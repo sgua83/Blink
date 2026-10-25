@@ -5,28 +5,30 @@
 ## 从四个数开始
 
 ```powershell
-$blc = '.\target\release\blc.exe'
-$out = 'target/interop'
-& $blc build-dll sample/lessons/map.b `
-    "$out/map.dll" sample scale
+.\target\release\blc.exe build-dll `
+    sample/lessons/map.b `
+    target/interop/map.dll sample scale
 
-cl /nologo /utf-8 /EHsc /I $out `
-    sample/interop/map.cpp "$out/map.lib" `
+cl /nologo /utf-8 /EHsc `
+    /I target/interop `
+    sample/interop/map.cpp `
+    target/interop/map.lib `
     /Fo:target/interop/map-cpp.obj `
     /Fe:target/interop/map-cpp.exe
-& "$out/map-cpp.exe"
+.\target\interop\map-cpp.exe
 
-cl /nologo /utf-8 /I $out `
-    sample/interop/map.c "$out/map.lib" `
+cl /nologo /utf-8 /I target/interop `
+    sample/interop/map.c `
+    target/interop/map.lib `
     /Fo:target/interop/map-c.obj `
     /Fe:target/interop/map-c.exe
-& "$out/map-c.exe"
+.\target\interop\map-c.exe
 
 rustc --edition=2024 -C opt-level=3 `
     sample/interop/map.rs `
     -L native=target/interop `
     -o target/interop/map-rust.exe
-& "$out/map-rust.exe"
+.\target\interop\map-rust.exe
 ```
 
 C 和 C++ 输出 3 5 7 9；Rust 输出 [3.0, 5.0, 7.0, 9.0]。C++ 析构与 Rust Drop 释放 DLL handle，数组仍属于各自的宿主。
@@ -34,13 +36,16 @@ C 和 C++ 输出 3 5 7 9；Rust 输出 [3.0, 5.0, 7.0, 9.0]。C++ 析构与 Rust
 ## 一百万像素的分形：完整调用计时
 
 ```powershell
-& $blc build-dll sample/interop/fractal.b `
-    "$out/fractal.dll" sample render
+.\target\release\blc.exe build-dll `
+    sample/interop/fractal.b `
+    target/interop/fractal.dll `
+    sample render
 
 cl /nologo /utf-8 /std:c++17 `
     /O2 /arch:AVX2 /fp:precise /EHsc `
-    /I $out sample/interop/cpp.cpp `
-    "$out/fractal.lib" `
+    /I target/interop `
+    sample/interop/cpp.cpp `
+    target/interop/fractal.lib `
     /Fo:target/interop/cpp.obj `
     /Fe:target/interop/cpp.exe
 
@@ -50,10 +55,10 @@ rustc --edition=2024 -C opt-level=3 `
     -L native=target/interop `
     --out-dir target/interop
 
-& "$out/cpp.exe" cpu
-& "$out/cpp.exe" gpu
-& "$out/rust.exe" cpu
-& "$out/rust.exe" gpu
+.\target\interop\cpp.exe cpu
+.\target\interop\cpp.exe gpu
+.\target\interop\rust.exe cpu
+.\target\interop\rust.exe gpu
 ```
 
 编译器、执行框架及生成的 DLL 均为 Release；C++ 使用 /O2，Rust 使用 -C opt-level=3。2026-10-26 的重新实测见 [完整运行记录](../performance/运行记录.txt)。
