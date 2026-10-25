@@ -2,7 +2,6 @@ use blanguage::{ExecutableProgram, ast::Access, ir::Scalar};
 use blcompute::{Dataset, Result, Texture2D, TextureMip, Value, cpu::CpuProgram, vulkan::Device};
 use std::{
     hint::black_box,
-    num::NonZeroU32,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -67,23 +66,16 @@ fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     let name = args.get(1).map(String::as_str).unwrap_or("map");
     let default_count = match name {
-        "map" | "compact" | "algebra" => 16_777_216,
-        "reduce" => 67_108_864,
-        "scan" => 8_388_608,
-        "resolve" => 8_294_400,
-        _ => 4_194_304,
+        "map" | "scan" | "compact" | "algebra" => 100_000_000,
+        "resolve" => 1_000_000,
+        _ => 10_000_000,
     };
     let n: u32 = args
         .get(2)
         .map(|s| s.parse())
         .transpose()?
         .unwrap_or(default_count);
-    let samples: usize = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(9);
-    let steps: NonZeroU32 = args
-        .get(4)
-        .map(|s| s.parse())
-        .transpose()?
-        .unwrap_or(NonZeroU32::new(8).unwrap());
+    let samples = 9;
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()?;
@@ -124,13 +116,13 @@ fn main() -> Result<()> {
         "resolve" => (
             11,
             "render/resolve.b",
-            "resolve<3840,2160,2,8294400,33177600>",
-            vec![33177600, 8294400],
+            "resolve<1000,1000,2,1000000,4000000>",
+            vec![4_000_000, 1_000_000],
             &engine,
         ),
         _ => return Err(std::io::Error::other("未知案例").into()),
     };
-    let n = if kind == 11 { 8_294_400 } else { n };
+    let n = if kind == 11 { 1_000_000 } else { n };
     let program = blanguage::compile_entry(&module_root.join(module), module_root, entry)?
         .programs
         .into_iter()
@@ -274,19 +266,17 @@ fn main() -> Result<()> {
     let mut cxx_times = Vec::new();
     for repeat in 0..samples + 2 {
         let start = Instant::now();
-        for _ in 0..steps.get() {
-            unsafe {
-                book_serial(
-                    kind,
-                    n,
-                    pointers.as_ptr(),
-                    stride.as_ptr(),
-                    field.as_ptr(),
-                    texture_pixels.as_ptr().cast(),
-                );
-            }
+        unsafe {
+            book_serial(
+                kind,
+                n,
+                pointers.as_ptr(),
+                stride.as_ptr(),
+                field.as_ptr(),
+                texture_pixels.as_ptr().cast(),
+            );
         }
-        let elapsed = ms(start) / steps.get() as f64;
+        let elapsed = ms(start);
         black_box(&serial);
         if repeat >= 2 {
             cxx_times.push(elapsed);
@@ -299,22 +289,20 @@ fn main() -> Result<()> {
         let compiled = CpuProgram::new(program.clone())?;
         for repeat in 0..samples + 2 {
             let start = Instant::now();
-            for _ in 0..steps.get() {
-                cpu = compiled
-                    .run_owned(
-                        blcompute::cpu::Bindings {
-                            datasets: cpu,
-                            textures: if kind == 10 {
-                                vec![texture.clone()]
-                            } else {
-                                vec![]
-                            },
+            cpu = compiled
+                .run_owned(
+                    blcompute::cpu::Bindings {
+                        datasets: cpu,
+                        textures: if kind == 10 {
+                            vec![texture.clone()]
+                        } else {
+                            vec![]
                         },
-                        &values,
-                    )?
-                    .into_datasets();
-            }
-            let elapsed = ms(start) / steps.get() as f64;
+                    },
+                    &values,
+                )?
+                .into_datasets();
+            let elapsed = ms(start);
             black_box(&cpu);
             if repeat >= 2 {
                 cpu_times.push(elapsed);
@@ -340,20 +328,19 @@ fn main() -> Result<()> {
     for repeat in 0..samples + 2 {
         let start = Instant::now();
         let done = compiled
-            .submit_steps(
+            .submit(
                 blcompute::vulkan::Bindings {
                     datasets: gpu,
                     accelerations: vec![],
                     textures: textures.clone(),
                 },
                 &values,
-                steps,
             )?
             .wait()?;
-        let elapsed = ms(start) / steps.get() as f64;
+        let elapsed = ms(start);
         if repeat >= 2 {
             gpu_times.push(elapsed);
-            device_times.push(done.timings.elapsed_ms / steps.get() as f64);
+            device_times.push(done.timings.elapsed_ms);
         }
         gpu = done.into_datasets();
     }
@@ -386,14 +373,13 @@ fn main() -> Result<()> {
             .map(|d| device.upload(d))
             .collect::<Result<Vec<_>>>()?;
         let done = compiled
-            .submit_steps(
+            .submit(
                 blcompute::vulkan::Bindings {
                     datasets: uploaded,
                     accelerations: vec![],
                     textures: textures.clone(),
                 },
                 &values,
-                steps,
             )?
             .wait()?;
         for (i, binding) in program.buffers().iter().enumerate() {
@@ -401,7 +387,7 @@ fn main() -> Result<()> {
                 black_box(device.download(&done.datasets()[i])?);
             }
         }
-        roundtrip_times.push(ms(start) / steps.get() as f64);
+        roundtrip_times.push(ms(start));
     }
     let cxx = median(&mut cxx_times);
     let cpu = if cpu_times.is_empty() {
@@ -411,10 +397,10 @@ fn main() -> Result<()> {
     };
     let wall = median(&mut gpu_times);
     println!(
-        "case,n,samples,steps,cxx_ms,b_cpu_ms,b_gpu_wall_ms,gpu_device_ms,gpu_roundtrip_ms,gpu_prepare_ms,cpu_speedup,gpu_speedup,cpu_max_abs,gpu_max_abs,cpu_integer_mismatch,gpu_integer_mismatch"
+        "case,n,samples,cxx_ms,b_cpu_ms,b_gpu_wall_ms,gpu_device_ms,gpu_roundtrip_ms,gpu_prepare_ms,cpu_speedup,gpu_speedup,cpu_max_abs,gpu_max_abs,cpu_integer_mismatch,gpu_integer_mismatch"
     );
     println!(
-        "{name},{n},{samples},{steps},{cxx:.6},{cpu:.6},{wall:.6},{:.6},{:.6},{prepare_ms:.6},{:.3},{:.3},{:.9},{:.9},{},{}",
+        "{name},{n},{samples},{cxx:.6},{cpu:.6},{wall:.6},{:.6},{:.6},{prepare_ms:.6},{:.3},{:.3},{:.9},{:.9},{},{}",
         median(&mut device_times),
         median(&mut roundtrip_times),
         cxx / cpu,

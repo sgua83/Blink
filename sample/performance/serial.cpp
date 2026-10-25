@@ -223,7 +223,7 @@ extern "C" void book_serial(u32 kind, u32 n, u32 **data, const u32 *stride, cons
     }
     else if (kind == 11)
     {
-        constexpr u32 W = 3840, InternalWidth = W * 2;
+        constexpr u32 W = 1000, InternalWidth = W * 2;
         for (u32 i = 0; i < n; ++i)
         {
             u32 base = (i / W) * (InternalWidth * 2) + (i % W) * 2;

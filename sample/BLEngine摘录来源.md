@@ -25,6 +25,6 @@
 | [Programs/render/frame.h](../../BLEngine/Programs/render/frame.h) | #11 | `11b2b1313a79d4c796827be8d43773e4264d6c76498e9388c724c4a25d61aefd` |
 | [Programs/render/frame.b](../../BLEngine/Programs/render/frame.b) | #11 | `65c1615be25bfa13fa7928a89ed95a28669053e5ee12ffde7a592047034c7d75` |
 
-性能测量直接调用 simulation.bodies::step、simulation.statistics::step_and_total、scene.transforms::prepare、material.textured::shade 与 render.resolve::resolve；显示入口为 3840×2160 输出、2×2 内部采样。C++ 完整对照位于 performance/serial.cpp，调用与计时位于 performance/src/main.rs。
+性能测量直接调用 simulation.bodies::step、simulation.statistics::step_and_total、scene.transforms::prepare、material.textured::shade 与 render.resolve::resolve；本书测量的显示入口为 1000×1000 输出（一百万个像素）、2×2 内部采样。C++ 完整对照位于 performance/serial.cpp，调用与计时位于 performance/src/main.rs。
 
 语言规则以 Blink 的 Docs/BLanguage.md 为准；执行与资源所有权以 Docs/Architecture.md 和实际框架为准。更新中的完整帧与求交源码属于持续研发；本书各项性能结论仅对应明确列出的入口与输入，不外推为整帧 FPS。

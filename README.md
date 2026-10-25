@@ -4,7 +4,7 @@ Blink（简称 B）是一门自研原生并行计算语言，提供 CPU／GPU �
 
 B 也寓意 **Base**。Blink 希望像 C 语言为上一个计算时代所做的那样，成为 AI 超算时代的基础语言。并行计算、数据关系与协作应成为算法的基本表达，让同一套思想从普通计算扩展到大规模异构计算。
 
-工程目录与 P4 标识沿用 `BLanguage`，编译器命令为 `blc`，源码接口 `.h`、实现 `.b`。
+工程目录与 P4 标识沿用 `BLanguage`，编译器命令为 `blc`，执行器为 `blrun`，源码接口 `.h`、实现 `.b`。
 
 独立 P4 主线 `//BLanguage/main`，client `BLanguage_Gua`，本机根 `B:\BLanguage`。首个消费者 BLEngine 位于 `B:\BLEngine`，通过两个自研 crate 的路径依赖使用语言与框架；本项目不依赖引擎。
 
@@ -14,20 +14,24 @@ GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 
 
 ## 构建与使用
 
-Windows x64 MSVC，使用 Rust 标准库和 Windows／Vulkan 标准接口。GPU 能力由真实程序申请，纯编译不创建设备；源码 MIT，生成物不提交。
+当前动手环境为 Windows x64。准备 [Git for Windows](https://git-scm.com/install/windows)、[Rust stable 的 MSVC 工具链](https://rust-lang.org/tools/install) 和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（“使用 C++ 的桌面开发”、x64 工具与 Windows SDK）。打开 x64 Developer PowerShell，在希望保存源码的位置执行：
 
 ```powershell
+git clone https://github.com/sgua83/Blink.git
+Set-Location Blink
 cargo build --workspace --release
-.\target\release\blc.exe check ..\BLEngine\Programs\math\field.b ..\BLEngine\Programs
-.\target\release\blc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
+.\target\release\blc.exe check sample\lessons\map.b sample demo
+.\target\release\blrun.exe cpu sample\lessons\map.b demo sample Saved\Book\map :4
 ```
 
-上例显式编译首个消费者的真实算法；源文件和模块根由调用方传入。blanguage 提供编译 API，blcompute 提供原生数据及执行 API。BLEngine 的 compute 命令位于引擎项目；普通语言开发只构建本工作区。
+`blc` 检查和导出原生代码，`blrun` 通过同一编译库在 CPU／GPU 上执行 B 模块。上例仅依赖当前仓库，输出 `Saved/Book/map/values.bldata` 中的四个 f32 为 `[3,5,7,9]`。将 `cpu` 改为 `gpu` 可执行 GPU 版本，需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
+
+blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun。BLEngine 通过库 API 消费 Blink；入门示例不需要引擎工程。完整的编译、运行和读取输出步骤见 [《并行编程的艺术》](sample/并行编程的艺术.md)。
 
 | 位置 | 职责 |
 |---|---|
 | crates/blanguage | 模块、类型／访问、并行 IR、优化、x64／SPIR-V 与 blc |
-| crates/blcompute | CPU 范围执行、GPU 驻留、提交、同步和生命周期 |
+| crates/blcompute | CPU 范围执行、GPU 驻留、提交、同步、生命周期与 blrun |
 | Docs | 语言规范、架构、问题及原始观测 |
 | Saved、target | 本地研发数据与生成物，不提交 |
 

@@ -1,25 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="820">
-<rect x="0" y="0" width="760" height="820" rx="12" fill="#f5f8fa" stroke="#f5f8fa"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="790">
+<rect x="0" y="0" width="760" height="790" rx="12" fill="#f5f8fa" stroke="#f5f8fa" />
 <text x="28" y="58" font-size="42" fill="#147d86">独占前缀和 / 实测</text>
-<text x="28" y="108" font-size="29" fill="#263746">8,388,608 个元素 · 每批连续 8 轮</text>
+<text x="28" y="108" font-size="29" fill="#263746">输入：一亿个元素</text>
 <text x="28" y="148" font-size="27" fill="#657787">同算法 · 同输入 · 耗时包含调度与等待</text>
-<rect x="20" y="177" width="720" height="136" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<rect x="20" y="177" width="720" height="136" rx="12" fill="#ffffff" stroke="#d9e4eb" />
 <text x="40" y="216" font-size="33" fill="#263746">C++ 串行</text>
-<text x="405" y="216" font-size="34" fill="#263746">2.206 ms / 轮</text>
-<rect x="40" y="240" width="610.0" height="17" rx="3" fill="#7e8c97" stroke="#7e8c97"/>
+<text x="405" y="216" font-size="34" fill="#263746">31.284 ms</text>
+<rect x="40" y="240" width="487.24430236892766" height="17" rx="3" fill="#7e8c97" stroke="#7e8c97" />
 <text x="40" y="290" font-size="29" fill="#7e8c97">比较基准</text>
-<rect x="20" y="328" width="720" height="136" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<rect x="20" y="328" width="720" height="136" rx="12" fill="#ffffff" stroke="#d9e4eb" />
 <text x="40" y="367" font-size="33" fill="#263746">B CPU 并行</text>
-<text x="405" y="367" font-size="34" fill="#263746">1.253 ms / 轮</text>
-<rect x="40" y="391" width="346.42308885028166" height="17" rx="3" fill="#339ba2" stroke="#339ba2"/>
-<text x="40" y="441" font-size="29" fill="#339ba2">加速 1.76 倍</text>
-<rect x="20" y="479" width="720" height="136" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="405" y="367" font-size="34" fill="#263746">39.165 ms</text>
+<rect x="40" y="391" width="610.0" height="17" rx="3" fill="#339ba2" stroke="#339ba2" />
+<text x="40" y="441" font-size="29" fill="#339ba2">耗时为串行的 1.25 倍</text>
+<rect x="20" y="479" width="720" height="136" rx="12" fill="#ffffff" stroke="#d9e4eb" />
 <text x="40" y="518" font-size="33" fill="#263746">B GPU 驻留</text>
-<text x="405" y="518" font-size="34" fill="#263746">1.719 ms / 轮</text>
-<rect x="40" y="542" width="475.45799768598283" height="17" rx="3" fill="#147d86" stroke="#147d86"/>
-<text x="40" y="592" font-size="29" fill="#147d86">加速 1.28 倍</text>
-<text x="28" y="676" font-size="29" fill="#263746">GPU 数据往返：13.715 ms / 轮</text>
+<text x="405" y="518" font-size="34" fill="#263746">20.582 ms</text>
+<rect x="40" y="542" width="320.5656268032498" height="17" rx="3" fill="#147d86" stroke="#147d86" />
+<text x="40" y="592" font-size="29" fill="#147d86">加速 1.52 倍</text>
+<text x="28" y="676" font-size="29" fill="#263746">GPU 含数据往返：1204.467 ms</text>
 <text x="28" y="718" font-size="26" fill="#657787">数据往返包括上传、执行与读回，另行计时。</text>
-<text x="28" y="757" font-size="27" fill="#657787">预热 2 批 · 测量 9 批 · 取中位数</text>
-<text x="28" y="795" font-size="26" fill="#657787">9950X / 16 核 32 线程 · RX 9070 GRE</text>
+<text x="28" y="764" font-size="26" fill="#657787">9950X / 16 核 32 线程 · RX 9070 GRE</text>
 </svg>
