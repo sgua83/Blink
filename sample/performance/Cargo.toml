@@ -1,0 +1,21 @@
+[package]
+name = "book-performance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[[bin]]
+name = "bperf"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+blanguage = { path = "../../crates/blanguage" }
+blcompute = { path = "../../crates/blcompute" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
