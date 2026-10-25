@@ -849,6 +849,10 @@ impl Drop for GpuDataset {
 pub struct ReadDataset(Rc<GpuDataset>);
 pub type ViewBinding<'a> = crate::ViewBinding<'a, ReadDataset>;
 impl ReadDataset {
+    /// 原存储的物理记录容量；GPU有效前缀仍由其域关系持有。
+    pub fn count(&self) -> u32 {
+        self.0.count()
+    }
     pub fn bytes(&self) -> u64 {
         self.0.bytes()
     }
