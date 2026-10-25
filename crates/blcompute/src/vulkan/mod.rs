@@ -17,7 +17,7 @@ use blanguage::{
     ir::{Program, Ty},
 };
 use execution::{Completion, Execution, ExecutionResources, QueryPool};
-pub use present::Swapchain;
+pub use present::{PresentStatus, Swapchain};
 use raw::*;
 pub use ray::{Acceleration, BottomLevel, RayInstance};
 use std::num::NonZeroU32;

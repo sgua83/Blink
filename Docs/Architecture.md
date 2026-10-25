@@ -63,6 +63,8 @@ GPU 数据为独立设备内存。上传、读回和零初始化都是明确操�
 
 设备能力由真实消费者提出。`Device::new` 提供通用计算，`Device::for_program` 按程序声明启用加速结构／光线查询，两者均不启用窗口或交换链扩展。需要呈现的消费者使用 `Device::with_presentation`；交换链自己加载并持有呈现入口，计算设备不持有这组入口。无窗口几何渲染也使用普通计算设备，不先创建窗口。它们仍使用同一套 Vulkan 数据、编译与提交实现。Device::swapchain 接收实际宽高，Swapchain 持有真实 extent，按 dataset 的物理页逐段复制完整 BGRA8 输出；页尾和页首不足一行时仍按图像实际偏移交付，不复制页表，也不依赖某个引擎产品的固定分辨率。
 
+Win32交换链创建与present读取实际窗口的DPI上下文，在该线程作用域执行WSI后归还原上下文，不改变进程全局DPI。窗口仍由调用者持有到Swapchain析构之后，独立GPU线程沿相同平台入口使用。Swapchain::present返回PresentStatus::Optimal／Suboptimal；两者均成功取得并提交图像，Suboptimal保留WSI原生状态，其余结果继续报告。依据为[微软线程DPI接口](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddpiawarenesscontext)和[Vulkan获取图像](https://docs.vulkan.org/refpages/latest/refpages/source/vkAcquireNextImageKHR.html)／[呈现规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html)；不以缩小输出或重试处理表面变化。动态extent／OutOfDate仍由后续实际窗口生命周期工作补齐。
+
 Device::same_device仅比较原逻辑设备／队列所有者的身份。Device克隆共享该所有者；同一物理GPU重新创建的Device仍不同。真实消费者在交接跨模块资源前可据此处理平台归属，不复制设备ID、按名称猜测或增加运行时审核链。引擎多输出的场景／图像职责仍属于BLEngine，通用执行框架不持有场景或视图状态。
 
 每个阶段的读写集合用于生成 RAW、WAW、WAR 所需依赖。当前使用同一计算／呈现队列；全局内存屏障覆盖全部待完成生产者，再清理同步记录。执行上下文持有命令、描述符、临时存储、编译程序及原生完成点；每份唯一数据持有自己的最后使用上下文。资源只随最后一个真实消费者结束而释放，分支不再复制或重建存储所属表。

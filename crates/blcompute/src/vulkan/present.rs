@@ -1,5 +1,29 @@
 use super::*;
 
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetWindowDpiAwarenessContext(window: *mut c_void) -> *mut c_void;
+    fn SetThreadDpiAwarenessContext(context: *mut c_void) -> *mut c_void;
+}
+// WSI必须在该真实窗口的DPI上下文调用；离开操作后归还调用线程的原上下文。
+struct WindowDpi(*mut c_void);
+impl WindowDpi {
+    fn enter(context: *mut c_void) -> Result<Self> {
+        let previous = unsafe { SetThreadDpiAwarenessContext(context) };
+        if previous.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self(previous))
+    }
+}
+impl Drop for WindowDpi {
+    fn drop(&mut self) {
+        unsafe {
+            SetThreadDpiAwarenessContext(self.0);
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct Extent2D {
@@ -74,7 +98,24 @@ pub(super) struct PresentInfo {
 }
 type DestroySurface = unsafe extern "system" fn(VkInstance, u64, *const c_void);
 
+/// 两者均成功取得并提交图像；Suboptimal保留WSI报告的非最优表面事实。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentStatus {
+    Optimal,
+    Suboptimal,
+}
+impl PresentStatus {
+    fn read(code: i32, operation: &str) -> Result<Self> {
+        match code {
+            0 => Ok(Self::Optimal),
+            1000001003 => Ok(Self::Suboptimal),
+            _ => Err(error(format!("{operation} 返回 VkResult {code}"))),
+        }
+    }
+}
+
 pub struct Swapchain {
+    window_dpi: *mut c_void,
     extent: Extent2D,
     inner: Rc<Inner>,
     functions: PresentFunctions,
@@ -96,6 +137,11 @@ impl Device {
         height: u32,
     ) -> Result<Swapchain> {
         unsafe {
+            let window_dpi = GetWindowDpiAwarenessContext(window);
+            if window_dpi.is_null() {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let _dpi = WindowDpi::enter(window_dpi)?;
             width
                 .checked_mul(height)
                 .ok_or_else(|| error("呈现图像超出当前 dataset 的 u32 寻址能力"))?;
@@ -126,6 +172,7 @@ impl Device {
                 *mut Format,
             ) -> i32 = library.get(vk_instance, c"vkGetPhysicalDeviceSurfaceFormatsKHR")?;
             let mut out = Swapchain {
+                window_dpi,
                 extent: Extent2D { width, height },
                 inner: self.inner.clone(),
                 functions,
@@ -265,7 +312,8 @@ impl Device {
     }
 }
 impl Swapchain {
-    pub fn present(&mut self, display: &GpuDataset) -> Result<()> {
+    pub fn present(&mut self, display: &GpuDataset) -> Result<PresentStatus> {
+        let _dpi = WindowDpi::enter(self.window_dpi)?;
         if !Rc::ptr_eq(&self.inner, &display.allocation.inner)
             || display.count != self.extent.width * self.extent.height
             || display.stride != 4
@@ -278,7 +326,7 @@ impl Swapchain {
             let f = &self.inner.functions;
             let d = self.inner.owner.device;
             let mut index = 0;
-            check(
+            let acquired = PresentStatus::read(
                 (self.functions.vkAcquireNextImageKHR)(
                     d,
                     self.chain,
@@ -400,13 +448,17 @@ impl Swapchain {
                 indices: &index,
                 results: null_mut(),
             };
-            check(
+            let queued = PresentStatus::read(
                 (self.functions.vkQueuePresentKHR)(self.inner.queue, &info),
                 "vkQueuePresentKHR",
             )?;
             commands.wait()?;
+            Ok(if acquired == PresentStatus::Suboptimal || queued == PresentStatus::Suboptimal {
+                PresentStatus::Suboptimal
+            } else {
+                PresentStatus::Optimal
+            })
         }
-        Ok(())
     }
 }
 impl Drop for Swapchain {
