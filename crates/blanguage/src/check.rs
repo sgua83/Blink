@@ -362,7 +362,7 @@ fn expand_stages(
                     );
                 }
                 let bound = |expr: &Expr| -> Result<u32> {
-                    match stage_root(world, d, env, expr)? {
+                    match stage_root(world, d, env, program, expr)? {
                         Root::Literal(ty, words) if ty == Ty::scalar(Scalar::U32) => Ok(words[0]),
                         _ => d.source.fail(
                             expr.span,
@@ -655,7 +655,7 @@ fn expand_stages(
                 }
                 let roots = args
                     .iter()
-                    .map(|arg| stage_root(world, d, env, arg))
+                    .map(|arg| stage_root(world, d, env, program, arg))
                     .collect::<Result<Vec<_>>>()?;
                 let actuals: Vec<_> = roots
                     .iter()
@@ -831,8 +831,9 @@ fn expand_stages(
 }
 fn stage_root(
     world: &World,
-    d: &Definition,
+    d: &Arc<Definition>,
     env: &BTreeMap<String, Root>,
+    program: &Program,
     arg: &Expr,
 ) -> Result<Root> {
     match &arg.kind {
@@ -855,13 +856,7 @@ fn stage_root(
             let (ty, bits) = number(&d.source, arg.span, n)?;
             Ok(Root::Literal(ty, vec![bits]))
         }
-        _ => {
-            return d.source.fail(
-                arg.span,
-                "B114",
-                "阶段参数必须是已声明参数或常量；逐元素表达式放在 parallel 中",
-            );
-        }
+        _ => constant::stage_expression(world, d, env, program, arg),
     }
 }
 fn collective_field(

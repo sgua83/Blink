@@ -33,6 +33,34 @@ impl Builder<'_> {
 pub(super) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<u32>)> {
     evaluate(world, key, &[])
 }
+/// 阶段派生参数复用已有表达式及常量语义；没有宿主求值器或新增运行阶段。
+pub(super) fn stage_expression(
+    world: &World,
+    definition: &Arc<Definition>,
+    roots: &BTreeMap<String, Root>,
+    program: &Program,
+    expression: &Expr,
+) -> Result<Root> {
+    let mut builder = Builder::new(world, definition, program, 0);
+    builder.in_function = true;
+    builder.roots(roots);
+    // roots中的无关uniform装载不是当前表达式的计算，不要求它们为常量。
+    let first = builder.code.len();
+    let value = builder.expr(expression)?;
+    if value.ty.contains_views()
+        || value.constant.is_none()
+        || builder.code[first..]
+            .iter()
+            .any(|inst| !matches!(inst, Inst::Constant(..)))
+    {
+        return definition.source.fail(
+            expression.span,
+            "B114",
+            "阶段派生参数必须可完全编译期求值；运行期或逐元素表达式放在 parallel 中",
+        );
+    }
+    Ok(Root::Literal(value.ty, value.constant.unwrap()))
+}
 fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<u32>)> {
     let definition = &world.functions[key];
     if !world.evaluating_constants.borrow_mut().insert(key.into()) {

@@ -1149,3 +1149,14 @@
 - 最终Release重新编译／链接后再次执行全部本轮入口：原始查询PID19736、Stella几何PID37220、共同表面PID50364、五组完整数值frame PID26404、正式corner／原字形PID18944／17980及原生窗口PID704。27份完整数值／图像文件与前次执行SHA-256相同；正式blengine.exe为348832a71a5842bdea23b31aaf5175802d71516d3fe969c68b1ef699ddb4269e。此前进程／测量记录保留于BeforeFinalLink，最终记录与数据同目录；不将重建后的单次耗时差当作加速。
 
 - 本轮临时B／Rust消费者、研发输入及原生执行产物已清理：BLEngine的Saved/SurfaceGeometryDevelopment共18个文件、3741045.0字节，目录已不存在；精确清单见该测量目录cleanup.json。原始数值、完整4K图和必要日志保留，没有新增常驻测试或验证关卡。
+
+
+## BLEngine提出的阶段常量派生表达式缺口（2026-10-26）
+
+- 归属：语言能力缺口。Stella的静态路径轮次已给出编译期round，但调用traverse(...,round+1)仍报B114；原stage_root只接受名称、数字及StaticU32。这不是已证实的GPU误编译，不能靠引擎另写固定展开或运行期求值绕过。
+- 已补齐：阶段实参及静态for范围直接复用原Builder表达式／常量函数语义，只有普通值完全常量化且表达式不产生其他指令才交给原Root::Literal。根环境中的无关uniform装载不属于本表达式；表达式自己的资源效果不会被忽略。u32运算保持模32位，不引入编译期解释器、运行期阶段或宿主状态。
+- Release一次性原生消费者PID68360，三百万零三条记录，for范围0..N+1、常量函数twice(round+1)及0xffffffff+1共同进入一个融合阶段；CPU／GPU全部值42、原index和独立参考一致。offset+1的动态派生，以及原子修改后返回字面量的函数调用均在编译期报B114，没有执行副作用。未称任意纯函数控制流都可在编译期解释。
+- 实际消费者：BLEngine的16段frame已用round+1编译并在真实Vulkan设备执行53阶段，输出3840×2160、内部7680×4320；引擎的介质与图像结果归B:/BLEngine/Docs/Issues.md。
+- 原始数值、诊断、进程及Release配置保留在E:/BLEngineMeasurements/VolumeTransport；本轮临时消费者归BLEngine所属Saved目录，研发结束清除。动态设备阶段循环、其他已列语言缺口及完整引擎保持未完成。
+
+- 本轮临时B／Rust消费者、研发场景／几何／材质及原生程序／PDB已清理：BLEngine的Saved/VolumeTransport共32个文件、3728654字节，目录已不存在；精确清单见测量目录cleanup.json。保留原始数值、完整图像及必要日志，没有新增常驻测试、测试资产或验证关卡。
