@@ -144,26 +144,48 @@ impl Drop for QueryPool {
         }
     }
 }
-pub(super) struct ExecutionResources {
-    pub commands: Commands,
-    pub _compiled: Rc<Compiled>,
-    pub _accelerations: Vec<Acceleration>,
-    pub _scratch: Vec<Option<Scratch>>,
-    pub _queries: Rc<QueryPool>,
+pub(super) enum ExecutionResources {
+    Compute {
+        commands: Commands,
+        _compiled: Rc<Compiled>,
+        _accelerations: Vec<Acceleration>,
+        _scratch: Vec<Option<Scratch>>,
+        _queries: Rc<QueryPool>,
+    },
+    Transfer {
+        commands: Commands,
+        _staging: Vec<Allocation>,
+    },
+    Acceleration {
+        commands: Commands,
+        _scratch: Allocation,
+        _inputs: Vec<ray::RayInput>,
+    },
+}
+impl ExecutionResources {
+    fn commands(&self) -> &Commands {
+        match self {
+            Self::Compute { commands, .. }
+            | Self::Transfer { commands, .. }
+            | Self::Acceleration { commands, .. } => commands,
+        }
+    }
 }
 pub(super) struct Execution {
     pub point: Rc<Completion>,
     resources: RefCell<Option<ExecutionResources>>,
     dependencies: RefCell<Vec<Rc<Self>>>,
     discarded: RefCell<Vec<GpuStorage>>,
+    discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
 impl Execution {
     pub fn new(resources: ExecutionResources, dependencies: Vec<Rc<Self>>) -> Rc<Self> {
         Rc::new(Self {
-            point: resources.commands.completion.clone(),
+            point: resources.commands().completion.clone(),
             resources: RefCell::new(Some(resources)),
             dependencies: RefCell::new(dependencies),
             discarded: RefCell::new(Vec::new()),
+            discarded_structures: RefCell::new(Vec::new()),
         })
     }
     pub fn prepare(mut sources: Vec<Rc<Self>>) -> Result<Vec<Rc<Self>>> {
@@ -193,6 +215,13 @@ impl Execution {
             self.discarded.borrow_mut().push(storage);
         }
     }
+    pub fn discard_structure(&self, storage: ray::StructureStorage) {
+        if self.point.result.get() == Some(0) {
+            drop(storage);
+        } else {
+            self.discarded_structures.borrow_mut().push(storage);
+        }
+    }
     fn release_known(&self) {
         let dependencies = std::mem::take(&mut *self.dependencies.borrow_mut());
         for previous in dependencies {
@@ -204,6 +233,8 @@ impl Execution {
         drop(resources);
         let storage = std::mem::take(&mut *self.discarded.borrow_mut());
         drop(storage);
+        let structures = std::mem::take(&mut *self.discarded_structures.borrow_mut());
+        drop(structures);
         self.point.release_fence();
     }
     pub fn is_complete(&self) -> Result<bool> {

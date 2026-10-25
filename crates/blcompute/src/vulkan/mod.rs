@@ -617,69 +617,8 @@ impl Device {
         })?;
         let mut target = GpuDataset::new(self.inner.clone(), data.ty, data.stride, data.count)?;
         target.storage.views = views;
-        self.upload_payload(&target, &data.words)?;
+        self.upload_payload(&mut target, &data.words)?;
         Ok(target)
-    }
-    fn upload_payload(&self, target: &GpuDataset, words: &[u32]) -> Result<()> {
-        let words_per_page = target.page_records() as usize * target.stride as usize / 4;
-        let fields: Vec<_> = target
-            .ty
-            .view_fields()
-            .iter()
-            .map(|(offset, _)| *offset)
-            .collect();
-        let headers: Vec<_> = target
-            .views
-            .sources
-            .iter()
-            .map(|source| {
-                let address = source.0.allocation.address();
-                [address as u32, (address >> 32) as u32, source.0.count]
-            })
-            .collect();
-        for (index, (page, words)) in target
-            .pages
-            .iter()
-            .zip(words.chunks(words_per_page))
-            .enumerate()
-        {
-            self.upload_page(page, words, |mapped| {
-                target.views.encode(
-                    &fields,
-                    target.stride as usize / 4,
-                    index * target.page_records() as usize,
-                    mapped,
-                    &headers,
-                );
-            })?;
-        }
-        Ok(())
-    }
-    fn upload_page(
-        &self,
-        target: &Allocation,
-        words: &[u32],
-        encode: impl FnOnce(&mut [u32]),
-    ) -> Result<()> {
-        let source = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 1, 6)?;
-        source.write_with(words, encode)?;
-        let mut commands = Commands::new(self.inner.clone())?;
-        let copy = VkBufferCopy {
-            srcOffset: 0,
-            dstOffset: 0,
-            size: words.len() as u64 * 4,
-        };
-        unsafe {
-            (self.inner.functions.vkCmdCopyBuffer)(
-                commands.command,
-                source.buffer,
-                target.buffer,
-                1,
-                &copy,
-            );
-        }
-        commands.submit()?;
-        commands.wait()
     }
     pub fn zeroed(&self, program: &Program, binding: usize, count: u32) -> Result<GpuDataset> {
         let schema = program
@@ -692,9 +631,9 @@ impl Device {
             ));
         }
         let bytes = schema.stride as u64 * count as u64;
-        let target = GpuDataset::new(self.inner.clone(), schema.ty.clone(), schema.stride, count)?;
+        let mut target = GpuDataset::new(self.inner.clone(), schema.ty.clone(), schema.stride, count)?;
         if bytes > 0 {
-            let mut commands = Commands::new(self.inner.clone())?;
+            let commands = Commands::new(self.inner.clone())?;
             for page in &target.pages {
                 unsafe {
                     (self.inner.functions.vkCmdFillBuffer)(
@@ -706,8 +645,7 @@ impl Device {
                     );
                 }
             }
-            commands.submit()?;
-            commands.wait()?;
+            target.last_use = Some(self.submit_transfer(commands, Vec::new())?);
         }
         Ok(target)
     }
@@ -741,8 +679,13 @@ impl Device {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
+            let dependencies = Execution::prepare(data.last_use.iter().cloned().collect())?;
             commands.submit()?;
-            commands.wait()?;
+            let execution = Execution::new(
+                ExecutionResources::Transfer { commands, _staging: Vec::new() },
+                dependencies,
+            );
+            execution.wait()?;
             words.extend(target.read(bytes as usize / 4)?);
             remaining -= bytes;
         }
@@ -1774,6 +1717,9 @@ impl GpuProgram {
         {
             return Err(error("加速资源的数量或设备归属与程序不一致"));
         }
+        for acceleration in accelerations {
+            owner.dependencies.push(acceleration.produced());
+        }
         for d in data.iter() {
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
                 return Err(error("数据集不属于程序的设备"));
@@ -1802,7 +1748,8 @@ impl GpuProgram {
         commands.textures = std::mem::take(&mut owner.textures);
         if !owner.dependencies.is_empty() {
             // 同队列提交顺序本身不形成依赖；此交接同时覆盖 RAW、WAW 与 WAR。
-            commands.barrier(0x10000, 0x800, 0x10000, 0x60);
+            let access = 0x60 | if accelerations.is_empty() { 0 } else { 0x200000 };
+            commands.barrier(0x10000, 0x800, 0x10000, access);
             // 完成状态不替代设备内存依赖，先记录交接，再回收完成的前序资源。
             owner.dependencies = Execution::prepare(std::mem::take(&mut owner.dependencies))?;
         }
@@ -2244,7 +2191,7 @@ impl GpuProgram {
         commands.submit()?;
         let queries = QueryPool::take(&mut commands, query_count);
         let execution = Execution::new(
-            ExecutionResources {
+            ExecutionResources::Compute {
                 commands,
                 _compiled: c.clone(),
                 _accelerations: owner.accelerations.clone(),

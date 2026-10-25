@@ -157,14 +157,14 @@ impl RayDevice {
         }
     }
 }
-struct Structure {
+pub(super) struct StructureStorage {
     inner: Rc<Inner>,
     handle: u64,
     address: u64,
     _storage: Allocation,
     models: Vec<BottomLevel>,
 }
-impl Drop for Structure {
+impl Drop for StructureStorage {
     fn drop(&mut self) {
         if self.handle != 0 {
             unsafe {
@@ -177,8 +177,49 @@ impl Drop for Structure {
         }
     }
 }
+// 输出对象只持有其实际构建完成点；执行不反向持有这个对象。
+struct Structure {
+    storage: ManuallyDrop<StructureStorage>,
+    built: Rc<Execution>,
+}
+impl std::ops::Deref for Structure {
+    type Target = StructureStorage;
+    fn deref(&self) -> &StructureStorage {
+        &self.storage
+    }
+}
+impl Drop for Structure {
+    fn drop(&mut self) {
+        let storage = unsafe { ManuallyDrop::take(&mut self.storage) };
+        self.built.discard_structure(storage);
+    }
+}
+pub(super) struct RayInput {
+    allocation: Allocation,
+    ready: Option<Rc<Execution>>,
+}
+impl RayInput {
+    fn address(&self) -> u64 {
+        self.allocation.address()
+    }
+}
+impl Drop for RayInput {
+    fn drop(&mut self) {
+        if let Some(ready) = &self.ready {
+            ready.point.finish_for_drop();
+        }
+    }
+}
 #[derive(Clone)]
 pub struct BottomLevel(Rc<Structure>);
+impl BottomLevel {
+    pub fn is_complete(&self) -> Result<bool> {
+        self.0.built.is_complete()
+    }
+    pub fn wait(&self) -> Result<()> {
+        self.0.built.wait()
+    }
+}
 pub(super) struct InstanceInput {
     pub(super) pointers: Allocation,
     pub(super) models: Vec<BottomLevel>,
@@ -191,6 +232,15 @@ pub struct RayInstance {
 #[derive(Clone)]
 pub struct Acceleration(Rc<Structure>);
 impl Acceleration {
+    pub fn is_complete(&self) -> Result<bool> {
+        self.0.built.is_complete()
+    }
+    pub fn wait(&self) -> Result<()> {
+        self.0.built.wait()
+    }
+    pub(super) fn produced(&self) -> Rc<Execution> {
+        self.0.built.clone()
+    }
     pub fn allocated_bytes(&self) -> u64 {
         self.0._storage.allocated_size
             + self
@@ -208,12 +258,17 @@ impl Acceleration {
     }
 }
 impl Device {
-    fn ray_input(&self, words: &[u32]) -> Result<Allocation> {
-        let target = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 0xa0002, 1)?;
-        if !words.is_empty() {
-            self.upload_page(&target, words, |_| {})?;
-        }
-        Ok(target)
+    fn ray_input(&self, words: &[u32]) -> Result<RayInput> {
+        let allocation = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 0xa0002, 1)?;
+        let ready = if words.is_empty() {
+            None
+        } else {
+            let mut commands = Commands::new(self.inner.clone())?;
+            let mut staging = Vec::new();
+            self.stage_page(&allocation, words, |_| {}, &mut commands, &mut staging)?;
+            Some(self.submit_transfer(commands, staging)?)
+        };
+        Ok(RayInput { allocation, ready })
     }
     fn build_acceleration(
         &self,
@@ -221,6 +276,9 @@ impl Device {
         count: u32,
         structure_type: u32,
         producer: Usage,
+        inputs: Vec<RayInput>,
+        models: Vec<BottomLevel>,
+        mut dependencies: Vec<Rc<Execution>>,
     ) -> Result<Structure> {
         let ray = self
             .inner
@@ -259,12 +317,15 @@ impl Device {
             (ray.sizes)(self.inner.owner.device, 1, &info, &count, &mut sizes);
         }
         let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1)?;
-        let mut out = Structure {
+        dependencies.extend(inputs.iter().filter_map(|input| input.ready.clone()));
+        dependencies.extend(models.iter().map(|model| model.0.built.clone()));
+        let dependencies = Execution::prepare(dependencies)?;
+        let mut out = StructureStorage {
             inner: self.inner.clone(),
             handle: 0,
             address: 0,
             _storage: storage,
-            models: Vec::new(),
+            models,
         };
         let ci = Create {
             kind: 1000150017,
@@ -303,23 +364,32 @@ impl Device {
             producer.stage() | 0x1000 | 0x2000000,
             0x2000000,
             producer.access() | 0x1000 | 0x400000,
-            0x200000,
+            0x200020,
         );
         unsafe {
             (ray.build)(commands.command, 1, &info, &ranges);
         }
-        commands.barrier(0x2000000, 0x800, 0x400000, 0x200000);
         commands.submit()?;
-        commands.wait()?;
         let address = AddressInfo {
             kind: 1000150002,
             next: null(),
             structure: out.handle,
         };
         out.address = unsafe { (ray.address)(self.inner.owner.device, &address) };
-        Ok(out)
+        let built = Execution::new(
+            ExecutionResources::Acceleration {
+                commands,
+                _scratch: scratch,
+                _inputs: inputs,
+            },
+            dependencies,
+        );
+        Ok(Structure {
+            storage: ManuallyDrop::new(out),
+            built,
+        })
     }
-    /// 输入索引必须来自已经检查拓扑的资产；输入只被构建命令借用。
+    /// 输入索引来自已检查拓扑的资产；返回前复制到自有传输存储，构建资源沿真实完成点持有。
     /// # Safety
     /// 所有三角形索引必须落在 positions 中，位置必须为有限值。
     pub unsafe fn bottom_level(
@@ -350,8 +420,16 @@ impl Device {
                 },
             },
         };
-        self.build_acceleration(geometry, u32::try_from(indices.len())?, 1, Usage::Transfer)
-            .map(|s| BottomLevel(Rc::new(s)))
+        self.build_acceleration(
+            geometry,
+            u32::try_from(indices.len())?,
+            1,
+            Usage::Transfer,
+            vec![vertices, triangles],
+            Vec::new(),
+            Vec::new(),
+        )
+        .map(|s| BottomLevel(Rc::new(s)))
     }
     /// # Safety
     /// 实例仿射矩阵必须为有限值且可逆；模型由本设备的 BLAS 构造入口提供。
@@ -384,18 +462,21 @@ impl Device {
                 },
             },
         };
-        let mut structure = self.build_acceleration(
-            geometry,
-            u32::try_from(instances.len())?,
-            0,
-            Usage::Transfer,
-        )?;
-        structure.models = instances
+        let models = instances
             .into_iter()
             .map(|i| (i.model.0.handle, i.model))
             .collect::<std::collections::BTreeMap<_, _>>()
             .into_values()
             .collect();
+        let structure = self.build_acceleration(
+            geometry,
+            u32::try_from(words.len() / 16)?,
+            0,
+            Usage::Transfer,
+            vec![input],
+            models,
+            Vec::new(),
+        )?;
         Ok(Acceleration(Rc::new(structure)))
     }
     /// 创建 Vulkan 实例输入，B 仅声明 offset 0..48 的 12 个 f32 与 stride(64)。
@@ -433,7 +514,6 @@ impl Device {
             data.count,
             0x80000,
         )?;
-        self.upload_payload(&target, &data.words)?;
         let mut addresses = Vec::with_capacity(models.len() * 2);
         for page in &target.pages {
             let base = page.address();
@@ -442,8 +522,9 @@ impl Device {
                 addresses.extend([address as u32, (address >> 32) as u32]);
             }
         }
+        let pointers = Allocation::new(self.inner.clone(), addresses.len() as u64 * 4, 0xa0002, 1)?;
         target.storage.instances = Some(InstanceInput {
-            pointers: self.ray_input(&addresses)?,
+            pointers,
             models: models
                 .into_iter()
                 .map(|m| (m.0.handle, m))
@@ -451,13 +532,26 @@ impl Device {
                 .into_values()
                 .collect(),
         });
+        if !data.words.is_empty() {
+            let mut commands = Commands::new(self.inner.clone())?;
+            let mut staging = Vec::new();
+            self.stage_payload(&target, &data.words, &mut commands, &mut staging)?;
+            self.stage_page(
+                &target.instances.as_ref().unwrap().pointers,
+                &addresses,
+                |_| {},
+                &mut commands,
+                &mut staging,
+            )?;
+            target.last_use = Some(self.submit_transfer(commands, staging)?);
+        }
         Ok(target)
     }
     /// GPU 矩阵直入 TLAS。读取真实数据页，不下载或逐记录重新打包矩阵。
     /// # Safety
     /// 每条最终矩阵必须有限且线性部分可逆。调用者只能改写矩阵逻辑字段；
     /// 不得用 bulk copy/sort/compact 等操作破坏或换入未持有 BLAS 的原生尾部。
-    pub unsafe fn top_level_device(&self, data: &GpuDataset) -> Result<Acceleration> {
+    pub unsafe fn top_level_device(&self, mut data: GpuDataset) -> Result<Acceleration> {
         if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
             return Err(error("实例输入不属于目标设备"));
         }
@@ -479,8 +573,20 @@ impl Device {
                 },
             },
         };
-        let mut structure = self.build_acceleration(geometry, data.count, 0, data.producer)?;
-        structure.models = input.models.clone();
+        let models = input.models.clone();
+        let dependencies = data.last_use.iter().cloned().collect();
+        let structure = self.build_acceleration(
+            geometry,
+            data.count,
+            0,
+            data.producer,
+            Vec::new(),
+            models,
+            dependencies,
+        )?;
+        data.last_use = Some(structure.built.clone());
+        // 物理实例页交给构建完成点，不从借用推断异步寿命，也不保留第二份矩阵。
+        drop(data);
         Ok(Acceleration(Rc::new(structure)))
     }
 }

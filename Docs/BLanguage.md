@@ -2125,7 +2125,7 @@ let persistent = pending.wait()?.into_bindings();
 
 回收前仍先记录同队列 RAW／WAW／WAR 依赖：Fence 完成观察不替代设备内存可见性，依据 [Vulkan 跨提交屏障](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier.html)。成功观察到 signaled 后复用原有完成结果，资源析构不会再次调用原生等待。显式 `wait()` 只等待当前末项 Fence；它的作用域包括同队列此前命令，因此前序资源可直接释放，依据 [Vulkan Fence 作用域](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences-signaling)。丢弃尚未完成的数据，只把它的物理存储移交给最后使用点，已有兄弟分支可继续推进；最后一个执行所有者退出时才结束仍未完成的真实消费者。原生完成后允许销毁命令池，见 [vkDestroyCommandPool](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyCommandPool.html)。
 
-这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；只读 Count 共享、多队列／多 GPU 和设备自主生成任务仍未完成。新存储的同步上传应在连续计算开始前完成，否则上传的既有等待会阻塞同队列先前工作。
+这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；只读 Count 共享、多队列／多 GPU 和设备自主生成任务仍未完成。新缓冲区上传与GPU清零现已返回带真实完成点的存储，后续提交可以直接消费；纹理上传仍显式同步，不能将缓冲区能力外推为所有资源均异步。
 
 ### 多生产者汇合与待完成结果分叉
 
@@ -2172,7 +2172,7 @@ let results = pending.wait()?.into_bindings();
 
 `Bindings<D>` 的 datasets 可为普通 GPU 数据向量或 `DomainBindings<GpuDataset>`。所有执行最终使用同一带域绑定表示；普通向量没有已生产关系。追加预先上传的 CPU 结果或已完成 GPU 结果时，直接传入带域绑定，既有关系和待汇合 GPU 结果一起重排。需要加速结构时，使用相同 `Bindings { datasets, accelerations, textures }`。`submit_after` 是一个前项的汇合入口，执行与生命周期实现共用。
 
-上传依然是显式同步传输，应在排入这批 GPU 工作之前准备好新增存储；CPU 上传结果与未等待 GPU 结果可以随后汇合。没有隐式统一物理内存、异步传输或新 GPU 调度语言。源语言组合的条件继续由前端检查，动态 Rust 路由在实际绑定边界检查归属、唯一所有权与已有关系。
+缓冲区上传仍是显式传输，但不在API内等待复制完成；CPU上传结果与尚未等待的GPU结果可以直接汇合，沿真实最后使用点建立原队列依赖。下载等待实际结果，纹理上传仍同步；没有隐式统一物理内存或新GPU调度语言。源语言组合的条件继续由前端检查，动态 Rust 路由在实际绑定边界检查归属、唯一所有权与已有关系。
 
 ### 有效前缀上的集合运算
 
@@ -2451,3 +2451,7 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 不带具体入口的 check／build 保持有限实例检查；开放声明不枚举 u32 全域，也不隐式选择一个值。其通用声明结构与固有资源权限先检查，依赖具体值的布局和函数体在实际使用时完整编译检查。Compilation.open_generics 与 blc 输出列出开放声明，并明确 body checked on instantiation；只检查未使用开放库不证明所有可能实例的正文都合法。只有开放 program 且没有可导出具体入口时，build 报 B240，要求选择入口。完整符号泛型体分析仍未实现。
 
 开放参数使用原 AST 替换、名义布局与 IR 常量，使用后即为具体算法；不增加泛型运行时、宿主逐元素回调、动态编译服务、额外 uniform、运行期长度表或另一份资源状态。material.textured::indexed_ggx 已删除原固定长度清单，从实际纹理数组推导 N，索引仍必须满足 requires index；实际算法、资源完成和像素品质目标保持。
+
+## 原生缓冲区与AS异步交接
+
+upload、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；纹理、多队列、refit和完整流送未据此完成。
