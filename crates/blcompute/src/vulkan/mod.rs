@@ -826,6 +826,7 @@ pub struct GpuStorage {
     count: u32,
     producer: Usage,
     views: Views<ReadDataset>,
+    instances: Option<ray::InstanceInput>,
 }
 impl std::ops::Deref for GpuDataset {
     type Target = GpuStorage;
@@ -866,7 +867,12 @@ impl GpuDataset {
         self.pages.len()
     }
     pub fn allocated_bytes(&self) -> u64 {
-        self.allocation.allocated_size + self.pages.iter().map(|p| p.allocated_size).sum::<u64>()
+        self.allocation.allocated_size
+            + self.pages.iter().map(|p| p.allocated_size).sum::<u64>()
+            + self
+                .instances
+                .as_ref()
+                .map_or(0, |i| i.pointers.allocated_size)
     }
     fn page_records(&self) -> u32 {
         blanguage::spirv::PAGE_BYTES / self.stride
@@ -882,6 +888,9 @@ impl GpuDataset {
         extra_usage: u32,
     ) -> Result<Self> {
         let capacity = blanguage::spirv::PAGE_BYTES / stride;
+        if capacity == 0 {
+            return Err(error("GPU 页寻址要求单条记录能容纳于一个物理页"));
+        }
         let mut pages = Vec::new();
         let mut remaining = count;
         while remaining > 0 {
@@ -904,6 +913,7 @@ impl GpuDataset {
                 count,
                 producer: Usage::Transfer,
                 views: Views::default(),
+                instances: None,
             }),
             last_use: None,
         })

@@ -54,6 +54,12 @@ impl Device {
             words: self.read_payload(data)?,
             views: Views::default(),
         };
+        // 原生实例尾部不是可移植数据；主机只接收 B 声明的矩阵。
+        if data.instances.is_some() {
+            for record in target.words.chunks_exact_mut(16) {
+                record[12..16].fill(0);
+            }
+        }
         target.attach_views(Views {
             sources,
             bindings: data.views.bindings.clone(),

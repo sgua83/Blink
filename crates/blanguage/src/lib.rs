@@ -694,6 +694,23 @@ impl World {
             code: "B238",
             message: "记录对齐后超过 u32 字节地址范围".into(),
         })?;
+        if let Some(shape) = &record.stride {
+            let stride = match shape {
+                Shape::Constant(name) if value_map.contains_key(name) => value_map[name],
+                _ => self.shape(&record.stride, s, record.span, m, i)?.unwrap(),
+            };
+            if stride < ty.size || stride % ty.align != 0 {
+                return s.fail(
+                    record.span,
+                    "B241",
+                    format!(
+                        "记录 stride {stride} 必须容纳自然布局 {} 且是对齐 {} 的倍数",
+                        ty.size, ty.align
+                    ),
+                );
+            }
+            ty.size = stride;
+        }
         stack.remove(&key);
         Ok(ty)
     }

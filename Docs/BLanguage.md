@@ -207,7 +207,9 @@ program step(inout dataset<Particle<float3>> particles, f32 dt) on compute {
 
 编译器检查每份泛型记录的全部允许类型组合，包括未被 program 使用的实例。类型实参个数、集合或名义类型推导不符报 B232；类型参数声明沿用 B231。记录的递归、空字段、dataset 字段及普通字段重名继续报原诊断；默认值、泛型记录的自动构造参数推导、常量泛型与开放接口约束尚未实现。
 
-布局只按具体字段的既有 size／align 规则计算，类型参数元数据不占 GPU／BLDATA 记录字节。Particle<float3> 的位置／速度／id 偏移为 0／16／28，步长为 32。相同名字、相同实参的名义类型保持一致；不同记录或不同类型实参不因布局相同就互换。类型名称和参数显示会进入布局说明，不代表物理 ABI 新增字段。
+默认布局按具体字段的既有 size／align 规则计算，类型参数元数据不占 GPU／BLDATA 记录字节。Particle<float3> 的位置／速度／id 偏移为 0／16／28，步长为 32。相同名字、相同实参的名义类型保持一致；不同记录或不同类型实参不因布局相同就互换。类型名称和参数显示会进入布局说明，不代表物理 ABI 新增字段。
+
+stride 放在记录名称及泛型参数之后，例如 `struct Transform<const S:u32> stride(S) {float3x4 matrix;};`。它指定总大小／元素步长，保留自然字段偏移与自然对齐；字面量、模块 const 或记录 const 参数在具体化时解析，必须容纳自然布局且是自然对齐的倍数，否则报 B241。填充不是普通值字段，类型化赋值不覆盖填充。完整规则、GPU 页寻址及原生所有权见 [记录步长与设备实例](DeviceInstances.md)。
 
 现有 simulation.bodies 使用 BLBody<T: floating,const Power:u32 in {1,2,3}>，integrate_body 按实际 BLBody 推导类型与模型值并借用完整记录，measure_energy 按速度 T 推导；integrate／energy／step program 按 BLSimulatedBody 泛型，statistics 从实际 BLBody<float3,3> 自动推导。该布局的位置／速度／energy 偏移 0／16／28、步长 32 保持，源数据由原 Dataset 和并行域持有，没有增加一套模拟状态。
 

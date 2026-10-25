@@ -379,6 +379,14 @@ impl Parser {
             if self.take("struct") {
                 let name = self.ident()?;
                 let (types, values) = self.parameters()?;
+                let stride = if self.take("stride") {
+                    self.expect("(")?;
+                    let value = self.shape_argument()?;
+                    self.expect(")")?;
+                    Some(value)
+                } else {
+                    None
+                };
                 self.expect("{")?;
                 let mut fields = Vec::new();
                 while !self.take("}") {
@@ -393,6 +401,7 @@ impl Parser {
                     name,
                     types,
                     values,
+                    stride,
                     fields,
                     span,
                 });

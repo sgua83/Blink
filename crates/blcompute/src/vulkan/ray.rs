@@ -179,6 +179,10 @@ impl Drop for Structure {
 }
 #[derive(Clone)]
 pub struct BottomLevel(Rc<Structure>);
+pub(super) struct InstanceInput {
+    pub(super) pointers: Allocation,
+    pub(super) models: Vec<BottomLevel>,
+}
 pub struct RayInstance {
     pub model: BottomLevel,
     /// 行主序仿射 3x4，与 Vulkan instance transform 相同。
@@ -216,6 +220,7 @@ impl Device {
         geometry: Geometry,
         count: u32,
         structure_type: u32,
+        producer: Usage,
     ) -> Result<Structure> {
         let ray = self
             .inner
@@ -294,7 +299,12 @@ impl Device {
         };
         let ranges = &range as *const Range;
         let mut commands = Commands::new(self.inner.clone())?;
-        commands.barrier(0x1000 | 0x2000000, 0x2000000, 0x1000 | 0x400000, 0x200000);
+        commands.barrier(
+            producer.stage() | 0x1000 | 0x2000000,
+            0x2000000,
+            producer.access() | 0x1000 | 0x400000,
+            0x200000,
+        );
         unsafe {
             (ray.build)(commands.command, 1, &info, &ranges);
         }
@@ -340,7 +350,7 @@ impl Device {
                 },
             },
         };
-        self.build_acceleration(geometry, u32::try_from(indices.len())?, 1)
+        self.build_acceleration(geometry, u32::try_from(indices.len())?, 1, Usage::Transfer)
             .map(|s| BottomLevel(Rc::new(s)))
     }
     /// # Safety
@@ -374,14 +384,103 @@ impl Device {
                 },
             },
         };
-        let mut structure =
-            self.build_acceleration(geometry, u32::try_from(instances.len())?, 0)?;
+        let mut structure = self.build_acceleration(
+            geometry,
+            u32::try_from(instances.len())?,
+            0,
+            Usage::Transfer,
+        )?;
         structure.models = instances
             .into_iter()
             .map(|i| (i.model.0.handle, i.model))
             .collect::<std::collections::BTreeMap<_, _>>()
             .into_values()
             .collect();
+        Ok(Acceleration(Rc::new(structure)))
+    }
+    /// 创建 Vulkan 实例输入，B 仅声明 offset 0..48 的 12 个 f32 与 stride(64)。
+    /// 原生尾部、页内地址及 BLAS 引用随唯一物理存储转移，不暴露为 B 字段。
+    pub fn instance_data(
+        &self,
+        program: &Program,
+        binding: usize,
+        models: Vec<BottomLevel>,
+    ) -> Result<GpuDataset> {
+        let mut data = Dataset::new(program, binding, u32::try_from(models.len())?)?;
+        let components: Vec<_> = (0..12)
+            .map(|i| (blanguage::ir::Scalar::F32, i * 4))
+            .collect();
+        if data.stride != 64 || data.ty.components != components {
+            return Err(error(
+                "Vulkan 实例输入需要 64 字节 stride 与 offset 0 的 3×4 f32 矩阵",
+            ));
+        }
+        for (model, record) in models.iter().zip(data.words.chunks_exact_mut(16)) {
+            if !Rc::ptr_eq(&model.0.inner, &self.inner) {
+                return Err(error("BLAS 不属于目标设备"));
+            }
+            record[12..16].copy_from_slice(&[
+                0xff000000,
+                0x01000000,
+                model.0.address as u32,
+                (model.0.address >> 32) as u32,
+            ]);
+        }
+        let mut target = GpuDataset::allocate(
+            self.inner.clone(),
+            data.ty,
+            data.stride,
+            data.count,
+            0x80000,
+        )?;
+        self.upload_payload(&target, &data.words)?;
+        let mut addresses = Vec::with_capacity(models.len() * 2);
+        for page in &target.pages {
+            let base = page.address();
+            for i in 0..page.size / 64 {
+                let address = base + i * 64;
+                addresses.extend([address as u32, (address >> 32) as u32]);
+            }
+        }
+        target.storage.instances = Some(InstanceInput {
+            pointers: self.ray_input(&addresses)?,
+            models: models
+                .into_iter()
+                .map(|m| (m.0.handle, m))
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_values()
+                .collect(),
+        });
+        Ok(target)
+    }
+    /// GPU 矩阵直入 TLAS。读取真实数据页，不下载或逐记录重新打包矩阵。
+    /// # Safety
+    /// 每条最终矩阵必须有限且线性部分可逆。调用者只能改写矩阵逻辑字段；
+    /// 不得用 bulk copy/sort/compact 等操作破坏或换入未持有 BLAS 的原生尾部。
+    pub unsafe fn top_level_device(&self, data: &GpuDataset) -> Result<Acceleration> {
+        if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
+            return Err(error("实例输入不属于目标设备"));
+        }
+        let input = data
+            .instances
+            .as_ref()
+            .ok_or_else(|| error("数据集不是由设备创建的原生实例输入"))?;
+        let geometry = Geometry {
+            kind: 1000150006,
+            next: null(),
+            geometry_type: 2,
+            flags: 0,
+            data: GeometryData {
+                instances: Instances {
+                    kind: 1000150004,
+                    next: null(),
+                    pointers: 1,
+                    data: input.pointers.address(),
+                },
+            },
+        };
+        let mut structure = self.build_acceleration(geometry, data.count, 0, data.producer)?;
+        structure.models = input.models.clone();
         Ok(Acceleration(Rc::new(structure)))
     }
 }

@@ -960,6 +960,15 @@ pub fn emit_pass(
     stage_index: usize,
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
+    if program.buffers.iter().any(|b| {
+        b.stride > PAGE_BYTES
+            || b.ty
+                .view_fields()
+                .iter()
+                .any(|(_, ty)| ty.size > PAGE_BYTES)
+    }) {
+        return Err("GPU 页寻址要求单条记录能容纳于一个物理页");
+    }
     let stage = &program.stages[stage_index];
     let custom_kernel =
         if let Operation::CustomReduce(r)
