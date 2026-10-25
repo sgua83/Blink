@@ -1,0 +1,123 @@
+//! 值函数只有输入／输出寄存器及私有局部值，不持有数据资源。
+use super::*;
+#[derive(Clone, Debug)]
+pub struct ValueCode {
+    pub registers: Vec<Scalar>,
+    pub locals: Vec<Scalar>,
+    pub code: Vec<Inst>,
+    pub inputs: Vec<Reg>,
+    pub outputs: Vec<Reg>,
+}
+#[derive(Clone, Debug)]
+pub struct CustomReduction {
+    pub fields: Reduction,
+    pub source_ty: Ty,
+    pub ty: Ty,
+    pub project: Option<ValueCode>,
+    pub identity: ValueCode,
+    pub combine: ValueCode,
+}
+#[derive(Clone, Debug)]
+pub struct CustomScan {
+    pub values: CustomReduction,
+    pub head_word: Option<u32>,
+}
+#[derive(Clone, Debug)]
+pub struct CustomSegmentedReduction {
+    pub values: CustomReduction,
+    pub head_word: u32,
+    pub count: PrefixCount,
+}
+impl CustomSegmentedReduction {
+    pub fn summary_words(&self) -> usize {
+        self.values.ty.components.len() + 2
+    }
+}
+impl CustomScan {
+    pub fn summary_words(&self) -> usize {
+        self.values.ty.components.len() + usize::from(self.head_word.is_some())
+    }
+    pub fn needs_root_add(&self, program: &Program) -> bool {
+        program.buffers[self.values.fields.source]
+            .count
+            .is_none_or(|n| n > 64)
+    }
+}
+pub struct ReductionKernel {
+    pub stage: Stage,
+    pub invariant_end: usize,
+    pub(crate) invariants: std::collections::BTreeSet<Reg>,
+    pub initialize_end: usize,
+    pub project_end: usize,
+    pub source: Vec<Reg>,
+    pub projected: Vec<Reg>,
+    pub initial: Vec<Reg>,
+    pub left: Vec<Reg>,
+    pub right: Vec<Reg>,
+    pub result: Vec<Reg>,
+}
+impl CustomReduction {
+    /// 两后端在编译期使用同一寄存器／局部值重定位；源 Program 保持不可变。
+    pub fn kernel(&self, stage: &Stage, project: bool, identity: bool) -> ReductionKernel {
+        let mut stage = stage.clone();
+        stage.registers = if identity {
+            self.identity.registers.clone()
+        } else {
+            Vec::new()
+        };
+        stage.locals = if identity {
+            self.identity.locals.clone()
+        } else {
+            Vec::new()
+        };
+        stage.code = if identity {
+            self.identity.code.clone()
+        } else {
+            Vec::new()
+        };
+        let initialize_end = stage.code.len();
+        let projection = self.project.as_ref().filter(|_| project).map(|value| {
+            let reg = stage.registers.len();
+            let slot = stage.locals.len();
+            let mut code = value.code.clone();
+            crate::optimize::map(&mut code, &|r| r + reg, &|s| s + slot);
+            stage.code.extend(code);
+            stage.registers.extend(&value.registers);
+            stage.locals.extend(&value.locals);
+            (
+                value.inputs.iter().map(|r| r + reg).collect(),
+                value.outputs.iter().map(|r| r + reg).collect(),
+            )
+        });
+        let project_end = stage.code.len();
+        let reg = stage.registers.len();
+        let slot = stage.locals.len();
+        let mut combine = self.combine.code.clone();
+        crate::optimize::map(&mut combine, &|r| r + reg, &|s| s + slot);
+        stage.code.extend(combine);
+        stage.registers.extend(&self.combine.registers);
+        stage.locals.extend(&self.combine.locals);
+        let k = self.ty.components.len();
+        let right: Vec<_> = self.combine.inputs[k..].iter().map(|r| r + reg).collect();
+        let (source, projected) = projection.unwrap_or_else(|| (right.clone(), right.clone()));
+        let mut kernel = ReductionKernel {
+            stage,
+            invariant_end: 0,
+            invariants: std::collections::BTreeSet::new(),
+            initialize_end,
+            project_end,
+            source,
+            projected,
+            initial: if identity {
+                self.identity.outputs.clone()
+            } else {
+                Vec::new()
+            },
+            left: self.combine.inputs[..k].iter().map(|r| r + reg).collect(),
+            right,
+            result: self.combine.outputs.iter().map(|r| r + reg).collect(),
+        };
+        crate::optimize::prepare_reduction(&mut kernel);
+        kernel
+    }
+}

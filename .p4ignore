@@ -1,0 +1,14 @@
+target/
+.git/
+Saved/
+Local/
+.p4config
+*.p4form
+*.spv
+*.x64
+*.reloc
+*.layout
+*.blegeom
+*.ppm
+*.png
+*.bmp

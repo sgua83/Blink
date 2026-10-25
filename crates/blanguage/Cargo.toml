@@ -1,0 +1,14 @@
+[package]
+name = "blanguage"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "blc"
+path = "src/main.rs"
+
+[dependencies]

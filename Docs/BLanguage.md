@@ -1,0 +1,2451 @@
+# Blink 语言规范 v0.1
+
+Blink（简称 B）是一门自研原生并行计算语言。`.h` 声明模块接口，`.b` 提供实现，由 Rust 编写的编译器生成原生代码。
+
+B 也寓意 Base。Blink 希望像 C 语言为上一个计算时代所做的那样，成为 AI 超算时代的基础语言。以下规范描述当前 v0.1 的实际语言规则。
+
+## 接口、实现与并行域
+
+首个消费者 BLEngine/Programs 中的实际计算接口（算法属于引擎，语言与框架独立构建）：
+
+```c
+module simulation.bodies;
+import math.field;
+
+struct BLBody<T: floating, const Power: u32 in {1,2,3}> {
+    T position;
+    T velocity;
+    f32 energy;
+};
+typeset BLSimulatedBody {
+    BLBody<f32,1>; BLBody<f32,2>; BLBody<f32,3>;
+    BLBody<float2,1>; BLBody<float2,2>; BLBody<float2,3>;
+    BLBody<float3,1>; BLBody<float3,2>; BLBody<float3,3>;
+    BLBody<float4,1>; BLBody<float4,2>; BLBody<float4,3>;
+};
+void integrate_body<T: floating, const Power: u32 in {1,2,3}>(inout BLBody<T,Power> body, f32 dt, f32 strength) on compute;
+program integrate<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength) on compute;
+```
+
+对应 `.b`：
+
+```c
+module simulation.bodies;
+
+void integrate_body<T: floating, const Power: u32 in {1,2,3}>(inout BLBody<T,Power> body, f32 dt, f32 strength) on compute {
+    body.velocity += central_acceleration<Power>(body.position, strength) * dt;
+    body.position += body.velocity * dt;
+}
+program integrate<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength) on compute {
+    parallel (body in bodies) { integrate_body(body, dt, strength); }
+}
+```
+
+这段源码直接生成 CPU 范围函数与 GPU 计算程序。`body` 是当前域的一个独占元素视图；它不表示可以随意访问其他线程正在修改的数据。`on compute` 表示两个后端都可执行，`on cpu`／`on gpu` 则限制设备；不能自动切换设备来掩盖执行失败。
+
+`program` 可以组合其他 program，编译器展开阶段依赖。只接收普通值的函数是无共享写副作用的逐元素计算，支持结构体、向量和不可变 view 参数；函数的资源访问由 read dataset、atomic dataset、atomic 字段与 write／inout 独占位置借用显式声明。两者按 CPU／compute／GPU 目标静态内联，不递归。普通函数可以在条件与顺序循环中提前 return；有返回值函数的所有可继续到函数末尾的路径都必须返回匹配类型，void 函数可自然结束或以 return; 结束。return 只退出当前函数，不退出 parallel 实例。cooperative 函数暂时仍保持末尾返回。
+
+## 数据能力和编译期检查
+
+| 语义 | 当前行为 |
+|---|---|
+| read dataset | 共享读取；不能写入，也不能在调用时提升为 inout |
+| write dataset | 元素字段写入；写前读取被拒绝 |
+| inout dataset | 读写当前独占元素 |
+| atomic dataset | 通过显式 u32/i32 原子操作共享修改；普通元素读写被拒绝 |
+| tile_atomic／atomic tile<T> | 同一逻辑块内的原子共享值及协作借用；不产生全局散写权限 |
+| tile_barrier() | 根块内整块同步；分支、循环、普通值函数内拒绝 |
+| clear_prefix／append | 建立空输出前缀并有界接纳完整记录；不开放裸票号或任意散写 |
+| parallel 元素域 | 当前 index 与域绑定，不允许未证明安全的任意散写 |
+| 固定形状 dataset<T,N> | 编译器可对索引范围证明；设备绑定时检查真实形状 |
+| `.h`／`.b` | 模块、数据、签名、访问能力与设备目标一致性检查 |
+| 不支持的语义 | 源位置诊断，编译失败；不会改成另一种算法执行 |
+
+跨元素的可变读取会形成依赖，不能当作独立 map 无条件融合。不同元素域、不同设备能力和访问能力在编译期处理；实际 DLL ABI、资源归属、形状与设备能力仍属于必须检查的原生系统边界。
+
+已实际触发的边界诊断包括只读写入 `B144`、接口不一致 `B028`、固定形状越界 `B137`。这些能力不等于证明全部算法：浮点定义域、数值稳定性、动态循环终止和业务正确性仍须由程序设计负责。
+
+## 模块级编译期常量与命名形状
+
+`const 类型 名称 = 表达式;` 在编译期得到完整值。公开常量直接定义在 .h，.b 只能使用或定义本模块私有常量；同一值只定义一次，不在 .h 声明后又于 .b 重复定义。常量与函数共享模块值名称空间，支持直接 import、限定名和现有私有可见性规则；普通局部或参数可以在自己的词法作用域遮蔽未限定的常量名。
+
+完整 `.h` 示例：
+
+```c
+module fixed_work;
+const u32 Width = 17;
+const u32 Height = 5;
+const u32 Count = Width * Height;
+const uint4 Delta = uint4(3, 7, 9, 13);
+struct Row { uint4 value; u32 audit; };
+program blocks(inout dataset<Row, Count> rows) on compute;
+program add(inout dataset<Row, Count> rows, uint4 delta) on compute;
+program run(inout dataset<Row, Count> rows) on compute;
+```
+
+对应 `.b`：
+
+```c
+module fixed_work;
+program blocks(inout dataset<Row, Count> rows) on compute {
+    parallel (row in rows) {
+        let values = tile_input(rows.value, Width);
+        uint4 total = tile_reduce_sum(values);
+        row.value = total + Delta;
+    }
+}
+program add(inout dataset<Row, Count> rows, uint4 delta) on compute {
+    parallel (row in rows) { row.value += delta; }
+}
+program run(inout dataset<Row, Count> rows) on compute {
+    blocks(rows);
+    add(rows, Delta);
+}
+```
+
+Count 在编译期为 85，Width 为 17；固定形状和块宽度仍按各自既有语义使用。数据集形状位置目前接受十进制 u32 字面量或 u32 标量 const 名称，包含 `schema::Count` 等限定名；派生形状先声明 const，例如 Count=Width*Height，再写 dataset<Row,Count>。.h/.b 仍须写相同的接口类型与形状名称，不提供符号形状方程求解。块宽度位置使用普通表达式，能使用已求值的 u32 常量；0 或不一致宽度仍按原诊断拒绝。
+
+const 可保存 bool、32 位数值标量／向量，以及不含 view 的普通或具体泛型记录；值类型不发生擦除。初始化复用已有表达式、构造、字段、swizzle、整数模 32 位算术／比较／位运算／除余、已知条件选择和类型转换。整数移位量取低五位，MIN/−1 保持模 32 位结果；已知类型转换和一元运算直接生成原 Constant IR。浮点字面量、浮点值的显式转换与取负可以得到常量，浮点二元算术及 sqrt／sin 等数学函数尚不在编译期求值子集中。
+
+声明类型沿用普通绑定／返回值的严格类型匹配：正整数字面量默认 u32，`const i32 N=i32(17);` 显式转换；已经定型的常量名称不因值已知就获得隐式转换或向量广播。不可变命名值仍可作为非零除数、范围和条件分析的输入。局部赋值不能改写 const，资源句柄、含 view 的记录与 void 不能作为 const 值。
+
+普通／泛型值函数可参与初始化，但只有在现有分析能完全得到值、且不留下运行期运算或控制流时才接受。例如 `u32 triple(u32 x){return x*3;}` 用常量实参可求值；函数内部尚未求值的循环即便最后返回字面量也拒绝。编译器不执行宿主程序、设备程序或编译期副作用，不将尚未支持的初始化变成运行期初始化。常量互相引用及经普通函数间接形成的循环沿原调用栈报 B160。
+
+program 的阶段参数可以直接传入 const 名称，包括向量、普通记录、具体泛型记录和 bool；其类型与实值传入原阶段环境，逐元素消费只生成所需常量。顶层阶段的任意表达式调用仍未开放，不能把 `add(rows,uint4(...))` 当作已实现；先声明对应 const，再传名字。const 不是函数，`Delta()` 报 B234。
+
+初始化不能完全求值或包含资源报 B234；形状常量未知／不明确或不是 u32 标量报 B015。类型、构造、除零、重复名称、可见性与非法赋值沿原诊断。全部声明包括未使用的私有常量都在编译期检查，没有动态初始化、全局可写存储、GPU 数据缓冲、参数镜像或初始化阶段。
+
+当前引擎渲染由 BLRenderTarget 的 W／H／S 及其真实资源数量专门化 `frame<N,W,H,S,DC,IC>`，trace 的寻址与投影、resolve 的采样及固定形状使用同一具体实例；旧 render.dimensions 已删除。DC=W*H、IC=W*H*S*S 由引擎资源所有者计算，当前语言形状尚不能直接声明符号乘积等式，不能把这项关系说成完整编译期符号证明。BLEditor 消费者继续明确使用输出 3840×2160、内部 7680×4320；语言与平台层不固定某个应用分辨率。
+
+模块 const 与函数 const 参数是不同职责；固定数组和有限／开放 u32 const 参数已实现，开放式编译期解释器与通用浮点常量计算仍未实现。
+
+## 受约束的数值泛型函数
+
+普通函数与 cooperative 函数支持 `T function<T: floating>(T value)` 形式，类型参数放在函数名之后，约束是编译器已知的有限类型集合。`.h/.b` 的类型参数名、顺序和约束必须相同。调用仍写普通函数名，从实际参数推导具体类型；同一 T 在多个参数中必须相同，不为推导而隐式改变数值类型或向量宽度。
+
+| 类型集合 | 允许类型 |
+|---|---|
+| floating | f32、float2、float3、float4 |
+| integer | u32、uint2、uint3、uint4、i32、int2、int3、int4 |
+| numeric | floating 与 integer 的全部 12 种类型 |
+| scalar_numeric | f32、u32、i32 |
+| scalar_integer | u32、i32 |
+
+自动推导从实际参数类型取得类型参数，也可来自 dataset、tile 或 view 的元素类型，以及 write／inout／atomic 借用。只出现在返回类型或完全不出现在形参中的类型参数需要显式指定；不根据预期返回类型或运行数据猜测。bool、用户记录、acceleration 和资源句柄本身不属于这些集合；例如 view<uint3> 可匹配 view<T> 并推导 T=uint3，不能作为裸 T 的 numeric 实参。
+
+例如 `.h`：
+
+```c
+module generic_motion;
+struct BLBody { float3 position; float3 velocity; u32 audit; };
+void advance<T: floating>(inout T position, T velocity, f32 dt) on compute;
+program step(inout dataset<BLBody> bodies, f32 dt) on compute;
+```
+
+对应 `.b`：
+
+```c
+module generic_motion;
+void advance<T: floating>(inout T position, T velocity, f32 dt) on compute {
+    position += velocity * dt;
+}
+program step(inout dataset<BLBody> bodies, f32 dt) on compute {
+    parallel (body in bodies) {
+        advance(body.position, body.velocity, dt);
+    }
+}
+```
+
+该调用推导 T=float3；同一 advance 函数也能用于 f32、float2 和 float4。类型名 T 可用于返回、参数、无初值局部和普通局部类型，也可写 `T(0)` 等构造，复用具体类型原有的显式转换／分量构造语义。多类型参数写作 `T f<T: numeric, I: scalar_integer>(T value, I flag)`，分别从实际参数推导。
+
+数值泛型保留已有资源权限、形状、索引、requires、输出完整性和借用别名规则。只读／原子 dataset、不可变 view、独占／原子字段及 cooperative tile 都绑定原实际来源。块内宽度仍从调用方继承，泛型不引入第二份存储或隐式屏障。原子算子只接受 u32/i32 标量时，应声明 scalar_integer；把 T 声明为 numeric 后只对其中两个成员合法，不是有效接口。归约／扫描值函数也可为数值泛型；无元素参数的单位元可以通过 `bind(identity, uint3(0))` 等统一普通值参数推导，也可声明没有元素参数的 identity<T>()，但普通调用必须显式指定类型；集合回调可使用显式泛型函数引用，现有 bind 继续表达真实的统一普通值参数；详见“静态泛型算法参数”。
+
+编译器在模块加载后从原声明生成每个泛型的所有允许类型组合，按原入口检查函数体；即使某种类型未被 program 调用，也必须合法。例如 `T f<T: numeric>(T x) { return sqrt(x); }` 在整数实例上报 B154，应把约束改为 floating。错误会说明正在检查的具体泛型实例。这里只做编译期类型展开，逐元素泛型函数按实际调用类型内联到 program 的原 IR，只为被调用的计算生成原生 x64／SPIR-V；不产生类型擦除、运行期类型分派、宿主每元素回调或独立执行框架。
+
+声明／推导／类型集合错误报 B231；签名不一致沿用 B028，重复参数类型不符沿用 B124，权限、形状、输出与协作错误沿用原诊断。直接把 cooperative 当普通函数调用仍拒绝，其 tile 实参先沿原借用入口识别，不再被误作普通数值。
+
+当前泛型支持内置数值集合和下述用户定义的有限类型集合。有限 u32 常量参数与显式函数／program 实参见下节；记录 const 参数见下节；开放接口约束／关联类型、重载和运行期类型对象尚未实现。多个类型参数按集合笛卡尔积检查，编译期分析量随组合数增加，尚无通用符号泛型体分析。编译成功不证明浮点定义域、循环终止或业务算法正确。
+
+## 受约束的泛型记录
+
+记录可以声明相同的有限数值类型集合，例如 `struct Pair<T: numeric> { T left; T right; };`。使用处显式指定 `Pair<uint3>`、`Pair<f32>` 等具体类型；函数参数可以写 Pair<T>，编译器从实际记录的名义类型参数推导 T。结构体本身不做运行期类型分派。
+
+完整 `.h` 示例：
+
+```c
+module generic_particles;
+struct Particle<T: floating> {
+    T position;
+    T velocity;
+    u32 id;
+};
+void drift<T: floating>(inout Particle<T> particle, f32 dt) on compute;
+program step(inout dataset<Particle<float3>> particles, f32 dt) on compute;
+```
+
+对应 `.b`：
+
+```c
+module generic_particles;
+void drift<T: floating>(inout Particle<T> particle, f32 dt) on compute {
+    particle.position += particle.velocity * dt;
+}
+program step(inout dataset<Particle<float3>> particles, f32 dt) on compute {
+    parallel (particle in particles) {
+        drift(particle, dt);
+    }
+}
+```
+
+泛型记录也可出现在返回、普通值、write／inout／atomic 位置和合法的 dataset／tile／view 元素中。`view<Pair<T>>`、`tile<Pair<T>>` 与 `dataset<Pair<T>, 8>` 按原资源语义借用，拥有 view 字段的记录仍由真实根／子资源图维持寿命；包含 view 的 tile 或原子字段借用继续拒绝。包装本身不能直接嵌套为 view<view<T>> 或 dataset<view<T>>，应通过记录的 view 字段表达子资源。
+
+记录构造显式写类型实参：`Pair<uint3>(uint3(1), uint3(2))`，按声明顺序提供每个字段，沿原字段类型检查，不按同尺寸数据做转换。函数体里可写 `Pair<T>(left, right)`，编译器在类型展开时替换 T；构造参数按源码顺序求值，函数写效果仍由原位置负责。`Pair<T> local;` 支持原有确定初始化，构造／复制只写真实分量，ABI 填充不从来源复制到目标。
+
+记录字段可以嵌套另一泛型记录，例如 `struct Wrap<T: numeric> { Pair<T> pair; u32 marker; };`。多个类型参数分别指定集合，例如 `struct Entry<T: numeric, I: scalar_integer> { T value; I key; };`，使用 Entry<float3,u32>。每个类型实参必须属于声明的集合；Pair<Pair<f32>> 不满足 numeric，但以用户集合约束的记录可以接收其中列出的普通记录类型。
+
+未用于字段的类型参数也保留名义身份，例如 `struct Tag<T: numeric> { u32 id; };` 的 Tag<u32> 和 Tag<f32> 物理布局相同，类型仍不同。函数可从 Tag<T> 推导 T，不从字段反猜类型。float／uint 等既有内置别名仍在解析具体类型后规范为 f32／u32；类型参数不成为物理数据中的标签。
+
+编译器检查每份泛型记录的全部允许类型组合，包括未被 program 使用的实例。类型实参个数、集合或名义类型推导不符报 B232；类型参数声明沿用 B231。记录的递归、空字段、dataset 字段及普通字段重名继续报原诊断；默认值、泛型记录的自动构造参数推导、常量泛型与开放接口约束尚未实现。
+
+布局只按具体字段的既有 size／align 规则计算，类型参数元数据不占 GPU／BLDATA 记录字节。Particle<float3> 的位置／速度／id 偏移为 0／16／28，步长为 32。相同名字、相同实参的名义类型保持一致；不同记录或不同类型实参不因布局相同就互换。类型名称和参数显示会进入布局说明，不代表物理 ABI 新增字段。
+
+现有 simulation.bodies 使用 BLBody<T: floating,const Power:u32 in {1,2,3}>，integrate_body 按实际 BLBody 推导类型与模型值并借用完整记录，measure_energy 按速度 T 推导；integrate／energy／step program 按 BLSimulatedBody 泛型，statistics 从实际 BLBody<float3,3> 自动推导。该布局的位置／速度／energy 偏移 0／16／28、步长 32 保持，源数据由原 Dataset 和并行域持有，没有增加一套模拟状态。
+
+## 用户定义的有限类型集合
+
+`typeset` 为泛型参数声明有限的具体类型清单。成员可以是普通内置值类型、普通记录或已指定实参的泛型记录；含不可变 view 字段的普通记录也可以列入。集合名称只用于类型参数约束，一个 dataset 仍绑定一种具体类型。
+
+完整 `.h` 示例：
+
+```c
+module movers;
+struct Point2 { float2 position; float2 velocity; u32 id; };
+struct Point3 { float3 position; float3 velocity; u32 id; f32 weight; };
+typeset Movable { Point2; Point3; };
+void advance<P: Movable>(inout P point, f32 dt) on compute;
+program step(inout dataset<Point3> points, f32 dt) on compute;
+```
+
+对应 `.b`：
+
+```c
+module movers;
+void advance<P: Movable>(inout P point, f32 dt) on compute {
+    point.position += point.velocity * dt;
+}
+program step(inout dataset<Point3> points, f32 dt) on compute {
+    parallel (point in points) {
+        advance(point, dt);
+    }
+}
+```
+
+advance 的两个成员实现分别按 float2、float3 字段检查，即使 program 只调用 Point3，Point2 上的错误也会使库编译失败。类型从调用方实际参数推导，再展开到原字段、寄存器和访存操作；没有逐元素类型分派。集合也可约束返回值、write／inout 位置、dataset／view 元素、cooperative tile 和集合回调，资源权限、形状、索引、requires 和输出完整性仍由原规则检查。
+
+类型集合按已有模块类型作用域解析，可放在 .h 或 .b，声明一次；使用其他模块的集合需按既有导入规则引用，也可写 `P: schema::Movable` 等限定名。.h/.b 的函数类型参数约束仍须一致。集合与记录共享类型名称空间，不能同名或覆盖内置类型及内置约束集合。
+
+成员按完整名义类型解析；uint／u32、float／f32 等别名及重复成员在编译期去重，不合并不同名字或不同实参的同布局记录。集合可以列入 Particle<float3>，函数和记录可以用这些普通记录作为 T；类型替换保留完整嵌套实参及资源包装，不能只替换一个类型名字符串。
+
+例如 `typeset Payload { Point2; Particle<float3>; };` 配合 `struct Envelope<T: Payload> { T value; u32 version; };`，可产生 Envelope<Point2> 与 Envelope<Particle<float3>> 两种具体布局。`T(...)` 按实际成员的原构造规则处理：普通数值继续显式转换／分量构造，记录按字段构造；该调用必须对全部成员合法。
+
+集合至少包含一个完整具体类型；不能直接列出 dataset、tile、view 包装、未指定参数的泛型记录、集合名或 void。集合与记录约束不能递归引用。声明／解析／递归错误报 B233，成员类型错误沿用 B031／B228／B232，调用方类型不在集合中沿用 B231／B232。集合中的记录即便含有 view 字段，仍不能因此进入禁止 view 的 tile 或原子借用。
+
+这是有限清单下的编译期多态。集合组合／继承、开放接口约束、关联类型、方法分派、运算符重载、运行期异构数组及动态类型对象尚未实现；不自动为成员补齐字段或选择其他算法。实际引擎的 BLSimulatedBody 集合列出四种浮点维度与 Power∈{1,2,3} 的 BLBody<T,Power>，integrate_body 按每份完整 BLBody 的字段生成原计算。
+
+## 泛型并行 program 与阶段组合
+
+program 可以使用与普通／cooperative 函数、记录相同的有限类型约束。`program update<T: numeric>(inout dataset<Item<T>> items)` 或 `program step<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength)` 都是原生并行入口：元素类型在编译期确定，并行域、访问权限与阶段关系仍由 program 声明。
+
+完整 `.h` 示例：
+
+```c
+module generic_work;
+struct Item<T: numeric> { T value; T bias; };
+struct Total<T: numeric> { T value; };
+program update<T: numeric>(inout dataset<Item<T>> items) on compute;
+program sum<T: numeric>(read dataset<Item<T>> items, write dataset<Total<T>, 1> total) on compute;
+program run<T: numeric>(inout dataset<Item<T>> items, write dataset<Total<T>, 1> total) on compute;
+program entry(inout dataset<Item<uint3>> items, write dataset<Total<uint3>, 1> total) on compute;
+```
+
+对应 `.b`：
+
+```c
+module generic_work;
+program update<T: numeric>(inout dataset<Item<T>> items) on compute {
+    parallel (item in items) { item.value += item.bias; }
+}
+program sum<T: numeric>(read dataset<Item<T>> items, write dataset<Total<T>, 1> total) on compute {
+    reduce_sum(items.value, total.value);
+}
+program run<T: numeric>(inout dataset<Item<T>> items, write dataset<Total<T>, 1> total) on compute {
+    update(items);
+    sum(items, total);
+}
+program entry(inout dataset<Item<uint3>> items, write dataset<Total<uint3>, 1> total) on compute {
+    run(items, total);
+}
+```
+
+entry 的 run、update、sum 都从实际 Item<uint3>／Total<uint3> 推导 T=uint3，不复制宿主逐元素循环。函数与 program 使用同一套名义类型推导；多个实参必须给出相同类型，同布局的其他记录不能冒充 Item。可自动推导的类型来自实际参数，不能靠执行数据猜测；也支持显式 `run<uint3>(...)`，未出现在形参中的类型必须显式给出。
+
+编译器检查每个泛型 program 的全部允许类型组合，包含未使用／私有 program 和条件模板；出错时附具体实例。普通并行写完整性、索引与数值证明、tile／cooperative 作用域、形状、设备目标、数据访问和参数别名保持原规则。泛型不授予整份数组的任意写权限，也不允许在 parallel 或普通值函数里调用 program。
+
+requires／ensures prefix 可以与泛型并用。调用先从实际绑定推导完整类型，再沿原 prefix 接口交付有效域；不同阶段保留同一 dataset 与 Count 的身份。生产者 compact 后可组合泛型消费与归约，GPU 中间计数留在设备；泛型不加入 Count 镜像、提交、读回、屏障或运行期类型分派。同域阶段仍按既有依赖融合，显式 phase 和块内协作边界仍有效。
+
+入口模块公开的泛型 program 按具体类型导出到原 Compilation.programs／templates，例如 `generic_work::run<uint3>`；导入模块的实例只供检查和调用，不变成当前入口模块的公开接口。现有 compute 命令接受完整名字或带完整类型后缀的本地名 `run<uint3>`；记录实参保留限定名，例如 `step<simulation.bodies::BLBody<float3,3>>`。未给类型的 `run` 不是可执行实例；有 requires 的模板仍只能经持有域关系的原生绑定或满足前提的 program 组合执行。
+
+blc build 的泛型导出文件使用 `模块_入口.instance-序号`，避免 Windows 文件名中的尖括号，并通过同名 .layout 记录完整的 program 名字与布局；序号是本次导出列表的位置，不是稳定 ABI。普通具体入口的文件名不变。具体程序的原生 ABI 只包含实际资源与普通值参数，不含类型标签或泛型调度器。
+
+simulation.bodies 的 integrate、energy、step 按 BLSimulatedBody 声明，覆盖四种浮点维度与三种 Power 的 BLBody<T,Power>。step 组合前两个泛型 program；statistics 明确消费 BLBody<float3,3>，调用自动推导，两个 map 仍可融合成一个实际阶段。Power 只属于编译期模型身份，不增加物理字段；源码阶段数变化不等同于设备性能提高。
+
+当前仍为有限集合的编译期多态，有限 u32 函数 const 参数也已支持；开放接口约束／关联类型、动态任务和通用符号泛型体分析未实现。笛卡尔积检查随类型参数组合增加，尚无按符号证明全部实例的分析；不把本节能力等同于完整语言。
+
+## 有限编译期值参数与显式实例
+
+普通函数、cooperative 函数与 program 可以声明 `const N: u32 in {17,65,257}`，类型参数写在 const 参数之前。它定义有限的合法编译期值域；不指定具体入口的 check／build 与原类型集合一起逐实例检查，包括未被入口调用的有限实例。开放声明及具体入口选择规则见后文。不同形状、块宽度、固定循环上界或算法分支可以共用一份源程序。
+
+完整 `.h` 示例：
+
+```c
+module specialized_blocks;
+const u32 ChosenWidth = 65;
+struct Cell<T: numeric> { T value; u32 audit; };
+void add<T: numeric, const Bias: u32 in {1,7}>(inout T value) on compute;
+program sum<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(inout dataset<Cell<T>> cells) on compute;
+program entry(inout dataset<Cell<uint3>> cells) on compute;
+```
+
+对应 `.b`：
+
+```c
+module specialized_blocks;
+void add<T: numeric, const Bias: u32 in {1,7}>(inout T value) on compute {
+    value += T(Bias);
+}
+program sum<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(inout dataset<Cell<T>> cells) on compute {
+    parallel (cell in cells) {
+        let values = tile_input(cells.value, Width);
+        T total = tile_reduce_sum(values);
+        cell.value = total;
+        add<T, Bias>(cell.value);
+    }
+}
+program entry(inout dataset<Cell<uint3>> cells) on compute {
+    sum<ChosenWidth, 7>(cells);
+}
+```
+
+调用可以给出全部类型和 const 实参，例如 sum<uint3,65,7>，也可只给全部 const 后缀，例如 sum<65,7>，让类型从实际参数推导。不支持任意省略部分类型、const 默认值或从运行期 dataset 容量猜测 const；静态形状推导见开放 const 一节。不写尖括号时，可从形参对应的名义记录推导全部 const 参数，详见下节；不能推导的值仍须显式给出。普通值函数和 program 都使用这一规则；协作调用写 `cooperate aggregate<T,7>(tile)` 或只给值后缀。
+
+显式 `in {...}` 值域只接受非空的直接十进制 u32 字面量清单；省略 in 的开放声明见后文。有限清单重复值去重、顺序规范化；u32／uint 别名均可作其声明类型。调用实参可以是直接 u32 字面量、模块 const 名称或外层函数的 const 参数，也支持限定名。任意实参算式先定义为模块 const 再传名，不在尖括号内执行普通表达式解析；值域尚不接受命名常量、区间、依赖其他参数的条件或一般谓词。
+
+const 参数作为固定 u32 值进入原类型、数值与索引分析，不保留字面量的隐式适配权限。它可用于本函数的 dataset<T,N> 形状、tile_input 的块宽度、普通数值、构造、分支／循环边界以及子程序的普通值参数；实例化时形状变成原 Buffer.count，值变成已有 Constant IR。局部变量、循环／parallel 绑定和普通参数不能覆盖本函数的 const 参数；不同函数自己的词法作用域仍独立。const 参数不能改写，也不能充当函数或普通类型。
+
+显式类型实参同时支持原有限数值集合、用户类型集合和完整的泛型记录名。例如 copy<Pair<uint3>,7>(output,input)。仅返回类型中的参数可以通过 zero<uint3>() 等形式指定，不再强制它出现在形参中；未指定且无法推导时编译报 B231。记录构造 Pair<uint3>(...) 保持原名义类型与字段语义；记录的有限 u32 const 参数及混合实参见下节。
+
+实例从原声明使用同一泛型 AST 替换生成，完整检查与实际调用共用实例化入口，不保存全部具体定义的全局副本；不加入运行期类型／值分派、额外 uniform、设备参数表或初始化阶段。实际调用仍静态内联，program 保持原阶段、融合、phase、访问、前缀有效域和完成所有权。静态块宽度不等于物理 subgroup 宽度；cooperative 函数仍继承真实 tile 作用域，不因增加 const 参数就能另建隐藏固定块。循环边界已知不表示循环一定展开，编译期值也不能替代设备真实有效 Count 或伪造 prefix 关系。
+
+入口模块的公开 program 为每个类型／值组合导出具体实例，例如 `blocks::run<uint3,65,7>`、`sized::lookup<17>`；compute 命令按这一完整后缀选择。导入／私有实例仍只服务已有调用与检查，blc 使用原 instance 序号文件名。类型与值组合的检查量随笛卡尔积增长，不承诺无限参数集合或零编译成本。
+
+声明、值域、实参数量／成员和非法遮蔽报 B235，类型实参与推导继续使用 B231／B232／B124；签名不一致 B028、形状 B167、权限／别名、初始化、整数除数和协作的诊断保持。含 {0,17} 的块宽度程序会因 0 实例不合法而拒绝，不能只挑 17 隐藏它；递归仍拒绝。函数写效果在显式调用中同样进入原可变性、确定初始化与当前内容证明。
+
+实际 math.field::central_acceleration 以 Power∈{1,2,3} 选择软化半径的分母 r、r²、r³，r²=dot(position,position)+0.25；这表示分母幂次，不把三者的物理力幅衰减混称为同一参数。simulation.bodies 的 BLBody<T,Power> 持有编译期模型身份，integrate_body 从实际记录推导 T／Power，再调用 central_acceleration<Power>。statistics 选择 BLBody<float3,3>，保留原三维算法、物理布局和机器码；其他模型由各自实例求值，不增加运行期模式分支。
+
+目前尚未实现无限／一般谓词值域、i32／bool／浮点／记录值参数、静态数组类型、模板递归、符号泛型体分析或一般编译期循环解释；不把有限实例展开外推为完整泛型系统。
+
+## 记录 const 参数与名义值推导
+
+记录也可声明有限 u32 参数，例如 `struct Cell<T:numeric,const Width:u32 in {17,65},const Bias:u32 in {1,7}>`。类型参数在前、const 参数在后，声明与函数共用值域语法。类型和构造必须完整给出实参，例如 `Cell<uint3,65,7>`、`Cell<uint3,ChosenWidth,7>(value,audit)`；记录自身不做构造参数推导，也没有默认值。
+
+完整 `.h` 示例：
+
+```c
+module typed_blocks;
+const u32 ChosenWidth = 65;
+struct Cell<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}> { T value; u32 audit; };
+void add<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(inout Cell<T,Width,Bias> cell) on compute;
+cooperative T total<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(tile<Cell<T,Width,Bias>> input) on compute;
+program sum<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(inout dataset<Cell<T,Width,Bias>> cells) on compute;
+program entry(inout dataset<Cell<uint3,ChosenWidth,7>> cells) on compute;
+```
+
+对应 `.b`：
+
+```c
+module typed_blocks;
+void add<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(inout Cell<T,Width,Bias> cell) on compute {
+    cell.value += T(Bias);
+}
+cooperative T total<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(tile<Cell<T,Width,Bias>> input) on compute {
+    T sum = tile_reduce_sum(input.value);
+    return sum;
+}
+program sum<T: numeric, const Width: u32 in {17,65}, const Bias: u32 in {1,7}>(inout dataset<Cell<T,Width,Bias>> cells) on compute {
+    parallel (cell in cells) {
+        let input = tile_input(cells, Width);
+        T sum = cooperate total(input);
+        cell.value = sum;
+        add(cell);
+    }
+}
+program entry(inout dataset<Cell<uint3,ChosenWidth,7>> cells) on compute {
+    sum(cells);
+}
+```
+
+entry、sum、total 与 add 从真实的记录类型取得 T=uint3、Width=65、Bias=7。名义值推导也可递归穿过嵌套记录、dataset／tile 元素及不可变 view 元素；同一参数出现多次时必须一致，推导结果必须属于被调函数值域。只省略全部泛型实参时自动推导全部参数；显式调用仍须给完整清单或全部 const 后缀。不从预期返回类型、运行期字段值或资源容量猜测值，`dataset<T,N>` 的固定容量单独出现不足以推导 N。
+
+const 值属于名义类型身份。`Cell<uint3,17,7>` 与 `Cell<uint3,65,7>` 是不同类型，即使字段布局相同也不能互传。Ty 保存实际类型和值参数供编译器恢复完整类型语法，值不占用记录载荷、资源描述或普通 uniform；实际对象只有声明的字段。记录字段可以把外层值转交给内层记录，用户类型集合可列出具体值实例。模块 const 先求值再规范化身份，`ChosenWidth` 和字面量 65 指同一实例；参数名不是运行期成员或静态成员访问语法。
+
+记录 const 参数本身不是内联存储或通用依赖类型；固定数组见下节。Width 身份本身不证明任意 view 长度、不冻结有效 Count、不授予索引／写权限；上例的块宽度来自函数绑定的编译期 Width，尾块继续使用真实有效长度。全部合法记录和函数组合仍在编译期间检查，未被入口使用的非法嵌套值实例也会拒绝。
+
+原声明是唯一函数定义表，具体实例由检查或调用在自身生命周期内生成；类型解析中的命名 const 即使调用泛型函数，也无需等待另一张实例表填充。常量与类型互相依赖时，共用本次编译的活动常量集合，直接报 B160，诊断返回后移除该活动项；没有运行期初始化、值缓存或重试路径。未知／非 u32 命名值沿原 B015 入口拒绝，记录数量／类型位置错误 B232、值域与不可推导／冲突 B235、普通类型不匹配 B124。
+
+## 固定维度矩阵与空间变换
+
+原生 f32 矩阵为 float2x2、float2x3、float2x4、float3x2、float3x3、float3x4、float4x2、float4x3、float4x4。floatRxC 的 R 为行数，C 为列数。它们是独立普通值类型，可用于字段、局部、模块 const、函数参数／返回／独占借用、dataset／tile／不可变 view 元素、用户类型集合和集合算法，不属于原 numeric／floating 数值集合。
+
+矩阵按行布局，每行遵守 floatC 的对齐：两列行大小／对齐／步长为 8 字节，三列行为大小 12、对齐与步长 16，四列行为大小／对齐／步长 16。矩阵大小是 R×行步长，对齐等于行对齐；float3x3 大小 48 字节、float4x3 大小 64 字节。逻辑分量不包含行内填充，运算和普通写入保留目标填充；矩阵没有运行期维度字段、对象分配或另一份存储。
+
+构造的分量顺序为行优先，可给完整标量清单、拼接标量／向量或每个行向量。例如 float2x3(1.0,2.0,3.0,4.0,5.0,6.0) 与 float2x3(float3(1.0,2.0,3.0),float3(4.0,5.0,6.0)) 相同；构造显式把普通数值分量转换成 f32。单个标量构造对角值，其余分量为 +0.0：float3x3(1.0) 是单位矩阵，float2x3(1.0) 的前两条对角线为 1；它不是全分量填充。相同矩阵类型可直接复制构造，不接受不同矩阵或普通记录／资源的构造替换。
+
+行字段为 r0 至 r(R−1)，类型为 floatC，可继续 swizzle、赋值或按原规则独占借用。例如 m.r1.xy 保持该矩阵的真实位置；行内／整矩阵的借用冲突及确定初始化仍按原逻辑分量检查。矩阵不能通过 float4(m) 等数值构造丢失维度，先取得所需行字段。
+
+| 表达式 | 语义 |
+|---|---|
+| A + B、A − B | 维度相同的矩阵逐分量加减 |
+| −A | 逐分量取负 |
+| A × B | 线性代数乘法，A 的列数等于 B 的行数，结果维度为 A 行数×B 列数 |
+| A × v | v 为列向量，维度等于 A 列数；结果为 A 行数的向量 |
+| v × A | v 为行向量，维度等于 A 行数；结果为 A 列数的向量 |
+| A × s、s × A、A / s | s 为 f32 标量，逐分量缩放／除法；数值字面量沿原显式适配规则 |
+| transpose(A) | 行列互换，结果类型为 floatCxR |
+| determinant(A) | 2／3／4 阶方阵的 f32 行列式 |
+| inverse(A) | 2／3／4 阶方阵的逆矩阵 |
+
+表中 × 在源码中写 *。矩阵乘法的每个内积按 k=0、1、… 依次乘加，不强制 FMA 或改变括号；矩阵之间的 * 不是逐分量乘法。加减不广播标量，标量除以矩阵、矩阵比较／位运算和把 dot／normalize 等向量内建直接用于矩阵均不支持。维度、运算及构造种类错误报 B237，构造分量数 B157、返回／赋值类型 B124、行／分量 B141／B140，原权限、别名和初始化规则保持。
+
+矩阵在前端静态展开为原标量值 IR，按已有优化、物理寄存器分配及 x64／SPIR-V 后端执行。复制／构造／转置重用分量，乘法生成对应的标量乘加；没有宿主逐元素回调或额外 GPU 数学库。行列式与逆矩阵按固定阶数展开余子式；逆矩阵是伴随矩阵除以行列式，不加奇异检查、单位矩阵替换或阈值修正。零行列式可产生 Inf／NaN，病态矩阵可能放大误差；这些数值性质不能由类型／维度正确推导。
+
+矩阵构造、相同类型复制与 transpose 可以形成完全求值的模块 const；例如 const float3x3 Unit=identity<float3x3>()。当前一般 f32 二元运算、行列式／逆矩阵的编译期求值仍未实现，不能将它们的执行运算当作 const 初始化。
+
+math.transform 的 BLMatrix 集合列出上述九个类型，BLSquareMatrix 集合列出三个方阵；identity<T>() 生成对角 1，compose<T>(first,second) 返回 second*first，scaled<T> 缩放矩阵。库还提供 transform_point(float4x4,float3)，包含齐次 w 除法；transform_plane(float3x2,float2) 映射平面偏移；transform_direction(float3x3,float3) 映射方向；transform_normal(float3x3,float3) 使用逆转置后归一化。
+
+完整 `.h` 示例：
+
+```c
+module matrix_work;
+import math.transform;
+struct Pose { float4x4 local_to_world; float3 normal; float3 position; u32 audit; };
+struct Sample { float3 position; float3 normal; u32 audit; };
+program run(read dataset<Pose> poses, inout dataset<Sample> samples) on compute;
+```
+
+对应 `.b`：
+
+```c
+module matrix_work;
+program run(read dataset<Pose> poses, inout dataset<Sample> samples) on compute {
+    parallel (sample in samples) {
+        let i = index();
+        if (i < poses.length) {
+            Pose pose = poses[i];
+            float3x3 basis = float3x3(pose.local_to_world.r0.xyz,
+                pose.local_to_world.r1.xyz, pose.local_to_world.r2.xyz);
+            sample.position = transform_point(pose.local_to_world, pose.position);
+            sample.normal = transform_normal(basis, pose.normal);
+        }
+    }
+}
+```
+
+实际 render.trace 使用 float3x2 相机平面基乘以采样坐标，透视方向和正交原点共享该偏移；原相机参数与平台资源布局保持。矩阵也可通过 identity<T>／compose<T> 静态引用参与有序归约和扫描，原有效前缀与数据所有权不变。
+
+当前是九种固定维度 f32 矩阵，不是一般维度依赖类型、稀疏／超大矩阵、动态矩阵行下标或完整线性代数系统。矩阵可作为下一节固定数组的元素；动态数据与大规模集合继续使用既有 dataset／view／并行集合，完整语言仍需继续。
+
+## 固定内联数组与原生下标（2026-10-25）
+
+`array<T,N>` 是拥有 N 个 T 值的普通内联值，N 为正 u32 编译期常量，可来自字面量、模块 const 或有限 const 参数。类型身份包含完整元素类型和长度，`array<u32,2>` 与 `array<u32,3>` 不能互传；泛型函数能从数组元素和固定长度推导类型／const 参数，仍须满足声明的有限集合。不从 dataset 容量或运行期字段推测 N。
+
+元素可为标量、向量、矩阵、记录、另一层固定数组或不可变 view；dataset／tile 句柄和 void 不能嵌入。数组可作为字段、函数参数与返回值、write／inout 位置和 dataset／tile／view 元素。含 view 的数组沿原引用所有权传递，不能作为 program 写出数据或普通 uniform；主机仍通过 with_views 绑定实际子资源。
+
+布局为元素对齐、元素步长 align_up(T.size,T.align)、总字节数 N×步长。array<float3,3> 大小 48、对齐 16，逻辑分量不含每个 float3 的填充；数组普通赋值保持填充。array<array<u32,2>,3> 大小 24。长度不增加载荷或运行期状态，`.length` 返回固定 u32 常量。布局超出 u32 字节范围在类型解析时拒绝；这不代表现有私有栈、GPU 共享内存或单条分页记录能够容纳任意接近该上限的值。
+
+`array<T,N>(v0,...,vN_1)` 按序构造全部元素；一个 T 参数填充 N 份，该参数只求值一次；一个相同数组类型参数复制该数组。元素需要准确的 T，不将异构值或整个数组隐式转换成数值向量。构造、相同类型复制与常量下标可形成模块 const；运行期控制流和一般编译期循环／浮点求值仍未补齐。
+
+数组以 `a[i]` 选取元素，可继续字段、向量 swizzle 或下一层数组下标。i 必须是 u32，并已由常量、区间／条件、有界 for 或 `requires index(i,values)` 证明小于 N；长度相同的固定数组共享这一静态范围事实。没有逐元素运行期越界分支。无法证明的下标报 B137；数组不提供 .x 等向量分量，也不参与数值算术、比较、向量／矩阵的展平构造或 subgroup 首值广播，先选取元素。
+
+常量下标按原逻辑分量投影，可逐个初始化未赋初值的数组。动态下标不能证明写中了哪些未知分量，因此首次动态访问可写局部／独占记录中的数组前，必须完整初始化该数组；先用整体填充再循环写入即可。动态写会撤回其候选存储的旧数值事实，不把新值的范围错误地赋给全部候选元素。动态元素可交给 write／inout；同次调用中可能相交的动态位置按冲突处理，即使两个下标来自不同寄存器。write 参数用本次形参的编译期初始化身份检查，调用方原有值不会令非法的先读后写通过；这些身份没有执行期载荷。
+
+CPU 的动态私有访问使用原生栈上的连续字，GPU 使用 SPIR-V Function 数组；静态分量继续参与原寄存器和死代码优化。全局／view 动态访问直接在原记录地址上加偏移，不加载整条记录后逐项选择。tile 输入／发布动态读取保持共享流的物理字顺序和真实生命周期，跨发布点仍保存当前 lane 的私有活跃值；尾块只读取有效 lane。没有宿主逐元素回调、第三方数组运行时或另一个任务调度器。
+
+主机 `Ty.field`／Dataset.field_offset 和 with_views 路径支持 `normal_indices[2]`、`refs[1]`、`groups[0].child` 及根数组 `[0]`，按同一类型布局求偏移。输入携带的引用必须有实际 ReadDataset 所有者，原始头部字节不能替代绑定。表达式中的下标和字段基对象只求值一次，包括读取数组内 view 的 length。
+
+完整 `.h` 示例：
+
+```c
+module fixed_arrays;
+const u32 Width = 4;
+struct Cell { array<float3,Width> offsets; u32 selected; };
+program shift(inout dataset<Cell> cells, float3 delta) on compute;
+```
+
+对应 `.b`：
+
+```c
+module fixed_arrays;
+program shift(inout dataset<Cell> cells, float3 delta) on compute {
+    parallel (cell in cells) {
+        u32 selected = cell.selected;
+        if (selected < cell.offsets.length) {
+            cell.offsets[selected] += delta;
+        }
+    }
+}
+```
+
+泛型签名可写 `T at<T:numeric,const N:u32 in {2,3,4}>(array<T,N> values,u32 i) on compute requires index(i,values);`，函数体直接 `return values[i];`。这里的约束证明来自调用实参，不增加运行期参数或检查。
+
+现阶段固定数组用于普通值聚合，编译器仍按逻辑分量展开类型与整体值，动态访问才固定连续存储；编译成本会随内联长度增长，不能据此宣称适合超大容量私有数组。大规模数据继续由 dataset／view 分页和并行集合承载。固定数组的动态 u32／i32 原子下标已支持，沿显式 atomic dataset／tile 权限与内存序执行，见下节；B214 拒绝非原子目标或普通读写混用。动态长度内联数组、切片、矩阵动态行下标、一般依赖类型与完整语言继续开发。
+
+实际 render.trace 的 Triangle 已用 array<u32,3> normal_indices，宿主按同一数组路径写入三项，三角形仍为 12 字节；着色的三个常量下标消除为原直接访问，不改变原高精度几何或采样。
+
+## 显式原子 dataset 与内存序
+
+`.h` 用 `atomic dataset<T>` 声明共享原子访问能力，`.b` 必须保持相同签名。它要求已初始化的可读写数据，布局仍是原来的普通记录；当前仅能对 u32/i32 标量位置进行原子操作，可选择嵌套字段、向量的一个分量或已证明下标的固定数组元素。其他字段和填充不会被隐式读改写。它不是裸指针或可逃逸的原子引用；普通函数可以显式借用整份 atomic dataset，program 继续拥有并行域与阶段组合。
+
+```c
+struct Sample { u32 key; u32 value; };
+struct Bin { u32 count; u32 sum; };
+program histogram(read dataset<Sample> input,
+                  atomic dataset<Bin> bins) on compute {
+    parallel (item in input) {
+        let n = bins.length;
+        if (n != 0) {
+            let k = item.key % n;
+            atomic_add(bins[k].count, 1, relaxed);
+            atomic_add(bins[k].sum, item.value, relaxed);
+        }
+    }
+}
+```
+
+长度仍是只读元数据，索引仍须由同一前端证明。多个 invocation 可以原子修改同一字段；该模式下，直接 `bins[k].count` 读写、把整条记录作为普通值读取，或用 tile_input 捕获其普通快照都被拒绝。read/write/inout 位置、局部变量和不可变 view 不能当作原子目标。原子目标错误报 B214，目标不是 u32/i32 标量报 B215，参数数量报 B217，值类型沿用 B124。
+
+| 内置操作 | 返回值 |
+|---|---|
+| `atomic_load(target, order)` | 当前原子值 |
+| `atomic_store(target, value, order);` | 语句，无返回值；绑定或用于表达式报 B218 |
+| `atomic_add`／`atomic_sub`／`atomic_exchange(target, value, order)` | 修改之前的旧值 |
+| `atomic_min`／`atomic_max(target, value, order)` | 旧值；i32 使用有符号极值，u32 使用无符号极值 |
+| `atomic_and`／`atomic_or`／`atomic_xor(target, value, order)` | 旧的完整 32 位值 |
+| `atomic_compare_exchange(target, expected, desired, success_order, failure_order)` | 旧值；与 expected 相等才写 desired，是不发生伪失败的强比较交换 |
+
+所有操作都显式提供静态内存序：`relaxed`、`acquire`、`release`、`acq_rel`。这些是该参数位置的语法，不接受运行时变量。load 只接受 relaxed/acquire，store 只接受 relaxed/release，读改写接受四种序。比较交换失败序只能 relaxed/acquire，且不能强于成功序；非法序报 B216。值参数不获得额外隐式数值转换，加减继续保留低 32 位。此语言的 CPU／GPU 共同配置不支持 seq_cst，也不把它替换成较弱的序；依据为 [Vulkan 内存模型](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
+
+GPU 使用 Device 作用域，约束当前设备上的 buffer 原子；CPU 约束访问同一主机数据的执行线程。它们不会把主机和显存变成同一个地址或同一个原子域，显式上传／下载与资源所有权仍由原框架负责。relaxed 只约束该位置的原子性；release/acquire 只有实际读到对应发布时才建立同步，不是全域屏障，也不保证跨 workgroup 自旋循环能够推进。全域阶段继续由 program 依赖和 phase 表达。
+
+同一数据集传给多个可写子程序参数时，只有这些别名全部声明 atomic 才能共享；混合普通读写别名仍报 B118。拥有 inout/atomic 能力的外层 program 可调用相应子程序，read 或 write 单独不能升级成需要读写的 atomic 能力。不同访问阶段之间，编译器按真实读、写和跨元素访问保留依赖；原 cross_reads 统一为 cross_access，涵盖原子写入，不能把“先读取整域、再跨元素原子写入”错融成逐元素执行。
+
+原子效果不能作为纯表达式消除、缓存或提前到未选分支，忽略旧值也必须执行修改。CPU 自研 x64 直接使用对齐 MOV、LOCK XADD、内存 XCHG、LOCK CMPXCHG；极值和按位读改写由 CMPXCHG 构成同一个原子操作。GPU 直接编码 SPIR-V 原子指令，acquire/release 使用 UniformMemory 语义，沿用原物理页表地址；不增加宿主锁、逐元素回调或另一种 Shader 编译器。指令和比较交换的成功／失败规则见 [SPIR-V 原子规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpAtomicCompareExchange)。当前 CPU 原子阶段使用原生标量范围并行，尚未实现原子操作的四元素 SIMD。
+
+前缀域在 CPU 启动范围／GPU 间接参数中已经捕获本次有效数量。阶段内原子改写原 Count 不改变本次范围；既有 written 规则撤销下一阶段的旧域关系，不能继续使用旧 prefix 或声称保留其 ensures。原子增量、返回的票号或单独的 Count 都不能自行签发安全散写／容量／prefix 能力。返回旧值依赖执行次序，CPU 与 GPU 的逐行票号可以不同；可交换整数归约的最终结果与票号唯一性分别评价。
+
+块内 u32/i32 共享原子与显式根块屏障见下文。64 位／浮点原子、可变 view、动态任务与有界并行预留类型仍待实现。原子接口并不等于已实现完整并发队列。
+
+### 原子数组下标与函数借用（2026-10-25）
+
+`atomic_add(bank.rows[row][slot].count,1,relaxed)` 可直接选择嵌套固定数组里的 u32／i32 位置，每层下标由原范围分析证明。类型、记录对齐、原子访问权和内存序保持，不转成逐项选择，也不增加宿主锁、回调或逐元素越界检查。
+
+原 Atomic IR 增加可选动态字偏移，来源仍是已检查的 Place；地址依赖进入原寄存器活跃性、重映射和阶段效果。CPU／GPU 在原记录／共享存储地址上加偏移，再发出原子操作；固定下标保持原直接位置。Device 分页先按记录索引选择页面，数组偏移留在该记录内；Workgroup 索引保留共享流顺序、发布值与原生命周期。
+
+普通函数可借用整行 `atomic array<T,N>` 或动态选出的记录／标量位置，N 从实际数组类型推导。`requires index(slot,bins)` 适用于原子或独占借用的固定数组及记录数组字段，长度证明只读取类型元数据；数组 length 仍是静态值。原子结果只给出旧整数，不授予任意散写或输出容量权限。
+
+`.h` 示例：
+
+```c
+module histogram;
+const u32 BinCount = 256;
+struct Sample { u32 key; };
+struct BinBlock { array<u32,BinCount> counts; };
+u32 increment<const N:u32 in {64,256}>(atomic array<u32,N> bins,u32 slot) on compute requires index(slot,bins);
+program count(read dataset<Sample> input,atomic dataset<BinBlock,1> bins) on compute;
+```
+
+对应 `.b`：
+
+```c
+module histogram;
+u32 increment<const N:u32 in {64,256}>(atomic array<u32,N> bins,u32 slot) on compute requires index(slot,bins) {
+    return atomic_add(bins[slot],1,relaxed);
+}
+program count(read dataset<Sample> input,atomic dataset<BinBlock,1> bins) on compute {
+    parallel (sample in input) {
+        increment(bins[0].counts,sample.key%BinCount);
+    }
+}
+```
+
+主机提供已初始化的 BinBlock；此程序在原计数上累加，空输入保持计数。具有相同权限的 tile_atomic 数组也可复用 increment；在全块更新后读取最终值，仍由协作根块使用既有 tile_barrier 明确同步。原子操作不等于全块完成，release／acquire 不隐式产生根块屏障。
+
+非原子局部、普通 read／inout 数据、不可变 view 和只读 tile 不能当作原子目标；atomic 数组元素不能通过普通读取或赋值访问。目标非 u32／i32 报 B215，缺少原子权限或混用普通访问报 B214，下标、调用前提和内存序沿原 B137／B226／B216 拒绝。动态长度内联数组、64 位／浮点原子、第一类原子引用和动态任务仍未实现。
+
+## 普通函数的原子字段借用
+
+普通函数可以用 `atomic T parameter` 借用一个实际原子位置，不把它读成 T 的普通值。T 可以是标量、向量、固定数组或不含资源 view 的非空记录；实际原子操作仍只接受 u32/i32 标量字段。`.h` 与 `.b` 的 atomic 访问模式必须一致，它明确声明共享访问效果，不能当作纯数值参数。接口示例：
+
+```c
+module counters;
+struct Count { u32 value; };
+struct Job { u32 old; };
+u32 add(atomic u32 target, u32 delta) on compute;
+program update(inout dataset<Job> jobs, atomic dataset<Count> counts) on compute;
+```
+
+对应实现：
+
+```c
+module counters;
+u32 add(atomic u32 target, u32 delta) on compute {
+    return atomic_add(target, delta, relaxed);
+}
+program update(inout dataset<Job> jobs, atomic dataset<Count> counts) on compute {
+    parallel (job in jobs) {
+        let n = counts.length;
+        if (n != 0) {
+            job.old = add(counts[ordinal(job) % n].value, 1);
+        }
+    }
+}
+```
+
+调用方必须已经拥有 atomic dataset 或 tile_atomic 的实际元素／字段，或者已有原子参数；局部变量、普通 read/write/inout 数据、只读 view 和只读 tile 不能升级为原子位置。索引先按原有边界规则证明，再借用实际位置。索引与普通值实参按从左到右求值一次，之后多层转交保留该位置；其中有副作用的索引计算不能被重新求值或删除。
+
+函数内部可以显式 atomic_load/store、执行其他原子算子，或者把字段继续借给另一函数。整记录与向量借用保留实际逐 word 映射，支持嵌套字段、swizzle 和多个显式原子别名；同一位置可传给两个 atomic 参数，访问仍必须是原子操作。直接读取、赋值、复合赋值、普通局部复制、记录构造或返回借用均报错。借用不是普通 T 值、整数地址、可存入资产的数据或可逃逸引用；不提供地址算术，也不产生新的数据所有权。
+
+cooperative 函数也可同时借用 tile<T>／atomic tile<T> 与 atomic T 字段。普通函数中的原子访问不隐式添加屏障，不允许隐藏 cooperate、tile_publish 或 tile_barrier；同步步骤仍由协作根块明确表达。调用目标继续遵守 cpu／compute／gpu 能力；函数抽取不会把 Workgroup 地址升级成 Device 地址，也不会把普通局部变量变为共享存储。
+
+独立函数检查持有符号位置，只检查类型、字段、权限、内存序和调用关系；封闭 program 时按调用者的真实 Place 静态内联。后端仍只接收原来的 Dataset／Tile Atomic IR，没有新的指针值、原子引用 ABI、宿主锁或逐元素回调。实际读写进入原来的阶段依赖、跨元素访问、值转发与活跃性；返回旧值未使用时，写效果照常保留。经函数借用修改 Count，同样撤销后续旧 prefix／ensures，当前执行仍使用已捕获的范围。
+
+仅普通值参数的归约／扫描回调继续要求无共享写副作用，atomic 参数不能进入其接口。含 view 的原子参数报 B223；普通读写／非法实际来源沿用 B214，字段类型 B124，原子目标类型 B215，内存序 B216，签名 B028，目标能力 B161，递归 B160。未知位置索引不会因函数接口而获得证明。
+
+atomic T 借用一个已有位置；整份只读／原子 dataset 借用见下一节。独占可写数组借用、第一类原子引用变量、函数返回原子引用、资源泛型和动态调用仍需按真实所有权与并行语义继续实现。
+
+## 整份数据集的函数借用
+
+普通函数与 cooperative 函数可显式接收 `read dataset<T>`／`atomic dataset<T>`，也可声明固定形状 `dataset<T,N>`。它们直接借用调用方已有资源，不复制 payload，不增加设备地址、运行时引用对象或宿主任务。函数库可以独立检查；program 从实际调用点静态内联，CPU x64 与 GPU SPIR-V 沿用同一 Load／Atomic IR。
+
+`.h` 示例：
+
+```c
+module resource_functions;
+struct Cell { u32 value; };
+struct Job { u32 key; u32 result; };
+u32 lookup(read dataset<Cell> table, u32 key) on compute;
+u32 visit(atomic dataset<Cell> bins, u32 key, u32 value) on compute;
+program run(read dataset<Cell> table, inout dataset<Job> jobs,
+            atomic dataset<Cell> bins) on compute;
+```
+
+对应 `.b`：
+
+```c
+module resource_functions;
+u32 lookup(read dataset<Cell> table, u32 key) on compute {
+    u32 result = 0;
+    if (table.length != 0) { result = table[key % table.length].value; }
+    return result;
+}
+u32 visit(atomic dataset<Cell> bins, u32 key, u32 value) on compute {
+    u32 old = 0;
+    if (bins.length != 0) { old = atomic_add(bins[key % bins.length].value, value, relaxed); }
+    return old;
+}
+program run(read dataset<Cell> table, inout dataset<Job> jobs,
+            atomic dataset<Cell> bins) on compute {
+    parallel (job in jobs) {
+        job.result = visit(bins, job.key, lookup(table, job.key));
+    }
+}
+```
+
+参数按实际资源身份绑定：交换参数名、多层转交或让两个同权限参数指向同一数组，都保留同一缓冲、字段布局和长度证明。只读别名允许，显式原子别名也允许；原子返回的获胜次序可以不同。实参必须为当前作用域中已有的数据集名称，不能传入元素、字段、prefix 表达式或普通值。数据集不能作为普通值复制、存进设备记录或从函数返回；read 数组中的不可变 view 可以按原有值语义读出并返回，资源寿命仍由真实根与子所有者持有。
+
+read／atomic 权限必须与调用点当前阶段完全一致。inout 不能借成 read：其他 invocation 可能正在修改函数将要读取的元素；inout／write 也不能在函数内升级为 atomic，atomic 不能伪装成 read。program 的已有阶段接口可以转交其声明的权限，函数消费该阶段实际的访问模式，不根据最外层缓冲的初始声明猜测权限。write／inout／无访问模式的 dataset 函数参数仍拒绝，独占写入继续由 parallel 的元素所有权表达。
+
+`for (element in data)` 可以遍历 read 或 atomic 数据集；atomic 游标只是现有元素位置，必须使用 atomic_load／其他原子算子，不能隐式读取或直接赋值。游标支持 ordinal、break、seek，也可把当前原子字段继续借给 atomic T 参数。函数内不允许 parallel、phase 或隐式协作同步；cooperative 仍须声明至少一个 tile 参数，并从调用点继承同一逻辑块。通用只读／原子数组不会把一个值函数变成新的并行域。
+
+固定 N 参数要求调用方声明完全相同形状；动态形状参数可接收固定或动态来源。独立库检查按自己的接口证明索引，不能依赖某个入口恰好提供的长度：例如动态 dataset 的普通索引参数必须由接口 index 约束，或在函数内通过实际长度条件／取余／有界游标证明，不能直接读取任意 i。长度与索引关系属于实际数据集，不能把另一数组的范围移过来；独立动态函数也不能无声明地转交给要求固定 17 项的函数。
+
+借用覆盖完整容量，不隐含一个 Count 前缀。prefix 的 requires／ensures 仍由 program 接口管理；普通／cooperative 函数的值与索引 requires 见下一节。函数可原子修改实际 Count，但其写效果使后续旧 prefix 关系失效，不改变已捕获的当前循环域。这里没有新加运行期边界检查或 Count 读回。只读／原子函数不进入要求普通值参数的归约／扫描回调；纯集合合并器仍不能隐藏资源副作用。
+
+诊断沿用类型 B124、形状 B167、普通边界 B137、显式原子访问 B214、含 view 的原子参数 B223、签名 B028、目标 B161 与递归 B160；B224 报告不合法的整份借用、访问模式或 dataset 返回，B120 拒绝函数中的独占可写数组参数。可变 view、独占可写数组借用、第一类资源引用、通用资源泛型、动态调用及完整并发队列仍未完成。
+
+## 独占位置的 inout 函数借用
+
+普通函数与 cooperative 函数可以接收 `inout T`。实参是调用方已初始化的独占位置：当前 parallel 元素、其字段／无重复分量的 swizzle，或可变局部变量及其字段。参数直接使用原来的局部槽或全局缓冲 word 映射；不会在调用入口复制整个 T，不创建运行时引用对象、引用 ABI、宿主回调或设备任务。函数可继续把整位置或互不重叠的字段借给其他函数。
+
+`.h` 示例：
+
+```c
+module motion;
+struct BLBody { float3 position; float3 velocity; f32 energy; };
+f32 advance(inout float3 position, inout float3 velocity, f32 dt) on compute;
+program step(inout dataset<BLBody> bodies, f32 dt) on compute;
+```
+
+对应 `.b`：
+
+```c
+module motion;
+f32 advance(inout float3 position, inout float3 velocity, f32 dt) on compute {
+    velocity += float3(0.0,-9.8,0.0) * dt;
+    position += velocity * dt;
+    return 0.5 * dot(velocity,velocity);
+}
+program step(inout dataset<BLBody> bodies, f32 dt) on compute {
+    parallel (body in bodies) {
+        body.energy = advance(body.position,body.velocity,dt);
+    }
+}
+```
+
+同一次调用的所有 inout 实参必须互不重叠：两个不同字段可以借用，整个记录与自身字段、相交 swizzle、同一位置的不同写法均拒绝。按值实参保存求值时的快照，可以来自被借位置；实参与索引从左到右求值一次，所有实参求值完毕后执行函数体，借用结束后调用方继续使用原位置。`bump(value,bump(value,2))` 的内部调用先完成，外部调用再使用更新后的 value 和已捕获的增量，不会重算索引或恢复旧内容。
+
+局部绑定若只通过函数修改，也由同一写效果分析确定其可变存储。读取参数得到普通 T 值，`return value` 返回快照；参数本身不是可存入记录或逃逸的引用。普通按值参数仍不可直接作为 inout 实参，可以先声明自己的局部副本。inout 不授予新并行域、任意散写、只读／原子权限升级或块内共享写；只读 view 的元素及只读／atomic tile 不能作为 inout 位置。
+
+write dataset 的字段必须在借出前已初始化；可以先初始化一部分，再借出这部分，不必读取其他字段。独占元素和局部位置共用一份逐分量来源、范围、资源域及非零信息，直接写入和函数写入在同一位置更新这些事实。当前独占字段的重复装载可使用同一值身份，写入后只代表新内容；只读外部数据和原子内容的重复装载等价仍未完成，原子读取不能当作稳定快照。
+
+if、for、while、短路与三元式中的函数写入进入原有控制流效果。函数返回的 bool 可以约束调用方当前内容；旧快照的条件不会约束改写后的内容。合流暂保守撤回可能修改位置的事实，尚未实现逐字段细粒度合流。函数位置读写沿原 IR 进入值转发、活跃性、阶段依赖与 Count 关系失效；cooperative 中的 inout 仍是各 invocation 的私有位置，不增加屏障或共享存储。
+
+局部记录中的不可变 view 句柄可以整体交换或替换，再按新句柄读取；实际子资源继续由原闭合图持有，不能修改 view 的地址分量或子元素，也不能把含 view 的记录写入可写全局数据集。nonzero／index 值约束目前仍只接受按值参数，不能对可变位置声明这些输入条件。
+
+借用冲突、重复分量或不具备独占权限报 B227；未初始化沿用 B142、类型 B124、索引 B137、非当前元素的可写访问 B166，目标 B161、递归 B160、签名 B028 保持。重复参数名由声明解析统一报 B100，不能在静态内联时覆盖位置。`write T` 输出借用与 void 函数见下一节。整份独占可写 dataset 借用、第一类引用、动态任务与资源泛型仍需继续实现。现有 `simulation.bodies` 已以两个互不重叠的 float3 位置封装无返回值积分，以 write f32 位置输出能量；独立 integrate／energy 入口保留。
+
+## void 函数、write 输出与确定初始化
+
+`void` 表示函数没有返回值，只能用于普通／cooperative 函数的返回声明，不能成为变量、参数、字段、dataset 元素、view 元素或普通计算值。普通 void 函数可以自然结束，也可以在分支、顺序循环或末尾 `return;`；有返回值的普通函数可在这些位置返回匹配类型，所有继续路径必须返回。cooperative 函数仍限制为末尾返回，不能从 parallel 内 return。调用作为语句执行，写效果照常保留；把 void 调用绑定到 let、用于运算／条件或其他值参数报 B228，不用占位零值表示无结果。
+
+`write T` 借用一个完整输出位置，不消费调用前的内容。与 inout 相同，它只能来自当前独占元素／字段／无重复分量的 swizzle，或可变局部位置；同次所有 write 与 inout 参数必须互不重叠。函数必须在结束前完整初始化每个 write 参数的全部逻辑分量，漏写报 B229；写前读取、复合赋值或转交给 inout 报 B142。写出某个分量后可以读取或继续修改该新内容。输入内容即便在调用方已初始化，也不能作为 write 参数的旧值被函数读取；这里撤回的是编译期知识，不是向实际缓冲区填零。
+
+调用方可用 `T name;` 声明未初始化的局部记录、向量、标量或不可变 view 句柄。它只声明实际局部位置，不生成默认值或清零指令；读取前必须确定所需分量已写入。`let name = expression;` 仍必须有初值。字段可以逐个写入或借给输出函数，完整读取记录时才要求全部逻辑分量就绪；ABI 填充不是要额外填满的字段。普通值实参与位置索引仍从左到右求值一次，在所有实参求值之后开始输出函数；因此已初始化的 x 可以用于 `assign(x,x+1)` 的输入快照，未初始化的 x 不能借此读取自身。
+
+`.h` 示例：
+
+```c
+module outputs;
+struct State { uint4 values; u32 checksum; };
+void generate(write uint4 target,u32 seed) on compute;
+program run(write dataset<State> states) on compute;
+```
+
+对应 `.b`：
+
+```c
+module outputs;
+void generate(write uint4 target,u32 seed) on compute {
+    target.xy = uint2(seed,seed+1);
+    target.zw = uint2(seed+2,seed+3);
+    return;
+}
+program run(write dataset<State> states) on compute {
+    parallel (state in states) {
+        uint4 values;
+        generate(values,index());
+        state.values = values;
+        state.checksum = values.x ^ values.y ^ values.z ^ values.w;
+    }
+}
+```
+
+普通有返回值函数也可以带 write 参数，返回值与输出位置各有自己的职责；输出仍须在函数结束前完整写入。多层输出转交、不同字段、swizzle 和局部含 view 记录使用同一个原位置映射，不分配引用对象、不复制整个输入记录。view 输出只构造不可变句柄，实际子资源继续由原资源图持有；不能修改句柄的地址分量、子元素或把含 view 的记录写进可写全局数组。
+
+确定初始化扩展原有的 `Builder.initialized`，以实际局部槽／独占元素 word 为键；没有第二份输出状态或运行期初始化位。if 与三元式从同一入口状态分别检查两侧，仅保留都确定初始化的位置；已知常量条件选择实际执行侧。&&／|| 只在右侧必定执行时把其新增初始化带出。while 条件在循环退出前至少执行一次，其确定写入可以带出；仅在循环体中的写入不能证明零次循环后已初始化。for 的起止表达式先执行，循环体仍可能零次。分支／循环中的值来源与数值范围合流仍有既有保守限制，不把初始化完成当作任意数值条件已成立。
+
+cooperative void 函数可以在协作根块用 `cooperate name(tile,output...);` 直接作为语句调用；也可多层转交同块 tile 与私有输出位置。原 tile 集合仍在根块 let 声明中产生，发布／同步作用域保持，不把 write 位置变为跨 lane 共享存储。普通 void 函数不能隐藏屏障。归约／扫描的回调仍需普通返回值，不能用无返回值函数充当数值算子。
+
+静态内联沿用现有 Load／Store／LoadLocal／StoreLocal 与阶段读写集合，直接声明没有默认初始化指令，void 没有结果寄存器。函数写 Count 同样使后续旧 prefix 关系失效。整份独占可写 dataset 参数、动态引用、提前返回、语言泛型与设备自主任务仍未完成。
+
+## 普通函数的提前返回
+
+`return value;`／`return;` 结束当前普通函数。它们可位于 if、while、for 和多层局部循环中；函数调用完成后，调用方继续执行。break 只退出当前顺序循环，seek 只推进该循环游标，不能用它们退出调用方的循环或 parallel 实例。
+
+编译器按每条真实返回边检查返回类型与 write 输出完整性，再合流返回值和借用位置的当前内容事实；一致性包含所经分支和循环范围。void 的自然结束也是返回边。提前返回的一侧不参与后续语句的初始化与范围合流，例如 `if (position >= source.length) { return 0; }` 后面可以读取 `source[position]`；`if (divisor == 0) { return 0; }` 后面可以执行整数除法。输出缺字段报 B229，读取尚未初始化位置沿用 B142，有值函数缺少返回路径报 B132／B133。
+
+顺序块合成 return、break、seek 和继续执行的边；循环后只合流条件失败与 break 的真实状态，不把函数返回当成循环继续。若 while(true) 内部分支 break，函数仍需处理这条循环后路径。已知常量条件只生成实际路径，已知空 for 不编译其循环体，但起止表达式仍按顺序求值，while 条件的实际副作用也保留。完整模块仍先做独立函数检查，不依赖某个调用恰好使用常量才接受非法的通用函数。
+
+例如 `.h`：
+
+```c
+module search;
+struct Sample { u32 key; u32 value; };
+struct Query { u32 key; u32 value; bool found; u32 audit; };
+void find(read dataset<Sample> source, u32 key,
+          write u32 value, write bool found) on compute;
+program search(read dataset<Sample> source,
+               inout dataset<Query> queries) on compute;
+```
+
+对应 `.b`：
+
+```c
+module search;
+void find(read dataset<Sample> source, u32 key,
+          write u32 value, write bool found) on compute {
+    for (sample in source) {
+        if (sample.key == key) {
+            value = sample.value;
+            found = true;
+            return;
+        }
+    }
+    value = 0;
+    found = false;
+}
+program search(read dataset<Sample> source,
+               inout dataset<Query> queries) on compute {
+    parallel (query in queries) {
+        find(source, query.key, query.value, query.found);
+    }
+}
+```
+
+函数继续静态展开到同一 CPU／GPU IR。只在需要提前退出时建立函数 Scope；x64 直接跳到该函数域末尾，SPIR-V 以结构化选择域和循环合流处的 SSA 退出值离开当前函数域。不增加宿主回调、逐语句返回标记、默认输出清零或新的执行循环。常量特化后若只剩单一末尾返回，退出域会被消除。
+
+普通函数返回后会在自身域合流，父级块内屏障仍由调用方显式执行。cooperative 函数的提前返回暂报 B208；整块一致退出、动态协作与控制流内屏障尚未实现。返回多条路径的 bool 目前只保留共同事实，不能把分支中的 true／false 自动重组为任意资源谓词；never 类型、通用循环定点与细粒度字段合流仍未完成。不可达源码仍做语法解析，尚未提供独立于可达性的完整类型诊断。编译成功不承诺没有死循环或业务错误。
+
+## 函数参数的编译期约束
+
+普通函数与 cooperative 函数可以在 `on compute/cpu/gpu` 后声明 requires。它是 `.h/.b` 函数签名的一部分，允许算法库独立检查，并把必要前提交给调用点证明；不会在执行时插入断言、边界检查、失败分支或宿主调用。编译器先按实际实参证明全部要求，再用同一组要求精化被调用方已有参数 Proof，随后按原方式静态内联。
+
+| 约束 | 含义与适用参数 |
+|---|---|
+| `requires nonzero(value)` | 按值 u32／i32 标量或向量的每个选中分量非零；支持记录字段和 swizzle，不表示有符号数一定为正 |
+| `requires nonempty(resource)` | dataset／tile 或按值不可变 view 的长度至少为 1；view 可以是记录字段 |
+| `requires index(value,resource)` | 按值 u32 标量或向量的每个选中分量都可索引该实际资源；同时可知该资源非空，不表示索引互异 |
+
+`.h` 示例：
+
+```c
+module function_requirements;
+struct Job { u32 value; u32 divisor; u32 result; };
+u32 quotient(u32 value, u32 divisor) on compute requires nonzero(divisor);
+program run(inout dataset<Job> jobs) on compute;
+```
+
+对应 `.b`：
+
+```c
+module function_requirements;
+u32 quotient(u32 value, u32 divisor) on compute requires nonzero(divisor) {
+    return value / divisor;
+}
+program run(inout dataset<Job> jobs) on compute {
+    parallel (job in jobs) {
+        let divisor = job.divisor;
+        if (divisor != 0) { job.result = quotient(job.value, divisor); }
+    }
+}
+```
+
+独占字段的重复装载现按本次内容关联；只读外部数据／原子内容的重复装载等价仍未完成。示例显式保存本次 divisor 值，条件与实参使用同一快照。不能因另一次 atomic_load 非零就认定后来的读取也非零，也不能对 atomic T 位置本身声明 nonzero。浮点、bool、整个普通记录不属于当前 nonzero 类型，记录中的整数向量字段可以使用 `nonzero(config.divisors.yx)`。
+
+路径只选择形参及其字段，不执行函数调用或数据集元素读取。`index(query.indices,table)` 支持向量各分量，`index(query.pos,query.nodes)` 可以关联按值记录里的不可变 view；`nonempty(query.nodes)` 则给函数内的 view[0]／length-1 提供前提。只读／原子 dataset、tile 的访问模式、目标、字段类型与生命周期仍由原接口负责。index 不授予独占写入、任意散写、原子升级或块内同步，也不把完整容量当作 Count 有效前缀。
+
+所有要求都必须在调用点已经成立；数值常量、固定形状、当前范围／长度条件、既有索引能力及已声明的上层 requires 可以提供证明。函数独立检查时使用自己的接口，不依赖某个入口实际传来的数值。前提可在多层函数中转交，修改局部副本会按原赋值规则清除相应知识；requires 不会让后续的新值继续满足旧要求。类型检查不扫描输入数据、不会证明所有记录的任意业务属性，也没有新增量化条件或通用关系求解器。
+
+多个 requires 的顺序与重复项不影响签名匹配，`.h/.b` 的谓词、参数路径必须一致；语义相似但书写不同的谓词不自动视为同一签名。声明不能引用局部变量或任意表达式。普通／cooperative 函数当前不接受 ensures，prefix 约束继续只用于 program；program 当前也不接受这三种值约束，宿主原始输入不能被隐式假定为满足前提。
+
+普通值集合回调可以声明这些要求，但仍须在实际集合调用处证明。例如投影的 divisor 通过 `bind(project,7)` 传入时可以满足 nonzero；未知输入元素不会因为实际数据恰好非零就取得该能力。原纯值类型、统一捕获与禁止隐藏资源副作用的规则保持，requires 不绕开集合接口。
+
+非法声明／不支持的约束报 B225，调用点缺少证明报 B226；签名不一致继续报 B028，函数中使用 prefix 继续报 B192。body 内改写后失去普通索引／非零证明时，仍按原 B137／B201／B152 报错。本节实现函数输入的三类明确约束，不代表已有第一类 NonZero 类型、任意精化类型、函数后置条件、program 值条件或完整语言。
+
+## 有界并行接纳与输出前缀
+
+`clear_prefix(output, count.value);` 是 program 顶层阶段，把独立单 u32 Count 写为 0，并建立空的 prefix(output,count.value) 关系。它不清空输出物理存储、不分配另一套队列对象；容量与数据仍由原 dataset 持有。输出必须为普通 write/inout，计数必须为普通 write/inout、形状 1、单 u32，二者不能别名。普通计数值或宿主文件内容仍不能自行构造前缀能力。
+
+在 parallel 中，`append(output, count.value, record)` 尝试接纳一条完整记录，返回 bool。它必须取得已有的输出／Count 前缀关系；输出为普通 write/inout，计数明确为 inout，二者都不能与当前并行域或彼此别名。同一阶段可以多次向同一对输出／计数接纳，也可以操作多个独立输出，但每份输出与计数必须一对一配对，包括嵌套调用、分支与循环中出现的操作。权限／形状错误报 B221，配对冲突报 B222；缺少原有前缀沿用 B191，参数数目报 B220，记录／返回类型沿用 B124。
+
+`.h` 声明对应的数据与相同 program 签名，`.b` 可写：
+
+```c
+struct Work { u32 id; bool selected; bool accepted; };
+struct Entry { u32 id; };
+struct Count { u32 value; };
+program build(inout dataset<Work> input,
+              inout dataset<Entry> output,
+              inout dataset<Count, 1> count) on compute
+    ensures prefix(output, count.value) {
+    clear_prefix(output, count.value);
+    parallel (item in input) {
+        item.accepted = item.selected && append(output, count.value, Entry(item.id));
+    }
+    parallel (entry in prefix(output, count.value)) {
+        entry.id += 1;
+    }
+}
+```
+
+计数小于容量时，原语在同一次接纳中取得唯一位置并写完完整记录的所有实际字段，然后返回 true。容量耗尽则返回 false，不增加计数、不写输出、不令计数回绕；这是该操作的容量语义。调用者自行决定如何使用接纳状态，框架不会隐式扩容、重新提交或丢弃错误。参数按普通值规则先求值，即使容量已满，record 表达式的计算也已发生；原语不向源码暴露裸票号或尚未初始化的可写预留区。记录的值字段沿用普通赋值与 ABI，填充保持输出原内容；未接纳的容量尾部也保持原值，不承诺复制来源的填充。
+
+同一阶段的接纳次序不确定；CPU 与 GPU 可以选择不同的成功调用者和输出顺序。每次成功调用必须对应唯一完整记录，失败调用不能占位，实际 Count 等于接纳后的有效数量。它不是稳定 compact，需要输入顺序时仍使用 compact／排序。忽略返回值不会删除接纳效果；短路与三元式只执行实际选中的调用。完整记录构造可以来自普通值函数。普通函数可借用 read／atomic dataset，但 append 所需的独占输出与关联 Count 仍由 program 的阶段和并行域拥有。
+
+Count 的修改先预留位置，不表示同阶段的载荷已经发布。源码不能把这份 inout Count 或输出别名成原子／只读资源同时窥读，后续消费者通过 program 阶段依赖和 prefix 接口取得已写好的数据。前端使其他共用旧 Count 的关系失效，只保留本阶段证明的实际输出关系；运行时复用既有数据所有权、ensures、DomainBindings 与提交生命周期。条件生产者可 requires/ensures 同一前缀，跨提交继续追加，GPU 不必中途读回 Count。
+
+封闭 Append IR 保存实际输出、Count、完整字段与接纳结果，独占预留和写入不可分割。它参与原有读写依赖、跨元素访问、分支保留、活跃性和原生寄存器分配，不用另一套表达式解释器、宿主回调或队列管理器。CPU 直接用 x64 的容量比较、LOCK CMPXCHG 和记录存储；CAS 成功才写入原位置，失败比较返回的新计数进入同一原子算法。
+
+GPU 在实际活动 subgroup 中 ballot／计数／计算 rank，由选举出的一个 invocation 用 CAS 一次预留 `min(活动数量, 剩余容量)` 个位置，再广播实际范围，各成功 lane 写入自己的记录。没有按 32／64 固定 lane 编号，也不为每条记录争用一个全局 CAS。源分歧与不同循环迭代中的活动集合必须准确，因此该 shader 显式使用 SPV_KHR_maximal_reconvergence／MaximallyReconvergesKHR；Device::for_program 按真实程序需求查询并启用 VK_KHR_shader_maximal_reconvergence，普通计算设备不会暗中升级或换算法。缺少所需能力直接报错。该汇合要求来自 [Khronos 最大汇合语义](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_maximal_reconvergence.html)及其[并行接纳示例](https://docs.vulkan.org/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html)，不是根据本机一次运行推测的保证。
+
+当前是完整记录的有界接纳，不是任意大小预留类型、并发出队／回收、同阶段生产消费、稳定输出、动态设备任务图或自动背压。一般 queue 容器、批量可写 reservation、64 位计数及设备自主调度仍需实现。
+
+## 原生加速结构资源
+
+`read acceleration scene` 是 GPU program 或 `on gpu` 值函数的不可变资源参数，不是整数句柄，也不占 dataset 长度槽。它只能由执行框架绑定同设备上的加速结构；不能声明为 write／inout，也不能进入 CPU／compute 通用目标。子程序和函数组合保持实际资源身份及只读能力。非法权限或目标在编译期报 B182，查询／借用实参类型错误报 B183，内置类型名称不能被自定义记录覆盖（B184）。
+
+```c
+RayHit hit = trace_closest(scene, origin, 0.0, direction, 100000.0);
+if (hit.exists) {
+    f32 distance = hit.distance;
+    float2 barycentric = hit.barycentric;
+    u32 instance = hit.instance;
+    u32 primitive = hit.primitive;
+}
+bool blocked = trace_any(scene, origin, 0.0001, direction, 100000.0);
+```
+
+`RayHit` 的 instance 是构建输入中的实例序号，primitive 是该 BLAS 单一三角形 geometry 内的原三角形序号。exists=false 时 distance 为给定 maximum，其余数值字段为 0；它们不代表一次有效命中。光线原点、方向和区间仍须满足 Vulkan 的数值要求，编译器不能证明动态浮点条件。
+
+当前查询处理不透明双面三角形，使用固定 0xff 可见掩码，自动接受三角形候选；trace_any 在首次命中终止。它可服务可见性、遮挡与其他几何计算，不等于已经实现物理接触解算器、透明材质或光传输系统。
+
+前端生成封闭的 RayQuery IR，自研后端直接编码 SPIR-V 1.4 与 SPV_KHR_ray_query。CPU 后端明确拒绝硬件查询操作，不转成另一种求交算法。GPU 值函数可借用命名的 `read acceleration` 并调用其他 GPU 函数；内联时绑定调用方的真实资源下标，不复制加速结构、不增加描述符，也不允许把资源当普通值返回。仅借用 acceleration 与普通值的辅助函数同样使用该资源调用规则，不要求同时声明 dataset／texture。查询最终仍在调用 program 的并行域执行；不可变数据 view 可以经 CPU／compute／GPU 函数组合。
+
+执行框架 `Bindings` 同时接收 datasets 与 accelerations；提交对象在实际完成前持有全部资源。顶层结构的唯一所有者持有去重的 BLAS 引用；只读 acceleration 可以共享同一所有者。由 `Device::for_program` 从程序资源需求选择设备能力，创建加速结构的低层 unsafe 接口明确要求调用者提供有效几何及有限、可逆的实例变换。材质和数值算法正确性不由资源类型证明。
+
+光线查询不要求窗口：`Device::for_program` 不启用 surface／swapchain。需要原生窗口呈现的程序明确使用 `Device::with_presentation`，计算资源和执行语义保持相同。`Device::swapchain(instance,window,width,height)` 接收实际输出尺寸；呈现消费同设备、等像素数和 4 字节 stride 的 BGRA8 dataset，并逐实际物理页复制，页边界可位于像素行中间。真实表面尺寸和设备能力属于原平台入口，框架不写入某个应用的最低分辨率。
+
+## 原生只读二维纹理（2026-10-25）
+
+`texture2d` 是不可变资源参数，供 CPU／compute／GPU 程序与普通函数只读借用；它不属于普通值类型，不能放进普通记录、内联 array、dataset、view、tile、统一值或函数返回值。接口必须写 `read texture2d`，函数与 program 组合传递实际资源身份，不复制像素、不暴露地址，也不能将普通值冒充纹理。多个只读参数可以引用同一资源；固定资源数组见下一节。
+
+```c
+// example/texture.h
+module example.texture;
+struct Sample { float2 uv; f32 lod; float4 colour; };
+program shade(inout dataset<Sample> pixels, read texture2d albedo) on compute;
+```
+
+```c
+// example/texture.b
+module example.texture;
+program shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
+    parallel (pixel in pixels) {
+        pixel.colour = texture_sample(albedo, pixel.uv, pixel.lod);
+    }
+}
+```
+
+`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。当前纹理保存线性 RGBA32F，坐标归一化，U／V 越界按 clamp-to-edge 处理；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。不进行 sRGB 解码、显示编码或预乘 alpha。
+
+资源、参数数量、UV／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限 UV／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。硬件过滤精度与 CPU f32 算术可有差异；同一算法和格式不意味着非二进制坐标逐位一致，不能据此承诺天然材质视觉等价。
+
+源采样进入同一 TextureSample IR，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 自研后端直接编码 `OpTypeImage`、`OpTypeSampledImage` 与 `OpImageSampleExplicitLod`，由 Vulkan sampled image／sampler 执行过滤；不经过 HLSL／GLSL 或第三方编译器。CPU 后端把采样降低为 mip 元数据读取、四点 texel 读取与标量插值，直接生成 x64 指令，没有逐 texel 的宿主回调。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
+
+原生资源 API 是 `Texture2D::new(Vec<TextureMip>)`、`Texture2D::read/write` 和 `Device::upload_texture`。CPU 资源通过 Arc 持有不可变 mip；`cpu::Bindings { datasets, textures }` 交给 `CpuProgram::run_owned` 或 `CpuTemplate::run`。GPU 上传返回可共享的 `vulkan::Texture`，使用 `vulkan::Bindings { datasets, accelerations, textures }`，普通程序与条件模板使用同一 submit／submit_after／submit_join 资源接口。资源数组顺序是各类参数在 `.h` 中的声明顺序；Vulkan set 0 依次放 dataset、acceleration、texture、执行器私有辅助项。CPU 集合范围摘要使用原私有槽，不把纹理描述误当摘要。
+
+CPU 调用期间持有实际像素及描述；GPU Commands 持有 image／view／sampler 到原生消费者结束，沿既有 Execution 和完成点释放。调用者保留 Texture 克隆即可供后续提交复用，不从已丢弃句柄或裸地址重建资源。Count 的域关系仍随实际数据所有权移动，纹理不引入宿主计数镜像、独立调度服务或资源注册表。绑定数量／设备归属、资产文件边界及物理格式能力属于既有资源边界。
+
+独立资产 `.bltex` 使用 **BLTEX v1**：8 字节 `BLTEX\0\0\0`，小端 u32 version=1、mip_count；每层依次为小端 u32 width、height，再跟 `width*height` 个逐行 RGBA f32，每 texel 16 字节。行方向和颜色含义由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸／内存与 RGBA32F 线性过滤能力限制。文件读入和 GPU 上传目前为显式同步操作，不等于异步流送或虚拟纹理。
+
+当前只有固定采样规则的只读 RGBA32F 二维纹理。固定纹理资源数组见下一节；整数／压缩／sRGB 纹理、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型、自动 mip 构建及纹理格式导入尚未实现。规范与指令依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
+
+BLEngine 的 `Programs/material/textured.h/.b` 使用同一资源语义实现批量 GGX，CPU／GPU 均实际执行。引擎全图入口现已消费 `.blmat` 材质资产、几何分组与原始 UV，具体格式和职责见 [材质资产](../../BLEngine/Docs/Materials.md)；天然纹理、完整光传输和白玉视觉目标仍未完成。
+
+### 固定纹理资源数组与逐元素选择
+
+`read array<texture2d,N>` 在 program、普通函数及 cooperative 参数中声明固定长度的只读纹理集合，N 是正 u32 编译期形状，可用模块 const 或已实例化的有限／开放 const 参数。它是资源接口，不具有普通内联 array 的值布局，不能嵌套或放入记录、dataset、view、tile、局部普通值、返回值；普通数值数组的原规则保持。集合中的每张纹理可以有不同宽高和 mip 链；该接口表达独立图像的描述符集合。
+
+`maps.length` 是静态 u32 常量，`maps[index]` 选择资源，可直接采样或传给 `read texture2d` 函数；整组可借用给相同长度的资源数组形参。下标必须为 u32，常量范围、数值范围、length 条件和函数 `requires index(index,maps)` 沿用原证明。越界或无证明报 B137，错误形状／资源权限报 B239；源程序没有隐式下标修正，运行时直接执行已证明的访问。带写效果的下标只求值一次，CPU 后续 mip 与 texel 读取也使用同一索引结果。
+
+外部资产边界已经建立有效编号时，可在采样或只读资源借用位置写 `unsafe_read(maps,index)`，例如 `texture_sample(unsafe_read(maps,material.texture),uv,lod)`。它选择一张资源，仍要求资源数组与 u32 下标；调用方负责 `index < maps.length`、实际绑定与资源寿命，编译器不声称已证明该数据关系，也不生成钳制、替代采样或逐像素校验。普通 `maps[index]` 的证明要求和 B137 保持。所选资源可传给 `read texture2d` 形参，不能存入普通值、记录或逃逸；选择仍使用同一 Texture IR，索引只求值一次。
+
+BLEngine 的正式消费者在读取 `.blmat` 时解析并核对 surface 的纹理编号，再把完整只读材质表和图像集合交给提交；计算程序只消费这份已交付数据。这里的外部编号关系由资产所有者承担，不增加另一份运行时校验状态。
+
+下面是循环纹理序列：frame 是持续增长的帧号，按集合长度取模表达纹理序列的播放周期。
+
+```c
+// example/texture_sequence.h
+module example.texture_sequence;
+const u32 FrameCount = 3;
+struct FrameSample { float2 uv; f32 lod; u32 frame; float4 colour; };
+float4 sample_frame(read array<texture2d,FrameCount> frames, u32 frame, float2 uv, f32 lod) on compute requires index(frame,frames);
+program animate(inout dataset<FrameSample> samples, read array<texture2d,FrameCount> frames) on compute;
+```
+
+```c
+// example/texture_sequence.b
+module example.texture_sequence;
+float4 sample_frame(read array<texture2d,FrameCount> frames, u32 frame, float2 uv, f32 lod) on compute requires index(frame,frames) {
+    return texture_sample(frames[frame], uv, lod);
+}
+program animate(inout dataset<FrameSample> samples, read array<texture2d,FrameCount> frames) on compute {
+    parallel (sample in samples) {
+        sample.colour = sample_frame(frames, sample.frame % frames.length, sample.uv, sample.lod);
+    }
+}
+```
+
+源资源引用保存原 binding 与可选元素寄存器；动态元素属于 IR 输入，参与原重映射、死值删除、寄存器活跃性与跨 tile 阶段保存。资源选择也参与值的 uniform 判定，不能因 UV／LOD 是常量就把逐元素选纹理的结果当成统一值。函数静态内联保持实际资源及元素，不复制像素或把采样移成宿主逐元素调用。
+
+GPU 一个资源数组占一个 descriptor binding，其 descriptorCount 为 N；不同 invocation 可以选不同元素。自研 SPIR-V 后端生成数组、AccessChain 与 `NonUniform` 标记，按 [SPIR-V descriptor indexing](https://github.khronos.org/SPIRV-Registry/extensions/EXT/SPV_EXT_descriptor_indexing.html) 编码。`Device::for_program/with_presentation` 为资源数组明确查询并启用 [shaderSampledImageArrayNonUniformIndexing](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceDescriptorIndexingFeatures.html)，不支持或未声明设备能力时明确报错；不改成逐材质宿主提交。CPU 按绑定表中的实际资源指针寻址，整体数量与地址保留原生宽度，仍由原范围线程执行。
+
+`Program::textures()` 返回按参数顺序排列的 TextureBinding，count=None 为单张纹理、Some(N) 为资源数组；`texture_count()` 是实际元素总数，`texture_offset(binding)` 是该参数在扁平资源列表中的起点。`cpu::Bindings.textures`／`vulkan::Bindings.textures` 仍为同一实际所有者列表：按参数顺序，再按每个数组的元素顺序展开。例如数组 3 张、单张、数组 2 张，共三个纹理 binding、六个资源元素；执行器辅助 binding 在三个资源 binding 之后。物理能力按元素总数判断，不误用参数个数。
+
+CLI 同样在所有 dataset 文件之后，按上述展开顺序提供每张 `.bltex`。现有格式不变，数组不向资产写入平台句柄或地址。所有 N 个槽必须绑定实际纹理；共享同一图像时显式克隆只读所有者即可。Commands 持有整个本次实际使用的资源列表至原生完成，没有可变描述符更新、占位纹理、全局资源注册表或新的提交寿命。
+
+`material.textured::indexed_ggx<N>(maps,material,point)` 已将此接口用于真实 B 材质求值，使用开放 `const N:u32`，要求调用前证明 `index(material,maps)`；内部调用原 textured_ggx。N 可从实际纹理数组的静态长度推导，也可显式给出；一般资源类型泛型仍未实现。集合长度目前参与编译，运行时可变长度、部分绑定、描述符在途更新、纹理句柄进入普通记录与通用 bindless／虚拟纹理仍未实现。
+
+## 不可变 CPU／GPU 数据视图
+
+`view<T>` 是带元素类型与长度的不可变数据引用，可嵌入结构体。例如 `struct Instance { view<Triangle> triangles; view<Normal> normals; float4 tint; };`。`.length` 为 u32；由该引用的长度条件或有界游标证明后可用普通索引读取，外部索引契约仍使用 `unsafe_read(instance.triangles, primitive)`。源程序不能提取地址、把 view 转成数值或写回引用元数据。
+
+program 的含 view 记录只能作为 read dataset，不能作为 write/inout/atomic 或 program 按值参数；CPU／compute／GPU 目标共用这个限制。无写副作用的普通值函数可以按值接收／返回 view 或含 view 的记录，按既有目标规则组合；跨不相容目标仍报 B161。允许局部 view、嵌套只读记录、逐层读取与有界遍历；元数据不可写、数值伪造和可写 view 仍报 B185。可变视图及语言资源泛型尚未实现。
+
+宿主用 `Dataset::for_view` 获取元素类型和布局。CPU 用 `Dataset::freeze()?` 交还可跨宿主线程共享的 `blcompute::ReadDataset`，以 `Dataset::with_views(Vec<ViewBinding>)` 绑定父记录；GPU 上传后用 `GpuDataset::freeze()` 交还 Vulkan 的 `ReadDataset`，通过 `Device::upload_with_views` 绑定已有设备数据。两端共用字段、逐记录数量、元素类型和唯一性处理，GPU 另外检查实际设备归属；不以地址字节代替真实资源。父数据持有按所有者身份去重的子引用；CPU 原生范围完成前保持根数据，GPU 提交继续持有根数据到 Fence 完成，子资源随最后一个真实引用释放。嵌套图通过相同不可变引用闭合，不增加宿主每元素回调。
+
+view ABI 仍为 16 字节、对齐 8：隐藏的 64 位物理地址、u32 长度和填充。CPU 地址指向冻结存储的连续字缓冲，自研 x64 后端用 64 位元素寻址直接读取；GPU 地址指向现有物理页表，各数据集仍按完整记录分页。两种物理地址不互相冒充，IR 的 ViewLoad 使用中性的 address 字段，源语言不区分地址编码。SPIR-V 对物理页表加载声明 Aligned 8，对物理数据加载声明 Aligned 4，遵守 [Vulkan SPIR-V 环境规则](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)。地址与所有权由执行框架生产，语言层不暴露裸指针。
+
+### 主机资源的可变访问与传输
+
+先填写普通字段，再冻结子数据并绑定父记录。`ReadDataset` 只提供不可变借用；冻结会转移唯一可写存储，源缓冲不复制，子引用由标准 Arc 持有，可供多个宿主任务共享。`with_views` 根据真实来源编码隐藏地址与长度，并持有去重所有者；相同资源可以被多个字段、记录和父对象引用。
+
+`Dataset::words_mut()` 表示重新取得原始可写 payload，同时放弃该数据已有的视图引用所有权。旧的地址字节不能继续作为有效绑定；需要使用仍由调用者持有的实际只读来源显式重新 `with_views`。非空含 view 数据若只有原始字节、文件内容、脱离所有者的设备地址副本或已丢弃绑定，在 CPU 执行／冻结／上传的既有资源边界明确拒绝，不从地址重建引用。空父数据没有记录和子字段，无需虚构子资源。
+
+上传／下载是显式物理传输。`Device::upload` 复制根数据及其闭合不可变引用图，目标父记录由实际 GPU 子所有者生成地址与长度；`Device::download` 对完整图读回，并生成持有真实主机子资源的 Dataset，可直接交给 CPU 程序或冻结共享。调用方无需逐层重写目标绑定，已有 GPU 子资源仍可用 `upload_with_views` 显式组合。复制包含地址的裸记录不等于传输资源图。
+
+父数据保存去重的实际来源及每个记录字段对应的来源槽；物理地址只是从该图生成的执行表示。每次传输用局部所有者身份映射共享目标：相同来源只复制一次，内容相同但所有者不同的来源不会合并。`upload_domains`／`download_domains` 在本次所有根之间共用这份局部映射，并保留实际存储的有效域关系；调用结束后不保留迁移缓存、地址注册表或后台任务。分别调用两次 upload／download 不承诺跨调用共享。
+
+GPU 页按完整记录传输，目标地址直接编码到每页现有暂存映射，不额外复制整个父 payload。CPU 地址指向连续缓冲，GPU 地址仍指向页表；普通字段、填充和 view 的第四个填充字保持。BLDATA 当前只保存原始记录，不序列化资源图；文件内地址不能作为绑定，也不能生产 Count 所有权。CPU／GPU 的内存不是统一地址空间，没有隐式执行设备选择、按需迁移、多设备迁移或异步传输；可写 view 仍未实现。CPU 直线视图读取可进入下述四元素降低，复杂分支／循环继续由原生标量控制流及既有范围线程池执行，不使用解释器。只读视图不把硬件光线查询或 subgroup 变成 CPU 功能。
+
+```rust
+let gpu_data = device.upload_domains(cpu_result)?;
+let pending = gpu_program.submit(gpu_data, &[])?;
+let cpu_data = device.download_domains(pending.into_bindings())?;
+// cpu_data 同时持有读回的根、不可变子图及原实际有效域关系。
+```
+
+### 引用值的范围与遍历
+
+```c
+let normals = instance.normals;
+let i = item.normal_index;
+let valid = i < normals.length;
+if (valid) {
+    item.normal = normals[i].normal;
+}
+
+for (normal in instance.normals) {
+    let i = ordinal(normal);
+    // normal 是该引用内的只读元素游标。
+}
+```
+
+view 与普通 dataset 共用范围条件、bool 命题、函数内联、多个资源的联合范围及有界 for 语义；未知普通访问报 B137。可以读取整记录、字段、向量或嵌套 view，也可在各自条件成立的 `?:` 分支中读取。`for (i in 0..normals.length)` 取得同一引用的索引能力；`for (element in view表达式)` 允许结构体字段、函数返回值和条件选择式，表达式及其长度在进入循环前只求值一次。游标支持既有 ordinal、break 和 seek。引用变量在循环体内改变时，当前游标仍指向进入循环时捕获的引用，不能把游标范围转给新引用。
+
+范围身份属于实际引用值，包含隐藏页表地址两部分与长度三个分量的来源，不能仅凭变量名、存储槽或两个资源碰巧等长判为同一个引用。编译器沿不可变别名、可变局部、嵌套记录字段、按值参数和返回值保留既有 SSA 来源；替换整个引用或某个记录字段时更新对应来源，其他未变字段保留自己的来源。分支合流与循环仍撤回可能被改写的旧知识。例如先保存 `let old = normals`，再把 normals 改成另一个资源，旧条件只能约束 old；重新比较新 normals 的长度后才可索引它。
+
+重复从 dataset 记录或 view 元素载入同一个引用字段，尚不自动建立装载地址等价关系；应保留实际取得的引用值，再对其长度与索引编程。已经保存的不可变记录或局部记录字段保留分量来源，可以反复读取；精确长度相等也能按既有规则向索引传递多个资源范围。这些元数据只存在于前端，不增加设备字、运行时版本号、范围检查或 GPU 提交。普通索引与 `unsafe_read` 共用既有 ViewLoad，含 view 的资源仍由原父数据和提交消费者持有到完成。
+
+view 的元素及元数据始终不可写，长度证明不能取得散写权限。资源布局与绑定有效性由既有执行框架边界负责；加速结构命中、文件内几何索引等外部数据关系尚不会自动变成语言范围证明，现有渲染程序继续显式承担这些外部索引契约。
+
+### 只读资源函数
+
+```c
+float3 surface_normal(Instance instance, u32 primitive, float2 barycentric) on compute;
+```
+
+函数可以用 `unsafe_read(instance.triangles, primitive)` 和 `instance.normals` 完成只读几何计算；实际实现见 `Programs/render/trace.b`。它也可以返回 `view<T>` 或包含 view 的记录，再由调用方读取。这里复制的是不可变引用值，不复制底层数据，不改变资源所有权；所有引用仍来自已绑定的 read 根数据，宿主持有整条依赖到最后一个提交消费者完成。没有设备分配、裸地址构造或可写资源逃逸。
+
+只读资源函数可声明为 `on compute`，或明确为 `on cpu`／`on gpu`。函数签名、参数类型与调用方目标由相同前端检查，静态内联后生成同一 ViewLoad IR；两个后端直接读取各自绑定的物理存储。实际 `surface_normal` 已由渲染器与 CPU／GPU 共同消费。普通函数可以进一步借用整份 read／atomic dataset，独占写入与阶段调度仍由 program 表达；借用没有授予任意非原子散写能力。外部索引有效性仍是调用者责任，不因提取成函数就变成静态证明。
+
+## 外部索引边界
+
+`unsafe_read(read_dataset, u32_index)` 读取具有外部索引契约的数据。它只能用于不可变 read 数据集，不能用于别名读取正在并行修改的数据。调用者负责索引有效性、设备和资源生命周期；编译器不把它描述为静态范围证明，也不生成自动修正索引的代码。普通 `dataset[index]` 要求域、固定形状或已成立的长度条件证明，未证明的访问仍报 B137。
+
+引擎用此入口读取索引三角形与共享顶点：OBJ／.blgeom 读取已经负责外部资源索引有效性，每项几何通过自己的类型化 view 读取局部三角形与法线索引。引擎内部若破坏该契约，仍可能产生非法 GPU 访问，编译成功不能保证它正确。后续的带来源索引类型尚未实现。
+
+### 长度条件与有界索引
+
+```c
+struct Input { u32 value; };
+struct Work { u32 source_index; u32 value; };
+program gather(read dataset<Input> input, inout dataset<Work> work) on compute {
+    parallel (item in work) {
+        let i = item.source_index;
+        if (i < input.length) {
+            item.value = input[i].value;
+        }
+    }
+}
+```
+
+编译器从程序自身的条件得知 i 在 input 的范围内，随后生成既有 Load IR。它不另外插入检查、修正索引、限制到最后一项或改用其他数据。这里只说明访问在实际进入的分支内有效；未进入时做什么由源码定义。读取同一数据的 `unsafe_read` 写法在相同源码条件下可生成相同的原生代码。
+
+当前识别命名 u32 值与 dataset／tile length 的严格比较，支持反向比较、否定、if 的真／假分支、while 的成立分支，以及 &&／|| 实际执行右侧的条件。例如 `i < input.length && input[i].keep` 的右侧已具有索引能力；`i >= input.length || input[i].keep` 的右侧同样如此。已经有效的索引也可作为其他索引的上界或相等值。`i <= input.length` 会允许等于长度，不能产生有效索引能力。
+
+`for (i in begin..input.length)` 在循环体内具有 input 索引能力；tile length 与同源的不可变长度别名也适用。范围起点和终点在进入 for 前各求值一次；起点大于等于终点时不进入循环。已经有效的索引作为严格终点时，内部游标也在同一数据域内。改变保存终点的局部变量不会改变已捕获的本轮 for 范围。
+
+索引与长度能力沿用前端 Value／Binding 的 domains 集合，不成为运行时资源。一个实际值可以同时属于多个数据的索引范围，也可同时保存精确长度来源与其他范围事实。不可变 let 复制保留这些事实；可变绑定赋值时用右侧新值的事实替换原集合，不能把新旧值的范围合并。分支各自在入口环境分析，退出恢复外层事实，并清除任一路径可能改写的局部知识。while／for 进入前先清除循环体可能改写的局部知识，while 再从本轮实际条件取得能力；不能把首轮有效的索引沿用到后续轮次。这与优化器的循环携带值处理分别负责类型安全与值转发。
+
+范围证明只解决索引边界。read 数据仍不能写，inout／write 数据仍只允许访问当前独占元素，tile 仍是不可变快照；不能借长度条件获得其他元素的写权限。dataset.length 是绑定容量，筛选后的有效条数继续使用 prefix 及其接口／所有权关系。布尔值可保存范围命题；不可变 view 的范围见前节。下文列出的 u32 单调索引算术已实现；任意算术范围推导、完整关系求解和用户构造索引句柄仍未开放。
+
+### 多数据范围与长度来源
+
+```c
+let i = item.source_index;
+let valid = i < positions.length && i < normals.length && i < materials.length;
+if (valid) {
+    item.position = positions[i].value;
+    item.normal = normals[i].value;
+    item.material = materials[i].value;
+}
+```
+
+同一索引可同时读取分别存储的数据；后一个范围不会覆盖前一个。各数据长度可以不同，实际进入分支的条件由源码决定。嵌套分支、反向比较、bool 别名、相等索引、按值函数与返回值沿用同一事实集合，没有额外的设备检查或数据布局协议。
+
+`let n = positions.length; if (n == normals.length && n == materials.length)` 使 n 同时具有三份精确长度来源；内部的 `for (i in 0..n)` 可以读取三份数据。相等条件把当前两侧已经持有的事实交给另一侧；严格小于某个精确长度才产生对应索引能力，n 自身仍不能作为 positions[n] 的索引。长度事实与索引事实并存，例如 n 是 positions 的长度且小于 normals 的长度，`for (i in 0..n)` 对两份数据都有效。
+
+动态 `choose ? i : j` 只保留两侧结果共有的范围与长度；常量选择保留实际选中值的集合。逻辑 OR 的替代路径也只保留共同事实，不能把只在一条路径上成立的能力合并到全部路径。常量折叠的比较仍保留成立结果的命题，已知左值的短路求值也不丢失左侧提供的事实。
+
+同一阶段的 tile 输入与发布共享既有逻辑块宽度和实际尾块长度，因此块内范围使用共同的 Tile／TileLength 语义，而不是存储资源编号；实际 TileView／存储引用仍各自独立。由 points.length 证明的块内索引也可读取同阶段同块的 keys。现有宽度约束继续生效，这不授予跨阶段访问、可变共享存储或其他元素写权限。
+
+同一 dataset 的重复 length 与同一逻辑块的 tile length 已具有稳定身份，详见下一节；这不建立不同资源之间的持久等式关系图。`na == nb && nb == c.length` 后，第二次比较新增的 c 长度来源尚不会反向传播给第一次的 na；仍可显式保留同一个长度值并逐项比较，如上面的 n。等式传递闭包、缓存谓词的循环回边、任意算术与重复资源装载的等价关系仍见 C-005；尚未证明的用法明确报错，不代表已经完成全部范围推导。
+
+### 资源长度的稳定身份与实际执行域
+
+`dataset.length` 来自当前程序绑定的完整容量；同一实际数据集的多次读取具有同一编译期身份。`if (table.length != 0)` 成立时，之后的 `key % table.length` 可以证明除数非零，`if (table.length >= 8)` 可证明读取 table[7]。不再要求先人为声明一个 n 才能把同一个长度关联起来。read／atomic 借用、多层函数转交、向量／记录字段与 bool 谓词沿用同一 Proof；例如返回 `table.length != 0` 的谓词函数可以让调用方在成立分支内安全读取该 table。
+
+事实仍受原有分支作用域约束：离开 if、进入另一分支或让 OR 的另一条件单独成立，都不能保留未必成立的长度下界；短路与三元式的临时事实也不泄漏。不同 dataset 不能混用身份；相同元素类型或实际长度碰巧相同不产生范围关系。普通数据字段与 atomic_load 的重复读取没有因此变成稳定快照，Count.value 更不是 dataset.length；相关重读等价关系仍未实现。
+
+有界 for 的游标比较现在复用普通比较分析。在循环体内，当前游标严格小于进入循环前捕获的无符号终点，因此这个终点至少为 1。可以直接写：
+
+```c
+u32 rotate(read dataset<Cell> table, u32 key) on compute {
+    u32 result = 0;
+    for (cell in table) {
+        result += table[(ordinal(cell) + key) % table.length].value;
+    }
+    return result;
+}
+```
+
+同一规则适用于 `for (i in 0..n)` 的未被改写 n、命名的不可变 view，以及 tile 游标；空范围不会执行循环体。起点、终点和 view 仍只捕获一次，body 内改写原终点变量不会改变本次范围，也不能让新值继承旧终点的非零事实。循环体中的事实在离开循环时撤回，不据此断言循环至少执行过一次。
+
+parallel 的某个元素实际执行时，它所属数据集的容量至少为 1，因此本域内 `key % jobs.length` 可以证明非零。prefix 域执行时同样只证明承载它的数据集非空，不把容量当作有效 Count；空有效域没有正文执行。该事实不能交给其他数据集，也不改变只有当前元素可独占写入的权限。
+
+tile length 属于当前逻辑块，其输入、发布、字段借用与 cooperative 参数共享该长度身份。长度下界可由 cooperative 返回的 bool 传回调用方，也可用于同块另一 tile 的普通索引；实际尾块仍按有效长度判断，不把固定逻辑宽度当作尾部容量。没有共享值冻结或隐式屏障。
+
+这些是前端已有类型／范围事实的来源和作用域：资源借用持有长度的 Proof，普通值仍持有自己的值身份，既有环境负责分支保存／恢复。没有独立的事实管理器、GPU 长度缓存、宿主计数镜像、运行期边界检查或新增 IR／设备 ABI。长度读取仍生成原来的 Uniform／TileLength，再由共用优化器消除冗余；并非把跨屏障值强制留成新的私有流。
+
+### 布尔命题与值来源
+
+```c
+let i = item.source_index;
+let valid = i < input.length;
+if (valid && item.keep) {
+    item.value = input[i].value;
+}
+```
+
+bool 现在可以保存比较所得的范围关系，再经别名、`!`、`&&`／`||`、bool 相等／不等、布尔 `?:`、按值函数参数和返回值传递。范围事实属于参与比较的值，不按变量名猜测。例如 OR 成立时，只保留每条可能成立的路径共有的事实；`i < input.length || item.keep` 不能单独证明 i 有效。布尔值转成数字、写入 dataset 或发布到 tile 后读回，或经过 subgroup 运算后，不会自动保留这种来源关系。
+
+```c
+u32 i = item.source_index;
+let original = i;
+let valid = i < input.length;
+i = 0xffffffff;
+if (valid) {
+    item.value = input[original].value;
+}
+```
+
+旧条件仍可约束保留下来的 original，不能约束已改写的 i；若显式把 original 赋回 i，二者又是同一个实际值。更换了长度变量也不会改写已计算的 bool：当时参与比较的长度若已知来自 input.length，命题仍按这个原值成立。任意新的算术结果不因变量名相近或数值可能相等而继承关系。
+
+普通值继续复用既有 SSA 值编号记录来源，资源长度使用前述稳定身份；局部槽在赋值、分支合流及循环改写处更新或清除知识，不生成运行期版本号。if 真／假两侧、短路右侧与选择表达式各自消费实际条件；作用域结束后撤回分支的范围精化。表达式与现有按值函数不会改写调用方局部值，因此在短路／三元表达式中取得的局部值身份保留，不能连同临时范围事实一起丢掉。函数内联按实际参数的来源推导返回的 bool，现阶段没有另行声明／导出的通用函数精化类型。
+
+`while (inside(i,input.length))` 或含短路／三元表达式的循环条件可在每轮重新建立范围，前提是 inside 按值返回相应比较结果。首轮留下的旧 bool 不能证明后续改写的 i。即便源码在循环末尾重新计算了缓存 bool，跨循环回边的关系合并目前也未实现，涉及的普通索引仍可能报 B137。把 bool 写进数据集再读出、转成数字再转回，或用任意布尔等价关系与完整关系求解重建证明，同样不能假称已实现。C-005 保留。
+
+这些来源与命题只用于编译期，不进入 IR 数据布局、资产、GPU 缓冲或提交协议；不会增加范围检查、索引修正、数据副本或宿主任务。相同的直接条件与不可变 bool 别名算例已生成完全相同的 x64 和 SPIR-V。
+
+bool 的存储字以 0 表示假、非零表示真。CPU 标量／SIMD／tile 读取和 GPU from-word 解码在取得语言值时规范为 0／1，相等、取反、数值转换和普通类型化复制使用同一逻辑语义；未写的源存储不变。compact／排序搬运完整记录仍保留原始记录字节，不把记录搬运与 bool 值求值混为一件事。
+
+动态 `?:` 也从条件取得各自分支的范围事实，并且只求值选中的一侧，见下节。普通 dataset 未证明访问报 B137，tile 未证明访问报 B201，写权限仍由 B144／B166／B202 拒绝。
+
+### 无符号索引算术与下界
+
+u32 标量现在可以根据实际值的下界继续推导普通索引。`i > 0`／`i != 0` 的成立路径持有 i≥1；`i >= 3`、`3 <= i`、与已知下界值相等或比较也产生相应下界。命题仍沿既有 bool 别名、取反、短路、选择与按值函数传递。AND 合并必然事实，OR 只保留各条成立路径都保证的下界，例如 `i >= 3 || i >= 7` 保证 i≥3，`i > 0 || choose` 不保证非零。
+
+```c
+struct Work { u32 key; bool head; };
+program mark_runs(read dataset<Work> input,
+                  inout dataset<Work> output) on compute {
+    parallel (item in output) {
+        let i = ordinal(item);
+        if (i < input.length) {
+            bool first = true;
+            if (i > 0) {
+                first = input[i].key != input[i - 1].key;
+            }
+            item.key = input[i].key;
+            item.head = first;
+        }
+    }
+}
+```
+
+这个程序可对已排序记录标记连续键段的起点，再交给既有 compact 形成分组头队列；没有单独的宿主邻域任务。前驱读取的条件是源算法处理第一个元素的规则，编译器不会另加边界检查或修正索引。
+
+| u32 标量表达式 | 产生索引能力的条件 |
+|---|---|
+| `i - c` | c 是编译期常量，当前事实证明 i≥c；结果继续属于 i 已有的数据／块／view 索引域 |
+| `i / d`、`i % d` | d 是编译期非零常量或已证明非零的动态 u32 标量；结果不会大于 i，保留 i 的索引域。余数还严格小于 d，可取得 d 的实际长度来源对应的索引域 |
+| `i >> s` | s 是编译期 0–31；结果不会大于 i，保留 i 的索引域 |
+| `i & j` | 结果不会大于任一操作数，可同时持有二者已有的索引域 |
+
+下界在无回绕减法、常量除法和右移后继续换算。动态选择的数值结果只保留两侧共同保证的下界，已知常量选择沿实际选中值；因此 i≥3 时，`j = choose ? i-1 : i-2` 保证 j≥1，后续 `j-1` 仍可安全索引。常量赋给可变局部时捕获其实际值下界，重新赋值、分支合流和循环改写仍由既有来源与失效规则处理；旧 bool 不授予新值下界。
+
+长度本身仍不是索引。若显式捕获 `let n = input.length`，在 n>0 的路径中，`n-1` 属于该输入；`n-0`、`n/1`、`n>>0` 仍等于长度，不能访问该输入的第 n 项。掩码不无条件继承 length 的资源索引身份，但其结果可由独立数值界证明，例如长度已知为 17 时 n&15 必然在范围内。正的常量减法必须不下溢；非零长度作为取余的除数时，余数严格落在该资源内。
+
+上表描述与具体资源绑定的符号索引域，适用于普通 dataset、tile 输入／发布及 CPU／GPU 不可变 view，资源身份与写所有权保持。这些关系按实际 u32 分量生效，不因一般加乘、左移或 OR 就复制操作数的资源身份；数值界可按下一节独立证明结果。算术本身仍按既有 32 位语义执行；证明不足只拒绝其普通索引用途，动态整数除余的非零要求见下节，未证明或不支持的除数仍报 B152。数值元数据只存在前端，不进入 IR、ABI、GPU 缓冲、资产或提交协议。
+
+### 逐分量资源域与批量索引
+
+每个 u32 分量分别记录它属于哪些 dataset／tile／view 的索引域，以及它是否是某个资源的精确长度。原 Value 与 Local 上的整值 domains 已删除，域与数值界、非零事实、值来源都由现有 Proof 持有。向量构造、广播、swizzle、嵌套记录、按值参数／返回值和局部字段投影不会丢失对应分量的域，也不会把一个分量的许可复制给其他分量。
+
+```c
+struct Cell { u32 value; };
+struct Work { uint4 keys; uint4 result; };
+program lookup_pair(read dataset<Cell> left,
+                    read dataset<Cell> right,
+                    inout dataset<Work> work) on compute {
+    parallel (item in work) {
+        let sizes = uint2(left.length, right.length);
+        if (sizes.x != 0 && sizes.y != 0) {
+            let ids = item.keys % uint4(sizes.x, sizes.y, sizes.x, sizes.y);
+            item.result = uint4(left[ids.x].value, right[ids.y].value,
+                                left[ids.z].value, right[ids.w].value);
+        }
+    }
+}
+```
+
+四个 ids 分量在同一普通值中保存，但 x/z 属于 left，y/w 属于 right；对二者长度没有相等要求。`left[ids.y]` 仍无法证明。逐分量除数已证明非零时，除法／取余沿实际操作数计算每个结果的域；常量右移与 AND 同样逐分量适用；无下溢的常量减法也逐分量适用。AND 可以同时保留两侧索引域；长度本身不因此变成索引。
+
+条件比较一个字段时，只精化持有同一值来源的对应分量。打包长度的正下界可证明该资源的常量索引，例如 sizes.x>0 时读取 left[0]；若该分量被替换成普通输入，旧长度事实随之移除。直线局部分量赋值保留未改写字段，选择只保留两侧对应分量共有的域；保存的旧别名继续描述旧值。分支与循环改写仍按既有整个局部变量失效规则处理，尚未实现细粒度合流。
+
+同一规则覆盖只读 view、tile 输入、tile 发布与 cooperative 借用。实际尾块长度参与取余，不能拿固定逻辑宽度索引较短尾块。资源身份仍取自真实引用；打包、拆包及传参都不会把一个 view 的范围授权给另一个 view。当前函数静态内联，调用处传递实参的编译期事实，不是 `.h` 新增了依赖索引类型或跨 ABI 的证明协议。u32/i32 位转换不保留资源域。
+
+这些值仍使用原来的标量／向量／记录布局，CPU 和 GPU 消费既有 IR；没有运行时范围对象、自动索引检查或额外提交。唯一可写元素仍由 parallel 的真实所有权决定，组内序号和有界数值不能授予任意散写。
+
+### 逐分量 u32 数值区间
+
+u32 值现在同时携带数值下界与上界，向量及记录按实际分量保留。旧的寄存器 ranges 表已删除，字面量、固定形状、算术、比较、别名、字段、值参数和返回值共用现有 Value／Proof。索引最大值严格小于固定容量或当前作用域保证的最小有效长度时，可使用普通读取；这与已有资源索引域共同服务同一检查，不另建运行期检查。
+
+```c
+struct Cell { u32 value; };
+struct Work { u32 key; u32 value; };
+program lookup(read dataset<Cell,17> table,
+               inout dataset<Work> work) on compute {
+    parallel (item in work) {
+        let i = item.key % 17;
+        item.value = table[i].value;
+    }
+}
+```
+
+工作域可大于 17，甚至与表完全不同形；余数是 0–16，不再要求人为补一个 i<table.length 条件或使用 unsafe_read。已证明非零的动态除数也可限定余数上界；掩码、右移、无回绕加减乘和左移继续计算数值界。OR／XOR 使用保守的有效位上界，按位取反及 u32 取负按真实 32 位结果换算，bool→u32 的范围为 0–1。
+
+可能回绕的加减乘／左移不会沿用错误端点；数值界变为未知，算术仍照常取低 32 位，后续掩码或移位可重新取得有效界。比较的真／假路径产生上下界，OR 与选择只保留所有可能路径都保证的范围。字段赋值只替换对应分量，未改写的值及显式旧别名保留原事实；分支退出与循环改写仍撤回既有作用域知识。矛盾条件在数值推导中形成空区间，不对不存在的端点执行除法。
+
+动态长度也可以参与：保存 let n=input.length，在 n!=0 的路径内，item.key%n 取得该输入的索引域；已保存的 view 同样适用。view.length 的上下界随实际引用的长度分量传递，不能移到另一个或重新装载的未知引用。tile 还必须满足每个实际尾块的有效长度，固定宽度不等于每个尾块都有该宽度。活动 lane 的 tile 长度为正，因此以其实际长度取余可直接读取该块。
+
+例如 uint4 的 `values % uint4(17) + uint4(1)` 每个分量均为 1–17，可以直接作为动态整数除数，不需要在源码或执行器中再补零检查。这里推导数值性质，不改变运算、数据权限、GPU 参与集合或阶段边界。48 个未证明／越界／权限错误用法仍实际拒绝；具体运行与机器码对照见 Issues。
+
+该能力不是完整整数关系求解器：浮点区间、一般有符号区间及其转换、等式传递闭包、分支／循环的细粒度合流仍未完成。资源身份与数值区间现在都按实际分量传递；它们只描述当前来源，不把值类型改成运行时索引句柄，也不替代唯一写所有权。
+
+### 已证明非零的动态整数除余
+
+整数 `/`／`%` 的常量除数继续要求每个分量在编译期非零，u32／i32 及其向量沿用精确常量降低。动态除数支持 **u32／i32 标量及 2／3／4 分量向量**，每个实际除数分量都必须在当前作用域证明非零。向量按分量运算，标量操作数可广播；非标量操作数的维度与整数类别必须匹配。未知或可能为零的任一除数分量仍报 B152。
+
+```c
+struct Work { uint3 number; u32 divisor; uint3 quotient; uint3 remainder; };
+program divide(inout dataset<Work> data) on compute {
+    parallel (item in data) {
+        let d = item.divisor;
+        if (d != 0) {
+            item.quotient = item.number / d;
+            item.remainder = item.number % d;
+        }
+    }
+}
+```
+
+使用既有值来源捕获实际除数，再由非零比较、bool 命题、选择和常量下界建立证明。条件必须约束当前值；变量改写、错误分支、含未知路径的 OR、过期循环谓词或给另一个数做的非零判断，都不能授权本次运算。标量可在 `while (d != 0)` 的每一轮重新获得证明，循环体改写 d 后，下一轮再按实际条件执行。未选中的选择式分支不执行其中的除余。
+
+向量可逐分量比较后直接整体除余，例如：
+
+```c
+struct ComponentWork { int3 number; int3 divisor; int3 quotient; int3 remainder; };
+program vector_divide(inout dataset<ComponentWork> data) on compute {
+    parallel (item in data) {
+        let d = item.divisor;
+        if (d.x != 0 && d.y != 0 && d.z != 0) {
+            item.quotient = item.number / d;
+            item.remainder = item.number % d;
+        }
+    }
+}
+```
+
+Proof 沿既有分量来源记录非零信息，构造的拼接／标量广播、swizzle、整数取负和位转换按实际分量传递；OR 的每个结果分量只要对应任一操作数已非零，就能保证非零。选择式按分量保留两侧共同事实。捕获的记录字段及可变局部子字段使用同一份分量映射；直线局部赋值只更新被改写分量的来源与事实，旧条件不能约束被替换的新值，其余未改写分量仍可使用原有知识。分支合流和循环改写继续按现有整体变量范围失效，尚未保留所有可推导的分量事实；循环中按当前条件重新证明，缓存的旧谓词不能代替新条件。
+
+只比较一个分量、用不同分量的 OR 条件、或向量中仍含未证明的分量，都不能授权整体除余。向量 bool 比较结果不是标量条件；可按上例显式合取，或者在源码中定义非零值如 `bits | int3(1)`。这些算术与条件是源程序的实际语义，不是编译器额外生成的保护。非零事实本身不授予资源索引或散写权限，也不生成 CPU／GPU 数据或运行期状态。
+
+u32 的按位 OR 结果不会小于任一操作数，前端保留两侧已知下界的较大者，数值上界按前节的有效位规则计算，不直接复制资源索引身份。例如程序显式计算 `bits | 1` 时，结果的下界为 1。选择式 `d != 0 ? d : 1` 两侧结果均已证明非零，也可直接用作除数；这些是源码自身的数值定义。编译器不生成零检查、异常捕获或替换除数。
+
+有符号分量以非零事实精化当前值，支持 `d != 0`、`d == 0` 的相反分支、严格正／负范围及不含零的常量范围；和已知非零值相等也能传递该事实。缓存 bool、短路合流、按值函数及可变局部沿用同一来源与失效规则。整数取负与 i32／u32 之间保留位值的转换也保留非零信息，但不保留旧值身份或索引域。类型构造消费转换产生的分量证明。u32 数值区间确实排除零时可以推导非零；一般有符号算术、浮点转换与任意关系求解仍不支持。
+
+已证明非零的 u32 除余不会增大分子，因此分子原有的 dataset／tile／view 索引域可继续传给结果；除法不把精确 length 身份自动变成索引。这不授予 i32 索引域，也没有完成任意动态算术、函数接口显式非零类型或全部数学定义域。
+
+IR 使用同一 IntegerDivide，除数分为 Constant 与 Value。动态除数是实际 SSA 操作数，参与别名改写、公共表达式、活跃性、寄存器／溢出槽分配与 tile 私有状态延续；CPU 批次的统一性同时取决于分子和除数。动态除余保留真实控制流，不能像已知非零常量除法一样提前移出条件分支。
+
+CPU 动态 u32 直接生成无符号 DIV；动态 i32 将两个实际操作数在内部符号扩展为 i64，使用 IDIV64 后消费低 32 位商／余数。四元素批次逐 lane 执行相同规则并合回批次，其他可批处理运算继续使用 SSE2；不声称存在 SSE2 packed 整数除法或统一的向量除法吞吐。
+
+GPU 动态 i32 使用 32 位符号掩码形成 u32 幅值，执行 [SPIR-V OpUDiv／OpUMod](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpUDiv) 后恢复符号；幅值可以表示 abs(i32::MIN)，所有符号恢复均按低 32 位运算。商向零截断，非零余数与分子同号；`i32::MIN / -1` 返回 i32::MIN，余数为 0，恒等式 `n = q*d+r` 按低 32 位成立。CPU 内部宽度和 GPU 幅值运算都不改变源语言类型或数据 ABI，不插入零检查、溢出特判或异常处理，也不执行有溢出风险的动态 SDiv32。常量路径保持既有精确倒数／移位与 −1 降低，不调用另一套运行时或 Shader 编译器。
+
+### 商与余数的联合降低
+
+源码继续使用 `/` 和 `%`。同一直线块内，相同实际 SSA 分子与除数的商、余数由既有值转发合并为一个双结果 IntegerDivide；两种书写顺序都可合并。只使用一个结果时，死代码消除会缩成单结果，两个结果均无消费者时删除整个计算。IR 的结果枚举明确表示 Quotient、Remainder 或 Both，结果重编号、活跃性、寄存器／溢出槽与 tile 私有状态共用既有多结果处理。
+
+CPU 动态 u32／i32 除余分别从一次 DIV／IDIV64 取得低 32 位商与余数；四元素批次逐 lane 计算并收集两个输出。常量 u32／i32 除余只计算一次精确商，并以 `n − q*d` 取得余数。源值与除数在两个结果写回之前完成读取，允许分配器按真实活跃性复用位置。既有 signed MIN／−1 的取低位规则保持。
+
+合并仅沿同一块内的真实值，不跨 If、Loop、Break／Continue 或 tile 发布／集合点；分支、循环体内部仍可各自合并。改写分子或除数形成的新值不会与旧值配对，显式保留的不可变快照可以复用。动态非零证明及可提前求值范围保持原规则。GPU 为两个输出分别编码运算；动态 i32 共用幅值与符号信息，常量 i32 仍用标准 SDiv／SRem。不承诺驱动生成一条联合除余指令。原生核对与受控 CPU 计时范围见 Issues。
+
+### 条件求值选择式
+
+```c
+let i = item.source_index;
+let value = i < input.length ? input[i].value : item.value;
+item.value = value;
+```
+
+条件必须是 bool，两侧必须具有相同类型；结果可以是标量、向量、整记录，也可以是 CPU／GPU 程序中的不可变 view 或含 view 的记录。条件先求值一次，随后只求值选中的表达式。嵌套选择、普通函数内联及函数里的局部循环沿用相同语义。复制 view 只复制已有引用值，真实资源仍由原来的根数据与提交消费者持有。
+
+真／假两侧分别取得条件成立／不成立时的范围事实。例如上例中的读取有效，`i >= input.length ? input[i].value : item.value` 仍报 B137；选择结束后不能在外部沿用分支事实。tile length、同源的不可变长度别名，以及保存到 bool 的命题同样适用。不可变 view 也可在其长度条件成立的一侧使用普通索引，外部索引继续使用既有 `unsafe_read` 契约。
+
+即使条件为常量，两侧也都接受类型、访问与能力检查；常量选中值以外的代码不进入最终执行程序。未选侧的整数零除数仍报 B152，类型不一致仍报 B124，不能把未执行等同于不检查源码。
+
+前端把动态选择转换为既有 If、分量局部槽及合流读取，CPU／GPU 后端继续消费同一 IR；没有另外的运行时选择器、宿主任务或数据副本。外部 dataset、tile、view、光线查询、subgroup、局部循环、浮点计算与转换保留真实控制流，不提前执行。尤其 subgroup 的活动参与者由实际选中的分支决定；其硬件组织见 [Vulkan subgroup 说明](https://docs.vulkan.org/guide/latest/subgroups.html)，不假定设备 lane 顺序或固定宽度。
+
+优化器可将能够安全提前求值的两侧重新变成直接值选择：整数／bool 的运算和比较、非零常量整数除法、位操作、已有值复制，以及由并行域证明有效的当前独占元素读取。它不提前读取任意外部索引，也不扩大协作参与范围。一个 `choose ? (a + 7) / 3 : (b ^ 0x81234567) * 5` 当前元素算例最终为 0 个 If、1 个 Select、0 个局部槽，仍可进入既有直线 map SIMD；这不是所有分支程序的吞吐结论。普通 if 的等价赋值结构也可使用这一优化。合流后的可变局部若仍被后续循环消费，真实存储保留，值转发与 DCE 按实际消费者删除其余存储。
+
+未选侧不引起其中的浮点除法执行，已通过直接原生调用观察未选 0/0 无新增异常状态、选中 0/0 产生 Invalid 状态。本项不是跨线程浮点环境、任意舍入模式或全部 NaN 算术的完整规范；f32 运算的选择不因此进入可提前求值集合。复杂控制流／循环 SIMD 和完整范围推导仍见 C-002／C-005。
+
+## 原生 subgroup 值协作
+
+subgroup 是 GPU 在一个 workgroup 内实际划分的协作集合。Blink 现在直接表达该作用域的值运算，生成封闭 Subgroup IR，再由自研后端编码 SPIR-V；调用者不需要切换到 HLSL／GLSL，也没有逐组的宿主调用或全局中间数组。这些操作要求 program／函数显式 `on gpu`，不把 GPU 的 lane 组织伪装成 CPU 执行语义。
+
+| 源码操作 | 类型与含义 |
+|---|---|
+| `subgroup_lane()`／`subgroup_size()`／`subgroup_id()` | 返回 u32：物理 subgroup 内 lane、该 subgroup 宽度、workgroup 内 subgroup 编号 |
+| `subgroup_elect()` | bool，仅当前活动集合里 lane 编号最小者为 true |
+| `subgroup_any(predicate)`／`subgroup_all(predicate)` | bool 标量谓词的投票，返回 bool |
+| `subgroup_count(predicate)`／`subgroup_prefix_count(predicate)` | bool 标量谓词的总计数／低于当前 lane 的计数，返回 u32 |
+| `subgroup_broadcast_first(value)` | 广播当前活动集合中最小 lane 的值，支持数值或 bool 标量／向量 |
+| `subgroup_sum(value)`／`subgroup_exclusive_sum(value)` | f32／u32／i32 标量或向量的组内和／独占前缀和，返回同类型 |
+| `subgroup_min(value)`／`subgroup_max(value)` | f32／u32／i32 标量或向量的逐分量最小／最大值，返回同类型 |
+| `subgroup_bit_and(value)`／`subgroup_bit_or(value)`／`subgroup_bit_xor(value)` | u32／i32 标量或向量在实际参与集合中的逐分量按位归约 |
+| `subgroup_exclusive_bit_and(value)`／`subgroup_exclusive_bit_or(value)`／`subgroup_exclusive_bit_xor(value)` | 当前物理 lane 之前、实际参与者的逐分量独占按位前缀，返回同类型 |
+
+`.h` 接口示例：
+
+```c
+struct WorkItem { f32 cost; f32 group_peak; u32 chosen_before; bool keep; bool any; };
+program annotate(inout dataset<WorkItem> work) on gpu;
+```
+
+`.b` 中的设备算法：
+
+```c
+program annotate(inout dataset<WorkItem> work) on gpu {
+    parallel (item in work) {
+        item.group_peak = subgroup_max(item.cost);
+        item.chosen_before = subgroup_prefix_count(item.keep);
+        item.any = subgroup_any(item.keep);
+    }
+}
+```
+
+同一调用只包含当时实际参与的 invocation：尾组只处理有效元素，分歧分支只处理进入该分支的参与者，循环按各次动态调用的参与者协作。`subgroup_size()` 仍是物理宽度，不是活动数量；活动数量使用 `subgroup_count(true)`。lane 不是 `index()`，subgroup 编号也不是全局任务编号，不能假定相邻记录必然按某种 lane 顺序分组。这些规则遵循 [Vulkan group operations](https://docs.vulkan.org/spec/latest/chapters/shaders.html#shaders-group-operations) 与 [SPIR-V non-uniform instructions](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#_non_uniform_instructions)。
+
+整数和按 32 位取低位。浮点和的运算次序由实现决定，不承诺与 CPU、其他 subgroup 宽度或另一种归约算法逐位相同；NaN、无穷、带符号零和数学定义域仍按设备运算语义处理，不自动修正数值。
+
+这些操作只交换值，不授予跨元素写权限，不建立设备存储的可见性，也不代替 workgroup／全域阶段屏障。组内 rank 不是全局唯一写索引；`data[subgroup_prefix_count(...)]` 不会自动得到安全散写能力。组内计数也不能签发 `prefix(data,count.value)` 关系，接口 requires／ensures 继续使用既有域生产证明。普通 GPU 值函数可以封装协作并在模块间复用，CPU／compute 调用不相容的 GPU 函数在编译期拒绝。
+
+按位 AND 的单位元为 32 位全 1，OR／XOR 为 0。独占前缀的第一个实际参与者取得单位元；顺序按物理 lane 编号，而不是源记录顺序。仅接受 u32／i32 及其向量，f32、bool、记录和 view 在前端拒绝。自研后端直接编码 [SPIR-V 非一致组按位指令](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpGroupNonUniformBitwiseAnd)，使用既有 arithmetic 能力声明，不引入新的运行框架或 Shader 编译器。
+
+优化器对这些指令处理寄存器依赖、别名重写与无用结果删除，不跨含协作的源阶段做 map 融合，避免改变参与集合。SPIR-V 只声明实际使用的 basic／vote／arithmetic／ballot 能力；绑定时由同一设备的真实 compute subgroup 属性决定能否执行，不满足则报告能力错误。普通协作管线不固定 32 或 64 lane，不额外启用排序所需的 subgroup size control／full subgroup。排序仍保留自己的 32 lane 要求。
+
+当前已实现 subgroup 值协作、类型化 tile 输入快照和中间值发布；Device 作用域的 u32/i32 存储原子已实现；块内原子共享值和显式根块屏障现已实现；任意 lane shuffle、非原子任意共享写与一般组间协作仍未实现。
+
+## 类型化 tile 输入快照
+
+`tile_input(dataset 或字段, width)` 表达阶段入口的只读分块输入。它必须位于 parallel 开头的 let 声明区，width 为编译期可知的正 u32 值；同一阶段的所有 tile 使用相同宽度。分块按逻辑元素顺序划分，与宿主任务批次及 GPU subgroup 的物理 lane 映射无关。同一 `.b` 算法可以声明 `on compute`，分别由自研 CPU／GPU 后端执行。
+
+`.h` 接口仍声明正式数据和访问权限：
+
+```c
+module example.center;
+struct Cell { float3 position; };
+program center(inout dataset<Cell> cells) on compute;
+```
+
+`.b` 中可原地更新每块元素，读取的仍是进入该阶段时的快照：
+
+```c
+module example.center;
+program center(inout dataset<Cell> cells) on compute {
+    parallel (cell in cells) {
+        let positions = tile_input(cells.position, 128);
+        float3 total = tile_reduce_sum(positions);
+        cell.position = total / f32(positions.length);
+    }
+}
+```
+
+`positions.length` 是当前块的实际有效长度，尾块不补成公开的虚假记录；`positions.lane` 是当前元素在逻辑块内的索引。可以用 `positions[positions.lane]` 或 for 游标读取，`ordinal(cursor)` 的结果也可索引同一阶段的其他 tile。常量索引必须在所有可能的尾块中有效；全局 `index()` 不属于 tile 索引域，tile lane 也不因此成为全局可写索引。保留普通值类型、结构体字段和向量分量访问，不暴露裸共享地址或赋予快照写权限。
+
+快照可以来自当前 inout 数据，也可以来自其他可读数据；后者的容量必须覆盖阶段域绑定容量。固定形状不足在编译期报 B200，动态容量由原有 CPU／GPU 绑定边界拒绝。含资源 view 的记录不能作为快照捕获；可以捕获不含资源的值字段。加载出的普通值可以传给函数，tile 绑定本身目前不能作为 `.h` 参数、结构体字段或返回值逃逸。
+
+物理存储按实际 TileLoad 的源绑定和源 word 合并：整条记录视图及字段视图引用同一源位置时，只生产一份共享值；未使用的捕获和字段不占存储。若阶段含有 subgroup 运算，声明宽度仍会影响参与集合，不能随未读取的快照一起删除；保留分块宽度不等于分配无消费者的数据。CPU 范围函数使用按字段打包的局部输入，每个逻辑块先复制必要数据，再执行该块的元素计算，不为每个元素创建任务或复制全数据集。CPU 任务范围按 width 对齐，只有最后一块可以不满。
+
+GPU 在有效元素分支之前由整个 workgroup 共同生产快照，随后执行一次统一控制／内存屏障；尾块中无效 invocation 不读全局记录，仍参与屏障。共享存储只读，阶段主体可以有分歧和局部循环，不需要在这些控制流里手写屏障。屏障覆盖 Workgroup 和 UniformMemory，后者包含 PhysicalStorageBuffer，保证同块的输入读取先于原地写入；依据 [Vulkan memory model](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html) 和 [SPIR-V OpControlBarrier](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpControlBarrier)。
+
+width 同时决定该 map 管线的 workgroup 大小；设备绑定按真实 invocations、X 大小及显式共享字节上限决定能否执行，不把任意合法源码宽度冒充每台 GPU 都支持。`GpuProgram`／`GpuTemplate::with_partition_elements` 对 tile 阶段按整块取整，prefix 参数生成与多维索引也使用同一宽度，计数保持设备驻留。普通无 tile 的 map 继续使用默认 64，集合运算的已有 64 线程实现不变。tile 与 subgroup 可在 `on gpu` 阶段组合，二者的 lane 和宽度具有不同含义。
+
+输入快照的生命周期止于当前阶段；后续阶段或重复步重新取得输入。优化器保留含 tile 协作的阶段边界，消除无消费者捕获，并从最终指令派生 map 的实际读写集合；`.layout` 列出 width、快照与显式共享载荷。当前支持连续一维分块输入，尚未开放任意 gather 映射或跨块 halo；可变原子 tile 与根块屏障见下节。浮点计算继续遵循各后端运算语义，不承诺所有算法逐位一致。
+
+## 类型化 tile 中间值发布
+
+`let name = tile_publish(value, width)` 把当前元素计算出的普通值发布给同块元素。每个有效元素只生产自己 lane 的一份值；编译器完成全块生产与同步后，后续语句才能读取这个不可变版本。它可以发布标量、向量和不含 view 的结构体，不要求存在 tile_input，也不申请新的全局 dataset。
+
+例如对每块变换后的向量求中心，再写回各自元素：
+
+```c
+program center(inout dataset<Cell> cells, f32 scale) on compute {
+    parallel (cell in cells) {
+        let transformed = tile_publish(cell.position * scale, 128);
+        float3 total = tile_reduce_sum(transformed);
+        cell.position = transformed[transformed.lane] - total / f32(transformed.length);
+    }
+}
+```
+
+输入快照和发布值都可直接交给下文的块内集合运算，归约结果继续是当前元素的普通值。
+
+发布声明当前只允许位于 parallel 或 cooperative 根块，不能出现在分支、循环或普通值函数中；发布值的计算可以使用这些控制流及已有普通函数。一个阶段内的所有输入与发布使用相同的编译期正 u32 宽度，错误位置／形式报 B203，非法宽度报 B199，含 view 的发布值报 B204。发布 tile 使用已有 length、lane、有界 for 游标、ordinal 与索引证明；不能被写入、当成普通值逃逸或提升为全局写权限。普通值函数保持逐 lane 语义；块内阶段可由下文的 cooperative 函数封装。
+
+可以连续发布多个版本，后续版本可以依赖此前的发布值与私有局部状态；此前版本仍可读取。版本生命周期止于本源阶段，不跨 program phase 或独立执行保留。发布是块内阶段切换，不能当作全域同步或任意组间协作；跨块依赖仍由 program 阶段及执行框架负责。尾块只发布有效元素，原有 prefix 关系、设备驻留计数与分区边界继续适用。
+
+编译器的同一份 IR 同时描述发布位置、字段和值依赖。后向活跃性分析处理分支、局部循环、break 与 seek，只保存后续阶段需要的私有寄存器／局部槽；共享 word 则按最后读取阶段分配。输入字段继续按源绑定／word 去重，发布字段按版本区分，无读取字段不占共享存储。旧 word 的最后读取阶段严格早于新发布阶段时才复用物理槽；仍在本阶段读取的 word 不允许被较快 lane 提前覆盖，不为复用增加另一道用户屏障。
+
+CPU 在一个原生范围函数内，依次让本块所有 lane 执行每个阶段，按 lane 保存跨阶段所需私有值，完成一个块后复用局部存储；不创建逐元素／逐阶段系统任务或全数据集镜像。当前这些流位于范围函数栈帧，仍受原生 ABI 和线程栈资源约束；tile 协作阶段尚未进行跨元素 SIMD。
+
+GPU 保持一个内核：每阶段只让有效 lane 执行源码和发布写入，所有 invocation 随后参与统一控制／内存屏障；无效尾 lane 不读取真实记录或发布数据。跨阶段的寄存器值通过正确前驱的 SSA phi 延续，源局部变量继续为 invocation 私有，不把整个私有帧复制到共享／全局存储。屏障与 phi 分别遵循 [OpControlBarrier](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpControlBarrier) 和 [OpPhi](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpPhi)，没有引入第三方 Shader 编译器或一次发布一次宿主提交。
+
+无消费者的发布可消除；若 subgroup 运算仍能观察阶段切换，则保留其同步作用域而不生产无用载荷。`.layout` 列出逻辑宽度、实际共享值、阶段数及共享字节。实际设备能力继续在已有绑定边界处理，不以合法源码宽度冒充任意 GPU 都有足够线程／共享资源。tile_atomic 与根块屏障沿用这套阶段与布局；当前尚不支持循环内动态发布、非原子任意共享地址写入和跨块 halo；浮点运算仍不承诺跨后端逐位一致。
+
+## 块内原子共享值与显式屏障
+
+`let bins = tile_atomic(value, width);` 在本逻辑块内建立可变共享值。每个有效 lane 用自己的 value 初始化对应元素，初始化与整块发布沿用 tile_publish 的同一 IR、共享布局和同步步骤；返回后可通过原子操作访问本块任意已证明有效的元素。width 是块宽度，不是另一份全局 dataset 容量；尾块的 length 仍为实际有效元素数。已有 tile 范围时可以省略 width，cooperative 函数必须继承调用方范围。
+
+```c
+struct Bin { u32 count; u32 sum; };
+struct Cell { u32 key; u32 value; u32 count; u32 sum; };
+program local_histogram(inout dataset<Cell> cells) on compute {
+    parallel (cell in cells) {
+        let bins = tile_atomic(Bin(0, 0), 128);
+        u32 key = cell.key % bins.length;
+        atomic_add(bins[key].count, 1, relaxed);
+        atomic_add(bins[key].sum, cell.value, relaxed);
+        tile_barrier();
+        cell.count = atomic_load(bins[bins.lane].count, acquire);
+        cell.sum = atomic_load(bins[bins.lane].sum, relaxed);
+    }
+}
+```
+
+共享元素只能通过前述 11 种 atomic 操作访问 u32/i32 标量字段。嵌套记录与向量可选择具体标量；普通读取／赋值／复合赋值和直接 tile 集合读取均报 B214，其他原子目标类型报 B215。需要进入只读集合时，先在同步后显式 atomic_load，再 tile_publish 该普通值。它仍不是裸地址，不能逃逸为普通值、全局资源或函数返回的 tile；局部的有界索引、lane、length、游标与字段映射复用原检查器，不授予全局写入或前缀域能力。
+
+`tile_barrier();` 只允许位于已有 tile 范围的 parallel／cooperative 根块，不接收参数、不返回值。不允许放在分支、循环或普通值函数内，即便分支条件暂时是常量；非法位置／参数报 B219，作为表达式报 B218。有效尾 invocation 执行源码，无效尾 invocation 不访问记录或共享元素，但 GPU 中它们同样经过全部整块屏障。当前支持的是静态根块阶段，不是循环内动态 barrier、跨 workgroup 屏障或调度公平性承诺。
+
+原子性和稳定快照是两件事。barrier 之后的一次 atomic_load 可看到其他 lane 后续写入；acquire 不冻结共享状态。若函数必须给所有 lane 返回相同的阶段快照，需要先完成生产，再把读取结果保存在私有值中，最后同步，之后才允许下一阶段写入。例如 `.h` 声明 `cooperative u32 accumulate(atomic tile<u32> bins, u32 value) on compute;`，实现为：
+
+```c
+cooperative u32 accumulate(atomic tile<u32> bins, u32 value) on compute {
+    atomic_add(bins[0], value, relaxed);
+    tile_barrier();
+    u32 total = atomic_load(bins[0], acquire);
+    tile_barrier();
+    return total;
+}
+```
+
+调用方用 `cooperate accumulate(bins, value)`，参数与实参必须同为 atomic；只读借用不能升级，atomic 借用也不能伪装成普通只读 tile。允许多个 atomic 参数借用同一实际 tile 或字段，操作仍只通过显式原子发生。不同存储身份和逐字段 word 映射保留，不复制共享内容，宽度由调用方专门化。普通值函数仍不接收 tile，动态协作未实现。
+
+IR 的 AtomicTarget 区分 Dataset 与 Tile，操作、结果、显式内存序与寄存器活跃性共用。GPU 的 dataset 地址保持 Device scope=1／UniformMemory；tile 地址使用已有 Workgroup 存储、scope=2／WorkgroupMemory，同一 shader 可同时操作两者。根块屏障复用已有 OpControlBarrier，Workgroup 执行／内存作用域覆盖当前逻辑块；不为一次屏障创建宿主提交。语义依据见 [SPIR-V 原子和屏障规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpControlBarrier)及 [Vulkan 内存模型](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
+
+CPU 按完整 tile 对齐领取范围，在原生范围函数的线程私有帧内持有共享值，逐阶段执行所有有效 lane。共享操作直接生成 MOV、算术、比较与条件移动，保留旧值返回；该存储不会被其他 CPU 线程访问，无需 LOCK、主机锁或宿主线程屏障。dataset 原子仍使用原有真正跨线程原子指令。两端允许合法的不同争用次序，不能要求逐行票号或获胜者相同。
+
+共享布局将原子读与写都计入最后访问阶段，初始化字段按实际访问保留；仍在本阶段访问的 word 不能与新发布覆盖同一槽。显式屏障参加同一阶段切分和私有值活跃性，无载荷屏障仍保留同步职责。类型化非原子任意共享写、动态同步、64 位／浮点原子、有界并行预留与完整并发工作队列尚未实现。
+
+## 块内归约与独占扫描
+
+`tile_reduce_sum(tile 或数值字段)` 返回当前逻辑块所有有效元素之和，同块元素各得到同一总值。`tile_scan_exclusive_sum(tile 或数值字段)` 返回当前 lane 之前的有效元素之和，lane 0 为 0；顺序由逻辑元素顺序定义，与物理 subgroup lane 映射无关。`tile_reduce_min`／`tile_reduce_max` 返回同块有效元素的最小／最大值，`tile_scan_exclusive_min`／`tile_scan_exclusive_max` 返回当前元素之前的极值。这些操作返回普通数值，支持 f32／u32／i32 标量及 2／3／4 分量向量，按分量独立计算；结构体需要选择数值字段，支持嵌套字段与向量 swizzle。不对 bool、记录或资源直接归约或扫描。
+
+整数位集合另有 `tile_reduce_bit_and`／`tile_reduce_bit_or`／`tile_reduce_bit_xor`，以及对应的 `tile_scan_exclusive_bit_and`／`tile_scan_exclusive_bit_or`／`tile_scan_exclusive_bit_xor`。它们只接受 u32／i32 标量或向量，返回相同类型；AND 单位元为全 1，OR／XOR 为 0，独占扫描不包含当前元素。输入、发布、字段借用、cooperative 函数与尾块沿用同一逻辑元素范围；不把物理 subgroup 宽度变成 CPU／GPU 的公共数据顺序。
+
+```c
+parallel (cell in cells) {
+    let input = tile_input(cells.position, 128);
+    float3 total = tile_reduce_sum(input);
+    let before = tile_scan_exclusive_sum(input);
+    let centered = tile_publish(input[input.lane] - total / f32(input.length), 128);
+    float3 centered_total = tile_reduce_sum(centered);
+    cell.position = before + centered[centered.lane] + centered_total;
+}
+```
+
+这些原语当前只能作为 parallel 或 cooperative 根块的 let／普通值类型声明初始化式，且只有一个 tile 参数；分支／循环、普通值函数或其他表达式内部调用报 B205，数据集／普通值参数及不支持的数值类型报 B206。需要后续算术时先保存原语结果。显式值类型仍必须匹配。返回值不带有 tile 索引或全局唯一写入证明：任意数值前缀可能相同或溢出，不能直接当作安全散写目标；也不能签发全域 prefix(data,count.value) 关系。
+
+归约／扫描和发布共用一个块内阶段序列及私有值活跃性。CPU 在原生范围内对每块、每个实际使用分量顺序计算一次，向后续 lane 交付归约值或前缀；工作量随有效元素数线性增长，不让每个 lane 再遍历一遍全块。GPU 将该分量装入共享树，向上归约，扫描再向下传播；树操作复用全域扫描的同一自研 SPIR-V 核心。使用 [Blelloch 的归约／前缀树](https://www.cs.cmu.edu/afs/cs.cmu.edu/project/scandal/public/papers/CMU-CS-90-190.html)，有效合并操作与共享访存量为 O(width)，同步深度为 O(log width)，不额外要求固定 subgroup 宽度或 subgroup arithmetic 能力。
+
+非二次幂的逻辑宽度在 GPU 工作区内部补到下一个二次幂，最多不到两倍；尾部、补齐槽不成为可索引的源元素。无效尾 invocation 不读取源 tile，仍参与统一同步。求和及前缀和继续逐分量复用单流工作区；极值向量的实际结果分量共用同一轮树同步，各有一个工作流。工作区为 `next_power_of_two(width) * 4 * K` 字节，K 取同阶段实际需要的最大流数：和为 1，极值为未被消除的结果分量数。完成一批分量的读取后，后续集合才可复用工作区。它与尚在被读取的不可变 tile 数据分开；真实 GPU 资源边界检查数据及工作区总量。CPU 不分配 GPU 共享树，只保留必要的私有结果流。
+
+未读取的局部写入、寄存器结果与集合载荷通过同一份后向活跃性消除；前端不再因创建了一个局部变量，就强迫它的归约、输入读取和共享工作区常驻。若后续 subgroup 仍能观察阶段同步，则只保留作用域，不生产无人读取的载荷或工作区。循环终止及可见写入的职责保持原样，不把运行时保护加在下游。
+
+u32／i32 和仍取低 32 位，整数扫描可跨后端精确核对。f32 的 CPU 顺序累加与 GPU 树形累加具有不同结合顺序和内部单位元，不承诺逐位相同、NaN 载荷一致或任意输入的固定误差界；数学定义域与数值稳定性仍是算法责任。原生非二进制浮点样本的实际误差独立记录在 Issues，不修改输出值来伪造一致性。
+
+极值扫描的首元素使用对应单位元：
+
+| 类型 | min 单位元 | max 单位元 |
+|---|---|---|
+| u32 | 4294967295 | 0 |
+| i32 | 2147483647 | -2147483648 |
+| f32 | +Infinity | -Infinity |
+
+例如给每个元素交付所属块的包围盒角点：
+
+```c
+parallel (vertex in vertices) {
+    let positions = tile_input(vertices.position, 128);
+    float3 lower = tile_reduce_min(positions);
+    float3 upper = tile_reduce_max(positions);
+    vertex.lower = lower;
+    vertex.upper = upper;
+}
+```
+
+这是当前元素自己的结果，不产生每块一条输出记录或新的散写权限。全部有效元素都参与；尾块只使用实际长度。CPU 为每个分量顺序计算一次并交付结果；GPU 上行树按左／右子树顺序合并，独占扫描下行先合并左侧前缀与当前子树。f32 相等或比较无序时交付右操作数；没有有效右子树时直接交付左子树，填充值不能覆盖实际 NaN。NaN 使该二元操作不具备一般结合律，因此 CPU 与 GPU 的不同结合顺序仍可产生不同结果；不承诺含 NaN 的归约逐位相同。
+
+块内集合只作用于一个 tile，不是下文的全域集合，不增加全局中间 dataset 或宿主提交；当前已实现下面的静态协作函数，尚未实现循环内动态协作、通用扫描运算符或分段集合。`.layout` 中 `shared_bytes` 包含实际 GPU tile 数据和集合工作区，`collective_scratch_bytes` 单列工作区。
+
+## 协作函数与 tile 借用
+
+`.h` 用 `cooperative` 声明块内协作效果，`tile<T>` 参数借用调用方已有 tile 的只读值与块范围，`atomic tile<T>` 则借用显式原子访问能力；两种模式不能互换。普通函数、cooperative 函数、program 是不同函数种类，接口与实现必须一致。调用处使用 `cooperate`，只能放在 parallel／cooperative 根块的局部声明中；同步效果不隐藏在普通值函数调用里。
+
+例如 `.h`：
+
+```c
+module blocks;
+cooperative float3 centered(tile<float3> input, float3 value) on compute;
+```
+
+对应 `.b`：
+
+```c
+module blocks;
+cooperative float3 centered(tile<float3> input, float3 value) on compute {
+    float3 total = tile_reduce_sum(input);
+    let result = tile_publish(value - total / f32(input.length));
+    return result[result.lane];
+}
+```
+
+消费者在自己的模块声明 `import blocks;`，在 parallel 中调用：
+
+```c
+let positions = tile_input(cells.position, 128);
+let value = cooperate blocks::centered(positions, cell.position);
+cell.position = value;
+```
+
+每个 cooperative 接口至少有一个 tile 参数，所有借用属于调用方同一逻辑块。元素类型固定，宽度随调用方专门化；这不是完整元素类型泛型。同一函数无需按 17／128／1024 等宽度复制实现。函数内 `tile_publish(value)`／`tile_atomic(value)` 继承范围，不能用显式宽度建立隐藏的固定宽度要求（B209）。program 已有 tile 范围后也可省略发布宽度；首次建立范围仍须使用 tile_input 或显式发布宽度，缺少范围报 B209。
+
+参数可借用整条记录、嵌套字段或 swizzle，包括重复分量；类型与逐分量来源一起传递。借用只引用原 tile 及 word 映射，不复制输入快照或另建 dataset。length、lane、foreach 游标和 ordinal 沿用原块的有效长度及有界索引语义。只读 tile 不能存进普通变量／结构体、作为 program 参数或函数返回值，也不能包含资源 view；它不是一般设备地址或可写对象。调用者在函数返回后继续持有自己的 tile。
+
+函数可以调用普通值函数，也可在根块嵌套 `let result = cooperate other(...);`，支持普通值和记录返回。普通值参数及返回值沿用既有值语义。函数内部可有局部循环、分支和 seek；协作调用、发布和块内集合本身仍只在根块，不能放进这些控制流或内嵌算术／return 表达式。index() 仍只属于 program 的 parallel；函数通过借用的 lane／游标或显式值参数处理索引。CPU／GPU 执行目标相容性与不允许递归的规则继续适用。
+
+类型检查函数库时，编译器保存真实的符号块范围及借用来源，不填入假宽度或伪造数据集。在 program 调用处，参数视图绑定到实际来源，发布宽度继承为具体值；封闭执行 IR 只包含具体布局和既有发布／集合／普通指令。cooperative 函数静态内联到同一个原生范围／GPU 内核，不增加函数任务、宿主调度或 GPU 提交。函数自己的根块、循环和游标上下文与调用方分开，值与借用通过参数传递；共用 IR 的局部值转发、x64 物理寄存器分配及普通直线逐元素阶段的 SIMD 已接入，tile 协作阶段仍按标量 lane 执行。
+
+跨模块函数必须在该模块 `.h` 导出，并由使用方直接 import；限定名不能绕过接口。层级模块沿用点分路径，例如 `cooperate lib.blocks::centered(...)`。未导出的同模块辅助函数可以在本模块内使用。`blc check`／`blanguage::check` 能检查不含 program 的类型／函数库，同时检查 `.h/.b`、完整导入闭包和未调用函数。原生 build／`blanguage::compile` 仍需要公开 program；库检查成功不表示已经产出可执行内核。
+
+```powershell
+.\target\release\blc.exe check ..\BLEngine\Programs\math\field.b ..\BLEngine\Programs
+```
+
+借用类型位置错误报 B207，将 tile 当作普通值报 B145；非法协作位置／效果报 B208；接口效果不一致报 B028；借用元素类型错误报 B124，未导出／未直接 import 的调用报 B158，递归报 B160，设备不相容报 B161。当前未实现控制流内动态协作、递归、tile 返回、一般高阶函数、完整泛型及独立二进制函数链接。
+
+## 阶段与集合运算
+
+```c
+program step(inout dataset<BLBody> bodies, f32 dt, f32 strength) on compute {
+    integrate(bodies, dt, strength);
+    energy(bodies);
+}
+```
+
+前端证明安全时，相邻同域 map 可融合，减少中间全局读写。显式 `phase;` 保留阶段边界；它表示全域阶段依赖，不是某个线程任意执行的 workgroup barrier。
+
+```c
+struct Total { f32 value; };
+
+program total_energy(read dataset<BLBody> bodies,
+                     write dataset<Total, 1> total) on compute {
+    reduce_sum(bodies.energy, total.value);
+}
+```
+
+### 数值全域归约
+
+`reduce_sum`／`reduce_min`／`reduce_max` 接受 f32／u32／i32 标量及 2／3／4 分量向量，按分量独立计算。输入为 read dataset 的数值字段，也可使用具有既有域证明的 `prefix(dataset,count.field)`；字段可嵌套。目标为独立可写、形状 1 数据集中的同类型字段。目标记录可以同时拥有其他字段，归约只写指定字段的实际分量，保留其余存储与 ABI 填充。bool、整记录、资源、不同数值类型／向量宽度在编译期拒绝，不授予普通 parallel 任意写入能力。
+
+```c
+struct Vertex { float3 position; };
+struct Bounds { float3 lower; float3 upper; };
+program bounds(read dataset<Vertex> vertices,
+               write dataset<Bounds, 1> result) on compute {
+    reduce_min(vertices.position, result.lower);
+    reduce_max(vertices.position, result.upper);
+}
+```
+
+| 运算 | f32 空域单位元 | u32 空域单位元 | i32 空域单位元 |
+|---|---|---|---|
+| sum | +0 | 0 | 0 |
+| min | +∞ | 4294967295 | 2147483647 |
+| max | −∞ | 0 | −2147483648 |
+
+整数 sum 保留低 32 位。浮点 min／max 以严格比较选择左值，否则取右值，包含相等、有符号零和无序比较时的右值；不隐式过滤 NaN。CPU 按本次范围划分依次累计，再合并范围结果；GPU 组内按 32／16／8／4／2／1 的距离合并，再递归归约组结果。不同分组可能改变浮点和的舍入及特殊值的结果，不能承诺 CPU／GPU 全部逐位一致。GPU 极值不合并没有真实元素的右侧填充，单元素 NaN 不会被尾部单位元替换；空域仍按表输出单位元。f32 阶段沿用既有 DenormPreserve／SignedZeroInfNanPreserve 能力要求，整数归约不增加浮点设备要求。
+
+全域归约使用单一 Reduce IR，类型和算子由前端产生；块内与全域的 sum／min／max 及整数位集合共用 CollectiveOperator 与 GPU 分量合并代码。CPU 自研叶范围函数在一次遍历中累计所有分量，不逐元素调用 Rust 函数、不使用局部栈帧；第五个原生参数交付范围结果地址，运行框架负责合并部分结果。参数位置遵守 [Windows x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)，源语言调用接口不暴露这个执行细节。
+
+GPU 每组 64 线程、最多 1024 字节归约共享存储，各分量共用同步层。递归中间记录紧密保存数值分量，不复制整份目标记录；只有最终目标绑定使用原记录布局及字段偏移。有效前缀的实际数量由设备间接参数交付，目标布局由当前绑定的结果域决定，不能用有效数量提前缩到单组来推断已经绑定最终输出。所有部分结果与原有间接参数由同一提交持有并留在显存，不中途读回或由 CPU 计算 GPU 归约结果。
+
+`blc build` 导出主／递归 tail SPIR-V 及原生 x64。集合阶段沿用既有依赖、prefix requires／ensures 与跨提交所有权；输出形状和权限、数据绑定及生命周期仍由原边界负责。自定义普通值归约见下节，分段归约见后文；跨块邻域和设备自主任务尚未实现。
+
+### 自定义普通值归约与投影归约
+
+归约不再只接受固定算子。用户用普通 `.h/.b` 值函数定义单位元、合并规则及可选投影；编译器将函数静态编进 CPU 范围函数与 GPU 共享树。用户函数按调用点静态展开，数学内建保持既有链接，不通过宿主逐元素回调或另一套表达式解释器执行聚合。
+
+```c
+// .h 声明以下类型与函数；函数体放在 .b。
+struct Vertex { float3 position; };
+struct BoxValue { float3 lower; float3 upper; u32 count; };
+struct Result { BoxValue bounds; };
+
+BoxValue box_identity() {
+    return BoxValue(float3(1.0 / 0.0), float3(-1.0 / 0.0), 0);
+}
+BoxValue point_box(float3 point) {
+    return BoxValue(point, point, 1);
+}
+BoxValue join_box(BoxValue a, BoxValue b) {
+    return BoxValue(min(a.lower, b.lower), max(a.upper, b.upper), a.count + b.count);
+}
+program bounds(read dataset<Vertex> vertices,
+               write dataset<Result, 1> result) on compute {
+    reduce_map(vertices.position, result.bounds, point_box, box_identity, join_box);
+}
+```
+
+`Record(field0,field1,...)` 按声明字段顺序构造记录，支持嵌套记录与向量；各字段类型必须完全相同，不将异构分量统一转成一个标量类型。需要数值转换时显式写 f32／u32／i32 构造。记录构造只组合已有值寄存器，不分配对象，不复制 ABI 填充。字段数量错误报 B157，类型错误报 B124；值来源与逐分量证明沿既有规则传递。
+
+`reduce(source.field,target.field,identity,combine)` 聚合相同普通值类型。identity 是无参数、返回 T 的函数，combine 是 `(T,T)->T` 的函数；标量、向量、混合 f32／u32／i32／bool 的记录都可使用。目标仍为形状 1 的独立可写数据集，只写目标字段的逻辑分量，其他字段及记录内／外填充保持。空域返回 identity。
+
+`reduce_map(source.field,target.field,project,identity,combine)` 允许源 S 与结果 T 不同，project 的签名为 `(S)->T`。投影在主阶段处理有效源元素，直接进入累积／共享树；不物化 N 条 T 的中间数据集。递归摘要只合并 T，不再执行 project。输入可以是现有 `prefix(data,count.value).field`；前缀计数留在 GPU，原 Count 所有权与模块 requires／ensures 继续生效。返回记录中的普通 count 只是数值，不自动授予有效域或任意散写能力。
+
+函数引用可以是静态名称、已导入的限定名称或下一节的 `bind` 参数绑定。只接受 `on compute` 的普通值函数，参数和返回值必须匹配；可调用其他普通值函数，使用局部记录改写、分支、循环、向量及已有数学／整数运算。资源引用不能成为聚合值，不能捕获 dataset／acceleration、使用 index()、subgroup／tile 或执行 program。集合调用实参数量报 B169，函数角色／形参数量／设备／名称形式报 B212，未知或未导出函数报 B158；函数自身仍接受完整模块、返回类型、非零／范围与副作用检查。静态类型和访问证明不等于已经证明任意用户算法的数学性质。
+
+combine 必须在算法使用的值域中满足结合律，identity 必须是双侧单位元；编译器不运行样本来猜测这些性质，不增加运行时检查。实现保持逻辑输入的左右顺序，允许改变结合括号，所以无需交换律；矩阵组合、仿射变换、稳定候选筛选等有序结合运算可直接表达。浮点也使用真实运算和既有保留模式，结合顺序变化仍可能改变舍入、零符号及 NaN／无穷结果，不能把 f32 加法当作逐位结合或承诺固定误差。数值域及稳定性属于算法责任。
+
+CPU 的单位元、投影、逐范围累积和范围摘要合并都由自研 x64 编码执行，跨调用值和跨迭代累积值参加同一寄存器／溢出槽活跃性分析；最终只按类型偏移写出结果。GPU 按相邻子树从左到右合并 64 路输入，每次静态展开都拥有独立 SSA 结果，空右子树直接保留左结果；纯合并器中的数据相关循环不引入屏障。共享载荷为 `64*K*4` 字节，K 为结果逻辑分量数，真实设备能力在既有编译资源边界绑定。全局摘要为紧密 K 个 word，源与目标继续使用各自记录 ABI。
+
+这些运算复用原归约的阶段、递归参数、双摘要缓冲、原生 Fence 与存储所有权，不创建另一套调度器。`blc build` 导出主／递归 SPIR-V、CPU 主／`.tail.x64` 及各自 reloc；递归 CPU 函数同样支持必要的数学链接。自定义扫描与分段归约见后文；动态任务、完整泛型及自动证明结合律仍未实现。
+
+### 集合值函数的执行参数绑定
+
+`bind(function,capture0,...)` 把当前 program 的统一普通值追加到函数的元素参数之后。该形式适用于 `reduce`、`scan_exclusive`、`scan_segmented_exclusive`、`reduce_segmented` 及各自 `_map` 的 project／identity／combine 位置，三种函数可以各自绑定不同数量与类型的参数：
+
+| 角色 | 未绑定的元素参数 | 最终函数签名 |
+|---|---|---|
+| project | 一个 S | `(S,C0,...)->T` |
+| identity | 无 | `(C0,...)->T` |
+| combine | 两个 T | `(T,T,C0,...)->T` |
+
+```c
+// .h 声明同样的函数和 program；.b 定义函数体。
+BoxValue local_box(float3 point, float3 origin) {
+    let local = point - origin;
+    return BoxValue(local, local, 1);
+}
+program local_bounds(read dataset<Vertex> vertices,
+                     write dataset<Result, 1> result,
+                     float3 origin) on compute {
+    reduce_map(vertices.position, result.bounds,
+               bind(local_box, origin), box_identity, join_box);
+}
+```
+
+上例的 BoxValue／Vertex／Result 与单位元、合并器沿用前节。源几何只保留原坐标；坐标系作为一次执行的统一参数传递，不复制到 N 条输入。identity 和 combine 也可绑定记录规则，例如选择最大／最小候选及同分时的顺序。同一个已编译程序可以在后续执行更换这些值，不需要按参数值重新编译。
+
+捕获表达式支持标量、向量、嵌套普通记录、显式类型构造、已声明常量、统一算术／值函数结果和 `dataset.length`。length 仍是该绑定的容量／长度元数据，不是设备生产的有效 Count；不能通过绑定表达式读取 `count[0].value` 或其他数据集元素。资源、元素游标、index()、tile／subgroup、program 和隐藏资源副作用不属于该绑定的值语义。函数主体仍只能通过显式形参取得绑定值，不能隐式访问调用方变量。
+
+第一个参数为静态函数名或显式泛型引用，例如 bind(project<T,Mode>,offset)，不能是函数调用或另一份 bind；`bind(f)` 等同于没有额外参数的静态引用。角色、设备和形参数量错误报 B212；普通类型仍由 B124 检查；读取数据集元素／非统一普通值报 B213，资源名称及非法作用域沿用已有诊断。bind 只能出现在这些集合函数参数位置，在 parallel／普通函数中当作一般值求值报 B156。当前没有堆闭包、函数指针、一般高阶变量或完整泛型。
+
+前端沿用 program 根参数解析、普通值检查和静态内联；捕获生成同一 ValueCode 中的 Uniform／普通值 IR，未使用参数由既有值流与死代码消除删除。x64 与 SPIR-V 在主遍历、摘要、前缀及结果传播中直接消费这份 IR；没有宿主逐元素回调、N 条捕获副本或另一套编译表示。封闭集合现已把无条件路径上只依赖统一参数／常量的纯计算提至原生入口，复用相同表达式；CPU 每个范围一次，GPU 每次 invocation 一次。它不意味着一次 program 或每个 workgroup 只计算一次；用户分支／循环中的计算及元素相关运算仍留在各自位置，通用循环不变量外提尚未完成。结合律、双侧单位元及有效数值域必须对本次绑定的参数成立，仍由算法定义。
+
+### 静态泛型算法参数
+
+集合算法可直接接收 `identity<uint3,7>`、`combine<7>`、`compose<Affine<uint3,Mode>>` 等显式泛型函数引用。支持普通归约、独占扫描、分段扫描、分段归约及各自的投影形式；投影、单位元与合并器共用原值函数参数入口。普通函数和 program 的调用仍写括号，例如 `identity<uint3,7>()`；带括号的调用结果不能作为静态函数引用。
+
+完整 `.h` 示例：
+
+```c
+module typed_scan;
+const u32 ChosenBias = 7;
+struct Local { uint3 value; u32 audit; };
+struct Global { uint3 before; u32 audit; };
+T identity<T: numeric, const Bias: u32 in {0,7}>();
+T plus<T: numeric, const Bias: u32 in {0,7}>(T left, T right);
+T project<T: numeric, const Bias: u32 in {0,7}>(T value, T offset);
+program entry(read dataset<Local> local, inout dataset<Global> global) on compute;
+```
+
+对应 `.b`：
+
+```c
+module typed_scan;
+T identity<T: numeric, const Bias: u32 in {0,7}>() { return T(0); }
+T plus<T: numeric, const Bias: u32 in {0,7}>(T left, T right) { return left + right; }
+T project<T: numeric, const Bias: u32 in {0,7}>(T value, T offset) {
+    return value + offset + T(Bias);
+}
+program entry(read dataset<Local> local, inout dataset<Global> global) on compute {
+    scan_exclusive_map(local.value, global.before,
+        bind(project<ChosenBias>, uint3(3)),
+        identity<uint3,ChosenBias>, plus<ChosenBias>);
+}
+```
+
+project 和 plus 只给 const 后缀，类型由源值、合并器的实际元素参数或真实 bind 参数推导；identity 没有普通参数，因此显式给出 uint3。目标字段的期望类型不会反向推导没有输入的泛型参数。显式实参规则与普通调用相同：完整类型和值清单，或全部 const 后缀；省略尖括号的普通函数名仍沿原推导规则。
+
+嵌套的具体记录、用户类型集合、记录值参数、跨模块限定名和外层函数／program 的类型与 const 参数均可用于引用。模块 const 先解析为实际值，引用实例沿唯一原声明生成；原生代码只留下实际运算。bind 的后续参数是实际统一数值，不承担代替缺失类型实参的职责；不创建每元素闭包、运行期函数表、间接调用或新调度任务。
+
+引用必须解析为可见的 compute 普通值函数；全部形参仍是普通按值参数，输入／输出类型、参数数量、访问、捕获统一性与原有 requires 在同一调用入口检查。直接引用、显式引用与 bind 共用 ValueCode，已有有效前缀、数据所有权、阶段及集合结合顺序保持。未使用的非法类型／值实例也仍在编译期拒绝；结合律与双侧单位元属于算法责任，编译器不以样本猜测它们。
+
+显式引用当前仅用于这些集合算法及其 bind 首参数。它不能保存到局部／字段、作为普通值返回、传给一般值参数或参与数值运算；解析为引用后按普通值求值报 B236，其他非法语法沿原解析入口拒绝。引用角色／设备／形参数量沿原 B212，bind 非统一读取沿 B213，普通类型 B124、模块可见性 B158、泛型实参 B231／B232／B235／B015 保持。任意高阶形参、函数指针、堆闭包、lambda 和动态分派仍未实现。
+
+### 集合入口的不变计算
+
+集合内核在原有值 IR 上分出入口、单位元、投影与合并段。无条件路径上的 Constant／Uniform、普通一元／二元算术、转换、数学内建、Select 和固定非零除数的整数除余，只有全部操作数都来自入口纯值时才前置。元素值、Index、资源读写、局部槽及用户 If／Loop 不前置；动态整数除法仍留在其非零证明成立的作用域。单位元／投影／合并都没有新增能力或放宽访问证明。
+
+入口沿用现有值流／表达式消除，同一统一值与有序表达式只保留一份；不改浮点运算顺序，不用代数近似或交换左右操作数。三个函数体分别继承入口值，不能从另一个尚未执行的函数体取得局部结果。每个后端阶段只生成它实际需要的角色：摘要不再投影，普通扫描与分段摘要传播不计算不用的单位元；真正需要段头重置的最终分段遍历仍保留单位元。
+
+CPU 自研范围函数在循环前计算这些值，以既有结构化活跃性求得跨迭代输入，再由原寄存器分配器保存跨调用的值及必要溢出槽。GPU 在共享树之前计算入口 SSA，后续每次合并仍为元素结果产生新 SSA，只保留入口定义；用于有效 Count 的间接启动参数内核不执行集合值函数入口。没有引入宿主缓存、预计算缓冲、额外提交或运行时开关。
+
+这是封闭集合的入口外提，不是完整 LICM、动态任务系统或各类代码的统一加速保证。CPU 是每个分区范围计算一次；GPU 是每次 shader invocation 计算一次，不能称为整次提交或整个 workgroup 只有一份计算。元素投影本就每 invocation 执行一次，GPU 收益主要来自多个合并节点复用表达式及减少重复指令，实际吞吐仍需以程序测量。
+
+### 自定义普通值独占扫描与融合投影
+
+```c
+// .h 声明类型与函数；.b 定义函数体与 program。
+struct Transform { u32 scale; u32 bias; };
+struct Local { Transform value; };
+struct Global { Transform before; };
+
+Transform identity() { return Transform(1, 0); }
+Transform compose(Transform a, Transform b) {
+    return Transform(b.scale * a.scale, b.scale * a.bias + b.bias);
+}
+program chain(read dataset<Local> local,
+              write dataset<Global> global) on compute {
+    scan_exclusive(local.value, global.before, identity, compose);
+}
+```
+
+`scan_exclusive(source.field,target.field,identity,combine)` 对每个有效输入位置 i 写入 `[0,i)` 的有序合并，首项是 identity。上例按模 32 位组合一维仿射变换，左右顺序不能交换；实际浮点变换、矩阵和其他普通记录同样通过用户值函数表达。它是并行集合操作，程序不需要管理线程、摘要数组或主机／设备回调。
+
+`scan_exclusive_map(source.field,target.field,project,identity,combine)` 接受 `(S)->T` 的投影，直接把源值转换到局部扫描，递归与传播只处理 T，不重复投影，也不生成逐输入投影中间数组。其余函数签名、纯值访问、模块导入、结合律和双侧单位元要求与自定义归约相同。浮点结合顺序及数学链接继续遵守上节语义，不保证逐位一致。
+
+源必须是独立 read 字段，结果为可写的相同 T 字段，支持标量、向量和混合类型嵌套记录。目标容量至少容纳源容量，可以额外保留尾部；静态不足报 B188，动态容量仍由既有参数绑定边界检查。只写目标字段的逻辑分量，其他字段、填充及有效域之后的尾部保持。空输入不写任何输出记录。不能扫描自身、改写输入前缀 Count，或把资源引用作为聚合值。
+
+源可为已有证明的 `prefix(data,count.value).field`。操作直接产生相同 Count 对应的 `prefix(target,count.value)`，可供后续 parallel、集合或 requires／ensures 接口消费。没有新的 Count、计数读回或按实际数量动态分配；仍按容量预留递归层级和存储。
+
+CPU 首遍按范围产生局部独占结果及紧密 K-word 摘要；自研 x64 前缀函数原地扫描少量范围摘要，第二遍 x64 合并范围前缀与局部结果。三部分复用同一值 IR、寄存器分配及 Windows ABI，数学调用跨迭代值仍由活跃集持有；Rust 不解释用户合并器。GPU 复用既有 64 路扫描调度，以有序共享树上扫、根置单位元及下扫产生局部独占值，递归摘要与逐级传播保持 `combine(前置摘要,局部值)`。共享存储为 `64*K*4` 字节；没有真实输入的右子树不参与上扫。所有摘要与有效数量留在设备，临时资源沿原提交寿命释放。
+
+`blc build` 导出主、`.tail.spv`、`.add.spv`、必要的 `.root-add.spv`，以及 CPU 主、`.prefix.x64`、`.add.x64` 和各自数学 reloc。运行时直接消费编译产物对象，不依赖导出文件形成第二份状态。自定义分段扫描／归约见后文；完整泛型仍需实现。
+
+### 自定义普通值分段独占扫描
+
+```c
+// Transform、identity、compose 沿用上节；.h 声明接口，.b 定义函数体。
+struct SegmentItem { Transform value; bool head; };
+program chains(read dataset<SegmentItem> local,
+               write dataset<Global> global) on compute {
+    scan_segmented_exclusive(local.value, local.head,
+                             global.before, identity, compose);
+}
+```
+
+`scan_segmented_exclusive(source.field,source.head,target.field,identity,combine)` 在每段内部计算独占前缀。有效域首项隐含开始一段；后续 true 开始新段，连续段头各自形成单元素段。段头输出 identity，不包含本项；没有显式段头的非空域就是一个连续段，空域不写输出。它适合多条连续存放的有序链，不隐含任意树形依赖或通用任务图。
+
+`scan_segmented_exclusive_map(source.field,source.head,target.field,project,identity,combine)` 先按 `(S)->T` 投影，直接进入分段扫描；摘要与传播只处理 T，不重新投影。纯函数、类型、容量、左右顺序、结合律／单位元及浮点语义与普通自定义扫描一致。源可以是已有证明的 prefix；段头跟随该有效域，筛选丢弃的段头不再开始新段。扫描继续交付同一 Count 的输出 prefix，不建立第二份有效数量。
+
+段头必须为同一个 read 源记录的 bool 字段，不能来自另一个数据集或不相同的有效前缀。类型／函数签名／作用域继续在编译期检查；权限／域不匹配报 B170，缺少或失效的前缀关系报 B191，静态目标容量不足报 B188。目标和输入 Count 独立；只写目标字段的逻辑分量，其他字段、ABI 填充与有效域后的容量保持。
+
+分段摘要为 `(T 的尾段值, 是否含段头)`，紧密保存 K+1 个 word。左右摘要 `(a,h)`、`(b,j)` 合并为 `(j ? b : combine(a,b),h||j)`；右侧已经开始新段时直接保留其尾值，不执行跨段用户合并器。摘要的单位元为 `(identity(),false)`。这是一种有序结合运算，继续使用相同 ValueCode 与扫描层级，没有逐输入段号或额外映射数据集。
+
+CPU 主范围函数遇到段头后重置累积；原生摘要前缀函数直接合并／重置摘要，传播函数到范围内首个段头即结束。需要跨迭代保留的单位元和累积值进入既有活跃集，数学调用遵守相同 ABI。GPU 在原共享树中处理 K+1 分量，上扫与下扫保持逻辑顺序，根阶段输出当前段头的单位元。根摘要最后一个 word 同时编码首个段头的 lane+1，零表示没有段头；递归将非零解释为含段头，最终传播只修改该工作组首个段头之前的值。共享存储为 `64*(K+1)*4` 字节，所有摘要、有效计数和递归间接参数留在设备，资源仍由原提交持有到最后消费。
+
+导出文件与普通自定义扫描相同，`blc build` 的 CPU prefix／add 也包含需要的数学链接。它没有增加另一个运行时、同步协议或调度器。用户定义分段归约见下节；动态协作／任务和完整语言仍未完成。
+
+### 自定义普通值分段归约
+
+```c
+// BoxValue、point_box、box_identity、join_box 沿用普通投影归约示例。
+struct Point { float3 position; bool head; };
+struct BoxResult { BoxValue value; };
+struct Count { u32 value; };
+program segment_boxes(read dataset<Point> points,
+                       write dataset<BoxResult> boxes,
+                       write dataset<Count, 1> segments) on compute
+    ensures prefix(boxes, segments.value) {
+    reduce_segmented_map(points.position, points.head,
+                         boxes.value, segments.value,
+                         point_box, box_identity, join_box);
+}
+```
+
+`reduce_segmented(source.field,source.head,target.field,segments.value,identity,combine)` 按逻辑顺序为每个非空段输出一个 T。`reduce_segmented_map(...,project,identity,combine)` 在原始 S 与聚合 T 之间使用纯值投影。有效域首项隐含新段，后续 true 开始新段，连续段头各自形成单元素段；空输入交付 segments=0，不改写目标记录。目标按原段顺序排列，字段以外的记录内容、填充和实际段数之后的容量保持。
+
+源值与 bool 段头必须来自同一 read 记录和有效域；目标、输出 Count、源和输入前缀 Count 独立，输出 Count 是形状 1、单 u32 字段的可写数据集。目标容量至少为源容量，容纳最坏情况下每项一段；静态不足报 B188，动态容量沿原参数绑定边界检查。函数签名、纯值与资源访问、逻辑左右顺序、结合律／双侧单位元、浮点差异与其他自定义集合相同。
+
+输出 `prefix(target,segments.value)` 由此操作直接产生，可经 ensures／requires 交付后续 parallel、集合或独立提交。Count 来自编译器生成的真实段计数；聚合 T 内部的普通 count 字段不能自行签发域关系。整个操作不会按段数在设备动态分配存储。
+
+摘要为 `(T 的尾段值,含段头标记,段头数量)`，紧密占 K+2 个 word。右摘要有段头时直接取其尾值，否则调用用户合并器；标记取 OR，数量相加。CPU 第一遍原生范围函数产生摘要，原生前缀函数原地合并摘要、写出总段数，第二遍原生范围函数在真实段尾写结果。范围参数仍复用原摘要存储，包含进入范围前的 T、总有效长度与已出现段数；没有宿主解释合并器或逐元素回调。
+
+GPU 第一遍只写工作组摘要，递归扫描及反向传播只处理这些摘要，最后一遍直接写各段尾的唯一结果位置与实际段数。使用同一有序共享树，显式共享为 `64*(K+2)*4` 字节；源值、有效数量、段数及所有摘要留在设备，不中途读回。两端都遍历源两次，投影在这两次原始源遍历中执行，递归摘要不再投影；这是用源重算避免 N 条投影／段号中间数组的实现取舍，不代表所有负载的最优吞吐。投影仍必须是无资源副作用的纯值函数。
+
+`blc build` 导出主、tail、add、finish SPIR-V、必要的有效域 dispatch，以及 CPU 主、prefix、finish x64 和各自数学 reloc。运行框架共用既有分段归约的递归命令、扫描缓冲及提交寿命，不创建另一套调度器。完整泛型、动态协作／任务仍未实现。
+
+### 整数按位全域归约
+
+```c
+struct Item { uint4 flags; };
+struct Masks { uint4 common; uint4 combined; uint4 parity; };
+program masks(read dataset<Item> items,
+              write dataset<Masks, 1> result) on compute {
+    reduce_bit_and(items.flags, result.common);
+    reduce_bit_or(items.flags, result.combined);
+    reduce_bit_xor(items.flags, result.parity);
+}
+```
+
+三种运算接受同类型的 u32／i32 标量及 2／3／4 分量向量，逐分量保留完整 32 位。AND 交付所有输入共有的位，OR 合并出现过的位，XOR 交付各位的奇偶性。空域 AND 返回 `0xffffffff`（i32 为 −1），OR／XOR 返回 0；输入全 0、全 1、负数和最高位都按位处理，不引入浮点或 bool 数值转换。
+
+输入为只读数值字段或已有证明的 `prefix(dataset,count.field)`，输出为独立形状 1 的可写数据字段。目标其余字段与填充保持；f32、bool、整记录、资源以及类型／向量宽度不一致仍在既有类型入口拒绝。筛选后的有效域可直接归约，容量尾部不参与运算。CPU 与 GPU 按相同位运算得到一致结果；这不外推浮点归约的舍入与 NaN 语义。
+
+CPU 原生范围内直接使用整数 AND／OR／XOR 指令，运行框架以相同算子合并范围结果。GPU 复用既有 64 路归约树、递归中间页和有效域的设备参数，块内扫描复用现有共享存储树；没有新增数据副本、提交协议或计数读回。位集合可用于可见性、资源类别和任务标记，不能代替原子存储操作、全域屏障或写入所有权。
+
+### 类型化全域独占扫描
+
+```c
+struct Count { u32 value; };
+
+program prefix(read dataset<Count> input,
+               write dataset<Count> output) on compute {
+    scan_exclusive_sum(input.value, output.value);
+}
+```
+
+输入／输出字段支持同类型的 u32／i32 标量及 2／3／4 分量向量。`scan_exclusive_sum`、`scan_exclusive_min`、`scan_exclusive_max`、`scan_exclusive_bit_and`、`scan_exclusive_bit_or`、`scan_exclusive_bit_xor` 分别计算当前元素之前所有元素的和、极小、极大及按位 AND／OR／XOR，逐分量返回同类型。空输入不产生元素，首项为对应单位元：
+
+| 操作 | u32 单位元 | i32 单位元 |
+|---|---|---|
+| sum／bit_or／bit_xor | 0 | 0 |
+| min | 4294967295 | 2147483647 |
+| max | 0 | −2147483648 |
+| bit_and | 4294967295 | −1 |
+
+整数和保留低 32 位，i32 极值使用有符号比较；按位操作保留原始 32 位。不同分组得到相同整数结果，需要计数不溢出的算法仍须选择合适的数据规模。字段可以位于记录中，其他字段及 ABI 填充保持原值；不再要求输出记录只有一个 u32。输入／输出仍独立，输入是 read，输出为 write/inout。完整域要求输入／输出长度相等，有效前缀允许输出容量大于输入容量。形状不满足报 B186，bool／记录／资源及字段类型不同报 B175，可写输入或别名报 B170；动态容量继续由既有参数绑定边界负责。
+
+```c
+struct Work { uint4 units; };
+struct Offsets { u32 id; uint4 begin; uint4 minimum; uint4 flags; };
+program offsets(read dataset<Work> input,
+                inout dataset<Offsets> output) on compute {
+    scan_exclusive_sum(input.units, output.begin);
+    scan_exclusive_min(input.units, output.minimum);
+    scan_exclusive_bit_or(input.units, output.flags);
+}
+```
+
+扫描是全域集合操作，不能放入单元素 parallel 或当作纯函数调用。前端以类型化 Scan 保存字段、分量与算子，保留既有阶段边界和依赖。CPU 自研 x64 范围函数一次遍历同时累计各数值分量，通过与归约共用的第五个参数写范围结果；少量范围结果按相同算子组合后，原生传播函数并行修正输出。两个叶范围函数均不使用局部栈帧，没有逐元素 Rust 调用或任务。
+
+GPU 每组 64 线程执行 work-efficient Blelloch 扫描，各分量共用同步层，普通扫描最多使用 1024 字节共享树。有效尾组的全部线程参加必要的屏障，域外位置贡献对应单位元；递归摘要和前缀紧密保存真实分量，不复制整份输出记录，也不读回 CPU。最终传播使用原目标记录步长与字段偏移；它们与紧密摘要布局不同时，复用现有根输出传播 pass，相同时使用同一传播内核，不额外建立重复管线。三分量向量的记录填充与其他字段同样保留。提交继续持有全部临时页到真实完成。
+
+稳定 compact 与键排序的内部计数仍使用同一扫描实现中的 u32 求和定义；各自的布尔规范化、稳定散写和计数所有权保持。有效前缀扫描交付原 Count 对应的输出域，后续可直接读取该前缀；容量尾部不参与扫描，也不被修改。GPU 额外绑定的扫描页表属于既有执行框架，不增加源参数或提交协议。`blc build` 输出主 `.spv`、`.tail.spv`、`.add.spv` 和 CPU `.x64`／`.add.x64`，最终布局不同或分段时另输出 `.root-add.spv`。f32 极值扫描、用户定义扫描算子、分段向量扫描和设备生成新任务仍未实现。
+
+### 浮点全域独占前缀和
+
+`scan_exclusive_sum` 同时接受 f32／float2／float3／float4，逐分量返回当前元素之前的和，首项为 +0.0，空域不写元素。完整域、有效前缀、独立输入／输出、嵌套记录字段及容量尾部规则与整数扫描相同。浮点 min／max 与按位扫描仍报 B175；不把含 NaN 的非结合极值操作直接接入全域扫描。浮点分段求和见下节。
+
+```c
+struct Light { float4 energy; bool selected; };
+struct Size { u32 value; };
+struct Distribution { u32 id; float4 before; };
+
+program energy_prefix(read dataset<Light> queue,
+                      read dataset<Size, 1> size,
+                      inout dataset<Distribution> output) on compute
+    requires prefix(queue, size.value)
+    ensures prefix(output, size.value) {
+    scan_exclusive_sum(prefix(queue, size.value).energy, output.before);
+}
+
+program selected_energy(read dataset<Light> input,
+                        inout dataset<Light> queue,
+                        inout dataset<Size, 1> size,
+                        inout dataset<Distribution> output) on compute {
+    compact(input, input.selected, queue, size.value);
+    energy_prefix(queue, size, output);
+}
+```
+
+输入的逻辑顺序定义前缀包含哪些元素，浮点结合顺序由实现决定。CPU 范围内使用 SSE 标量加法，范围结果由同一执行框架合并再原生传播；GPU 使用既有 64 路 Blelloch 树、递归摘要及前缀传播。CPU 两个叶范围函数仅使用易失寄存器、没有局部栈帧；各分量共同遍历记录，记录其他字段与填充保持。浮点摘要和整数摘要共用物理页与原有提交所有权，不增加宿主中间读回或逐元素任务。
+
+GPU 主扫描、递归扫描、摘要传播与最终记录传播均声明既有 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`，并沿用设备能力绑定。运算直接生成 SPIR-V `OpFAdd`，不转换为整数加法或调用外部 Shader 编译器。CPU／GPU 不承诺逐位相同、固定误差界、NaN 载荷一致或中间结果不会溢出；次正规数、无穷和 NaN 继续参与真实运算，不截断、替换或滤除。对严重消减或精确分布有要求的算法仍须处理数值稳定性，编译成功不意味着这些数学条件成立。实际误差见 [问题列表](Issues.md)。
+
+### 原生分段独占扫描
+
+```c
+struct Work { u32 amount; bool head; };
+struct Offset { u32 value; };
+
+program local_offsets(read dataset<Work> work,
+                      write dataset<Offset> offsets) on compute {
+    scan_segmented_exclusive_sum(work.amount, work.head, offsets.value);
+}
+```
+
+每个 `head=true` 元素开始新段，该元素的输出为算子单位元；其后元素只组合本段在它之前的值。首个元素隐含开始第一段，允许其 head=false。连续段头各自产生单位元，空输入不产生记录。上面的 sum 示例中，amount 为 `[2,3,5,7,11]`、head 为 `[false,false,true,false,true]` 时，结果为 `[0,2,0,5,0]`。整数加法按低 32 位计算。此操作可为已按逻辑顺序分组的任务生成段内偏移、边界极值和类别标记；段长可以超过 CPU 范围、GPU 工作组和物理数据页。
+
+| 操作 | 源与目标字段类型 | 单位元 |
+|---|---|---|
+| `scan_segmented_exclusive_sum` | u32／i32／f32 及 2／3／4 分量向量 | 整数 0，浮点 +0.0 |
+| `scan_segmented_exclusive_min` | u32／i32 及其向量 | 对应类型最大值 |
+| `scan_segmented_exclusive_max` | u32／i32 及其向量 | 对应类型最小值 |
+| `scan_segmented_exclusive_bit_and` | u32／i32 及其向量 | 全 1 |
+| `scan_segmented_exclusive_bit_or`／`scan_segmented_exclusive_bit_xor` | u32／i32 及其向量 | 0 |
+
+数值向量按分量独立扫描，同一 bool 段头同时重置所有分量。源与目标数值字段类型必须相同，可位于不同记录的嵌套字段中；段头必须为同一 read 源记录的 bool 字段，输出为独立可写记录，保留其余字段与填充，并遵守同一扫描形状规则。段头字段可以直接写 `work.head`；源值使用 `prefix(work,size.value).amount` 时，段头自动使用同一有效域，也可以明确写相同的 `prefix(work,size.value).head`。不同数据源或不同前缀报 B170，类型不同或不支持的浮点算子报 B175，缺少域生产关系报 B191。操作只出现在 program 全域阶段，不能在 parallel 内抢号或作为逐元素值调用；非法位置报 B156。
+
+编译器以 `Scan` IR 保存源／目标字段、数值类型、算子及可选段头字段，依赖、资源绑定、接口 requires／ensures 和跨提交域所有权继续消费同一份阶段信息。有效域输出交付 `prefix(offsets,size.value)` 关系，容量尾部保持原内容；计数与中间结果不为调度读回 CPU。
+
+分段算法的结合元为 `(各分量尾段值, 是否含段头)`：组合左结果 a 与右结果 b 时，若 b 含段头，逐分量采用 b 的尾段值，否则以对应算子合并；段头位取逻辑或。K 个数值分量的摘要紧密占 K+1 个 word，数值分量后保存段头信息，由同一 `Scan.summary_words()` 交付后端与物理分配。CPU 自研 x64 内核一次扫描范围内所有分量，经普通归约／扫描已有的第五个结果指针写摘要；旧 u32 分段专用 u64 返回接口已删除。叶内核只用易失寄存器、没有局部栈帧，执行框架组合少量范围摘要，随后并行修正各范围首个段头之前的输出。
+
+GPU 每组 64 个 invocation，在 `64*(K+1)*4` 字节 workgroup 存储中完成所有分量与段头的上行／下行扫描，直接写入目标字段。K 为 1–4，显式共享载荷为 512–1280 字节；每条全局摘要为 8–20 字节。根层将首段头位置加一编码在摘要最后一个 word 中：有段头时仅首段头 invocation 写编码，没有段头时仅最后一个物理 lane 写 0。两种写入互斥，尾组与空输入同样适用；递归只消费其是否非零，不另存段头副本。组间前缀仅修正首段头之前的结果，不生成逐元素全局标记或末尾复制程序。树的 workgroup 屏障与既有计算阶段的全局内存屏障分别负责自己的消费者，存储类作用域遵循 [Vulkan memory model](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
+
+浮点求和沿用上述 f32 运算与设备保留模式；同一段的 CPU 顺序、范围组合和 GPU 树形结合顺序不同，不承诺逐位一致、固定误差界或 NaN 载荷相同。新段从 +0.0 开始，不把上一段的 NaN／无穷前缀带进新段。浮点极值与按位扫描仍不开放；整数按位操作不等于原子或全域屏障，数值前缀不签发任意散写权限。
+
+`blc build` 对内置分段扫描导出主 `.spv`、递归 `.tail.spv`、摘要修正 `.add.spv`、根输出修正 `.root-add.spv` 和 CPU `.x64`／`.add.x64`。执行框架直接持有编译结果与全部临时资源到实际完成。用户自定义扫描与分段归约见前文；设备自主分配输出仍未实现，内置分段归约见下节。
+
+### 原生分段归约
+
+```c
+struct Sample { uint4 value; bool head; };
+struct Segment { uint4 value; };
+struct Count { u32 value; };
+
+program summarize(read dataset<Sample> input,
+                  write dataset<Segment> output,
+                  write dataset<Count, 1> count) on compute
+    ensures prefix(output, count.value) {
+    reduce_segmented_sum(input.value, input.head, output.value, count.value);
+}
+```
+
+每个段返回一条数值结果，按源段顺序写入 output，count 是实际段数。首条有效输入隐含段头，不要求 head 为 true；后续 true 开始新段，连续段头各自形成单元素段。空输入产生 count=0，目标记录保持原内容。没有 head 时整个非空输入只有一段。
+
+`reduce_segmented_sum`／`min`／`max` 接受同类型 u32／i32／f32 标量及 2／3／4 分量向量；`reduce_segmented_bit_and`／`bit_or`／`bit_xor` 接受整数及其向量。逐分量运算与全域归约共用算子和单位元；整数加法取低 32 位。f32 分段极值归约已开放，f32 极值扫描仍未开放。浮点结合顺序由实现决定，求和可能不同；极值沿用有序比较、相等或 unordered 时取右值的规则，含 NaN 时重组会改变结果，不承诺跨后端相同或 NaN 载荷一致。实际非有限值继续参与运算，不作替换。
+
+源数值与 bool 段头必须来自同一个 read 数据集；数值也可写为 `prefix(input, size.value).value`，段头跟随同一实际有效域。目标字段类型必须完全相同，目标、输出 Count 与源／输入 Count 独立，Count 仍为形状 1 的单 u32 字段。目标容量需要容纳输入容量的最坏段数，当前不会按实际段数在设备动态分配输出。静态形状不足编译报 B188，动态形状在现有资源绑定边界拒绝。权限／别名、类型、Count 形状、参数形式、作用域与有效域不足分别沿用 B170／B175／B171／B172／B156／B191。
+
+编译器直接生产 `prefix(output,count.value)` 关系，可立即用于后续 parallel、归约、扫描、压缩、排序，或经 requires／ensures 交付独立消费者。它不从普通数值 Count 猜测关系，也不授予用户任意散写权限。段尾的唯一输出位置由这个封闭集合操作生成；只改写输出的数值字段，其他字段、填充及有效段数之后的容量尾部保持。后续消费者仍遵守各自的访问能力。
+
+实现只保存范围／工作组摘要，不先生成逐输入记录的扫描结果或段号数组。摘要为 `(K 个尾段分量, 是否含段头, 段头数)`，紧密占 K+2 个 word；若右摘要含段头，尾值取右，否则合并左右尾值，标记取 OR、计数相加。
+
+CPU 自研 x64 首次遍历产生各范围摘要，执行框架只组合这些少量摘要，再用原摘要存储交付范围前缀、总有效长度和进入范围前的段数。第二次原生遍历直接在真实段尾写唯一结果，范围末端只读原源的下一条段头，不复制 halo。两个叶内核仅使用 Windows 易失寄存器，没有局部栈帧；空域由同一执行阶段写 Count=0。
+
+GPU 首次遍历只写组摘要，递归扫描与传播只处理摘要，最后一次遍历读取源与组前缀并直接写段尾；没有逐元素全局中间数组或原子计数器。64 路共享树显式占 `64*(K+2)*4` 字节，即 768–1536 字节；临时全局存储从 ceil(N/64) 个摘要开始递归。无效右子树不参与归约，填充身份值不改写实际尾值。首个有效 lane 拥有组摘要写入；最后一条有效输入写总段数，空域由首组写 0，矩形间接启动补齐的无效组不取得输出权限。
+
+完整域／有效域共用 SegmentedReduce IR、阶段依赖和既有范围／Vulkan 提交所有权。GPU 的有效计数、摘要与所有递归启动参数留在设备；命令及临时存储仍按容量预留，不代表设备已经能动态构造任意任务图。`blc build` 导出主、tail、add、finish SPIR-V，以及 CPU 主函数和 `.finish.x64`。自定义普通值／投影分段归约见前文；稀疏集合、动态协作及设备自主任务仍待完成。
+
+### 稳定压缩筛选
+
+```c
+struct Item { float3 position; u32 id; bool keep; };
+struct Count { u32 value; };
+
+program select(read dataset<Item> input,
+               write dataset<Item> output,
+               write dataset<Count, 1> count) on compute {
+    compact(input, input.keep, output, count.value);
+}
+```
+
+`compact(input, flags.keep, output, count.value)` 按输入顺序复制谓词为 true 的完整记录，计数输出为选中的记录数；空输入和全 false 都产生 0。有效结果只包含输出的前 `count.value` 条记录，尾部不属于筛选结果；当前实现保留其原内容，不能把默认全零尾部当作筛选语义。记录值和 ABI 填充字节均原样复制，不重新求值或量化。
+
+谓词字段必须为 bool，计数字段为 u32、数据集形状为 1 且只有一个字段。输入／输出记录类型完全相同，谓词的元素数与输入一致，输出容量至少为完整输入数。输入和谓词是 read，可以使用输入记录自己的 bool 字段，也可以使用独立 read 数据集。输出和计数为 write/inout，它们彼此以及与读资源不能别名。静态谓词形状不符报 B187，输出容量不足报 B188，记录类型不符报 B189，权限／别名报 B170；动态实际形状在既有绑定边界检查。当前仍要求最坏情况下足够的输出容量，不会根据一次实际选择率猜测分配量。
+
+CPU 用自研 x64 范围计数与稳定复制：先并行计数，计算少量范围前缀，再并行复制每个范围的所选记录。GPU 将 bool 归一为 0/1，重用独占扫描层级；每条被选记录取得唯一的前缀序号，最后一条输入写出总数，空输入单独写出 0。扫描、散写和计数全部由同一提交持有资源，全程不读回 CPU。源程序没有获得任意散写权限。
+
+`compact` 是全域集合阶段，保留前后依赖；可以与 map、scan、sum 同属一个程序。`blc build` 对该阶段额外输出 `.tail.spv`、`.add.spv`、`.scatter.spv` 和 CPU `.scatter.x64`。普通 parallel 仍表示绑定容量；使用下面的 prefix 域直接消费 GPU 有效计数。
+
+### 原生有效前缀并行域
+
+```c
+program process(read dataset<Item> input,
+                inout dataset<Item> output,
+                write dataset<Count, 1> count) on compute {
+    compact(input, input.keep, output, count.value);
+    parallel (item in prefix(output, count.value)) {
+        item.id += 100;
+    }
+}
+```
+
+`prefix(dataset, count.field)` 是执行域，表示前 count 条有效记录；不是普通值函数或对整个容量逐元素执行后再判断。`index()`／`ordinal(item)` 为该前缀内从 0 开始的序号；dataset 本身的长度仍表示绑定容量。当前类型作用域必须持有该数据与计数的有效关系：它来自本函数的 compact／分段归约、接口 requires，或已调用模块的 ensures。计数一经改写，对应关系立即失效；未生产、被改写或来自另一输出的计数均报 B191。这些关系只存在于编译器，不新增运行期计数状态。write 计数可用于此执行域，因为对应集合生产者已证明其初始化；不放宽任意 write 数据的读取权限。
+
+每个元素仍只拥有自身写入权限。计数读取进入阶段读集合和跨元素依赖；只有底层数据和 prefix 计数字段都相同的 map 才可按既有条件融合。完整容量域与有效域不能融合，显式 phase 仍保留。前缀域不授予任意地址散写权限；原子计数返回的数字也不自动取得写所有权或有效域生产证明。
+
+CPU 直接读取自己存储中的已生产计数，按该长度执行原生范围函数。GPU 先生成提交私有的层级执行快照，每层 16 字节：前三个 u32 为间接启动 X/Y/Z 工作组数，最后一个为该层有效数量；随后直接 `vkCmdDispatchIndirect`。map 使用一层，sum／scan／compact 一次产生覆盖当前 u32 域的六层参数；排序另有独立直方图域。计数与启动参数不为调度读回 CPU，命令和所有临时资源仍由同一提交持有到完成。原始 Count 数据集仍是生产者的输出，执行快照不是可独立修改的另一份权威计数。
+
+X 分区按 64 线程工作组对齐，并受设备上限与 `with_partition_elements` 控制；Y/Z 根据实际组数展开。主程序将多维全局坐标以 u64 线性化，先与有效数量比较，再提供语言层 u32 index，防止矩形网格补齐后发生 32 位回绕。空前缀的 map 产生零维启动；集合运算保留写出单位元或计数所需的工作组。间接参数缓冲区具有真实 INDIRECT_BUFFER 用途，参数写入到间接读取／Shader 读取之间具有明确内存依赖；同一提交的后续时间步覆盖参数前也等待此前读者。ABI 与用法依据 [Vulkan 间接启动规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDispatchIndirect.html)和[参数结构规范](https://docs.vulkan.org/refpages/latest/refpages/source/VkDispatchIndirectCommand.html)。
+
+`blc build` 为有效域额外输出 `.dispatch.spv`。模块接口可以声明和传递前缀域能力，跨提交由相同数据的所有权承载，见下节；通用动态任务仍待完成；前缀集合运算见下文。
+
+### 模块接口中的有效域
+
+`.h` 与 `.b` 都声明前置条件和交付关系，顺序不影响接口匹配。下列模块可独立检查；消费函数不依赖生产模块的私有实现：
+
+```c
+// producer.h / producer.b 的签名一致
+program select(read dataset<Item> input,
+               write dataset<Item> output,
+               write dataset<Count, 1> count) on compute
+    ensures prefix(output, count.value) {
+    compact(input, input.keep, output, count.value);
+}
+
+// consumer.h / consumer.b 的签名一致
+program consume(inout dataset<Item> items,
+                read dataset<Count, 1> size, u32 delta) on compute
+    requires prefix(items, size.value)
+    ensures prefix(items, size.value) {
+    parallel (item in prefix(items, size.value)) {
+        item.id += delta;
+    }
+}
+
+// 上层 .b 导入上述模块，.h 声明相同签名
+program run(read dataset<Item> input, inout dataset<Item> output,
+            inout dataset<Count, 1> count) on compute
+    ensures prefix(output, count.value) {
+    select(input, output, count);
+    consume(output, count, 100);
+}
+```
+
+`requires` 表示调用者必须提供的关系；`ensures` 表示当前实现必须证明的关系，不是可任意声明的承诺。Count 必须是独立、形状为 1 且只含一个 u32 字段的数据集；requires 的计数参数必须可读。缺少调用条件报 B191，无效关系声明报 B192，无法证明交付报 B193，`.h/.b` 约束不同报 B028。普通值函数不接受此类约束。
+
+每个 program 只在自己的 requires 下检查。调用时，编译器先满足被调用者的条件，再按声明的 write/inout 参数使调用方旧计数关系失效，最后接收被调用者已证明的 ensures；不从私有实现推断额外承诺。read 计数不能被模块改写，因此调用方已有关系可继续保留；函数直接改写计数后，必须重新生产对应关系才能交付。访问权限仍独立生效，write 参数不会因存在前缀关系而变为 read。
+
+编译结果将无前置条件的公开入口保存为 `ExecutableProgram`，条件模板保存为 `Compilation.templates` 中的 `TemplateProgram`。两个类型都只能由编译器构造，只读访问已检查 IR。`CpuProgram::new`／`Device::compile` 只接收前者；`CpuTemplate::new`／`Device::compile_template` 接收后者，条件执行接口必须取得实际存储持有的域关系。`blc check/build` 可以检查与导出条件模板的原生代码，通用 `compute` 文件入口不能直接绑定裸 Count 执行条件模板。跨模块组合仍可在一个闭合入口中执行，不为普通模块调用读回计数或新增一次提交。
+
+`CpuProgram::program()` 与 `GpuProgram::program()` 只读借用实际执行程序的布局；原生消费者据此创建 dataset、读取字段偏移和步长，不为长期执行另保留一份 IR／字段布局镜像。
+
+### 跨执行与跨提交的域所有权
+
+`DomainBindings<Dataset>`／`DomainBindings<GpuDataset>` 移动实际存储及其已生产的关系。关系由成功执行的编译程序交付，不能从任意计数、原始文件或相同数值重新构造；没有全局计数注册表、哈希或版本票据。`datasets()` 只提供不可变借用，`into_datasets()` 取出存储并放弃关系，宿主随后可自行修改。
+
+- CPU 闭合入口使用 `CpuProgram::run_owned` 返回带关系的绑定；`CpuTemplate::run` 只接收这类绑定。既有 `CpuProgram::run(&mut [Dataset], ...)` 继续执行普通程序，它不交付可持续持有的域关系。
+- `rebind(order, additional)` 按旧绑定和追加绑定的联合顺序选取并重排所有权，同时重排关系中的数据／计数索引。未一起保留的数据与计数不再构成关系，同一存储不能重复绑定为两个可写所有者。追加的普通数据没有域关系。
+- 每次执行后，按接口声明的 write/inout 计数权限使旧关系失效，再接收经过编译证明的 ensures；read 计数保留调用方原关系，即使被调用模块没有重复声明 ensures。前端模块调用和宿主分次执行使用相同权限规则。
+- `Device::upload_domains`／`download_domains` 移动实际传输后的存储及关系。上传／下载仍是显式物理传输，不把 CPU 与显存伪装成同一存储。普通值记录可直接往返消费；CPU／GPU view 分别通过 `with_views`／`upload_with_views` 绑定真实不可变资源。物理地址复制不转移引用图，也不能替代引用所有权。
+
+GPU 的条件绑定来自 `Completed::into_bindings`，或直接来自尚未等待的 `Submission`。后者由 `GpuProgram::submit_after`／`GpuTemplate::submit_after` 接收。以上节 select／consume 的参数顺序为例，producer 是已编译的 select，consumer 是已编译的 consume，input 是预先上传的 source／output／count 三项：
+
+```rust
+let pending = producer.submit(input, &[])?;
+// 保留上一项的 output 和 count；原 source 不成为消费模块的参数。
+let pending = consumer.submit_after(
+    pending, &[1, 2], Vec::<blcompute::vulkan::GpuDataset>::new(),
+    &[blcompute::Value::U32(100)],
+)?;
+let persistent = pending.wait()?.into_bindings();
+```
+
+`submit_after` 消费前项提交和数据，不先等待它。GPU 直接读取前项 Count 并生成间接启动参数，CPU 不读回计数。跨提交只支持同一设备队列；原生宿主绑定边界检查实际存储与接口条件，类型、访问、条件证明和模块实现继续在编译期检查，不把动态 Rust 绑定顺序误称为静态证明。
+
+每份 `GpuDataset` 的唯一存储持有最后一次实际使用它的执行上下文。分支共享原生完成事实和命令资源，分别拥有独立数据，不再维护另一张存储来源表。继续提交前，执行上下文按同队列成功提交次序归并依赖，在分配新临时页之前用已有 Fence 的 [vkGetFenceStatus](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetFenceStatus.html) 观察完成前缀；完成的命令、pipeline 引用、描述符、临时页和已丢弃存储立即释放。没有新增计数读回、等待线程、全局票据或定时轮询。仍有分支持有的数据及不可变 view 的真实引用继续存活，已经观察完成的命令资源不随这些数据长期保留。
+
+回收前仍先记录同队列 RAW／WAW／WAR 依赖：Fence 完成观察不替代设备内存可见性，依据 [Vulkan 跨提交屏障](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier.html)。成功观察到 signaled 后复用原有完成结果，资源析构不会再次调用原生等待。显式 `wait()` 只等待当前末项 Fence；它的作用域包括同队列此前命令，因此前序资源可直接释放，依据 [Vulkan Fence 作用域](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences-signaling)。丢弃尚未完成的数据，只把它的物理存储移交给最后使用点，已有兄弟分支可继续推进；最后一个执行所有者退出时才结束仍未完成的真实消费者。原生完成后允许销毁命令池，见 [vkDestroyCommandPool](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyCommandPool.html)。
+
+这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；只读 Count 共享、多队列／多 GPU 和设备自主生成任务仍未完成。新存储的同步上传应在连续计算开始前完成，否则上传的既有等待会阻塞同队列先前工作。
+
+### 多生产者汇合与待完成结果分叉
+
+`DomainBindings::join(parts)` 消费多个绑定组，依次连接它们的存储槽，并平移各自域关系中的数据／计数索引。每个 dataset 和 Count 保持自己的范围，记录内容与实际数组不复制；记录串接、归约或其他业务合并由 `.b` 程序定义。CPU 执行结果、GPU Completed 的绑定，以及显式传输后的绑定都可如此组合，再用 `rebind` 对应下游接口。
+
+`partition(groups)` 消费一个绑定组，按每组索引转移独立所有权；未选择的存储释放。它复用同一绑定重排规则，禁止重复取出同一存储。空分组有效。数据与 Count 分到同一组时，关系一起转移；拆开双方则放弃该关系，随后重新 join 不会根据相同计数或记录内容恢复关系。多份独立输出及各自 Count 可分开执行再汇合；一个共享 Count 不能被复制为多个可写所有者。
+
+CPU 的 `CpuProgram::run_owned`／`CpuTemplate::run` 结果可直接分区。GPU 的 `Submission::partition(groups)` 可在生产者仍 pending 时直接分叉；`Submission::into_bindings()` 同样不等待，返回的绑定可 join、partition 或传给下一次 submit。Completed 的绑定也使用同一分区实现。分区只转移独立数据及其执行寿命，不下载数据、不复制记录、不申请 GPU 数据页。
+
+例如一个生产者依次绑定 source_a／temporary_a／count_a／output_a／source_b／temporary_b／count_b／output_b，交付两个独立有效域；advance 的参数为 queue／count，combine 为 a／ca／b／cb／total：
+
+```rust
+let pending = producer.submit(inputs, &[])?;
+let mut branches = pending.partition(&[&[3, 2], &[7, 6]])?;
+let right = branches.pop().unwrap();
+let left = branches.pop().unwrap();
+let left = advance.submit(left, &[blcompute::Value::U32(1)])?;
+let right = advance.submit(right, &[blcompute::Value::U32(2)])?;
+let pending = combine.submit_join(
+    [right, left], &[2, 3, 0, 1, 4], vec![total],
+    &[blcompute::Value::U32(3), blcompute::Value::U32(5)],
+)?;
+let results = pending.wait()?.into_bindings();
+```
+
+这些接口消费原所有者，Rust 不允许分叉后继续使用原 Submission 或重复移动同一分支。多份独立输出各自拥有 Count；它们可独立计算再汇合，但不能把同一可写存储或 Count 复制给两个分支。丢弃一个 pending 分支时，它的存储延迟至最后使用点完成才释放，其他分支不必为此等待。延后使用的分支保留自己的数据，即使生产者的命令和临时页已经释放。
+
+执行资源与时间戳的消费者不同：`is_complete()` 可释放已完成命令、临时页及 Fence；原 Submission 仍保留查询池，之后 `wait()` 可读取正确的 `GpuTimings`，不再次进行原生等待。消费 Submission 做分区或后续提交时，不再保留无人读取的旧时间戳；查询池仍由实际 GPU 命令持有到完成。
+
+`GpuProgram::submit_join`／`GpuTemplate::submit_join` 消费同队列的多个未等待提交。order 索引按照传入生产者的数据槽依次连接，再接追加数据；接口参数次序可独立于原生提交次序。假设两个 select 的绑定依次为 source／queue／count，消费接口依次为 a／ca／b／cb／total 和两个增量，且声明两份 requires：
+
+```rust
+let left = producer.submit(input_a, &[])?;
+let right = producer.submit(input_b, &[])?;
+// 逻辑输入顺序 [right, left]，下游参数仍按 [a, ca, b, cb, total]。
+let pending = consumer.submit_join(
+    [right, left], &[4, 5, 1, 2, 6], vec![total],
+    &[blcompute::Value::U32(3), blcompute::Value::U32(5)],
+)?;
+let results = pending.wait()?.into_bindings();
+```
+
+每个生产者的 Count 继续在 GPU 上生成和消费，汇合不先等待生产者或读回计数。原生队列所有者只在成功 vkQueueSubmit 后记录私有 u64 提交顺序；执行资源按该顺序归并回收，Fence 仍是完成事实源。该序号不进入源语言数据、不签发域能力，也不替代 Count。未继续绑定的物理存储交回它实际的最后使用点，不依赖传入生产者的逻辑位置。交接失败时，存储也沿相同寿命释放；仍有兄弟分支持有该执行时，失败分支不阻塞它。
+
+`Bindings<D>` 的 datasets 可为普通 GPU 数据向量或 `DomainBindings<GpuDataset>`。所有执行最终使用同一带域绑定表示；普通向量没有已生产关系。追加预先上传的 CPU 结果或已完成 GPU 结果时，直接传入带域绑定，既有关系和待汇合 GPU 结果一起重排。需要加速结构时，使用相同 `Bindings { datasets, accelerations, textures }`。`submit_after` 是一个前项的汇合入口，执行与生命周期实现共用。
+
+上传依然是显式同步传输，应在排入这批 GPU 工作之前准备好新增存储；CPU 上传结果与未等待 GPU 结果可以随后汇合。没有隐式统一物理内存、异步传输或新 GPU 调度语言。源语言组合的条件继续由前端检查，动态 Rust 路由在实际绑定边界检查归属、唯一所有权与已有关系。
+
+### 有效前缀上的集合运算
+
+同一 `prefix` 域直接用于数值 sum／min／max、scan 和 compact，不通过读取尾部数据猜测有效工作量：
+
+```c
+struct WorkItem { u32 units; f32 energy; bool keep; };
+struct WorkSum { f32 value; };
+program process_queue(read dataset<WorkItem> queue,
+                      read dataset<Count, 1> count,
+                      write dataset<Count> offsets,
+                      write dataset<WorkSum, 1> total,
+                      write dataset<WorkItem> next,
+                      write dataset<Count, 1> next_count) on compute
+    requires prefix(queue, count.value)
+    ensures prefix(offsets, count.value)
+    ensures prefix(next, next_count.value) {
+    scan_exclusive_sum(prefix(queue, count.value).units, offsets.value);
+    reduce_sum(prefix(queue, count.value).energy, total.value);
+    compact(prefix(queue, count.value), queue.keep, next, next_count.value);
+}
+```
+
+三个运算只消费前 count 条记录。扫描保持该有效长度，前端为 offsets 建立同一 Count 的关系，之后可直接使用 `parallel (v in prefix(offsets,count.value))`；筛选为 next 生产独立的新计数；本例 sum 写一个 f32 结果，其他数值归约可写同类型标量或向量字段。空有效域的归约输出对应单位元、compact 计数为 0，scan 不写记录。输出有效域之后的原内容保留，带有非零值、其他记录或无效数值的尾部不会进入运算。
+
+扫描输出容量至少覆盖输入绑定容量，compact 继续要求最坏情况下可容纳整个输入绑定容量，谓词容量仍与输入相等；不会用某一次选择率推导安全分配。输入有效计数不能与本运算的输出别名。访问、类型、形状与域证明仍由同一前端处理；源域计数进入阶段读集合和跨元素依赖。条件模块可独立检查与导出，再由上层入口满足 requires 后组合执行。
+
+CPU 按有效数量执行已有范围集合代码。GPU 的参数生成阶段读取当前 Count，一次写出每层的 X/Y/Z 和有效数量；递归归约、局部扫描、前缀传播和 scatter 分别使用对应层级的间接参数，全程不为调度读回计数。集合中间页与间接参数页分别占据必要的内部绑定槽，布局索引由同一 IR 提供；源程序参数与原数据页表 ABI 保持一致，提交拥有全部资源直到完成。
+
+多维启动补齐的整组在进入共享存储屏障前统一退出；有效尾组的所有线程继续参加屏障，域外值贡献单位元。该控制流遵守 [SPIR-V 工作组屏障规则](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)。命令的递归层数与临时存储目前仍按绑定容量预留，各层启动规模使用实际有效数量；这不是设备生成任意新任务，也未取消容量、显存或 u32 记录域限制。
+
+### 原生稳定键排序
+
+`stable_sort_by_key(input.key, output)` 按 u32 键升序重排完整记录；相同键保持输入顺序。源记录保持原值，输出只写实际输入域，容量尾部保留原内容。有效前缀写成 `stable_sort_by_key(prefix(input,count.value).key, output)`，输出继续持有同一 Count 的有效域关系：
+
+```c
+struct SortItem { u32 key; u32 id; };
+program order(read dataset<SortItem> input,
+              write dataset<SortItem> output) on compute {
+    stable_sort_by_key(input.key, output);
+}
+program order_queue(read dataset<SortItem> input,
+                    read dataset<Count, 1> count,
+                    write dataset<SortItem> output) on compute
+    requires prefix(input, count.value)
+    ensures prefix(output, count.value) {
+    stable_sort_by_key(prefix(input, count.value).key, output);
+}
+```
+
+`.h` 声明相同接口，函数体位于 `.b`。输入必须为 read，输出为独立 write/inout dataset，记录类型相同；输出容量至少覆盖输入绑定容量。输出不得与自身有效计数别名。字段类型、访问／别名、静态容量、结果域关系分别复用 B175、B170、B188／B189、B191／B193；动态实际容量继续由现有设备绑定边界负责。键支持 u32／i32／f32 标量及嵌套字段，统一为稳定升序；向量、bool、记录和 view 键在前端报 B175。u64 键、降序／自定义比较器及含 view 的可写输出仍未实现。
+
+键的顺序由源类型确定：
+
+| 键 | 升序定义 |
+|---|---|
+| u32 | 无符号数值顺序 |
+| i32 | 有符号数值顺序，i32::MIN 在前 |
+| f32 | 全部 32 位编码的全序；负 NaN、−Infinity、负数、负次正规数、−0.0、+0.0、正次正规数、正数、+Infinity、正 NaN |
+
+f32 使用与 [Rust f32::total_cmp](https://doc.rust-lang.org/std/primitive.f32.html#method.total_cmp) 一致的编码全序：正 NaN 的 signaling 编码在 quiet 编码之前，负 NaN 反向；同符号 NaN 的载荷也参与顺序。−0.0 与 +0.0 不是相同键，全部 NaN 也不会合为一个键。只有键编码完全相同的记录才按输入顺序保持稳定；u32／i32 同数值也恰好同编码。这里是排序语义，不改变普通浮点 `==`／`<` 运算的含义。
+
+初始化时，i32 将符号位翻转为无符号次序；f32 将负编码逐位取反、非负编码翻转符号位。转换只写入既有 8 字节键／序号暂存，不改写源字段。CPU 自研 x64 与 GPU 自研 SPIR-V 都只增加这一次整数位运算；不对 f32 键执行浮点比较、转换或算术，不增加 DenormPreserve／SignedZeroInfNanPreserve 的设备要求，记录中的 NaN 载荷、有符号零及次正规数完整保留。
+
+两个后端都以 4 bit、16 桶进行八轮稳定基数分配。中间移动的是 8 字节的键／原始序号，不在每轮移动完整记录；最后依据序号 gather 一次完整记录，保留字段与 ABI 填充字节。CPU 由自研 x64 内核完成初始化、各范围私有直方图、稳定散写与 gather；执行框架只为少量范围／桶计算前缀，继续复用 Windows 范围线程池，不调用另一套排序库。临时内存由当前执行拥有，分配失败直接报告。
+
+GPU 每个 64 线程组产生 16 桶直方图，桶优先、组序号其次排列；对该扁平序列做独占扫描即可同时得到桶起点与此前各组的数量。ballot 求出本 subgroup 内的相等键掩码和稳定序号，加上此前 subgroup 的桶计数后得到组内序号；全局前缀与组内序号共同给出唯一写入位置。直方图扫描复用已有设备扫描层级，全部中间数据留在 GPU，提交持有页与 pipeline 到最后一个消费者完成。
+
+Vulkan 不保证 LocalInvocationIndex 与 subgroup lane 的直接对应关系，因此排序内核明确申请 32 lane、full subgroups，并用 `SubgroupId * 32 + SubgroupLocalInvocationId` 合成逻辑输入序号。尾组仍完整参加 ballot／共享存储屏障；域外元素不贡献计数。依据为 [Khronos subgroup 序号规则](https://docs.vulkan.org/refpages/latest/refpages/source/SubgroupLocalInvocationId.html)与[完整 subgroup 能力定义](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceSubgroupSizeControlFeatures.html)。32 是当前排序后端的实现要求，不改变语言元素域，也不是所有 GPU 算法的固定 wave 宽度。
+
+`Device::for_program`／`with_presentation` 按程序需求查询并启用 `VK_EXT_subgroup_size_control`、compute ballot、subgroupSizeControl 和 computeFullSubgroups；仅排序的 histogram／scatter pipeline 请求 requiredSubgroupSize=32 及 REQUIRE_FULL_SUBGROUPS。普通计算和光线查询不因此申请排序能力。没有声明能力的设备不能编译排序程序，缺少硬件能力明确报错；CPU 排序不依赖 Vulkan 设备。
+
+有效域排序一次生成两组间接参数：记录域及其 `16 * max(ceil(N/64),1)` 直方图域，各自具有当前 u32 范围所需的六层参数。八轮的初始化、直方图、扫描、scatter 和最终 gather 均直接消费设备计数；空结果仍生成正确的零直方图。中间存储和命令层级继续按容量预留，没有 CPU 中途读回计数，也未实现 GPU 动态创建任意命令图。
+
+`blc build` 导出初始化 `.spv/.x64`、各 shift 的 `.histogram.spv`／`.scatter.spv`、扫描 `.scan/.tail/.add.spv`、最终 `.gather.spv`，以及 CPU histogram／scatter／gather `.x64`；有效域另有 `.dispatch.spv`。自研 SPIR-V 生成 API 返回 Result，不适用于排序的后端 pass 明确返回错误。运行时仍直接消费编译结果，不以这些调试导出文件建立另一套执行状态。
+
+u32 排序已验证到 33554433 条记录，i32／f32 已验证到 4194307 条跨页记录；此前 u32 跨提交组合已验证到 16777219 条记录；多个生产者的同队列汇合、pending 独立结果分叉和前序资源回收也已运行，但没有完成排序或提交的性能调优，不声称达到成熟 GPU 排序库的吞吐或已经改善产品帧率。原生 subgroup 值协作已实现；任意 shuffle、非原子任意共享写、循环内动态协作、其他分段运算与设备自主任务仍需继续实现。
+
+## 值类型与顺序控制
+
+支持 `f32`／`u32`／`i32`／`bool`，`float2/3/4`、`uint2/3/4`、`int2/3/4`，嵌套结构体、向量构造、固定 f32 矩阵和 swizzle。支持局部变量、赋值、if/else、while、范围 for、只读数据集游标、break、短路布尔表达式、数值转换和常见标量／向量数学。
+
+数学包括 dot、cross、length、normalize、abs、sqrt、floor、sin、cos、exp、log、exp2、log2、pow、min、max、clamp。数学定义域不会被隐式修正；normalize 零向量、非法 log 等仍是数值设计问题。
+
+`for (node in nodes)` 是每个并行实例自己的有界索引访问，不额外生成一批并行任务。`ordinal(node)` 读取游标索引；`seek(node, node.escape)` 将最内层游标移到指定位置并重新进入循环检查，服务线性 BVH 跳过子树。循环的索引受数据集长度约束；程序仍有责任保证跳转推进和算法终止。
+
+安全整数除法接受编译期非零常量；动态 u32／i32 标量和向量除数需逐分量证明当前值非零，标量操作数可广播；函数接口显式非零类型尚未实现。普通指针、任意地址散写、64 位／浮点原子、非原子任意共享写／动态屏障、递归、动态任务和完整泛型不在当前子集中。
+
+无小数点的正整数字面量当前为 u32，负整数字面量为 i32；带小数点的数值为 f32。整数按 32 位运算，溢出取低位；`0x` 十六进制中的 e/E/f 是数字，不作为浮点标记，紧随其后的加减仍是独立运算符；有符号最小值除以 -1 直接降低为取负，余数为 0，CPU 不执行会触发异常的 idiv。动态浮点到整数的转换必须满足目标范围；当前编译器不能完整证明所有数值定义域。
+
+## 整数常量表达式与不可变绑定
+
+整数常量的加减乘、除余、位运算、移位和比较在前端按实际类型求值，直接生成既有 Constant IR。u32／i32 运算保留低 32 位，移位量取低五位，有符号右移保持符号；整数除法向零截断，MIN／−1 的模 32 位商与零余数保持。向量按分量求值，标量广播、构造与 swizzle 使用原来的类型布局。浮点二元运算和数学函数仍由后端执行，本轮没有新增浮点折叠、通用编译期解释器或函数循环求值。
+
+类型先于常量求值确定。数值字面量及尚未经过类型绑定的整数字面量表达式可以接受另一侧的数值类型；两侧均为未绑定字面量时，含 f32 使用 f32，否则含负整数使用 i32，其余使用 u32。局部绑定、参数、函数返回值和显式类型构造固定类型，已知数值不再赋予它们隐式转换权限。比如 `i32_value + 1` 使用 i32，而 `i32_value + u32(1)` 报 B148；bool 与数值比较需要显式转换。函数实际参数恰好为常量也不改变其声明类型、有符号比较或右移语义。
+
+未被赋值的 let 直接引用原来的 Value／SSA 寄存器，保留常量、范围、域与类型信息，不再先写入局部槽再恢复。可变名称只从当前函数体派生，内联进入／退出函数时与其环境一起切换；无关函数的同名变量不会改变当前绑定的可变性。旧 local_ranges 与全局寄存器 ranges 表均已删除，数值区间随实际 Value／Proof 的分量传递。存在赋值的局部继续使用可变槽和既有分支／循环分析，不因某次执行没有进入赋值分支而冒充常量。
+
+```c
+let divisor = (1 << 3) - 1;
+cell.value = cell.value / divisor;
+let values = tile_publish(cell.value, (1 << 4) + 1);
+u32 total = tile_reduce_sum(values);
+```
+
+安全整数除数及 tile 宽度消费同一份编译期结果；宽度仍必须是非零 u32，同阶段必须一致，设备资源限制仍由原有边界负责。无需另一套 AST 求值器或运行期计算宽度。
+
+已知左值的 &&／|| 只生成实际需要的右侧代码，固定条件的 ?: 只生成选中侧代码并交付其值；所有操作数和分支仍先接受完整类型与能力检查。动态 ?: 的条件求值及优化见前文“条件求值选择式”。`1 / (8 - 8)`、`false && (x / 0 == 0)` 和未选表达式中的非法除法仍报 B152，不因折叠而隐藏源码问题。动态选择和可变除数不被伪装成编译期常量；动态 u32 除数沿用前文的非零证明，未支持的类型仍明确拒绝。
+
+## 局部值转发与函数封装
+
+普通值函数和 cooperative 函数内联后，参数、返回值与局部变量进入同一份结构化 IR。优化器记录局部槽当前已知的 SSA 值，后续读取直接使用这个值；既有后向活跃性随后删除没有真实读取者的局部写入及空槽。函数封装不必因此增加一层内存读写，也不建立额外的运行时对象或调度任务。
+
+分支分别分析，只有两条路径交付同一个 SSA 值时才在合流后继续转发。循环入口先清除所有可能被条件或循环体改写的局部槽知识，循环中的读取与写入仍按实际顺序处理；循环携带的可变状态保留，进入前已知的值不会被误当作循环不变量。跨 tile 阶段的真实私有值继续由同一 IR 活跃性与阶段切分保存。
+
+数值转换的公共表达式以目标标量类型和来源区分；相同来源转为 i32、u32、f32 或 bool 不能相互替代。此优化不重排浮点运算、不跨协作指令合并参与者，也不等于完整 SSA 局部提升、物理寄存器分配或跨元素 SIMD。某个封装是否完全消失，仍取决于实际源程序及控制流；本轮一组多层协作与值函数封装已与直接写法生成逐字节相同的 x64／SPIR-V，具体记录见 [问题列表](Issues.md)。
+
+## ABI 与代码生成
+
+| 项目 | 当前规则 |
+|---|---|
+| 标量 | 4 字节 |
+| float2 | 大小 8、对齐 8 |
+| float3 | 大小 12、对齐 16；其后标量可占偏移 12 |
+| float4 | 大小 16、对齐 16 |
+| 结构体 | 字段按自身对齐排列，最终步长按最大字段对齐 |
+| BLBody | position@0、velocity@16、energy@28、stride=32 |
+| 小参数 | word0 为范围末端、word1 为分区起点，随后数据集长度与对齐后的值参数 |
+| 当前小参数上限 | 128 字节；大参数使用只读数据集 |
+
+Rust 消费者从编译结果获取布局，不能手写另一份结构体步长。CPU 普通范围函数 ABI 为 `(buffer pointers, parameter words, end index, begin index)`；数值归约与普通扫描经第五个结果指针写出紧密分量。第二个参数始终指向程序统一参数，扫描／压缩／分段归约的范围前缀与排序范围元数据通过指针表末尾的私有项传递；每个工作回调只持有自己的指针表，原记录、统一参数和摘要数据不复制。自定义传播把私有项作为仅原生降低可见的只读 Buffer，用已有 Load IR 读取，不新增源语言资源或 GPU binding。分段计数仍使用自己的双 word 范围结果，源程序不暴露这些执行参数。
+
+SPIR-V 1.4 直接按标准编码。GPU 的逻辑数据集通过只读的 u64 设备地址页表访问最多 256 MiB 的物理页；记录不跨页，源语言的元素索引仍是 u32。64 位物理地址不表示源语言已经支持通用 u64。分页、上传、读回和递归归约临时存储由同一执行框架拥有。当前普通 GPU map 每组默认 64 个线程，tile 阶段使用其源码宽度；这不是假定硬件 wave 必须为 64，也与 Burley SSS 的采样数无关。驱动仍负责把 SPIR-V 转成具体 GPU 指令；自研语言不等于绕开硬件驱动。
+
+```powershell
+.\target\release\blc.exe check ..\BLEngine\Programs\render\frame.b ..\BLEngine\Programs 'frame<2,3840,2160,2,8294400,33177600>'
+.\target\release\blc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
+```
+
+build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` 和布局 `.layout`。引擎运行时直接使用同一编译器结果和后端，不靠这些调试导出文件再建立第二套权威表示。
+
+### x64 物理寄存器与栈槽
+
+逐元素范围内核不再给每个 IR 寄存器和局部变量固定保留一份栈存储。自研后端复用结构化 IR 的循环固定点活跃性，建立 SSA 值与可变局部槽的干涉关系，按静态引用及循环权重着色；同时存活的值不能占用同一位置。分支、break／seek、循环回边和 tile 阶段私有值均参与分析。寄存器不足的值分配溢出槽，不重叠的寿命可以复用同一槽。下面的分配表描述标量降低；四元素 SIMD 的位置见下一节。
+
+| 用途 | 当前分配 |
+|---|---|
+| 整数与 bool 值 | R8D、R9D、ESI、EDI、EBP |
+| f32 值 | XMM2–15，各保存一个标量值 |
+| 跨数学函数调用的值 | 使用非易失寄存器或溢出槽；不把 R8／R9、XMM2–5 当成可跨调用保留的存储 |
+| 内核临时运算 | RAX／RCX／RDX、R10／R11、XMM0／1，独立于值分配 |
+| 范围与绑定 | 既有 RBX、R12–15；全范围入口／退出保存恢复 |
+
+实际使用到的非易失通用寄存器保存全部 64 位，XMM6–15 保存全部 128 位，每个范围调用仅在入口／退出各处理一次。只有含外部数学调用的内核保留 32 字节调用区；栈帧保持 16 字节对齐，大帧继续逐页触及，零字节局部帧无需调整 RSP。寄存器规则依据 [Windows x64 ABI](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)。当前还没有生成动态栈展开与调试信息。
+
+寄存器间的 f32 值使用完整 XMM 位复制，避免为未使用的高位保留依赖；逻辑运算仍只消费各标量低 32 位。tile 保存／恢复直接消费分配位置与既有逐 lane 私有流，不再要求中间值同时拥有永久栈位置。算术次序保持，数值转换与数学定义域不因此改变。
+
+标量和四元素 SIMD 共用活跃性与着色实现，基础指令直接消费各自的分配位置；活跃区间拆分和寄存器合并继续开发。单个标量驻留 XMM 与跨元素 SIMD 是两件事。GPU 继续由同一 SPIR-V 后端与驱动分配物理寄存器，没有复制一套 CPU 分配结果到 GPU。完整集合库、非原子任意共享写／动态协作和多设备执行仍未完成，性能取决于数据组织、工作量与具体代码。
+
+### x64 直接操作数
+
+标量算术、比较、局部复制、常量、参数与数据加载／保存直接使用已分配的 GPR、XMM 或溢出槽。目标与来源相同的位复制不生成指令，栈到栈复制按硬件约束通过临时 GPR 完成；不同类型的寄存器之间用 MOVD 保留 32 位原值。XMM 内部复制继续使用完整位复制，数据存储只读写该标量的 4 字节，不覆盖相邻字段。
+
+整数加减乘与位运算、浮点加减乘除、min／max 直接取得右操作数，允许其为寄存器或溢出槽。两地址指令的结果若与尚未读取的右值共址，先在保留的临时寄存器完成计算，再交付结果；不通过交换浮点操作数消除复制。减法、除法、NaN 与正负零相关的 min／max 次序保持，CPU 的既有 SSE 行为遵循 [Intel 指令手册 MINSS／MAXSS](https://cdrdv2-public.intel.com/782151/253667-sdm-vol-2b.pdf)。这不扩大为所有后端的 NaN 载荷保证。
+
+整数除余使用编译期常量倒数的精确乘法／移位序列，动态移位使用 ECX／CL，结果直接交付实际位置。比较直接读取来源后生成原有 bool 结果；IR 已准备好两个输入的 Select 使用 CMOV 做位选择，不改变前端的条件求值与 if／while 控制流。ModRM、REX 和 SIB 编码由同一后端消费寄存器／基址位移；零位移、8 位和 32 位位移用于实际需要的寻址，也服务非易失寄存器保存／恢复。
+
+上述指令选择描述标量执行，四元素降低见下节。进一步的寻址、寄存器合并、活跃区间拆分和复杂控制流向量化未完成；代码更短也不自动证明某个程序吞吐更高，实际数据见 [问题列表](Issues.md)。
+
+### 四元素 SSE2 并行降低
+
+普通直线 map 阶段可以在一个 CPU 范围函数内一次处理四个独立元素，范围内剩余至多三个元素执行同一 IR 的标量指令。选择在编译期完成，不增加源语言语法、运行时重编译、系统任务或另一套数据格式。现有 `simulation.bodies::step` 已经使用该降低；4 是当前 CPU 机器粒度，不是源语言 tile 宽度、GPU subgroup 宽度或光照采样数。
+
+编译器先区分常量／参数／只读统一地址得到的统一值，与逐元素值。存储必须使用当前元素索引；读取可使用当前元素、未被本阶段写入的数据集任意合法索引，以及不可变 view。各元素的独占写入、普通索引范围与绑定所有权沿用前端和执行器的既有证明；unsafe_read 仍由调用方承担外部索引关系，后端不扩大其权限。向量寻址还须能以目标机器的位移表达，阶段融合与显式 phase 保持。分支／循环、tile／subgroup、射线查询、外部数学调用和逐 lane 不同的移位量目前不进入四元素降低，这些阶段继续使用已有的标量范围生成。
+
+只读间接读取逐 lane 生成 64 位主机地址，按原类型步长／字段位移取得四个标量后合并到既有 SSE2 批次。它不是硬件向量 gather 指令；批次中的算术、转换、bool 规范化与写回继续使用原有实现。嵌套 view 的地址高低字和元素索引可以每 lane 不同，结果在所有输入 lane 读取完成后才写回分配位置，允许真实的寄存器及溢出槽复用。一个读取操作的 view 基址统一时只构造一次该基址；地址和索引都统一时只读一次并广播。数据始终保持原 AoS 布局，没有预先打包整张几何、复制资源图或增加运行期索引检查。
+
+这里只覆盖前端已生成的直线指令，不把有条件的外部读取提前到未选分支之外。普通索引由来源域、数值界／形状或显式条件证明；例如任意规模工作域的 index()%17 可以读取固定 17 项表，原同形域的 index()/3 也保持支持。含视图的值函数可在直线调用中批量降低，复杂控制流及协作 SIMD 仍需继续实现。
+
+已支持 f32 加减乘除、sqrt／abs／min／max，u32／i32 模 32 位加减乘、编译期非零常量除余与已逐分量证明非零的动态 u32／i32 除余、位运算、统一移位量，标量／bool 转换、六类比较和位选择。每个 packed lane 保留一个逻辑元素的值，浮点运算不重排、不横向归约、不融合成 FMA。u32 乘法用 SSE2 的偶／奇位乘积重组低 32 位；u32→f32 分别精确转换高低 16 位后只在最终加法舍入一次，覆盖大于 i32 最大值的输入。f32→u32 按 2^31 拆分再转换；动态转换仍需满足既有数值定义域，不承诺非法数值没有问题。
+
+每个 XMM4–15 保存四个元素的同一标量分量，XMM0–3 为机器临时值；溢出槽为 16 字节。一个逻辑 float3 可以对应三个这样的向量，外部记录的 AoS 步长、字段对齐、填充与传输 ABI 不变。后端按字段装载四条记录，再按字段写回各自记录；只读统一数据只装载一份再广播。两地址运算保留未读右值和 min／max 的源顺序。
+
+只服务寻址、没有普通值消费者的 Index 不生产索引向量，直接使用范围游标；实际使用 `index()` 时产生四个真实全局索引。整组入口以 64 位计算 index＋4，避免 u32 末端的加法回绕；只有整组落在范围内才装载四条记录。起点无需按四对齐，尾部不读取范围之外的行或广播记录。
+
+同一干涉图先供标量着色，再供 SIMD 机器位置分析，分析消费者结束后释放。整组与尾部的临时数据区域可以复用，唯一 Frame 在最大区域之后保存两者实际使用的非易失寄存器，并在范围入口／退出各处理一次；不复制两套栈帧或改变资源完成点。该实现仅使用既有 x64 基线中的 SSE2；AVX2／AVX512、更宽批次、分歧掩码与协作 SIMD 仍未完成。数值、规模与时间记录见 [问题列表](Issues.md)。
+
+### 编译期常量整数除余
+
+常量除数以 `IntegerDivisor::Constant(NonZeroU32)` 位模式进入同一 IntegerDivide，符号取自分子类型；常量不再作为运行期寄存器流转。动态除数则使用前文的 Value SSA 操作数。死值删除、表达式复用、局部值转发、活跃性与 tile 私有值保存共同消费这份 IR，不在两个后端重新建立常量事实表。
+
+类型构造保留转换后各分量的常量信息，标量广播、嵌套向量和 swizzle 继续使用同一份信息。例如 `u32(7)`、`uint4(3, 7, 9, 65537)` 和 `int4(-1, 3, -7, -2147483648)` 可作为除数；包含任意零分量、转换后为零或没有当前非零证明的动态除数仍报 B152。整数常量表达式及不可变绑定保留结果，`3 + 4` 可作为除数；函数接口显式非零类型仍未实现，动态除数规则见前文。
+
+CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移取得商；其他除数使用整数乘积高 32 位、必要的修正及右移，余数由 `n - q*d` 的低 32 位取得。不使用浮点倒数或近似除法；编译器的参数推导使用 u128，不代表源语言增加了 u64／u128 类型。SSE2 分别计算偶／奇 lane 的无符号乘积并重组高位，四个 lane 始终是四个独立元素。
+
+有符号整数先以模 32 位运算取得无符号幅值，再恢复商的符号，保留向零截断及余数跟随被除数符号的语义。`i32::MIN / -1` 沿用取负的模 32 位结果，余数为零，前端仍直接生成该语义；不让 GPU 执行未定义的溢出除法。SPIR-V 从同一 IR 生成类型化常量与整数除余指令，驱动负责硬件指令选择。
+
+逐元素不同移位量继续使用标量范围生成。本轮移除了实测较慢的 SSE2 五级选择模拟，没有保留另一条模拟实现或增加运行期切换；更宽硬件指令及编译期成本选择继续属于后端工作。原生执行、精确数值与性能记录见 [问题列表](Issues.md)。
+
+### GPU f32 运算的保留模式
+
+编译器从优化后的实际 IR 派生 f32 运算要求，包括算术、数值比较与转换、数学函数、块内集合、subgroup 数值协作和全域 f32 归约／扫描。主入口、f32 归约尾入口及扫描的递归／传播入口声明 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`；纯位复制、整数运算及已删除的浮点计算不引入该要求。该规则归属浮点运算本身，普通内核与使用极值集合的内核使用相同模式。
+
+同一 Vulkan 设备在既有属性查询链读取 `VkPhysicalDeviceFloatControlsProperties`，实际执行绑定检查所需的两个 32 位能力；不支持时明确报错。该能力来自 [Vulkan 1.2 浮点控制属性](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceFloatControlsProperties.html)，入口模式按 [SPIR-V float controls](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_float_controls.html) 编码。保留有符号零、次正规数、NaN／无穷语义不等于承诺所有 NaN 载荷、浮点结合顺序、近似数学结果和舍入误差一致；CPU 继续使用既有原生浮点指令。
+
+## 通用原生执行入口
+
+`blengine compute <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]` 直接编译并执行没有未满足前置条件的公开 program。先按接口 dataset 顺序绑定数据，再按 texture2d 顺序提供 `.bltex`，与参数在原接口中是否交错无关；`:count` 明确申请该长度的全零数据。每个值参数按接口类型解析，向量按分量顺序提供。只写与读写数据输出为 `<参数名>.bldata`，read 数据不重复保存。加速结构和 view 通过原生 Bindings API 绑定，不从数据文件伪造地址。
+
+```powershell
+..\BLEngine\target\release\blengine.exe simulate cpu 1048576 8 Saved\bodies.bldata
+..\BLEngine\target\release\blengine.exe compute gpu ..\BLEngine\Programs\simulation\statistics.b step_and_total ..\BLEngine\Programs Saved\Compute Saved\bodies.bldata :1 -- 0.008333333 0.2
+```
+
+`BLDATA v1` 为小端：8 字节 `BLDATA\0\0`，随后 u32 version=1、记录数、记录步长、执行步数，再跟完整记录字节。它保存指定编译布局下的值，类型和字段含义来自 `.h`；文件本身不能证明相同步长的数据具有相同业务类型。当前读取会验证文件边界和编译步长，执行绑定继续检查类型和形状。`simulate` 与通用入口共用 `Dataset::read_data/write_data`，不再各自实现一套写入协议。
+
+`GPU_program_ms` 只含设备程序和阶段依赖；CLI 的 `compute_elapsed_ms` 从程序编译结果与输入数据准备好之后开始，包含后端编译、执行和输出写盘，GPU 另含设备创建／上传／读回。两者不是相同口径，也不能与 CPU 原生运算时间直接相减计算加速比。
+
+## 语言优先的开发顺序
+
+Blink 是引擎主要计算算法及其生产消费关系的表达语言，覆盖适用的 CPU／GPU 计算。材质与光照、图像计算、几何与空间算法、动画与模拟、场景批量数值更新、有效工作组织和阶段组合主要使用 B；Rust 继续负责自研编译器与优化后端、原生执行框架、平台接口和物理资源生命周期。系统边界与核心设计以 [引擎总体架构](../../BLEngine/Docs/Architecture.md) 的对应章节为事实源。当前渲染求交、GGX、阴影、resolve 与模拟程序已经走这条链路；完整分工包含尚待实现的能力。
+
+B 表达数据域、访问与协作语义以及算法依赖，Rust 编译器与执行框架据此落实原生执行。几何页需求与优先级等计算归 B，实际 I/O、分配、传输、Vulkan 命令、硬件加速结构构建和实际完成后的释放仍由 Rust 的既有所有者负责；BLEditor 编辑与排版继续属于原核心。两者不维护第二套场景状态或宿主计数。当前语言和后端能力缺口由真实消费者推动补齐，不能当作主要算法永久留在 Rust 的边界；沿既有 program／IR／执行链替换重复实现，不新增独立调度服务、宿主逐元素回调或额外校验流程。
+
+语言发展的运行效率目标是跨阶段消除无必要中间存储、按实际有效域推进工作、改善数据局部性，并让执行框架减少无必要的交接与等待。CPU／GPU 后端持续提高机器执行质量；不以 B 源码比例、内核数量减少或当前单项实现代替同画质、同采样与同几何精度下的产品性能结果。
+
+scan、稳定 compact、有效前缀并行域、GPU 间接启动和接口级 requires／ensures 已完成，安全域可跨模块及独立 CPU 执行／GPU 提交传递。有效前缀上的数值标量／向量 sum／min／max、scan／compact、u32／i32／f32 稳定键排序、同队列完成资源回收、多生产者汇合及待完成独立结果分叉现已完成，CPU／GPU 块内数值 sum／min／max 与对应 exclusive scan 也已实现，继续分段集合运算、稀疏邻域和协作计算。动态工作量、容量、唯一写入与资源所有权需要进入语言／IR 的真实语义，不能仅用函数名字包装任意散写。当前提交序列仍由宿主确定，通用设备动态任务调度未实现。
+
+CPU 后端已有物理寄存器分配、溢出槽复用和直线逐元素四元素 SIMD，继续活跃区间拆分、寻址／指令选择、复杂控制流与更宽向量；GPU 已在 subgroup 值协作和类型化 tile 输入之上实现中间值发布及块内集合原语，继续补可变协作、同步作用域与调度优化；数据与依赖证明成立后再融合。静态 cooperative 函数及宽度继承现已实现；模块增量编译、语言资源泛型、调试信息和大于 u32 的记录域仍需完成。先把语言与执行基础用于真实消费者，再继续资产导入和上层引擎功能；FBX 与 UE 转换需求保留。
+
+## 开放 u32 const、静态形状推导与具体入口（2026-10-25）
+
+函数、cooperative、program 和记录可以声明 `const N: u32`，无需枚举长度。N 在每次具体使用时确定，覆盖 u32 值域；0 是否合法由实际类型、操作或已声明约束决定。普通数组、纹理数组和 tile 宽度仍要求正长度，普通数组与记录布局继续检查原 u32 字节范围；静态参数不意味着设备能承载所有长度。类型参数仍使用原有限类型集合，开放 u32 常量参数不等于开放类型接口。
+
+开放与有限 const 可以组合。显式类型／值实参仍使用同一顺序和规则；字面量、模块 const 与外层 const 均可传入，身份规范化为实际类型名与十进制值。实参位置暂不解析任意算式，使用已有模块 const 表达式先求得值。没有默认值、范围表达式或一般符号谓词。
+
+不显式指定 const 时，编译器可从对应的固定 array<T,N>、名义泛型记录、固定 dataset<T,N> 及 read array<texture2d,N> 的静态形状推导。多个实际参数对同一 N 必须一致，冲突报 B235。动态 dataset 的运行期容量、GPU 的有效 Count、tile 的有效尾长度和纹理像素不会被读回或用于猜测静态参数；无法推导时必须显式给出。函数、协作调用与 program 阶段调用共用原实例化和实际资源身份。
+
+例如 `u32 divided<const N:u32>(u32 value) on compute requires nonzero(N);` 的 N 在实例化时直接检查；N=0 报 B226，非零时该已满足的 const 条件不进入执行接口。一般值参数的 nonzero、nonempty、index 和 prefix 仍按原规则证明，不能从静态参数伪造实际有效域。
+
+完整 `.h`：
+
+```c
+module open_blocks;
+struct Cell<T:numeric> { T value; u32 audit; };
+cooperative T plus<T:numeric,const Bias:u32>(tile<T> input) on compute;
+program run<T:numeric,const Width:u32,const Bias:u32>(inout dataset<Cell<T>> rows) on compute;
+```
+
+对应 `.b`：
+
+```c
+module open_blocks;
+cooperative T plus<T:numeric,const Bias:u32>(tile<T> input) on compute {
+    T value = tile_reduce_sum(input);
+    return value + T(Bias);
+}
+program run<T:numeric,const Width:u32,const Bias:u32>(inout dataset<Cell<T>> rows) on compute {
+    parallel (row in rows) {
+        let block = tile_input(rows.value, Width);
+        T value = cooperate plus<T,Bias>(block);
+        row.value = value;
+    }
+}
+```
+
+blc 可选择公开 program 的具体入口：
+
+```powershell
+.\target\release\blc.exe check <module.b> <module-root> 'run<uint3,37,11>'
+.\target\release\blc.exe build <module.b> Saved\Compiled <module-root> 'run<uint3,37,11>'
+```
+
+Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；入口必须公开且属于入口模块，可用限定名和模块 const。返回的 programs／templates 只包含所选具体入口，名字使用规范化类型与值；原类型、访问、索引、初始化、阶段和 prefix 检查完成后才产生 ExecutableProgram 或 TemplateProgram。条件模板仍需真实 DomainBindings，普通 compute 文件入口不能绕过。BLEngine compute 命令使用相同入口选择，无需先在源码中写一个具体包装 program。
+
+不带具体入口的 check／build 保持有限实例检查；开放声明不枚举 u32 全域，也不隐式选择一个值。其通用声明结构与固有资源权限先检查，依赖具体值的布局和函数体在实际使用时完整编译检查。Compilation.open_generics 与 blc 输出列出开放声明，并明确 body checked on instantiation；只检查未使用开放库不证明所有可能实例的正文都合法。只有开放 program 且没有可导出具体入口时，build 报 B240，要求选择入口。完整符号泛型体分析仍未实现。
+
+开放参数使用原 AST 替换、名义布局与 IR 常量，使用后即为具体算法；不增加泛型运行时、宿主逐元素回调、动态编译服务、额外 uniform、运行期长度表或另一份资源状态。material.textured::indexed_ggx 已删除原固定长度清单，从实际纹理数组推导 N，索引仍必须满足 requires index；实际算法、资源完成和像素品质目标保持。

@@ -1,0 +1,14 @@
+/target/
+/Saved/
+/Local/
+/.p4config
+/.p4root/
+/*.p4form
+/.env
+/.env.*
+/auth.json
+/secrets/
+*.spv
+*.x64
+*.reloc
+*.layout

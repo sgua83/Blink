@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/blanguage", "crates/blcompute"]
+resolver = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
