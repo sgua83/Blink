@@ -59,6 +59,7 @@ impl Builder<'_> {
         };
         if let Some(value) = &mut value {
             value.uniform &= self.control_uniform;
+            value.proof = bounds::Proof::returning(value, &self.env);
         }
         let mut borrowed = BTreeMap::new();
         let definition = self.definition.clone();

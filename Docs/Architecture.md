@@ -182,6 +182,8 @@ write T 与 inout T 共用实际独占位置、字段投影和别名规则。wri
 
 return 的所有者是当前静态展开函数，不是 GPU invocation 或 program。前端以顺序块的继续／return／break／seek 边表达控制流；在每条返回边检查 write 完整初始化，在循环条件失败和 break 处保存原环境，后续合流只消费实际可到达路径。独占位置、资源长度与值仍使用既有 Proof／initialized 数据，不向运行时复制这些编译期事实。
 
+bool 返回沿同一个 Proof／Condition 保存每个返回点当前成立的值身份、数值区间、索引域与非零事实，再按 false／true 结果分别取所有可能路径的共同事实。常量返回只进入自身结果，返回表达式的条件继续参与原合并；不再把两种结果先混合并丢弃全部谓词。调用方只精化仍持有同一实际值的绑定，资源长度仍属于原 dataset／tile／view。没有第二份证明状态、运行时条件对象、索引检查或设备协议；普通非 bool 返回、输出初始化及原 Scope／Exit 生命周期保持。
+
 IR 的 Scope／Exit 明确最近函数退出域；普通末尾返回不需要它，特化后唯一末尾退出也直接消除。活跃性、DCE、寄存器分配、tile 私有状态和全部集合 x64 入口共用这条退出边。Scope 的必要写入保留，未使用的纯返回计算可删除；无返回值函数不生成结果槽。
 
 CPU 直接修补静态跳转到当前函数域末尾。GPU 使用恒定选择器的结构化 switch 域；不在循环中的 Exit 跳到当前函数域合流，循环内 Exit 先到最内层循环合流，再用该处 OpPhi 的 SSA 布尔值决定继续退出外层循环或到函数域合流。普通 break 的入边为 false，函数退出入边为 true；没有可变返回状态、逐语句条件包裹或结束 invocation 的 OpReturn。依据 [SPIR-V 2.11.3 结构化控制流](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)，分支不能任意跨越嵌套 loop；嵌套函数各持有自己的 Scope。

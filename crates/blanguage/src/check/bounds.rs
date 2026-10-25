@@ -118,6 +118,8 @@ impl Proof {
     }
     pub fn common(a: &Value, b: &Value) -> Self {
         Self {
+            condition: (a.ty == Ty::scalar(Scalar::Bool))
+                .then(|| Box::new(Condition::common(Condition::of(a), Condition::of(b)))),
             ranges: (0..a.regs.len())
                 .map(|i| {
                     let (al, ah) = a.component_range(i);
@@ -139,6 +141,63 @@ impl Proof {
                 .collect(),
             ..Self::default()
         }
+    }
+    fn facts(&self, ty: &Ty) -> Facts {
+        let mut facts = Facts::new();
+        for (component, (scalar, _)) in ty.components.iter().enumerate() {
+            let Some(identity) = self.origins.get(component).copied().flatten() else {
+                continue;
+            };
+            if matches!(scalar, Scalar::U32 | Scalar::I32)
+                && self.nonzero.get(component) == Some(&true)
+            {
+                facts.insert(Fact::NonZero(identity));
+            }
+            if *scalar == Scalar::U32 {
+                let (minimum, maximum) = self.range(component);
+                if minimum != 0 {
+                    facts.insert(Fact::Minimum(identity, minimum));
+                }
+                if maximum != u32::MAX {
+                    facts.insert(Fact::Maximum(identity, maximum));
+                }
+                facts.extend(
+                    self.domains(component)
+                        .into_iter()
+                        .map(|d| Fact::Index(identity, d)),
+                );
+            }
+        }
+        facts
+    }
+    pub(super) fn returning(value: &Value, environment: &BTreeMap<String, Binding>) -> Self {
+        let mut proof = value.proof.clone();
+        if value.ty == Ty::scalar(Scalar::Bool) {
+            let mut facts = Facts::new();
+            for binding in environment.values() {
+                facts.extend(match binding {
+                    Binding::Value(value) => Self::capture(value).facts(&value.ty),
+                    Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
+                    Binding::Data(view) => view
+                        .length
+                        .clone()
+                        .with_identity(ValueIdentity::DataLength(view.binding))
+                        .facts(&Ty::scalar(Scalar::U32)),
+                    Binding::Tile(view) => view
+                        .length
+                        .clone()
+                        .with_identity(ValueIdentity::TileLength)
+                        .facts(&Ty::scalar(Scalar::U32)),
+                    _ => Facts::new(),
+                });
+            }
+            let mut condition = Condition::of(value);
+            for case in condition.cases.iter_mut().flatten() {
+                case.extend(facts.iter().copied());
+            }
+            proof.condition = Some(Box::new(condition));
+        }
+        proof
     }
     pub fn append(&mut self, value: &Value) {
         self.origins
@@ -324,6 +383,13 @@ fn maximums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
     result
 }
 impl Condition {
+    fn common(a: Self, b: Self) -> Self {
+        let [af, at] = a.cases;
+        let [bf, bt] = b.cases;
+        Self {
+            cases: [either(af, bf), either(at, bt)],
+        }
+    }
     pub fn of(value: &Value) -> Self {
         let mut condition = value
             .proof
