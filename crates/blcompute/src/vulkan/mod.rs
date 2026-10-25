@@ -24,7 +24,7 @@ pub use ray::{Acceleration, BottomLevel, RayInstance};
 use std::num::NonZeroU32;
 use std::{
     cell::Cell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::{CStr, c_char, c_void},
     mem::ManuallyDrop,
     ptr::{null, null_mut},
@@ -1792,10 +1792,23 @@ impl GpuProgram {
         let f = &c.inner.functions;
         let device = c.inner.owner.device;
         let mut scratch = Vec::new();
+        // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
+        let mut scratch_indices = Vec::new();
+        let mut selected_storage = BTreeMap::new();
         let query_count = u32::try_from(c.pipelines.len() as u64 * 2 * steps.get() as u64)?;
         let mut extra_sets = 0u64;
         for stage in c.program.stages() {
             let count = data[stage.domain].count;
+            if stage.selection.is_some() {
+                if let Some(&slot) = selected_storage.get(&count) {
+                    extra_sets += (levels(count) * 2 + 2) as u64 * steps.get() as u64;
+                    scratch_indices.push(slot);
+                    scratch.push(None);
+                    continue;
+                }
+                selected_storage.insert(count, scratch.len());
+            }
+            scratch_indices.push(scratch.len());
             let temporary = match stage.operation {
                 blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
                     ty: ref reduction_ty,
@@ -1964,8 +1977,9 @@ impl GpuProgram {
                         null(),
                     );
                     (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
-                    let prefix_set = if let Some(args) =
-                        scratch[i].as_mut().and_then(|s| s.arguments.as_mut())
+                    let prefix_set = if let Some(args) = scratch[scratch_indices[i]]
+                        .as_mut()
+                        .and_then(|s| s.arguments.as_mut())
                     {
                         Some(prefix::prepare(
                             &mut commands,
@@ -1976,14 +1990,14 @@ impl GpuProgram {
                             &accelerations,
                             &mut uniforms,
                             self.partition_elements,
-                            step > 0,
+                            step > 0 || scratch_indices[i] != i,
                         )?)
                     } else {
                         None
                     };
                     match &stage.operation {
                         blanguage::ir::Operation::StableSort(s) => {
-                            let temporary = scratch[i].as_ref().unwrap();
+                            let temporary = scratch[scratch_indices[i]].as_ref().unwrap();
                             sort::record(
                                 &mut commands,
                                 c,
@@ -2004,7 +2018,7 @@ impl GpuProgram {
                                 c,
                                 i,
                                 &data,
-                                scratch[i].as_ref().unwrap(),
+                                scratch[scratch_indices[i]].as_ref().unwrap(),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2017,7 +2031,12 @@ impl GpuProgram {
                                 c,
                                 c.pipelines[i],
                                 prefix_set.unwrap(),
-                                scratch[i].as_ref().unwrap().arguments.as_ref().unwrap(),
+                                scratch[scratch_indices[i]]
+                                    .as_ref()
+                                    .unwrap()
+                                    .arguments
+                                    .as_ref()
+                                    .unwrap(),
                                 &mut uniforms,
                                 0,
                             );
@@ -2067,8 +2086,10 @@ impl GpuProgram {
                                 ],
                                 &r.values.fields,
                                 &data[r.values.fields.source],
-                                &scratch[i].as_ref().unwrap().buffers,
-                                scratch[i].as_ref().and_then(|s| s.arguments.as_ref()),
+                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                scratch[scratch_indices[i]]
+                                    .as_ref()
+                                    .and_then(|s| s.arguments.as_ref()),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2087,8 +2108,10 @@ impl GpuProgram {
                                 ],
                                 &r.values.fields,
                                 &data[r.values.fields.source],
-                                &scratch[i].as_ref().unwrap().buffers,
-                                scratch[i].as_ref().and_then(|s| s.arguments.as_ref()),
+                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                scratch[scratch_indices[i]]
+                                    .as_ref()
+                                    .and_then(|s| s.arguments.as_ref()),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2110,8 +2133,10 @@ impl GpuProgram {
                                 r.head_word.is_some(),
                                 &data[r.values.source],
                                 &data[r.values.target].allocation,
-                                &scratch[i].as_ref().unwrap().buffers,
-                                scratch[i].as_ref().and_then(|s| s.arguments.as_ref()),
+                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                scratch[scratch_indices[i]]
+                                    .as_ref()
+                                    .and_then(|s| s.arguments.as_ref()),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2135,8 +2160,10 @@ impl GpuProgram {
                                 r.head_word.is_some(),
                                 &data[fields.source],
                                 &data[fields.target].allocation,
-                                &scratch[i].as_ref().unwrap().buffers,
-                                scratch[i].as_ref().and_then(|s| s.arguments.as_ref()),
+                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                scratch[scratch_indices[i]]
+                                    .as_ref()
+                                    .and_then(|s| s.arguments.as_ref()),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2151,7 +2178,7 @@ impl GpuProgram {
                                 i,
                                 selection,
                                 &data,
-                                scratch[i].as_ref().unwrap(),
+                                scratch[scratch_indices[i]].as_ref().unwrap(),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2177,12 +2204,15 @@ impl GpuProgram {
                                 let source = if pass == 0 {
                                     &data[reduction.source].allocation
                                 } else {
-                                    &scratch[i].as_ref().unwrap().buffers[(pass - 1) % 2].allocation
+                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers
+                                        [(pass - 1) % 2]
+                                        .allocation
                                 };
                                 let target = if groups == 1 {
                                     &data[reduction.target].allocation
                                 } else {
-                                    &scratch[i].as_ref().unwrap().buffers[pass % 2].allocation
+                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers[pass % 2]
+                                        .allocation
                                 };
                                 let mut pass_infos = infos.clone();
                                 pass_infos[reduction.source] = VkDescriptorBufferInfo {
@@ -2201,7 +2231,7 @@ impl GpuProgram {
                                     &pass_infos,
                                     &accelerations,
                                     None,
-                                    scratch[i]
+                                    scratch[scratch_indices[i]]
                                         .as_ref()
                                         .and_then(|s| s.arguments.as_ref())
                                         .map(|a| &a.allocation),
@@ -2220,7 +2250,9 @@ impl GpuProgram {
                                     length,
                                     &mut uniforms,
                                     self.partition_elements,
-                                    scratch[i].as_ref().and_then(|s| s.arguments.as_ref()),
+                                    scratch[scratch_indices[i]]
+                                        .as_ref()
+                                        .and_then(|s| s.arguments.as_ref()),
                                     pass,
                                 );
                                 if groups == 1 {

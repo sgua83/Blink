@@ -119,6 +119,25 @@ program 的阶段参数可以直接传入 const 名称，包括向量、普通�
 
 模块 const 与函数 const 参数是不同职责；固定数组和有限／开放 u32 const 参数已实现，开放式编译期解释器与通用浮点常量计算仍未实现。
 
+## 编译期阶段范围循环（2026-10-26）
+
+program阶段层支持`for(counter in first..last)`。范围为已有语法的u32字面量、模块const、具体泛型值，或当前静态外层计数器；仍使用原阶段实参解析，不运行宿主函数解释循环。例如：
+
+```c
+program iterate<const R:u32>(inout dataset<Item> items) on compute {
+    parallel(item in items){item.value=index();item.keep=index()%7==2;}
+    for(round in 0..R){
+        parallel(item in where(items,items.keep)){
+            item.value=item.value*31+round;
+        }
+    }
+}
+```
+
+编译器按左闭右开范围展开已有parallel、集合、子program、phase及嵌套静态循环。counter是当前词法作用域的不可变u32编译期值，结束后不泄漏；不能覆盖现有参数或计数器。各轮依次消费真实数据和原requires／ensures关系，已改写的Count关系继续失效，不复制一份宿主权威状态。phase跨轮保留，融合仍受既有域、选择及读写依赖约束。
+
+空范围不展开正文；若整个program没有其他阶段，仍报B104。展开阶段数量及编译资源随实际迭代数增加，不表示已经有设备驱动的动态阶段循环。普通parallel正文内的for／while保持原运行期控制流；阶段层已解析根为动态或非u32时报B251，未开放的范围表达式仍沿原B114诊断，应先声明模块const；计数器改写沿B134，重复名称沿B125，跨program递归沿B105拒绝。
+
 ## 受约束的数值泛型函数
 
 普通函数与 cooperative 函数支持 `T function<T: floating>(T value)` 形式，类型参数放在函数名之后，约束是编译器已知的有限类型集合。`.h/.b` 的类型参数名、顺序和约束必须相同。调用仍写普通函数名，从实际参数推导具体类型；同一 T 在多个参数中必须相同，不为推导而隐式改变数值类型或向量宽度。

@@ -313,8 +313,75 @@ fn expand_program(
             .fail(d.function.span, "B105", "计算程序递归调用没有静态阶段边界");
     }
     stack.push(key);
-    for statement in d.function.body.as_ref().unwrap() {
+    expand_stages(
+        world,
+        d,
+        d.function.body.as_ref().unwrap(),
+        env,
+        program,
+        stack,
+        boundary,
+        facts,
+    )?;
+    for contract in d
+        .function
+        .contracts
+        .iter()
+        .filter(|c| c.kind == ContractKind::Ensures)
+    {
+        let relation = prefix::relation(program, env, d, contract)?;
+        if !facts.holds(relation) {
+            return d.source.fail(
+                contract.span,
+                "B193",
+                "ensures prefix 未由本函数当前生产证明或有效输入能力支持",
+            );
+        }
+    }
+    stack.pop();
+    Ok(())
+}
+fn expand_stages(
+    world: &World,
+    d: &Arc<Definition>,
+    body: &[Stmt],
+    env: &BTreeMap<String, Root>,
+    program: &mut Program,
+    stack: &mut Vec<String>,
+    boundary: &mut bool,
+    facts: &mut prefix::Facts,
+) -> Result<()> {
+    for statement in body {
         match &statement.kind {
+            StmtKind::For(name, first, Some(last), body) => {
+                if env.contains_key(name) {
+                    return d.source.fail(
+                        statement.span,
+                        "B125",
+                        format!("重复阶段 for 计数器或覆盖参数 {name}"),
+                    );
+                }
+                let bound = |expr: &Expr| -> Result<u32> {
+                    match stage_root(world, d, env, expr)? {
+                        Root::Literal(ty, words) if ty == Ty::scalar(Scalar::U32) => Ok(words[0]),
+                        _ => d.source.fail(
+                            expr.span,
+                            "B251",
+                            "program 阶段 for 的范围必须是编译期 u32；动态循环放在 parallel 中",
+                        ),
+                    }
+                };
+                let first = bound(first)?;
+                let last = bound(last)?;
+                for index in first..last {
+                    let mut child = env.clone();
+                    child.insert(
+                        name.clone(),
+                        Root::Literal(Ty::scalar(Scalar::U32), vec![index]),
+                    );
+                    expand_stages(world, d, body, &child, program, stack, boundary, facts)?;
+                }
+            }
             StmtKind::Parallel(name, syntax, body) => {
                 let data = &syntax.dataset;
                 let Some(Root::Data(domain, domain_access)) = env.get(data) else {
@@ -588,37 +655,7 @@ fn expand_program(
                 }
                 let roots = args
                     .iter()
-                    .map(|arg| match &arg.kind {
-                        ExprKind::Name(n) => {
-                            if let Some(root) = env.get(n) {
-                                Ok(root.clone())
-                            } else if let Some(key) =
-                                world.resolve(n, &d.module, &d.imports, true).filter(|key| {
-                                    world.functions[key].function.kind == FunctionKind::Constant
-                                })
-                            {
-                                let (ty, words) = constant_value(world, &key)?;
-                                Ok(Root::Literal(ty, words))
-                            } else {
-                                d.source
-                                    .fail(arg.span, "B113", format!("未知参数或 const {n}"))
-                            }
-                        }
-                        ExprKind::StaticU32(bits) => {
-                            Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![*bits]))
-                        }
-                        ExprKind::Number(n) => {
-                            let (ty, bits) = number(&d.source, arg.span, n)?;
-                            Ok(Root::Literal(ty, vec![bits]))
-                        }
-                        _ => {
-                            return d.source.fail(
-                                arg.span,
-                                "B114",
-                                "阶段参数必须是已声明参数或常量；逐元素表达式放在 parallel 中",
-                            );
-                        }
-                    })
+                    .map(|arg| stage_root(world, d, env, arg))
                     .collect::<Result<Vec<_>>>()?;
                 let actuals: Vec<_> = roots
                     .iter()
@@ -790,23 +827,42 @@ fn expand_program(
             }
         }
     }
-    for contract in d
-        .function
-        .contracts
-        .iter()
-        .filter(|c| c.kind == ContractKind::Ensures)
-    {
-        let relation = prefix::relation(program, env, d, contract)?;
-        if !facts.holds(relation) {
+    Ok(())
+}
+fn stage_root(
+    world: &World,
+    d: &Definition,
+    env: &BTreeMap<String, Root>,
+    arg: &Expr,
+) -> Result<Root> {
+    match &arg.kind {
+        ExprKind::Name(n) => {
+            if let Some(root) = env.get(n) {
+                Ok(root.clone())
+            } else if let Some(key) = world
+                .resolve(n, &d.module, &d.imports, true)
+                .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
+            {
+                let (ty, words) = constant_value(world, &key)?;
+                Ok(Root::Literal(ty, words))
+            } else {
+                d.source
+                    .fail(arg.span, "B113", format!("未知参数或 const {n}"))
+            }
+        }
+        ExprKind::StaticU32(bits) => Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![*bits])),
+        ExprKind::Number(n) => {
+            let (ty, bits) = number(&d.source, arg.span, n)?;
+            Ok(Root::Literal(ty, vec![bits]))
+        }
+        _ => {
             return d.source.fail(
-                contract.span,
-                "B193",
-                "ensures prefix 未由本函数当前生产证明或有效输入能力支持",
+                arg.span,
+                "B114",
+                "阶段参数必须是已声明参数或常量；逐元素表达式放在 parallel 中",
             );
         }
     }
-    stack.pop();
-    Ok(())
 }
 fn collective_field(
     program: &Program,
@@ -1275,371 +1331,21 @@ impl<'a> Builder<'a> {
     fn statement(&mut self, s: &Stmt) -> Result<()> {
         match &s.kind {
             StmtKind::Declare(annotation, name) => {
-                if self.env.contains_key(name) {
-                    return self.fail(s.span, "B125", format!("重复局部变量或覆盖参数 {name}"));
-                }
-                let ty = self.world.ty(
-                    annotation,
-                    &self.definition.source,
-                    s.span,
-                    &self.definition.module,
-                    &self.definition.imports,
-                )?;
-                let slots = ty
-                    .components
-                    .iter()
-                    .map(|(scalar, _)| {
-                        let slot = self.locals.len();
-                        self.locals.push(*scalar);
-                        slot
-                    })
-                    .collect();
-                self.env.insert(
-                    name.clone(),
-                    Binding::Owned(OwnedBinding {
-                        place: Place::Local(ty, slots),
-                        proof: bounds::Proof::default(),
-                        uniform: false,
-                        initialization: None,
-                    }),
-                );
+                return self.declare_statement(annotation, name, s.span);
             }
             StmtKind::Let(annotation, name, e) => {
-                if self.env.contains_key(name) {
-                    return self.fail(s.span, "B125", format!("重复局部变量或覆盖参数 {name}"));
-                }
-                if let ExprKind::Call(call, args) = &e.kind {
-                    if matches!(call.as_str(), "tile_publish" | "tile_atomic") {
-                        return self.tile_publish(
-                            annotation.is_some(),
-                            name,
-                            args,
-                            s.span,
-                            call == "tile_atomic",
-                        );
-                    }
-                }
-                let value = if let ExprKind::Cooperate(call, explicit, args) = &e.kind {
-                    let result = self.cooperate(call, explicit.as_deref(), args, e.span)?;
-                    self.value_result(result, e.span)?
-                } else if let ExprKind::Call(call, args) = &e.kind {
-                    if let Some(op) = TileOp::from_source(call) {
-                        self.tile_collective(op, args, s.span)?
-                    } else {
-                        self.expr(e)?
-                    }
-                } else {
-                    self.expr(e)?
-                };
-                if let Some(ty) = annotation {
-                    let ty = self.world.ty(
-                        ty,
-                        &self.definition.source,
-                        s.span,
-                        &self.definition.module,
-                        &self.definition.imports,
-                    )?;
-                    self.require_same(&ty, &value.ty, s.span)?;
-                }
-                if !self.mutable_names.contains(name) && value.ty.contains_arrays() {
-                    let proof = bounds::Proof::capture(&value);
-                    let uniform = value.uniform && self.control_uniform;
-                    let place = self.materialize_array(value);
-                    self.env.insert(
-                        name.clone(),
-                        Binding::Owned(OwnedBinding {
-                            place,
-                            proof,
-                            uniform,
-                            initialization: None,
-                        }),
-                    );
-                    return Ok(());
-                }
-                if !self.mutable_names.contains(name) {
-                    let mut value = value;
-                    value.literal = false;
-                    value.uniform &= self.control_uniform;
-                    self.env.insert(name.clone(), Binding::Value(value));
-                    return Ok(());
-                }
-                let mut slots = Vec::new();
-                for r in &value.regs {
-                    let slot = self.locals.len();
-                    self.locals.push(self.registers[*r]);
-                    self.code.push(Inst::StoreLocal(slot, *r));
-                    slots.push(slot);
-                }
-                let proof = bounds::Proof::capture(&value);
-                let place = Place::Local(value.ty, slots);
-                self.initialize(&place);
-                self.env.insert(
-                    name.clone(),
-                    Binding::Owned(OwnedBinding {
-                        proof,
-                        place,
-                        uniform: value.uniform && self.control_uniform,
-                        initialization: None,
-                    }),
-                );
+                return self.let_statement(annotation, name, e, s.span);
             }
-            StmtKind::Assign(lhs, op, rhs) => {
-                let place = self.place(lhs)?;
-                let mut value = self.expr(rhs)?;
-                if op != "=" {
-                    let current = self.read_place(&place, lhs.span)?;
-                    value = self.binary(&op[..1], current, value, s.span)?;
-                }
-                self.write_place(&place, value, s.span)?;
-            }
-            StmtKind::Expr(e) => {
-                if let ExprKind::Call(name, args) = &e.kind
-                    && name == "atomic_store"
-                {
-                    self.atomic_store(args, e.span)?;
-                } else if let ExprKind::Call(name, args) = &e.kind
-                    && name == "tile_barrier"
-                {
-                    self.tile_barrier(args, e.span)?;
-                } else if let ExprKind::Call(name, args) = &e.kind {
-                    self.call(name, args, e.span)?;
-                } else if let ExprKind::Specialize(name, explicit, args) = &e.kind {
-                    self.specialized_call(name, explicit, args, e.span)?;
-                } else if let ExprKind::Cooperate(name, explicit, args) = &e.kind {
-                    self.cooperate(name, explicit.as_deref(), args, e.span)?;
-                } else {
-                    self.expr(e)?;
-                }
-            }
+            StmtKind::Assign(lhs, op, rhs) => return self.assign_statement(lhs, op, rhs, s.span),
+            StmtKind::Expr(e) => return self.expression_statement(e),
             StmtKind::If(condition, yes_body, no_body) => {
-                let c = self.expr(condition)?;
-                self.require_bool(&c, condition.span)?;
-                if let Some(bits) = &c.constant {
-                    let truth = bits[0] != 0;
-                    self.refine_bounds(&c, truth);
-                    return self.block(if truth { yes_body } else { no_body });
-                }
-                let environment = self.env.clone();
-                let previous = std::mem::take(&mut self.code);
-                let init = self.initialized.clone();
-                let control = self.control_uniform;
-                self.control_uniform &= c.uniform;
-                self.refine_bounds(&c, true);
-                self.block(yes_body)?;
-                let yes = std::mem::take(&mut self.code);
-                let yes_init = self.initialized.clone();
-                let yes_env = self.env.clone();
-                let yes_flow = self.flow;
-                let yes_reachable = yes_flow.continues();
-                self.flow = Flow::NEXT;
-                self.initialized = init;
-                self.env = environment.clone();
-                self.refine_bounds(&c, false);
-                self.block(no_body)?;
-                let no = std::mem::take(&mut self.code);
-                let no_init = std::mem::take(&mut self.initialized);
-                let no_flow = self.flow;
-                let no_reachable = no_flow.continues();
-                let no_env = self.env.clone();
-                if yes_reachable && !no_reachable {
-                    self.env = yes_env;
-                    self.initialized = yes_init;
-                } else if !yes_reachable && no_reachable {
-                    self.env = no_env;
-                    self.initialized = no_init;
-                } else {
-                    self.env = environment;
-                    self.join_initialization(&c, yes_init, no_init);
-                    self.invalidate_assigned(yes_body);
-                    self.invalidate_assigned(no_body);
-                }
-                self.flow = yes_flow.union(no_flow);
-                self.control_uniform = control && (c.uniform || (yes_reachable && no_reachable));
-                self.code = previous;
-                self.code.push(Inst::If {
-                    condition: c.regs[0],
-                    yes,
-                    no,
-                });
+                return self.if_statement(condition, yes_body, no_body);
             }
             StmtKind::While(condition, body) => {
-                self.invalidate_assigned(body);
-                self.invalidate_expression(condition);
-                let environment = self.env.clone();
-                let outer = std::mem::take(&mut self.code);
-                let c = self.expr(condition)?;
-                self.require_bool(&c, condition.span)?;
-                let condition_code = std::mem::take(&mut self.code);
-                if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
-                    self.code = outer;
-                    self.code.extend(condition_code);
-                    return Ok(());
-                }
-                self.enter_loop(&environment);
-                let condition_env = self.env.clone();
-                let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {
-                    None
-                } else {
-                    self.refine_bounds(&c, false);
-                    let exit = self.loop_state();
-                    self.env = condition_env;
-                    Some(exit)
-                };
-                let control = self.control_uniform;
-                self.control_uniform &= c.uniform;
-                self.refine_bounds(&c, true);
-                self.loop_depth += 1;
-                self.iterators.push(None);
-                self.block(body)?;
-                let body_flow = self.flow;
-                self.iterators.pop();
-                self.loop_depth -= 1;
-                let body = std::mem::take(&mut self.code);
-                let next = self.leave_loop(natural);
-                self.flow = body_flow.loop_result(next);
-                self.control_uniform = control;
-                self.code = outer;
-                self.code.push(Inst::Loop {
-                    condition: condition_code,
-                    test: c.regs[0],
-                    body,
-                });
+                return self.while_statement(condition, body);
             }
             StmtKind::For(name, start, end, body) => {
-                if self.env.contains_key(name) {
-                    return self.fail(s.span, "B125", "循环变量不能覆盖已有绑定");
-                }
-                let (begin, limit, data) = if let Some(end) = end {
-                    let a = self.expr(start)?;
-                    let b = self.expr(end)?;
-                    self.require_same(&Ty::scalar(Scalar::U32), &a.ty, start.span)?;
-                    self.require_same(&a.ty, &b.ty, start.span)?;
-                    (a, b, None)
-                } else {
-                    let source = if let ExprKind::Name(data) = &start.kind {
-                        self.env.get(data).cloned()
-                    } else {
-                        None
-                    };
-                    let begin = self.constant(Scalar::U32, 0);
-                    match source {
-                        Some(Binding::Tile(view)) => (
-                            begin,
-                            self.tile_length(&view),
-                            Some(CursorSource::Tile(view)),
-                        ),
-                        Some(Binding::Data(view)) => {
-                            let binding = view.binding;
-                            if !matches!(self.view_access[&binding], Access::Read | Access::Atomic)
-                            {
-                                return self.fail(
-                                    start.span,
-                                    "B128",
-                                    "顺序遍历需要 read 或 atomic 数据集；atomic 游标仍须显式原子访问",
-                                );
-                            }
-                            (
-                                begin,
-                                self.data_length(&view),
-                                Some(CursorSource::Data(binding)),
-                            )
-                        }
-                        _ => {
-                            let view = self.expr(start)?;
-                            if view.ty.view.is_none() {
-                                return self.fail(
-                                    start.span,
-                                    "B127",
-                                    "顺序遍历需要 dataset、tile 或不可变 view",
-                                );
-                            }
-                            (
-                                begin,
-                                Self::view_length(&view),
-                                Some(CursorSource::View(view)),
-                            )
-                        }
-                    }
-                };
-                if begin.minimum() >= limit.maximum() {
-                    return Ok(());
-                }
-                let nonempty = begin.maximum() < limit.minimum();
-                self.invalidate_assigned(body);
-                let environment = self.env.clone();
-                self.enter_loop(&environment);
-                let slot = self.locals.len();
-                self.locals.push(Scalar::U32);
-                self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
-                let outer = std::mem::take(&mut self.code);
-                let index = self.reg(Scalar::U32);
-                self.code.push(Inst::LoadLocal(index, slot));
-                let cursor = Value {
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    ty: Ty::scalar(Scalar::U32),
-                    regs: vec![index],
-                    uniform: begin.uniform && limit.uniform,
-                    constant: None,
-                };
-                let test = self.binary("<", cursor.clone(), limit.clone(), s.span)?;
-                let condition = std::mem::take(&mut self.code);
-                self.env.insert(
-                    name.clone(),
-                    if let Some(domain) = data {
-                        match domain {
-                            CursorSource::Data(binding) => Binding::Element {
-                                binding,
-                                index,
-                                writable: false,
-                            },
-                            CursorSource::Tile(view) => Binding::TileElement { view, index },
-                            CursorSource::View(view) => Binding::ViewElement { view, index },
-                        }
-                    } else {
-                        Binding::Value(Value {
-                            proof: bounds::Proof::unsigned(0, limit.maximum().saturating_sub(1))
-                                .with_domains(bounds::indices_below(&limit.proof.domains(0), true)),
-                            ..cursor
-                        })
-                    },
-                );
-                let condition_env = self.env.clone();
-                self.refine_bounds(&test, false);
-                let natural = self.loop_state();
-                self.env = condition_env;
-                self.refine_bounds(&test, true);
-                let control = self.control_uniform;
-                self.control_uniform &= begin.uniform && limit.uniform;
-                self.loop_depth += 1;
-                self.iterators.push(Some((name.clone(), slot)));
-                self.block(body)?;
-                let body_flow = self.flow;
-                let body_reachable = body_flow.continues();
-                self.iterators.pop();
-                self.loop_depth -= 1;
-                if body_reachable {
-                    let one = self.constant(Scalar::U32, 1);
-                    let next = self.reg(Scalar::U32);
-                    self.code.push(Inst::Binary {
-                        dst: next,
-                        op: BinaryOp::IAdd,
-                        a: index,
-                        b: one.regs[0],
-                    });
-                    self.code.push(Inst::StoreLocal(slot, next));
-                }
-                let body = std::mem::take(&mut self.code);
-                let natural = (!nonempty || body_flow.iterates()).then_some(natural);
-                let next = self.leave_loop(natural);
-                self.flow = body_flow.loop_result(next);
-                self.control_uniform = control;
-                self.code = outer;
-                self.code.push(Inst::Loop {
-                    condition,
-                    test: test.regs[0],
-                    body,
-                });
+                return self.for_statement(name, start, end, body, s.span);
             }
             StmtKind::Break => {
                 if self.loop_depth == 0 {
@@ -1658,19 +1364,7 @@ impl<'a> Builder<'a> {
                 );
             }
             StmtKind::Phase => return self.fail(s.span, "B163", "phase 只能位于 program 阶段层"),
-            StmtKind::Seek(name, position) => {
-                let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {
-                    return self.fail(s.span, "B164", "seek 需要当前有界 for 游标");
-                };
-                if iterator != *name {
-                    return self.fail(s.span, "B165", "seek 只能推进当前最内层游标");
-                }
-                let value = self.expr(position)?;
-                self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
-                self.code.push(Inst::StoreLocal(slot, value.regs[0]));
-                self.code.push(Inst::Continue);
-                self.flow = Flow::CONTINUE;
-            }
+            StmtKind::Seek(name, position) => return self.seek_statement(name, position, s.span),
         }
         Ok(())
     }
@@ -1682,99 +1376,9 @@ impl<'a> Builder<'a> {
     }
     fn place(&mut self, e: &Expr) -> Result<Place> {
         match &e.kind {
-            ExprKind::Name(name) => match self.env.get(name).cloned() {
-                Some(Binding::AtomicBorrow(place)) => Ok(place),
-                Some(Binding::Owned(owner)) => Ok(owner.place),
-                Some(Binding::Value(value)) if value.ty.contains_arrays() => {
-                    let place = self.materialize_array(value);
-                    self.env.insert(
-                        name.clone(),
-                        Binding::Owned(OwnedBinding {
-                            place: place.clone(),
-                            proof: bounds::Proof::default(),
-                            uniform: false,
-                            initialization: None,
-                        }),
-                    );
-                    Ok(place)
-                }
-                Some(Binding::Element {
-                    binding,
-                    index,
-                    writable,
-                }) => {
-                    let ty = self.program.buffers[binding].ty.clone();
-                    let words = ty.components.iter().map(|x| x.1 / 4).collect();
-                    Ok(Place::Element {
-                        ty,
-                        binding,
-                        index,
-                        words,
-                        writable,
-                    })
-                }
-                Some(Binding::TileElement { view, index }) => Ok(Place::TileElement {
-                    ty: view.ty,
-                    tile: view.tile,
-                    index,
-                    words: view.words,
-                }),
-                Some(Binding::ViewElement { view, index }) => Ok(Self::view_element(&view, index)),
-                _ => self.fail(e.span, "B134", format!("{name} 不是可赋值的元素或局部变量")),
-            },
-            ExprKind::Member(base, field) => {
-                let p = self.place(base)?;
-                if p.ty().view.is_some() {
-                    return self.fail(e.span, "B185", "view 元数据不可修改或按分量访问");
-                }
-                let (sub, components) = self.member(p.ty(), field, e.span)?;
-                Ok(p.project(sub, &components))
-            }
-            ExprKind::Index(base, index) => {
-                let ExprKind::Name(name) = &base.kind else {
-                    return self.view_place(base, index);
-                };
-                if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
-                    return self.tile_place(view, index);
-                }
-                let Some(Binding::Data(view)) = self.env.get(name).cloned() else {
-                    return self.view_place(base, index);
-                };
-                let binding = view.binding;
-                let i = self.expr(index)?;
-                self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
-                if !self.index_in(
-                    &i,
-                    IndexDomain::Data(binding),
-                    self.program.buffers[binding].count.unwrap_or(0),
-                ) && !(binding == self.domain && i.regs[0] == self.global_index)
-                {
-                    return self.fail(
-                        index.span,
-                        "B137",
-                        "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
-                    );
-                }
-                if self.view_access[&binding] != Access::Atomic
-                    && self.view_access[&binding].writes()
-                    && (binding != self.domain || i.regs[0] != self.global_index)
-                {
-                    return self.fail(
-                        index.span,
-                        "B166",
-                        "并行可写数据只允许访问当前独占元素；读取其他元素需要独立 read 数据集",
-                    );
-                }
-                let ty = self.program.buffers[binding].ty.clone();
-                let words = ty.components.iter().map(|x| x.1 / 4).collect();
-                Ok(Place::Element {
-                    ty,
-                    binding,
-                    index: i.regs[0],
-                    words,
-                    writable: binding == self.domain && i.regs[0] == self.global_index,
-                })
-            }
+            ExprKind::Name(name) => self.name_place(name, e),
+            ExprKind::Member(base, field) => self.member_place(base, field, e),
+            ExprKind::Index(base, index) => self.index_place(base, index),
             _ => self.fail(e.span, "B138", "表达式不是可赋值位置"),
         }
     }
@@ -2036,261 +1640,11 @@ impl<'a> Builder<'a> {
                 Ok(self.literal(t.components[0].0, b))
             }
             ExprKind::Bool(b) => Ok(self.constant(Scalar::Bool, *b as u32)),
-            ExprKind::Name(name) => match self.env.get(name).cloned() {
-                Some(Binding::Value(v)) => Ok(v),
-                Some(Binding::Owned(owner)) => self.read_place(&owner.place, e.span),
-                Some(
-                    Binding::AtomicBorrow(_)
-                    | Binding::Element { .. }
-                    | Binding::TileElement { .. }
-                    | Binding::ViewElement { .. },
-                ) => {
-                    let p = self.place(e)?;
-                    self.read_place(&p, e.span)
-                }
-                None => {
-                    let key = self
-                        .world
-                        .resolve(
-                            name,
-                            &self.definition.module,
-                            &self.definition.imports,
-                            true,
-                        )
-                        .filter(|key| {
-                            self.world.functions[key].function.kind == FunctionKind::Constant
-                        })
-                        .ok_or_else(|| Diagnostic {
-                            source: self.definition.source.clone(),
-                            span: e.span,
-                            code: "B145",
-                            message: format!("未知值 {name}"),
-                        })?;
-                    self.module_constant(key)
-                }
-                _ => self.fail(e.span, "B145", format!("未知值 {name}")),
-            },
-            ExprKind::Member(base, field) => {
-                if let ExprKind::Name(name) = &base.kind {
-                    if let Some(Binding::Texture(reference)) = self.env.get(name).cloned() {
-                        if field == "length"
-                            && let Some(count) = reference.shape(self.program)
-                        {
-                            return Ok(self.constant(Scalar::U32, count));
-                        }
-                        return self.fail(e.span, "B239", "纹理资源数组只公开只读 length");
-                    }
-                    if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
-                        return match field.as_str() {
-                            "length" => Ok(self.tile_length(&view)),
-                            "lane" => Ok(self.tile_lane()),
-                            _ => self.fail(e.span, "B141", "tile 只公开只读 length 与 lane"),
-                        };
-                    }
-                    if let Some(Binding::Data(view)) = self.env.get(name).cloned() {
-                        if field == "length" {
-                            return Ok(self.data_length(&view));
-                        }
-                    }
-                }
-                if self.is_place(base) {
-                    // 保留字段访问，避免为了读取一个字段先加载整个结构体。
-                    let p = self.place(base)?;
-                    if p.ty().array.is_some() && field == "length" {
-                        return Ok(self.constant(Scalar::U32, p.ty().values[0]));
-                    }
-                    if p.ty().view.is_some() {
-                        if field == "length" {
-                            let view = self.read_place(&p, e.span)?;
-                            return Ok(Self::view_length(&view));
-                        }
-                        return self.fail(
-                            e.span,
-                            "B185",
-                            "view 只公开只读 length，不公开设备地址分量",
-                        );
-                    }
-                    let (sub, components) = self.member(p.ty(), field, e.span)?;
-                    return self.read_place(&p.project(sub, &components), e.span);
-                }
-                let v = self.expr(base)?;
-                if v.ty.array.is_some() && field == "length" {
-                    return Ok(self.constant(Scalar::U32, v.ty.values[0]));
-                }
-                if v.ty.view.is_some() && field == "length" {
-                    return Ok(Self::view_length(&v));
-                }
-                let (ty, indices) = self.member(&v.ty, field, e.span)?;
-                Ok(Value {
-                    proof: v.projected_proof(&indices),
-                    literal: false,
-                    ty,
-                    regs: indices.iter().map(|i| v.regs[*i]).collect(),
-                    uniform: v.uniform,
-                    constant: v.constant.map(|b| indices.iter().map(|i| b[*i]).collect()),
-                })
-            }
-            ExprKind::Index(base, index) => {
-                let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_))));
-                if !resource && !self.is_place(base) {
-                    let value = self.expr(base)?;
-                    if value.ty.array.is_some() {
-                        return self.array_value_index(value, index);
-                    }
-                    let place = self.view_value_place(value, index)?;
-                    return self.read_place(&place, e.span);
-                }
-                let p = self.place(e)?;
-                self.read_place(&p, e.span)
-            }
-            ExprKind::Unary(op, a) => {
-                if op == "-" {
-                    if let ExprKind::Number(literal) = &a.kind {
-                        let (ty, bits) = number(&self.definition.source, e.span, literal)?;
-                        return match ty.components[0].0 {
-                            Scalar::F32 => Ok(self.literal(Scalar::F32, bits ^ 0x80000000)),
-                            Scalar::U32 if bits <= 0x80000000 => {
-                                Ok(self.literal(Scalar::I32, 0u32.wrapping_sub(bits)))
-                            }
-                            _ => self.fail(e.span, "B180", "负整数字面量超出 i32 范围"),
-                        };
-                    }
-                }
-                let a = self.expr(a)?;
-                if op == "+" {
-                    if a.ty.array.is_some() {
-                        return self.fail(e.span, "B146", "数值一元运算不能接受数组");
-                    }
-                    return Ok(a);
-                }
-                if op == "!" {
-                    self.require_bool(&a, e.span)?;
-                } else if !a.ty.is_numeric() && !(op == "-" && a.ty.matrix_shape().is_some()) {
-                    return self.fail(e.span, "B146", "数值一元运算需要数值类型");
-                }
-                let scalar = a.ty.components[0].0;
-                let operation = match op.as_str() {
-                    "-" => match scalar {
-                        Scalar::F32 => UnaryOp::FloatNegate,
-                        Scalar::I32 => UnaryOp::SignedNegate,
-                        Scalar::U32 => UnaryOp::UnsignedNegate,
-                        Scalar::Bool => return self.fail(e.span, "B176", "bool 不能取负"),
-                    },
-                    "!" => UnaryOp::LogicalNot,
-                    "~" if scalar != Scalar::F32 => UnaryOp::BitNot,
-                    _ => return self.fail(e.span, "B177", "当前类型不支持该一元运算"),
-                };
-                let constant = a.constant.as_ref().map(|values| {
-                    values
-                        .iter()
-                        .map(|bits| match operation {
-                            UnaryOp::FloatNegate => bits ^ 0x80000000,
-                            UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => {
-                                0u32.wrapping_sub(*bits)
-                            }
-                            UnaryOp::LogicalNot => u32::from(*bits == 0),
-                            UnaryOp::BitNot => !bits,
-                        })
-                        .collect()
-                });
-                let proof = bounds::unary(operation, &a);
-                if let Some(bits) = constant {
-                    let mut value = self.constant_value(a.ty, bits);
-                    value.literal = a.literal;
-                    value.proof = proof;
-                    return Ok(value);
-                }
-                let mut regs = Vec::new();
-                for x in a.regs {
-                    let dst = self.reg(self.registers[x]);
-                    self.code.push(Inst::Unary {
-                        dst,
-                        op: operation,
-                        a: x,
-                    });
-                    regs.push(dst);
-                }
-                Ok(Value {
-                    proof,
-                    literal: a.literal,
-                    ty: a.ty,
-                    regs,
-                    uniform: a.uniform,
-                    constant: None,
-                })
-            }
-            ExprKind::Binary(op, a, b) => {
-                let left = a;
-                let a = self.expr(left)?;
-                if op == "&&" || op == "||" {
-                    let mut modified = BTreeSet::new();
-                    expression_assignments(self.world, &self.definition, b, &mut modified);
-                    self.require_bool(&a, e.span)?;
-                    let outer = std::mem::take(&mut self.code);
-                    let environment = self.env.clone();
-                    let before = self.initialized.clone();
-                    let control = self.control_uniform;
-                    self.control_uniform &= a.uniform;
-                    self.refine_bounds(&a, op == "&&");
-                    let b = self.expr(b)?;
-                    self.require_bool(&b, e.span)?;
-                    let after = std::mem::take(&mut self.initialized);
-                    if op == "&&" {
-                        self.join_initialization(&a, after, before);
-                    } else {
-                        self.join_initialization(&a, before, after);
-                    }
-                    self.restore_expression_environment(environment, &modified);
-                    self.invalidate_names(&modified);
-                    self.control_uniform = control;
-                    let mut branch = std::mem::take(&mut self.code);
-                    self.code = outer;
-                    if let Some(bits) = &a.constant {
-                        return if (bits[0] != 0) == (op == "&&") {
-                            self.code.extend(branch);
-                            let proof = bounds::Proof::condition(bounds::Condition::logical(
-                                op == "&&",
-                                &a,
-                                &b,
-                            ));
-                            let mut value = b;
-                            value.proof = proof;
-                            Ok(value)
-                        } else {
-                            Ok(a)
-                        };
-                    }
-                    let slot = self.locals.len();
-                    self.locals.push(Scalar::Bool);
-                    self.code.push(Inst::StoreLocal(slot, a.regs[0]));
-                    branch.push(Inst::StoreLocal(slot, b.regs[0]));
-                    self.code.push(Inst::If {
-                        condition: a.regs[0],
-                        yes: if op == "&&" {
-                            branch.clone()
-                        } else {
-                            Vec::new()
-                        },
-                        no: if op == "||" { branch } else { Vec::new() },
-                    });
-                    let r = self.reg(Scalar::Bool);
-                    self.code.push(Inst::LoadLocal(r, slot));
-                    return Ok(Value {
-                        proof: bounds::Proof::condition(bounds::Condition::logical(
-                            op == "&&",
-                            &a,
-                            &b,
-                        )),
-                        literal: false,
-                        ty: Ty::scalar(Scalar::Bool),
-                        regs: vec![r],
-                        uniform: a.uniform && b.uniform,
-                        constant: None,
-                    });
-                }
-                let b = self.expr(b)?;
-                self.binary(op, a, b, e.span)
-            }
+            ExprKind::Name(name) => self.name_expr(name, e),
+            ExprKind::Member(base, field) => self.member_expr(base, field, e),
+            ExprKind::Index(base, index) => self.index_expr(base, index, e),
+            ExprKind::Unary(op, a) => self.unary_expr(op, a, e.span),
+            ExprKind::Binary(op, a, b) => self.binary_expr(op, a, b, e.span),
             ExprKind::Select(c, a, b) => self.selection(c, a, b, e.span),
             ExprKind::Construct(ty, args) => {
                 let values = args
@@ -2614,142 +1968,13 @@ impl<'a> Builder<'a> {
             return value.map(Some);
         }
         if matches!(name, "trace_closest" | "trace_any") {
-            if args.len() != 5 {
-                return self.fail(
-                    span,
-                    "B183",
-                    "光线查询需要 acceleration、origin、minimum、direction、maximum",
-                );
-            }
-            let ExprKind::Name(scene) = &args[0].kind else {
-                return self.fail(span, "B183", "光线查询需要命名 acceleration 资源");
-            };
-            let Some(Binding::Acceleration(scene)) = self.env.get(scene).cloned() else {
-                return self.fail(span, "B183", "光线查询需要 read acceleration 资源");
-            };
-            let origin = self.expr(&args[1])?;
-            let minimum = self.expr(&args[2])?;
-            let direction = self.expr(&args[3])?;
-            let maximum = self.expr(&args[4])?;
-            self.require_same(&Ty::vector(Scalar::F32, 3), &origin.ty, args[1].span)?;
-            self.require_same(&Ty::scalar(Scalar::F32), &minimum.ty, args[2].span)?;
-            self.require_same(&origin.ty, &direction.ty, args[3].span)?;
-            self.require_same(&minimum.ty, &maximum.ty, args[4].span)?;
-            let ty = if name == "trace_any" {
-                Ty::scalar(Scalar::Bool)
-            } else {
-                Ty::builtin("RayHit").unwrap()
-            };
-            let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
-            let result = if name == "trace_any" {
-                RayResult::Any(regs[0])
-            } else {
-                RayResult::Closest(regs.as_slice().try_into().unwrap())
-            };
-            self.code.push(Inst::RayQuery {
-                scene,
-                origin: origin.regs.as_slice().try_into().unwrap(),
-                direction: direction.regs.as_slice().try_into().unwrap(),
-                minimum: minimum.regs[0],
-                maximum: maximum.regs[0],
-                result,
-            });
-            return Ok(Some(Value {
-                proof: bounds::Proof::default(),
-                literal: false,
-                ty,
-                regs,
-                uniform: false,
-                constant: None,
-            }));
+            return self.ray_query_call(name, args, span);
         }
         if name == "unsafe_read" {
-            if args.len() != 2 {
-                return self.fail(
-                    span,
-                    "B181",
-                    "unsafe_read 需要 read 数据集与 u32 索引；调用者负责外部索引有效性",
-                );
-            }
-            if let ExprKind::Name(data) = &args[0].kind {
-                if let Some(Binding::Data(view)) = self.env.get(data).cloned() {
-                    let binding = view.binding;
-                    if self.view_access[&binding] != Access::Read {
-                        return self.fail(
-                            span,
-                            "B181",
-                            "unsafe_read 只允许不可变数据集，不能别名读取并行写入的数据",
-                        );
-                    }
-                    let index = self.expr(&args[1])?;
-                    self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
-                    let ty = self.program.buffers[binding].ty.clone();
-                    let words = ty.components.iter().map(|x| x.1 / 4).collect();
-                    return self
-                        .read_place(
-                            &Place::Element {
-                                ty,
-                                binding,
-                                index: index.regs[0],
-                                words,
-                                writable: false,
-                            },
-                            span,
-                        )
-                        .map(Some);
-                }
-            }
-            let view = self.expr(&args[0])?;
-            if view.ty.view.is_none() {
-                return self.fail(span, "B181", "unsafe_read 需要 read dataset 或不可变 view");
-            }
-            let index = self.expr(&args[1])?;
-            self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
-            return self
-                .read_place(&Self::view_element(&view, index.regs[0]), span)
-                .map(Some);
+            return self.unsafe_read_call(args, span);
         }
         if name == "ordinal" {
-            if args.len() != 1 {
-                return self.fail(span, "B168", "ordinal 需要一个有界游标");
-            }
-            let ExprKind::Name(name) = &args[0].kind else {
-                return self.fail(span, "B168", "ordinal 需要命名游标");
-            };
-            let (domain, index, proof) = match self.env.get(name).cloned() {
-                Some(Binding::Owned(OwnedBinding {
-                    place: Place::Element { binding, index, .. },
-                    ..
-                })) => (
-                    IndexDomain::Data(binding),
-                    index,
-                    self.data_index_proof(binding),
-                ),
-                Some(Binding::Element { binding, index, .. }) => (
-                    IndexDomain::Data(binding),
-                    index,
-                    self.data_index_proof(binding),
-                ),
-                Some(Binding::TileElement { index, .. }) => {
-                    (IndexDomain::Tile, index, self.tile_index_proof())
-                }
-                Some(Binding::ViewElement { view, index }) => {
-                    let proof = bounds::Proof::unsigned(
-                        0,
-                        Self::view_length(&view).maximum().saturating_sub(1),
-                    );
-                    (IndexDomain::View(view.view_identity()), index, proof)
-                }
-                _ => return self.fail(span, "B168", "ordinal 只能用于元素游标"),
-            };
-            return Ok(Some(Value {
-                proof: proof.with_domains(Domains::from([domain])),
-                literal: false,
-                ty: Ty::scalar(Scalar::U32),
-                regs: vec![index],
-                uniform: false,
-                constant: None,
-            }));
+            return self.ordinal_call(args, span);
         }
         if name == "index" {
             if !args.is_empty() || self.in_function {
@@ -2830,56 +2055,7 @@ impl<'a> Builder<'a> {
             values.push(self.expr(a)?);
         }
         if let Some(ty) = Ty::builtin(name) {
-            if ty.matrix_shape().is_some() {
-                return self.matrix_construct(ty, values, span).map(Some);
-            }
-            if values.iter().any(|v| v.ty.array.is_some()) {
-                return self.fail(span, "B238", "数组不能转换成数值标量／向量；先取得数组元素");
-            }
-            if values.iter().any(|v| v.ty.matrix_shape().is_some()) {
-                return self.fail(span, "B237", "矩阵不能转换成数值标量／向量；先取得行字段");
-            }
-            if values.iter().any(|v| v.ty.contains_views()) {
-                return self.fail(span, "B185", "view 不能转换成数值或重解释设备地址");
-            }
-            if values.len() == 1 && values[0].ty == ty {
-                let mut value = values.pop().unwrap();
-                value.literal = false;
-                return Ok(Some(value));
-            }
-            let mut flat = Vec::new();
-            let mut constant = Some(Vec::new());
-            let mut proof = bounds::Proof::default();
-            let uniform = values.iter().all(|v| v.uniform);
-            for v in values {
-                let v = self.cast(v, ty.components[0].0);
-                if ty.components.len() == 1 {
-                    proof = v.proof.clone();
-                } else {
-                    proof.append(&v);
-                }
-                constant = constant.zip(v.constant).map(|(mut all, part)| {
-                    all.extend(part);
-                    all
-                });
-                flat.extend(v.regs);
-            }
-            if flat.len() == 1 && ty.components.len() > 1 {
-                proof.splat(ty.components.len());
-                flat = vec![flat[0]; ty.components.len()];
-                constant = constant.map(|v| vec![v[0]; ty.components.len()]);
-            }
-            if flat.len() != ty.components.len() {
-                return self.fail(span, "B157", "类型构造的分量数不匹配");
-            }
-            return Ok(Some(Value {
-                proof,
-                literal: false,
-                ty,
-                regs: flat,
-                uniform,
-                constant,
-            }));
+            return self.numeric_constructor(ty, values, span).map(Some);
         }
         if self
             .world
@@ -2916,123 +2092,15 @@ impl<'a> Builder<'a> {
             return self.matrix_intrinsic(name, values, span).map(Some);
         }
         if name == "dot" {
-            if values.len() != 2 {
-                return self.fail(span, "B153", "dot 需要两个向量");
-            }
-            self.require_same(&values[0].ty, &values[1].ty, span)?;
-            if values[0].ty.components[0].0 != Scalar::F32 || !values[0].ty.is_numeric() {
-                return self.fail(span, "B154", "dot 需要 float 向量");
-            }
-            let p = self.binary("*", values[0].clone(), values[1].clone(), span)?;
-            let mut r = Value {
-                proof: bounds::Proof::default(),
-                literal: false,
-                ty: Ty::scalar(Scalar::F32),
-                regs: vec![p.regs[0]],
-                uniform: p.uniform,
-                constant: None,
-            };
-            for x in p.regs.iter().skip(1) {
-                r = self.binary(
-                    "+",
-                    r,
-                    Value {
-                        proof: bounds::Proof::default(),
-                        literal: false,
-                        ty: Ty::scalar(Scalar::F32),
-                        regs: vec![*x],
-                        uniform: p.uniform,
-                        constant: None,
-                    },
-                    span,
-                )?;
-            }
-            return Ok(Some(r));
+            return self.dot_value(values, span).map(Some);
         }
         if matches!(name, "length" | "normalize") {
-            if values.len() != 1 {
-                return self.fail(span, "B153", "length／normalize 需要一个向量");
-            }
-            let v = values.remove(0);
-            if v.ty.components[0].0 != Scalar::F32
-                || !v.ty.fields.is_empty()
-                || v.ty.array.is_some()
-            {
-                return self.fail(span, "B154", "需要 float 向量");
-            }
-            let p = self.binary("*", v.clone(), v.clone(), span)?;
-            let mut r = Value {
-                proof: bounds::Proof::default(),
-                literal: false,
-                ty: Ty::scalar(Scalar::F32),
-                regs: vec![p.regs[0]],
-                uniform: p.uniform,
-                constant: None,
-            };
-            for x in p.regs.iter().skip(1) {
-                r = self.binary(
-                    "+",
-                    r,
-                    Value {
-                        proof: bounds::Proof::default(),
-                        literal: false,
-                        ty: Ty::scalar(Scalar::F32),
-                        regs: vec![*x],
-                        uniform: p.uniform,
-                        constant: None,
-                    },
-                    span,
-                )?;
-            }
-            let length = self.math("sqrt", vec![r], span)?;
-            return (if name == "length" {
-                Ok(length)
-            } else {
-                self.binary("/", v, length, span)
-            })
-            .map(Some);
+            return self
+                .length_value(values, name == "normalize", span)
+                .map(Some);
         }
         if name == "cross" {
-            if values.len() != 2 {
-                return self.fail(span, "B153", "cross 需要两个 float3");
-            }
-            for v in &values {
-                self.require_same(&Ty::vector(Scalar::F32, 3), &v.ty, span)?;
-            }
-            let a = &values[0];
-            let b = &values[1];
-            let mut regs = Vec::new();
-            for (i, j) in [(1, 2), (2, 0), (0, 1)] {
-                let value = |r, u| Value {
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    ty: Ty::scalar(Scalar::F32),
-                    regs: vec![r],
-                    uniform: u,
-                    constant: None,
-                };
-                let x = self.binary(
-                    "*",
-                    value(a.regs[i], a.uniform),
-                    value(b.regs[j], b.uniform),
-                    span,
-                )?;
-                let y = self.binary(
-                    "*",
-                    value(a.regs[j], a.uniform),
-                    value(b.regs[i], b.uniform),
-                    span,
-                )?;
-                regs.push(self.binary("-", x, y, span)?.regs[0]);
-            }
-            return Ok(Some(Value {
-                proof: bounds::Proof::default(),
-                literal: false,
-                ty: Ty::vector(Scalar::F32, 3),
-                regs,
-                uniform: a.uniform && b.uniform,
-                constant: None,
-            }));
+            return self.cross_value(values, span).map(Some);
         }
         if name == "clamp" {
             if values.len() != 3 {
@@ -3052,6 +2120,1071 @@ impl<'a> Builder<'a> {
                 .collect(),
             span,
         )
+    }
+    fn unary_expr(&mut self, op: &String, a: &Expr, span: Span) -> Result<Value> {
+        if op == "-" {
+            if let ExprKind::Number(literal) = &a.kind {
+                let (ty, bits) = number(&self.definition.source, span, literal)?;
+                return match ty.components[0].0 {
+                    Scalar::F32 => Ok(self.literal(Scalar::F32, bits ^ 0x80000000)),
+                    Scalar::U32 if bits <= 0x80000000 => {
+                        Ok(self.literal(Scalar::I32, 0u32.wrapping_sub(bits)))
+                    }
+                    _ => self.fail(span, "B180", "负整数字面量超出 i32 范围"),
+                };
+            }
+        }
+        let a = self.expr(a)?;
+        if op == "+" {
+            if a.ty.array.is_some() {
+                return self.fail(span, "B146", "数值一元运算不能接受数组");
+            }
+            return Ok(a);
+        }
+        if op == "!" {
+            self.require_bool(&a, span)?;
+        } else if !a.ty.is_numeric() && !(op == "-" && a.ty.matrix_shape().is_some()) {
+            return self.fail(span, "B146", "数值一元运算需要数值类型");
+        }
+        let scalar = a.ty.components[0].0;
+        let operation = match op.as_str() {
+            "-" => match scalar {
+                Scalar::F32 => UnaryOp::FloatNegate,
+                Scalar::I32 => UnaryOp::SignedNegate,
+                Scalar::U32 => UnaryOp::UnsignedNegate,
+                Scalar::Bool => return self.fail(span, "B176", "bool 不能取负"),
+            },
+            "!" => UnaryOp::LogicalNot,
+            "~" if scalar != Scalar::F32 => UnaryOp::BitNot,
+            _ => return self.fail(span, "B177", "当前类型不支持该一元运算"),
+        };
+        let constant = a.constant.as_ref().map(|values| {
+            values
+                .iter()
+                .map(|bits| match operation {
+                    UnaryOp::FloatNegate => bits ^ 0x80000000,
+                    UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => 0u32.wrapping_sub(*bits),
+                    UnaryOp::LogicalNot => u32::from(*bits == 0),
+                    UnaryOp::BitNot => !bits,
+                })
+                .collect()
+        });
+        let proof = bounds::unary(operation, &a);
+        if let Some(bits) = constant {
+            let mut value = self.constant_value(a.ty, bits);
+            value.literal = a.literal;
+            value.proof = proof;
+            return Ok(value);
+        }
+        let mut regs = Vec::new();
+        for x in a.regs {
+            let dst = self.reg(self.registers[x]);
+            self.code.push(Inst::Unary {
+                dst,
+                op: operation,
+                a: x,
+            });
+            regs.push(dst);
+        }
+        Ok(Value {
+            proof,
+            literal: a.literal,
+            ty: a.ty,
+            regs,
+            uniform: a.uniform,
+            constant: None,
+        })
+    }
+    fn binary_expr(&mut self, op: &String, a: &Expr, b: &Expr, span: Span) -> Result<Value> {
+        let left = a;
+        let a = self.expr(left)?;
+        if op == "&&" || op == "||" {
+            let mut modified = BTreeSet::new();
+            expression_assignments(self.world, &self.definition, b, &mut modified);
+            self.require_bool(&a, span)?;
+            let outer = std::mem::take(&mut self.code);
+            let environment = self.env.clone();
+            let before = self.initialized.clone();
+            let control = self.control_uniform;
+            self.control_uniform &= a.uniform;
+            self.refine_bounds(&a, op == "&&");
+            let b = self.expr(b)?;
+            self.require_bool(&b, span)?;
+            let after = std::mem::take(&mut self.initialized);
+            if op == "&&" {
+                self.join_initialization(&a, after, before);
+            } else {
+                self.join_initialization(&a, before, after);
+            }
+            self.restore_expression_environment(environment, &modified);
+            self.invalidate_names(&modified);
+            self.control_uniform = control;
+            let mut branch = std::mem::take(&mut self.code);
+            self.code = outer;
+            if let Some(bits) = &a.constant {
+                return if (bits[0] != 0) == (op == "&&") {
+                    self.code.extend(branch);
+                    let proof =
+                        bounds::Proof::condition(bounds::Condition::logical(op == "&&", &a, &b));
+                    let mut value = b;
+                    value.proof = proof;
+                    Ok(value)
+                } else {
+                    Ok(a)
+                };
+            }
+            let slot = self.locals.len();
+            self.locals.push(Scalar::Bool);
+            self.code.push(Inst::StoreLocal(slot, a.regs[0]));
+            branch.push(Inst::StoreLocal(slot, b.regs[0]));
+            self.code.push(Inst::If {
+                condition: a.regs[0],
+                yes: if op == "&&" {
+                    branch.clone()
+                } else {
+                    Vec::new()
+                },
+                no: if op == "||" { branch } else { Vec::new() },
+            });
+            let r = self.reg(Scalar::Bool);
+            self.code.push(Inst::LoadLocal(r, slot));
+            return Ok(Value {
+                proof: bounds::Proof::condition(bounds::Condition::logical(op == "&&", &a, &b)),
+                literal: false,
+                ty: Ty::scalar(Scalar::Bool),
+                regs: vec![r],
+                uniform: a.uniform && b.uniform,
+                constant: None,
+            });
+        }
+        let b = self.expr(b)?;
+        self.binary(op, a, b, span)
+    }
+    fn if_statement(
+        &mut self,
+        condition: &Expr,
+        yes_body: &[Stmt],
+        no_body: &[Stmt],
+    ) -> Result<()> {
+        let c = self.expr(condition)?;
+        self.require_bool(&c, condition.span)?;
+        if let Some(bits) = &c.constant {
+            let truth = bits[0] != 0;
+            self.refine_bounds(&c, truth);
+            return self.block(if truth { yes_body } else { no_body });
+        }
+        let environment = self.env.clone();
+        let previous = std::mem::take(&mut self.code);
+        let init = self.initialized.clone();
+        let control = self.control_uniform;
+        self.control_uniform &= c.uniform;
+        self.refine_bounds(&c, true);
+        self.block(yes_body)?;
+        let yes = std::mem::take(&mut self.code);
+        let yes_init = self.initialized.clone();
+        let yes_env = self.env.clone();
+        let yes_flow = self.flow;
+        let yes_reachable = yes_flow.continues();
+        self.flow = Flow::NEXT;
+        self.initialized = init;
+        self.env = environment.clone();
+        self.refine_bounds(&c, false);
+        self.block(no_body)?;
+        let no = std::mem::take(&mut self.code);
+        let no_init = std::mem::take(&mut self.initialized);
+        let no_flow = self.flow;
+        let no_reachable = no_flow.continues();
+        let no_env = self.env.clone();
+        if yes_reachable && !no_reachable {
+            self.env = yes_env;
+            self.initialized = yes_init;
+        } else if !yes_reachable && no_reachable {
+            self.env = no_env;
+            self.initialized = no_init;
+        } else {
+            self.env = environment;
+            self.join_initialization(&c, yes_init, no_init);
+            self.invalidate_assigned(yes_body);
+            self.invalidate_assigned(no_body);
+        }
+        self.flow = yes_flow.union(no_flow);
+        self.control_uniform = control && (c.uniform || (yes_reachable && no_reachable));
+        self.code = previous;
+        self.code.push(Inst::If {
+            condition: c.regs[0],
+            yes,
+            no,
+        });
+
+        Ok(())
+    }
+    fn while_statement(&mut self, condition: &Expr, body: &[Stmt]) -> Result<()> {
+        self.invalidate_assigned(body);
+        self.invalidate_expression(condition);
+        let environment = self.env.clone();
+        let outer = std::mem::take(&mut self.code);
+        let c = self.expr(condition)?;
+        self.require_bool(&c, condition.span)?;
+        let condition_code = std::mem::take(&mut self.code);
+        if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
+            self.code = outer;
+            self.code.extend(condition_code);
+            return Ok(());
+        }
+        self.enter_loop(&environment);
+        let condition_env = self.env.clone();
+        let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {
+            None
+        } else {
+            self.refine_bounds(&c, false);
+            let exit = self.loop_state();
+            self.env = condition_env;
+            Some(exit)
+        };
+        let control = self.control_uniform;
+        self.control_uniform &= c.uniform;
+        self.refine_bounds(&c, true);
+        self.loop_depth += 1;
+        self.iterators.push(None);
+        self.block(body)?;
+        let body_flow = self.flow;
+        self.iterators.pop();
+        self.loop_depth -= 1;
+        let body = std::mem::take(&mut self.code);
+        let next = self.leave_loop(natural);
+        self.flow = body_flow.loop_result(next);
+        self.control_uniform = control;
+        self.code = outer;
+        self.code.push(Inst::Loop {
+            condition: condition_code,
+            test: c.regs[0],
+            body,
+        });
+
+        Ok(())
+    }
+    fn for_statement(
+        &mut self,
+        name: &String,
+        start: &Expr,
+        end: &Option<Expr>,
+        body: &[Stmt],
+        span: Span,
+    ) -> Result<()> {
+        if self.env.contains_key(name) {
+            return self.fail(span, "B125", "循环变量不能覆盖已有绑定");
+        }
+        let (begin, limit, data) = if let Some(end) = end {
+            let a = self.expr(start)?;
+            let b = self.expr(end)?;
+            self.require_same(&Ty::scalar(Scalar::U32), &a.ty, start.span)?;
+            self.require_same(&a.ty, &b.ty, start.span)?;
+            (a, b, None)
+        } else {
+            let source = if let ExprKind::Name(data) = &start.kind {
+                self.env.get(data).cloned()
+            } else {
+                None
+            };
+            let begin = self.constant(Scalar::U32, 0);
+            match source {
+                Some(Binding::Tile(view)) => (
+                    begin,
+                    self.tile_length(&view),
+                    Some(CursorSource::Tile(view)),
+                ),
+                Some(Binding::Data(view)) => {
+                    let binding = view.binding;
+                    if !matches!(self.view_access[&binding], Access::Read | Access::Atomic) {
+                        return self.fail(
+                            start.span,
+                            "B128",
+                            "顺序遍历需要 read 或 atomic 数据集；atomic 游标仍须显式原子访问",
+                        );
+                    }
+                    (
+                        begin,
+                        self.data_length(&view),
+                        Some(CursorSource::Data(binding)),
+                    )
+                }
+                _ => {
+                    let view = self.expr(start)?;
+                    if view.ty.view.is_none() {
+                        return self.fail(
+                            start.span,
+                            "B127",
+                            "顺序遍历需要 dataset、tile 或不可变 view",
+                        );
+                    }
+                    (
+                        begin,
+                        Self::view_length(&view),
+                        Some(CursorSource::View(view)),
+                    )
+                }
+            }
+        };
+        if begin.minimum() >= limit.maximum() {
+            return Ok(());
+        }
+        let nonempty = begin.maximum() < limit.minimum();
+        self.invalidate_assigned(body);
+        let environment = self.env.clone();
+        self.enter_loop(&environment);
+        let slot = self.locals.len();
+        self.locals.push(Scalar::U32);
+        self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
+        let outer = std::mem::take(&mut self.code);
+        let index = self.reg(Scalar::U32);
+        self.code.push(Inst::LoadLocal(index, slot));
+        let cursor = Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty: Ty::scalar(Scalar::U32),
+            regs: vec![index],
+            uniform: begin.uniform && limit.uniform,
+            constant: None,
+        };
+        let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
+        let condition = std::mem::take(&mut self.code);
+        self.env.insert(
+            name.clone(),
+            if let Some(domain) = data {
+                match domain {
+                    CursorSource::Data(binding) => Binding::Element {
+                        binding,
+                        index,
+                        writable: false,
+                    },
+                    CursorSource::Tile(view) => Binding::TileElement { view, index },
+                    CursorSource::View(view) => Binding::ViewElement { view, index },
+                }
+            } else {
+                Binding::Value(Value {
+                    proof: bounds::Proof::unsigned(0, limit.maximum().saturating_sub(1))
+                        .with_domains(bounds::indices_below(&limit.proof.domains(0), true)),
+                    ..cursor
+                })
+            },
+        );
+        let condition_env = self.env.clone();
+        self.refine_bounds(&test, false);
+        let natural = self.loop_state();
+        self.env = condition_env;
+        self.refine_bounds(&test, true);
+        let control = self.control_uniform;
+        self.control_uniform &= begin.uniform && limit.uniform;
+        self.loop_depth += 1;
+        self.iterators.push(Some((name.clone(), slot)));
+        self.block(body)?;
+        let body_flow = self.flow;
+        let body_reachable = body_flow.continues();
+        self.iterators.pop();
+        self.loop_depth -= 1;
+        if body_reachable {
+            let one = self.constant(Scalar::U32, 1);
+            let next = self.reg(Scalar::U32);
+            self.code.push(Inst::Binary {
+                dst: next,
+                op: BinaryOp::IAdd,
+                a: index,
+                b: one.regs[0],
+            });
+            self.code.push(Inst::StoreLocal(slot, next));
+        }
+        let body = std::mem::take(&mut self.code);
+        let natural = (!nonempty || body_flow.iterates()).then_some(natural);
+        let next = self.leave_loop(natural);
+        self.flow = body_flow.loop_result(next);
+        self.control_uniform = control;
+        self.code = outer;
+        self.code.push(Inst::Loop {
+            condition,
+            test: test.regs[0],
+            body,
+        });
+
+        Ok(())
+    }
+    fn let_statement(
+        &mut self,
+        annotation: &Option<TypeName>,
+        name: &String,
+        e: &Expr,
+        span: Span,
+    ) -> Result<()> {
+        if self.env.contains_key(name) {
+            return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
+        }
+        if let ExprKind::Call(call, args) = &e.kind {
+            if matches!(call.as_str(), "tile_publish" | "tile_atomic") {
+                return self.tile_publish(
+                    annotation.is_some(),
+                    name,
+                    args,
+                    span,
+                    call == "tile_atomic",
+                );
+            }
+        }
+        let value = if let ExprKind::Cooperate(call, explicit, args) = &e.kind {
+            let result = self.cooperate(call, explicit.as_deref(), args, e.span)?;
+            self.value_result(result, e.span)?
+        } else if let ExprKind::Call(call, args) = &e.kind {
+            if let Some(op) = TileOp::from_source(call) {
+                self.tile_collective(op, args, span)?
+            } else {
+                self.expr(e)?
+            }
+        } else {
+            self.expr(e)?
+        };
+        if let Some(ty) = annotation {
+            let ty = self.world.ty(
+                ty,
+                &self.definition.source,
+                span,
+                &self.definition.module,
+                &self.definition.imports,
+            )?;
+            self.require_same(&ty, &value.ty, span)?;
+        }
+        if !self.mutable_names.contains(name) && value.ty.contains_arrays() {
+            let proof = bounds::Proof::capture(&value);
+            let uniform = value.uniform && self.control_uniform;
+            let place = self.materialize_array(value);
+            self.env.insert(
+                name.clone(),
+                Binding::Owned(OwnedBinding {
+                    place,
+                    proof,
+                    uniform,
+                    initialization: None,
+                }),
+            );
+            return Ok(());
+        }
+        if !self.mutable_names.contains(name) {
+            let mut value = value;
+            value.literal = false;
+            value.uniform &= self.control_uniform;
+            self.env.insert(name.clone(), Binding::Value(value));
+            return Ok(());
+        }
+        let mut slots = Vec::new();
+        for r in &value.regs {
+            let slot = self.locals.len();
+            self.locals.push(self.registers[*r]);
+            self.code.push(Inst::StoreLocal(slot, *r));
+            slots.push(slot);
+        }
+        let proof = bounds::Proof::capture(&value);
+        let place = Place::Local(value.ty, slots);
+        self.initialize(&place);
+        self.env.insert(
+            name.clone(),
+            Binding::Owned(OwnedBinding {
+                proof,
+                place,
+                uniform: value.uniform && self.control_uniform,
+                initialization: None,
+            }),
+        );
+
+        Ok(())
+    }
+    fn numeric_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+        if ty.matrix_shape().is_some() {
+            return self.matrix_construct(ty, values, span);
+        }
+        if values.iter().any(|v| v.ty.array.is_some()) {
+            return self.fail(span, "B238", "数组不能转换成数值标量／向量；先取得数组元素");
+        }
+        if values.iter().any(|v| v.ty.matrix_shape().is_some()) {
+            return self.fail(span, "B237", "矩阵不能转换成数值标量／向量；先取得行字段");
+        }
+        if values.iter().any(|v| v.ty.contains_views()) {
+            return self.fail(span, "B185", "view 不能转换成数值或重解释设备地址");
+        }
+        if values.len() == 1 && values[0].ty == ty {
+            let mut value = values.pop().unwrap();
+            value.literal = false;
+            return Ok(value);
+        }
+        let mut flat = Vec::new();
+        let mut constant = Some(Vec::new());
+        let mut proof = bounds::Proof::default();
+        let uniform = values.iter().all(|v| v.uniform);
+        for v in values {
+            let v = self.cast(v, ty.components[0].0);
+            if ty.components.len() == 1 {
+                proof = v.proof.clone();
+            } else {
+                proof.append(&v);
+            }
+            constant = constant.zip(v.constant).map(|(mut all, part)| {
+                all.extend(part);
+                all
+            });
+            flat.extend(v.regs);
+        }
+        if flat.len() == 1 && ty.components.len() > 1 {
+            proof.splat(ty.components.len());
+            flat = vec![flat[0]; ty.components.len()];
+            constant = constant.map(|v| vec![v[0]; ty.components.len()]);
+        }
+        if flat.len() != ty.components.len() {
+            return self.fail(span, "B157", "类型构造的分量数不匹配");
+        }
+        return Ok(Value {
+            proof,
+            literal: false,
+            ty,
+            regs: flat,
+            uniform,
+            constant,
+        });
+    }
+    fn dot_value(&mut self, values: Vec<Value>, span: Span) -> Result<Value> {
+        if values.len() != 2 {
+            return self.fail(span, "B153", "dot 需要两个向量");
+        }
+        self.require_same(&values[0].ty, &values[1].ty, span)?;
+        if values[0].ty.components[0].0 != Scalar::F32 || !values[0].ty.is_numeric() {
+            return self.fail(span, "B154", "dot 需要 float 向量");
+        }
+        let p = self.binary("*", values[0].clone(), values[1].clone(), span)?;
+        let mut r = Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty: Ty::scalar(Scalar::F32),
+            regs: vec![p.regs[0]],
+            uniform: p.uniform,
+            constant: None,
+        };
+        for x in p.regs.iter().skip(1) {
+            r = self.binary(
+                "+",
+                r,
+                Value {
+                    proof: bounds::Proof::default(),
+                    literal: false,
+                    ty: Ty::scalar(Scalar::F32),
+                    regs: vec![*x],
+                    uniform: p.uniform,
+                    constant: None,
+                },
+                span,
+            )?;
+        }
+        return Ok(r);
+    }
+    fn length_value(
+        &mut self,
+        mut values: Vec<Value>,
+        normalize: bool,
+        span: Span,
+    ) -> Result<Value> {
+        if values.len() != 1 {
+            return self.fail(span, "B153", "length／normalize 需要一个向量");
+        }
+        let v = values.remove(0);
+        if v.ty.components[0].0 != Scalar::F32 || !v.ty.fields.is_empty() || v.ty.array.is_some() {
+            return self.fail(span, "B154", "需要 float 向量");
+        }
+        let p = self.binary("*", v.clone(), v.clone(), span)?;
+        let mut r = Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty: Ty::scalar(Scalar::F32),
+            regs: vec![p.regs[0]],
+            uniform: p.uniform,
+            constant: None,
+        };
+        for x in p.regs.iter().skip(1) {
+            r = self.binary(
+                "+",
+                r,
+                Value {
+                    proof: bounds::Proof::default(),
+                    literal: false,
+                    ty: Ty::scalar(Scalar::F32),
+                    regs: vec![*x],
+                    uniform: p.uniform,
+                    constant: None,
+                },
+                span,
+            )?;
+        }
+        let length = self.math("sqrt", vec![r], span)?;
+        if !normalize {
+            Ok(length)
+        } else {
+            self.binary("/", v, length, span)
+        }
+    }
+    fn cross_value(&mut self, values: Vec<Value>, span: Span) -> Result<Value> {
+        if values.len() != 2 {
+            return self.fail(span, "B153", "cross 需要两个 float3");
+        }
+        for v in &values {
+            self.require_same(&Ty::vector(Scalar::F32, 3), &v.ty, span)?;
+        }
+        let a = &values[0];
+        let b = &values[1];
+        let mut regs = Vec::new();
+        for (i, j) in [(1, 2), (2, 0), (0, 1)] {
+            let value = |r, u| Value {
+                proof: bounds::Proof::default(),
+                literal: false,
+                ty: Ty::scalar(Scalar::F32),
+                regs: vec![r],
+                uniform: u,
+                constant: None,
+            };
+            let x = self.binary(
+                "*",
+                value(a.regs[i], a.uniform),
+                value(b.regs[j], b.uniform),
+                span,
+            )?;
+            let y = self.binary(
+                "*",
+                value(a.regs[j], a.uniform),
+                value(b.regs[i], b.uniform),
+                span,
+            )?;
+            regs.push(self.binary("-", x, y, span)?.regs[0]);
+        }
+        return Ok(Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty: Ty::vector(Scalar::F32, 3),
+            regs,
+            uniform: a.uniform && b.uniform,
+            constant: None,
+        });
+    }
+    fn member_place(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Place> {
+        let p = self.place(base)?;
+        if p.ty().view.is_some() {
+            return self.fail(e.span, "B185", "view 元数据不可修改或按分量访问");
+        }
+        let (sub, components) = self.member(p.ty(), field, e.span)?;
+        Ok(p.project(sub, &components))
+    }
+    fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Place> {
+        let ExprKind::Name(name) = &base.kind else {
+            return self.view_place(base, index);
+        };
+        if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
+            return self.tile_place(view, index);
+        }
+        let Some(Binding::Data(view)) = self.env.get(name).cloned() else {
+            return self.view_place(base, index);
+        };
+        let binding = view.binding;
+        let i = self.expr(index)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
+        if !self.index_in(
+            &i,
+            IndexDomain::Data(binding),
+            self.program.buffers[binding].count.unwrap_or(0),
+        ) && !(binding == self.domain && i.regs[0] == self.global_index)
+        {
+            return self.fail(
+                index.span,
+                "B137",
+                "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
+            );
+        }
+        if self.view_access[&binding] != Access::Atomic
+            && self.view_access[&binding].writes()
+            && (binding != self.domain || i.regs[0] != self.global_index)
+        {
+            return self.fail(
+                index.span,
+                "B166",
+                "并行可写数据只允许访问当前独占元素；读取其他元素需要独立 read 数据集",
+            );
+        }
+        let ty = self.program.buffers[binding].ty.clone();
+        let words = ty.components.iter().map(|x| x.1 / 4).collect();
+        Ok(Place::Element {
+            ty,
+            binding,
+            index: i.regs[0],
+            words,
+            writable: binding == self.domain && i.regs[0] == self.global_index,
+        })
+    }
+    fn name_place(&mut self, name: &String, e: &Expr) -> Result<Place> {
+        match self.env.get(name).cloned() {
+            Some(Binding::AtomicBorrow(place)) => Ok(place),
+            Some(Binding::Owned(owner)) => Ok(owner.place),
+            Some(Binding::Value(value)) if value.ty.contains_arrays() => {
+                let place = self.materialize_array(value);
+                self.env.insert(
+                    name.clone(),
+                    Binding::Owned(OwnedBinding {
+                        place: place.clone(),
+                        proof: bounds::Proof::default(),
+                        uniform: false,
+                        initialization: None,
+                    }),
+                );
+                Ok(place)
+            }
+            Some(Binding::Element {
+                binding,
+                index,
+                writable,
+            }) => {
+                let ty = self.program.buffers[binding].ty.clone();
+                let words = ty.components.iter().map(|x| x.1 / 4).collect();
+                Ok(Place::Element {
+                    ty,
+                    binding,
+                    index,
+                    words,
+                    writable,
+                })
+            }
+            Some(Binding::TileElement { view, index }) => Ok(Place::TileElement {
+                ty: view.ty,
+                tile: view.tile,
+                index,
+                words: view.words,
+            }),
+            Some(Binding::ViewElement { view, index }) => Ok(Self::view_element(&view, index)),
+            _ => self.fail(e.span, "B134", format!("{name} 不是可赋值的元素或局部变量")),
+        }
+    }
+    fn declare_statement(
+        &mut self,
+        annotation: &TypeName,
+        name: &String,
+        span: Span,
+    ) -> Result<()> {
+        if self.env.contains_key(name) {
+            return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
+        }
+        let ty = self.world.ty(
+            annotation,
+            &self.definition.source,
+            span,
+            &self.definition.module,
+            &self.definition.imports,
+        )?;
+        let slots = ty
+            .components
+            .iter()
+            .map(|(scalar, _)| {
+                let slot = self.locals.len();
+                self.locals.push(*scalar);
+                slot
+            })
+            .collect();
+        self.env.insert(
+            name.clone(),
+            Binding::Owned(OwnedBinding {
+                place: Place::Local(ty, slots),
+                proof: bounds::Proof::default(),
+                uniform: false,
+                initialization: None,
+            }),
+        );
+
+        Ok(())
+    }
+    fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
+        let place = self.place(lhs)?;
+        let mut value = self.expr(rhs)?;
+        if op != "=" {
+            let current = self.read_place(&place, lhs.span)?;
+            value = self.binary(&op[..1], current, value, span)?;
+        }
+        self.write_place(&place, value, span)?;
+
+        Ok(())
+    }
+    fn expression_statement(&mut self, e: &Expr) -> Result<()> {
+        if let ExprKind::Call(name, args) = &e.kind
+            && name == "atomic_store"
+        {
+            self.atomic_store(args, e.span)?;
+        } else if let ExprKind::Call(name, args) = &e.kind
+            && name == "tile_barrier"
+        {
+            self.tile_barrier(args, e.span)?;
+        } else if let ExprKind::Call(name, args) = &e.kind {
+            self.call(name, args, e.span)?;
+        } else if let ExprKind::Specialize(name, explicit, args) = &e.kind {
+            self.specialized_call(name, explicit, args, e.span)?;
+        } else if let ExprKind::Cooperate(name, explicit, args) = &e.kind {
+            self.cooperate(name, explicit.as_deref(), args, e.span)?;
+        } else {
+            self.expr(e)?;
+        }
+
+        Ok(())
+    }
+    fn seek_statement(&mut self, name: &String, position: &Expr, span: Span) -> Result<()> {
+        let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {
+            return self.fail(span, "B164", "seek 需要当前有界 for 游标");
+        };
+        if iterator != *name {
+            return self.fail(span, "B165", "seek 只能推进当前最内层游标");
+        }
+        let value = self.expr(position)?;
+        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
+        self.code.push(Inst::StoreLocal(slot, value.regs[0]));
+        self.code.push(Inst::Continue);
+        self.flow = Flow::CONTINUE;
+
+        Ok(())
+    }
+    fn ray_query_call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if args.len() != 5 {
+            return self.fail(
+                span,
+                "B183",
+                "光线查询需要 acceleration、origin、minimum、direction、maximum",
+            );
+        }
+        let ExprKind::Name(scene) = &args[0].kind else {
+            return self.fail(span, "B183", "光线查询需要命名 acceleration 资源");
+        };
+        let Some(Binding::Acceleration(scene)) = self.env.get(scene).cloned() else {
+            return self.fail(span, "B183", "光线查询需要 read acceleration 资源");
+        };
+        let origin = self.expr(&args[1])?;
+        let minimum = self.expr(&args[2])?;
+        let direction = self.expr(&args[3])?;
+        let maximum = self.expr(&args[4])?;
+        self.require_same(&Ty::vector(Scalar::F32, 3), &origin.ty, args[1].span)?;
+        self.require_same(&Ty::scalar(Scalar::F32), &minimum.ty, args[2].span)?;
+        self.require_same(&origin.ty, &direction.ty, args[3].span)?;
+        self.require_same(&minimum.ty, &maximum.ty, args[4].span)?;
+        let ty = if name == "trace_any" {
+            Ty::scalar(Scalar::Bool)
+        } else {
+            Ty::builtin("RayHit").unwrap()
+        };
+        let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
+        let result = if name == "trace_any" {
+            RayResult::Any(regs[0])
+        } else {
+            RayResult::Closest(regs.as_slice().try_into().unwrap())
+        };
+        self.code.push(Inst::RayQuery {
+            scene,
+            origin: origin.regs.as_slice().try_into().unwrap(),
+            direction: direction.regs.as_slice().try_into().unwrap(),
+            minimum: minimum.regs[0],
+            maximum: maximum.regs[0],
+            result,
+        });
+        return Ok(Some(Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty,
+            regs,
+            uniform: false,
+            constant: None,
+        }));
+    }
+    fn unsafe_read_call(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if args.len() != 2 {
+            return self.fail(
+                span,
+                "B181",
+                "unsafe_read 需要 read 数据集与 u32 索引；调用者负责外部索引有效性",
+            );
+        }
+        if let ExprKind::Name(data) = &args[0].kind {
+            if let Some(Binding::Data(view)) = self.env.get(data).cloned() {
+                let binding = view.binding;
+                if self.view_access[&binding] != Access::Read {
+                    return self.fail(
+                        span,
+                        "B181",
+                        "unsafe_read 只允许不可变数据集，不能别名读取并行写入的数据",
+                    );
+                }
+                let index = self.expr(&args[1])?;
+                self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
+                let ty = self.program.buffers[binding].ty.clone();
+                let words = ty.components.iter().map(|x| x.1 / 4).collect();
+                return self
+                    .read_place(
+                        &Place::Element {
+                            ty,
+                            binding,
+                            index: index.regs[0],
+                            words,
+                            writable: false,
+                        },
+                        span,
+                    )
+                    .map(Some);
+            }
+        }
+        let view = self.expr(&args[0])?;
+        if view.ty.view.is_none() {
+            return self.fail(span, "B181", "unsafe_read 需要 read dataset 或不可变 view");
+        }
+        let index = self.expr(&args[1])?;
+        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
+        return self
+            .read_place(&Self::view_element(&view, index.regs[0]), span)
+            .map(Some);
+    }
+    fn ordinal_call(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if args.len() != 1 {
+            return self.fail(span, "B168", "ordinal 需要一个有界游标");
+        }
+        let ExprKind::Name(name) = &args[0].kind else {
+            return self.fail(span, "B168", "ordinal 需要命名游标");
+        };
+        let (domain, index, proof) = match self.env.get(name).cloned() {
+            Some(Binding::Owned(OwnedBinding {
+                place: Place::Element { binding, index, .. },
+                ..
+            })) => (
+                IndexDomain::Data(binding),
+                index,
+                self.data_index_proof(binding),
+            ),
+            Some(Binding::Element { binding, index, .. }) => (
+                IndexDomain::Data(binding),
+                index,
+                self.data_index_proof(binding),
+            ),
+            Some(Binding::TileElement { index, .. }) => {
+                (IndexDomain::Tile, index, self.tile_index_proof())
+            }
+            Some(Binding::ViewElement { view, index }) => {
+                let proof = bounds::Proof::unsigned(
+                    0,
+                    Self::view_length(&view).maximum().saturating_sub(1),
+                );
+                (IndexDomain::View(view.view_identity()), index, proof)
+            }
+            _ => return self.fail(span, "B168", "ordinal 只能用于元素游标"),
+        };
+        return Ok(Some(Value {
+            proof: proof.with_domains(Domains::from([domain])),
+            literal: false,
+            ty: Ty::scalar(Scalar::U32),
+            regs: vec![index],
+            uniform: false,
+            constant: None,
+        }));
+    }
+    fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Value> {
+        if let ExprKind::Name(name) = &base.kind {
+            if let Some(Binding::Texture(reference)) = self.env.get(name).cloned() {
+                if field == "length"
+                    && let Some(count) = reference.shape(self.program)
+                {
+                    return Ok(self.constant(Scalar::U32, count));
+                }
+                return self.fail(e.span, "B239", "纹理资源数组只公开只读 length");
+            }
+            if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
+                return match field.as_str() {
+                    "length" => Ok(self.tile_length(&view)),
+                    "lane" => Ok(self.tile_lane()),
+                    _ => self.fail(e.span, "B141", "tile 只公开只读 length 与 lane"),
+                };
+            }
+            if let Some(Binding::Data(view)) = self.env.get(name).cloned() {
+                if field == "length" {
+                    return Ok(self.data_length(&view));
+                }
+            }
+        }
+        if self.is_place(base) {
+            // 保留字段访问，避免为了读取一个字段先加载整个结构体。
+            let p = self.place(base)?;
+            if p.ty().array.is_some() && field == "length" {
+                return Ok(self.constant(Scalar::U32, p.ty().values[0]));
+            }
+            if p.ty().view.is_some() {
+                if field == "length" {
+                    let view = self.read_place(&p, e.span)?;
+                    return Ok(Self::view_length(&view));
+                }
+                return self.fail(e.span, "B185", "view 只公开只读 length，不公开设备地址分量");
+            }
+            let (sub, components) = self.member(p.ty(), field, e.span)?;
+            return self.read_place(&p.project(sub, &components), e.span);
+        }
+        let v = self.expr(base)?;
+        if v.ty.array.is_some() && field == "length" {
+            return Ok(self.constant(Scalar::U32, v.ty.values[0]));
+        }
+        if v.ty.view.is_some() && field == "length" {
+            return Ok(Self::view_length(&v));
+        }
+        let (ty, indices) = self.member(&v.ty, field, e.span)?;
+        Ok(Value {
+            proof: v.projected_proof(&indices),
+            literal: false,
+            ty,
+            regs: indices.iter().map(|i| v.regs[*i]).collect(),
+            uniform: v.uniform,
+            constant: v.constant.map(|b| indices.iter().map(|i| b[*i]).collect()),
+        })
+    }
+    fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Value> {
+        let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_))));
+        if !resource && !self.is_place(base) {
+            let value = self.expr(base)?;
+            if value.ty.array.is_some() {
+                return self.array_value_index(value, index);
+            }
+            let place = self.view_value_place(value, index)?;
+            return self.read_place(&place, e.span);
+        }
+        let p = self.place(e)?;
+        self.read_place(&p, e.span)
+    }
+    fn name_expr(&mut self, name: &String, e: &Expr) -> Result<Value> {
+        match self.env.get(name).cloned() {
+            Some(Binding::Value(v)) => Ok(v),
+            Some(Binding::Owned(owner)) => self.read_place(&owner.place, e.span),
+            Some(
+                Binding::AtomicBorrow(_)
+                | Binding::Element { .. }
+                | Binding::TileElement { .. }
+                | Binding::ViewElement { .. },
+            ) => {
+                let p = self.place(e)?;
+                self.read_place(&p, e.span)
+            }
+            None => {
+                let key = self
+                    .world
+                    .resolve(
+                        name,
+                        &self.definition.module,
+                        &self.definition.imports,
+                        true,
+                    )
+                    .filter(|key| self.world.functions[key].function.kind == FunctionKind::Constant)
+                    .ok_or_else(|| Diagnostic {
+                        source: self.definition.source.clone(),
+                        span: e.span,
+                        code: "B145",
+                        message: format!("未知值 {name}"),
+                    })?;
+                self.module_constant(key)
+            }
+            _ => self.fail(e.span, "B145", format!("未知值 {name}")),
+        }
     }
     fn is_place(&self, e: &Expr) -> bool {
         match &e.kind {

@@ -1105,3 +1105,14 @@
 - BLEngine以同一语言实现Stella原槽位路径生成和where硬件遍历，真实3000003条GPU输入／输出跨页；不反向引入引擎依赖。引擎正式compute、完整4K／内部8K渲染及原生高精度字形相机交互均完成，完整帧保持；这不是完整GI、语言规模上限或UE替换完成的证明。
 - 原始数值、日志和图像在E:/BLEngineMeasurements/WhereDevelopment；稀疏tile、CPU稀疏packet、设备自主任务及完整引擎继续实现。
 - 本轮临时消费者、B组合、输入资产、原生程序及导出已清理：Saved/WhereDevelopment共86个文件、4972572字节，目录已不存在；本次where DLL缓存另清理14个文件、4083451字节，编译器已自行清除其临时构建源码。精确清单在WhereDevelopment/cleanup.json，没有新增常驻测试或关卡。
+
+## Stella输运开发发现的语言与执行问题（2026-10-26）
+
+- 编译期阶段轮次缺口：原program只能顺序列出parallel和子程序，无法在B中表达有限轮次；已支持阶段层for(counter in first..last)，范围使用现有编译期u32根，嵌套作用域、phase、资源权限和requires／ensures继续沿原展开及依赖模型。动态范围和非u32报B251，计数器改写B134、覆盖参数B125、递归program B105；尚未实现设备驱动的动态阶段循环。
+- 编译器栈溢出：调试版检查Stella的深层材质调用时，原expr／call／statement同时保留未执行分支的大量临时值。已按表达式、位置、语句及值内建职责拆出原逻辑，缩短递归调度栈帧，未提高栈上限、改用异常重试或隐藏失败。原调试栈帧观测expr 39288字节、call 59336字节、statement 60272字节，拆分后为6376／12200／904字节；这是编译器定位数据，不是渲染性能。原会溢出的完整frame具体入口现已通过调试检查，修正前正式编译器与修正后检查器导出的60份原生文件逐字节一致。
+- where临时存储重复驻留：同一串行提交的每个where原先各自分配扫描、原索引和间接参数，即使前一阶段已经消费完。现按真实容量复用同一份提交内工作存储，实际槽位仍由原Execution持有至完成；复用前沿既有prefix.prepare建立Compute／Indirect到下一写者的依赖，不增加独立资源服务或宿主Count。
+- 正式Release原生PID13852覆盖相同容量、不同容量、零容量、独立谓词和三步提交，CPU／GPU完整记录及独立结果错误0。PID39880运行引擎十四阶段输运，主命中、最终路径与颜色三个完整数据文件与工作存储调整前SHA-256一致。PID61944核对33554435条跨两页记录、零／一／三轮及嵌套轮次，CPU／GPU与独立期望错误0。
+- 本次GPU／CPU耗时均来自target/release库、Release blengine及opt-level=3原生消费者；调试版仅用于编译器定位。具体原始日志、数据与构建档位位于E:/BLEngineMeasurements/TransportDevelopment。正式渲染及性能记录只使用Release的规则已写入本项目与BLEngine的AGENTS.md。
+- 这些修复支持当前有限轮次和串行资源复用，不表示Blink已达稳定版。动态设备阶段循环、稀疏tile／CPU packet、多队列及设备自主调度仍未完成；引擎GI／反射与完整产品替换的剩余项由BLEngine问题列表记录。
+
+- 本轮临时消费者、B组合、输入资产、原生程序及导出已清理：BLEngine的Saved/TransportDevelopment共202个文件、5850869字节，目录已不存在；编译器栈定位临时汇编另清理178239791字节。原始日志、数值及完整图像保留在E:/BLEngineMeasurements/TransportDevelopment，精确清单见cleanup.json，没有新增常驻测试或关卡。
