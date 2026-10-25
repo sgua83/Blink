@@ -567,9 +567,15 @@ impl Parser {
             self.expect("(")?;
             let name = self.ident()?;
             self.expect("in")?;
+            let selected = self.peek() == "where"
+                && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "(");
+            if selected {
+                self.at += 1;
+                self.expect("(")?;
+            }
             let prefix = self.peek() == "prefix"
                 && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "(");
-            let domain = if prefix {
+            let mut domain = if prefix {
                 self.at += 1;
                 self.expect("(")?;
                 let dataset = self.ident()?;
@@ -579,13 +585,20 @@ impl Parser {
                 ParallelDomain {
                     dataset,
                     count: Some(count),
+                    selection: None,
                 }
             } else {
                 ParallelDomain {
                     dataset: self.ident()?,
                     count: None,
+                    selection: None,
                 }
             };
+            if selected {
+                self.expect(",")?;
+                domain.selection = Some(self.expr(0)?);
+                self.expect(")")?;
+            }
             self.expect(")")?;
             StmtKind::Parallel(name, domain, self.block()?)
         } else if self.take("if") {

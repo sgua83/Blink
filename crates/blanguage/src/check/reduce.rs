@@ -46,6 +46,7 @@ pub(super) fn compile(
     program.stages.push(Stage {
         domain: source,
         prefix,
+        selection: None,
         operation: Operation::Reduce(ReductionSpec {
             fields: Reduction {
                 source,

@@ -285,6 +285,7 @@ pub struct Stmt {
 pub struct ParallelDomain {
     pub dataset: String,
     pub count: Option<Expr>,
+    pub selection: Option<Expr>,
 }
 #[derive(Clone, Debug)]
 pub enum StmtKind {

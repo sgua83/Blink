@@ -96,7 +96,7 @@ pub(super) struct Plan {
 }
 impl Plan {
     pub fn new(program: &Program, stage: &Stage) -> Option<Self> {
-        if stage.has_tile_scope() || stage.writes.is_empty() {
+        if stage.selection.is_some() || stage.has_tile_scope() || stage.writes.is_empty() {
             return None;
         }
         let mut uniform = vec![false; stage.registers.len()];

@@ -82,6 +82,7 @@ pub(super) fn compile(
     program.stages.push(Stage {
         domain: source,
         prefix,
+        selection: None,
         operation: Operation::ScanExclusive(Scan {
             values: Reduction {
                 source,

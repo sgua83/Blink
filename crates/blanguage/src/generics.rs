@@ -353,6 +353,9 @@ fn substitute_block(
                 if let Some(c) = &mut domain.count {
                     substitute_expr(c, types, values, source)?;
                 }
+                if let Some(s) = &mut domain.selection {
+                    substitute_expr(s, types, values, source)?;
+                }
                 substitute_block(body, types, values, source)?;
             }
             _ => {}

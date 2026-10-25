@@ -2058,6 +2058,31 @@ X 分区按 64 线程工作组对齐，并受设备上限与 `with_partition_ele
 
 `blc build` 为有效域额外输出 `.dispatch.spv`。模块接口可以声明和传递前缀域能力，跨提交由相同数据的所有权承载，见下节；通用动态任务仍待完成；前缀集合运算见下文。
 
+### 保留原索引的稀疏并行域（2026-10-25）
+
+`where(dataset, dataset.bool_field)` 在原元素域中只执行 bool 字段为真的元素；第二个 dataset 可以是另一个只读数据集。它是 parallel 的域语法。例如：
+
+```c
+struct Path { bool active; float3 contribution; };
+struct Pixel { float3 radiance; };
+program accumulate<const C:u32>(read dataset<Path,C> paths,
+                               inout dataset<Pixel,C> pixels) on compute {
+    parallel (pixel in where(pixels,paths.active)) {
+        pixel.radiance += paths[index()].contribution;
+    }
+}
+```
+
+每个实例仍独占 pixels 的原位置，`index()`／`ordinal(pixel)` 是当前输入数据集中的原索引，不是筛选后的紧凑序号。未选择记录及填充不改写，`length(dataset)` 仍为绑定容量。path 数值不授予任意散写，也不能反查此前显式 compact 已移走的记录；像素一一对应需要生产者一直保留共同源位置。
+
+谓词为 bool 字段，可嵌套，例如 `flags.state.keep`；必须来自 read 数据集，或当前 inout 域自身。当前元素可以改写自己的活跃位，其他实例没有该位置的写权限；每个源阶段重新选择，不缓存旧活跃集合。其他 inout、write 或 atomic 数据不能充当谓词。谓词容量必须覆盖原域容量；已知静态形状在编译期检查，动态绑定由原执行入口检查实际容量。
+
+可写 `parallel (item in where(prefix(items,count.value),flags.keep))`，prefix 仍需已有真实生产关系，仅在有效前缀内筛选。当前不开放多层 where、任意谓词表达式或把 where 直接作为集合算子的输入。独占写、普通索引、资源权限和阶段依赖保持原规则；向另一个可写目标 `other[index()]` 写入仍报 B166。
+
+CPU 原生范围函数按原索引读取 bool，只对选中元素执行正文。GPU 用既有分层扫描稳定生成私有 u32 原索引序列，再按设备选中数量间接启动正文；原前缀的六层启动参数与选中正文的第七项分开，避免覆盖仍在读取的参数。计数、索引、摘要与参数由当前 Commands／Execution／Completion 持有，不增加公开 Count、逆映射、资源服务或 CPU 计数读回。
+
+只有域、prefix 和 selection 相同，且通过原依赖分析的 map 才可能融合。谓词读进入阶段读集合，自身谓词的读写冲突保留必要边界。当前 CPU 稀疏正文使用标量范围，不使用四元素 packet；GPU subgroup 按实际执行参与者协作，不授予额外写权限。稀疏 tile 的邻接与发布尚未定义，含 tile 的 where 阶段报 B250。`blc build` 额外导出 selection、tail、add、scatter 和 dispatch SPIR-V，DLL 内嵌同一 Selection IR。
+
 ### 模块接口中的有效域
 
 `.h` 与 `.b` 都声明前置条件和交付关系，顺序不影响接口匹配。下列模块可独立检查；消费函数不依赖生产模块的私有实现：

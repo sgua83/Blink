@@ -98,6 +98,9 @@ pub(super) fn assigned_names(
                 if let Some(count) = &domain.count {
                     expression_assignments(world, definition, count, names);
                 }
+                if let Some(selection) = &domain.selection {
+                    expression_assignments(world, definition, selection, names);
+                }
                 assigned_names(world, definition, body, names);
             }
             _ => {}

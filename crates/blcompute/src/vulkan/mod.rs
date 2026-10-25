@@ -6,6 +6,7 @@ mod present;
 mod raw;
 mod ray;
 mod scan;
+mod selection;
 mod sort;
 mod texture;
 mod transfer;
@@ -631,7 +632,8 @@ impl Device {
             ));
         }
         let bytes = schema.stride as u64 * count as u64;
-        let mut target = GpuDataset::new(self.inner.clone(), schema.ty.clone(), schema.stride, count)?;
+        let mut target =
+            GpuDataset::new(self.inner.clone(), schema.ty.clone(), schema.stride, count)?;
         if bytes > 0 {
             let commands = Commands::new(self.inner.clone())?;
             for page in &target.pages {
@@ -682,7 +684,10 @@ impl Device {
             let dependencies = Execution::prepare(data.last_use.iter().cloned().collect())?;
             commands.submit()?;
             let execution = Execution::new(
-                ExecutionResources::Transfer { commands, _staging: Vec::new() },
+                ExecutionResources::Transfer {
+                    commands,
+                    _staging: Vec::new(),
+                },
                 dependencies,
             );
             execution.wait()?;
@@ -1163,6 +1168,7 @@ struct Compiled {
     scan_adds: Vec<Option<VkPipeline>>,
     finishes: Vec<Option<VkPipeline>>,
     dispatches: Vec<Option<VkPipeline>>,
+    selectors: Vec<Option<VkPipeline>>,
     sorts: Vec<Option<sort::Pipelines>>,
 }
 impl Drop for Compiled {
@@ -1177,6 +1183,7 @@ impl Drop for Compiled {
                 .chain(self.scan_adds.iter().flatten())
                 .chain(self.finishes.iter().flatten())
                 .chain(self.dispatches.iter().flatten())
+                .chain(self.selectors.iter().flatten())
             {
                 (f.vkDestroyPipeline)(d, *p, null());
             }
@@ -1252,6 +1259,7 @@ fn descriptor_set(
     accelerations: &[Acceleration],
     auxiliary: Option<&Allocation>,
     indirect: Option<&Allocation>,
+    selection: Option<&Allocation>,
 ) -> Result<u64> {
     unsafe {
         let f = &compiled.inner.functions;
@@ -1316,6 +1324,7 @@ fn descriptor_set(
         let auxiliary_infos: Vec<_> = [
             (infos.len(), auxiliary),
             (compiled.program.indirect_buffer(), indirect),
+            (compiled.program.selection_buffer(), selection),
         ]
         .into_iter()
         .filter_map(|(binding, allocation)| {
@@ -1485,6 +1494,7 @@ impl GpuProgram {
             scan_adds: Vec::new(),
             finishes: Vec::new(),
             dispatches: Vec::new(),
+            selectors: Vec::new(),
             sorts: Vec::new(),
         };
         unsafe {
@@ -1545,6 +1555,9 @@ impl GpuProgram {
                     | Operation::CustomSegmentedReduce(_)
                     | Operation::Compact(_)
                     | Operation::SegmentedReduce(_) => Some(Pass::ScanTail),
+                    Operation::Map if out.program.stages()[i].selection.is_some() => {
+                        Some(Pass::ScanTail)
+                    }
                     Operation::Map | Operation::StableSort(_) => None,
                 }
                 .map(|pass| {
@@ -1564,7 +1577,8 @@ impl GpuProgram {
                         | Operation::CustomSegmentedReduce(_)
                         | Operation::Compact(_)
                         | Operation::SegmentedReduce(_)
-                ) {
+                ) || out.program.stages()[i].selection.is_some()
+                {
                     Some(pipeline(
                         &out.inner,
                         out.layout,
@@ -1576,6 +1590,9 @@ impl GpuProgram {
                 };
                 out.scan_adds.push(adds);
                 let finish = match &out.program.stages()[i].operation {
+                    Operation::Map if out.program.stages()[i].selection.is_some() => {
+                        Some(Pass::SelectionScatter)
+                    }
                     Operation::Compact(_) => Some(Pass::CompactScatter),
                     Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
                         Some(Pass::ScanRootAdd)
@@ -1598,19 +1615,33 @@ impl GpuProgram {
                 })
                 .transpose()?;
                 out.finishes.push(finish);
-                let dispatch = out.program.stages()[i]
-                    .prefix
-                    .map(|p| {
+                let stage = &out.program.stages()[i];
+                let dispatch_pass = if stage.selection.is_some() {
+                    Some(Pass::SelectionArguments)
+                } else {
+                    stage.prefix.map(Pass::DispatchArguments)
+                };
+                let dispatch = dispatch_pass
+                    .map(|pass| {
                         pipeline(
                             &out.inner,
                             out.layout,
-                            &emit_pass(&out.program, i, Pass::DispatchArguments(p))
-                                .map_err(error)?,
+                            &emit_pass(&out.program, i, pass).map_err(error)?,
                             false,
                         )
                     })
                     .transpose()?;
                 out.dispatches.push(dispatch);
+                out.selectors.push(if stage.selection.is_some() {
+                    Some(pipeline(
+                        &out.inner,
+                        out.layout,
+                        &emit_pass(&out.program, i, Pass::SelectionScan).map_err(error)?,
+                        false,
+                    )?)
+                } else {
+                    None
+                });
                 let sorting =
                     if matches!(out.program.stages()[i].operation, Operation::StableSort(_)) {
                         Some(sort::Pipelines::new(&out, i)?)
@@ -1748,7 +1779,12 @@ impl GpuProgram {
         commands.textures = std::mem::take(&mut owner.textures);
         if !owner.dependencies.is_empty() {
             // 同队列提交顺序本身不形成依赖；此交接同时覆盖 RAW、WAW 与 WAR。
-            let access = 0x60 | if accelerations.is_empty() { 0 } else { 0x200000 };
+            let access = 0x60
+                | if accelerations.is_empty() {
+                    0
+                } else {
+                    0x200000
+                };
             commands.barrier(0x10000, 0x800, 0x10000, access);
             // 完成状态不替代设备内存依赖，先记录交接，再回收完成的前序资源。
             owner.dependencies = Execution::prepare(std::mem::take(&mut owner.dependencies))?;
@@ -1812,9 +1848,13 @@ impl GpuProgram {
                     extra_sets += (2 + 8 * (2 * levels(histogram) + 1)) as u64 * steps.get() as u64;
                     Some(sort::allocate(c, count)?)
                 }
+                blanguage::ir::Operation::Map if stage.selection.is_some() => {
+                    extra_sets += (levels(count) * 2 + 1) as u64 * steps.get() as u64;
+                    Some(selection::allocate(c, count)?)
+                }
                 blanguage::ir::Operation::Map => None,
             };
-            let temporary = if stage.prefix.is_some() {
+            let temporary = if stage.prefix.is_some() || stage.selection.is_some() {
                 extra_sets += steps.get() as u64;
                 let mut temporary = temporary.unwrap_or(Scratch {
                     buffers: Vec::new(),
@@ -1865,7 +1905,7 @@ impl GpuProgram {
                     range: d.allocation.size,
                 })
                 .collect();
-            let set = descriptor_set(&mut commands, c, &infos, &accelerations, None, None)?;
+            let set = descriptor_set(&mut commands, c, &infos, &accelerations, None, None, None)?;
             let queries = QueryPoolCreateInfo {
                 s_type: 11,
                 next: null(),
@@ -1952,6 +1992,19 @@ impl GpuProgram {
                                 &data,
                                 temporary.sorting.as_ref().unwrap(),
                                 temporary.arguments.as_ref(),
+                                &infos,
+                                &accelerations,
+                                &mut uniforms,
+                                self.partition_elements,
+                            )?;
+                        }
+                        blanguage::ir::Operation::Map if stage.selection.is_some() => {
+                            selection::record(
+                                &mut commands,
+                                c,
+                                i,
+                                &data,
+                                scratch[i].as_ref().unwrap(),
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
@@ -2152,6 +2205,7 @@ impl GpuProgram {
                                         .as_ref()
                                         .and_then(|s| s.arguments.as_ref())
                                         .map(|a| &a.allocation),
+                                    None,
                                 )?;
                                 uniforms[2 + reduction.target] = groups;
                                 scan::dispatch(

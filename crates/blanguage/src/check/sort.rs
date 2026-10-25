@@ -70,6 +70,7 @@ pub(super) fn compile(
         tiles: Vec::new(),
         domain: source,
         prefix,
+        selection: None,
         operation: Operation::StableSort(Sorting {
             source,
             key_word,

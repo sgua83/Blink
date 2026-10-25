@@ -212,9 +212,11 @@ variants!(Operation {Map, Reduce(r), CustomReduce(r), CustomScan(s), CustomSegme
     SegmentedReduce(r), ScanExclusive(s), Compact(c), StableSort(s)});
 record!(PrefixCount { binding, word });
 record!(PrefixRelation { domain, count });
+record!(Selection { binding, word });
 record!(Stage {
     domain,
     prefix,
+    selection,
     operation,
     boundary_before,
     registers,

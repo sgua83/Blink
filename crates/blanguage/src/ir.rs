@@ -763,10 +763,26 @@ pub struct PrefixRelation {
     pub domain: usize,
     pub count: PrefixCount,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub binding: usize,
+    pub word: u32,
+}
+impl Selection {
+    pub fn scan(self, target: usize) -> Reduction {
+        Reduction {
+            source: self.binding,
+            source_word: self.word,
+            target,
+            target_word: 0,
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Stage {
     pub domain: usize,
     pub prefix: Option<PrefixCount>,
+    pub selection: Option<Selection>,
     pub operation: Operation,
     pub boundary_before: bool,
     pub registers: Vec<Scalar>,
@@ -1244,12 +1260,20 @@ impl Program {
                         | Operation::SegmentedReduce(_)
                         | Operation::Compact(_)
                         | Operation::StableSort(_)
-                )
+                ) || s.selection.is_some()
             }))
+    }
+    pub fn selection_buffer(&self) -> usize {
+        self.indirect_buffer() + 1
     }
     pub fn auxiliary_buffers(&self) -> usize {
         self.indirect_buffer() - self.buffers.len()
-            + usize::from(self.stages.iter().any(|s| s.prefix.is_some()))
+            + usize::from(
+                self.stages
+                    .iter()
+                    .any(|s| s.prefix.is_some() || s.selection.is_some()),
+            )
+            + usize::from(self.stages.iter().any(|s| s.selection.is_some()))
     }
     pub fn requires_sort(&self) -> bool {
         self.stages
@@ -1339,14 +1363,15 @@ impl Program {
         }
         for (i, s) in self.stages.iter().enumerate() {
             out += &format!(
-                "  stage {i}: {:?}, domain={}, reads={:?}, writes={:?}, scalar_values={}, locals={}, prefix={:?}\n",
+                "  stage {i}: {:?}, domain={}, reads={:?}, writes={:?}, scalar_values={}, locals={}, prefix={:?}, selection={:?}\n",
                 s.operation,
                 self.buffers[s.domain].name,
                 s.reads,
                 s.writes,
                 s.registers.len(),
                 s.locals.len(),
-                s.prefix
+                s.prefix,
+                s.selection
             );
             if s.has_tile_scope() {
                 out += &format!(

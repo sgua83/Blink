@@ -39,6 +39,7 @@ pub(super) fn clear(
     program.stages.push(Stage {
         domain: count,
         prefix: None,
+        selection: None,
         operation: Operation::Map,
         boundary_before: true,
         registers: vec![Scalar::U32],

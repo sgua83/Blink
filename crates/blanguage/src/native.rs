@@ -626,6 +626,17 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     let begin = e.code.len();
     e.bytes(&[0x44, 0x39, 0xf3]);
     let end = e.jump(Some(0x83));
+    let skip_selection = stage.selection.map(|selection| {
+        // R12 is the data table, EBX the original record index.
+        e.bytes(&[0x49, 0x8b, 0x84, 0x24]);
+        e.u32(selection.binding as u32 * 8);
+        e.bytes(&[0x89, 0xd9, 0x48, 0x69, 0xc9]);
+        e.u32(program.buffers[selection.binding].stride);
+        e.bytes(&[0x48, 0x01, 0xc8, 0x83, 0xb8]);
+        e.u32(selection.word * 4);
+        e.bytes(&[0]);
+        e.jump(Some(0x84))
+    });
     if stage.has_tile_steps() {
         e.tile_phases()?;
     } else {
@@ -633,6 +644,9 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
             e.tile_input();
         }
         e.block(&stage.code)?;
+        if let Some(skip) = skip_selection {
+            e.patch(skip, e.code.len());
+        }
         e.bytes(&[0xff, 0xc3]);
     }
     let back = e.jump(None);

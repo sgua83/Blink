@@ -327,6 +327,35 @@ fn expand_program(
                     .as_ref()
                     .map(|expr| prefix::resolve(program, env, *domain, expr, d, facts))
                     .transpose()?;
+                let selection = syntax
+                    .selection
+                    .as_ref()
+                    .map(|expr| {
+                        let (binding, word, access) =
+                            collective_field(program, env, expr, d, Scalar::Bool)?;
+                        if access != Access::Read
+                            && !(binding == *domain && access == Access::InOut)
+                        {
+                            return d.source.fail(
+                                expr.span,
+                                "B170",
+                                "where 谓词必须是只读 bool 字段，或当前 inout 独占域的 bool 字段",
+                            );
+                        }
+                        if let (Some(domain_count), Some(flags_count)) = (
+                            program.buffers[*domain].count,
+                            program.buffers[binding].count,
+                        ) && flags_count < domain_count
+                        {
+                            return d.source.fail(
+                                expr.span,
+                                "B187",
+                                "where 谓词容量不能小于原始域",
+                            );
+                        }
+                        Ok(Selection { binding, word })
+                    })
+                    .transpose()?;
                 let mut b = Builder::new(world, d, program, *domain);
                 b.roots(env);
                 let index = b.reg(Scalar::U32);
@@ -404,11 +433,24 @@ fn expand_program(
                         }
                     }
                 }
+                let tiles = b.lower_tiles(statement.span)?;
+                if selection.is_some() && !tiles.is_empty() {
+                    return d.source.fail(
+                        statement.span,
+                        "B250",
+                        "where 稀疏域尚未定义 tile 邻接与发布语义",
+                    );
+                }
+                if let Some(selection) = selection {
+                    b.reads.insert(selection.binding);
+                    b.cross_access.insert(selection.binding);
+                }
                 let stage = Stage {
                     domain: *domain,
                     prefix,
+                    selection,
                     operation: Operation::Map,
-                    tiles: b.lower_tiles(statement.span)?,
+                    tiles,
                     boundary_before: std::mem::take(boundary),
                     registers: b.registers,
                     locals: b.locals,

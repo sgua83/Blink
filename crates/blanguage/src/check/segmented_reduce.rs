@@ -81,6 +81,7 @@ pub(super) fn compile(
     program.stages.push(Stage {
         domain: source,
         prefix,
+        selection: None,
         operation: Operation::SegmentedReduce(SegmentedReduction {
             values: ReductionSpec {
                 fields: Reduction {

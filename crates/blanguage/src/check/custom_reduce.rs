@@ -272,6 +272,7 @@ pub(super) fn compile(
     program.stages.push(Stage {
         domain: source,
         prefix,
+        selection: None,
         operation: if let Some(count) = count {
             Operation::CustomSegmentedReduce(CustomSegmentedReduction {
                 values,

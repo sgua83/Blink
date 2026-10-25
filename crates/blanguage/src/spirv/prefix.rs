@@ -27,7 +27,7 @@ impl Emitter<'_> {
         self.emit(128, &[u, result, quotient, carry]);
         result
     }
-    fn prefix_min(&mut self, a: u32, b: u32) -> u32 {
+    pub(super) fn prefix_min(&mut self, a: u32, b: u32) -> u32 {
         let less = self.id();
         self.emit(176, &[self.types[&Scalar::Bool], less, a, b]);
         let value = self.id();
@@ -52,11 +52,36 @@ impl Emitter<'_> {
         );
         let count = self.id();
         self.emit(61, &[u, count, source, 2, 4]);
+        self.domain_arguments(count);
+        self.emit(249, &[end]);
+        self.emit(248, &[end]);
+    }
+    pub(super) fn selection_source_arguments(&mut self, invocation: u32) {
+        let zero = self.constant(Scalar::U32, 0);
+        let condition = self.id();
+        self.emit(
+            170,
+            &[self.types[&Scalar::Bool], condition, invocation, zero],
+        );
+        let run = self.id();
+        let end = self.id();
+        self.emit(247, &[end, 0]);
+        self.emit(250, &[condition, run, end]);
+        self.emit(248, &[run]);
+        let count = self.prefix_push(2 + self.stage.domain as u32);
+        self.domain_arguments(count);
+        self.emit(249, &[end]);
+        self.emit(248, &[end]);
+    }
+    fn domain_arguments(&mut self, count: u32) {
+        let u = self.types[&Scalar::U32];
+        let zero = self.constant(Scalar::U32, 0);
         let width = self.constant(Scalar::U32, self.stage.workgroup_width());
         // 参数由执行框架写入目标设备的非零 X/Y 工作组上限。
         let max_x = self.prefix_push(0);
         let max_y = self.prefix_push(1);
-        let collective = !matches!(self.stage.operation, Operation::Map);
+        let collective =
+            !matches!(self.stage.operation, Operation::Map) || self.stage.selection.is_some();
         let levels = if collective { PREFIX_LEVELS } else { 1 };
         let sorting = matches!(self.stage.operation, Operation::StableSort(_));
         let mut root_count = count;
@@ -100,14 +125,13 @@ impl Emitter<'_> {
                 self.emit(132, &[u, root_count, groups_nonzero, bins]);
             }
         }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
     }
     pub(super) fn prefix_index(
         &mut self,
         gid: u32,
         num_groups: u32,
         vector_type: u32,
+        collective: bool,
     ) -> (u32, u32) {
         let u = self.types[&Scalar::U32];
         let wide = self.u64_type;
@@ -145,7 +169,7 @@ impl Emitter<'_> {
         self.emit(113, &[wide, count64, count]);
         let active = self.id();
         self.emit(176, &[self.types[&Scalar::Bool], active, index, count64]);
-        if !matches!(self.stage.operation, Operation::Map) {
+        if collective {
             // 矩形网格补齐的整组先统一退出，不能写越界部分和，也不能分歧进入屏障。
             let groups = self.prefix_ceil(count, width);
             let zero = self.constant(Scalar::U32, 0);

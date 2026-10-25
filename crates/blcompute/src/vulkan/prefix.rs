@@ -2,10 +2,14 @@
 use super::*;
 use blanguage::ir::{Operation, Scalar, Stage};
 pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<GpuDataset> {
-    let levels = match stage.operation {
-        Operation::Map => 1,
-        Operation::StableSort(_) => blanguage::spirv::PREFIX_LEVELS * 2,
-        _ => blanguage::spirv::PREFIX_LEVELS,
+    let levels = if stage.selection.is_some() {
+        blanguage::spirv::PREFIX_LEVELS + 1
+    } else {
+        match stage.operation {
+            Operation::Map => 1,
+            Operation::StableSort(_) => blanguage::spirv::PREFIX_LEVELS * 2,
+            _ => blanguage::spirv::PREFIX_LEVELS,
+        }
     };
     GpuDataset::allocate(
         c.inner.clone(),
@@ -36,6 +40,7 @@ pub(super) fn prepare(
         accelerations,
         None,
         Some(&args.allocation),
+        None,
     )?;
     unsafe {
         let f = &c.inner.functions;

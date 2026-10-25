@@ -18,6 +18,7 @@ pub fn optimize(program: &mut Program) {
                 && !stage.has_tile_scope()
                 && previous.domain == stage.domain
                 && previous.prefix == stage.prefix
+                && previous.selection == stage.selection
                 && !stage.boundary_before
                 && !cross_dependency(previous, &stage)
                 && !cross_dependency(&stage, previous)
@@ -134,6 +135,7 @@ pub fn optimize(program: &mut Program) {
             });
             reads.extend(stage.input_words().iter().map(|(source, _)| *source));
             reads.extend(stage.prefix.map(|p| p.binding));
+            reads.extend(stage.selection.map(|s| s.binding));
             stage.reads = reads.into_iter().collect();
             stage.writes = writes.into_iter().collect();
             stage

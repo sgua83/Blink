@@ -9,6 +9,7 @@ mod reduce;
 mod returns;
 mod scan;
 mod segmented;
+mod selection;
 mod sort;
 mod subgroup;
 mod texture;
@@ -22,6 +23,9 @@ pub enum Pass {
     ScanAdd,
     ScanRootAdd,
     CompactScatter,
+    SelectionArguments,
+    SelectionScan,
+    SelectionScatter,
     SortHistogram(u32),
     SortScatter(u32),
     SortScan,
@@ -1184,7 +1188,9 @@ pub fn emit_pass(
     op(&mut e.defs, 59, &[ptr_input, global, 1]);
     op(&mut e.decorations, 71, &[global, 11, 28]);
     let mut num_groups = 0;
-    if stage.prefix.is_some() && !matches!(pass, Pass::DispatchArguments(_)) {
+    if (stage.prefix.is_some() || stage.selection.is_some())
+        && !matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments)
+    {
         num_groups = e.id();
         op(&mut e.defs, 59, &[ptr_input, num_groups, 1]);
         op(&mut e.decorations, 71, &[num_groups, 11, 24]);
@@ -1242,6 +1248,7 @@ pub fn emit_pass(
         stage.operation,
         Operation::ScanExclusive(_) | Operation::CustomScan(_) | Operation::Compact(_)
     ) && matches!(pass, Pass::Main | Pass::ScanTail))
+        || (stage.selection.is_some() && matches!(pass, Pass::SelectionScan | Pass::ScanTail))
         || (matches!(stage.operation, Operation::StableSort(_))
             && matches!(pass, Pass::SortScan | Pass::ScanTail))
         || (matches!(
@@ -1426,7 +1433,13 @@ pub fn emit_pass(
     let local_index = e.id();
     e.emit(81, &[u, local_index, gid, 0]);
     let (count, active) = if num_groups != 0 {
-        e.prefix_index(gid, num_groups, v3)
+        e.prefix_index(
+            gid,
+            num_groups,
+            v3,
+            !matches!(stage.operation, Operation::Map)
+                || (stage.selection.is_some() && pass != Pass::Main),
+        )
     } else {
         let zero = e.constant(Scalar::U32, 0);
         let one = e.constant(Scalar::U32, 1);
@@ -1463,6 +1476,39 @@ pub fn emit_pass(
     }
     if let Pass::DispatchArguments(prefix) = pass {
         e.prefix_arguments(&prefix, local_index);
+    } else if pass == Pass::SelectionArguments {
+        if let Some(prefix) = stage.prefix {
+            e.prefix_arguments(&prefix, local_index);
+        } else {
+            e.selection_source_arguments(local_index);
+        }
+    } else if let Some(selection) = stage.selection
+        && pass != Pass::Main
+    {
+        if pass == Pass::SelectionScatter {
+            e.selection_scatter(selection, count, active);
+        } else if scan_local {
+            let local = e.id();
+            e.emit(61, &[u, local, local_input]);
+            e.scan(
+                &Scan::counts(selection.scan(program.selection_buffer())),
+                pass == Pass::ScanTail,
+                local,
+                shared,
+                shared_pointer,
+                active,
+            );
+        } else {
+            e.emit(247, &[end, 0]);
+            e.emit(250, &[active, execute, end]);
+            e.emit(248, &[execute]);
+            e.scan_add(
+                &Scan::counts(selection.scan(program.selection_buffer())),
+                false,
+            );
+            e.emit(249, &[end]);
+            e.emit(248, &[end]);
+        }
     } else if let Operation::StableSort(s) = &stage.operation {
         match pass {
             Pass::Main => e.sort_initialize(s, active),
@@ -1668,6 +1714,12 @@ pub fn emit_pass(
             e.emit(247, &[end, 0]);
             e.emit(250, &[active, execute, end]);
             e.emit(248, &[execute]);
+            if stage.selection.is_some() {
+                let at = e.address_scalar(program.buffers.len(), e.index, 1, 0);
+                let original = e.id();
+                e.emit(61, &[u, original, at, 2, 4]);
+                e.index = original;
+            }
             if e.block(&stage.code, None) {
                 e.emit(249, &[end]);
             }

@@ -53,6 +53,7 @@ pub(super) fn record(
         accelerations,
         Some(prefix),
         scratch.arguments.as_ref().map(|a| &a.allocation),
+        None,
     )?;
     scan::dispatch(
         commands,

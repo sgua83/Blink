@@ -192,6 +192,11 @@ pub(crate) fn arguments(
         words[2 + i] = *count;
     }
     for stage in program.stages() {
+        if let Some(selection) = stage.selection
+            && shapes[selection.binding].2 < shapes[stage.domain].2
+        {
+            return Err(error("where 实际谓词容量不能小于原始域容量"));
+        }
         let sources: std::collections::BTreeSet<_> = stage
             .input_words()
             .into_iter()

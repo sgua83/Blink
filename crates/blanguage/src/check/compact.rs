@@ -92,6 +92,7 @@ pub(super) fn compile(
         tiles: Vec::new(),
         domain: source,
         prefix,
+        selection: None,
         operation: Operation::Compact(Compaction {
             source,
             flags,

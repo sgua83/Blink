@@ -71,7 +71,10 @@ impl Emitter<'_> {
             );
             let value = self.id();
             self.emit(61, &[u, value, at, 2, 4]);
-            let value = if matches!(self.stage.operation, Operation::Compact(_)) && !tail {
+            let value = if (matches!(self.stage.operation, Operation::Compact(_))
+                || self.stage.selection.is_some())
+                && !tail
+            {
                 let keep = self.id();
                 self.emit(171, &[b, keep, value, zero]);
                 let one = self.constant(Scalar::U32, 1);

@@ -60,8 +60,12 @@ pub(super) fn record(
         };
         let auxiliary = &temporary[level * 2].allocation;
         let mut pass_infos = infos.to_vec();
-        pass_infos[r.source] = info(source);
-        pass_infos[r.target] = info(target);
+        if level > 0 || r.target != c.program.selection_buffer() {
+            pass_infos[r.source] = info(source);
+        }
+        if r.target < pass_infos.len() {
+            pass_infos[r.target] = info(target);
+        }
         let set = descriptor_set(
             commands,
             c,
@@ -69,6 +73,7 @@ pub(super) fn record(
             accelerations,
             Some(auxiliary),
             arguments.map(|a| &a.allocation),
+            (r.target == c.program.selection_buffer()).then_some(target),
         )?;
         let pipeline = kernels[usize::from(level != 0)];
         dispatch(
@@ -93,7 +98,9 @@ pub(super) fn record(
         };
         let mut pass_infos = infos.to_vec();
         pass_infos[r.source] = info(source);
-        pass_infos[r.target] = info(target);
+        if r.target < pass_infos.len() {
+            pass_infos[r.target] = info(target);
+        }
         let set = descriptor_set(
             commands,
             c,
@@ -105,6 +112,7 @@ pub(super) fn record(
                 None
             },
             arguments.map(|a| &a.allocation),
+            (r.target == c.program.selection_buffer()).then_some(target),
         )?;
         dispatch(
             commands,
@@ -158,6 +166,7 @@ pub(super) fn record_segmented_reduce(
             accelerations,
             Some(&temporary[level * 2].allocation),
             arguments.map(|a| &a.allocation),
+            None,
         )?;
         dispatch(
             commands,
@@ -184,6 +193,7 @@ pub(super) fn record_segmented_reduce(
             accelerations,
             None,
             arguments.map(|a| &a.allocation),
+            None,
         )?;
         dispatch(
             commands,
@@ -206,6 +216,7 @@ pub(super) fn record_segmented_reduce(
         accelerations,
         Some(prefix),
         arguments.map(|a| &a.allocation),
+        None,
     )?;
     dispatch(
         commands,

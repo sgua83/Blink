@@ -122,11 +122,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 ("add", Pass::ScanAdd),
                                 ("gather", Pass::SortGather),
                             ],
+                            Operation::Map if p.stages()[i].selection.is_some() => &[
+                                ("selection", Pass::SelectionScan),
+                                ("tail", Pass::ScanTail),
+                                ("add", Pass::ScanAdd),
+                                ("scatter", Pass::SelectionScatter),
+                            ],
                             Operation::Map => &[],
                         };
-                        if let Some(prefix) = p.stages()[i].prefix {
-                            let words = emit_pass(p, i, Pass::DispatchArguments(prefix))
-                                .map_err(std::io::Error::other)?;
+                        let dispatch = if p.stages()[i].selection.is_some() {
+                            Some(Pass::SelectionArguments)
+                        } else {
+                            p.stages()[i].prefix.map(Pass::DispatchArguments)
+                        };
+                        if let Some(pass) = dispatch {
+                            let words = emit_pass(p, i, pass).map_err(std::io::Error::other)?;
                             let bytes: Vec<_> =
                                 words.iter().flat_map(|w| w.to_le_bytes()).collect();
                             std::fs::write(out.join(format!("{stem}.{i}.dispatch.spv")), bytes)?;
