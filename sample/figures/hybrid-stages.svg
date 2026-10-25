@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="634" viewBox="0 0 560 634">
+<rect x="0" y="0" width="560" height="634" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">同一算法，两种执行组织</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">串行 / 依次处理粒子</text>
+<text x="38" y="167" fill="#263746" font-size="25">更新 0、1、2，再测能量并求和</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">B / integrate 阶段</text>
+<text x="38" y="293" fill="#263746" font-size="25">粒子 0、1、2 可独立更新</text>
+<line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="342" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">B / energy 阶段</text>
+<text x="38" y="419" fill="#263746" font-size="25">读取更新后的速度，独立求能量</text>
+<line x1="280" y1="448" x2="280" y2="463" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="468" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="504" fill="#147d86" font-size="27">B / total_energy 阶段</text>
+<text x="38" y="545" fill="#263746" font-size="25">归约所有能量，产生一个 total</text>
+<text x="22" y="610" fill="#657787" font-size="20">执行关系示意 · 箭头不表示耗时</text>
+</svg>

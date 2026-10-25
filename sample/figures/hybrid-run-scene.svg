@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="688" viewBox="0 0 560 688">
+<rect x="0" y="0" width="560" height="688" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">scene / 空间与组件结果</text>
+<rect x="20" y="90" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">PowerShell</text>
+<text x="38" y="167" fill="#263746" font-size="25">&amp; $book scene cpu</text>
+<text x="38" y="203" fill="#263746" font-size="25">&amp; $book scene gpu</text>
+<line x1="280" y1="232" x2="280" y2="247" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="252" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="288" fill="#147d86" font-size="27">世界平移</text>
+<text x="38" y="329" fill="#263746" font-size="25">node[0] (10,0,0)</text>
+<text x="38" y="365" fill="#263746" font-size="25">node[1] (10,2,0)</text>
+<text x="38" y="401" fill="#263746" font-size="25">node[2] (10,2,3)</text>
+<line x1="280" y1="430" x2="280" y2="445" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="450" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="486" fill="#147d86" font-size="27">挂接组件</text>
+<text x="38" y="527" fill="#263746" font-size="25">camera.eye=[10,2,4]</text>
+<text x="38" y="563" fill="#263746" font-size="25">camera.up=[0,1,0]</text>
+<text x="38" y="599" fill="#263746" font-size="25">light.position=[11,2,0]</text>
+<text x="22" y="664" fill="#657787" font-size="20">真实运行记录排印 · 两种后端结果一致</text>
+</svg>

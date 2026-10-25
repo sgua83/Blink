@@ -37,6 +37,12 @@ blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun
 
 [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [问题列表](Docs/Issues.md) · [BLEngine](../BLEngine/README.md)
 
+## 系列书籍
+
+[《并行编程的艺术》](sample/并行编程的艺术.md) 从 C/C++ 走向并行思考；[《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) 沿 BLEngine 的真实实现，讲解数据布局、设备驻留、提交组合、共享资产、场景与图像输出。第二本配有[完整 Rust 宿主](sample/hybrid/README.md)，无需 BLEngine 工作区即可运行。
+
+第二本中文版 PDF：[手机阅读版](sample/pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准版](sample/pdf/Blink和Rust混合编程.pdf)。
+
 ## C、C++ 与 Rust 集成
 
 blc 现可将一个具体 program 构建为 Windows x64 DLL，同时输出 C/C++ 的 .abi.h、MSVC 导入库 .lib 与 Rust 安全绑定 .rs。C++ 使用 RAII，Rust 使用切片、Result 与 Drop；两种宿主调用同一份 B 算法，可选择 CPU 多核或 Vulkan GPU。

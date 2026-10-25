@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544" viewBox="0 0 560 544">
+<rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">共享输入，独立表面响应</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">Rust / 纹理所有者</text>
+<text x="38" y="167" fill="#263746" font-size="25">一次创建或读取 albedo 纹理</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">B / 每个 point</text>
+<text x="38" y="293" fill="#263746" font-size="25">uv → texture_sample</text>
+<text x="38" y="329" fill="#263746" font-size="25">normal / view / light → GGX</text>
+<line x1="280" y1="358" x2="280" y2="373" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="378" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="414" fill="#147d86" font-size="27">B / 当前元素输出</text>
+<text x="38" y="455" fill="#263746" font-size="25">只写自己的 point.radiance</text>
+<text x="22" y="520" fill="#657787" font-size="20">执行关系示意 · 箭头不表示耗时</text>
+</svg>

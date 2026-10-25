@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544" viewBox="0 0 560 544">
+<rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">共享世界，独立图像</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">世界 / BLSceneRenderer</text>
+<text x="38" y="167" fill="#263746" font-size="25">模型、材质、纹理、灯光</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">输出 A / BLRenderOutput</text>
+<text x="38" y="293" fill="#263746" font-size="25">像素、显示图、叠加层、相机</text>
+<line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="342" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">输出 B / BLRenderOutput</text>
+<text x="38" y="419" fill="#263746" font-size="25">另一份像素与视图输入</text>
+<text x="38" y="455" fill="#263746" font-size="25">与输出 A 共享实际世界资源</text>
+<text x="22" y="520" fill="#657787" font-size="20">执行关系示意 · 箭头不表示耗时</text>
+</svg>

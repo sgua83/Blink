@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="616" viewBox="0 0 560 616">
+<rect x="0" y="0" width="560" height="616" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">steps / 三个物理时间步</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">PowerShell</text>
+<text x="38" y="167" fill="#263746" font-size="25">&amp; $book steps</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">物理输入</text>
+<text x="38" y="293" fill="#263746" font-size="25">physical_steps=3  dt=0.01</text>
+<text x="38" y="329" fill="#263746" font-size="25">simulated_seconds=0.03</text>
+<line x1="280" y1="358" x2="280" y2="373" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="378" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="414" fill="#147d86" font-size="27">GPU / 最终读回</text>
+<text x="38" y="455" fill="#263746" font-size="25">first_x=0.999914</text>
+<text x="38" y="491" fill="#263746" font-size="25">first_y=0.029999</text>
+<text x="38" y="527" fill="#263746" font-size="25">total_energy=1.499899</text>
+<text x="22" y="592" fill="#657787" font-size="20">真实运行记录排印 · 无中间主机等待</text>
+</svg>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="508" viewBox="0 0 560 508">
+<rect x="0" y="0" width="560" height="508" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">结束消费时，先关闭再等待</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">01 / 释放接收端</text>
+<text x="38" y="167" fill="#263746" font-size="25">receiver.take()</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">02 / 发送者发现交接结束</text>
+<text x="38" y="293" fill="#263746" font-size="25">send 返回错误，工作者退出</text>
+<line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="342" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">03 / 等待真实工作者结束</text>
+<text x="38" y="419" fill="#263746" font-size="25">join 已经开始的读取线程</text>
+<text x="22" y="484" fill="#657787" font-size="20">读取尚在进行时，等待其实际结束</text>
+</svg>

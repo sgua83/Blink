@@ -1,0 +1,72 @@
+Blink 和 Rust 混合编程 / 原生运行记录
+日期：2026-10-25
+CPU: AMD Ryzen 9 9950X 16C/32T; RAM: 128 GB
+GPU: AMD Radeon RX 9070 GRE; Rust: 1.95.0 MSVC; release
+计时为一次原生观测；各字段口径见书稿第十章。
+
+[particles-cpu-3]
+layout stride=32 position=0 velocity=16 energy=28
+setup_ms=5.637
+run_wait_ms=0.158
+count=3 total_energy=1.500003
+first position=(0.999986,0.010000,0.000000) energy=0.500001
+
+[particles-gpu-3]
+layout stride=32 position=0 velocity=16 energy=28
+GPU AMD Radeon RX 9070 GRE
+setup_ms=160.005
+upload_enqueue_ms=7.302
+run_wait_ms=6.230 gpu_ms=0.011
+download_ms=8.326
+count=3 total_energy=1.500003
+first position=(0.999986,0.010000,0.000000) energy=0.500001
+
+[steps]
+layout stride=32 position=0 velocity=16 energy=28
+physical_steps=3 dt=0.01 simulated_seconds=0.03
+first_x=0.999914 first_y=0.029999 total_energy=1.499899
+
+[flow]
+layout stride=32 position=0 velocity=16 energy=28
+layout stride=32 position=0 velocity=16 energy=28
+left=1.500003 right=6.000003 combined=7.500006
+
+[scene-cpu]
+setup_run_read_ms=1.351
+node[0] world=(10.0,0.0,0.0)
+node[1] world=(10.0,2.0,0.0)
+node[2] world=(10.0,2.0,3.0)
+camera.eye=[10.0, 2.0, 4.0]
+camera.up=[0.0, 1.0, 0.0]
+light.position=[11.0, 2.0, 0.0]
+
+[scene-gpu]
+setup_run_read_ms=183.462
+node[0] world=(10.0,0.0,0.0)
+node[1] world=(10.0,2.0,0.0)
+node[2] world=(10.0,2.0,3.0)
+camera.eye=[10.0, 2.0, 4.0]
+camera.up=[0.0, 1.0, 0.0]
+light.position=[11.0, 2.0, 0.0]
+
+[sheet-cpu]
+setup_ms=97.524
+first_run_wait_ms=45.563
+resident_run_wait_ms=46.684
+count=10000000 center_radiance=(0.152368,0.172937,0.118156)
+
+[sheet-gpu]
+GPU AMD Radeon RX 9070 GRE
+setup_upload_enqueue_ms=629.451
+first_run_wait_ms=127.771 gpu_ms=12.348
+resident_run_wait_ms=16.701 gpu_ms=13.220
+points_download_ms=2620.171
+count=10000000 center_radiance=(0.152371,0.172865,0.118214)
+
+[image]
+GPU AMD Radeon RX 9070 GRE
+setup_enqueue_ms=97.586
+image_run_wait_ms=7.172 gpu_ms=2.176
+display_download_ms=11.708 display_bytes=4000000
+image=Saved/HybridBook/materials.ppm size=1000x1000
+

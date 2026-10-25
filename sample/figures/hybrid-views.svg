@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544" viewBox="0 0 560 544">
+<rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">实例引用同一份实际模型</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">实例 A / 独立 tint 与变换</text>
+<text x="38" y="167" fill="#263746" font-size="25">triangles view ── 共享来源</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">实例 B / 独立 tint 与变换</text>
+<text x="38" y="293" fill="#263746" font-size="25">triangles view ── 同一来源</text>
+<line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="342" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">几何存储 / 实际只读数据</text>
+<text x="38" y="419" fill="#263746" font-size="25">三角形、法线、纹理坐标</text>
+<text x="38" y="455" fill="#263746" font-size="25">来源所有权随引用继续存活</text>
+<text x="22" y="520" fill="#657787" font-size="20">执行关系示意 · 箭头不表示耗时</text>
+</svg>

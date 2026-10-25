@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="508" viewBox="0 0 560 508">
+<rect x="0" y="0" width="560" height="508" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">从局部空间走到世界空间</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">根 / 局部平移 (10,0,0)</text>
+<text x="38" y="167" fill="#263746" font-size="25">世界平移 (10,0,0)</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">子 / 局部平移 (0,2,0)</text>
+<text x="38" y="293" fill="#263746" font-size="25">根 × 子 → (10,2,0)</text>
+<line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="342" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">孙 / 局部平移 (0,0,3)</text>
+<text x="38" y="419" fill="#263746" font-size="25">根 × 子 × 孙 → (10,2,3)</text>
+<text x="22" y="484" fill="#657787" font-size="20">各输出并行读取父链 · 链内按祖先次序组合</text>
+</svg>
