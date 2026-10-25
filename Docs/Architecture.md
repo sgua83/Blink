@@ -315,3 +315,9 @@ BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使
 blc 的 build-dll 将一个已检查、无外部前置条件的具体入口导出为 Windows x64 DLL，同时生成 C ABI 头文件、导入库与 Rust 安全包装器。B 前端、IR、源码输出和 ABI 布局生成属于 blanguage；实际数据复制、CPU／GPU 执行、完成等待与本次资源释放属于 blcompute::ffi，复用原生执行器。Rust 工具链链接既有 Rust 框架与 PE 导出，不替代自研 B 后端。DLL 内嵌已检查 IR，create 准备目标代码／pipeline。
 
 C++ 与 Rust 是并列宿主；Rust 原生 crate、类型及异步资源接口保持不变，不经 C ABI 中转。DLL run 同步完成本次纯值数据调用，返回前完成必要输出读回；宿主拥有数组，DLL 拥有自己的 handle，跨界不传递 C++ 对象、Rust Vec／String 或分配器所有权。view、纹理、AS 和外部 prefix 条件不伪装成裸值 ABI。完整接口、当前限制与部署见 [原生集成](NativeInterop.md)。
+
+## 引擎集成问题与命中位置读取（2026-10-26）
+
+Blink 尚非稳定版。引擎发现语言、编译器或执行框架缺陷时，在本项目 Docs/Issues.md 记录实际复现、影响与处理状态并提交本项目 P4；BLEngine 引用该记录。能力尚未暴露与合法程序被错误编译分别说明，未修复项保持开放，不在引擎增加替代计算链。
+
+RayHit 按消费者需要提供实际命中三角形位置；IR 保留真实使用，SPIR-V 直接读取 AS，Vulkan 所有者按程序申请位置读取功能及 BLAS 构建标志。普通硬件查询不被升级为必须读取顶点。B 消费这些位置作几何计算，引擎原场景、实例及逆转置矩阵继续是唯一权威；执行框架不持有表面、材质或渲染语义。该能力只适用于已取得的真实命中，不提供无光线的任意三角形采样、网格发光分布或世界缓存。

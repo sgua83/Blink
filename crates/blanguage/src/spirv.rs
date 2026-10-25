@@ -69,6 +69,7 @@ struct Emitter<'a> {
     uint2_type: u32,
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, u32>,
+    position_queries: std::collections::BTreeSet<Reg>,
     vec3_type: u32,
     vec2_type: u32,
     push: u32,
@@ -918,6 +919,21 @@ impl Emitter<'_> {
                 6023,
                 &[self.types[&Scalar::U32], primitive, query, committed],
             );
+            let mut vertices = Vec::new();
+            if self.position_queries.contains(&regs[0]) {
+                let length = self.constant(Scalar::U32, 3);
+                let array_type = self.id();
+                op(&mut self.defs, 28, &[array_type, self.vec3_type, length]);
+                let points = self.id();
+                self.emit(5340, &[array_type, points, query, committed]);
+                for v in 0..3 {
+                    for c in 0..3 {
+                        let component = self.id();
+                        self.emit(81, &[self.types[&Scalar::F32], component, points, v, c]);
+                        vertices.push(component);
+                    }
+                }
+            }
             self.emit(249, &[merged]);
             self.emit(248, &[no]);
             self.emit(249, &[merged]);
@@ -931,6 +947,9 @@ impl Emitter<'_> {
                 (regs[5], primitive, zero),
             ] {
                 self.emit(245, &[self.ty(r), self.value(r), value, yes, miss, no]);
+            }
+            for (r, value) in regs[6..].iter().zip(vertices) {
+                self.emit(245, &[self.ty(*r), self.value(*r), value, yes, z, no]);
             }
         }
     }
@@ -1011,6 +1030,7 @@ pub fn emit_pass(
         uint2_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
+        position_queries: stage.ray_position_queries(),
         vec3_type: 0,
         vec2_type: 0,
         push: 0,
@@ -1069,6 +1089,9 @@ pub fn emit_pass(
     if !program.accelerations.is_empty() {
         op(&mut prelude, 17, &[4472]);
     }
+    if !e.position_queries.is_empty() {
+        op(&mut prelude, 17, &[5391]);
+    }
     if !program.textures.is_empty() {
         op(&mut prelude, 17, &[50]);
     }
@@ -1088,6 +1111,13 @@ pub fn emit_pass(
     }
     if !program.accelerations.is_empty() {
         op(&mut prelude, 10, &string("SPV_KHR_ray_query"));
+    }
+    if !e.position_queries.is_empty() {
+        op(
+            &mut prelude,
+            10,
+            &string("SPV_KHR_ray_tracing_position_fetch"),
+        );
     }
     op(&mut prelude, 10, &string("SPV_KHR_physical_storage_buffer"));
     e.ext = e.id();

@@ -149,8 +149,8 @@ impl Ty {
                 name: "RayHit".into(),
                 arguments: Vec::new(),
                 values: Vec::new(),
-                size: 24,
-                align: 8,
+                size: 80,
+                align: 16,
                 view: None,
                 array: None,
                 components: vec![
@@ -160,7 +160,10 @@ impl Ty {
                     (Scalar::F32, 12),
                     (Scalar::U32, 16),
                     (Scalar::U32, 20),
-                ],
+                ]
+                .into_iter()
+                .chain((0..3).flat_map(|v| (0..3).map(move |c| (Scalar::F32, 32 + v * 16 + c * 4))))
+                .collect(),
                 fields: vec![
                     ("exists".into(), 0, Box::new(Self::scalar(Scalar::Bool))),
                     ("distance".into(), 4, Box::new(Self::scalar(Scalar::F32))),
@@ -171,6 +174,9 @@ impl Ty {
                     ),
                     ("instance".into(), 16, Box::new(Self::scalar(Scalar::U32))),
                     ("primitive".into(), 20, Box::new(Self::scalar(Scalar::U32))),
+                    ("vertex0".into(), 32, Box::new(Self::vector(Scalar::F32, 3))),
+                    ("vertex1".into(), 48, Box::new(Self::vector(Scalar::F32, 3))),
+                    ("vertex2".into(), 64, Box::new(Self::vector(Scalar::F32, 3))),
                 ],
             },
             _ => return None,
@@ -643,7 +649,7 @@ pub enum Inst {
 #[derive(Clone, Debug)]
 pub enum RayResult {
     Any(Reg),
-    Closest([Reg; 6]), // exists, distance, barycentric.xy, instance, primitive。
+    Closest([Reg; 15]), // exists, distance, barycentric.xy, instance, primitive, object-space vertices。
 }
 impl RayResult {
     pub fn registers(&self) -> &[Reg] {
@@ -977,6 +983,44 @@ pub struct SubgroupCapabilities {
     pub ballot: bool,
 }
 impl Stage {
+    /// 仅消费命中顶点的查询需要位置读取能力；普通最近命中和阴影不申请该扩展。
+    pub fn ray_position_queries(&self) -> std::collections::BTreeSet<Reg> {
+        fn visit(
+            code: &[Inst],
+            used: &mut std::collections::BTreeSet<Reg>,
+            queries: &mut Vec<[Reg; 15]>,
+        ) {
+            for inst in code {
+                used.extend(inst.operands());
+                match inst {
+                    Inst::RayQuery {
+                        result: RayResult::Closest(regs),
+                        ..
+                    } => queries.push(*regs),
+                    Inst::Scope(body) => visit(body, used, queries),
+                    Inst::If { yes, no, .. } => {
+                        visit(yes, used, queries);
+                        visit(no, used, queries);
+                    }
+                    Inst::Loop {
+                        condition, body, ..
+                    } => {
+                        visit(condition, used, queries);
+                        visit(body, used, queries);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut used = std::collections::BTreeSet::new();
+        let mut queries = Vec::new();
+        visit(&self.code, &mut used, &mut queries);
+        queries
+            .into_iter()
+            .filter(|r| r[6..].iter().any(|r| used.contains(r)))
+            .map(|r| r[0])
+            .collect()
+    }
     pub fn requires_maximal_reconvergence(&self) -> bool {
         fn uses(code: &[Inst]) -> bool {
             code.iter().any(|i| match i {
@@ -1234,6 +1278,11 @@ impl Program {
             .iter()
             .map(|t| t.elements() as usize)
             .sum()
+    }
+    pub fn requires_ray_position_fetch(&self) -> bool {
+        self.stages
+            .iter()
+            .any(|stage| !stage.ray_position_queries().is_empty())
     }
     pub fn requires_texture_indexing(&self) -> bool {
         self.textures.iter().any(|t| t.count.is_some())

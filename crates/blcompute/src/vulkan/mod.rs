@@ -202,6 +202,7 @@ struct Inner {
     sorting: bool,
     maximal_reconvergence: bool,
     texture_indexing: bool,
+    position_fetch: bool,
     subgroup_operations: u32,
     float32_preserve: bool,
     next_submission: Cell<u64>,
@@ -216,7 +217,7 @@ impl Device {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
     pub fn new() -> Result<Self> {
-        Self::create(false, false, false, false, false)
+        Self::create(false, false, false, false, false, false)
     }
     pub fn for_program(program: &Program) -> Result<Self> {
         Self::create(
@@ -225,6 +226,7 @@ impl Device {
             false,
             program.requires_maximal_reconvergence(),
             program.requires_texture_indexing(),
+            program.requires_ray_position_fetch(),
         )
     }
     pub fn with_presentation(program: &Program) -> Result<Self> {
@@ -234,6 +236,7 @@ impl Device {
             true,
             program.requires_maximal_reconvergence(),
             program.requires_texture_indexing(),
+            program.requires_ray_position_fetch(),
         )
     }
     fn create(
@@ -242,6 +245,7 @@ impl Device {
         presentation: bool,
         maximal_reconvergence: bool,
         texture_indexing: bool,
+        position_fetch: bool,
     ) -> Result<Self> {
         unsafe {
             let library = Library::new()?;
@@ -336,9 +340,18 @@ impl Device {
                 .get(instance, c"vkGetPhysicalDeviceFeatures2")?;
             let mut address: VkPhysicalDeviceBufferDeviceAddressFeatures = zero();
             address.sType = 1000257000;
+            let mut position_features = ray::PositionFetchFeatures {
+                kind: 1000481000,
+                next: null_mut(),
+                position_fetch: 0,
+            };
             let mut query_features = ray::QueryFeatures {
                 kind: 1000348013,
-                next: null_mut(),
+                next: if position_fetch {
+                    (&mut position_features as *mut ray::PositionFetchFeatures).cast()
+                } else {
+                    null_mut()
+                },
                 ray_query: 0,
             };
             let mut acceleration_features: ray::AccelerationFeatures = zero();
@@ -429,11 +442,25 @@ impl Device {
                     "程序需要 accelerationStructure 与 rayQuery，目标设备不支持",
                 ));
             }
+            if position_fetch && position_features.position_fetch == 0 {
+                return Err(error("程序读取命中顶点，需要 rayTracingPositionFetch"));
+            }
             features.features.fill(0);
             features.features[40] = 1; // VkPhysicalDeviceFeatures::shaderInt64。
+            let position_enabled = ray::PositionFetchFeatures {
+                kind: 1000481000,
+                next: null_mut(),
+                position_fetch: 1,
+            };
             let query_enabled = ray::QueryFeatures {
                 kind: 1000348013,
-                next: null_mut(),
+                next: if position_fetch {
+                    (&position_enabled as *const ray::PositionFetchFeatures)
+                        .cast_mut()
+                        .cast()
+                } else {
+                    null_mut()
+                },
                 ray_query: 1,
             };
             let acceleration_enabled = ray::AccelerationFeatures {
@@ -529,6 +556,9 @@ impl Device {
                     c"VK_KHR_deferred_host_operations".as_ptr(),
                 ]);
             }
+            if position_fetch {
+                device_extensions.push(c"VK_KHR_ray_tracing_position_fetch".as_ptr());
+            }
             let mut ci: VkDeviceCreateInfo = zero();
             ci.sType = 3;
             ci.pNext = (&features as *const VkPhysicalDeviceFeatures2).cast();
@@ -583,6 +613,7 @@ impl Device {
                     sorting,
                     maximal_reconvergence,
                     texture_indexing,
+                    position_fetch,
                     subgroup_operations: if subgroup.stages & 0x20 != 0 {
                         subgroup.operations
                     } else {
@@ -1453,6 +1484,11 @@ impl GpuProgram {
             if program.accelerations().len() > ray.properties.per_stage as usize {
                 return Err(error("加速结构绑定数量超出设备能力"));
             }
+        }
+        if program.requires_ray_position_fetch() && !inner.position_fetch {
+            return Err(error(
+                "命中顶点查询必须以 Device::for_program 声明位置读取能力",
+            ));
         }
         if program.requires_texture_indexing() && !inner.texture_indexing {
             return Err(error("纹理数组程序必须以 Device::for_program 声明设备能力"));

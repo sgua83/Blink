@@ -18,6 +18,12 @@ pub(super) struct QueryFeatures {
     pub ray_query: u32,
 }
 #[repr(C)]
+pub(super) struct PositionFetchFeatures {
+    pub kind: u32,
+    pub next: *mut c_void,
+    pub position_fetch: u32,
+}
+#[repr(C)]
 pub(super) struct Properties {
     pub kind: u32,
     pub next: *mut c_void,
@@ -297,7 +303,11 @@ impl Device {
             kind: 1000150000,
             next: null(),
             structure_type,
-            flags: 4,
+            flags: 4 | if self.inner.position_fetch && structure_type == 1 {
+                0x800
+            } else {
+                0
+            },
             mode: 0,
             source: 0,
             target: 0,
