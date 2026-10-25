@@ -1497,6 +1497,7 @@ pub fn emit_pass(
                 shared,
                 shared_pointer,
                 active,
+                count,
             );
         } else {
             e.emit(247, &[end, 0]);
@@ -1540,6 +1541,7 @@ pub fn emit_pass(
                     shared,
                     shared_pointer,
                     active,
+                    count,
                 );
             }
             Pass::ScanAdd => {
@@ -1648,6 +1650,7 @@ pub fn emit_pass(
                 shared,
                 shared_pointer,
                 active,
+                count,
             );
         } else {
             e.emit(247, &[end, 0]);
@@ -1670,6 +1673,7 @@ pub fn emit_pass(
                     shared,
                     shared_pointer,
                     active,
+                    count,
                 );
             } else {
                 e.emit(247, &[end, 0]);
@@ -1694,6 +1698,7 @@ pub fn emit_pass(
                     shared,
                     shared_pointer,
                     active,
+                    count,
                 );
             } else {
                 e.emit(247, &[end, 0]);

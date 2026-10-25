@@ -27,11 +27,23 @@ impl Emitter<'_> {
         shared: u32,
         pointer: u32,
         active: u32,
+        count: u32,
     ) {
         let r = &scan.values;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
+        // 全域扫描的尾组与 tile 共用树；有效长度属于当前实际工作域。
+        let remaining =
+            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+                let group_begin = self.id();
+                self.emit(130, &[u, group_begin, self.index, local]);
+                let available = self.id();
+                self.emit(130, &[u, available, count, group_begin]);
+                available
+            } else {
+                0
+            };
         let components = scan.ty.components.len() as u32;
         let trees: Vec<_> = scan
             .ty
@@ -107,7 +119,7 @@ impl Emitter<'_> {
             .collect();
         self.scan_barrier();
         for width in [1, 2, 4, 8, 16, 32] {
-            self.scan_tree(&trees, local, width, false);
+            self.scan_tree(&trees, local, width, false, remaining);
         }
         let last = self.constant(Scalar::U32, 63);
         let is_last = self.id();
@@ -136,7 +148,7 @@ impl Emitter<'_> {
         self.emit(248, &[saved]);
         self.scan_barrier();
         for width in [32, 16, 8, 4, 2, 1] {
-            self.scan_tree(&trees, local, width, true);
+            self.scan_tree(&trees, local, width, true, remaining);
         }
         let write = self.id();
         let end = self.id();
@@ -166,14 +178,21 @@ impl Emitter<'_> {
         self.emit(249, &[end]);
         self.emit(248, &[end]);
     }
-    fn scan_tree(&mut self, trees: &[SharedTree], local: u32, width: u32, down: bool) {
+    fn scan_tree(
+        &mut self,
+        trees: &[SharedTree],
+        local: u32,
+        width: u32,
+        down: bool,
+        remaining: u32,
+    ) {
         let u = self.types[&Scalar::U32];
         let mask = self.constant(Scalar::U32, width * 2 - 1);
         let bits = self.id();
         self.emit(199, &[u, bits, local, mask]);
         let selected = self.id();
         self.emit(170, &[self.types[&Scalar::Bool], selected, bits, mask]);
-        self.scan_tree_step(trees, local, width, selected, down);
+        self.scan_tree_step(trees, local, width, selected, down, remaining);
     }
     pub(super) fn tree_at(&mut self, tree: SharedTree, node: u32) -> u32 {
         let at = if tree.base_word == 0 {
@@ -193,6 +212,7 @@ impl Emitter<'_> {
         width: u32,
         selected: u32,
         down: bool,
+        remaining: u32,
     ) {
         let u = self.types[&Scalar::U32];
         let run = self.id();
@@ -227,12 +247,7 @@ impl Emitter<'_> {
                 let has_right = self.id();
                 self.emit(
                     176,
-                    &[
-                        self.types[&Scalar::Bool],
-                        has_right,
-                        right_begin,
-                        self.tile_length,
-                    ],
+                    &[self.types[&Scalar::Bool], has_right, right_begin, remaining],
                 );
                 let sum = self.id();
                 self.emit(169, &[u, sum, has_right, combined, left]);
@@ -256,6 +271,17 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
+        let first =
+            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+                let local = self.id();
+                self.emit(137, &[u, local, self.index, width]);
+                let zero = self.constant(Scalar::U32, 0);
+                let first = self.id();
+                self.emit(170, &[self.types[&Scalar::Bool], first, local, zero]);
+                Some(first)
+            } else {
+                None
+            };
         for (component, (scalar, offset)) in scan.ty.components.iter().enumerate() {
             let source = self.address_scalar(r.source, group, components, component as u32);
             let prefix = self.id();
@@ -277,7 +303,14 @@ impl Emitter<'_> {
             let value = self.id();
             self.emit(61, &[u, value, target, 2, 4]);
             let combined = self.collective_pair(*scalar, scan.operator, prefix, value);
-            self.emit(62, &[target, combined, 2, 4]);
+            let result = if let Some(first) = first {
+                let result = self.id();
+                self.emit(169, &[u, result, first, prefix, combined]);
+                result
+            } else {
+                combined
+            };
+            self.emit(62, &[target, result, 2, 4]);
         }
     }
 }

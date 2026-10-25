@@ -96,7 +96,7 @@ pub(super) struct Plan {
 }
 impl Plan {
     pub fn new(program: &Program, stage: &Stage) -> Option<Self> {
-        if stage.selection.is_some() || stage.has_tile_scope() || stage.writes.is_empty() {
+        if stage.has_tile_scope() || stage.writes.is_empty() {
             return None;
         }
         let mut uniform = vec![false; stage.registers.len()];
@@ -368,8 +368,26 @@ impl Emitter<'_> {
             }
         }
     }
-    fn packet_address(&mut self, allocation: &PacketAllocation, binding: usize, index: &Address) {
+    fn packet_address(
+        &mut self,
+        allocation: &PacketAllocation,
+        binding: usize,
+        index: &Address,
+        lane: u32,
+    ) {
         match index {
+            Address::Element if self.stage.selection.is_some() => {
+                self.instruction(
+                    None,
+                    &[0x8b],
+                    false,
+                    0,
+                    Operand::Memory {
+                        base: 4,
+                        offset: self.frame.end as u32 + lane * 4,
+                    },
+                );
+            }
             Address::Element => self.bytes(&[0x89, 0xd8]),
             Address::Uniform(r) => match allocation.location(PrivateSlot::Register(*r)) {
                 PacketPlace::Register(xmm) => {
@@ -504,9 +522,34 @@ impl Emitter<'_> {
     pub(super) fn packet_loop(&mut self, plan: &Plan, allocation: &PacketAllocation) {
         use PrivateSlot::Register;
         let begin = self.code.len();
-        // 用 64 位检查 index+4；u32 域末端附近也不让加法提前回绕。
-        self.bytes(&[0x89, 0xd8, 0x48, 0x83, 0xc0, 0x04, 0x4c, 0x39, 0xf0]);
-        let tail = self.jump(Some(0x87));
+        let sparse = self.stage.selection.is_some();
+        let tail = if let Some(selection) = self.stage.selection {
+            // 四个真实选中位置只在本范围栈帧内存在，不物化全域稀疏索引。
+            self.bytes(&[0x31, 0xc9]); // ecx = 已收集 lane 数
+            let collect = self.code.len();
+            self.bytes(&[0x44, 0x39, 0xf3]);
+            let tail = self.jump(Some(0x83));
+            self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
+            self.u32(selection.binding as u32 * 8);
+            self.bytes(&[0x89, 0xd8, 0x48, 0x69, 0xc0]);
+            self.u32(self.program.buffers[selection.binding].stride);
+            self.bytes(&[0x49, 0x01, 0xc7, 0x41, 0x83, 0xbf]);
+            self.u32(selection.word * 4);
+            self.bytes(&[0]);
+            let skip = self.jump(Some(0x84));
+            self.bytes(&[0x89, 0x9c, 0x8c]); // indices[ecx] = ebx
+            self.u32(self.frame.end as u32);
+            self.bytes(&[0xff, 0xc1]);
+            self.patch(skip, self.code.len());
+            self.bytes(&[0xff, 0xc3, 0x83, 0xf9, 0x04]);
+            let again = self.jump(Some(0x85));
+            self.patch(again, collect);
+            tail
+        } else {
+            // 用 64 位检查 index+4；u32 域末端附近也不让加法提前回绕。
+            self.bytes(&[0x89, 0xd8, 0x48, 0x83, 0xc0, 0x04, 0x4c, 0x39, 0xf0]);
+            self.jump(Some(0x87))
+        };
         for step in &plan.code {
             match step {
                 Step::Constant(dst, bits) => {
@@ -518,6 +561,20 @@ impl Emitter<'_> {
                     self.packet_store(allocation, Register(*dst), target);
                 }
                 Step::Index(dst) => {
+                    if sparse {
+                        self.instruction(
+                            None,
+                            &[0x0f, 0x28],
+                            false,
+                            0,
+                            Operand::Memory {
+                                base: 4,
+                                offset: self.frame.end as u32,
+                            },
+                        );
+                        self.packet_store(allocation, Register(*dst), 0);
+                        continue;
+                    }
                     // 从 [0,1,2,3] 加广播的真实范围起点形成源语言索引。
                     for (i, xmm) in [0, 1, 2, 3].into_iter().enumerate() {
                         self.bytes(&[0xb8]);
@@ -577,14 +634,19 @@ impl Emitter<'_> {
                     index,
                     word,
                 } => {
-                    self.packet_address(allocation, *binding, index);
                     let stride = self.program.buffers[*binding].stride;
                     let broadcast = matches!(index, Address::Uniform(_));
+                    if !sparse || broadcast {
+                        self.packet_address(allocation, *binding, index, 0);
+                    }
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
                         _ => 0,
                     };
                     for lane in 0..if broadcast { 1 } else { 4 } {
+                        if sparse && !broadcast {
+                            self.packet_address(allocation, *binding, index, lane);
+                        }
                         self.instruction(
                             Some(0x66),
                             &[0x0f, 0x6e],
@@ -592,7 +654,7 @@ impl Emitter<'_> {
                             if lane == 0 { target } else { lane as u8 },
                             Operand::Memory {
                                 base: 15,
-                                offset: word * 4 + lane * stride,
+                                offset: word * 4 + if sparse { 0 } else { lane * stride },
                             },
                         );
                     }
@@ -612,7 +674,9 @@ impl Emitter<'_> {
                     word,
                     value,
                 } => {
-                    self.packet_address(allocation, *binding, index);
+                    if !sparse {
+                        self.packet_address(allocation, *binding, index, 0);
+                    }
                     let stride = self.program.buffers[*binding].stride;
                     let source = match allocation.location(Register(*value)) {
                         PacketPlace::Register(r) => r,
@@ -622,6 +686,9 @@ impl Emitter<'_> {
                         }
                     };
                     for lane in 0..4 {
+                        if sparse {
+                            self.packet_address(allocation, *binding, index, lane);
+                        }
                         if lane != 0 {
                             self.shuffle(0, source, (lane * 0x55) as u8);
                         }
@@ -632,7 +699,7 @@ impl Emitter<'_> {
                             if lane == 0 { source } else { 0 },
                             Operand::Memory {
                                 base: 15,
-                                offset: word * 4 + lane * stride,
+                                offset: word * 4 + if sparse { 0 } else { lane * stride },
                             },
                         );
                     }
@@ -761,9 +828,26 @@ impl Emitter<'_> {
                 }
             }
         }
-        self.bytes(&[0x83, 0xc3, 0x04]);
+        if !sparse {
+            self.bytes(&[0x83, 0xc3, 0x04]);
+        }
         let again = self.jump(None);
         self.patch(again, begin);
         self.patch(tail, self.code.len());
+        if sparse {
+            self.bytes(&[0x85, 0xc9]);
+            let empty = self.jump(Some(0x84));
+            self.instruction(
+                None,
+                &[0x8b],
+                false,
+                3,
+                Operand::Memory {
+                    base: 4,
+                    offset: self.frame.end as u32,
+                },
+            );
+            self.patch(empty, self.code.len());
+        }
     }
 }

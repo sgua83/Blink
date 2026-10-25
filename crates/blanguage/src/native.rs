@@ -596,6 +596,11 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         packet.as_ref().map(|(_, allocation)| allocation),
     );
     let bytes = frame_layout.end
+        + if packet.is_some() && stage.selection.is_some() {
+            16
+        } else {
+            0
+        }
         + if stage.has_tile_scope() {
             4 + stage.tile_data_bytes()
                 + if stage.has_tile_steps() {

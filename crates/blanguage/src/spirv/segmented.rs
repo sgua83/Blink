@@ -89,6 +89,7 @@ impl Emitter<'_> {
         shared: u32,
         pointer: u32,
         active: u32,
+        count: u32,
     ) {
         let r = &scan.values;
         let scan = &Segment {
@@ -101,6 +102,16 @@ impl Emitter<'_> {
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
         let identity = self.segment_identity(scan);
+        let remaining =
+            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+                let group_begin = self.id();
+                self.emit(130, &[u, group_begin, self.index, local]);
+                let available = self.id();
+                self.emit(130, &[u, available, count, group_begin]);
+                Some(available)
+            } else {
+                None
+            };
         let before = self.current_label;
         let read = self.id();
         let read_end = self.id();
@@ -148,7 +159,7 @@ impl Emitter<'_> {
         self.segment_write(&own, &input);
         self.scan_barrier();
         for width in [1, 2, 4, 8, 16, 32] {
-            self.segment_tree(scan, local, shared, pointer, width, false, None);
+            self.segment_tree(scan, local, shared, pointer, width, false, remaining);
         }
         let last = self.constant(Scalar::U32, 63);
         let width = self.constant(Scalar::U32, 64);
@@ -557,6 +568,26 @@ impl Emitter<'_> {
         let target = self.segment_address(scan, r.target, self.index);
         let value = self.segment_read(&target);
         let merged = self.segment_combine(scan, &prefix, &value);
+        let merged =
+            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+                let u = self.types[&Scalar::U32];
+                let local = self.id();
+                self.emit(137, &[u, local, self.index, width]);
+                let zero = self.constant(Scalar::U32, 0);
+                let first = self.id();
+                self.emit(170, &[self.types[&Scalar::Bool], first, local, zero]);
+                merged
+                    .into_iter()
+                    .zip(prefix)
+                    .map(|(value, prefix)| {
+                        let result = self.id();
+                        self.emit(169, &[u, result, first, prefix, value]);
+                        result
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                merged
+            };
         self.segment_write(&target, &merged);
     }
     pub(super) fn segmented_root_add(&mut self, scan: &Scan) {
@@ -609,7 +640,16 @@ impl Emitter<'_> {
             let value = self.id();
             self.emit(61, &[u, value, target, 2, 4]);
             let merged = self.collective_pair(*scalar, scan.operator, prefix, value);
-            self.emit(62, &[target, merged, 2, 4]);
+            let result = if *scalar == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+                let first = self.id();
+                self.emit(170, &[b, first, local, zero]);
+                let result = self.id();
+                self.emit(169, &[u, result, first, prefix, merged]);
+                result
+            } else {
+                merged
+            };
+            self.emit(62, &[target, result, 2, 4]);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);

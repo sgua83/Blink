@@ -21,15 +21,11 @@ pub(super) fn compile(
         prefix::typed_field(program, env, &args[0], d, facts)?;
     let (target, target_word, target_access, target_ty) =
         collective_value_field(program, env, args.last().unwrap(), d)?;
-    if !ty.is_numeric()
-        || !operator.accepts(ty.components[0].0)
-        || (ty.components[0].0 == Scalar::F32 && operator != CollectiveOperator::Sum)
-        || ty != target_ty
-    {
+    if !ty.is_numeric() || !operator.accepts(ty.components[0].0) || ty != target_ty {
         return d.source.fail(
             span,
             "B175",
-            "扫描需要同类型数值标量／向量字段；f32 仅支持求和",
+            "扫描需要同类型数值标量／向量字段；按位算子只接受整数",
         );
     }
     let head_word = if segmented {

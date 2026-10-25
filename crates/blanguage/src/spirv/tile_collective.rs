@@ -125,6 +125,6 @@ impl Emitter<'_> {
         let count = self.constant(Scalar::U32, padded);
         let selected = self.id();
         self.emit(176, &[self.types[&Scalar::Bool], selected, node, count]);
-        self.scan_tree_step(trees, node, stride, selected, down);
+        self.scan_tree_step(trees, node, stride, selected, down, self.tile_length);
     }
 }
