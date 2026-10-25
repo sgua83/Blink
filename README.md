@@ -10,6 +10,8 @@ B 也寓意 **Base**。Blink 希望像 C 语言为上一个计算时代所做的
 
 GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 Git 共用工作目录，P4 管理正式提交；`Tools/PublishGit.ps1` 在独立进程中读取已提交版本并发布到 GitHub，Git 提交中的 `P4-Change` 标明对应 changelist。发布过程不修改工作区源码或 P4 状态，构建产物与本地连接配置不进入 GitHub。Git 错误由发布任务单独报告。
 
+本机已配置 Codex 后台任务，每 5 分钟检查一次 P4 新提交，需要电脑和 Codex 桌面应用保持运行。该任务独立于 P4 提交命令。
+
 ## 构建与使用
 
 Windows x64 MSVC，使用 Rust 标准库和 Windows／Vulkan 标准接口。GPU 能力由真实程序申请，纯编译不创建设备；源码 MIT，生成物不提交。
