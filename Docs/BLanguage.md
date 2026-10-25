@@ -940,9 +940,13 @@ bool blocked = trace_any(scene, origin, 0.0001, direction, 100000.0);
 
 vertex0／vertex1／vertex2 是该命中三角形的加速结构空间（无构建前置变换时即模型空间）位置，不是世界坐标。它们与原 primitive 顺序对应；本实现的 BLAS 输入无额外构建变换。实例变换后的外向法线应以逆转置变换原三角形法线，不能直接将负行列式实例的世界边叉积当成外向法线。法线计算属于 B 消费者，不由后端替换成渲染器专用结果。
 
-RayHit 当前 ABI 为80字节、16字节对齐，原字段偏移0／4／8／16／20保持，三顶点偏移32／48／64。旧的24字节完整 RayHit 记录不再是当前 ABI；编译布局、原生调用方和 BLDATA 必须使用当前程序定义，不增加旧记录转换。只保存原基础字段的用户记录仍可保持24字节。exists=false 时被消费的三顶点为0；不以未命中位置进行几何运算。
+RayHit 当前 ABI 为176字节、16字节对齐，原字段偏移0／4／8／16／20保持，三顶点偏移32／48／64；object_to_world与world_to_object两个float3x4依次位于80／128。旧的24／80字节完整 RayHit 记录不再是当前 ABI；编译布局、原生调用方和 BLDATA 必须使用当前程序定义，不增加旧记录转换。只保存原基础字段的用户记录仍可保持24字节。exists=false 时被消费的顶点与矩阵分量均为0；不以未命中值进行几何运算。
 
 优化后的 IR 按真实顶点分量使用发现位置读取需求，SPIR-V 只在对应最近命中分支内发出 OpRayQueryGetIntersectionTriangleVertexPositionsKHR。Device::for_program／with_presentation 仅对这样的程序查询并启用 rayTracingPositionFetch、VK_KHR_ray_tracing_position_fetch，BLAS 构建设置 ALLOW_DATA_ACCESS；普通最近命中和 trace_any 不因此申请该扩展。缺少实际能力明确报错，不保留顶点副本或另换求交路径。顶点由 AS 及其原完成点持有，构建输入仍在构建真正完成后释放；读取不延长已无消费者的原上传存储。接口依据 [Khronos 位置读取定义](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_ray_tracing_position_fetch.html)与 [SPIR-V 指令](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_ray_tracing_position_fetch.html)，本项目直接实现。
+
+object_to_world与world_to_object来自本次实际命中的TLAS实例，分别把物体空间与世界空间互换；包含平移，按B的float3x4行字段使用。逆矩阵由实际AS交付，不在宿主维护第二份矩阵或在着色时再次求逆。外向法线可用transpose(float3x3(hit.world_to_object.r0.xyz,hit.world_to_object.r1.xyz,hit.world_to_object.r2.xyz))变换原物体法线。
+
+优化后的IR分别识别顶点、正向矩阵和逆向矩阵的真实消费；只读取矩阵不申请位置扩展，不消费某矩阵就不发射该矩阵读取。后端直接使用[SPV_KHR_ray_query](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_ray_query.html)的OpRayQueryGetIntersectionObjectToWorldKHR／WorldToObjectKHR（6031／6032）；标准结果为四列float3，逐分量转换为B的三行float4。两项仍属于原RayQueryKHR能力，无额外设备扩展。只在真实命中分支读取，未命中分支形成零值Phi；不把CPU矩阵表作为GPU查询结果。
 
 当前查询处理不透明双面三角形，使用固定 0xff 可见掩码，自动接受三角形候选；trace_any 在首次命中终止。它可服务可见性、遮挡与其他几何计算，不等于已经实现物理接触解算器、透明材质或光传输系统。
 

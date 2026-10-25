@@ -149,7 +149,7 @@ impl Ty {
                 name: "RayHit".into(),
                 arguments: Vec::new(),
                 values: Vec::new(),
-                size: 80,
+                size: 176,
                 align: 16,
                 view: None,
                 array: None,
@@ -163,6 +163,7 @@ impl Ty {
                 ]
                 .into_iter()
                 .chain((0..3).flat_map(|v| (0..3).map(move |c| (Scalar::F32, 32 + v * 16 + c * 4))))
+                .chain((0..24).map(|c| (Scalar::F32, 80 + c * 4)))
                 .collect(),
                 fields: vec![
                     ("exists".into(), 0, Box::new(Self::scalar(Scalar::Bool))),
@@ -177,6 +178,8 @@ impl Ty {
                     ("vertex0".into(), 32, Box::new(Self::vector(Scalar::F32, 3))),
                     ("vertex1".into(), 48, Box::new(Self::vector(Scalar::F32, 3))),
                     ("vertex2".into(), 64, Box::new(Self::vector(Scalar::F32, 3))),
+                    ("object_to_world".into(), 80, Box::new(Self::matrix(3, 4))),
+                    ("world_to_object".into(), 128, Box::new(Self::matrix(3, 4))),
                 ],
             },
             _ => return None,
@@ -649,7 +652,7 @@ pub enum Inst {
 #[derive(Clone, Debug)]
 pub enum RayResult {
     Any(Reg),
-    Closest([Reg; 15]), // exists, distance, barycentric.xy, instance, primitive, object-space vertices。
+    Closest([Reg; 39]), // 基础命中、物体空间顶点、object_to_world、world_to_object。
 }
 impl RayResult {
     pub fn registers(&self) -> &[Reg] {
@@ -983,12 +986,15 @@ pub struct SubgroupCapabilities {
     pub ballot: bool,
 }
 impl Stage {
-    /// 仅消费命中顶点的查询需要位置读取能力；普通最近命中和阴影不申请该扩展。
-    pub fn ray_position_queries(&self) -> std::collections::BTreeSet<Reg> {
+    /// 对实际消费的命中字段发射设备读取；未消费的顶点和矩阵不生成读取。
+    pub fn ray_result_queries(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> std::collections::BTreeSet<Reg> {
         fn visit(
             code: &[Inst],
             used: &mut std::collections::BTreeSet<Reg>,
-            queries: &mut Vec<[Reg; 15]>,
+            queries: &mut Vec<[Reg; 39]>,
         ) {
             for inst in code {
                 used.extend(inst.operands());
@@ -1017,7 +1023,7 @@ impl Stage {
         visit(&self.code, &mut used, &mut queries);
         queries
             .into_iter()
-            .filter(|r| r[6..].iter().any(|r| used.contains(r)))
+            .filter(|r| r[range.clone()].iter().any(|r| used.contains(r)))
             .map(|r| r[0])
             .collect()
     }
@@ -1282,7 +1288,7 @@ impl Program {
     pub fn requires_ray_position_fetch(&self) -> bool {
         self.stages
             .iter()
-            .any(|stage| !stage.ray_position_queries().is_empty())
+            .any(|stage| !stage.ray_result_queries(6..15).is_empty())
     }
     pub fn requires_texture_indexing(&self) -> bool {
         self.textures.iter().any(|t| t.count.is_some())

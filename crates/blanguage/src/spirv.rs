@@ -70,6 +70,7 @@ struct Emitter<'a> {
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, u32>,
     position_queries: std::collections::BTreeSet<Reg>,
+    transform_queries: [std::collections::BTreeSet<Reg>; 2],
     vec3_type: u32,
     vec2_type: u32,
     push: u32,
@@ -919,7 +920,7 @@ impl Emitter<'_> {
                 6023,
                 &[self.types[&Scalar::U32], primitive, query, committed],
             );
-            let mut vertices = Vec::new();
+            let mut fields = Vec::new();
             if self.position_queries.contains(&regs[0]) {
                 let length = self.constant(Scalar::U32, 3);
                 let array_type = self.id();
@@ -930,7 +931,29 @@ impl Emitter<'_> {
                     for c in 0..3 {
                         let component = self.id();
                         self.emit(81, &[self.types[&Scalar::F32], component, points, v, c]);
-                        vertices.push(component);
+                        fields.push((regs[6 + v as usize * 3 + c as usize], component));
+                    }
+                }
+            }
+            for (slot, opcode) in [(0, 6031), (1, 6032)] {
+                if self.transform_queries[slot].contains(&regs[0]) {
+                    let matrix_type = self.id();
+                    op(&mut self.defs, 24, &[matrix_type, self.vec3_type, 4]);
+                    let matrix = self.id();
+                    self.emit(opcode, &[matrix_type, matrix, query, committed]);
+                    // SPIR-V以列为复合索引，B的float3x4以行存储。
+                    for row in 0..3 {
+                        for column in 0..4 {
+                            let component = self.id();
+                            self.emit(
+                                81,
+                                &[self.types[&Scalar::F32], component, matrix, column, row],
+                            );
+                            fields.push((
+                                regs[15 + slot * 12 + row as usize * 4 + column as usize],
+                                component,
+                            ));
+                        }
                     }
                 }
             }
@@ -948,8 +971,8 @@ impl Emitter<'_> {
             ] {
                 self.emit(245, &[self.ty(r), self.value(r), value, yes, miss, no]);
             }
-            for (r, value) in regs[6..].iter().zip(vertices) {
-                self.emit(245, &[self.ty(*r), self.value(*r), value, yes, z, no]);
+            for (r, value) in fields {
+                self.emit(245, &[self.ty(r), self.value(r), value, yes, z, no]);
             }
         }
     }
@@ -1030,7 +1053,11 @@ pub fn emit_pass(
         uint2_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
-        position_queries: stage.ray_position_queries(),
+        position_queries: stage.ray_result_queries(6..15),
+        transform_queries: [
+            stage.ray_result_queries(15..27),
+            stage.ray_result_queries(27..39),
+        ],
         vec3_type: 0,
         vec2_type: 0,
         push: 0,
