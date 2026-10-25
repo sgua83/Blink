@@ -22,7 +22,7 @@ cl /nologo /utf-8 /I $out `
     /Fe:target/interop/map-c.exe
 & "$out/map-c.exe"
 
-rustc --edition=2024 -O `
+rustc --edition=2024 -C opt-level=3 `
     sample/interop/map.rs `
     -L native=target/interop `
     -o target/interop/map-rust.exe
@@ -44,7 +44,7 @@ cl /nologo /utf-8 /std:c++17 `
     /Fo:target/interop/cpp.obj `
     /Fe:target/interop/cpp.exe
 
-rustc --edition=2024 -O `
+rustc --edition=2024 -C opt-level=3 `
     -C target-cpu=native `
     sample/interop/rust.rs `
     -L native=target/interop `
@@ -55,6 +55,8 @@ rustc --edition=2024 -O `
 & "$out/rust.exe" cpu
 & "$out/rust.exe" gpu
 ```
+
+编译器、执行框架及生成的 DLL 均为 Release；C++ 使用 /O2，Rust 使用 -C opt-level=3。2026-10-26 的重新实测见 [完整运行记录](../performance/运行记录.txt)。
 
 每次处理一百万像素；limit=256 是每个像素的最大递推次数。程序分别报告 create 的 setup_ms、各宿主串行的 serial_ms、完整 DLL 调用的 blink_call_ms、加速比、差异像素数与校验和。算法不包含文件输出的计时。两次预热后测量九次单次调用，取中位数，方法与全书其他案例一致。
 

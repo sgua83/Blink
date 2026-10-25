@@ -7,16 +7,15 @@
 使用 Windows x64 的 Visual Studio 开发者 PowerShell，确认 `cl`、`lib`、`cargo` 可用。在 Blink 项目根目录运行：
 
 ```powershell
-$work = "$PWD/Saved/BookPerformance"
-$env:CARGO_TARGET_DIR = "$work/target"
 cargo build --release `
     --manifest-path `
-    sample/performance/Cargo.toml
-$bench = "$work/target/release/bperf.exe"
-& $bench map 100000000
+    sample/performance/Cargo.toml `
+    --target-dir target
+.\target\release\bperf.exe `
+    map 100000000
 ```
 
-参数只有案例和元素数；省略元素数时采用下表的书中规模。每次计时只执行一次完整算法，单位为毫秒。为减小偶然波动，每个版本先预热两次，再独立计时九次并取中位数；GPU 每次单独提交并等待完成，不把多次执行打包摊薄提交开销。粒子、空间变换、材质和显示转换直接编译相邻 `BLEngine/Programs` 中的正式算法，需要相邻引擎源码；普通教学案例只依赖 Blink 仓库。
+参数只有案例和元素数；省略元素数时采用下表的书中规模。编译器、CPU/GPU 执行框架与测量宿主均使用 Release；bperf.exe 位于 target/release。每次计时只执行一次完整算法，单位为毫秒。为减小偶然波动，每个版本先预热两次，再独立计时九次并取中位数；GPU 每次单独提交并等待完成，不把多次执行打包摊薄提交开销。粒子、空间变换、材质和显示转换直接编译相邻 `BLEngine/Programs` 中的正式算法，需要相邻引擎源码；普通教学案例只依赖 Blink 仓库。
 
 | 案例 | 算法 | 书中元素数 |
 |---|---|---|
@@ -34,7 +33,7 @@ $bench = "$work/target/release/bperf.exe"
 | shade | 引擎双线性纹理采样与 GGX | 一千万 |
 | resolve | 内部采样转换为显示像素 | 一百万 |
 
-`resolve` 使用引擎的通用 GPU 入口，固定为 1000×1000 输出、2×2 内部采样，命令为 `& $bench resolve`；其规模由这组尺寸确定。其他案例可用第二个参数改变规模。
+`resolve` 使用引擎的通用 GPU 入口，固定为 1000×1000 输出、2×2 内部采样，命令为 `.\target\release\bperf.exe resolve`；其规模由这组尺寸确定。其他案例可用第二个参数改变规模。
 
 ## 计时范围
 
@@ -55,4 +54,8 @@ map 输入为 `(i % 17) / 8`；求和与扫描输入循环 `[3,1,4,2]`；筛选�
 
 程序在计时之外比较最终输出，报告浮点最大绝对差和整数不一致数量。浮点归约的分组不同，会改变舍入；`body_total` 另列逐粒子 f32 能量的 f64 累加参考，便于观察串行线性累加与并行归约的数值差异。`resolve` 的 B CPU 时间显示 `NaN`，表示该正式入口仅支持 GPU。
 
-本次机器：AMD Ryzen 9 9950X（16 核、32 逻辑处理器）、AMD Radeon RX 9070 GRE、MSVC 14.44、Rust 1.95.0，Release 构建。正式书稿包含精选规模的时间与加速比；原始 stdout/stderr、较小规模记录保存在本机 `Saved/BookPerformance`。
+2026-10-26 使用 Blink P4 CL12985 的已提交源码重新构建和实测。Release 档位为 opt-level=3、thin LTO、codegen-units=1、panic=abort；C++ 仍使用上述 /O2 等选项。第十四章 DLL 也重新以 Release 生成，Rust 串行宿主显式使用 -C opt-level=3。
+
+[完整运行记录](运行记录.txt) 保存实际可执行文件路径、构建输出、SHA-256、13 组原始 CSV 以及 C++/Rust DLL 调用结果。
+
+本次机器：AMD Ryzen 9 9950X（16 核、32 逻辑处理器）、AMD Radeon RX 9070 GRE、MSVC 14.44、Rust 1.95.0，Release 构建。正式书稿包含精选规模的时间与加速比；原始 stdout/stderr 保存在本机 `Saved/BookRelease`，历史测量保留在 `Saved/BookPerformance`。

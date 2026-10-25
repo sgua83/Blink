@@ -1,21 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="905">
 <rect x="0" y="0" width="760" height="905" rx="12" fill="#f5f8fa" stroke="#f5f8fa" />
 <text x="28" y="58" font-size="40" fill="#147d86">同一个公式，三种执行路径</text>
-<text x="28" y="108" font-size="30" fill="#263746">一亿个数 · 同样一次数组变换</text>
+<text x="28" y="108" font-size="30" fill="#263746">Release · 一亿个数 · 一次数组变换</text>
 <rect x="20" y="143" width="720" height="169" rx="12" fill="#ffffff" stroke="#d9e4eb" />
 <text x="40" y="186" font-size="34" fill="#263746">C++ 串行 / 主存</text>
 <text x="40" y="233" font-size="28" fill="#263746">一个线程依次遍历数组，完成全部元素</text>
-<text x="40" y="281" font-size="34" fill="#147d86">执行用时 19.063 ms</text>
+<text x="40" y="281" font-size="34" fill="#147d86">执行用时 17.512 ms</text>
 <rect x="20" y="334" width="720" height="169" rx="12" fill="#ffffff" stroke="#d9e4eb" />
 <text x="40" y="377" font-size="34" fill="#263746">B CPU / 主存</text>
 <text x="40" y="424" font-size="28" fill="#263746">多个工作线程共同完成同一次变换</text>
-<text x="40" y="472" font-size="34" fill="#147d86">执行用时 14.110 ms</text>
+<text x="40" y="472" font-size="34" fill="#147d86">执行用时 14.627 ms</text>
 <rect x="20" y="525" width="720" height="169" rx="12" fill="#ffffff" stroke="#d9e4eb" />
 <text x="40" y="568" font-size="34" fill="#263746">B GPU / 数据驻留</text>
 <text x="40" y="615" font-size="28" fill="#263746">提交一次算法，等待设备实际完成</text>
-<text x="40" y="663" font-size="34" fill="#147d86">执行用时 4.826 ms</text>
+<text x="40" y="663" font-size="34" fill="#147d86">执行用时 4.143 ms</text>
 <rect x="20" y="735" width="720" height="145" rx="12" fill="#fff6e7" stroke="#e1c997" />
 <text x="40" y="778" font-size="31" fill="#8d6327">若重新上传并读回全部数据集</text>
-<text x="40" y="825" font-size="31" fill="#8d6327">GPU 完整用时 1080.848 ms</text>
+<text x="40" y="825" font-size="31" fill="#8d6327">GPU 完整用时 1102.336 ms</text>
 <text x="40" y="862" font-size="27" fill="#8d6327">数据位置会改变最后的选择。</text>
 </svg>
