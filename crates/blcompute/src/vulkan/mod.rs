@@ -210,6 +210,10 @@ pub struct Device {
     inner: Rc<Inner>,
 }
 impl Device {
+    /// 是否为同一个逻辑设备与队列所有者；同一物理GPU上的独立设备仍不同。
+    pub fn same_device(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
     pub fn new() -> Result<Self> {
         Self::create(false, false, false, false, false)
     }
