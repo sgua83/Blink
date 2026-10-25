@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="580">
+<rect x="0" y="0" width="560" height="580" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">唯一 UI 队列，独立窗口视图</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">BLWindowSystem / 消息泵</text>
+<text x="38" y="167" fill="#263746" font-size="25">整条线程队列 → 实际目标身份</text>
+<rect x="20" y="216" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">窗口 A / 独立消费者</text>
+<text x="38" y="293" fill="#263746" font-size="25">输入 A → 导航或命令</text>
+<text x="38" y="329" fill="#263746" font-size="25">相机 A + 输出 A + 交换链 A</text>
+<rect x="20" y="378" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="414" fill="#147d86" font-size="27">窗口 B / 独立消费者</text>
+<text x="38" y="455" fill="#263746" font-size="25">输入 B → 导航或命令</text>
+<text x="38" y="491" fill="#263746" font-size="25">相机 B + 输出 B + 交换链 B</text>
+<text x="22" y="556" fill="#657787" font-size="20">窗口各自消费 · 不为每窗口重复建立消息泵</text>
+</svg>

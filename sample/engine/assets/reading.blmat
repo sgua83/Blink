@@ -1,0 +1,9 @@
+BLMAT 1
+texture file checker.bltex
+texture color .09 .38 .55 1
+texture color .19 .16 .13 1
+surface tile 0 .3 1.5 0 1 1 0 0
+surface blue 1 .18 1.5 0 1 1 0 0
+surface floor 2 .65 1.5 0 1 1 0 0
+geometry solid tile
+ground floor

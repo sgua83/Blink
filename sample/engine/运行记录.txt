@@ -1,0 +1,109 @@
+BLEngine 源码分析 / 原生运行记录
+日期：2026-10-25
+BLEngine P4 CL12969; Blink P4 CL12971; Rust 1.95.0; Windows x64 release
+独立清单只改变源码和依赖的路径；实现取自固定已提交版本。
+CPU: Ryzen 9 9950X; RAM: 128 GB; GPU: Radeon RX 9070 GRE
+
+[device]
+Vulkan device: AMD Radeon RX 9070 GRE
+
+[cook]
+vertices=24 triangles=12 materials=2 output=B:/BLanguage/Saved/EngineBook/run/cube.blgeom
+
+[cook-scene]
+scene_declared_meshes=1 scene_nodes=7 output=B:/BLanguage/Saved/EngineBook/run/reading.blscene
+
+[render]
+GPU AMD Radeon RX 9070 GRE internal=7680x4320 viewport=3840x2160
+scene_declared_meshes=1 scene_nodes=7 scene_instances=2
+GPU_program_ms=19.593 stages_ms=[10.26712, 7.9198, 1.391] render_readback_write_ms=126.884 output=B:/BLanguage/Saved/EngineBook/run/frame.ppm
+
+[views]
+GPU AMD Radeon RX 9070 GRE internal=7680x4320 viewport=3840x2160
+scene_declared_meshes=1 scene_nodes=7 scene_instances=2
+scene_views=2 GPU_program_ms=46.026 render_readback_write_ms=249.602 output=B:/BLanguage/Saved/EngineBook/run/views
+
+[sim-cpu-10s]
+CPU execution_ms=874.734
+total_kinetic_energy=63477.54
+elements=1000000 steps=1200 bytes=32000000 total_ms=896.911 output=B:/BLanguage/Saved/EngineBook/run/bodies-cpu.bldata
+
+[sim-gpu-10s]
+GPU AMD Radeon RX 9070 GRE
+GPU_program_ms=127.532 submissions=1
+total_kinetic_energy=63477.547
+elements=1000000 steps=1200 bytes=32000000 total_ms=344.046 output=B:/BLanguage/Saved/EngineBook/run/bodies-gpu.bldata
+
+[frame-layout]
+open const declarations (body checked on instantiation): render.composite::composite, render.frame::frame, render.resolve::resolve, stella.lighting::illuminate, stella.surface::surface_sample, stella.visibility::pixel_ray, stella.visibility::visibility
+program render.frame::frame<3,3840,2160,2,8294400,33177600> on Gpu
+push_constants=64 bytes, source_stages=4, executable_stages=3
+  binding 0: InOut pixels : render.resolve::BLPixel, stride=16, shape=Some(33177600)
+    radiance: float3 @ 0
+  binding 1: Write display : render.resolve::BLDisplayPixel, stride=4, shape=Some(8294400)
+    bgra: u32 @ 0
+  binding 2: Read instances : stella.surface::BLInstance, stride=80, shape=None
+    triangles: view<stella.surface::BLTriangle> @ 0
+    normals: view<stella.surface::BLNormal> @ 16
+    texcoords: view<stella.surface::BLTextureTriangle> @ 32
+    materials: view<stella.surface::BLMaterialSlot> @ 48
+    tint: float4 @ 64
+  binding 3: Read overlays : render.composite::BLOverlay, stride=48, shape=None
+    rectangle: float4 @ 0
+    color: float4 @ 16
+    background: u32 @ 32
+  binding 4: Read surfaces : material.palette::BLSurface, stride=40, shape=None
+    texture: u32 @ 0
+    roughness: f32 @ 4
+    ior: f32 @ 8
+    lod: f32 @ 12
+    uv_scale: float2 @ 16
+    uv_offset: float2 @ 24
+    uses_uv: bool @ 32
+  binding 5: Read normal_matrices : scene.transforms::BLNormalMatrix, stride=48, shape=None
+    basis: float3x3 @ 0
+  binding 6: Read cameras : scene.camera::BLCamera, stride=80, shape=None
+    eye: float3 @ 0
+    right: float3 @ 16
+    up: float3 @ 32
+    forward: float3 @ 48
+    tangent: f32 @ 60
+    projection: u32 @ 64
+    near: f32 @ 68
+    far: f32 @ 72
+  binding 7: Read lights : lighting.lights::BLLight, stride=112, shape=None
+    kind: u32 @ 0
+    position: float3 @ 16
+    direction: float3 @ 32
+    edge_u: float3 @ 48
+    edge_v: float3 @ 64
+    energy: float3 @ 80
+    inner: f32 @ 92
+    outer: f32 @ 96
+    samples: u32 @ 100
+  binding 8: Read lighting : lighting.lights::BLLightingSettings, stride=48, shape=Some(1)
+    background: float3 @ 0
+    fill: float3 @ 16
+    offset: f32 @ 28
+    near: f32 @ 32
+    far: f32 @ 36
+  binding 9: InOut hits : stella.surface::BLStellaHit, stride=48, shape=Some(33177600)
+    position: float3 @ 0
+    instance: u32 @ 12
+    incoming: float3 @ 16
+    primitive: u32 @ 28
+    barycentric: float2 @ 32
+    distance: f32 @ 40
+    kind: u32 @ 44
+  uniform floor_present : bool @ 48
+  uniform ground_z : f32 @ 52
+  uniform ground : u32 @ 56
+  uniform overlay_start : u32 @ 60
+  binding 10: read acceleration scene
+  binding 11: read acceleration overlay_scene
+  texture 12: Read albedos : texture2d
+    array elements=3
+  stage 0: Map, domain=hits, reads=[6], writes=[9], scalar_values=210, locals=48, prefix=None
+  stage 1: Map, domain=pixels, reads=[0, 2, 3, 4, 5, 7, 8, 9], writes=[0], scalar_values=950, locals=89, prefix=None
+  stage 2: Map, domain=display, reads=[0], writes=[1], scalar_values=78, locals=5, prefix=None
+

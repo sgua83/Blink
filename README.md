@@ -39,7 +39,9 @@ blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun
 
 ## 系列书籍
 
-[《并行编程的艺术》](sample/并行编程的艺术.md) 从 C/C++ 走向并行思考；[《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) 沿 BLEngine 的真实实现，讲解数据布局、设备驻留、提交组合、共享资产、场景与图像输出。第二本配有[完整 Rust 宿主](sample/hybrid/README.md)，无需 BLEngine 工作区即可运行。
+[《并行编程的艺术》](sample/并行编程的艺术.md) 从 C/C++ 走向并行思考；[《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) 沿 BLEngine 的真实实现，讲解数据布局、设备驻留、提交组合、共享资产、场景与图像输出。第二本配有[独立 Rust 示例](sample/hybrid/README.md)，无需 BLEngine 工作区即可运行。
+
+[《BLEngine 源码分析》](sample/BLEngine源码分析.md) 沿一帧实际图像分析资产、场景、变换、几何驻留、材质、Stella、输出、原生窗口与编辑器适配，配有[阅读场景](sample/engine/README.md)、[手机 PDF](sample/pdf/BLEngine源码分析-手机阅读版.pdf) 和[标准 PDF](sample/pdf/BLEngine源码分析.pdf)。
 
 第二本中文版 PDF：[手机阅读版](sample/pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准版](sample/pdf/Blink和Rust混合编程.pdf)。
 

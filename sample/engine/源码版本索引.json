@@ -1,0 +1,482 @@
+[
+  {
+    "source": "//BLEngine/main/src/clipboard.rs",
+    "path": "src/clipboard.rs",
+    "revision": "2",
+    "sha256": "3502dee0f893749fd3ad16c18d480c6031fc6c4e09429e39c7d9e5de65fdd965"
+  },
+  {
+    "source": "//BLEngine/main/src/components.rs",
+    "path": "src/components.rs",
+    "revision": "1",
+    "sha256": "6906b2a7a7d10054049fba180d91a9504c5be47b495bd4866a8704d47d211aad"
+  },
+  {
+    "source": "//BLEngine/main/src/editor.rs",
+    "path": "src/editor.rs",
+    "revision": "18",
+    "sha256": "f9e4775ee86864c4fa32a8eeeabee10b8e7f4f569abd28c68edd99c51ced8fd9"
+  },
+  {
+    "source": "//BLEngine/main/src/geometry.rs",
+    "path": "src/geometry.rs",
+    "revision": "4",
+    "sha256": "26e600b0e69e0f5eea5c600af7f53a5be9181882b36f75dba0b407aaef3dacd0"
+  },
+  {
+    "source": "//BLEngine/main/src/geometry_io.rs",
+    "path": "src/geometry_io.rs",
+    "revision": "1",
+    "sha256": "23ad9dbc431ac514a4edf29b9e348d3df3f8906e2a2a6d50bce84ac09554d143"
+  },
+  {
+    "source": "//BLEngine/main/src/hierarchy.rs",
+    "path": "src/hierarchy.rs",
+    "revision": "4",
+    "sha256": "d2db05e95d7b2dab81e558f98a8a0265bdf6dd497009571ca3d4c3c25728dc84"
+  },
+  {
+    "source": "//BLEngine/main/src/json.rs",
+    "path": "src/json.rs",
+    "revision": "3",
+    "sha256": "36227ac4d8a46841f0728ade1b54937c3338d420ecbecd2605c8f98657b740f2"
+  },
+  {
+    "source": "//BLEngine/main/src/labels.rs",
+    "path": "src/labels.rs",
+    "revision": "5",
+    "sha256": "9028828ac76edc192e782f0effc500b1663c89298f5db8a6caac452f63c283fb"
+  },
+  {
+    "source": "//BLEngine/main/src/lib.rs",
+    "path": "src/lib.rs",
+    "revision": "14",
+    "sha256": "690ed45af4319661e4d295f5d9636374d497ee617cfd04ca8355cc12467be487"
+  },
+  {
+    "source": "//BLEngine/main/src/lighting.rs",
+    "path": "src/lighting.rs",
+    "revision": "2",
+    "sha256": "6a9a2eeb8c5cf3b16b882f55101ff68bb083405c73b6f011e1b05776ab852f62"
+  },
+  {
+    "source": "//BLEngine/main/src/main.rs",
+    "path": "src/main.rs",
+    "revision": "17",
+    "sha256": "e9e57109587d476ab22b806c6814c3c0f195ff5e832c1cbc37ca0dfffa5de160"
+  },
+  {
+    "source": "//BLEngine/main/src/material.rs",
+    "path": "src/material.rs",
+    "revision": "3",
+    "sha256": "d76170cf1715dde93867daf987e76d5edcb77059468ed79f3ff312b2ac899cd8"
+  },
+  {
+    "source": "//BLEngine/main/src/math.rs",
+    "path": "src/math.rs",
+    "revision": "2",
+    "sha256": "61c050f4dc185b15bd382a8ee00a559f4b558bf647d430a1957199e419670646"
+  },
+  {
+    "source": "//BLEngine/main/src/output.rs",
+    "path": "src/output.rs",
+    "revision": "3",
+    "sha256": "1f6eff22b16219c751ff6e887ef27468010b610d334de205a33e3f3a11c2c0d7"
+  },
+  {
+    "source": "//BLEngine/main/src/primitives.rs",
+    "path": "src/primitives.rs",
+    "revision": "2",
+    "sha256": "afa1931c62bcfbcddfa0a54bbf6bbd8091947ceef1700858cac89daa244ff936"
+  },
+  {
+    "source": "//BLEngine/main/src/render.rs",
+    "path": "src/render.rs",
+    "revision": "21",
+    "sha256": "08ab126b80896ee202c5704f3a8143849207fc447c994f4d344dc405cc1e6eb7"
+  },
+  {
+    "source": "//BLEngine/main/src/scene.rs",
+    "path": "src/scene.rs",
+    "revision": "14",
+    "sha256": "b1506ba291996e4cc82fe2159daa9f4301d01ab3732096c7ba0e1b5acf88f488"
+  },
+  {
+    "source": "//BLEngine/main/src/scene_asset.rs",
+    "path": "src/scene_asset.rs",
+    "revision": "7",
+    "sha256": "4e4eff82e9c5842146b2c38fb95185acf5f31c8f0d962bfd643aa60683d2ba38"
+  },
+  {
+    "source": "//BLEngine/main/src/universe.rs",
+    "path": "src/universe.rs",
+    "revision": "7",
+    "sha256": "6cb2b79cd27ebdb696d211a8dac7b67ce101f9936505258419b6f61ba0ff2be3"
+  },
+  {
+    "source": "//BLEngine/main/src/view.rs",
+    "path": "src/view.rs",
+    "revision": "3",
+    "sha256": "4a46c864de3c9b196be082aa363e9ecccd7f0432db08b60a504ab569454e8300"
+  },
+  {
+    "source": "//BLEngine/main/src/viewer.rs",
+    "path": "src/viewer.rs",
+    "revision": "8",
+    "sha256": "6b0b55aed1ba7cdf9ba3b314784509dfb770d03832e978a7ac09c26a83e9e936"
+  },
+  {
+    "source": "//BLEngine/main/src/window.rs",
+    "path": "src/window.rs",
+    "revision": "5",
+    "sha256": "d247ba1683876bcf22eb8f5ebcc89042469f6308f8ec9474508b4065d1928f69"
+  },
+  {
+    "source": "//BLEngine/main/Programs/geometry/primitives.b",
+    "path": "Programs/geometry/primitives.b",
+    "revision": "2",
+    "sha256": "a463df04eabce3af776a2a5c632fa25009e82db1b3f995910fe029e0ea398ec9"
+  },
+  {
+    "source": "//BLEngine/main/Programs/geometry/primitives.h",
+    "path": "Programs/geometry/primitives.h",
+    "revision": "2",
+    "sha256": "3f37f2e96781d9cd1adf62cb21bc15ace77aa022c805e436bd33a3275fa77985"
+  },
+  {
+    "source": "//BLEngine/main/Programs/lighting/lights.b",
+    "path": "Programs/lighting/lights.b",
+    "revision": "1",
+    "sha256": "8a251fdf7f30d0e3c00cc364ef32abab7b28bbf9651d8040b9eb6826c3e03941"
+  },
+  {
+    "source": "//BLEngine/main/Programs/lighting/lights.h",
+    "path": "Programs/lighting/lights.h",
+    "revision": "1",
+    "sha256": "e36794a70b75d692226580bb3cca4acf736ba5ac9eef6f3893a2d0093df850bd"
+  },
+  {
+    "source": "//BLEngine/main/Programs/material/palette.b",
+    "path": "Programs/material/palette.b",
+    "revision": "1",
+    "sha256": "b6a285ac50946563436f7e334992bed07b26193b608623d96a34d3bdea67047c"
+  },
+  {
+    "source": "//BLEngine/main/Programs/material/palette.h",
+    "path": "Programs/material/palette.h",
+    "revision": "2",
+    "sha256": "74167813ec5b809813e73ff1803bceb091d18f21e4ea67788eddc4b2332d9cdf"
+  },
+  {
+    "source": "//BLEngine/main/Programs/material/surface.b",
+    "path": "Programs/material/surface.b",
+    "revision": "3",
+    "sha256": "a97372bce86718340e628565dfbd2dbf6d463de5ae9a1284a51b43232a0c8d7a"
+  },
+  {
+    "source": "//BLEngine/main/Programs/material/surface.h",
+    "path": "Programs/material/surface.h",
+    "revision": "1",
+    "sha256": "960645b0b47041621fb67d4c92b94b6fdb1e3d1f3ab6e856ae15f64fa315a5de"
+  },
+  {
+    "source": "//BLEngine/main/Programs/material/textured.b",
+    "path": "Programs/material/textured.b",
+    "revision": "4",
+    "sha256": "f628f644c5c54c954e1aaff148d1a8b10892a1bb77550275b657b18f0ea19db3"
+  },
+  {
+    "source": "//BLEngine/main/Programs/material/textured.h",
+    "path": "Programs/material/textured.h",
+    "revision": "4",
+    "sha256": "9f1daefe804c15f812fc2a0cb9cc7d3dc1fa4ec4c55fc790e5326e747657f351"
+  },
+  {
+    "source": "//BLEngine/main/Programs/math/field.b",
+    "path": "Programs/math/field.b",
+    "revision": "3",
+    "sha256": "fc74a15454d685d2badfb5f15b168a8a9c0a7f39fe834b5b3cf4dc3cb7f586f1"
+  },
+  {
+    "source": "//BLEngine/main/Programs/math/field.h",
+    "path": "Programs/math/field.h",
+    "revision": "3",
+    "sha256": "a0b82319874b7512ae6b72607e5e76c00494628436638b2feb9df4a7a2af62c7"
+  },
+  {
+    "source": "//BLEngine/main/Programs/math/transform.b",
+    "path": "Programs/math/transform.b",
+    "revision": "2",
+    "sha256": "f919f691e84ffa426a656540182f27ee00bd77c5633cc17d55e5afb262ed12b2"
+  },
+  {
+    "source": "//BLEngine/main/Programs/math/transform.h",
+    "path": "Programs/math/transform.h",
+    "revision": "2",
+    "sha256": "f6224686eead1786a89f242de3a3377446b8d79a62db649c0dcd545ecaaba439"
+  },
+  {
+    "source": "//BLEngine/main/Programs/render/composite.b",
+    "path": "Programs/render/composite.b",
+    "revision": "1",
+    "sha256": "015501d754f1f0ad49ae3d57bd589b9ec1c95a89a1ad9dd9d6fe3d6b1c05beb7"
+  },
+  {
+    "source": "//BLEngine/main/Programs/render/composite.h",
+    "path": "Programs/render/composite.h",
+    "revision": "1",
+    "sha256": "6e90edefffec649983caf1c5a0c55aeec0d0974debf46abef3fa9e2ca7fb8a19"
+  },
+  {
+    "source": "//BLEngine/main/Programs/render/frame.b",
+    "path": "Programs/render/frame.b",
+    "revision": "12",
+    "sha256": "86a6a0723655805967f64c9233bf19500d6b53bf4c00cc773837d9afc62e335a"
+  },
+  {
+    "source": "//BLEngine/main/Programs/render/frame.h",
+    "path": "Programs/render/frame.h",
+    "revision": "12",
+    "sha256": "9f20ff34ced3fdeb015b9952fe33a3c74e0ee0d8f41da0f135ee239ef2bae85f"
+  },
+  {
+    "source": "//BLEngine/main/Programs/render/resolve.b",
+    "path": "Programs/render/resolve.b",
+    "revision": "4",
+    "sha256": "550b5e3b97d90f4c149354d44d92952e542c66743989a37c938400c877c91d2f"
+  },
+  {
+    "source": "//BLEngine/main/Programs/render/resolve.h",
+    "path": "Programs/render/resolve.h",
+    "revision": "5",
+    "sha256": "8ddc7efe7222d81cb22f159b574522dc583d23bb90955ed61cbfcdc3e23fd4d4"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/camera.b",
+    "path": "Programs/scene/camera.b",
+    "revision": "1",
+    "sha256": "66c9bad19037a499a1e2641306c553c74f329f2324d2d580ec59e402e86b4b8e"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/camera.h",
+    "path": "Programs/scene/camera.h",
+    "revision": "1",
+    "sha256": "b7bf03ae4e985e24bc8068fd6defd3e1d983f203c9e852ca4bfec5877518b7bb"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/components.b",
+    "path": "Programs/scene/components.b",
+    "revision": "1",
+    "sha256": "f33691b08a194d06ad4d74c347b2ed7b93370670929e2861113e144d50904c00"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/components.h",
+    "path": "Programs/scene/components.h",
+    "revision": "1",
+    "sha256": "dbb3053f1a62a8494aa3e3d2a0b3473852837266028291df84bad8bc4eec2059"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/device.b",
+    "path": "Programs/scene/device.b",
+    "revision": "1",
+    "sha256": "2dcb0bb03d986f87349f8388429660fa929530d335d8fd01972b0161c7473781"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/device.h",
+    "path": "Programs/scene/device.h",
+    "revision": "1",
+    "sha256": "c3d394d67f4b159cfa6579509632c2a83f316c7c776f0402bdbde24c1aa5a015"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/hierarchy.b",
+    "path": "Programs/scene/hierarchy.b",
+    "revision": "1",
+    "sha256": "48f7791608f856af6cce9722be303f03f66263f21e59c65e7a8dffef3ed08cd4"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/hierarchy.h",
+    "path": "Programs/scene/hierarchy.h",
+    "revision": "1",
+    "sha256": "346fc399d4766cdd7da24fcc7008f6454c3cf64dd05bf70ee85d3eaadab16a8d"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/labels.b",
+    "path": "Programs/scene/labels.b",
+    "revision": "3",
+    "sha256": "0fb3eafce2a5a46125066d8cd6fb2d922347d9ba8a64c17dbe8c1ae0170a684e"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/labels.h",
+    "path": "Programs/scene/labels.h",
+    "revision": "3",
+    "sha256": "1d70f119086be7e88d452d808a7c275b027d83cc4ccd203356ea2d3df75640ad"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/pick.b",
+    "path": "Programs/scene/pick.b",
+    "revision": "4",
+    "sha256": "f094878cb55a40cfb1e0e582e85bf740549a67ccead1ac408e4939819d732672"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/pick.h",
+    "path": "Programs/scene/pick.h",
+    "revision": "4",
+    "sha256": "f7a8dc8800ebd9f94365314533995e485ba6c00f4be893415856c1c961aedb47"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/transforms.b",
+    "path": "Programs/scene/transforms.b",
+    "revision": "3",
+    "sha256": "4d47a6a95ee892d7fa640a77ab4bd5a13141517671f9139529cf178c802eaa1b"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/transforms.h",
+    "path": "Programs/scene/transforms.h",
+    "revision": "3",
+    "sha256": "5c2b42e32364e02396459cd8e42c18cb939ee057c28165fcc1d332629c9a86f3"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/universe.b",
+    "path": "Programs/scene/universe.b",
+    "revision": "3",
+    "sha256": "41199c72539198e73db8bc88732280c65819ba53d08a4adb0bcf757f68359b4d"
+  },
+  {
+    "source": "//BLEngine/main/Programs/scene/universe.h",
+    "path": "Programs/scene/universe.h",
+    "revision": "3",
+    "sha256": "c3336213a0cfde9229146d9703995d04d20229a49a400456f854f6046a674786"
+  },
+  {
+    "source": "//BLEngine/main/Programs/simulation/bodies.b",
+    "path": "Programs/simulation/bodies.b",
+    "revision": "9",
+    "sha256": "60613260d125db91662d6a001c0c7956af4304e0e442d4fb14dea1fd190f0509"
+  },
+  {
+    "source": "//BLEngine/main/Programs/simulation/bodies.h",
+    "path": "Programs/simulation/bodies.h",
+    "revision": "8",
+    "sha256": "d2beb6318438743d497de4fd89d5154646ccb399640c891bb19555e5a12c00c4"
+  },
+  {
+    "source": "//BLEngine/main/Programs/simulation/statistics.b",
+    "path": "Programs/simulation/statistics.b",
+    "revision": "4",
+    "sha256": "a13cdee4ffcc442eadb5ead6e83cf0d3aecb14b3b2527a7149cc8e81524c3d73"
+  },
+  {
+    "source": "//BLEngine/main/Programs/simulation/statistics.h",
+    "path": "Programs/simulation/statistics.h",
+    "revision": "4",
+    "sha256": "8eebb295e6206585e5dcfc82c32d14aab79e14fcd50b9f40e81c4f91b9e47f3d"
+  },
+  {
+    "source": "//BLEngine/main/Programs/stella/lighting.b",
+    "path": "Programs/stella/lighting.b",
+    "revision": "1",
+    "sha256": "33cfb0af0e42031f612ba2f7179bbbc2b6ea02e2cd4ed127c06e5ef7b90410ff"
+  },
+  {
+    "source": "//BLEngine/main/Programs/stella/lighting.h",
+    "path": "Programs/stella/lighting.h",
+    "revision": "1",
+    "sha256": "b2ed10deaa4825c521a637232399cca427dac28d0a865dd275c1e1e1c0a9654a"
+  },
+  {
+    "source": "//BLEngine/main/Programs/stella/surface.b",
+    "path": "Programs/stella/surface.b",
+    "revision": "1",
+    "sha256": "7975f34021c79523dae71ab0880c1af4fd6552c63d152ebb2f8cb895b95d0438"
+  },
+  {
+    "source": "//BLEngine/main/Programs/stella/surface.h",
+    "path": "Programs/stella/surface.h",
+    "revision": "1",
+    "sha256": "0abe3d7e1bcfd0c1eff572d4cd874ddbfbd98f487744ba2c3d2d4aaaa5a7604f"
+  },
+  {
+    "source": "//BLEngine/main/Programs/stella/visibility.b",
+    "path": "Programs/stella/visibility.b",
+    "revision": "1",
+    "sha256": "ad84316c1e3debfb455eaca69e88cb44de0a84fb2a3104d7ddd2f488e806428d"
+  },
+  {
+    "source": "//BLEngine/main/Programs/stella/visibility.h",
+    "path": "Programs/stella/visibility.h",
+    "revision": "1",
+    "sha256": "54de3b3867a2b957ac567dd262a13e649e60d385aaf1044801816f1710ded113"
+  },
+  {
+    "source": "//BLEngine/main/Docs/Architecture.md",
+    "path": "Docs/Architecture.md",
+    "revision": "93",
+    "sha256": "6d5b78f9244bbbdad746960466b5c82504afb713091aa8d27aca8c2c27195791"
+  },
+  {
+    "source": "//BLEngine/main/Docs/GeometryIO.md",
+    "path": "Docs/GeometryIO.md",
+    "revision": "2",
+    "sha256": "22fa785ef689bb550d1e6baa622541c38aaab4ed812091d167455a0c8be36844"
+  },
+  {
+    "source": "//BLEngine/main/Docs/Issues.md",
+    "path": "Docs/Issues.md",
+    "revision": "106",
+    "sha256": "e87ebcc402c5fef92177efedbd4991181e29219ac98c9a8287be4924744c9e29"
+  },
+  {
+    "source": "//BLEngine/main/Docs/Lighting.md",
+    "path": "Docs/Lighting.md",
+    "revision": "6",
+    "sha256": "42a14f029e0bd527cfc7e7973badfc5d87b8a657b41d857a3344132a30171683"
+  },
+  {
+    "source": "//BLEngine/main/Docs/Materials.md",
+    "path": "Docs/Materials.md",
+    "revision": "7",
+    "sha256": "9584dab74b19acb8a07473a10f0acee258c71bd364a96edac00f45d7f16ca68f"
+  },
+  {
+    "source": "//BLEngine/main/Docs/SceneAssets.md",
+    "path": "Docs/SceneAssets.md",
+    "revision": "13",
+    "sha256": "a144485c3fd61897fa69d8877a2ccc98a933f8a500be2cb349d0b7a4bd48e58c"
+  },
+  {
+    "source": "//BLEngine/main/Docs/Stella.md",
+    "path": "Docs/Stella.md",
+    "revision": "1",
+    "sha256": "0267f1751d4523f09cb9818bbacef000eae76892ce368874fc4a161151900046"
+  },
+  {
+    "source": "//BLEngine/main/Docs/Universe.md",
+    "path": "Docs/Universe.md",
+    "revision": "5",
+    "sha256": "cae5a54c518ab08e8f27ea2f4cba829f8ab3aa2975376e0778bd615fb4a6c011"
+  },
+  {
+    "source": "//BLEngine/main/Cargo.toml",
+    "path": "Cargo.toml",
+    "revision": "2",
+    "sha256": "4ced67a742fb19644ea5ca9b15606a4a9365af2ab4b34edf9f16482fc8e3897b"
+  },
+  {
+    "source": "//BLEngine/main/Cargo.lock",
+    "path": "Cargo.lock",
+    "revision": "1",
+    "sha256": "0828bca887bcdb41def5e87068ed87786a2c06311980d6489e03c488194aeec7"
+  },
+  {
+    "source": "//BLEngine/main/README.md",
+    "path": "README.md",
+    "revision": "92",
+    "sha256": "6f939d19092be3acc6e09e2e15d991903f2013e83af1bcb9adf624abd5e45786"
+  },
+  {
+    "source": "//BLEngine/main/LICENSE",
+    "path": "LICENSE",
+    "revision": "1",
+    "sha256": "4515c99e69aa6de35c81114e31161fab25c8d3dd13e9cff92eb49632207d9532"
+  }
+]

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="670">
+<rect x="0" y="0" width="560" height="670" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">一次 render 的完整调用链</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">main.rs / 命令入口</text>
+<text x="38" y="167" fill="#263746" font-size="25">render → viewer::render_file</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">viewer.rs / load</text>
+<text x="38" y="293" fill="#263746" font-size="25">read → evaluate → new → place</text>
+<line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="342" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">output.rs / 实际图像</text>
+<text x="38" y="419" fill="#263746" font-size="25">create_output → draw_to</text>
+<line x1="280" y1="448" x2="280" y2="463" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="468" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="504" fill="#147d86" font-size="27">B / frame 与最终消费者</text>
+<text x="38" y="545" fill="#263746" font-size="25">命中 → 光照 → 合成 → resolve</text>
+<text x="38" y="581" fill="#263746" font-size="25">display → PPM 文件</text>
+<text x="22" y="646" fill="#657787" font-size="20">固定源码关系示意 · 连线不表示耗时</text>
+</svg>

@@ -3,8 +3,8 @@
 <text x="22" y="42" fill="#147d86" font-size="31">scene / 空间与组件结果</text>
 <rect x="20" y="90" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="126" fill="#147d86" font-size="27">PowerShell</text>
-<text x="38" y="167" fill="#263746" font-size="25">&amp; $book scene cpu</text>
-<text x="38" y="203" fill="#263746" font-size="25">&amp; $book scene gpu</text>
+<text x="38" y="167" fill="#263746" font-size="25">.\target\release\scene-evaluate.exe cpu</text>
+<text x="38" y="203" fill="#263746" font-size="25">.\target\release\scene-evaluate.exe gpu</text>
 <line x1="280" y1="232" x2="280" y2="247" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="252" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="288" fill="#147d86" font-size="27">世界平移</text>

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="814">
+<rect x="0" y="0" width="560" height="814" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">完整引擎 / 原生渲染记录</text>
+<rect x="20" y="90" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">cook / 正式小模型</text>
+<text x="38" y="167" fill="#263746" font-size="25">vertices=24  triangles=12</text>
+<text x="38" y="203" fill="#263746" font-size="25">materials=2</text>
+<line x1="280" y1="232" x2="280" y2="247" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="252" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="288" fill="#147d86" font-size="27">场景 / 实际消费者</text>
+<text x="38" y="329" fill="#263746" font-size="25">scene_nodes=7</text>
+<text x="38" y="365" fill="#263746" font-size="25">scene_instances=2</text>
+<text x="38" y="401" fill="#263746" font-size="25">scene_declared_meshes=1</text>
+<line x1="280" y1="430" x2="280" y2="445" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="450" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="486" fill="#147d86" font-size="27">GPU / 实际输出规格</text>
+<text x="38" y="527" fill="#263746" font-size="25">viewport=3840x2160</text>
+<text x="38" y="563" fill="#263746" font-size="25">internal=7680x4320</text>
+<line x1="280" y1="592" x2="280" y2="607" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="612" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="648" fill="#147d86" font-size="27">计时 / 两种范围</text>
+<text x="38" y="689" fill="#263746" font-size="25">GPU_program_ms=19.593</text>
+<text x="38" y="725" fill="#263746" font-size="25">render_readback_write_ms=126.884</text>
+<text x="22" y="790" fill="#657787" font-size="20">终端真实输出排印 · 路径见配套运行文本</text>
+</svg>

@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "blink-rust-book"
+name = "blink-rust-examples"
 version = "0.1.0"
 dependencies = [
  "blanguage",

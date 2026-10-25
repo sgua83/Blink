@@ -1,0 +1,22 @@
+BLSCENE_SOURCE 6
+output 3840 2160 2
+materials reading.blmat
+view main
+ground plane 0
+environment .025 .035 .05 .025 .025 .025
+shadow .0002 .0001 inf
+mesh cube cube.blgeom
+node rig none 1 0 0 0 0 1 0 0 0 0 1 0
+node first rig 1 0 0 -.85 0 1 0 0 0 0 1 .5
+instance first cube 1 1 1 1
+node second rig .9659258 -.1423505 0 .85 .258819 .5312592 0 .35 0 0 1.1 .55
+instance second cube 1 1 1 1
+material second solid blue
+node main none 1 0 0 0 0 1 0 0 0 0 1 0
+camera main perspective 3 -6 3 0 .1 .5 0 0 1 .36 .001 100
+node side none 1 0 0 0 0 1 0 0 0 0 1 0
+camera side perspective -3 -5 2.5 0 .1 .5 0 0 1 .36 .001 100
+node sun none 1 0 0 0 0 1 0 0 0 0 1 0
+light sun directional .5 .6 -1 2.2 2 1.7
+node panel none 1 0 0 0 0 1 0 0 0 0 1 0
+light panel area -.5 -1 4 .8 0 0 0 -.8 0 8 7 5 4

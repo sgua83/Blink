@@ -1,7 +1,7 @@
-//! 《Blink 和 Rust 混合编程》配套宿主。在 Blink 仓库根目录运行。
-mod particles;
-mod scene;
-mod sheet;
+//! 各示例复用的数据布局读写与 B 入口加载。在 Blink 仓库根目录运行。
+pub mod particles;
+pub mod scene;
+pub mod sheet;
 
 use blanguage::ExecutableProgram;
 use blcompute::{Dataset, Result};
@@ -37,23 +37,3 @@ fn elapsed(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    let command = args.first().map(String::as_str).unwrap_or("particles");
-    let backend = args.get(1).map(String::as_str).unwrap_or("cpu");
-    match command {
-        "particles" => particles::run(
-            backend,
-            args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(3),
-        ),
-        "steps" => particles::steps(),
-        "flow" => particles::flow(),
-        "scene" => scene::run(backend),
-        "sheet" => sheet::run(backend),
-        "image" => sheet::image(),
-        _ => Err(std::io::Error::other(
-            "用法: particles cpu|gpu [数量] | steps | flow | scene cpu|gpu | sheet cpu|gpu | image",
-        )
-        .into()),
-    }
-}

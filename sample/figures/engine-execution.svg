@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="508">
+<rect x="0" y="0" width="560" height="508" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">同一程序，两条原生执行路径</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">B / 访问与计算关系</text>
+<text x="38" y="167" fill="#263746" font-size="25">program、parallel、归约与阶段</text>
+<rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">CPU / CpuProgram</text>
+<text x="38" y="293" fill="#263746" font-size="25">原生 x64、范围线程与 SIMD</text>
+<rect x="20" y="342" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="378" fill="#147d86" font-size="27">GPU / GpuProgram</text>
+<text x="38" y="419" fill="#263746" font-size="25">原生 SPIR-V、设备提交与驻留</text>
+<text x="22" y="484" fill="#657787" font-size="20">CPU 与 GPU 分别消费同一编译语义</text>
+</svg>

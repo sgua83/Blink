@@ -23,3 +23,7 @@
 ## 第二本：《Blink 和 Rust 混合编程》
 
 [书稿](Blink和Rust混合编程.md) · [配套项目](hybrid/README.md) · [手机 PDF](pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准 PDF](pdf/Blink和Rust混合编程.pdf)。从真实粒子程序逐步进入设备驻留、提交汇合、共享几何、场景组件、材质与最终图像，B 算法与 Rust 所有权沿同一数据流对照讲解。
+
+## 第三本：《BLEngine 源码分析》
+
+[书稿](BLEngine源码分析.md) · [阅读场景与命令](engine/README.md) · [手机 PDF](pdf/BLEngine源码分析-手机阅读版.pdf) · [标准 PDF](pdf/BLEngine源码分析.pdf)。固定 BLEngine CL12969，沿同一个双实例场景分析架构、数据生产消费与资源寿命，包含真实 4K 输出、编译阶段和原生运行记录。

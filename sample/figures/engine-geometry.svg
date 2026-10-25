@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544">
+<rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">一份模型，两个不同实例</text>
+<rect x="20" y="90" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">共享资产 / cube</text>
+<text x="38" y="167" fill="#263746" font-size="25">十二个原三角形与原法线</text>
+<text x="38" y="203" fill="#263746" font-size="25">BLAS + 着色属性 view</text>
+<rect x="20" y="252" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="288" fill="#147d86" font-size="27">实例 first / 独立输入</text>
+<text x="38" y="329" fill="#263746" font-size="25">本地变换 + tile 材质选择</text>
+<rect x="20" y="378" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="414" fill="#147d86" font-size="27">实例 second / 独立输入</text>
+<text x="38" y="455" fill="#263746" font-size="25">另一变换 + blue 材质选择</text>
+<text x="22" y="520" fill="#657787" font-size="20">两个实例都引用共享资产 · 不依次复制模型</text>
+</svg>

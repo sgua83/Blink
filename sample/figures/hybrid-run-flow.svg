@@ -3,7 +3,7 @@
 <text x="22" y="42" fill="#147d86" font-size="31">flow / 两个结果真实汇合</text>
 <rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="126" fill="#147d86" font-size="27">PowerShell</text>
-<text x="38" y="167" fill="#263746" font-size="25">&amp; $book flow</text>
+<text x="38" y="167" fill="#263746" font-size="25">.\target\release\particle-flow.exe</text>
 <line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="216" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="252" fill="#147d86" font-size="27">生产者 / step_and_total</text>

@@ -1,10 +1,34 @@
 [package]
-name = "blink-rust-book"
+name = "blink-rust-examples"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [workspace]
+
+[[bin]]
+name = "particles"
+path = "src/bin/particles.rs"
+
+[[bin]]
+name = "particle-steps"
+path = "src/bin/particle-steps.rs"
+
+[[bin]]
+name = "particle-flow"
+path = "src/bin/particle-flow.rs"
+
+[[bin]]
+name = "scene-evaluate"
+path = "src/bin/scene-evaluate.rs"
+
+[[bin]]
+name = "material-samples"
+path = "src/bin/material-samples.rs"
+
+[[bin]]
+name = "material-image"
+path = "src/bin/material-image.rs"
 
 [dependencies]
 blanguage = { path = "../../crates/blanguage" }

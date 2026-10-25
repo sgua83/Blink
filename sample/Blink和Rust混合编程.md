@@ -22,7 +22,7 @@ Blink 开源项目、两本书及配套源码：
 
 引擎摘录固定为截至 P4 CL12965 的已提交源码；这是一份可追溯的学习样本。段落中的代码节选会重排换行、略去无关字段和重复打包过程，必要的错误传播与资源寿命仍予保留。配套 Programs 中的引擎文件保留原文，来源清单列出版本和 SHA256；book 模块是明确标注的教学组合。
 
-本书的独立 Rust 宿主位于 sample/hybrid。它只依赖 Blink 的两个 crate，读者下载 Blink 后即可运行，无需安装 BLEngine 或配置 P4。深入渲染和资产管理的章节阅读真实引擎节选；最终动手项目则把真实材质与显示转换串起来，输出一幅一百万像素的材质图。
+本书的独立 Rust 示例位于 sample/hybrid。各示例直接生成按用途命名的 exe，只依赖 Blink 的两个 crate；读者下载 Blink 后即可运行，无需安装 BLEngine 或配置 P4。深入渲染和资产管理的章节阅读真实引擎节选；最终动手项目则把真实材质与显示转换串起来，输出一幅一百万像素的材质图。
 
 ### 阅读路线
 
@@ -103,18 +103,30 @@ git clone `
 Set-Location Blink
 cargo build --workspace --release
 
-$env:CARGO_TARGET_DIR = `
-    Join-Path $PWD 'target'
-$manifest = 'sample/hybrid/Cargo.toml'
 cargo build --release `
-    --manifest-path $manifest
+    --manifest-path sample/hybrid/Cargo.toml `
+    --target-dir target
 
-$book = `
-    'target/release/blink-rust-book.exe'
-& $book particles cpu 3
+.\target\release\particles.exe `
+    cpu 3
 ```
 
-本书后续命令都在 Blink 仓库根目录执行，并沿用 $book。Cargo 构建 Rust 宿主；宿主运行时由 blanguage 编译所选 B 入口，再由 blcompute 执行。没有第三方 Shader 编译器或并行运行时。
+后续命令均在 Blink 仓库根目录执行。第一条 cargo build 构建 Blink 工具链；第二条构建本书的 Rust 示例程序，--target-dir target 指定输出目录。最后直接运行生成的 particles.exe，参数 cpu 3 表示在 CPU 上推进三个粒子。
+
+本例使用 Rust 原生 API：宿主加载 B 源码，调用 blanguage 编译所选入口，再由 blcompute 执行。Cargo 编译 Rust 宿主，B 算法由 Blink 编译器处理。第十四章另给出 blc 生成独立 DLL、宿主链接该 DLL 的命令。
+
+particles.exe 是这一章的粒子模拟应用：Rust 准备三个粒子，B 推进一步并汇总能量，Rust 打印结果。它不是语言工具，也不是读者项目需要安装的运行时。后续例子分别生成自己的应用：
+
+| 程序 | 本例完成的事情 |
+|---|---|
+| particles.exe | 选择 CPU 或 GPU，推进粒子并打印结果 |
+| particle-steps.exe | 连续推进三个物理时间步 |
+| particle-flow.exe | 汇合两组粒子模拟的结果 |
+| scene-evaluate.exe | 求场景层级、相机和灯光的世界结果 |
+| material-samples.exe | 计算一千万个材质采样点，比较执行耗时 |
+| material-image.exe | 计算并保存一幅一百万像素材质图 |
+
+这些程序各自完成一个具体示例。初次运行时只需运行 particles.exe；其余程序在相应章节出现。
 
 CPU 命令不要求显卡；GPU 命令要求驱动提供相应 Vulkan 能力，无需额外安装 Vulkan SDK。当前构建与运行范围是 Windows x64，不能把这些命令视为其他平台已完成适配的证明。
 
@@ -140,11 +152,13 @@ let 绑定一个名字，mut 允许修改；vec! 构造拥有元素的动态数�
 
 末尾的 ? 表示：成功就取出结果，失败就把错误交给调用者。因此“完成”只在运行成功后打印。它没有把失败替换成零或空数据。
 
-本书的 main 返回 blcompute::Result<()>。I/O、编译、设备和执行错误沿同一条 Result 路径返回；实际业务可在顶层增加合适的上下文。
+各示例的 main 返回 blcompute::Result<()>。I/O、编译、设备和执行错误沿同一条 Result 路径返回；实际业务可在顶层增加合适的上下文。
 
 ### 2.3　从文件得到一个可执行入口
 
-下面摘自配套 main.rs 的加载函数：
+粒子示例的 B 算法位于 Programs/simulation/statistics.b，Rust 计算调用位于 src/particles.rs，可执行入口位于 src/bin/particles.rs。入口读取 cpu 或 gpu 与粒子数量，再调用这个示例的 run。
+
+各例复用的加载函数位于 src/lib.rs：
 
 ```rust
 let root = Path::new(
@@ -293,7 +307,8 @@ let bodies = device.download(
 upload 消费主机 Dataset，产生设备数据。submit 消费设备绑定，返回 Submission；wait 返回 Completed。download 才把需要的设备结果复制到主机。
 
 ```powershell
-& $book particles gpu 3
+.\target\release\particles.exe `
+    gpu 3
 ```
 
 得到的第一粒子位置与 CPU 相同到这里显示的小数位，总能量为 1.500003。设备创建、上传、提交和读回都有实际成本；三个粒子的 GPU 时间不能用来评价大规模算法吞吐量。
@@ -318,7 +333,7 @@ submit 接收 data 后，Rust 不允许继续使用原来的 data。这种“移
 
 ### 4.2　沿用同一组绑定
 
-配套 steps 命令使用三个独立提交，展示所有权的衔接：
+配套 particle-steps.exe使用三个独立提交，展示所有权的衔接：
 
 ```rust
 let first =
@@ -354,7 +369,7 @@ submit_after 适合学习阶段组合，submit_steps 适合同一演化程序的
 ### 4.4　编译、执行和解释结果
 
 ```powershell
-& $book steps
+.\target\release\particle-steps.exe
 ```
 
 ![图 4-2　三步设备驻留模拟。](figures/hybrid-run-steps.svg)
@@ -430,7 +445,7 @@ order 只选择并排列真实数据，不复制粒子数组。未继续使用�
 ### 5.4　运行与读数
 
 ```powershell
-& $book flow
+.\target\release\particle-flow.exe
 ```
 
 ![图 5-2　两个真实模拟结果的汇合。](figures/hybrid-run-flow.svg)
@@ -588,11 +603,13 @@ compose_affine(parent,child) 将父变换放在左边。先由自己的局部空
 
 ### 7.5　运行并解释三个输出
 
-配套 scene 命令执行下一章的 evaluate，内部先调用 resolve，因此可以同时观察层级与依赖它的组件。
+配套 scene-evaluate.exe执行下一章的 evaluate，内部先调用 resolve，因此可以同时观察层级与依赖它的组件。
 
 ```powershell
-& $book scene cpu
-& $book scene gpu
+.\target\release\scene-evaluate.exe `
+    cpu
+.\target\release\scene-evaluate.exe `
+    gpu
 ```
 
 ![图 7-2　真实场景计算与组件输出。](figures/hybrid-run-scene.svg)
@@ -784,8 +801,10 @@ prepare 完整初始化 write 记录，包括暂为零的 radiance；随后 shad
 ### 9.6　编译和原生运行
 
 ```powershell
-& $book sheet cpu
-& $book sheet gpu
+.\target\release\material-samples.exe `
+    cpu
+.\target\release\material-samples.exe `
+    gpu
 ```
 
 两个命令对同一张一千万点采样表计算相同的准备与 GGX 程序，分别报告首次执行、资源复用后的执行，以及中心点颜色。下一章读这些真实计时，第十三章把结果变成图像。
@@ -794,7 +813,7 @@ prepare 完整初始化 write 记录，包括暂为零的 radiance；随后 shad
 
 ### 10.1　先把比较的两端对齐
 
-sheet cpu 与 sheet gpu 都执行 materials<10000,1000>，都包含采样点准备和真实 GGX 材质计算，都是一千万点。CPU 路径已经使用 Blink 的原生多核执行；这里比较的是 CPU 多核与 GPU 驻留执行，并非拿串行解释器衬托 GPU。
+material-samples.exe cpu 与 material-samples.exe gpu 都执行 materials<10000,1000>，都包含采样点准备和真实 GGX 材质计算，都是一千万点。CPU 路径已经使用 Blink 的原生多核执行；这里比较的是 CPU 多核与 GPU 驻留执行，并非拿串行解释器衬托 GPU。
 
 宿主先报告首次运行，再复用同一程序、纹理和存储执行下一次。复用后的计时从调用执行接口开始，到结果完成为止；没有重新编译，也没有把数据传回 CPU。第一次 GPU 等待还可能包含此前尚未完成的上传。
 
@@ -886,6 +905,8 @@ fetch_add 分配互不重复的任务编号。Relaxed 足以表达这里的编�
 
 零容量不等于整个项目内存为零：每个工作者可以持有自己正在读取或等待交接的模型，消费者也拥有已经接走的数据。并发预算决定同时进行的实际读取数量。
 
+迭代入口用阻塞 recv 等待结果；非阻塞 try_next 的 Pending 交给已有事件循环处理，表示此刻未就绪。没有新请求时不创建读取工作，也无需常驻轮询。
+
 ### 11.4　接收结果时保留资产身份
 
 下面是 src/scene.rs 消费几何读取结果的组织节选，省略材质分组装配：
@@ -922,10 +943,6 @@ take 释放唯一接收端，阻塞的 send 随之结束；finish 再 join 工�
 ![图 11-2　结束消费时的关闭与等待顺序。](figures/hybrid-close.svg)
 
 *图 11-2　先解除交接等待，再等待工作者结束；不把仍在读取的线程分离出去。*
-
-### 11.6　并发不需要成为常驻轮询
-
-迭代入口用阻塞 recv 等待结果；非阻塞 try_next 的 Pending 交给已有事件循环处理，表示此刻未就绪。没有新请求时不创建读取工作，也无需常驻轮询。
 
 ## 12　一帧渲染：把资源交出去，再完整接回来
 
@@ -1057,7 +1074,8 @@ frame 还需要真实几何、相机、纹理和光线查询资源。本书附�
 sample/hybrid/
   Cargo.toml
   src/
-    main.rs       命令与布局读写
+    lib.rs        B 加载与布局读写
+    bin/          各示例的可执行入口
     particles.rs  粒子与提交组合
     scene.rs      场景输入与结果解释
     sheet.rs      纹理、设备、文件
@@ -1194,13 +1212,11 @@ file.flush()?;
 ### 13.8　编译、运行和打开图像
 
 ```powershell
-$env:CARGO_TARGET_DIR = `
-    Join-Path $PWD 'target'
-$manifest = 'sample/hybrid/Cargo.toml'
 cargo build --release `
-    --manifest-path $manifest
+    --manifest-path sample/hybrid/Cargo.toml `
+    --target-dir target
 
-& $book image
+.\target\release\material-image.exe
 ```
 
 ![图 13-2　一百万像素项目的原生运行记录。](figures/hybrid-run-image.svg)
@@ -1244,6 +1260,38 @@ src/hierarchy.rs 的 BLScenePrograms 保存实际使用的 CpuProgram，按需�
 
 Rust 无需经过 C ABI 才能使用 B。原生接口保留了本书的资源模型；需要向现有 C++ 产品发布一个独立算法 DLL 时，使用同一算法的 DLL 路径即可。第一本书与 Docs/NativeInterop.md 给出完整构建和调用实例。
 
+DLL 路径使用 Blink 正式编译命令。以下在 Blink 根目录执行，把四个数的变换编译成独立算法库，再编译、链接 Rust 调用方：
+
+```powershell
+.\target\release\blc.exe build-dll `
+    sample/lessons/map.b `
+    target/interop/map.dll sample scale
+
+rustc --edition=2024 -O `
+    sample/interop/map.rs `
+    -L native=target/interop `
+    -o target/interop/map-rust.exe
+
+.\target\interop\map-rust.exe
+```
+
+blc 生成 map.dll、map.lib、map.abi.h 和 map.rs；rustc 编译 Rust 调用方，并从 -L 指定的目录链接 map.lib。最后运行 map-rust.exe，输出 [3.0, 5.0, 7.0, 9.0]。生成的 DLL 与调用方 exe 放在同一目录，供运行时加载。
+
+对于 C++，同一个 map.lib 交给 C++ 编译器和链接器：
+
+```powershell
+cl /nologo /utf-8 /EHsc `
+    /I target/interop `
+    sample/interop/map.cpp `
+    target/interop/map.lib `
+    /Fo:target/interop/map-cpp.obj `
+    /Fe:target/interop/map-cpp.exe
+
+.\target\interop\map-cpp.exe
+```
+
+输出为 3 5 7 9。这里的 blc、rustc、cl 分别处理 B 算法、Rust 调用方和 C++ 调用方。完整源码位于 sample/interop。
+
 当前 DLL 的同步调用不表达本书完整的设备资源与异步组合，不能用原生 API 的能力描述替代其实际 ABI 范围。B 源码目前也没有任意导入 C++ 或 Rust 外部函数的语法；常见组织方式是 Rust/C++ 宿主调用 B，然后继续调用各自生态。
 
 ### 14.4　复杂度应留在真正需要的地方
@@ -1276,41 +1324,43 @@ Rust 无需经过 C ABI 才能使用 B。原生接口保留了本书的资源模
 
 ```powershell
 cargo build --workspace --release
-$env:CARGO_TARGET_DIR = `
-    Join-Path $PWD 'target'
-$manifest = 'sample/hybrid/Cargo.toml'
 cargo build --release `
-    --manifest-path $manifest
+    --manifest-path sample/hybrid/Cargo.toml `
+    --target-dir target
 
-$book = `
-    'target/release/blink-rust-book.exe'
-& $book particles cpu 3
-& $book particles gpu 3
-& $book steps
-& $book flow
-& $book scene cpu
-& $book scene gpu
-& $book sheet cpu
-& $book sheet gpu
-& $book image
+.\target\release\particles.exe `
+    cpu 3
+.\target\release\particles.exe `
+    gpu 3
+.\target\release\particle-steps.exe
+.\target\release\particle-flow.exe
+.\target\release\scene-evaluate.exe `
+    cpu
+.\target\release\scene-evaluate.exe `
+    gpu
+.\target\release\material-samples.exe `
+    cpu
+.\target\release\material-samples.exe `
+    gpu
+.\target\release\material-image.exe
 ```
 
-所有命令会直接传播失败；GPU 命令不会在设备不可用时改成 CPU 执行。sheet 使用约 1.12 GB 的点记录，加上执行与传输所需资源；image 使用一百万像素的独立数据，二者规模不同。
+所有命令会直接传播失败；GPU 命令不会在设备不可用时改成 CPU 执行。material-samples 使用约 1.12 GB 的点记录，加上执行与传输所需资源；material-image 使用一百万像素的独立数据，二者规模不同。
 
 ### A.2　单独查看 B 编译结果
 
 ```powershell
-$blc = '.\target\release\blc.exe'
-$root = 'sample/hybrid/Programs'
-& $blc check `
-    "$root/simulation/statistics.b" `
-    $root step_and_total
+.\target\release\blc.exe check `
+    sample/hybrid/Programs/simulation/statistics.b `
+    sample/hybrid/Programs step_and_total
 
-& $blc check "$root/book/sheet.b" `
-    $root 'materials<10000,1000>'
+.\target\release\blc.exe check `
+    sample/hybrid/Programs/book/sheet.b `
+    sample/hybrid/Programs 'materials<10000,1000>'
 
-& $blc check "$root/book/sheet.b" `
-    $root image
+.\target\release\blc.exe check `
+    sample/hybrid/Programs/book/sheet.b `
+    sample/hybrid/Programs image
 ```
 
 一千万采样点的 materials 在本书版本中具有两个源阶段，优化后为一个执行 Map 阶段；这也解释了为什么不能仅数源程序调用就判断内核数量。
@@ -1318,20 +1368,21 @@ $root = 'sample/hybrid/Programs'
 ### A.3　真实引擎 frame 的编译检查
 
 ```powershell
-& $blc check "$root/render/frame.b" `
-    $root `
+.\target\release\blc.exe check `
+    sample/hybrid/Programs/render/frame.b `
+    sample/hybrid/Programs `
   'frame<1,1000,1000,1,1000000,1000000>'
 ```
 
 本书原生检查得到两个执行阶段：trace 写 pixels，resolve 读 pixels 写 display。dataset 步长依次为 16、4、80、48、40、48、80、112、48 字节；此外还有两个 acceleration 和一个纹理数组。
 
-这个命令不创建场景、不构造光线加速结构，也不输出 frame 图像。它用于阅读真实编译接口；完整可运行图像项目使用 A.1 的 image。
+这个命令不创建场景、不构造光线加速结构，也不输出 frame 图像。它用于阅读真实编译接口；完整可运行图像项目使用 A.1 的 material-image.exe。
 
 ### A.4　保存结果与阅读数值
 
 配套 sample/hybrid/运行记录.txt 保存书中原生运行的终端文本，图中的数值由这些记录排印。输出图像路径为 Saved/HybridBook/materials.ppm。重新运行时耗时会变化，程序不会为了吻合书中数字而固定结果。
 
-particle、steps 和 flow 的显示小数用于理解算法；CPU/GPU 材质输出存在浮点差异，书中只展示实际观察到的中心点。需要数值精度约束的项目应围绕自己的正式输出要求设计计算。
+粒子推进、连续时间步和结果汇合的显示小数用于理解算法；CPU/GPU 材质输出存在浮点差异，书中只展示实际观察到的中心点。需要数值精度约束的项目应围绕自己的正式输出要求设计计算。
 
 ## 附录 B　源码阅读路线与摘录范围
 
