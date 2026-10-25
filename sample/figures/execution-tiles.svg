@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="680" font-family="Microsoft YaHei, sans-serif">
+<text x="20" y="50" font-size="40" fill="#147d86">块内协作 / 小输入运行记录</text>
+<rect x="20" y="90" width="720" height="150" rx="12" fill="#f5f8fa" stroke="#d9e4eb"/>
+<text x="40" y="133" font-size="34" fill="#147d86">01 / 程序入口与执行状态</text>
+<text x="40" y="179" font-size="28" fill="#263746">program lessons.tiles::demo&lt;4&gt;</text>
+<text x="40" y="221" font-size="29" fill="#263746">CPU exit code: 0    GPU exit code: 0</text>
+<rect x="20" y="265" width="720" height="365" rx="12" fill="#f5f8fa" stroke="#d9e4eb"/>
+<text x="40" y="309" font-size="34" fill="#147d86">02 / 两端 BLDATA 解码结果</text>
+<text x="40" y="355" font-size="33" fill="#263746">value = [1.0,2.0,3.0,4.0,5.0,6.0]</text>
+<text x="40" y="400" font-size="33" fill="#263746">total =</text>
+<text x="40" y="445" font-size="33" fill="#263746">  [10.0,10.0,10.0,10.0,11.0,11.0]</text>
+<text x="40" y="490" font-size="33" fill="#263746">before = [0.0,1.0,3.0,6.0,0.0,5.0]</text>
+<text x="40" y="535" font-size="33" fill="#263746">centered =</text>
+<text x="40" y="580" font-size="33" fill="#263746">  [-1.5,-0.5,0.5,1.5,-0.5,0.5]</text>
+<text x="20" y="658" font-size="27" fill="#657787">结果与正文的手算输入对应；性能对照见后文。</text>
+</svg>

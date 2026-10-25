@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="500" font-family="Microsoft YaHei, sans-serif">
+<text x="20" y="50" font-size="40" fill="#147d86">仿射组合 / 小输入运行记录</text>
+<rect x="20" y="90" width="720" height="150" rx="12" fill="#f5f8fa" stroke="#d9e4eb"/>
+<text x="40" y="133" font-size="34" fill="#147d86">01 / 程序入口与执行状态</text>
+<text x="40" y="179" font-size="28" fill="#263746">program lessons.algebra::demo</text>
+<text x="40" y="221" font-size="29" fill="#263746">CPU exit code: 0    GPU exit code: 0</text>
+<rect x="20" y="265" width="720" height="185" rx="12" fill="#f5f8fa" stroke="#d9e4eb"/>
+<text x="40" y="309" font-size="34" fill="#147d86">02 / 两端 BLDATA 解码结果</text>
+<text x="40" y="355" font-size="33" fill="#263746">before = [[1,0],[2,1],[4,3],[8,7]]</text>
+<text x="40" y="400" font-size="33" fill="#263746">total = [16,15]</text>
+<text x="20" y="478" font-size="27" fill="#657787">结果与正文的手算输入对应；性能对照见后文。</text>
+</svg>
