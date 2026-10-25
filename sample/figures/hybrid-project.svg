@@ -1,17 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544" viewBox="0 0 560 544">
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544">
 <rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
-<text x="22" y="42" fill="#147d86" font-size="31">从采样表到一幅真实图片</text>
+<text x="22" y="42" fill="#147d86" font-size="31">从 B 算法到图片文件</text>
 <rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="126" fill="#147d86" font-size="27">B / prepare + shade</text>
-<text x="38" y="167" fill="#263746" font-size="25">采样表 → GGX → radiance</text>
+<text x="38" y="167" fill="#263746" font-size="25">生成采样参数 → GGX → radiance</text>
 <line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="252" fill="#147d86" font-size="27">B / pack + resolve</text>
-<text x="38" y="293" fill="#263746" font-size="25">radiance → 显示映射 → BGRA</text>
+<text x="38" y="293" fill="#263746" font-size="25">整理颜色 → 显示转换 → BGRA</text>
 <line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="342" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="378" fill="#147d86" font-size="27">Rust / 最终文件消费者</text>
-<text x="38" y="419" fill="#263746" font-size="25">只下载 4 MB display</text>
-<text x="38" y="455" fill="#263746" font-size="25">拆 RGB 字节，写出 PPM</text>
-<text x="22" y="520" fill="#657787" font-size="20">一百万像素 · 中间点记录 112 MB 留在设备</text>
+<text x="38" y="378" fill="#147d86" font-size="27">Rust / 保存</text>
+<text x="38" y="419" fill="#263746" font-size="25">只下载 4 MB 的 display</text>
+<text x="38" y="455" fill="#263746" font-size="25">拆成 RGB 字节，写 PPM 文件</text>
+<text x="22" y="520" fill="#657787" font-size="20">一百万像素 · 中间点记录留在 GPU</text>
 </svg>

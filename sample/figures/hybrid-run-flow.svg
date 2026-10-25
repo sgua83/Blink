@@ -1,17 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544" viewBox="0 0 560 544">
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544">
 <rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
-<text x="22" y="42" fill="#147d86" font-size="31">flow / 两个结果真实汇合</text>
+<text x="22" y="42" fill="#147d86" font-size="31">两组结果 / 原生输出</text>
 <rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="126" fill="#147d86" font-size="27">PowerShell</text>
+<text x="38" y="126" fill="#147d86" font-size="27">运行</text>
 <text x="38" y="167" fill="#263746" font-size="25">.\target\release\particle-flow.exe</text>
 <line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="216" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="252" fill="#147d86" font-size="27">生产者 / step_and_total</text>
+<text x="38" y="252" fill="#147d86" font-size="27">两组总动能</text>
 <text x="38" y="293" fill="#263746" font-size="25">left=1.500003</text>
 <text x="38" y="329" fill="#263746" font-size="25">right=6.000003</text>
 <line x1="280" y1="358" x2="280" y2="373" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="378" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="414" fill="#147d86" font-size="27">消费者 / finish</text>
+<text x="38" y="414" fill="#147d86" font-size="27">B 中相加的结果</text>
 <text x="38" y="455" fill="#263746" font-size="25">combined=7.500006</text>
-<text x="22" y="520" fill="#657787" font-size="20">真实运行记录排印 · 速度加倍，动能约四倍</text>
+<text x="22" y="520" fill="#657787" font-size="20">终端实际输出排印 · 合并仍在 GPU 上完成</text>
 </svg>

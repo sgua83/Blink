@@ -1,12 +1,19 @@
-# 《Blink 和 Rust 混合编程》配套项目
+# 《Blink 和 Rust 混合编程》配套示例
 
-在 Blink 仓库根目录、Visual Studio x64 Developer PowerShell 中执行。安装与语言介绍见 [书稿](../Blink和Rust混合编程.md)。本项目独立依赖本仓库的 blanguage 与 blcompute，不要求 BLEngine 工作区或 P4。
+从 [第一个 DLL 调用例子](first/README.md) 开始。自己写 numbers.h、numbers.b、main.rs，使用 blc 生成算法库，再用 rustc 编译 Rust 调用方，直接运行 numbers.exe。B 完成乘二加一，Rust 提供输入并打印结果。
+
+第一、二章完整解释这次调用；第三章再使用 blanguage、blcompute 原生 Rust 接口，逐步准备粒子、执行 B 并读取结果。书稿见 [《Blink 和 Rust 混合编程》](../Blink和Rust混合编程.md)。
+
+## 构建原生 Rust 示例
+
+在 Blink 根目录、x64 Developer PowerShell 中执行：
 
 ```powershell
-cargo build --workspace --release
 cargo build --release `
     --manifest-path sample/hybrid/Cargo.toml `
     --target-dir target
+
+.\target\release\particle-cpu.exe
 .\target\release\particles.exe cpu 3
 .\target\release\particles.exe gpu 3
 .\target\release\particle-steps.exe
@@ -18,17 +25,20 @@ cargo build --release `
 .\target\release\material-image.exe
 ```
 
-- particles.exe：真实引擎 step_and_total，三粒子用于手算；可另给十进制数量。
-- particle-steps.exe：三个 0.01 秒的物理时间步，无中间主机等待。
-- particle-flow.exe：两组真实粒子模拟，通过 submit_join 汇合能量。
-- scene-evaluate.exe：真实引擎 evaluate，世界变换、相机和点光源。
-- material-samples.exe：一千万采样点的真实 GGX，分别显示首次执行和资源复用后的执行；GPU 另列全量下载。点记录约 1.12 GB，传输另需实际资源。
-- material-image.exe：一百万像素完整 B 流水，只下载四字节显示像素，输出 Saved/HybridBook/materials.ppm。支持 PPM 的图像查看器可以直接打开。
+| 程序 | 完成的事情 | 主要 Rust 源码 |
+|---|---|---|
+| particle-cpu | 完整展开的一次三粒子 CPU 模拟 | src/bin/particle-cpu.rs |
+| particles | 同样的物理问题，选择 CPU/GPU、数量并打印耗时 | src/particles.rs |
+| particle-steps | 连续推进三个 0.01 秒的物理时间步 | src/particles.rs |
+| particle-flow | 两组粒子分别求动能，再由 B 相加 | src/particles.rs |
+| scene-evaluate | 三节点世界变换及相机、灯光位置 | src/scene.rs |
+| material-samples | 一千万点的 GGX 采样，比较 CPU/GPU 时间 | src/sheet.rs |
+| material-image | 一百万像素图片，从 B 加载一直到文件保存 | src/bin/material-image.rs |
 
-cargo build --workspace --release 构建 Blink 工具链；带 --manifest-path 的命令编译 Rust 宿主，--target-dir target 指定生成位置。各 exe 是按用途命名的 Rust 示例程序，使用 blanguage 编译 B、使用 blcompute 执行。独立 DLL 的 blc 构建及宿主链接命令见书中第十四章。
+前述两个完整程序直接写出加载、数据创建、执行和结果处理。其余示例的独立入口也位于 src/bin，各完成一个明确用途。
 
-GPU 入口要求当前驱动提供相应 Vulkan 能力，出错直接返回；CPU 不创建设备。material-samples 的 CPU 已是原生多核，不是串行参考；setup、主机执行等待、设备时间戳、读回采用不同字段，不能混成一个内核加速比。两种后端存在浮点差异，运行记录显示实际中心点，未宣称全部逐位一致。
+GPU 例子需要驱动提供所需 Vulkan 能力。失败会直接返回；CPU 不创建设备。点记录约 1.12 GB，全量下载与设备计算分别计时。material-image 只下载最后的四字节显示像素，输出 Saved/HybridBook/materials.ppm。
 
-Programs/book 是本书的输入生成与组合代码，其他 Programs 模块保留 BLEngine 截至 CL12965 的已提交原文及导入闭包；[来源清单](BLEngine摘录来源.md) 记录精确版本与 SHA256，[MIT 许可](BLEngine-LICENSE.txt) 随摘录保留。Rust src 是完整教学宿主；书中的引擎 Rust 节选另标原文件。
+Programs 下的引擎模块保留 BLEngine 截至 CL12965 的原文及所需导入。Programs/book 只准备示例输入和连接步骤；实际粒子、变换、GGX 与显示转换使用引擎实现。[来源清单](BLEngine摘录来源.md) 与 [MIT 许可](BLEngine-LICENSE.txt) 随源码保留。下载 Blink 后可运行这些独立例子，不要求 BLEngine 工作区或 P4。
 
-[原生运行记录](运行记录.txt) 保存书中图表对应的实际输出。这个项目是正式教学示例，不是构建后自动执行的测试关卡。
+[原始运行记录](运行记录.txt) 保留正文图表和新版完整示例的输出。

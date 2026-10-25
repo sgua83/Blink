@@ -4,11 +4,7 @@ use blcompute::{
     cpu::{self, CpuProgram},
     vulkan::{self, Device},
 };
-use std::{
-    fs::File,
-    io::{BufWriter, Write},
-    time::Instant,
-};
+use std::time::Instant;
 
 fn texture() -> Result<Texture2D> {
     Texture2D::new(vec![TextureMip {
@@ -106,50 +102,5 @@ pub fn run(backend: &str) -> Result<()> {
         f32::from_bits(output.words()[offset + 1]),
         f32::from_bits(output.words()[offset + 2])
     );
-    Ok(())
-}
-
-pub fn image() -> Result<()> {
-    let setup = Instant::now();
-    let code = program("book/sheet.b", "image")?;
-    let device = Device::for_program(&code)?;
-    println!("GPU {}", device.name());
-    let data = (0..3)
-        .map(|i| device.zeroed(&code, i, 1_000_000))
-        .collect::<Result<Vec<_>>>()?;
-    let albedo = device.upload_texture(&texture()?)?;
-    let code = device.compile(code)?;
-    println!("setup_enqueue_ms={:.3}", elapsed(setup));
-    let start = Instant::now();
-    let done = code
-        .submit(
-            vulkan::Bindings {
-                datasets: data,
-                accelerations: vec![],
-                textures: vec![albedo],
-            },
-            &[],
-        )?
-        .wait()?;
-    println!(
-        "image_run_wait_ms={:.3} gpu_ms={:.3}",
-        elapsed(start),
-        done.timings.elapsed_ms
-    );
-    let start = Instant::now();
-    let display = device.download(&done.datasets()[2])?;
-    println!(
-        "display_download_ms={:.3} display_bytes={}",
-        elapsed(start),
-        display.words().len() * 4
-    );
-    std::fs::create_dir_all("Saved/HybridBook")?;
-    let mut file = BufWriter::new(File::create("Saved/HybridBook/materials.ppm")?);
-    file.write_all(b"P6\n1000 1000\n255\n")?;
-    for &bgra in display.words() {
-        file.write_all(&[(bgra >> 16) as u8, (bgra >> 8) as u8, bgra as u8])?;
-    }
-    file.flush()?;
-    println!("image=Saved/HybridBook/materials.ppm size=1000x1000");
     Ok(())
 }

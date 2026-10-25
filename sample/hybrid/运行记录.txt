@@ -140,3 +140,42 @@ setup_enqueue_ms=158.131
 image_run_wait_ms=8.285 gpu_ms=2.301
 display_download_ms=11.603 display_bytes=4000000
 image=Saved/HybridBook/materials.ppm size=1000x1000
+
+[完整入门与图像程序重写 / 2026-10-25]
+B 编译及执行框架来自已提交的 Blink CL12977 快照，教学源码为本次修改。原先性能图表保留此前观测；以下为本次原生运行。
+
+[numbers-build-run]
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.39
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+program numbers::transform on Compute
+push_constants=12 bytes, source_stages=1, executable_stages=1
+  binding 0: InOut values : f32, stride=4, shape=None
+  stage 0: Map, domain=values, reads=[0], writes=[0], scalar_values=6, locals=0, prefix=None
+     Locking 2 packages to latest Rust 1.95.0 compatible versions
+   Compiling blanguage v0.1.0 (B:\BLanguage\Saved\HybridRewrite\sdk\crates\blanguage)
+   Compiling blcompute v0.1.0 (B:\BLanguage\Saved\HybridRewrite\sdk\crates\blcompute)
+   Compiling blink_dll v0.0.0 (B:\BLanguage\Saved\HybridRewrite\sdk\target\blc-dll\31436-1792940346358040400)
+    Finished `release` profile [optimized] target(s) in 28.76s
+DLL B:\BLanguage\target\hybrid\numbers.dll
+C/C++ B:\BLanguage\target\hybrid\numbers.abi.h
+Rust B:\BLanguage\target\hybrid\numbers.rs
+import library B:\BLanguage\target\hybrid\numbers.lib
+before: [1.0, 2.0, 3.0, 4.0]
+after:  [3.0, 5.0, 7.0, 9.0]
+before: [1.0, 2.0, 3.0, 4.0]
+after:  [3.0, 5.0, 7.0, 9.0]
+
+[particle-cpu]
+first_x=0.999986 first_y=0.010000
+total_energy=1.500003
+
+[material-image]
+GPU AMD Radeon RX 9070 GRE
+setup_enqueue_ms=175.076
+image_run_wait_ms=9.659 gpu_ms=2.756
+display_download_ms=11.999 display_bytes=4000000
+image=Saved/HybridBook/materials.ppm size=1000x1000
+
+展开前后 PPM SHA256 均为 0155d6aca3c7d4c753c3cf23ece3dca858ffb345a79d6e30529c5be13c465ac3。

@@ -22,7 +22,7 @@
 
 ## 第二本：《Blink 和 Rust 混合编程》
 
-[书稿](Blink和Rust混合编程.md) · [配套项目](hybrid/README.md) · [手机 PDF](pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准 PDF](pdf/Blink和Rust混合编程.pdf)。从真实粒子程序逐步进入设备驻留、提交汇合、共享几何、场景组件、材质与最终图像，B 算法与 Rust 所有权沿同一数据流对照讲解。
+[书稿](Blink和Rust混合编程.md) · [配套项目](hybrid/README.md) · [手机 PDF](pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准 PDF](pdf/Blink和Rust混合编程.pdf)。从三个完整源码文件和两条编译命令开始，先跑通四个数的 Rust/B 调用；再逐步进入粒子、连续计算、共享模型、场景和材质图像。
 
 ## 第三本：《BLEngine 源码分析》
 

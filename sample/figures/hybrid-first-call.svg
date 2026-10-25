@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="670">
+<rect x="0" y="0" width="560" height="670" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">一次 run 的处理过程</text>
+<rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="126" fill="#147d86" font-size="27">Rust / 调用 run</text>
+<text x="38" y="167" fill="#263746" font-size="25">传入 values 数组及元素数 4</text>
+<line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="216" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="252" fill="#147d86" font-size="27">DLL / Blink 计算</text>
+<text x="38" y="293" fill="#263746" font-size="25">准备数据 → 执行 transform</text>
+<text x="38" y="329" fill="#263746" font-size="25">1→3   2→5   3→7   4→9</text>
+<line x1="280" y1="358" x2="280" y2="373" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="378" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="414" fill="#147d86" font-size="27">DLL / 完成后返回</text>
+<text x="38" y="455" fill="#263746" font-size="25">将结果写回 Rust 的 values</text>
+<line x1="280" y1="484" x2="280" y2="499" stroke="#147d86" stroke-width="2"/>
+<rect x="20" y="504" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="540" fill="#147d86" font-size="27">Rust / 下一条语句</text>
+<text x="38" y="581" fill="#263746" font-size="25">println! 打印修改后的数组</text>
+<text x="22" y="646" fill="#657787" font-size="20">执行顺序示意 · 连线不表示耗时</text>
+</svg>

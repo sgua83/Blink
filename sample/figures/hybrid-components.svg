@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="560" height="670" viewBox="0 0 560 670">
-<rect x="0" y="0" width="560" height="670" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
-<text x="22" y="42" fill="#147d86" font-size="31">一份世界变换，多个消费者</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="544">
+<rect x="0" y="0" width="560" height="544" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">一份 worlds，接着算两类对象</text>
 <rect x="20" y="90" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="126" fill="#147d86" font-size="27">Rust / 场景快照</text>
-<text x="38" y="167" fill="#263746" font-size="25">nodes、挂接相机、挂接灯光</text>
+<text x="38" y="126" fill="#147d86" font-size="27">Rust / 准备输入</text>
+<text x="38" y="167" fill="#263746" font-size="25">节点数组、本地相机、本地灯光</text>
 <line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="216" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="252" fill="#147d86" font-size="27">B / resolve</text>
@@ -11,11 +11,7 @@
 <line x1="280" y1="322" x2="280" y2="337" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="342" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
 <text x="38" y="378" fill="#147d86" font-size="27">B / cameras 与 lights</text>
-<text x="38" y="419" fill="#263746" font-size="25">worlds → 世界相机</text>
-<text x="38" y="455" fill="#263746" font-size="25">worlds → 世界灯光</text>
-<line x1="280" y1="484" x2="280" y2="499" stroke="#147d86" stroke-width="2"/>
-<rect x="20" y="504" width="520" height="102" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="540" fill="#147d86" font-size="27">实际消费者</text>
-<text x="38" y="581" fill="#263746" font-size="25">实例放置、视图与照明输入</text>
-<text x="22" y="646" fill="#657787" font-size="20">执行关系示意 · 箭头不表示耗时</text>
+<text x="38" y="419" fill="#263746" font-size="25">worlds + 本地相机 → 世界相机</text>
+<text x="38" y="455" fill="#263746" font-size="25">worlds + 本地灯光 → 世界灯光</text>
+<text x="22" y="520" fill="#657787" font-size="20">执行顺序示意 · 连线不表示耗时</text>
 </svg>

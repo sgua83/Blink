@@ -1,25 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="560" height="814" viewBox="0 0 560 814">
-<rect x="0" y="0" width="560" height="814" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
-<text x="22" y="42" fill="#147d86" font-size="31">particles / 第一次真实执行</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="616">
+<rect x="0" y="0" width="560" height="616" rx="0" fill="#f7fafb" stroke="#f7fafb"/>
+<text x="22" y="42" fill="#147d86" font-size="31">三个粒子 / 原生输出</text>
 <rect x="20" y="90" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="126" fill="#147d86" font-size="27">PowerShell / 执行</text>
-<text x="38" y="167" fill="#263746" font-size="25">运行粒子模拟</text>
-<text x="38" y="203" fill="#263746" font-size="25">.\target\release\particles.exe cpu 3</text>
+<text x="38" y="126" fill="#147d86" font-size="27">运行同一物理问题</text>
+<text x="38" y="167" fill="#263746" font-size="25">.\target\release\particles.exe</text>
+<text x="38" y="203" fill="#263746" font-size="25">参数为 cpu 3 或 gpu 3</text>
 <line x1="280" y1="232" x2="280" y2="247" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="252" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="288" fill="#147d86" font-size="27">布局 / 来自反射</text>
-<text x="38" y="329" fill="#263746" font-size="25">stride=32  position=0</text>
-<text x="38" y="365" fill="#263746" font-size="25">velocity=16  energy=28</text>
+<text x="38" y="288" fill="#147d86" font-size="27">CPU / 本次显示结果</text>
+<text x="38" y="329" fill="#263746" font-size="25">count=3 total_energy=1.500003</text>
+<text x="38" y="365" fill="#263746" font-size="25">position=(0.999986,0.010000,0)</text>
 <line x1="280" y1="394" x2="280" y2="409" stroke="#147d86" stroke-width="2"/>
-<rect x="20" y="414" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="450" fill="#147d86" font-size="27">CPU / 输出</text>
+<rect x="20" y="414" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
+<text x="38" y="450" fill="#147d86" font-size="27">GPU / 本次显示结果</text>
 <text x="38" y="491" fill="#263746" font-size="25">count=3 total_energy=1.500003</text>
 <text x="38" y="527" fill="#263746" font-size="25">position=(0.999986,0.010000,0)</text>
-<text x="38" y="563" fill="#263746" font-size="25">energy=0.500001</text>
-<line x1="280" y1="592" x2="280" y2="607" stroke="#147d86" stroke-width="2"/>
-<rect x="20" y="612" width="520" height="138" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="648" fill="#147d86" font-size="27">GPU / 对照结果</text>
-<text x="38" y="689" fill="#263746" font-size="25">count=3 total_energy=1.500003</text>
-<text x="38" y="725" fill="#263746" font-size="25">position=(0.999986,0.010000,0)</text>
-<text x="22" y="790" fill="#657787" font-size="20">原生运行记录排印 · 小数据用于解释结果</text>
+<text x="22" y="592" fill="#657787" font-size="20">原始数值排印 · 小输入便于手算</text>
 </svg>
