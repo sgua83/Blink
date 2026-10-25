@@ -37,6 +37,20 @@ blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun
 
 [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [问题列表](Docs/Issues.md) · [BLEngine](../BLEngine/README.md)
 
+## C、C++ 与 Rust 集成
+
+blc 现可将一个具体 program 构建为 Windows x64 DLL，同时输出 C/C++ 的 .abi.h、MSVC 导入库 .lib 与 Rust 安全绑定 .rs。C++ 使用 RAII，Rust 使用切片、Result 与 Drop；两种宿主调用同一份 B 算法，可选择 CPU 多核或 Vulkan GPU。
+
+```powershell
+.\target\release\blc.exe build-dll `
+    sample\lessons\map.b `
+    target\interop\map.dll sample scale
+```
+
+DLL 内嵌已检查的 B IR 与既有执行框架，create 一次性准备目标代码／pipeline，消费者无需 Blink 源码或 Rust 工具链；当前构建 DLL 使用源码 SDK 中的 Rust/MSVC 工具链。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。原有 blanguage、blcompute Rust API 和资源所有权保持不变，Rust 可继续直接使用设备驻留与异步提交。
+
+完整 C、C++、Rust 示例、串行／并行实测及部署说明见 [sample/interop](sample/interop/README.md) 和 [原生集成](Docs/NativeInterop.md)。当前 DLL 数据 ABI 支持纯值 dataset 与 uniform，B 源码尚未提供任意 C++／Rust 外部函数导入语法；支持范围以集成文档为准。
+
 ## 开放 const 与具体入口
 
 函数、协作函数、program 和记录已支持 `const N:u32`，不再要求列出所有长度。普通数组、名义记录、固定 dataset 及纹理数组的静态形状可推导 N；具体入口通过 compile_entry 或 blc 的最后一个参数选择，例如 'run<uint3,37,11>'。实例沿原编译检查后直接生成原生代码，未使用的开放正文尚不做完整符号证明，详见 [语言规范](Docs/BLanguage.md#开放-u32-const静态形状推导与具体入口2026-10-25)。

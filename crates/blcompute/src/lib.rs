@@ -1,6 +1,7 @@
 //! 编译程序的设备执行、数据存储与生命周期所有者。
 mod bindings;
 pub mod cpu;
+pub mod ffi;
 mod texture;
 mod views;
 pub use texture::{Texture2D, TextureMip};

@@ -299,3 +299,9 @@ ValueParameter 以 None 表示开放 u32 参数、Some 表示原有限清单，�
 Execution按真实操作持有命令、上传暂存、构建输入与scratch；资源本体只持有构建完成点。最后引用退出时，实际原生存储交回其完成所有者，不让执行反向持有自己的公开资源对象。查询提交持有TLAS，TLAS持有真实BLAS。GPU实例构建消费整个GpuDataset，将页表、数据页和地址数组交给构建完成点；不借用可能提前退出的输入，也不下载矩阵。
 
 BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。纹理上传仍同步，多队列、refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
+
+## C/C++ 与 Rust 宿主的 DLL 边界（2026-10-25）
+
+blc 的 build-dll 将一个已检查、无外部前置条件的具体入口导出为 Windows x64 DLL，同时生成 C ABI 头文件、导入库与 Rust 安全包装器。B 前端、IR、源码输出和 ABI 布局生成属于 blanguage；实际数据复制、CPU／GPU 执行、完成等待与本次资源释放属于 blcompute::ffi，复用原生执行器。Rust 工具链链接既有 Rust 框架与 PE 导出，不替代自研 B 后端。DLL 内嵌已检查 IR，create 准备目标代码／pipeline。
+
+C++ 与 Rust 是并列宿主；Rust 原生 crate、类型及异步资源接口保持不变，不经 C ABI 中转。DLL run 同步完成本次纯值数据调用，返回前完成必要输出读回；宿主拥有数组，DLL 拥有自己的 handle，跨界不传递 C++ 对象、Rust Vec／String 或分配器所有权。view、纹理、AS 和外部 prefix 条件不伪装成裸值 ABI。完整接口、当前限制与部署见 [原生集成](NativeInterop.md)。

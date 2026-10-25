@@ -2455,3 +2455,13 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 ## 原生缓冲区与AS异步交接
 
 upload、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；纹理、多队列、refit和完整流送未据此完成。
+
+## Windows x64 DLL 与 C/C++／Rust 入口（2026-10-25）
+
+```powershell
+.\target\release\blc.exe build-dll sample\lessons\map.b target\interop\map.dll sample scale
+```
+
+build-dll 接收一个公开、具体且无 requires 前置条件的 program；泛型使用既有 compile_entry 的具体入口语法。输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
+
+C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy 释放 DLL 自己创建的 handle。run 为同步、包含数据交付的完整调用。C++ 使用 RAII，Rust 绑定提供独占切片、Result、Drop 与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 源码任意 extern 导入尚未实现，不能把 DLL 导出解释为可反向调用任意 C++／Rust 函数。详见 [原生集成](NativeInterop.md)。

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="1170">
+<rect x="0" y="0" width="760" height="1170" rx="12" fill="#f5f8fa" stroke="#f5f8fa" />
+<text x="28" y="58" font-size="42" fill="#147d86">分形计算 / 完整调用实测</text>
+<text x="28" y="112" font-size="29" fill="#263746">一百万像素 · 每像素最多 256 次迭代</text>
+<rect x="20" y="155" width="720" height="295" rx="12" fill="#ffffff" stroke="#d9e4eb" />
+<text x="40" y="199" font-size="33" fill="#147d86">C++ 宿主 / CPU 逐项一致</text>
+<text x="40" y="250" font-size="33" fill="#263746">串行   100.150 ms</text>
+<rect x="40" y="267" width="620" height="15" rx="12" fill="#7e8c97" stroke="#7e8c97" />
+<text x="40" y="326" font-size="33" fill="#263746">B CPU   7.202 ms</text>
+<rect x="40" y="343" width="44.58552171742386" height="15" rx="12" fill="#147d86" stroke="#147d86" />
+<text x="40" y="406" font-size="29" fill="#263746">加速 13.91 倍 · 准备 0.190 ms</text>
+<rect x="20" y="475" width="720" height="295" rx="12" fill="#ffffff" stroke="#d9e4eb" />
+<text x="40" y="519" font-size="33" fill="#147d86">Rust 宿主 / CPU 逐项一致</text>
+<text x="40" y="570" font-size="33" fill="#263746">串行   148.766 ms</text>
+<rect x="40" y="587" width="620" height="15" rx="12" fill="#7e8c97" stroke="#7e8c97" />
+<text x="40" y="646" font-size="33" fill="#263746">B CPU   7.339 ms</text>
+<rect x="40" y="663" width="30.58615543874273" height="15" rx="12" fill="#147d86" stroke="#147d86" />
+<text x="40" y="726" font-size="29" fill="#263746">加速 20.27 倍 · 准备 0.175 ms</text>
+<rect x="20" y="800" width="720" height="225" rx="12" fill="#ffffff" stroke="#d9e4eb" />
+<text x="40" y="845" font-size="32" fill="#147d86">GPU / 含上传、等待与输出读回</text>
+<text x="40" y="894" font-size="31" fill="#263746">C++：21.103 ms / 4.73 倍</text>
+<text x="40" y="940" font-size="31" fill="#263746">Rust：21.256 ms / 7.00 倍</text>
+<text x="40" y="993" font-size="28" fill="#657787">GPU 有边界像素差异，详见正文。</text>
+<text x="28" y="1080" font-size="27" fill="#657787">一次只计算一张图；对象准备时间单列。</text>
+<text x="28" y="1130" font-size="26" fill="#657787">9950X / 16 核 32 线程 · RX 9070 GRE</text>
+</svg>

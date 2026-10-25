@@ -1,0 +1,38 @@
+
+/* 0=CPU, 1=GPU. Return 0 on success, -1 on error (UTF-8).
+   Handle calls/destroy: serial, on its creating thread.
+   Data pointers: count valid records, writable ranges must not overlap.
+   run is synchronous, including GPU upload, completion and output download.
+   error may be NULL only when capacity=0. destroy accepts NULL. */
+typedef struct @PREFIX@_handle @PREFIX@_handle;
+#ifdef __cplusplus
+extern "C" {
+#endif
+__declspec(dllimport) int32_t @PREFIX@_create(uint32_t backend, @PREFIX@_handle **out, char *error, size_t capacity);
+__declspec(dllimport) int32_t @PREFIX@_run(@PREFIX@_handle *handle@COMMA@@C_PARAMS@, char *error, size_t capacity);
+__declspec(dllimport) void @PREFIX@_destroy(@PREFIX@_handle *handle);
+#ifdef __cplusplus
+}
+#include <stdexcept>
+namespace @PREFIX@ {
+enum class Backend : uint32_t { Cpu=0, Gpu=1 };
+class Program {
+    @PREFIX@_handle *handle_ = nullptr;
+public:
+    explicit Program(Backend backend) {
+        char error[4096];
+        if (@PREFIX@_create(uint32_t(backend), &handle_, error, sizeof(error)))
+            throw std::runtime_error(error);
+    }
+    ~Program() { @PREFIX@_destroy(handle_); }
+    Program(const Program&) = delete;
+    Program& operator=(const Program&) = delete;
+    void run(@C_PARAMS@) {
+        char error[4096];
+        if (@PREFIX@_run(handle_@COMMA@@ARGS@, error, sizeof(error)))
+            throw std::runtime_error(error);
+    }
+};
+}
+#endif
+#endif

@@ -12,20 +12,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.is_empty() {
         println!(
-            "Blink compiler\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]"
+            "Blink compiler\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nblc build-dll <module.b> <output.dll> [module-root] [program<args>]"
         );
         return Ok(());
     }
     let command = &args[0];
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
-    let root = if command == "build" {
-        args.get(3)
-    } else {
-        args.get(2)
-    }
-    .map(PathBuf::from)
-    .unwrap_or_else(|| path.parent().unwrap().into());
-    let selected = args.get(if command == "build" { 4 } else { 3 });
+    let has_output = matches!(command.as_str(), "build" | "build-dll");
+    let root = if has_output { args.get(3) } else { args.get(2) }
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.parent().unwrap().into());
+    let selected = args.get(if has_output { 4 } else { 3 });
     let compilation = if let Some(entry) = selected {
         blanguage::compile_entry(&path, &root, entry)?
     } else if command == "check" {
@@ -49,6 +46,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         print!("{}", p.describe());
     }
     match command.as_str() {
+        "build-dll" => {
+            if compilation.programs.len() != 1 || !compilation.templates.is_empty() {
+                return Err(
+                    "build-dll 需要一个无前置条件的具体 program；请在命令末尾选择入口".into(),
+                );
+            }
+            blanguage::dll::build(
+                &compilation.programs[0],
+                &PathBuf::from(args.get(2).ok_or("缺少 DLL 输出路径")?),
+            )?;
+        }
         "check" => {
             if programs.is_empty() {
                 println!("library {} checked", path.display());

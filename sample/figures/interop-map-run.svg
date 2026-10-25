@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="720">
+<rect x="0" y="0" width="760" height="720" rx="12" fill="#f5f8fa" stroke="#f5f8fa" />
+<text x="28" y="58" font-size="42" fill="#147d86">同一个 DLL / 三种宿主</text>
+<rect x="20" y="115" width="720" height="140" rx="12" fill="#ffffff" stroke="#d9e4eb" />
+<text x="40" y="158" font-size="33" fill="#147d86">C / map-c.exe</text>
+<text x="40" y="216" font-size="34" fill="#263746">3 5 7 9</text>
+<rect x="20" y="275" width="720" height="140" rx="12" fill="#ffffff" stroke="#d9e4eb" />
+<text x="40" y="318" font-size="33" fill="#147d86">C++ / map-cpp.exe</text>
+<text x="40" y="376" font-size="34" fill="#263746">3 5 7 9</text>
+<rect x="20" y="435" width="720" height="140" rx="12" fill="#ffffff" stroke="#d9e4eb" />
+<text x="40" y="478" font-size="33" fill="#147d86">Rust / map-rust.exe</text>
+<text x="40" y="536" font-size="34" fill="#263746">[3.0, 5.0, 7.0, 9.0]</text>
+<text x="28" y="629" font-size="28" fill="#263746">输入均为 [1,2,3,4]，由宿主创建。</text>
+<text x="28" y="681" font-size="27" fill="#657787">原生运行摘录 · 2026-10-25</text>
+</svg>

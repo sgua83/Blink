@@ -1,6 +1,7 @@
 //! BLanguage .h/.b 前端、类型和访问检查、并行 IR 与原生代码生成。
 pub mod ast;
 mod check;
+pub mod dll;
 mod generics;
 pub mod ir;
 mod lexer;
@@ -30,6 +31,42 @@ pub(crate) struct Definition {
 /// 仅由已完成模块／阶段证明的无前置条件程序构造；执行器不接受条件模板。
 #[derive(Clone, Debug)]
 pub struct ExecutableProgram(ir::Program);
+impl ExecutableProgram {
+    /// 恢复 blc 生成的已检查编译结果；供独立 DLL 内嵌程序使用。
+    ///
+    /// # Safety
+    /// 参数必须是本版本编译器对同一无前置条件入口生成的完整、未修改的结果。
+    /// 不得由宿主输入构造，不能把条件模板伪装成可执行程序。
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn from_compiler_output(
+        name: String,
+        target: Target,
+        buffers: Vec<ir::Buffer>,
+        accelerations: Vec<String>,
+        textures: Vec<ir::TextureBinding>,
+        uniforms: Vec<ir::Uniform>,
+        uniform_bytes: u32,
+        source_stages: usize,
+        stages: Vec<ir::Stage>,
+        prefix_requirements: Vec<ir::PrefixRelation>,
+        prefix_guarantees: Vec<ir::PrefixRelation>,
+    ) -> Self {
+        Self(ir::Program {
+            name,
+            target,
+            buffers,
+            accelerations,
+            textures,
+            uniforms,
+            uniform_bytes,
+            source_stages,
+            stages,
+            prefix_requirements,
+            prefix_guarantees,
+        })
+    }
+}
 impl std::ops::Deref for ExecutableProgram {
     type Target = ir::Program;
     fn deref(&self) -> &Self::Target {

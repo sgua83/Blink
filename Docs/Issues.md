@@ -1085,3 +1085,12 @@
 - AMD Radeon RX 9070 GRE的临时真实队列事件尚未释放时，两份BLAS、CPU／GPU TLAS、矩阵程序、查询及跨页数据程序均已返回pending。提前释放原BLAS／TLAS、查询输入、叶／父view与清零数据的原持有者，再放行设备，三个命中与一个未命中、实例／primitive／距离以及四个跨页float4读取均精确符合预期；16777219条记录的上传和清零各为两页。空TLAS完成接口及最后设备所有者实际释放也已确认。
 - 移除临时事件模块后，正式Release与workspace check通过。BLEngine十组实际4K／内部8K完整场景／材质帧与之前参考相同；原生高精度字形交互后完整图保持ed3e77ee4ac2a02ba7af9e367d721ee96e75978f4674812fcb1abf0e7dcf35aa。原始日志与整帧在E:/BLEngineMeasurements/AsyncResourcesDevelopment，不把逐字节相同当作最终玉石／真皮视觉验收。
 - 这是单设备、单队列的缓冲区和AS交接。上传暂存按每操作全部未完成页持有，尚无自动背压；纹理上传仍同步，显式下载／wait、当前draw及呈现和无后续所有者的最后析构仍可等待。多队列、refit、完整流送与完整引擎继续实现。本轮Saved/AsyncResourcesDevelopment临时源码、事件入口、消费者及编译产物共26个文件已清除，目录已不存在；不新增常驻测试。
+
+## 编译器 DLL 输出与 C/C++／Rust 宿主（2026-10-25）
+
+- blc 新增 build-dll，输出真正可链接的 Windows x64 PE DLL、.lib、.abi.h 与 .rs。DLL 内嵌已检查 IR 和原生执行框架；create 准备所选后端代码／pipeline。不是将原范围函数 .x64 文件改名，也不要求 C++ 消费者编写 Rust 桥接工程。
+- C、C++ 与 Rust 宿主均实际链接并调用同一个 map.dll，输入 [1,2,3,4] 得到 [3,5,7,9]。Rust 原生 CPU／GPU 示例均得到相同结果；既有 BLEngine Rust 消费者 cargo check --release 通过，原 API 签名保持。
+- 原生 ABI 核对包含 48 字节／16 对齐的记录、float3 字段位于字节 16、32 字节／16 对齐的 record uniform、bool 与固定数组。C++、Rust 布局相同，CPU／GPU 得到 position=(2,4,6)、tags=(7,8,9)，C++ 宿主的填充 0xaa 保持。错误 backend 和空数据指针真实返回 -1，随后合法调用仍执行正确；生命周期由同一 DLL 创建／释放。
+- 完整筛选／排序／扫描／归约流水的两端 DLL 调用得到 count=4、id=(4,2,0,6)、offset=(0,5,8,9)、total=16；自定义仿射集合得到 before=(1,0),(2,1),(4,3),(8,7)、total=(16,15)。没有绕开条件模板或复制另一套算法。
+- 一百万像素、每像素最多256次迭代的分形，完整 DLL CPU 调用在 C++ 宿主为7.202 ms，对照串行为100.150 ms（13.91倍）；Rust 宿主为7.339 ms，对照串行为148.766 ms（20.27倍）。两端 CPU 均逐项相同，checksum=60267434。GPU 完整调用分别21.103／21.256 ms（含上传、等待与输出读回），对应串行99.718／148.800 ms。GPU 有2428个边界像素迭代计数不同，最大差185，checksum=60268716，未称逐位等价。准备费用单列，不能据此宣称单次冷启动均有收益。
+- 原始输出、ABI结果和测量保存在 Saved/DllDevelopment；源 SDK 隔离使用 P4 CL12960 已提交的执行基础加本次改动。正式示例位于 sample/interop，数据／寿命及 B 反向调用的未实现范围见 NativeInterop.md。临时 ABI 宿主与输入已清除，不增加常驻测试或验证关卡。

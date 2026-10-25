@@ -1,0 +1,15 @@
+[package]
+name = "blink-native-interop"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+
+[[bin]]
+name = "blink-native-interop"
+path = "native.rs"
+
+[dependencies]
+blanguage = { path = "../../crates/blanguage" }
+blcompute = { path = "../../crates/blcompute" }

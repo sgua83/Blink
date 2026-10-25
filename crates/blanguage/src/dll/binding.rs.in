@@ -1,0 +1,40 @@
+@TYPES@
+use std::ffi::{c_char, c_void};
+#[link(name="@PREFIX@")]
+unsafe extern "C" {
+    fn @PREFIX@_create(backend:u32, out:*mut *mut c_void, error:*mut c_char, capacity:usize)->i32;
+    fn @PREFIX@_run(handle:*mut c_void@COMMA@@R_PARAMS@, error:*mut c_char, capacity:usize)->i32;
+    fn @PREFIX@_destroy(handle:*mut c_void);
+}
+#[derive(Clone, Copy)]
+pub enum Backend { Cpu=0, Gpu=1 }
+pub struct Program {
+    handle: *mut c_void,
+    thread_owner: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl Program {
+    pub fn new(backend: Backend) -> Result<Self, String> {
+        let mut handle = std::ptr::null_mut();
+        let mut error = [0i8; 4096];
+        let code = unsafe {
+            @PREFIX@_create(backend as u32, &mut handle, error.as_mut_ptr(), error.len())
+        };
+        status(code, &error)?;
+        Ok(Self { handle, thread_owner: std::marker::PhantomData })
+    }
+    pub fn run(&mut self@COMMA@@SAFE_PARAMS@) -> Result<(), String> {
+        let mut error = [0i8; 4096];
+        let code = unsafe {
+            @PREFIX@_run(self.handle@COMMA@@SAFE_ARGS@, error.as_mut_ptr(), error.len())
+        };
+        status(code, &error)
+    }
+}
+impl Drop for Program {
+    fn drop(&mut self) { unsafe { @PREFIX@_destroy(self.handle) } }
+}
+fn status(code: i32, error: &[i8]) -> Result<(), String> {
+    if code == 0 { Ok(()) } else {
+        Err(unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) }.to_str().unwrap().to_owned())
+    }
+}

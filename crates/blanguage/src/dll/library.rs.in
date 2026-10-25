@@ -1,0 +1,37 @@
+#![allow(non_camel_case_types, unused_imports, unused_mut)]
+use blanguage::{ExecutableProgram, ast::{Access, Target}, ir::*};
+use blcompute::ffi::{LibraryProgram, Buffer as FfiBuffer, status};
+use std::{num::NonZeroU32, ffi::{c_void, c_char}};
+@TYPES@
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn @PREFIX@_create(
+    backend: u32, out: *mut *mut LibraryProgram, error: *mut c_char, capacity: usize,
+) -> i32 {
+    let result = (|| {
+        if out.is_null() {
+            return Err(std::io::Error::other("null output handle").into());
+        }
+        unsafe { *out = std::ptr::null_mut(); }
+        let program = @PROGRAM@;
+        let handle = LibraryProgram::new(program, backend)?;
+        unsafe { *out = Box::into_raw(Box::new(handle)); }
+        Ok(())
+    })();
+    unsafe { status(result, error, capacity) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn @PREFIX@_run(
+    handle: *mut LibraryProgram@COMMA@@R_PARAMS@, error: *mut c_char, capacity: usize,
+) -> i32 {
+    let result = (|| {
+        let handle = unsafe { handle.as_mut() }
+            .ok_or_else(|| std::io::Error::other("null handle"))?;
+        @VALUES@
+        unsafe { handle.run(&[@BUFFERS@], &values) }
+    })();
+    unsafe { status(result, error, capacity) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn @PREFIX@_destroy(handle: *mut LibraryProgram) {
+    if !handle.is_null() { drop(unsafe { Box::from_raw(handle) }); }
+}
