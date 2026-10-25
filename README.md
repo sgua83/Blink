@@ -8,9 +8,9 @@ B 也寓意 **Base**。Blink 希望像 C 语言为上一个计算时代所做的
 
 独立 P4 主线 `//BLanguage/main`，client `BLanguage_Gua`，本机根 `B:\BLanguage`。首个消费者 BLEngine 位于 `B:\BLEngine`，通过两个自研 crate 的路径依赖使用语言与框架；本项目不依赖引擎。
 
-GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 Git 共用工作目录，P4 管理正式提交；`Tools/PublishGit.ps1` 在独立进程中读取已提交版本并发布到 GitHub，Git 提交中的 `P4-Change` 标明对应 changelist。发布过程不修改工作区源码或 P4 状态，构建产物与本地连接配置不进入 GitHub。Git 错误由发布任务单独报告。
+GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 Git 共用工作目录，P4 管理正式提交。每次 P4 提交成功后，由执行该提交的调用方通过 PowerShell 7 的 `Start-Process -WindowStyle Hidden` 启动一次 `Tools/PublishGit.ps1`，在独立进程中读取已提交版本并发布到 GitHub；Git 提交中的 `P4-Change` 标明对应 changelist。发布过程不修改工作区源码或 P4 状态，构建产物与本地连接配置不进入 GitHub。Git 失败只影响本次发布，不阻塞或回滚 P4，也不自动重试。
 
-本机已配置 Codex 后台任务，每 5 分钟检查一次 P4 新提交，需要电脑和 Codex 桌面应用保持运行。该任务独立于 P4 提交命令。
+没有 P4 提交就不启动发布进程。不使用定时任务、Codex heartbeat 或轮询；发布由提交方在成功提交后启动，不安装常驻监控进程。
 
 ## 构建与使用
 

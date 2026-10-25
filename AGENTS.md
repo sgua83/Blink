@@ -4,7 +4,7 @@
 - B 同时寓意 Base；语言愿景是成为 AI 超算时代的基础语言，像 C 语言对上一个计算时代的贡献一样。文档按这一定位说明方向，能力状态仍以实际实现与原生执行为准。
 - 自研原生并行计算语言、编译器与 CPU／GPU 执行框架。接口 .h、实现 .b；语言规则以 Docs/BLanguage.md 为准，职责以 Docs/Architecture.md 为准。
 - 使用 P4：//BLanguage/main，client BLanguage_Gua，根 B:\BLanguage。只提交当前任务相关源码和文档，保留其他未提交改动。
-- 同一目录的 Git 仅向 https://github.com/sgua83/Blink.git 发布 P4 已提交版本。P4 提交独立完成；后台自动化随后执行 Tools/PublishGit.ps1，按 P4 changelist 生成 Git 提交。Git 失败只影响发布，不阻塞或回滚 P4，不执行 P4 sync／revert／submit，也不修改工作区源码。未提交文件与本地暂存内容不纳入自动发布。
+- 同一目录的 Git 仅向 https://github.com/sgua83/Blink.git 发布 P4 已提交版本。每次本项目 P4 提交成功后，由执行该提交的调用方立即用 PowerShell 7 的 Start-Process -WindowStyle Hidden 异步运行一次 Tools/PublishGit.ps1，按 P4 changelist 生成 Git 提交；P4 提交失败或没有提交时不启动发布。不得创建定时任务、Codex heartbeat、轮询或自动重试。Git 失败只影响本次发布，不阻塞或回滚 P4，不执行 P4 sync／revert／submit，也不修改工作区源码。未提交文件与本地暂存内容不纳入发布。
 - 不引入第三方编译器、Shader 编译器、图形框架或并行运行时。Rust 标准库与 Windows／Vulkan／SPIR-V 标准接口属于必要平台设施。
 - crates/blanguage 拥有前端、并行 IR、优化与原生 x64／SPIR-V 后端；crates/blcompute 拥有真实存储、传输、执行与完成后的资源释放。
 - BLEngine 是独立消费者；场景、资产、渲染／材质／模拟算法及编辑器接入留在 B:\BLEngine。本项目不反向依赖引擎。
