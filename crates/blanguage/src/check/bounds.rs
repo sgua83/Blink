@@ -743,10 +743,14 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                 .map(|i| {
                     let left = a.component_range(i % a.regs.len());
                     let right = b.component_range(i % b.regs.len());
-                    if a.ty.components[0].0 == Scalar::I32 {
-                        signed_range(op, left, right)
-                    } else {
-                        unsigned_range(op, left, right)
+                    let signed = a.ty.components[0].0 == Scalar::I32;
+                    let bias = if signed { 0x8000_0000 } else { 0 };
+                    match op {
+                        "&" => bitwise_range(left, right, bias, |a, b| a & b),
+                        "|" => bitwise_range(left, right, bias, |a, b| a | b),
+                        "^" => bitwise_range(left, right, bias, |a, b| a ^ b),
+                        _ if signed => signed_range(op, left, right),
+                        _ => unsigned_range(op, left, right),
                     }
                 })
                 .collect()
@@ -850,6 +854,67 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     }
     proof
 }
+fn bitwise_range(
+    (al, ah): (u32, u32),
+    (bl, bh): (u32, u32),
+    bias: u32,
+    operation: fn(u32, u32) -> u32,
+) -> (u32, u32) {
+    if al > ah || bl > bh {
+        return (1, 0);
+    }
+    // 从高位向低位交付可达的输出前缀。四个松弛位分别表示两个输入已经
+    // 严格大于下界／小于上界；相同状态的后缀选择相同，只需保留前缀极值。
+    let mut prefixes = [None; 16];
+    prefixes[0] = Some((0u32, 0u32));
+    for bit in (0..u32::BITS).rev() {
+        let (al, ah, bl, bh) = (
+            (al >> bit) & 1,
+            (ah >> bit) & 1,
+            (bl >> bit) & 1,
+            (bh >> bit) & 1,
+        );
+        let sign = (bias >> bit) & 1;
+        let mut next: [Option<(u32, u32)>; 16] = [None; 16];
+        for (loose, prefix) in prefixes.into_iter().enumerate() {
+            let Some((lower, upper)) = prefix else {
+                continue;
+            };
+            for a in 0..=1 {
+                for b in 0..=1 {
+                    if (loose & 1 == 0 && a < al)
+                        || (loose & 2 == 0 && a > ah)
+                        || (loose & 4 == 0 && b < bl)
+                        || (loose & 8 == 0 && b > bh)
+                    {
+                        continue;
+                    }
+                    let state = loose
+                        | usize::from(a > al)
+                        | (usize::from(a < ah) << 1)
+                        | (usize::from(b > bl) << 2)
+                        | (usize::from(b < bh) << 3);
+                    // i32 的端点按翻转符号位排序；运算消费真实位，再回到相同顺序。
+                    let value = operation(a ^ sign, b ^ sign) ^ sign;
+                    let (lower, upper) = ((lower << 1) | value, (upper << 1) | value);
+                    next[state] = Some(match next[state] {
+                        Some((old_lower, old_upper)) => {
+                            (old_lower.min(lower), old_upper.max(upper))
+                        }
+                        None => (lower, upper),
+                    });
+                }
+            }
+        }
+        prefixes = next;
+    }
+    prefixes
+        .into_iter()
+        .flatten()
+        .fold((u32::MAX, 0), |(lower, upper), (a, b)| {
+            (lower.min(a), upper.max(b))
+        })
+}
 fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u32) {
     if al > ah || bl > bh {
         return (1, 0);
@@ -904,16 +969,6 @@ fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32,
         "*" => (al * bl, ah * bh),
         "/" if bl > 0 => (al / bh, ah / bl),
         "%" if bl > 0 => (0, ah.min(bh - 1)),
-        "&" => (0, ah.min(bh)),
-        "|" | "^" => {
-            let bits = (ah | bh) as u32;
-            let upper = if bits == 0 {
-                0
-            } else {
-                u32::MAX >> bits.leading_zeros()
-            };
-            (if op == "|" { al.max(bl) } else { 0 }, i128::from(upper))
-        }
         ">>" if bh < 32 => (al >> bh, ah >> bl),
         ">>" if bl == bh => (al >> (bl & 31), ah >> (bl & 31)),
         ">>" => (0, ah),
