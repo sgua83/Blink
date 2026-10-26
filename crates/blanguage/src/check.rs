@@ -970,12 +970,12 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
             && !matches!(p.access, Access::Read | Access::Atomic)
             && !(d.function.kind == FunctionKind::Value
                 && d.function.target == Target::Cpu
-                && p.access == Access::InOut)
+                && matches!(p.access, Access::Value | Access::InOut))
         {
             return d.source.fail(
                 p.span,
                 "B120",
-                "函数 dataset 参数支持 read／atomic，CPU 应用函数另可 inout 借用已有独占存储；write 的全域初始化尚未实现",
+                "函数 dataset 参数支持 read／atomic，CPU 应用函数另可按值取得所有权或 inout 借用；write 的全域初始化尚未实现",
             );
         }
         if p.ty.is_texture_resource() && p.access != Access::Read {
@@ -1086,9 +1086,9 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
         if p.ty.dataset {
             let binding = if d.function.kind == FunctionKind::Value
                 && d.function.target == Target::Cpu
-                && matches!(p.access, Access::Read | Access::InOut)
+                && matches!(p.access, Access::Read | Access::InOut | Access::Value)
             {
-                Binding::ApplicationData(b.application_parameter(data_index, p.access))
+                Binding::ApplicationData(b.application_parameter(data_index, p.access)?)
             } else {
                 b.view_access.insert(data_index, p.access);
                 Binding::Data(b.dataset_view(data_index))
@@ -2353,6 +2353,8 @@ impl<'a> Builder<'a> {
                 self.join_initialization(&a, before, after);
             }
             let branch_env = self.env.clone();
+            let branch_releases = self.application_join_releases(&branch_env, &environment);
+            let skipped_releases = self.application_join_releases(&environment, &branch_env);
             self.restore_expression_environment(environment, &modified);
             self.refine_bounds(&a, op != "&&");
             let skipped_env = std::mem::replace(&mut self.env, branch_env);
@@ -2369,6 +2371,9 @@ impl<'a> Builder<'a> {
             }
             self.control_uniform = control;
             let mut branch = std::mem::take(&mut self.code);
+            if a.constant.is_none() {
+                branch.extend(branch_releases);
+            }
             self.code = outer;
             if let Some(bits) = &a.constant {
                 return if (bits[0] != 0) == (op == "&&") {
@@ -2391,9 +2396,9 @@ impl<'a> Builder<'a> {
                 yes: if op == "&&" {
                     branch.clone()
                 } else {
-                    Vec::new()
+                    skipped_releases.clone()
                 },
-                no: if op == "||" { branch } else { Vec::new() },
+                no: if op == "||" { branch } else { skipped_releases },
             });
             let r = self.reg(Scalar::Bool);
             self.code.push(Inst::LoadLocal(r, slot));
@@ -2429,7 +2434,7 @@ impl<'a> Builder<'a> {
         self.control_uniform &= c.uniform;
         self.refine_bounds(&c, true);
         self.block(yes_body)?;
-        let yes = std::mem::take(&mut self.code);
+        let mut yes = std::mem::take(&mut self.code);
         let yes_init = self.initialized.clone();
         let yes_env = self.env.clone();
         let yes_flow = self.flow;
@@ -2439,7 +2444,7 @@ impl<'a> Builder<'a> {
         self.env = environment.clone();
         self.refine_bounds(&c, false);
         self.block(no_body)?;
-        let no = std::mem::take(&mut self.code);
+        let mut no = std::mem::take(&mut self.code);
         let no_init = std::mem::take(&mut self.initialized);
         let no_flow = self.flow;
         let no_reachable = no_flow.continues();
@@ -2451,6 +2456,8 @@ impl<'a> Builder<'a> {
             self.env = no_env;
             self.initialized = no_init;
         } else if yes_reachable && no_reachable {
+            yes.extend(self.application_join_releases(&yes_env, &no_env));
+            no.extend(self.application_join_releases(&no_env, &yes_env));
             self.env = yes_env;
             self.join_initialization(&c, yes_init, no_init);
             self.join_environment(&no_env, Some(&c));
@@ -2476,7 +2483,7 @@ impl<'a> Builder<'a> {
         let outer = std::mem::take(&mut self.code);
         let c = self.expr(condition)?;
         self.require_bool(&c, condition.span)?;
-        let condition_code = std::mem::take(&mut self.code);
+        let mut condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
             self.code = outer;
             self.code.extend(condition_code);
@@ -2504,8 +2511,8 @@ impl<'a> Builder<'a> {
         }
         self.iterators.pop();
         self.loop_depth -= 1;
-        let body = std::mem::take(&mut self.code);
-        let next = self.leave_loop(natural);
+        let mut body = std::mem::take(&mut self.code);
+        let next = self.leave_loop(natural, &mut condition_code, c.regs[0], &mut body);
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -2609,7 +2616,7 @@ impl<'a> Builder<'a> {
             constant: None,
         };
         let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
-        let condition = std::mem::take(&mut self.code);
+        let mut condition = std::mem::take(&mut self.code);
         self.env.insert(
             name.clone(),
             if let Some(domain) = data {
@@ -2660,9 +2667,9 @@ impl<'a> Builder<'a> {
         if body_reachable {
             self.advance_iterator(index, slot);
         }
-        let body = std::mem::take(&mut self.code);
+        let mut body = std::mem::take(&mut self.code);
         let natural = (!nonempty || body_flow.iterates()).then_some(natural);
-        let next = self.leave_loop(natural);
+        let next = self.leave_loop(natural, &mut condition, test.regs[0], &mut body);
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3313,6 +3320,7 @@ impl<'a> Builder<'a> {
     fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Value> {
         if let ExprKind::Name(name) = &base.kind {
             if let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned() {
+                self.application_available(&data, e.span)?;
                 return if field == "length" {
                     Ok(data.length)
                 } else {

@@ -111,7 +111,7 @@ CPU 应用的整份 inout 借用沿原函数静态内联和存储访问展开，
 
 编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break、continue 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
 
-带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；普通局部资源移动、拥有形参、其他资源种类返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
+带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；资源重赋值与聚合、其他资源种类返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
 
 ### CPU 应用函数返回拥有的 dataset
 
@@ -131,7 +131,31 @@ dataset<Item> create_input(u32 length) on cpu {
 
 函数的 CPU 执行位置与资源的存储位置分别处理：函数可以返回经显式 upload 的资源，调用方继续 run_gpu 或 download，实际完成点与有效域关系留在原资源所有者。多返回位置的存储位置不一致时，其合流位置未知；需要确定位置的访问或传输沿原 B266 规则拒绝，不自动迁移。普通 CPU program 的并行实例不能据此创建动态 dataset；应用帧之外的资源构造／调用仍报 B266。
 
-单独调用资源函数而不接收结果时，结果在该表达式结束后释放；GPU 物理存储仍保持到最后真实消费者完成。当前资源结果通过原静态函数展开交付，不是普通值、C ABI 资源句柄或独立函数调用 ABI。普通局部变量之间的所有权移动、拥有资源形参、资源聚合及其他资源种类返回仍待实现。正式示例见 `sample/applications/datasets.b`。
+单独调用资源函数而不接收结果时，结果在该表达式结束后释放；GPU 物理存储仍保持到最后真实消费者完成。当前资源结果通过原静态函数展开交付，不是普通值、C ABI 资源句柄或独立函数调用 ABI。局部初始化移动与拥有形参见下一节；资源重赋值、资源聚合及其他资源种类返回仍待实现。正式示例见 `sample/applications/datasets.b`。
+
+
+### CPU dataset 的局部移动与拥有形参
+
+普通 CPU 应用中的 `let target = source;` 或匹配的 `dataset<T[,N]> target = source;` 将拥有资源移到新局部绑定。原句柄、实际长度、固定形状、CPU／GPU 存储位置与有效域保持；没有载荷复制。移动后 source 不能再读取 length、索引、传输、借用或再次移动。已有普通值赋值规则保持；资源重赋值与移动后重新初始化原绑定尚未实现。
+
+普通 `on cpu` 函数中，未写 read／inout 的 `dataset<T[,N]> parameter` 是拥有形参。调用从左到右求值实参，并在对应实参处交接唯一所有权；允许传入拥有资源的名称、构造或资源函数结果。CPU 拥有形参要求当前 CPU 存储，元素类型与固定形状仍须匹配。函数能读写、转交、显式上传并返回这份资源，或者在结束时释放它；调用方的原绑定随交接失效。类型与 const 泛型、公开模块接口沿同一规则推导和绑定。
+
+```c
+dataset<Item> create_input(dataset<Item> storage) on cpu {
+    let input = storage;
+    run_cpu(seed(input));
+    return input;
+}
+// main 中：
+let allocated = dataset<Item>(length);
+let input = create_input(allocated);
+```
+
+read／inout dataset 仍只是借用，不能转成拥有形参、移动到局部或作为拥有资源返回。一次调用中的拥有交接不能与同一资源的其他拥有或借用实参重叠。后续实参中的嵌套调用若消费了此前捕获的整份／元素借用，调用同样不合法；没有运行时别名补救。`take(rows,rows.length)` 在第一个实参移动后也不能再读取 rows；可以先在普通局部保存长度快照。元素游标仍借用其所属存储，游标有效时不能消费整份 owner。
+
+if、短路与选择式只合流实际继续路径：一个继续分支已消费某绑定，另一个分支在合流前释放自己仍持有的那份资源，合流后原绑定不可用；已 return 的路径不影响其余继续路径。循环回边须保有入口各绑定的所有权与物理位置，不能在后续迭代重复消费同一入口资源。循环内新建资源可移动、消费并在 continue／seek 前清理；消费入口资源后 break／return 的路径可以退出。break 与条件失败的所有权差异直接在各真实退出边释放，不增加运行时拥有标记。所有释放仍由同一 Frame 与最后真实 CPU／GPU 消费者落实。
+
+移动后访问、借用逃逸、重叠交接和不合法循环回边报 B227；CPU／GPU 位置不符沿 B266 拒绝，元素和形状沿 B124／B167。当前仍是普通值 dataset 的静态函数展开，不代表资源聚合、其他资源种类、普通原生调用或完整内存模型已经完成。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 
@@ -909,7 +933,7 @@ program run(write dataset<State> states) on compute {
 
 cooperative void 函数可以在协作根块用 `cooperate name(tile,output...);` 直接作为语句调用；也可多层转交同块 tile 与私有输出位置。原 tile 集合仍在根块 let 声明中产生，发布／同步作用域保持，不把 write 位置变为跨 lane 共享存储。普通 void 函数不能隐藏屏障。归约／扫描的回调仍需普通返回值，不能用无返回值函数充当数值算子。
 
-静态内联沿用现有 Load／Store／LoadLocal／StoreLocal 与阶段读写集合，直接声明没有默认初始化指令，void 没有结果寄存器。函数写 Count 同样使后续旧 prefix 关系失效。CPU 应用整份已初始化 inout dataset 借用及普通函数提前返回已实现；write dataset 全域初始化、动态资源返回、cooperative 提前返回与设备自主任务仍未完成。
+静态内联沿用现有 Load／Store／LoadLocal／StoreLocal 与阶段读写集合，直接声明没有默认初始化指令，void 没有结果寄存器。函数写 Count 同样使后续旧 prefix 关系失效。CPU 应用整份已初始化 inout dataset 借用及普通函数提前返回已实现；write dataset 全域初始化、其他资源种类返回、cooperative 提前返回与设备自主任务仍未完成。
 
 ## 普通函数的提前返回
 

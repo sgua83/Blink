@@ -1,15 +1,16 @@
 module applications.datasets;
 import lessons.pipeline;
 
-dataset<Item> create_input(u32 length) on cpu {
-    dataset<Item> input = dataset<Item>(length);
+dataset<Item> create_input(dataset<Item> storage) on cpu {
+    let input = storage;
     run_cpu(seed(input));
     return input;
 }
 
 u32 main() on cpu {
     u32 size = 1000000;
-    let input = create_input(size);
+    let allocated = dataset<Item>(size);
+    let input = create_input(allocated);
     dataset<Item> selected = dataset<Item>(size);
     dataset<Item> ordered = dataset<Item>(size);
     dataset<Count, 1> count = dataset<Count>(1);

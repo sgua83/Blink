@@ -89,6 +89,8 @@ impl<'a> Builder<'a> {
                     Argument::Acceleration(*index)
                 } else if param.ty.is_texture_resource() {
                     Argument::Texture(self.texture_argument(arg)?)
+                } else if param.ty.dataset && param.access == Access::Value {
+                    Argument::ApplicationData(self.application_resource(arg, arg.span)?)
                 } else if param.ty.dataset {
                     let ExprKind::Name(name) = &arg.kind else {
                         return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
@@ -96,6 +98,7 @@ impl<'a> Builder<'a> {
                     match self.env.get(name) {
                         Some(Binding::Data(view)) => Argument::Dataset(view.clone()),
                         Some(Binding::ApplicationData(data)) => {
+                            self.application_available(data, arg.span)?;
                             Argument::ApplicationData(data.clone())
                         }
                         _ => return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称"),
@@ -112,11 +115,28 @@ impl<'a> Builder<'a> {
                 },
             );
         }
+        for (param, argument) in callee.function.params.iter().zip(&arguments) {
+            let handle = match argument {
+                Argument::ApplicationData(data) if param.access != Access::Value => {
+                    Some(data.handle)
+                }
+                Argument::Exclusive(place) | Argument::Atomic(place) => match place.storage() {
+                    Place::ApplicationElement { handle, .. } => Some(*handle),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(handle) = handle {
+                self.application_handle_available(handle, span)?;
+            }
+        }
         for (index, (param, argument)) in callee.function.params.iter().zip(&arguments).enumerate()
         {
             for (other, before) in callee.function.params.iter().zip(&arguments).take(index) {
                 if (matches!(param.access, Access::Write | Access::InOut)
-                    || matches!(other.access, Access::Write | Access::InOut))
+                    || matches!(other.access, Access::Write | Access::InOut)
+                    || (param.ty.dataset && param.access == Access::Value)
+                    || (other.ty.dataset && other.access == Access::Value))
                     && argument.overlaps(before)
                 {
                     return self.fail(
@@ -256,11 +276,11 @@ impl<'a> Builder<'a> {
                 (true, false, Argument::ApplicationData(mut data)) => {
                     self.application_cpu(&data, span)?;
                     self.require_same(&ty, &data.ty, span)?;
-                    if !matches!(param.access, Access::Read | Access::InOut) {
+                    if !matches!(param.access, Access::Read | Access::InOut | Access::Value) {
                         return self.fail(
                             span,
                             "B224",
-                            "CPU 应用函数按 read／inout 借用 dataset；原子与 write 全域借用尚未实现",
+                            "CPU 应用函数按值取得 dataset 所有权或按 read／inout 借用；原子与 write 全域借用尚未实现",
                         );
                     }
                     if param.access == Access::InOut && !data.writable {
@@ -277,8 +297,12 @@ impl<'a> Builder<'a> {
                     {
                         return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
                     }
-                    data.owned = false;
-                    data.writable = param.access == Access::InOut;
+                    data.ownership = if param.access == Access::Value {
+                        application::Ownership::Owned
+                    } else {
+                        application::Ownership::Borrowed
+                    };
+                    data.writable = matches!(param.access, Access::Value | Access::InOut);
                     Binding::ApplicationData(data)
                 }
                 (true, false, Argument::Dataset(view)) => {

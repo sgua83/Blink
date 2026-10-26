@@ -114,7 +114,7 @@ impl Builder<'_> {
                 Some(Returned::Value(value))
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
-                let mut data = self.application_owned_return(expr, span)?;
+                let mut data = self.application_resource(expr, span)?;
                 self.application_data_type(&mut data, &ty, count, span)?;
                 data.count = count;
                 Some(Returned::Dataset(data))

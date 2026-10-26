@@ -5,12 +5,18 @@ pub(super) struct Context {
     pub frame: Option<Value>,
     pub resources: crate::application::Resources,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Ownership {
+    Owned,
+    Borrowed,
+    Moved,
+}
 #[derive(Clone)]
 pub(super) struct Data {
     pub handle: Reg,
     pub ty: Ty,
     pub length: Value,
-    pub owned: bool,
+    pub ownership: Ownership,
     pub writable: bool,
     pub count: Option<u32>,
     pub residency: Option<Target>,
@@ -192,22 +198,29 @@ fn live_resources(body: &mut ValueCode, app: Context) -> Option<crate::applicati
 }
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
-    // 实际内联直接借用调用方的 ApplicationData，资源仍由原帧拥有。
-    pub(super) fn application_parameter(&mut self, binding: usize, access: Access) -> Data {
+    // 实际内联交接或借用调用方的 ApplicationData，物理资源仍由原帧拥有。
+    pub(super) fn application_parameter(&mut self, binding: usize, access: Access) -> Result<Data> {
+        if access == Access::Value {
+            self.application_frame(self.definition.function.span)?;
+        }
         let handle = self.reg(Scalar::U32);
         let view = self.dataset_view(binding);
         let mut length = self.data_length(&view);
         length.proof = bounds::Proof::capture(&length)
             .with_domains(Domains::from([IndexDomain::ApplicationLength(handle)]));
-        Data {
+        Ok(Data {
             handle,
             ty: self.program.buffers[binding].ty.clone(),
             length,
             count: self.program.buffers[binding].count,
-            owned: false,
-            writable: access == Access::InOut,
+            ownership: if access == Access::Value {
+                Ownership::Owned
+            } else {
+                Ownership::Borrowed
+            },
+            writable: matches!(access, Access::Value | Access::InOut),
             residency: Some(Target::Cpu),
-        }
+        })
     }
     fn application_frame(&mut self, span: Span) -> Result<Value> {
         if self.application.is_none() {
@@ -261,9 +274,9 @@ impl Builder<'_> {
             constant: None,
         }))
     }
-    pub(super) fn release_application_handle(&mut self, handle: Reg) {
+    fn application_release(&self, handle: Reg) -> Inst {
         let frame = self.application.as_ref().unwrap().frame.clone().unwrap();
-        self.code.push(runtime_call(
+        runtime_call(
             "release",
             vec![
                 argument(frame),
@@ -274,7 +287,58 @@ impl Builder<'_> {
             ],
             None,
             Vec::new(),
-        ));
+        )
+    }
+    pub(super) fn release_application_handle(&mut self, handle: Reg) {
+        self.code.push(self.application_release(handle));
+    }
+    pub(super) fn application_join_releases(
+        &self,
+        environment: &BTreeMap<String, Binding>,
+        other: &BTreeMap<String, Binding>,
+    ) -> Vec<Inst> {
+        environment
+            .iter()
+            .filter_map(|(name, binding)| {
+                if let (Binding::ApplicationData(data), Some(Binding::ApplicationData(after))) =
+                    (binding, other.get(name))
+                    && data.ownership == Ownership::Owned
+                    && after.ownership == Ownership::Moved
+                {
+                    Some(self.application_release(data.handle))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+    pub(super) fn application_available(&self, data: &Data, span: Span) -> Result<()> {
+        if data.ownership == Ownership::Moved {
+            return self.fail(
+                span,
+                "B227",
+                "dataset 所有权已经移动；原绑定不能再次访问或转移",
+            );
+        }
+        Ok(())
+    }
+    pub(super) fn application_handle_available(&self, handle: Reg, span: Span) -> Result<()> {
+        let mut matching = self
+            .env
+            .values()
+            .filter_map(|binding| match binding {
+                Binding::ApplicationData(data) if data.handle == handle => Some(data),
+                _ => None,
+            })
+            .peekable();
+        if matching.peek().is_some() && matching.all(|data| data.ownership == Ownership::Moved) {
+            return self.fail(
+                span,
+                "B227",
+                "dataset 在当前表达式中已移动，先前借用或元素位置不能继续消费",
+            );
+        }
+        Ok(())
     }
     pub(super) fn release_application_data(&mut self, keep: Option<&BTreeSet<String>>) {
         let handles: Vec<_> = self
@@ -282,7 +346,8 @@ impl Builder<'_> {
             .iter()
             .filter_map(|(name, binding)| match binding {
                 Binding::ApplicationData(data)
-                    if data.owned && !keep.is_some_and(|names| names.contains(name)) =>
+                    if data.ownership == Ownership::Owned
+                        && !keep.is_some_and(|names| names.contains(name)) =>
                 {
                     Some(data.handle)
                 }
@@ -296,6 +361,9 @@ impl Builder<'_> {
 
     pub(super) fn application_data_expression(&self, expr: &Expr) -> bool {
         let name = match &expr.kind {
+            ExprKind::Name(name) => {
+                return matches!(self.env.get(name), Some(Binding::ApplicationData(_)));
+            }
             ExprKind::Specialize(name, _, _) if name == "dataset" => return true,
             ExprKind::Call(name, _) | ExprKind::Specialize(name, _, _) => name,
             _ => return false,
@@ -359,6 +427,29 @@ impl Builder<'_> {
     }
     pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Data> {
         self.application_frame(span)?;
+        if let ExprKind::Name(name) = &expr.kind {
+            let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned() else {
+                return self.fail(span, "B224", "dataset 移动需要应用拥有的实际资源");
+            };
+            self.application_available(&data, span)?;
+            if data.ownership != Ownership::Owned {
+                return self.fail(span, "B227", "借用的 dataset 不能移动或作为拥有资源返回");
+            }
+            if self.env.values().any(|binding| {
+                let place = match binding {
+                    Binding::Owned(owner) => &owner.place,
+                    Binding::AtomicBorrow(place) => place,
+                    _ => return false,
+                };
+                matches!(place.storage(), Place::ApplicationElement { handle, .. } if *handle == data.handle)
+            }) {
+                return self.fail(span, "B227", "dataset 的元素仍被当前游标或位置借用，不能交接整份所有权");
+            }
+            if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
+                source.ownership = Ownership::Moved;
+            }
+            return Ok(data);
+        }
         let (name, explicit, args) = match &expr.kind {
             ExprKind::Specialize(name, _, _) if name == "dataset" => {
                 return self.create_application_dataset(expr, span);
@@ -393,22 +484,6 @@ impl Builder<'_> {
             return self.fail(span, "B224", "资源函数没有交付声明的 dataset 所有权");
         };
         Ok(data)
-    }
-    pub(super) fn application_owned_return(&mut self, expr: &Expr, span: Span) -> Result<Data> {
-        if let ExprKind::Name(name) = &expr.kind {
-            let Some(Binding::ApplicationData(data)) = self.env.get(name) else {
-                return self.fail(span, "B224", "dataset 返回需要函数拥有的实际资源");
-            };
-            if !data.owned {
-                return self.fail(span, "B227", "借用的 dataset 不能作为拥有资源返回");
-            }
-            let data = data.clone();
-            if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
-                source.owned = false;
-            }
-            return Ok(data);
-        }
-        self.application_resource(expr, span)
     }
     fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Data> {
         self.application_frame(span)?;
@@ -501,7 +576,7 @@ impl Builder<'_> {
             ty,
             length,
             count,
-            owned: true,
+            ownership: Ownership::Owned,
             writable: true,
             residency: Some(Target::Cpu),
         })
@@ -549,8 +624,13 @@ impl Builder<'_> {
         write: bool,
         span: Span,
     ) -> Result<[Reg; 2]> {
+        self.application_handle_available(handle, span)?;
         if let Some(data) = self.env.values().find_map(|binding| match binding {
-            Binding::ApplicationData(data) if data.handle == handle => Some(data),
+            Binding::ApplicationData(data)
+                if data.handle == handle && data.ownership != Ownership::Moved =>
+            {
+                Some(data)
+            }
             _ => None,
         }) {
             self.application_cpu(data, span)?;
@@ -681,6 +761,7 @@ impl Builder<'_> {
                 let Some(Binding::ApplicationData(value)) = self.env.get(name).cloned() else {
                     return self.fail(arg.span, "B224", "program 需要应用持有的动态 dataset");
                 };
+                self.application_available(&value, arg.span)?;
                 if parameter.access.writes() && !value.writable {
                     return self.fail(arg.span, "B227", "只读 dataset 不能交给可写 program 参数");
                 }
@@ -708,6 +789,9 @@ impl Builder<'_> {
                 actuals.push((value.ty.clone(), None));
                 uniforms.push(value);
             }
+        }
+        for value in &data {
+            self.application_handle_available(value.handle, span)?;
         }
         let types = actuals
             .iter()
@@ -767,6 +851,7 @@ impl Builder<'_> {
         self.application_call(&format!("run_{index}"), params, None, span)
     }
     pub(super) fn application_cpu(&self, data: &Data, span: Span) -> Result<()> {
+        self.application_available(data, span)?;
         if data.residency != Some(Target::Cpu) {
             return self.fail(
                 span,
@@ -792,7 +877,7 @@ impl Builder<'_> {
         let Some(Binding::ApplicationData(data)) = self.env.get(binding).cloned() else {
             return self.fail(span, "B266", "upload／download 需要应用拥有的 dataset");
         };
-        if !data.owned {
+        if data.ownership != Ownership::Owned {
             return self.fail(
                 span,
                 "B227",

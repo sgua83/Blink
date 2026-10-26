@@ -30,22 +30,30 @@ pub(super) struct LoopState {
 }
 pub(super) struct LoopContext {
     names: BTreeSet<String>,
-    residencies: BTreeMap<Reg, Option<Target>>,
+    resources: BTreeMap<String, (Option<Target>, application::Ownership)>,
     exits: Vec<LoopState>,
 }
 impl Builder<'_> {
     pub(super) fn check_application_loop(&self, span: Span) -> Result<()> {
-        let entry = &self.loop_contexts.last().unwrap().residencies;
-        for binding in self.env.values() {
+        let entry = &self.loop_contexts.last().unwrap().resources;
+        for (name, binding) in &self.env {
             if let Binding::ApplicationData(data) = binding
-                && let Some(residency) = entry.get(&data.handle)
-                && *residency != data.residency
+                && let Some((residency, ownership)) = entry.get(name)
             {
-                return self.fail(
-                    span,
-                    "B266",
-                    "循环继续前须归还入口相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输",
-                );
+                if *ownership != data.ownership {
+                    return self.fail(
+                        span,
+                        "B227",
+                        "循环继续前须保有入口的 dataset 所有权，不能在回边重复消费",
+                    );
+                }
+                if *residency != data.residency {
+                    return self.fail(
+                        span,
+                        "B266",
+                        "循环继续前须归还入口相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输",
+                    );
+                }
             }
         }
         Ok(())
@@ -72,6 +80,9 @@ impl Builder<'_> {
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
                 (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
+                    if a.ownership != b.ownership {
+                        a.ownership = application::Ownership::Moved;
+                    }
                     a.length.proof.join(&b.length.proof, 1, None);
                     if a.residency != b.residency {
                         a.residency = None;
@@ -85,10 +96,12 @@ impl Builder<'_> {
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
-            residencies: environment
-                .values()
-                .filter_map(|binding| match binding {
-                    Binding::ApplicationData(data) => Some((data.handle, data.residency)),
+            resources: environment
+                .iter()
+                .filter_map(|(name, binding)| match binding {
+                    Binding::ApplicationData(data) => {
+                        Some((name.clone(), (data.residency, data.ownership)))
+                    }
                     _ => None,
                 })
                 .collect(),
@@ -111,8 +124,16 @@ impl Builder<'_> {
         let state = self.loop_state();
         self.loop_contexts.last_mut().unwrap().exits.push(state);
     }
-    pub(super) fn leave_loop(&mut self, natural: Option<LoopState>) -> bool {
+    pub(super) fn leave_loop(
+        &mut self,
+        natural: Option<LoopState>,
+        condition: &mut Vec<Inst>,
+        test: Reg,
+        body: &mut Vec<Inst>,
+    ) -> bool {
         let mut context = self.loop_contexts.pop().unwrap();
+        let break_states: Vec<_> = context.exits.iter().map(|exit| exit.env.clone()).collect();
+        let natural_env = natural.as_ref().map(|exit| exit.env.clone());
         context.exits.extend(natural);
         let mut exits = context.exits.into_iter();
         let Some(first) = exits.next() else {
@@ -129,6 +150,38 @@ impl Builder<'_> {
                 .collect();
             self.join_environment(&exit.env, None);
         }
+        let releases: Vec<_> = break_states
+            .iter()
+            .map(|environment| self.application_join_releases(environment, &self.env))
+            .collect();
+        insert_break_releases(body, &mut releases.into_iter());
+        if let Some(environment) = natural_env {
+            let no = self.application_join_releases(&environment, &self.env);
+            if !no.is_empty() {
+                condition.push(Inst::If {
+                    condition: test,
+                    yes: Vec::new(),
+                    no,
+                });
+            }
+        }
         true
     }
+}
+// 每个 break 仍属于原循环；内层循环已沿自己的出口完成交接。
+fn insert_break_releases(code: &mut Vec<Inst>, releases: &mut impl Iterator<Item = Vec<Inst>>) {
+    let mut result = Vec::new();
+    for mut instruction in std::mem::take(code) {
+        match &mut instruction {
+            Inst::Break => result.extend(releases.next().unwrap()),
+            Inst::If { yes, no, .. } => {
+                insert_break_releases(yes, releases);
+                insert_break_releases(no, releases);
+            }
+            Inst::Scope(body) => insert_break_releases(body, releases),
+            _ => {}
+        }
+        result.push(instruction);
+    }
+    *code = result;
 }
