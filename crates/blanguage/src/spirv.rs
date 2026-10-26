@@ -512,6 +512,7 @@ impl Emitter<'_> {
                             UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => 126,
                             UnaryOp::LogicalNot => 168,
                             UnaryOp::BitNot => 200,
+                            UnaryOp::Bitcast => 124,
                         };
                         self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*a)]);
                     }

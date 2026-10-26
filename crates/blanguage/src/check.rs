@@ -1735,6 +1735,45 @@ impl<'a> Builder<'a> {
             }
         }
     }
+    fn bitcast(&mut self, name: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
+        if args.len() != 1 {
+            return self.fail(span, "B153", format!("{name} 需要一个参数"));
+        }
+        let (source, target) = if name == "bitcast_u32" {
+            (Scalar::F32, Scalar::U32)
+        } else {
+            (Scalar::U32, Scalar::F32)
+        };
+        let value = args.remove(0);
+        let n = value.regs.len();
+        if !(1..=4).contains(&n) || value.ty != Ty::vector(source, n) {
+            return self.fail(span, "B154", format!("{name} 需要对应的32位标量或向量"));
+        }
+        let ty = Ty::vector(target, n);
+        if let Some(bits) = value.constant {
+            let mut result = self.constant_value(ty, bits);
+            result.literal = false;
+            return Ok(result);
+        }
+        let mut regs = Vec::with_capacity(n);
+        for a in value.regs {
+            let dst = self.reg(target);
+            self.code.push(Inst::Unary {
+                dst,
+                op: UnaryOp::Bitcast,
+                a,
+            });
+            regs.push(dst);
+        }
+        Ok(Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty,
+            regs,
+            uniform: value.uniform,
+            constant: None,
+        })
+    }
     fn cast(&mut self, v: Value, s: Scalar) -> Value {
         let source = v.ty.components[0].0;
         let constant = v.constant.as_ref().and_then(|values| {
@@ -2157,6 +2196,9 @@ impl<'a> Builder<'a> {
                 .record_value(&TypeName::named(name), values, span)
                 .map(Some);
         }
+        if matches!(name, "bitcast_u32" | "bitcast_f32") {
+            return self.bitcast(name, values, span).map(Some);
+        }
         if matches!(
             name,
             "sqrt"
@@ -2252,6 +2294,7 @@ impl<'a> Builder<'a> {
                     UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => 0u32.wrapping_sub(*bits),
                     UnaryOp::LogicalNot => u32::from(*bits == 0),
                     UnaryOp::BitNot => !bits,
+                    UnaryOp::Bitcast => *bits,
                 })
                 .collect()
         });

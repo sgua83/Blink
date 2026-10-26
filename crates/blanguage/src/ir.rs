@@ -303,6 +303,7 @@ pub enum UnaryOp {
     UnsignedNegate,
     LogicalNot,
     BitNot,
+    Bitcast,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOp {

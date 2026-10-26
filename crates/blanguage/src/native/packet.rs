@@ -782,6 +782,7 @@ impl Emitter<'_> {
                         _ => 0,
                     };
                     match op {
+                        UnaryOp::Bitcast => self.packet_load(allocation, Register(*a), target),
                         UnaryOp::FloatNegate => {
                             self.packet_load(allocation, Register(*a), target);
                             self.packet_constant(1, 0x80000000);

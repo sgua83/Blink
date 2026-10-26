@@ -468,6 +468,7 @@ impl Emitter<'_> {
                             self.integer_unary(*dst, *a, 0x83, 6, Some(1))
                         }
                         UnaryOp::BitNot => self.integer_unary(*dst, *a, 0xf7, 2, None),
+                        UnaryOp::Bitcast => self.copy(self.location(*dst), self.location(*a)),
                     };
                 }
                 Inst::Binary { dst, op, a, b } => match op {
