@@ -2329,8 +2329,8 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn while_statement(&mut self, condition: &Expr, body: &[Stmt]) -> Result<()> {
-        self.invalidate_assigned(body);
-        self.invalidate_expression(condition);
+        self.invalidate_assigned(body)?;
+        self.invalidate_expression(condition)?;
         let environment = self.env.clone();
         let outer = std::mem::take(&mut self.code);
         let c = self.expr(condition)?;
@@ -2439,7 +2439,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         }
         let nonempty = begin.maximum() < limit.minimum();
-        self.invalidate_assigned(body);
+        self.invalidate_assigned(body)?;
         let environment = self.env.clone();
         self.enter_loop(&environment);
         let slot = self.locals.len();

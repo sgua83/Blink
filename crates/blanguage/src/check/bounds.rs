@@ -17,6 +17,23 @@ pub(super) struct Proof {
     domains: Vec<Domains>,
 }
 impl Proof {
+    pub(super) fn assign(&mut self, components: &[usize], width: usize, fresh: Self) {
+        if components.iter().copied().eq(0..width) {
+            *self = fresh;
+        } else {
+            self.origins.resize(width, None);
+            self.nonzero.resize(width, false);
+            self.ranges.resize(width, (0, u32::MAX));
+            self.domains.resize(width, Domains::new());
+            for (j, &i) in components.iter().enumerate() {
+                self.origins[i] = fresh.origins.get(j).copied().flatten();
+                self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
+                self.ranges[i] = fresh.range(j);
+                self.domains[i] = fresh.domains(j);
+            }
+            self.condition = None;
+        }
+    }
     pub(super) fn join(&mut self, other: &Self, width: usize, branch: Option<&Value>) {
         let condition = if self.condition.is_some() || other.condition.is_some() {
             let a = self.condition.as_deref().cloned().unwrap_or_default();
@@ -847,24 +864,6 @@ impl Builder<'_> {
         }
         self.env = environment;
     }
-    pub(super) fn invalidate_names(&mut self, names: &BTreeSet<String>) {
-        for name in effects::modified_owners(&self.env, names) {
-            if let Some(Binding::Owned(owner)) = self.env.get_mut(&name) {
-                owner.uniform = false;
-                owner.proof = Proof::default();
-            }
-        }
-    }
-    pub(super) fn invalidate_expression(&mut self, expr: &Expr) {
-        let mut names = BTreeSet::new();
-        expression_assignments(self.world, &self.definition, expr, &mut names);
-        self.invalidate_names(&names);
-    }
-    pub(super) fn invalidate_assigned(&mut self, body: &[Stmt]) {
-        let mut names = BTreeSet::new();
-        assigned_names(self.world, &self.definition, body, &mut names);
-        self.invalidate_names(&names);
-    }
     pub(super) fn refine_bounds(&mut self, value: &Value, truth: bool) {
         let condition = Condition::of(value);
         let Some(facts) = &condition.cases[usize::from(truth)] else {
@@ -924,9 +923,13 @@ impl Builder<'_> {
         if let Place::Indexed { base, .. } = place {
             for binding in self.env.values_mut() {
                 if let Binding::Owned(owner) = binding
-                    && base.components_in(&owner.place).is_some()
+                    && let Some(components) = base.components_in(&owner.place)
                 {
-                    owner.proof = Proof::default();
+                    owner.proof.assign(
+                        &components,
+                        owner.place.ty().components.len(),
+                        Proof::default(),
+                    );
                     owner.uniform = false;
                 }
             }
@@ -943,21 +946,6 @@ impl Builder<'_> {
         };
         owner.uniform = uniform;
         let width = owner.place.ty().components.len();
-        if components.iter().copied().eq(0..width) {
-            owner.proof = fresh;
-        } else {
-            let proof = &mut owner.proof;
-            proof.origins.resize(width, None);
-            proof.nonzero.resize(width, false);
-            proof.ranges.resize(width, (0, u32::MAX));
-            proof.domains.resize(width, Domains::new());
-            for (j, &i) in components.iter().enumerate() {
-                proof.origins[i] = fresh.origins.get(j).copied().flatten();
-                proof.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
-                proof.ranges[i] = fresh.range(j);
-                proof.domains[i] = fresh.domains(j);
-            }
-            proof.condition = None;
-        }
+        owner.proof.assign(&components, width, fresh);
     }
 }
