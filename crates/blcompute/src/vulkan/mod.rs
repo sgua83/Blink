@@ -716,10 +716,13 @@ impl Device {
     }
     fn read_payload(&self, data: &GpuDataset) -> Result<Vec<u32>> {
         let mut words = Vec::with_capacity(data.bytes() as usize / 4);
+        let Some(first) = data.pages.first() else {
+            return Ok(words);
+        };
+        let target = Allocation::new(self.inner.clone(), first.size, 2, 6)?;
         let mut remaining = data.bytes();
         for page in &data.pages {
             let bytes = remaining.min(page.size);
-            let target = Allocation::new(self.inner.clone(), bytes, 2, 6)?;
             let mut commands = Commands::new(self.inner.clone())?;
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let copy = VkBufferCopy {
@@ -748,7 +751,7 @@ impl Device {
                 dependencies,
             );
             execution.wait()?;
-            words.extend(target.read(bytes as usize / 4)?);
+            target.read(&mut words, bytes as usize / 4)?;
             remaining -= bytes;
         }
         Ok(words)
@@ -1055,10 +1058,15 @@ impl Allocation {
             (f.vkGetBufferMemoryRequirements)(device, out.buffer, &mut required);
             out.allocated_size = required.size;
             let memory = &out.inner.memory;
+            // 宿主读回在兼容的 coherent 类型中选择主机缓存；上传和设备分配保持原顺序。
+            let host_read = usage == 2 && flags & 2 != 0;
             let index = (0..memory.memoryTypeCount)
-                .find(|i| {
+                .filter(|i| {
                     required.memoryTypeBits & (1 << i) != 0
                         && memory.memoryTypes[*i as usize].propertyFlags & flags == flags
+                })
+                .min_by_key(|i| {
+                    host_read && memory.memoryTypes[*i as usize].propertyFlags & 8 == 0
                 })
                 .ok_or_else(|| error(format!("目标设备缺少内存类型 flags={flags:#x}")))?;
             let mut ai: VkMemoryAllocateInfo = zero();
@@ -1116,11 +1124,12 @@ impl Allocation {
         }
         Ok(())
     }
-    fn read(&self, count: usize) -> Result<Vec<u32>> {
+    fn read(&self, out: &mut Vec<u32>, count: usize) -> Result<()> {
         if !self.host_visible {
             return Err(error("只能映射 host-visible 数据传输内存"));
         }
-        let mut out = vec![0; count];
+        out.reserve(count);
+        let start = out.len();
         unsafe {
             let mut ptr = null_mut();
             check(
@@ -1134,10 +1143,12 @@ impl Allocation {
                 ),
                 "vkMapMemory(read)",
             )?;
-            std::ptr::copy_nonoverlapping(ptr.cast(), out.as_mut_ptr(), count);
+            // reserve 保留最终容量，完成的映射内容写入后才发布新长度。
+            std::ptr::copy_nonoverlapping(ptr.cast(), out.as_mut_ptr().add(start), count);
+            out.set_len(start + count);
             (self.inner.functions.vkUnmapMemory)(self.inner.owner.device, self.memory);
         }
-        Ok(out)
+        Ok(())
     }
 }
 impl Drop for Allocation {

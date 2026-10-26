@@ -229,6 +229,8 @@ x64 的编译期步长缩放由原 Emitter 统一生成：地址索引先按既�
 
 GPU 数据为独立设备内存。上传、读回和零初始化都是明确操作；多个时间步可以在一次提交中执行，中间数据留在 GPU。执行结束返回数据所有权，调用者决定何时读回。CPU 内存和 GPU 显存不假装是同一物理存储。
 
+同步读回由本次调用持有最终主机 Vec 与一个物理页大小的 staging，逐页完成实际设备复制后，把映射内容直接追加到最终存储；整次调用结束释放 staging，不创建逐页主机副本或跨调用缓存。原分配器依据 buffer 的实际兼容内存类型、必需属性及用途选择单一类型：供宿主读取的 host-visible TRANSFER_DST 在既有 coherent 类型中按 HOST_CACHED 属性选择，上传与设备分配沿原顺序。原队列依赖、transfer→host 屏障与 Fence 完成继续负责可见性和真实资源寿命，view 图的主机地址仍由下载后的实际所有者重建。缓存属性依据 [Vulkan 内存属性规范](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryPropertyFlagBits.html)；具体内存类型、吞吐与分配收益按实际驱动和消费者记录。
+
 设备能力由真实消费者提出。`Device::new` 提供通用计算，`Device::for_program` 按程序声明启用加速结构／光线查询，两者均不启用窗口或交换链扩展。需要呈现的消费者使用 `Device::with_presentation`；交换链自己加载并持有呈现入口，计算设备不持有这组入口。无窗口几何渲染也使用普通计算设备，不先创建窗口。它们仍使用同一套 Vulkan 数据、编译与提交实现。Device::swapchain 接收实际宽高，Swapchain 持有真实 extent，按 dataset 的物理页逐段复制完整 BGRA8 输出；页尾和页首不足一行时仍按图像实际偏移交付，不复制页表，也不依赖某个引擎产品的固定分辨率。
 
 Win32交换链创建与present读取实际窗口的DPI上下文，在该线程作用域执行WSI后归还原上下文，不改变进程全局DPI。窗口仍由调用者持有到Swapchain析构之后，独立GPU线程沿相同平台入口使用。Swapchain::present返回PresentStatus::Optimal／Suboptimal；两者均成功取得并提交图像，Suboptimal保留WSI原生状态，其余结果继续报告。依据为[微软线程DPI接口](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddpiawarenesscontext)和[Vulkan获取图像](https://docs.vulkan.org/refpages/latest/refpages/source/vkAcquireNextImageKHR.html)／[呈现规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html)；不以缩小输出或重试处理表面变化。动态extent／OutOfDate仍由后续实际窗口生命周期工作补齐。
