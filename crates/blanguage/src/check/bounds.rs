@@ -836,9 +836,10 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
                 } else {
                     match op {
                         UnaryOp::BitNot => (!upper, !lower),
-                        UnaryOp::SignedNegate if lower != 0 => {
-                            (0u32.wrapping_sub(upper), 0u32.wrapping_sub(lower))
-                        }
+                        UnaryOp::SignedNegate => signed_result_range((
+                            -i64::from((upper ^ 0x8000_0000) as i32),
+                            -i64::from((lower ^ 0x8000_0000) as i32),
+                        )),
                         _ => (0, u32::MAX),
                     }
                 }
@@ -872,10 +873,16 @@ fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u
         "<<" if bl == bh => (al * (1i64 << (bl & 31)), ah * (1i64 << (bl & 31))),
         _ => return (0, u32::MAX),
     };
-    // 原生整数仍按原规则回绕；只有整个结果区间未跨越 i32 边界时交付证明。
-    match (i32::try_from(range.0), i32::try_from(range.1)) {
-        (Ok(lower), Ok(upper)) => (lower as u32 ^ 0x8000_0000, upper as u32 ^ 0x8000_0000),
-        _ => (0, u32::MAX),
+    signed_result_range(range)
+}
+fn signed_result_range((lower, upper): (i64, i64)) -> (u32, u32) {
+    // 同一有符号周期内按模 32 位投影；跨断点的结果不能由单个有序区间表达。
+    let period = 1i64 << 32;
+    let bias = 1i64 << 31;
+    if (lower + bias).div_euclid(period) == (upper + bias).div_euclid(period) {
+        (lower as u32 ^ 0x8000_0000, upper as u32 ^ 0x8000_0000)
+    } else {
+        (0, u32::MAX)
     }
 }
 fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u32) {
