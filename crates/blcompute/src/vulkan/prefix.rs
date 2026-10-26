@@ -1,6 +1,6 @@
 //! 当前有效域的全部层级参数一次在设备产生，同一提交持有到最后一个消费者完成。
 use super::*;
-use blanguage::ir::{Operation, Scalar, Stage};
+use blanguage::ir::{ExecutionStage as Stage, Operation, Scalar};
 pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<GpuDataset> {
     let levels = if stage.selection.is_some() {
         blanguage::spirv::PREFIX_LEVELS + 1

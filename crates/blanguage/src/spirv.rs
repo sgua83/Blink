@@ -5,6 +5,8 @@ mod atomic;
 mod compact;
 mod custom_reduce;
 mod prefix;
+mod program;
+pub use program::{ProgramImage, ShaderCode, StageCode, compile_program};
 mod reduce;
 mod returns;
 mod scan;

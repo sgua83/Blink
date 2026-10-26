@@ -59,7 +59,7 @@ blc 现可将一个具体 program 构建为 Windows x64 DLL，同时输出 C/C++
     target\interop\map.dll sample scale
 ```
 
-DLL 内嵌已检查的 B IR 与既有执行框架，create 一次性准备目标代码／pipeline，消费者无需 Blink 源码或 Rust 工具链；当前构建 DLL 使用源码 SDK 中的 Rust/MSVC 工具链。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。原有 blanguage、blcompute Rust API 和资源所有权保持不变，Rust 可继续直接使用设备驻留与异步提交。
+DLL 携带构建时生成的 CPU 机器码、SPIR-V 和执行布局，create 只装载代码／pipeline，不再从内嵌值 IR 编译；消费者无需 Blink 源码或 Rust 工具链。构建 DLL 仍使用源码 SDK 中的 Rust/MSVC 工具链。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。Rust SDK 也可先生成 ProgramImage，再通过 CpuProgram::from_image 或 Device::load 装载；数据布局消费 ProgramInterface，实际存储、设备驻留、异步提交与资源释放仍由原所有者负责。B 应用动态数据及 CPU／GPU program 调用仍待 C-011。
 
 完整 C、C++、Rust 宿主示例、串行／并行实测及部署说明见 [sample/interop](sample/interop/README.md) 和 [原生集成](Docs/NativeInterop.md)。DLL 数据 ABI 支持纯值 dataset 与 uniform。B 主流程也可通过 `extern "C"` 调用 Windows x64 C++／Rust DLL，普通值及 read／write／inout 借用见 [sample/extern](sample/extern/README.md)；其他平台、裸指针值、回调和静态对象链接仍待实现。
 

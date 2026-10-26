@@ -2199,7 +2199,7 @@ program accumulate<const C:u32>(read dataset<Path,C> paths,
 
 CPU 原生范围函数按原索引读取 bool，只对选中元素执行正文。GPU 用既有分层扫描稳定生成私有 u32 原索引序列，再按设备选中数量间接启动正文；原前缀的六层启动参数与选中正文的第七项分开，避免覆盖仍在读取的参数。计数、索引、摘要与参数由当前 Commands／Execution／Completion 持有，不增加公开 Count、逆映射、资源服务或 CPU 计数读回。
 
-只有域、prefix 和 selection 相同，且通过原依赖分析的 map 才可能融合。谓词读进入阶段读集合，自身谓词的读写冲突保留必要边界。CPU 直线稀疏正文使用下述四元素 SSE2 计划，按原顺序收集四个选中索引，原索引的读取与独占写入逐 lane 寻址；未选中元素不执行正文，余下至多三个选中元素由同一原生范围函数完成。分支／循环等尚无批次表示的正文仍按原标量指令执行。GPU subgroup 按实际执行参与者协作，不授予额外写权限。稀疏 tile 的邻接与发布尚未定义，含 tile 的 where 阶段报 B250。`blc build` 额外导出 selection、tail、add、scatter 和 dispatch SPIR-V，DLL 内嵌同一 Selection IR。
+只有域、prefix 和 selection 相同，且通过原依赖分析的 map 才可能融合。谓词读进入阶段读集合，自身谓词的读写冲突保留必要边界。CPU 直线稀疏正文使用下述四元素 SSE2 计划，按原顺序收集四个选中索引，原索引的读取与独占写入逐 lane 寻址；未选中元素不执行正文，余下至多三个选中元素由同一原生范围函数完成。分支／循环等尚无批次表示的正文仍按原标量指令执行。GPU subgroup 按实际执行参与者协作，不授予额外写权限。稀疏 tile 的邻接与发布尚未定义，含 tile 的 where 阶段报 B250。`blc build` 额外导出 selection、tail、add、scatter 和 dispatch SPIR-V，DLL 携带同一选择域的最终代码与执行布局。
 
 ### 模块接口中的有效域
 
@@ -2610,6 +2610,27 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 ## 原生缓冲区与AS异步交接
 
 upload、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；纹理、多队列、refit和完整流送未据此完成。
+
+## 整程序编译映像与原生装载（2026-10-26）
+
+编译器拥有从已检查 IR 到全部机器入口的转换，执行器拥有代码装载、存储、提交和实际完成后的释放。`native::compile_program` 生成 CPU 的 `ProgramImage<P>`，`spirv::compile_program` 生成 GPU 的 `ProgramImage<P>`；P 保留 ExecutableProgram／TemplateProgram 的入口种类，但不保存原 IR 对象。映像包含最终代码及 ExecutionPlan，后者只保留接口、域关系、访问依赖、集合布局、工作组／共享存储和实际设备需求；自定义集合的投影、单位元、合并器及普通值指令均已编译，不进入执行布局。
+
+下例是 Rust SDK 对一个 on compute 入口的构建与装载，用于现有原生宿主：
+
+```rust
+let source = blanguage::compile_entry(path, module_root, "run")?.programs.remove(0);
+let cpu_image = blanguage::native::compile_program(source.clone())?;
+let gpu_image = blanguage::spirv::compile_program(source)?;
+let device = blcompute::vulkan::Device::for_program(gpu_image.program())?;
+let cpu = blcompute::cpu::CpuProgram::from_image(cpu_image)?;
+let gpu = device.load(gpu_image)?;
+```
+
+普通入口使用 CpuProgram::from_image／Device::load；条件入口使用 CpuTemplate::from_image／Device::load_template，仍须交付真实 DomainBindings。原 CpuProgram::new／Device::compile 及两个模板编译入口先调用同一整程序编译，再进入相同装载路径，不维护另一套代码生成。CPU 装载保留真实 DLL 重定位和代码消费者的模块所有权；GPU 装载按编译布局建立原管线与资源，设备能力错误直接报告。
+
+ProgramInterface 是编译结果与已装载程序共同提供的只读接口。Dataset 创建、不可变 view、域关系和引擎数据打包消费该接口；已装载 CPU／GPU 程序的 program() 返回 ExecutionPlan，不再为了旧类型签名保留整份 IR。编译器内部的 ir::Program 继续拥有指令和优化。生成 DLL 使用同版本编译器的可信 ProgramImage::from_compiler_output 恢复最终代码及其布局；该 unsafe 边界不能接收宿主输入、改写代码或伪造条件模板的前缀关系，原整份 IR 恢复入口已删除。
+
+blc build、build-dll 和 SDK 使用同一份程序映像；阶段导出沿用原文件名及布局描述，不重新挑选或发射辅助代码。值 IR 和集合函数正文在编译侧结束，物理数据及完成点仍由既有执行所有者持有。这里没有新增 B 应用的动态数据、CPU／GPU 调用语法或隐式数据传输；这些继续属于 C-011，不能用 Rust SDK 或算法 DLL 的完成代替。
 
 ## Windows x64 DLL 与 C/C++／Rust 入口（2026-10-25）
 

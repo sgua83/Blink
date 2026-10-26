@@ -15,8 +15,7 @@ use crate::views::Views;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ast::Target,
-    ir::{Program, Ty},
+    ir::{ExecutionPlan as Program, ProgramInterface, Ty},
 };
 use execution::{Completion, Execution, ExecutionResources, QueryPool};
 pub use memory::{MemoryBudget, MemoryHeapBudget};
@@ -222,33 +221,36 @@ impl Device {
     pub fn new() -> Result<Self> {
         Self::create(false, false, false, false, false, false)
     }
-    pub fn for_program(program: &Program) -> Result<Self> {
+    pub fn for_program(program: &dyn ProgramInterface) -> Result<Self> {
         Self::for_programs(std::iter::once(program))
     }
     /// 同一逻辑设备消费多个B程序，按实际程序集合声明能力，不在执行中重建设备。
-    pub fn for_programs<'a>(programs: impl IntoIterator<Item = &'a Program>) -> Result<Self> {
+    pub fn for_programs<'a, P: ProgramInterface + ?Sized + 'a>(
+        programs: impl IntoIterator<Item = &'a P>,
+    ) -> Result<Self> {
         Self::program_device(programs, false)
     }
-    pub fn with_presentation(program: &Program) -> Result<Self> {
+    pub fn with_presentation(program: &dyn ProgramInterface) -> Result<Self> {
         Self::with_presentation_programs(std::iter::once(program))
     }
-    pub fn with_presentation_programs<'a>(
-        programs: impl IntoIterator<Item = &'a Program>,
+    pub fn with_presentation_programs<'a, P: ProgramInterface + ?Sized + 'a>(
+        programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Self> {
         Self::program_device(programs, true)
     }
-    fn program_device<'a>(
-        programs: impl IntoIterator<Item = &'a Program>,
+    fn program_device<'a, P: ProgramInterface + ?Sized + 'a>(
+        programs: impl IntoIterator<Item = &'a P>,
         presentation: bool,
     ) -> Result<Self> {
         let (mut ray, mut sort, mut reconverge, mut textures, mut positions) =
             (false, false, false, false, false);
         for program in programs {
-            ray |= !program.accelerations().is_empty();
-            sort |= program.requires_sort();
-            reconverge |= program.requires_maximal_reconvergence();
-            textures |= program.requires_texture_indexing();
-            positions |= program.requires_ray_position_fetch();
+            let required = program.requirements();
+            ray |= required.ray_query;
+            sort |= required.sorting;
+            reconverge |= required.maximal_reconvergence;
+            textures |= required.texture_indexing;
+            positions |= required.position_fetch;
         }
         Self::create(ray, sort, presentation, reconverge, textures, positions)
     }
@@ -670,7 +672,12 @@ impl Device {
         self.upload_payload(&mut target, &data.words)?;
         Ok(target)
     }
-    pub fn zeroed(&self, program: &Program, binding: usize, count: u32) -> Result<GpuDataset> {
+    pub fn zeroed(
+        &self,
+        program: &dyn ProgramInterface,
+        binding: usize,
+        count: u32,
+    ) -> Result<GpuDataset> {
         let schema = program
             .buffers()
             .get(binding)
@@ -747,11 +754,23 @@ impl Device {
         Ok(words)
     }
     pub fn compile(&self, program: ExecutableProgram) -> Result<GpuProgram> {
-        GpuProgram::new(self.inner.clone(), (*program).clone())
+        self.load(blanguage::spirv::compile_program(program).map_err(error)?)
     }
     pub fn compile_template(&self, program: TemplateProgram) -> Result<GpuTemplate> {
+        self.load_template(blanguage::spirv::compile_program(program).map_err(error)?)
+    }
+    pub fn load(
+        &self,
+        image: blanguage::spirv::ProgramImage<ExecutableProgram>,
+    ) -> Result<GpuProgram> {
+        GpuProgram::from_image(self.inner.clone(), image)
+    }
+    pub fn load_template(
+        &self,
+        image: blanguage::spirv::ProgramImage<TemplateProgram>,
+    ) -> Result<GpuTemplate> {
         Ok(GpuTemplate {
-            code: GpuProgram::new(self.inner.clone(), (*program).clone())?,
+            code: GpuProgram::from_image(self.inner.clone(), image)?,
         })
     }
     /// 真实传输同时移动存储及其域关系；任意宿主转换不能签发有效域。
@@ -1489,10 +1508,8 @@ impl GpuProgram {
     pub fn program(&self) -> &Program {
         &self.compiled.program
     }
-    fn new(inner: Rc<Inner>, program: Program) -> Result<Self> {
-        if program.target() == Target::Cpu {
-            return Err(error("CPU 专属程序不能提交给 GPU"));
-        }
+    fn from_image<P>(inner: Rc<Inner>, image: blanguage::spirv::ProgramImage<P>) -> Result<Self> {
+        let (program, shaders) = image.into_parts();
         if program.requires_sort() && !inner.sorting {
             return Err(error(
                 "排序程序必须以 Device::for_program 声明 subgroup 能力",
@@ -1507,7 +1524,7 @@ impl GpuProgram {
         if program
             .stages()
             .iter()
-            .any(blanguage::ir::Stage::requires_float32_preserve)
+            .any(blanguage::ir::ExecutionStage::requires_float32_preserve)
             && !inner.float32_preserve
         {
             return Err(error(
@@ -1560,13 +1577,7 @@ impl GpuProgram {
             || program.stages().iter().any(|s| {
                 s.workgroup_width() > limits.maxComputeWorkGroupInvocations
                     || s.workgroup_width() > limits.maxComputeWorkGroupSize[0]
-                    || s.tile_bytes() > limits.maxComputeSharedMemorySize as u64
-                    || matches!(&s.operation, blanguage::ir::Operation::CustomReduce(r)
-                        if r.ty.components.len() as u64*64*4 > limits.maxComputeSharedMemorySize as u64)
-                    || matches!(&s.operation, blanguage::ir::Operation::CustomScan(r)
-                        if r.summary_words() as u64*64*4 > limits.maxComputeSharedMemorySize as u64)
-                    || matches!(&s.operation, blanguage::ir::Operation::CustomSegmentedReduce(r)
-                        if r.summary_words() as u64*64*4 > limits.maxComputeSharedMemorySize as u64)
+                    || s.shared_bytes() > limits.maxComputeSharedMemorySize as u64
             })
         {
             return Err(error("计算程序超出目标设备的资源能力"));
@@ -1625,120 +1636,29 @@ impl GpuProgram {
                     (f.vkCreatePipelineLayout)(device, &layout, null(), &mut out.layout),
                     "vkCreatePipelineLayout",
                 )?;
-                for i in 0..out.program.stages().len() {
-                    out.pipelines.push(pipeline(
-                        &out.inner,
-                        out.layout,
-                        &blanguage::spirv::emit(&out.program, i).map_err(error)?,
-                        false,
-                    )?);
-                    use blanguage::{
-                        ir::Operation,
-                        spirv::{Pass, emit_pass},
-                    };
-                    let tail = match out.program.stages()[i].operation {
-                        Operation::Reduce(_) | Operation::CustomReduce(_) => {
-                            Some(Pass::ReductionTail)
-                        }
-                        Operation::ScanExclusive(_)
-                        | Operation::CustomScan(_)
-                        | Operation::CustomSegmentedReduce(_)
-                        | Operation::Compact(_)
-                        | Operation::SegmentedReduce(_) => Some(Pass::ScanTail),
-                        Operation::Map if out.program.stages()[i].selection.is_some() => {
-                            Some(Pass::ScanTail)
-                        }
-                        Operation::Map | Operation::StableSort(_) => None,
-                    }
-                    .map(|pass| {
-                        pipeline(
-                            &out.inner,
-                            out.layout,
-                            &emit_pass(&out.program, i, pass).map_err(error)?,
-                            false,
-                        )
-                    })
-                    .transpose()?;
-                    out.tails.push(tail);
-                    let adds = if matches!(
-                        out.program.stages()[i].operation,
-                        Operation::ScanExclusive(_)
-                            | Operation::CustomScan(_)
-                            | Operation::CustomSegmentedReduce(_)
-                            | Operation::Compact(_)
-                            | Operation::SegmentedReduce(_)
-                    ) || out.program.stages()[i].selection.is_some()
-                    {
-                        Some(pipeline(
-                            &out.inner,
-                            out.layout,
-                            &emit_pass(&out.program, i, Pass::ScanAdd).map_err(error)?,
-                            false,
-                        )?)
-                    } else {
-                        None
-                    };
-                    out.scan_adds.push(adds);
-                    let finish = match &out.program.stages()[i].operation {
-                        Operation::Map if out.program.stages()[i].selection.is_some() => {
-                            Some(Pass::SelectionScatter)
-                        }
-                        Operation::Compact(_) => Some(Pass::CompactScatter),
-                        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
-                            Some(Pass::ScanRootAdd)
-                        }
-                        Operation::ScanExclusive(s) if s.needs_root_add(&out.program) => {
-                            Some(Pass::ScanRootAdd)
-                        }
-                        Operation::CustomScan(s) if s.needs_root_add(&out.program) => {
-                            Some(Pass::ScanRootAdd)
-                        }
-                        _ => None,
-                    }
-                    .map(|pass| {
-                        pipeline(
-                            &out.inner,
-                            out.layout,
-                            &emit_pass(&out.program, i, pass).map_err(error)?,
-                            false,
-                        )
-                    })
-                    .transpose()?;
-                    out.finishes.push(finish);
-                    let stage = &out.program.stages()[i];
-                    let dispatch_pass = if stage.selection.is_some() {
-                        Some(Pass::SelectionArguments)
-                    } else {
-                        stage.prefix.map(Pass::DispatchArguments)
-                    };
-                    let dispatch = dispatch_pass
-                        .map(|pass| {
-                            pipeline(
-                                &out.inner,
-                                out.layout,
-                                &emit_pass(&out.program, i, pass).map_err(error)?,
-                                false,
-                            )
-                        })
+                for shader in shaders {
+                    let make = |words: &[u32]| pipeline(&out.inner, out.layout, words, false);
+                    out.pipelines.push(make(&shader.main)?);
+                    out.tails
+                        .push(shader.tail.as_deref().map(make).transpose()?);
+                    out.scan_adds
+                        .push(shader.scan_add.as_deref().map(make).transpose()?);
+                    out.finishes.push(
+                        shader
+                            .finish
+                            .as_ref()
+                            .map(|(_, words)| make(words))
+                            .transpose()?,
+                    );
+                    out.dispatches
+                        .push(shader.dispatch.as_deref().map(make).transpose()?);
+                    out.selectors
+                        .push(shader.selector.as_deref().map(make).transpose()?);
+                    let sort = shader
+                        .sort
+                        .map(|s| sort::Pipelines::load(&out, s))
                         .transpose()?;
-                    out.dispatches.push(dispatch);
-                    out.selectors.push(if stage.selection.is_some() {
-                        Some(pipeline(
-                            &out.inner,
-                            out.layout,
-                            &emit_pass(&out.program, i, Pass::SelectionScan).map_err(error)?,
-                            false,
-                        )?)
-                    } else {
-                        None
-                    });
-                    let sorting =
-                        if let Operation::StableSort(s) = &out.program.stages()[i].operation {
-                            Some(sort::Pipelines::new(&out, i, s)?)
-                        } else {
-                            None
-                        };
-                    out.sorts.push(sorting);
+                    out.sorts.push(sort);
                 }
             }
         }
@@ -1913,7 +1833,7 @@ impl GpuProgram {
                     ty: ref reduction_ty,
                     ..
                 })
-                | blanguage::ir::Operation::CustomReduce(blanguage::ir::CustomReduction {
+                | blanguage::ir::Operation::CustomReduce(blanguage::ir::ReductionLayout {
                     ty: ref reduction_ty,
                     ..
                 }) => {
@@ -2296,7 +2216,7 @@ impl GpuProgram {
                                 ..
                             })
                             | blanguage::ir::Operation::CustomReduce(
-                                blanguage::ir::CustomReduction {
+                                blanguage::ir::ReductionLayout {
                                     fields: reduction, ..
                                 },
                             ) => {

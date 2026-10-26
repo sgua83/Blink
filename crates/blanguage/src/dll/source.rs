@@ -1,9 +1,17 @@
-//! 将已经检查的编译结果写成 Rust 构造表达式；DLL 不携带源码文件或文件系统加载器。
+//! 输出完整原生程序映像；运行时只装载机器码与调度布局，不携带值 IR。
+use crate::{
+    ExecutableProgram,
+    native::{
+        ContinuationCode, NativeCode, NativeIntrinsic, NativeSymbol, RangeResult, Relocation,
+        SortCode as NativeSortCode, StageCode as NativeStageCode,
+    },
+    spirv::{ShaderCode, StageCode as ShaderStageCode},
+};
 use crate::{
     ast::{Access, ExternalName, Target},
     ir::*,
 };
-use std::num::NonZeroU32;
+use std::collections::BTreeSet;
 
 pub(super) trait Source {
     fn source(&self) -> String;
@@ -13,25 +21,20 @@ macro_rules! number {
         fn source(&self) -> String { self.to_string() }
     })*};
 }
-number!(u32, usize, bool);
+number!(u8, u32, u64, usize, bool);
 impl Source for String {
     fn source(&self) -> String {
         format!("{self:?}.into()")
     }
 }
-impl Source for NonZeroU32 {
+impl Source for &'static str {
     fn source(&self) -> String {
-        format!("NonZeroU32::new({}).unwrap()", self.get())
+        format!("{self:?}")
     }
 }
 impl<T: Source> Source for Vec<T> {
     fn source(&self) -> String {
         format!("vec![{}]", list(self.iter()))
-    }
-}
-impl<T: Source, const N: usize> Source for [T; N] {
-    fn source(&self) -> String {
-        format!("[{}]", list(self.iter()))
     }
 }
 impl<T: Source> Source for Option<T> {
@@ -66,7 +69,7 @@ fn list<'a, T: Source + 'a>(values: impl Iterator<Item = &'a T>) -> String {
     values.map(Source::source).collect::<Vec<_>>().join(",")
 }
 macro_rules! record {
-    ($t:ident { $($f:ident),* $(,)? }) => {impl Source for $t {
+    ($t:ident $(<$g:ident>)? { $($f:ident),* $(,)? }) => {impl $(<$g: Source>)? Source for $t $(<$g>)? {
         fn source(&self) -> String {
             let Self { $($f),* } = self;
             format!(concat!(stringify!($t), "{{", $(stringify!($f), ":{},",)* "}}"), $($f.source()),*)
@@ -74,7 +77,7 @@ macro_rules! record {
     }};
 }
 macro_rules! variants {
-    ($t:ident { $($v:ident $(($($a:ident),*))? $({$($f:ident),*})?),* $(,)? }) => {impl Source for $t {
+    ($t:ident $(<$g:ident>)? { $($v:ident $(($($a:ident),*))? $({$($f:ident),*})?),* $(,)? }) => {impl $(<$g: Source>)? Source for $t $(<$g>)? {
         fn source(&self) -> String {
             match self { $(Self::$v $(($($a),*))? $({$($f),*})? => {
                 #[allow(unused_mut)]
@@ -119,72 +122,18 @@ record!(Buffer {
     count
 });
 record!(Uniform { name, ty, offset });
-variants!(Comparison {
-    Equal,
-    NotEqual,
-    Less,
-    Greater,
-    LessEqual,
-    GreaterEqual
-});
-variants!(UnaryOp {
-    FloatNegate,
-    SignedNegate,
-    UnsignedNegate,
-    LogicalNot,
-    BitNot
-});
-variants!(BinaryOp {FAdd, FSub, FMul, FDiv, IAdd, ISub, IMul, Compare(c), And, Or, Xor,
-    ShiftLeft, ShiftRightLogical, ShiftRightArithmetic});
-variants!(IntegerDivisor {Constant(n), Value(r)});
-variants!(IntegerDivisionResult {Quotient(r), Remainder(r), Both {quotient, remainder}});
-variants!(MathOp {
-    Abs,
-    Floor,
-    Sin,
-    Cos,
-    Pow,
-    Exp,
-    Log,
-    Exp2,
-    Log2,
-    Sqrt,
-    Min,
-    Max
-});
-variants!(IndexedSource {Data {binding, index}, View {address, index, stride}, Tile {tile, index}});
+impl<T: Source> Source for [T] {
+    fn source(&self) -> String {
+        format!("vec![{}]", list(self.iter()))
+    }
+}
+impl<T: Source> Source for BTreeSet<T> {
+    fn source(&self) -> String {
+        format!("BTreeSet::from([{}])", list(self.iter()))
+    }
+}
 record!(ExternalName { library, symbol });
-variants!(ExternalStorage{Local{base,len},Indexed(source)});
-record!(ExternalReference {
-    storage,
-    offset,
-    word
-});
-variants!(ExternalArgument{Value{ty,values},Reference{ty,access,address}});
-record!(ExternalCall {
-    function,
-    arguments,
-    result,
-    values
-});
-record!(TextureSource { binding, element });
 record!(TextureBinding { name, count });
-variants!(Inst {
-    TextureSample {result, texture, coordinate, lod}, TextureSize {result, texture, level},
-    TextureLevels {dst, texture}, TextureFetch {result, texture, coordinate, level},
-    LoadIndexed {dst, source, offset, word}, StoreIndexed {source, offset, word, value},
-    Atomic(a), Append(a), TileBarrier, TilePublish(p), TileCollective(c), TileLength(r), TileLane(r),
-    TileLoad {dst, tile, index, word}, Subgroup {dst, op, value, argument}, Print {dst, value}, ExternalCall(call),
-    ViewLoad {dst, address, index, stride, word},
-    RayQuery {scene, origin, direction, minimum, maximum, result},
-    Constant(r, s, v), Index(r), Uniform(r, offset), LoadLocal(r, slot), StoreLocal(slot, r),
-    LoadLocalIndexed {dst, base, len, index, word}, StoreLocalIndexed {base, len, index, word, value},
-    Load {dst, binding, index, word}, Store {binding, index, word, value},
-    Unary {dst, op, a}, Binary {dst, op, a, b}, IntegerDivide {result, src, divisor},
-    Cast {dst, src}, Math {dst, op, args}, Select {dst, condition, a, b},
-    If {condition, yes, no}, Loop {condition, test, body}, Break, Continue, Scope(code), Exit
-});
-variants!(RayResult {Any(r), Closest(r)});
 record!(Reduction {
     source,
     source_word,
@@ -225,48 +174,11 @@ record!(Sorting {
     keys,
     target
 });
-variants!(Operation {Map, Reduce(r), CustomReduce(r), CustomScan(s), CustomSegmentedReduce(r),
+variants!(Operation<R> {Map, Reduce(r), CustomReduce(r), CustomScan(s), CustomSegmentedReduce(r),
     SegmentedReduce(r), ScanExclusive(s), Compact(c), StableSort(s)});
 record!(PrefixCount { binding, word });
 record!(PrefixRelation { domain, count });
 record!(Selection { binding, word });
-record!(Stage {
-    domain,
-    prefix,
-    selection,
-    operation,
-    boundary_before,
-    registers,
-    locals,
-    code,
-    reads,
-    writes,
-    cross_access,
-    tiles
-});
-record!(Tile { source, ty, width });
-variants!(TileSource {Input {binding, word}, Published});
-record!(Publication { tile, values });
-record!(Append {
-    accepted,
-    target,
-    count,
-    values
-});
-variants!(TileOp {
-    ReduceSum,
-    ScanExclusiveSum,
-    ReduceMin,
-    ReduceMax,
-    ScanExclusiveMin,
-    ScanExclusiveMax,
-    ReduceBitAnd,
-    ReduceBitOr,
-    ReduceBitXor,
-    ScanExclusiveBitAnd,
-    ScanExclusiveBitOr,
-    ScanExclusiveBitXor
-});
 variants!(CollectiveOperator {
     Sum,
     Min,
@@ -275,98 +187,120 @@ variants!(CollectiveOperator {
     BitOr,
     BitXor
 });
-record!(TileCollective { op, tile, results });
-variants!(SubgroupOp {
-    Lane,
-    Size,
-    Id,
-    Elect,
-    Any,
-    All,
-    Count,
-    PrefixCount,
-    BroadcastFirst,
-    Shuffle,
-    ShuffleXor,
-    ShuffleUp,
-    ShuffleDown,
-    Sum,
-    ExclusiveSum,
-    Min,
-    Max,
-    BitAnd,
-    BitOr,
-    BitXor,
-    ExclusiveBitAnd,
-    ExclusiveBitOr,
-    ExclusiveBitXor
+record!(ReductionLayout { fields, ty });
+record!(CustomScan<R> { values, head_word });
+record!(CustomSegmentedReduction<R> { values, head_word, count });
+record!(SubgroupCapabilities {
+    basic,
+    vote,
+    arithmetic,
+    ballot,
+    shuffle,
+    shuffle_relative
 });
-variants!(MemoryOrder {
-    Relaxed,
-    Acquire,
-    Release,
-    AcquireRelease
+record!(DeviceRequirements {
+    ray_query,
+    sorting,
+    maximal_reconvergence,
+    texture_indexing,
+    position_fetch,
+    subgroup
 });
-variants!(AtomicOp {Load, Store(r), Add(r), Sub(r), Exchange(r), CompareExchange {expected, desired, failure},
-    Min(r), Max(r), And(r), Or(r), Xor(r)});
-record!(Atomic {
-    result,
+record!(ProgramLayout {
+    name,
     target,
-    index,
-    word,
-    offset,
-    op,
-    order
+    buffers,
+    accelerations,
+    textures,
+    uniforms,
+    uniform_bytes,
+    prefix_requirements,
+    prefix_guarantees,
+    requirements
 });
-variants!(AtomicTarget {Dataset(b), Tile(t)});
-record!(ValueCode {
-    registers,
-    locals,
-    code,
+record!(ExecutionStage {
+    domain,
+    prefix,
+    selection,
+    operation,
+    reads,
+    writes,
     inputs,
-    outputs
+    tile_scope,
+    width,
+    shared_bytes,
+    float32_preserve
 });
-record!(CustomReduction {
-    fields,
-    source_ty,
-    ty,
-    project,
-    identity,
-    combine
+record!(ExecutionPlan {
+    interface,
+    stages,
+    indirect_buffer,
+    auxiliary_buffers
 });
-record!(CustomScan { values, head_word });
-record!(CustomSegmentedReduction {
-    values,
-    head_word,
-    count
+variants!(NativeIntrinsic {
+    Sin,
+    Cos,
+    Floor,
+    Exp,
+    Exp2,
+    Log,
+    Log2,
+    Pow,
+    PrintU32,
+    PrintI32,
+    PrintBool
+});
+variants!(NativeSymbol { Intrinsic(i), External(name) });
+record!(Relocation { offset, target });
+record!(NativeCode {
+    bytes,
+    relocations,
+    stack_bytes
+});
+variants!(RangeResult { None, Values(n), UnsignedSum });
+variants!(ContinuationCode { ReductionTail(code), ScanAdd(code), CompactScatter(code), SegmentedFinish(code), Scan { prefix, apply, source, target } });
+record!(NativeSortCode {
+    source,
+    target,
+    initialize,
+    histogram,
+    scatter,
+    gather
+});
+variants!(NativeStageCode { Element { main, continuation, result }, Sort(code) });
+record!(ShaderCode { words, ranks });
+record!(ShaderStageCode {
+    main,
+    tail,
+    scan_add,
+    finish,
+    dispatch,
+    selector,
+    sort
 });
 
-pub(super) fn program(p: &Program) -> String {
-    let Program {
-        name,
-        target,
-        buffers,
-        accelerations,
-        textures,
-        uniforms,
-        uniform_bytes,
-        source_stages,
-        stages,
-        prefix_requirements,
-        prefix_guarantees,
-    } = p;
-    format!(
-        "unsafe {{ ExecutableProgram::from_compiler_output({},{},{},{},{},{},{},{},{},{},{}) }}",
-        name.source(),
-        target.source(),
-        buffers.source(),
-        accelerations.source(),
-        textures.source(),
-        uniforms.source(),
-        uniform_bytes.source(),
-        source_stages.source(),
-        stages.source(),
-        prefix_requirements.source(),
-        prefix_guarantees.source()
-    )
+pub(super) fn constructor(p: &ExecutableProgram) -> Result<String, Box<dyn std::error::Error>> {
+    let cpu = if p.target() == Target::Gpu {
+        "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
+    } else {
+        let image = crate::native::compile_program(p.clone()).map_err(std::io::Error::other)?;
+        format!(
+            "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output({}, {}) }})?)",
+            image.program().source(),
+            image.stages().source()
+        )
+    };
+    let gpu = if p.target() == Target::Cpu {
+        "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()
+    } else {
+        let image = crate::spirv::compile_program(p.clone()).map_err(std::io::Error::other)?;
+        format!(
+            "{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output({}, {}) }}; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}",
+            image.program().source(),
+            image.stages().source()
+        )
+    };
+    Ok(format!(
+        "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
+    ))
 }

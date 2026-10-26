@@ -37,27 +37,14 @@ impl Drop for Pipelines {
     }
 }
 impl Pipelines {
-    pub fn new(c: &Compiled, stage: usize, s: &blanguage::ir::Sorting) -> Result<Self> {
-        use blanguage::spirv::{Pass, emit_pass};
+    pub fn load(c: &Compiled, shaders: Vec<blanguage::spirv::ShaderCode>) -> Result<Self> {
         let mut out = Self {
             inner: c.inner.clone(),
             handles: Vec::new(),
         };
-        let passes = (0..8)
-            .map(|i| Pass::SortHistogram(i * 4))
-            .chain((0..8).map(|i| Pass::SortScatter(i * 4)))
-            .chain([
-                Pass::SortScan,
-                Pass::ScanTail,
-                Pass::ScanAdd,
-                Pass::SortGather,
-            ])
-            .chain((0..s.keys.len() - 1).map(Pass::SortKey));
-        for pass in passes {
-            let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
-            let words = emit_pass(&c.program, stage, pass).map_err(error)?;
+        for shader in shaders {
             out.handles
-                .push(pipeline(&c.inner, c.layout, &words, ranks)?);
+                .push(pipeline(&c.inner, c.layout, &shader.words, shader.ranks)?);
         }
         Ok(out)
     }

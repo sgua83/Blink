@@ -1,6 +1,6 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
-use blanguage::ir::{PrefixCount, PrefixRelation, Program};
+use blanguage::ir::{PrefixCount, PrefixRelation, ProgramInterface};
 
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
@@ -113,7 +113,7 @@ impl<D> DomainBindings<D> {
         }
         Ok(self.datasets.split_off(order.len()))
     }
-    pub(crate) fn require(&self, program: &Program) -> Result<()> {
+    pub(crate) fn require(&self, program: &dyn ProgramInterface) -> Result<()> {
         for relation in program.prefix_requirements() {
             if !self.domains.contains(relation) {
                 return Err(error(format!(
@@ -126,7 +126,7 @@ impl<D> DomainBindings<D> {
         }
         Ok(())
     }
-    pub(crate) fn completed(&mut self, program: &Program) {
+    pub(crate) fn completed(&mut self, program: &dyn ProgramInterface) {
         self.domains
             .retain(|r| !program.buffers()[r.count.binding].access.writes());
         self.domains.extend(program.prefix_guarantees());

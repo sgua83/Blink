@@ -1,6 +1,5 @@
 //! CPU 范围私有直方图、桶／范围前缀与稳定散写；大记录只在最后 gather 一次。
 use super::*;
-use blanguage::ir::{Program, Sorting};
 pub(super) struct Code {
     source: usize,
     target: usize,
@@ -10,20 +9,18 @@ pub(super) struct Code {
     gather: Executable,
 }
 impl Code {
-    pub fn new(program: &Program, s: &Sorting, initialize: Executable) -> Result<Self> {
-        let mut keys = vec![initialize];
-        for key in (0..s.keys.len() - 1).rev() {
-            keys.push(Executable::new(blanguage::native::emit_sort_key(
-                program, s, key,
-            ))?);
-        }
+    pub fn load(code: blanguage::native::SortCode) -> Result<Self> {
         Ok(Self {
-            source: s.source,
-            target: s.target,
-            initialize: keys,
-            histogram: Executable::new(blanguage::native::emit_sort_histogram(program))?,
-            scatter: Executable::new(blanguage::native::emit_sort_scatter(program))?,
-            gather: Executable::new(blanguage::native::emit_sort_gather(program, s))?,
+            source: code.source,
+            target: code.target,
+            initialize: code
+                .initialize
+                .into_iter()
+                .map(Executable::new)
+                .collect::<Result<_>>()?,
+            histogram: Executable::new(code.histogram)?,
+            scatter: Executable::new(code.scatter)?,
+            gather: Executable::new(code.gather)?,
         })
     }
 }

@@ -24,7 +24,9 @@ cargo build --workspace --release
 
 B 的源码接口 map.h 和生成的 C 头文件 map.abi.h 是不同文件。导出前缀来自 DLL 文件名，只接受 ASCII 字母、下划线和非首位数字；不同算法库应使用不同名字。生成接口与对应 DLL 一起发布，不混用其他版本的绑定。
 
-blc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检查，并将已检查 IR 内嵌到 DLL。create 按选择的后端准备原生 CPU 代码或 Vulkan pipeline；该一次性准备仍使用 Blink 自研 x64／SPIR-V 后端。Rust 工具链负责既有 Rust 执行框架、C ABI 和 PE DLL 链接，不负责翻译 B 算法。当前 build-dll 使用构建 blc 的源码 SDK 与 Rust/MSVC 工具链；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。
+blc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检查，并用自研后端生成全部 CPU 机器码与 SPIR-V，包括集合尾部、扫描传播、排序和间接启动入口。DLL 携带最终代码、重定位和执行布局，不内嵌值 IR。create 只装载 CPU 代码或 Vulkan pipeline；CPU 的机器码生成已移到构建时，GPU 驱动仍负责接收 SPIR-V 并建立实际管线。声明 on cpu／on gpu 的入口只生成对应后端，on compute 生成两端，无法编译的目标明确失败。
+
+Rust 工具链负责既有 Rust 执行框架、C ABI、静态代码数据与 PE DLL 链接，不负责翻译 B 算法。当前 build-dll 使用构建 blc 的源码 SDK 与 Rust/MSVC 工具链；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。C 导出及生成的 C++／Rust 调用签名保持。Rust SDK 新增整程序编译映像与装载入口，数据创建接口消费只读的 ProgramInterface；已装载程序的 program() 返回不含 IR 的 ExecutionPlan，直接标注旧 ir::Program 类型的数据布局消费者须改用该接口。
 
 部署机器需要 Windows x64 与 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。GPU 后端另需支持程序所需 Vulkan 能力的显卡驱动；不要求安装 Vulkan SDK。
 

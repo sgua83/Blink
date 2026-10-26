@@ -7,7 +7,7 @@ mod views;
 pub use texture::{Texture2D, TextureMip};
 pub mod vulkan;
 pub use bindings::DomainBindings;
-use blanguage::ir::{Program, Scalar, Ty};
+use blanguage::ir::{ExecutionPlan, ProgramInterface, Scalar, Ty};
 pub use views::{ReadDataset, ViewBinding};
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub(crate) fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
@@ -48,7 +48,11 @@ pub struct Dataset {
 }
 impl Dataset {
     /// 接收已经打包的记录存储，避免在上传前再次复制整个数据集。
-    pub fn from_words(program: &Program, binding: usize, words: Vec<u32>) -> Result<Self> {
+    pub fn from_words(
+        program: &dyn ProgramInterface,
+        binding: usize,
+        words: Vec<u32>,
+    ) -> Result<Self> {
         let b = program
             .buffers()
             .get(binding)
@@ -65,14 +69,19 @@ impl Dataset {
             views: views::Views::default(),
         })
     }
-    pub fn new(program: &Program, binding: usize, count: u32) -> Result<Self> {
+    pub fn new(program: &dyn ProgramInterface, binding: usize, count: u32) -> Result<Self> {
         let b = program
             .buffers()
             .get(binding)
             .ok_or_else(|| error("数据绑定编号越界"))?;
         Self::with_type(b.ty.clone(), count)
     }
-    pub fn for_view(program: &Program, binding: usize, field: &str, count: u32) -> Result<Self> {
+    pub fn for_view(
+        program: &dyn ProgramInterface,
+        binding: usize,
+        field: &str,
+        count: u32,
+    ) -> Result<Self> {
         let b = program
             .buffers()
             .get(binding)
@@ -103,7 +112,11 @@ impl Dataset {
         })
     }
     /// BLDATA v1 保存编译布局下的完整记录；类型来自程序，不从文件生成另一份 schema。
-    pub fn read_data(program: &Program, binding: usize, path: &std::path::Path) -> Result<Self> {
+    pub fn read_data(
+        program: &dyn ProgramInterface,
+        binding: usize,
+        path: &std::path::Path,
+    ) -> Result<Self> {
         use std::io::Read;
         let mut input = std::io::BufReader::new(std::fs::File::open(path)?);
         let mut header = [0u8; 24];
@@ -168,7 +181,7 @@ impl Dataset {
     }
 }
 pub(crate) fn arguments(
-    program: &Program,
+    program: &ExecutionPlan,
     shapes: &[(&Ty, u32, u32)],
     values: &[Value],
 ) -> Result<Vec<u32>> {

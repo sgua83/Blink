@@ -2,9 +2,8 @@ mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ast::Target,
-    ir::{CollectiveOperator, Program, Scalar},
-    native::{NativeIntrinsic, NativeSymbol},
+    ir::{CollectiveOperator, ExecutionPlan as Program, Scalar},
+    native::{NativeIntrinsic, NativeSymbol, RangeResult},
 };
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,21 +29,6 @@ unsafe extern "system" {
 }
 type Entry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32);
 type UnsignedEntry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32) -> u32;
-#[derive(Clone, Copy)]
-enum RangeResult {
-    None,
-    Values(usize),
-    UnsignedSum,
-}
-impl RangeResult {
-    fn words(self) -> usize {
-        match self {
-            Self::None => 0,
-            Self::Values(words) => words,
-            Self::UnsignedSum => 1,
-        }
-    }
-}
 type ValuesEntry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32, *mut u32);
 struct RangeWork {
     entry: *mut c_void,
@@ -346,8 +330,11 @@ impl CpuProgram {
         &self.code.program
     }
     pub fn new(program: ExecutableProgram) -> Result<Self> {
+        Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
+    }
+    pub fn from_image(image: blanguage::native::ProgramImage<ExecutableProgram>) -> Result<Self> {
         Ok(Self {
-            code: CpuCode::new((*program).clone())?,
+            code: CpuCode::from_image(image)?,
         })
     }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
@@ -364,8 +351,11 @@ impl CpuProgram {
 }
 impl CpuTemplate {
     pub fn new(program: TemplateProgram) -> Result<Self> {
+        Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
+    }
+    pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> Result<Self> {
         Ok(Self {
-            code: CpuCode::new((*program).clone())?,
+            code: CpuCode::from_image(image)?,
         })
     }
     pub fn run(
@@ -378,94 +368,46 @@ impl CpuTemplate {
     }
 }
 impl CpuCode {
-    fn new(program: Program) -> Result<Self> {
-        if program.target() == Target::Gpu {
-            return Err(error("GPU 专属程序不能提交给 CPU"));
-        }
+    fn from_image<P>(image: blanguage::native::ProgramImage<P>) -> Result<Self> {
+        use blanguage::native::{ContinuationCode, StageCode as ImageStage};
+        let (program, images) = image.into_parts();
         let workers = std::thread::available_parallelism()?.get();
-        let stages = program
-            .stages()
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let main = blanguage::native::emit(&program, i)
-                    .map_err(error)
-                    .and_then(Executable::new)?;
-                let (continuation, result) = match &s.operation {
-                    blanguage::ir::Operation::StableSort(s) => {
-                        return Ok(StageCode::Sort(sort::Code::new(&program, s, main)?));
-                    }
-                    blanguage::ir::Operation::CustomScan(r) => {
-                        let prefix = Executable::new(
-                            blanguage::native::emit_custom_scan_prefix(&program, i)
-                                .map_err(error)?,
-                        )?;
-                        let apply = Executable::new(
-                            blanguage::native::emit_custom_scan_add(&program, i).map_err(error)?,
-                        )?;
-                        return Ok(StageCode::Element {
-                            main,
-                            continuation: Some(Continuation::Scan {
-                                prefix,
-                                apply,
-                                source: r.values.fields.source,
-                                target: r.values.fields.target,
-                            }),
-                            result: RangeResult::Values(r.summary_words()),
-                        });
-                    }
-                    blanguage::ir::Operation::CustomSegmentedReduce(r) => {
-                        let prefix = Executable::new(
-                            blanguage::native::emit_custom_segmented_prefix(&program, i)
-                                .map_err(error)?,
-                        )?;
-                        let apply = Executable::new(
-                            blanguage::native::emit_custom_segmented_finish(&program, i)
-                                .map_err(error)?,
-                        )?;
-                        return Ok(StageCode::Element {
-                            main,
-                            continuation: Some(Continuation::Scan {
-                                prefix,
-                                apply,
-                                source: r.values.fields.source,
-                                target: r.values.fields.target,
-                            }),
-                            result: RangeResult::Values(r.summary_words()),
-                        });
-                    }
-                    blanguage::ir::Operation::ScanExclusive(r) => (
-                        Some(blanguage::native::emit_scan_add(&program, r)),
-                        RangeResult::Values(r.summary_words()),
-                    ),
-                    blanguage::ir::Operation::SegmentedReduce(r) => (
-                        Some(blanguage::native::emit_segmented_reduce_finish(&program, r)),
-                        RangeResult::Values(r.summary_words()),
-                    ),
-                    blanguage::ir::Operation::CustomReduce(r) => (
-                        Some(
-                            blanguage::native::emit_custom_reduce_tail(&program, i)
-                                .map_err(error)?,
-                        ),
-                        RangeResult::Values(r.ty.components.len()),
-                    ),
-                    blanguage::ir::Operation::Compact(c) => (
-                        Some(blanguage::native::emit_compact_scatter(&program, c)),
-                        RangeResult::UnsignedSum,
-                    ),
-                    blanguage::ir::Operation::Reduce(r) => {
-                        (None, RangeResult::Values(r.ty.components.len()))
-                    }
-                    blanguage::ir::Operation::Map => (None, RangeResult::None),
-                };
-                let continuation = continuation
-                    .map(Executable::new)
-                    .transpose()?
-                    .map(Continuation::Apply);
-                Ok(StageCode::Element {
-                    main,
-                    continuation,
-                    result,
+        let stages = images
+            .into_iter()
+            .map(|image| {
+                Ok(match image {
+                    ImageStage::Sort(code) => StageCode::Sort(sort::Code::load(code)?),
+                    ImageStage::Element {
+                        main,
+                        continuation,
+                        result,
+                    } => StageCode::Element {
+                        main: Executable::new(main)?,
+                        continuation: continuation
+                            .map(|continuation| -> Result<Continuation> {
+                                Ok(match continuation {
+                                    ContinuationCode::ReductionTail(code)
+                                    | ContinuationCode::ScanAdd(code)
+                                    | ContinuationCode::CompactScatter(code)
+                                    | ContinuationCode::SegmentedFinish(code) => {
+                                        Continuation::Apply(Executable::new(code)?)
+                                    }
+                                    ContinuationCode::Scan {
+                                        prefix,
+                                        apply,
+                                        source,
+                                        target,
+                                    } => Continuation::Scan {
+                                        prefix: Executable::new(prefix)?,
+                                        apply: Executable::new(apply)?,
+                                        source,
+                                        target,
+                                    },
+                                })
+                            })
+                            .transpose()?,
+                        result,
+                    },
                 })
             })
             .collect::<Result<Vec<_>>>()?;

@@ -18,27 +18,39 @@ pub struct CustomReduction {
     pub combine: ValueCode,
 }
 #[derive(Clone, Debug)]
-pub struct CustomScan {
-    pub values: CustomReduction,
+pub struct CustomScan<R = CustomReduction> {
+    pub values: R,
     pub head_word: Option<u32>,
 }
 #[derive(Clone, Debug)]
-pub struct CustomSegmentedReduction {
-    pub values: CustomReduction,
+pub struct CustomSegmentedReduction<R = CustomReduction> {
+    pub values: R,
     pub head_word: u32,
     pub count: PrefixCount,
 }
-impl CustomSegmentedReduction {
-    pub fn summary_words(&self) -> usize {
-        self.values.ty.components.len() + 2
+pub trait ReductionShape {
+    fn value_type(&self) -> &Ty;
+    fn fields(&self) -> &Reduction;
+}
+impl ReductionShape for CustomReduction {
+    fn value_type(&self) -> &Ty {
+        &self.ty
+    }
+    fn fields(&self) -> &Reduction {
+        &self.fields
     }
 }
-impl CustomScan {
+impl<R: ReductionShape> CustomSegmentedReduction<R> {
     pub fn summary_words(&self) -> usize {
-        self.values.ty.components.len() + usize::from(self.head_word.is_some())
+        self.values.value_type().components.len() + 2
     }
-    pub fn needs_root_add(&self, program: &Program) -> bool {
-        program.buffers[self.values.fields.source]
+}
+impl<R: ReductionShape> CustomScan<R> {
+    pub fn summary_words(&self) -> usize {
+        self.values.value_type().components.len() + usize::from(self.head_word.is_some())
+    }
+    pub fn needs_root_add(&self, program: &dyn ProgramInterface) -> bool {
+        program.buffers()[self.values.fields().source]
             .count
             .is_none_or(|n| n > 64)
     }

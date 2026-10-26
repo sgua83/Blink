@@ -7,7 +7,7 @@ use crate::{
 };
 use blanguage::{
     ExecutableProgram,
-    ir::{Program, Scalar},
+    ir::{ExecutionPlan as Program, Scalar},
 };
 use std::ffi::{c_char, c_void};
 

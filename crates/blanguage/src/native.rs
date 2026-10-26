@@ -11,6 +11,10 @@ mod external;
 mod integer;
 mod operands;
 mod packet;
+mod program;
+pub use program::{
+    ContinuationCode, ProgramImage, RangeResult, SortCode, StageCode, compile_program,
+};
 mod reduce;
 mod scan;
 mod segmented_reduce;

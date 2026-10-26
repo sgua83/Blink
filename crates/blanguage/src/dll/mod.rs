@@ -2,7 +2,7 @@
 mod source;
 use crate::{
     ExecutableProgram,
-    ir::{Program, Scalar, Ty, align_up},
+    ir::{Scalar, Ty, align_up},
 };
 use std::{fmt::Write, path::Path, process::Command};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -96,7 +96,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &Program, prefix: &str) -> Result<(String, String, String)> {
+fn generate(p: &ExecutableProgram, prefix: &str) -> Result<(String, String, String)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -183,7 +183,7 @@ fn generate(p: &Program, prefix: &str) -> Result<(String, String, String)> {
         ("@SAFE_PARAMS@", safe_r.join(", ")),
         ("@SAFE_ARGS@", safe_args.join(", ")),
         ("@TYPES@", types),
-        ("@PROGRAM@", source::program(p)),
+        ("@CREATE@", source::constructor(p)?),
         ("@VALUES@", values),
         ("@BUFFERS@", buffers.join(", ")),
     ];
@@ -201,7 +201,7 @@ fn generate(p: &Program, prefix: &str) -> Result<(String, String, String)> {
 }
 
 /// 构建一个具体、无前置条件的入口；输出 DLL、import lib、.abi.h、.rs。
-/// B 前端在此处完成检查；DLL 内嵌已检查的 IR，create 准备原生机器码／GPU pipeline。
+/// B 前端与两后端在构建时生成完整原生入口；create 仅装载机器码／GPU pipeline。
 /// Rust 工具链只负责既有 Rust 执行框架、导出 ABI 与 PE 链接，不编译 B 算法。
 pub fn build(program: &ExecutableProgram, output: &Path) -> Result<()> {
     if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {

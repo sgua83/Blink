@@ -499,7 +499,7 @@ impl Device {
     /// 原生尾部、页内地址及 BLAS 引用随唯一物理存储转移，不暴露为 B 字段。
     pub fn instance_data(
         &self,
-        program: &Program,
+        program: &dyn ProgramInterface,
         binding: usize,
         models: Vec<BottomLevel>,
     ) -> Result<GpuDataset> {

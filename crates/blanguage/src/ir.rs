@@ -2,6 +2,11 @@ use crate::ast::{Access, Target};
 use std::num::NonZeroU32;
 mod external;
 pub use external::{ExternalArgument, ExternalCall, ExternalReference, ExternalStorage};
+mod execution;
+pub use execution::{
+    DeviceRequirements, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
+    ReductionLayout,
+};
 mod atomic;
 pub use atomic::{Atomic, AtomicOp, AtomicTarget, MemoryOrder};
 mod custom_reduce;
@@ -720,10 +725,10 @@ impl Scan {
             head_word: None,
         }
     }
-    pub fn needs_root_add(&self, program: &Program) -> bool {
+    pub fn needs_root_add(&self, program: &dyn ProgramInterface) -> bool {
         self.head_word.is_some()
             || self.values.target_word != 0
-            || program.buffers[self.values.target].stride != self.ty.components.len() as u32 * 4
+            || program.buffers()[self.values.target].stride != self.ty.components.len() as u32 * 4
     }
 }
 #[derive(Clone, Debug)]
@@ -763,12 +768,12 @@ pub struct Sorting {
     pub target: usize,
 }
 #[derive(Clone, Debug)]
-pub enum Operation {
+pub enum Operation<R = CustomReduction> {
     Map,
     Reduce(ReductionSpec),
-    CustomReduce(CustomReduction),
-    CustomScan(CustomScan),
-    CustomSegmentedReduce(CustomSegmentedReduction),
+    CustomReduce(R),
+    CustomScan(CustomScan<R>),
+    CustomSegmentedReduce(CustomSegmentedReduction<R>),
     SegmentedReduce(SegmentedReduction),
     ScanExclusive(Scan),
     Compact(Compaction),
