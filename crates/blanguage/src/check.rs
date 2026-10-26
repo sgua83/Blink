@@ -2199,6 +2199,11 @@ impl<'a> Builder<'a> {
             self.require_bool(&a, span)?;
             let outer = std::mem::take(&mut self.code);
             let environment = self.env.clone();
+            let effects = (
+                self.reads.clone(),
+                self.writes.clone(),
+                self.cross_access.clone(),
+            );
             let before = self.initialized.clone();
             let control = self.control_uniform;
             self.control_uniform &= a.uniform;
@@ -2211,8 +2216,21 @@ impl<'a> Builder<'a> {
             } else {
                 self.join_initialization(&a, before, after);
             }
+            let branch_env = self.env.clone();
             self.restore_expression_environment(environment, &modified);
-            self.invalidate_names(&modified);
+            self.refine_bounds(&a, op != "&&");
+            let skipped_env = std::mem::replace(&mut self.env, branch_env);
+            if let Some(bits) = &a.constant {
+                if (bits[0] != 0) != (op == "&&") {
+                    self.env = skipped_env;
+                    (self.reads, self.writes, self.cross_access) = effects;
+                }
+            } else if op == "&&" {
+                self.join_environment(&skipped_env, Some(&a));
+            } else {
+                let branch_env = std::mem::replace(&mut self.env, skipped_env);
+                self.join_environment(&branch_env, Some(&a));
+            }
             self.control_uniform = control;
             let mut branch = std::mem::take(&mut self.code);
             self.code = outer;

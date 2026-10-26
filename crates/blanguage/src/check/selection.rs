@@ -13,25 +13,44 @@ impl Builder<'_> {
         let outer = std::mem::take(&mut self.code);
         let environment = self.env.clone();
         let initialized = self.initialized.clone();
+        let effects = (
+            self.reads.clone(),
+            self.writes.clone(),
+            self.cross_access.clone(),
+        );
         let mut yes_modified = BTreeSet::new();
-        let mut no_modified = BTreeSet::new();
         expression_assignments(self.world, &self.definition, yes, &mut yes_modified);
-        expression_assignments(self.world, &self.definition, no, &mut no_modified);
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&c, true);
         let a = self.expr(yes)?;
+        let yes_env = self.env.clone();
+        let yes_effects = (
+            std::mem::replace(&mut self.reads, effects.0),
+            std::mem::replace(&mut self.writes, effects.1),
+            std::mem::replace(&mut self.cross_access, effects.2),
+        );
         let yes_init = std::mem::replace(&mut self.initialized, initialized);
         let mut yes = std::mem::take(&mut self.code);
-        self.restore_expression_environment(environment.clone(), &yes_modified);
+        self.restore_expression_environment(environment, &yes_modified);
         self.refine_bounds(&c, false);
         let b = self.expr(no)?;
         let no_init = std::mem::take(&mut self.initialized);
         self.join_initialization(&c, yes_init, no_init);
         let mut no = std::mem::take(&mut self.code);
-        self.restore_expression_environment(environment, &no_modified);
-        yes_modified.extend(no_modified);
-        self.invalidate_names(&yes_modified);
+        let no_env = std::mem::replace(&mut self.env, yes_env);
+        if let Some(bits) = &c.constant {
+            if bits[0] != 0 {
+                (self.reads, self.writes, self.cross_access) = yes_effects;
+            } else {
+                self.env = no_env;
+            }
+        } else {
+            self.join_environment(&no_env, Some(&c));
+            self.reads.extend(yes_effects.0);
+            self.writes.extend(yes_effects.1);
+            self.cross_access.extend(yes_effects.2);
+        }
         self.control_uniform = control;
         self.code = outer;
         self.require_same(&a.ty, &b.ty, span)?;
