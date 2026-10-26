@@ -147,7 +147,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 words.iter().flat_map(|w| w.to_le_bytes()).collect();
                             std::fs::write(out.join(format!("{stem}.{i}.{name}.spv")), bytes)?;
                         }
-                        if matches!(p.stages()[i].operation, Operation::StableSort(_)) {
+                        if let Operation::StableSort(s) = &p.stages()[i].operation {
+                            for key in 0..s.keys.len() - 1 {
+                                let words = emit_pass(p, i, Pass::SortKey(key))
+                                    .map_err(std::io::Error::other)?;
+                                let bytes: Vec<_> =
+                                    words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                                std::fs::write(
+                                    out.join(format!("{stem}.{i}.key-{key}.spv")),
+                                    bytes,
+                                )?;
+                            }
                             for shift in (0..32).step_by(4) {
                                 for (name, pass) in [
                                     ("histogram", Pass::SortHistogram(shift)),
@@ -250,6 +260,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             )?;
                         }
                         if let blanguage::ir::Operation::StableSort(s) = &p.stages()[i].operation {
+                            for key in 0..s.keys.len() - 1 {
+                                std::fs::write(
+                                    out.join(format!("{stem}.{i}.key-{key}.x64")),
+                                    blanguage::native::emit_sort_key(p, s, key).bytes,
+                                )?;
+                            }
                             for (name, code) in [
                                 ("histogram", blanguage::native::emit_sort_histogram(p)),
                                 ("scatter", blanguage::native::emit_sort_scatter(p)),

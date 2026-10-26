@@ -4,17 +4,23 @@ use blanguage::ir::{Program, Sorting};
 pub(super) struct Code {
     source: usize,
     target: usize,
-    initialize: Executable,
+    initialize: Vec<Executable>,
     histogram: Executable,
     scatter: Executable,
     gather: Executable,
 }
 impl Code {
     pub fn new(program: &Program, s: &Sorting, initialize: Executable) -> Result<Self> {
+        let mut keys = vec![initialize];
+        for key in (0..s.keys.len() - 1).rev() {
+            keys.push(Executable::new(blanguage::native::emit_sort_key(
+                program, s, key,
+            ))?);
+        }
         Ok(Self {
             source: s.source,
             target: s.target,
-            initialize,
+            initialize: keys,
             histogram: Executable::new(blanguage::native::emit_sort_histogram(program))?,
             scatter: Executable::new(blanguage::native::emit_sort_scatter(program))?,
             gather: Executable::new(blanguage::native::emit_sort_gather(program, s))?,
@@ -34,7 +40,7 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32
         a.as_mut_ptr(),
     ];
     let mut work = RangeWork {
-        entry: code.initialize.address,
+        entry: code.initialize[0].address,
         buffers: buffers.as_ptr(),
         range_parameter_slot: buffers.len(),
         uniforms: std::ptr::null(),
@@ -46,32 +52,40 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32
         range_parameters: std::ptr::null(),
         range_parameter_words: 17,
     };
-    host.execute(&mut work)?;
-    for shift in (0..32).step_by(4) {
-        rows.fill(0);
-        for row in rows.chunks_exact_mut(17) {
-            row[0] = shift;
-        }
+    for key in &code.initialize {
         buffers[2] = a.as_mut_ptr();
-        buffers[3] = b.as_mut_ptr();
+        buffers[3] = a.as_mut_ptr();
         work.buffers = buffers.as_ptr();
-        work.entry = code.histogram.address;
-        work.range_parameters = rows.as_mut_ptr();
+        work.entry = key.address;
+        work.range_parameters = std::ptr::null();
         work.next = AtomicUsize::new(0);
         host.execute(&mut work)?;
-        let mut offset = 0u32;
-        for bin in 0..16 {
+        for shift in (0..32).step_by(4) {
+            rows.fill(0);
             for row in rows.chunks_exact_mut(17) {
-                let n = row[bin + 1];
-                row[bin + 1] = offset;
-                offset += n;
+                row[0] = shift;
             }
+            buffers[2] = a.as_mut_ptr();
+            buffers[3] = b.as_mut_ptr();
+            work.buffers = buffers.as_ptr();
+            work.entry = code.histogram.address;
+            work.range_parameters = rows.as_mut_ptr();
+            work.next = AtomicUsize::new(0);
+            host.execute(&mut work)?;
+            let mut offset = 0u32;
+            for bin in 0..16 {
+                for row in rows.chunks_exact_mut(17) {
+                    let n = row[bin + 1];
+                    row[bin + 1] = offset;
+                    offset += n;
+                }
+            }
+            work.range_parameters = rows.as_mut_ptr();
+            work.entry = code.scatter.address;
+            work.next = AtomicUsize::new(0);
+            host.execute(&mut work)?;
+            std::mem::swap(&mut a, &mut b);
         }
-        work.range_parameters = rows.as_mut_ptr();
-        work.entry = code.scatter.address;
-        work.next = AtomicUsize::new(0);
-        host.execute(&mut work)?;
-        std::mem::swap(&mut a, &mut b);
     }
     buffers[2] = a.as_mut_ptr();
     work.buffers = buffers.as_ptr();

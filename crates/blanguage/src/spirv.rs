@@ -28,6 +28,7 @@ pub enum Pass {
     SelectionScatter,
     SortHistogram(u32),
     SortScatter(u32),
+    SortKey(usize),
     SortScan,
     SortGather,
     DispatchArguments(PrefixCount),
@@ -1569,7 +1570,8 @@ pub fn emit_pass(
         }
     } else if let Operation::StableSort(s) = &stage.operation {
         match pass {
-            Pass::Main => e.sort_initialize(s, active),
+            Pass::Main => e.sort_initialize(s, s.keys.len() - 1, true, active),
+            Pass::SortKey(key) => e.sort_initialize(s, key, false, active),
             Pass::SortGather => e.sort_gather(s, active),
             Pass::SortHistogram(shift) | Pass::SortScatter(shift) => e.sort_rank(
                 s,

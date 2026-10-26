@@ -37,7 +37,7 @@ impl Drop for Pipelines {
     }
 }
 impl Pipelines {
-    pub fn new(c: &Compiled, stage: usize) -> Result<Self> {
+    pub fn new(c: &Compiled, stage: usize, s: &blanguage::ir::Sorting) -> Result<Self> {
         use blanguage::spirv::{Pass, emit_pass};
         let mut out = Self {
             inner: c.inner.clone(),
@@ -51,7 +51,8 @@ impl Pipelines {
                 Pass::ScanTail,
                 Pass::ScanAdd,
                 Pass::SortGather,
-            ]);
+            ])
+            .chain((0..s.keys.len() - 1).map(Pass::SortKey));
         for pass in passes {
             let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
             let words = emit_pass(&c.program, stage, pass).map_err(error)?;
@@ -127,40 +128,18 @@ pub(super) fn record(
     let kernels = c.sorts[stage].as_ref().unwrap();
     let n = data[s.source].count;
     let args = arguments.map(|a| &a.allocation);
-    let mut pass_infos = infos.to_vec();
-    pass_infos[s.target] = info(&storage.pairs[0].allocation);
-    let set = descriptor_set(commands, c, &pass_infos, accelerations, None, args, None)?;
-    scan::dispatch(
-        commands,
-        c,
-        c.pipelines[stage],
-        set,
-        n,
-        uniforms,
-        partition,
-        arguments,
-        0,
-    );
-    for pass in 0..8 {
-        commands.barrier(0x800, 0x800, 0x40, 0x60);
-        let input = &storage.pairs[pass % 2].allocation;
-        let target = &storage.pairs[(pass + 1) % 2].allocation;
-        pass_infos = infos.to_vec();
-        pass_infos[s.source] = info(input);
-        pass_infos[s.target] = info(target);
-        let set = descriptor_set(
-            commands,
-            c,
-            &pass_infos,
-            accelerations,
-            Some(&storage.histogram.allocation),
-            args,
-            None,
-        )?;
+    for key in (0..s.keys.len()).rev() {
+        let mut pass_infos = infos.to_vec();
+        pass_infos[s.target] = info(&storage.pairs[0].allocation);
+        let set = descriptor_set(commands, c, &pass_infos, accelerations, None, args, None)?;
         scan::dispatch(
             commands,
             c,
-            kernels.handles[pass],
+            if key + 1 == s.keys.len() {
+                c.pipelines[stage]
+            } else {
+                kernels.handles[20 + key]
+            },
             set,
             n,
             uniforms,
@@ -168,52 +147,80 @@ pub(super) fn record(
             arguments,
             0,
         );
+        for pass in 0..8 {
+            commands.barrier(0x800, 0x800, 0x40, 0x60);
+            let input = &storage.pairs[pass % 2].allocation;
+            let target = &storage.pairs[(pass + 1) % 2].allocation;
+            pass_infos = infos.to_vec();
+            pass_infos[s.source] = info(input);
+            pass_infos[s.target] = info(target);
+            let set = descriptor_set(
+                commands,
+                c,
+                &pass_infos,
+                accelerations,
+                Some(&storage.histogram.allocation),
+                args,
+                None,
+            )?;
+            scan::dispatch(
+                commands,
+                c,
+                kernels.handles[pass],
+                set,
+                n,
+                uniforms,
+                partition,
+                arguments,
+                0,
+            );
+            commands.barrier(0x800, 0x800, 0x40, 0x60);
+            let r = blanguage::ir::Reduction {
+                source: s.source,
+                source_word: 0,
+                target: s.target,
+                target_word: 0,
+            };
+            scan::record(
+                commands,
+                c,
+                kernels.scan(),
+                &r,
+                false,
+                &storage.histogram,
+                &storage.prefixes.allocation,
+                &storage.scan,
+                arguments,
+                infos,
+                accelerations,
+                uniforms,
+                partition,
+                blanguage::spirv::PREFIX_LEVELS,
+            )?;
+            commands.barrier(0x800, 0x800, 0x40, 0x60);
+            let set = descriptor_set(
+                commands,
+                c,
+                &pass_infos,
+                accelerations,
+                Some(&storage.prefixes.allocation),
+                args,
+                None,
+            )?;
+            scan::dispatch(
+                commands,
+                c,
+                kernels.handles[8 + pass],
+                set,
+                n,
+                uniforms,
+                partition,
+                arguments,
+                0,
+            );
+        }
         commands.barrier(0x800, 0x800, 0x40, 0x60);
-        let r = blanguage::ir::Reduction {
-            source: s.source,
-            source_word: 0,
-            target: s.target,
-            target_word: 0,
-        };
-        scan::record(
-            commands,
-            c,
-            kernels.scan(),
-            &r,
-            false,
-            &storage.histogram,
-            &storage.prefixes.allocation,
-            &storage.scan,
-            arguments,
-            infos,
-            accelerations,
-            uniforms,
-            partition,
-            blanguage::spirv::PREFIX_LEVELS,
-        )?;
-        commands.barrier(0x800, 0x800, 0x40, 0x60);
-        let set = descriptor_set(
-            commands,
-            c,
-            &pass_infos,
-            accelerations,
-            Some(&storage.prefixes.allocation),
-            args,
-            None,
-        )?;
-        scan::dispatch(
-            commands,
-            c,
-            kernels.handles[8 + pass],
-            set,
-            n,
-            uniforms,
-            partition,
-            arguments,
-            0,
-        );
     }
-    commands.barrier(0x800, 0x800, 0x40, 0x60);
     let set = descriptor_set(
         commands,
         c,

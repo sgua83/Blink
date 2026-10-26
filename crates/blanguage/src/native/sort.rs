@@ -21,20 +21,33 @@ fn finish(e: Emitter<'_>, stack_bytes: u32) -> NativeCode {
     }
 }
 pub(super) fn emit_initialize(program: &Program, s: &Sorting) -> NativeCode {
+    initialize(program, s, s.keys.len() - 1, true)
+}
+pub fn emit_sort_key(program: &Program, s: &Sorting, key: usize) -> NativeCode {
+    initialize(program, s, key, false)
+}
+fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> NativeCode {
     let mut e = emitter(program);
     let stride = program.buffers[s.source].stride;
-    e.bytes(&[
-        0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x18, 0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0,
-    ]);
-    e.u32(stride);
-    e.bytes(&[0x49, 0x01, 0xc2]);
+    e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x18]);
+    if first {
+        e.bytes(&[0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
+        e.u32(stride);
+        e.bytes(&[0x49, 0x01, 0xc2]);
+    }
     let begin = e.code.len();
     e.bytes(&[0x45, 0x39, 0xc1]);
     let end = e.jump(Some(0x83));
-    e.bytes(&[0x41, 0x8b, 0x82]);
-    e.u32(s.key_word * 4);
-    // 初始化时把键映射为无符号全序；后续八轮和完整记录 gather 共用原实现。
-    match s.key {
+    if first {
+        e.bytes(&[0x47, 0x89, 0x4c, 0xcb, 0x04, 0x41, 0x8b, 0x82]);
+    } else {
+        e.bytes(&[0x43, 0x8b, 0x44, 0xcb, 0x04, 0x48, 0x69, 0xc0]);
+        e.u32(stride);
+        e.bytes(&[0x41, 0x8b, 0x84, 0x02]);
+    }
+    e.u32(s.keys[key].0 * 4);
+    // 每个键仅装入一次全序编码；后续八轮共用键／原始序号。
+    match s.keys[key].1 {
         SortKey::U32 => {}
         SortKey::I32 => {
             e.bytes(&[0x35]);
@@ -47,10 +60,11 @@ pub(super) fn emit_initialize(program: &Program, s: &Sorting) -> NativeCode {
             e.bytes(&[0x31, 0xd0]);
         }
     }
-    e.bytes(&[
-        0x43, 0x89, 0x04, 0xcb, 0x47, 0x89, 0x4c, 0xcb, 0x04, 0x49, 0x81, 0xc2,
-    ]);
-    e.u32(stride);
+    e.bytes(&[0x43, 0x89, 0x04, 0xcb]);
+    if first {
+        e.bytes(&[0x49, 0x81, 0xc2]);
+        e.u32(stride);
+    }
     e.bytes(&[0x41, 0xff, 0xc1]);
     let back = e.jump(None);
     e.patch(back, begin);

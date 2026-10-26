@@ -1692,8 +1692,8 @@ impl GpuProgram {
                         None
                     });
                     let sorting =
-                        if matches!(out.program.stages()[i].operation, Operation::StableSort(_)) {
-                            Some(sort::Pipelines::new(&out, i)?)
+                        if let Operation::StableSort(s) = &out.program.stages()[i].operation {
+                            Some(sort::Pipelines::new(&out, i, s)?)
                         } else {
                             None
                         };
@@ -1906,9 +1906,11 @@ impl GpuProgram {
                     extra_sets += (levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
-                blanguage::ir::Operation::StableSort(_) => {
+                blanguage::ir::Operation::StableSort(ref s) => {
                     let histogram = count.div_ceil(64).max(1) * 16;
-                    extra_sets += (2 + 8 * (2 * levels(histogram) + 1)) as u64 * steps.get() as u64;
+                    extra_sets += (1 + s.keys.len() as u64
+                        * (1 + 8 * (2 * levels(histogram) + 1)) as u64)
+                        * steps.get() as u64;
                     Some(sort::allocate(c, count)?)
                 }
                 blanguage::ir::Operation::Map if stage.selection.is_some() => {

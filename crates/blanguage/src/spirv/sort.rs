@@ -26,19 +26,31 @@ impl Emitter<'_> {
         let at = self.address_scalar(binding, index, stride, word);
         self.emit(62, &[at, value, 2, 4]);
     }
-    pub(super) fn sort_initialize(&mut self, s: &Sorting, active: u32) {
+    pub(super) fn sort_initialize(
+        &mut self,
+        s: &Sorting,
+        key_index: usize,
+        first: bool,
+        active: u32,
+    ) {
         self.sort_when(active, |e| {
+            let original = if first {
+                e.index
+            } else {
+                e.sort_load(s.target, e.index, 2, 1)
+            };
             let key = e.sort_load(
                 s.source,
-                e.index,
+                original,
                 e.program.buffers[s.source].stride / 4,
-                s.key_word,
+                s.keys[key_index].0,
             );
-            let key = match s.key {
+            let key_type = s.keys[key_index].1;
+            let key = match key_type {
                 SortKey::U32 => key,
                 SortKey::I32 | SortKey::F32 => {
                     let sign = e.constant(Scalar::U32, 0x8000_0000);
-                    let mask = if s.key == SortKey::F32 {
+                    let mask = if key_type == SortKey::F32 {
                         let shift = e.constant(Scalar::U32, 31);
                         let negative = e.sort_binary(194, key, shift);
                         let zero = e.constant(Scalar::U32, 0);
@@ -51,7 +63,7 @@ impl Emitter<'_> {
                 }
             };
             e.sort_store(s.target, e.index, 2, 0, key);
-            e.sort_store(s.target, e.index, 2, 1, e.index);
+            e.sort_store(s.target, e.index, 2, 1, original);
         });
     }
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {

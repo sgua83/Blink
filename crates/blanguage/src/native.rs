@@ -22,7 +22,7 @@ pub use custom_reduce::{
 };
 pub use scan::emit_scan_add;
 pub use segmented_reduce::emit_segmented_reduce_finish;
-pub use sort::{emit_sort_gather, emit_sort_histogram, emit_sort_scatter};
+pub use sort::{emit_sort_gather, emit_sort_histogram, emit_sort_key, emit_sort_scatter};
 
 #[derive(Clone, Debug)]
 pub struct Relocation {

@@ -204,8 +204,7 @@ record!(Compaction {
 variants!(SortKey { U32, I32, F32 });
 record!(Sorting {
     source,
-    key_word,
-    key,
+    keys,
     target
 });
 variants!(Operation {Map, Reduce(r), CustomReduce(r), CustomScan(s), CustomSegmentedReduce(r),
