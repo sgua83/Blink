@@ -197,15 +197,35 @@ impl Emitter<'_> {
             Location::Xmm(r) => r,
             _ => 0,
         };
-        self.copy(Location::Xmm(target), self.location(source));
         self.instruction(
             Some(0xf3),
             &[0x0f, 0x51],
             false,
             target,
-            Operand::Register(target),
+            self.location(source).into(),
         );
         self.copy(d, Location::Xmm(target));
+    }
+    pub(super) fn integer_unary(
+        &mut self,
+        dst: Reg,
+        source: Reg,
+        opcode: u8,
+        extension: u8,
+        immediate: Option<u8>,
+    ) {
+        let (d, source) = (self.location(dst), self.location(source));
+        let target = match d {
+            Location::Gpr(_) => d,
+            Location::Stack(_) if d == source => d,
+            _ => Location::Gpr(0),
+        };
+        self.copy(target, source);
+        self.instruction(None, &[opcode], false, extension, target.into());
+        if let Some(value) = immediate {
+            self.bytes(&[value]);
+        }
+        self.copy(d, target);
     }
     pub(super) fn shift(&mut self, dst: Reg, a: Reg, b: Reg, kind: u8) {
         self.copy(Location::Gpr(1), self.location(b));

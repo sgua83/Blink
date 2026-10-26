@@ -747,28 +747,34 @@ impl Emitter<'_> {
                     broadcast,
                 } => self.packet_gather(allocation, *dst, source, *index, *word, *broadcast),
                 Step::Unary { dst, op, a } => {
-                    self.packet_load(allocation, Register(*a), 0);
+                    let target = match allocation.location(Register(*dst)) {
+                        PacketPlace::Register(r) => r,
+                        _ => 0,
+                    };
                     match op {
                         UnaryOp::FloatNegate => {
+                            self.packet_load(allocation, Register(*a), target);
                             self.packet_constant(1, 0x80000000);
-                            self.packed(Some(0x66), 0xef, 0, 1);
+                            self.packed(Some(0x66), 0xef, target, 1);
                         }
                         UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => {
-                            self.packed(None, 0x28, 1, 0);
-                            self.packet_constant(0, 0);
-                            self.packed(Some(0x66), 0xfa, 0, 1);
+                            // 目标可能与输入同址，先保存减数再清零目标。
+                            self.packet_load(allocation, Register(*a), 1);
+                            self.packet_constant(target, 0);
+                            self.packed(Some(0x66), 0xfa, target, 1);
                         }
                         UnaryOp::LogicalNot => {
-                            self.packet_constant(1, 0);
-                            self.packed(Some(0x66), 0x76, 0, 1);
-                            self.packet_bool(0);
+                            self.packet_load(allocation, Register(*a), target);
+                            self.packet_constant(1, 1);
+                            self.packed(Some(0x66), 0xef, target, 1);
                         }
                         UnaryOp::BitNot => {
+                            self.packet_load(allocation, Register(*a), target);
                             self.packet_constant(1, u32::MAX);
-                            self.packed(Some(0x66), 0xef, 0, 1);
+                            self.packed(Some(0x66), 0xef, target, 1);
                         }
                     }
-                    self.packet_store(allocation, Register(*dst), 0);
+                    self.packet_store(allocation, Register(*dst), target);
                 }
                 Step::Binary { dst, op, a, b } => match op {
                     Binary::Float(opcode) => {
@@ -784,13 +790,18 @@ impl Emitter<'_> {
                         self.packet_store(allocation, Register(*dst), 0);
                     }
                     Binary::Shift(opcode) => {
-                        self.packet_load(allocation, Register(*a), 0);
+                        let target = match allocation.location(Register(*dst)) {
+                            PacketPlace::Register(r) => r,
+                            _ => 0,
+                        };
+                        // 先取得计数，再覆盖可能与右值共用的目标位置。
                         self.packet_load(allocation, Register(*b), 1);
                         self.instruction(Some(0x66), &[0x0f, 0x7e], false, 1, Operand::Register(0));
                         self.bytes(&[0x83, 0xe0, 0x1f]);
                         self.instruction(Some(0x66), &[0x0f, 0x6e], false, 1, Operand::Register(0));
-                        self.packed(Some(0x66), *opcode, 0, 1);
-                        self.packet_store(allocation, Register(*dst), 0);
+                        self.packet_load(allocation, Register(*a), target);
+                        self.packed(Some(0x66), *opcode, target, 1);
+                        self.packet_store(allocation, Register(*dst), target);
                     }
                     Binary::ShiftEach(kind) => {
                         self.packet_shift_values(allocation, *dst, *a, *b, *kind)
@@ -842,10 +853,14 @@ impl Emitter<'_> {
                         self.packet_store(allocation, Register(*dst), target);
                     }
                     Math::Abs => {
-                        self.packet_load(allocation, Register(args[0]), 0);
+                        let target = match allocation.location(Register(*dst)) {
+                            PacketPlace::Register(r) => r,
+                            _ => 0,
+                        };
+                        self.packet_load(allocation, Register(args[0]), target);
                         self.packet_constant(1, 0x7fffffff);
-                        self.packed(Some(0x66), 0xdb, 0, 1);
-                        self.packet_store(allocation, Register(*dst), 0);
+                        self.packed(Some(0x66), 0xdb, target, 1);
+                        self.packet_store(allocation, Register(*dst), target);
                     }
                 },
                 Step::Select {

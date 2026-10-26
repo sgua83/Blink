@@ -441,21 +441,22 @@ impl Emitter<'_> {
                     self.write_memory(self.location(*value), 15, word * 4);
                 }
                 Inst::Unary { dst, op, a } => {
-                    self.load(*a);
                     match op {
                         UnaryOp::FloatNegate => {
+                            self.load(*a);
                             self.bytes(&[0x35]);
                             self.u32(0x80000000);
+                            self.store(*dst);
                         }
                         UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => {
-                            self.bytes(&[0xf7, 0xd8])
+                            self.integer_unary(*dst, *a, 0xf7, 3, None)
                         }
                         UnaryOp::LogicalNot => {
-                            self.bytes(&[0x85, 0xc0, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0])
+                            // IR 布尔值已经规范为 0／1；其逻辑非就是翻转这一位。
+                            self.integer_unary(*dst, *a, 0x83, 6, Some(1))
                         }
-                        UnaryOp::BitNot => self.bytes(&[0xf7, 0xd0]),
+                        UnaryOp::BitNot => self.integer_unary(*dst, *a, 0xf7, 2, None),
                     };
-                    self.store(*dst);
                 }
                 Inst::Binary { dst, op, a, b } => match op {
                     BinaryOp::FAdd => self.float_binary(*dst, *a, *b, 0x58),

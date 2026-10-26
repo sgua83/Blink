@@ -166,7 +166,22 @@ impl Graph {
                         !self.addressable.contains(&self.id(*dst))
                             && !self.addressable.contains(&self.id(*src))
                     });
-                    if let Some((dst, src)) = transfer {
+                    let preferred = transfer.or_else(|| match inst {
+                        Inst::Unary { dst, a, .. } => Some((Register(*dst), Register(*a))),
+                        Inst::Binary { dst, op, a, .. } if !matches!(op, BinaryOp::Compare(_)) => {
+                            Some((Register(*dst), Register(*a)))
+                        }
+                        Inst::Math { dst, op, args }
+                            if matches!(
+                                op,
+                                MathOp::Abs | MathOp::Min | MathOp::Max | MathOp::Sqrt
+                            ) =>
+                        {
+                            Some((Register(*dst), Register(args[0])))
+                        }
+                        _ => None,
+                    });
+                    if let Some((dst, src)) = preferred {
                         let (dst, src) = (self.id(dst), self.id(src));
                         self.affinities[dst].insert(src);
                         self.affinities[src].insert(dst);
