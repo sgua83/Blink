@@ -384,7 +384,9 @@ impl Emitter<'_> {
                     let image = self.texture_image(*texture);
                     self.emit(106, &[self.types[&Scalar::U32], self.value(*dst), image]);
                 }
-                Inst::TextureAddress { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
+                Inst::TextureAddress { .. }
+                | Inst::TextureFormat { .. }
+                | Inst::TextureRead { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
                 Inst::TextureSize {
                     result,
                     texture,

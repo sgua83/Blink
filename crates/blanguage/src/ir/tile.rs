@@ -396,7 +396,10 @@ impl Inst {
                 result.to_vec()
             }
             Self::TextureSize { result, .. } => result.to_vec(),
-            Self::TextureLevels { dst, .. } | Self::TextureAddress { dst, .. } => vec![*dst],
+            Self::TextureLevels { dst, .. }
+            | Self::TextureAddress { dst, .. }
+            | Self::TextureFormat { dst, .. }
+            | Self::TextureRead { dst, .. } => vec![*dst],
             Self::Append(a) => vec![a.accepted],
             Self::Atomic(a) => a.result.iter().copied().collect(),
             Self::Constant(r, ..)
@@ -430,6 +433,9 @@ impl Inst {
                 coordinate, lod, ..
             } => vec![coordinate[0], coordinate[1], *lod],
             Self::TextureFetch {
+                coordinate, level, ..
+            }
+            | Self::TextureRead {
                 coordinate, level, ..
             } => vec![coordinate[0], coordinate[1], *level],
             Self::TextureSize { level, .. } => vec![*level],
@@ -496,7 +502,9 @@ impl Inst {
         | Self::TextureFetch { texture, .. }
         | Self::TextureSize { texture, .. }
         | Self::TextureLevels { texture, .. }
-        | Self::TextureAddress { texture, .. } = self
+        | Self::TextureAddress { texture, .. }
+        | Self::TextureFormat { texture, .. }
+        | Self::TextureRead { texture, .. } = self
         {
             values.extend(texture.element);
         }

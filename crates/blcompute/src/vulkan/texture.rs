@@ -23,11 +23,12 @@ pub(super) struct BufferImageCopy {
     pub(super) image_offset: [i32; 3],
     pub(super) extent: VkExtent3D,
 }
-fn mip_copies(dimensions: [u32; 2], levels: u32) -> (Vec<BufferImageCopy>, u64) {
+fn mip_copies(dimensions: [u32; 2], levels: u32, texel_bytes: u64) -> (Vec<BufferImageCopy>, u64) {
     let [mut width, mut height] = dimensions;
-    let mut offset = 0;
+    let mut offset = 0u64;
     let mut copies = Vec::with_capacity(levels as usize);
     for mip in 0..levels {
+        offset = (offset + 3) & !3;
         copies.push(BufferImageCopy {
             offset,
             row_length: 0,
@@ -45,7 +46,7 @@ fn mip_copies(dimensions: [u32; 2], levels: u32) -> (Vec<BufferImageCopy>, u64) 
                 depth: 1,
             },
         });
-        offset += width as u64 * height as u64 * 16;
+        offset += width as u64 * height as u64 * texel_bytes;
         width = (width / 2).max(1);
         height = (height / 2).max(1);
     }
@@ -145,6 +146,7 @@ struct Storage {
     dimensions: [u32; 2],
     mips: u32,
     address: [crate::TextureAddress; 2],
+    format: crate::TextureFormat,
 }
 impl Storage {
     fn range(&self) -> SubresourceRange {
@@ -170,6 +172,9 @@ impl Drop for Image {
 #[derive(Clone)]
 pub struct Texture(Rc<Image>);
 impl Texture {
+    pub fn format(&self) -> crate::TextureFormat {
+        self.0.storage.format
+    }
     pub fn address(&self) -> [crate::TextureAddress; 2] {
         self.0.storage.address
     }
@@ -207,6 +212,13 @@ impl Device {
     pub fn upload_texture(&self, source: &crate::Texture2D) -> Result<Texture> {
         let inner = self.inner.clone();
         let dimensions = source.dimensions();
+        let format = source.format();
+        let native_format = match format {
+            crate::TextureFormat::Rgba32Float => 109,
+            crate::TextureFormat::Rgba8Unorm => 37,
+            crate::TextureFormat::Rgba8Srgb => 43,
+            crate::TextureFormat::R8Unorm => 9,
+        };
         if dimensions
             .iter()
             .any(|n| *n > inner.properties.limits.maxImageDimension2D)
@@ -223,11 +235,11 @@ impl Device {
                 .library
                 .get(instance.instance, c"vkGetPhysicalDeviceFormatProperties")?;
             let mut support: FormatProperties = zero();
-            properties(inner.physical, 109, &mut support);
+            properties(inner.physical, native_format, &mut support);
             if support.optimal & 0xd001 != 0xd001 {
-                return Err(error(
-                    "设备不支持 RGBA32F sampled image 的线性过滤与双向传输",
-                ));
+                return Err(error(format!(
+                    "设备不支持{format:?} sampled image的线性过滤与双向传输"
+                )));
             }
             let mut texture = Storage {
                 inner: inner.clone(),
@@ -239,13 +251,14 @@ impl Device {
                 dimensions,
                 mips: source.mip_count(),
                 address: source.address(),
+                format,
             };
             let f = &inner.functions;
             let device = inner.owner.device;
             let mut ci: ImageCreateInfo = zero();
             ci.kind = 14;
             ci.image_type = 1;
-            ci.format = 109;
+            ci.format = native_format;
             ci.extent = VkExtent3D {
                 width: dimensions[0],
                 height: dimensions[1],
@@ -288,7 +301,7 @@ impl Device {
                 flags: 0,
                 image: texture.image,
                 view_type: 1,
-                format: 109,
+                format: native_format,
                 components: [0; 4],
                 range: texture.range(),
             };
@@ -326,7 +339,7 @@ impl Device {
                 (f.vkCreateSampler)(device, &si, null(), &mut texture.sampler),
                 "vkCreateSampler",
             )?;
-            let (copies, bytes) = mip_copies(dimensions, texture.mips);
+            let (copies, bytes) = mip_copies(dimensions, texture.mips, format.texel_bytes() as u64);
             let staging = Allocation::new(inner.clone(), bytes, 1, 6)?;
             let mut mapped = null_mut();
             check(
@@ -335,9 +348,9 @@ impl Device {
             )?;
             for (mip, copy) in source.levels.iter().zip(&copies) {
                 std::ptr::copy_nonoverlapping(
-                    mip.pixels.as_ptr().cast::<u8>(),
+                    mip.pixels.as_bytes().as_ptr(),
                     mapped.cast::<u8>().add(copy.offset as usize),
-                    mip.pixels.len() * 16,
+                    mip.pixels.as_bytes().len(),
                 );
             }
             (f.vkUnmapMemory)(device, staging.memory);
@@ -411,7 +424,11 @@ impl Device {
             return Err(error("纹理属于另一设备"));
         }
         let texture = &source.0.storage;
-        let (copies, bytes) = mip_copies(texture.dimensions, texture.mips);
+        let (copies, bytes) = mip_copies(
+            texture.dimensions,
+            texture.mips,
+            texture.format.texel_bytes() as u64,
+        );
         let target = Allocation::new(self.inner.clone(), bytes, 2, 6)?;
         let commands = Commands::new(self.inner.clone())?;
         unsafe {
@@ -473,27 +490,22 @@ impl Device {
         self.submit_transfer(commands, Vec::new(), dependencies)?
             .wait()?;
         let mut levels = Vec::with_capacity(copies.len());
-        target.read_with(|mapped| {
+        target.read_with(|mapped| -> Result<()> {
             for copy in &copies {
                 let width = copy.extent.width;
                 let height = copy.extent.height;
-                let count = width as usize * height as usize;
-                let mut pixels: Vec<[f32; 4]> = Vec::with_capacity(count);
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        mapped.add(copy.offset as usize).cast(),
-                        pixels.as_mut_ptr(),
-                        count,
-                    );
-                    pixels.set_len(count);
-                }
+                let count = width as usize * height as usize * texture.format.texel_bytes();
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(mapped.add(copy.offset as usize), count) };
+                let pixels = crate::TextureTexels::from_bytes(texture.format, bytes)?;
                 levels.push(crate::TextureMip {
                     width,
                     height,
                     pixels,
                 });
             }
-        })?;
+            Ok(())
+        })??;
         Ok(crate::Texture2D {
             levels: levels.into(),
             address: source.address(),

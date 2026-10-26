@@ -1276,7 +1276,7 @@ program shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 }
 ```
 
-`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。当前纹理保存线性 RGBA32F，坐标归一化，U／V 越界按 clamp-to-edge 处理；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。不进行 sRGB 解码、显示编码或预乘 alpha。
+`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。纹理实际保存 RGBA32F、RGBA8 UNORM、RGBA8 sRGB 或 R8 UNORM，坐标归一化，U／V 越界由资源逐轴选择 Clamp／Repeat；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。RGBA8 sRGB 在过滤前解码 RGB，alpha 仍为 UNORM；其他格式不进行显示传递转换，R8 返回 `(r,0,0,1)`，均不预乘 alpha。
 
 资源、参数数量、UV／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限 UV／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。硬件过滤精度与 CPU f32 算术可有差异；同一算法和格式不意味着非二进制坐标逐位一致，不能据此承诺天然材质视觉等价。
 
@@ -1288,9 +1288,9 @@ CPU 调用期间持有实际像素及描述；Device::upload_texture 返回完�
 
 Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。独立逻辑设备及本机离散／集成两块物理 GPU 的双向显式交接已有原生记录，不表示直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原上传，采样结果仍沿实际提交观察。
 
-独立资产 `.bltex` 使用 **BLTEX v1**：8 字节 `BLTEX\0\0\0`，小端 u32 version=1、mip_count；每层依次为小端 u32 width、height，再跟 `width*height` 个逐行 RGBA f32，每 texel 16 字节。行方向和颜色含义由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸／内存与 RGBA32F 线性过滤能力限制。文件读入仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
+独立资产 `.bltex` 当前写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1 字节，文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
 
-当前只有固定采样规则的只读 RGBA32F 二维纹理。固定纹理资源数组见下一节；整数／压缩／sRGB 纹理、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型、自动 mip 构建及纹理格式导入尚未实现。规范与指令依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
+当前只有只读二维纹理。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
 
 BLEngine 的 `Programs/material/textured.h/.b` 使用同一资源语义实现批量 GGX，CPU／GPU 均实际执行。引擎全图入口现已消费 `.blmat` 材质资产、几何分组与原始 UV，具体格式和职责见 [材质资产](../../BLEngine/Docs/Materials.md)；天然纹理、完整光传输和白玉视觉目标仍未完成。
 
@@ -2986,6 +2986,15 @@ program split<const N:u32>(write dataset<A,N> first,write dataset<B,N> second) o
 
 只读纹理资源现在显式携带每轴 `TextureAddress::Clamp` 或 `TextureAddress::Repeat`。`Texture2D::new`／`read` 继续创建 Clamp 资源；`image.with_address(u,v)` 消费该资源视图并共享原不可变像素，`address()` 返回当前模式。B 的 `read texture2d`、资源数组和 `texture_sample` 签名不变，资源实际身份随绑定交接，不由材质函数复制图像。相同像素的不同 CPU 视图不等于已经共享 Vulkan 图像存储；当前上传各自创建原物理资源。
 
-CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap 参与双线性及 mip 间过滤。Repeat 保留负坐标、整数周期及接缝两侧的贡献，不能只对 uv 取小数后继续钳制 tap。现有16字节 CPU 纹理描述符的第二个 u32 保存 U／V repeat 位；CPU 专用降低指令直接读取该资源描述符，仍生成原生算术与读取，不调用宿主采样函数。Vulkan 使用同一资源声明设置 VkSampler 的 U／V addressMode，SPIR-V 继续直接发出图像采样指令。
+CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap 参与双线性及 mip 间过滤。Repeat 保留负坐标、整数周期及接缝两侧的贡献，不能只对 uv 取小数后继续钳制 tap。当前24字节 CPU 纹理描述符的第二个 u32 保存 U／V repeat 位；CPU 专用降低指令直接读取该资源描述符，仍生成原生算术与读取，不调用宿主采样函数。Vulkan 使用同一资源声明设置 VkSampler 的 U／V addressMode，SPIR-V 继续直接发出图像采样指令。
 
-`vulkan::Texture::address` 返回原上传模式，`download_texture` 的独立 CPU 快照保留该模式，后续显式上传另一个逻辑 Device 继续消费它。`.bltex v1` 只保存线性像素与 mip；采样模式由实际资源／材质声明，不改写图像文件或改变旧资产解释。CPU 与硬件线性过滤的舍入精度不同，不保证逐 bit 相同。当前仅 Clamp／Repeat，镜像、边框色、各向异性、独立 sampler 类型及压缩格式仍未实现。
+`vulkan::Texture::address` 返回原上传模式，`download_texture` 的独立 CPU 快照保留该模式，后续显式上传另一个逻辑 Device 继续消费它。`.bltex` 只保存实际格式、像素与 mip；采样模式由实际资源／材质声明，不改写图像文件或改变旧资产解释。CPU 与硬件线性过滤的舍入精度不同，不保证逐 bit 相同。当前仅 Clamp／Repeat，镜像、边框色、各向异性、独立 sampler 类型及压缩格式仍未实现。
+
+
+## 原生 texel 格式与存储所有权（2026-10-27）
+
+`TextureMip::pixels` 为 `TextureTexels::{Rgba32Float(Vec<[f32;4]>),Rgba8Unorm(Vec<[u8;4]>),Rgba8Srgb(Vec<[u8;4]>),R8Unorm(Vec<u8>)}`。原 float Vec 可通过 `.into()` 交接；`Texture2D::format` 从实际负载取得格式，整链同格式。`TextureTexels::as_bytes/from_bytes` 只交接真实字节，不维护解码后的 CPU float 镜像。原生 CPU 描述含 mip 数、逐轴地址模式、mip 指针与格式（offset 0／4／8／16，stride24），每级描述仍16字节。采样直接生成相应字节／dword 装载、UNORM 或分段 sRGB 运算，再完成原双线性及 mip 混合；格式来自所选资源，混合格式数组不要求统一转换，也不经宿主 texel 回调。
+
+Vulkan 按真实格式创建 `R32G32B32A32_SFLOAT`、`R8G8B8A8_UNORM`、`R8G8B8A8_SRGB` 或 `R8_UNORM` 图像／视图；格式不支持时明确报告，不能静默替换。上传／读回按真实 texel 字节数构造复制，每级 staging 起点满足4字节对齐，尤其保留R8奇数尾层；文件不保存这些平台填充。复制区域布局见 [VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)，对齐约束见 [vkCmdCopyBufferToImage](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyBufferToImage.html)。快照保留实际格式与地址模式，逐字节保留原负载，包括 float NaN 载荷、负零和次正规位，不通过浮点算术重建。资源仍沿原上传及最后采样完成点持有，不新增长驻状态、上传副本或全局资源表。
+
+Release 原生核对覆盖1×1、1×7、7×1、3×5、512×256的四种格式／全部mip，混合格式资源选择、逐轴Clamp／Repeat及每组100003条UV／LOD记录。实际GPU原始读回及v2文件往返均逐字节相同，既有v1正式checker仍为RGBA32F。CPU相对独立双精度过滤参考最大误差约1.031e-5，GPU约0.002214；硬件格式／过滤精度与CPU运算不同，不能承诺采样逐位一致或天然材质视觉等价。8192² RGBA8 sRGB完整14级实际负载357913940字节、GPU图像分配357957632字节，所有mip读回相同；这是图像分配，不是进程驱动总显存。BLEngine的B编码器还实际执行了RGBA8／sRGB和R8奇数尾部，CPU／GPU本轮全部输出字节相同。原始记录在E:/BLEngineMeasurements/TextureFormats；压缩格式、流送和完整产品性能继续开放。

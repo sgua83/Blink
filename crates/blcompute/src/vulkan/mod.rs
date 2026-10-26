@@ -1197,11 +1197,11 @@ impl Allocation {
             out.set_len(start + count);
         })
     }
-    fn read_with(&self, read: impl FnOnce(*const u8)) -> Result<()> {
+    fn read_with<T>(&self, read: impl FnOnce(*const u8) -> T) -> Result<T> {
         if !self.host_visible {
             return Err(error("只能映射 host-visible 数据传输内存"));
         }
-        unsafe {
+        let value = unsafe {
             let mut ptr = null_mut();
             check(
                 (self.inner.functions.vkMapMemory)(
@@ -1214,10 +1214,11 @@ impl Allocation {
                 ),
                 "vkMapMemory(read)",
             )?;
-            read(ptr.cast());
+            let value = read(ptr.cast());
             (self.inner.functions.vkUnmapMemory)(self.inner.owner.device, self.memory);
-        }
-        Ok(())
+            value
+        };
+        Ok(value)
     }
 }
 impl Drop for Allocation {

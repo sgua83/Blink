@@ -153,7 +153,7 @@ fn main() -> Result<()> {
     let texture = Texture2D::new(vec![TextureMip {
         width: 256,
         height: 256,
-        pixels: texture_pixels.clone(),
+        pixels: texture_pixels.clone().into(),
     }])?;
     if kind == 8 || kind == 12 {
         field = ["position", "velocity", "energy"]

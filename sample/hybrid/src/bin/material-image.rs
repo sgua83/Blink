@@ -27,7 +27,8 @@ fn main() -> Result<()> {
             [0.1, 0.6, 0.9, 1.0],
             [0.2, 0.7, 0.3, 1.0],
             [0.8, 0.7, 0.2, 1.0],
-        ],
+        ]
+        .into(),
     }])?;
     let albedo = device.upload_texture(&albedo)?;
     let program = device.compile(code)?;

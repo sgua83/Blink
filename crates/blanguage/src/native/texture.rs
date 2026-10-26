@@ -60,12 +60,139 @@ impl Lower {
         });
         dst
     }
+    fn srgb(&mut self, value: Reg) -> Reg {
+        let threshold = self.constant(Scalar::F32, 0.04045f32.to_bits());
+        let condition = self.binary(
+            Scalar::Bool,
+            BinaryOp::Compare(Comparison::LessEqual),
+            value,
+            threshold,
+        );
+        let divisor = self.constant(Scalar::F32, 12.92f32.to_bits());
+        let linear = self.binary(Scalar::F32, BinaryOp::FDiv, value, divisor);
+        let offset = self.constant(Scalar::F32, 0.055f32.to_bits());
+        let scale = self.constant(Scalar::F32, 1.055f32.to_bits());
+        let exponent = self.constant(Scalar::F32, 2.4f32.to_bits());
+        let shifted = self.binary(Scalar::F32, BinaryOp::FAdd, value, offset);
+        let unit = self.binary(Scalar::F32, BinaryOp::FDiv, shifted, scale);
+        let curve = self.math(MathOp::Pow, unit, exponent);
+        self.select(Scalar::F32, condition, linear, curve)
+    }
+    fn texel(
+        &mut self,
+        texture: TextureSource,
+        coordinate: [Reg; 2],
+        level: Reg,
+        format: Reg,
+    ) -> [Reg; 4] {
+        let result = std::array::from_fn(|_| self.reg(Scalar::F32));
+        let zero_format = self.constant(Scalar::U32, 0);
+        let floating = self.binary(
+            Scalar::Bool,
+            BinaryOp::Compare(Comparison::Equal),
+            format,
+            zero_format,
+        );
+        let outer = std::mem::take(&mut self.code);
+        self.code.push(Inst::TextureFetch {
+            result,
+            texture,
+            coordinate,
+            level,
+        });
+        let floats = std::mem::take(&mut self.code);
+        let byte_format = self.constant(Scalar::U32, 3);
+        let single = self.binary(
+            Scalar::Bool,
+            BinaryOp::Compare(Comparison::Equal),
+            format,
+            byte_format,
+        );
+        let packed_outer = std::mem::take(&mut self.code);
+        let raw = self.reg(Scalar::U32);
+        self.code.push(Inst::TextureRead {
+            dst: raw,
+            texture,
+            coordinate,
+            level,
+            byte: true,
+        });
+        let value = self.cast(Scalar::F32, raw);
+        let denominator = self.constant(Scalar::F32, 255.0f32.to_bits());
+        let red = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
+        self.code.push(Inst::Cast {
+            dst: result[0],
+            src: red,
+        });
+        for channel in 1..4 {
+            let bits = if channel == 3 { 1.0f32.to_bits() } else { 0 };
+            self.code
+                .push(Inst::Constant(result[channel], Scalar::F32, bits));
+        }
+        let singles = std::mem::take(&mut self.code);
+        let raw = self.reg(Scalar::U32);
+        self.code.push(Inst::TextureRead {
+            dst: raw,
+            texture,
+            coordinate,
+            level,
+            byte: false,
+        });
+        for channel in 0..4 {
+            let shift = self.constant(Scalar::U32, (channel * 8) as u32);
+            let shifted = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, raw, shift);
+            let mask = self.constant(Scalar::U32, 255);
+            let byte = self.binary(Scalar::U32, BinaryOp::And, shifted, mask);
+            let value = self.cast(Scalar::F32, byte);
+            let denominator = self.constant(Scalar::F32, 255.0f32.to_bits());
+            let value = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
+            self.code.push(Inst::Cast {
+                dst: result[channel],
+                src: value,
+            });
+        }
+        let srgb_format = self.constant(Scalar::U32, 2);
+        let encoded = self.binary(
+            Scalar::Bool,
+            BinaryOp::Compare(Comparison::Equal),
+            format,
+            srgb_format,
+        );
+        let rgba = std::mem::take(&mut self.code);
+        for channel in 0..3 {
+            let value = self.srgb(result[channel]);
+            self.code.push(Inst::Cast {
+                dst: result[channel],
+                src: value,
+            });
+        }
+        let decode = std::mem::replace(&mut self.code, rgba);
+        self.code.push(Inst::If {
+            condition: encoded,
+            yes: decode,
+            no: Vec::new(),
+        });
+        let rgba = std::mem::replace(&mut self.code, packed_outer);
+        self.code.push(Inst::If {
+            condition: single,
+            yes: singles,
+            no: rgba,
+        });
+        let packed = std::mem::replace(&mut self.code, outer);
+        self.code.push(Inst::If {
+            condition: floating,
+            yes: floats,
+            no: packed,
+        });
+        result
+    }
     fn level_sample(
         &mut self,
         texture: TextureSource,
         coordinate: [Reg; 2],
         level: Reg,
         address: Reg,
+        format: Reg,
     ) -> [Reg; 4] {
         let dimensions = std::array::from_fn(|_| self.reg(Scalar::U32));
         self.code.push(Inst::TextureSize {
@@ -142,14 +269,7 @@ impl Lower {
             [first[0], next[1]],
             [next[0], next[1]],
         ] {
-            let result = std::array::from_fn(|_| self.reg(Scalar::F32));
-            self.code.push(Inst::TextureFetch {
-                result,
-                texture,
-                coordinate,
-                level,
-            });
-            taps.push(result);
+            taps.push(self.texel(texture, coordinate, level, format));
         }
         std::array::from_fn(|i| {
             let top = self.lerp(taps[0][i], taps[1][i], fraction[0]);
@@ -162,6 +282,11 @@ impl Lower {
         let one = self.constant(Scalar::U32, 1);
         let levels = self.reg(Scalar::U32);
         let address = self.reg(Scalar::U32);
+        let format = self.reg(Scalar::U32);
+        self.code.push(Inst::TextureFormat {
+            dst: format,
+            texture,
+        });
         self.code.push(Inst::TextureAddress {
             dst: address,
             texture,
@@ -179,8 +304,8 @@ impl Lower {
         let fraction = self.binary(Scalar::F32, BinaryOp::FSub, clamped, first_float);
         let adjacent = self.binary(Scalar::U32, BinaryOp::IAdd, first, one);
         let next = self.min_u(adjacent, last);
-        let a = self.level_sample(texture, coordinate, first, address);
-        let b = self.level_sample(texture, coordinate, next, address);
+        let a = self.level_sample(texture, coordinate, first, address, format);
+        let b = self.level_sample(texture, coordinate, next, address, format);
         for i in 0..4 {
             let value = self.lerp(a[i], b[i], fraction);
             self.code.push(Inst::Cast {

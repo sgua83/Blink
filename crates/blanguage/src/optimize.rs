@@ -273,7 +273,10 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
                 result.iter_mut().for_each(|v| *v = r(*v))
             }
             Inst::TextureSize { result, .. } => result.iter_mut().for_each(|v| *v = r(*v)),
-            Inst::TextureLevels { dst, .. } | Inst::TextureAddress { dst, .. } => *dst = r(*dst),
+            Inst::TextureLevels { dst, .. }
+            | Inst::TextureAddress { dst, .. }
+            | Inst::TextureFormat { dst, .. }
+            | Inst::TextureRead { dst, .. } => *dst = r(*dst),
             Inst::Append(a) => a.accepted = r(a.accepted),
             Inst::Atomic(a) => a.result = a.result.map(r),
             Inst::RayQuery { result, .. } => result.map(r),
@@ -337,7 +340,9 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
     | Inst::TextureFetch { texture, .. }
     | Inst::TextureSize { texture, .. }
     | Inst::TextureLevels { texture, .. }
-    | Inst::TextureAddress { texture, .. } = i
+    | Inst::TextureAddress { texture, .. }
+    | Inst::TextureFormat { texture, .. }
+    | Inst::TextureRead { texture, .. } = i
     {
         texture.element = texture.element.map(r);
     }
@@ -349,6 +354,9 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *lod = r(*lod);
         }
         Inst::TextureFetch {
+            coordinate, level, ..
+        }
+        | Inst::TextureRead {
             coordinate, level, ..
         } => {
             coordinate.iter_mut().for_each(|v| *v = r(*v));

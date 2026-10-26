@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-003 的原生紧凑纹理格式：**实现与原生验证完成；完整目标仍开放** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage/Saved/TextureFormatsWorkspace`，client `BLanguage_Gua_TextureFormats`；RGBA32F／RGBA8 UNORM／sRGB／R8 UNORM真实单一存储、CPU原生采样、Vulkan上传／全mip读回、BLTEX v2和现有v1读取已实现。Release SDK／hybrid／performance检查通过，五组尺寸各100003条混合格式CPU／GPU采样、原始位及8K完整14mip读回已执行；BLEngine真实四源图基础层字节相同，四张实际GPU图像分配811073536字节，4K／内部8K实体介质64轮完整帧与后台HUD2.14GiB已观察。仅改纹理／私有read_with返回、对应IR分支及原Rust消费者／规范；不改AS refit、PA2临时位置／reads或PA3资源结果前端。主线采用仅重放本轮源码差异，保留原有其他改动。压缩、流送及完整效率目标仍开放；P4／Git状态另按实际回执记录。 | 2026-10-27 |
 | C-020.3／C-021.2 的拥有资源记录组合：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，用户PA3／client BLanguage_PA3；在已提交dataset／Result所有权上推进普通CPU记录的数据组合：dataset／拥有结果字段、嵌套记录、构造移动、局部及形参／返回、字段借用与部分移动／重赋值、真实作用域与控制流释放。沿原Ty字段布局及Returned／Data／局部槽，把结果专用元数据归并到同一拥有值表示；实际Frame存储不变，不新增运行时所有权标记、注册表或释放链。预计修改类型资源分类、World记录布局、check拥有值／成员／位置／借用／返回／合流／泛型与必要类型发射；ir.rs只改资源分类，保留纹理会话其余变化，不改PA2后端与Gua Vulkan。先认领，后基线、实现、Release／真实CPU与GPU消费者、清理及P4／Git。一般拥有数组／动态容器、view图、资源ABI、完整错误系统与统一函数仍开放。 | 2026-10-27 06:44 +08:00 |
 | C-002／C-024.3 的 CPU SSA 值实际消费位置：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；追查大局部数组的 8304 字节帧，private_spans 已合并，先保存真实 IR／正式基线，核对初始化临时值寿命；在原 CPU 装载排布中交付无副作用 SSA 生产者给首次实际消费，保留原读取快照、写入顺序、调用／控制／同步和集合分段。保留原 reads.rs 模块路径，复用普通范围的既有接入，仅扩展 reads.rs、application.rs、custom_reduce.rs 及架构／原台账；不改 Gua_TextureFormats 正在编辑的 native.rs／texture.rs，不改 PA3 类型／check／IR 或 Gua Vulkan refit，不新增运行期状态／分派或常驻测试。先认领，后源码、Release、原生及效率、清理和聚焦交付；完整 SSA／整体效率仍开放。 | 2026-10-27 06:38 +08:00 |
 | C-003／C-022.4 的加速结构显式 refit：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；复用原 BLAS／CPU TLAS／GPU 实例 TLAS 构建入口，显式声明原生 ALLOW_UPDATE 并以原结构创建新版本 UPDATE 结果。旧结构／消费者保持原快照，来源与输入只由本次原 Execution 持有到实际更新完成；不原地改写共享 AS、不自动重建或增加注册表／调度。按真实 Vulkan 几何布局／数量／更新能力与设备归属处理边界，复用原 build barrier、依赖、updateScratchSize 和最后消费者释放。预计仅 ray.rs、execution.rs 及架构／规范／设备说明／台账，避开 PA2 后端、PA3 dataset 结果和引擎算法；原接口保持。先保存缺口及构建／查询基线，再记录 CPU／GPU 输入、旧新共存／源退出、两 GPU 实际能力、原生和发布采用；多队列、原地更新与完整流送仍开放。 | 2026-10-27 06:26 +08:00 |
@@ -2446,3 +2447,18 @@ Release 正式构建 59.90 秒。临时 Rust 消费者以 opt-level=3、thin LTO
 ## C-020.3／C-021.2：拥有资源的记录组合
 
 - PA3／DESKTOP-80G4Q60，真实IPv4 192.168.10.13，D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0。已核对最新AGENTS／架构／规范／台账、真实网络和P4占用；PA3原无打开文件，接续CL13380资源Result交付。静态源码仍明确拒绝dataset或拥有Result记录字段，本轮先提交认领，尚未执行基线或修改实现。PA2推进native/reads、application、custom_reduce；Gua纹理会话占用ir.rs及原生／SPIR-V和纹理类型，另有Vulkan refit；本轮只在ir.rs现有owns_resources分类及前端记录所有权处聚焦实施，三方合并保留并发变更。数组／view、原生资源ABI和完整长期目标保持开放；源码、编译、原生执行与释放、P4和Git分别回填。
+
+## C-004：按位复合赋值语法的当前范围（2026-10-27）
+
+BLEngine新图像编码程序在使用`value |= expression`时，当前parser报B011（需要标识符）。原规范／parser未定义按位复合赋值，本轮改用已经存在的`value = value | expression`明确表达同一计算；不是GPU格式实现缺陷，也不新增解析失败后替换源码的路径。按位复合赋值仍属于尚未实现的C风格语法便利能力，不与原生格式支持混同。实际执行机192.168.10.5／GUA、会话01a161fa-3afe-7b63-b04e-e09926616c1a，原始诊断在E:/BLEngineMeasurements/TextureFormats/native.log；保留最初诊断，不用临时消费者进入长期测试链。
+
+## C-003：原生紧凑 texel 格式及真实引擎消费者（2026-10-27）
+
+- 消费事实：原8位源图全部驻留为RGBA32F，使三张皮革8192²及玉纹1024²完整mip文件合计4317337384字节。新资源选择明确格式，不猜测色彩含义、不在失败时替换；RGBA32F继续提供HDR／高精度表示，8位mip量化不冒充无损。
+- `TextureTexels`持有真实float4／RGBA8／R8数据，格式来自负载，CPU描述直接借用原字节；CPU lowering发出真实byte／dword读取、UNORM／sRGB解码后过滤。Vulkan按实际VkFormat创建图像，复制／快照共用真实texel字节与4字节mip起点对齐。`read_with<T>`把闭包结果穿过既有map／unmap生命周期交回，不新增分配、完成状态或下载镜像。BLTEX v2保存实际格式，已有v1按正式RGBA32F布局读取，未知版本／格式拒绝。
+- Release SDK构建26.98秒，hybrid检查2.92秒；performance首次因当前shell未配置MSVC而找不到cl，明确设置已安装14.51.36231的原生工具／SDK Include后检查0.54秒通过，未修改示例构建脚本或添加路径猜测。BLEngine主工作区采用后Release库31.48秒、正式程序21.51秒。主工作区IR／native／optimize存在其他会话差异，按精确基线的本轮hunk交接并保留。
+- 五组1×1／1×7／7×1／3×5／512×256、四格式混合资源、逐轴Clamp／Repeat、每组100003条UV／LOD覆盖完成。GPU全mip原始字节与v2往返相同，原v1 checker仍能读取；float NaN／infinity／negative-zero／subnormal载荷逐位保留。CPU相对独立f64参考最大误差1.0307045543944682e-5，GPU0.0022131233672776918，硬件过滤精度不同，不作采样逐位相同结论。
+- B图像编码器RGBA8、sRGB、R8的100003像素和1像素尾部均实际CPU／GPU执行，本轮最大字节差0。8192² RGBA8 sRGB全部14mip实际payload357913940字节、图像分配357957632字节，原始快照相同。正式四源图基础层逐字节同原RGBA8，奇数7×5面积mip与独立参考的三个8位目标差0、RGBA32F最大1.8471e-7；四张真实GPU图像合计811073536字节且所有mip快照相同。
+- 正式引擎原四字形／相同光照、4K输出／内部8K／64轮完整帧通过；GPU绘制58303.299ms，与旧58118.401ms不作加速结论。后台实际HUD显示1.4FPS、GPU666.10ms、本进程驱动估计2.14GiB／预算11.08GiB；这是当前观察，不证明长期稳定、全产品、天然玉质或完整Stella。旧查看器在06:55:04再次报655360字节分配失败，原始日志保留，未新增重试或声称OOM根因已修复。原始记录E:/BLEngineMeasurements/TextureFormats，当前压缩格式、流送、多目标并行及完整语言仍开放。
+
+- 集成并发已提交CL13377等最新源码后，隔离SDK Release再次通过（1分00秒，保留原应用检查的未使用方法警告），同一五尺寸混合格式原生消费者再次完整通过，采样最大误差／所有mip字节保持；未把其他会话前端／结果改动纳入本轮纹理差异。

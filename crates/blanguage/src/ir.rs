@@ -624,6 +624,17 @@ pub enum Inst {
         dst: Reg,
         texture: TextureSource,
     },
+    TextureFormat {
+        dst: Reg,
+        texture: TextureSource,
+    },
+    TextureRead {
+        dst: Reg,
+        texture: TextureSource,
+        coordinate: [Reg; 2],
+        level: Reg,
+        byte: bool,
+    },
     TextureFetch {
         result: [Reg; 4],
         texture: TextureSource,

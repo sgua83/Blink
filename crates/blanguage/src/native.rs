@@ -334,6 +334,33 @@ impl Emitter<'_> {
                     self.texture_pointer(*texture);
                     self.read_scalar(*dst, 15, 4);
                 }
+                Inst::TextureFormat { dst, texture } => {
+                    self.texture_pointer(*texture);
+                    self.read_scalar(*dst, 15, 16);
+                }
+                Inst::TextureRead {
+                    dst,
+                    texture,
+                    level,
+                    coordinate,
+                    byte,
+                } => {
+                    self.texture_level(*texture, *level);
+                    self.load(coordinate[1]);
+                    self.bytes(&[0x41, 0x8b, 0x0f, 0x48, 0x0f, 0xaf, 0xc1, 0x48, 0x89, 0xc2]);
+                    self.load(coordinate[0]);
+                    self.bytes(&[0x48, 0x01, 0xd0]);
+                    if !byte {
+                        self.bytes(&[0x48, 0xc1, 0xe0, 2]);
+                    }
+                    self.bytes(&[0x4d, 0x8b, 0x7f, 8, 0x49, 0x01, 0xc7]);
+                    if *byte {
+                        self.bytes(&[0x41, 0x0f, 0xb6, 0x07]);
+                        self.store(*dst);
+                    } else {
+                        self.read_scalar(*dst, 15, 0);
+                    }
+                }
                 Inst::TextureFetch {
                     result,
                     texture,
