@@ -123,9 +123,32 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     e.u32(stride);
     e.bytes(&[0x49, 0x8d, 0x34, 0x02, 0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
     e.u32(stride);
-    e.bytes(&[0x49, 0x8d, 0x3c, 0x03, 0xb9]);
-    e.u32(stride / 4);
-    e.bytes(&[0xf3, 0xa5, 0x41, 0xff, 0xc1]);
+    e.bytes(&[0x49, 0x8d, 0x3c, 0x03]);
+    let vectors = stride / 16;
+    if vectors != 0 {
+        if vectors != 1 {
+            e.bytes(&[0xb9]);
+            e.u32(vectors);
+        }
+        let copy = e.code.len();
+        // XMM0 属于原范围 ABI 的易失寄存器；只读取当前记录内的完整 16 字节块。
+        e.bytes(&[
+            0x0f, 0x10, 0x06, 0x0f, 0x11, 0x07, 0x48, 0x83, 0xc6, 0x10, 0x48, 0x83, 0xc7, 0x10,
+        ]);
+        if vectors != 1 {
+            e.bytes(&[0xff, 0xc9]);
+            let again = e.jump(Some(0x85));
+            e.patch(again, copy);
+        }
+    }
+    if stride % 16 >= 8 {
+        e.bytes(&[0x48, 0xa5]);
+    }
+    // 记录步长是四字节的倍数；只复制实际剩余的一字，不能宽读下一条记录。
+    if stride % 8 != 0 {
+        e.bytes(&[0xa5]);
+    }
+    e.bytes(&[0x41, 0xff, 0xc1]);
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
