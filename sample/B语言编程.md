@@ -20,7 +20,7 @@ Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基
 
 `.h` 列出公开接口，`.b` 写具体做法。先照着第一例把两个文件编译成功；之后再逐步理解名字、类型和函数。修改 B 源码以后，重新编译自己的 exe，再运行它。
 
-前十四章的应用已使用 **Blink P4 CL13085 的 Release 编译器**实际构建与执行；第十五至十九章的动态数据与 CPU／GPU 应用使用 **CL13172 的 Release 编译器**执行。原始输出和源码哈希见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
+基础应用使用 **Blink P4 CL13085 的 Release 编译器**实际构建与执行；第四、十一章的小数与坐标显示补用 **CL13181**；第十五至十九章的动态数据与 CPU／GPU 应用使用 **CL13172**。这些运行都使用正式优化版本。原始输出和源码哈希见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
 
 ## 第一章 先把 Blink 准备好
 
@@ -208,7 +208,8 @@ u32 main() on cpu {
     println(count);
     println(change);
     println(passed);
-    println(temperature > 18.0);
+    println(temperature);
+    println(7.0 / 2.0);
     return 0;
 }
 ```
@@ -217,7 +218,8 @@ u32 main() on cpu {
 
 ```powershell
 .\target\release\blc.exe build-exe `
-    sample/beginner/types.b target/types.exe
+    sample/beginner/types.b `
+    target/types.exe
 .\target\types.exe
 ```
 
@@ -227,25 +229,29 @@ u32 main() on cpu {
 3
 -3
 true
-true
+21.5
+3.5
 ```
 
 ![types 的实际构建与输出](figures/beginner-app-types.svg)
 
 *运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
-四行依次说明：七除二的整数商是三；负七除二向零取整得到负三；七十五达到六十分；二十一点五度高于十八度。
+前两行是整数除法，分别得到三和负三；第三行说明七十五达到六十分。第四行直接显示温度 21.5，第五行显示小数除法的结果 3.5。
 
-### 4.3 小数运算和小数显示分开理解
+### 4.3 先转换，再相除
 
 `7.0 / 2.0` 得到 f32 的 3.5。`7 / 2` 是整数除法，得到三；后来再转成 f32，只会得到 3.0。
 
 ```b
 u32 count = 7;
 f32 average = f32(count) / 2.0;
+println(average);
 ```
 
-这里先转换，再相除，average 得到 3.5。当前 println 可直接显示 u32、i32 和 bool，尚不能格式化 f32；因此本例显示的是温度判断的真假。f32 计算已经可用，不能把暂缺小数显示误解为不能计算小数。
+这里先把七转成小数，再除以 2.0，average 得到 3.5，println 直接显示这个值。转换发生在除法之前，才不会先丢掉小数部分。
+
+println 可以显示 u32、i32、f32 和 bool。f32 表示的是有限精度的小数；显示出更多数字不会让原来的近似值变成无限精度。后面的坐标计算也会直接显示分量。
 
 ### 4.4 常用运算符
 
@@ -669,12 +675,12 @@ u32 main() on cpu {
     float2 position = float2(1.0, 2.0);
     float2 speed = float2(0.0, 2.0);
     float2 moved = position + speed * 0.5;
-    println(moved.x == 1.0);
-    println(moved.y == 3.0);
+    println(moved.x);
+    println(moved.y);
     float2x2 turn = float2x2(0.0, -1.0, 1.0, 0.0);
     float2 rotated = turn * position;
-    println(rotated.x == -2.0);
-    println(rotated.y == 1.0);
+    println(rotated.x);
+    println(rotated.y);
     return 0;
 }
 ```
@@ -683,26 +689,29 @@ u32 main() on cpu {
 
 ```powershell
 .\target\release\blc.exe build-exe `
-    sample/beginner/vectors.b target/vectors.exe
+    sample/beginner/vectors.b `
+    target/vectors.exe
 .\target\vectors.exe
 ```
 
 实际终端输出：
 
 ```text
-true
-true
-true
-true
+1
+3
+-2
+1
 ```
 
 ![vectors 的实际构建与输出](figures/beginner-app-vectors.svg)
 
 *运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
-四行 true 依次回答：移动后的 x 是否为一、y 是否为三，旋转后的 x 是否为负二、y 是否为一。这些数都能在本例中精确表达；一般小数算法不能一律用相等判断处理近似误差。
+前两行是 moved 的 x、y：一、三。后两行是 rotated 的 x、y：负二、一。它们分别对应移动和旋转得到的两个坐标。
 
-当前 stdout 尚不提供 f32 或整向量格式化。本例把坐标的具体数值写在推导中，并直接显示相应判断。后续能力补齐后，可直接显示坐标；计算写法无需因此改变。
+println 每次显示一个数，所以先写 moved.x，再写 moved.y。显示为 1 的这一项仍是 f32。小数部分为零时，显示可以省去小数点和后面的零。
+
+沿移动过程手算：速度乘半得到 `(0.0,1.0)`，再加起点 `(1.0,2.0)`，得到 `(1.0,3.0)`。旋转使用原来的 position，把 x、y 换成 -y、x，所以得到 `(-2.0,1.0)`。代码显示的值与这两条计算过程一致。
 
 ## 第十二章 常量与分开的文件
 
@@ -1658,7 +1667,7 @@ CPU 与 GPU 的选择改变了执行位置和数据交接，成绩规则没有�
 | 读取前没有内容 | 分支与各字段是否确实完成赋值 |
 | 下标范围不明 | 固定下标或 `0..length` 是否表达了有效范围 |
 | 模块找不到 | import、模块名与编译时搜索根目录 |
-| println 拒绝参数 | 当前只支持 u32、i32、bool，且属于 CPU 输出 |
+| println 拒绝参数 | 参数是否为 u32、i32、f32 或 bool 标量，调用是否在 CPU 上 |
 
 ### 20.2 容易混淆的几对写法
 
@@ -1686,7 +1695,7 @@ return 0;
 
 ### 20.4 当前能力与后续学习
 
-当前 Windows x64 独立应用支持普通函数、条件、顺序循环、记录、固定数组、向量和矩阵计算，支持应用拥有动态 dataset、调用 CPU／GPU program、显式传输和作用域释放。标准输出接受整数和真假值。文本、f32 格式化、键盘输入、文件、其他平台及更多资源类型仍在开发，完整状态以语言规范与问题列表为准。
+当前 Windows x64 独立应用支持普通函数、条件、顺序循环、记录、固定数组、向量和矩阵计算，支持应用拥有动态 dataset、调用 CPU／GPU program、显式传输和作用域释放。标准输出接受整数、小数和真假值。文本、键盘输入、文件、其他平台及更多资源类型仍在开发，完整状态以语言规范与问题列表为准。
 
 C/C++ 与 Rust 可以继续作为同等正式的宿主，通过生成 DLL 或原生接口调用 B 计算。混合编程是项目可选择的整合方式，详见《Blink 和 Rust 混合编程》，不影响前面普通 B 应用的独立使用。
 
@@ -1727,7 +1736,7 @@ dataset 创建后位于 CPU 一侧。CPU program 直接借用；GPU program 使�
 
 ### B.1 前五题
 
-前两题分别得到五十六、二十二。第三题整数商为三，小数除法得到 3.5；当前 println 尚不能直接格式化小数。
+前两题分别得到五十六、二十二。第三题整数商为三，小数除法得到 3.5，可直接用 println 显示。
 
 第四题可使用顺序循环，循环中让 value 从一到四，显示 `value * value`。第五题比较 `score >= 60`，依次得到 false、true、true。
 
@@ -1743,7 +1752,7 @@ dataset 创建后位于 CPU 一侧。CPU program 直接借用；GPU program 使�
 |---|---|
 | `start.h / start.b` | 第一个程序，直接显示 3 |
 | `names.h / names.b` | 变量、let 和赋值 |
-| `types.h / types.b` | 整数、负数、真假与小数比较 |
+| `types.h / types.b` | 整数、负数、真假与小数输出 |
 | `choice.h / choice.b` | if 与等级判断 |
 | `loops.h / loops.b` | for、while 和 break |
 | `functions.h / functions.b` | 函数与提前返回 |

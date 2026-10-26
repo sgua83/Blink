@@ -423,5 +423,37 @@
       "sample/beginner/scores_gpu.h": "586672a7c121c731ccf48910053846adcfa831c82af8d163fa9408dc4d0c1652",
       "sample/beginner/scores_gpu.b": "7c753a1c0a05682524cde54ade11218aac07694f93f93a8e1a9b6c8f2d32fa2b"
     }
+  },
+  "floating_applications": {
+    "compiler_p4": 13181,
+    "configuration": "Release",
+    "compiler_sha256": "a1a2f27e22bb6d3cf2477e657c513e68168fca45da55fe9cf61f39b0b58dd660",
+    "machine": "Gua",
+    "ipv4": "192.168.10.5",
+    "date": "2026-10-26T20:17:05.759015",
+    "cases": [
+      {
+        "name": "types",
+        "build_command": "B:\\BLanguage\\target\\release\\blc.exe build-exe sample/beginner/types.b target/types.exe",
+        "run_command": "B:\\BLanguage\\target\\types.exe",
+        "stdout": "3\n-3\ntrue\n21.5\n3.5\n",
+        "stderr": "",
+        "exit_code": 0,
+        "source_sha256": "0f2f0970b64577ea1a4cf8c0299c45d0a535ddad503665ee4b7645006bfeae0e",
+        "interface_sha256": "80d2626ddda72fce0ab05353ab195510db9cfd3c515be396d99a132e6226fef2",
+        "exe_sha256": "e061de493ec2e0fb98ca4accef57b00378fe9b06f211173b4aaa4957fe88fdf0"
+      },
+      {
+        "name": "vectors",
+        "build_command": "B:\\BLanguage\\target\\release\\blc.exe build-exe sample/beginner/vectors.b target/vectors.exe",
+        "run_command": "B:\\BLanguage\\target\\vectors.exe",
+        "stdout": "1\n3\n-2\n1\n",
+        "stderr": "",
+        "exit_code": 0,
+        "source_sha256": "a13202ab16ec885a9427038a334108cf60a7eabd5848eabb6bdae7414f852c2f",
+        "interface_sha256": "75019e5b51efe179fe2905eefb1c789a69f808cdca553fb725ba202f11c0f2a8",
+        "exe_sha256": "b5f3cf63603ddf7ed0c2b31abf89ef0de0b0795df143e251e34e9d5ad208b4cf"
+      }
+    ]
   }
 }

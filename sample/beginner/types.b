@@ -8,6 +8,7 @@ u32 main() on cpu {
     println(count);
     println(change);
     println(passed);
-    println(temperature > 18.0);
+    println(temperature);
+    println(7.0 / 2.0);
     return 0;
 }
