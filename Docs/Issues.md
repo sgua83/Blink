@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-005 的 i32 有符号区间证明：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；仅处理 `crates/blanguage/src/check/bounds.rs` 的有符号比较、逐分量区间与非零证明传递及本台账。避让 `BLanguage_Gua_Application` 的 main／println／build-exe、主 IR 与后端入口；其他 C-005 缺口不在本轮范围。已核对真实 IP 和其他打开文件；尚未实现、编译或原生验证，源码未提交、Git 未发布。 | 2026-10-26 11:50 +08:00 |
 | C-010；C-012 的数值／bool 标准输出；C-016 的原生应用构建入口：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | 普通 CPU main、原生 x64／PE 启动与链接、println、build-exe；`B:\BLanguage\Saved\ApplicationWorkspace`，P4 client `BLanguage_Gua_Application`。代码实现中，尚未完成本轮编译、原生验证或源码提交；动态 dataset、通用文本／文件库与跨平台不在本轮修复范围内。 | 2026-10-26 11:42 +08:00 |
 
 ## 已处理
