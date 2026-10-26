@@ -10,6 +10,7 @@ mod bounds;
 mod compact;
 mod constant;
 use constant::constant_value;
+mod application;
 mod contracts;
 mod cooperative;
 mod custom_reduce;
@@ -27,6 +28,7 @@ mod segmented_reduce;
 mod selection;
 mod sort;
 mod subgroup;
+pub(crate) use application::compile_application;
 mod texture;
 mod tile;
 mod view;
@@ -1927,6 +1929,9 @@ impl<'a> Builder<'a> {
         })
     }
     fn call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if name == "println" {
+            return self.println(args, span).map(Some);
+        }
         if name == "texture_sample" {
             return self.texture_sample(args, span).map(Some);
         }

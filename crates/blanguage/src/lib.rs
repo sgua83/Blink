@@ -1,4 +1,5 @@
 //! BLanguage .h/.b 前端、类型和访问检查、并行 IR 与原生代码生成。
+pub mod application;
 pub mod ast;
 mod check;
 pub mod dll;
@@ -86,6 +87,7 @@ pub struct Compilation {
     pub programs: Vec<ExecutableProgram>,
     pub templates: Vec<TemplateProgram>,
     pub open_generics: Vec<String>,
+    pub applications: Vec<application::Application>,
 }
 pub(crate) struct World {
     sources: BTreeMap<String, Source>,
@@ -130,7 +132,24 @@ pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
 }
 /// 选择公开 program 的具体静态入口，例如 shade<13> 或 run<float3,17>。
 pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Compilation> {
-    compile_module(path, module_root, true, Some(entry))
+    compile_module(
+        path,
+        module_root,
+        true,
+        Some((FunctionKind::Program, entry)),
+    )
+}
+/// 编译独立 CPU 应用的普通值入口；启动与平台链接由 application 模块拥有。
+pub fn compile_application(
+    path: &Path,
+    module_root: &Path,
+    entry: &str,
+) -> Result<application::Application> {
+    Ok(
+        compile_module(path, module_root, false, Some((FunctionKind::Value, entry)))?
+            .applications
+            .remove(0),
+    )
 }
 /// 库接口与完整导入闭包同样检查；无需为函数库伪造可执行 program。
 pub fn check(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -140,7 +159,7 @@ fn compile_module(
     path: &Path,
     module_root: &Path,
     require_program: bool,
-    requested: Option<&str>,
+    requested: Option<(FunctionKind, &str)>,
 ) -> Result<Compilation> {
     let mut world = World {
         sources: BTreeMap::new(),
@@ -152,9 +171,9 @@ fn compile_module(
     let mut loaded = BTreeSet::new();
     let mut visiting = BTreeSet::new();
     let entry = load(path, module_root, &mut world, &mut loaded, &mut visiting)?;
-    let selected = if let Some(request) = requested {
+    let selected = if let Some((kind, request)) = requested {
         let source = Source {
-            path: PathBuf::from("<program-entry>"),
+            path: PathBuf::from("<entry>"),
             text: request.into(),
         };
         let (name, arguments) = parser::entry(source.clone())?;
@@ -164,16 +183,17 @@ fn compile_module(
                 source: source.clone(),
                 span: Span::default(),
                 code: "B240",
-                message: format!("没有公开 program {name}"),
+                message: format!("没有公开入口 {name}"),
             })?;
         let definition = &world.functions[&key];
-        if !definition.public
-            || definition.module != entry
-            || definition.function.kind != FunctionKind::Program
-        {
-            return source.fail(Span::default(), "B240", "入口选择需要本模块的公开 program");
+        if !definition.public || definition.module != entry || definition.function.kind != kind {
+            return source.fail(
+                Span::default(),
+                "B240",
+                "入口选择需要本模块对应种类的公开函数",
+            );
         }
-        Some((key, arguments))
+        Some((key, arguments, kind))
     } else {
         None
     };
@@ -206,10 +226,11 @@ fn compile_module(
 
     let mut programs = Vec::new();
     let mut templates = Vec::new();
+    let mut applications = Vec::new();
     // 有限声明逐项检查；选定的入口与开放 const 声明在具体使用处实例化。
     for (base, definition) in &world.functions {
         generics::validate_declaration(definition)?;
-        if selected.as_ref().is_some_and(|(key, _)| key == base) {
+        if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
             continue;
         }
         for instance in generics::instances(&world, base, definition)? {
@@ -231,7 +252,7 @@ fn compile_module(
             }
         }
     }
-    if let Some((key, arguments)) = selected {
+    if let Some((key, arguments, kind)) = selected {
         let definition = &world.functions[&key];
         let instance = check::generics::specialize(
             &world,
@@ -241,12 +262,16 @@ fn compile_module(
             definition,
             definition.function.span,
         )?;
-        let p = check::compile_program(&world, &instance)
-            .map_err(|error| instance_error(error, &instance.name))?;
-        if p.prefix_requirements.is_empty() {
-            programs.push(ExecutableProgram(p));
+        if kind == FunctionKind::Value {
+            applications.push(check::compile_application(&world, &instance)?);
         } else {
-            templates.push(TemplateProgram(p));
+            let p = check::compile_program(&world, &instance)
+                .map_err(|error| instance_error(error, &instance.name))?;
+            if p.prefix_requirements.is_empty() {
+                programs.push(ExecutableProgram(p));
+            } else {
+                templates.push(TemplateProgram(p));
+            }
         }
     }
     let open_generics: Vec<_> = world
@@ -285,6 +310,7 @@ fn compile_module(
         programs,
         templates,
         open_generics,
+        applications,
     })
 }
 fn instance_error(mut error: Diagnostic, name: &str) -> Diagnostic {

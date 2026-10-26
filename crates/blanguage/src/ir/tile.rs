@@ -408,6 +408,7 @@ impl Inst {
             | Self::Load { dst, .. }
             | Self::LoadLocalIndexed { dst, .. }
             | Self::Subgroup { dst, .. }
+            | Self::Print { dst, .. }
             | Self::TileLoad { dst, .. }
             | Self::ViewLoad { dst, .. }
             | Self::Unary { dst, .. }
@@ -471,6 +472,7 @@ impl Inst {
             Self::Subgroup {
                 value, argument, ..
             } => value.iter().chain(argument).copied().collect(),
+            Self::Print { value, .. } => vec![*value],
             Self::ViewLoad { address, index, .. } => vec![address[0], address[1], *index],
             Self::Load { index, .. } | Self::TileLoad { index, .. } => vec![*index],
             Self::Store { index, value, .. } => vec![*index, *value],

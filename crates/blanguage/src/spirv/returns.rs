@@ -20,7 +20,7 @@ fn contains_exit(code: &[Inst]) -> bool {
     })
 }
 impl Emitter<'_> {
-    pub(super) fn function_scope(&mut self, body: &[Inst]) {
+    pub(super) fn function_scope(&mut self, body: &[Inst]) -> Result<(), &'static str> {
         let merge = self.id();
         let begin = self.id();
         let selector = self.constant(Scalar::U32, 0);
@@ -31,11 +31,12 @@ impl Emitter<'_> {
             merge,
             loops: Vec::new(),
         });
-        if self.block(body, None) {
+        if self.block(body, None)? {
             self.emit(249, &[merge]);
         }
         self.return_scopes.pop();
         self.emit(248, &[merge]);
+        Ok(())
     }
     pub(super) fn function_exit(&mut self) {
         let label = self.current_label;

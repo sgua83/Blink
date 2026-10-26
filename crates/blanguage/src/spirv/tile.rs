@@ -75,7 +75,7 @@ impl Emitter<'_> {
             self.emit(62, &[at, raw]);
         }
     }
-    pub(super) fn tile_phases(&mut self, active: u32) {
+    pub(super) fn tile_phases(&mut self, active: u32) -> Result<(), &'static str> {
         for phase in self.stage.tile_phases() {
             let before = self.current_label;
             let execute = self.id();
@@ -83,7 +83,7 @@ impl Emitter<'_> {
             self.emit(247, &[end, 0]);
             self.emit(250, &[active, execute, end]);
             self.emit(248, &[execute]);
-            self.block(phase.code, None);
+            self.block(phase.code, None)?;
             if let Some(TileStep::Publish(publication)) = phase.step {
                 self.publish_values(publication);
             }
@@ -108,5 +108,6 @@ impl Emitter<'_> {
                 None => {}
             }
         }
+        Ok(())
     }
 }

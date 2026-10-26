@@ -14,6 +14,8 @@ pub fn optimize(program: &mut Program) {
                 && matches!(stage.operation, Operation::Map)
                 && previous.subgroup_operations().is_empty()
                 && stage.subgroup_operations().is_empty()
+                && !previous.has_standard_output()
+                && !stage.has_standard_output()
                 && !previous.has_tile_scope()
                 && !stage.has_tile_scope()
                 && previous.domain == stage.domain
@@ -161,7 +163,7 @@ pub fn optimize(program: &mut Program) {
     stages.retain(|stage| !matches!(stage.operation, Operation::Map) || !stage.code.is_empty());
     program.stages = stages;
 }
-fn value_code(value: &mut ValueCode) {
+pub(crate) fn value_code(value: &mut ValueCode) {
     value_flow::run_value(&mut value.code, &value.registers, &mut value.outputs);
     let mut needed = value
         .outputs
@@ -270,6 +272,7 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
             Inst::LoadIndexed { dst, .. }
             | Inst::Load { dst, .. }
             | Inst::Subgroup { dst, .. }
+            | Inst::Print { dst, .. }
             | Inst::TileLoad { dst, .. }
             | Inst::ViewLoad { dst, .. }
             | Inst::Unary { dst, .. }
@@ -361,6 +364,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *index = r(*index);
             *value = r(*value);
         }
+        Inst::Print { value, .. } => *value = r(*value),
         Inst::Subgroup {
             value, argument, ..
         } => {
@@ -430,7 +434,7 @@ fn dce(
             *result = retained;
         }
         let results = i.results();
-        if !matches!(i, Inst::Atomic(_) | Inst::Append(_))
+        if !matches!(i, Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. })
             && !results.is_empty()
             && !results.iter().any(|r| needed.contains(&Register(*r)))
         {
@@ -519,6 +523,7 @@ fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
         | Inst::Store { .. }
         | Inst::Atomic(_)
         | Inst::Append(_)
+        | Inst::Print { .. }
         | Inst::TilePublish(_)
         | Inst::TileCollective(_)
         | Inst::TileBarrier => true,

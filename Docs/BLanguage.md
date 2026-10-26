@@ -43,7 +43,33 @@ program integrate<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 stren
 
 这段源码直接生成 CPU 范围函数与 GPU 计算程序。`body` 是当前域的一个独占元素视图；它不表示可以随意访问其他线程正在修改的数据。`on compute` 表示两个后端都可执行，`on cpu`／`on gpu` 则限制设备；不能自动切换设备来掩盖执行失败。
 
-`program` 可以组合其他 program，编译器展开阶段依赖。只接收普通值的函数是无共享写副作用的逐元素计算，支持结构体、向量和不可变 view 参数；函数的资源访问由 read dataset、atomic dataset、atomic 字段与 write／inout 独占位置借用显式声明。两者按 CPU／compute／GPU 目标静态内联，不递归。普通函数可以在条件与顺序循环中提前 return；有返回值函数的所有可继续到函数末尾的路径都必须返回匹配类型，void 函数可自然结束或以 return; 结束。return 只退出当前函数，不退出 parallel 实例。cooperative 函数暂时仍保持末尾返回。
+`program` 可以组合其他 program，编译器展开阶段依赖。只接收普通值的函数支持结构体、向量和不可变 view 参数；函数的资源访问由 read dataset、atomic dataset、atomic 字段与 write／inout 独占位置借用显式声明。两者按 CPU／compute／GPU 目标静态内联，不递归。普通函数可以在条件与顺序循环中提前 return；有返回值函数的所有可继续到函数末尾的路径都必须返回匹配类型，void 函数可自然结束或以 return; 结束。return 只退出当前函数，不退出 parallel 实例。cooperative 函数暂时仍保持末尾返回。
+
+## 独立 CPU 应用与标准输出（2026-10-26）
+
+应用入口是 `.h` 公开、`.b` 实现的无参数普通函数，返回 `u32` 或 `i32`，显式声明 `on cpu`：
+
+```c
+module applications.start;
+
+u32 main() on cpu {
+    if (!println(1 + 2)) { return 1; }
+    return 0;
+}
+```
+
+对应 `.h` 声明 `module applications.start; u32 main() on cpu;`。直接构建与运行：
+
+```powershell
+.\target\release\blc.exe build-exe sample/applications/start.b target/applications/start.exe
+.\target\applications\start.exe
+```
+
+正常输出 `3` 和 LF 换行，进程退出码为 `0`。`build-exe <module.b> <output.exe> [module-root] [entry=main]` 默认以源文件所在目录作为模块根、选择本模块公开的 `main`；显式入口也沿用具体类型／const 参数选择。返回值的原始 32 位作为退出码，`i32(-7)` 保留相同比特。入口参数、其他返回类型或其他执行目标报 B262，私有或不存在的入口沿用 B240。函数体继续按既有类型、返回、初始化和索引规则检查。
+
+`bool println(value)` 当前接受单个 `u32`、`i32` 或 `bool` 标量。整数使用十进制，bool 使用 `true／false`，末尾附加一个 LF；完整写出返回 true，写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU program 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、f32、向量等当前不支持的类型报 B261。
+
+生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，超越函数使用系统 UCRT。运行无需 B 源码、编译器、blrun 或手写宿主。当前尚未提供应用动态 dataset／CPU／GPU program 组织、通用字符串与 UTF-8 库、输入、文件、命令行参数、外部库导入、其他平台／架构及源码调试。源码示例见 [独立应用](../sample/applications/README.md)。
 
 ## 数据能力和编译期检查
 

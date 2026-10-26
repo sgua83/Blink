@@ -61,7 +61,7 @@ impl Emitter<'_> {
         kernel: &ReductionKernel,
         left: &[u32],
         right: &[u32],
-    ) -> Vec<u32> {
+    ) -> Result<Vec<u32>, &'static str> {
         for reg in
             kernel.stage.registers.len() - r.combine.registers.len()..kernel.stage.registers.len()
         {
@@ -75,8 +75,8 @@ impl Emitter<'_> {
         for (reg, value) in kernel.right.iter().zip(right) {
             self.from_word(*reg, *value);
         }
-        self.block(&kernel.stage.code[kernel.project_end..], None);
-        kernel.result.iter().map(|reg| self.to_word(*reg)).collect()
+        self.block(&kernel.stage.code[kernel.project_end..], None)?;
+        Ok(kernel.result.iter().map(|reg| self.to_word(*reg)).collect())
     }
     fn custom_input(
         &mut self,
@@ -89,7 +89,7 @@ impl Emitter<'_> {
         active: u32,
         summary: Summary,
         capture: bool,
-    ) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>), &'static str> {
         let k = r.ty.components.len();
         let words = summary.words(k);
         let head_word = summary.head();
@@ -98,7 +98,7 @@ impl Emitter<'_> {
         self.block(
             &kernel.stage.code[kernel.invariant_end..kernel.initialize_end],
             None,
-        );
+        )?;
         let mut identity: Vec<_> = kernel.initial.iter().map(|r| self.to_word(*r)).collect();
         for _ in k..words {
             identity.push(self.constant(Scalar::U32, 0));
@@ -132,7 +132,7 @@ impl Emitter<'_> {
         self.block(
             &kernel.stage.code[kernel.initialize_end..kernel.project_end],
             None,
-        );
+        )?;
         for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
             self.regs[*dst] = self.value(*src);
         }
@@ -185,7 +185,7 @@ impl Emitter<'_> {
             Vec::new()
         };
         self.scan_barrier();
-        (own, identity, input)
+        Ok((own, identity, input))
     }
     fn custom_merge(
         &mut self,
@@ -194,7 +194,7 @@ impl Emitter<'_> {
         left: &[u32],
         right: &[u32],
         summary: Summary,
-    ) -> Vec<u32> {
+    ) -> Result<Vec<u32>, &'static str> {
         if matches!(summary, Summary::Plain) {
             return self.custom_pair(r, kernel, left, right);
         }
@@ -211,7 +211,7 @@ impl Emitter<'_> {
         self.emit(248, &[keep]);
         self.emit(249, &[end]);
         self.emit(248, &[combine]);
-        let merged = self.custom_pair(r, kernel, &left[..k], &right[..k]);
+        let merged = self.custom_pair(r, kernel, &left[..k], &right[..k])?;
         let combined = self.current_label;
         self.emit(249, &[end]);
         self.emit(248, &[end]);
@@ -232,7 +232,7 @@ impl Emitter<'_> {
             self.emit(128, &[u, count, left[k + 1], right[k + 1]]);
             values.push(count);
         }
-        values
+        Ok(values)
     }
     fn custom_tree(
         &mut self,
@@ -245,7 +245,7 @@ impl Emitter<'_> {
         remaining: u32,
         down: bool,
         summary: Summary,
-    ) {
+    ) -> Result<(), &'static str> {
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let mask = self.constant(Scalar::U32, width * 2 - 1);
@@ -284,7 +284,7 @@ impl Emitter<'_> {
             self.custom_merge(r, kernel, &right, &left, summary)
         } else {
             self.custom_merge(r, kernel, &left, &right, summary)
-        };
+        }?;
         self.custom_write(&z, &values);
         self.emit(249, &[merged]);
         self.emit(248, &[absent]);
@@ -296,6 +296,7 @@ impl Emitter<'_> {
         self.emit(249, &[end]);
         self.emit(248, &[end]);
         self.scan_barrier();
+        Ok(())
     }
     fn custom_remaining(&mut self, local: u32, count: u32) -> u32 {
         let u = self.types[&Scalar::U32];
@@ -328,7 +329,7 @@ impl Emitter<'_> {
         pointer: u32,
         active: u32,
         count: u32,
-    ) {
+    ) -> Result<(), &'static str> {
         self.custom_input(
             r,
             kernel,
@@ -339,7 +340,7 @@ impl Emitter<'_> {
             active,
             Summary::Plain,
             false,
-        );
+        )?;
         let remaining = self.custom_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
@@ -352,12 +353,13 @@ impl Emitter<'_> {
                 remaining,
                 false,
                 Summary::Plain,
-            );
+            )?;
         }
         let owner = self.custom_owner(local, active, count);
         let last = self.constant(Scalar::U32, 63);
         let root = self.custom_node(r.ty.components.len(), shared, pointer, last);
         self.reduction_output(&r.fields, &r.ty, &root, owner);
+        Ok(())
     }
     pub(super) fn custom_scan(
         &mut self,
@@ -369,20 +371,20 @@ impl Emitter<'_> {
         pointer: u32,
         active: u32,
         count: u32,
-    ) {
+    ) -> Result<(), &'static str> {
         let r = &scan.values;
         let k = r.ty.components.len();
         let words = scan.summary_words();
         let summary = Summary::scan(scan.head_word);
         let (own, identity, input) = self.custom_input(
             r, kernel, tail, local, shared, pointer, active, summary, false,
-        );
+        )?;
         let head = input.first().copied();
         let remaining = self.custom_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
                 r, kernel, local, shared, pointer, width, remaining, false, summary,
-            );
+            )?;
         }
         let owner = self.custom_owner(local, active, count);
         let width = self.constant(Scalar::U32, 64);
@@ -405,7 +407,7 @@ impl Emitter<'_> {
         for width in [32, 16, 8, 4, 2, 1] {
             self.custom_tree(
                 r, kernel, local, shared, pointer, width, remaining, true, summary,
-            );
+            )?;
         }
         let values = self.custom_read(&own);
         let write = self.id();
@@ -458,6 +460,7 @@ impl Emitter<'_> {
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
+        Ok(())
     }
     pub(super) fn custom_segmented_reduce(
         &mut self,
@@ -469,7 +472,7 @@ impl Emitter<'_> {
         pointer: u32,
         active: u32,
         count: u32,
-    ) {
+    ) -> Result<(), &'static str> {
         let r = &reduction.values;
         let summary = Summary::Counted(reduction.head_word);
         let words = reduction.summary_words();
@@ -491,11 +494,11 @@ impl Emitter<'_> {
             let prefix = self.custom_read(&prefix);
             let target = self.custom_address(words, r.fields.target, self.index);
             let value = self.custom_read(&target);
-            let total = self.custom_merge(r, kernel, &prefix, &value, summary);
+            let total = self.custom_merge(r, kernel, &prefix, &value, summary)?;
             self.custom_write(&target, &total);
             self.emit(249, &[end]);
             self.emit(248, &[end]);
-            return;
+            return Ok(());
         }
         let (own, identity, input) = self.custom_input(
             r,
@@ -507,12 +510,12 @@ impl Emitter<'_> {
             active,
             summary,
             pass == Pass::ScanRootAdd,
-        );
+        )?;
         let remaining = self.custom_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
                 r, kernel, local, shared, pointer, width, remaining, false, summary,
-            );
+            )?;
         }
         let owner = self.custom_owner(local, active, count);
         let save = self.id();
@@ -550,13 +553,13 @@ impl Emitter<'_> {
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
         if pass == Pass::Main {
-            return;
+            return Ok(());
         }
         self.scan_barrier();
         for width in [32, 16, 8, 4, 2, 1] {
             self.custom_tree(
                 r, kernel, local, shared, pointer, width, remaining, true, summary,
-            );
+            )?;
         }
         let result = self.custom_read(&own);
         let write = self.id();
@@ -568,7 +571,7 @@ impl Emitter<'_> {
             let target = self.custom_address(words, r.fields.target, self.index);
             self.custom_write(&target, &result);
         } else {
-            let inclusive = self.custom_merge(r, kernel, &result, &input, summary);
+            let inclusive = self.custom_merge(r, kernel, &result, &input, summary)?;
             let first_group = self.id();
             self.emit(170, &[b, first_group, group, zero]);
             let load = self.id();
@@ -590,7 +593,7 @@ impl Emitter<'_> {
                     p
                 })
                 .collect();
-            let total = self.custom_merge(r, kernel, &prefix, &inclusive, summary);
+            let total = self.custom_merge(r, kernel, &prefix, &inclusive, summary)?;
             let next = self.id();
             self.emit(128, &[u, next, self.index, one]);
             let last = self.id();
@@ -642,6 +645,7 @@ impl Emitter<'_> {
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
+        Ok(())
     }
     fn custom_target(&mut self, r: &CustomReduction, index: u32) -> Vec<u32> {
         r.ty.components
@@ -661,7 +665,7 @@ impl Emitter<'_> {
         scan: &CustomScan,
         kernel: &ReductionKernel,
         root: bool,
-    ) {
+    ) -> Result<(), &'static str> {
         let r = &scan.values;
         let words = scan.summary_words();
         let width = self.constant(Scalar::U32, 64);
@@ -716,11 +720,12 @@ impl Emitter<'_> {
             } else {
                 Summary::scan(scan.head_word)
             },
-        );
+        )?;
         self.custom_write(&target, &values);
         if let Some(end) = end {
             self.emit(249, &[end]);
             self.emit(248, &[end]);
         }
+        Ok(())
     }
 }

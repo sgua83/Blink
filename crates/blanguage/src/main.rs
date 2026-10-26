@@ -12,12 +12,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.is_empty() {
         println!(
-            "Blink compiler\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nblc build-dll <module.b> <output.dll> [module-root] [program<args>]"
+            "Blink compiler\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nblc build-dll <module.b> <output.dll> [module-root] [program<args>]\nblc build-exe <module.b> <output.exe> [module-root] [entry=main]"
         );
         return Ok(());
     }
     let command = &args[0];
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
+    if command == "build-exe" {
+        let root = args
+            .get(3)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.parent().unwrap().into());
+        let entry = args.get(4).map(String::as_str).unwrap_or("main");
+        let application = blanguage::compile_application(&path, &root, entry)?;
+        let output = PathBuf::from(args.get(2).ok_or("缺少 .exe 输出路径")?);
+        application.build(&output)?;
+        println!("application {} -> {}", application.name(), output.display());
+        return Ok(());
+    }
     let has_output = matches!(command.as_str(), "build" | "build-dll");
     let root = if has_output { args.get(3) } else { args.get(2) }
         .map(PathBuf::from)

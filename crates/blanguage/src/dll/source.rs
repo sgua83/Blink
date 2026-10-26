@@ -160,7 +160,7 @@ variants!(Inst {
     TextureLevels {dst, texture}, TextureFetch {result, texture, coordinate, level},
     LoadIndexed {dst, source, offset, word}, StoreIndexed {source, offset, word, value},
     Atomic(a), Append(a), TileBarrier, TilePublish(p), TileCollective(c), TileLength(r), TileLane(r),
-    TileLoad {dst, tile, index, word}, Subgroup {dst, op, value, argument},
+    TileLoad {dst, tile, index, word}, Subgroup {dst, op, value, argument}, Print {dst, value},
     ViewLoad {dst, address, index, stride, word},
     RayQuery {scene, origin, direction, minimum, maximum, result},
     Constant(r, s, v), Index(r), Uniform(r, offset), LoadLocal(r, slot), StoreLocal(slot, r),

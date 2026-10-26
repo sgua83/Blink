@@ -52,9 +52,14 @@ impl Graph {
         }
     }
     fn together(&mut self, live: &BTreeSet<PrivateSlot>) {
-        for a in live {
-            for b in live.range(..a) {
-                self.edge(self.id(*a), self.id(*b));
+        let allocated: Vec<_> = live
+            .iter()
+            .map(|slot| self.id(*slot))
+            .filter(|id| !self.addressable.contains(id))
+            .collect();
+        for (i, &a) in allocated.iter().enumerate() {
+            for &b in &allocated[..i] {
+                self.edge(a, b);
             }
         }
     }
@@ -126,10 +131,12 @@ impl Graph {
                         definitions.push(Local(*slot));
                     }
                     for dst in &definitions {
-                        for other in &live {
-                            self.edge(self.id(*dst), self.id(*other));
-                        }
                         let id = self.id(*dst);
+                        if !self.addressable.contains(&id) {
+                            for other in &live {
+                                self.edge(id, self.id(*other));
+                            }
+                        }
                         self.weights[id] = self.weights[id].saturating_add(weight);
                     }
                     for dst in &definitions {
@@ -137,17 +144,18 @@ impl Graph {
                     }
                     if matches!(
                         inst,
-                        Inst::Math {
-                            op: MathOp::Sin
-                                | MathOp::Cos
-                                | MathOp::Floor
-                                | MathOp::Exp
-                                | MathOp::Exp2
-                                | MathOp::Log
-                                | MathOp::Log2
-                                | MathOp::Pow,
-                            ..
-                        }
+                        Inst::Print { .. }
+                            | Inst::Math {
+                                op: MathOp::Sin
+                                    | MathOp::Cos
+                                    | MathOp::Floor
+                                    | MathOp::Exp
+                                    | MathOp::Exp2
+                                    | MathOp::Log
+                                    | MathOp::Log2
+                                    | MathOp::Pow,
+                                ..
+                            }
                     ) {
                         self.has_calls = true;
                         let preserved: Vec<_> = live.iter().map(|slot| self.id(*slot)).collect();

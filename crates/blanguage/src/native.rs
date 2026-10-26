@@ -4,6 +4,7 @@ mod allocation;
 mod append;
 mod atomic;
 use allocation::{Allocation, Frame, PacketAllocation};
+mod application;
 mod compact;
 mod custom_reduce;
 mod integer;
@@ -14,6 +15,9 @@ mod scan;
 mod segmented_reduce;
 mod sort;
 mod texture;
+pub(crate) use application::{
+    ApplicationCode, emit as emit_application, unwind as application_unwind,
+};
 mod tile;
 pub use compact::emit_compact_scatter;
 pub use custom_reduce::{
@@ -29,7 +33,7 @@ pub struct Relocation {
     pub offset: usize,
     pub intrinsic: NativeIntrinsic,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NativeIntrinsic {
     Sin,
     Cos,
@@ -39,6 +43,9 @@ pub enum NativeIntrinsic {
     Log,
     Log2,
     Pow,
+    PrintU32,
+    PrintI32,
+    PrintBool,
 }
 #[derive(Clone, Debug)]
 pub struct NativeCode {
@@ -237,6 +244,22 @@ impl Emitter<'_> {
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
             match inst {
+                Inst::Print { dst, value } => {
+                    self.copy(allocation::Location::Gpr(1), self.location(*value));
+                    self.bytes(&[0x48, 0xb8]);
+                    self.relocations.push(Relocation {
+                        offset: self.code.len(),
+                        intrinsic: match self.stage.registers[*value] {
+                            Scalar::U32 => NativeIntrinsic::PrintU32,
+                            Scalar::I32 => NativeIntrinsic::PrintI32,
+                            Scalar::Bool => NativeIntrinsic::PrintBool,
+                            Scalar::F32 => return Err("println 尚不接受 f32"),
+                        },
+                    });
+                    self.bytes(&[0; 8]);
+                    self.bytes(&[0xff, 0xd0]);
+                    self.store(*dst);
+                }
                 Inst::TextureSample { .. } => return Err("原生采样尚未降低到纹理读取 IR"),
                 Inst::TextureSize {
                     result,

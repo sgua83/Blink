@@ -20,12 +20,13 @@ GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 
 git clone https://github.com/sgua83/Blink.git
 Set-Location Blink
 cargo build --workspace --release
-.\target\release\blrun.exe cpu `
-    sample/beginner/start.b run `
-    sample Saved/Learn/start :1
+.\target\release\blc.exe build-exe sample/applications/start.b target/applications/start.exe
+.\target\applications\start.exe
 ```
 
-`blc` 检查和导出原生代码，`blrun` 编译并在 CPU／GPU 上执行 B 模块。上例仅依赖当前仓库，输出 `Saved/Learn/start/numbers.bldata` 中的 u32 为 `3`。将 `cpu` 改为 `gpu` 可执行 GPU 版本，需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
+上例直接显示 `3`，正常退出码为 `0`。`build-exe` 将普通 CPU `main` 编译、链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／bool 标准输出、普通函数、顺序逻辑和固定数组；动态数据、GPU program 应用调用、通用文本／文件及源码调试仍待实现。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
+
+`blc` 也可检查模块、导出阶段原生代码和构建算法 DLL；`blrun` 继续负责数据绑定及 CPU／GPU 计算模块执行，例如 `blrun cpu sample/beginner/start.b run sample Saved/Learn/start :1` 将结果 `3` 保存到 `numbers.bldata`。将 `cpu` 改为 `gpu` 需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
 
 blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun。BLEngine 通过库 API 消费 Blink；入门示例不需要引擎工程。完整的下载、语法、运行和读取输出步骤见 [《B 语言编程》](sample/B语言编程.md)。
 

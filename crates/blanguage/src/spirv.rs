@@ -289,9 +289,14 @@ impl Emitter<'_> {
         self.emit(132, &[u, bytes, self.value(offset), four]);
         self.word_pointer(address, bytes)
     }
-    fn block(&mut self, code: &[Inst], loop_targets: Option<(u32, u32)>) -> bool {
+    fn block(
+        &mut self,
+        code: &[Inst],
+        loop_targets: Option<(u32, u32)>,
+    ) -> Result<bool, &'static str> {
         for inst in code {
             match inst {
+                Inst::Print { .. } => return Err("GPU 后端不能执行 CPU 标准输出"),
                 Inst::TextureSample {
                     result,
                     texture,
@@ -340,10 +345,10 @@ impl Emitter<'_> {
                         self.emit(81, &[self.ty(*r), self.value(*r), value, i as u32]);
                     }
                 }
-                Inst::Scope(body) => self.function_scope(body),
+                Inst::Scope(body) => self.function_scope(body)?,
                 Inst::Exit => {
                     self.function_exit();
-                    return false;
+                    return Ok(false);
                 }
                 Inst::Append(append) => self.append(append),
                 Inst::Atomic(atomic) => self.atomic(atomic),
@@ -719,19 +724,19 @@ impl Emitter<'_> {
                     self.emit(247, &[merge, 0]);
                     self.emit(250, &[self.value(*condition), y, n]);
                     self.emit(248, &[y]);
-                    let yr = self.block(yes, loop_targets);
+                    let yr = self.block(yes, loop_targets)?;
                     if yr {
                         self.emit(249, &[merge]);
                     }
                     self.emit(248, &[n]);
-                    let nr = self.block(no, loop_targets);
+                    let nr = self.block(no, loop_targets)?;
                     if nr {
                         self.emit(249, &[merge]);
                     }
                     self.emit(248, &[merge]);
                     if !yr && !nr {
                         self.emit(255, &[]);
-                        return false;
+                        return Ok(false);
                     }
                 }
                 Inst::Loop {
@@ -750,11 +755,11 @@ impl Emitter<'_> {
                     self.emit(246, &[end, next, 0]);
                     self.emit(249, &[check]);
                     self.emit(248, &[check]);
-                    self.block(condition, Some((end, next)));
+                    self.block(condition, Some((end, next)))?;
                     self.loop_exit_edge(end, self.current_label);
                     self.emit(250, &[self.value(*test), run, end]);
                     self.emit(248, &[run]);
-                    if self.block(body, Some((end, next))) {
+                    if self.block(body, Some((end, next)))? {
                         self.emit(249, &[next]);
                     }
                     self.emit(248, &[next]);
@@ -767,15 +772,15 @@ impl Emitter<'_> {
                 Inst::Break => {
                     self.loop_exit_edge(loop_targets.unwrap().0, self.current_label);
                     self.emit(249, &[loop_targets.unwrap().0]);
-                    return false;
+                    return Ok(false);
                 }
                 Inst::Continue => {
                     self.emit(249, &[loop_targets.unwrap().1]);
-                    return false;
+                    return Ok(false);
                 }
             }
         }
-        true
+        Ok(true)
     }
     fn from_word(&mut self, dst: Reg, raw: u32) {
         match self.stage.registers[dst] {
@@ -1535,7 +1540,7 @@ pub fn emit_pass(
     if let Some(kernel) = &custom_kernel
         && !matches!(pass, Pass::DispatchArguments(_))
     {
-        e.block(&kernel.stage.code[..kernel.invariant_end], None);
+        e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
     }
     if let Pass::DispatchArguments(prefix) = pass {
         e.prefix_arguments(&prefix, local_index);
@@ -1643,7 +1648,7 @@ pub fn emit_pass(
             shared_pointer,
             active,
             count,
-        );
+        )?;
     } else if let Operation::CustomScan(r) = &stage.operation {
         let kernel = custom_kernel.as_ref().unwrap();
         if scan_local {
@@ -1658,12 +1663,12 @@ pub fn emit_pass(
                 shared_pointer,
                 active,
                 count,
-            );
+            )?;
         } else {
             e.emit(247, &[end, 0]);
             e.emit(250, &[active, execute, end]);
             e.emit(248, &[execute]);
-            e.custom_scan_add(r, kernel, pass == Pass::ScanRootAdd);
+            e.custom_scan_add(r, kernel, pass == Pass::ScanRootAdd)?;
             e.emit(249, &[end]);
             e.emit(248, &[end]);
         }
@@ -1679,7 +1684,7 @@ pub fn emit_pass(
             shared_pointer,
             active,
             count,
-        );
+        )?;
     } else if let Operation::Reduce(r) = &stage.operation {
         let local = e.id();
         e.emit(61, &[u, local, local_input]);
@@ -1778,7 +1783,7 @@ pub fn emit_pass(
             e.tile_input(count, active);
         }
         if stage.has_tile_steps() {
-            e.tile_phases(active);
+            e.tile_phases(active)?;
         } else {
             e.emit(247, &[end, 0]);
             e.emit(250, &[active, execute, end]);
@@ -1789,7 +1794,7 @@ pub fn emit_pass(
                 e.emit(61, &[u, original, at, 2, 4]);
                 e.index = original;
             }
-            if e.block(&stage.code, None) {
+            if e.block(&stage.code, None)? {
                 e.emit(249, &[end]);
             }
             e.emit(248, &[end]);

@@ -557,6 +557,10 @@ pub enum Inst {
         value: Option<Reg>,
         argument: Option<Reg>,
     },
+    Print {
+        dst: Reg,
+        value: Reg,
+    },
     ViewLoad {
         dst: Reg,
         address: [Reg; 2],
@@ -997,6 +1001,20 @@ pub struct SubgroupCapabilities {
     pub shuffle_relative: bool,
 }
 impl Stage {
+    pub(crate) fn has_standard_output(&self) -> bool {
+        fn contains(code: &[Inst]) -> bool {
+            code.iter().any(|inst| match inst {
+                Inst::Print { .. } => true,
+                Inst::Scope(body) => contains(body),
+                Inst::If { yes, no, .. } => contains(yes) || contains(no),
+                Inst::Loop {
+                    condition, body, ..
+                } => contains(condition) || contains(body),
+                _ => false,
+            })
+        }
+        contains(&self.code)
+    }
     /// 对实际消费的命中字段发射设备读取；未消费的顶点和矩阵不生成读取。
     pub fn ray_result_queries(
         &self,

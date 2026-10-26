@@ -123,6 +123,23 @@ impl Drop for WorkHandle {
 struct Executable {
     address: *mut c_void,
 }
+fn print_line(value: impl std::fmt::Display) -> u32 {
+    use std::io::Write;
+    let text = format!("{value}\n");
+    match std::io::stdout().lock().write(text.as_bytes()) {
+        Ok(n) => u32::from(n == text.len()),
+        Err(_) => 0,
+    }
+}
+extern "C" fn print_u32(value: u32) -> u32 {
+    print_line(value)
+}
+extern "C" fn print_i32(value: i32) -> u32 {
+    print_line(value)
+}
+extern "C" fn print_bool(value: u32) -> u32 {
+    print_line(value != 0)
+}
 impl Executable {
     fn new(mut code: blanguage::native::NativeCode) -> Result<Self> {
         for r in &code.relocations {
@@ -135,6 +152,9 @@ impl Executable {
                 NativeIntrinsic::Log => log as *const (),
                 NativeIntrinsic::Log2 => log2 as *const (),
                 NativeIntrinsic::Pow => pow as *const (),
+                NativeIntrinsic::PrintU32 => print_u32 as *const (),
+                NativeIntrinsic::PrintI32 => print_i32 as *const (),
+                NativeIntrinsic::PrintBool => print_bool as *const (),
             };
             code.bytes[r.offset..r.offset + 8].copy_from_slice(&(ptr as u64).to_le_bytes());
         }
