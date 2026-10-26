@@ -471,6 +471,16 @@ pub(super) fn emit(
             value: total,
         });
     }
+    // Each actual range phase owns its own producers; no value crosses these cuts.
+    let mut after_code = stage.code.split_off(loop_end);
+    let mut loop_code = stage.code.split_off(initialize_end);
+    reads::place(&mut stage.code, &stage.writes);
+    reads::place(&mut loop_code, &stage.writes);
+    reads::place(&mut after_code, &stage.writes);
+    let initialize_end = stage.code.len();
+    stage.code.extend(loop_code);
+    let loop_end = stage.code.len();
+    stage.code.extend(after_code);
     let mut live: std::collections::BTreeSet<_> =
         (0..k).map(|i| PrivateSlot::Local(carry + i)).collect();
     if history {

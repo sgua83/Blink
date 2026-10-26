@@ -43,7 +43,7 @@ fn saved_unwind(at: u8, reg: u8, offset: u32, xmm: bool) -> Vec<u8> {
     }
 }
 pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
-    let stage = Stage {
+    let mut stage = Stage {
         tiles: Vec::new(),
         domain: 0,
         prefix: None,
@@ -70,6 +70,7 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(),
     };
+    reads::place(&mut stage.code, &stage.writes);
     let graph = allocation::Graph::with_live(
         &stage,
         body.outputs
