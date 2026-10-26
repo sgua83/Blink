@@ -1,9 +1,32 @@
-//! SSE2 四路整数乘法与除余；常量使用精确倒数，动态值逐 lane 原生执行。
+//! SSE2 四路整数乘法、除余与移位；常量使用精确倒数，动态值逐 lane 原生执行。
 use super::*;
 use crate::native::integer::Division;
 use std::num::NonZeroU32;
 
 impl Emitter<'_> {
+    pub(super) fn packet_shift_values(
+        &mut self,
+        allocation: &PacketAllocation,
+        dst: Reg,
+        src: Reg,
+        count: Reg,
+        kind: u8,
+    ) {
+        self.packed(Some(0x66), 0xef, 0, 0);
+        for lane in 0..4 {
+            self.packet_lane(allocation, count, lane, 1);
+            self.packet_lane(allocation, src, lane, 0);
+            self.bytes(&[0xd3, 0xc0 | (kind << 3)]); // eax 按 cl 的低五位移位。
+            self.instruction(Some(0x66), &[0x0f, 0x6e], false, 1, Operand::Register(0));
+            if lane != 0 {
+                self.packed(Some(0x66), 0x73, 7, 1);
+                self.bytes(&[lane * 4]);
+            }
+            self.packed(Some(0x66), 0xeb, 0, 1);
+        }
+        // 分配位置可复用任一输入；四个源 lane 全部读完后才交付结果。
+        self.packet_store(allocation, PrivateSlot::Register(dst), 0);
+    }
     pub(super) fn packet_divide_value(
         &mut self,
         allocation: &PacketAllocation,

@@ -2,7 +2,13 @@
 use super::*;
 
 impl Emitter<'_> {
-    fn packet_lane(&mut self, allocation: &PacketAllocation, value: Reg, lane: u8, gpr: u8) {
+    pub(super) fn packet_lane(
+        &mut self,
+        allocation: &PacketAllocation,
+        value: Reg,
+        lane: u8,
+        gpr: u8,
+    ) {
         match allocation.location(PrivateSlot::Register(value)) {
             PacketPlace::Register(xmm) => {
                 let source = if lane == 0 {

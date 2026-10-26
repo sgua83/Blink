@@ -12,6 +12,7 @@ enum Binary {
     Multiply,
     Compare(Comparison, Scalar),
     Shift(u8),
+    ShiftEach(u8),
 }
 enum Math {
     Sqrt,
@@ -234,7 +235,9 @@ impl Plan {
                         BinaryOp::ShiftLeft if uniform[*b] => Binary::Shift(0xf2),
                         BinaryOp::ShiftRightLogical if uniform[*b] => Binary::Shift(0xd2),
                         BinaryOp::ShiftRightArithmetic if uniform[*b] => Binary::Shift(0xe2),
-                        _ => return None,
+                        BinaryOp::ShiftLeft => Binary::ShiftEach(4),
+                        BinaryOp::ShiftRightLogical => Binary::ShiftEach(5),
+                        BinaryOp::ShiftRightArithmetic => Binary::ShiftEach(7),
                     };
                     uniform[*dst] = uniform[*a] && uniform[*b];
                     Step::Binary {
@@ -756,6 +759,9 @@ impl Emitter<'_> {
                         self.instruction(Some(0x66), &[0x0f, 0x6e], false, 1, Operand::Register(0));
                         self.packed(Some(0x66), *opcode, 0, 1);
                         self.packet_store(allocation, Register(*dst), 0);
+                    }
+                    Binary::ShiftEach(kind) => {
+                        self.packet_shift_values(allocation, *dst, *a, *b, *kind)
                     }
                     Binary::Multiply => {
                         self.packet_load(allocation, Register(*a), 0);
