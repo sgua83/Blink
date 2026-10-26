@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-005 的空整数域安全索引：**本轮源码与原生核对完成；源码已提交／Git 已回读** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage`，client `BLanguage_Gua`；仅修正 bounds.rs 的 index_in 片段包含关系，空下标值域包含于零长度资源域；无新IR／ABI／运行时状态。源码及规范 CL13268，Git `4b68dd17f115556d4c6444cb65e5ecf5176502c6` 三文件与精确P4一致。Release主线59.81秒、14组CPU／GPU各200162个输出word及5项类型／范围／权限拒绝保持；引擎零世界与100003实例场景区域已实际消费。15个临时文件、3927639字节已清理，原始结果保留；台账通过隔离client BLanguage_Gua_EmptyIndexIssue提交，保留其他会话编辑。其他C-005范围继续开放。 | 2026-10-27 01:21 +0800 |
 | C-020.3 的 CPU dataset 重赋值与重新初始化：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；在 CL13242／CL13259 上补齐普通 CPU 应用的资源重赋值、移动后重新初始化、无初值 dataset 局部与拥有形参再绑定。区分绑定位置与实际资源身份，沿既有局部槽、Proof、分支／循环和 Frame 交接，处理旧资源退出、实参求值、形状／位置和旧索引事实；不复制 payload，不增加运行时拥有标记或资源注册表。预计修改前端 check.rs 的局部／赋值片段及 application.rs、cooperative.rs、returns.rs、flow.rs、effects.rs、ownership.rs、generics.rs 和必要规范／正式消费者；避开 PA2 数值 for／bounds 与 Gua GPU 共享 Count，不改后端、IR、ABI 或运行库。先提交本认领，再基线、实现、Release／CPU／GPU 原生复核、清理和提交。资源聚合、write 全域初始化、其他资源及更大架构项仍开放。 | 2026-10-27 01:14 +08:00 |
 | C-002／C-024 的 x64 编译期步长寻址：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；追查 native.rs、native/operands.rs 与各 x64 消费者的已知记录／私有步长乘法，沿原地址所有者降低二的幂缩放并利用原生比例寻址，保留 64 位地址、u32 索引、尾部、稀疏／间接／view、原子、C ABI 与集合资源边界。预计修改 native.rs 及 native 下 packet／memory、tile、external、append 和集合寻址片段及必要说明；不改 Gua 的 bounds 或 blcompute 共享 Count、前端／IR／ABI／SPIR-V。先记录当前正式代码和原生基线，再修改、完整核对并测量，清理／提交／Git 分别回填。其余 SIMD／寄存器／完整性能目标仍开放。 | 2026-10-27 01:14 +08:00 |
 | C-006／C-022.4 的 GPU 共享只读 Count：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；沿既有 GPU 冻结存储、DomainBindings 重排／分区及真实最后使用点，补齐同一物理只读 Count 的分叉与有效域关系交接。只在真实存储所有者识别只读别名，保留唯一可写绑定及 Count 改写失效；不复制 payload／计数镜像、不读回计数、不另建完成链。预计修改 blcompute 的 bindings.rs、lib.rs、vulkan/mod.rs 及正式说明；避让 PA3 dataset 移动和 PA2 for／bounds，不改前端／IR／后端。先记录原实现拒绝，再实现并以 pending GPU 分叉／汇合／丢弃和失败消费者核对，清理、提交及 Git 发布分别回填。CPU 通用共享绑定、多队列／多设备与自动背压仍开放。 | 2026-10-27 01:06 +08:00 |
@@ -1921,3 +1922,13 @@ Release消费者PID3716、退出0：完整4K／内部8K，两次提交返回时�
 
 - 本轮执行机 PA3／DESKTOP-80G4Q60，实际 IPv4 192.168.10.13；工作区 D:/BLanguage，P4 用户 PA3、client BLanguage_PA3，会话 01a17891-5f8f-7bc3-8966-57a6f31772e0。已读取最新进行中记录并核对 P4 打开状态，PA3 无打开文件、无源码差异，已同步 CL13263。Gua 的 GPU 共享 Count 限于真实运行库存储／绑定；本轮只改 CPU 应用资源绑定的前端语义，不重做其运行库范围，避开 PA2 bounds／数值 for 范围。
 - 当前为认领提交，后续分别记录实际实现、Release 构建、原生消费者、清理、P4 源码提交与 Git 发布，不把本记录作为能力完成证据。之前返回、局部初始化移动及拥有形参成果保留；完整内存模型与长期架构继续未完成。
+
+
+### C-005：空整数值域的安全下标包含关系（2026-10-27）
+
+- BLEngine的实际scene_regions<2,0,1,1>在唯一输出工作项i=0上，以i<1选择锚点；相反分支中i-1的可达整数集合已经为空，但原index_in使用maximum()，把空集合包围端点的0当成真实最大下标，仍以0<0失败拒绝零长度world。采用主线CL13252及后续整数恒等实现后仍可复现，属于静态证明缺陷，不是观测到的越界执行。初始B137与源片段保留在E:/BLEngineMeasurements/SceneGuiding。
+- index_in现在直接消费同一Proof中全部可达整数片段：每段上界都须小于实际保证的最小长度；空集合按包含关系成立。非空集合等同于原最大值判断，原资源身份路径保持。没有增加空域运行时分支、Guard、Proof状态、IR／ABI或设备代码；源类型、只读权限及并行独占写入仍由原入口检查，值改写后按新值重新证明。引擎恢复普通下标访问，没有保留定位时使用的unchecked读取或零世界特殊路径。
+- 正式Release工作区构建56.56秒；并发主线for游标与应用资源改动按其真实提交采用，最终完整Release构建59.81秒，无前一轮局部采用时的未使用helper告警。未改for_cursor、整数恒等／区间算术、check.rs、IR、后端或执行框架；本轮最终diff只含index_in及对应规范。
+- interval与nonzero两个原生程序分别覆盖区间矛盾x<5且x>=5、相等零且非零；0／1／3／4／5／65／100003条记录共14组，CPU与GPU各200162个输出word全部等于独立期望7。最终已采用的主线再次编译原生消费者并执行，进程及退出见run-final-exit.json。五项拒绝为：可达下标、非空可达区间、分支内改写后访问仍B137，非当前元素写入仍B166，bool下标仍B124。
+- 正式BLEngine B程序在0／1／3／33／100003个世界实例和1／3个锚点的五组CPU／GPU执行，均采用普通下标且完成；真实4K／内部8K场景还实际经历世界区域4→3→2（最后没有世界几何、仍有独立空间实例）。详细数值、几何与帧结果由引擎自身记录，不把语言修正称为完整Stella或完整引擎。
+- 原始BLDATA、summary.json、diagnostics.json、最终stdout／stderr及实际进程退出保留在E:/BLEngineMeasurements/EmptyIndex；15个B／Rust临时代码、可执行与PDB共3927639字节已清理，Saved/EmptyIndex已不存在，不建立常设测试。源码与规范已提交CL13268，提交后立即单次异步发布，Git 4b68dd17f115556d4c6444cb65e5ecf5176502c6三文件已与精确P4回读一致；此处仅关闭空域索引误拒绝，其余C-005范围保持各自状态。
