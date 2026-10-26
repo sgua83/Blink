@@ -3,6 +3,7 @@ use super::*;
 use allocation::{PacketAllocation, PacketPlace};
 use operands::Operand;
 use std::collections::BTreeSet;
+mod control;
 mod integer;
 mod memory;
 
@@ -90,6 +91,20 @@ enum Step {
         a: Reg,
         b: Reg,
     },
+    If {
+        condition: Reg,
+        yes: Vec<Step>,
+        no: Vec<Step>,
+    },
+    Loop {
+        condition: Vec<Step>,
+        test: Reg,
+        body: Vec<Step>,
+    },
+    Scope(Vec<Step>),
+    Exit,
+    Break,
+    Continue,
 }
 pub(super) struct Plan {
     code: Vec<Step>,
@@ -100,30 +115,44 @@ impl Plan {
         if stage.has_tile_scope() || stage.writes.is_empty() {
             return None;
         }
-        let mut uniform = vec![false; stage.registers.len()];
-        let mut locals = vec![false; stage.locals.len()];
+        let uniform = control::uniform_registers(stage);
         let mut indices = BTreeSet::new();
+        control::visit(&stage.code, &mut |inst| {
+            if let Inst::Index(dst) = inst {
+                indices.insert(*dst);
+            }
+        });
+        let mut code = Self::block(program, stage, &stage.code, &uniform, &indices)?;
+        let mut values = BTreeSet::new();
+        control::visit(&stage.code, &mut |inst| match inst {
+            Inst::Load { .. } => {}
+            Inst::Store { value, .. } => {
+                values.insert(*value);
+            }
+            _ => values.extend(inst.operands()),
+        });
+        let address_only = indices.difference(&values).copied().collect();
+        control::remove_address_indices(&mut code, &address_only);
+        Some(Self { code, address_only })
+    }
+
+    fn block(
+        program: &Program,
+        stage: &Stage,
+        instructions: &[Inst],
+        uniform: &[bool],
+        indices: &BTreeSet<Reg>,
+    ) -> Option<Vec<Step>> {
         let mut code = Vec::new();
-        for inst in &stage.code {
+        for inst in instructions {
             let step = match inst {
-                Inst::Constant(dst, _, bits) => {
-                    uniform[*dst] = true;
-                    Step::Constant(*dst, *bits)
-                }
-                Inst::Index(dst) => {
-                    indices.insert(*dst);
-                    Step::Index(*dst)
-                }
-                Inst::Uniform(dst, offset) => {
-                    uniform[*dst] = true;
-                    Step::Uniform(*dst, *offset)
-                }
+                Inst::Constant(dst, _, bits) => Step::Constant(*dst, *bits),
+                Inst::Index(dst) => Step::Index(*dst),
+                Inst::Uniform(dst, offset) => Step::Uniform(*dst, *offset),
                 Inst::LoadLocal(dst, slot) => {
-                    uniform[*dst] = locals[*slot];
                     Step::Copy(PrivateSlot::Register(*dst), PrivateSlot::Local(*slot))
                 }
                 Inst::StoreLocal(slot, src) => {
-                    locals[*slot] = uniform[*src];
                     Step::Copy(PrivateSlot::Local(*slot), PrivateSlot::Register(*src))
                 }
                 Inst::Load {
@@ -143,7 +172,6 @@ impl Plan {
                     if stride > i32::MAX as u64 || last > i32::MAX as u64 {
                         return None;
                     }
-                    uniform[*dst] = broadcast;
                     if broadcast || element {
                         Step::Load {
                             dst: *dst,
@@ -177,7 +205,6 @@ impl Plan {
                     }
                     let same_address = uniform[address[0]] && uniform[address[1]];
                     let broadcast = same_address && uniform[*index];
-                    uniform[*dst] = broadcast;
                     Step::Gather {
                         dst: *dst,
                         source: ReadSource::View {
@@ -211,14 +238,11 @@ impl Plan {
                         value: *value,
                     }
                 }
-                Inst::Unary { dst, op, a } => {
-                    uniform[*dst] = uniform[*a];
-                    Step::Unary {
-                        dst: *dst,
-                        op: *op,
-                        a: *a,
-                    }
-                }
+                Inst::Unary { dst, op, a } => Step::Unary {
+                    dst: *dst,
+                    op: *op,
+                    a: *a,
+                },
                 Inst::Binary { dst, op, a, b } => {
                     let op = match op {
                         BinaryOp::FAdd => Binary::Float(0x58),
@@ -239,7 +263,6 @@ impl Plan {
                         BinaryOp::ShiftRightLogical => Binary::ShiftEach(5),
                         BinaryOp::ShiftRightArithmetic => Binary::ShiftEach(7),
                     };
-                    uniform[*dst] = uniform[*a] && uniform[*b];
                     Step::Binary {
                         dst: *dst,
                         op,
@@ -251,23 +274,12 @@ impl Plan {
                     result,
                     src,
                     divisor,
-                } => {
-                    let same = uniform[*src]
-                        && match divisor {
-                            IntegerDivisor::Constant(_) => true,
-                            IntegerDivisor::Value(r) => uniform[*r],
-                        };
-                    for (_, dst) in result.outputs() {
-                        uniform[dst] = same;
-                    }
-                    Step::IntegerDivide {
-                        result: *result,
-                        src: *src,
-                        divisor: *divisor,
-                    }
-                }
+                } => Step::IntegerDivide {
+                    result: *result,
+                    src: *src,
+                    divisor: *divisor,
+                },
                 Inst::Cast { dst, src } => {
-                    uniform[*dst] = uniform[*src];
                     let from = stage.registers[*src];
                     let into = stage.registers[*dst];
                     if operands::bit_copy(from, into) {
@@ -289,7 +301,6 @@ impl Plan {
                         MathOp::Max => Math::Max,
                         _ => return None,
                     };
-                    uniform[*dst] = args.iter().all(|r| uniform[*r]);
                     Step::Math {
                         dst: *dst,
                         op,
@@ -301,34 +312,47 @@ impl Plan {
                     condition,
                     a,
                     b,
-                } => {
-                    uniform[*dst] = uniform[*condition] && uniform[*a] && uniform[*b];
-                    Step::Select {
-                        dst: *dst,
+                } => Step::Select {
+                    dst: *dst,
+                    condition: *condition,
+                    a: *a,
+                    b: *b,
+                },
+                Inst::If { condition, yes, no } => {
+                    if !uniform[*condition] {
+                        return None;
+                    }
+                    Step::If {
                         condition: *condition,
-                        a: *a,
-                        b: *b,
+                        yes: Self::block(program, stage, yes, uniform, indices)?,
+                        no: Self::block(program, stage, no, uniform, indices)?,
                     }
                 }
+                Inst::Loop {
+                    condition,
+                    test,
+                    body,
+                } => {
+                    if !uniform[*test] {
+                        return None;
+                    }
+                    Step::Loop {
+                        condition: Self::block(program, stage, condition, uniform, indices)?,
+                        test: *test,
+                        body: Self::block(program, stage, body, uniform, indices)?,
+                    }
+                }
+                Inst::Scope(body) => {
+                    Step::Scope(Self::block(program, stage, body, uniform, indices)?)
+                }
+                Inst::Exit => Step::Exit,
+                Inst::Break => Step::Break,
+                Inst::Continue => Step::Continue,
                 _ => return None,
             };
             code.push(step);
         }
-        let mut values = BTreeSet::new();
-        for inst in &stage.code {
-            match inst {
-                Inst::Load { .. } => {}
-                Inst::Store { value, .. } => {
-                    values.insert(*value);
-                }
-                _ => {
-                    values.extend(inst.operands());
-                }
-            }
-        }
-        let address_only: BTreeSet<_> = indices.difference(&values).copied().collect();
-        code.retain(|step| !matches!(step, Step::Index(r) if address_only.contains(r)));
-        Some(Self { code, address_only })
+        Some(code)
     }
 }
 impl From<PacketPlace> for Operand {
@@ -583,7 +607,6 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn packet_loop(&mut self, plan: &Plan, allocation: &PacketAllocation) {
-        use PrivateSlot::Register;
         let begin = self.code.len();
         let sparse = self.stage.selection.is_some();
         let tail = if let Some(selection) = self.stage.selection {
@@ -617,8 +640,84 @@ impl Emitter<'_> {
             self.bytes(&[0x89, 0xd8, 0x48, 0x83, 0xc0, 0x04, 0x4c, 0x39, 0xf0]);
             self.jump(Some(0x87))
         };
-        for step in &plan.code {
+        self.packet_block(&plan.code, allocation);
+        if !sparse {
+            self.bytes(&[0x83, 0xc3, 0x04]);
+        }
+        let again = self.jump(None);
+        self.patch(again, begin);
+        self.patch(tail, self.code.len());
+        if sparse {
+            self.bytes(&[0x85, 0xc9]);
+            let empty = self.jump(Some(0x84));
+            self.instruction(
+                None,
+                &[0x8b],
+                false,
+                3,
+                Operand::memory(4, self.frame.end as u32),
+            );
+            self.patch(empty, self.code.len());
+        }
+    }
+
+    fn packet_block(&mut self, code: &[Step], allocation: &PacketAllocation) {
+        use PrivateSlot::Register;
+        let sparse = self.stage.selection.is_some();
+        for step in code {
             match step {
+                Step::If { condition, yes, no } => {
+                    self.packet_lane(allocation, *condition, 0, 0);
+                    self.bytes(&[0x85, 0xc0]);
+                    let other = self.jump(Some(0x84));
+                    self.packet_block(yes, allocation);
+                    let end = self.jump(None);
+                    self.patch(other, self.code.len());
+                    self.packet_block(no, allocation);
+                    self.patch(end, self.code.len());
+                }
+                Step::Loop {
+                    condition,
+                    test,
+                    body,
+                } => {
+                    let begin = self.code.len();
+                    self.packet_block(condition, allocation);
+                    self.packet_lane(allocation, *test, 0, 0);
+                    self.bytes(&[0x85, 0xc0]);
+                    let end = self.jump(Some(0x84));
+                    self.breaks.push(Vec::new());
+                    self.continues.push(begin);
+                    self.packet_block(body, allocation);
+                    self.continues.pop();
+                    let back = self.jump(None);
+                    self.patch(back, begin);
+                    let target = self.code.len();
+                    self.patch(end, target);
+                    for at in self.breaks.pop().unwrap() {
+                        self.patch(at, target);
+                    }
+                }
+                Step::Scope(body) => {
+                    self.exits.push(Vec::new());
+                    self.packet_block(body, allocation);
+                    let target = self.code.len();
+                    for at in self.exits.pop().unwrap() {
+                        self.patch(at, target);
+                    }
+                }
+                Step::Exit => {
+                    let at = self.jump(None);
+                    self.exits.last_mut().unwrap().push(at);
+                }
+                Step::Break => {
+                    let at = self.jump(None);
+                    self.breaks.last_mut().unwrap().push(at);
+                }
+                Step::Continue => {
+                    let at = self.jump(None);
+                    self.patch(at, *self.continues.last().unwrap());
+                }
                 Step::Constant(dst, bits) => {
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
@@ -934,24 +1033,6 @@ impl Emitter<'_> {
                     self.packet_store(allocation, Register(*dst), target);
                 }
             }
-        }
-        if !sparse {
-            self.bytes(&[0x83, 0xc3, 0x04]);
-        }
-        let again = self.jump(None);
-        self.patch(again, begin);
-        self.patch(tail, self.code.len());
-        if sparse {
-            self.bytes(&[0x85, 0xc9]);
-            let empty = self.jump(Some(0x84));
-            self.instruction(
-                None,
-                &[0x8b],
-                false,
-                3,
-                Operand::memory(4, self.frame.end as u32),
-            );
-            self.patch(empty, self.code.len());
         }
     }
 }
