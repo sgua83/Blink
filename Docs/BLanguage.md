@@ -2309,7 +2309,9 @@ program order_queue(read dataset<SortItem> input,
 
 `.h` 声明相同接口，函数体位于 `.b`。输入必须为 read，输出为独立 write/inout dataset，记录类型相同；输出容量至少覆盖输入绑定容量。输出不得与自身有效计数别名。字段类型、访问／别名、静态容量、结果域关系分别复用 B175、B170、B188／B189、B191／B193；动态实际容量继续由现有设备绑定边界负责。
 
-键支持 u32／i32／f32 标量、对应的二至四分量向量及嵌套字段，也可在输出参数之前列出多个键，例如 `stable_sort_by_key(input.space,input.high,input.low,output)`。按参数从左至右的优先级做字典序升序，向量按 x、y、z、w 展开；较高优先级相同才比较下一个分量，全部键相同才保持输入顺序。所有键必须来自同一 read dataset 和同一有效域；有效前缀的每个键都要写相同的 `prefix(input,count.value)`。bool、记录、数组、矩阵和 view 键仍报 B175。`uint2` 是 x 优先的数值向量，不隐含低位／高位语义；64 位身份可显式列出高位字段、低位字段。独立 u64 值类型、降序／自定义比较器及含 view 的可写输出仍未实现。
+键支持 u32／i32／f32 标量、对应的二至四分量向量及嵌套字段，也可在输出参数之前列出多个键，例如 `stable_sort_by_key(input.space,input.high,input.low,output)`。按参数从左至右的优先级做字典序排序，默认升序，向量按 x、y、z、w 展开；较高优先级相同才比较下一个分量，全部键相同才保持输入顺序。所有键必须来自同一 read dataset 和同一有效域；有效前缀的每个键都要写相同的 `prefix(input,count.value)`。bool、记录、数组、矩阵和 view 键仍报 B175。`uint2` 是 x 优先的数值向量，不隐含低位／高位语义；64 位身份可显式列出高位字段、低位字段。独立 u64 值类型、自定义比较器及含 view 的可写输出仍未实现。
+
+在排序键参数上使用 `descending(field)` 指定降序，例如 `stable_sort_by_key(descending(input.priority),input.id,output)` 按 priority 降序、id 升序。`descending(input.vector)` 的全部向量分量均按降序参与原字典序优先级，嵌套字段和 `descending(prefix(input,count.value).key)` 同样支持。方向属于每个静态键，不改变域、原记录或相等完整键的稳定性。`descending` 只在此排序键位置接收一个字段参数，参数数目错误报 B169；它不是普通值函数，不接受比较器、动态方向或计算表达式作为键。
 
 键的顺序由源类型确定：
 
@@ -2321,7 +2323,7 @@ program order_queue(read dataset<SortItem> input,
 
 f32 使用与 [Rust f32::total_cmp](https://doc.rust-lang.org/std/primitive.f32.html#method.total_cmp) 一致的编码全序：正 NaN 的 signaling 编码在 quiet 编码之前，负 NaN 反向；同符号 NaN 的载荷也参与顺序。−0.0 与 +0.0 不是相同键，全部 NaN 也不会合为一个键。只有键编码完全相同的记录才按输入顺序保持稳定；u32／i32 同数值也恰好同编码。这里是排序语义，不改变普通浮点 `==`／`<` 运算的含义。
 
-装入当前键时，i32 将符号位翻转为无符号次序；f32 将负编码逐位取反、非负编码翻转符号位。转换只写入既有 8 字节键／序号暂存，不改写源字段。CPU 自研 x64 与 GPU 自研 SPIR-V 每个分量都只做这一次整数位运算；不对 f32 键执行浮点比较、转换或算术，不增加 DenormPreserve／SignedZeroInfNanPreserve 的设备要求，记录中的 NaN 载荷、有符号零及次正规数完整保留。
+装入当前键时，i32 将符号位翻转为无符号次序；f32 将负编码逐位取反、非负编码翻转符号位。降序对该无符号全序编码取反，因此 f32 的完整编码全序也反向，相等编码仍按原顺序稳定排列。转换只写入既有 8 字节键／序号暂存，不改写源字段。CPU 自研 x64 与 GPU 自研 SPIR-V 每个分量都只在装入键时进行整数位运算；不对 f32 键执行浮点比较、转换或算术，不增加 DenormPreserve／SignedZeroInfNanPreserve 的设备要求，记录中的 NaN 载荷、有符号零及次正规数完整保留。
 
 两个后端都从最低优先级分量开始，每个分量以 4 bit、16 桶进行八轮稳定基数分配。下一个分量直接按已有原始序号从源记录装入同一键槽；不保存全部键的副本，不为每个键生成一个完整记录中间集。中间始终只移动 8 字节的当前键／原始序号，最后 gather 一次完整记录，保留字段与 ABI 填充字节。CPU 由自研 x64 内核完成键装入、各范围私有直方图、稳定散写与 gather；执行框架只为少量范围／桶计算前缀，继续复用 Windows 范围线程池，不调用另一套排序库。临时内存由当前执行拥有，分配失败直接报告。
 

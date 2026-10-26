@@ -202,6 +202,10 @@ record!(Compaction {
     count_word
 });
 variants!(SortKey { U32, I32, F32 });
+variants!(SortOrder {
+    Ascending,
+    Descending
+});
 record!(Sorting {
     source,
     keys,

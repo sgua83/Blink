@@ -60,6 +60,9 @@ fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> Native
             e.bytes(&[0x31, 0xd0]);
         }
     }
+    if s.keys[key].2 == SortOrder::Descending {
+        e.bytes(&[0xf7, 0xd0]); // not eax：反向全序编码，不改写原记录。
+    }
     e.bytes(&[0x43, 0x89, 0x04, 0xcb]);
     if first {
         e.bytes(&[0x49, 0x81, 0xc2]);

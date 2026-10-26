@@ -62,6 +62,12 @@ impl Emitter<'_> {
                     e.sort_binary(198, key, mask)
                 }
             };
+            let key = if s.keys[key_index].2 == SortOrder::Descending {
+                let mask = e.constant(Scalar::U32, u32::MAX);
+                e.sort_binary(198, key, mask)
+            } else {
+                key
+            };
             e.sort_store(s.target, e.index, 2, 0, key);
             e.sort_store(s.target, e.index, 2, 1, original);
         });

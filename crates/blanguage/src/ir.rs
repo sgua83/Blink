@@ -744,10 +744,15 @@ pub enum SortKey {
     I32,
     F32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
 #[derive(Clone, Debug)]
 pub struct Sorting {
     pub source: usize,
-    pub keys: Vec<(u32, SortKey)>,
+    pub keys: Vec<(u32, SortKey, SortOrder)>,
     pub target: usize,
 }
 #[derive(Clone, Debug)]

@@ -1,5 +1,18 @@
 //! 稳定排序按不可变键建立唯一目标序号；源记录与容量尾部保持原值。
 use super::*;
+fn key<'a>(expr: &'a Expr, d: &Definition) -> Result<(&'a Expr, SortOrder)> {
+    if let ExprKind::Call(name, args) = &expr.kind
+        && name == "descending"
+    {
+        if args.len() != 1 {
+            return d
+                .source
+                .fail(expr.span, "B169", "descending 需要一个排序键字段");
+        }
+        return Ok((&args[0], SortOrder::Descending));
+    }
+    Ok((expr, SortOrder::Ascending))
+}
 pub(super) fn compile(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
@@ -15,10 +28,13 @@ pub(super) fn compile(
             "stable_sort_by_key 需要按优先级排列的数值源键字段和输出 dataset",
         );
     }
-    let (source, _, _, prefix, _) = prefix::typed_field(program, env, &args[0], d, facts)?;
+    let (first, _) = key(&args[0], d)?;
+    let (source, _, _, prefix, _) = prefix::typed_field(program, env, first, d, facts)?;
     let mut keys = Vec::new();
     for arg in &args[..args.len() - 1] {
-        let (binding, word, access, domain, ty) = prefix::typed_field(program, env, arg, d, facts)?;
+        let (field, order) = key(arg, d)?;
+        let (binding, word, access, domain, ty) =
+            prefix::typed_field(program, env, field, d, facts)?;
         if binding != source || domain != prefix || access != Access::Read {
             return d
                 .source
@@ -39,7 +55,7 @@ pub(super) fn compile(
         keys.extend(
             ty.components
                 .iter()
-                .map(|&(_, offset)| (word + offset / 4, key)),
+                .map(|&(_, offset)| (word + offset / 4, key, order)),
         );
     }
     let output = args.last().unwrap();
