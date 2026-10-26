@@ -68,6 +68,7 @@ pub enum NativeIntrinsic {
     PrintU32,
     PrintI32,
     PrintBool,
+    PrintF32,
 }
 #[derive(Clone, Debug)]
 pub struct NativeCode {
@@ -290,7 +291,7 @@ impl Emitter<'_> {
                             Scalar::U32 => NativeIntrinsic::PrintU32,
                             Scalar::I32 => NativeIntrinsic::PrintI32,
                             Scalar::Bool => NativeIntrinsic::PrintBool,
-                            Scalar::F32 => return Err("println 尚不接受 f32"),
+                            Scalar::F32 => NativeIntrinsic::PrintF32,
                         }),
                     });
                     self.bytes(&[0; 8]);

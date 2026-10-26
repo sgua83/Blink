@@ -31,6 +31,12 @@ fn kernel(name: &'static str) -> Import {
         name: name.into(),
     }
 }
+fn ucrt(name: &'static str) -> Import {
+    Import {
+        dll: "ucrtbase.dll".into(),
+        name: name.into(),
+    }
+}
 fn math(op: NativeIntrinsic) -> Option<Import> {
     let name = match op {
         NativeIntrinsic::Sin => "sinf",
@@ -41,14 +47,14 @@ fn math(op: NativeIntrinsic) -> Option<Import> {
         NativeIntrinsic::Log => "logf",
         NativeIntrinsic::Log2 => "log2f",
         NativeIntrinsic::Pow => "powf",
-        NativeIntrinsic::PrintU32 | NativeIntrinsic::PrintI32 | NativeIntrinsic::PrintBool => {
+        NativeIntrinsic::PrintU32
+        | NativeIntrinsic::PrintI32
+        | NativeIntrinsic::PrintBool
+        | NativeIntrinsic::PrintF32 => {
             return None;
         }
     };
-    Some(Import {
-        dll: "ucrtbase.dll".into(),
-        name: name.into(),
-    })
+    Some(ucrt(name))
 }
 struct ImportTable {
     bytes: Vec<u8>,
@@ -125,20 +131,28 @@ fn jmp(v: &mut Vec<u8>, condition: Option<u8>) -> usize {
     v.extend([0; 4]);
     at
 }
-fn call(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, name: &'static str) {
+fn call(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
     v.extend([0xff, 0x15]);
     let at = v.len();
     v.extend([0; 4]);
-    patches.push((at, kernel(name)));
+    patches.push((at, import));
 }
 fn print(op: NativeIntrinsic) -> Result<Helper> {
     let signed = op == NativeIntrinsic::PrintI32;
     let boolean = op == NativeIntrinsic::PrintBool;
+    let float = op == NativeIntrinsic::PrintF32;
     let saved = if signed { vec![3, 6, 7] } else { vec![3, 6] };
-    let frame = if signed { 80u8 } else { 88u8 };
+    let frame = if float {
+        120u8
+    } else if signed {
+        80u8
+    } else {
+        88u8
+    };
     let mut v = Vec::new();
     let mut operations = Vec::new();
     let mut patches = Vec::new();
+    let mut failures = Vec::new();
     for &reg in &saved {
         v.push(0x50 + reg);
         let at = v.len() as u8;
@@ -148,7 +162,28 @@ fn print(op: NativeIntrinsic) -> Result<Helper> {
     let at = v.len() as u8;
     operations.push((at, vec![at, ((frame / 8 - 1) << 4) | 2]));
     let unwind = application_unwind(at, operations);
-    if boolean {
+    if float {
+        // intrinsic 的参数仍是原始 32 位；只为 C 的 %g 参数提升到 double。
+        v.extend([
+            0x66, 0x0f, 0x6e, 0xc1, 0xf3, 0x0f, 0x5a, 0xc0, 0xf2, 0x0f, 0x11, 0x44, 0x24, 0x38,
+            0x66, 0xc7, 0x44, 0x24, 0x40, b'C', 0, 0xc7, 0x44, 0x24, 0x48, b'%', b'.', b'9', b'g',
+            0x66, 0xc7, 0x44, 0x24, 0x4c, 10, 0, 0xb9, 4, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x40,
+        ]);
+        call(&mut v, &mut patches, ucrt("_create_locale"));
+        v.extend([0x48, 0x85, 0xc0]);
+        failures.push(jmp(&mut v, Some(0x84)));
+        v.extend([
+            0x48, 0x89, 0xc6, 0xb9, 2, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x50, 0x41, 0xb8, 32, 0, 0,
+            0, 0x4c, 0x8d, 0x4c, 0x24, 0x48, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48, 0x8d, 0x44, 0x24,
+            0x38, 0x48, 0x89, 0x44, 0x24, 0x28,
+        ]);
+        call(&mut v, &mut patches, ucrt("__stdio_common_vsprintf"));
+        v.extend([0x89, 0xc3, 0x48, 0x89, 0xf1]);
+        call(&mut v, &mut patches, ucrt("_free_locale"));
+        v.extend([0x85, 0xdb]);
+        failures.push(jmp(&mut v, Some(0x88)));
+        v.extend([0x48, 0x8d, 0x74, 0x24, 0x50]);
+    } else if boolean {
         v.extend([0x85, 0xc9]);
         let no = jmp(&mut v, Some(0x84));
         v.extend([0xc7, 0x44, 0x24, 0x30]);
@@ -192,18 +227,20 @@ fn print(op: NativeIntrinsic) -> Result<Helper> {
     }
     v.extend([0xb9]);
     v.extend((-11i32).to_le_bytes());
-    call(&mut v, &mut patches, "GetStdHandle");
+    call(&mut v, &mut patches, kernel("GetStdHandle"));
     v.extend([
         0x48, 0x89, 0xc1, 0x48, 0x89, 0xf2, 0x41, 0x89, 0xd8, 0x4c, 0x8d, 0x4c, 0x24, 0x2c, 0x48,
         0xc7, 0x44, 0x24, 0x20, 0, 0, 0, 0,
     ]);
-    call(&mut v, &mut patches, "WriteFile");
+    call(&mut v, &mut patches, kernel("WriteFile"));
     v.extend([0x85, 0xc0]);
-    let failed = jmp(&mut v, Some(0x84));
+    failures.push(jmp(&mut v, Some(0x84)));
     v.extend([0x39, 0x5c, 0x24, 0x2c, 0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0]);
     let finish = jmp(&mut v, None);
     let target = v.len();
-    relative(&mut v, failed, target)?;
+    for failed in failures {
+        relative(&mut v, failed, target)?;
+    }
     v.extend([0x31, 0xc0]);
     let target = v.len();
     relative(&mut v, finish, target)?;
@@ -254,7 +291,7 @@ fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import)
 pub(super) fn link(native: ApplicationCode) -> Result<Vec<u8>> {
     let mut text = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
     let mut patches = Vec::new();
-    call(&mut text, &mut patches, "ExitProcess");
+    call(&mut text, &mut patches, kernel("ExitProcess"));
     let mut functions = vec![Function {
         begin: 0,
         end: text.len(),

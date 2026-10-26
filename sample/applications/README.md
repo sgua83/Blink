@@ -9,11 +9,20 @@ cargo build --workspace --release
 $LASTEXITCODE
 ```
 
-程序在标准输出显示 `3`，正常退出码为 `0`；输出失败时返回 `1`。`println` 接受一个 `u32`、`i32` 或 `bool` 标量，附加 LF 换行，完整写出时返回 `true`。这个示例只有 B 源码，运行生成的 exe 无需 B 源码、编译器、运行器或另写的 Rust／C++ 宿主。
+程序在标准输出显示 `3`，正常退出码为 `0`；输出失败时返回 `1`。`println` 接受一个 `u32`、`i32`、`f32` 或 `bool` 标量，附加 LF 换行，完整写出时返回 `true`。这个示例只有 B 源码，运行生成的 exe 无需 B 源码、编译器、运行器或另写的 Rust／C++ 宿主。
 
 入口在 `.h` 中公开，在 `.b` 中实现，形式为无参数的 `u32 main() on cpu` 或 `i32 main() on cpu`。返回值按原始 32 位作为进程退出码。`build-exe` 的可选参数为模块根目录和具体入口，默认入口是 `main`；普通函数、条件、顺序循环和固定数组使用既有语言规则。
 
 当前输出为 PE32+，目标是 Windows x64 控制台应用。启动和标准输出使用 Windows 系统接口，使用超越函数时导入系统 UCRT 数学入口；调用 C++／Rust DLL 见 [外部 C ABI 示例](../extern/README.md)。字符串、输入、文件、命令行参数、其他平台和源码调试继续研发。
+
+## 浮点结果直接输出
+
+```powershell
+.\target\release\blc.exe build-exe sample/applications/floating.b target/applications/floating.exe
+.\target\applications\floating.exe
+```
+
+`floating.b` 直接输出 `0.333333343`、`1.41421354` 和 `-0`，正常退出码为 `0`。f32 使用 C 数值区域的 `%.9g`，最多 9 位有效数字，以普通或科学计数法显示当前单精度值；小数点固定为 `.`，保留负零。这不是把 1／3 或平方根变成精确实数。普通值应用仍只部署 exe，系统 UCRT 负责浮点格式化。
 
 ## 由 B 组织动态数据和 CPU／GPU 计算
 

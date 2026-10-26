@@ -737,20 +737,21 @@ impl Builder<'_> {
             return self.fail(span, "B260", "println 是 CPU 标准输出操作，要求显式 on cpu");
         }
         if args.len() != 1 {
-            return self.fail(span, "B261", "println 需要一个 u32、i32 或 bool 标量");
+            return self.fail(span, "B261", "println 需要一个 u32、i32、f32 或 bool 标量");
         }
         let value = self.expr(&args[0])?;
         if ![
             Ty::scalar(Scalar::U32),
             Ty::scalar(Scalar::I32),
             Ty::scalar(Scalar::Bool),
+            Ty::scalar(Scalar::F32),
         ]
         .contains(&value.ty)
         {
             return self.fail(
                 args[0].span,
                 "B261",
-                "println 当前接受 u32、i32 或 bool 标量",
+                "println 当前接受 u32、i32、f32 或 bool 标量",
             );
         }
         let dst = self.reg(Scalar::Bool);

@@ -137,13 +137,15 @@ impl Drop for Library {
         }
     }
 }
-fn print_line(value: impl std::fmt::Display) -> u32 {
+fn write_stdout(text: &[u8]) -> u32 {
     use std::io::Write;
-    let text = format!("{value}\n");
-    match std::io::stdout().lock().write(text.as_bytes()) {
+    match std::io::stdout().lock().write(text) {
         Ok(n) => u32::from(n == text.len()),
         Err(_) => 0,
     }
+}
+fn print_line(value: impl std::fmt::Display) -> u32 {
+    write_stdout(format!("{value}\n").as_bytes())
 }
 extern "C" fn print_u32(value: u32) -> u32 {
     print_line(value)
@@ -153,6 +155,44 @@ extern "C" fn print_i32(value: i32) -> u32 {
 }
 extern "C" fn print_bool(value: u32) -> u32 {
     print_line(value != 0)
+}
+#[link(name = "ucrt")]
+unsafe extern "C" {
+    fn _create_locale(category: i32, locale: *const std::ffi::c_char) -> *mut c_void;
+    fn _free_locale(locale: *mut c_void);
+    fn __stdio_common_vsprintf(
+        options: u64,
+        buffer: *mut std::ffi::c_char,
+        count: usize,
+        format: *const std::ffi::c_char,
+        locale: *mut c_void,
+        arguments: *const c_void,
+    ) -> i32;
+}
+// 与独立 PE 使用同一 UCRT 格式及 C 数值区域，不改变宿主的当前区域设置。
+extern "C" fn print_f32(value: u32) -> u32 {
+    let mut text = [0u8; 32];
+    let value = f32::from_bits(value) as f64;
+    let count = unsafe {
+        let locale = _create_locale(4, c"C".as_ptr());
+        if locale.is_null() {
+            return 0;
+        }
+        let count = __stdio_common_vsprintf(
+            2,
+            text.as_mut_ptr().cast(),
+            text.len(),
+            c"%.9g\n".as_ptr(),
+            locale,
+            (&value as *const f64).cast(),
+        );
+        _free_locale(locale);
+        count
+    };
+    if count < 0 {
+        return 0;
+    }
+    write_stdout(&text[..count as usize])
 }
 impl Executable {
     fn new(mut code: blanguage::native::NativeCode) -> Result<Self> {
@@ -183,6 +223,7 @@ impl Executable {
                     NativeIntrinsic::PrintU32 => print_u32 as *const (),
                     NativeIntrinsic::PrintI32 => print_i32 as *const (),
                     NativeIntrinsic::PrintBool => print_bool as *const (),
+                    NativeIntrinsic::PrintF32 => print_f32 as *const (),
                 },
             };
             code.bytes[r.offset..r.offset + 8].copy_from_slice(&(ptr as u64).to_le_bytes());

@@ -248,7 +248,8 @@ variants!(NativeIntrinsic {
     Pow,
     PrintU32,
     PrintI32,
-    PrintBool
+    PrintBool,
+    PrintF32
 });
 variants!(NativeSymbol { Intrinsic(i), External(name) });
 record!(Relocation { offset, target });
