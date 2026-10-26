@@ -38,12 +38,15 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         e.bytes(&[0x4c, 0x8b, 0x99]);
         e.u32(r.target as u32 * 8);
     }
-    e.bytes(&[0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
-    e.u32(program.buffers[if add { r.target } else { r.source }].stride);
+    e.bytes(&[0x44, 0x89, 0xc8]);
+    e.scale_index(
+        0,
+        program.buffers[if add { r.target } else { r.source }].stride,
+    );
     e.bytes(&[0x49, 0x01, 0xc2]);
     if !add {
-        e.bytes(&[0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
-        e.u32(program.buffers[r.target].stride);
+        e.bytes(&[0x44, 0x89, 0xc8]);
+        e.scale_index(0, program.buffers[r.target].stride);
         e.bytes(&[0x49, 0x01, 0xc3]);
     }
     e.bytes(&[0x45, 0x29, 0xc8]);
@@ -226,8 +229,8 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         e.u32(binding as u32 * 8);
     }
     for (binding, pointer) in [(r.source, 0xc2), (r.target, 0xc3)] {
-        e.bytes(&[0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
-        e.u32(program.buffers[binding].stride);
+        e.bytes(&[0x44, 0x89, 0xc8]);
+        e.scale_index(0, program.buffers[binding].stride);
         e.bytes(&[0x49, 0x01, pointer]);
     }
     e.bytes(&[0x45, 0x29, 0xc8]); // r8d = 剩余数量；begin 已消费。

@@ -35,8 +35,6 @@ impl Emitter<'_> {
         let again = self.jump(Some(0x85));
         self.patch(again, begin);
         // EAX 是成功预留的原计数，直接形成唯一记录地址。
-        self.bytes(&[0x48, 0x69, 0xc0]);
-        self.u32(self.program.buffers[a.target].stride);
         self.instruction(
             None,
             &[0x8b],
@@ -47,7 +45,7 @@ impl Emitter<'_> {
                 offset: a.target as u32 * 8,
             },
         );
-        self.bytes(&[0x49, 0x01, 0xc7]);
+        self.offset_address(self.program.buffers[a.target].stride);
         for (word, value) in &a.values {
             self.load(*value);
             self.instruction(

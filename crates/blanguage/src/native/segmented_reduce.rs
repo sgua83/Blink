@@ -78,8 +78,8 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.bytes(&[0x4c, 0x8b, 0x99]);
         e.u32(r.target as u32 * 8);
     }
-    e.bytes(&[0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
-    e.u32(program.buffers[r.source].stride);
+    e.bytes(&[0x44, 0x89, 0xc8]);
+    e.scale_index(0, program.buffers[r.source].stride);
     e.bytes(&[0x49, 0x01, 0xc2, 0x45, 0x29, 0xc8]);
     if finish {
         // 同一范围参数块：K 个前缀分量、实际总长度、进入范围前的段数。
@@ -123,8 +123,8 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.bytes(&[0]);
         let not_tail = e.jump(Some(0x84));
         e.patch(last, e.code.len());
-        e.bytes(&[0x89, 0xc8, 0xff, 0xc8, 0x48, 0x69, 0xc0]);
-        e.u32(program.buffers[r.target].stride);
+        e.bytes(&[0x89, 0xc8, 0xff, 0xc8]);
+        e.scale_index(0, program.buffers[r.target].stride);
         e.bytes(&[0x49, 0x8d, 0x14, 0x03]); // rdx = target + (当前段数-1)*stride
         for (component, (_, offset)) in values.ty.components.iter().enumerate() {
             e.bytes(&[0xf3, 0x0f, 0x11, 0x82 + component as u8 * 8]);

@@ -22,6 +22,32 @@ impl From<Location> for Operand {
     }
 }
 impl Emitter<'_> {
+    pub(super) fn scale_index(&mut self, register: u8, stride: u32) {
+        if stride == 1 {
+            return;
+        }
+        if stride.is_power_of_two() {
+            self.instruction(None, &[0xc1], true, 4, Operand::Register(register));
+            self.bytes(&[stride.trailing_zeros() as u8]);
+        } else {
+            self.instruction(None, &[0x69], true, register, Operand::Register(register));
+            self.u32(stride);
+        }
+    }
+    // R15 holds the base, RAX the zero-extended index; only the address is consumed.
+    pub(super) fn offset_address(&mut self, stride: u32) {
+        if stride.is_power_of_two() && stride <= 8 {
+            self.bytes(&[
+                0x4d,
+                0x8d,
+                0x3c,
+                0x07 | ((stride.trailing_zeros() as u8) << 6),
+            ]);
+        } else {
+            self.scale_index(0, stride);
+            self.bytes(&[0x49, 0x01, 0xc7]);
+        }
+    }
     fn rex(&mut self, wide: bool, r: u8, b: u8) {
         let prefix = 0x40 | (u8::from(wide) << 3) | ((r >> 3) << 2) | (b >> 3);
         if prefix != 0x40 {

@@ -18,8 +18,8 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     // rcx=buffer pointers, r8d=end, r9d=begin；r10=当前源地址，ecx=当前元素。
     e.bytes(&[0x4c, 0x8b, 0x91]);
     e.u32(r.source as u32 * 8);
-    e.bytes(&[0x44, 0x89, 0xc8, 0x48, 0x69, 0xc0]);
-    e.u32(program.buffers[r.source].stride);
+    e.bytes(&[0x44, 0x89, 0xc8]);
+    e.scale_index(0, program.buffers[r.source].stride);
     e.bytes(&[0x49, 0x01, 0xc2, 0x44, 0x89, 0xc9]);
     let registers = [0u8, 2, 9, 11];
     let identity = reduction.operator.identity(scalar);

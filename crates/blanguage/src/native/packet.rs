@@ -409,9 +409,7 @@ impl Emitter<'_> {
         }
         self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
         self.u32(binding as u32 * 8);
-        self.bytes(&[0x48, 0x69, 0xc0]);
-        self.u32(self.program.buffers[binding].stride);
-        self.bytes(&[0x49, 0x01, 0xc7]);
+        self.offset_address(self.program.buffers[binding].stride);
     }
     fn packet_binary(
         &mut self,
@@ -570,9 +568,9 @@ impl Emitter<'_> {
             let tail = self.jump(Some(0x83));
             self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
             self.u32(selection.binding as u32 * 8);
-            self.bytes(&[0x89, 0xd8, 0x48, 0x69, 0xc0]);
-            self.u32(self.program.buffers[selection.binding].stride);
-            self.bytes(&[0x49, 0x01, 0xc7, 0x41, 0x83, 0xbf]);
+            self.bytes(&[0x89, 0xd8]);
+            self.offset_address(self.program.buffers[selection.binding].stride);
+            self.bytes(&[0x41, 0x83, 0xbf]);
             self.u32(selection.word * 4);
             self.bytes(&[0]);
             let skip = self.jump(Some(0x84));

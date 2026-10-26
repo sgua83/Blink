@@ -90,9 +90,7 @@ impl Emitter<'_> {
                             self.load(parts[0]);
                             self.bytes(&[0x49, 0x09, 0xc7]);
                             self.load(*index);
-                            self.bytes(&[0x48, 0x69, 0xc0]);
-                            self.u32(*stride);
-                            self.bytes(&[0x49, 0x01, 0xc7]);
+                            self.offset_address(*stride);
                             if address.word != 0 {
                                 self.bytes(&[0x49, 0x81, 0xc7]);
                                 self.u32(address.word * 4);

@@ -23,9 +23,8 @@ impl Emitter<'_> {
     }
     pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32) {
         self.load(index);
-        self.bytes(&[0x48, 0x69, 0xc0]);
-        self.u32(4);
-        self.bytes(&[0x49, 0x89, 0xe7, 0x49, 0x01, 0xc7]);
+        self.bytes(&[0x49, 0x89, 0xe7]);
+        self.offset_address(4);
         self.read_scalar(
             dst,
             15,
@@ -47,8 +46,8 @@ impl Emitter<'_> {
         for (source, word) in self.stage.input_words() {
             self.bytes(&[0x4d, 0x8b, 0x94, 0x24]);
             self.u32(source as u32 * 8);
-            self.bytes(&[0x89, 0xd8, 0x48, 0x69, 0xc0]);
-            self.u32(self.program.buffers[source].stride);
+            self.bytes(&[0x89, 0xd8]);
+            self.scale_index(0, self.program.buffers[source].stride);
             self.bytes(&[0x49, 0x01, 0xc2, 0x4c, 0x8d, 0x9c, 0x24]);
             self.u32(
                 self.tile_storage_base()

@@ -138,9 +138,7 @@ impl Emitter<'_> {
         self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
         self.u32(binding as u32 * 8);
         self.load(index);
-        self.bytes(&[0x48, 0x69, 0xc0]);
-        self.u32(self.program.buffers[binding].stride);
-        self.bytes(&[0x49, 0x01, 0xc7]);
+        self.offset_address(self.program.buffers[binding].stride);
     }
     fn private_address(&mut self, base: usize, index: Reg, word: u32) -> Result<(), &'static str> {
         let allocation::Location::Stack(offset) =
@@ -166,9 +164,7 @@ impl Emitter<'_> {
                 self.load(address[0]);
                 self.bytes(&[0x49, 0x09, 0xc7]);
                 self.load(*index);
-                self.bytes(&[0x48, 0x69, 0xc0]);
-                self.u32(*stride);
-                self.bytes(&[0x49, 0x01, 0xc7]);
+                self.offset_address(*stride);
             }
             IndexedSource::Tile { tile, index } => {
                 self.load(*index);
@@ -182,9 +178,7 @@ impl Emitter<'_> {
                     self.bytes(&[0x05]);
                     self.u32(word);
                 }
-                self.bytes(&[0x48, 0x69, 0xc0]);
-                self.u32(self.stage.workgroup_width() * 4);
-                self.bytes(&[0x49, 0x01, 0xc7]);
+                self.offset_address(self.stage.workgroup_width() * 4);
                 return;
             }
         }
@@ -368,9 +362,7 @@ impl Emitter<'_> {
                     self.load(address[0]);
                     self.bytes(&[0x49, 0x09, 0xc7]);
                     self.load(*index);
-                    self.bytes(&[0x48, 0x69, 0xc0]);
-                    self.u32(*stride);
-                    self.bytes(&[0x49, 0x01, 0xc7]);
+                    self.offset_address(*stride);
                     self.read_scalar(*dst, 15, *word * 4);
                 }
                 Inst::LoadIndexed {
@@ -701,8 +693,8 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         // R12 is the data table, EBX the original record index.
         e.bytes(&[0x49, 0x8b, 0x84, 0x24]);
         e.u32(selection.binding as u32 * 8);
-        e.bytes(&[0x89, 0xd9, 0x48, 0x69, 0xc9]);
-        e.u32(program.buffers[selection.binding].stride);
+        e.bytes(&[0x89, 0xd9]);
+        e.scale_index(1, program.buffers[selection.binding].stride);
         e.bytes(&[0x48, 0x01, 0xc8, 0x83, 0xb8]);
         e.u32(selection.word * 4);
         e.bytes(&[0]);

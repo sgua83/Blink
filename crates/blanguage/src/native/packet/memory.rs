@@ -63,9 +63,7 @@ impl Emitter<'_> {
                 self.packet_read_base(allocation, source, lane);
             }
             self.packet_lane(allocation, index, lane, 0);
-            self.bytes(&[0x48, 0x69, 0xc0]);
-            self.u32(stride);
-            self.bytes(&[0x49, 0x01, 0xc7]);
+            self.offset_address(stride);
             // XMM3 只在取 lane 时暂用，第四个读取在地址完成后才写入它。
             // 目标分配位置在四个源 lane 全部读取后写回，允许实际的寄存器复用。
             self.instruction(
