@@ -71,6 +71,17 @@ impl IntegerRanges {
     fn map(&self, mut operation: impl FnMut((u32, u32)) -> Self) -> Self {
         Self::from_intervals(self.0.iter().flat_map(|&interval| operation(interval).0))
     }
+    fn flip_sign_order(&self) -> Self {
+        self.map(|(lower, upper)| {
+            integer_result_range(
+                (
+                    i128::from(lower) + (1i128 << 31),
+                    i128::from(upper) + (1i128 << 31),
+                ),
+                0,
+            )
+        })
+    }
     fn combine(
         &self,
         other: &Self,
@@ -202,8 +213,15 @@ impl Proof {
     }
     pub fn integer_bits(value: &Value) -> Self {
         Self {
+            ranges: (0..value.regs.len())
+                .map(|i| value.component_ranges(i).flip_sign_order())
+                .collect(),
             nonzero: (0..value.regs.len())
                 .map(|i| value.component_nonzero(i))
+                .collect(),
+            // 索引域约束原 u32 位模式；中间 i32 仍不能直接作为索引。
+            domains: (0..value.regs.len())
+                .map(|i| value.proof.domains(i))
                 .collect(),
             ..Self::default()
         }
@@ -879,11 +897,7 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     if op == UnaryOp::LogicalNot {
         return Proof::condition(Condition::of(value).negate());
     }
-    let mut proof = if matches!(op, UnaryOp::SignedNegate | UnaryOp::UnsignedNegate) {
-        Proof::integer_bits(value)
-    } else {
-        Proof::default()
-    };
+    let mut proof = Proof::default();
     if value.ty.components[0].0 == Scalar::U32 {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
