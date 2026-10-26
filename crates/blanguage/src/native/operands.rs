@@ -256,22 +256,28 @@ impl Emitter<'_> {
             self.copy(Location::Gpr(left), a);
             self.instruction(None, &[0x3b], false, left, b.into());
         }
-        self.comparison_result(comparison, scalar);
-        self.store(dst);
+        self.comparison_result(dst, comparison, scalar);
     }
     pub(super) fn select(&mut self, dst: Reg, condition: Reg, a: Reg, b: Reg) {
-        self.load(condition);
-        self.bytes(&[0x85, 0xc0]);
-        self.load(b);
-        let source = match self.location(a) {
+        let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
+        self.instruction(None, &[0x83], false, 7, self.location(condition).into());
+        self.bytes(&[0]);
+        let target = match d {
+            Location::Gpr(r) => r,
+            _ => 0,
+        };
+        // 目标已有真值时改用 CMOVZ，避免先写入假值破坏尚未读取的真值。
+        let (initial, source, opcode) = if d == a { (a, b, 0x44) } else { (b, a, 0x45) };
+        self.copy(Location::Gpr(target), initial);
+        let source = match source {
             Location::Xmm(_) => {
-                self.copy(Location::Gpr(1), self.location(a));
+                self.copy(Location::Gpr(1), source);
                 Operand::Register(1)
             }
             location => location.into(),
         };
-        self.instruction(None, &[0x0f, 0x45], false, 0, source);
-        self.store(dst);
+        self.instruction(None, &[0x0f, opcode], false, target, source);
+        self.copy(d, Location::Gpr(target));
     }
     pub(super) fn preserve_registers(&mut self, restore: bool) {
         for (r, offset) in self.frame.saved_gpr.clone() {

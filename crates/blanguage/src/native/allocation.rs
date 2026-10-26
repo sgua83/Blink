@@ -168,9 +168,26 @@ impl Graph {
                     });
                     let preferred = transfer.or_else(|| match inst {
                         Inst::Unary { dst, a, .. } => Some((Register(*dst), Register(*a))),
-                        Inst::Binary { dst, op, a, .. } if !matches!(op, BinaryOp::Compare(_)) => {
-                            Some((Register(*dst), Register(*a)))
+                        Inst::Binary { dst, op, a, b } => {
+                            let source = if let BinaryOp::Compare(comparison) = op {
+                                let reverse = if registers[*a] == Scalar::F32 {
+                                    matches!(
+                                        comparison,
+                                        Comparison::Greater | Comparison::GreaterEqual
+                                    )
+                                } else {
+                                    matches!(
+                                        comparison,
+                                        Comparison::Less | Comparison::GreaterEqual
+                                    )
+                                };
+                                if reverse { *b } else { *a }
+                            } else {
+                                *a
+                            };
+                            Some((Register(*dst), Register(source)))
                         }
+                        Inst::Select { dst, b, .. } => Some((Register(*dst), Register(*b))),
                         Inst::Math { dst, op, args }
                             if matches!(
                                 op,

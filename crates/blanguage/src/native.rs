@@ -194,7 +194,11 @@ impl Emitter<'_> {
         }
         self.bytes(&[0x4d, 0x8d, 0x3c, 0x87]);
     }
-    fn comparison_result(&mut self, operation: Comparison, s: Scalar) {
+    fn comparison_result(&mut self, dst: Reg, operation: Comparison, s: Scalar) {
+        let target = match self.location(dst) {
+            allocation::Location::Gpr(r) => r,
+            _ => 0,
+        };
         if s == Scalar::F32 {
             let c = match operation {
                 Comparison::Equal => 0x94,
@@ -210,7 +214,6 @@ impl Emitter<'_> {
             } else {
                 self.bytes(&[0x0f, 0x9b, 0xc2, 0x20, 0xd0]);
             }
-            self.bytes(&[0x0f, 0xb6, 0xc0]);
         } else {
             let signed = s == Scalar::I32;
             let c = match operation {
@@ -245,8 +248,16 @@ impl Emitter<'_> {
                     }
                 }
             };
-            self.bytes(&[0x0f, c, 0xc0, 0x0f, 0xb6, 0xc0]);
+            self.bytes(&[0x0f, c, 0xc0]);
         }
+        self.instruction(
+            None,
+            &[0x0f, 0xb6],
+            false,
+            target,
+            operands::Operand::Register(0),
+        );
+        self.copy(self.location(dst), allocation::Location::Gpr(target));
     }
     fn math_call(&mut self, intrinsic: NativeIntrinsic, args: &[Reg]) {
         if args.len() == 2 {
@@ -498,8 +509,7 @@ impl Emitter<'_> {
                         if b == Scalar::Bool {
                             self.bytes(&[0x0f, 0x57, 0xc9]);
                             self.bytes(&[0x0f, 0x2e, 0xc1]);
-                            self.comparison_result(Comparison::NotEqual, Scalar::F32);
-                            self.store(*dst);
+                            self.comparison_result(*dst, Comparison::NotEqual, Scalar::F32);
                         } else {
                             self.bytes(if b == Scalar::U32 {
                                 &[0xf3, 0x48, 0x0f, 0x2c, 0xc0]

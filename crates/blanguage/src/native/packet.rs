@@ -448,17 +448,37 @@ impl Emitter<'_> {
             self.packed(Some(0x66), 0xfe, xmm, 1);
         }
     }
-    fn packet_compare(&mut self, op: Comparison, scalar: Scalar) {
+    fn packet_compare(
+        &mut self,
+        allocation: &PacketAllocation,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        op: Comparison,
+        scalar: Scalar,
+    ) {
         let swap = matches!(op, Comparison::Greater | Comparison::GreaterEqual)
             && scalar == Scalar::F32
             || matches!(op, Comparison::Less | Comparison::GreaterEqual) && scalar != Scalar::F32;
-        if swap {
-            self.packed(None, 0x28, 2, 0);
-            self.packed(None, 0x28, 0, 1);
-            self.packed(None, 0x28, 1, 2);
+        let (a, b) = if swap { (b, a) } else { (a, b) };
+        let (d, left, right) = (
+            allocation.location(PrivateSlot::Register(dst)),
+            allocation.location(PrivateSlot::Register(a)),
+            allocation.location(PrivateSlot::Register(b)),
+        );
+        let equality = matches!(op, Comparison::Equal | Comparison::NotEqual);
+        let bias = !equality && matches!(scalar, Scalar::U32 | Scalar::Bool);
+        let target = match d {
+            PacketPlace::Register(r) if bias || d != right || left == right => r,
+            _ => 0,
+        };
+        if bias {
+            // 无符号顺序先保留右值；它可能与结果共用位置。
+            self.packet_load(allocation, PrivateSlot::Register(b), 1);
         }
+        self.packet_load(allocation, PrivateSlot::Register(a), target);
         if scalar == Scalar::F32 {
-            self.packed(None, 0xc2, 0, 1);
+            self.instruction(None, &[0x0f, 0xc2], false, target, right.into());
             self.bytes(&[match op {
                 Comparison::Equal => 0,
                 Comparison::NotEqual => 4,
@@ -466,22 +486,32 @@ impl Emitter<'_> {
                 Comparison::LessEqual | Comparison::GreaterEqual => 2,
             }]);
         } else {
-            let equality = matches!(op, Comparison::Equal | Comparison::NotEqual);
-            if !equality && scalar != Scalar::I32 {
+            if bias {
                 self.packet_constant(2, 0x80000000);
-                self.packed(Some(0x66), 0xef, 0, 2);
+                self.packed(Some(0x66), 0xef, target, 2);
                 self.packed(Some(0x66), 0xef, 1, 2);
             }
-            self.packed(Some(0x66), if equality { 0x76 } else { 0x66 }, 0, 1);
+            self.instruction(
+                Some(0x66),
+                &[0x0f, if equality { 0x76 } else { 0x66 }],
+                false,
+                target,
+                if bias {
+                    Operand::Register(1)
+                } else {
+                    right.into()
+                },
+            );
             if matches!(
                 op,
                 Comparison::NotEqual | Comparison::LessEqual | Comparison::GreaterEqual
             ) {
                 self.packet_constant(2, u32::MAX);
-                self.packed(Some(0x66), 0xef, 0, 2);
+                self.packed(Some(0x66), 0xef, target, 2);
             }
         }
-        self.packet_bool(0);
+        self.packet_bool(target);
+        self.packet_store(allocation, PrivateSlot::Register(dst), target);
     }
     fn packet_cast(&mut self, from: Scalar, into: Scalar) {
         if into == Scalar::Bool {
@@ -784,10 +814,7 @@ impl Emitter<'_> {
                         self.packet_binary(allocation, *dst, *a, *b, Some(0x66), *opcode)
                     }
                     Binary::Compare(op, scalar) => {
-                        self.packet_load(allocation, Register(*a), 0);
-                        self.packet_load(allocation, Register(*b), 1);
-                        self.packet_compare(*op, *scalar);
-                        self.packet_store(allocation, Register(*dst), 0);
+                        self.packet_compare(allocation, *dst, *a, *b, *op, *scalar);
                     }
                     Binary::Shift(opcode) => {
                         let target = match allocation.location(Register(*dst)) {
@@ -869,15 +896,26 @@ impl Emitter<'_> {
                     a,
                     b,
                 } => {
-                    self.packet_load(allocation, Register(*condition), 0);
+                    let target = match allocation.location(Register(*dst)) {
+                        PacketPlace::Register(r) => r,
+                        _ => 0,
+                    };
+                    // 先保留假值；掩码若覆盖真值位置，还须先保存真值。
+                    self.packet_load(allocation, Register(*b), 1);
+                    let a = allocation.location(Register(*a));
+                    let source = if a == PacketPlace::Register(target) {
+                        self.instruction(None, &[0x0f, 0x28], false, 2, a.into());
+                        Operand::Register(2)
+                    } else {
+                        a.into()
+                    };
+                    self.packet_load(allocation, Register(*condition), target);
                     self.packet_constant(3, 0);
-                    self.packed(Some(0x66), 0x76, 0, 3);
-                    self.packet_load(allocation, Register(*a), 1);
-                    self.packet_load(allocation, Register(*b), 2);
-                    self.packed(Some(0x66), 0xdb, 2, 0);
-                    self.packed(Some(0x66), 0xdf, 0, 1);
-                    self.packed(Some(0x66), 0xeb, 0, 2);
-                    self.packet_store(allocation, Register(*dst), 0);
+                    self.packed(Some(0x66), 0x76, target, 3);
+                    self.packed(Some(0x66), 0xdb, 1, target);
+                    self.instruction(Some(0x66), &[0x0f, 0xdf], false, target, source);
+                    self.packed(Some(0x66), 0xeb, target, 1);
+                    self.packet_store(allocation, Register(*dst), target);
                 }
             }
         }
