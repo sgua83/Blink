@@ -215,6 +215,80 @@ impl Emitter<'_> {
         self.emit(61, &[self.u64_type, base, table]);
         self.word_pointer(base, offset)
     }
+    fn record_copy_type(&mut self, lanes: u32) -> (u32, u32) {
+        let mut vector = if lanes == 4 {
+            self.ballot_type
+        } else {
+            self.uint2_type
+        };
+        if vector == 0 {
+            vector = self.id();
+            op(
+                &mut self.defs,
+                23,
+                &[vector, self.types[&Scalar::U32], lanes],
+            );
+            if lanes == 4 {
+                self.ballot_type = vector;
+            } else {
+                self.uint2_type = vector;
+            }
+        }
+        let pointer = self.id();
+        op(&mut self.defs, 32, &[pointer, 5349, vector]);
+        (vector, pointer)
+    }
+    // 记录页不拆分记录；按原始字复制，保留填充及 bool／浮点编码。
+    fn copy_record(
+        &mut self,
+        source_binding: usize,
+        source_index: u32,
+        target_binding: usize,
+        target_index: u32,
+    ) {
+        let stride = self.program.buffers[source_binding].stride / 4;
+        let source = self.address_scalar(source_binding, source_index, stride, 0);
+        let target = self.address_scalar(target_binding, target_index, stride, 0);
+        let blocks = stride / 4 + (stride % 4) / 2 + stride % 2;
+        let bases = (blocks > 1).then(|| {
+            let from = self.id();
+            let to = self.id();
+            self.emit(117, &[self.u64_type, from, source]);
+            self.emit(117, &[self.u64_type, to, target]);
+            (from, to)
+        });
+        let mut word = 0;
+        for lanes in [4, 2, 1] {
+            if stride - word < lanes {
+                continue;
+            }
+            let (ty, pointer) = if lanes == 1 {
+                (self.types[&Scalar::U32], self.ptr_buffer_u32)
+            } else {
+                self.record_copy_type(lanes)
+            };
+            while stride - word >= lanes {
+                let (mut from, mut to) = if word == 0 {
+                    (source, target)
+                } else {
+                    let (from, to) = bases.unwrap();
+                    let bytes = self.constant(Scalar::U32, word * 4);
+                    (self.word_pointer(from, bytes), self.word_pointer(to, bytes))
+                };
+                if lanes != 1 {
+                    let vector_from = self.id();
+                    let vector_to = self.id();
+                    self.emit(124, &[pointer, vector_from, from]);
+                    self.emit(124, &[pointer, vector_to, to]);
+                    (from, to) = (vector_from, vector_to);
+                }
+                let value = self.id();
+                self.emit(61, &[ty, value, from, 2, 4]);
+                self.emit(62, &[to, value, 2, 4]);
+                word += lanes;
+            }
+        }
+    }
     fn record_location(&mut self, index: u32, stride_words: u32, word: u32) -> (u32, u32) {
         let capacity = self.constant(Scalar::U32, PAGE_BYTES / (stride_words * 4));
         let page = self.id();

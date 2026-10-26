@@ -41,14 +41,7 @@ impl Emitter<'_> {
             let prefix = e.id();
             e.emit(61, &[u, prefix, at, 2, 4]);
             e.compact_when(keep, |e| {
-                let stride = e.program.buffers[c.source].stride / 4;
-                for word in 0..stride {
-                    let source = e.address_scalar(c.source, e.index, stride, word);
-                    let value = e.id();
-                    e.emit(61, &[u, value, source, 2, 4]);
-                    let target = e.address_scalar(c.target, prefix, stride, word);
-                    e.emit(62, &[target, value, 2, 4]);
-                }
+                e.copy_record(c.source, e.index, c.target, prefix);
             });
             let next = e.id();
             e.emit(128, &[u, next, e.index, one]);

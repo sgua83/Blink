@@ -8,7 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
-| C-024／C-001 的 GPU compact 整记录复制：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；追查 compact scatter 对每个 word 重复计算页表／物理地址的代码链，复用排序已有的记录起点及 128／64／32 位原始块复制。范围限 SPIR-V 记录复制及必要规范；保持稳定顺序、谓词、前缀 Count、原始字节、页界、IR／ABI 与提交所有者；避让 PA3 资源移动、PA2 bounds 和其他会话。先保存原实现 Release 与真实 CPU／GPU 基线，再实现、核对并清理临时消费者，提交与 Git 发布分别回填。 | 2026-10-27 00:44 +08:00 |
+| C-024／C-001 的 GPU compact 整记录复制：**源码与原生核对完成；待提交／发布** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；compact scatter 与排序 gather 共用既有 128／64／32 位原始记录复制，删除逐 word 页表／寻址链。Release 54.55 秒；36 种布局每版 326 组小规模 CPU／GPU／独立参考，以及五种大规模输入每种五次 GPU 全字核对全部通过，两版共 351 组结果对应，10 类排序 gather 指令流散列相同。含 276000276 字节记录源及 320000000 字节谓词的跨页、原始 bool／浮点／ABI 填充和 Count／尾部保持。92 字节一百万条中位 3.38744→1.61852 ms、3000003 条 10.18804→3.77568 ms；16 字节大规模变化很小，不外推通用性能。132 个临时文件／58889494 字节已清理，原始记录在 Saved/Measurements/GpuCompactCopyDevelopment。认领 CL13251；只处理原始记录复制，不改 PA3 资源移动、PA2 bounds、IR／ABI 与提交所有者。 | 2026-10-27 00:53 +08:00 |
 | C-020.3 的 CPU dataset 局部移动与拥有形参：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；在 CL13242 的资源返回上补齐本地 dataset 初始化移动、按值拥有形参及返回／再绑定。沿现有 Frame／句柄交接唯一所有权，处理分支／循环回边、提前返回、作用域退出和丢弃结果；读取、inout 借用与拥有转移之间保持真实访问约束。预计修改 check.rs 的应用资源／调用片段、check/application.rs、cooperative.rs、returns.rs、flow.rs 及必要泛型绑定与规范；不改 bounds.rs、IR／ABI、后端或运行库。先提交本认领，再保存真实基线、实现、Release 与 CPU／GPU 原生验证，最后清理并聚焦提交。普通聚合、write 全域初始化、其他资源构造、模块与跨机／热更新仍开放。 | 2026-10-27 00:33 +08:00 |
 | C-004 的 f32／u32 原始位解释：**本轮实现与原生核对完成；源码已提交／Git 已回读** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage`，client `BLanguage_Gua`；源码与规范 CL13241，Git `923a89430040254093e3bf2ef8e40ab440bf05fb` 的七文件与精确 P4 全部一致。bitcast_u32／bitcast_f32 复用 Unary、原 x64／SSE2 与 SPIR-V；18 组 CPU／GPU／独立位参考核对共 60000960 个输出 word，类型及索引证明拒绝符合预期。21 个临时文件、7755835 字节已清理，原始结果在 E:/BLEngineMeasurements/SpatialBits。本台账通过隔离 client BLanguage_Gua_SpatialIssue 提交，保留主工作区其他会话编辑。其他 C-004 与完整语言继续开放。 | 2026-10-27 00:25 +08:00 |
 | C-020.3 的 CPU 应用拥有 dataset 返回：**本轮源码、PA3 原生验证、P4 提交与 Git 发布完成** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；集成 CL13241 后 Release 43.51 秒，108 组数据／所有权、五百万零三条跨页及 13 项拒绝再次通过。源码十个文件已由 PA3 提交 CL13242，Gua 单次 Git 发布 `a8f7ae4399ce20ed4e27ae7a460dc245675fc9f7`，十个 Git blob 与精确 P4 版本相同。PA3 have 对应 CL13242、源码无差异且无打开文件；临时消费者已清理，原始记录在 Saved/Measurements/PA3DatasetReturnDevelopment。只完成拥有 dataset 的函数返回，其余 C-020.3 与长期架构范围保持未完成。 | 2026-10-27 00:30 +08:00 |
@@ -1868,3 +1868,22 @@ Release消费者PID3716、退出0：完整4K／内部8K，两次提交返回时�
 - 19 项非法源码分别为 14 个 B152（非中性加乘／XOR／AND／移位、混合分量、源／结果／资源改写、缺少非零、XOR 自身不是原值、右侧写后的新值）、4 个 B137（另一资源、长度本身、改变值的 i32 除法及新 bitcast 的证明屏障）、1 个 B166（index()+0 的非当前位置写）。它们均保持原生编译拒绝，未执行非法程序。这里验证的是对应关系，不把所有整数表达式都视为恒等式。
 - 正式 blc -c 编译带动态 dataset 的独立 CPU 应用，bllink 只链接目标产物，直接运行 exe 与对应执行 DLL。应用按 0 至 65 条分配并通过 length+0 游标初始化，使用 i32 乘一后恢复 u32 的长度索引，并在普通函数内通过加零别名条件证明原除数非零；输出 18914、退出 0，与独立 PowerShell 64 位整数参考一致。编译阶段 30.881 秒，编译／链接／运行 stderr 均为空；不是资源返回或 GPU 排序的重复验证。
 - 150 个临时模块、三份消费者版本／符号、目标与执行 DLL，以及本次新生成的 9 个 blink_app_499ec081cb5a934f 归档／fingerprint 文件，共 159 个文件、23691356 字节已清理。Saved/IntegerIdentityDevelopment 已移除，既有共享库与缓存保持；原始基线、构建、CPU／GPU、拒绝、应用、缓存前库存及 cleanup.json 保存在 Saved/Measurements/IntegerIdentityDevelopment，没有新增常驻测试、脚本、资产、断言或固定关卡。源码／架构／规范／台账已提交 CL13252；提交后立即单次异步 Git 发布返回 PUBLISHED P4 CL 13252→0edf5947b98f690053a3abfa4cd4849b27732344，远端 main 回读一致，四个文件与精确 P4@13252 的 Git blob 全部相同，临时回读副本已删除。首次提交因共享台账推进到 #129 被拒绝，没有启动 Git；合并保留双方记录后完成该提交及发布。for 非零起点下界、其他相关性及语言剩余能力保持未完成。
+
+## C-024／C-001：GPU compact 共用原始记录复制（2026-10-27）
+
+- 根因：compact scatter 按每个 u32 重新计算记录页号、页内偏移并读取源／目标页表，重复承担已由排序 gather 完成的整记录复制职责。本轮把既有实现移到 SPIR-V Emitter，两个集合入口共用；源与目标各解析一次记录起点，按 128／64／32 位原始 u32 块及精确尾部复制，不新增运行期入口、状态、分配或调度。页仍只容纳完整记录，Aligned 4、原始 bool／浮点编码、ABI 填充、稳定次序、谓词和 Count 的生产关系保持。
+- 实现范围：spirv.rs、spirv/sort.rs、spirv/compact.rs，以及本规范／架构说明。SDK Release 构建 54.55 秒；原实现基线 Release 54.86 秒，修正临时消费者后以原三文件重新构建基线 58.18 秒。原型 Count 曾因不是单 u32 记录被 B171 拒绝；随后排序消费者未声明 subgroup 设备能力被原运行库拒绝。两项均修正临时消费者，保留原始诊断，没有修改语言／运行库规则。
+- 原生范围：GUA／192.168.10.5，AMD Radeon RX 9070 GRE，Release 库及 opt-level=3、thin LTO、codegen-units=1、panic=abort 的一次性消费者。33 种四至一百三十二字节的逐四字节步长，加 float3／矩阵／固定数组共 36 种布局；每版 326 组小规模 CPU／GPU／独立稳定参考逐 word 核对，包含 0、1、3、63、64、65、4099 条，空／全选／稀疏谓词、真实 compact→有效前缀 compact 以及排序。全部输入、谓词、Count、有效记录、容量尾部和填充均核对；10 类排序 gather 的 FNV64 指令流散列一致。
+- 五种大规模输入各有一次 CPU 完整参考及五次 GPU 逐字核对，两版共 351 组 GPU 结果对应。包含 3000003×92=276000276 字节源、10000000×32=320000000 字节谓词的 256 MiB 跨页；实际源、Count 与输出尾部保持。静态 92 字节普通 scatter：3197→1089 个 SPIR-V word，Load 78→18、Store 25→9、UDiv／UMod 各 50→6；有效前缀 scatter 为 3431→1319 个 word。静态指令数量不冒充实际硬件访存次数。
+
+以下是每组五次 GPU_program_ms 的中位数，覆盖完整 compact 的扫描和 scatter，未分离复制阶段，也不包含上传／读回；不作为产品帧率或成熟库对照。
+
+| 记录步长／输入数量／选择 | 原实现 ms | 共用复制 ms |
+|---|---:|---:|
+| 16 字节／一百万／稀疏 | 0.28548 | 0.24320 |
+| 16 字节／三百万零三／稀疏 | 0.83136 | 0.81856 |
+| 16 字节／一千万／全选 | 2.79964 | 2.79768 |
+| 92 字节／一百万／稀疏 | 3.38744 | 1.61852 |
+| 92 字节／三百万零三／稀疏 | 10.18804 | 3.77568 |
+
+保留全部原始样本，包含修改版 92 字节三百万零三条的 33.45508 ms 样本及其他波动；16 字节大规模变化很小，不宣称所有步长／数量都有同比收益。研发记录在 `Saved/Measurements/GpuCompactCopyDevelopment`；132 个临时代码／原生产物／SDK target 文件共 58889494 字节已清理。认领 CL13251 保留，源码提交、Git 发布与主工作区采用分别回填；C-001、C-007、C-024 的其余能力和性能目标继续开放。
