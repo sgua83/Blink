@@ -44,19 +44,20 @@ impl Emitter<'_> {
         word: u32,
         broadcast: bool,
     ) {
-        let shared = matches!(source, ReadSource::View { uniform: true, .. }) && !broadcast;
+        let shared = matches!(
+            source,
+            ReadSource::Dataset(_) | ReadSource::View { uniform: true, .. }
+        );
         if shared {
             self.packet_read_base(allocation, source, 0);
-            self.instruction(None, &[0x8b], true, 2, Operand::Register(15));
         }
         let stride = match source {
             ReadSource::Dataset(binding) => self.program.buffers[*binding].stride,
             ReadSource::View { stride, .. } => *stride,
         };
         for lane in 0..if broadcast { 1 } else { 4 } {
-            if shared {
-                self.instruction(None, &[0x8b], true, 15, Operand::Register(2));
-            } else {
+            // Lane extraction and indexed reads preserve R15's base.
+            if !shared {
                 self.packet_read_base(allocation, source, lane);
             }
             self.packet_lane(allocation, index, lane, 0);
