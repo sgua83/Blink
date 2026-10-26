@@ -268,11 +268,17 @@ impl Plan {
                 }
                 Inst::Cast { dst, src } => {
                     uniform[*dst] = uniform[*src];
-                    Step::Cast {
-                        dst: *dst,
-                        src: *src,
-                        from: stage.registers[*src],
-                        into: stage.registers[*dst],
+                    let from = stage.registers[*src];
+                    let into = stage.registers[*dst];
+                    if operands::bit_copy(from, into) {
+                        Step::Copy(PrivateSlot::Register(*dst), PrivateSlot::Register(*src))
+                    } else {
+                        Step::Cast {
+                            dst: *dst,
+                            src: *src,
+                            from,
+                            into,
+                        }
                     }
                 }
                 Inst::Math { dst, op, args } => {

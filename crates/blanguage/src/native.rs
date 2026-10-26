@@ -488,7 +488,7 @@ impl Emitter<'_> {
                 Inst::Cast { dst, src } => {
                     let a = self.stage.registers[*src];
                     let b = self.stage.registers[*dst];
-                    if a == b {
+                    if operands::bit_copy(a, b) {
                         self.copy(self.location(*dst), self.location(*src));
                         continue;
                     }

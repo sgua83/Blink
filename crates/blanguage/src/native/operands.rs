@@ -2,6 +2,12 @@
 use super::*;
 use allocation::Location;
 
+pub(super) fn bit_copy(from: Scalar, into: Scalar) -> bool {
+    from == into
+        || matches!(from, Scalar::U32 | Scalar::I32 | Scalar::Bool)
+            && matches!(into, Scalar::U32 | Scalar::I32)
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Operand {
     Register(u8),

@@ -33,6 +33,7 @@ pub(super) struct Frame {
 pub(super) struct Graph {
     addressable: BTreeSet<usize>,
     edges: Vec<BTreeSet<usize>>,
+    affinities: Vec<BTreeSet<usize>>,
     weights: Vec<u64>,
     across_call: BTreeSet<usize>,
     outgoing_bytes: u64,
@@ -66,6 +67,7 @@ impl Graph {
     fn block(
         &mut self,
         code: &[Inst],
+        registers: &[Scalar],
         mut live: BTreeSet<PrivateSlot>,
         break_live: &BTreeSet<PrivateSlot>,
         continue_live: &BTreeSet<PrivateSlot>,
@@ -78,13 +80,22 @@ impl Graph {
                 Inst::If { condition, yes, no } => {
                     let a = self.block(
                         yes,
+                        registers,
                         live.clone(),
                         break_live,
                         continue_live,
                         exit_live,
                         weight,
                     );
-                    live = self.block(no, live, break_live, continue_live, exit_live, weight);
+                    live = self.block(
+                        no,
+                        registers,
+                        live,
+                        break_live,
+                        continue_live,
+                        exit_live,
+                        weight,
+                    );
                     live.extend(a);
                     live.insert(Register(*condition));
                     self.weights[*condition] = self.weights[*condition].saturating_add(weight);
@@ -104,13 +115,21 @@ impl Graph {
                         exit_live,
                     );
                     let nested = weight.saturating_mul(8);
-                    let mut before_body =
-                        self.block(body, header.clone(), &live, &header, exit_live, nested);
+                    let mut before_body = self.block(
+                        body,
+                        registers,
+                        header.clone(),
+                        &live,
+                        &header,
+                        exit_live,
+                        nested,
+                    );
                     before_body.extend(live);
                     before_body.insert(Register(*test));
                     self.weights[*test] = self.weights[*test].saturating_add(nested);
                     live = self.block(
                         condition,
+                        registers,
                         before_body,
                         break_live,
                         continue_live,
@@ -119,12 +138,39 @@ impl Graph {
                     );
                 }
                 Inst::Scope(body) => {
-                    live = self.block(body, live.clone(), break_live, continue_live, &live, weight)
+                    live = self.block(
+                        body,
+                        registers,
+                        live.clone(),
+                        break_live,
+                        continue_live,
+                        &live,
+                        weight,
+                    )
                 }
                 Inst::Exit => live = exit_live.clone(),
                 Inst::Break => live = break_live.clone(),
                 Inst::Continue => live = continue_live.clone(),
                 _ => {
+                    let transfer = match inst {
+                        Inst::LoadLocal(dst, slot) => Some((Register(*dst), Local(*slot))),
+                        Inst::StoreLocal(slot, src) => Some((Local(*slot), Register(*src))),
+                        Inst::Cast { dst, src }
+                            if operands::bit_copy(registers[*src], registers[*dst]) =>
+                        {
+                            Some((Register(*dst), Register(*src)))
+                        }
+                        _ => None,
+                    }
+                    .filter(|(dst, src)| {
+                        !self.addressable.contains(&self.id(*dst))
+                            && !self.addressable.contains(&self.id(*src))
+                    });
+                    if let Some((dst, src)) = transfer {
+                        let (dst, src) = (self.id(dst), self.id(src));
+                        self.affinities[dst].insert(src);
+                        self.affinities[src].insert(dst);
+                    }
                     let mut definitions: Vec<_> =
                         inst.results().into_iter().map(Register).collect();
                     if let Inst::StoreLocal(slot, _) = inst {
@@ -134,7 +180,10 @@ impl Graph {
                         let id = self.id(*dst);
                         if !self.addressable.contains(&id) {
                             for other in &live {
-                                self.edge(id, self.id(*other));
+                                // 复制后的两份值相同；其他定义和写入仍建立真实干涉。
+                                if transfer != Some((*dst, *other)) {
+                                    self.edge(id, self.id(*other));
+                                }
                             }
                         }
                         self.weights[id] = self.weights[id].saturating_add(weight);
@@ -192,6 +241,7 @@ impl Graph {
                 .flat_map(|r| r.map(|s| stage.registers.len() + s))
                 .collect(),
             edges: vec![BTreeSet::new(); stage.registers.len() + stage.locals.len()],
+            affinities: vec![BTreeSet::new(); stage.registers.len() + stage.locals.len()],
             weights: vec![0; stage.registers.len() + stage.locals.len()],
             across_call: BTreeSet::new(),
             outgoing_bytes: 0,
@@ -199,7 +249,15 @@ impl Graph {
         };
         let empty = BTreeSet::new();
         graph.together(&live);
-        graph.block(&stage.code, live, &empty, &empty, &empty, 1);
+        graph.block(
+            &stage.code,
+            &stage.registers,
+            live,
+            &empty,
+            &empty,
+            &empty,
+            1,
+        );
         if stage.has_tile_steps() {
             // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
             for phase in stage.tile_phases() {
@@ -230,14 +288,19 @@ impl Graph {
                 .filter_map(|n| locations[*n])
                 .collect();
             let candidates = candidates(id, self.across_call.contains(&id));
-            let location =
-                if let Some(register) = candidates.into_iter().find(|r| !used.contains(r)) {
-                    register
-                } else {
-                    let slot = (0..).find(|s| !used.contains(&stack(*s))).unwrap();
-                    spills = spills.max(slot + 1);
-                    stack(slot)
-                };
+            let preferred = self.affinities[id]
+                .iter()
+                .filter_map(|n| locations[*n])
+                .find(|r| candidates.contains(r) && !used.contains(r));
+            let location = if let Some(register) =
+                preferred.or_else(|| candidates.into_iter().find(|r| !used.contains(r)))
+            {
+                register
+            } else {
+                let slot = (0..).find(|s| !used.contains(&stack(*s))).unwrap();
+                spills = spills.max(slot + 1);
+                stack(slot)
+            };
             locations[id] = Some(location);
         }
         (locations.into_iter().map(Option::unwrap).collect(), spills)
