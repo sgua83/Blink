@@ -24,7 +24,7 @@ float3x4 自然大小为 48、对齐为 16；Transform<64> 大小为 64、对齐
 |---|---|
 | Device::instance_data(program,binding,models) | 按具体 B 绑定创建原生实例输入；要求 stride=64、12 个 f32 分量位于 offset 0..44，模型均属于该设备 |
 | Device::instance_data_from(data,models) | 以已有 B 布局 Dataset 的 CPU 矩阵创建同一原生输入，记录数量必须对应实际模型；原生尾部仍只由平台填写 |
-| unsafe Device::top_level_device_read(data) | 接收冻结的 ReadDataset，异步读取原生实例输入；同一只读存储可交给其他真实计算消费者 |
+| unsafe Device::top_level_device_read(data) | 以冻结输入的原生只读绑定进入同一top_level_device构建；存储可供其他真实计算消费者引用 |
 | unsafe Device::top_level_device(data) | 消费GpuDataset所有权，读取实际GPU页异步提交TLAS构建；输入须属于该设备并持有原生实例所有权 |
 | Device::download(data) | 返回矩阵等逻辑数据；原生实例的 48..64 字节清零，不将设备地址序列化为可执行资源 |
 
@@ -70,6 +70,16 @@ BottomLevel::primitive_count返回该BLAS实际构建输入的u32 primitive范�
 
 BLEngine 的刚体表面对应需要此前实例矩阵。instance_data_from 接收由真实 B 类型创建并填好逻辑矩阵的 CPU Dataset，复用 instance_data 的原生尾部、模型检查、分页地址及传输；instance_data 原入口直接委托它，没有第二份设备矩阵。
 
-调用者可 freeze 同一原生输入，再交给 unsafe top_level_device_read。构建 Execution 持有该 ReadDataset 到真实构建完成；显式场景或计算消费者按自己的使用期限继续持有同一存储。冻结输入保持其原生产完成点，不反向改成当前构建的最后使用点，因此构建对输入的持有不会形成引用环。后续 view 提交仍由原执行框架持有真实读取资源，不新增全局历史、资源注册表或额外完成状态。
+调用者可 freeze 同一原生输入，再交给 unsafe top_level_device_read。只读绑定在真实构建完成点持有该 ReadDataset；显式场景或计算消费者按自己的使用期限继续持有同一存储。冻结输入保持其原生产完成点，不反向改成当前构建的最后使用点，因此构建对输入的持有不会形成引用环。后续 view 提交仍由原执行框架持有真实读取资源，不新增全局历史、资源注册表或额外完成状态。
 
 未请求其他消费者时，原 top_level_device 仍在构建完成后释放唯一输入。64 字节原生记录与矩阵／模型／设备前提不变；只读共享不授予修改原生尾部、伪造模型引用、跨设备使用或任意变换的安全证明。此项为执行框架能力补齐，语言语法、IR 和数学算法没有改动。
+
+## 冻结dataset的直接原生绑定（2026-10-26）
+
+ReadDataset::binding返回可直接放入原vulkan::Bindings.datasets的GpuDataset句柄。它只引用原冻结存储，不创建GPU记录、页表、view头或传输；同一来源可以在多个read参数／程序中使用。原生提交检查B声明的真实权限，冻结来源只接受Access::Read，不能因句柄类型仍为GpuDataset而改写底层页。
+
+绑定未消费时没有本次最后使用点；提交与下载从原来源取得生产依赖，提交后才由绑定记录本次实际执行。退出沿原Execution.discarded存储的Owned／Read两种所有权形态交接，不增加第二个执行或完成服务。已完成的共享输入可以直接再次使用，binding再freeze取得原冻结来源，不累积句柄包装或令生产执行持有自身。
+
+top_level_device_read也复用此路径，AS不再保留独立的_read_inputs持有字段和私有共享构建链。存储只在最后实际消费者完成后释放；普通唯一输入仍按同一构建寿命退出。原生matrix／BLAS／device约束与unsafe前提保持。
+
+BLEngine据此删除仅为共享绑定存在的相机、实例元数据和运动输入引用包装。视图引用依然用于真正的嵌套数据关系；本项不是禁止view，也没有复制BLCamera／世界矩阵或增加逐帧校验。Release原生边界、跨页与生命周期记录见[问题列表](Issues.md#blengine提出的原生只读dataset直接绑定缺口2026-10-26)。

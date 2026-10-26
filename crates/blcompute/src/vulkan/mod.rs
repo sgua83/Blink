@@ -658,7 +658,7 @@ impl Device {
             Ok((&source.0.ty, Rc::as_ptr(&source.0) as usize))
         })?;
         let mut target = GpuDataset::new(self.inner.clone(), data.ty, data.stride, data.count)?;
-        target.storage.views = views;
+        target.owned_storage()?.views = views;
         self.upload_payload(&mut target, &data.words)?;
         Ok(target)
     }
@@ -722,7 +722,8 @@ impl Device {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let dependencies = Execution::prepare(data.last_use.iter().cloned().collect())?;
+            let dependencies =
+                Execution::prepare(data.dependency().cloned().into_iter().collect())?;
             commands.submit()?;
             let execution = Execution::new(
                 ExecutionResources::Transfer {
@@ -805,8 +806,12 @@ impl Usage {
     }
 }
 pub struct GpuDataset {
-    storage: ManuallyDrop<GpuStorage>,
+    storage: ManuallyDrop<DatasetStorage>,
     last_use: Option<Rc<Execution>>,
+}
+enum DatasetStorage {
+    Owned(GpuStorage),
+    Read(ReadDataset),
 }
 /// 不透明物理存储；可读借用不允许交换存储与它的执行寿命。
 #[doc(hidden)]
@@ -824,7 +829,10 @@ pub struct GpuStorage {
 impl std::ops::Deref for GpuDataset {
     type Target = GpuStorage;
     fn deref(&self) -> &GpuStorage {
-        &self.storage
+        match &*self.storage {
+            DatasetStorage::Owned(storage) => storage,
+            DatasetStorage::Read(source) => &source.0,
+        }
     }
 }
 impl Drop for GpuDataset {
@@ -842,6 +850,14 @@ impl Drop for GpuDataset {
 pub struct ReadDataset(Rc<GpuDataset>);
 pub type ViewBinding<'a> = crate::ViewBinding<'a, ReadDataset>;
 impl ReadDataset {
+    /// 将同一冻结物理存储直接交给原生read dataset绑定；不创建GPU记录、页表或传输。
+    pub fn binding(&self) -> GpuDataset {
+        GpuDataset {
+            storage: ManuallyDrop::new(DatasetStorage::Read(self.clone())),
+            last_use: None,
+        }
+    }
+
     /// 原存储的物理记录容量；GPU有效前缀仍由其域关系持有。
     pub fn count(&self) -> u32 {
         self.0.count()
@@ -858,7 +874,22 @@ impl ReadDataset {
 }
 impl GpuDataset {
     pub fn freeze(self) -> ReadDataset {
+        if let DatasetStorage::Read(source) = &*self.storage {
+            return source.clone();
+        }
         ReadDataset(Rc::new(self))
+    }
+    fn dependency(&self) -> Option<&Rc<Execution>> {
+        self.last_use.as_ref().or_else(|| match &*self.storage {
+            DatasetStorage::Owned(_) => None,
+            DatasetStorage::Read(source) => source.0.dependency(),
+        })
+    }
+    fn owned_storage(&mut self) -> Result<&mut GpuStorage> {
+        match &mut *self.storage {
+            DatasetStorage::Owned(storage) => Ok(storage),
+            DatasetStorage::Read(_) => Err(error("只读物理存储不能由原生接口改写")),
+        }
     }
     pub fn page_count(&self) -> usize {
         self.pages.len()
@@ -902,7 +933,7 @@ impl GpuDataset {
         }
         let allocation = Self::table(inner, &pages)?;
         Ok(Self {
-            storage: ManuallyDrop::new(GpuStorage {
+            storage: ManuallyDrop::new(DatasetStorage::Owned(GpuStorage {
                 allocation,
                 pages,
                 ty,
@@ -911,7 +942,7 @@ impl GpuDataset {
                 producer: Usage::Transfer,
                 views: Views::default(),
                 instances: None,
-            }),
+            })),
             last_use: None,
         })
     }
@@ -1478,7 +1509,9 @@ impl GpuProgram {
         let required = u32::from(caps.basic)
             | (u32::from(caps.vote) << 1)
             | (u32::from(caps.arithmetic) << 2)
-            | (u32::from(caps.ballot) << 3);
+            | (u32::from(caps.ballot) << 3)
+            | (u32::from(caps.shuffle) << 4)
+            | (u32::from(caps.shuffle_relative) << 5);
         if inner.subgroup_operations & required != required {
             return Err(error(format!(
                 "GPU 不支持程序需要的 compute subgroup 操作：需要 {required:#x}，实际 {:#x}",
@@ -1767,7 +1800,7 @@ impl GpuProgram {
             &self.compiled.inner,
         )?;
         for data in &extra.datasets.datasets {
-            if let Some(used) = &data.last_use {
+            if let Some(used) = data.dependency() {
                 if !Rc::ptr_eq(&used.point.inner, &self.compiled.inner) {
                     return Err(error("跨提交衔接必须属于同一设备队列"));
                 }
@@ -1792,6 +1825,14 @@ impl GpuProgram {
             return Err(error("纹理数量或设备归属与程序不一致"));
         }
         let data = &mut owner.bindings.datasets;
+        for (dataset, binding) in data.iter().zip(c.program.buffers()) {
+            if matches!(&*dataset.storage, DatasetStorage::Read(_))
+                && binding.access != blanguage::ast::Access::Read
+            {
+                return Err(error("冻结的物理存储只能绑定read dataset"));
+            }
+        }
+
         let accelerations = &owner.accelerations;
         if accelerations.len() != c.program.accelerations().len()
             || accelerations.iter().any(|a| !a.belongs_to(&c.inner))
@@ -1805,7 +1846,7 @@ impl GpuProgram {
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
                 return Err(error("数据集不属于程序的设备"));
             }
-            if let Some(used) = &d.last_use {
+            if let Some(used) = d.dependency() {
                 owner.dependencies.push(used.clone());
             }
         }
@@ -1817,7 +1858,7 @@ impl GpuProgram {
             if visited.insert(Rc::as_ptr(&source.0) as usize) {
                 resource_stage |= source.0.producer.stage();
                 resource_access |= source.0.producer.access();
-                if let Some(used) = &source.0.last_use {
+                if let Some(used) = source.0.dependency() {
                     owner.dependencies.push(used.clone());
                 }
                 resources.extend(&source.0.views.sources);
@@ -2332,7 +2373,7 @@ impl GpuProgram {
                         for b in &stage.writes {
                             pending.insert(*b);
                             last[*b] = Usage::Compute;
-                            data[*b].storage.producer = Usage::Compute;
+                            data[*b].owned_storage()?.producer = Usage::Compute;
                         }
                     }
                 }

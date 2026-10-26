@@ -160,7 +160,6 @@ pub(super) enum ExecutionResources {
         commands: Commands,
         _scratch: Allocation,
         _inputs: Vec<ray::RayInput>,
-        _read_inputs: Vec<ReadDataset>,
     },
 }
 impl ExecutionResources {
@@ -176,7 +175,7 @@ pub(super) struct Execution {
     pub point: Rc<Completion>,
     resources: RefCell<Option<ExecutionResources>>,
     dependencies: RefCell<Vec<Rc<Self>>>,
-    discarded: RefCell<Vec<GpuStorage>>,
+    discarded: RefCell<Vec<DatasetStorage>>,
     discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
 impl Execution {
@@ -209,7 +208,7 @@ impl Execution {
         all.drain(..finished);
         Ok(all)
     }
-    pub fn discard(&self, storage: GpuStorage) {
+    pub fn discard(&self, storage: DatasetStorage) {
         if self.point.result.get() == Some(0) {
             drop(storage);
         } else {

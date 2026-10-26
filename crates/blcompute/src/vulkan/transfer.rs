@@ -22,7 +22,7 @@ impl Device {
         }
         let mut target =
             GpuDataset::new(self.inner.clone(), data.ty.clone(), data.stride, data.count)?;
-        target.storage.views = Views {
+        target.owned_storage()?.views = Views {
             sources,
             bindings: data.views.bindings.clone(),
         };

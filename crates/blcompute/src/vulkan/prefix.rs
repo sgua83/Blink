@@ -63,7 +63,7 @@ pub(super) fn prepare(
         (f.vkCmdDispatch)(commands.command, 1, 1, 1);
         commands.barrier(0x800, 0x802, 0x40, 0x21);
     }
-    args.storage.producer = Usage::Compute;
+    args.owned_storage()?.producer = Usage::Compute;
     Ok(set)
 }
 pub(super) fn dispatch(

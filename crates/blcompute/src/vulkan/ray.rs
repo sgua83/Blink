@@ -288,7 +288,6 @@ impl Device {
         structure_type: u32,
         producer: Usage,
         inputs: Vec<RayInput>,
-        read_inputs: Vec<ReadDataset>,
         models: Vec<BottomLevel>,
         mut dependencies: Vec<Rc<Execution>>,
     ) -> Result<Structure> {
@@ -398,7 +397,6 @@ impl Device {
                 commands,
                 _scratch: scratch,
                 _inputs: inputs,
-                _read_inputs: read_inputs,
             },
             dependencies,
         );
@@ -444,7 +442,6 @@ impl Device {
             1,
             Usage::Transfer,
             vec![vertices, triangles],
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -493,7 +490,6 @@ impl Device {
             0,
             Usage::Transfer,
             vec![input],
-            Vec::new(),
             models,
             Vec::new(),
         )?;
@@ -554,7 +550,7 @@ impl Device {
             }
         }
         let pointers = Allocation::new(self.inner.clone(), addresses.len() as u64 * 4, 0xa0002, 1)?;
-        target.storage.instances = Some(InstanceInput {
+        target.owned_storage()?.instances = Some(InstanceInput {
             pointers,
             models: models
                 .into_iter()
@@ -583,23 +579,6 @@ impl Device {
     /// 每条最终矩阵必须有限且线性部分可逆。调用者只能改写矩阵逻辑字段；
     /// 不得用 bulk copy/sort/compact 等操作破坏或换入未持有 BLAS 的原生尾部。
     pub unsafe fn top_level_device(&self, mut data: GpuDataset) -> Result<Acceleration> {
-        let structure = self.build_device_instances(&data, Vec::new())?;
-        data.last_use = Some(structure.built.clone());
-        drop(data);
-        Ok(Acceleration(Rc::new(structure)))
-    }
-    /// 不可变实例输入可以同时由AS构建和后续计算消费，不复制矩阵或暴露原生尾部。
-    /// # Safety
-    /// 矩阵、原生尾部及模型所有权前提与top_level_device相同。
-    pub unsafe fn top_level_device_read(&self, data: ReadDataset) -> Result<Acceleration> {
-        let structure = self.build_device_instances(&data.0, vec![data.clone()])?;
-        Ok(Acceleration(Rc::new(structure)))
-    }
-    fn build_device_instances(
-        &self,
-        data: &GpuDataset,
-        read_inputs: Vec<ReadDataset>,
-    ) -> Result<Structure> {
         if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
             return Err(error("实例输入不属于目标设备"));
         }
@@ -622,17 +601,24 @@ impl Device {
             },
         };
         let models = input.models.clone();
-        let dependencies = data.last_use.iter().cloned().collect();
+        let dependencies = data.dependency().cloned().into_iter().collect();
         let structure = self.build_acceleration(
             geometry,
             data.count,
             0,
             data.producer,
             Vec::new(),
-            read_inputs,
             models,
             dependencies,
         )?;
-        Ok(structure)
+        data.last_use = Some(structure.built.clone());
+        drop(data);
+        Ok(Acceleration(Rc::new(structure)))
+    }
+    /// 同一只读实例存储直接进入原生构建，不另建输入持有类别。
+    /// # Safety
+    /// 与top_level_device相同的矩阵／模型／原生尾部前提。
+    pub unsafe fn top_level_device_read(&self, data: ReadDataset) -> Result<Acceleration> {
+        unsafe { self.top_level_device(data.binding()) }
     }
 }
