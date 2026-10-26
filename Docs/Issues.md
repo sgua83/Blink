@@ -8,8 +8,8 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
-| C-005 的 i32 有符号区间证明：**正在修复（实现及原生验证已完成，待提交）** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；`check/bounds.rs` 已实现逐分量有符号比较、区间与非零证明传递。Release 构建、30 个入口的 241 组 CPU／GPU／独立参考完整记录核对及 15 个 B152 诊断通过，详见末节。其他 C-005 缺口保留。认领 CL13075、进度 CL13077 已提交；本轮源码待提交。Git 尚未发布：CL13077 的单次发布因缺少 GitHub 认证失败，未自动重试。 | 2026-10-26 12:10 +08:00 |
-| C-004 的 GPU 常量 i32 负数取余错误：**正在修复（实现及原生验证已完成，待提交）** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；仅修改 `spirv.rs` 的 `IntegerDivide` 常量有符号除余与已有幅值辅助函数，常量／动态路径共用原幅值降低。Release 原生 CPU／GPU 核对通过，包含 MIN32、正负除数及商／余数。保留 `BLanguage_Gua_Application` 的应用入口、主 IR 和其他未提交工作；本轮源码待提交，Git 发布尚未完成。 | 2026-10-26 12:10 +08:00 |
+| C-005 的 i32 有符号区间证明：**本轮源码修复完成；Git 未发布** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；`check/bounds.rs` 实现及 Release 构建完成，30 个入口的 241 组 CPU／GPU／独立参考完整记录核对、15 个 B152 诊断通过，源码已提交 CL13078；临时验证目录已清理。认领 CL13075、进度 CL13077 保留。其他 C-005 缺口继续未完成。CL13078 的单次 Git 发布因本机缺少 GitHub 认证失败，未自动重试。 | 2026-10-26 12:12 +08:00 |
+| C-004 的 GPU 常量 i32 负数取余错误：**本轮源码修复完成；Git 未发布** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；仅修改 `spirv.rs` 的 `IntegerDivide` 常量有符号除余与已有幅值辅助函数。Release 原生 CPU／GPU／参考核对通过，包含 MIN32、正负除数及商／余数，源码已提交 CL13078；临时验证目录已清理。保留 `BLanguage_Gua_Application` 的应用入口、主 IR 和其他未提交工作；整个 C-004 仍有其他缺口，Git 发布仍缺少认证。 | 2026-10-26 12:12 +08:00 |
 | C-010；C-012 的数值／bool 标准输出；C-016 的原生应用构建入口：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | 普通 CPU main、原生 x64／PE 启动与链接、println、build-exe；`B:\BLanguage\Saved\ApplicationWorkspace`，P4 client `BLanguage_Gua_Application`。代码实现中，尚未完成本轮编译、原生验证或源码提交；动态 dataset、通用文本／文件库与跨平台不在本轮修复范围内。 | 2026-10-26 11:42 +08:00 |
 
 ## 已处理
@@ -1310,5 +1310,5 @@
 - 原生核对另复现与本次区间证明无关的旧后端错误：直接执行 `MIN32 % -7`，CPU／独立参考为 -2，NVIDIA GeForce RTX 5060 Ti 的原 GPU 输出为 MIN32。旧常量路径在 `spirv.rs#8` 直接使用 OpSRem；[Vulkan SPIR-V 环境规范](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#spirvenv-precision-operation) 明确规定，未启用 maintenance8 时，负操作数的 OpSRem／OpSMod 没有可用的数值语义。该原生路径未启用此能力。
 - 常量与动态 i32 除数现在都进入原有无符号幅值与符号恢复实现，u32 幅值可表示 abs(MIN32)。没有增加设备扩展、运行时分支或备用算法。改动只涉及 `IntegerDivide` 降低和其幅值辅助函数；另一会话的 main／println／build-exe、主 IR 与其他后端入口保持由其负责。
 - Release 工作区构建完成；一次性消费者链接 `target/release` 的真实库，使用 opt-level=3、thin LTO、codegen-units=1、panic=abort。30 个入口共 241 组 CPU／GPU／独立参考完整记录核对通过，GPU 为 NVIDIA GeForce RTX 5060 Ti。普通规模为 0／1／3／4／5／65／4099／100003 条，另有 14000003 条、stride=20、280000060 字节的跨 256 MiB 页执行，完整输出与未写字段逐字一致。
-- 执行覆盖正负边界、MIN32／MAX32、常量正负除数、动态除余、向量逐分量与局部字段更新、布尔条件、分支与选择合流及 for 内未写值。15 个零除数、可能溢出产生零、包含零的右移区间、错误分支、旧谓词及改写字段输入仍报 B152；只编译负例，没有执行非法除法。原始诊断、修复前 GPU 差异与最终原生完整记录核对日志保存在本机 `Saved/Measurements/SignedRangeDevelopment`；临时消费者、B 模块与导出在验证结束清理，不新增常驻测试或固定验证关卡。
+- 执行覆盖正负边界、MIN32／MAX32、常量正负除数、动态除余、向量逐分量与局部字段更新、布尔条件、分支与选择合流及 for 内未写值。15 个零除数、可能溢出产生零、包含零的右移区间、错误分支、旧谓词及改写字段输入仍报 B152；只编译负例，没有执行非法除法。原始诊断、修复前 GPU 差异与最终原生完整记录核对日志保存在本机 `Saved/Measurements/SignedRangeDevelopment`；本轮已清理 104 个临时文件、3778625 字节，`Saved/SignedRangeDevelopment` 目录已不存在，不新增常驻测试或固定验证关卡。
 - 本项不表示整个 C-004／C-005 完成；循环已写值／回边不变式、缓存循环谓词、重复资源装载等价、动态数组位置、浮点区间、精确溢出回绕区间及任意关系求解继续未完成。P4 源码提交和 Git 发布状态见本页原认领记录，发布失败不冒充源码或原生验证失败。
