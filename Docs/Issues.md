@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-002／C-024.3 的结构化出口局部值转发：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；核对 optimize/value_flow.rs 在 Scope 一律清空局部值事实及 If 忽略真实出口的开销，先保存 Release 原生基线与 IR，再按正常继续／break／continue／Scope Exit 分别合流已存在的 SSA 值。保持真正分支合流与循环携带局部槽，不引入 Phi、推测读取、运行时状态或全局内存缓存；沿原外部调用／动态索引写失效。预计仅该优化源与必要说明，不改 PA3 枚举／C++、Gua Vulkan、前端语义、IR／ABI 或运行库。实现、编译、CPU／GPU／C ABI、计时、清理、P4／Git 分别回填，完整 SSA 与整体效率仍开放。 | 2026-10-27 04:49 +08:00 |
 | C-015／C-021.6 的 C++ 生成命名空间冲突：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；枚举 C ABI 原生核对发现现有头生成器直接将模块叶名用作 C++ 命名空间，main 模块的 namespace main 与 C++ main() 冲突，MSVC C2365 已真实复现。统一在 C++ 包装命名空间使用产品前缀 blink_，修正唯一模板并迁移正式 C++ 消费者、互操作文档和相关书稿／两版 PDF；C 导出、opaque handle、Rust 绑定、数据及执行 ABI 保持。先以正常 map 和 main 头对照，再核对原生 C++／Rust／C 消费，不添加 main 特例、兼容别名或消费者改名绕路。枚举源码保留在另一本轮范围，本项聚焦提交不包含未提交枚举；避开 PA2 后端及 Gua Vulkan。 | 2026-10-27 04:46 +08:00 |
 | C-021.9 的原生分布式编译与超大规模构建：**本轮目标文档完成；能力待设计／实现** | `192.168.10.5`／`GUA` | Codex／分布式构建设计文档 | `B:/BLanguage/Saved/DistributedBuildDesignWorkspace`，client `BLanguage_Gua_DistributedBuildDesign`；仅更新 Architecture／Issues，将分布式编译列为工具链正式目标，覆盖依赖／增量／复用、编译链接职责及千万级域的规模要求。未改源码或构建，未确定多机运行／计算域实现，不依赖 Matrix；P4／Git 按实际回执确认。 | 2026-10-27 04:43 +0800 |
 | C-003／C-022.5 的纹理显式读回与跨逻辑设备交接：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；原 Texture 仅上传／采样，没有真实读回接口，图像创建未声明 TRANSFER_SRC。拟接通 Device::download_texture，直接从实际 GPU 图像全 mip 复制到主机 Texture2D，按当前单队列的实际访问过渡／恢复 shader-read 布局，不保留 CPU 镜像或新布局状态；显式 CPU 数据再交给另一个逻辑 Device 上传，设备归属保持。复用原 staging 映射与 Transfer Execution 依赖，删除重复提交构造；预计修改 texture.rs、mod.rs、transfer.rs、ray.rs 中相应入口／调用及说明，不改前端／后端、IR／ABI、引擎算法，不建自动迁移、注册表、缓存或回收服务。先保存正式基线，再核对实际 mip 原始位、pending 生产、读回前后共享采样、源退出、逻辑设备交接／拒绝和分配生命周期；清理／P4／Git／主线采用分别回填。多物理 GPU、多队列、自动流送及其他纹理格式仍开放。 | 2026-10-27 04:43 +08:00 |
@@ -2221,3 +2222,7 @@ result=value;
 ## C-015／C-021.6：C++ 生成命名空间冲突
 
 - 实际执行机 PA3／DESKTOP-80G4Q60，IPv4 192.168.10.13，D:/BLanguage，P4 用户 PA3／client BLanguage_PA3，会话 01a17891-5f8f-7bc3-8966-57a6f31772e0。真实 MSVC 14.51.36231 输出 C2365，指向生成 algorithm.abi.h 的 namespace main 与宿主 int main()；临时宿主把 opaque handle 误写为 void* 另产生 C2664，二者分开处理，不能用主机错误掩盖生成器缺陷。根因是 C++ 包装直接复用 C 函数前缀作为普通名字空间；C/Rust 调用已成功，生成C++类型布局本身尚未见错。当前仅认领，尚未修改模板／消费者／书籍；正常模块对照、正式修正、Release、C++／Rust／C 原生、PDF 渲染、清理和 P4／Git 分别回填。
+
+## C-002／C-024.3：结构化出口的局部值转发（2026-10-27，正在修复）
+
+- 实际执行机 192.168.10.12／DESKTOP-4B3HN14，会话 01a17630-b20a-7a81-9b77-1b040d8edd04，D:/BLanguage、BLanguage_PA2。已核对当前 P4 和台账，占用的 PA3 前端／C++ 与 Gua Vulkan 范围保持。公共 value_flow 的 Scope 当前无条件清空 locals，If 只比较两支最终表，未区分真正继续与提前返回／break／continue。先保存实际优化后 IR、Release 原生数据与基线；只沿原结构化出口交付共同 SSA 事实，不宣称一般 Phi／完整 SSA 局部提升，也不把未知或不同的真实值当作相同。当前只认领，未修改或验证本项实现。
