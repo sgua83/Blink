@@ -58,12 +58,14 @@ if ($remote -ne 'https://github.com/sgua83/Blink.git') {
 }
 $branch = Git @('symbolic-ref', '--short', 'HEAD')
 if ($branch -ne 'main') { throw 'The publishing branch must be main.' }
-$head = Git @('for-each-ref', '--format=%(objectname)', 'refs/heads/main')
+$localHead = Git @('for-each-ref', '--format=%(objectname)', 'refs/heads/main')
 Git @('fetch', 'origin') | Out-Null
-$remoteHead = Git @('ls-remote', '--heads', 'origin', 'main')
-if ($remoteHead -and ($remoteHead -split '\s+')[0] -ne $head) {
-    throw 'GitHub main differs from local main; publication requires resolving Git history.'
+$remoteHead = Git @('for-each-ref', '--format=%(objectname)', 'refs/remotes/origin/main')
+if ($localHead -and $remoteHead -and $localHead -ne $remoteHead) {
+    Git @('merge-base', '--is-ancestor', $localHead, $remoteHead) | Out-Null
 }
+# Other machines may have published newer P4 changes. Continue from that history.
+$head = if ($remoteHead) { $remoteHead } else { $localHead }
 $message = if ($head) { Git @('log', '-1', '--format=%B', $head) } else { '' }
 $lastChange = if ($message -match '(?m)^P4-Change: (\d+)\s*$') { [int]$Matches[1] } else { 0 }
 $latest = @(P4Records @('changes', '-m', '1', '-s', 'submitted', "$depot..."))[0]
@@ -135,7 +137,7 @@ try {
     Git @('push', 'origin', "${parent}:refs/heads/main") | Out-Null
     $published = Git @('ls-remote', '--heads', 'origin', 'main')
     if (($published -split '\s+')[0] -ne $parent) { throw 'GitHub did not confirm the published commit.' }
-    $previous = if ($head) { $head } else { [string]::new('0', 40) }
+    $previous = if ($localHead) { $localHead } else { [string]::new('0', 40) }
     Git @('update-ref', 'refs/heads/main', $parent, $previous) | Out-Null
     $indexBytes = [IO.File]::ReadAllBytes($env:GIT_INDEX_FILE)
     $lock.Write($indexBytes)
