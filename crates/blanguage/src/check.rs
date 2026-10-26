@@ -1988,6 +1988,13 @@ impl<'a> Builder<'a> {
         } else {
             bounds::arithmetic(op, &a, &b)
         };
+        let constant = constant.or_else(|| {
+            if comparison {
+                proof.known_value(&ty)
+            } else {
+                None
+            }
+        });
         if let Some(bits) = constant {
             let mut value = self.constant_value(ty, bits);
             value.literal = literal;

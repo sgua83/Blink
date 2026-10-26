@@ -798,7 +798,11 @@ impl Condition {
         if (!signed && a.ty != Ty::scalar(Scalar::U32)) || b.ty != a.ty {
             return Self::default();
         }
+        let left = a.component_ranges(0);
+        let right = b.component_ranges(0);
+        let same = a.same_component(0, b, 0);
         let mut facts = [Facts::new(), Facts::new()];
+        let mut possible = [false; 2];
         for (truth, facts) in facts.iter_mut().enumerate() {
             let op = if truth != 0 {
                 op
@@ -812,6 +816,30 @@ impl Condition {
                     Comparison::NotEqual => Comparison::Equal,
                 }
             };
+            possible[truth] = left.0.iter().any(|&(al, ah)| {
+                right.0.iter().any(|&(bl, bh)| {
+                    if same {
+                        return al.max(bl) <= ah.min(bh)
+                            && matches!(
+                                op,
+                                Comparison::Equal
+                                    | Comparison::LessEqual
+                                    | Comparison::GreaterEqual
+                            );
+                    }
+                    match op {
+                        Comparison::Less => al < bh,
+                        Comparison::Greater => ah > bl,
+                        Comparison::LessEqual => al <= bh,
+                        Comparison::GreaterEqual => ah >= bl,
+                        Comparison::Equal => al.max(bl) <= ah.min(bh),
+                        Comparison::NotEqual => al != bh || ah != bl,
+                    }
+                })
+            });
+            if !possible[truth] {
+                continue;
+            }
             match op {
                 Comparison::Less => constrain(facts, a, b, true),
                 Comparison::Greater => constrain(facts, b, a, true),
@@ -863,7 +891,7 @@ impl Condition {
             }
         }
         Self {
-            cases: facts.map(Some),
+            cases: std::array::from_fn(|i| possible[i].then(|| std::mem::take(&mut facts[i]))),
         }
     }
 }
