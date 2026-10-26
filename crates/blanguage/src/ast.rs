@@ -149,6 +149,7 @@ pub struct Record {
     pub types: Vec<TypeParameter>,
     pub values: Vec<ValueParameter>,
     pub stride: Option<Shape>,
+    pub enumeration: Option<TypeName>,
     pub fields: Vec<Field>,
     pub span: Span,
 }

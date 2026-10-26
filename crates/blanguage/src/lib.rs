@@ -538,6 +538,7 @@ impl World {
                 fields: Vec::new(),
                 view: Some(Box::new(element)),
                 array: None,
+                enumeration: false,
             });
         }
         if name.name == "array" {
@@ -587,6 +588,7 @@ impl World {
                 fields: Vec::new(),
                 view: None,
                 array: Some(Box::new(element)),
+                enumeration: false,
             });
         }
         if let Some(ty) = ir::Ty::builtin(&name.name) {
@@ -678,6 +680,16 @@ impl World {
         if !stack.insert(key.clone()) {
             return source.fail(span, "B032", "结构体不能递归包含自身");
         }
+        if let Some(representation) = &record.enumeration {
+            let mut ty = self.ty_inner(representation, s, record.span, m, i, stack)?;
+            if ty != ir::Ty::scalar(ir::Scalar::U32) && ty != ir::Ty::scalar(ir::Scalar::I32) {
+                return s.fail(record.span, "B268", "编号枚举的表示类型需要 u32 或 i32");
+            }
+            ty.name = key.clone();
+            ty.enumeration = true;
+            stack.remove(&key);
+            return Ok(ty);
+        }
         let mut ty = ir::Ty {
             name: key.clone(),
             arguments,
@@ -688,6 +700,7 @@ impl World {
             fields: Vec::new(),
             view: None,
             array: None,
+            enumeration: false,
         };
         let mut names = BTreeSet::new();
         for field in &record.fields {

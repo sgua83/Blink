@@ -36,6 +36,22 @@ impl Builder<'_> {
             &self.definition.module,
             &self.definition.imports,
         )?;
+        if ty.enumeration {
+            if values.len() != 1 {
+                return self.fail(
+                    span,
+                    "B268",
+                    "编号枚举构造需要一个同类型值或其声明的整数表示",
+                );
+            }
+            let mut value = values.into_iter().next().unwrap();
+            if value.ty != ty {
+                self.require_same(&Ty::scalar(ty.components[0].0), &value.ty, span)?;
+            }
+            value.ty = ty;
+            value.literal = false;
+            return Ok(value);
+        }
         if ty.matrix_shape().is_some() {
             return self.matrix_construct(ty, values, span);
         }

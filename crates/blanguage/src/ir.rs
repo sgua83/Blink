@@ -33,6 +33,7 @@ pub struct Ty {
     pub fields: Vec<(String, u32, Box<Ty>)>,
     pub view: Option<Box<Ty>>,
     pub array: Option<Box<Ty>>,
+    pub enumeration: bool,
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
@@ -81,6 +82,7 @@ impl Ty {
             fields: Vec::new(),
             view: None,
             array: None,
+            enumeration: false,
         }
     }
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -106,6 +108,7 @@ impl Ty {
             fields: Vec::new(),
             view: None,
             array: None,
+            enumeration: false,
         }
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
@@ -129,6 +132,7 @@ impl Ty {
                 .collect(),
             view: None,
             array: None,
+            enumeration: false,
         }
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
@@ -160,6 +164,7 @@ impl Ty {
                 align: 16,
                 view: None,
                 array: None,
+                enumeration: false,
                 components: vec![
                     (Scalar::Bool, 0),
                     (Scalar::F32, 4),
@@ -193,7 +198,8 @@ impl Ty {
         })
     }
     pub fn is_numeric(&self) -> bool {
-        self.view.is_none()
+        !self.enumeration
+            && self.view.is_none()
             && self.array.is_none()
             && self.fields.is_empty()
             && self.components.iter().all(|x| x.0 != Scalar::Bool)

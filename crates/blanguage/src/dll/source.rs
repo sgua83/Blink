@@ -112,7 +112,8 @@ record!(Ty {
     components,
     fields,
     view,
-    array
+    array,
+    enumeration
 });
 record!(Buffer {
     name,

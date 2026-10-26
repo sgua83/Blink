@@ -420,6 +420,49 @@ impl Parser {
                 });
                 continue;
             }
+            if self.take("enum") {
+                let name = self.ident()?;
+                self.expect(":")?;
+                let representation = self.ty()?;
+                self.expect("{")?;
+                records.push(Record {
+                    name: name.clone(),
+                    types: Vec::new(),
+                    values: Vec::new(),
+                    stride: None,
+                    enumeration: Some(representation),
+                    fields: Vec::new(),
+                    span,
+                });
+                while !self.take("}") {
+                    let span = self.span();
+                    let member = self.ident()?;
+                    self.expect("=")?;
+                    let value = self.expr(0)?;
+                    self.expect(";")?;
+                    functions.push(Function {
+                        name: format!("{name}::{member}"),
+                        types: Vec::new(),
+                        values: Vec::new(),
+                        params: Vec::new(),
+                        result: TypeName::named(&name),
+                        kind: FunctionKind::Constant,
+                        target: Target::Compute,
+                        contracts: Vec::new(),
+                        body: Some(vec![Stmt {
+                            span,
+                            kind: StmtKind::Return(Some(Expr {
+                                span,
+                                kind: ExprKind::Call(name.clone(), vec![value]),
+                            })),
+                        }]),
+                        external: None,
+                        span,
+                    });
+                }
+                self.expect(";")?;
+                continue;
+            }
             if self.take("struct") {
                 let name = self.ident()?;
                 let (types, values) = self.parameters()?;
@@ -446,6 +489,7 @@ impl Parser {
                     types,
                     values,
                     stride,
+                    enumeration: None,
                     fields,
                     span,
                 });

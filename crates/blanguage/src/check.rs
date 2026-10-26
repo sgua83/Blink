@@ -1880,6 +1880,17 @@ impl<'a> Builder<'a> {
         }
     }
     fn binary(&mut self, op: &str, mut a: Value, mut b: Value, span: Span) -> Result<Value> {
+        let comparison = ["==", "!=", "<", ">", "<=", ">="].contains(&op);
+        if a.ty.enumeration || b.ty.enumeration {
+            self.require_same(&a.ty, &b.ty, span)?;
+            if !comparison {
+                return self.fail(
+                    span,
+                    "B268",
+                    "编号枚举只直接比较同类型值；数值运算先显式取得声明的整数表示",
+                );
+            }
+        }
         if a.ty.matrix_shape().is_some() || b.ty.matrix_shape().is_some() {
             return self.matrix_binary(op, a, b, span);
         }
@@ -1916,7 +1927,6 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B149", "向量维度不匹配");
         }
         let scalar = a.ty.components[0].0;
-        let comparison = ["==", "!=", "<", ">", "<=", ">="].contains(&op);
         let literal = literal && scalar != Scalar::F32 && !comparison;
         if scalar == Scalar::Bool && !matches!(op, "==" | "!=") {
             return self.fail(span, "B150", "bool 只支持逻辑或相等运算");
@@ -2308,8 +2318,8 @@ impl<'a> Builder<'a> {
         }
         let a = self.expr(a)?;
         if op == "+" {
-            if a.ty.array.is_some() {
-                return self.fail(span, "B146", "数值一元运算不能接受数组");
+            if a.ty.array.is_some() || a.ty.enumeration {
+                return self.fail(span, "B146", "数值一元运算不能接受数组或枚举");
             }
             return Ok(a);
         }
@@ -2931,6 +2941,16 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn numeric_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+        if values.iter().any(|value| value.ty.enumeration) {
+            if values.len() != 1 || ty != Ty::scalar(values[0].ty.components[0].0) {
+                return self.fail(
+                    span,
+                    "B268",
+                    "枚举值只直接取回其声明的整数表示；其他数值转换在该整数上显式进行",
+                );
+            }
+            return Ok(self.cast(values.pop().unwrap(), ty.components[0].0));
+        }
         if ty.matrix_shape().is_some() {
             return self.matrix_construct(ty, values, span);
         }
