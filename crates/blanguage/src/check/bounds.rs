@@ -9,13 +9,89 @@ enum Fact {
     NonZero(ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
+#[derive(Clone)]
+struct IntegerRanges(Vec<(u32, u32)>);
+impl Default for IntegerRanges {
+    fn default() -> Self {
+        Self(vec![(0, u32::MAX)])
+    }
+}
+impl IntegerRanges {
+    fn from_intervals(intervals: impl IntoIterator<Item = (u32, u32)>) -> Self {
+        let mut intervals: Vec<_> = intervals.into_iter().filter(|(a, b)| a <= b).collect();
+        intervals.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for (lower, upper) in intervals {
+            if let Some(last) = merged.last_mut()
+                && u64::from(lower) <= u64::from(last.1) + 1
+            {
+                last.1 = last.1.max(upper);
+            } else {
+                merged.push((lower, upper));
+            }
+        }
+        Self(merged)
+    }
+    fn interval(lower: u32, upper: u32) -> Self {
+        Self::from_intervals([(lower, upper)])
+    }
+    fn hull(&self) -> (u32, u32) {
+        match (self.0.first(), self.0.last()) {
+            (Some(first), Some(last)) => (first.0, last.1),
+            _ => (1, 0),
+        }
+    }
+    fn contains(&self, value: u32) -> bool {
+        self.0
+            .iter()
+            .any(|&(lower, upper)| lower <= value && value <= upper)
+    }
+    fn union(&self, other: &Self) -> Self {
+        Self::from_intervals(self.0.iter().chain(&other.0).copied())
+    }
+    fn restrict(&self, lower: u32, upper: u32) -> Self {
+        Self::from_intervals(self.0.iter().map(|&(a, b)| (a.max(lower), b.min(upper))))
+    }
+    fn without(&self, value: u32) -> Self {
+        let mut intervals = Vec::new();
+        for &(lower, upper) in &self.0 {
+            if value < lower || value > upper {
+                intervals.push((lower, upper));
+            } else {
+                if lower < value {
+                    intervals.push((lower, value - 1));
+                }
+                if value < upper {
+                    intervals.push((value + 1, upper));
+                }
+            }
+        }
+        Self(intervals)
+    }
+    fn map(&self, mut operation: impl FnMut((u32, u32)) -> Self) -> Self {
+        Self::from_intervals(self.0.iter().flat_map(|&interval| operation(interval).0))
+    }
+    fn combine(
+        &self,
+        other: &Self,
+        mut operation: impl FnMut((u32, u32), (u32, u32)) -> Self,
+    ) -> Self {
+        let mut intervals = Vec::new();
+        for &left in &self.0 {
+            for &right in &other.0 {
+                intervals.extend(operation(left, right).0);
+            }
+        }
+        Self::from_intervals(intervals)
+    }
+}
 #[derive(Clone, Default)]
 pub(super) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
     origins: Vec<Vec<ValueIdentity>>,
     condition: Option<Box<Condition>>,
     // 整数按数值顺序编码；i32 翻转符号位，复用相同的区间与路径合流。
-    ranges: Vec<(u32, u32)>,
+    ranges: Vec<IntegerRanges>,
     nonzero: Vec<bool>,
     domains: Vec<Domains>,
 }
@@ -26,12 +102,12 @@ impl Proof {
         } else {
             self.origins.resize_with(width, Vec::new);
             self.nonzero.resize(width, false);
-            self.ranges.resize(width, (0, u32::MAX));
+            self.ranges.resize_with(width, IntegerRanges::default);
             self.domains.resize(width, Domains::new());
             for (j, &i) in components.iter().enumerate() {
                 self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
                 self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
-                self.ranges[i] = fresh.range(j);
+                self.ranges[i] = fresh.range_set(j);
                 self.domains[i] = fresh.domains(j);
             }
             self.condition = None;
@@ -62,11 +138,7 @@ impl Proof {
             .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true))
             .collect();
         self.ranges = (0..width)
-            .map(|i| {
-                let (a, b) = self.range(i);
-                let (c, d) = other.range(i);
-                (a.min(c), b.max(d))
-            })
+            .map(|i| self.range_set(i).union(&other.range_set(i)))
             .collect();
         self.domains = (0..width)
             .map(|i| {
@@ -92,7 +164,7 @@ impl Proof {
             .iter()
             .map(|&i| self.nonzero.get(i) == Some(&true))
             .collect();
-        proof.ranges = components.iter().map(|&i| self.range(i)).collect();
+        proof.ranges = components.iter().map(|&i| self.range_set(i)).collect();
         proof.domains = components.iter().map(|&i| self.domains(i)).collect();
         proof
     }
@@ -104,7 +176,7 @@ impl Proof {
     }
     pub fn unsigned(minimum: u32, maximum: u32) -> Self {
         Self {
-            ranges: vec![(minimum, maximum)],
+            ranges: vec![IntegerRanges::interval(minimum, maximum)],
             ..Self::default()
         }
     }
@@ -123,7 +195,10 @@ impl Proof {
         self.domains.get(component).cloned().unwrap_or_default()
     }
     fn range(&self, component: usize) -> (u32, u32) {
-        self.ranges.get(component).copied().unwrap_or((0, u32::MAX))
+        self.range_set(component).hull()
+    }
+    fn range_set(&self, component: usize) -> IntegerRanges {
+        self.ranges.get(component).cloned().unwrap_or_default()
     }
     pub fn integer_bits(value: &Value) -> Self {
         Self {
@@ -136,7 +211,7 @@ impl Proof {
     pub fn capture(value: &Value) -> Self {
         let mut proof = value.proof.clone();
         proof.ranges = (0..value.regs.len())
-            .map(|i| value.component_range(i))
+            .map(|i| value.component_ranges(i))
             .collect();
         proof.nonzero = (0..value.regs.len())
             .map(|i| value.component_nonzero(i))
@@ -163,11 +238,7 @@ impl Proof {
             condition: (a.ty == Ty::scalar(Scalar::Bool))
                 .then(|| Box::new(Condition::common(Condition::of(a), Condition::of(b)))),
             ranges: (0..a.regs.len())
-                .map(|i| {
-                    let (al, ah) = a.component_range(i);
-                    let (bl, bh) = b.component_range(i);
-                    (al.min(bl), ah.max(bh))
-                })
+                .map(|i| a.component_ranges(i).union(&b.component_ranges(i)))
                 .collect(),
             nonzero: (0..a.regs.len())
                 .map(|i| a.component_nonzero(i) && b.component_nonzero(i))
@@ -237,14 +308,14 @@ impl Proof {
         self.nonzero
             .extend((0..value.regs.len()).map(|i| value.component_nonzero(i)));
         self.ranges
-            .extend((0..value.regs.len()).map(|i| value.component_range(i)));
+            .extend((0..value.regs.len()).map(|i| value.component_ranges(i)));
         self.domains
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
     }
     pub fn splat(&mut self, width: usize) {
         self.origins = vec![self.origins[0].clone(); width];
         self.nonzero = vec![self.nonzero[0]; width];
-        self.ranges = vec![self.ranges[0]; width];
+        self.ranges = vec![self.ranges[0].clone(); width];
         self.domains = vec![self.domains[0].clone(); width];
     }
     pub(super) fn mark_nonzero(&mut self, component: usize) {
@@ -271,8 +342,8 @@ impl Proof {
                 if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) =>
             {
                 self.ranges
-                    .resize(self.ranges.len().max(component + 1), (0, u32::MAX));
-                self.ranges[component].0 = self.ranges[component].0.max(lower);
+                    .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+                self.ranges[component] = self.ranges[component].restrict(lower, u32::MAX);
                 if ty.components[component].0 == Scalar::U32 && lower != 0 {
                     self.mark_nonzero(component);
                 }
@@ -281,8 +352,8 @@ impl Proof {
                 if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) =>
             {
                 self.ranges
-                    .resize(self.ranges.len().max(component + 1), (0, u32::MAX));
-                self.ranges[component].1 = self.ranges[component].1.min(upper);
+                    .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+                self.ranges[component] = self.ranges[component].restrict(0, upper);
             }
             Fact::NonZero(_) if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) => {
                 self.mark_nonzero(component);
@@ -398,12 +469,13 @@ impl Value {
     fn component_nonzero(&self, component: usize) -> bool {
         matches!(self.ty.components[component].0, Scalar::U32 | Scalar::I32)
             && (self.proof.nonzero.get(component) == Some(&true)
-                || (self.ty.components[component].0 == Scalar::U32
-                    && self.component_range(component).0 != 0)
-                || (self.ty.components[component].0 == Scalar::I32 && {
-                    let (lower, upper) = self.component_range(component);
-                    lower > 0x8000_0000 || upper < 0x8000_0000
-                })
+                || !self.component_ranges(component).contains(
+                    if self.ty.components[component].0 == Scalar::I32 {
+                        0x8000_0000
+                    } else {
+                        0
+                    },
+                )
                 || self.constant.as_ref().is_some_and(|v| v[component] != 0))
     }
     pub(super) fn minimum(&self) -> u32 {
@@ -419,35 +491,27 @@ impl Value {
         self.component_range(0).1
     }
     fn component_range(&self, component: usize) -> (u32, u32) {
+        self.component_ranges(component).hull()
+    }
+    fn component_ranges(&self, component: usize) -> IntegerRanges {
         let scalar = self.ty.components[component].0;
         if !matches!(scalar, Scalar::U32 | Scalar::I32) {
-            return (0, u32::MAX);
+            return IntegerRanges::default();
         }
-        let (lower, upper) = self.proof.range(component);
-        let (mut lower, mut upper) = (lower, upper);
+        let bias = if scalar == Scalar::I32 {
+            0x8000_0000
+        } else {
+            0
+        };
+        let mut ranges = self.proof.range_set(component);
         if self.proof.nonzero.get(component) == Some(&true) {
-            if scalar == Scalar::U32 {
-                lower = lower.max(1);
-            } else {
-                if lower == 0x8000_0000 {
-                    lower += 1;
-                }
-                if upper == 0x8000_0000 {
-                    upper -= 1;
-                }
-            }
+            ranges = ranges.without(bias);
         }
         if let Some(bits) = &self.constant {
-            let value = bits[component]
-                ^ if scalar == Scalar::I32 {
-                    0x8000_0000
-                } else {
-                    0
-                };
-            (lower.max(value), upper.min(value))
-        } else {
-            (lower, upper)
+            let value = bits[component] ^ bias;
+            ranges = ranges.restrict(value, value);
         }
+        ranges
     }
     fn identity(&self) -> ValueIdentity {
         self.component_identity(0)
@@ -475,7 +539,7 @@ impl Value {
         Proof {
             origins: indices.iter().map(|i| self.component_origins(*i)).collect(),
             condition: None,
-            ranges: indices.iter().map(|i| self.component_range(*i)).collect(),
+            ranges: indices.iter().map(|i| self.component_ranges(*i)).collect(),
             nonzero: indices.iter().map(|i| self.component_nonzero(*i)).collect(),
             domains: indices.iter().map(|i| self.proof.domains(*i)).collect(),
         }
@@ -742,17 +806,23 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         ranges: if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
             (0..count)
                 .map(|i| {
-                    let left = a.component_range(i % a.regs.len());
-                    let right = b.component_range(i % b.regs.len());
+                    let left = a.component_ranges(i % a.regs.len());
+                    let right = b.component_ranges(i % b.regs.len());
                     let signed = a.ty.components[0].0 == Scalar::I32;
                     let bias = if signed { 0x8000_0000 } else { 0 };
-                    match op {
-                        "&" => bitwise_range(left, right, bias, |a, b| a & b),
-                        "|" => bitwise_range(left, right, bias, |a, b| a | b),
-                        "^" => bitwise_range(left, right, bias, |a, b| a ^ b),
-                        _ if signed => signed_range(op, left, right),
-                        _ => unsigned_range(op, left, right),
-                    }
+                    left.combine(&right, |left, right| {
+                        let bitwise = |operation: fn(u32, u32) -> u32| {
+                            let (lower, upper) = bitwise_range(left, right, bias, operation);
+                            IntegerRanges::interval(lower, upper)
+                        };
+                        match op {
+                            "&" => bitwise(|a, b| a & b),
+                            "|" => bitwise(|a, b| a | b),
+                            "^" => bitwise(|a, b| a ^ b),
+                            _ if signed => signed_range(op, left, right),
+                            _ => unsigned_range(op, left, right),
+                        }
+                    })
                 })
                 .collect()
         } else {
@@ -817,39 +887,29 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     if value.ty.components[0].0 == Scalar::U32 {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
-                let (lower, upper) = value.component_range(i);
-                if lower > upper {
-                    (1, 0)
-                } else {
-                    match op {
-                        UnaryOp::BitNot => (!upper, !lower),
-                        UnaryOp::UnsignedNegate => {
-                            integer_result_range((-i128::from(upper), -i128::from(lower)), 0)
-                        }
-                        _ => (0, u32::MAX),
+                value.component_ranges(i).map(|(lower, upper)| match op {
+                    UnaryOp::BitNot => IntegerRanges::interval(!upper, !lower),
+                    UnaryOp::UnsignedNegate => {
+                        integer_result_range((-i128::from(upper), -i128::from(lower)), 0)
                     }
-                }
+                    _ => IntegerRanges::default(),
+                })
             })
             .collect();
     } else if value.ty.components[0].0 == Scalar::I32 {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
-                let (lower, upper) = value.component_range(i);
-                if lower > upper {
-                    (1, 0)
-                } else {
-                    match op {
-                        UnaryOp::BitNot => (!upper, !lower),
-                        UnaryOp::SignedNegate => integer_result_range(
-                            (
-                                -i128::from((upper ^ 0x8000_0000) as i32),
-                                -i128::from((lower ^ 0x8000_0000) as i32),
-                            ),
-                            0x8000_0000,
+                value.component_ranges(i).map(|(lower, upper)| match op {
+                    UnaryOp::BitNot => IntegerRanges::interval(!upper, !lower),
+                    UnaryOp::SignedNegate => integer_result_range(
+                        (
+                            -i128::from((upper ^ 0x8000_0000) as i32),
+                            -i128::from((lower ^ 0x8000_0000) as i32),
                         ),
-                        _ => (0, u32::MAX),
-                    }
-                }
+                        0x8000_0000,
+                    ),
+                    _ => IntegerRanges::default(),
+                })
             })
             .collect();
     }
@@ -861,9 +921,6 @@ fn bitwise_range(
     bias: u32,
     operation: fn(u32, u32) -> u32,
 ) -> (u32, u32) {
-    if al > ah || bl > bh {
-        return (1, 0);
-    }
     // 从高位向低位交付可达的输出前缀。四个松弛位分别表示两个输入已经
     // 严格大于下界／小于上界；相同状态的后缀选择相同，只需保留前缀极值。
     let mut prefixes = [None; 16];
@@ -916,10 +973,7 @@ fn bitwise_range(
             (lower.min(a), upper.max(b))
         })
 }
-fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u32) {
-    if al > ah || bl > bh {
-        return (1, 0);
-    }
+fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> IntegerRanges {
     let decode = |value| i64::from((value ^ 0x8000_0000u32) as i32);
     let (al, ah, bl, bh) = (decode(al), decode(ah), decode(bl), decode(bh));
     let corners = |f: fn(i64, i64) -> i64| {
@@ -939,25 +993,25 @@ fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u
         "<<" if bl >= 0 && bh < 32 => corners(|a, b| a * (1i64 << b)),
         ">>" if bl == bh => (al >> (bl & 31), ah >> (bl & 31)),
         "<<" if bl == bh => (al * (1i64 << (bl & 31)), ah * (1i64 << (bl & 31))),
-        _ => return (0, u32::MAX),
+        _ => return IntegerRanges::default(),
     };
     integer_result_range((i128::from(range.0), i128::from(range.1)), 0x8000_0000)
 }
-fn integer_result_range((lower, upper): (i128, i128), bias: u32) -> (u32, u32) {
-    // 同一有序周期内按模 32 位投影；跨断点的结果不能由单个区间表达。
+fn integer_result_range((lower, upper): (i128, i128), bias: u32) -> IntegerRanges {
+    // 按有序周期投影；不足一个完整周期的跨断点结果保留两侧区间。
     let period = 1i128 << 32;
     let offset = i128::from(bias);
+    if upper - lower >= period - 1 {
+        return IntegerRanges::default();
+    }
+    let (a, b) = (lower as u32 ^ bias, upper as u32 ^ bias);
     if (lower + offset).div_euclid(period) == (upper + offset).div_euclid(period) {
-        (lower as u32 ^ bias, upper as u32 ^ bias)
+        IntegerRanges::interval(a, b)
     } else {
-        (0, u32::MAX)
+        IntegerRanges::from_intervals([(0, b), (a, u32::MAX)])
     }
 }
-fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u32) {
-    // 矛盾条件形成空区间；空集合的算术仍为空，不对不存在的端点做除法。
-    if al > ah || bl > bh {
-        return (1, 0);
-    }
+fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> IntegerRanges {
     let (al, ah, bl, bh) = (
         i128::from(al),
         i128::from(ah),
@@ -978,7 +1032,7 @@ fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32,
             let shift = bl & 31;
             (al << shift, ah << shift)
         }
-        _ => return (0, u32::MAX),
+        _ => return IntegerRanges::default(),
     };
     integer_result_range(range, 0)
 }
