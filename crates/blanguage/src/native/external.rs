@@ -63,9 +63,10 @@ impl Emitter<'_> {
                 };
                 self.stack_address(offset + address.word * 4);
                 if let Some(index) = address.offset {
-                    self.bytes(&[0x49, 0x89, 0xc2]);
+                    // ABI argument registers are populated only after every call slot is ready.
+                    self.bytes(&[0x48, 0x89, 0xc1]);
                     self.load(index);
-                    self.bytes(&[0x48, 0xc1, 0xe0, 2, 0x4c, 0x01, 0xd0]);
+                    self.bytes(&[0x48, 0xc1, 0xe0, 2, 0x48, 0x01, 0xc8]);
                 }
             }
             ExternalStorage::Indexed(source) => {
@@ -166,9 +167,10 @@ impl Emitter<'_> {
             } else if floating(ty) {
                 self.store_float(call.values[0]);
             } else {
-                self.bytes(&[0x49, 0x89, 0xc2]);
+                // After the call, RCX preserves all packed return bits while RAX delivers each word.
+                self.bytes(&[0x48, 0x89, 0xc1]);
                 for ((scalar, offset), reg) in ty.components.iter().zip(&call.values) {
-                    self.bytes(&[0x4c, 0x89, 0xd0]);
+                    self.bytes(&[0x48, 0x89, 0xc8]);
                     if *offset != 0 {
                         self.bytes(&[0x48, 0xc1, 0xe8, 32]);
                     }

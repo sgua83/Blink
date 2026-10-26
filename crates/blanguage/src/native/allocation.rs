@@ -346,12 +346,12 @@ impl Allocation {
             .chain(&stage.locals)
             .copied()
             .collect();
-        // Tile copy and phase handoff own R11; other scalar bodies leave it available.
-        // R10 remains the C ABI reference and aggregate-result temporary.
+        // Tile input and phase handoff own R10/R11.
+        // Other scalar bodies use RAX/RCX/RDX for instruction temporaries.
         let gpr: &[u8] = if stage.has_tile_scope() {
             &[8, 9, 6, 7, 5]
         } else {
-            &[8, 9, 11, 6, 7, 5]
+            &[8, 9, 10, 11, 6, 7, 5]
         };
         let base = graph.outgoing_bytes;
         let (mut locations, spills) = graph.allocate(
