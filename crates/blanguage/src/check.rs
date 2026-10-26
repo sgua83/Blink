@@ -1399,6 +1399,20 @@ impl<'a> Builder<'a> {
                 self.capture_break();
                 self.flow = Flow::BREAK;
             }
+            StmtKind::Continue => {
+                if self.loop_depth == 0 {
+                    return self.fail(s.span, "B129", "continue 只能用于局部顺序循环");
+                }
+                self.check_application_loop(s.span)?;
+                self.release_application_loop();
+                if let Some(Some((_, slot))) = self.iterators.last().cloned() {
+                    let index = self.reg(Scalar::U32);
+                    self.code.push(Inst::LoadLocal(index, slot));
+                    self.advance_iterator(index, slot);
+                }
+                self.code.push(Inst::Continue);
+                self.flow = Flow::CONTINUE;
+            }
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span)?,
             StmtKind::Parallel(..) => {
                 return self.fail(
@@ -2599,15 +2613,7 @@ impl<'a> Builder<'a> {
         self.iterators.pop();
         self.loop_depth -= 1;
         if body_reachable {
-            let one = self.constant(Scalar::U32, 1);
-            let next = self.reg(Scalar::U32);
-            self.code.push(Inst::Binary {
-                dst: next,
-                op: BinaryOp::IAdd,
-                a: index,
-                b: one.regs[0],
-            });
-            self.code.push(Inst::StoreLocal(slot, next));
+            self.advance_iterator(index, slot);
         }
         let body = std::mem::take(&mut self.code);
         let natural = (!nonempty || body_flow.iterates()).then_some(natural);
@@ -3066,6 +3072,17 @@ impl<'a> Builder<'a> {
         }
 
         Ok(())
+    }
+    fn advance_iterator(&mut self, index: Reg, slot: usize) {
+        let one = self.constant(Scalar::U32, 1);
+        let next = self.reg(Scalar::U32);
+        self.code.push(Inst::Binary {
+            dst: next,
+            op: BinaryOp::IAdd,
+            a: index,
+            b: one.regs[0],
+        });
+        self.code.push(Inst::StoreLocal(slot, next));
     }
     fn seek_statement(&mut self, name: &String, position: &Expr, span: Span) -> Result<()> {
         let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {

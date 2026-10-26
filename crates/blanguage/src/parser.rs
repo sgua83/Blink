@@ -712,6 +712,9 @@ impl Parser {
         } else if self.take("break") {
             self.expect(";")?;
             StmtKind::Break
+        } else if self.take("continue") {
+            self.expect(";")?;
+            StmtKind::Continue
         } else if self.take("phase") {
             self.expect(";")?;
             StmtKind::Phase

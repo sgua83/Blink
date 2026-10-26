@@ -109,7 +109,7 @@ CPU 应用的整份 inout 借用沿原函数静态内联和存储访问展开，
 
 `run_cpu(name(args))` 与 `run_gpu(name(args))` 选择实际执行位置，入口可用原具体类型／const 语法。参数借用应用资源并按原 uniform 类型传值；类型、固定形状、目标与独占别名仍受原规则约束。同一资源在一次 program 调用中只绑定一次。CPU 调用等待本次计算完成；GPU 调用交付已提交的资源，其最后使用点继续随存储持有。后续 GPU 调用建立原同队列依赖，CPU 消费通过显式 download 取得结果。prefix 关系沿同一所有者、实际参数重排及显式传输保留，CPU 写借用计数会撤回旧关系。
 
-编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
+编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break、continue 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
 
 带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
 
@@ -796,7 +796,7 @@ program run(read dataset<Cell> table, inout dataset<Job> jobs,
 
 read／atomic 权限必须与调用点当前阶段完全一致。inout 不能借成 read：其他 invocation 可能正在修改函数将要读取的元素；inout／write 也不能在函数内升级为 atomic，atomic 不能伪装成 read。program 的已有阶段接口可以转交其声明的权限，函数消费该阶段实际的访问模式，不根据最外层缓冲的初始声明猜测权限。write／inout／无访问模式的 dataset 函数参数仍拒绝，独占写入继续由 parallel 的元素所有权表达。
 
-`for (element in data)` 可以遍历 read 或 atomic 数据集；atomic 游标只是现有元素位置，必须使用 atomic_load／其他原子算子，不能隐式读取或直接赋值。游标支持 ordinal、break、seek，也可把当前原子字段继续借给 atomic T 参数。函数内不允许 parallel、phase 或隐式协作同步；cooperative 仍须声明至少一个 tile 参数，并从调用点继承同一逻辑块。通用只读／原子数组不会把一个值函数变成新的并行域。
+`for (element in data)` 可以遍历 read 或 atomic 数据集；atomic 游标只是现有元素位置，必须使用 atomic_load／其他原子算子，不能隐式读取或直接赋值。游标支持 ordinal、break、continue、seek，也可把当前原子字段继续借给 atomic T 参数。函数内不允许 parallel、phase 或隐式协作同步；cooperative 仍须声明至少一个 tile 参数，并从调用点继承同一逻辑块。通用只读／原子数组不会把一个值函数变成新的并行域。
 
 固定 N 参数要求调用方声明完全相同形状；动态形状参数可接收固定或动态来源。独立库检查按自己的接口证明索引，不能依赖某个入口恰好提供的长度：例如动态 dataset 的普通索引参数必须由接口 index 约束，或在函数内通过实际长度条件／取余／有界游标证明，不能直接读取任意 i。长度与索引关系属于实际数据集，不能把另一数组的范围移过来；独立动态函数也不能无声明地转交给要求固定 17 项的函数。
 
@@ -887,15 +887,30 @@ program run(write dataset<State> states) on compute {
 
 cooperative void 函数可以在协作根块用 `cooperate name(tile,output...);` 直接作为语句调用；也可多层转交同块 tile 与私有输出位置。原 tile 集合仍在根块 let 声明中产生，发布／同步作用域保持，不把 write 位置变为跨 lane 共享存储。普通 void 函数不能隐藏屏障。归约／扫描的回调仍需普通返回值，不能用无返回值函数充当数值算子。
 
-静态内联沿用现有 Load／Store／LoadLocal／StoreLocal 与阶段读写集合，直接声明没有默认初始化指令，void 没有结果寄存器。函数写 Count 同样使后续旧 prefix 关系失效。整份独占可写 dataset 参数、动态引用、提前返回、语言泛型与设备自主任务仍未完成。
+静态内联沿用现有 Load／Store／LoadLocal／StoreLocal 与阶段读写集合，直接声明没有默认初始化指令，void 没有结果寄存器。函数写 Count 同样使后续旧 prefix 关系失效。CPU 应用整份已初始化 inout dataset 借用及普通函数提前返回已实现；write dataset 全域初始化、动态资源返回、cooperative 提前返回与设备自主任务仍未完成。
 
 ## 普通函数的提前返回
 
-`return value;`／`return;` 结束当前普通函数。它们可位于 if、while、for 和多层局部循环中；函数调用完成后，调用方继续执行。break 只退出当前顺序循环，seek 只推进该循环游标，不能用它们退出调用方的循环或 parallel 实例。
+`return value;`／`return;` 结束当前普通函数。它们可位于 if、while、for 和多层局部循环中；函数调用完成后，调用方继续执行。break 只退出当前顺序循环；continue 跳过当前循环体余下语句，for 先将最内层游标加一，while 直接重新求值条件；seek 把最内层 for 游标置为指定位置并重新检查，不额外加一。三者都不能控制调用方的循环或直接退出 parallel 实例。
 
 编译器按每条真实返回边检查返回类型与 write 输出完整性，再合流返回值和借用位置的当前内容事实；一致性包含所经分支和循环范围。void 的自然结束也是返回边。提前返回的一侧不参与后续语句的初始化与范围合流，例如 `if (position >= source.length) { return 0; }` 后面可以读取 `source[position]`；`if (divisor == 0) { return 0; }` 后面可以执行整数除法。输出缺字段报 B229，读取尚未初始化位置沿用 B142，有值函数缺少返回路径报 B132／B133。
 
-顺序块合成 return、break、seek 和继续执行的边；循环后只合流条件失败与 break 的真实状态，不把函数返回当成循环继续。若 while(true) 内部分支 break，函数仍需处理这条循环后路径。已知常量条件只生成实际路径，已知空 for 不编译其循环体，但起止表达式仍按顺序求值，while 条件的实际副作用也保留。完整模块仍先做独立函数检查，不依赖某个调用恰好使用常量才接受非法的通用函数。
+顺序块合成 return、break、continue、seek 和顺序继续的边；循环后只合流条件失败与 break 的真实状态，不把函数返回当成循环继续。若 while(true) 内部分支 break，函数仍需处理这条循环后路径。已知常量条件只生成实际路径，已知空 for 不编译其循环体，但起止表达式仍按顺序求值，while 条件的实际副作用也保留。完整模块仍先做独立函数检查，不依赖某个调用恰好使用常量才接受非法的通用函数。
+
+`continue;` 可用于普通函数、CPU 应用、parallel 实例或 cooperative 函数内部的局部 while／for。范围、dataset、view 和 tile 的 for 都沿同一个游标推进规则；嵌套循环只推进最内层，不跳过外层循环。函数的循环上下文与调用方分开。program 阶段层的静态 for 展开不属于局部顺序循环，不能在阶段层使用 continue。
+
+```c
+u32 odd_sum(u32 limit) on compute {
+    u32 total = 0;
+    for (i in 0..limit) {
+        if ((i & 1) == 0) { continue; }
+        total += i;
+    }
+    return total;
+}
+```
+
+continue 与 seek 共用原有 IR 循环回边，不产生新的调度任务或运行期状态。离开本轮循环体时，释放本轮及嵌套块内拥有的局部 dataset，保留循环入口及调用方资源；显式 CPU／GPU 存储转移仍须在回边前配对完成。continue 路径不成为循环后的出口，不将该路径上的局部初始化或条件事实误带到循环后；cooperative 的同步与发布仍只允许原有根块位置。
 
 例如 `.h`：
 
@@ -1195,7 +1210,7 @@ for (normal in instance.normals) {
 }
 ```
 
-view 与普通 dataset 共用范围条件、bool 命题、函数内联、多个资源的联合范围及有界 for 语义；未知普通访问报 B137。可以读取整记录、字段、向量或嵌套 view，也可在各自条件成立的 `?:` 分支中读取。`for (i in 0..normals.length)` 取得同一引用的索引能力；`for (element in view表达式)` 允许结构体字段、函数返回值和条件选择式，表达式及其长度在进入循环前只求值一次。游标支持既有 ordinal、break 和 seek。引用变量在循环体内改变时，当前游标仍指向进入循环时捕获的引用，不能把游标范围转给新引用。
+view 与普通 dataset 共用范围条件、bool 命题、函数内联、多个资源的联合范围及有界 for 语义；未知普通访问报 B137。可以读取整记录、字段、向量或嵌套 view，也可在各自条件成立的 `?:` 分支中读取。`for (i in 0..normals.length)` 取得同一引用的索引能力；`for (element in view表达式)` 允许结构体字段、函数返回值和条件选择式，表达式及其长度在进入循环前只求值一次。游标支持既有 ordinal、break、continue 和 seek。引用变量在循环体内改变时，当前游标仍指向进入循环时捕获的引用，不能把游标范围转给新引用。
 
 范围身份属于实际引用值，包含隐藏页表地址两部分与长度三个分量的来源，不能仅凭变量名、存储槽或两个资源碰巧等长判为同一个引用。编译器沿不可变别名、可变局部、嵌套记录字段、按值参数和返回值保留既有 SSA 来源；替换整个引用或某个记录字段时更新对应来源，其他未变字段保留自己的来源。分支合流与循环仍撤回可能被改写的旧知识。例如先保存 `let old = normals`，再把 normals 改成另一个资源，旧条件只能约束 old；重新比较新 normals 的长度后才可索引它。
 
@@ -1754,7 +1769,7 @@ cell.position = value;
 
 参数可借用整条记录、嵌套字段或 swizzle，包括重复分量；类型与逐分量来源一起传递。借用只引用原 tile 及 word 映射，不复制输入快照或另建 dataset。length、lane、foreach 游标和 ordinal 沿用原块的有效长度及有界索引语义。只读 tile 不能存进普通变量／结构体、作为 program 参数或函数返回值，也不能包含资源 view；它不是一般设备地址或可写对象。调用者在函数返回后继续持有自己的 tile。
 
-函数可以调用普通值函数，也可在根块嵌套 `let result = cooperate other(...);`，支持普通值和记录返回。普通值参数及返回值沿用既有值语义。函数内部可有局部循环、分支和 seek；协作调用、发布和块内集合本身仍只在根块，不能放进这些控制流或内嵌算术／return 表达式。index() 仍只属于 program 的 parallel；函数通过借用的 lane／游标或显式值参数处理索引。CPU／GPU 执行目标相容性与不允许递归的规则继续适用。
+函数可以调用普通值函数，也可在根块嵌套 `let result = cooperate other(...);`，支持普通值和记录返回。普通值参数及返回值沿用既有值语义。函数内部可有局部循环、分支、continue 和 seek；协作调用、发布和块内集合本身仍只在根块，不能放进这些控制流或内嵌算术／return 表达式。index() 仍只属于 program 的 parallel；函数通过借用的 lane／游标或显式值参数处理索引。CPU／GPU 执行目标相容性与不允许递归的规则继续适用。
 
 类型检查函数库时，编译器保存真实的符号块范围及借用来源，不填入假宽度或伪造数据集。在 program 调用处，参数视图绑定到实际来源，发布宽度继承为具体值；封闭执行 IR 只包含具体布局和既有发布／集合／普通指令。cooperative 函数静态内联到同一个原生范围／GPU 内核，不增加函数任务、宿主调度或 GPU 提交。函数自己的根块、循环和游标上下文与调用方分开，值与借用通过参数传递；共用 IR 的局部值转发、x64 物理寄存器分配及普通直线逐元素阶段的 SIMD 已接入，tile 协作阶段仍按标量 lane 执行。
 
@@ -2442,7 +2457,7 @@ u32 排序已验证到 33554433 条记录，i32／f32 已验证到 4194307 条�
 
 ## 值类型与顺序控制
 
-支持 `f32`／`u32`／`i32`／`bool`，`float2/3/4`、`uint2/3/4`、`int2/3/4`，嵌套结构体、向量构造、固定 f32 矩阵和 swizzle。支持局部变量、赋值、if/else、while、范围 for、只读数据集游标、break、短路布尔表达式、数值转换和常见标量／向量数学。
+支持 `f32`／`u32`／`i32`／`bool`，`float2/3/4`、`uint2/3/4`、`int2/3/4`，嵌套结构体、向量构造、固定 f32 矩阵和 swizzle。支持局部变量、赋值、if/else、while、范围 for、只读数据集游标、break／continue、短路布尔表达式、数值转换和常见标量／向量数学。
 
 数学包括 dot、cross、length、normalize、abs、sqrt、floor、sin、cos、exp、log、exp2、log2、pow、min、max、clamp。数学定义域不会被隐式修正；normalize 零向量、非法 log 等仍是数值设计问题。
 

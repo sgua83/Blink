@@ -305,6 +305,7 @@ pub enum StmtKind {
     Parallel(String, ParallelDomain, Vec<Stmt>),
     Return(Option<Expr>),
     Break,
+    Continue,
     Phase,
     Seek(String, Expr),
 }
