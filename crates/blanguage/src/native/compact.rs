@@ -69,9 +69,29 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     e.u32(c.flag_word * 4);
     e.bytes(&[0]);
     let skip = e.jump(Some(0x84));
-    e.bytes(&[0xb9]);
-    e.u32(stride / 4);
-    e.bytes(&[0xf3, 0xa5]);
+    let vectors = stride / 16;
+    if vectors != 0 {
+        if vectors != 1 {
+            e.bytes(&[0xb9]);
+            e.u32(vectors);
+        }
+        let copy = e.code.len();
+        // XMM0 是易失寄存器；读取当前记录内的完整块，并推进两个实际游标。
+        e.bytes(&[
+            0x0f, 0x10, 0x06, 0x0f, 0x11, 0x07, 0x48, 0x83, 0xc6, 0x10, 0x48, 0x83, 0xc7, 0x10,
+        ]);
+        if vectors != 1 {
+            e.bytes(&[0xff, 0xc9]);
+            let again = e.jump(Some(0x85));
+            e.patch(again, copy);
+        }
+    }
+    if stride % 16 >= 8 {
+        e.bytes(&[0x48, 0xa5]);
+    }
+    if stride % 8 != 0 {
+        e.bytes(&[0xa5]);
+    }
     let next = e.jump(None);
     e.patch(skip, e.code.len());
     e.bytes(&[0x48, 0x81, 0xc6]);
