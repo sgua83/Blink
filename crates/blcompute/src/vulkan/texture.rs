@@ -117,25 +117,45 @@ struct Storage {
     dimensions: [u32; 2],
     mips: u32,
 }
+// 真实图像和上传完成点由同一个共享所有者持有；执行不反向持有输出图像。
+struct Image {
+    storage: Storage,
+    uploaded: Rc<Execution>,
+}
+impl Drop for Image {
+    fn drop(&mut self) {
+        self.uploaded.point.finish_for_drop();
+    }
+}
 #[derive(Clone)]
-pub struct Texture(Rc<Storage>);
+pub struct Texture(Rc<Image>);
 impl Texture {
     pub fn dimensions(&self) -> [u32; 2] {
-        self.0.dimensions
+        self.0.storage.dimensions
     }
     pub fn mip_count(&self) -> u32 {
-        self.0.mips
+        self.0.storage.mips
     }
     pub fn allocated_bytes(&self) -> u64 {
-        self.0.allocated_bytes
+        self.0.storage.allocated_bytes
+    }
+    /// 只观察本张图像的上传，不代表后续采样消费者已经完成。
+    pub fn is_complete(&self) -> Result<bool> {
+        self.0.uploaded.is_complete()
+    }
+    pub fn wait(&self) -> Result<()> {
+        self.0.uploaded.wait()
+    }
+    pub(super) fn produced(&self) -> Rc<Execution> {
+        self.0.uploaded.clone()
     }
     pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
-        Rc::ptr_eq(&self.0.inner, inner)
+        Rc::ptr_eq(&self.0.storage.inner, inner)
     }
     pub(super) fn descriptor(&self) -> DescriptorImageInfo {
         DescriptorImageInfo {
-            sampler: self.0.sampler,
-            view: self.0.view,
+            sampler: self.0.storage.sampler,
+            view: self.0.storage.view,
             layout: 5,
         }
     }
@@ -300,7 +320,7 @@ impl Device {
                 offset += mip.pixels.len() * 16;
             }
             (f.vkUnmapMemory)(device, staging.memory);
-            let mut commands = Commands::new(inner.clone())?;
+            let commands = Commands::new(inner.clone())?;
             let barrier = ImageBarrier {
                 kind: 45,
                 next: null(),
@@ -357,9 +377,11 @@ impl Device {
                 1,
                 (&barrier as *const ImageBarrier).cast(),
             );
-            commands.submit()?;
-            commands.completion.wait()?;
-            Ok(Texture(Rc::new(texture)))
+            let uploaded = self.submit_transfer(commands, vec![staging])?;
+            Ok(Texture(Rc::new(Image {
+                storage: texture,
+                uploaded,
+            })))
         }
     }
 }

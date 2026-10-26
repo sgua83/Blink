@@ -1781,6 +1781,9 @@ impl GpuProgram {
         {
             return Err(error("纹理数量或设备归属与程序不一致"));
         }
+        for texture in &owner.textures {
+            owner.dependencies.push(texture.produced());
+        }
         let data = &mut owner.bindings.datasets;
         for (dataset, binding) in data.iter().zip(c.program.buffers()) {
             if matches!(&*dataset.storage, DatasetStorage::Read(_))
