@@ -32,11 +32,11 @@ static void serial(std::vector<uint32_t>& pixels, uint32_t limit) {
 
 int main(int argc, char** argv) try {
     const auto backend = argc > 1 && std::string(argv[1]) == "gpu"
-        ? fractal::Backend::Gpu : fractal::Backend::Cpu;
+        ? blink_fractal::Backend::Gpu : blink_fractal::Backend::Cpu;
     std::vector<uint32_t> expected(FRACTAL_PIXELS_COUNT), pixels(FRACTAL_PIXELS_COUNT);
     const uint32_t limit = 256;
     auto begin = Clock::now();
-    fractal::Program program(backend);
+    blink_fractal::Program program(backend);
     const double setup_ms = milliseconds(begin);
     // 初始化与预热独立于一次调用的计时；各方法预热两次，取九次单次调用的中位数。
     std::vector<double> serial_samples, blink_samples;
@@ -60,7 +60,7 @@ int main(int argc, char** argv) try {
         max_difference = std::max(max_difference,
             pixels[i] > expected[i] ? pixels[i] - expected[i] : expected[i] - pixels[i]);
     }
-    std::printf("host=C++ backend=%s pixels=%zu limit=%u\n", backend == fractal::Backend::Gpu ? "gpu" : "cpu", pixels.size(), limit);
+    std::printf("host=C++ backend=%s pixels=%zu limit=%u\n", backend == blink_fractal::Backend::Gpu ? "gpu" : "cpu", pixels.size(), limit);
     std::printf("setup_ms=%.3f\nserial_ms=%.3f\nblink_call_ms=%.3f\nspeedup=%.2fx\n",
         setup_ms, serial_samples[4], blink_samples[4], serial_samples[4] / blink_samples[4]);
     std::printf("different_pixels=%u max_iteration_difference=%u checksum=%llu\n", different, max_difference,

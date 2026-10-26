@@ -14,7 +14,7 @@ __declspec(dllimport) void @PREFIX@_destroy(@PREFIX@_handle *handle);
 #ifdef __cplusplus
 }
 #include <stdexcept>
-namespace @PREFIX@ {
+namespace blink_@PREFIX@ {
 enum class Backend : uint32_t { Cpu=0, Gpu=1 };
 class Program {
     @PREFIX@_handle *handle_ = nullptr;

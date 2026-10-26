@@ -3,7 +3,7 @@
 
 int main() try {
     float values[] = {1, 2, 3, 4};
-    map::Program program(map::Backend::Cpu);
+    blink_map::Program program(blink_map::Backend::Cpu);
     program.run(values, 4);
     for (float value : values) std::printf("%.0f ", value);
     std::puts("");

@@ -44,7 +44,7 @@ C++ 使用头文件中的 RAII 类：
 ```cpp
 #include "map.abi.h"
 float values[] = {1, 2, 3, 4};
-map::Program program(map::Backend::Cpu);
+blink_map::Program program(blink_map::Backend::Cpu);
 program.run(values, 4);
 // values: 3, 5, 7, 9
 ```

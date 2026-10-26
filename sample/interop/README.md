@@ -36,6 +36,8 @@ rustc --edition=2024 -C opt-level=3 `
 .\target\interop\map-rust.exe
 ```
 
+生成的 C++ 包装统一使用 `blink_` 产品前缀，例如 `blink_map::Program`／`blink_map::Backend`；模块名 `main` 或 C++ 关键字不会直接成为全局命名空间。C 导出仍为 `map_*`，Rust 模块与绑定名称保持。
+
 C 和 C++ 输出 3 5 7 9；Rust 输出 [3.0, 5.0, 7.0, 9.0]。C++ 析构与 Rust Drop 释放 DLL handle，数组仍属于各自的宿主。
 
 ## 一百万像素的分形：完整调用计时
