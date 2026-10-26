@@ -357,6 +357,12 @@ impl Proof {
         self.nonzero[component] = true;
     }
     pub(super) fn mark_domain(&mut self, component: usize, domain: IndexDomain) {
+        if let IndexDomain::Fixed(count) = domain {
+            // 固定形状的索引事实同时给出数值上界；保留原有区间与空路径。
+            self.ranges
+                .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+            self.ranges[component] = self.ranges[component].restrict(0, count).without(count);
+        }
         self.domains
             .resize(self.domains.len().max(component + 1), Domains::new());
         self.domains[component].insert(domain);

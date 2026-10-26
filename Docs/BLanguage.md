@@ -629,6 +629,8 @@ program shift(inout dataset<Cell> cells, float3 delta) on compute {
 
 泛型签名可写 `T at<T:numeric,const N:u32 in {2,3,4}>(array<T,N> values,u32 i) on compute requires index(i,values);`，函数体直接 `return values[i];`。这里的约束证明来自调用实参，不增加运行期参数或检查。
 
+对固定数组的 requires index(i,values)，函数体同时取得 i 的数值范围 0 <= i < N；向量索引的每个选中分量分别取得此事实。已有算术与路径分析可继续使用它，例如 N=17 时，values[i >> shift]、长度为 18 的另一数组的 [i+1] 和以 17-i 为除数均可证明；无须重复写同一长度条件。调用点仍须先证明原契约。赋值替换索引值后不沿用旧事实，可能回绕的 i-1 或仍可能为零的 i 不能因此直接用作下标或除数；动态资源的长度与并行独占写权限分别证明。
+
 现阶段固定数组用于普通值聚合，编译器仍按逻辑分量展开类型与整体值，动态访问才固定连续存储；编译成本会随内联长度增长，不能据此宣称适合超大容量私有数组。大规模数据继续由 dataset／view 分页和并行集合承载。固定数组的动态 u32／i32 原子下标已支持，沿显式 atomic dataset／tile 权限与内存序执行，见下节；B214 拒绝非原子目标或普通读写混用。动态长度内联数组、切片、矩阵动态行下标、一般依赖类型与完整语言继续开发。
 
 实际 render.trace 的 Triangle 已用 array<u32,3> normal_indices，宿主按同一数组路径写入三项，三角形仍为 12 字节；着色的三个常量下标消除为原直接访问，不改变原高精度几何或采样。
