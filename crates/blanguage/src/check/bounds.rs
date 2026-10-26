@@ -1234,7 +1234,12 @@ impl Builder<'_> {
         if value.proof.domains(0).contains(&domain) {
             return true;
         }
-        value.maximum() < self.resource_minimum(domain, minimum)
+        let limit = self.resource_minimum(domain, minimum);
+        value
+            .component_ranges(0)
+            .0
+            .iter()
+            .all(|&(_, upper)| upper < limit)
     }
     pub(super) fn resource_minimum(&self, domain: IndexDomain, minimum: u32) -> u32 {
         let length = match domain {
