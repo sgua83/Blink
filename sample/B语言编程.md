@@ -1,14 +1,14 @@
 # B 语言编程
 
-从第一个数字开始，学会 Blink
+原生并行，统一 CPU 与 GPU 编程
 
 ## 写在前面
 
 让电脑计算一加二，运行后直接看到三，这是本书的起点。
 
-这是一本从零开始的语言入门书。不要求先会 C、C++ 或 Rust。每遇到一种新写法，我们先说它要解决什么问题，再读代码，最后编译、运行，看看真正显示的结果。
+这是一本从零开始的语言入门书。不要求先会 C、C++ 或 Rust。每遇到一种新写法，我们先说它要解决什么问题，再读代码，最后编译、链接、运行，看看真正显示的结果。
 
-Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基础语言。对初学者来说，这个目标可以从两件具体的事开始理解：把一件小事写清楚，再学会让许多份数据各自工作。
+Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基础语言。它把并行计算写进语言本身，让应用明确组织 CPU 与 GPU 上的数据和计算。
 
 本书从头到尾使用可以直接运行的 B 应用。前半部分学习普通值、函数和顺序处理，后半部分由应用自己创建数据，组织 CPU／GPU 并行计算，再把结果显示在终端。每一步都从明确的数据和简单的规则出发。
 
@@ -18,9 +18,9 @@ Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基
 
 命令都在下载后的 Blink 项目根目录执行。每个动手例子给出完整的 B 实现、正式编译命令、运行命令和真实结果。命令末尾的反引号表示下一行仍属于同一条命令。
 
-`.h` 列出公开接口，`.b` 写具体做法。先照着第一例把两个文件编译成功；之后再逐步理解名字、类型和函数。修改 B 源码以后，重新编译自己的 exe，再运行它。
+`.h` 列出公开接口，`.b` 写具体做法。先照着第一例把两个文件编译成功；之后再逐步理解名字、类型和函数。修改 B 源码以后，重新编译、链接，再运行生成的 exe。
 
-基础应用使用 **Blink P4 CL13085 的 Release 编译器**实际构建与执行；第四、十一章的小数与坐标显示补用 **CL13181**；第十五至十九章的动态数据与 CPU／GPU 应用使用 **CL13172**。这些运行都使用正式优化版本。原始输出和源码哈希见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
+本版二十一个应用均使用本次编译、链接分离实现的 **Release 工具**，分别编译为 obj、链接为 exe，再直接运行。运行地点为 Windows x64；GPU 示例使用 AMD Radeon RX 9070 GRE。完整命令、工具与源码哈希、标准输出和退出码见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
 
 ## 第一章 先把 Blink 准备好
 
@@ -38,24 +38,30 @@ cd Blink
 cargo build --workspace --release
 ```
 
-第一条下载源码，第二条进入项目，第三条构建正式优化版本。第一次构建可能需要一些时间。完成后，编译器位于 `target/release/blc.exe`。
+第一条下载源码，第二条进入项目，第三条构建正式优化版本。第一次构建可能需要一些时间。完成后，编译器位于 `target/release/blc.exe`，链接器位于 `target/release/bllink.exe`。
 
 ### 1.2 认识三个目录
 
 ```text
 Blink/
     sample/beginner/    本书的 B 源码
-    target/release/     Blink 编译器
-    target/             自己编译出的 exe
+    target/release/     Blink 编译器和链接器
+    target/             自己的 obj 和 exe
 ```
 
 `sample` 和 `target` 都从项目根目录开始寻找。目录可以放在自己的数据盘上。用文本编辑器打开 `.b/.h`，保存为 UTF-8；注意文件名不要多出 `.txt`。
 
-### 1.3 编译和运行分成两步
+### 1.3 编译、链接、运行是三件事
 
-编译把 B 源码变成 exe；运行让这个 exe 执行计算。改过源码以后要重新编译，否则运行的仍是上一次的程序。
+写完源码后，先编译，再链接，最后运行。
 
-构建 Blink 工具使用 cargo 的 `--release`。编译自己的 B 应用使用 `blc.exe build-exe`，随后直接运行生成的 exe。
+编译器 `blc.exe` 读取 B 源码，检查写法，生成机器指令，保存为 `.obj` 目标文件。目标文件已经含有编译结果，但还不能当作应用启动。
+
+链接器 `bllink.exe` 读取目标文件，安排代码和数据的位置，连接程序使用的系统函数，生成操作系统能启动的 `.exe`。它不再读取 B 源码，也不重新编译算法。
+
+最后运行自己的 exe，才开始执行计算。下一章用三条命令走完这三步。改过源码以后，重新编译、链接，再运行新程序。
+
+`cargo build --workspace --release` 用来构建 Blink 工具本身；日常编译、链接 B 应用使用刚得到的 blc 和 bllink。
 
 ## 第二章 第一个程序：直接显示 3
 
@@ -84,15 +90,21 @@ u32 main() on cpu {
 
 `main` 是应用从哪里开始执行。`u32` 说明它最后交回一个整数，`on cpu` 说明这段应用入口在 CPU 上执行。`return 0;` 表示正常结束；这个零是进程退出码，不会因此多打印一个零。
 
-### 2.2 编译，再直接运行
+### 2.2 编译、链接，再运行
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/start.b target/start.exe
+.\target\release\blc.exe -c `
+    sample/beginner/start.b `
+    -o target/start.obj
+.\target\release\bllink.exe `
+    target/start.obj `
+    -o target/start.exe
 .\target\start.exe
 ```
+
+第一条运行编译器 blc，把 start.b 编译为 start.obj。第二条运行链接器 bllink，把 start.obj 链接为 start.exe。第三条才运行自己写的程序。两个工具的 exe 是构建工具，start.exe 是这份源码生成的应用。
 
 实际终端输出：
 
@@ -102,7 +114,7 @@ u32 main() on cpu {
 
 ![start 的实际构建与输出](figures/beginner-app-start.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 终端直接显示三。这里不需要准备输入数据文件，也不需要再读取输出文件。生成的 `target/start.exe` 可以直接启动；运行它不需要 B 源码、blc 或 blrun 留在旁边。
 
@@ -114,11 +126,11 @@ u32 main() on cpu {
 
 ![从源码到终端结果](figures/beginner-app-flow.svg)
 
-*图 2-1：先编译得到真正的 exe，再由操作系统启动它。println 把计算结果直接送到终端。*
+*图 2-1：先编译得到 obj，再链接得到 exe，最后由操作系统启动它。println 把计算结果直接送到终端。*
 
 ### 2.4 亲手改一次
 
-把 `1 + 2` 改为 `4 + 5`，保存 `.b`，重新执行编译命令，再运行 exe，终端应显示九。`.h` 不需要改变。
+把 `1 + 2` 改为 `4 + 5`，保存 `.b`，重新执行编译和链接命令，再运行 exe，终端应显示九。`.h` 不需要改变。
 
 ## 第三章 给数字起名字
 
@@ -139,11 +151,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/names.b target/names.exe
+.\target\release\blc.exe -c `
+    sample/beginner/names.b `
+    -o target/names.obj
+.\target\release\bllink.exe `
+    target/names.obj `
+    -o target/names.exe
 .\target\names.exe
 ```
 
@@ -155,7 +171,7 @@ u32 main() on cpu {
 
 ![names 的实际构建与输出](figures/beginner-app-names.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 本章及后面的普通应用，`.h` 都采用第一例的形式：把 module 改为对应文件名，公开 `u32 main() on cpu;`。配套文件已经写好，可以直接打开阅读。
 
@@ -214,12 +230,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
+.\target\release\blc.exe -c `
     sample/beginner/types.b `
-    target/types.exe
+    -o target/types.obj
+.\target\release\bllink.exe `
+    target/types.obj `
+    -o target/types.exe
 .\target\types.exe
 ```
 
@@ -235,7 +254,7 @@ true
 
 ![types 的实际构建与输出](figures/beginner-app-types.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 前两行是整数除法，分别得到三和负三；第三行说明七十五达到六十分。第四行直接显示温度 21.5，第五行显示小数除法的结果 3.5。
 
@@ -295,11 +314,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/choice.b target/choice.exe
+.\target\release\blc.exe -c `
+    sample/beginner/choice.b `
+    -o target/choice.obj
+.\target\release\bllink.exe `
+    target/choice.obj `
+    -o target/choice.exe
 .\target\choice.exe
 ```
 
@@ -312,7 +335,7 @@ true
 
 ![choice 的实际构建与输出](figures/beginner-app-choice.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 score 为七十五，第一项不成立，第二项成立，于是 level 取二。后面的 else if 不再继续选一遍。第一行输出等级二，第二行输出是否及格 true。
 
@@ -388,11 +411,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/loops.b target/loops.exe
+.\target\release\blc.exe -c `
+    sample/beginner/loops.b `
+    -o target/loops.obj
+.\target\release\bllink.exe `
+    target/loops.obj `
+    -o target/loops.exe
 .\target\loops.exe
 ```
 
@@ -406,7 +433,7 @@ u32 main() on cpu {
 
 ![loops 的实际构建与输出](figures/beginner-app-loops.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 前两项都是十五；最后一项只加一、二、三，得到六。
 
@@ -442,11 +469,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/functions.b target/functions.exe
+.\target\release\blc.exe -c `
+    sample/beginner/functions.b `
+    -o target/functions.obj
+.\target\release\bllink.exe `
+    target/functions.obj `
+    -o target/functions.exe
 .\target\functions.exe
 ```
 
@@ -459,7 +490,7 @@ u32 main() on cpu {
 
 ![functions 的实际构建与输出](figures/beginner-app-functions.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 `add_bonus(70, 5)` 得到七十五，再交给 level_of 得到二。参数按声明顺序对应。函数中的 score 是这次调用收到的值，不因名字相同就自动改写 main 里的变量。
 
@@ -507,11 +538,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/borrow.b target/borrow.exe
+.\target\release\blc.exe -c `
+    sample/beginner/borrow.b `
+    -o target/borrow.obj
+.\target\release\bllink.exe `
+    target/borrow.obj `
+    -o target/borrow.exe
 .\target\borrow.exe
 ```
 
@@ -524,7 +559,7 @@ u32 main() on cpu {
 
 ![borrow 的实际构建与输出](figures/beginner-app-borrow.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 add_one 把 main 的 value 从三改成四。twice 读取四，把八写入 output。两行分别显示四、八。
 
@@ -570,11 +605,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/records.b target/records.exe
+.\target\release\blc.exe -c `
+    sample/beginner/records.b `
+    -o target/records.obj
+.\target\release\bllink.exe `
+    target/records.obj `
+    -o target/records.exe
 .\target\records.exe
 ```
 
@@ -587,7 +626,7 @@ true
 
 ![records 的实际构建与输出](figures/beginner-app-records.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 点号选择一项字段，`student.score` 是成绩，`student.passed` 是判断结果。每一项在读取前都应有确定内容。
 
@@ -618,11 +657,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/arrays.b target/arrays.exe
+.\target\release\blc.exe -c `
+    sample/beginner/arrays.b `
+    -o target/arrays.obj
+.\target\release\bllink.exe `
+    target/arrays.obj `
+    -o target/arrays.exe
 .\target\arrays.exe
 ```
 
@@ -638,7 +681,7 @@ u32 main() on cpu {
 
 ![arrays 的实际构建与输出](figures/beginner-app-arrays.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 前四行分别显示数组元素，最后一行显示总和十。这里是一个独立 exe，数组由应用代码直接声明，不是命令行另外申请的数据集。
 
@@ -685,12 +728,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
+.\target\release\blc.exe -c `
     sample/beginner/vectors.b `
-    target/vectors.exe
+    -o target/vectors.obj
+.\target\release\bllink.exe `
+    target/vectors.obj `
+    -o target/vectors.exe
 .\target\vectors.exe
 ```
 
@@ -705,7 +751,7 @@ u32 main() on cpu {
 
 ![vectors 的实际构建与输出](figures/beginner-app-vectors.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 前两行是 moved 的 x、y：一、三。后两行是 rotated 的 x、y：负二、一。它们分别对应移动和旋转得到的两个坐标。
 
@@ -759,11 +805,16 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/modules.b target/modules.exe sample
+.\target\release\blc.exe -c `
+    sample/beginner/modules.b `
+    -o target/modules.obj `
+    -I sample
+.\target\release\bllink.exe `
+    target/modules.obj `
+    -o target/modules.exe
 .\target\modules.exe
 ```
 
@@ -775,13 +826,13 @@ u32 main() on cpu {
 
 ![modules 的实际构建与输出](figures/beginner-app-modules.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 import 让本模块明确使用 beginner.math 的公开内容。这里的编译命令末尾增加 `sample`，告诉编译器从哪里寻找 `beginner/math.h/.b`；它是模块搜索根目录。第一例没有导入，无需这个参数。
 
 ### 12.3 改规则，不复制规则
 
-把 Base 改为二十并重新编译，结果会成为二十三。多个程序使用同一函数时，也在这个模块中维护共同做法，不必在各文件复制一份。
+把 Base 改为二十并重新编译、链接，结果会成为二十三。多个程序使用同一函数时，也在这个模块中维护共同做法，不必在各文件复制一份。
 
 ## 第十三章 同一份做法，换一种类型
 
@@ -809,11 +860,15 @@ u32 main() on cpu {
 }
 ```
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/generic.b target/generic.exe
+.\target\release\blc.exe -c `
+    sample/beginner/generic.b `
+    -o target/generic.obj
+.\target\release\bllink.exe `
+    target/generic.obj `
+    -o target/generic.exe
 .\target\generic.exe
 ```
 
@@ -826,7 +881,7 @@ u32 main() on cpu {
 
 ![generic 的实际构建与输出](figures/beginner-app-generic.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 T 是暂时使用的类型名，integer 规定它来自允许的整数类型集合。本例传三时推断为 u32，传负二时推断为 i32，分别得到六和负四。
 
@@ -887,11 +942,15 @@ u32 main() on cpu {
 
 final_score 只负责一人的调整。main 负责数组、循环、显示和求和。Result 把同一人的三项结果放在一起。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/grades.b target/grades.exe
+.\target\release\blc.exe -c `
+    sample/beginner/grades.b `
+    -o target/grades.obj
+.\target\release\bllink.exe `
+    target/grades.obj `
+    -o target/grades.exe
 .\target\grades.exe
 ```
 
@@ -915,7 +974,7 @@ true
 
 ![grades 的实际构建与输出](figures/beginner-app-grades.svg)
 
-*运行记录：Release 编译器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
 
 每三行是一人的原成绩、新成绩、及格标志；最后一行是总和。按记录整理如下，数值取自上面的实际终端输出：
 
@@ -930,7 +989,7 @@ true
 
 这段程序只包含 B 源码。它有应用入口，保存自己的固定数据，调用函数，按规则修改记录，显示结果，再正常退出。
 
-把奖励分改为十，重新编译。新成绩应是五十五、七十、八十五、一百，总和三百一十。先预测，再运行，看每一步变化是否符合规则。
+把奖励分改为十，重新编译、链接。新成绩应是五十五、七十、八十五、一百，总和三百一十。先预测，再运行，看每一步变化是否符合规则。
 
 ## 第十五章 从顺序程序走向并行数据
 
@@ -984,11 +1043,15 @@ u32 main() on cpu {
 
 第一个 for 计算，第二个 for 显示。i 是从零开始的编号；value 是编号加一后的数。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/numbers_serial.b target/numbers_serial.exe
+.\target\release\blc.exe -c `
+    sample/beginner/numbers_serial.b `
+    -o target/numbers_serial.obj
+.\target\release\bllink.exe `
+    target/numbers_serial.obj `
+    -o target/numbers_serial.exe
 .\target\numbers_serial.exe
 ```
 
@@ -1048,11 +1111,15 @@ main 仍然负责创建 numbers 和显示结果。原来的计算循环放进 ru
 
 number 直接表示当前可写的那个元素。value 仍是各自计算时使用的局部变量；每个元素都有自己的 value，彼此不会覆盖。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/numbers.b target/numbers.exe
+.\target\release\blc.exe -c `
+    sample/beginner/numbers.b `
+    -o target/numbers.obj
+.\target\release\bllink.exe `
+    target/numbers.obj `
+    -o target/numbers.exe
 .\target\numbers.exe
 ```
 
@@ -1075,11 +1142,11 @@ number 直接表示当前可写的那个元素。value 仍是各自计算时使�
 
 显示发生在计算完成之后，仍由 main 的 for 按编号进行。因此终端依次显示二、四、六、八。这里没有让并行参与者直接争着打印。
 
-想处理六个数，把 main 中创建长度的四改成六，重新编译即可。program 不需要修改，显示循环也会跟着 numbers.length 遍历，结果为二、四、六、八、十、十二。
+想处理六个数，把 main 中创建长度的四改成六，重新编译、链接即可。program 不需要修改，显示循环也会跟着 numbers.length 遍历，结果为二、四、六、八、十、十二。
 
 ### 15.5 编译后，目录里有什么
 
-这些例子使用动态数据和计算执行框架。编译器除了生成 exe，还会在同目录生成一个名称形如 blink_app_*.dll 的执行库。星号部分由编译器命名。
+这些例子使用动态数据和计算执行框架。blc 先把应用和必要的执行框架编译进 obj；bllink 再生成 exe，并在同目录生成一个名称形如 blink_app_*.dll 的执行库。星号部分由链接器命名。
 
 日常仍然直接运行 numbers.exe。把程序复制给另一台 Windows x64 电脑时，要把它对应的 DLL 一起放在同目录。运行不需要携带 B 源码、编译器或 Rust 工具链；构建这个源码 SDK 时需要的工具已在第一章准备。
 
@@ -1136,11 +1203,15 @@ seed 只负责填写起始值，参数写 write。scale 既要读取原值又要
 
 一个步骤内部，各元素独立计算；两个步骤之间，后一阶段需要前一阶段的结果。把这种先后关系写清楚，并行才有意义。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/stages.b target/stages.exe
+.\target\release\blc.exe -c `
+    sample/beginner/stages.b `
+    -o target/stages.obj
+.\target\release\bllink.exe `
+    target/stages.obj `
+    -o target/stages.exe
 .\target\stages.exe
 ```
 
@@ -1265,11 +1336,15 @@ main 创建三份数据：numbers 保存输入，before 保存每个位置的前
 
 seed 填写输入；summarize 只读输入，填写两份结果；run 组织两步。计算完成后，main 读取 before 和 total，直接显示。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/totals.b target/totals.exe
+.\target\release\blc.exe -c `
+    sample/beginner/totals.b `
+    -o target/totals.obj
+.\target\release\bllink.exe `
+    target/totals.obj `
+    -o target/totals.exe
 .\target\totals.exe
 ```
 
@@ -1346,8 +1421,13 @@ upload 将这份存储交给 GPU。run_gpu 提交计算。download 等待需要�
 ### 17.2 编译与直接运行
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/stages_gpu.b target/stages_gpu.exe sample
+.\target\release\blc.exe -c `
+    sample/beginner/stages_gpu.b `
+    -o target/stages_gpu.obj `
+    -I sample
+.\target\release\bllink.exe `
+    target/stages_gpu.obj `
+    -o target/stages_gpu.exe
 .\target\stages_gpu.exe
 ```
 
@@ -1431,8 +1511,12 @@ main 仍然是应用入口。尖括号写在 B 源码的调用处，命令行不
 ### 18.2 编译并运行
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/shape.b target/shape.exe
+.\target\release\blc.exe -c `
+    sample/beginner/shape.b `
+    -o target/shape.obj
+.\target\release\bllink.exe `
+    target/shape.obj `
+    -o target/shape.exe
 .\target\shape.exe
 ```
 
@@ -1559,11 +1643,15 @@ program run(inout dataset<Result> results,
 
 main 创建四条 Result 和一条总和。fill 给每条成绩填写三个字段；sum 汇总结果；run 明确先填写、后求和。最后仍由 main 按顺序显示，便于逐行对照。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/scores.b target/scores.exe
+.\target\release\blc.exe -c `
+    sample/beginner/scores.b `
+    -o target/scores.obj
+.\target\release\bllink.exe `
+    target/scores.obj `
+    -o target/scores.exe
 .\target\scores.exe
 ```
 
@@ -1630,11 +1718,16 @@ u32 main() on cpu {
 
 results 和 total 都交给 GPU，因为计算既要写成绩，也要写总和。两份结果交回 CPU 以后，显示代码与 CPU 应用一致。
 
-编译并运行：
+编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe build-exe `
-    sample/beginner/scores_gpu.b target/scores_gpu.exe sample
+.\target\release\blc.exe -c `
+    sample/beginner/scores_gpu.b `
+    -o target/scores_gpu.obj `
+    -I sample
+.\target\release\bllink.exe `
+    target/scores_gpu.obj `
+    -o target/scores_gpu.exe
 .\target\scores_gpu.exe
 ```
 
@@ -1650,7 +1743,7 @@ results 和 total 都交给 GPU，因为计算既要写成绩，也要写总和�
 
 CPU 与 GPU 的选择改变了执行位置和数据交接，成绩规则没有变化。处理完以后离开 main，应用创建的两份 dataset 按作用域释放。
 
-把传入的奖励分改成十，重新编译，调整后是五十五、七十、八十五、一百，总和三百一十。保留公式，改变参数，就能沿同一条数据路线理解新的结果。
+把传入的奖励分改成十，重新编译、链接，调整后是五十五、七十、八十五、一百，总和三百一十。保留公式，改变参数，就能沿同一条数据路线理解新的结果。
 
 ## 第二十章 读懂错误，继续练习
 
@@ -1658,7 +1751,7 @@ CPU 与 GPU 的选择改变了执行位置和数据交接，成绩规则没有�
 
 检查错误给出的文件、行、列与说明。缺分号先补分号，括号不成对先找对应括号；不要因为后面也报错就一次重写全部代码。
 
-命令找不到文件时，确认自己在 Blink 根目录。改过源码却看不到变化时，确认已经重新编译刚才运行的 exe。
+命令找不到文件时，确认自己在 Blink 根目录。改过源码却看不到变化时，确认已经重新编译、链接刚才运行的 exe。
 
 | 问题 | 先检查什么 |
 |---|---|
@@ -1766,6 +1859,6 @@ dataset 创建后位于 CPU 一侧。CPU program 直接借用；GPU program 使�
 
 ### B.4 并行例子与下一步
 
-并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 program。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都由 blc build-exe 编译，再直接运行生成的 exe。
+并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 program。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都先由 blc 编译为 obj，再由 bllink 链接为 exe，最后直接运行。
 
 下一步可以阅读《并行编程的艺术》，学习更大规模的数据关系与真实效率；阅读《Blink 和 Rust 混合编程》，学习把 B 算法接入项目；对实现感兴趣时，再阅读《B 语言源码分析》。

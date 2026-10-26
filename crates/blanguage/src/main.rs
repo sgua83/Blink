@@ -11,27 +11,54 @@ fn main() -> ExitCode {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.is_empty() {
+    if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nblc build-dll <module.b> <output.dll> [module-root] [program<args>]\nblc build-exe <module.b> <output.exe> [module-root] [entry=main]"
+            "Blink compiler\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
     let command = &args[0];
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
-    if command == "build-exe" {
-        let root = args
-            .get(3)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.parent().unwrap().into());
-        let entry = args.get(4).map(String::as_str).unwrap_or("main");
-        let application = blanguage::compile_application(&path, &root, entry)?;
-        let output = PathBuf::from(args.get(2).ok_or("缺少 .exe 输出路径")?);
-        application.build(&output)?;
-        println!("application {} -> {}", application.name(), output.display());
+    if command == "-c" {
+        let mut root = path.parent().unwrap().to_path_buf();
+        let mut output = None;
+        let mut entry = "main";
+        let mut program = None;
+        let mut i = 2;
+        while i < args.len() {
+            let value = args.get(i + 1).ok_or("编译选项缺少参数")?;
+            match args[i].as_str() {
+                "-o" => output = Some(PathBuf::from(value)),
+                "-I" => root = PathBuf::from(value),
+                "--entry" => entry = value,
+                "--program" => program = Some(value.as_str()),
+                other => return Err(format!("未知编译选项 {other}").into()),
+            }
+            i += 2;
+        }
+        let output = output.ok_or("缺少 -o 目标文件路径")?;
+        let object = if let Some(entry) = program {
+            let compilation = blanguage::compile_entry(&path, &root, entry)?;
+            let program = compilation
+                .programs
+                .first()
+                .ok_or("DLL 编译需要无前置条件的具体 program")?;
+            let prefix = output
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("目标文件名不是 UTF-8")?;
+            blanguage::dll::compile_object(program, prefix)?
+        } else {
+            blanguage::compile_application(&path, &root, entry)?.compile()?
+        };
+        object.write(&output)?;
+        println!("object {} -> {}", object.name(), output.display());
         return Ok(());
     }
-    let has_output = matches!(command.as_str(), "build" | "build-dll");
+    if !matches!(command.as_str(), "check" | "build") {
+        return Err(format!("未知命令 {command}；编译使用 blc -c，链接使用 bllink").into());
+    }
+    let has_output = command == "build";
     let root = if has_output { args.get(3) } else { args.get(2) }
         .map(PathBuf::from)
         .unwrap_or_else(|| path.parent().unwrap().into());
@@ -59,17 +86,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         print!("{}", p.describe());
     }
     match command.as_str() {
-        "build-dll" => {
-            if compilation.programs.len() != 1 || !compilation.templates.is_empty() {
-                return Err(
-                    "build-dll 需要一个无前置条件的具体 program；请在命令末尾选择入口".into(),
-                );
-            }
-            blanguage::dll::build(
-                &compilation.programs[0],
-                &PathBuf::from(args.get(2).ok_or("缺少 DLL 输出路径")?),
-            )?;
-        }
         "check" => {
             if programs.is_empty() {
                 println!("library {} checked", path.display());

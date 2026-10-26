@@ -1,19 +1,24 @@
 # C、C++ 与 Rust 集成
 
-C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 blc 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，已有签名保持不变。
+C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 bllink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，已有签名保持不变。
 
-## 由 blc 输出 DLL
+## 编译算法，再链接为 DLL
 
 当前目标为 Windows x64。使用源码 SDK，在 Visual Studio x64 Developer PowerShell 中构建 Blink，再执行：
 
 ```powershell
 cargo build --workspace --release
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample\lessons\map.b `
-    target\interop\map.dll sample scale
+    -o target\interop\map.obj `
+    -I sample `
+    --program scale
+.\target\release\bllink.exe `
+    target\interop\map.obj `
+    -o target\interop\map.dll
 ```
 
-最后一个参数选择具体公开 program；开放 const 入口可以用 'run<float3,1000000>' 等实例。每个 DLL 导出一个无 requires 前置条件的具体入口；条件模板应先在 B 中组合成能够自行生产所需关系的 program。不会把裸指针中的 Count 当作编译器已经证明的 prefix 关系。
+`--program` 选择具体公开 program；开放 const 入口可以用 'run<float3,1000000>' 等实例。每个 DLL 导出一个无 requires 前置条件的具体入口；条件模板应先在 B 中组合成能够自行生产所需关系的 program。不会把裸指针中的 Count 当作编译器已经证明的 prefix 关系。
 
 | 输出 | 用途 |
 |---|---|
@@ -22,11 +27,11 @@ cargo build --workspace --release
 | map.abi.h | C ABI、数据布局及 C++ RAII 包装器 |
 | map.rs | 相同布局、extern C 声明及 Rust 安全包装器 |
 
-B 的源码接口 map.h 和生成的 C 头文件 map.abi.h 是不同文件。导出前缀来自 DLL 文件名，只接受 ASCII 字母、下划线和非首位数字；不同算法库应使用不同名字。生成接口与对应 DLL 一起发布，不混用其他版本的绑定。
+B 的源码接口 map.h 和生成的 C 头文件 map.abi.h 是不同文件。导出前缀来自编译目标文件名，只接受 ASCII 字母、下划线和非首位数字；不同算法库应使用不同名字。生成接口与对应 DLL 一起发布，不混用其他版本的绑定。
 
 blc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检查，并用自研后端生成全部 CPU 机器码与 SPIR-V，包括集合尾部、扫描传播、排序和间接启动入口。DLL 携带最终代码、重定位和执行布局，不内嵌值 IR。create 只装载 CPU 代码或 Vulkan pipeline；CPU 的机器码生成已移到构建时，GPU 驱动仍负责接收 SPIR-V 并建立实际管线。声明 on cpu／on gpu 的入口只生成对应后端，on compute 生成两端，无法编译的目标明确失败。
 
-Rust 工具链负责既有 Rust 执行框架、C ABI、静态代码数据与 PE DLL 链接，不负责翻译 B 算法。当前 build-dll 使用构建 blc 的源码 SDK 与 Rust/MSVC 工具链；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。C 导出及生成的 C++／Rust 调用签名保持。Rust SDK 新增整程序编译映像与装载入口，数据创建接口消费只读的 ProgramInterface；已装载程序的 program() 返回不含 IR 的 ExecutionPlan，直接标注旧 ir::Program 类型的数据布局消费者须改用该接口。
+编译阶段由 blc 生成 B 算法原生代码，并使用 Rust 工具链把既有执行框架和 C ABI 编译成静态目标库，随 COFF 目标文件保存。链接阶段由 bllink 读取目标文件，调用 MSVC 本机链接器生成 DLL，不调用 blc、Cargo 或 rustc，也不需要 B 源码。编译使用源码 SDK 与 Rust 工具链，链接使用 Visual Studio C++ 工具和 Windows SDK；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。C 导出及生成的 C++／Rust 调用签名保持。Rust SDK 新增整程序编译映像与装载入口，数据创建接口消费只读的 ProgramInterface；已装载程序的 program() 返回不含 IR 的 ExecutionPlan，直接标注旧 ir::Program 类型的数据布局消费者须改用该接口。
 
 部署机器需要 Windows x64 与 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。GPU 后端另需支持程序所需 Vulkan 能力的显卡驱动；不要求安装 Vulkan SDK。
 
@@ -64,7 +69,7 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 - 每个数据指针配一个 u32 元素数，单位是完整记录。只读参数生成 const 指针／Rust 共享切片；可写参数生成可写指针／Rust 独占切片。各可写区间不得与其他参数重叠；调用期间宿主不能同时访问相应内存。
 - run 是一次同步调用：准备本次存储、复制输入、执行、等待实际完成，再复制输出。GPU 路径包含上传与输出读回；DLL 不在返回后借用调用方数组。数组始终由宿主分配和释放，handle 由 DLL 创建并由 DLL 的 destroy 释放。所有 handle 销毁后才能卸载 DLL。
 - create 的 backend 为 0（CPU）或 1（GPU）；目标限制与设备能力错误直接返回。相同 handle 可反复运行；调用及释放必须在创建线程串行执行。Rust 包装器以独占方法、Drop 和非 Send／Sync 类型表达这一所有权；C/C++ 遵守头文件中的相同约定。不同线程可分别创建自己的实例。
-- view、纹理、加速结构和有外部 prefix 前置条件的程序不在当前 DLL 数据 ABI 中；build-dll 明确拒绝，不改写成其他算法。C++ 可以调用包含内部多阶段、集合、排序及内部有效前缀的完整 program。
+- view、纹理、加速结构和有外部 prefix 前置条件的程序不在当前 DLL 数据 ABI 中；算法目标文件编译明确拒绝，不改写成其他算法。C++ 可以调用包含内部多阶段、集合、排序及内部有效前缀的完整 program。
 
 ## 性能的完整口径
 
@@ -83,7 +88,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
     from "blink_rust.dll";
 ```
 
-`.b` 主流程可以取得 C++ 返回的 Pair，再将同一位置借给 Rust 修改。`as "真实符号"` 可指定与 B 函数不同的导出名称；省略时使用函数名。完整 B、C++、Rust 源码与构建部署命令见 [sample/extern](../sample/extern/README.md)，已实际运行并输出 `15`、`21`。B 的 build-exe 直接生成 PE 和导入表；外部 C++／Rust 工具链只构建各自的库。部署时携带实际 DLL 及其依赖，不需要 B 源码或编译器。
+`.b` 主流程可以取得 C++ 返回的 Pair，再将同一位置借给 Rust 修改。`as "真实符号"` 可指定与 B 函数不同的导出名称；省略时使用函数名。完整 B、C++、Rust 源码与构建部署命令见 [sample/extern](../sample/extern/README.md)，已实际运行并输出 `15`、`21`。blc 生成机器码和导入重定位，bllink 生成 PE 和导入表；外部 C++／Rust 工具链只构建各自的库。部署时携带实际 DLL 及其依赖，不需要 B 源码或编译器。
 
 普通值按 Windows x64 C ABI 传递；read／write／inout 分别是实际存储的只读／完整输出／读写指针。前端保持类型、初始化和重叠借用限制。这里的普通值使用 B 的偏移、对齐、填充和数组步长；bool 使用 32 位 `uint32_t／u32`，向量是 POD 布局，不等同于 C++ 向量内建类型。C++ 的导出使用 extern C，Rust 使用 extern C 与 repr(C) 等实际匹配布局；普通 Rust ABI 和 C++ 类／模板 ABI 不属于该接口。
 

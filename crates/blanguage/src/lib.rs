@@ -7,6 +7,8 @@ mod generics;
 pub mod ir;
 mod lexer;
 pub mod native;
+pub mod object;
+pub mod linker;
 mod optimize;
 mod parser;
 pub mod spirv;

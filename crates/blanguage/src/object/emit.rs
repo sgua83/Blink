@@ -1,14 +1,9 @@
-//! PE32+ 的节、平台导入、DIR64 重定位与 x64 展开信息均由本机链接器生产。
+//! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
+use super::{Import, Relocation, Result, Section, Target};
 use crate::native::{ApplicationCode, NativeIntrinsic, NativeSymbol, application_unwind};
 use std::collections::{BTreeMap, BTreeSet};
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-const BASE: u64 = 0x140000000;
-const TEXT: u32 = 0x1000;
 fn align(n: usize, a: usize) -> usize {
     n.div_ceil(a) * a
-}
-fn put16(v: &mut [u8], at: usize, n: u16) {
-    v[at..at + 2].copy_from_slice(&n.to_le_bytes());
 }
 fn put32(v: &mut [u8], at: usize, n: u32) {
     v[at..at + 4].copy_from_slice(&n.to_le_bytes());
@@ -19,11 +14,6 @@ fn put64(v: &mut [u8], at: usize, n: u64) {
 fn relative(v: &mut [u8], at: usize, target: usize) -> Result<()> {
     put32(v, at, i32::try_from(target as i64 - at as i64 - 4)? as u32);
     Ok(())
-}
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Import {
-    dll: String,
-    name: String,
 }
 fn kernel(name: &'static str) -> Import {
     Import {
@@ -55,61 +45,6 @@ fn math(op: NativeIntrinsic) -> Option<Import> {
         }
     };
     Some(ucrt(name))
-}
-struct ImportTable {
-    bytes: Vec<u8>,
-    targets: BTreeMap<Import, u32>,
-    directory_size: u32,
-    iat_start: u32,
-    iat_size: u32,
-}
-fn imports(values: &BTreeSet<Import>, rva: u32) -> ImportTable {
-    let mut groups: BTreeMap<&str, Vec<Import>> = BTreeMap::new();
-    for value in values {
-        groups.entry(&value.dll).or_default().push(value.clone());
-    }
-    let directory_size = (groups.len() + 1) * 20;
-    let mut bytes = vec![0; align(directory_size, 8)];
-    let mut lookups = Vec::new();
-    for group in groups.values() {
-        let at = bytes.len();
-        bytes.resize(at + (group.len() + 1) * 8, 0);
-        lookups.push(at);
-    }
-    let iat_start = bytes.len();
-    let mut tables = Vec::new();
-    for group in groups.values() {
-        let at = bytes.len();
-        bytes.resize(at + (group.len() + 1) * 8, 0);
-        tables.push(at);
-    }
-    let iat_end = bytes.len();
-    let mut targets = BTreeMap::new();
-    for (i, (dll, group)) in groups.iter().enumerate() {
-        let name = bytes.len();
-        bytes.extend(dll.as_bytes());
-        bytes.push(0);
-        put32(&mut bytes, i * 20, rva + lookups[i] as u32);
-        put32(&mut bytes, i * 20 + 12, rva + name as u32);
-        put32(&mut bytes, i * 20 + 16, rva + tables[i] as u32);
-        for (j, value) in group.iter().enumerate() {
-            bytes.resize(align(bytes.len(), 2), 0);
-            let hint = bytes.len();
-            bytes.extend([0, 0]);
-            bytes.extend(value.name.as_bytes());
-            bytes.push(0);
-            put64(&mut bytes, lookups[i] + j * 8, (rva + hint as u32) as u64);
-            put64(&mut bytes, tables[i] + j * 8, (rva + hint as u32) as u64);
-            targets.insert(value.clone(), rva + (tables[i] + j * 8) as u32);
-        }
-    }
-    ImportTable {
-        bytes,
-        targets,
-        directory_size: directory_size as u32,
-        iat_start: rva + iat_start as u32,
-        iat_size: (iat_end - iat_start) as u32,
-    }
 }
 struct Function {
     begin: usize,
@@ -255,40 +190,13 @@ fn print(op: NativeIntrinsic) -> Result<Helper> {
         unwind,
     })
 }
-fn relocation_table(locations: &[u32]) -> Vec<u8> {
-    let mut pages: BTreeMap<u32, Vec<u16>> = BTreeMap::new();
-    for &location in locations {
-        pages
-            .entry(location & !4095)
-            .or_default()
-            .push(0xa000 | (location & 4095) as u16);
-    }
-    let mut bytes = Vec::new();
-    for (page, mut entries) in pages {
-        if entries.len() % 2 != 0 {
-            entries.push(0);
-        }
-        bytes.extend(page.to_le_bytes());
-        bytes.extend((8 + entries.len() as u32 * 2).to_le_bytes());
-        for entry in entries {
-            bytes.extend(entry.to_le_bytes());
-        }
-    }
-    bytes
-}
-struct Section {
-    name: &'static [u8],
-    rva: u32,
-    bytes: Vec<u8>,
-    flags: u32,
-}
 fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
     text.extend([0xff, 0x25]);
     let at = text.len();
     text.extend([0; 4]);
     patches.push((at, import));
 }
-pub(super) fn link(native: ApplicationCode) -> Result<Vec<u8>> {
+pub(crate) fn application(native: ApplicationCode) -> Result<Vec<Section>> {
     let mut text = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
     let mut patches = Vec::new();
     call(&mut text, &mut patches, kernel("ExitProcess"));
@@ -347,143 +255,57 @@ pub(super) fn link(native: ApplicationCode) -> Result<Vec<u8>> {
     let mut locations = Vec::new();
     for relocation in &native.code.relocations {
         let at = main + relocation.offset;
-        put64(
-            &mut text,
-            at,
-            BASE + TEXT as u64 + targets[&relocation.target] as u64,
-        );
-        locations.push(TEXT + at as u32);
-    }
-    let idata_rva = TEXT + u32::try_from(align(text.len(), 4096))?;
-    let table = imports(
-        &patches.iter().map(|(_, import)| import.clone()).collect(),
-        idata_rva,
-    );
-    for (at, import) in patches {
-        relative(&mut text, at, (table.targets[&import] - TEXT) as usize)?;
-    }
-    let pdata_rva = idata_rva + u32::try_from(align(table.bytes.len(), 4096))?;
-    functions.sort_by_key(|function| function.begin);
-    let directory_size = functions.len() * 12;
-    let mut pdata = vec![0; directory_size];
-    for (i, function) in functions.iter().enumerate() {
-        pdata.resize(align(pdata.len(), 4), 0);
-        let unwind = pdata.len();
-        pdata.extend(&function.unwind);
-        put32(&mut pdata, i * 12, TEXT + function.begin as u32);
-        put32(&mut pdata, i * 12 + 4, TEXT + function.end as u32);
-        put32(&mut pdata, i * 12 + 8, pdata_rva + unwind as u32);
-    }
-    let reloc = relocation_table(&locations);
-    let reloc_rva = pdata_rva + u32::try_from(align(pdata.len(), 4096))?;
-    let reloc_size = reloc.len() as u32;
-    let mut sections = vec![
-        Section {
-            name: b".text",
-            rva: TEXT,
-            bytes: text,
-            flags: 0x60000020,
-        },
-        Section {
-            name: b".idata",
-            rva: idata_rva,
-            bytes: table.bytes,
-            flags: 0xc0000040,
-        },
-        Section {
-            name: b".pdata",
-            rva: pdata_rva,
-            bytes: pdata,
-            flags: 0x40000040,
-        },
-    ];
-    if !reloc.is_empty() {
-        sections.push(Section {
-            name: b".reloc",
-            rva: reloc_rva,
-            bytes: reloc,
-            flags: 0x42000040,
+        put64(&mut text, at, targets[&relocation.target] as u64);
+        locations.push(Relocation {
+            offset: at,
+            kind: 1,
+            target: Target::Section(0, 0),
         });
     }
-    let header_size = align(0x80 + 24 + 240 + sections.len() * 40, 512);
-    let mut output = vec![0; header_size];
-    output[0..2].copy_from_slice(b"MZ");
-    put32(&mut output, 0x3c, 0x80);
-    output[0x80..0x84].copy_from_slice(b"PE\0\0");
-    let file = 0x84;
-    put16(&mut output, file, 0x8664);
-    put16(&mut output, file + 2, sections.len() as u16);
-    put16(&mut output, file + 16, 240);
-    put16(&mut output, file + 18, 0x22);
-    let optional = file + 20;
-    put16(&mut output, optional, 0x20b);
-    put32(
-        &mut output,
-        optional + 4,
-        align(sections[0].bytes.len(), 512) as u32,
-    );
-    put32(
-        &mut output,
-        optional + 8,
-        sections
-            .iter()
-            .skip(1)
-            .map(|section| align(section.bytes.len(), 512) as u32)
-            .sum(),
-    );
-    put32(&mut output, optional + 16, TEXT);
-    put32(&mut output, optional + 20, TEXT);
-    put64(&mut output, optional + 24, BASE);
-    put32(&mut output, optional + 32, 4096);
-    put32(&mut output, optional + 36, 512);
-    put16(&mut output, optional + 40, 6);
-    put16(&mut output, optional + 48, 6);
-    let last = sections.last().unwrap();
-    put32(
-        &mut output,
-        optional + 56,
-        last.rva + u32::try_from(align(last.bytes.len(), 4096))?,
-    );
-    put32(&mut output, optional + 60, header_size as u32);
-    put16(&mut output, optional + 68, 3);
-    put16(
-        &mut output,
-        optional + 70,
-        0x100 | if reloc_size != 0 { 0x60 } else { 0 },
-    );
-    put64(
-        &mut output,
-        optional + 72,
-        align(native.code.stack_bytes as usize + 1024 * 1024, 65536) as u64,
-    );
-    put64(&mut output, optional + 80, 4096);
-    put64(&mut output, optional + 88, 1024 * 1024);
-    put64(&mut output, optional + 96, 4096);
-    put32(&mut output, optional + 108, 16);
-    for (index, rva, size) in [
-        (1, idata_rva, table.directory_size),
-        (3, pdata_rva, directory_size as u32),
-        (5, if reloc_size == 0 { 0 } else { reloc_rva }, reloc_size),
-        (12, table.iat_start, table.iat_size),
-    ] {
-        put32(&mut output, optional + 112 + index * 8, rva);
-        put32(&mut output, optional + 116 + index * 8, size);
+
+    for (at, import) in patches {
+        locations.push(Relocation {
+            offset: at,
+            kind: 4,
+            target: Target::Import(import),
+        });
     }
-    for (i, section) in sections.iter().enumerate() {
-        let header = optional + 240 + i * 40;
-        output[header..header + section.name.len()].copy_from_slice(section.name);
-        put32(&mut output, header + 8, section.bytes.len() as u32);
-        put32(&mut output, header + 12, section.rva);
-        put32(
-            &mut output,
-            header + 16,
-            align(section.bytes.len(), 512) as u32,
-        );
-        let raw = output.len();
-        put32(&mut output, header + 20, raw as u32);
-        put32(&mut output, header + 36, section.flags);
-        output.extend(&section.bytes);
-        output.resize(align(output.len(), 512), 0);
+    functions.sort_by_key(|f| f.begin);
+    let mut pdata = vec![0; functions.len() * 12];
+    let mut xdata = Vec::new();
+    let mut relocations = Vec::new();
+    for (i, f) in functions.iter().enumerate() {
+        xdata.resize(align(xdata.len(), 4), 0);
+        put32(&mut pdata, i * 12, f.begin as u32);
+        put32(&mut pdata, i * 12 + 4, f.end as u32);
+        put32(&mut pdata, i * 12 + 8, xdata.len() as u32);
+        xdata.extend(&f.unwind);
+        for (offset, section) in [(0, 0), (4, 0), (8, 2)] {
+            relocations.push(Relocation {
+                offset: i * 12 + offset,
+                kind: 3,
+                target: Target::Section(section, 0),
+            });
+        }
     }
-    Ok(output)
+    Ok(vec![
+        Section {
+            name: ".text".into(),
+            bytes: text,
+            flags: 0x60500020,
+            relocations: locations,
+        },
+        Section {
+            name: ".pdata".into(),
+            bytes: pdata,
+            flags: 0x40300040,
+            relocations,
+        },
+        Section {
+            name: ".xdata".into(),
+            bytes: xdata,
+            flags: 0x40300040,
+            relocations: Vec::new(),
+        },
+    ])
 }

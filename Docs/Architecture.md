@@ -124,7 +124,13 @@ Map 的指令全部消除后，阶段本身也从生产端删除；集合运算�
 
 `compile_application` 使用同一模块闭包、普通函数检查、值 IR、优化和 x64 寄存器分配，将公开的无参数 `u32／i32 main() on cpu` 编译为一次普通函数执行；返回值成为进程退出码。共享检查器的空资源上下文用于编译期类型分析；纯值应用没有 dataset 或计算设备，拥有动态资源的应用按下节接入原存储与执行框架。
 
-`application` 模块拥有 Windows x64 启动和 PE32+ 链接，直接写出 main 的机器码、系统导入、实际绝对地址的 DIR64 重定位与 x64 展开信息。启动调用 main，再将原始 32 位返回值交给 ExitProcess；栈帧按实际分配布局、调用约定与所需页探测生成。数学入口按实际消费导入 UCRT。资源应用的执行库由现有 Rust 工具链链接平台框架与 ABI，B 算法仍由自研后端输出；产物不嵌入源码、值 IR 或运行器。`build` 的阶段导出、`build-dll` 的算法库及 `blrun` 的数据执行职责保留。
+`application` 检查普通 CPU 应用入口并生成 main 的原生代码；`object::emit` 在编译阶段生成启动、标准输出辅助函数、导入跳板和 x64 展开信息。`object::coff` 写出 AMD64 COFF 机器码、符号和标准重定位。`blc -c` 到目标文件为止，不生成最终 PE。
+
+独立 `bllink` 只消费目标文件：`linker::pe` 排列已编译节、解析导入和地址重定位，输出 Windows x64 PE32+。启动调用 main，再把原始 32 位返回值交给 ExitProcess；数学入口按实际消费导入 UCRT。链接器不读取 B 源码，不进行前端检查、IR 优化或机器码／SPIR-V 生成，也不调用 Cargo 或 rustc。
+
+需要动态数据或 CPU／GPU program 时，编译阶段使用现有 Rust 工具链，把执行框架、ABI 和已生成程序映像编译成静态本机目标库，随 COFF 的 `.blrt` 节保存。`.blmeta` 保存 BLCO 版本 1 的应用／算法类型、入口信息、接口和本机库依赖；标准 COFF 重定位表是代码位置的唯一重定位来源。链接阶段只把已编译静态目标库交给 MSVC 本机链接器，生成应用配套执行 DLL 或公开算法 DLL；不把 Rust 编译隐藏在链接中。`.blmeta/.blrt` 不作为应用可装载节放入 PE，产物不嵌入源码、值 IR 或运行器。
+
+当前一次编译覆盖入口与实际导入模块，一次链接消费一个完整应用／算法目标文件；尚未提供多个独立 B 目标文件之间的一般模块符号链接。`blc check`、阶段代码导出 `blc build` 与计算模块执行器 `blrun` 保持各自职责。
 
 `println` 是显式 CPU 标准输出效果，进入同一 IR 的使用、活跃性和死代码分析；即使返回值未被使用，写出仍需执行。含该效果的 map 保留原阶段边界，避免融合改变可观察的跨阶段输出次序；并行参与者之间不承诺输出顺序。独立应用链接原生数值格式化与 Windows 输出调用，嵌入式 CPU 执行由既有代码重定位连接宿主标准输出，两者都用 bool 返回完整写入的结果。f32 的原始位值进入同一 Print IR／原生 intrinsic，两条实际执行入口均用系统 UCRT、C 数值区域和 %.9g 格式；区域对象由单次格式化拥有并释放，不改变宿主区域设置，不建立全局缓存或独立输出状态。标准输出句柄由进程提供，单次打印借用而不关闭。
 
@@ -140,7 +146,7 @@ native::compile_program 与 spirv::compile_program 在编译侧一次生成主�
 
 ExecutionPlan 只拥有接口、前缀关系、访问集合、集合布局、工作组／共享存储与实际设备需求。自定义集合保留输出类型及源／目标字段，投影、单位元和合并器正文随编译结束释放。ProgramInterface 让数据打包和资源绑定消费必要的只读布局，原生代码消费者不再为了引用 ir::Program 的类型而持有指令。编译器内部的完整 IR 继续负责检查、优化和代码生成。
 
-CPU 执行器只装载编译好的范围／集合函数、解析真实符号并管理可执行内存，GPU 执行器只按编译结果建立实际管线和原资源。原 CpuProgram::new／Device::compile 也先进入同一编译映像路径；数据、Vulkan 提交、域关系、Fence 和最后消费者之后的释放仍由原 blcompute 所有者负责。build-dll 在构建时生成最终代码，create 不再从值 IR 编译；Rust 链接只封装平台执行与 C ABI。生成映像的 unsafe 恢复入口承接同版本编译输出这一原生 ABI 信任边界，不接收动态宿主数据或补加运行时证明。
+CPU 执行器只装载编译好的范围／集合函数、解析真实符号并管理可执行内存，GPU 执行器只按编译结果建立实际管线和原资源。原 CpuProgram::new／Device::compile 也先进入同一编译映像路径；数据、Vulkan 提交、域关系、Fence 和最后消费者之后的释放仍由原 blcompute 所有者负责。算法目标文件在编译时保存最终代码，create 不再从值 IR 编译；Rust 链接只封装平台执行与 C ABI。生成映像的 unsafe 恢复入口承接同版本编译输出这一原生 ABI 信任边界，不接收动态宿主数据或补加运行时证明。
 
 ## B 应用的数据所有权与显式执行
 
@@ -152,7 +158,7 @@ upload／download 由 B 明确转移 CPU／GPU 存储，run_cpu／run_gpu 只执
 
 每个应用调用帧拥有自己的资源绑定与已声明程序，沿原 Dataset／GPU Dataset 执行，空槽在作用域结束后复用。编译器剔除优化后没有调用者的类型／程序映像；CPU 原生范围与 GPU 管线在实际首次执行时装载，设备在首次上传或 GPU 执行时创建，保留原单设备、声明程序能力及物理生命周期。程序映像被装载后归原代码／管线所有者持有，不保留值 IR 或另一份可写存储。
 
-build-exe 继续直接生成 main 的 PE32+；需要资源时，编译器输出同目录的执行库，复用 DLL 已有的 Rust 框架／平台链接入口。该库嵌入最终机器码／SPIR-V 和执行布局，不编译 B 算法，也不调用运行器。运行库 ABI 只服务同次构建的应用，公开 C/C++ 算法 DLL 协议保持独立。入口使用的运行帧先作为 ValueCode 参数参加既有寄存器映射，再连接原生创建／析构，不能在优化后使用旧编号。
+blc 将 main 与实际资源依赖编译进目标文件，bllink 单独生成 PE32+；需要资源时，链接器使用目标文件中已有的静态本机代码生成同目录的执行库。该库嵌入最终机器码／SPIR-V 和执行布局，不编译 B 算法，也不调用运行器。运行库 ABI 只服务同次构建的应用，公开 C/C++ 算法 DLL 协议保持独立。入口使用的运行帧先作为 ValueCode 参数参加既有寄存器映射，再连接原生创建／析构，不能在优化后使用旧编号。
 
 当前实现范围为 Windows x64 应用的普通值 dataset、显式 CPU／GPU program 调用与原生位置借用；返回资源、write dataset 全域确定初始化、其他执行域的整份独占资源借用、应用内 view／纹理／AS 创建、通用标准库和其他平台继续按所属能力推进。正式示例为 sample/applications/datasets.b。
 
@@ -447,7 +453,7 @@ BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使
 
 ## C/C++ 与 Rust 宿主的 DLL 边界（2026-10-25）
 
-blc 的 build-dll 将一个已检查、无外部前置条件的具体入口导出为 Windows x64 DLL，同时生成 C ABI 头文件、导入库与 Rust 安全包装器。B 前端、IR、源码输出和 ABI 布局生成属于 blanguage；实际数据复制、CPU／GPU 执行、完成等待与本次资源释放属于 blcompute::ffi，复用原生执行器。Rust 工具链链接既有 Rust 框架与 PE 导出，不替代自研 B 后端。DLL 内嵌已检查 IR，create 准备目标代码／pipeline。
+`blc -c ... --program name` 将已检查、无外部前置条件的具体入口编译成算法目标文件；`bllink input.obj -o output.dll` 再生成 Windows x64 DLL、C ABI 头文件、导入库与 Rust 安全包装器。B 前端、IR、原生代码、ABI 布局及执行框架静态代码的编译属于编译阶段；最终 PE 与原生依赖解析属于链接阶段。实际数据复制、CPU／GPU 执行、完成等待与本次资源释放仍属于 blcompute::ffi。DLL 内含最终机器码／SPIR-V，create 只装载代码／pipeline，不再编译 B 源码或值 IR。现有 Rust `dll::build` API 组合这两个正式阶段，原生 crate API 和公开 C/C++／Rust ABI 保持。
 
 C++ 与 Rust 是并列宿主；Rust 原生 crate、类型及异步资源接口保持不变，不经 C ABI 中转。DLL run 同步完成本次纯值数据调用，返回前完成必要输出读回；宿主拥有数组，DLL 拥有自己的 handle，跨界不传递 C++ 对象、Rust Vec／String 或分配器所有权。view、纹理、AS 和外部 prefix 条件不伪装成裸值 ABI。完整接口、当前限制与部署见 [原生集成](NativeInterop.md)。
 

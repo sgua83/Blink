@@ -1,10 +1,10 @@
-//! Windows x64 应用的原生启动、PE 链接及平台导入；不携带源码、IR或解释器。
-mod pe;
+//! Windows x64 应用编译为 COFF 目标文件；PE 链接由独立 linker 模块负责。
 pub(crate) const RUNTIME_LIBRARY: &str = "@blink.application@";
 use crate::{
     ast::Target,
     ir::{Program, Ty, ValueCode},
     native,
+    object::{self, Kind, Object},
 };
 use std::path::Path;
 pub struct Application {
@@ -21,28 +21,41 @@ impl Application {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn build(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let mut code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
-        let output = std::path::absolute(path)?;
-        std::fs::create_dir_all(output.parent().unwrap())?;
-        if let Some(resources) = &self.resources {
+    pub fn compile(&self) -> Result<Object, Box<dyn std::error::Error>> {
+        let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
+        let stack_bytes = code.code.stack_bytes;
+        let sections = object::application_code(code)?;
+        let archive = if let Some(resources) = &self.resources {
             use std::hash::{Hash, Hasher};
             let source = crate::dll::application_source(resources)?;
             let mut hash = std::collections::hash_map::DefaultHasher::new();
-            output.file_name().hash(&mut hash);
             source.hash(&mut hash);
             let prefix = format!("blink_app_{:016x}", hash.finish());
-            let library = format!("{prefix}.dll");
-            crate::dll::link_rust(&source, &prefix, &output.with_file_name(&library), false)?;
-            for relocation in &mut code.code.relocations {
-                if let native::NativeSymbol::External(name) = &mut relocation.target
-                    && name.library == RUNTIME_LIBRARY
-                {
-                    name.library = library.clone();
-                }
-            }
-        }
-        std::fs::write(output, pe::link(code)?)?;
-        Ok(())
+            let mut exports = [
+                "blink_create",
+                "blink_destroy",
+                "blink_release",
+                "blink_upload",
+                "blink_download",
+                "blink_address",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+            exports.extend((0..resources.types.len()).map(|i| format!("blink_allocate_{i}")));
+            exports.extend((0..resources.programs.len()).map(|i| format!("blink_run_{i}")));
+            Some(object::compile_archive(&source, &prefix, exports)?)
+        } else {
+            None
+        };
+        Ok(Object {
+            name: self.name.clone(),
+            kind: Kind::Application { stack_bytes },
+            sections,
+            archive,
+        })
+    }
+    pub fn write_object(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        self.compile()?.write(path)
     }
 }

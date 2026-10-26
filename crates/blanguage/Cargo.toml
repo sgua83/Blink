@@ -11,4 +11,8 @@ path = "src/lib.rs"
 name = "blc"
 path = "src/main.rs"
 
+[[bin]]
+name = "bllink"
+path = "src/bin/bllink.rs"
+
 [dependencies]

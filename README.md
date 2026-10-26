@@ -4,7 +4,7 @@ Blink（简称 B）是一门自研原生并行计算语言，提供 CPU／GPU �
 
 B 也寓意 **Base**。Blink 希望像 C 语言为上一个计算时代所做的那样，成为 AI 超算时代的基础语言。并行计算、数据关系与协作应成为算法的基本表达，让同一套思想从普通计算扩展到大规模异构计算。
 
-工程目录与 P4 标识沿用 `BLanguage`，编译器命令为 `blc`，执行器为 `blrun`，源码接口 `.h`、实现 `.b`。
+工程目录与 P4 标识沿用 `BLanguage`，编译器命令为 `blc`，链接器为 `bllink`，计算模块执行器为 `blrun`，源码接口 `.h`、实现 `.b`。
 
 独立 P4 主线 `//BLanguage/main`，client `BLanguage_Gua`，本机根 `B:\BLanguage`。首个消费者 BLEngine 位于 `B:\BLEngine`，通过两个自研 crate 的路径依赖使用语言与框架；本项目不依赖引擎。
 
@@ -20,21 +20,26 @@ GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 
 git clone https://github.com/sgua83/Blink.git
 Set-Location Blink
 cargo build --workspace --release
-.\target\release\blc.exe build-exe sample/applications/start.b target/applications/start.exe
+.\target\release\blc.exe -c `
+    sample/applications/start.b `
+    -o target/applications/start.obj
+.\target\release\bllink.exe `
+    target/applications/start.obj `
+    -o target/applications/start.exe
 .\target\applications\start.exe
 ```
 
-上例直接显示 `3`，正常退出码为 `0`。`build-exe` 将普通 CPU `main` 编译、链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／f32／bool 输出、普通函数、顺序逻辑、固定数组，以及应用拥有的动态 dataset、显式 CPU／GPU 传输和 program 调用。通用文本／文件及源码调试继续研发。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
+上例直接显示 `3`，正常退出码为 `0`。`blc -c` 将普通 CPU `main` 编译为 COFF 目标文件，`bllink` 将目标文件链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／f32／bool 输出、普通函数、顺序逻辑、固定数组，以及应用拥有的动态 dataset、显式 CPU／GPU 传输和 program 调用。通用文本／文件及源码调试继续研发。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
 
-`sample/applications/datasets.b` 由 B 创建百万条记录，显式 `upload／download`，组织 CPU 生成、GPU 筛选与排序、CPU 扫描与归约。使用 `blc build-exe sample/applications/datasets.b target/applications/datasets.exe sample` 构建，部署生成的 exe 及同目录的 `blink_app_*.dll`；构建时使用现有 Rust 工具链链接执行框架，B 算法已由自研后端生成机器码／SPIR-V。GPU 执行需要对应 Vulkan 驱动。
+`sample/applications/datasets.b` 由 B 创建百万条记录，显式 `upload／download`，组织 CPU 生成、GPU 筛选与排序、CPU 扫描与归约。使用 `blc -c sample/applications/datasets.b -o target/applications/datasets.obj -I sample` 编译，再用 `bllink target/applications/datasets.obj -o target/applications/datasets.exe` 链接，部署生成的 exe 及同目录的 `blink_app_*.dll`；编译时使用现有 Rust 工具链把执行框架编译为静态目标代码，链接时只使用本机链接工具，B 算法已由自研后端生成机器码／SPIR-V。GPU 执行需要对应 Vulkan 驱动。
 
-`blc` 也可检查模块、导出阶段原生代码和构建算法 DLL；`blrun` 继续负责数据绑定及 CPU／GPU 计算模块执行，例如 `blrun cpu sample/beginner/start.b run sample Saved/Learn/start :1` 将结果 `3` 保存到 `numbers.bldata`。将 `cpu` 改为 `gpu` 需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
+`blc` 也可检查模块、导出阶段原生代码和编译算法目标文件；`bllink` 独立生成 exe 或 DLL；`blrun` 继续负责数据绑定及 CPU／GPU 计算模块执行，例如 `blrun cpu sample/lessons/map.b demo sample Saved/map :4` 将四个结果保存到 `values.bldata`。将 `cpu` 改为 `gpu` 需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
 
 blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun。BLEngine 通过库 API 消费 Blink；入门示例不需要引擎工程。完整的下载、语法、运行和读取输出步骤见 [《B 语言编程》](sample/B语言编程.md)。
 
 | 位置 | 职责 |
 |---|---|
-| crates/blanguage | 模块、类型／访问、并行 IR、优化、x64／SPIR-V 与 blc |
+| crates/blanguage | 模块、类型／访问、并行 IR、优化、x64／SPIR-V、COFF 目标文件、blc 与 bllink |
 | crates/blcompute | CPU 范围执行、GPU 驻留、提交、同步、生命周期与 blrun |
 | Docs | 语言规范、架构、问题及原始观测 |
 | Saved、target | 本地研发数据与生成物，不提交 |
@@ -53,15 +58,20 @@ blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun
 
 ## C、C++ 与 Rust 集成
 
-blc 现可将一个具体 program 构建为 Windows x64 DLL，同时输出 C/C++ 的 .abi.h、MSVC 导入库 .lib 与 Rust 安全绑定 .rs。C++ 使用 RAII，Rust 使用切片、Result 与 Drop；两种宿主调用同一份 B 算法，可选择 CPU 多核或 Vulkan GPU。
+blc 可将一个具体 program 编译为目标文件，再由 bllink 链接为 Windows x64 DLL，同时输出 C/C++ 的 .abi.h、MSVC 导入库 .lib 与 Rust 安全绑定 .rs。C++ 使用 RAII，Rust 使用切片、Result 与 Drop；两种宿主调用同一份 B 算法，可选择 CPU 多核或 Vulkan GPU。
 
 ```powershell
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample\lessons\map.b `
-    target\interop\map.dll sample scale
+    -o target\interop\map.obj `
+    -I sample `
+    --program scale
+.\target\release\bllink.exe `
+    target\interop\map.obj `
+    -o target\interop\map.dll
 ```
 
-DLL 携带构建时生成的 CPU 机器码、SPIR-V 和执行布局，create 只装载代码／pipeline，不再从内嵌值 IR 编译；消费者无需 Blink 源码或 Rust 工具链。构建 DLL 仍使用源码 SDK 中的 Rust/MSVC 工具链。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。Rust SDK 也可先生成 ProgramImage，再通过 CpuProgram::from_image 或 Device::load 装载；数据布局消费 ProgramInterface，实际存储、设备驻留、异步提交与资源释放仍由原所有者负责。B 应用已能拥有动态 dataset 并显式组织 CPU／GPU program，见独立应用示例；资源返回及其余资源构造仍待 C-011。
+DLL 携带构建时生成的 CPU 机器码、SPIR-V 和执行布局，create 只装载代码／pipeline，不再从内嵌值 IR 编译；消费者无需 Blink 源码或 Rust 工具链。编译算法目标文件使用源码 SDK 和 Rust 工具链；链接阶段只读取目标文件及其中的静态目标代码，使用 MSVC 链接工具和 Windows SDK。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。Rust SDK 也可先生成 ProgramImage，再通过 CpuProgram::from_image 或 Device::load 装载；数据布局消费 ProgramInterface，实际存储、设备驻留、异步提交与资源释放仍由原所有者负责。B 应用已能拥有动态 dataset 并显式组织 CPU／GPU program，见独立应用示例；资源返回及其余资源构造仍待 C-011。
 
 完整 C、C++、Rust 宿主示例、串行／并行实测及部署说明见 [sample/interop](sample/interop/README.md) 和 [原生集成](Docs/NativeInterop.md)。DLL 数据 ABI 支持纯值 dataset 与 uniform。B 主流程也可通过 `extern "C"` 调用 Windows x64 C++／Rust DLL，普通值及 read／write／inout 借用见 [sample/extern](sample/extern/README.md)；其他平台、裸指针值、回调和静态对象链接仍待实现。
 

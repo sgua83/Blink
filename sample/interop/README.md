@@ -1,13 +1,18 @@
 # 将 B 算法接入 C、C++ 和 Rust
 
-在 Blink 根目录、Visual Studio x64 Developer PowerShell 中执行。先按仓库 README 安装 Git、Rust MSVC、C++ 工具并运行 cargo build --workspace --release。这里的 DLL 和头文件均由 blc 生成，宿主不需要自己编写 Rust DLL 工程。
+在 Blink 根目录、Visual Studio x64 Developer PowerShell 中执行。先按仓库 README 安装 Git、Rust MSVC、C++ 工具并运行 cargo build --workspace --release。这里先由 blc 编译算法目标文件，再由 bllink 输出 DLL 和调用接口，宿主不需要自己编写 Rust DLL 工程。
 
 ## 从四个数开始
 
 ```powershell
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample/lessons/map.b `
-    target/interop/map.dll sample scale
+    -o target/interop/map.obj `
+    -I sample `
+    --program scale
+.\target\release\bllink.exe `
+    target/interop/map.obj `
+    -o target/interop/map.dll
 
 cl /nologo /utf-8 /EHsc `
     /I target/interop `
@@ -36,10 +41,14 @@ C 和 C++ 输出 3 5 7 9；Rust 输出 [3.0, 5.0, 7.0, 9.0]。C++ 析构与 Rust
 ## 一百万像素的分形：完整调用计时
 
 ```powershell
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample/interop/fractal.b `
-    target/interop/fractal.dll `
-    sample render
+    -o target/interop/fractal.obj `
+    -I sample `
+    --program render
+.\target\release\bllink.exe `
+    target/interop/fractal.obj `
+    -o target/interop/fractal.dll
 
 cl /nologo /utf-8 /std:c++17 `
     /O2 /arch:AVX2 /fp:precise /EHsc `

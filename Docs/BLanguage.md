@@ -63,11 +63,24 @@ u32 main() on cpu {
 对应 `.h` 声明 `module applications.start; u32 main() on cpu;`。直接构建与运行：
 
 ```powershell
-.\target\release\blc.exe build-exe sample/applications/start.b target/applications/start.exe
+.\target\release\blc.exe -c `
+    sample/applications/start.b `
+    -o target/applications/start.obj
+.\target\release\bllink.exe `
+    target/applications/start.obj `
+    -o target/applications/start.exe
 .\target\applications\start.exe
 ```
 
-正常输出 `3` 和 LF 换行，进程退出码为 `0`。`build-exe <module.b> <output.exe> [module-root] [entry=main]` 默认以源文件所在目录作为模块根、选择本模块公开的 `main`；显式入口也沿用具体类型／const 参数选择。返回值的原始 32 位作为退出码，`i32(-7)` 保留相同比特。入口参数、其他返回类型或其他执行目标报 B262，私有或不存在的入口沿用 B240。函数体继续按既有类型、返回、初始化和索引规则检查。
+正常输出 `3` 和 LF 换行，进程退出码为 `0`。`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main]` 默认以源文件所在目录作为模块根、选择本模块公开的 `main`；显式入口也沿用具体类型／const 参数选择。返回值的原始 32 位作为退出码，`i32(-7)` 保留相同比特。入口参数、其他返回类型或其他执行目标报 B262，私有或不存在的入口沿用 B240。函数体继续按既有类型、返回、初始化和索引规则检查。
+
+### 编译与链接的独立边界
+
+`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待执行的 B 源码或值 IR。
+
+`bllink <input.obj> -o <output.exe|output.dll>` 只链接目标文件：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、blc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
+
+编译时若需要执行框架，源码 SDK 使用现有 Rust 工具链把框架和 ABI 编译成静态目标代码，写进该目标文件；链接时只解析这些已经编译的代码及本机库依赖。当前每个目标文件是包含导入模块的一个完整应用或算法单元，不把这项能力写成通用多目标文件模块链接。`blc check` 与阶段代码导出 `blc build` 保留，不承担最终应用链接；旧的 `build-exe/build-dll` 合并命令已移除。
 
 `bool println(value)` 接受单个 `u32`、`i32`、`f32` 或 `bool` 标量。整数使用十进制，bool 使用 `true／false`；f32 按 C 数值区域的 `%.9g` 格式输出，最多 9 位有效十进制数字，小数点为 `.`，按数值使用普通或科学计数法并去除末尾无用零。负零保留符号，无穷和 NaN 使用系统 UCRT 的 `inf／nan` 形式（NaN 可以带符号或分类后缀）；文本不保存 NaN 的负载。末尾附加一个 LF，完整写出返回 true，格式化失败、写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU program 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、向量等不支持的类型报 B261。
 
@@ -98,7 +111,7 @@ CPU 应用的整份 inout 借用沿原函数静态内联和存储访问展开，
 
 编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
 
-带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 构建使用 Rust 工具链链接框架与 ABI，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
+带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 
@@ -2659,15 +2672,22 @@ let gpu = device.load(gpu_image)?;
 
 ProgramInterface 是编译结果与已装载程序共同提供的只读接口。Dataset 创建、不可变 view、域关系和引擎数据打包消费该接口；已装载 CPU／GPU 程序的 program() 返回 ExecutionPlan，不再为了旧类型签名保留整份 IR。编译器内部的 ir::Program 继续拥有指令和优化。生成 DLL 使用同版本编译器的可信 ProgramImage::from_compiler_output 恢复最终代码及其布局；该 unsafe 边界不能接收宿主输入、改写代码或伪造条件模板的前缀关系，原整份 IR 恢复入口已删除。
 
-blc build、build-dll 和 SDK 使用同一份程序映像；阶段导出沿用原文件名及布局描述，不重新挑选或发射辅助代码。值 IR 和集合函数正文在编译侧结束，物理数据及完成点仍由既有执行所有者持有。这里没有新增 B 应用的动态数据、CPU／GPU 调用语法或隐式数据传输；这些继续属于 C-011，不能用 Rust SDK 或算法 DLL 的完成代替。
+blc build、算法目标文件编译和 SDK 使用同一份程序映像；阶段导出沿用原文件名及布局描述，不重新挑选或发射辅助代码。值 IR 和集合函数正文在编译侧结束，物理数据及完成点仍由既有执行所有者持有。这里没有新增 B 应用的动态数据、CPU／GPU 调用语法或隐式数据传输；这些继续属于 C-011，不能用 Rust SDK 或算法 DLL 的完成代替。
 
 ## Windows x64 DLL 与 C/C++／Rust 入口（2026-10-25）
 
 ```powershell
-.\target\release\blc.exe build-dll sample\lessons\map.b target\interop\map.dll sample scale
+.\target\release\blc.exe -c `
+    sample\lessons\map.b `
+    -o target\interop\map.obj `
+    -I sample `
+    --program scale
+.\target\release\bllink.exe `
+    target\interop\map.obj `
+    -o target\interop\map.dll
 ```
 
-build-dll 接收一个公开、具体且无 requires 前置条件的 program；泛型使用既有 compile_entry 的具体入口语法。输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
+`blc -c ... --program name` 接收一个公开、具体且无 requires 前置条件的 program；泛型使用既有 compile_entry 的具体入口语法。编译输出 .obj，再由 `bllink input.obj -o output.dll` 输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
 
 C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy 释放 DLL 自己创建的 handle。run 为同步、包含数据交付的完整调用。C++ 使用 RAII，Rust 绑定提供独占切片、Result、Drop 与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 调用宿主 DLL 使用前述 CPU extern C 声明，不改变这里由宿主持有的算法入口与资源。详见 [原生集成](NativeInterop.md)。
 

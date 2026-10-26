@@ -5,7 +5,7 @@ use crate::{
     ir::{Scalar, Ty, align_up},
 };
 pub(crate) use source::application_source;
-use std::{fmt::Write, path::Path, process::Command};
+use std::{fmt::Write, path::Path};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn identifier(value: &str) -> Result<String> {
@@ -201,87 +201,31 @@ fn generate(p: &ExecutableProgram, prefix: &str) -> Result<(String, String, Stri
     Ok((c, r, dll))
 }
 
-/// 构建一个具体、无前置条件的入口；输出 DLL、import lib、.abi.h、.rs。
-/// B 前端与两后端在构建时生成完整原生入口；create 仅装载机器码／GPU pipeline。
-/// Rust 工具链只负责既有 Rust 执行框架、导出 ABI 与 PE 链接，不编译 B 算法。
-pub fn build(program: &ExecutableProgram, output: &Path) -> Result<()> {
-    if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        return Err("build-dll 当前输出 Windows x64 DLL".into());
-    }
-    if output.extension().and_then(|s| s.to_str()) != Some("dll") {
-        return Err("build-dll 的输出路径必须以 .dll 结尾".into());
-    }
-    let prefix = identifier(
-        output
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or("缺少 DLL 名称")?,
-    )?;
+/// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
+pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+    let prefix = identifier(prefix)?;
     let (header, binding, source) = generate(program, &prefix)?;
-    let output = std::path::absolute(output)?;
-    link_rust(&source, &prefix, &output, true)?;
-    std::fs::write(output.with_extension("abi.h"), header)?;
-    std::fs::write(output.with_extension("rs"), binding)?;
-    println!(
-        "DLL {}\nC/C++ {}\nRust {}\nimport library {}",
-        output.display(),
-        output.with_extension("abi.h").display(),
-        output.with_extension("rs").display(),
-        output.with_extension("lib").display()
-    );
-    Ok(())
+    let exports = ["create", "run", "destroy"]
+        .into_iter()
+        .map(|n| format!("{prefix}_{n}"))
+        .collect();
+    let archive = crate::object::compile_archive(&source, &prefix, exports)?;
+    Ok(crate::object::Object {
+        name: program.name().into(),
+        kind: crate::object::Kind::Library {
+            prefix,
+            header,
+            binding,
+        },
+        sections: Vec::new(),
+        archive: Some(archive),
+    })
 }
-
-/// Rust 只链接原生执行框架及 ABI 封装；B 代码在调用前已由自研后端生成。
-pub(crate) fn link_rust(
-    source: &str,
-    prefix: &str,
-    output: &Path,
-    import_library: bool,
-) -> Result<()> {
-    let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let task = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    );
-    let build = sdk.join("target/blc-dll").join(task);
-    std::fs::create_dir_all(build.join("src"))?;
-    let result = (|| -> Result<()> {
-        let manifest = format!(
-            "[package]\nname=\"blink_dll\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={prefix:?}\ncrate-type=[\"cdylib\"]\n[dependencies]\nblanguage={{path={:?}}}\nblcompute={{path={:?}}}\n[profile.release]\nlto=\"thin\"\ncodegen-units=1\npanic=\"abort\"\n",
-            sdk.join("crates/blanguage").to_string_lossy(),
-            sdk.join("crates/blcompute").to_string_lossy()
-        );
-        std::fs::write(build.join("Cargo.toml"), manifest)?;
-        std::fs::write(build.join("src/lib.rs"), source)?;
-        let target = sdk.join("target/dll");
-        let status = Command::new("cargo")
-            .args(["build", "--offline", "--release", "--manifest-path"])
-            .arg(build.join("Cargo.toml"))
-            .arg("--target-dir")
-            .arg(&target)
-            .status()?;
-        if !status.success() {
-            return Err(format!("DLL 链接失败：{status}").into());
-        }
-        let output = std::path::absolute(output)?;
-        std::fs::create_dir_all(output.parent().unwrap())?;
-        std::fs::copy(target.join(format!("release/{prefix}.dll")), &output)?;
-        if import_library {
-            std::fs::copy(
-                target.join(format!("release/{prefix}.dll.lib")),
-                output.with_extension("lib"),
-            )?;
-        }
-        Ok(())
-    })();
-    std::fs::remove_dir_all(build)?;
-    result
+/// SDK 现有构建 API 组合正式编译与链接；C/C++ 和 Rust 的 DLL ABI 保持。
+pub fn build(program: &ExecutableProgram, output: &Path) -> Result<()> {
+    let prefix = output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("缺少 DLL 名称")?;
+    crate::linker::link_object(compile_object(program, prefix)?, output)
 }
