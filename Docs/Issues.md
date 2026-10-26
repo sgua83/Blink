@@ -8,7 +8,8 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
-| C-005 的 i32 有符号区间证明：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；仅处理 `crates/blanguage/src/check/bounds.rs` 的有符号比较、逐分量区间与非零证明传递及本台账。避让 `BLanguage_Gua_Application` 的 main／println／build-exe、主 IR 与后端入口；其他 C-005 缺口不在本轮范围。已核对真实 IP 和其他打开文件；尚未实现、编译或原生验证，源码未提交、Git 未发布。 | 2026-10-26 11:50 +08:00 |
+| C-005 的 i32 有符号区间证明：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；`check/bounds.rs` 的有符号比较、逐分量区间与非零证明已实现并通过 Release 构建，原 B152 复现已通过。CPU／GPU 完整核对进行中，已发现下行独立 GPU 常量取余问题，尚未把整轮标为完成。认领文档 CL13075 已提交；源码未提交。该提交的 Git 发布因本机尚无 Git 元数据失败；现已建立本机发布元数据，未重试该次发布。 | 2026-10-26 12:05 +08:00 |
+| C-004 的 GPU 常量 i32 负数取余错误：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:\BLanguage`，P4 client `BLanguage_PA2`；仅处理 `spirv.rs` 内 `IntegerDivide` 的常量有符号除余及已有幅值辅助函数。已核对 `BLanguage_Gua_Application` 在修 main／println／build-exe 的范围，保留其工作，不修改应用入口或主 IR。原生 GPU 与 CPU／参考不符，常量路径直接生成 OpSRem，动态路径已有无符号幅值实现；源码尚未修改、提交，修复后重新完整验证。 | 2026-10-26 12:05 +08:00 |
 | C-010；C-012 的数值／bool 标准输出；C-016 的原生应用构建入口：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | 普通 CPU main、原生 x64／PE 启动与链接、println、build-exe；`B:\BLanguage\Saved\ApplicationWorkspace`，P4 client `BLanguage_Gua_Application`。代码实现中，尚未完成本轮编译、原生验证或源码提交；动态 dataset、通用文本／文件库与跨平台不在本轮修复范围内。 | 2026-10-26 11:42 +08:00 |
 
 ## 已处理
