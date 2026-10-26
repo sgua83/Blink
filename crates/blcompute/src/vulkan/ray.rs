@@ -288,6 +288,40 @@ impl Device {
         };
         Ok(RayInput { allocation, ready })
     }
+    fn ray_input_device(&self, mut data: GpuDataset) -> Result<RayInput> {
+        let allocation = Allocation::new(self.inner.clone(), data.bytes(), 0xa0002, 1)?;
+        let ready = if data.count == 0 {
+            None
+        } else {
+            let commands = Commands::new(self.inner.clone())?;
+            commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
+            let mut offset = 0;
+            for page in &data.pages {
+                let copy = VkBufferCopy {
+                    srcOffset: 0,
+                    dstOffset: offset,
+                    size: page.size,
+                };
+                unsafe {
+                    (self.inner.functions.vkCmdCopyBuffer)(
+                        commands.command,
+                        page.buffer,
+                        allocation.buffer,
+                        1,
+                        &copy,
+                    );
+                }
+                offset += page.size;
+            }
+            let dependencies =
+                Execution::prepare(data.dependency().cloned().into_iter().collect())?;
+            Some(self.submit_transfer(commands, Vec::new(), dependencies)?)
+        };
+        if let Some(ready) = &ready {
+            data.last_use = Some(ready.clone());
+        }
+        Ok(RayInput { allocation, ready })
+    }
     fn build_acceleration(
         &self,
         geometry: Geometry,
@@ -488,6 +522,91 @@ impl Device {
         let triangles: Vec<_> = indices.iter().flatten().copied().collect();
         let vertices = self.ray_input(&vertices)?;
         let triangles = self.ray_input(&triangles)?;
+        self.bottom_level_inputs(
+            vertices,
+            triangles,
+            12,
+            u32::try_from(positions.len().saturating_sub(1))?,
+            u32::try_from(indices.len())?,
+            operation,
+        )
+    }
+    /// GPU 顶点／三角形沿原传输完成点形成自有 AS 输入；不下载几何。
+    /// 顶点开头为三个 f32，沿实际记录 stride 取样；三角形为紧密的三个 u32。
+    /// 消费完整记录域；冻结来源可直接传入 binding()，不读取有效前缀计数。
+    /// # Safety
+    /// 全部记录已初始化，位置有限，索引均落在本次顶点域内。
+    pub unsafe fn bottom_level_device(
+        &self,
+        vertices: GpuDataset,
+        triangles: GpuDataset,
+    ) -> Result<BottomLevel> {
+        self.bottom_level_device_operation(vertices, triangles, BuildOperation::Static)
+    }
+    /// GPU 几何直接构建显式 ALLOW_UPDATE 的 BLAS。
+    /// # Safety
+    /// 与 bottom_level_device 相同的初始化、有限位置与索引前提。
+    pub unsafe fn bottom_level_device_updatable(
+        &self,
+        vertices: GpuDataset,
+        triangles: GpuDataset,
+    ) -> Result<BottomLevel> {
+        self.bottom_level_device_operation(vertices, triangles, BuildOperation::Updatable)
+    }
+    /// GPU 几何 UPDATE 到独立 BLAS，旧结构仍保持原快照。
+    /// # Safety
+    /// 与 bottom_level_device 相同；索引内容／顺序及 primitive 活动状态须与来源相同。
+    pub unsafe fn refit_bottom_level_device(
+        &self,
+        source: &BottomLevel,
+        vertices: GpuDataset,
+        triangles: GpuDataset,
+    ) -> Result<BottomLevel> {
+        self.bottom_level_device_operation(vertices, triangles, BuildOperation::Refit(&source.0))
+    }
+    fn bottom_level_device_operation(
+        &self,
+        vertices: GpuDataset,
+        triangles: GpuDataset,
+        operation: BuildOperation<'_>,
+    ) -> Result<BottomLevel> {
+        use blanguage::ir::Scalar::{F32, U32};
+        if !Rc::ptr_eq(&self.inner, &vertices.allocation.inner)
+            || !Rc::ptr_eq(&self.inner, &triangles.allocation.inner)
+        {
+            return Err(error("几何输入不属于目标设备"));
+        }
+        if !vertices
+            .ty
+            .components
+            .starts_with(&[(F32, 0), (F32, 4), (F32, 8)])
+        {
+            return Err(error("BLAS 顶点需要 offset 0 的三个 f32 位置分量"));
+        }
+        if triangles.stride != 12 || triangles.ty.components != [(U32, 0), (U32, 4), (U32, 8)] {
+            return Err(error("BLAS 三角形需要紧密的三个 u32 索引，stride 为 12"));
+        }
+        let stride = vertices.stride as u64;
+        let max_vertex = vertices.count.saturating_sub(1);
+        let count = triangles.count;
+        self.bottom_level_inputs(
+            self.ray_input_device(vertices)?,
+            self.ray_input_device(triangles)?,
+            stride,
+            max_vertex,
+            count,
+            operation,
+        )
+    }
+    fn bottom_level_inputs(
+        &self,
+        vertices: RayInput,
+        triangles: RayInput,
+        stride: u64,
+        max_vertex: u32,
+        count: u32,
+        operation: BuildOperation<'_>,
+    ) -> Result<BottomLevel> {
         let geometry = Geometry {
             kind: 1000150006,
             next: null(),
@@ -499,8 +618,8 @@ impl Device {
                     next: null(),
                     format: 106,
                     vertices: vertices.address(),
-                    stride: 12,
-                    max_vertex: u32::try_from(positions.len().saturating_sub(1))?,
+                    stride,
+                    max_vertex,
                     index_type: 1,
                     indices: triangles.address(),
                     transform: 0,
@@ -509,7 +628,7 @@ impl Device {
         };
         self.build_acceleration(
             geometry,
-            u32::try_from(indices.len())?,
+            count,
             1,
             Usage::Transfer,
             vec![vertices, triangles],

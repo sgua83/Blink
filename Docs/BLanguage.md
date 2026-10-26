@@ -1259,7 +1259,11 @@ refit 来源必须属于同一逻辑设备且在构建时声明可更新，primi
 
 执行在更新真正完成前持有 source 的实际结构引用、输入与 scratch，新 TLAS 持有本次实际 BLAS 集合；is_complete／wait 观察本次更新本身，后续查询仍由各自提交负责。原生输入与 scratch 可以在本次更新完成后退出，旧查询需要的旧结构继续有效。`Acceleration::allocated_bytes` 仍只计结果 AS 与其直接持有的去重 BLAS 存储，不计 pending 操作临时持有的旧 AS、scratch／输入，不作为更新峰值、整卡驻留或共享资源的全局去重统计。
 
-当前 refit 是显式的新版本 AS 更新，覆盖已有三类原生构建输入；GPU 顶点／拓扑 BLAS 输入、原地更新、压缩及完整流送尚未实现，未新增 B 内的资源构造语法或通用版本／热更新能力。原生依据为 [更新约束](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html)，具体 API 与原生范围见 [设备实例](DeviceInstances.md)。
+GPU 几何的原生入口为 `bottom_level_device(vertices,triangles)`、`bottom_level_device_updatable(vertices,triangles)` 与 `refit_bottom_level_device(&source,vertices,triangles)`，消费实际 GpuDataset，也接受冻结来源的 `binding()`。顶点 offset 0／4／8 为三个 f32，沿实际 stride 取样，位置后可有其他字段；三角形为紧密三个 u32、stride 12，例如 `struct Triangle {array<u32,3> indices;};`，`uint3` 的 16 字节 stride 不是该原生索引布局。消费完整记录域，不根据 GPU 有效前缀隐式截取；初始化、有限位置及索引范围是 unsafe 前提。
+
+源数据页沿原传输完成点复制到具备 AS 输入用途的连续原生存储，不下载几何、不拆分三角形或改变 primitive 编号。源存储保持到复制完成，输入保持到 AS 构建／更新完成，共享与退出复用原实际所有者。CPU／GPU 几何在原数量、maxVertex、索引内容／顺序与活动状态相同的前提下可交叉 refit，顶点 stride 使用本次布局；原结构仍是原快照。
+
+当前 refit 是显式的新版本 AS 更新，覆盖 CPU／GPU 几何 BLAS 与 CPU／GPU 实例 TLAS；原地更新、通用拓扑修改、压缩及完整流送尚未实现，未新增 B 内的资源构造语法或通用版本／热更新能力。原生依据为 [更新约束](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html)，具体 API、压力失败及原生范围见 [设备实例](DeviceInstances.md) 与 Issues。
 
 光线查询不要求窗口：`Device::for_program` 不启用 surface／swapchain。需要原生窗口呈现的程序明确使用 `Device::with_presentation`，计算资源和执行语义保持相同。`Device::swapchain(instance,window,width,height)` 接收实际输出尺寸；呈现消费同设备、等像素数和 4 字节 stride 的 BGRA8 dataset，并逐实际物理页复制，页边界可位于像素行中间。真实表面尺寸和设备能力属于原平台入口，框架不写入某个应用的最低分辨率。
 

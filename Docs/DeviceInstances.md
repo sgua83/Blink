@@ -98,4 +98,16 @@ BLEngine据此删除仅为共享绑定存在的相机、实例元数据和运动
 
 `is_complete`／`wait` 表示该结果自身的构建／更新完成；查询的使用期限沿原提交持有，源 CPU 数组在 API 已复制后可退出。构建完成后不再保留顶点／索引的 CPU 镜像。实现不自动证明所有输入的有限性、矩阵可逆性或相同索引内容；这些 unsafe 条件与真正原生形状／设备边界分别负责。
 
-原生记录见 Issues 的 C-003／C-022.4 refit：分别记录旧新快照、连续更新、CPU／GPU 输入交接、实际 pending 中的来源退出及查询结果；构建与遍历性能、峰值资源、完整引擎采用不由接口实现代替。GPU 顶点 BLAS 输入、原地更新、压缩／重排和完整流送继续开放。
+原生记录见 Issues 的 C-003／C-022.4 refit：分别记录旧新快照、连续更新、CPU／GPU 输入交接、实际 pending 中的来源退出及查询结果；构建与遍历性能、峰值资源、完整引擎采用不由接口实现代替。GPU 几何输入见下节，原地更新、通用拓扑修改、压缩／重排和完整流送继续开放。
+
+## GPU 顶点与索引直接构建／更新 BLAS（2026-10-27）
+
+| 静态构建 | 可更新构建 | 新版本更新 |
+|---|---|---|
+| unsafe bottom_level_device(vertices,triangles) | unsafe bottom_level_device_updatable(vertices,triangles) | unsafe refit_bottom_level_device(&source,vertices,triangles) |
+
+两个输入都是本逻辑设备的 GpuDataset，可直接传冻结来源的 binding()。顶点前三个分量为 offset 0／4／8 的 f32，按真实记录 stride 读取，允许后续字段；三角形为紧密三个 u32，stride 12。`struct Triangle {array<u32,3> indices;};` 可表达该索引布局，uint3 的 stride 16 不等价。入口消费完整记录数，不隐式读取有效前缀；全部记录已初始化、位置有限及索引有效是 unsafe 前提。更新还要求原索引内容／顺序、活动状态、原数量及 maxVertex；同形 CPU／GPU 输入可以交叉更新，顶点 stride 可以不同。
+
+GPU 计算结果按真实物理页沿原传输提交复制到具备 AS 输入用途的连续存储，保留逻辑顺序及 primitive 编号。没有 CPU 几何读回、逐三角形主机调用、额外调度或所有普通分配用途扩张。源数据通过原最后使用点持有到复制完成，输入／scratch 与 refit source 通过原 AS Execution 持有到构建／更新完成；旧新查询各消费自己的真实快照。输出仍为原 BottomLevel，不增加另一份几何或场景权威。
+
+两 GPU 常规构建／交叉 refit、65 次连续更新、共享来源退出、真正 pending 中的资源交接与 256 MiB 顶点分页已有本轮原生记录；RX 9070 GRE 还实际读取命中顶点。两千多万索引压力触发设备丢失／分配失败，原 CPU 同规模路径也未完成 refit，根因尚未确定；该项不标为通过，不改变容量、原算法或错误语义。原始结果及最终交付状态见 Issues。

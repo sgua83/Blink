@@ -595,7 +595,17 @@ BottomLevel／Acceleration的is_complete／wait观察其构建或显式 refit �
 
 UPDATE 的真实消费者会读取旧 AS 本体，仅引用其旧构建完成点不足以保持原存储。原 ExecutionResources::Acceleration 因而同时持有本次 source 结构、输入与 scratch，到更新实际完成后归还。新 TLAS 持有其实际新 BLAS 集合；旧 TLAS 和旧查询继续持有旧集合。资源沿既有完成回收入口释放，不将版本关系变成全局当前场景、后台回收或代码热更新机制。
 
-当前覆盖已有 CPU 顶点 BLAS、CPU 实例 TLAS 与 GPU 实例 TLAS 的显式新版本更新。GPU 顶点／拓扑 BLAS 输入、原地更新、压缩／重排、自动构建选择与完整流送仍开放。接口实现、原生查询、完整引擎采用、构建／遍历性能和峰值资源各自记录，不把 UPDATE 指令或新 API 当作性能优势的证明。
+当前覆盖 CPU／GPU 几何 BLAS、CPU 实例 TLAS 与 GPU 实例 TLAS 的显式新版本更新；GPU 几何入口见下节。原地更新、通用拓扑修改、压缩／重排、自动构建选择与完整流送仍开放。接口实现、原生查询、完整引擎采用、构建／遍历性能和峰值资源各自记录，不把 UPDATE 指令或新 API 当作性能优势的证明。
+
+## GPU 几何直接进入原生 BLAS（2026-10-27）
+
+bottom_level_device／bottom_level_device_updatable／refit_bottom_level_device 消费本设备的顶点与三角形 GpuDataset，复用原 bottom_level_inputs／build_acceleration 生成 BUILD 或 UPDATE。CPU 数组入口同样交给这一份几何描述；B 继续产生位置、拓扑及其计算关系，Rust 负责原生输入、AS、传输与真实完成。不改变 acceleration 查询 ABI，不下载顶点、索引或有效计数。
+
+当前原生顶点输入在 offset 0／4／8 为三个 f32，按实际记录 stride 读取，允许位置后的其他字段及填充。三角形输入为紧密三个 u32、stride 12；例如含 array<u32,3> 的记录，不能将 stride 16 的 uint3 记录当作紧密索引。该布局来自当前 Vulkan 三角形接口，并非 B 的永久类型边界。入口消费完整物理记录域；全部记录已初始化、位置有限、索引落在顶点域内由 unsafe 消费者负责，refit 仍保持索引内容／顺序、活动状态、原数量和 maxVertex。
+
+普通数据页具有原传输用途，没有 AS_BUILD_INPUT_READ_ONLY 用途。ray_input_device 因而沿原 Transfer Execution 将真实记录页按逻辑次序复制为连续、自有的原生 AS 输入；保留实际 stride 与 primitive 编号，不为所有普通分配追加 AS 用途，也不拆分 geometry。生产者写入到复制读取、复制写入到 AS 读取各用原队列内存依赖。被消费的源存储交给复制完成点，原生输入交给 AS 完成点；冻结来源直接传 binding()，共享持有与退出沿原 Owned／Read 入口处理。
+
+GPU／CPU 几何可在满足原 UPDATE 形状时交接，顶点 stride 可随本次真实输入变化；原 AS 保持原快照，更新仍持有旧 source 到实际完成。Vulkan 输入地址、用途与更新条件见 [三角形数据](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryTrianglesDataKHR.html) 和 [构建／更新](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html)。两千多万索引压力下的分配失败／设备丢失保留为未解决记录，不添加容量钳制、重试或自动重建，详见 Issues 本轮原生记录。
 
 ## 直接生产依赖与完成后的资源归还（2026-10-27）
 
