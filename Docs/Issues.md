@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-002／C-024.3 的分程序点统一性与控制出口：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；延续 CL13299 的保守统一性边界，先保存真实 IR／正式基线，检查同一局部在循环与后续数据阶段复用时的误拒绝。沿原结构化 If／Loop／Scope，按程序点更新事实、循环回边求固定点，分别合流正常、break／continue 和作用域退出；仍以真实逐元素来源否决分歧条件。预计仅改 native/packet/control.rs 及必要计划接点和当前说明，不改 PA3 开放类型、前端数值／初始化、IR／ABI、Frame／分配或 Gua Vulkan／函数设计。保留实际不收益及分歧；Release、CPU／GPU／保护页、原生计时、清理、P4／Git 分别回填。 | 2026-10-27 04:17 +08:00 |
 | C-020.5／C-021.8／C-022.1 的统一函数与结果模型：**本轮设计文档完成；实现待推进** | `192.168.10.5`／`GUA` | Codex／统一函数设计文档 | `B:/BLanguage/Saved/FunctionDesignWorkspace`，client `BLanguage_Gua_FunctionDesign`；仅更新 Architecture／Issues，确认取消表面 program、执行要求推导、target、Ok／Err 与枚举、真实完成及双向互操作；保留现状章节和其他会话记录。未修改或构建编译器，未生成书籍／PDF；多机方案未定稿。P4 与 Git 交付按本次实际回执分别确认。 | 2026-10-27 04:13 +0800 |
 | C-021.2／C-020.1 的开放普通值类型形参：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；从现有有限类型集合与开放 const 实例化出发，允许 `<T>` 普通值类型形参在具体使用时绑定用户类型，保留 `<T: family>` 的有限域全实例检查。统一现有形参约束消费和开放声明说明，贯通记录、普通／cooperative 函数、program 及静态算法引用；既有布局／访问／初始化／资源期限及原生 x64／SPIR-V 继续消费具体 Ty，无类型擦除、运行时派发、新 IR／ABI 或资源状态。预计修改 ast.rs、parser.rs、generics.rs、check/generics.rs、type_sets.rs、lib.rs 与必要开放声明说明及文档；不改 PA2 的 check.rs／bounds.rs 数值条件、不改后端或 Gua Vulkan。先提交认领，再保存实际基线、实现和 Release／CPU／GPU／C ABI 消费者结果；一般约束接口、符号泛型体分析、普通原生调用及模块二进制链接仍开放。 | 2026-10-27 04:07 +08:00 |
 | C-003／C-022.5 的同设备异步纹理上传：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；原 upload_texture 在提交后直接等待，staging 由函数局部持有。将上传命令／staging 交给既有 Execution，纹理唯一物理所有者持有真实上传完成点，采样提交沿原依赖消费并保持图像至最后 GPU 消费者；移除构造时 CPU 等待，显式观察／等待只反映上传本身。预计仅改 blcompute/vulkan/texture.rs、mod.rs 及架构／规范／台账，不改 PA2／PA3 前端、后端、IR／ABI 或引擎算法，不建后台任务、轮询、计数镜像或回收注册表。先保存原 Release 基线及实际队列等待证据，再核对 pending 上传、源退出、共享采样／汇合、drop、mip 与设备边界；清理、提交、Git 和主线采用分别回填。跨设备／多队列、refit 与完整流送仍开放。 | 2026-10-27 03:55 +08:00 |
@@ -2157,3 +2158,7 @@ result=value;
 ## C-021.2／C-020.1：开放普通值类型形参
 
 - 实际执行机 PA3／DESKTOP-80G4Q60，IPv4 192.168.10.13，D:/BLanguage，P4 用户 PA3／client BLanguage_PA3，会话 01a17891-5f8f-7bc3-8966-57a6f31772e0。已回读最新台账、AGENTS、架构和真实网络；PA3 无打开文件。PA2 正修改 check.rs／bounds.rs 的已知不可达整数条件，Gua 正修改 Vulkan 异步纹理上传，本项避开各自源码范围。当前仅认领，尚未实施或保存本项原生基线；本轮不把当前有限类型集合扩大成永久语言边界，也不声称已具备一般约束或符号泛型体检查。源码、编译、CPU／GPU／C ABI 原生结果、清理、P4 与 Git 分别回填。
+
+## C-002／C-024.3：局部复用的程序点统一性（2026-10-27，正在修复）
+
+- 实际执行机 192.168.10.12／DESKTOP-4B3HN14，会话 01a17630-b20a-7a81-9b77-1b040d8edd04，D:/BLanguage、BLanguage_PA2。已核对最新 Issues／P4 所有占用；后端未被其他会话打开，前端开放类型、Vulkan 异步纹理及函数设计分别由原执行者保持。本轮从 CL13299 的全局局部写入一致性限制出发，先核对真实 IR 是否仍因后续写入漏失早先统一循环，再沿已有 IR 的真实出口处理，不添加运行时检测、分歧掩码或另一份 IR／资源状态。当前只提交认领，尚未实现或验证。
