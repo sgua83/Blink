@@ -1,39 +1,25 @@
 module beginner.loops;
 
-program for_loop(write dataset<u32> numbers) on compute {
-    parallel (number in numbers) {
-        u32 n = index() + 1;
-        u32 total = 0;
-        for (i in 1..n + 1) {
-            total += i;
-        }
-        number = total;
+u32 main() on cpu {
+    u32 total = 0;
+    for (i in 1..6) {
+        total += i;
     }
-}
-
-program while_loop(write dataset<u32> numbers) on compute {
-    parallel (number in numbers) {
-        u32 n = index() + 1;
-        u32 i = 1;
-        u32 total = 0;
-        while (i <= n) {
-            total += i;
-            i += 1;
-        }
-        number = total;
+    println(total);
+    total = 0;
+    u32 i = 1;
+    while (i <= 5) {
+        total += i;
+        i += 1;
     }
-}
-
-program first_square(write dataset<u32> numbers) on compute {
-    parallel (number in numbers) {
-        u32 n = index() + 1;
-        u32 first = 0;
-        for (k in 1..10) {
-            if (k * k >= n) {
-                first = k;
-                break;
-            }
+    println(total);
+    total = 0;
+    for (j in 1..6) {
+        if (j == 4) {
+            break;
         }
-        number = first;
+        total += j;
     }
+    println(total);
+    return 0;
 }

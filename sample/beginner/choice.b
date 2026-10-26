@@ -1,16 +1,18 @@
 module beginner.choice;
 
-program run(write dataset<u32> levels) on compute {
-    parallel (level in levels) {
-        u32 score = 45 + index() * 15;
-        if (score >= 90) {
-            level = 3;
-        } else if (score >= 75) {
-            level = 2;
-        } else if (score >= 60) {
-            level = 1;
-        } else {
-            level = 0;
-        }
+u32 main() on cpu {
+    u32 score = 75;
+    u32 level;
+    if (score >= 90) {
+        level = 3;
+    } else if (score >= 75) {
+        level = 2;
+    } else if (score >= 60) {
+        level = 1;
+    } else {
+        level = 0;
     }
+    println(level);
+    println(score >= 60);
+    return 0;
 }

@@ -8,10 +8,12 @@ void twice(u32 value, write u32 output) on compute {
     output = value * 2;
 }
 
-program run(write dataset<u32> numbers) on compute {
-    parallel (number in numbers) {
-        u32 value = index() + 1;
-        add_one(value);
-        twice(value, number);
-    }
+u32 main() on cpu {
+    u32 value = 3;
+    add_one(value);
+    u32 output;
+    twice(value, output);
+    println(value);
+    println(output);
+    return 0;
 }

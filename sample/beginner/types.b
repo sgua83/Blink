@@ -1,26 +1,13 @@
 module beginner.types;
 
-program integer(write dataset<u32> numbers) on compute {
-    parallel (number in numbers) {
-        number = 7 / 2;
-    }
-}
-
-program decimal(write dataset<f32> numbers) on compute {
-    parallel (number in numbers) {
-        number = 7.0 / 2.0;
-    }
-}
-
-program signed(write dataset<i32> numbers) on compute {
-    parallel (number in numbers) {
-        i32 balance = -7;
-        number = balance / 2;
-    }
-}
-
-program flag(write dataset<bool> numbers) on compute {
-    parallel (number in numbers) {
-        number = 7 > 2;
-    }
+u32 main() on cpu {
+    u32 count = 7 / 2;
+    i32 change = -7 / 2;
+    bool passed = 75 >= 60;
+    f32 temperature = 21.5;
+    println(count);
+    println(change);
+    println(passed);
+    println(temperature > 18.0);
+    return 0;
 }

@@ -1,11 +1,11 @@
 module beginner.generic;
 
-T twice<T: floating>(T value) on compute {
-    return value * 2.0;
+T twice<T: integer>(T value) on compute {
+    return value * 2;
 }
 
-program run(write dataset<f32> numbers) on compute {
-    parallel (number in numbers) {
-        number = twice(f32(index() + 1));
-    }
+u32 main() on cpu {
+    println(twice(3));
+    println(twice(-2));
+    return 0;
 }

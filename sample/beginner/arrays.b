@@ -1,12 +1,12 @@
 module beginner.arrays;
 
-program run(write dataset<u32> numbers) on compute {
-    parallel (number in numbers) {
-        array<u32, 3> values = array<u32, 3>(1, 2, 3);
-        u32 total = 0;
-        for (i in 0..values.length) {
-            total += values[i];
-        }
-        number = total;
+u32 main() on cpu {
+    array<u32, 4> values = array<u32, 4>(1, 2, 3, 4);
+    u32 total = 0;
+    for (i in 0..values.length) {
+        println(values[i]);
+        total += values[i];
     }
+    println(total);
+    return 0;
 }
