@@ -20,13 +20,14 @@ GitHub 发布仓库为 [sgua83/Blink](https://github.com/sgua83/Blink)。P4 与 
 git clone https://github.com/sgua83/Blink.git
 Set-Location Blink
 cargo build --workspace --release
-.\target\release\blc.exe check sample\lessons\map.b sample demo
-.\target\release\blrun.exe cpu sample\lessons\map.b demo sample Saved\Book\map :4
+.\target\release\blrun.exe cpu `
+    sample/beginner/start.b run `
+    sample Saved/Learn/start :1
 ```
 
-`blc` 检查和导出原生代码，`blrun` 通过同一编译库在 CPU／GPU 上执行 B 模块。上例仅依赖当前仓库，输出 `Saved/Book/map/values.bldata` 中的四个 f32 为 `[3,5,7,9]`。将 `cpu` 改为 `gpu` 可执行 GPU 版本，需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
+`blc` 检查和导出原生代码，`blrun` 编译并在 CPU／GPU 上执行 B 模块。上例仅依赖当前仓库，输出 `Saved/Learn/start/numbers.bldata` 中的 u32 为 `3`。将 `cpu` 改为 `gpu` 可执行 GPU 版本，需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
 
-blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun。BLEngine 通过库 API 消费 Blink；入门示例不需要引擎工程。完整的编译、运行和读取输出步骤见 [《并行编程的艺术》](sample/并行编程的艺术.md)。
+blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun。BLEngine 通过库 API 消费 Blink；入门示例不需要引擎工程。完整的下载、语法、运行和读取输出步骤见 [《B 语言编程》](sample/B语言编程.md)。
 
 | 位置 | 职责 |
 |---|---|
@@ -38,6 +39,8 @@ blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun
 [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [问题列表](Docs/Issues.md) · [BLEngine](../BLEngine/README.md)
 
 ## 系列书籍
+
+[《B 语言编程》](sample/B语言编程.md) 是独立的零基础语法入门书，从下载、运行第一个程序开始，逐步讲解变量、类型、条件、循环、结构体、函数、数组、向量、模块与并行计算。配有[完整示例](sample/beginner/README.md)、[手机 PDF](sample/pdf/B语言编程-手机阅读版.pdf) 和[标准 PDF](sample/pdf/B语言编程.pdf)，不要求先学习 C/C++ 或 Rust。
 
 [《并行编程的艺术》](sample/并行编程的艺术.md) 从 C/C++ 走向并行思考；[《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) 先完整写出 Rust 调用 B 处理四个数的程序，再学习粒子模拟、连续 GPU 计算、场景变换和材质图像。第二本配有[独立 Rust 示例](sample/hybrid/README.md)，无需 BLEngine 工作区即可运行。
 
