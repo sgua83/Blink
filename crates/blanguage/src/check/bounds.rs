@@ -847,7 +847,7 @@ fn constrain(facts: &mut Facts, index: &Value, limit: &Value, strict: bool) {
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
 pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
-    Proof {
+    let mut proof = Proof {
         ranges: if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
             (0..count)
                 .map(|i| {
@@ -911,6 +911,60 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
             Vec::new()
         },
         ..Proof::default()
+    };
+    if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
+        for component in 0..count {
+            if let Some((value, source)) = arithmetic_source(op, a, b, component) {
+                let mut exact = value.projected_proof(&[source]);
+                // 继承操作数身份，但仍与运算的可达片段相交，保留空路径。
+                exact.ranges[0] = exact.range_set(0).combine(
+                    &proof.range_set(component),
+                    |(al, ah), (bl, bh)| IntegerRanges::interval(al.max(bl), ah.min(bh)),
+                );
+                exact.domains[0].extend(proof.domains(component));
+                proof.assign(&[component], count, exact);
+            }
+        }
+    }
+    proof
+}
+fn arithmetic_source<'a>(
+    op: &str,
+    a: &'a Value,
+    b: &'a Value,
+    component: usize,
+) -> Option<(&'a Value, usize)> {
+    let ai = component % a.regs.len();
+    let bi = component % b.regs.len();
+    if matches!(op, "&" | "|") && a.same_component(ai, b, bi) {
+        return Some((a, ai));
+    }
+    if matches!(op, "<<" | ">>") {
+        return (b.component_ranges(bi).shift_counts(0).hull() == (0, 0)).then_some((a, ai));
+    }
+    let (right, left) = match op {
+        "+" | "|" | "^" => (0, Some(0)),
+        "*" => (1, Some(1)),
+        "-" => (0, None),
+        "/" => (1, None),
+        "&" => (u32::MAX, Some(u32::MAX)),
+        _ => return None,
+    };
+    let bits = |value: &Value, index| {
+        let (lower, upper) = value.component_range(index);
+        let bias = if value.ty.components[index].0 == Scalar::I32 {
+            0x8000_0000
+        } else {
+            0
+        };
+        (lower == upper).then_some(lower ^ bias)
+    };
+    if bits(b, bi) == Some(right) {
+        Some((a, ai))
+    } else if left.is_some_and(|neutral| bits(a, ai) == Some(neutral)) {
+        Some((b, bi))
+    } else {
+        None
     }
 }
 fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domains {
