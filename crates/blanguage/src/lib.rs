@@ -6,9 +6,9 @@ pub mod dll;
 mod generics;
 pub mod ir;
 mod lexer;
+pub mod linker;
 pub mod native;
 pub mod object;
-pub mod linker;
 mod optimize;
 mod parser;
 pub mod spirv;
@@ -554,6 +554,7 @@ impl World {
                 array: None,
                 enumeration: false,
                 result: false,
+                dataset: None,
             });
         }
         if name.name == "result" {
@@ -565,16 +566,23 @@ impl World {
                 let GenericArgument::Type(payload) = argument else {
                     return source.fail(span, "B269", "结果实参需要类型");
                 };
-                if payload.dataset || payload.tile {
-                    return source.fail(span, "B269", "拥有资源或 tile 的结果载荷尚未实现");
+                if payload.tile {
+                    return source.fail(span, "B269", "tile 是执行域借用，不能作为拥有结果载荷");
                 }
-                let ty = if *payload == TypeName::named("void") {
+                let mut ty = if *payload == TypeName::named("void") {
                     ir::Ty::unit()
                 } else {
                     self.ty_inner(payload, source, span, module, imports, stack)?
                 };
                 if ty.contains_views() {
-                    return source.fail(span, "B269", "含 view 资源图的结果载荷尚未实现");
+                    return source.fail(span, "B269", "含view资源图的结果载荷尚未实现");
+                }
+                if payload.dataset {
+                    if ty.owns_resources() {
+                        return source.fail(span, "B033", "dataset 元素不能保存另一份拥有资源");
+                    }
+                    let count = self.shape(&payload.count, source, span, module, imports)?;
+                    ty = ir::Ty::owned_dataset(ty, count);
                 }
                 payloads.push(ty);
             }
@@ -610,6 +618,13 @@ impl World {
             if count == 0 {
                 return source.fail(span, "B238", "普通值 array 的固定长度必须为正");
             }
+            if element.owns_resources() {
+                return source.fail(
+                    span,
+                    "B238",
+                    "拥有资源的内联数组尚未实现，不能按普通值复制句柄",
+                );
+            }
             let stride = ir::align_up(element.size, element.align);
             let size = stride.checked_mul(count).ok_or_else(|| Diagnostic {
                 source: source.clone(),
@@ -636,6 +651,7 @@ impl World {
                 array: Some(Box::new(element)),
                 enumeration: false,
                 result: false,
+                dataset: None,
             });
         }
         if let Some(ty) = ir::Ty::builtin(&name.name) {
@@ -753,6 +769,7 @@ impl World {
             array: None,
             enumeration: false,
             result: false,
+            dataset: None,
         };
         let mut names = BTreeSet::new();
         for field in &record.fields {
@@ -766,6 +783,13 @@ impl World {
             generics::substitute_type(&mut field_type, &replacements, s, field.span)?;
             value_parameters::substitute_type(&mut field_type, &value_map);
             let f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
+            if f.owns_resources() {
+                return s.fail(
+                    field.span,
+                    "B033",
+                    "拥有资源的记录聚合尚未实现，不能按普通值复制句柄",
+                );
+            }
             let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
             let end = offset + f.size as u64;
             if end > u32::MAX as u64 {

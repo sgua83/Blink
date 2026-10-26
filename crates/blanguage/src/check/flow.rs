@@ -33,7 +33,7 @@ pub(super) struct LoopState {
 }
 pub(super) struct LoopContext {
     names: BTreeSet<String>,
-    resources: BTreeMap<String, (Option<Target>, application::Ownership)>,
+    resources: BTreeMap<String, Binding>,
     exits: Vec<LoopState>,
     initial: bool,
     arrays: bool,
@@ -105,8 +105,18 @@ impl Builder<'_> {
         }
     }
     pub(super) fn application_initial_loop(&self, body: &[Stmt]) -> bool {
-        self.env.iter().any(|(name, binding)| matches!(binding,
-            Binding::ApplicationData(data) if data.ownership == application::Ownership::Moved && application::rebound(body, name)))
+        self.env.iter().any(|(name, binding)| {
+            application::rebound(body, name)
+                && match binding {
+                    Binding::ApplicationData(data) => {
+                        data.ownership == application::Ownership::Moved
+                    }
+                    Binding::OwnedResult(result) => {
+                        result.ownership == application::Ownership::Moved || result.incomplete()
+                    }
+                    _ => false,
+                }
+        })
     }
     pub(super) fn configure_initial_loop(
         &mut self,
@@ -143,17 +153,35 @@ impl Builder<'_> {
         }
         let entry = &self.loop_contexts.last().unwrap().resources;
         for (name, binding) in &self.env {
-            if let Binding::ApplicationData(data) = binding
-                && let Some((residency, ownership)) = entry.get(name)
+            if let Binding::OwnedResult(result) = binding
+                && let Some(Binding::OwnedResult(before)) = entry.get(name)
             {
-                if *ownership != data.ownership {
+                if result.ownership != before.ownership {
+                    return self.fail(
+                        span,
+                        "B227",
+                        "循环继续前须保有入口的结果所有权，不能在回边重复消费",
+                    );
+                }
+                if result.ownership == application::Ownership::Owned
+                    && !before.loop_compatible(result)
+                {
+                    return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
+                }
+            }
+            if let Binding::ApplicationData(data) = binding
+                && let Some(Binding::ApplicationData(before)) = entry.get(name)
+            {
+                if before.ownership != data.ownership {
                     return self.fail(
                         span,
                         "B227",
                         "循环继续前须保有入口的 dataset 所有权，不能在回边重复消费",
                     );
                 }
-                if *ownership != application::Ownership::Moved && *residency != data.residency {
+                if before.ownership != application::Ownership::Moved
+                    && before.residency != data.residency
+                {
                     return self.fail(
                         span,
                         "B266",
@@ -189,6 +217,12 @@ impl Builder<'_> {
                     a.uniform &= b.uniform;
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
+                (Binding::OwnedResult(a), Binding::OwnedResult(b)) => {
+                    if a.ownership != b.ownership {
+                        a.ownership = application::Ownership::Moved;
+                    }
+                    a.join(b.clone());
+                }
                 (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
                     if a.ownership != b.ownership {
                         a.ownership = application::Ownership::Moved;
@@ -214,8 +248,8 @@ impl Builder<'_> {
             resources: environment
                 .iter()
                 .filter_map(|(name, binding)| match binding {
-                    Binding::ApplicationData(data) => {
-                        Some((name.clone(), (data.residency, data.ownership)))
+                    Binding::ApplicationData(_) | Binding::OwnedResult(_) => {
+                        Some((name.clone(), binding.clone()))
                     }
                     _ => None,
                 })

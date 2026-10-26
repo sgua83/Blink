@@ -19,12 +19,13 @@ mod external;
 mod flow;
 pub(crate) mod generics;
 mod matrix;
+mod owned_results;
 mod ownership;
 mod prefix;
 mod records;
 mod reduce;
-mod returns;
 mod results;
+mod returns;
 mod scan;
 mod segmented_reduce;
 mod selection;
@@ -82,6 +83,7 @@ struct Value {
 #[derive(Clone)]
 enum Binding {
     ApplicationData(application::Data),
+    OwnedResult(owned_results::OwnedResult),
     AtomicBorrow(Place),
     Owned(OwnedBinding),
     Value(Value),
@@ -240,6 +242,13 @@ pub(crate) fn compile_program(
             continue;
         }
         let ty = world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)?;
+        if ty.owns_resources() {
+            return d.source.fail(
+                p.span,
+                "B224",
+                "拥有结果属于CPU资源组织，不能成为program的普通存储或uniform",
+            );
+        }
         if ty.contains_views() && (!p.ty.dataset || p.access != Access::Read) {
             return d.source.fail(
                 p.span,
@@ -955,7 +964,7 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     if d.function.kind == FunctionKind::Program {
         return Ok(());
     }
-    if d.function.result.dataset
+    if (d.function.result.dataset || d.function.result.mentions_owned())
         && !(d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu)
     {
         return d.source.fail(
@@ -973,6 +982,16 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
         );
     }
     for p in &d.function.params {
+        if p.ty.mentions_owned()
+            && !p.ty.dataset
+            && !(d.function.kind == FunctionKind::Value
+                && d.function.target == Target::Cpu
+                && p.access == Access::Value)
+        {
+            return d
+                .source
+                .fail(p.span, "B224", "拥有结果参数属于CPU函数的按值交接");
+        }
         if p.ty.is_acceleration() {
             if p.access != Access::Read || d.function.target != Target::Gpu {
                 return d
@@ -1168,6 +1187,18 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
         }
         let ty = world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)?;
         let regs = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
+        if ty.owns_resources() {
+            let result = b.incoming_owned_result(Value {
+                ty,
+                regs,
+                proof: bounds::Proof::default(),
+                literal: false,
+                uniform: false,
+                constant: None,
+            });
+            b.bind_owned_result(&p.name, result, p.span)?;
+            continue;
+        }
         b.env.insert(
             p.name.clone(),
             Binding::Value(Value {
@@ -2894,9 +2925,6 @@ impl<'a> Builder<'a> {
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
-        if annotation.as_ref().is_some_and(|ty| ty.dataset) || self.application_data_expression(e) {
-            return self.application_dataset(annotation, name, e, span);
-        }
         if let ExprKind::Call(call, args) = &e.kind {
             if matches!(call.as_str(), "tile_publish" | "tile_atomic") {
                 return self.tile_publish(
@@ -2910,32 +2938,35 @@ impl<'a> Builder<'a> {
         }
         let expected = annotation
             .as_ref()
-            .map(|ty| {
-                self.world.ty(
-                    ty,
-                    &self.definition.source,
-                    span,
-                    &self.definition.module,
-                    &self.definition.imports,
-                )
-            })
+            .map(|ty| self.expected_storage(ty, span))
             .transpose()?;
-        let value = if let ExprKind::Cooperate(call, explicit, args) = &e.kind {
-            let result = self.cooperate(call, explicit.as_deref(), args, e.span)?;
-            self.value_result(result, e.span)?
+        let result = if let ExprKind::Cooperate(call, explicit, args) = &e.kind {
+            self.cooperate(call, explicit.as_deref(), args, e.span)?
+                .map(returns::Returned::Value)
         } else if let ExprKind::Call(call, args) = &e.kind {
             if let Some(op) = TileOp::from_source(call) {
-                self.tile_collective(op, args, span)?
+                Some(returns::Returned::Value(
+                    self.tile_collective(op, args, span)?,
+                ))
             } else {
-                self.expr_expected(e, expected.as_ref())?
+                self.evaluate_returned(e, expected.as_ref())?
             }
         } else {
-            self.expr_expected(e, expected.as_ref())?
+            self.evaluate_returned(e, expected.as_ref())?
         };
-        if let Some(ty) = expected {
-            self.require_same(&ty, &value.ty, span)?;
+        if !self.flow.continues() {
+            return Ok(());
         }
-        self.bind_local_value(name, value, span)
+        let mut value = result.ok_or_else(|| Diagnostic {
+            source: self.definition.source.clone(),
+            span,
+            code: "B228",
+            message: "局部绑定需要值或拥有资源".into(),
+        })?;
+        if let Some(expected) = expected {
+            self.check_returned_type(&mut value, &expected, span)?;
+        }
+        self.bind_returned(name, value, span)
     }
     fn bind_local_value(&mut self, name: &String, value: Value, span: Span) -> Result<()> {
         if self.env.contains_key(name) {
@@ -3301,6 +3332,9 @@ impl<'a> Builder<'a> {
             &self.definition.module,
             &self.definition.imports,
         )?;
+        if ty.owns_resources() {
+            return self.owned_result_declare(name, ty, span);
+        }
         let (slots, storage) = self.local_slots(&ty);
         self.env.insert(
             name.clone(),
@@ -3315,6 +3349,11 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
+        if let ExprKind::Name(name) = &lhs.kind
+            && let Some(Binding::OwnedResult(value)) = self.env.get(name).cloned()
+        {
+            return self.owned_result_assign(name, value, op, rhs, span);
+        }
         if let ExprKind::Name(name) = &lhs.kind
             && let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned()
         {
@@ -3331,11 +3370,6 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn expression_statement(&mut self, e: &Expr) -> Result<()> {
-        if self.application_data_expression(e) {
-            let data = self.application_resource(e, e.span)?;
-            self.release_application_handle(data.handle.regs[0]);
-            return Ok(());
-        }
         if let ExprKind::Call(name, args) = &e.kind
             && name == "atomic_store"
         {
@@ -3344,14 +3378,12 @@ impl<'a> Builder<'a> {
             && name == "tile_barrier"
         {
             self.tile_barrier(args, e.span)?;
-        } else if let ExprKind::Call(name, args) = &e.kind {
-            self.call(name, args, e.span)?;
-        } else if let ExprKind::Specialize(name, explicit, args) = &e.kind {
-            self.specialized_call(name, explicit, args, e.span)?;
         } else if let ExprKind::Cooperate(name, explicit, args) = &e.kind {
             self.cooperate(name, explicit.as_deref(), args, e.span)?;
         } else {
-            self.expr(e)?;
+            if let Some(value) = self.evaluate_returned(e, None)? {
+                self.drop_returned(value, e.span)?;
+            }
         }
 
         Ok(())

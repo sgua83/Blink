@@ -6,12 +6,27 @@ pub(super) enum Argument {
     Value(Value),
     Dataset(DatasetView),
     ApplicationData(application::Data),
+    OwnedResult(owned_results::OwnedResult),
     Tile(TileView),
     Atomic(Place),
     Exclusive(Place),
 }
 impl Argument {
     fn overlaps(&self, other: &Self) -> bool {
+        let handles = |arg: &Self| match arg {
+            Self::ApplicationData(d) => vec![d.handle.identity()],
+            Self::OwnedResult(r) => r.handles(),
+            Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
+                Place::ApplicationElement { identity, .. } => vec![*identity],
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        let a = handles(self);
+        let b = handles(other);
+        if a.iter().any(|h| b.contains(h)) {
+            return true;
+        }
         match (self, other) {
             (Self::ApplicationData(a), Self::ApplicationData(b)) => {
                 a.handle.identity() == b.handle.identity()
@@ -37,6 +52,19 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
         &definition.module,
         &definition.imports,
     )?;
+    if ty.owns_resources()
+        && (param.ty.dataset
+            || param.ty.tile
+            || param.access != Access::Value
+            || definition.function.kind != FunctionKind::Value
+            || definition.function.target != Target::Cpu)
+    {
+        return definition.source.fail(
+            param.span,
+            "B224",
+            "拥有结果通过普通CPU函数的值参数交接；通用拥有聚合、借用与并行元素尚未实现",
+        );
+    }
     if matches!(param.access, Access::InOut | Access::Write)
         && !param.ty.dataset
         && !param.ty.tile
@@ -92,7 +120,14 @@ impl<'a> Builder<'a> {
                 } else if param.ty.is_texture_resource() {
                     Argument::Texture(self.texture_argument(arg)?)
                 } else if param.ty.dataset && param.access == Access::Value {
-                    Argument::ApplicationData(self.application_resource(arg, arg.span)?)
+                    let returned = self.evaluate_returned(arg, None)?;
+                    if !self.flow.continues() {
+                        return Ok(arguments);
+                    }
+                    let Some(returns::Returned::Dataset(data)) = returned else {
+                        return self.fail(arg.span, "B224", "dataset 值参数需要拥有的数据集");
+                    };
+                    Argument::ApplicationData(data)
                 } else if param.ty.dataset {
                     let ExprKind::Name(name) = &arg.kind else {
                         return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
@@ -131,9 +166,21 @@ impl<'a> Builder<'a> {
                         } else {
                             None
                         };
-                    Argument::Value(self.expr_expected(arg, expected.as_ref())?)
+                    let returned = self.evaluate_returned(arg, expected.as_ref())?;
+                    if !self.flow.continues() {
+                        return Ok(arguments);
+                    }
+                    match returned {
+                        Some(returns::Returned::Value(v)) => Argument::Value(v),
+                        Some(returns::Returned::OwnedResult(v)) => Argument::OwnedResult(v),
+                        Some(returns::Returned::Dataset(v)) => Argument::ApplicationData(v),
+                        _ => return self.fail(arg.span, "B228", "函数实参需要值或拥有资源"),
+                    }
                 },
             );
+            if !self.flow.continues() {
+                return Ok(arguments);
+            }
         }
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
             let handle = match argument {
@@ -184,18 +231,26 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<Value>> {
+        let result = self.invoke_returned(instance, args, span)?;
+        self.ordinary_return(result, span)
+    }
+    pub(super) fn invoke_returned(
+        &mut self,
+        instance: crate::generics::Instance,
+        args: Vec<Argument>,
+        span: Span,
+    ) -> Result<Option<returns::Returned>> {
         if instance.definition.function.external.is_some() {
-            return self.external_call(&instance.definition, args, span);
+            return self
+                .external_call(&instance.definition, args, span)
+                .map(|v| v.map(returns::Returned::Value));
         }
         match instance.definition.function.kind {
             FunctionKind::Program => self.fail(span, "B159", "program 调用只能位于程序阶段层"),
             FunctionKind::Cooperative => {
                 self.fail(span, "B208", "cooperative 函数需要显式 cooperate 根块调用")
             }
-            FunctionKind::Value => {
-                let result = self.inline_instance(instance, args, span)?;
-                self.ordinary_return(result, span)
-            }
+            FunctionKind::Value => self.inline_instance(instance, args, span),
             FunctionKind::Constant => {
                 self.fail(span, "B234", "const 通过名称读取，不能作为函数调用")
             }
@@ -293,6 +348,22 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let ty = parameter_type(self.world, param, callee)?;
+            if let Argument::OwnedResult(value) = arg {
+                if param.access != Access::Value || !ty.owns_resources() {
+                    return self.fail(
+                        span,
+                        "B224",
+                        "拥有结果参数按值转移，不能冒充普通值或位置借用",
+                    );
+                }
+                self.require_same(&ty, &value.value.ty, span)?;
+                let value = self.owned_result_binding(
+                    value,
+                    application::rebound(callee.function.body.as_ref().unwrap(), &param.name),
+                );
+                env.insert(param.name.clone(), Binding::OwnedResult(value));
+                continue;
+            }
             let binding = match (param.ty.dataset, param.ty.tile, arg) {
                 (true, false, Argument::ApplicationData(mut data)) => {
                     self.application_cpu(&data, span)?;

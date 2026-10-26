@@ -467,7 +467,7 @@ impl Builder<'_> {
             );
         }
     }
-    fn application_frame(&mut self, span: Span) -> Result<Value> {
+    pub(super) fn application_frame(&mut self, span: Span) -> Result<Value> {
         if self.application.is_none() {
             return self.fail(
                 span,
@@ -542,25 +542,25 @@ impl Builder<'_> {
         environment: &BTreeMap<String, Binding>,
         other: &BTreeMap<String, Binding>,
     ) -> Vec<Inst> {
-        let data: Vec<_> = environment
-            .iter()
-            .filter_map(|(name, binding)| {
-                if let (Binding::ApplicationData(data), Some(Binding::ApplicationData(after))) =
-                    (binding, other.get(name))
-                    && data.ownership == Ownership::Owned
-                    && after.ownership == Ownership::Moved
-                {
-                    Some(data.clone())
-                } else {
-                    None
+        let old = std::mem::take(&mut self.code);
+        for (name, binding) in environment {
+            let consumed = match (binding, other.get(name)) {
+                (Binding::ApplicationData(a), Some(Binding::ApplicationData(b))) => {
+                    a.ownership == Ownership::Owned && b.ownership == Ownership::Moved
                 }
-            })
-            .collect();
-        data.iter()
-            .flat_map(|data| self.application_drop(data))
-            .collect()
+                (Binding::OwnedResult(a), Some(Binding::OwnedResult(b))) => {
+                    a.ownership == Ownership::Owned && b.ownership == Ownership::Moved
+                }
+                _ => false,
+            };
+            if consumed {
+                self.drop_binding(binding.clone(), self.definition.function.span)
+                    .unwrap();
+            }
+        }
+        std::mem::replace(&mut self.code, old)
     }
-    fn application_drop(&mut self, data: &Data) -> Vec<Inst> {
+    pub(super) fn application_drop(&mut self, data: &Data) -> Vec<Inst> {
         let mut code = Vec::new();
         let handle = if let Some(slots) = data.slots {
             let reg = self.reg(Scalar::U32);
@@ -680,25 +680,25 @@ impl Builder<'_> {
         data
     }
     pub(super) fn release_application_data(&mut self, keep: Option<&BTreeSet<String>>) {
-        let data: Vec<_> = self
+        let bindings: Vec<_> = self
             .env
             .iter()
-            .filter_map(|(name, binding)| match binding {
-                Binding::ApplicationData(data)
-                    if data.ownership == Ownership::Owned
-                        && !keep.is_some_and(|names| names.contains(name)) =>
-                {
-                    Some(data.clone())
+            .filter(|(name, _)| !keep.is_some_and(|names| names.contains(*name)))
+            .filter_map(|(_, binding)| match binding {
+                Binding::ApplicationData(data) if data.ownership == Ownership::Owned => {
+                    Some(binding.clone())
+                }
+                Binding::OwnedResult(result) if result.ownership == Ownership::Owned => {
+                    Some(binding.clone())
                 }
                 _ => None,
             })
             .collect();
-        for data in data {
-            let code = self.application_drop(&data);
-            self.code.extend(code);
+        for binding in bindings {
+            self.drop_binding(binding, self.definition.function.span)
+                .unwrap();
         }
     }
-
     pub(super) fn application_data_expression(&self, expr: &Expr) -> bool {
         let name = match &expr.kind {
             ExprKind::Name(name) => {
@@ -872,6 +872,14 @@ impl Builder<'_> {
     }
     pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Data> {
         self.application_frame(span)?;
+        if let ExprKind::Call(name, args) = &expr.kind
+            && name == "try"
+        {
+            return match self.propagate_returned(args, span)? {
+                Some(returns::Returned::Dataset(data)) => Ok(data),
+                _ => self.fail(span, "B224", "try成功载荷不是dataset"),
+            };
+        }
         if let ExprKind::Name(name) = &expr.kind {
             let Some(mut data) = self.application_value(name, span)? else {
                 return self.fail(span, "B224", "dataset 移动需要应用拥有的实际资源");
@@ -970,6 +978,9 @@ impl Builder<'_> {
         } else {
             None
         };
+        if ty.owns_resources() {
+            return self.fail(span, "B224", "dataset 元素必须是普通存储，不能复制拥有句柄");
+        }
         if ty.contains_views() {
             return self.fail(
                 span,

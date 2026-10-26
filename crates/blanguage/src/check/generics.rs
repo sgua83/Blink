@@ -41,6 +41,7 @@ impl Builder<'_> {
                     ty: None,
                     count: t.shape(self.program),
                 },
+                Argument::OwnedResult(v) => Actual::value(&v.value.ty),
                 Argument::Value(v) => Actual::value(&v.ty),
                 Argument::Dataset(v) => Actual {
                     ty: Some(&self.program.buffers[v.binding].ty),
@@ -283,6 +284,11 @@ fn infer_type(
     if !formal.mentions(&parameter.name) {
         return Ok(());
     }
+    let actual = if formal.dataset && actual.dataset.is_some() {
+        actual.dataset.as_deref().unwrap()
+    } else {
+        actual
+    };
     let actual = if formal.view {
         actual.view.as_deref().ok_or_else(|| Diagnostic {
             source: source.clone(),
@@ -408,6 +414,21 @@ fn infer_value(
     span: Span,
     inferred: &mut Option<u32>,
 ) -> Result<()> {
+    if formal.dataset
+        && actual.dataset.is_some()
+        && formal.count == Some(Shape::Constant(name.into()))
+        && let Some(value) = actual.values.first()
+    {
+        if inferred.is_some_and(|before| before != *value) {
+            return source.fail(span, "B235", "dataset 的重复长度推导不一致");
+        }
+        *inferred = Some(*value);
+    }
+    let actual = if formal.dataset && actual.dataset.is_some() {
+        actual.dataset.as_deref().unwrap()
+    } else {
+        actual
+    };
     let actual = if formal.view {
         let Some(actual) = actual.view.as_deref() else {
             return Ok(());

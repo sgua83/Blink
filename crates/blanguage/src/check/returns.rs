@@ -1,9 +1,12 @@
 //! 返回点检查自己的输出与值；退出后只合流真实可继续路径，函数域不结束并行实例。
 use super::*;
 
+#[derive(Clone)]
 pub(super) enum Returned {
+    Unit,
     Value(Value),
     Dataset(application::Data),
+    OwnedResult(owned_results::OwnedResult),
 }
 #[derive(Clone)]
 enum Expected {
@@ -19,21 +22,35 @@ impl Expected {
     }
 }
 impl Returned {
-    fn registers(&self) -> Vec<Reg> {
+    pub(super) fn registers(&self) -> Vec<Reg> {
         match self {
+            Self::Unit => Vec::new(),
+            Self::OwnedResult(value) => value.value.regs.clone(),
             Self::Value(value) => value.regs.clone(),
             Self::Dataset(data) => vec![data.handle.regs[0], data.length.regs[0]],
         }
     }
-    fn join(&mut self, other: Self) {
+    pub(super) fn join(&mut self, other: Self) {
+        if matches!(self, Self::Unit) {
+            return;
+        }
+        if let Self::OwnedResult(value) = self {
+            let Self::OwnedResult(other) = other else {
+                unreachable!()
+            };
+            value.join(other);
+            return;
+        }
         if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &other) {
             data.handle.proof = bounds::Proof::common(&data.handle, &other.handle);
         }
         let (other, residency) = match &other {
+            Self::Unit | Self::OwnedResult(_) => unreachable!(),
             Self::Value(value) => (value, None),
             Self::Dataset(data) => (&data.length, data.residency),
         };
         let value = match self {
+            Self::Unit | Self::OwnedResult(_) => unreachable!(),
             Self::Value(value) => value,
             Self::Dataset(data) => &mut data.length,
         };
@@ -127,6 +144,12 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<Option<Value>> {
         match result {
+            Some(Returned::Unit) => Ok(None),
+            Some(Returned::OwnedResult(_)) => self.fail(
+                span,
+                "B224",
+                "拥有结果不能按普通值复制；使用绑定、match、try或拥有参数交接",
+            ),
             Some(Returned::Value(value)) => Ok(Some(value)),
             None => Ok(None),
             Some(Returned::Dataset(_)) => self.fail(
@@ -147,9 +170,18 @@ impl Builder<'_> {
         let expected = context.expected.clone();
         let value = match (expected, expr) {
             (Some(Expected::Value(ty)), Some(expr)) => {
-                let value = self.expr_expected(expr, Some(&ty))?;
-                self.require_same(&ty, &value.ty, expr.span)?;
-                Some(Returned::Value(value))
+                let result = self.evaluate_returned(expr, Some(&ty))?;
+                if !self.flow.continues() {
+                    return Ok(());
+                }
+                let mut value = result.ok_or_else(|| Diagnostic {
+                    source: self.definition.source.clone(),
+                    span,
+                    code: "B228",
+                    message: "返回需要值或拥有资源".into(),
+                })?;
+                self.check_returned_type(&mut value, &ty, expr.span)?;
+                Some(value)
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
                 let mut data = self.application_resource(expr, span)?;
@@ -235,6 +267,17 @@ impl Builder<'_> {
                 &definition.module,
                 &definition.imports,
             )?;
+            if ty.owns_resources()
+                && (name.dataset
+                    || definition.function.kind != FunctionKind::Value
+                    || definition.function.target != Target::Cpu)
+            {
+                return self.fail(
+                    definition.function.span,
+                    "B224",
+                    "拥有结果由普通CPU函数返回；并行元素与通用拥有聚合尚未实现",
+                );
+            }
             Some(if name.dataset {
                 Expected::Dataset {
                     ty,
@@ -359,18 +402,7 @@ impl Builder<'_> {
                         reg
                     })
                     .collect();
-                match value {
-                    Returned::Value(value) => value.regs = registers,
-                    Returned::Dataset(data) => {
-                        data.handle.regs = vec![registers[0]];
-                        data.handle.proof = bounds::Proof::capture(&data.handle);
-                        data.length.regs = vec![registers[1]];
-                        data.length.proof =
-                            bounds::Proof::capture(&data.length).with_domains(Domains::from([
-                                IndexDomain::ApplicationLength(data.handle.identity()),
-                            ]));
-                    }
-                }
+                self.rebind_returned(value, registers);
             }
         }
         Ok(result)

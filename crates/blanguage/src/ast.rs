@@ -88,6 +88,13 @@ pub enum Shape {
     Constant(String),
 }
 impl TypeName {
+    pub fn mentions_owned(&self) -> bool {
+        self.dataset
+            || self
+                .arguments
+                .iter()
+                .any(|arg| matches!(arg,GenericArgument::Type(ty) if ty.mentions_owned()))
+    }
     pub fn is_acceleration(&self) -> bool {
         self.name == "acceleration"
             && self.arguments.is_empty()

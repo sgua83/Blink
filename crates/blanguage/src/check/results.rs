@@ -104,7 +104,7 @@ impl Builder<'_> {
         value.literal = false;
         value
     }
-    fn result_payload(&mut self, value: &Value, success: bool) -> Option<Value> {
+    pub(super) fn result_payload(&mut self, value: &Value, success: bool) -> Option<Value> {
         let ty = value.ty.arguments[usize::from(!success)].clone();
         if ty.name == "void" {
             return None;
@@ -148,7 +148,7 @@ impl Builder<'_> {
             constant,
         })
     }
-    fn result_condition(&mut self, value: &Value, span: Span) -> Result<Value> {
+    pub(super) fn result_condition(&mut self, value: &Value, span: Span) -> Result<Value> {
         let tag = self.result_word(value, 0, Scalar::U32);
         let zero = self.constant(Scalar::U32, 0);
         self.binary("==", tag, zero, span)
@@ -181,12 +181,20 @@ impl Builder<'_> {
         no: &[Stmt],
         span: Span,
     ) -> Result<()> {
-        let value = self.expr(expr)?;
-        if !value.ty.result {
+        self.match_returned(expr, yes_name, yes, no_name, no, span)
+    }
+    pub(super) fn check_result_patterns(
+        &self,
+        ty: &Ty,
+        yes_name: &Option<String>,
+        no_name: &Option<String>,
+        span: Span,
+    ) -> Result<()> {
+        if !ty.result {
             return self.fail(span, "B269", "match 需要 result<T,E> 值");
         }
         for (success, binding) in [(true, yes_name), (false, no_name)] {
-            let unit = value.ty.arguments[usize::from(!success)].name == "void";
+            let unit = ty.arguments[usize::from(!success)].name == "void";
             if binding.is_none() && !unit {
                 return self.fail(span, "B269", "有载荷分支需要名称或 _ 模式");
             }
@@ -194,6 +202,18 @@ impl Builder<'_> {
                 return self.fail(span, "B269", "void 分支没有可绑定的载荷");
             }
         }
+        Ok(())
+    }
+    pub(super) fn match_value(
+        &mut self,
+        value: Value,
+        yes_name: &Option<String>,
+        yes: &[Stmt],
+        no_name: &Option<String>,
+        no: &[Stmt],
+        span: Span,
+    ) -> Result<()> {
+        self.check_result_patterns(&value.ty, yes_name, no_name, span)?;
         let condition = self.result_condition(&value, span)?;
         self.conditional_blocks(
             condition,
@@ -202,28 +222,8 @@ impl Builder<'_> {
         )
     }
     pub(super) fn propagate_result(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
-        if args.len() != 1 {
-            return self.fail(span, "B269", "try 需要一个结果表达式");
-        }
-        let value = self.expr(&args[0])?;
-        if !value.ty.result {
-            return self.fail(span, "B269", "try 需要 result<T,E> 值");
-        }
-        let Some(expected) = self.result_return_type().filter(|ty| ty.result) else {
-            return self.fail(span, "B269", "try 所在普通函数必须返回 result<T,E>");
-        };
-        self.require_same(&expected.arguments[1], &value.ty.arguments[1], span)?;
-        let condition = self.result_condition(&value, span)?;
-        self.conditional_blocks(
-            condition,
-            |_| Ok(()),
-            |b| {
-                let error = b.result_payload(&value, false);
-                let result = b.result_value(expected, false, error);
-                b.finish_return(Some(returns::Returned::Value(result)), span)
-            },
-        )?;
-        Ok(self.result_payload(&value, true))
+        let value = self.propagate_returned(args, span)?;
+        self.ordinary_return(value, span)
     }
     pub(super) fn explicit_result(
         &mut self,

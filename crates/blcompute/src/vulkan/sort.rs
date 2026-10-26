@@ -77,6 +77,7 @@ pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
         array: None,
         enumeration: false,
         result: false,
+        dataset: None,
     };
     let scalar = Ty::scalar(Scalar::U32);
     let n = count.div_ceil(64).max(1) * 16;

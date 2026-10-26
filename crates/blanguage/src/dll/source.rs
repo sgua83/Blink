@@ -114,7 +114,8 @@ record!(Ty {
     view,
     array,
     enumeration,
-    result
+    result,
+    dataset
 });
 record!(Buffer {
     name,

@@ -35,9 +35,16 @@ pub struct Ty {
     pub array: Option<Box<Ty>>,
     pub enumeration: bool,
     pub result: bool,
+    pub dataset: Option<Box<Ty>>,
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
+        if let Some(element) = &self.dataset {
+            let mut ty = element.syntax();
+            ty.dataset = true;
+            ty.count = self.values.first().map(|v| crate::ast::Shape::Literal(*v));
+            return ty;
+        }
         if let Some(element) = &self.array {
             let mut ty = crate::ast::TypeName::named("array");
             ty.arguments = vec![
@@ -66,6 +73,29 @@ impl Ty {
             .collect();
         ty
     }
+    pub fn owns_resources(&self) -> bool {
+        self.dataset.is_some() || (self.result && self.arguments.iter().any(Self::owns_resources))
+    }
+    pub fn owned_dataset(element: Self, count: Option<u32>) -> Self {
+        Self {
+            name: format!(
+                "dataset<{}{}>",
+                element.name,
+                count.map(|v| format!(",{v}")).unwrap_or_default()
+            ),
+            arguments: Vec::new(),
+            values: count.into_iter().collect(),
+            size: 8,
+            align: 4,
+            components: vec![(Scalar::U32, 0), (Scalar::U32, 4)],
+            fields: Vec::new(),
+            view: None,
+            array: None,
+            enumeration: false,
+            result: false,
+            dataset: Some(Box::new(element)),
+        }
+    }
     pub fn result(ok: Self, error: Self) -> Option<Self> {
         let align = ok.align.max(error.align).max(4);
         let offset = align_up(4, align);
@@ -88,6 +118,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: true,
+            dataset: None,
         })
     }
     pub fn unit() -> Self {
@@ -103,6 +134,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            dataset: None,
         }
     }
     pub fn scalar(s: Scalar) -> Self {
@@ -124,6 +156,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            dataset: None,
         }
     }
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -151,6 +184,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            dataset: None,
         }
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
@@ -176,6 +210,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            dataset: None,
         }
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
@@ -209,6 +244,7 @@ impl Ty {
                 array: None,
                 enumeration: false,
                 result: false,
+                dataset: None,
                 components: vec![
                     (Scalar::Bool, 0),
                     (Scalar::F32, 4),
@@ -242,7 +278,8 @@ impl Ty {
         })
     }
     pub fn is_numeric(&self) -> bool {
-        !self.enumeration
+        !self.owns_resources()
+            && !self.enumeration
             && !self.result
             && self.view.is_none()
             && self.array.is_none()

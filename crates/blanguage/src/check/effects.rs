@@ -118,6 +118,15 @@ impl Builder<'_> {
                 data.length.uniform = false;
             }
         }
+        for (name, binding) in &mut self.env {
+            if let Binding::OwnedResult(result) = binding
+                && writes
+                    .iter()
+                    .any(|e| matches!(&e.kind,ExprKind::Name(target) if target==name))
+            {
+                result.invalidate();
+            }
+        }
         let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (name, binding) in &self.env {
             if let Binding::Owned(owner) = binding {

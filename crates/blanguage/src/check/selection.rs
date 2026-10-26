@@ -18,6 +18,23 @@ impl Builder<'_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<Value> {
+        let result = self.selection_returned(condition, yes, no, span, expected)?;
+        self.ordinary_return(result, span)?
+            .ok_or_else(|| Diagnostic {
+                source: self.definition.source.clone(),
+                span,
+                code: "B228",
+                message: "选择式需要值".into(),
+            })
+    }
+    pub(super) fn selection_returned(
+        &mut self,
+        condition: &Expr,
+        yes: &Expr,
+        no: &Expr,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Result<Option<returns::Returned>> {
         let c = self.expr(condition)?;
         self.require_bool(&c, condition.span)?;
         let outer = std::mem::take(&mut self.code);
@@ -34,7 +51,10 @@ impl Builder<'_> {
         self.control_uniform &= c.uniform;
         self.refine_bounds(&c, true);
         self.flow = Flow::NEXT;
-        let a = self.expr_expected(yes, expected)?;
+        let mut a_result = self.evaluate_returned(yes, expected)?;
+        if self.flow.continues() && a_result.is_none() {
+            return self.fail(span, "B228", "选择式需要值");
+        }
         let yes_flow = self.flow;
         let yes_env = self.env.clone();
         let yes_effects = (
@@ -48,7 +68,10 @@ impl Builder<'_> {
         self.restore_expression_environment(environment, &yes_modified);
         self.refine_bounds(&c, false);
         self.flow = Flow::NEXT;
-        let b = self.expr_expected(no, expected)?;
+        let b_result = self.evaluate_returned(no, expected)?;
+        if self.flow.continues() && b_result.is_none() {
+            return self.fail(span, "B228", "选择式需要值");
+        }
         let no_flow = self.flow;
         let no_init = self.take_application_initialization_state();
         let yes_initial = yes_init.clone();
@@ -93,31 +116,46 @@ impl Builder<'_> {
         }
         self.control_uniform = control;
         self.code = outer;
-        self.require_same(&a.ty, &b.ty, span)?;
         if let Some(bits) = &c.constant {
-            let literal = a.literal && b.literal;
-            let mut value = if bits[0] != 0 {
+            if bits[0] != 0 {
                 self.code.extend(yes);
-                a
-            } else {
-                self.code.extend(no);
-                b
-            };
-            value.literal = literal;
-            return Ok(value);
+                return Ok(a_result);
+            }
+            self.code.extend(no);
+            return Ok(b_result);
         }
-        let slots: Vec<_> =
-            a.ty.components
-                .iter()
-                .map(|(s, _)| {
-                    let slot = self.locals.len();
-                    self.locals.push(*s);
-                    slot
-                })
-                .collect();
-        for ((slot, a), b) in slots.iter().zip(&a.regs).zip(&b.regs) {
-            yes.push(Inst::StoreLocal(*slot, *a));
-            no.push(Inst::StoreLocal(*slot, *b));
+        let a = a_result.as_ref().map(|v| self.returned_storage(v));
+        let b = b_result.as_ref().map(|v| self.returned_storage(v));
+        if let (Some(a), Some(b)) = (&a, &b) {
+            self.require_same(&a.ty, &b.ty, span)?;
+        }
+        let Some(storage) = a.as_ref().or(b.as_ref()) else {
+            self.code.push(Inst::If {
+                condition: c.regs[0],
+                yes,
+                no,
+            });
+            return Ok(None);
+        };
+        let ty = storage.ty.clone();
+        let slots: Vec<_> = ty
+            .components
+            .iter()
+            .map(|(s, _)| {
+                let i = self.locals.len();
+                self.locals.push(*s);
+                i
+            })
+            .collect();
+        if let Some(a) = &a {
+            for (slot, reg) in slots.iter().zip(&a.regs) {
+                yes.push(Inst::StoreLocal(*slot, *reg));
+            }
+        }
+        if let Some(b) = &b {
+            for (slot, reg) in slots.iter().zip(&b.regs) {
+                no.push(Inst::StoreLocal(*slot, *reg));
+            }
         }
         self.code.push(Inst::If {
             condition: c.regs[0],
@@ -125,26 +163,36 @@ impl Builder<'_> {
             no,
         });
         let regs = slots
-            .into_iter()
-            .zip(&a.ty.components)
-            .map(|(slot, (s, _))| {
-                let dst = self.reg(*s);
-                self.code.push(Inst::LoadLocal(dst, slot));
-                dst
+            .iter()
+            .zip(&ty.components)
+            .map(|(slot, (scalar, _))| {
+                let reg = self.reg(*scalar);
+                self.code.push(Inst::LoadLocal(reg, *slot));
+                reg
             })
             .collect();
-        let proof = if a.ty == Ty::scalar(Scalar::Bool) {
-            bounds::Proof::condition(bounds::Condition::select(&c, &a, &b))
-        } else {
-            bounds::Proof::common(&a, &b)
+        let proof = match (&a, &b) {
+            (Some(a), Some(b)) if ty == Ty::scalar(Scalar::Bool) => {
+                bounds::Proof::condition(bounds::Condition::select(&c, a, b))
+            }
+            (Some(a), Some(b)) => bounds::Proof::common(a, b),
+            _ => bounds::Proof::capture(storage),
         };
-        Ok(Value {
-            proof,
-            literal: false,
-            ty: a.ty,
-            regs,
-            uniform: c.uniform && a.uniform && b.uniform,
-            constant: None,
-        })
+        let mut result = match (a_result.take(), b_result) {
+            (Some(mut a), Some(b)) => {
+                a.join(b);
+                a
+            }
+            (Some(a), None) | (None, Some(a)) => a,
+            _ => unreachable!(),
+        };
+        self.rebind_returned(&mut result, regs);
+        if let returns::Returned::Value(value) = &mut result {
+            value.proof = proof;
+            value.uniform = c.uniform && a.iter().chain(b.iter()).all(|v| v.uniform);
+            value.literal = false;
+            value.constant = None;
+        }
+        Ok(Some(result))
     }
 }

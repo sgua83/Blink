@@ -20,7 +20,8 @@ fn identifier(value: &str) -> Result<String> {
     Ok(value.into())
 }
 fn plain(ty: &Ty) -> bool {
-    ty.view.is_none()
+    !ty.owns_resources()
+        && ty.view.is_none()
         && ty.fields.iter().all(|(_, _, t)| plain(t))
         && ty.array.as_ref().is_none_or(|t| plain(t))
 }

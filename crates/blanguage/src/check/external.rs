@@ -25,6 +25,13 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
 }
 fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Result<Ty> {
     let ty = world.ty(ty, &d.source, span, &d.module, &d.imports)?;
+    if ty.owns_resources() {
+        return d.source.fail(
+            span,
+            "B224",
+            "拥有结果需要Frame所有权协议，不能跨当前普通C ABI",
+        );
+    }
     if ty.contains_views() || ty.components.is_empty() {
         return d.source.fail(
             span,
