@@ -164,10 +164,10 @@ impl Emitter<'_> {
         self.emit(124, &[self.types[&Scalar::U32], bits, magnitude]);
         (bits, sign)
     }
-    fn signed_divide_value(&mut self, result: IntegerDivisionResult, src: Reg, divisor: Reg) {
+    fn signed_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: u32) {
         // 幅值留在 u32，可表示 abs(MIN32)；所有符号恢复按 32 位模运算完成。
         let (numerator, nsign) = self.signed_magnitude(self.value(src));
-        let (denominator, dsign) = self.signed_magnitude(self.value(divisor));
+        let (denominator, dsign) = self.signed_magnitude(divisor);
         let i = self.types[&Scalar::I32];
         for (operator, dst) in result.outputs() {
             let raw = self.id();
@@ -514,22 +514,20 @@ impl Emitter<'_> {
                     divisor,
                 } => {
                     let scalar = self.stage.registers[*src];
-                    if scalar == Scalar::I32
-                        && let IntegerDivisor::Value(divisor) = divisor
-                    {
-                        self.signed_divide_value(*result, *src, *divisor);
-                        continue;
-                    }
                     let divisor = match divisor {
                         IntegerDivisor::Constant(divisor) => self.constant(scalar, divisor.get()),
                         IntegerDivisor::Value(divisor) => self.value(*divisor),
                     };
+                    if scalar == Scalar::I32 {
+                        // Vulkan 未启用 maintenance8 时，负操作数的 OpSRem 没有定义。
+                        // 常量与动态除数共用幅值降低，保持语言的带符号除余规则。
+                        self.signed_divide(*result, *src, divisor);
+                        continue;
+                    }
                     for (op, dst) in result.outputs() {
-                        let opcode = match (scalar == Scalar::I32, op) {
-                            (false, IntegerDivisionOp::Quotient) => 134,
-                            (true, IntegerDivisionOp::Quotient) => 135,
-                            (false, IntegerDivisionOp::Remainder) => 137,
-                            (true, IntegerDivisionOp::Remainder) => 138,
+                        let opcode = match op {
+                            IntegerDivisionOp::Quotient => 134,
+                            IntegerDivisionOp::Remainder => 137,
                         };
                         self.emit(
                             opcode,

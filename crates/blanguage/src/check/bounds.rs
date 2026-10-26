@@ -14,6 +14,7 @@ pub(super) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
     origins: Vec<Vec<ValueIdentity>>,
     condition: Option<Box<Condition>>,
+    // 整数按数值顺序编码；i32 翻转符号位，复用相同的区间与路径合流。
     ranges: Vec<(u32, u32)>,
     nonzero: Vec<bool>,
     domains: Vec<Domains>,
@@ -198,7 +199,7 @@ impl Proof {
                 {
                     facts.insert(Fact::NonZero(identity));
                 }
-                if *scalar == Scalar::U32 {
+                if matches!(scalar, Scalar::U32 | Scalar::I32) {
                     let (minimum, maximum) = self.range(component);
                     if minimum != 0 {
                         facts.insert(Fact::Minimum(identity, minimum));
@@ -206,11 +207,13 @@ impl Proof {
                     if maximum != u32::MAX {
                         facts.insert(Fact::Maximum(identity, maximum));
                     }
-                    facts.extend(
-                        self.domains(component)
-                            .into_iter()
-                            .map(|d| Fact::Index(identity, d)),
-                    );
+                    if *scalar == Scalar::U32 {
+                        facts.extend(
+                            self.domains(component)
+                                .into_iter()
+                                .map(|d| Fact::Index(identity, d)),
+                        );
+                    }
                 }
             }
         }
@@ -264,15 +267,19 @@ impl Proof {
             Fact::Index(_, domain) if ty.components[component].0 == Scalar::U32 => {
                 self.mark_domain(component, domain);
             }
-            Fact::Minimum(_, lower) if ty.components[component].0 == Scalar::U32 => {
+            Fact::Minimum(_, lower)
+                if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) =>
+            {
                 self.ranges
                     .resize(self.ranges.len().max(component + 1), (0, u32::MAX));
                 self.ranges[component].0 = self.ranges[component].0.max(lower);
-                if lower != 0 {
+                if ty.components[component].0 == Scalar::U32 && lower != 0 {
                     self.mark_nonzero(component);
                 }
             }
-            Fact::Maximum(_, upper) if ty.components[component].0 == Scalar::U32 => {
+            Fact::Maximum(_, upper)
+                if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) =>
+            {
                 self.ranges
                     .resize(self.ranges.len().max(component + 1), (0, u32::MAX));
                 self.ranges[component].1 = self.ranges[component].1.min(upper);
@@ -392,6 +399,10 @@ impl Value {
             && (self.proof.nonzero.get(component) == Some(&true)
                 || (self.ty.components[component].0 == Scalar::U32
                     && self.component_range(component).0 != 0)
+                || (self.ty.components[component].0 == Scalar::I32 && {
+                    let (lower, upper) = self.component_range(component);
+                    lower > 0x8000_0000 || upper < 0x8000_0000
+                })
                 || self.constant.as_ref().is_some_and(|v| v[component] != 0))
     }
     pub(super) fn minimum(&self) -> u32 {
@@ -407,13 +418,32 @@ impl Value {
         self.component_range(0).1
     }
     fn component_range(&self, component: usize) -> (u32, u32) {
-        if self.ty.components[component].0 != Scalar::U32 {
+        let scalar = self.ty.components[component].0;
+        if !matches!(scalar, Scalar::U32 | Scalar::I32) {
             return (0, u32::MAX);
         }
         let (lower, upper) = self.proof.range(component);
-        let lower = lower.max(u32::from(self.proof.nonzero.get(component) == Some(&true)));
+        let (mut lower, mut upper) = (lower, upper);
+        if self.proof.nonzero.get(component) == Some(&true) {
+            if scalar == Scalar::U32 {
+                lower = lower.max(1);
+            } else {
+                if lower == 0x8000_0000 {
+                    lower += 1;
+                }
+                if upper == 0x8000_0000 {
+                    upper -= 1;
+                }
+            }
+        }
         if let Some(bits) = &self.constant {
-            (lower.max(bits[component]), upper.min(bits[component]))
+            let value = bits[component]
+                ^ if scalar == Scalar::I32 {
+                    0x8000_0000
+                } else {
+                    0
+                };
+            (lower.max(value), upper.min(value))
         } else {
             (lower, upper)
         }
@@ -627,44 +657,6 @@ impl Condition {
                     Comparison::NotEqual => Comparison::Equal,
                 }
             };
-            if signed {
-                if op == Comparison::Equal {
-                    facts.insert(Fact::equal(a.identity(), b.identity()));
-                }
-                for (value, other, relation) in [
-                    (a, b, op),
-                    (
-                        b,
-                        a,
-                        match op {
-                            Comparison::Less => Comparison::Greater,
-                            Comparison::Greater => Comparison::Less,
-                            Comparison::LessEqual => Comparison::GreaterEqual,
-                            Comparison::GreaterEqual => Comparison::LessEqual,
-                            other => other,
-                        },
-                    ),
-                ] {
-                    let known = match relation {
-                        Comparison::Equal => other.is_nonzero(),
-                        Comparison::NotEqual => other.constant.as_deref() == Some(&[0]),
-                        relation => other.constant.as_deref().is_some_and(|bits| {
-                            let c = bits[0] as i32;
-                            match relation {
-                                Comparison::Less => c <= 0,
-                                Comparison::LessEqual => c < 0,
-                                Comparison::Greater => c >= 0,
-                                Comparison::GreaterEqual => c > 0,
-                                Comparison::Equal | Comparison::NotEqual => false,
-                            }
-                        }),
-                    };
-                    if known {
-                        facts.insert(Fact::NonZero(value.identity()));
-                    }
-                }
-                continue;
-            }
             match op {
                 Comparison::Less => constrain(facts, a, b, true),
                 Comparison::Greater => constrain(facts, b, a, true),
@@ -684,23 +676,33 @@ impl Condition {
                             .iter()
                             .map(|domain| Fact::Index(b.identity(), *domain)),
                     );
-                    for (value, lower) in [(a, b.minimum()), (b, a.minimum())] {
+                    for (value, lower) in [(a, b.component_range(0).0), (b, a.component_range(0).0)]
+                    {
                         if lower != 0 {
                             facts.insert(Fact::Minimum(value.identity(), lower));
                         }
                     }
-                    for (value, upper) in [(a, b.maximum()), (b, a.maximum())] {
+                    for (value, upper) in [(a, b.component_range(0).1), (b, a.component_range(0).1)]
+                    {
                         if upper != u32::MAX {
                             facts.insert(Fact::Maximum(value.identity(), upper));
                         }
                     }
+                    for (value, other) in [(a, b), (b, a)] {
+                        if other.is_nonzero() {
+                            facts.insert(Fact::NonZero(value.identity()));
+                        }
+                    }
                 }
                 Comparison::NotEqual => {
-                    if b.constant.as_deref() == Some(&[0]) {
-                        facts.insert(Fact::Minimum(a.identity(), 1));
-                    }
-                    if a.constant.as_deref() == Some(&[0]) {
-                        facts.insert(Fact::Minimum(b.identity(), 1));
+                    for (value, other) in [(a, b), (b, a)] {
+                        if other.constant.as_deref() == Some(&[0]) {
+                            facts.insert(if signed {
+                                Fact::NonZero(value.identity())
+                            } else {
+                                Fact::Minimum(value.identity(), 1)
+                            });
+                        }
                     }
                 }
             }
@@ -711,18 +713,21 @@ impl Condition {
     }
 }
 fn constrain(facts: &mut Facts, index: &Value, limit: &Value, strict: bool) {
-    if let Some(upper) = limit.maximum().checked_sub(u32::from(strict)) {
+    if let Some(upper) = limit.component_range(0).1.checked_sub(u32::from(strict)) {
         if upper != u32::MAX {
             facts.insert(Fact::Maximum(index.identity(), upper));
         }
     }
-    facts.extend(
-        indices_below(&limit.proof.domains(0), strict)
-            .into_iter()
-            .map(|domain| Fact::Index(index.identity(), domain)),
-    );
+    if index.ty == Ty::scalar(Scalar::U32) {
+        facts.extend(
+            indices_below(&limit.proof.domains(0), strict)
+                .into_iter()
+                .map(|domain| Fact::Index(index.identity(), domain)),
+        );
+    }
     if let Some(lower) = index
-        .minimum()
+        .component_range(0)
+        .0
         .checked_add(u32::from(strict))
         .filter(|&lower| lower != 0)
     {
@@ -733,14 +738,16 @@ fn constrain(facts: &mut Facts, index: &Value, limit: &Value, strict: bool) {
 pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
     Proof {
-        ranges: if a.ty.components[0].0 == Scalar::U32 {
+        ranges: if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
             (0..count)
                 .map(|i| {
-                    unsigned_range(
-                        op,
-                        a.component_range(i % a.regs.len()),
-                        b.component_range(i % b.regs.len()),
-                    )
+                    let left = a.component_range(i % a.regs.len());
+                    let right = b.component_range(i % b.regs.len());
+                    if a.ty.components[0].0 == Scalar::I32 {
+                        signed_range(op, left, right)
+                    } else {
+                        unsigned_range(op, left, right)
+                    }
                 })
                 .collect()
         } else {
@@ -820,8 +827,56 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
                 }
             })
             .collect();
+    } else if value.ty.components[0].0 == Scalar::I32 {
+        proof.ranges = (0..value.regs.len())
+            .map(|i| {
+                let (lower, upper) = value.component_range(i);
+                if lower > upper {
+                    (1, 0)
+                } else {
+                    match op {
+                        UnaryOp::BitNot => (!upper, !lower),
+                        UnaryOp::SignedNegate if lower != 0 => {
+                            (0u32.wrapping_sub(upper), 0u32.wrapping_sub(lower))
+                        }
+                        _ => (0, u32::MAX),
+                    }
+                }
+            })
+            .collect();
     }
     proof
+}
+fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u32) {
+    if al > ah || bl > bh {
+        return (1, 0);
+    }
+    let decode = |value| i64::from((value ^ 0x8000_0000u32) as i32);
+    let (al, ah, bl, bh) = (decode(al), decode(ah), decode(bl), decode(bh));
+    let corners = |f: fn(i64, i64) -> i64| {
+        let values = [f(al, bl), f(al, bh), f(ah, bl), f(ah, bh)];
+        (*values.iter().min().unwrap(), *values.iter().max().unwrap())
+    };
+    let range = match op {
+        "+" => (al + bl, ah + bh),
+        "-" => (al - bh, ah - bl),
+        "*" => corners(|a, b| a * b),
+        "/" if bl > 0 || bh < 0 => corners(|a, b| a / b),
+        "%" if bl > 0 || bh < 0 => {
+            let maximum = bl.abs().max(bh.abs()) - 1;
+            (al.min(0).max(-maximum), ah.max(0).min(maximum))
+        }
+        ">>" if bl >= 0 && bh < 32 => corners(|a, b| a >> b),
+        "<<" if bl >= 0 && bh < 32 => corners(|a, b| a * (1i64 << b)),
+        ">>" if bl == bh => (al >> (bl & 31), ah >> (bl & 31)),
+        "<<" if bl == bh => (al * (1i64 << (bl & 31)), ah * (1i64 << (bl & 31))),
+        _ => return (0, u32::MAX),
+    };
+    // 原生整数仍按原规则回绕；只有整个结果区间未跨越 i32 边界时交付证明。
+    match (i32::try_from(range.0), i32::try_from(range.1)) {
+        (Ok(lower), Ok(upper)) => (lower as u32 ^ 0x8000_0000, upper as u32 ^ 0x8000_0000),
+        _ => (0, u32::MAX),
+    }
 }
 fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u32) {
     // 矛盾条件形成空区间；空集合的算术仍为空，不对不存在的端点做除法。
