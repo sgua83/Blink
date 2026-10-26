@@ -30,7 +30,11 @@ fn speculatable(
         | Inst::StoreLocal(..) => true,
         Inst::LoadLocal(_, slot) => !written.contains(slot),
         Inst::Load { binding, index, .. } => *binding == domain && indices.contains(index),
-        Inst::Unary { op, .. } => *op != UnaryOp::FloatNegate,
+        // f32 取负／abs 只改变符号位，不触发浮点算术的异常状态。
+        Inst::Unary { .. }
+        | Inst::Math {
+            op: MathOp::Abs, ..
+        } => true,
         Inst::Binary { a, .. } => registers[*a] != Scalar::F32,
         Inst::Cast { dst, src } => registers[*dst] != Scalar::F32 && registers[*src] != Scalar::F32,
         _ => false,
