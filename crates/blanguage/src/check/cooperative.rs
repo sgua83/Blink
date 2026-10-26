@@ -443,8 +443,8 @@ impl<'a> Builder<'a> {
             .collect();
         self.env = old_env;
         for (data, scope) in &dataset_outputs {
-            self.initialized.retain(|position| !matches!(position,
-                Position::Parameter(owner, _) | Position::ApplicationElement(owner, _, _) if owner == scope));
+            self.initialized
+                .retain(|position| !position.uses_scope(*scope));
             self.initialize_application(data);
         }
         let fresh_scopes: BTreeSet<_> = borrowed
@@ -461,7 +461,7 @@ impl<'a> Builder<'a> {
             })
             .collect();
         self.initialized
-            .retain(|p| !matches!(p, Position::Parameter(id, _) if fresh_scopes.contains(id)));
+            .retain(|p| !fresh_scopes.iter().any(|scope| p.uses_scope(*scope)));
         for (access, place) in &borrowed {
             if *access == Access::Write {
                 self.initialize(place);

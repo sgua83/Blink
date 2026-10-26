@@ -36,6 +36,7 @@ pub(super) struct LoopContext {
     resources: BTreeMap<String, (Option<Target>, application::Ownership)>,
     exits: Vec<LoopState>,
     initial: bool,
+    arrays: bool,
     continues: Vec<LoopState>,
     iterator: Option<String>,
     initial_cursor: Option<Value>,
@@ -63,6 +64,46 @@ impl Builder<'_> {
             }
         }
     }
+    pub(super) fn initialize_array_iteration_exit(
+        &self,
+        exit: &mut LoopState,
+        begin: &Value,
+        limit: &Value,
+        index: ownership::ApplicationIndex,
+        initial: bool,
+        body: &[Stmt],
+    ) {
+        if initial || bounds::seeks(body) {
+            return;
+        }
+        let states = &self.loop_contexts.last().unwrap().continues;
+        if states.is_empty() {
+            return;
+        }
+        let positions: BTreeSet<_> = states
+            .iter()
+            .flat_map(|state| state.initialized.iter().cloned())
+            .collect();
+        for position in positions {
+            if !states.iter().all(|state| {
+                self.position_initialized_in(&position, &state.initialized, &state.env)
+            }) {
+                continue;
+            }
+            if begin.maximum() < limit.minimum() && !position.uses_index(index) {
+                exit.initialized.insert(position.clone());
+            }
+            if begin.minimum() == begin.maximum()
+                && limit.minimum() == limit.maximum()
+                && let Position::Indexed(choices, at) = &position
+                && *at == index
+                && let Some(covered) =
+                    choices.get(begin.minimum() as usize..limit.minimum() as usize)
+            {
+                exit.initialized.extend(covered.iter().cloned());
+            }
+        }
+    }
     pub(super) fn application_initial_loop(&self, body: &[Stmt]) -> bool {
         self.env.iter().any(|(name, binding)| matches!(binding,
             Binding::ApplicationData(data) if data.ownership == application::Ownership::Moved && application::rebound(body, name)))
@@ -73,7 +114,9 @@ impl Builder<'_> {
         iterator: Option<String>,
         cursor: Option<Value>,
     ) {
+        let arrays = iterator.is_some() && self.incomplete_arrays();
         let context = self.loop_contexts.last_mut().unwrap();
+        context.arrays = arrays;
         context.initial = initial;
         context.iterator = iterator;
         context.initial_cursor = cursor;
@@ -119,7 +162,7 @@ impl Builder<'_> {
                 }
             }
         }
-        if self.env.values().any(|binding| matches!(binding, Binding::ApplicationData(data) if data.initialization.is_some())) {
+        if self.loop_contexts.last().unwrap().arrays || self.env.values().any(|binding| matches!(binding, Binding::ApplicationData(data) if data.initialization.is_some())) {
             let state = self.loop_state();
             self.loop_contexts.last_mut().unwrap().continues.push(state);
         }
@@ -179,6 +222,7 @@ impl Builder<'_> {
                 .collect(),
             exits: Vec::new(),
             initial: false,
+            arrays: false,
             continues: Vec::new(),
             iterator: None,
             initial_cursor: None,
@@ -275,11 +319,8 @@ impl Builder<'_> {
         self.env = first.env;
         self.initialized = first.initialized;
         for exit in exits {
-            self.initialized = self
-                .initialized
-                .intersection(&exit.initialized)
-                .copied()
-                .collect();
+            self.initialized =
+                ownership::intersect_initialized(&self.initialized, &exit.initialized);
             self.join_environment(&exit.env, None);
         }
         let final_environment = self.env.clone();

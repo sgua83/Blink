@@ -428,17 +428,22 @@ impl Builder<'_> {
             .all(|(_, offset)| self.application_field_initialized(data, offset / 4))
     }
     pub(super) fn application_field_initialized(&self, data: &Data, word: u32) -> bool {
+        self.application_field_initialized_in(data, word, &self.initialized)
+    }
+    pub(super) fn application_field_initialized_in(
+        &self,
+        data: &Data,
+        word: u32,
+        initialized: &BTreeSet<Position>,
+    ) -> bool {
         let Some(scope) = data.initialization else {
             return true;
         };
-        if self
-            .initialized
-            .contains(&Position::Parameter(scope, word as usize))
-        {
+        if initialized.contains(&Position::Parameter(scope, word as usize)) {
             return true;
         }
         let length = data.length.minimum();
-        data.length.maximum() == length && self.initialized.iter().filter(|position| matches!(position,
+        data.length.maximum() == length && initialized.iter().filter(|position| matches!(position,
             Position::ApplicationElement(owner, ownership::ApplicationIndex::Constant(index), component)
             if *owner == scope && *component == word && *index < length)).count() as u64 == u64::from(length)
     }

@@ -186,6 +186,7 @@ enum Place {
     ReadOnlyLocal(Ty, Vec<usize>, std::ops::Range<usize>),
     Indexed {
         ty: Ty,
+        initialization: Vec<Position>,
         base: Box<Place>,
         offset: Reg,
         words: Vec<u32>,
@@ -2800,6 +2801,14 @@ impl<'a> Builder<'a> {
         self.loop_depth -= 1;
         let mut code = std::mem::take(&mut self.code);
         self.initialize_iteration_exit(&mut natural, &initialization, iteration, initial);
+        self.initialize_array_iteration_exit(
+            &mut natural,
+            &begin,
+            &limit,
+            iteration,
+            initial,
+            body,
+        );
         let natural = (!nonempty || (!initial && body_flow.iterates())).then_some(natural);
         if initial {
             let specification = cursor_specification.clone();

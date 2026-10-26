@@ -35,12 +35,21 @@ impl Place {
                 base,
                 offset,
                 words,
+                initialization,
                 ..
             } => Self::Indexed {
                 ty,
                 base,
                 offset,
                 words: components.iter().map(|i| words[*i]).collect(),
+                initialization: if initialization.is_empty() {
+                    initialization
+                } else {
+                    components
+                        .iter()
+                        .map(|i| initialization[*i].clone())
+                        .collect()
+                },
             },
             Self::Element {
                 binding,
@@ -190,15 +199,7 @@ impl Builder<'_> {
             let components: Vec<_> = (first..first + element.components.len()).collect();
             return Ok(place.project(element, &components));
         }
-        match place.storage() {
-            Place::Local(..) => self.require_initialized(&place, span)?,
-            Place::Element { binding, .. }
-                if matches!(self.view_access[binding], Access::Write | Access::InOut) =>
-            {
-                self.require_initialized(&place, span)?
-            }
-            _ => {}
-        }
+        let initialization = self.indexed_positions(&place, &index, element.components.len());
         let stride = ir::align_up(element.size, element.align) / 4;
         let factor = self.constant(Scalar::U32, stride);
         let relative = self.binary("*", index, factor, span)?.regs[0];
@@ -236,6 +237,7 @@ impl Builder<'_> {
             .collect();
         Ok(Place::Indexed {
             ty: element,
+            initialization,
             base,
             offset,
             words,
@@ -284,6 +286,7 @@ impl Builder<'_> {
             base,
             offset,
             words,
+            ..
         } = place
         else {
             unreachable!()

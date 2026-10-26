@@ -15,12 +15,55 @@ impl ApplicationIndex {
         }
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
     Local(usize),
     Element(usize, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
+    Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
+}
+impl Position {
+    pub(super) fn initialized_by(&self, initialized: &BTreeSet<Position>) -> bool {
+        initialized.contains(self)
+            || match self {
+                Self::Indexed(choices, _) => choices
+                    .iter()
+                    .all(|choice| choice.initialized_by(initialized)),
+                Self::ApplicationElement(scope, _, word) => {
+                    initialized.contains(&Self::Parameter(*scope, *word as usize))
+                }
+                _ => false,
+            }
+    }
+    pub(super) fn uses_scope(&self, scope: usize) -> bool {
+        match self {
+            Self::Parameter(owner, _) | Self::ApplicationElement(owner, _, _) => *owner == scope,
+            Self::Indexed(choices, _) => choices.iter().any(|choice| choice.uses_scope(scope)),
+            _ => false,
+        }
+    }
+    pub(super) fn uses_index(&self, index: ApplicationIndex) -> bool {
+        if matches!(index, ApplicationIndex::Constant(_)) {
+            return false;
+        }
+        match self {
+            Self::ApplicationElement(_, value, _) => *value == index,
+            Self::Indexed(choices, value) => {
+                *value == index || choices.iter().any(|choice| choice.uses_index(index))
+            }
+            _ => false,
+        }
+    }
+}
+pub(super) fn intersect_initialized(
+    a: &BTreeSet<Position>,
+    b: &BTreeSet<Position>,
+) -> BTreeSet<Position> {
+    a.union(b)
+        .filter(|position| position.initialized_by(a) && position.initialized_by(b))
+        .cloned()
+        .collect()
 }
 impl Place {
     pub(super) fn owned_positions(&self) -> Option<Vec<Position>> {
@@ -39,7 +82,7 @@ impl Place {
                     })
                     .collect(),
             ),
-            Self::Indexed { base, .. } => base.owned_positions(),
+            Self::Indexed { initialization, .. } => Some(initialization.clone()),
             Self::ReadOnlyLocal(..) => Some(Vec::new()),
             Self::Local(_, slots, ..) => Some(slots.iter().copied().map(Position::Local).collect()),
             Self::Element { binding, words, .. } => Some(
@@ -214,23 +257,74 @@ impl Builder<'_> {
             };
             let identities = owner.initialization.as_ref()?;
             let components = place.components_in(&owner.place)?;
-            Some(components.iter().map(|i| identities[*i]).collect())
+            Some(components.iter().map(|i| identities[*i].clone()).collect())
         }) {
             return positions;
         }
-        if let Place::Indexed { base, .. } = place {
-            self.positions(base)
-        } else {
-            place.owned_positions().unwrap()
+        place.owned_positions().unwrap()
+    }
+    pub(super) fn indexed_positions(
+        &self,
+        place: &Place,
+        index: &Value,
+        width: usize,
+    ) -> Vec<Position> {
+        let positions = match place.owned_positions() {
+            Some(_) => self.positions(place),
+            None => return Vec::new(),
+        };
+        if positions.is_empty() {
+            return positions;
+        }
+        let index = ApplicationIndex::of(index);
+        (0..width)
+            .map(|component| {
+                let choices: std::sync::Arc<[Position]> = positions
+                    .chunks_exact(width)
+                    .map(|element| element[component].clone())
+                    .collect();
+                match index {
+                    ApplicationIndex::Constant(index) => choices[index as usize].clone(),
+                    _ => Position::Indexed(choices, index),
+                }
+            })
+            .collect()
+    }
+    pub(super) fn position_initialized_in(
+        &self,
+        position: &Position,
+        initialized: &BTreeSet<Position>,
+        environment: &BTreeMap<String, Binding>,
+    ) -> bool {
+        position.initialized_by(initialized) || match position {
+            Position::Indexed(choices, _) => choices.iter().all(|choice| self.position_initialized_in(choice, initialized, environment)),
+            Position::ApplicationElement(scope, _, word) => environment.values().any(|binding| matches!(binding,
+                Binding::ApplicationData(data) if data.initialization == Some(*scope) && self.application_field_initialized_in(data, *word, initialized))),
+            _ => false,
         }
     }
     pub(super) fn is_initialized(&self, place: &Place) -> bool {
         self.positions(place)
             .iter()
-            .all(|p| self.initialized.contains(p) || matches!(p, Position::ApplicationElement(scope, _, word)
-                if self.initialized.contains(&Position::Parameter(*scope, *word as usize))
-                || self.env.values().any(|binding| matches!(binding, Binding::ApplicationData(data)
-                    if data.initialization == Some(*scope) && self.application_field_initialized(data, *word)))))
+            .all(|position| self.position_initialized_in(position, &self.initialized, &self.env))
+    }
+    pub(super) fn incomplete_arrays(&self) -> bool {
+        self.env.values().any(|binding| {
+            matches!(binding, Binding::Owned(owner)
+            if owner.place.ty().contains_arrays() && !self.is_initialized(&owner.place))
+        }) || self.view_access.iter().any(|(binding, access)| {
+            *access == Access::Write
+                && self.program.buffers[*binding].ty.contains_arrays()
+                && self.program.buffers[*binding]
+                    .ty
+                    .components
+                    .iter()
+                    .any(|(_, offset)| {
+                        !self
+                            .initialized
+                            .contains(&Position::Element(*binding, offset / 4))
+                    })
+        })
     }
     pub(super) fn require_initialized(&self, place: &Place, span: Span) -> Result<()> {
         if !self.is_initialized(place) {
@@ -243,10 +337,6 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn initialize(&mut self, place: &Place) {
-        // A dynamic projection writes that selected position, never every field of its base.
-        // A borrowed output can still name and initialize that exact selected position.
-        if matches!(place, Place::Indexed { .. }) && !self.env.values().any(|binding|
-            matches!(binding, Binding::Owned(owner) if place.components_in(&owner.place).is_some())) { return; }
         self.initialized.extend(self.positions(place));
     }
     pub(super) fn join_initialization(
@@ -258,7 +348,7 @@ impl Builder<'_> {
         self.initialized = if let Some(bits) = &condition.constant {
             if bits[0] != 0 { yes } else { no }
         } else {
-            yes.intersection(&no).copied().collect()
+            intersect_initialized(&yes, &no)
         };
     }
     pub(super) fn borrow_owned(&self, place: Place) -> OwnedBinding {
@@ -277,7 +367,7 @@ impl Builder<'_> {
                 initialization: owner
                     .initialization
                     .as_ref()
-                    .map(|ids| components.iter().map(|i| ids[*i]).collect()),
+                    .map(|ids| components.iter().map(|i| ids[*i].clone()).collect()),
                 place,
             }
         } else {
