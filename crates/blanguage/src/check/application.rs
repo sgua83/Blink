@@ -92,9 +92,8 @@ pub(crate) fn compile_application(
     builder.calls.push(instance.name.clone());
     let requirements = contracts::resolve(&builder, d, &builder.env)?;
     contracts::assume(&mut builder.env, &requirements);
-    let result = builder
-        .function_body(d.function.body.as_ref().unwrap())?
-        .unwrap();
+    let result = builder.function_body(d.function.body.as_ref().unwrap())?;
+    let result = builder.ordinary_return(result, d.function.span)?.unwrap();
     let mut app = builder.application.take().unwrap();
     let mut body = ValueCode {
         registers: builder.registers,
@@ -262,10 +261,22 @@ impl Builder<'_> {
             constant: None,
         }))
     }
+    pub(super) fn release_application_handle(&mut self, handle: Reg) {
+        let frame = self.application.as_ref().unwrap().frame.clone().unwrap();
+        self.code.push(runtime_call(
+            "release",
+            vec![
+                argument(frame),
+                ExternalArgument::Value {
+                    ty: Ty::scalar(Scalar::U32),
+                    values: vec![handle],
+                },
+            ],
+            None,
+            Vec::new(),
+        ));
+    }
     pub(super) fn release_application_data(&mut self, keep: Option<&BTreeSet<String>>) {
-        let Some(frame) = self.application.as_ref().and_then(|app| app.frame.clone()) else {
-            return;
-        };
         let handles: Vec<_> = self
             .env
             .iter()
@@ -279,19 +290,40 @@ impl Builder<'_> {
             })
             .collect();
         for handle in handles {
-            self.code.push(runtime_call(
-                "release",
-                vec![
-                    argument(frame.clone()),
-                    ExternalArgument::Value {
-                        ty: Ty::scalar(Scalar::U32),
-                        values: vec![handle],
-                    },
-                ],
-                None,
-                Vec::new(),
-            ));
+            self.release_application_handle(handle);
         }
+    }
+
+    pub(super) fn application_data_expression(&self, expr: &Expr) -> bool {
+        let name = match &expr.kind {
+            ExprKind::Specialize(name, _, _) if name == "dataset" => return true,
+            ExprKind::Call(name, _) | ExprKind::Specialize(name, _, _) => name,
+            _ => return false,
+        };
+        self.world
+            .resolve(
+                name,
+                &self.definition.module,
+                &self.definition.imports,
+                true,
+            )
+            .is_some_and(|key| self.world.functions[&key].function.result.dataset)
+    }
+    pub(super) fn application_data_type(
+        &self,
+        data: &mut Data,
+        ty: &Ty,
+        count: Option<u32>,
+        span: Span,
+    ) -> Result<()> {
+        self.require_same(ty, &data.ty, span)?;
+        if let Some(count) = count {
+            if data.length.minimum() != count || data.length.maximum() != count {
+                return self.fail(span, "B167", "dataset 实际长度未满足声明的固定形状");
+            }
+            data.count = Some(count);
+        }
+        Ok(())
     }
     pub(super) fn application_dataset(
         &mut self,
@@ -300,6 +332,85 @@ impl Builder<'_> {
         expr: &Expr,
         span: Span,
     ) -> Result<()> {
+        let mut data = self.application_resource(expr, span)?;
+        if let Some(annotation) = annotation {
+            if !annotation.dataset {
+                return self.fail(span, "B124", "dataset 资源不能初始化普通值");
+            }
+            let definition = self.definition.clone();
+            let ty = self.world.ty(
+                annotation,
+                &definition.source,
+                span,
+                &definition.module,
+                &definition.imports,
+            )?;
+            let count = self.world.shape(
+                &annotation.count,
+                &definition.source,
+                span,
+                &definition.module,
+                &definition.imports,
+            )?;
+            self.application_data_type(&mut data, &ty, count, span)?;
+        }
+        self.env.insert(name.into(), Binding::ApplicationData(data));
+        Ok(())
+    }
+    pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Data> {
+        self.application_frame(span)?;
+        let (name, explicit, args) = match &expr.kind {
+            ExprKind::Specialize(name, _, _) if name == "dataset" => {
+                return self.create_application_dataset(expr, span);
+            }
+            ExprKind::Call(name, args) => (name, None, args),
+            ExprKind::Specialize(name, explicit, args) => (name, Some(explicit.as_slice()), args),
+            _ => {
+                return self.fail(
+                    span,
+                    "B266",
+                    "dataset 资源由构造或返回拥有资源的 CPU 函数取得",
+                );
+            }
+        };
+        let Some(key) = self.world.resolve(
+            name,
+            &self.definition.module,
+            &self.definition.imports,
+            true,
+        ) else {
+            return self.fail(span, "B158", format!("未知或未导出的资源函数 {name}"));
+        };
+        let callee = &self.world.functions[&key];
+        if !callee.function.result.dataset {
+            return self.fail(span, "B224", "dataset 资源声明需要返回拥有 dataset 的函数");
+        }
+        let arguments = self.function_arguments(&key, args, span)?;
+        let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
+        let Some(returns::Returned::Dataset(data)) =
+            self.inline_instance(instance, arguments, span)?
+        else {
+            return self.fail(span, "B224", "资源函数没有交付声明的 dataset 所有权");
+        };
+        Ok(data)
+    }
+    pub(super) fn application_owned_return(&mut self, expr: &Expr, span: Span) -> Result<Data> {
+        if let ExprKind::Name(name) = &expr.kind {
+            let Some(Binding::ApplicationData(data)) = self.env.get(name) else {
+                return self.fail(span, "B224", "dataset 返回需要函数拥有的实际资源");
+            };
+            if !data.owned {
+                return self.fail(span, "B227", "借用的 dataset 不能作为拥有资源返回");
+            }
+            let data = data.clone();
+            if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
+                source.owned = false;
+            }
+            return Ok(data);
+        }
+        self.application_resource(expr, span)
+    }
+    fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Data> {
         self.application_frame(span)?;
         let ExprKind::Specialize(constructor, explicit, args) = &expr.kind else {
             return self.fail(
@@ -333,7 +444,7 @@ impl Builder<'_> {
             &definition.module,
             &definition.imports,
         )?;
-        let mut count = if let Some(argument) = explicit.get(1) {
+        let count = if let Some(argument) = explicit.get(1) {
             let Some(shape) = argument.shape() else {
                 return self.fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
             };
@@ -347,34 +458,6 @@ impl Builder<'_> {
         } else {
             None
         };
-        if let Some(annotation) = annotation {
-            if !annotation.dataset {
-                return self.fail(
-                    span,
-                    "B124",
-                    "dataset 不能初始化普通值；使用 dataset<T> 声明或 let 推导资源类型",
-                );
-            }
-            let expected = self.world.ty(
-                annotation,
-                &definition.source,
-                span,
-                &definition.module,
-                &definition.imports,
-            )?;
-            self.require_same(&expected, &ty, span)?;
-            let annotated_count = self.world.shape(
-                &annotation.count,
-                &definition.source,
-                span,
-                &definition.module,
-                &definition.imports,
-            )?;
-            if annotated_count.is_some() && count.is_some() && annotated_count != count {
-                return self.fail(span, "B167", "dataset 声明与构造的静态形状不一致");
-            }
-            count = annotated_count.or(count);
-        }
         if ty.contains_views() {
             return self.fail(
                 span,
@@ -413,19 +496,15 @@ impl Builder<'_> {
             .regs[0];
         length.proof = bounds::Proof::capture(&length)
             .with_domains(Domains::from([IndexDomain::ApplicationLength(handle)]));
-        self.env.insert(
-            name.into(),
-            Binding::ApplicationData(Data {
-                handle,
-                ty,
-                length,
-                count,
-                owned: true,
-                writable: true,
-                residency: Some(Target::Cpu),
-            }),
-        );
-        Ok(())
+        Ok(Data {
+            handle,
+            ty,
+            length,
+            count,
+            owned: true,
+            writable: true,
+            residency: Some(Target::Cpu),
+        })
     }
     pub(super) fn application_element(data: &Data, index: Reg, index_range: (u32, u32)) -> Place {
         Place::ApplicationElement {

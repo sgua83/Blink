@@ -940,11 +940,13 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     if d.function.kind == FunctionKind::Program {
         return Ok(());
     }
-    if d.function.result.dataset {
+    if d.function.result.dataset
+        && !(d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu)
+    {
         return d.source.fail(
             d.function.span,
             "B224",
-            "dataset 只能借用现有资源，不能作为普通值返回",
+            "拥有的 dataset 返回属于普通 CPU 应用函数，借用与并行实例不转移资源所有权",
         );
     }
     if d.function.kind == FunctionKind::Cooperative && !d.function.params.iter().any(|p| p.ty.tile)
@@ -2682,9 +2684,7 @@ impl<'a> Builder<'a> {
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
-        if annotation.as_ref().is_some_and(|ty| ty.dataset)
-            || matches!(&e.kind, ExprKind::Specialize(call, _, _) if call == "dataset")
-        {
+        if annotation.as_ref().is_some_and(|ty| ty.dataset) || self.application_data_expression(e) {
             return self.application_dataset(annotation, name, e, span);
         }
         if let ExprKind::Call(call, args) = &e.kind {
@@ -3096,6 +3096,11 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn expression_statement(&mut self, e: &Expr) -> Result<()> {
+        if self.application_data_expression(e) {
+            let data = self.application_resource(e, e.span)?;
+            self.release_application_handle(data.handle);
+            return Ok(());
+        }
         if let ExprKind::Call(name, args) = &e.kind
             && name == "atomic_store"
         {

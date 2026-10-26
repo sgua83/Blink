@@ -99,7 +99,7 @@ download(rows);
 for (row in rows) { println(row.value); }
 ```
 
-`dataset<T>(length)` 接收 u32 长度并将普通值记录的完整存储初始化为零；长度为零有效。`let rows = dataset<T>(length)` 推导拥有的资源，固定形状可由声明或 `dataset<T,N>(length)` 给出，创建长度须证明等于 N。动态长度不会被用于推导 const 实例。dataset 不能初始化普通值、复制成另一份独占资源或按普通值返回；含 view 的资源图创建仍由原生资源 API 负责。
+`dataset<T>(length)` 接收 u32 长度并将普通值记录的完整存储初始化为零；长度为零有效。`let rows = dataset<T>(length)` 推导拥有的资源，固定形状可由声明或 `dataset<T,N>(length)` 给出，创建长度须证明等于 N。动态长度不会被用于推导 const 实例。dataset 不能初始化普通值或复制成另一份独占资源；拥有资源的函数返回见下节，不能将其当成普通值返回或存储。含 view 的资源图创建仍由原生资源 API 负责。
 
 资源公开只读 `length`。CPU 下标、字段、固定内联数组、有界游标、ordinal 和初始化规则复用原检查器与访存 IR；普通 CPU 函数的 `read dataset<T>` 共享读取当前 CPU 存储，`inout dataset<T>` 独占读写整份已初始化存储；两者都不转移所有权，不能 upload／download 或在退出时释放这份借用。inout 可继续按 inout 转借，或临时转借只读函数，也可调用对应的 CPU program；参数恢复后原所有者继续持有同一数据。一次调用中，独占的整份数据不能与同一存储的其他整份／元素借用重叠；共享 read 可以重复借用，同一存储中已证明分离的普通元素／字段仍可分别独占。别名按实际资源身份、位置范围和字段投影判断，不按参数名称猜测。应用内合法取得的 CPU 元素可作为现有 C ABI 的 read／write／inout 位置。动态存储不在 program 的逐元素／块内函数中创建。
 
@@ -111,7 +111,27 @@ CPU 应用的整份 inout 借用沿原函数静态内联和存储访问展开，
 
 编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break、continue 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
 
-带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
+带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；普通局部资源移动、拥有形参、其他资源种类返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
+
+### CPU 应用函数返回拥有的 dataset
+
+普通 `on cpu` 函数可声明 `dataset<T>` 或 `dataset<T,N>` 返回，交付函数自己创建并拥有的普通值存储。例如函数 `.h` 声明相同签名，`.b` 实现：
+
+```c
+dataset<Item> create_input(u32 length) on cpu {
+    dataset<Item> input = dataset<Item>(length);
+    run_cpu(seed(input));
+    return input;
+}
+```
+
+调用方使用 `let input = create_input(length);` 或匹配的 dataset 声明接收资源；`return dataset<Item>(length);` 和返回另一资源函数的结果也成立。资源不会复制，返回后的释放责任属于接收该结果的作用域。函数先清理其他本地资源，保留所返回资源；嵌套调用、分支和循环提前返回使用同一规则。`read`／`inout dataset` 参数只是借用，返回它们作为拥有资源报 B227。资源结果不能传给普通值参数或初始化普通值，类型不符沿原 B124／B224 处理。
+
+返回声明的元素类型必须相同，固定形状需要证明实际长度等于 N，否则报 B167。类型与 const 参数继续沿既有专门化选择；普通返回不从动态长度反推 const。不同返回点分别保留实际句柄与长度，后续读取 `length` 得到所选资源的真实长度。
+
+函数的 CPU 执行位置与资源的存储位置分别处理：函数可以返回经显式 upload 的资源，调用方继续 run_gpu 或 download，实际完成点与有效域关系留在原资源所有者。多返回位置的存储位置不一致时，其合流位置未知；需要确定位置的访问或传输沿原 B266 规则拒绝，不自动迁移。普通 CPU program 的并行实例不能据此创建动态 dataset；应用帧之外的资源构造／调用仍报 B266。
+
+单独调用资源函数而不接收结果时，结果在该表达式结束后释放；GPU 物理存储仍保持到最后真实消费者完成。当前资源结果通过原静态函数展开交付，不是普通值、C ABI 资源句柄或独立函数调用 ABI。普通局部变量之间的所有权移动、拥有资源形参、资源聚合及其他资源种类返回仍待实现。正式示例见 `sample/applications/datasets.b`。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 

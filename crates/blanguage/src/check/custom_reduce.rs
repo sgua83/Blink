@@ -101,6 +101,7 @@ fn function(
     builder.in_function = false;
     let instance = builder.specialized_arguments(key, &args, explicit, reference.span)?;
     let result = builder.inline_instance(instance, args, reference.span)?;
+    let result = builder.ordinary_return(result, expr.span)?;
     let result = builder.value_result(result, expr.span)?;
     builder.require_same(ty, &result.ty, expr.span)?;
     Ok(ValueCode {

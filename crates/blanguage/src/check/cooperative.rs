@@ -152,7 +152,10 @@ impl<'a> Builder<'a> {
             FunctionKind::Cooperative => {
                 self.fail(span, "B208", "cooperative 函数需要显式 cooperate 根块调用")
             }
-            FunctionKind::Value => self.inline_instance(instance, args, span),
+            FunctionKind::Value => {
+                let result = self.inline_instance(instance, args, span)?;
+                self.ordinary_return(result, span)
+            }
             FunctionKind::Constant => {
                 self.fail(span, "B234", "const 通过名称读取，不能作为函数调用")
             }
@@ -191,7 +194,8 @@ impl<'a> Builder<'a> {
         }
         let arguments = self.function_arguments(&key, args, span)?;
         let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
-        self.inline_instance(instance, arguments, span)
+        let result = self.inline_instance(instance, arguments, span)?;
+        self.ordinary_return(result, span)
     }
     pub(super) fn inline_function(
         &mut self,
@@ -203,14 +207,15 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B162", "函数参数数量不匹配");
         }
         let instance = self.specialized_function(key, &args, span)?;
-        self.inline_instance(instance, args, span)
+        let result = self.inline_instance(instance, args, span)?;
+        self.ordinary_return(result, span)
     }
     pub(super) fn inline_instance(
         &mut self,
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
-    ) -> Result<Option<Value>> {
+    ) -> Result<Option<returns::Returned>> {
         let key = instance.name;
         let callee = &instance.definition;
         if self.calls.contains(&key) {
@@ -382,7 +387,7 @@ impl<'a> Builder<'a> {
         };
         self.calls.push(key);
         let mut result = self.function_body(callee.function.body.as_ref().unwrap())?;
-        if let Some(value) = &mut result {
+        if let Some(returns::Returned::Value(value)) = &mut result {
             value.literal = false;
         }
         self.calls.pop();

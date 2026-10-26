@@ -1,12 +1,57 @@
 //! 返回点检查自己的输出与值；退出后只合流真实可继续路径，函数域不结束并行实例。
 use super::*;
 
+pub(super) enum Returned {
+    Value(Value),
+    Dataset(application::Data),
+}
+#[derive(Clone)]
+enum Expected {
+    Value(Ty),
+    Dataset { ty: Ty, count: Option<u32> },
+}
+impl Expected {
+    fn scalars(&self) -> Vec<Scalar> {
+        match self {
+            Self::Value(ty) => ty.components.iter().map(|(scalar, _)| *scalar).collect(),
+            Self::Dataset { .. } => vec![Scalar::U32, Scalar::U32],
+        }
+    }
+}
+impl Returned {
+    fn registers(&self) -> Vec<Reg> {
+        match self {
+            Self::Value(value) => value.regs.clone(),
+            Self::Dataset(data) => vec![data.handle, data.length.regs[0]],
+        }
+    }
+    fn join(&mut self, other: Self) {
+        let (other, residency) = match &other {
+            Self::Value(value) => (value, None),
+            Self::Dataset(data) => (&data.length, data.residency),
+        };
+        let value = match self {
+            Self::Value(value) => value,
+            Self::Dataset(data) => &mut data.length,
+        };
+        value.proof = bounds::Proof::common(value, other);
+        value.uniform &= other.uniform;
+        if value.constant != other.constant {
+            value.constant = None;
+        }
+        if let Self::Dataset(data) = self
+            && data.residency != residency
+        {
+            data.residency = None;
+        }
+    }
+}
 struct ReturnExit {
-    value: Option<Value>,
+    value: Option<Returned>,
     borrowed: BTreeMap<String, OwnedBinding>,
 }
 pub(super) struct ReturnContext {
-    expected: Option<Ty>,
+    expected: Option<Expected>,
     scoped: bool,
     slots: Vec<usize>,
     exits: Vec<ReturnExit>,
@@ -38,6 +83,21 @@ fn owns_exit(code: &[Inst]) -> bool {
     })
 }
 impl Builder<'_> {
+    pub(super) fn ordinary_return(
+        &self,
+        result: Option<Returned>,
+        span: Span,
+    ) -> Result<Option<Value>> {
+        match result {
+            Some(Returned::Value(value)) => Ok(Some(value)),
+            None => Ok(None),
+            Some(Returned::Dataset(_)) => self.fail(
+                span,
+                "B224",
+                "拥有的 dataset 需要资源声明或资源返回位置，不能当作普通值",
+            ),
+        }
+    }
     pub(super) fn return_statement(&mut self, expr: Option<&Expr>, span: Span) -> Result<()> {
         let Some(context) = &self.return_context else {
             return self.fail(
@@ -48,16 +108,22 @@ impl Builder<'_> {
         };
         let expected = context.expected.clone();
         let mut value = match (expected, expr) {
-            (Some(ty), Some(expr)) => {
+            (Some(Expected::Value(ty)), Some(expr)) => {
                 let value = self.expr(expr)?;
                 self.require_same(&ty, &value.ty, expr.span)?;
-                Some(value)
+                Some(Returned::Value(value))
+            }
+            (Some(Expected::Dataset { ty, count }), Some(expr)) => {
+                let mut data = self.application_owned_return(expr, span)?;
+                self.application_data_type(&mut data, &ty, count, span)?;
+                data.count = count;
+                Some(Returned::Dataset(data))
             }
             (None, None) => None,
             (Some(_), None) => return self.fail(span, "B228", "有返回值函数不能使用 return;"),
             (None, Some(_)) => return self.fail(span, "B228", "void 函数不能返回普通值"),
         };
-        if let Some(value) = &mut value {
+        if let Some(Returned::Value(value)) = &mut value {
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env);
         }
@@ -88,8 +154,8 @@ impl Builder<'_> {
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {
-                for (slot, reg) in context.slots.iter().zip(&value.regs) {
-                    self.code.push(Inst::StoreLocal(*slot, *reg));
+                for (slot, reg) in context.slots.iter().zip(value.registers()) {
+                    self.code.push(Inst::StoreLocal(*slot, reg));
                 }
             }
             self.code.push(Inst::Exit);
@@ -98,19 +164,33 @@ impl Builder<'_> {
         self.flow = Flow::RETURN;
         Ok(())
     }
-    pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<Option<Value>> {
+    pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<Option<Returned>> {
         let definition = self.definition.clone();
         let name = &definition.function.result;
         let expected = if name.name == "void" && !name.dataset && !name.tile && !name.view {
             None
         } else {
-            Some(self.world.ty(
+            let ty = self.world.ty(
                 name,
                 &definition.source,
                 definition.function.span,
                 &definition.module,
                 &definition.imports,
-            )?)
+            )?;
+            Some(if name.dataset {
+                Expected::Dataset {
+                    ty,
+                    count: self.world.shape(
+                        &name.count,
+                        &definition.source,
+                        definition.function.span,
+                        &definition.module,
+                        &definition.imports,
+                    )?,
+                }
+            } else {
+                Expected::Value(ty)
+            })
         };
         let scoped = early_returns(body);
         if scoped && definition.function.kind == FunctionKind::Cooperative {
@@ -123,10 +203,10 @@ impl Builder<'_> {
         let slots = if scoped {
             expected
                 .iter()
-                .flat_map(|t| &t.components)
-                .map(|(scalar, _)| {
+                .flat_map(Expected::scalars)
+                .map(|scalar| {
                     let slot = self.locals.len();
-                    self.locals.push(*scalar);
+                    self.locals.push(scalar);
                     slot
                 })
                 .collect()
@@ -196,11 +276,7 @@ impl Builder<'_> {
         let mut borrowed = first.borrowed;
         for exit in exits {
             if let (Some(value), Some(other)) = (&mut result, exit.value) {
-                value.proof = bounds::Proof::common(value, &other);
-                value.uniform &= other.uniform;
-                if value.constant != other.constant {
-                    value.constant = None;
-                }
+                value.join(other);
             }
             for (name, owner) in &mut borrowed {
                 let other = &exit.borrowed[name];
@@ -216,16 +292,26 @@ impl Builder<'_> {
         }
         if scoped {
             if let Some(value) = &mut result {
-                value.regs = context
+                let registers: Vec<_> = context
                     .slots
                     .iter()
-                    .zip(&value.ty.components)
-                    .map(|(slot, (scalar, _))| {
-                        let reg = self.reg(*scalar);
+                    .map(|slot| {
+                        let reg = self.reg(self.locals[*slot]);
                         self.code.push(Inst::LoadLocal(reg, *slot));
                         reg
                     })
                     .collect();
+                match value {
+                    Returned::Value(value) => value.regs = registers,
+                    Returned::Dataset(data) => {
+                        data.handle = registers[0];
+                        data.length.regs = vec![registers[1]];
+                        data.length.proof =
+                            bounds::Proof::capture(&data.length).with_domains(Domains::from([
+                                IndexDomain::ApplicationLength(data.handle),
+                            ]));
+                    }
+                }
             }
         }
         Ok(result)
