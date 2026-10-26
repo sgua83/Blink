@@ -1253,6 +1253,14 @@ object_to_world与world_to_object来自本次实际命中的TLAS实例，分别�
 
 执行框架 `Bindings` 同时接收 datasets 与 accelerations；提交对象在实际完成前持有全部资源。顶层结构的唯一所有者持有去重的 BLAS 引用；只读 acceleration 可以共享同一所有者。由 `Device::for_program` 从程序资源需求选择设备能力，创建加速结构的低层 unsafe 接口明确要求调用者提供有效几何及有限、可逆的实例变换。材质和数值算法正确性不由资源类型证明。
 
+原生框架的 `bottom_level_updatable`／`top_level_updatable`／`top_level_device_updatable` 明确以 ALLOW_UPDATE 构建；原静态入口保持。`refit_bottom_level(&source,positions,indices)`、`refit_top_level(&source,instances)`、`refit_top_level_device(&source,data)` 使用 Vulkan UPDATE 生成新的独立结构，同样返回 `BottomLevel`／`Acceleration`，不改变 B 的 `read acceleration` 类型、绑定顺序或查询 ABI。原结构及其克隆继续表示原快照；派生结果按自己的真实构建／查询完成点持有资源。
+
+refit 来源必须属于同一逻辑设备且在构建时声明可更新，primitive／instance 数量及三角形 maxVertex 保持。索引内容／顺序与活动状态保持、有限顶点／有限可逆矩阵是相应 unsafe 输入前提；形状、原生更新能力及设备归属由资源入口报告，不能将其解释为任意拓扑修改的许可。GPU 原生实例输入直接消费原 64 字节记录页及地址数组，也接受冻结数据的 `binding()`；同形的 CPU／GPU 实例入口可交接。只读资源没有原地写入权限。
+
+执行在更新真正完成前持有 source 的实际结构引用、输入与 scratch，新 TLAS 持有本次实际 BLAS 集合；is_complete／wait 观察本次更新本身，后续查询仍由各自提交负责。原生输入与 scratch 可以在本次更新完成后退出，旧查询需要的旧结构继续有效。`Acceleration::allocated_bytes` 仍只计结果 AS 与其直接持有的去重 BLAS 存储，不计 pending 操作临时持有的旧 AS、scratch／输入，不作为更新峰值、整卡驻留或共享资源的全局去重统计。
+
+当前 refit 是显式的新版本 AS 更新，覆盖已有三类原生构建输入；GPU 顶点／拓扑 BLAS 输入、原地更新、压缩及完整流送尚未实现，未新增 B 内的资源构造语法或通用版本／热更新能力。原生依据为 [更新约束](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html)，具体 API 与原生范围见 [设备实例](DeviceInstances.md)。
+
 光线查询不要求窗口：`Device::for_program` 不启用 surface／swapchain。需要原生窗口呈现的程序明确使用 `Device::with_presentation`，计算资源和执行语义保持相同。`Device::swapchain(instance,window,width,height)` 接收实际输出尺寸；呈现消费同设备、等像素数和 4 字节 stride 的 BGRA8 dataset，并逐实际物理页复制，页边界可位于像素行中间。真实表面尺寸和设备能力属于原平台入口，框架不写入某个应用的最低分辨率。
 
 ## 原生只读二维纹理（2026-10-25）

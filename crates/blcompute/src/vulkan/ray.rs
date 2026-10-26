@@ -170,6 +170,8 @@ pub(super) struct StructureStorage {
     _storage: Allocation,
     models: Vec<BottomLevel>,
     count: u32,
+    flags: u32,
+    max_vertex: Option<u32>,
 }
 impl Drop for StructureStorage {
     fn drop(&mut self) {
@@ -184,8 +186,8 @@ impl Drop for StructureStorage {
         }
     }
 }
-// 输出对象只持有其实际构建完成点；执行不反向持有这个对象。
-struct Structure {
+// 输出持有自己的完成点；执行不持有自身输出，refit 仅持有旧 source。
+pub(super) struct Structure {
     storage: ManuallyDrop<StructureStorage>,
     built: Rc<Execution>,
 }
@@ -242,6 +244,11 @@ pub struct RayInstance {
 }
 #[derive(Clone)]
 pub struct Acceleration(Rc<Structure>);
+enum BuildOperation<'a> {
+    Static,
+    Updatable,
+    Refit(&'a Rc<Structure>),
+}
 impl Acceleration {
     pub fn is_complete(&self) -> Result<bool> {
         self.0.built.is_complete()
@@ -290,6 +297,7 @@ impl Device {
         inputs: Vec<RayInput>,
         models: Vec<BottomLevel>,
         mut dependencies: Vec<Rc<Execution>>,
+        operation: BuildOperation<'_>,
     ) -> Result<Structure> {
         let ray = self
             .inner
@@ -304,17 +312,41 @@ impl Device {
         if count as u64 > limit {
             return Err(error("加速结构的 primitive／instance 数量超出设备能力"));
         }
+        let max_vertex = if structure_type == 1 {
+            Some(unsafe { geometry.data.triangles.max_vertex })
+        } else {
+            None
+        };
+        let static_flags = 4 | if self.inner.position_fetch && structure_type == 1 {
+            0x800
+        } else {
+            0
+        };
+        let (flags, source) = match operation {
+            BuildOperation::Static => (static_flags, None),
+            BuildOperation::Updatable => (static_flags | 1, None),
+            BuildOperation::Refit(source) => {
+                if !Rc::ptr_eq(&self.inner, &source.inner) {
+                    return Err(error("refit 来源不属于目标设备"));
+                }
+                if source.flags & 1 == 0 {
+                    return Err(error("refit 来源构建时未声明 ALLOW_UPDATE"));
+                }
+                if source.count != count || source.max_vertex != max_vertex {
+                    return Err(error(
+                        "refit 必须保持原 primitive／instance 数量与 maxVertex",
+                    ));
+                }
+                (source.flags, Some(source.clone()))
+            }
+        };
         let mut info = Build {
             kind: 1000150000,
             next: null(),
             structure_type,
-            flags: 4 | if self.inner.position_fetch && structure_type == 1 {
-                0x800
-            } else {
-                0
-            },
-            mode: 0,
-            source: 0,
+            flags,
+            mode: u32::from(source.is_some()),
+            source: source.as_ref().map_or(0, |source| source.handle),
             target: 0,
             geometry_count: 1,
             geometries: &geometry,
@@ -334,6 +366,7 @@ impl Device {
         let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1)?;
         dependencies.extend(inputs.iter().filter_map(|input| input.ready.clone()));
         dependencies.extend(models.iter().map(|model| model.0.built.clone()));
+        dependencies.extend(source.iter().map(|source| source.built.clone()));
         let dependencies = Execution::prepare(dependencies)?;
         let mut out = StructureStorage {
             inner: self.inner.clone(),
@@ -342,6 +375,8 @@ impl Device {
             _storage: storage,
             models,
             count,
+            flags,
+            max_vertex,
         };
         let ci = Create {
             kind: 1000150017,
@@ -362,7 +397,12 @@ impl Device {
         let alignment = ray.properties.scratch_alignment as u64;
         let scratch = Allocation::new(
             self.inner.clone(),
-            sizes.build_scratch + alignment - 1,
+            if source.is_some() {
+                sizes.update_scratch
+            } else {
+                sizes.build_scratch
+            } + alignment
+                - 1,
             0x20020,
             1,
         )?;
@@ -397,6 +437,7 @@ impl Device {
                 commands,
                 _scratch: scratch,
                 _inputs: inputs,
+                _source: source,
             },
             dependencies,
         );
@@ -412,6 +453,36 @@ impl Device {
         &self,
         positions: &[[f32; 3]],
         indices: &[[u32; 3]],
+    ) -> Result<BottomLevel> {
+        unsafe { self.bottom_level_operation(positions, indices, BuildOperation::Static) }
+    }
+    /// 显式允许后续 refit，其他输入及完成语义与 bottom_level 相同。
+    /// # Safety
+    /// 索引须落在 positions 内，位置必须有限。
+    pub unsafe fn bottom_level_updatable(
+        &self,
+        positions: &[[f32; 3]],
+        indices: &[[u32; 3]],
+    ) -> Result<BottomLevel> {
+        unsafe { self.bottom_level_operation(positions, indices, BuildOperation::Updatable) }
+    }
+    /// UPDATE 到新的独立 BLAS；旧结构及其查询保持原快照。
+    /// # Safety
+    /// 位置必须有限，索引须引用本次 positions；进入 UPDATE 的索引内容须与来源相同。
+    /// 数量或 maxVertex 不符由资源入口报告。
+    pub unsafe fn refit_bottom_level(
+        &self,
+        source: &BottomLevel,
+        positions: &[[f32; 3]],
+        indices: &[[u32; 3]],
+    ) -> Result<BottomLevel> {
+        unsafe { self.bottom_level_operation(positions, indices, BuildOperation::Refit(&source.0)) }
+    }
+    unsafe fn bottom_level_operation(
+        &self,
+        positions: &[[f32; 3]],
+        indices: &[[u32; 3]],
+        operation: BuildOperation<'_>,
     ) -> Result<BottomLevel> {
         let vertices: Vec<_> = positions.iter().flatten().map(|v| v.to_bits()).collect();
         let triangles: Vec<_> = indices.iter().flatten().copied().collect();
@@ -444,12 +515,36 @@ impl Device {
             vec![vertices, triangles],
             Vec::new(),
             Vec::new(),
+            operation,
         )
         .map(|s| BottomLevel(Rc::new(s)))
     }
     /// # Safety
     /// 实例仿射矩阵必须为有限值且可逆；模型由本设备的 BLAS 构造入口提供。
     pub unsafe fn top_level(&self, instances: Vec<RayInstance>) -> Result<Acceleration> {
+        unsafe { self.top_level_operation(instances, BuildOperation::Static) }
+    }
+    /// 显式允许后续 refit。
+    /// # Safety
+    /// 与 top_level 相同，全部实例矩阵必须有限且可逆。
+    pub unsafe fn top_level_updatable(&self, instances: Vec<RayInstance>) -> Result<Acceleration> {
+        unsafe { self.top_level_operation(instances, BuildOperation::Updatable) }
+    }
+    /// UPDATE 到独立 TLAS，允许交接新的实际 BLAS 引用及实例变换。
+    /// # Safety
+    /// 全部实例矩阵必须有限且可逆，实例保持原活动状态。
+    pub unsafe fn refit_top_level(
+        &self,
+        source: &Acceleration,
+        instances: Vec<RayInstance>,
+    ) -> Result<Acceleration> {
+        unsafe { self.top_level_operation(instances, BuildOperation::Refit(&source.0)) }
+    }
+    unsafe fn top_level_operation(
+        &self,
+        instances: Vec<RayInstance>,
+        operation: BuildOperation<'_>,
+    ) -> Result<Acceleration> {
         let mut words = Vec::with_capacity(instances.len() * 16);
         for instance in &instances {
             if !Rc::ptr_eq(&instance.model.0.inner, &self.inner) {
@@ -492,6 +587,7 @@ impl Device {
             vec![input],
             models,
             Vec::new(),
+            operation,
         )?;
         Ok(Acceleration(Rc::new(structure)))
     }
@@ -578,7 +674,30 @@ impl Device {
     /// # Safety
     /// 每条最终矩阵必须有限且线性部分可逆。调用者只能改写矩阵逻辑字段；
     /// 不得用 bulk copy/sort/compact 等操作破坏或换入未持有 BLAS 的原生尾部。
-    pub unsafe fn top_level_device(&self, mut data: GpuDataset) -> Result<Acceleration> {
+    pub unsafe fn top_level_device(&self, data: GpuDataset) -> Result<Acceleration> {
+        unsafe { self.top_level_device_operation(data, BuildOperation::Static) }
+    }
+    /// 直接以 B 产生的原生实例数据构建可更新 TLAS。
+    /// # Safety
+    /// 与 top_level_device 相同的矩阵及原生尾部／BLAS 前提。
+    pub unsafe fn top_level_device_updatable(&self, data: GpuDataset) -> Result<Acceleration> {
+        unsafe { self.top_level_device_operation(data, BuildOperation::Updatable) }
+    }
+    /// B 实例数据直接进入 UPDATE；输入及原结构保持到本次更新真正完成。
+    /// # Safety
+    /// 与 top_level_device 相同，实例保持原活动状态。
+    pub unsafe fn refit_top_level_device(
+        &self,
+        source: &Acceleration,
+        data: GpuDataset,
+    ) -> Result<Acceleration> {
+        unsafe { self.top_level_device_operation(data, BuildOperation::Refit(&source.0)) }
+    }
+    unsafe fn top_level_device_operation(
+        &self,
+        mut data: GpuDataset,
+        operation: BuildOperation<'_>,
+    ) -> Result<Acceleration> {
         if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
             return Err(error("实例输入不属于目标设备"));
         }
@@ -610,6 +729,7 @@ impl Device {
             Vec::new(),
             models,
             dependencies,
+            operation,
         )?;
         data.last_use = Some(structure.built.clone());
         drop(data);

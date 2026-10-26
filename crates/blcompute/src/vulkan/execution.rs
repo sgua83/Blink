@@ -182,6 +182,7 @@ pub(super) enum ExecutionResources {
         commands: Commands,
         _scratch: Allocation,
         _inputs: Vec<ray::RayInput>,
+        _source: Option<Rc<ray::Structure>>,
     },
 }
 impl ExecutionResources {

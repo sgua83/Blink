@@ -83,3 +83,19 @@ ReadDataset::binding返回可直接放入原vulkan::Bindings.datasets的GpuDatas
 top_level_device_read也复用此路径，AS不再保留独立的_read_inputs持有字段和私有共享构建链。存储只在最后实际消费者完成后释放；普通唯一输入仍按同一构建寿命退出。原生matrix／BLAS／device约束与unsafe前提保持。
 
 BLEngine据此删除仅为共享绑定存在的相机、实例元数据和运动输入引用包装。视图引用依然用于真正的嵌套数据关系；本项不是禁止view，也没有复制BLCamera／世界矩阵或增加逐帧校验。Release原生边界、跨页与生命周期记录见[问题列表](Issues.md#blengine提出的原生只读dataset直接绑定缺口2026-10-26)。
+
+## 显式可更新构建与新版本 refit（2026-10-27）
+
+| 构建入口 | 对应更新入口 | 输入与所有权 |
+|---|---|---|
+| unsafe bottom_level_updatable(positions,indices) | unsafe refit_bottom_level(&source,positions,indices) | CPU 顶点与索引复制到本次原生输入；索引内容／顺序和活动状态保持，顶点有限 |
+| unsafe top_level_updatable(instances) | unsafe refit_top_level(&source,instances) | 本次实际 RayInstance 变换和 BLAS；矩阵有限可逆，实例活动状态保持 |
+| unsafe top_level_device_updatable(data) | unsafe refit_top_level_device(&source,data) | 原 B 原生实例数据、页内地址及 BLAS；维持 top_level_device 的矩阵及原生尾部前提 |
+
+原 bottom_level／top_level／top_level_device／top_level_device_read 仍为原静态构建，未声明 ALLOW_UPDATE 的来源不能进入 refit。同一逻辑设备、原数量和三角形 maxVertex 由唯一原生描述负责；不同数量或顶点范围属于不同构建形状。GPU 只读实例输入直接用 `frozen.binding()` 交给可更新构建／refit，不再增加专用读取包装；同形 CPU 与 GPU 输入可在更新中交接。
+
+新入口复用 build_acceleration，source 为原 AS，target 为独立新 AS，选择真实 UPDATE 与 updateScratchSize；原静态入口继续 BUILD 和 buildScratchSize，build flags 在后续更新中保持。source 本体而非仅其旧完成点由本次原 Execution 持有，更新完成后归还；新 TLAS 唯一存储持有本次真实 BLAS 集合，旧查询保留旧集合。没有主机等待才能开始更新的额外前置，也没有原地改写共享资源、全局版本表、自动重建或后台回收。
+
+`is_complete`／`wait` 表示该结果自身的构建／更新完成；查询的使用期限沿原提交持有，源 CPU 数组在 API 已复制后可退出。构建完成后不再保留顶点／索引的 CPU 镜像。实现不自动证明所有输入的有限性、矩阵可逆性或相同索引内容；这些 unsafe 条件与真正原生形状／设备边界分别负责。
+
+原生记录见 Issues 的 C-003／C-022.4 refit：分别记录旧新快照、连续更新、CPU／GPU 输入交接、实际 pending 中的来源退出及查询结果；构建与遍历性能、峰值资源、完整引擎采用不由接口实现代替。GPU 顶点 BLAS 输入、原地更新、压缩／重排和完整流送继续开放。

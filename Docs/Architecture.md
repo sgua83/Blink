@@ -583,7 +583,17 @@ Execution按真实操作持有命令、上传暂存、构建输入与scratch；�
 
 Device::download_texture 借用本设备的真实不可变图像，将全部 mip 直接复制到 host-visible coherent staging，返回新的 CPU Texture2D；源 CPU 像素不作为图像镜像保留。图像创建声明采样及双向传输用途，上传与下载共用由实际尺寸／mip 数推导的紧密复制区域。当前单队列在本图像范围过渡 shader-read→transfer-src→shader-read，覆盖此前上传和采样访问，等待本次复制及布局恢复完成后返回；图像仍可由原共享引用继续采样。staging 只映射一次，各 mip 直接写入最终像素 Vec；缓冲区和纹理共用原映射／Transfer Execution 入口，不再重复构造提交完成对象。调用者可显式把 CPU 快照上传到另一独立逻辑 Device，两个原生资源和完成点分别所有；不按物理设备名称共享句柄或建立自动迁移／布局状态表。复制依据 [Vulkan 图像到缓冲区接口](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyImageToBuffer.html) 与 [图像用途](https://docs.vulkan.org/refpages/latest/refpages/source/VkImageUsageFlagBits.html)。
 
-BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。直接跨设备传输、多队列、refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
+BottomLevel／Acceleration的is_complete／wait观察其构建或显式 refit 完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。直接跨设备传输、多队列、原地 refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
+
+## 加速结构的显式可更新构建与 refit（2026-10-27）
+
+原 bottom_level／top_level／top_level_device 保持原静态构建；对应 *_updatable 入口明确声明 Vulkan ALLOW_UPDATE。refit_bottom_level／refit_top_level／refit_top_level_device 在同一 build_acceleration 中选择 UPDATE，以原结构为 source、独立新分配为 target，沿原依赖、barrier 和原生完成点提交；scratch 使用本次查询的 updateScratchSize。原结构及其共享查询保持原快照，新结果仍由相同 BottomLevel／Acceleration 所有者交接；没有原地改写、自动重建、另一套构建器或资源注册表。语义依据 [构建与更新的 source／target](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureBuildGeometryInfoKHR.html) 及 [构建大小与更新 scratch](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetAccelerationStructureBuildSizesKHR.html)。
+
+实际 AS 所有者保存原生 build flags、primitive／instance 数量及三角形 maxVertex，更新保留这些既有描述；设备归属、ALLOW_UPDATE 及形状由原资源边界处理。索引内容／顺序与活动状态、有限顶点／可逆实例矩阵仍是相应 unsafe 输入前提，不通过保存原 CPU 索引、逐元素校验或额外证明链重建第二份权威。GPU 实例输入沿原 64 字节页／地址数组直接构建和更新，共享只读 binding 继续持有原存储；CPU 与 GPU 输入可在符合原形状时交接。
+
+UPDATE 的真实消费者会读取旧 AS 本体，仅引用其旧构建完成点不足以保持原存储。原 ExecutionResources::Acceleration 因而同时持有本次 source 结构、输入与 scratch，到更新实际完成后归还。新 TLAS 持有其实际新 BLAS 集合；旧 TLAS 和旧查询继续持有旧集合。资源沿既有完成回收入口释放，不将版本关系变成全局当前场景、后台回收或代码热更新机制。
+
+当前覆盖已有 CPU 顶点 BLAS、CPU 实例 TLAS 与 GPU 实例 TLAS 的显式新版本更新。GPU 顶点／拓扑 BLAS 输入、原地更新、压缩／重排、自动构建选择与完整流送仍开放。接口实现、原生查询、完整引擎采用、构建／遍历性能和峰值资源各自记录，不把 UPDATE 指令或新 API 当作性能优势的证明。
 
 ## 直接生产依赖与完成后的资源归还（2026-10-27）
 
