@@ -23,6 +23,29 @@ impl Builder<'_> {
             _ => self.fail(expr.span, "B200", "需要命名 dataset 或其字段"),
         }
     }
+    pub(super) fn record_expression(
+        &mut self,
+        name: &TypeName,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Value> {
+        let ty = self.world.ty(
+            name,
+            &self.definition.source,
+            span,
+            &self.definition.module,
+            &self.definition.imports,
+        )?;
+        let mut values = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let expected = ty
+                .array
+                .as_deref()
+                .or_else(|| ty.fields.get(index).map(|(_, _, ty)| ty.as_ref()));
+            values.push(self.expr_expected(arg, expected)?);
+        }
+        self.record_value(name, values, span)
+    }
     pub(super) fn record_value(
         &mut self,
         name: &TypeName,
@@ -36,6 +59,9 @@ impl Builder<'_> {
             &self.definition.module,
             &self.definition.imports,
         )?;
+        if ty.result {
+            return self.fail(span, "B269", "结果通过 Ok／Err 构造，不能直接构造原始存储");
+        }
         if ty.enumeration {
             if values.len() != 1 {
                 return self.fail(

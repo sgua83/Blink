@@ -1,6 +1,6 @@
 # C、C++ 与 Rust 集成
 
-C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 bllink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，已有签名保持不变。
+C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 bllink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，继续作为正式 SDK 提供。
 
 ## 编译算法，再链接为 DLL
 
@@ -64,7 +64,7 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 
 ## 数据、完成与释放
 
-- DLL 当前接受纯值 dataset 和 uniform：f32／u32／i32／bool、向量、矩阵、普通或具体泛型记录、固定内联数组。生成布局直接取自编译器的字段偏移、对齐与步长；布尔字段使用 32 位整数，值为 0 或 1。
+- DLL 当前接受纯值 dataset 和 uniform：f32／u32／i32／bool、向量、矩阵、编号枚举、普通值／void result、普通或具体泛型记录、固定内联数组。生成布局直接取自编译器的字段偏移、对齐与步长；布尔字段使用32位整数，B写出为0或1，原生传入按零／非零解码。
 - 向量、矩阵、嵌套记录和数组展开为 v_position_x、v_tags_0 等标量成员，填充与字节偏移显式保留。不要直接强转宿主自有结构；按生成的类型填充字段。执行层只复制真实字段，不读取或改写宿主结构体的填充。
 - 每个数据指针配一个 u32 元素数，单位是完整记录。只读参数生成 const 指针／Rust 共享切片；可写参数生成可写指针／Rust 独占切片。各可写区间不得与其他参数重叠；调用期间宿主不能同时访问相应内存。
 - run 是一次同步调用：准备本次存储、复制输入、执行、等待实际完成，再复制输出。GPU 路径包含上传与输出读回；DLL 不在返回后借用调用方数组。数组始终由宿主分配和释放，handle 由 DLL 创建并由 DLL 的 destroy 释放。所有 handle 销毁后才能卸载 DLL。
@@ -99,3 +99,15 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 当前只接受无泛型／契约的 on cpu 普通外部函数和非空普通值／void 返回。dataset、tile、view、纹理、加速结构及含资源记录不能跨此 ABI；CPU 端已合法取得的普通元素仍可借用。裸指针值、u64、opaque handle、回调、变参、静态对象链接及其他平台仍待实现。B 应用创建动态数据与组织 CPU／GPU program 仍归 C-011，不以外部调用或宿主已有能力冒充完成；原生 Rust 计算 API 保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
+
+## B 业务结果与调用状态
+
+B 的 `result<T,E>` 是业务数据，和生成 DLL 的 create／run 返回状态分别处理。C ABI 的0／-1、C++异常及Rust包装器Result报告装载／设备／执行／接口调用；一个合法执行可以在输出记录中产生业务Err，不因此变成DLL调用失败。B的try只传播显式业务结果，不自动捕获平台失败、外部异常或回滚已经发生的写入。
+
+结果布局以偏移0处4字节B bool判别（零为Ok，非零为Err，B构造为0／1），载荷从两类载荷与4的最大自然对齐开始，共用最大载荷大小，整体按同一对齐补齐。生成记录中的 `*_tag`、`*_payload_序号` 及显式填充反映这个真实布局；载荷字按活动分支的原类型解释。对齐填充不作为业务值保证，宿主不能仅因总大小相同就假设字段偏移相同。原生声明仍是可信边界，宿主提供有效活动载荷，不引入动态类型对象或第二份所有权状态。
+
+结果作为普通POD可用于B导入的外部C函数值、返回及位置借用；生成算法接口继续同时服务C／C++和Rust。Windows x64的8字节寄存器结果和80字节间接结果已有PA3双向原生记录；含80字节结果的96字节记录由C++及Rust宿主在CPU／GPU各65条完整核对，包含非规范的非零判别字、NaN原始位及嵌套数组。实际验证使用正式Release、C++ /O2、Rust opt-level=3与panic=abort。
+
+当前结果载荷支持不含view的普通值及void；拥有资源、view资源图、一般变体、按错误分支的部分输出契约和结果形式的应用入口仍开放。接口语法、分支及显式传播见[语言规范](BLanguage.md#有载荷结果分支与显式传播2026-10-27)，资源按原最后真实消费者完成后释放。
+
+Rust SDK的ir::Ty新增结果类别；直接使用该结构体字面量的消费者需补齐result字段，已有类型构造器自动保持相应类别。此项不改变生成C函数及C++／Rust包装器的调用签名。

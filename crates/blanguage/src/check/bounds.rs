@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn seeks(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match &statement.kind {
         StmtKind::Seek(..) => true,
-        StmtKind::If(_, yes, no) => seeks(yes) || seeks(no),
+        StmtKind::If(_, yes, no) | StmtKind::Match(_, _, yes, _, no) => seeks(yes) || seeks(no),
         // Nested loops own their reentry; their seek cannot replace this cursor.
         _ => false,
     })

@@ -346,7 +346,14 @@ fn load(
     {
         if matches!(
             record.name.as_str(),
-            "acceleration" | "dataset" | "view" | "tile" | "array" | "texture2d" | "void"
+            "acceleration"
+                | "dataset"
+                | "view"
+                | "tile"
+                | "array"
+                | "result"
+                | "texture2d"
+                | "void"
         ) || ir::Ty::builtin(&record.name).is_some()
         {
             return source.fail(record.span, "B184", "记录名称不能覆盖内置类型");
@@ -382,7 +389,14 @@ fn load(
             || ir::Ty::builtin(&set.name).is_some()
             || matches!(
                 set.name.as_str(),
-                "void" | "dataset" | "view" | "tile" | "array" | "acceleration" | "texture2d"
+                "void"
+                    | "dataset"
+                    | "view"
+                    | "tile"
+                    | "array"
+                    | "result"
+                    | "acceleration"
+                    | "texture2d"
             )
             || matches!(
                 set.name.as_str(),
@@ -539,6 +553,38 @@ impl World {
                 view: Some(Box::new(element)),
                 array: None,
                 enumeration: false,
+                result: false,
+            });
+        }
+        if name.name == "result" {
+            if name.arguments.len() != 2 {
+                return source.fail(span, "B269", "result<T,E> 需要成功及错误两个类型");
+            }
+            let mut payloads = Vec::new();
+            for argument in &name.arguments {
+                let GenericArgument::Type(payload) = argument else {
+                    return source.fail(span, "B269", "结果实参需要类型");
+                };
+                if payload.dataset || payload.tile {
+                    return source.fail(span, "B269", "拥有资源或 tile 的结果载荷尚未实现");
+                }
+                let ty = if *payload == TypeName::named("void") {
+                    ir::Ty::unit()
+                } else {
+                    self.ty_inner(payload, source, span, module, imports, stack)?
+                };
+                if ty.contains_views() {
+                    return source.fail(span, "B269", "含 view 资源图的结果载荷尚未实现");
+                }
+                payloads.push(ty);
+            }
+            let error = payloads.pop().unwrap();
+            let ok = payloads.pop().unwrap();
+            return ir::Ty::result(ok, error).ok_or_else(|| Diagnostic {
+                source: source.clone(),
+                span,
+                code: "B269",
+                message: "结果布局超过 u32 字节地址范围".into(),
             });
         }
         if name.name == "array" {
@@ -589,6 +635,7 @@ impl World {
                 view: None,
                 array: Some(Box::new(element)),
                 enumeration: false,
+                result: false,
             });
         }
         if let Some(ty) = ir::Ty::builtin(&name.name) {
@@ -621,7 +668,11 @@ impl World {
             if arg.dataset || arg.view || arg.tile {
                 return source.fail(span, "B232", "记录类型实参不能直接是资源包装");
             }
-            let actual = self.ty_inner(arg, source, span, module, imports, stack)?;
+            let actual = if *arg == TypeName::named("void") {
+                ir::Ty::unit()
+            } else {
+                self.ty_inner(arg, source, span, module, imports, stack)?
+            };
             if !self.family_accepts(&parameter.family, &actual, s, record.span, m, i, stack)? {
                 return source.fail(
                     span,
@@ -701,6 +752,7 @@ impl World {
             view: None,
             array: None,
             enumeration: false,
+            result: false,
         };
         let mut names = BTreeSet::new();
         for field in &record.fields {

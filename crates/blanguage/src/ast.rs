@@ -301,6 +301,7 @@ pub enum StmtKind {
     Assign(Expr, String, Expr),
     Expr(Expr),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
+    Match(Expr, Option<String>, Vec<Stmt>, Option<String>, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
     For(String, Expr, Option<Expr>, Vec<Stmt>),
     Parallel(String, ParallelDomain, Vec<Stmt>),

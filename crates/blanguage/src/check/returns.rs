@@ -60,18 +60,53 @@ pub(super) struct ReturnContext {
     exits: Vec<ReturnExit>,
 }
 fn early_returns(body: &[Stmt]) -> bool {
-    body.iter().enumerate().any(|(i, s)| match &s.kind {
-        StmtKind::Return(_) => i + 1 != body.len(),
-        StmtKind::If(_, yes, no) => has_return(yes) || has_return(no),
-        StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
-        _ => false,
-    })
+    propagates(body)
+        || body.iter().enumerate().any(|(i, s)| match &s.kind {
+            StmtKind::Return(_) => i + 1 != body.len(),
+            StmtKind::If(_, yes, no) | StmtKind::Match(_, _, yes, _, no) => {
+                has_return(yes) || has_return(no)
+            }
+            StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
+            _ => false,
+        })
 }
 fn has_return(body: &[Stmt]) -> bool {
     body.iter().any(|s| match &s.kind {
         StmtKind::Return(_) => true,
-        StmtKind::If(_, y, n) => has_return(y) || has_return(n),
+        StmtKind::If(_, y, n) | StmtKind::Match(_, _, y, _, n) => has_return(y) || has_return(n),
         StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
+        _ => false,
+    })
+}
+fn propagates(body: &[Stmt]) -> bool {
+    fn expr(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Call(name, args) => name == "try" || args.iter().any(expr),
+            ExprKind::Specialize(_, _, args)
+            | ExprKind::Cooperate(_, _, args)
+            | ExprKind::Construct(_, args) => args.iter().any(expr),
+            ExprKind::Member(e, _) | ExprKind::Unary(_, e) => expr(e),
+            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => expr(a) || expr(b),
+            ExprKind::Select(c, a, b) => expr(c) || expr(a) || expr(b),
+            _ => false,
+        }
+    }
+    body.iter().any(|s| match &s.kind {
+        StmtKind::Let(_, _, e)
+        | StmtKind::Expr(e)
+        | StmtKind::Return(Some(e))
+        | StmtKind::Seek(_, e) => expr(e),
+        StmtKind::Assign(a, _, b) => expr(a) || expr(b),
+        StmtKind::If(c, a, b) | StmtKind::Match(c, _, a, _, b) => {
+            expr(c) || propagates(a) || propagates(b)
+        }
+        StmtKind::While(c, body) => expr(c) || propagates(body),
+        StmtKind::For(_, a, b, body) => expr(a) || b.as_ref().is_some_and(expr) || propagates(body),
+        StmtKind::Parallel(_, domain, body) => {
+            domain.count.as_ref().is_some_and(expr)
+                || domain.selection.as_ref().is_some_and(expr)
+                || propagates(body)
+        }
         _ => false,
     })
 }
@@ -110,9 +145,9 @@ impl Builder<'_> {
             );
         };
         let expected = context.expected.clone();
-        let mut value = match (expected, expr) {
+        let value = match (expected, expr) {
             (Some(Expected::Value(ty)), Some(expr)) => {
-                let value = self.expr(expr)?;
+                let value = self.expr_expected(expr, Some(&ty))?;
                 self.require_same(&ty, &value.ty, expr.span)?;
                 Some(Returned::Value(value))
             }
@@ -126,6 +161,15 @@ impl Builder<'_> {
             (Some(_), None) => return self.fail(span, "B228", "有返回值函数不能使用 return;"),
             (None, Some(_)) => return self.fail(span, "B228", "void 函数不能返回普通值"),
         };
+        self.finish_return(value, span)
+    }
+    pub(super) fn result_return_type(&self) -> Option<Ty> {
+        match self.return_context.as_ref()?.expected.as_ref()? {
+            Expected::Value(ty) => Some(ty.clone()),
+            _ => None,
+        }
+    }
+    pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
         if let Some(Returned::Value(value)) = &mut value {
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env);

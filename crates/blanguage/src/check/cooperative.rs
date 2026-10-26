@@ -119,7 +119,19 @@ impl<'a> Builder<'a> {
                     let place = self.mutable_place(arg, param.access)?;
                     Argument::Exclusive(place)
                 } else {
-                    Argument::Value(self.expr(arg)?)
+                    let expected =
+                        if callee.function.types.is_empty() && callee.function.values.is_empty() {
+                            Some(self.world.ty(
+                                &param.ty,
+                                &callee.source,
+                                param.span,
+                                &callee.module,
+                                &callee.imports,
+                            )?)
+                        } else {
+                            None
+                        };
+                    Argument::Value(self.expr_expected(arg, expected.as_ref())?)
                 },
             );
         }

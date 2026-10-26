@@ -47,7 +47,13 @@ fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, Scalar, u32)>) 
         }
     } else {
         for (i, &(s, offset)) in ty.components.iter().enumerate() {
-            let n = if ty.components.len() == 1 {
+            let n = if ty.result {
+                if i == 0 {
+                    format!("{name}_tag")
+                } else {
+                    format!("{name}_payload_{}", i - 1)
+                }
+            } else if ty.components.len() == 1 {
                 name.into()
             } else {
                 format!("{name}_{}", ["x", "y", "z", "w"][i])

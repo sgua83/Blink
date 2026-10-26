@@ -113,7 +113,8 @@ record!(Ty {
     fields,
     view,
     array,
-    enumeration
+    enumeration,
+    result
 });
 record!(Buffer {
     name,

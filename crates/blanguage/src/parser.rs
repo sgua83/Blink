@@ -732,6 +732,39 @@ impl Parser {
                 Vec::new()
             };
             StmtKind::If(c, a, b)
+        } else if self.take("match") {
+            self.expect("(")?;
+            let value = self.expr(0)?;
+            self.expect(")")?;
+            self.expect("{")?;
+            let mut yes = None;
+            let mut no = None;
+            while !self.take("}") {
+                let arm = self.ident()?;
+                self.expect("(")?;
+                let binding = if self.take(")") {
+                    None
+                } else {
+                    let name = self.ident()?;
+                    self.expect(")")?;
+                    Some(name)
+                };
+                let body = self.block()?;
+                let target = match arm.as_str() {
+                    "Ok" => &mut yes,
+                    "Err" => &mut no,
+                    _ => return self.source.fail(span, "B269", "结果分支为 Ok 或 Err"),
+                };
+                if target.replace((binding, body)).is_some() {
+                    return self.source.fail(span, "B269", "同一结果分支不能重复");
+                }
+            }
+            let (Some((yes_name, yes)), Some((no_name, no))) = (yes, no) else {
+                return self
+                    .source
+                    .fail(span, "B269", "结果分支必须同时处理 Ok 与 Err");
+            };
+            StmtKind::Match(value, yes_name, yes, no_name, no)
         } else if self.take("while") {
             self.expect("(")?;
             let c = self.expr(0)?;

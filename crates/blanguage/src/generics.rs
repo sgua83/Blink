@@ -30,6 +30,9 @@ pub(crate) fn instantiate(
     let mut names = arguments
         .iter()
         .map(|ty| {
+            if *ty == TypeName::named("void") {
+                return Ok("void".to_owned());
+            }
             world
                 .ty(
                     ty,
@@ -138,7 +141,14 @@ pub(crate) fn validate_parameters(
         if Ty::builtin(&parameter.name).is_some()
             || matches!(
                 parameter.name.as_str(),
-                "void" | "dataset" | "view" | "tile" | "array" | "acceleration" | "texture2d"
+                "void"
+                    | "dataset"
+                    | "view"
+                    | "tile"
+                    | "array"
+                    | "result"
+                    | "acceleration"
+                    | "texture2d"
             )
             || parameter.name == owner
         {
@@ -331,7 +341,7 @@ fn substitute_block(
             StmtKind::Expr(e) | StmtKind::Seek(_, e) | StmtKind::Return(Some(e)) => {
                 substitute_expr(e, types, values, source)?
             }
-            StmtKind::If(c, a, b) => {
+            StmtKind::If(c, a, b) | StmtKind::Match(c, _, a, _, b) => {
                 substitute_expr(c, types, values, source)?;
                 substitute_block(a, types, values, source)?;
                 substitute_block(b, types, values, source)?;

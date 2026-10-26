@@ -24,6 +24,7 @@ mod prefix;
 mod records;
 mod reduce;
 mod returns;
+mod results;
 mod scan;
 mod segmented_reduce;
 mod selection;
@@ -1438,6 +1439,9 @@ impl<'a> Builder<'a> {
                 self.code.push(Inst::Continue);
                 self.flow = Flow::CONTINUE;
             }
+            StmtKind::Match(value, yes_name, yes, no_name, no) => {
+                return self.result_match(value, yes_name, yes, no_name, no, s.span);
+            }
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span)?,
             StmtKind::Parallel(..) => {
                 return self.fail(
@@ -1466,6 +1470,13 @@ impl<'a> Builder<'a> {
         }
     }
     fn member(&self, ty: &Ty, field: &str, span: Span) -> Result<(Ty, Vec<usize>)> {
+        if ty.result {
+            return self.fail(
+                span,
+                "B269",
+                "结果载荷通过 match 或 try 使用，不公开原始判别字／载荷字段",
+            );
+        }
         if ty.view.is_some() {
             return if field == "length" {
                 Ok((Ty::scalar(Scalar::U32), vec![2]))
@@ -1759,13 +1770,7 @@ impl<'a> Builder<'a> {
             ExprKind::Unary(op, a) => self.unary_expr(op, a, e.span),
             ExprKind::Binary(op, a, b) => self.binary_expr(op, a, b, e.span),
             ExprKind::Select(c, a, b) => self.selection(c, a, b, e.span),
-            ExprKind::Construct(ty, args) => {
-                let values = args
-                    .iter()
-                    .map(|arg| self.expr(arg))
-                    .collect::<Result<Vec<_>>>()?;
-                self.record_value(ty, values, e.span)
-            }
+            ExprKind::Construct(ty, args) => self.record_expression(ty, args, e.span),
             ExprKind::Call(name, args) => {
                 let result = self.call(name, args, e.span)?;
                 self.value_result(result, e.span)
@@ -1880,6 +1885,9 @@ impl<'a> Builder<'a> {
         }
     }
     fn binary(&mut self, op: &str, mut a: Value, mut b: Value, span: Span) -> Result<Value> {
+        if a.ty.result || b.ty.result {
+            return self.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
+        }
         let comparison = ["==", "!=", "<", ">", "<=", ">="].contains(&op);
         if a.ty.enumeration || b.ty.enumeration {
             self.require_same(&a.ty, &b.ty, span)?;
@@ -2106,6 +2114,16 @@ impl<'a> Builder<'a> {
         })
     }
     fn call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if name == "try" {
+            return self.propagate_result(args, span);
+        }
+        if matches!(name, "Ok" | "Err") {
+            return self.fail(
+                span,
+                "B269",
+                "Ok／Err 需要 result<T,E> 上下文或两个显式类型实参",
+            );
+        }
         if matches!(name, "upload" | "download") {
             return self.application_transfer(name, args, span);
         }
@@ -2217,6 +2235,11 @@ impl<'a> Builder<'a> {
         );
         if let Some(key) = &function_key
             && (self.world.functions[key].function.external.is_some()
+                || self.world.functions[key]
+                    .function
+                    .params
+                    .iter()
+                    .any(|p| p.ty.name == "result")
                 || self.world.functions[key].function.params.iter().any(|p| {
                     p.ty.dataset
                         || p.ty.tile
@@ -2229,13 +2252,6 @@ impl<'a> Builder<'a> {
             let arguments = self.function_arguments(key, args, span)?;
             return self.invoke_function(key.clone(), arguments, span);
         }
-        let mut values = Vec::new();
-        for a in args {
-            values.push(self.expr(a)?);
-        }
-        if let Some(ty) = Ty::builtin(name) {
-            return self.numeric_constructor(ty, values, span).map(Some);
-        }
         if self
             .world
             .resolve(
@@ -2247,8 +2263,15 @@ impl<'a> Builder<'a> {
             .is_some()
         {
             return self
-                .record_value(&TypeName::named(name), values, span)
+                .record_expression(&TypeName::named(name), args, span)
                 .map(Some);
+        }
+        let mut values = Vec::new();
+        for a in args {
+            values.push(self.expr(a)?);
+        }
+        if let Some(ty) = Ty::builtin(name) {
+            return self.numeric_constructor(ty, values, span).map(Some);
         }
         if matches!(name, "bitcast_u32" | "bitcast_f32") {
             return self.bitcast(name, values, span).map(Some);
@@ -2318,8 +2341,8 @@ impl<'a> Builder<'a> {
         }
         let a = self.expr(a)?;
         if op == "+" {
-            if a.ty.array.is_some() || a.ty.enumeration {
-                return self.fail(span, "B146", "数值一元运算不能接受数组或枚举");
+            if a.ty.array.is_some() || a.ty.enumeration || a.ty.result {
+                return self.fail(span, "B146", "数值一元运算不能接受数组、枚举或结果");
             }
             return Ok(a);
         }
@@ -2475,10 +2498,18 @@ impl<'a> Builder<'a> {
     ) -> Result<()> {
         let c = self.expr(condition)?;
         self.require_bool(&c, condition.span)?;
+        self.conditional_blocks(c, |b| b.block(yes_body), |b| b.block(no_body))
+    }
+    fn conditional_blocks(
+        &mut self,
+        c: Value,
+        yes_body: impl FnOnce(&mut Self) -> Result<()>,
+        no_body: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
         if let Some(bits) = &c.constant {
             let truth = bits[0] != 0;
             self.refine_bounds(&c, truth);
-            return self.block(if truth { yes_body } else { no_body });
+            return if truth { yes_body(self) } else { no_body(self) };
         }
         let environment = self.env.clone();
         let previous = std::mem::take(&mut self.code);
@@ -2486,7 +2517,7 @@ impl<'a> Builder<'a> {
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&c, true);
-        self.block(yes_body)?;
+        yes_body(self)?;
         let mut yes = std::mem::take(&mut self.code);
         let yes_init = self.application_initialization_state();
         let yes_env = self.env.clone();
@@ -2496,7 +2527,7 @@ impl<'a> Builder<'a> {
         self.initialized = init;
         self.env = environment.clone();
         self.refine_bounds(&c, false);
-        self.block(no_body)?;
+        no_body(self)?;
         let mut no = std::mem::take(&mut self.code);
         let no_init = self.take_application_initialization_state();
         let no_flow = self.flow;
@@ -2877,6 +2908,18 @@ impl<'a> Builder<'a> {
                 );
             }
         }
+        let expected = annotation
+            .as_ref()
+            .map(|ty| {
+                self.world.ty(
+                    ty,
+                    &self.definition.source,
+                    span,
+                    &self.definition.module,
+                    &self.definition.imports,
+                )
+            })
+            .transpose()?;
         let value = if let ExprKind::Cooperate(call, explicit, args) = &e.kind {
             let result = self.cooperate(call, explicit.as_deref(), args, e.span)?;
             self.value_result(result, e.span)?
@@ -2884,20 +2927,19 @@ impl<'a> Builder<'a> {
             if let Some(op) = TileOp::from_source(call) {
                 self.tile_collective(op, args, span)?
             } else {
-                self.expr(e)?
+                self.expr_expected(e, expected.as_ref())?
             }
         } else {
-            self.expr(e)?
+            self.expr_expected(e, expected.as_ref())?
         };
-        if let Some(ty) = annotation {
-            let ty = self.world.ty(
-                ty,
-                &self.definition.source,
-                span,
-                &self.definition.module,
-                &self.definition.imports,
-            )?;
+        if let Some(ty) = expected {
             self.require_same(&ty, &value.ty, span)?;
+        }
+        self.bind_local_value(name, value, span)
+    }
+    fn bind_local_value(&mut self, name: &String, value: Value, span: Span) -> Result<()> {
+        if self.env.contains_key(name) {
+            return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
         if !self.mutable_names.contains(name) && value.ty.contains_arrays() {
             let proof = bounds::Proof::capture(&value);
@@ -2941,6 +2983,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn numeric_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+        if values.iter().any(|value| value.ty.result) {
+            return self.fail(span, "B269", "结果值须先通过 match 或 try 取得对应载荷");
+        }
         if values.iter().any(|value| value.ty.enumeration) {
             if values.len() != 1 || ty != Ty::scalar(values[0].ty.components[0].0) {
                 return self.fail(
@@ -3276,7 +3321,7 @@ impl<'a> Builder<'a> {
             return self.application_assign(name, data, op, rhs, span);
         }
         let place = self.place(lhs)?;
-        let mut value = self.expr(rhs)?;
+        let mut value = self.expr_expected(rhs, Some(place.ty()))?;
         if op != "=" {
             let current = self.read_place(&place, lhs.span)?;
             value = self.binary(&op[..1], current, value, span)?;

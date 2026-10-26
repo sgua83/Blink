@@ -34,6 +34,7 @@ pub struct Ty {
     pub view: Option<Box<Ty>>,
     pub array: Option<Box<Ty>>,
     pub enumeration: bool,
+    pub result: bool,
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
@@ -65,6 +66,45 @@ impl Ty {
             .collect();
         ty
     }
+    pub fn result(ok: Self, error: Self) -> Option<Self> {
+        let align = ok.align.max(error.align).max(4);
+        let offset = align_up(4, align);
+        let size = u32::try_from(
+            (u64::from(offset) + u64::from(ok.size.max(error.size))).div_ceil(u64::from(align))
+                * u64::from(align),
+        )
+        .ok()?;
+        Some(Self {
+            name: format!("result<{},{}>", ok.name, error.name),
+            arguments: vec![ok, error],
+            values: Vec::new(),
+            size,
+            align,
+            components: std::iter::once((Scalar::Bool, 0))
+                .chain((offset..size).step_by(4).map(|at| (Scalar::U32, at)))
+                .collect(),
+            fields: Vec::new(),
+            view: None,
+            array: None,
+            enumeration: false,
+            result: true,
+        })
+    }
+    pub fn unit() -> Self {
+        Self {
+            name: "void".into(),
+            arguments: Vec::new(),
+            values: Vec::new(),
+            size: 0,
+            align: 1,
+            components: Vec::new(),
+            fields: Vec::new(),
+            view: None,
+            array: None,
+            enumeration: false,
+            result: false,
+        }
+    }
     pub fn scalar(s: Scalar) -> Self {
         Self {
             name: match s {
@@ -83,6 +123,7 @@ impl Ty {
             view: None,
             array: None,
             enumeration: false,
+            result: false,
         }
     }
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -109,6 +150,7 @@ impl Ty {
             view: None,
             array: None,
             enumeration: false,
+            result: false,
         }
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
@@ -133,6 +175,7 @@ impl Ty {
             view: None,
             array: None,
             enumeration: false,
+            result: false,
         }
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
@@ -165,6 +208,7 @@ impl Ty {
                 view: None,
                 array: None,
                 enumeration: false,
+                result: false,
                 components: vec![
                     (Scalar::Bool, 0),
                     (Scalar::F32, 4),
@@ -199,16 +243,20 @@ impl Ty {
     }
     pub fn is_numeric(&self) -> bool {
         !self.enumeration
+            && !self.result
             && self.view.is_none()
             && self.array.is_none()
             && self.fields.is_empty()
             && self.components.iter().all(|x| x.0 != Scalar::Bool)
     }
     pub fn contains_arrays(&self) -> bool {
-        self.array.is_some() || self.fields.iter().any(|(_, _, t)| t.contains_arrays())
+        (self.result && self.arguments.iter().any(|ty| ty.contains_arrays()))
+            || self.array.is_some()
+            || self.fields.iter().any(|(_, _, t)| t.contains_arrays())
     }
     pub fn contains_views(&self) -> bool {
-        self.view.is_some()
+        (self.result && self.arguments.iter().any(|ty| ty.contains_views()))
+            || self.view.is_some()
             || self.array.as_ref().is_some_and(|t| t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
     }

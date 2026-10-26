@@ -241,7 +241,7 @@ fn statement_writes<'e>(
             | StmtKind::Expr(expr)
             | StmtKind::Return(Some(expr))
             | StmtKind::Seek(_, expr) => expression_writes(world, definition, expr, writes),
-            StmtKind::If(expr, a, b) => {
+            StmtKind::If(expr, a, b) | StmtKind::Match(expr, _, a, _, b) => {
                 expression_writes(world, definition, expr, writes);
                 statement_writes(world, definition, a, writes);
                 statement_writes(world, definition, b, writes);

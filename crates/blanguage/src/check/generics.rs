@@ -63,6 +63,9 @@ impl Builder<'_> {
         args: &[Expr],
         span: Span,
     ) -> Result<Option<Value>> {
+        if matches!(name, "Ok" | "Err") {
+            return self.explicit_result(name, explicit, args, span).map(Some);
+        }
         if name == "array"
             || self
                 .world
@@ -76,11 +79,7 @@ impl Builder<'_> {
         {
             let mut ty = TypeName::named(name);
             ty.arguments = explicit.to_vec();
-            let values = args
-                .iter()
-                .map(|arg| self.expr(arg))
-                .collect::<Result<Vec<_>>>()?;
-            return self.record_value(&ty, values, span).map(Some);
+            return self.record_expression(&ty, args, span).map(Some);
         }
         let key = self
             .world
@@ -141,7 +140,11 @@ pub(crate) fn specialize(
             if ty.dataset || ty.view || ty.tile {
                 return source.fail(span, "B231", "类型实参不能直接是资源包装");
             }
-            let actual = world.ty(ty, source, span, &caller.module, &caller.imports)?;
+            let actual = if *ty == TypeName::named("void") {
+                Ty::unit()
+            } else {
+                world.ty(ty, source, span, &caller.module, &caller.imports)?
+            };
             if !world.family_accepts(
                 &parameter.family,
                 &actual,
@@ -325,6 +328,18 @@ fn infer_type(
         }
         return Ok(());
     }
+    if formal.name == "result" {
+        if !actual.result || formal.arguments.len() != 2 {
+            return source.fail(span, "B269", "结果类型推导需要相同结果种类");
+        }
+        for (arg, ty) in formal.arguments.iter().zip(&actual.arguments) {
+            let GenericArgument::Type(arg) = arg else {
+                return source.fail(span, "B269", "结果实参需要类型");
+            };
+            infer_type(world, source, arg, ty, parameter, callee, span, inferred)?;
+        }
+        return Ok(());
+    }
     if formal.name == "array" {
         let Some(element) = &actual.array else {
             return source.fail(span, "B238", "array 类型推导需要相同数组种类");
@@ -402,6 +417,18 @@ fn infer_value(
         actual
     };
     if formal.arguments.is_empty() {
+        return Ok(());
+    }
+    if formal.name == "result" {
+        if !actual.result || formal.arguments.len() != 2 {
+            return source.fail(span, "B269", "结果 const 推导需要相同结果种类");
+        }
+        for (arg, ty) in formal.arguments.iter().zip(&actual.arguments) {
+            let GenericArgument::Type(arg) = arg else {
+                return source.fail(span, "B269", "结果实参需要类型");
+            };
+            infer_value(world, arg, ty, name, callee, source, span, inferred)?;
+        }
         return Ok(());
     }
     if formal.name == "array" {

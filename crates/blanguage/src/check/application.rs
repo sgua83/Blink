@@ -1401,7 +1401,9 @@ pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
             _,
             _,
         ) => target == name,
-        StmtKind::If(_, yes, no) => rebound(yes, name) || rebound(no, name),
+        StmtKind::If(_, yes, no) | StmtKind::Match(_, _, yes, _, no) => {
+            rebound(yes, name) || rebound(no, name)
+        }
         StmtKind::For(_, _, _, body) | StmtKind::While(_, body) => rebound(body, name),
         _ => false,
     })
