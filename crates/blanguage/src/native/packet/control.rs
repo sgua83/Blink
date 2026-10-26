@@ -21,38 +21,164 @@ pub(super) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
 }
 
 pub(super) fn uniform_registers(stage: &Stage) -> Vec<bool> {
-    // A local is uniform only when every assignment is uniform, including loop backedges.
-    // Start at the greatest fixed point so an induction cycle can retain its uniform seed.
-    let mut registers = vec![true; stage.registers.len()];
-    let mut locals = vec![true; stage.locals.len()];
-    loop {
-        let mut changed = false;
-        visit(&stage.code, &mut |inst| {
-            let uniform = match inst {
-                Inst::Index(_) => false,
-                Inst::Load { binding, index, .. } => {
-                    !stage.writes.contains(binding) && registers[*index]
-                }
-                Inst::LoadLocal(_, slot) => locals[*slot],
-                _ => inst.operands().iter().all(|r| registers[*r]),
-            };
-            for dst in inst.results() {
-                if registers[dst] && !uniform {
-                    registers[dst] = false;
-                    changed = true;
-                }
-            }
-            if let Inst::StoreLocal(slot, src) = inst
-                && locals[*slot]
-                && !registers[*src]
-            {
-                locals[*slot] = false;
-                changed = true;
-            }
-        });
-        if !changed {
-            return registers;
+    let mut analysis = Uniformity {
+        stage,
+        definitions: vec![None; stage.registers.len()],
+    };
+    analysis.block(
+        &stage.code,
+        State(vec![false; stage.registers.len() + stage.locals.len()]),
+        true,
+    );
+    analysis
+        .definitions
+        .into_iter()
+        .map(|uniform| uniform.unwrap_or(false))
+        .collect()
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct State(Vec<bool>);
+impl State {
+    fn intersect(&mut self, other: &Self) {
+        for (value, other) in self.0.iter_mut().zip(&other.0) {
+            *value &= *other;
         }
+    }
+}
+fn merge(target: &mut Option<State>, other: Option<State>) {
+    if let Some(other) = other {
+        if let Some(target) = target {
+            target.intersect(&other);
+        } else {
+            *target = Some(other);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Flow {
+    next: Option<State>,
+    breaks: Option<State>,
+    continues: Option<State>,
+    exits: Option<State>,
+}
+impl Flow {
+    fn join(&mut self, other: Self) {
+        merge(&mut self.next, other.next);
+        merge(&mut self.breaks, other.breaks);
+        merge(&mut self.continues, other.continues);
+        merge(&mut self.exits, other.exits);
+    }
+}
+struct Uniformity<'a> {
+    stage: &'a Stage,
+    definitions: Vec<Option<bool>>,
+}
+impl Uniformity<'_> {
+    fn block(&mut self, code: &[Inst], state: State, record: bool) -> Flow {
+        let mut flow = Flow {
+            next: Some(state),
+            ..Flow::default()
+        };
+        for inst in code {
+            let Some(mut state) = flow.next.take() else {
+                break;
+            };
+            let step = match inst {
+                Inst::If { yes, no, .. } => {
+                    let mut yes = self.block(yes, state.clone(), record);
+                    yes.join(self.block(no, state, record));
+                    yes
+                }
+                Inst::Loop {
+                    condition, body, ..
+                } => self.loop_flow(condition, body, state, record),
+                Inst::Scope(body) => {
+                    let mut scope = self.block(body, state, record);
+                    merge(&mut scope.next, scope.exits.take());
+                    scope
+                }
+                Inst::Break => Flow {
+                    breaks: Some(state),
+                    ..Flow::default()
+                },
+                Inst::Continue => Flow {
+                    continues: Some(state),
+                    ..Flow::default()
+                },
+                Inst::Exit => Flow {
+                    exits: Some(state),
+                    ..Flow::default()
+                },
+                _ => {
+                    let uniform = match inst {
+                        Inst::Index(_) => false,
+                        Inst::Load { binding, index, .. } => {
+                            !self.stage.writes.contains(binding) && state.0[*index]
+                        }
+                        Inst::LoadLocal(_, slot) => state.0[self.stage.registers.len() + slot],
+                        _ => inst.operands().iter().all(|r| state.0[*r]),
+                    };
+                    for dst in inst.results() {
+                        state.0[dst] = uniform;
+                        if record {
+                            self.definitions[dst] = Some(
+                                self.definitions[dst].is_none_or(|previous| previous) && uniform,
+                            );
+                        }
+                    }
+                    if let Inst::StoreLocal(slot, src) = inst {
+                        state.0[self.stage.registers.len() + slot] = state.0[*src];
+                    }
+                    Flow {
+                        next: Some(state),
+                        ..Flow::default()
+                    }
+                }
+            };
+            flow.join(step);
+        }
+        flow
+    }
+
+    fn loop_flow(&mut self, condition: &[Inst], body: &[Inst], entry: State, record: bool) -> Flow {
+        // Only paths that really reenter this loop constrain its header.
+        // Break and scope exits carry their own facts to their actual consumers.
+        let mut header = entry.clone();
+        loop {
+            let mut condition_flow = self.block(condition, header.clone(), false);
+            let mut body_flow = condition_flow
+                .next
+                .clone()
+                .map(|state| self.block(body, state, false))
+                .unwrap_or_default();
+            let mut back = body_flow.next.take();
+            merge(&mut back, body_flow.continues.take());
+            let mut next = entry.clone();
+            if let Some(back) = back {
+                next.intersect(&back);
+            }
+            if next == header {
+                if !record {
+                    merge(&mut condition_flow.next, body_flow.breaks.take());
+                    merge(&mut condition_flow.exits, body_flow.exits.take());
+                    return condition_flow;
+                }
+                break;
+            }
+            header = next;
+        }
+        // Record definitions only after the loop facts are stable, not during speculation.
+        let mut condition_flow = self.block(condition, header, record);
+        let mut body_flow = condition_flow
+            .next
+            .clone()
+            .map(|state| self.block(body, state, record))
+            .unwrap_or_default();
+        merge(&mut condition_flow.next, body_flow.breaks.take());
+        merge(&mut condition_flow.exits, body_flow.exits.take());
+        condition_flow
     }
 }
 
