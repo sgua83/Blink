@@ -1,4 +1,4 @@
-//! 单设备 Vulkan 执行后端。唯一数据持有最后使用点，执行资源在原生完成后释放。
+//! Vulkan 执行后端。每个逻辑设备拥有队列，执行资源在原生完成后释放。
 mod compact;
 mod execution;
 mod memory;
@@ -91,12 +91,151 @@ struct InstanceOwner {
     instance: VkInstance,
     destroy: DestroyInstance,
     library: Library,
+    presentation: bool,
 }
 impl Drop for InstanceOwner {
     fn drop(&mut self) {
         unsafe {
             (self.destroy)(self.instance, null());
         }
+    }
+}
+/// Vulkan 实例；物理设备与逻辑设备共同持有其实际生命周期。
+#[derive(Clone)]
+pub struct Instance {
+    owner: Rc<InstanceOwner>,
+}
+impl Instance {
+    pub fn new() -> Result<Self> {
+        Self::create(false)
+    }
+    /// 显式启用 Windows surface；无需先创建窗口。
+    pub fn with_presentation() -> Result<Self> {
+        Self::create(true)
+    }
+    fn create(presentation: bool) -> Result<Self> {
+        unsafe {
+            let library = Library::new()?;
+            let create: unsafe extern "system" fn(
+                *const VkInstanceCreateInfo,
+                *const c_void,
+                *mut VkInstance,
+            ) -> i32 = library.get(null_mut(), c"vkCreateInstance")?;
+            let mut app: VkApplicationInfo = zero();
+            app.sType = 0;
+            app.pApplicationName = c"BLCompute".as_ptr();
+            app.pEngineName = c"BLCompute".as_ptr();
+            app.apiVersion = (1 << 22) | (2 << 12);
+            let extensions = if presentation {
+                vec![c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr()]
+            } else {
+                Vec::new()
+            };
+            let mut info: VkInstanceCreateInfo = zero();
+            info.sType = 1;
+            info.pApplicationInfo = &app;
+            info.enabledExtensionCount = extensions.len() as u32;
+            info.ppEnabledExtensionNames = extensions.as_ptr();
+            let mut instance = null_mut();
+            check(create(&info, null(), &mut instance), "vkCreateInstance")?;
+            let destroy = library.get(instance, c"vkDestroyInstance")?;
+            Ok(Self {
+                owner: Rc::new(InstanceOwner {
+                    instance,
+                    destroy,
+                    library,
+                    presentation,
+                }),
+            })
+        }
+    }
+    /// 返回本实例的真实物理句柄；保留驱动顺序，不筛去集成 GPU 或其他类型。
+    pub fn physical_devices(&self) -> Result<Vec<PhysicalDevice>> {
+        unsafe {
+            let owner = &self.owner;
+            let instance = owner.instance;
+            let enumerate: unsafe extern "system" fn(
+                VkInstance,
+                *mut u32,
+                *mut VkPhysicalDevice,
+            ) -> i32 = owner.library.get(instance, c"vkEnumeratePhysicalDevices")?;
+            let properties: unsafe extern "system" fn(
+                VkPhysicalDevice,
+                *mut VkPhysicalDeviceProperties,
+            ) = owner
+                .library
+                .get(instance, c"vkGetPhysicalDeviceProperties")?;
+            let mut count = 0;
+            check(
+                enumerate(instance, &mut count, null_mut()),
+                "vkEnumeratePhysicalDevices(count)",
+            )?;
+            let mut devices = vec![null_mut(); count as usize];
+            check(
+                enumerate(instance, &mut count, devices.as_mut_ptr()),
+                "vkEnumeratePhysicalDevices",
+            )?;
+            devices.truncate(count as usize);
+            Ok(devices
+                .into_iter()
+                .map(|physical| {
+                    let mut p = zero();
+                    properties(physical, &mut p);
+                    PhysicalDevice {
+                        owner: owner.clone(),
+                        physical,
+                        properties: p,
+                    }
+                })
+                .collect())
+        }
+    }
+}
+/// 从实际实例枚举取得的选择句柄；名称仅供显示，不用于重建或重选资源。
+#[derive(Clone)]
+pub struct PhysicalDevice {
+    owner: Rc<InstanceOwner>,
+    physical: VkPhysicalDevice,
+    properties: VkPhysicalDeviceProperties,
+}
+impl PhysicalDevice {
+    pub fn name(&self) -> String {
+        unsafe { CStr::from_ptr(self.properties.deviceName.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    }
+    pub fn is_discrete(&self) -> bool {
+        self.properties.deviceType == 2
+    }
+    pub fn device(&self) -> Result<Device> {
+        Device::create(self.clone(), false, false, false, false, false)
+    }
+    pub fn for_program(&self, program: &dyn ProgramInterface) -> Result<Device> {
+        self.for_programs(std::iter::once(program))
+    }
+    /// 在选定物理设备上声明各程序能力；呈现能力由原实例的显式创建方式决定。
+    pub fn for_programs<'a, P: ProgramInterface + ?Sized + 'a>(
+        &self,
+        programs: impl IntoIterator<Item = &'a P>,
+    ) -> Result<Device> {
+        let (mut ray, mut sort, mut reconverge, mut textures, mut positions) =
+            (false, false, false, false, false);
+        for program in programs {
+            let required = program.requirements();
+            ray |= required.ray_query;
+            sort |= required.sorting;
+            reconverge |= required.maximal_reconvergence;
+            textures |= required.texture_indexing;
+            positions |= required.position_fetch;
+        }
+        Device::create(self.clone(), ray, sort, reconverge, textures, positions)
+    }
+    fn default(presentation: bool) -> Result<Self> {
+        Instance::create(presentation)?
+            .physical_devices()?
+            .into_iter()
+            .find(Self::is_discrete)
+            .ok_or_else(|| error("目标平台需要离散 GPU"))
     }
 }
 struct DeviceOwner {
@@ -221,7 +360,7 @@ impl Device {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
     pub fn new() -> Result<Self> {
-        Self::create(false, false, false, false, false, false)
+        PhysicalDevice::default(false)?.device()
     }
     pub fn for_program(program: &dyn ProgramInterface) -> Result<Self> {
         Self::for_programs(std::iter::once(program))
@@ -230,7 +369,7 @@ impl Device {
     pub fn for_programs<'a, P: ProgramInterface + ?Sized + 'a>(
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Self> {
-        Self::program_device(programs, false)
+        PhysicalDevice::default(false)?.for_programs(programs)
     }
     pub fn with_presentation(program: &dyn ProgramInterface) -> Result<Self> {
         Self::with_presentation_programs(std::iter::once(program))
@@ -238,73 +377,24 @@ impl Device {
     pub fn with_presentation_programs<'a, P: ProgramInterface + ?Sized + 'a>(
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Self> {
-        Self::program_device(programs, true)
-    }
-    fn program_device<'a, P: ProgramInterface + ?Sized + 'a>(
-        programs: impl IntoIterator<Item = &'a P>,
-        presentation: bool,
-    ) -> Result<Self> {
-        let (mut ray, mut sort, mut reconverge, mut textures, mut positions) =
-            (false, false, false, false, false);
-        for program in programs {
-            let required = program.requirements();
-            ray |= required.ray_query;
-            sort |= required.sorting;
-            reconverge |= required.maximal_reconvergence;
-            textures |= required.texture_indexing;
-            positions |= required.position_fetch;
-        }
-        Self::create(ray, sort, presentation, reconverge, textures, positions)
+        PhysicalDevice::default(true)?.for_programs(programs)
     }
     fn create(
+        selected: PhysicalDevice,
         ray_query: bool,
         sorting: bool,
-        presentation: bool,
         maximal_reconvergence: bool,
         texture_indexing: bool,
         position_fetch: bool,
     ) -> Result<Self> {
         unsafe {
-            let library = Library::new()?;
-            let create: unsafe extern "system" fn(
-                *const VkInstanceCreateInfo,
-                *const c_void,
-                *mut VkInstance,
-            ) -> i32 = library.get(null_mut(), c"vkCreateInstance")?;
-            let mut app: VkApplicationInfo = zero();
-            app.sType = 0;
-            app.pApplicationName = c"BLCompute".as_ptr();
-            app.pEngineName = c"BLCompute".as_ptr();
-            app.apiVersion = (1 << 22) | (2 << 12);
-            let extensions = if presentation {
-                vec![c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr()]
-            } else {
-                Vec::new()
-            };
-            let mut info: VkInstanceCreateInfo = zero();
-            info.sType = 1;
-            info.pApplicationInfo = &app;
-            info.enabledExtensionCount = extensions.len() as u32;
-            info.ppEnabledExtensionNames = extensions.as_ptr();
-            let mut instance = null_mut();
-            check(create(&info, null(), &mut instance), "vkCreateInstance")?;
-            let destroy = library.get(instance, c"vkDestroyInstance")?;
-            let owner = Rc::new(InstanceOwner {
-                instance,
-                destroy,
-                library,
-            });
-            let enumerate: unsafe extern "system" fn(
-                VkInstance,
-                *mut u32,
-                *mut VkPhysicalDevice,
-            ) -> i32 = owner.library.get(instance, c"vkEnumeratePhysicalDevices")?;
-            let properties_fn: unsafe extern "system" fn(
-                VkPhysicalDevice,
-                *mut VkPhysicalDeviceProperties,
-            ) = owner
-                .library
-                .get(instance, c"vkGetPhysicalDeviceProperties")?;
+            let PhysicalDevice {
+                owner,
+                physical,
+                properties,
+            } = selected;
+            let instance = owner.instance;
+            let presentation = owner.presentation;
             let families_fn: unsafe extern "system" fn(
                 VkPhysicalDevice,
                 *mut u32,
@@ -326,26 +416,6 @@ impl Device {
             ) -> i32 = owner.library.get(instance, c"vkCreateDevice")?;
             let destroy_device: DestroyDevice = owner.library.get(instance, c"vkDestroyDevice")?;
             let get_device: Gdpa = owner.library.get(instance, c"vkGetDeviceProcAddr")?;
-            let mut count = 0;
-            check(
-                enumerate(instance, &mut count, null_mut()),
-                "vkEnumeratePhysicalDevices(count)",
-            )?;
-            let mut devices = vec![null_mut(); count as usize];
-            check(
-                enumerate(instance, &mut count, devices.as_mut_ptr()),
-                "vkEnumeratePhysicalDevices",
-            )?;
-            let mut chosen = None;
-            for physical in devices {
-                let mut p = zero();
-                properties_fn(physical, &mut p);
-                if p.deviceType == 2 {
-                    chosen = Some((physical, p));
-                    break;
-                }
-            }
-            let (physical, properties) = chosen.ok_or_else(|| error("目标平台需要离散 GPU"))?;
             if properties.apiVersion < ((1 << 22) | (2 << 12)) {
                 return Err(error("目标 GPU 需要 Vulkan 1.2"));
             }

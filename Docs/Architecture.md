@@ -567,7 +567,15 @@ Execution按真实操作持有命令、上传暂存、构建输入与scratch；�
 
 Device::download_texture 借用本设备的真实不可变图像，将全部 mip 直接复制到 host-visible coherent staging，返回新的 CPU Texture2D；源 CPU 像素不作为图像镜像保留。图像创建声明采样及双向传输用途，上传与下载共用由实际尺寸／mip 数推导的紧密复制区域。当前单队列在本图像范围过渡 shader-read→transfer-src→shader-read，覆盖此前上传和采样访问，等待本次复制及布局恢复完成后返回；图像仍可由原共享引用继续采样。staging 只映射一次，各 mip 直接写入最终像素 Vec；缓冲区和纹理共用原映射／Transfer Execution 入口，不再重复构造提交完成对象。调用者可显式把 CPU 快照上传到另一独立逻辑 Device，两个原生资源和完成点分别所有；不按物理设备名称共享句柄或建立自动迁移／布局状态表。复制依据 [Vulkan 图像到缓冲区接口](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyImageToBuffer.html) 与 [图像用途](https://docs.vulkan.org/refpages/latest/refpages/source/VkImageUsageFlagBits.html)。
 
-BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。直接跨设备传输、多物理 GPU 选择／验证、多队列、refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
+BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。直接跨设备传输、多队列、refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
+
+## 物理设备选择与实例所有权（2026-10-27）
+
+Vulkan Instance::physical_devices 返回本实例可访问的全部真实 PhysicalDevice，保留驱动顺序，不按离散／集成类型过滤。句柄与逻辑 Device 沿原 Rc 共同持有唯一 InstanceOwner；枚举列表、公开 Instance 或选择句柄退出，不会提前销毁仍有设备／资源消费者的原生实例。不另建设备注册表，不按名称、枚举编号或第二次枚举重建已选句柄。原生依据为 [物理设备枚举](https://docs.vulkan.org/refpages/latest/refpages/source/vkEnumeratePhysicalDevices.html) 与 [实例子对象寿命](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyInstance.html)。
+
+PhysicalDevice::device／for_program／for_programs 在所选物理设备上创建独立逻辑设备，后两者按真实程序集合合并能力需求，复用原查询与启用入口。Instance::new 只声明计算；Instance::with_presentation 明确声明 Windows surface，其派生逻辑设备启用原 swapchain 能力，不要求枚举前先开窗口。原 Device::new／for_programs／with_presentation_programs 复用该链，保持默认选择第一块离散 GPU；不能满足程序所需能力时明确报错，不自动更换物理设备或运算方法。
+
+每个逻辑 Device 仍拥有一条实际队列，same_device 只比较真实逻辑所有者。不同物理 GPU 的 Dataset／Texture 通过既有显式下载和目标设备上传完成 CPU 桥接，各自存储、依赖和完成点分别所有；不共享原生地址或伪造跨设备依赖。本机离散与集成 GPU 的计算、双向跨页记录／全 mip 纹理交接已有原生记录，见 Issues 的 C-003／C-022.5；不是直接 GPU 通信、多队列、自动分片／调度、并发性能或完整多设备语言语义的证明。
 
 ## C/C++ 与 Rust 宿主的 DLL 边界（2026-10-25）
 

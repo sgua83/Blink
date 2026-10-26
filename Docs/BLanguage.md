@@ -1224,7 +1224,7 @@ program shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 
 CPU 调用期间持有实际像素及描述；Device::upload_texture 返回完成原生提交的共享图像，返回时不等待设备复制。主机 mip 已进入本次 staging，源 Texture2D 可以退出；上传命令与 staging 由原 Transfer Execution 持有。Texture::is_complete()／wait() 只观察该图像的上传，不代表后续采样已经结束；采样提交自动收集真实上传依赖，调用者可以直接交付尚在上传的 Texture。GPU Commands 持有 image／view／sampler 到原生采样消费者结束，沿既有 Execution 和完成点释放。调用者保留 Texture 克隆即可供后续提交复用，不从已丢弃句柄或裸地址重建资源。Count 的域关系仍随实际数据所有权移动，纹理不引入宿主计数镜像、独立调度服务或资源注册表。绑定数量／设备归属、资产文件边界及物理格式能力属于既有资源边界。
 
-Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。当前验证的是同一物理 GPU 上两个独立 VkDevice 的显式交接，不表示多物理 GPU、直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原上传，采样结果仍沿实际提交观察。
+Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。独立逻辑设备及本机离散／集成两块物理 GPU 的双向显式交接已有原生记录，不表示直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原上传，采样结果仍沿实际提交观察。
 
 独立资产 `.bltex` 使用 **BLTEX v1**：8 字节 `BLTEX\0\0\0`，小端 u32 version=1、mip_count；每层依次为小端 u32 width、height，再跟 `width*height` 个逐行 RGBA f32，每 texel 16 字节。行方向和颜色含义由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸／内存与 RGBA32F 线性过滤能力限制。文件读入仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
 
@@ -2750,6 +2750,23 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 `BLDATA v1` 为小端：8 字节 `BLDATA\0\0`，随后 u32 version=1、记录数、记录步长、执行步数，再跟完整记录字节。它保存指定编译布局下的值，类型和字段含义来自 `.h`；文件本身不能证明相同步长的数据具有相同业务类型。当前读取会验证文件边界和编译步长，执行绑定继续检查类型和形状。`simulate` 与通用入口共用 `Dataset::read_data/write_data`，不再各自实现一套写入协议。
 
 `GPU_program_ms` 只含设备程序和阶段依赖；CLI 的 `compute_elapsed_ms` 从程序编译结果与输入数据准备好之后开始，包含后端编译、执行和输出写盘，GPU 另含设备创建／上传／读回。两者不是相同口径，也不能与 CPU 原生运算时间直接相减计算加速比。
+
+### 原生物理 GPU 枚举与选择
+
+Rust SDK 的 `vulkan::Instance::new()` 创建计算实例；`Instance::with_presentation()` 明确启用 Windows surface。两者的 `physical_devices()` 都返回实际 `Vec<PhysicalDevice>`，包含集成 GPU 等驱动可访问类型。`PhysicalDevice::name()` 供显示、`is_discrete()` 供调用者选择；名称不是资源身份。保留选中的句柄后可释放列表和公开实例，真实实例由该句柄及其派生设备共同持有。
+
+`physical.device()` 创建基础计算设备；`physical.for_program(program)`／`for_programs(programs)` 合并实际程序所需能力并在该物理设备上创建独立逻辑 `Device`。呈现能力沿原实例的显式创建方式继承；其余设备／程序／格式边界仍由原入口负责，缺少能力直接报错。原 `Device::new`／`for_program(s)` 及 `with_presentation(_programs)` 复用这一创建链，仍默认选择第一块离散 GPU。
+
+```rust
+let instance = blcompute::vulkan::Instance::new()?;
+let physical = instance.physical_devices()?;
+for selected in &physical {
+    let device = selected.for_programs([&step, &shade])?;
+    // 编译、上传与提交仍使用原 device 接口，资源只属于该逻辑设备。
+}
+```
+
+这项 API 是原生执行框架的物理设备入口，没有新增 B 语法或设备编号字段。不同物理 GPU 可以沿 `source.download`／`target.upload` 或纹理对应入口显式通过 CPU 交接；返回 CPU 数据与目标 GPU 存储分别所有。`same_device` 比较真实逻辑设备及队列所有者，同一物理 GPU 上独立创建的设备也不相同。直接设备间传输、多队列、自动分片／迁移及完整多设备语言调度仍未完成。
 
 ## 语言优先的开发顺序
 
