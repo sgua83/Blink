@@ -2,7 +2,7 @@
 
 [书稿](../B语言编程.md) · [手机 PDF](../pdf/B语言编程-手机阅读版.pdf) · [标准 PDF](../pdf/B语言编程.pdf) · [运行记录](运行记录.md)。
 
-前十四章直接编译 B 应用，然后运行 exe，在终端看到结果：
+先构建 Blink，再编译并运行第一个 B 应用：
 
 ```powershell
 cargo build --workspace --release
@@ -11,10 +11,14 @@ cargo build --workspace --release
 .\target\start.exe
 ```
 
-输出为 3。普通应用不需要 blrun、:count、输入／输出数据文件或另写 Rust/C++ 宿主。导入模块的 modules 示例在编译命令末尾使用 sample 作为模块根目录，其余命令见书稿。
+终端直接显示 3。每个动手例子都提供 main，直接运行生成的 exe，不需要另写 Rust／C++ 宿主或指定数据文件。
 
-独立应用示例：start、names、types、choice、loops、functions、borrow、records、arrays、vectors、modules、generic、grades。math 为共用函数模块。每个同名 .h/.b 提供接口与实现。
+前十四章：start、names、types、choice、loops、functions、borrow、records、arrays、vectors、modules、generic、grades。math 是共用函数模块。这十三个应用的 CL13085 Release 原生运行记录保留。
 
-第十五章起的 numbers、stages、totals、shape、scores 保留并行 program，用于讲解数据域、阶段、集合、GPU 和同一成绩规则的并行实现。当前由正式 blrun 或宿主 API 执行，命令、数据与读取方法见对应章节。B 应用自身创建动态 dataset、组织 CPU/GPU program 的能力仍待 C-011。
+第十五至十九章：numbers_serial 是顺序对照；numbers、stages、totals、shape、scores 创建自己的 dataset 并调用 CPU program；stages_gpu、scores_gpu 复用算法并显式组织 upload、run_gpu、download。八个应用均使用 CL13172 Release 编译器真实编译和直接运行，CPU／GPU 完整输出一致。命令见书稿。
 
-十三个独立 exe 与七次 CPU/GPU 计算模块执行均已原生运行。详见应用运行记录.json。当前 println 支持 u32、i32、bool；f32 格式化、通用文本和输入／文件等能力尚未实现，书稿分别说明。
+使用 import 的 modules、stages_gpu 和 scores_gpu 在编译命令末尾以 sample 为模块根目录。使用动态数据或 program 的应用会生成 exe 及同目录 blink_app_*.dll，部署时一起复制；运行无需编译器、SDK 或 B 源码。GPU 需要系统 Vulkan 驱动。
+
+应用运行记录.json 保存原基础应用、旧计算模块和本轮独立并行应用的版本、源码／exe／执行库 SHA256、完整标准输出与退出码。旧 blrun 记录只是历史证据，不是本版书稿的运行步骤。
+
+println 当前支持 u32、i32、bool。f32 格式化、通用文本、输入／文件及其他平台尚在研发。

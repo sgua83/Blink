@@ -6,6 +6,7 @@ struct Result {
     bool passed;
 };
 struct Number { u32 value; };
+u32 main() on cpu;
 u32 final_score(u32 score, u32 bonus) on compute;
 program fill(write dataset<Result> results, u32 bonus) on compute;
 program sum(read dataset<Result> results,

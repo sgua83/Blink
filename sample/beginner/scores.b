@@ -1,5 +1,18 @@
 module beginner.scores;
 
+u32 main() on cpu {
+    dataset<Result> results = dataset<Result>(4);
+    dataset<Number, 1> total = dataset<Number>(1);
+    run_cpu(run(results, total, 5));
+    for (i in 0..results.length) {
+        println(results[i].original);
+        println(results[i].adjusted);
+        println(results[i].passed);
+    }
+    println(total[0].value);
+    return 0;
+}
+
 u32 final_score(u32 score, u32 bonus) on compute {
     u32 adjusted = score + bonus;
     if (adjusted > 100) {

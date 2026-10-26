@@ -10,7 +10,7 @@
 
 Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基础语言。对初学者来说，这个目标可以从两件具体的事开始理解：把一件小事写清楚，再学会让许多份数据各自工作。
 
-本书前十四章使用独立的 B 应用。编译器生成 Windows x64 可执行文件，直接运行 exe，在终端显示结果。后半部分学习并行数据与集合操作，使用当前已有的计算模块接口；两种入口怎样衔接、当前还缺少什么，会在进入并行部分时讲清楚。
+本书从头到尾使用可以直接运行的 B 应用。前半部分学习普通值、函数和顺序处理，后半部分由应用自己创建数据，组织 CPU／GPU 并行计算，再把结果显示在终端。每一步都从明确的数据和简单的规则出发。
 
 全部源码随 [Blink 开源工程](https://github.com/sgua83/Blink) 提供，位于 `sample/beginner`。中文版手机版和标准版 PDF 位于 `sample/pdf`。
 
@@ -20,7 +20,7 @@ Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基
 
 `.h` 列出公开接口，`.b` 写具体做法。先照着第一例把两个文件编译成功；之后再逐步理解名字、类型和函数。修改 B 源码以后，重新编译自己的 exe，再运行它。
 
-本次独立应用示例使用 **Blink P4 CL13085 的 Release 编译器**实际构建与执行。原始输出和源码哈希见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
+前十四章的应用已使用 **Blink P4 CL13085 的 Release 编译器**实际构建与执行；第十五至十九章的动态数据与 CPU／GPU 应用使用 **CL13172 的 Release 编译器**执行。原始输出和源码哈希见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
 
 ## 第一章 先把 Blink 准备好
 
@@ -644,7 +644,7 @@ u32 main() on cpu {
 
 ### 10.3 先理解固定，再认识动态
 
-固定数组适合本书的小数据。运行时才决定长度的动态数组，以及应用自己创建并行 dataset 的能力仍在开发；不要用一个很大的固定数组冒充已经支持所有动态存储需求。
+固定数组适合个数明确的小数据。第十五章会用 dataset 创建一份运行时给出长度的数据集合，并由应用自己组织并行计算。先掌握固定数组的下标与遍历，后面仍然会用到这些写法。
 
 ## 第十一章 用几个数表示坐标
 
@@ -925,39 +925,99 @@ true
 
 ## 第十五章 从顺序程序走向并行数据
 
-### 15.1 先分清两种循环关系
+### 15.1 一排数据，由应用自己准备
 
-上一章 total 每次都读取上一轮累计值，这一写法具有先后依赖。逐个成绩的调整却互不依赖：算第一个人的新成绩，不需要知道第二个人的新成绩。
+上一章已经能处理四个人的成绩。现在先换成更容易手算的一排数字：准备四个位置，让第一个位置得到二，第二个得到四，后面依次是六和八。
 
-并行计算首先来自这种数据关系，而不是把 for 改一个名字。顺序部分继续明确先后，独立部分才有机会一起执行。
+第十章的 array 在类型里写明个数。dataset 则是一份由应用持有的数据集合，创建时给出长度：
 
-![独立应用与计算模块](figures/beginner-app-parallel.svg)
+```b
+dataset<u32> numbers = dataset<u32>(4);
+```
 
-*图 15-1：main 已能组织普通 CPU 逻辑；计算 program 表达一排数据的并行工作。由 B 应用自行创建动态 dataset、调用 CPU/GPU program 的连接能力仍在 C-011 中推进。*
+左边说明 numbers 保存 u32 元素，右边申请四个位置，初值都是零。numbers.length 是个数，numbers[0] 是第一个数。长度可以在运行时决定；这里先用四，方便逐项检查。
 
-### 15.2 当前并行例子怎样运行
+numbers 在当前作用域中只有一个所有者。离开它所在的作用域时，执行框架释放其存储，不需要自己写释放命令。后面把它交给 program，是暂时借它计算。
 
-目前可以独立编译 main，也可以编译和运行计算 program。后一种入口接收外部准备的数据集，现有 blrun 专门完成数据准备、CPU/GPU 执行和结果保存；它不负责运行前面的普通 exe。
+![一个 B 应用怎样完成并行计算](figures/beginner-app-parallel.svg)
 
-以下几章使用这一已有计算模块工具来学习 parallel、阶段和集合操作。它是当前并行接口的真实用法；B 应用直接创建数据并调用 program 的能力尚未完成。学习前十四章无需使用它。
+*图 15-1：main 准备数据、调用计算、显示结果；program 描述数据上的工作。两者都写在 B 源码里。*
 
+### 15.2 先把顺序版本写出来
 
-### 15.3 每格都有自己的编号
+每个位置的计算相同：编号加一，再乘二。先用已经学过的 for。
 
-现在准备四格，想得到 `[2,4,6,8]`。做法是：当前格子的编号加一，再乘二。
+`numbers_serial.h`：
+
+```b
+module beginner.numbers_serial;
+
+u32 main() on cpu;
+```
+
+`numbers_serial.b`：
+
+```b
+module beginner.numbers_serial;
+
+u32 main() on cpu {
+    dataset<u32> numbers = dataset<u32>(4);
+    for (i in 0..numbers.length) {
+        u32 value = i + 1;
+        numbers[i] = value * 2;
+    }
+    for (i in 0..numbers.length) {
+        println(numbers[i]);
+    }
+    return 0;
+}
+```
+
+第一个 for 计算，第二个 for 显示。i 是从零开始的编号；value 是编号加一后的数。
+
+编译并运行：
+
+```powershell
+.\target\release\blc.exe build-exe `
+    sample/beginner/numbers_serial.b target/numbers_serial.exe
+.\target\numbers_serial.exe
+```
+
+```text
+2
+4
+6
+8
+```
+
+![顺序应用的真实输出](figures/beginner-native-numbers_serial.svg)
+
+### 15.3 再写并行版本
+
+算第二个位置不需要先得到第一个位置的结果。因此可以把“每个位置做什么”单独写成一个 program。
 
 `numbers.h`：
 
-```c
+```b
 module beginner.numbers;
 
+u32 main() on cpu;
 program run(write dataset<u32> numbers) on compute;
 ```
 
 `numbers.b`：
 
-```c
+```b
 module beginner.numbers;
+
+u32 main() on cpu {
+    dataset<u32> numbers = dataset<u32>(4);
+    run_cpu(run(numbers));
+    for (i in 0..numbers.length) {
+        println(numbers[i]);
+    }
+    return 0;
+}
 
 program run(write dataset<u32> numbers) on compute {
     parallel (number in numbers) {
@@ -967,49 +1027,65 @@ program run(write dataset<u32> numbers) on compute {
 }
 ```
 
-运行：
+main 仍然负责创建 numbers 和显示结果。原来的计算循环放进 run，使用 parallel 逐个描述元素的工作。run_cpu(run(numbers)) 表示在 CPU 上执行这次计算，完成后才继续显示。
+
+对照计算部分：
+
+| 顺序版本 | 并行版本 |
+|---|---|
+| i | index() |
+| value = i + 1 | value = index() + 1 |
+| numbers[i] = value * 2 | number = value * 2 |
+
+number 直接表示当前可写的那个元素。value 仍是各自计算时使用的局部变量；每个元素都有自己的 value，彼此不会覆盖。
+
+编译并运行：
 
 ```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/numbers.b run `
-    sample Saved/Learn/numbers :4
+.\target\release\blc.exe build-exe `
+    sample/beginner/numbers.b target/numbers.exe
+.\target\numbers.exe
 ```
 
-`numbers.bldata` 中保存 **[2,4,6,8]**。
+```text
+2
+4
+6
+8
+```
 
-index() 给出当前元素的编号。编号从 0 开始，所以四格的编号依次是 0、1、2、3。加一后得到 1、2、3、4，再乘二就是结果。
+![并行应用的真实输出](figures/beginner-native-numbers.svg)
 
-![编号如何变成结果](figures/beginner-numbers.svg)
+![顺序与并行怎样写回四个结果](figures/beginner-native-order.svg)
 
-*图 5-1　每格按自己的编号计算，数字的位置保持不变。*
+*图 15-2：顺序循环沿编号逐项推进；parallel 交出彼此独立的工作。结果位置相同，实际同时处理多少元素由设备与执行框架决定。*
 
-### 15.4 parallel 里面的变量属于谁
+### 15.4 为什么结果还能按顺序显示
 
-每一格执行同一段做法，但其中的 value 是各自的局部值。第一格的 value 是 1，第二格的是 2，彼此不会覆盖。
+并行工作可以按不同先后完成，但第零格始终写回第零格，第一格始终写回第一格。它们不需要争用同一个输出位置。
 
-number 对应当前这一格，给 number 赋值会写回结果；value 是计算过程里临时起的名字。只修改 value，不会自动改变 number，最后需要明确写回。
+显示发生在计算完成之后，仍由 main 的 for 按编号进行。因此终端依次显示二、四、六、八。这里没有让并行参与者直接争着打印。
 
-把命令末尾的 `:4` 改成 `:6`，就会申请六格。程序不用修改，结果会成为 `[2,4,6,8,10,12]`。
+想处理六个数，把 main 中创建长度的四改成六，重新编译即可。program 不需要修改，显示循环也会跟着 numbers.length 遍历，结果为二、四、六、八、十、十二。
 
-### 15.5 结果顺序与执行先后
+### 15.5 编译后，目录里有什么
 
-第一格的结果仍在第一格，第二格的结果仍在第二格。这个位置关系不要求它们按编号先后完成。
+这些例子使用动态数据和计算执行框架。编译器除了生成 exe，还会在同目录生成一个名称形如 blink_app_*.dll 的执行库。星号部分由编译器命名。
 
-parallel 表达的是每份数据要做什么，以及这些工作可以分别进行。电脑实际同时处理多少份，要看执行设备与计算内容。
+日常仍然直接运行 numbers.exe。把程序复制给另一台 Windows x64 电脑时，要把它对应的 DLL 一起放在同目录。运行不需要携带 B 源码、编译器或 Rust 工具链；构建这个源码 SDK 时需要的工具已在第一章准备。
 
-也因此，不要让一格去随意修改别人的结果。先掌握“各算各的、各写各的”，就能写出大量清楚的计算。
-
-
+不要只复制 exe 后丢掉它的执行库。第二章那样只计算普通值的程序可以只生成 exe，使用动态数据的本章则有上述配套文件。
 
 ### 15.6 先填数字，再改数字
 
-我们已经会生成 [1,2,3,4]，也会把每个数乘二加一。把这两件事分别起名，最后按顺序调用。
+再看一个有先后关系的计算：先生成一、二、三、四，再把每个数乘二加一。
 
 `stages.h`：
 
-```c
+```b
 module beginner.stages;
 
+u32 main() on cpu;
 program seed(write dataset<u32> numbers) on compute;
 program scale(inout dataset<u32> numbers) on compute;
 program run(inout dataset<u32> numbers) on compute;
@@ -1017,8 +1093,17 @@ program run(inout dataset<u32> numbers) on compute;
 
 `stages.b`：
 
-```c
+```b
 module beginner.stages;
+
+u32 main() on cpu {
+    dataset<u32> numbers = dataset<u32>(4);
+    run_cpu(run(numbers));
+    for (i in 0..numbers.length) {
+        println(numbers[i]);
+    }
+    return 0;
+}
 
 program seed(write dataset<u32> numbers) on compute {
     parallel (number in numbers) {
@@ -1038,53 +1123,36 @@ program run(inout dataset<u32> numbers) on compute {
 }
 ```
 
-seed 负责填写起始值，所以使用 write。scale 要读取原值再改写，所以使用 inout。run 组织这两步，也把同一份 numbers 交给它们。
+seed 只负责填写起始值，参数写 write。scale 既要读取原值又要改写，参数写 inout。run 按顺序组合这两个步骤。
 
-### 15.7 一条命令完成两步
+一个步骤内部，各元素独立计算；两个步骤之间，后一阶段需要前一阶段的结果。把这种先后关系写清楚，并行才有意义。
 
-```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/stages.b run `
-    sample Saved/Learn/stages :4
-```
-
-结果为 **[3,5,7,9]**。
-
-![先生成，再变换](figures/beginner-stages.svg)
-
-*图 13-1　先生成原值，后面的计算消费这些值。每步内部都可以展开独立工作。*
-
-程序中的先后顺序表达真实依赖：scale 需要 seed 写出的数字，因此要放在后面。编译器可以优化具体执行方式，但计算仍要满足这个关系。
-
-### 15.8 也可以分两次运行
-
-先只运行 seed：
+编译并运行：
 
 ```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/stages.b seed `
-    sample Saved/Learn/seed :4
+.\target\release\blc.exe build-exe `
+    sample/beginner/stages.b target/stages.exe
+.\target\stages.exe
 ```
 
-这时 numbers.bldata 中是 [1,2,3,4]。再把这份已有文件交给 scale：
-
-```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/stages.b scale `
-    sample Saved/Learn/scaled `
-    Saved/Learn/seed/numbers.bldata
+```text
+3
+5
+7
+9
 ```
 
-结果为 [3,5,7,9]。原来写 `:4` 的地方，现在写输入文件路径；两者都在告诉执行器这份数据从哪里来。
+例如第三格：seed 写入三，scale 读取三，算出三乘二加一，写回七。编译器可以在保持结果含义的前提下合并相邻的逐元素工作，减少中间读写；代码表达的先后关系不变。
 
-一个已有应用也可以在内存中交付数据，调用 B 算法。C、C++ 和 Rust 的接入方式见《并行编程的艺术》第十四章；完成这本书的例子不需要这些宿主工程。
+![stages 的真实编译和运行](figures/beginner-native-stages.svg)
 
+*运行图由正式版本的真实标准输出整理；终端结果直接来自应用。*
 
 ## 第十六章 一排数字一起求和
 
-### 16.1 把目标说清楚
+### 16.1 两个目标，先手算
 
-这一章处理 [1,2,3,4]，同时得到两种结果：总和 10，以及每个位置前面的数加起来是多少。
+这一章处理一、二、三、四，同时得到全部总和十，以及“每个位置前面各项的和”。
 
 | 当前位置 | 当前数 | 前面各项之和 |
 |---|---|---|
@@ -1093,28 +1161,50 @@ seed 负责填写起始值，所以使用 write。scale 要读取原值再改写
 | 2 | 3 | 3 |
 | 3 | 4 | 6 |
 
-总和叫归约结果；前面各项之和常叫前缀和。名字可以慢慢熟悉，先记住上面这张表。
+前面各项之和通常叫前缀和。本例不包括当前项，所以第一个位置是零，最后一个位置是前三项之和六。全部数字的总和叫归约结果。
 
-### 16.2 两个现成操作
+### 16.2 先读顺序做法
 
-```c
+假设 numbers、before 和 total 已经创建，并且 numbers 中保存一、二、三、四。顺序写法如下：
+
+```b
+u32 sum = 0;
+for (i in 0..numbers.length) {
+    before[i].value = sum;
+    sum += numbers[i].value;
+}
+total[0].value = sum;
+```
+
+先把旧 sum 写到 before，再加入当前数。循环结束时，sum 才是全部总和。调换这两行顺序，就会得到包含当前项的另一种前缀和。
+
+### 16.3 用集合操作表达同一目标
+
+```b
 scan_exclusive_sum(numbers.value,
                    before.value);
 reduce_sum(numbers.value, total.value);
 ```
 
-scan_exclusive_sum 把“当前位置之前的和”写到 before，因此第一项是 0。reduce_sum 把全部数字的总和写到 total。
+第一条得到前面各项之和，第二条得到全部总和。它们说明要什么结果，由编译器和执行框架组织具体步骤。
 
-当前这些集合操作通过记录字段选择要计算的数字。我们定义一个只有 value 的 Number 记录，再分别指出 numbers.value、before.value 和 total.value。
+![求和的顺序推进和分组合并](figures/beginner-native-sum.svg)
 
-### 16.3 完整例子
+*图 16-1：顺序写法把累计值交给下一步；并行求和可先求各组小计，再合并。图中用四个数说明关系，不表示设备只有四个参与者。*
+
+总和的合并方式不能直接照搬成每个位置的前缀和。扫描还要把前面各组的累计结果传到后面的组，才会得到零、一、三、六。
+
+### 16.4 完整应用
+
+当前集合操作用记录字段指出要计算的数字。Number 只有一个 value 字段，便于先把问题看清楚。
 
 `totals.h`：
 
-```c
+```b
 module beginner.totals;
 
 struct Number { u32 value; };
+u32 main() on cpu;
 program seed(write dataset<Number> numbers) on compute;
 program summarize(read dataset<Number> numbers,
                   write dataset<Number> before,
@@ -1126,8 +1216,20 @@ program run(inout dataset<Number> numbers,
 
 `totals.b`：
 
-```c
+```b
 module beginner.totals;
+
+u32 main() on cpu {
+    dataset<Number> numbers = dataset<Number>(4);
+    dataset<Number> before = dataset<Number>(4);
+    dataset<Number, 1> total = dataset<Number>(1);
+    run_cpu(run(numbers, before, total));
+    for (i in 0..before.length) {
+        println(before[i].value);
+    }
+    println(total[0].value);
+    return 0;
+}
 
 program seed(write dataset<Number> numbers) on compute {
     parallel (number in numbers) {
@@ -1150,81 +1252,161 @@ program run(inout dataset<Number> numbers,
 }
 ```
 
-summarize 只读取 numbers，填写另外两份输出。run 先调用 seed 生成输入，再把它交给 summarize。`dataset<Number,1>` 明确说明 total 只有一条记录。
+main 创建三份数据：numbers 保存输入，before 保存每个位置的前缀，total 只保存一个总和。dataset<Number, 1> 把“只有一条”也写进类型。
 
-运行：
+seed 填写输入；summarize 只读输入，填写两份结果；run 组织两步。计算完成后，main 读取 before 和 total，直接显示。
+
+编译并运行：
 
 ```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/totals.b run `
-    sample Saved/Learn/totals :4 :4 :1
+.\target\release\blc.exe build-exe `
+    sample/beginner/totals.b target/totals.exe
+.\target\totals.exe
 ```
-
-三个容量按接口顺序对应 numbers、before、total。结果为：
 
 ```text
-numbers.value = [1, 2, 3, 4]
-before.value  = [0, 1, 3, 6]
-total.value   = 10
+0
+1
+3
+6
+10
 ```
 
-### 16.4 为什么不让大家同时加同一个变量
+前四行是 before，最后一行是总和。结果就保存在当前应用的 dataset 中，显示时直接访问这些字段。
 
-如果每个元素都随意读取并改写一个共享 total，某次读取可能发生在别人写入之前，结果就难以确定。
+![totals 的真实编译和运行](figures/beginner-native-totals.svg)
 
-reduce_sum 已经表达了真正想做的事：把这些数字按求和规则汇总。我们负责说明输入输出，编译器和执行框架负责组织具体工作。
+### 16.5 为什么不能大家随意加同一个变量
 
+假设两份工作都读到 sum 为零，一份准备写一，另一份准备写二。后写入的值可能覆盖先写入的值，得到的不是三。
 
+reduce_sum 表达“把全部数字按求和规则合并”，并没有让每个元素任意读写一个共享位置。先独立处理，再按明确规则汇总，是并行编程中很常用的思路。
 
-## 第十七章 换到 GPU 执行
+## 第十七章 让同一个计算在 GPU 上运行
 
-### 17.1 先保持同一个计算
+### 17.1 算法保留，执行位置写清楚
 
-第十五章的 stages.b 已声明 on compute。选择 GPU 时，命令写成：
+第十五章的 seed、scale、run 都写 on compute，允许在 CPU 或 GPU 上执行。现在继续使用原来的 stages 模块，另外写一个实际使用 GPU 的应用。
+
+`stages_gpu.h`：
+
+```b
+module beginner.stages_gpu;
+
+u32 main() on cpu;
+```
+
+`stages_gpu.b`：
+
+```b
+module beginner.stages_gpu;
+import beginner.stages;
+
+u32 main() on cpu {
+    dataset<u32> numbers = dataset<u32>(4);
+    upload(numbers);
+    run_gpu(beginner.stages::run(numbers));
+    download(numbers);
+    for (i in 0..numbers.length) {
+        println(numbers[i]);
+    }
+    return 0;
+}
+```
+
+import 导入原来的计算。beginner.stages::run 指向那个模块的 run，所以 seed 和 scale 的算法一行也不用复制。
+
+与 CPU 调用对照：
+
+```b
+// CPU：数据创建后就在 CPU 一侧。
+run_cpu(run(numbers));
+
+// GPU：先交给 GPU，执行后再交回 CPU。
+upload(numbers);
+run_gpu(beginner.stages::run(numbers));
+download(numbers);
+```
+
+upload 将这份存储交给 GPU。run_gpu 提交计算。download 等待需要的 GPU 工作完成，把结果交回 CPU，后面的 for 才能读取并显示。
+
+![数据从 CPU 到 GPU 再返回](figures/beginner-native-gpu.svg)
+
+*图 17-1：同一份 numbers 的所有权与有效内容沿传输继续。GPU 内部仍先 seed、后 scale；CPU 在 download 完成后消费结果。*
+
+### 17.2 编译与直接运行
 
 ```powershell
-.\target\release\blrun.exe gpu `
-    sample/beginner/stages.b run `
-    sample Saved/Learn/stages-gpu :4
+.\target\release\blc.exe build-exe `
+    sample/beginner/stages_gpu.b target/stages_gpu.exe sample
+.\target\stages_gpu.exe
 ```
 
-结果仍为 **[3,5,7,9]**。CPU 与 GPU 分别使用自己的结果目录，便于对照。
+```text
+3
+5
+7
+9
+```
 
-运行 GPU 版本需要显卡驱动提供 Vulkan。Blink 使用同一份 B 源码生成对应代码；本例不需要另写 GPU 专用语言，也不需要安装 Vulkan SDK。
+命令末尾的 sample 是寻找 import 模块的根目录，第十二章已经用过。它是编译参数；运行生成的 exe 时不用再提供源码路径、数据长度或结果目录。
 
-### 17.2 on 后面的三个选择
+GPU 计算需要系统显卡驱动提供 Vulkan，编写本例无需安装 Vulkan SDK。部署时，exe 与编译器生成的对应 DLL 要放在一起。
 
-| 写法 | 允许在哪里执行 |
+![GPU 应用的真实输出](figures/beginner-native-stages_gpu.svg)
+
+### 17.3 为什么 main 还是 on cpu
+
+main 负责创建资源、发起计算、读取结果和标准输出。这些应用工作在 CPU 一侧进行。真正处理每个数字的是它调用的 GPU program。
+
+| 声明 | 允许在哪里执行 |
 |---|---|
-| on compute | CPU 或 GPU，由调用方选择 |
+| on compute | CPU 或 GPU，由调用位置选择 |
 | on cpu | CPU |
 | on gpu | GPU |
 
-program 和它调用的函数都要满足目标要求。本书并行计算例子使用 on compute，便于把注意力放在共同语法上。
+run_cpu 与 run_gpu 明确选择执行设备，传入数据要处在对应的存储位置。
 
-### 17.3 看懂运行时间
+### 17.4 几行代码背后的等待与释放
 
-四个数字适合手算，却太少，无法体现大规模并行的吞吐。准备设备、编译代码和保存文件都需要时间。
+CPU 调用完成以后，后面的代码才能读取 CPU 结果。GPU 调用提交后，后续 GPU 步骤可以继续依赖同一份数据；需要 CPU 读取时，以 download 明确完成交接。
 
-命令行中的 compute_elapsed_ms 包含这次执行的后端准备和结果保存；GPU 路径还包括设备创建、上传和读回。GPU_program_ms 是设备程序的计时，两者范围不同。
+离开作用域会结束应用对资源的拥有。若 GPU 仍在使用，执行框架会保留物理存储到最后一次实际使用完成，不能因为 CPU 函数先返回就提前释放显存。
 
-学语法时先看结果是否符合预期。真正比较效率时，需要同样的工作量、正式优化版本，以及说清楚的计时范围。《并行编程的艺术》提供了从一百万到一亿规模的实际对照。
+### 17.5 四个数能说明什么
 
+四个数适合看清源码和核对结果，不能用于证明 GPU 更快。设备准备、数据传输和计算都需要时间，小输入可能主要花在准备工作上。
+
+选择并行计算要看数据之间是否独立、规模是否足够大，以及传输成本能否由计算收益覆盖。本书先把语言写法学会；《并行编程的艺术》用一百万、一千万、一亿等规模进行真实 Release 效率对照，并说明每个计时范围。
 
 ## 第十八章 固定个数作为编译参数
 
-固定个数也可以由构建具体程序时的参数指定。`shape.h`：
+### 18.1 把四作为一种明确约定
 
-```c
+动态 dataset 的长度在创建时给出。某些算法还需要在编译时知道个数，例如固定大小的块、矩阵或一次固定形状的操作。这时可以把个数写成 const 参数。
+
+`shape.h`：
+
+```b
 module beginner.shape;
 
+u32 main() on cpu;
 program run<const N: u32>(write dataset<u32, N> numbers) on compute;
 ```
 
 `shape.b`：
 
-```c
+```b
 module beginner.shape;
+
+u32 main() on cpu {
+    dataset<u32, 4> numbers = dataset<u32>(4);
+    run_cpu(run<4>(numbers));
+    for (i in 0..numbers.length) {
+        println(numbers[i]);
+    }
+    return 0;
+}
 
 program run<const N: u32>(write dataset<u32, N> numbers) on compute {
     parallel (number in numbers) {
@@ -1233,34 +1415,76 @@ program run<const N: u32>(write dataset<u32, N> numbers) on compute {
 }
 ```
 
-这里的 N 是生成这个具体程序前需要确定的整数。dataset 的固定个数随着 N 确定。选择具体入口 `'run<4>'`，就指定了 N=4；引号让 PowerShell 原样传递尖括号。
+main 的 dataset<u32, 4> 声明固定四项。run<4>(numbers) 选择 N 等于四的计算实例。run 里面只写 N，一份做法就能用于不同的具体个数。
+
+main 仍然是应用入口。尖括号写在 B 源码的调用处，命令行不需要再指定 program 的特殊入口。
+
+### 18.2 编译并运行
 
 ```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/shape.b 'run<4>' `
-    sample Saved/Learn/shape :4
+.\target\release\blc.exe build-exe `
+    sample/beginner/shape.b target/shape.exe
+.\target\shape.exe
 ```
 
-结果为 **[1,2,3,4]**。入口指定四个元素，命令也提供四条记录；这两处的个数需要相符。
+```text
+1
+2
+3
+4
+```
 
-当前的开放常量参数按具体实例检查，并不是任意类型和任意代码都已经支持。进一步使用前，参照项目中的语言规范，确认需要的类型和做法处在已实现范围内。
+![固定形状例子的真实输出](figures/beginner-native-shape.svg)
 
+### 18.3 三处个数怎样对应
+
+dataset<u32, 4> 是类型约定，dataset<u32>(4) 是实际申请个数，run<4> 是选择计算实例。这三处描述的是同一个固定形状，必须一致。
+
+想改成六项，把这三处的四都改成六。显示循环仍沿 numbers.length，不需要手写六次 println。
+
+只有算法确实需要固定形状时才引入这种写法。第十五章的普通逐元素计算只需要动态长度，保留 dataset<u32> 就足够。
 
 ## 第十九章 并行处理同一组成绩
 
-第十四章的 final_score 规则继续保留，字段名字也保持相同。现在每个 parallel 实例拥有一人的 Result，集合操作汇总所有 adjusted。应用入口与计算入口的组织不同，单人成绩的计算仍是同一件事。
+### 19.1 规则与第十四章相同
 
-### 19.1 先把规则写成人话
+准备四个成绩：四十五、六十、七十五、九十。每人加五分，最高记为一百分；达到六十分就及格。保存原成绩、新成绩和是否及格，最后求新成绩总和。
 
-准备四个成绩：45、60、75、90。每个成绩加 5 分，最高记为 100 分；达到 60 分就记为及格。保留原成绩、调整后成绩和是否及格，最后求调整后成绩的总和。
+调整后应是五十、六十五、八十、九十五，总和二百九十。第一人不及格，其余三人及格。
 
-先自己算一遍：调整后是 50、65、80、95，总和应为 290。第一人不及格，其余三人及格。
+第十四章的顺序应用叫 grades，这里的并行应用叫 scores。Result 的字段、final_score 的公式和及格规则都相同。
 
-### 19.2 先列清单
+### 19.2 先看计算部分的对照
+
+顺序版本对每个人计算后，继续更新 total：
+
+```b
+result.adjusted = final_score(result.original, 5);
+result.passed = result.adjusted >= 60;
+total += result.adjusted;
+```
+
+并行版本保持单人成绩计算，把汇总单独表达：
+
+```b
+parallel (result in results) {
+    result.original = 45 + index() * 15;
+    result.adjusted = final_score(result.original, bonus);
+    result.passed = result.adjusted >= 60;
+}
+```
+
+```b
+reduce_sum(results.adjusted, total.value);
+```
+
+四个人各自计算自己的 Result，最后由求和操作汇总 adjusted。这里的 bonus 由 main 传入五。
+
+### 19.3 完整 CPU 应用
 
 `scores.h`：
 
-```c
+```b
 module beginner.scores;
 
 struct Result {
@@ -1269,6 +1493,7 @@ struct Result {
     bool passed;
 };
 struct Number { u32 value; };
+u32 main() on cpu;
 u32 final_score(u32 score, u32 bonus) on compute;
 program fill(write dataset<Result> results, u32 bonus) on compute;
 program sum(read dataset<Result> results,
@@ -1277,16 +1502,23 @@ program run(inout dataset<Result> results,
             write dataset<Number, 1> total, u32 bonus) on compute;
 ```
 
-Result 保存一人的三项结果。Number 保存一个数，作为总和输出。final_score 负责计算单个成绩；fill 处理这一排记录；sum 求和；run 把步骤连起来。
-
-bonus 是每次运行传入的奖励分。这里按题目传入 5，并申请四条结果；种子成绩也按这四人的规则生成。
-
-### 19.3 再写具体做法
-
 `scores.b`：
 
-```c
+```b
 module beginner.scores;
+
+u32 main() on cpu {
+    dataset<Result> results = dataset<Result>(4);
+    dataset<Number, 1> total = dataset<Number>(1);
+    run_cpu(run(results, total, 5));
+    for (i in 0..results.length) {
+        println(results[i].original);
+        println(results[i].adjusted);
+        println(results[i].passed);
+    }
+    println(total[0].value);
+    return 0;
+}
 
 u32 final_score(u32 score, u32 bonus) on compute {
     u32 adjusted = score + bonus;
@@ -1316,21 +1548,33 @@ program run(inout dataset<Result> results,
 }
 ```
 
-final_score 先计算 adjusted，超过 100 就提前交回 100，否则交回 adjusted。这是题目规定的满分规则。
+main 创建四条 Result 和一条总和。fill 给每条成绩填写三个字段；sum 汇总结果；run 明确先填写、后求和。最后仍由 main 按顺序显示，便于逐行对照。
 
-fill 让每条记录完成自己的三项填写。它只需要知道当前编号与这次的 bonus，不依赖其他人的成绩。
-
-sum 把所有 adjusted 相加。它只读取成绩，不再修改成绩。run 先填写、后求和，因此 sum 能读到已经完成的值。
-
-### 19.4 运行并对照结果
+编译并运行：
 
 ```powershell
-.\target\release\blrun.exe cpu `
-    sample/beginner/scores.b run `
-    sample Saved/Learn/scores :4 :1 -- 5
+.\target\release\blc.exe build-exe `
+    sample/beginner/scores.b target/scores.exe
+.\target\scores.exe
 ```
 
-两个容量分别对应 results 的四条记录与 total 的一条记录，最后的 5 对应 bonus。
+```text
+45
+50
+false
+60
+65
+true
+75
+80
+true
+90
+95
+true
+290
+```
+
+每三行是一人的原成绩、新成绩、及格标志，最后一行是总和。与第十四章的完整输出相同。
 
 | original | adjusted | passed |
 |---|---|---|
@@ -1339,30 +1583,65 @@ sum 把所有 adjusted 相加。它只读取成绩，不再修改成绩。run �
 | 75 | 80 | true |
 | 90 | 95 | true |
 
-`total.bldata` 中的 value 为 **290**。
+### 19.4 同一算法的 GPU 应用
 
-![成绩小程序的真实结果](figures/beginner-scores.svg)
+成绩规则仍放在 scores 模块。GPU 应用只负责创建数据、选择设备和消费结果。
 
-*运行记录：CPU/GPU 的四条完整记录与总和一致，按读取到的数字展示。*
+`scores_gpu.h`：
 
-GPU 版本只需选择 gpu，并指定独立目录：
+```b
+module beginner.scores_gpu;
 
-```powershell
-.\target\release\blrun.exe gpu `
-    sample/beginner/scores.b run `
-    sample Saved/Learn/scores-gpu `
-    :4 :1 -- 5
+u32 main() on cpu;
 ```
 
-### 19.5 沿着数据走一遍
+`scores_gpu.b`：
 
-一条记录进入 fill，先得到原成绩；普通函数算出新成绩；比较得到真假值。四条记录分别完成后，sum 汇总 adjusted，得到 290。
+```b
+module beginner.scores_gpu;
+import beginner.scores;
 
-这里用到了数字类型、变量、函数、条件、结构体、并行元素和程序组合。每一种写法都有具体工作，不需要为了使用某个语法而额外制造一层程序。
+u32 main() on cpu {
+    dataset<Result> results = dataset<Result>(4);
+    dataset<Number, 1> total = dataset<Number>(1);
+    upload(results);
+    upload(total);
+    run_gpu(beginner.scores::run(results, total, 5));
+    download(results);
+    download(total);
+    for (i in 0..results.length) {
+        println(results[i].original);
+        println(results[i].adjusted);
+        println(results[i].passed);
+    }
+    println(total[0].value);
+    return 0;
+}
+```
 
-可以试着把 bonus 改成 10。四个 adjusted 应成为 55、70、85、100，总和为 310。题目规则仍然清楚，变化只来自传入的参数。
+results 和 total 都交给 GPU，因为计算既要写成绩，也要写总和。两份结果交回 CPU 以后，显示代码与 CPU 应用一致。
 
+编译并运行：
 
+```powershell
+.\target\release\blc.exe build-exe `
+    sample/beginner/scores_gpu.b target/scores_gpu.exe sample
+.\target\scores_gpu.exe
+```
+
+终端完整输出与上面的 CPU 应用相同，最后得到二百九十。
+
+![CPU 和 GPU 成绩应用的真实对照](figures/beginner-native-scores.svg)
+
+*实际标准输出按一人一行整理；每条完整记录和总和在 CPU、GPU 上一致。*
+
+### 19.5 沿一条记录走到底
+
+以第二个人为例：main 先创建存储；fill 根据编号一填写原成绩六十；final_score 得到六十五；比较得出 true；sum 把六十五计入总和；main 最后读取并显示这条记录。
+
+CPU 与 GPU 的选择改变了执行位置和数据交接，成绩规则没有变化。处理完以后离开 main，应用创建的两份 dataset 按作用域释放。
+
+把传入的奖励分改成十，重新编译，调整后是五十五、七十、八十五、一百，总和三百一十。保留公式，改变参数，就能沿同一条数据路线理解新的结果。
 
 ## 第二十章 读懂错误，继续练习
 
@@ -1388,7 +1667,7 @@ GPU 版本只需选择 gpu，并指定独立目录：
 | = 与 == | 写入新值；比较是否相等 |
 | return 与 break | 结束当前函数；结束当前循环 |
 | for 与 parallel | 明确的顺序重复；对数据域的独立工作 |
-| array 与 dataset | 普通固定数组值；并行入口接收的数据集合 |
+| array 与 dataset | 普通固定数组值；由应用拥有、可交给并行计算的数据集合 |
 | let 与 const | 从初值推断局部类型；定义编译期值 |
 | main 与 program | 普通应用入口；具有数据与执行目标的计算入口 |
 
@@ -1407,7 +1686,7 @@ return 0;
 
 ### 20.4 当前能力与后续学习
 
-当前独立应用支持普通函数、条件、顺序循环、记录、固定数组、向量和矩阵计算，以及整数／真假标准输出。文本、f32 格式化、键盘输入、文件、动态数据和应用组织 GPU 仍有明确未完成部分。完整状态以语言规范与问题列表为准。
+当前 Windows x64 独立应用支持普通函数、条件、顺序循环、记录、固定数组、向量和矩阵计算，支持应用拥有动态 dataset、调用 CPU／GPU program、显式传输和作用域释放。标准输出接受整数和真假值。文本、f32 格式化、键盘输入、文件、其他平台及更多资源类型仍在开发，完整状态以语言规范与问题列表为准。
 
 C/C++ 与 Rust 可以继续作为同等正式的宿主，通过生成 DLL 或原生接口调用 B 计算。混合编程是项目可选择的整合方式，详见《Blink 和 Rust 混合编程》，不影响前面普通 B 应用的独立使用。
 
@@ -1424,29 +1703,25 @@ C/C++ 与 Rust 可以继续作为同等正式的宿主，通过生成 DLL 或原
 9. 数组改为 `[2,4,6,8]`，显示总和。
 10. 成绩奖励分改为十，预测每人记录与总和。
 
-## 附录 A 并行计算结果的读取
+## 附录 A 数据、执行与部署
 
-第一至十四章的结果直接显示在终端，无需读取数据文件。本附录只服务于后面采用 blrun 的计算模块。
+### A.1 两种借用，分别读懂
 
-### A.1 读取四个整数
+program 的 read 表示只读，write 表示填写，inout 表示读取后修改。第十六章的 summarize 只读 numbers，却能写 before 和 total；权限分别属于各份参数。
 
-第十五章 numbers 的结果位于 `Saved/Learn/numbers/numbers.bldata`。若安装了 Python，可直接查看它的四个 u32：
+main 仍拥有它创建的 dataset。run_cpu 或 run_gpu 暂时借用这些资源完成程序，不会把同一份存储复制成第二个可写所有者。
 
-```powershell
-python -c "import struct; from pathlib import Path; raw=Path('Saved/Learn/numbers/numbers.bldata').read_bytes(); print(struct.unpack('<4I',raw[24:]))"
-```
+### A.2 CPU 与 GPU 数据交接
 
-```text
-(2, 4, 6, 8)
-```
+dataset 创建后位于 CPU 一侧。CPU program 直接借用；GPU program 使用前写 upload，CPU 读取 GPU 结果前写 download。不要把“GPU 已提交”理解成“CPU 现在就能读结果”。
 
-这是一条读取二进制计算数据的工具命令，不是编译或运行普通应用的前置步骤。
+这些例子没有输入、输出数据文件参数。结果保存在应用自己的数据中，main 直接读取并显示；blrun 的文件读写工具继续可用于其他计算模块，不是本书应用的运行步骤。
 
-### A.2 文件头与记录
+### A.3 把程序交给别人
 
-当前 BLDATA 的前二十四字节是文件头，含格式标识、版本、记录数、记录间隔和执行步数。后面才是按编译布局保存的记录。四个 u32 的间隔为四字节；Result 等记录还包含多个字段与可能的对齐空白。
+只使用普通值的起步应用可以只生成 exe。使用动态 dataset 或 program 的应用还会生成同目录的 blink_app_*.dll，部署时把对应文件一起复制。不要给 DLL 改名，exe 已记录它的实际名称。
 
-普通记录、向量与浮点数据应按各自布局读取，不要把全部内容都当作 u32。原始数据读写实现在 `crates/blcompute/src/lib.rs`。
+使用 GPU 的电脑需要支持所需 Vulkan 能力的显卡驱动。当前这些独立应用的输出目标是 Windows x64，不把语言的发展目标写成所有平台已经可用。
 
 ## 附录 B 练习参考与源码索引
 
@@ -1482,6 +1757,6 @@ python -c "import struct; from pathlib import Path; raw=Path('Saved/Learn/number
 
 ### B.4 并行例子与下一步
 
-并行例子包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`。它们的接口仍是 program，沿正式 blrun 或宿主 API 执行，不与已改为 main 的普通应用混用。
+并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 program。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都由 blc build-exe 编译，再直接运行生成的 exe。
 
 下一步可以阅读《并行编程的艺术》，学习更大规模的数据关系与真实效率；阅读《Blink 和 Rust 混合编程》，学习把 B 算法接入项目；对实现感兴趣时，再阅读《B 语言源码分析》。

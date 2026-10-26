@@ -1,6 +1,7 @@
 module beginner.totals;
 
 struct Number { u32 value; };
+u32 main() on cpu;
 program seed(write dataset<Number> numbers) on compute;
 program summarize(read dataset<Number> numbers,
                   write dataset<Number> before,
