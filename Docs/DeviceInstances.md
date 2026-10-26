@@ -55,3 +55,11 @@ unsafe bottom_level复制CPU几何到自有传输资源后提交构建；unsafe 
 本轮原生执行在AMD Radeon RX 9070 GRE的真实队列前放置一个临时未释放事件：两份BLAS、CPU TLAS、GPU矩阵程序、设备TLAS及射线查询均在事件释放前返回，完成观察为pending。原始BLAS／TLAS持有者和查询输入提前退出后，放行队列，CPU／GPU实例的三个命中和一个未命中完全相同，命中实例为0／1／1、primitive为0／0／1、距离为1／1.5／1.5。
 
 同一受控队列中，16777219条float4记录的上传与清零各跨两个物理页；原始叶、父view和清零数据持有者在完成前退出，最终四个跨页位置的实际读取与预期严格相同。空TLAS的wait／is_complete及最后设备所有者释放也已确认。原日志在E:/BLEngineMeasurements/AsyncResourcesDevelopment/async-native.out.log；临时事件入口与消费者均在验证后删除，不成为正式API或固定关卡。
+
+## 多程序的同一设备与BLAS记录范围（2026-10-26）
+
+Device::for_programs(programs)在创建一个实际逻辑设备时，合并各B程序所需的光线查询、排序、maximal reconvergence、纹理数组及命中顶点读取能力。with_presentation_programs额外声明原生呈现；原for_program／with_presentation复用同一实现。能力来自真实程序，不在执行时更换设备或增加另一套调度。后续程序仍由既有逻辑设备／能力边界负责；这不把单队列变成多队列或设备自主任务。
+
+BottomLevel::primitive_count返回该BLAS实际构建输入的u32 primitive范围。数值由平台构建所有者保存，用于原AS的primitive号与外部属性记录之间的寻址关系；不是GPU Count、原生构建完成或查询完成。它不读回设备计数，不增加引擎侧的计数镜像、扫描或等待，is_complete／wait仍保持原来含义。
+
+本轮由BLEngine独立GPU场景与渲染消费者推动：同一for_programs设备上的网格查询与两张纹理的完整4K／内部8K渲染已实际执行；原with_presentation入口也经原生4K窗口与转动使用。源材质／法线／UV按真实消费者补充时，直接用驻留BLAS的primitive范围交接。原始日志、完整图及数据位于E:/BLEngineMeasurements/GpuScene。当前没有新增B语法、第三方依赖或常驻测试，不称全部引擎或多队列并行已经完成。

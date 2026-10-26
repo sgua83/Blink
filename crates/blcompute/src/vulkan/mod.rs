@@ -220,24 +220,34 @@ impl Device {
         Self::create(false, false, false, false, false, false)
     }
     pub fn for_program(program: &Program) -> Result<Self> {
-        Self::create(
-            !program.accelerations().is_empty(),
-            program.requires_sort(),
-            false,
-            program.requires_maximal_reconvergence(),
-            program.requires_texture_indexing(),
-            program.requires_ray_position_fetch(),
-        )
+        Self::for_programs(std::iter::once(program))
+    }
+    /// 同一逻辑设备消费多个B程序，按实际程序集合声明能力，不在执行中重建设备。
+    pub fn for_programs<'a>(programs: impl IntoIterator<Item = &'a Program>) -> Result<Self> {
+        Self::program_device(programs, false)
     }
     pub fn with_presentation(program: &Program) -> Result<Self> {
-        Self::create(
-            !program.accelerations().is_empty(),
-            program.requires_sort(),
-            true,
-            program.requires_maximal_reconvergence(),
-            program.requires_texture_indexing(),
-            program.requires_ray_position_fetch(),
-        )
+        Self::with_presentation_programs(std::iter::once(program))
+    }
+    pub fn with_presentation_programs<'a>(
+        programs: impl IntoIterator<Item = &'a Program>,
+    ) -> Result<Self> {
+        Self::program_device(programs, true)
+    }
+    fn program_device<'a>(
+        programs: impl IntoIterator<Item = &'a Program>,
+        presentation: bool,
+    ) -> Result<Self> {
+        let (mut ray, mut sort, mut reconverge, mut textures, mut positions) =
+            (false, false, false, false, false);
+        for program in programs {
+            ray |= !program.accelerations().is_empty();
+            sort |= program.requires_sort();
+            reconverge |= program.requires_maximal_reconvergence();
+            textures |= program.requires_texture_indexing();
+            positions |= program.requires_ray_position_fetch();
+        }
+        Self::create(ray, sort, presentation, reconverge, textures, positions)
     }
     fn create(
         ray_query: bool,

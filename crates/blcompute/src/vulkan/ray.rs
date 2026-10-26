@@ -169,6 +169,7 @@ pub(super) struct StructureStorage {
     address: u64,
     _storage: Allocation,
     models: Vec<BottomLevel>,
+    count: u32,
 }
 impl Drop for StructureStorage {
     fn drop(&mut self) {
@@ -219,6 +220,10 @@ impl Drop for RayInput {
 #[derive(Clone)]
 pub struct BottomLevel(Rc<Structure>);
 impl BottomLevel {
+    /// 实际BLAS构建输入的primitive范围，不读取设备计数。
+    pub fn primitive_count(&self) -> u32 {
+        self.0.count
+    }
     pub fn is_complete(&self) -> Result<bool> {
         self.0.built.is_complete()
     }
@@ -336,6 +341,7 @@ impl Device {
             address: 0,
             _storage: storage,
             models,
+            count,
         };
         let ci = Create {
             kind: 1000150017,
