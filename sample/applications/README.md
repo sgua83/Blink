@@ -64,8 +64,8 @@ $LASTEXITCODE
 .\target\applications\borrow.exe
 ```
 
-`borrow.b` 由 main 创建一百万条 Entry，再将同一存储以 `inout dataset<Entry>` 交给 prepare 初始化、advance 调用 CPU program，以 `read dataset<Entry>` 交给 total 求和。正常输出 `1784293664` 和 `1000000`，退出码为 `0`；求和按 u32 回绕。
+`borrow.b` 由 main 创建一百万条 Entry，再将同一存储以 `write dataset<Entry>` 交给 prepare 完整初始化，以 `inout dataset<Entry>` 交给 advance 调用 CPU program，以 `read dataset<Entry>` 交给 total 求和。正常输出 `1784293664` 和 `1000000`，退出码为 `0`；求和按 u32 回绕。
 
 inout 函数可在范围内读写和转借，返回后数据仍由 main 拥有；函数只释放自己的本地资源，不能转移借来的 CPU／GPU 存储。同次调用中的独占借用不得与同一存储的其他整份或元素借用重叠，只读参数可以共享。参数类型／固定形状和 nonempty／index 条件继续沿原检查器证明，不复制数据，不增加引用 ABI 或运行时别名检查。
 
-CPU 应用中已初始化存储的整份 inout、拥有 dataset 的函数返回、局部初始化移动、拥有形参、资源重赋值与重新初始化已接通；资源聚合、write dataset 全域初始化与其他资源构造仍待完成。program 的每个并行实例仍只拥有当前独占元素。
+CPU 应用中已初始化存储的整份 inout、拥有 dataset 的函数返回、局部初始化移动、拥有形参、资源重赋值与重新初始化已接通；CPU write dataset 的完整遍历／已知域输出已接通；资源聚合、一般动态子域／数组初始化推导与其他资源构造仍待完成。program 的每个并行实例仍只拥有当前独占元素。

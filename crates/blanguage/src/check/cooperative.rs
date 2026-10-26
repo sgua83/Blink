@@ -256,6 +256,7 @@ impl<'a> Builder<'a> {
         }
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
+        let mut dataset_outputs = Vec::new();
         for (param, arg) in callee.function.params.iter().zip(args) {
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
@@ -284,15 +285,25 @@ impl<'a> Builder<'a> {
                 (true, false, Argument::ApplicationData(mut data)) => {
                     self.application_cpu(&data, span)?;
                     self.require_same(&ty, &data.ty, span)?;
-                    if !matches!(param.access, Access::Read | Access::InOut | Access::Value) {
+                    if !matches!(
+                        param.access,
+                        Access::Read | Access::InOut | Access::Write | Access::Value
+                    ) {
                         return self.fail(
                             span,
                             "B224",
-                            "CPU 应用函数按值取得 dataset 所有权或按 read／inout 借用；原子与 write 全域借用尚未实现",
+                            "CPU 应用函数按值取得 dataset 所有权或按 read／write／inout 借用；原子借用属于实际并行域",
                         );
                     }
-                    if param.access == Access::InOut && !data.writable {
-                        return self.fail(span, "B227", "只读 dataset 借用不能提升为 inout");
+                    if matches!(param.access, Access::InOut | Access::Write) && !data.writable {
+                        return self.fail(span, "B227", "只读 dataset 借用不能提升为 write／inout");
+                    }
+                    if param.access == Access::Write {
+                        let scope = self.application_output_scope();
+                        dataset_outputs.push((data.clone(), scope));
+                        data.initialization = Some(scope);
+                    } else {
+                        self.require_application_initialized(&data, span)?;
                     }
                     if param.ty.count.is_some()
                         && self.world.shape(
@@ -310,7 +321,8 @@ impl<'a> Builder<'a> {
                     } else {
                         application::Ownership::Borrowed
                     };
-                    data.writable = matches!(param.access, Access::Value | Access::InOut);
+                    data.writable =
+                        matches!(param.access, Access::Value | Access::InOut | Access::Write);
                     let mutable =
                         application::rebound(callee.function.body.as_ref().unwrap(), &param.name);
                     Binding::ApplicationData(self.application_bind(data, mutable))
@@ -430,6 +442,11 @@ impl<'a> Builder<'a> {
             .map(|(_, place)| self.borrow_owned(place.clone()))
             .collect();
         self.env = old_env;
+        for (data, scope) in &dataset_outputs {
+            self.initialized.retain(|position| !matches!(position,
+                Position::Parameter(owner, _) | Position::ApplicationElement(owner, _, _) if owner == scope));
+            self.initialize_application(data);
+        }
         let fresh_scopes: BTreeSet<_> = borrowed
             .iter()
             .zip(&updates)

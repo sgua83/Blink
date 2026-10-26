@@ -3,7 +3,7 @@ module applications.borrow;
 program increment(inout dataset<Entry> rows) on compute {
     parallel (row in rows) { row.value += 1; }
 }
-void prepare(inout dataset<Entry> rows) on cpu {
+void prepare(write dataset<Entry> rows) on cpu {
     for (row in rows) {
         row.value = ordinal(row);
         row.tag = ordinal(row) ^ 305419896;

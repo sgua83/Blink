@@ -70,7 +70,9 @@ impl Builder<'_> {
             }
             let place = self.place(expr)?;
             match place.storage() {
-                Place::Local(..) => self.require_initialized(&place, expr.span)?,
+                Place::Local(..) | Place::ApplicationElement { .. } => {
+                    self.require_initialized(&place, expr.span)?
+                }
                 Place::Element { binding, .. } if self.view_access[binding].writes() => {
                     self.require_initialized(&place, expr.span)?
                 }

@@ -141,6 +141,7 @@ struct ForLoop {
     data: Option<CursorSource>,
     borrowed: Option<String>,
     slot: usize,
+    initialization: Vec<(application::Data, Vec<u32>)>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TileOrigin {
@@ -159,6 +160,7 @@ enum Place {
         ty: Ty,
         handle: Reg,
         identity: ValueIdentity,
+        initialization: Option<(usize, ownership::ApplicationIndex)>,
         index: Reg,
         index_range: (u32, u32),
         stride: u32,
@@ -981,12 +983,12 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
             && !matches!(p.access, Access::Read | Access::Atomic)
             && !(d.function.kind == FunctionKind::Value
                 && d.function.target == Target::Cpu
-                && matches!(p.access, Access::Value | Access::InOut))
+                && matches!(p.access, Access::Value | Access::InOut | Access::Write))
         {
             return d.source.fail(
                 p.span,
                 "B120",
-                "函数 dataset 参数支持 read／atomic，CPU 应用函数另可按值取得所有权或 inout 借用；write 的全域初始化尚未实现",
+                "函数 dataset 参数支持 read／atomic，CPU 应用函数另可按值取得所有权或按 write／inout 借用",
             );
         }
         if p.ty.is_texture_resource() && p.access != Access::Read {
@@ -1097,8 +1099,10 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
         if p.ty.dataset {
             let binding = if d.function.kind == FunctionKind::Value
                 && d.function.target == Target::Cpu
-                && matches!(p.access, Access::Read | Access::InOut | Access::Value)
-            {
+                && matches!(
+                    p.access,
+                    Access::Read | Access::InOut | Access::Write | Access::Value
+                ) {
                 {
                     let data = b.application_parameter(data_index, p.access)?;
                     let data = b.application_bind(
@@ -1511,7 +1515,10 @@ impl<'a> Builder<'a> {
                 stride,
                 words,
                 ..
-            } => self.read_application_place(ty, *handle, *identity, *index, *stride, words, span),
+            } => {
+                self.require_initialized(p, span)?;
+                self.read_application_place(ty, *handle, *identity, *index, *stride, words, span)
+            }
             Place::Indexed { .. } => self.read_array_place(p, span),
             Place::AtomicParameter(_) => {
                 self.fail(span, "B214", "原子借用只能通过显式原子操作读取")
@@ -1657,9 +1664,13 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.writable_storage(p, span)?;
-                return self.write_application_place(
+                let proof = bounds::Proof::capture(&value);
+                self.write_application_place(
                     *handle, *identity, *index, *stride, words, value, span,
-                );
+                )?;
+                self.initialize(p);
+                self.assign_owned_proof(p, proof, false);
+                return Ok(());
             }
             Place::Indexed { .. } => return self.write_array_place(p, value, span),
             Place::ReadOnlyLocal(..) => {
@@ -2363,23 +2374,24 @@ impl<'a> Builder<'a> {
                 self.writes.clone(),
                 self.cross_access.clone(),
             );
-            let before = self.initialized.clone();
+            let before = self.application_initialization_state();
             let control = self.control_uniform;
             self.control_uniform &= a.uniform;
             self.refine_bounds(&a, op == "&&");
             let b = self.expr(b)?;
             self.require_bool(&b, span)?;
-            let after = std::mem::take(&mut self.initialized);
-            if op == "&&" {
-                self.join_initialization(&a, after, before);
-            } else {
-                self.join_initialization(&a, before, after);
-            }
+            let after = self.take_application_initialization_state();
             let branch_env = self.env.clone();
             let branch_releases = self.application_join_releases(&branch_env, &environment);
             let skipped_releases = self.application_join_releases(&environment, &branch_env);
             self.restore_expression_environment(environment, &modified);
             self.refine_bounds(&a, op != "&&");
+            let before = self.application_empty_initialization(before);
+            if op == "&&" {
+                self.join_initialization(&a, after, before);
+            } else {
+                self.join_initialization(&a, before, after);
+            }
             let skipped_env = std::mem::replace(&mut self.env, branch_env);
             if let Some(bits) = &a.constant {
                 if (bits[0] != 0) != (op == "&&") {
@@ -2452,13 +2464,13 @@ impl<'a> Builder<'a> {
         }
         let environment = self.env.clone();
         let previous = std::mem::take(&mut self.code);
-        let init = self.initialized.clone();
+        let init = self.application_initialization_state();
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&c, true);
         self.block(yes_body)?;
         let mut yes = std::mem::take(&mut self.code);
-        let yes_init = self.initialized.clone();
+        let yes_init = self.application_initialization_state();
         let yes_env = self.env.clone();
         let yes_flow = self.flow;
         let yes_reachable = yes_flow.continues();
@@ -2468,7 +2480,7 @@ impl<'a> Builder<'a> {
         self.refine_bounds(&c, false);
         self.block(no_body)?;
         let mut no = std::mem::take(&mut self.code);
-        let no_init = std::mem::take(&mut self.initialized);
+        let no_init = self.take_application_initialization_state();
         let no_flow = self.flow;
         let no_reachable = no_flow.continues();
         let no_env = self.env.clone();
@@ -2655,6 +2667,7 @@ impl<'a> Builder<'a> {
         let slot = self.locals.len();
         self.locals.push(Scalar::U32);
         self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
+        let initialization = self.application_iteration_outputs(&begin, &limit);
         self.for_loop(
             ForLoop {
                 name: name.clone(),
@@ -2663,6 +2676,7 @@ impl<'a> Builder<'a> {
                 data,
                 borrowed: borrowed.map(str::to_owned),
                 slot,
+                initialization,
             },
             body,
             span,
@@ -2686,9 +2700,16 @@ impl<'a> Builder<'a> {
             data,
             borrowed,
             slot,
+            mut initialization,
         } = cursor_specification.clone();
         if begin.minimum() >= limit.maximum() || begin.identity() == limit.identity() {
+            for (data, words) in initialization {
+                self.initialize_application_words(&data, &words);
+            }
             return Ok(());
+        }
+        if bounds::seeks(body) {
+            initialization.clear();
         }
         if !initial {
             self.invalidate_assigned(body, borrowed.as_deref())?;
@@ -2724,8 +2745,13 @@ impl<'a> Builder<'a> {
                     CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
                         place: Self::application_element(
                             &data,
-                            index,
-                            (0, data.length.maximum().saturating_sub(1)),
+                            &cursor,
+                            (
+                                cursor.minimum(),
+                                cursor
+                                    .maximum()
+                                    .min(data.length.maximum().saturating_sub(1)),
+                            ),
                         ),
                         proof: bounds::Proof::default(),
                         uniform: false,
@@ -2746,13 +2772,17 @@ impl<'a> Builder<'a> {
                     } else {
                         bounds::for_cursor(&begin, &limit, body)
                     },
-                    ..cursor
+                    ..cursor.clone()
                 })
             },
         );
+        let iteration = match self.env.get(&name) {
+            Some(Binding::Value(value)) => ownership::ApplicationIndex::of(value),
+            _ => ownership::ApplicationIndex::of(&cursor),
+        };
         let condition_env = self.env.clone();
         self.refine_bounds(&test, false);
-        let natural = self.loop_state();
+        let mut natural = self.loop_state();
         self.env = condition_env;
         self.refine_bounds(&test, true);
         let control = self.control_uniform;
@@ -2769,12 +2799,15 @@ impl<'a> Builder<'a> {
         self.iterators.pop();
         self.loop_depth -= 1;
         let mut code = std::mem::take(&mut self.code);
+        self.initialize_iteration_exit(&mut natural, &initialization, iteration, initial);
         let natural = (!nonempty || (!initial && body_flow.iterates())).then_some(natural);
         if initial {
             let specification = cursor_specification.clone();
             let (expanded, flow) =
                 self.expand_initial_loop(code, body_reachable, |builder, next| {
                     let mut cursor = specification.clone();
+                    cursor.initialization =
+                        builder.application_iteration_prefix(&initialization, iteration);
                     cursor.begin = next.unwrap();
                     builder.for_loop(cursor, body, span, false, false)
                 })?;
@@ -3343,7 +3376,7 @@ impl<'a> Builder<'a> {
                     .read_place(
                         &Self::application_element(
                             &data,
-                            index.regs[0],
+                            &index,
                             (index.minimum(), index.maximum()),
                         ),
                         span,
@@ -3398,13 +3431,16 @@ impl<'a> Builder<'a> {
             Some(Binding::Owned(OwnedBinding {
                 place:
                     Place::ApplicationElement {
-                        identity, index, ..
+                        identity,
+                        index,
+                        index_range,
+                        ..
                     },
                 ..
             })) => (
                 IndexDomain::ApplicationData(identity),
                 index,
-                bounds::Proof::unsigned(0, u32::MAX),
+                bounds::Proof::unsigned(index_range.0, index_range.1),
             ),
             Some(Binding::Owned(OwnedBinding {
                 place: Place::Element { binding, index, .. },

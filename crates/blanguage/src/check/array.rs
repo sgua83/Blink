@@ -6,6 +6,7 @@ impl Place {
             Self::ApplicationElement {
                 handle,
                 identity,
+                initialization,
                 index,
                 index_range,
                 stride,
@@ -16,6 +17,7 @@ impl Place {
                 ty,
                 handle,
                 identity,
+                initialization,
                 index,
                 index_range,
                 stride,
@@ -287,7 +289,9 @@ impl Builder<'_> {
             unreachable!()
         };
         match &**base {
-            Place::Local(..) => self.require_initialized(place, span)?,
+            Place::Local(..) | Place::ApplicationElement { .. } => {
+                self.require_initialized(place, span)?
+            }
             Place::Element { binding, index, .. } => {
                 self.reads.insert(*binding);
                 if *index != self.global_index {

@@ -2,15 +2,43 @@
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ApplicationIndex {
+    Constant(u32),
+    Value(ValueIdentity),
+}
+impl ApplicationIndex {
+    pub(super) fn of(value: &Value) -> Self {
+        if value.minimum() == value.maximum() {
+            Self::Constant(value.minimum())
+        } else {
+            Self::Value(value.identity())
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
     Local(usize),
     Element(usize, u32),
     Parameter(usize, usize),
+    ApplicationElement(usize, ApplicationIndex, u32),
 }
 impl Place {
     pub(super) fn owned_positions(&self) -> Option<Vec<Position>> {
         match self {
-            Self::ApplicationElement { .. } => Some(Vec::new()),
+            Self::ApplicationElement {
+                initialization,
+                words,
+                ..
+            } => Some(
+                initialization
+                    .iter()
+                    .flat_map(|(scope, index)| {
+                        words
+                            .iter()
+                            .map(|word| Position::ApplicationElement(*scope, *index, *word))
+                    })
+                    .collect(),
+            ),
             Self::Indexed { base, .. } => base.owned_positions(),
             Self::ReadOnlyLocal(..) => Some(Vec::new()),
             Self::Local(_, slots, ..) => Some(slots.iter().copied().map(Position::Local).collect()),
@@ -37,6 +65,25 @@ impl Place {
     }
     pub(super) fn components_in(&self, owner: &Place) -> Option<Vec<usize>> {
         match (self, owner) {
+            (
+                Self::ApplicationElement {
+                    identity: a,
+                    initialization: ai,
+                    index: i,
+                    words,
+                    ..
+                },
+                Self::ApplicationElement {
+                    identity: b,
+                    initialization: bi,
+                    index: j,
+                    words: root,
+                    ..
+                },
+            ) if a == b && (ai.is_some() && ai == bi || i == j) => words
+                .iter()
+                .map(|word| root.iter().position(|root| root == word))
+                .collect(),
             (
                 Self::Indexed {
                     base: a,
@@ -171,12 +218,19 @@ impl Builder<'_> {
         }) {
             return positions;
         }
-        place.owned_positions().unwrap()
+        if let Place::Indexed { base, .. } = place {
+            self.positions(base)
+        } else {
+            place.owned_positions().unwrap()
+        }
     }
     pub(super) fn is_initialized(&self, place: &Place) -> bool {
         self.positions(place)
             .iter()
-            .all(|p| self.initialized.contains(p))
+            .all(|p| self.initialized.contains(p) || matches!(p, Position::ApplicationElement(scope, _, word)
+                if self.initialized.contains(&Position::Parameter(*scope, *word as usize))
+                || self.env.values().any(|binding| matches!(binding, Binding::ApplicationData(data)
+                    if data.initialization == Some(*scope) && self.application_field_initialized(data, *word)))))
     }
     pub(super) fn require_initialized(&self, place: &Place, span: Span) -> Result<()> {
         if !self.is_initialized(place) {
@@ -189,6 +243,10 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn initialize(&mut self, place: &Place) {
+        // A dynamic projection writes that selected position, never every field of its base.
+        // A borrowed output can still name and initialize that exact selected position.
+        if matches!(place, Place::Indexed { .. }) && !self.env.values().any(|binding|
+            matches!(binding, Binding::Owned(owner) if place.components_in(&owner.place).is_some())) { return; }
         self.initialized.extend(self.positions(place));
     }
     pub(super) fn join_initialization(

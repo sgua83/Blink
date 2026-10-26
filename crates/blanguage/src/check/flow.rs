@@ -41,6 +41,28 @@ pub(super) struct LoopContext {
     initial_cursor: Option<Value>,
 }
 impl Builder<'_> {
+    pub(super) fn initialize_iteration_exit(
+        &self,
+        exit: &mut LoopState,
+        outputs: &[(application::Data, Vec<u32>)],
+        index: ownership::ApplicationIndex,
+        initial: bool,
+    ) {
+        let continues = &self.loop_contexts.last().unwrap().continues;
+        for (data, words) in outputs {
+            let scope = data.initialization.unwrap();
+            for word in words {
+                if initial
+                    || continues.iter().all(|state| {
+                        initialized_application_word(&state.initialized, scope, index, *word)
+                    })
+                {
+                    exit.initialized
+                        .insert(Position::Parameter(scope, *word as usize));
+                }
+            }
+        }
+    }
     pub(super) fn application_initial_loop(&self, body: &[Stmt]) -> bool {
         self.env.iter().any(|(name, binding)| matches!(binding,
             Binding::ApplicationData(data) if data.ownership == application::Ownership::Moved && application::rebound(body, name)))
@@ -96,6 +118,10 @@ impl Builder<'_> {
                     );
                 }
             }
+        }
+        if self.env.values().any(|binding| matches!(binding, Binding::ApplicationData(data) if data.initialization.is_some())) {
+            let state = self.loop_state();
+            self.loop_contexts.last_mut().unwrap().continues.push(state);
         }
         Ok(())
     }
@@ -167,7 +193,7 @@ impl Builder<'_> {
                 .filter(|(n, _)| names.contains(*n))
                 .map(|(n, b)| (n.clone(), b.clone()))
                 .collect(),
-            initialized: self.initialized.clone(),
+            initialized: self.application_initialization_state(),
             control: self.control_uniform,
             cursor: self
                 .loop_contexts
@@ -378,4 +404,14 @@ where
         result.push(instruction);
     }
     Ok(result)
+}
+
+pub(super) fn initialized_application_word(
+    initialized: &BTreeSet<Position>,
+    scope: usize,
+    index: ownership::ApplicationIndex,
+    word: u32,
+) -> bool {
+    initialized.contains(&Position::Parameter(scope, word as usize))
+        || initialized.contains(&Position::ApplicationElement(scope, index, word))
 }

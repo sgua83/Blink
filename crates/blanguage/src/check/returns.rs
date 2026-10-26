@@ -134,6 +134,17 @@ impl Builder<'_> {
         let mut borrowed = BTreeMap::new();
         let definition = self.definition.clone();
         for param in &definition.function.params {
+            if param.ty.dataset
+                && param.access == Access::Write
+                && let Some(Binding::ApplicationData(data)) = self.env.get(&param.name)
+                && !self.application_initialized(data)
+            {
+                return self.fail(
+                    span,
+                    "B229",
+                    format!("返回前没有完整初始化 write dataset 参数 {}", param.name),
+                );
+            }
             if matches!(param.access, Access::Write | Access::InOut)
                 && !param.ty.dataset
                 && !param.ty.tile
@@ -216,7 +227,7 @@ impl Builder<'_> {
         } else {
             Vec::new()
         };
-        let initial = self.initialized.clone();
+        let initial = self.application_initialization_state();
         let caller = self.return_context.replace(ReturnContext {
             expected,
             scoped,

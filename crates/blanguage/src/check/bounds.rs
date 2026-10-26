@@ -1,15 +1,15 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
 
+pub(super) fn seeks(body: &[Stmt]) -> bool {
+    body.iter().any(|statement| match &statement.kind {
+        StmtKind::Seek(..) => true,
+        StmtKind::If(_, yes, no) => seeks(yes) || seeks(no),
+        // Nested loops own their reentry; their seek cannot replace this cursor.
+        _ => false,
+    })
+}
 pub(super) fn for_cursor(begin: &Value, limit: &Value, body: &[Stmt]) -> Proof {
-    fn seeks(body: &[Stmt]) -> bool {
-        body.iter().any(|statement| match &statement.kind {
-            StmtKind::Seek(..) => true,
-            StmtKind::If(_, yes, no) => seeks(yes) || seeks(no),
-            // Nested loops own their reentry; their seek cannot replace this cursor.
-            _ => false,
-        })
-    }
     let minimum = if seeks(body) { 0 } else { begin.minimum() };
     Proof::unsigned(minimum, limit.maximum().saturating_sub(1))
         .with_domains(indices_below(&limit.proof.domains(0), true))

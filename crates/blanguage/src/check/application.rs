@@ -15,6 +15,7 @@ pub(super) enum Ownership {
 pub(super) struct Data {
     pub handle: Value,
     pub slots: Option<[usize; 2]>,
+    pub initialization: Option<usize>,
     pub ty: Ty,
     pub length: Value,
     pub ownership: Ownership,
@@ -211,9 +212,15 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
+        let initialization = if access == Access::Write {
+            Some(self.application_output_scope())
+        } else {
+            None
+        };
         Ok(Data {
             handle,
             slots: None,
+            initialization,
             ty: self.program.buffers[binding].ty.clone(),
             length,
             count: self.program.buffers[binding].count,
@@ -222,9 +229,238 @@ impl Builder<'_> {
             } else {
                 Ownership::Borrowed
             },
-            writable: matches!(access, Access::Value | Access::InOut),
+            writable: matches!(access, Access::Value | Access::InOut | Access::Write),
             residency: Some(Target::Cpu),
         })
+    }
+    pub(super) fn application_iteration_outputs(
+        &self,
+        begin: &Value,
+        limit: &Value,
+    ) -> Vec<(Data, Vec<u32>)> {
+        let domains = limit.proof.domains(0);
+        self.env.values().filter_map(|binding| {
+            let Binding::ApplicationData(data) = binding else { return None; };
+            let scope = data.initialization?;
+            if !(domains.contains(&IndexDomain::ApplicationLength(data.handle.identity()))
+                || limit.identity() == data.length.identity()
+                || limit.minimum() == limit.maximum() && limit.minimum() == data.length.minimum() && limit.maximum() == data.length.maximum()) { return None; }
+            let words = data.ty.components.iter().filter_map(|(_, offset)| {
+                let word = offset / 4;
+                let prefix = begin.minimum();
+                (self.application_field_initialized(data, word) || begin.maximum() == prefix &&
+                    self.initialized.iter().filter(|position| matches!(position,
+                        Position::ApplicationElement(owner, ownership::ApplicationIndex::Constant(index), component)
+                        if *owner == scope && *component == word && *index < prefix)).count() as u64 == u64::from(prefix)).then_some(word)
+            }).collect();
+            Some((data.clone(), words))
+        }).collect()
+    }
+    pub(super) fn application_iteration_prefix(
+        &self,
+        outputs: &[(Data, Vec<u32>)],
+        index: ownership::ApplicationIndex,
+    ) -> Vec<(Data, Vec<u32>)> {
+        outputs
+            .iter()
+            .map(|(data, words)| {
+                (
+                    data.clone(),
+                    words
+                        .iter()
+                        .copied()
+                        .filter(|word| {
+                            flow::initialized_application_word(
+                                &self.initialized,
+                                data.initialization.unwrap(),
+                                index,
+                                *word,
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+    pub(super) fn initialize_application_words(&mut self, data: &Data, words: &[u32]) {
+        let scope = data.initialization.unwrap();
+        self.initialized.extend(
+            words
+                .iter()
+                .map(|word| Position::Parameter(scope, *word as usize)),
+        );
+    }
+    pub(super) fn application_empty_initialization(
+        &self,
+        mut initialized: BTreeSet<Position>,
+    ) -> BTreeSet<Position> {
+        for binding in self.env.values() {
+            if let Binding::ApplicationData(data) = binding
+                && let Some(scope) = data.initialization
+                && data.length.maximum() == 0
+            {
+                initialized.extend(
+                    data.ty
+                        .components
+                        .iter()
+                        .map(|(_, offset)| Position::Parameter(scope, (offset / 4) as usize)),
+                );
+            }
+        }
+        initialized
+    }
+    pub(super) fn application_initialization_state(&self) -> BTreeSet<Position> {
+        self.application_empty_initialization(self.initialized.clone())
+    }
+    pub(super) fn take_application_initialization_state(&mut self) -> BTreeSet<Position> {
+        let initialized = std::mem::take(&mut self.initialized);
+        self.application_empty_initialization(initialized)
+    }
+    fn initialize_application_program(&mut self, program: &Program, data: &[Data]) {
+        let same_length = |a: &Data, b: &Data| {
+            a.length.identity() == b.length.identity()
+                || a.length.minimum() == a.length.maximum()
+                    && a.length.minimum() == b.length.minimum()
+                    && a.length.maximum() == b.length.maximum()
+        };
+        for stage in &program.stages {
+            match &stage.operation {
+                Operation::Map => {
+                    if stage.prefix.is_none() && stage.selection.is_none() {
+                        for binding in &stage.writes {
+                            if program.buffers[*binding].access == Access::Write
+                                && same_length(&data[*binding], &data[stage.domain])
+                            {
+                                self.initialize_application(&data[*binding]);
+                            }
+                        }
+                    }
+                }
+                Operation::Reduce(values) => self.initialize_application_reduction(
+                    &data[values.fields.target],
+                    values.fields.target_word,
+                    &values.ty,
+                ),
+                Operation::CustomReduce(values) => self.initialize_application_reduction(
+                    &data[values.fields.target],
+                    values.fields.target_word,
+                    &values.ty,
+                ),
+                Operation::ScanExclusive(values) => {
+                    if stage.prefix.is_none()
+                        && same_length(&data[values.values.target], &data[values.values.source])
+                    {
+                        self.initialize_application_value(
+                            &data[values.values.target],
+                            values.values.target_word,
+                            &values.ty,
+                        );
+                    }
+                }
+                Operation::CustomScan(values) => {
+                    if stage.prefix.is_none()
+                        && same_length(
+                            &data[values.values.fields.target],
+                            &data[values.values.fields.source],
+                        )
+                    {
+                        self.initialize_application_value(
+                            &data[values.values.fields.target],
+                            values.values.fields.target_word,
+                            &values.values.ty,
+                        );
+                    }
+                }
+                Operation::StableSort(values) => {
+                    if stage.prefix.is_none()
+                        && same_length(&data[values.target], &data[values.source])
+                    {
+                        self.initialize_application(&data[values.target]);
+                    }
+                }
+                Operation::Compact(values) => self.initialize_application_reduction(
+                    &data[values.count],
+                    values.count_word,
+                    &Ty::scalar(Scalar::U32),
+                ),
+                Operation::SegmentedReduce(values) => self.initialize_application_reduction(
+                    &data[values.count.binding],
+                    values.count.word,
+                    &Ty::scalar(Scalar::U32),
+                ),
+                Operation::CustomSegmentedReduce(values) => self.initialize_application_reduction(
+                    &data[values.count.binding],
+                    values.count.word,
+                    &Ty::scalar(Scalar::U32),
+                ),
+            }
+        }
+    }
+    fn initialize_application_value(&mut self, data: &Data, first: u32, ty: &Ty) {
+        if let Some(scope) = data.initialization {
+            self.initialized.extend(
+                ty.components
+                    .iter()
+                    .map(|(_, offset)| Position::Parameter(scope, (first + offset / 4) as usize)),
+            );
+        }
+    }
+    fn initialize_application_reduction(&mut self, data: &Data, first: u32, ty: &Ty) {
+        if let Some(scope) = data.initialization {
+            self.initialized
+                .extend(ty.components.iter().map(|(_, offset)| {
+                    Position::ApplicationElement(
+                        scope,
+                        ownership::ApplicationIndex::Constant(0),
+                        first + offset / 4,
+                    )
+                }));
+        }
+    }
+    pub(super) fn application_output_scope(&mut self) -> usize {
+        self.output_scopes += 1;
+        self.output_scopes
+    }
+    pub(super) fn application_initialized(&self, data: &Data) -> bool {
+        data.ty
+            .components
+            .iter()
+            .all(|(_, offset)| self.application_field_initialized(data, offset / 4))
+    }
+    pub(super) fn application_field_initialized(&self, data: &Data, word: u32) -> bool {
+        let Some(scope) = data.initialization else {
+            return true;
+        };
+        if self
+            .initialized
+            .contains(&Position::Parameter(scope, word as usize))
+        {
+            return true;
+        }
+        let length = data.length.minimum();
+        data.length.maximum() == length && self.initialized.iter().filter(|position| matches!(position,
+            Position::ApplicationElement(owner, ownership::ApplicationIndex::Constant(index), component)
+            if *owner == scope && *component == word && *index < length)).count() as u64 == u64::from(length)
+    }
+    pub(super) fn require_application_initialized(&self, data: &Data, span: Span) -> Result<()> {
+        if !self.application_initialized(data) {
+            return self.fail(
+                span,
+                "B142",
+                "读取或 inout 借用了尚未完整初始化的 dataset；write 输出须先完整写入所需元素与字段",
+            );
+        }
+        Ok(())
+    }
+    pub(super) fn initialize_application(&mut self, data: &Data) {
+        if let Some(scope) = data.initialization {
+            self.initialized.extend(
+                data.ty
+                    .components
+                    .iter()
+                    .map(|(_, offset)| Position::Parameter(scope, (offset / 4) as usize)),
+            );
+        }
     }
     fn application_frame(&mut self, span: Span) -> Result<Value> {
         if self.application.is_none() {
@@ -578,6 +814,7 @@ impl Builder<'_> {
                 handle: value(handle),
                 length: value(length),
                 slots: Some(slots),
+                initialization: None,
                 ty,
                 count,
                 ownership: Ownership::Moved,
@@ -770,6 +1007,7 @@ impl Builder<'_> {
         Ok(Data {
             handle,
             slots: None,
+            initialization: None,
             ty,
             length,
             count,
@@ -778,12 +1016,19 @@ impl Builder<'_> {
             residency: Some(Target::Cpu),
         })
     }
-    pub(super) fn application_element(data: &Data, index: Reg, index_range: (u32, u32)) -> Place {
+    pub(super) fn application_element(
+        data: &Data,
+        index: &Value,
+        index_range: (u32, u32),
+    ) -> Place {
         Place::ApplicationElement {
             ty: data.ty.clone(),
             handle: data.handle.regs[0],
             identity: data.handle.identity(),
-            index,
+            initialization: data
+                .initialization
+                .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
+            index: index.regs[0],
             index_range,
             stride: ir::align_up(data.ty.size, data.ty.align),
             words: data
@@ -812,7 +1057,7 @@ impl Builder<'_> {
         }
         Ok(Self::application_element(
             &data,
-            value.regs[0],
+            &value,
             (value.minimum(), value.maximum()),
         ))
     }
@@ -983,6 +1228,9 @@ impl Builder<'_> {
                         "同一独占 dataset 不能在一次 program 调用中重复绑定",
                     );
                 }
+                if parameter.access.reads() {
+                    self.require_application_initialized(&value, arg.span)?;
+                }
                 actuals.push((value.ty.clone(), value.count));
                 data.push(value);
             } else {
@@ -1012,6 +1260,7 @@ impl Builder<'_> {
         for (value, uniform) in uniforms.iter().zip(&program.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
         }
+        self.initialize_application_program(&program, &data);
         let app = self.application.as_mut().unwrap();
         let index = app
             .resources

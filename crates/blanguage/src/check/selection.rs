@@ -12,7 +12,7 @@ impl Builder<'_> {
         self.require_bool(&c, condition.span)?;
         let outer = std::mem::take(&mut self.code);
         let environment = self.env.clone();
-        let initialized = self.initialized.clone();
+        let initialized = self.application_initialization_state();
         let effects = (
             self.reads.clone(),
             self.writes.clone(),
@@ -31,11 +31,12 @@ impl Builder<'_> {
             std::mem::replace(&mut self.cross_access, effects.2),
         );
         let yes_init = std::mem::replace(&mut self.initialized, initialized);
+        let yes_init = self.application_empty_initialization(yes_init);
         let mut yes = std::mem::take(&mut self.code);
         self.restore_expression_environment(environment, &yes_modified);
         self.refine_bounds(&c, false);
         let b = self.expr(no)?;
-        let no_init = std::mem::take(&mut self.initialized);
+        let no_init = self.take_application_initialization_state();
         self.join_initialization(&c, yes_init, no_init);
         let mut no = std::mem::take(&mut self.code);
         let no_env = std::mem::replace(&mut self.env, yes_env);
