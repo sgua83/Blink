@@ -534,6 +534,11 @@ pub enum Inst {
         dst: Reg,
         texture: TextureSource,
     },
+    /// CPU采样降低阶段读取原资源描述符中的逐轴寻址位；不属于B可见指令。
+    TextureAddress {
+        dst: Reg,
+        texture: TextureSource,
+    },
     TextureFetch {
         result: [Reg; 4],
         texture: TextureSource,

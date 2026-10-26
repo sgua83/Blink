@@ -9,6 +9,13 @@ pub struct TextureMip {
 #[derive(Clone)]
 pub struct Texture2D {
     pub(crate) levels: Arc<[TextureMip]>,
+    pub(crate) address: [TextureAddress; 2],
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextureAddress {
+    #[default]
+    Clamp,
+    Repeat,
 }
 #[repr(C)]
 pub(crate) struct LevelDescriptor {
@@ -19,7 +26,7 @@ pub(crate) struct LevelDescriptor {
 #[repr(C)]
 pub(crate) struct TextureDescriptor {
     levels: u32,
-    reserved: u32,
+    address: u32,
     mips: *const LevelDescriptor,
 }
 pub(crate) struct CpuTextures {
@@ -43,9 +50,11 @@ impl CpuTextures {
             .collect();
         let descriptors = levels
             .iter()
-            .map(|m| TextureDescriptor {
+            .zip(textures)
+            .map(|(m, t)| TextureDescriptor {
                 levels: m.len() as u32,
-                reserved: 0,
+                address: u32::from(t.address[0] == TextureAddress::Repeat)
+                    | (u32::from(t.address[1] == TextureAddress::Repeat) << 1),
                 mips: m.as_ptr(),
             })
             .collect();
@@ -88,7 +97,16 @@ impl Texture2D {
         }
         Ok(Self {
             levels: levels.into(),
+            address: [TextureAddress::Clamp; 2],
         })
+    }
+    /// 采样模式属于当前只读资源视图；共享原像素，不重写图像或其文件格式。
+    pub fn with_address(mut self, u: TextureAddress, v: TextureAddress) -> Self {
+        self.address = [u, v];
+        self
+    }
+    pub fn address(&self) -> [TextureAddress; 2] {
+        self.address
     }
     pub fn dimensions(&self) -> [u32; 2] {
         [self.levels[0].width, self.levels[0].height]

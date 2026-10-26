@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-003 的显式纹理寻址：**实现及原生验证完成** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage/Saved/TextureSamplingWorkspace`，client `BLanguage_Gua_TextureSampling`；保留主工作区的其他源码／文档编辑。BLEngine 真实皮革世界坐标超出[0,1]，原 clamp-to-edge 按既有语义拉伸边界，属于消费者所需能力缺口。本轮为纹理提供每轴 clamp／repeat，CPU 原生四 tap 和 Vulkan sampler 共享模式，设备快照保留模式；不改 B 语法、材质算法、图像格式或上传完成所有权，避让 PA2 的位置优化与 PA3 枚举。 | 2026-10-27 |
 | C-003／C-022.5 的物理 GPU 枚举与显式选择：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；拆开现有 Vulkan 实例／物理设备枚举和逻辑设备创建，调用者选择真实物理句柄并沿原实例所有权创建设备，程序能力仍由原入口负责。保留既有默认离散 GPU 行为，不按名称重选、不自动换设备或复制资源注册表。预计仅 Vulkan mod.rs 与架构／规范／台账；实际两块 GPU 的计算、显式 CPU 桥接数据／纹理及生命周期按真实能力验证，不改 PA2 后端、PA3 结果类型、IR／ABI 或引擎算法。直接设备间传输、多队列、自动调度及分布式仍开放。 | 2026-10-27 05:34 +08:00 |
 | C-002／C-024.3 的 CPU 只读装载与活跃区间：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；现有高压力样本先装载完整记录的 27 分量，再逐部分消费，原 Frame 仍达 432–480 字节。拟在 texture 降低后的同一 CPU Stage、原活跃性分配前，把稳定只读 dataset／view 装载延后到真实首次消费；所有写入、调用、控制与同步仍为边界，不由入口名字推断无别名。原 SSA 依赖、非装载操作次序、GPU IR／发射器、ABI 和真实资源所有权保持；不建运行期缓存、另一个分配器或调度服务。预计 native.rs、新的 native/reads.rs 与架构／原台账，避开 PA3 result 前端／类型及 Gua Vulkan。先保存 Release 基线，再记录代码／Frame、CPU／GPU／保护页与真实写边界、计时、清理和 P4／Git；完整 SSA／整体效率仍开放。 | 2026-10-27 05:24 +08:00 |
 | C-020.5／C-020.1 的有载荷结果与错误传播：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`／client `BLanguage_PA3`；接续已提交枚举，落实 result<T,E> 的成功／错误载荷、Ok／Err 构造、穷尽分支及显式传播，贯通普通函数／泛型／记录／数组、CPU／GPU 与原生 ABI；使用标签加重叠载荷布局，复用原标量 IR、控制流、返回点和真实资源释放。正常非零状态与错误／进程退出分开，传播错误不能漏清理本地拥有 dataset，也不能伪造 write 输出完成。具体推导／分支／传播语法在真实实现中收口并更新规范；拥有资源作为结果载荷、一般变体、异步失败与统一函数／target 继续开放，不把本增量写成完整错误系统。预计修改类型／AST／parser、check 的结果与返回／作用域及必要语法遍历、原类型发射和 Ty 构造；不改 PA2 native/packet 或 Gua Vulkan，不增加结果注册表、隐藏异常、重试或编号替换。先认领提交，再保存 Release 基线、实现、原生核对和聚焦交付。 | 2026-10-27 05:14 +08:00 |
@@ -2292,3 +2293,13 @@ result=value;
 ## C-002／C-024.3：CPU 只读装载的位置与活跃区间（2026-10-27，正在修复）
 
 - 本轮认领（PA2 只读装载位置）：实际执行机 192.168.10.12／DESKTOP-4B3HN14，会话 01a17630-b20a-7a81-9b77-1b040d8edd04，D:/BLanguage、BLanguage_PA2。已核对真实网络与所有进行中范围，保留 PA3 的结果／传播及 Gua 纹理修改。实际高压力 IR 在首项计算前已装载三个完整 Item，27 个字段同时存活，原 Graph／Frame 因而需要溢出；本轮在同一 CPU Stage 消费 SSA 依赖、先保存正式基线，再把稳定只读装载交给首次真实消费。所有写入、调用、控制、原子与协作边界仍按原顺序消费；不会仅凭不同绑定名推断无别名，前端／GPU／ABI／资源所有权不改。当前只认领，尚未实施或验证。
+
+
+## C-003：BLEngine 真实纹理所需的逐轴寻址（2026-10-27）
+
+- 归属：语言执行框架的能力缺口。原 texture_sample 的 Clamp 结果符合原有语义；BLEngine 世界坐标超出[0,1]时，皮革边界像素被拉成长条，消费者需要明确的 Repeat。没有将其误记为编译器缺陷，也没有在材质中加 fract 后继续钳制来掩盖边界过滤问题。
+- 实际执行机 192.168.10.5／GUA，会话 01a161fa-3afe-7b63-b04e-e09926616c1a；独立 B:/BLanguage/Saved/TextureSamplingWorkspace、client BLanguage_Gua_TextureSampling。主工作区存在其他源码／Issues 编辑，保持原样；本轮新增 TextureAddress 资源模式、CPU 四 tap 寻址、Vulkan sampler 与读回快照交接，不改 B 语法、图像文件格式或原上传完成所有权。CPU 的内部 TextureAddress 指令只在采样降低时产生，不进入 GPU／公开 B 指令。
+- Release 原生执行：5种尺寸(1×1、1×7、7×1、3×5、8×4)×4组逐轴模式，每组100003条，两个纹理资源在同一个非一致数组中选择；覆盖负坐标、整数周期、接缝两侧、分数mip与原Clamp。独立f64双线性／mip参考的CPU最大绝对差1.5643984e-7，AMD Radeon RX 9070 GRE硬件过滤最大绝对差0.0014502362；不把硬件插值量化误称位级一致。每组真实GPU全mip快照均保留逐轴模式；完整结果在E:/BLEngineMeasurements/MaterialAssets/address.log。
+- 其余范围保持开放：独立sampler／共享GPU图像视图、镜像／边框／各向异性和其他图像格式。最终源码、主工作区采用、原生画面、清理及P4／Git状态按实际结果补充，不以本段记录代替执行。
+
+- 最终 Release SDK 构建54.82秒；修正有限f32周期边界处的tap寻址后，上述20组消费者再次通过（address-final.log）。主工作区只采用本轮九份源码的精确局部差异，原ir.rs／native.rs／optimize.rs的其他未提交内容保持；BLEngine Release重建52.00秒。临时研发入口将在画面核对及提交后清除，不转为长期测试。

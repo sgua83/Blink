@@ -144,6 +144,7 @@ struct Storage {
     allocated_bytes: u64,
     dimensions: [u32; 2],
     mips: u32,
+    address: [crate::TextureAddress; 2],
 }
 impl Storage {
     fn range(&self) -> SubresourceRange {
@@ -169,6 +170,9 @@ impl Drop for Image {
 #[derive(Clone)]
 pub struct Texture(Rc<Image>);
 impl Texture {
+    pub fn address(&self) -> [crate::TextureAddress; 2] {
+        self.0.storage.address
+    }
     pub fn dimensions(&self) -> [u32; 2] {
         self.0.storage.dimensions
     }
@@ -221,7 +225,9 @@ impl Device {
             let mut support: FormatProperties = zero();
             properties(inner.physical, 109, &mut support);
             if support.optimal & 0xd001 != 0xd001 {
-                return Err(error("设备不支持 RGBA32F sampled image 的线性过滤与双向传输"));
+                return Err(error(
+                    "设备不支持 RGBA32F sampled image 的线性过滤与双向传输",
+                ));
             }
             let mut texture = Storage {
                 inner: inner.clone(),
@@ -232,6 +238,7 @@ impl Device {
                 allocated_bytes: 0,
                 dimensions,
                 mips: source.mip_count(),
+                address: source.address(),
             };
             let f = &inner.functions;
             let device = inner.owner.device;
@@ -296,8 +303,14 @@ impl Device {
                 mag_filter: 1,
                 min_filter: 1,
                 mipmap_mode: 1,
-                address_u: 2,
-                address_v: 2,
+                address_u: match source.address[0] {
+                    crate::TextureAddress::Clamp => 2,
+                    crate::TextureAddress::Repeat => 0,
+                },
+                address_v: match source.address[1] {
+                    crate::TextureAddress::Clamp => 2,
+                    crate::TextureAddress::Repeat => 0,
+                },
                 address_w: 2,
                 mip_bias: 0.0,
                 anisotropy: 0,
@@ -483,6 +496,7 @@ impl Device {
         })?;
         Ok(crate::Texture2D {
             levels: levels.into(),
+            address: source.address(),
         })
     }
 }

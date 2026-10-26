@@ -329,6 +329,10 @@ impl Emitter<'_> {
                     self.texture_pointer(*texture);
                     self.read_scalar(*dst, 15, 0);
                 }
+                Inst::TextureAddress { dst, texture } => {
+                    self.texture_pointer(*texture);
+                    self.read_scalar(*dst, 15, 4);
+                }
                 Inst::TextureFetch {
                     result,
                     texture,

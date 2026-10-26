@@ -50,11 +50,22 @@ impl Lower {
         let scaled = self.binary(Scalar::F32, BinaryOp::FMul, difference, t);
         self.binary(Scalar::F32, BinaryOp::FAdd, a, scaled)
     }
+    fn select(&mut self, s: Scalar, condition: Reg, a: Reg, b: Reg) -> Reg {
+        let dst = self.reg(s);
+        self.code.push(Inst::Select {
+            dst,
+            condition,
+            a,
+            b,
+        });
+        dst
+    }
     fn level_sample(
         &mut self,
         texture: TextureSource,
         coordinate: [Reg; 2],
         level: Reg,
+        address: Reg,
     ) -> [Reg; 4] {
         let dimensions = std::array::from_fn(|_| self.reg(Scalar::U32));
         self.code.push(Inst::TextureSize {
@@ -81,6 +92,48 @@ impl Lower {
             fraction[axis] = self.binary(Scalar::F32, BinaryOp::FSub, at, base);
             let adjacent = self.binary(Scalar::U32, BinaryOp::IAdd, first[axis], one);
             next[axis] = self.min_u(adjacent, last);
+            // 先周期化归一坐标，再对四个真实tap分别寻址；边界两侧共同参与过滤。
+            let floor = self.math(MathOp::Floor, coordinate[axis], coordinate[axis]);
+            let unit = self.binary(Scalar::F32, BinaryOp::FSub, coordinate[axis], floor);
+            let scaled = self.binary(Scalar::F32, BinaryOp::FMul, unit, size_float);
+            let centered = self.binary(Scalar::F32, BinaryOp::FSub, scaled, half);
+            let base = self.math(MathOp::Floor, centered, centered);
+            let negative = self.binary(
+                Scalar::Bool,
+                BinaryOp::Compare(Comparison::Less),
+                base,
+                zero,
+            );
+            let index = self.cast(Scalar::U32, base);
+            let zero_u = self.constant(Scalar::U32, 0);
+            let at_limit = self.binary(
+                Scalar::Bool,
+                BinaryOp::Compare(Comparison::Equal),
+                index,
+                dimensions[axis],
+            );
+            let index = self.select(Scalar::U32, at_limit, zero_u, index);
+            let wrapped = self.select(Scalar::U32, negative, last, index);
+            let next_index = self.binary(Scalar::U32, BinaryOp::IAdd, wrapped, one);
+            let at_end = self.binary(
+                Scalar::Bool,
+                BinaryOp::Compare(Comparison::Equal),
+                wrapped,
+                last,
+            );
+            let wrapped_next = self.select(Scalar::U32, at_end, zero_u, next_index);
+            let weight = self.binary(Scalar::F32, BinaryOp::FSub, centered, base);
+            let bit = self.constant(Scalar::U32, 1 << axis);
+            let flag = self.binary(Scalar::U32, BinaryOp::And, address, bit);
+            let repeat = self.binary(
+                Scalar::Bool,
+                BinaryOp::Compare(Comparison::NotEqual),
+                flag,
+                zero_u,
+            );
+            first[axis] = self.select(Scalar::U32, repeat, wrapped, first[axis]);
+            next[axis] = self.select(Scalar::U32, repeat, wrapped_next, next[axis]);
+            fraction[axis] = self.select(Scalar::F32, repeat, weight, fraction[axis]);
         }
         let mut taps = Vec::new();
         for coordinate in [
@@ -108,6 +161,11 @@ impl Lower {
         let zero = self.constant(Scalar::F32, 0);
         let one = self.constant(Scalar::U32, 1);
         let levels = self.reg(Scalar::U32);
+        let address = self.reg(Scalar::U32);
+        self.code.push(Inst::TextureAddress {
+            dst: address,
+            texture,
+        });
         self.code.push(Inst::TextureLevels {
             dst: levels,
             texture,
@@ -121,8 +179,8 @@ impl Lower {
         let fraction = self.binary(Scalar::F32, BinaryOp::FSub, clamped, first_float);
         let adjacent = self.binary(Scalar::U32, BinaryOp::IAdd, first, one);
         let next = self.min_u(adjacent, last);
-        let a = self.level_sample(texture, coordinate, first);
-        let b = self.level_sample(texture, coordinate, next);
+        let a = self.level_sample(texture, coordinate, first, address);
+        let b = self.level_sample(texture, coordinate, next, address);
         for i in 0..4 {
             let value = self.lerp(a[i], b[i], fraction);
             self.code.push(Inst::Cast {

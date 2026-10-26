@@ -2901,3 +2901,12 @@ program split<const N:u32>(write dataset<A,N> first,write dataset<B,N> second) o
 同一阶段中，append的输出与单u32计数不能再借作普通write／inout当前元素，也不能与inout tile_input域重叠，反向顺序同样拒绝为B221；计算append值时取得的借用也参与判定。这扩展原append的共享写入与独占元素互斥，不产生运行时检查。同一输出／计数对的连续append保持合法。
 
 普通map、where的原索引以及同域阶段组合复用同一IR Store／读取写入集合、现有CPU／SPIR-V后端和执行完成点，不增加GPU复制、宿主逐元素回调、运行期下标修正或额外调度器。实际使用是BLEngine在一次主命中中同时生成像素与48字节可见性记录；可选输出在const分支关闭时没有对应Store，普通图像不因此获得全图历史。当前实现与原生范围见[问题C-017](Issues.md#c-017同索引独占多输出2026-10-26)。
+
+
+## 原生纹理的逐轴寻址（2026-10-27）
+
+只读纹理资源现在显式携带每轴 `TextureAddress::Clamp` 或 `TextureAddress::Repeat`。`Texture2D::new`／`read` 继续创建 Clamp 资源；`image.with_address(u,v)` 消费该资源视图并共享原不可变像素，`address()` 返回当前模式。B 的 `read texture2d`、资源数组和 `texture_sample` 签名不变，资源实际身份随绑定交接，不由材质函数复制图像。相同像素的不同 CPU 视图不等于已经共享 Vulkan 图像存储；当前上传各自创建原物理资源。
+
+CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap 参与双线性及 mip 间过滤。Repeat 保留负坐标、整数周期及接缝两侧的贡献，不能只对 uv 取小数后继续钳制 tap。现有16字节 CPU 纹理描述符的第二个 u32 保存 U／V repeat 位；CPU 专用降低指令直接读取该资源描述符，仍生成原生算术与读取，不调用宿主采样函数。Vulkan 使用同一资源声明设置 VkSampler 的 U／V addressMode，SPIR-V 继续直接发出图像采样指令。
+
+`vulkan::Texture::address` 返回原上传模式，`download_texture` 的独立 CPU 快照保留该模式，后续显式上传另一个逻辑 Device 继续消费它。`.bltex v1` 只保存线性像素与 mip；采样模式由实际资源／材质声明，不改写图像文件或改变旧资产解释。CPU 与硬件线性过滤的舍入精度不同，不保证逐 bit 相同。当前仅 Clamp／Repeat，镜像、边框色、各向异性、独立 sampler 类型及压缩格式仍未实现。
