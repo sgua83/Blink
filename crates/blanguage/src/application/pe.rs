@@ -1,5 +1,5 @@
 //! PE32+ 的节、平台导入、DIR64 重定位与 x64 展开信息均由本机链接器生产。
-use crate::native::{ApplicationCode, NativeIntrinsic, application_unwind};
+use crate::native::{ApplicationCode, NativeIntrinsic, NativeSymbol, application_unwind};
 use std::collections::{BTreeMap, BTreeSet};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const BASE: u64 = 0x140000000;
@@ -20,15 +20,15 @@ fn relative(v: &mut [u8], at: usize, target: usize) -> Result<()> {
     put32(v, at, i32::try_from(target as i64 - at as i64 - 4)? as u32);
     Ok(())
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Import {
-    dll: &'static str,
-    name: &'static str,
+    dll: String,
+    name: String,
 }
 fn kernel(name: &'static str) -> Import {
     Import {
-        dll: "KERNEL32.dll",
-        name,
+        dll: "KERNEL32.dll".into(),
+        name: name.into(),
     }
 }
 fn math(op: NativeIntrinsic) -> Option<Import> {
@@ -46,8 +46,8 @@ fn math(op: NativeIntrinsic) -> Option<Import> {
         }
     };
     Some(Import {
-        dll: "ucrtbase.dll",
-        name,
+        dll: "ucrtbase.dll".into(),
+        name: name.into(),
     })
 }
 struct ImportTable {
@@ -60,7 +60,7 @@ struct ImportTable {
 fn imports(values: &BTreeSet<Import>, rva: u32) -> ImportTable {
     let mut groups: BTreeMap<&str, Vec<Import>> = BTreeMap::new();
     for value in values {
-        groups.entry(value.dll).or_default().push(*value);
+        groups.entry(&value.dll).or_default().push(value.clone());
     }
     let directory_size = (groups.len() + 1) * 20;
     let mut bytes = vec![0; align(directory_size, 8)];
@@ -94,7 +94,7 @@ fn imports(values: &BTreeSet<Import>, rva: u32) -> ImportTable {
             bytes.push(0);
             put64(&mut bytes, lookups[i] + j * 8, (rva + hint as u32) as u64);
             put64(&mut bytes, tables[i] + j * 8, (rva + hint as u32) as u64);
-            targets.insert(*value, rva + (tables[i] + j * 8) as u32);
+            targets.insert(value.clone(), rva + (tables[i] + j * 8) as u32);
         }
     }
     ImportTable {
@@ -245,6 +245,12 @@ struct Section {
     bytes: Vec<u8>,
     flags: u32,
 }
+fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
+    text.extend([0xff, 0x25]);
+    let at = text.len();
+    text.extend([0; 4]);
+    patches.push((at, import));
+}
 pub(super) fn link(native: ApplicationCode) -> Result<Vec<u8>> {
     let mut text = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
     let mut patches = Vec::new();
@@ -268,28 +274,37 @@ pub(super) fn link(native: ApplicationCode) -> Result<Vec<u8>> {
         .code
         .relocations
         .iter()
-        .map(|r| r.intrinsic)
+        .map(|r| r.target.clone())
         .collect();
     for op in operations {
         text.resize(align(text.len(), 16), 0x90);
         let begin = text.len();
-        targets.insert(op, begin);
-        if let Some(import) = math(op) {
-            text.extend([0xff, 0x25]);
-            let at = text.len();
-            text.extend([0; 4]);
-            patches.push((at, import));
-        } else {
-            let helper = print(op)?;
-            text.extend(helper.bytes);
-            for (at, import) in helper.patches {
-                patches.push((begin + at, import));
+        targets.insert(op.clone(), begin);
+        match op {
+            NativeSymbol::External(name) => thunk(
+                &mut text,
+                &mut patches,
+                Import {
+                    dll: name.library,
+                    name: name.symbol,
+                },
+            ),
+            NativeSymbol::Intrinsic(op) => {
+                if let Some(import) = math(op) {
+                    thunk(&mut text, &mut patches, import);
+                } else {
+                    let helper = print(op)?;
+                    text.extend(helper.bytes);
+                    for (at, import) in helper.patches {
+                        patches.push((begin + at, import));
+                    }
+                    functions.push(Function {
+                        begin,
+                        end: text.len(),
+                        unwind: helper.unwind,
+                    });
+                }
             }
-            functions.push(Function {
-                begin,
-                end: text.len(),
-                unwind: helper.unwind,
-            });
         }
     }
     let mut locations = Vec::new();
@@ -298,13 +313,13 @@ pub(super) fn link(native: ApplicationCode) -> Result<Vec<u8>> {
         put64(
             &mut text,
             at,
-            BASE + TEXT as u64 + targets[&relocation.intrinsic] as u64,
+            BASE + TEXT as u64 + targets[&relocation.target] as u64,
         );
         locations.push(TEXT + at as u32);
     }
     let idata_rva = TEXT + u32::try_from(align(text.len(), 4096))?;
     let table = imports(
-        &patches.iter().map(|(_, import)| *import).collect(),
+        &patches.iter().map(|(_, import)| import.clone()).collect(),
         idata_rva,
     );
     for (at, import) in patches {

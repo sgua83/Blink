@@ -18,6 +18,7 @@ pub(crate) fn compile_application(
         )?)
     };
     if d.function.kind != FunctionKind::Value
+        || d.function.external.is_some()
         || d.function.target != Target::Cpu
         || !d.function.params.is_empty()
         || !result.is_some_and(|result| {

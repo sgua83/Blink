@@ -82,12 +82,9 @@ pub(crate) fn instantiate(
         substitute_type(&mut p.ty, &replacements, &definition.source, p.span)?;
         crate::value_parameters::substitute_type(&mut p.ty, &value_map);
     }
-    substitute_block(
-        concrete.function.body.as_mut().unwrap(),
-        &replacements,
-        &value_map,
-        &definition.source,
-    )?;
+    if let Some(body) = &mut concrete.function.body {
+        substitute_block(body, &replacements, &value_map, &definition.source)?;
+    }
     names.extend(values.iter().map(u32::to_string));
     Ok(Instance {
         name: key(base, &names),

@@ -1,5 +1,5 @@
 #![allow(non_camel_case_types, unused_imports, unused_mut)]
-use blanguage::{ExecutableProgram, ast::{Access, Target}, ir::*};
+use blanguage::{ExecutableProgram, ast::{Access, Target, ExternalName}, ir::*};
 use blcompute::ffi::{LibraryProgram, Buffer as FfiBuffer, status};
 use std::{num::NonZeroU32, ffi::{c_void, c_char}};
 @TYPES@

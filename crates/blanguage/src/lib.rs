@@ -116,6 +116,7 @@ fn contract_signature(f: &Function) -> BTreeSet<(ContractKind, &ContractPredicat
 }
 fn same_signature(a: &Function, b: &Function) -> bool {
     a.kind == b.kind
+        && a.external == b.external
         && a.types == b.types
         && a.values == b.values
         && a.result == b.result
@@ -436,7 +437,7 @@ fn load(
     for f in interface
         .functions
         .iter()
-        .filter(|f| f.kind != FunctionKind::Constant)
+        .filter(|f| f.kind != FunctionKind::Constant && f.external.is_none())
     {
         if f.body.is_some() {
             return interface
@@ -467,7 +468,7 @@ fn load(
     for (f, source, public) in interface
         .functions
         .iter()
-        .filter(|f| f.kind == FunctionKind::Constant)
+        .filter(|f| f.kind == FunctionKind::Constant || f.external.is_some())
         .map(|f| (f, &interface.source, true))
         .chain(implementation.functions.iter().map(|f| {
             (
@@ -477,7 +478,7 @@ fn load(
             )
         }))
     {
-        if f.body.is_none() {
+        if f.body.is_none() && f.external.is_none() {
             return source.fail(f.span, "B029", ".b 中的函数必须有实现");
         }
         let key = format!("{name}::{}", f.name);

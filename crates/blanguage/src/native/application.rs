@@ -79,7 +79,30 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
     );
     let allocation = Allocation::new(&stage, &graph);
     let layout = Frame::new(&allocation, None);
-    let scratch = !private_spans(&stage.code).is_empty();
+    fn scratch(code: &[Inst]) -> bool {
+        code.iter().any(|i| match i {
+            Inst::LoadLocalIndexed { .. } | Inst::StoreLocalIndexed { .. } => true,
+            Inst::Scope(b) => scratch(b),
+            Inst::If { yes, no, .. } => scratch(yes) || scratch(no),
+            Inst::Loop {
+                condition, body, ..
+            } => scratch(condition) || scratch(body),
+            Inst::ExternalCall(call) => call.arguments.iter().any(|a| {
+                matches!(
+                    a,
+                    ExternalArgument::Reference {
+                        address: ExternalReference {
+                            storage: ExternalStorage::Indexed(_),
+                            ..
+                        },
+                        ..
+                    }
+                )
+            }),
+            _ => false,
+        })
+    }
+    let scratch = scratch(&stage.code);
     let bytes = layout.end.div_ceil(16) * 16;
     let frame = i32::try_from(bytes + if !scratch && bytes != 0 { 8 } else { 0 })
         .map_err(|_| "应用栈帧超出x64地址编码")? as u32;

@@ -72,6 +72,45 @@ impl Parser {
             self.source.fail(t.span, "B011", "需要标识符")
         }
     }
+    fn link_string(&mut self) -> Result<String> {
+        let span = self.span();
+        let text = self.peek().to_owned();
+        if !text.starts_with('"') {
+            return self
+                .source
+                .fail(span, "B263", "C ABI 与链接名称使用双引号字符串");
+        }
+        let mut result = String::new();
+        let mut chars = text[1..text.len() - 1].chars();
+        while let Some(c) = chars.next() {
+            let c = if c == '\\' {
+                match chars.next() {
+                    Some('\\') => '\\',
+                    Some('"') => '"',
+                    _ => {
+                        return self.source.fail(
+                            span,
+                            "B263",
+                            "链接字符串只支持 \\\\ 与 \\\" 转义",
+                        );
+                    }
+                }
+            } else {
+                c
+            };
+            if !c.is_ascii() || c == '\0' {
+                return self
+                    .source
+                    .fail(span, "B263", "PE 链接名称需要非 NUL 的 ASCII 字符");
+            }
+            result.push(c);
+        }
+        if result.is_empty() {
+            return self.source.fail(span, "B263", "链接名称不能为空");
+        }
+        self.at += 1;
+        Ok(result)
+    }
     fn qualified(&mut self, sep: &str) -> Result<String> {
         let mut s = self.ident()?;
         while self.take(sep) {
@@ -356,6 +395,7 @@ impl Parser {
                         span,
                         kind: StmtKind::Return(Some(value)),
                     }]),
+                    external: None,
                     span,
                 });
                 continue;
@@ -407,6 +447,14 @@ impl Parser {
                 });
                 continue;
             }
+            let external = if self.take("extern") {
+                if self.link_string()? != "C" {
+                    return self.source.fail(span, "B263", "外部函数使用 C ABI");
+                }
+                true
+            } else {
+                false
+            };
             let kind = if self.take("program") {
                 FunctionKind::Program
             } else if self.take("cooperative") {
@@ -523,6 +571,25 @@ impl Parser {
                     span,
                 });
             }
+            let external = if external {
+                if !types.is_empty() || !values.is_empty() {
+                    return self.source.fail(
+                        span,
+                        "B263",
+                        "extern C 的链接符号需要具体类型，泛型包装写为普通 B 函数",
+                    );
+                }
+                self.expect("from")?;
+                let library = self.link_string()?;
+                let symbol = if self.take("as") {
+                    self.link_string()?
+                } else {
+                    name.clone()
+                };
+                Some(ExternalName { library, symbol })
+            } else {
+                None
+            };
             let body = if self.take(";") {
                 None
             } else {
@@ -538,6 +605,7 @@ impl Parser {
                 target,
                 contracts,
                 body,
+                external,
                 span,
             });
         }

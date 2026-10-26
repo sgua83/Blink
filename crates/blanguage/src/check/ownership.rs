@@ -12,7 +12,7 @@ impl Place {
         match self {
             Self::Indexed { base, .. } => base.owned_positions(),
             Self::ReadOnlyLocal(..) => Some(Vec::new()),
-            Self::Local(_, slots) => Some(slots.iter().copied().map(Position::Local).collect()),
+            Self::Local(_, slots, ..) => Some(slots.iter().copied().map(Position::Local).collect()),
             Self::Element { binding, words, .. } => Some(
                 words
                     .iter()
@@ -25,8 +25,8 @@ impl Place {
     pub(super) fn ty(&self) -> &Ty {
         match self {
             Self::AtomicParameter(ty)
-            | Self::Local(ty, _)
-            | Self::ReadOnlyLocal(ty, _)
+            | Self::Local(ty, _, ..)
+            | Self::ReadOnlyLocal(ty, _, ..)
             | Self::Indexed { ty, .. }
             | Self::Element { ty, .. }
             | Self::TileElement { ty, .. }
@@ -52,8 +52,8 @@ impl Place {
                 .iter()
                 .map(|w| root.iter().position(|r| r == w))
                 .collect(),
-            (Self::ReadOnlyLocal(_, slots), Self::ReadOnlyLocal(_, root))
-            | (Self::Local(_, slots), Self::Local(_, root)) => slots
+            (Self::ReadOnlyLocal(_, slots, ..), Self::ReadOnlyLocal(_, root, ..))
+            | (Self::Local(_, slots, ..), Self::Local(_, root, ..)) => slots
                 .iter()
                 .map(|s| root.iter().position(|r| r == s))
                 .collect(),
@@ -81,7 +81,7 @@ impl Place {
         match (self, other) {
             (Self::Indexed { base, .. }, b) => base.overlaps(b.storage()),
             (a, Self::Indexed { base, .. }) => a.storage().overlaps(base),
-            (Self::Local(_, a), Self::Local(_, b)) => a.iter().any(|x| b.contains(x)),
+            (Self::Local(_, a, ..), Self::Local(_, b, ..)) => a.iter().any(|x| b.contains(x)),
             (
                 Self::Element {
                     binding: a,
@@ -118,7 +118,7 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         match place {
-            Place::Local(_, slots) => Ok(slots.clone()),
+            Place::Local(_, slots, ..) => Ok(slots.clone()),
             Place::Element {
                 binding,
                 words,

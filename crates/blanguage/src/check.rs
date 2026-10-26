@@ -15,6 +15,7 @@ mod contracts;
 mod cooperative;
 mod custom_reduce;
 mod effects;
+mod external;
 mod flow;
 pub(crate) mod generics;
 mod matrix;
@@ -155,8 +156,8 @@ enum Place {
         index: Reg,
         words: Vec<u32>,
     },
-    Local(Ty, Vec<usize>),
-    ReadOnlyLocal(Ty, Vec<usize>),
+    Local(Ty, Vec<usize>, std::ops::Range<usize>),
+    ReadOnlyLocal(Ty, Vec<usize>, std::ops::Range<usize>),
     Indexed {
         ty: Ty,
         base: Box<Place>,
@@ -903,6 +904,9 @@ fn collective_value_field(
     Ok((*binding, offset / 4, *access, ty.clone()))
 }
 pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
+    if d.function.external.is_some() {
+        return external::validate_signature(d);
+    }
     if d.function.kind == FunctionKind::Program {
         return Ok(());
     }
@@ -965,6 +969,9 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
 pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let name = &instance.name;
     let d = &instance.definition;
+    if d.function.external.is_some() {
+        return external::check_declaration(world, d);
+    }
     if d.function.kind == FunctionKind::Constant {
         return constant_value(world, name).map(|_| ());
     }
@@ -1058,16 +1065,8 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
         if p.access != Access::Value {
             if matches!(p.access, Access::InOut | Access::Write) {
                 let ty = cooperative::parameter_type(world, p, d)?;
-                let slots = ty
-                    .components
-                    .iter()
-                    .map(|(s, _)| {
-                        let slot = b.locals.len();
-                        b.locals.push(*s);
-                        slot
-                    })
-                    .collect();
-                let place = Place::Local(ty, slots);
+                let (slots, storage) = b.local_slots(&ty);
+                let place = Place::Local(ty, slots, storage);
                 if p.access == Access::InOut {
                     b.initialize(&place);
                 }
@@ -1484,7 +1483,7 @@ impl<'a> Builder<'a> {
                     constant: None,
                 })
             }
-            Place::Local(ty, slots) | Place::ReadOnlyLocal(ty, slots) => {
+            Place::Local(ty, slots, ..) | Place::ReadOnlyLocal(ty, slots, ..) => {
                 if matches!(p, Place::Local(..)) {
                     self.require_initialized(p, span)?;
                 }
@@ -1566,7 +1565,7 @@ impl<'a> Builder<'a> {
                 }
                 return self.fail(span, "B202", "tile 值不可写；只修改当前独占的全局元素");
             }
-            Place::Local(_, slots) => {
+            Place::Local(_, slots, ..) => {
                 if slots.iter().copied().collect::<BTreeSet<_>>().len() != slots.len() {
                     return self.fail(span, "B143", "赋值位置包含重复分量");
                 }
@@ -2033,14 +2032,15 @@ impl<'a> Builder<'a> {
             true,
         );
         if let Some(key) = &function_key
-            && self.world.functions[key].function.params.iter().any(|p| {
-                p.ty.dataset
-                    || p.ty.tile
-                    || p.ty.is_acceleration()
-                    || p.ty.is_texture_resource()
-                    || (matches!(p.access, Access::Atomic | Access::InOut | Access::Write)
-                        && !p.ty.tile)
-            })
+            && (self.world.functions[key].function.external.is_some()
+                || self.world.functions[key].function.params.iter().any(|p| {
+                    p.ty.dataset
+                        || p.ty.tile
+                        || p.ty.is_acceleration()
+                        || p.ty.is_texture_resource()
+                        || (matches!(p.access, Access::Atomic | Access::InOut | Access::Write)
+                            && !p.ty.tile)
+                }))
         {
             let arguments = self.function_arguments(key, args, span)?;
             return self.invoke_function(key.clone(), arguments, span);
@@ -2587,15 +2587,12 @@ impl<'a> Builder<'a> {
             self.env.insert(name.clone(), Binding::Value(value));
             return Ok(());
         }
-        let mut slots = Vec::new();
-        for r in &value.regs {
-            let slot = self.locals.len();
-            self.locals.push(self.registers[*r]);
-            self.code.push(Inst::StoreLocal(slot, *r));
-            slots.push(slot);
+        let (slots, storage) = self.local_slots(&value.ty);
+        for (slot, r) in slots.iter().zip(&value.regs) {
+            self.code.push(Inst::StoreLocal(*slot, *r));
         }
         let proof = bounds::Proof::capture(&value);
-        let place = Place::Local(value.ty, slots);
+        let place = Place::Local(value.ty, slots, storage);
         self.initialize(&place);
         self.env.insert(
             name.clone(),
@@ -2892,19 +2889,11 @@ impl<'a> Builder<'a> {
             &self.definition.module,
             &self.definition.imports,
         )?;
-        let slots = ty
-            .components
-            .iter()
-            .map(|(scalar, _)| {
-                let slot = self.locals.len();
-                self.locals.push(*scalar);
-                slot
-            })
-            .collect();
+        let (slots, storage) = self.local_slots(&ty);
         self.env.insert(
             name.clone(),
             Binding::Owned(OwnedBinding {
-                place: Place::Local(ty, slots),
+                place: Place::Local(ty, slots, storage),
                 proof: bounds::Proof::default(),
                 uniform: false,
                 initialization: None,

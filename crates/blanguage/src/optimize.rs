@@ -14,8 +14,8 @@ pub fn optimize(program: &mut Program) {
                 && matches!(stage.operation, Operation::Map)
                 && previous.subgroup_operations().is_empty()
                 && stage.subgroup_operations().is_empty()
-                && !previous.has_standard_output()
-                && !stage.has_standard_output()
+                && !previous.has_external_effects()
+                && !stage.has_external_effects()
                 && !previous.has_tile_scope()
                 && !stage.has_tile_scope()
                 && previous.domain == stage.domain
@@ -105,6 +105,30 @@ pub fn optimize(program: &mut Program) {
             let mut reads = BTreeSet::new();
             let mut writes = BTreeSet::new();
             visit(&stage.code, &mut |i| match i {
+                Inst::ExternalCall(call) => {
+                    for arg in &call.arguments {
+                        if let ExternalArgument::Reference {
+                            access,
+                            address:
+                                ExternalReference {
+                                    storage:
+                                        ExternalStorage::Indexed(IndexedSource::Data {
+                                            binding, ..
+                                        }),
+                                    ..
+                                },
+                            ..
+                        } = arg
+                        {
+                            if access.reads() {
+                                reads.insert(*binding);
+                            }
+                            if access.writes() {
+                                writes.insert(*binding);
+                            }
+                        }
+                    }
+                }
                 Inst::Append(a) => {
                     reads.insert(a.count.binding);
                     writes.extend([a.target, a.count.binding]);
@@ -211,6 +235,7 @@ fn destination(i: &Inst) -> Option<Reg> {
             | Inst::TextureSize { .. }
             | Inst::TextureFetch { .. }
             | Inst::TileCollective(_)
+            | Inst::ExternalCall(_)
             | Inst::IntegerDivide {
                 result: IntegerDivisionResult::Both { .. },
                 ..
@@ -269,6 +294,18 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
                 *base = s(*base);
             }
             Inst::StoreLocalIndexed { base, .. } => *base = s(*base),
+            Inst::ExternalCall(call) => {
+                for value in &mut call.values {
+                    *value = r(*value);
+                }
+                for arg in &mut call.arguments {
+                    if let ExternalArgument::Reference { address, .. } = arg
+                        && let ExternalStorage::Local { base, .. } = &mut address.storage
+                    {
+                        *base = s(*base);
+                    }
+                }
+            }
             Inst::LoadIndexed { dst, .. }
             | Inst::Load { dst, .. }
             | Inst::Subgroup { dst, .. }
@@ -365,6 +402,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *value = r(*value);
         }
         Inst::Print { value, .. } => *value = r(*value),
+        Inst::ExternalCall(call) => call.map_operands(r),
         Inst::Subgroup {
             value, argument, ..
         } => {
@@ -434,8 +472,10 @@ fn dce(
             *result = retained;
         }
         let results = i.results();
-        if !matches!(i, Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. })
-            && !results.is_empty()
+        if !matches!(
+            i,
+            Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. } | Inst::ExternalCall(_)
+        ) && !results.is_empty()
             && !results.iter().any(|r| needed.contains(&Register(*r)))
         {
             continue;
@@ -524,6 +564,7 @@ fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
         | Inst::Atomic(_)
         | Inst::Append(_)
         | Inst::Print { .. }
+        | Inst::ExternalCall(_)
         | Inst::TilePublish(_)
         | Inst::TileCollective(_)
         | Inst::TileBarrier => true,

@@ -1,6 +1,6 @@
 //! 将已经检查的编译结果写成 Rust 构造表达式；DLL 不携带源码文件或文件系统加载器。
 use crate::{
-    ast::{Access, Target},
+    ast::{Access, ExternalName, Target},
     ir::*,
 };
 use std::num::NonZeroU32;
@@ -153,6 +153,20 @@ variants!(MathOp {
     Max
 });
 variants!(IndexedSource {Data {binding, index}, View {address, index, stride}, Tile {tile, index}});
+record!(ExternalName { library, symbol });
+variants!(ExternalStorage{Local{base,len},Indexed(source)});
+record!(ExternalReference {
+    storage,
+    offset,
+    word
+});
+variants!(ExternalArgument{Value{ty,values},Reference{ty,access,address}});
+record!(ExternalCall {
+    function,
+    arguments,
+    result,
+    values
+});
 record!(TextureSource { binding, element });
 record!(TextureBinding { name, count });
 variants!(Inst {
@@ -160,7 +174,7 @@ variants!(Inst {
     TextureLevels {dst, texture}, TextureFetch {result, texture, coordinate, level},
     LoadIndexed {dst, source, offset, word}, StoreIndexed {source, offset, word, value},
     Atomic(a), Append(a), TileBarrier, TilePublish(p), TileCollective(c), TileLength(r), TileLane(r),
-    TileLoad {dst, tile, index, word}, Subgroup {dst, op, value, argument}, Print {dst, value},
+    TileLoad {dst, tile, index, word}, Subgroup {dst, op, value, argument}, Print {dst, value}, ExternalCall(call),
     ViewLoad {dst, address, index, stride, word},
     RayQuery {scene, origin, direction, minimum, maximum, result},
     Constant(r, s, v), Index(r), Uniform(r, offset), LoadLocal(r, slot), StoreLocal(slot, r),

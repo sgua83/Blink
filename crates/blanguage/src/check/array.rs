@@ -4,11 +4,11 @@ impl Place {
     pub(super) fn project(self, ty: Ty, components: &[usize]) -> Self {
         match self {
             Self::AtomicParameter(_) => Self::AtomicParameter(ty),
-            Self::Local(_, slots) => {
-                Self::Local(ty, components.iter().map(|i| slots[*i]).collect())
+            Self::Local(_, slots, storage) => {
+                Self::Local(ty, components.iter().map(|i| slots[*i]).collect(), storage)
             }
-            Self::ReadOnlyLocal(_, slots) => {
-                Self::ReadOnlyLocal(ty, components.iter().map(|i| slots[*i]).collect())
+            Self::ReadOnlyLocal(_, slots, storage) => {
+                Self::ReadOnlyLocal(ty, components.iter().map(|i| slots[*i]).collect(), storage)
             }
             Self::Indexed {
                 base,
@@ -66,6 +66,23 @@ impl Place {
     }
 }
 impl Builder<'_> {
+    pub(super) fn local_slots(&mut self, ty: &Ty) -> (Vec<usize>, std::ops::Range<usize>) {
+        let base = self.locals.len();
+        self.locals.resize(
+            base + ir::align_up(ty.size, ty.align) as usize / 4,
+            Scalar::U32,
+        );
+        let slots = ty
+            .components
+            .iter()
+            .map(|(s, at)| {
+                let slot = base + *at as usize / 4;
+                self.locals[slot] = *s;
+                slot
+            })
+            .collect();
+        (slots, base..self.locals.len())
+    }
     pub(super) fn materialize_array_bindings(&mut self) {
         let values: Vec<_> = self
             .env
@@ -97,17 +114,11 @@ impl Builder<'_> {
     }
 
     pub(super) fn materialize_array(&mut self, value: Value) -> Place {
-        let slots = value
-            .regs
-            .iter()
-            .map(|r| {
-                let slot = self.locals.len();
-                self.locals.push(self.registers[*r]);
-                self.code.push(Inst::StoreLocal(slot, *r));
-                slot
-            })
-            .collect();
-        Place::ReadOnlyLocal(value.ty, slots)
+        let (slots, storage) = self.local_slots(&value.ty);
+        for (slot, r) in slots.iter().zip(&value.regs) {
+            self.code.push(Inst::StoreLocal(*slot, *r));
+        }
+        Place::ReadOnlyLocal(value.ty, slots, storage)
     }
     pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Place> {
         let index = self.expr(expr)?;
@@ -167,12 +178,7 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        let packed = matches!(place.storage(), Place::Local(..) | Place::ReadOnlyLocal(..));
-        let stride = if packed {
-            element.components.len() as u32
-        } else {
-            ir::align_up(element.size, element.align) / 4
-        };
+        let stride = ir::align_up(element.size, element.align) / 4;
         let factor = self.constant(Scalar::U32, stride);
         let relative = self.binary("*", index, factor, span)?.regs[0];
         let (base, offset, first) = match place {
@@ -204,8 +210,7 @@ impl Builder<'_> {
         let words = element
             .components
             .iter()
-            .enumerate()
-            .map(|(i, (_, o))| first + if packed { i as u32 } else { o / 4 })
+            .map(|(_, o)| first + o / 4)
             .collect();
         Ok(Place::Indexed {
             ty: element,
@@ -275,13 +280,15 @@ impl Builder<'_> {
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
             self.code.push(match &**base {
-                Place::Local(_, slots) | Place::ReadOnlyLocal(_, slots) => Inst::LoadLocalIndexed {
-                    dst,
-                    base: slots[0],
-                    len: slots.len(),
-                    index: *offset,
-                    word: *word,
-                },
+                Place::Local(_, slots, ..) | Place::ReadOnlyLocal(_, slots, ..) => {
+                    Inst::LoadLocalIndexed {
+                        dst,
+                        base: slots[0],
+                        len: ir::align_up(base.ty().size, base.ty().align) as usize / 4,
+                        index: *offset,
+                        word: *word,
+                    }
+                }
                 _ => Inst::LoadIndexed {
                     dst,
                     source: self.array_memory(base),
@@ -327,9 +334,9 @@ impl Builder<'_> {
         self.initialize(place);
         for (word, value) in words.iter().zip(value.regs) {
             self.code.push(match &**base {
-                Place::Local(_, slots) => Inst::StoreLocalIndexed {
+                Place::Local(_, slots, ..) => Inst::StoreLocalIndexed {
                     base: slots[0],
-                    len: slots.len(),
+                    len: ir::align_up(base.ty().size, base.ty().align) as usize / 4,
                     index: *offset,
                     word: *word,
                     value,

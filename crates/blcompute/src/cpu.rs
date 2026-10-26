@@ -4,7 +4,7 @@ use blanguage::{
     ExecutableProgram, TemplateProgram,
     ast::Target,
     ir::{CollectiveOperator, Program, Scalar},
-    native::NativeIntrinsic,
+    native::{NativeIntrinsic, NativeSymbol},
 };
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,6 +16,9 @@ unsafe extern "system" {
     fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
+    fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const std::ffi::c_char) -> *const c_void;
+    fn FreeLibrary(module: *mut c_void) -> i32;
     fn CreateThreadpoolWork(
         callback: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void),
         context: *mut c_void,
@@ -122,6 +125,33 @@ impl Drop for WorkHandle {
 }
 struct Executable {
     address: *mut c_void,
+    _libraries: Vec<Library>,
+}
+struct Library(*mut c_void);
+impl Library {
+    fn load(name: &str) -> Result<Self> {
+        let name: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe { LoadLibraryW(name.as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self(handle))
+    }
+    fn symbol(&self, name: &str) -> Result<*const ()> {
+        let name = std::ffi::CString::new(name)?;
+        let address = unsafe { GetProcAddress(self.0, name.as_ptr()) };
+        if address.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(address.cast())
+    }
+}
+impl Drop for Library {
+    fn drop(&mut self) {
+        unsafe {
+            FreeLibrary(self.0);
+        }
+    }
 }
 fn print_line(value: impl std::fmt::Display) -> u32 {
     use std::io::Write;
@@ -142,19 +172,34 @@ extern "C" fn print_bool(value: u32) -> u32 {
 }
 impl Executable {
     fn new(mut code: blanguage::native::NativeCode) -> Result<Self> {
+        let mut libraries = std::collections::BTreeMap::new();
         for r in &code.relocations {
-            let ptr = match r.intrinsic {
-                NativeIntrinsic::Sin => sin as *const (),
-                NativeIntrinsic::Cos => cos as *const (),
-                NativeIntrinsic::Floor => floor as *const (),
-                NativeIntrinsic::Exp => exp as *const (),
-                NativeIntrinsic::Exp2 => exp2 as *const (),
-                NativeIntrinsic::Log => log as *const (),
-                NativeIntrinsic::Log2 => log2 as *const (),
-                NativeIntrinsic::Pow => pow as *const (),
-                NativeIntrinsic::PrintU32 => print_u32 as *const (),
-                NativeIntrinsic::PrintI32 => print_i32 as *const (),
-                NativeIntrinsic::PrintBool => print_bool as *const (),
+            let ptr = match &r.target {
+                NativeSymbol::External(name) => {
+                    if !libraries.contains_key(&name.library) {
+                        libraries.insert(
+                            name.library.clone(),
+                            Library::load(&name.library)
+                                .map_err(|e| error(format!("加载 {} 失败：{e}", name.library)))?,
+                        );
+                    }
+                    libraries[&name.library].symbol(&name.symbol).map_err(|e| {
+                        error(format!("解析 {}!{} 失败：{e}", name.library, name.symbol))
+                    })?
+                }
+                NativeSymbol::Intrinsic(intrinsic) => match intrinsic {
+                    NativeIntrinsic::Sin => sin as *const (),
+                    NativeIntrinsic::Cos => cos as *const (),
+                    NativeIntrinsic::Floor => floor as *const (),
+                    NativeIntrinsic::Exp => exp as *const (),
+                    NativeIntrinsic::Exp2 => exp2 as *const (),
+                    NativeIntrinsic::Log => log as *const (),
+                    NativeIntrinsic::Log2 => log2 as *const (),
+                    NativeIntrinsic::Pow => pow as *const (),
+                    NativeIntrinsic::PrintU32 => print_u32 as *const (),
+                    NativeIntrinsic::PrintI32 => print_i32 as *const (),
+                    NativeIntrinsic::PrintBool => print_bool as *const (),
+                },
             };
             code.bytes[r.offset..r.offset + 8].copy_from_slice(&(ptr as u64).to_le_bytes());
         }
@@ -162,7 +207,10 @@ impl Executable {
         if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let out = Self { address };
+        let out = Self {
+            address,
+            _libraries: libraries.into_values().collect(),
+        };
         unsafe {
             std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
             let mut old = 0;

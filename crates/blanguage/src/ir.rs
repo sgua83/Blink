@@ -1,5 +1,7 @@
 use crate::ast::{Access, Target};
 use std::num::NonZeroU32;
+mod external;
+pub use external::{ExternalArgument, ExternalCall, ExternalReference, ExternalStorage};
 mod atomic;
 pub use atomic::{Atomic, AtomicOp, AtomicTarget, MemoryOrder};
 mod custom_reduce;
@@ -561,6 +563,7 @@ pub enum Inst {
         dst: Reg,
         value: Reg,
     },
+    ExternalCall(ExternalCall),
     ViewLoad {
         dst: Reg,
         address: [Reg; 2],
@@ -1001,10 +1004,10 @@ pub struct SubgroupCapabilities {
     pub shuffle_relative: bool,
 }
 impl Stage {
-    pub(crate) fn has_standard_output(&self) -> bool {
+    pub(crate) fn has_external_effects(&self) -> bool {
         fn contains(code: &[Inst]) -> bool {
             code.iter().any(|inst| match inst {
-                Inst::Print { .. } => true,
+                Inst::Print { .. } | Inst::ExternalCall(_) => true,
                 Inst::Scope(body) => contains(body),
                 Inst::If { yes, no, .. } => contains(yes) || contains(no),
                 Inst::Loop {

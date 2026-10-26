@@ -210,7 +210,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let reloc = tail
                                 .relocations
                                 .iter()
-                                .map(|r| format!("{} {:?}\n", r.offset, r.intrinsic))
+                                .map(|r| format!("{} {:?}\n", r.offset, r.target))
                                 .collect::<String>();
                             std::fs::write(out.join(format!("{stem}.{i}.tail.reloc")), reloc)?;
                         }
@@ -226,7 +226,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 let reloc = code
                                     .relocations
                                     .iter()
-                                    .map(|r| format!("{} {:?}\n", r.offset, r.intrinsic))
+                                    .map(|r| format!("{} {:?}\n", r.offset, r.target))
                                     .collect::<String>();
                                 std::fs::write(
                                     out.join(format!("{stem}.{i}.{name}.reloc")),
@@ -254,7 +254,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 let reloc = code
                                     .relocations
                                     .iter()
-                                    .map(|r| format!("{} {:?}\n", r.offset, r.intrinsic))
+                                    .map(|r| format!("{} {:?}\n", r.offset, r.target))
                                     .collect::<String>();
                                 std::fs::write(
                                     out.join(format!("{stem}.{i}.{name}.reloc")),
@@ -292,7 +292,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let reloc = native
                             .relocations
                             .iter()
-                            .map(|r| format!("{} {:?}\n", r.offset, r.intrinsic))
+                            .map(|r| format!("{} {:?}\n", r.offset, r.target))
                             .collect::<String>();
                         std::fs::write(out.join(format!("{stem}.{i}.reloc")), reloc)?;
                     }

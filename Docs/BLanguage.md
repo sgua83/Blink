@@ -69,7 +69,40 @@ u32 main() on cpu {
 
 `bool println(value)` 当前接受单个 `u32`、`i32` 或 `bool` 标量。整数使用十进制，bool 使用 `true／false`，末尾附加一个 LF；完整写出返回 true，写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU program 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、f32、向量等当前不支持的类型报 B261。
 
-生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，超越函数使用系统 UCRT。运行无需 B 源码、编译器、blrun 或手写宿主。当前尚未提供应用动态 dataset／CPU／GPU program 组织、通用字符串与 UTF-8 库、输入、文件、命令行参数、外部库导入、其他平台／架构及源码调试。源码示例见 [独立应用](../sample/applications/README.md)。
+生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，超越函数使用系统 UCRT。运行无需 B 源码、编译器、blrun 或手写宿主。当前尚未提供应用动态 dataset／CPU／GPU program 组织、通用字符串与 UTF-8 库、输入、文件、命令行参数、其他平台／架构及源码调试。外部 DLL 调用见下一节，源码示例见 [独立应用](../sample/applications/README.md)。
+
+## CPU 的外部 C ABI 函数（2026-10-26）
+
+普通 CPU 函数和 CPU program 可以直接调用 Windows x64 DLL 的 C 导出。声明通常放在 `.h`，不在 `.b` 再写实现；模块仍保留其 `.b` 文件。私有外部声明也可以放在 `.b`：
+
+```c
+module external.start;
+struct Pair { u32 left; u32 right; };
+extern "C" Pair add_values(Pair value, u32 amount) on cpu
+    from "blink_cpp.dll";
+extern "C" void scale_values(inout Pair value, u32 amount) on cpu
+    from "blink_rust.dll";
+u32 main() on cpu;
+```
+
+对应 `.b` 的主流程取得 `add_values(Pair(3,5),2)`，再 `scale_values(value,3)`，即可输出 `15`、`21`。需要不同导出名称时在库名后写 `as "真实符号"`，省略时使用声明中的函数名。引号仅用于 ABI 与链接元数据，尚未成为运行时字符串。库名和导出名称为非空、非 NUL 的 ASCII 字符串，只支持 `\\` 与 `\"` 转义。完整 C++／Rust 库和部署命令见 [外部调用示例](../sample/extern/README.md)。
+
+| 形参 | C ABI 含义与调用要求 |
+|---|---|
+| `T value` | 按值；普通非空数值、POD 结构体、向量、矩阵或固定数组，布局与 B 的字段偏移、对齐和填充一致 |
+| `read T value` | 指向已初始化实际位置的只读指针；只读数据、view 的普通元素和临时普通值也可借用 |
+| `write T value` | 指向实际独占位置的输出指针；可以传未初始化局部，返回后全部逻辑字段视为已初始化 |
+| `inout T value` | 指向已初始化实际独占位置的读写指针 |
+
+返回类型可以是上述普通值或 `void`。u32、i32、f32 及 bool 都为 32 位；bool 对应 C 的 `uint32_t`／Rust 的 `u32`，不能换成宿主单字节 bool。返回与读取的 bool 按零／非零解码。向量按 B 的 POD 内存布局声明，不使用 C++ 的 `__m128` 或 vectorcall；嵌套结构、数组的宿主布局必须与 B 完全相同，不能仅凭字段名相同判断兼容。
+
+前端保留类型、确定初始化、位置连续性、对齐和重叠借用要求；离散或重排 swizzle 不能形成 C 指针。外部写入使旧值的非零／范围等证明失效，不从声明推测结果。外部函数是显式可观察效果，未使用返回值也会执行；含调用的阶段保持边界，并行实例的调用次序不作保证。
+
+这是可信外部 ABI 声明：声明者负责真实导出、布局、读写权限及调用约定一致，外部代码只在调用期间借用、不得越过对象访问、保留指针或让异常／longjmp 跨边界。`write` 约定每次正常返回都完整初始化全部逻辑字段，即使另外返回了失败状态。编译器不读取 DLL 机器签名，也不证明外部实现遵守声明。
+
+声明只允许无正文、无泛型／requires／ensures 的 `on cpu` 普通函数。dataset、tile、view、纹理、加速结构及含资源的值不能穿过这个 ABI，atomic 权限也不支持；可以借用其 CPU 端已合法取得的普通数据元素。裸指针值、u64、opaque handle、回调、变参、C++ 类／模板 ABI、静态对象链接与其他平台仍待实现。声明错误报 B263，实际位置布局不符报 B264；GPU／compute 调用报 B265，不能调用宿主 DLL。已有 CPU program 与生成的算法 DLL 同样使用此调用实现，普通程序的资源所有者仍属于 blcompute。
+
+独立应用按实际调用在 PE 导入表记录库与符号，由 Windows 装载；嵌入式 CPU 执行使用 LoadLibraryW／GetProcAddress，错误保留库名、符号及操作系统错误。原生代码所有者持有对应模块到最后一个代码消费者释放。DLL 或符号缺失即失败，不替换目标或吞错。应用启动、寄存器、栈参数与结构体返回遵循 [Windows x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)。
 
 ## 数据能力和编译期检查
 
@@ -2442,11 +2475,11 @@ build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` �
 |---|---|
 | 整数与 bool 值 | R8D、R9D、ESI、EDI、EBP |
 | f32 值 | XMM2–15，各保存一个标量值 |
-| 跨数学函数调用的值 | 使用非易失寄存器或溢出槽；不把 R8／R9、XMM2–5 当成可跨调用保留的存储 |
+| 跨数学／C ABI 函数调用的值 | 使用非易失寄存器或溢出槽；不把 R8／R9、XMM2–5 当成可跨调用保留的存储 |
 | 内核临时运算 | RAX／RCX／RDX、R10／R11、XMM0／1，独立于值分配 |
 | 范围与绑定 | 既有 RBX、R12–15；全范围入口／退出保存恢复 |
 
-实际使用到的非易失通用寄存器保存全部 64 位，XMM6–15 保存全部 128 位，每个范围调用仅在入口／退出各处理一次。只有含外部数学调用的内核保留 32 字节调用区；栈帧保持 16 字节对齐，大帧继续逐页触及，零字节局部帧无需调整 RSP。寄存器规则依据 [Windows x64 ABI](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)。当前还没有生成动态栈展开与调试信息。
+实际使用到的非易失通用寄存器保存全部 64 位，XMM6–15 保存全部 128 位，每个范围调用仅在入口／退出各处理一次。调用区按实际数学／C ABI 调用的最大 shadow space、栈参数、按值副本与返回缓冲需求分配；没有调用就不生产调用区。栈帧保持 16 字节对齐，大帧继续逐页触及，零字节局部帧无需调整 RSP。寄存器规则依据 [Windows x64 ABI](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)。独立 PE 应用已有 x64 展开信息；内存中的计算范围函数尚无动态栈展开与源码调试信息。
 
 寄存器间的 f32 值使用完整 XMM 位复制，避免为未使用的高位保留依赖；逻辑运算仍只消费各标量低 32 位。tile 保存／恢复直接消费分配位置与既有逐 lane 私有流，不再要求中间值同时拥有永久栈位置。算术次序保持，数值转换与数学定义域不因此改变。
 
@@ -2468,7 +2501,7 @@ build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` �
 
 where 的直线正文复用相同计划、寄存器分配、Frame 和标量尾部。每范围仅用栈内 16 字节保存当前四个选中原索引，普通 Index 值、当前元素加载与独占写回均消费它们；不复制完整记录或建立全域 CPU 索引数组，资源与执行范围仍由原所有者持有。
 
-编译器先区分常量／参数／只读统一地址得到的统一值，与逐元素值。存储必须使用当前元素索引；读取可使用当前元素、未被本阶段写入的数据集任意合法索引，以及不可变 view。各元素的独占写入、普通索引范围与绑定所有权沿用前端和执行器的既有证明；unsafe_read 仍由调用方承担外部索引关系，后端不扩大其权限。向量寻址还须能以目标机器的位移表达，阶段融合与显式 phase 保持。分支／循环、tile／subgroup、射线查询、外部数学调用和逐 lane 不同的移位量目前不进入四元素降低，这些阶段继续使用已有的标量范围生成。
+编译器先区分常量／参数／只读统一地址得到的统一值，与逐元素值。存储必须使用当前元素索引；读取可使用当前元素、未被本阶段写入的数据集任意合法索引，以及不可变 view。各元素的独占写入、普通索引范围与绑定所有权沿用前端和执行器的既有证明；unsafe_read 仍由调用方承担外部索引关系，后端不扩大其权限。向量寻址还须能以目标机器的位移表达，阶段融合与显式 phase 保持。分支／循环、tile／subgroup、射线查询与外部数学／C ABI 调用目前不进入四元素降低，这些阶段继续使用已有的标量范围生成。
 
 只读间接读取逐 lane 生成 64 位主机地址，按原类型步长／字段位移取得四个标量后合并到既有 SSE2 批次。它不是硬件向量 gather 指令；批次中的算术、转换、bool 规范化与写回继续使用原有实现。嵌套 view 的地址高低字和元素索引可以每 lane 不同，结果在所有输入 lane 读取完成后才写回分配位置，允许真实的寄存器及溢出槽复用。一个读取操作的 view 基址统一时只构造一次该基址；地址和索引都统一时只读一次并广播。数据始终保持原 AoS 布局，没有预先打包整张几何、复制资源图或增加运行期索引检查。
 
@@ -2586,4 +2619,4 @@ upload、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生�
 
 build-dll 接收一个公开、具体且无 requires 前置条件的 program；泛型使用既有 compile_entry 的具体入口语法。输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
 
-C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy 释放 DLL 自己创建的 handle。run 为同步、包含数据交付的完整调用。C++ 使用 RAII，Rust 绑定提供独占切片、Result、Drop 与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 源码任意 extern 导入尚未实现，不能把 DLL 导出解释为可反向调用任意 C++／Rust 函数。详见 [原生集成](NativeInterop.md)。
+C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy 释放 DLL 自己创建的 handle。run 为同步、包含数据交付的完整调用。C++ 使用 RAII，Rust 绑定提供独占切片、Result、Drop 与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 调用宿主 DLL 使用前述 CPU extern C 声明，不改变这里由宿主持有的算法入口与资源。详见 [原生集成](NativeInterop.md)。

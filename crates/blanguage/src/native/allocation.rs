@@ -35,7 +35,7 @@ pub(super) struct Graph {
     edges: Vec<BTreeSet<usize>>,
     weights: Vec<u64>,
     across_call: BTreeSet<usize>,
-    has_calls: bool,
+    outgoing_bytes: u64,
     registers: usize,
 }
 impl Graph {
@@ -145,6 +145,7 @@ impl Graph {
                     if matches!(
                         inst,
                         Inst::Print { .. }
+                            | Inst::ExternalCall(_)
                             | Inst::Math {
                                 op: MathOp::Sin
                                     | MathOp::Cos
@@ -157,7 +158,13 @@ impl Graph {
                                 ..
                             }
                     ) {
-                        self.has_calls = true;
+                        self.outgoing_bytes =
+                            self.outgoing_bytes
+                                .max(if let Inst::ExternalCall(call) = inst {
+                                    super::external::Layout::new(call).bytes
+                                } else {
+                                    32
+                                });
                         let preserved: Vec<_> = live.iter().map(|slot| self.id(*slot)).collect();
                         self.across_call.extend(preserved);
                     }
@@ -187,7 +194,7 @@ impl Graph {
             edges: vec![BTreeSet::new(); stage.registers.len() + stage.locals.len()],
             weights: vec![0; stage.registers.len() + stage.locals.len()],
             across_call: BTreeSet::new(),
-            has_calls: false,
+            outgoing_bytes: 0,
             registers: stage.registers.len(),
         };
         let empty = BTreeSet::new();
@@ -244,7 +251,7 @@ impl Allocation {
             .chain(&stage.locals)
             .copied()
             .collect();
-        let base = if graph.has_calls { 32 } else { 0 };
+        let base = graph.outgoing_bytes;
         let (mut locations, spills) = graph.allocate(
             |id, across_call| {
                 if scalars[id] == Scalar::F32 {
@@ -260,10 +267,11 @@ impl Allocation {
                         .collect()
                 }
             },
-            |slot| Location::Stack(base + slot * 4),
+            |slot| Location::Stack((base + slot as u64 * 4) as u32),
         );
         let mut data_end = base as u64 + spills as u64 * 4;
         for span in private_spans(&stage.code) {
+            data_end = data_end.div_ceil(16) * 16;
             for slot in span.clone() {
                 locations[stage.registers.len() + slot] =
                     Location::Stack((data_end + (slot - span.start) as u64 * 4) as u32);

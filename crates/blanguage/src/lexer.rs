@@ -33,7 +33,26 @@ pub fn lex(source: &Source) -> Result<Vec<Token>> {
             at += 2;
             continue;
         }
-        if c.is_ascii_alphabetic() || c == b'_' {
+        if c == b'"' {
+            at += 1;
+            while at < bytes.len() && bytes[at] != b'"' {
+                if bytes[at] == b'\\' {
+                    at += 1;
+                }
+                at += 1;
+            }
+            if at >= bytes.len() {
+                return source.fail(
+                    Span {
+                        start,
+                        end: bytes.len(),
+                    },
+                    "B003",
+                    "链接字符串没有结束",
+                );
+            }
+            at += 1;
+        } else if c.is_ascii_alphabetic() || c == b'_' {
             at += 1;
             while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
                 at += 1;

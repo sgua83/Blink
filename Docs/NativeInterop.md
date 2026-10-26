@@ -70,10 +70,25 @@ sample/interop/fractal.* 是一百万像素的 Mandelbrot 计算，C++ 和 Rust 
 
 CPU 结果与两个串行实现逐项相同。当前 GPU 的 f32 结果在分形边界有差异，具体数量与最大迭代差由样例输出，不能将设备结果称为逐位等价。分形的递推会放大浮点差异；要求精确迭代计数的消费者应选用已核对的 CPU 路径或另行设计数值算法。不要只用加速比判断替换是否适合应用。
 
-## B 源码能否直接调用 C++ 或 Rust
+## B 主流程调用 C++ 或 Rust
 
-当前没有任意 extern 函数、C++ 类／模板或 Rust 函数的导入语法。DLL 输出解决的是 C/C++／Rust 调用 B 的具体算法，不代表 B 已能反向调用任意宿主函数。
+B 的普通 CPU main、函数和 CPU program 已支持调用 Windows x64 DLL 的 C 导出。例如 `.h` 声明：
 
-现有应用由宿主组织：C++ 或 Rust 准备数据、调用 B、消费结果，再调用既有库。C++ 与 Rust 自己的相互调用使用双方的 C ABI；普通 Rust ABI 不作为跨语言稳定接口。GPU 内核也不能把任意 CPU 函数直接当设备函数。此边界不会删减或替换既有 Rust 原生计算 API。
+```c
+extern "C" Pair add_values(Pair value, u32 amount) on cpu
+    from "blink_cpp.dll";
+extern "C" void scale_values(inout Pair value, u32 amount) on cpu
+    from "blink_rust.dll";
+```
+
+`.b` 主流程可以取得 C++ 返回的 Pair，再将同一位置借给 Rust 修改。`as "真实符号"` 可指定与 B 函数不同的导出名称；省略时使用函数名。完整 B、C++、Rust 源码与构建部署命令见 [sample/extern](../sample/extern/README.md)，已实际运行并输出 `15`、`21`。B 的 build-exe 直接生成 PE 和导入表；外部 C++／Rust 工具链只构建各自的库。部署时携带实际 DLL 及其依赖，不需要 B 源码或编译器。
+
+普通值按 Windows x64 C ABI 传递；read／write／inout 分别是实际存储的只读／完整输出／读写指针。前端保持类型、初始化和重叠借用限制。这里的普通值使用 B 的偏移、对齐、填充和数组步长；bool 使用 32 位 `uint32_t／u32`，向量是 POD 布局，不等同于 C++ 向量内建类型。C++ 的导出使用 extern C，Rust 使用 extern C 与 repr(C) 等实际匹配布局；普通 Rust ABI 和 C++ 类／模板 ABI 不属于该接口。
+
+声明是可信 ABI 边界，DLL 必须匹配真实符号、类型布局与访问权限，指针只在调用期间有效，不得逃逸、越界或让异常／longjmp 跨边界。write 参数在每次正常返回前完整初始化全部逻辑字段。外部写入撤回旧值的静态证明；编译器不会检查 DLL 机器签名或推测失败状态对应的写入结果。只读临时值按必要生命周期保留，位置借用不维护另一份写回副本。
+
+独立应用由 Windows 按实际导入装载库；原生 CpuProgram 用 LoadLibraryW／GetProcAddress 解析，原生代码所有者持有模块到最后一个消费者释放。装载／符号错误保留原生错误，不替换库或实现。外部调用的副作用不因返回值未使用而删除；parallel 实例的调用顺序不作保证。生成的 B 算法 DLL 也可在 CPU 后端调用其依赖库，GPU 后端明确拒绝宿主调用。
+
+当前只接受无泛型／契约的 on cpu 普通外部函数和非空普通值／void 返回。dataset、tile、view、纹理、加速结构及含资源记录不能跨此 ABI；CPU 端已合法取得的普通元素仍可借用。裸指针值、u64、opaque handle、回调、变参、静态对象链接及其他平台仍待实现。B 应用创建动态数据与组织 CPU／GPU program 仍归 C-011，不以外部调用或宿主已有能力冒充完成；原生 Rust 计算 API 保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。

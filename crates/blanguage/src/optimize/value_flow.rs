@@ -195,6 +195,12 @@ impl Values {
                     cycle.block(body, registers);
                     self.memory.clear();
                 }
+                Inst::ExternalCall(call) => {
+                    for slot in call.locals(true) {
+                        self.locals.remove(&slot);
+                    }
+                    if call.arguments.iter().any(|arg|matches!(arg,ExternalArgument::Reference{access,address:ExternalReference{storage:ExternalStorage::Indexed(_),..},..} if access.writes())) {self.memory.clear();}
+                }
                 _ => {}
             }
             out.push(inst);

@@ -61,36 +61,40 @@ impl<'a> Builder<'a> {
         let mut arguments = Vec::new();
         let mut exclusive = Vec::new();
         for (param, arg) in callee.function.params.iter().zip(args) {
-            arguments.push(if param.ty.is_acceleration() {
-                let ExprKind::Name(name) = &arg.kind else {
-                    return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
-                };
-                let Some(Binding::Acceleration(index)) = self.env.get(name) else {
-                    return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
-                };
-                Argument::Acceleration(*index)
-            } else if param.ty.is_texture_resource() {
-                Argument::Texture(self.texture_argument(arg)?)
-            } else if param.ty.dataset {
-                let ExprKind::Name(name) = &arg.kind else {
-                    return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
-                };
-                let Some(Binding::Data(view)) = self.env.get(name) else {
-                    return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
-                };
-                Argument::Dataset(view.clone())
-            } else if param.ty.tile {
-                Argument::Tile(self.tile_view(arg)?)
-            } else if param.access == Access::Atomic {
-                Argument::Atomic(self.atomic_place(arg)?)
-            } else if matches!(param.access, Access::InOut | Access::Write) {
-                let place = self.mutable_place(arg, param.access)?;
-                self.require_disjoint(&exclusive, &place, arg.span)?;
-                exclusive.push(place.clone());
-                Argument::Exclusive(place)
-            } else {
-                Argument::Value(self.expr(arg)?)
-            });
+            arguments.push(
+                if callee.function.external.is_some() && param.access == Access::Read {
+                    Argument::Exclusive(self.external_read_place(arg)?)
+                } else if param.ty.is_acceleration() {
+                    let ExprKind::Name(name) = &arg.kind else {
+                        return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
+                    };
+                    let Some(Binding::Acceleration(index)) = self.env.get(name) else {
+                        return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
+                    };
+                    Argument::Acceleration(*index)
+                } else if param.ty.is_texture_resource() {
+                    Argument::Texture(self.texture_argument(arg)?)
+                } else if param.ty.dataset {
+                    let ExprKind::Name(name) = &arg.kind else {
+                        return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
+                    };
+                    let Some(Binding::Data(view)) = self.env.get(name) else {
+                        return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
+                    };
+                    Argument::Dataset(view.clone())
+                } else if param.ty.tile {
+                    Argument::Tile(self.tile_view(arg)?)
+                } else if param.access == Access::Atomic {
+                    Argument::Atomic(self.atomic_place(arg)?)
+                } else if matches!(param.access, Access::InOut | Access::Write) {
+                    let place = self.mutable_place(arg, param.access)?;
+                    self.require_disjoint(&exclusive, &place, arg.span)?;
+                    exclusive.push(place.clone());
+                    Argument::Exclusive(place)
+                } else {
+                    Argument::Value(self.expr(arg)?)
+                },
+            );
         }
         Ok(arguments)
     }
@@ -109,6 +113,9 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<Value>> {
+        if instance.definition.function.external.is_some() {
+            return self.external_call(&instance.definition, args, span);
+        }
         match instance.definition.function.kind {
             FunctionKind::Program => self.fail(span, "B159", "program 调用只能位于程序阶段层"),
             FunctionKind::Cooperative => {

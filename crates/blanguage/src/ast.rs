@@ -230,7 +230,13 @@ pub struct Function {
     pub target: Target,
     pub contracts: Vec<FunctionContract>,
     pub body: Option<Vec<Stmt>>,
+    pub external: Option<ExternalName>,
     pub span: Span,
+}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExternalName {
+    pub library: String,
+    pub symbol: String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunctionKind {

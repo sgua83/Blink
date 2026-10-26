@@ -7,6 +7,7 @@ use allocation::{Allocation, Frame, PacketAllocation};
 mod application;
 mod compact;
 mod custom_reduce;
+mod external;
 mod integer;
 mod operands;
 mod packet;
@@ -31,7 +32,24 @@ pub use sort::{emit_sort_gather, emit_sort_histogram, emit_sort_key, emit_sort_s
 #[derive(Clone, Debug)]
 pub struct Relocation {
     pub offset: usize,
-    pub intrinsic: NativeIntrinsic,
+    pub target: NativeSymbol,
+}
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NativeSymbol {
+    Intrinsic(NativeIntrinsic),
+    External(crate::ast::ExternalName),
+}
+impl std::fmt::Debug for NativeSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Intrinsic(v) => v.fmt(f),
+            Self::External(v) => f
+                .debug_struct("External")
+                .field("library", &v.library)
+                .field("symbol", &v.symbol)
+                .finish(),
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NativeIntrinsic {
@@ -233,7 +251,10 @@ impl Emitter<'_> {
         self.bytes(&[0x48, 0xb8]);
         let offset = self.code.len();
         self.bytes(&[0; 8]);
-        self.relocations.push(Relocation { offset, intrinsic });
+        self.relocations.push(Relocation {
+            offset,
+            target: NativeSymbol::Intrinsic(intrinsic),
+        });
         self.bytes(&[0xff, 0xd0]);
     }
     fn math_result(&mut self, dst: Reg, intrinsic: NativeIntrinsic, args: &[Reg]) {
@@ -244,17 +265,18 @@ impl Emitter<'_> {
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
             match inst {
+                Inst::ExternalCall(call) => self.external_call(call)?,
                 Inst::Print { dst, value } => {
                     self.copy(allocation::Location::Gpr(1), self.location(*value));
                     self.bytes(&[0x48, 0xb8]);
                     self.relocations.push(Relocation {
                         offset: self.code.len(),
-                        intrinsic: match self.stage.registers[*value] {
+                        target: NativeSymbol::Intrinsic(match self.stage.registers[*value] {
                             Scalar::U32 => NativeIntrinsic::PrintU32,
                             Scalar::I32 => NativeIntrinsic::PrintI32,
                             Scalar::Bool => NativeIntrinsic::PrintBool,
                             Scalar::F32 => return Err("println 尚不接受 f32"),
-                        },
+                        }),
                     });
                     self.bytes(&[0; 8]);
                     self.bytes(&[0xff, 0xd0]);
@@ -361,10 +383,14 @@ impl Emitter<'_> {
                     self.read_scalar(*dst, 13, *off);
                 }
                 Inst::LoadLocal(dst, slot) => {
-                    self.copy(
-                        self.location(*dst),
-                        self.allocation.location(PrivateSlot::Local(*slot)),
-                    );
+                    let source = self.allocation.location(PrivateSlot::Local(*slot));
+                    if self.stage.registers[*dst] == Scalar::Bool
+                        && let allocation::Location::Stack(offset) = source
+                    {
+                        self.read_scalar(*dst, 4, offset);
+                    } else {
+                        self.copy(self.location(*dst), source);
+                    }
                 }
                 Inst::StoreLocal(slot, src) => {
                     self.copy(
