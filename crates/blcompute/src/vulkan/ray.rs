@@ -277,7 +277,7 @@ impl Device {
             let mut commands = Commands::new(self.inner.clone())?;
             let mut staging = Vec::new();
             self.stage_page(&allocation, words, |_| {}, &mut commands, &mut staging)?;
-            Some(self.submit_transfer(commands, staging)?)
+            Some(self.submit_transfer(commands, staging, Vec::new())?)
         };
         Ok(RayInput { allocation, ready })
     }
@@ -570,7 +570,7 @@ impl Device {
                 &mut commands,
                 &mut staging,
             )?;
-            target.last_use = Some(self.submit_transfer(commands, staging)?);
+            target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
         }
         Ok(target)
     }

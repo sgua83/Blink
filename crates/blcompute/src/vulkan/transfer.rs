@@ -84,7 +84,7 @@ impl Device {
         let mut commands = Commands::new(self.inner.clone())?;
         let mut staging = Vec::new();
         self.stage_payload(target, words, &mut commands, &mut staging)?;
-        target.last_use = Some(self.submit_transfer(commands, staging)?);
+        target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
         Ok(())
     }
     pub(super) fn stage_payload(
@@ -168,6 +168,7 @@ impl Device {
         &self,
         mut commands: Commands,
         staging: Vec<Allocation>,
+        dependencies: Vec<Rc<Execution>>,
     ) -> Result<Rc<Execution>> {
         commands.submit()?;
         Ok(Execution::new(
@@ -175,7 +176,7 @@ impl Device {
                 commands,
                 _staging: staging,
             },
-            Vec::new(),
+            dependencies,
         ))
     }
 

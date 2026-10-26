@@ -1220,9 +1220,11 @@ program shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 
 源采样进入同一 TextureSample IR，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 自研后端直接编码 `OpTypeImage`、`OpTypeSampledImage` 与 `OpImageSampleExplicitLod`，由 Vulkan sampled image／sampler 执行过滤；不经过 HLSL／GLSL 或第三方编译器。CPU 后端把采样降低为 mip 元数据读取、四点 texel 读取与标量插值，直接生成 x64 指令，没有逐 texel 的宿主回调。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
 
-原生资源 API 是 `Texture2D::new(Vec<TextureMip>)`、`Texture2D::read/write` 和 `Device::upload_texture`。CPU 资源通过 Arc 持有不可变 mip；`cpu::Bindings { datasets, textures }` 交给 `CpuProgram::run_owned` 或 `CpuTemplate::run`。GPU 上传返回可共享的 `vulkan::Texture`，使用 `vulkan::Bindings { datasets, accelerations, textures }`，普通程序与条件模板使用同一 submit／submit_after／submit_join 资源接口。资源数组顺序是各类参数在 `.h` 中的声明顺序；Vulkan set 0 依次放 dataset、acceleration、texture、执行器私有辅助项。CPU 集合范围摘要使用原私有槽，不把纹理描述误当摘要。
+原生资源 API 是 `Texture2D::new(Vec<TextureMip>)`、`Texture2D::read/write` 和 `Device::upload_texture/download_texture`。CPU 资源通过 Arc 持有不可变 mip；`cpu::Bindings { datasets, textures }` 交给 `CpuProgram::run_owned` 或 `CpuTemplate::run`。GPU 上传返回可共享的 `vulkan::Texture`，使用 `vulkan::Bindings { datasets, accelerations, textures }`，普通程序与条件模板使用同一 submit／submit_after／submit_join 资源接口。资源数组顺序是各类参数在 `.h` 中的声明顺序；Vulkan set 0 依次放 dataset、acceleration、texture、执行器私有辅助项。CPU 集合范围摘要使用原私有槽，不把纹理描述误当摘要。
 
 CPU 调用期间持有实际像素及描述；Device::upload_texture 返回完成原生提交的共享图像，返回时不等待设备复制。主机 mip 已进入本次 staging，源 Texture2D 可以退出；上传命令与 staging 由原 Transfer Execution 持有。Texture::is_complete()／wait() 只观察该图像的上传，不代表后续采样已经结束；采样提交自动收集真实上传依赖，调用者可以直接交付尚在上传的 Texture。GPU Commands 持有 image／view／sampler 到原生采样消费者结束，沿既有 Execution 和完成点释放。调用者保留 Texture 克隆即可供后续提交复用，不从已丢弃句柄或裸地址重建资源。Count 的域关系仍随实际数据所有权移动，纹理不引入宿主计数镜像、独立调度服务或资源注册表。绑定数量／设备归属、资产文件边界及物理格式能力属于既有资源边界。
+
+Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。当前验证的是同一物理 GPU 上两个独立 VkDevice 的显式交接，不表示多物理 GPU、直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原上传，采样结果仍沿实际提交观察。
 
 独立资产 `.bltex` 使用 **BLTEX v1**：8 字节 `BLTEX\0\0\0`，小端 u32 version=1、mip_count；每层依次为小端 u32 width、height，再跟 `width*height` 个逐行 RGBA f32，每 texel 16 字节。行方向和颜色含义由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸／内存与 RGBA32F 线性过滤能力限制。文件读入仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
 
@@ -2839,7 +2841,7 @@ T 是普通值类型，不擦除裸 dataset、tile、texture2d、acceleration �
 
 ## 原生缓冲区与AS异步交接
 
-upload／upload_texture、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建，Texture的完成接口只观察本次上传。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；纹理读回、多队列、refit和完整流送未据此完成。
+upload／upload_texture、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建，Texture的完成接口只观察本次上传。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；直接跨设备传输、多物理 GPU 选择／验证、多队列、refit和完整流送未据此完成。
 
 ## 整程序编译映像与原生装载（2026-10-26）
 

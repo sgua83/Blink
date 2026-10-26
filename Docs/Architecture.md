@@ -282,7 +282,7 @@ Blink 的不可变 `view<T>` 由 CPU／compute／GPU 共用，普通索引沿用
 
 原始可写 payload 不等于已绑定资源图。Dataset 取得 words_mut 时放弃已有主机视图子引用及字段绑定，执行前必须显式绑定真实来源；裸地址字节不能成为 CPU 所有权。该检查属于现有资源 ABI／生命周期边界，不增加元素索引运行检查、后台修复或从地址重建引用。
 
-父数据的实际来源与逐记录字段槽构成闭合不可变资源图。显式 upload／download 递归复制图并从目标实际所有者生成平台地址，不要求消费者逐层重新绑定；GPU 编码直接使用既有逐页暂存映射。一次操作内按真实所有者身份保留共享，批量域传输在各根间共用局部映射，内容相同的独立来源不合并。读回的根直接持有真实主机子资源；GPU 生产的子资源仍按原提交与 Fence 生命周期保持。映射随调用结束释放，不建立全局资源注册表、迁移缓存或新的执行循环。CPU、GPU 物理存储与显式传输保持分别所有，不做隐式迁移、设备选择或统一地址空间；同设备缓冲区上传、清零与纹理上传已按真实完成点异步交接；普通数据下载仍等待实际结果，纹理读回、跨 VkDevice 迁移与多队列尚未实现。
+父数据的实际来源与逐记录字段槽构成闭合不可变资源图。显式 upload／download 递归复制图并从目标实际所有者生成平台地址，不要求消费者逐层重新绑定；GPU 编码直接使用既有逐页暂存映射。一次操作内按真实所有者身份保留共享，批量域传输在各根间共用局部映射，内容相同的独立来源不合并。读回的根直接持有真实主机子资源；GPU 生产的子资源仍按原提交与 Fence 生命周期保持。映射随调用结束释放，不建立全局资源注册表、迁移缓存或新的执行循环。CPU、GPU 物理存储与显式传输保持分别所有，不做隐式迁移、设备选择或统一地址空间；同设备缓冲区上传、清零与纹理上传已按真实完成点异步交接；普通数据与纹理读回均等待真实结果；纹理可经显式 CPU 快照交给另一逻辑设备，直接跨 VkDevice 设备传输、多物理 GPU 选择／验证与多队列尚未实现。
 
 `DomainBindings` 将有效域关系附着于实际存储所有权，CPU／GPU 显式传输时一起移动。宿主取出存储就放弃原关系。多个结果可 join；CPU 结果、GPU Completed 及尚未等待的 Submission 均可 partition。CPU／GPU 绑定均可用 freeze 显式冻结选中存储，随后多个分支共享同一 Count 的只读绑定；数据没有对应真实 Count 绑定时不交付关系，同一冻结所有者的别名可继续承接原关系，不从数值或内容重建能力。同一可写数据和 Count 仍只移动一次。DomainStorage 由存储所有者直接交付只读身份和绑定，CPU 借用入口继续接受 Dataset，拥有型入口接受 CpuDataset，GPU 入口接受 GpuDataset；不另加存储类型封闭列表，不建立计数镜像、别名注册表或第二份存储状态。
 
@@ -565,7 +565,9 @@ Execution按真实操作持有命令、上传暂存、构建输入与scratch；�
 
 纹理返回前完成主机 mip 到 staging 的复制和原生提交，源 Texture2D 随后可以退出；staging 与上传命令由原 Transfer Execution 持有。共享图像所有者同时持有 image／view／sampler 与真实上传完成点，采样提交收集该点并由 Commands 保持图像到消费者结束；执行不反向持有自己的输出图像。Texture::is_complete／wait 只观察上传，后续采样仍由其提交完成点负责。最后图像引用退出时先结束实际上传使用，再销毁物理句柄，沿用既有原生完成处理。没有额外完成标记、全局图像表或后台回收；依据为 [Vulkan 图像寿命](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyImage.html) 与 [同队列屏障语义](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier.html)。
 
-BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。纹理读回、多队列、refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
+Device::download_texture 借用本设备的真实不可变图像，将全部 mip 直接复制到 host-visible coherent staging，返回新的 CPU Texture2D；源 CPU 像素不作为图像镜像保留。图像创建声明采样及双向传输用途，上传与下载共用由实际尺寸／mip 数推导的紧密复制区域。当前单队列在本图像范围过渡 shader-read→transfer-src→shader-read，覆盖此前上传和采样访问，等待本次复制及布局恢复完成后返回；图像仍可由原共享引用继续采样。staging 只映射一次，各 mip 直接写入最终像素 Vec；缓冲区和纹理共用原映射／Transfer Execution 入口，不再重复构造提交完成对象。调用者可显式把 CPU 快照上传到另一独立逻辑 Device，两个原生资源和完成点分别所有；不按物理设备名称共享句柄或建立自动迁移／布局状态表。复制依据 [Vulkan 图像到缓冲区接口](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyImageToBuffer.html) 与 [图像用途](https://docs.vulkan.org/refpages/latest/refpages/source/VkImageUsageFlagBits.html)。
+
+BottomLevel／Acceleration的is_complete／wait观察其构建完成；查询使用寿命由查询提交负责。显式下载、wait、当前引擎draw和呈现仍可等待；没有后续所有者时，最后析构须结束真实原生使用。直接跨设备传输、多物理 GPU 选择／验证、多队列、refit、取消、自动背压和完整流送尚未完成。实现与原生记录见[设备实例](DeviceInstances.md)，不能据此宣称全引擎无等待。
 
 ## C/C++ 与 Rust 宿主的 DLL 边界（2026-10-25）
 

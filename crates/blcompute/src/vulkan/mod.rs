@@ -127,6 +127,7 @@ functions! { Functions {
     vkCreateSampler:unsafe extern "system" fn(VkDevice,*const texture::SamplerCreateInfo,*const c_void,*mut u64)->i32,
     vkDestroySampler:unsafe extern "system" fn(VkDevice,u64,*const c_void),
     vkCmdCopyBufferToImage:unsafe extern "system" fn(VkCommandBuffer,VkBuffer,u64,u32,u32,*const BufferImageCopy),
+    vkCmdCopyImageToBuffer:unsafe extern "system" fn(VkCommandBuffer,u64,u32,VkBuffer,u32,*const BufferImageCopy),
     vkCreateBuffer:unsafe extern "system" fn(VkDevice,*const VkBufferCreateInfo,*const c_void,*mut VkBuffer)->i32,
     vkDestroyBuffer:unsafe extern "system" fn(VkDevice,VkBuffer,*const c_void),
     vkGetBufferMemoryRequirements:unsafe extern "system" fn(VkDevice,VkBuffer,*mut VkMemoryRequirements),
@@ -703,7 +704,7 @@ impl Device {
                     );
                 }
             }
-            target.last_use = Some(self.submit_transfer(commands, Vec::new())?);
+            target.last_use = Some(self.submit_transfer(commands, Vec::new(), Vec::new())?);
         }
         Ok(target)
     }
@@ -723,7 +724,7 @@ impl Device {
         let mut remaining = data.bytes();
         for page in &data.pages {
             let bytes = remaining.min(page.size);
-            let mut commands = Commands::new(self.inner.clone())?;
+            let commands = Commands::new(self.inner.clone())?;
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let copy = VkBufferCopy {
                 srcOffset: 0,
@@ -742,15 +743,8 @@ impl Device {
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
             let dependencies =
                 Execution::prepare(data.dependency().cloned().into_iter().collect())?;
-            commands.submit()?;
-            let execution = Execution::new(
-                ExecutionResources::Transfer {
-                    commands,
-                    _staging: Vec::new(),
-                },
-                dependencies,
-            );
-            execution.wait()?;
+            self.submit_transfer(commands, Vec::new(), dependencies)?
+                .wait()?;
             target.read(&mut words, bytes as usize / 4)?;
             remaining -= bytes;
         }
@@ -1125,11 +1119,18 @@ impl Allocation {
         Ok(())
     }
     fn read(&self, out: &mut Vec<u32>, count: usize) -> Result<()> {
+        out.reserve(count);
+        let start = out.len();
+        self.read_with(|ptr| unsafe {
+            // reserve 保留最终容量，完成的映射内容写入后才发布新长度。
+            std::ptr::copy_nonoverlapping(ptr.cast(), out.as_mut_ptr().add(start), count);
+            out.set_len(start + count);
+        })
+    }
+    fn read_with(&self, read: impl FnOnce(*const u8)) -> Result<()> {
         if !self.host_visible {
             return Err(error("只能映射 host-visible 数据传输内存"));
         }
-        out.reserve(count);
-        let start = out.len();
         unsafe {
             let mut ptr = null_mut();
             check(
@@ -1143,9 +1144,7 @@ impl Allocation {
                 ),
                 "vkMapMemory(read)",
             )?;
-            // reserve 保留最终容量，完成的映射内容写入后才发布新长度。
-            std::ptr::copy_nonoverlapping(ptr.cast(), out.as_mut_ptr().add(start), count);
-            out.set_len(start + count);
+            read(ptr.cast());
             (self.inner.functions.vkUnmapMemory)(self.inner.owner.device, self.memory);
         }
         Ok(())

@@ -23,6 +23,34 @@ pub(super) struct BufferImageCopy {
     pub(super) image_offset: [i32; 3],
     pub(super) extent: VkExtent3D,
 }
+fn mip_copies(dimensions: [u32; 2], levels: u32) -> (Vec<BufferImageCopy>, u64) {
+    let [mut width, mut height] = dimensions;
+    let mut offset = 0;
+    let mut copies = Vec::with_capacity(levels as usize);
+    for mip in 0..levels {
+        copies.push(BufferImageCopy {
+            offset,
+            row_length: 0,
+            image_height: 0,
+            subresource: Subresource {
+                aspect: 1,
+                mip,
+                base_layer: 0,
+                layers: 1,
+            },
+            image_offset: [0; 3],
+            extent: VkExtent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        });
+        offset += width as u64 * height as u64 * 16;
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+    }
+    (copies, offset)
+}
 #[repr(C)]
 pub(super) struct SubresourceRange {
     pub(super) aspect: u32,
@@ -117,6 +145,17 @@ struct Storage {
     dimensions: [u32; 2],
     mips: u32,
 }
+impl Storage {
+    fn range(&self) -> SubresourceRange {
+        SubresourceRange {
+            aspect: 1,
+            base_mip: 0,
+            levels: self.mips,
+            base_layer: 0,
+            layers: 1,
+        }
+    }
+}
 // 真实图像和上传完成点由同一个共享所有者持有；执行不反向持有输出图像。
 struct Image {
     storage: Storage,
@@ -181,8 +220,8 @@ impl Device {
                 .get(instance.instance, c"vkGetPhysicalDeviceFormatProperties")?;
             let mut support: FormatProperties = zero();
             properties(inner.physical, 109, &mut support);
-            if support.optimal & 0x9001 != 0x9001 {
-                return Err(error("设备不支持 RGBA32F sampled image 的线性过滤与传输"));
+            if support.optimal & 0xd001 != 0xd001 {
+                return Err(error("设备不支持 RGBA32F sampled image 的线性过滤与双向传输"));
             }
             let mut texture = Storage {
                 inner: inner.clone(),
@@ -208,7 +247,7 @@ impl Device {
             ci.mips = texture.mips;
             ci.layers = 1;
             ci.samples = 1;
-            ci.usage = 6;
+            ci.usage = 7;
             check(
                 (f.vkCreateImage)(device, &ci, null(), &mut texture.image),
                 "vkCreateImage",
@@ -236,13 +275,6 @@ impl Device {
                 (f.vkBindImageMemory)(device, texture.image, texture.memory, 0),
                 "vkBindImageMemory",
             )?;
-            let range = || SubresourceRange {
-                aspect: 1,
-                base_mip: 0,
-                levels: texture.mips,
-                base_layer: 0,
-                layers: 1,
-            };
             let vi = ImageViewCreateInfo {
                 kind: 15,
                 next: null(),
@@ -251,7 +283,7 @@ impl Device {
                 view_type: 1,
                 format: 109,
                 components: [0; 4],
-                range: range(),
+                range: texture.range(),
             };
             check(
                 (f.vkCreateImageView)(device, &vi, null(), &mut texture.view),
@@ -281,43 +313,19 @@ impl Device {
                 (f.vkCreateSampler)(device, &si, null(), &mut texture.sampler),
                 "vkCreateSampler",
             )?;
-            let bytes = source
-                .levels
-                .iter()
-                .map(|m| m.pixels.len() as u64 * 16)
-                .sum();
+            let (copies, bytes) = mip_copies(dimensions, texture.mips);
             let staging = Allocation::new(inner.clone(), bytes, 1, 6)?;
             let mut mapped = null_mut();
             check(
                 (f.vkMapMemory)(device, staging.memory, 0, bytes, 0, &mut mapped),
                 "vkMapMemory(texture)",
             )?;
-            let mut offset = 0usize;
-            let mut copies = Vec::new();
-            for (level, mip) in source.levels.iter().enumerate() {
+            for (mip, copy) in source.levels.iter().zip(&copies) {
                 std::ptr::copy_nonoverlapping(
                     mip.pixels.as_ptr().cast::<u8>(),
-                    mapped.cast::<u8>().add(offset),
+                    mapped.cast::<u8>().add(copy.offset as usize),
                     mip.pixels.len() * 16,
                 );
-                copies.push(BufferImageCopy {
-                    offset: offset as u64,
-                    row_length: 0,
-                    image_height: 0,
-                    subresource: Subresource {
-                        aspect: 1,
-                        mip: level as u32,
-                        base_layer: 0,
-                        layers: 1,
-                    },
-                    image_offset: [0; 3],
-                    extent: VkExtent3D {
-                        width: mip.width,
-                        height: mip.height,
-                        depth: 1,
-                    },
-                });
-                offset += mip.pixels.len() * 16;
             }
             (f.vkUnmapMemory)(device, staging.memory);
             let commands = Commands::new(inner.clone())?;
@@ -331,7 +339,7 @@ impl Device {
                 source_family: u32::MAX,
                 target_family: u32::MAX,
                 image: texture.image,
-                range: range(),
+                range: texture.range(),
             };
             (f.vkCmdPipelineBarrier)(
                 commands.command,
@@ -363,7 +371,7 @@ impl Device {
                 source_family: u32::MAX,
                 target_family: u32::MAX,
                 image: texture.image,
-                range: range(),
+                range: texture.range(),
             };
             (f.vkCmdPipelineBarrier)(
                 commands.command,
@@ -377,12 +385,105 @@ impl Device {
                 1,
                 (&barrier as *const ImageBarrier).cast(),
             );
-            let uploaded = self.submit_transfer(commands, vec![staging])?;
+            let uploaded = self.submit_transfer(commands, vec![staging], Vec::new())?;
             Ok(Texture(Rc::new(Image {
                 storage: texture,
                 uploaded,
             })))
         }
+    }
+    /// 显式同步读回真实图像的全部 mip；返回独立 CPU 存储并恢复采样布局。
+    pub fn download_texture(&self, source: &Texture) -> Result<crate::Texture2D> {
+        if !source.belongs_to(&self.inner) {
+            return Err(error("纹理属于另一设备"));
+        }
+        let texture = &source.0.storage;
+        let (copies, bytes) = mip_copies(texture.dimensions, texture.mips);
+        let target = Allocation::new(self.inner.clone(), bytes, 2, 6)?;
+        let commands = Commands::new(self.inner.clone())?;
+        unsafe {
+            // 布局转换覆盖本队列此前的上传与采样，复制后恢复采样布局。
+            let barrier = ImageBarrier {
+                kind: 45,
+                next: null(),
+                source_access: 0x18000,
+                target_access: 0x800,
+                old_layout: 5,
+                new_layout: 6,
+                source_family: u32::MAX,
+                target_family: u32::MAX,
+                image: texture.image,
+                range: texture.range(),
+            };
+            (self.inner.functions.vkCmdPipelineBarrier)(
+                commands.command,
+                0x10000,
+                0x1000,
+                0,
+                0,
+                null(),
+                0,
+                null(),
+                1,
+                (&barrier as *const ImageBarrier).cast(),
+            );
+            (self.inner.functions.vkCmdCopyImageToBuffer)(
+                commands.command,
+                texture.image,
+                6,
+                target.buffer,
+                copies.len() as u32,
+                copies.as_ptr(),
+            );
+            let barrier = ImageBarrier {
+                source_access: 0x800,
+                target_access: 0x20,
+                old_layout: 6,
+                new_layout: 5,
+                ..barrier
+            };
+            (self.inner.functions.vkCmdPipelineBarrier)(
+                commands.command,
+                0x1000,
+                0x800,
+                0,
+                0,
+                null(),
+                0,
+                null(),
+                1,
+                (&barrier as *const ImageBarrier).cast(),
+            );
+        }
+        commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
+        let dependencies = Execution::prepare(vec![source.produced()])?;
+        self.submit_transfer(commands, Vec::new(), dependencies)?
+            .wait()?;
+        let mut levels = Vec::with_capacity(copies.len());
+        target.read_with(|mapped| {
+            for copy in &copies {
+                let width = copy.extent.width;
+                let height = copy.extent.height;
+                let count = width as usize * height as usize;
+                let mut pixels: Vec<[f32; 4]> = Vec::with_capacity(count);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        mapped.add(copy.offset as usize).cast(),
+                        pixels.as_mut_ptr(),
+                        count,
+                    );
+                    pixels.set_len(count);
+                }
+                levels.push(crate::TextureMip {
+                    width,
+                    height,
+                    pixels,
+                });
+            }
+        })?;
+        Ok(crate::Texture2D {
+            levels: levels.into(),
+        })
     }
 }
 impl Drop for Storage {
