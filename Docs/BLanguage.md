@@ -2377,13 +2377,32 @@ let persistent = pending.wait()?.into_bindings();
 
 回收前仍先记录同队列 RAW／WAW／WAR 依赖：Fence 完成观察不替代设备内存可见性，依据 [Vulkan 跨提交屏障](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier.html)。成功观察到 signaled 后复用原有完成结果，资源析构不会再次调用原生等待。显式 `wait()` 只等待当前末项 Fence；它的作用域包括同队列此前命令，因此前序资源可直接释放，依据 [Vulkan Fence 作用域](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences-signaling)。丢弃尚未完成的数据，只把它的物理存储移交给最后使用点，已有兄弟分支可继续推进；最后一个执行所有者退出时才结束仍未完成的真实消费者。原生完成后允许销毁命令池，见 [vkDestroyCommandPool](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyCommandPool.html)。
 
-这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；只读 Count 共享、多队列／多 GPU 和设备自主生成任务仍未完成。新缓冲区上传与GPU清零现已返回带真实完成点的存储，后续提交可以直接消费；纹理上传仍显式同步，不能将缓冲区能力外推为所有资源均异步。
+这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；GPU 只读 Count 共享见下节；CPU 通用共享绑定、多队列／多 GPU 和设备自主生成任务仍未完成。新缓冲区上传与GPU清零现已返回带真实完成点的存储，后续提交可以直接消费；纹理上传仍显式同步，不能将缓冲区能力外推为所有资源均异步。
 
 ### 多生产者汇合与待完成结果分叉
 
 `DomainBindings::join(parts)` 消费多个绑定组，依次连接它们的存储槽，并平移各自域关系中的数据／计数索引。每个 dataset 和 Count 保持自己的范围，记录内容与实际数组不复制；记录串接、归约或其他业务合并由 `.b` 程序定义。CPU 执行结果、GPU Completed 的绑定，以及显式传输后的绑定都可如此组合，再用 `rebind` 对应下游接口。
 
-`partition(groups)` 消费一个绑定组，按每组索引转移独立所有权；未选择的存储释放。它复用同一绑定重排规则，禁止重复取出同一存储。空分组有效。数据与 Count 分到同一组时，关系一起转移；拆开双方则放弃该关系，随后重新 join 不会根据相同计数或记录内容恢复关系。多份独立输出及各自 Count 可分开执行再汇合；一个共享 Count 不能被复制为多个可写所有者。
+`partition(groups)` 消费一个绑定组，按每组索引转移所有权；未选择的存储沿实际最后使用点释放。它与 rebind 共用同一重排规则：唯一可写存储不能重复，已冻结的 GPU 存储可以产生同一所有者的只读绑定。空分组有效。每组数据与实际 Count 关系一起交付；没有对应 Count 或其只读别名时放弃关系，随后 join 不会根据相同计数或记录内容恢复关系。一个 Count 不能被复制为多个可写所有者。CPU Dataset 继续只转移唯一所有权。
+
+`DomainBindings<GpuDataset>::freeze(&[count_binding])` 消费绑定组，在保留现有域关系的同时冻结所选物理存储；此后这些槽只能交给 read 参数。它可以直接消费 pending 结果，不读取 Count，不复制记录或申请 GPU 数据页。后续 partition／rebind 允许重复选择冻结槽，每个别名持有同一 ReadDataset 所有者及其真实生产依赖；分支新增的 GPU 使用仍由原 Execution 与最后使用点管理。
+
+例如生产者绑定为 source／queue_a／queue_b／count，并已交付两个队列与 count 的有效域关系：
+
+```rust
+let bindings = pending.into_bindings().freeze(&[3])?;
+let mut branches = bindings.partition(&[&[1, 3], &[2, 3]])?;
+let b = branches.pop().unwrap();
+let a = branches.pop().unwrap();
+let a = advance_a.submit(a, &[])?;
+let b = advance_b.submit(b, &[])?;
+let joined = DomainBindings::join([b.into_bindings(), a.into_bindings()]);
+// 保留 a、b 及任一相同冻结 Count 的绑定，域关系随真实来源重排。
+let joined = joined.rebind(&[2, 0, 1], vec![])?;
+let pending = combine.submit(joined, &[])?;
+```
+
+关系只认原编译器已交付的来源与计数字段。同一冻结 Count 的别名可在 join 后直接满足接口，也可在 rebind 中保留任一个别名；独立且数值相同的 Count、裸数据向量和已被修改的 Count 不能据此取得关系。冻结数据不能绑定 write／inout／atomic；未冻结的唯一存储仍不能重复取出。DomainStorage 为真实存储类型的封闭能力，外部 Rust 类型不能自行实现来签发身份；原 C ABI 与 B 类型／语法不变，CPU 通用共享绑定仍待实现。
 
 CPU 的 `CpuProgram::run_owned`／`CpuTemplate::run` 结果可直接分区。GPU 的 `Submission::partition(groups)` 可在生产者仍 pending 时直接分叉；`Submission::into_bindings()` 同样不等待，返回的绑定可 join、partition 或传给下一次 submit。Completed 的绑定也使用同一分区实现。分区只转移独立数据及其执行寿命，不下载数据、不复制记录、不申请 GPU 数据页。
 

@@ -876,6 +876,44 @@ impl Drop for GpuDataset {
 }
 #[derive(Clone)]
 pub struct ReadDataset(Rc<GpuDataset>);
+impl crate::bindings::sealed::Sealed for GpuDataset {}
+impl crate::DomainStorage for GpuDataset {
+    fn read_identity(&self) -> Option<usize> {
+        match &*self.storage {
+            DatasetStorage::Owned(_) => None,
+            DatasetStorage::Read(source) => Some(Rc::as_ptr(&source.0) as usize),
+        }
+    }
+    fn read_binding(&self) -> Option<Self> {
+        match &*self.storage {
+            DatasetStorage::Owned(_) => None,
+            DatasetStorage::Read(source) => Some(source.binding()),
+        }
+    }
+}
+impl DomainBindings<GpuDataset> {
+    /// 冻结选中存储并保留原域关系；后续只读别名仍指向同一物理所有者。
+    pub fn freeze(mut self, bindings: &[usize]) -> Result<Self> {
+        for &binding in bindings {
+            if binding >= self.datasets.len() {
+                return Err(error("冻结域绑定索引越界"));
+            }
+        }
+        self.datasets = self
+            .datasets
+            .into_iter()
+            .enumerate()
+            .map(|(binding, data)| {
+                if bindings.contains(&binding) {
+                    data.freeze().binding()
+                } else {
+                    data
+                }
+            })
+            .collect();
+        Ok(self)
+    }
+}
 pub type ViewBinding<'a> = crate::ViewBinding<'a, ReadDataset>;
 impl ReadDataset {
     /// 将同一冻结物理存储直接交给原生read dataset绑定；不创建GPU记录、页表或传输。

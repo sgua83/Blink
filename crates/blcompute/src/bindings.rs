@@ -1,6 +1,28 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
 use blanguage::ir::{PrefixCount, PrefixRelation, ProgramInterface};
+use std::collections::BTreeMap;
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// 域绑定只消费执行框架拥有的真实存储；只读身份来自冻结的同一所有者。
+pub trait DomainStorage: sealed::Sealed + Sized {
+    #[doc(hidden)]
+    fn read_identity(&self) -> Option<usize>;
+    #[doc(hidden)]
+    fn read_binding(&self) -> Option<Self>;
+}
+impl sealed::Sealed for crate::Dataset {}
+impl DomainStorage for crate::Dataset {
+    fn read_identity(&self) -> Option<usize> {
+        None
+    }
+    fn read_binding(&self) -> Option<Self> {
+        None
+    }
+}
 
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
@@ -43,12 +65,18 @@ impl<D> DomainBindings<D> {
         self.datasets
     }
     /// order 索引本次所有旧绑定与按顺序追加的新绑定；不允许产生可写别名。
-    pub fn rebind(mut self, order: &[usize], additional: Vec<D>) -> Result<Self> {
+    pub fn rebind(mut self, order: &[usize], additional: Vec<D>) -> Result<Self>
+    where
+        D: DomainStorage,
+    {
         self.remap(order, additional)?;
         Ok(self)
     }
-    /// 只转移独立所有权；关系双方分到不同部分时，原关系随之放弃。
-    pub fn partition(mut self, groups: &[&[usize]]) -> Result<Vec<Self>> {
+    /// 唯一存储只移动一次，冻结存储可共享；每个部分只持有自己实际绑定的关系。
+    pub fn partition(mut self, groups: &[&[usize]]) -> Result<Vec<Self>>
+    where
+        D: DomainStorage,
+    {
         let order: Vec<_> = groups.iter().flat_map(|g| g.iter().copied()).collect();
         self.remap(&order, Vec::new())?;
         let mut data = self.datasets.into_iter();
@@ -76,46 +104,86 @@ impl<D> DomainBindings<D> {
         }
         Ok(parts)
     }
-    pub(crate) fn remap(&mut self, order: &[usize], additional: Vec<D>) -> Result<Vec<D>> {
+    pub(crate) fn remap(&mut self, order: &[usize], additional: Vec<D>) -> Result<Vec<D>>
+    where
+        D: DomainStorage,
+    {
         let total = self.datasets.len() + additional.len();
-        let mut positions = vec![None; total];
+        let mut positions = vec![Vec::new(); total];
+        let mut remaining = vec![0; total];
         for (new, &old) in order.iter().enumerate() {
             let slot = positions
                 .get_mut(old)
                 .ok_or_else(|| error("域绑定重排索引越界"))?;
-            if slot.is_some() {
-                return Err(error("域绑定重排不能重复同一存储"));
-            }
-            *slot = Some(new);
+            slot.push(new);
+            remaining[old] += 1;
         }
-        self.domains = self
-            .domains
-            .iter()
-            .filter_map(|r| {
-                Some(PrefixRelation {
-                    domain: positions[r.domain]?,
-                    count: PrefixCount {
-                        binding: positions[r.count.binding]?,
-                        word: r.count.word,
-                    },
-                })
-            })
-            .collect();
         self.datasets.extend(additional);
-        let mut identities: Vec<_> = (0..total).collect();
-        let mut locations = identities.clone();
+        let mut shared: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (new, &old) in order.iter().enumerate() {
-            let at = locations[old];
-            locations[identities[new]] = at;
-            locations[old] = new;
-            self.datasets.swap(new, at);
-            identities.swap(new, at);
+            if let Some(identity) = self.datasets[old].read_identity() {
+                shared.entry(identity).or_default().push(new);
+            }
         }
-        Ok(self.datasets.split_off(order.len()))
+        for (old, data) in self.datasets.iter().enumerate() {
+            if let Some(identity) = data.read_identity() {
+                positions[old] = shared.get(&identity).cloned().unwrap_or_default();
+            }
+        }
+        let mut domains = Vec::new();
+        for relation in &self.domains {
+            for &domain in &positions[relation.domain] {
+                for &binding in &positions[relation.count.binding] {
+                    domains.push(PrefixRelation {
+                        domain,
+                        count: PrefixCount {
+                            binding,
+                            word: relation.count.word,
+                        },
+                    });
+                }
+            }
+        }
+        domains.sort();
+        domains.dedup();
+        let mut slots: Vec<_> = std::mem::take(&mut self.datasets)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut datasets = Vec::with_capacity(order.len());
+        for &old in order {
+            let data = if remaining[old] == 1 {
+                slots[old].take().unwrap()
+            } else {
+                slots[old]
+                    .as_ref()
+                    .unwrap()
+                    .read_binding()
+                    .ok_or_else(|| error("域绑定重排不能重复可写存储"))?
+            };
+            datasets.push(data);
+            remaining[old] -= 1;
+        }
+        self.datasets = datasets;
+        self.domains = domains;
+        Ok(slots.into_iter().flatten().collect())
     }
-    pub(crate) fn require(&self, program: &dyn ProgramInterface) -> Result<()> {
+    pub(crate) fn require(&self, program: &dyn ProgramInterface) -> Result<()>
+    where
+        D: DomainStorage,
+    {
+        let same = |a: usize, b: usize| {
+            a == b
+                || self.datasets[a].read_identity().is_some_and(|identity| {
+                    self.datasets.get(b).and_then(D::read_identity) == Some(identity)
+                })
+        };
         for relation in program.prefix_requirements() {
-            if !self.domains.contains(relation) {
+            if !self.domains.iter().any(|known| {
+                same(known.domain, relation.domain)
+                    && known.count.word == relation.count.word
+                    && same(known.count.binding, relation.count.binding)
+            }) {
                 return Err(error(format!(
                     "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",
                     program.name(),
