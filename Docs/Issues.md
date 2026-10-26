@@ -4,6 +4,12 @@
 
 本表接收原 BLEngine 记录中的语言、后端与执行框架问题，保留原 C 编号与观测。引擎产品问题见 [BLEngine 问题列表](../../BLEngine/Docs/Issues.md)。拆分前记录的 Saved 路径仍相对于 BLEngine 工作区，原始 E 盘测量数据不变；拆分后语言研发数据写本项目 Saved。迁移时开放 const 参数单独保留，后续实现与运行结果见末节。
 
+## 正在修复
+
+| 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
+|---|---|---|---|---|
+| C-010；C-012 的数值／bool 标准输出；C-016 的原生应用构建入口：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | 普通 CPU main、原生 x64／PE 启动与链接、println、build-exe；`B:\BLanguage\Saved\ApplicationWorkspace`，P4 client `BLanguage_Gua_Application`。代码实现中，尚未完成本轮编译、原生验证或源码提交；动态 dataset、通用文本／文件库与跨平台不在本轮修复范围内。 | 2026-10-26 11:42 +08:00 |
+
 ## 已处理
 
 | 问题 | 原因与处理 | 实际运行 |
