@@ -17,6 +17,7 @@ use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{ExecutionPlan as Program, ProgramInterface, Ty},
 };
+pub use execution::GpuCompletion;
 use execution::{Completion, Execution, ExecutionResources, QueryPool};
 pub use memory::{MemoryBudget, MemoryHeapBudget};
 pub use present::{PresentStatus, Swapchain};
@@ -2438,18 +2439,26 @@ impl Submission {
     pub fn into_bindings(self) -> DomainBindings<GpuDataset> {
         self.bindings
     }
+    /// 不等待CPU，交出带真实最后使用点的数据及独立的完成／时间戳观察。
+    pub fn detach(self) -> (DomainBindings<GpuDataset>, Vec<Acceleration>, GpuCompletion) {
+        (
+            self.bindings,
+            self.accelerations,
+            GpuCompletion {
+                execution: self.execution,
+                queries: self.queries,
+            },
+        )
+    }
     pub fn partition(self, groups: &[&[usize]]) -> Result<Vec<DomainBindings<GpuDataset>>> {
         self.into_bindings().partition(groups)
     }
     pub fn wait(mut self) -> Result<Completed> {
-        self.execution.wait()?;
-        let timings = match &self.queries {
-            Some(queries) => queries.read()?,
-            None => GpuTimings {
-                elapsed_ms: 0.0,
-                stage_ms: Vec::new(),
-            },
-        };
+        let timings = GpuCompletion {
+            execution: self.execution,
+            queries: self.queries,
+        }
+        .wait()?;
         for dataset in &mut self.bindings.datasets {
             dataset.last_use = None;
         }

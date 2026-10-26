@@ -2,6 +2,28 @@
 use super::*;
 use std::cell::RefCell;
 
+/// 已提交执行的原生完成与时间戳；不拥有另一份数据或帧计数。
+/// 数据及AS继续通过原物理最后使用点保持到实际GPU消费结束。
+pub struct GpuCompletion {
+    pub(super) execution: Rc<Execution>,
+    pub(super) queries: Option<Rc<QueryPool>>,
+}
+impl GpuCompletion {
+    pub fn is_complete(&self) -> Result<bool> {
+        self.execution.is_complete()
+    }
+    pub fn wait(self) -> Result<GpuTimings> {
+        self.execution.wait()?;
+        match &self.queries {
+            Some(queries) => queries.read(),
+            None => Ok(GpuTimings {
+                elapsed_ms: 0.0,
+                stage_ms: Vec::new(),
+            }),
+        }
+    }
+}
+
 pub(super) struct Completion {
     pub inner: Rc<Inner>,
     pub fence: Cell<VkFence>,
