@@ -646,27 +646,40 @@ impl Emitter<'_> {
                         PacketPlace::Register(r) => r,
                         _ => 0,
                     };
-                    for lane in 0..if broadcast { 1 } else { 4 } {
-                        if sparse && !broadcast {
-                            self.packet_address(allocation, *binding, index, lane);
-                        }
+                    if !sparse && !broadcast && stride == 4 {
                         self.instruction(
-                            Some(0x66),
-                            &[0x0f, 0x6e],
+                            None,
+                            &[0x0f, 0x10],
                             false,
-                            if lane == 0 { target } else { lane as u8 },
+                            target,
                             Operand::Memory {
                                 base: 15,
-                                offset: word * 4 + if sparse { 0 } else { lane * stride },
+                                offset: word * 4,
                             },
                         );
-                    }
-                    if broadcast {
-                        self.shuffle(target, target, 0);
                     } else {
-                        self.packed(Some(0x66), 0x62, target, 1);
-                        self.packed(Some(0x66), 0x62, 2, 3);
-                        self.packed(Some(0x66), 0x6c, target, 2);
+                        for lane in 0..if broadcast { 1 } else { 4 } {
+                            if sparse && !broadcast {
+                                self.packet_address(allocation, *binding, index, lane);
+                            }
+                            self.instruction(
+                                Some(0x66),
+                                &[0x0f, 0x6e],
+                                false,
+                                if lane == 0 { target } else { lane as u8 },
+                                Operand::Memory {
+                                    base: 15,
+                                    offset: word * 4 + if sparse { 0 } else { lane * stride },
+                                },
+                            );
+                        }
+                        if broadcast {
+                            self.shuffle(target, target, 0);
+                        } else {
+                            self.packed(Some(0x66), 0x62, target, 1);
+                            self.packed(Some(0x66), 0x62, 2, 3);
+                            self.packed(Some(0x66), 0x6c, target, 2);
+                        }
                     }
                     self.packet_from_word(*dst, target);
                     self.packet_store(allocation, Register(*dst), target);
@@ -688,23 +701,36 @@ impl Emitter<'_> {
                             1
                         }
                     };
-                    for lane in 0..4 {
-                        if sparse {
-                            self.packet_address(allocation, *binding, index, lane);
-                        }
-                        if lane != 0 {
-                            self.shuffle(0, source, (lane * 0x55) as u8);
-                        }
+                    if !sparse && stride == 4 {
                         self.instruction(
-                            Some(0x66),
-                            &[0x0f, 0x7e],
+                            None,
+                            &[0x0f, 0x11],
                             false,
-                            if lane == 0 { source } else { 0 },
+                            source,
                             Operand::Memory {
                                 base: 15,
-                                offset: word * 4 + if sparse { 0 } else { lane * stride },
+                                offset: word * 4,
                             },
                         );
+                    } else {
+                        for lane in 0..4 {
+                            if sparse {
+                                self.packet_address(allocation, *binding, index, lane);
+                            }
+                            if lane != 0 {
+                                self.shuffle(0, source, (lane * 0x55) as u8);
+                            }
+                            self.instruction(
+                                Some(0x66),
+                                &[0x0f, 0x7e],
+                                false,
+                                if lane == 0 { source } else { 0 },
+                                Operand::Memory {
+                                    base: 15,
+                                    offset: word * 4 + if sparse { 0 } else { lane * stride },
+                                },
+                            );
+                        }
                     }
                 }
                 Step::Gather {
