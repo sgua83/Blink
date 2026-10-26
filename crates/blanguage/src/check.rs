@@ -2641,8 +2641,7 @@ impl<'a> Builder<'a> {
                 }
             } else {
                 Binding::Value(Value {
-                    proof: bounds::Proof::unsigned(0, limit.maximum().saturating_sub(1))
-                        .with_domains(bounds::indices_below(&limit.proof.domains(0), true)),
+                    proof: bounds::for_cursor(&begin, &limit, body),
                     ..cursor
                 })
             },
