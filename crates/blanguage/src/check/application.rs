@@ -192,6 +192,24 @@ fn live_resources(body: &mut ValueCode, app: Context) -> Option<crate::applicati
     Some(crate::application::Resources { types, programs })
 }
 impl Builder<'_> {
+    // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
+    // 实际内联直接借用调用方的 ApplicationData，资源仍由原帧拥有。
+    pub(super) fn application_parameter(&mut self, binding: usize, access: Access) -> Data {
+        let handle = self.reg(Scalar::U32);
+        let view = self.dataset_view(binding);
+        let mut length = self.data_length(&view);
+        length.proof = bounds::Proof::capture(&length)
+            .with_domains(Domains::from([IndexDomain::ApplicationLength(handle)]));
+        Data {
+            handle,
+            ty: self.program.buffers[binding].ty.clone(),
+            length,
+            count: self.program.buffers[binding].count,
+            owned: false,
+            writable: access == Access::InOut,
+            residency: Some(Target::Cpu),
+        }
+    }
     fn application_frame(&mut self, span: Span) -> Result<Value> {
         if self.application.is_none() {
             return self.fail(
@@ -699,7 +717,7 @@ impl Builder<'_> {
             return self.fail(
                 span,
                 "B227",
-                "只有资源所有者可以转移 CPU／GPU 存储，read 借用不能转移",
+                "只有资源所有者可以转移 CPU／GPU 存储，函数借用不能转移",
             );
         }
         let (source, target) = if name == "upload" {

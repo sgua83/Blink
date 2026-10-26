@@ -10,6 +10,21 @@ pub(super) enum Argument {
     Atomic(Place),
     Exclusive(Place),
 }
+impl Argument {
+    fn overlaps(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ApplicationData(a), Self::ApplicationData(b)) => a.handle == b.handle,
+            (Self::ApplicationData(data), Self::Exclusive(place) | Self::Atomic(place))
+            | (Self::Exclusive(place) | Self::Atomic(place), Self::ApplicationData(data)) => {
+                matches!(place.storage(), Place::ApplicationElement { handle, .. } if *handle == data.handle)
+            }
+            (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) => {
+                a.overlaps(b)
+            }
+            _ => false,
+        }
+    }
+}
 pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definition) -> Result<Ty> {
     let mut name = param.ty.clone();
     name.tile = false;
@@ -60,7 +75,6 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B162", "函数参数数量不匹配");
         }
         let mut arguments = Vec::new();
-        let mut exclusive = Vec::new();
         for (param, arg) in callee.function.params.iter().zip(args) {
             arguments.push(
                 if callee.function.external.is_some() && param.access == Access::Read {
@@ -92,13 +106,26 @@ impl<'a> Builder<'a> {
                     Argument::Atomic(self.atomic_place(arg)?)
                 } else if matches!(param.access, Access::InOut | Access::Write) {
                     let place = self.mutable_place(arg, param.access)?;
-                    self.require_disjoint(&exclusive, &place, arg.span)?;
-                    exclusive.push(place.clone());
                     Argument::Exclusive(place)
                 } else {
                     Argument::Value(self.expr(arg)?)
                 },
             );
+        }
+        for (index, (param, argument)) in callee.function.params.iter().zip(&arguments).enumerate()
+        {
+            for (other, before) in callee.function.params.iter().zip(&arguments).take(index) {
+                if (matches!(param.access, Access::Write | Access::InOut)
+                    || matches!(other.access, Access::Write | Access::InOut))
+                    && argument.overlaps(before)
+                {
+                    return self.fail(
+                        args[index].span,
+                        "B227",
+                        "同一次调用的独占借用不能重叠，也不能与同一存储的只读或原子借用重叠",
+                    );
+                }
+            }
         }
         Ok(arguments)
     }
@@ -224,12 +251,15 @@ impl<'a> Builder<'a> {
                 (true, false, Argument::ApplicationData(mut data)) => {
                     self.application_cpu(&data, span)?;
                     self.require_same(&ty, &data.ty, span)?;
-                    if param.access != Access::Read {
+                    if !matches!(param.access, Access::Read | Access::InOut) {
                         return self.fail(
                             span,
                             "B224",
-                            "普通函数按 read 借用应用 dataset；并行写入通过 program 组织",
+                            "CPU 应用函数按 read／inout 借用 dataset；原子与 write 全域借用尚未实现",
                         );
+                    }
+                    if param.access == Access::InOut && !data.writable {
+                        return self.fail(span, "B227", "只读 dataset 借用不能提升为 inout");
                     }
                     if param.ty.count.is_some()
                         && self.world.shape(
@@ -243,17 +273,19 @@ impl<'a> Builder<'a> {
                         return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
                     }
                     data.owned = false;
-                    data.writable = false;
+                    data.writable = param.access == Access::InOut;
                     Binding::ApplicationData(data)
                 }
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
                     self.require_same(&ty, &self.program.buffers[binding].ty, span)?;
-                    if param.access != self.view_access[&binding] {
+                    if !matches!(param.access, Access::Read | Access::Atomic)
+                        || param.access != self.view_access[&binding]
+                    {
                         return self.fail(
                             span,
                             "B224",
-                            "dataset 实参与参数必须具有相同的 read／atomic 访问权限",
+                            "并行实例只能转借已有 read／atomic dataset；整份 inout 借用需要 CPU 应用的独占资源",
                         );
                     }
                     if param.ty.count.is_some()

@@ -36,3 +36,15 @@ $LASTEXITCODE
 `dataset<T>(length)` 创建全零、由当前 CPU 应用拥有的存储，`let rows = dataset<T>(length)` 可推导资源类型；固定形状可写 `dataset<T,N>` 或 `dataset<T,N>(N)`。CPU 下标与有界遍历沿用原类型和范围规则，普通函数可以 `read dataset<T>` 借用。`upload(rows)`、`download(rows)` 明确转移这份资源的物理存储；`run_cpu(program(args))`、`run_gpu(program(args))` 只接受对应存储，CPU 读取 GPU 数据前也须下载。资源离开作用域、函数返回、break 或 seek 时释放，GPU 物理内存继续由实际最后使用点持有。
 
 这个应用部署为 exe 加编译器生成的 `blink_app_*.dll`，应一起复制同目录。源码 SDK 构建时，Rust 工具链只链接执行框架与平台 ABI；main 和 program 均为 B 的原生编译结果。部署无需 SDK、Rust 工具链、B 源码或 blrun；GPU 部分需要系统 Vulkan 驱动。仅使用普通值的 `start` 仍只产生 exe。
+## 整份数据借用给普通 CPU 函数
+
+```powershell
+.\target\release\blc.exe build-exe sample/applications/borrow.b target/applications/borrow.exe
+.\target\applications\borrow.exe
+```
+
+`borrow.b` 由 main 创建一百万条 Entry，再将同一存储以 `inout dataset<Entry>` 交给 prepare 初始化、advance 调用 CPU program，以 `read dataset<Entry>` 交给 total 求和。正常输出 `1784293664` 和 `1000000`，退出码为 `0`；求和按 u32 回绕。
+
+inout 函数可在范围内读写和转借，返回后数据仍由 main 拥有；函数只释放自己的本地资源，不能转移借来的 CPU／GPU 存储。同次调用中的独占借用不得与同一存储的其他整份或元素借用重叠，只读参数可以共享。参数类型／固定形状和 nonempty／index 条件继续沿原检查器证明，不复制数据，不增加引用 ABI 或运行时别名检查。
+
+当前只接通 CPU 应用中已初始化存储的整份 inout；write dataset 全域初始化、资源返回与其他资源构造仍待完成。program 的每个并行实例仍只拥有当前独占元素。

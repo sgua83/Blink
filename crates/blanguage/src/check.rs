@@ -964,11 +964,16 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
             }
             continue;
         }
-        if p.ty.dataset && !matches!(p.access, Access::Read | Access::Atomic) {
+        if p.ty.dataset
+            && !matches!(p.access, Access::Read | Access::Atomic)
+            && !(d.function.kind == FunctionKind::Value
+                && d.function.target == Target::Cpu
+                && p.access == Access::InOut)
+        {
             return d.source.fail(
                 p.span,
                 "B120",
-                "函数 dataset 参数只能借用 read 或 atomic 权限；独占写入由 program 的并行域表达",
+                "函数 dataset 参数支持 read／atomic，CPU 应用函数另可 inout 借用已有独占存储；write 的全域初始化尚未实现",
             );
         }
         if p.ty.is_texture_resource() && p.access != Access::Read {
@@ -1077,9 +1082,16 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
             continue;
         }
         if p.ty.dataset {
-            let view = b.dataset_view(data_index);
-            b.env.insert(p.name.clone(), Binding::Data(view));
-            b.view_access.insert(data_index, p.access);
+            let binding = if d.function.kind == FunctionKind::Value
+                && d.function.target == Target::Cpu
+                && matches!(p.access, Access::Read | Access::InOut)
+            {
+                Binding::ApplicationData(b.application_parameter(data_index, p.access))
+            } else {
+                b.view_access.insert(data_index, p.access);
+                Binding::Data(b.dataset_view(data_index))
+            };
+            b.env.insert(p.name.clone(), binding);
             data_index += 1;
             continue;
         }

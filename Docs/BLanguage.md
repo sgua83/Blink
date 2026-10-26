@@ -45,7 +45,7 @@ program integrate<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 stren
 
 这段源码直接生成 CPU 范围函数与 GPU 计算程序。`body` 是当前域的一个独占元素视图；它不表示可以随意访问其他线程正在修改的数据。`on compute` 表示两个后端都可执行，`on cpu`／`on gpu` 则限制设备；不能自动切换设备来掩盖执行失败。
 
-`program` 可以组合其他 program，编译器展开阶段依赖。只接收普通值的函数支持结构体、向量和不可变 view 参数；函数的资源访问由 read dataset、atomic dataset、atomic 字段与 write／inout 独占位置借用显式声明。两者按 CPU／compute／GPU 目标静态内联，不递归。普通函数可以在条件与顺序循环中提前 return；有返回值函数的所有可继续到函数末尾的路径都必须返回匹配类型，void 函数可自然结束或以 return; 结束。return 只退出当前函数，不退出 parallel 实例。cooperative 函数暂时仍保持末尾返回。
+`program` 可以组合其他 program，编译器展开阶段依赖。只接收普通值的函数支持结构体、向量和不可变 view 参数；函数的资源访问由 read dataset、atomic dataset、atomic 字段与 write／inout 独占位置借用显式声明；CPU 应用还可将整份已初始化 dataset 以 inout 借给普通 CPU 函数。两者按 CPU／compute／GPU 目标静态内联，不递归。普通函数可以在条件与顺序循环中提前 return；有返回值函数的所有可继续到函数末尾的路径都必须返回匹配类型，void 函数可自然结束或以 return; 结束。return 只退出当前函数，不退出 parallel 实例。cooperative 函数暂时仍保持末尾返回。
 
 ## 独立 CPU 应用与标准输出（2026-10-26）
 
@@ -88,15 +88,17 @@ for (row in rows) { println(row.value); }
 
 `dataset<T>(length)` 接收 u32 长度并将普通值记录的完整存储初始化为零；长度为零有效。`let rows = dataset<T>(length)` 推导拥有的资源，固定形状可由声明或 `dataset<T,N>(length)` 给出，创建长度须证明等于 N。动态长度不会被用于推导 const 实例。dataset 不能初始化普通值、复制成另一份独占资源或按普通值返回；含 view 的资源图创建仍由原生资源 API 负责。
 
-资源公开只读 `length`。CPU 下标、字段、固定内联数组、有界游标、ordinal 和初始化规则复用原检查器与访存 IR；普通函数的 `read dataset<T>` 只借用当前 CPU 存储，不能转移所有权或写入。应用内合法取得的 CPU 元素可作为现有 C ABI 的 read／write／inout 位置。动态存储不在 program 的逐元素／块内函数中创建。
+资源公开只读 `length`。CPU 下标、字段、固定内联数组、有界游标、ordinal 和初始化规则复用原检查器与访存 IR；普通 CPU 函数的 `read dataset<T>` 共享读取当前 CPU 存储，`inout dataset<T>` 独占读写整份已初始化存储；两者都不转移所有权，不能 upload／download 或在退出时释放这份借用。inout 可继续按 inout 转借，或临时转借只读函数，也可调用对应的 CPU program；参数恢复后原所有者继续持有同一数据。一次调用中，独占的整份数据不能与同一存储的其他整份／元素借用重叠；共享 read 可以重复借用，同一存储中已证明分离的普通元素／字段仍可分别独占。别名按实际资源身份、位置范围和字段投影判断，不按参数名称猜测。应用内合法取得的 CPU 元素可作为现有 C ABI 的 read／write／inout 位置。动态存储不在 program 的逐元素／块内函数中创建。
 
 `upload(rows)` 将拥有的 CPU 存储交给同一应用的 GPU 设备，`download(rows)` 等待原生完成点后交回 CPU 存储。两者是语句，保持资源身份、容量和已拥有的有效域；没有第二份可写数据。方向、所有者与当前位置由前端检查。条件合流后要继续访问，相关分支须给出一致的位置；循环的继续路径须归还与入口相同的位置。read 借用不能转移存储。CPU 对 GPU 数据的索引或遍历不会隐式下载。
+
+CPU 应用的整份 inout 借用沿原函数静态内联和存储访问展开，不复制数据，也不增加引用 ABI、锁或调度器。固定形状、const 推导、nonempty／index 输入约束沿用同一资源长度与身份。并行实例只拥有当前独占元素，不能把它提升为整份 inout dataset；可继续按已有 write／inout T 规则转借当前元素。write dataset 的完整初始化义务尚未接通，不能因已有物理零值而赋予它 inout 的旧值读取权限。正式示例见 `sample/applications/borrow.b`。
 
 `run_cpu(name(args))` 与 `run_gpu(name(args))` 选择实际执行位置，入口可用原具体类型／const 语法。参数借用应用资源并按原 uniform 类型传值；类型、固定形状、目标与独占别名仍受原规则约束。同一资源在一次 program 调用中只绑定一次。CPU 调用等待本次计算完成；GPU 调用交付已提交的资源，其最后使用点继续随存储持有。后续 GPU 调用建立原同队列依赖，CPU 消费通过显式 download 取得结果。prefix 关系沿同一所有者、实际参数重排及显式传输保留，CPU 写借用计数会撤回旧关系。
 
 编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
 
-带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 构建使用 Rust 工具链链接框架与 ABI，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、普通函数的独占整 dataset 参数、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
+带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 构建使用 Rust 工具链链接框架与 ABI，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、write dataset 的全域确定初始化、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 
@@ -137,7 +139,7 @@ u32 main() on cpu;
 |---|---|
 | read dataset | 共享读取；不能写入，也不能在调用时提升为 inout |
 | write dataset | 元素字段写入；写前读取被拒绝 |
-| inout dataset | 读写当前独占元素 |
+| inout dataset | program 中读写当前独占元素；CPU 应用可将整份已初始化存储独占借给普通 CPU 函数 |
 | atomic dataset | 通过显式 u32/i32 原子操作共享修改；普通元素读写被拒绝 |
 | tile_atomic／atomic tile<T> | 同一逻辑块内的原子共享值及协作借用；不产生全局散写权限 |
 | tile_barrier() | 根块内整块同步；分支、循环、普通值函数内拒绝 |

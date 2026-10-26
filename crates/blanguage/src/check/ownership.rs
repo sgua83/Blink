@@ -79,7 +79,7 @@ impl Place {
             _ => None,
         }
     }
-    fn overlaps(&self, other: &Place) -> bool {
+    pub(super) fn overlaps(&self, other: &Place) -> bool {
         match (self, other) {
             (
                 Self::ApplicationElement {
@@ -202,21 +202,6 @@ impl Builder<'_> {
         } else {
             yes.intersection(&no).copied().collect()
         };
-    }
-    pub(super) fn require_disjoint(
-        &self,
-        places: &[Place],
-        place: &Place,
-        span: Span,
-    ) -> Result<()> {
-        if places.iter().any(|p| p.overlaps(place)) {
-            return self.fail(
-                span,
-                "B227",
-                "同一次调用的 write／inout 借用必须互不重叠；整个记录和其字段也不能同时独占借用",
-            );
-        }
-        Ok(())
     }
     pub(super) fn borrow_owned(&self, place: Place) -> OwnedBinding {
         let projected = self.env.values().find_map(|binding| {

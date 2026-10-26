@@ -1,4 +1,4 @@
-//! 外部调用的 ABI 声明是信任边界；借用仍指向调用方的实际位置。
+//! 外部调用的 ABI 声明是信任边界；实参借用统一判定别名，ABI 只投影实际位置。
 use super::*;
 use cooperative::Argument;
 pub(super) fn validate_signature(d: &Definition) -> Result<()> {
@@ -255,7 +255,7 @@ impl Builder<'_> {
         }
         check_declaration(self.world, d)?;
         let mut arguments = Vec::new();
-        let mut borrowed: Vec<(Place, Access)> = Vec::new();
+        let mut written = Vec::new();
         for (param, arg) in d.function.params.iter().zip(args) {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
             arguments.push(match arg {
@@ -268,13 +268,10 @@ impl Builder<'_> {
                 }
                 Argument::Exclusive(place) if param.access != Access::Value => {
                     self.require_same(&ty, place.ty(), span)?;
-                    for (old, access) in &borrowed {
-                        if access.writes() || param.access.writes() {
-                            self.require_disjoint(std::slice::from_ref(old), &place, span)?;
-                        }
-                    }
                     let address = self.external_reference(&place, param.access, span)?;
-                    borrowed.push((place, param.access));
+                    if param.access.writes() {
+                        written.push(place);
+                    }
                     ExternalArgument::Reference {
                         ty,
                         access: param.access,
@@ -305,11 +302,9 @@ impl Builder<'_> {
             result: result.clone(),
             values: values.clone(),
         }));
-        for (place, access) in borrowed {
-            if access.writes() {
-                self.assign_owned_proof(&place, bounds::Proof::default(), false);
-                self.initialize(&place);
-            }
+        for place in written {
+            self.assign_owned_proof(&place, bounds::Proof::default(), false);
+            self.initialize(&place);
         }
         Ok(result.map(|ty| Value {
             proof: bounds::Proof::default(),
