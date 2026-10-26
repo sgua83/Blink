@@ -295,6 +295,7 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
     environment
         .values()
         .flat_map(|binding| match binding {
+            Binding::ApplicationData(data) => data.length.proof.facts(&data.length.ty),
             Binding::Value(value) => Proof::capture(value).facts(&value.ty),
             Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
             Binding::Data(view) => view
@@ -988,9 +989,13 @@ pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
             IndexDomain::DataLength(binding) if strict => Some(IndexDomain::Data(binding)),
             IndexDomain::TileLength if strict => Some(IndexDomain::Tile),
             IndexDomain::ViewLength(origin) if strict => Some(IndexDomain::View(origin)),
-            domain @ (IndexDomain::Data(_) | IndexDomain::Tile | IndexDomain::View(_)) => {
-                Some(domain)
+            IndexDomain::ApplicationLength(handle) if strict => {
+                Some(IndexDomain::ApplicationData(handle))
             }
+            domain @ (IndexDomain::Data(_)
+            | IndexDomain::Tile
+            | IndexDomain::View(_)
+            | IndexDomain::ApplicationData(_)) => Some(domain),
             _ => None,
         })
         .collect()
@@ -1053,6 +1058,9 @@ impl Builder<'_> {
             IndexDomain::Data(b) | IndexDomain::DataLength(b) => IndexDomain::DataLength(b),
             IndexDomain::Tile | IndexDomain::TileLength => IndexDomain::TileLength,
             IndexDomain::View(id) | IndexDomain::ViewLength(id) => IndexDomain::ViewLength(id),
+            IndexDomain::ApplicationData(handle) | IndexDomain::ApplicationLength(handle) => {
+                IndexDomain::ApplicationLength(handle)
+            }
         };
         self.env.values().fold(minimum, |minimum, binding| {
             let lower = match binding {
@@ -1079,6 +1087,15 @@ impl Builder<'_> {
                         .range(0)
                         .0
                         .max(u32::from(proof.nonzero.get(0) == Some(&true)))
+                }
+                Binding::ApplicationData(data)
+                    if data.length.proof.domains(0).contains(&length) =>
+                {
+                    data.length
+                        .proof
+                        .range(0)
+                        .0
+                        .max(u32::from(data.length.proof.nonzero.get(0) == Some(&true)))
                 }
                 _ => 0,
             };
@@ -1132,6 +1149,7 @@ impl Builder<'_> {
                 }
                 Binding::Owned(owner) => owner.proof.extend_equalities(&roots),
                 Binding::Data(view) => view.length.extend_equalities(&roots),
+                Binding::ApplicationData(data) => data.length.proof.extend_equalities(&roots),
                 Binding::Tile(view) => view.length.extend_equalities(&roots),
                 _ => {}
             }
@@ -1155,6 +1173,17 @@ impl Builder<'_> {
                                 owner.proof.refine(owner.place.ty(), component, *fact);
                             }
                         }
+                    }
+                    Binding::ApplicationData(data)
+                        if data
+                            .length
+                            .proof
+                            .origins
+                            .iter()
+                            .flatten()
+                            .any(|id| *id == identity) =>
+                    {
+                        data.length.proof.refine(&data.length.ty, 0, *fact);
                     }
                     Binding::Data(view)
                         if view

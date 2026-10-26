@@ -64,6 +64,8 @@ enum IndexDomain {
     TileLength,
     View([ValueIdentity; 3]),
     ViewLength([ValueIdentity; 3]),
+    ApplicationData(Reg),
+    ApplicationLength(Reg),
 }
 type Domains = BTreeSet<IndexDomain>;
 #[derive(Clone)]
@@ -78,6 +80,7 @@ struct Value {
 }
 #[derive(Clone)]
 enum Binding {
+    ApplicationData(application::Data),
     AtomicBorrow(Place),
     Owned(OwnedBinding),
     Value(Value),
@@ -119,6 +122,7 @@ struct TileView {
     length: bounds::Proof,
 }
 enum CursorSource {
+    ApplicationData(application::Data),
     Data(usize),
     Tile(TileView),
     View(Value),
@@ -141,6 +145,15 @@ struct CheckedTile {
 }
 #[derive(Clone, PartialEq, Eq)]
 enum Place {
+    ApplicationElement {
+        ty: Ty,
+        handle: Reg,
+        index: Reg,
+        index_range: (u32, u32),
+        stride: u32,
+        words: Vec<u32>,
+        writable: bool,
+    },
     // 独立函数检查的符号位置；program 内联直接借用调用方的实际 Place。
     AtomicParameter(Ty),
     ViewElement {
@@ -1038,6 +1051,9 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     };
     let mut b = Builder::new(world, d, &program, 0);
     b.in_function = true;
+    if d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu {
+        b.application = Some(application::Context::default());
+    }
     b.calls.push(name.into());
     if d.function.kind == FunctionKind::Cooperative {
         b.cooperative_root = Some(0);
@@ -1166,6 +1182,7 @@ fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
     }
 }
 struct Builder<'a> {
+    application: Option<application::Context>,
     world: &'a World,
     definition: Arc<Definition>,
     program: &'a Program,
@@ -1212,6 +1229,7 @@ impl<'a> Builder<'a> {
             &mut mutable_names,
         );
         Self {
+            application: None,
             world,
             definition: definition.clone(),
             program,
@@ -1335,6 +1353,9 @@ impl<'a> Builder<'a> {
         }
         self.flow = flow;
         self.block_depth -= 1;
+        if flow.continues() {
+            self.release_application_data(Some(&original));
+        }
         self.env.retain(|k, _| original.contains(k));
         Ok(())
     }
@@ -1361,6 +1382,7 @@ impl<'a> Builder<'a> {
                 if self.loop_depth == 0 {
                     return self.fail(s.span, "B129", "break 只能用于局部顺序循环");
                 }
+                self.release_application_loop();
                 self.code.push(Inst::Break);
                 self.capture_break();
                 self.flow = Flow::BREAK;
@@ -1435,6 +1457,14 @@ impl<'a> Builder<'a> {
     }
     fn read_place(&mut self, p: &Place, span: Span) -> Result<Value> {
         match p {
+            Place::ApplicationElement {
+                ty,
+                handle,
+                index,
+                stride,
+                words,
+                ..
+            } => self.read_application_place(ty, *handle, *index, *stride, words, span),
             Place::Indexed { .. } => self.read_array_place(p, span),
             Place::AtomicParameter(_) => {
                 self.fail(span, "B214", "原子借用只能通过显式原子操作读取")
@@ -1570,6 +1600,16 @@ impl<'a> Builder<'a> {
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
         match p {
+            Place::ApplicationElement {
+                handle,
+                index,
+                stride,
+                words,
+                ..
+            } => {
+                self.writable_storage(p, span)?;
+                return self.write_application_place(*handle, *index, *stride, words, value, span);
+            }
             Place::Indexed { .. } => return self.write_array_place(p, value, span),
             Place::ReadOnlyLocal(..) => {
                 return self.fail(span, "B144", "按值参数或不可变局部值不可写");
@@ -1947,6 +1987,12 @@ impl<'a> Builder<'a> {
         })
     }
     fn call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if matches!(name, "upload" | "download") {
+            return self.application_transfer(name, args, span);
+        }
+        if matches!(name, "run_cpu" | "run_gpu") {
+            return self.application_run(name, args, span);
+        }
         if name == "println" {
             return self.println(args, span).map(Some);
         }
@@ -2382,6 +2428,9 @@ impl<'a> Builder<'a> {
         self.iterators.push(None);
         self.block(body)?;
         let body_flow = self.flow;
+        if body_flow.iterates() {
+            self.check_application_loop(condition.span)?;
+        }
         self.iterators.pop();
         self.loop_depth -= 1;
         let body = std::mem::take(&mut self.code);
@@ -2422,6 +2471,14 @@ impl<'a> Builder<'a> {
             };
             let begin = self.constant(Scalar::U32, 0);
             match source {
+                Some(Binding::ApplicationData(data)) => {
+                    self.application_cpu(&data, start.span)?;
+                    (
+                        begin,
+                        data.length.clone(),
+                        Some(CursorSource::ApplicationData(data)),
+                    )
+                }
                 Some(Binding::Tile(view)) => (
                     begin,
                     self.tile_length(&view),
@@ -2486,6 +2543,16 @@ impl<'a> Builder<'a> {
             name.clone(),
             if let Some(domain) = data {
                 match domain {
+                    CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
+                        place: Self::application_element(
+                            &data,
+                            index,
+                            (0, data.length.maximum().saturating_sub(1)),
+                        ),
+                        proof: bounds::Proof::default(),
+                        uniform: false,
+                        initialization: None,
+                    }),
                     CursorSource::Data(binding) => Binding::Element {
                         binding,
                         index,
@@ -2513,6 +2580,9 @@ impl<'a> Builder<'a> {
         self.iterators.push(Some((name.clone(), slot)));
         self.block(body)?;
         let body_flow = self.flow;
+        if body_flow.iterates() {
+            self.check_application_loop(span)?;
+        }
         let body_reachable = body_flow.continues();
         self.iterators.pop();
         self.loop_depth -= 1;
@@ -2550,6 +2620,11 @@ impl<'a> Builder<'a> {
     ) -> Result<()> {
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
+        }
+        if annotation.as_ref().is_some_and(|ty| ty.dataset)
+            || matches!(&e.kind, ExprKind::Specialize(call, _, _) if call == "dataset")
+        {
+            return self.application_dataset(annotation, name, e, span);
         }
         if let ExprKind::Call(call, args) = &e.kind {
             if matches!(call.as_str(), "tile_publish" | "tile_atomic") {
@@ -2809,6 +2884,9 @@ impl<'a> Builder<'a> {
         let ExprKind::Name(name) = &base.kind else {
             return self.view_place(base, index);
         };
+        if let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned() {
+            return self.application_index(data, index);
+        }
         if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
             return self.tile_place(view, index);
         }
@@ -2915,6 +2993,13 @@ impl<'a> Builder<'a> {
         name: &String,
         span: Span,
     ) -> Result<()> {
+        if annotation.dataset {
+            return self.fail(
+                span,
+                "B263",
+                "动态 dataset 声明需要 dataset<T>(length) 创建存储",
+            );
+        }
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
@@ -2979,6 +3064,8 @@ impl<'a> Builder<'a> {
         }
         let value = self.expr(position)?;
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
+        self.check_application_loop(span)?;
+        self.release_application_loop();
         self.code.push(Inst::StoreLocal(slot, value.regs[0]));
         self.code.push(Inst::Continue);
         self.flow = Flow::CONTINUE;
@@ -3044,6 +3131,21 @@ impl<'a> Builder<'a> {
             );
         }
         if let ExprKind::Name(data) = &args[0].kind {
+            if let Some(Binding::ApplicationData(data)) = self.env.get(data).cloned() {
+                self.application_cpu(&data, span)?;
+                let index = self.expr(&args[1])?;
+                self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
+                return self
+                    .read_place(
+                        &Self::application_element(
+                            &data,
+                            index.regs[0],
+                            (index.minimum(), index.maximum()),
+                        ),
+                        span,
+                    )
+                    .map(Some);
+            }
             if let Some(Binding::Data(view)) = self.env.get(data).cloned() {
                 let binding = view.binding;
                 if self.view_access[&binding] != Access::Read {
@@ -3090,6 +3192,14 @@ impl<'a> Builder<'a> {
         };
         let (domain, index, proof) = match self.env.get(name).cloned() {
             Some(Binding::Owned(OwnedBinding {
+                place: Place::ApplicationElement { handle, index, .. },
+                ..
+            })) => (
+                IndexDomain::ApplicationData(handle),
+                index,
+                bounds::Proof::unsigned(0, u32::MAX),
+            ),
+            Some(Binding::Owned(OwnedBinding {
                 place: Place::Element { binding, index, .. },
                 ..
             })) => (
@@ -3125,6 +3235,13 @@ impl<'a> Builder<'a> {
     }
     fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Value> {
         if let ExprKind::Name(name) = &base.kind {
+            if let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned() {
+                return if field == "length" {
+                    Ok(data.length)
+                } else {
+                    self.fail(e.span, "B141", "dataset 只公开只读 length")
+                };
+            }
             if let Some(Binding::Texture(reference)) = self.env.get(name).cloned() {
                 if field == "length"
                     && let Some(count) = reference.shape(self.program)
@@ -3180,7 +3297,7 @@ impl<'a> Builder<'a> {
         })
     }
     fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Value> {
-        let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_))));
+        let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
             let value = self.expr(base)?;
             if value.ty.array.is_some() {

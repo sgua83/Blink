@@ -4,6 +4,7 @@ use crate::{
     ExecutableProgram,
     ir::{Scalar, Ty, align_up},
 };
+pub(crate) use source::application_source;
 use std::{fmt::Write, path::Path, process::Command};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -217,6 +218,27 @@ pub fn build(program: &ExecutableProgram, output: &Path) -> Result<()> {
             .ok_or("缺少 DLL 名称")?,
     )?;
     let (header, binding, source) = generate(program, &prefix)?;
+    let output = std::path::absolute(output)?;
+    link_rust(&source, &prefix, &output, true)?;
+    std::fs::write(output.with_extension("abi.h"), header)?;
+    std::fs::write(output.with_extension("rs"), binding)?;
+    println!(
+        "DLL {}\nC/C++ {}\nRust {}\nimport library {}",
+        output.display(),
+        output.with_extension("abi.h").display(),
+        output.with_extension("rs").display(),
+        output.with_extension("lib").display()
+    );
+    Ok(())
+}
+
+/// Rust 只链接原生执行框架及 ABI 封装；B 代码在调用前已由自研后端生成。
+pub(crate) fn link_rust(
+    source: &str,
+    prefix: &str,
+    output: &Path,
+    import_library: bool,
+) -> Result<()> {
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -252,19 +274,12 @@ pub fn build(program: &ExecutableProgram, output: &Path) -> Result<()> {
         let output = std::path::absolute(output)?;
         std::fs::create_dir_all(output.parent().unwrap())?;
         std::fs::copy(target.join(format!("release/{prefix}.dll")), &output)?;
-        std::fs::copy(
-            target.join(format!("release/{prefix}.dll.lib")),
-            output.with_extension("lib"),
-        )?;
-        std::fs::write(output.with_extension("abi.h"), header)?;
-        std::fs::write(output.with_extension("rs"), binding)?;
-        println!(
-            "DLL {}\nC/C++ {}\nRust {}\nimport library {}",
-            output.display(),
-            output.with_extension("abi.h").display(),
-            output.with_extension("rs").display(),
-            output.with_extension("lib").display()
-        );
+        if import_library {
+            std::fs::copy(
+                target.join(format!("release/{prefix}.dll.lib")),
+                output.with_extension("lib"),
+            )?;
+        }
         Ok(())
     })();
     std::fs::remove_dir_all(build)?;

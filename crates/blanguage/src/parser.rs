@@ -734,9 +734,6 @@ impl Parser {
             let looks_type = self.declaration_type();
             if looks_type {
                 let ty = self.ty()?;
-                if ty.dataset {
-                    return self.source.fail(span, "B120", "dataset 不能作为局部值声明");
-                }
                 let name = self.ident()?;
                 if self.take(";") {
                     StmtKind::Declare(ty, name)

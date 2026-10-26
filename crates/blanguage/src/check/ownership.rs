@@ -10,6 +10,7 @@ pub(super) enum Position {
 impl Place {
     pub(super) fn owned_positions(&self) -> Option<Vec<Position>> {
         match self {
+            Self::ApplicationElement { .. } => Some(Vec::new()),
             Self::Indexed { base, .. } => base.owned_positions(),
             Self::ReadOnlyLocal(..) => Some(Vec::new()),
             Self::Local(_, slots, ..) => Some(slots.iter().copied().map(Position::Local).collect()),
@@ -31,6 +32,7 @@ impl Place {
             | Self::Element { ty, .. }
             | Self::TileElement { ty, .. }
             | Self::ViewElement { ty, .. } => ty,
+            Self::ApplicationElement { ty, .. } => ty,
         }
     }
     pub(super) fn components_in(&self, owner: &Place) -> Option<Vec<usize>> {
@@ -79,6 +81,25 @@ impl Place {
     }
     fn overlaps(&self, other: &Place) -> bool {
         match (self, other) {
+            (
+                Self::ApplicationElement {
+                    handle: a,
+                    index_range: (low_a, high_a),
+                    words,
+                    ..
+                },
+                Self::ApplicationElement {
+                    handle: b,
+                    index_range: (low_b, high_b),
+                    words: other,
+                    ..
+                },
+            ) => {
+                a == b
+                    && high_a >= low_b
+                    && high_b >= low_a
+                    && words.iter().any(|word| other.contains(word))
+            }
             (Self::Indexed { base, .. }, b) => base.overlaps(b.storage()),
             (a, Self::Indexed { base, .. }) => a.storage().overlaps(base),
             (Self::Local(_, a, ..), Self::Local(_, b, ..)) => a.iter().any(|x| b.contains(x)),
@@ -118,6 +139,11 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         match place {
+            Place::ApplicationElement {
+                words,
+                writable: true,
+                ..
+            } => Ok(words.iter().map(|word| *word as usize).collect()),
             Place::Local(_, slots, ..) => Ok(slots.clone()),
             Place::Element {
                 binding,

@@ -1,4 +1,5 @@
 //! 编译程序的设备执行、数据存储与生命周期所有者。
+pub mod application;
 mod bindings;
 pub mod cpu;
 pub mod ffi;
@@ -95,7 +96,7 @@ impl Dataset {
             .ok_or_else(|| error(format!("{field} 不是 view")))?;
         Self::with_type(ty.clone(), count)
     }
-    fn with_type(ty: Ty, count: u32) -> Result<Self> {
+    pub(crate) fn with_type(ty: Ty, count: u32) -> Result<Self> {
         let stride = blanguage::ir::align_up(ty.size, ty.align);
         let bytes = (stride as usize)
             .checked_mul(count as usize)

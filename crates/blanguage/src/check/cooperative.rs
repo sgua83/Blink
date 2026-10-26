@@ -5,6 +5,7 @@ pub(super) enum Argument {
     Texture(texture::TextureReference),
     Value(Value),
     Dataset(DatasetView),
+    ApplicationData(application::Data),
     Tile(TileView),
     Atomic(Place),
     Exclusive(Place),
@@ -78,10 +79,13 @@ impl<'a> Builder<'a> {
                     let ExprKind::Name(name) = &arg.kind else {
                         return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
                     };
-                    let Some(Binding::Data(view)) = self.env.get(name) else {
-                        return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
-                    };
-                    Argument::Dataset(view.clone())
+                    match self.env.get(name) {
+                        Some(Binding::Data(view)) => Argument::Dataset(view.clone()),
+                        Some(Binding::ApplicationData(data)) => {
+                            Argument::ApplicationData(data.clone())
+                        }
+                        _ => return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称"),
+                    }
                 } else if param.ty.tile {
                     Argument::Tile(self.tile_view(arg)?)
                 } else if param.access == Access::Atomic {
@@ -217,6 +221,31 @@ impl<'a> Builder<'a> {
             }
             let ty = parameter_type(self.world, param, callee)?;
             let binding = match (param.ty.dataset, param.ty.tile, arg) {
+                (true, false, Argument::ApplicationData(mut data)) => {
+                    self.application_cpu(&data, span)?;
+                    self.require_same(&ty, &data.ty, span)?;
+                    if param.access != Access::Read {
+                        return self.fail(
+                            span,
+                            "B224",
+                            "普通函数按 read 借用应用 dataset；并行写入通过 program 组织",
+                        );
+                    }
+                    if param.ty.count.is_some()
+                        && self.world.shape(
+                            &param.ty.count,
+                            &callee.source,
+                            param.span,
+                            &callee.module,
+                            &callee.imports,
+                        )? != data.count
+                    {
+                        return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
+                    }
+                    data.owned = false;
+                    data.writable = false;
+                    Binding::ApplicationData(data)
+                }
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
                     self.require_same(&ty, &self.program.buffers[binding].ty, span)?;

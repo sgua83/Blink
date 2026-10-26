@@ -46,6 +46,10 @@ impl Builder<'_> {
                     ty: Some(&self.program.buffers[v.binding].ty),
                     count: self.program.buffers[v.binding].count,
                 },
+                Argument::ApplicationData(data) => Actual {
+                    ty: Some(&data.ty),
+                    count: data.count,
+                },
                 Argument::Tile(v) => Actual::value(&v.ty),
                 Argument::Atomic(p) | Argument::Exclusive(p) => Actual::value(p.ty()),
             })

@@ -69,7 +69,32 @@ u32 main() on cpu {
 
 `bool println(value)` 当前接受单个 `u32`、`i32` 或 `bool` 标量。整数使用十进制，bool 使用 `true／false`，末尾附加一个 LF；完整写出返回 true，写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU program 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、f32、向量等当前不支持的类型报 B261。
 
-生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，超越函数使用系统 UCRT。运行无需 B 源码、编译器、blrun 或手写宿主。当前尚未提供应用动态 dataset／CPU／GPU program 组织、通用字符串与 UTF-8 库、输入、文件、命令行参数、其他平台／架构及源码调试。外部 DLL 调用见下一节，源码示例见 [独立应用](../sample/applications/README.md)。
+生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，超越函数使用系统 UCRT。运行无需 B 源码、编译器、blrun 或手写宿主。动态数据与 program 组织见下一节；通用字符串与 UTF-8 库、输入、文件、命令行参数、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
+
+## 应用拥有的动态 dataset 与显式执行（2026-10-26）
+
+普通 CPU 应用及其静态内联的 CPU 函数可声明本地独占资源：
+
+```c
+dataset<Item> rows = dataset<Item>(length);
+run_cpu(seed(rows));
+upload(rows);
+run_gpu(step(rows));
+download(rows);
+for (row in rows) { println(row.value); }
+```
+
+`dataset<T>(length)` 接收 u32 长度并将普通值记录的完整存储初始化为零；长度为零有效。`let rows = dataset<T>(length)` 推导拥有的资源，固定形状可由声明或 `dataset<T,N>(length)` 给出，创建长度须证明等于 N。动态长度不会被用于推导 const 实例。dataset 不能初始化普通值、复制成另一份独占资源或按普通值返回；含 view 的资源图创建仍由原生资源 API 负责。
+
+资源公开只读 `length`。CPU 下标、字段、固定内联数组、有界游标、ordinal 和初始化规则复用原检查器与访存 IR；普通函数的 `read dataset<T>` 只借用当前 CPU 存储，不能转移所有权或写入。应用内合法取得的 CPU 元素可作为现有 C ABI 的 read／write／inout 位置。动态存储不在 program 的逐元素／块内函数中创建。
+
+`upload(rows)` 将拥有的 CPU 存储交给同一应用的 GPU 设备，`download(rows)` 等待原生完成点后交回 CPU 存储。两者是语句，保持资源身份、容量和已拥有的有效域；没有第二份可写数据。方向、所有者与当前位置由前端检查。条件合流后要继续访问，相关分支须给出一致的位置；循环的继续路径须归还与入口相同的位置。read 借用不能转移存储。CPU 对 GPU 数据的索引或遍历不会隐式下载。
+
+`run_cpu(name(args))` 与 `run_gpu(name(args))` 选择实际执行位置，入口可用原具体类型／const 语法。参数借用应用资源并按原 uniform 类型传值；类型、固定形状、目标与独占别名仍受原规则约束。同一资源在一次 program 调用中只绑定一次。CPU 调用等待本次计算完成；GPU 调用交付已提交的资源，其最后使用点继续随存储持有。后续 GPU 调用建立原同队列依赖，CPU 消费通过显式 download 取得结果。prefix 关系沿同一所有者、实际参数重排及显式传输保留，CPU 写借用计数会撤回旧关系。
+
+编译器在构建时生成 main 机器码及全部被调用 program 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
+
+带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 构建使用 Rust 工具链链接框架与 ABI，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态资源返回、普通函数的独占整 dataset 参数、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 

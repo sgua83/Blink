@@ -350,6 +350,9 @@ impl CpuProgram {
     }
 }
 impl CpuTemplate {
+    pub fn program(&self) -> &Program {
+        &self.code.program
+    }
     pub fn new(program: TemplateProgram) -> Result<Self> {
         Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
     }

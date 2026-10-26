@@ -3,6 +3,23 @@ use super::*;
 impl Place {
     pub(super) fn project(self, ty: Ty, components: &[usize]) -> Self {
         match self {
+            Self::ApplicationElement {
+                handle,
+                index,
+                index_range,
+                stride,
+                words,
+                writable,
+                ..
+            } => Self::ApplicationElement {
+                ty,
+                handle,
+                index,
+                index_range,
+                stride,
+                writable,
+                words: components.iter().map(|i| words[*i]).collect(),
+            },
             Self::AtomicParameter(_) => Self::AtomicParameter(ty),
             Self::Local(_, slots, storage) => {
                 Self::Local(ty, components.iter().map(|i| slots[*i]).collect(), storage)
@@ -200,6 +217,7 @@ impl Builder<'_> {
             p => {
                 let first = match &p {
                     Place::Element { words, .. }
+                    | Place::ApplicationElement { words, .. }
                     | Place::ViewElement { words, .. }
                     | Place::TileElement { words, .. } => words[0],
                     _ => 0,
@@ -219,8 +237,18 @@ impl Builder<'_> {
             words,
         })
     }
-    fn array_memory(&self, base: &Place) -> IndexedSource {
-        match base {
+    fn array_memory(&mut self, base: &Place, write: bool, span: Span) -> Result<IndexedSource> {
+        Ok(match base {
+            Place::ApplicationElement {
+                handle,
+                index,
+                stride,
+                ..
+            } => IndexedSource::View {
+                address: self.application_address(*handle, write, span)?,
+                index: *index,
+                stride: *stride,
+            },
             Place::Element { binding, index, .. } => IndexedSource::Data {
                 binding: *binding,
                 index: *index,
@@ -240,7 +268,7 @@ impl Builder<'_> {
                 index: *index,
             },
             _ => unreachable!(),
-        }
+        })
     }
     pub(super) fn read_array_place(&mut self, place: &Place, span: Span) -> Result<Value> {
         if self.atomic_storage(place) {
@@ -279,7 +307,7 @@ impl Builder<'_> {
         let mut regs = Vec::new();
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
-            self.code.push(match &**base {
+            let instruction = match &**base {
                 Place::Local(_, slots, ..) | Place::ReadOnlyLocal(_, slots, ..) => {
                     Inst::LoadLocalIndexed {
                         dst,
@@ -291,11 +319,12 @@ impl Builder<'_> {
                 }
                 _ => Inst::LoadIndexed {
                     dst,
-                    source: self.array_memory(base),
+                    source: self.array_memory(base, false, span)?,
                     offset: *offset,
                     word: *word,
                 },
-            });
+            };
+            self.code.push(instruction);
             regs.push(dst);
         }
         let (proof, uniform) = self.read_owned_proof(place, &regs);
@@ -333,7 +362,7 @@ impl Builder<'_> {
         self.assign_owned_proof(place, bounds::Proof::capture(&value), false);
         self.initialize(place);
         for (word, value) in words.iter().zip(value.regs) {
-            self.code.push(match &**base {
+            let instruction = match &**base {
                 Place::Local(_, slots, ..) => Inst::StoreLocalIndexed {
                     base: slots[0],
                     len: ir::align_up(base.ty().size, base.ty().align) as usize / 4,
@@ -341,17 +370,20 @@ impl Builder<'_> {
                     word: *word,
                     value,
                 },
-                Place::Element { binding, .. } => {
-                    self.writes.insert(*binding);
+                Place::Element { .. } | Place::ApplicationElement { .. } => {
+                    if let Place::Element { binding, .. } = &**base {
+                        self.writes.insert(*binding);
+                    }
                     Inst::StoreIndexed {
-                        source: self.array_memory(base),
+                        source: self.array_memory(base, true, span)?,
                         offset: *offset,
                         word: *word,
                         value,
                     }
                 }
                 _ => unreachable!(),
-            });
+            };
+            self.code.push(instruction);
         }
         Ok(())
     }

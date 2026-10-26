@@ -81,7 +81,11 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
     let layout = Frame::new(&allocation, None);
     fn scratch(code: &[Inst]) -> bool {
         code.iter().any(|i| match i {
-            Inst::LoadLocalIndexed { .. } | Inst::StoreLocalIndexed { .. } => true,
+            Inst::LoadLocalIndexed { .. }
+            | Inst::StoreLocalIndexed { .. }
+            | Inst::ViewLoad { .. }
+            | Inst::LoadIndexed { .. }
+            | Inst::StoreIndexed { .. } => true,
             Inst::Scope(b) => scratch(b),
             Inst::If { yes, no, .. } => scratch(yes) || scratch(no),
             Inst::Loop {

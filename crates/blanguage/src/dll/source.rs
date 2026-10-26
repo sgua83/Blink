@@ -304,3 +304,74 @@ pub(super) fn constructor(p: &ExecutableProgram) -> Result<String, Box<dyn std::
         "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
     ))
 }
+
+pub(crate) fn application_source(
+    resources: &crate::application::Resources,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use std::fmt::Write;
+    let mut images = Vec::new();
+    let mut functions = String::new();
+    for index in 0..resources.types.len() {
+        writeln!(
+            functions,
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn blink_allocate_{index}(frame: *mut Frame, count: u32) -> u32 {{\n let result = unsafe {{ &mut *frame }}.allocate({index}, count);\n unsafe {{ finish(frame, result) }}\n}}"
+        )?;
+    }
+    for (index, (target, program)) in resources.programs.iter().enumerate() {
+        let template = crate::TemplateProgram(program.clone());
+        let image = if *target == Target::Cpu {
+            let image = crate::native::compile_program(template).map_err(std::io::Error::other)?;
+            format!(
+                "ProgramImage::Cpu(unsafe {{ NativeProgramImage::<TemplateProgram>::from_compiler_output({}, {}) }})",
+                image.program().source(),
+                image.stages().source()
+            )
+        } else {
+            let image = crate::spirv::compile_program(template).map_err(std::io::Error::other)?;
+            format!(
+                "ProgramImage::Gpu(unsafe {{ ShaderProgramImage::<TemplateProgram>::from_compiler_output({}, {}) }})",
+                image.program().source(),
+                image.stages().source()
+            )
+        };
+        images.push(image);
+        let mut params = vec!["frame: *mut Frame".to_string()];
+        let handles = (0..program.buffers.len())
+            .map(|i| {
+                params.push(format!("data_{i}: u32"));
+                format!("data_{i}")
+            })
+            .collect::<Vec<_>>();
+        let mut words = Vec::new();
+        for uniform in &program.uniforms {
+            for (scalar, _) in &uniform.ty.components {
+                let name = format!("value_{}", words.len());
+                params.push(format!(
+                    "{name}: {}",
+                    match scalar {
+                        Scalar::F32 => "f32",
+                        Scalar::I32 => "i32",
+                        _ => "u32",
+                    }
+                ));
+                words.push(match scalar {
+                    Scalar::F32 => format!("Value::F32({name})"),
+                    Scalar::I32 => format!("Value::I32({name})"),
+                    Scalar::Bool => format!("Value::Bool({name} != 0)"),
+                    Scalar::U32 => format!("Value::U32({name})"),
+                });
+            }
+        }
+        writeln!(
+            functions,
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn blink_run_{index}({}) {{\n let result = unsafe {{ &mut *frame }}.run({index}, &[{}], &[{}]);\n unsafe {{ finish(frame, result) }}\n}}",
+            params.join(","),
+            handles.join(","),
+            words.join(",")
+        )?;
+    }
+    Ok(include_str!("../application/runtime.rs.in")
+        .replace("@TYPES@", &resources.types.source())
+        .replace("@IMAGES@", &format!("vec![{}]", images.join(",")))
+        .replace("@FUNCTIONS@", &functions))
+}

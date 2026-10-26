@@ -61,6 +61,7 @@ impl Builder<'_> {
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env);
         }
+        self.release_application_data(None);
         let mut borrowed = BTreeMap::new();
         let definition = self.definition.clone();
         for param in &definition.function.params {

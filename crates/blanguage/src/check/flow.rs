@@ -30,9 +30,30 @@ pub(super) struct LoopState {
 }
 pub(super) struct LoopContext {
     names: BTreeSet<String>,
+    residencies: BTreeMap<Reg, Option<Target>>,
     exits: Vec<LoopState>,
 }
 impl Builder<'_> {
+    pub(super) fn check_application_loop(&self, span: Span) -> Result<()> {
+        let entry = &self.loop_contexts.last().unwrap().residencies;
+        for binding in self.env.values() {
+            if let Binding::ApplicationData(data) = binding
+                && let Some(residency) = entry.get(&data.handle)
+                && *residency != data.residency
+            {
+                return self.fail(
+                    span,
+                    "B266",
+                    "循环继续前须归还入口相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输",
+                );
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn release_application_loop(&mut self) {
+        let names = self.loop_contexts.last().unwrap().names.clone();
+        self.release_application_data(Some(&names));
+    }
     pub(super) fn join_environment(
         &mut self,
         other: &BTreeMap<String, Binding>,
@@ -50,6 +71,12 @@ impl Builder<'_> {
                     a.uniform &= b.uniform;
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
+                (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
+                    a.length.proof.join(&b.length.proof, 1, None);
+                    if a.residency != b.residency {
+                        a.residency = None;
+                    }
+                }
                 (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
                 _ => {}
             }
@@ -58,6 +85,13 @@ impl Builder<'_> {
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
+            residencies: environment
+                .values()
+                .filter_map(|binding| match binding {
+                    Binding::ApplicationData(data) => Some((data.handle, data.residency)),
+                    _ => None,
+                })
+                .collect(),
             exits: Vec::new(),
         });
     }

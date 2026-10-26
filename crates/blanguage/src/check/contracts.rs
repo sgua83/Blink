@@ -7,6 +7,11 @@ struct Selection {
     value: Value,
 }
 enum Resource {
+    Application {
+        root: String,
+        handle: Reg,
+        minimum: u32,
+    },
     Array(u32),
     Data {
         root: String,
@@ -22,6 +27,7 @@ enum Resource {
 impl Resource {
     fn domain(&self) -> IndexDomain {
         match self {
+            Self::Application { handle, .. } => IndexDomain::ApplicationData(*handle),
             Self::Array(count) => IndexDomain::Fixed(*count),
             Self::Data { binding, .. } => IndexDomain::Data(*binding),
             Self::Tile { .. } => IndexDomain::Tile,
@@ -30,6 +36,7 @@ impl Resource {
     }
     fn minimum(&self) -> u32 {
         match self {
+            Self::Application { minimum, .. } => *minimum,
             Self::Array(count) => *count,
             Self::Data { minimum, .. } | Self::Tile { minimum, .. } => *minimum,
             Self::View(value) => Builder::view_length(&value.value).minimum(),
@@ -37,6 +44,9 @@ impl Resource {
     }
     fn assume_nonempty(&self, name: &str, binding: &mut Binding) {
         match (self, binding) {
+            (Self::Application { root, .. }, Binding::ApplicationData(data)) if root == name => {
+                data.length.proof.mark_nonzero(0);
+            }
             (Self::Data { root, .. }, Binding::Data(view)) if root == name => {
                 view.length.mark_nonzero(0);
             }
@@ -114,6 +124,13 @@ fn resource(
     span: Span,
 ) -> Result<Resource> {
     match env.get(path) {
+        Some(Binding::ApplicationData(data)) => {
+            return Ok(Resource::Application {
+                root: path.into(),
+                handle: data.handle,
+                minimum: data.length.minimum(),
+            });
+        }
         Some(Binding::Texture(reference)) => {
             if let Some(count) = reference.shape(builder.program) {
                 return Ok(Resource::Array(count));

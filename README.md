@@ -24,7 +24,9 @@ cargo build --workspace --release
 .\target\applications\start.exe
 ```
 
-上例直接显示 `3`，正常退出码为 `0`。`build-exe` 将普通 CPU `main` 编译、链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／bool 标准输出、普通函数、顺序逻辑和固定数组；动态数据、GPU program 应用调用、通用文本／文件及源码调试仍待实现。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
+上例直接显示 `3`，正常退出码为 `0`。`build-exe` 将普通 CPU `main` 编译、链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／bool 输出、普通函数、顺序逻辑、固定数组，以及应用拥有的动态 dataset、显式 CPU／GPU 传输和 program 调用。通用文本／文件及源码调试继续研发。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
+
+`sample/applications/datasets.b` 由 B 创建百万条记录，显式 `upload／download`，组织 CPU 生成、GPU 筛选与排序、CPU 扫描与归约。使用 `blc build-exe sample/applications/datasets.b target/applications/datasets.exe sample` 构建，部署生成的 exe 及同目录的 `blink_app_*.dll`；构建时使用现有 Rust 工具链链接执行框架，B 算法已由自研后端生成机器码／SPIR-V。GPU 执行需要对应 Vulkan 驱动。
 
 `blc` 也可检查模块、导出阶段原生代码和构建算法 DLL；`blrun` 继续负责数据绑定及 CPU／GPU 计算模块执行，例如 `blrun cpu sample/beginner/start.b run sample Saved/Learn/start :1` 将结果 `3` 保存到 `numbers.bldata`。将 `cpu` 改为 `gpu` 需要显卡驱动提供 Vulkan，无需安装 Vulkan SDK。源码 MIT，普通构建不创建设备。
 
