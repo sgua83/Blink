@@ -818,10 +818,9 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
                 } else {
                     match op {
                         UnaryOp::BitNot => (!upper, !lower),
-                        UnaryOp::UnsignedNegate if lower > 0 => {
-                            (0u32.wrapping_sub(upper), 0u32.wrapping_sub(lower))
+                        UnaryOp::UnsignedNegate => {
+                            integer_result_range((-i128::from(upper), -i128::from(lower)), 0)
                         }
-                        UnaryOp::UnsignedNegate if upper == 0 => (0, 0),
                         _ => (0, u32::MAX),
                     }
                 }
@@ -836,10 +835,13 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
                 } else {
                     match op {
                         UnaryOp::BitNot => (!upper, !lower),
-                        UnaryOp::SignedNegate => signed_result_range((
-                            -i64::from((upper ^ 0x8000_0000) as i32),
-                            -i64::from((lower ^ 0x8000_0000) as i32),
-                        )),
+                        UnaryOp::SignedNegate => integer_result_range(
+                            (
+                                -i128::from((upper ^ 0x8000_0000) as i32),
+                                -i128::from((lower ^ 0x8000_0000) as i32),
+                            ),
+                            0x8000_0000,
+                        ),
                         _ => (0, u32::MAX),
                     }
                 }
@@ -873,14 +875,14 @@ fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32, u
         "<<" if bl == bh => (al * (1i64 << (bl & 31)), ah * (1i64 << (bl & 31))),
         _ => return (0, u32::MAX),
     };
-    signed_result_range(range)
+    integer_result_range((i128::from(range.0), i128::from(range.1)), 0x8000_0000)
 }
-fn signed_result_range((lower, upper): (i64, i64)) -> (u32, u32) {
-    // 同一有符号周期内按模 32 位投影；跨断点的结果不能由单个有序区间表达。
-    let period = 1i64 << 32;
-    let bias = 1i64 << 31;
-    if (lower + bias).div_euclid(period) == (upper + bias).div_euclid(period) {
-        (lower as u32 ^ 0x8000_0000, upper as u32 ^ 0x8000_0000)
+fn integer_result_range((lower, upper): (i128, i128), bias: u32) -> (u32, u32) {
+    // 同一有序周期内按模 32 位投影；跨断点的结果不能由单个区间表达。
+    let period = 1i128 << 32;
+    let offset = i128::from(bias);
+    if (lower + offset).div_euclid(period) == (upper + offset).div_euclid(period) {
+        (lower as u32 ^ bias, upper as u32 ^ bias)
     } else {
         (0, u32::MAX)
     }
@@ -890,34 +892,39 @@ fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> (u32,
     if al > ah || bl > bh {
         return (1, 0);
     }
-    let checked = || -> Option<(u32, u32)> {
-        Some(match op {
-            "+" => (al.checked_add(bl)?, ah.checked_add(bh)?),
-            "-" => (al.checked_sub(bh)?, ah.checked_sub(bl)?),
-            "*" => (al.checked_mul(bl)?, ah.checked_mul(bh)?),
-            "/" if bl > 0 => (al / bh, ah / bl),
-            "%" if bl > 0 => (0, ah.min(bh - 1)),
-            "&" => (0, ah.min(bh)),
-            "|" | "^" => {
-                let bits = ah | bh;
-                let upper = if bits == 0 {
-                    0
-                } else {
-                    u32::MAX >> bits.leading_zeros()
-                };
-                (if op == "|" { al.max(bl) } else { 0 }, upper)
-            }
-            ">>" if bh < 32 => (al >> bh, ah >> bl),
-            ">>" => (0, ah),
-            "<<" if bh < 32 => (al.checked_mul(1 << bl)?, ah.checked_mul(1 << bh)?),
-            "<<" if bl == bh => {
-                let shift = bl & 31;
-                (al.checked_mul(1 << shift)?, ah.checked_mul(1 << shift)?)
-            }
-            _ => return None,
-        })
+    let (al, ah, bl, bh) = (
+        i128::from(al),
+        i128::from(ah),
+        i128::from(bl),
+        i128::from(bh),
+    );
+    let range = match op {
+        "+" => (al + bl, ah + bh),
+        "-" => (al - bh, ah - bl),
+        "*" => (al * bl, ah * bh),
+        "/" if bl > 0 => (al / bh, ah / bl),
+        "%" if bl > 0 => (0, ah.min(bh - 1)),
+        "&" => (0, ah.min(bh)),
+        "|" | "^" => {
+            let bits = (ah | bh) as u32;
+            let upper = if bits == 0 {
+                0
+            } else {
+                u32::MAX >> bits.leading_zeros()
+            };
+            (if op == "|" { al.max(bl) } else { 0 }, i128::from(upper))
+        }
+        ">>" if bh < 32 => (al >> bh, ah >> bl),
+        ">>" if bl == bh => (al >> (bl & 31), ah >> (bl & 31)),
+        ">>" => (0, ah),
+        "<<" if bh < 32 => (al << bl, ah << bh),
+        "<<" if bl == bh => {
+            let shift = bl & 31;
+            (al << shift, ah << shift)
+        }
+        _ => return (0, u32::MAX),
     };
-    checked().unwrap_or((0, u32::MAX))
+    integer_result_range(range, 0)
 }
 pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
     domains
