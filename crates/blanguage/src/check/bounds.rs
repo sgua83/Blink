@@ -571,6 +571,12 @@ impl Value {
             .cloned()
             .unwrap_or_else(|| vec![ValueIdentity::Register(self.regs[index])])
     }
+    fn same_component(&self, index: usize, other: &Self, other_index: usize) -> bool {
+        let other = other.component_origins(other_index);
+        self.component_origins(index)
+            .iter()
+            .any(|origin| other.contains(origin))
+    }
     pub(super) fn view_identity(&self) -> [ValueIdentity; 3] {
         std::array::from_fn(|i| self.component_identity(i))
     }
@@ -845,10 +851,28 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         ranges: if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
             (0..count)
                 .map(|i| {
-                    let left = a.component_ranges(i % a.regs.len());
-                    let mut right = b.component_ranges(i % b.regs.len());
+                    let ai = i % a.regs.len();
+                    let bi = i % b.regs.len();
+                    let left = a.component_ranges(ai);
+                    let mut right = b.component_ranges(bi);
                     let signed = a.ty.components[0].0 == Scalar::I32;
                     let bias = if signed { 0x8000_0000 } else { 0 };
+                    if matches!(op, "-" | "^" | "&" | "|" | "/" | "%")
+                        && a.same_component(ai, b, bi)
+                    {
+                        // 同值快照只取共同可达片段；空路径仍为空。
+                        let shared = left.combine(&right, |(al, ah), (bl, bh)| {
+                            IntegerRanges::interval(al.max(bl), ah.min(bh))
+                        });
+                        return match op {
+                            "&" | "|" => shared,
+                            _ => {
+                                // 整数除余在进入范围计算前已由 binary 证明除数非零。
+                                let value = if op == "/" { bias ^ 1 } else { bias };
+                                shared.map(|_| IntegerRanges::interval(value, value))
+                            }
+                        };
+                    }
                     if matches!(op, "<<" | ">>") {
                         right = right.shift_counts(bias);
                     }
@@ -894,6 +918,9 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
     let bi = component % b.regs.len();
     let left = a.proof.domains(ai);
     let right = b.proof.domains(bi);
+    if matches!(op, "&" | "|") && a.same_component(ai, b, bi) {
+        return left.union(&right).copied().collect();
+    }
     if op == "&" {
         let mut domains = indices_below(&left, false);
         domains.extend(indices_below(&right, false));
