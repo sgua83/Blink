@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-018 驱动进程内存预算观测：**本轮实现与原生消费完成；源码已提交** | 192.168.10.5／GUA | 01a161fa-3afe-7b63-b04e-e09926616c1a | B:/BLanguage，client BLanguage_Gua；源码 CL13124。blcompute 设备枚举并查询 VK_EXT_memory_budget；Release BLEngine 可见窗口已显示驱动估计与预算。该源码提交后的单次 Git 发布因远端主线前进失败，保留日志；本记录独立工作区 B:/BLanguage/Saved/MemoryIssue、client BLanguage_Gua_MemoryIssue，保留其他会话文档。 | 2026-10-26 16:20 +08:00 |
 | C-002 的 f32 符号位选择合并：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；本轮仅处理 `optimize/selection.rs` 对 f32 取负／abs 的安全提前求值，使已有 Select 与四元素路径消费。先核对原生符号位实现、未选路径的异常状态及完整记录；浮点算术／转换、动态除法和外部读取保持原控制流。本轮尚未实现／构建／验证；避让其他会话 C-011 的 IR、native／SPIR-V 程序映像、DLL 与 blcompute 执行器，架构与台账仅追加本轮事实。 | 2026-10-26 16:23 +08:00 |
 | C-007 的 CPU 排序整记录复制：**本轮源码修复完成；Git 已回读确认** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；native/sort.rs 最终 gather 已用原生 128 位块与精确 8／4 字节尾部，原键／序号、范围 ABI、24 字节栈保存与整记录字节保持。最终 Release 构建、38 种布局的 20292 组保护页范围核对及 118 组 CPU／GPU／独立参考完整排序核对通过；覆盖 4 至 132 字节步长、NaN／非规范 bool／填充、7 条输出尾部、部分范围及 3000003 条 stride=92 跨页记录。148 个临时文件已清理；原实现、64 位 REP 候选及最终点测全部保留，未称整体排序吞吐达标。源码／架构／台账已提交 CL13122（原 pending CL13117），认领 CL13113 保留；提交后的单次 Git 发布已确认 80b1c31f86338bd6c50e94537bf4419590b6d419（P4-Change: 13122），远端主线已回读一致；保留 C-011 的排序执行器／程序映像与其他会话工作。 | 2026-10-26 16:04 +08:00 |
 | C-011 的 B 应用动态数据与 CPU／GPU program 组织：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:\BLanguage\Saved\ApplicationWorkspace`，P4 client `BLanguage_Gua_Application`。CPU／SPIR-V 整程序编译与资源装载已分离，执行布局不携带值 IR，build-dll 已改为构建时生成原生代码；Release 通过，完整集合／资源交接验证进行中。动态数据与 B 主流程执行语法尚未接入。必要的 BLEngine 数据布局接口改为只消费 ProgramInterface，使用隔离工作区 `B:\BLEngine_BlinkInterface`／client `BLEngine_Gua_BlinkInterface`，只改 七个 Rust 文件的接口类型，不改引擎算法；主工作区已有改动保留。不修改 C-002 的 packet 访存片段，已提交同索引多输出保留。 | 2026-10-26 14:35 +08:00 |
@@ -1446,3 +1447,9 @@
 
 - 原始结果位于本机 Saved/Measurements/SortCopyDevelopment，包含原生范围／完整排序点测、64 位候选退步、保护页摘要及完整 CPU／GPU 核对。研发目录中的 148 个临时模块、消费者、可执行文件、符号及 x64 导出共 10246631 字节已清理，Saved/SortCopyDevelopment 目录已移除；认证临时助手另已在使用后删除。没有新增常驻测试或脚本，其他会话的 C-011 与共享文档改动保留。GPU 占用率／访存、批处理及整体排序吞吐调优继续未完成；源码提交与 Git 发布分阶段记录。
 - 交付记录：本节源码、架构及验证范围已提交 CL13122（原 pending CL13117）；提交后立即异步运行一次正式 Git 发布，原生返回 PUBLISHED P4 CL 13122→80b1c31f86338bd6c50e94537bf4419590b6d419，随后 git ls-remote 回读远端 main 一致。保留完整源码、原始测量与 C-007 剩余范围；未把独立 gather 点测外推为整体排序吞吐达标。
+
+## C-018：驱动进程内存预算（2026-10-26）
+
+此项是执行框架观测能力补齐，不是编译器数值缺陷。Device::memory_budget 返回各堆的设备本地标记、大小、驱动估计 usage 与动态 budget；无扩展时明确不可用，不创建资源账本或把逻辑字节称为物理驻留。设备层拥有 Vulkan 查询，BLEngine 只消费返回值。定义见[设备内存](DeviceMemory.md)。
+
+本机正式 Release 构建已通过，AMD Radeon RX 9070 GRE 的可见 BLEngine 4K／内部8K单字场景原生消费成功，窗口数值持续刷新，显存约0.75 GiB、当时预算约11.08 GiB。原生进程／构建与日志在 E:/BLEngineMeasurements/Reservoir/visible-hud-*。源码及文档已提交CL13124；该提交后的单次Git发布因远端主线已前进而失败，未自动重试或回滚P4。保留事实，本记录提交触发的独立发布另行核对，不以源码提交称为Git发布成功。
