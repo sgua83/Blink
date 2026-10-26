@@ -288,11 +288,6 @@ pub(crate) fn compile_program(
         &mut false,
         &mut facts,
     )?;
-    if program.stages.is_empty() {
-        return d
-            .source
-            .fail(d.function.span, "B104", "program 必须产生并行计算阶段");
-    }
     program.source_stages = program.stages.len();
     crate::optimize::optimize(&mut program);
     Ok(program)

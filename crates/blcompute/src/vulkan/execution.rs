@@ -150,7 +150,7 @@ pub(super) enum ExecutionResources {
         _compiled: Rc<Compiled>,
         _accelerations: Vec<Acceleration>,
         _scratch: Vec<Option<Scratch>>,
-        _queries: Rc<QueryPool>,
+        _queries: Option<Rc<QueryPool>>,
     },
     Transfer {
         commands: Commands,

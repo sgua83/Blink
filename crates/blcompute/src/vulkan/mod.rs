@@ -1543,131 +1543,72 @@ impl GpuProgram {
             selectors: Vec::new(),
             sorts: Vec::new(),
         };
-        unsafe {
-            let f = &out.inner.functions;
-            let device = out.inner.owner.device;
-            let bindings: Vec<_> = (0..out.program.buffers().len())
-                .map(|_| (7, 1))
-                .chain((0..out.program.accelerations().len()).map(|_| (1000150000, 1)))
-                .chain(out.program.textures().iter().map(|t| (1, t.elements())))
-                .chain((0..auxiliary).map(|_| (7, 1)))
-                .enumerate()
-                .map(|(i, (kind, count))| VkDescriptorSetLayoutBinding {
-                    binding: i as u32,
-                    descriptorType: kind,
-                    descriptorCount: count,
+        if !out.program.stages().is_empty() {
+            unsafe {
+                let f = &out.inner.functions;
+                let device = out.inner.owner.device;
+                let bindings: Vec<_> = (0..out.program.buffers().len())
+                    .map(|_| (7, 1))
+                    .chain((0..out.program.accelerations().len()).map(|_| (1000150000, 1)))
+                    .chain(out.program.textures().iter().map(|t| (1, t.elements())))
+                    .chain((0..auxiliary).map(|_| (7, 1)))
+                    .enumerate()
+                    .map(|(i, (kind, count))| VkDescriptorSetLayoutBinding {
+                        binding: i as u32,
+                        descriptorType: kind,
+                        descriptorCount: count,
+                        stageFlags: 0x20,
+                        pImmutableSamplers: null(),
+                    })
+                    .collect();
+                let mut ci: VkDescriptorSetLayoutCreateInfo = zero();
+                ci.sType = 32;
+                ci.bindingCount = bindings.len() as u32;
+                ci.pBindings = bindings.as_ptr();
+                check(
+                    (f.vkCreateDescriptorSetLayout)(device, &ci, null(), &mut out.set_layout),
+                    "vkCreateDescriptorSetLayout",
+                )?;
+                let range = VkPushConstantRange {
                     stageFlags: 0x20,
-                    pImmutableSamplers: null(),
-                })
-                .collect();
-            let mut ci: VkDescriptorSetLayoutCreateInfo = zero();
-            ci.sType = 32;
-            ci.bindingCount = bindings.len() as u32;
-            ci.pBindings = bindings.as_ptr();
-            check(
-                (f.vkCreateDescriptorSetLayout)(device, &ci, null(), &mut out.set_layout),
-                "vkCreateDescriptorSetLayout",
-            )?;
-            let range = VkPushConstantRange {
-                stageFlags: 0x20,
-                offset: 0,
-                size: out.program.uniform_bytes(),
-            };
-            let mut layout: VkPipelineLayoutCreateInfo = zero();
-            layout.sType = 30;
-            layout.setLayoutCount = 1;
-            layout.pSetLayouts = &out.set_layout;
-            layout.pushConstantRangeCount = 1;
-            layout.pPushConstantRanges = &range;
-            check(
-                (f.vkCreatePipelineLayout)(device, &layout, null(), &mut out.layout),
-                "vkCreatePipelineLayout",
-            )?;
-            for i in 0..out.program.stages().len() {
-                out.pipelines.push(pipeline(
-                    &out.inner,
-                    out.layout,
-                    &blanguage::spirv::emit(&out.program, i).map_err(error)?,
-                    false,
-                )?);
-                use blanguage::{
-                    ir::Operation,
-                    spirv::{Pass, emit_pass},
+                    offset: 0,
+                    size: out.program.uniform_bytes(),
                 };
-                let tail = match out.program.stages()[i].operation {
-                    Operation::Reduce(_) | Operation::CustomReduce(_) => Some(Pass::ReductionTail),
-                    Operation::ScanExclusive(_)
-                    | Operation::CustomScan(_)
-                    | Operation::CustomSegmentedReduce(_)
-                    | Operation::Compact(_)
-                    | Operation::SegmentedReduce(_) => Some(Pass::ScanTail),
-                    Operation::Map if out.program.stages()[i].selection.is_some() => {
-                        Some(Pass::ScanTail)
-                    }
-                    Operation::Map | Operation::StableSort(_) => None,
-                }
-                .map(|pass| {
-                    pipeline(
+                let mut layout: VkPipelineLayoutCreateInfo = zero();
+                layout.sType = 30;
+                layout.setLayoutCount = 1;
+                layout.pSetLayouts = &out.set_layout;
+                layout.pushConstantRangeCount = 1;
+                layout.pPushConstantRanges = &range;
+                check(
+                    (f.vkCreatePipelineLayout)(device, &layout, null(), &mut out.layout),
+                    "vkCreatePipelineLayout",
+                )?;
+                for i in 0..out.program.stages().len() {
+                    out.pipelines.push(pipeline(
                         &out.inner,
                         out.layout,
-                        &emit_pass(&out.program, i, pass).map_err(error)?,
+                        &blanguage::spirv::emit(&out.program, i).map_err(error)?,
                         false,
-                    )
-                })
-                .transpose()?;
-                out.tails.push(tail);
-                let adds = if matches!(
-                    out.program.stages()[i].operation,
-                    Operation::ScanExclusive(_)
+                    )?);
+                    use blanguage::{
+                        ir::Operation,
+                        spirv::{Pass, emit_pass},
+                    };
+                    let tail = match out.program.stages()[i].operation {
+                        Operation::Reduce(_) | Operation::CustomReduce(_) => {
+                            Some(Pass::ReductionTail)
+                        }
+                        Operation::ScanExclusive(_)
                         | Operation::CustomScan(_)
                         | Operation::CustomSegmentedReduce(_)
                         | Operation::Compact(_)
-                        | Operation::SegmentedReduce(_)
-                ) || out.program.stages()[i].selection.is_some()
-                {
-                    Some(pipeline(
-                        &out.inner,
-                        out.layout,
-                        &emit_pass(&out.program, i, Pass::ScanAdd).map_err(error)?,
-                        false,
-                    )?)
-                } else {
-                    None
-                };
-                out.scan_adds.push(adds);
-                let finish = match &out.program.stages()[i].operation {
-                    Operation::Map if out.program.stages()[i].selection.is_some() => {
-                        Some(Pass::SelectionScatter)
+                        | Operation::SegmentedReduce(_) => Some(Pass::ScanTail),
+                        Operation::Map if out.program.stages()[i].selection.is_some() => {
+                            Some(Pass::ScanTail)
+                        }
+                        Operation::Map | Operation::StableSort(_) => None,
                     }
-                    Operation::Compact(_) => Some(Pass::CompactScatter),
-                    Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
-                        Some(Pass::ScanRootAdd)
-                    }
-                    Operation::ScanExclusive(s) if s.needs_root_add(&out.program) => {
-                        Some(Pass::ScanRootAdd)
-                    }
-                    Operation::CustomScan(s) if s.needs_root_add(&out.program) => {
-                        Some(Pass::ScanRootAdd)
-                    }
-                    _ => None,
-                }
-                .map(|pass| {
-                    pipeline(
-                        &out.inner,
-                        out.layout,
-                        &emit_pass(&out.program, i, pass).map_err(error)?,
-                        false,
-                    )
-                })
-                .transpose()?;
-                out.finishes.push(finish);
-                let stage = &out.program.stages()[i];
-                let dispatch_pass = if stage.selection.is_some() {
-                    Some(Pass::SelectionArguments)
-                } else {
-                    stage.prefix.map(Pass::DispatchArguments)
-                };
-                let dispatch = dispatch_pass
                     .map(|pass| {
                         pipeline(
                             &out.inner,
@@ -1677,24 +1618,87 @@ impl GpuProgram {
                         )
                     })
                     .transpose()?;
-                out.dispatches.push(dispatch);
-                out.selectors.push(if stage.selection.is_some() {
-                    Some(pipeline(
-                        &out.inner,
-                        out.layout,
-                        &emit_pass(&out.program, i, Pass::SelectionScan).map_err(error)?,
-                        false,
-                    )?)
-                } else {
-                    None
-                });
-                let sorting =
-                    if matches!(out.program.stages()[i].operation, Operation::StableSort(_)) {
-                        Some(sort::Pipelines::new(&out, i)?)
+                    out.tails.push(tail);
+                    let adds = if matches!(
+                        out.program.stages()[i].operation,
+                        Operation::ScanExclusive(_)
+                            | Operation::CustomScan(_)
+                            | Operation::CustomSegmentedReduce(_)
+                            | Operation::Compact(_)
+                            | Operation::SegmentedReduce(_)
+                    ) || out.program.stages()[i].selection.is_some()
+                    {
+                        Some(pipeline(
+                            &out.inner,
+                            out.layout,
+                            &emit_pass(&out.program, i, Pass::ScanAdd).map_err(error)?,
+                            false,
+                        )?)
                     } else {
                         None
                     };
-                out.sorts.push(sorting);
+                    out.scan_adds.push(adds);
+                    let finish = match &out.program.stages()[i].operation {
+                        Operation::Map if out.program.stages()[i].selection.is_some() => {
+                            Some(Pass::SelectionScatter)
+                        }
+                        Operation::Compact(_) => Some(Pass::CompactScatter),
+                        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
+                            Some(Pass::ScanRootAdd)
+                        }
+                        Operation::ScanExclusive(s) if s.needs_root_add(&out.program) => {
+                            Some(Pass::ScanRootAdd)
+                        }
+                        Operation::CustomScan(s) if s.needs_root_add(&out.program) => {
+                            Some(Pass::ScanRootAdd)
+                        }
+                        _ => None,
+                    }
+                    .map(|pass| {
+                        pipeline(
+                            &out.inner,
+                            out.layout,
+                            &emit_pass(&out.program, i, pass).map_err(error)?,
+                            false,
+                        )
+                    })
+                    .transpose()?;
+                    out.finishes.push(finish);
+                    let stage = &out.program.stages()[i];
+                    let dispatch_pass = if stage.selection.is_some() {
+                        Some(Pass::SelectionArguments)
+                    } else {
+                        stage.prefix.map(Pass::DispatchArguments)
+                    };
+                    let dispatch = dispatch_pass
+                        .map(|pass| {
+                            pipeline(
+                                &out.inner,
+                                out.layout,
+                                &emit_pass(&out.program, i, pass).map_err(error)?,
+                                false,
+                            )
+                        })
+                        .transpose()?;
+                    out.dispatches.push(dispatch);
+                    out.selectors.push(if stage.selection.is_some() {
+                        Some(pipeline(
+                            &out.inner,
+                            out.layout,
+                            &emit_pass(&out.program, i, Pass::SelectionScan).map_err(error)?,
+                            false,
+                        )?)
+                    } else {
+                        None
+                    });
+                    let sorting =
+                        if matches!(out.program.stages()[i].operation, Operation::StableSort(_)) {
+                            Some(sort::Pipelines::new(&out, i)?)
+                        } else {
+                            None
+                        };
+                    out.sorts.push(sorting);
+                }
             }
         }
         Ok(Self {
@@ -1927,401 +1931,413 @@ impl GpuProgram {
             };
             scratch.push(temporary);
         }
-        unsafe {
-            let sets = u32::try_from(1 + extra_sets)?;
-            let mut sizes = vec![VkDescriptorPoolSize {
-                r#type: 7,
-                descriptorCount: u32::try_from(
-                    (data.len() + c.program.auxiliary_buffers()) as u64 * sets as u64,
-                )?,
-            }];
-            if !accelerations.is_empty() {
-                sizes.push(VkDescriptorPoolSize {
-                    r#type: 1000150000,
-                    descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
-                });
-            }
-            if !commands.textures.is_empty() {
-                sizes.push(VkDescriptorPoolSize {
-                    r#type: 1,
-                    descriptorCount: u32::try_from(commands.textures.len() as u64 * sets as u64)?,
-                });
-            }
-            let mut pool: VkDescriptorPoolCreateInfo = zero();
-            pool.sType = 33;
-            pool.maxSets = sets;
-            pool.poolSizeCount = sizes.len() as u32;
-            pool.pPoolSizes = sizes.as_ptr();
-            check(
-                (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
-                "vkCreateDescriptorPool",
-            )?;
-            let infos: Vec<_> = data
-                .iter()
-                .map(|d| VkDescriptorBufferInfo {
-                    buffer: d.allocation.buffer,
-                    offset: 0,
-                    range: d.allocation.size,
-                })
-                .collect();
-            let set = descriptor_set(&mut commands, c, &infos, &accelerations, None, None, None)?;
-            let queries = QueryPoolCreateInfo {
-                s_type: 11,
-                next: null(),
-                flags: 0,
-                query_type: 2,
-                count: query_count,
-                statistics: 0,
-            };
-            check(
-                (f.vkCreateQueryPool)(device, &queries, null(), &mut commands.queries),
-                "vkCreateQueryPool",
-            )?;
-            (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
-            let mut pending: BTreeSet<_> = (0..data.len()).collect();
-            let mut pending_reads = BTreeSet::new();
-            let mut last: Vec<_> = data.iter().map(|d| d.producer).collect();
-            for step in 0..steps.get() {
-                for (i, stage) in c.program.stages().iter().enumerate() {
-                    let affected: Vec<_> = stage
-                        .reads
-                        .iter()
-                        .chain(&stage.writes)
-                        .copied()
-                        .filter(|b| pending.contains(b))
-                        .collect();
-                    let war = stage.writes.iter().any(|b| pending_reads.contains(b));
-                    if !affected.is_empty() || war || resource_stage != 0 {
-                        let src = pending
+        if query_count != 0 {
+            unsafe {
+                let sets = u32::try_from(1 + extra_sets)?;
+                let mut sizes = vec![VkDescriptorPoolSize {
+                    r#type: 7,
+                    descriptorCount: u32::try_from(
+                        (data.len() + c.program.auxiliary_buffers()) as u64 * sets as u64,
+                    )?,
+                }];
+                if !accelerations.is_empty() {
+                    sizes.push(VkDescriptorPoolSize {
+                        r#type: 1000150000,
+                        descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
+                    });
+                }
+                if !commands.textures.is_empty() {
+                    sizes.push(VkDescriptorPoolSize {
+                        r#type: 1,
+                        descriptorCount: u32::try_from(
+                            commands.textures.len() as u64 * sets as u64,
+                        )?,
+                    });
+                }
+                let mut pool: VkDescriptorPoolCreateInfo = zero();
+                pool.sType = 33;
+                pool.maxSets = sets;
+                pool.poolSizeCount = sizes.len() as u32;
+                pool.pPoolSizes = sizes.as_ptr();
+                check(
+                    (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
+                    "vkCreateDescriptorPool",
+                )?;
+                let infos: Vec<_> = data
+                    .iter()
+                    .map(|d| VkDescriptorBufferInfo {
+                        buffer: d.allocation.buffer,
+                        offset: 0,
+                        range: d.allocation.size,
+                    })
+                    .collect();
+                let set =
+                    descriptor_set(&mut commands, c, &infos, &accelerations, None, None, None)?;
+                let queries = QueryPoolCreateInfo {
+                    s_type: 11,
+                    next: null(),
+                    flags: 0,
+                    query_type: 2,
+                    count: query_count,
+                    statistics: 0,
+                };
+                check(
+                    (f.vkCreateQueryPool)(device, &queries, null(), &mut commands.queries),
+                    "vkCreateQueryPool",
+                )?;
+                (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
+                let mut pending: BTreeSet<_> = (0..data.len()).collect();
+                let mut pending_reads = BTreeSet::new();
+                let mut last: Vec<_> = data.iter().map(|d| d.producer).collect();
+                for step in 0..steps.get() {
+                    for (i, stage) in c.program.stages().iter().enumerate() {
+                        let affected: Vec<_> = stage
+                            .reads
                             .iter()
-                            .fold(resource_stage | if war { 0x800 } else { 0 }, |s, b| {
-                                s | last[*b].stage()
-                            });
-                        let access = pending
-                            .iter()
-                            .fold(resource_access | if war { 0x20 } else { 0 }, |s, b| {
-                                s | last[*b].access()
-                            });
-                        commands.barrier(src, 0x800, access, 0x60);
-                        pending.clear();
-                        pending_reads.clear();
-                        resource_stage = 0;
-                        resource_access = 0;
-                    }
-                    let count = data[stage.domain].count;
-                    uniforms[0] = count;
-                    let query = (step as usize * c.pipelines.len() + i) as u32 * 2;
-                    (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
-                    (f.vkCmdBindDescriptorSets)(
-                        commands.command,
-                        1,
-                        c.layout,
-                        0,
-                        1,
-                        &set,
-                        0,
-                        null(),
-                    );
-                    (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
-                    let prefix_set = if let Some(args) = scratch[scratch_indices[i]]
-                        .as_mut()
-                        .and_then(|s| s.arguments.as_mut())
-                    {
-                        Some(prefix::prepare(
-                            &mut commands,
-                            c,
-                            i,
-                            args,
-                            &infos,
-                            &accelerations,
-                            &mut uniforms,
-                            self.partition_elements,
-                            step > 0 || scratch_indices[i] != i,
-                        )?)
-                    } else {
-                        None
-                    };
-                    match &stage.operation {
-                        blanguage::ir::Operation::StableSort(s) => {
-                            let temporary = scratch[scratch_indices[i]].as_ref().unwrap();
-                            sort::record(
+                            .chain(&stage.writes)
+                            .copied()
+                            .filter(|b| pending.contains(b))
+                            .collect();
+                        let war = stage.writes.iter().any(|b| pending_reads.contains(b));
+                        if !affected.is_empty() || war || resource_stage != 0 {
+                            let src = pending
+                                .iter()
+                                .fold(resource_stage | if war { 0x800 } else { 0 }, |s, b| {
+                                    s | last[*b].stage()
+                                });
+                            let access = pending
+                                .iter()
+                                .fold(resource_access | if war { 0x20 } else { 0 }, |s, b| {
+                                    s | last[*b].access()
+                                });
+                            commands.barrier(src, 0x800, access, 0x60);
+                            pending.clear();
+                            pending_reads.clear();
+                            resource_stage = 0;
+                            resource_access = 0;
+                        }
+                        let count = data[stage.domain].count;
+                        uniforms[0] = count;
+                        let query = (step as usize * c.pipelines.len() + i) as u32 * 2;
+                        (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
+                        (f.vkCmdBindDescriptorSets)(
+                            commands.command,
+                            1,
+                            c.layout,
+                            0,
+                            1,
+                            &set,
+                            0,
+                            null(),
+                        );
+                        (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
+                        let prefix_set = if let Some(args) = scratch[scratch_indices[i]]
+                            .as_mut()
+                            .and_then(|s| s.arguments.as_mut())
+                        {
+                            Some(prefix::prepare(
                                 &mut commands,
                                 c,
                                 i,
-                                s,
-                                &data,
-                                temporary.sorting.as_ref().unwrap(),
-                                temporary.arguments.as_ref(),
+                                args,
                                 &infos,
                                 &accelerations,
                                 &mut uniforms,
                                 self.partition_elements,
-                            )?;
-                        }
-                        blanguage::ir::Operation::Map if stage.selection.is_some() => {
-                            selection::record(
-                                &mut commands,
-                                c,
-                                i,
-                                &data,
-                                scratch[scratch_indices[i]].as_ref().unwrap(),
-                                &infos,
-                                &accelerations,
-                                &mut uniforms,
-                                self.partition_elements,
-                            )?;
-                        }
-                        blanguage::ir::Operation::Map if stage.prefix.is_some() => {
-                            prefix::dispatch(
-                                &commands,
-                                c,
-                                c.pipelines[i],
-                                prefix_set.unwrap(),
-                                scratch[scratch_indices[i]]
-                                    .as_ref()
-                                    .unwrap()
-                                    .arguments
-                                    .as_ref()
-                                    .unwrap(),
-                                &mut uniforms,
-                                0,
-                            );
-                        }
-                        blanguage::ir::Operation::Map => {
-                            let width = stage.workgroup_width();
-                            let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
-                                as u64
-                                * width as u64;
-                            let requested = if stage.has_tile_scope() {
-                                self.partition_elements.get().div_ceil(width) as u64 * width as u64
-                            } else {
-                                self.partition_elements.get() as u64
-                            };
-                            let partition = maximum.min(requested);
-                            let mut begin = 0u64;
-                            while begin < count as u64 {
-                                let size = (count as u64 - begin).min(partition);
-                                uniforms[0] = (begin + size) as u32;
-                                uniforms[1] = begin as u32;
-                                (f.vkCmdPushConstants)(
-                                    commands.command,
-                                    c.layout,
-                                    0x20,
-                                    0,
-                                    c.program.uniform_bytes(),
-                                    uniforms.as_ptr().cast(),
-                                );
-                                (f.vkCmdDispatch)(
-                                    commands.command,
-                                    (size as u32).div_ceil(width),
-                                    1,
-                                    1,
-                                );
-                                begin += size;
-                            }
-                        }
-                        blanguage::ir::Operation::SegmentedReduce(r) => {
-                            scan::record_segmented_reduce(
-                                &mut commands,
-                                c,
-                                [
-                                    c.pipelines[i],
-                                    c.tails[i].unwrap(),
-                                    c.scan_adds[i].unwrap(),
-                                    c.finishes[i].unwrap(),
-                                ],
-                                &r.values.fields,
-                                &data[r.values.fields.source],
-                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
-                                scratch[scratch_indices[i]]
-                                    .as_ref()
-                                    .and_then(|s| s.arguments.as_ref()),
-                                &infos,
-                                &accelerations,
-                                &mut uniforms,
-                                self.partition_elements,
-                            )?;
-                        }
-                        blanguage::ir::Operation::CustomSegmentedReduce(r) => {
-                            scan::record_segmented_reduce(
-                                &mut commands,
-                                c,
-                                [
-                                    c.pipelines[i],
-                                    c.tails[i].unwrap(),
-                                    c.scan_adds[i].unwrap(),
-                                    c.finishes[i].unwrap(),
-                                ],
-                                &r.values.fields,
-                                &data[r.values.fields.source],
-                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
-                                scratch[scratch_indices[i]]
-                                    .as_ref()
-                                    .and_then(|s| s.arguments.as_ref()),
-                                &infos,
-                                &accelerations,
-                                &mut uniforms,
-                                self.partition_elements,
-                            )?;
-                        }
-                        blanguage::ir::Operation::ScanExclusive(r) => {
-                            let add = c.scan_adds[i].unwrap();
-                            let root_add = if r.needs_root_add(&c.program) {
-                                c.finishes[i].unwrap()
-                            } else {
-                                add
-                            };
-                            scan::record(
-                                &mut commands,
-                                c,
-                                [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
-                                &r.values,
-                                r.head_word.is_some(),
-                                &data[r.values.source],
-                                &data[r.values.target].allocation,
-                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
-                                scratch[scratch_indices[i]]
-                                    .as_ref()
-                                    .and_then(|s| s.arguments.as_ref()),
-                                &infos,
-                                &accelerations,
-                                &mut uniforms,
-                                self.partition_elements,
-                                0,
-                            )?;
-                        }
-                        blanguage::ir::Operation::CustomScan(r) => {
-                            let fields = &r.values.fields;
-                            let add = c.scan_adds[i].unwrap();
-                            let root_add = if r.needs_root_add(&c.program) {
-                                c.finishes[i].unwrap()
-                            } else {
-                                add
-                            };
-                            scan::record(
-                                &mut commands,
-                                c,
-                                [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
-                                fields,
-                                r.head_word.is_some(),
-                                &data[fields.source],
-                                &data[fields.target].allocation,
-                                &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
-                                scratch[scratch_indices[i]]
-                                    .as_ref()
-                                    .and_then(|s| s.arguments.as_ref()),
-                                &infos,
-                                &accelerations,
-                                &mut uniforms,
-                                self.partition_elements,
-                                0,
-                            )?;
-                        }
-                        blanguage::ir::Operation::Compact(selection) => {
-                            compact::record(
-                                &mut commands,
-                                c,
-                                i,
-                                selection,
-                                &data,
-                                scratch[scratch_indices[i]].as_ref().unwrap(),
-                                &infos,
-                                &accelerations,
-                                &mut uniforms,
-                                self.partition_elements,
-                            )?;
-                        }
-                        blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
-                            fields: reduction,
-                            ..
-                        })
-                        | blanguage::ir::Operation::CustomReduce(
-                            blanguage::ir::CustomReduction {
-                                fields: reduction, ..
-                            },
-                        ) => {
-                            let mut length = count;
-                            let mut pass = 0;
-                            loop {
-                                let groups = length.div_ceil(64).max(1);
-                                if pass > 0 {
-                                    commands.barrier(0x800, 0x800, 0x40, 0x60);
-                                }
-                                let source = if pass == 0 {
-                                    &data[reduction.source].allocation
-                                } else {
-                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers
-                                        [(pass - 1) % 2]
-                                        .allocation
-                                };
-                                let target = if groups == 1 {
-                                    &data[reduction.target].allocation
-                                } else {
-                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers[pass % 2]
-                                        .allocation
-                                };
-                                let mut pass_infos = infos.clone();
-                                pass_infos[reduction.source] = VkDescriptorBufferInfo {
-                                    buffer: source.buffer,
-                                    offset: 0,
-                                    range: source.size,
-                                };
-                                pass_infos[reduction.target] = VkDescriptorBufferInfo {
-                                    buffer: target.buffer,
-                                    offset: 0,
-                                    range: target.size,
-                                };
-                                let pass_set = descriptor_set(
+                                step > 0 || scratch_indices[i] != i,
+                            )?)
+                        } else {
+                            None
+                        };
+                        match &stage.operation {
+                            blanguage::ir::Operation::StableSort(s) => {
+                                let temporary = scratch[scratch_indices[i]].as_ref().unwrap();
+                                sort::record(
                                     &mut commands,
                                     c,
-                                    &pass_infos,
+                                    i,
+                                    s,
+                                    &data,
+                                    temporary.sorting.as_ref().unwrap(),
+                                    temporary.arguments.as_ref(),
+                                    &infos,
                                     &accelerations,
-                                    None,
-                                    scratch[scratch_indices[i]]
-                                        .as_ref()
-                                        .and_then(|s| s.arguments.as_ref())
-                                        .map(|a| &a.allocation),
-                                    None,
-                                )?;
-                                uniforms[2 + reduction.target] = groups;
-                                scan::dispatch(
-                                    &commands,
-                                    c,
-                                    if pass == 0 {
-                                        c.pipelines[i]
-                                    } else {
-                                        c.tails[i].unwrap()
-                                    },
-                                    pass_set,
-                                    length,
                                     &mut uniforms,
                                     self.partition_elements,
+                                )?;
+                            }
+                            blanguage::ir::Operation::Map if stage.selection.is_some() => {
+                                selection::record(
+                                    &mut commands,
+                                    c,
+                                    i,
+                                    &data,
+                                    scratch[scratch_indices[i]].as_ref().unwrap(),
+                                    &infos,
+                                    &accelerations,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                )?;
+                            }
+                            blanguage::ir::Operation::Map if stage.prefix.is_some() => {
+                                prefix::dispatch(
+                                    &commands,
+                                    c,
+                                    c.pipelines[i],
+                                    prefix_set.unwrap(),
+                                    scratch[scratch_indices[i]]
+                                        .as_ref()
+                                        .unwrap()
+                                        .arguments
+                                        .as_ref()
+                                        .unwrap(),
+                                    &mut uniforms,
+                                    0,
+                                );
+                            }
+                            blanguage::ir::Operation::Map => {
+                                let width = stage.workgroup_width();
+                                let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
+                                    as u64
+                                    * width as u64;
+                                let requested = if stage.has_tile_scope() {
+                                    self.partition_elements.get().div_ceil(width) as u64
+                                        * width as u64
+                                } else {
+                                    self.partition_elements.get() as u64
+                                };
+                                let partition = maximum.min(requested);
+                                let mut begin = 0u64;
+                                while begin < count as u64 {
+                                    let size = (count as u64 - begin).min(partition);
+                                    uniforms[0] = (begin + size) as u32;
+                                    uniforms[1] = begin as u32;
+                                    (f.vkCmdPushConstants)(
+                                        commands.command,
+                                        c.layout,
+                                        0x20,
+                                        0,
+                                        c.program.uniform_bytes(),
+                                        uniforms.as_ptr().cast(),
+                                    );
+                                    (f.vkCmdDispatch)(
+                                        commands.command,
+                                        (size as u32).div_ceil(width),
+                                        1,
+                                        1,
+                                    );
+                                    begin += size;
+                                }
+                            }
+                            blanguage::ir::Operation::SegmentedReduce(r) => {
+                                scan::record_segmented_reduce(
+                                    &mut commands,
+                                    c,
+                                    [
+                                        c.pipelines[i],
+                                        c.tails[i].unwrap(),
+                                        c.scan_adds[i].unwrap(),
+                                        c.finishes[i].unwrap(),
+                                    ],
+                                    &r.values.fields,
+                                    &data[r.values.fields.source],
+                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
                                     scratch[scratch_indices[i]]
                                         .as_ref()
                                         .and_then(|s| s.arguments.as_ref()),
-                                    pass,
-                                );
-                                if groups == 1 {
-                                    break;
-                                }
-                                length = groups;
-                                pass += 1;
+                                    &infos,
+                                    &accelerations,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                )?;
                             }
-                            uniforms[2 + reduction.target] = data[reduction.target].count;
+                            blanguage::ir::Operation::CustomSegmentedReduce(r) => {
+                                scan::record_segmented_reduce(
+                                    &mut commands,
+                                    c,
+                                    [
+                                        c.pipelines[i],
+                                        c.tails[i].unwrap(),
+                                        c.scan_adds[i].unwrap(),
+                                        c.finishes[i].unwrap(),
+                                    ],
+                                    &r.values.fields,
+                                    &data[r.values.fields.source],
+                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                    scratch[scratch_indices[i]]
+                                        .as_ref()
+                                        .and_then(|s| s.arguments.as_ref()),
+                                    &infos,
+                                    &accelerations,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                )?;
+                            }
+                            blanguage::ir::Operation::ScanExclusive(r) => {
+                                let add = c.scan_adds[i].unwrap();
+                                let root_add = if r.needs_root_add(&c.program) {
+                                    c.finishes[i].unwrap()
+                                } else {
+                                    add
+                                };
+                                scan::record(
+                                    &mut commands,
+                                    c,
+                                    [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
+                                    &r.values,
+                                    r.head_word.is_some(),
+                                    &data[r.values.source],
+                                    &data[r.values.target].allocation,
+                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                    scratch[scratch_indices[i]]
+                                        .as_ref()
+                                        .and_then(|s| s.arguments.as_ref()),
+                                    &infos,
+                                    &accelerations,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                    0,
+                                )?;
+                            }
+                            blanguage::ir::Operation::CustomScan(r) => {
+                                let fields = &r.values.fields;
+                                let add = c.scan_adds[i].unwrap();
+                                let root_add = if r.needs_root_add(&c.program) {
+                                    c.finishes[i].unwrap()
+                                } else {
+                                    add
+                                };
+                                scan::record(
+                                    &mut commands,
+                                    c,
+                                    [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
+                                    fields,
+                                    r.head_word.is_some(),
+                                    &data[fields.source],
+                                    &data[fields.target].allocation,
+                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
+                                    scratch[scratch_indices[i]]
+                                        .as_ref()
+                                        .and_then(|s| s.arguments.as_ref()),
+                                    &infos,
+                                    &accelerations,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                    0,
+                                )?;
+                            }
+                            blanguage::ir::Operation::Compact(selection) => {
+                                compact::record(
+                                    &mut commands,
+                                    c,
+                                    i,
+                                    selection,
+                                    &data,
+                                    scratch[scratch_indices[i]].as_ref().unwrap(),
+                                    &infos,
+                                    &accelerations,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                )?;
+                            }
+                            blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
+                                fields: reduction,
+                                ..
+                            })
+                            | blanguage::ir::Operation::CustomReduce(
+                                blanguage::ir::CustomReduction {
+                                    fields: reduction, ..
+                                },
+                            ) => {
+                                let mut length = count;
+                                let mut pass = 0;
+                                loop {
+                                    let groups = length.div_ceil(64).max(1);
+                                    if pass > 0 {
+                                        commands.barrier(0x800, 0x800, 0x40, 0x60);
+                                    }
+                                    let source = if pass == 0 {
+                                        &data[reduction.source].allocation
+                                    } else {
+                                        &scratch[scratch_indices[i]].as_ref().unwrap().buffers
+                                            [(pass - 1) % 2]
+                                            .allocation
+                                    };
+                                    let target = if groups == 1 {
+                                        &data[reduction.target].allocation
+                                    } else {
+                                        &scratch[scratch_indices[i]].as_ref().unwrap().buffers
+                                            [pass % 2]
+                                            .allocation
+                                    };
+                                    let mut pass_infos = infos.clone();
+                                    pass_infos[reduction.source] = VkDescriptorBufferInfo {
+                                        buffer: source.buffer,
+                                        offset: 0,
+                                        range: source.size,
+                                    };
+                                    pass_infos[reduction.target] = VkDescriptorBufferInfo {
+                                        buffer: target.buffer,
+                                        offset: 0,
+                                        range: target.size,
+                                    };
+                                    let pass_set = descriptor_set(
+                                        &mut commands,
+                                        c,
+                                        &pass_infos,
+                                        &accelerations,
+                                        None,
+                                        scratch[scratch_indices[i]]
+                                            .as_ref()
+                                            .and_then(|s| s.arguments.as_ref())
+                                            .map(|a| &a.allocation),
+                                        None,
+                                    )?;
+                                    uniforms[2 + reduction.target] = groups;
+                                    scan::dispatch(
+                                        &commands,
+                                        c,
+                                        if pass == 0 {
+                                            c.pipelines[i]
+                                        } else {
+                                            c.tails[i].unwrap()
+                                        },
+                                        pass_set,
+                                        length,
+                                        &mut uniforms,
+                                        self.partition_elements,
+                                        scratch[scratch_indices[i]]
+                                            .as_ref()
+                                            .and_then(|s| s.arguments.as_ref()),
+                                        pass,
+                                    );
+                                    if groups == 1 {
+                                        break;
+                                    }
+                                    length = groups;
+                                    pass += 1;
+                                }
+                                uniforms[2 + reduction.target] = data[reduction.target].count;
+                            }
                         }
-                    }
-                    (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query + 1);
-                    pending_reads.extend(stage.reads.iter().copied());
-                    for b in &stage.writes {
-                        pending.insert(*b);
-                        last[*b] = Usage::Compute;
-                        data[*b].storage.producer = Usage::Compute;
+                        (f.vkCmdWriteTimestamp)(
+                            commands.command,
+                            0x800,
+                            commands.queries,
+                            query + 1,
+                        );
+                        pending_reads.extend(stage.reads.iter().copied());
+                        for b in &stage.writes {
+                            pending.insert(*b);
+                            last[*b] = Usage::Compute;
+                            data[*b].storage.producer = Usage::Compute;
+                        }
                     }
                 }
             }
         }
         commands.submit()?;
-        let queries = QueryPool::take(&mut commands, query_count);
+        let queries = (query_count != 0).then(|| QueryPool::take(&mut commands, query_count));
         let execution = Execution::new(
             ExecutionResources::Compute {
                 commands,
@@ -2418,7 +2434,7 @@ pub struct Submission {
     execution: Rc<Execution>,
     bindings: DomainBindings<GpuDataset>,
     accelerations: Vec<Acceleration>,
-    queries: Rc<QueryPool>,
+    queries: Option<Rc<QueryPool>>,
 }
 pub struct Completed {
     bindings: DomainBindings<GpuDataset>,
@@ -2456,7 +2472,13 @@ impl Submission {
     }
     pub fn wait(mut self) -> Result<Completed> {
         self.execution.wait()?;
-        let timings = self.queries.read()?;
+        let timings = match &self.queries {
+            Some(queries) => queries.read()?,
+            None => GpuTimings {
+                elapsed_ms: 0.0,
+                stage_ms: Vec::new(),
+            },
+        };
         for dataset in &mut self.bindings.datasets {
             dataset.last_use = None;
         }

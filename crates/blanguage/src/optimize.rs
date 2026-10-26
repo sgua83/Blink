@@ -158,6 +158,7 @@ pub fn optimize(program: &mut Program) {
         stage.registers = registers;
         stage.locals = locals;
     }
+    stages.retain(|stage| !matches!(stage.operation, Operation::Map) || !stage.code.is_empty());
     program.stages = stages;
 }
 fn value_code(value: &mut ValueCode) {
