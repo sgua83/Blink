@@ -2388,6 +2388,8 @@ Rust 消费者从编译结果获取布局，不能手写另一份结构体步长
 
 SPIR-V 1.4 直接按标准编码。GPU 的逻辑数据集通过只读的 u64 设备地址页表访问最多 256 MiB 的物理页；记录不跨页，源语言的元素索引仍是 u32。64 位物理地址不表示源语言已经支持通用 u64。分页、上传、读回和递归归约临时存储由同一执行框架拥有。当前普通 GPU map 每组默认 64 个线程，tile 阶段使用其源码宽度；这不是假定硬件 wave 必须为 64，也与 Burley SSS 的采样数无关。驱动仍负责把 SPIR-V 转成具体 GPU 指令；自研语言不等于绕开硬件驱动。
 
+当前已在 RX 9070 GRE 原生执行单逻辑数据 4362076160 字节（4 GiB 加 64 MiB）：272629760 条、stride=16、17 个物理页，原地 map 的全部读回内容与 CPU 原生结果和独立参考一致。后续间接索引及同一大数据的 view 各执行100003条查询，覆盖页边界、4 GiB 前后和无效索引；不是把多个小数据集的容量相加。该数据的 Vulkan 分配口径为4362076296字节，不等于驱动驻留量；记录索引仍为u32，不据此称多设备、超出u32记录域或所有集合算法已在此规模完成。实际阶段、耗时范围和未完成项见 [问题列表](Issues.md)。
+
 ```powershell
 .\target\release\blc.exe check ..\BLEngine\Programs\render\frame.b ..\BLEngine\Programs 'frame<2,3840,2160,2,8294400,33177600>'
 .\target\release\blc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
