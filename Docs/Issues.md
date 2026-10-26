@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-005 的已知不可达整数比较分支：**保守拒绝已确认，待修复** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLEngine/Saved/SpatialAggregation`；文档隔离client `BLanguage_Gua_AggregationIssue`，保留主工作区既有未提交记录。实际引擎聚合的无余数分区中，u32的next≥1但next<0选择臂仍扩张返回范围，最终安全for索引报B137；直接常量终点被接纳。仅登记已确认的保守拒绝，不修改其他会话正在研发的前端／后端，不宣称语言修复。具体最小复现与影响见末节。 | 2026-10-27 02:10 +08:00 |
 | C-005 的空整数域安全索引：**本轮源码与原生核对完成；源码已提交／Git 已回读** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage`，client `BLanguage_Gua`；仅修正 bounds.rs 的 index_in 片段包含关系，空下标值域包含于零长度资源域；无新IR／ABI／运行时状态。源码及规范 CL13268，Git `4b68dd17f115556d4c6444cb65e5ecf5176502c6` 三文件与精确P4一致。Release主线59.81秒、14组CPU／GPU各200162个输出word及5项类型／范围／权限拒绝保持；引擎零世界与100003实例场景区域已实际消费。15个临时文件、3927639字节已清理，原始结果保留；台账通过隔离client BLanguage_Gua_EmptyIndexIssue提交，保留其他会话编辑。其他C-005范围继续开放。 | 2026-10-27 01:21 +0800 |
 | C-020.3 的 CPU dataset 重赋值与重新初始化：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；在 CL13242／CL13259 上补齐普通 CPU 应用的资源重赋值、移动后重新初始化、无初值 dataset 局部与拥有形参再绑定。区分绑定位置与实际资源身份，沿既有局部槽、Proof、分支／循环和 Frame 交接，处理旧资源退出、实参求值、形状／位置和旧索引事实；不复制 payload，不增加运行时拥有标记或资源注册表。预计修改前端 check.rs 的局部／赋值片段及 application.rs、cooperative.rs、returns.rs、flow.rs、effects.rs、ownership.rs、generics.rs、contracts.rs 和必要规范／正式消费者；bounds.rs 仅接通原 Value 身份及应用资源事实投影，不改数值推导算法；避开 PA2 数值 for 与 bounds 的数值算法 与 Gua GPU 共享 Count，不改后端、IR、ABI 或运行库。先提交本认领，再基线、实现、Release／CPU／GPU 原生复核、清理和提交。资源聚合、write 全域初始化、其他资源及更大架构项仍开放。 | 2026-10-27 01:14 +08:00 |
 | C-002／C-024 的 x64 编译期步长寻址：**本轮指令降低已提交发布；效率改善未证实** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；12 个 x64 文件的 26 处已知步长缩放由原 Emitter 统一选择 64 位 SHL／IMUL 与硬件 1／2／4／8 比例 LEA，保留布局、值算术、IR／ABI 与资源所有者，避让 PA3 前端及 Gua 运行库。候选 Release 55.93 秒，695 组 CPU／688 组 GPU、3600 组保护页及 100 组 u32 最大索引末端核对通过；35 个二的幂布局内核缩短，15 个非二的幂布局内核逐字节相同。已集成 CL13273／13275，Release 24.92 秒、编译器库哈希相同，追加 295 CPU／288 GPU 通过。交错及同进程计时未证实稳定提速，64 字节流式样本略慢，C-002／C-024 效率目标继续开放。217 个临时文件、40169648 字节已清理，认领 CL13266／Git f955af5fb9aa555257f27c8afe234d78b7311563 保留，14 个源码／说明／台账文件已提交 CL13277，单次 Git 发布 622ebae838af1823f4828053690d252589ca141c，远端已回读，14 个 blob 与精确 P4@13277 一致。 | 2026-10-27 02:00 +08:00 |
@@ -1964,3 +1965,22 @@ Release消费者PID3716、退出0：完整4K／内部8K，两次提交返回时�
 删除多余 Sealed 后，Release 配置 cargo check 3.12 秒通过；外部自有存储可实现通用辅助接口，但传入 GPU submit 被原有 DomainBindings<GpuDataset> 具体类型边界拒绝。核心身份、原始关系与 GPU 执行方法体没有变化。删除层已提交 CL13275，最终六个源码／规范文件在 Git `93ea6e0a43bc91bdad8508cb2a280fa49c887a48` 与精确 P4@13275 全部相同。最终主工作区 Release 26.25 秒通过，以本次顶层正式 rlib 重建消费者，再次完成 0／65／4099／1000003 四组正式 pipeline 的 submit_join／submit_after 与全部源／筛选／扫描／归约／计数／尾部核对，四次生产者观测均为 pending。额外 36 个元数据检查文件／2425438 字节及三个最终原生消费者文件／3430691 字节已清理；各阶段累计 105 个临时文件／81501274 字节已清理，主 target 与正式产物保留。
 
 认领 CL13261 保留。最终集成消费者完整复核通过，25 次生产者观测均为 pending；63 个临时消费者／原生产物／隔离 SDK target 文件共 72214454 字节已经清理，原始结果与诊断保留。六个源码／规范文件已提交 CL13273，Git `fbb598b732781aff039655ffd2406a01baaeed6e` 的六个 blob 与精确 P4@13273 相同，远端 main 已回读。主工作区接入三个运行库文件及两份说明，Release 构建 25.33 秒通过；以 Cargo 顶层正式 rlib 构建临时原生消费者，直接复用 sample/lessons/pipeline.b，在 0／65／4099／1000003 条四组实际 pending 生产后冻结同一输入与 Count，分叉排序、submit_join 改用兄弟 Count 别名、submit_after 再排序；末项完成后源、筛选、原 scan／reduce、最终排序、Count 与容量尾部均符合独立参考。首次临时消费者误选 target/deps 的历史 rlib，Rust 编译拒绝；只修正为 Cargo 本次正式产物输入，未修改语言／运行库规则，诊断保留。主采用的三个临时文件共 3430691 字节已经清理，主 target／Release 工具继续保留；两工作区共清理 66 个文件／75645145 字节。C-006／C-022.4 的 CPU 共享绑定、其他调度和系统范围继续开放，不将本轮原生结果外推为引擎画面、帧率或通用吞吐结论。
+
+### C-005：无余数分区中的不可达整数比较臂（2026-10-27）
+
+- 状态：已确认保守拒绝，尚未修复。发现于BLEngine的B原生空间排序／分块聚合；不影响已经通过的空整数域索引CL13268，不宣称运行时越界或错误接纳。
+- 在write dataset<f32,1>的parallel中，group=index()只能为0，next=group+1只能为1。下面的extra为0，两个比较均为假，span恰为(0,14287)；for的实际最大地址为14286×7=100002，位于100003条read dataset内：
+
+```c
+u32 group=index();
+u32 width=14287;u32 extra=0;u32 next=group+1;
+uint2 span=uint2(group*width+(group<extra?group:extra),
+                next*width+(next<extra?next:extra));
+f32 value=0.0;
+for(j in span.x+1..span.y){value+=input[j*7];}
+result=value;
+```
+
+- 当前Release主编译器对该表达式及同式的uint2函数返回均报B137，直接写for(j in 1..14287)则接纳。诊断来自真实compile_entry，原始结果在E:/BLEngineMeasurements/SpatialAggregation/probe.log。临时程序仅用于定位，完成后清理，不新增常设测试入口。
+- 源码检查指向现有整数Condition比较／选择合流：严格上界为0时，constrain的checked_sub不能产生上界事实；后续并未排除该已知不可达选择臂。尚未完成独立修复与所有语义核对，保留C-005状态，不改IR、ABI、资源访问或运行时保护。
+- 引擎分区对编译期余数为0直接使用商的两个乘积端点，消除不需要的余数分配比较；有余数时仍使用同一均分公式。该静态算法特化不是语言修复，未特化表达式的保守拒绝继续保留。引擎所有实际资源访问仍由普通静态索引规则检查，没有增加unchecked访问或运行时检查。
