@@ -54,15 +54,17 @@ impl From<Memory> for Operand {
         Self::Memory(memory)
     }
 }
-impl From<Location> for Operand {
-    fn from(location: Location) -> Self {
+impl Emitter<'_> {
+    fn operand(&mut self, location: Location, temporary: u8) -> Operand {
         match location {
-            Location::Gpr(r) | Location::Xmm(r) => Self::Register(r),
-            Location::Stack(offset) => Self::memory(4, offset),
+            Location::Gpr(r) | Location::Xmm(r) => Operand::Register(r),
+            Location::Stack(offset) => Operand::memory(4, offset),
+            Location::Immediate(bits) => {
+                self.literal(Location::Gpr(temporary), bits);
+                Operand::Register(temporary)
+            }
         }
     }
-}
-impl Emitter<'_> {
     pub(super) fn value_memory(
         &mut self,
         base: u8,
@@ -187,23 +189,32 @@ impl Emitter<'_> {
             return;
         }
         match (dst, src) {
+            // A literal has no writable storage, including phase restoration.
+            (Location::Immediate(_), _) => {}
+            (_, Location::Immediate(bits)) => self.literal(dst, bits),
             (Location::Gpr(d), Location::Gpr(_) | Location::Stack(_)) => {
-                self.instruction(None, &[0x8b], false, d, src.into());
+                let operand = self.operand(src, 1);
+                self.instruction(None, &[0x8b], false, d, operand);
             }
             (Location::Stack(_), Location::Gpr(s)) => {
-                self.instruction(None, &[0x89], false, s, dst.into());
+                let operand = self.operand(dst, 1);
+                self.instruction(None, &[0x89], false, s, operand);
             }
             (Location::Xmm(d), Location::Xmm(_)) => {
-                self.instruction(None, &[0x0f, 0x28], false, d, src.into());
+                let operand = self.operand(src, 1);
+                self.instruction(None, &[0x0f, 0x28], false, d, operand);
             }
             (Location::Xmm(d), Location::Stack(_)) => {
-                self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, src.into());
+                let operand = self.operand(src, 1);
+                self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, operand);
             }
             (Location::Stack(_), Location::Xmm(s)) => {
-                self.instruction(Some(0xf3), &[0x0f, 0x11], false, s, dst.into());
+                let operand = self.operand(dst, 1);
+                self.instruction(Some(0xf3), &[0x0f, 0x11], false, s, operand);
             }
             (Location::Xmm(d), Location::Gpr(_)) => {
-                self.instruction(Some(0x66), &[0x0f, 0x6e], false, d, src.into());
+                let operand = self.operand(src, 1);
+                self.instruction(Some(0x66), &[0x0f, 0x6e], false, d, operand);
             }
             (Location::Gpr(d), Location::Xmm(s)) => {
                 self.instruction(Some(0x66), &[0x0f, 0x7e], false, s, Operand::Register(d));
@@ -233,14 +244,19 @@ impl Emitter<'_> {
         self.copy(self.location(r), Location::Xmm(0));
     }
     pub(super) fn constant(&mut self, r: Reg, bits: u32) {
-        match self.location(r) {
+        self.literal(self.location(r), bits);
+    }
+    fn literal(&mut self, dst: Location, bits: u32) {
+        match dst {
+            Location::Immediate(_) => {}
             Location::Gpr(d) => {
                 self.rex(false, 0, d, 0);
                 self.bytes(&[0xb8 | (d & 7)]);
                 self.u32(bits);
             }
             dst @ Location::Stack(_) => {
-                self.instruction(None, &[0xc7], false, 0, dst.into());
+                let operand = self.operand(dst, 1);
+                self.instruction(None, &[0xc7], false, 0, operand);
                 self.u32(bits);
             }
             dst @ Location::Xmm(_) => {
@@ -255,7 +271,7 @@ impl Emitter<'_> {
         match dst {
             Location::Gpr(d) => self.instruction(None, &[0x8b], false, d, source),
             Location::Xmm(d) => self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, source),
-            Location::Stack(_) => {
+            Location::Stack(_) | Location::Immediate(_) => {
                 let temporary = memory.temporary_register();
                 self.instruction(None, &[0x8b], false, temporary, source);
                 self.copy(dst, Location::Gpr(temporary));
@@ -288,6 +304,10 @@ impl Emitter<'_> {
     pub(super) fn write_address(&mut self, src: Location, memory: Memory) {
         let target = memory.into();
         match src {
+            Location::Immediate(bits) => {
+                self.instruction(None, &[0xc7], false, 0, target);
+                self.u32(bits);
+            }
             Location::Gpr(s) => self.instruction(None, &[0x89], false, s, target),
             Location::Xmm(s) => self.instruction(Some(0xf3), &[0x0f, 0x11], false, s, target),
             Location::Stack(_) => {
@@ -305,18 +325,45 @@ impl Emitter<'_> {
             _ => 0,
         };
         self.copy(Location::Xmm(target), a);
-        self.instruction(Some(0xf3), &[0x0f, opcode], false, target, b.into());
+        let right = self.operand(b, 1);
+        self.instruction(Some(0xf3), &[0x0f, opcode], false, target, right);
         self.copy(d, Location::Xmm(target));
     }
-    pub(super) fn integer_binary(&mut self, dst: Reg, a: Reg, b: Reg, opcode: &[u8]) {
+    pub(super) fn integer_binary(
+        &mut self,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        opcode: &[u8],
+        immediate: Option<u8>,
+    ) {
         let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
         let target = match d {
             Location::Gpr(r) if d != b || a == b => r,
             _ => 0,
         };
         self.copy(Location::Gpr(target), a);
-        self.instruction(None, opcode, false, target, b.into());
+        if let Location::Immediate(bits) = b {
+            if let Some(extension) = immediate {
+                self.integer_immediate(extension, target, bits);
+            } else {
+                self.instruction(None, &[0x69], false, target, Operand::Register(target));
+                self.u32(bits);
+            }
+        } else {
+            let right = self.operand(b, 1);
+            self.instruction(None, opcode, false, target, right);
+        }
         self.copy(d, Location::Gpr(target));
+    }
+    fn integer_immediate(&mut self, extension: u8, target: u8, bits: u32) {
+        if i8::try_from(bits as i32).is_ok() {
+            self.instruction(None, &[0x83], false, extension, Operand::Register(target));
+            self.bytes(&[bits as u8]);
+        } else {
+            self.instruction(None, &[0x81], false, extension, Operand::Register(target));
+            self.u32(bits);
+        }
     }
     pub(super) fn float_sqrt(&mut self, dst: Reg, source: Reg) {
         let d = self.location(dst);
@@ -324,13 +371,8 @@ impl Emitter<'_> {
             Location::Xmm(r) => r,
             _ => 0,
         };
-        self.instruction(
-            Some(0xf3),
-            &[0x0f, 0x51],
-            false,
-            target,
-            self.location(source).into(),
-        );
+        let source = self.operand(self.location(source), 1);
+        self.instruction(Some(0xf3), &[0x0f, 0x51], false, target, source);
         self.copy(d, Location::Xmm(target));
     }
     pub(super) fn integer_unary(
@@ -348,21 +390,30 @@ impl Emitter<'_> {
             _ => Location::Gpr(0),
         };
         self.copy(target, source);
-        self.instruction(None, &[opcode], false, extension, target.into());
+        let operand = self.operand(target, 1);
+        self.instruction(None, &[opcode], false, extension, operand);
         if let Some(value) = immediate {
             self.bytes(&[value]);
         }
         self.copy(d, target);
     }
     pub(super) fn shift(&mut self, dst: Reg, a: Reg, b: Reg, kind: u8) {
-        self.copy(Location::Gpr(1), self.location(b));
+        let shift = self.location(b);
+        if !matches!(shift, Location::Immediate(_)) {
+            self.copy(Location::Gpr(1), shift);
+        }
         let d = self.location(dst);
         let target = match d {
             Location::Gpr(r) => r,
             _ => 0,
         };
         self.copy(Location::Gpr(target), self.location(a));
-        self.instruction(None, &[0xd3], false, kind, Operand::Register(target));
+        if let Location::Immediate(bits) = shift {
+            self.instruction(None, &[0xc1], false, kind, Operand::Register(target));
+            self.bytes(&[(bits & 31) as u8]);
+        } else {
+            self.instruction(None, &[0xd3], false, kind, Operand::Register(target));
+        }
         self.copy(d, Location::Gpr(target));
     }
     pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
@@ -374,20 +425,31 @@ impl Emitter<'_> {
                 _ => 0,
             };
             self.copy(Location::Xmm(left), a);
-            self.instruction(None, &[0x0f, 0x2e], false, left, b.into());
+            let right = self.operand(b, 1);
+            self.instruction(None, &[0x0f, 0x2e], false, left, right);
         } else {
             let left = match a {
                 Location::Gpr(r) => r,
                 _ => 0,
             };
             self.copy(Location::Gpr(left), a);
-            self.instruction(None, &[0x3b], false, left, b.into());
+            if let Location::Immediate(bits) = b {
+                self.integer_immediate(7, left, bits);
+            } else {
+                let right = self.operand(b, 1);
+                self.instruction(None, &[0x3b], false, left, right);
+            }
         }
         self.comparison_result(dst, comparison, scalar);
     }
     pub(super) fn select(&mut self, dst: Reg, condition: Reg, a: Reg, b: Reg) {
         let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
-        self.instruction(None, &[0x83], false, 7, self.location(condition).into());
+        if let Location::Immediate(bits) = self.location(condition) {
+            self.copy(d, if bits != 0 { a } else { b });
+            return;
+        }
+        let condition = self.operand(self.location(condition), 2);
+        self.instruction(None, &[0x83], false, 7, condition);
         self.bytes(&[0]);
         let target = match d {
             Location::Gpr(r) => r,
@@ -397,11 +459,11 @@ impl Emitter<'_> {
         let (initial, source, opcode) = if d == a { (a, b, 0x44) } else { (b, a, 0x45) };
         self.copy(Location::Gpr(target), initial);
         let source = match source {
-            Location::Xmm(_) => {
+            Location::Xmm(_) | Location::Immediate(_) => {
                 self.copy(Location::Gpr(1), source);
                 Operand::Register(1)
             }
-            location => location.into(),
+            location => self.operand(location, 1),
         };
         self.instruction(None, &[0x0f, opcode], false, target, source);
         self.copy(d, Location::Gpr(target));

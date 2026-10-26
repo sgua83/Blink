@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
+    Immediate(u32),
     Gpr(u8),
     Xmm(u8),
     Stack(u32),
@@ -301,10 +302,14 @@ impl Graph {
     }
     fn allocate<P: Copy + Ord>(
         &self,
+        fixed: impl Fn(usize) -> Option<P>,
         candidates: impl Fn(usize, bool) -> Vec<P>,
         stack: impl Fn(u32) -> P,
     ) -> (Vec<P>, u32) {
-        let mut order: Vec<_> = (0..self.edges.len()).collect();
+        let mut locations: Vec<_> = (0..self.edges.len()).map(fixed).collect();
+        let mut order: Vec<_> = (0..self.edges.len())
+            .filter(|id| locations[*id].is_none())
+            .collect();
         order.sort_by_key(|id| {
             (
                 std::cmp::Reverse(self.weights[*id]),
@@ -312,7 +317,6 @@ impl Graph {
                 *id,
             )
         });
-        let mut locations = vec![None; self.edges.len()];
         let mut spills = 0u32;
         for id in order {
             let used: BTreeSet<_> = self.edges[id]
@@ -340,6 +344,38 @@ impl Graph {
 }
 impl Allocation {
     pub fn new(stage: &Stage, graph: &Graph) -> Self {
+        // A register may be defined in several structured blocks. Only identical
+        // literal definitions have no mutable storage; locals remain real slots.
+        fn literals(code: &[Inst], values: &mut [Option<Option<u32>>]) {
+            for inst in code {
+                let literal = match inst {
+                    Inst::Constant(_, scalar, bits) if *scalar != Scalar::F32 => Some(*bits),
+                    _ => None,
+                };
+                for dst in inst.results() {
+                    values[dst] = Some(match values[dst] {
+                        None => literal,
+                        Some(previous) => previous.filter(|bits| Some(*bits) == literal),
+                    });
+                }
+                match inst {
+                    Inst::If { yes, no, .. } => {
+                        literals(yes, values);
+                        literals(no, values);
+                    }
+                    Inst::Loop {
+                        condition, body, ..
+                    } => {
+                        literals(condition, values);
+                        literals(body, values);
+                    }
+                    Inst::Scope(body) => literals(body, values),
+                    _ => {}
+                }
+            }
+        }
+        let mut constants = vec![None; stage.registers.len() + stage.locals.len()];
+        literals(&stage.code, &mut constants);
         let scalars: Vec<_> = stage
             .registers
             .iter()
@@ -355,6 +391,7 @@ impl Allocation {
         };
         let base = graph.outgoing_bytes;
         let (mut locations, spills) = graph.allocate(
+            |id| constants[id].flatten().map(Location::Immediate),
             |id, across_call| {
                 if scalars[id] == Scalar::F32 {
                     (2..16)
@@ -403,6 +440,7 @@ impl PacketAllocation {
             graph.weights[*r] = 0;
         }
         let (locations, spills) = graph.allocate(
+            |_| None,
             |_, _| (4..16).map(PacketPlace::Register).collect(),
             |slot| PacketPlace::Stack(slot * 16),
         );
