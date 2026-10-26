@@ -32,4 +32,4 @@
 
 ## 第三本：《BLEngine 源码分析》
 
-[书稿](BLEngine源码分析.md) · [阅读场景与命令](engine/README.md) · [手机 PDF](pdf/BLEngine源码分析-手机阅读版.pdf) · [标准 PDF](pdf/BLEngine源码分析.pdf)。固定 BLEngine CL12969，沿同一个双实例场景分析架构、数据生产消费与资源寿命，包含真实 4K 输出、编译阶段和原生运行记录。
+[书稿](BLEngine源码分析.md) · [阅读场景与命令](engine/README.md) · [手机 PDF](pdf/BLEngine源码分析-手机阅读版.pdf) · [标准 PDF](pdf/BLEngine源码分析.pdf)。固定 BLEngine CL13031、Blink CL13046，以 25 章从数学、几何变换和相机逐步讲到场景、资产、材质光照、Stella 输运、GPU 执行与窗口；包含 35 处核心源码节选、执行图、完整源码结构索引及重新运行的真实 4K 场景，明确说明尚未实现的引擎能力。
