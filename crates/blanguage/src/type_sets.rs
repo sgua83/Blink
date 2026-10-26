@@ -20,6 +20,24 @@ impl TypeFamily {
     }
 }
 impl World {
+    pub(crate) fn family_accepts(
+        &self,
+        family: &Option<TypeFamily>,
+        actual: &Ty,
+        source: &Source,
+        span: Span,
+        module: &str,
+        imports: &[String],
+        stack: &mut BTreeSet<String>,
+    ) -> Result<bool> {
+        match family {
+            None => Ok(actual.view.is_none()),
+            Some(family) => Ok(self
+                .family_members(family, source, span, module, imports, stack)?
+                .iter()
+                .any(|(_, member)| member.name == actual.name)),
+        }
+    }
     pub(crate) fn family_members(
         &self,
         family: &TypeFamily,

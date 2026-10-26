@@ -2,6 +2,9 @@
 use crate::{World, ast::*, ir::Ty};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) fn is_open(types: &[TypeParameter], values: &[ValueParameter]) -> bool {
+    types.iter().any(|p| p.family.is_none()) || values.iter().any(|p| p.choices.is_none())
+}
 pub(crate) fn key(base: &str, types: &[String]) -> String {
     format!("{base}<{}>", types.join(","))
 }
@@ -154,14 +157,12 @@ pub(crate) fn combinations(
 ) -> Result<Vec<Vec<TypeName>>> {
     let mut result = vec![Vec::new()];
     for parameter in types {
-        let members = world.family_members(
-            &parameter.family,
-            source,
-            span,
-            module,
-            imports,
-            &mut BTreeSet::new(),
-        )?;
+        let Some(family) = &parameter.family else {
+            result.clear();
+            continue;
+        };
+        let members =
+            world.family_members(family, source, span, module, imports, &mut BTreeSet::new())?;
         result = result
             .into_iter()
             .flat_map(|prefix| {

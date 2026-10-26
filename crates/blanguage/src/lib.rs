@@ -194,7 +194,7 @@ fn compile_module(
     let mut programs = Vec::new();
     let mut templates = Vec::new();
     let mut applications = Vec::new();
-    // 有限声明逐项检查；选定的入口与开放 const 声明在具体使用处实例化。
+    // 有限声明逐项检查；选定的入口与开放声明在具体使用处实例化。
     for (base, definition) in &world.functions {
         generics::validate_declaration(definition)?;
         if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
@@ -244,13 +244,13 @@ fn compile_module(
     let open_generics: Vec<_> = world
         .records
         .iter()
-        .filter(|(_, (record, ..))| record.values.iter().any(|p| p.choices.is_none()))
+        .filter(|(_, (record, ..))| generics::is_open(&record.types, &record.values))
         .map(|(name, _)| name.clone())
         .chain(
             world
                 .functions
                 .iter()
-                .filter(|(_, d)| d.function.values.iter().any(|p| p.choices.is_none()))
+                .filter(|(_, d)| generics::is_open(&d.function.types, &d.function.values))
                 .map(|(name, _)| name.clone()),
         )
         .collect();
@@ -259,12 +259,12 @@ fn compile_module(
             d.module == entry
                 && d.public
                 && d.function.kind == FunctionKind::Program
-                && d.function.values.iter().any(|p| p.choices.is_none())
+                && generics::is_open(&d.function.types, &d.function.values)
         }) {
             return world.sources[&entry].fail(
                 Span::default(),
                 "B240",
-                "开放 const program 需要选择具体入口，例如 compile_entry(..., \"run<13>\")",
+                "开放泛型 program 需要选择具体入口，例如 compile_entry(..., \"run<13>\")",
             );
         }
         return world.sources[&entry].fail(
@@ -620,8 +620,7 @@ impl World {
                 return source.fail(span, "B232", "记录类型实参不能直接是资源包装");
             }
             let actual = self.ty_inner(arg, source, span, module, imports, stack)?;
-            let members = self.family_members(&parameter.family, s, record.span, m, i, stack)?;
-            if !members.iter().any(|(_, member)| member.name == actual.name) {
+            if !self.family_accepts(&parameter.family, &actual, s, record.span, m, i, stack)? {
                 return source.fail(
                     span,
                     "B232",

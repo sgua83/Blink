@@ -72,7 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     if !compilation.open_generics.is_empty() {
         println!(
-            "open const declarations (body checked on instantiation): {}",
+            "open generic declarations (body checked on instantiation): {}",
             compilation.open_generics.join(", ")
         );
     }

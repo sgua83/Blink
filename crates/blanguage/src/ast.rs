@@ -196,7 +196,7 @@ pub enum TypeFamily {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeParameter {
     pub name: String,
-    pub family: TypeFamily,
+    pub family: Option<TypeFamily>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueParameter {

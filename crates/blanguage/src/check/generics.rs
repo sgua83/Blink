@@ -142,15 +142,15 @@ pub(crate) fn specialize(
                 return source.fail(span, "B231", "类型实参不能直接是资源包装");
             }
             let actual = world.ty(ty, source, span, &caller.module, &caller.imports)?;
-            let members = world.family_members(
+            if !world.family_accepts(
                 &parameter.family,
+                &actual,
                 &callee.source,
                 f.span,
                 &callee.module,
                 &callee.imports,
                 &mut BTreeSet::new(),
-            )?;
-            if !members.iter().any(|(_, t)| t.name == actual.name) {
+            )? {
                 return source.fail(
                     span,
                     "B231",
@@ -294,21 +294,21 @@ fn infer_type(
         if !formal.arguments.is_empty() {
             return source.fail(span, "B232", "类型参数已代表完整类型，不能再附加实参");
         }
-        let members = world.family_members(
+        if !world.family_accepts(
             &parameter.family,
+            actual,
             &callee.source,
             span,
             &callee.module,
             &callee.imports,
             &mut BTreeSet::new(),
-        )?;
-        if !members.iter().any(|(_, member)| member.name == actual.name) {
+        )? {
             return source.fail(
                 span,
                 "B231",
                 format!(
-                    "类型 {} 不属于 {} 的 {:?} 类型集合",
-                    actual.name, parameter.name, parameter.family
+                    "类型 {} 不满足参数 {} 的普通值类型或有限集合约束",
+                    actual.name, parameter.name
                 ),
             );
         }

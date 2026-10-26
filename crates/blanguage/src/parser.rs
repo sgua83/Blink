@@ -251,8 +251,8 @@ impl Parser {
                 if types.iter().any(|t| t.name == name) || values.iter().any(|v| v.name == name) {
                     return self.source.fail(span, "B231", "重复的泛型参数");
                 }
-                self.expect(":")?;
                 if is_value {
+                    self.expect(":")?;
                     let ty = self.ty()?;
                     if !matches!(ty.name.as_str(), "u32" | "uint")
                         || !ty.arguments.is_empty()
@@ -296,14 +296,18 @@ impl Parser {
                             .source
                             .fail(span, "B235", "类型参数必须写在 const 参数之前");
                     }
-                    let bound = self.type_name()?;
-                    let family = match bound.as_str() {
-                        "numeric" => TypeFamily::Numeric,
-                        "floating" => TypeFamily::Floating,
-                        "integer" => TypeFamily::Integer,
-                        "scalar_numeric" => TypeFamily::ScalarNumeric,
-                        "scalar_integer" => TypeFamily::ScalarInteger,
-                        _ => TypeFamily::Named(bound),
+                    let family = if self.take(":") {
+                        let bound = self.type_name()?;
+                        Some(match bound.as_str() {
+                            "numeric" => TypeFamily::Numeric,
+                            "floating" => TypeFamily::Floating,
+                            "integer" => TypeFamily::Integer,
+                            "scalar_numeric" => TypeFamily::ScalarNumeric,
+                            "scalar_integer" => TypeFamily::ScalarInteger,
+                            _ => TypeFamily::Named(bound),
+                        })
+                    } else {
+                        None
                     };
                     types.push(TypeParameter { name, family });
                 }

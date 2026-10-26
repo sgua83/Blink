@@ -369,7 +369,7 @@ program step(inout dataset<BLBody> bodies, f32 dt) on compute {
 
 声明／推导／类型集合错误报 B231；签名不一致沿用 B028，重复参数类型不符沿用 B124，权限、形状、输出与协作错误沿用原诊断。直接把 cooperative 当普通函数调用仍拒绝，其 tile 实参先沿原借用入口识别，不再被误作普通数值。
 
-当前泛型支持内置数值集合和下述用户定义的有限类型集合。有限 u32 常量参数与显式函数／program 实参见下节；记录 const 参数见下节；开放接口约束／关联类型、重载和运行期类型对象尚未实现。多个类型参数按集合笛卡尔积检查，编译期分析量随组合数增加，尚无通用符号泛型体分析。编译成功不证明浮点定义域、循环终止或业务算法正确。
+显式类型约束支持内置数值集合和下述用户定义的有限类型集合；不写集合约束的开放类型形参见“开放普通值类型形参”。有限 u32 常量参数与显式函数／program 实参见下节；记录 const 参数见下节；开放接口约束／关联类型、重载和运行期类型对象尚未实现。多个类型参数按集合笛卡尔积检查，编译期分析量随组合数增加，尚无通用符号泛型体分析。编译成功不证明浮点定义域、循环终止或业务算法正确。
 
 ## 受约束的泛型记录
 
@@ -2789,6 +2789,33 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 不带具体入口的 check／build 保持有限实例检查；开放声明不枚举 u32 全域，也不隐式选择一个值。其通用声明结构与固有资源权限先检查，依赖具体值的布局和函数体在实际使用时完整编译检查。Compilation.open_generics 与 blc 输出列出开放声明，并明确 body checked on instantiation；只检查未使用开放库不证明所有可能实例的正文都合法。只有开放 program 且没有可导出具体入口时，build 报 B240，要求选择入口。完整符号泛型体分析仍未实现。
 
 开放参数使用原 AST 替换、名义布局与 IR 常量，使用后即为具体算法；不增加泛型运行时、宿主逐元素回调、动态编译服务、额外 uniform、运行期长度表或另一份资源状态。material.textured::indexed_ggx 已删除原固定长度清单，从实际纹理数组推导 N，索引仍必须满足 requires index；实际算法、资源完成和像素品质目标保持。
+
+## 开放普通值类型形参（2026-10-27）
+
+记录、普通／cooperative 函数和当前 program 可写不带集合约束的 `<T>`。T 在每次具体使用处绑定普通值类型：支持 bool、数值、矩阵、数组、用户记录及其合法组合，不要求把用户类型加入库的有限清单。例如 `.h`：
+
+```c
+struct Packet<T> { u32 tag; T payload; };
+Packet<T> packet<T>(T value, u32 tag) on compute;
+void assign<T>(write T target, T value) on compute;
+```
+
+对应 `.b`：
+
+```c
+Packet<T> packet<T>(T value, u32 tag) on compute {
+    return Packet<T>(tag, value);
+}
+void assign<T>(write T target, T value) on compute { target = value; }
+```
+
+`packet(UserRecord(...), 7)` 从实参推导 T，返回名义类型 Packet<UserRecord>；也可显式指定类型。相同 T 的所有推导必须一致，布局相同的不同名义类型不会合并。数组、名义记录和 dataset／tile／view 元素沿原形状与类型关系推导；开放类型可以和有限集合、有限／开放 const 参数组合，例如 `<T, I: scalar_integer, const N: u32>`。类型参数仍在 const 参数之前，不能只从预期返回类型、运行期容量或 Count 猜测它。
+
+T 是普通值类型，不擦除裸 dataset、tile、texture2d、acceleration 或 view 包装的权限与寿命；`view<T>`／`dataset<T>` 等仍通过原显式接口声明引用或资源访问。普通记录内部合法的 view 字段继续遵守原引用图及目标限制，开放类型不授予构造、写出、传输或逃逸权限。void 不是数据类型。write／inout、完整初始化、借用重叠、模块可见性、设备、索引和返回规则在实际实例上保持。
+
+完全有限的泛型声明仍枚举并检查全部允许实例。只要声明含开放类型或开放 const，就不能枚举其所有替换；依赖类型／值的布局和正文在实际使用时完整检查，未使用声明仅检查原通用签名并列入 Compilation.open_generics，CLI 输出 `open generic declarations (body checked on instantiation)`。检查未调用的开放库不证明所有类型都能执行其正文；错误仍定位到实际具体类型和源码。只有开放 program 而未选择具体入口时，build 报 B240；具体入口沿原 `compile_entry` 或 `blc -c --program` 语法选择，例如 `copy<UserRecord,65>`。
+
+开放类型用于现有静态实例化和集合函数引用，不新增类型擦除、运行期分派、宿主逐元素回调、额外 uniform、布局表或新 IR／ABI。通用约束接口、关联类型、符号泛型体检查、普通原生调用及独立模块二进制仍未完成；统一函数／结果模型按架构设计继续推进，当前语法范围不构成永久函数分类。
 
 ## 原生缓冲区与AS异步交接
 
