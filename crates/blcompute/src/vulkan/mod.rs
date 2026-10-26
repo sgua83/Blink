@@ -1,6 +1,7 @@
 //! 单设备 Vulkan 执行后端。唯一数据持有最后使用点，执行资源在原生完成后释放。
 mod compact;
 mod execution;
+mod memory;
 mod prefix;
 mod present;
 mod raw;
@@ -18,6 +19,7 @@ use blanguage::{
     ir::{Program, Ty},
 };
 use execution::{Completion, Execution, ExecutionResources, QueryPool};
+pub use memory::{MemoryBudget, MemoryHeapBudget};
 pub use present::{PresentStatus, Swapchain};
 use raw::*;
 pub use ray::{Acceleration, BottomLevel, RayInstance};
@@ -196,6 +198,7 @@ struct Inner {
     queue: VkQueue,
     family: u32,
     memory: VkPhysicalDeviceMemoryProperties,
+    memory_budget: Option<memory::BudgetQuery>,
     properties: VkPhysicalDeviceProperties,
     timestamp_bits: u32,
     ray: Option<ray::RayDevice>,
@@ -550,6 +553,10 @@ impl Device {
             q.queueCount = 1;
             q.pQueuePriorities = &priority;
             let mut device_extensions = Vec::new();
+            let memory_budget = memory::BudgetQuery::load(&owner, physical)?;
+            if memory_budget.is_some() {
+                device_extensions.push(c"VK_EXT_memory_budget".as_ptr());
+            }
             if maximal_reconvergence {
                 device_extensions.push(c"VK_KHR_shader_maximal_reconvergence".as_ptr());
             }
@@ -617,6 +624,7 @@ impl Device {
                     queue,
                     family: family as u32,
                     memory,
+                    memory_budget,
                     properties,
                     timestamp_bits: queue_properties.timestampValidBits,
                     ray,
