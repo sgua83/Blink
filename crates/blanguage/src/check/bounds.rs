@@ -932,7 +932,8 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
         return domains;
     }
     if op == "/" && b.component_range(bi).0 != 0 {
-        return indices_below(&left, false);
+        let strict = a.component_nonzero(ai) && b.component_range(bi).0 > 1;
+        return indices_below(&left, strict);
     }
     if op == ">>" {
         let strict = a.component_nonzero(ai) && !b.component_ranges(bi).shift_counts(0).contains(0);
