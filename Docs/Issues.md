@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-015／C-021.6 的 C++ 生成命名空间冲突：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；枚举 C ABI 原生核对发现现有头生成器直接将模块叶名用作 C++ 命名空间，main 模块的 namespace main 与 C++ main() 冲突，MSVC C2365 已真实复现。统一在 C++ 包装命名空间使用产品前缀 blink_，修正唯一模板并迁移正式 C++ 消费者、互操作文档和相关书稿／两版 PDF；C 导出、opaque handle、Rust 绑定、数据及执行 ABI 保持。先以正常 map 和 main 头对照，再核对原生 C++／Rust／C 消费，不添加 main 特例、兼容别名或消费者改名绕路。枚举源码保留在另一本轮范围，本项聚焦提交不包含未提交枚举；避开 PA2 后端及 Gua Vulkan。 | 2026-10-27 04:46 +08:00 |
 | C-021.9 的原生分布式编译与超大规模构建：**本轮目标文档完成；能力待设计／实现** | `192.168.10.5`／`GUA` | Codex／分布式构建设计文档 | `B:/BLanguage/Saved/DistributedBuildDesignWorkspace`，client `BLanguage_Gua_DistributedBuildDesign`；仅更新 Architecture／Issues，将分布式编译列为工具链正式目标，覆盖依赖／增量／复用、编译链接职责及千万级域的规模要求。未改源码或构建，未确定多机运行／计算域实现，不依赖 Matrix；P4／Git 按实际回执确认。 | 2026-10-27 04:43 +0800 |
 | C-003／C-022.5 的纹理显式读回与跨逻辑设备交接：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；原 Texture 仅上传／采样，没有真实读回接口，图像创建未声明 TRANSFER_SRC。拟接通 Device::download_texture，直接从实际 GPU 图像全 mip 复制到主机 Texture2D，按当前单队列的实际访问过渡／恢复 shader-read 布局，不保留 CPU 镜像或新布局状态；显式 CPU 数据再交给另一个逻辑 Device 上传，设备归属保持。复用原 staging 映射与 Transfer Execution 依赖，删除重复提交构造；预计修改 texture.rs、mod.rs、transfer.rs、ray.rs 中相应入口／调用及说明，不改前端／后端、IR／ABI、引擎算法，不建自动迁移、注册表、缓存或回收服务。先保存正式基线，再核对实际 mip 原始位、pending 生产、读回前后共享采样、源退出、逻辑设备交接／拒绝和分配生命周期；清理／P4／Git／主线采用分别回填。多物理 GPU、多队列、自动流送及其他纹理格式仍开放。 | 2026-10-27 04:43 +08:00 |
 | C-020.1／C-020.5 的显式编号枚举：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，用户 `PA3`、client `BLanguage_PA3`；落实统一结果设计的编号枚举基础：明确 u32／i32 表示、名义类型、显式成员编号、构造／取回原整数、比较与聚合存储，复用原记录类型和编译期常量所有者，不建成员运行时注册表。相同编号允许不同名字，未命名整数原位保留，编号不自动成为成功／错误或进程退出语义。贯通模块／开放泛型／实际 CPU／GPU／C ABI 与既有静态目标产物；预计修改 AST／parser／lib／Ty、check.rs 的枚举比较与转换、record 构造及必要值入口、dll/source.rs 的原类型发射和现有 sort 临时 Ty 初始化。避开 PA2 native/packet/control.rs、数值条件与 Gua Vulkan。完整 Ok／Err、变体载荷、传播、统一函数／target 仍开放。先认领，再保存基线、实现、Release／原生核对、清理、P4／Git。 | 2026-10-27 04:32 +08:00 |
@@ -2216,3 +2217,7 @@ result=value;
 ## C-020.1／C-020.5：显式编号枚举
 
 - 实际执行机 PA3／DESKTOP-80G4Q60，IPv4 192.168.10.13，D:/BLanguage，P4 用户 PA3／client BLanguage_PA3，会话 01a17891-5f8f-7bc3-8966-57a6f31772e0。已回读真实网络、最新台账／AGENTS／架构；PA3 无打开文件，已同步 CL13324。PA2 在 native/packet/control.rs 推进分程序点统一性，Gua 统一函数设计仅文档已完成、异步纹理源码已提交，本轮只处理枚举值／编号及其原生表示。当前仅认领，尚未实施或执行本项基线；枚举不代替完整结果模型，也不把代码编号当作自动成败语义。实现、编译、CPU／GPU／C ABI、清理与 P4／Git 分别回填。
+
+## C-015／C-021.6：C++ 生成命名空间冲突
+
+- 实际执行机 PA3／DESKTOP-80G4Q60，IPv4 192.168.10.13，D:/BLanguage，P4 用户 PA3／client BLanguage_PA3，会话 01a17891-5f8f-7bc3-8966-57a6f31772e0。真实 MSVC 14.51.36231 输出 C2365，指向生成 algorithm.abi.h 的 namespace main 与宿主 int main()；临时宿主把 opaque handle 误写为 void* 另产生 C2664，二者分开处理，不能用主机错误掩盖生成器缺陷。根因是 C++ 包装直接复用 C 函数前缀作为普通名字空间；C/Rust 调用已成功，生成C++类型布局本身尚未见错。当前仅认领，尚未修改模板／消费者／书籍；正常模块对照、正式修正、Release、C++／Rust／C 原生、PDF 渲染、清理和 P4／Git 分别回填。
