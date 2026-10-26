@@ -568,6 +568,9 @@ fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
         | Inst::TilePublish(_)
         | Inst::TileCollective(_)
         | Inst::TileBarrier => true,
-        _ => false,
+        _ => inst
+            .results()
+            .iter()
+            .any(|r| after.contains(&PrivateSlot::Register(*r))),
     })
 }

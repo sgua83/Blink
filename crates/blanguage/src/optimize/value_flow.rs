@@ -1,6 +1,34 @@
 //! 已知局部值直接进入 SSA 使用点；分支合流与循环携带的实际状态保留在局部槽。
 use super::*;
 
+type LocalValues = BTreeMap<usize, Reg>;
+
+fn merge(target: &mut Option<LocalValues>, other: Option<LocalValues>) {
+    if let Some(other) = other {
+        if let Some(target) = target {
+            target.retain(|slot, value| other.get(slot) == Some(value));
+        } else {
+            *target = Some(other);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Flow {
+    next: Option<LocalValues>,
+    breaks: Option<LocalValues>,
+    continues: Option<LocalValues>,
+    exits: Option<LocalValues>,
+}
+impl Flow {
+    fn join(&mut self, other: Self) {
+        merge(&mut self.next, other.next);
+        merge(&mut self.breaks, other.breaks);
+        merge(&mut self.continues, other.continues);
+        merge(&mut self.exits, other.exits);
+    }
+}
+
 #[derive(Clone, Default)]
 struct Values {
     aliases: BTreeMap<Reg, Reg>,
@@ -15,8 +43,24 @@ impl Values {
         }
         r
     }
-    fn block(&mut self, code: &mut Vec<Inst>, registers: &[Scalar]) {
+    fn local_values(&self) -> LocalValues {
+        self.locals
+            .iter()
+            .map(|(slot, value)| (*slot, self.root(*value)))
+            .collect()
+    }
+    fn resume(&mut self, flow: &mut Flow, step: Flow) -> bool {
+        flow.join(step);
+        let next = flow.next.take();
+        let continuing = next.is_some();
+        self.locals = next.unwrap_or_default();
+        self.memory.clear();
+        continuing
+    }
+    fn block(&mut self, code: &mut Vec<Inst>, registers: &[Scalar]) -> Flow {
         let mut out = Vec::new();
+        let mut flow = Flow::default();
+        let mut continuing = true;
         // 只指向本直线块已生成的 IR；不会跟随 Values 克隆跨控制／协作边界。
         let mut divisions: BTreeMap<(Reg, IntegerDivisor), (usize, IntegerDivisionResult)> =
             BTreeMap::new();
@@ -109,9 +153,21 @@ impl Values {
             match &mut inst {
                 Inst::Scope(body) => {
                     let mut scoped = self.clone();
-                    scoped.block(body, registers);
-                    self.locals.clear();
-                    self.memory.clear();
+                    let mut scope = scoped.block(body, registers);
+                    merge(&mut scope.next, scope.exits.take());
+                    continuing = self.resume(&mut flow, scope);
+                }
+                Inst::Exit => {
+                    merge(&mut flow.exits, Some(self.local_values()));
+                    continuing = false;
+                }
+                Inst::Break => {
+                    merge(&mut flow.breaks, Some(self.local_values()));
+                    continuing = false;
+                }
+                Inst::Continue => {
+                    merge(&mut flow.continues, Some(self.local_values()));
+                    continuing = false;
                 }
                 Inst::Atomic(_) | Inst::Append(_) | Inst::TileBarrier => self.memory.clear(),
                 Inst::LoadLocal(dst, slot) => {
@@ -159,21 +215,10 @@ impl Values {
                 Inst::If { yes, no, .. } => {
                     let mut y = self.clone();
                     let mut n = self.clone();
-                    y.block(yes, registers);
-                    n.block(no, registers);
-                    // 只在两个路径交付同一个 SSA 值时转发；分支内的新值不会泄露到另一条路径。
-                    self.locals = y
-                        .locals
-                        .iter()
-                        .filter_map(|(slot, value)| {
-                            let a = y.root(*value);
-                            n.locals
-                                .get(slot)
-                                .filter(|b| n.root(**b) == a)
-                                .map(|_| (*slot, a))
-                        })
-                        .collect();
-                    self.memory.clear();
+                    let mut branches = y.block(yes, registers);
+                    branches.join(n.block(no, registers));
+                    // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
+                    continuing = self.resume(&mut flow, branches);
                 }
                 Inst::Loop {
                     condition,
@@ -188,12 +233,24 @@ impl Values {
                     }
                     // 循环下一次进入时可能已改变；不把进入前的局部值当作循环不变量。
                     self.locals.retain(|slot, _| !written.contains(slot));
+                    let after = self.local_values();
                     let mut cycle = self.clone();
                     cycle.memory.clear();
-                    cycle.block(condition, registers);
+                    let condition_flow = cycle.block(condition, registers);
                     *test = cycle.root(*test);
-                    cycle.block(body, registers);
-                    self.memory.clear();
+                    let mut loop_flow = Flow {
+                        next: condition_flow.next.as_ref().map(|_| after),
+                        breaks: condition_flow.breaks,
+                        continues: condition_flow.continues,
+                        exits: condition_flow.exits,
+                    };
+                    if condition_flow.next.is_some() {
+                        let body_flow = cycle.block(body, registers);
+                        // 普通／continue 回边和 break 由本循环接收；Scope 退出仍向外传递。
+                        // 已写槽仍保留在原循环携带状态，不把某次迭代的定义交给循环后。
+                        merge(&mut loop_flow.exits, body_flow.exits);
+                    }
+                    continuing = self.resume(&mut flow, loop_flow);
                 }
                 Inst::ExternalCall(call) => {
                     for slot in call.locals(true) {
@@ -204,8 +261,15 @@ impl Values {
                 _ => {}
             }
             out.push(inst);
+            if !continuing {
+                break;
+            }
         }
         *code = out;
+        if continuing {
+            flow.next = Some(self.local_values());
+        }
+        flow
     }
 }
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
