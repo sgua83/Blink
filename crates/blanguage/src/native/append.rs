@@ -7,24 +7,15 @@ impl Emitter<'_> {
             &[0x8b],
             true,
             15,
-            Operand::Memory {
-                base: 12,
-                offset: a.count.binding as u32 * 8,
-            },
+            Operand::memory(12, a.count.binding as u32 * 8),
         );
-        let counter = Operand::Memory {
-            base: 15,
-            offset: a.count.word * 4,
-        };
+        let counter = Operand::memory(15, a.count.word * 4);
         self.instruction(
             None,
             &[0x8b],
             false,
             1,
-            Operand::Memory {
-                base: 13,
-                offset: 8 + a.target as u32 * 4,
-            },
+            Operand::memory(13, 8 + a.target as u32 * 4),
         );
         self.instruction(None, &[0x8b], false, 0, counter);
         let begin = self.code.len();
@@ -40,24 +31,12 @@ impl Emitter<'_> {
             &[0x8b],
             true,
             15,
-            Operand::Memory {
-                base: 12,
-                offset: a.target as u32 * 8,
-            },
+            Operand::memory(12, a.target as u32 * 8),
         );
         self.offset_address(self.program.buffers[a.target].stride);
         for (word, value) in &a.values {
             self.load(*value);
-            self.instruction(
-                None,
-                &[0x89],
-                false,
-                0,
-                Operand::Memory {
-                    base: 15,
-                    offset: word * 4,
-                },
-            );
+            self.instruction(None, &[0x89], false, 0, Operand::memory(15, word * 4));
         }
         self.bytes(&[0xb8, 1, 0, 0, 0]);
         let done = self.jump(None);

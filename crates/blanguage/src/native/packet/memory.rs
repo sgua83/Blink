@@ -30,10 +30,7 @@ impl Emitter<'_> {
                 &[0x8b],
                 false,
                 gpr,
-                Operand::Memory {
-                    base: 4,
-                    offset: offset + u32::from(lane) * 4,
-                },
+                Operand::memory(4, offset + u32::from(lane) * 4),
             ),
         }
     }
@@ -63,19 +60,10 @@ impl Emitter<'_> {
                 self.packet_read_base(allocation, source, lane);
             }
             self.packet_lane(allocation, index, lane, 0);
-            self.offset_address(stride);
+            let memory = self.scaled_memory(15, 0, stride, word * 4);
             // XMM3 只在取 lane 时暂用，第四个读取在地址完成后才写入它。
             // 目标分配位置在四个源 lane 全部读取后写回，允许实际的寄存器复用。
-            self.instruction(
-                Some(0x66),
-                &[0x0f, 0x6e],
-                false,
-                lane,
-                Operand::Memory {
-                    base: 15,
-                    offset: word * 4,
-                },
-            );
+            self.instruction(Some(0x66), &[0x0f, 0x6e], false, lane, memory.into());
         }
         if broadcast {
             self.shuffle(0, 0, 0);

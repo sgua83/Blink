@@ -9,19 +9,96 @@ pub(super) fn bit_copy(from: Scalar, into: Scalar) -> bool {
 }
 
 #[derive(Clone, Copy)]
+pub(super) struct Memory {
+    base: u8,
+    index: Option<(u8, u8)>,
+    offset: u32,
+}
+impl Memory {
+    pub(super) fn new(base: u8, offset: u32) -> Self {
+        Self {
+            base,
+            index: None,
+            offset,
+        }
+    }
+    pub(super) fn offset(mut self, offset: u32) -> Self {
+        self.offset += offset;
+        self
+    }
+    fn uses_register(self, register: u8) -> bool {
+        self.base == register || self.index.is_some_and(|(index, _)| index == register)
+    }
+    fn temporary_register(self) -> u8 {
+        if !self.uses_register(0) {
+            0
+        } else if !self.uses_register(1) {
+            1
+        } else {
+            2
+        }
+    }
+}
+#[derive(Clone, Copy)]
 pub(super) enum Operand {
     Register(u8),
-    Memory { base: u8, offset: u32 },
+    Memory(Memory),
+}
+impl Operand {
+    pub(super) fn memory(base: u8, offset: u32) -> Self {
+        Self::Memory(Memory::new(base, offset))
+    }
+}
+impl From<Memory> for Operand {
+    fn from(memory: Memory) -> Self {
+        Self::Memory(memory)
+    }
 }
 impl From<Location> for Operand {
     fn from(location: Location) -> Self {
         match location {
             Location::Gpr(r) | Location::Xmm(r) => Self::Register(r),
-            Location::Stack(offset) => Self::Memory { base: 4, offset },
+            Location::Stack(offset) => Self::memory(4, offset),
         }
     }
 }
 impl Emitter<'_> {
+    pub(super) fn value_memory(
+        &mut self,
+        base: u8,
+        index: Location,
+        stride: u32,
+        offset: u32,
+    ) -> Memory {
+        let shift = stride.trailing_zeros().min(3) as u8;
+        if stride >> shift == 1
+            && let Location::Gpr(index) = index
+        {
+            Memory {
+                base,
+                index: Some((index, shift)),
+                offset,
+            }
+        } else {
+            self.load_location(index);
+            self.scaled_memory(base, 0, stride, offset)
+        }
+    }
+    pub(super) fn scaled_memory(
+        &mut self,
+        base: u8,
+        index: u8,
+        stride: u32,
+        offset: u32,
+    ) -> Memory {
+        let shift = stride.trailing_zeros().min(3) as u8;
+        self.scale_index(index, stride >> shift);
+        Memory {
+            base,
+            index: Some((index, shift)),
+            offset,
+        }
+    }
     pub(super) fn scale_index(&mut self, register: u8, stride: u32) {
         if stride == 1 {
             return;
@@ -48,8 +125,9 @@ impl Emitter<'_> {
             self.bytes(&[0x49, 0x01, 0xc7]);
         }
     }
-    fn rex(&mut self, wide: bool, r: u8, b: u8) {
-        let prefix = 0x40 | (u8::from(wide) << 3) | ((r >> 3) << 2) | (b >> 3);
+    fn rex(&mut self, wide: bool, r: u8, b: u8, index: u8) {
+        let prefix =
+            0x40 | (u8::from(wide) << 3) | ((r >> 3) << 2) | ((index >> 3) << 1) | (b >> 3);
         if prefix != 0x40 {
             self.bytes(&[prefix]);
         }
@@ -68,12 +146,16 @@ impl Emitter<'_> {
         let field = (register & 7) << 3;
         match operand {
             Operand::Register(r) => {
-                self.rex(wide, register, r);
+                self.rex(wide, register, r, 0);
                 self.bytes(opcode);
                 self.bytes(&[0xc0 | field | (r & 7)]);
             }
-            Operand::Memory { base, offset } => {
-                self.rex(wide, register, base);
+            Operand::Memory(Memory {
+                base,
+                index,
+                offset,
+            }) => {
+                self.rex(wide, register, base, index.map_or(0, |(r, _)| r));
                 self.bytes(opcode);
                 let mode = if offset == 0 && base & 7 != 5 {
                     0
@@ -82,8 +164,11 @@ impl Emitter<'_> {
                 } else {
                     2
                 };
-                self.bytes(&[(mode << 6) | field | (base & 7)]);
-                if base & 7 == 4 {
+                let indexed = index.is_some() || base & 7 == 4;
+                self.bytes(&[(mode << 6) | field | if indexed { 4 } else { base & 7 }]);
+                if let Some((r, shift)) = index {
+                    self.bytes(&[(shift << 6) | ((r & 7) << 3) | (base & 7)]);
+                } else if indexed {
                     self.bytes(&[0x24]);
                 }
                 match mode {
@@ -150,7 +235,7 @@ impl Emitter<'_> {
     pub(super) fn constant(&mut self, r: Reg, bits: u32) {
         match self.location(r) {
             Location::Gpr(d) => {
-                self.rex(false, 0, d);
+                self.rex(false, 0, d, 0);
                 self.bytes(&[0xb8 | (d & 7)]);
                 self.u32(bits);
             }
@@ -165,34 +250,50 @@ impl Emitter<'_> {
             }
         }
     }
-    pub(super) fn read_memory(&mut self, dst: Location, base: u8, offset: u32) {
-        let source = Operand::Memory { base, offset };
+    pub(super) fn read_address(&mut self, dst: Location, memory: Memory) {
+        let source = memory.into();
         match dst {
             Location::Gpr(d) => self.instruction(None, &[0x8b], false, d, source),
             Location::Xmm(d) => self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, source),
             Location::Stack(_) => {
-                self.instruction(None, &[0x8b], false, 0, source);
-                self.copy(dst, Location::Gpr(0));
+                let temporary = memory.temporary_register();
+                self.instruction(None, &[0x8b], false, temporary, source);
+                self.copy(dst, Location::Gpr(temporary));
             }
         }
     }
     pub(super) fn read_scalar(&mut self, dst: Reg, base: u8, offset: u32) {
+        self.read_scalar_address(dst, Memory::new(base, offset));
+    }
+    pub(super) fn read_scalar_address(&mut self, dst: Reg, memory: Memory) {
         if self.stage.registers[dst] == Scalar::Bool {
-            self.instruction(None, &[0x83], false, 7, Operand::Memory { base, offset });
-            self.bytes(&[0, 0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0]);
-            self.store(dst);
+            let temporary = memory.temporary_register();
+            self.instruction(None, &[0x83], false, 7, memory.into());
+            self.bytes(&[0, 0x0f, 0x95, 0xc0 | temporary]);
+            self.instruction(
+                None,
+                &[0x0f, 0xb6],
+                false,
+                temporary,
+                Operand::Register(temporary),
+            );
+            self.copy(self.location(dst), Location::Gpr(temporary));
         } else {
-            self.read_memory(self.location(dst), base, offset);
+            self.read_address(self.location(dst), memory);
         }
     }
     pub(super) fn write_memory(&mut self, src: Location, base: u8, offset: u32) {
-        let target = Operand::Memory { base, offset };
+        self.write_address(src, Memory::new(base, offset));
+    }
+    pub(super) fn write_address(&mut self, src: Location, memory: Memory) {
+        let target = memory.into();
         match src {
             Location::Gpr(s) => self.instruction(None, &[0x89], false, s, target),
             Location::Xmm(s) => self.instruction(Some(0xf3), &[0x0f, 0x11], false, s, target),
             Location::Stack(_) => {
-                self.copy(Location::Gpr(0), src);
-                self.instruction(None, &[0x89], false, 0, target);
+                let temporary = memory.temporary_register();
+                self.copy(Location::Gpr(temporary), src);
+                self.instruction(None, &[0x89], false, temporary, target);
             }
         }
     }
@@ -312,7 +413,7 @@ impl Emitter<'_> {
                 &[if restore { 0x8b } else { 0x89 }],
                 true,
                 r,
-                Operand::Memory { base: 4, offset },
+                Operand::memory(4, offset),
             );
         }
         for (r, offset) in self.frame.saved_xmm.clone() {
@@ -321,7 +422,7 @@ impl Emitter<'_> {
                 &[0x0f, if restore { 0x28 } else { 0x29 }],
                 false,
                 r,
-                Operand::Memory { base: 4, offset },
+                Operand::memory(4, offset),
             );
         }
     }

@@ -52,7 +52,7 @@ impl Layout {
 }
 impl Emitter<'_> {
     fn stack_address(&mut self, offset: u32) {
-        self.instruction(None, &[0x8d], true, 0, Operand::Memory { base: 4, offset });
+        self.instruction(None, &[0x8d], true, 0, Operand::memory(4, offset));
     }
     fn reference_address(&mut self, address: &ExternalReference) -> Result<(), &'static str> {
         match &address.storage {
@@ -108,29 +108,14 @@ impl Emitter<'_> {
         let layout = Layout::new(call);
         if let Some(at) = layout.result {
             self.stack_address(at as u32);
-            self.instruction(
-                None,
-                &[0x89],
-                true,
-                0,
-                Operand::Memory { base: 4, offset: 0 },
-            );
+            self.instruction(None, &[0x89], true, 0, Operand::memory(4, 0));
         }
         for (i, arg) in call.arguments.iter().enumerate() {
             let slot = (i + usize::from(layout.hidden)) as u32 * 8;
             match arg {
                 ExternalArgument::Reference { address, .. } => {
                     self.reference_address(address)?;
-                    self.instruction(
-                        None,
-                        &[0x89],
-                        true,
-                        0,
-                        Operand::Memory {
-                            base: 4,
-                            offset: slot,
-                        },
-                    );
+                    self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                 }
                 ExternalArgument::Value { ty, values } => {
                     let base = layout.copies[i].map_or(slot, |at| at as u32);
@@ -141,46 +126,25 @@ impl Emitter<'_> {
                             &[0x89],
                             false,
                             0,
-                            Operand::Memory {
-                                base: 4,
-                                offset: base + *offset,
-                            },
+                            Operand::memory(4, base + *offset),
                         );
                     }
                     if let Some(at) = layout.copies[i] {
                         self.stack_address(at as u32);
-                        self.instruction(
-                            None,
-                            &[0x89],
-                            true,
-                            0,
-                            Operand::Memory {
-                                base: 4,
-                                offset: slot,
-                            },
-                        );
+                        self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                     }
                 }
             }
         }
         if layout.hidden {
-            self.instruction(
-                None,
-                &[0x8b],
-                true,
-                1,
-                Operand::Memory { base: 4, offset: 0 },
-            );
+            self.instruction(None, &[0x8b], true, 1, Operand::memory(4, 0));
         }
         for (i, arg) in call.arguments.iter().enumerate() {
             let slot = i + usize::from(layout.hidden);
             if slot >= 4 {
                 continue;
             }
-            let memory = Operand::Memory {
-                base: 4,
-                offset: slot as u32 * 8,
-            };
+            let memory = Operand::memory(4, slot as u32 * 8);
             if matches!(arg,ExternalArgument::Value{ty,..} if floating(ty)) {
                 self.instruction(Some(0xf3), &[0x0f, 0x10], false, slot as u8, memory);
             } else {

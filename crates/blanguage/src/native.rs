@@ -10,6 +10,7 @@ mod custom_reduce;
 mod external;
 mod integer;
 mod operands;
+use operands::Memory;
 mod packet;
 mod program;
 pub use program::{
@@ -140,18 +141,41 @@ impl Emitter<'_> {
         self.load(index);
         self.offset_address(self.program.buffers[binding].stride);
     }
-    fn private_address(&mut self, base: usize, index: Reg, word: u32) -> Result<(), &'static str> {
+    fn data_memory(&mut self, binding: usize, index: Reg, word: u32) -> Memory {
+        self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
+        self.u32(binding as u32 * 8);
+        self.value_memory(
+            15,
+            self.location(index),
+            self.program.buffers[binding].stride,
+            word * 4,
+        )
+    }
+    fn private_memory(
+        &mut self,
+        base: usize,
+        index: Reg,
+        word: u32,
+    ) -> Result<Memory, &'static str> {
         let allocation::Location::Stack(offset) =
             self.allocation.location(PrivateSlot::Local(base))
         else {
             return Err("索引私有存储没有原生栈地址");
         };
-        self.load(index);
-        self.bytes(&[0x4c, 0x8d, 0xbc, 0x84]);
-        self.u32(offset + word * 4);
-        Ok(())
+        Ok(self.value_memory(4, self.location(index), 4, offset + word * 4))
     }
     fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
+        let stride = self.indexed_base(source);
+        let index = self.indexed_offset(offset, word);
+        self.load_location(index);
+        self.offset_address(stride);
+    }
+    fn indexed_memory(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> Memory {
+        let stride = self.indexed_base(source);
+        let index = self.indexed_offset(offset, word);
+        self.value_memory(15, index, stride, 0)
+    }
+    fn indexed_base(&mut self, source: &IndexedSource) -> u32 {
         match source {
             IndexedSource::Data { binding, index } => self.address(*binding, *index),
             IndexedSource::View {
@@ -173,21 +197,20 @@ impl Emitter<'_> {
                     self.tile_storage_base()
                         + self.stage.word_offset(self.stage.shared_word(*tile, 0)) as u32,
                 );
-                self.load(offset);
-                if word != 0 {
-                    self.bytes(&[0x05]);
-                    self.u32(word);
-                }
-                self.offset_address(self.stage.workgroup_width() * 4);
-                return;
+                return self.stage.workgroup_width() * 4;
             }
         }
-        self.load(offset);
+        4
+    }
+    fn indexed_offset(&mut self, offset: Reg, word: u32) -> allocation::Location {
         if word != 0 {
+            self.load(offset);
             self.bytes(&[0x05]);
             self.u32(word);
+            allocation::Location::Gpr(0)
+        } else {
+            self.location(offset)
         }
-        self.bytes(&[0x4d, 0x8d, 0x3c, 0x87]);
     }
     fn comparison_result(&mut self, dst: Reg, operation: Comparison, s: Scalar) {
         let target = match self.location(dst) {
@@ -361,9 +384,8 @@ impl Emitter<'_> {
                     self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
                     self.load(address[0]);
                     self.bytes(&[0x49, 0x09, 0xc7]);
-                    self.load(*index);
-                    self.offset_address(*stride);
-                    self.read_scalar(*dst, 15, *word * 4);
+                    let memory = self.value_memory(15, self.location(*index), *stride, *word * 4);
+                    self.read_scalar_address(*dst, memory);
                 }
                 Inst::LoadIndexed {
                     dst,
@@ -371,8 +393,8 @@ impl Emitter<'_> {
                     offset,
                     word,
                 } => {
-                    self.indexed_address(source, *offset, *word);
-                    self.read_scalar(*dst, 15, 0);
+                    let memory = self.indexed_memory(source, *offset, *word);
+                    self.read_scalar_address(*dst, memory);
                 }
                 Inst::StoreIndexed {
                     source,
@@ -380,8 +402,8 @@ impl Emitter<'_> {
                     word,
                     value,
                 } => {
-                    self.indexed_address(source, *offset, *word);
-                    self.write_memory(self.location(*value), 15, 0);
+                    let memory = self.indexed_memory(source, *offset, *word);
+                    self.write_address(self.location(*value), memory);
                 }
                 Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
                 Inst::Index(dst) => {
@@ -413,8 +435,8 @@ impl Emitter<'_> {
                     word,
                     ..
                 } => {
-                    self.private_address(*base, *index, *word)?;
-                    self.read_scalar(*dst, 15, 0);
+                    let memory = self.private_memory(*base, *index, *word)?;
+                    self.read_scalar_address(*dst, memory);
                 }
                 Inst::StoreLocalIndexed {
                     base,
@@ -423,8 +445,8 @@ impl Emitter<'_> {
                     value,
                     ..
                 } => {
-                    self.private_address(*base, *index, *word)?;
-                    self.write_memory(self.location(*value), 15, 0);
+                    let memory = self.private_memory(*base, *index, *word)?;
+                    self.write_address(self.location(*value), memory);
                 }
                 Inst::Load {
                     dst,
@@ -432,8 +454,8 @@ impl Emitter<'_> {
                     index,
                     word,
                 } => {
-                    self.address(*binding, *index);
-                    self.read_scalar(*dst, 15, word * 4);
+                    let memory = self.data_memory(*binding, *index, *word);
+                    self.read_scalar_address(*dst, memory);
                 }
                 Inst::Store {
                     binding,
@@ -441,8 +463,8 @@ impl Emitter<'_> {
                     word,
                     value,
                 } => {
-                    self.address(*binding, *index);
-                    self.write_memory(self.location(*value), 15, word * 4);
+                    let memory = self.data_memory(*binding, *index, *word);
+                    self.write_address(self.location(*value), memory);
                 }
                 Inst::Unary { dst, op, a } => {
                     match op {
@@ -694,9 +716,13 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         e.bytes(&[0x49, 0x8b, 0x84, 0x24]);
         e.u32(selection.binding as u32 * 8);
         e.bytes(&[0x89, 0xd9]);
-        e.scale_index(1, program.buffers[selection.binding].stride);
-        e.bytes(&[0x48, 0x01, 0xc8, 0x83, 0xb8]);
-        e.u32(selection.word * 4);
+        let memory = e.scaled_memory(
+            0,
+            1,
+            program.buffers[selection.binding].stride,
+            selection.word * 4,
+        );
+        e.instruction(None, &[0x83], false, 7, memory.into());
         e.bytes(&[0]);
         e.jump(Some(0x84))
     });

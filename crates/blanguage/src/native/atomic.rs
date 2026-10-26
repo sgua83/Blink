@@ -18,16 +18,10 @@ impl Emitter<'_> {
                 offset,
                 atomic.word,
             );
-            Operand::Memory {
-                base: 15,
-                offset: 0,
-            }
+            Operand::memory(15, 0)
         } else {
             self.address(binding, atomic.index);
-            Operand::Memory {
-                base: 15,
-                offset: atomic.word * 4,
-            }
+            Operand::memory(15, atomic.word * 4)
         };
         match atomic.op {
             AtomicOp::Load => self.instruction(None, &[0x8b], false, 0, at),
@@ -87,21 +81,18 @@ impl Emitter<'_> {
                 offset,
                 atomic.word,
             );
-            Operand::Memory {
-                base: 15,
-                offset: 0,
-            }
+            Operand::memory(15, 0)
         } else {
             self.load(atomic.index);
             self.bytes(&[0x4c, 0x8d, 0x3c, 0x84]); // r15 = rsp + index * 4
-            Operand::Memory {
-                base: 15,
-                offset: self.tile_storage_base()
+            Operand::memory(
+                15,
+                self.tile_storage_base()
                     + self
                         .stage
                         .word_offset(self.stage.shared_word(tile, atomic.word))
                         as u32,
-            }
+            )
         };
         match atomic.op {
             AtomicOp::Load => self.instruction(None, &[0x8b], false, 0, at),

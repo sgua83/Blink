@@ -143,18 +143,12 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         operations.push((at, allocation_unwind(at, frame)));
     }
     for (r, offset) in e.frame.saved_gpr.clone() {
-        e.instruction(None, &[0x89], true, r, Operand::Memory { base: 4, offset });
+        e.instruction(None, &[0x89], true, r, Operand::memory(4, offset));
         let at = e.code.len() as u8;
         operations.push((at, saved_unwind(at, r, offset, false)));
     }
     for (r, offset) in e.frame.saved_xmm.clone() {
-        e.instruction(
-            None,
-            &[0x0f, 0x29],
-            false,
-            r,
-            Operand::Memory { base: 4, offset },
-        );
+        e.instruction(None, &[0x0f, 0x29], false, r, Operand::memory(4, offset));
         let at = e.code.len() as u8;
         operations.push((at, saved_unwind(at, r, offset, true)));
     }
