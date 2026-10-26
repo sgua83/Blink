@@ -288,6 +288,7 @@ impl Device {
         structure_type: u32,
         producer: Usage,
         inputs: Vec<RayInput>,
+        read_inputs: Vec<ReadDataset>,
         models: Vec<BottomLevel>,
         mut dependencies: Vec<Rc<Execution>>,
     ) -> Result<Structure> {
@@ -397,6 +398,7 @@ impl Device {
                 commands,
                 _scratch: scratch,
                 _inputs: inputs,
+                _read_inputs: read_inputs,
             },
             dependencies,
         );
@@ -442,6 +444,7 @@ impl Device {
             1,
             Usage::Transfer,
             vec![vertices, triangles],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -490,6 +493,7 @@ impl Device {
             0,
             Usage::Transfer,
             vec![input],
+            Vec::new(),
             models,
             Vec::new(),
         )?;
@@ -503,7 +507,18 @@ impl Device {
         binding: usize,
         models: Vec<BottomLevel>,
     ) -> Result<GpuDataset> {
-        let mut data = Dataset::new(program, binding, u32::try_from(models.len())?)?;
+        let data = Dataset::new(program, binding, u32::try_from(models.len())?)?;
+        self.instance_data_from(data, models)
+    }
+    /// CPU矩阵与B产生的矩阵共用实际64字节实例输入，原生尾部仍由平台填写。
+    pub fn instance_data_from(
+        &self,
+        mut data: Dataset,
+        models: Vec<BottomLevel>,
+    ) -> Result<GpuDataset> {
+        if data.count as usize != models.len() {
+            return Err(error("矩阵记录与实际BLAS实例数量不同"));
+        }
         let components: Vec<_> = (0..12)
             .map(|i| (blanguage::ir::Scalar::F32, i * 4))
             .collect();
@@ -568,6 +583,23 @@ impl Device {
     /// 每条最终矩阵必须有限且线性部分可逆。调用者只能改写矩阵逻辑字段；
     /// 不得用 bulk copy/sort/compact 等操作破坏或换入未持有 BLAS 的原生尾部。
     pub unsafe fn top_level_device(&self, mut data: GpuDataset) -> Result<Acceleration> {
+        let structure = self.build_device_instances(&data, Vec::new())?;
+        data.last_use = Some(structure.built.clone());
+        drop(data);
+        Ok(Acceleration(Rc::new(structure)))
+    }
+    /// 不可变实例输入可以同时由AS构建和后续计算消费，不复制矩阵或暴露原生尾部。
+    /// # Safety
+    /// 矩阵、原生尾部及模型所有权前提与top_level_device相同。
+    pub unsafe fn top_level_device_read(&self, data: ReadDataset) -> Result<Acceleration> {
+        let structure = self.build_device_instances(&data.0, vec![data.clone()])?;
+        Ok(Acceleration(Rc::new(structure)))
+    }
+    fn build_device_instances(
+        &self,
+        data: &GpuDataset,
+        read_inputs: Vec<ReadDataset>,
+    ) -> Result<Structure> {
         if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
             return Err(error("实例输入不属于目标设备"));
         }
@@ -597,12 +629,10 @@ impl Device {
             0,
             data.producer,
             Vec::new(),
+            read_inputs,
             models,
             dependencies,
         )?;
-        data.last_use = Some(structure.built.clone());
-        // 物理实例页交给构建完成点，不从借用推断异步寿命，也不保留第二份矩阵。
-        drop(data);
-        Ok(Acceleration(Rc::new(structure)))
+        Ok(structure)
     }
 }

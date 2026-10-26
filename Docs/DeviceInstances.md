@@ -23,14 +23,16 @@ float3x4 自然大小为 48、对齐为 16；Transform<64> 大小为 64、对齐
 | API | 语义 |
 |---|---|
 | Device::instance_data(program,binding,models) | 按具体 B 绑定创建原生实例输入；要求 stride=64、12 个 f32 分量位于 offset 0..44，模型均属于该设备 |
+| Device::instance_data_from(data,models) | 以已有 B 布局 Dataset 的 CPU 矩阵创建同一原生输入，记录数量必须对应实际模型；原生尾部仍只由平台填写 |
+| unsafe Device::top_level_device_read(data) | 接收冻结的 ReadDataset，异步读取原生实例输入；同一只读存储可交给其他真实计算消费者 |
 | unsafe Device::top_level_device(data) | 消费GpuDataset所有权，读取实际GPU页异步提交TLAS构建；输入须属于该设备并持有原生实例所有权 |
 | Device::download(data) | 返回矩阵等逻辑数据；原生实例的 48..64 字节清零，不将设备地址序列化为可执行资源 |
 
 实例输入以已有 GpuDataset 持有数据页、原生地址数组及唯一 BLAS 引用集合。框架填入 mask／flags／BLAS 引用，B 只写 matrix。48 字节矩阵与 16 字节原生尾部对应 [Vulkan 实例布局](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureInstanceKHR.html)。构建使用 [arrayOfPointers](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryInstancesDataKHR.html)，地址数组按真实数据页生成，允许实例跨多个数据页，无需逐记录复制命令或矩阵读回。
 
-构建沿用GpuDataset的真实最后使用点，消费其唯一所有权。页表、实例页、地址数组交给本次构建完成点；不在函数内等待GPU，也不下载或重新打包矩阵。原队列记录Compute／Transfer到构建的访问依赖，后续查询记录构建到计算的访问依赖。API返回不表示本次构建已经完成，GPU自主调度与refit仍未实现。
+唯一输入入口 top_level_device 沿用 GpuDataset 的真实最后使用点，并消费其唯一所有权。页表、实例页、地址数组交给本次构建完成点；不在函数内等待GPU，也不下载或重新打包矩阵。原队列记录Compute／Transfer到构建的访问依赖，后续查询记录构建到计算的访问依赖。API返回不表示本次构建已经完成，GPU自主调度与refit仍未实现。
 
-TLAS自提交起持有唯一BLAS引用集合，构建输入与scratch在真实构建完成后释放；TLAS随真正查询它的执行存活。不维护第二份模型计数或跨操作注册表。普通数据集的原始填充不能伪造原生所有权，跨设备模型／输入在资源边界直接报告。
+TLAS自提交起持有唯一BLAS引用集合，构建持有的输入引用与scratch在真实构建完成后释放；TLAS随真正查询它的执行存活。不维护第二份模型计数或跨操作注册表。普通数据集的原始填充不能伪造原生所有权，跨设备模型／输入在资源边界直接报告。
 
 ## unsafe 的实际含义
 
@@ -63,3 +65,11 @@ Device::for_programs(programs)在创建一个实际逻辑设备时，合并各B�
 BottomLevel::primitive_count返回该BLAS实际构建输入的u32 primitive范围。数值由平台构建所有者保存，用于原AS的primitive号与外部属性记录之间的寻址关系；不是GPU Count、原生构建完成或查询完成。它不读回设备计数，不增加引擎侧的计数镜像、扫描或等待，is_complete／wait仍保持原来含义。
 
 本轮由BLEngine独立GPU场景与渲染消费者推动：同一for_programs设备上的网格查询与两张纹理的完整4K／内部8K渲染已实际执行；原with_presentation入口也经原生4K窗口与转动使用。源材质／法线／UV按真实消费者补充时，直接用驻留BLAS的primitive范围交接。原始日志、完整图及数据位于E:/BLEngineMeasurements/GpuScene。当前没有新增B语法、第三方依赖或常驻测试，不称全部引擎或多队列并行已经完成。
+
+## 共享不可变的实际构建输入（2026-10-26）
+
+BLEngine 的刚体表面对应需要此前实例矩阵。instance_data_from 接收由真实 B 类型创建并填好逻辑矩阵的 CPU Dataset，复用 instance_data 的原生尾部、模型检查、分页地址及传输；instance_data 原入口直接委托它，没有第二份设备矩阵。
+
+调用者可 freeze 同一原生输入，再交给 unsafe top_level_device_read。构建 Execution 持有该 ReadDataset 到真实构建完成；显式场景或计算消费者按自己的使用期限继续持有同一存储。冻结输入保持其原生产完成点，不反向改成当前构建的最后使用点，因此构建对输入的持有不会形成引用环。后续 view 提交仍由原执行框架持有真实读取资源，不新增全局历史、资源注册表或额外完成状态。
+
+未请求其他消费者时，原 top_level_device 仍在构建完成后释放唯一输入。64 字节原生记录与矩阵／模型／设备前提不变；只读共享不授予修改原生尾部、伪造模型引用、跨设备使用或任意变换的安全证明。此项为执行框架能力补齐，语言语法、IR 和数学算法没有改动。

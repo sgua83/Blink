@@ -160,6 +160,7 @@ pub(super) enum ExecutionResources {
         commands: Commands,
         _scratch: Allocation,
         _inputs: Vec<ray::RayInput>,
+        _read_inputs: Vec<ReadDataset>,
     },
 }
 impl ExecutionResources {
