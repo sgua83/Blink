@@ -454,9 +454,16 @@ fn expand_stages(
                         writable: false,
                     }
                 };
-                if *domain_access == Access::InOut {
-                    if let Binding::Owned(owner) = &element {
-                        b.initialize(&owner.place);
+                // 每份inout输入的当前元素均由真实调用者提供初值。
+                for (binding, access) in &b.view_access {
+                    if *access == Access::InOut {
+                        b.initialized.extend(
+                            program.buffers[*binding]
+                                .ty
+                                .components
+                                .iter()
+                                .map(|(_, offset)| Position::Element(*binding, offset / 4)),
+                        );
                     }
                 }
                 b.env.insert(name.clone(), element);
@@ -484,16 +491,26 @@ fn expand_stages(
                         statement.span,
                     )?;
                 }
-                if *domain_access == Access::Write {
-                    for (_, offset) in &program.buffers[*domain].ty.components {
+                let mut outputs = b.writes.clone();
+                outputs.insert(*domain);
+                for binding in outputs {
+                    if b.view_access[&binding] != Access::Write
+                        || b.appends.iter().any(|(output, _)| *output == binding)
+                    {
+                        continue;
+                    }
+                    for (_, offset) in &program.buffers[binding].ty.components {
                         if !b
                             .initialized
-                            .contains(&Position::Element(*domain, offset / 4))
+                            .contains(&Position::Element(binding, offset / 4))
                         {
                             return d.source.fail(
                                 statement.span,
                                 "B108",
-                                format!("write 数据集 {} 有字段未在所有路径初始化", data),
+                                format!(
+                                    "write 数据集 {} 有字段未在所有路径初始化",
+                                    program.buffers[binding].name
+                                ),
                             );
                         }
                     }
@@ -1153,6 +1170,7 @@ struct Builder<'a> {
     definition: Arc<Definition>,
     program: &'a Program,
     domain: usize,
+    element_domains: BTreeSet<usize>,
     env: BTreeMap<String, Binding>,
     registers: Vec<Scalar>,
     locals: Vec<Scalar>,
@@ -1198,6 +1216,7 @@ impl<'a> Builder<'a> {
             definition: definition.clone(),
             program,
             domain,
+            element_domains: BTreeSet::from([domain]),
             env: BTreeMap::new(),
             registers: Vec::new(),
             locals: Vec::new(),
@@ -2799,11 +2818,14 @@ impl<'a> Builder<'a> {
         let binding = view.binding;
         let i = self.expr(index)?;
         self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
+        let current = i.regs[0] == self.global_index;
+        let same_shape = self.program.buffers[binding].count.is_some()
+            && self.program.buffers[binding].count == self.program.buffers[self.domain].count;
         if !self.index_in(
             &i,
             IndexDomain::Data(binding),
             self.program.buffers[binding].count.unwrap_or(0),
-        ) && !(binding == self.domain && i.regs[0] == self.global_index)
+        ) && !(current && (binding == self.domain || same_shape))
         {
             return self.fail(
                 index.span,
@@ -2813,13 +2835,27 @@ impl<'a> Builder<'a> {
         }
         if self.view_access[&binding] != Access::Atomic
             && self.view_access[&binding].writes()
-            && (binding != self.domain || i.regs[0] != self.global_index)
+            && !current
         {
             return self.fail(
                 index.span,
                 "B166",
                 "并行可写数据只允许访问当前独占元素；读取其他元素需要独立 read 数据集",
             );
+        }
+        if matches!(self.view_access[&binding], Access::Write | Access::InOut) {
+            if self
+                .appends
+                .iter()
+                .any(|(output, count)| *output == binding || count.binding == binding)
+            {
+                return self.fail(
+                    index.span,
+                    "B221",
+                    "append 的共享输出／计数不能在同一阶段借为普通独占元素",
+                );
+            }
+            self.element_domains.insert(binding);
         }
         let ty = self.program.buffers[binding].ty.clone();
         let words = ty.components.iter().map(|x| x.1 / 4).collect();
@@ -2828,7 +2864,7 @@ impl<'a> Builder<'a> {
             binding,
             index: i.regs[0],
             words,
-            writable: binding == self.domain && i.regs[0] == self.global_index,
+            writable: self.view_access[&binding].writes() && current,
         })
     }
     fn name_place(&mut self, name: &String, e: &Expr) -> Result<Place> {

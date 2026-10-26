@@ -82,8 +82,6 @@ impl Builder<'_> {
         if !matches!(self.view_access[&target], Access::Write | Access::InOut)
             || self.view_access[&binding] != Access::InOut
             || target == binding
-            || target == self.domain
-            || binding == self.domain
             || self.program.buffers[binding].count != Some(1)
             || self.program.buffers[binding].ty.components.len() != 1
             || ty != Ty::scalar(Scalar::U32)
@@ -91,11 +89,18 @@ impl Builder<'_> {
             return self.fail(
                 span,
                 "B221",
-                "append 需要域外普通可写输出及独立 inout 单 u32 计数；不能与并行域或彼此别名",
+                "append 需要普通独占元素／tile 输入域之外的可写输出及独立 inout 单 u32 计数；两者不能别名",
             );
         }
         let value = self.expr(&args[2])?;
         self.require_same(&self.program.buffers[target].ty, &value.ty, args[2].span)?;
+        if self.element_domains.contains(&target) || self.element_domains.contains(&binding) {
+            return self.fail(
+                span,
+                "B221",
+                "append 输出／计数不能与本阶段普通独占元素或 tile 输入域重叠",
+            );
+        }
         if self.appends.iter().any(|(output, previous)| {
             (*output == target || previous.binding == binding)
                 && (*output != target || *previous != count)

@@ -2620,3 +2620,24 @@ upload、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生�
 build-dll 接收一个公开、具体且无 requires 前置条件的 program；泛型使用既有 compile_entry 的具体入口语法。输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
 
 C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy 释放 DLL 自己创建的 handle。run 为同步、包含数据交付的完整调用。C++ 使用 RAII，Rust 绑定提供独占切片、Result、Drop 与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 调用宿主 DLL 使用前述 CPU extern C 声明，不改变这里由宿主持有的算法入口与资源。详见 [原生集成](NativeInterop.md)。
+
+## 同索引独占多输出（2026-10-26）
+
+一个parallel以主数据集定义invocation域，同一个invocation可以读写其他普通可写数据集的当前index()元素。各根的read／write／inout权限保持，不授予其他元素的散写权；固定同形容量提供当前索引的范围事实，包含空域，但不会把不同资源判为同一资源。动态容量按已证明的范围条件访问。
+
+```c
+struct A {f32 value;};
+struct B {u32 value;};
+program split<const N:u32>(write dataset<A,N> first,write dataset<B,N> second) on compute {
+    parallel(item in first) {
+        item.value=f32(index());
+        second[index()].value=index();
+    }
+}
+```
+
+每份inout当前元素均由调用者提供初值；write字段在读取或inout借用前必须初始化。实际写入的普通write输出须在全部继续路径初始化所需字段，未完成报B108，未初始化读取／借用报B142；bounded append继续沿原有效前缀语义交付。非当前元素的普通可写访问报B166，未证明范围报B137，read／不可变view不能获得写权。子程序可写数据集别名沿用B118，当前位置借用仍要求互不重叠。
+
+同一阶段中，append的输出与单u32计数不能再借作普通write／inout当前元素，也不能与inout tile_input域重叠，反向顺序同样拒绝为B221；计算append值时取得的借用也参与判定。这扩展原append的共享写入与独占元素互斥，不产生运行时检查。同一输出／计数对的连续append保持合法。
+
+普通map、where的原索引以及同域阶段组合复用同一IR Store／读取写入集合、现有CPU／SPIR-V后端和执行完成点，不增加GPU复制、宿主逐元素回调、运行期下标修正或额外调度器。实际使用是BLEngine在一次主命中中同时生成像素与48字节可见性记录；可选输出在const分支关闭时没有对应Store，普通图像不因此获得全图历史。当前实现与原生范围见[问题C-017](Issues.md#c-017同索引独占多输出2026-10-26)。

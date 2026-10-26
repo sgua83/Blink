@@ -48,6 +48,9 @@ impl Builder<'_> {
             {
                 return self.fail(args[0].span, "B200", "tile 源容量不能小于阶段域容量");
             }
+            if self.view_access[&source] == Access::InOut {
+                self.element_domains.insert(source);
+            }
             let tile = if let Some(index) = self.tiles.iter().position(|t| {
                 t.source
                     == TileOrigin::Bound(TileSource::Input {
