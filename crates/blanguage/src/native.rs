@@ -13,6 +13,7 @@ mod operands;
 use operands::Memory;
 mod packet;
 mod program;
+mod reads;
 pub use program::{
     ContinuationCode, ProgramImage, RangeResult, SortCode, StageCode, compile_program,
 };
@@ -666,7 +667,8 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     if let Operation::Reduce(r) = &program.stages[index].operation {
         return Ok(reduce::emit(program, r));
     }
-    let lowered = texture::lower(&program.stages[index]);
+    let mut lowered = texture::lower(&program.stages[index]).into_owned();
+    reads::place(&mut lowered.code, &lowered.writes);
     let stage = &lowered;
     let mut graph = allocation::Graph::new(stage);
     let allocation = Allocation::new(stage, &graph);
