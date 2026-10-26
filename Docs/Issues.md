@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-020.3 的 CPU dataset 局部移动与拥有形参：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；在 CL13242 的资源返回上补齐本地 dataset 初始化移动、按值拥有形参及返回／再绑定。沿现有 Frame／句柄交接唯一所有权，处理分支／循环回边、提前返回、作用域退出和丢弃结果；读取、inout 借用与拥有转移之间保持真实访问约束。预计修改 check.rs 的应用资源／调用片段、check/application.rs、cooperative.rs、returns.rs、flow.rs 及必要泛型绑定与规范；不改 bounds.rs、IR／ABI、后端或运行库。先提交本认领，再保存真实基线、实现、Release 与 CPU／GPU 原生验证，最后清理并聚焦提交。普通聚合、write 全域初始化、其他资源构造、模块与跨机／热更新仍开放。 | 2026-10-27 00:33 +08:00 |
 | C-004 的 f32／u32 原始位解释：**本轮实现与原生核对完成；源码已提交／Git 已回读** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage`，client `BLanguage_Gua`；源码与规范 CL13241，Git `923a89430040254093e3bf2ef8e40ab440bf05fb` 的七文件与精确 P4 全部一致。bitcast_u32／bitcast_f32 复用 Unary、原 x64／SSE2 与 SPIR-V；18 组 CPU／GPU／独立位参考核对共 60000960 个输出 word，类型及索引证明拒绝符合预期。21 个临时文件、7755835 字节已清理，原始结果在 E:/BLEngineMeasurements/SpatialBits。本台账通过隔离 client BLanguage_Gua_SpatialIssue 提交，保留主工作区其他会话编辑。其他 C-004 与完整语言继续开放。 | 2026-10-27 00:25 +08:00 |
 | C-020.3 的 CPU 应用拥有 dataset 返回：**本轮源码、PA3 原生验证、P4 提交与 Git 发布完成** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | `D:/BLanguage`，P4 用户 `PA3`、client `BLanguage_PA3`；集成 CL13241 后 Release 43.51 秒，108 组数据／所有权、五百万零三条跨页及 13 项拒绝再次通过。源码十个文件已由 PA3 提交 CL13242，Gua 单次 Git 发布 `a8f7ae4399ce20ed4e27ae7a460dc245675fc9f7`，十个 Git blob 与精确 P4 版本相同。PA3 have 对应 CL13242、源码无差异且无打开文件；临时消费者已清理，原始记录在 Saved/Measurements/PA3DatasetReturnDevelopment。只完成拥有 dataset 的函数返回，其余 C-020.3 与长期架构范围保持未完成。 | 2026-10-27 00:30 +08:00 |
 | C-005 的整数恒等运算身份交接：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；在 check/bounds.rs 追查整数加零／乘一／中性按位操作／零有效移位及同值 AND／OR 的结果与真实操作数相等时，原身份和精确长度域的交接；复用原 Proof 投影／赋值，保留空路径、实际类型、改写失效及写权限。先保存真实基线，再实现并核对标量／向量、资源及拒绝；不重做 CL13232 的同值范围修复，不改 IR／ABI／运行期，避让 bitcast／PA3 返回／GPU gather 与 for 下界占用。实现、Release、原生验证、清理、提交及发布分别回填。 | 2026-10-27 00:15 +08:00 |
@@ -1847,3 +1848,8 @@ Release消费者PID3716、退出0：完整4K／内部8K，两次提交返回时�
 - Release 正式工作区构建通过；原生直线／分支、循环及标量／float2／float3／float4 组合程序，各自运行 0／1／3／4／5／1000003 条记录，共 18 组。CPU、GPU 与独立整数位参考共核对 60000960 个输出 word，差异均 0；包括正负零、非正规数、正负无穷、NaN 载荷及广泛原始位值，数值 cast 对照保持原结果。不外推为后续浮点算术保持载荷或任意设备结果证明。
 - 原始 BLDATA、values-summary.json、dimensions-summary.json、diagnostics.json、构建与实际进程／退出结果保留在 E:/BLEngineMeasurements/SpatialBits；两份原生消费者、B 测量模块及错误调用等 21 个临时代码／可执行／PDB 文件共 7755835 字节已清理，不建立常设测试入口。BLEngine 的空间目录及消费结果记在其自身问题列表。
 - 源码与对应规范已提交 CL13241，并立即单次异步触发 PublishGit；七文件已从精确 P4 与 Git 923a89430040254093e3bf2ef8e40ab440bf05fb 回读一致。本节仅关闭上述缺口，C-004 其他语言能力及完整引擎继续开放。
+
+## C-020.3：CPU dataset 局部移动与拥有形参
+
+- 本轮执行机 PA3／DESKTOP-80G4Q60，实际 IPv4 192.168.10.13；D:/BLanguage，P4 用户 PA3、client BLanguage_PA3，会话 01a17891-5f8f-7bc3-8966-57a6f31772e0。开始前已读取全部进行中记录，源码文件无其他 P4 打开占用，PA3 当前未打开文件且已同步 CL13247。Gua 的同类记录为协作避让、实现未开始；本轮延续 PA3 的资源交接，避开 PA2 bounds、GPU 排序和编译链接范围。
+- 当前仅认领上述真实所有权范围；实现、Release 构建、CPU／GPU 原生结果、临时代码清理、P4 源码提交和 Git 发布尚未发生，分别按实际结果回填。原 C-020.3 返回成果及全部其他会话记录保持。
