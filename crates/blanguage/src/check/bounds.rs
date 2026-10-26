@@ -17,7 +17,18 @@ pub(super) struct Proof {
     domains: Vec<Domains>,
 }
 impl Proof {
-    pub(super) fn join(&mut self, other: &Self, width: usize) {
+    pub(super) fn join(&mut self, other: &Self, width: usize, branch: Option<&Value>) {
+        let condition = if self.condition.is_some() || other.condition.is_some() {
+            let a = self.condition.as_deref().cloned().unwrap_or_default();
+            let b = other.condition.as_deref().cloned().unwrap_or_default();
+            Some(Box::new(if let Some(c) = branch {
+                Condition::branch(Condition::of(c), a, b)
+            } else {
+                Condition::common(a, b)
+            }))
+        } else {
+            None
+        };
         self.origins = (0..width)
             .map(|i| {
                 let a = self.origins.get(i).copied().flatten();
@@ -46,7 +57,7 @@ impl Proof {
                     .collect()
             })
             .collect();
-        self.condition = None;
+        self.condition = condition;
     }
     pub(super) fn project(&self, components: &[usize], width: usize) -> Self {
         let mut proof = if components.iter().copied().eq(0..width) {
@@ -425,9 +436,9 @@ impl Condition {
         }
     }
     pub fn select(c: &Value, a: &Value, b: &Value) -> Self {
-        let c = Self::of(c);
-        let a = Self::of(a);
-        let b = Self::of(b);
+        Self::branch(Self::of(c), Self::of(a), Self::of(b))
+    }
+    fn branch(c: Self, a: Self, b: Self) -> Self {
         Self {
             cases: std::array::from_fn(|truth| {
                 either(

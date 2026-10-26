@@ -205,7 +205,7 @@ impl Builder<'_> {
                 let other = &exit.borrowed[name];
                 owner
                     .proof
-                    .join(&other.proof, owner.place.ty().components.len());
+                    .join(&other.proof, owner.place.ty().components.len(), None);
                 owner.uniform &= other.uniform;
             }
         }

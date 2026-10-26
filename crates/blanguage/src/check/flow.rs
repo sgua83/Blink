@@ -33,6 +33,28 @@ pub(super) struct LoopContext {
     exits: Vec<LoopState>,
 }
 impl Builder<'_> {
+    pub(super) fn join_environment(
+        &mut self,
+        other: &BTreeMap<String, Binding>,
+        branch: Option<&Value>,
+    ) {
+        for (name, binding) in &mut self.env {
+            match (binding, &other[name]) {
+                (Binding::Value(a), Binding::Value(b)) => {
+                    a.proof.join(&b.proof, a.regs.len(), branch);
+                    a.uniform &= b.uniform;
+                }
+                (Binding::Owned(a), Binding::Owned(b)) => {
+                    a.proof
+                        .join(&b.proof, a.place.ty().components.len(), branch);
+                    a.uniform &= b.uniform;
+                }
+                (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
+                (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
+                _ => {}
+            }
+        }
+    }
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
@@ -71,18 +93,7 @@ impl Builder<'_> {
                 .intersection(&exit.initialized)
                 .copied()
                 .collect();
-            for (name, binding) in &mut self.env {
-                match (binding, &exit.env[name]) {
-                    (Binding::Value(a), Binding::Value(b)) => a.proof.join(&b.proof, a.regs.len()),
-                    (Binding::Owned(a), Binding::Owned(b)) => {
-                        a.proof.join(&b.proof, a.place.ty().components.len());
-                        a.uniform &= b.uniform;
-                    }
-                    (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1),
-                    (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1),
-                    _ => {}
-                }
-            }
+            self.join_environment(&exit.env, None);
         }
         true
     }

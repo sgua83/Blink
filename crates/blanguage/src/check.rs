@@ -2296,11 +2296,13 @@ impl<'a> Builder<'a> {
         } else if !yes_reachable && no_reachable {
             self.env = no_env;
             self.initialized = no_init;
+        } else if yes_reachable && no_reachable {
+            self.env = yes_env;
+            self.join_initialization(&c, yes_init, no_init);
+            self.join_environment(&no_env, Some(&c));
         } else {
             self.env = environment;
             self.join_initialization(&c, yes_init, no_init);
-            self.invalidate_assigned(yes_body);
-            self.invalidate_assigned(no_body);
         }
         self.flow = yes_flow.union(no_flow);
         self.control_uniform = control && (c.uniform || (yes_reachable && no_reachable));
