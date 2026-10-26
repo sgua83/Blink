@@ -64,8 +64,8 @@ enum IndexDomain {
     TileLength,
     View([ValueIdentity; 3]),
     ViewLength([ValueIdentity; 3]),
-    ApplicationData(Reg),
-    ApplicationLength(Reg),
+    ApplicationData(ValueIdentity),
+    ApplicationLength(ValueIdentity),
 }
 type Domains = BTreeSet<IndexDomain>;
 #[derive(Clone)]
@@ -121,6 +121,7 @@ struct TileView {
     words: Vec<u32>,
     length: bounds::Proof,
 }
+#[derive(Clone)]
 enum CursorSource {
     ApplicationData(application::Data),
     Data(usize),
@@ -131,6 +132,15 @@ enum CursorSource {
 enum TileWidth {
     Fixed(u32),
     Parameter,
+}
+#[derive(Clone)]
+struct ForLoop {
+    name: String,
+    begin: Value,
+    limit: Value,
+    data: Option<CursorSource>,
+    borrowed: Option<String>,
+    slot: usize,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TileOrigin {
@@ -148,6 +158,7 @@ enum Place {
     ApplicationElement {
         ty: Ty,
         handle: Reg,
+        identity: ValueIdentity,
         index: Reg,
         index_range: (u32, u32),
         stride: u32,
@@ -1088,7 +1099,14 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
                 && d.function.target == Target::Cpu
                 && matches!(p.access, Access::Read | Access::InOut | Access::Value)
             {
-                Binding::ApplicationData(b.application_parameter(data_index, p.access)?)
+                {
+                    let data = b.application_parameter(data_index, p.access)?;
+                    let data = b.application_bind(
+                        data,
+                        application::rebound(d.function.body.as_ref().unwrap(), &p.name),
+                    );
+                    Binding::ApplicationData(data)
+                }
             } else {
                 b.view_access.insert(data_index, p.access);
                 Binding::Data(b.dataset_view(data_index))
@@ -1405,13 +1423,13 @@ impl<'a> Builder<'a> {
                 if self.loop_depth == 0 {
                     return self.fail(s.span, "B129", "continue 只能用于局部顺序循环");
                 }
-                self.check_application_loop(s.span)?;
                 self.release_application_loop();
                 if let Some(Some((_, slot))) = self.iterators.last().cloned() {
                     let index = self.reg(Scalar::U32);
                     self.code.push(Inst::LoadLocal(index, slot));
-                    self.advance_iterator(index, slot);
+                    self.advance_iterator(index, slot)?;
                 }
+                self.check_application_loop(s.span)?;
                 self.code.push(Inst::Continue);
                 self.flow = Flow::CONTINUE;
             }
@@ -1488,11 +1506,12 @@ impl<'a> Builder<'a> {
             Place::ApplicationElement {
                 ty,
                 handle,
+                identity,
                 index,
                 stride,
                 words,
                 ..
-            } => self.read_application_place(ty, *handle, *index, *stride, words, span),
+            } => self.read_application_place(ty, *handle, *identity, *index, *stride, words, span),
             Place::Indexed { .. } => self.read_array_place(p, span),
             Place::AtomicParameter(_) => {
                 self.fail(span, "B214", "原子借用只能通过显式原子操作读取")
@@ -1571,13 +1590,14 @@ impl<'a> Builder<'a> {
                     regs.push(r);
                 }
                 let (proof, uniform) = self.read_owned_proof(p, &regs);
+                let constant = proof.known_value(ty);
                 Ok(Value {
                     proof,
                     literal: false,
                     ty: ty.clone(),
                     regs,
                     uniform,
-                    constant: None,
+                    constant,
                 })
             }
             Place::Element {
@@ -1630,13 +1650,16 @@ impl<'a> Builder<'a> {
         match p {
             Place::ApplicationElement {
                 handle,
+                identity,
                 index,
                 stride,
                 words,
                 ..
             } => {
                 self.writable_storage(p, span)?;
-                return self.write_application_place(*handle, *index, *stride, words, value, span);
+                return self.write_application_place(
+                    *handle, *identity, *index, *stride, words, value, span,
+                );
             }
             Place::Indexed { .. } => return self.write_array_place(p, value, span),
             Place::ReadOnlyLocal(..) => {
@@ -2477,8 +2500,15 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn while_statement(&mut self, condition: &Expr, body: &[Stmt]) -> Result<()> {
-        self.invalidate_assigned(body)?;
-        self.invalidate_expression(condition)?;
+        let initial = self.application_initial_loop(body);
+        self.while_loop(condition, body, initial)
+    }
+    fn while_loop(&mut self, condition: &Expr, body: &[Stmt], initial: bool) -> Result<()> {
+        self.flow = Flow::NEXT;
+        if !initial {
+            self.invalidate_assigned(body, None)?;
+            self.invalidate_expression(condition)?;
+        }
         let environment = self.env.clone();
         let outer = std::mem::take(&mut self.code);
         let c = self.expr(condition)?;
@@ -2490,6 +2520,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         }
         self.enter_loop(&environment);
+        self.configure_initial_loop(initial, None, None);
         let condition_env = self.env.clone();
         let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {
             None
@@ -2505,13 +2536,22 @@ impl<'a> Builder<'a> {
         self.loop_depth += 1;
         self.iterators.push(None);
         self.block(body)?;
-        let body_flow = self.flow;
-        if body_flow.iterates() {
+        let mut body_flow = self.flow;
+        if body_flow.continues() {
             self.check_application_loop(condition.span)?;
         }
         self.iterators.pop();
         self.loop_depth -= 1;
-        let mut body = std::mem::take(&mut self.code);
+        let mut code = std::mem::take(&mut self.code);
+        if initial {
+            let (expanded, flow) =
+                self.expand_initial_loop(code, body_flow.continues(), |builder, _| {
+                    builder.while_loop(condition, body, false)
+                })?;
+            code = expanded;
+            body_flow = body_flow.union(flow);
+        }
+        let mut body = code;
         let next = self.leave_loop(natural, &mut condition_code, c.regs[0], &mut body);
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
@@ -2543,7 +2583,11 @@ impl<'a> Builder<'a> {
             (a, b, None)
         } else {
             let source = if let ExprKind::Name(data) = &start.kind {
-                self.env.get(data).cloned()
+                if let Some(value) = self.application_value(data, start.span)? {
+                    Some(Binding::ApplicationData(value))
+                } else {
+                    self.env.get(data).cloned()
+                }
             } else {
                 None
             };
@@ -2598,22 +2642,78 @@ impl<'a> Builder<'a> {
             return Ok(());
         }
         let nonempty = begin.maximum() < limit.minimum();
-        self.invalidate_assigned(body)?;
-        let environment = self.env.clone();
-        self.enter_loop(&environment);
+        let borrowed = if end.is_none() {
+            if let ExprKind::Name(name) = &start.kind {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let initial = self.application_initial_loop(body);
         let slot = self.locals.len();
         self.locals.push(Scalar::U32);
         self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
+        self.for_loop(
+            ForLoop {
+                name: name.clone(),
+                begin,
+                limit,
+                data,
+                borrowed: borrowed.map(str::to_owned),
+                slot,
+            },
+            body,
+            span,
+            initial,
+            nonempty,
+        )
+    }
+    fn for_loop(
+        &mut self,
+        cursor_specification: ForLoop,
+        body: &[Stmt],
+        span: Span,
+        initial: bool,
+        nonempty: bool,
+    ) -> Result<()> {
+        self.flow = Flow::NEXT;
+        let ForLoop {
+            name,
+            begin,
+            limit,
+            data,
+            borrowed,
+            slot,
+        } = cursor_specification.clone();
+        if begin.minimum() >= limit.maximum() || begin.identity() == limit.identity() {
+            return Ok(());
+        }
+        if !initial {
+            self.invalidate_assigned(body, borrowed.as_deref())?;
+        }
+        let environment = self.env.clone();
+        self.enter_loop(&environment);
+        self.configure_initial_loop(initial, Some(name.clone()), initial.then(|| begin.clone()));
         let outer = std::mem::take(&mut self.code);
         let index = self.reg(Scalar::U32);
         self.code.push(Inst::LoadLocal(index, slot));
         let cursor = Value {
-            proof: bounds::Proof::default(),
+            proof: if initial {
+                bounds::Proof::capture(&begin)
+            } else {
+                bounds::Proof::default()
+            },
             literal: false,
             ty: Ty::scalar(Scalar::U32),
             regs: vec![index],
             uniform: begin.uniform && limit.uniform,
-            constant: None,
+            constant: if initial {
+                begin.constant.clone()
+            } else {
+                None
+            },
         };
         let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
         let mut condition = std::mem::take(&mut self.code);
@@ -2641,7 +2741,11 @@ impl<'a> Builder<'a> {
                 }
             } else {
                 Binding::Value(Value {
-                    proof: bounds::for_cursor(&begin, &limit, body),
+                    proof: if initial {
+                        bounds::Proof::capture(&cursor)
+                    } else {
+                        bounds::for_cursor(&begin, &limit, body)
+                    },
                     ..cursor
                 })
             },
@@ -2656,18 +2760,28 @@ impl<'a> Builder<'a> {
         self.loop_depth += 1;
         self.iterators.push(Some((name.clone(), slot)));
         self.block(body)?;
-        let body_flow = self.flow;
-        if body_flow.iterates() {
+        let mut body_flow = self.flow;
+        let body_reachable = body_flow.continues();
+        if body_reachable {
+            self.advance_iterator(index, slot)?;
             self.check_application_loop(span)?;
         }
-        let body_reachable = body_flow.continues();
         self.iterators.pop();
         self.loop_depth -= 1;
-        if body_reachable {
-            self.advance_iterator(index, slot);
+        let mut code = std::mem::take(&mut self.code);
+        let natural = (!nonempty || (!initial && body_flow.iterates())).then_some(natural);
+        if initial {
+            let specification = cursor_specification.clone();
+            let (expanded, flow) =
+                self.expand_initial_loop(code, body_reachable, |builder, next| {
+                    let mut cursor = specification.clone();
+                    cursor.begin = next.unwrap();
+                    builder.for_loop(cursor, body, span, false, false)
+                })?;
+            code = expanded;
+            body_flow = body_flow.union(flow);
         }
-        let mut body = std::mem::take(&mut self.code);
-        let natural = (!nonempty || body_flow.iterates()).then_some(natural);
+        let mut body = code;
         let next = self.leave_loop(natural, &mut condition, test.regs[0], &mut body);
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
@@ -2951,7 +3065,7 @@ impl<'a> Builder<'a> {
         let ExprKind::Name(name) = &base.kind else {
             return self.view_place(base, index);
         };
-        if let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned() {
+        if let Some(data) = self.application_value(name, base.span)? {
             return self.application_index(data, index);
         }
         if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
@@ -3060,15 +3174,11 @@ impl<'a> Builder<'a> {
         name: &String,
         span: Span,
     ) -> Result<()> {
-        if annotation.dataset {
-            return self.fail(
-                span,
-                "B263",
-                "动态 dataset 声明需要 dataset<T>(length) 创建存储",
-            );
-        }
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
+        }
+        if annotation.dataset {
+            return self.application_declare(annotation, name, span);
         }
         let ty = self.world.ty(
             annotation,
@@ -3091,6 +3201,11 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
+        if let ExprKind::Name(name) = &lhs.kind
+            && let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned()
+        {
+            return self.application_assign(name, data, op, rhs, span);
+        }
         let place = self.place(lhs)?;
         let mut value = self.expr(rhs)?;
         if op != "=" {
@@ -3104,7 +3219,7 @@ impl<'a> Builder<'a> {
     fn expression_statement(&mut self, e: &Expr) -> Result<()> {
         if self.application_data_expression(e) {
             let data = self.application_resource(e, e.span)?;
-            self.release_application_handle(data.handle);
+            self.release_application_handle(data.handle.regs[0]);
             return Ok(());
         }
         if let ExprKind::Call(name, args) = &e.kind
@@ -3127,16 +3242,21 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
-    fn advance_iterator(&mut self, index: Reg, slot: usize) {
-        let one = self.constant(Scalar::U32, 1);
-        let next = self.reg(Scalar::U32);
-        self.code.push(Inst::Binary {
-            dst: next,
-            op: BinaryOp::IAdd,
-            a: index,
-            b: one.regs[0],
+    fn advance_iterator(&mut self, index: Reg, slot: usize) -> Result<()> {
+        let mut source = self.initial_loop_cursor().unwrap_or(Value {
+            proof: bounds::Proof::default(),
+            literal: false,
+            ty: Ty::scalar(Scalar::U32),
+            regs: vec![index],
+            uniform: false,
+            constant: None,
         });
-        self.code.push(Inst::StoreLocal(slot, next));
+        source.regs = vec![index];
+        let one = self.constant(Scalar::U32, 1);
+        let value = self.binary("+", source, one, self.definition.function.span)?;
+        self.code.push(Inst::StoreLocal(slot, value.regs[0]));
+        self.capture_loop_cursor(value);
+        Ok(())
     }
     fn seek_statement(&mut self, name: &String, position: &Expr, span: Span) -> Result<()> {
         let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {
@@ -3147,9 +3267,10 @@ impl<'a> Builder<'a> {
         }
         let value = self.expr(position)?;
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
-        self.check_application_loop(span)?;
         self.release_application_loop();
         self.code.push(Inst::StoreLocal(slot, value.regs[0]));
+        self.capture_loop_cursor(value);
+        self.check_application_loop(span)?;
         self.code.push(Inst::Continue);
         self.flow = Flow::CONTINUE;
 
@@ -3214,7 +3335,7 @@ impl<'a> Builder<'a> {
             );
         }
         if let ExprKind::Name(data) = &args[0].kind {
-            if let Some(Binding::ApplicationData(data)) = self.env.get(data).cloned() {
+            if let Some(data) = self.application_value(data, span)? {
                 self.application_cpu(&data, span)?;
                 let index = self.expr(&args[1])?;
                 self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
@@ -3275,10 +3396,13 @@ impl<'a> Builder<'a> {
         };
         let (domain, index, proof) = match self.env.get(name).cloned() {
             Some(Binding::Owned(OwnedBinding {
-                place: Place::ApplicationElement { handle, index, .. },
+                place:
+                    Place::ApplicationElement {
+                        identity, index, ..
+                    },
                 ..
             })) => (
-                IndexDomain::ApplicationData(handle),
+                IndexDomain::ApplicationData(identity),
                 index,
                 bounds::Proof::unsigned(0, u32::MAX),
             ),
@@ -3318,8 +3442,7 @@ impl<'a> Builder<'a> {
     }
     fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Value> {
         if let ExprKind::Name(name) = &base.kind {
-            if let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned() {
-                self.application_available(&data, e.span)?;
+            if let Some(data) = self.application_value(name, e.span)? {
                 return if field == "length" {
                     Ok(data.length)
                 } else {

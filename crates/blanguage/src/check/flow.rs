@@ -24,17 +24,58 @@ impl Flow {
         Self((self.0 & 2) | u8::from(next))
     }
 }
+#[derive(Clone)]
 pub(super) struct LoopState {
     env: BTreeMap<String, Binding>,
     initialized: BTreeSet<Position>,
+    control: bool,
+    cursor: Option<Value>,
 }
 pub(super) struct LoopContext {
     names: BTreeSet<String>,
     resources: BTreeMap<String, (Option<Target>, application::Ownership)>,
     exits: Vec<LoopState>,
+    initial: bool,
+    continues: Vec<LoopState>,
+    iterator: Option<String>,
+    initial_cursor: Option<Value>,
 }
 impl Builder<'_> {
-    pub(super) fn check_application_loop(&self, span: Span) -> Result<()> {
+    pub(super) fn application_initial_loop(&self, body: &[Stmt]) -> bool {
+        self.env.iter().any(|(name, binding)| matches!(binding,
+            Binding::ApplicationData(data) if data.ownership == application::Ownership::Moved && application::rebound(body, name)))
+    }
+    pub(super) fn configure_initial_loop(
+        &mut self,
+        initial: bool,
+        iterator: Option<String>,
+        cursor: Option<Value>,
+    ) {
+        let context = self.loop_contexts.last_mut().unwrap();
+        context.initial = initial;
+        context.iterator = iterator;
+        context.initial_cursor = cursor;
+    }
+    pub(super) fn initial_loop_cursor(&self) -> Option<Value> {
+        self.loop_contexts
+            .last()
+            .and_then(|context| context.initial_cursor.clone())
+    }
+    pub(super) fn capture_loop_cursor(&mut self, value: Value) {
+        if let Some(name) = self
+            .loop_contexts
+            .last()
+            .and_then(|context| context.iterator.clone())
+        {
+            self.env.insert(name, Binding::Value(value));
+        }
+    }
+    pub(super) fn check_application_loop(&mut self, span: Span) -> Result<()> {
+        if self.loop_contexts.last().unwrap().initial {
+            let state = self.loop_state();
+            self.loop_contexts.last_mut().unwrap().continues.push(state);
+            return Ok(());
+        }
         let entry = &self.loop_contexts.last().unwrap().resources;
         for (name, binding) in &self.env {
             if let Binding::ApplicationData(data) = binding
@@ -47,7 +88,7 @@ impl Builder<'_> {
                         "循环继续前须保有入口的 dataset 所有权，不能在回边重复消费",
                     );
                 }
-                if *residency != data.residency {
+                if *ownership != application::Ownership::Moved && *residency != data.residency {
                     return self.fail(
                         span,
                         "B266",
@@ -83,7 +124,12 @@ impl Builder<'_> {
                     if a.ownership != b.ownership {
                         a.ownership = application::Ownership::Moved;
                     }
+                    a.handle.proof.join(&b.handle.proof, 1, None);
                     a.length.proof.join(&b.length.proof, 1, None);
+                    a.length.uniform &= b.length.uniform;
+                    if a.length.constant != b.length.constant {
+                        a.length.constant = None;
+                    }
                     if a.residency != b.residency {
                         a.residency = None;
                     }
@@ -106,6 +152,10 @@ impl Builder<'_> {
                 })
                 .collect(),
             exits: Vec::new(),
+            initial: false,
+            continues: Vec::new(),
+            iterator: None,
+            initial_cursor: None,
         });
     }
     pub(super) fn loop_state(&self) -> LoopState {
@@ -118,7 +168,63 @@ impl Builder<'_> {
                 .map(|(n, b)| (n.clone(), b.clone()))
                 .collect(),
             initialized: self.initialized.clone(),
+            control: self.control_uniform,
+            cursor: self
+                .loop_contexts
+                .last()
+                .unwrap()
+                .iterator
+                .as_ref()
+                .and_then(|name| match self.env.get(name) {
+                    Some(Binding::Value(value)) => Some(value.clone()),
+                    _ => None,
+                }),
         }
+    }
+    fn restore_initial_edge(&mut self, state: LoopState) {
+        self.env = state.env;
+        self.initialized = state.initialized;
+        self.control_uniform = state.control;
+    }
+    pub(super) fn expand_initial_loop<F>(
+        &mut self,
+        code: Vec<Inst>,
+        next: bool,
+        mut continuation: F,
+    ) -> Result<(Vec<Inst>, Flow)>
+    where
+        F: FnMut(&mut Self, Option<Value>) -> Result<()>,
+    {
+        let context = self.loop_contexts.last_mut().unwrap();
+        let breaks = std::mem::take(&mut context.exits);
+        let mut continues = std::mem::take(&mut context.continues);
+        let natural = if next {
+            Some(continues.pop().unwrap())
+        } else {
+            None
+        };
+        let mut exits = Vec::new();
+        let mut flow = Flow::NEXT;
+        let mut code = expand_initial_code(
+            self,
+            code,
+            &mut breaks.into_iter(),
+            &mut continues.into_iter(),
+            &mut exits,
+            &mut flow,
+            &mut continuation,
+        )?;
+        if let Some(state) = natural {
+            code.extend(compile_initial_continuation(
+                self,
+                state,
+                &mut exits,
+                &mut flow,
+                &mut continuation,
+            )?);
+        }
+        self.loop_contexts.last_mut().unwrap().exits = exits;
+        Ok((code, flow))
     }
     pub(super) fn capture_break(&mut self) {
         let state = self.loop_state();
@@ -150,13 +256,14 @@ impl Builder<'_> {
                 .collect();
             self.join_environment(&exit.env, None);
         }
+        let final_environment = self.env.clone();
         let releases: Vec<_> = break_states
             .iter()
-            .map(|environment| self.application_join_releases(environment, &self.env))
+            .map(|environment| self.application_join_releases(environment, &final_environment))
             .collect();
         insert_break_releases(body, &mut releases.into_iter());
         if let Some(environment) = natural_env {
-            let no = self.application_join_releases(&environment, &self.env);
+            let no = self.application_join_releases(&environment, &final_environment);
             if !no.is_empty() {
                 condition.push(Inst::If {
                     condition: test,
@@ -184,4 +291,91 @@ fn insert_break_releases(code: &mut Vec<Inst>, releases: &mut impl Iterator<Item
         result.push(instruction);
     }
     *code = result;
+}
+
+// Continue is the real next-iteration edge. Compile its continuation directly, without an ownership flag.
+fn compile_initial_continuation<'a, F>(
+    builder: &mut Builder<'a>,
+    state: LoopState,
+    exits: &mut Vec<LoopState>,
+    flow: &mut Flow,
+    continuation: &mut F,
+) -> Result<Vec<Inst>>
+where
+    F: FnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
+{
+    let cursor = state.cursor.clone();
+    builder.restore_initial_edge(state);
+    builder.flow = Flow::NEXT;
+    continuation(builder, cursor)?;
+    *flow = flow.union(builder.flow);
+    let mut code = std::mem::take(&mut builder.code);
+    if builder.flow.continues() {
+        exits.push(builder.loop_state());
+        code.push(Inst::Break);
+    }
+    Ok(code)
+}
+fn expand_initial_code<'a, F>(
+    builder: &mut Builder<'a>,
+    code: Vec<Inst>,
+    breaks: &mut impl Iterator<Item = LoopState>,
+    continues: &mut impl Iterator<Item = LoopState>,
+    exits: &mut Vec<LoopState>,
+    flow: &mut Flow,
+    continuation: &mut F,
+) -> Result<Vec<Inst>>
+where
+    F: FnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
+{
+    let mut result = Vec::new();
+    for mut instruction in code {
+        match &mut instruction {
+            Inst::Break => exits.push(breaks.next().unwrap()),
+            Inst::Continue => {
+                result.extend(compile_initial_continuation(
+                    builder,
+                    continues.next().unwrap(),
+                    exits,
+                    flow,
+                    continuation,
+                )?);
+                continue;
+            }
+            Inst::If { yes, no, .. } => {
+                *yes = expand_initial_code(
+                    builder,
+                    std::mem::take(yes),
+                    breaks,
+                    continues,
+                    exits,
+                    flow,
+                    continuation,
+                )?;
+                *no = expand_initial_code(
+                    builder,
+                    std::mem::take(no),
+                    breaks,
+                    continues,
+                    exits,
+                    flow,
+                    continuation,
+                )?;
+            }
+            Inst::Scope(body) => {
+                *body = expand_initial_code(
+                    builder,
+                    std::mem::take(body),
+                    breaks,
+                    continues,
+                    exits,
+                    flow,
+                    continuation,
+                )?
+            }
+            _ => {}
+        }
+        result.push(instruction);
+    }
+    Ok(result)
 }

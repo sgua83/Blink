@@ -127,13 +127,14 @@ impl Builder<'_> {
             }
             Place::ApplicationElement {
                 handle,
+                identity,
                 index,
                 stride,
                 words,
                 ..
             } => (
                 ExternalStorage::Indexed(IndexedSource::View {
-                    address: self.application_address(*handle, access.writes(), span)?,
+                    address: self.application_address(*handle, *identity, access.writes(), span)?,
                     index: *index,
                     stride: *stride,
                 }),
@@ -185,11 +186,17 @@ impl Builder<'_> {
                     }
                     Place::ApplicationElement {
                         handle,
+                        identity,
                         index,
                         stride,
                         ..
                     } => ExternalStorage::Indexed(IndexedSource::View {
-                        address: self.application_address(*handle, access.writes(), span)?,
+                        address: self.application_address(
+                            *handle,
+                            *identity,
+                            access.writes(),
+                            span,
+                        )?,
                         index: *index,
                         stride: *stride,
                     }),

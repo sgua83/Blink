@@ -83,13 +83,13 @@ impl Place {
         match (self, other) {
             (
                 Self::ApplicationElement {
-                    handle: a,
+                    identity: a,
                     index_range: (low_a, high_a),
                     words,
                     ..
                 },
                 Self::ApplicationElement {
-                    handle: b,
+                    identity: b,
                     index_range: (low_b, high_b),
                     words: other,
                     ..

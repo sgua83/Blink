@@ -46,8 +46,9 @@ impl Builder<'_> {
                 self.env = no_env;
             }
         } else {
-            yes.extend(self.application_join_releases(&self.env, &no_env));
-            no.extend(self.application_join_releases(&no_env, &self.env));
+            let yes_environment = self.env.clone();
+            yes.extend(self.application_join_releases(&yes_environment, &no_env));
+            no.extend(self.application_join_releases(&no_env, &yes_environment));
             self.join_environment(&no_env, Some(&c));
             self.reads.extend(yes_effects.0);
             self.writes.extend(yes_effects.1);

@@ -87,7 +87,37 @@ impl Builder<'_> {
             _ => Ok(None),
         }
     }
-    fn invalidate_writes(&mut self, writes: &[&Expr]) -> Result<()> {
+    fn invalidate_writes(&mut self, writes: &[&Expr], borrowed_data: Option<&str>) -> Result<()> {
+        let resources: Vec<_> = self
+            .env
+            .iter()
+            .filter_map(|(name, binding)| {
+                let Binding::ApplicationData(data) = binding else {
+                    return None;
+                };
+                (borrowed_data != Some(name.as_str())
+                    && !data
+                        .handle
+                        .proof
+                        .known_identity(0)
+                        .is_some_and(|id| self.application_borrowed(id))
+                    && writes
+                        .iter()
+                        .any(|expr| matches!(&expr.kind, ExprKind::Name(target) if target == name)))
+                .then(|| name.clone())
+            })
+            .collect();
+        for name in resources {
+            if let Some(Binding::ApplicationData(data)) = self.env.get_mut(&name) {
+                data.handle.proof = bounds::Proof::default();
+                data.length.proof = data
+                    .count
+                    .map(|count| bounds::Proof::unsigned(count, count))
+                    .unwrap_or_default();
+                data.length.constant = None;
+                data.length.uniform = false;
+            }
+        }
         let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (name, binding) in &self.env {
             if let Binding::Owned(owner) = binding {
@@ -119,14 +149,18 @@ impl Builder<'_> {
         expression_writes(self.world, &self.definition, expr, &mut |place| {
             writes.push(place)
         });
-        self.invalidate_writes(&writes)
+        self.invalidate_writes(&writes, None)
     }
-    pub(super) fn invalidate_assigned(&mut self, body: &[Stmt]) -> Result<()> {
+    pub(super) fn invalidate_assigned(
+        &mut self,
+        body: &[Stmt],
+        borrowed_data: Option<&str>,
+    ) -> Result<()> {
         let mut writes = Vec::new();
         statement_writes(self.world, &self.definition, body, &mut |place| {
             writes.push(place)
         });
-        self.invalidate_writes(&writes)
+        self.invalidate_writes(&writes, borrowed_data)
     }
 }
 

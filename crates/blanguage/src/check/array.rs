@@ -5,6 +5,7 @@ impl Place {
         match self {
             Self::ApplicationElement {
                 handle,
+                identity,
                 index,
                 index_range,
                 stride,
@@ -14,6 +15,7 @@ impl Place {
             } => Self::ApplicationElement {
                 ty,
                 handle,
+                identity,
                 index,
                 index_range,
                 stride,
@@ -241,11 +243,12 @@ impl Builder<'_> {
         Ok(match base {
             Place::ApplicationElement {
                 handle,
+                identity,
                 index,
                 stride,
                 ..
             } => IndexedSource::View {
-                address: self.application_address(*handle, write, span)?,
+                address: self.application_address(*handle, *identity, write, span)?,
                 index: *index,
                 stride: *stride,
             },

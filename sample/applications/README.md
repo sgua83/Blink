@@ -47,7 +47,7 @@ $LASTEXITCODE
 .\target\applications\datasets.exe
 ```
 
-`datasets.b` 由 main 创建一百万条记录，把所有权交给 CPU 函数 `create_input`；函数把拥有形参移动到新局部、调用 `seed`，再返回同一 dataset 给 main；main 随后显式上传输入、筛选输出、排序输出和计数，再调用 GPU `select／order`。GPU 两次提交之间保留数据与有效域，没有读回 Count；随后显式下载排序结果及计数，调用 CPU `summarize`。正常输出 `500000` 和 `891896832`，退出码为 `0`；第二个数是 B 的 u32 回绕结果。
+`datasets.b` 先声明尚无资源的 input，再把零长度拥有存储交给 CPU 函数 `create_input`；函数按请求长度保留或重赋值 storage，调用 `seed` 初始化一百万条记录，再返回实际 dataset 给 main；main 随后显式上传输入、筛选输出、排序输出和计数，再调用 GPU `select／order`。GPU 两次提交之间保留数据与有效域，没有读回 Count；随后显式下载排序结果及计数，调用 CPU `summarize`。正常输出 `500000` 和 `891896832`，退出码为 `0`；第二个数是 B 的 u32 回绕结果。
 
 `dataset<T>(length)` 创建全零、由当前 CPU 应用拥有的存储，`let rows = dataset<T>(length)` 可推导资源类型；固定形状可写 `dataset<T,N>` 或 `dataset<T,N>(N)`。CPU 下标与有界遍历沿用原类型和范围规则，普通函数可以 `read dataset<T>` 借用。`upload(rows)`、`download(rows)` 明确转移这份资源的物理存储；`run_cpu(program(args))`、`run_gpu(program(args))` 只接受对应存储，CPU 读取 GPU 数据前也须下载。资源可由普通 CPU 函数以 dataset<T[,N]> 返回并由调用方接收；返回资源交接所有权，其余本地资源在作用域结束、函数返回、break、continue 或 seek 时释放，GPU 物理内存继续由实际最后使用点持有。借用参数不能当作拥有资源返回；局部初始化和 CPU 拥有形参可以移动资源，原绑定随移动失效。
 
@@ -68,4 +68,4 @@ $LASTEXITCODE
 
 inout 函数可在范围内读写和转借，返回后数据仍由 main 拥有；函数只释放自己的本地资源，不能转移借来的 CPU／GPU 存储。同次调用中的独占借用不得与同一存储的其他整份或元素借用重叠，只读参数可以共享。参数类型／固定形状和 nonempty／index 条件继续沿原检查器证明，不复制数据，不增加引用 ABI 或运行时别名检查。
 
-CPU 应用中已初始化存储的整份 inout、拥有 dataset 的函数返回、局部初始化移动与拥有形参已接通；资源重赋值／聚合、write dataset 全域初始化与其他资源构造仍待完成。program 的每个并行实例仍只拥有当前独占元素。
+CPU 应用中已初始化存储的整份 inout、拥有 dataset 的函数返回、局部初始化移动、拥有形参、资源重赋值与重新初始化已接通；资源聚合、write dataset 全域初始化与其他资源构造仍待完成。program 的每个并行实例仍只拥有当前独占元素。

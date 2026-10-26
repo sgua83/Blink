@@ -9,7 +9,7 @@ struct Selection {
 enum Resource {
     Application {
         root: String,
-        handle: Reg,
+        handle: ValueIdentity,
         minimum: u32,
     },
     Array(u32),
@@ -127,7 +127,7 @@ fn resource(
         Some(Binding::ApplicationData(data)) => {
             return Ok(Resource::Application {
                 root: path.into(),
-                handle: data.handle,
+                handle: data.handle.identity(),
                 minimum: data.length.minimum(),
             });
         }

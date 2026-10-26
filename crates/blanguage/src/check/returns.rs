@@ -22,10 +22,13 @@ impl Returned {
     fn registers(&self) -> Vec<Reg> {
         match self {
             Self::Value(value) => value.regs.clone(),
-            Self::Dataset(data) => vec![data.handle, data.length.regs[0]],
+            Self::Dataset(data) => vec![data.handle.regs[0], data.length.regs[0]],
         }
     }
     fn join(&mut self, other: Self) {
+        if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &other) {
+            data.handle.proof = bounds::Proof::common(&data.handle, &other.handle);
+        }
         let (other, residency) = match &other {
             Self::Value(value) => (value, None),
             Self::Dataset(data) => (&data.length, data.residency),
@@ -304,11 +307,12 @@ impl Builder<'_> {
                 match value {
                     Returned::Value(value) => value.regs = registers,
                     Returned::Dataset(data) => {
-                        data.handle = registers[0];
+                        data.handle.regs = vec![registers[0]];
+                        data.handle.proof = bounds::Proof::capture(&data.handle);
                         data.length.regs = vec![registers[1]];
                         data.length.proof =
                             bounds::Proof::capture(&data.length).with_domains(Domains::from([
-                                IndexDomain::ApplicationLength(data.handle),
+                                IndexDomain::ApplicationLength(data.handle.identity()),
                             ]));
                     }
                 }

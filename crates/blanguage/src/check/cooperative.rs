@@ -13,10 +13,12 @@ pub(super) enum Argument {
 impl Argument {
     fn overlaps(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::ApplicationData(a), Self::ApplicationData(b)) => a.handle == b.handle,
+            (Self::ApplicationData(a), Self::ApplicationData(b)) => {
+                a.handle.identity() == b.handle.identity()
+            }
             (Self::ApplicationData(data), Self::Exclusive(place) | Self::Atomic(place))
             | (Self::Exclusive(place) | Self::Atomic(place), Self::ApplicationData(data)) => {
-                matches!(place.storage(), Place::ApplicationElement { handle, .. } if *handle == data.handle)
+                matches!(place.storage(), Place::ApplicationElement { identity, .. } if *identity == data.handle.identity())
             }
             (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) => {
                 a.overlaps(b)
@@ -95,13 +97,19 @@ impl<'a> Builder<'a> {
                     let ExprKind::Name(name) = &arg.kind else {
                         return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
                     };
-                    match self.env.get(name) {
-                        Some(Binding::Data(view)) => Argument::Dataset(view.clone()),
-                        Some(Binding::ApplicationData(data)) => {
-                            self.application_available(data, arg.span)?;
-                            Argument::ApplicationData(data.clone())
+                    if let Some(data) = self.application_value(name, arg.span)? {
+                        Argument::ApplicationData(data)
+                    } else {
+                        match self.env.get(name) {
+                            Some(Binding::Data(view)) => Argument::Dataset(view.clone()),
+                            _ => {
+                                return self.fail(
+                                    arg.span,
+                                    "B224",
+                                    "dataset 借用需要已有数据集名称",
+                                );
+                            }
                         }
-                        _ => return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称"),
                     }
                 } else if param.ty.tile {
                     Argument::Tile(self.tile_view(arg)?)
@@ -118,10 +126,10 @@ impl<'a> Builder<'a> {
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
             let handle = match argument {
                 Argument::ApplicationData(data) if param.access != Access::Value => {
-                    Some(data.handle)
+                    Some(data.handle.identity())
                 }
                 Argument::Exclusive(place) | Argument::Atomic(place) => match place.storage() {
-                    Place::ApplicationElement { handle, .. } => Some(*handle),
+                    Place::ApplicationElement { identity, .. } => Some(*identity),
                     _ => None,
                 },
                 _ => None,
@@ -303,7 +311,9 @@ impl<'a> Builder<'a> {
                         application::Ownership::Borrowed
                     };
                     data.writable = matches!(param.access, Access::Value | Access::InOut);
-                    Binding::ApplicationData(data)
+                    let mutable =
+                        application::rebound(callee.function.body.as_ref().unwrap(), &param.name);
+                    Binding::ApplicationData(self.application_bind(data, mutable))
                 }
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;

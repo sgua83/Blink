@@ -137,6 +137,36 @@ pub(super) struct Proof {
     domains: Vec<Domains>,
 }
 impl Proof {
+    pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<u32>> {
+        if *ty == Ty::scalar(Scalar::Bool) {
+            return match &self.condition.as_deref()?.cases {
+                [None, Some(_)] => Some(vec![1]),
+                [Some(_), None] => Some(vec![0]),
+                _ => None,
+            };
+        }
+        ty.components
+            .iter()
+            .enumerate()
+            .map(|(component, (scalar, _))| {
+                let bias = match scalar {
+                    Scalar::U32 => 0,
+                    Scalar::I32 => 1 << 31,
+                    _ => return None,
+                };
+                match self.range_set(component).0.as_slice() {
+                    [(lower, upper)] if lower == upper => Some(lower ^ bias),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+    pub(super) fn known_identity(&self, component: usize) -> Option<ValueIdentity> {
+        self.origins
+            .get(component)
+            .and_then(|origins| origins.first())
+            .copied()
+    }
     pub(super) fn assign(&mut self, components: &[usize], width: usize, fresh: Self) {
         if components.iter().copied().eq(0..width) {
             *self = fresh;
@@ -567,7 +597,7 @@ impl Value {
         }
         ranges
     }
-    fn identity(&self) -> ValueIdentity {
+    pub(super) fn identity(&self) -> ValueIdentity {
         self.component_identity(0)
     }
     fn component_identity(&self, index: usize) -> ValueIdentity {
@@ -932,10 +962,11 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
             if let Some((value, source)) = arithmetic_source(op, a, b, component) {
                 let mut exact = value.projected_proof(&[source]);
                 // 继承操作数身份，但仍与运算的可达片段相交，保留空路径。
-                exact.ranges[0] = exact.range_set(0).combine(
-                    &proof.range_set(component),
-                    |(al, ah), (bl, bh)| IntegerRanges::interval(al.max(bl), ah.min(bh)),
-                );
+                exact.ranges[0] = exact
+                    .range_set(0)
+                    .combine(&proof.range_set(component), |(al, ah), (bl, bh)| {
+                        IntegerRanges::interval(al.max(bl), ah.min(bh))
+                    });
                 exact.domains[0].extend(proof.domains(component));
                 proof.assign(&[component], count, exact);
             }
