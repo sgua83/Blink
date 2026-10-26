@@ -26,6 +26,29 @@ impl Emitter<'_> {
         let at = self.address_scalar(binding, index, stride, word);
         self.emit(62, &[at, value, 2, 4]);
     }
+    fn sort_copy_type(&mut self, lanes: u32) -> (u32, u32) {
+        let mut vector = if lanes == 4 {
+            self.ballot_type
+        } else {
+            self.uint2_type
+        };
+        if vector == 0 {
+            vector = self.id();
+            op(
+                &mut self.defs,
+                23,
+                &[vector, self.types[&Scalar::U32], lanes],
+            );
+            if lanes == 4 {
+                self.ballot_type = vector;
+            } else {
+                self.uint2_type = vector;
+            }
+        }
+        let pointer = self.id();
+        op(&mut self.defs, 32, &[pointer, 5349, vector]);
+        (vector, pointer)
+    }
     pub(super) fn sort_initialize(
         &mut self,
         s: &Sorting,
@@ -76,9 +99,46 @@ impl Emitter<'_> {
         self.sort_when(active, |e| {
             let original = e.sort_load(e.program.buffers.len(), e.index, 2, 1);
             let stride = e.program.buffers[s.source].stride / 4;
-            for word in 0..stride {
-                let value = e.sort_load(s.source, original, stride, word);
-                e.sort_store(s.target, e.index, stride, word, value);
+            let source = e.address_scalar(s.source, original, stride, 0);
+            let target = e.address_scalar(s.target, e.index, stride, 0);
+            let blocks = stride / 4 + (stride % 4) / 2 + stride % 2;
+            let bases = (blocks > 1).then(|| {
+                let from = e.id();
+                let to = e.id();
+                e.emit(117, &[e.u64_type, from, source]);
+                e.emit(117, &[e.u64_type, to, target]);
+                (from, to)
+            });
+            let mut word = 0;
+            for lanes in [4, 2, 1] {
+                if stride - word < lanes {
+                    continue;
+                }
+                let (ty, pointer) = if lanes == 1 {
+                    (e.types[&Scalar::U32], e.ptr_buffer_u32)
+                } else {
+                    e.sort_copy_type(lanes)
+                };
+                while stride - word >= lanes {
+                    let (mut from, mut to) = if word == 0 {
+                        (source, target)
+                    } else {
+                        let (from, to) = bases.unwrap();
+                        let bytes = e.constant(Scalar::U32, word * 4);
+                        (e.word_pointer(from, bytes), e.word_pointer(to, bytes))
+                    };
+                    if lanes != 1 {
+                        let vector_from = e.id();
+                        let vector_to = e.id();
+                        e.emit(124, &[pointer, vector_from, from]);
+                        e.emit(124, &[pointer, vector_to, to]);
+                        (from, to) = (vector_from, vector_to);
+                    }
+                    let value = e.id();
+                    e.emit(61, &[ty, value, from, 2, 4]);
+                    e.emit(62, &[to, value, 2, 4]);
+                    word += lanes;
+                }
             }
         });
     }
