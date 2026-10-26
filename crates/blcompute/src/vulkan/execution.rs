@@ -213,22 +213,15 @@ impl Execution {
     pub fn prepare(mut sources: Vec<Rc<Self>>) -> Result<Vec<Rc<Self>>> {
         sources.sort_unstable_by_key(|s| s.point.sequence.get());
         sources.dedup_by_key(|s| s.point.sequence.get());
-        let mut all = Vec::new();
-        for source in sources {
-            all.extend(std::mem::take(&mut *source.dependencies.borrow_mut()));
-            all.push(source);
-        }
-        all.sort_unstable_by_key(|s| s.point.sequence.get());
-        all.dedup_by_key(|s| s.point.sequence.get());
         let mut finished = 0;
-        for source in &all {
+        for source in &sources {
             if !source.is_complete()? {
                 break;
             }
             finished += 1;
         }
-        all.drain(..finished);
-        Ok(all)
+        sources.drain(..finished);
+        Ok(sources)
     }
     pub fn discard(&self, storage: DatasetStorage) {
         if self.point.result.get() == Some(0) {
@@ -245,12 +238,28 @@ impl Execution {
         }
     }
     fn release_known(&self) {
-        let dependencies = std::mem::take(&mut *self.dependencies.borrow_mut());
-        for previous in dependencies {
-            // 当前 Fence 完成，包含同一队列较早提交的真实命令。
-            previous.point.result.set(Some(0));
-            previous.release_known();
+        // 保留真实原生终态；同队列成功覆盖生产依赖，设备丢失仍是错误。
+        let result = self.point.result.get();
+        let mut completed = std::mem::take(&mut *self.dependencies.borrow_mut());
+        let mut index = 0;
+        while index < completed.len() {
+            let dependencies = {
+                let previous = &completed[index];
+                previous
+                    .point
+                    .result
+                    .set(previous.point.result.get().or(result));
+                std::mem::take(&mut *previous.dependencies.borrow_mut())
+            };
+            completed.extend(dependencies);
+            index += 1;
         }
+        for previous in completed.into_iter().rev() {
+            previous.release_resources();
+        }
+        self.release_resources();
+    }
+    fn release_resources(&self) {
         let resources = self.resources.borrow_mut().take();
         drop(resources);
         let storage = std::mem::take(&mut *self.discarded.borrow_mut());
@@ -276,8 +285,6 @@ impl Execution {
 impl Drop for Execution {
     fn drop(&mut self) {
         self.point.finish_for_drop();
-        if self.point.result.get() == Some(0) {
-            self.release_known();
-        }
+        self.release_known();
     }
 }
