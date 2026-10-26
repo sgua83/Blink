@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-002／C-024 的 x64 单次读写内存操作数：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，P4 client `BLanguage_PA2`；延续 CL13277 的实际性能未证实记录，追查单次 Load／Store、view／私有数组及 SIMD 稀疏／间接访问的地址生产者，把可直接表达的 base＋index×scale＋disp 交给实际内存指令。区分单次地址消费者与 C ABI／原子／多次地址复用，沿同一 Operand／Emitter 编码，处理索引寄存器与溢出值临时寄存器的真实存活。预计修改 native.rs、native/operands.rs、packet.rs、packet/memory.rs 及其必要内存操作数构造点和说明；避让 PA3 全部前端与 Gua 执行框架，不改 IR／ABI／资源所有权。先保存当前正式基线，再实现、保护页／最大索引／压力／真实 CPU／GPU 核对和前后计时；保留失败及无收益事实，清理／源码提交／Git 分别回填。 | 2026-10-27 02:19 +08:00 |
 | C-006／C-022.4 的 CPU 共享只读 Count 与传输：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；沿原 ReadDataset／Arc 与实际存储所有权，接通 CPU 原生只读绑定和共享 Count 的分区／汇合；CPU 拥有型执行统一消费独占／只读 CpuDataset，借用入口和原生代码 ABI 保持，共用原执行主体。同步应用 Frame 与显式 upload_domains／download_domains，按同一真实冻结所有者在一次传输内保留共享和域关系，不建跨操作缓存、计数镜像或 CPU／GPU 统一地址。预计修改 blcompute 的 cpu.rs／cpu 数据绑定、bindings.rs、application.rs、views.rs 与 vulkan/mod.rs／transfer.rs 及说明；不改 PA3 前端／资源重赋值、PA2 后端／寻址、IR／ABI。先保存真实基线，再实现并核对 CPU 原生、跨线程读取、双向传输、共享关系及拒绝；清理／P4／Git 分别回填，多队列／设备和背压继续开放。 | 2026-10-27 02:12 +08:00 |
 | C-005 的已知不可达整数比较分支：**保守拒绝已确认，待修复** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLEngine/Saved/SpatialAggregation`；文档隔离client `BLanguage_Gua_AggregationIssue`，保留主工作区既有未提交记录。实际引擎聚合的无余数分区中，u32的next≥1但next<0选择臂仍扩张返回范围，最终安全for索引报B137；直接常量终点被接纳。仅登记已确认的保守拒绝，不修改其他会话正在研发的前端／后端，不宣称语言修复。具体最小复现与影响见末节。 | 2026-10-27 02:10 +08:00 |
 | C-005 的空整数域安全索引：**本轮源码与原生核对完成；源码已提交／Git 已回读** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage`，client `BLanguage_Gua`；仅修正 bounds.rs 的 index_in 片段包含关系，空下标值域包含于零长度资源域；无新IR／ABI／运行时状态。源码及规范 CL13268，Git `4b68dd17f115556d4c6444cb65e5ecf5176502c6` 三文件与精确P4一致。Release主线59.81秒、14组CPU／GPU各200162个输出word及5项类型／范围／权限拒绝保持；引擎零世界与100003实例场景区域已实际消费。15个临时文件、3927639字节已清理，原始结果保留；台账通过隔离client BLanguage_Gua_EmptyIndexIssue提交，保留其他会话编辑。其他C-005范围继续开放。 | 2026-10-27 01:21 +0800 |
@@ -1985,3 +1986,8 @@ result=value;
 - 当前Release主编译器对该表达式及同式的uint2函数返回均报B137，直接写for(j in 1..14287)则接纳。诊断来自真实compile_entry，原始结果在E:/BLEngineMeasurements/SpatialAggregation/probe.log。临时程序仅用于定位，完成后清理，不新增常设测试入口。
 - 源码检查指向现有整数Condition比较／选择合流：严格上界为0时，constrain的checked_sub不能产生上界事实；后续并未排除该已知不可达选择臂。尚未完成独立修复与所有语义核对，保留C-005状态，不改IR、ABI、资源访问或运行时保护。
 - 引擎分区对编译期余数为0直接使用商的两个乘积端点，消除不需要的余数分配比较；有余数时仍使用同一均分公式。该静态算法特化不是语言修复，未特化表达式的保守拒绝继续保留。引擎所有实际资源访问仍由普通静态索引规则检查，没有增加unchecked访问或运行时检查。
+
+## C-002／C-024：x64 单次读写内存操作数（2026-10-27，正在修复）
+
+- 实际执行机 192.168.10.12／DESKTOP-4B3HN14，会话 01a17630-b20a-7a81-9b77-1b040d8edd04，D:/BLanguage、BLanguage_PA2。上一轮 CL13277／13278 已交付已知步长的指令选择，但计时未证实稳定收益，64 字节流式样本略慢；本轮据该事实继续追查，不重写或撤销原测量。当前仅认领单次实际内存消费者与原寄存器／栈位置的地址交接，尚未实现、构建、核对或提交源码。重复使用的地址和真实指针消费者保留原物化责任，不把所有地址强制改成同一种形式；不新增缓存、运行时分派、校验或资源镜像。
+
