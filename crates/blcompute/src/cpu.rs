@@ -1,10 +1,12 @@
+mod dataset;
 mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ir::{CollectiveOperator, ExecutionPlan as Program, Scalar},
+    ir::{CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
     native::{NativeIntrinsic, NativeSymbol, RangeResult},
 };
+pub use dataset::CpuDataset;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -341,26 +343,51 @@ pub struct Bindings<D = Vec<Dataset>> {
     pub datasets: D,
     pub textures: Vec<crate::Texture2D>,
 }
-impl From<Vec<Dataset>> for Bindings<DomainBindings<Dataset>> {
-    fn from(datasets: Vec<Dataset>) -> Self {
+impl<D: Into<CpuDataset>> From<Vec<D>> for Bindings<DomainBindings<CpuDataset>> {
+    fn from(datasets: Vec<D>) -> Self {
+        Self {
+            datasets: datasets
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>()
+                .into(),
+            textures: Vec::new(),
+        }
+    }
+}
+impl From<DomainBindings<Dataset>> for Bindings<DomainBindings<CpuDataset>> {
+    fn from(datasets: DomainBindings<Dataset>) -> Self {
         Self {
             datasets: datasets.into(),
             textures: Vec::new(),
         }
     }
 }
-impl From<DomainBindings<Dataset>> for Bindings<DomainBindings<Dataset>> {
-    fn from(datasets: DomainBindings<Dataset>) -> Self {
+impl From<DomainBindings<CpuDataset>> for Bindings<DomainBindings<CpuDataset>> {
+    fn from(datasets: DomainBindings<CpuDataset>) -> Self {
         Self {
             datasets,
             textures: Vec::new(),
         }
     }
 }
-impl From<Bindings<Vec<Dataset>>> for Bindings<DomainBindings<Dataset>> {
-    fn from(bindings: Bindings<Vec<Dataset>>) -> Self {
+impl From<Bindings<DomainBindings<Dataset>>> for Bindings<DomainBindings<CpuDataset>> {
+    fn from(bindings: Bindings<DomainBindings<Dataset>>) -> Self {
         Self {
             datasets: bindings.datasets.into(),
+            textures: bindings.textures,
+        }
+    }
+}
+impl<D: Into<CpuDataset>> From<Bindings<Vec<D>>> for Bindings<DomainBindings<CpuDataset>> {
+    fn from(bindings: Bindings<Vec<D>>) -> Self {
+        Self {
+            datasets: bindings
+                .datasets
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>()
+                .into(),
             textures: bindings.textures,
         }
     }
@@ -383,9 +410,9 @@ impl CpuProgram {
     }
     pub fn run_owned(
         &self,
-        bindings: impl Into<Bindings<DomainBindings<Dataset>>>,
+        bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
         values: &[Value],
-    ) -> Result<DomainBindings<Dataset>> {
+    ) -> Result<DomainBindings<CpuDataset>> {
         let Bindings { datasets, textures } = bindings.into();
         self.code.run_owned(datasets, &textures, values)
     }
@@ -404,11 +431,37 @@ impl CpuTemplate {
     }
     pub fn run(
         &self,
-        bindings: impl Into<Bindings<DomainBindings<Dataset>>>,
+        bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
         values: &[Value],
-    ) -> Result<DomainBindings<Dataset>> {
+    ) -> Result<DomainBindings<CpuDataset>> {
         let Bindings { datasets, textures } = bindings.into();
         self.code.run_owned(datasets, &textures, values)
+    }
+}
+struct CpuBuffer<'a> {
+    ty: &'a Ty,
+    stride: u32,
+    count: u32,
+    pointer: *mut u32,
+}
+impl<'a> CpuBuffer<'a> {
+    fn owned(data: &'a mut Dataset) -> Result<Self> {
+        data.require_views()?;
+        Ok(Self {
+            ty: &data.ty,
+            stride: data.stride,
+            count: data.count,
+            pointer: data.words.as_mut_ptr(),
+        })
+    }
+    fn read(data: &'a Dataset) -> Result<Self> {
+        data.require_views()?;
+        Ok(Self {
+            ty: &data.ty,
+            stride: data.stride,
+            count: data.count,
+            pointer: data.words.as_ptr().cast_mut(),
+        })
     }
 }
 impl CpuCode {
@@ -463,12 +516,26 @@ impl CpuCode {
     }
     fn run_owned(
         &self,
-        mut bindings: DomainBindings<Dataset>,
+        mut bindings: DomainBindings<CpuDataset>,
         textures: &[crate::Texture2D],
         values: &[Value],
-    ) -> Result<DomainBindings<Dataset>> {
+    ) -> Result<DomainBindings<CpuDataset>> {
         bindings.require(&self.program)?;
-        self.run(&mut bindings.datasets, textures, values)?;
+        for (data, binding) in bindings.datasets.iter().zip(self.program.buffers()) {
+            if matches!(data, CpuDataset::Read(_)) && binding.access != blanguage::ast::Access::Read
+            {
+                return Err(error("冻结的 CPU 存储只能绑定 read dataset"));
+            }
+        }
+        let buffers = bindings
+            .datasets
+            .iter_mut()
+            .map(|data| match data {
+                CpuDataset::Owned(data) => CpuBuffer::owned(data),
+                CpuDataset::Read(data) => CpuBuffer::read(data),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.run_buffers(&buffers, textures, values)?;
         bindings.completed(&self.program);
         Ok(bindings)
     }
@@ -478,28 +545,42 @@ impl CpuCode {
         textures: &[crate::Texture2D],
         values: &[Value],
     ) -> Result<()> {
+        let buffers = datasets
+            .iter_mut()
+            .map(CpuBuffer::owned)
+            .collect::<Result<Vec<_>>>()?;
+        self.run_buffers(&buffers, textures, values)
+    }
+    fn run_buffers(
+        &self,
+        buffers: &[CpuBuffer<'_>],
+        textures: &[crate::Texture2D],
+        values: &[Value],
+    ) -> Result<()> {
         if textures.len() != self.program.texture_count() {
             return Err(error("纹理绑定数量与程序接口不一致"));
         }
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
-        for data in datasets.iter() {
-            data.require_views()?;
-        }
-        let shapes: Vec<_> = datasets
+        let mut uniforms = arguments(
+            &self.program,
+            buffers.iter().map(|d| (d.ty, d.stride, d.count)),
+            values,
+        )?;
+        let pointers: Vec<_> = buffers
             .iter()
-            .map(|d| (&d.ty, d.stride, d.count))
-            .collect();
-        let mut uniforms = arguments(&self.program, &shapes, values)?;
-        let pointers: Vec<_> = datasets
-            .iter_mut()
-            .map(|d| d.words.as_mut_ptr())
+            .map(|d| d.pointer)
             .chain(texture_descriptors.pointers())
             .collect();
         for (stage, code) in self.program.stages().iter().zip(&self.stages) {
             let count = if let Some(prefix) = &stage.prefix {
-                datasets[prefix.binding].words[prefix.word as usize]
+                unsafe {
+                    buffers[prefix.binding]
+                        .pointer
+                        .add(prefix.word as usize)
+                        .read()
+                }
             } else {
-                datasets[stage.domain].count
+                buffers[stage.domain].count
             };
             let (executable, continuation, result) = match code {
                 StageCode::Sort(code) => {
@@ -547,8 +628,12 @@ impl CpuCode {
                         .fold(reduction.operator.identity(scalar), |a, b| {
                             collective_pair(scalar, reduction.operator, a, b)
                         });
-                    datasets[reduction.fields.target].words
-                        [(reduction.fields.target_word + offset / 4) as usize] = total;
+                    unsafe {
+                        buffers[reduction.fields.target]
+                            .pointer
+                            .add((reduction.fields.target_word + offset / 4) as usize)
+                            .write(total);
+                    }
                 }
             }
             if let Some(continuation) = continuation {
@@ -590,8 +675,12 @@ impl CpuCode {
                                 );
                             }
                             for (value, (_, offset)) in output.into_iter().zip(&r.ty.components) {
-                                datasets[r.fields.target].words
-                                    [(r.fields.target_word + offset / 4) as usize] = value;
+                                unsafe {
+                                    buffers[r.fields.target]
+                                        .pointer
+                                        .add((r.fields.target_word + offset / 4) as usize)
+                                        .write(value);
+                                }
                             }
                             continue;
                         } else if let blanguage::ir::Operation::SegmentedReduce(reduction) =
@@ -618,8 +707,12 @@ impl CpuCode {
                                 total[k + 1] = segments;
                                 segments = next_segments;
                             }
-                            datasets[reduction.count.binding].words
-                                [reduction.count.word as usize] = segments;
+                            unsafe {
+                                buffers[reduction.count.binding]
+                                    .pointer
+                                    .add(reduction.count.word as usize)
+                                    .write(segments);
+                            }
                         } else if let blanguage::ir::Operation::ScanExclusive(scan) =
                             &stage.operation
                         {
@@ -646,7 +739,12 @@ impl CpuCode {
                                 prefix = next;
                             }
                             if let blanguage::ir::Operation::Compact(c) = &stage.operation {
-                                datasets[c.count].words[c.count_word as usize] = prefix;
+                                unsafe {
+                                    buffers[c.count]
+                                        .pointer
+                                        .add(c.count_word as usize)
+                                        .write(prefix);
+                                }
                             }
                         }
                         next

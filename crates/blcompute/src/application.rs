@@ -1,5 +1,9 @@
 //! B 应用拥有动态数据；原 Dataset、域关系及 GPU 最后使用点仍拥有物理资源。
-use crate::{Dataset, DomainBindings, Result, Value, cpu::CpuTemplate, error, vulkan};
+use crate::{
+    Dataset, DomainBindings, Result, Value,
+    cpu::{CpuDataset, CpuTemplate},
+    error, vulkan,
+};
 use blanguage::{
     TemplateProgram,
     ir::{ExecutionPlan, PrefixCount, PrefixRelation, Ty},
@@ -35,11 +39,11 @@ impl Program {
     }
 }
 enum ResidentData {
-    Cpu(Dataset),
+    Cpu(CpuDataset),
     Gpu(vulkan::GpuDataset),
 }
 impl ResidentData {
-    fn cpu(self) -> Result<Dataset> {
+    fn cpu(self) -> Result<CpuDataset> {
         match self {
             Self::Cpu(d) => Ok(d),
             Self::Gpu(_) => Err(error("CPU 访问需要先显式 download 数据")),
@@ -115,14 +119,13 @@ impl Frame {
     pub fn download(&mut self, handle: u32) -> Result<()> {
         let data = self.data.datasets[handle as usize].take().unwrap().gpu()?;
         let data = self.device.as_ref().unwrap().download(&data)?;
-        self.data.datasets[handle as usize] = Some(ResidentData::Cpu(data));
+        self.data.datasets[handle as usize] = Some(ResidentData::Cpu(data.into()));
         Ok(())
     }
     pub fn allocate(&mut self, ty: u32, count: u32) -> Result<u32> {
-        let data = Some(ResidentData::Cpu(Dataset::with_type(
-            self.types[ty as usize].clone(),
-            count,
-        )?));
+        let data = Some(ResidentData::Cpu(
+            Dataset::with_type(self.types[ty as usize].clone(), count)?.into(),
+        ));
         if let Some(index) = self.data.datasets.iter().position(Option::is_none) {
             self.data.datasets[index] = data;
             return Ok(u32::try_from(index)?);
@@ -147,7 +150,15 @@ impl Frame {
         let index = handle as usize;
         let source = self.data.datasets[index].take().unwrap();
         let mut data = source.cpu()?;
-        let address = data.words.as_mut_ptr();
+        let address = match &mut data {
+            CpuDataset::Owned(data) => data.words.as_mut_ptr(),
+            CpuDataset::Read(data) => {
+                if write {
+                    return Err(error("冻结的 CPU 存储不能取得写借用"));
+                }
+                data.words().as_ptr().cast_mut()
+            }
+        };
         self.data.datasets[index] = Some(ResidentData::Cpu(data));
         if write {
             self.data.domains.retain(|r| r.count.binding != index);

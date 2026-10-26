@@ -3,6 +3,61 @@ use super::*;
 use std::collections::BTreeMap;
 
 impl Device {
+    pub(super) fn upload_cpu(
+        &self,
+        data: crate::cpu::CpuDataset,
+        memo: &mut BTreeMap<usize, ReadDataset>,
+    ) -> Result<GpuDataset> {
+        data.require_views()?;
+        match data {
+            crate::cpu::CpuDataset::Owned(data) => self.upload_graph(&data, memo),
+            crate::cpu::CpuDataset::Read(source) => self
+                .upload_read(&source, memo)
+                .map(|target| target.binding()),
+        }
+    }
+
+    pub(super) fn download_cpu(
+        &self,
+        data: &GpuDataset,
+        memo: &mut BTreeMap<usize, crate::ReadDataset>,
+    ) -> Result<crate::cpu::CpuDataset> {
+        match &*data.storage {
+            DatasetStorage::Owned(_) => self.download_graph(data, memo).map(Into::into),
+            DatasetStorage::Read(source) => {
+                let key = Rc::as_ptr(&source.0) as usize;
+                self.download_read(data, key, memo)
+                    .map(|target| target.binding())
+            }
+        }
+    }
+    fn upload_read(
+        &self,
+        source: &crate::ReadDataset,
+        memo: &mut BTreeMap<usize, ReadDataset>,
+    ) -> Result<ReadDataset> {
+        let key = source.identity();
+        if let Some(target) = memo.get(&key) {
+            return Ok(target.clone());
+        }
+        let target = self.upload_graph(source, memo)?.freeze();
+        memo.insert(key, target.clone());
+        Ok(target)
+    }
+    fn download_read(
+        &self,
+        source: &GpuDataset,
+        key: usize,
+        memo: &mut BTreeMap<usize, crate::ReadDataset>,
+    ) -> Result<crate::ReadDataset> {
+        if let Some(target) = memo.get(&key) {
+            return Ok(target.clone());
+        }
+        let target = self.download_graph(source, memo)?.freeze()?;
+        memo.insert(key, target.clone());
+        Ok(target)
+    }
+
     pub(super) fn upload_graph(
         &self,
         data: &Dataset,
@@ -10,15 +65,7 @@ impl Device {
     ) -> Result<GpuDataset> {
         let mut sources = Vec::with_capacity(data.views.sources.len());
         for source in &data.views.sources {
-            let key = source.identity();
-            let target = if let Some(target) = memo.get(&key) {
-                target.clone()
-            } else {
-                let target = self.upload_graph(source, memo)?.freeze();
-                memo.insert(key, target.clone());
-                target
-            };
-            sources.push(target);
+            sources.push(self.upload_read(source, memo)?);
         }
         let mut target =
             GpuDataset::new(self.inner.clone(), data.ty.clone(), data.stride, data.count)?;
@@ -140,14 +187,7 @@ impl Device {
         let mut sources = Vec::with_capacity(data.views.sources.len());
         for source in &data.views.sources {
             let key = Rc::as_ptr(&source.0) as usize;
-            let target = if let Some(target) = memo.get(&key) {
-                target.clone()
-            } else {
-                let target = self.download_graph(&source.0, memo)?.freeze()?;
-                memo.insert(key, target.clone());
-                target
-            };
-            sources.push(target);
+            sources.push(self.download_read(&source.0, key, memo)?);
         }
         let mut target = Dataset {
             ty: data.ty.clone(),

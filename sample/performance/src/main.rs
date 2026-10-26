@@ -39,9 +39,14 @@ fn put(data: &mut Dataset, i: usize, at: usize, values: &[f32]) {
         data.words_mut()[begin + k] = v.to_bits();
     }
 }
-fn difference(program: &ExecutableProgram, a: &[Dataset], b: &[Dataset]) -> (f64, u64) {
+fn difference<T: std::borrow::Borrow<Dataset>>(
+    program: &ExecutableProgram,
+    a: &[Dataset],
+    b: &[T],
+) -> (f64, u64) {
     let (mut absolute, mut integers) = (0.0f64, 0u64);
     for ((binding, a), b) in program.buffers().iter().zip(a).zip(b) {
+        let b = b.borrow();
         if binding.access == Access::Read {
             continue;
         }
@@ -282,7 +287,10 @@ fn main() -> Result<()> {
             cxx_times.push(elapsed);
         }
     }
-    let mut cpu = copies(&program, &initial)?;
+    let mut cpu: Vec<blcompute::cpu::CpuDataset> = copies(&program, &initial)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
     let mut cpu_times = Vec::new();
     let mut cpu_error = (0.0, 0);
     if kind != 11 {

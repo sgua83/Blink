@@ -59,6 +59,30 @@ impl<D> DomainBindings<D> {
     pub fn into_datasets(self) -> Vec<D> {
         self.datasets
     }
+    pub(crate) fn freeze_with(
+        mut self,
+        bindings: &[usize],
+        mut freeze: impl FnMut(D) -> Result<D>,
+    ) -> Result<Self> {
+        for &binding in bindings {
+            if binding >= self.datasets.len() {
+                return Err(error("冻结域绑定索引越界"));
+            }
+        }
+        self.datasets = self
+            .datasets
+            .into_iter()
+            .enumerate()
+            .map(|(binding, data)| {
+                if bindings.contains(&binding) {
+                    freeze(data)
+                } else {
+                    Ok(data)
+                }
+            })
+            .collect::<Result<_>>()?;
+        Ok(self)
+    }
     /// order 索引本次所有旧绑定与按顺序追加的新绑定；不允许产生可写别名。
     pub fn rebind(mut self, order: &[usize], additional: Vec<D>) -> Result<Self>
     where

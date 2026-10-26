@@ -9,6 +9,10 @@ impl ReadDataset {
     pub(crate) fn identity(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }
+    /// 原冻结存储直接作为 CPU read 绑定，保留实际来源与子资源。
+    pub fn binding(&self) -> crate::cpu::CpuDataset {
+        crate::cpu::CpuDataset::Read(self.clone())
+    }
 }
 
 /// 每个记录按类型声明顺序索引真实来源；执行地址由此图降低，不反向解析地址。

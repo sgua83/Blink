@@ -181,33 +181,34 @@ impl Dataset {
             .ok_or_else(|| error(format!("未知字段 {name}")))
     }
 }
-pub(crate) fn arguments(
+pub(crate) fn arguments<'a>(
     program: &ExecutionPlan,
-    shapes: &[(&Ty, u32, u32)],
+    shapes: impl ExactSizeIterator<Item = (&'a Ty, u32, u32)>,
     values: &[Value],
 ) -> Result<Vec<u32>> {
     if shapes.len() != program.buffers().len() {
         return Err(error("设备调用的数据集数量不匹配"));
     }
     let mut words = vec![0; program.uniform_bytes() as usize / 4];
-    for (i, ((ty, stride, count), expected)) in shapes.iter().zip(program.buffers()).enumerate() {
-        if **ty != expected.ty || *stride != expected.stride {
+    for (i, ((ty, stride, count), expected)) in shapes.zip(program.buffers()).enumerate() {
+        if *ty != expected.ty || stride != expected.stride {
             return Err(error(format!(
                 "绑定 {} 的数据布局与程序不一致",
                 expected.name
             )));
         }
-        if expected.count.is_some_and(|n| n != *count) {
+        if expected.count.is_some_and(|n| n != count) {
             return Err(error(format!(
                 "绑定 {} 的元素数不满足程序形状 {:?}",
                 expected.name, expected.count
             )));
         }
-        words[2 + i] = *count;
+        words[2 + i] = count;
     }
+    let length = |binding: usize| words[2 + binding];
     for stage in program.stages() {
         if let Some(selection) = stage.selection
-            && shapes[selection.binding].2 < shapes[stage.domain].2
+            && length(selection.binding) < length(stage.domain)
         {
             return Err(error("where 实际谓词容量不能小于原始域容量"));
         }
@@ -218,43 +219,43 @@ pub(crate) fn arguments(
             .filter(|source| *source != stage.domain)
             .collect();
         for source in sources {
-            if shapes[source].2 < shapes[stage.domain].2 {
+            if length(source) < length(stage.domain) {
                 return Err(error("tile 实际源容量不能小于阶段域容量"));
             }
         }
         if let blanguage::ir::Operation::Compact(c) = &stage.operation {
-            if shapes[c.source].2 != shapes[c.flags].2 || shapes[c.target].2 < shapes[c.source].2 {
+            if length(c.source) != length(c.flags) || length(c.target) < length(c.source) {
                 return Err(error(
                     "compact 实际输入／谓词长度或输出容量不满足并行写入要求",
                 ));
             }
         }
         if let blanguage::ir::Operation::StableSort(s) = &stage.operation {
-            if shapes[s.target].2 < shapes[s.source].2 {
+            if length(s.target) < length(s.source) {
                 return Err(error("排序的实际输出容量不足以容纳输入域"));
             }
         }
         if let blanguage::ir::Operation::ScanExclusive(r) = &stage.operation {
             let r = &r.values;
-            if (stage.prefix.is_none() && shapes[r.source].2 != shapes[r.target].2)
-                || (stage.prefix.is_some() && shapes[r.target].2 < shapes[r.source].2)
+            if (stage.prefix.is_none() && length(r.source) != length(r.target))
+                || (stage.prefix.is_some() && length(r.target) < length(r.source))
             {
                 return Err(error("扫描的实际输出容量不满足输入域"));
             }
         }
         if let blanguage::ir::Operation::CustomScan(r) = &stage.operation
-            && shapes[r.values.fields.target].2 < shapes[r.values.fields.source].2
+            && length(r.values.fields.target) < length(r.values.fields.source)
         {
             return Err(error("自定义扫描的实际输出容量不足以容纳输入域"));
         }
         if let blanguage::ir::Operation::CustomSegmentedReduce(r) = &stage.operation
-            && shapes[r.values.fields.target].2 < shapes[r.values.fields.source].2
+            && length(r.values.fields.target) < length(r.values.fields.source)
         {
             return Err(error("自定义分段归约的实际输出容量不足以容纳输入段"));
         }
         if let blanguage::ir::Operation::SegmentedReduce(r) = &stage.operation {
             let fields = &r.values.fields;
-            if shapes[fields.target].2 < shapes[fields.source].2 {
+            if length(fields.target) < length(fields.source) {
                 return Err(error("分段归约的实际目标容量不足以容纳输入段"));
             }
         }

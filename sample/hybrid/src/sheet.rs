@@ -90,7 +90,7 @@ pub fn run(backend: &str) -> Result<()> {
             let start = Instant::now();
             let output = device.download(&done.datasets()[0])?;
             println!("points_download_ms={:.3}", elapsed(start));
-            output
+            output.into()
         }
         _ => return Err(std::io::Error::other("后端须为 cpu 或 gpu").into()),
     };

@@ -653,9 +653,8 @@ impl Device {
             .into_owned()
     }
     /// 显式复制闭合只读资源图；共享来源在本次传输内只复制一次。
-    pub fn upload(&self, data: Dataset) -> Result<GpuDataset> {
-        data.require_views()?;
-        self.upload_graph(&data, &mut std::collections::BTreeMap::new())
+    pub fn upload(&self, data: impl Into<crate::cpu::CpuDataset>) -> Result<GpuDataset> {
+        self.upload_cpu(data.into(), &mut std::collections::BTreeMap::new())
     }
     pub fn upload_with_views(
         &self,
@@ -777,16 +776,14 @@ impl Device {
     /// 真实传输同时移动存储及其域关系；任意宿主转换不能签发有效域。
     pub fn upload_domains(
         &self,
-        bindings: DomainBindings<Dataset>,
+        bindings: impl Into<DomainBindings<crate::cpu::CpuDataset>>,
     ) -> Result<DomainBindings<GpuDataset>> {
+        let bindings = bindings.into();
         let mut memo = std::collections::BTreeMap::new();
         let datasets = bindings
             .datasets
             .into_iter()
-            .map(|d| {
-                d.require_views()?;
-                self.upload_graph(&d, &mut memo)
-            })
+            .map(|d| self.upload_cpu(d, &mut memo))
             .collect::<Result<Vec<_>>>()?;
         Ok(DomainBindings {
             datasets,
@@ -796,7 +793,7 @@ impl Device {
     pub fn download_domains(
         &self,
         bindings: DomainBindings<GpuDataset>,
-    ) -> Result<DomainBindings<Dataset>> {
+    ) -> Result<DomainBindings<crate::cpu::CpuDataset>> {
         let mut memo = std::collections::BTreeMap::new();
         let datasets = bindings
             .datasets
@@ -805,7 +802,7 @@ impl Device {
                 if !Rc::ptr_eq(&self.inner, &d.allocation.inner) {
                     return Err(error("数据集属于另一设备"));
                 }
-                self.download_graph(d, &mut memo)
+                self.download_cpu(d, &mut memo)
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(DomainBindings {
@@ -892,25 +889,8 @@ impl crate::DomainStorage for GpuDataset {
 }
 impl DomainBindings<GpuDataset> {
     /// 冻结选中存储并保留原域关系；后续只读别名仍指向同一物理所有者。
-    pub fn freeze(mut self, bindings: &[usize]) -> Result<Self> {
-        for &binding in bindings {
-            if binding >= self.datasets.len() {
-                return Err(error("冻结域绑定索引越界"));
-            }
-        }
-        self.datasets = self
-            .datasets
-            .into_iter()
-            .enumerate()
-            .map(|(binding, data)| {
-                if bindings.contains(&binding) {
-                    data.freeze().binding()
-                } else {
-                    data
-                }
-            })
-            .collect();
-        Ok(self)
+    pub fn freeze(self, bindings: &[usize]) -> Result<Self> {
+        self.freeze_with(bindings, |data| Ok(data.freeze().binding()))
     }
 }
 pub type ViewBinding<'a> = crate::ViewBinding<'a, ReadDataset>;
@@ -1830,8 +1810,11 @@ impl GpuProgram {
                 resources.extend(&source.0.views.sources);
             }
         }
-        let shapes: Vec<_> = data.iter().map(|d| (&d.ty, d.stride, d.count)).collect();
-        let mut uniforms = arguments(&c.program, &shapes, values)?;
+        let mut uniforms = arguments(
+            &c.program,
+            data.iter().map(|d| (&d.ty, d.stride, d.count)),
+            values,
+        )?;
         let mut commands = Commands::new(c.inner.clone())?;
         commands.textures = std::mem::take(&mut owner.textures);
         if !owner.dependencies.is_empty() {
