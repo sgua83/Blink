@@ -17,6 +17,10 @@ impl Builder<'_> {
             "subgroup_count" => SubgroupOp::Count,
             "subgroup_prefix_count" => SubgroupOp::PrefixCount,
             "subgroup_broadcast_first" => SubgroupOp::BroadcastFirst,
+            "subgroup_shuffle" => SubgroupOp::Shuffle,
+            "subgroup_shuffle_xor" => SubgroupOp::ShuffleXor,
+            "subgroup_shuffle_up" => SubgroupOp::ShuffleUp,
+            "subgroup_shuffle_down" => SubgroupOp::ShuffleDown,
             "subgroup_sum" => SubgroupOp::Sum,
             "subgroup_exclusive_sum" => SubgroupOp::ExclusiveSum,
             "subgroup_min" => SubgroupOp::Min,
@@ -43,10 +47,21 @@ impl Builder<'_> {
             op,
             SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id | SubgroupOp::Elect
         );
-        if args.len() != usize::from(!nullary) {
+        let shuffle = matches!(
+            op,
+            SubgroupOp::Shuffle
+                | SubgroupOp::ShuffleXor
+                | SubgroupOp::ShuffleUp
+                | SubgroupOp::ShuffleDown
+        );
+        if args.len() != usize::from(!nullary) + usize::from(shuffle) {
             return self.fail(span, "B196", "subgroup 操作参数数量不符");
         }
         let value = args.first().map(|e| self.expr(e)).transpose()?;
+        let argument = args.get(1).map(|e| self.expr(e)).transpose()?;
+        if let Some(argument) = &argument {
+            self.require_same(&Ty::scalar(Scalar::U32), &argument.ty, args[1].span)?;
+        }
         let ty = match op {
             SubgroupOp::Elect => Ty::scalar(Scalar::Bool),
             SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id => Ty::scalar(Scalar::U32),
@@ -68,15 +83,19 @@ impl Builder<'_> {
             | SubgroupOp::ExclusiveBitAnd
             | SubgroupOp::ExclusiveBitOr
             | SubgroupOp::ExclusiveBitXor
+            | SubgroupOp::Shuffle
+            | SubgroupOp::ShuffleXor
+            | SubgroupOp::ShuffleUp
+            | SubgroupOp::ShuffleDown
             | SubgroupOp::BroadcastFirst => {
                 let ty = &value.as_ref().unwrap().ty;
                 if ty.components.is_empty()
                     || !ty.fields.is_empty()
                     || ty.view.is_some()
                     || ty.array.is_some()
-                    || (op != SubgroupOp::BroadcastFirst && !ty.is_numeric())
+                    || (op != SubgroupOp::BroadcastFirst && !shuffle && !ty.is_numeric())
                 {
-                    return self.fail(span, "B197", "subgroup 数值协作需要数值标量／向量，广播也支持 bool；不能传记录或资源 view");
+                    return self.fail(span, "B197", "subgroup 数值协作需要数值标量／向量，广播与 shuffle 也支持 bool；不能传记录或资源 view");
                 }
                 if matches!(
                     op,
@@ -100,6 +119,7 @@ impl Builder<'_> {
                 dst,
                 op,
                 value: value.as_ref().map(|v| v.regs[component]),
+                argument: argument.as_ref().map(|v| v.regs[0]),
             });
             regs.push(dst);
         }

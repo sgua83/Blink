@@ -555,6 +555,7 @@ pub enum Inst {
         dst: Reg,
         op: SubgroupOp,
         value: Option<Reg>,
+        argument: Option<Reg>,
     },
     ViewLoad {
         dst: Reg,
@@ -966,6 +967,10 @@ pub enum SubgroupOp {
     Count,
     PrefixCount,
     BroadcastFirst,
+    Shuffle,
+    ShuffleXor,
+    ShuffleUp,
+    ShuffleDown,
     Sum,
     ExclusiveSum,
     Min,
@@ -983,6 +988,8 @@ pub struct SubgroupCapabilities {
     pub vote: bool,
     pub arithmetic: bool,
     pub ballot: bool,
+    pub shuffle: bool,
+    pub shuffle_relative: bool,
 }
 impl Stage {
     /// 对实际消费的命中字段发射设备读取；未消费的顶点和矩阵不生成读取。
@@ -1241,6 +1248,8 @@ impl SubgroupCapabilities {
                 SubgroupOp::Count | SubgroupOp::PrefixCount | SubgroupOp::BroadcastFirst => {
                     caps.ballot = true
                 }
+                SubgroupOp::Shuffle | SubgroupOp::ShuffleXor => caps.shuffle = true,
+                SubgroupOp::ShuffleUp | SubgroupOp::ShuffleDown => caps.shuffle_relative = true,
                 SubgroupOp::Sum
                 | SubgroupOp::ExclusiveSum
                 | SubgroupOp::Min

@@ -362,7 +362,12 @@ impl Emitter<'_> {
                     index,
                     word,
                 } => self.tile_load(*dst, *tile, *index, *word),
-                Inst::Subgroup { dst, op, value } => self.subgroup(*dst, *op, *value),
+                Inst::Subgroup {
+                    dst,
+                    op,
+                    value,
+                    argument,
+                } => self.subgroup(*dst, *op, *value, *argument),
                 Inst::ViewLoad {
                     dst,
                     address,
@@ -1109,6 +1114,8 @@ pub fn emit_pass(
         (subgroup_caps.vote, 62),
         (subgroup_caps.arithmetic, 63),
         (subgroup_caps.ballot || ranks, 64),
+        (subgroup_caps.shuffle, 65),
+        (subgroup_caps.shuffle_relative, 66),
     ] {
         if needed {
             op(&mut prelude, 17, &[capability]);

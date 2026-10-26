@@ -1,7 +1,13 @@
 //! 按活动 invocation 集合协作；只产生值，不隐式同步设备存储。
 use super::*;
 impl Emitter<'_> {
-    pub(super) fn subgroup(&mut self, dst: Reg, op: SubgroupOp, value: Option<Reg>) {
+    pub(super) fn subgroup(
+        &mut self,
+        dst: Reg,
+        op: SubgroupOp,
+        value: Option<Reg>,
+        argument: Option<Reg>,
+    ) {
         let scope = self.constant(Scalar::U32, 3);
         let ty = self.ty(dst);
         let result = self.value(dst);
@@ -14,6 +20,30 @@ impl Emitter<'_> {
             SubgroupOp::All => self.emit(334, &[ty, result, scope, self.value(value.unwrap())]),
             SubgroupOp::BroadcastFirst => {
                 self.emit(338, &[ty, result, scope, self.value(value.unwrap())])
+            }
+            SubgroupOp::Shuffle
+            | SubgroupOp::ShuffleXor
+            | SubgroupOp::ShuffleUp
+            | SubgroupOp::ShuffleDown => {
+                let opcode = if op == SubgroupOp::Shuffle {
+                    345
+                } else if op == SubgroupOp::ShuffleXor {
+                    346
+                } else if op == SubgroupOp::ShuffleUp {
+                    347
+                } else {
+                    348
+                };
+                self.emit(
+                    opcode,
+                    &[
+                        ty,
+                        result,
+                        scope,
+                        self.value(value.unwrap()),
+                        self.value(argument.unwrap()),
+                    ],
+                );
             }
             SubgroupOp::Count | SubgroupOp::PrefixCount => {
                 let ballot = self.id();

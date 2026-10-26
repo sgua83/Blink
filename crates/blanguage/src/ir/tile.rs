@@ -468,7 +468,9 @@ impl Inst {
             Self::StoreLocal(_, r) => vec![*r],
             Self::LoadLocalIndexed { index, .. } => vec![*index],
             Self::StoreLocalIndexed { index, value, .. } => vec![*index, *value],
-            Self::Subgroup { value, .. } => value.iter().copied().collect(),
+            Self::Subgroup {
+                value, argument, ..
+            } => value.iter().chain(argument).copied().collect(),
             Self::ViewLoad { address, index, .. } => vec![address[0], address[1], *index],
             Self::Load { index, .. } | Self::TileLoad { index, .. } => vec![*index],
             Self::Store { index, value, .. } => vec![*index, *value],

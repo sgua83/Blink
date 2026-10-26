@@ -361,8 +361,10 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *index = r(*index);
             *value = r(*value);
         }
-        Inst::Subgroup { value, .. } => {
-            if let Some(v) = value {
+        Inst::Subgroup {
+            value, argument, ..
+        } => {
+            for v in value.iter_mut().chain(argument) {
                 *v = r(*v);
             }
         }
