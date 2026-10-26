@@ -82,6 +82,21 @@ impl IntegerRanges {
             )
         })
     }
+    fn shift_counts(&self, bias: u32) -> Self {
+        self.map(|(lower, upper)| {
+            let mask = u32::BITS - 1;
+            if upper - lower >= mask {
+                return Self::interval(bias, bias | mask);
+            }
+            // 两种有序编码只差符号位，低五位与原移位量相同。
+            let (a, b) = (lower & mask, upper & mask);
+            if a <= b {
+                Self::interval(bias | a, bias | b)
+            } else {
+                Self::from_intervals([(bias, bias | b), (bias | a, bias | mask)])
+            }
+        })
+    }
     fn combine(
         &self,
         other: &Self,
@@ -825,9 +840,12 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
             (0..count)
                 .map(|i| {
                     let left = a.component_ranges(i % a.regs.len());
-                    let right = b.component_ranges(i % b.regs.len());
+                    let mut right = b.component_ranges(i % b.regs.len());
                     let signed = a.ty.components[0].0 == Scalar::I32;
                     let bias = if signed { 0x8000_0000 } else { 0 };
+                    if matches!(op, "<<" | ">>") {
+                        right = right.shift_counts(bias);
+                    }
                     left.combine(&right, |left, right| {
                         let bitwise = |operation: fn(u32, u32) -> u32| {
                             let (lower, upper) = bitwise_range(left, right, bias, operation);
@@ -883,12 +901,15 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
     if op == "/" && b.component_range(bi).0 != 0 {
         return indices_below(&left, false);
     }
+    if op == ">>" {
+        let strict = a.component_nonzero(ai) && !b.component_ranges(bi).shift_counts(0).contains(0);
+        return indices_below(&left, strict);
+    }
     let Some(constant) = b.constant.as_ref().map(|values| values[bi]) else {
         return Domains::new();
     };
     let strict = match op {
         "-" if a.component_range(ai).0 >= constant => constant != 0,
-        ">>" if constant < 32 => false,
         _ => return Domains::new(),
     };
     indices_below(&left, strict)
@@ -1003,10 +1024,8 @@ fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> Integer
             let maximum = bl.abs().max(bh.abs()) - 1;
             (al.min(0).max(-maximum), ah.max(0).min(maximum))
         }
-        ">>" if bl >= 0 && bh < 32 => corners(|a, b| a >> b),
-        "<<" if bl >= 0 && bh < 32 => corners(|a, b| a * (1i64 << b)),
-        ">>" if bl == bh => (al >> (bl & 31), ah >> (bl & 31)),
-        "<<" if bl == bh => (al * (1i64 << (bl & 31)), ah * (1i64 << (bl & 31))),
+        ">>" => corners(|a, b| a >> b),
+        "<<" => corners(|a, b| a * (1i64 << b)),
         _ => return IntegerRanges::default(),
     };
     integer_result_range((i128::from(range.0), i128::from(range.1)), 0x8000_0000)
@@ -1038,14 +1057,8 @@ fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> Integ
         "*" => (al * bl, ah * bh),
         "/" if bl > 0 => (al / bh, ah / bl),
         "%" if bl > 0 => (0, ah.min(bh - 1)),
-        ">>" if bh < 32 => (al >> bh, ah >> bl),
-        ">>" if bl == bh => (al >> (bl & 31), ah >> (bl & 31)),
-        ">>" => (0, ah),
-        "<<" if bh < 32 => (al << bl, ah << bh),
-        "<<" if bl == bh => {
-            let shift = bl & 31;
-            (al << shift, ah << shift)
-        }
+        ">>" => (al >> bh, ah >> bl),
+        "<<" => (al << bl, ah << bh),
         _ => return IntegerRanges::default(),
     };
     integer_result_range(range, 0)
