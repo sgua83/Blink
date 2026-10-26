@@ -3,18 +3,13 @@ use crate::{Result, error};
 use blanguage::ir::{PrefixCount, PrefixRelation, ProgramInterface};
 use std::collections::BTreeMap;
 
-pub(crate) mod sealed {
-    pub trait Sealed {}
-}
-
-/// 域绑定只消费执行框架拥有的真实存储；只读身份来自冻结的同一所有者。
-pub trait DomainStorage: sealed::Sealed + Sized {
+/// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
+pub trait DomainStorage: Sized {
     #[doc(hidden)]
     fn read_identity(&self) -> Option<usize>;
     #[doc(hidden)]
     fn read_binding(&self) -> Option<Self>;
 }
-impl sealed::Sealed for crate::Dataset {}
 impl DomainStorage for crate::Dataset {
     fn read_identity(&self) -> Option<usize> {
         None

@@ -2402,7 +2402,7 @@ let joined = joined.rebind(&[2, 0, 1], vec![])?;
 let pending = combine.submit(joined, &[])?;
 ```
 
-关系只认原编译器已交付的来源与计数字段。同一冻结 Count 的别名可在 join 后直接满足接口，也可在 rebind 中保留任一个别名；独立且数值相同的 Count、裸数据向量和已被修改的 Count 不能据此取得关系。冻结数据不能绑定 write／inout／atomic；未冻结的唯一存储仍不能重复取出。DomainStorage 为真实存储类型的封闭能力，外部 Rust 类型不能自行实现来签发身份；原 C ABI 与 B 类型／语法不变，CPU 通用共享绑定仍待实现。
+关系只认原编译器已交付的来源与计数字段。同一冻结 Count 的别名可在 join 后直接满足接口，也可在 rebind 中保留任一个别名；独立且数值相同的 Count、裸数据向量和已被修改的 Count 不能据此取得关系。冻结数据不能绑定 write／inout／atomic；未冻结的唯一存储仍不能重复取出。DomainStorage 由存储实现提供只读身份与绑定；通用绑定辅助函数可扩展，原生执行仍只接受相应的 Dataset／GpuDataset，其他存储实现不能代替目标物理存储。不另加封闭类型列表；原 C ABI 与 B 类型／语法不变，CPU 通用共享绑定仍待实现。
 
 CPU 的 `CpuProgram::run_owned`／`CpuTemplate::run` 结果可直接分区。GPU 的 `Submission::partition(groups)` 可在生产者仍 pending 时直接分叉；`Submission::into_bindings()` 同样不等待，返回的绑定可 join、partition 或传给下一次 submit。Completed 的绑定也使用同一分区实现。分区只转移独立数据及其执行寿命，不下载数据、不复制记录、不申请 GPU 数据页。
 

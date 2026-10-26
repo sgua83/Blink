@@ -876,7 +876,6 @@ impl Drop for GpuDataset {
 }
 #[derive(Clone)]
 pub struct ReadDataset(Rc<GpuDataset>);
-impl crate::bindings::sealed::Sealed for GpuDataset {}
 impl crate::DomainStorage for GpuDataset {
     fn read_identity(&self) -> Option<usize> {
         match &*self.storage {
