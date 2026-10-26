@@ -2,6 +2,7 @@
 use super::*;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Fact {
+    Equal(ValueIdentity, ValueIdentity),
     Index(ValueIdentity, IndexDomain),
     Minimum(ValueIdentity, u32),
     Maximum(ValueIdentity, u32),
@@ -10,7 +11,8 @@ enum Fact {
 type Facts = BTreeSet<Fact>;
 #[derive(Clone, Default)]
 pub(super) struct Proof {
-    origins: Vec<Option<ValueIdentity>>,
+    // 首项是实际来源，其余是当前路径已经证明相等的快照。
+    origins: Vec<Vec<ValueIdentity>>,
     condition: Option<Box<Condition>>,
     ranges: Vec<(u32, u32)>,
     nonzero: Vec<bool>,
@@ -21,12 +23,12 @@ impl Proof {
         if components.iter().copied().eq(0..width) {
             *self = fresh;
         } else {
-            self.origins.resize(width, None);
+            self.origins.resize_with(width, Vec::new);
             self.nonzero.resize(width, false);
             self.ranges.resize(width, (0, u32::MAX));
             self.domains.resize(width, Domains::new());
             for (j, &i) in components.iter().enumerate() {
-                self.origins[i] = fresh.origins.get(j).copied().flatten();
+                self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
                 self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
                 self.ranges[i] = fresh.range(j);
                 self.domains[i] = fresh.domains(j);
@@ -48,12 +50,11 @@ impl Proof {
         };
         self.origins = (0..width)
             .map(|i| {
-                let a = self.origins.get(i).copied().flatten();
-                if a == other.origins.get(i).copied().flatten() {
-                    a
-                } else {
-                    None
-                }
+                let a = self.origins.get(i).cloned().unwrap_or_default();
+                let b = other.origins.get(i).cloned().unwrap_or_default();
+                a.into_iter()
+                    .filter(|identity| b.contains(identity))
+                    .collect()
             })
             .collect();
         self.nonzero = (0..width)
@@ -84,7 +85,7 @@ impl Proof {
         };
         proof.origins = components
             .iter()
-            .map(|&i| self.origins.get(i).copied().flatten())
+            .map(|&i| self.origins.get(i).cloned().unwrap_or_default())
             .collect();
         proof.nonzero = components
             .iter()
@@ -111,7 +112,10 @@ impl Proof {
         self
     }
     pub fn with_identity(mut self, identity: ValueIdentity) -> Self {
-        self.origins = vec![Some(identity)];
+        let mut origins = self.origins.first().cloned().unwrap_or_default();
+        origins.retain(|origin| *origin != identity);
+        origins.insert(0, identity);
+        self.origins = vec![origins];
         self
     }
     pub(super) fn domains(&self, component: usize) -> Domains {
@@ -137,7 +141,7 @@ impl Proof {
             .map(|i| value.component_nonzero(i))
             .collect();
         proof.origins = (0..value.regs.len())
-            .map(|i| Some(value.component_identity(i)))
+            .map(|i| value.component_origins(i))
             .collect();
         if value.ty == Ty::scalar(Scalar::Bool) {
             proof.condition = Some(Box::new(Condition::of(value)));
@@ -146,6 +150,15 @@ impl Proof {
     }
     pub fn common(a: &Value, b: &Value) -> Self {
         Self {
+            origins: (0..a.regs.len())
+                .map(|i| {
+                    let other = b.component_origins(i);
+                    a.component_origins(i)
+                        .into_iter()
+                        .filter(|id| other.contains(id))
+                        .collect()
+                })
+                .collect(),
             condition: (a.ty == Ty::scalar(Scalar::Bool))
                 .then(|| Box::new(Condition::common(Condition::of(a), Condition::of(b)))),
             ranges: (0..a.regs.len())
@@ -173,27 +186,32 @@ impl Proof {
     fn facts(&self, ty: &Ty) -> Facts {
         let mut facts = Facts::new();
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
-            let Some(identity) = self.origins.get(component).copied().flatten() else {
+            let Some(origins) = self.origins.get(component) else {
                 continue;
             };
-            if matches!(scalar, Scalar::U32 | Scalar::I32)
-                && self.nonzero.get(component) == Some(&true)
-            {
-                facts.insert(Fact::NonZero(identity));
+            for pair in origins.windows(2) {
+                facts.insert(Fact::equal(pair[0], pair[1]));
             }
-            if *scalar == Scalar::U32 {
-                let (minimum, maximum) = self.range(component);
-                if minimum != 0 {
-                    facts.insert(Fact::Minimum(identity, minimum));
+            for &identity in origins {
+                if matches!(scalar, Scalar::U32 | Scalar::I32)
+                    && self.nonzero.get(component) == Some(&true)
+                {
+                    facts.insert(Fact::NonZero(identity));
                 }
-                if maximum != u32::MAX {
-                    facts.insert(Fact::Maximum(identity, maximum));
+                if *scalar == Scalar::U32 {
+                    let (minimum, maximum) = self.range(component);
+                    if minimum != 0 {
+                        facts.insert(Fact::Minimum(identity, minimum));
+                    }
+                    if maximum != u32::MAX {
+                        facts.insert(Fact::Maximum(identity, maximum));
+                    }
+                    facts.extend(
+                        self.domains(component)
+                            .into_iter()
+                            .map(|d| Fact::Index(identity, d)),
+                    );
                 }
-                facts.extend(
-                    self.domains(component)
-                        .into_iter()
-                        .map(|d| Fact::Index(identity, d)),
-                );
             }
         }
         facts
@@ -201,24 +219,7 @@ impl Proof {
     pub(super) fn returning(value: &Value, environment: &BTreeMap<String, Binding>) -> Self {
         let mut proof = value.proof.clone();
         if value.ty == Ty::scalar(Scalar::Bool) {
-            let mut facts = Facts::new();
-            for binding in environment.values() {
-                facts.extend(match binding {
-                    Binding::Value(value) => Self::capture(value).facts(&value.ty),
-                    Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
-                    Binding::Data(view) => view
-                        .length
-                        .clone()
-                        .with_identity(ValueIdentity::DataLength(view.binding))
-                        .facts(&Ty::scalar(Scalar::U32)),
-                    Binding::Tile(view) => view
-                        .length
-                        .clone()
-                        .with_identity(ValueIdentity::TileLength)
-                        .facts(&Ty::scalar(Scalar::U32)),
-                    _ => Facts::new(),
-                });
-            }
+            let facts = environment_facts(environment);
             let mut condition = Condition::of(value);
             for case in condition.cases.iter_mut().flatten() {
                 case.extend(facts.iter().copied());
@@ -229,7 +230,7 @@ impl Proof {
     }
     pub fn append(&mut self, value: &Value) {
         self.origins
-            .extend((0..value.regs.len()).map(|i| Some(value.component_identity(i))));
+            .extend((0..value.regs.len()).map(|i| value.component_origins(i)));
         self.nonzero
             .extend((0..value.regs.len()).map(|i| value.component_nonzero(i)));
         self.ranges
@@ -238,7 +239,7 @@ impl Proof {
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
     }
     pub fn splat(&mut self, width: usize) {
-        self.origins = vec![self.origins[0]; width];
+        self.origins = vec![self.origins[0].clone(); width];
         self.nonzero = vec![self.nonzero[0]; width];
         self.ranges = vec![self.ranges[0]; width];
         self.domains = vec![self.domains[0].clone(); width];
@@ -280,6 +281,100 @@ impl Proof {
                 self.mark_nonzero(component);
             }
             _ => {}
+        }
+    }
+}
+fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
+    environment
+        .values()
+        .flat_map(|binding| match binding {
+            Binding::Value(value) => Proof::capture(value).facts(&value.ty),
+            Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
+            Binding::Data(view) => view
+                .length
+                .clone()
+                .with_identity(ValueIdentity::DataLength(view.binding))
+                .facts(&Ty::scalar(Scalar::U32)),
+            Binding::Tile(view) => view
+                .length
+                .clone()
+                .with_identity(ValueIdentity::TileLength)
+                .facts(&Ty::scalar(Scalar::U32)),
+            _ => Facts::new(),
+        })
+        .collect()
+}
+impl Fact {
+    fn equal(a: ValueIdentity, b: ValueIdentity) -> Self {
+        Self::Equal(a.min(b), a.max(b))
+    }
+    fn identity(self) -> Option<ValueIdentity> {
+        match self {
+            Self::Index(id, _)
+            | Self::Minimum(id, _)
+            | Self::Maximum(id, _)
+            | Self::NonZero(id) => Some(id),
+            Self::Equal(_, _) => None,
+        }
+    }
+    fn at(self, id: ValueIdentity) -> Self {
+        match self {
+            Self::Index(_, domain) => Self::Index(id, domain),
+            Self::Minimum(_, bound) => Self::Minimum(id, bound),
+            Self::Maximum(_, bound) => Self::Maximum(id, bound),
+            Self::NonZero(_) => Self::NonZero(id),
+            equal @ Self::Equal(_, _) => equal,
+        }
+    }
+}
+fn equality_roots(facts: &Facts) -> BTreeMap<ValueIdentity, ValueIdentity> {
+    let mut roots = BTreeMap::new();
+    for fact in facts {
+        if let Fact::Equal(a, b) = *fact {
+            let a_root = roots.get(&a).copied().unwrap_or(a);
+            let b_root = roots.get(&b).copied().unwrap_or(b);
+            let root = a_root.min(b_root);
+            for current in roots.values_mut() {
+                if *current == a_root || *current == b_root {
+                    *current = root;
+                }
+            }
+            roots.insert(a, root);
+            roots.insert(b, root);
+        }
+    }
+    roots
+}
+fn equivalent_facts(mut facts: Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> Facts {
+    let mut inferred = Facts::new();
+    for fact in &facts {
+        if let Some(identity) = fact.identity()
+            && let Some(root) = roots.get(&identity)
+        {
+            inferred.extend(
+                roots
+                    .iter()
+                    .filter(|(_, group)| *group == root)
+                    .map(|(id, _)| fact.at(*id)),
+            );
+        }
+    }
+    facts.extend(inferred);
+    facts
+}
+impl Proof {
+    fn extend_equalities(&mut self, roots: &BTreeMap<ValueIdentity, ValueIdentity>) {
+        for origins in &mut self.origins {
+            let groups: BTreeSet<_> = origins
+                .iter()
+                .filter_map(|id| roots.get(id))
+                .copied()
+                .collect();
+            for (id, root) in roots {
+                if groups.contains(root) && !origins.contains(id) {
+                    origins.push(*id);
+                }
+            }
         }
     }
 }
@@ -327,20 +422,27 @@ impl Value {
         self.component_identity(0)
     }
     fn component_identity(&self, index: usize) -> ValueIdentity {
-        match self.proof.origins.get(index).copied().flatten() {
-            Some(origin) => origin,
-            None => ValueIdentity::Register(self.regs[index]),
-        }
+        self.proof
+            .origins
+            .get(index)
+            .and_then(|origins| origins.first())
+            .copied()
+            .unwrap_or(ValueIdentity::Register(self.regs[index]))
+    }
+    fn component_origins(&self, index: usize) -> Vec<ValueIdentity> {
+        self.proof
+            .origins
+            .get(index)
+            .filter(|origins| !origins.is_empty())
+            .cloned()
+            .unwrap_or_else(|| vec![ValueIdentity::Register(self.regs[index])])
     }
     pub(super) fn view_identity(&self) -> [ValueIdentity; 3] {
         std::array::from_fn(|i| self.component_identity(i))
     }
     pub(super) fn projected_proof(&self, indices: &[usize]) -> Proof {
         Proof {
-            origins: indices
-                .iter()
-                .map(|i| Some(self.component_identity(*i)))
-                .collect(),
+            origins: indices.iter().map(|i| self.component_origins(*i)).collect(),
             condition: None,
             ranges: indices.iter().map(|i| self.component_range(*i)).collect(),
             nonzero: indices.iter().map(|i| self.component_nonzero(*i)).collect(),
@@ -366,7 +468,27 @@ fn both(a: &Option<Facts>, b: &Option<Facts>) -> Option<Facts> {
 fn either(a: Option<Facts>, b: Option<Facts>) -> Option<Facts> {
     match (a, b) {
         (Some(a), Some(b)) => {
+            let left = equality_roots(&a);
+            let right = equality_roots(&b);
+            let a = equivalent_facts(a, &left);
+            let b = equivalent_facts(b, &right);
             let mut common: Facts = a.intersection(&b).copied().collect();
+            let identities: BTreeSet<_> = left.keys().chain(right.keys()).copied().collect();
+            let mut groups: BTreeMap<_, Vec<ValueIdentity>> = BTreeMap::new();
+            for identity in identities {
+                groups
+                    .entry((
+                        left.get(&identity).copied().unwrap_or(identity),
+                        right.get(&identity).copied().unwrap_or(identity),
+                    ))
+                    .or_default()
+                    .push(identity);
+            }
+            for group in groups.values() {
+                for other in group.iter().skip(1) {
+                    common.insert(Fact::equal(group[0], *other));
+                }
+            }
             let upper_a = maximums(&a);
             let upper_b = maximums(&b);
             for (identity, upper) in upper_a {
@@ -506,6 +628,9 @@ impl Condition {
                 }
             };
             if signed {
+                if op == Comparison::Equal {
+                    facts.insert(Fact::equal(a.identity(), b.identity()));
+                }
                 for (value, other, relation) in [
                     (a, b, op),
                     (
@@ -546,6 +671,7 @@ impl Condition {
                 Comparison::LessEqual => constrain(facts, a, b, false),
                 Comparison::GreaterEqual => constrain(facts, b, a, false),
                 Comparison::Equal => {
+                    facts.insert(Fact::equal(a.identity(), b.identity()));
                     facts.extend(
                         b.proof
                             .domains(0)
@@ -851,12 +977,12 @@ impl Builder<'_> {
                     owner
                         .proof
                         .origins
-                        .resize(owner.place.ty().components.len(), None);
+                        .resize_with(owner.place.ty().components.len(), Vec::new);
                     for (origin, current) in
                         owner.proof.origins.iter_mut().zip(&current.proof.origins)
                     {
-                        if origin.is_none() {
-                            *origin = *current;
+                        if origin.is_empty() {
+                            origin.extend(current.iter().take(1).copied());
                         }
                     }
                 }
@@ -869,31 +995,61 @@ impl Builder<'_> {
         let Some(facts) = &condition.cases[usize::from(truth)] else {
             return;
         };
-        for fact in facts {
-            let (Fact::Index(identity, _)
-            | Fact::Minimum(identity, _)
-            | Fact::Maximum(identity, _)
-            | Fact::NonZero(identity)) = *fact;
+        let mut facts = facts.clone();
+        facts.extend(environment_facts(&self.env));
+        let roots = equality_roots(&facts);
+        for binding in self.env.values_mut() {
+            match binding {
+                Binding::Value(value) => {
+                    value.proof.origins = (0..value.regs.len())
+                        .map(|i| value.component_origins(i))
+                        .collect();
+                    value.proof.extend_equalities(&roots);
+                }
+                Binding::Owned(owner) => owner.proof.extend_equalities(&roots),
+                Binding::Data(view) => view.length.extend_equalities(&roots),
+                Binding::Tile(view) => view.length.extend_equalities(&roots),
+                _ => {}
+            }
+        }
+        for fact in &facts {
+            let Some(identity) = fact.identity() else {
+                continue;
+            };
             for binding in self.env.values_mut() {
                 match binding {
                     Binding::Value(value) => {
                         for component in 0..value.regs.len() {
-                            if value.component_identity(component) == identity {
+                            if value.proof.origins[component].contains(&identity) {
                                 value.proof.refine(&value.ty, component, *fact);
                             }
                         }
                     }
                     Binding::Owned(owner) => {
                         for component in 0..owner.proof.origins.len() {
-                            if owner.proof.origins[component] == Some(identity) {
+                            if owner.proof.origins[component].contains(&identity) {
                                 owner.proof.refine(owner.place.ty(), component, *fact);
                             }
                         }
                     }
-                    Binding::Data(view) if identity == ValueIdentity::DataLength(view.binding) => {
+                    Binding::Data(view)
+                        if view
+                            .length
+                            .origins
+                            .iter()
+                            .flatten()
+                            .any(|id| *id == identity) =>
+                    {
                         view.length.refine(&Ty::scalar(Scalar::U32), 0, *fact);
                     }
-                    Binding::Tile(view) if identity == ValueIdentity::TileLength => {
+                    Binding::Tile(view)
+                        if view
+                            .length
+                            .origins
+                            .iter()
+                            .flatten()
+                            .any(|id| *id == identity) =>
+                    {
                         view.length.refine(&Ty::scalar(Scalar::U32), 0, *fact);
                     }
                     _ => {}
@@ -913,9 +1069,11 @@ impl Builder<'_> {
             return (Proof::default(), false);
         };
         let width = owner.place.ty().components.len();
-        owner.proof.origins.resize(width, None);
+        owner.proof.origins.resize_with(width, Vec::new);
         for (component, reg) in components.iter().zip(regs) {
-            owner.proof.origins[*component].get_or_insert(ValueIdentity::Register(*reg));
+            if owner.proof.origins[*component].is_empty() {
+                owner.proof.origins[*component].push(ValueIdentity::Register(*reg));
+            }
         }
         (owner.proof.project(&components, width), owner.uniform)
     }
