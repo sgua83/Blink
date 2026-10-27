@@ -26,11 +26,7 @@ impl Application {
         let stack_bytes = code.code.stack_bytes;
         let sections = object::application_code(code)?;
         let archive = if let Some(resources) = &self.resources {
-            use std::hash::{Hash, Hasher};
             let source = crate::dll::application_source(resources)?;
-            let mut hash = std::collections::hash_map::DefaultHasher::new();
-            source.hash(&mut hash);
-            let prefix = format!("blink_app_{:016x}", hash.finish());
             let mut exports = [
                 "blink_create",
                 "blink_destroy",
@@ -44,7 +40,7 @@ impl Application {
             .collect::<Vec<_>>();
             exports.extend((0..resources.types.len()).map(|i| format!("blink_allocate_{i}")));
             exports.extend((0..resources.programs.len()).map(|i| format!("blink_run_{i}")));
-            Some(object::compile_archive(&source, &prefix, exports)?)
+            Some(object::compile_archive(&source, exports)?)
         } else {
             None
         };

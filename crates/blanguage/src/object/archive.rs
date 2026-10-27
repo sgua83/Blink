@@ -1,7 +1,14 @@
 //! 编译阶段把执行框架和 ABI 编译为静态目标库；链接器不再调用 Cargo 或 rustc。
 use super::{Archive, Result};
 use std::{path::Path, process::Command};
-pub(crate) fn compile(source: &str, prefix: &str, exports: Vec<String>) -> Result<Archive> {
+fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}\n编译暂存清理失败：{cleanup}").into()),
+    }
+}
+pub(crate) fn compile(source: &str, exports: Vec<String>) -> Result<Archive> {
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -14,11 +21,12 @@ pub(crate) fn compile(source: &str, prefix: &str, exports: Vec<String>) -> Resul
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     );
+    let unit = format!("blink_object_{}", id.replace('-', "_"));
     let build = sdk.join("target/blc-object").join(id);
     std::fs::create_dir_all(build.join("src"))?;
     let result = (|| {
         let manifest = format!(
-            "[package]\nname=\"blink_object\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={prefix:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\nblanguage={{path={:?}}}\nblcompute={{path={:?}}}\n[profile.release]\nlto=\"thin\"\ncodegen-units=1\npanic=\"abort\"\n",
+            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\nblanguage={{path={:?}}}\nblcompute={{path={:?}}}\n[profile.release]\nlto=\"thin\"\ncodegen-units=1\npanic=\"abort\"\n",
             sdk.join("crates/blanguage").to_string_lossy(),
             sdk.join("crates/blcompute").to_string_lossy()
         );
@@ -33,28 +41,49 @@ pub(crate) fn compile(source: &str, prefix: &str, exports: Vec<String>) -> Resul
             .args(["--", "--print", "native-static-libs"])
             .env("CARGO_TERM_COLOR", "never")
             .output()?;
-        let stderr = String::from_utf8(output.stderr)?;
-        if !output.status.success() {
-            return Err(format!(
-                "执行库目标代码编译失败：\n{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                stderr
-            )
-            .into());
-        }
-        let libraries = stderr
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("note: native-static-libs: "))
-            .ok_or("Rust 未返回静态目标库的本机库依赖")?
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        Ok(Archive {
-            bytes: std::fs::read(target.join(format!("release/{prefix}.lib")))?,
-            libraries,
-            exports,
-        })
+        let compilation = (|| {
+            let stderr = String::from_utf8(output.stderr)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "执行库目标代码编译失败：\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    stderr
+                )
+                .into());
+            }
+            let libraries = stderr
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("note: native-static-libs: "))
+                .ok_or("Rust 未返回静态目标库的本机库依赖")?
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect();
+            Ok(Archive {
+                bytes: std::fs::read(target.join(format!("release/{unit}.lib")))?,
+                libraries,
+                exports,
+            })
+        })();
+        let cleanup = (|| {
+            let output = Command::new("cargo")
+                .args(["clean", "--offline", "--release", "--manifest-path"])
+                .arg(build.join("Cargo.toml"))
+                .arg("--target-dir")
+                .arg(&target)
+                .args(["--package", &unit])
+                .env("CARGO_TERM_COLOR", "never")
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "执行库单元产物清理失败：\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+            Ok(())
+        })();
+        finish(compilation, cleanup)
     })();
-    std::fs::remove_dir_all(build)?;
-    result
+    finish(result, std::fs::remove_dir_all(build).map_err(Into::into))
 }
