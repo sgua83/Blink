@@ -1028,6 +1028,24 @@ enum ClauseNode {
     Either(Clause, Clause),
 }
 impl Clause {
+    fn selection(index: ownership::ApplicationIndex, element: usize) -> Self {
+        match index {
+            ownership::ApplicationIndex::Constant(index) => {
+                if index as usize == element {
+                    Self::default()
+                } else {
+                    Self::impossible()
+                }
+            }
+            ownership::ApplicationIndex::Value(identity) => Self::facts(
+                [
+                    Fact::Minimum(identity, element as u32),
+                    Fact::Maximum(identity, element as u32),
+                ]
+                .into(),
+            ),
+        }
+    }
     pub(super) fn impossible() -> Self {
         Self(Arc::new(ClauseNode::Impossible))
     }
@@ -1096,19 +1114,27 @@ impl Clause {
         self.required_in(&Facts::new())
     }
     fn required_in(&self, environment: &Facts) -> Option<Facts> {
-        let mut facts = BTreeMap::new();
-        for clause in Self::ordered(std::slice::from_ref(self)) {
-            let required = match &*clause.0 {
-                ClauseNode::Impossible => None,
-                ClauseNode::Facts(facts) => combine_facts(facts, environment),
-                ClauseNode::Both(a, b) => both_facts(&facts[&a.key()], &facts[&b.key()]),
-                ClauseNode::Either(a, b) => {
-                    either_facts(facts[&a.key()].clone(), facts[&b.key()].clone())
-                }
-            };
-            facts.insert(clause.key(), required);
+        let ordered = Self::ordered(std::slice::from_ref(self));
+        let mut environment = environment.clone();
+        loop {
+            let mut facts = BTreeMap::new();
+            for clause in &ordered {
+                let required = match &*clause.0 {
+                    ClauseNode::Impossible => None,
+                    ClauseNode::Facts(facts) => combine_facts(facts, &environment),
+                    ClauseNode::Both(a, b) => both_facts(&facts[&a.key()], &facts[&b.key()]),
+                    ClauseNode::Either(a, b) => {
+                        either_facts(facts[&a.key()].clone(), facts[&b.key()].clone())
+                    }
+                };
+                facts.insert(clause.key(), required);
+            }
+            let required = facts.remove(&self.key()).unwrap()?;
+            if required == environment {
+                return Some(required);
+            }
+            environment = required;
         }
-        facts.remove(&self.key()).unwrap()
     }
     fn possible(&self) -> bool {
         self.required().is_some()
@@ -1770,6 +1796,142 @@ pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
         .collect()
 }
 impl Builder<'_> {
+    pub(super) fn observe_bounds(&mut self, value: &Value) {
+        self.path = Clause::both(
+            &self.path,
+            &Clause::facts(Proof::capture(value).facts(&value.ty)),
+        );
+    }
+    fn selected_proof(
+        &self,
+        proof: &Proof,
+        source: &Ty,
+        ty: &Ty,
+        choices: &[Vec<(usize, Clause)>],
+        registers: Option<&[Reg]>,
+    ) -> Proof {
+        let environment = environment_facts(&self.env);
+        let mut result = Proof::default();
+        for (component, ((scalar, _), candidates)) in ty.components.iter().zip(choices).enumerate()
+        {
+            let mut selected: Option<Proof> = None;
+            for (source_component, condition) in candidates {
+                let mut path = Clause::both(&self.path, condition);
+                let Some(context) = path.required_in(&environment) else {
+                    continue;
+                };
+                // 同次聚合读取的字段来自同一选择，不能在合流前拆散其身份关系。
+                if let Some(registers) = registers {
+                    for (register, siblings) in registers.iter().zip(choices) {
+                        let mut related = Clause::impossible();
+                        for (sibling, selection) in siblings {
+                            if selection.required_in(&context).is_none() {
+                                continue;
+                            }
+                            let facts = proof
+                                .project(&[*sibling], source.components.len())
+                                .with_identity(ValueIdentity::Register(*register))
+                                .facts(&Ty::scalar(source.components[*sibling].0));
+                            related = Clause::either(
+                                &related,
+                                &Clause::both(selection, &Clause::facts(facts)),
+                            );
+                        }
+                        path = Clause::both(&path, &related);
+                    }
+                }
+                let mut next = proof.project(&[*source_component], source.components.len());
+                next.under_path(&Ty::scalar(*scalar), &path);
+                match &mut selected {
+                    Some(selected) => selected.join(&next, 1, None),
+                    None => selected = Some(next),
+                }
+            }
+            result.assign(
+                &[component],
+                ty.components.len(),
+                selected.unwrap_or_default(),
+            );
+        }
+        result
+    }
+    pub(super) fn array_value_proof(
+        &self,
+        proof: &Proof,
+        array: &Ty,
+        index: ownership::ApplicationIndex,
+        registers: &[Reg],
+    ) -> Proof {
+        let element = array.array.as_ref().unwrap();
+        let width = element.components.len();
+        let choices: Vec<Vec<_>> = (0..width)
+            .map(|component| {
+                (0..array.values[0] as usize)
+                    .map(|i| (i * width + component, Clause::selection(index, i)))
+                    .collect()
+            })
+            .collect();
+        self.selected_proof(proof, array, element, &choices, Some(registers))
+    }
+    pub(super) fn projected_owned_proof(
+        &self,
+        place: &Place,
+        registers: Option<&[Reg]>,
+    ) -> Option<Proof> {
+        fn collect(
+            position: &Position,
+            owner: &[Position],
+            path: Clause,
+            choices: &mut Vec<(usize, Clause)>,
+        ) -> Option<()> {
+            if let Some(component) = owner.iter().position(|candidate| candidate == position) {
+                choices.push((component, path));
+                return Some(());
+            }
+            let Position::Indexed(elements, index) = position else {
+                return None;
+            };
+            for (i, element) in elements.iter().enumerate() {
+                collect(
+                    element,
+                    owner,
+                    Clause::both(&path, &Clause::selection(*index, i)),
+                    choices,
+                )?;
+            }
+            Some(())
+        }
+        let positions = place.owned_positions()?;
+        if positions.is_empty() {
+            return None;
+        }
+        for binding in self.env.values() {
+            let (proof, owner) = match binding {
+                Binding::Owned(owner) => (&owner.proof, owner.place.clone()),
+                Binding::OwnedValue(owner) => {
+                    let Some(place) = owner.place() else {
+                        continue;
+                    };
+                    (&owner.value.proof, place)
+                }
+                _ => continue,
+            };
+            let owner_positions = self.positions(&owner);
+            let choices: Option<Vec<_>> = positions
+                .iter()
+                .map(|position| {
+                    let mut choices = Vec::new();
+                    collect(position, &owner_positions, Clause::default(), &mut choices)?;
+                    Some(choices)
+                })
+                .collect();
+            let Some(choices) = choices else {
+                continue;
+            };
+            return Some(self.selected_proof(proof, owner.ty(), place.ty(), &choices, registers));
+        }
+        None
+    }
     pub(super) fn refine_parallel_domain(&mut self) {
         for binding in self.env.values_mut() {
             if let Binding::Data(view) = binding
@@ -2059,7 +2221,11 @@ impl Builder<'_> {
             }
             return (proof.project(&components, width), *uniform);
         }
-        (Proof::default(), false)
+        (
+            self.projected_owned_proof(place, Some(regs))
+                .unwrap_or_default(),
+            false,
+        )
     }
     pub(super) fn invalidate_application_contents(&mut self, identity: ValueIdentity) {
         for binding in self.env.values_mut() {

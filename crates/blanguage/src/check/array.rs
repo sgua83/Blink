@@ -159,7 +159,9 @@ impl Builder<'_> {
         for (slot, r) in slots.iter().zip(&value.regs) {
             self.code.push(Inst::StoreLocal(*slot, *r));
         }
-        Place::ReadOnlyLocal(value.ty, slots, storage)
+        let place = Place::ReadOnlyLocal(value.ty, slots, storage);
+        self.initialize(&place);
+        place
     }
     pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Option<Place>> {
         let Some(index) = self.expr(expr)? else {
@@ -194,9 +196,17 @@ impl Builder<'_> {
                     .map(|b| components.iter().map(|i| b[*i]).collect()),
             }));
         }
+        let proof = bounds::Proof::capture(&value);
+        let array = value.ty.clone();
+        let selected = ownership::ApplicationIndex::of(&index);
+        let uniform = value.uniform && index.uniform;
         let place = self.materialize_array(value);
         let place = self.array_index(place, index, expr.span)?;
-        self.read_place(&place, expr.span).map(Some)
+        let mut result = self.read_place(&place, expr.span)?;
+        result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
+        result.uniform = uniform;
+        result.constant = result.proof.known_value(&result.ty);
+        Ok(Some(result))
     }
     fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
         let element = (**place.ty().array.as_ref().unwrap()).clone();
@@ -209,6 +219,7 @@ impl Builder<'_> {
                 "数组下标有效性无法静态证明；使用常量下标、有界循环或小于数组 length 的条件",
             );
         }
+        self.observe_bounds(&index);
         if let Some(bits) = &index.constant {
             let first = bits[0] as usize * element.components.len();
             let components: Vec<_> = (first..first + element.components.len()).collect();

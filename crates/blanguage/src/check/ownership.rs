@@ -84,8 +84,9 @@ impl Place {
             ),
             Self::Reference{scope,words,..} => Some(words.iter().map(|word|Position::Parameter(*scope,*word as usize)).collect()),
             Self::Indexed { initialization, .. } => Some(initialization.clone()),
-            Self::ReadOnlyLocal(..) => Some(Vec::new()),
-            Self::Local(_, slots, ..) => Some(slots.iter().copied().map(Position::Local).collect()),
+            Self::ReadOnlyLocal(_, slots, ..) | Self::Local(_, slots, ..) => {
+                Some(slots.iter().copied().map(Position::Local).collect())
+            }
             Self::Element { binding, words, .. } => Some(
                 words
                     .iter()
@@ -257,7 +258,7 @@ impl Builder<'_> {
             ),
         }
     }
-    fn positions(&self, place: &Place) -> Vec<Position> {
+    pub(super) fn positions(&self, place: &Place) -> Vec<Position> {
         if let Some(positions) = self.env.values().find_map(|binding| {
             let Binding::Owned(owner) = binding else {
                 return None;
@@ -403,8 +404,8 @@ impl Builder<'_> {
             }
         } else {
             OwnedBinding {
+                proof: self.projected_owned_proof(&place, None).unwrap_or_default(),
                 place,
-                proof: bounds::Proof::default(),
                 uniform: false,
                 initialization: None,
             }
