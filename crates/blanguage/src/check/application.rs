@@ -1209,7 +1209,12 @@ impl Builder<'_> {
                 if parameter.access.writes() && !value.writable {
                     return self.fail(span, "B227", "只读 dataset 不能交给可写函数参数");
                 }
-                if !self.residency.require(&value.residency, target) {
+                if !self.residency.require(
+                    &value.residency,
+                    target,
+                    &self.definition.source,
+                    span,
+                ) {
                     return self.fail(
                         span,
                         "B266",
@@ -1358,7 +1363,12 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn application_cpu(&mut self, data: &Data, span: Span) -> Result<()> {
-        if !self.residency.require(&data.residency, Target::Cpu) {
+        if !self.residency.require(
+            &data.residency,
+            Target::Cpu,
+            &self.definition.source,
+            span,
+        ) {
             return self.fail(
                 span,
                 "B266",
@@ -1392,7 +1402,12 @@ impl Builder<'_> {
         } else {
             (Target::Gpu, residency::Residency::cpu())
         };
-        if !self.residency.require(&data.residency, source) {
+        if !self.residency.require(
+            &data.residency,
+            source,
+            &self.definition.source,
+            span,
+        ) {
             return self.fail(
                 span,
                 "B266",

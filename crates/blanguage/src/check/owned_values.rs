@@ -63,16 +63,23 @@ impl OwnedValue {
             p.is_none() || matches!(p.as_deref(),Some(Returned::OwnedValue(v)) if v.incomplete()) || matches!(p.as_deref(),Some(Returned::Dataset(d)) if d.ownership==Ownership::Moved)
         })
     }
-    pub(super) fn loop_compatible(&self, other: &Self, inputs: &residency::Inputs) -> bool {
+    pub(super) fn loop_compatible(
+        &self,
+        other: &Self,
+        inputs: &mut residency::Inputs,
+        source: &Source,
+        span: Span,
+    ) -> bool {
         self.ownership == other.ownership
             && self.payloads.iter().zip(&other.payloads).all(|(a, b)| {
                 match (a.as_deref(), b.as_deref()) {
                     (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
                         a.ownership == b.ownership
-                            && (a.ownership == Ownership::Moved || inputs.same(&a.residency, &b.residency))
+                            && (a.ownership == Ownership::Moved
+                                || inputs.same(&a.residency, &b.residency, source, span))
                     }
                     (Some(Returned::OwnedValue(a)), Some(Returned::OwnedValue(b))) => {
-                        a.loop_compatible(b, inputs)
+                        a.loop_compatible(b, inputs, source, span)
                     }
                     (None, Some(_)) => false,
                     _ => true,

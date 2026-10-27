@@ -187,7 +187,12 @@ impl Builder<'_> {
                     );
                 }
                 if result.ownership == application::Ownership::Owned
-                    && !before.loop_compatible(result, &self.residency)
+                    && !before.loop_compatible(
+                        result,
+                        &mut self.residency,
+                        &self.definition.source,
+                        span,
+                    )
                 {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
                 }
@@ -203,7 +208,12 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved
-                    && !self.residency.same(&before.residency, &data.residency)
+                    && !self.residency.same(
+                        &before.residency,
+                        &data.residency,
+                        &self.definition.source,
+                        span,
+                    )
                 {
                     return self.fail(
                         span,

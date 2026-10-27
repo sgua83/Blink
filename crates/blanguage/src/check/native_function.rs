@@ -57,6 +57,7 @@ struct Unit {
     module: String,
     public: bool,
     residency_calls: Vec<residency::Call>,
+    residency_uses: Vec<residency::Use>,
 }
 fn declaration(
     world: &World,
@@ -88,6 +89,7 @@ fn declaration(
                 module: instance.definition.module.clone(),
                 public: instance.definition.public,
                 residency_calls: Vec::new(),
+                residency_uses: Vec::new(),
             }),
         );
         return Ok(context);
@@ -99,7 +101,11 @@ fn declaration(
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
     let checked = checked_function(world, &instance, Some(context))?;
-    let residency::Inputs { required, calls } = checked.residency;
+    let residency::Inputs {
+        required,
+        calls,
+        uses,
+    } = checked.residency;
     let mut context = checked.application.unwrap();
     context.frame = frame;
     let mut function = checked.body;
@@ -127,6 +133,7 @@ fn declaration(
             module: instance.definition.module.clone(),
             public: instance.definition.public,
             residency_calls: calls,
+            residency_uses: uses,
         }),
     );
     Ok(context)
@@ -470,7 +477,7 @@ impl Builder<'_> {
             translate_returned(&mut returned, &model, &bindings);
             residency::returned(&mut returned, &locations);
         } else {
-            unknown_resources(&mut returned);
+            residency::output(&mut returned, &instance.name, &locations);
         }
         Ok(Some(returned))
     }
@@ -525,18 +532,14 @@ fn translate_returned(
         _ => {}
     }
 }
-fn unknown_resources(value: &mut Returned) {
-    match value {
-        Returned::Dataset(data) => data.residency = residency::Residency::default(),
-        Returned::OwnedValue(value) => {
-            value.resources_mut(&mut |data| data.residency = residency::Residency::default())
-        }
-        _ => {}
-    }
-}
-
 // 函数合同沿真实资源调用关系收敛，递归参数置换也消费同一输入条件。
 fn resolve_residencies(module: &mut Module) -> Result<()> {
+    let outputs = residency::solve_outputs(module.units.iter().map(|(name, unit)| {
+        (
+            name.as_str(),
+            unit.as_ref().unwrap().contract.returned.as_ref(),
+        )
+    }));
     loop {
         let known = module
             .units
@@ -554,17 +557,37 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
             let mut inputs = residency::Inputs {
                 required: unit.contract.residency.clone(),
                 calls: Vec::new(),
+                uses: Vec::new(),
             };
             for call in &unit.residency_calls {
-                inputs.apply(&known[&call.function], call)?;
+                inputs.apply(
+                    &known[&call.function],
+                    &residency::resolved_call(call, &outputs),
+                )?;
             }
+            inputs.apply_uses(&unit.residency_uses, &outputs, false)?;
             changed |= inputs.required != unit.contract.residency;
             unit.contract.residency = inputs.required;
         }
         if !changed {
-            return Ok(());
+            break;
         }
     }
+    for unit in module.units.values_mut() {
+        let unit = unit.as_mut().unwrap();
+        let mut inputs = residency::Inputs {
+            required: unit.contract.residency.clone(),
+            calls: Vec::new(),
+            uses: Vec::new(),
+        };
+        inputs.apply_uses(&unit.residency_uses, &outputs, true)?;
+        if let Some(returned) = &mut unit.contract.returned {
+            if !residency::resolve_returned(returned, &outputs) {
+                unit.contract.returned = None;
+            }
+        }
+    }
+    Ok(())
 }
 fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
@@ -1072,6 +1095,7 @@ fn build_domain(
             module: d.module.clone(),
             public: d.public,
             residency_calls: Vec::new(),
+            residency_uses: Vec::new(),
         }),
     );
     Ok(())
