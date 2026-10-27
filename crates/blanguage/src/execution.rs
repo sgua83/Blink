@@ -26,6 +26,11 @@ impl Body {
         }
         if let Some(key) = world.resolve(name, &d.module, &d.imports, true) {
             self.calls.insert(key.clone());
+            // A CPU wrapper invokes an already compiled domain through its actual
+            // host entry; its body is not part of the caller's stage expansion.
+            self.host |= d.function.target == Target::Cpu
+                && world.functions[&key].compiled.is_some()
+                && world.functions[&key].execution == Requirement::Domain;
             if statement {
                 self.statements.insert(key);
             }
@@ -130,7 +135,8 @@ pub(crate) fn infer(world: &mut World) {
         .map(|(key, d)| {
             let mut body = Body::default();
             if d.compiled.is_some() {
-                body.host = true;
+                body.domain = d.execution == Requirement::Domain;
+                body.host = d.execution == Requirement::Host;
             }
             if d.function.kind == FunctionKind::Value {
                 if let Some(stmts) = &d.function.body {

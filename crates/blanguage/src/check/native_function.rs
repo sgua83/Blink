@@ -99,6 +99,7 @@ pub(crate) struct Contract {
     requires: BTreeSet<(ContractKind, ContractPredicate)>,
     target: Target,
     frame: bool,
+    domain: Option<crate::module::domain::Interface>,
 }
 crate::module::codec::record!(Contract {
     parameters,
@@ -108,7 +109,8 @@ crate::module::codec::record!(Contract {
     written,
     requires,
     target,
-    frame
+    frame,
+    domain
 });
 struct Unit {
     function: Option<FunctionBody>,
@@ -172,6 +174,7 @@ fn declaration(
             .collect(),
         target: instance.definition.function.target,
         frame: false,
+        domain: None,
     };
     crate::optimize::value_code(&mut function.body);
     context.functions.units.insert(
@@ -701,7 +704,11 @@ pub(crate) fn compile_module(
             continue;
         }
         for mut instance in crate::generics::instances(world, key, d)? {
-            if d.function.external.is_none()
+            if d.execution == crate::execution::Requirement::Domain
+                && super::kernel_interface(world, &instance.definition)?
+            {
+                roots.extend(domain_declaration(world, &instance, &mut context)?);
+            } else if d.function.external.is_none()
                 && d.function.kind == FunctionKind::Value
                 && d.function.target != Target::Gpu
             {
@@ -741,6 +748,12 @@ pub(crate) fn compile_module(
             d,
             d.function.span,
         )?;
+        if d.execution == crate::execution::Requirement::Domain
+            && super::kernel_interface(world, &instance.definition)?
+        {
+            roots.extend(domain_declaration(world, &instance, &mut context)?);
+            continue;
+        }
         if d.function.external.is_some()
             || d.function.kind != FunctionKind::Value
             || d.function.target == Target::Gpu
@@ -761,9 +774,178 @@ pub(crate) fn compile_module(
     Ok(crate::module::Module {
         name: entry.into(),
         header: world.interfaces[entry].text.to_string(),
+        requirements: world
+            .functions
+            .iter()
+            .filter(|(_, d)| d.module == entry && d.public)
+            .map(|(name, d)| (name.clone(), d.execution))
+            .collect(),
         functions,
         imports: finalized.imports,
         exports: finalized.exports,
         resources,
     })
+}
+
+pub(super) fn domain_interface(
+    instance: &crate::generics::Instance,
+    target: Target,
+) -> Result<crate::module::domain::Interface> {
+    use crate::module::codec::Decode;
+    let name = crate::module::domain::symbol(&instance.name, target);
+    let d = &instance.definition;
+    let interface = d
+        .compiled
+        .as_ref()
+        .unwrap()
+        .get(&name)
+        .ok_or_else(|| Diagnostic {
+            source: d.source.clone(),
+            span: d.function.span,
+            code: "B270",
+            message: format!("已编译模块没有本次目标的整域实例 {name}"),
+        })?;
+    Contract::from_bytes(interface)
+        .and_then(|contract| contract.domain.ok_or_else(|| "模块入口缺少整域合同".into()))
+        .map_err(|error| Diagnostic {
+            source: d.source.clone(),
+            span: d.function.span,
+            code: "B270",
+            message: error.to_string(),
+        })
+}
+impl Builder<'_> {
+    pub(super) fn compiled_domain_call(
+        &mut self,
+        mut instance: crate::generics::Instance,
+        target: Target,
+        arguments: Vec<CallArgument>,
+    ) -> Result<()> {
+        instance.name = crate::module::domain::symbol(&instance.name, target);
+        self.native_declaration(&instance, &[])?;
+        self.code.push(Inst::Call(Call {
+            target: CallTarget::Defined(instance.name),
+            arguments,
+            result: None,
+            values: Vec::new(),
+        }));
+        Ok(())
+    }
+}
+fn domain_declaration(
+    world: &World,
+    instance: &crate::generics::Instance,
+    context: &mut application::Context,
+) -> Result<BTreeSet<String>> {
+    let d = &instance.definition;
+    let program = compile_program(world, instance)?;
+    if !program.accelerations.is_empty() || !program.textures.is_empty() {
+        return d.source.fail(
+            d.function.span,
+            "B270",
+            "B应用的独立整域入口尚未交接纹理或加速结构；原生宿主算法接口继续使用已有产物",
+        );
+    }
+    let targets: &[Target] = match d.function.target {
+        Target::Cpu => &[Target::Cpu],
+        Target::Gpu => &[Target::Gpu],
+        Target::Compute => &[Target::Cpu, Target::Gpu],
+    };
+    let mut roots = BTreeSet::new();
+    for &target in targets {
+        let name = crate::module::domain::symbol(&instance.name, target);
+        if context.functions.units.contains_key(&name) {
+            roots.insert(name);
+            continue;
+        }
+        let index = context.resources.programs.len();
+        context.resources.programs.push((target, program.clone()));
+        let mut frame = Ty::vector(Scalar::U32, 2);
+        frame.name = "__blink_frame".into();
+        let mut registers = vec![Scalar::U32, Scalar::U32];
+        let mut parameters = vec![CallParameter::Value(frame.clone())];
+        let mut arguments = vec![CallArgument::Value {
+            ty: frame,
+            values: vec![0, 1],
+        }];
+        let mut data = Vec::new();
+        let mut uniforms = Vec::new();
+        for param in &d.function.params {
+            let ty = cooperative::parameter_type(world, param, d)?;
+            if param.ty.dataset {
+                let first = registers.len();
+                registers.extend([Scalar::U32, Scalar::U32]);
+                let count = world.shape(
+                    &param.ty.count,
+                    &d.source,
+                    param.span,
+                    &d.module,
+                    &d.imports,
+                )?;
+                parameters.push(CallParameter::Value(Ty::owned_dataset(ty, count)));
+                data.push(CallArgument::Value {
+                    ty: Ty::scalar(Scalar::U32),
+                    values: vec![first],
+                });
+            } else {
+                let first = registers.len();
+                registers.extend(ty.components.iter().map(|(scalar, _)| *scalar));
+                parameters.push(CallParameter::Value(ty.clone()));
+                uniforms.extend(ty.components.iter().enumerate().map(|(i, (scalar, _))| {
+                    CallArgument::Value {
+                        ty: Ty::scalar(*scalar),
+                        values: vec![first + i],
+                    }
+                }));
+            }
+        }
+        arguments.extend(data);
+        arguments.extend(uniforms);
+        let inputs: Vec<_> = (0..registers.len()).collect();
+        let body = ValueCode {
+            registers,
+            locals: Vec::new(),
+            inputs: inputs.clone(),
+            outputs: Vec::new(),
+            code: vec![application::runtime_call(
+                &format!("run_{index}"),
+                arguments,
+                None,
+                Vec::new(),
+            )],
+        };
+        let function = FunctionBody {
+            name: name.clone(),
+            parameters: parameters.clone(),
+            result: None,
+            body,
+        };
+        let contract = Contract {
+            parameters,
+            result: None,
+            inputs,
+            returned: None,
+            written: vec![None; d.function.params.len()],
+            requires: crate::contract_signature(&d.function)
+                .into_iter()
+                .map(|(kind, predicate)| (kind, predicate.clone()))
+                .collect(),
+            target: Target::Cpu,
+            frame: true,
+            domain: Some(crate::module::domain::Interface::new(&program, target)),
+        };
+        context.functions.units.insert(
+            name.clone(),
+            Some(Unit {
+                function: Some(function),
+                contract,
+                module: d.module.clone(),
+                public: d.public,
+            }),
+        );
+        if d.public {
+            roots.insert(name);
+        }
+    }
+    Ok(roots)
 }

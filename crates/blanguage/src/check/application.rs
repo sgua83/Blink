@@ -36,7 +36,7 @@ fn argument(value: Value) -> CallArgument {
         values: value.regs,
     }
 }
-fn runtime_call(
+pub(super) fn runtime_call(
     name: &str,
     arguments: Vec<CallArgument>,
     result: Option<Ty>,
@@ -381,105 +381,39 @@ impl Builder<'_> {
         let initialized = std::mem::take(&mut self.initialized);
         self.application_empty_initialization(initialized)
     }
-    fn initialize_application_program(&mut self, program: &Program, data: &[Data]) {
+    fn initialize_application_domain(
+        &mut self,
+        interface: &crate::module::domain::Interface,
+        data: &[Data],
+    ) {
         let same_length = |a: &Data, b: &Data| {
             a.length.identity() == b.length.identity()
                 || a.length.minimum() == a.length.maximum()
                     && a.length.minimum() == b.length.minimum()
                     && a.length.maximum() == b.length.maximum()
         };
-        for stage in &program.stages {
-            match &stage.operation {
-                Operation::Map => {
-                    if stage.prefix.is_none() && stage.selection.is_none() {
-                        for binding in &stage.writes {
-                            if program.buffers[*binding].access == Access::Write
-                                && same_length(&data[*binding], &data[stage.domain])
-                            {
-                                self.initialize_application(&data[*binding]);
-                            }
-                        }
-                    }
+        for output in &interface.outputs {
+            let Some(scope) = data[output.binding].initialization else {
+                continue;
+            };
+            match output.domain {
+                Some(domain) if same_length(&data[output.binding], &data[domain]) => {
+                    self.initialized.extend(
+                        output
+                            .words
+                            .iter()
+                            .map(|word| Position::Parameter(scope, *word as usize)),
+                    );
                 }
-                Operation::Reduce(values) => self.initialize_application_reduction(
-                    &data[values.fields.target],
-                    values.fields.target_word,
-                    &values.ty,
-                ),
-                Operation::CustomReduce(values) => self.initialize_application_reduction(
-                    &data[values.fields.target],
-                    values.fields.target_word,
-                    &values.ty,
-                ),
-                Operation::ScanExclusive(values) => {
-                    if stage.prefix.is_none()
-                        && same_length(&data[values.values.target], &data[values.values.source])
-                    {
-                        self.initialize_application_value(
-                            &data[values.values.target],
-                            values.values.target_word,
-                            &values.ty,
-                        );
-                    }
-                }
-                Operation::CustomScan(values) => {
-                    if stage.prefix.is_none()
-                        && same_length(
-                            &data[values.values.fields.target],
-                            &data[values.values.fields.source],
-                        )
-                    {
-                        self.initialize_application_value(
-                            &data[values.values.fields.target],
-                            values.values.fields.target_word,
-                            &values.values.ty,
-                        );
-                    }
-                }
-                Operation::StableSort(values) => {
-                    if stage.prefix.is_none()
-                        && same_length(&data[values.target], &data[values.source])
-                    {
-                        self.initialize_application(&data[values.target]);
-                    }
-                }
-                Operation::Compact(values) => self.initialize_application_reduction(
-                    &data[values.count],
-                    values.count_word,
-                    &Ty::scalar(Scalar::U32),
-                ),
-                Operation::SegmentedReduce(values) => self.initialize_application_reduction(
-                    &data[values.count.binding],
-                    values.count.word,
-                    &Ty::scalar(Scalar::U32),
-                ),
-                Operation::CustomSegmentedReduce(values) => self.initialize_application_reduction(
-                    &data[values.count.binding],
-                    values.count.word,
-                    &Ty::scalar(Scalar::U32),
-                ),
-            }
-        }
-    }
-    fn initialize_application_value(&mut self, data: &Data, first: u32, ty: &Ty) {
-        if let Some(scope) = data.initialization {
-            self.initialized.extend(
-                ty.components
-                    .iter()
-                    .map(|(_, offset)| Position::Parameter(scope, (first + offset / 4) as usize)),
-            );
-        }
-    }
-    fn initialize_application_reduction(&mut self, data: &Data, first: u32, ty: &Ty) {
-        if let Some(scope) = data.initialization {
-            self.initialized
-                .extend(ty.components.iter().map(|(_, offset)| {
+                None => self.initialized.extend(output.words.iter().map(|word| {
                     Position::ApplicationElement(
                         scope,
                         ownership::ApplicationIndex::Constant(0),
-                        first + offset / 4,
+                        *word,
                     )
-                }));
+                })),
+                _ => {}
+            }
         }
     }
     pub(super) fn application_output_scope(&mut self) -> usize {
@@ -1297,8 +1231,16 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.handle.identity(), span)?;
         }
-        let program = super::compile_program(self.world, &instance)?;
-        for (value, buffer) in data.iter().zip(&program.buffers) {
+        let (interface, program) = if callee.compiled.is_some() {
+            (native_function::domain_interface(&instance, target)?, None)
+        } else {
+            let program = super::compile_program(self.world, &instance)?;
+            (
+                crate::module::domain::Interface::new(&program, target),
+                Some(program),
+            )
+        };
+        for (value, buffer) in data.iter().zip(&interface.buffers) {
             self.require_same(&buffer.ty, &value.ty, span)?;
             if buffer.count.is_some() && buffer.count != value.count {
                 return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
@@ -1307,10 +1249,33 @@ impl Builder<'_> {
                 self.invalidate_application_contents(value.handle.identity());
             }
         }
-        for (value, uniform) in uniforms.iter().zip(&program.uniforms) {
+        for (value, uniform) in uniforms.iter().zip(&interface.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
         }
-        self.initialize_application_program(&program, &data);
+        self.initialize_application_domain(&interface, &data);
+        if program.is_none() {
+            let frame = self.application_frame(span)?;
+            let mut physical = vec![argument(frame)];
+            let mut data = data.into_iter();
+            let mut uniforms = uniforms.into_iter();
+            for parameter in &callee.function.params {
+                if parameter.ty.dataset {
+                    let value = data.next().unwrap();
+                    physical.push(argument(
+                        self.returned_storage(&returns::Returned::Dataset(value.clone())),
+                    ));
+                } else {
+                    let value = uniforms.next().unwrap();
+                    physical.push(argument(value.clone()));
+                }
+            }
+            self.compiled_domain_call(instance, target, physical)?;
+            for name in held {
+                self.finish_scoped_argument(&name, span)?;
+            }
+            return Ok(Some(returns::Returned::Unit));
+        }
+        let program = program.unwrap();
         let app = self.application.as_mut().unwrap();
         let index = app
             .resources

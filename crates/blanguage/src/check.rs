@@ -380,7 +380,10 @@ fn expand_program(
     expand_stages(
         world,
         d,
-        d.function.body.as_ref().unwrap(),
+        d.function.body.as_ref().ok_or_else(|| Diagnostic {
+            source: d.source.clone(), span: d.function.span, code: "B270",
+            message: "已编译整域入口没有可展开的实现体；CPU应用或CPU包装函数沿原生入口调用，域内部的已编译域组合尚未实现".into(),
+        })?,
         env,
         program,
         stack,

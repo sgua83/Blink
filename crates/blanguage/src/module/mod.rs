@@ -1,5 +1,6 @@
 //! 已编译模块公开接口、原生定义和实际产物；导入不读取实现源码。
 pub(crate) mod codec;
+pub(crate) mod domain;
 use crate::{
     application::Resources,
     ir::FunctionBody,
@@ -10,6 +11,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 pub(crate) struct Imported {
     pub header: String,
     pub definitions: Arc<BTreeMap<String, Vec<u8>>>,
+    pub requirements: BTreeMap<String, crate::execution::Requirement>,
 }
 #[derive(Default)]
 pub(crate) struct Imports {
@@ -19,7 +21,12 @@ impl Imports {
     pub fn new(objects: &[Object]) -> codec::Result<Self> {
         let mut imports = Self::default();
         for object in objects {
-            let Kind::Module { interface, .. } = &object.kind else {
+            let Kind::Module {
+                interface,
+                requirements,
+                ..
+            } = &object.kind
+            else {
                 return Err(format!("{} 不是独立模块产物", object.name).into());
             };
             let definitions = object
@@ -33,6 +40,7 @@ impl Imports {
                     object.name.clone(),
                     Imported {
                         header: interface.clone(),
+                        requirements: requirements.clone(),
                         definitions: Arc::new(definitions),
                     },
                 )
@@ -47,6 +55,7 @@ impl Imports {
 pub struct Module {
     pub(crate) name: String,
     pub(crate) header: String,
+    pub(crate) requirements: BTreeMap<String, crate::execution::Requirement>,
     pub(crate) functions: Vec<FunctionBody>,
     pub(crate) imports: BTreeMap<String, Vec<u8>>,
     pub(crate) exports: BTreeMap<String, Vec<u8>>,
@@ -92,6 +101,7 @@ impl Module {
             name: self.name.clone(),
             kind: Kind::Module {
                 interface: self.header.clone(),
+                requirements: self.requirements.clone(),
                 stack_bytes,
             },
             sections,

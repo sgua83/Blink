@@ -69,6 +69,7 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
         name: "@blink.resources@".into(),
         kind: Kind::Module {
             interface: String::new(),
+            requirements: std::collections::BTreeMap::new(),
             stack_bytes: 0,
         },
         sections: vec![Section {

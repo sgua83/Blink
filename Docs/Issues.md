@@ -11,7 +11,7 @@
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
 | C-005／C-020.3 的原生位置参数内容身份与字段输出事实：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；接续CL13508记录的整份可写Ticket原生调用后旧index关系B137。沿原Proof／函数Contract及已有内容所有者，区分原生地址输入与位置入口内容身份，交接真实未改分量及输出事实；不追加机器参数、运行期载荷复制、额外装载或完成状态。主要check.rs的值身份／参数初始Proof、bounds静态翻译与编解码、native_function::canonical及调用点Proof映射；避让PA3独立整域模块的Contract结构／模块编译／执行入口与PA2 native／allocation／packet后端，不改物理参数／布局或原Frame。原生与提交发布结果分别回填，一般字段契约／递归推导仍按实际范围开放。 | 2026-10-27 16:40 +08:00 |
-| C-021.4／C-021.8 的独立整域模块CPU／GPU调用：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | PA3／D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续CL13543普通位置ABI，交付独立模块的整域CPU／GPU调用。库编译拥有代码、执行映像及真实资源入口；导入消费公开参与要求、布局、初始化／访问及调用合同，应用与库共用原Frame，链接只绑定既有机器码与资源。移走库.h／.b后仍可在CPU／GPU调用，不以重读实现、源码重编、隐式传输或运行时注册冒充模块。 避让Gua的never结果／Flow／returns与PA2 native／allocation／packet分歧后端；必要接点限lib加载元数据、execution已编译参与要求、native_function模块编译／物理调用、application整域入口，以及module／object产物，不修改never结果分支或后端算法。 | 2026-10-27 16:20 +08:00 |
+| C-021.4／C-021.8 的独立整域模块CPU／GPU调用：**已修复（应用及CPU包装入口子范围），待提交／发布；域内组合待实现** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | PA3／D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续CL13543普通位置ABI，交付独立模块的整域CPU／GPU调用。库编译拥有代码、执行映像及真实资源入口；导入消费公开参与要求、布局、初始化／访问及调用合同，应用与库共用原Frame，链接只绑定既有机器码与资源。移走库.h／.b后仍可在CPU／GPU调用，不以重读实现、源码重编、隐式传输或运行时注册冒充模块。 避让Gua的never结果／Flow／returns与PA2 native／allocation／packet分歧后端；必要接点限lib加载元数据、execution已编译参与要求、native_function模块编译／物理调用、application整域入口，以及module／object产物，不修改never结果分支或后端算法。 | 2026-10-27 16:20 +08:00 |
 | C-021.8／C-022.1 的 program 语法迁移状态与本地文档采用：**已修复（本轮文档与采用范围）；完整函数／调度能力待实现** | `192.168.10.5`／`GUA` | Codex 会话 `01a17c57-3bbb-7dd2-9f06-b8a4e950f270` | `B:/BLanguage`，client `BLanguage_Gua`；已三方核对并采用 22 份规范、书稿、十份正式 PDF 与配套说明，保留原规范／Issues 的其他会话内容。原设计、认领与候选记录改为明确历史范围，统一语法／同步 target 状态对应 CL13482 与消费者 CL13483；历史版本源码分析节选及内部 Program／Stage／ExecutionPlan 保留。修正入门 README 当前 GPU 调用名。现有 `target/release/blc.exe` 检查 50 个正式源码模块；三种旧写法实际拒绝；重新编译／链接的 CPU、GPU 阶段应用均输出 3／5／7／9，百万条 datasets 应用输出 500000／891896832，全部退出 0、stderr 空。本轮未修改编译器／运行时，未重新构建工具；原始命令、输出及工具 SHA256 在 `Saved/Measurements/ProgramSyntaxClosure`。文档通过隔离 client `BLanguage_Gua_ProgramSyntaxClosure` 聚焦提交，本记录所在 changelist 与单次异步 Git 发布回执分别为交付事实。 | 2026-10-27 16:10 +08:00 |
 | C-004／C-020.5 的never函数结果与非返回路径：**已修复（本轮函数结果与控制流子范围）；已提交发布并由主工作区采用；一般never类型组合待实现** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；11份前端及3份规范／架构／台账CL13549，Git07813aebc604dce73a3e2e7ce26aad54b2ceee0d的14份精确P4／SDK／Git一致，远端包含。原Flow与ReturnContext保留真实无返回，不伪造值、write初始化或正常参数归还；合入PA3 CL13543借用ABI，未改后端／Frame。集成Release60.76秒、主线61.17秒；两处均28项语义17合法／11正确拒绝，入口另B262；11个单对象原生应用及无库源码的双对象消费符合准确退出／输出，CPU／GPU各0／1／65／1000003条全记录与独立参考相同。主线采用17份必要源码／规则且138份crates文件与SDK一致；临时消费者、隔离target及比对副本已清理，主target／其他会话改动保留。原始记录Saved/Measurements/NeverReturnDevelopment；完整C-004及一般never数据／泛型组合继续待实现。 | 2026-10-27 16:33 +08:00 |
 | C-021.3／C-021.4 的独立借用ABI与C布局合同：**已修复（本轮CPU普通位置与C布局子范围）；P4已提交／Git已发布；完整模块能力待实现** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | PA3／D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续已修复CL13520模块子范围，删除普通B借用按调用方物理映射生成符号的耦合。沿原Place、CallParameter／CallArgument和现有x64调用槽，向量独占借用按真实分量地址交接，记录／数组保留声明布局与单一实际地址；不复制载荷，不增运行时布局表、分派、注册、检查或源码重编。C连续及对齐要求留在真实外部ABI边界，通过现有requires合同明确表达并由调用方静态满足，普通B借用不新增许可。 避让Gua的lexer最长token、parser赋值token与check.rs::assign_statement复合赋值，必要parser改动只限原函数契约谓词分支，check.rs只限原生引用参数／读写接点；不修改PA2的native.rs／allocation／packet控制和优化。  源码CL13543／Git1e4962f2e5498011a6390a6bf4dbca1b7e9a4b4a远端已回读；140构建输入和13份变化的145份并集与精确P4／PA3／Git相同。Release及正式消费者／多对象CPU与GPU原生已完成，临时消费者和比对副本已清理，原始记录保留。| 2026-10-27 16:13 +08:00 |
@@ -192,7 +192,7 @@ C-020 至 C-024 是长期能力事项。C-001 至 C-019 保留具体缺口、缺
 
 ### C-021：支撑大型软件的函数与模块体系
 
-**状态与基础：整体待设计／待实现。** 已有 .h/.b 模块、访问模式、有限／开放 u32 const、有限类型集合及静态实例化。CL13210 已完成 `blc -c` 与 `bllink` 分离；当前产物是单个完整应用或算法目标文件，通用多对象模块链接尚未完成。关联 C-004、C-005、C-010、C-013 至 C-016。
+**状态与基础：整体待设计／待实现。** 已有 .h/.b 模块、访问模式、有限／开放 u32 const、有限类型集合及静态实例化。CL13210 已完成 `blc -c` 与 `bllink` 分离；当前已有独立CPU普通模块、位置借用ABI、归档接口、多对象资源绑定，以及应用／CPU包装调用的独立整域CPU／GPU入口；完整模块、资源阶段、泛型分发与域内组合仍未完成。关联 C-004、C-005、C-010、C-013 至 C-016。
 
 **职责与关联：** blanguage 拥有函数／模块契约、泛型、独立检查、调用、目标文件和链接语义；当前执行与平台接口仍由原所有者落实。数据与资源条件来自 C-020，调度消费接口效果，版本更新消费契约与实际代码依赖。非面向对象保持确定方向，不引入类继承、虚表或对象类型驱动派发。
 
@@ -2947,9 +2947,16 @@ BLEngine新图像编码程序在使用`value |= expression`时，当前parser报
 
 ### C-021.4／C-021.8：独立整域模块CPU／GPU调用
 
-- 状态：**正在修复**。PA3／D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续CL13543普通位置ABI，交付独立模块的整域CPU／GPU调用。库编译拥有代码、执行映像及真实资源入口；导入消费公开参与要求、布局、初始化／访问及调用合同，应用与库共用原Frame，链接只绑定既有机器码与资源。移走库.h／.b后仍可在CPU／GPU调用，不以重读实现、源码重编、隐式传输或运行时注册冒充模块。
+- 状态：**已修复（应用及CPU包装入口子范围），待P4提交／Git发布；域内组合待实现**。PA3／D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续CL13543普通位置ABI，交付独立模块的整域CPU／GPU调用。库编译拥有代码、执行映像及真实资源入口；导入消费公开参与要求、布局、初始化／访问及调用合同，应用与库共用原Frame，链接只绑定既有机器码与资源。移走库.h／.b后仍可在CPU／GPU调用，不以重读实现、源码重编、隐式传输或运行时注册冒充模块。
 - 协作范围：避让Gua的never结果／Flow／returns与PA2 native／allocation／packet分歧后端；必要接点限lib加载元数据、execution已编译参与要求、native_function模块编译／物理调用、application整域入口，以及module／object产物，不修改never结果分支或后端算法。
 - 当前实际关系：普通CPU模块符号已交付，但已编译接口被统一当作Host；GPU整域入口仅编译检查而未交付外部可绑定入口，应用整域调用仍直接compile_program依赖实现。将沿既有资源编译、原生调用和初始化所有者交接必要合同，不复制运行状态、不新增执行器或校验流程。具体缺陷复现、实现、Release、原生运行、提交与发布分别记录；完整C-021.4／C-021.8与开放泛型模板等剩余能力继续开放。认领先于源码，2026-10-27 16:20 +08:00。
+
+- 认领CL13547／Gitcc5c66abeab98a18edddb0dab9e558ee04019562先于源码。CL13543 Release真实复现已编译GPU整域声明被当普通函数并报B120；旧模块不交付对应GPU入口。现模块编译拥有CPU／GPU映像及原资源入口，导入按公开参与要求和具体原生合同调用，不读取库私有源码。原Frame／句柄／长度及真实设备完成保持，无IR或原生后端／blcompute变更，无运行时注册、复制载荷或隐式传输。
+- 公开Invocation／Domain／Host元数据独立于具体泛型导出，未实例化的开放声明不被误判；实际实例沿原类型与const处理。原Program初始化分支收口成可导出的布局／效果，完整域、同长度域、首元素及筛选输出不混淆。全量write改成where筛选后，旧应用对象链接明确“模块接口不匹配”，新CPU包装因输出不完整报B229；仅改变私有计算值7→8时，原应用对象散列不变，重新链接真实输出8。
+- 实际组合：移走库.h／.b，CPU与GPU0／1／65／1000003条全部记录通过；三层模块、拥有dataset返回、uint4与const显式实例、未实例化开放声明、普通uint3重排借用及真实错误位置／目标／缺失实例通过。CPU包装中的write参数提前读取被B142拒绝。带填充记录、f32／float3／float4、bool及超过四槽的混合ABI实际通过CPU算术和GPU值选择／传递；此前GPU浮点算术因设备缺少DenormPreserve与SignedZeroInfNanPreserve而退出1，保留原始错误，不降低算术规则或声称其已通过。
+- 正式算法边界：独立整域扫描／归约／稳定排序在CPU与GPU逐项核对0／1／65／1000003条。正式lessons.pipeline复制到本轮临时模块，移走临时库源码后，compact及实际Count→排序→有效前缀scan／reduce在CPU与GPU完整核对每个有效记录、稳定顺序、offset与total；原正式样例未改。原始记录Saved/Measurements/PA3DomainModules。
+- 已合入Gua CL13549／13550 never修复，五处打开文件自动合并无冲突；最终Release57.65秒，无警告。51语言／62引擎模块、21正式入门应用逐字输出、BLEngine Release及真实优化C++／Rust DLL调用15／21通过。BLCO格式更新为3，旧对象需正式重编，链接不重编源码；性能与完整平台能力未据此完成。
+- 真实剩余能力：普通CPU包装对已编译域的调用现归实际Host发起路径，不再展开缺失库体；纯on compute域内部的已编译域组合仍未实现，原Option::unwrap崩溃已改为对应接口来源B270，不能将诊断当成该组合已经可执行。B应用纹理／AS、一般资源阶段／借用返回、符号模板、完整常量／依赖版本、其他目标普通值调用和热更新继续待实现。源码尚未提交／发布；完成后回填原状态与交付。更新时间：2026-10-27 16:59 +08:00。
 
 ## C-004／C-020.5：never 函数结果与非返回路径（2026-10-27）
 

@@ -52,6 +52,7 @@ pub(crate) struct Archive {
 pub(crate) enum Kind {
     Module {
         interface: String,
+        requirements: std::collections::BTreeMap<String, crate::execution::Requirement>,
         stack_bytes: u32,
     },
     Application {

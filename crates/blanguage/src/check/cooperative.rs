@@ -262,7 +262,9 @@ impl<'a> Builder<'a> {
                 .external_call(&instance.definition, args, span)
                 .map(|v| v.map(returns::Returned::Value));
         }
-        if instance.definition.compiled.is_some() {
+        if instance.definition.compiled.is_some()
+            && instance.definition.execution != crate::execution::Requirement::Domain
+        {
             if self.application.is_none() {
                 return self.fail(span, "B270", "该已编译普通原生模块入口需要CPU应用调用位置");
             }

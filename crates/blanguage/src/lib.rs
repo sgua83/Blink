@@ -595,7 +595,20 @@ fn load(
             key,
             Arc::new(Definition {
                 function: f.clone(),
-                execution: execution::Requirement::Invocation,
+                execution: if let Some(compiled) = compiled {
+                    compiled
+                        .requirements
+                        .get(&format!("{name}::{}", f.name))
+                        .copied()
+                        .ok_or_else(|| Diagnostic {
+                            source: source.clone(),
+                            span: f.span,
+                            code: "B270",
+                            message: format!("已编译模块没有接口 {} 的参与要求", f.name),
+                        })?
+                } else {
+                    execution::Requirement::Invocation
+                },
                 source: source.clone(),
                 module: name.clone(),
                 imports: imports.clone(),
