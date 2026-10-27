@@ -43,6 +43,7 @@ impl Memory {
 pub(super) enum Operand {
     Register(u8),
     Memory(Memory),
+    Literal(u32),
 }
 impl Operand {
     pub(super) fn memory(base: u8, offset: u32) -> Self {
@@ -55,6 +56,12 @@ impl From<Memory> for Operand {
     }
 }
 impl Emitter<'_> {
+    fn float_operand(&mut self, location: Location) -> Operand {
+        match location {
+            Location::Immediate(bits) => Operand::Literal(bits),
+            location => self.operand(location, 1),
+        }
+    }
     fn operand(&mut self, location: Location, temporary: u8) -> Operand {
         match location {
             Location::Gpr(r) | Location::Xmm(r) => Operand::Register(r),
@@ -147,6 +154,15 @@ impl Emitter<'_> {
         }
         let field = (register & 7) << 3;
         match operand {
+            Operand::Literal(bits) => {
+                // Scalar literal reads end at disp32: ModRM 00/r/101 is RIP-relative.
+                self.rex(wide, register, 0, 0);
+                self.bytes(opcode);
+                self.bytes(&[field | 5]);
+                let at = self.code.len();
+                self.u32(0);
+                self.literals.entry(bits).or_default().push(at);
+            }
             Operand::Register(r) => {
                 self.rex(wide, register, r, 0);
                 self.bytes(opcode);
@@ -259,10 +275,8 @@ impl Emitter<'_> {
                 self.instruction(None, &[0xc7], false, 0, operand);
                 self.u32(bits);
             }
-            dst @ Location::Xmm(_) => {
-                self.bytes(&[0xb8]);
-                self.u32(bits);
-                self.copy(dst, Location::Gpr(0));
+            Location::Xmm(d) => {
+                self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, Operand::Literal(bits));
             }
         }
     }
@@ -325,7 +339,7 @@ impl Emitter<'_> {
             _ => 0,
         };
         self.copy(Location::Xmm(target), a);
-        let right = self.operand(b, 1);
+        let right = self.float_operand(b);
         self.instruction(Some(0xf3), &[0x0f, opcode], false, target, right);
         self.copy(d, Location::Xmm(target));
     }
@@ -371,7 +385,7 @@ impl Emitter<'_> {
             Location::Xmm(r) => r,
             _ => 0,
         };
-        let source = self.operand(self.location(source), 1);
+        let source = self.float_operand(self.location(source));
         self.instruction(Some(0xf3), &[0x0f, 0x51], false, target, source);
         self.copy(d, Location::Xmm(target));
     }
@@ -425,7 +439,7 @@ impl Emitter<'_> {
                 _ => 0,
             };
             self.copy(Location::Xmm(left), a);
-            let right = self.operand(b, 1);
+            let right = self.float_operand(b);
             self.instruction(None, &[0x0f, 0x2e], false, left, right);
         } else {
             let left = match a {

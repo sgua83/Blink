@@ -63,6 +63,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
         breaks: Vec::new(),
@@ -150,9 +151,5 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.u32((k as u32 + 1) * 4);
     }
     e.bytes(&[0xc3]);
-    NativeCode {
-        bytes: e.code,
-        relocations: Vec::new(),
-        stack_bytes: 0,
-    }
+    e.finish(0)
 }

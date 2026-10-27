@@ -349,7 +349,7 @@ impl Allocation {
         fn literals(code: &[Inst], values: &mut [Option<Option<u32>>]) {
             for inst in code {
                 let literal = match inst {
-                    Inst::Constant(_, scalar, bits) if *scalar != Scalar::F32 => Some(*bits),
+                    Inst::Constant(_, _, bits) => Some(*bits),
                     _ => None,
                 };
                 for dst in inst.results() {

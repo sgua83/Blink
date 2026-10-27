@@ -4,6 +4,7 @@ fn emitter<'a>(program: &'a Program) -> Emitter<'a> {
     Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
         breaks: Vec::new(),
@@ -33,11 +34,7 @@ pub(super) fn emit_count(program: &Program, c: &Compaction) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0xc3]);
-    NativeCode {
-        bytes: e.code,
-        relocations: Vec::new(),
-        stack_bytes: 0,
-    }
+    e.finish(0)
 }
 pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     let mut e = emitter(program);
@@ -104,9 +101,5 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
-    NativeCode {
-        bytes: e.code,
-        relocations: Vec::new(),
-        stack_bytes: 32,
-    }
+    e.finish(32)
 }

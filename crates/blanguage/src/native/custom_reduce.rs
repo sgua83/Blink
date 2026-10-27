@@ -510,6 +510,7 @@ pub(super) fn emit(
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,
         breaks: Vec::new(),
@@ -550,9 +551,5 @@ pub(super) fn emit(
         }
     }
     e.leave(frame);
-    Ok(NativeCode {
-        bytes: e.code,
-        relocations: e.relocations,
-        stack_bytes: frame,
-    })
+    Ok(e.finish(frame))
 }

@@ -4,6 +4,7 @@ fn emitter(program: &Program) -> Emitter<'_> {
     Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
         breaks: Vec::new(),
@@ -14,11 +15,7 @@ fn emitter(program: &Program) -> Emitter<'_> {
     }
 }
 fn finish(e: Emitter<'_>, stack_bytes: u32) -> NativeCode {
-    NativeCode {
-        bytes: e.code,
-        relocations: Vec::new(),
-        stack_bytes,
-    }
+    e.finish(stack_bytes)
 }
 pub(super) fn emit_initialize(program: &Program, s: &Sorting) -> NativeCode {
     initialize(program, s, s.keys.len() - 1, true)

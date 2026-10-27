@@ -114,6 +114,7 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,
         breaks: Vec::new(),
@@ -184,11 +185,7 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         e.bytes(&[0x4d, 0x29, 0xda, 0x41, 0x85, 0x02, 0xc3]);
     }
     Ok(ApplicationCode {
-        code: NativeCode {
-            bytes: e.code,
-            relocations: e.relocations,
-            stack_bytes: frame,
-        },
+        code: e.finish(frame),
         function_end: end,
         unwind: metadata,
     })

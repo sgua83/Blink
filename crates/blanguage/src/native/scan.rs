@@ -20,6 +20,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
         breaks: Vec::new(),
@@ -194,11 +195,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         }
     }
     e.bytes(&[0xc3]);
-    NativeCode {
-        bytes: e.code,
-        relocations: Vec::new(),
-        stack_bytes: 0,
-    }
+    e.finish(0)
 }
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
     let r = &scan.values;
@@ -211,6 +208,7 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
         breaks: Vec::new(),
@@ -359,9 +357,5 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         e.u32(scan.ty.components.len() as u32 * 4);
     }
     e.bytes(&[0xc3]);
-    NativeCode {
-        bytes: e.code,
-        relocations: Vec::new(),
-        stack_bytes: 0,
-    }
+    e.finish(0)
 }

@@ -81,6 +81,7 @@ pub struct NativeCode {
 struct Emitter<'a> {
     code: Vec<u8>,
     relocations: Vec<Relocation>,
+    literals: std::collections::BTreeMap<u32, Vec<usize>>,
     stage: &'a Stage,
     program: &'a Program,
     breaks: Vec<Vec<usize>>,
@@ -90,6 +91,23 @@ struct Emitter<'a> {
     frame: Frame,
 }
 impl Emitter<'_> {
+    // Literal bytes belong to this code image, after all returning instructions
+    // and any local helpers. Their references move with the same image.
+    fn finish(mut self, stack_bytes: u32) -> NativeCode {
+        for (bits, references) in std::mem::take(&mut self.literals) {
+            self.code.resize(self.code.len().div_ceil(4) * 4, 0);
+            let target = self.code.len();
+            self.u32(bits);
+            for at in references {
+                self.patch(at, target);
+            }
+        }
+        NativeCode {
+            bytes: self.code,
+            relocations: self.relocations,
+            stack_bytes,
+        }
+    }
     fn enter(&mut self, frame: u32) {
         self.bytes(&[0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x53]);
         let mut remaining = frame;
@@ -729,6 +747,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        literals: std::collections::BTreeMap::new(),
         stage,
         program,
         breaks: Vec::new(),
@@ -775,9 +794,5 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.leave(frame);
-    Ok(NativeCode {
-        bytes: e.code,
-        relocations: e.relocations,
-        stack_bytes: frame,
-    })
+    Ok(e.finish(frame))
 }
