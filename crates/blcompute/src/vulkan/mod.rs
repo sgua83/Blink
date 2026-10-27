@@ -339,6 +339,7 @@ struct Inner {
     family: u32,
     memory: VkPhysicalDeviceMemoryProperties,
     memory_budget: Option<memory::BudgetQuery>,
+    max_buffer_size: Option<u64>,
     properties: VkPhysicalDeviceProperties,
     timestamp_bits: u32,
     ray: Option<ray::RayDevice>,
@@ -419,6 +420,7 @@ impl Device {
             if properties.apiVersion < ((1 << 22) | (2 << 12)) {
                 return Err(error("目标 GPU 需要 Vulkan 1.2"));
             }
+            let max_buffer_size = memory::max_buffer_size(&owner, physical, properties.apiVersion)?;
             let features_fn: unsafe extern "system" fn(
                 VkPhysicalDevice,
                 *mut VkPhysicalDeviceFeatures2,
@@ -699,6 +701,7 @@ impl Device {
                     family: family as u32,
                     memory,
                     memory_budget,
+                    max_buffer_size,
                     properties,
                     timestamp_bits: queue_properties.timestampValidBits,
                     ray,
@@ -1099,12 +1102,20 @@ impl Allocation {
         unsafe { (self.inner.functions.vkGetBufferDeviceAddress)(self.inner.owner.device, &info) }
     }
     fn new(inner: Rc<Inner>, bytes: u64, usage: u32, flags: u32) -> Result<Self> {
+        let size = bytes.max(4);
+        if let Some(limit) = inner.max_buffer_size {
+            if size > limit {
+                return Err(error(format!(
+                    "VkBuffer 请求 {size} 字节超过设备 maxBufferSize={limit}，usage={usage:#x}",
+                )));
+            }
+        }
         unsafe {
             let mut out = Self {
                 inner,
                 buffer: 0,
                 memory: 0,
-                size: bytes.max(4),
+                size,
                 allocated_size: 0,
                 host_visible: flags & 2 != 0,
             };

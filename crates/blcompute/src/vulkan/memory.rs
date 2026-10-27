@@ -1,4 +1,4 @@
-//! 驱动对当前进程各内存堆的估计；不以逻辑资源容量代替驻留或整卡占用。
+//! 原生物理缓冲尺寸与驱动内存堆估计；不以逻辑资源容量代替原生能力或驻留。
 use super::*;
 
 #[derive(Clone, Debug)]
@@ -11,6 +11,41 @@ pub struct MemoryHeapBudget {
 #[derive(Clone, Debug)]
 pub struct MemoryBudget {
     pub heaps: Vec<MemoryHeapBudget>,
+}
+
+#[repr(C)]
+struct BufferProperties {
+    kind: u32,
+    next: *mut c_void,
+    max_size: u64,
+}
+
+pub(super) fn max_buffer_size(
+    owner: &InstanceOwner,
+    physical: VkPhysicalDevice,
+    api_version: u32,
+) -> Result<Option<u64>> {
+    if api_version < ((1 << 22) | (3 << 12)) {
+        return Ok(None);
+    }
+    let mut buffer = BufferProperties {
+        kind: 1000413001,
+        next: null_mut(),
+        max_size: 0,
+    };
+    let mut properties = VkPhysicalDeviceProperties2 {
+        kind: 1000059001,
+        next: (&mut buffer as *mut BufferProperties).cast(),
+        base: zero(),
+    };
+    unsafe {
+        let get: unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties2) =
+            owner
+                .library
+                .get(owner.instance, c"vkGetPhysicalDeviceProperties2")?;
+        get(physical, &mut properties);
+    }
+    Ok(Some(buffer.max_size))
 }
 
 #[repr(C)]

@@ -609,7 +609,15 @@ bottom_level_device／bottom_level_device_updatable／refit_bottom_level_device 
 
 普通数据页具有原传输用途，没有 AS_BUILD_INPUT_READ_ONLY 用途。ray_input_device 因而沿原 Transfer Execution 将真实记录页按逻辑次序复制为连续、自有的原生 AS 输入；保留实际 stride 与 primitive 编号，不为所有普通分配追加 AS 用途，也不拆分 geometry。生产者写入到复制读取、复制写入到 AS 读取各用原队列内存依赖。被消费的源存储交给复制完成点，原生输入交给 AS 完成点；冻结来源直接传 binding()，共享持有与退出沿原 Owned／Read 入口处理。
 
-GPU／CPU 几何可在满足原 UPDATE 形状时交接，顶点 stride 可随本次真实输入变化；原 AS 保持原快照，更新仍持有旧 source 到实际完成。Vulkan 输入地址、用途与更新条件见 [三角形数据](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryTrianglesDataKHR.html) 和 [构建／更新](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html)。两千多万索引压力下的分配失败／设备丢失保留为未解决记录，不添加容量钳制、重试或自动重建，详见 Issues 本轮原生记录。
+GPU／CPU 几何可在满足原 UPDATE 形状时交接，顶点 stride 可随本次真实输入变化；原 AS 保持原快照，更新仍持有旧 source 到实际完成。Vulkan 输入地址、用途与更新条件见 [三角形数据](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryTrianglesDataKHR.html) 和 [构建／更新](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html)。大索引压力已查明存在超出实际 maxBufferSize 的原生请求，按下节修正；容量内的核显 AS 压力问题仍开放，原始失败记录保留。
+
+## 原生缓冲尺寸与逻辑数据域（2026-10-27）
+
+VkBufferCreateInfo::size 不得超过物理设备报告的 maxBufferSize，这是 Vulkan 缓冲对象的真实边界，见 [缓冲创建约束](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferCreateInfo.html)。原逻辑设备 Inner 在创建时取得 Vulkan 1.3 核心提供的该属性并持有唯一事实；Allocation::new 在调用 vkCreateBuffer 前对实际物理缓冲请求报告不支持，错误包含请求字节数、设备属性值与用途。不固定 2 GiB，不从总显存、动态预算、primitive 数量或经验值推导阈值，不建立额外审核、回收、重试或替代分配链。
+
+该属性约束单个物理 VkBuffer，不是 B dataset、u32 记录域或 CPU 连续存储的逻辑上限。原 GPU 数据页继续按其已有布局分配，逻辑域可以跨多个合法物理缓冲；本轮两 GPU 均完整执行并读回 272629760 条 stride 16 记录、4362076160 字节、17 页。当前 AS 及其原生输入／scratch 需要各自的连续物理缓冲，native size query 超出该设备能力时明确不支持，不缩小 AS、不拆 geometry 改 primitive 编号，也不将原错误写成成功。Vulkan 1.2 下未取得该核心属性时保持未知，原生返回值仍如实处理；不把缺失属性伪造成 0、无限或另一台设备的值，也不提高已有 Vulkan 1.2 最低要求。
+
+本机两 GPU 报告的 maxBufferSize 均为 2147483648，而 22369623 个三角形的 AS 请求分别为 4073406300 与 3638792616 字节，旧成功创建／查询不能作为合法容量证明。尺寸越界已在原资源入口修正；核显八百万三角形在各缓冲均处于该范围内时仍出现设备丢失及 Watchdog 141，CPU 输入亦复现，故压力问题未全部解决。该事实不导出固定 primitive 容量或超时参数，不修改系统 TDR、构建偏好或选择另一设备掩盖失败；原生记录及其剩余范围见 Issues。
 
 ## 直接生产依赖与完成后的资源归还（2026-10-27）
 
