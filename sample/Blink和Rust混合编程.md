@@ -20,9 +20,9 @@ Rust 程序可以读取文件、响应输入、管理对象；其中需要大量
 
 书中的命令均在 Blink 仓库根目录执行，直接写出 exe 路径。每个 exe 都是一个有具体用途的示例程序。源码在 sample/hybrid 中，不需要另外安装 BLEngine 或配置 P4。
 
-后半部分摘读 BLEngine 截至 P4 CL12965 的已提交实现。B 算法保留计算与所需导入文件；当前可编译副本仅将旧 program 声明迁移为统一 void 函数；Rust 节选省去计时等与当节无关的部分，逐段说明省略了什么。完整示例与引擎节选会分别标明。
+书中的独立教学模块以仓库现行 sample/hybrid 为准，采用当前统一函数语法，并由本轮 Blink Release 工具实际编译。它们演示粒子、变换、GGX 与图像组合；当前 BLEngine 的完整场景、Stella 和资源交接另见《BLEngine 源码分析》。Rust 节选省去与当节无关的计时或界面部分，完整示例注明真实路径。
 
-版本：2026 年 10 月 25 日。运行环境为 Windows x64，Blink v0.1。原始运行记录保存在 sample/hybrid/运行记录.txt，源码出处见同目录的 BLEngine摘录来源.md。
+版本：2026 年 10 月 27 日。运行环境为 Windows x64，Blink v0.1。原始运行记录保存在 sample/hybrid/运行记录.txt，源码出处见同目录的 BLEngine摘录来源.md。
 
 ## 1　让 Rust 调用一个 B 算法
 
@@ -132,16 +132,19 @@ cargo build --workspace --release
 
 这条 cargo 命令构建 Blink 工具链。完成后，Blink 编译器位于 target/release/blc.exe。下面一直在这个 Blink 目录中操作。
 
-### 1.7　第一条编译命令：把 B 做成 DLL
+### 1.7　编译与链接：把 B 做成 DLL
 
 ```powershell
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample/hybrid/first/numbers.b `
-    target/hybrid/numbers.dll `
-    sample/hybrid/first transform
+    -o target/hybrid/numbers.obj `
+    -I sample/hybrid/first --program transform
+.\target\release\bllink.exe `
+    target/hybrid/numbers.obj `
+    -o target/hybrid/numbers.dll
 ```
 
-从左到右读它：调用 Blink 编译器，生成 DLL；输入是 numbers.b；输出是 numbers.dll；从 sample/hybrid/first 查找模块；选择 transform 这个入口。
+第一步由 Blink 编译器读取 numbers.b，从 sample/hybrid/first 查找模块，选择 transform 入口并输出已编译的 numbers.obj；第二步由 bllink 链接该目标文件，生成 numbers.dll 和配套接口。链接阶段不重读 B 源码、不生成 B 机器码，也不调用 Cargo 或 rustc。
 
 编译器同时读取同目录的 numbers.h，并生成以下文件：
 
@@ -154,7 +157,7 @@ cargo build --workspace --release
 
 这些文件不需要手写。numbers.b 决定算法；生成的 numbers.rs 让 Rust 知道怎样调用这个库。创建 Program 时，库会准备相应的 CPU 机器码或 GPU 程序。
 
-### 1.8　第二条编译命令：生成 Rust exe
+### 1.8　构建宿主：生成 Rust exe
 
 ```powershell
 rustc --edition=2024 `
@@ -192,9 +195,9 @@ numbers.exe 和 numbers.dll 放在同一输出目录，运行时由 Windows 加�
 
 ### 2.1　run 怎样找到 transform
 
-main.rs 调用的是 numbers::Program::run，B 中的入口却叫 transform。二者的联系来自上一章的 build-dll 命令。
+main.rs 调用的是 numbers::Program::run，B 中的入口却叫 transform。二者的联系来自上一章编译时的 --program transform 与随后的独立链接。
 
-命令末尾已经选定 transform。生成的这个 DLL 只导出该具体入口的调用接口，numbers.rs 中的 Program 也对应它。因此 run 执行的就是选中的 transform，不会按文件名猜一个函数。
+编译命令的 --program 已经选定 transform。生成的这个 DLL 只导出该具体入口的调用接口，numbers.rs 中的 Program 也对应它。因此 run 执行的就是选中的 transform，不会按文件名猜一个函数。
 
 三个名字分别说明不同事情：numbers 是这组算法和生成库的名字；transform 是 B 中的入口；numbers.exe 是我们最后运行的应用程序。
 
@@ -1260,7 +1263,7 @@ if let Err(e) = self.finish() {
 
 现在已有几何、实例、相机、光源和纹理。渲染需要根据相机发出光线，找到表面，计算颜色，再形成显示像素。
 
-本章阅读 BLEngine CL12965 的一帧入口。它比前面的独立示例多了几何求交所需的加速结构。下一章则提供一个下载 Blink 后就能运行的完整图像程序，不要求先写出整个引擎。
+本章阅读随书维护的 Programs/render/frame.b 教学入口。它比前面的独立示例多了几何求交所需的加速结构。下一章则提供一个下载 Blink 后就能运行的完整图像程序，不要求先写出整个引擎。
 
 ### 12.2　先检查这个 B 入口
 
@@ -1324,7 +1327,7 @@ Rust 只调用这个组合后的入口。它不用在 trace 和 resolve 之间�
 
 scene 和 overlay_scene 是光线查询用的加速结构，albedos 是纹理数组。它们不是普通 Dataset，需要放在相应资源列表中。
 
-下面摘自引擎 src/output.rs。datasets 已按上表排列；inputs 保存当前场景的设备资源，values 保存 floor_present 等普通参数：
+对这个教学入口，datasets 按上表排列；inputs 保存设备资源，values 保存 floor_present 等普通参数。使用当前 blcompute 接口的同步交接写法如下：
 
 ```rust
 let done = self.program.submit(
@@ -1343,13 +1346,29 @@ Bindings 的三组资源分别对应数据集、加速结构和纹理。std::mem
 
 ### 12.6　计算完成后继续使用这些资源
 
-submit 使用的模型、纹理和图像在 GPU 运行时需要一直保留。wait 返回以后，引擎从 done 取回数据和加速结构，下一帧继续使用。
+submit 使用的模型、纹理和图像在 GPU 运行时需要一直保留。wait 返回以后，这个同步示例从 done 取回数据和加速结构，下一次调用继续使用。
 
 ![图 12-2　准备、执行、完成后继续使用。](figures/hybrid-return.svg)
 
 *图 12-2　Rust 传递资源对象；B 计算相应图像。完成后可以复用存储。*
 
 显示窗口可以直接使用设备结果；写图片文件时才下载 display。此时下载的是最后的显示像素，不是全部内部颜色、模型和材质。
+
+当前 BLEngine 的真实异步入口位于 src/output.rs:221，直接引用场景所有者的加速结构与材质纹理，并交付独立完成对象：
+
+```rust
+let submitted = self.program.submit(
+    Bindings {
+        datasets,
+        accelerations: scene.accelerations.clone(),
+        textures: inputs.materials.textures.clone(),
+    },
+    &values,
+)?;
+let (bindings, _, completion) = submitted.detach();
+```
+
+BLRenderSubmission 持有 completion 和本次视图 snapshot；detach 交还绑定并不代表 GPU 已完成。真实资源保持到消费者完成，设备完成与下载分别处理。完整执行案例和当前参数布局见《BLEngine 源码分析》。
 
 ## 13　完整项目：生成一幅一百万像素的材质图
 
@@ -1571,7 +1590,7 @@ cargo build --release `
 
 | 做法 | 怎样使用 | 适合的情况 |
 |---|---|---|
-| blc build-dll | 先生成库，再由 Rust/C++ 链接调用 | 给已有项目交付一个数组算法 |
+| blc -c／bllink | 先生成库，再由 Rust/C++ 链接调用 | 给已有项目交付一个数组算法 |
 | blanguage、blcompute | 在 Rust 中加载 B，直接创建和传递资源 | 连续 GPU 计算、共享纹理和复杂步骤组合 |
 
 第一章已经完整演示 DLL。第三章以后使用原生 API，是为了把上传、设备数据和等待都写出来。两种方式都保留，按项目需要选择。
@@ -1585,9 +1604,12 @@ numbers.dll 同时生成 numbers.abi.h 和 numbers.lib。C++ 通过生成头文�
 仓库里的 sample/interop/map.cpp 提供了完整例子；下列命令在 Blink 根目录运行：
 
 ```powershell
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample/lessons/map.b `
-    target/interop/map.dll sample scale
+    -o target/interop/map.obj `
+    -I sample --program scale
+.\target\release\bllink.exe `
+    target/interop/map.obj -o target/interop/map.dll
 
 cl /nologo /utf-8 /EHsc `
     /I target/interop `
@@ -1601,7 +1623,7 @@ cl /nologo /utf-8 /EHsc `
 
 输出为 3 5 7 9。编译 B 的是 blc，编译 C++ 调用方的是 cl。Rust 和 C++ 都可以作为正式调用方；Rust 仍可直接使用原生 crate。
 
-B 源码当前没有任意导入 Rust 或 C++ 函数的语法。现阶段由 Rust/C++ 应用调用 B，取得结果后再调用各自的其他库。更完整的接口说明见 Docs/NativeInterop.md。
+B 的普通 CPU 应用已支持通过 extern "C" 声明调用 Windows x64 DLL 的 C 导出；Rust 与 C++ 可以各自按 C ABI 导出函数。普通值、位置借用与连续布局合同有明确边界，不直接导入语言对象或普通 Rust ABI。完整范围见 Docs/NativeInterop.md。
 
 ### 14.4　把只需准备一次的东西留下来
 
@@ -1639,10 +1661,13 @@ cargo build --workspace --release
 ### A.2　编译第一个 DLL，运行 CPU 和 GPU 版
 
 ```powershell
-.\target\release\blc.exe build-dll `
+.\target\release\blc.exe -c `
     sample/hybrid/first/numbers.b `
-    target/hybrid/numbers.dll `
-    sample/hybrid/first transform
+    -o target/hybrid/numbers.obj `
+    -I sample/hybrid/first --program transform
+.\target\release\bllink.exe `
+    target/hybrid/numbers.obj `
+    -o target/hybrid/numbers.dll
 
 rustc --edition=2024 `
     sample/hybrid/first/main.rs `
@@ -1691,7 +1716,7 @@ GPU 例子需要驱动提供所需 Vulkan 能力。执行失败会返回错误�
     'materials<10000,1000>'
 ```
 
-本书固定的源码中，prepare 和 shade 形成两个源步骤，优化后合成一个执行 Map 阶段。完整图像 image 也可用相同 check 形式查看。
+本书现行教学模块中，prepare 和 shade 形成两个源步骤，优化后合成一个执行 Map 阶段。完整图像 image 也可用相同 check 形式查看。
 
 ### A.5　原始输出放在哪里
 
@@ -1719,7 +1744,7 @@ sample/hybrid/运行记录.txt 保留图表使用的原始终端输出。第十�
 
 模型 view 来自 BLEngine 的 render/trace.h 与 src/scene.rs；文件读取来自 src/geometry_io.rs；一帧资源调用来自 src/output.rs 和 render/frame.b。
 
-BLEngine摘录来源.md 列出各个文件的修订和 SHA256。B 节选固定为截至 CL12965 的已提交源码；Programs 下同时保留它需要导入的其他模块，方便独立编译。
+BLEngine摘录来源.md 列出各个文件的修订和 SHA256。该清单记录教学模块的最初来源与本轮文件 SHA256；现行 Programs 使用当前语言接口，并同时提供所需导入文件，直接由最新版编译器编译。
 
 Programs/book 是为这些例子准备输入和连接步骤的小模块。实际 GGX、粒子更新、场景变换和显示转换仍使用引擎实现。
 
@@ -1733,4 +1758,4 @@ Copyright (c) 2026 Blink contributors。引擎摘录 Copyright (c) 2026 BLEngine
 
 ## 本版统一函数接口
 
-B 计算入口使用统一 void 函数定义，parallel 及原数据访问不变。Rust 的 Program、compile_entry、同步run与异步submit仍消费同一算法产物，不要求换一套宿主接口；--program是产物入口选项。B应用使用target选择本次CPU／GPU位置，同步GPU返回与显式下载分别完成计算与传输。普通函数的独立原生调用／模块契约、递归和一般异步应用语法仍待完成。原始运行记录与摘录出处保留实际版本，不把本次声明迁移写成重新取得全部旧性能或画面。
+B 计算入口使用统一 void 函数定义，parallel 及原数据访问不变。Rust 的 Program、compile_entry、同步run与异步submit仍消费同一算法产物，不要求换一套宿主接口；--program是产物入口选项。B应用使用target选择本次CPU／GPU位置，同步GPU返回与显式下载分别完成计算与传输。普通 CPU 原生调用、递归与有限独立模块已经实现；完整模块／资源契约及一般异步应用语法仍待完成。原始性能记录注明真实来源和测量范围；当前编译与 CPU／GPU 调用结果分别记录。

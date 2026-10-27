@@ -1,7 +1,5 @@
 # BLEngine 源码分析
 
-本轮版本提示（2026-10-27）：当前 Blink 已统一普通与计算函数，源 program 声明改为返回类型（无值为 void），parallel 仍显式；应用用 target(cpu, ...)／target(gpu, ...) 选择位置，GPU 同步返回与显式下载分开。纯接口.h不再需要空.b。本书仍解读下述固定历史版本，源码节选及原生记录保留原文；当前规范和能力状态见 Docs/BLanguage.md 与 Docs/Issues.md。
-
 从数学、场景到一帧图像
 
 ## 写在前面
@@ -12,7 +10,7 @@
 
 本书从向量开始。先用能手算的数字解释坐标和变换，再进入相机、裁剪、场景树和几何资产；随后沿真实命中进入材质、阴影、反射、折射与介质，最后回到 GPU 执行、资源寿命和窗口。读者可以依照这个顺序学习，也可以通过目录和源码索引回到某个具体函数。
 
-分析对象固定为 **BLEngine P4 CL13031**，配套原生执行使用 **Blink P4 CL13046**。源码修订和 SHA256 记录在 `engine/源码版本索引.json`。节选保留真实函数名与计算；省略外围部分时明确标出。书中的数学推导是解释，代码框中的源码节选才是该版本的具体实现。
+本版按修订时已提交的 **BLEngine P4 CL13541** 与 **Blink P4 CL13553** 阅读和运行当前实现。源码修订、SHA256 与重新取得的节选行号在 `engine/源码版本索引.json`；示例采用当前返回类型函数定义和正式执行接口。数学推导用于解释，代码框标明实际源码位置，运行记录来自本轮 Release 产物。
 
 Blink 语言简称 B 语言，B 也寓意 Base。开源项目地址为 https://github.com/sgua83/Blink 。Blink 拥有语言、编译器与通用 CPU/GPU 执行框架；BLEngine 在其上实现引擎。当前 BLEngine 源码由独立 P4 工程管理，尚未随 Blink 仓库完整公开；本仓库提供书稿、获准摘录的源码和阅读场景，不能把下载 Blink 等同于取得完整引擎。
 
@@ -203,7 +201,7 @@ float3x3 mesh_normal_basis(float3x4 world_to_object) on compute {
 源码：`Programs/stella/surface.b:17`。
 
 ```b
-float2 surface_uv(BLInstance instance, u32 primitive, float2 barycentric) on compute {
+float2 surface_uv(BLShadingInstance instance, u32 primitive, float2 barycentric) on compute {
     BLTextureTriangle triangle = unsafe_read(instance.texcoords, primitive);
     f32 u = barycentric.x;
     f32 v = barycentric.y;
@@ -243,7 +241,7 @@ BLCamera camera_basis(float3 eye, float3 target, float3 up, f32 span, u32 projec
 
 图像的左上角是像素 `(0,0)`，三维相机的“上”却通常取正方向。`stella.visibility::pixel_ray` 在像素中心取样，横向映射到 `[-1,1]`，纵向反过来映射到 `[1,-1]`；横向还乘宽高比，防止宽屏把物体压扁。
 
-源码：`Programs/stella/visibility.b:2`。
+源码：`Programs/stella/visibility.b:6`。
 
 ```b
 BLRay pixel_ray<const W:u32,const H:u32,const S:u32>(read dataset<BLCamera> cameras,u32 pixel,u32 layer) on compute {
@@ -295,7 +293,7 @@ BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
 源码：`Programs/scene/camera.b:18`。
 
 ```b
-program orbit(write dataset<BLCamera,1> cameras,
+void orbit(write dataset<BLCamera,1> cameras,
     float3 eye, float3 target, float3 up, f32 span, u32 projection, f32 near, f32 far, u32 medium,
     f32 yaw, f32 pitch, f32 distance) on compute {
     parallel (camera in cameras) {
@@ -360,7 +358,7 @@ p(t) = origin + t * direction
 BLMeshHit mesh_intersect(BLMeshRay ray,read dataset<BLInstance> instances,read acceleration scene,u32 base) on gpu {
     RayHit hit=trace_closest(scene,ray.origin,ray.near,ray.direction,ray.far);
     if(!hit.exists){
-        return BLMeshHit(float3(0.0),ray.far,float3(0.0),0,float2(0.0),uint2(0),0,false,float3(0.0));
+        return BLMeshHit(float3(0.0),ray.far,float3(0.0),0,float2(0.0),uint2(0),0,false,uint2(0),float3(0.0));
     }
     u32 instance=base+hit.instance;
     float3x3 basis=mesh_normal_basis(hit.world_to_object);
@@ -368,7 +366,7 @@ BLMeshHit mesh_intersect(BLMeshRay ray,read dataset<BLInstance> instances,read a
     float3 local=hit.vertex0*(1.0-hit.barycentric.x-hit.barycentric.y)+
         hit.vertex1*hit.barycentric.x+hit.vertex2*hit.barycentric.y;
     return BLMeshHit(ray.origin+ray.direction*hit.distance,hit.distance,normal,hit.primitive,
-        hit.barycentric,unsafe_read(instances,instance).identity,instance,true,local);
+        hit.barycentric,unsafe_read(instances,instance).identity,instance,true,unsafe_read(instances,instance).geometry,local);
 }
 ```
 
@@ -382,7 +380,7 @@ BLEngine 可以给独立 overlay 空间使用另一台相机和另一份顶层�
 
 当前尚无独立场景视锥剔除器、遮挡层级或 GPU 可见实例压紧管线。硬件 AS 能加速射线查询，但不能据此说整个引擎已经具备完整场景可见性系统。
 
-作为理论对照，传统视锥可以由六张朝内的平面表示。若平面写成 `dot(n,p)+d≥0`，且 n 是单位法线，一个中心 c、半径 r 的球在某平面满足 `dot(n,c)+d<-r`，便整个落在外侧，可以提前排除。与平面相交的球仍须保留，不能只检查球心是否在内部。这说明“范围描述”和“批量对象剔除”之间还需要实际算法；固定版本尚未实现这份场景剔除计算。
+作为理论对照，传统视锥可以由六张朝内的平面表示。若平面写成 `dot(n,p)+d≥0`，且 n 是单位法线，一个中心 c、半径 r 的球在某平面满足 `dot(n,c)+d<-r`，便整个落在外侧，可以提前排除。与平面相交的球仍须保留，不能只检查球心是否在内部。这说明“范围描述”和“批量对象剔除”之间还需要实际算法；当前实现尚未实现这份场景剔除计算。
 
 ## 第七章 场景组织：树保存关系，矩阵解释关系
 
@@ -401,7 +399,7 @@ BLEngine 可以给独立 overlay 空间使用另一台相机和另一份顶层�
 源码：`Programs/scene/hierarchy.b:9`。
 
 ```b
-program resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform> worlds) on compute {
+void resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform> worlds) on compute {
     parallel(world in worlds) {
         BLHierarchyNode node=unsafe_read(nodes,index());
         float3x4 matrix=node.local;
@@ -443,7 +441,7 @@ program resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransfo
 源码：`Programs/scene/components.b:29`。
 
 ```b
-program evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
+void evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
                  read dataset<BLAttachedCamera> local_cameras,write dataset<BLSceneCamera> world_cameras,
                  read dataset<BLAttachedLight> local_lights,write dataset<BLLight> world_lights) on compute {
     resolve(nodes,worlds);
@@ -467,7 +465,7 @@ program evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransf
 源码：`Programs/scene/device.b:9`。
 
 ```b
-program prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
+void prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
                 read dataset<BLDrawNode> draws,inout dataset<BLDeviceTransform> transforms) on compute {
     resolve(nodes,worlds);
     gather(worlds,draws,transforms);
@@ -476,7 +474,7 @@ program prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransfo
 
 这个顺序很具体：`resolve` 产生 worlds，`gather` 消费 worlds。框架负责两段之间的设备可见性。Rust 不需要把所有矩阵先读回 CPU，再重新上传到 TLAS。
 
-固定版本的设备入口仍挂在 `BLSceneRenderer` 上，使用单一 TLAS；它还不是完全独立的 GPU 场景对象，也没有实现 refit 和脏子树。书中对源数据和资源所有者的分析以这个版本为准。
+当前 `BLGpuScene` 拥有几何、GPU 实例变换与本次加速结构，`BLRenderScene` 引用本次 AS 及 `BLShadingSource`；`BLSceneRenderer` 拥有照明与程序。普通查询不要求初始化渲染材质。Blink 已有明确 refit 接口，实际场景采用、局部更新与完整流送仍应按各自消费者判断。
 
 ## 第九章 资产：让文件中的模型变成引擎数据
 
@@ -517,7 +515,7 @@ let index = if let Some(index) = lookup.get(&key) {
 | `.blmat` | 图像、表面、介质、默认组绑定和地面材质 | `src/material.rs` |
 | `.bltex` | 线性图像与 mip 数据 | Blink `blcompute` 的纹理读写 |
 
-当前格式分别为 BLGEOM 2、BLSCENE 7、BLMAT 2、BLTEX 1。格式版本是实际数据协议，不是渲染质量等级。当前开发版本不提供旧版本自动转换链，源材料应按当前明确格式重新 cook。
+当前写出格式分别为 BLGEOM 2、BLSCENE 8、BLMAT 2、BLTEX 2。格式版本是实际数据协议，不是渲染质量等级。当前开发版本不提供旧版本自动转换链，源材料应按当前明确格式重新 cook。
 
 ### 9.3 相对路径要从所属文件算
 
@@ -543,7 +541,7 @@ let index = if let Some(index) = lookup.get(&key) {
 
 *图 10-1：两个实例共享一个 BLAS，但各有世界变换和材质选择。着色属性表与原生 AS 是不同资源。*
 
-`src/scene.rs::insert` 把原位置和三角形交给 `Device::bottom_level`，同时建立着色需要的三角形法线索引、法线记录和可选 UV。`instances` 再把 placement 变成 `RayInstance`；`src/render.rs::set_partitioned_instances` 建立世界层和可选独立层的 TLAS。
+BLGpuScene 把原位置、索引与实例变换交给 Blink 的原生 AS 接口；GPU 层级求值可直接产生同一变换输入。BLRenderScene 引用本次加速结构，BLShadingSource 根据实际材质需求持有法线、UV、材质与网格发光属性。世界层和独立层的 AS 按本次场景来源交付，着色不把原场景移出再归还。
 
 这些结构不等于一份手写的 Rust BVH。实际构建和 Vulkan 内存属于 Blink 的 `vulkan/ray.rs`，引擎交付原精度几何和实例关系。B 在命中之后继续解释属性，不接管原生句柄的释放。
 
@@ -551,27 +549,33 @@ let index = if let Some(index) = lookup.get(&key) {
 
 设备构建用的 `BLDeviceTransform` 使用六十四字节步长，其中前四十八字节是三行四列矩阵，剩余部分由框架维护原生实例信息。B 只写自己声明的矩阵字段。
 
-着色用的 `BLInstance` 则保存只读 view、tint 和身份：
+查询身份记录 BLInstance 与着色记录分开。当前 `BLShadingInstance` 保存真实属性 view、tint、几何／属性来源身份，以及网格光使用的位置与索引：
 
-源码：`Programs/scene/instance.h:1`。
+源码：`Programs/render/instance.h:1`。
 
 ```b
-module scene.instance;
+module render.instance;
 struct BLTriangle {array<u32,3> normal_indices;u32 material;};
 struct BLNormal {float3 normal;};
 struct BLTextureTriangle {array<float2,3> coordinates;};
 struct BLMaterialSlot {u32 surface;};
-struct BLInstance {
+struct BLPosition {float3 position;};
+struct BLIndexTriangle stride(12) {array<u32,3> vertices;};
+struct BLShadingInstance {
     view<BLTriangle> triangles;
     view<BLNormal> normals;
     view<BLTextureTriangle> texcoords;
     view<BLMaterialSlot> materials;
     float4 tint;
-    uint2 identity;
+    uint2 identity;uint2 geometry;
+    uint2 attributes;uint2 uv_source;
+    float3 bounds_min;float3 bounds_max;
+    view<BLPosition> positions;
+    view<BLIndexTriangle> indices;
 };
 ```
 
-这里的三角形记录保存的是法线索引和材质组，不再复制硬件已有的每个位置。`view` 指向真正的只读数据。框架保持它所引用的存储，不能把 view 当成一个脱离所有者仍有效的裸数字。
+三角形属性记录保存法线索引和材质组；positions／indices 引用原几何的实际内容，供网格光分布等消费者使用，不是另一份宿主几何镜像。`view` 指向真正的只读数据。框架保持它所引用的存储，不能把 view 当成一个脱离所有者仍有效的裸数字。
 
 ### 10.4 材质组怎样避免破坏共享
 
@@ -614,13 +618,8 @@ ground floor
 
 ```b
 BLSurface surface=unsafe_read(surfaces,material);
-float2 uv=float2(0.0);
-if(surface.uses_uv){
-    uv=position.xy;
-    if(hit.kind==2 || hit.kind==3){uv=surface_uv(unsafe_read(instances,hit.instance),hit.primitive,hit.barycentric);}
-}
-uv=uv*surface.uv_scale+surface.uv_offset;
-float3 color=texture_sample(unsafe_read(textures,surface.texture),uv,surface.lod).xyz*tint;
+float2 uv=surface_coordinates(hit,surface,instances);
+float3 color=(texture_sample(unsafe_read(textures,surface.texture),uv,surface.lod).xyz*surface.color_scale+surface.color_bias)*tint;
 f32 roughness=surface.roughness;
 ```
 
@@ -682,7 +681,7 @@ f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute 
 
 面光的世界位置加上 `[-1,1]` 范围的两条半边得到采样点。若两半边长度各为一且垂直，完整面积是四，不是一。源码中 `area_pdf` 的系数四来自这个定义：
 
-源码：`Programs/lighting/lights.b:44`。
+源码：`Programs/lighting/lights.b:37`。
 
 ```b
 density=area_pdf(light,direction,distance_squared);
@@ -699,15 +698,15 @@ if (density==0.0) { return BLLightSample(direction,float3(0.0),target,true,false
 
 `stella.lighting::light_occluded` 对局部灯把最大距离限制到真实目标；`stella.visibility::occluded` 检查可选地面、其他解析面光与网格 `trace_any`。阴影只需回答有没有遮挡，通常不必拿回最近三角形的全部属性。
 
-源码：`Programs/stella/lighting.b:3`。
+源码：`Programs/stella/lighting.b:80`。
 
 ```b
 bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLightSample sample,f32 near,f32 far,
-    float3 origin,bool floor_present,f32 ground_z,u32 target_light) on gpu {
+    float3 origin,bool floor_present,f32 ground_z,u32 target_light,u32 area_root) on gpu {
     f32 maximum=far;
     if(sample.local){maximum=min(maximum,length(sample.target-origin));}
     return occluded(scene,lights,BLRay(origin,sample.direction),near,maximum,
-        floor_present,ground_z,target_light,sample.local && sample.event==1);
+        floor_present,ground_z,target_light,sample.local && sample.event==1,area_root);
 }
 ```
 
@@ -717,7 +716,7 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 面光有面积，表面上不同采样点会看见不同程度的灯，因此产生半影。采样数少时半影会有噪声；增加采样改变估计精度，也增加实际求交工作量。
 
-有限太阳用角半径定义天空中的圆盘，`sun_direction` 在其立体角内选方向，`sun_emission` 允许相机或反射路径真正看见它。它和单一方向的理想太阳光不同。当前环境其余部分仍为恒定颜色，不是有方向细节的天空贴图或完整大气系统。
+有限太阳用角半径定义天空中的圆盘，`sun_direction` 在其立体角内选方向，`sun_emission` 允许相机或反射路径真正看见它。它和单一方向的理想太阳光不同。环境可以是常量或带旋转与缩放的 HDR 图像，B 生成其方向分布并与路径提议共同计算密度；完整大气系统仍未实现。
 
 ## 第十三章 采样：为什么算光照需要概率
 
@@ -731,17 +730,18 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 ### 13.2 随机数从像素和维度得到
 
-源码：`Programs/sampling/random.b:10`。
+源码：`Programs/sampling/random.b:17`。
 
 ```b
-f32 sample_unit(u32 key,u32 dimension) on compute {
-    return f32(sample_hash(key^sample_hash(dimension))&0x00ffffff)/16777216.0;
+    BLRandomStream stream=sample_stream(address,dimension);
+    uint4 words=sample_next(stream);
+    return float3(f32(words.x>>8),f32(words.y>>8),f32(words.z>>8))/16777216.0;
 }
 ```
 
-键和采样维度经过整数哈希，低二十四位映射到 `[0,1)`。不同方向分量、路径顶点和自由程使用明确维度或独立流，不依赖各工作项抢一个全局随机状态。
+调用者交付 BLSampleRound 的 key 与 ordinal，sample_address 由路径编号和顶点建立实际采样地址；sample_stream 再按维度产生计数器流。sample_unit3 把生成字的高二十四位映射到 `[0,1)`。不同用途通过明确地址和维度区分，不依赖共享的全局随机状态。
 
-这样每个像素可以独立工作，也便于复现。当前 `frame` 使用固定种子零，没有跨帧递增样本和时序历史；连续渲染相同静态输入，不会自动获得越来越多的新样本来消除噪声。
+采样轮次由实际消费者传入。静态输入、相同轮次与相同采样地址可复现；新的轮次产生新样本。当前 BLImageMean 保存线性均值和样本计数，BLViewHistory 由真实视图拥有，并按相机与光照来源的适用关系延续或重启。稳定身份或同一像素不自动证明旧照明可复用。
 
 ### 13.3 weight 已经包含哪些量
 
@@ -817,7 +817,7 @@ surface clear dielectric 0 0 vacuum glass 0 1 1 0 0
 
 `stella.surface::surface_at` 用真实几何法线判断当前处在边界哪侧，再交付目标介质；`surface_medium` 只有在路径穿过几何边界时切换编号：
 
-源码：`Programs/stella/surface.b:85`。
+源码：`Programs/stella/surface.b:103`。
 
 ```b
 u32 surface_medium(BLStellaSurface surface,float3 direction) on compute {
@@ -862,7 +862,7 @@ float3 medium_transmittance(BLMedium medium,f32 distance,bool infinite) on compu
 
 `material.medium::medium_sample` 以 RGB 消光的均匀混合提出距离：选一个通道，计算 `s=-log(1-u)/rate`。若发生散射，权重为 `Tr*sigma_s/PDF`；否则用生存概率补偿到达表面的权重。纯吸收没有必要随机造一次碰撞，直接计算确定性透过率。
 
-源码：`Programs/stella/volume.b:6`。
+源码：`Programs/stella/volume.b:2`。
 
 ```b
 BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,float2 random,bool overlay) on compute {
@@ -903,22 +903,41 @@ BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,fl
 
 ### 16.2 integrate 的主干
 
-`Programs/stella/transport.b::integrate` 对每个内部像素独立执行：先求主命中和第一段介质传播，得到第一份辐亮度；随后在预算内反复散射、遍历、累计。下面保留循环的真实主干：
+`Programs/stella/transport.b::integrate` 为每个内部像素建立主命中与采样地址，再由 path_radiance 累计路径贡献。当前主循环按真实事件和俄罗斯轮盘推进，下面保留初始化及循环主干：
 
-局部节选，外围未列出：`Programs/stella/transport.b:43`。
+局部节选，外围未列出：`Programs/stella/transport.b:35`。
 
 ```b
-u32 round=0;
-while(round<segments && path.active){
-    path=scatter_hit<N>(path,instances,surfaces,settings,media,textures,ground,seed,round);
+float3 radiance=float3(0.0);
+f32 initial_ior=unsafe_read(media,initial.medium).ior;
+u32 vertex=0;
+bool illuminate=true;
+bool primary=true;
+while(illuminate){
+    float3 contribution=path.throughput*hit_radiance<N,G>(path,instances,surfaces,lights,distribution,candidates,cells,directions,guiding_cells,media,
+        scene,overlay_scene,textures,environment,emitters,mesh_lights,mesh_domains,settings,floor_present,ground_z,ground,overlay_start,address,
+        primary,fill && primary,sampling);
+    if(primary){radiance=contribution;}else{radiance+=contribution;}
+    primary=false;
+    illuminate=path.active;
     if(path.active){
-        path=traverse_path(path,settings,lights,media,scene,overlay_scene,
-            floor_present,ground_z,overlay_start,seed,round+1);
-        radiance+=path.throughput*hit_radiance<N>(path,instances,surfaces,lights,media,
-            scene,overlay_scene,textures,settings,floor_present,ground_z,ground,path.path^seed,
-            (round+1)*5+3,round+1<segments,false);
+        if(vertex>=roulette_start){
+            f32 relative_ior=unsafe_read(media,path.medium).ior/initial_ior;
+            f32 probability=path_survival(path.throughput,relative_ior,maximum_survival);
+            if(sample_unit3(address,5).x>=probability){return radiance;}
+            path.throughput/=probability;
+        }
+        path=scatter_hit<N,G>(path,instances,surfaces,directions,guiding_cells,settings,media,textures,ground,address);
+        illuminate=path.active;
+        if(path.active){
+            address=sample_address(sample_round,path.path,vertex+1);
+            path.light_density=environment_scatter_pdf(environment,settings,path.direction,path.light_density);
+            path=traverse_path(path,settings,lights,media,scene,overlay_scene,
+                floor_present,ground_z,overlay_start,address);
+        }
     }
-    round+=1;
+    vertex+=1;
+}
 ```
 
 `scatter_hit` 根据事件选择表面散射或体散射；`traverse_path` 查询下一次最近命中，并比较介质自由程；`hit_radiance` 处理环境、可见面光、体事件和普通表面照明。每一层的工作都有明确输入，而不是由一个巨大函数隐式保存全世界状态。
@@ -931,9 +950,9 @@ while(round<segments && path.active){
 
 ### 16.4 有限预算不等于完整实时 GI
 
-`BLTransportSettings.segments` 指定允许的附加路径段数。当前 viewer 选择十六，第一次主命中不计入这十六段。这是该入口的计算预算，不是语言常量或所有场景都足够的物理上限。
+当前传入 roulette_start 与 maximum_survival。达到起始顶点后，path_survival 依据吞吐和相对折射率计算继续概率；被选中继续的路径把吞吐除以该概率，补偿随机终止。路径还会在真实环境、吸收或无有效散射时结束，不能用旧的固定段数描述这段实现。
 
-固定版本已有有限局部多段输运及环境、面光和有限太阳的 MIS。还没有世界采样缓存、跨帧表面历史、重投影和稳定重建；随机种子也固定。不能把“有间接光路径”写成“已经达到完整 Lumen 级实时全局光照”。
+当前已有环境图分布、网格发光提议、直接候选和方向统计／引导等计算，路径消费实际提议与混合密度。视图历史、线性均值和可见性分别由明确消费者持有；候选复用不等于复用旧 RGB，也不等于独立样本数增加。完整时序重建、产品视觉与实时效率目标仍未完成。
 
 ## 第十七章 图像形成：线性光怎样变成屏幕像素
 
@@ -941,12 +960,12 @@ while(round<segments && path.active){
 
 `Programs/render/frame.b` 的程序体很短：
 
-程序体节选：`Programs/render/frame.b:18`。
+程序体节选：`Programs/render/frame.b:26`。
 
 ```b
-integrate<N,W,H,S,IC>(pixels,overlays,cameras,instances,surfaces,lights,lighting,media,
-    scene,overlay_scene,textures,floor_present,ground_z,ground,overlay_start,0,Segments);
-resolve<W,H,S,DC,IC>(pixels,display);
+radiance<N,W,H,S,DC,IC,Start,V,Shared,G>(pixels,display,instances,overlays,surfaces,cameras,lights,lighting,media,visible,distribution,candidates,candidate_round,cells,directions,guiding_cells,environment,emitters,mesh_lights,mesh_domains,
+    scene,overlay_scene,textures,flags,ground_z,ground,overlay_start,seed,sample_low,sample_high,direct_samples,mesh_samples,maximum_survival);
+resolve<W,H,S,DC,IC>(pixels,display,overlays);
 ```
 
 第一段 `integrate` 为内部图像计算线性辐亮度，包含可见性、材质、直接光、后续输运和屏幕矩形合成；第二段 `resolve` 把内部图像变成显示图像。这是当前两段设备程序的组织，不是说引擎只有两件事情。
@@ -985,7 +1004,7 @@ Rust 不逐像素调用函数。它调用 `compile_entry` 取得选定入口的�
 
 ### 18.2 常量参数与每次输入有什么区别
 
-当前 frame 的 `N、W、H、S、DC、IC、Segments` 是编译专门化参数：纹理数量、显示尺寸、内部倍率、显示与内部记录数、路径预算。它们影响实际程序和数据布局；相机位置等则是每次绘制交付的数据。
+当前 frame 的 N、W、H、S、DC、IC、Start、V、Shared、G 为专门化参数，分别涉及纹理、输出与内部形状、轮盘起点、可见性记录、共享候选及引导配置；实际含义以公开接口为准。seed、sample_low／sample_high 等是本次采样输入，相机和材质等由实际资源绑定交付。
 
 同规格输出能共享已编译程序，不同规格输出由 `create_output` 选择相应专门化程序。这比在每个像素里反复询问图像规格更直接，但不代表窗口尺寸变化已经完整实现。编译入口和窗口重建是不同职责。
 
@@ -993,26 +1012,23 @@ Rust 不逐像素调用函数。它调用 `compile_entry` 取得选定入口的�
 
 frame 中 integrate 写 pixels，resolve 读 pixels。B 编译结果保存这些读写关系，执行框架在实际设备提交中组织阶段和内存可见性。只靠 CPU 先后调用两次函数，并不能自动证明 GPU 已完成前一份写入。
 
-当前 `BLRenderOutput::draw` 的交接如下：
+当前 `BLRenderOutput::submit` 的设备交接如下，draw 在同一提交接口上明确等待：
 
-局部节选，外围未列出：`src/output.rs:138`。
+局部节选，外围未列出：`src/output.rs:221`。
 
 ```rust
-let done = self
-    .program
-    .submit(
-        Bindings {
-            datasets,
-            accelerations: std::mem::take(&mut inputs.accelerations),
-            textures: inputs.textures.clone(),
-        },
-        &values,
-    )?
-    .wait()?;
-let (bindings, accelerations, timings) = done.into_parts();
+let submitted = self.program.submit(
+    Bindings {
+        datasets,
+        accelerations: scene.accelerations.clone(),
+        textures: inputs.materials.textures.clone(),
+    },
+    &values,
+)?;
+let (bindings, _, completion) = submitted.detach();
 ```
 
-`Bindings` 汇合本次真正使用的数据集、加速结构和纹理。`.submit()` 交给设备，`.wait()` 等待这次绘制完成，再把世界输入和输出数据归还各自所有者。
+`Bindings` 汇合本次真正使用的数据集、加速结构和纹理。submit 交给设备；detach 交出绑定与独立完成观察，实际存储仍由最后使用关系持有。BLRenderSubmission 可以稍后等待，原场景来源无需被搬出再归还。显示或 CPU 读取须消费相应依赖，提交返回不能代替 GPU 完成。
 
 ### 18.4 布局由编译结果给出
 
@@ -1068,7 +1084,7 @@ Blink 的 `ExecutionResources` 分别持有计算、传输和 AS 构建需要的
 
 `poll_with` 的核心是：
 
-局部节选，外围未列出：`src/window.rs:279`。
+局部节选，外围未列出：`src/window.rs:354`。
 
 ```rust
 let got = PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, 1);
@@ -1132,7 +1148,7 @@ void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, 
 源码：`Programs/simulation/statistics.b:7`。
 
 ```b
-program step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTotal, 1> total, f32 dt, f32 strength) on compute {
+void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTotal, 1> total, f32 dt, f32 strength) on compute {
     step(bodies, dt, strength);
     total_energy(bodies, total);
 }
@@ -1144,15 +1160,15 @@ program step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BL
 
 ### 21.3 当前一百万粒子的真实运行
 
-同一固定源、同一初值、一千二百个时间步，Release 原生运行如下。CPU 路径为原生多核 B，GPU 路径使状态驻留设备并在一次提交内推进。
+同一源码与输入、同一初值、一千二百个时间步，Release 原生运行如下。CPU 路径为原生多核 B，GPU 路径使状态驻留设备并在一次提交内推进。
 
 | 口径 | CPU | GPU |
 |---|---|---|
-| 程序内部执行计时 | 1214.745 ms，CPU 墙钟 | 114.413 ms，GPU 设备时间 |
-| total_ms，同一命令计时范围 | 1228.396 ms | 369.908 ms |
+| 程序内部执行计时 | 969.513 ms，CPU 墙钟 | 114.373 ms，GPU 设备时间 |
+| total_ms，同一命令计时范围 | 985.348 ms | 270.554 ms |
 | 总动能输出 | 63477.54 | 63477.547 |
 
-`total_ms` 包含各后端准备、执行、必要传输和输出写入，不包含共同的初值创建。按这一同口径范围，GPU 约为 CPU 的 **3.32 倍**。上行内部计时分别属于 CPU 墙钟和 GPU 时间戳，不能拿它替换同口径端到端加速比。
+`total_ms` 包含各后端准备、执行、必要传输和输出写入，不包含共同的初值创建。按这一同口径范围，GPU 约为 CPU 的 **3.64 倍**。上行内部计时分别属于 CPU 墙钟和 GPU 时间戳，不能拿它替换同口径端到端加速比。
 
 数值结果保留真实浮点差异，不能把近似相等写成逐位相同。并行归约顺序、后端计算和舍入都会影响末位；需要按算法用途分析误差，而不是把日志改成一致。
 
@@ -1189,7 +1205,7 @@ program step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BL
 源码：`Programs/scene/pick.b:36`。
 
 ```b
-program pick<const W:u32,const H:u32>(read dataset<BLNode> nodes, write dataset<BLResult,1> result,
+void pick<const W:u32,const H:u32>(read dataset<BLNode> nodes, write dataset<BLResult,1> result,
              float3 eye, float3 right, float3 up, float3 forward, f32 tangent, float2 pointer) on compute {
     reduce_map(nodes.target,result.hit,bind(intersect<W,H>,eye,right,up,forward,tangent,pointer),no_hit,nearest);
 }
@@ -1197,7 +1213,7 @@ program pick<const W:u32,const H:u32>(read dataset<BLNode> nodes, write dataset<
 
 `nearest` 对相同距离按节点编号排序，保证该选择规则明确。标签的矩形测试在屏幕空间，球的相交在三维空间，二者转换到同一相机射线距离后比较。
 
-第六章的 `scene.query` 则查询真实三角形 AS。固定版本尚未把全部消费者选择迁移到通用网格查询；“引擎已有 API”不能写成“编辑器已经使用并完成”。
+第六章的 `scene.query` 则查询真实三角形 AS。当前实现尚未把全部消费者选择迁移到通用网格查询；“引擎已有 API”不能写成“编辑器已经使用并完成”。
 
 ### 22.5 标签布局也有可读的算法代价
 
@@ -1256,13 +1272,13 @@ Copy-Item `
 
 ![原生运行记录](figures/engine-book-run.svg)
 
-*图 23-1：固定源码 Release 原生日志排印，非终端截屏。GPU 两段时间分别来自 integrate 与 resolve；完整原始记录见 engine/运行记录.txt。*
+*图 23-1：本轮源码 Release 原生日志排印，非终端截屏。GPU 两段时间分别来自 integrate 与 resolve；完整原始记录见 engine/运行记录.txt。*
 
-实际设备为 AMD Radeon RX 9070 GRE。输出是 `3840×2160`，内部为 `7680×4320`。一次 frame 的 GPU 程序跨度为 **46.898 ms**，两段时间为 **45.45448、1.41876 ms**；绘制、读回和写文件合计 **180.977 ms**。此范围不含前面的场景加载、源程序编译及资源准备，也不是窗口产品帧率。
+实际设备为 AMD Radeon RX 9070 GRE。输出是 `3840×2160`，内部为 `7680×4320`。一次 frame 的 GPU 程序跨度为 **227.346 ms**，两段时间为 **225.6618、1.4352 ms**；绘制、读回和写文件合计 **304.961 ms**。此范围不含前面的场景加载、源程序编译及资源准备，也不是窗口产品帧率。
 
 ![主相机完整帧](figures/engine-frame.png)
 
-*图 23-2：本次固定源码原生 PPM 转换的完整 4K 输出。两个物体共用一个立方体模型；左侧使用棋盘表面，右侧选择蓝色表面。PDF 按页面缩放展示，配套 PNG 保留原分辨率。*
+*图 23-2：本轮源码原生 PPM 转换的完整 4K 输出。两个物体共用一个立方体模型；左侧使用棋盘表面，右侧选择蓝色表面。PDF 按页面缩放展示，配套 PNG 保留原分辨率。*
 
 模型只有十二个三角形，这份画面用于观察关系与代码结果，不是超高精度字形、天然玉石或大型场景的品质与性能证明。
 
@@ -1275,13 +1291,13 @@ Copy-Item `
   Saved/Scene/views
 ```
 
-场景只加载一次，相机依次绘制到同一输出，文件名为 `camera-<节点下标>.ppm`。本场景相机下标为三和四。两视图 GPU 程序跨度之和为 **98.290 ms**，绘制、读回与文件写入共 **342.771 ms**。
+场景只加载一次，相机依次绘制到同一输出，文件名为 `camera-<节点下标>.ppm`。本场景相机下标为三和四。两视图 GPU 程序跨度之和为 **474.113 ms**，绘制、读回与文件写入共 **593.670 ms**。
 
 ![侧相机完整帧](figures/engine-side.png)
 
 *图 23-3：相同世界从第二台相机观察，模型、材质和灯光没有为这张图另建一套。*
 
-还可以执行 `blengine.exe view` 建立单窗口，或执行 `view-views` 为多相机建立多个窗口。当前新记录没有执行这两条交互入口，因此其行为分析来自固定源码，而非本次运行画面的推断。
+还可以执行 `blengine.exe view` 建立单窗口，或执行 `view-views` 为多相机建立多个窗口。当前新记录没有执行这两条交互入口，因此其行为分析来自本轮源码，而非本次运行画面的推断。
 
 ### 23.5 运行模拟并读取计时
 
@@ -1356,7 +1372,7 @@ Copy-Item `
 
 ### 24.4 注释、文档与实际代码的优先顺序
 
-固定源码的 `scene_asset.rs` 顶部注释仍写 v6，实际 `const VERSION` 已为七，读写字段也含起始介质。遇到这种情况，应对照常量、解析和实际文件，而不是只照抄注释。
+当前 scene_asset.rs 的 MAGIC、VERSION、源解析和写出共同定义 BLSCENE 8。阅读材料使用 BLSCENE_SOURCE 8，环境与补光各自声明；相机与材质的介质编号也按真实接口交付。格式字段应对照当前解析与写出源码。
 
 源码分析同样不能只复述问题列表。每个能力应回到定义、调用者和原生执行范围：函数存在表示有实现，实际入口调用才说明接通，运行日志说明运行过，最终产品效果仍需对应场景验证。
 
@@ -1364,14 +1380,14 @@ Copy-Item `
 
 ### 25.1 先用全景图定位，再判断实现程度
 
-| 领域 | 固定版本的实际位置与能力 | 仍未完成的主要部分 |
+| 领域 | 当前实现的实际位置与能力 | 仍未完成的主要部分 |
 |---|---|---|
 | 数学与变换 | 向量、矩阵、仿射、法线、相机基、射线 | 更广的数学工具与专门算法按实际需求补齐 |
-| 场景与组件 | 森林、稳定运行身份、几何／相机／灯、显式更新 | 脏子树、完整设备自主更新与独立 GPU 场景 |
+| 场景与组件 | 森林、稳定运行身份、几何／相机／灯、独立 BLGpuScene 与 GPU 变换输入 | 完整设备自主更新、一般局部变更与需求驱动流送 |
 | 可见性与查询 | 主射线、阴影、BLAS/TLAS、批量网格查询 | 独立场景剔除、遮挡层级、完整选择迁移 |
 | 资产与几何 | OBJ、原精度 BLGEOM、自有场景和材质 | FBX、骨骼／动画导入、虚拟几何与完整流送 |
 | 材质与纹理 | 基础色、粗糙度通道、切线法线、三类表面 | 材质图、完整分层模型、多库与热更新 |
-| 光照与输运 | 解析灯、有限太阳、阴影、有限局部多段路径 | 方向天空、任意发光网格及其分布、稳定实时 GI |
+| 光照与输运 | 解析灯、HDR 环境分布、网格发光、直接候选、方向引导与轮盘路径 | 完整时序重建、稳定实时 GI 与目标效率 |
 | 体积 | 均匀吸收、自由程、HG 散射 | 异质密度场、自动区域、完整玉石外观 |
 | 图像与后处理 | 空间超采样、色调映射、gamma 近似、矩形合成 | 运动矢量、时序重建、完整透明和后处理图 |
 | 模拟与物理 | 粒子中心力场、积分、能量归约 | 刚体、接触约束、连续碰撞、软体与流体系统 |
@@ -1399,82 +1415,178 @@ Copy-Item `
 
 如果层级很深，先看祖先重复遍历；标签很多，先看平方级重叠比较；输运太贵，先分清主命中、阴影样本和后续段的工作；显存增长，先看哪个真实输出或在途消费者仍持有资源。
 
-不能用降低内部采样、简化高精度模型或牺牲材质效果来冒充同画质优化。当前主要任务是完成通用引擎能力并恢复消费者的完整功能与效果，六十帧目标属于后续逐步优化；本书的一次简单场景计时不能替代产品结论。
+不能用降低内部采样、简化高精度模型或牺牲材质效果来冒充同画质优化。当前主要任务是完成通用引擎能力并恢复消费者的完整功能与效果，近期完整场景效率目标与长期六十帧目标分别记录；本书的一次简单场景计时不能替代产品结论。
 
 引擎的整体感来自这些关系能够闭合：数学把几何放到正确位置，场景描述对象及其关系，光传输决定可见量，执行框架把计算交给真实设备，所有者让资源活到最后一次使用。读懂一个核心函数之后，再把它放回这张全景图，才算读懂它在引擎中的意义。
 
 ## 附录 A 源码节选与版本定位
 
-正文每份源码节选均标出路径、符号或行号。以下索引按固定 CL13031 建立；完整逐文件修订、提交号和 SHA256 见 `engine/源码版本索引.json`。同一 P4 changelist 快照内，各文件最后修改的 CL 可以不同，不表示混用了未提交源码。
+本版节选从 BLEngine CL13541 与 Blink CL13553 重新取得。完整文件修订、SHA256、节选行范围与本轮原生命令见 engine/源码版本索引.json。代码使用当前接口；下表中的最后修改号来自同一次已提交源码快照。
 
-设备框架说明以 Blink CL13046 的 `blcompute/src/cpu.rs`、`vulkan/mod.rs`、`vulkan/ray.rs`、`vulkan/execution.rs` 和 `vulkan/present.rs` 为准。当前工作区可能继续演进，阅读固定版本可避免把后来拆分的文件误认为书中已经存在。
-
-| 源码路径 | 固定修订 |
+| 源码路径 | 修订／最后修改 |
 |---|---|
-| `src/clipboard.rs` | #2，最后修改 CL12904 |
-| `src/components.rs` | #2，最后修改 CL13009 |
-| `src/editor.rs` | #21，最后修改 CL13031 |
-| `src/geometry.rs` | #4，最后修改 CL12941 |
-| `src/geometry_io.rs` | #1，最后修改 CL12958 |
-| `src/hierarchy.rs` | #5，最后修改 CL13031 |
-| `src/identity.rs` | #1，最后修改 CL13031 |
-| `src/json.rs` | #3，最后修改 CL12904 |
-| `src/labels.rs` | #6，最后修改 CL13031 |
-| `src/lib.rs` | #15，最后修改 CL13031 |
-| `src/lighting.rs` | #3，最后修改 CL13019 |
-| `src/main.rs` | #17，最后修改 CL12954 |
-| `src/material.rs` | #7，最后修改 CL13029 |
-| `src/math.rs` | #2，最后修改 CL12904 |
-| `src/output.rs` | #7，最后修改 CL13024 |
-| `src/primitives.rs` | #2，最后修改 CL12904 |
-| `src/render.rs` | #27，最后修改 CL13031 |
-| `src/scene.rs` | #16，最后修改 CL13031 |
-| `src/scene_asset.rs` | #8，最后修改 CL13009 |
-| `src/universe.rs` | #9，最后修改 CL13031 |
-| `src/view.rs` | #5，最后修改 CL13013 |
-| `src/viewer.rs` | #9，最后修改 CL13013 |
-| `src/window.rs` | #5，最后修改 CL12954 |
-| `Programs/geometry/normals`（.b / .h） | .b #1 CL13031；.h #1 CL13031 |
-| `Programs/geometry/primitives`（.b / .h） | .b #2 CL12904；.h #2 CL12904 |
-| `Programs/lighting/environment`（.b / .h） | .b #3 CL13013；.h #2 CL13009 |
-| `Programs/lighting/lights`（.b / .h） | .b #6 CL13019；.h #6 CL13019 |
-| `Programs/material/conductor`（.b / .h） | .b #1 CL13029；.h #1 CL13029 |
-| `Programs/material/dielectric`（.b / .h） | .b #1 CL13009；.h #1 CL13009 |
-| `Programs/material/maps`（.b / .h） | .b #1 CL13026；.h #1 CL13026 |
-| `Programs/material/medium`（.b / .h） | .b #2 CL13013；.h #2 CL13013 |
-| `Programs/material/microfacet`（.b / .h） | .b #1 CL13009；.h #1 CL13009 |
-| `Programs/material/palette`（.b / .h） | .b #1 CL12874；.h #5 CL13029 |
-| `Programs/material/phase`（.b / .h） | .b #1 CL13013；.h #1 CL13013 |
-| `Programs/material/scattering`（.b / .h） | .b #1 CL13009；.h #3 CL13029 |
-| `Programs/material/surface`（.b / .h） | .b #7 CL13029；.h #5 CL13029 |
-| `Programs/material/textured`（.b / .h） | .b #6 CL13029；.h #5 CL13029 |
-| `Programs/math/field`（.b / .h） | .b #3 CL12835；.h #3 CL12835 |
-| `Programs/math/transform`（.b / .h） | .b #2 CL12904；.h #2 CL12904 |
-| `Programs/render/composite`（.b / .h） | .b #3 CL13015；.h #2 CL13015 |
-| `Programs/render/frame`（.b / .h） | .b #21 CL13026；.h #19 CL13031 |
-| `Programs/render/resolve`（.b / .h） | .b #4 CL12914；.h #5 CL12969 |
-| `Programs/sampling/frame`（.b / .h） | .b #1 CL12997；.h #1 CL12997 |
-| `Programs/sampling/mis`（.b / .h） | .b #1 CL12997；.h #1 CL12997 |
-| `Programs/sampling/random`（.b / .h） | .b #1 CL12973；.h #1 CL12973 |
-| `Programs/scene/camera`（.b / .h） | .b #2 CL13009；.h #2 CL13009 |
-| `Programs/scene/components`（.b / .h） | .b #2 CL13019；.h #2 CL13009 |
-| `Programs/scene/device`（.b / .h） | .b #2 CL13024；.h #2 CL13024 |
-| `Programs/scene/hierarchy`（.b / .h） | .b #1 CL12925；.h #1 CL12925 |
-| `Programs/scene/instance`（.b / .h） | .b #1 CL13031；.h #1 CL13031 |
-| `Programs/scene/labels`（.b / .h） | .b #3 CL12914；.h #3 CL12914 |
-| `Programs/scene/pick`（.b / .h） | .b #4 CL12914；.h #4 CL12914 |
-| `Programs/scene/query`（.b / .h） | .b #1 CL13031；.h #1 CL13031 |
-| `Programs/scene/transforms`（.h） | .h #4 CL13024 |
-| `Programs/scene/universe`（.b / .h） | .b #3 CL12914；.h #3 CL12914 |
-| `Programs/simulation/bodies`（.b / .h） | .b #9 CL12904；.h #8 CL12904 |
-| `Programs/simulation/statistics`（.b / .h） | .b #4 CL12904；.h #4 CL12904 |
-| `Programs/stella/lighting`（.b / .h） | .b #12 CL13026；.h #13 CL13031 |
-| `Programs/stella/scattering`（.b / .h） | .b #8 CL13024；.h #6 CL13013 |
-| `Programs/stella/surface`（.b / .h） | .b #7 CL13029；.h #9 CL13031 |
-| `Programs/stella/transport`（.b / .h） | .b #9 CL13026；.h #9 CL13031 |
-| `Programs/stella/traversal`（.b / .h） | .b #9 CL13024；.h #9 CL13024 |
-| `Programs/stella/visibility`（.b / .h） | .b #7 CL13031；.h #6 CL13031 |
-| `Programs/stella/volume`（.b / .h） | .b #2 CL13024；.h #1 CL13013 |
+| `Cargo.lock` | #1，CL12581 |
+| `Cargo.toml` | #2，CL12861 |
+| `Programs/geometry/normals.b` | #1，CL13031 |
+| `Programs/geometry/normals.h` | #1，CL13031 |
+| `Programs/geometry/primitives.b` | #3，CL13483 |
+| `Programs/geometry/primitives.h` | #3，CL13483 |
+| `Programs/image/mean.b` | #2，CL13483 |
+| `Programs/image/mean.h` | #2，CL13483 |
+| `Programs/image/texture.b` | #4，CL13483 |
+| `Programs/image/texture.h` | #4，CL13483 |
+| `Programs/lighting/area.b` | #1，CL13495 |
+| `Programs/lighting/area.h` | #1，CL13495 |
+| `Programs/lighting/directional.b` | #4，CL13483 |
+| `Programs/lighting/directional.h` | #4，CL13483 |
+| `Programs/lighting/distribution.b` | #7，CL13521 |
+| `Programs/lighting/distribution.h` | #7，CL13521 |
+| `Programs/lighting/environment.b` | #4，CL13421 |
+| `Programs/lighting/environment.h` | #3，CL13421 |
+| `Programs/lighting/environment_field.b` | #3，CL13483 |
+| `Programs/lighting/environment_field.h` | #3，CL13483 |
+| `Programs/lighting/field.b` | #4，CL13483 |
+| `Programs/lighting/field.h` | #4，CL13483 |
+| `Programs/lighting/guiding.b` | #3，CL13483 |
+| `Programs/lighting/guiding.h` | #3，CL13483 |
+| `Programs/lighting/lights.b` | #7，CL13119 |
+| `Programs/lighting/lights.h` | #9，CL13495 |
+| `Programs/lighting/mesh.b` | #1，CL13521 |
+| `Programs/lighting/mesh.h` | #1，CL13521 |
+| `Programs/lighting/resources.b` | #1，CL13495 |
+| `Programs/lighting/resources.h` | #1，CL13495 |
+| `Programs/material/conductor.b` | #1，CL13029 |
+| `Programs/material/conductor.h` | #1，CL13029 |
+| `Programs/material/dielectric.b` | #1，CL13009 |
+| `Programs/material/dielectric.h` | #1，CL13009 |
+| `Programs/material/maps.b` | #1，CL13026 |
+| `Programs/material/maps.h` | #1，CL13026 |
+| `Programs/material/medium.b` | #2，CL13013 |
+| `Programs/material/medium.h` | #2，CL13013 |
+| `Programs/material/microfacet.b` | #1，CL13009 |
+| `Programs/material/microfacet.h` | #1，CL13009 |
+| `Programs/material/palette.h` | #7，CL13501 |
+| `Programs/material/phase.b` | #1，CL13013 |
+| `Programs/material/phase.h` | #1，CL13013 |
+| `Programs/material/scattering.h` | #3，CL13029 |
+| `Programs/material/surface.b` | #7，CL13029 |
+| `Programs/material/surface.h` | #5，CL13029 |
+| `Programs/material/textured.b` | #7，CL13483 |
+| `Programs/material/textured.h` | #6，CL13483 |
+| `Programs/math/angles.b` | #1，CL13421 |
+| `Programs/math/angles.h` | #1，CL13421 |
+| `Programs/math/field.b` | #3，CL12835 |
+| `Programs/math/field.h` | #3，CL12835 |
+| `Programs/math/scalar.b` | #2，CL13495 |
+| `Programs/math/scalar.h` | #2，CL13495 |
+| `Programs/math/transform.b` | #2，CL12904 |
+| `Programs/math/transform.h` | #2，CL12904 |
+| `Programs/render/composite.b` | #4，CL13196 |
+| `Programs/render/composite.h` | #3，CL13196 |
+| `Programs/render/frame.b` | #33，CL13521 |
+| `Programs/render/frame.h` | #31，CL13521 |
+| `Programs/render/instance.h` | #4，CL13521 |
+| `Programs/render/resolve.b` | #6，CL13483 |
+| `Programs/render/resolve.h` | #7，CL13483 |
+| `Programs/sampling/counter.b` | #1，CL13119 |
+| `Programs/sampling/counter.h` | #1，CL13119 |
+| `Programs/sampling/direction.b` | #1，CL13311 |
+| `Programs/sampling/direction.h` | #1，CL13311 |
+| `Programs/sampling/frame.b` | #1，CL12997 |
+| `Programs/sampling/frame.h` | #1，CL12997 |
+| `Programs/sampling/mis.b` | #1，CL12997 |
+| `Programs/sampling/mis.h` | #1，CL12997 |
+| `Programs/sampling/random.b` | #2，CL13180 |
+| `Programs/sampling/random.h` | #2，CL13180 |
+| `Programs/sampling/reservoir.b` | #2，CL13180 |
+| `Programs/sampling/reservoir.h` | #2，CL13180 |
+| `Programs/scene/camera.b` | #4，CL13483 |
+| `Programs/scene/camera.h` | #4，CL13483 |
+| `Programs/scene/components.b` | #3，CL13483 |
+| `Programs/scene/components.h` | #3，CL13483 |
+| `Programs/scene/device.b` | #3，CL13483 |
+| `Programs/scene/device.h` | #3，CL13483 |
+| `Programs/scene/hierarchy.b` | #2，CL13483 |
+| `Programs/scene/hierarchy.h` | #2，CL13483 |
+| `Programs/scene/instance.h` | #4，CL13068 |
+| `Programs/scene/labels.b` | #4，CL13483 |
+| `Programs/scene/labels.h` | #4，CL13483 |
+| `Programs/scene/motion.b` | #3，CL13483 |
+| `Programs/scene/motion.h` | #3，CL13483 |
+| `Programs/scene/pick.b` | #5，CL13483 |
+| `Programs/scene/pick.h` | #5，CL13483 |
+| `Programs/scene/query.b` | #4，CL13483 |
+| `Programs/scene/query.h` | #4，CL13483 |
+| `Programs/scene/surface.b` | #3，CL13483 |
+| `Programs/scene/surface.h` | #2，CL13483 |
+| `Programs/scene/transforms.h` | #4，CL13024 |
+| `Programs/scene/universe.b` | #4，CL13483 |
+| `Programs/scene/universe.h` | #4，CL13483 |
+| `Programs/simulation/bodies.b` | #10，CL13483 |
+| `Programs/simulation/bodies.h` | #9，CL13483 |
+| `Programs/simulation/statistics.b` | #5，CL13483 |
+| `Programs/simulation/statistics.h` | #5，CL13483 |
+| `Programs/spatial/bounds.b` | #1，CL13281 |
+| `Programs/spatial/bounds.h` | #1，CL13281 |
+| `Programs/spatial/keys.b` | #1，CL13250 |
+| `Programs/spatial/keys.h` | #1，CL13250 |
+| `Programs/stella/guiding.b` | #1，CL13311 |
+| `Programs/stella/guiding.h` | #1，CL13311 |
+| `Programs/stella/history.b` | #2，CL13483 |
+| `Programs/stella/history.h` | #2，CL13483 |
+| `Programs/stella/lighting.b` | #27，CL13534 |
+| `Programs/stella/lighting.h` | #26，CL13534 |
+| `Programs/stella/reproject.b` | #2，CL13483 |
+| `Programs/stella/reproject.h` | #2，CL13483 |
+| `Programs/stella/scattering.b` | #13，CL13534 |
+| `Programs/stella/scattering.h` | #10，CL13534 |
+| `Programs/stella/surface.b` | #12，CL13521 |
+| `Programs/stella/surface.h` | #13，CL13521 |
+| `Programs/stella/termination.b` | #1，CL13369 |
+| `Programs/stella/termination.h` | #1，CL13369 |
+| `Programs/stella/transport.b` | #24，CL13534 |
+| `Programs/stella/transport.h` | #23，CL13534 |
+| `Programs/stella/traversal.b` | #13，CL13534 |
+| `Programs/stella/traversal.h` | #11，CL13534 |
+| `Programs/stella/visibility.b` | #10，CL13495 |
+| `Programs/stella/visibility.h` | #9，CL13495 |
+| `Programs/stella/volume.b` | #4，CL13534 |
+| `Programs/stella/volume.h` | #3，CL13534 |
+| `src/clipboard.rs` | #2，CL12904 |
+| `src/components.rs` | #2，CL13009 |
+| `src/editor.rs` | #27，CL13421 |
+| `src/environment.rs` | #1，CL13421 |
+| `src/geometry.rs` | #4，CL12941 |
+| `src/geometry_io.rs` | #1，CL12958 |
+| `src/gpu_scene.rs` | #8，CL13521 |
+| `src/guiding.rs` | #3，CL13454 |
+| `src/hdr.rs` | #1，CL13421 |
+| `src/hierarchy.rs` | #6，CL13135 |
+| `src/history.rs` | #1，CL13207 |
+| `src/identity.rs` | #3，CL13074 |
+| `src/image.rs` | #2，CL13207 |
+| `src/json.rs` | #3，CL12904 |
+| `src/labels.rs` | #6，CL13031 |
+| `src/lib.rs` | #25，CL13521 |
+| `src/lighting.rs` | #15，CL13495 |
+| `src/main.rs` | #21，CL13421 |
+| `src/material.rs` | #14，CL13521 |
+| `src/math.rs` | #2，CL12904 |
+| `src/mesh_lighting.rs` | #1，CL13521 |
+| `src/motion.rs` | #3，CL13074 |
+| `src/output.rs` | #24，CL13521 |
+| `src/primitives.rs` | #2，CL12904 |
+| `src/render.rs` | #44，CL13521 |
+| `src/scene.rs` | #22，CL13521 |
+| `src/scene_asset.rs` | #9，CL13421 |
+| `src/surface.rs` | #2，CL13110 |
+| `src/texture_import.rs` | #3，CL13421 |
+| `src/universe.rs` | #9，CL13031 |
+| `src/view.rs` | #12，CL13369 |
+| `src/viewer.rs` | #28，CL13466 |
+| `src/visibility.rs` | #1，CL13110 |
+| `src/wic.rs` | #1，CL13358 |
+| `src/window.rs` | #7，CL13152 |
 
 ## 附录 B 阅读练习与答案
 

@@ -1,9 +1,10 @@
-BLSCENE_SOURCE 7
+BLSCENE_SOURCE 8
 output 3840 2160 2
 materials reading.blmat
 view main
 ground plane 0
-environment .025 .035 .05 .025 .025 .025
+environment constant .025 .035 .05
+fill .025 .025 .025
 shadow .0002 .0001 inf
 mesh cube cube.blgeom
 node rig none 1 0 0 0 0 1 0 0 0 0 1 0

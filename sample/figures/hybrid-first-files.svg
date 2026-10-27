@@ -6,7 +6,7 @@
 <text x="38" y="167" fill="#263746" font-size="25">numbers.h + numbers.b</text>
 <line x1="280" y1="196" x2="280" y2="211" stroke="#147d86" stroke-width="2"/>
 <rect x="20" y="216" width="520" height="174" rx="12" fill="#ffffff" stroke="#d9e4eb"/>
-<text x="38" y="252" fill="#147d86" font-size="27">blc build-dll / 生成</text>
+<text x="38" y="252" fill="#147d86" font-size="27">blc -c → bllink / 生成</text>
 <text x="38" y="293" fill="#263746" font-size="25">numbers.dll + numbers.lib</text>
 <text x="38" y="329" fill="#263746" font-size="25">numbers.rs / Rust 调用接口</text>
 <text x="38" y="365" fill="#263746" font-size="25">numbers.abi.h / C++ 调用接口</text>

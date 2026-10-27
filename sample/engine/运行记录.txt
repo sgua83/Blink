@@ -1,53 +1,57 @@
-《BLEngine 源码分析》原始运行记录
-日期：2026-10-26
-BLEngine：//BLEngine/main/...@13031
-Blink：//BLanguage/main/...@13046
-实际执行目录：B:/BLanguage/Saved/EngineRewrite/Source/BLEngine
-构建：cargo build --release
-产物：B:/BLanguage/Saved/EngineRewrite/Source/BLEngine/target/release/blengine.exe
-构建结果：Finished release profile [optimized] in 38.75s
-输入目录：B:/BLanguage/Saved/EngineRewrite/Run
-书中使用 Saved/Scene 作为读者输出目录，资产内容相同。
+BLEngine 源码分析：本轮 Release 原生运行
+日期：2026-10-27
+源码：BLEngine P4 CL13541；Blink P4 CL13553
+实际执行机：GUA／192.168.10.5；Windows x64；AMD Radeon RX 9070 GRE
+墙钟包含范围以实际输出字段为准，不作为窗口产品帧率。
 
-执行：.\target\release\blengine.exe device
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe device
+exit: 0
 Vulkan device: AMD Radeon RX 9070 GRE
 
-执行：.\target\release\blengine.exe cook ../../Run/cube.obj ../../Run/cube.blgeom
-vertices=24 triangles=12 materials=2 output=..\..\Run\cube.blgeom
 
-执行：.\target\release\blengine.exe cook-scene ../../Run/reading.blscene.txt ../../Run/reading.blscene
-scene_declared_meshes=1 scene_nodes=7 output=..\..\Run\reading.blscene
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe cook B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\cube.obj B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\cube.blgeom
+exit: 0
+vertices=24 triangles=12 materials=2 output=B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\cube.blgeom
 
-执行：.\target\release\blengine.exe render ../../Run/reading.blscene ../../Run/frame.ppm
-GPU AMD Radeon RX 9070 GRE internal=7680x4320 viewport=3840x2160
-scene_declared_meshes=1 scene_nodes=7 scene_instances=2
-GPU_program_ms=46.898 stages_ms=[45.45448, 1.41876] render_readback_write_ms=180.977 output=..\..\Run\frame.ppm
 
-执行：.\target\release\blengine.exe render-views ../../Run/reading.blscene ../../Run/views
-GPU AMD Radeon RX 9070 GRE internal=7680x4320 viewport=3840x2160
-scene_declared_meshes=1 scene_nodes=7 scene_instances=2
-scene_views=2 GPU_program_ms=98.290 render_readback_write_ms=342.771 output=..\..\Run\views
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe cook-scene B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\reading.blscene.txt B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\reading.blscene
+exit: 0
+scene_declared_meshes=1 scene_nodes=7 output=B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\reading.blscene
 
-执行：.\target\release\blengine.exe simulate cpu 1000000 1200 ../../Run/bodies-cpu.bldata
-CPU execution_ms=1214.745
-total_kinetic_energy=63477.54
-elements=1000000 steps=1200 bytes=32000000 total_ms=1228.396 output=..\..\Run\bodies-cpu.bldata
 
-执行：.\target\release\blengine.exe simulate gpu 1000000 1200 ../../Run/bodies-gpu.bldata
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe render B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\reading.blscene B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\frame.ppm
+exit: 0
 GPU AMD Radeon RX 9070 GRE
-GPU_program_ms=114.413 submissions=1
+scene_declared_meshes=1 scene_nodes=7 scene_instances=2
+GPU_program_ms=227.346 stages_ms=[225.6618, 1.4352] render_readback_write_ms=304.961 output=B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\frame.ppm
+
+
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe render-views B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\reading.blscene B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\views
+exit: 0
+GPU AMD Radeon RX 9070 GRE
+scene_declared_meshes=1 scene_nodes=7 scene_instances=2
+scene_views=2 GPU_program_ms=474.113 render_readback_write_ms=593.670 output=B:\BLanguage\Saved\BookSyntaxRefresh\Native\Scene\views
+
+
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe simulate cpu 1000000 1200 B:\BLanguage\Saved\BookSyntaxRefresh\Native\bodies-cpu.bldata
+exit: 0
+CPU execution_ms=969.513
+total_kinetic_energy=63477.54
+elements=1000000 steps=1200 bytes=32000000 total_ms=985.348 output=B:\BLanguage\Saved\BookSyntaxRefresh\Native\bodies-cpu.bldata
+
+
+cwd: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine
+command: B:\BLanguage\Saved\BookSyntaxRefresh\BLEngine\target\release\blengine.exe simulate gpu 1000000 1200 B:\BLanguage\Saved\BookSyntaxRefresh\Native\bodies-gpu.bldata
+exit: 0
+GPU AMD Radeon RX 9070 GRE
+GPU_program_ms=114.373 submissions=1
 total_kinetic_energy=63477.547
-elements=1000000 steps=1200 bytes=32000000 total_ms=369.908 output=..\..\Run\bodies-gpu.bldata
+elements=1000000 steps=1200 bytes=32000000 total_ms=270.554 output=B:\BLanguage\Saved\BookSyntaxRefresh\Native\bodies-gpu.bldata
 
-计时范围：GPU_program_ms 为设备跨度；stages_ms 为实际两个设备阶段。render_readback_write_ms 从场景资源、相机和输出创建完成后开始，到绘制、读回和写文件结束，不包括场景加载、B编译和几何准备。render-views 的计时从世界加载、相机程序所有者和输出创建完成后开始，包括各相机求值、绘制、读回和写文件。simulate total_ms 包含后端准备、执行、传输和文件写入，不含共同初值构造；CPU execution_ms 是墙钟，GPU_program_ms 是设备计时。
-本次没有执行交互 view/view-views/editor，不以离屏输出替代窗口运行证据。
-图像由完整原生PPM无损转换为PNG，未改变像素；示意图与运行卡片为排印。
 
-SHA256
-27d6d35ee35d1b4bd8c855f9b02f7e10cfc436336005878a25382e050cfcc60a  Run/frame.ppm
-27d6d35ee35d1b4bd8c855f9b02f7e10cfc436336005878a25382e050cfcc60a  Run/views/camera-3.ppm
-f541feda0e32ca0bb981ac565619d6ed117d64164b608049d6a9e7994fced27f  Run/views/camera-4.ppm
-532a9dd27f83084331cc08386a02c39fc90e1c39dd0a7daed03bb54735023fdf  sample/figures/engine-frame.png
-99a7c4b96ce5d8c1f3043c7b0631f87e39af5ffe484e30d4efe5bdb529b850ad  sample/figures/engine-side.png
-3059c23d567250ebcd68a3f99a80909eea9a5f1534e216f8d2bbdc96f8283cf0  sample/engine/assets/reading.blscene.txt
-ad3b280658c51511393995ca671318fb06bfe98fba69d034c20a048d29b0b76f  sample/engine/assets/reading.blmat
