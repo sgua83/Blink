@@ -3,6 +3,13 @@ use super::*;
 
 type ComponentProjection = (Ty, Vec<Vec<usize>>);
 
+#[derive(Clone, Copy)]
+struct Write<'e> {
+    place: &'e Expr,
+    contents: bool,
+    iterator: Option<(&'e str, &'e Expr)>,
+}
+
 impl Builder<'_> {
     // 只投影可能改写的现有所有者，不求值下标或再次生成表达式代码。
     fn written_projection(
@@ -10,15 +17,27 @@ impl Builder<'_> {
         expr: &Expr,
         name: &str,
         owner: &Place,
+        iterator: Option<(&str, &Expr)>,
     ) -> Result<Option<ComponentProjection>> {
         match &expr.kind {
-            ExprKind::Name(root) if root == name => {
-                let ty = owner.ty().clone();
-                let components = (0..ty.components.len()).map(|i| vec![i]).collect();
-                Ok(Some((ty, components)))
+            ExprKind::Name(root) => {
+                if let Some((iterator, source)) = iterator
+                    && root == iterator
+                {
+                    return Ok(self.application_write_projection(source, owner));
+                }
+                if root == name {
+                    let ty = owner.ty().clone();
+                    let components = (0..ty.components.len()).map(|i| vec![i]).collect();
+                    Ok(Some((ty, components)))
+                } else {
+                    Ok(None)
+                }
             }
             ExprKind::Member(base, field) => {
-                let Some((ty, components)) = self.written_projection(base, name, owner)? else {
+                let Some((ty, components)) =
+                    self.written_projection(base, name, owner, iterator)?
+                else {
                     return Ok(None);
                 };
                 let (ty, selected) = self.member(&ty, field, expr.span)?;
@@ -28,6 +47,9 @@ impl Builder<'_> {
                 )))
             }
             ExprKind::Index(base, index) => {
+                if let Some(projection) = self.application_write_projection(base, owner) {
+                    return Ok(Some(projection));
+                }
                 if let ExprKind::Name(root) = &base.kind
                     && let Some(Binding::Data(view)) = self.env.get(root)
                 {
@@ -50,7 +72,9 @@ impl Builder<'_> {
                     }
                     return Ok(None);
                 }
-                let Some((ty, components)) = self.written_projection(base, name, owner)? else {
+                let Some((ty, components)) =
+                    self.written_projection(base, name, owner, iterator)?
+                else {
                     return Ok(None);
                 };
                 let Some(element) = &ty.array else {
@@ -87,9 +111,64 @@ impl Builder<'_> {
             _ => Ok(None),
         }
     }
+    fn written_application_data(&self, expr: &Expr) -> Option<&application::Data> {
+        if let ExprKind::Name(name) = &expr.kind
+            && let Some(Binding::ApplicationData(data)) = self.env.get(name)
+        {
+            return Some(data);
+        }
+        let projection = self.owned_projection(expr)?;
+        let Binding::OwnedValue(owner) = self.env.get(&projection.root)? else {
+            return None;
+        };
+        let mut owner = owner;
+        for index in projection.path {
+            match owner.payloads[index].as_deref()? {
+                returns::Returned::Dataset(data) => return Some(data),
+                returns::Returned::OwnedValue(child) => owner = child,
+                _ => return None,
+            }
+        }
+        None
+    }
+    fn application_write_projection(
+        &self,
+        expr: &Expr,
+        owner: &Place,
+    ) -> Option<ComponentProjection> {
+        let data = self.written_application_data(expr)?;
+        let Place::ApplicationElement {
+            identity, words, ..
+        } = owner.storage()
+        else {
+            return None;
+        };
+        if *identity != data.handle.identity() {
+            return None;
+        }
+        let components = data
+            .ty
+            .components
+            .iter()
+            .map(|(_, offset)| {
+                if matches!(owner, Place::ApplicationElement { .. }) {
+                    words
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, word)| (*word == offset / 4).then_some(i))
+                        .collect()
+                } else if words.contains(&(offset / 4)) {
+                    (0..owner.ty().components.len()).collect()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        Some((data.ty.clone(), components))
+    }
     fn invalidate_writes(
         &mut self,
-        writes: &[&Expr],
+        writes: &[Write<'_>],
         borrowed_data: Option<ValueIdentity>,
     ) -> Result<()> {
         let resources: Vec<_> = self
@@ -105,9 +184,10 @@ impl Builder<'_> {
                         .proof
                         .known_identity(0)
                         .is_some_and(|id| self.application_borrowed(id))
-                    && writes
-                        .iter()
-                        .any(|expr| matches!(&expr.kind, ExprKind::Name(target) if target == name)))
+                    && writes.iter().any(|write| {
+                        !write.contents
+                            && matches!(&write.place.kind, ExprKind::Name(target) if target == name)
+                    }))
                 .then(|| name.clone())
             })
             .collect();
@@ -125,8 +205,13 @@ impl Builder<'_> {
         let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (name, binding) in &self.env {
             if let Some(owner) = binding.stored_place() {
-                for expr in writes {
-                    if let Some((_, components)) = self.written_projection(expr, name, &owner)? {
+                for write in writes {
+                    let projection = if write.contents {
+                        self.application_write_projection(write.place, &owner)
+                    } else {
+                        self.written_projection(write.place, name, &owner, write.iterator)?
+                    };
+                    if let Some((_, components)) = projection {
                         for component in components.into_iter().flatten() {
                             modified.entry(name.clone()).or_default().insert(component);
                         }
@@ -175,20 +260,18 @@ impl Builder<'_> {
     }
 }
 
-fn assigned_root(expr: &Expr, names: &mut BTreeSet<String>) {
+fn assigned_root(expr: &Expr) -> Option<&str> {
     match &expr.kind {
-        ExprKind::Name(name) => {
-            names.insert(name.clone());
-        }
-        ExprKind::Member(base, _) | ExprKind::Index(base, _) => assigned_root(base, names),
-        _ => {}
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Member(base, _) | ExprKind::Index(base, _) => assigned_root(base),
+        _ => None,
     }
 }
 fn expression_writes<'e>(
     world: &World,
     definition: &Definition,
     expr: &'e Expr,
-    writes: &mut impl FnMut(&'e Expr),
+    writes: &mut dyn FnMut(Write<'e>),
 ) {
     match &expr.kind {
         ExprKind::Call(name, args)
@@ -203,11 +286,12 @@ fn expression_writes<'e>(
                     world.resolve(name, &definition.module, &definition.imports, true)
             {
                 for (param, arg) in world.functions[&key].function.params.iter().zip(args) {
-                    if matches!(param.access, Access::InOut | Access::Write)
-                        && !param.ty.dataset
-                        && !param.ty.tile
-                    {
-                        writes(arg);
+                    if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
+                        writes(Write {
+                            place: arg,
+                            contents: param.ty.dataset,
+                            iterator: None,
+                        });
                     }
                 }
             }
@@ -220,7 +304,7 @@ fn expression_writes<'e>(
                 expression_writes(world, definition, arg, writes);
             }
         }
-        ExprKind::Target(_,base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
+        ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
             expression_writes(world, definition, base, writes)
         }
         ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
@@ -239,12 +323,16 @@ fn statement_writes<'e>(
     world: &World,
     definition: &Definition,
     code: &'e [Stmt],
-    writes: &mut impl FnMut(&'e Expr),
+    writes: &mut dyn FnMut(Write<'e>),
 ) {
     for s in code {
         match &s.kind {
             StmtKind::Assign(lhs, _, rhs) => {
-                writes(lhs);
+                writes(Write {
+                    place: lhs,
+                    contents: false,
+                    iterator: None,
+                });
                 expression_writes(world, definition, lhs, writes);
                 expression_writes(world, definition, rhs, writes);
             }
@@ -261,12 +349,17 @@ fn statement_writes<'e>(
                 expression_writes(world, definition, expr, writes);
                 statement_writes(world, definition, body, writes);
             }
-            StmtKind::For(_, start, end, body) => {
+            StmtKind::For(name, start, end, body) => {
                 expression_writes(world, definition, start, writes);
                 if let Some(end) = end {
                     expression_writes(world, definition, end, writes);
                 }
-                statement_writes(world, definition, body, writes);
+                statement_writes(world, definition, body, &mut |mut write| {
+                    if end.is_none() && assigned_root(write.place) == Some(name) {
+                        write.iterator = Some((name, start));
+                    }
+                    writes(write);
+                });
             }
             StmtKind::Parallel(_, domain, body) => {
                 if let Some(count) = &domain.count {
@@ -287,8 +380,12 @@ pub(super) fn expression_assignments(
     expr: &Expr,
     names: &mut BTreeSet<String>,
 ) {
-    expression_writes(world, definition, expr, &mut |place| {
-        assigned_root(place, names)
+    expression_writes(world, definition, expr, &mut |write| {
+        if !write.contents
+            && let Some(root) = assigned_root(write.place)
+        {
+            names.insert(root.to_owned());
+        }
     });
 }
 pub(super) fn assigned_names(
@@ -297,8 +394,12 @@ pub(super) fn assigned_names(
     code: &[Stmt],
     names: &mut BTreeSet<String>,
 ) {
-    statement_writes(world, definition, code, &mut |place| {
-        assigned_root(place, names)
+    statement_writes(world, definition, code, &mut |write| {
+        if !write.contents
+            && let Some(root) = assigned_root(write.place)
+        {
+            names.insert(root.to_owned());
+        }
     });
 }
 pub(super) fn modified_owners(
@@ -315,12 +416,22 @@ pub(super) fn modified_owners(
             }
         })
         .collect();
+    let application: BTreeSet<_> = names
+        .iter()
+        .flat_map(|name| match env.get(name) {
+            Some(Binding::ApplicationData(data)) => vec![data],
+            Some(Binding::OwnedValue(owner)) => owner.resources(),
+            _ => Vec::new(),
+        })
+        .map(|data| data.handle.identity())
+        .collect();
     env.iter()
         .filter_map(|(name, binding)| {
             let owner = binding.stored_place()?;
             let through_data =
                 matches!(owner,Place::Element{binding,..} if data.contains(&binding));
-            (names.contains(name) || through_data).then(|| name.clone())
+            let through_application = matches!(owner.storage(), Place::ApplicationElement { identity, .. } if application.contains(identity));
+            (names.contains(name) || through_data || through_application).then(|| name.clone())
         })
         .collect()
 }

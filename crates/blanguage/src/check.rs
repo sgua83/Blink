@@ -1571,7 +1571,14 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.require_initialized(p, span)?;
-                self.read_application_place(ty, *handle, *identity, *index, *stride, words, span)
+                let mut value = self.read_application_place(
+                    ty, *handle, *identity, *index, *stride, words, span,
+                )?;
+                let (proof, uniform) = self.read_owned_proof(p, &value.regs);
+                value.constant = proof.known_value(ty);
+                value.proof = proof;
+                value.uniform = uniform;
+                Ok(value)
             }
             Place::Indexed { .. } => self.read_array_place(p, span),
             Place::AtomicParameter(_) => {

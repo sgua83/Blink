@@ -1530,24 +1530,51 @@ impl Builder<'_> {
         }
         (Proof::default(), false)
     }
+    pub(super) fn invalidate_application_contents(&mut self, identity: ValueIdentity) {
+        for binding in self.env.values_mut() {
+            let Some((proof, uniform, owner)) = binding.proof_storage() else {
+                continue;
+            };
+            if matches!(owner.storage(), Place::ApplicationElement { identity: source, .. } if *source == identity)
+            {
+                *proof = Proof::default();
+                *uniform = false;
+            }
+        }
+    }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
         for binding in self.env.values_mut() {
             let modified = {
                 let Some((proof, state, owner)) = binding.proof_storage() else {
                     continue;
                 };
-                if let Place::Indexed { base, .. } = place
-                    && let Some(components) = base.components_in(&owner)
-                {
-                    proof.assign(&components, owner.ty().components.len(), Proof::default());
-                    *state = false;
-                }
                 if let Some(components) = place.components_in(&owner) {
                     proof.assign(&components, owner.ty().components.len(), fresh.clone());
                     *state = uniform;
                     true
+                } else if let Place::Indexed { base, .. } = place
+                    && let Some(components) = base.components_in(&owner)
+                {
+                    proof.assign(&components, owner.ty().components.len(), Proof::default());
+                    *state = false;
+                    true
+                } else if place.overlaps(&owner) {
+                    let components: Vec<_> = match (place.storage(), &owner) {
+                        (
+                            Place::ApplicationElement { words, .. },
+                            Place::ApplicationElement { words: root, .. },
+                        ) => root
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, word)| words.contains(word).then_some(i))
+                            .collect(),
+                        _ => (0..owner.ty().components.len()).collect(),
+                    };
+                    proof.assign(&components, owner.ty().components.len(), Proof::default());
+                    *state = false;
+                    true
                 } else {
-                    matches!(place,Place::Indexed{base,..} if base.components_in(&owner).is_some())
+                    false
                 }
             };
             if modified && let Binding::OwnedValue(owner) = binding {

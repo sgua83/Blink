@@ -1239,6 +1239,9 @@ impl Builder<'_> {
             if buffer.count.is_some() && buffer.count != value.count {
                 return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
             }
+            if buffer.access.writes() {
+                self.invalidate_application_contents(value.handle.identity());
+            }
         }
         for (value, uniform) in uniforms.iter().zip(&program.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;

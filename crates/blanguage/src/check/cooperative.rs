@@ -467,6 +467,9 @@ impl<'a> Builder<'a> {
                     };
                     data.writable =
                         matches!(param.access, Access::Value | Access::InOut | Access::Write);
+                    if matches!(param.access, Access::InOut | Access::Write) {
+                        self.invalidate_application_contents(data.handle.identity());
+                    }
                     let mutable =
                         application::rebound(callee.function.body.as_ref().unwrap(), &param.name);
                     Binding::ApplicationData(self.application_bind(data, mutable))
