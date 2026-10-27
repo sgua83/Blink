@@ -22,6 +22,8 @@ impl Expected {
     }
 }
 impl Returned {
+    pub(super) fn view_value(&self)->Option<&Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&value.value),_=>None}}
+    pub(super) fn view_value_mut(&mut self)->Option<&mut Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&mut value.value),_=>None}}
     fn bind_outputs(
         &mut self,
         registers: Option<&[Reg]>,
@@ -314,6 +316,7 @@ impl Builder<'_> {
             value.proof = bounds::Proof::returning(value, &self.env, &self.path);
         }
         if let Some(Returned::OwnedValue(value)) = &mut value {
+            self.require_view_return(&value.value,span)?;
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
         let output_views=self.definition.function.params.iter().filter_map(|param| {

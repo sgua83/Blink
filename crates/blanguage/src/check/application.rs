@@ -558,7 +558,7 @@ impl Builder<'_> {
         other: &BTreeMap<String, Binding>,
         result: Option<&returns::Returned>,
     ) -> Result<Vec<Inst>> {
-        let mut retained=match result {Some(returns::Returned::Value(value))=>value.proof.borrowed_view(),_=>view::Borrow::default()};
+        let mut retained=result.and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
         for (name,binding) in environment {retained.union(&self.live_view_borrow(name,binding));}
         let old = std::mem::take(&mut self.code);
         for (name, binding) in environment {

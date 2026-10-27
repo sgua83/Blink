@@ -211,15 +211,16 @@ pub(super) fn canonical(
             }
         }
     }
+    for(index,param)in builder.definition.function.params.iter().enumerate(){if let Some(Binding::OwnedValue(value))=builder.env.get(&param.name){for resource in 0..view::resource_paths(&value.value.ty).len(){let id=ValueIdentity::ResourceParameter(index,resource);bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Data(id)])));}}}
     builder.view_model.parameters=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect();
-    if let Some(Returned::Value(value))=&returned {builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
+    if let Some(value)=returned.as_ref().and_then(Returned::view_value) {builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
     for (index,proof)in written.iter().enumerate() {
         if let Some(proof)=proof {
             let parameter=&builder.definition.function.params[index];
             if let Some((ty,_))=builder.env.get(&parameter.name).and_then(Binding::view_parts){builder.view_model.capture(proof,ty,|component|view_contracts::Output::Written(index,component));}
         }
     }
-    let parameter_sources = returned.as_ref().into_iter().flat_map(|model| match model { Returned::Value(v)=>v.proof.borrowed_views(),_=>BTreeSet::new() })
+    let parameter_sources = returned.as_ref().and_then(Returned::view_value).into_iter().flat_map(|value|value.proof.typed_view_borrow(&value.ty).sources)
         .chain(written.iter().flatten().flat_map(|proof| proof.borrowed_views())).collect::<BTreeSet<_>>();
     for source in parameter_sources {
         if let view::Source::Parameter(id)=source && let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0) {
@@ -231,7 +232,7 @@ pub(super) fn canonical(
     fn resource_identity(model:&mut Returned) {
         match model {
             Returned::Dataset(data)=>{data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::Register(data.handle.regs[0]))]));}
-            Returned::OwnedValue(value)=>{for item in value.payloads.iter_mut().flatten(){resource_identity(item);}value.sync_resource_borrows();},_=>{},
+            Returned::OwnedValue(value)=>{for item in value.payloads.iter_mut().flatten(){resource_identity(item);}},_=>{},
         }
     }
     if let Some(model)=&mut returned {resource_identity(model);}
@@ -305,6 +306,7 @@ impl Builder<'_> {
         let mut written_data = Vec::new();
         let mut held = Vec::new();
         let mut contents = BTreeMap::new();
+        let mut resource_inputs=BTreeMap::new();
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg = match arg {
@@ -419,6 +421,7 @@ impl Builder<'_> {
                     for data in value.resources(){self.require_application_initialized(data,span)?;}
                     value.resources_mut(&mut |data|data.initialization=None);
                     residency::owned_argument(&mut locations, index, &mut value);
+                    for(resource,path)in view::resource_paths(&value.value.ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),bounds::Proof::default().with_view_borrow(0,borrow));}
                     append_actual(&mut actual, &value.value);
                     arguments.push(CallArgument::Value {
                         ty: value.value.ty.clone(),
@@ -485,9 +488,9 @@ impl Builder<'_> {
                 )
             });
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
-        view_arguments.extend(contents.clone());
+        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
         let pending_view=result.as_ref().filter(|ty|ty.contains_views()).is_some_and(|ty| {
-            prototype.as_ref().and_then(|(_,model,_)|model.as_ref()).is_none_or(|model|match model {Returned::Value(value)=>view_contracts::pending(&value.proof,ty),_=>true})
+            prototype.as_ref().and_then(|(_,model,_)|model.as_ref()).is_none_or(|model|model.view_value().is_none_or(|value|view_contracts::pending(&value.proof,ty)))
         })||written.iter().any(|(index,place)|place.ty().contains_views()&&prototype.as_ref().and_then(|(_,_,written)|written.get(*index)).and_then(Option::as_ref).is_none_or(|proof|view_contracts::pending(proof,place.ty())));
         let view_call=if pending_view {
             Some(self.view_model.call(&instance.name,view_arguments,self.definition.source.clone(),span))
@@ -507,7 +510,7 @@ impl Builder<'_> {
         } else {
             (BTreeMap::new(), None, Vec::new())
         };
-        bindings.extend(contents);
+        bindings.extend(contents);bindings.extend(resource_inputs);
         if let Some(model) = &model {
             for (source, target) in model.registers().into_iter().zip(&values) {
                 bindings.insert(
@@ -563,11 +566,11 @@ impl Builder<'_> {
         } else {
             residency::output(&mut returned, &instance.name, &locations);
         }
-        if let (Some(call),Returned::Value(value))=(view_call,&mut returned) {
+        if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
             for component in view_contracts::components(&value.ty){value.proof=value.proof.clone().with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Returned(component)));}
         }
         self.view_uses.after(span);
-        let borrow = match &returned {Returned::Value(v)=>v.proof.borrowed_view(),_=>view::Borrow::default()};
+        let borrow=returned.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
         for name in held {
             let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.handle.identity()).collect::<Vec<_>>();
             for identity in resources {
@@ -576,7 +579,7 @@ impl Builder<'_> {
             }
             self.finish_scoped_argument(&name, span)?;
         }
-        if let Returned::Value(v)=&returned { self.require_view_available(v,span)?; }
+        if let Some(value)=returned.view_value() { self.require_view_available(value,span)?; }
         Ok(Some(returned))
     }
 }
@@ -632,7 +635,7 @@ fn translate_returned(
 }
 fn view_outputs(contract:&Contract)->view_contracts::Outputs {
     let mut outputs=BTreeMap::new();
-    if let Some(Returned::Value(value))=&contract.returned {
+    if let Some(value)=contract.returned.as_ref().and_then(Returned::view_value) {
         for component in view_contracts::components(&value.ty){outputs.insert(view_contracts::Output::Returned(component),value.proof.view_borrow(component));}
     }
     // 位置参数的实际类型由原CallParameter携带；值输出合同保留原形参编号。
@@ -654,7 +657,7 @@ fn resolve_views(module:&mut Module)->Result<()> {
         let contract=&mut unit.as_mut().unwrap().contract;
         for (output,borrow)in &outputs[name] {
             match *output {
-                view_contracts::Output::Returned(component)=>if let Some(Returned::Value(value))=&mut contract.returned {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
+                view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
                 view_contracts::Output::Written(parameter,component)=>if let Some(proof)=&mut contract.written[parameter] {*proof=proof.clone().with_view_borrow(component,borrow.clone());},
             }
         }

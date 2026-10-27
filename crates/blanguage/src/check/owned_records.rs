@@ -126,6 +126,7 @@ impl Builder<'_> {
             let binding = match &item {
                 Returned::Dataset(data) => Some(Binding::ApplicationData(data.clone())),
                 Returned::OwnedValue(value) => Some(Binding::OwnedValue(value.clone())),
+                Returned::Value(value) if value.ty.contains_views()=>Some(Binding::Value(value.clone())),
                 _ => None,
             };
             if let Some(binding) = binding {
@@ -138,6 +139,7 @@ impl Builder<'_> {
             fields[index] = match self.env.remove(&name).unwrap() {
                 Binding::ApplicationData(data) => Returned::Dataset(data),
                 Binding::OwnedValue(value) => Returned::OwnedValue(value),
+                Binding::Value(value)=>Returned::Value(value),
                 _ => unreachable!(),
             };
         }
@@ -148,7 +150,8 @@ impl Builder<'_> {
             values.push(self.returned_storage(&item));
             payloads.push(field.owns_resources().then(|| Box::new(item)));
         }
-        let value = self.pack_record(ty, values, span)?;
+        let mut value = self.pack_record(ty, values, span)?;
+        value.proof.retain_view_borrows(&value.ty);
         Ok(Some(Returned::OwnedValue(OwnedValue {
             value,
             payloads,
@@ -396,6 +399,7 @@ impl Builder<'_> {
             root.value.ty.components.len(),
             bounds::Proof::capture(&value),
         );
+        root.value.proof.retain_view_borrows(&root.value.ty);
         root.value.constant = None;
         root.value.uniform = false;
         let old = metadata_mut(root, &p.path);

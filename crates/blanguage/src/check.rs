@@ -65,6 +65,8 @@ enum ValueIdentity {
     TileLength,
     // 原生位置参数入口的内容身份，与传递地址的机器寄存器分开。
     ParameterContent(usize, usize),
+    // 资源叶输入与重叠载荷中的view值分开命名，不占机器参数。
+    ResourceParameter(usize, usize),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexDomain {
@@ -318,6 +320,9 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
             );
         }
         if p.ty.dataset {
+            if !view_contracts::stored_views(&ty) {
+                return d.source.fail(p.span,"B185","持久dataset的view图需要固定字段；变体view载荷当前只支持函数值");
+            }
             if p.access == Access::Value {
                 return d.source.fail(
                     p.span,
@@ -1294,7 +1299,8 @@ fn checked_function(
             if ty.owns_resources() {
                 let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
                 inputs.extend(&regs);parameters.push(CallParameter::Value(ty.clone()));
-                let mut value=b.incoming_owned_value(Value{ty,regs,proof:bounds::Proof::default(),literal:false,uniform:false,constant:None});
+                let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));
+                let mut value=b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None});
                 value.borrow();residency::parameter(&mut value,parameter_index);
                 b.bind_owned_value(&p.name,value,p.span)?;continue;
             }
@@ -1371,10 +1377,11 @@ fn checked_function(
             parameters.push(CallParameter::Value(ty.clone()));
         }
         if ty.owns_resources() {
+            let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));
             let mut result = b.incoming_owned_value(Value {
                 ty,
                 regs,
-                proof: bounds::Proof::default(),
+                proof,
                 literal: false,
                 uniform: false,
                 constant: None,
@@ -4133,5 +4140,5 @@ crate::module::codec::record!(Value {
     uniform,
     constant
 });
-crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component)});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id)});

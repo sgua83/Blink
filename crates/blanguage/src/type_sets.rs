@@ -31,7 +31,7 @@ impl World {
         stack: &mut BTreeSet<String>,
     ) -> Result<bool> {
         match family {
-            None => Ok(actual.view.is_none()),
+            None => Ok(true),
             Some(family) => Ok(self
                 .family_members(family, source, span, module, imports, stack)?
                 .iter()

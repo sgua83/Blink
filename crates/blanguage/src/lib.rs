@@ -718,9 +718,6 @@ impl World {
                 } else {
                     self.ty_inner(payload, source, span, module, imports, stack)?
                 };
-                if ty.contains_views() {
-                    return source.fail(span, "B269", "含view资源图的结果载荷尚未实现");
-                }
                 if payload.dataset {
                     if ty.owns_resources() {
                         return source.fail(span, "B033", "dataset 元素不能保存另一份拥有资源");
@@ -927,7 +924,6 @@ impl World {
                         if payload.owns_resources() || payload.contains_views() { return s.fail(variant.span, "B033", "dataset元素需要普通存储"); }
                         payload = ir::Ty::owned_dataset(payload, self.shape(&syntax.count, s, variant.span, m, i)?);
                     }
-                    if payload.contains_views() { return s.fail(variant.span, "B269", "变体载荷的view所有权图尚未实现"); }
                     alternatives.push(ir::Variant { name: variant.name.clone(), discriminant: tag, ty: Box::new(payload) });
                 }
                 let ty = ir::Ty::variant(key.clone(), arguments, values, representation.components[0].0, alternatives)
@@ -984,9 +980,6 @@ impl World {
             ty.size = end as u32;
             ty.align = ty.align.max(f.align);
             ty.fields.push((field.name.clone(), offset, Box::new(f)));
-        }
-        if ty.owns_resources() && ty.contains_views() {
-            return s.fail(record.span, "B269", "拥有存储与view图的组合寿命尚未实现");
         }
         if ty.components.is_empty() {
             return source.fail(span, "B035", "空结构体不能作为计算数据");

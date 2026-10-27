@@ -190,7 +190,9 @@ pub(super) struct Proof {
     views: Vec<view::Borrow>,
 }
 impl Proof {
-    pub(super) fn clear_view_borrows(&mut self) {self.views.clear();}
+    pub(super) fn borrow_state(&self)->Self {Self{views:self.views.clone(),..Self::default()}}
+    pub(super) fn typed_view_borrow(&self,ty:&Ty)->view::Borrow {view_contracts::components(ty).into_iter().fold(view::Borrow::default(),|mut all,component|{all.union(&self.view_borrow(component));all})}
+    pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources}
@@ -199,8 +201,7 @@ impl Proof {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
     }
     pub(super) fn view_parameters(mut self, ty: &Ty, identity: impl Fn(usize) -> ValueIdentity) -> Self {
-        for (offset, _) in ty.view_fields() {
-            let at = ty.components.iter().position(|(_, at)| *at == offset).unwrap();
+        for at in view_contracts::components(ty) {
             self = self.with_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at))]));
         }
         self

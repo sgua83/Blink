@@ -232,7 +232,9 @@ fn visit_owned(
     }
 }
 pub(super) fn parameter(value: &mut owned_values::OwnedValue, parameter: usize) {
+    let resources=view::resource_paths(&value.value.ty).into_iter().enumerate().map(|(index,path)|(path,index)).collect::<BTreeMap<_,_>>();
     visit_owned(value, &mut Input::new(parameter), &mut |data, input| {
+        data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,resources[&input.fields]))]));
         data.residency = Residency::input(input.clone());
     });
 }

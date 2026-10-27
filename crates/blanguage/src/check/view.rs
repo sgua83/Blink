@@ -99,13 +99,15 @@ pub(super) enum Source {
     Data(ValueIdentity),
     Parameter(ValueIdentity),
     Unresolved,
+    // 实际变体分支在此槽没有view；区别于尚未知的来源。
+    Inactive,
 }
 impl Source {
     pub(super) fn bind_outputs(self, bindings: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
         match self {
             Self::Data(id) => Self::Data(bindings.get(&id).copied().unwrap_or(id)),
             Self::Parameter(id) => Self::Parameter(bindings.get(&id).copied().unwrap_or(id)),
-            Self::Unresolved => self,
+            Self::Unresolved | Self::Inactive => self,
         }
     }
     pub(super) fn at_call(self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Borrow {
@@ -116,30 +118,44 @@ impl Source {
                 let value=proof.view_borrow(0);
                 if !value.empty(){value}else{Borrow::from_sources(BTreeSet::from([proof.known_identity(0).map(Self::Data).unwrap_or(Self::Unresolved)]))}
             }
-            Self::Unresolved=>Borrow::from_sources(BTreeSet::from([self])),
+            Self::Unresolved|Self::Inactive=>Borrow::from_sources(BTreeSet::from([self])),
         }
     }
 }
-crate::module::codec::variants!(Source{0=>Data(id),1=>Parameter(id),2=>Unresolved});
+crate::module::codec::variants!(Source{0=>Data(id),1=>Parameter(id),2=>Unresolved,3=>Inactive});
 impl Binding {
     pub(super) fn view_parts(&self)->Option<(&Ty,&bounds::Proof)> {
         match self {
             Self::Value(v) if v.ty.contains_views()=>Some((&v.ty,&v.proof)),
             Self::Owned(v) if v.place.ty().contains_views()=>Some((v.place.ty(),&v.proof)),
+            Self::OwnedValue(v) if v.value.ty.contains_views()=>Some((&v.value.ty,&v.value.proof)),
             _=>None,
         }
     }
     pub(super) fn view_proof_mut(&mut self)->Option<&mut bounds::Proof> {
-        match self {Self::Value(v) if v.ty.contains_views()=>Some(&mut v.proof),Self::Owned(v) if v.place.ty().contains_views()=>Some(&mut v.proof),_=>None}
+        match self {Self::Value(v) if v.ty.contains_views()=>Some(&mut v.proof),Self::Owned(v) if v.place.ty().contains_views()=>Some(&mut v.proof),Self::OwnedValue(v) if v.value.ty.contains_views()=>Some(&mut v.value.proof),_=>None}
     }
     pub(super) fn view_borrow(&self)->Borrow {
         if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
-            return value.value.proof.borrowed_view();
+            let mut borrow=value.value.proof.typed_view_borrow(&value.value.ty);
+            for data in value.resources(){borrow.union(&data.handle.proof.view_borrow(0));}return borrow;
         }
         if let Self::ViewElement{view,..}=self {return view.proof.borrowed_view();}
-        self.view_parts().map(|(_,proof)|proof.borrowed_view()).unwrap_or_default()
+        self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default()
     }
 
+}
+pub(super) fn resource_paths(ty:&Ty)->Vec<Vec<usize>> {
+    fn visit(ty:&Ty,path:&mut Vec<usize>,result:&mut Vec<Vec<usize>>) {
+        if ty.dataset.is_some(){result.push(path.clone());return;}
+        if ty.has_variants(){for(index,variant)in ty.variants.iter().enumerate(){path.push(index);visit(&variant.ty,path,result);path.pop();}}
+        else{for index in 0..ty.aggregate_len(){let(_,field)=ty.aggregate_part(index);path.push(index);visit(field,path,result);path.pop();}}
+    }
+    let mut result=Vec::new();visit(ty,&mut Vec::new(),&mut result);result
+}
+pub(super) fn owned_data_at<'a>(value:&'a owned_values::OwnedValue,path:&[usize])->Option<&'a application::Data> {
+    let(first,rest)=path.split_first()?;
+    match value.payloads.get(*first)?.as_deref()? {returns::Returned::Dataset(data)if rest.is_empty()=>Some(data),returns::Returned::OwnedValue(child)=>owned_data_at(child,rest),_=>None}
 }
 impl Builder<'_> {
     fn mapped_data_borrow(&self,identity:ValueIdentity)->Option<Borrow> {
@@ -187,23 +203,25 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, span: Span) -> Result<()> {
-        for source in value.proof.borrowed_views() {
+        for source in value.proof.typed_view_borrow(&value.ty).sources {
             match source {
                 Source::Data(id) => self.application_handle_available(id, span)?,
                 Source::Unresolved => {
                     return self.fail(span, "B271", "view返回的实际借用来源尚未形成合同");
                 }
-                Source::Parameter(_) => {}
+                Source::Parameter(_) | Source::Inactive => {}
             }
         }
         Ok(())
     }
     pub(super) fn require_view_return(&mut self, value: &Value, span: Span) -> Result<()> {
         self.require_view_available(value, span)?;
-        self.require_view_return_proof(&value.proof, span)
+        let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
+        self.require_view_return_proof(&proof, span)
     }
     pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,span:Span)->Result<()> {
-        let allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).map(|data|data.handle.identity()).collect();
+        let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.handle.identity()).chain(data.handle.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
+        for(index,param)in self.definition.function.params.iter().enumerate(){if param.access==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
         self.check_view_requirement(Requirement::Return{borrow:proof.borrowed_view(),allowed,span})
     }
     pub(super) fn create_application_view(

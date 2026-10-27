@@ -11,26 +11,6 @@ pub(super) struct OwnedValue {
     pub slots: Option<Vec<usize>>,
 }
 impl OwnedValue {
-    // 拥有树的资源叶是来源所有者；原打包值只映射到相同物理分量。
-    pub(super) fn sync_resource_borrows(&mut self) {
-        self.value.proof.clear_view_borrows();
-        for (index,item) in self.payloads.iter_mut().enumerate() {
-            let Some(item)=item.as_deref_mut() else{continue};
-            if let Returned::OwnedValue(child)=item {child.sync_resource_borrows();}
-            let (offset,ty)=if self.value.ty.has_variants(){(ir::align_up(4,self.value.ty.align),self.value.ty.variants[index].ty.as_ref())}else{self.value.ty.aggregate_part(index)};
-            for (component,(_,at)) in ty.components.iter().enumerate() {
-                let borrow=match item {
-                    Returned::Dataset(data) if component==0=>data.handle.proof.view_borrow(0),
-                    Returned::OwnedValue(value)=>value.value.proof.view_borrow(component),_=>view::Borrow::default(),
-                };
-                if borrow.empty(){continue;}
-                let selected=self.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap();
-                let borrow=self.value.proof.view_borrow(selected).joined(borrow);
-                self.value.proof=self.value.proof.clone().with_view_borrow(selected,borrow);
-            }
-        }
-    }
-
     pub(super) fn place(&self) -> Option<Place> {
         self.slots.as_ref().map(|slots| {
             let base = slots[0] - self.value.ty.components[0].1 as usize / 4;
@@ -91,7 +71,6 @@ impl OwnedValue {
                 Returned::OwnedValue(value)=>value.borrow(),_=>{},
             }
         }
-        self.sync_resource_borrows();
     }
     pub(super) fn incomplete(&self) -> bool {
         self.payloads.iter().enumerate().any(|(i,p)|{
@@ -124,12 +103,12 @@ impl OwnedValue {
     }
     pub(super) fn invalidate(&mut self) {
         self.value.constant = None;
-        self.value.proof = bounds::Proof::default();
+        self.value.proof = self.value.proof.borrow_state();
         self.value.uniform = false;
         for item in self.payloads.iter_mut().flatten() {
             match item.as_mut() {
                 Returned::Dataset(data) => {
-                    data.handle.proof = bounds::Proof::default();
+                    data.handle.proof = data.handle.proof.borrow_state();
                     data.length.proof = data
                         .count
                         .map(|n| bounds::Proof::unsigned(n, n))
@@ -193,7 +172,7 @@ impl OwnedValue {
                         if borrowed.is_some_and(|id| d.handle.proof.known_identity(0) == Some(id)) {
                             continue;
                         }
-                        d.handle.proof = bounds::Proof::default();
+                        d.handle.proof = d.handle.proof.borrow_state();
                         d.length.proof = d
                             .count
                             .map(|n| bounds::Proof::unsigned(n, n))
@@ -378,7 +357,8 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn template_returned(&mut self, value: Value, available: bool) -> Returned {
+    pub(super) fn template_returned(&mut self, mut value: Value, available: bool) -> Returned {
+        if value.ty.dataset.is_none(){value.proof.retain_view_borrows(&value.ty);}
         if let Some(element) = value.ty.dataset.as_deref() {
             let mut handle = self.value_component(&value, 0);
             handle.proof = bounds::Proof::capture(&handle);
@@ -727,7 +707,9 @@ impl Builder<'_> {
     fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Returned {
         let payload=self.variant_payload(&value.value,index);
         let Some(meta)=&value.payloads[index] else {return match payload {Some(value)=>self.template_returned(value,false),None=>Returned::Unit};};
-        let mut item=(**meta).clone();if let Some(value)=payload {self.rebind_returned(&mut item,value.regs);}item
+        let mut item=(**meta).clone();if let Some(value)=payload {
+            match &mut item {Returned::Value(current)=>*current=value,Returned::OwnedValue(current)=>{current.value=value;current.slots=None;},_=>self.rebind_returned(&mut item,value.regs)}
+        }item
     }
     pub(super) fn evaluate_returned(
         &mut self,

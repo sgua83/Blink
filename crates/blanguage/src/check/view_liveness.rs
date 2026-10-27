@@ -140,6 +140,7 @@ impl State {
         let (ty, proof) = match binding {
             Binding::Value(v) => (&v.ty, &v.proof),
             Binding::Owned(v) => (v.place.ty(), &v.proof),
+            Binding::OwnedValue(v) => (&v.value.ty,&v.value.proof),
             Binding::ViewElement { view, .. } => return view.proof.borrowed_view(),
             _ => return view::Borrow::default(),
         };
@@ -149,8 +150,9 @@ impl State {
             for path in excluded {
                 selected.retain(|i| !components(ty, path, 0).contains(i));
             }
-            for component in selected {
-                result.union(&proof.view_borrow(component));
+            let views=view_contracts::components(ty);
+            for component in selected.intersection(&views) {
+                result.union(&proof.view_borrow(*component));
             }
         }
         result

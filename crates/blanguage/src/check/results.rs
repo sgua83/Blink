@@ -141,6 +141,10 @@ impl Builder<'_> {
         if let Some(bits) = &mut value.constant {
             bits[0] = ty.variants[index].discriminant;
         }
+        value.proof.retain_view_borrows(&ty);
+        let offset=ir::align_up(4,ty.align);
+        let active=view_contracts::components(&ty.variants[index].ty).into_iter().map(|component|ty.components.iter().position(|(_,at)|*at==offset+ty.variants[index].ty.components[component].1).unwrap()).collect::<BTreeSet<_>>();
+        for component in view_contracts::components(&ty).difference(&active){value.proof=value.proof.clone().with_view_sources(*component,BTreeSet::from([view::Source::Inactive]));}
         value.literal = false;
         value
     }
@@ -182,6 +186,7 @@ impl Builder<'_> {
                 constant = None;
             }
         }
+        proof.retain_view_borrows(&ty);
         Some(Value {
             ty,
             regs,

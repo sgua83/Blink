@@ -78,8 +78,7 @@ impl Builder<'_> {
         for (name,binding) in &self.loop_contexts[level].resources {
             for (path,_,independent) in data_paths(binding){slots.push(InputSlot::Data{name:name.clone(),path,independent});}
             if let Some((ty,_))=binding.view_parts() {
-                for (offset,_) in ty.view_fields() {
-                    let component=ty.components.iter().position(|(_,at)|*at==offset).unwrap();
+                for component in view_contracts::components(ty) {
                     slots.push(InputSlot::Value{name:name.clone(),component});
                 }
             }
@@ -100,7 +99,6 @@ impl Builder<'_> {
                 data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:BTreeSet::from([LoopInput{level:scope,index}]),..Borrow::default()});
             }
         }
-        for binding in self.env.values_mut(){if let Binding::OwnedValue(value)=binding {value.sync_resource_borrows();}}
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Value{name,component}=slot {
                 let proof=self.env.get_mut(name).unwrap().view_proof_mut().unwrap();
@@ -167,7 +165,6 @@ impl Builder<'_> {
                     }
                     _=>{},
                 }
-                if let Binding::OwnedValue(value)=binding {value.sync_resource_borrows();}
             }
         };
         for state in &mut context.exits {resolve_env(&mut state.env);}
