@@ -749,7 +749,9 @@ impl Device {
         self.upload_payload(&mut target, &data.words)?;
         Ok(target)
     }
-    pub fn zeroed(
+    /// 分配原生存储；内容由实际B生产者写入，不额外提交清零工作。
+    /// 调用者须在读取前初始化会被消费的字段；有view的非空记录仍需真实绑定。
+    pub fn allocate(
         &self,
         program: &dyn ProgramInterface,
         binding: usize,
@@ -764,9 +766,16 @@ impl Device {
                 "非空 view 数据需要 upload_with_views 绑定资源，不能以零地址初始化",
             ));
         }
-        let bytes = schema.stride as u64 * count as u64;
-        let mut target =
-            GpuDataset::new(self.inner.clone(), schema.ty.clone(), schema.stride, count)?;
+        GpuDataset::new(self.inner.clone(), schema.ty.clone(), schema.stride, count)
+    }
+    pub fn zeroed(
+        &self,
+        program: &dyn ProgramInterface,
+        binding: usize,
+        count: u32,
+    ) -> Result<GpuDataset> {
+        let mut target = self.allocate(program, binding, count)?;
+        let bytes = target.stride as u64 * count as u64;
         if bytes > 0 {
             let commands = Commands::new(self.inner.clone())?;
             for page in &target.pages {
