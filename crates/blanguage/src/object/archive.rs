@@ -26,7 +26,7 @@ pub(crate) fn compile(source: &str, exports: Vec<String>) -> Result<Archive> {
     std::fs::create_dir_all(build.join("src"))?;
     let result = (|| {
         let manifest = format!(
-            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\nblanguage={{path={:?}}}\nblcompute={{path={:?}}}\n[profile.release]\nlto=\"thin\"\ncodegen-units=1\npanic=\"abort\"\n",
+            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\nblanguage={{path={:?}}}\nblcompute={{path={:?}}}\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
             sdk.join("crates/blanguage").to_string_lossy(),
             sdk.join("crates/blcompute").to_string_lossy()
         );
@@ -62,6 +62,7 @@ pub(crate) fn compile(source: &str, exports: Vec<String>) -> Result<Archive> {
                 bytes: std::fs::read(target.join(format!("release/{unit}.lib")))?,
                 libraries,
                 exports,
+                resources: None,
             })
         })();
         let cleanup = (|| {

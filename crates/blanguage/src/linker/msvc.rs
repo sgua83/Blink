@@ -110,7 +110,8 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         vec![vc.join("lib/x64"), sdk.join("um/x64"), sdk.join("ucrt/x64")],
     ))
 }
-pub(super) fn library(archive: &Archive, path: &Path, import_library: bool) -> Result<()> {
+pub(super) fn library(archives: &[Archive], path: &Path, import_library: bool) -> Result<()> {
+    let binding = super::resources::resources(archives)?;
     let (linker, libraries) = tools()?;
     let id = format!(
         "{}-{}",
@@ -119,8 +120,23 @@ pub(super) fn library(archive: &Archive, path: &Path, import_library: bool) -> R
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     );
-    let temp = path.parent().unwrap().join(format!(".blink-link-{id}.lib"));
-    std::fs::write(&temp, &archive.bytes)?;
+    let mut temporary = Vec::new();
+    for (index, archive) in archives.iter().enumerate() {
+        let path = path
+            .parent()
+            .unwrap()
+            .join(format!(".blink-link-{id}-{index}.lib"));
+        std::fs::write(&path, &archive.bytes)?;
+        temporary.push(path);
+    }
+    if let Some(binding) = binding {
+        let path = path
+            .parent()
+            .unwrap()
+            .join(format!(".blink-link-{id}-resources.obj"));
+        binding.write(&path)?;
+        temporary.push(path);
+    }
     let result = (|| {
         let mut command = Command::new(linker);
         command
@@ -133,7 +149,7 @@ pub(super) fn library(archive: &Archive, path: &Path, import_library: bool) -> R
                 "/NOEXP",
             ])
             .arg(format!("/OUT:{}", path.display()))
-            .arg(&temp);
+            .args(&temporary);
         if import_library {
             command.arg(format!("/IMPLIB:{}", path.with_extension("lib").display()));
         } else {
@@ -142,15 +158,25 @@ pub(super) fn library(archive: &Archive, path: &Path, import_library: bool) -> R
         for lib in libraries {
             command.arg(format!("/LIBPATH:{}", lib.display()));
         }
-        for name in &archive.libraries {
+        let libraries = archives
+            .iter()
+            .flat_map(|archive| &archive.libraries)
+            .collect::<std::collections::BTreeSet<_>>();
+        let exports = archives
+            .iter()
+            .flat_map(|archive| &archive.exports)
+            .collect::<std::collections::BTreeSet<_>>();
+        for name in libraries {
             command.arg(name);
         }
-        for name in &archive.exports {
+        for name in exports {
             command.arg(format!("/EXPORT:{name}"));
         }
         output(&mut command)?;
         Ok(())
     })();
-    std::fs::remove_file(temp)?;
+    for path in temporary {
+        std::fs::remove_file(path)?;
+    }
     result
 }

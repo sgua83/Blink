@@ -13,7 +13,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
@@ -24,20 +24,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut output = None;
         let mut entry = "main";
         let mut program = None;
+        let mut module = false;
+        let mut imports = Vec::new();
+        let mut instances = Vec::new();
         let mut i = 2;
         while i < args.len() {
+            if args[i] == "--module" {
+                module = true;
+                i += 1;
+                continue;
+            }
             let value = args.get(i + 1).ok_or("编译选项缺少参数")?;
             match args[i].as_str() {
                 "-o" => output = Some(PathBuf::from(value)),
                 "-I" => root = PathBuf::from(value),
                 "--entry" => entry = value,
                 "--program" => program = Some(value.as_str()),
+                "--import" => imports.push(blanguage::object::Object::read(&PathBuf::from(value))?),
+                "--instance" => instances.push(value.clone()),
                 other => return Err(format!("未知编译选项 {other}").into()),
             }
             i += 2;
         }
         let output = output.ok_or("缺少 -o 目标文件路径")?;
-        let object = if let Some(entry) = program {
+        let object = if module {
+            blanguage::module::compile(&path, &root, &imports, &instances)?.compile()?
+        } else if let Some(entry) = program {
             let compilation = blanguage::compile_entry(&path, &root, entry)?;
             let program = compilation
                 .programs
@@ -48,8 +60,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|s| s.to_str())
                 .ok_or("目标文件名不是 UTF-8")?;
             blanguage::dll::compile_object(program, prefix)?
-        } else {
+        } else if imports.is_empty() {
             blanguage::compile_application(&path, &root, entry)?.compile()?
+        } else {
+            blanguage::compile_application_with_modules(&path, &root, entry, &imports)?.compile()?
         };
         object.write(&output)?;
         println!("object {} -> {}", object.name(), output.display());

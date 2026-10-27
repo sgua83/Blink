@@ -1731,3 +1731,23 @@ impl Builder<'_> {
         }
     }
 }
+
+impl crate::module::codec::Encode for IntegerRanges {
+    fn encode(&self, w: &mut crate::module::codec::Writer) {
+        crate::module::codec::Encode::encode(&self.0, w);
+    }
+}
+impl crate::module::codec::Decode for IntegerRanges {
+    fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
+        Ok(Self(crate::module::codec::Decode::decode(r)?))
+    }
+}
+crate::module::codec::record!(Proof {
+    origins,
+    condition,
+    ranges,
+    nonzero,
+    domains
+});
+crate::module::codec::record!(Condition { cases });
+crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value)});

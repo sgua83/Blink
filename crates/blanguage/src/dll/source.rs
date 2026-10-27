@@ -311,14 +311,30 @@ pub(super) fn constructor(p: &ExecutableProgram) -> Result<String, Box<dyn std::
 
 pub(crate) fn application_source(
     resources: &crate::application::Resources,
+    prefix: &str,
+    root: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::fmt::Write;
     let mut images = Vec::new();
     let mut functions = String::new();
+    if root {
+        functions.push_str(r#"
+type Factory=unsafe extern "C" fn()->*mut ModuleResources;
+unsafe extern "C"{static __blink_module_count:usize;static __blink_module_factories:Factory;}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_create()->*mut Frame{
+    let factories=unsafe{std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories),__blink_module_count)};
+    let mut types=Vec::new();let mut programs=Vec::new();
+    for factory in factories{let module=unsafe{Box::from_raw(factory())};let ModuleResources{types:local_types,programs:local_programs}=*module;types.extend(local_types);programs.extend(local_programs);}
+    Box::into_raw(Box::new(Frame::new(types,programs)))
+}
+"#);
+    }
+
     for index in 0..resources.types.len() {
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn blink_allocate_{index}(frame: *mut Frame, count: u32) -> u32 {{\n let result = unsafe {{ &mut *frame }}.allocate({index}, count);\n unsafe {{ finish(frame, result) }}\n}}"
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(frame: *mut Frame, count: u32) -> u32 {{\n let result = unsafe {{ &mut *frame }}.allocate(unsafe {{ {prefix}_type_base }} + {index}, count);\n unsafe {{ finish(frame, result) }}\n}}"
         )?;
     }
     for (index, (target, program)) in resources.programs.iter().enumerate() {
@@ -368,13 +384,14 @@ pub(crate) fn application_source(
         }
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn blink_run_{index}({}) {{\n let result = unsafe {{ &mut *frame }}.run({index}, &[{}], &[{}]);\n unsafe {{ finish(frame, result) }}\n}}",
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({}) {{\n let result = unsafe {{ &mut *frame }}.run(unsafe {{ {prefix}_program_base }} + {index}, &[{}], &[{}]);\n unsafe {{ finish(frame, result) }}\n}}",
             params.join(","),
             handles.join(","),
             words.join(",")
         )?;
     }
     Ok(include_str!("../application/runtime.rs.in")
+        .replace("@PREFIX@", prefix)
         .replace("@TYPES@", &resources.types.source())
         .replace("@IMAGES@", &format!("vec![{}]", images.join(",")))
         .replace("@FUNCTIONS@", &functions))

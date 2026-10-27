@@ -11,6 +11,7 @@ pub struct Application {
     pub(crate) name: String,
     pub(crate) body: ValueCode,
     pub(crate) functions: Vec<crate::ir::FunctionBody>,
+    pub(crate) imports: std::collections::BTreeMap<String, Vec<u8>>,
     pub(crate) resources: Option<Resources>,
 }
 #[derive(Default)]
@@ -24,7 +25,7 @@ impl Application {
     }
     pub fn compile(&self) -> Result<Object, Box<dyn std::error::Error>> {
         let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
-        let stack_bytes = code.code.stack_bytes;
+        let mut stack_bytes = code.code.stack_bytes;
         let functions = self
             .functions
             .iter()
@@ -33,34 +34,71 @@ impl Application {
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(std::io::Error::other)?;
-        let sections = object::application_code(code, functions)?;
-        let archive = if let Some(resources) = &self.resources {
-            let source = crate::dll::application_source(resources)?;
-            let mut exports = [
-                "blink_create",
-                "blink_destroy",
-                "blink_release",
-                "blink_upload",
-                "blink_download",
-                "blink_address",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-            exports.extend((0..resources.types.len()).map(|i| format!("blink_allocate_{i}")));
-            exports.extend((0..resources.programs.len()).map(|i| format!("blink_run_{i}")));
-            Some(object::compile_archive(&source, exports)?)
-        } else {
-            None
-        };
+        for (_, function) in &functions {
+            stack_bytes = stack_bytes.max(function.code.stack_bytes);
+        }
+        let sections =
+            object::application_code(code, functions, &self.imports, &resource_prefix(&self.name))?;
+        let archive = compile_resources(&self.name, self.resources.as_ref(), true)?;
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Application { stack_bytes },
             sections,
+            symbols: Vec::new(),
             archive,
         })
     }
     pub fn write_object(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         self.compile()?.write(path)
     }
+}
+
+pub(crate) fn resource_prefix(name: &str) -> String {
+    use std::fmt::Write;
+    let mut prefix = String::from("blink_m");
+    for byte in name.bytes() {
+        write!(prefix, "{byte:02x}").unwrap();
+    }
+    prefix
+}
+pub(crate) fn compile_resources(
+    name: &str,
+    resources: Option<&Resources>,
+    root: bool,
+) -> Result<Option<object::Archive>, Box<dyn std::error::Error>> {
+    Ok(if let Some(resources) = resources {
+        let prefix = resource_prefix(name);
+        let source = crate::dll::application_source(resources, &prefix, root)?;
+        let mut exports = [
+            "blink_destroy",
+            "blink_release",
+            "blink_upload",
+            "blink_download",
+            "blink_address",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        exports.extend((0..resources.types.len()).map(|i| format!("{prefix}_allocate_{i}")));
+        exports.extend((0..resources.programs.len()).map(|i| format!("{prefix}_run_{i}")));
+        if root {
+            exports.push("blink_create".into());
+        }
+        exports.push(format!("{prefix}_resources"));
+        let mut archive = object::compile_archive(&source, exports)?;
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        archive.resources = Some(object::ResourceBinding {
+            prefix,
+            types: u32::try_from(resources.types.len())?,
+            programs: u32::try_from(resources.programs.len())?,
+            abi: object::runtime_abi(sdk)?,
+        });
+        Some(archive)
+    } else {
+        None
+    })
 }

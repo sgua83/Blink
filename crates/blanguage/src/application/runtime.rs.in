@@ -1,47 +1,15 @@
 #![allow(unused_imports)]
 use blanguage::{TemplateProgram, ast::{Access, Target, ExternalName}, ir::*, native::{NativeCode, NativeIntrinsic, NativeSymbol, Relocation, RangeResult, ContinuationCode, SortCode as NativeSortCode, StageCode as NativeStageCode, ProgramImage as NativeProgramImage}, spirv::{ShaderCode, StageCode as ShaderStageCode, ProgramImage as ShaderProgramImage}};
-use blcompute::application::{Frame, ProgramImage};
+use blcompute::application::{Frame, ProgramImage,ModuleResources};
 use blcompute::Value;
 use std::collections::BTreeSet;
-
-fn fail(error: Box<dyn std::error::Error + Send + Sync>) -> ! {
-    eprintln!("{error}");
-    std::process::exit(1)
+fn fail(error:Box<dyn std::error::Error+Send+Sync>)->!{eprintln!("{error}");std::process::exit(1)}
+unsafe fn finish<T>(frame:*mut Frame,result:blcompute::Result<T>)->T{
+    match result{Ok(value)=>value,Err(error)=>{drop(unsafe{Box::from_raw(frame)});fail(error)}}
 }
-unsafe fn finish<T>(frame: *mut Frame, result: blcompute::Result<T>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(error) => {
-            drop(unsafe { Box::from_raw(frame) });
-            fail(error)
-        }
-    }
-}
+unsafe extern "C"{static @PREFIX@_type_base:u32;static @PREFIX@_program_base:u32;}
 #[unsafe(no_mangle)]
-pub extern "C" fn blink_create() -> *mut Frame {
-    Box::into_raw(Box::new(Frame::new(@TYPES@, @IMAGES@)))
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_destroy(frame: *mut Frame) {
-    drop(unsafe { Box::from_raw(frame) });
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_release(frame: *mut Frame, handle: u32) {
-    unsafe { &mut *frame }.release(handle);
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_upload(frame: *mut Frame, handle: u32) {
-    let result = unsafe { &mut *frame }.upload(handle);
-    unsafe { finish(frame, result) }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_download(frame: *mut Frame, handle: u32) {
-    let result = unsafe { &mut *frame }.download(handle);
-    unsafe { finish(frame, result) }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_address(frame: *mut Frame, handle: u32, write: u32) -> *mut u32 {
-    let result = unsafe { (&mut *frame).address(handle, write != 0) };
-    unsafe { finish(frame, result) }
+pub extern "C" fn @PREFIX@_resources()->*mut ModuleResources{
+    Box::into_raw(Box::new(ModuleResources{types:@TYPES@,programs:@IMAGES@}))
 }
 @FUNCTIONS@

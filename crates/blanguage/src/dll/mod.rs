@@ -151,11 +151,7 @@ fn generate(p: &ExecutableProgram, prefix: &str) -> Result<(String, String, Stri
         let t = format!("{prefix}_data_{n}");
         layout(&t, &b.ty, &mut c, &mut types)?;
         if let Some(count) = b.count {
-            writeln!(
-                c,
-                "#define {upper}_{}_COUNT {count}u",
-                constant_name(&n)
-            )?;
+            writeln!(c, "#define {upper}_{}_COUNT {count}u", constant_name(&n))?;
             writeln!(
                 types,
                 "pub const {}_COUNT: usize = {count};",
@@ -247,6 +243,7 @@ pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate
             binding,
         },
         sections: Vec::new(),
+        symbols: Vec::new(),
         archive: Some(archive),
     })
 }

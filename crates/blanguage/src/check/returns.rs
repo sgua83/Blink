@@ -117,7 +117,7 @@ fn propagates(body: &[Stmt]) -> bool {
             ExprKind::Specialize(_, _, args)
             | ExprKind::Cooperate(_, _, args)
             | ExprKind::Construct(_, args) => args.iter().any(expr),
-            ExprKind::Target(_,e) | ExprKind::Member(e, _) | ExprKind::Unary(_, e) => expr(e),
+            ExprKind::Target(_, e) | ExprKind::Member(e, _) | ExprKind::Unary(_, e) => expr(e),
             ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => expr(a) || expr(b),
             ExprKind::Select(c, a, b) => expr(c) || expr(a) || expr(b),
             _ => false,
@@ -432,3 +432,5 @@ impl Builder<'_> {
         Ok(result)
     }
 }
+
+crate::module::codec::variants!(Returned{0=>Unit,1=>Value(value),2=>Dataset(data),3=>OwnedValue(value)});

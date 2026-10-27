@@ -206,9 +206,9 @@ u32 main() on cpu {
 
 ### 编译与链接的独立边界
 
-`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待执行的 B 源码或值 IR。
+`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj] [--instance function<args>]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待编译的实现源码或值IR；独立模块携带其公开.h接口。
 
-`bllink <input.obj> -o <output.exe|output.dll>` 只链接目标文件：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、blc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
+`bllink <input.obj> [module.obj ...] -o <output.exe|output.dll>` 只链接目标文件：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、blc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
 
 编译时若需要执行框架，源码 SDK 使用现有 Rust 工具链把框架和 ABI 编译成静态目标代码，写进该目标文件；链接时只解析这些已经编译的代码及本机库依赖。当前每个目标文件是包含导入模块的一个完整应用或算法单元，不把这项能力写成通用多目标文件模块链接。`blc check` 与阶段代码导出 `blc build` 保留，不承担最终应用链接；旧的 `build-exe/build-dll` 合并命令已移除。
 
@@ -393,7 +393,24 @@ u32 factorial(u32 n) on cpu {
 
 拥有 dataset、记录和 result 的调用传递原 Frame 句柄／长度和活动资源叶，同一可变存储只有原所有者。资源的 CPU／GPU 位置按本次实际关系专门化，返回 GPU 存储不会下载；原拥有者显式 download 后才可在 CPU 读取。应用入口拥有 Frame 创建／销毁，需要资源的函数链只借用同一 Frame；普通纯值调用不增加执行框架依赖。
 
-compute 值函数从 CPU 应用调用时可生成 CPU 原生函数；parallel 元素函数、整域算法和 cooperative 仍使用原参与范围及专门化规则，不能由主流程递归能力推导设备递归已经实现。一般递归资源的存储位置事实、拥有参数资源阶段合同、其他目标普通调用、选择性内联、独立模块编译及多对象链接继续研发；未知资源位置保持未知。当前对象包含本次已装入的定义闭包，不能当作独立模块 ABI 或稳定热更新。
+compute 值函数从 CPU 应用调用时可生成 CPU 原生函数；parallel 元素函数、整域算法和 cooperative 仍使用原参与范围及专门化规则，不能由主流程递归能力推导设备递归已经实现。一般递归资源的存储位置事实、拥有参数资源阶段合同、其他目标普通调用及选择性内联继续研发；未知资源位置保持未知。独立模块与多对象链接按下节的实际有限范围提供，不能当作完整模块ABI或稳定热更新。
+
+## 独立原生模块（2026-10-27）
+
+将普通CPU适用函数库编译为模块对象，再让应用只消费已编译接口：
+
+```powershell
+.\target\release\blc.exe -c sample/beginner/math.b -I sample --module -o target/modules/math.obj
+.\target\release\blc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.obj -o target/modules/app.obj
+.\target\release\bllink.exe target/modules/math.obj target/modules/app.obj -o target/modules/app.exe
+.\target\modules\app.exe
+```
+
+输出13。模块产物保存实际.h的公开声明／常量及已编译具体函数的布局、访问、结果／写后事实和原生符号；应用不需要该库的.h或.b文件。依赖模块分别通过重复的`--import`提供，最终链接显式列出需要的对象；缺失或不兼容的定义直接报错。未使用`--import`的原完整源码编译入口继续按原职责工作，不在导入失败后切换模式。
+
+模块导出公开的有限具体实例，开放泛型可以在模块编译时重复指定`--instance 'function<args>'`；尚未导出的开放实例不能靠装入私有源码临时生成。普通CPU函数可包含同步CPU／GPU程序、返回拥有资源，跨对象仍借用同一个Frame；显式upload／download、设备真实完成和最后消费者释放的语义保持。
+
+目前跨对象的位置借用沿已有物理映射具体实例，任意新布局的通用借用ABI、一般拥有参数的CPU／GPU阶段合同、符号泛型模板、完整常量／依赖版本、设备普通跨模块调用及热更新尚未实现。含资源对象当前要求同一实际SDK／Rust执行框架ABI；这是当前私有表示的互操作限制，不是语言永久边界。链接不会编译实现或掩盖未知资源位置。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 

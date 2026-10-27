@@ -143,6 +143,7 @@ pub(super) fn link(object: &Object, runtime: Option<&str>) -> Result<Vec<u8>> {
                     sections.get(*i).ok_or("重定位引用未知节")?.rva as u64 + *value as u64
                 }
                 Target::Import(i) => table.targets[&physical(i)?] as u64,
+                Target::Symbol(name, _) => return Err(format!("未定义模块符号 {name}").into()),
             };
             let at = relocation.offset;
             let source = sections[index].rva as u64 + at as u64;

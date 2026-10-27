@@ -262,15 +262,26 @@ impl<'a> Builder<'a> {
                 .external_call(&instance.definition, args, span)
                 .map(|v| v.map(returns::Returned::Value));
         }
+        if instance.definition.compiled.is_some() {
+            if self.application.is_none() {
+                return self.fail(span, "B270", "该已编译普通原生模块入口需要CPU应用调用位置");
+            }
+            return self.native_function(instance, args, span);
+        }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application.is_some() {
-                if instance.definition.function.target==Target::Cpu
-                    && !super::kernel_interface(self.world,&instance.definition)? {
-                    return self.inline_instance(instance,args,span);
+                if instance.definition.function.target == Target::Cpu
+                    && !super::kernel_interface(self.world, &instance.definition)?
+                {
+                    return self.inline_instance(instance, args, span);
                 }
                 return self.application_execute(instance, args, Target::Cpu, span);
             }
-            return self.fail(span,"B159","整域执行需要发起位置，不能由元素实例或协作成员发起");
+            return self.fail(
+                span,
+                "B159",
+                "整域执行需要发起位置，不能由元素实例或协作成员发起",
+            );
         }
         match instance.definition.function.kind {
             FunctionKind::Cooperative => {
@@ -339,8 +350,11 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
-        if self.application.is_some() && instance.definition.function.kind==FunctionKind::Value && instance.definition.function.target!=Target::Gpu {
-            return self.native_function(instance,args,span);
+        if self.application.is_some()
+            && instance.definition.function.kind == FunctionKind::Value
+            && instance.definition.function.target != Target::Gpu
+        {
+            return self.native_function(instance, args, span);
         }
         let mut held = Vec::new();
         let args = args

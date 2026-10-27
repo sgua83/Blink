@@ -72,11 +72,144 @@ pub(super) fn parameter_resources(value: &mut owned_values::OwnedValue, origin: 
 pub(super) struct Module {
     units: BTreeMap<String, Option<Unit>>,
 }
-struct Unit {
-    function: FunctionBody,
+#[derive(Clone)]
+pub(crate) struct Contract {
+    parameters: Vec<CallParameter>,
+    result: Option<Ty>,
     inputs: Vec<Reg>,
     returned: Option<Returned>,
     written: Vec<Option<bounds::Proof>>,
+    requires: BTreeSet<(ContractKind, ContractPredicate)>,
+    target: Target,
+    frame: bool,
+}
+crate::module::codec::record!(Contract {
+    parameters,
+    result,
+    inputs,
+    returned,
+    written,
+    requires,
+    target,
+    frame
+});
+struct Unit {
+    function: Option<FunctionBody>,
+    contract: Contract,
+    module: String,
+    public: bool,
+}
+fn declaration(
+    world: &World,
+    instance: &crate::generics::Instance,
+    mut context: application::Context,
+    interface: &[Parameter],
+) -> Result<application::Context> {
+    if context.functions.units.contains_key(&instance.name) {
+        return Ok(context);
+    }
+    if let Some(definitions) = &instance.definition.compiled {
+        use crate::module::codec::Decode;
+        let bytes = definitions.get(&instance.name).ok_or_else(|| Diagnostic {
+            source: instance.definition.source.clone(),
+            span: instance.definition.function.span,
+            code: "B270",
+            message: format!("已编译模块没有原生实例 {}", instance.name),
+        })?;
+        let contract = Contract::from_bytes(bytes).map_err(|error| Diagnostic {
+            source: instance.definition.source.clone(),
+            span: instance.definition.function.span,
+            code: "B270",
+            message: format!("模块函数接口错误：{error}"),
+        })?;
+        context.functions.units.insert(
+            instance.name.clone(),
+            Some(Unit {
+                function: None,
+                contract,
+                module: instance.definition.module.clone(),
+                public: instance.definition.public,
+            }),
+        );
+        return Ok(context);
+    }
+    context.functions.units.insert(instance.name.clone(), None);
+    let frame = context.frame.take();
+    let mut instance = instance.clone();
+    if instance.definition.function.target == Target::Compute {
+        Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
+    }
+    let checked = checked_function(world, &instance, Some(context), interface)?;
+    let mut context = checked.application.unwrap();
+    context.frame = frame;
+    let mut function = checked.body;
+    let contract = Contract {
+        parameters: function.parameters.clone(),
+        result: function.result.clone(),
+        inputs: checked.inputs,
+        returned: checked.returned,
+        written: checked.written,
+        requires: crate::contract_signature(&instance.definition.function)
+            .into_iter()
+            .map(|(kind, predicate)| (kind, predicate.clone()))
+            .collect(),
+        target: instance.definition.function.target,
+        frame: false,
+    };
+    crate::optimize::value_code(&mut function.body);
+    context.functions.units.insert(
+        instance.name.clone(),
+        Some(Unit {
+            function: Some(function),
+            contract,
+            module: instance.definition.module.clone(),
+            public: instance.definition.public,
+        }),
+    );
+    Ok(context)
+}
+pub(super) fn canonical(
+    builder: &mut Builder<'_>,
+    returned: Option<Returned>,
+    inputs: &[Reg],
+    written: Vec<Option<bounds::Proof>>,
+) -> (Option<Returned>, Vec<Reg>, Vec<Option<bounds::Proof>>) {
+    let bindings = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, reg)| {
+            (
+                ValueIdentity::Register(*reg),
+                Value {
+                    ty: Ty::scalar(Scalar::U32),
+                    regs: vec![index],
+                    proof: bounds::Proof::default(),
+                    literal: false,
+                    uniform: false,
+                    constant: None,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let returned = returned.map(|model| {
+        let storage = builder.returned_storage(&model);
+        let value = Value {
+            ty: storage.ty,
+            regs: (inputs.len()..inputs.len() + storage.regs.len()).collect(),
+            proof: bounds::Proof::default(),
+            literal: false,
+            uniform: false,
+            constant: None,
+        };
+        let mut value = builder.template_returned(value, true);
+        translate_returned(&mut value, &model, &bindings);
+        value
+    });
+    let written = written
+        .into_iter()
+        .map(|proof| proof.map(|proof| proof.at_call(&bindings)))
+        .collect();
+    (returned, (0..inputs.len()).collect(), written)
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut context = application::Context::default();
@@ -89,43 +222,8 @@ impl Builder<'_> {
         instance: &crate::generics::Instance,
         interface: &[Parameter],
     ) -> Result<()> {
-        if self
-            .application
-            .as_ref()
-            .unwrap()
-            .functions
-            .units
-            .contains_key(&instance.name)
-        {
-            return Ok(());
-        }
-        let outer = self.application.as_mut().unwrap();
-        outer.functions.units.insert(instance.name.clone(), None);
-        let context = application::Context {
-            frame: None,
-            resources: std::mem::take(&mut outer.resources),
-            functions: std::mem::take(&mut outer.functions),
-        };
-        let mut instance = instance.clone();
-        if instance.definition.function.target == Target::Compute {
-            Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
-        }
-        let checked = checked_function(self.world, &instance, Some(context), interface)?;
-        let mut context = checked.application.unwrap();
-        let mut function = checked.body;
-        crate::optimize::value_code(&mut function.body);
-        context.functions.units.insert(
-            instance.name.clone(),
-            Some(Unit {
-                function,
-                inputs: checked.inputs,
-                returned: checked.returned,
-                written: checked.written,
-            }),
-        );
-        let outer = self.application.as_mut().unwrap();
-        outer.functions = context.functions;
-        outer.resources = context.resources;
+        let context = self.application.take().unwrap();
+        self.application = Some(declaration(self.world, instance, context, interface)?);
         Ok(())
     }
     pub(super) fn native_function(
@@ -291,9 +389,9 @@ impl Builder<'_> {
             .as_ref()
             .map(|unit| {
                 (
-                    unit.inputs.clone(),
-                    unit.returned.clone(),
-                    unit.written.clone(),
+                    unit.contract.inputs.clone(),
+                    unit.contract.returned.clone(),
+                    unit.contract.written.clone(),
                 )
             });
         let (bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
@@ -406,69 +504,88 @@ fn unknown_resources(value: &mut Returned) {
     }
 }
 
-pub(super) fn finish(module: Module, root: &mut ValueCode) -> Vec<FunctionBody> {
-    fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
-        for inst in code {
-            match inst {
-                Inst::Call(call) => visit(call),
-                Inst::Scope(body) => calls(body, visit),
-                Inst::If { yes, no, .. } => {
-                    calls(yes, visit);
-                    calls(no, visit);
-                }
-                Inst::Loop {
-                    condition, body, ..
-                } => {
-                    calls(condition, visit);
-                    calls(body, visit);
-                }
-                _ => {}
+fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
+    for inst in code {
+        match inst {
+            Inst::Call(call) => visit(call),
+            Inst::Scope(body) => calls(body, visit),
+            Inst::If { yes, no, .. } => {
+                calls(yes, visit);
+                calls(no, visit);
             }
+            Inst::Loop {
+                condition, body, ..
+            } => {
+                calls(condition, visit);
+                calls(body, visit);
+            }
+            _ => {}
         }
     }
-    fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
-        let mut names = BTreeSet::new();
-        calls(&mut body.code, &mut |call| {
-            if let CallTarget::Defined(name) = &call.target {
-                names.insert(name.clone());
-            }
-        });
-        names
-    }
-    let mut functions = module
+}
+fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    calls(&mut body.code, &mut |call| {
+        if let CallTarget::Defined(name) = &call.target {
+            names.insert(name.clone());
+        }
+    });
+    names
+}
+pub(super) struct Finalized {
+    pub functions: Vec<FunctionBody>,
+    pub imports: BTreeMap<String, Vec<u8>>,
+    pub exports: BTreeMap<String, Vec<u8>>,
+}
+fn finalize(
+    module: Module,
+    mut reachable: BTreeSet<String>,
+    mut root: Option<&mut ValueCode>,
+    owner: Option<&str>,
+) -> Finalized {
+    use crate::module::codec::Encode;
+    let mut units = module
         .units
         .into_iter()
-        .map(|(name, unit)| (name, unit.unwrap().function))
+        .map(|(name, unit)| (name, unit.unwrap()))
         .collect::<BTreeMap<_, _>>();
-    let mut reachable = dependencies(root);
     loop {
         let mut next = reachable.clone();
         for name in &reachable {
-            next.extend(dependencies(&mut functions.get_mut(name).unwrap().body));
+            if let Some(function) = &mut units.get_mut(name).unwrap().function {
+                next.extend(dependencies(&mut function.body));
+            }
         }
         if next == reachable {
             break;
         }
         reachable = next;
     }
-    functions.retain(|name, _| reachable.contains(name));
+    units.retain(|name, _| reachable.contains(name));
     let mut frame = BTreeSet::new();
-    for (name, function) in &mut functions {
-        calls(&mut function.body.code, &mut |call| {
-            if matches!(&call.target,CallTarget::External(name) if name.library==crate::application::RUNTIME_LIBRARY)
-            {
-                frame.insert(name.clone());
-            }
-        });
+    for (name, unit) in &mut units {
+        if unit.contract.frame {
+            frame.insert(name.clone());
+        }
+        if let Some(function) = &mut unit.function {
+            calls(&mut function.body.code, &mut |call| {
+                if matches!(&call.target,CallTarget::External(name) if name.library==crate::application::RUNTIME_LIBRARY)
+                {
+                    frame.insert(name.clone());
+                }
+            });
+        }
     }
     loop {
         let mut next = frame.clone();
-        for (name, function) in &mut functions {
-            if dependencies(&mut function.body)
-                .iter()
-                .any(|callee| frame.contains(callee))
-            {
-                next.insert(name.clone());
+        for (name, unit) in &mut units {
+            if let Some(function) = &mut unit.function {
+                if dependencies(&mut function.body)
+                    .iter()
+                    .any(|callee| frame.contains(callee))
+                {
+                    next.insert(name.clone());
+                }
             }
         }
         if next == frame {
@@ -483,14 +600,156 @@ pub(super) fn finish(module: Module, root: &mut ValueCode) -> Vec<FunctionBody> 
             }
         });
     }
-    prune(root, &frame);
-    for (name, function) in &mut functions {
-        prune(&mut function.body, &frame);
-        if !frame.contains(name) {
-            function.parameters.remove(0);
-            function.body.inputs.drain(..2);
-        }
-        crate::optimize::value_code(&mut function.body);
+    if let Some(body) = &mut root {
+        prune(body, &frame);
     }
-    functions.into_values().collect()
+    let mut result = Finalized {
+        functions: Vec::new(),
+        imports: BTreeMap::new(),
+        exports: BTreeMap::new(),
+    };
+    for (name, mut unit) in units {
+        unit.contract.frame = frame.contains(&name);
+        let local = unit.function.is_some() && owner.is_none_or(|owner| unit.module == owner);
+        if local {
+            let mut function = unit.function.take().unwrap();
+            prune(&mut function.body, &frame);
+            if !frame.contains(&name) {
+                function.parameters.remove(0);
+                function.body.inputs.drain(..2);
+            }
+            crate::optimize::value_code(&mut function.body);
+            result.functions.push(function);
+            if owner.is_some() && unit.public {
+                result.exports.insert(name, unit.contract.bytes());
+            }
+        } else {
+            result.imports.insert(name, unit.contract.bytes());
+        }
+    }
+    result
+}
+pub(super) fn finish(module: Module, root: &mut ValueCode) -> Finalized {
+    let roots = dependencies(root);
+    finalize(module, roots, Some(root), None)
+}
+
+fn default_symbol(world: &World, instance: &crate::generics::Instance) -> Result<String> {
+    fn states(ty: &Ty, out: &mut String) {
+        if ty.dataset.is_some() {
+            out.push('c');
+        } else if ty.owns_resources() {
+            out.push('(');
+            if ty.result {
+                for ty in &ty.arguments {
+                    states(ty, out);
+                }
+            } else {
+                for (_, _, ty) in &ty.fields {
+                    if ty.owns_resources() {
+                        states(ty, out);
+                    } else {
+                        out.push('-');
+                    }
+                }
+            }
+            out.push(')');
+        }
+    }
+    let mut name = instance.name.clone();
+    for (index, param) in instance.definition.function.params.iter().enumerate() {
+        let ty = cooperative::parameter_type(world, param, &instance.definition)?;
+        if !param.ty.dataset && matches!(param.access, Access::Write | Access::InOut) {
+            name.push_str(&format!(
+                "#r{index}{:?}",
+                ty.components
+                    .iter()
+                    .map(|(_, offset)| offset / 4)
+                    .collect::<Vec<_>>()
+            ));
+        } else if !param.ty.dataset && param.access == Access::Value && ty.owns_resources() {
+            name.push_str(&format!("#s{index}"));
+            states(&ty, &mut name);
+        }
+    }
+    Ok(name)
+}
+pub(crate) fn compile_module(
+    world: &World,
+    entry: &str,
+    requests: &[String],
+) -> Result<crate::module::Module> {
+    let mut context = application::Context::default();
+    let mut roots = BTreeSet::new();
+    for (key, d) in &world.functions {
+        crate::generics::validate_declaration(d)?;
+        if d.module != entry || d.compiled.is_some() {
+            continue;
+        }
+        for mut instance in crate::generics::instances(world, key, d)? {
+            if d.function.external.is_none()
+                && d.function.kind == FunctionKind::Value
+                && d.function.target != Target::Gpu
+            {
+                instance.name = default_symbol(world, &instance)?;
+                if d.public {
+                    roots.insert(instance.name.clone());
+                }
+                context = declaration(world, &instance, context, &[])?;
+            } else if d.execution == crate::execution::Requirement::Domain {
+                compile_program(world, &instance)?;
+            } else {
+                check_function(world, &instance)?;
+            }
+        }
+    }
+    for request in requests {
+        let source = Source {
+            path: "<module-export>".into(),
+            text: request.clone().into(),
+        };
+        let (name, arguments) = crate::parser::entry(source.clone())?;
+        let key = world
+            .resolve(&name, entry, &[], true)
+            .filter(|key| world.functions[key].module == entry && world.functions[key].public)
+            .ok_or_else(|| Diagnostic {
+                source: source.clone(),
+                span: Span::default(),
+                code: "B270",
+                message: format!("没有本模块公开导出 {name}"),
+            })?;
+        let d = &world.functions[&key];
+        let mut instance = super::generics::specialize(
+            world,
+            &key,
+            &[],
+            arguments.as_deref(),
+            d,
+            d.function.span,
+        )?;
+        if d.function.external.is_some()
+            || d.function.kind != FunctionKind::Value
+            || d.function.target == Target::Gpu
+        {
+            return d.source.fail(
+                d.function.span,
+                "B270",
+                "此普通原生模块入口需要CPU适用的普通函数",
+            );
+        }
+        instance.name = default_symbol(world, &instance)?;
+        roots.insert(instance.name.clone());
+        context = declaration(world, &instance, context, &[])?;
+    }
+    let finalized = finalize(context.functions, roots, None, Some(entry));
+    let mut functions = finalized.functions;
+    let resources = application::module_resources(&mut functions, context.resources);
+    Ok(crate::module::Module {
+        name: entry.into(),
+        header: world.interfaces[entry].text.to_string(),
+        functions,
+        imports: finalized.imports,
+        exports: finalized.exports,
+        resources,
+    })
 }

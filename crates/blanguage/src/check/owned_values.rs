@@ -636,7 +636,7 @@ impl Builder<'_> {
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
         match &expr.kind {
-            ExprKind::Target(target,call) => return self.target_call(*target,call,expr.span),
+            ExprKind::Target(target, call) => return self.target_call(*target, call, expr.span),
             ExprKind::Member(base, name) => return self.member_returned(expr, base, name),
             ExprKind::Construct(name, args) => {
                 let ty = self.expected_storage(name, expr.span)?;
@@ -1026,3 +1026,10 @@ impl Builder<'_> {
         self.drop_returned(Returned::Dataset(data), span)
     }
 }
+
+crate::module::codec::record!(OwnedValue {
+    value,
+    payloads,
+    ownership,
+    slots
+});

@@ -54,17 +54,26 @@ fn read_import(s: &str) -> Result<Import> {
         name: rest.get(n..).ok_or("DLL 符号名称错误")?.into(),
     })
 }
-struct Symbol {
+struct CoffSymbol {
     name: String,
     section: i16,
     value: u32,
     function: bool,
+    external: bool,
 }
 pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 1);
+    word(&mut meta, 2);
     string(&mut meta, &o.name)?;
     match &o.kind {
+        Kind::Module {
+            interface,
+            stack_bytes,
+        } => {
+            word(&mut meta, 2);
+            string(&mut meta, interface)?;
+            word(&mut meta, *stack_bytes);
+        }
         Kind::Application { stack_bytes } => {
             word(&mut meta, 0);
             word(&mut meta, *stack_bytes);
@@ -98,6 +107,40 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
             string(&mut meta, e)?;
         }
     }
+    use crate::module::codec::{Encode, Writer};
+    let mut resource = Writer(Vec::new());
+    if let Some(binding) = o.archive.as_ref().and_then(|a| a.resources.as_ref()) {
+        true.encode(&mut resource);
+        binding.prefix.encode(&mut resource);
+        binding.types.encode(&mut resource);
+        binding.programs.encode(&mut resource);
+        binding.abi.encode(&mut resource);
+    } else {
+        false.encode(&mut resource);
+    }
+    word(&mut meta, u32::try_from(resource.0.len())?);
+    meta.extend(resource.0);
+    let mut bindings = BTreeMap::new();
+    for symbol in &o.symbols {
+        bindings.insert(symbol.name.clone(), symbol.contract.clone());
+    }
+    for section in &o.sections {
+        for relocation in &section.relocations {
+            if let Target::Symbol(name, contract) = &relocation.target {
+                if let Some(expected) = bindings.insert(name.clone(), contract.clone())
+                    && expected != *contract
+                {
+                    return Err(format!("对象内模块接口冲突 {name}").into());
+                }
+            }
+        }
+    }
+    word(&mut meta, u32::try_from(bindings.len())?);
+    for (name, contract) in &bindings {
+        string(&mut meta, name)?;
+        word(&mut meta, u32::try_from(contract.len())?);
+        meta.extend(contract);
+    }
     let mut sections: Vec<(&str, &[u8], u32, &[Relocation])> = o
         .sections
         .iter()
@@ -114,24 +157,53 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     if let Some(a) = &o.archive {
         sections.push((ARCHIVE, &a.bytes, 0x840, &[]));
     }
-    let mut symbols: Vec<Symbol> = o
+    let mut symbols: Vec<CoffSymbol> = o
         .sections
         .iter()
         .enumerate()
-        .map(|(i, s)| Symbol {
+        .map(|(i, s)| CoffSymbol {
             name: s.name.clone(),
             section: i as i16 + 1,
             value: 0,
             function: false,
+            external: false,
         })
         .collect();
     if matches!(o.kind, Kind::Application { .. }) {
-        symbols.push(Symbol {
+        symbols.push(CoffSymbol {
             name: "mainCRTStartup".into(),
             section: 1,
             value: 0,
             function: true,
+            external: true,
         });
+    }
+    let mut names = BTreeMap::new();
+    for symbol in &o.symbols {
+        names.insert(symbol.name.clone(), symbols.len());
+        symbols.push(CoffSymbol {
+            name: symbol.name.clone(),
+            section: i16::try_from(symbol.section + 1)?,
+            value: symbol.value,
+            function: symbol.function,
+            external: true,
+        });
+    }
+    for section in &o.sections {
+        for relocation in &section.relocations {
+            if let Target::Symbol(name, _) = &relocation.target
+                && !names.contains_key(name)
+            {
+                names.insert(name.clone(), symbols.len());
+                symbols.push(CoffSymbol {
+                    name: name.clone(),
+                    section: 0,
+                    value: 0,
+                    function: true,
+                    external: true,
+                });
+            }
+        }
     }
     let mut imports = BTreeMap::new();
     for s in &o.sections {
@@ -143,11 +215,12 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     }
     for (i, index) in &mut imports {
         *index = symbols.len();
-        symbols.push(Symbol {
+        symbols.push(CoffSymbol {
             name: import_name(i),
             section: 0,
             value: 0,
             function: true,
+            external: true,
         });
     }
     let mut out = vec![0; 20 + 40 * sections.len()];
@@ -185,6 +258,7 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
             word(&mut out, u32::try_from(r.offset)?);
             let symbol = match &r.target {
                 Target::Section(i, _) => *i,
+                Target::Symbol(name, _) => names[name],
                 Target::Import(i) => imports[i],
             };
             word(&mut out, u32::try_from(symbol)?);
@@ -207,7 +281,7 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
         u32_at(&mut row, 8, symbol.value);
         u16_at(&mut row, 12, symbol.section as u16);
         u16_at(&mut row, 14, if symbol.function { 0x20 } else { 0 });
-        row[16] = if symbol.function { 2 } else { 3 };
+        row[16] = if symbol.external { 2 } else { 3 };
         out.extend(row);
     }
     let n = u32::try_from(strings.len())?;
@@ -238,7 +312,13 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
         } else {
             std::str::from_utf8(&r[..r[..8].iter().position(|&c| c == 0).unwrap_or(8)])?.to_owned()
         };
-        symbols.push((name, get16(r, 12)? as i16, get32(r, 8)?));
+        symbols.push((
+            name,
+            get16(r, 12)? as i16,
+            get32(r, 8)?,
+            r[16],
+            get16(r, 14)? == 0x20,
+        ));
     }
     let mut raw = Vec::new();
     for i in 0..n {
@@ -261,11 +341,15 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 1 {
+    if tag != *b"BLCO" || read_word(&mut c)? != 2 {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;
     let kind = match read_word(&mut c)? {
+        2 => Kind::Module {
+            interface: read_string(&mut c)?,
+            stack_bytes: read_word(&mut c)?,
+        },
         0 => Kind::Application {
             stack_bytes: read_word(&mut c)?,
         },
@@ -284,10 +368,34 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
     for _ in 0..read_word(&mut c)? {
         exports.push(read_string(&mut c)?);
     }
+    use crate::module::codec::{Decode, Reader};
+    let size = read_word(&mut c)? as usize;
+    let at = c.position() as usize;
+    let mut resource = Reader::new(slice(meta, at, size)?);
+    c.set_position((at + size) as u64);
+    let resources = if bool::decode(&mut resource)? {
+        Some(ResourceBinding {
+            prefix: String::decode(&mut resource)?,
+            types: u32::decode(&mut resource)?,
+            programs: u32::decode(&mut resource)?,
+            abi: Vec::<u8>::decode(&mut resource)?,
+        })
+    } else {
+        None
+    };
+    let mut bindings = BTreeMap::new();
+    for _ in 0..read_word(&mut c)? {
+        let name = read_string(&mut c)?;
+        let size = read_word(&mut c)? as usize;
+        let at = c.position() as usize;
+        bindings.insert(name, slice(meta, at, size)?.to_vec());
+        c.set_position((at + size) as u64);
+    }
     let archive = raw.iter().find(|s| s.0 == ARCHIVE).map(|s| Archive {
         bytes: s.1.clone(),
         libraries,
         exports,
+        resources,
     });
     let mut mapping = BTreeMap::new();
     let mut sections = Vec::new();
@@ -323,8 +431,16 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
                         .ok_or("COFF 引用了不可装载的节")?,
                     s.2,
                 )
-            } else {
+            } else if s.0.starts_with("__blink_import$") {
                 Target::Import(read_import(&s.0)?)
+            } else {
+                Target::Symbol(
+                    s.0.clone(),
+                    bindings
+                        .get(&s.0)
+                        .ok_or("未定义符号缺少模块接口合同")?
+                        .clone(),
+                )
             };
             sections[*index].relocations.push(Relocation {
                 offset: get32(r, 0)? as usize,
@@ -335,8 +451,30 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
     }
     Ok(Object {
         name,
-        kind,
+        symbols: symbols
+            .into_iter()
+            .filter(|(name, section, _, class, _)| {
+                *class == 2
+                    && *section > 0
+                    && !(name == "mainCRTStartup" && matches!(kind, Kind::Application { .. }))
+            })
+            .map(|(name, section, value, _, function)| {
+                Ok(super::Symbol {
+                    function,
+                    contract: bindings
+                        .get(&name)
+                        .ok_or("导出符号缺少模块接口合同")?
+                        .clone(),
+                    name,
+                    section: *mapping
+                        .get(&(section as usize - 1))
+                        .ok_or("导出符号引用不可装载的节")?,
+                    value,
+                })
+            })
+            .collect::<Result<_>>()?,
         sections,
         archive,
+        kind,
     })
 }

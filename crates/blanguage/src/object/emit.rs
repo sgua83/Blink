@@ -199,29 +199,53 @@ fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import)
 pub(crate) fn application(
     native: ApplicationCode,
     defined: Vec<(String, ApplicationCode)>,
+    imports: &BTreeMap<String, Vec<u8>>,
+    prefix: &str,
 ) -> Result<Vec<Section>> {
-    let mut text = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
+    Ok(functions(Some(native), defined, imports, prefix)?.0)
+}
+pub(crate) fn module(
+    defined: Vec<(String, ApplicationCode)>,
+    imports: &BTreeMap<String, Vec<u8>>,
+    prefix: &str,
+) -> Result<(Vec<Section>, BTreeMap<String, u32>)> {
+    functions(None, defined, imports, prefix)
+}
+fn functions(
+    native: Option<ApplicationCode>,
+    defined: Vec<(String, ApplicationCode)>,
+    imports: &BTreeMap<String, Vec<u8>>,
+    prefix: &str,
+) -> Result<(Vec<Section>, BTreeMap<String, u32>)> {
+    let mut text = Vec::new();
     let mut patches = Vec::new();
-    call(&mut text, &mut patches, kernel("ExitProcess"));
-    let mut functions = vec![Function {
-        begin: 0,
-        end: text.len(),
-        unwind: application_unwind(4, vec![(4, vec![4, 0x42])]),
-    }];
-    text.resize(align(text.len(), 16), 0x90);
-    let main = text.len();
-    relative(&mut text, 5, main)?;
-    text.extend(&native.code.bytes);
-    functions.push(Function {
-        begin: main,
-        end: main + native.function_end as usize,
-        unwind: native.unwind,
-    });
+    let mut functions = Vec::new();
+    let mut images = Vec::new();
+    let mut symbols = BTreeMap::new();
+    if let Some(native) = native {
+        text.extend([0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1]);
+        call(&mut text, &mut patches, kernel("ExitProcess"));
+        functions.push(Function {
+            begin: 0,
+            end: text.len(),
+            unwind: application_unwind(4, vec![(4, vec![4, 0x42])]),
+        });
+        text.resize(align(text.len(), 16), 0x90);
+        let main = text.len();
+        relative(&mut text, 5, main)?;
+        text.extend(&native.code.bytes);
+        functions.push(Function {
+            begin: main,
+            end: main + native.function_end as usize,
+            unwind: native.unwind,
+        });
+        images.push((main, native.code));
+    }
     let mut targets = BTreeMap::new();
-    let mut images = vec![(main, native.code)];
     for (name, function) in defined {
         text.resize(align(text.len(), 16), 0x90);
         let begin = text.len();
+        symbols.insert(name.clone(), u32::try_from(begin)?);
         targets.insert(NativeSymbol::Function(name), begin);
         text.extend(&function.code.bytes);
         functions.push(Function {
@@ -238,8 +262,8 @@ pub(crate) fn application(
         .collect();
     for op in operations {
         if let NativeSymbol::Function(name) = &op {
-            if !targets.contains_key(&op) {
-                return Err(format!("应用缺少函数代码 {name}").into());
+            if !targets.contains_key(&op) && !imports.contains_key(name) {
+                return Err(format!("缺少模块函数接口 {name}").into());
             }
             continue;
         }
@@ -247,13 +271,20 @@ pub(crate) fn application(
         let begin = text.len();
         targets.insert(op.clone(), begin);
         match op {
-            NativeSymbol::Function(name) => return Err(format!("应用缺少函数代码 {name}").into()),
+            NativeSymbol::Function(_) => unreachable!(),
             NativeSymbol::External(name) => thunk(
                 &mut text,
                 &mut patches,
                 Import {
-                    dll: name.library,
-                    name: name.symbol,
+                    dll: name.library.clone(),
+                    name: if name.library == crate::application::RUNTIME_LIBRARY
+                        && (name.symbol.starts_with("blink_allocate_")
+                            || name.symbol.starts_with("blink_run_"))
+                    {
+                        format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
+                    } else {
+                        name.symbol
+                    },
                 },
             ),
             NativeSymbol::Intrinsic(op) => {
@@ -278,11 +309,18 @@ pub(crate) fn application(
     for (begin, code) in images {
         for relocation in code.relocations {
             let at = begin + relocation.offset;
-            put64(&mut text, at, targets[&relocation.target] as u64);
+            let target = if let NativeSymbol::Function(name) = &relocation.target
+                && !targets.contains_key(&relocation.target)
+            {
+                Target::Symbol(name.clone(), imports[name].clone())
+            } else {
+                put64(&mut text, at, targets[&relocation.target] as u64);
+                Target::Section(0, 0)
+            };
             locations.push(Relocation {
                 offset: at,
                 kind: 1,
-                target: Target::Section(0, 0),
+                target,
             });
         }
     }
@@ -312,24 +350,27 @@ pub(crate) fn application(
             });
         }
     }
-    Ok(vec![
-        Section {
-            name: ".text".into(),
-            bytes: text,
-            flags: 0x60500020,
-            relocations: locations,
-        },
-        Section {
-            name: ".pdata".into(),
-            bytes: pdata,
-            flags: 0x40300040,
-            relocations,
-        },
-        Section {
-            name: ".xdata".into(),
-            bytes: xdata,
-            flags: 0x40300040,
-            relocations: Vec::new(),
-        },
-    ])
+    Ok((
+        vec![
+            Section {
+                name: ".text".into(),
+                bytes: text,
+                flags: 0x60500020,
+                relocations: locations,
+            },
+            Section {
+                name: ".pdata".into(),
+                bytes: pdata,
+                flags: 0x40300040,
+                relocations,
+            },
+            Section {
+                name: ".xdata".into(),
+                bytes: xdata,
+                flags: 0x40300040,
+                relocations: Vec::new(),
+            },
+        ],
+        symbols,
+    ))
 }

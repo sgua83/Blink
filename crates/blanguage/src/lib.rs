@@ -3,11 +3,12 @@ pub mod application;
 pub mod ast;
 mod check;
 pub mod dll;
-mod generics;
 mod execution;
+mod generics;
 pub mod ir;
 mod lexer;
 pub mod linker;
+pub mod module;
 pub mod native;
 pub mod object;
 mod optimize;
@@ -32,6 +33,7 @@ pub(crate) struct Definition {
     module: String,
     imports: Vec<String>,
     public: bool,
+    compiled: Option<Arc<BTreeMap<String, Vec<u8>>>>,
 }
 /// 仅由已完成模块／阶段证明的无前置条件程序构造；执行器不接受条件模板。
 #[derive(Clone, Debug)]
@@ -59,6 +61,7 @@ pub struct Compilation {
 }
 pub(crate) struct World {
     sources: BTreeMap<String, Source>,
+    interfaces: BTreeMap<String, Source>,
     records: BTreeMap<String, (Record, Source, String, Vec<String>)>,
     functions: BTreeMap<String, Arc<Definition>>,
     type_sets: BTreeMap<String, (TypeSet, Source, String, Vec<String>)>,
@@ -97,7 +100,7 @@ fn same_signature(a: &Function, b: &Function) -> bool {
             .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.access == b.access)
 }
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
-    compile_module(path, module_root, true, None)
+    compile_module(path, module_root, true, None, None)
 }
 /// 选择公开 program 的具体静态入口，例如 shade<13> 或 run<float3,17>。
 pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Compilation> {
@@ -106,6 +109,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
         module_root,
         true,
         Some((EntryKind::Domain, entry)),
+        None,
     )
 }
 /// 编译独立 CPU 应用的普通值入口；启动与平台链接由 application 模块拥有。
@@ -114,35 +118,59 @@ pub fn compile_application(
     module_root: &Path,
     entry: &str,
 ) -> Result<application::Application> {
-    Ok(
-        compile_module(path, module_root, false, Some((EntryKind::Application, entry)))?
-            .applications
-            .remove(0),
-    )
+    Ok(compile_module(
+        path,
+        module_root,
+        false,
+        Some((EntryKind::Application, entry)),
+        None,
+    )?
+    .applications
+    .remove(0))
+}
+/// 使用真实已编译模块接口编译应用，不读取这些模块的实现源码。
+pub fn compile_application_with_modules(
+    path: &Path,
+    module_root: &Path,
+    entry: &str,
+    dependencies: &[object::Object],
+) -> Result<application::Application> {
+    let imports = module::Imports::new(dependencies).map_err(|error| Diagnostic {
+        source: Source {
+            path: path.into(),
+            text: "".into(),
+        },
+        span: Span::default(),
+        code: "B270",
+        message: error.to_string(),
+    })?;
+    Ok(compile_module(
+        path,
+        module_root,
+        false,
+        Some((EntryKind::Application, entry)),
+        Some(&imports),
+    )?
+    .applications
+    .remove(0))
 }
 /// 库接口与完整导入闭包同样检查；无需为函数库伪造可执行 program。
 pub fn check(path: &Path, module_root: &Path) -> Result<Compilation> {
-    compile_module(path, module_root, false, None)
+    compile_module(path, module_root, false, None, None)
 }
 #[derive(Clone, Copy)]
-enum EntryKind { Domain, Application }
+enum EntryKind {
+    Domain,
+    Application,
+}
 fn compile_module(
     path: &Path,
     module_root: &Path,
     require_program: bool,
     requested: Option<(EntryKind, &str)>,
+    imported: Option<&module::Imports>,
 ) -> Result<Compilation> {
-    let mut world = World {
-        sources: BTreeMap::new(),
-        records: BTreeMap::new(),
-        functions: BTreeMap::new(),
-        type_sets: BTreeMap::new(),
-        evaluating_constants: RefCell::new(BTreeSet::new()),
-    };
-    let mut loaded = BTreeSet::new();
-    let mut visiting = BTreeSet::new();
-    let entry = load(path, module_root, &mut world, &mut loaded, &mut visiting)?;
-    execution::infer(&mut world);
+    let (world, entry) = read_world(path, module_root, imported)?;
     let selected = if let Some((kind, request)) = requested {
         let source = Source {
             path: PathBuf::from("<entry>"),
@@ -158,7 +186,10 @@ fn compile_module(
                 message: format!("没有公开入口 {name}"),
             })?;
         let definition = &world.functions[&key];
-        if !definition.public || definition.module != entry || definition.function.kind != FunctionKind::Value {
+        if !definition.public
+            || definition.module != entry
+            || definition.function.kind != FunctionKind::Value
+        {
             return source.fail(
                 Span::default(),
                 "B240",
@@ -169,47 +200,25 @@ fn compile_module(
     } else {
         None
     };
-    for name in world.type_sets.keys() {
-        world.set_members(name, &mut BTreeSet::new())?;
-    }
-    for (name, (record, source, module, imports)) in &world.records {
-        generics::validate_parameters(&record.types, &record.name, source, record.span)?;
-        value_parameters::validate(&record.values, &record.name, &[], source, record.span)?;
-        let values = value_parameters::combinations(&record.values);
-        for arguments in
-            generics::combinations(&world, &record.types, source, record.span, module, imports)?
-        {
-            for values in &values {
-                let mut ty = TypeName::named(name);
-                ty.arguments = arguments
-                    .iter()
-                    .cloned()
-                    .map(GenericArgument::Type)
-                    .chain(
-                        values
-                            .iter()
-                            .map(|value| GenericArgument::Value(Shape::Literal(*value))),
-                    )
-                    .collect();
-                world.ty(&ty, source, record.span, module, imports)?;
-            }
-        }
-    }
-
+    validate_types(&world)?;
     let mut programs = Vec::new();
     let mut templates = Vec::new();
     let mut applications = Vec::new();
     // 有限声明逐项检查；选定的入口与开放声明在具体使用处实例化。
     for (base, definition) in &world.functions {
         generics::validate_declaration(definition)?;
+        if definition.compiled.is_some() {
+            continue;
+        }
         if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
             continue;
         }
         for instance in generics::instances(&world, base, definition)? {
             let name = &instance.name;
             let d = &instance.definition;
-            if d.execution==execution::Requirement::Domain
-                && (d.function.target!=Target::Cpu || check::kernel_interface(&world,d)?) {
+            if d.execution == execution::Requirement::Domain
+                && (d.function.target != Target::Cpu || check::kernel_interface(&world, d)?)
+            {
                 let p = check::compile_program(&world, &instance)
                     .map_err(|error| instance_error(error, name))?;
                 if selected.is_none() && d.module == entry && d.public {
@@ -286,6 +295,63 @@ fn compile_module(
         applications,
     })
 }
+fn read_world(
+    path: &Path,
+    module_root: &Path,
+    imported: Option<&module::Imports>,
+) -> Result<(World, String)> {
+    let mut world = World {
+        sources: BTreeMap::new(),
+        interfaces: BTreeMap::new(),
+        records: BTreeMap::new(),
+        functions: BTreeMap::new(),
+        type_sets: BTreeMap::new(),
+        evaluating_constants: RefCell::new(BTreeSet::new()),
+    };
+    let mut loaded = BTreeSet::new();
+    let mut visiting = BTreeSet::new();
+    let entry = load(
+        path,
+        module_root,
+        &mut world,
+        &mut loaded,
+        &mut visiting,
+        imported,
+        None,
+    )?;
+    execution::infer(&mut world);
+    Ok((world, entry))
+}
+fn validate_types(world: &World) -> Result<()> {
+    for name in world.type_sets.keys() {
+        world.set_members(name, &mut BTreeSet::new())?;
+    }
+    for (name, (record, source, module, imports)) in &world.records {
+        generics::validate_parameters(&record.types, &record.name, source, record.span)?;
+        value_parameters::validate(&record.values, &record.name, &[], source, record.span)?;
+        let values = value_parameters::combinations(&record.values);
+        for arguments in
+            generics::combinations(&world, &record.types, source, record.span, module, imports)?
+        {
+            for values in &values {
+                let mut ty = TypeName::named(name);
+                ty.arguments = arguments
+                    .iter()
+                    .cloned()
+                    .map(GenericArgument::Type)
+                    .chain(
+                        values
+                            .iter()
+                            .map(|value| GenericArgument::Value(Shape::Literal(*value))),
+                    )
+                    .collect();
+                world.ty(&ty, source, record.span, module, imports)?;
+            }
+        }
+    }
+
+    Ok(())
+}
 fn instance_error(mut error: Diagnostic, name: &str) -> Diagnostic {
     if name.contains('<') {
         error.message += &format!("（检查泛型实例 {name}）");
@@ -298,17 +364,31 @@ fn load(
     world: &mut World,
     loaded: &mut BTreeSet<String>,
     visiting: &mut BTreeSet<String>,
+    imported: Option<&module::Imports>,
+    import: Option<&str>,
 ) -> Result<String> {
-    let interface = parser::parse(read(&path.with_extension("h"))?)?;
+    let compiled = imported.and_then(|imports| import.and_then(|name| imports.modules.get(name)));
+    let interface = if let Some(compiled) = compiled {
+        parser::parse(Source {
+            path: PathBuf::from(format!("<{}>.h", import.unwrap())),
+            text: compiled.header.clone().into(),
+        })?
+    } else {
+        parser::parse(read(&path.with_extension("h"))?)?
+    };
     let implementation_path = path.with_extension("b");
-    let present = implementation_path
-        .try_exists()
-        .map_err(|error| Diagnostic {
-            source: interface.source.clone(),
-            span: Span::default(),
-            code: "B020",
-            message: format!("无法访问实现源 {}：{error}", implementation_path.display()),
-        })?;
+    let present = if imported.is_some() && import.is_some() {
+        false
+    } else {
+        implementation_path
+            .try_exists()
+            .map_err(|error| Diagnostic {
+                source: interface.source.clone(),
+                span: Span::default(),
+                code: "B020",
+                message: format!("无法访问实现源 {}：{error}", implementation_path.display()),
+            })?
+    };
     let implementation = if present {
         Some(parser::parse(read(&implementation_path)?)?)
     } else {
@@ -329,6 +409,9 @@ fn load(
         return Ok(name);
     }
     world.sources.insert(name.clone(), source.clone());
+    world
+        .interfaces
+        .insert(name.clone(), interface.source.clone());
     if !visiting.insert(name.clone()) {
         return source.fail(
             Span::default(),
@@ -346,7 +429,15 @@ fn load(
         .collect();
     for import in &imports {
         let import_path: PathBuf = root.join(import.replace('.', "/")).with_extension("b");
-        let actual = load(&import_path, root, world, loaded, visiting)?;
+        let actual = load(
+            &import_path,
+            root,
+            world,
+            loaded,
+            visiting,
+            imported,
+            Some(import),
+        )?;
         if actual != *import {
             return source.fail(
                 Span::default(),
@@ -446,6 +537,9 @@ fn load(
                 .source
                 .fail(f.span, "B026", ".h 只声明接口，函数体放在 .b");
         }
+        if compiled.is_some() {
+            continue;
+        }
         let (body, body_source) = implementation
             .iter()
             .flat_map(|module| {
@@ -476,7 +570,7 @@ fn load(
     for (f, source, public) in interface
         .functions
         .iter()
-        .filter(|f| f.kind == FunctionKind::Constant || f.external.is_some())
+        .filter(|f| f.kind == FunctionKind::Constant || f.external.is_some() || compiled.is_some())
         .map(|f| (f, &interface.source, true))
         .chain(implementation.iter().flat_map(|module| {
             module.functions.iter().map(move |function| {
@@ -488,7 +582,7 @@ fn load(
             })
         }))
     {
-        if f.body.is_none() && f.external.is_none() {
+        if f.body.is_none() && f.external.is_none() && compiled.is_none() {
             return source.fail(f.span, "B029", ".b 中的函数必须有实现");
         }
         let key = format!("{name}::{}", f.name);
@@ -504,6 +598,11 @@ fn load(
                 module: name.clone(),
                 imports: imports.clone(),
                 public,
+                compiled: if f.kind != FunctionKind::Constant && f.external.is_none() {
+                    compiled.map(|module| module.definitions.clone())
+                } else {
+                    None
+                },
             }),
         );
     }
@@ -525,9 +624,9 @@ impl World {
                     d.module == module || (d.public && imports.contains(&d.module))
                 })
             } else {
-                self.records
-                    .get(n)
-                    .is_some_and(|(_, source, owner, _)| type_visible(source, owner, module, imports))
+                self.records.get(n).is_some_and(|(_, source, owner, _)| {
+                    type_visible(source, owner, module, imports)
+                })
             }
         })
     }
@@ -821,8 +920,14 @@ impl World {
             value_parameters::substitute_type(&mut field_type, &value_map);
             let mut f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
             if field_type.dataset {
-                if f.owns_resources() || f.contains_views(){return s.fail(field.span,"B033","dataset 元素需要普通存储；拥有聚合与view资源图不能按普通值复制");}
-                f=ir::Ty::owned_dataset(f,self.shape(&field_type.count,s,field.span,m,i)?);
+                if f.owns_resources() || f.contains_views() {
+                    return s.fail(
+                        field.span,
+                        "B033",
+                        "dataset 元素需要普通存储；拥有聚合与view资源图不能按普通值复制",
+                    );
+                }
+                f = ir::Ty::owned_dataset(f, self.shape(&field_type.count, s, field.span, m, i)?);
             }
             let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
             let end = offset + f.size as u64;
@@ -836,7 +941,9 @@ impl World {
             ty.align = ty.align.max(f.align);
             ty.fields.push((field.name.clone(), offset, Box::new(f)));
         }
-        if ty.owns_resources()&&ty.contains_views(){return s.fail(record.span,"B269","拥有存储与view图的组合寿命尚未实现");}
+        if ty.owns_resources() && ty.contains_views() {
+            return s.fail(record.span, "B269", "拥有存储与view图的组合寿命尚未实现");
+        }
         if ty.components.is_empty() {
             return source.fail(span, "B035", "空结构体不能作为计算数据");
         }
@@ -871,7 +978,10 @@ impl World {
 
 fn type_visible(source: &Source, owner: &str, module: &str, imports: &[String]) -> bool {
     owner == module
-        || (source.path.extension().is_some_and(|extension| extension == "h")
+        || (source
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "h")
             && imports.iter().any(|import| import == owner))
 }
 fn resolve_name(

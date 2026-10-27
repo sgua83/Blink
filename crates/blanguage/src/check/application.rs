@@ -99,8 +99,8 @@ pub(crate) fn compile_application(
     let mut builder = Builder::new(world, d, &context, 0);
     builder.application = Some(Context::default());
     builder.in_function = true;
-    let result=builder.native_function(instance.clone(),Vec::new(),d.function.span)?;
-    let result=builder.ordinary_return(result,d.function.span)?.unwrap();
+    let result = builder.native_function(instance.clone(), Vec::new(), d.function.span)?;
+    let result = builder.ordinary_return(result, d.function.span)?.unwrap();
     let mut app = builder.application.take().unwrap();
     let mut body = ValueCode {
         registers: builder.registers,
@@ -117,9 +117,17 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         frame.regs = std::mem::take(&mut body.inputs);
     }
-    let mut functions=native_function::finish(std::mem::take(&mut app.functions),&mut body);
-    let resources=live_resources(&mut body,&mut functions,app);
-    Ok(crate::application::Application{name:instance.name.clone(),body,functions,resources})
+    let finalized = native_function::finish(std::mem::take(&mut app.functions), &mut body);
+    let mut functions = finalized.functions;
+    let imports = finalized.imports;
+    let resources = live_resources(&mut body, &mut functions, app);
+    Ok(crate::application::Application {
+        name: instance.name.clone(),
+        body,
+        functions,
+        imports,
+        resources,
+    })
 }
 
 fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName)) {
@@ -127,7 +135,8 @@ fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName))
         match instruction {
             Inst::Call(call) => {
                 if let CallTarget::External(name) = &mut call.target
-                    && name.library == crate::application::RUNTIME_LIBRARY {
+                    && name.library == crate::application::RUNTIME_LIBRARY
+                {
                     visitor(name)
                 }
             }
@@ -146,14 +155,15 @@ fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName))
         }
     }
 }
-fn live_resources(body: &mut ValueCode, functions:&mut [FunctionBody], app: Context) -> Option<crate::application::Resources> {
-    let frame = app.frame?;
+fn declarations(
+    codes: &mut [&mut Vec<Inst>],
+    resources: crate::application::Resources,
+) -> crate::application::Resources {
     let mut names = BTreeSet::new();
-    for code in std::iter::once(&mut body.code).chain(functions.iter_mut().map(|function|&mut function.body.code)) {
-        runtime_calls(code,&mut |call|{names.insert(call.symbol.clone());});
-    }
-    if names.is_empty() {
-        return None;
+    for code in codes.iter_mut() {
+        runtime_calls(code, &mut |call| {
+            names.insert(call.symbol.clone());
+        });
     }
     fn retain<T>(
         items: Vec<T>,
@@ -172,11 +182,60 @@ fn live_resources(body: &mut ValueCode, functions:&mut [FunctionBody], app: Cont
         live
     }
     let mut renames = BTreeMap::new();
-    let types = retain(app.resources.types, "allocate", &names, &mut renames);
-    let programs = retain(app.resources.programs, "run", &names, &mut renames);
-    for code in std::iter::once(&mut body.code).chain(functions.iter_mut().map(|function|&mut function.body.code)) {
-        runtime_calls(code,&mut |call|{if let Some(name)=renames.get(&call.symbol){call.symbol=name.clone();}});
+    let types = retain(resources.types, "allocate", &names, &mut renames);
+    let programs = retain(resources.programs, "run", &names, &mut renames);
+    for code in codes.iter_mut() {
+        runtime_calls(code, &mut |call| {
+            if let Some(name) = renames.get(&call.symbol) {
+                call.symbol = name.clone();
+            }
+        });
     }
+    crate::application::Resources { types, programs }
+}
+pub(super) fn module_resources(
+    functions: &mut [FunctionBody],
+    resources: crate::application::Resources,
+) -> Option<crate::application::Resources> {
+    let mut used = false;
+    for function in &mut *functions {
+        runtime_calls(&mut function.body.code, &mut |_| used = true);
+    }
+    if !used {
+        return None;
+    }
+    let mut codes = functions
+        .iter_mut()
+        .map(|function| &mut function.body.code)
+        .collect::<Vec<_>>();
+    Some(declarations(&mut codes, resources))
+}
+fn live_resources(
+    body: &mut ValueCode,
+    functions: &mut [FunctionBody],
+    app: Context,
+) -> Option<crate::application::Resources> {
+    let frame = app.frame?;
+    fn uses(code: &[Inst], registers: &[Reg]) -> bool {
+        code.iter().any(|inst| {
+            inst.operands().iter().any(|reg| registers.contains(reg))
+                || match inst {
+                    Inst::Scope(code) => uses(code, registers),
+                    Inst::If { yes, no, .. } => uses(yes, registers) || uses(no, registers),
+                    Inst::Loop {
+                        condition, body, ..
+                    } => uses(condition, registers) || uses(body, registers),
+                    _ => false,
+                }
+        })
+    }
+    if !uses(&body.code, &frame.regs) {
+        return None;
+    }
+    let mut codes = std::iter::once(&mut body.code)
+        .chain(functions.iter_mut().map(|function| &mut function.body.code))
+        .collect::<Vec<_>>();
+    let resources = declarations(&mut codes, app.resources);
     body.code.insert(
         0,
         runtime_call(
@@ -192,7 +251,7 @@ fn live_resources(body: &mut ValueCode, functions:&mut [FunctionBody], app: Cont
         None,
         Vec::new(),
     ));
-    Some(crate::application::Resources { types, programs })
+    Some(resources)
 }
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
@@ -203,9 +262,18 @@ impl Builder<'_> {
         }
         let reg = self.reg(Scalar::U32);
         let handle = self.application_handle(reg);
-        let length_reg=self.reg(Scalar::U32);
-        let count=self.program.buffers[binding].count;
-        let mut length=Value{ty:Ty::scalar(Scalar::U32),regs:vec![length_reg],proof:count.map(|n|bounds::Proof::unsigned(n,n)).unwrap_or_default(),literal:false,uniform:false,constant:count.map(|n|vec![n])};
+        let length_reg = self.reg(Scalar::U32);
+        let count = self.program.buffers[binding].count;
+        let mut length = Value {
+            ty: Ty::scalar(Scalar::U32),
+            regs: vec![length_reg],
+            proof: count
+                .map(|n| bounds::Proof::unsigned(n, n))
+                .unwrap_or_default(),
+            literal: false,
+            uniform: false,
+            constant: count.map(|n| vec![n]),
+        };
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
@@ -1347,6 +1415,7 @@ impl Builder<'_> {
             module: self.definition.module.clone(),
             imports: self.definition.imports.clone(),
             public: false,
+            compiled: None,
         });
         self.application_execute(
             crate::generics::Instance { name, definition },
@@ -1569,3 +1638,16 @@ fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
     }
     block(body, &BTreeSet::new(), names);
 }
+
+crate::module::codec::variants!(Ownership{0=>Owned,1=>Borrowed,2=>Moved});
+crate::module::codec::record!(Data {
+    handle,
+    slots,
+    initialization,
+    ty,
+    length,
+    ownership,
+    writable,
+    count,
+    residency
+});

@@ -129,6 +129,9 @@ pub(crate) fn infer(world: &mut World) {
         .iter()
         .map(|(key, d)| {
             let mut body = Body::default();
+            if d.compiled.is_some() {
+                body.host = true;
+            }
             if d.function.kind == FunctionKind::Value {
                 if let Some(stmts) = &d.function.body {
                     body.block(world, d, stmts);

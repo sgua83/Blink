@@ -9,6 +9,9 @@ use blanguage::{
     ir::{ExecutionPlan, PrefixCount, PrefixRelation, Ty},
 };
 
+mod abi;
+pub use abi::ModuleResources;
+
 pub enum ProgramImage {
     Cpu(blanguage::native::ProgramImage<TemplateProgram>),
     Gpu(blanguage::spirv::ProgramImage<TemplateProgram>),

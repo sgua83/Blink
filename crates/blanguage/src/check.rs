@@ -17,6 +17,7 @@ mod custom_reduce;
 mod effects;
 mod external;
 mod native_function;
+pub(crate) use native_function::compile_module as compile_native_module;
 mod flow;
 pub(crate) mod generics;
 mod matrix;
@@ -161,7 +162,12 @@ struct CheckedTile {
 }
 #[derive(Clone, PartialEq, Eq)]
 enum Place {
-    Reference { ty:Ty, address:[Reg;2], scope:usize, words:Vec<u32> },
+    Reference {
+        ty: Ty,
+        address: [Reg; 2],
+        scope: usize,
+        words: Vec<u32>,
+    },
     ApplicationElement {
         ty: Ty,
         handle: Reg,
@@ -212,8 +218,12 @@ pub(crate) fn compile_program(
 ) -> Result<Program> {
     let name = &instance.name;
     let d = &instance.definition;
-    if !kernel_interface(world,d)? {
-        return d.source.fail(d.function.span,"B266","算法对象接口以借用数据与普通统一值交付结果；普通函数的独立调用／资源 ABI 产物尚未实现");
+    if !kernel_interface(world, d)? {
+        return d.source.fail(
+            d.function.span,
+            "B266",
+            "算法对象接口以借用数据与普通统一值交付结果；普通函数的独立调用／资源 ABI 产物尚未实现",
+        );
     }
     let mut buffers = Vec::new();
     let mut accelerations = Vec::new();
@@ -594,21 +604,27 @@ fn expand_stages(
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
                 ..
-            }) if name == "clear_prefix" && world.resolve(name,&d.module,&d.imports,true).is_none() => {
+            }) if name == "clear_prefix"
+                && world.resolve(name, &d.module, &d.imports, true).is_none() =>
+            {
                 append::clear(program, env, args, d, statement.span, facts)?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
                 ..
-            }) if name == "stable_sort_by_key" && world.resolve(name,&d.module,&d.imports,true).is_none() => {
+            }) if name == "stable_sort_by_key"
+                && world.resolve(name, &d.module, &d.imports, true).is_none() =>
+            {
                 sort::compile(program, env, args, d, statement.span, facts)?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
                 ..
-            }) if name == "compact" && world.resolve(name,&d.module,&d.imports,true).is_none() => {
+            }) if name == "compact"
+                && world.resolve(name, &d.module, &d.imports, true).is_none() =>
+            {
                 compact::compile(program, env, args, d, statement.span, facts)?;
                 *boundary = false;
             }
@@ -625,70 +641,80 @@ fn expand_stages(
                 } else {
                     None
                 };
-                let callee_key=world.resolve(name,&d.module,&d.imports,true);
+                let callee_key = world.resolve(name, &d.module, &d.imports, true);
                 if callee_key.is_none() {
-                if let Some(operator) =
-                    CollectiveOperator::from_reduction_source(name).filter(|_| explicit.is_none())
-                {
-                    reduce::compile(program, env, operator, args, d, statement.span, facts)?;
-                    *boundary = false;
-                    continue;
-                }
-                if let Some(kind) =
-                    custom_reduce::Kind::from_source(name).filter(|_| explicit.is_none())
-                {
-                    custom_reduce::compile(
-                        world,
-                        program,
-                        env,
-                        args,
-                        d,
-                        statement.span,
-                        facts,
-                        name.ends_with("_map"),
-                        kind,
-                    )?;
-                    *boundary = false;
-                    continue;
-                }
-                if let Some(operator) = CollectiveOperator::from_segmented_reduction_source(name)
-                    .filter(|_| explicit.is_none())
-                {
-                    segmented_reduce::compile(
-                        program,
-                        env,
-                        operator,
-                        args,
-                        d,
-                        statement.span,
-                        facts,
-                    )?;
-                    *boundary = false;
-                    continue;
-                }
-                if let Some(operator) =
-                    CollectiveOperator::from_scan_source(name).filter(|_| explicit.is_none())
-                {
-                    scan::compile(
-                        program,
-                        env,
-                        operator,
-                        false,
-                        args,
-                        d,
-                        statement.span,
-                        facts,
-                    )?;
-                    *boundary = false;
-                    continue;
-                }
-                if let Some(operator) = CollectiveOperator::from_segmented_scan_source(name)
-                    .filter(|_| explicit.is_none())
-                {
-                    scan::compile(program, env, operator, true, args, d, statement.span, facts)?;
-                    *boundary = false;
-                    continue;
-                }
+                    if let Some(operator) = CollectiveOperator::from_reduction_source(name)
+                        .filter(|_| explicit.is_none())
+                    {
+                        reduce::compile(program, env, operator, args, d, statement.span, facts)?;
+                        *boundary = false;
+                        continue;
+                    }
+                    if let Some(kind) =
+                        custom_reduce::Kind::from_source(name).filter(|_| explicit.is_none())
+                    {
+                        custom_reduce::compile(
+                            world,
+                            program,
+                            env,
+                            args,
+                            d,
+                            statement.span,
+                            facts,
+                            name.ends_with("_map"),
+                            kind,
+                        )?;
+                        *boundary = false;
+                        continue;
+                    }
+                    if let Some(operator) =
+                        CollectiveOperator::from_segmented_reduction_source(name)
+                            .filter(|_| explicit.is_none())
+                    {
+                        segmented_reduce::compile(
+                            program,
+                            env,
+                            operator,
+                            args,
+                            d,
+                            statement.span,
+                            facts,
+                        )?;
+                        *boundary = false;
+                        continue;
+                    }
+                    if let Some(operator) =
+                        CollectiveOperator::from_scan_source(name).filter(|_| explicit.is_none())
+                    {
+                        scan::compile(
+                            program,
+                            env,
+                            operator,
+                            false,
+                            args,
+                            d,
+                            statement.span,
+                            facts,
+                        )?;
+                        *boundary = false;
+                        continue;
+                    }
+                    if let Some(operator) = CollectiveOperator::from_segmented_scan_source(name)
+                        .filter(|_| explicit.is_none())
+                    {
+                        scan::compile(
+                            program,
+                            env,
+                            operator,
+                            true,
+                            args,
+                            d,
+                            statement.span,
+                            facts,
+                        )?;
+                        *boundary = false;
+                        continue;
+                    }
                 }
                 let Some(key) = callee_key else {
                     return d
@@ -1056,10 +1082,10 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     if d.function.kind == FunctionKind::Constant {
         return constant_value(world, name).map(|_| ());
     }
-    if d.function.kind==FunctionKind::Value && d.function.target==Target::Cpu {
-        return native_function::check(world,instance);
+    if d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu {
+        return native_function::check(world, instance);
     }
-    checked_function(world,instance,None,&[]).map(|_|())
+    checked_function(world, instance, None, &[]).map(|_| ())
 }
 struct CheckedFunction {
     body: FunctionBody,
@@ -1299,6 +1325,8 @@ fn checked_function(
     } else {
         Some(b.expected_storage(&d.function.result, d.function.span)?)
     };
+    let (returned, semantic_inputs, written) =
+        native_function::canonical(&mut b, returned, &inputs, written);
     let body = FunctionBody {
         name: name.clone(),
         parameters,
@@ -1314,7 +1342,7 @@ fn checked_function(
     Ok(CheckedFunction {
         body,
         returned,
-        inputs,
+        inputs: semantic_inputs,
         written,
         application: b.application,
     })
@@ -1578,7 +1606,9 @@ impl<'a> Builder<'a> {
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span)?,
             StmtKind::Parallel(..) => return self.application_parallel(s),
             StmtKind::Phase => {
-                if self.application.is_none(){return self.fail(s.span,"B163","phase 需要整域同步位置，不能位于元素实例中");}
+                if self.application.is_none() {
+                    return self.fail(s.span, "B163", "phase 需要整域同步位置，不能位于元素实例中");
+                }
             }
             StmtKind::Seek(name, position) => return self.seek_statement(name, position, s.span),
         }
@@ -1655,17 +1685,35 @@ impl<'a> Builder<'a> {
             );
         }
         match p {
-            Place::Reference {ty,address,words,..} => {
-                self.require_initialized(p,span)?;
-                let zero=self.constant(Scalar::U32,0).regs[0];
-                let mut regs=Vec::new();
-                for ((scalar,_),word) in ty.components.iter().zip(words) {
-                    let dst=self.reg(*scalar);
-                    self.code.push(Inst::LoadIndexed{dst,source:IndexedSource::View{address:*address,index:zero,stride:0},offset:zero,word:*word});
+            Place::Reference {
+                ty, address, words, ..
+            } => {
+                self.require_initialized(p, span)?;
+                let zero = self.constant(Scalar::U32, 0).regs[0];
+                let mut regs = Vec::new();
+                for ((scalar, _), word) in ty.components.iter().zip(words) {
+                    let dst = self.reg(*scalar);
+                    self.code.push(Inst::LoadIndexed {
+                        dst,
+                        source: IndexedSource::View {
+                            address: *address,
+                            index: zero,
+                            stride: 0,
+                        },
+                        offset: zero,
+                        word: *word,
+                    });
                     regs.push(dst);
                 }
-                let (proof,uniform)=self.read_owned_proof(p,&regs);
-                Ok(Value{proof,literal:false,ty:ty.clone(),regs,uniform,constant:None})
+                let (proof, uniform) = self.read_owned_proof(p, &regs);
+                Ok(Value {
+                    proof,
+                    literal: false,
+                    ty: ty.clone(),
+                    regs,
+                    uniform,
+                    constant: None,
+                })
             }
             Place::ApplicationElement {
                 ty,
@@ -1677,9 +1725,8 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.require_initialized(p, span)?;
-                let mut value = self.read_application_place(
-                    ty, *handle, *identity, *index, *stride, words, span,
-                )?;
+                let mut value = self
+                    .read_application_place(ty, *handle, *identity, *index, *stride, words, span)?;
                 let (proof, uniform) = self.read_owned_proof(p, &value.regs);
                 value.constant = proof.known_value(ty);
                 value.proof = proof;
@@ -1822,13 +1869,22 @@ impl<'a> Builder<'a> {
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
         match p {
-            Place::Reference {address,words,..} => {
-                self.writable_storage(p,span)?;
-                self.assign_owned_proof(p,bounds::Proof::capture(&value),false);
+            Place::Reference { address, words, .. } => {
+                self.writable_storage(p, span)?;
+                self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 self.initialize(p);
-                let zero=self.constant(Scalar::U32,0).regs[0];
-                for (word,value) in words.iter().zip(value.regs) {
-                    self.code.push(Inst::StoreIndexed{source:IndexedSource::View{address:*address,index:zero,stride:0},offset:zero,word:*word,value});
+                let zero = self.constant(Scalar::U32, 0).regs[0];
+                for (word, value) in words.iter().zip(value.regs) {
+                    self.code.push(Inst::StoreIndexed {
+                        source: IndexedSource::View {
+                            address: *address,
+                            index: zero,
+                            stride: 0,
+                        },
+                        offset: zero,
+                        word: *word,
+                        value,
+                    });
                 }
             }
             Place::ApplicationElement {
@@ -1945,10 +2001,12 @@ impl<'a> Builder<'a> {
             ExprKind::Binary(op, a, b) => self.binary_expr(op, a, b, e.span),
             ExprKind::Select(c, a, b) => self.selection(c, a, b, e.span),
             ExprKind::Target(target, call) => {
-                let result=self.target_call(*target,call,e.span)?;
-                if !self.flow.continues(){return Ok(None);}
-                let value=self.ordinary_return(result,e.span)?;
-                self.value_result(value,e.span).map(Some)
+                let result = self.target_call(*target, call, e.span)?;
+                if !self.flow.continues() {
+                    return Ok(None);
+                }
+                let value = self.ordinary_return(result, e.span)?;
+                self.value_result(value, e.span).map(Some)
             }
             ExprKind::Construct(ty, args) => self.record_expression(ty, args, e.span),
             ExprKind::Call(..) => {
@@ -3917,3 +3975,14 @@ pub(crate) fn kernel_interface(world: &World, d: &Definition) -> Result<bool> {
     }
     Ok(true)
 }
+
+crate::module::codec::record!(Value {
+    proof,
+    literal,
+    ty,
+    regs,
+    uniform,
+    constant
+});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength});
+crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id)});
