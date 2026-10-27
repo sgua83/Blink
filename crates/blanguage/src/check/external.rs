@@ -95,16 +95,16 @@ impl Builder<'_> {
             Ok(Some(self.materialize_array(value)))
         }
     }
-    fn external_reference(
+    pub(super) fn call_reference(
         &mut self,
         place: &Place,
         access: Access,
         span: Span,
-    ) -> Result<ExternalReference> {
-        let ty = place.ty();
+    ) -> Result<(CallReference,Vec<u32>)> {
         let (storage, offset, words) = match place {
+            Place::Reference{address,words,..}=>(CallStorage::Indexed(IndexedSource::View{address:*address,index:self.constant(Scalar::U32,0).regs[0],stride:0}),None,words.clone()),
             Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => (
-                ExternalStorage::Local {
+                CallStorage::Local {
                     base: storage.start,
                     len: storage.len(),
                 },
@@ -130,7 +130,7 @@ impl Builder<'_> {
                     self.cross_access.insert(*binding);
                 }
                 (
-                    ExternalStorage::Indexed(IndexedSource::Data {
+                    CallStorage::Indexed(IndexedSource::Data {
                         binding: *binding,
                         index: *index,
                     }),
@@ -146,7 +146,7 @@ impl Builder<'_> {
                 words,
                 ..
             } => (
-                ExternalStorage::Indexed(IndexedSource::View {
+                CallStorage::Indexed(IndexedSource::View {
                     address: self.application_address(*handle, *identity, access.writes(), span)?,
                     index: *index,
                     stride: *stride,
@@ -161,7 +161,7 @@ impl Builder<'_> {
                 words,
                 ..
             } => (
-                ExternalStorage::Indexed(IndexedSource::View {
+                CallStorage::Indexed(IndexedSource::View {
                     address: *address,
                     index: *index,
                     stride: *stride,
@@ -176,8 +176,9 @@ impl Builder<'_> {
                 ..
             } => {
                 let storage = match &**base {
+                    Place::Reference{address,..}=>CallStorage::Indexed(IndexedSource::View{address:*address,index:self.constant(Scalar::U32,0).regs[0],stride:0}),
                     Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => {
-                        ExternalStorage::Local {
+                        CallStorage::Local {
                             base: storage.start,
                             len: storage.len(),
                         }
@@ -192,7 +193,7 @@ impl Builder<'_> {
                         if *index != self.global_index {
                             self.cross_access.insert(*binding);
                         }
-                        ExternalStorage::Indexed(IndexedSource::Data {
+                        CallStorage::Indexed(IndexedSource::Data {
                             binding: *binding,
                             index: *index,
                         })
@@ -203,7 +204,7 @@ impl Builder<'_> {
                         index,
                         stride,
                         ..
-                    } => ExternalStorage::Indexed(IndexedSource::View {
+                    } => CallStorage::Indexed(IndexedSource::View {
                         address: self.application_address(
                             *handle,
                             *identity,
@@ -218,7 +219,7 @@ impl Builder<'_> {
                         index,
                         stride,
                         ..
-                    } => ExternalStorage::Indexed(IndexedSource::View {
+                    } => CallStorage::Indexed(IndexedSource::View {
                         address: *address,
                         index: *index,
                         stride: *stride,
@@ -239,26 +240,18 @@ impl Builder<'_> {
             }
             _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
         };
-        let first = words[0];
-        if (first * 4) % ty.align != 0 {
-            return self.fail(span, "B264", "C ABI 引用的实际地址偏移不满足参数对齐");
+        let first=*words.iter().min().unwrap();
+        let layout=words.iter().map(|word|word-first).collect();
+        Ok((CallReference{storage,offset,word:first},layout))
+    }
+    pub(super) fn external_reference(&mut self,place:&Place,access:Access,span:Span)->Result<CallReference>{
+        let ty=place.ty();
+        let (address,words)=self.call_reference(place,access,span)?;
+        if address.word*4%ty.align!=0{return self.fail(span,"B264","C ABI 引用的实际地址偏移不满足参数对齐");}
+        if !words.iter().zip(&ty.components).all(|(word,(_,offset))|*word==offset/4){
+            return self.fail(span,"B264","C ABI 引用要求连续且顺序匹配的实际布局，不能借用重排或离散 swizzle");
         }
-        if !words
-            .iter()
-            .zip(&ty.components)
-            .all(|(word, (_, at))| *word == first + at / 4)
-        {
-            return self.fail(
-                span,
-                "B264",
-                "C ABI 引用要求连续且顺序匹配的实际布局，不能借用重排或离散 swizzle",
-            );
-        }
-        Ok(ExternalReference {
-            storage,
-            offset,
-            word: first,
-        })
+        Ok(address)
     }
     pub(super) fn external_call(
         &mut self,
@@ -281,7 +274,7 @@ impl Builder<'_> {
             arguments.push(match arg {
                 Argument::Value(value) if param.access == Access::Value => {
                     self.require_same(&ty, &value.ty, span)?;
-                    ExternalArgument::Value {
+                    CallArgument::Value {
                         ty,
                         values: value.regs,
                     }
@@ -292,7 +285,7 @@ impl Builder<'_> {
                     if param.access.writes() {
                         written.push(place);
                     }
-                    ExternalArgument::Reference {
+                    CallArgument::Reference {
                         ty,
                         access: param.access,
                         address,
@@ -316,8 +309,8 @@ impl Builder<'_> {
             .flat_map(|t| t.components.iter().map(|(s, _)| *s))
             .map(|s| self.reg(s))
             .collect::<Vec<_>>();
-        self.code.push(Inst::ExternalCall(ExternalCall {
-            function: d.function.external.clone().unwrap(),
+        self.code.push(Inst::Call(Call {
+            target: CallTarget::External(d.function.external.clone().unwrap()),
             arguments,
             result: result.clone(),
             values: values.clone(),

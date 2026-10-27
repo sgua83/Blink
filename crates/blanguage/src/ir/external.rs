@@ -1,18 +1,18 @@
-//! C ABI 使用真实位置借用；普通值按目标 ABI 打包，不携带源语言资源引用。
+//! 原生调用共用实际值与位置 ABI；模块函数和外部符号明确区分。
 use super::*;
 #[derive(Clone, Debug)]
-pub enum ExternalStorage {
+pub enum CallStorage {
     Local { base: usize, len: usize },
     Indexed(IndexedSource),
 }
 #[derive(Clone, Debug)]
-pub struct ExternalReference {
-    pub storage: ExternalStorage,
+pub struct CallReference {
+    pub storage: CallStorage,
     pub offset: Option<Reg>,
     pub word: u32,
 }
 #[derive(Clone, Debug)]
-pub enum ExternalArgument {
+pub enum CallArgument {
     Value {
         ty: Ty,
         values: Vec<Reg>,
@@ -20,31 +20,48 @@ pub enum ExternalArgument {
     Reference {
         ty: Ty,
         access: Access,
-        address: ExternalReference,
+        address: CallReference,
     },
 }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CallTarget {
+    External(crate::ast::ExternalName),
+    Defined(String),
+}
 #[derive(Clone, Debug)]
-pub struct ExternalCall {
-    pub function: crate::ast::ExternalName,
-    pub arguments: Vec<ExternalArgument>,
+pub enum CallParameter {
+    Value(Ty),
+    Reference { ty: Ty, access: Access },
+}
+#[derive(Clone, Debug)]
+pub struct FunctionBody {
+    pub name: String,
+    pub parameters: Vec<CallParameter>,
+    pub result: Option<Ty>,
+    pub body: ValueCode,
+}
+#[derive(Clone, Debug)]
+pub struct Call {
+    pub target: CallTarget,
+    pub arguments: Vec<CallArgument>,
     pub result: Option<Ty>,
     pub values: Vec<Reg>,
 }
-impl ExternalReference {
+impl CallReference {
     pub(crate) fn local_range(&self) -> Option<std::ops::Range<usize>> {
         match self.storage {
-            ExternalStorage::Local { base, len } => Some(base..base + len),
+            CallStorage::Local { base, len } => Some(base..base + len),
             _ => None,
         }
     }
     pub(crate) fn operands(&self) -> Vec<Reg> {
         let mut regs = self.offset.into_iter().collect::<Vec<_>>();
         match &self.storage {
-            ExternalStorage::Local { .. } => {}
-            ExternalStorage::Indexed(
+            CallStorage::Local { .. } => {}
+            CallStorage::Indexed(
                 IndexedSource::Data { index, .. } | IndexedSource::Tile { index, .. },
             ) => regs.push(*index),
-            ExternalStorage::Indexed(IndexedSource::View { address, index, .. }) => {
+            CallStorage::Indexed(IndexedSource::View { address, index, .. }) => {
                 regs.extend(address);
                 regs.push(*index);
             }
@@ -54,11 +71,11 @@ impl ExternalReference {
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
         self.offset = self.offset.map(r);
         match &mut self.storage {
-            ExternalStorage::Local { .. } => {}
-            ExternalStorage::Indexed(
+            CallStorage::Local { .. } => {}
+            CallStorage::Indexed(
                 IndexedSource::Data { index, .. } | IndexedSource::Tile { index, .. },
             ) => *index = r(*index),
-            ExternalStorage::Indexed(IndexedSource::View { address, index, .. }) => {
+            CallStorage::Indexed(IndexedSource::View { address, index, .. }) => {
                 for a in address {
                     *a = r(*a);
                 }
@@ -67,25 +84,25 @@ impl ExternalReference {
         }
     }
 }
-impl ExternalCall {
+impl Call {
     pub(crate) fn operands(&self) -> Vec<Reg> {
         self.arguments
             .iter()
             .flat_map(|a| match a {
-                ExternalArgument::Value { values, .. } => values.clone(),
-                ExternalArgument::Reference { address, .. } => address.operands(),
+                CallArgument::Value { values, .. } => values.clone(),
+                CallArgument::Reference { address, .. } => address.operands(),
             })
             .collect()
     }
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
         for argument in &mut self.arguments {
             match argument {
-                ExternalArgument::Value { values, .. } => {
+                CallArgument::Value { values, .. } => {
                     for v in values {
                         *v = r(*v)
                     }
                 }
-                ExternalArgument::Reference { address, .. } => address.map_operands(r),
+                CallArgument::Reference { address, .. } => address.map_operands(r),
             }
         }
     }
@@ -93,7 +110,7 @@ impl ExternalCall {
         self.arguments
             .iter()
             .flat_map(|arg| {
-                if let ExternalArgument::Reference {
+                if let CallArgument::Reference {
                     address, access, ..
                 } = arg
                     && (if writing {

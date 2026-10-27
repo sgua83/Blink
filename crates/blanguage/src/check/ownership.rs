@@ -1,4 +1,4 @@
-//! 独占位置沿静态内联传递；字段只投影原槽／原缓冲字，不创建引用 ABI。
+//! 独占位置保留原存储：元素函数静态投影，CPU 普通调用传递实际借用地址。
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -82,6 +82,7 @@ impl Place {
                     })
                     .collect(),
             ),
+            Self::Reference{scope,words,..} => Some(words.iter().map(|word|Position::Parameter(*scope,*word as usize)).collect()),
             Self::Indexed { initialization, .. } => Some(initialization.clone()),
             Self::ReadOnlyLocal(..) => Some(Vec::new()),
             Self::Local(_, slots, ..) => Some(slots.iter().copied().map(Position::Local).collect()),
@@ -96,7 +97,8 @@ impl Place {
     }
     pub(super) fn ty(&self) -> &Ty {
         match self {
-            Self::AtomicParameter(ty)
+            Self::Reference{ty,..}
+            | Self::AtomicParameter(ty)
             | Self::Local(ty, _, ..)
             | Self::ReadOnlyLocal(ty, _, ..)
             | Self::Indexed { ty, .. }
@@ -108,6 +110,7 @@ impl Place {
     }
     pub(super) fn components_in(&self, owner: &Place) -> Option<Vec<usize>> {
         match (self, owner) {
+            (Self::Reference{address:a,words,..},Self::Reference{address:b,words:root,..}) if a==b => words.iter().map(|word|root.iter().position(|root|root==word)).collect(),
             (
                 Self::ApplicationElement {
                     identity: a,
@@ -171,6 +174,7 @@ impl Place {
     }
     pub(super) fn overlaps(&self, other: &Place) -> bool {
         match (self, other) {
+            (Self::Reference{address:a,words,..},Self::Reference{address:b,words:other,..})=>a==b && words.iter().any(|word|other.contains(word)),
             (
                 Self::ApplicationElement {
                     identity: a,
@@ -231,6 +235,7 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         match place {
+            Place::Reference{words,..}=>Ok(words.iter().map(|word|*word as usize).collect()),
             Place::ApplicationElement {
                 words,
                 writable: true,

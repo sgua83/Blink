@@ -373,7 +373,7 @@ impl Emitter<'_> {
         for inst in code {
             match inst {
                 Inst::Print { .. } => return Err("GPU 后端不能执行 CPU 标准输出"),
-                Inst::ExternalCall(_) => return Err("GPU 后端不能调用 CPU C ABI 外部函数"),
+                Inst::Call(_) => return Err("GPU 后端不能调用 CPU C ABI 外部函数"),
                 Inst::TextureSample {
                     result,
                     texture,

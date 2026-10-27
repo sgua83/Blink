@@ -349,6 +349,9 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
+        if self.application.is_some() && instance.definition.function.kind==FunctionKind::Value && instance.definition.function.target!=Target::Gpu {
+            return self.native_function(instance,args,span);
+        }
         let mut held = Vec::new();
         let args = args
             .into_iter()

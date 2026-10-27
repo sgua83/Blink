@@ -201,6 +201,7 @@ impl Executable {
         let mut libraries = std::collections::BTreeMap::new();
         for r in &code.relocations {
             let ptr = match &r.target {
+                NativeSymbol::Function(name) => return Err(error(format!("范围映像缺少所属模块函数 {name}"))),
                 NativeSymbol::External(name) => {
                     if !libraries.contains_key(&name.library) {
                         libraries.insert(

@@ -23,7 +23,7 @@ mod segmented_reduce;
 mod sort;
 mod texture;
 pub(crate) use application::{
-    ApplicationCode, emit as emit_application, unwind as application_unwind,
+    ApplicationCode, emit as emit_application, emit_function, unwind as application_unwind,
 };
 mod tile;
 pub use compact::emit_compact_scatter;
@@ -44,11 +44,13 @@ pub struct Relocation {
 pub enum NativeSymbol {
     Intrinsic(NativeIntrinsic),
     External(crate::ast::ExternalName),
+    Function(String),
 }
 impl std::fmt::Debug for NativeSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Intrinsic(v) => v.fmt(f),
+            Self::Function(v) => f.debug_tuple("Function").field(v).finish(),
             Self::External(v) => f
                 .debug_struct("External")
                 .field("library", &v.library)
@@ -317,7 +319,7 @@ impl Emitter<'_> {
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
             match inst {
-                Inst::ExternalCall(call) => self.external_call(call)?,
+                Inst::Call(call) => self.native_call(call)?,
                 Inst::Print { dst, value } => {
                     self.copy(allocation::Location::Gpr(1), self.location(*value));
                     self.bytes(&[0x48, 0xb8]);

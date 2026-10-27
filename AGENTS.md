@@ -40,7 +40,7 @@
 - 同一目录的 Git 仅向 https://github.com/sgua83/Blink.git 发布 P4 已提交版本。每次本项目 P4 提交成功后，由执行该提交的调用方立即用 PowerShell 7 的 Start-Process -WindowStyle Hidden 异步运行一次 Tools/PublishGit.ps1，按 P4 changelist 生成 Git 提交；P4 提交失败或没有提交时不启动发布。不得创建定时任务、Codex heartbeat、轮询或自动重试。Git 失败只影响本次发布，不阻塞或回滚 P4，不执行 P4 sync／revert／submit，也不修改工作区源码。未提交文件与本地暂存内容不纳入发布。
 - 不引入第三方编译器、Shader 编译器、图形框架或并行运行时。Rust 标准库与 Windows／Vulkan／SPIR-V 标准接口属于必要平台设施。
 - crates/blanguage 拥有前端、并行 IR、优化与原生 x64／SPIR-V 后端；crates/blcompute 拥有真实存储、传输、执行与完成后的资源释放。
-- 源语言普通与整域计算统一使用返回类型函数定义，不恢复 program 类别或手写 launch 许可；parallel 显式表达域，on 声明目标能力，target 选择本次 CPU／GPU 位置。同步 GPU 调用等待本次真实完成，结果仍留 GPU，download 负责向 CPU 传输；内部 Program／Stage／ExecutionPlan 和低层异步完成所有者保留职责。当前推导依赖装入的定义，独立模块契约、普通原生调用／递归与异步应用仍须按实际实现记录。
+- 源语言普通与整域计算统一使用返回类型函数定义，不恢复 program 类别或手写 launch 许可；parallel 显式表达域，on 声明目标能力，target 选择本次 CPU／GPU 位置。同步 GPU 调用等待本次真实完成，结果仍留 GPU，download 负责向 CPU 传输；内部 Program／Stage／ExecutionPlan 和低层异步完成所有者保留职责。当前推导依赖装入的定义，CPU 应用普通原生调用／递归已沿原 ABI 和 Frame 实现；独立模块契约、其他目标普通调用、选择性内联与异步应用继续开放，具体范围见 Docs/Architecture.md 和 Docs/BLanguage.md。
 - .h 是模块接口来源，纯类型／常量／外部声明模块不依赖空.b；实际存在的.b持有实现及私有声明，普通函数必须有真实匹配实现，不伪造空模块或忽略真实读取错误。
 - 编译与链接职责分开：`blc -c` 生成已编译目标文件，独立 `bllink` 消费目标文件并生成最终应用或算法库。链接阶段不重读 B 源码、不进行 IR 优化或 CPU／GPU 代码生成，也不调用 Cargo／rustc 编译执行框架；必要框架代码在编译阶段形成静态目标代码。C/C++ 与 Rust 互操作、原生 Rust API 和数据所有权继续保留；SDK 的组合构建 API 复用这两个正式阶段，不恢复合并的应用 CLI。
 - BLEngine 是独立消费者；场景、资产、渲染／材质／模拟算法及编辑器接入留在 B:\BLEngine。本项目不反向依赖引擎。

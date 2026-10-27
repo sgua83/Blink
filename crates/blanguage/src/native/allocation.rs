@@ -227,7 +227,7 @@ impl Graph {
                     if matches!(
                         inst,
                         Inst::Print { .. }
-                            | Inst::ExternalCall(_)
+                            | Inst::Call(_)
                             | Inst::Math {
                                 op: MathOp::Sin
                                     | MathOp::Cos
@@ -242,7 +242,7 @@ impl Graph {
                     ) {
                         self.outgoing_bytes =
                             self.outgoing_bytes
-                                .max(if let Inst::ExternalCall(call) = inst {
+                                .max(if let Inst::Call(call) = inst {
                                     super::external::Layout::new(call).bytes
                                 } else {
                                     32
@@ -264,6 +264,10 @@ impl Graph {
     }
 }
 impl Graph {
+    pub(super) fn function_inputs(&mut self,inputs:&[Reg]) {
+        // Entry values are simultaneous definitions supplied by the native caller.
+        self.together(&inputs.iter().copied().map(PrivateSlot::Register).collect());
+    }
     pub fn new(stage: &Stage) -> Self {
         Self::with_live(stage, BTreeSet::new())
     }

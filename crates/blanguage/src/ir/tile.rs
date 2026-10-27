@@ -391,7 +391,7 @@ pub(crate) fn live_before(
 impl Inst {
     pub(crate) fn results(&self) -> Vec<Reg> {
         match self {
-            Self::ExternalCall(call) => call.values.clone(),
+            Self::Call(call) => call.values.clone(),
             Self::TextureSample { result, .. } | Self::TextureFetch { result, .. } => {
                 result.to_vec()
             }
@@ -428,7 +428,7 @@ impl Inst {
     }
     pub(crate) fn operands(&self) -> Vec<Reg> {
         let mut values = match self {
-            Self::ExternalCall(call) => call.operands(),
+            Self::Call(call) => call.operands(),
             Self::TextureSample {
                 coordinate, lod, ..
             } => vec![coordinate[0], coordinate[1], *lod],
@@ -512,7 +512,7 @@ impl Inst {
     }
     pub(crate) fn local_reads(&self) -> Vec<usize> {
         match self {
-            Self::ExternalCall(call) => call.locals(false),
+            Self::Call(call) => call.locals(false),
             Self::LoadLocal(_, slot) => vec![*slot],
             Self::LoadLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
             _ => Vec::new(),
@@ -520,7 +520,7 @@ impl Inst {
     }
     pub(crate) fn local_writes(&self) -> Vec<usize> {
         match self {
-            Self::ExternalCall(call) => call.locals(true),
+            Self::Call(call) => call.locals(true),
             Self::StoreLocal(slot, _) => vec![*slot],
             Self::StoreLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
             _ => Vec::new(),
@@ -533,9 +533,9 @@ pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {
             match inst {
                 Inst::LoadLocalIndexed { base, len, .. }
                 | Inst::StoreLocalIndexed { base, len, .. } => out.push(*base..*base + *len),
-                Inst::ExternalCall(call) => {
+                Inst::Call(call) => {
                     for arg in &call.arguments {
-                        if let ExternalArgument::Reference { address, .. } = arg
+                        if let CallArgument::Reference { address, .. } = arg
                             && let Some(range) = address.local_range()
                         {
                             out.push(range);

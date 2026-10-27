@@ -137,6 +137,101 @@ pub(super) struct Proof {
     domains: Vec<Domains>,
 }
 impl Proof {
+    // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
+    pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Value>) -> Self {
+        fn identity(
+            id: ValueIdentity,
+            bindings: &BTreeMap<ValueIdentity, Value>,
+        ) -> Option<ValueIdentity> {
+            bindings.get(&id).map(Value::identity)
+        }
+        fn domain(
+            value: IndexDomain,
+            bindings: &BTreeMap<ValueIdentity, Value>,
+        ) -> Option<IndexDomain> {
+            Some(match value {
+                IndexDomain::Fixed(n) => IndexDomain::Fixed(n),
+                IndexDomain::ApplicationData(id) => {
+                    IndexDomain::ApplicationData(identity(id, bindings)?)
+                }
+                IndexDomain::ApplicationLength(id) => {
+                    IndexDomain::ApplicationLength(identity(id, bindings)?)
+                }
+                IndexDomain::View(ids) => IndexDomain::View([
+                    identity(ids[0], bindings)?,
+                    identity(ids[1], bindings)?,
+                    identity(ids[2], bindings)?,
+                ]),
+                IndexDomain::ViewLength(ids) => IndexDomain::ViewLength([
+                    identity(ids[0], bindings)?,
+                    identity(ids[1], bindings)?,
+                    identity(ids[2], bindings)?,
+                ]),
+                _ => return None,
+            })
+        }
+        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Value>) -> Option<Fact> {
+            Some(match value {
+                Fact::Equal(a, b) => Fact::equal(identity(a, bindings)?, identity(b, bindings)?),
+                Fact::Index(id, d) => Fact::Index(identity(id, bindings)?, domain(d, bindings)?),
+                Fact::Minimum(id, n) => Fact::Minimum(identity(id, bindings)?, n),
+                Fact::Maximum(id, n) => Fact::Maximum(identity(id, bindings)?, n),
+                Fact::NonZero(id) => Fact::NonZero(identity(id, bindings)?),
+            })
+        }
+        let mut translated = self.clone();
+        for (i, origins) in self.origins.iter().enumerate() {
+            let values = origins
+                .iter()
+                .filter_map(|id| bindings.get(id))
+                .collect::<Vec<_>>();
+            translated.origins[i] = values
+                .iter()
+                .flat_map(|value| value.component_origins(0))
+                .collect();
+            translated
+                .ranges
+                .resize_with(translated.ranges.len().max(i + 1), IntegerRanges::default);
+            translated
+                .nonzero
+                .resize(translated.nonzero.len().max(i + 1), false);
+            translated
+                .domains
+                .resize_with(translated.domains.len().max(i + 1), Domains::new);
+            translated.domains[i] = self
+                .domains(i)
+                .into_iter()
+                .filter_map(|d| domain(d, bindings))
+                .collect();
+            for value in values {
+                let incoming = value.component_ranges(0);
+                translated.ranges[i] = IntegerRanges::from_intervals(
+                    translated.ranges[i].0.iter().flat_map(|(a, b)| {
+                        incoming
+                            .0
+                            .iter()
+                            .map(move |(c, d)| ((*a).max(*c), (*b).min(*d)))
+                    }),
+                );
+                translated.nonzero[i] |= value.component_nonzero(0);
+                translated.domains[i].extend(value.proof.domains(0));
+            }
+        }
+        // Domains may exist without a captured origin (for example a proven index).
+        for i in self.origins.len()..translated.domains.len() {
+            translated.domains[i] = self
+                .domains(i)
+                .into_iter()
+                .filter_map(|d| domain(d, bindings))
+                .collect();
+        }
+        if let Some(condition) = &mut translated.condition {
+            for facts in condition.cases.iter_mut().flatten() {
+                *facts = facts.iter().filter_map(|f| fact(*f, bindings)).collect();
+            }
+        }
+        translated
+    }
     pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<u32>> {
         if *ty == Ty::scalar(Scalar::Bool) {
             return match &self.condition.as_deref()?.cases {

@@ -105,14 +105,14 @@ pub fn optimize(program: &mut Program) {
             let mut reads = BTreeSet::new();
             let mut writes = BTreeSet::new();
             visit(&stage.code, &mut |i| match i {
-                Inst::ExternalCall(call) => {
+                Inst::Call(call) => {
                     for arg in &call.arguments {
-                        if let ExternalArgument::Reference {
+                        if let CallArgument::Reference {
                             access,
                             address:
-                                ExternalReference {
+                                CallReference {
                                     storage:
-                                        ExternalStorage::Indexed(IndexedSource::Data {
+                                        CallStorage::Indexed(IndexedSource::Data {
                                             binding, ..
                                         }),
                                     ..
@@ -235,7 +235,7 @@ fn destination(i: &Inst) -> Option<Reg> {
             | Inst::TextureSize { .. }
             | Inst::TextureFetch { .. }
             | Inst::TileCollective(_)
-            | Inst::ExternalCall(_)
+            | Inst::Call(_)
             | Inst::IntegerDivide {
                 result: IntegerDivisionResult::Both { .. },
                 ..
@@ -297,13 +297,13 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
                 *base = s(*base);
             }
             Inst::StoreLocalIndexed { base, .. } => *base = s(*base),
-            Inst::ExternalCall(call) => {
+            Inst::Call(call) => {
                 for value in &mut call.values {
                     *value = r(*value);
                 }
                 for arg in &mut call.arguments {
-                    if let ExternalArgument::Reference { address, .. } = arg
-                        && let ExternalStorage::Local { base, .. } = &mut address.storage
+                    if let CallArgument::Reference { address, .. } = arg
+                        && let CallStorage::Local { base, .. } = &mut address.storage
                     {
                         *base = s(*base);
                     }
@@ -411,7 +411,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *value = r(*value);
         }
         Inst::Print { value, .. } => *value = r(*value),
-        Inst::ExternalCall(call) => call.map_operands(r),
+        Inst::Call(call) => call.map_operands(r),
         Inst::Subgroup {
             value, argument, ..
         } => {
@@ -483,7 +483,7 @@ fn dce(
         let results = i.results();
         if !matches!(
             i,
-            Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. } | Inst::ExternalCall(_)
+            Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. } | Inst::Call(_)
         ) && !results.is_empty()
             && !results.iter().any(|r| needed.contains(&Register(*r)))
         {
@@ -573,7 +573,7 @@ fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
         | Inst::Atomic(_)
         | Inst::Append(_)
         | Inst::Print { .. }
-        | Inst::ExternalCall(_)
+        | Inst::Call(_)
         | Inst::TilePublish(_)
         | Inst::TileCollective(_)
         | Inst::TileBarrier => true,

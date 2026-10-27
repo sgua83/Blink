@@ -10,6 +10,7 @@ use std::path::Path;
 pub struct Application {
     pub(crate) name: String,
     pub(crate) body: ValueCode,
+    pub(crate) functions: Vec<crate::ir::FunctionBody>,
     pub(crate) resources: Option<Resources>,
 }
 #[derive(Default)]
@@ -24,7 +25,15 @@ impl Application {
     pub fn compile(&self) -> Result<Object, Box<dyn std::error::Error>> {
         let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
         let stack_bytes = code.code.stack_bytes;
-        let sections = object::application_code(code)?;
+        let functions = self
+            .functions
+            .iter()
+            .map(|function| {
+                native::emit_function(function).map(|code| (function.name.clone(), code))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(std::io::Error::other)?;
+        let sections = object::application_code(code, functions)?;
         let archive = if let Some(resources) = &self.resources {
             let source = crate::dll::application_source(resources)?;
             let mut exports = [

@@ -1,7 +1,7 @@
 use crate::ast::{Access, Target};
 use std::num::NonZeroU32;
 mod external;
-pub use external::{ExternalArgument, ExternalCall, ExternalReference, ExternalStorage};
+pub use external::{CallArgument, Call, CallReference, CallStorage, CallTarget, CallParameter, FunctionBody};
 mod execution;
 pub use execution::{
     DeviceRequirements, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
@@ -677,7 +677,7 @@ pub enum Inst {
         dst: Reg,
         value: Reg,
     },
-    ExternalCall(ExternalCall),
+    Call(Call),
     ViewLoad {
         dst: Reg,
         address: [Reg; 2],
@@ -1121,7 +1121,7 @@ impl Stage {
     pub(crate) fn has_external_effects(&self) -> bool {
         fn contains(code: &[Inst]) -> bool {
             code.iter().any(|inst| match inst {
-                Inst::Print { .. } | Inst::ExternalCall(_) => true,
+                Inst::Print { .. } | Inst::Call(_) => true,
                 Inst::Scope(body) => contains(body),
                 Inst::If { yes, no, .. } => contains(yes) || contains(no),
                 Inst::Loop {

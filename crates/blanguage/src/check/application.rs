@@ -5,6 +5,7 @@ use super::*;
 pub(super) struct Context {
     pub frame: Option<Value>,
     pub resources: crate::application::Resources,
+    pub functions: native_function::Module,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Ownership {
@@ -29,23 +30,23 @@ fn pointer_type() -> Ty {
     ty.name = "__blink_frame".into();
     ty
 }
-fn argument(value: Value) -> ExternalArgument {
-    ExternalArgument::Value {
+fn argument(value: Value) -> CallArgument {
+    CallArgument::Value {
         ty: value.ty,
         values: value.regs,
     }
 }
 fn runtime_call(
     name: &str,
-    arguments: Vec<ExternalArgument>,
+    arguments: Vec<CallArgument>,
     result: Option<Ty>,
     values: Vec<Reg>,
 ) -> Inst {
-    Inst::ExternalCall(ExternalCall {
-        function: ExternalName {
+    Inst::Call(Call {
+        target: CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
             symbol: format!("blink_{name}"),
-        },
+        }),
         arguments,
         result,
         values,
@@ -98,11 +99,8 @@ pub(crate) fn compile_application(
     let mut builder = Builder::new(world, d, &context, 0);
     builder.application = Some(Context::default());
     builder.in_function = true;
-    builder.calls.push(instance.name.clone());
-    let requirements = contracts::resolve(&builder, d, &builder.env)?;
-    contracts::assume(&mut builder.env, &requirements);
-    let result = builder.function_body(d.function.body.as_ref().unwrap())?;
-    let result = builder.ordinary_return(result, d.function.span)?.unwrap();
+    let result=builder.native_function(instance.clone(),Vec::new(),d.function.span)?;
+    let result=builder.ordinary_return(result,d.function.span)?.unwrap();
     let mut app = builder.application.take().unwrap();
     let mut body = ValueCode {
         registers: builder.registers,
@@ -119,20 +117,19 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         frame.regs = std::mem::take(&mut body.inputs);
     }
-    let resources = live_resources(&mut body, app);
-    Ok(crate::application::Application {
-        name: instance.name.clone(),
-        body,
-        resources,
-    })
+    let mut functions=native_function::finish(std::mem::take(&mut app.functions),&mut body);
+    let resources=live_resources(&mut body,&mut functions,app);
+    Ok(crate::application::Application{name:instance.name.clone(),body,functions,resources})
 }
-fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalCall)) {
+
+fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName)) {
     for instruction in code {
         match instruction {
-            Inst::ExternalCall(call)
-                if call.function.library == crate::application::RUNTIME_LIBRARY =>
-            {
-                visitor(call)
+            Inst::Call(call) => {
+                if let CallTarget::External(name) = &mut call.target
+                    && name.library == crate::application::RUNTIME_LIBRARY {
+                    visitor(name)
+                }
             }
             Inst::Scope(body) => runtime_calls(body, visitor),
             Inst::If { yes, no, .. } => {
@@ -149,12 +146,12 @@ fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalCall))
         }
     }
 }
-fn live_resources(body: &mut ValueCode, app: Context) -> Option<crate::application::Resources> {
+fn live_resources(body: &mut ValueCode, functions:&mut [FunctionBody], app: Context) -> Option<crate::application::Resources> {
     let frame = app.frame?;
     let mut names = BTreeSet::new();
-    runtime_calls(&mut body.code, &mut |call| {
-        names.insert(call.function.symbol.clone());
-    });
+    for code in std::iter::once(&mut body.code).chain(functions.iter_mut().map(|function|&mut function.body.code)) {
+        runtime_calls(code,&mut |call|{names.insert(call.symbol.clone());});
+    }
     if names.is_empty() {
         return None;
     }
@@ -177,11 +174,9 @@ fn live_resources(body: &mut ValueCode, app: Context) -> Option<crate::applicati
     let mut renames = BTreeMap::new();
     let types = retain(app.resources.types, "allocate", &names, &mut renames);
     let programs = retain(app.resources.programs, "run", &names, &mut renames);
-    runtime_calls(&mut body.code, &mut |call| {
-        if let Some(name) = renames.get(&call.function.symbol) {
-            call.function.symbol = name.clone();
-        }
-    });
+    for code in std::iter::once(&mut body.code).chain(functions.iter_mut().map(|function|&mut function.body.code)) {
+        runtime_calls(code,&mut |call|{if let Some(name)=renames.get(&call.symbol){call.symbol=name.clone();}});
+    }
     body.code.insert(
         0,
         runtime_call(
@@ -201,15 +196,16 @@ fn live_resources(body: &mut ValueCode, app: Context) -> Option<crate::applicati
 }
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
-    // 实际内联交接或借用调用方的 ApplicationData，物理资源仍由原帧拥有。
+    // 原生调用交接同一 Frame 的句柄与长度，物理资源仍由原帧拥有。
     pub(super) fn application_parameter(&mut self, binding: usize, access: Access) -> Result<Data> {
         if access == Access::Value {
             self.application_frame(self.definition.function.span)?;
         }
         let reg = self.reg(Scalar::U32);
         let handle = self.application_handle(reg);
-        let view = self.dataset_view(binding);
-        let mut length = self.data_length(&view);
+        let length_reg=self.reg(Scalar::U32);
+        let count=self.program.buffers[binding].count;
+        let mut length=Value{ty:Ty::scalar(Scalar::U32),regs:vec![length_reg],proof:count.map(|n|bounds::Proof::unsigned(n,n)).unwrap_or_default(),literal:false,uniform:false,constant:count.map(|n|vec![n])};
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
@@ -526,7 +522,7 @@ impl Builder<'_> {
             "release",
             vec![
                 argument(frame),
-                ExternalArgument::Value {
+                CallArgument::Value {
                     ty: Ty::scalar(Scalar::U32),
                     values: vec![handle],
                 },

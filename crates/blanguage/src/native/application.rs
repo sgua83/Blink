@@ -1,4 +1,4 @@
-//! 普通值入口直接返回 EAX；栈布局与调用活跃性复用原 x64 后端。
+//! 普通函数入口／结果使用 Windows x64 ABI；栈布局与调用活跃性复用原后端。
 use super::operands::Operand;
 use super::*;
 pub(crate) struct ApplicationCode {
@@ -43,6 +43,21 @@ fn saved_unwind(at: u8, reg: u8, offset: u32, xmm: bool) -> Vec<u8> {
     }
 }
 pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
+    emit_value(body, &[], Some(&Ty::scalar(Scalar::U32)))
+}
+pub(crate) fn emit_function(function: &FunctionBody) -> Result<ApplicationCode, &'static str> {
+    emit_value(
+        &function.body,
+        &function.parameters,
+        function.result.as_ref(),
+    )
+}
+use super::external::{floating, indirect};
+fn emit_value(
+    body: &ValueCode,
+    parameters: &[CallParameter],
+    result: Option<&Ty>,
+) -> Result<ApplicationCode, &'static str> {
     let mut stage = Stage {
         tiles: Vec::new(),
         domain: 0,
@@ -71,13 +86,14 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         prefix_guarantees: Vec::new(),
     };
     reads::place(&mut stage.code, &stage.writes);
-    let graph = allocation::Graph::with_live(
+    let mut graph = allocation::Graph::with_live(
         &stage,
         body.outputs
             .iter()
             .map(|&r| PrivateSlot::Register(r))
             .collect(),
     );
+    graph.function_inputs(&body.inputs);
     let allocation = Allocation::new(&stage, &graph);
     let layout = Frame::new(&allocation, None);
     fn scratch(code: &[Inst]) -> bool {
@@ -92,12 +108,12 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
             Inst::Loop {
                 condition, body, ..
             } => scratch(condition) || scratch(body),
-            Inst::ExternalCall(call) => call.arguments.iter().any(|a| {
+            Inst::Call(call) => call.arguments.iter().any(|a| {
                 matches!(
                     a,
-                    ExternalArgument::Reference {
-                        address: ExternalReference {
-                            storage: ExternalStorage::Indexed(_),
+                    CallArgument::Reference {
+                        address: CallReference {
+                            storage: CallStorage::Indexed(_),
                             ..
                         },
                         ..
@@ -108,7 +124,9 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         })
     }
     let scratch = scratch(&stage.code);
-    let bytes = layout.end.div_ceil(16) * 16;
+    let hidden = result.is_some_and(indirect);
+    let result_pointer = hidden.then_some(layout.end.div_ceil(8) as u32 * 8);
+    let bytes = (layout.end + if hidden { 8 } else { 0 }).div_ceil(16) * 16;
     let frame = i32::try_from(bytes + if !scratch && bytes != 0 { 8 } else { 0 })
         .map_err(|_| "应用栈帧超出x64地址编码")? as u32;
     let mut e = Emitter {
@@ -123,6 +141,21 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         allocation,
         frame: layout,
     };
+    // Home every register argument before allocation, probing or input moves may overwrite it.
+    // These are the Windows x64 caller-provided home slots, not another parameter copy owner.
+    for slot in 0..(parameters.len() + usize::from(hidden)).min(4) {
+        let value = if hidden && slot == 0 {
+            None
+        } else {
+            parameters.get(slot - usize::from(hidden))
+        };
+        let memory = Operand::memory(4, 8 + slot as u32 * 8);
+        if matches!(value,Some(CallParameter::Value(ty)) if floating(ty)) {
+            e.instruction(Some(0xf3), &[0x0f, 0x11], false, slot as u8, memory);
+        } else {
+            e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
+        }
+    }
     let mut operations = Vec::new();
     if scratch {
         e.bytes(&[0x41, 0x57]);
@@ -155,8 +188,57 @@ pub(crate) fn emit(body: &ValueCode) -> Result<ApplicationCode, &'static str> {
         operations.push((at, saved_unwind(at, r, offset, true)));
     }
     let metadata = unwind(e.code.len() as u8, operations);
+    let home = frame + if scratch { 8 } else { 0 } + 8;
+    if let Some(at) = result_pointer {
+        e.instruction(None, &[0x8b], true, 0, Operand::memory(4, home));
+        e.instruction(None, &[0x89], true, 0, Operand::memory(4, at));
+    }
+    let mut inputs = body.inputs.iter();
+    for (i, parameter) in parameters.iter().enumerate() {
+        let slot = home + (i + usize::from(hidden)) as u32 * 8;
+        match parameter {
+            CallParameter::Value(ty) => {
+                let base = if indirect(ty) {
+                    e.instruction(None, &[0x8b], true, 1, Operand::memory(4, slot));
+                    1
+                } else {
+                    4
+                };
+                for (_, offset) in &ty.components {
+                    let dst = *inputs.next().unwrap();
+                    e.read_scalar(dst, base, if base == 4 { slot + offset } else { *offset });
+                }
+            }
+            CallParameter::Reference { .. } => {
+                for offset in [0, 4] {
+                    let dst = *inputs.next().unwrap();
+                    e.read_scalar(dst, 4, slot + offset);
+                }
+            }
+        }
+    }
     e.block(&stage.code)?;
-    e.load(body.outputs[0]);
+    if let Some(ty) = result {
+        if let Some(at) = result_pointer {
+            e.instruction(None, &[0x8b], true, 1, Operand::memory(4, at));
+            for ((_, offset), reg) in ty.components.iter().zip(&body.outputs) {
+                e.write_memory(e.location(*reg), 1, *offset);
+            }
+            e.bytes(&[0x48, 0x89, 0xc8]);
+        } else if floating(ty) {
+            e.copy(allocation::Location::Xmm(0), e.location(body.outputs[0]));
+        } else {
+            e.bytes(&[0x31, 0xc9]);
+            for ((_, offset), reg) in ty.components.iter().zip(&body.outputs) {
+                e.load(*reg);
+                if *offset != 0 {
+                    e.bytes(&[0x48, 0xc1, 0xe0, 32]);
+                }
+                e.bytes(&[0x48, 0x09, 0xc1]);
+            }
+            e.bytes(&[0x48, 0x89, 0xc8]);
+        }
+    }
     e.preserve_registers(true);
     if frame != 0 {
         e.bytes(&[0x48, 0x81, 0xc4]);

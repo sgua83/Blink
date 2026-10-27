@@ -254,7 +254,7 @@ variants!(NativeIntrinsic {
     PrintBool,
     PrintF32
 });
-variants!(NativeSymbol { Intrinsic(i), External(name) });
+variants!(NativeSymbol { Intrinsic(i), External(name), Function(name) });
 record!(Relocation { offset, target });
 record!(NativeCode {
     bytes,

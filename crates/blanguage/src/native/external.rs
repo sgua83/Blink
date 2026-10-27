@@ -8,14 +8,14 @@ pub(super) struct Layout {
     pub copies: Vec<Option<u64>>,
     pub hidden: bool,
 }
-fn indirect(ty: &Ty) -> bool {
+pub(super) fn indirect(ty: &Ty) -> bool {
     !matches!(align_up(ty.size, ty.align), 4 | 8)
 }
-fn floating(ty: &Ty) -> bool {
+pub(super) fn floating(ty: &Ty) -> bool {
     *ty == Ty::scalar(Scalar::F32)
 }
 impl Layout {
-    pub(super) fn new(call: &ExternalCall) -> Self {
+    pub(super) fn new(call: &Call) -> Self {
         let hidden = call.result.as_ref().is_some_and(indirect);
         let mut bytes =
             ((call.arguments.len() + usize::from(hidden)).max(4) as u64 * 8).div_ceil(16) * 16;
@@ -30,7 +30,7 @@ impl Layout {
         let mut copies = Vec::new();
         for arg in &call.arguments {
             copies.push(
-                if let ExternalArgument::Value { ty, .. } = arg
+                if let CallArgument::Value { ty, .. } = arg
                     && indirect(ty)
                 {
                     bytes = bytes.div_ceil(16) * 16;
@@ -54,9 +54,9 @@ impl Emitter<'_> {
     fn stack_address(&mut self, offset: u32) {
         self.instruction(None, &[0x8d], true, 0, Operand::memory(4, offset));
     }
-    fn reference_address(&mut self, address: &ExternalReference) -> Result<(), &'static str> {
+    fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
         match &address.storage {
-            ExternalStorage::Local { base, .. } => {
+            CallStorage::Local { base, .. } => {
                 let Location::Stack(offset) = self.allocation.location(PrivateSlot::Local(*base))
                 else {
                     return Err("C ABI 局部借用没有实际栈地址");
@@ -69,7 +69,7 @@ impl Emitter<'_> {
                     self.bytes(&[0x48, 0xc1, 0xe0, 2, 0x48, 0x01, 0xc8]);
                 }
             }
-            ExternalStorage::Indexed(source) => {
+            CallStorage::Indexed(source) => {
                 if let Some(offset) = address.offset {
                     self.indexed_address(source, offset, address.word);
                 } else {
@@ -105,7 +105,7 @@ impl Emitter<'_> {
         }
         Ok(())
     }
-    pub(super) fn external_call(&mut self, call: &ExternalCall) -> Result<(), &'static str> {
+    pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
         let layout = Layout::new(call);
         if let Some(at) = layout.result {
             self.stack_address(at as u32);
@@ -114,11 +114,11 @@ impl Emitter<'_> {
         for (i, arg) in call.arguments.iter().enumerate() {
             let slot = (i + usize::from(layout.hidden)) as u32 * 8;
             match arg {
-                ExternalArgument::Reference { address, .. } => {
+                CallArgument::Reference { address, .. } => {
                     self.reference_address(address)?;
                     self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                 }
-                ExternalArgument::Value { ty, values } => {
+                CallArgument::Value { ty, values } => {
                     let base = layout.copies[i].map_or(slot, |at| at as u32);
                     for ((_, offset), value) in ty.components.iter().zip(values) {
                         self.write_memory(self.location(*value), 4, base + *offset);
@@ -139,7 +139,7 @@ impl Emitter<'_> {
                 continue;
             }
             let memory = Operand::memory(4, slot as u32 * 8);
-            if matches!(arg,ExternalArgument::Value{ty,..} if floating(ty)) {
+            if matches!(arg,CallArgument::Value{ty,..} if floating(ty)) {
                 self.instruction(Some(0xf3), &[0x0f, 0x10], false, slot as u8, memory);
             } else {
                 self.instruction(None, &[0x8b], true, [1, 2, 8, 9][slot], memory);
@@ -148,7 +148,10 @@ impl Emitter<'_> {
         self.bytes(&[0x48, 0xb8]);
         self.relocations.push(Relocation {
             offset: self.code.len(),
-            target: NativeSymbol::External(call.function.clone()),
+            target: match &call.target {
+                CallTarget::External(name) => NativeSymbol::External(name.clone()),
+                CallTarget::Defined(name) => NativeSymbol::Function(name.clone()),
+            },
         });
         self.bytes(&[0; 8]);
         self.bytes(&[0xff, 0xd0]);

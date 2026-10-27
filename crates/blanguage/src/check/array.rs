@@ -3,6 +3,7 @@ use super::*;
 impl Place {
     pub(super) fn project(self, ty: Ty, components: &[usize]) -> Self {
         match self {
+            Self::Reference{address,scope,words,..}=>Self::Reference{ty,address,scope,words:components.iter().map(|i|words[*i]).collect()},
             Self::ApplicationElement {
                 handle,
                 identity,
@@ -225,7 +226,8 @@ impl Builder<'_> {
             }
             p => {
                 let first = match &p {
-                    Place::Element { words, .. }
+                    Place::Reference {words,..}
+                    | Place::Element { words, .. }
                     | Place::ApplicationElement { words, .. }
                     | Place::ViewElement { words, .. }
                     | Place::TileElement { words, .. } => words[0],
@@ -249,6 +251,7 @@ impl Builder<'_> {
     }
     fn array_memory(&mut self, base: &Place, write: bool, span: Span) -> Result<IndexedSource> {
         Ok(match base {
+            Place::Reference{address,..}=>IndexedSource::View{address:*address,index:self.constant(Scalar::U32,0).regs[0],stride:0},
             Place::ApplicationElement {
                 handle,
                 identity,
@@ -296,7 +299,7 @@ impl Builder<'_> {
             unreachable!()
         };
         match &**base {
-            Place::Local(..) | Place::ApplicationElement { .. } => {
+            Place::Local(..) | Place::Reference{..} | Place::ApplicationElement { .. } => {
                 self.require_initialized(place, span)?
             }
             Place::Element { binding, index, .. } => {
@@ -384,7 +387,7 @@ impl Builder<'_> {
                     word: *word,
                     value,
                 },
-                Place::Element { .. } | Place::ApplicationElement { .. } => {
+                Place::Reference{..} | Place::Element { .. } | Place::ApplicationElement { .. } => {
                     if let Place::Element { binding, .. } = &**base {
                         self.writes.insert(*binding);
                     }

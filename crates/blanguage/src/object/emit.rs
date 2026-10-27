@@ -196,7 +196,10 @@ fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import)
     text.extend([0; 4]);
     patches.push((at, import));
 }
-pub(crate) fn application(native: ApplicationCode) -> Result<Vec<Section>> {
+pub(crate) fn application(
+    native: ApplicationCode,
+    defined: Vec<(String, ApplicationCode)>,
+) -> Result<Vec<Section>> {
     let mut text = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
     let mut patches = Vec::new();
     call(&mut text, &mut patches, kernel("ExitProcess"));
@@ -215,17 +218,36 @@ pub(crate) fn application(native: ApplicationCode) -> Result<Vec<Section>> {
         unwind: native.unwind,
     });
     let mut targets = BTreeMap::new();
-    let operations: BTreeSet<_> = native
-        .code
-        .relocations
+    let mut images = vec![(main, native.code)];
+    for (name, function) in defined {
+        text.resize(align(text.len(), 16), 0x90);
+        let begin = text.len();
+        targets.insert(NativeSymbol::Function(name), begin);
+        text.extend(&function.code.bytes);
+        functions.push(Function {
+            begin,
+            end: begin + function.function_end as usize,
+            unwind: function.unwind,
+        });
+        images.push((begin, function.code));
+    }
+    let operations: BTreeSet<_> = images
         .iter()
+        .flat_map(|(_, code)| &code.relocations)
         .map(|r| r.target.clone())
         .collect();
     for op in operations {
+        if let NativeSymbol::Function(name) = &op {
+            if !targets.contains_key(&op) {
+                return Err(format!("应用缺少函数代码 {name}").into());
+            }
+            continue;
+        }
         text.resize(align(text.len(), 16), 0x90);
         let begin = text.len();
         targets.insert(op.clone(), begin);
         match op {
+            NativeSymbol::Function(name) => return Err(format!("应用缺少函数代码 {name}").into()),
             NativeSymbol::External(name) => thunk(
                 &mut text,
                 &mut patches,
@@ -253,14 +275,16 @@ pub(crate) fn application(native: ApplicationCode) -> Result<Vec<Section>> {
         }
     }
     let mut locations = Vec::new();
-    for relocation in &native.code.relocations {
-        let at = main + relocation.offset;
-        put64(&mut text, at, targets[&relocation.target] as u64);
-        locations.push(Relocation {
-            offset: at,
-            kind: 1,
-            target: Target::Section(0, 0),
-        });
+    for (begin, code) in images {
+        for relocation in code.relocations {
+            let at = begin + relocation.offset;
+            put64(&mut text, at, targets[&relocation.target] as u64);
+            locations.push(Relocation {
+                offset: at,
+                kind: 1,
+                target: Target::Section(0, 0),
+            });
+        }
     }
 
     for (at, import) in patches {

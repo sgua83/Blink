@@ -252,11 +252,11 @@ impl Values {
                     }
                     continuing = self.resume(&mut flow, loop_flow);
                 }
-                Inst::ExternalCall(call) => {
+                Inst::Call(call) => {
                     for slot in call.locals(true) {
                         self.locals.remove(&slot);
                     }
-                    if call.arguments.iter().any(|arg|matches!(arg,ExternalArgument::Reference{access,address:ExternalReference{storage:ExternalStorage::Indexed(_),..},..} if access.writes())) {self.memory.clear();}
+                    if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,address:CallReference{storage:CallStorage::Indexed(_),..},..} if access.writes())) {self.memory.clear();}
                 }
                 _ => {}
             }

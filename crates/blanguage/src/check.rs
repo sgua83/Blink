@@ -16,6 +16,7 @@ mod cooperative;
 mod custom_reduce;
 mod effects;
 mod external;
+mod native_function;
 mod flow;
 pub(crate) mod generics;
 mod matrix;
@@ -160,6 +161,7 @@ struct CheckedTile {
 }
 #[derive(Clone, PartialEq, Eq)]
 enum Place {
+    Reference { ty:Ty, address:[Reg;2], scope:usize, words:Vec<u32> },
     ApplicationElement {
         ty: Ty,
         handle: Reg,
@@ -1054,7 +1056,27 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     if d.function.kind == FunctionKind::Constant {
         return constant_value(world, name).map(|_| ());
     }
-    // 独立函数按接口检查资源；实际内联仍绑定调用方的缓冲身份。
+    if d.function.kind==FunctionKind::Value && d.function.target==Target::Cpu {
+        return native_function::check(world,instance);
+    }
+    checked_function(world,instance,None,&[]).map(|_|())
+}
+struct CheckedFunction {
+    body: FunctionBody,
+    returned: Option<returns::Returned>,
+    inputs: Vec<Reg>,
+    written: Vec<Option<bounds::Proof>>,
+    application: Option<application::Context>,
+}
+fn checked_function(
+    world: &World,
+    instance: &crate::generics::Instance,
+    application: Option<application::Context>,
+    interface: &[native_function::Parameter],
+) -> Result<CheckedFunction> {
+    let name = &instance.name;
+    let d = &instance.definition;
+    // CPU 参数是实际调用 ABI；设备参数仍使用原并行域的接口身份。
     let mut buffers = Vec::new();
     for p in &d.function.params {
         if p.ty.dataset {
@@ -1100,8 +1122,13 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     };
     let mut b = Builder::new(world, d, &program, 0);
     b.in_function = true;
-    if d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu {
-        b.application = Some(application::Context::default());
+    b.application = application;
+    let mut inputs = Vec::new();
+    let mut parameters = Vec::new();
+    if b.application.is_some() {
+        let frame = b.application_frame(d.function.span)?;
+        parameters.push(CallParameter::Value(frame.ty));
+        inputs.extend(frame.regs);
     }
     b.calls.push(name.into());
     if d.function.kind == FunctionKind::Cooperative {
@@ -1110,7 +1137,7 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     let mut data_index = 0;
     let mut texture_index = 0;
     let mut acceleration_index = 0;
-    for p in &d.function.params {
+    for (parameter_index, p) in d.function.params.iter().enumerate() {
         if p.ty.is_acceleration() {
             b.env
                 .insert(p.name.clone(), Binding::Acceleration(acceleration_index));
@@ -1134,6 +1161,11 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
                 ) {
                 {
                     let data = b.application_parameter(data_index, p.access)?;
+                    parameters.push(CallParameter::Value(Ty::owned_dataset(
+                        data.ty.clone(),
+                        data.count,
+                    )));
+                    inputs.extend([data.handle.regs[0], data.length.regs[0]]);
                     let data = b.application_bind(
                         data,
                         application::rebound(d.function.body.as_ref().unwrap(), &p.name),
@@ -1163,8 +1195,27 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
         if p.access != Access::Value {
             if matches!(p.access, Access::InOut | Access::Write) {
                 let ty = cooperative::parameter_type(world, p, d)?;
-                let (slots, storage) = b.local_slots(&ty);
-                let place = Place::Local(ty, slots, storage);
+                let place = if b.application.is_some() {
+                    let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
+                    inputs.extend(address);
+                    parameters.push(CallParameter::Reference {
+                        ty: ty.clone(),
+                        access: p.access,
+                    });
+                    b.output_scopes += 1;
+                    Place::Reference {
+                        words: match interface.get(parameter_index) {
+                            Some(native_function::Parameter::Reference(words)) => words.clone(),
+                            _ => ty.components.iter().map(|(_, offset)| offset / 4).collect(),
+                        },
+                        ty,
+                        address,
+                        scope: b.output_scopes,
+                    }
+                } else {
+                    let (slots, storage) = b.local_slots(&ty);
+                    Place::Local(ty, slots, storage)
+                };
                 if p.access == Access::InOut {
                     b.initialize(&place);
                 }
@@ -1194,9 +1245,13 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
             );
         }
         let ty = cooperative::parameter_type(world, p, d)?;
-        let regs = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
+        let regs: Vec<_> = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
+        if b.application.is_some() {
+            inputs.extend(&regs);
+            parameters.push(CallParameter::Value(ty.clone()));
+        }
         if ty.owns_resources() {
-            let result = b.incoming_owned_value(Value {
+            let mut result = b.incoming_owned_value(Value {
                 ty,
                 regs,
                 proof: bounds::Proof::default(),
@@ -1204,6 +1259,10 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
                 uniform: false,
                 constant: None,
             });
+            if let Some(native_function::Parameter::Owned(origin)) = interface.get(parameter_index)
+            {
+                native_function::parameter_resources(&mut result, origin);
+            }
             b.bind_owned_value(&p.name, result, p.span)?;
             continue;
         }
@@ -1222,8 +1281,43 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     let requirements = contracts::resolve(&b, d, &b.env)?;
     contracts::assume(&mut b.env, &requirements);
     b.materialize_array_bindings();
-    b.function_body(d.function.body.as_ref().unwrap())?;
-    Ok(())
+    let returned = b.function_body(d.function.body.as_ref().unwrap())?;
+    let output = returned.as_ref().map(|value| b.returned_storage(value));
+    let written = d
+        .function
+        .params
+        .iter()
+        .map(|p| match b.env.get(&p.name) {
+            Some(Binding::Owned(owner)) if matches!(p.access, Access::Write | Access::InOut) => {
+                Some(owner.proof.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let result = if d.function.result.name == "void" {
+        None
+    } else {
+        Some(b.expected_storage(&d.function.result, d.function.span)?)
+    };
+    let body = FunctionBody {
+        name: name.clone(),
+        parameters,
+        result,
+        body: ValueCode {
+            registers: b.registers,
+            locals: b.locals,
+            code: b.code,
+            inputs: inputs.clone(),
+            outputs: output.map(|v| v.regs).unwrap_or_default(),
+        },
+    };
+    Ok(CheckedFunction {
+        body,
+        returned,
+        inputs,
+        written,
+        application: b.application,
+    })
 }
 fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
     if !n.starts_with("0x")
@@ -1561,6 +1655,18 @@ impl<'a> Builder<'a> {
             );
         }
         match p {
+            Place::Reference {ty,address,words,..} => {
+                self.require_initialized(p,span)?;
+                let zero=self.constant(Scalar::U32,0).regs[0];
+                let mut regs=Vec::new();
+                for ((scalar,_),word) in ty.components.iter().zip(words) {
+                    let dst=self.reg(*scalar);
+                    self.code.push(Inst::LoadIndexed{dst,source:IndexedSource::View{address:*address,index:zero,stride:0},offset:zero,word:*word});
+                    regs.push(dst);
+                }
+                let (proof,uniform)=self.read_owned_proof(p,&regs);
+                Ok(Value{proof,literal:false,ty:ty.clone(),regs,uniform,constant:None})
+            }
             Place::ApplicationElement {
                 ty,
                 handle,
@@ -1716,6 +1822,15 @@ impl<'a> Builder<'a> {
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
         match p {
+            Place::Reference {address,words,..} => {
+                self.writable_storage(p,span)?;
+                self.assign_owned_proof(p,bounds::Proof::capture(&value),false);
+                self.initialize(p);
+                let zero=self.constant(Scalar::U32,0).regs[0];
+                for (word,value) in words.iter().zip(value.regs) {
+                    self.code.push(Inst::StoreIndexed{source:IndexedSource::View{address:*address,index:zero,stride:0},offset:zero,word:*word,value});
+                }
+            }
             Place::ApplicationElement {
                 handle,
                 identity,

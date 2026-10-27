@@ -319,7 +319,7 @@ impl Builder<'_> {
             }
         }
     }
-    fn template_returned(&mut self, value: Value, available: bool) -> Returned {
+    pub(super) fn template_returned(&mut self, value: Value, available: bool) -> Returned {
         if let Some(element) = value.ty.dataset.as_deref() {
             let mut handle = self.value_component(&value, 0);
             handle.proof = bounds::Proof::capture(&handle);
