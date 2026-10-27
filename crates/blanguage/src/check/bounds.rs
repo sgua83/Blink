@@ -27,6 +27,25 @@ enum Fact {
     Below(ValueIdentity, ValueIdentity, bool, bool),
 }
 type Facts = BTreeSet<Fact>;
+type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
+fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
+    bindings.get(&identity).copied().unwrap_or(identity)
+}
+fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain {
+    match domain {
+        IndexDomain::View(ids) => IndexDomain::View(ids.map(|id| output_identity(id, bindings))),
+        IndexDomain::ViewLength(ids) => {
+            IndexDomain::ViewLength(ids.map(|id| output_identity(id, bindings)))
+        }
+        IndexDomain::ApplicationData(id) => {
+            IndexDomain::ApplicationData(output_identity(id, bindings))
+        }
+        IndexDomain::ApplicationLength(id) => {
+            IndexDomain::ApplicationLength(output_identity(id, bindings))
+        }
+        other => other,
+    }
+}
 impl Place {
     fn refine_position(
         &mut self,
@@ -168,6 +187,78 @@ pub(super) struct Proof {
     domains: Vec<Domains>,
 }
 impl Proof {
+    pub(super) fn width(&self) -> usize {
+        self.origins.len()
+    }
+    pub(super) fn output_bindings(
+        &self,
+        registers: &[Reg],
+        entry: usize,
+        bindings: &mut OutputBindings,
+    ) {
+        for (origins, reg) in self.origins.iter().zip(registers) {
+            for identity in origins {
+                if let ValueIdentity::Register(source) = identity
+                    && *source >= entry
+                    && source != reg
+                {
+                    bindings
+                        .entry(*identity)
+                        .or_insert(ValueIdentity::Register(*reg));
+                }
+            }
+        }
+    }
+    pub(super) fn output_aliases(&self, registers: &[Reg], bindings: &OutputBindings) -> Clause {
+        Clause::facts(
+            self.origins
+                .iter()
+                .zip(registers)
+                .flat_map(|(origins, reg)| {
+                    let target = ValueIdentity::Register(*reg);
+                    origins
+                        .iter()
+                        .flat_map(|id| [*id, output_identity(*id, bindings)])
+                        .filter(move |id| *id != target)
+                        .map(move |id| Fact::equal(id, target))
+                })
+                .collect(),
+        )
+    }
+    pub(super) fn bind_outputs(
+        &mut self,
+        ty: &Ty,
+        registers: Option<&[Reg]>,
+        bindings: &OutputBindings,
+        aliases: &Clause,
+    ) {
+        for origins in &mut self.origins {
+            for identity in origins {
+                *identity = output_identity(*identity, bindings);
+            }
+        }
+        for domains in &mut self.domains {
+            *domains = domains
+                .iter()
+                .map(|d| output_domain(*d, bindings))
+                .collect();
+        }
+        for condition in self.conditions.iter_mut().flatten() {
+            for case in &mut condition.cases {
+                *case = case.output_bound(bindings);
+            }
+        }
+        if let Some(registers) = registers {
+            self.origins.resize_with(registers.len(), Vec::new);
+            for (origins, reg) in self.origins.iter_mut().zip(registers) {
+                let identity = ValueIdentity::Register(*reg);
+                if !origins.contains(&identity) {
+                    origins.push(identity);
+                }
+            }
+        }
+        self.under_path(ty, aliases);
+    }
     // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
     pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
         fn identity(
@@ -1040,6 +1131,51 @@ enum ClauseNode {
     Either(Clause, Clause),
 }
 impl Clause {
+    pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
+        if bindings.is_empty() {
+            return self.clone();
+        }
+        let identity = |id| output_identity(id, bindings);
+        let mut clauses: BTreeMap<usize, Clause> = BTreeMap::new();
+        for clause in Self::ordered(std::slice::from_ref(self)) {
+            let next = match &*clause.0 {
+                ClauseNode::Impossible => clause.clone(),
+                ClauseNode::Facts(facts) => {
+                    let renamed: Facts = facts
+                        .iter()
+                        .map(|fact| match *fact {
+                            Fact::Equal(a, b) => Fact::equal(identity(a), identity(b)),
+                            Fact::Index(id, domain) => {
+                                Fact::Index(identity(id), output_domain(domain, bindings))
+                            }
+                            Fact::Minimum(id, n) => Fact::Minimum(identity(id), n),
+                            Fact::Maximum(id, n) => Fact::Maximum(identity(id), n),
+                            Fact::NonZero(id) => Fact::NonZero(identity(id)),
+                            Fact::Boolean(id, truth) => Fact::Boolean(identity(id), truth),
+                            Fact::Below(a, b, strict, signed) => {
+                                Fact::Below(identity(a), identity(b), strict, signed)
+                            }
+                        })
+                        .collect();
+                    if renamed == *facts {
+                        clause.clone()
+                    } else {
+                        Self::facts(renamed)
+                    }
+                }
+                ClauseNode::Both(a, b) | ClauseNode::Either(a, b)
+                    if Arc::ptr_eq(&clauses[&a.key()].0, &a.0)
+                        && Arc::ptr_eq(&clauses[&b.key()].0, &b.0) =>
+                {
+                    clause.clone()
+                }
+                ClauseNode::Both(a, b) => Self::both(&clauses[&a.key()], &clauses[&b.key()]),
+                ClauseNode::Either(a, b) => Self::either(&clauses[&a.key()], &clauses[&b.key()]),
+            };
+            clauses.insert(clause.key(), next);
+        }
+        clauses.remove(&self.key()).unwrap()
+    }
     fn selection(index: ownership::ApplicationIndex, element: usize) -> Self {
         match index {
             ownership::ApplicationIndex::Constant(index) => {

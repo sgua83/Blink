@@ -22,6 +22,38 @@ impl Expected {
     }
 }
 impl Returned {
+    fn bind_outputs(
+        &mut self,
+        registers: Option<&[Reg]>,
+        bindings: &BTreeMap<ValueIdentity, ValueIdentity>,
+        aliases: &bounds::Clause,
+    ) {
+        fn value(
+            value: &mut Value,
+            registers: Option<&[Reg]>,
+            bindings: &BTreeMap<ValueIdentity, ValueIdentity>,
+            aliases: &bounds::Clause,
+        ) {
+            value.proof = bounds::Proof::capture(value);
+            value
+                .proof
+                .bind_outputs(&value.ty, registers, bindings, aliases);
+        }
+        match self {
+            Self::Unit => {}
+            Self::Value(v) => value(v, registers, bindings, aliases),
+            Self::OwnedValue(v) => {
+                value(&mut v.value, registers, bindings, aliases);
+                for payload in v.payloads.iter_mut().flatten() {
+                    payload.bind_outputs(None, bindings, aliases);
+                }
+            }
+            Self::Dataset(v) => {
+                value(&mut v.handle, registers.map(|r| &r[..1]), bindings, aliases);
+                value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
+            }
+        }
+    }
     pub(super) fn registers(&self) -> Vec<Reg> {
         match self {
             Self::Unit => Vec::new(),
@@ -152,6 +184,46 @@ fn owns_exit(code: &[Inst]) -> bool {
     })
 }
 impl Builder<'_> {
+    fn bind_return_exit(
+        &mut self,
+        value: &mut Option<Returned>,
+        borrowed: &mut BTreeMap<String, OwnedBinding>,
+        path: &mut bounds::Clause,
+        registers: &[Reg],
+        written: &BTreeMap<String, Vec<Reg>>,
+        entry: usize,
+    ) {
+        let returned = value.as_ref().map(|v| self.returned_storage(v));
+        let proof = returned.as_ref().map(bounds::Proof::capture);
+        let mut bindings = BTreeMap::new();
+        if let Some(proof) = &proof {
+            proof.output_bindings(registers, entry, &mut bindings);
+        }
+        for (name, owner) in borrowed.iter() {
+            owner
+                .proof
+                .output_bindings(&written[name], entry, &mut bindings);
+        }
+        let mut aliases = bounds::Clause::default();
+        if let Some(proof) = &proof {
+            aliases = bounds::Clause::both(&aliases, &proof.output_aliases(registers, &bindings));
+        }
+        for (name, owner) in borrowed.iter() {
+            aliases = bounds::Clause::both(
+                &aliases,
+                &owner.proof.output_aliases(&written[name], &bindings),
+            );
+        }
+        *path = bounds::Clause::both(&path.output_bound(&bindings), &aliases);
+        if let Some(value) = value {
+            value.bind_outputs(Some(registers), &bindings, &aliases);
+        }
+        for (name, owner) in borrowed.iter_mut() {
+            owner
+                .proof
+                .bind_outputs(owner.place.ty(), Some(&written[name]), &bindings, &aliases);
+        }
+    }
     pub(super) fn ordinary_return(
         &self,
         result: Option<Returned>,
@@ -294,6 +366,7 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<Option<Returned>> {
+        let entry = self.registers.len();
         let definition = self.definition.clone();
         let name = &definition.function.result;
         let expected = if (name.name == "void" && !name.dataset && !name.tile && !name.view)
@@ -415,15 +488,62 @@ impl Builder<'_> {
             self.path = bounds::Clause::impossible();
             return Ok(None);
         };
-        self.path = first.path;
+        let mut path = first.path;
         let mut result = first.value;
         let mut borrowed = first.borrowed?;
+        let registers: Vec<_> = if scoped {
+            context
+                .slots
+                .iter()
+                .map(|slot| {
+                    let reg = self.reg(self.locals[*slot]);
+                    self.code.push(Inst::LoadLocal(reg, *slot));
+                    reg
+                })
+                .collect()
+        } else {
+            result.as_ref().map(Returned::registers).unwrap_or_default()
+        };
+        let written: BTreeMap<_, _> = borrowed
+            .iter()
+            .map(|(name, owner)| {
+                (
+                    name.clone(),
+                    owner
+                        .place
+                        .ty()
+                        .components
+                        .iter()
+                        .map(|(scalar, _)| self.reg(*scalar))
+                        .collect(),
+                )
+            })
+            .collect();
+        self.bind_return_exit(
+            &mut result,
+            &mut borrowed,
+            &mut path,
+            &registers,
+            &written,
+            entry,
+        );
+        self.path = path;
         for exit in exits {
-            self.path = bounds::Clause::either(&self.path, &exit.path);
-            if let (Some(value), Some(other)) = (&mut result, exit.value) {
+            let mut path = exit.path;
+            let mut other = exit.value;
+            let mut other_borrowed = exit.borrowed?;
+            self.bind_return_exit(
+                &mut other,
+                &mut other_borrowed,
+                &mut path,
+                &registers,
+                &written,
+                entry,
+            );
+            self.path = bounds::Clause::either(&self.path, &path);
+            if let (Some(value), Some(other)) = (&mut result, other) {
                 value.join(other);
             }
-            let other_borrowed = exit.borrowed?;
             for (name, owner) in &mut borrowed {
                 let other = &other_borrowed[name];
                 owner
@@ -438,15 +558,6 @@ impl Builder<'_> {
         }
         if scoped {
             if let Some(value) = &mut result {
-                let registers: Vec<_> = context
-                    .slots
-                    .iter()
-                    .map(|slot| {
-                        let reg = self.reg(self.locals[*slot]);
-                        self.code.push(Inst::LoadLocal(reg, *slot));
-                        reg
-                    })
-                    .collect();
                 self.rebind_returned(value, registers);
             }
         }

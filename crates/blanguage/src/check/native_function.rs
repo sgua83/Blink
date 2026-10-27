@@ -208,10 +208,31 @@ pub(super) fn canonical(
             }
         }
     }
-    let returned = returned.map(|model| {
+    let count = returned.as_ref().map_or(0, |model| model.registers().len());
+    let models = returned.map(|model| {
         let mut value = model.clone();
-        let count = model.registers().len();
         rebind_model(&mut value, (inputs.len()..inputs.len() + count).collect());
+        for (source, target) in model.registers().into_iter().zip(value.registers()) {
+            bindings
+                .entry(ValueIdentity::Register(source))
+                .or_insert_with(|| {
+                    bounds::Proof::default().with_identity(ValueIdentity::Register(target))
+                });
+        }
+        (value, model)
+    });
+    let mut next = inputs.len() + count;
+    for proof in written.iter().flatten() {
+        for component in 0..proof.width() {
+            if let Some(identity) = proof.known_identity(component) {
+                bindings.entry(identity).or_insert_with(|| {
+                    bounds::Proof::default().with_identity(ValueIdentity::Register(next))
+                });
+            }
+            next += 1;
+        }
+    }
+    let returned = models.map(|(mut value, model)| {
         translate_returned(&mut value, &model, &bindings);
         value
     });
@@ -449,6 +470,26 @@ impl Builder<'_> {
             (BTreeMap::new(), None, Vec::new())
         };
         bindings.extend(contents);
+        if let Some(model) = &model {
+            for (source, target) in model.registers().into_iter().zip(&values) {
+                bindings.insert(
+                    ValueIdentity::Register(source),
+                    bounds::Proof::default().with_identity(ValueIdentity::Register(*target)),
+                );
+            }
+        }
+        for (index, place) in &written {
+            if let Some(Some(proof)) = writes.get(*index) {
+                for (component, (scalar, _)) in place.ty().components.iter().enumerate() {
+                    if let Some(identity) = proof.known_identity(component) {
+                        bindings.entry(identity).or_insert_with(|| {
+                            let reg = self.reg(*scalar);
+                            bounds::Proof::default().with_identity(ValueIdentity::Register(reg))
+                        });
+                    }
+                }
+            }
+        }
         for (index, place) in written {
             let proof = writes
                 .get(index)
