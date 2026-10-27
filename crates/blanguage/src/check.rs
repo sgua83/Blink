@@ -88,6 +88,7 @@ struct Value {
 }
 #[derive(Clone)]
 enum Binding {
+    DataReference(application::DataReference),
     ApplicationData(application::Data),
     OwnedValue(owned_values::OwnedValue),
     AtomicBorrow(Place),
@@ -132,7 +133,7 @@ struct TileView {
 }
 #[derive(Clone)]
 enum CursorSource {
-    ApplicationData(application::Data),
+    ApplicationData(application::DataReference),
     Data(usize),
     Tile(TileView),
     View(Value),
@@ -188,6 +189,7 @@ enum Place {
         ty: Ty,
         handle: Reg,
         identity: ValueIdentity,
+        sources: Vec<ValueIdentity>,
         initialization: Option<(usize, ownership::ApplicationIndex)>,
         index: Reg,
         index_range: (u32, u32),
@@ -2945,7 +2947,7 @@ impl<'a> Builder<'a> {
             (a, b, None)
         } else {
             let source = if let Some(value) = self.application_reference(start)? {
-                Some(Binding::ApplicationData(value))
+                Some(Binding::DataReference(value))
             } else if let ExprKind::Name(name) = &start.kind {
                 self.env.get(name).cloned()
             } else {
@@ -2953,7 +2955,7 @@ impl<'a> Builder<'a> {
             };
             let begin = self.constant(Scalar::U32, 0);
             match source {
-                Some(Binding::ApplicationData(data)) => {
+                Some(Binding::DataReference(data)) => {
                     self.application_cpu(&data, start.span)?;
                     (
                         begin,
@@ -3088,8 +3090,7 @@ impl<'a> Builder<'a> {
             if let Some(domain) = data {
                 match domain {
                     CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
-                        place: Self::application_element(
-                            &data,
+                        place: data.element(
                             &cursor,
                             (
                                 cursor.minimum(),
@@ -3621,10 +3622,14 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
-        if let Some(p) = self
-            .owned_projection(lhs)
-            .filter(|p| !p.path.is_empty() && p.ty.owns_resources())
+        if !matches!(lhs.kind, ExprKind::Name(_))
+            && self
+                .owned_element_type(lhs)
+                .is_some_and(|ty| ty.owns_resources())
         {
+            let Some(p) = self.resolve_owned_projection(lhs)? else {
+                return Ok(());
+            };
             return self.assign_owned_projection(p, op, rhs, span);
         }
         if let ExprKind::Name(name) = &lhs.kind
@@ -3640,9 +3645,14 @@ impl<'a> Builder<'a> {
         let Some(place) = self.place(lhs)? else {
             return Ok(());
         };
+        let borrowed = matches!(place.storage(), Place::ApplicationElement { .. })
+            .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
         let Some(mut value) = self.expr_expected(rhs, Some(place.ty()))? else {
             return Ok(());
         };
+        if let Some(name) = borrowed {
+            self.env.remove(&name);
+        }
         if op != "=" {
             let current = self.read_place(&place, lhs.span)?;
             value = self.binary(&op[..op.len() - 1], current, value, span)?;
@@ -3892,7 +3902,7 @@ impl<'a> Builder<'a> {
     fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Option<Value>> {
         if let Some(data) = self.application_reference(base)? {
             return if field == "length" {
-                Ok(Some(data.length))
+                Ok(Some(data.length.clone()))
             } else {
                 self.fail(e.span, "B141", "dataset只公开只读length")
             };

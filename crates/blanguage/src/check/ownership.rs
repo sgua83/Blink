@@ -82,7 +82,12 @@ impl Place {
                     })
                     .collect(),
             ),
-            Self::Reference{scope,words,..} => Some(words.iter().map(|word|Position::Parameter(*scope,*word as usize)).collect()),
+            Self::Reference { scope, words, .. } => Some(
+                words
+                    .iter()
+                    .map(|word| Position::Parameter(*scope, *word as usize))
+                    .collect(),
+            ),
             Self::Indexed { initialization, .. } => Some(initialization.clone()),
             Self::ReadOnlyLocal(_, slots, ..) | Self::Local(_, slots, ..) => {
                 Some(slots.iter().copied().map(Position::Local).collect())
@@ -98,7 +103,7 @@ impl Place {
     }
     pub(super) fn ty(&self) -> &Ty {
         match self {
-            Self::Reference{ty,..}
+            Self::Reference { ty, .. }
             | Self::AtomicParameter(ty)
             | Self::Local(ty, _, ..)
             | Self::ReadOnlyLocal(ty, _, ..)
@@ -111,7 +116,19 @@ impl Place {
     }
     pub(super) fn components_in(&self, owner: &Place) -> Option<Vec<usize>> {
         match (self, owner) {
-            (Self::Reference{address:a,words,..},Self::Reference{address:b,words:root,..}) if a==b => words.iter().map(|word|root.iter().position(|root|root==word)).collect(),
+            (
+                Self::Reference {
+                    address: a, words, ..
+                },
+                Self::Reference {
+                    address: b,
+                    words: root,
+                    ..
+                },
+            ) if a == b => words
+                .iter()
+                .map(|word| root.iter().position(|root| root == word))
+                .collect(),
             (
                 Self::ApplicationElement {
                     identity: a,
@@ -175,22 +192,31 @@ impl Place {
     }
     pub(super) fn overlaps(&self, other: &Place) -> bool {
         match (self, other) {
-            (Self::Reference{address:a,words,..},Self::Reference{address:b,words:other,..})=>a==b && words.iter().any(|word|other.contains(word)),
+            (
+                Self::Reference {
+                    address: a, words, ..
+                },
+                Self::Reference {
+                    address: b,
+                    words: other,
+                    ..
+                },
+            ) => a == b && words.iter().any(|word| other.contains(word)),
             (
                 Self::ApplicationElement {
-                    identity: a,
+                    sources: a,
                     index_range: (low_a, high_a),
                     words,
                     ..
                 },
                 Self::ApplicationElement {
-                    identity: b,
+                    sources: b,
                     index_range: (low_b, high_b),
                     words: other,
                     ..
                 },
             ) => {
-                a == b
+                a.iter().any(|source| b.contains(source))
                     && high_a >= low_b
                     && high_b >= low_a
                     && words.iter().any(|word| other.contains(word))
@@ -236,7 +262,7 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         match place {
-            Place::Reference{words,..}=>Ok(words.iter().map(|word|*word as usize).collect()),
+            Place::Reference { words, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
             Place::ApplicationElement {
                 words,
                 writable: true,

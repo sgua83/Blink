@@ -1,7 +1,9 @@
 use crate::ast::{Access, Target};
 use std::num::NonZeroU32;
 mod external;
-pub use external::{CallArgument, Call, CallReference, CallStorage, CallTarget, CallParameter, FunctionBody};
+pub use external::{
+    Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody,
+};
 mod execution;
 pub use execution::{
     DeviceRequirements, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
@@ -75,7 +77,27 @@ impl Ty {
         ty
     }
     pub fn owns_resources(&self) -> bool {
-        self.dataset.is_some() || (self.result && self.arguments.iter().any(Self::owns_resources)) || self.fields.iter().any(|(_,_,ty)|ty.owns_resources())
+        self.dataset.is_some()
+            || (self.result && self.arguments.iter().any(Self::owns_resources))
+            || self.array.as_deref().is_some_and(Self::owns_resources)
+            || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
+    }
+    pub(crate) fn aggregate_len(&self) -> usize {
+        if self.array.is_some() {
+            self.values[0] as usize
+        } else {
+            self.fields.len()
+        }
+    }
+    pub(crate) fn aggregate_part(&self, index: usize) -> (u32, &Self) {
+        if let Some(element) = &self.array {
+            (
+                index as u32 * align_up(element.size, element.align),
+                element,
+            )
+        } else {
+            (self.fields[index].1, &self.fields[index].2)
+        }
     }
     pub fn owned_dataset(element: Self, count: Option<u32>) -> Self {
         Self {

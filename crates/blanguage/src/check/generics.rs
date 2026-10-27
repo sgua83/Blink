@@ -47,6 +47,10 @@ impl Builder<'_> {
                     ty: Some(&self.program.buffers[v.binding].ty),
                     count: self.program.buffers[v.binding].count,
                 },
+                Argument::BorrowedData(reference) => Actual {
+                    ty: Some(&reference.ty),
+                    count: reference.count,
+                },
                 Argument::ApplicationData(data) | Argument::ScopedData { data, .. } => Actual {
                     ty: Some(&data.ty),
                     count: data.count,

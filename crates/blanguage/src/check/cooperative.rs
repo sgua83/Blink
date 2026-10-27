@@ -1,6 +1,7 @@
 //! 函数借用现有数据集、独占／原子位置或 tile；静态绑定实际来源与访问模式。
 use super::*;
 pub(super) enum Argument {
+    BorrowedData(application::DataReference),
     Acceleration(usize),
     Texture(texture::TextureReference),
     Value(Value),
@@ -23,12 +24,13 @@ impl Argument {
             return a.overlaps(b);
         }
         let handles = |arg: &Self| match arg {
+            Self::BorrowedData(reference) => reference.sources.clone(),
             Self::ApplicationData(d) | Self::ScopedData { data: d, .. } => {
                 vec![d.handle.identity()]
             }
             Self::OwnedValue(r) => r.handles(),
             Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
-                Place::ApplicationElement { identity, .. } => vec![*identity],
+                Place::ApplicationElement { sources, .. } => sources.clone(),
                 _ => Vec::new(),
             },
             _ => Vec::new(),
@@ -140,7 +142,7 @@ impl<'a> Builder<'a> {
                     Argument::ApplicationData(data)
                 } else if param.ty.dataset {
                     if let Some(data) = self.application_reference(arg)? {
-                        Argument::ApplicationData(data)
+                        Argument::BorrowedData(data)
                     } else if let ExprKind::Name(name) = &arg.kind
                         && let Some(Binding::Data(view)) = self.env.get(name)
                     {
@@ -204,6 +206,18 @@ impl<'a> Builder<'a> {
             }
         }
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
+            if let Argument::BorrowedData(reference) = argument {
+                for source in &reference.sources {
+                    self.application_handle_available(*source, span)?;
+                }
+            }
+            if let Argument::Exclusive(place) | Argument::Atomic(place) = argument
+                && let Place::ApplicationElement { sources, .. } = place.storage()
+            {
+                for source in sources {
+                    self.application_handle_available(*source, span)?;
+                }
+            }
             let handle = match argument {
                 Argument::ApplicationData(data) | Argument::ScopedData { data, .. }
                     if param.access != Access::Value =>
@@ -227,6 +241,10 @@ impl<'a> Builder<'a> {
                     || matches!(other.access, Access::Write | Access::InOut)
                     || (param.ty.dataset && param.access == Access::Value)
                     || (other.ty.dataset && other.access == Access::Value)
+                    || (param.ty.dataset
+                        && other.ty.dataset
+                        && ((param.access == Access::Atomic && other.access != Access::Atomic)
+                            || (other.access == Access::Atomic && param.access != Access::Atomic)))
                     || matches!(argument, Argument::OwnedValue(_))
                     || matches!(before, Argument::OwnedValue(_)))
                     && argument.overlaps(before)
@@ -362,6 +380,7 @@ impl<'a> Builder<'a> {
         let args = args
             .into_iter()
             .map(|arg| match arg {
+                Argument::BorrowedData(reference) => Argument::ApplicationData(reference.data),
                 Argument::ScopedData { data, owner } => {
                     held.push(owner);
                     Argument::ApplicationData(data)

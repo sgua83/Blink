@@ -46,7 +46,7 @@ impl OwnedValue {
     pub(super) fn all_available(&self) -> bool {
         self.ownership == Ownership::Owned
             && self.payloads.iter().enumerate().all(|(i, p)| {
-                if !self.value.ty.result && !self.value.ty.fields[i].2.owns_resources() {
+                if !self.value.ty.result && !self.value.ty.aggregate_part(i).1.owns_resources() {
                     return true;
                 }
                 match p.as_deref() {
@@ -59,7 +59,7 @@ impl OwnedValue {
     }
     pub(super) fn incomplete(&self) -> bool {
         self.payloads.iter().enumerate().any(|(i,p)|{
-            if !self.value.ty.result && !self.value.ty.fields[i].2.owns_resources(){return false;}
+            if !self.value.ty.result && !self.value.ty.aggregate_part(i).1.owns_resources(){return false;}
             p.is_none() || matches!(p.as_deref(),Some(Returned::OwnedValue(v)) if v.incomplete()) || matches!(p.as_deref(),Some(Returned::Dataset(d)) if d.ownership==Ownership::Moved)
         })
     }
@@ -127,8 +127,8 @@ impl OwnedValue {
         );
         self.value.constant = None;
         self.value.uniform = false;
-        for i in 0..self.value.ty.fields.len() {
-            let (_, offset, ty) = &self.value.ty.fields[i];
+        for i in 0..self.value.ty.aggregate_len() {
+            let (offset, ty) = self.value.ty.aggregate_part(i);
             if !ty.owns_resources() {
                 continue;
             }
@@ -357,9 +357,9 @@ impl Builder<'_> {
                 initialization: None,
             })
         } else if value.ty.owns_resources() && !value.ty.result {
-            let payloads = (0..value.ty.fields.len())
+            let payloads = (0..value.ty.aggregate_len())
                 .map(|i| {
-                    if !value.ty.fields[i].2.owns_resources() {
+                    if !value.ty.aggregate_part(i).1.owns_resources() {
                         return None;
                     }
                     let field = self.record_component(&value, i);
@@ -465,7 +465,7 @@ impl Builder<'_> {
         mut result: OwnedValue,
         mutable: bool,
     ) -> OwnedValue {
-        if mutable {
+        if mutable || result.value.ty.contains_arrays() {
             let (slots, _) = self.local_slots(&result.value.ty);
             for (slot, reg) in slots.iter().zip(&result.value.regs) {
                 self.code.push(Inst::StoreLocal(*slot, *reg));
@@ -645,6 +645,14 @@ impl Builder<'_> {
         match &expr.kind {
             ExprKind::Target(target, call) => return self.target_call(*target, call, expr.span),
             ExprKind::Member(base, name) => return self.member_returned(expr, base, name),
+            ExprKind::Index(base, index)
+                if self
+                    .owned_element_type(base)
+                    .is_some_and(|ty| ty.array.is_some() && ty.owns_resources())
+                    || self.temporary_projection(base) =>
+            {
+                return self.owned_array_index(expr, base, index);
+            }
             ExprKind::Construct(name, args) => {
                 let ty = self.expected_storage(name, expr.span)?;
                 if ty.owns_resources() {
@@ -693,15 +701,16 @@ impl Builder<'_> {
                 return self.selection_returned(c, a, b, expr.span, expected);
             }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
-                if self
-                    .world
-                    .resolve(
-                        name,
-                        &self.definition.module,
-                        &self.definition.imports,
-                        false,
-                    )
-                    .is_some()
+                if name == "array"
+                    || self
+                        .world
+                        .resolve(
+                            name,
+                            &self.definition.module,
+                            &self.definition.imports,
+                            false,
+                        )
+                        .is_some()
                 {
                     let mut syntax = TypeName::named(name);
                     if let ExprKind::Specialize(_, explicit, _) = &expr.kind {
@@ -910,8 +919,8 @@ impl Builder<'_> {
             }
             Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
                 if !result.value.ty.result {
-                    for i in 0..result.value.ty.fields.len() {
-                        if result.value.ty.fields[i].2.owns_resources() {
+                    for i in 0..result.value.ty.aggregate_len() {
+                        if result.value.ty.aggregate_part(i).1.owns_resources() {
                             let field = self.unpack_record(&result, i);
                             self.drop_returned(field, span)?;
                         }
@@ -968,6 +977,14 @@ impl Builder<'_> {
         access: Access,
     ) -> Option<String> {
         let binding = match argument {
+            cooperative::Argument::BorrowedData(reference) => {
+                Binding::DataReference(reference.clone())
+            }
+            cooperative::Argument::Exclusive(place) | cooperative::Argument::Atomic(place)
+                if matches!(place.storage(), Place::ApplicationElement { .. }) =>
+            {
+                Binding::AtomicBorrow(place.clone())
+            }
             cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
             cooperative::Argument::ApplicationData(data) if access == Access::Value => {
                 Binding::ApplicationData(data.clone())
@@ -992,6 +1009,9 @@ impl Builder<'_> {
                 continue;
             }
             let value = self.env.remove(name).unwrap();
+            if matches!(value, Binding::DataReference(_) | Binding::AtomicBorrow(_)) {
+                continue;
+            }
             arguments[*index] = match value {
                 Binding::ApplicationData(data) => cooperative::Argument::ApplicationData(data),
                 Binding::OwnedValue(value) => cooperative::Argument::OwnedValue(value),

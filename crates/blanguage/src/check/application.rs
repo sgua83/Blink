@@ -25,6 +25,33 @@ pub(super) struct Data {
     pub count: Option<u32>,
     pub residency: residency::Residency,
 }
+// 动态数组借用携带实际可能的资源叶；这些来源只用于编译期别名和存活期。
+#[derive(Clone)]
+pub(super) struct DataReference {
+    pub data: Data,
+    pub sources: Vec<ValueIdentity>,
+}
+impl std::ops::Deref for DataReference {
+    type Target = Data;
+    fn deref(&self) -> &Data {
+        &self.data
+    }
+}
+impl DataReference {
+    pub(super) fn direct(data: Data) -> Self {
+        let sources = vec![data.handle.identity()];
+        Self { data, sources }
+    }
+    pub(super) fn element(&self, index: &Value, range: (u32, u32)) -> Place {
+        let mut place = Builder::application_element(&self.data, index, range);
+        let Place::ApplicationElement { sources, .. } = &mut place else {
+            unreachable!()
+        };
+        *sources = self.sources.clone();
+        place
+    }
+}
+
 fn pointer_type() -> Ty {
     let mut ty = Ty::vector(Scalar::U32, 2);
     ty.name = "__blink_frame".into();
@@ -614,11 +641,12 @@ impl Builder<'_> {
     pub(super) fn application_borrowed(&self, identity: ValueIdentity) -> bool {
         self.env.values().any(|binding| {
             let place = match binding {
+                Binding::DataReference(reference) => return reference.sources.contains(&identity),
                 Binding::Owned(owner) => &owner.place,
                 Binding::AtomicBorrow(place) => place,
                 _ => return false,
             };
-            matches!(place.storage(), Place::ApplicationElement { identity: owner, .. } if *owner == identity)
+            matches!(place.storage(), Place::ApplicationElement { sources, .. } if sources.contains(&identity))
         })
     }
     pub(super) fn application_movable(&self, data: &Data, span: Span) -> Result<()> {
@@ -995,6 +1023,7 @@ impl Builder<'_> {
             ty: data.ty.clone(),
             handle: data.handle.regs[0],
             identity: data.handle.identity(),
+            sources: vec![data.handle.identity()],
             initialization: data
                 .initialization
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
@@ -1010,9 +1039,16 @@ impl Builder<'_> {
             writable: data.writable,
         }
     }
-    pub(super) fn application_index(&mut self, data: Data, index: &Expr) -> Result<Option<Place>> {
+    pub(super) fn application_index(
+        &mut self,
+        data: DataReference,
+        index: &Expr,
+    ) -> Result<Option<Place>> {
         self.application_cpu(&data, index.span)?;
-        let Some(value) = self.expr(index)? else {
+        let held = self.hold_binding(Binding::DataReference(data.clone()));
+        let value = self.expr(index)?;
+        self.env.remove(&held);
+        let Some(value) = value else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
@@ -1027,11 +1063,9 @@ impl Builder<'_> {
                 "dataset 索引需要由本资源的长度条件或有界游标证明",
             );
         }
-        Ok(Some(Self::application_element(
-            &data,
-            &value,
-            (value.minimum(), value.maximum()),
-        )))
+        Ok(Some(
+            data.element(&value, (value.minimum(), value.maximum())),
+        ))
     }
     pub(super) fn application_address(
         &mut self,
@@ -1041,15 +1075,20 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<[Reg; 2]> {
         self.application_handle_available(identity, span)?;
-        if let Some(data) = self.env.values().find_map(|binding| match binding {
-            Binding::ApplicationData(data)
-                if data.handle.proof.known_identity(0) == Some(identity)
-                    && data.ownership != Ownership::Moved =>
-            {
-                Some(data)
-            }
-            _ => None,
-        }).cloned() {
+        if let Some(data) = self
+            .env
+            .values()
+            .find_map(|binding| match binding {
+                Binding::ApplicationData(data)
+                    if data.handle.proof.known_identity(0) == Some(identity)
+                        && data.ownership != Ownership::Moved =>
+                {
+                    Some(data)
+                }
+                _ => None,
+            })
+            .cloned()
+        {
             self.application_cpu(&data, span)?;
         }
         let handle = Value {
@@ -1200,6 +1239,14 @@ impl Builder<'_> {
             if parameter.ty.dataset {
                 let value = match value {
                     Argument::ApplicationData(data) => data,
+                    Argument::BorrowedData(reference) => {
+                        if parameter.access.writes() {
+                            for source in &reference.sources {
+                                self.invalidate_application_contents(*source);
+                            }
+                        }
+                        reference.data
+                    }
                     Argument::ScopedData { data, owner } => {
                         held.push(owner);
                         data
@@ -1209,12 +1256,10 @@ impl Builder<'_> {
                 if parameter.access.writes() && !value.writable {
                     return self.fail(span, "B227", "只读 dataset 不能交给可写函数参数");
                 }
-                if !self.residency.require(
-                    &value.residency,
-                    target,
-                    &self.definition.source,
-                    span,
-                ) {
+                if !self
+                    .residency
+                    .require(&value.residency, target, &self.definition.source, span)
+                {
                     return self.fail(
                         span,
                         "B266",
@@ -1231,7 +1276,11 @@ impl Builder<'_> {
                                 && parameter.access == Access::Atomic)
                     })
                 {
-                    return self.fail(span, "B227", "同一存储的重复参数必须同为 read 或同为 atomic");
+                    return self.fail(
+                        span,
+                        "B227",
+                        "同一存储的重复参数必须同为 read 或同为 atomic",
+                    );
                 }
                 if parameter.access.reads() {
                     self.require_application_initialized(&value, span)?;
@@ -1313,7 +1362,7 @@ impl Builder<'_> {
                 let mut ty = data.ty.syntax();
                 ty.dataset = true;
                 ty.count = data.count.map(Shape::Literal);
-                (ty, access, Argument::ApplicationData(data))
+                (ty, access, Argument::BorrowedData(data))
             } else {
                 let value = self.name_expr(&name, &expr)?;
                 (value.ty.syntax(), Access::Value, Argument::Value(value))
@@ -1363,12 +1412,10 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn application_cpu(&mut self, data: &Data, span: Span) -> Result<()> {
-        if !self.residency.require(
-            &data.residency,
-            Target::Cpu,
-            &self.definition.source,
-            span,
-        ) {
+        if !self
+            .residency
+            .require(&data.residency, Target::Cpu, &self.definition.source, span)
+        {
             return self.fail(
                 span,
                 "B266",
@@ -1397,17 +1444,16 @@ impl Builder<'_> {
                 "只有资源所有者可以转移 CPU／GPU 存储，函数借用不能转移",
             );
         }
+        self.application_movable(&data, span)?;
         let (source, target) = if name == "upload" {
             (Target::Cpu, residency::Residency::gpu())
         } else {
             (Target::Gpu, residency::Residency::cpu())
         };
-        if !self.residency.require(
-            &data.residency,
-            source,
-            &self.definition.source,
-            span,
-        ) {
+        if !self
+            .residency
+            .require(&data.residency, source, &self.definition.source, span)
+        {
             return self.fail(
                 span,
                 "B266",

@@ -127,14 +127,15 @@ impl Builder<'_> {
         self.pack_record(ty, values, span)
     }
     pub(super) fn pack_record(&mut self, ty: Ty, values: Vec<Value>, span: Span) -> Result<Value> {
-        if values.len() != ty.fields.len() {
+        if values.len() != ty.aggregate_len() {
             return self.fail(span, "B157", "记录构造需要按声明顺序提供每个字段");
         }
         let uniform = values.iter().all(|v| v.uniform);
         let mut regs = Vec::new();
         let mut proof = bounds::Proof::default();
         let mut constant = Some(Vec::new());
-        for ((_, _, field), value) in ty.fields.iter().zip(values) {
+        for (i, value) in values.into_iter().enumerate() {
+            let (_, field) = ty.aggregate_part(i);
             self.require_same(field, &value.ty, span)?;
             proof.append(&value);
             regs.extend(value.regs);

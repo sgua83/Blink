@@ -11,9 +11,9 @@ pub mod linker;
 pub mod module;
 pub mod native;
 pub mod object;
-pub mod resource;
 mod optimize;
 mod parser;
+pub mod resource;
 pub mod spirv;
 mod type_sets;
 mod value_parameters;
@@ -681,7 +681,11 @@ impl World {
             return source.fail(span, "B228", "void 只能表示函数无返回值，不能作为数据类型");
         }
         if name.name == "never" {
-            return source.fail(span, "B228", "never 表示函数没有正常返回路径，不提供可存储的数据值");
+            return source.fail(
+                span,
+                "B228",
+                "never 表示函数没有正常返回路径，不提供可存储的数据值",
+            );
         }
         if name.tile {
             return source.fail(
@@ -758,10 +762,18 @@ impl World {
             let GenericArgument::Type(element) = &name.arguments[0] else {
                 return source.fail(span, "B238", "array 首参数需要值类型");
             };
-            if element.dataset || element.tile {
-                return source.fail(span, "B238", "array 不能包含 dataset 或 tile 句柄");
+            if element.tile {
+                return source.fail(span, "B238", "tile 是执行域借用，不能作为拥有数组元素");
             }
-            let element = self.ty_inner(element, source, span, module, imports, stack)?;
+            let mut element_ty = self.ty_inner(element, source, span, module, imports, stack)?;
+            if element.dataset {
+                if element_ty.owns_resources() {
+                    return source.fail(span, "B033", "dataset 元素不能保存另一份拥有资源");
+                }
+                let count = self.shape(&element.count, source, span, module, imports)?;
+                element_ty = ir::Ty::owned_dataset(element_ty, count);
+            }
+            let element = element_ty;
             let length = name.arguments[1].shape().ok_or_else(|| Diagnostic {
                 source: source.clone(),
                 span,
@@ -773,13 +785,6 @@ impl World {
                 .unwrap();
             if count == 0 {
                 return source.fail(span, "B238", "普通值 array 的固定长度必须为正");
-            }
-            if element.owns_resources() {
-                return source.fail(
-                    span,
-                    "B238",
-                    "拥有资源的内联数组尚未实现，不能按普通值复制句柄",
-                );
             }
             let stride = ir::align_up(element.size, element.align);
             let size = stride.checked_mul(count).ok_or_else(|| Diagnostic {

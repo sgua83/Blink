@@ -17,6 +17,7 @@ impl Place {
             Self::ApplicationElement {
                 handle,
                 identity,
+                sources,
                 initialization,
                 index,
                 index_range,
@@ -28,6 +29,7 @@ impl Place {
                 ty,
                 handle,
                 identity,
+                sources,
                 initialization,
                 index,
                 index_range,
@@ -164,7 +166,13 @@ impl Builder<'_> {
         place
     }
     pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Option<Place>> {
-        let Some(index) = self.expr(expr)? else {
+        let held = matches!(place.storage(), Place::ApplicationElement { .. })
+            .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
+        let index = self.expr(expr)?;
+        if let Some(name) = held {
+            self.env.remove(&name);
+        }
+        let Some(index) = index else {
             return Ok(None);
         };
         self.array_index(place, index, expr.span).map(Some)

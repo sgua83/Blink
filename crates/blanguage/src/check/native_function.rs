@@ -160,10 +160,7 @@ fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
                             &value.value.ty.arguments[index],
                         )
                     } else {
-                        (
-                            value.value.ty.fields[index].1,
-                            value.value.ty.fields[index].2.as_ref(),
-                        )
+                        value.value.ty.aggregate_part(index)
                     };
                     let registers = ty
                         .components
@@ -252,9 +249,7 @@ impl Builder<'_> {
         let mut actual = frame
             .regs
             .iter()
-            .map(|reg| {
-                Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)))
-            })
+            .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
             .collect::<Vec<_>>();
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
@@ -265,6 +260,14 @@ impl Builder<'_> {
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg = match arg {
+                Argument::BorrowedData(reference) => {
+                    if p.access.writes() {
+                        for source in &reference.sources {
+                            self.invalidate_application_contents(*source);
+                        }
+                    }
+                    Argument::ApplicationData(reference.data)
+                }
                 Argument::ScopedData { data, owner } => {
                     held.push(owner);
                     Argument::ApplicationData(data)
