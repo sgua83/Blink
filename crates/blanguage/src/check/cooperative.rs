@@ -6,7 +6,11 @@ pub(super) enum Argument {
     Value(Value),
     Dataset(DatasetView),
     ApplicationData(application::Data),
-    OwnedResult(owned_results::OwnedResult),
+    ScopedData {
+        data: application::Data,
+        owner: String,
+    },
+    OwnedValue(owned_values::OwnedValue),
     Tile(TileView),
     Atomic(Place),
     Exclusive(Place),
@@ -14,8 +18,10 @@ pub(super) enum Argument {
 impl Argument {
     fn overlaps(&self, other: &Self) -> bool {
         let handles = |arg: &Self| match arg {
-            Self::ApplicationData(d) => vec![d.handle.identity()],
-            Self::OwnedResult(r) => r.handles(),
+            Self::ApplicationData(d) | Self::ScopedData { data: d, .. } => {
+                vec![d.handle.identity()]
+            }
+            Self::OwnedValue(r) => r.handles(),
             Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
                 Place::ApplicationElement { identity, .. } => vec![*identity],
                 _ => Vec::new(),
@@ -105,6 +111,7 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B162", "函数参数数量不匹配");
         }
         let mut arguments = Vec::new();
+        let mut held = Vec::new();
         for (param, arg) in callee.function.params.iter().zip(args) {
             arguments.push(
                 if callee.function.external.is_some() && param.access == Access::Read {
@@ -122,6 +129,7 @@ impl<'a> Builder<'a> {
                 } else if param.ty.dataset && param.access == Access::Value {
                     let returned = self.evaluate_returned(arg, None)?;
                     if !self.flow.continues() {
+                        self.abandon_arguments(&held);
                         return Ok(arguments);
                     }
                     let Some(returns::Returned::Dataset(data)) = returned else {
@@ -129,22 +137,19 @@ impl<'a> Builder<'a> {
                     };
                     Argument::ApplicationData(data)
                 } else if param.ty.dataset {
-                    let ExprKind::Name(name) = &arg.kind else {
-                        return self.fail(arg.span, "B224", "dataset 借用需要已有数据集名称");
-                    };
-                    if let Some(data) = self.application_value(name, arg.span)? {
+                    if let Some(data) = self.application_reference(arg)? {
                         Argument::ApplicationData(data)
+                    } else if let ExprKind::Name(name) = &arg.kind
+                        && let Some(Binding::Data(view)) = self.env.get(name)
+                    {
+                        Argument::Dataset(view.clone())
                     } else {
-                        match self.env.get(name) {
-                            Some(Binding::Data(view)) => Argument::Dataset(view.clone()),
-                            _ => {
-                                return self.fail(
-                                    arg.span,
-                                    "B224",
-                                    "dataset 借用需要已有数据集名称",
-                                );
-                            }
+                        let argument = self.scoped_argument(arg)?;
+                        if !self.flow.continues() {
+                            self.abandon_arguments(&held);
+                            return Ok(arguments);
                         }
+                        argument.unwrap()
                     }
                 } else if param.ty.tile {
                     Argument::Tile(self.tile_view(arg)?)
@@ -168,23 +173,30 @@ impl<'a> Builder<'a> {
                         };
                     let returned = self.evaluate_returned(arg, expected.as_ref())?;
                     if !self.flow.continues() {
+                        self.abandon_arguments(&held);
                         return Ok(arguments);
                     }
                     match returned {
                         Some(returns::Returned::Value(v)) => Argument::Value(v),
-                        Some(returns::Returned::OwnedResult(v)) => Argument::OwnedResult(v),
+                        Some(returns::Returned::OwnedValue(v)) => Argument::OwnedValue(v),
                         Some(returns::Returned::Dataset(v)) => Argument::ApplicationData(v),
                         _ => return self.fail(arg.span, "B228", "函数实参需要值或拥有资源"),
                     }
                 },
             );
             if !self.flow.continues() {
+                self.abandon_arguments(&held);
                 return Ok(arguments);
+            }
+            if let Some(name) = self.hold_argument(arguments.last().unwrap(), param.access) {
+                held.push((arguments.len() - 1, name));
             }
         }
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
             let handle = match argument {
-                Argument::ApplicationData(data) if param.access != Access::Value => {
+                Argument::ApplicationData(data) | Argument::ScopedData { data, .. }
+                    if param.access != Access::Value =>
+                {
                     Some(data.handle.identity())
                 }
                 Argument::Exclusive(place) | Argument::Atomic(place) => match place.storage() {
@@ -203,7 +215,9 @@ impl<'a> Builder<'a> {
                 if (matches!(param.access, Access::Write | Access::InOut)
                     || matches!(other.access, Access::Write | Access::InOut)
                     || (param.ty.dataset && param.access == Access::Value)
-                    || (other.ty.dataset && other.access == Access::Value))
+                    || (other.ty.dataset && other.access == Access::Value)
+                    || matches!(argument, Argument::OwnedValue(_))
+                    || matches!(before, Argument::OwnedValue(_)))
                     && argument.overlaps(before)
                 {
                     return self.fail(
@@ -214,6 +228,7 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+        self.finish_arguments(&held, &mut arguments);
         Ok(arguments)
     }
     pub(super) fn invoke_function(
@@ -311,6 +326,29 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
+        let mut held = Vec::new();
+        let args = args
+            .into_iter()
+            .map(|arg| match arg {
+                Argument::ScopedData { data, owner } => {
+                    held.push(owner);
+                    Argument::ApplicationData(data)
+                }
+                other => other,
+            })
+            .collect();
+        let result = self.inline_body(instance, args, span)?;
+        for name in held {
+            self.finish_scoped_argument(&name, span)?;
+        }
+        Ok(result)
+    }
+    fn inline_body(
+        &mut self,
+        instance: crate::generics::Instance,
+        args: Vec<Argument>,
+        span: Span,
+    ) -> Result<Option<returns::Returned>> {
         let key = instance.name;
         let callee = &instance.definition;
         if self.calls.contains(&key) {
@@ -348,7 +386,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let ty = parameter_type(self.world, param, callee)?;
-            if let Argument::OwnedResult(value) = arg {
+            if let Argument::OwnedValue(value) = arg {
                 if param.access != Access::Value || !ty.owns_resources() {
                     return self.fail(
                         span,
@@ -357,11 +395,11 @@ impl<'a> Builder<'a> {
                     );
                 }
                 self.require_same(&ty, &value.value.ty, span)?;
-                let value = self.owned_result_binding(
-                    value,
-                    application::rebound(callee.function.body.as_ref().unwrap(), &param.name),
-                );
-                env.insert(param.name.clone(), Binding::OwnedResult(value));
+                let mutable =
+                    application::rebound(callee.function.body.as_ref().unwrap(), &param.name)
+                        || !value.value.ty.result;
+                let value = self.owned_value_binding(value, mutable);
+                env.insert(param.name.clone(), Binding::OwnedValue(value));
                 continue;
             }
             let binding = match (param.ty.dataset, param.ty.tile, arg) {

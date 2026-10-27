@@ -453,6 +453,18 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
             Binding::ApplicationData(data) => data.length.proof.facts(&data.length.ty),
             Binding::Value(value) => Proof::capture(value).facts(&value.ty),
             Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
+            Binding::OwnedValue(owner) => owner
+                .value
+                .proof
+                .facts(&owner.value.ty)
+                .into_iter()
+                .chain(
+                    owner
+                        .resources()
+                        .into_iter()
+                        .flat_map(|d| d.length.proof.facts(&d.length.ty)),
+                )
+                .collect(),
             Binding::Data(view) => view
                 .length
                 .clone()
@@ -1327,6 +1339,21 @@ impl Builder<'_> {
                     .map(|i| owner.proof.unsigned_minimum(i))
                     .max()
                     .unwrap_or(0),
+                Binding::OwnedValue(owner) => (0..owner.value.ty.components.len())
+                    .filter(|i| {
+                        owner.value.ty.components[*i].0 == Scalar::U32
+                            && owner.value.proof.domains(*i).contains(&length)
+                    })
+                    .map(|i| owner.value.proof.unsigned_minimum(i))
+                    .chain(
+                        owner
+                            .resources()
+                            .iter()
+                            .filter(|d| d.length.proof.domains(0).contains(&length))
+                            .map(|d| d.length.minimum()),
+                    )
+                    .max()
+                    .unwrap_or(0),
                 Binding::Data(DatasetView { length: proof, .. })
                 | Binding::Tile(TileView { length: proof, .. })
                     if proof.domains(0).contains(&length) =>
@@ -1360,6 +1387,26 @@ impl Builder<'_> {
         for (name, binding) in &mut environment {
             if written.contains(name) {
                 continue;
+            }
+            if let Binding::OwnedValue(owner) = binding
+                && let Some(Binding::OwnedValue(current)) = self.env.get(name)
+            {
+                owner
+                    .value
+                    .proof
+                    .origins
+                    .resize_with(owner.value.ty.components.len(), Vec::new);
+                for (origin, now) in owner
+                    .value
+                    .proof
+                    .origins
+                    .iter_mut()
+                    .zip(&current.value.proof.origins)
+                {
+                    if origin.is_empty() {
+                        origin.extend(now.iter().take(1).copied());
+                    }
+                }
             }
             if let Binding::Owned(owner) = binding {
                 if let Some(Binding::Owned(current)) = self.env.get(name) {
@@ -1396,6 +1443,10 @@ impl Builder<'_> {
                     value.proof.extend_equalities(&roots);
                 }
                 Binding::Owned(owner) => owner.proof.extend_equalities(&roots),
+                Binding::OwnedValue(owner) => {
+                    owner.value.proof.extend_equalities(&roots);
+                    owner.resources_mut(&mut |data| data.length.proof.extend_equalities(&roots));
+                }
                 Binding::Data(view) => view.length.extend_equalities(&roots),
                 Binding::ApplicationData(data) => data.length.proof.extend_equalities(&roots),
                 Binding::Tile(view) => view.length.extend_equalities(&roots),
@@ -1421,6 +1472,25 @@ impl Builder<'_> {
                                 owner.proof.refine(owner.place.ty(), component, *fact);
                             }
                         }
+                    }
+                    Binding::OwnedValue(owner) => {
+                        for component in 0..owner.value.proof.origins.len() {
+                            if owner.value.proof.origins[component].contains(&identity) {
+                                owner.value.proof.refine(&owner.value.ty, component, *fact);
+                            }
+                        }
+                        owner.resources_mut(&mut |data| {
+                            if data
+                                .length
+                                .proof
+                                .origins
+                                .iter()
+                                .flatten()
+                                .any(|id| *id == identity)
+                            {
+                                data.length.proof.refine(&data.length.ty, 0, *fact);
+                            }
+                        });
                     }
                     Binding::ApplicationData(data)
                         if data
@@ -1459,52 +1529,47 @@ impl Builder<'_> {
         }
     }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
-        let projected = self.env.values_mut().find_map(|binding| {
-            let Binding::Owned(owner) = binding else {
-                return None;
+        for binding in self.env.values_mut() {
+            let Some((proof, uniform, owner)) = binding.proof_storage() else {
+                continue;
             };
-            let components = place.components_in(&owner.place)?;
-            Some((owner, components))
-        });
-        let Some((owner, components)) = projected else {
-            return (Proof::default(), false);
-        };
-        let width = owner.place.ty().components.len();
-        owner.proof.origins.resize_with(width, Vec::new);
-        for (component, reg) in components.iter().zip(regs) {
-            if owner.proof.origins[*component].is_empty() {
-                owner.proof.origins[*component].push(ValueIdentity::Register(*reg));
-            }
-        }
-        (owner.proof.project(&components, width), owner.uniform)
-    }
-    pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
-        if let Place::Indexed { base, .. } = place {
-            for binding in self.env.values_mut() {
-                if let Binding::Owned(owner) = binding
-                    && let Some(components) = base.components_in(&owner.place)
-                {
-                    owner.proof.assign(
-                        &components,
-                        owner.place.ty().components.len(),
-                        Proof::default(),
-                    );
-                    owner.uniform = false;
+            let Some(components) = place.components_in(&owner) else {
+                continue;
+            };
+            let width = owner.ty().components.len();
+            proof.origins.resize_with(width, Vec::new);
+            for (component, reg) in components.iter().zip(regs) {
+                if proof.origins[*component].is_empty() {
+                    proof.origins[*component].push(ValueIdentity::Register(*reg));
                 }
             }
+            return (proof.project(&components, width), *uniform);
         }
-        let projected = self.env.values_mut().find_map(|binding| {
-            let Binding::Owned(owner) = binding else {
-                return None;
+        (Proof::default(), false)
+    }
+    pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
+        for binding in self.env.values_mut() {
+            let modified = {
+                let Some((proof, state, owner)) = binding.proof_storage() else {
+                    continue;
+                };
+                if let Place::Indexed { base, .. } = place
+                    && let Some(components) = base.components_in(&owner)
+                {
+                    proof.assign(&components, owner.ty().components.len(), Proof::default());
+                    *state = false;
+                }
+                if let Some(components) = place.components_in(&owner) {
+                    proof.assign(&components, owner.ty().components.len(), fresh.clone());
+                    *state = uniform;
+                    true
+                } else {
+                    matches!(place,Place::Indexed{base,..} if base.components_in(&owner).is_some())
+                }
             };
-            let components = place.components_in(&owner.place)?;
-            Some((owner, components))
-        });
-        let Some((owner, components)) = projected else {
-            return;
-        };
-        owner.uniform = uniform;
-        let width = owner.place.ty().components.len();
-        owner.proof.assign(&components, width, fresh);
+            if modified && let Binding::OwnedValue(owner) = binding {
+                owner.value.constant = None;
+            }
+        }
     }
 }

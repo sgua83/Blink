@@ -9,11 +9,11 @@ impl Builder<'_> {
         &self,
         expr: &Expr,
         name: &str,
-        owner: &OwnedBinding,
+        owner: &Place,
     ) -> Result<Option<ComponentProjection>> {
         match &expr.kind {
             ExprKind::Name(root) if root == name => {
-                let ty = owner.place.ty().clone();
+                let ty = owner.ty().clone();
                 let components = (0..ty.components.len()).map(|i| vec![i]).collect();
                 Ok(Some((ty, components)))
             }
@@ -31,7 +31,7 @@ impl Builder<'_> {
                 if let ExprKind::Name(root) = &base.kind
                     && let Some(Binding::Data(view)) = self.env.get(root)
                 {
-                    if let Place::Element { binding, words, .. } = &owner.place
+                    if let Place::Element { binding, words, .. } = owner
                         && *binding == view.binding
                     {
                         let ty = self.program.buffers[*binding].ty.clone();
@@ -87,7 +87,11 @@ impl Builder<'_> {
             _ => Ok(None),
         }
     }
-    fn invalidate_writes(&mut self, writes: &[&Expr], borrowed_data: Option<&str>) -> Result<()> {
+    fn invalidate_writes(
+        &mut self,
+        writes: &[&Expr],
+        borrowed_data: Option<ValueIdentity>,
+    ) -> Result<()> {
         let resources: Vec<_> = self
             .env
             .iter()
@@ -95,7 +99,7 @@ impl Builder<'_> {
                 let Binding::ApplicationData(data) = binding else {
                     return None;
                 };
-                (borrowed_data != Some(name.as_str())
+                (borrowed_data != Some(data.handle.identity())
                     && !data
                         .handle
                         .proof
@@ -118,20 +122,11 @@ impl Builder<'_> {
                 data.length.uniform = false;
             }
         }
-        for (name, binding) in &mut self.env {
-            if let Binding::OwnedResult(result) = binding
-                && writes
-                    .iter()
-                    .any(|e| matches!(&e.kind,ExprKind::Name(target) if target==name))
-            {
-                result.invalidate();
-            }
-        }
         let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (name, binding) in &self.env {
-            if let Binding::Owned(owner) = binding {
+            if let Some(owner) = binding.stored_place() {
                 for expr in writes {
-                    if let Some((_, components)) = self.written_projection(expr, name, owner)? {
+                    if let Some((_, components)) = self.written_projection(expr, name, &owner)? {
                         for component in components.into_iter().flatten() {
                             modified.entry(name.clone()).or_default().insert(component);
                         }
@@ -140,15 +135,22 @@ impl Builder<'_> {
             }
         }
         for (name, binding) in &mut self.env {
-            if let Binding::Owned(owner) = binding
-                && let Some(components) = modified.get(name)
-            {
-                owner.uniform = false;
-                owner.proof.assign(
-                    &components.iter().copied().collect::<Vec<_>>(),
-                    owner.place.ty().components.len(),
-                    bounds::Proof::default(),
-                );
+            if let Some(components) = modified.get(name) {
+                let components: Vec<_> = components.iter().copied().collect();
+                match binding {
+                    Binding::Owned(owner) => {
+                        owner.uniform = false;
+                        owner.proof.assign(
+                            &components,
+                            owner.place.ty().components.len(),
+                            bounds::Proof::default(),
+                        );
+                    }
+                    Binding::OwnedValue(owner) => {
+                        owner.invalidate_components(&components, borrowed_data)
+                    }
+                    _ => {}
+                }
             }
         }
         Ok(())
@@ -163,7 +165,7 @@ impl Builder<'_> {
     pub(super) fn invalidate_assigned(
         &mut self,
         body: &[Stmt],
-        borrowed_data: Option<&str>,
+        borrowed_data: Option<ValueIdentity>,
     ) -> Result<()> {
         let mut writes = Vec::new();
         statement_writes(self.world, &self.definition, body, &mut |place| {
@@ -315,11 +317,9 @@ pub(super) fn modified_owners(
         .collect();
     env.iter()
         .filter_map(|(name, binding)| {
-            let Binding::Owned(owner) = binding else {
-                return None;
-            };
+            let owner = binding.stored_place()?;
             let through_data =
-                matches!(&owner.place, Place::Element { binding, .. } if data.contains(binding));
+                matches!(owner,Place::Element{binding,..} if data.contains(&binding));
             (names.contains(name) || through_data).then(|| name.clone())
         })
         .collect()

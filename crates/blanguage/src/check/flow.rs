@@ -111,7 +111,7 @@ impl Builder<'_> {
                     Binding::ApplicationData(data) => {
                         data.ownership == application::Ownership::Moved
                     }
-                    Binding::OwnedResult(result) => {
+                    Binding::OwnedValue(result) => {
                         result.ownership == application::Ownership::Moved || result.incomplete()
                     }
                     _ => false,
@@ -153,8 +153,8 @@ impl Builder<'_> {
         }
         let entry = &self.loop_contexts.last().unwrap().resources;
         for (name, binding) in &self.env {
-            if let Binding::OwnedResult(result) = binding
-                && let Some(Binding::OwnedResult(before)) = entry.get(name)
+            if let Binding::OwnedValue(result) = binding
+                && let Some(Binding::OwnedValue(before)) = entry.get(name)
             {
                 if result.ownership != before.ownership {
                     return self.fail(
@@ -217,7 +217,7 @@ impl Builder<'_> {
                     a.uniform &= b.uniform;
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
-                (Binding::OwnedResult(a), Binding::OwnedResult(b)) => {
+                (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
                     if a.ownership != b.ownership {
                         a.ownership = application::Ownership::Moved;
                     }
@@ -248,7 +248,7 @@ impl Builder<'_> {
             resources: environment
                 .iter()
                 .filter_map(|(name, binding)| match binding {
-                    Binding::ApplicationData(_) | Binding::OwnedResult(_) => {
+                    Binding::ApplicationData(_) | Binding::OwnedValue(_) => {
                         Some((name.clone(), binding.clone()))
                     }
                     _ => None,

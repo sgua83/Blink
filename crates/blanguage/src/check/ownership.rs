@@ -309,9 +309,17 @@ impl Builder<'_> {
             .all(|position| self.position_initialized_in(position, &self.initialized, &self.env))
     }
     pub(super) fn incomplete_arrays(&self) -> bool {
-        self.env.values().any(|binding| {
-            matches!(binding, Binding::Owned(owner)
-            if owner.place.ty().contains_arrays() && !self.is_initialized(&owner.place))
+        self.env.values().any(|binding| match binding {
+            Binding::Owned(owner) => {
+                owner.place.ty().contains_arrays() && !self.is_initialized(&owner.place)
+            }
+            Binding::OwnedValue(owner) => {
+                owner.value.ty.contains_arrays()
+                    && owner
+                        .place()
+                        .is_some_and(|place| !self.is_initialized(&place))
+            }
+            _ => false,
         }) || self.view_access.iter().any(|(binding, access)| {
             *access == Access::Write
                 && self.program.buffers[*binding].ty.contains_arrays()
@@ -352,6 +360,22 @@ impl Builder<'_> {
         };
     }
     pub(super) fn borrow_owned(&self, place: Place) -> OwnedBinding {
+        for binding in self.env.values() {
+            if let Binding::OwnedValue(owner) = binding
+                && let Some(root) = owner.place()
+                && let Some(components) = place.components_in(&root)
+            {
+                return OwnedBinding {
+                    proof: owner
+                        .value
+                        .proof
+                        .project(&components, owner.value.ty.components.len()),
+                    uniform: owner.value.uniform,
+                    initialization: None,
+                    place,
+                };
+            }
+        }
         let projected = self.env.values().find_map(|binding| {
             let Binding::Owned(owner) = binding else {
                 return None;

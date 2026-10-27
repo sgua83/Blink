@@ -41,13 +41,13 @@ impl Builder<'_> {
                     ty: None,
                     count: t.shape(self.program),
                 },
-                Argument::OwnedResult(v) => Actual::value(&v.value.ty),
+                Argument::OwnedValue(v) => Actual::value(&v.value.ty),
                 Argument::Value(v) => Actual::value(&v.ty),
                 Argument::Dataset(v) => Actual {
                     ty: Some(&self.program.buffers[v.binding].ty),
                     count: self.program.buffers[v.binding].count,
                 },
-                Argument::ApplicationData(data) => Actual {
+                Argument::ApplicationData(data) | Argument::ScopedData { data, .. } => Actual {
                     ty: Some(&data.ty),
                     count: data.count,
                 },

@@ -1,17 +1,30 @@
-//! 拥有结果只持有原 Frame 资源；结果判别决定实际交付或释放哪个载荷。
+//! 拥有值沿原 Frame 持有资源；记录按字段组合，结果判别实际交付或释放的载荷。
 use super::*;
 use application::{Data, Ownership};
 use returns::Returned;
 
 #[derive(Clone)]
-pub(super) struct OwnedResult {
+pub(super) struct OwnedValue {
     pub value: Value,
-    pub payloads: [Option<Box<Returned>>; 2],
+    pub payloads: Vec<Option<Box<Returned>>>,
     pub ownership: Ownership,
     pub slots: Option<Vec<usize>>,
 }
-impl OwnedResult {
+impl OwnedValue {
+    pub(super) fn place(&self) -> Option<Place> {
+        self.slots.as_ref().map(|slots| {
+            let base = slots[0] - self.value.ty.components[0].1 as usize / 4;
+            Place::Local(
+                self.value.ty.clone(),
+                slots.clone(),
+                base..base + ir::align_up(self.value.ty.size, self.value.ty.align) as usize / 4,
+            )
+        })
+    }
     pub(super) fn join(&mut self, other: Self) {
+        if self.ownership != other.ownership {
+            self.ownership = Ownership::Moved;
+        }
         self.value.proof = bounds::Proof::common(&self.value, &other.value);
         self.value.uniform &= other.value.uniform;
         if self.value.constant != other.value.constant {
@@ -19,7 +32,7 @@ impl OwnedResult {
         }
         self.join_payloads(other.payloads);
     }
-    pub(super) fn join_payloads(&mut self, payloads: [Option<Box<Returned>>; 2]) {
+    pub(super) fn join_payloads(&mut self, payloads: Vec<Option<Box<Returned>>>) {
         for (current, other) in self.payloads.iter_mut().zip(payloads) {
             if let Some(other) = other {
                 if let Some(current) = current {
@@ -30,24 +43,40 @@ impl OwnedResult {
             }
         }
     }
+    pub(super) fn all_available(&self) -> bool {
+        self.ownership == Ownership::Owned
+            && self.payloads.iter().enumerate().all(|(i, p)| {
+                if !self.value.ty.result && !self.value.ty.fields[i].2.owns_resources() {
+                    return true;
+                }
+                match p.as_deref() {
+                    Some(Returned::Dataset(d)) => d.ownership == Ownership::Owned,
+                    Some(Returned::OwnedValue(v)) => v.all_available(),
+                    None => self.value.ty.result,
+                    _ => true,
+                }
+            })
+    }
     pub(super) fn incomplete(&self) -> bool {
-        self.payloads.iter().any(|p| {
-            p.is_none() || matches!(p.as_deref(), Some(Returned::OwnedResult(r)) if r.incomplete())
+        self.payloads.iter().enumerate().any(|(i,p)|{
+            if !self.value.ty.result && !self.value.ty.fields[i].2.owns_resources(){return false;}
+            p.is_none() || matches!(p.as_deref(),Some(Returned::OwnedValue(v)) if v.incomplete()) || matches!(p.as_deref(),Some(Returned::Dataset(d)) if d.ownership==Ownership::Moved)
         })
     }
     pub(super) fn loop_compatible(&self, other: &Self) -> bool {
-        self.payloads
-            .iter()
-            .zip(&other.payloads)
-            .all(|(a, b)| match (a.as_deref(), b.as_deref()) {
-                (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
-                    a.residency == b.residency
+        self.ownership == other.ownership
+            && self.payloads.iter().zip(&other.payloads).all(|(a, b)| {
+                match (a.as_deref(), b.as_deref()) {
+                    (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
+                        a.ownership == b.ownership
+                            && (a.ownership == Ownership::Moved || a.residency == b.residency)
+                    }
+                    (Some(Returned::OwnedValue(a)), Some(Returned::OwnedValue(b))) => {
+                        a.loop_compatible(b)
+                    }
+                    (None, Some(_)) => false,
+                    _ => true,
                 }
-                (Some(Returned::OwnedResult(a)), Some(Returned::OwnedResult(b))) => {
-                    a.loop_compatible(b)
-                }
-                (None, Some(_)) => false,
-                _ => true,
             })
     }
     pub(super) fn invalidate(&mut self) {
@@ -65,7 +94,7 @@ impl OwnedResult {
                     data.length.constant = None;
                     data.length.uniform = false;
                 }
-                Returned::OwnedResult(result) => result.invalidate(),
+                Returned::OwnedValue(value) => value.invalidate(),
                 Returned::Value(value) => {
                     value.proof = bounds::Proof::default();
                     value.constant = None;
@@ -75,23 +104,125 @@ impl OwnedResult {
             }
         }
     }
+    pub(super) fn invalidate_components(
+        &mut self,
+        components: &[usize],
+        borrowed: Option<ValueIdentity>,
+    ) {
+        if self.value.ty.result {
+            self.invalidate();
+            return;
+        }
+        self.value.proof.assign(
+            components,
+            self.value.ty.components.len(),
+            bounds::Proof::default(),
+        );
+        self.value.constant = None;
+        self.value.uniform = false;
+        for i in 0..self.value.ty.fields.len() {
+            let (_, offset, ty) = &self.value.ty.fields[i];
+            if !ty.owns_resources() {
+                continue;
+            }
+            let selected: Vec<_> = ty
+                .components
+                .iter()
+                .enumerate()
+                .filter_map(|(j, (_, at))| {
+                    let at = self
+                        .value
+                        .ty
+                        .components
+                        .iter()
+                        .position(|(_, word)| *word == offset + at)
+                        .unwrap();
+                    components.contains(&at).then_some(j)
+                })
+                .collect();
+            if selected.is_empty() {
+                continue;
+            }
+            if let Some(item) = &mut self.payloads[i] {
+                match item.as_mut() {
+                    Returned::OwnedValue(v) => v.invalidate_components(&selected, borrowed),
+                    Returned::Dataset(d) => {
+                        if borrowed.is_some_and(|id| d.handle.proof.known_identity(0) == Some(id)) {
+                            continue;
+                        }
+                        d.handle.proof = bounds::Proof::default();
+                        d.length.proof = d
+                            .count
+                            .map(|n| bounds::Proof::unsigned(n, n))
+                            .unwrap_or_default();
+                        d.length.constant = None;
+                        d.length.uniform = false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    pub(super) fn mark_moved(&mut self) {
+        if self.value.ty.result {
+            self.ownership = Ownership::Moved;
+            return;
+        }
+        self.ownership = Ownership::Owned;
+        for item in self.payloads.iter_mut().flatten() {
+            match item.as_mut() {
+                Returned::Dataset(d) => {
+                    d.ownership = Ownership::Moved;
+                    d.residency = None;
+                }
+                Returned::OwnedValue(v) => v.mark_moved(),
+                _ => {}
+            }
+        }
+    }
     pub(super) fn handles(&self) -> Vec<ValueIdentity> {
         self.payloads
             .iter()
             .flatten()
             .flat_map(|item| match item.as_ref() {
-                Returned::Dataset(data) => vec![data.handle.identity()],
-                Returned::OwnedResult(result) => result.handles(),
+                Returned::Dataset(d) => vec![d.handle.identity()],
+                Returned::OwnedValue(v) => v.handles(),
                 _ => Vec::new(),
             })
             .collect()
+    }
+    pub(super) fn resources(&self) -> Vec<&Data> {
+        if self.ownership == Ownership::Moved {
+            return Vec::new();
+        }
+        self.payloads
+            .iter()
+            .flatten()
+            .flat_map(|item| match item.as_ref() {
+                Returned::Dataset(d) => vec![d],
+                Returned::OwnedValue(v) => v.resources(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+    pub(super) fn resources_mut(&mut self, visit: &mut impl FnMut(&mut Data)) {
+        if self.ownership == Ownership::Moved {
+            return;
+        }
+        for item in self.payloads.iter_mut().flatten() {
+            match item.as_mut() {
+                Returned::Dataset(d) => visit(d),
+                Returned::OwnedValue(v) => v.resources_mut(visit),
+                _ => {}
+            }
+        }
     }
 }
 impl Builder<'_> {
     pub(super) fn returned_storage(&mut self, value: &Returned) -> Value {
         match value {
             Returned::Value(value) => value.clone(),
-            Returned::OwnedResult(value) => value.value.clone(),
+            Returned::OwnedValue(value) => value.value.clone(),
             Returned::Unit => Value {
                 ty: Ty::unit(),
                 regs: Vec::new(),
@@ -155,7 +286,7 @@ impl Builder<'_> {
                 data.count = count;
                 Ok(())
             }
-            Returned::OwnedResult(result) if expected.owns_resources() => {
+            Returned::OwnedValue(result) if expected.owns_resources() => {
                 self.require_same(expected, &result.value.ty, span)
             }
             Returned::Value(value) if !expected.owns_resources() => {
@@ -173,7 +304,7 @@ impl Builder<'_> {
         match value {
             Returned::Unit => {}
             Returned::Value(value) => value.regs = regs,
-            Returned::OwnedResult(result) => {
+            Returned::OwnedValue(result) => {
                 result.value.regs = regs;
                 result.slots = None;
             }
@@ -218,8 +349,32 @@ impl Builder<'_> {
                 slots: None,
                 initialization: None,
             })
+        } else if value.ty.owns_resources() && !value.ty.result {
+            let payloads = (0..value.ty.fields.len())
+                .map(|i| {
+                    if !value.ty.fields[i].2.owns_resources() {
+                        return None;
+                    }
+                    let field = self.record_component(&value, i);
+                    Some(Box::new(self.template_returned(field, available)))
+                })
+                .collect();
+            Returned::OwnedValue(OwnedValue {
+                value,
+                payloads,
+                ownership: Ownership::Owned,
+                slots: None,
+            })
         } else if value.ty.owns_resources() {
-            let mut payloads = [None, None];
+            let mut payloads = vec![None, None];
+            if !available {
+                return Returned::OwnedValue(OwnedValue {
+                    value,
+                    payloads,
+                    ownership: Ownership::Moved,
+                    slots: None,
+                });
+            }
             for (index, success) in [true, false].into_iter().enumerate() {
                 let payload = self.result_payload(&value, success);
                 payloads[index] = Some(Box::new(match payload {
@@ -227,7 +382,7 @@ impl Builder<'_> {
                     None => Returned::Unit,
                 }));
             }
-            Returned::OwnedResult(OwnedResult {
+            Returned::OwnedValue(OwnedValue {
                 value,
                 payloads,
                 ownership: if available {
@@ -253,19 +408,13 @@ impl Builder<'_> {
             constant: value.constant.as_ref().map(|v| vec![v[index]]),
         }
     }
-    pub(super) fn incoming_owned_result(&mut self, value: Value) -> OwnedResult {
-        let Returned::OwnedResult(result) = self.template_returned(value, true) else {
+    pub(super) fn incoming_owned_value(&mut self, value: Value) -> OwnedValue {
+        let Returned::OwnedValue(result) = self.template_returned(value, true) else {
             unreachable!()
         };
         result
     }
-    fn refresh_owned_result(&mut self, name: &str, span: Span) -> Result<OwnedResult> {
-        let Some(Binding::OwnedResult(mut result)) = self.env.get(name).cloned() else {
-            return self.fail(span, "B224", "需要已有的拥有结果");
-        };
-        if result.ownership != Ownership::Owned {
-            return self.fail(span, "B227", "结果尚未初始化或已移动，不能再次读取或交接");
-        }
+    pub(super) fn load_owned_value(&mut self, result: &mut OwnedValue) {
         if let Some(slots) = &result.slots {
             result.value.regs = slots
                 .iter()
@@ -277,57 +426,66 @@ impl Builder<'_> {
                 .collect();
             result.value.proof = bounds::Proof::capture(&result.value);
         }
-        Ok(result)
     }
-    fn take_owned_result(&mut self, name: &str, span: Span) -> Result<OwnedResult> {
-        let mut result = self.refresh_owned_result(name, span)?;
-        if let Some(Binding::OwnedResult(source)) = self.env.get_mut(name) {
-            source.ownership = Ownership::Moved;
+    pub(super) fn take_owned_value(&mut self, name: &str, span: Span) -> Result<OwnedValue> {
+        let Some(Binding::OwnedValue(mut result)) = self.env.get(name).cloned() else {
+            unreachable!()
+        };
+        if result
+            .handles()
+            .iter()
+            .any(|id| self.application_borrowed(*id))
+        {
+            return self.fail(span, "B227", "资源字段仍被游标或位置借用，不能移动拥有值");
+        }
+        if !result.all_available() {
+            return self.fail(span, "B227", "拥有值存在未初始化或已移动的资源字段");
+        }
+        if !result.value.ty.result
+            && let Some(place) = result.place()
+        {
+            self.require_initialized(&place, span)?;
+        }
+        self.load_owned_value(&mut result);
+        if let Some(Binding::OwnedValue(source)) = self.env.get_mut(name) {
+            source.mark_moved();
         }
         result.slots = None;
         Ok(result)
     }
-    pub(super) fn owned_result_binding(
+    pub(super) fn owned_value_binding(
         &mut self,
-        mut result: OwnedResult,
+        mut result: OwnedValue,
         mutable: bool,
-    ) -> OwnedResult {
+    ) -> OwnedValue {
         if mutable {
-            let slots: Vec<_> = result
-                .value
-                .ty
-                .components
-                .iter()
-                .map(|(scalar, _)| {
-                    let slot = self.locals.len();
-                    self.locals.push(*scalar);
-                    slot
-                })
-                .collect();
+            let (slots, _) = self.local_slots(&result.value.ty);
             for (slot, reg) in slots.iter().zip(&result.value.regs) {
                 self.code.push(Inst::StoreLocal(*slot, *reg));
             }
             result.slots = Some(slots);
         }
+        if let Some(place) = result.place() {
+            self.initialize(&place);
+        }
         result
     }
-    pub(super) fn bind_owned_result(
+    pub(super) fn bind_owned_value(
         &mut self,
         name: &String,
-        result: OwnedResult,
+        result: OwnedValue,
         span: Span,
     ) -> Result<()> {
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
-        let result = self.owned_result_binding(
-            result,
-            application::rebound(self.definition.function.body.as_ref().unwrap(), name),
-        );
-        self.env.insert(name.clone(), Binding::OwnedResult(result));
+        let mutable = application::rebound(self.definition.function.body.as_ref().unwrap(), name)
+            || !result.value.ty.result;
+        let result = self.owned_value_binding(result, mutable);
+        self.env.insert(name.clone(), Binding::OwnedValue(result));
         Ok(())
     }
-    pub(super) fn owned_result_declare(&mut self, name: &String, ty: Ty, span: Span) -> Result<()> {
+    pub(super) fn owned_value_declare(&mut self, name: &String, ty: Ty, span: Span) -> Result<()> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B224", "拥有结果属于普通CPU应用资源组织");
         }
@@ -340,31 +498,28 @@ impl Builder<'_> {
             uniform: false,
             literal: false,
         };
-        let mut result = OwnedResult {
-            value,
-            payloads: [None, None],
-            ownership: Ownership::Moved,
-            slots: None,
+        let mut result = if value.ty.result {
+            OwnedValue {
+                value,
+                payloads: vec![None, None],
+                ownership: Ownership::Moved,
+                slots: None,
+            }
+        } else {
+            let Returned::OwnedValue(v) = self.template_returned(value, false) else {
+                unreachable!()
+            };
+            v
         };
-        let slots = result
-            .value
-            .ty
-            .components
-            .iter()
-            .map(|(s, _)| {
-                let i = self.locals.len();
-                self.locals.push(*s);
-                i
-            })
-            .collect();
+        let (slots, _) = self.local_slots(&result.value.ty);
         result.slots = Some(slots);
-        self.env.insert(name.clone(), Binding::OwnedResult(result));
+        self.env.insert(name.clone(), Binding::OwnedValue(result));
         Ok(())
     }
-    pub(super) fn owned_result_assign(
+    pub(super) fn owned_value_assign(
         &mut self,
         name: &str,
-        target: OwnedResult,
+        target: OwnedValue,
         op: &str,
         rhs: &Expr,
         span: Span,
@@ -383,12 +538,15 @@ impl Builder<'_> {
             message: "赋值需要结果".into(),
         })?;
         self.check_returned_type(&mut value, &target.value.ty, span)?;
-        if matches!(self.env.get(name),Some(Binding::OwnedResult(r)) if r.ownership==Ownership::Owned)
+        if matches!(self.env.get(name),Some(Binding::OwnedValue(r)) if r.ownership==Ownership::Owned)
         {
-            let old = self.refresh_owned_result(name, span)?;
-            self.drop_returned(Returned::OwnedResult(old), span)?;
+            let Some(Binding::OwnedValue(old)) = self.env.get(name).cloned() else {
+                unreachable!()
+            };
+            self.movable_returned(&Returned::OwnedValue(old.clone()), span)?;
+            self.drop_returned(Returned::OwnedValue(old), span)?;
         }
-        let Returned::OwnedResult(mut value) = value else {
+        let Returned::OwnedValue(mut value) = value else {
             return self.fail(span, "B224", "需要相同拥有结果类型");
         };
         if self.loop_depth > 0 {
@@ -399,7 +557,8 @@ impl Builder<'_> {
             self.code.push(Inst::StoreLocal(*slot, *reg));
         }
         value.slots = Some(slots);
-        self.env.insert(name.into(), Binding::OwnedResult(value));
+        self.initialize(&value.place().unwrap());
+        self.env.insert(name.into(), Binding::OwnedValue(value));
         Ok(())
     }
     fn make_owned_result(
@@ -408,7 +567,7 @@ impl Builder<'_> {
         success: bool,
         args: &[Expr],
         span: Span,
-    ) -> Result<Option<OwnedResult>> {
+    ) -> Result<Option<OwnedValue>> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B224", "拥有结果属于普通CPU应用资源组织");
         }
@@ -438,16 +597,16 @@ impl Builder<'_> {
         };
         let payload = self.returned_storage(&item);
         let value = self.result_value(ty, success, Some(payload));
-        let mut payloads = [None, None];
+        let mut payloads = vec![None, None];
         payloads[index] = Some(Box::new(item));
-        Ok(Some(OwnedResult {
+        Ok(Some(OwnedValue {
             value,
             payloads,
             ownership: Ownership::Owned,
             slots: None,
         }))
     }
-    fn owned_condition(&mut self, value: &OwnedResult, span: Span) -> Result<Value> {
+    fn owned_condition(&mut self, value: &OwnedValue, span: Span) -> Result<Value> {
         if value.payloads[0].is_none() {
             return Ok(self.constant(Scalar::Bool, 0));
         }
@@ -456,7 +615,7 @@ impl Builder<'_> {
         }
         self.result_condition(&value.value, span)
     }
-    fn unpack_owned(&mut self, value: &OwnedResult, success: bool) -> Returned {
+    fn unpack_owned(&mut self, value: &OwnedValue, success: bool) -> Returned {
         let index = usize::from(!success);
         let payload = self.result_payload(&value.value, success);
         let Some(meta) = &value.payloads[index] else {
@@ -477,6 +636,13 @@ impl Builder<'_> {
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
         match &expr.kind {
+            ExprKind::Member(base, name) => return self.member_returned(expr, base, name),
+            ExprKind::Construct(name, args) => {
+                let ty = self.expected_storage(name, expr.span)?;
+                if ty.owns_resources() {
+                    return self.make_owned_record(ty, args, expr.span);
+                }
+            }
             ExprKind::Name(name)
                 if matches!(self.env.get(name), Some(Binding::ApplicationData(_))) =>
             {
@@ -484,10 +650,10 @@ impl Builder<'_> {
                     .application_resource(expr, expr.span)
                     .map(|v| Some(Returned::Dataset(v)));
             }
-            ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::OwnedResult(_))) => {
+            ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::OwnedValue(_))) => {
                 return self
-                    .take_owned_result(name, expr.span)
-                    .map(|v| Some(Returned::OwnedResult(v)));
+                    .take_owned_value(name, expr.span)
+                    .map(|v| Some(Returned::OwnedValue(v)));
             }
             ExprKind::Specialize(name, _, _) if name == "dataset" => {
                 return self
@@ -500,7 +666,7 @@ impl Builder<'_> {
             {
                 return self
                     .make_owned_result(expected.unwrap().clone(), name == "Ok", args, expr.span)
-                    .map(|v| v.map(Returned::OwnedResult));
+                    .map(|v| v.map(Returned::OwnedValue));
             }
             ExprKind::Specialize(name, explicit, args) if matches!(name.as_str(), "Ok" | "Err") => {
                 let mut syntax = TypeName::named("result");
@@ -509,7 +675,7 @@ impl Builder<'_> {
                 if ty.owns_resources() {
                     return self
                         .make_owned_result(ty, name == "Ok", args, expr.span)
-                        .map(|v| v.map(Returned::OwnedResult));
+                        .map(|v| v.map(Returned::OwnedValue));
                 }
             }
             ExprKind::Call(name, args) if name == "try" => {
@@ -519,6 +685,25 @@ impl Builder<'_> {
                 return self.selection_returned(c, a, b, expr.span, expected);
             }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
+                if self
+                    .world
+                    .resolve(
+                        name,
+                        &self.definition.module,
+                        &self.definition.imports,
+                        false,
+                    )
+                    .is_some()
+                {
+                    let mut syntax = TypeName::named(name);
+                    if let ExprKind::Specialize(_, explicit, _) = &expr.kind {
+                        syntax.arguments = explicit.clone();
+                    }
+                    let ty = self.expected_storage(&syntax, expr.span)?;
+                    if ty.owns_resources() {
+                        return self.make_owned_record(ty, args, expr.span);
+                    }
+                }
                 if let Some(key) = self.world.resolve(
                     name,
                     &self.definition.module,
@@ -573,7 +758,7 @@ impl Builder<'_> {
             message: "try需要结果".into(),
         })?;
         let (value, owned) = match &source {
-            Returned::OwnedResult(r) => (r.value.clone(), Some(r)),
+            Returned::OwnedValue(r) if r.value.ty.result => (r.value.clone(), Some(r)),
             Returned::Value(v) if v.ty.result => (v.clone(), None),
             _ => return self.fail(span, "B269", "try需要结果"),
         };
@@ -616,9 +801,9 @@ impl Builder<'_> {
         let payload = self.returned_storage(&item);
         let value = self.result_value(ty.clone(), success, Some(payload));
         if ty.owns_resources() {
-            let mut payloads = [None, None];
+            let mut payloads = vec![None, None];
             payloads[usize::from(!success)] = Some(Box::new(item));
-            Returned::OwnedResult(OwnedResult {
+            Returned::OwnedValue(OwnedValue {
                 value,
                 payloads,
                 ownership: Ownership::Owned,
@@ -648,7 +833,7 @@ impl Builder<'_> {
         if let Returned::Value(value) = returned {
             return self.match_value(value, yes_name, yes, no_name, no, span);
         }
-        let Returned::OwnedResult(value) = returned else {
+        let Returned::OwnedValue(value) = returned else {
             return self.fail(span, "B269", "match需要结果");
         };
         self.check_result_patterns(&value.value.ty, yes_name, no_name, span)?;
@@ -661,7 +846,7 @@ impl Builder<'_> {
     }
     fn owned_arm(
         &mut self,
-        value: &OwnedResult,
+        value: &OwnedValue,
         success: bool,
         name: &Option<String>,
         body: &[Stmt],
@@ -692,7 +877,7 @@ impl Builder<'_> {
     ) -> Result<()> {
         match value {
             Returned::Value(value) => self.bind_local_value(name, value, span),
-            Returned::OwnedResult(value) => self.bind_owned_result(name, value, span),
+            Returned::OwnedValue(value) => self.bind_owned_value(name, value, span),
             Returned::Dataset(data) => {
                 if self.env.contains_key(name) {
                     return self.fail(span, "B125", "重复局部绑定");
@@ -714,7 +899,16 @@ impl Builder<'_> {
                 let code = self.application_drop(&data);
                 self.code.extend(code);
             }
-            Returned::OwnedResult(mut result) if result.ownership == Ownership::Owned => {
+            Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
+                if !result.value.ty.result {
+                    for i in 0..result.value.ty.fields.len() {
+                        if result.value.ty.fields[i].2.owns_resources() {
+                            let field = self.unpack_record(&result, i);
+                            self.drop_returned(field, span)?;
+                        }
+                    }
+                    return Ok(());
+                }
                 if let Some(slots) = &result.slots {
                     result.value.regs = slots
                         .iter()
@@ -751,9 +945,82 @@ impl Builder<'_> {
     }
     pub(super) fn drop_binding(&mut self, binding: Binding, span: Span) -> Result<()> {
         match binding {
-            Binding::OwnedResult(r) => self.drop_returned(Returned::OwnedResult(r), span),
+            Binding::OwnedValue(r) => self.drop_returned(Returned::OwnedValue(r), span),
             Binding::ApplicationData(data) => self.drop_returned(Returned::Dataset(data), span),
             _ => Ok(()),
         }
+    }
+}
+
+impl Builder<'_> {
+    pub(super) fn hold_argument(
+        &mut self,
+        argument: &cooperative::Argument,
+        access: Access,
+    ) -> Option<String> {
+        let binding = match argument {
+            cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
+            cooperative::Argument::ApplicationData(data) if access == Access::Value => {
+                Binding::ApplicationData(data.clone())
+            }
+            cooperative::Argument::ScopedData { owner, .. } => return Some(owner.clone()),
+            _ => return None,
+        };
+        Some(self.hold_binding(binding))
+    }
+    pub(super) fn hold_binding(&mut self, binding: Binding) -> String {
+        let name = format!("\0argument:{}", self.env.len());
+        self.env.insert(name.clone(), binding);
+        name
+    }
+    pub(super) fn finish_arguments(
+        &mut self,
+        held: &[(usize, String)],
+        arguments: &mut [cooperative::Argument],
+    ) {
+        for (index, name) in held {
+            if matches!(arguments[*index], cooperative::Argument::ScopedData { .. }) {
+                continue;
+            }
+            let value = self.env.remove(name).unwrap();
+            arguments[*index] = match value {
+                Binding::ApplicationData(data) => cooperative::Argument::ApplicationData(data),
+                Binding::OwnedValue(value) => cooperative::Argument::OwnedValue(value),
+                _ => unreachable!(),
+            };
+        }
+    }
+    pub(super) fn abandon_arguments(&mut self, held: &[(usize, String)]) {
+        for (_, name) in held {
+            self.env.remove(name);
+        }
+    }
+    pub(super) fn scoped_argument(&mut self, expr: &Expr) -> Result<Option<cooperative::Argument>> {
+        let value = self.evaluate_returned(expr, None)?;
+        if !self.flow.continues() {
+            return Ok(None);
+        }
+        let Some(Returned::Dataset(data)) = value else {
+            return self.fail(
+                expr.span,
+                "B224",
+                "dataset借用需要实际资源或拥有数据的临时值",
+            );
+        };
+        let name = format!("\0argument:{}", self.env.len());
+        let mut reference = data.clone();
+        reference.ownership = Ownership::Borrowed;
+        self.env
+            .insert(name.clone(), Binding::ApplicationData(data));
+        Ok(Some(cooperative::Argument::ScopedData {
+            data: reference,
+            owner: name,
+        }))
+    }
+    pub(super) fn finish_scoped_argument(&mut self, name: &str, span: Span) -> Result<()> {
+        let Binding::ApplicationData(data) = self.env.remove(name).unwrap() else {
+            unreachable!()
+        };
+        self.drop_returned(Returned::Dataset(data), span)
     }
 }

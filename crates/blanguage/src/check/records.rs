@@ -59,6 +59,9 @@ impl Builder<'_> {
             &self.definition.module,
             &self.definition.imports,
         )?;
+        if ty.owns_resources() {
+            return self.fail(span, "B224", "拥有资源的记录通过移动构造，不能复制为普通值");
+        }
         if ty.result {
             return self.fail(span, "B269", "结果通过 Ok／Err 构造，不能直接构造原始存储");
         }
@@ -118,6 +121,9 @@ impl Builder<'_> {
                 constant,
             });
         }
+        self.pack_record(ty, values, span)
+    }
+    pub(super) fn pack_record(&mut self, ty: Ty, values: Vec<Value>, span: Span) -> Result<Value> {
         if values.len() != ty.fields.len() {
             return self.fail(span, "B157", "记录构造需要按声明顺序提供每个字段");
         }

@@ -74,7 +74,7 @@ impl Ty {
         ty
     }
     pub fn owns_resources(&self) -> bool {
-        self.dataset.is_some() || (self.result && self.arguments.iter().any(Self::owns_resources))
+        self.dataset.is_some() || (self.result && self.arguments.iter().any(Self::owns_resources)) || self.fields.iter().any(|(_,_,ty)|ty.owns_resources())
     }
     pub fn owned_dataset(element: Self, count: Option<u32>) -> Self {
         Self {

@@ -1,4 +1,5 @@
 //! 应用入口是一次普通 CPU 值函数调用，不伪造 dataset 或 parallel 域。
+use super::cooperative::Argument;
 use super::*;
 #[derive(Default)]
 pub(super) struct Context {
@@ -544,17 +545,18 @@ impl Builder<'_> {
     ) -> Vec<Inst> {
         let old = std::mem::take(&mut self.code);
         for (name, binding) in environment {
-            let consumed = match (binding, other.get(name)) {
-                (Binding::ApplicationData(a), Some(Binding::ApplicationData(b))) => {
-                    a.ownership == Ownership::Owned && b.ownership == Ownership::Moved
-                }
-                (Binding::OwnedResult(a), Some(Binding::OwnedResult(b))) => {
-                    a.ownership == Ownership::Owned && b.ownership == Ownership::Moved
-                }
-                _ => false,
+            let a = match binding {
+                Binding::ApplicationData(d) => Some(returns::Returned::Dataset(d.clone())),
+                Binding::OwnedValue(v) => Some(returns::Returned::OwnedValue(v.clone())),
+                _ => None,
             };
-            if consumed {
-                self.drop_binding(binding.clone(), self.definition.function.span)
+            let b = match other.get(name) {
+                Some(Binding::ApplicationData(d)) => Some(returns::Returned::Dataset(d.clone())),
+                Some(Binding::OwnedValue(v)) => Some(returns::Returned::OwnedValue(v.clone())),
+                _ => None,
+            };
+            if let (Some(a), Some(b)) = (a, b) {
+                self.join_owned_releases(a, &b, self.definition.function.span)
                     .unwrap();
             }
         }
@@ -590,14 +592,12 @@ impl Builder<'_> {
         let mut matching = self
             .env
             .values()
-            .filter_map(|binding| match binding {
-                Binding::ApplicationData(data)
-                    if data.handle.proof.known_identity(0) == Some(identity) =>
-                {
-                    Some(data)
-                }
-                _ => None,
+            .flat_map(|binding| match binding {
+                Binding::ApplicationData(d) => vec![d],
+                Binding::OwnedValue(v) => v.resources(),
+                _ => Vec::new(),
             })
+            .filter(|d| d.handle.proof.known_identity(0) == Some(identity))
             .peekable();
         if matching.peek().is_some() && matching.all(|data| data.ownership == Ownership::Moved) {
             return self.fail(
@@ -618,7 +618,7 @@ impl Builder<'_> {
             matches!(place.storage(), Place::ApplicationElement { identity: owner, .. } if *owner == identity)
         })
     }
-    fn application_movable(&self, data: &Data, span: Span) -> Result<()> {
+    pub(super) fn application_movable(&self, data: &Data, span: Span) -> Result<()> {
         if self.application_borrowed(data.handle.identity()) {
             return self.fail(
                 span,
@@ -645,6 +645,14 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.application_available(&data, span)?;
+        data = self.refresh_application_data(data);
+        if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
+            source.handle.proof = data.handle.proof.clone();
+            source.length.proof = data.length.proof.clone();
+        }
+        Ok(Some(data))
+    }
+    pub(super) fn refresh_application_data(&mut self, mut data: Data) -> Data {
         if let Some(slots) = data.slots {
             let handle = self.reg(Scalar::U32);
             let length = self.reg(Scalar::U32);
@@ -657,12 +665,8 @@ impl Builder<'_> {
                 IndexDomain::ApplicationLength(data.handle.identity()),
             ]));
             data.length.constant = data.length.proof.known_value(&data.length.ty);
-            if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
-                source.handle.proof = data.handle.proof.clone();
-                source.length.proof = data.length.proof.clone();
-            }
         }
-        Ok(Some(data))
+        data
     }
     pub(super) fn application_bind(&mut self, mut data: Data, mutable: bool) -> Data {
         data.slots = None;
@@ -688,7 +692,7 @@ impl Builder<'_> {
                 Binding::ApplicationData(data) if data.ownership == Ownership::Owned => {
                     Some(binding.clone())
                 }
-                Binding::OwnedResult(result) if result.ownership == Ownership::Owned => {
+                Binding::OwnedValue(result) if result.ownership == Ownership::Owned => {
                     Some(binding.clone())
                 }
                 _ => None,
@@ -698,24 +702,6 @@ impl Builder<'_> {
             self.drop_binding(binding, self.definition.function.span)
                 .unwrap();
         }
-    }
-    pub(super) fn application_data_expression(&self, expr: &Expr) -> bool {
-        let name = match &expr.kind {
-            ExprKind::Name(name) => {
-                return matches!(self.env.get(name), Some(Binding::ApplicationData(_)));
-            }
-            ExprKind::Specialize(name, _, _) if name == "dataset" => return true,
-            ExprKind::Call(name, _) | ExprKind::Specialize(name, _, _) => name,
-            _ => return false,
-        };
-        self.world
-            .resolve(
-                name,
-                &self.definition.module,
-                &self.definition.imports,
-                true,
-            )
-            .is_some_and(|key| self.world.functions[&key].function.result.dataset)
     }
     pub(super) fn application_data_type(
         &self,
@@ -731,51 +717,6 @@ impl Builder<'_> {
             }
             data.count = Some(count);
         }
-        Ok(())
-    }
-    pub(super) fn application_dataset(
-        &mut self,
-        annotation: &Option<TypeName>,
-        name: &str,
-        expr: &Expr,
-        span: Span,
-    ) -> Result<()> {
-        let mut data = self.application_resource(expr, span)?;
-        if let Some(annotation) = annotation {
-            if !annotation.dataset {
-                return self.fail(span, "B124", "dataset 资源不能初始化普通值");
-            }
-            let definition = self.definition.clone();
-            let ty = self.world.ty(
-                annotation,
-                &definition.source,
-                span,
-                &definition.module,
-                &definition.imports,
-            )?;
-            let count = self.world.shape(
-                &annotation.count,
-                &definition.source,
-                span,
-                &definition.module,
-                &definition.imports,
-            )?;
-            self.application_data_type(&mut data, &ty, count, span)?;
-        }
-        let mutable = rebound(self.definition.function.body.as_ref().unwrap(), name);
-        if mutable {
-            if let Some(annotation) = annotation {
-                data.count = self.world.shape(
-                    &annotation.count,
-                    &self.definition.source,
-                    span,
-                    &self.definition.module,
-                    &self.definition.imports,
-                )?;
-            }
-        }
-        let data = self.application_bind(data, mutable);
-        self.env.insert(name.into(), Binding::ApplicationData(data));
         Ok(())
     }
     pub(super) fn application_declare(
@@ -1213,16 +1154,24 @@ impl Builder<'_> {
         if callee.function.target != Target::Compute && callee.function.target != target {
             return self.fail(span, "B266", "program 的执行目标与调用位置不一致");
         }
+        let prepared = self.function_arguments(&key, arguments, span)?;
+        if !self.flow.continues() {
+            return Ok(None);
+        }
         let mut data = Vec::new();
         let mut uniforms = Vec::new();
         let mut actuals = Vec::new();
-        for (parameter, arg) in callee.function.params.iter().zip(arguments) {
+        let mut held = Vec::new();
+        for ((parameter, arg), value) in callee.function.params.iter().zip(arguments).zip(prepared)
+        {
             if parameter.ty.dataset {
-                let ExprKind::Name(name) = &arg.kind else {
-                    return self.fail(arg.span, "B224", "program 借用实际 dataset 资源名称");
-                };
-                let Some(value) = self.application_value(name, arg.span)? else {
-                    return self.fail(arg.span, "B224", "program 需要应用持有的动态 dataset");
+                let value = match value {
+                    Argument::ApplicationData(data) => data,
+                    Argument::ScopedData { data, owner } => {
+                        held.push(owner);
+                        data
+                    }
+                    _ => return self.fail(arg.span, "B224", "program需要应用持有的实际dataset"),
                 };
                 if parameter.access.writes() && !value.writable {
                     return self.fail(arg.span, "B227", "只读 dataset 不能交给可写 program 参数");
@@ -1250,7 +1199,9 @@ impl Builder<'_> {
                 actuals.push((value.ty.clone(), value.count));
                 data.push(value);
             } else {
-                let value = self.expr(arg)?;
+                let Argument::Value(value) = value else {
+                    return self.fail(arg.span, "B266", "program统一参数需要普通值");
+                };
                 actuals.push((value.ty.clone(), None));
                 uniforms.push(value);
             }
@@ -1304,7 +1255,11 @@ impl Builder<'_> {
                     constant: None,
                 })
         }));
-        self.application_call(&format!("run_{index}"), params, None, span)
+        let result = self.application_call(&format!("run_{index}"), params, None, span)?;
+        for name in held {
+            self.finish_scoped_argument(&name, span)?;
+        }
+        Ok(result)
     }
     pub(super) fn application_cpu(&self, data: &Data, span: Span) -> Result<()> {
         if data.residency != Some(Target::Cpu) {
@@ -1326,10 +1281,7 @@ impl Builder<'_> {
         if args.len() != 1 {
             return self.fail(span, "B266", "upload／download 需要一个拥有的 dataset 名称");
         }
-        let ExprKind::Name(binding) = &args[0].kind else {
-            return self.fail(span, "B266", "upload／download 转移实际 dataset 存储");
-        };
-        let Some(data) = self.application_value(binding, span)? else {
+        let Some(data) = self.application_reference(&args[0])? else {
             return self.fail(span, "B266", "upload／download 需要应用拥有的 dataset");
         };
         if data.ownership != Ownership::Owned {
@@ -1353,12 +1305,18 @@ impl Builder<'_> {
         }
         let value = data.handle.clone();
         self.application_call(name, vec![value], None, span)?;
-        for value in self.env.values_mut() {
-            if let Binding::ApplicationData(alias) = value
-                && alias.ownership != Ownership::Moved
+        let update = &mut |alias: &mut Data| {
+            if alias.ownership != Ownership::Moved
                 && alias.handle.proof.known_identity(0) == Some(data.handle.identity())
             {
                 alias.residency = Some(target);
+            }
+        };
+        for binding in self.env.values_mut() {
+            match binding {
+                Binding::ApplicationData(alias) => update(alias),
+                Binding::OwnedValue(owner) => owner.resources_mut(update),
+                _ => {}
             }
         }
         Ok(None)
@@ -1403,15 +1361,15 @@ impl Builder<'_> {
 
 // Only whole binding assignment needs mutable handle/length storage; payload writes do not.
 pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
-    body.iter().any(|statement| match &statement.kind {
-        StmtKind::Assign(
-            Expr {
-                kind: ExprKind::Name(target),
-                ..
-            },
-            _,
-            _,
-        ) => target == name,
+    fn root(expr: &Expr) -> Option<&str> {
+        match &expr.kind {
+            ExprKind::Name(name) => Some(name),
+            ExprKind::Member(base, _) => root(base),
+            _ => None,
+        }
+    }
+    body.iter().any(|s| match &s.kind {
+        StmtKind::Assign(lhs, _, _) => root(lhs) == Some(name),
         StmtKind::If(_, yes, no) | StmtKind::Match(_, _, yes, _, no) => {
             rebound(yes, name) || rebound(no, name)
         }

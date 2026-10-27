@@ -6,7 +6,7 @@ pub(super) enum Returned {
     Unit,
     Value(Value),
     Dataset(application::Data),
-    OwnedResult(owned_results::OwnedResult),
+    OwnedValue(owned_values::OwnedValue),
 }
 #[derive(Clone)]
 enum Expected {
@@ -25,7 +25,7 @@ impl Returned {
     pub(super) fn registers(&self) -> Vec<Reg> {
         match self {
             Self::Unit => Vec::new(),
-            Self::OwnedResult(value) => value.value.regs.clone(),
+            Self::OwnedValue(value) => value.value.regs.clone(),
             Self::Value(value) => value.regs.clone(),
             Self::Dataset(data) => vec![data.handle.regs[0], data.length.regs[0]],
         }
@@ -34,23 +34,26 @@ impl Returned {
         if matches!(self, Self::Unit) {
             return;
         }
-        if let Self::OwnedResult(value) = self {
-            let Self::OwnedResult(other) = other else {
+        if let Self::OwnedValue(value) = self {
+            let Self::OwnedValue(other) = other else {
                 unreachable!()
             };
             value.join(other);
             return;
         }
         if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &other) {
+            if data.ownership != other.ownership {
+                data.ownership = application::Ownership::Moved;
+            }
             data.handle.proof = bounds::Proof::common(&data.handle, &other.handle);
         }
         let (other, residency) = match &other {
-            Self::Unit | Self::OwnedResult(_) => unreachable!(),
+            Self::Unit | Self::OwnedValue(_) => unreachable!(),
             Self::Value(value) => (value, None),
             Self::Dataset(data) => (&data.length, data.residency),
         };
         let value = match self {
-            Self::Unit | Self::OwnedResult(_) => unreachable!(),
+            Self::Unit | Self::OwnedValue(_) => unreachable!(),
             Self::Value(value) => value,
             Self::Dataset(data) => &mut data.length,
         };
@@ -145,7 +148,7 @@ impl Builder<'_> {
     ) -> Result<Option<Value>> {
         match result {
             Some(Returned::Unit) => Ok(None),
-            Some(Returned::OwnedResult(_)) => self.fail(
+            Some(Returned::OwnedValue(_)) => self.fail(
                 span,
                 "B224",
                 "拥有结果不能按普通值复制；使用绑定、match、try或拥有参数交接",

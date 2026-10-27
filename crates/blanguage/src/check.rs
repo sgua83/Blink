@@ -19,7 +19,8 @@ mod external;
 mod flow;
 pub(crate) mod generics;
 mod matrix;
-mod owned_results;
+mod owned_records;
+mod owned_values;
 mod ownership;
 mod prefix;
 mod records;
@@ -83,7 +84,7 @@ struct Value {
 #[derive(Clone)]
 enum Binding {
     ApplicationData(application::Data),
-    OwnedResult(owned_results::OwnedResult),
+    OwnedValue(owned_values::OwnedValue),
     AtomicBorrow(Place),
     Owned(OwnedBinding),
     Value(Value),
@@ -142,7 +143,7 @@ struct ForLoop {
     begin: Value,
     limit: Value,
     data: Option<CursorSource>,
-    borrowed: Option<String>,
+    borrowed: Option<ValueIdentity>,
     slot: usize,
     initialization: Vec<(application::Data, Vec<u32>)>,
 }
@@ -1185,10 +1186,10 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
                 "函数参数使用普通值、write／inout 独占位置、read dataset 或 atomic 借用",
             );
         }
-        let ty = world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)?;
+        let ty = cooperative::parameter_type(world, p, d)?;
         let regs = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
         if ty.owns_resources() {
-            let result = b.incoming_owned_result(Value {
+            let result = b.incoming_owned_value(Value {
                 ty,
                 regs,
                 proof: bounds::Proof::default(),
@@ -1196,7 +1197,7 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
                 uniform: false,
                 constant: None,
             });
-            b.bind_owned_result(&p.name, result, p.span)?;
+            b.bind_owned_value(&p.name, result, p.span)?;
             continue;
         }
         b.env.insert(
@@ -1549,6 +1550,13 @@ impl<'a> Builder<'a> {
         self.fail(span, "B141", format!("{} 没有字段 {field}", ty.name))
     }
     fn read_place(&mut self, p: &Place, span: Span) -> Result<Value> {
+        if p.ty().owns_resources() {
+            return self.fail(
+                span,
+                "B224",
+                "拥有资源需要移动、字段借用或match交接，不能按普通值复制",
+            );
+        }
         match p {
             Place::ApplicationElement {
                 ty,
@@ -1796,7 +1804,11 @@ impl<'a> Builder<'a> {
             }
             ExprKind::Bool(b) => Ok(self.constant(Scalar::Bool, *b as u32)),
             ExprKind::Name(name) => self.name_expr(name, e),
-            ExprKind::Member(base, field) => self.member_expr(base, field, e),
+            ExprKind::Member(base, field) => {
+                let result = self.member_returned(e, base, field)?;
+                let value = self.ordinary_return(result, e.span)?;
+                self.value_result(value, e.span)
+            }
             ExprKind::Index(base, index) => self.index_expr(base, index, e),
             ExprKind::Unary(op, a) => self.unary_expr(op, a, e.span),
             ExprKind::Binary(op, a, b) => self.binary_expr(op, a, b, e.span),
@@ -2674,12 +2686,10 @@ impl<'a> Builder<'a> {
             self.require_same(&a.ty, &b.ty, start.span)?;
             (a, b, None)
         } else {
-            let source = if let ExprKind::Name(data) = &start.kind {
-                if let Some(value) = self.application_value(data, start.span)? {
-                    Some(Binding::ApplicationData(value))
-                } else {
-                    self.env.get(data).cloned()
-                }
+            let source = if let Some(value) = self.application_reference(start)? {
+                Some(Binding::ApplicationData(value))
+            } else if let ExprKind::Name(name) = &start.kind {
+                self.env.get(name).cloned()
             } else {
                 None
             };
@@ -2734,14 +2744,9 @@ impl<'a> Builder<'a> {
             return Ok(());
         }
         let nonempty = begin.maximum() < limit.minimum();
-        let borrowed = if end.is_none() {
-            if let ExprKind::Name(name) = &start.kind {
-                Some(name.as_str())
-            } else {
-                None
-            }
-        } else {
-            None
+        let borrowed = match &data {
+            Some(CursorSource::ApplicationData(data)) => Some(data.handle.identity()),
+            _ => None,
         };
         let initial = self.application_initial_loop(body);
         let slot = self.locals.len();
@@ -2754,7 +2759,7 @@ impl<'a> Builder<'a> {
                 begin,
                 limit,
                 data,
-                borrowed: borrowed.map(str::to_owned),
+                borrowed,
                 slot,
                 initialization,
             },
@@ -2792,7 +2797,7 @@ impl<'a> Builder<'a> {
             initialization.clear();
         }
         if !initial {
-            self.invalidate_assigned(body, borrowed.as_deref())?;
+            self.invalidate_assigned(body, borrowed)?;
         }
         let environment = self.env.clone();
         self.enter_loop(&environment);
@@ -3207,12 +3212,12 @@ impl<'a> Builder<'a> {
         Ok(p.project(sub, &components))
     }
     fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Place> {
+        if let Some(data) = self.application_reference(base)? {
+            return self.application_index(data, index);
+        }
         let ExprKind::Name(name) = &base.kind else {
             return self.view_place(base, index);
         };
-        if let Some(data) = self.application_value(name, base.span)? {
-            return self.application_index(data, index);
-        }
         if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
             return self.tile_place(view, index);
         }
@@ -3275,6 +3280,7 @@ impl<'a> Builder<'a> {
         match self.env.get(name).cloned() {
             Some(Binding::AtomicBorrow(place)) => Ok(place),
             Some(Binding::Owned(owner)) => Ok(owner.place),
+            Some(Binding::OwnedValue(owner)) => Ok(owner.place().unwrap()),
             Some(Binding::Value(value)) if value.ty.contains_arrays() => {
                 let place = self.materialize_array(value);
                 self.env.insert(
@@ -3333,7 +3339,7 @@ impl<'a> Builder<'a> {
             &self.definition.imports,
         )?;
         if ty.owns_resources() {
-            return self.owned_result_declare(name, ty, span);
+            return self.owned_value_declare(name, ty, span);
         }
         let (slots, storage) = self.local_slots(&ty);
         self.env.insert(
@@ -3349,10 +3355,16 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
-        if let ExprKind::Name(name) = &lhs.kind
-            && let Some(Binding::OwnedResult(value)) = self.env.get(name).cloned()
+        if let Some(p) = self
+            .owned_projection(lhs)
+            .filter(|p| !p.path.is_empty() && p.ty.owns_resources())
         {
-            return self.owned_result_assign(name, value, op, rhs, span);
+            return self.assign_owned_projection(p, op, rhs, span);
+        }
+        if let ExprKind::Name(name) = &lhs.kind
+            && let Some(Binding::OwnedValue(value)) = self.env.get(name).cloned()
+        {
+            return self.owned_value_assign(name, value, op, rhs, span);
         }
         if let ExprKind::Name(name) = &lhs.kind
             && let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned()
@@ -3590,14 +3602,14 @@ impl<'a> Builder<'a> {
         }));
     }
     fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Value> {
+        if let Some(data) = self.application_reference(base)? {
+            return if field == "length" {
+                Ok(data.length)
+            } else {
+                self.fail(e.span, "B141", "dataset只公开只读length")
+            };
+        }
         if let ExprKind::Name(name) = &base.kind {
-            if let Some(data) = self.application_value(name, e.span)? {
-                return if field == "length" {
-                    Ok(data.length)
-                } else {
-                    self.fail(e.span, "B141", "dataset 只公开只读 length")
-                };
-            }
             if let Some(Binding::Texture(reference)) = self.env.get(name).cloned() {
                 if field == "length"
                     && let Some(count) = reference.shape(self.program)
@@ -3636,13 +3648,16 @@ impl<'a> Builder<'a> {
             return self.read_place(&p.project(sub, &components), e.span);
         }
         let v = self.expr(base)?;
+        self.member_value(v, field, e.span)
+    }
+    pub(super) fn member_value(&mut self, v: Value, field: &String, span: Span) -> Result<Value> {
         if v.ty.array.is_some() && field == "length" {
             return Ok(self.constant(Scalar::U32, v.ty.values[0]));
         }
         if v.ty.view.is_some() && field == "length" {
             return Ok(Self::view_length(&v));
         }
-        let (ty, indices) = self.member(&v.ty, field, e.span)?;
+        let (ty, indices) = self.member(&v.ty, field, span)?;
         Ok(Value {
             proof: v.projected_proof(&indices),
             literal: false,
@@ -3710,6 +3725,7 @@ impl<'a> Builder<'a> {
                             | Binding::TileElement { .. }
                             | Binding::ViewElement { .. }
                             | Binding::Owned(_)
+                            | Binding::OwnedValue(_)
                     )
                 )
             }

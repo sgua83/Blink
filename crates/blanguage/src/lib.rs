@@ -773,22 +773,16 @@ impl World {
         };
         let mut names = BTreeSet::new();
         for field in &record.fields {
-            if field.ty.dataset {
-                return s.fail(field.span, "B033", "数据集句柄不能嵌入设备结构体");
-            }
             if !names.insert(field.name.clone()) {
                 return s.fail(field.span, "B034", format!("重复字段 {}", field.name));
             }
             let mut field_type = field.ty.clone();
             generics::substitute_type(&mut field_type, &replacements, s, field.span)?;
             value_parameters::substitute_type(&mut field_type, &value_map);
-            let f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
-            if f.owns_resources() {
-                return s.fail(
-                    field.span,
-                    "B033",
-                    "拥有资源的记录聚合尚未实现，不能按普通值复制句柄",
-                );
+            let mut f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
+            if field_type.dataset {
+                if f.owns_resources() || f.contains_views(){return s.fail(field.span,"B033","dataset 元素需要普通存储；拥有聚合与view资源图不能按普通值复制");}
+                f=ir::Ty::owned_dataset(f,self.shape(&field_type.count,s,field.span,m,i)?);
             }
             let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
             let end = offset + f.size as u64;
@@ -802,6 +796,7 @@ impl World {
             ty.align = ty.align.max(f.align);
             ty.fields.push((field.name.clone(), offset, Box::new(f)));
         }
+        if ty.owns_resources()&&ty.contains_views(){return s.fail(record.span,"B269","拥有存储与view图的组合寿命尚未实现");}
         if ty.components.is_empty() {
             return source.fail(span, "B035", "空结构体不能作为计算数据");
         }
