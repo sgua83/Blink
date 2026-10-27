@@ -714,6 +714,7 @@ impl World {
                 array: None,
                 enumeration: false,
                 result: false,
+                variants: Vec::new(),
                 dataset: None,
             });
         }
@@ -812,6 +813,7 @@ impl World {
                 array: Some(Box::new(element)),
                 enumeration: false,
                 result: false,
+                variants: Vec::new(),
                 dataset: None,
             });
         }
@@ -849,14 +851,16 @@ impl World {
             let GenericArgument::Type(arg) = arg else {
                 return source.fail(span, "B232", "此记录位置需要普通值类型");
             };
-            if arg.dataset || arg.view || arg.tile {
-                return source.fail(span, "B232", "记录类型实参不能直接是资源包装");
-            }
-            let actual = if *arg == TypeName::named("void") {
+            if arg.tile { return source.fail(span, "B232", "tile借用不能作为拥有类型实参"); }
+            let mut actual = if *arg == TypeName::named("void") {
                 ir::Ty::unit()
             } else {
                 self.ty_inner(arg, source, span, module, imports, stack)?
             };
+            if arg.dataset {
+                if actual.owns_resources() || actual.contains_views() { return source.fail(span, "B033", "dataset元素需要普通存储"); }
+                actual = ir::Ty::owned_dataset(actual, self.shape(&arg.count, source, span, module, imports)?);
+            }
             if !self.family_accepts(&parameter.family, &actual, s, record.span, m, i, stack)? {
                 return source.fail(
                     span,
@@ -920,6 +924,33 @@ impl World {
             if ty != ir::Ty::scalar(ir::Scalar::U32) && ty != ir::Ty::scalar(ir::Scalar::I32) {
                 return s.fail(record.span, "B268", "编号枚举的表示类型需要 u32 或 i32");
             }
+            if !record.variants.is_empty() {
+                let representation = ty;
+                let mut alternatives = Vec::new();
+                let mut names = BTreeSet::new(); let mut tags = BTreeSet::new();
+                for variant in &record.variants {
+                    if !names.insert(variant.name.clone()) { return s.fail(variant.span, "B268", "同一变体名称不能重复"); }
+                    let mut expression = variant.discriminant.clone();
+                    generics::substitute_expr(&mut expression, &replacements, &value_map, s)?;
+                    let tag = check::variant_discriminant(self, &format!("{key}::{}",variant.name), s, m, i, &representation, &expression)?;
+                    if !tags.insert(tag) { return s.fail(variant.span, "B268", "带载荷变体的编号必须唯一，才能确定活动载荷"); }
+                    let mut syntax = variant.payload.clone();
+                    generics::substitute_type(&mut syntax, &replacements, s, variant.span)?;
+                    value_parameters::substitute_type(&mut syntax, &value_map);
+                    if syntax.tile { return s.fail(variant.span, "B269", "tile是执行域借用，不能作为变体载荷"); }
+                    let mut payload = if syntax == TypeName::named("void") { ir::Ty::unit() }
+                        else { self.ty_inner(&syntax, s, variant.span, m, i, stack)? };
+                    if syntax.dataset {
+                        if payload.owns_resources() || payload.contains_views() { return s.fail(variant.span, "B033", "dataset元素需要普通存储"); }
+                        payload = ir::Ty::owned_dataset(payload, self.shape(&syntax.count, s, variant.span, m, i)?);
+                    }
+                    if payload.contains_views() { return s.fail(variant.span, "B269", "变体载荷的view所有权图尚未实现"); }
+                    alternatives.push(ir::Variant { name: variant.name.clone(), discriminant: tag, ty: Box::new(payload) });
+                }
+                let ty = ir::Ty::variant(key.clone(), arguments, values, representation.components[0].0, alternatives)
+                    .ok_or_else(|| Diagnostic { source: s.clone(), span: record.span, code: "B238", message: "变体布局超过u32字节地址范围".into() })?;
+                stack.remove(&key); return Ok(ty);
+            }
             ty.name = key.clone();
             ty.enumeration = true;
             stack.remove(&key);
@@ -937,6 +968,7 @@ impl World {
             array: None,
             enumeration: false,
             result: false,
+            variants: Vec::new(),
             dataset: None,
         };
         let mut names = BTreeSet::new();

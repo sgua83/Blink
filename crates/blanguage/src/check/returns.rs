@@ -126,9 +126,10 @@ fn early_returns(body: &[Stmt]) -> bool {
     propagates(body)
         || body.iter().enumerate().any(|(i, s)| match &s.kind {
             StmtKind::Return(_) => i + 1 != body.len(),
-            StmtKind::If(_, yes, no) | StmtKind::Match(_, _, yes, _, no) => {
+            StmtKind::If(_, yes, no) => {
                 has_return(yes) || has_return(no)
             }
+            StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body)),
             StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
             _ => false,
         })
@@ -136,7 +137,8 @@ fn early_returns(body: &[Stmt]) -> bool {
 fn has_return(body: &[Stmt]) -> bool {
     body.iter().any(|s| match &s.kind {
         StmtKind::Return(_) => true,
-        StmtKind::If(_, y, n) | StmtKind::Match(_, _, y, _, n) => has_return(y) || has_return(n),
+        StmtKind::If(_, y, n) => has_return(y) || has_return(n),
+        StmtKind::Match(_, arms) => arms.iter().any(|arm|has_return(&arm.body)),
         StmtKind::While(_, b) | StmtKind::For(_, _, _, b) => has_return(b),
         _ => false,
     })
@@ -160,9 +162,10 @@ fn propagates(body: &[Stmt]) -> bool {
         | StmtKind::Return(Some(e))
         | StmtKind::Seek(_, e) => expr(e),
         StmtKind::Assign(a, _, b) => expr(a) || expr(b),
-        StmtKind::If(c, a, b) | StmtKind::Match(c, _, a, _, b) => {
+        StmtKind::If(c, a, b) => {
             expr(c) || propagates(a) || propagates(b)
         }
+        StmtKind::Match(value, arms) => expr(value) || arms.iter().any(|arm|propagates(&arm.body)),
         StmtKind::While(c, body) => expr(c) || propagates(body),
         StmtKind::For(_, a, b, body) => expr(a) || b.as_ref().is_some_and(expr) || propagates(body),
         StmtKind::Parallel(_, domain, body) => {
@@ -304,6 +307,7 @@ impl Builder<'_> {
         }
     }
     pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
+        if let Some(value)=&mut value {self.require_returned_initialized(value,span)?;}
         if let Some(Returned::Value(value)) = &mut value {
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env, &self.path);

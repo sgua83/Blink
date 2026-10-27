@@ -10,6 +10,7 @@ mod bounds;
 mod compact;
 mod constant;
 use constant::constant_value;
+pub(crate) use constant::variant_discriminant;
 mod application;
 mod contracts;
 mod cooperative;
@@ -190,7 +191,7 @@ enum Place {
         handle: Reg,
         identity: ValueIdentity,
         sources: Vec<ValueIdentity>,
-        initialization: Option<(usize, ownership::ApplicationIndex)>,
+        initialization: Option<(Position, ownership::ApplicationIndex)>,
         index: Reg,
         index_range: (u32, u32),
         stride: u32,
@@ -800,7 +801,7 @@ fn expand_stages(
                     .iter()
                     .map(|root| match root {
                         Root::Data(i, _) => generics::Actual {
-                            ty: Some(&program.buffers[*i].ty),
+                            ty: Some(std::borrow::Cow::Borrowed(&program.buffers[*i].ty)),
                             count: program.buffers[*i].count,
                         },
                         Root::Uniform(ty, _) | Root::Literal(ty, _) => generics::Actual::value(ty),
@@ -1681,9 +1682,7 @@ impl<'a> Builder<'a> {
                 self.code.push(Inst::Continue);
                 self.flow = Flow::CONTINUE;
             }
-            StmtKind::Match(value, yes_name, yes, no_name, no) => {
-                return self.result_match(value, yes_name, yes, no_name, no, s.span);
-            }
+            StmtKind::Match(value, arms) => { return self.match_returned(value,arms,s.span); }
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span)?,
             StmtKind::Parallel(..) => return self.application_parallel(s),
             StmtKind::Phase => {
@@ -1710,7 +1709,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn member(&self, ty: &Ty, field: &str, span: Span) -> Result<(Ty, Vec<usize>)> {
-        if ty.result {
+        if ty.has_variants() {
             return self.fail(
                 span,
                 "B269",
@@ -2059,6 +2058,9 @@ impl<'a> Builder<'a> {
             }
             ExprKind::StaticU32(bits) => Ok(Some(self.constant(Scalar::U32, *bits))),
             ExprKind::Specialize(name, explicit, args) => {
+                if self.variant_constructor_type(name,Some(explicit),None,e.span)?.is_some() {
+                    let value=self.evaluate_returned(e,None)?;return self.ordinary_return(value,e.span);
+                }
                 let value = self.specialized_call(name, explicit, args, e.span)?;
                 if !self.flow.continues() {
                     return Ok(None);
@@ -2240,7 +2242,7 @@ impl<'a> Builder<'a> {
         Ok((a, b))
     }
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
-        if a.ty.result || b.ty.result {
+        if a.ty.has_variants() || b.ty.has_variants() {
             return self.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
         }
         let comparison = ["==", "!=", "<", ">", "<=", ">="].contains(&op);
@@ -2682,7 +2684,7 @@ impl<'a> Builder<'a> {
             return Ok(None);
         };
         if op == "+" {
-            if a.ty.array.is_some() || a.ty.enumeration || a.ty.result {
+            if a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
                 return self.fail(span, "B146", "数值一元运算不能接受数组、枚举或结果");
             }
             return Ok(Some(a));
@@ -3016,7 +3018,7 @@ impl<'a> Builder<'a> {
         let slot = self.locals.len();
         self.locals.push(Scalar::U32);
         self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
-        let initialization = self.application_iteration_outputs(&begin, &limit);
+        let initialization = self.application_iteration_outputs(&begin, &limit, match &data {Some(CursorSource::ApplicationData(data))=>Some(&data.data),_=>None});
         self.for_loop(
             ForLoop {
                 name: name.clone(),
@@ -3285,7 +3287,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn numeric_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
-        if values.iter().any(|value| value.ty.result) {
+        if values.iter().any(|value| value.ty.has_variants()) {
             return self.fail(span, "B269", "结果值须先通过 match 或 try 取得对应载荷");
         }
         if values.iter().any(|value| value.ty.enumeration) {

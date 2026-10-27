@@ -423,45 +423,43 @@ impl Parser {
             }
             if self.take("enum") {
                 let name = self.ident()?;
+                let (types, values) = self.parameters()?;
                 self.expect(":")?;
                 let representation = self.ty()?;
                 self.expect("{")?;
-                records.push(Record {
-                    name: name.clone(),
-                    types: Vec::new(),
-                    values: Vec::new(),
-                    stride: None,
-                    enumeration: Some(representation),
-                    fields: Vec::new(),
-                    span,
-                });
+                let mut variants = Vec::new();
+                let mut payloads = !types.is_empty() || !values.is_empty();
                 while !self.take("}") {
-                    let span = self.span();
+                    let at = self.span();
                     let member = self.ident()?;
+                    let payload = if self.take("(") {
+                        payloads = true;
+                        if self.take(")") { TypeName::named("void") }
+                        else { let ty = self.ty()?; self.expect(")")?; ty }
+                    } else { TypeName::named("void") };
                     self.expect("=")?;
-                    let value = self.expr(0)?;
+                    let discriminant = self.expr(0)?;
                     self.expect(";")?;
-                    functions.push(Function {
-                        name: format!("{name}::{member}"),
-                        types: Vec::new(),
-                        values: Vec::new(),
-                        params: Vec::new(),
-                        result: TypeName::named(&name),
-                        kind: FunctionKind::Constant,
-                        target: Target::Compute,
-                        contracts: Vec::new(),
-                        body: Some(vec![Stmt {
-                            span,
-                            kind: StmtKind::Return(Some(Expr {
-                                span,
-                                kind: ExprKind::Call(name.clone(), vec![value]),
-                            })),
-                        }]),
-                        external: None,
-                        span,
-                    });
+                    variants.push(VariantDeclaration { name: member, payload, discriminant, span: at });
                 }
                 self.expect(";")?;
+                if !payloads {
+                    for variant in &variants {
+                        let span = variant.span;
+                        functions.push(Function {
+                            name: format!("{name}::{}", variant.name),
+                            types: Vec::new(), values: Vec::new(), params: Vec::new(),
+                            result: TypeName::named(&name), kind: FunctionKind::Constant,
+                            target: Target::Compute, contracts: Vec::new(), external: None, span,
+                            body: Some(vec![Stmt { span, kind: StmtKind::Return(Some(Expr {
+                                span, kind: ExprKind::Call(name.clone(), vec![variant.discriminant.clone()]),
+                            })) }]),
+                        });
+                    }
+                    variants.clear();
+                }
+                records.push(Record { name, types, values, stride: None,
+                    enumeration: Some(representation), variants, fields: Vec::new(), span });
                 continue;
             }
             if self.take("struct") {
@@ -491,6 +489,7 @@ impl Parser {
                     values,
                     stride,
                     enumeration: None,
+                    variants: Vec::new(),
                     fields,
                     span,
                 });
@@ -723,34 +722,13 @@ impl Parser {
             let value = self.expr(0)?;
             self.expect(")")?;
             self.expect("{")?;
-            let mut yes = None;
-            let mut no = None;
+            let mut arms=Vec::new();
             while !self.take("}") {
-                let arm = self.ident()?;
-                self.expect("(")?;
-                let binding = if self.take(")") {
-                    None
-                } else {
-                    let name = self.ident()?;
-                    self.expect(")")?;
-                    Some(name)
-                };
-                let body = self.block()?;
-                let target = match arm.as_str() {
-                    "Ok" => &mut yes,
-                    "Err" => &mut no,
-                    _ => return self.source.fail(span, "B269", "结果分支为 Ok 或 Err"),
-                };
-                if target.replace((binding, body)).is_some() {
-                    return self.source.fail(span, "B269", "同一结果分支不能重复");
-                }
+                let at=self.span();let variant=self.type_name()?;self.expect("(")?;
+                let binding=if self.take(")"){None}else{let name=self.ident()?;self.expect(")")?;Some(name)};
+                let body=self.block()?;arms.push(MatchArm {variant,binding,body,span:at});
             }
-            let (Some((yes_name, yes)), Some((no_name, no))) = (yes, no) else {
-                return self
-                    .source
-                    .fail(span, "B269", "结果分支必须同时处理 Ok 与 Err");
-            };
-            StmtKind::Match(value, yes_name, yes, no_name, no)
+            StmtKind::Match(value,arms)
         } else if self.take("while") {
             self.expect("(")?;
             let c = self.expr(0)?;

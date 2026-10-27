@@ -1,9 +1,9 @@
-//! 模块资源 ABI 1：编译后的类型、执行布局及原生映像；不传递 Rust 容器表示。
+//! 模块资源 ABI 2：编译后的类型、执行布局及原生映像；不传递 Rust 容器表示。
 use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variants};
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x01\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x02\0\0\0";
 pub const F32: u32 = 0;
 pub const U32: u32 = 1;
 pub const I32: u32 = 2;

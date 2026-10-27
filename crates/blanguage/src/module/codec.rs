@@ -201,8 +201,11 @@ record!(ir::Ty {
     array,
     enumeration,
     result,
+    variants,
     dataset
 });
 variants!(ir::CallParameter{0=>Value(ty),1=>Reference{ty,access}});
 variants!(ast::ContractKind{0=>Requires,1=>Ensures});
 variants!(ast::ContractPredicate{0=>Prefix{data,count,field},1=>Nonzero(name),2=>Nonempty(name),3=>Index{value,resource},4=>Contiguous(name)});
+
+record!(crate::ir::Variant { name, discriminant, ty });

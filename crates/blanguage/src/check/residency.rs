@@ -266,7 +266,7 @@ fn bind_returned(value: &mut Returned, arguments: &Arguments) -> bool {
             for payload in &mut value.payloads {
                 if let Some(item) = payload {
                     if !bind_returned(item, arguments) {
-                        if value.value.ty.result {
+                        if value.value.ty.has_variants() {
                             *payload = None;
                         } else {
                             present = false;
@@ -467,7 +467,7 @@ pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool 
                 for payload in &mut value.payloads {
                     if let Some(item) = payload {
                         if !resolve(item, outputs) {
-                            if value.value.ty.result {
+                            if value.value.ty.has_variants() {
                                 *payload = None;
                             } else {
                                 present = false;

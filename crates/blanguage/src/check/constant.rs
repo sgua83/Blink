@@ -195,3 +195,34 @@ pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: u32, b: u32) -> Option<u32
         BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv => return None,
     })
 }
+
+// 编号表达式沿原常量求值，不建立另一份宿主表达式解释器。
+pub(crate) fn variant_discriminant(world: &World, identity: &str, source: &Source, module: &str, imports: &[String], representation: &Ty, expression: &Expr) -> Result<u32> {
+    let key=format!("<variant-tag>:{identity}");
+    if !world.evaluating_constants.borrow_mut().insert(key.clone()) {
+        return source.fail(expression.span,"B160",format!("编译期变体编号与类型递归依赖 {identity}"));
+    }
+    let result=(|| {
+    let definition = Arc::new(Definition {
+        source: source.clone(), module: module.into(), imports: imports.to_vec(), public: false, compiled: None,
+        execution: crate::execution::Requirement::Invocation,
+        function: Function { name: "<variant-number>".into(), types: Vec::new(), values: Vec::new(), params: Vec::new(),
+            result: representation.syntax(), kind: FunctionKind::Constant, target: Target::Compute,
+            contracts: Vec::new(), external: None, body: Some(vec![Stmt { span: expression.span, kind: StmtKind::Return(Some(expression.clone())) }]), span: expression.span },
+    });
+    let context = Program { name: definition.function.name.clone(), target: Target::Compute,
+        buffers: Vec::new(), accelerations: Vec::new(), textures: Vec::new(), uniforms: Vec::new(), uniform_bytes: 0,
+        source_stages: 0, stages: Vec::new(), prefix_requirements: Vec::new(), prefix_guarantees: Vec::new() };
+    let mut builder = Builder::new(world, &definition, &context, 0);
+    builder.in_function = true;
+    let result = builder.expr(expression)?;
+    let value = builder.value_result(result, expression.span)?;
+    builder.require_same(representation, &value.ty, expression.span)?;
+    if value.constant.is_none() || builder.code.iter().any(|inst| !matches!(inst, Inst::Constant(..))) {
+        return source.fail(expression.span, "B268", "变体编号必须是可完全编译期求值的底层整数");
+    }
+    Ok(value.constant.unwrap()[0])
+    })();
+    world.evaluating_constants.borrow_mut().remove(&key);
+    result
+}

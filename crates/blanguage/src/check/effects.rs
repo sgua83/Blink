@@ -364,10 +364,14 @@ fn statement_writes<'e>(
             | StmtKind::Expr(expr)
             | StmtKind::Return(Some(expr))
             | StmtKind::Seek(_, expr) => expression_writes(world, definition, expr, writes),
-            StmtKind::If(expr, a, b) | StmtKind::Match(expr, _, a, _, b) => {
+            StmtKind::If(expr, a, b) => {
                 expression_writes(world, definition, expr, writes);
                 statement_writes(world, definition, a, writes);
                 statement_writes(world, definition, b, writes);
+            }
+            StmtKind::Match(value, arms) => {
+                expression_writes(world,definition,value,writes);
+                for arm in arms {statement_writes(world,definition,&arm.body,writes);}
             }
             StmtKind::While(expr, body) => {
                 expression_writes(world, definition, expr, writes);

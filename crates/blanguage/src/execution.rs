@@ -97,11 +97,15 @@ impl Body {
                     }
                     self.block(world, d, body);
                 }
-                StmtKind::If(e, a, b) | StmtKind::Match(e, _, a, _, b) => {
+                StmtKind::If(e, a, b) => {
                     self.local = true;
                     self.expr(world, d, e, false);
                     self.block(world, d, a);
                     self.block(world, d, b);
+                }
+                StmtKind::Match(value, arms) => {
+                    self.local=true;self.expr(world,d,value,false);
+                    for arm in arms {self.block(world,d,&arm.body);}
                 }
                 StmtKind::While(e, b) => {
                     self.local = true;

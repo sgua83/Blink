@@ -450,7 +450,7 @@ impl<'a> Builder<'a> {
                 self.require_same(&ty, &value.value.ty, span)?;
                 let mutable =
                     application::rebound(callee.function.body.as_ref().unwrap(), &param.name)
-                        || !value.value.ty.result;
+                        || !value.value.ty.has_variants();
                 let value = self.owned_value_binding(value, mutable);
                 env.insert(param.name.clone(), Binding::OwnedValue(value));
                 continue;
@@ -475,7 +475,7 @@ impl<'a> Builder<'a> {
                     if param.access == Access::Write {
                         let scope = self.application_output_scope();
                         dataset_outputs.push((data.clone(), scope));
-                        data.initialization = Some(scope);
+                        data.initialization = Some(Position::Parameter(scope,0));
                     } else {
                         self.require_application_initialized(&data, span)?;
                     }

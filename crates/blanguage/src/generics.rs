@@ -41,7 +41,10 @@ pub(crate) fn instantiate(
                     &definition.module,
                     &definition.imports,
                 )
-                .map(|ty| ty.name)
+                .and_then(|actual| {
+                    Ok(if ty.dataset {Ty::owned_dataset(actual,world.shape(&ty.count,&definition.source,function.span,&definition.module,&definition.imports)?).name}
+                       else {actual.name})
+                })
         })
         .collect::<Result<Vec<_>>>()?;
     let replacements: BTreeMap<_, _> = function
@@ -208,10 +211,13 @@ pub(crate) fn substitute_type(
         }
         let (dataset, view, tile, count) = (ty.dataset, ty.view, ty.tile, ty.count.clone());
         *ty = actual.clone();
-        ty.dataset = dataset;
-        ty.view = view;
-        ty.tile = tile;
-        ty.count = count;
+        if dataset || view || tile {
+            if ty.dataset || ty.view || ty.tile {return source.fail(span,"B232","资源包装的元素需要普通存储类型，不能再次包装资源");}
+            ty.dataset = dataset;
+            ty.view = view;
+            ty.tile = tile;
+            ty.count = count;
+        }
     }
     Ok(())
 }
@@ -237,7 +243,7 @@ fn substitute_reference(
     }
     Ok(())
 }
-fn substitute_expr(
+pub(crate) fn substitute_expr(
     expr: &mut Expr,
     types: &BTreeMap<String, TypeName>,
     values: &BTreeMap<String, u32>,
@@ -342,10 +348,14 @@ fn substitute_block(
             StmtKind::Expr(e) | StmtKind::Seek(_, e) | StmtKind::Return(Some(e)) => {
                 substitute_expr(e, types, values, source)?
             }
-            StmtKind::If(c, a, b) | StmtKind::Match(c, _, a, _, b) => {
+            StmtKind::If(c, a, b) => {
                 substitute_expr(c, types, values, source)?;
                 substitute_block(a, types, values, source)?;
                 substitute_block(b, types, values, source)?;
+            }
+            StmtKind::Match(value, arms) => {
+                substitute_expr(value, types, values, source)?;
+                for arm in arms { substitute_block(&mut arm.body, types, values, source)?; }
             }
             StmtKind::While(c, b) => {
                 substitute_expr(c, types, values, source)?;

@@ -162,12 +162,20 @@ pub struct Field {
     pub span: Span,
 }
 #[derive(Clone, Debug)]
+pub struct VariantDeclaration {
+    pub name: String,
+    pub payload: TypeName,
+    pub discriminant: Expr,
+    pub span: Span,
+}
+#[derive(Clone, Debug)]
 pub struct Record {
     pub name: String,
     pub types: Vec<TypeParameter>,
     pub values: Vec<ValueParameter>,
     pub stride: Option<Shape>,
     pub enumeration: Option<TypeName>,
+    pub variants: Vec<VariantDeclaration>,
     pub fields: Vec<Field>,
     pub span: Span,
 }
@@ -314,13 +322,20 @@ pub struct ParallelDomain {
     pub selection: Option<Expr>,
 }
 #[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub variant: String,
+    pub binding: Option<String>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+#[derive(Clone, Debug)]
 pub enum StmtKind {
     Declare(TypeName, String),
     Let(Option<TypeName>, String, Expr),
     Assign(Expr, String, Expr),
     Expr(Expr),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
-    Match(Expr, Option<String>, Vec<Stmt>, Option<String>, Vec<Stmt>),
+    Match(Expr, Vec<MatchArm>),
     While(Expr, Vec<Stmt>),
     For(String, Expr, Option<Expr>, Vec<Stmt>),
     Parallel(String, ParallelDomain, Vec<Stmt>),

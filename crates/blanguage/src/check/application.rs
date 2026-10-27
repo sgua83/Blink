@@ -17,13 +17,18 @@ pub(super) enum Ownership {
 pub(super) struct Data {
     pub handle: Value,
     pub slots: Option<[usize; 2]>,
-    pub initialization: Option<usize>,
+    pub initialization: Option<Position>,
     pub ty: Ty,
     pub length: Value,
     pub ownership: Ownership,
     pub writable: bool,
     pub count: Option<u32>,
     pub residency: residency::Residency,
+}
+impl Binding {
+    pub(super) fn application_resources(&self)->Vec<&Data> {
+        match self {Self::ApplicationData(data)=>vec![data],Self::DataReference(data)=>vec![&data.data],Self::OwnedValue(value)=>value.resources(),_=>Vec::new()}
+    }
 }
 // 动态数组借用携带实际可能的资源叶；这些来源只用于编译期别名和存活期。
 #[derive(Clone)]
@@ -310,7 +315,7 @@ impl Builder<'_> {
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
         let initialization = if access == Access::Write {
-            Some(self.application_output_scope())
+            Some(Position::Parameter(self.application_output_scope(),0))
         } else {
             None
         };
@@ -334,11 +339,11 @@ impl Builder<'_> {
         &self,
         begin: &Value,
         limit: &Value,
+        selected: Option<&Data>,
     ) -> Vec<(Data, Vec<u32>)> {
         let domains = limit.proof.domains(0);
-        self.env.values().filter_map(|binding| {
-            let Binding::ApplicationData(data) = binding else { return None; };
-            let scope = data.initialization?;
+        self.env.values().flat_map(Binding::application_resources).chain(selected).filter_map(|data| {
+            let scope = data.initialization.as_ref()?;
             if !(domains.contains(&IndexDomain::ApplicationLength(data.handle.identity()))
                 || limit.identity() == data.length.identity()
                 || limit.minimum() == limit.maximum() && limit.minimum() == data.length.minimum() && limit.maximum() == data.length.maximum()) { return None; }
@@ -346,9 +351,7 @@ impl Builder<'_> {
                 let word = offset / 4;
                 let prefix = begin.minimum();
                 (self.application_field_initialized(data, word) || begin.maximum() == prefix &&
-                    self.initialized.iter().filter(|position| matches!(position,
-                        Position::ApplicationElement(owner, ownership::ApplicationIndex::Constant(index), component)
-                        if *owner == scope && *component == word && *index < prefix)).count() as u64 == u64::from(prefix)).then_some(word)
+                    scope.application_prefix_initialized(prefix,word,&self.initialized)).then_some(word)
             }).collect();
             Some((data.clone(), words))
         }).collect()
@@ -369,7 +372,7 @@ impl Builder<'_> {
                         .filter(|word| {
                             flow::initialized_application_word(
                                 &self.initialized,
-                                data.initialization.unwrap(),
+                                data.initialization.as_ref().unwrap(),
                                 index,
                                 *word,
                             )
@@ -380,28 +383,20 @@ impl Builder<'_> {
             .collect()
     }
     pub(super) fn initialize_application_words(&mut self, data: &Data, words: &[u32]) {
-        let scope = data.initialization.unwrap();
+        let scope = data.initialization.as_ref().unwrap();
         self.initialized.extend(
             words
                 .iter()
-                .map(|word| Position::Parameter(scope, *word as usize)),
+                .map(|word| scope.application_word(None,*word)),
         );
     }
     pub(super) fn application_empty_initialization(
         &self,
         mut initialized: BTreeSet<Position>,
     ) -> BTreeSet<Position> {
-        for binding in self.env.values() {
-            if let Binding::ApplicationData(data) = binding
-                && let Some(scope) = data.initialization
-                && data.length.maximum() == 0
-            {
-                initialized.extend(
-                    data.ty
-                        .components
-                        .iter()
-                        .map(|(_, offset)| Position::Parameter(scope, (offset / 4) as usize)),
-                );
+        for data in self.env.values().flat_map(Binding::application_resources) {
+            if let Some(scope)=&data.initialization && data.length.maximum()==0 {
+                initialized.extend(data.ty.components.iter().map(|(_,offset)|scope.application_word(None,offset/4)));
             }
         }
         initialized
@@ -425,7 +420,7 @@ impl Builder<'_> {
                     && a.length.maximum() == b.length.maximum()
         };
         for output in &interface.outputs {
-            let Some(scope) = data[output.binding].initialization else {
+            let Some(scope) = &data[output.binding].initialization else {
                 continue;
             };
             match output.domain {
@@ -434,15 +429,11 @@ impl Builder<'_> {
                         output
                             .words
                             .iter()
-                            .map(|word| Position::Parameter(scope, *word as usize)),
+                            .map(|word| scope.application_word(None,*word)),
                     );
                 }
                 None => self.initialized.extend(output.words.iter().map(|word| {
-                    Position::ApplicationElement(
-                        scope,
-                        ownership::ApplicationIndex::Constant(0),
-                        *word,
-                    )
+                    scope.application_word(Some(ownership::ApplicationIndex::Constant(0)),*word)
                 })),
                 _ => {}
             }
@@ -467,16 +458,9 @@ impl Builder<'_> {
         word: u32,
         initialized: &BTreeSet<Position>,
     ) -> bool {
-        let Some(scope) = data.initialization else {
-            return true;
-        };
-        if initialized.contains(&Position::Parameter(scope, word as usize)) {
-            return true;
-        }
-        let length = data.length.minimum();
-        data.length.maximum() == length && initialized.iter().filter(|position| matches!(position,
-            Position::ApplicationElement(owner, ownership::ApplicationIndex::Constant(index), component)
-            if *owner == scope && *component == word && *index < length)).count() as u64 == u64::from(length)
+        let Some(scope)=&data.initialization else{return true;};
+        scope.application_word(None,word).initialized_by(initialized) ||
+            data.length.minimum()==data.length.maximum() && scope.application_prefix_initialized(data.length.minimum(),word,initialized)
     }
     pub(super) fn require_application_initialized(&self, data: &Data, span: Span) -> Result<()> {
         if !self.application_initialized(data) {
@@ -489,12 +473,12 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn initialize_application(&mut self, data: &Data) {
-        if let Some(scope) = data.initialization {
+        if let Some(scope) = &data.initialization {
             self.initialized.extend(
                 data.ty
                     .components
                     .iter()
-                    .map(|(_, offset)| Position::Parameter(scope, (offset / 4) as usize)),
+                    .map(|(_, offset)| scope.application_word(None,offset/4)),
             );
         }
     }
@@ -1005,7 +989,7 @@ impl Builder<'_> {
         Ok(Some(Data {
             handle,
             slots: None,
-            initialization: None,
+            initialization: if ty.zero_valid(){None}else{Some(Position::Parameter(self.application_output_scope(),0))},
             ty,
             length,
             count,
@@ -1025,7 +1009,7 @@ impl Builder<'_> {
             identity: data.handle.identity(),
             sources: vec![data.handle.identity()],
             initialization: data
-                .initialization
+                .initialization.clone()
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
             index: index.regs[0],
             index_range,
@@ -1529,9 +1513,10 @@ pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
     }
     body.iter().any(|s| match &s.kind {
         StmtKind::Assign(lhs, _, _) => root(lhs) == Some(name),
-        StmtKind::If(_, yes, no) | StmtKind::Match(_, _, yes, _, no) => {
+        StmtKind::If(_, yes, no) => {
             rebound(yes, name) || rebound(no, name)
         }
+        StmtKind::Match(_, arms) => arms.iter().any(|arm| rebound(&arm.body,name)),
         StmtKind::For(_, _, _, body) | StmtKind::While(_, body) => rebound(body, name),
         _ => false,
     })
@@ -1604,13 +1589,9 @@ fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
                     block(a, &bound, names);
                     block(b, &bound, names);
                 }
-                StmtKind::Match(e, yes_name, yes, no_name, no) => {
-                    expr(e, &bound, names);
-                    for (binding, branch) in [(yes_name, yes), (no_name, no)] {
-                        let mut nested = bound.clone();
-                        nested.extend(binding.iter().cloned());
-                        block(branch, &nested, names);
-                    }
+                StmtKind::Match(e, arms) => {
+                    expr(e,&bound,names);
+                    for arm in arms {let mut nested=bound.clone();nested.extend(arm.binding.iter().cloned());block(&arm.body,&nested,names);}
                 }
                 StmtKind::While(e, body) => {
                     expr(e, &bound, names);
@@ -1633,14 +1614,14 @@ fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
 }
 
 crate::module::codec::variants!(Ownership{0=>Owned,1=>Borrowed,2=>Moved});
-crate::module::codec::record!(Data {
-    handle,
-    slots,
-    initialization,
-    ty,
-    length,
-    ownership,
-    writable,
-    count,
-    residency
-});
+// slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
+impl crate::module::codec::Encode for Data {
+    fn encode(&self,w:&mut crate::module::codec::Writer) {
+        self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.writable.encode(w);self.count.encode(w);self.residency.encode(w);
+    }
+}
+impl crate::module::codec::Decode for Data {
+    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
+        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,slots:None,initialization:None})
+    }
+}

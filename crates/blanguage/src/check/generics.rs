@@ -2,13 +2,15 @@
 use super::*;
 use cooperative::Argument;
 pub(crate) struct Actual<'a> {
-    pub ty: Option<&'a Ty>,
+    pub ty: Option<std::borrow::Cow<'a,Ty>>,
     pub count: Option<u32>,
 }
 impl<'a> Actual<'a> {
+    pub fn dataset(ty:&Ty,count:Option<u32>)->Self{Self{ty:Some(std::borrow::Cow::Owned(Ty::owned_dataset(ty.clone(),count))),count}}
+
     pub fn value(ty: &'a Ty) -> Self {
         Self {
-            ty: Some(ty),
+            ty: Some(std::borrow::Cow::Borrowed(ty)),
             count: None,
         }
     }
@@ -44,17 +46,11 @@ impl Builder<'_> {
                 Argument::OwnedValue(v) => Actual::value(&v.value.ty),
                 Argument::Value(v) => Actual::value(&v.ty),
                 Argument::Dataset(v) => Actual {
-                    ty: Some(&self.program.buffers[v.binding].ty),
+                    ty: Some(std::borrow::Cow::Borrowed(&self.program.buffers[v.binding].ty)),
                     count: self.program.buffers[v.binding].count,
                 },
-                Argument::BorrowedData(reference) => Actual {
-                    ty: Some(&reference.ty),
-                    count: reference.count,
-                },
-                Argument::ApplicationData(data) | Argument::ScopedData { data, .. } => Actual {
-                    ty: Some(&data.ty),
-                    count: data.count,
-                },
+                Argument::BorrowedData(reference) => Actual::dataset(&reference.ty,reference.count),
+                Argument::ApplicationData(data) | Argument::ScopedData { data, .. } => Actual::dataset(&data.ty,data.count),
                 Argument::Tile(v) => Actual::value(&v.ty),
                 Argument::Atomic(p) | Argument::Exclusive(p) => Actual::value(p.ty()),
             })
@@ -144,14 +140,18 @@ pub(crate) fn specialize(
             let GenericArgument::Type(ty) = arg else {
                 return source.fail(span, "B231", "此泛型位置需要普通值类型");
             };
-            if ty.dataset || ty.view || ty.tile {
+            if ty.view || ty.tile {
                 return source.fail(span, "B231", "类型实参不能直接是资源包装");
             }
-            let actual = if *ty == TypeName::named("void") {
+            let mut actual = if *ty == TypeName::named("void") {
                 Ty::unit()
             } else {
                 world.ty(ty, source, span, &caller.module, &caller.imports)?
             };
+            if ty.dataset {
+                if actual.owns_resources() || actual.contains_views(){return source.fail(span,"B033","dataset元素需要普通存储");}
+                actual=Ty::owned_dataset(actual,world.shape(&ty.count,source,span,&caller.module,&caller.imports)?);
+            }
             if !world.family_accepts(
                 &parameter.family,
                 &actual,
@@ -177,7 +177,7 @@ pub(crate) fn specialize(
                 if !formal.ty.mentions(&parameter.name) {
                     continue;
                 }
-                let actual = actual.ty.ok_or_else(|| Diagnostic {
+                let actual = actual.ty.as_deref().ok_or_else(|| Diagnostic {
                     source: source.clone(),
                     span,
                     code: "B231",
@@ -232,7 +232,7 @@ pub(crate) fn specialize(
                 {
                     merge_value(&mut inferred, value, source, span)?;
                 }
-                if let Some(actual) = actual.ty {
+                if let Some(actual) = actual.ty.as_deref() {
                     infer_value(
                         world,
                         &formal.ty,

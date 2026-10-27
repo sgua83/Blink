@@ -77,6 +77,7 @@ pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
         array: None,
         enumeration: false,
         result: false,
+        variants: Vec::new(),
         dataset: None,
     };
     let scalar = Ty::scalar(Scalar::U32);

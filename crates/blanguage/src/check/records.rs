@@ -65,7 +65,7 @@ impl Builder<'_> {
         if ty.owns_resources() {
             return self.fail(span, "B224", "拥有资源的记录通过移动构造，不能复制为普通值");
         }
-        if ty.result {
+        if ty.has_variants() {
             return self.fail(span, "B269", "结果通过 Ok／Err 构造，不能直接构造原始存储");
         }
         if ty.enumeration {

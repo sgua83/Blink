@@ -74,7 +74,7 @@ impl Builder<'_> {
     ) {
         let continues = &self.loop_contexts.last().unwrap().continues;
         for (data, words) in outputs {
-            let scope = data.initialization.unwrap();
+            let scope = data.initialization.as_ref().unwrap();
             for word in words {
                 if initial
                     || continues.iter().all(|state| {
@@ -82,7 +82,7 @@ impl Builder<'_> {
                     })
                 {
                     exit.initialized
-                        .insert(Position::Parameter(scope, *word as usize));
+                        .insert(scope.application_word(None,*word));
                 }
             }
         }
@@ -223,7 +223,7 @@ impl Builder<'_> {
                 }
             }
         }
-        if self.loop_contexts.last().unwrap().arrays || self.env.values().any(|binding| matches!(binding, Binding::ApplicationData(data) if data.initialization.is_some())) {
+        if self.loop_contexts.last().unwrap().arrays || self.env.values().any(|binding| binding.application_resources().iter().any(|data|data.initialization.is_some())) {
             let state = self.loop_state();
             self.loop_contexts.last_mut().unwrap().continues.push(state);
         }
@@ -520,10 +520,9 @@ where
 
 pub(super) fn initialized_application_word(
     initialized: &BTreeSet<Position>,
-    scope: usize,
+    scope: &Position,
     index: ownership::ApplicationIndex,
     word: u32,
 ) -> bool {
-    initialized.contains(&Position::Parameter(scope, word as usize))
-        || initialized.contains(&Position::ApplicationElement(scope, index, word))
+    scope.application_word(Some(index),word).initialized_by(initialized)
 }

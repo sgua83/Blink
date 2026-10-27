@@ -17,6 +17,7 @@ impl ApplicationIndex {
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
+    Initialized,
     Local(usize),
     Element(usize, u32),
     Parameter(usize, usize),
@@ -26,7 +27,9 @@ pub(super) enum Position {
 impl Position {
     pub(super) fn initialized_by(&self, initialized: &BTreeSet<Position>) -> bool {
         initialized.contains(self)
+            || self.application_complete().is_some_and(|whole|initialized.contains(&whole))
             || match self {
+                Self::Initialized=>true,
                 Self::Indexed(choices, _) => choices
                     .iter()
                     .all(|choice| choice.initialized_by(initialized)),
@@ -35,6 +38,43 @@ impl Position {
                 }
                 _ => false,
             }
+    }
+    fn application_complete(&self)->Option<Self> {
+        match self {
+            Self::ApplicationElement(scope,_,word)=>Some(Self::Parameter(*scope,*word as usize)),
+            Self::Initialized=>Some(Self::Initialized),
+            Self::Indexed(choices,index)=>Some(Self::Indexed(choices.iter().map(Self::application_complete).collect::<Option<_>>()?,*index)),
+            _=>None,
+        }
+    }
+    pub(super) fn application_word(&self,index:Option<ApplicationIndex>,word:u32)->Self {
+        match self {
+            Self::Initialized=>Self::Initialized,
+            Self::Parameter(scope,_)=>match index {
+                Some(index)=>Self::ApplicationElement(*scope,index,word),
+                None=>Self::Parameter(*scope,word as usize),
+            },
+            Self::Indexed(choices,selected)=>Self::Indexed(choices.iter().map(|choice|choice.application_word(index,word)).collect(),*selected),
+            _=>unreachable!(),
+        }
+    }
+    fn application_element_index(&self)->Option<ApplicationIndex> {
+        match self {
+            Self::ApplicationElement(_,index,_)=>Some(*index),
+            Self::Indexed(choices,_)=>choices.iter().find_map(Self::application_element_index),
+            _=>None,
+        }
+    }
+    pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool {
+        if self.application_word(None,word).initialized_by(initialized) {return true;}
+        if let Self::Indexed(choices,_)=self {
+            if choices.iter().all(|choice|choice.application_prefix_initialized(length,word,initialized)){return true;}
+        }
+        let indices:BTreeSet<_>=initialized.iter().filter_map(|position| {
+            let ApplicationIndex::Constant(index)=position.application_element_index()? else{return None};
+            (index<length && *position==self.application_word(Some(ApplicationIndex::Constant(index)),word)).then_some(index)
+        }).collect();
+        indices.len() as u64==u64::from(length)
     }
     pub(super) fn uses_scope(&self, scope: usize) -> bool {
         match self {
@@ -78,7 +118,7 @@ impl Place {
                     .flat_map(|(scope, index)| {
                         words
                             .iter()
-                            .map(|word| Position::ApplicationElement(*scope, *index, *word))
+                            .map(|word| scope.application_word(Some(*index),*word))
                     })
                     .collect(),
             ),
@@ -332,8 +372,8 @@ impl Builder<'_> {
     ) -> bool {
         position.initialized_by(initialized) || match position {
             Position::Indexed(choices, _) => choices.iter().all(|choice| self.position_initialized_in(choice, initialized, environment)),
-            Position::ApplicationElement(scope, _, word) => environment.values().any(|binding| matches!(binding,
-                Binding::ApplicationData(data) if data.initialization == Some(*scope) && self.application_field_initialized_in(data, *word, initialized))),
+            Position::ApplicationElement(scope, _, word) => environment.values().flat_map(Binding::application_resources).any(|data|
+                data.initialization.as_ref()==Some(&Position::Parameter(*scope,0)) && self.application_field_initialized_in(data,*word,initialized)),
             _ => false,
         }
     }

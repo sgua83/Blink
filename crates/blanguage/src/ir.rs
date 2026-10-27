@@ -25,6 +25,12 @@ pub enum Scalar {
     Bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Variant {
+    pub name: String,
+    pub discriminant: u32,
+    pub ty: Box<Ty>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
     pub name: String,
     pub arguments: Vec<Ty>,
@@ -37,6 +43,7 @@ pub struct Ty {
     pub array: Option<Box<Ty>>,
     pub enumeration: bool,
     pub result: bool,
+    pub variants: Vec<Variant>,
     pub dataset: Option<Box<Ty>>,
 }
 impl Ty {
@@ -78,7 +85,7 @@ impl Ty {
     }
     pub fn owns_resources(&self) -> bool {
         self.dataset.is_some()
-            || (self.result && self.arguments.iter().any(Self::owns_resources))
+            || self.variants.iter().any(|v| v.ty.owns_resources())
             || self.array.as_deref().is_some_and(Self::owns_resources)
             || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
     }
@@ -116,33 +123,36 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            variants: Vec::new(),
             dataset: Some(Box::new(element)),
         }
     }
     pub fn result(ok: Self, error: Self) -> Option<Self> {
-        let align = ok.align.max(error.align).max(4);
+        let name = format!("result<{},{}>", ok.name, error.name);
+        let arguments = vec![ok.clone(), error.clone()];
+        let variants = vec![
+            Variant { name: "Ok".into(), discriminant: 0, ty: Box::new(ok) },
+            Variant { name: "Err".into(), discriminant: 1, ty: Box::new(error) },
+        ];
+        Self::variant(name, arguments, Vec::new(), Scalar::Bool, variants).map(|mut ty| { ty.result = true; ty })
+    }
+    pub fn variant(name: String, arguments: Vec<Self>, values: Vec<u32>, tag: Scalar, variants: Vec<Variant>) -> Option<Self> {
+        let align = variants.iter().map(|v| v.ty.align).max().unwrap_or(4).max(4);
+        let payload = variants.iter().map(|v| v.ty.size).max().unwrap_or(0);
         let offset = align_up(4, align);
-        let size = u32::try_from(
-            (u64::from(offset) + u64::from(ok.size.max(error.size))).div_ceil(u64::from(align))
-                * u64::from(align),
-        )
-        .ok()?;
+        let size = u32::try_from((u64::from(offset) + u64::from(payload)).div_ceil(u64::from(align)) * u64::from(align)).ok()?;
         Some(Self {
-            name: format!("result<{},{}>", ok.name, error.name),
-            arguments: vec![ok, error],
-            values: Vec::new(),
-            size,
-            align,
-            components: std::iter::once((Scalar::Bool, 0))
-                .chain((offset..size).step_by(4).map(|at| (Scalar::U32, at)))
-                .collect(),
-            fields: Vec::new(),
-            view: None,
-            array: None,
-            enumeration: false,
-            result: true,
-            dataset: None,
+            name, arguments, values, size, align,
+            components: std::iter::once((tag, 0)).chain((offset..size).step_by(4).map(|at| (Scalar::U32, at))).collect(),
+            fields: Vec::new(), view: None, array: None, enumeration: false, result: false,
+            variants, dataset: None,
         })
+    }
+    pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
+    pub(crate) fn zero_valid(&self)->bool {
+        if self.dataset.is_some() || self.view.is_some(){return false;}
+        if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
+        self.array.as_deref().is_none_or(Self::zero_valid) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
     }
     pub fn unit() -> Self {
         Self {
@@ -157,6 +167,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            variants: Vec::new(),
             dataset: None,
         }
     }
@@ -179,6 +190,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            variants: Vec::new(),
             dataset: None,
         }
     }
@@ -207,6 +219,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            variants: Vec::new(),
             dataset: None,
         }
     }
@@ -233,6 +246,7 @@ impl Ty {
             array: None,
             enumeration: false,
             result: false,
+            variants: Vec::new(),
             dataset: None,
         }
     }
@@ -267,6 +281,7 @@ impl Ty {
                 array: None,
                 enumeration: false,
                 result: false,
+                variants: Vec::new(),
                 dataset: None,
                 components: vec![
                     (Scalar::Bool, 0),
@@ -303,19 +318,19 @@ impl Ty {
     pub fn is_numeric(&self) -> bool {
         !self.owns_resources()
             && !self.enumeration
-            && !self.result
+            && !self.has_variants()
             && self.view.is_none()
             && self.array.is_none()
             && self.fields.is_empty()
             && self.components.iter().all(|x| x.0 != Scalar::Bool)
     }
     pub fn contains_arrays(&self) -> bool {
-        (self.result && self.arguments.iter().any(|ty| ty.contains_arrays()))
+        self.variants.iter().any(|v| v.ty.contains_arrays())
             || self.array.is_some()
             || self.fields.iter().any(|(_, _, t)| t.contains_arrays())
     }
     pub fn contains_views(&self) -> bool {
-        (self.result && self.arguments.iter().any(|ty| ty.contains_views()))
+        self.variants.iter().any(|v| v.ty.contains_views())
             || self.view.is_some()
             || self.array.as_ref().is_some_and(|t| t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())

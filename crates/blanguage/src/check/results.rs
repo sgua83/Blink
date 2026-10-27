@@ -2,11 +2,30 @@
 use super::*;
 
 impl Builder<'_> {
+    pub(super) fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
+        let Some((parent,member))=name.rsplit_once("::") else{return Ok(None)};
+        let Some(key)=self.world.resolve(parent,&self.definition.module,&self.definition.imports,false) else{return Ok(None)};
+        if self.world.records[&key].0.variants.is_empty(){return Ok(None);}
+        let mut syntax=TypeName::named(parent);
+        if let Some(arguments)=explicit {syntax.arguments=arguments.to_vec();}
+        else if let Some(expected)=expected.filter(|ty|ty.name.split_once('<').map_or(ty.name.as_str(),|(root,_)|root)==key) {
+            syntax.arguments=expected.syntax().arguments;
+        }
+        let ty=self.expected_storage(&syntax,span)?;
+        let Some(index)=ty.variants.iter().position(|variant|variant.name==member) else{return self.fail(span,"B269",format!("{}没有变体分支{member}",ty.name));};
+        Ok(Some((ty,index)))
+    }
     pub(super) fn expr_expected(
         &mut self,
         e: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Value>> {
+        let constructor=match &e.kind {
+            ExprKind::Call(name,_)=>self.variant_constructor_type(name,None,expected,e.span)?,
+            ExprKind::Specialize(name,types,_)=>self.variant_constructor_type(name,Some(types),expected,e.span)?,
+            _=>None,
+        };
+        if constructor.is_some(){let value=self.evaluate_returned(e,expected)?;return self.ordinary_return(value,e.span);}
         match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err") => {
                 let Some(ty) = expected.filter(|ty| ty.result) else {
@@ -29,7 +48,10 @@ impl Builder<'_> {
         args: &[Expr],
         span: Span,
     ) -> Result<Option<Value>> {
-        let payload = ty.arguments[usize::from(!success)].clone();
+        self.value_variant_constructor(ty,usize::from(!success),args,span)
+    }
+    pub(super) fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&[Expr],span:Span)->Result<Option<Value>> {
+        let payload=(*ty.variants[index].ty).clone();
         let value = if payload.name == "void" {
             if !args.is_empty() {
                 return self.fail(span, "B269", "void 结果分支不接受载荷");
@@ -45,7 +67,7 @@ impl Builder<'_> {
             self.require_same(&payload, &value.ty, span)?;
             Some(value)
         };
-        Ok(Some(self.result_value(ty, success, value)))
+        Ok(Some(self.variant_value(ty,index,value)))
     }
     fn result_word(&mut self, value: &Value, index: usize, scalar: Scalar) -> Value {
         let source = value.ty.components[index].0;
@@ -84,8 +106,11 @@ impl Builder<'_> {
         }
     }
     pub(super) fn result_value(&mut self, ty: Ty, success: bool, payload: Option<Value>) -> Value {
+        self.variant_value(ty,usize::from(!success),payload)
+    }
+    pub(super) fn variant_value(&mut self, ty: Ty, index: usize, payload: Option<Value>) -> Value {
         let mut value = self.constant_value(ty.clone(), vec![0; ty.components.len()]);
-        let tag = self.constant(Scalar::Bool, u32::from(!success));
+        let tag = self.constant(ty.components[0].0,ty.variants[index].discriminant);
         value.regs[0] = tag.regs[0];
         value
             .proof
@@ -114,13 +139,16 @@ impl Builder<'_> {
             value.uniform = payload.uniform;
         }
         if let Some(bits) = &mut value.constant {
-            bits[0] = u32::from(!success);
+            bits[0] = ty.variants[index].discriminant;
         }
         value.literal = false;
         value
     }
     pub(super) fn result_payload(&mut self, value: &Value, success: bool) -> Option<Value> {
-        let ty = value.ty.arguments[usize::from(!success)].clone();
+        self.variant_payload(value,usize::from(!success))
+    }
+    pub(super) fn variant_payload(&mut self, value: &Value, index: usize) -> Option<Value> {
+        let ty = (*value.ty.variants[index].ty).clone();
         if ty.name == "void" {
             return None;
         }
@@ -164,79 +192,42 @@ impl Builder<'_> {
         })
     }
     pub(super) fn result_condition(&mut self, value: &Value, span: Span) -> Result<Value> {
-        let tag = self.result_word(value, 0, Scalar::Bool);
-        let zero = self.constant(Scalar::Bool, 0);
-        self.binary("==", tag, zero, span)
+        self.variant_condition(value,0,span)
     }
-    fn result_arm(
-        &mut self,
-        value: &Value,
-        success: bool,
-        binding: &Option<String>,
-        body: &[Stmt],
-        span: Span,
-    ) -> Result<()> {
-        let payload = self.result_payload(value, success);
-        if let Some(name) = binding.as_ref().filter(|name| name.as_str() != "_") {
-            let payload = payload.unwrap();
-            self.bind_local_value(name, payload, span)?;
-            self.block(body)?;
-            self.env.remove(name);
-            Ok(())
-        } else {
-            self.block(body)
-        }
+    pub(super) fn variant_condition(&mut self,value:&Value,index:usize,span:Span)->Result<Value> {
+        let scalar=value.ty.components[0].0;
+        let tag=self.result_word(value,0,scalar);
+        let expected=self.constant(scalar,value.ty.variants[index].discriminant);
+        self.binary("==",tag,expected,span)
     }
-    pub(super) fn result_match(
-        &mut self,
-        expr: &Expr,
-        yes_name: &Option<String>,
-        yes: &[Stmt],
-        no_name: &Option<String>,
-        no: &[Stmt],
-        span: Span,
-    ) -> Result<()> {
-        self.match_returned(expr, yes_name, yes, no_name, no, span)
-    }
-    pub(super) fn check_result_patterns(
-        &self,
-        ty: &Ty,
-        yes_name: &Option<String>,
-        no_name: &Option<String>,
-        span: Span,
-    ) -> Result<()> {
-        if !ty.result {
-            return self.fail(span, "B269", "match 需要 result<T,E> 值");
-        }
-        for (success, binding) in [(true, yes_name), (false, no_name)] {
-            let unit = ty.arguments[usize::from(!success)].name == "void";
-            if binding.is_none() && !unit {
-                return self.fail(span, "B269", "有载荷分支需要名称或 _ 模式");
+    pub(super) fn check_variant_patterns<'b>(
+        &self, ty: &Ty, arms: &'b [MatchArm], span: Span,
+    ) -> Result<Vec<&'b MatchArm>> {
+        if !ty.has_variants() { return self.fail(span, "B269", "match需要带载荷变体或result值"); }
+        let mut selected = vec![None; ty.variants.len()];
+        for arm in arms {
+            let (owner, name) = arm.variant.rsplit_once("::").map_or((None, arm.variant.as_str()), |(owner, name)| (Some(owner), name));
+            if let Some(owner) = owner {
+                let mut syntax = ty.syntax(); syntax.name = owner.into(); syntax.canonical = false;
+                let expected = self.expected_storage(&syntax, arm.span)?;
+                self.require_same(ty, &expected, arm.span)?;
             }
-            if unit && binding.as_ref().is_some_and(|name| name != "_") {
-                return self.fail(span, "B269", "void 分支没有可绑定的载荷");
-            }
+            let Some(index) = ty.variants.iter().position(|v| v.name == name) else { return self.fail(arm.span,"B269",format!("{}没有变体分支{name}",ty.name)); };
+            if selected[index].replace(arm).is_some() { return self.fail(arm.span,"B269","同一变体分支不能重复"); }
+            let unit = ty.variants[index].ty.name == "void";
+            if arm.binding.is_none() && !unit { return self.fail(arm.span,"B269","有载荷分支需要名称或_模式"); }
+            if unit && arm.binding.as_ref().is_some_and(|name| name!="_") { return self.fail(arm.span,"B269","无载荷分支没有可绑定的数据"); }
         }
-        Ok(())
+        if selected.iter().any(Option::is_none) { return self.fail(span,"B269","match必须处理声明的全部变体分支"); }
+        Ok(selected.into_iter().map(Option::unwrap).collect())
     }
-    pub(super) fn match_value(
-        &mut self,
-        value: Value,
-        yes_name: &Option<String>,
-        yes: &[Stmt],
-        no_name: &Option<String>,
-        no: &[Stmt],
-        span: Span,
-    ) -> Result<()> {
-        self.check_result_patterns(&value.ty, yes_name, no_name, span)?;
-        let condition = self.result_condition(&value, span)?;
-        self.conditional_blocks(
-            condition,
-            |b| b.result_arm(&value, true, yes_name, yes, span),
-            |b| b.result_arm(&value, false, no_name, no, span),
-        )
+    pub(super) fn value_variant_arm(&mut self, value: &Value, index: usize, arm: &MatchArm) -> Result<()> {
+        let payload = self.variant_payload(value,index);
+        if let Some(name) = arm.binding.as_ref().filter(|name| name.as_str()!="_") {
+            self.bind_local_value(name,payload.unwrap(),arm.span)?;
+            self.block(&arm.body)?; self.env.remove(name); Ok(())
+        } else { self.block(&arm.body) }
     }
-
     pub(super) fn explicit_result(
         &mut self,
         name: &str,

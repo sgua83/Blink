@@ -88,6 +88,7 @@ impl Builder<'_> {
         args: &[Expr],
         span: Span,
     ) -> Result<Option<Returned>> {
+        if ty.has_variants() {return self.fail(span,"B269","带载荷变体通过声明的分支构造");}
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B224", "拥有资源的记录由普通CPU应用函数组织");
         }
@@ -431,6 +432,7 @@ impl Builder<'_> {
                 self.fail(expr.span, "B141", "dataset只公开只读length")
             };
         }
+        if self.owned_element_type(base).is_some_and(|ty|ty.has_variants()) {return self.fail(expr.span,"B269","变体载荷通过match使用");}
         if !self.temporary_projection(base)
             && (self.is_place(expr)
                 || matches!(&base.kind,ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Data(_)|Binding::Tile(_)|Binding::Texture(_)))))
@@ -497,7 +499,7 @@ impl Builder<'_> {
                 if b.ownership == Ownership::Moved {
                     return self.drop_returned(Returned::OwnedValue(a), span);
                 }
-                if !a.value.ty.result {
+                if !a.value.ty.has_variants() {
                     for i in 0..a.value.ty.aggregate_len() {
                         if a.value.ty.aggregate_part(i).1.owns_resources() {
                             let x = self.unpack_record(&a, i);
@@ -693,7 +695,7 @@ impl Builder<'_> {
             }
             match self.unpack_record(value, index) {
                 Returned::Dataset(data) => leaves.push(data),
-                Returned::OwnedValue(child) if !child.value.ty.result => {
+                Returned::OwnedValue(child) if !child.value.ty.has_variants() => {
                     self.owned_resource_leaves(&child, leaves)
                 }
                 _ => {}
@@ -749,7 +751,16 @@ impl Builder<'_> {
         for data in &candidates {
             self.application_available(data, expr.span)?;
         }
+        fn initialization(position:&Position,candidates:&[Data])->Position {
+            match position {
+                Position::Local(slot)=>candidates.iter().find(|data|data.slots.unwrap()[0]==*slot).unwrap().initialization.clone().unwrap_or(Position::Initialized),
+                Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|initialization(choice,candidates)).collect(),*index),
+                _=>unreachable!(),
+            }
+        }
+        let root=initialization(&place.owned_positions().unwrap()[0],&candidates);
         let mut data = candidates[0].clone();
+        data.initialization=Some(root);
         if candidates.len() == 1 {
             return Ok(Some(application::DataReference::direct(
                 self.refresh_application_data(data),

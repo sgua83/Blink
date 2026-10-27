@@ -115,6 +115,7 @@ record!(Ty {
     array,
     enumeration,
     result,
+    variants,
     dataset
 });
 record!(Buffer {
@@ -408,3 +409,5 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
         )
         .replace("@FUNCTIONS@", &functions))
 }
+
+record!(Variant { name, discriminant, ty });

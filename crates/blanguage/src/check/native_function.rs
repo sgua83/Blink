@@ -10,7 +10,7 @@ pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
         && ty.fields.is_empty()
         && ty.view.is_none()
         && ty.dataset.is_none()
-        && !ty.result
+        && !ty.has_variants()
         && !ty.enumeration
         && ty.components.len() > 1
     {
@@ -154,10 +154,10 @@ fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
             value.slots = None;
             for (index, payload) in value.payloads.iter_mut().enumerate() {
                 if let Some(payload) = payload {
-                    let (offset, ty) = if value.value.ty.result {
+                    let (offset, ty) = if value.value.ty.has_variants() {
                         (
                             ir::align_up(4, value.value.ty.align),
-                            &value.value.ty.arguments[index],
+                            value.value.ty.variants[index].ty.as_ref(),
                         )
                     } else {
                         value.value.ty.aggregate_part(index)
@@ -388,6 +388,8 @@ impl Builder<'_> {
                     if p.access == Access::Value && ty.owns_resources() =>
                 {
                     self.require_same(&ty, &value.value.ty, span)?;
+                    for data in value.resources(){self.require_application_initialized(data,span)?;}
+                    value.resources_mut(&mut |data|data.initialization=None);
                     residency::owned_argument(&mut locations, index, &mut value);
                     append_actual(&mut actual, &value.value);
                     arguments.push(CallArgument::Value {

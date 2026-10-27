@@ -70,7 +70,7 @@ fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, Scalar, u32)>) 
         }
     } else {
         for (i, &(s, offset)) in ty.components.iter().enumerate() {
-            let n = if ty.result {
+            let n = if ty.has_variants() {
                 if i == 0 {
                     format!("{name}_tag")
                 } else {
