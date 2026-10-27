@@ -35,7 +35,13 @@ fn scalar(s: Scalar) -> (&'static str, &'static str) {
 fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, Scalar, u32)>) -> Result<()> {
     if !ty.fields.is_empty() {
         for (n, offset, t) in &ty.fields {
-            fields(t, &format!("{name}_{}", identifier(n)?), base + offset, out)?;
+            let field = identifier(n)?.replace('z', "z7a").replace('_', "z5f");
+            fields(
+                t,
+                &format!("{name}_f{}_{field}", n.len()),
+                base + offset,
+                out,
+            )?;
         }
     } else if let Some(t) = &ty.array {
         for i in 0..ty.values[0] {
