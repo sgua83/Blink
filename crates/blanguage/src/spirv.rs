@@ -580,23 +580,25 @@ impl Emitter<'_> {
                     op: operation,
                     a,
                 } => {
-                    let s = self.stage.registers[*a];
-                    if *operation == UnaryOp::UnsignedNegate {
-                        let zero = self.constant(s, 0);
-                        self.emit(
-                            130,
-                            &[self.ty(*dst), self.value(*dst), zero, self.value(*a)],
-                        );
-                    } else {
-                        let opcode = match operation {
-                            UnaryOp::FloatNegate => 127,
-                            UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => 126,
-                            UnaryOp::LogicalNot => 168,
-                            UnaryOp::BitNot => 200,
-                            UnaryOp::Bitcast => 124,
-                        };
-                        self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*a)]);
-                    }
+                    let opcode = match operation {
+                        UnaryOp::UnsignedNegate => {
+                            let zero = self.constant(self.stage.registers[*a], 0);
+                            self.emit(
+                                130,
+                                &[self.ty(*dst), self.value(*dst), zero, self.value(*a)],
+                            );
+                            continue;
+                        }
+                        UnaryOp::FloatNegate => {
+                            self.sign_bits(*dst, *a, 198, 0x8000_0000);
+                            continue;
+                        }
+                        UnaryOp::SignedNegate => 126,
+                        UnaryOp::LogicalNot => 168,
+                        UnaryOp::BitNot => 200,
+                        UnaryOp::Bitcast => 124,
+                    };
+                    self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*a)]);
                 }
                 Inst::IntegerDivide {
                     result,
@@ -770,7 +772,10 @@ impl Emitter<'_> {
                     args,
                 } => {
                     let opcode = match operation {
-                        MathOp::Abs => 4,
+                        MathOp::Abs => {
+                            self.sign_bits(*dst, args[0], 199, 0x7fff_ffff);
+                            continue;
+                        }
                         MathOp::Floor => 8,
                         MathOp::Sin => 13,
                         MathOp::Cos => 14,
@@ -866,6 +871,13 @@ impl Emitter<'_> {
             }
         }
         Ok(true)
+    }
+    fn sign_bits(&mut self, dst: Reg, src: Reg, opcode: u16, mask: u32) {
+        let word = self.to_word(src);
+        let mask = self.constant(Scalar::U32, mask);
+        let result = self.id();
+        self.emit(opcode, &[self.types[&Scalar::U32], result, word, mask]);
+        self.from_word(dst, result);
     }
     fn from_word(&mut self, dst: Reg, raw: u32) {
         match self.stage.registers[dst] {

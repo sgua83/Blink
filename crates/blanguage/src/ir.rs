@@ -1189,11 +1189,7 @@ impl Stage {
     pub fn requires_float32_preserve(&self) -> bool {
         fn arithmetic(code: &[Inst], registers: &[Scalar]) -> bool {
             code.iter().any(|inst| match inst {
-                Inst::Unary {
-                    op: UnaryOp::FloatNegate,
-                    ..
-                }
-                | Inst::Math { .. } => true,
+                Inst::Math { op, .. } => *op != MathOp::Abs,
                 Inst::Binary { a, .. } => registers[*a] == Scalar::F32,
                 Inst::Cast { dst, src } => {
                     registers[*dst] == Scalar::F32 || registers[*src] == Scalar::F32
