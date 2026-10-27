@@ -1464,6 +1464,7 @@ struct Builder<'a> {
     domain: usize,
     element_domains: BTreeSet<usize>,
     env: BTreeMap<String, Binding>,
+    path: bounds::Clause,
     registers: Vec<Scalar>,
     locals: Vec<Scalar>,
     code: Vec<Inst>,
@@ -1512,6 +1513,7 @@ impl<'a> Builder<'a> {
             domain,
             element_domains: BTreeSet::from([domain]),
             env: BTreeMap::new(),
+            path: bounds::Clause::default(),
             registers: Vec::new(),
             locals: Vec::new(),
             code: Vec::new(),
@@ -2793,6 +2795,7 @@ impl<'a> Builder<'a> {
             return if truth { yes_body(self) } else { no_body(self) };
         }
         let environment = self.env.clone();
+        let path = self.path.clone();
         let previous = std::mem::take(&mut self.code);
         let init = self.application_initialization_state();
         let control = self.control_uniform;
@@ -2802,11 +2805,13 @@ impl<'a> Builder<'a> {
         let mut yes = std::mem::take(&mut self.code);
         let yes_init = self.application_initialization_state();
         let yes_env = self.env.clone();
+        let yes_path = self.path.clone();
         let yes_flow = self.flow;
         let yes_reachable = yes_flow.continues();
         self.flow = Flow::NEXT;
         self.initialized = init;
         self.env = environment.clone();
+        self.path = path;
         self.refine_bounds(&c, false);
         no_body(self)?;
         let mut no = std::mem::take(&mut self.code);
@@ -2814,19 +2819,24 @@ impl<'a> Builder<'a> {
         let no_flow = self.flow;
         let no_reachable = no_flow.continues();
         let no_env = self.env.clone();
+        let no_path = self.path.clone();
         if yes_reachable && !no_reachable {
+            self.path = yes_path;
             self.env = yes_env;
             self.initialized = yes_init;
         } else if !yes_reachable && no_reachable {
+            self.path = no_path;
             self.env = no_env;
             self.initialized = no_init;
         } else if yes_reachable && no_reachable {
+            self.path = bounds::Clause::either(&yes_path, &no_path);
             yes.extend(self.application_join_releases(&yes_env, &no_env));
             no.extend(self.application_join_releases(&no_env, &yes_env));
             self.env = yes_env;
             self.join_initialization(&c, yes_init, no_init);
             self.join_environment(&no_env, Some(&c));
         } else {
+            self.path = bounds::Clause::impossible();
             self.env = environment;
             self.join_initialization(&c, yes_init, no_init);
         }
@@ -2861,6 +2871,7 @@ impl<'a> Builder<'a> {
         self.require_bool(&c, condition.span)?;
         let mut condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
+            self.refine_bounds(&c, false);
             self.code = outer;
             self.code.extend(condition_code);
             return Ok(());
@@ -2868,12 +2879,14 @@ impl<'a> Builder<'a> {
         self.enter_loop(&environment);
         self.configure_initial_loop(initial, None, None);
         let condition_env = self.env.clone();
+        let condition_path = self.path.clone();
         let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {
             None
         } else {
             self.refine_bounds(&c, false);
             let exit = self.loop_state();
             self.env = condition_env;
+            self.path = condition_path;
             Some(exit)
         };
         let control = self.control_uniform;
@@ -3114,9 +3127,11 @@ impl<'a> Builder<'a> {
             _ => ownership::ApplicationIndex::of(&cursor),
         };
         let condition_env = self.env.clone();
+        let condition_path = self.path.clone();
         self.refine_bounds(&test, false);
         let mut natural = self.loop_state();
         self.env = condition_env;
+        self.path = condition_path;
         self.refine_bounds(&test, true);
         let control = self.control_uniform;
         self.control_uniform &= begin.uniform && limit.uniform;

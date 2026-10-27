@@ -679,7 +679,11 @@ impl Proof {
         }
         facts
     }
-    pub(super) fn returning(value: &Value, environment: &BTreeMap<String, Binding>) -> Self {
+    pub(super) fn returning(
+        value: &Value,
+        environment: &BTreeMap<String, Binding>,
+        path: &Clause,
+    ) -> Self {
         let mut proof = value.proof.clone();
         proof.conditions = (0..value.regs.len())
             .map(|i| Self::value_condition(value, i))
@@ -692,7 +696,28 @@ impl Proof {
                 }
             }
         }
+        proof.under_path(&value.ty, path);
         proof
+    }
+    pub(super) fn under_path(&mut self, ty: &Ty, path: &Clause) {
+        self.conditions
+            .resize_with(self.conditions.len().max(ty.components.len()), || None);
+        for (component, (scalar, _)) in ty.components.iter().enumerate() {
+            if *scalar == Scalar::Bool && self.conditions[component].is_none() {
+                let mut condition = Condition::default();
+                if let Some(identity) = self.known_identity(component) {
+                    for (truth, case) in condition.cases.iter_mut().enumerate() {
+                        *case = Clause::facts([Fact::Boolean(identity, truth != 0)].into());
+                    }
+                }
+                self.conditions[component] = Some(Box::new(condition));
+            }
+            if let Some(condition) = &mut self.conditions[component] {
+                for case in &mut condition.cases {
+                    *case = Clause::both(case, path);
+                }
+            }
+        }
     }
     pub fn append(&mut self, value: &Value) {
         self.conditions
@@ -990,7 +1015,12 @@ impl Default for Condition {
     }
 }
 #[derive(Clone)]
-struct Clause(Arc<ClauseNode>);
+pub(super) struct Clause(Arc<ClauseNode>);
+impl Default for Clause {
+    fn default() -> Self {
+        Self::facts(Facts::new())
+    }
+}
 enum ClauseNode {
     Impossible,
     Facts(Facts),
@@ -998,7 +1028,7 @@ enum ClauseNode {
     Either(Clause, Clause),
 }
 impl Clause {
-    fn impossible() -> Self {
+    pub(super) fn impossible() -> Self {
         Self(Arc::new(ClauseNode::Impossible))
     }
     fn facts(facts: Facts) -> Self {
@@ -1008,7 +1038,7 @@ impl Clause {
             Self(Arc::new(ClauseNode::Facts(facts)))
         }
     }
-    fn both(a: &Self, b: &Self) -> Self {
+    pub(super) fn both(a: &Self, b: &Self) -> Self {
         match (&*a.0, &*b.0) {
             (ClauseNode::Impossible, _) | (_, ClauseNode::Impossible) => Self::impossible(),
             (ClauseNode::Facts(facts), _) if facts.is_empty() => b.clone(),
@@ -1020,7 +1050,7 @@ impl Clause {
             _ => Self(Arc::new(ClauseNode::Both(a.clone(), b.clone()))),
         }
     }
-    fn either(a: &Self, b: &Self) -> Self {
+    pub(super) fn either(a: &Self, b: &Self) -> Self {
         match (&*a.0, &*b.0) {
             (ClauseNode::Impossible, _) => b.clone(),
             (_, ClauseNode::Impossible) => a.clone(),
@@ -1912,9 +1942,8 @@ impl Builder<'_> {
     }
     pub(super) fn refine_bounds(&mut self, value: &Value, truth: bool) {
         let condition = Condition::of(value);
-        let Some(facts) =
-            condition.cases[usize::from(truth)].required_in(&environment_facts(&self.env))
-        else {
+        self.path = Clause::both(&self.path, &condition.cases[usize::from(truth)]);
+        let Some(facts) = self.path.required_in(&environment_facts(&self.env)) else {
             return;
         };
         let roots = equality_roots(&facts);

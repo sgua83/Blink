@@ -49,6 +49,7 @@ impl Flow {
 #[derive(Clone)]
 pub(super) struct LoopState {
     env: BTreeMap<String, Binding>,
+    path: bounds::Clause,
     initialized: BTreeSet<Position>,
     control: bool,
     cursor: Option<Value>,
@@ -286,6 +287,7 @@ impl Builder<'_> {
     pub(super) fn loop_state(&self) -> LoopState {
         let names = &self.loop_contexts.last().unwrap().names;
         LoopState {
+            path: self.path.clone(),
             env: self
                 .env
                 .iter()
@@ -308,6 +310,7 @@ impl Builder<'_> {
     }
     fn restore_initial_edge(&mut self, state: LoopState) {
         self.env = state.env;
+        self.path = state.path;
         self.initialized = state.initialized;
         self.control_uniform = state.control;
     }
@@ -369,11 +372,14 @@ impl Builder<'_> {
         let mut exits = context.exits.into_iter();
         let Some(first) = exits.next() else {
             self.env.retain(|name, _| context.names.contains(name));
+            self.path = bounds::Clause::impossible();
             return false;
         };
         self.env = first.env;
+        self.path = first.path;
         self.initialized = first.initialized;
         for exit in exits {
+            self.path = bounds::Clause::either(&self.path, &exit.path);
             self.initialized =
                 ownership::intersect_initialized(&self.initialized, &exit.initialized);
             self.join_environment(&exit.env, None);

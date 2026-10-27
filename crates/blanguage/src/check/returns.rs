@@ -68,6 +68,7 @@ impl Returned {
     }
 }
 struct ReturnExit {
+    path: bounds::Clause,
     value: Option<Returned>,
     borrowed: Result<BTreeMap<String, OwnedBinding>>,
 }
@@ -228,7 +229,10 @@ impl Builder<'_> {
     pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
         if let Some(Returned::Value(value)) = &mut value {
             value.uniform &= self.control_uniform;
-            value.proof = bounds::Proof::returning(value, &self.env);
+            value.proof = bounds::Proof::returning(value, &self.env, &self.path);
+        }
+        if let Some(Returned::OwnedValue(value)) = &mut value {
+            value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
         self.release_application_data(None);
         let borrowed = (|| -> Result<BTreeMap<String, OwnedBinding>> {
@@ -266,6 +270,7 @@ impl Builder<'_> {
                     }
                     let mut owner = self.borrow_owned(place);
                     owner.uniform &= self.control_uniform;
+                    owner.proof.under_path(owner.place.ty(), &self.path);
                     borrowed.insert(param.name.clone(), owner);
                 }
             }
@@ -280,7 +285,11 @@ impl Builder<'_> {
             }
             self.code.push(Inst::Exit);
         }
-        context.exits.push(ReturnExit { value, borrowed });
+        context.exits.push(ReturnExit {
+            path: self.path.clone(),
+            value,
+            borrowed,
+        });
         self.flow = Flow::RETURN;
         Ok(())
     }
@@ -403,11 +412,14 @@ impl Builder<'_> {
         let mut exits = context.exits.into_iter();
         let Some(first) = exits.next() else {
             self.flow = Flow::STOP;
+            self.path = bounds::Clause::impossible();
             return Ok(None);
         };
+        self.path = first.path;
         let mut result = first.value;
         let mut borrowed = first.borrowed?;
         for exit in exits {
+            self.path = bounds::Clause::either(&self.path, &exit.path);
             if let (Some(value), Some(other)) = (&mut result, exit.value) {
                 value.join(other);
             }

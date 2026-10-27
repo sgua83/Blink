@@ -39,6 +39,7 @@ impl Builder<'_> {
         self.require_bool(&c, condition.span)?;
         let outer = std::mem::take(&mut self.code);
         let environment = self.env.clone();
+        let path = self.path.clone();
         let initialized = self.application_initialization_state();
         let effects = (
             self.reads.clone(),
@@ -65,6 +66,7 @@ impl Builder<'_> {
         }
         let yes_flow = self.flow;
         let yes_env = self.env.clone();
+        let yes_path = self.path.clone();
         let yes_effects = (
             std::mem::replace(&mut self.reads, effects.0),
             std::mem::replace(&mut self.writes, effects.1),
@@ -74,6 +76,7 @@ impl Builder<'_> {
         let yes_init = self.application_empty_initialization(yes_init);
         let mut yes = std::mem::take(&mut self.code);
         self.restore_expression_environment(environment, &yes_modified);
+        self.path = path;
         self.refine_bounds(&c, false);
         self.flow = Flow::NEXT;
         let b_result = self.evaluate_returned(no, expected)?;
@@ -86,6 +89,7 @@ impl Builder<'_> {
             self.require_same(&a.ty, &b.ty, span)?;
         }
         let no_flow = self.flow;
+        let no_path = self.path.clone();
         let no_init = self.take_application_initialization_state();
         let yes_initial = yes_init.clone();
         let no_initial = no_init.clone();
@@ -112,6 +116,11 @@ impl Builder<'_> {
             self.cross_access.extend(yes_effects.2);
         }
         if let Some(bits) = &c.constant {
+            self.path = if bits[0] != 0 {
+                yes_path.clone()
+            } else {
+                no_path.clone()
+            };
             if let Some(context) = &mut self.return_context {
                 context.select_exits(first_exit, yes_exit, bits[0] != 0);
             }
@@ -122,6 +131,12 @@ impl Builder<'_> {
                 no_initial
             };
         } else {
+            self.path = match (yes_flow.continues(), no_flow.continues()) {
+                (true, true) => bounds::Clause::either(&yes_path, &no_path),
+                (true, false) => yes_path,
+                (false, true) => no_path,
+                (false, false) => bounds::Clause::impossible(),
+            };
             if yes_flow.continues() && !no_flow.continues() {
                 self.initialized = yes_initial;
             } else if !yes_flow.continues() && no_flow.continues() {
