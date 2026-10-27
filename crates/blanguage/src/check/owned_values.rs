@@ -63,16 +63,16 @@ impl OwnedValue {
             p.is_none() || matches!(p.as_deref(),Some(Returned::OwnedValue(v)) if v.incomplete()) || matches!(p.as_deref(),Some(Returned::Dataset(d)) if d.ownership==Ownership::Moved)
         })
     }
-    pub(super) fn loop_compatible(&self, other: &Self) -> bool {
+    pub(super) fn loop_compatible(&self, other: &Self, inputs: &residency::Inputs) -> bool {
         self.ownership == other.ownership
             && self.payloads.iter().zip(&other.payloads).all(|(a, b)| {
                 match (a.as_deref(), b.as_deref()) {
                     (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
                         a.ownership == b.ownership
-                            && (a.ownership == Ownership::Moved || a.residency == b.residency)
+                            && (a.ownership == Ownership::Moved || inputs.same(&a.residency, &b.residency))
                     }
                     (Some(Returned::OwnedValue(a)), Some(Returned::OwnedValue(b))) => {
-                        a.loop_compatible(b)
+                        a.loop_compatible(b, inputs)
                     }
                     (None, Some(_)) => false,
                     _ => true,
@@ -173,7 +173,7 @@ impl OwnedValue {
             match item.as_mut() {
                 Returned::Dataset(d) => {
                     d.ownership = Ownership::Moved;
-                    d.residency = None;
+                    d.residency = residency::Residency::default();
                 }
                 Returned::OwnedValue(v) => v.mark_moved(),
                 _ => {}
@@ -339,7 +339,7 @@ impl Builder<'_> {
                 length,
                 ty: element.clone(),
                 count,
-                residency: Some(Target::Cpu),
+                residency: residency::Residency::cpu(),
                 ownership: if available {
                     Ownership::Owned
                 } else {

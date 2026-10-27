@@ -270,7 +270,7 @@ impl Builder<'_> {
             match metadata_mut(root, &p.path) {
                 Returned::Dataset(d) => {
                     d.ownership = Ownership::Moved;
-                    d.residency = None;
+                    d.residency = residency::Residency::default();
                 }
                 Returned::OwnedValue(v) => v.mark_moved(),
                 _ => unreachable!(),

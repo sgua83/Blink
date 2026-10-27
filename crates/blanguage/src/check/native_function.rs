@@ -22,69 +22,6 @@ pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
         vec![ty.clone()]
     }
 }
-pub(super) enum Parameter {
-    Value,
-    Owned(Returned),
-}
-fn resource_states(value: &Returned, states: &mut String) {
-    match value {
-        Returned::Dataset(data) => states.push(match data.residency {
-            Some(Target::Cpu) => 'c',
-            Some(Target::Gpu) => 'g',
-            _ => 'u',
-        }),
-        Returned::OwnedValue(value) => {
-            states.push('(');
-            for item in &value.payloads {
-                if let Some(item) = item {
-                    resource_states(item, states);
-                } else {
-                    states.push('-');
-                }
-            }
-            states.push(')');
-        }
-        _ => {}
-    }
-}
-fn parameter_symbol(name: &str, parameters: &[Parameter]) -> String {
-    let mut symbol = name.to_owned();
-    for (i, parameter) in parameters.iter().enumerate() {
-        match parameter {
-            Parameter::Owned(value) => {
-                symbol.push_str(&format!("#s{i}"));
-                resource_states(value, &mut symbol);
-            }
-            _ => {}
-        }
-    }
-    symbol
-}
-pub(super) fn parameter_resources(value: &mut owned_values::OwnedValue, origin: &Returned) {
-    let Returned::OwnedValue(origin) = origin else {
-        unreachable!()
-    };
-    fn copy(value: &mut Returned, origin: &Returned) {
-        match (value, origin) {
-            (Returned::Dataset(value), Returned::Dataset(origin)) => {
-                value.residency = origin.residency
-            }
-            (Returned::OwnedValue(value), Returned::OwnedValue(origin)) => {
-                for (value, origin) in value.payloads.iter_mut().zip(&origin.payloads) {
-                    if let (Some(value), Some(origin)) = (value, origin) {
-                        copy(value, origin);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    for (value, origin) in value.payloads.iter_mut().zip(&origin.payloads) {
-        if let (Some(value), Some(origin)) = (value, origin) {
-            copy(value, origin);
-        }
-    }
-}
 #[derive(Default)]
 pub(super) struct Module {
     units: BTreeMap<String, Option<Unit>>,
@@ -100,6 +37,7 @@ pub(crate) struct Contract {
     target: Target,
     frame: bool,
     domain: Option<crate::module::domain::Interface>,
+    residency: residency::Requirements,
 }
 crate::module::codec::record!(Contract {
     parameters,
@@ -110,19 +48,20 @@ crate::module::codec::record!(Contract {
     requires,
     target,
     frame,
-    domain
+    domain,
+    residency
 });
 struct Unit {
     function: Option<FunctionBody>,
     contract: Contract,
     module: String,
     public: bool,
+    residency_calls: Vec<residency::Call>,
 }
 fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
     mut context: application::Context,
-    interface: &[Parameter],
 ) -> Result<application::Context> {
     if context.functions.units.contains_key(&instance.name) {
         return Ok(context);
@@ -148,6 +87,7 @@ fn declaration(
                 contract,
                 module: instance.definition.module.clone(),
                 public: instance.definition.public,
+                residency_calls: Vec::new(),
             }),
         );
         return Ok(context);
@@ -158,7 +98,8 @@ fn declaration(
     if instance.definition.function.target == Target::Compute {
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
-    let checked = checked_function(world, &instance, Some(context), interface)?;
+    let checked = checked_function(world, &instance, Some(context))?;
+    let residency::Inputs { required, calls } = checked.residency;
     let mut context = checked.application.unwrap();
     context.frame = frame;
     let mut function = checked.body;
@@ -175,6 +116,7 @@ fn declaration(
         target: instance.definition.function.target,
         frame: false,
         domain: None,
+        residency: required,
     };
     crate::optimize::value_code(&mut function.body);
     context.functions.units.insert(
@@ -184,9 +126,57 @@ fn declaration(
             contract,
             module: instance.definition.module.clone(),
             public: instance.definition.public,
+            residency_calls: calls,
         }),
     );
     Ok(context)
+}
+// 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
+fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
+    match value {
+        Returned::Unit => {}
+        Returned::Value(value) => value.regs = registers,
+        Returned::Dataset(data) => {
+            data.handle.regs = vec![registers[0]];
+            data.length.regs = vec![registers[1]];
+            data.slots = None;
+            data.initialization = None;
+        }
+        Returned::OwnedValue(value) => {
+            value.value.regs = registers;
+            value.slots = None;
+            for (index, payload) in value.payloads.iter_mut().enumerate() {
+                if let Some(payload) = payload {
+                    let (offset, ty) = if value.value.ty.result {
+                        (
+                            ir::align_up(4, value.value.ty.align),
+                            &value.value.ty.arguments[index],
+                        )
+                    } else {
+                        (
+                            value.value.ty.fields[index].1,
+                            value.value.ty.fields[index].2.as_ref(),
+                        )
+                    };
+                    let registers = ty
+                        .components
+                        .iter()
+                        .map(|(_, at)| {
+                            let component = value
+                                .value
+                                .ty
+                                .components
+                                .iter()
+                                .position(|(_, word)| *word == offset + at)
+                                .unwrap();
+                            value.value.regs[component]
+                        })
+                        .collect();
+                    rebind_model(payload, registers);
+                }
+            }
+        }
+    }
 }
 pub(super) fn canonical(
     builder: &mut Builder<'_>,
@@ -215,16 +205,9 @@ pub(super) fn canonical(
         }
     }
     let returned = returned.map(|model| {
-        let storage = builder.returned_storage(&model);
-        let value = Value {
-            ty: storage.ty,
-            regs: (inputs.len()..inputs.len() + storage.regs.len()).collect(),
-            proof: bounds::Proof::default(),
-            literal: false,
-            uniform: false,
-            constant: None,
-        };
-        let mut value = builder.template_returned(value, true);
+        let mut value = model.clone();
+        let count = model.registers().len();
+        rebind_model(&mut value, (inputs.len()..inputs.len() + count).collect());
         translate_returned(&mut value, &model, &bindings);
         value
     });
@@ -235,23 +218,18 @@ pub(super) fn canonical(
     (returned, (0..inputs.len()).collect(), written)
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let mut context = application::Context::default();
-    context.functions.units.insert(instance.name.clone(), None);
-    checked_function(world, instance, Some(context), &[]).map(|_| ())
+    let mut context = declaration(world, instance, application::Context::default())?;
+    resolve_residencies(&mut context.functions)
 }
 impl Builder<'_> {
-    fn native_declaration(
-        &mut self,
-        instance: &crate::generics::Instance,
-        interface: &[Parameter],
-    ) -> Result<()> {
+    fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
         let context = self.application.take().unwrap();
-        self.application = Some(declaration(self.world, instance, context, interface)?);
+        self.application = Some(declaration(self.world, instance, context)?);
         Ok(())
     }
     pub(super) fn native_function(
         &mut self,
-        mut instance: crate::generics::Instance,
+        instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<Returned>> {
@@ -272,7 +250,7 @@ impl Builder<'_> {
             })
             .collect::<Vec<_>>();
         let mut env = BTreeMap::new();
-        let mut interface = Vec::new();
+        let mut locations = residency::Arguments::new();
         let mut written = Vec::new();
         let mut written_data = Vec::new();
         let mut held = Vec::new();
@@ -290,7 +268,6 @@ impl Builder<'_> {
                 Argument::Value(mut value) if p.access == Access::Value && !p.ty.dataset => {
                     self.require_same(&ty, &value.ty, span)?;
                     value.literal = false;
-                    interface.push(Parameter::Value);
                     append_actual(&mut actual, &value);
                     arguments.push(CallArgument::Value {
                         ty: value.ty.clone(),
@@ -300,7 +277,6 @@ impl Builder<'_> {
                 }
                 Argument::Exclusive(place) if matches!(p.access, Access::Write | Access::InOut) => {
                     self.require_same(&ty, place.ty(), span)?;
-                    interface.push(Parameter::Value);
                     for (part, address) in self.native_references(&place, p.access, span)? {
                         arguments.push(CallArgument::Reference {
                             ty: part,
@@ -334,8 +310,7 @@ impl Builder<'_> {
                     written.push((index, place));
                 }
                 Argument::ApplicationData(data) if p.ty.dataset => {
-                    interface.push(Parameter::Value);
-                    self.application_cpu(&data, span)?;
+                    residency::argument(&mut locations, index, &data);
                     self.require_same(&ty, &data.ty, span)?;
                     if !matches!(
                         p.access,
@@ -378,9 +353,11 @@ impl Builder<'_> {
                     });
                     env.insert(p.name.clone(), Binding::ApplicationData(data));
                 }
-                Argument::OwnedValue(value) if p.access == Access::Value && ty.owns_resources() => {
+                Argument::OwnedValue(mut value)
+                    if p.access == Access::Value && ty.owns_resources() =>
+                {
                     self.require_same(&ty, &value.value.ty, span)?;
-                    interface.push(Parameter::Owned(Returned::OwnedValue(value.clone())));
+                    residency::owned_argument(&mut locations, index, &mut value);
                     append_actual(&mut actual, &value.value);
                     arguments.push(CallArgument::Value {
                         ty: value.value.ty.clone(),
@@ -399,8 +376,21 @@ impl Builder<'_> {
         }
         let requirements = contracts::resolve(self, d, &env)?;
         contracts::prove(self, &requirements, span)?;
-        instance.name = parameter_symbol(&instance.name, &interface);
-        self.native_declaration(&instance, &interface)?;
+        self.native_declaration(&instance)?;
+        if !locations.is_empty() {
+            let call = residency::Call {
+                function: instance.name.clone(),
+                arguments: locations.clone(),
+                source: self.definition.source.clone(),
+                span,
+            };
+            if let Some(unit) =
+                self.application.as_ref().unwrap().functions.units[&instance.name].as_ref()
+            {
+                self.residency.apply(&unit.contract.residency, &call)?;
+            }
+            self.residency.calls.push(call);
+        }
         let result = if d.function.result.name == "void" || d.function.result.is_never() {
             None
         } else {
@@ -478,6 +468,7 @@ impl Builder<'_> {
         let mut returned = self.template_returned(value, true);
         if let Some(model) = model {
             translate_returned(&mut returned, &model, &bindings);
+            residency::returned(&mut returned, &locations);
         } else {
             unknown_resources(&mut returned);
         }
@@ -517,7 +508,7 @@ fn translate_returned(
                 bounds::Proof::capture(&value.length).with_domains(Domains::from([
                     IndexDomain::ApplicationLength(value.handle.identity()),
                 ]));
-            value.residency = model.residency;
+            value.residency = model.residency.clone();
             value.count = model.count;
         }
         (Returned::OwnedValue(value), Returned::OwnedValue(model)) => {
@@ -536,12 +527,45 @@ fn translate_returned(
 }
 fn unknown_resources(value: &mut Returned) {
     match value {
-        Returned::Dataset(data) => data.residency = None,
-        Returned::OwnedValue(value) => value.resources_mut(&mut |data| data.residency = None),
+        Returned::Dataset(data) => data.residency = residency::Residency::default(),
+        Returned::OwnedValue(value) => {
+            value.resources_mut(&mut |data| data.residency = residency::Residency::default())
+        }
         _ => {}
     }
 }
 
+// 函数合同沿真实资源调用关系收敛，递归参数置换也消费同一输入条件。
+fn resolve_residencies(module: &mut Module) -> Result<()> {
+    loop {
+        let known = module
+            .units
+            .iter()
+            .map(|(name, unit)| {
+                (
+                    name.clone(),
+                    unit.as_ref().unwrap().contract.residency.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut changed = false;
+        for unit in module.units.values_mut() {
+            let unit = unit.as_mut().unwrap();
+            let mut inputs = residency::Inputs {
+                required: unit.contract.residency.clone(),
+                calls: Vec::new(),
+            };
+            for call in &unit.residency_calls {
+                inputs.apply(&known[&call.function], call)?;
+            }
+            changed |= inputs.required != unit.contract.residency;
+            unit.contract.residency = inputs.required;
+        }
+        if !changed {
+            return Ok(());
+        }
+    }
+}
 fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
         match inst {
@@ -576,12 +600,13 @@ pub(super) struct Finalized {
     pub exports: BTreeMap<String, Vec<u8>>,
 }
 fn finalize(
-    module: Module,
+    mut module: Module,
     mut reachable: BTreeSet<String>,
     mut root: Option<&mut ValueCode>,
     owner: Option<&str>,
-) -> Finalized {
+) -> Result<Finalized> {
     use crate::module::codec::Encode;
+    resolve_residencies(&mut module)?;
     let mut units = module
         .units
         .into_iter()
@@ -665,45 +690,13 @@ fn finalize(
             result.imports.insert(name, unit.contract.bytes());
         }
     }
-    result
+    Ok(result)
 }
-pub(super) fn finish(module: Module, root: &mut ValueCode) -> Finalized {
+pub(super) fn finish(module: Module, root: &mut ValueCode) -> Result<Finalized> {
     let roots = dependencies(root);
     finalize(module, roots, Some(root), None)
 }
 
-fn default_symbol(world: &World, instance: &crate::generics::Instance) -> Result<String> {
-    fn states(ty: &Ty, out: &mut String) {
-        if ty.dataset.is_some() {
-            out.push('c');
-        } else if ty.owns_resources() {
-            out.push('(');
-            if ty.result {
-                for ty in &ty.arguments {
-                    states(ty, out);
-                }
-            } else {
-                for (_, _, ty) in &ty.fields {
-                    if ty.owns_resources() {
-                        states(ty, out);
-                    } else {
-                        out.push('-');
-                    }
-                }
-            }
-            out.push(')');
-        }
-    }
-    let mut name = instance.name.clone();
-    for (index, param) in instance.definition.function.params.iter().enumerate() {
-        let ty = cooperative::parameter_type(world, param, &instance.definition)?;
-        if !param.ty.dataset && param.access == Access::Value && ty.owns_resources() {
-            name.push_str(&format!("#s{index}"));
-            states(&ty, &mut name);
-        }
-    }
-    Ok(name)
-}
 pub(crate) fn compile_module(
     world: &World,
     entry: &str,
@@ -716,7 +709,7 @@ pub(crate) fn compile_module(
         if d.module != entry || d.compiled.is_some() {
             continue;
         }
-        for mut instance in crate::generics::instances(world, key, d)? {
+        for instance in crate::generics::instances(world, key, d)? {
             if d.execution == crate::execution::Requirement::Domain
                 && super::kernel_interface(world, &instance.definition)?
             {
@@ -725,11 +718,10 @@ pub(crate) fn compile_module(
                 && d.function.kind == FunctionKind::Value
                 && d.function.target != Target::Gpu
             {
-                instance.name = default_symbol(world, &instance)?;
                 if d.public {
                     roots.insert(instance.name.clone());
                 }
-                context = declaration(world, &instance, context, &[])?;
+                context = declaration(world, &instance, context)?;
             } else if d.execution == crate::execution::Requirement::Domain {
                 compile_program(world, &instance)?;
             } else {
@@ -753,7 +745,7 @@ pub(crate) fn compile_module(
                 message: format!("没有本模块公开导出 {name}"),
             })?;
         let d = &world.functions[&key];
-        let mut instance = super::generics::specialize(
+        let instance = super::generics::specialize(
             world,
             &key,
             &[],
@@ -777,11 +769,10 @@ pub(crate) fn compile_module(
                 "此普通原生模块入口需要CPU适用的普通函数",
             );
         }
-        instance.name = default_symbol(world, &instance)?;
         roots.insert(instance.name.clone());
-        context = declaration(world, &instance, context, &[])?;
+        context = declaration(world, &instance, context)?;
     }
-    let finalized = finalize(context.functions, roots, None, Some(entry));
+    let finalized = finalize(context.functions, roots, None, Some(entry))?;
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, context.resources);
     Ok(crate::module::Module {
@@ -811,7 +802,7 @@ fn domain_at(
         if instance.definition.compiled.is_some() {
             let mut reference = instance.clone();
             reference.name = name.clone();
-            *context = declaration(world, &reference, std::mem::take(context), &[])?;
+            *context = declaration(world, &reference, std::mem::take(context))?;
         } else {
             build_domain(world, instance, context, target)?;
         }
@@ -1071,6 +1062,7 @@ fn build_domain(
         target: Target::Cpu,
         frame: false,
         domain: Some(interface),
+        residency: BTreeMap::new(),
     };
     context.functions.units.insert(
         name,
@@ -1079,6 +1071,7 @@ fn build_domain(
             contract,
             module: d.module.clone(),
             public: d.public,
+            residency_calls: Vec::new(),
         }),
     );
     Ok(())

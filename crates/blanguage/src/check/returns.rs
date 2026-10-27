@@ -50,7 +50,7 @@ impl Returned {
         let (other, residency) = match &other {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),
             Self::Value(value) => (value, None),
-            Self::Dataset(data) => (&data.length, data.residency),
+            Self::Dataset(data) => (&data.length, Some(data.residency.clone())),
         };
         let value = match self {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),
@@ -62,10 +62,8 @@ impl Returned {
         if value.constant != other.constant {
             value.constant = None;
         }
-        if let Self::Dataset(data) = self
-            && data.residency != residency
-        {
-            data.residency = None;
+        if let Self::Dataset(data) = self {
+            data.residency.join(&residency.unwrap());
         }
     }
 }

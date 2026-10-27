@@ -17,6 +17,7 @@ mod custom_reduce;
 mod effects;
 mod external;
 mod native_function;
+mod residency;
 pub(crate) use native_function::{check_domain, compile_module as compile_native_module};
 mod flow;
 pub(crate) mod generics;
@@ -1148,20 +1149,20 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     if d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu {
         return native_function::check(world, instance);
     }
-    checked_function(world, instance, None, &[]).map(|_| ())
+    checked_function(world, instance, None).map(|_| ())
 }
 struct CheckedFunction {
     body: FunctionBody,
     returned: Option<returns::Returned>,
     inputs: Vec<Reg>,
     written: Vec<Option<bounds::Proof>>,
+    residency: residency::Inputs,
     application: Option<application::Context>,
 }
 fn checked_function(
     world: &World,
     instance: &crate::generics::Instance,
     application: Option<application::Context>,
-    interface: &[native_function::Parameter],
 ) -> Result<CheckedFunction> {
     let name = &instance.name;
     let d = &instance.definition;
@@ -1249,7 +1250,7 @@ fn checked_function(
                     Access::Read | Access::InOut | Access::Write | Access::Value
                 ) {
                 {
-                    let data = b.application_parameter(data_index, p.access)?;
+                    let data = b.application_parameter(data_index, parameter_index, p.access)?;
                     parameters.push(CallParameter::Value(Ty::owned_dataset(
                         data.ty.clone(),
                         data.count,
@@ -1361,10 +1362,7 @@ fn checked_function(
                 uniform: false,
                 constant: None,
             });
-            if let Some(native_function::Parameter::Owned(origin)) = interface.get(parameter_index)
-            {
-                native_function::parameter_resources(&mut result, origin);
-            }
+            residency::parameter(&mut result, parameter_index);
             b.bind_owned_value(&p.name, result, p.span)?;
             continue;
         }
@@ -1420,6 +1418,7 @@ fn checked_function(
         returned,
         inputs: semantic_inputs,
         written,
+        residency: b.residency,
         application: b.application,
     })
 }
@@ -1457,6 +1456,7 @@ fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
     }
 }
 struct Builder<'a> {
+    residency: residency::Inputs,
     application: Option<application::Context>,
     world: &'a World,
     definition: Arc<Definition>,
@@ -1504,6 +1504,7 @@ impl<'a> Builder<'a> {
             &mut mutable_names,
         );
         Self {
+            residency: residency::Inputs::default(),
             application: None,
             world,
             definition: definition.clone(),

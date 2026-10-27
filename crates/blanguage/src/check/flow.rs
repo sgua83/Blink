@@ -186,7 +186,7 @@ impl Builder<'_> {
                     );
                 }
                 if result.ownership == application::Ownership::Owned
-                    && !before.loop_compatible(result)
+                    && !before.loop_compatible(result, &self.residency)
                 {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
                 }
@@ -202,7 +202,7 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved
-                    && before.residency != data.residency
+                    && !self.residency.same(&before.residency, &data.residency)
                 {
                     return self.fail(
                         span,
@@ -256,9 +256,7 @@ impl Builder<'_> {
                     if a.length.constant != b.length.constant {
                         a.length.constant = None;
                     }
-                    if a.residency != b.residency {
-                        a.residency = None;
-                    }
+                    a.residency.join(&b.residency);
                 }
                 (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
                 _ => {}

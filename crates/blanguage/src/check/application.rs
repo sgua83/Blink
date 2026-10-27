@@ -23,7 +23,7 @@ pub(super) struct Data {
     pub ownership: Ownership,
     pub writable: bool,
     pub count: Option<u32>,
-    pub residency: Option<Target>,
+    pub residency: residency::Residency,
 }
 fn pointer_type() -> Ty {
     let mut ty = Ty::vector(Scalar::U32, 2);
@@ -117,7 +117,7 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         frame.regs = std::mem::take(&mut body.inputs);
     }
-    let finalized = native_function::finish(std::mem::take(&mut app.functions), &mut body);
+    let finalized = native_function::finish(std::mem::take(&mut app.functions), &mut body)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app);
@@ -256,7 +256,12 @@ fn live_resources(
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
     // 原生调用交接同一 Frame 的句柄与长度，物理资源仍由原帧拥有。
-    pub(super) fn application_parameter(&mut self, binding: usize, access: Access) -> Result<Data> {
+    pub(super) fn application_parameter(
+        &mut self,
+        binding: usize,
+        parameter: usize,
+        access: Access,
+    ) -> Result<Data> {
         if access == Access::Value {
             self.application_frame(self.definition.function.span)?;
         }
@@ -295,7 +300,7 @@ impl Builder<'_> {
                 Ownership::Borrowed
             },
             writable: matches!(access, Access::Value | Access::InOut | Access::Write),
-            residency: Some(Target::Cpu),
+            residency: residency::Residency::parameter(parameter),
         })
     }
     pub(super) fn application_iteration_outputs(
@@ -763,7 +768,7 @@ impl Builder<'_> {
                 count,
                 ownership: Ownership::Moved,
                 writable: true,
-                residency: None,
+                residency: residency::Residency::default(),
             }),
         );
         Ok(())
@@ -835,7 +840,7 @@ impl Builder<'_> {
             self.application_movable(&data, span)?;
             if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
                 source.ownership = Ownership::Moved;
-                source.residency = None;
+                source.residency = residency::Residency::default();
             }
             data.slots = None;
             return Ok(Some(data));
@@ -978,7 +983,7 @@ impl Builder<'_> {
             count,
             ownership: Ownership::Owned,
             writable: true,
-            residency: Some(Target::Cpu),
+            residency: residency::Residency::cpu(),
         }))
     }
     pub(super) fn application_element(
@@ -1044,8 +1049,8 @@ impl Builder<'_> {
                 Some(data)
             }
             _ => None,
-        }) {
-            self.application_cpu(data, span)?;
+        }).cloned() {
+            self.application_cpu(&data, span)?;
         }
         let handle = Value {
             proof: bounds::Proof::default(),
@@ -1204,7 +1209,7 @@ impl Builder<'_> {
                 if parameter.access.writes() && !value.writable {
                     return self.fail(span, "B227", "只读 dataset 不能交给可写函数参数");
                 }
-                if value.residency != Some(target) {
+                if !self.residency.require(&value.residency, target) {
                     return self.fail(
                         span,
                         "B266",
@@ -1352,8 +1357,8 @@ impl Builder<'_> {
         )?;
         Ok(())
     }
-    pub(super) fn application_cpu(&self, data: &Data, span: Span) -> Result<()> {
-        if data.residency != Some(Target::Cpu) {
+    pub(super) fn application_cpu(&mut self, data: &Data, span: Span) -> Result<()> {
+        if !self.residency.require(&data.residency, Target::Cpu) {
             return self.fail(
                 span,
                 "B266",
@@ -1383,11 +1388,11 @@ impl Builder<'_> {
             );
         }
         let (source, target) = if name == "upload" {
-            (Target::Cpu, Target::Gpu)
+            (Target::Cpu, residency::Residency::gpu())
         } else {
-            (Target::Gpu, Target::Cpu)
+            (Target::Gpu, residency::Residency::cpu())
         };
-        if data.residency != Some(source) {
+        if !self.residency.require(&data.residency, source) {
             return self.fail(
                 span,
                 "B266",
@@ -1400,7 +1405,7 @@ impl Builder<'_> {
             if alias.ownership != Ownership::Moved
                 && alias.handle.proof.known_identity(0) == Some(data.handle.identity())
             {
-                alias.residency = Some(target);
+                alias.residency = target.clone();
             }
         };
         for binding in self.env.values_mut() {
