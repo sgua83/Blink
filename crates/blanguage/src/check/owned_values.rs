@@ -64,18 +64,34 @@ impl OwnedValue {
         }
     }
     pub(super) fn all_available(&self) -> bool {
-        self.ownership == Ownership::Owned
+        self.ownership==Ownership::Owned && self.available()
+    }
+    pub(super) fn available(&self)->bool {
+        self.ownership != Ownership::Moved
             && self.payloads.iter().enumerate().all(|(i, p)| {
                 if !self.value.ty.has_variants() && !self.value.ty.aggregate_part(i).1.owns_resources() {
                     return true;
                 }
                 match p.as_deref() {
-                    Some(Returned::Dataset(d)) => d.ownership == Ownership::Owned,
-                    Some(Returned::OwnedValue(v)) => v.all_available(),
+                    Some(Returned::Dataset(d)) => d.ownership != Ownership::Moved,
+                    Some(Returned::OwnedValue(v)) => v.available(),
                     None => self.value.ty.has_variants(),
                     _ => true,
                 }
             })
+    }
+    pub(super) fn borrow(&mut self) {
+        self.ownership=Ownership::Borrowed;
+        for item in self.payloads.iter_mut().flatten() {
+            match item.as_mut() {
+                Returned::Dataset(data)=>{
+                    data.ownership=Ownership::Borrowed;data.writable=false;
+                    if data.handle.proof.view_borrow(0).empty(){data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(data.handle.identity())]));}
+                }
+                Returned::OwnedValue(value)=>value.borrow(),_=>{},
+            }
+        }
+        self.sync_resource_borrows();
     }
     pub(super) fn incomplete(&self) -> bool {
         self.payloads.iter().enumerate().any(|(i,p)|{
@@ -457,6 +473,48 @@ impl Builder<'_> {
         };
         result
     }
+    pub(super) fn read_owned_aggregate(&mut self,expr:&Expr)->Result<Option<(OwnedValue,Option<String>)>> {
+        if let Some(projection)=self.owned_projection(expr) {
+            let Returned::OwnedValue(mut value)=self.projected_owned(&projection,expr.span)? else {
+                return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体");
+            };
+            if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
+            if !value.value.ty.has_variants() && let Some(place)=value.place(){self.require_initialized(&place,expr.span)?;}
+            self.load_owned_value(&mut value);value.borrow();return Ok(Some((value,None)));
+        }
+        if let ExprKind::Member(base,field) = &expr.kind {
+            let Some((value,owner))=self.read_owned_aggregate(base)? else{return Ok(None)};
+                let index=value.value.ty.fields.iter().position(|(name,_,_)|name==field).ok_or_else(||Diagnostic{source:self.definition.source.clone(),span:expr.span,code:"B141",message:"拥有值字段不存在".into()})?;
+            let item=self.unpack_record(&value,index);
+            let Returned::OwnedValue(value)=item else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
+            return Ok(Some((value,owner)));
+        }
+        if let ExprKind::Index(base,index) = &expr.kind {
+            let Some((value,mut owner))=self.read_owned_aggregate(base)? else{return Ok(None)};
+            let Some(element)=value.value.ty.array.as_deref().cloned()else{return self.fail(expr.span,"B224","聚合只读下标需要固定拥有数组")};
+            if owner.is_none(){owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));}
+            let Some(index)=self.expr(index)? else{return Ok(None)};
+            self.require_same(&Ty::scalar(Scalar::U32),&index.ty,expr.span)?;
+            let count=value.value.ty.values[0];
+            if !self.index_in(&index,IndexDomain::Fixed(count),count){return self.fail(expr.span,"B137","拥有数组下标有效性无法静态证明")};
+            let item=if index.minimum()==index.maximum(){self.unpack_record(&value,index.minimum()as usize)}else{
+                let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
+                let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);
+                for i in selected{model.join(self.unpack_record(&value,i as usize));}
+                let place=self.materialize_array(value.value.clone());let place=self.array_index(place,index,expr.span)?;
+                let mut regs=Vec::new();
+                for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span)?.regs[0]);}
+                self.rebind_returned(&mut model,regs);model
+            };
+            let Returned::OwnedValue(value)=item else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
+            return Ok(Some((value,owner)));
+        }
+        let returned=self.evaluate_returned(expr,None)?;
+        if !self.flow.continues(){return Ok(None);}
+        let Some(Returned::OwnedValue(mut value))=returned else{return self.fail(expr.span,"B224","read聚合需要实际拥有值或其临时值")};
+        if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
+        let owner=self.hold_binding(Binding::OwnedValue(value.clone()));value.borrow();Ok(Some((value,Some(owner))))
+    }
     pub(super) fn load_owned_value(&mut self, result: &mut OwnedValue) {
         if let Some(slots) = &result.slots {
             result.value.regs = slots
@@ -569,6 +627,8 @@ impl Builder<'_> {
         rhs: &Expr,
         span: Span,
     ) -> Result<()> {
+        if target.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能替换其拥有绑定");}
+        if let Some(place)=target.place(){self.require_owned_writable(&place,span)?;}
         if op != "=" {
             return self.fail(span, "B224", "拥有结果交接整份载荷，不支持数值复合赋值");
         }
@@ -873,12 +933,17 @@ impl Builder<'_> {
         }
     }
     pub(super) fn match_returned(&mut self, expr: &Expr, arms: &[MatchArm], span: Span) -> Result<()> {
-        let returned = self.evaluate_returned(expr,None)?;
+        let mut root=expr;
+        while let ExprKind::Member(base,_)|ExprKind::Index(base,_)=&root.kind{root=base;}
+        let borrowed=self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) && matches!(&root.kind,ExprKind::Name(name)if matches!(self.env.get(name),Some(Binding::OwnedValue(value))if value.ownership==Ownership::Borrowed));
+        let (returned,held)=if borrowed {match self.read_owned_aggregate(expr)? {Some((value,held))=>(Some(Returned::OwnedValue(value)),held),None=>(None,None)}}else{(self.evaluate_returned(expr,None)?,None)};
         if !self.flow.continues() { return Ok(()); }
         let returned = returned.ok_or_else(|| Diagnostic { source:self.definition.source.clone(),span,code:"B269",message:"match需要变体值".into() })?;
         let value = self.returned_storage(&returned);
         let selected = self.check_variant_patterns(&value.ty,arms,span)?;
-        self.match_variant_arms(&returned,&selected,0,span)
+        self.match_variant_arms(&returned,&selected,0,span)?;
+        if let Some(name)=held {if self.flow.continues(){self.finish_scoped_argument(&name,span)?;}else{self.env.remove(&name);}}
+        Ok(())
     }
     fn match_variant_arms(&mut self, value: &Returned, arms: &[&MatchArm], index: usize, span: Span) -> Result<()> {
         if index+1==arms.len() { return self.match_variant_arm(value,index,arms[index]); }
@@ -1008,7 +1073,7 @@ impl Builder<'_> {
             cooperative::Argument::ApplicationData(data) if access == Access::Value => {
                 Binding::ApplicationData(data.clone())
             }
-            cooperative::Argument::ScopedData { owner, .. } => return Some(owner.clone()),
+            cooperative::Argument::Scoped { owner, .. } => return Some(owner.clone()),
             _ => return None,
         };
         Some(self.hold_binding(binding))
@@ -1024,7 +1089,7 @@ impl Builder<'_> {
         arguments: &mut [cooperative::Argument],
     ) {
         for (index, name) in held {
-            if matches!(arguments[*index], cooperative::Argument::ScopedData { .. }) {
+            if matches!(arguments[*index], cooperative::Argument::Scoped { .. }) {
                 continue;
             }
             let value = self.env.remove(name).unwrap();
@@ -1061,16 +1126,14 @@ impl Builder<'_> {
         reference.ownership = Ownership::Borrowed;
         self.env
             .insert(name.clone(), Binding::ApplicationData(data));
-        Ok(Some(cooperative::Argument::ScopedData {
-            data: reference,
+        Ok(Some(cooperative::Argument::Scoped {
+            value: Returned::Dataset(reference),
             owner: name,
         }))
     }
     pub(super) fn finish_scoped_argument(&mut self, name: &str, span: Span) -> Result<()> {
-        let Binding::ApplicationData(data) = self.env.remove(name).unwrap() else {
-            unreachable!()
-        };
-        self.drop_returned(Returned::Dataset(data), span)
+        let binding=self.env.remove(name).unwrap();
+        self.drop_binding(binding,span)
     }
 }
 

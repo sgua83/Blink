@@ -219,7 +219,7 @@ impl Builder<'_> {
         result.constant = result.proof.known_value(&result.ty);
         Ok(Some(result))
     }
-    fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
+    pub(super) fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
         let element = (**place.ty().array.as_ref().unwrap()).clone();
         let count = place.ty().values[0];
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;

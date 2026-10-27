@@ -287,9 +287,9 @@ impl Builder<'_> {
                 Some(value)
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
-                let Some(mut data) = self.application_resource(expr, span)? else {
-                    return Ok(());
-                };
+                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone(),count)))?;
+                if !self.flow.continues(){return Ok(());}
+                let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
                 self.application_data_type(&mut data, &ty, count, span)?;
                 data.count = count;
                 Some(Returned::Dataset(data))

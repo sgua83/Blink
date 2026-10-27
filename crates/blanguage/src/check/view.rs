@@ -133,6 +133,9 @@ impl Binding {
         match self {Self::Value(v) if v.ty.contains_views()=>Some(&mut v.proof),Self::Owned(v) if v.place.ty().contains_views()=>Some(&mut v.proof),_=>None}
     }
     pub(super) fn view_borrow(&self)->Borrow {
+        if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
+            return value.value.proof.borrowed_view();
+        }
         if let Self::ViewElement{view,..}=self {return view.proof.borrowed_view();}
         self.view_parts().map(|(_,proof)|proof.borrowed_view()).unwrap_or_default()
     }
@@ -200,9 +203,7 @@ impl Builder<'_> {
         self.require_view_return_proof(&value.proof, span)
     }
     pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,span:Span)->Result<()> {
-        let allowed=self.env.values().filter_map(|binding|match binding {
-            Binding::ApplicationData(data) if data.ownership==application::Ownership::Borrowed=>Some(data.handle.identity()),_=>None,
-        }).collect();
+        let allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).map(|data|data.handle.identity()).collect();
         self.check_view_requirement(Requirement::Return{borrow:proof.borrowed_view(),allowed,span})
     }
     pub(super) fn create_application_view(

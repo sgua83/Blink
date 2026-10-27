@@ -296,7 +296,14 @@ impl Builder<'_> {
         }
         Ok(Some(place))
     }
+    pub(super) fn require_owned_writable(&self,place:&Place,span:Span)->Result<()> {
+        if self.env.values().any(|binding|matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed && value.place().is_some_and(|root|place.overlaps(&root)))) {
+            return self.fail(span,"B227","read聚合的元数据与普通字段不能写入或取得独占借用");
+        }
+        Ok(())
+    }
     pub(super) fn writable_storage(&mut self, place: &Place, span: Span) -> Result<Vec<usize>> {
+        self.require_owned_writable(place,span)?;
         if let Place::Indexed { base, words, .. } = place {
             self.writable_storage(base, span)?;
             return Ok(words.iter().map(|w| *w as usize).collect());

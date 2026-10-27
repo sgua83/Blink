@@ -1239,7 +1239,7 @@ impl Builder<'_> {
                         }
                         reference.data
                     }
-                    Argument::ScopedData { data, owner } => {
+                    Argument::Scoped { value:returns::Returned::Dataset(data), owner } => {
                         held.push(owner);
                         data
                     }

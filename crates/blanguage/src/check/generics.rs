@@ -50,7 +50,8 @@ impl Builder<'_> {
                     count: self.program.buffers[v.binding].count,
                 },
                 Argument::BorrowedData(reference) => Actual::dataset(&reference.ty,reference.count),
-                Argument::ApplicationData(data) | Argument::ScopedData { data, .. } => Actual::dataset(&data.ty,data.count),
+                Argument::ApplicationData(data) => Actual::dataset(&data.ty,data.count),
+                Argument::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>Actual::dataset(&data.ty,data.count),returns::Returned::OwnedValue(value)=>Actual::value(&value.value.ty),returns::Returned::Value(value)=>Actual::value(&value.ty),returns::Returned::Unit=>unreachable!()},
                 Argument::Tile(v) => Actual::value(&v.ty),
                 Argument::Atomic(p) | Argument::Exclusive(p) => Actual::value(p.ty()),
             })

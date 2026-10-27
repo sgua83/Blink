@@ -1091,7 +1091,7 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
             && !p.ty.dataset
             && !(d.function.kind == FunctionKind::Value
                 && d.function.target == Target::Cpu
-                && p.access == Access::Value)
+                && matches!(p.access,Access::Value|Access::Read))
         {
             return d
                 .source
@@ -1132,7 +1132,7 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
                 "tile<T> 只能是 cooperative 的只读或 atomic 借用参数",
             );
         }
-        if !p.ty.dataset && !p.ty.tile && !p.ty.is_texture_resource() && p.access == Access::Read {
+        if !p.ty.dataset && !p.ty.tile && !p.ty.is_texture_resource() && p.access == Access::Read && !(d.function.kind==FunctionKind::Value && d.function.target==Target::Cpu) {
             return d.source.fail(
                 p.span,
                 "B120",
@@ -1288,6 +1288,16 @@ fn checked_function(
             });
             b.bind_tile(&p.name, tile);
             continue;
+        }
+        if p.access==Access::Read {
+            let ty=cooperative::parameter_type(world,p,d)?;
+            if ty.owns_resources() {
+                let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
+                inputs.extend(&regs);parameters.push(CallParameter::Value(ty.clone()));
+                let mut value=b.incoming_owned_value(Value{ty,regs,proof:bounds::Proof::default(),literal:false,uniform:false,constant:None});
+                value.borrow();residency::parameter(&mut value,parameter_index);
+                b.bind_owned_value(&p.name,value,p.span)?;continue;
+            }
         }
         if p.access != Access::Value {
             if matches!(p.access, Access::InOut | Access::Write) {
@@ -1959,6 +1969,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn write_place(&mut self, p: &Place, value: Value, span: Span) -> Result<()> {
+        self.require_owned_writable(p,span)?;
         self.require_view_available(&value, span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;

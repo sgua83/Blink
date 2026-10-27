@@ -317,10 +317,7 @@ impl Builder<'_> {
                     reference.data.handle.proof = reference.data.handle.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
                     Argument::ApplicationData(reference.data)
                 }
-                Argument::ScopedData { data, owner } => {
-                    held.push(owner);
-                    Argument::ApplicationData(data)
-                }
+                Argument::Scoped { value, owner } => {held.push(owner);Argument::resource(value)}
                 other => other,
             };
             match arg {
@@ -413,9 +410,12 @@ impl Builder<'_> {
                     env.insert(p.name.clone(), Binding::ApplicationData(data));
                 }
                 Argument::OwnedValue(mut value)
-                    if p.access == Access::Value && ty.owns_resources() =>
+                    if matches!(p.access,Access::Value|Access::Read) && ty.owns_resources() =>
                 {
                     self.require_same(&ty, &value.value.ty, span)?;
+                    if p.access==Access::Read {
+                        value.borrow();
+                    }else if !value.all_available(){return self.fail(span,"B227","按值参数需要实际拥有全部活动资源");}
                     for data in value.resources(){self.require_application_initialized(data,span)?;}
                     value.resources_mut(&mut |data|data.initialization=None);
                     residency::owned_argument(&mut locations, index, &mut value);
@@ -569,8 +569,9 @@ impl Builder<'_> {
         self.view_uses.after(span);
         let borrow = match &returned {Returned::Value(v)=>v.proof.borrowed_view(),_=>view::Borrow::default()};
         for name in held {
-            if let Some(Binding::ApplicationData(data))=self.env.get(&name) {
-                let resource=self.data_borrow(&[data.handle.identity()]);
+            let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.handle.identity()).collect::<Vec<_>>();
+            for identity in resources {
+                let resource=self.data_borrow(&[identity]);
                 self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:borrow.clone(),span})?;
             }
             self.finish_scoped_argument(&name, span)?;

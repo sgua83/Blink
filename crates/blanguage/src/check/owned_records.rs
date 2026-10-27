@@ -231,7 +231,7 @@ impl Builder<'_> {
         };
         Some(owner.place()?.project(p.ty.clone(), &p.components))
     }
-    fn projected_owned(&mut self, p: &OwnedProjection, span: Span) -> Result<Returned> {
+    pub(super) fn projected_owned(&mut self, p: &OwnedProjection, span: Span) -> Result<Returned> {
         let Some(Binding::OwnedValue(root)) = self.env.get(&p.root).cloned() else {
             unreachable!()
         };
@@ -362,6 +362,8 @@ impl Builder<'_> {
         rhs: &Expr,
         span: Span,
     ) -> Result<()> {
+        if matches!(self.env.get(&p.root),Some(Binding::OwnedValue(value))if value.ownership==Ownership::Borrowed){return self.fail(span,"B227","read聚合的资源字段不能替换");}
+        if let Some(place)=self.projection_place(&p){self.require_owned_writable(&place,span)?;}
         if op != "=" {
             return self.fail(span, "B224", "资源字段只支持整份移动赋值");
         }

@@ -7,17 +7,25 @@ pub(super) enum Argument {
     Value(Value),
     Dataset(DatasetView),
     ApplicationData(application::Data),
-    ScopedData {
-        data: application::Data,
-        owner: String,
-    },
+    Scoped { value: returns::Returned, owner: String },
     OwnedValue(owned_values::OwnedValue),
     Tile(TileView),
     Atomic(Place),
     Exclusive(Place),
 }
 impl Argument {
-    fn overlaps(&self, other: &Self) -> bool {
+    pub(super) fn resource(value:returns::Returned)->Self {
+        match value {returns::Returned::Dataset(data)=>Self::ApplicationData(data),returns::Returned::OwnedValue(value)=>Self::OwnedValue(value),returns::Returned::Value(value)=>Self::Value(value),returns::Returned::Unit=>unreachable!()}
+    }
+    fn overlaps(&self, other: &Self,env:&BTreeMap<String,Binding>) -> bool {
+        let place=|argument:&Self|match argument {
+            Self::Exclusive(place)|Self::Atomic(place)=>Some(place.clone()),
+            Self::OwnedValue(value)=>value.place(),
+            Self::Scoped{owner,..}=>match env.get(owner){Some(Binding::OwnedValue(value))=>value.place(),_=>None},_=>None,
+        };
+        if matches!(self,Self::Exclusive(_)|Self::Atomic(_))||matches!(other,Self::Exclusive(_)|Self::Atomic(_)) {
+            if let(Some(a),Some(b))=(place(self),place(other)) && a.overlaps(&b){return true;}
+        }
         if let (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) =
             (self, other)
         {
@@ -25,9 +33,8 @@ impl Argument {
         }
         let handles = |arg: &Self| match arg {
             Self::BorrowedData(reference) => reference.sources.clone(),
-            Self::ApplicationData(d) | Self::ScopedData { data: d, .. } => {
-                vec![d.handle.identity()]
-            }
+            Self::ApplicationData(d) => vec![d.handle.identity()],
+            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.handle.identity()],returns::Returned::OwnedValue(value)=>value.handles(),_=>Vec::new()},
             Self::OwnedValue(r) => r.handles(),
             Self::Value(v) => v.proof.borrowed_views().into_iter().filter_map(|s| if let view::Source::Data(id)=s {Some(id)}else{None}).collect(),
             Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
@@ -54,14 +61,14 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
     if ty.owns_resources()
         && (param.ty.dataset
             || param.ty.tile
-            || param.access != Access::Value
+            || !matches!(param.access, Access::Value | Access::Read)
             || definition.function.kind != FunctionKind::Value
             || definition.function.target != Target::Cpu)
     {
         return definition.source.fail(
             param.span,
             "B224",
-            "拥有结果通过普通CPU函数的值参数交接；通用拥有聚合、借用与并行元素尚未实现",
+            "拥有聚合通过普通CPU函数按值交接或read借用；其他访问与执行目标尚未实现",
         );
     }
     if matches!(param.access, Access::InOut | Access::Write)
@@ -159,6 +166,12 @@ impl<'a> Builder<'a> {
                     }
                 } else if param.ty.tile {
                     Argument::Tile(self.tile_view(arg)?)
+                } else if param.access == Access::Read {
+                    let Some((value,owner))=self.read_owned_aggregate(arg)? else {
+                        self.abandon_arguments(&held);
+                        return Ok(None);
+                    };
+                    match owner {Some(owner)=>Argument::Scoped{value:returns::Returned::OwnedValue(value),owner},None=>Argument::OwnedValue(value)}
                 } else if param.access == Access::Atomic {
                     {
                         let Some(place) = self.atomic_place(arg)? else {
@@ -223,7 +236,7 @@ impl<'a> Builder<'a> {
                 }
             }
             let handle = match argument {
-                Argument::ApplicationData(data) | Argument::ScopedData { data, .. }
+                Argument::ApplicationData(data) | Argument::Scoped { value:returns::Returned::Dataset(data), .. }
                     if param.access != Access::Value =>
                 {
                     Some(data.handle.identity())
@@ -250,9 +263,9 @@ impl<'a> Builder<'a> {
                         && other.ty.dataset
                         && ((param.access == Access::Atomic && other.access != Access::Atomic)
                             || (other.access == Access::Atomic && param.access != Access::Atomic)))
-                    || matches!(argument, Argument::OwnedValue(_))
-                    || matches!(before, Argument::OwnedValue(_)))
-                    && argument.overlaps(before)
+                    || (param.access==Access::Value && matches!(argument, Argument::OwnedValue(_)))
+                    || (other.access==Access::Value && matches!(before, Argument::OwnedValue(_))))
+                    && argument.overlaps(before,&self.env)
                 {
                     return self.fail(
                         args[index].span,
@@ -386,10 +399,7 @@ impl<'a> Builder<'a> {
             .into_iter()
             .map(|arg| match arg {
                 Argument::BorrowedData(reference) => Argument::ApplicationData(reference.data),
-                Argument::ScopedData { data, owner } => {
-                    held.push(owner);
-                    Argument::ApplicationData(data)
-                }
+                Argument::Scoped { value, owner } => {held.push(owner);Argument::resource(value)}
                 other => other,
             })
             .collect();
