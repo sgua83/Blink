@@ -2068,7 +2068,32 @@ impl<'a> Builder<'a> {
             constant,
         }
     }
-    fn binary(&mut self, op: &str, mut a: Value, mut b: Value, span: Span) -> Result<Value> {
+    fn numeric_operands(&mut self, mut a: Value, mut b: Value, span: Span) -> Result<(Value, Value)> {
+        let literal = a.literal && b.literal;
+        if a.ty.components[0].0 != b.ty.components[0].0 {
+            if literal {
+                let scalar =
+                    if a.ty.components[0].0 == Scalar::F32 || b.ty.components[0].0 == Scalar::F32 {
+                        Scalar::F32
+                    } else {
+                        Scalar::I32
+                    };
+                a = self.cast(a, scalar);
+                b = self.cast(b, scalar);
+            } else if a.literal && b.ty.components[0].0 != Scalar::Bool {
+                a = self.cast(a, b.ty.components[0].0);
+            } else if b.literal && a.ty.components[0].0 != Scalar::Bool {
+                b = self.cast(b, a.ty.components[0].0);
+            } else {
+                return self.fail(span, "B148", "不同数值类型必须显式转换");
+            }
+        }
+        if a.regs.len() != b.regs.len() && a.regs.len() != 1 && b.regs.len() != 1 {
+            return self.fail(span, "B149", "向量维度不匹配");
+        }
+        Ok((a, b))
+    }
+    fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
         if a.ty.result || b.ty.result {
             return self.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
         }
@@ -2096,28 +2121,8 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
         }
         let literal = a.literal && b.literal;
-        if a.ty.components[0].0 != b.ty.components[0].0 {
-            if literal {
-                let scalar =
-                    if a.ty.components[0].0 == Scalar::F32 || b.ty.components[0].0 == Scalar::F32 {
-                        Scalar::F32
-                    } else {
-                        Scalar::I32
-                    };
-                a = self.cast(a, scalar);
-                b = self.cast(b, scalar);
-            } else if a.literal && b.ty.components[0].0 != Scalar::Bool {
-                a = self.cast(a, b.ty.components[0].0);
-            } else if b.literal && a.ty.components[0].0 != Scalar::Bool {
-                b = self.cast(b, a.ty.components[0].0);
-            } else {
-                return self.fail(span, "B148", "不同数值类型必须显式转换");
-            }
-        }
+        let (a, b) = self.numeric_operands(a, b, span)?;
         let n = a.regs.len().max(b.regs.len());
-        if a.regs.len() != b.regs.len() && a.regs.len() != 1 && b.regs.len() != 1 {
-            return self.fail(span, "B149", "向量维度不匹配");
-        }
         let scalar = a.ty.components[0].0;
         let literal = literal && scalar != Scalar::F32 && !comparison;
         if scalar == Scalar::Bool && !matches!(op, "==" | "!=") {
@@ -2260,6 +2265,50 @@ impl<'a> Builder<'a> {
         };
         if args.len() != arity {
             return self.fail(span, "B153", format!("{op} 需要 {arity} 个参数"));
+        }
+        if matches!(op, "min" | "max")
+            && args.iter().all(|a| {
+                a.ty.is_numeric() && matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32)
+            })
+        {
+            let mut args = args.into_iter();
+            let (a, b) = self.numeric_operands(args.next().unwrap(), args.next().unwrap(), span)?;
+            let n = a.regs.len().max(b.regs.len());
+            let scalar = a.ty.components[0].0;
+            let ty = Ty::vector(scalar, n);
+            let proof = bounds::arithmetic(op, &a, &b);
+            let literal = a.literal && b.literal;
+            if let Some(bits) = proof.known_value(&ty) {
+                let mut value = self.constant_value(ty, bits);
+                value.proof = proof;
+                value.literal = literal;
+                return Ok(value);
+            }
+            let comparison = self.binary(
+                if op == "min" { "<" } else { ">" },
+                a.clone(),
+                b.clone(),
+                span,
+            )?;
+            let mut regs = Vec::with_capacity(n);
+            for i in 0..n {
+                let dst = self.reg(scalar);
+                self.code.push(Inst::Select {
+                    dst,
+                    condition: comparison.regs[i],
+                    a: a.regs[i % a.regs.len()],
+                    b: b.regs[i % b.regs.len()],
+                });
+                regs.push(dst);
+            }
+            return Ok(Value {
+                proof,
+                literal,
+                ty,
+                regs,
+                uniform: a.uniform && b.uniform,
+                constant: None,
+            });
         }
         let n = args.iter().map(|v| v.regs.len()).max().unwrap();
         for a in &args {

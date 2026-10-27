@@ -1048,7 +1048,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                     let mut right = b.component_ranges(bi);
                     let signed = a.ty.components[0].0 == Scalar::I32;
                     let bias = if signed { 0x8000_0000 } else { 0 };
-                    if matches!(op, "-" | "^" | "&" | "|" | "/" | "%")
+                    if matches!(op, "-" | "^" | "&" | "|" | "/" | "%" | "min" | "max")
                         && a.same_component(ai, b, bi)
                     {
                         // 同值快照只取共同可达片段；空路径仍为空。
@@ -1056,7 +1056,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                             IntegerRanges::interval(al.max(bl), ah.min(bh))
                         });
                         return match op {
-                            "&" | "|" => shared,
+                            "&" | "|" | "min" | "max" => shared,
                             _ => {
                                 // 整数除余在进入范围计算前已由 binary 证明除数非零。
                                 let value = if op == "/" { bias ^ 1 } else { bias };
@@ -1128,8 +1128,19 @@ fn arithmetic_source<'a>(
 ) -> Option<(&'a Value, usize)> {
     let ai = component % a.regs.len();
     let bi = component % b.regs.len();
-    if matches!(op, "&" | "|") && a.same_component(ai, b, bi) {
+    if matches!(op, "&" | "|" | "min" | "max") && a.same_component(ai, b, bi) {
         return Some((a, ai));
+    }
+    if matches!(op, "min" | "max") {
+        let (al, ah) = a.component_range(ai);
+        let (bl, bh) = b.component_range(bi);
+        return if ah <= bl {
+            Some(if op == "min" { (a, ai) } else { (b, bi) })
+        } else if bh <= al {
+            Some(if op == "min" { (b, bi) } else { (a, ai) })
+        } else {
+            None
+        };
     }
     if matches!(op, "<<" | ">>") {
         return (b.component_ranges(bi).shift_counts(0).hull() == (0, 0)).then_some((a, ai));
@@ -1164,6 +1175,15 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
     let bi = component % b.regs.len();
     let left = a.proof.domains(ai);
     let right = b.proof.domains(bi);
+    if matches!(op, "min" | "max") {
+        let left = indices_below(&left, false);
+        let right = indices_below(&right, false);
+        return if op == "min" {
+            left.union(&right).copied().collect()
+        } else {
+            left.intersection(&right).copied().collect()
+        };
+    }
     if matches!(op, "&" | "|") && a.same_component(ai, b, bi) {
         return left.union(&right).copied().collect();
     }
@@ -1296,6 +1316,8 @@ fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> Integer
         (*values.iter().min().unwrap(), *values.iter().max().unwrap())
     };
     let range = match op {
+        "min" => (al.min(bl), ah.min(bh)),
+        "max" => (al.max(bl), ah.max(bh)),
         "+" => (al + bl, ah + bh),
         "-" => (al - bh, ah - bl),
         "*" => corners(|a, b| a * b),
@@ -1332,6 +1354,8 @@ fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> Integ
         i128::from(bh),
     );
     let range = match op {
+        "min" => (al.min(bl), ah.min(bh)),
+        "max" => (al.max(bl), ah.max(bh)),
         "+" => (al + bl, ah + bh),
         "-" => (al - bh, ah - bl),
         "*" => (al * bl, ah * bh),
