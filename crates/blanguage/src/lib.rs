@@ -219,6 +219,11 @@ fn compile_module(
             if d.execution == execution::Requirement::Domain
                 && (d.function.target != Target::Cpu || check::kernel_interface(&world, d)?)
             {
+                if matches!(selected.as_ref(), Some((_, _, EntryKind::Application))) {
+                    check::check_domain(&world, &instance)
+                        .map_err(|error| instance_error(error, name))?;
+                    continue;
+                }
                 let p = check::compile_program(&world, &instance)
                     .map_err(|error| instance_error(error, name))?;
                 if selected.is_none() && d.module == entry && d.public {

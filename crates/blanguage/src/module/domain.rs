@@ -1,7 +1,7 @@
 //! 整域模块的公开布局及完成后的初始化效果；不包含执行器或可变运行状态。
 use crate::{ast::Target, ir::*};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Output {
     pub binding: usize,
     pub domain: Option<usize>,

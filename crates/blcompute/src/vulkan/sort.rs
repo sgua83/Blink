@@ -107,7 +107,7 @@ pub(super) fn record(
     c: &Compiled,
     stage: usize,
     s: &blanguage::ir::Sorting,
-    data: &[GpuDataset],
+    data: &impl std::ops::Index<usize, Output = GpuDataset>,
     storage: &Storage,
     arguments: Option<&GpuDataset>,
     infos: &[VkDescriptorBufferInfo],

@@ -1213,9 +1213,15 @@ impl Builder<'_> {
                 }
                 if data
                     .iter()
-                    .any(|existing: &Data| existing.handle.identity() == value.handle.identity())
+                    .zip(callee.function.params.iter().filter(|p| p.ty.dataset))
+                    .any(|(existing, previous): (&Data, &Param)| {
+                        existing.handle.identity() == value.handle.identity()
+                            && (previous.access.writes() || parameter.access.writes())
+                            && !(previous.access == Access::Atomic
+                                && parameter.access == Access::Atomic)
+                    })
                 {
-                    return self.fail(span, "B227", "同一独占 dataset 不能在一次调用中重复绑定");
+                    return self.fail(span, "B227", "同一存储的重复参数必须同为 read 或同为 atomic");
                 }
                 if parameter.access.reads() {
                     self.require_application_initialized(&value, span)?;
@@ -1231,15 +1237,7 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.handle.identity(), span)?;
         }
-        let (interface, program) = if callee.compiled.is_some() {
-            (native_function::domain_interface(&instance, target)?, None)
-        } else {
-            let program = super::compile_program(self.world, &instance)?;
-            (
-                crate::module::domain::Interface::new(&program, target),
-                Some(program),
-            )
-        };
+        let interface = self.prepare_domain(&instance, target)?;
         for (value, buffer) in data.iter().zip(&interface.buffers) {
             self.require_same(&buffer.ty, &value.ty, span)?;
             if buffer.count.is_some() && buffer.count != value.count {
@@ -1253,61 +1251,25 @@ impl Builder<'_> {
             self.require_same(&uniform.ty, &value.ty, span)?;
         }
         self.initialize_application_domain(&interface, &data);
-        if program.is_none() {
-            let frame = self.application_frame(span)?;
-            let mut physical = vec![argument(frame)];
-            let mut data = data.into_iter();
-            let mut uniforms = uniforms.into_iter();
-            for parameter in &callee.function.params {
-                if parameter.ty.dataset {
-                    let value = data.next().unwrap();
-                    physical.push(argument(
-                        self.returned_storage(&returns::Returned::Dataset(value.clone())),
-                    ));
-                } else {
-                    let value = uniforms.next().unwrap();
-                    physical.push(argument(value.clone()));
-                }
+        let frame = self.application_frame(span)?;
+        let mut physical = vec![argument(frame)];
+        let mut data = data.into_iter();
+        let mut uniforms = uniforms.into_iter();
+        for parameter in &callee.function.params {
+            if parameter.ty.dataset {
+                let value = data.next().unwrap();
+                physical.push(argument(
+                    self.returned_storage(&returns::Returned::Dataset(value)),
+                ));
+            } else {
+                physical.push(argument(uniforms.next().unwrap()));
             }
-            self.compiled_domain_call(instance, target, physical)?;
-            for name in held {
-                self.finish_scoped_argument(&name, span)?;
-            }
-            return Ok(Some(returns::Returned::Unit));
         }
-        let program = program.unwrap();
-        let app = self.application.as_mut().unwrap();
-        let index = app
-            .resources
-            .programs
-            .iter()
-            .position(|(at, p)| *at == target && p.name == program.name)
-            .unwrap_or_else(|| {
-                let index = app.resources.programs.len();
-                app.resources.programs.push((target, program));
-                index
-            });
-        let mut params = data.into_iter().map(|data| data.handle).collect::<Vec<_>>();
-        params.extend(uniforms.into_iter().flat_map(|value| {
-            value
-                .ty
-                .components
-                .into_iter()
-                .zip(value.regs)
-                .map(|((scalar, _), reg)| Value {
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    ty: Ty::scalar(scalar),
-                    regs: vec![reg],
-                    uniform: false,
-                    constant: None,
-                })
-        }));
-        let result = self.application_call(&format!("run_{index}"), params, None, span)?;
+        self.call_domain(instance, target, physical);
         for name in held {
             self.finish_scoped_argument(&name, span)?;
         }
-        Ok(result.map(returns::Returned::Value))
+        Ok(Some(returns::Returned::Unit))
     }
     pub(super) fn application_parallel(&mut self, statement: &Stmt) -> Result<()> {
         if self.application.is_none() {

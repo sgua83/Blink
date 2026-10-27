@@ -800,165 +800,332 @@ pub(crate) fn compile_module(
     })
 }
 
-pub(super) fn domain_interface(
+fn domain_at(
+    world: &World,
     instance: &crate::generics::Instance,
+    context: &mut application::Context,
     target: Target,
 ) -> Result<crate::module::domain::Interface> {
-    use crate::module::codec::Decode;
     let name = crate::module::domain::symbol(&instance.name, target);
-    let d = &instance.definition;
-    let interface = d
-        .compiled
+    if !context.functions.units.contains_key(&name) {
+        if instance.definition.compiled.is_some() {
+            let mut reference = instance.clone();
+            reference.name = name.clone();
+            *context = declaration(world, &reference, std::mem::take(context), &[])?;
+        } else {
+            build_domain(world, instance, context, target)?;
+        }
+    }
+    context.functions.units[&name]
         .as_ref()
         .unwrap()
-        .get(&name)
+        .contract
+        .domain
+        .clone()
         .ok_or_else(|| Diagnostic {
-            source: d.source.clone(),
-            span: d.function.span,
+            source: instance.definition.source.clone(),
+            span: instance.definition.function.span,
             code: "B270",
-            message: format!("已编译模块没有本次目标的整域实例 {name}"),
-        })?;
-    Contract::from_bytes(interface)
-        .and_then(|contract| contract.domain.ok_or_else(|| "模块入口缺少整域合同".into()))
-        .map_err(|error| Diagnostic {
-            source: d.source.clone(),
-            span: d.function.span,
-            code: "B270",
-            message: error.to_string(),
+            message: "模块入口缺少整域合同".into(),
         })
 }
 impl Builder<'_> {
-    pub(super) fn compiled_domain_call(
+    pub(super) fn prepare_domain(
         &mut self,
-        mut instance: crate::generics::Instance,
+        instance: &crate::generics::Instance,
+        target: Target,
+    ) -> Result<crate::module::domain::Interface> {
+        let mut context = self.application.take().unwrap();
+        let interface = domain_at(self.world, instance, &mut context, target)?;
+        self.application = Some(context);
+        Ok(interface)
+    }
+    pub(super) fn call_domain(
+        &mut self,
+        instance: crate::generics::Instance,
         target: Target,
         arguments: Vec<CallArgument>,
-    ) -> Result<()> {
-        instance.name = crate::module::domain::symbol(&instance.name, target);
-        self.native_declaration(&instance, &[])?;
+    ) {
         self.code.push(Inst::Call(Call {
-            target: CallTarget::Defined(instance.name),
+            target: CallTarget::Defined(crate::module::domain::symbol(&instance.name, target)),
             arguments,
             result: None,
             values: Vec::new(),
         }));
-        Ok(())
     }
+}
+pub(crate) fn check_domain(world: &World, instance: &crate::generics::Instance) -> Result<()> {
+    domain_declaration(world, instance, &mut application::Context::default())?;
+    Ok(())
 }
 fn domain_declaration(
     world: &World,
     instance: &crate::generics::Instance,
     context: &mut application::Context,
 ) -> Result<BTreeSet<String>> {
-    let d = &instance.definition;
-    let program = compile_program(world, instance)?;
-    if !program.accelerations.is_empty() || !program.textures.is_empty() {
-        return d.source.fail(
-            d.function.span,
-            "B270",
-            "B应用的独立整域入口尚未交接纹理或加速结构；原生宿主算法接口继续使用已有产物",
-        );
-    }
-    let targets: &[Target] = match d.function.target {
+    let targets: &[Target] = match instance.definition.function.target {
         Target::Cpu => &[Target::Cpu],
         Target::Gpu => &[Target::Gpu],
         Target::Compute => &[Target::Cpu, Target::Gpu],
     };
     let mut roots = BTreeSet::new();
     for &target in targets {
-        let name = crate::module::domain::symbol(&instance.name, target);
-        if context.functions.units.contains_key(&name) {
-            roots.insert(name);
-            continue;
-        }
-        let index = context.resources.programs.len();
-        context.resources.programs.push((target, program.clone()));
-        let mut frame = Ty::vector(Scalar::U32, 2);
-        frame.name = "__blink_frame".into();
-        let mut registers = vec![Scalar::U32, Scalar::U32];
-        let mut parameters = vec![CallParameter::Value(frame.clone())];
-        let mut arguments = vec![CallArgument::Value {
-            ty: frame,
-            values: vec![0, 1],
-        }];
-        let mut data = Vec::new();
-        let mut uniforms = Vec::new();
-        for param in &d.function.params {
-            let ty = cooperative::parameter_type(world, param, d)?;
-            if param.ty.dataset {
-                let first = registers.len();
-                registers.extend([Scalar::U32, Scalar::U32]);
-                let count = world.shape(
-                    &param.ty.count,
-                    &d.source,
-                    param.span,
-                    &d.module,
-                    &d.imports,
-                )?;
-                parameters.push(CallParameter::Value(Ty::owned_dataset(ty, count)));
-                data.push(CallArgument::Value {
-                    ty: Ty::scalar(Scalar::U32),
-                    values: vec![first],
-                });
-            } else {
-                let first = registers.len();
-                registers.extend(ty.components.iter().map(|(scalar, _)| *scalar));
-                parameters.push(CallParameter::Value(ty.clone()));
-                uniforms.extend(ty.components.iter().enumerate().map(|(i, (scalar, _))| {
-                    CallArgument::Value {
-                        ty: Ty::scalar(*scalar),
-                        values: vec![first + i],
-                    }
-                }));
-            }
-        }
-        arguments.extend(data);
-        arguments.extend(uniforms);
-        let inputs: Vec<_> = (0..registers.len()).collect();
-        let body = ValueCode {
-            registers,
-            locals: Vec::new(),
-            inputs: inputs.clone(),
-            outputs: Vec::new(),
-            code: vec![application::runtime_call(
-                &format!("run_{index}"),
-                arguments,
-                None,
-                Vec::new(),
-            )],
-        };
-        let function = FunctionBody {
-            name: name.clone(),
-            parameters: parameters.clone(),
-            result: None,
-            body,
-        };
-        let contract = Contract {
-            parameters,
-            result: None,
-            inputs,
-            returned: None,
-            written: vec![None; d.function.params.len()],
-            requires: crate::contract_signature(&d.function)
-                .into_iter()
-                .map(|(kind, predicate)| (kind, predicate.clone()))
-                .collect(),
-            target: Target::Cpu,
-            frame: true,
-            domain: Some(crate::module::domain::Interface::new(&program, target)),
-        };
-        context.functions.units.insert(
-            name.clone(),
-            Some(Unit {
-                function: Some(function),
-                contract,
-                module: d.module.clone(),
-                public: d.public,
-            }),
-        );
-        if d.public {
-            roots.insert(name);
+        domain_at(world, instance, context, target)?;
+        if instance.definition.public {
+            roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
     }
     Ok(roots)
+}
+fn build_domain(
+    world: &World,
+    instance: &crate::generics::Instance,
+    context: &mut application::Context,
+    target: Target,
+) -> Result<()> {
+    let d = &instance.definition;
+    let expanded = expand_domain(world, instance)?;
+    let mut signature = expanded.program;
+    if !signature.accelerations.is_empty() || !signature.textures.is_empty() {
+        return d.source.fail(
+            d.function.span,
+            "B270",
+            "B应用的独立整域入口尚未交接纹理或加速结构；原生宿主算法接口继续使用已有产物",
+        );
+    }
+    let stages = std::mem::take(&mut signature.stages);
+    let mut frame = Ty::vector(Scalar::U32, 2);
+    frame.name = "__blink_frame".into();
+    let mut registers = vec![Scalar::U32, Scalar::U32];
+    let mut parameters = vec![CallParameter::Value(frame.clone())];
+    let frame = CallArgument::Value {
+        ty: frame,
+        values: vec![0, 1],
+    };
+    let mut data = Vec::new();
+    let mut uniform_values = Vec::new();
+    let mut uniform_regs = BTreeMap::new();
+    let mut ui = 0;
+    for param in &d.function.params {
+        let ty = cooperative::parameter_type(world, param, d)?;
+        let first = registers.len();
+        if param.ty.dataset {
+            registers.extend([Scalar::U32, Scalar::U32]);
+            let count = world.shape(
+                &param.ty.count,
+                &d.source,
+                param.span,
+                &d.module,
+                &d.imports,
+            )?;
+            parameters.push(CallParameter::Value(Ty::owned_dataset(ty, count)));
+            data.push([first, first + 1]);
+        } else {
+            registers.extend(ty.components.iter().map(|(s, _)| *s));
+            parameters.push(CallParameter::Value(ty.clone()));
+            for (i, (scalar, offset)) in ty.components.iter().enumerate() {
+                uniform_regs.insert(signature.uniforms[ui].offset + offset, first + i);
+                uniform_values.push(CallArgument::Value {
+                    ty: Ty::scalar(*scalar),
+                    values: vec![first + i],
+                });
+            }
+            ui += 1;
+        }
+    }
+    let inputs: Vec<_> = (0..registers.len()).collect();
+    let mut code = Vec::new();
+    let mut interface = crate::module::domain::Interface::new(&signature, target);
+    interface.outputs.clear();
+    let mut start = 0;
+    let mut required = signature.prefix_requirements.clone();
+    let split = !expanded.calls.is_empty();
+    let mut part = 0;
+    for call in expanded.calls {
+        emit_domain_part(
+            &signature,
+            &stages[start..call.stage],
+            &required,
+            &call.before,
+            split,
+            &mut part,
+            context,
+            target,
+            &frame,
+            &data,
+            &uniform_values,
+            &mut code,
+            &mut interface,
+        );
+        let callee = domain_at(world, &call.instance, context, target)?;
+        let mut arguments = vec![frame.clone()];
+        let bindings = call
+            .arguments
+            .iter()
+            .filter_map(|root| {
+                if let Root::Data(i, _) = root {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for root in &call.arguments {
+            arguments.push(match root {
+                Root::Data(i, _) => CallArgument::Value {
+                    ty: Ty::owned_dataset(
+                        signature.buffers[*i].ty.clone(),
+                        signature.buffers[*i].count,
+                    ),
+                    values: data[*i].to_vec(),
+                },
+                Root::Uniform(ty, offset) => CallArgument::Value {
+                    ty: ty.clone(),
+                    values: ty
+                        .components
+                        .iter()
+                        .map(|(_, at)| uniform_regs[&(offset + at)])
+                        .collect(),
+                },
+                Root::Literal(ty, words) => {
+                    let values = ty
+                        .components
+                        .iter()
+                        .zip(words)
+                        .map(|((scalar, _), word)| {
+                            let reg = registers.len();
+                            registers.push(*scalar);
+                            code.push(Inst::Constant(reg, *scalar, *word));
+                            reg
+                        })
+                        .collect();
+                    CallArgument::Value {
+                        ty: ty.clone(),
+                        values,
+                    }
+                }
+                _ => {
+                    return d
+                        .source
+                        .fail(d.function.span, "B270", "该Frame入口尚未交接此资源种类");
+                }
+            });
+        }
+        code.push(Inst::Call(Call {
+            target: CallTarget::Defined(crate::module::domain::symbol(&call.instance.name, target)),
+            arguments,
+            result: None,
+            values: Vec::new(),
+        }));
+        interface
+            .outputs
+            .extend(callee.outputs.into_iter().map(|mut output| {
+                output.binding = bindings[output.binding];
+                output.domain = output.domain.map(|i| bindings[i]);
+                output
+            }));
+        start = call.stage;
+        required = call.after;
+    }
+    emit_domain_part(
+        &signature,
+        &stages[start..],
+        &required,
+        &signature.prefix_guarantees,
+        split,
+        &mut part,
+        context,
+        target,
+        &frame,
+        &data,
+        &uniform_values,
+        &mut code,
+        &mut interface,
+    );
+    interface.outputs.sort();
+    interface.outputs.dedup();
+    let name = crate::module::domain::symbol(&instance.name, target);
+    let body = ValueCode {
+        registers,
+        locals: Vec::new(),
+        inputs: inputs.clone(),
+        outputs: Vec::new(),
+        code,
+    };
+    let function = FunctionBody {
+        name: name.clone(),
+        parameters: parameters.clone(),
+        result: None,
+        body,
+    };
+    let contract = Contract {
+        parameters,
+        result: None,
+        inputs,
+        returned: None,
+        written: vec![None; d.function.params.len()],
+        requires: crate::contract_signature(&d.function)
+            .into_iter()
+            .map(|(kind, predicate)| (kind, predicate.clone()))
+            .collect(),
+        target: Target::Cpu,
+        frame: false,
+        domain: Some(interface),
+    };
+    context.functions.units.insert(
+        name,
+        Some(Unit {
+            function: Some(function),
+            contract,
+            module: d.module.clone(),
+            public: d.public,
+        }),
+    );
+    Ok(())
+}
+fn emit_domain_part(
+    signature: &Program,
+    stages: &[Stage],
+    required: &[PrefixRelation],
+    guaranteed: &[PrefixRelation],
+    split: bool,
+    part: &mut usize,
+    context: &mut application::Context,
+    target: Target,
+    frame: &CallArgument,
+    data: &[[Reg; 2]],
+    uniforms: &[CallArgument],
+    code: &mut Vec<Inst>,
+    interface: &mut crate::module::domain::Interface,
+) {
+    if stages.is_empty() {
+        return;
+    }
+    let mut program = signature.clone();
+    if split {
+        program.name = format!("{}@part{}", signature.name, *part);
+    }
+    *part += 1;
+    program.stages = stages.to_vec();
+    program.source_stages = stages.len();
+    program.prefix_requirements = required.to_vec();
+    program.prefix_guarantees = guaranteed.to_vec();
+    crate::optimize::optimize(&mut program);
+    interface
+        .outputs
+        .extend(crate::module::domain::Interface::new(&program, target).outputs);
+    let index = context.resources.programs.len();
+    context.resources.programs.push((target, program));
+    let mut arguments = vec![frame.clone()];
+    arguments.extend(data.iter().map(|regs| CallArgument::Value {
+        ty: Ty::scalar(Scalar::U32),
+        values: vec![regs[0]],
+    }));
+    arguments.extend_from_slice(uniforms);
+    code.push(application::runtime_call(
+        &format!("run_{index}"),
+        arguments,
+        None,
+        Vec::new(),
+    ));
 }

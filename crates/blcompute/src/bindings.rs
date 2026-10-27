@@ -187,7 +187,11 @@ impl<D> DomainBindings<D> {
         self.domains = domains;
         Ok(slots.into_iter().flatten().collect())
     }
-    pub(crate) fn require(&self, program: &dyn ProgramInterface) -> Result<()>
+    pub(crate) fn require(
+        &self,
+        program: &dyn ProgramInterface,
+        binding: impl Fn(usize) -> usize,
+    ) -> Result<()>
     where
         D: DomainStorage,
     {
@@ -199,9 +203,9 @@ impl<D> DomainBindings<D> {
         };
         for relation in program.prefix_requirements() {
             if !self.domains.iter().any(|known| {
-                same(known.domain, relation.domain)
+                same(known.domain, binding(relation.domain))
                     && known.count.word == relation.count.word
-                    && same(known.count.binding, relation.count.binding)
+                    && same(known.count.binding, binding(relation.count.binding))
             }) {
                 return Err(error(format!(
                     "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",
@@ -213,10 +217,26 @@ impl<D> DomainBindings<D> {
         }
         Ok(())
     }
-    pub(crate) fn completed(&mut self, program: &dyn ProgramInterface) {
+    pub(crate) fn completed(
+        &mut self,
+        program: &dyn ProgramInterface,
+        binding: impl Fn(usize) -> usize,
+    ) {
+        self.domains.retain(|r| {
+            !program
+                .buffers()
+                .iter()
+                .enumerate()
+                .any(|(i, b)| binding(i) == r.count.binding && b.access.writes())
+        });
         self.domains
-            .retain(|r| !program.buffers()[r.count.binding].access.writes());
-        self.domains.extend(program.prefix_guarantees());
+            .extend(program.prefix_guarantees().iter().map(|r| PrefixRelation {
+                domain: binding(r.domain),
+                count: PrefixCount {
+                    binding: binding(r.count.binding),
+                    word: r.count.word,
+                },
+            }));
         self.domains.sort();
         self.domains.dedup();
     }

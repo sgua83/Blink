@@ -1140,9 +1140,7 @@ impl Allocation {
                     required.memoryTypeBits & (1 << i) != 0
                         && memory.memoryTypes[*i as usize].propertyFlags & flags == flags
                 })
-                .min_by_key(|i| {
-                    host_read && memory.memoryTypes[*i as usize].propertyFlags & 8 == 0
-                })
+                .min_by_key(|i| host_read && memory.memoryTypes[*i as usize].propertyFlags & 8 == 0)
                 .ok_or_else(|| error(format!("目标设备缺少内存类型 flags={flags:#x}")))?;
             let mut ai: VkMemoryAllocateInfo = zero();
             ai.sType = 5;
@@ -1850,12 +1848,23 @@ impl GpuProgram {
     }
     fn submit_owned(
         &self,
-        mut owner: InputOwner,
+        owner: InputOwner,
         values: &[Value],
         steps: NonZeroU32,
     ) -> Result<Submission> {
+        let count = owner.bindings.datasets.len();
+        self.submit_owned_mapped(owner, values, steps, count, |i| i)
+    }
+    fn submit_owned_mapped(
+        &self,
+        mut owner: InputOwner,
+        values: &[Value],
+        steps: NonZeroU32,
+        count: usize,
+        physical: impl Fn(usize) -> usize + Copy,
+    ) -> Result<Submission> {
         let c = &self.compiled;
-        owner.bindings.require(&c.program)?;
+        owner.bindings.require(&c.program, physical)?;
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
         {
@@ -1864,7 +1873,11 @@ impl GpuProgram {
         for texture in &owner.textures {
             owner.dependencies.push(texture.produced());
         }
-        let data = &mut owner.bindings.datasets;
+        let mut data = DatasetProjection {
+            owners: &mut owner.bindings.datasets,
+            count,
+            physical,
+        };
         for (dataset, binding) in data.iter().zip(c.program.buffers()) {
             if matches!(&*dataset.storage, DatasetStorage::Read(_))
                 && binding.access != blanguage::ast::Access::Read
@@ -1882,7 +1895,7 @@ impl GpuProgram {
         for acceleration in accelerations {
             owner.dependencies.push(acceleration.produced());
         }
-        for d in data.iter() {
+        for d in data.owners.iter() {
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
                 return Err(error("数据集不属于程序的设备"));
             }
@@ -1893,7 +1906,7 @@ impl GpuProgram {
         let mut resource_stage = 0;
         let mut resource_access = 0;
         let mut visited = BTreeSet::new();
-        let mut resources: Vec<_> = data.iter().flat_map(|d| &d.views.sources).collect();
+        let mut resources: Vec<_> = data.owners.iter().flat_map(|d| &d.views.sources).collect();
         while let Some(source) = resources.pop() {
             if visited.insert(Rc::as_ptr(&source.0) as usize) {
                 resource_stage |= source.0.producer.stage();
@@ -2080,19 +2093,22 @@ impl GpuProgram {
                     "vkCreateQueryPool",
                 )?;
                 (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
-                let mut pending: BTreeSet<_> = (0..data.len()).collect();
+                let mut pending: BTreeSet<_> = (0..data.owners.len()).collect();
                 let mut pending_reads = BTreeSet::new();
-                let mut last: Vec<_> = data.iter().map(|d| d.producer).collect();
+                let mut last: Vec<_> = data.owners.iter().map(|d| d.producer).collect();
                 for step in 0..steps.get() {
                     for (i, stage) in c.program.stages().iter().enumerate() {
                         let affected: Vec<_> = stage
                             .reads
                             .iter()
                             .chain(&stage.writes)
-                            .copied()
+                            .map(|&b| physical(b))
                             .filter(|b| pending.contains(b))
                             .collect();
-                        let war = stage.writes.iter().any(|b| pending_reads.contains(b));
+                        let war = stage
+                            .writes
+                            .iter()
+                            .any(|&b| pending_reads.contains(&physical(b)));
                         if !affected.is_empty() || war || resource_stage != 0 {
                             let src = pending
                                 .iter()
@@ -2421,10 +2437,10 @@ impl GpuProgram {
                             commands.queries,
                             query + 1,
                         );
-                        pending_reads.extend(stage.reads.iter().copied());
+                        pending_reads.extend(stage.reads.iter().map(|&b| physical(b)));
                         for b in &stage.writes {
-                            pending.insert(*b);
-                            last[*b] = Usage::Compute;
+                            pending.insert(physical(*b));
+                            last[physical(*b)] = Usage::Compute;
                             data[*b].owned_storage()?.producer = Usage::Compute;
                         }
                     }
@@ -2443,10 +2459,10 @@ impl GpuProgram {
             },
             owner.dependencies,
         );
-        for dataset in data.iter_mut() {
+        for dataset in data.owners.iter_mut() {
             dataset.last_use = Some(execution.clone());
         }
-        owner.bindings.completed(&c.program);
+        owner.bindings.completed(&c.program, physical);
         Ok(Submission {
             execution,
             bindings: owner.bindings,
@@ -2470,6 +2486,25 @@ impl GpuTemplate {
     ) -> Result<Submission> {
         self.code.submit(bindings, values)
     }
+    pub(crate) fn submit_projected(
+        &self,
+        bindings: DomainBindings<GpuDataset>,
+        order: &[usize],
+        values: &[Value],
+    ) -> Result<Submission> {
+        self.code.submit_owned_mapped(
+            InputOwner {
+                dependencies: Vec::new(),
+                bindings,
+                accelerations: Vec::new(),
+                textures: Vec::new(),
+            },
+            values,
+            NonZeroU32::MIN,
+            order.len(),
+            |i| order[i],
+        )
+    }
     pub fn submit_after(
         &self,
         previous: Submission,
@@ -2487,6 +2522,31 @@ impl GpuTemplate {
         values: &[Value],
     ) -> Result<Submission> {
         self.code.submit_join(previous, order, additional, values)
+    }
+}
+// 投影仅用于本次命令记录；提交继续持有各物理存储的唯一所有者。
+struct DatasetProjection<'a, F> {
+    owners: &'a mut [GpuDataset],
+    count: usize,
+    physical: F,
+}
+impl<F: Fn(usize) -> usize + Copy> DatasetProjection<'_, F> {
+    fn len(&self) -> usize {
+        self.count
+    }
+    fn iter(&self) -> impl ExactSizeIterator<Item = &GpuDataset> {
+        (0..self.count).map(|i| &self.owners[(self.physical)(i)])
+    }
+}
+impl<F: Fn(usize) -> usize> std::ops::Index<usize> for DatasetProjection<'_, F> {
+    type Output = GpuDataset;
+    fn index(&self, index: usize) -> &GpuDataset {
+        &self.owners[(self.physical)(index)]
+    }
+}
+impl<F: Fn(usize) -> usize> std::ops::IndexMut<usize> for DatasetProjection<'_, F> {
+    fn index_mut(&mut self, index: usize) -> &mut GpuDataset {
+        &mut self.owners[(self.physical)(index)]
     }
 }
 // 数据本身持有最后使用点，输入容器无需维护另一套原生资源所属表。

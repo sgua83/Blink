@@ -201,7 +201,9 @@ impl Executable {
         let mut libraries = std::collections::BTreeMap::new();
         for r in &code.relocations {
             let ptr = match &r.target {
-                NativeSymbol::Function(name) => return Err(error(format!("范围映像缺少所属模块函数 {name}"))),
+                NativeSymbol::Function(name) => {
+                    return Err(error(format!("范围映像缺少所属模块函数 {name}")));
+                }
                 NativeSymbol::External(name) => {
                     if !libraries.contains_key(&name.library) {
                         libraries.insert(
@@ -438,7 +440,17 @@ impl CpuTemplate {
         let Bindings { datasets, textures } = bindings.into();
         self.code.run_owned(datasets, &textures, values)
     }
+    pub(crate) fn run_projected(
+        &self,
+        bindings: DomainBindings<CpuDataset>,
+        order: &[usize],
+        values: &[Value],
+    ) -> Result<DomainBindings<CpuDataset>> {
+        self.code
+            .run_owned_mapped(bindings, &[], values, order.len(), |i| order[i])
+    }
 }
+#[derive(Clone, Copy)]
 struct CpuBuffer<'a> {
     ty: &'a Ty,
     stride: u32,
@@ -517,12 +529,26 @@ impl CpuCode {
     }
     fn run_owned(
         &self,
-        mut bindings: DomainBindings<CpuDataset>,
+        bindings: DomainBindings<CpuDataset>,
         textures: &[crate::Texture2D],
         values: &[Value],
     ) -> Result<DomainBindings<CpuDataset>> {
-        bindings.require(&self.program)?;
-        for (data, binding) in bindings.datasets.iter().zip(self.program.buffers()) {
+        let count = bindings.datasets.len();
+        self.run_owned_mapped(bindings, textures, values, count, |i| i)
+    }
+    fn run_owned_mapped(
+        &self,
+        mut bindings: DomainBindings<CpuDataset>,
+        textures: &[crate::Texture2D],
+        values: &[Value],
+        count: usize,
+        physical: impl Fn(usize) -> usize + Copy,
+    ) -> Result<DomainBindings<CpuDataset>> {
+        bindings.require(&self.program, physical)?;
+        for (data, binding) in (0..count)
+            .map(|i| &bindings.datasets[physical(i)])
+            .zip(self.program.buffers())
+        {
             if matches!(data, CpuDataset::Read(_)) && binding.access != blanguage::ast::Access::Read
             {
                 return Err(error("冻结的 CPU 存储只能绑定 read dataset"));
@@ -536,8 +562,10 @@ impl CpuCode {
                 CpuDataset::Read(data) => CpuBuffer::read(data),
             })
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, values)?;
-        bindings.completed(&self.program);
+        // 只复制原指针描述符，不重复借用或复制实际数据。
+        let arguments: Vec<_> = (0..count).map(|i| buffers[physical(i)]).collect();
+        self.run_buffers(&arguments, textures, values)?;
+        bindings.completed(&self.program, physical);
         Ok(bindings)
     }
     fn run(

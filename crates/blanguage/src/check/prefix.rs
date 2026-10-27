@@ -1,19 +1,35 @@
 //! 函数类型作用域持有前缀证明；模块调用只交换声明的输入／输出能力。
 use super::*;
-#[derive(Default)]
-pub(super) struct Facts(BTreeSet<PrefixRelation>);
+pub(super) struct Facts(Vec<BTreeSet<PrefixRelation>>);
 impl Facts {
     pub fn new(relations: &[PrefixRelation]) -> Self {
-        Self(relations.iter().copied().collect())
+        Self(vec![relations.iter().copied().collect()])
     }
     pub fn written(&mut self, bindings: &[usize]) {
-        self.0.retain(|r| !bindings.contains(&r.count.binding));
+        for scope in &mut self.0 {
+            scope.retain(|r| !bindings.contains(&r.count.binding));
+        }
     }
     pub fn holds(&self, relation: PrefixRelation) -> bool {
-        self.0.contains(&relation)
+        self.0.last().unwrap().contains(&relation)
     }
     pub fn grant(&mut self, relation: PrefixRelation) {
-        self.0.insert(relation);
+        self.0.last_mut().unwrap().insert(relation);
+    }
+    pub fn enter(&mut self, relations: &[PrefixRelation]) {
+        self.0.push(relations.iter().copied().collect());
+    }
+    pub fn leave(&mut self) {
+        self.0.pop();
+    }
+    pub fn relations(&self) -> Vec<PrefixRelation> {
+        self.0
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 pub(super) fn resolve(

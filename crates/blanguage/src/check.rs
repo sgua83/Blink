@@ -17,7 +17,7 @@ mod custom_reduce;
 mod effects;
 mod external;
 mod native_function;
-pub(crate) use native_function::compile_module as compile_native_module;
+pub(crate) use native_function::{check_domain, compile_module as compile_native_module};
 mod flow;
 pub(crate) mod generics;
 mod matrix;
@@ -227,10 +227,34 @@ enum Place {
     },
 }
 
+struct DomainCall {
+    stage: usize,
+    instance: crate::generics::Instance,
+    arguments: Vec<Root>,
+    before: Vec<PrefixRelation>,
+    after: Vec<PrefixRelation>,
+}
+struct ExpandedDomain {
+    program: Program,
+    calls: Vec<DomainCall>,
+}
 pub(crate) fn compile_program(
     world: &World,
     instance: &crate::generics::Instance,
 ) -> Result<Program> {
+    let expanded = expand_domain(world, instance)?;
+    if !expanded.calls.is_empty() {
+        return instance.definition.source.fail(
+            instance.definition.function.span,
+            "B270",
+            "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
+        );
+    }
+    let mut program = expanded.program;
+    crate::optimize::optimize(&mut program);
+    Ok(program)
+}
+fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<ExpandedDomain> {
     let name = &instance.name;
     let d = &instance.definition;
     if !kernel_interface(world, d)? {
@@ -350,6 +374,7 @@ pub(crate) fn compile_program(
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
+    let mut calls = Vec::new();
     expand_program(
         world,
         d,
@@ -358,10 +383,10 @@ pub(crate) fn compile_program(
         &mut Vec::new(),
         &mut false,
         &mut facts,
+        &mut calls,
     )?;
     program.source_stages = program.stages.len();
-    crate::optimize::optimize(&mut program);
-    Ok(program)
+    Ok(ExpandedDomain { program, calls })
 }
 fn expand_program(
     world: &World,
@@ -371,6 +396,7 @@ fn expand_program(
     stack: &mut Vec<String>,
     boundary: &mut bool,
     facts: &mut prefix::Facts,
+    calls: &mut Vec<DomainCall>,
 ) -> Result<()> {
     let key = format!("{}::{}", d.module, d.function.name);
     if stack.contains(&key) {
@@ -391,6 +417,7 @@ fn expand_program(
         stack,
         boundary,
         facts,
+        calls,
     )?;
     for contract in d
         .function
@@ -419,6 +446,7 @@ fn expand_stages(
     stack: &mut Vec<String>,
     boundary: &mut bool,
     facts: &mut prefix::Facts,
+    calls: &mut Vec<DomainCall>,
 ) -> Result<()> {
     for statement in body {
         match &statement.kind {
@@ -449,7 +477,9 @@ fn expand_stages(
                         name.clone(),
                         Root::Literal(Ty::scalar(Scalar::U32), vec![index]),
                     );
-                    expand_stages(world, d, body, &child, program, stack, boundary, facts)?;
+                    expand_stages(
+                        world, d, body, &child, program, stack, boundary, facts, calls,
+                    )?;
                 }
             }
             StmtKind::Parallel(name, syntax, body) => {
@@ -893,16 +923,28 @@ fn expand_stages(
                         statement.span,
                     )?;
                 }
-                let mut child_facts = prefix::Facts::new(&required);
-                expand_program(
-                    world,
-                    callee,
-                    &child,
-                    program,
-                    stack,
-                    boundary,
-                    &mut child_facts,
-                )?;
+                let compiled = callee.compiled.is_some();
+                if compiled {
+                    calls.push(DomainCall {
+                        stage: program.stages.len(),
+                        instance: instance.clone(),
+                        arguments: callee
+                            .function
+                            .params
+                            .iter()
+                            .map(|p| child[&p.name].clone())
+                            .collect(),
+                        before: facts.relations(),
+                        after: Vec::new(),
+                    });
+                    *boundary = true;
+                } else {
+                    facts.enter(&required);
+                    expand_program(
+                        world, callee, &child, program, stack, boundary, facts, calls,
+                    )?;
+                    facts.leave();
+                }
                 let writable: Vec<_> = callee
                     .function
                     .params
@@ -919,6 +961,9 @@ fn expand_stages(
                 facts.written(&writable);
                 for relation in prefix::relations(program, &child, callee, ContractKind::Ensures)? {
                     facts.grant(relation);
+                }
+                if compiled {
+                    calls.last_mut().unwrap().after = facts.relations();
                 }
             }
             StmtKind::Phase => {

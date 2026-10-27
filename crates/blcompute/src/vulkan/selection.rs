@@ -15,7 +15,7 @@ pub(super) fn record(
     commands: &mut Commands,
     c: &Compiled,
     stage: usize,
-    data: &[GpuDataset],
+    data: &impl std::ops::Index<usize, Output = GpuDataset>,
     scratch: &Scratch,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],

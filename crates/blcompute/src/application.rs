@@ -174,15 +174,38 @@ impl Frame {
         let index = program as usize;
         let program = self.load(index)?;
         let layout = program.layout();
+        // 参数是存储的引用；同一物理存储只移动一次。
+        let mut selected = Vec::new();
+        let mut order = Vec::with_capacity(handles.len());
+        for (logical, &handle) in handles.iter().enumerate() {
+            let slot = if let Some(slot) = selected.iter().position(|&h| h == handle) {
+                let first = order.iter().position(|&i| i == slot).unwrap();
+                use blanguage::ast::Access::{Atomic, Read};
+                if !matches!(
+                    (
+                        layout.buffers()[first].access,
+                        layout.buffers()[logical].access
+                    ),
+                    (Read, Read) | (Atomic, Atomic)
+                ) {
+                    return Err(error("同一存储的重复参数必须同为 read 或同为 atomic"));
+                }
+                slot
+            } else {
+                selected.push(handle);
+                selected.len() - 1
+            };
+            order.push(slot);
+        }
         let domains: Vec<_> = self
             .data
             .domains
             .iter()
             .filter_map(|r| {
                 Some(PrefixRelation {
-                    domain: handles.iter().position(|&h| h as usize == r.domain)?,
+                    domain: selected.iter().position(|&h| h as usize == r.domain)?,
                     count: PrefixCount {
-                        binding: handles
+                        binding: selected
                             .iter()
                             .position(|&h| h as usize == r.count.binding)?,
                         word: r.count.word,
@@ -192,11 +215,12 @@ impl Frame {
             .collect();
         let (datasets, domains) = match &program {
             Program::Cpu(program) => {
-                let datasets = handles
+                let datasets = selected
                     .iter()
                     .map(|&handle| self.data.datasets[handle as usize].take().unwrap().cpu())
                     .collect::<Result<Vec<_>>>()?;
-                let result = program.run(DomainBindings { datasets, domains }, values)?;
+                let result =
+                    program.run_projected(DomainBindings { datasets, domains }, &order, values)?;
                 (
                     result
                         .datasets
@@ -207,12 +231,12 @@ impl Frame {
                 )
             }
             Program::Gpu(program) => {
-                let datasets = handles
+                let datasets = selected
                     .iter()
                     .map(|&handle| self.data.datasets[handle as usize].take().unwrap().gpu())
                     .collect::<Result<Vec<_>>>()?;
                 let result = program
-                    .submit(DomainBindings { datasets, domains }, values)?
+                    .submit_projected(DomainBindings { datasets, domains }, &order, values)?
                     .wait()?
                     .into_bindings();
                 (
@@ -225,7 +249,7 @@ impl Frame {
                 )
             }
         };
-        for (&handle, data) in handles.iter().zip(datasets) {
+        for (&handle, data) in selected.iter().zip(datasets) {
             self.data.datasets[handle as usize] = Some(data);
         }
         self.data.domains.retain(|r| {
@@ -237,9 +261,9 @@ impl Frame {
         self.data
             .domains
             .extend(domains.into_iter().map(|r| PrefixRelation {
-                domain: handles[r.domain] as usize,
+                domain: selected[r.domain] as usize,
                 count: PrefixCount {
-                    binding: handles[r.count.binding] as usize,
+                    binding: selected[r.count.binding] as usize,
                     word: r.count.word,
                 },
             }));
