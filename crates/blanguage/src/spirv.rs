@@ -496,6 +496,10 @@ impl Emitter<'_> {
                     let raw = self.to_word(*value);
                     self.emit(62, &[ptr, raw, 2, 4]);
                 }
+                Inst::Constant(dst, Scalar::F32, bits) => {
+                    let word = self.constant(Scalar::U32, *bits);
+                    self.from_word(*dst, word);
+                }
                 Inst::Constant(dst, s, b) => {
                     let c = self.constant(*s, *b);
                     self.emit(83, &[self.ty(*dst), self.value(*dst), c]);
