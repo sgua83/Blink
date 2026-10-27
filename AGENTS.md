@@ -45,7 +45,7 @@
 - B 同时寓意 Base；语言愿景是成为 AI 超算时代的基础语言，像 C 语言对上一个计算时代的贡献一样。文档按这一定位说明方向，能力状态仍以实际实现与原生执行为准。
 - 自研原生并行计算语言、编译器与 CPU／GPU 执行框架。接口 .h、实现 .b；语言规则以 Docs/BLanguage.md 为准，职责以 Docs/Architecture.md 为准。
 - 使用 P4：//BLanguage/main，client BLanguage_Gua，根 B:\BLanguage。只提交当前任务相关源码和文档，保留其他未提交改动。
-- 同一目录的 Git 仅向 https://github.com/sgua83/Blink.git 发布 P4 已提交版本。每次本项目 P4 提交成功后，由执行该提交的调用方立即用 PowerShell 7 的 Start-Process -WindowStyle Hidden 异步运行一次 Tools/PublishGit.ps1，按 P4 changelist 生成 Git 提交；P4 提交失败或没有提交时不启动发布。不得创建定时任务、Codex heartbeat、轮询或自动重试。Git 失败只影响本次发布，不阻塞或回滚 P4，不执行 P4 sync／revert／submit，也不修改工作区源码。未提交文件与本地暂存内容不纳入发布。
+- 同一目录的 Git 仅向 https://github.com/sgua83/Blink.git 发布 P4 已提交版本。问题台账 `Docs/Issues.md` 仅由 P4 管理并保留本地文件，不纳入 Git 镜像；`.gitignore` 忽略该精确路径，`Tools/PublishGit.ps1` 在既有发布索引中移除该路径并排除其后续内容，不能因 P4 台账提交而重新加入 Git。每次本项目 P4 提交成功后，由执行该提交的调用方立即用 PowerShell 7 的 Start-Process -WindowStyle Hidden 异步运行一次 Tools/PublishGit.ps1，按 P4 changelist 生成 Git 提交；P4 提交失败或没有提交时不启动发布。不得创建定时任务、Codex heartbeat、轮询或自动重试。Git 失败只影响本次发布，不阻塞或回滚 P4，不执行 P4 sync／revert／submit，也不修改工作区源码。未提交文件与本地暂存内容不纳入发布。
 - 不引入第三方编译器、Shader 编译器、图形框架或并行运行时。Rust 标准库与 Windows／Vulkan／SPIR-V 标准接口属于必要平台设施。
 - crates/blanguage 拥有前端、并行 IR、优化与原生 x64／SPIR-V 后端；crates/blcompute 拥有真实存储、传输、执行与完成后的资源释放。
 - 源语言普通与整域计算统一使用返回类型函数定义，不恢复 program 类别或手写 launch 许可；parallel 显式表达域，on 声明目标能力，target 选择本次 CPU／GPU 位置。同步 GPU 调用等待本次真实完成，结果仍留 GPU，download 负责向 CPU 传输；内部 Program／Stage／ExecutionPlan 和低层异步完成所有者保留职责。当前推导依赖装入的定义，CPU 应用普通原生调用／递归已沿原 ABI 和 Frame 实现；独立原生模块、归档接口与多对象链接已有有限实现；应用及CPU包装可调用独立模块整域CPU／GPU入口，参与要求与初始化效果随原合同导出；纯整域内部也可组合已编译域入口，本地阶段按真实模块调用分段优化，Frame按物理存储唯一交接并允许合法read／atomic参数别名；CPU普通位置借用已按声明布局／逻辑分量交接原地址，C连续布局沿原requires contiguous合同表达；完整模块／资源阶段契约、借用返回、版本演化、其他目标普通调用、选择性内联与异步应用继续开放，具体范围见 Docs/Architecture.md 和 Docs/BLanguage.md。

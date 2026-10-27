@@ -107,10 +107,13 @@ try {
             }
         }
         $lines = [Text.StringBuilder]::new()
+        # The issue ledger is P4-only, including when the previous Git tree tracked it.
+        [void]$lines.Append("0 $([string]::new('0', 40))`tDocs/Issues.md`0")
         $fileNumber = 0
         foreach ($entry in $entries) {
             if (-not $entry.depotFile.StartsWith($depot, [StringComparison]::Ordinal)) { continue }
             $relative = $entry.depotFile.Substring($depot.Length)
+            if ($relative -ceq 'Docs/Issues.md') { continue }
             if ($entry.action -in @('delete', 'move/delete')) {
                 if ($lastChange -ne 0) { [void]$lines.Append("0 $([string]::new('0', 40))`t$relative`0") }
                 continue

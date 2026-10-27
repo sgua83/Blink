@@ -12,3 +12,4 @@ target/
 *.x64
 *.reloc
 *.layout
+/Docs/Issues.md
