@@ -1,20 +1,22 @@
 <div align="center">
 
-<h1>Blink</h1>
+<h1>Blink Programming Language</h1>
 
 <p><strong>Native parallelism · Unified CPU/GPU programming · Native domain compilation and execution</strong></p>
-<p>A foundational language for the AI supercomputing era</p>
+<p>A native parallel programming language for the AI supercomputing era</p>
 
 <p><a href="README.md">简体中文</a> | <strong>English</strong></p>
 <p><a href="#quick-start">Quick start</a> · <a href="#parallel-programming">Read chapters 1–3</a> · <a href="Docs/BLanguage.md">Language reference</a> · <a href="#learn-and-explore">Learn</a> · <a href="Docs/Architecture.md">Architecture</a></p>
 
 </div>
 
-Blink, or **B**, is a native parallel programming language developed from the ground up. B also stands for **Base**: parallelism, data relationships, and cooperation belong in the language itself. The long-term goal is a complete general-purpose and systems language.
+**Blink is a native parallel programming language, also known as the B language.** Use it to write standalone applications, multicore CPU programs, and GPU compute programs. The same compute source can be compiled to native CPU and GPU code.
 
-Interfaces live in `.h` files; implementations live in `.b` files. The compiler generates Windows x64 machine code and SPIR-V directly. The native execution framework owns data, devices, transfers, and completion. The compiler and framework are currently implemented in Rust, without third-party compilers, shader compilers, or parallel runtimes.
+The B in the name also stands for **Base**. Blink aims to become a foundational programming language for the AI supercomputing era, with parallelism, data relationships, and cooperation built into the language, while developing complete general-purpose and systems programming capabilities.
 
-> **In development — version 0.1.0.** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture](Docs/Architecture.md) and [implementation status](Docs/Issues.md).
+This repository contains the B-language compiler, linker, native execution framework, language reference, and examples. B-language interfaces live in `.h` files and implementations in `.b` files. The compiler generates Windows x64 machine code or SPIR-V for the selected target. The execution framework owns data, devices, transfers, and completion. The compiler and framework are currently implemented in Rust, without third-party compilers, shader compilers, or parallel runtimes.
+
+> **In development — version 0.1.0.** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
 
 ## Three core features
 
@@ -24,7 +26,7 @@ Parallelism is a language capability. Parallel domains, access permissions, coop
 
 ### 2. Unified CPU/GPU programming
 
-**One set of B sources, native execution on CPUs and GPUs.** Applicable algorithms share an implementation across both targets. `on` declares target capabilities, `target` chooses an execution location, and `upload` / `download` make data transfers explicit. Hardware differences and transfer costs remain visible.
+**One set of B-language sources, native execution on CPUs and GPUs.** Applicable algorithms share an implementation across both targets. `on` declares target capabilities, `target` chooses an execution location, and `upload` / `download` make data transfers explicit. Hardware differences and transfer costs remain visible.
 
 ### 3. Native domain compilation and execution
 
@@ -48,7 +50,7 @@ Run all subsequent commands from the Blink root. CPU examples need no GPU. GPU e
 
 ## Begin with The Art of Parallel Programming
 
-The first three chapters of [The Art of Parallel Programming](sample/并行编程的艺术.md) are reproduced in full below, including explanations, C/B comparisons, figures, commands, and the book's measurements. Links and outdated function/borrowing descriptions are aligned with the current implementation. Figures are retained from the Chinese edition, with translated captions here.
+The first three chapters of [The Art of Parallel Programming](sample/并行编程的艺术.md) are reproduced in full below, including explanations, C and B-language comparisons, figures, commands, and the book's measurements. Links and outdated function/borrowing descriptions are aligned with the current implementation. Figures are retained from the Chinese edition, with translated captions here.
 
 [Chapter 1: element-wise parallelism](#map) · [Chapter 2: ownership of reads and writes](#ownership) · [Chapter 3: sum reduction](#reduction)
 
@@ -74,7 +76,7 @@ for (size_t i = 0; i < n; ++i) {
 }
 ```
 
-The computation in B is just as short:
+The computation written in the B language is just as short:
 
 ```c
 parallel (value in values) {
@@ -156,11 +158,11 @@ In the book's recorded runs, both `values.bldata` outputs contain `[3,5,7,9]`, w
 
 Four numbers are easy to check by hand. To compare efficiency, apply the same formula to one hundred million numbers. Both serial and parallel versions perform one array transformation with the same formula, data type, and amount of work. A sufficiently large input gives parallel resources room to contribute.
 
-The book's performance comparisons use Release builds throughout. The Blink compiler, CPU/GPU execution framework, and measurement program use Rust release optimizations. The algorithm DLL in Chapter 14 is also built in Release mode. Debug builds are used for investigation; their timings are excluded from these comparisons.
+The book's performance comparisons use Release builds throughout. The Blink compiler, CPU/GPU execution framework, and measurement program use Rust release optimizations. The compute library written in the B language in Chapter 14 is also built in Release mode. Debug builds are used for investigation; their timings are excluded from these comparisons.
 
-Three real implementations are compared: single-threaded C++ optimized with `/O2 /arch:AVX2`, B's native parallel CPU ranges, and B's native GPU execution. C++ retains compiler auto-vectorization. B's CPU version uses the machine's available worker threads.
+Three real implementations are compared: single-threaded C++ optimized with `/O2 /arch:AVX2`, native CPU range parallelism from B-language programs, and native GPU execution of the same B-language program. C++ retains compiler auto-vectorization. The B-language CPU version uses the machine's available worker threads.
 
-To reduce incidental variation, the program warms up, repeats measurements, and reports the median. Each measurement executes the algorithm once. C++ and B CPU timing starts before the algorithm call and ends after completion. B GPU timing starts before submission and ends after actual device completion, including command organization, submission, and waiting. Speedup is serial C++ time divided by B parallel time.
+To reduce incidental variation, the program warms up, repeats measurements, and reports the median. Each measurement executes the algorithm once. C++ and B-language CPU timing starts before the algorithm call and ends after completion. B-language GPU timing starts before submission and ends after actual device completion, including command organization, submission, and waiting. Speedup is serial C++ time divided by B-language parallel execution time.
 
 Code generation, initial allocation, and data preparation are outside the compute timing. In the main GPU comparison, code and data are already resident, and one submission performs one algorithm execution. Upload-execute-download costs are measured separately so that execution can be chosen according to where the data lives.
 
@@ -171,7 +173,7 @@ Build the measurement program as described in [Appendix A.5](sample/并行编程
     map 100000000
 ```
 
-Serial C++ takes **17.512 ms**. B CPU takes **14.627 ms**, a **1.20×** speedup. Resident B GPU execution takes **4.143 ms**, a **4.23×** speedup. The formula is still the one introduced at the beginning.
+Serial C++ takes **17.512 ms**. B-language CPU takes **14.627 ms**, a **1.20×** speedup. Resident B-language GPU execution takes **4.143 ms**, a **4.23×** speedup. The formula is still the one introduced at the beginning.
 
 ![Measured serial and parallel performance of the element-wise transformation](sample/figures/performance-map.svg)
 
@@ -179,9 +181,9 @@ Serial C++ takes **17.512 ms**. B CPU takes **14.627 ms**, a **1.20×** speedup.
 
 ### 1.7 · Put computation where it belongs
 
-For the same one hundred million numbers, serial C++ takes 17.512 ms, B CPU 14.627 ms, and resident B GPU execution 4.143 ms. CPU range parallelism divides work on the host-memory array, while the GPU distributes independent calculations across the device.
+For the same one hundred million numbers, serial C++ takes 17.512 ms, B-language CPU 14.627 ms, and resident B-language GPU execution 4.143 ms. CPU range parallelism divides work on the host-memory array, while the GPU distributes independent calculations across the device.
 
-If those numbers must be uploaded from host memory and downloaded after the transformation, the complete GPU time is 1102.336 ms. For a simple multiply-and-add, movement costs far more than the formula. Data already in host memory can use the faster B CPU version; data already resident on the GPU can continue using device computation.
+If those numbers must be uploaded from host memory and downloaded after the transformation, the complete GPU time is 1102.336 ms. For a simple multiply-and-add, movement costs far more than the formula. Data already in host memory can use the faster B-language CPU version; data already resident on the GPU can continue using device computation.
 
 ![Timing scope and data location for the same formula](sample/figures/performance-scope.svg)
 
@@ -195,7 +197,7 @@ Initial device creation, device-program preparation, and upload of initial value
 
 ### 2.1 · A syntax bridge for C/C++ readers
 
-| Familiar concept | B expression | Important difference |
+| Familiar concept | B-language syntax | Important difference |
 |---|---|---|
 | `float`, 32-bit integers | `f32`, `u32`, `i32` | Do not carry assumptions about C's `int` size into the program |
 | Three floating-point components | `float3` | A native vector value, not three system threads |
@@ -237,7 +239,7 @@ total[0].value += input[i].value;
 
 Several workers read the old value, each adds its own number, and their final writes overwrite one another. Even when addition is simple, the whole read-compute-write sequence is not indivisible.
 
-An ordinary B `parallel` domain gives each invocation exclusive write access to its current element. Shared mutation uses explicit atomics; collective summation uses reduction. Independent updates and shared modification are therefore distinguishable in the source.
+An ordinary `parallel` domain in the B language gives each invocation exclusive write access to its current element. Shared mutation uses explicit atomics; collective summation uses reduction. Independent updates and shared modification are therefore distinguishable in the source.
 
 Access permissions constrain conflicting reads and writes. The algorithm still determines the formula, numerical precision, and business rules.
 
@@ -278,7 +280,7 @@ for (size_t i = 0; i < n; ++i) {
 }
 ```
 
-The parallel B core is:
+The parallel version written in the B language is:
 
 ```c
 reduce_sum(input.value, total.value);
@@ -313,7 +315,7 @@ For ideal integer addition, `(a+b)+c` and `a+(b+c)` agree, so parentheses can be
 
 Associativity permits regrouping; commutativity permits exchanging left and right operands. They are different properties. Later chapters show parallel reductions and scans that preserve operand order.
 
-B u32 addition retains the low 32 bits, giving overflow defined modular semantics. A business count that must not overflow still needs an appropriate scale; a truncated result is not an arbitrary-precision integer.
+The B language's u32 addition retains the low 32 bits, giving overflow defined modular semantics. A business count that must not overflow still needs an appropriate scale; a truncated result is not an arbitrary-precision integer.
 
 ### 3.4 · Floating-point values are not mathematical real numbers
 
@@ -354,9 +356,9 @@ The performance input contains ten million elements. The comparison measures one
     reduce 10000000
 ```
 
-Serial C++ takes **0.542 ms** and B CPU **0.311 ms**, a **1.74×** speedup. Resident B GPU execution takes **5.101 ms**. On the book's machine, CPU range parallelism is a better choice for this lightweight sum.
+Serial C++ takes **0.542 ms** and B-language CPU **0.311 ms**, a **1.74×** speedup. Resident B-language GPU execution takes **5.101 ms**. On the book's machine, CPU range parallelism is a better choice for this lightweight sum.
 
-Each input contributes one integer addition, and the optimized serial implementation is already compact. B CPU divides ten million items into parallel ranges and combines their summaries. GPU submission and waiting account for a larger share of this lightweight computation. Inputs repeat `[3,1,4,2]`; the sum is twenty-five million, and all three implementations produce the same integer result.
+Each input contributes one integer addition, and the optimized serial implementation is already compact. B-language CPU divides ten million items into parallel ranges and combines their summaries. GPU submission and waiting account for a larger share of this lightweight computation. Inputs repeat `[3,1,4,2]`; the sum is twenty-five million, and all three implementations produce the same integer result.
 
 ![Measured sum reduction performance under matching conditions](sample/figures/performance-reduce.svg)
 
@@ -367,16 +369,16 @@ Each input contributes one integer addition, and the optimized serial implementa
 | Tool / library | Purpose |
 |---|---|
 | `blc` | Check sources, compile COFF objects, and export native CPU/GPU compute code |
-| `bllink` | Link compiled objects into Windows x64 executables or algorithm DLLs |
+| `bllink` | Link compiled objects into Windows x64 executables or compute libraries (DLLs) |
 | `blrun` | Bind data and execute CPU/GPU compute modules |
 | `blanguage` | Frontend, type/access checking, parallel IR, optimization, and native backends |
 | `blcompute` | Data, device resources, transfers, native execution, and release after completion |
 
-Build standalone applications in B or use B algorithms from **C, C++, and Rust**. Algorithm DLLs are accompanied by C ABI headers, import libraries, C++ wrappers, and Rust bindings. The native Rust API also supports resident resources and asynchronous submissions.
+Write standalone applications in the B language, or compile compute functions written in the B language into DLLs callable from **C, C++, and Rust**. The toolchain also generates C ABI headers, import libraries, C++ wrappers, and Rust bindings. The native Rust API supports resident resources and asynchronous submissions.
 
 - [Standalone applications](sample/applications/README.md): CPU entry points, dynamic data, and explicit CPU/GPU computation.
-- [Call B from C/C++/Rust](sample/interop/README.md): build and call the same algorithm DLL, starting with four numbers.
-- [Call external DLLs from B](sample/extern/README.md): C ABI, parameter access, and resource boundaries.
+- [Call B-language programs from C/C++/Rust](sample/interop/README.md): build and call the same algorithm DLL, starting with four numbers.
+- [Call external DLLs from the B language](sample/extern/README.md): C ABI, parameter access, and resource boundaries.
 - [Native integration and deployment](Docs/NativeInterop.md): artifacts, ABI, deployment, and current limitations.
 
 ## Capabilities and direction
@@ -390,7 +392,7 @@ Build standalone applications in B or use B algorithms from **C, C++, and Rust**
 | Compute domains | Domain compilation and execution have a defined architectural scope; not implemented |
 | Stable hot updates | Version binding, state migration, and resource handover are architectural goals; not implemented |
 
-B **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. Current rules, native runs, and performance results are recorded separately in the [language reference](Docs/BLanguage.md) and [issue register](Docs/Issues.md).
+The B language **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. Current rules, native runs, and performance results are recorded separately in the [language reference](Docs/BLanguage.md) and [implementation records in the architecture](Docs/Architecture.md).
 
 ## Learn and explore
 
@@ -407,7 +409,7 @@ Technical documentation and books are currently primarily in Chinese. Both READM
 
 ## Contributing
 
-Read the [project conventions](AGENTS.md) and [implementation status](Docs/Issues.md) before making changes. Include B sources, exact commands, toolchain/device details, and original errors when reporting a problem. Distinguish design goals, implementation, native execution, and measured performance. Maintainer submission and publishing procedures are documented in the project conventions.
+Read the [project conventions](AGENTS.md) and [current implementation scope](Docs/Architecture.md) before making changes. Include B-language source code, exact commands, toolchain/device details, and original errors when reporting a problem. Distinguish design goals, implementation, native execution, and measured performance. Maintainer submission and publishing procedures are documented in the project conventions.
 
 ## License
 
