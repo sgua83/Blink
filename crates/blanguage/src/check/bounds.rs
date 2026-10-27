@@ -22,6 +22,7 @@ enum Fact {
     Minimum(ValueIdentity, u32),
     Maximum(ValueIdentity, u32),
     NonZero(ValueIdentity),
+    Boolean(ValueIdentity, bool),
 }
 type Facts = BTreeSet<Fact>;
 impl Place {
@@ -198,14 +199,30 @@ impl Proof {
                 _ => return None,
             })
         }
-        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Fact> {
-            Some(match value {
-                Fact::Equal(a, b) => Fact::equal(identity(a, bindings)?, identity(b, bindings)?),
-                Fact::Index(id, d) => Fact::Index(identity(id, bindings)?, domain(d, bindings)?),
-                Fact::Minimum(id, n) => Fact::Minimum(identity(id, bindings)?, n),
-                Fact::Maximum(id, n) => Fact::Maximum(identity(id, bindings)?, n),
-                Fact::NonZero(id) => Fact::NonZero(identity(id, bindings)?),
-            })
+        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Facts> {
+            let translated = match value {
+                Fact::Boolean(id, truth) => {
+                    let Some(value) = bindings.get(&id) else {
+                        return Some(Facts::new());
+                    };
+                    let condition = value.condition.as_deref().cloned().unwrap_or_default();
+                    let mut facts = condition.cases[usize::from(truth)].clone()?;
+                    if let Some(id) = value.known_identity(0) {
+                        facts.insert(Fact::Boolean(id, truth));
+                    }
+                    return Some(facts);
+                }
+                Fact::Equal(a, b) => identity(a, bindings)
+                    .zip(identity(b, bindings))
+                    .map(|(a, b)| Fact::equal(a, b)),
+                Fact::Index(id, d) => identity(id, bindings)
+                    .zip(domain(d, bindings))
+                    .map(|(id, d)| Fact::Index(id, d)),
+                Fact::Minimum(id, n) => identity(id, bindings).map(|id| Fact::Minimum(id, n)),
+                Fact::Maximum(id, n) => identity(id, bindings).map(|id| Fact::Maximum(id, n)),
+                Fact::NonZero(id) => identity(id, bindings).map(Fact::NonZero),
+            };
+            Some(translated.into_iter().collect())
         }
         let mut translated = self.clone();
         for (i, origins) in self.origins.iter().enumerate() {
@@ -254,8 +271,12 @@ impl Proof {
                 .collect();
         }
         if let Some(condition) = &mut translated.condition {
-            for facts in condition.cases.iter_mut().flatten() {
-                *facts = facts.iter().filter_map(|f| fact(*f, bindings)).collect();
+            for case in &mut condition.cases {
+                *case = case.as_ref().and_then(|facts| {
+                    facts.iter().try_fold(Facts::new(), |current, value| {
+                        both(&Some(current), &fact(*value, bindings))
+                    })
+                });
             }
         }
         translated
@@ -474,6 +495,15 @@ impl Proof {
                 facts.insert(Fact::equal(pair[0], pair[1]));
             }
             for &identity in origins {
+                if *ty == Ty::scalar(Scalar::Bool)
+                    && let Some(condition) = self.condition.as_deref()
+                {
+                    for truth in [false, true] {
+                        if condition.cases[usize::from(!truth)].is_none() {
+                            facts.insert(Fact::Boolean(identity, truth));
+                        }
+                    }
+                }
                 if matches!(scalar, Scalar::U32 | Scalar::I32)
                     && self.nonzero.get(component) == Some(&true)
                 {
@@ -550,6 +580,12 @@ impl Proof {
     }
     fn refine(&mut self, ty: &Ty, component: usize, fact: Fact) {
         match fact {
+            Fact::Boolean(_, truth) if *ty == Ty::scalar(Scalar::Bool) => {
+                let condition = self
+                    .condition
+                    .get_or_insert_with(|| Box::new(Condition::default()));
+                condition.cases[usize::from(!truth)] = None;
+            }
             Fact::Index(_, domain) if ty.components[component].0 == Scalar::U32 => {
                 self.mark_domain(component, domain);
             }
@@ -619,7 +655,8 @@ impl Fact {
             Self::Index(id, _)
             | Self::Minimum(id, _)
             | Self::Maximum(id, _)
-            | Self::NonZero(id) => Some(id),
+            | Self::NonZero(id)
+            | Self::Boolean(id, _) => Some(id),
             Self::Equal(_, _) => None,
         }
     }
@@ -629,6 +666,7 @@ impl Fact {
             Self::Minimum(_, bound) => Self::Minimum(id, bound),
             Self::Maximum(_, bound) => Self::Maximum(id, bound),
             Self::NonZero(_) => Self::NonZero(id),
+            Self::Boolean(_, truth) => Self::Boolean(id, truth),
             equal @ Self::Equal(_, _) => equal,
         }
     }
@@ -791,7 +829,14 @@ impl Default for Condition {
     }
 }
 fn both(a: &Option<Facts>, b: &Option<Facts>) -> Option<Facts> {
-    Some(a.as_ref()?.union(b.as_ref()?).copied().collect())
+    let facts: Facts = a.as_ref()?.union(b.as_ref()?).copied().collect();
+    if facts.iter().any(|fact| {
+        matches!(fact, Fact::Boolean(id, truth) if facts.contains(&Fact::Boolean(*id, !truth)))
+    }) {
+        None
+    } else {
+        Some(facts)
+    }
 }
 fn either(a: Option<Facts>, b: Option<Facts>) -> Option<Facts> {
     match (a, b) {
@@ -875,6 +920,11 @@ impl Condition {
             .as_deref()
             .cloned()
             .unwrap_or_default();
+        for (truth, facts) in condition.cases.iter_mut().enumerate() {
+            if let Some(facts) = facts {
+                facts.insert(Fact::Boolean(value.identity(), truth != 0));
+            }
+        }
         // 常量排除相反结果，但不抹掉成立结果已经持有的范围与长度事实。
         if let Some(bits) = &value.constant {
             condition.cases[usize::from(bits[0] == 0)] = None;
@@ -1758,4 +1808,4 @@ crate::module::codec::record!(Proof {
     domains
 });
 crate::module::codec::record!(Condition { cases });
-crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value)});
+crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth)});
