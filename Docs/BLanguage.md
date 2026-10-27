@@ -2874,6 +2874,12 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 
 同一 Vulkan 设备在既有属性查询链读取 `VkPhysicalDeviceFloatControlsProperties`，实际执行绑定检查所需的两个 32 位能力；不支持时明确报错。该能力来自 [Vulkan 1.2 浮点控制属性](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceFloatControlsProperties.html)，入口模式按 [SPIR-V float controls](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_float_controls.html) 编码。保留有符号零、次正规数、NaN／无穷语义不等于承诺所有 NaN 载荷、浮点结合顺序、近似数学结果和舍入误差一致；CPU 继续使用既有原生浮点指令。
 
+### GPU f32除法的当前范围（2026-10-27）
+
+上述保留模式不将OpFDiv扩展成任意有限除数的全值域CPU精度。[Vulkan精度规定](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)对单精度除法的2.5ULP保证给出指定除数范围[2^-126,2^126]；不能只凭F32存储能表示某个数，就推出除法对该数有同样保证。编译器当前仍直接降低到对应原生指令，不声明统一正确舍入或全值域严格除法。
+
+2026-10-27，BLEngine同源Release程序在CPU上3e38/3e38=1、1.5e38/3e38=0.5，RX9070GRE GPU上均为0；这不属于一般末位误差。按有效数／指数重写的消费者归一化算法两端恢复上述结果，但不证明普通 `/` 已改变语义。不可表示结果的溢出／下溢、其他数学函数及不同设备继续按实际后端范围处理；严格浮点策略与成本仍开放，详见[问题C-004的实测记录](Issues.md#c-004gpu-f32极端除数范围与严格算术缺口2026-10-27)。
+
 ## 通用原生执行入口
 
 `blengine compute <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]` 直接编译并执行没有未满足前置条件的公开 program。先按接口 dataset 顺序绑定数据，再按 texture2d 顺序提供 `.bltex`，与参数在原接口中是否交错无关；`:count` 明确申请该长度的全零数据。每个值参数按接口类型解析，向量按分量顺序提供。只写与读写数据输出为 `<参数名>.bldata`，read 数据不重复保存。加速结构和 view 通过原生 Bindings API 绑定，不从数据文件伪造地址。
