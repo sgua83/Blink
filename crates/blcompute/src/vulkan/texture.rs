@@ -340,12 +340,8 @@ impl Device {
                 "vkCreateSampler",
             )?;
             let (copies, bytes) = mip_copies(dimensions, texture.mips, format.texel_bytes() as u64);
-            let staging = Allocation::new(inner.clone(), bytes, 1, 6)?;
-            let mut mapped = null_mut();
-            check(
-                (f.vkMapMemory)(device, staging.memory, 0, bytes, 0, &mut mapped),
-                "vkMapMemory(texture)",
-            )?;
+            let staging = Allocation::new(inner.clone(), bytes, 1, 6, 1)?;
+            let mapped = staging.mapping()?;
             for (mip, copy) in source.levels.iter().zip(&copies) {
                 std::ptr::copy_nonoverlapping(
                     mip.pixels.as_bytes().as_ptr(),
@@ -353,7 +349,6 @@ impl Device {
                     mip.pixels.as_bytes().len(),
                 );
             }
-            (f.vkUnmapMemory)(device, staging.memory);
             let commands = Commands::new(inner.clone())?;
             let barrier = ImageBarrier {
                 kind: 45,
@@ -429,7 +424,7 @@ impl Device {
             texture.mips,
             texture.format.texel_bytes() as u64,
         );
-        let target = Allocation::new(self.inner.clone(), bytes, 2, 6)?;
+        let target = Allocation::new(self.inner.clone(), bytes, 2, 6, 1)?;
         let commands = Commands::new(self.inner.clone())?;
         unsafe {
             // 布局转换覆盖本队列此前的上传与采样，复制后恢复采样布局。

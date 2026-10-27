@@ -2789,8 +2789,7 @@ impl<'a> Builder<'a> {
         yes_body: impl FnOnce(&mut Self) -> Result<()>,
         no_body: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
-        if let Some(bits) = &c.constant {
-            let truth = bits[0] != 0;
+        if let Some(truth) = c.boolean_constant() {
             self.refine_bounds(&c, truth);
             return if truth { yes_body(self) } else { no_body(self) };
         }

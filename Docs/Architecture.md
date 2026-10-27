@@ -821,3 +821,19 @@ parallel主域定义invocation集合，各独立可写根的当前index()位置�
 execution::infer从原Definition和已解析调用闭包先求域依赖、再求域外控制，推导结果属于当前定义的编译元数据，不是源函数种类、运行期许可或第二份调度状态。实际类型、访问、别名、初始化、目标和协作仍由原检查器负责。CPU主流程保留普通控制，直接parallel引用实际词法数据／统一值并进入原Program编译；拥有形参沿原函数作用域交接，不用算法对象ABI丢掉释放责任。算法对象接口以现有借用dataset及普通统一值组成；普通函数的其他签名不因此被认定无效，其独立产物ABI仍待实现。
 
 .h是接口唯一来源，实现为实际存在的可选解析源；公开与私有可见性、签名和真实错误仍由原模块加载器负责。没有空Module／Source、错误捕获后制造成功、额外模块注册服务或运行时许可。此项不解决独立模块编译、完整效果契约、自举、多机或热更新。
+
+
+## 缓冲物理块、绑定区间与完成后的释放（2026-10-27）
+
+逻辑设备的原生buffer_memory管理缓冲区物理内存；GpuDataset、扫描／排序工作区、AS输入与传输仍各自由原所有者持有VkBuffer，不复制逻辑数据或另立执行服务。小缓冲按实际内存类型、设备地址标志与宿主映射用途共用物理块，区间按类型／CPU／原生ABI与VkMemoryRequirements的共同对齐分配。类型页使用Ty.align，页表为64位地址布局，CPU传输按实际字／字节布局，AS实例及地址数组按原生接口交接。大缓冲仍按实际需求持有自己的块；vkGetBufferMemoryRequirements2报告必须专用分配时，使用对应VkMemoryDedicatedAllocateInfo。当前1MiB块是分配政策，不是语言、数据或设备容量上限。
+
+实际Allocation持有区间，Block只拥有原VkDeviceMemory、真实空闲范围与需要的宿主映射，设备索引只留Weak以便查找仍存活的块。冻结引用、在途执行、scratch和discarded继续沿原Execution真实最后消费者持有Allocation；区间只在原Allocation析构、其VkBuffer退出后归还并合并。不新增帧号、定时回收、独立维护线程或执行完成镜像；块的最后实际区间退出即释放物理内存，不保留空闲块。Block持有原DeviceOwner，内存释放前设备与Vulkan库仍有效，不形成Inner与Block的强引用环。
+
+宿主可见的块在其真实生命周期内映射一次，数据／页表读写及纹理staging共用Allocation的实际区间指针，不能再把整块起点当成某个buffer的起点；原coherent内存类型要求及读回偏好保持。只改变原生存储，不改B布局、源地址命名空间、算法或数值精度。GpuDataset.allocated_bytes继续表示该对象页表和数据页的绑定范围容量；共享块的剩余空间不归属某一逻辑对象，不能将逐对象之和冒充整块保留量或驱动显存。图像本体当前仍独立分配，驱动显存继续由原memory_budget单独报告。
+
+本次范围与原生结果记入C-025。依照[Vulkan内存分配指南](https://docs.vulkan.org/guide/latest/memory_allocation.html)及[专用分配要求](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryDedicatedRequirements.html)，实现由本项目自研，不引入第三方分配器。它不代表多设备、完整资源流送或整体引擎性能已经完成。
+
+
+## 已知结构布尔值与分支生成（2026-10-27）
+
+conditional_blocks直接消费既有Condition中已经排除的真假分支：一侧已明确Impossible时，沿原字面常量分支只生成该侧；结构记录中其他动态字段不会抹掉已经成立的布尔字段事实。查询不增加值身份、路径状态或运行时检查，未知真假仍使用原双侧控制流及合流。调用nonempty、整数除数非零及索引要求保持，不在各检查器额外放行不可达代码。源语言原字面常量分支处理方式保持，一般关系求解不据此宣称完成。原消费者阻断、最小复现和实际结果见C-026。

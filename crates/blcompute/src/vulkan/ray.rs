@@ -276,8 +276,8 @@ impl Acceleration {
     }
 }
 impl Device {
-    fn ray_input(&self, words: &[u32]) -> Result<RayInput> {
-        let allocation = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 0xa0002, 1)?;
+    fn ray_input(&self, words: &[u32], alignment: u64) -> Result<RayInput> {
+        let allocation = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 0xa0002, 1, alignment)?;
         let ready = if words.is_empty() {
             None
         } else {
@@ -289,7 +289,7 @@ impl Device {
         Ok(RayInput { allocation, ready })
     }
     fn ray_input_device(&self, mut data: GpuDataset) -> Result<RayInput> {
-        let allocation = Allocation::new(self.inner.clone(), data.bytes(), 0xa0002, 1)?;
+        let allocation = Allocation::new(self.inner.clone(), data.bytes(), 0xa0002, 1, u64::from(data.ty.align))?;
         let ready = if data.count == 0 {
             None
         } else {
@@ -397,7 +397,7 @@ impl Device {
         unsafe {
             (ray.sizes)(self.inner.owner.device, 1, &info, &count, &mut sizes);
         }
-        let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1)?;
+        let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1, 1)?;
         dependencies.extend(inputs.iter().filter_map(|input| input.ready.clone()));
         dependencies.extend(models.iter().map(|model| model.0.built.clone()));
         dependencies.extend(source.iter().map(|source| source.built.clone()));
@@ -438,6 +438,7 @@ impl Device {
             } + alignment
                 - 1,
             0x20020,
+            1,
             1,
         )?;
         info.target = out.handle;
@@ -520,8 +521,8 @@ impl Device {
     ) -> Result<BottomLevel> {
         let vertices: Vec<_> = positions.iter().flatten().map(|v| v.to_bits()).collect();
         let triangles: Vec<_> = indices.iter().flatten().copied().collect();
-        let vertices = self.ray_input(&vertices)?;
-        let triangles = self.ray_input(&triangles)?;
+        let vertices = self.ray_input(&vertices, 4)?;
+        let triangles = self.ray_input(&triangles, 4)?;
         self.bottom_level_inputs(
             vertices,
             triangles,
@@ -677,7 +678,7 @@ impl Device {
                 (instance.model.0.address >> 32) as u32,
             ]);
         }
-        let input = self.ray_input(&words)?;
+        let input = self.ray_input(&words, 16)?;
         let geometry = Geometry {
             kind: 1000150006,
             next: null(),
@@ -755,6 +756,7 @@ impl Device {
             data.stride,
             data.count,
             0x80000,
+            16,
         )?;
         let mut addresses = Vec::with_capacity(models.len() * 2);
         for page in &target.pages {
@@ -764,7 +766,7 @@ impl Device {
                 addresses.extend([address as u32, (address >> 32) as u32]);
             }
         }
-        let pointers = Allocation::new(self.inner.clone(), addresses.len() as u64 * 4, 0xa0002, 1)?;
+        let pointers = Allocation::new(self.inner.clone(), addresses.len() as u64 * 4, 0xa0002, 1, 8)?;
         target.owned_storage()?.instances = Some(InstanceInput {
             pointers,
             models: models

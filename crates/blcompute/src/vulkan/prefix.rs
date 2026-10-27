@@ -17,6 +17,7 @@ pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<GpuDataset> {
         4,
         (levels * 4) as u32,
         0x100,
+        1,
     )
 }
 pub(super) fn prepare(

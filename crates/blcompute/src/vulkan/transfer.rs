@@ -145,7 +145,7 @@ impl Device {
         if words.is_empty() {
             return Ok(());
         }
-        let source = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 1, 6)?;
+        let source = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 1, 6, 4)?;
         source.write_with(words, encode)?;
         let copy = VkBufferCopy {
             srcOffset: 0,

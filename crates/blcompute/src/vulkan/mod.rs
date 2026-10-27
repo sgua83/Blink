@@ -1,4 +1,5 @@
 //! Vulkan 执行后端。每个逻辑设备拥有队列，执行资源在原生完成后释放。
+mod buffer_memory;
 mod compact;
 mod execution;
 mod memory;
@@ -25,7 +26,7 @@ use raw::*;
 pub use ray::{Acceleration, BottomLevel, RayInstance};
 use std::num::NonZeroU32;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     ffi::{CStr, c_char, c_void},
     mem::ManuallyDrop,
@@ -269,7 +270,7 @@ functions! { Functions {
     vkCmdCopyImageToBuffer:unsafe extern "system" fn(VkCommandBuffer,u64,u32,VkBuffer,u32,*const BufferImageCopy),
     vkCreateBuffer:unsafe extern "system" fn(VkDevice,*const VkBufferCreateInfo,*const c_void,*mut VkBuffer)->i32,
     vkDestroyBuffer:unsafe extern "system" fn(VkDevice,VkBuffer,*const c_void),
-    vkGetBufferMemoryRequirements:unsafe extern "system" fn(VkDevice,VkBuffer,*mut VkMemoryRequirements),
+    vkGetBufferMemoryRequirements2:unsafe extern "system" fn(VkDevice,*const buffer_memory::BufferInfo,*mut buffer_memory::Requirements2),
     vkGetBufferDeviceAddress:unsafe extern "system" fn(VkDevice,*const VkBufferDeviceAddressInfo)->u64,
     vkAllocateMemory:unsafe extern "system" fn(VkDevice,*const VkMemoryAllocateInfo,*const c_void,*mut VkDeviceMemory)->i32,
     vkFreeMemory:unsafe extern "system" fn(VkDevice,VkDeviceMemory,*const c_void),
@@ -332,13 +333,14 @@ struct QueryPoolCreateInfo {
     statistics: u32,
 }
 struct Inner {
-    owner: DeviceOwner,
+    owner: Rc<DeviceOwner>,
     functions: Functions,
     physical: VkPhysicalDevice,
     queue: VkQueue,
     family: u32,
     memory: VkPhysicalDeviceMemoryProperties,
     memory_budget: Option<memory::BudgetQuery>,
+    buffer_memory: RefCell<buffer_memory::Pool>,
     max_buffer_size: Option<u64>,
     properties: VkPhysicalDeviceProperties,
     timestamp_bits: u32,
@@ -664,11 +666,11 @@ impl Device {
                 create_device(physical, &ci, null(), &mut device),
                 "vkCreateDevice",
             )?;
-            let device_owner = DeviceOwner {
+            let device_owner = Rc::new(DeviceOwner {
                 device,
                 destroy: destroy_device,
                 _instance: owner,
-            };
+            });
             let functions = Functions::load(device, get_device)?;
             let ray = if ray_query {
                 let mut ray_properties: ray::Properties = zero();
@@ -701,6 +703,7 @@ impl Device {
                     family: family as u32,
                     memory,
                     memory_budget,
+                    buffer_memory: RefCell::default(),
                     max_buffer_size,
                     properties,
                     timestamp_bits: queue_properties.timestampValidBits,
@@ -793,7 +796,7 @@ impl Device {
         let Some(first) = data.pages.first() else {
             return Ok(words);
         };
-        let target = Allocation::new(self.inner.clone(), first.size, 2, 6)?;
+        let target = Allocation::new(self.inner.clone(), first.size, 2, 6, 4)?;
         let mut remaining = data.bytes();
         for page in &data.pages {
             let bytes = remaining.min(page.size);
@@ -1021,7 +1024,7 @@ impl GpuDataset {
         blanguage::spirv::PAGE_BYTES / self.stride
     }
     fn new(inner: Rc<Inner>, ty: Ty, stride: u32, count: u32) -> Result<Self> {
-        Self::allocate(inner, ty, stride, count, 0)
+        Self::allocate(inner, ty, stride, count, 0, 1)
     }
     fn allocate(
         inner: Rc<Inner>,
@@ -1029,6 +1032,7 @@ impl GpuDataset {
         stride: u32,
         count: u32,
         extra_usage: u32,
+        alignment: u64,
     ) -> Result<Self> {
         let capacity = blanguage::spirv::PAGE_BYTES / stride;
         if capacity == 0 {
@@ -1043,6 +1047,7 @@ impl GpuDataset {
                 n as u64 * stride as u64,
                 0x20023 | extra_usage,
                 1,
+                alignment.max(u64::from(ty.align)),
             )?);
             remaining -= n;
         }
@@ -1062,7 +1067,7 @@ impl GpuDataset {
         })
     }
     fn table(inner: Rc<Inner>, pages: &[Allocation]) -> Result<Allocation> {
-        let table = Allocation::new(inner.clone(), (pages.len() as u64 * 8).max(8), 0x20020, 6)?;
+        let table = Allocation::new(inner.clone(), (pages.len() as u64 * 8).max(8), 0x20020, 6, 8)?;
         let mut words = Vec::with_capacity(pages.len() * 2);
         for page in pages {
             let info = VkBufferDeviceAddressInfo {
@@ -1087,7 +1092,7 @@ impl GpuDataset {
 struct Allocation {
     inner: Rc<Inner>,
     buffer: VkBuffer,
-    memory: VkDeviceMemory,
+    memory: Option<buffer_memory::Range>,
     size: u64,
     allocated_size: u64,
     host_visible: bool,
@@ -1101,7 +1106,7 @@ impl Allocation {
         };
         unsafe { (self.inner.functions.vkGetBufferDeviceAddress)(self.inner.owner.device, &info) }
     }
-    fn new(inner: Rc<Inner>, bytes: u64, usage: u32, flags: u32) -> Result<Self> {
+    fn new(inner: Rc<Inner>, bytes: u64, usage: u32, flags: u32, alignment: u64) -> Result<Self> {
         let size = bytes.max(4);
         if let Some(limit) = inner.max_buffer_size {
             if size > limit {
@@ -1114,7 +1119,7 @@ impl Allocation {
             let mut out = Self {
                 inner,
                 buffer: 0,
-                memory: 0,
+                memory: None,
                 size,
                 allocated_size: 0,
                 host_visible: flags & 2 != 0,
@@ -1129,43 +1134,13 @@ impl Allocation {
                 (f.vkCreateBuffer)(device, &ci, null(), &mut out.buffer),
                 "vkCreateBuffer",
             )?;
-            let mut required = zero();
-            (f.vkGetBufferMemoryRequirements)(device, out.buffer, &mut required);
+            let (required, dedicated) = buffer_memory::requirements(&out.inner, out.buffer);
             out.allocated_size = required.size;
-            let memory = &out.inner.memory;
-            // 宿主读回在兼容的 coherent 类型中选择主机缓存；上传和设备分配保持原顺序。
-            let host_read = usage == 2 && flags & 2 != 0;
-            let index = (0..memory.memoryTypeCount)
-                .filter(|i| {
-                    required.memoryTypeBits & (1 << i) != 0
-                        && memory.memoryTypes[*i as usize].propertyFlags & flags == flags
-                })
-                .min_by_key(|i| host_read && memory.memoryTypes[*i as usize].propertyFlags & 8 == 0)
-                .ok_or_else(|| error(format!("目标设备缺少内存类型 flags={flags:#x}")))?;
-            let mut ai: VkMemoryAllocateInfo = zero();
-            ai.sType = 5;
-            ai.allocationSize = required.size;
-            ai.memoryTypeIndex = index;
-            let allocation_flags = VkMemoryAllocateFlagsInfo {
-                sType: 1000060000,
-                pNext: null(),
-                flags: 2,
-                deviceMask: 0,
-            };
-            if usage & 0x20000 != 0 {
-                ai.pNext = (&allocation_flags as *const VkMemoryAllocateFlagsInfo).cast();
-            }
-            let allocated = (f.vkAllocateMemory)(device, &ai, null(), &mut out.memory);
-            if allocated != 0 {
-                let ty = memory.memoryTypes[index as usize];
-                let heap = memory.memoryHeaps[ty.heapIndex as usize];
-                return Err(error(format!(
-                    "vkAllocateMemory 返回 VkResult {allocated}：buffer_bytes={} allocation_bytes={} usage={usage:#x} memory_type={index} properties={:#x} heap={} heap_bytes={}",
-                    out.size, required.size, ty.propertyFlags, ty.heapIndex, heap.size
-                )));
-            }
+            let memory = buffer_memory::allocate(&out.inner, required, dedicated, out.buffer, usage, flags, alignment)?;
+            out.memory = Some(memory);
+            let memory = out.memory.as_ref().unwrap();
             check(
-                (f.vkBindBufferMemory)(device, out.buffer, out.memory, 0),
+                (f.vkBindBufferMemory)(device, out.buffer, memory.memory(), memory.offset),
                 "vkBindBufferMemory",
             )?;
             Ok(out)
@@ -1174,26 +1149,17 @@ impl Allocation {
     fn write(&self, words: &[u32]) -> Result<()> {
         self.write_with(words, |_| {})
     }
-    fn write_with(&self, words: &[u32], encode: impl FnOnce(&mut [u32])) -> Result<()> {
+    fn mapping(&self) -> Result<*mut u8> {
         if !self.host_visible {
             return Err(error("只能映射 host-visible 数据传输内存"));
         }
+        Ok(self.memory.as_ref().unwrap().pointer())
+    }
+    fn write_with(&self, words: &[u32], encode: impl FnOnce(&mut [u32])) -> Result<()> {
+        let pointer = self.mapping()?.cast::<u32>();
         unsafe {
-            let mut ptr = null_mut();
-            check(
-                (self.inner.functions.vkMapMemory)(
-                    self.inner.owner.device,
-                    self.memory,
-                    0,
-                    self.size,
-                    0,
-                    &mut ptr,
-                ),
-                "vkMapMemory(write)",
-            )?;
-            std::ptr::copy_nonoverlapping(words.as_ptr(), ptr.cast(), words.len());
-            encode(std::slice::from_raw_parts_mut(ptr.cast(), words.len()));
-            (self.inner.functions.vkUnmapMemory)(self.inner.owner.device, self.memory);
+            std::ptr::copy_nonoverlapping(words.as_ptr(), pointer, words.len());
+            encode(std::slice::from_raw_parts_mut(pointer, words.len()));
         }
         Ok(())
     }
@@ -1207,26 +1173,7 @@ impl Allocation {
         })
     }
     fn read_with<T>(&self, read: impl FnOnce(*const u8) -> T) -> Result<T> {
-        if !self.host_visible {
-            return Err(error("只能映射 host-visible 数据传输内存"));
-        }
-        let value = unsafe {
-            let mut ptr = null_mut();
-            check(
-                (self.inner.functions.vkMapMemory)(
-                    self.inner.owner.device,
-                    self.memory,
-                    0,
-                    self.size,
-                    0,
-                    &mut ptr,
-                ),
-                "vkMapMemory(read)",
-            )?;
-            let value = read(ptr.cast());
-            (self.inner.functions.vkUnmapMemory)(self.inner.owner.device, self.memory);
-            value
-        };
+        let value = read(self.mapping()?);
         Ok(value)
     }
 }
@@ -1237,9 +1184,6 @@ impl Drop for Allocation {
             let device = self.inner.owner.device;
             if self.buffer != 0 {
                 (f.vkDestroyBuffer)(device, self.buffer, null());
-            }
-            if self.memory != 0 {
-                (f.vkFreeMemory)(device, self.memory, null());
             }
         }
     }

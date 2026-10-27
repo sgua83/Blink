@@ -906,6 +906,18 @@ impl Proof {
     }
 }
 impl Value {
+    pub(super) fn boolean_constant(&self) -> Option<bool> {
+        let condition = Condition::of(self);
+        match condition
+            .cases
+            .each_ref()
+            .map(|case| matches!(&*case.0, ClauseNode::Impossible))
+        {
+            [true, false] => Some(true),
+            [false, true] => Some(false),
+            _ => None,
+        }
+    }
     pub(super) fn is_nonzero(&self) -> bool {
         self.ty.is_numeric()
             && matches!(
