@@ -2,8 +2,6 @@
 mod archive;
 mod static_library;
 pub use static_library::{Input, archive};
-mod sdk_abi;
-pub(crate) use sdk_abi::identity as runtime_abi;
 mod coff;
 mod emit;
 pub(crate) use archive::compile as compile_archive;

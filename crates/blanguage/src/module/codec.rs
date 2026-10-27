@@ -66,12 +66,17 @@ impl Decode for bool {
         }
     }
 }
-impl<T: Encode> Encode for Vec<T> {
+impl<T: Encode> Encode for [T] {
     fn encode(&self, w: &mut Writer) {
         self.len().encode(w);
         for value in self {
             value.encode(w);
         }
+    }
+}
+impl<T: Encode> Encode for Vec<T> {
+    fn encode(&self, w: &mut Writer) {
+        self.as_slice().encode(w);
     }
 }
 impl<T: Decode> Decode for Vec<T> {

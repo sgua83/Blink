@@ -11,6 +11,7 @@ pub mod linker;
 pub mod module;
 pub mod native;
 pub mod object;
+pub mod resource;
 mod optimize;
 mod parser;
 pub mod spirv;

@@ -8,7 +8,11 @@ fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
         (Err(error), Err(cleanup)) => Err(format!("{error}\n编译暂存清理失败：{cleanup}").into()),
     }
 }
-pub(crate) fn compile(source: &str, exports: Vec<String>) -> Result<Archive> {
+pub(crate) fn compile(
+    source: &str,
+    exports: Vec<String>,
+    dependencies: &[&str],
+) -> Result<Archive> {
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -25,10 +29,17 @@ pub(crate) fn compile(source: &str, exports: Vec<String>) -> Result<Archive> {
     let build = sdk.join("target/blc-object").join(id);
     std::fs::create_dir_all(build.join("src"))?;
     let result = (|| {
+        let dependencies = dependencies
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name}={{path={:?}}}\n",
+                    sdk.join("crates").join(name).to_string_lossy()
+                )
+            })
+            .collect::<String>();
         let manifest = format!(
-            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\nblanguage={{path={:?}}}\nblcompute={{path={:?}}}\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
-            sdk.join("crates/blanguage").to_string_lossy(),
-            sdk.join("crates/blcompute").to_string_lossy()
+            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\n{dependencies}[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
         );
         std::fs::write(build.join("Cargo.toml"), manifest)?;
         std::fs::write(build.join("src/lib.rs"), source)?;

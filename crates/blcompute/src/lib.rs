@@ -15,12 +15,14 @@ pub(crate) fn error(message: impl Into<String>) -> Box<dyn std::error::Error + S
     std::io::Error::other(message.into()).into()
 }
 
+// 模块资源 C ABI 的标量：u32 标签与 C union 载荷；所有权仍由实际调用者保持。
+#[repr(C, u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum Value {
-    F32(f32),
-    U32(u32),
-    I32(i32),
-    Bool(bool),
+    F32(f32) = blanguage::resource::F32,
+    U32(u32) = blanguage::resource::U32,
+    I32(i32) = blanguage::resource::I32,
+    Bool(bool) = blanguage::resource::BOOL,
 }
 impl Value {
     fn scalar(self) -> Scalar {

@@ -234,7 +234,7 @@ pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
         .collect();
-    let archive = crate::object::compile_archive(&source, exports)?;
+    let archive = crate::object::compile_archive(&source, exports, &["blanguage", "blcompute"])?;
     Ok(crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {

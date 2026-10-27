@@ -315,76 +315,86 @@ pub(crate) fn application_source(
     root: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::fmt::Write;
-    let mut images = Vec::new();
     let mut functions = String::new();
     if root {
         functions.push_str(r#"
-type Factory=unsafe extern "C" fn()->*mut ModuleResources;
-unsafe extern "C"{static __blink_module_count:usize;static __blink_module_factories:Factory;}
+use blcompute::application::{Frame, ProgramImage};
+type Factory = unsafe extern "C" fn() -> ModuleImage;
+unsafe extern "C" { static __blink_module_count: usize; static __blink_module_factories: Factory; }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_create()->*mut Frame{
-    let factories=unsafe{std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories),__blink_module_count)};
-    let mut types=Vec::new();let mut programs=Vec::new();
-    for factory in factories{let module=unsafe{Box::from_raw(factory())};let ModuleResources{types:local_types,programs:local_programs}=*module;types.extend(local_types);programs.extend(local_programs);}
-    Box::into_raw(Box::new(Frame::new(types,programs)))
+pub unsafe extern "C" fn blink_create() -> *mut c_void {
+    let factories = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories), __blink_module_count) };
+    let mut types = Vec::new();
+    let mut programs = Vec::new();
+    for factory in factories {
+        let image = unsafe { factory() };
+        let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
+        let module = match unsafe { blanguage::resource::from_compiler_output(bytes) } {
+            Ok(module) => module,
+            Err(error) => { eprintln!("{error}"); std::process::exit(1) }
+        };
+        types.extend(module.types);
+        programs.extend(module.images.into_iter().map(|image| match image {
+            blanguage::resource::Image::Cpu(image) => ProgramImage::Cpu(image),
+            blanguage::resource::Image::Gpu(image) => ProgramImage::Gpu(image),
+        }));
+    }
+    Box::into_raw(Box::new(Frame::new(types, programs))).cast()
 }
 "#);
     }
-
+    if !resources.types.is_empty() {
+        writeln!(
+            functions,
+            "unsafe extern \"C\" {{ static {prefix}_type_base:u32; fn blink_allocate(frame:*mut c_void,ty:u32,count:u32)->u32; }}"
+        )?;
+    }
+    if !resources.programs.is_empty() {
+        writeln!(
+            functions,
+            "unsafe extern \"C\" {{ static {prefix}_program_base:u32; fn blink_run(frame:*mut c_void,program:u32,data:*const u32,words:*const UniformValue); }}"
+        )?;
+    }
     for index in 0..resources.types.len() {
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(frame: *mut Frame, count: u32) -> u32 {{\n let result = unsafe {{ &mut *frame }}.allocate(unsafe {{ {prefix}_type_base }} + {index}, count);\n unsafe {{ finish(frame, result) }}\n}}"
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(frame:*mut c_void,count:u32)->u32 {{ unsafe {{ blink_allocate(frame,{prefix}_type_base+{index},count) }} }}"
         )?;
     }
-    for (index, (target, program)) in resources.programs.iter().enumerate() {
-        let template = crate::TemplateProgram(program.clone());
-        let image = if *target == Target::Cpu {
-            let image = crate::native::compile_program(template).map_err(std::io::Error::other)?;
-            format!(
-                "ProgramImage::Cpu(unsafe {{ NativeProgramImage::<TemplateProgram>::from_compiler_output({}, {}) }})",
-                image.program().source(),
-                image.stages().source()
-            )
-        } else {
-            let image = crate::spirv::compile_program(template).map_err(std::io::Error::other)?;
-            format!(
-                "ProgramImage::Gpu(unsafe {{ ShaderProgramImage::<TemplateProgram>::from_compiler_output({}, {}) }})",
-                image.program().source(),
-                image.stages().source()
-            )
-        };
-        images.push(image);
-        let mut params = vec!["frame: *mut Frame".to_string()];
+    for (index, (_, program)) in resources.programs.iter().enumerate() {
+        let mut params = vec!["frame:*mut c_void".to_owned()];
         let handles = (0..program.buffers.len())
             .map(|i| {
-                params.push(format!("data_{i}: u32"));
-                format!("data_{i}")
+                let name = format!("data_{i}");
+                params.push(format!("{name}:u32"));
+                name
             })
             .collect::<Vec<_>>();
         let mut words = Vec::new();
         for uniform in &program.uniforms {
             for (scalar, _) in &uniform.ty.components {
                 let name = format!("value_{}", words.len());
-                params.push(format!(
-                    "{name}: {}",
-                    match scalar {
-                        Scalar::F32 => "f32",
-                        Scalar::I32 => "i32",
-                        _ => "u32",
-                    }
+                let ty = match scalar {
+                    Scalar::F32 => "f32",
+                    Scalar::I32 => "i32",
+                    _ => "u32",
+                };
+                params.push(format!("{name}:{ty}"));
+                let bits = match scalar {
+                    Scalar::F32 => format!("{name}.to_bits()"),
+                    Scalar::I32 => format!("{name} as u32"),
+                    Scalar::Bool => format!("u32::from({name} != 0)"),
+                    Scalar::U32 => name,
+                };
+                words.push(format!(
+                    "UniformValue{{kind:{},bits:{bits}}}",
+                    crate::resource::scalar_tag(*scalar)
                 ));
-                words.push(match scalar {
-                    Scalar::F32 => format!("Value::F32({name})"),
-                    Scalar::I32 => format!("Value::I32({name})"),
-                    Scalar::Bool => format!("Value::Bool({name} != 0)"),
-                    Scalar::U32 => format!("Value::U32({name})"),
-                });
             }
         }
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({}) {{\n let result = unsafe {{ &mut *frame }}.run(unsafe {{ {prefix}_program_base }} + {index}, &[{}], &[{}]);\n unsafe {{ finish(frame, result) }}\n}}",
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({}) {{ let data=[{}];let words=[{}];unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr()) }} }}",
             params.join(","),
             handles.join(","),
             words.join(",")
@@ -392,7 +402,9 @@ pub unsafe extern "C" fn blink_create()->*mut Frame{
     }
     Ok(include_str!("../application/runtime.rs.in")
         .replace("@PREFIX@", prefix)
-        .replace("@TYPES@", &resources.types.source())
-        .replace("@IMAGES@", &format!("vec![{}]", images.join(",")))
+        .replace(
+            "@IMAGE@",
+            &format!("{:?}", crate::resource::compile(resources)?),
+        )
         .replace("@FUNCTIONS@", &functions))
 }

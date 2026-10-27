@@ -14,7 +14,7 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
     for module in &modules {
         if &module.abi != abi {
             return Err(
-                "模块执行框架的实际 Rust ABI 不一致，须用同一 SDK 和工具链重编资源模块".into(),
+                "模块资源 C ABI 不一致，须重编为同一实际资源 ABI".into(),
             );
         }
         if !prefixes.insert(&module.prefix) {

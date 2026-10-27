@@ -10,7 +10,6 @@ use blanguage::{
 };
 
 mod abi;
-pub use abi::ModuleResources;
 
 pub enum ProgramImage {
     Cpu(blanguage::native::ProgramImage<TemplateProgram>),
@@ -25,6 +24,13 @@ enum ProgramSlot {
     Loaded(Program),
 }
 impl ProgramSlot {
+    fn layout(&self) -> &ExecutionPlan {
+        match self {
+            Self::Image(ProgramImage::Cpu(image)) => image.program(),
+            Self::Image(ProgramImage::Gpu(image)) => image.program(),
+            Self::Loaded(program) => program.layout(),
+        }
+    }
     fn gpu_layout(&self) -> Option<&ExecutionPlan> {
         match self {
             Self::Image(ProgramImage::Gpu(image)) => Some(image.program()),

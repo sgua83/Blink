@@ -12,7 +12,7 @@ pub struct StageCode {
     pub main: Vec<u32>,
     pub tail: Option<Vec<u32>>,
     pub scan_add: Option<Vec<u32>>,
-    pub finish: Option<(&'static str, Vec<u32>)>,
+    pub finish: Option<(String, Vec<u32>)>,
     pub dispatch: Option<Vec<u32>>,
     pub selector: Option<Vec<u32>>,
     pub sort: Option<Vec<ShaderCode>>,
@@ -133,7 +133,7 @@ pub fn compile_program<P: Deref<Target = Program>>(
                 tail: tail.map(|p| emit_pass(&program, i, p)).transpose()?,
                 scan_add: scan_add.map(|p| emit_pass(&program, i, p)).transpose()?,
                 finish: finish
-                    .map(|(name, p)| Ok((name, emit_pass(&program, i, p)?)))
+                    .map(|(name, p)| Ok((name.into(), emit_pass(&program, i, p)?)))
                     .transpose()?,
                 dispatch: dispatch.map(|p| emit_pass(&program, i, p)).transpose()?,
                 selector: selected

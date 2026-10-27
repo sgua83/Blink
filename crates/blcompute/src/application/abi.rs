@@ -1,12 +1,9 @@
 //! 原生模块共用的实际 Frame C ABI；资源初始化数据仍由编译产物生产。
-use super::{Frame, ProgramImage};
-pub struct ModuleResources {
-    pub types: Vec<blanguage::ir::Ty>,
-    pub programs: Vec<ProgramImage>,
-}
+use super::Frame;
 #[cfg(windows)]
 mod native {
     use super::*;
+    use crate::Value;
     fn fail(error: Box<dyn std::error::Error + Send + Sync>) -> ! {
         eprintln!("{error}");
         std::process::exit(1)
@@ -19,6 +16,37 @@ mod native {
                 fail(error)
             }
         }
+    }
+    /// # Safety
+    /// frame 属于本运行库，ty 是已绑定模块的实际类型索引；调用遵守独占所有权。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_allocate(frame: *mut Frame, ty: u32, count: u32) -> u32 {
+        let result = unsafe { &mut *frame }.allocate(ty, count);
+        unsafe { finish(frame, result) }
+    }
+    /// # Safety
+    /// frame／program 来自本次已绑定资源映像；data和values按该程序接口交付有效的
+    /// 句柄和C布局标量数组。空数组同样具有有效对齐地址，借用保持到同步真实完成。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_run(
+        frame: *mut Frame,
+        program: u32,
+        data: *const u32,
+        values: *const Value,
+    ) {
+        let plan = unsafe { &*frame }.programs[program as usize]
+            .as_ref()
+            .unwrap()
+            .layout();
+        let data = unsafe { std::slice::from_raw_parts(data, plan.buffers().len()) };
+        let count = plan
+            .uniforms()
+            .iter()
+            .map(|value| value.ty.components.len())
+            .sum();
+        let values = unsafe { std::slice::from_raw_parts(values, count) };
+        let result = unsafe { &mut *frame }.run(program, data, values);
+        unsafe { finish(frame, result) }
     }
     /// # Safety
     /// frame 是本 ABI 创建且仍由调用者独占持有的实际 Frame。

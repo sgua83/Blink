@@ -69,33 +69,39 @@ pub(crate) fn compile_resources(
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
         let source = crate::dll::application_source(resources, &prefix, root)?;
-        let mut exports = [
-            "blink_destroy",
-            "blink_release",
-            "blink_upload",
-            "blink_download",
-            "blink_address",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+        let mut exports = if root {
+            [
+                "blink_destroy",
+                "blink_release",
+                "blink_upload",
+                "blink_download",
+                "blink_address",
+                "blink_allocate",
+                "blink_run",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         exports.extend((0..resources.types.len()).map(|i| format!("{prefix}_allocate_{i}")));
         exports.extend((0..resources.programs.len()).map(|i| format!("{prefix}_run_{i}")));
         if root {
             exports.push("blink_create".into());
         }
         exports.push(format!("{prefix}_resources"));
-        let mut archive = object::compile_archive(&source, exports)?;
-        let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
+        let dependencies: &[&str] = if root {
+            &["blanguage", "blcompute"]
+        } else {
+            &[]
+        };
+        let mut archive = object::compile_archive(&source, exports, dependencies)?;
         archive.resources = Some(object::ResourceBinding {
             prefix,
             types: u32::try_from(resources.types.len())?,
             programs: u32::try_from(resources.programs.len())?,
-            abi: object::runtime_abi(sdk)?,
+            abi: crate::resource::ABI.to_vec(),
         });
         Some(archive)
     } else {
