@@ -105,7 +105,7 @@ impl<'a> Builder<'a> {
         key: &str,
         args: &[Expr],
         span: Span,
-    ) -> Result<Vec<Argument>> {
+    ) -> Result<Option<Vec<Argument>>> {
         let callee = &self.world.functions[key];
         if args.len() != callee.function.params.len() {
             return self.fail(span, "B162", "函数参数数量不匹配");
@@ -115,7 +115,13 @@ impl<'a> Builder<'a> {
         for (param, arg) in callee.function.params.iter().zip(args) {
             arguments.push(
                 if callee.function.external.is_some() && param.access == Access::Read {
-                    Argument::Exclusive(self.external_read_place(arg)?)
+                    {
+                        let Some(place) = self.external_read_place(arg)? else {
+                            self.abandon_arguments(&held);
+                            return Ok(None);
+                        };
+                        Argument::Exclusive(place)
+                    }
                 } else if param.ty.is_acceleration() {
                     let ExprKind::Name(name) = &arg.kind else {
                         return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
@@ -125,12 +131,18 @@ impl<'a> Builder<'a> {
                     };
                     Argument::Acceleration(*index)
                 } else if param.ty.is_texture_resource() {
-                    Argument::Texture(self.texture_argument(arg)?)
+                    {
+                        let Some(texture) = self.texture_argument(arg)? else {
+                            self.abandon_arguments(&held);
+                            return Ok(None);
+                        };
+                        Argument::Texture(texture)
+                    }
                 } else if param.ty.dataset && param.access == Access::Value {
                     let returned = self.evaluate_returned(arg, None)?;
                     if !self.flow.continues() {
                         self.abandon_arguments(&held);
-                        return Ok(arguments);
+                        return Ok(None);
                     }
                     let Some(returns::Returned::Dataset(data)) = returned else {
                         return self.fail(arg.span, "B224", "dataset 值参数需要拥有的数据集");
@@ -147,16 +159,25 @@ impl<'a> Builder<'a> {
                         let argument = self.scoped_argument(arg)?;
                         if !self.flow.continues() {
                             self.abandon_arguments(&held);
-                            return Ok(arguments);
+                            return Ok(None);
                         }
                         argument.unwrap()
                     }
                 } else if param.ty.tile {
                     Argument::Tile(self.tile_view(arg)?)
                 } else if param.access == Access::Atomic {
-                    Argument::Atomic(self.atomic_place(arg)?)
+                    {
+                        let Some(place) = self.atomic_place(arg)? else {
+                            self.abandon_arguments(&held);
+                            return Ok(None);
+                        };
+                        Argument::Atomic(place)
+                    }
                 } else if matches!(param.access, Access::InOut | Access::Write) {
-                    let place = self.mutable_place(arg, param.access)?;
+                    let Some(place) = self.mutable_place(arg, param.access)? else {
+                        self.abandon_arguments(&held);
+                        return Ok(None);
+                    };
                     Argument::Exclusive(place)
                 } else {
                     let expected =
@@ -174,7 +195,7 @@ impl<'a> Builder<'a> {
                     let returned = self.evaluate_returned(arg, expected.as_ref())?;
                     if !self.flow.continues() {
                         self.abandon_arguments(&held);
-                        return Ok(arguments);
+                        return Ok(None);
                     }
                     match returned {
                         Some(returns::Returned::Value(v)) => Argument::Value(v),
@@ -186,7 +207,7 @@ impl<'a> Builder<'a> {
             );
             if !self.flow.continues() {
                 self.abandon_arguments(&held);
-                return Ok(arguments);
+                return Ok(None);
             }
             if let Some(name) = self.hold_argument(arguments.last().unwrap(), param.access) {
                 held.push((arguments.len() - 1, name));
@@ -229,7 +250,7 @@ impl<'a> Builder<'a> {
             }
         }
         self.finish_arguments(&held, &mut arguments);
-        Ok(arguments)
+        Ok(Some(arguments))
     }
     pub(super) fn invoke_function(
         &mut self,
@@ -302,7 +323,9 @@ impl<'a> Builder<'a> {
         if args.len() != callee.function.params.len() {
             return self.fail(span, "B162", "cooperate 参数数量不匹配");
         }
-        let arguments = self.function_arguments(&key, args, span)?;
+        let Some(arguments) = self.function_arguments(&key, args, span)? else {
+            return Ok(None);
+        };
         let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
         let result = self.inline_instance(instance, arguments, span)?;
         self.ordinary_return(result, span)

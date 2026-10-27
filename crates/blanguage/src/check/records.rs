@@ -28,7 +28,7 @@ impl Builder<'_> {
         name: &TypeName,
         args: &[Expr],
         span: Span,
-    ) -> Result<Value> {
+    ) -> Result<Option<Value>> {
         let ty = self.world.ty(
             name,
             &self.definition.source,
@@ -42,9 +42,12 @@ impl Builder<'_> {
                 .array
                 .as_deref()
                 .or_else(|| ty.fields.get(index).map(|(_, _, ty)| ty.as_ref()));
-            values.push(self.expr_expected(arg, expected)?);
+            let Some(value) = self.expr_expected(arg, expected)? else {
+                return Ok(None);
+            };
+            values.push(value);
         }
-        self.record_value(name, values, span)
+        self.record_value(name, values, span).map(Some)
     }
     pub(super) fn record_value(
         &mut self,

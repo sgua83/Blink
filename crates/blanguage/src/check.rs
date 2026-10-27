@@ -1493,9 +1493,9 @@ impl<'a> Builder<'a> {
             None => self.fail(span, "B228", "此处需要普通值，void 调用没有返回值"),
         }
     }
-    fn place(&mut self, e: &Expr) -> Result<Place> {
+    fn place(&mut self, e: &Expr) -> Result<Option<Place>> {
         match &e.kind {
-            ExprKind::Name(name) => self.name_place(name, e),
+            ExprKind::Name(name) => self.name_place(name, e).map(Some),
             ExprKind::Member(base, field) => self.member_place(base, field, e),
             ExprKind::Index(base, index) => self.index_place(base, index),
             _ => self.fail(e.span, "B138", "表达式不是可赋值位置"),
@@ -1783,7 +1783,7 @@ impl<'a> Builder<'a> {
         }
         Ok(())
     }
-    fn expr(&mut self, e: &Expr) -> Result<Value> {
+    fn expr(&mut self, e: &Expr) -> Result<Option<Value>> {
         match &e.kind {
             ExprKind::FunctionRef(..) => self.fail(
                 e.span,
@@ -1793,30 +1793,40 @@ impl<'a> Builder<'a> {
             ExprKind::Cooperate(..) => {
                 self.fail(e.span, "B208", "cooperate 调用只能作为协作根块的局部声明")
             }
-            ExprKind::StaticU32(bits) => Ok(self.constant(Scalar::U32, *bits)),
+            ExprKind::StaticU32(bits) => Ok(Some(self.constant(Scalar::U32, *bits))),
             ExprKind::Specialize(name, explicit, args) => {
                 let value = self.specialized_call(name, explicit, args, e.span)?;
-                self.value_result(value, e.span)
+                if !self.flow.continues() {
+                    return Ok(None);
+                }
+                self.value_result(value, e.span).map(Some)
             }
             ExprKind::Number(n) => {
                 let (t, b) = number(&self.definition.source, e.span, n)?;
-                Ok(self.literal(t.components[0].0, b))
+                Ok(Some(self.literal(t.components[0].0, b)))
             }
-            ExprKind::Bool(b) => Ok(self.constant(Scalar::Bool, *b as u32)),
-            ExprKind::Name(name) => self.name_expr(name, e),
+            ExprKind::Bool(b) => Ok(Some(self.constant(Scalar::Bool, *b as u32))),
+            ExprKind::Name(name) => self.name_expr(name, e).map(Some),
             ExprKind::Member(base, field) => {
                 let result = self.member_returned(e, base, field)?;
+                if !self.flow.continues() {
+                    return Ok(None);
+                }
                 let value = self.ordinary_return(result, e.span)?;
-                self.value_result(value, e.span)
+                self.value_result(value, e.span).map(Some)
             }
             ExprKind::Index(base, index) => self.index_expr(base, index, e),
             ExprKind::Unary(op, a) => self.unary_expr(op, a, e.span),
             ExprKind::Binary(op, a, b) => self.binary_expr(op, a, b, e.span),
             ExprKind::Select(c, a, b) => self.selection(c, a, b, e.span),
             ExprKind::Construct(ty, args) => self.record_expression(ty, args, e.span),
-            ExprKind::Call(name, args) => {
-                let result = self.call(name, args, e.span)?;
-                self.value_result(result, e.span)
+            ExprKind::Call(..) => {
+                let result = self.evaluate_returned(e, None)?;
+                if !self.flow.continues() {
+                    return Ok(None);
+                }
+                let value = self.ordinary_return(result, e.span)?;
+                self.value_result(value, e.span).map(Some)
             }
         }
     }
@@ -2156,10 +2166,7 @@ impl<'a> Builder<'a> {
             constant: None,
         })
     }
-    fn call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
-        if name == "try" {
-            return self.propagate_result(args, span);
-        }
+    fn builtin_call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
         if matches!(name, "Ok" | "Err") {
             return self.fail(
                 span,
@@ -2174,13 +2181,13 @@ impl<'a> Builder<'a> {
             return self.application_run(name, args, span);
         }
         if name == "println" {
-            return self.println(args, span).map(Some);
+            return self.println(args, span);
         }
         if name == "texture_sample" {
-            return self.texture_sample(args, span).map(Some);
+            return self.texture_sample(args, span);
         }
         if name == "append" {
-            return self.append(args, span).map(Some);
+            return self.append(args, span);
         }
         if TileOp::from_source(name).is_some() {
             return self.fail(
@@ -2204,7 +2211,7 @@ impl<'a> Builder<'a> {
             );
         }
         if let Some(value) = self.subgroup(name, args, span) {
-            return value.map(Some);
+            return value;
         }
         if matches!(name, "trace_closest" | "trace_any") {
             return self.ray_query_call(name, args, span);
@@ -2268,32 +2275,7 @@ impl<'a> Builder<'a> {
                 | "atomic_or"
                 | "atomic_xor"
         ) {
-            return self.atomic_value(name, args, span).map(Some);
-        }
-        let function_key = self.world.resolve(
-            name,
-            &self.definition.module,
-            &self.definition.imports,
-            true,
-        );
-        if let Some(key) = &function_key
-            && (self.world.functions[key].function.external.is_some()
-                || self.world.functions[key]
-                    .function
-                    .params
-                    .iter()
-                    .any(|p| p.ty.name == "result")
-                || self.world.functions[key].function.params.iter().any(|p| {
-                    p.ty.dataset
-                        || p.ty.tile
-                        || p.ty.is_acceleration()
-                        || p.ty.is_texture_resource()
-                        || (matches!(p.access, Access::Atomic | Access::InOut | Access::Write)
-                            && !p.ty.tile)
-                }))
-        {
-            let arguments = self.function_arguments(key, args, span)?;
-            return self.invoke_function(key.clone(), arguments, span);
+            return self.atomic_value(name, args, span);
         }
         if self
             .world
@@ -2305,13 +2287,14 @@ impl<'a> Builder<'a> {
             )
             .is_some()
         {
-            return self
-                .record_expression(&TypeName::named(name), args, span)
-                .map(Some);
+            return self.record_expression(&TypeName::named(name), args, span);
         }
         let mut values = Vec::new();
         for a in args {
-            values.push(self.expr(a)?);
+            let Some(value) = self.expr(a)? else {
+                return Ok(None);
+            };
+            values.push(value);
         }
         if let Some(ty) = Ty::builtin(name) {
             return self.numeric_constructor(ty, values, span).map(Some);
@@ -2357,37 +2340,29 @@ impl<'a> Builder<'a> {
             let a = self.math("max", vec![values[0].clone(), values[1].clone()], span)?;
             return self.math("min", vec![a, values[2].clone()], span).map(Some);
         }
-        let Some(key) = function_key else {
-            return self.fail(span, "B158", format!("未知函数或能力 {name}"));
-        };
-        self.invoke_function(
-            key,
-            values
-                .into_iter()
-                .map(cooperative::Argument::Value)
-                .collect(),
-            span,
-        )
+        self.fail(span, "B158", format!("未知函数或能力 {name}"))
     }
-    fn unary_expr(&mut self, op: &String, a: &Expr, span: Span) -> Result<Value> {
+    fn unary_expr(&mut self, op: &String, a: &Expr, span: Span) -> Result<Option<Value>> {
         if op == "-" {
             if let ExprKind::Number(literal) = &a.kind {
                 let (ty, bits) = number(&self.definition.source, span, literal)?;
                 return match ty.components[0].0 {
-                    Scalar::F32 => Ok(self.literal(Scalar::F32, bits ^ 0x80000000)),
+                    Scalar::F32 => Ok(Some(self.literal(Scalar::F32, bits ^ 0x80000000))),
                     Scalar::U32 if bits <= 0x80000000 => {
-                        Ok(self.literal(Scalar::I32, 0u32.wrapping_sub(bits)))
+                        Ok(Some(self.literal(Scalar::I32, 0u32.wrapping_sub(bits))))
                     }
                     _ => self.fail(span, "B180", "负整数字面量超出 i32 范围"),
                 };
             }
         }
-        let a = self.expr(a)?;
+        let Some(a) = self.expr(a)? else {
+            return Ok(None);
+        };
         if op == "+" {
             if a.ty.array.is_some() || a.ty.enumeration || a.ty.result {
                 return self.fail(span, "B146", "数值一元运算不能接受数组、枚举或结果");
             }
-            return Ok(a);
+            return Ok(Some(a));
         }
         if op == "!" {
             self.require_bool(&a, span)?;
@@ -2423,7 +2398,7 @@ impl<'a> Builder<'a> {
             let mut value = self.constant_value(a.ty, bits);
             value.literal = a.literal;
             value.proof = proof;
-            return Ok(value);
+            return Ok(Some(value));
         }
         let mut regs = Vec::new();
         for x in a.regs {
@@ -2435,103 +2410,45 @@ impl<'a> Builder<'a> {
             });
             regs.push(dst);
         }
-        Ok(Value {
+        Ok(Some(Value {
             proof,
             literal: a.literal,
             ty: a.ty,
             regs,
             uniform: a.uniform,
             constant: None,
-        })
+        }))
     }
-    fn binary_expr(&mut self, op: &String, a: &Expr, b: &Expr, span: Span) -> Result<Value> {
-        let left = a;
-        let a = self.expr(left)?;
+    fn binary_expr(
+        &mut self,
+        op: &String,
+        a: &Expr,
+        b: &Expr,
+        span: Span,
+    ) -> Result<Option<Value>> {
         if op == "&&" || op == "||" {
-            let mut modified = BTreeSet::new();
-            expression_assignments(self.world, &self.definition, b, &mut modified);
-            self.require_bool(&a, span)?;
-            let outer = std::mem::take(&mut self.code);
-            let environment = self.env.clone();
-            let effects = (
-                self.reads.clone(),
-                self.writes.clone(),
-                self.cross_access.clone(),
-            );
-            let before = self.application_initialization_state();
-            let control = self.control_uniform;
-            self.control_uniform &= a.uniform;
-            self.refine_bounds(&a, op == "&&");
-            let b = self.expr(b)?;
-            self.require_bool(&b, span)?;
-            let after = self.take_application_initialization_state();
-            let branch_env = self.env.clone();
-            let branch_releases = self.application_join_releases(&branch_env, &environment);
-            let skipped_releases = self.application_join_releases(&environment, &branch_env);
-            self.restore_expression_environment(environment, &modified);
-            self.refine_bounds(&a, op != "&&");
-            let before = self.application_empty_initialization(before);
-            if op == "&&" {
-                self.join_initialization(&a, after, before);
+            let skipped = Expr {
+                kind: ExprKind::Bool(op == "||"),
+                span,
+            };
+            let (yes, no) = if op == "&&" {
+                (b, &skipped)
             } else {
-                self.join_initialization(&a, before, after);
+                (&skipped, b)
+            };
+            let result = self.selection(a, yes, no, span)?;
+            if let Some(value) = &result {
+                self.require_bool(value, span)?;
             }
-            let skipped_env = std::mem::replace(&mut self.env, branch_env);
-            if let Some(bits) = &a.constant {
-                if (bits[0] != 0) != (op == "&&") {
-                    self.env = skipped_env;
-                    (self.reads, self.writes, self.cross_access) = effects;
-                }
-            } else if op == "&&" {
-                self.join_environment(&skipped_env, Some(&a));
-            } else {
-                let branch_env = std::mem::replace(&mut self.env, skipped_env);
-                self.join_environment(&branch_env, Some(&a));
-            }
-            self.control_uniform = control;
-            let mut branch = std::mem::take(&mut self.code);
-            if a.constant.is_none() {
-                branch.extend(branch_releases);
-            }
-            self.code = outer;
-            if let Some(bits) = &a.constant {
-                return if (bits[0] != 0) == (op == "&&") {
-                    self.code.extend(branch);
-                    let proof =
-                        bounds::Proof::condition(bounds::Condition::logical(op == "&&", &a, &b));
-                    let mut value = b;
-                    value.proof = proof;
-                    Ok(value)
-                } else {
-                    Ok(a)
-                };
-            }
-            let slot = self.locals.len();
-            self.locals.push(Scalar::Bool);
-            self.code.push(Inst::StoreLocal(slot, a.regs[0]));
-            branch.push(Inst::StoreLocal(slot, b.regs[0]));
-            self.code.push(Inst::If {
-                condition: a.regs[0],
-                yes: if op == "&&" {
-                    branch.clone()
-                } else {
-                    skipped_releases.clone()
-                },
-                no: if op == "||" { branch } else { skipped_releases },
-            });
-            let r = self.reg(Scalar::Bool);
-            self.code.push(Inst::LoadLocal(r, slot));
-            return Ok(Value {
-                proof: bounds::Proof::condition(bounds::Condition::logical(op == "&&", &a, &b)),
-                literal: false,
-                ty: Ty::scalar(Scalar::Bool),
-                regs: vec![r],
-                uniform: a.uniform && b.uniform,
-                constant: None,
-            });
+            return Ok(result);
         }
-        let b = self.expr(b)?;
-        self.binary(op, a, b, span)
+        let Some(a) = self.expr(a)? else {
+            return Ok(None);
+        };
+        let Some(b) = self.expr(b)? else {
+            return Ok(None);
+        };
+        self.binary(op, a, b, span).map(Some)
     }
     fn if_statement(
         &mut self,
@@ -2539,7 +2456,9 @@ impl<'a> Builder<'a> {
         yes_body: &[Stmt],
         no_body: &[Stmt],
     ) -> Result<()> {
-        let c = self.expr(condition)?;
+        let Some(c) = self.expr(condition)? else {
+            return Ok(());
+        };
         self.require_bool(&c, condition.span)?;
         self.conditional_blocks(c, |b| b.block(yes_body), |b| b.block(no_body))
     }
@@ -2615,7 +2534,11 @@ impl<'a> Builder<'a> {
         }
         let environment = self.env.clone();
         let outer = std::mem::take(&mut self.code);
-        let c = self.expr(condition)?;
+        let Some(c) = self.expr(condition)? else {
+            let code = std::mem::replace(&mut self.code, outer);
+            self.code.extend(code);
+            return Ok(());
+        };
         self.require_bool(&c, condition.span)?;
         let mut condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
@@ -2680,8 +2603,12 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B125", "循环变量不能覆盖已有绑定");
         }
         let (begin, limit, data) = if let Some(end) = end {
-            let a = self.expr(start)?;
-            let b = self.expr(end)?;
+            let Some(a) = self.expr(start)? else {
+                return Ok(());
+            };
+            let Some(b) = self.expr(end)? else {
+                return Ok(());
+            };
             self.require_same(&Ty::scalar(Scalar::U32), &a.ty, start.span)?;
             self.require_same(&a.ty, &b.ty, start.span)?;
             (a, b, None)
@@ -2724,7 +2651,9 @@ impl<'a> Builder<'a> {
                     )
                 }
                 _ => {
-                    let view = self.expr(start)?;
+                    let Some(view) = self.expr(start)? else {
+                        return Ok(());
+                    };
                     if view.ty.view.is_none() {
                         return self.fail(
                             start.span,
@@ -3203,15 +3132,17 @@ impl<'a> Builder<'a> {
             constant: None,
         });
     }
-    fn member_place(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Place> {
-        let p = self.place(base)?;
+    fn member_place(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Option<Place>> {
+        let Some(p) = self.place(base)? else {
+            return Ok(None);
+        };
         if p.ty().view.is_some() {
             return self.fail(e.span, "B185", "view 元数据不可修改或按分量访问");
         }
         let (sub, components) = self.member(p.ty(), field, e.span)?;
-        Ok(p.project(sub, &components))
+        Ok(Some(p.project(sub, &components)))
     }
-    fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Place> {
+    fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
         if let Some(data) = self.application_reference(base)? {
             return self.application_index(data, index);
         }
@@ -3225,7 +3156,9 @@ impl<'a> Builder<'a> {
             return self.view_place(base, index);
         };
         let binding = view.binding;
-        let i = self.expr(index)?;
+        let Some(i) = self.expr(index)? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
         let current = i.regs[0] == self.global_index;
         let same_shape = self.program.buffers[binding].count.is_some()
@@ -3268,13 +3201,13 @@ impl<'a> Builder<'a> {
         }
         let ty = self.program.buffers[binding].ty.clone();
         let words = ty.components.iter().map(|x| x.1 / 4).collect();
-        Ok(Place::Element {
+        Ok(Some(Place::Element {
             ty,
             binding,
             index: i.regs[0],
             words,
             writable: self.view_access[&binding].writes() && current,
-        })
+        }))
     }
     fn name_place(&mut self, name: &String, e: &Expr) -> Result<Place> {
         match self.env.get(name).cloned() {
@@ -3371,8 +3304,12 @@ impl<'a> Builder<'a> {
         {
             return self.application_assign(name, data, op, rhs, span);
         }
-        let place = self.place(lhs)?;
-        let mut value = self.expr_expected(rhs, Some(place.ty()))?;
+        let Some(place) = self.place(lhs)? else {
+            return Ok(());
+        };
+        let Some(mut value) = self.expr_expected(rhs, Some(place.ty()))? else {
+            return Ok(());
+        };
         if op != "=" {
             let current = self.read_place(&place, lhs.span)?;
             value = self.binary(&op[..1], current, value, span)?;
@@ -3423,7 +3360,9 @@ impl<'a> Builder<'a> {
         if iterator != *name {
             return self.fail(span, "B165", "seek 只能推进当前最内层游标");
         }
-        let value = self.expr(position)?;
+        let Some(value) = self.expr(position)? else {
+            return Ok(());
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
         self.release_application_loop();
         self.code.push(Inst::StoreLocal(slot, value.regs[0]));
@@ -3448,10 +3387,18 @@ impl<'a> Builder<'a> {
         let Some(Binding::Acceleration(scene)) = self.env.get(scene).cloned() else {
             return self.fail(span, "B183", "光线查询需要 read acceleration 资源");
         };
-        let origin = self.expr(&args[1])?;
-        let minimum = self.expr(&args[2])?;
-        let direction = self.expr(&args[3])?;
-        let maximum = self.expr(&args[4])?;
+        let Some(origin) = self.expr(&args[1])? else {
+            return Ok(None);
+        };
+        let Some(minimum) = self.expr(&args[2])? else {
+            return Ok(None);
+        };
+        let Some(direction) = self.expr(&args[3])? else {
+            return Ok(None);
+        };
+        let Some(maximum) = self.expr(&args[4])? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::vector(Scalar::F32, 3), &origin.ty, args[1].span)?;
         self.require_same(&Ty::scalar(Scalar::F32), &minimum.ty, args[2].span)?;
         self.require_same(&origin.ty, &direction.ty, args[3].span)?;
@@ -3495,7 +3442,9 @@ impl<'a> Builder<'a> {
         if let ExprKind::Name(data) = &args[0].kind {
             if let Some(data) = self.application_value(data, span)? {
                 self.application_cpu(&data, span)?;
-                let index = self.expr(&args[1])?;
+                let Some(index) = self.expr(&args[1])? else {
+                    return Ok(None);
+                };
                 self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
                 return self
                     .read_place(
@@ -3517,7 +3466,9 @@ impl<'a> Builder<'a> {
                         "unsafe_read 只允许不可变数据集，不能别名读取并行写入的数据",
                     );
                 }
-                let index = self.expr(&args[1])?;
+                let Some(index) = self.expr(&args[1])? else {
+                    return Ok(None);
+                };
                 self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
                 let ty = self.program.buffers[binding].ty.clone();
                 let words = ty.components.iter().map(|x| x.1 / 4).collect();
@@ -3535,11 +3486,15 @@ impl<'a> Builder<'a> {
                     .map(Some);
             }
         }
-        let view = self.expr(&args[0])?;
+        let Some(view) = self.expr(&args[0])? else {
+            return Ok(None);
+        };
         if view.ty.view.is_none() {
             return self.fail(span, "B181", "unsafe_read 需要 read dataset 或不可变 view");
         }
-        let index = self.expr(&args[1])?;
+        let Some(index) = self.expr(&args[1])? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
         return self
             .read_place(&Self::view_element(&view, index.regs[0]), span)
@@ -3601,10 +3556,10 @@ impl<'a> Builder<'a> {
             constant: None,
         }));
     }
-    fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Value> {
+    fn member_expr(&mut self, base: &Expr, field: &String, e: &Expr) -> Result<Option<Value>> {
         if let Some(data) = self.application_reference(base)? {
             return if field == "length" {
-                Ok(data.length)
+                Ok(Some(data.length))
             } else {
                 self.fail(e.span, "B141", "dataset只公开只读length")
             };
@@ -3614,41 +3569,47 @@ impl<'a> Builder<'a> {
                 if field == "length"
                     && let Some(count) = reference.shape(self.program)
                 {
-                    return Ok(self.constant(Scalar::U32, count));
+                    return Ok(Some(self.constant(Scalar::U32, count)));
                 }
                 return self.fail(e.span, "B239", "纹理资源数组只公开只读 length");
             }
             if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
                 return match field.as_str() {
-                    "length" => Ok(self.tile_length(&view)),
-                    "lane" => Ok(self.tile_lane()),
+                    "length" => Ok(Some(self.tile_length(&view))),
+                    "lane" => Ok(Some(self.tile_lane())),
                     _ => self.fail(e.span, "B141", "tile 只公开只读 length 与 lane"),
                 };
             }
             if let Some(Binding::Data(view)) = self.env.get(name).cloned() {
                 if field == "length" {
-                    return Ok(self.data_length(&view));
+                    return Ok(Some(self.data_length(&view)));
                 }
             }
         }
         if self.is_place(base) {
             // 保留字段访问，避免为了读取一个字段先加载整个结构体。
-            let p = self.place(base)?;
+            let Some(p) = self.place(base)? else {
+                return Ok(None);
+            };
             if p.ty().array.is_some() && field == "length" {
-                return Ok(self.constant(Scalar::U32, p.ty().values[0]));
+                return Ok(Some(self.constant(Scalar::U32, p.ty().values[0])));
             }
             if p.ty().view.is_some() {
                 if field == "length" {
                     let view = self.read_place(&p, e.span)?;
-                    return Ok(Self::view_length(&view));
+                    return Ok(Some(Self::view_length(&view)));
                 }
                 return self.fail(e.span, "B185", "view 只公开只读 length，不公开设备地址分量");
             }
             let (sub, components) = self.member(p.ty(), field, e.span)?;
-            return self.read_place(&p.project(sub, &components), e.span);
+            return self
+                .read_place(&p.project(sub, &components), e.span)
+                .map(Some);
         }
-        let v = self.expr(base)?;
-        self.member_value(v, field, e.span)
+        let Some(v) = self.expr(base)? else {
+            return Ok(None);
+        };
+        self.member_value(v, field, e.span).map(Some)
     }
     pub(super) fn member_value(&mut self, v: Value, field: &String, span: Span) -> Result<Value> {
         if v.ty.array.is_some() && field == "length" {
@@ -3667,18 +3628,24 @@ impl<'a> Builder<'a> {
             constant: v.constant.map(|b| indices.iter().map(|i| b[*i]).collect()),
         })
     }
-    fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Value> {
+    fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
         let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
-            let value = self.expr(base)?;
+            let Some(value) = self.expr(base)? else {
+                return Ok(None);
+            };
             if value.ty.array.is_some() {
                 return self.array_value_index(value, index);
             }
-            let place = self.view_value_place(value, index)?;
-            return self.read_place(&place, e.span);
+            let Some(place) = self.view_value_place(value, index)? else {
+                return Ok(None);
+            };
+            return self.read_place(&place, e.span).map(Some);
         }
-        let p = self.place(e)?;
-        self.read_place(&p, e.span)
+        let Some(p) = self.place(e)? else {
+            return Ok(None);
+        };
+        self.read_place(&p, e.span).map(Some)
     }
     fn name_expr(&mut self, name: &String, e: &Expr) -> Result<Value> {
         match self.env.get(name).cloned() {
@@ -3690,7 +3657,7 @@ impl<'a> Builder<'a> {
                 | Binding::TileElement { .. }
                 | Binding::ViewElement { .. },
             ) => {
-                let p = self.place(e)?;
+                let p = self.name_place(name, e)?;
                 self.read_place(&p, e.span)
             }
             None => {

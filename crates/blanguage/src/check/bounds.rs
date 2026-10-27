@@ -754,23 +754,6 @@ impl Condition {
         self.cases.swap(0, 1);
         self
     }
-    pub fn logical(and: bool, a: &Value, b: &Value) -> Self {
-        let a = Self::of(a);
-        let b = Self::of(b);
-        Self {
-            cases: if and {
-                [
-                    either(a.cases[0].clone(), both(&a.cases[1], &b.cases[0])),
-                    both(&a.cases[1], &b.cases[1]),
-                ]
-            } else {
-                [
-                    both(&a.cases[0], &b.cases[0]),
-                    either(a.cases[1].clone(), both(&a.cases[0], &b.cases[1])),
-                ]
-            },
-        }
-    }
     pub fn select(c: &Value, a: &Value, b: &Value) -> Self {
         Self::branch(Self::of(c), Self::of(a), Self::of(b))
     }

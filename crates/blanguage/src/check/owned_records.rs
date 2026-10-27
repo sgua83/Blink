@@ -375,7 +375,7 @@ impl Builder<'_> {
         {
             return self
                 .member_expr(base, name, expr)
-                .map(|v| Some(Returned::Value(v)));
+                .map(|v| v.map(Returned::Value));
         }
         let value = self.evaluate_returned(base, None)?;
         if !self.flow.continues() {

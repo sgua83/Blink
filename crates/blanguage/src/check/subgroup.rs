@@ -6,7 +6,7 @@ impl Builder<'_> {
         name: &str,
         args: &[Expr],
         span: Span,
-    ) -> Option<Result<Value>> {
+    ) -> Option<Result<Option<Value>>> {
         let op = match name {
             "subgroup_lane" => SubgroupOp::Lane,
             "subgroup_size" => SubgroupOp::Size,
@@ -35,7 +35,12 @@ impl Builder<'_> {
         };
         Some(self.subgroup_value(op, args, span))
     }
-    fn subgroup_value(&mut self, op: SubgroupOp, args: &[Expr], span: Span) -> Result<Value> {
+    fn subgroup_value(
+        &mut self,
+        op: SubgroupOp,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Option<Value>> {
         if self.program.target != Target::Gpu {
             return self.fail(
                 span,
@@ -57,8 +62,22 @@ impl Builder<'_> {
         if args.len() != usize::from(!nullary) + usize::from(shuffle) {
             return self.fail(span, "B196", "subgroup 操作参数数量不符");
         }
-        let value = args.first().map(|e| self.expr(e)).transpose()?;
-        let argument = args.get(1).map(|e| self.expr(e)).transpose()?;
+        let value = if let Some(expr) = args.first() {
+            let Some(value) = self.expr(expr)? else {
+                return Ok(None);
+            };
+            Some(value)
+        } else {
+            None
+        };
+        let argument = if let Some(expr) = args.get(1) {
+            let Some(value) = self.expr(expr)? else {
+                return Ok(None);
+            };
+            Some(value)
+        } else {
+            None
+        };
         if let Some(argument) = &argument {
             self.require_same(&Ty::scalar(Scalar::U32), &argument.ty, args[1].span)?;
         }
@@ -123,13 +142,13 @@ impl Builder<'_> {
             });
             regs.push(dst);
         }
-        Ok(Value {
+        Ok(Some(Value {
             proof: bounds::Proof::default(),
             literal: false,
             ty,
             regs,
             uniform: false,
             constant: None,
-        })
+        }))
     }
 }

@@ -52,7 +52,7 @@ pub(super) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
     Ok(())
 }
 impl Builder<'_> {
-    pub(super) fn external_read_place(&mut self, expr: &Expr) -> Result<Place> {
+    pub(super) fn external_read_place(&mut self, expr: &Expr) -> Result<Option<Place>> {
         fn root(expr: &Expr) -> Option<&String> {
             match &expr.kind {
                 ExprKind::Name(name) => Some(name),
@@ -75,7 +75,9 @@ impl Builder<'_> {
                     }),
                 );
             }
-            let place = self.place(expr)?;
+            let Some(place) = self.place(expr)? else {
+                return Ok(None);
+            };
             match place.storage() {
                 Place::Local(..) | Place::ApplicationElement { .. } => {
                     self.require_initialized(&place, expr.span)?
@@ -85,10 +87,12 @@ impl Builder<'_> {
                 }
                 _ => {}
             }
-            Ok(place)
+            Ok(Some(place))
         } else {
-            let value = self.expr(expr)?;
-            Ok(self.materialize_array(value))
+            let Some(value) = self.expr(expr)? else {
+                return Ok(None);
+            };
+            Ok(Some(self.materialize_array(value)))
         }
     }
     fn external_reference(

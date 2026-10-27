@@ -71,13 +71,25 @@ impl Returned {
 }
 struct ReturnExit {
     value: Option<Returned>,
-    borrowed: BTreeMap<String, OwnedBinding>,
+    borrowed: Result<BTreeMap<String, OwnedBinding>>,
 }
 pub(super) struct ReturnContext {
     expected: Option<Expected>,
     scoped: bool,
     slots: Vec<usize>,
     exits: Vec<ReturnExit>,
+}
+impl ReturnContext {
+    pub(super) fn exit_count(&self) -> usize {
+        self.exits.len()
+    }
+    pub(super) fn select_exits(&mut self, first: usize, yes_end: usize, truth: bool) {
+        if truth {
+            self.exits.truncate(yes_end);
+        } else {
+            self.exits.drain(first..yes_end);
+        }
+    }
 }
 fn early_returns(body: &[Stmt]) -> bool {
     propagates(body)
@@ -187,7 +199,9 @@ impl Builder<'_> {
                 Some(value)
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
-                let mut data = self.application_resource(expr, span)?;
+                let Some(mut data) = self.application_resource(expr, span)? else {
+                    return Ok(());
+                };
                 self.application_data_type(&mut data, &ty, count, span)?;
                 data.count = count;
                 Some(Returned::Dataset(data))
@@ -210,40 +224,46 @@ impl Builder<'_> {
             value.proof = bounds::Proof::returning(value, &self.env);
         }
         self.release_application_data(None);
-        let mut borrowed = BTreeMap::new();
-        let definition = self.definition.clone();
-        for param in &definition.function.params {
-            if param.ty.dataset
-                && param.access == Access::Write
-                && let Some(Binding::ApplicationData(data)) = self.env.get(&param.name)
-                && !self.application_initialized(data)
-            {
-                return self.fail(
-                    span,
-                    "B229",
-                    format!("返回前没有完整初始化 write dataset 参数 {}", param.name),
-                );
-            }
-            if matches!(param.access, Access::Write | Access::InOut)
-                && !param.ty.dataset
-                && !param.ty.tile
-            {
-                let place = self.place(&Expr {
-                    kind: ExprKind::Name(param.name.clone()),
-                    span: param.span,
-                })?;
-                if param.access == Access::Write && !self.is_initialized(&place) {
+        let borrowed = (|| -> Result<BTreeMap<String, OwnedBinding>> {
+            let mut borrowed = BTreeMap::new();
+            let definition = self.definition.clone();
+            for param in &definition.function.params {
+                if param.ty.dataset
+                    && param.access == Access::Write
+                    && let Some(Binding::ApplicationData(data)) = self.env.get(&param.name)
+                    && !self.application_initialized(data)
+                {
                     return self.fail(
                         span,
                         "B229",
-                        format!("返回前没有完整初始化 write 参数 {}", param.name),
+                        format!("返回前没有完整初始化 write dataset 参数 {}", param.name),
                     );
                 }
-                let mut owner = self.borrow_owned(place);
-                owner.uniform &= self.control_uniform;
-                borrowed.insert(param.name.clone(), owner);
+                if matches!(param.access, Access::Write | Access::InOut)
+                    && !param.ty.dataset
+                    && !param.ty.tile
+                {
+                    let place = self.name_place(
+                        &param.name,
+                        &Expr {
+                            kind: ExprKind::Name(param.name.clone()),
+                            span: param.span,
+                        },
+                    )?;
+                    if param.access == Access::Write && !self.is_initialized(&place) {
+                        return self.fail(
+                            span,
+                            "B229",
+                            format!("返回前没有完整初始化 write 参数 {}", param.name),
+                        );
+                    }
+                    let mut owner = self.borrow_owned(place);
+                    owner.uniform &= self.control_uniform;
+                    borrowed.insert(param.name.clone(), owner);
+                }
             }
-        }
+            Ok(borrowed)
+        })();
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {
@@ -377,13 +397,14 @@ impl Builder<'_> {
         let mut exits = context.exits.into_iter();
         let first = exits.next().unwrap();
         let mut result = first.value;
-        let mut borrowed = first.borrowed;
+        let mut borrowed = first.borrowed?;
         for exit in exits {
             if let (Some(value), Some(other)) = (&mut result, exit.value) {
                 value.join(other);
             }
+            let other_borrowed = exit.borrowed?;
             for (name, owner) in &mut borrowed {
-                let other = &exit.borrowed[name];
+                let other = &other_borrowed[name];
                 owner
                     .proof
                     .join(&other.proof, owner.place.ty().components.len(), None);

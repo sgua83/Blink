@@ -2,7 +2,11 @@
 use super::*;
 
 impl Builder<'_> {
-    pub(super) fn expr_expected(&mut self, e: &Expr, expected: Option<&Ty>) -> Result<Value> {
+    pub(super) fn expr_expected(
+        &mut self,
+        e: &Expr,
+        expected: Option<&Ty>,
+    ) -> Result<Option<Value>> {
         match &e.kind {
             ExprKind::Call(name, args) if matches!(name.as_str(), "Ok" | "Err") => {
                 let Some(ty) = expected.filter(|ty| ty.result) else {
@@ -24,7 +28,7 @@ impl Builder<'_> {
         success: bool,
         args: &[Expr],
         span: Span,
-    ) -> Result<Value> {
+    ) -> Result<Option<Value>> {
         let payload = ty.arguments[usize::from(!success)].clone();
         let value = if payload.name == "void" {
             if !args.is_empty() {
@@ -35,11 +39,13 @@ impl Builder<'_> {
             if args.len() != 1 {
                 return self.fail(span, "B269", "结果分支需要一个匹配类型的载荷");
             }
-            let value = self.expr_expected(&args[0], Some(&payload))?;
+            let Some(value) = self.expr_expected(&args[0], Some(&payload))? else {
+                return Ok(None);
+            };
             self.require_same(&payload, &value.ty, span)?;
             Some(value)
         };
-        Ok(self.result_value(ty, success, value))
+        Ok(Some(self.result_value(ty, success, value)))
     }
     fn result_word(&mut self, value: &Value, index: usize, scalar: Scalar) -> Value {
         let source = value.ty.components[index].0;
@@ -221,17 +227,14 @@ impl Builder<'_> {
             |b| b.result_arm(&value, false, no_name, no, span),
         )
     }
-    pub(super) fn propagate_result(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
-        let value = self.propagate_returned(args, span)?;
-        self.ordinary_return(value, span)
-    }
+
     pub(super) fn explicit_result(
         &mut self,
         name: &str,
         explicit: &[GenericArgument],
         args: &[Expr],
         span: Span,
-    ) -> Result<Value> {
+    ) -> Result<Option<Value>> {
         let mut ty = TypeName::named("result");
         ty.arguments = explicit.to_vec();
         let ty = self.world.ty(

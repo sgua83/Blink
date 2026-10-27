@@ -648,7 +648,7 @@ impl Builder<'_> {
             {
                 return self
                     .application_resource(expr, expr.span)
-                    .map(|v| Some(Returned::Dataset(v)));
+                    .map(|v| v.map(Returned::Dataset));
             }
             ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::OwnedValue(_))) => {
                 return self
@@ -658,7 +658,7 @@ impl Builder<'_> {
             ExprKind::Specialize(name, _, _) if name == "dataset" => {
                 return self
                     .application_resource(expr, expr.span)
-                    .map(|v| Some(Returned::Dataset(v)));
+                    .map(|v| v.map(Returned::Dataset));
             }
             ExprKind::Call(name, args)
                 if matches!(name.as_str(), "Ok" | "Err")
@@ -715,10 +715,9 @@ impl Builder<'_> {
                     } else {
                         None
                     };
-                    let arguments = self.function_arguments(&key, args, expr.span)?;
-                    if !self.flow.continues() {
+                    let Some(arguments) = self.function_arguments(&key, args, expr.span)? else {
                         return Ok(None);
-                    }
+                    };
                     let instance =
                         self.specialized_arguments(key, &arguments, explicit, expr.span)?;
                     return self.invoke_returned(instance, arguments, expr.span);
@@ -730,14 +729,14 @@ impl Builder<'_> {
             if matches!(name.as_str(), "Ok" | "Err") {
                 return self
                     .expr_expected(expr, expected)
-                    .map(|v| Some(Returned::Value(v)));
+                    .map(|v| v.map(Returned::Value));
             }
             return self
-                .call(name, args, expr.span)
+                .builtin_call(name, args, expr.span)
                 .map(|v| v.map(Returned::Value));
         }
         self.expr_expected(expr, expected)
-            .map(|v| Some(Returned::Value(v)))
+            .map(|v| v.map(Returned::Value))
     }
     pub(super) fn propagate_returned(
         &mut self,
@@ -822,14 +821,16 @@ impl Builder<'_> {
         no: &[Stmt],
         span: Span,
     ) -> Result<()> {
-        let returned = self
-            .evaluate_returned(expr, None)?
-            .ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
-                span,
-                code: "B269",
-                message: "match需要结果".into(),
-            })?;
+        let returned = self.evaluate_returned(expr, None)?;
+        if !self.flow.continues() {
+            return Ok(());
+        }
+        let returned = returned.ok_or_else(|| Diagnostic {
+            source: self.definition.source.clone(),
+            span,
+            code: "B269",
+            message: "match需要结果".into(),
+        })?;
         if let Returned::Value(value) = returned {
             return self.match_value(value, yes_name, yes, no_name, no, span);
         }

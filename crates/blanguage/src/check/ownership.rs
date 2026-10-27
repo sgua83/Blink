@@ -212,8 +212,10 @@ impl Place {
     }
 }
 impl Builder<'_> {
-    pub(super) fn mutable_place(&mut self, expr: &Expr, access: Access) -> Result<Place> {
-        let place = self.place(expr)?;
+    pub(super) fn mutable_place(&mut self, expr: &Expr, access: Access) -> Result<Option<Place>> {
+        let Some(place) = self.place(expr)? else {
+            return Ok(None);
+        };
         let positions = self.writable_storage(&place, expr.span)?;
         if positions.iter().copied().collect::<BTreeSet<_>>().len() != positions.len() {
             return self.fail(expr.span, "B227", "独占借用位置不能包含重复分量");
@@ -221,7 +223,7 @@ impl Builder<'_> {
         if access == Access::InOut {
             self.require_initialized(&place, expr.span)?;
         }
-        Ok(place)
+        Ok(Some(place))
     }
     pub(super) fn writable_storage(&self, place: &Place, span: Span) -> Result<Vec<usize>> {
         if let Place::Indexed { base, words, .. } = place {

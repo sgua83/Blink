@@ -84,7 +84,8 @@ fn function(
     }
     builder.in_function = true;
     for capture in captures {
-        let value = builder.expr(capture)?;
+        let result = builder.expr(capture)?;
+        let value = builder.value_result(result, capture.span)?;
         if !value.uniform
             || value.ty.contains_views()
             || !builder.reads.is_empty()

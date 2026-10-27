@@ -113,7 +113,9 @@ impl Builder<'_> {
                     message: "省略发布宽度需要既有 tile 范围".into(),
                 })?
         };
-        let value = self.expr(&args[0])?;
+        let Some(value) = self.expr(&args[0])? else {
+            return Ok(());
+        };
         if value.ty.contains_views() || value.ty.components.is_empty() {
             return self.fail(
                 args[0].span,
@@ -145,7 +147,8 @@ impl Builder<'_> {
         Ok(())
     }
     fn tile_width(&mut self, expr: &Expr) -> Result<u32> {
-        let value = self.expr(expr)?;
+        let result = self.expr(expr)?;
+        let value = self.value_result(result, expr.span)?;
         let Some(bits) = value.constant else {
             return self.fail(expr.span, "B199", "tile 宽度需要编译期正 u32 值");
         };
@@ -319,8 +322,10 @@ impl Builder<'_> {
     pub(super) fn tile_index_proof(&self) -> bounds::Proof {
         bounds::Proof::unsigned(0, self.tile_width_bound() - 1)
     }
-    pub(super) fn tile_place(&mut self, view: TileView, index: &Expr) -> Result<Place> {
-        let value = self.expr(index)?;
+    pub(super) fn tile_place(&mut self, view: TileView, index: &Expr) -> Result<Option<Place>> {
+        let Some(value) = self.expr(index)? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
         let minimum = match self.tiles[view.tile].width {
             TileWidth::Fixed(width) if self.prefix.is_none() => {
@@ -339,11 +344,11 @@ impl Builder<'_> {
                 "tile 索引需要本块有界游标、lane、有效长度条件或在所有尾块内有效的常量",
             );
         }
-        Ok(Place::TileElement {
+        Ok(Some(Place::TileElement {
             ty: view.ty,
             tile: view.tile,
             index: value.regs[0],
             words: view.words,
-        })
+        }))
     }
 }

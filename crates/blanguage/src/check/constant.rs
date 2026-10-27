@@ -46,7 +46,8 @@ pub(super) fn stage_expression(
     builder.roots(roots);
     // roots中的无关uniform装载不是当前表达式的计算，不要求它们为常量。
     let first = builder.code.len();
-    let value = builder.expr(expression)?;
+    let result = builder.expr(expression)?;
+    let value = builder.value_result(result, expression.span)?;
     if value.ty.contains_views()
         || value.constant.is_none()
         || builder.code[first..]

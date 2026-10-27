@@ -7,7 +7,7 @@ impl Builder<'_> {
         yes: &Expr,
         no: &Expr,
         span: Span,
-    ) -> Result<Value> {
+    ) -> Result<Option<Value>> {
         self.selection_expected(condition, yes, no, span, None)
     }
     pub(super) fn selection_expected(
@@ -17,15 +17,13 @@ impl Builder<'_> {
         no: &Expr,
         span: Span,
         expected: Option<&Ty>,
-    ) -> Result<Value> {
+    ) -> Result<Option<Value>> {
         let result = self.selection_returned(condition, yes, no, span, expected)?;
-        self.ordinary_return(result, span)?
-            .ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
-                span,
-                code: "B228",
-                message: "选择式需要值".into(),
-            })
+        if !self.flow.continues() {
+            return Ok(None);
+        }
+        let value = self.ordinary_return(result, span)?;
+        self.value_result(value, span).map(Some)
     }
     pub(super) fn selection_returned(
         &mut self,
@@ -35,7 +33,9 @@ impl Builder<'_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<Option<returns::Returned>> {
-        let c = self.expr(condition)?;
+        let Some(c) = self.expr(condition)? else {
+            return Ok(None);
+        };
         self.require_bool(&c, condition.span)?;
         let outer = std::mem::take(&mut self.code);
         let environment = self.env.clone();
@@ -51,7 +51,15 @@ impl Builder<'_> {
         self.control_uniform &= c.uniform;
         self.refine_bounds(&c, true);
         self.flow = Flow::NEXT;
+        let first_exit = self
+            .return_context
+            .as_ref()
+            .map_or(0, |context| context.exit_count());
         let mut a_result = self.evaluate_returned(yes, expected)?;
+        let yes_exit = self
+            .return_context
+            .as_ref()
+            .map_or(0, |context| context.exit_count());
         if self.flow.continues() && a_result.is_none() {
             return self.fail(span, "B228", "选择式需要值");
         }
@@ -71,6 +79,11 @@ impl Builder<'_> {
         let b_result = self.evaluate_returned(no, expected)?;
         if self.flow.continues() && b_result.is_none() {
             return self.fail(span, "B228", "选择式需要值");
+        }
+        if let (Some(a), Some(b)) = (&a_result, &b_result) {
+            let a = self.returned_storage(a);
+            let b = self.returned_storage(b);
+            self.require_same(&a.ty, &b.ty, span)?;
         }
         let no_flow = self.flow;
         let no_init = self.take_application_initialization_state();
@@ -99,6 +112,9 @@ impl Builder<'_> {
             self.cross_access.extend(yes_effects.2);
         }
         if let Some(bits) = &c.constant {
+            if let Some(context) = &mut self.return_context {
+                context.select_exits(first_exit, yes_exit, bits[0] != 0);
+            }
             self.flow = if bits[0] != 0 { yes_flow } else { no_flow };
             self.initialized = if bits[0] != 0 {
                 yes_initial
@@ -126,9 +142,6 @@ impl Builder<'_> {
         }
         let a = a_result.as_ref().map(|v| self.returned_storage(v));
         let b = b_result.as_ref().map(|v| self.returned_storage(v));
-        if let (Some(a), Some(b)) = (&a, &b) {
-            self.require_same(&a.ty, &b.ty, span)?;
-        }
         let Some(storage) = a.as_ref().or(b.as_ref()) else {
             self.code.push(Inst::If {
                 condition: c.regs[0],

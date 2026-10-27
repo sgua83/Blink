@@ -9,10 +9,12 @@ impl Builder<'_> {
             _ => false,
         }
     }
-    pub(super) fn atomic_place(&mut self, target: &Expr) -> Result<Place> {
-        let place = self.place(target)?;
+    pub(super) fn atomic_place(&mut self, target: &Expr) -> Result<Option<Place>> {
+        let Some(place) = self.place(target)? else {
+            return Ok(None);
+        };
         if self.atomic_storage(&place) {
-            Ok(place)
+            Ok(Some(place))
         } else {
             self.fail(
                 target.span,
@@ -24,8 +26,10 @@ impl Builder<'_> {
     fn atomic_location(
         &mut self,
         target: &Expr,
-    ) -> Result<(Option<(AtomicTarget, Reg, Option<Reg>, u32)>, Scalar)> {
-        let place = self.atomic_place(target)?;
+    ) -> Result<Option<(Option<(AtomicTarget, Reg, Option<Reg>, u32)>, Scalar)>> {
+        let Some(place) = self.atomic_place(target)? else {
+            return Ok(None);
+        };
         let ty = place.ty();
         if *ty != Ty::scalar(Scalar::U32) && *ty != Ty::scalar(Scalar::I32) {
             return self.fail(target.span, "B215", "原子目标只支持 u32/i32 标量字段");
@@ -41,7 +45,7 @@ impl Builder<'_> {
             Place::Element { words, .. } | Place::TileElement { words, .. } => {
                 (&place, None, words[0])
             }
-            Place::AtomicParameter(_) => return Ok((None, scalar)),
+            Place::AtomicParameter(_) => return Ok(Some((None, scalar))),
             _ => unreachable!(),
         };
         let location = match base {
@@ -54,7 +58,7 @@ impl Builder<'_> {
             }
             _ => unreachable!(),
         };
-        Ok((location, scalar))
+        Ok(Some((location, scalar)))
     }
     fn atomic_order(&self, expr: &Expr) -> Result<MemoryOrder> {
         if let ExprKind::Name(name) = &expr.kind
@@ -68,10 +72,12 @@ impl Builder<'_> {
             "原子内存序需要显式 relaxed、acquire、release 或 acq_rel",
         )
     }
-    fn atomic_operand(&mut self, expr: &Expr, scalar: Scalar) -> Result<Reg> {
-        let value = self.expr(expr)?;
+    fn atomic_operand(&mut self, expr: &Expr, scalar: Scalar) -> Result<Option<Reg>> {
+        let Some(value) = self.expr(expr)? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(scalar), &value.ty, expr.span)?;
-        Ok(value.regs[0])
+        Ok(Some(value.regs[0]))
     }
     fn atomic_effect(&mut self, atomic: Atomic) {
         if let AtomicTarget::Dataset(binding) = atomic.target {
@@ -89,8 +95,12 @@ impl Builder<'_> {
         if args.len() != 3 {
             return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
         }
-        let (location, scalar) = self.atomic_location(&args[0])?;
-        let value = self.atomic_operand(&args[1], scalar)?;
+        let Some((location, scalar)) = self.atomic_location(&args[0])? else {
+            return Ok(());
+        };
+        let Some(value) = self.atomic_operand(&args[1], scalar)? else {
+            return Ok(());
+        };
         let order = self.atomic_order(&args[2])?;
         if !matches!(order, MemoryOrder::Relaxed | MemoryOrder::Release) {
             return self.fail(
@@ -112,7 +122,12 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn atomic_value(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Value> {
+    pub(super) fn atomic_value(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Option<Value>> {
         let arity = match name {
             "atomic_load" => 2,
             "atomic_compare_exchange" => 5,
@@ -127,7 +142,9 @@ impl Builder<'_> {
                 ),
             );
         }
-        let (location, scalar) = self.atomic_location(&args[0])?;
+        let Some((location, scalar)) = self.atomic_location(&args[0])? else {
+            return Ok(None);
+        };
         let order_at = if name == "atomic_compare_exchange" {
             3
         } else {
@@ -144,7 +161,9 @@ impl Builder<'_> {
             }
             AtomicOp::Load
         } else {
-            let value = self.atomic_operand(&args[1], scalar)?;
+            let Some(value) = self.atomic_operand(&args[1], scalar)? else {
+                return Ok(None);
+            };
             match name {
                 "atomic_add" => AtomicOp::Add(value),
                 "atomic_sub" => AtomicOp::Sub(value),
@@ -155,7 +174,9 @@ impl Builder<'_> {
                 "atomic_or" => AtomicOp::Or(value),
                 "atomic_xor" => AtomicOp::Xor(value),
                 "atomic_compare_exchange" => {
-                    let desired = self.atomic_operand(&args[2], scalar)?;
+                    let Some(desired) = self.atomic_operand(&args[2], scalar)? else {
+                        return Ok(None);
+                    };
                     let failure = self.atomic_order(&args[4])?;
                     let permitted = match order {
                         MemoryOrder::Relaxed | MemoryOrder::Release => {
@@ -193,13 +214,13 @@ impl Builder<'_> {
                 order,
             });
         }
-        Ok(Value {
+        Ok(Some(Value {
             proof: bounds::Proof::default(),
             literal: false,
             ty: Ty::scalar(scalar),
             regs: vec![result],
             uniform: false,
             constant: None,
-        })
+        }))
     }
 }

@@ -788,7 +788,9 @@ impl Builder<'_> {
         if target.ownership == Ownership::Borrowed {
             return self.fail(span, "B227", "借用的 dataset 不能替换其资源所有者");
         }
-        let mut value = self.application_resource(rhs, span)?;
+        let Some(mut value) = self.application_resource(rhs, span)? else {
+            return Ok(());
+        };
         self.application_data_type(&mut value, &target.ty, target.count, span)?;
         if matches!(&self.env[name], Binding::ApplicationData(data) if data.ownership == Ownership::Owned)
         {
@@ -811,13 +813,17 @@ impl Builder<'_> {
             .insert(name.into(), Binding::ApplicationData(value));
         Ok(())
     }
-    pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Data> {
+    pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
         if let ExprKind::Call(name, args) = &expr.kind
             && name == "try"
         {
-            return match self.propagate_returned(args, span)? {
-                Some(returns::Returned::Dataset(data)) => Ok(data),
+            let value = self.propagate_returned(args, span)?;
+            if !self.flow.continues() {
+                return Ok(None);
+            }
+            return match value {
+                Some(returns::Returned::Dataset(data)) => Ok(Some(data)),
                 _ => self.fail(span, "B224", "try成功载荷不是dataset"),
             };
         }
@@ -834,7 +840,7 @@ impl Builder<'_> {
                 source.residency = None;
             }
             data.slots = None;
-            return Ok(data);
+            return Ok(Some(data));
         }
         let (name, explicit, args) = match &expr.kind {
             ExprKind::Specialize(name, _, _) if name == "dataset" => {
@@ -862,16 +868,18 @@ impl Builder<'_> {
         if !callee.function.result.dataset {
             return self.fail(span, "B224", "dataset 资源声明需要返回拥有 dataset 的函数");
         }
-        let arguments = self.function_arguments(&key, args, span)?;
+        let Some(arguments) = self.function_arguments(&key, args, span)? else {
+            return Ok(None);
+        };
         let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
         let Some(returns::Returned::Dataset(data)) =
             self.inline_instance(instance, arguments, span)?
         else {
             return self.fail(span, "B224", "资源函数没有交付声明的 dataset 所有权");
         };
-        Ok(data)
+        Ok(Some(data))
     }
-    fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Data> {
+    fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
         let ExprKind::Specialize(constructor, explicit, args) = &expr.kind else {
             return self.fail(
@@ -929,7 +937,9 @@ impl Builder<'_> {
                 "动态 dataset 的元素需要普通值；view 资源借用不能由零初始化存储创建",
             );
         }
-        let mut length = self.expr(&args[0])?;
+        let Some(mut length) = self.expr(&args[0])? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[0].span)?;
         if count.is_some_and(|count| length.minimum() != count || length.maximum() != count) {
             return self.fail(
@@ -961,7 +971,7 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
-        Ok(Data {
+        Ok(Some(Data {
             handle,
             slots: None,
             initialization: None,
@@ -971,7 +981,7 @@ impl Builder<'_> {
             ownership: Ownership::Owned,
             writable: true,
             residency: Some(Target::Cpu),
-        })
+        }))
     }
     pub(super) fn application_element(
         data: &Data,
@@ -997,9 +1007,11 @@ impl Builder<'_> {
             writable: data.writable,
         }
     }
-    pub(super) fn application_index(&mut self, data: Data, index: &Expr) -> Result<Place> {
+    pub(super) fn application_index(&mut self, data: Data, index: &Expr) -> Result<Option<Place>> {
         self.application_cpu(&data, index.span)?;
-        let value = self.expr(index)?;
+        let Some(value) = self.expr(index)? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
         if !self.index_in(
             &value,
@@ -1012,11 +1024,11 @@ impl Builder<'_> {
                 "dataset 索引需要由本资源的长度条件或有界游标证明",
             );
         }
-        Ok(Self::application_element(
+        Ok(Some(Self::application_element(
             &data,
             &value,
             (value.minimum(), value.maximum()),
-        ))
+        )))
     }
     pub(super) fn application_address(
         &mut self,
@@ -1154,10 +1166,9 @@ impl Builder<'_> {
         if callee.function.target != Target::Compute && callee.function.target != target {
             return self.fail(span, "B266", "program 的执行目标与调用位置不一致");
         }
-        let prepared = self.function_arguments(&key, arguments, span)?;
-        if !self.flow.continues() {
+        let Some(prepared) = self.function_arguments(&key, arguments, span)? else {
             return Ok(None);
-        }
+        };
         let mut data = Vec::new();
         let mut uniforms = Vec::new();
         let mut actuals = Vec::new();
@@ -1321,14 +1332,16 @@ impl Builder<'_> {
         }
         Ok(None)
     }
-    pub(super) fn println(&mut self, args: &[Expr], span: Span) -> Result<Value> {
+    pub(super) fn println(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
         if self.program.target != Target::Cpu {
             return self.fail(span, "B260", "println 是 CPU 标准输出操作，要求显式 on cpu");
         }
         if args.len() != 1 {
             return self.fail(span, "B261", "println 需要一个 u32、i32、f32 或 bool 标量");
         }
-        let value = self.expr(&args[0])?;
+        let Some(value) = self.expr(&args[0])? else {
+            return Ok(None);
+        };
         if ![
             Ty::scalar(Scalar::U32),
             Ty::scalar(Scalar::I32),
@@ -1348,14 +1361,14 @@ impl Builder<'_> {
             dst,
             value: value.regs[0],
         });
-        Ok(Value {
+        Ok(Some(Value {
             proof: bounds::Proof::default(),
             literal: false,
             ty: Ty::scalar(Scalar::Bool),
             regs: vec![dst],
             uniform: false,
             constant: None,
-        })
+        }))
     }
 }
 

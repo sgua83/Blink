@@ -25,15 +25,20 @@ impl Builder<'_> {
             words,
         }
     }
-    pub(super) fn view_place(&mut self, base: &Expr, index: &Expr) -> Result<Place> {
+    pub(super) fn view_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
         let view = if self.is_place(base) {
-            let place = self.place(base)?;
+            let Some(place) = self.place(base)? else {
+                return Ok(None);
+            };
             if place.ty().array.is_some() {
                 return self.array_place(place, index);
             }
             self.read_place(&place, base.span)?
         } else {
-            self.expr(base)?
+            let Some(value) = self.expr(base)? else {
+                return Ok(None);
+            };
+            value
         };
         if view.ty.array.is_some() {
             let place = self.materialize_array(view);
@@ -41,11 +46,13 @@ impl Builder<'_> {
         }
         self.view_value_place(view, index)
     }
-    pub(super) fn view_value_place(&mut self, view: Value, index: &Expr) -> Result<Place> {
+    pub(super) fn view_value_place(&mut self, view: Value, index: &Expr) -> Result<Option<Place>> {
         if view.ty.view.is_none() {
             return self.fail(index.span, "B136", "索引需要 dataset、tile 或不可变 view");
         }
-        let value = self.expr(index)?;
+        let Some(value) = self.expr(index)? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
         if !self.index_in(
             &value,
@@ -58,6 +65,6 @@ impl Builder<'_> {
                 "view 索引有效性无法静态证明；使用该引用值的长度条件或有界游标",
             );
         }
-        Ok(Self::view_element(&view, value.regs[0]))
+        Ok(Some(Self::view_element(&view, value.regs[0])))
     }
 }

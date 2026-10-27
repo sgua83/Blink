@@ -65,7 +65,7 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<Option<Value>> {
         if matches!(name, "Ok" | "Err") {
-            return self.explicit_result(name, explicit, args, span).map(Some);
+            return self.explicit_result(name, explicit, args, span);
         }
         if name == "array"
             || self
@@ -80,7 +80,7 @@ impl Builder<'_> {
         {
             let mut ty = TypeName::named(name);
             ty.arguments = explicit.to_vec();
-            return self.record_expression(&ty, args, span).map(Some);
+            return self.record_expression(&ty, args, span);
         }
         let key = self
             .world
@@ -96,7 +96,9 @@ impl Builder<'_> {
                 code: "B158",
                 message: format!("未知或未导出的泛型函数 {name}"),
             })?;
-        let arguments = self.function_arguments(&key, args, span)?;
+        let Some(arguments) = self.function_arguments(&key, args, span)? else {
+            return Ok(None);
+        };
         let instance = self.specialized_arguments(key, &arguments, Some(explicit), span)?;
         self.invoke_instance(instance, arguments, span)
     }

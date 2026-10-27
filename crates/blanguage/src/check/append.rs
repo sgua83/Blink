@@ -62,7 +62,7 @@ pub(super) fn clear(
 }
 
 impl Builder<'_> {
-    pub(super) fn append(&mut self, args: &[Expr], span: Span) -> Result<Value> {
+    pub(super) fn append(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
         if args.len() != 3 {
             return self.fail(
                 span,
@@ -92,7 +92,9 @@ impl Builder<'_> {
                 "append 需要普通独占元素／tile 输入域之外的可写输出及独立 inout 单 u32 计数；两者不能别名",
             );
         }
-        let value = self.expr(&args[2])?;
+        let Some(value) = self.expr(&args[2])? else {
+            return Ok(None);
+        };
         self.require_same(&self.program.buffers[target].ty, &value.ty, args[2].span)?;
         if self.element_domains.contains(&target) || self.element_domains.contains(&binding) {
             return self.fail(
@@ -128,13 +130,13 @@ impl Builder<'_> {
                 .map(|((_, byte), r)| (byte / 4, *r))
                 .collect(),
         }));
-        Ok(Value {
+        Ok(Some(Value {
             proof: bounds::Proof::default(),
             literal: false,
             ty: Ty::scalar(Scalar::Bool),
             regs: vec![accepted],
             uniform: false,
             constant: None,
-        })
+        }))
     }
 }

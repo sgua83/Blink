@@ -150,12 +150,16 @@ impl Builder<'_> {
         }
         Place::ReadOnlyLocal(value.ty, slots, storage)
     }
-    pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Place> {
-        let index = self.expr(expr)?;
-        self.array_index(place, index, expr.span)
+    pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Option<Place>> {
+        let Some(index) = self.expr(expr)? else {
+            return Ok(None);
+        };
+        self.array_index(place, index, expr.span).map(Some)
     }
-    pub(super) fn array_value_index(&mut self, value: Value, expr: &Expr) -> Result<Value> {
-        let index = self.expr(expr)?;
+    pub(super) fn array_value_index(&mut self, value: Value, expr: &Expr) -> Result<Option<Value>> {
+        let Some(index) = self.expr(expr)? else {
+            return Ok(None);
+        };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, expr.span)?;
         let ty = (**value.ty.array.as_ref().unwrap()).clone();
         if !self.index_in(
@@ -168,7 +172,7 @@ impl Builder<'_> {
         if let Some(bits) = &index.constant {
             let begin = bits[0] as usize * ty.components.len();
             let components: Vec<_> = (begin..begin + ty.components.len()).collect();
-            return Ok(Value {
+            return Ok(Some(Value {
                 proof: value.projected_proof(&components),
                 literal: false,
                 ty,
@@ -177,11 +181,11 @@ impl Builder<'_> {
                 constant: value
                     .constant
                     .map(|b| components.iter().map(|i| b[*i]).collect()),
-            });
+            }));
         }
         let place = self.materialize_array(value);
         let place = self.array_index(place, index, expr.span)?;
-        self.read_place(&place, expr.span)
+        self.read_place(&place, expr.span).map(Some)
     }
     fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
         let element = (**place.ty().array.as_ref().unwrap()).clone();
