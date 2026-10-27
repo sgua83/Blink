@@ -811,7 +811,9 @@ impl Parser {
             } else {
                 self.at = save;
                 let lhs = self.expr(0)?;
-                if ["=", "+=", "-=", "*=", "/="].contains(&self.peek()) {
+                if ["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]
+                    .contains(&self.peek())
+                {
                     let op = self.peek().to_owned();
                     self.at += 1;
                     let rhs = self.expr(0)?;

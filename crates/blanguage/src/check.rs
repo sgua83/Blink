@@ -3547,7 +3547,7 @@ impl<'a> Builder<'a> {
         };
         if op != "=" {
             let current = self.read_place(&place, lhs.span)?;
-            value = self.binary(&op[..1], current, value, span)?;
+            value = self.binary(&op[..op.len() - 1], current, value, span)?;
         }
         self.write_place(&place, value, span)?;
 
