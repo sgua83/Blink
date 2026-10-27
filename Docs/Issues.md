@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-019 的非阻塞交换链呈现：**本轮实现、Release及原生通过；完整调度仍开放** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage`，client `BLanguage_Gua`；仅修改Vulkan present.rs、删除mod.rs中无消费者的Commands::wait，同步原生接口／架构。零超时获取、原Execution的真实拷贝读依赖和acquire信号量消费归原所有者；两个4K窗口各64次完整整数核对、同步／异步交替及输入提前释放通过，原高精度场景两个窗口各4轮内部8K与同步全图相同，原生退出0。源码交付使用隔离client BLanguage_Gua_AsyncPresentationDelivery，保留其他会话文档与编译器编辑；原始记录E:/BLEngineMeasurements/AsyncPresentation。动态extent、多队列及完整异步调度未实现。 | 2026-10-27 |
 | C-021.1 的纯类型接口模块：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | D:/BLanguage，用户PA3／BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0。统一函数消费者基线发现D:/BLEngine/Programs/scene/transforms.h仅声明BLAffine，确由scene.labels接口及place算法使用；其.b在P4 CL13024已删除，旧SDK@13439实际加载labels时仍强求.b并报B020。按模块真实组成消除纯接口对空实现文件的依赖：.h持有接口，.b只在实际存在时作为实现源；普通函数声明仍必须匹配真实实现，读文件失败及名称不一致保持真实错误。实现源用Option表达，不伪造空Module／Source，不捕获B020后制造成功。仅lib.rs加载关系、必要模块规范与既有真实消费者，先提交本记录再修改；与进行中的统一函数工作一起集成验证，原生／提交分别记录。 | 2026-10-27 11:04 +08:00 |
 | C-021.4／C-021.6 的编译暂存产物隔离与生命周期：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；核对 object/archive.rs 将公开前缀作为 Cargo 私有库名并从共享 target/dll/release/<prefix>.lib 回读的产物归属。同前缀实际编译可能在消费前被另一编译覆盖；用真实 Cargo 的受控交接复现，不替换编译结果。沿现有编译单元身份隔离私有产物，保留依赖缓存，由原编译所有者在归档后清除自身暂存；删除 application.rs 仅为 Cargo 名字存在的 source hash／prefix 及 dll/mod.rs 对应实参，不改 PA3 统一函数、应用执行或 PA2 后端。先基线、实际实现、Release、并行产物／CPU／GPU／独立应用及失败清理，再 P4／Git；完整独立模块与分布式编译仍开放。 | 2026-10-27 11:01 +08:00 |
 | C-002／C-024.3 的四元素分歧控制：**正在修复：按真实活跃值重新降低** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，client `BLanguage_PA2`；上轮候选因约4至19倍耗时已按CL13461记录并恢复。本轮沿现有live_before／loop_live与同一Graph定位非参与lane真正需要的旧值，在packet分配干涉图保留其位置，只在真实出口交接需要时合并；完整参与段用原机器指令，外部访存／非法运算保持按参与执行。仅native.rs、native/allocation.rs、packet.rs及control／memory／integer和规范／台账；不改前端、公共IR、权限、GPU、blcompute或其他会话源码。先冻结现有Release、落实、22项分歧及既有view／合法只读别名／ABI、原生点测与临时生命周期，再分别提交／发布。Saved/PacketLivenessDevelopment为本轮新研发范围；此前三个自动审批拒绝清理的目录只读，不移动或再次删除。 | 2026-10-27 |
@@ -2727,3 +2728,17 @@ BLEngine新图像编码程序在使用`value |= expression`时，当前parser报
 ## C-021.1：纯类型接口模块的实现源依赖
 
 - 状态：**正在修复**。D:/BLanguage，用户PA3／BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0。统一函数消费者基线发现D:/BLEngine/Programs/scene/transforms.h仅声明BLAffine，确由scene.labels接口及place算法使用；其.b在P4 CL13024已删除，旧SDK@13439实际加载labels时仍强求.b并报B020。按模块真实组成消除纯接口对空实现文件的依赖：.h持有接口，.b只在实际存在时作为实现源；普通函数声明仍必须匹配真实实现，读文件失败及名称不一致保持真实错误。实现源用Option表达，不伪造空Module／Source，不捕获B020后制造成功。仅lib.rs加载关系、必要模块规范与既有真实消费者，先提交本记录再修改；与进行中的统一函数工作一起集成验证，原生／提交分别记录。 当前仅认领本扩展范围，未改加载器的实现源表示；旧版真实拒绝保留于Saved/Measurements/PA3UnifiedFunctionsDevelopment/engine-old-scene_labels.stderr.log。这是完整模块组织的能力缺口，不以新增空.b恢复旧依赖，也不把基线未通过的模块列为已验证。
+
+## C-019：可轮询交换链呈现（2026-10-27）
+
+本轮实现、Release构建与原生运行已完成。实际执行机192.168.10.5／GUA，会话01a161fa-3afe-7b63-b04e-e09926616c1a，源码工作区B:/BLanguage、client BLanguage_Gua；只修改vulkan/present.rs及删除mod.rs中已无消费者的Commands::wait，接口／架构同步，避让PA3统一函数及其他会话源码。聚焦交付由临时隔离client BLanguage_Gua_AsyncPresentationDelivery完成，不提交主工作区其他未提交文档。
+
+此前Swapchain::present在UI线程无限等待acquire并等待GPU拷贝；绘制可轮询仍不能避免该阻塞。try_present(&mut GpuDataset)在原acquire信号量消费未完成或零超时获取报告NOT_READY／TIMEOUT时返回Pending，不提交、不修改输入；真正取得图像后使用同一分页拷贝与呈现布局，交给原ExecutionResources::Transfer。输入最后使用点交给这份真实读执行，后续改写、读回和退出沿既有依赖，不复制显示缓冲。交换链只持有当前acquire消费，呈现等待信号量仍按实际图像保存；Ready是已排队，不是拷贝或显示器扫描完成。原同步present继续复用同一实现并明确等待，真实WSI错误仍报告。
+
+最终Release构建33.27秒通过，只保留已有invoke_function警告。临时消费者需与正式ThinLTO rlib使用相同链接配置；初次未加lto=thin产生LNK1136，补齐配置后链接通过，不把配置问题归为语言／执行错误。
+
+原生PID39536、退出0：两个3840×2160窗口各64次呈现，16588800个最终像素符合独立整数参考；128份生产提交返回时均未完成。1400次try_present中1272次Pending，最大单次宿主调用1.8628ms、总消费1154.4437ms；此前一次对应1384／1256次、5.7257／1175.3856ms。两次原始差异保留，不称显示器FPS、固定延迟或吞吐保证。同步／异步交替、冻结binding、输入／程序／原Device先退出、交换链最后正常退出均运行完成。
+
+正式BLEngine消费者PID45564、退出0：原高精度4字、白玉／真皮／晨光场景，两个窗口各4轮，每轮完整内部33177600样本，输出3840×2160；两份最终图与相同真实场景／相机／显式采样输入的同步绘制逐像素相同，共16588800像素。原renderer／scene／gpu退出后仍正常保存两份图。GPU渲染阶段合计11178.63052ms，加载／编译／渲染／读回／写出35697.2964ms；这些不同跨度不当作产品FPS或本轮积分加速。
+
+原始构建、链接失败、两个窗口的完整帧及退出记录保留E:/BLEngineMeasurements/AsyncPresentation，临时消费者完成后清除。正常入口已无无限acquire或显式CPU拷贝等待，但vkQueuePresentKHR仍可能有宿主成本；关闭时WSI完成／读回／保存、动态extent、OutOfDate、多队列和完整异步调度继续开放。C-019其余能力、完整引擎和BLEditor替换不据此完成。实际语义见Docs/DeviceSubmission.md；依据为Khronos的交换链信号量复用与vkAcquireNextImageKHR规范。

@@ -1345,9 +1345,6 @@ impl Commands {
         }
         Ok(())
     }
-    fn wait(&self) -> Result<()> {
-        self.completion.wait()
-    }
 }
 impl Drop for Commands {
     fn drop(&mut self) {

@@ -289,6 +289,8 @@ GPU 数据为独立设备内存。上传、读回和零初始化都是明确操�
 
 Win32交换链创建与present读取实际窗口的DPI上下文，在该线程作用域执行WSI后归还原上下文，不改变进程全局DPI。窗口仍由调用者持有到Swapchain析构之后，独立GPU线程沿相同平台入口使用。Swapchain::present返回PresentStatus::Optimal／Suboptimal；两者均成功取得并提交图像，Suboptimal保留WSI原生状态，其余结果继续报告。依据为[微软线程DPI接口](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddpiawarenesscontext)和[Vulkan获取图像](https://docs.vulkan.org/refpages/latest/refpages/source/vkAcquireNextImageKHR.html)／[呈现规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html)；不以缩小输出或重试处理表面变化。动态extent／OutOfDate仍由后续实际窗口生命周期工作补齐。
 
+try_present以零超时获取和原完成点观察返回Pending／Ready；Swapchain持有当前acquire信号量的真实消费执行，呈现等待信号量仍归实际图像。源显示存储的最后使用点交给原ExecutionResources::Transfer，后续写入／退出沿同队列依赖处理，不增加显示镜像或呈现调度服务。Ready是已排队，不是拷贝或扫描输出完成；原同步present仍显式等待同一执行。实际接口及WSI寿命见[原生提交](DeviceSubmission.md#交换链呈现与原显示存储2026-10-27)。
+
 Device::same_device仅比较原逻辑设备／队列所有者的身份。Device克隆共享该所有者；同一物理GPU重新创建的Device仍不同。真实消费者在交接跨模块资源前可据此处理平台归属，不复制设备ID、按名称猜测或增加运行时审核链。引擎多输出的场景／图像职责仍属于BLEngine，通用执行框架不持有场景或视图状态。
 
 每个阶段的读写集合用于生成 RAW、WAW、WAR 所需依赖。当前使用同一计算／呈现队列；全局内存屏障覆盖全部待完成生产者，再清理同步记录。执行上下文持有命令、描述符、临时存储、编译程序及原生完成点；每份唯一数据持有自己的最后使用上下文。资源只随最后一个真实消费者结束而释放，分支不再复制或重建存储所属表。

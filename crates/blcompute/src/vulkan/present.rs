@@ -1,4 +1,5 @@
 use super::*;
+use std::task::Poll;
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -125,6 +126,7 @@ pub struct Swapchain {
     images: Vec<u64>,
     acquired: u64,
     rendered: Vec<u64>,
+    acquisition: Option<Rc<Execution>>,
 }
 impl Device {
     /// 窗口必须在 Swapchain 析构之后销毁；调用者拥有原生窗口生命周期。
@@ -182,6 +184,7 @@ impl Device {
                 images: Vec::new(),
                 acquired: 0,
                 rendered: Vec::new(),
+                acquisition: None,
             };
             let info = Win32SurfaceInfo {
                 kind: 1000009000,
@@ -312,7 +315,40 @@ impl Device {
     }
 }
 impl Swapchain {
+    /// 同步呈现；返回前源图像的实际GPU拷贝已完成。
     pub fn present(&mut self, display: &GpuDataset) -> Result<PresentStatus> {
+        if let Some(previous) = self.acquisition.take() {
+            previous.wait()?;
+        }
+        match self.submit_present(display, u64::MAX)? {
+            Poll::Ready((status, execution)) => {
+                execution.wait()?;
+                Ok(status)
+            }
+            Poll::Pending => Err(error("无限等待的呈现图像获取未完成")),
+        }
+    }
+    /// 只在原acquire信号量已消费且交换链图像可用时提交；Pending不提交或改写输入。
+    /// Ready表示已排入呈现；拷贝沿display的真实最后使用点完成，不表示已经上屏。
+    pub fn try_present(&mut self, display: &mut GpuDataset) -> Result<Poll<PresentStatus>> {
+        if let Some(previous) = &self.acquisition
+            && !previous.is_complete()?
+        {
+            return Ok(Poll::Pending);
+        }
+        self.acquisition.take();
+        let Poll::Ready((status, execution)) = self.submit_present(display, 0)? else {
+            return Ok(Poll::Pending);
+        };
+        display.last_use = Some(execution.clone());
+        self.acquisition = Some(execution);
+        Ok(Poll::Ready(status))
+    }
+    fn submit_present(
+        &mut self,
+        display: &GpuDataset,
+        timeout: u64,
+    ) -> Result<Poll<(PresentStatus, Rc<Execution>)>> {
         let _dpi = WindowDpi::enter(self.window_dpi)?;
         if !Rc::ptr_eq(&self.inner, &display.allocation.inner)
             || display.count != self.extent.width * self.extent.height
@@ -326,17 +362,20 @@ impl Swapchain {
             let f = &self.inner.functions;
             let d = self.inner.owner.device;
             let mut index = 0;
-            let acquired = PresentStatus::read(
-                (self.functions.vkAcquireNextImageKHR)(
-                    d,
-                    self.chain,
-                    u64::MAX,
-                    self.acquired,
-                    0,
-                    &mut index,
-                ),
-                "vkAcquireNextImageKHR",
-            )?;
+            let result = (self.functions.vkAcquireNextImageKHR)(
+                d,
+                self.chain,
+                timeout,
+                self.acquired,
+                0,
+                &mut index,
+            );
+            if result == 1 || result == 2 {
+                return Ok(Poll::Pending);
+            }
+            let acquired = PresentStatus::read(result, "vkAcquireNextImageKHR")?;
+            let dependencies =
+                Execution::prepare(display.dependency().cloned().into_iter().collect())?;
             let mut commands = Commands::new(self.inner.clone())?;
             commands.barrier(
                 display.producer.stage(),
@@ -438,6 +477,13 @@ impl Swapchain {
             );
             let signal = self.rendered[index as usize];
             commands.submit_with(&[self.acquired], &[0x1000], &[signal])?;
+            let execution = Execution::new(
+                ExecutionResources::Transfer {
+                    commands,
+                    _staging: Vec::new(),
+                },
+                dependencies,
+            );
             let info = PresentInfo {
                 kind: 1000001001,
                 next: null(),
@@ -452,12 +498,13 @@ impl Swapchain {
                 (self.functions.vkQueuePresentKHR)(self.inner.queue, &info),
                 "vkQueuePresentKHR",
             )?;
-            commands.wait()?;
-            Ok(if acquired == PresentStatus::Suboptimal || queued == PresentStatus::Suboptimal {
-                PresentStatus::Suboptimal
-            } else {
-                PresentStatus::Optimal
-            })
+            let status =
+                if acquired == PresentStatus::Suboptimal || queued == PresentStatus::Suboptimal {
+                    PresentStatus::Suboptimal
+                } else {
+                    PresentStatus::Optimal
+                };
+            Ok(Poll::Ready((status, execution)))
         }
     }
 }
