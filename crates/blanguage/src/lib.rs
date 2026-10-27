@@ -314,14 +314,10 @@ fn read_world(
         type_sets: BTreeMap::new(),
         evaluating_constants: RefCell::new(BTreeSet::new()),
     };
-    let mut loaded = BTreeSet::new();
-    let mut visiting = BTreeSet::new();
     let entry = load(
         path,
         module_root,
         &mut world,
-        &mut loaded,
-        &mut visiting,
         imported,
         None,
     )?;
@@ -368,8 +364,6 @@ fn load(
     path: &Path,
     root: &Path,
     world: &mut World,
-    loaded: &mut BTreeSet<String>,
-    visiting: &mut BTreeSet<String>,
     imported: Option<&module::Imports>,
     import: Option<&str>,
 ) -> Result<String> {
@@ -411,20 +405,13 @@ fn load(
     let source = implementation
         .as_ref()
         .map_or(&interface.source, |module| &module.source);
-    if loaded.contains(&name) {
+    if world.sources.contains_key(&name) {
         return Ok(name);
     }
     world.sources.insert(name.clone(), source.clone());
     world
         .interfaces
         .insert(name.clone(), interface.source.clone());
-    if !visiting.insert(name.clone()) {
-        return source.fail(
-            Span::default(),
-            "B023",
-            "模块导入存在环；公共类型应移入共同依赖模块",
-        );
-    }
     let imports: Vec<_> = interface
         .imports
         .iter()
@@ -439,8 +426,6 @@ fn load(
             &import_path,
             root,
             world,
-            loaded,
-            visiting,
             imported,
             Some(import),
         )?;
@@ -627,8 +612,6 @@ fn load(
             }),
         );
     }
-    visiting.remove(&name);
-    loaded.insert(name.clone());
     Ok(name)
 }
 impl World {

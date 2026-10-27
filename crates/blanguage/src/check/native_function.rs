@@ -58,6 +58,7 @@ struct Unit {
     public: bool,
     residency_calls: Vec<residency::Call>,
     residency_uses: Vec<residency::Use>,
+    view_model: view_contracts::Function,
 }
 fn declaration(
     world: &World,
@@ -90,6 +91,7 @@ fn declaration(
                 public: instance.definition.public,
                 residency_calls: Vec::new(),
                 residency_uses: Vec::new(),
+                view_model: view_contracts::Function::default(),
             }),
         );
         return Ok(context);
@@ -134,6 +136,7 @@ fn declaration(
             public: instance.definition.public,
             residency_calls: calls,
             residency_uses: uses,
+            view_model: checked.view_model,
         }),
     );
     Ok(context)
@@ -206,6 +209,14 @@ pub(super) fn canonical(
                 let identity = ValueIdentity::ParameterContent(parameter, component);
                 bindings.insert(identity, bounds::Proof::default().with_identity(identity));
             }
+        }
+    }
+    builder.view_model.parameters=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect();
+    if let Some(Returned::Value(value))=&returned {builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
+    for (index,proof)in written.iter().enumerate() {
+        if let Some(proof)=proof {
+            let parameter=&builder.definition.function.params[index];
+            if let Some((ty,_))=builder.env.get(&parameter.name).and_then(Binding::view_parts){builder.view_model.capture(proof,ty,|component|view_contracts::Output::Written(index,component));}
         }
     }
     let parameter_sources = returned.as_ref().into_iter().flat_map(|model| match model { Returned::Value(v)=>v.proof.borrowed_views(),_=>BTreeSet::new() })
@@ -473,9 +484,14 @@ impl Builder<'_> {
                     unit.contract.written.clone(),
                 )
             });
-        if prototype.is_none() && written.iter().any(|(_,place)| place.ty().contains_views()) {
-            return self.fail(span,"B271","递归view输出的实际借用来源尚未形成合同");
-        }
+        let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
+        view_arguments.extend(contents.clone());
+        let pending_view=result.as_ref().filter(|ty|ty.contains_views()).is_some_and(|ty| {
+            prototype.as_ref().and_then(|(_,model,_)|model.as_ref()).is_none_or(|model|match model {Returned::Value(value)=>view_contracts::pending(&value.proof,ty),_=>true})
+        })||written.iter().any(|(index,place)|place.ty().contains_views()&&prototype.as_ref().and_then(|(_,_,written)|written.get(*index)).and_then(Option::as_ref).is_none_or(|proof|view_contracts::pending(proof,place.ty())));
+        let view_call=if pending_view {
+            Some(self.view_model.call(&instance.name,view_arguments,self.definition.source.clone(),span))
+        }else{None};
         let (mut bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
             (
                 inputs
@@ -513,11 +529,14 @@ impl Builder<'_> {
             }
         }
         for (index, place) in written {
-            let proof = writes
+            let mut proof = writes
                 .get(index)
                 .and_then(Option::as_ref)
                 .map(|proof| proof.at_call(&bindings))
                 .unwrap_or_default();
+            if let Some(call)=view_call {for component in view_contracts::components(place.ty()) {
+                proof=proof.with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
+            }}
             self.assign_owned_proof(&place, proof, false);
             self.initialize(&place);
         }
@@ -538,12 +557,14 @@ impl Builder<'_> {
             constant: None,
         };
         let mut returned = self.template_returned(value, true);
-        if returned_has_views(&returned) && model.is_none() { return self.fail(span,"B271","递归view返回的实际借用来源尚未形成合同"); }
         if let Some(model) = model {
             translate_returned(&mut returned, &model, &bindings);
             residency::returned(&mut returned, &locations);
         } else {
             residency::output(&mut returned, &instance.name, &locations);
+        }
+        if let (Some(call),Returned::Value(value))=(view_call,&mut returned) {
+            for component in view_contracts::components(&value.ty){value.proof=value.proof.clone().with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Returned(component)));}
         }
         self.view_uses.after(span);
         let borrow = match &returned {Returned::Value(v)=>v.proof.borrowed_view(),_=>view::Borrow::default()};
@@ -558,7 +579,6 @@ impl Builder<'_> {
         Ok(Some(returned))
     }
 }
-fn returned_has_views(value:&Returned)->bool { matches!(value,Returned::Value(v) if v.ty.contains_views()) }
 fn append_actual(actual: &mut Vec<Option<bounds::Proof>>, value: &Value) {
     let proof = bounds::Proof::capture(value);
     for i in 0..value.regs.len() {
@@ -609,8 +629,40 @@ fn translate_returned(
         _ => {}
     }
 }
+fn view_outputs(contract:&Contract)->view_contracts::Outputs {
+    let mut outputs=BTreeMap::new();
+    if let Some(Returned::Value(value))=&contract.returned {
+        for component in view_contracts::components(&value.ty){outputs.insert(view_contracts::Output::Returned(component),value.proof.view_borrow(component));}
+    }
+    // 位置参数的实际类型由原CallParameter携带；值输出合同保留原形参编号。
+    for (parameter,proof)in contract.written.iter().enumerate() {
+        if let Some(proof)=proof {for component in 0..proof.width() {
+            let borrow=proof.view_borrow(component);if !borrow.empty(){outputs.insert(view_contracts::Output::Written(parameter,component),borrow);}
+        }}
+    }
+    outputs
+}
+fn resolve_views(module:&mut Module)->Result<()> {
+    let mut functions=BTreeMap::new();let mut closed=BTreeMap::new();
+    for (name,unit)in &module.units {
+        let unit=unit.as_ref().unwrap();
+        if unit.function.is_some(){functions.insert(name.clone(),&unit.view_model);}else{closed.insert(name.clone(),view_outputs(&unit.contract));}
+    }
+    let outputs=view_contracts::solve(&functions,closed)?;
+    for (name,unit)in &mut module.units {
+        let contract=&mut unit.as_mut().unwrap().contract;
+        for (output,borrow)in &outputs[name] {
+            match *output {
+                view_contracts::Output::Returned(component)=>if let Some(Returned::Value(value))=&mut contract.returned {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
+                view_contracts::Output::Written(parameter,component)=>if let Some(proof)=&mut contract.written[parameter] {*proof=proof.clone().with_view_borrow(component,borrow.clone());},
+            }
+        }
+    }
+    Ok(())
+}
 // 函数合同沿真实资源调用关系收敛，递归参数置换也消费同一输入条件。
 fn resolve_residencies(module: &mut Module) -> Result<()> {
+    resolve_views(module)?;
     let outputs = residency::solve_outputs(module.units.iter().map(|(name, unit)| {
         (
             name.as_str(),
@@ -715,8 +767,9 @@ fn finalize(
     loop {
         let mut next = reachable.clone();
         for name in &reachable {
-            if let Some(function) = &mut units.get_mut(name).unwrap().function {
-                next.extend(dependencies(&mut function.body));
+            let unit=units.get_mut(name).unwrap();
+            if owner.is_none_or(|owner|unit.module==owner) {
+                if let Some(function)=&mut unit.function {next.extend(dependencies(&mut function.body));}
             }
         }
         if next == reachable {
@@ -724,7 +777,6 @@ fn finalize(
         }
         reachable = next;
     }
-    units.retain(|name, _| reachable.contains(name));
     let mut frame = BTreeSet::new();
     for (name, unit) in &mut units {
         if unit.contract.frame {
@@ -756,6 +808,7 @@ fn finalize(
         }
         frame = next;
     }
+    units.retain(|name, _| reachable.contains(name));
     fn prune(body: &mut ValueCode, frame: &BTreeSet<String>) {
         calls(&mut body.code, &mut |call| {
             if matches!(&call.target,CallTarget::Defined(name) if !frame.contains(name)) {
@@ -1173,6 +1226,7 @@ fn build_domain(
             public: d.public,
             residency_calls: Vec::new(),
             residency_uses: Vec::new(),
+                view_model: view_contracts::Function::default(),
         }),
     );
     Ok(())

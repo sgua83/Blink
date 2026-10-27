@@ -198,7 +198,6 @@ impl Proof {
     pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
     }
-    pub(super) fn resolve_view_loop(&mut self,level:usize,values:&[view::Borrow]) {for borrow in &mut self.views {*borrow=borrow.resolve(level,values);}}
     pub(super) fn view_parameters(mut self, ty: &Ty, identity: impl Fn(usize) -> ValueIdentity) -> Self {
         for (offset, _) in ty.view_fields() {
             let at = ty.components.iter().position(|(_, at)| *at == offset).unwrap();

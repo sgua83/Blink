@@ -41,6 +41,7 @@ mod texture;
 mod tile;
 mod view;
 mod view_liveness;
+mod view_contracts;
 use flow::{Flow, LoopContext};
 use ownership::Position;
 use std::{
@@ -1161,6 +1162,7 @@ struct CheckedFunction {
     inputs: Vec<Reg>,
     written: Vec<Option<bounds::Proof>>,
     residency: residency::Inputs,
+    view_model: view_contracts::Function,
     application: Option<application::Context>,
 }
 fn checked_function(
@@ -1424,6 +1426,7 @@ fn checked_function(
         inputs: semantic_inputs,
         written,
         residency: b.residency,
+        view_model: b.view_model,
         application: b.application,
     })
 }
@@ -1462,6 +1465,7 @@ fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
 }
 struct Builder<'a> {
     residency: residency::Inputs,
+    view_model: view_contracts::Function,
     application: Option<application::Context>,
     world: &'a World,
     definition: Arc<Definition>,
@@ -1512,6 +1516,7 @@ impl<'a> Builder<'a> {
         );
         Self {
             residency: residency::Inputs::default(),
+            view_model: view_contracts::Function::default(),
             application: None,
             world,
             definition: definition.clone(),
@@ -2932,7 +2937,7 @@ impl<'a> Builder<'a> {
             body_flow = body_flow.union(flow);
         }
         let mut body = code;
-        let next = self.leave_loop(natural, &mut condition_code, c.regs[0], &mut body, span)?;
+        let next = self.leave_loop(natural, &mut condition_code, c.regs[0], &mut body, span, false)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3193,7 +3198,7 @@ impl<'a> Builder<'a> {
             body_flow = body_flow.union(flow);
         }
         let mut body = code;
-        let next = self.leave_loop(natural, &mut condition, test.regs[0], &mut body, span)?;
+        let next = self.leave_loop(natural, &mut condition, test.regs[0], &mut body, span, nonempty)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;

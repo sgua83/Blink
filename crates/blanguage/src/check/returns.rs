@@ -22,15 +22,6 @@ impl Expected {
     }
 }
 impl Returned {
-    fn resolve_view_loop(&mut self,level:usize,values:&[view::Borrow]) {
-        match self {
-            Self::Value(value)=>value.proof.resolve_view_loop(level,values),
-            Self::Dataset(data)=>{data.handle.proof.resolve_view_loop(level,values);data.length.proof.resolve_view_loop(level,values);}
-            Self::OwnedValue(value)=>{value.value.proof.resolve_view_loop(level,values);for item in value.payloads.iter_mut().flatten(){item.resolve_view_loop(level,values);}}
-            Self::Unit=>{},
-        }
-    }
-
     fn bind_outputs(
         &mut self,
         registers: Option<&[Reg]>,
@@ -120,13 +111,6 @@ pub(super) struct ReturnContext {
     exits: Vec<ReturnExit>,
 }
 impl ReturnContext {
-    pub(super) fn resolve_view_loop(&mut self,level:usize,values:&[view::Borrow]) {
-        for exit in &mut self.exits {
-            if let Some(value)=&mut exit.value {value.resolve_view_loop(level,values);}
-            if let Ok(borrowed)=&mut exit.borrowed {for owner in borrowed.values_mut(){owner.proof.resolve_view_loop(level,values);}}
-        }
-    }
-
     pub(super) fn exit_count(&self) -> usize {
         self.exits.len()
     }

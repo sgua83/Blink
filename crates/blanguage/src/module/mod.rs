@@ -126,7 +126,8 @@ pub fn compile(
         code: "B270",
         message: error.to_string(),
     })?;
-    let (world, entry) = crate::read_world(path, module_root, Some(&imports))?;
+    let imported=if dependencies.is_empty(){None}else{Some(&imports)};
+    let (world, entry) = crate::read_world(path, module_root, imported)?;
     crate::validate_types(&world)?;
     crate::check::compile_native_module(&world, &entry, instances)
 }

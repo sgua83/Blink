@@ -7,24 +7,18 @@ pub(super) struct LoopInput { pub level: usize, pub index: usize }
 pub(super) struct Borrow {
     pub sources: BTreeSet<Source>,
     pub inputs: BTreeSet<LoopInput>,
+    pub calls: BTreeSet<view_contracts::CallResult>,
 }
 impl Borrow {
     pub fn from_sources(sources:BTreeSet<Source>)->Self {Self{sources,..Self::default()}}
-    pub fn empty(&self)->bool {self.sources.is_empty()&&self.inputs.is_empty()}
-    pub fn union(&mut self,other:&Self) {self.sources.extend(&other.sources);self.inputs.extend(&other.inputs);}
+    pub fn empty(&self)->bool {self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()}
+    pub fn union(&mut self,other:&Self) {self.sources.extend(&other.sources);self.inputs.extend(&other.inputs);self.calls.extend(&other.calls);}
     pub fn joined(mut self,other:Self)->Self {self.union(&other);self}
     pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        let mut result=Self{sources:BTreeSet::new(),inputs:self.inputs.clone()};
+        let mut result=Self{sources:BTreeSet::new(),inputs:self.inputs.clone(),calls:self.calls.clone()};
         for source in &self.sources {result.union(&source.at_call(bindings));} result
     }
-    pub fn resolve(&self,level:usize,values:&[Self])->Self {
-        let mut result=Self::from_sources(self.sources.clone());
-        for input in &self.inputs {
-            if input.level==level {result.union(&values[input.index]);}
-            else {result.inputs.insert(*input);}
-        }
-        result
-    }
+    pub fn pending(&self)->bool {!self.inputs.is_empty()||!self.calls.is_empty()}
 }
 impl crate::module::codec::Encode for Borrow {
     fn encode(&self,w:&mut crate::module::codec::Writer) {crate::module::codec::Encode::encode(&self.sources,w);}
@@ -76,35 +70,27 @@ pub(super) fn data_at_mut<'a>(binding:&'a mut Binding,path:&[usize])->Option<&'a
         _=>None,
     }
 }
-pub(super) fn resolve_binding(binding:&mut Binding,level:usize,values:&[Borrow]) {
-    if let Some(proof)=binding.view_proof_mut(){proof.resolve_view_loop(level,values);}
-    match binding {
-        Binding::ApplicationData(data)=>data.handle.proof.resolve_view_loop(level,values),
-        Binding::OwnedValue(value)=>{
-            fn resolve(value:&mut owned_values::OwnedValue,level:usize,values:&[Borrow]) {
-                value.value.proof.resolve_view_loop(level,values);
-                for item in value.payloads.iter_mut().flatten() {match item.as_mut() {
-                    returns::Returned::Dataset(data)=>data.handle.proof.resolve_view_loop(level,values),
-                    returns::Returned::OwnedValue(value)=>resolve(value,level,values),
-                    returns::Returned::Value(value)=>value.proof.resolve_view_loop(level,values),_=>{},
-                }}
-                value.sync_resource_borrows();
-            }
-            resolve(value,level,values);
-        },
-        Binding::ViewElement{view,..}=>view.proof.resolve_view_loop(level,values),_=>{},
-    }
-}
+#[derive(Clone)]
 pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,span:Span},
 }
 impl Requirement {
-    fn borrow(&self)->&Borrow {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}=>borrow}}
-    pub fn resolve(&mut self,level:usize,values:&[Borrow]) {
-        let borrow=match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}=>borrow};
-        *borrow=borrow.resolve(level,values);
-        if let Self::Unborrowed{resource,..}=self {*resource=resource.resolve(level,values);}
+    pub fn borrow(&self)->&Borrow {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}=>borrow}}
+    pub fn pending(&self)->bool {self.borrow().pending()||matches!(self,Self::Unborrowed{resource,..}if resource.pending())}
+    pub fn mapped(&self,map:impl Fn(&Borrow)->Borrow)->Self {
+        match self {
+            Self::Unborrowed{resource,borrow,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),span:*span},
+            Self::Return{borrow,allowed,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),span:*span},
+        }
+    }
+    pub fn check(&self,source:&crate::Source)->Result<()> {
+        if self.borrow().sources.contains(&Source::Unresolved){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
+        match self {
+            Self::Unborrowed{resource,borrow,span} if borrow.sources.iter().any(|source|matches!(source,Source::Data(_))&&resource.sources.contains(source))=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
+            Self::Return{borrow,allowed,span} if borrow.sources.iter().any(|source|matches!(source,Source::Data(id)if !allowed.contains(id)))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
+            _=>Ok(()),
+        }
     }
 }
 
@@ -188,18 +174,13 @@ impl Builder<'_> {
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
         let borrow=requirement.borrow();
         if borrow.empty(){return Ok(());}
-        if borrow.sources.contains(&Source::Unresolved) {return self.fail(match &requirement{Requirement::Unborrowed{span,..}|Requirement::Return{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         if let Requirement::Unborrowed{resource,borrow,..}=&requirement {
-            if resource.sources.is_empty() && borrow.sources.is_empty() && !resource.inputs.is_empty() && !borrow.inputs.is_empty() && resource.inputs.iter().all(|a|borrow.inputs.iter().all(|b| {
-                a.level==b.level && a.index!=b.index && self.loop_contexts.get(a.level).is_some_and(|context|context.view_inputs[a.index].independent() && context.view_inputs[b.index].independent())
+            if resource.calls.is_empty() && borrow.calls.is_empty() && resource.sources.is_empty() && borrow.sources.is_empty() && !resource.inputs.is_empty() && !borrow.inputs.is_empty() && resource.inputs.iter().all(|a|borrow.inputs.iter().all(|b| {
+                a.level==b.level && a.index!=b.index && self.loop_contexts.iter().find(|context|context.view_scope==Some(a.level)).is_some_and(|context|context.view_inputs[a.index].independent() && context.view_inputs[b.index].independent())
             })) {return Ok(());}
         }
-        match &requirement {
-            Requirement::Unborrowed{resource,borrow,span} if borrow.sources.iter().any(|source|matches!(source,Source::Data(_)) && resource.sources.contains(source)) => return self.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
-            Requirement::Return{borrow,allowed,span} if borrow.sources.iter().any(|s|matches!(s,Source::Data(id) if !allowed.contains(id))) => return self.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
-            _=>{},
-        }
-        if !borrow.inputs.is_empty() || matches!(&requirement,Requirement::Unborrowed{resource,..} if !resource.inputs.is_empty()) {self.loop_contexts.last_mut().unwrap().view_requirements.push(requirement);}
+        requirement.check(&self.definition.source)?;
+        if requirement.pending(){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone()});}
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, span: Span) -> Result<()> {
