@@ -178,7 +178,10 @@ impl Builder<'_> {
         self.array_index(place, index, expr.span).map(Some)
     }
     pub(super) fn array_value_index(&mut self, value: Value, expr: &Expr) -> Result<Option<Value>> {
-        let Some(index) = self.expr(expr)? else {
+        let held = value.ty.contains_views().then(|| self.hold_binding(Binding::Value(value.clone())));
+        let evaluated = self.expr(expr);
+        if let Some(name) = held { self.env.remove(&name); }
+        let Some(index) = evaluated? else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, expr.span)?;

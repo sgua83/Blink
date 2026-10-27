@@ -37,6 +37,7 @@ impl Builder<'_> {
             &self.definition.imports,
         )?;
         let mut values = Vec::new();
+        let mut held = Vec::new();
         for (index, arg) in args.iter().enumerate() {
             let expected = ty
                 .array
@@ -45,8 +46,10 @@ impl Builder<'_> {
             let Some(value) = self.expr_expected(arg, expected)? else {
                 return Ok(None);
             };
+            if value.ty.contains_views() { held.push(self.hold_binding(Binding::Value(value.clone()))); }
             values.push(value);
         }
+        for name in held { self.env.remove(&name); }
         self.record_value(name, values, span).map(Some)
     }
     pub(super) fn record_value(

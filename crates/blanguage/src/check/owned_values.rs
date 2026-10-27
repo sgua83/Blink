@@ -979,6 +979,7 @@ impl Builder<'_> {
             {
                 Binding::AtomicBorrow(place.clone())
             }
+            cooperative::Argument::Value(value) if value.ty.contains_views() => Binding::Value(value.clone()),
             cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
             cooperative::Argument::ApplicationData(data) if access == Access::Value => {
                 Binding::ApplicationData(data.clone())
@@ -1009,6 +1010,7 @@ impl Builder<'_> {
             arguments[*index] = match value {
                 Binding::ApplicationData(data) => cooperative::Argument::ApplicationData(data),
                 Binding::OwnedValue(value) => cooperative::Argument::OwnedValue(value),
+                Binding::Value(value) => cooperative::Argument::Value(value),
                 _ => unreachable!(),
             };
         }

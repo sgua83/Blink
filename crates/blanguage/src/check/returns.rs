@@ -309,13 +309,19 @@ impl Builder<'_> {
     pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
         if let Some(value)=&mut value {self.require_returned_initialized(value,span)?;}
         if let Some(Returned::Value(value)) = &mut value {
+            self.require_view_return(value, span)?;
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env, &self.path);
         }
         if let Some(Returned::OwnedValue(value)) = &mut value {
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
-        self.release_application_data(None);
+        for param in &self.definition.function.params {
+            if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && let Some(Binding::Owned(owner))=self.env.get(&param.name) {
+                self.require_view_return_proof(&owner.proof,span)?;
+            }
+        }
+        self.release_application_data(None)?;
         let borrowed = (|| -> Result<BTreeMap<String, OwnedBinding>> {
             let mut borrowed = BTreeMap::new();
             let definition = self.definition.clone();

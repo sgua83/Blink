@@ -303,11 +303,10 @@ impl Builder<'_> {
         }
         match place {
             Place::Reference { words, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
-            Place::ApplicationElement {
-                words,
-                writable: true,
-                ..
-            } => Ok(words.iter().map(|word| *word as usize).collect()),
+            Place::ApplicationElement { words, sources, writable: true, .. } => {
+                self.require_view_unborrowed(sources,span)?;
+                Ok(words.iter().map(|word| *word as usize).collect())
+            },
             Place::Local(_, slots, ..) => Ok(slots.clone()),
             Place::Element {
                 binding,

@@ -29,6 +29,7 @@ impl Argument {
                 vec![d.handle.identity()]
             }
             Self::OwnedValue(r) => r.handles(),
+            Self::Value(v) => v.proof.borrowed_views().into_iter().filter_map(|s| if let view::Source::Data(id)=s {Some(id)}else{None}).collect(),
             Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
                 Place::ApplicationElement { sources, .. } => sources.clone(),
                 _ => Vec::new(),
@@ -207,6 +208,7 @@ impl<'a> Builder<'a> {
         }
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
             if let Argument::BorrowedData(reference) = argument {
+                if param.access.writes() { self.require_view_unborrowed(&reference.sources, span)?; }
                 for source in &reference.sources {
                     self.application_handle_available(*source, span)?;
                 }
@@ -231,6 +233,7 @@ impl<'a> Builder<'a> {
                 _ => None,
             };
             if let Some(handle) = handle {
+                if param.access.writes() { self.require_view_unborrowed(&[handle], span)?; }
                 self.application_handle_available(handle, span)?;
             }
         }

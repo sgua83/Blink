@@ -186,8 +186,28 @@ pub(super) struct Proof {
     ranges: Vec<IntegerRanges>,
     nonzero: Vec<bool>,
     domains: Vec<Domains>,
+    // view分量的实际借用来源，与数值事实分别合流；只存在于编译期。
+    views: Vec<BTreeSet<view::Source>>,
 }
 impl Proof {
+    pub(super) fn view_sources(&self, component: usize) -> BTreeSet<view::Source> {
+        self.views.get(component).cloned().unwrap_or_default()
+    }
+    pub(super) fn borrowed_views(&self) -> BTreeSet<view::Source> {
+        self.views.iter().flatten().copied().collect()
+    }
+    pub(super) fn with_view_sources(mut self, component: usize, sources: BTreeSet<view::Source>) -> Self {
+        self.views.resize_with(self.views.len().max(component + 1), BTreeSet::new);
+        self.views[component] = sources;
+        self
+    }
+    pub(super) fn view_parameters(mut self, ty: &Ty, identity: impl Fn(usize) -> ValueIdentity) -> Self {
+        for (offset, _) in ty.view_fields() {
+            let at = ty.components.iter().position(|(_, at)| *at == offset).unwrap();
+            self = self.with_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at))]));
+        }
+        self
+    }
     pub(super) fn width(&self) -> usize {
         self.origins.len()
     }
@@ -239,6 +259,9 @@ impl Proof {
         bindings: &OutputBindings,
         aliases: &Clause,
     ) {
+        for sources in &mut self.views {
+            *sources = sources.iter().map(|source| source.bind_outputs(bindings)).collect();
+        }
         for origins in &mut self.origins {
             for identity in origins {
                 *identity = output_identity(*identity, bindings);
@@ -362,6 +385,7 @@ impl Proof {
             Clause::facts(translated.into_iter().collect())
         }
         let mut translated = self.clone();
+        translated.views = self.views.iter().map(|sources| sources.iter().flat_map(|s| s.at_call(bindings)).collect()).collect();
         for (i, origins) in self.origins.iter().enumerate() {
             let values = origins
                 .iter()
@@ -497,12 +521,14 @@ impl Proof {
         if components.iter().copied().eq(0..width) {
             *self = fresh;
         } else {
+            self.views.resize_with(width, BTreeSet::new);
             self.origins.resize_with(width, Vec::new);
             self.conditions.resize_with(width, || None);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, IntegerRanges::default);
             self.domains.resize(width, Domains::new());
             for (j, &i) in components.iter().enumerate() {
+                self.views[i] = fresh.view_sources(j);
                 self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
                 self.conditions[i] = fresh.conditions.get(j).cloned().flatten();
                 self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
@@ -526,6 +552,7 @@ impl Proof {
                 }))
             })
             .collect();
+        self.views = (0..width).map(|i| self.view_sources(i).union(&other.view_sources(i)).copied().collect()).collect();
         self.origins = (0..width)
             .map(|i| {
                 let a = self.origins.get(i).cloned().unwrap_or_default();
@@ -556,6 +583,7 @@ impl Proof {
             return self.clone();
         }
         Self {
+            views: components.iter().map(|&i| self.view_sources(i)).collect(),
             origins: components
                 .iter()
                 .map(|&i| self.origins.get(i).cloned().unwrap_or_default())
@@ -655,6 +683,7 @@ impl Proof {
     }
     pub fn common(a: &Value, b: &Value) -> Self {
         Self {
+            views: (0..a.regs.len()).map(|i| a.proof.view_sources(i).union(&b.proof.view_sources(i)).copied().collect()).collect(),
             origins: (0..a.regs.len())
                 .map(|i| {
                     let other = b.component_origins(i);
@@ -826,6 +855,7 @@ impl Proof {
         }
     }
     pub fn append(&mut self, value: &Value) {
+        self.views.extend((0..value.regs.len()).map(|i| value.proof.view_sources(i)));
         self.conditions
             .extend((0..value.regs.len()).map(|i| Self::value_condition(value, i)));
         self.origins
@@ -838,6 +868,7 @@ impl Proof {
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
     }
     pub fn splat(&mut self, width: usize) {
+        self.views = vec![self.view_sources(0); width];
         self.conditions = vec![self.conditions.first().cloned().flatten(); width];
         self.origins = vec![self.origins[0].clone(); width];
         self.nonzero = vec![self.nonzero[0]; width];
@@ -1097,6 +1128,7 @@ impl Value {
     }
     pub(super) fn projected_proof(&self, indices: &[usize]) -> Proof {
         Proof {
+            views: indices.iter().map(|i| self.proof.view_sources(*i)).collect(),
             origins: indices.iter().map(|i| self.component_origins(*i)).collect(),
             conditions: indices
                 .iter()
@@ -2585,6 +2617,7 @@ impl crate::module::codec::Encode for Proof {
         self.ranges.encode(w);
         self.nonzero.encode(w);
         self.domains.encode(w);
+        self.views.encode(w);
     }
 }
 impl crate::module::codec::Decode for Proof {
@@ -2632,6 +2665,7 @@ impl crate::module::codec::Decode for Proof {
             ranges: crate::module::codec::Decode::decode(r)?,
             nonzero: crate::module::codec::Decode::decode(r)?,
             domains: crate::module::codec::Decode::decode(r)?,
+            views: crate::module::codec::Decode::decode(r)?,
         })
     }
 }

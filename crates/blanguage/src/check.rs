@@ -1325,7 +1325,7 @@ fn checked_function(
                             bounds::Proof::parameter_content(
                                 parameter_index,
                                 place.ty().components.len(),
-                            )
+                            ).view_parameters(place.ty(), |i| ValueIdentity::ParameterContent(parameter_index,i))
                         } else {
                             bounds::Proof::default()
                         },
@@ -1372,7 +1372,7 @@ fn checked_function(
         b.env.insert(
             p.name.clone(),
             Binding::Value(Value {
-                proof: bounds::Proof::default(),
+                proof: bounds::Proof::default().view_parameters(&ty, |i| ValueIdentity::Register(regs[i])),
                 literal: false,
                 ty,
                 regs,
@@ -1635,7 +1635,7 @@ impl<'a> Builder<'a> {
         self.flow = flow;
         self.block_depth -= 1;
         if flow.continues() {
-            self.release_application_data(Some(&original));
+            self.release_application_data(Some(&original))?;
         }
         self.env.retain(|k, _| original.contains(k));
         Ok(())
@@ -1663,7 +1663,7 @@ impl<'a> Builder<'a> {
                 if self.loop_depth == 0 {
                     return self.fail(s.span, "B129", "break 只能用于局部顺序循环");
                 }
-                self.release_application_loop();
+                self.release_application_loop()?;
                 self.code.push(Inst::Break);
                 self.capture_break();
                 self.flow = Flow::BREAK;
@@ -1672,7 +1672,7 @@ impl<'a> Builder<'a> {
                 if self.loop_depth == 0 {
                     return self.fail(s.span, "B129", "continue 只能用于局部顺序循环");
                 }
-                self.release_application_loop();
+                self.release_application_loop()?;
                 if let Some(Some((_, slot))) = self.iterators.last().cloned() {
                     let index = self.reg(Scalar::U32);
                     self.code.push(Inst::LoadLocal(index, slot));
@@ -1947,6 +1947,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn write_place(&mut self, p: &Place, value: Value, span: Span) -> Result<()> {
+        self.require_view_available(&value, span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
         match p {
@@ -2058,6 +2059,7 @@ impl<'a> Builder<'a> {
             }
             ExprKind::StaticU32(bits) => Ok(Some(self.constant(Scalar::U32, *bits))),
             ExprKind::Specialize(name, explicit, args) => {
+                if name == "view" { return self.create_application_view(explicit, args, e.span); }
                 if self.variant_constructor_type(name,Some(explicit),None,e.span)?.is_some() {
                     let value=self.evaluate_returned(e,None)?;return self.ordinary_return(value,e.span);
                 }
@@ -3242,6 +3244,7 @@ impl<'a> Builder<'a> {
         self.bind_returned(name, value, span)
     }
     fn bind_local_value(&mut self, name: &String, value: Value, span: Span) -> Result<()> {
+        self.require_view_available(&value, span)?;
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
@@ -3712,7 +3715,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
-        self.release_application_loop();
+        self.release_application_loop()?;
         self.code.push(Inst::StoreLocal(slot, value.regs[0]));
         self.capture_loop_cursor(value);
         self.check_application_loop(span)?;
@@ -3840,9 +3843,10 @@ impl<'a> Builder<'a> {
         if view.ty.view.is_none() {
             return self.fail(span, "B181", "unsafe_read 需要 read dataset 或不可变 view");
         }
-        let Some(index) = self.expr(&args[1])? else {
-            return Ok(None);
-        };
+        let held = self.hold_binding(Binding::Value(view.clone()));
+        let evaluated = self.expr(&args[1]);
+        self.env.remove(&held);
+        let Some(index) = evaluated? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
         return self
             .read_place(&Self::view_element(&view, index.regs[0]), span)

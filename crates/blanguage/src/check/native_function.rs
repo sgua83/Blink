@@ -208,6 +208,13 @@ pub(super) fn canonical(
             }
         }
     }
+    let parameter_sources = returned.as_ref().into_iter().flat_map(|model| match model { Returned::Value(v)=>v.proof.borrowed_views(),_=>BTreeSet::new() })
+        .chain(written.iter().flatten().flat_map(|proof| proof.borrowed_views())).collect::<BTreeSet<_>>();
+    for source in parameter_sources {
+        if let view::Source::Parameter(id)=source && let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0) {
+            *proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));
+        }
+    }
     let count = returned.as_ref().map_or(0, |model| model.registers().len());
     let models = returned.map(|model| {
         let mut value = model.clone();
@@ -281,12 +288,13 @@ impl Builder<'_> {
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg = match arg {
-                Argument::BorrowedData(reference) => {
+                Argument::BorrowedData(mut reference) => {
                     if p.access.writes() {
                         for source in &reference.sources {
                             self.invalidate_application_contents(*source);
                         }
                     }
+                    reference.data.handle.proof = reference.data.handle.proof.with_view_sources(0,reference.sources.iter().copied().map(view::Source::Data).collect());
                     Argument::ApplicationData(reference.data)
                 }
                 Argument::ScopedData { data, owner } => {
@@ -456,6 +464,9 @@ impl Builder<'_> {
                     unit.contract.written.clone(),
                 )
             });
+        if prototype.is_none() && written.iter().any(|(_,place)| place.ty().contains_views()) {
+            return self.fail(span,"B271","递归view输出的实际借用来源尚未形成合同");
+        }
         let (mut bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
             (
                 inputs
@@ -504,10 +515,8 @@ impl Builder<'_> {
         for data in written_data {
             self.initialize_application(&data);
         }
-        for name in held {
-            self.finish_scoped_argument(&name, span)?;
-        }
         let Some(ty) = result else {
+            for name in held { self.finish_scoped_argument(&name, span)?; }
             return Ok(Some(Returned::Unit));
         };
         let value = Value {
@@ -519,15 +528,25 @@ impl Builder<'_> {
             constant: None,
         };
         let mut returned = self.template_returned(value, true);
+        if returned_has_views(&returned) && model.is_none() { return self.fail(span,"B271","递归view返回的实际借用来源尚未形成合同"); }
         if let Some(model) = model {
             translate_returned(&mut returned, &model, &bindings);
             residency::returned(&mut returned, &locations);
         } else {
             residency::output(&mut returned, &instance.name, &locations);
         }
+        let sources = match &returned { Returned::Value(v)=>v.proof.borrowed_views(), _=>BTreeSet::new() };
+        for name in held {
+            if let Some(Binding::ApplicationData(data))=self.env.get(&name) {
+                if sources.contains(&view::Source::Data(data.handle.identity())) { return self.fail(span,"B227","返回view不能超出临时dataset实参的实际寿命"); }
+            }
+            self.finish_scoped_argument(&name, span)?;
+        }
+        if let Returned::Value(v)=&returned { self.require_view_available(v,span)?; }
         Ok(Some(returned))
     }
 }
+fn returned_has_views(value:&Returned)->bool { matches!(value,Returned::Value(v) if v.ty.contains_views()) }
 fn append_actual(actual: &mut Vec<Option<bounds::Proof>>, value: &Value) {
     let proof = bounds::Proof::capture(value);
     for i in 0..value.regs.len() {

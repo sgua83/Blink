@@ -229,9 +229,9 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn release_application_loop(&mut self) {
+    pub(super) fn release_application_loop(&mut self) -> Result<()> {
         let names = self.loop_contexts.last().unwrap().names.clone();
-        self.release_application_data(Some(&names));
+        self.release_application_data(Some(&names))
     }
     pub(super) fn join_environment(
         &mut self,

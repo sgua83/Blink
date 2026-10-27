@@ -623,7 +623,7 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn application_borrowed(&self, identity: ValueIdentity) -> bool {
-        self.env.values().any(|binding| {
+        self.application_view_borrowed(identity) || self.env.values().any(|binding| {
             let place = match binding {
                 Binding::DataReference(reference) => return reference.sources.contains(&identity),
                 Binding::Owned(owner) => &owner.place,
@@ -698,7 +698,7 @@ impl Builder<'_> {
         }
         data
     }
-    pub(super) fn release_application_data(&mut self, keep: Option<&BTreeSet<String>>) {
+    pub(super) fn release_application_data(&mut self, keep: Option<&BTreeSet<String>>) -> Result<()> {
         let bindings: Vec<_> = self
             .env
             .iter()
@@ -713,10 +713,14 @@ impl Builder<'_> {
                 _ => None,
             })
             .collect();
-        for binding in bindings {
-            self.drop_binding(binding, self.definition.function.span)
-                .unwrap();
+        let dropping: BTreeSet<_> = bindings.iter().flat_map(|binding| binding.application_resources()).map(|data| data.handle.identity()).collect();
+        for (name, binding) in &self.env {
+            if keep.is_some_and(|names| names.contains(name)) && binding.view_sources().iter().any(|s| matches!(s,view::Source::Data(id) if dropping.contains(id))) {
+                return self.fail(self.definition.function.span,"B227","外层view仍借用本作用域即将释放的dataset");
+            }
         }
+        for binding in bindings { self.drop_binding(binding, self.definition.function.span)?; }
+        Ok(())
     }
     pub(super) fn application_data_type(
         &self,
@@ -1059,6 +1063,7 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<[Reg; 2]> {
         self.application_handle_available(identity, span)?;
+        if write { self.require_view_unborrowed(&[identity],span)?; }
         if let Some(data) = self
             .env
             .values()
