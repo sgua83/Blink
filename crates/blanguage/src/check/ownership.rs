@@ -296,7 +296,7 @@ impl Builder<'_> {
         }
         Ok(Some(place))
     }
-    pub(super) fn writable_storage(&self, place: &Place, span: Span) -> Result<Vec<usize>> {
+    pub(super) fn writable_storage(&mut self, place: &Place, span: Span) -> Result<Vec<usize>> {
         if let Place::Indexed { base, words, .. } = place {
             self.writable_storage(base, span)?;
             return Ok(words.iter().map(|w| *w as usize).collect());

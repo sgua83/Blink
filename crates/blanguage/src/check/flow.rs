@@ -1,5 +1,6 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
+use super::view::{Borrow,InputSlot,LoopInput,Source,data_paths,data_at,data_at_mut,resolve_binding};
 impl Place {
     fn join_position_range(&mut self, other: &Self) {
         match (self, other) {
@@ -63,8 +64,111 @@ pub(super) struct LoopContext {
     continues: Vec<LoopState>,
     iterator: Option<String>,
     initial_cursor: Option<Value>,
+    pub(super) view_inputs: Vec<view::InputSlot>,
+    pub(super) view_resources: BTreeMap<ValueIdentity,view::Borrow>,
+    pub(super) view_requirements: Vec<view::Requirement>,
 }
 impl Builder<'_> {
+    pub(super) fn prepare_view_loop(&mut self) {
+        if self.application.is_none() || self.loop_contexts.last().unwrap().initial{return;}
+        let level=self.loop_contexts.len()-1;
+        let mut slots=Vec::new();
+        for (name,binding) in &self.loop_contexts[level].resources {
+            for (path,_,independent) in data_paths(binding){slots.push(InputSlot::Data{name:name.clone(),path,independent});}
+            if let Some((ty,_))=binding.view_parts() {
+                for (offset,_) in ty.view_fields() {
+                    let component=ty.components.iter().position(|(_,at)|*at==offset).unwrap();
+                    slots.push(InputSlot::Value{name:name.clone(),component});
+                }
+            }
+        }
+        let mut resources:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
+        for (index,slot) in slots.iter().enumerate() {
+            if let InputSlot::Data{name,path,..}=slot {
+                let input=Borrow{inputs:BTreeSet::from([LoopInput{level,index}]),..Borrow::default()};
+                for environment in [&self.env,&self.loop_contexts[level].resources] {
+                    if let Some(data)=environment.get(name).and_then(|b|data_at(b,path)) {resources.entry(data.handle.identity()).or_default().union(&input);}
+                }
+            }
+        }
+        for (index,slot) in slots.iter().enumerate() {
+            if let InputSlot::Data{name,path,..}=slot {
+                let data=data_at_mut(self.env.get_mut(name).unwrap(),path).unwrap();
+                data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:BTreeSet::from([LoopInput{level,index}]),..Borrow::default()});
+            }
+        }
+        for binding in self.env.values_mut(){if let Binding::OwnedValue(value)=binding {value.sync_resource_borrows();}}
+        for (index,slot) in slots.iter().enumerate() {
+            if let InputSlot::Value{name,component}=slot {
+                let proof=self.env.get_mut(name).unwrap().view_proof_mut().unwrap();
+                *proof=proof.clone().with_view_borrow(*component,Borrow{inputs:BTreeSet::from([LoopInput{level,index}]),..Borrow::default()});
+            }
+        }
+        self.loop_contexts[level].view_inputs=slots;self.loop_contexts[level].view_resources=resources;
+    }
+    pub(super) fn close_view_context(&mut self,context:&mut LoopContext)->Result<()> {
+        let level=self.loop_contexts.len();
+        let mut initial=Vec::new();
+        for slot in &context.view_inputs {
+            initial.push(match slot {
+                InputSlot::Value{name,component}=>context.resources[name].view_parts().unwrap().1.view_borrow(*component),
+                InputSlot::Data{name,path,..}=>self.data_value_borrow(data_at(&context.resources[name],path).unwrap()),
+            });
+        }
+        let mut resources=BTreeMap::new();
+        for outer in &self.loop_contexts {resources.extend(outer.view_resources.clone());}
+        resources.extend(context.view_resources.clone());
+        let data_value=|data:&application::Data|resources.get(&data.handle.identity()).cloned().unwrap_or_else(|| {
+            let mut borrow=data.handle.proof.view_borrow(0);
+            if borrow.empty(){borrow.sources.insert(Source::Data(data.handle.identity()));}borrow
+        });
+        let mut definitions=initial.clone();
+        for state in &context.continues {
+            for (index,slot) in context.view_inputs.iter().enumerate() {
+                let value=match slot {
+                    InputSlot::Value{name,component}=>state.env.get(name).and_then(Binding::view_parts).map(|(_,proof)|proof.view_borrow(*component)).unwrap_or_default(),
+                    InputSlot::Data{name,path,..}=>state.env.get(name).and_then(|b|data_at(b,path)).map(&data_value).unwrap_or_default(),
+                };
+                definitions[index].union(&value);
+            }
+        }
+        let mut values=initial;
+        loop {
+            let next=definitions.iter().map(|borrow|borrow.resolve(level,&values)).collect::<Vec<_>>();
+            if next==values {break;}values=next;
+        }
+        // 每个出口保留自己实际交还的资源，再用同一入口关系消去局部循环引用。
+        let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
+            for binding in environment.values_mut() {
+                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,data_value(data).resolve(level,&values))).collect::<BTreeMap<_,_>>();
+                match binding {
+                    Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}}
+                    Binding::OwnedValue(value)=>{
+                        fn assign(value:&mut owned_values::OwnedValue,path:&mut Vec<usize>,borrows:&mut BTreeMap<Vec<usize>,Borrow>) {
+                            for (index,payload) in value.payloads.iter_mut().enumerate(){let Some(payload)=payload.as_deref_mut()else{continue};path.push(index);
+                                match payload {returns::Returned::Dataset(data)=>{if let Some(value)=borrows.remove(path){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}},returns::Returned::OwnedValue(value)=>assign(value,path,borrows),_=>{}}
+                                path.pop();
+                            }
+                        }
+                        assign(value,&mut Vec::new(),&mut data_borrows);
+                    }
+                    _=>{},
+                }
+                resolve_binding(binding,level,&values);
+            }
+        };
+        for state in &mut context.exits {resolve_env(&mut state.env);}
+        resolve_env(&mut self.env);
+        if let Some(returned)=&mut self.return_context {returned.resolve_view_loop(level,&values);}
+        for mut requirement in std::mem::take(&mut context.view_requirements) {
+            requirement.resolve(level,&values);self.check_view_requirement(requirement)?;
+        }
+        Ok(())
+    }
+    pub(super) fn finish_view_condition(&mut self)->Result<()> {
+        let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context)
+    }
+
     pub(super) fn initialize_iteration_exit(
         &self,
         exit: &mut LoopState,
@@ -223,7 +327,7 @@ impl Builder<'_> {
                 }
             }
         }
-        if self.loop_contexts.last().unwrap().arrays || self.env.values().any(|binding| binding.application_resources().iter().any(|data|data.initialization.is_some())) {
+        if !self.loop_contexts.last().unwrap().view_inputs.is_empty() || self.loop_contexts.last().unwrap().arrays || self.env.values().any(|binding| binding.application_resources().iter().any(|data|data.initialization.is_some())) {
             let state = self.loop_state();
             self.loop_contexts.last_mut().unwrap().continues.push(state);
         }
@@ -283,6 +387,7 @@ impl Builder<'_> {
                     Binding::ApplicationData(_) | Binding::OwnedValue(_) => {
                         Some((name.clone(), binding.clone()))
                     }
+                    _ if binding.view_parts().is_some()=>Some((name.clone(),binding.clone())),
                     _ => None,
                 })
                 .collect(),
@@ -292,6 +397,7 @@ impl Builder<'_> {
             continues: Vec::new(),
             iterator: None,
             initial_cursor: None,
+            view_inputs: Vec::new(),view_resources: BTreeMap::new(),view_requirements:Vec::new(),
         });
     }
     pub(super) fn loop_state(&self) -> LoopState {
@@ -370,12 +476,18 @@ impl Builder<'_> {
     }
     pub(super) fn leave_loop(
         &mut self,
-        natural: Option<LoopState>,
+        mut natural: Option<LoopState>,
         condition: &mut Vec<Inst>,
         test: Reg,
         body: &mut Vec<Inst>,
-    ) -> bool {
+        span: Span,
+    ) -> Result<bool> {
         let mut context = self.loop_contexts.pop().unwrap();
+        // condition-false也是同一入口之后的真实出口，先关闭所有源码循环引用。
+        let natural_index=context.exits.len();
+        if let Some(state)=natural.take(){context.exits.push(state);}
+        self.close_view_context(&mut context)?;
+        natural=if context.exits.len()>natural_index {Some(context.exits.pop().unwrap())}else{None};
         let break_states: Vec<_> = context.exits.iter().map(|exit| exit.env.clone()).collect();
         let natural_env = natural.as_ref().map(|exit| exit.env.clone());
         context.exits.extend(natural);
@@ -383,7 +495,7 @@ impl Builder<'_> {
         let Some(first) = exits.next() else {
             self.env.retain(|name, _| context.names.contains(name));
             self.path = bounds::Clause::impossible();
-            return false;
+            return Ok(false);
         };
         self.env = first.env;
         self.path = first.path;
@@ -394,14 +506,15 @@ impl Builder<'_> {
                 ownership::intersect_initialized(&self.initialized, &exit.initialized);
             self.join_environment(&exit.env, None);
         }
+        self.view_uses.after(span);
         let final_environment = self.env.clone();
         let releases: Vec<_> = break_states
             .iter()
-            .map(|environment| self.application_join_releases(environment, &final_environment))
-            .collect();
+            .map(|environment| self.application_join_releases(environment, &final_environment, None))
+            .collect::<Result<_>>()?;
         insert_break_releases(body, &mut releases.into_iter());
         if let Some(environment) = natural_env {
-            let no = self.application_join_releases(&environment, &final_environment);
+            let no = self.application_join_releases(&environment, &final_environment, None)?;
             if !no.is_empty() {
                 condition.push(Inst::If {
                     condition: test,
@@ -410,7 +523,7 @@ impl Builder<'_> {
                 });
             }
         }
-        true
+        Ok(true)
     }
 }
 // 每个 break 仍属于原循环；内层循环已沿自己的出口完成交接。

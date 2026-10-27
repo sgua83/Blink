@@ -22,6 +22,15 @@ impl Expected {
     }
 }
 impl Returned {
+    fn resolve_view_loop(&mut self,level:usize,values:&[view::Borrow]) {
+        match self {
+            Self::Value(value)=>value.proof.resolve_view_loop(level,values),
+            Self::Dataset(data)=>{data.handle.proof.resolve_view_loop(level,values);data.length.proof.resolve_view_loop(level,values);}
+            Self::OwnedValue(value)=>{value.value.proof.resolve_view_loop(level,values);for item in value.payloads.iter_mut().flatten(){item.resolve_view_loop(level,values);}}
+            Self::Unit=>{},
+        }
+    }
+
     fn bind_outputs(
         &mut self,
         registers: Option<&[Reg]>,
@@ -111,6 +120,13 @@ pub(super) struct ReturnContext {
     exits: Vec<ReturnExit>,
 }
 impl ReturnContext {
+    pub(super) fn resolve_view_loop(&mut self,level:usize,values:&[view::Borrow]) {
+        for exit in &mut self.exits {
+            if let Some(value)=&mut exit.value {value.resolve_view_loop(level,values);}
+            if let Ok(borrowed)=&mut exit.borrowed {for owner in borrowed.values_mut(){owner.proof.resolve_view_loop(level,values);}}
+        }
+    }
+
     pub(super) fn exit_count(&self) -> usize {
         self.exits.len()
     }
@@ -316,11 +332,13 @@ impl Builder<'_> {
         if let Some(Returned::OwnedValue(value)) = &mut value {
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
-        for param in &self.definition.function.params {
-            if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && let Some(Binding::Owned(owner))=self.env.get(&param.name) {
-                self.require_view_return_proof(&owner.proof,span)?;
+        let output_views=self.definition.function.params.iter().filter_map(|param| {
+            if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset {
+                if let Some(Binding::Owned(owner))=self.env.get(&param.name){return Some(owner.proof.clone());}
             }
-        }
+            None
+        }).collect::<Vec<_>>();
+        for proof in output_views {self.require_view_return_proof(&proof,span)?;}
         self.release_application_data(None)?;
         let borrowed = (|| -> Result<BTreeMap<String, OwnedBinding>> {
             let mut borrowed = BTreeMap::new();
@@ -460,6 +478,7 @@ impl Builder<'_> {
             }
             self.flow = Flow::NEXT;
             self.statement(statement)?;
+            self.view_uses.after(statement.span);
             sequence = sequence.then(self.flow);
         }
         self.flow = sequence;

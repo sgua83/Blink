@@ -556,7 +556,10 @@ impl Builder<'_> {
         &mut self,
         environment: &BTreeMap<String, Binding>,
         other: &BTreeMap<String, Binding>,
-    ) -> Vec<Inst> {
+        result: Option<&returns::Returned>,
+    ) -> Result<Vec<Inst>> {
+        let mut retained=match result {Some(returns::Returned::Value(value))=>value.proof.borrowed_view(),_=>view::Borrow::default()};
+        for (name,binding) in environment {retained.union(&self.live_view_borrow(name,binding));}
         let old = std::mem::take(&mut self.code);
         for (name, binding) in environment {
             let a = match binding {
@@ -570,11 +573,10 @@ impl Builder<'_> {
                 _ => None,
             };
             if let (Some(a), Some(b)) = (a, b) {
-                self.join_owned_releases(a, &b, self.definition.function.span)
-                    .unwrap();
+                self.join_owned_releases(a, &b, &retained, self.definition.function.span)?;
             }
         }
-        std::mem::replace(&mut self.code, old)
+        Ok(std::mem::replace(&mut self.code, old))
     }
     pub(super) fn application_drop(&mut self, data: &Data) -> Vec<Inst> {
         let mut code = Vec::new();
@@ -633,7 +635,8 @@ impl Builder<'_> {
             matches!(place.storage(), Place::ApplicationElement { sources, .. } if sources.contains(&identity))
         })
     }
-    pub(super) fn application_movable(&self, data: &Data, span: Span) -> Result<()> {
+    pub(super) fn application_movable(&mut self, data: &Data, span: Span) -> Result<()> {
+        self.require_view_unborrowed(&[data.handle.identity()],span)?;
         if self.application_borrowed(data.handle.identity()) {
             return self.fail(
                 span,
@@ -714,11 +717,9 @@ impl Builder<'_> {
             })
             .collect();
         let dropping: BTreeSet<_> = bindings.iter().flat_map(|binding| binding.application_resources()).map(|data| data.handle.identity()).collect();
-        for (name, binding) in &self.env {
-            if keep.is_some_and(|names| names.contains(name)) && binding.view_sources().iter().any(|s| matches!(s,view::Source::Data(id) if dropping.contains(id))) {
-                return self.fail(self.definition.function.span,"B227","外层view仍借用本作用域即将释放的dataset");
-            }
-        }
+        let mut retained=view::Borrow::default();
+        for (name,binding) in &self.env {if keep.is_some_and(|names|names.contains(name)){retained.union(&self.live_view_borrow(name,binding));}}
+        for identity in dropping {self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[identity]),borrow:retained.clone(),span:self.definition.function.span})?;}
         for binding in bindings { self.drop_binding(binding, self.definition.function.span)?; }
         Ok(())
     }
@@ -811,6 +812,7 @@ impl Builder<'_> {
             return Ok(());
         };
         self.application_data_type(&mut value, &target.ty, target.count, span)?;
+        self.view_uses.after(span);
         if matches!(&self.env[name], Binding::ApplicationData(data) if data.ownership == Ownership::Owned)
         {
             let old = self.application_value(name, span)?.unwrap();
@@ -833,6 +835,7 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
+        self.view_uses.before(expr.span);
         self.application_frame(span)?;
         if let ExprKind::Call(name, args) = &expr.kind
             && name == "try"
@@ -1433,6 +1436,7 @@ impl Builder<'_> {
                 "只有资源所有者可以转移 CPU／GPU 存储，函数借用不能转移",
             );
         }
+        self.view_uses.invocation(span);
         self.application_movable(&data, span)?;
         let (source, target) = if name == "upload" {
             (Target::Cpu, residency::Residency::gpu())

@@ -106,6 +106,7 @@ impl<'a> Builder<'a> {
         let mut arguments = Vec::new();
         let mut held = Vec::new();
         for (param, arg) in callee.function.params.iter().zip(args) {
+            self.view_uses.before(arg.span);
             arguments.push(
                 if callee.function.external.is_some() && param.access == Access::Read {
                     {
@@ -206,6 +207,7 @@ impl<'a> Builder<'a> {
                 held.push((arguments.len() - 1, name));
             }
         }
+        self.view_uses.invocation(span);
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
             if let Argument::BorrowedData(reference) = argument {
                 if param.access.writes() { self.require_view_unborrowed(&reference.sources, span)?; }
@@ -597,6 +599,7 @@ impl<'a> Builder<'a> {
             &mut self.mutable_names,
         );
         let old_definition = self.definition.clone();
+        let old_view_uses = std::mem::replace(&mut self.view_uses, if self.application.is_some() {view_liveness::State::new(self.world,callee)} else {view_liveness::State::default()});
         let old_in_function = self.in_function;
         let old_cooperative = self.cooperative_root;
         let old_block = self.block_depth;
@@ -656,6 +659,7 @@ impl<'a> Builder<'a> {
         }
         self.mutable_names = old_mutable_names;
         self.definition = old_definition;
+        self.view_uses = old_view_uses;
         self.in_function = old_in_function;
         self.cooperative_root = old_cooperative;
         self.block_depth = old_block;

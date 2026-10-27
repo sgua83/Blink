@@ -257,7 +257,7 @@ impl Builder<'_> {
             other => Ok(other),
         }
     }
-    pub(super) fn movable_returned(&self, item: &Returned, span: Span) -> Result<()> {
+    pub(super) fn movable_returned(&mut self, item: &Returned, span: Span) -> Result<()> {
         match item {
             Returned::Dataset(d) if d.ownership == Ownership::Owned => {
                 self.application_movable(d, span)
@@ -376,6 +376,7 @@ impl Builder<'_> {
             message: "字段赋值需要值或拥有资源".into(),
         })?;
         self.check_returned_type(&mut item, &p.ty, span)?;
+        self.view_uses.after(span);
         let old = self.projected_owned(&p, span)?;
         self.movable_returned(&old, span)?;
         self.drop_returned(old, span)?;
@@ -485,18 +486,21 @@ impl Builder<'_> {
         &mut self,
         a: Returned,
         b: &Returned,
+        retained: &view::Borrow,
         span: Span,
     ) -> Result<()> {
         match (a, b) {
             (Returned::Dataset(a), Returned::Dataset(b))
                 if a.ownership == Ownership::Owned && b.ownership == Ownership::Moved =>
             {
+                self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(&a),borrow:retained.clone(),span})?;
                 self.drop_returned(Returned::Dataset(a), span)
             }
             (Returned::OwnedValue(a), Returned::OwnedValue(b))
                 if a.ownership == Ownership::Owned =>
             {
                 if b.ownership == Ownership::Moved {
+                    for data in a.resources() {self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
                     return self.drop_returned(Returned::OwnedValue(a), span);
                 }
                 if !a.value.ty.has_variants() {
@@ -504,7 +508,7 @@ impl Builder<'_> {
                         if a.value.ty.aggregate_part(i).1.owns_resources() {
                             let x = self.unpack_record(&a, i);
                             let y = self.unpack_record(b, i);
-                            self.join_owned_releases(x, &y, span)?;
+                            self.join_owned_releases(x, &y, retained, span)?;
                         }
                     }
                 }

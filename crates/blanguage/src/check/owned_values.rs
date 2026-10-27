@@ -11,6 +11,26 @@ pub(super) struct OwnedValue {
     pub slots: Option<Vec<usize>>,
 }
 impl OwnedValue {
+    // 拥有树的资源叶是来源所有者；原打包值只映射到相同物理分量。
+    pub(super) fn sync_resource_borrows(&mut self) {
+        self.value.proof.clear_view_borrows();
+        for (index,item) in self.payloads.iter_mut().enumerate() {
+            let Some(item)=item.as_deref_mut() else{continue};
+            if let Returned::OwnedValue(child)=item {child.sync_resource_borrows();}
+            let (offset,ty)=if self.value.ty.has_variants(){(ir::align_up(4,self.value.ty.align),self.value.ty.variants[index].ty.as_ref())}else{self.value.ty.aggregate_part(index)};
+            for (component,(_,at)) in ty.components.iter().enumerate() {
+                let borrow=match item {
+                    Returned::Dataset(data) if component==0=>data.handle.proof.view_borrow(0),
+                    Returned::OwnedValue(value)=>value.value.proof.view_borrow(component),_=>view::Borrow::default(),
+                };
+                if borrow.empty(){continue;}
+                let selected=self.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap();
+                let borrow=self.value.proof.view_borrow(selected).joined(borrow);
+                self.value.proof=self.value.proof.clone().with_view_borrow(selected,borrow);
+            }
+        }
+    }
+
     pub(super) fn place(&self) -> Option<Place> {
         self.slots.as_ref().map(|slots| {
             let base = slots[0] - self.value.ty.components[0].1 as usize / 4;
@@ -454,6 +474,7 @@ impl Builder<'_> {
         let Some(Binding::OwnedValue(mut result)) = self.env.get(name).cloned() else {
             unreachable!()
         };
+        self.require_view_unborrowed(&result.handles(),span)?;
         if result
             .handles()
             .iter()
@@ -562,6 +583,7 @@ impl Builder<'_> {
             message: "赋值需要结果".into(),
         })?;
         self.check_returned_type(&mut value, &target.value.ty, span)?;
+        self.view_uses.after(span);
         if matches!(self.env.get(name),Some(Binding::OwnedValue(r)) if r.ownership==Ownership::Owned)
         {
             let Some(Binding::OwnedValue(old)) = self.env.get(name).cloned() else {
@@ -652,6 +674,7 @@ impl Builder<'_> {
         expr: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
+        self.view_uses.before(expr.span);
         let constructor = match &expr.kind {
             ExprKind::Call(name,args) => self.variant_constructor_type(name,None,expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
             ExprKind::Specialize(name,types,args) => self.variant_constructor_type(name,Some(types),expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
@@ -819,6 +842,7 @@ impl Builder<'_> {
                 let result = b.wrap_returned_result(expected, false, error);
                 b.finish_return(Some(result), span)
             },
+            span,
         )?;
         if !self.flow.continues() {
             return Ok(None);
@@ -863,7 +887,7 @@ impl Builder<'_> {
             Returned::OwnedValue(value) => self.owned_variant_condition(value,index,span)?,
             _=>unreachable!(),
         };
-        self.conditional_blocks(condition, |b|b.match_variant_arm(value,index,arms[index]), |b|b.match_variant_arms(value,arms,index+1,span))
+        self.conditional_blocks(condition, |b|b.match_variant_arm(value,index,arms[index]), |b|b.match_variant_arms(value,arms,index+1,span),span)
     }
     fn match_variant_arm(&mut self, value: &Returned, index: usize, arm: &MatchArm) -> Result<()> {
         match value {

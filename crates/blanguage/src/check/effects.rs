@@ -249,11 +249,7 @@ impl Builder<'_> {
                 match binding {
                     Binding::Owned(owner) => {
                         owner.uniform = false;
-                        owner.proof.assign(
-                            &components,
-                            owner.place.ty().components.len(),
-                            bounds::Proof::default(),
-                        );
+                        owner.proof.forget_value(&components,owner.place.ty().components.len());
                     }
                     Binding::OwnedValue(owner) => {
                         owner.invalidate_components(&components, borrowed_data)

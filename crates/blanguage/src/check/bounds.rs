@@ -187,20 +187,18 @@ pub(super) struct Proof {
     nonzero: Vec<bool>,
     domains: Vec<Domains>,
     // view分量的实际借用来源，与数值事实分别合流；只存在于编译期。
-    views: Vec<BTreeSet<view::Source>>,
+    views: Vec<view::Borrow>,
 }
 impl Proof {
-    pub(super) fn view_sources(&self, component: usize) -> BTreeSet<view::Source> {
-        self.views.get(component).cloned().unwrap_or_default()
+    pub(super) fn clear_view_borrows(&mut self) {self.views.clear();}
+    pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
+    pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
+    pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources}
+    pub(super) fn with_view_sources(self,component:usize,sources:BTreeSet<view::Source>)->Self {self.with_view_borrow(component,view::Borrow::from_sources(sources))}
+    pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
+        self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
     }
-    pub(super) fn borrowed_views(&self) -> BTreeSet<view::Source> {
-        self.views.iter().flatten().copied().collect()
-    }
-    pub(super) fn with_view_sources(mut self, component: usize, sources: BTreeSet<view::Source>) -> Self {
-        self.views.resize_with(self.views.len().max(component + 1), BTreeSet::new);
-        self.views[component] = sources;
-        self
-    }
+    pub(super) fn resolve_view_loop(&mut self,level:usize,values:&[view::Borrow]) {for borrow in &mut self.views {*borrow=borrow.resolve(level,values);}}
     pub(super) fn view_parameters(mut self, ty: &Ty, identity: impl Fn(usize) -> ValueIdentity) -> Self {
         for (offset, _) in ty.view_fields() {
             let at = ty.components.iter().position(|(_, at)| *at == offset).unwrap();
@@ -260,7 +258,7 @@ impl Proof {
         aliases: &Clause,
     ) {
         for sources in &mut self.views {
-            *sources = sources.iter().map(|source| source.bind_outputs(bindings)).collect();
+            sources.sources = sources.sources.iter().map(|source| source.bind_outputs(bindings)).collect();
         }
         for origins in &mut self.origins {
             for identity in origins {
@@ -385,7 +383,7 @@ impl Proof {
             Clause::facts(translated.into_iter().collect())
         }
         let mut translated = self.clone();
-        translated.views = self.views.iter().map(|sources| sources.iter().flat_map(|s| s.at_call(bindings)).collect()).collect();
+        translated.views = self.views.iter().map(|borrow|borrow.at_call(bindings)).collect();
         for (i, origins) in self.origins.iter().enumerate() {
             let values = origins
                 .iter()
@@ -517,18 +515,36 @@ impl Proof {
             .and_then(|origins| origins.first())
             .copied()
     }
+    // 数值事实失效不改变仍存在的view所借用的实际存储。
+    pub(super) fn forget_value(&mut self, components: &[usize], width: usize) {
+        let fresh=Self { views:components.iter().map(|i|self.view_borrow(*i)).collect(),..Self::default() };
+        self.assign(components,width,fresh);
+    }
+    pub(super) fn possible_view_write(&mut self, positions:&[Position], owner:&[Position], fresh:&Self) {
+        fn contains(position:&Position, leaf:&Position)->bool {
+            position==leaf || matches!(position,Position::Indexed(choices,_) if choices.iter().any(|p|contains(p,leaf)))
+        }
+        for (component,position) in positions.iter().enumerate() {
+            let sources=fresh.view_borrow(component);
+            if sources.empty(){continue;}
+            self.views.resize_with(owner.len(),view::Borrow::default);
+            for (index,leaf) in owner.iter().enumerate() {
+                if contains(position,leaf) {self.views[index].union(&sources);}
+            }
+        }
+    }
     pub(super) fn assign(&mut self, components: &[usize], width: usize, fresh: Self) {
         if components.iter().copied().eq(0..width) {
             *self = fresh;
         } else {
-            self.views.resize_with(width, BTreeSet::new);
+            self.views.resize_with(width, view::Borrow::default);
             self.origins.resize_with(width, Vec::new);
             self.conditions.resize_with(width, || None);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, IntegerRanges::default);
             self.domains.resize(width, Domains::new());
             for (j, &i) in components.iter().enumerate() {
-                self.views[i] = fresh.view_sources(j);
+                self.views[i] = fresh.view_borrow(j);
                 self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
                 self.conditions[i] = fresh.conditions.get(j).cloned().flatten();
                 self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
@@ -552,7 +568,7 @@ impl Proof {
                 }))
             })
             .collect();
-        self.views = (0..width).map(|i| self.view_sources(i).union(&other.view_sources(i)).copied().collect()).collect();
+        self.views = (0..width).map(|i| self.view_borrow(i).joined(other.view_borrow(i))).collect();
         self.origins = (0..width)
             .map(|i| {
                 let a = self.origins.get(i).cloned().unwrap_or_default();
@@ -583,7 +599,7 @@ impl Proof {
             return self.clone();
         }
         Self {
-            views: components.iter().map(|&i| self.view_sources(i)).collect(),
+            views: components.iter().map(|&i| self.view_borrow(i)).collect(),
             origins: components
                 .iter()
                 .map(|&i| self.origins.get(i).cloned().unwrap_or_default())
@@ -683,7 +699,7 @@ impl Proof {
     }
     pub fn common(a: &Value, b: &Value) -> Self {
         Self {
-            views: (0..a.regs.len()).map(|i| a.proof.view_sources(i).union(&b.proof.view_sources(i)).copied().collect()).collect(),
+            views: (0..a.regs.len()).map(|i| a.proof.view_borrow(i).joined(b.proof.view_borrow(i))).collect(),
             origins: (0..a.regs.len())
                 .map(|i| {
                     let other = b.component_origins(i);
@@ -855,7 +871,7 @@ impl Proof {
         }
     }
     pub fn append(&mut self, value: &Value) {
-        self.views.extend((0..value.regs.len()).map(|i| value.proof.view_sources(i)));
+        self.views.extend((0..value.regs.len()).map(|i| value.proof.view_borrow(i)));
         self.conditions
             .extend((0..value.regs.len()).map(|i| Self::value_condition(value, i)));
         self.origins
@@ -868,7 +884,7 @@ impl Proof {
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
     }
     pub fn splat(&mut self, width: usize) {
-        self.views = vec![self.view_sources(0); width];
+        self.views = vec![self.view_borrow(0); width];
         self.conditions = vec![self.conditions.first().cloned().flatten(); width];
         self.origins = vec![self.origins[0].clone(); width];
         self.nonzero = vec![self.nonzero[0]; width];
@@ -1128,7 +1144,7 @@ impl Value {
     }
     pub(super) fn projected_proof(&self, indices: &[usize]) -> Proof {
         Proof {
-            views: indices.iter().map(|i| self.proof.view_sources(*i)).collect(),
+            views: indices.iter().map(|i| self.proof.view_borrow(*i)).collect(),
             origins: indices.iter().map(|i| self.component_origins(*i)).collect(),
             conditions: indices
                 .iter()
@@ -2501,7 +2517,12 @@ impl Builder<'_> {
         }
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
-        for binding in self.env.values_mut() {
+        let positions=if place.ty().contains_views(){self.positions(place)}else{Vec::new()};
+        let owners:BTreeMap<_,_>=self.env.iter().filter_map(|(name,binding)| {
+            let owner=binding.stored_place()?;
+            owner.ty().contains_views().then(||(name.clone(),self.positions(&owner)))
+        }).collect();
+        for (name,binding) in &mut self.env {
             let modified = {
                 let Some((proof, state, owner)) = binding.proof_storage() else {
                     continue;
@@ -2513,7 +2534,8 @@ impl Builder<'_> {
                 } else if let Place::Indexed { base, .. } = place
                     && let Some(components) = base.components_in(&owner)
                 {
-                    proof.assign(&components, owner.ty().components.len(), Proof::default());
+                    proof.forget_value(&components, owner.ty().components.len());
+                    if let Some(owner)=owners.get(name) {proof.possible_view_write(&positions,owner,&fresh);}
                     *state = false;
                     true
                 } else if place.overlaps(&owner) {
@@ -2528,7 +2550,8 @@ impl Builder<'_> {
                             .collect(),
                         _ => (0..owner.ty().components.len()).collect(),
                     };
-                    proof.assign(&components, owner.ty().components.len(), Proof::default());
+                    proof.forget_value(&components, owner.ty().components.len());
+                    if let Some(owner)=owners.get(name) {proof.possible_view_write(&positions,owner,&fresh);}
                     *state = false;
                     true
                 } else {

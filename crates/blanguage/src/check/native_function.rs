@@ -215,6 +215,15 @@ pub(super) fn canonical(
             *proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));
         }
     }
+    // 拥有交接以实际返回句柄命名资源；局部循环中的资源沿革不成为公开借用源。
+    let mut returned=returned;
+    fn resource_identity(model:&mut Returned) {
+        match model {
+            Returned::Dataset(data)=>{data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::Register(data.handle.regs[0]))]));}
+            Returned::OwnedValue(value)=>{for item in value.payloads.iter_mut().flatten(){resource_identity(item);}value.sync_resource_borrows();},_=>{},
+        }
+    }
+    if let Some(model)=&mut returned {resource_identity(model);}
     let count = returned.as_ref().map_or(0, |model| model.registers().len());
     let models = returned.map(|model| {
         let mut value = model.clone();
@@ -294,7 +303,7 @@ impl Builder<'_> {
                             self.invalidate_application_contents(*source);
                         }
                     }
-                    reference.data.handle.proof = reference.data.handle.proof.with_view_sources(0,reference.sources.iter().copied().map(view::Source::Data).collect());
+                    reference.data.handle.proof = reference.data.handle.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
                     Argument::ApplicationData(reference.data)
                 }
                 Argument::ScopedData { data, owner } => {
@@ -516,6 +525,7 @@ impl Builder<'_> {
             self.initialize_application(&data);
         }
         let Some(ty) = result else {
+            self.view_uses.after(span);
             for name in held { self.finish_scoped_argument(&name, span)?; }
             return Ok(Some(Returned::Unit));
         };
@@ -535,10 +545,12 @@ impl Builder<'_> {
         } else {
             residency::output(&mut returned, &instance.name, &locations);
         }
-        let sources = match &returned { Returned::Value(v)=>v.proof.borrowed_views(), _=>BTreeSet::new() };
+        self.view_uses.after(span);
+        let borrow = match &returned {Returned::Value(v)=>v.proof.borrowed_view(),_=>view::Borrow::default()};
         for name in held {
             if let Some(Binding::ApplicationData(data))=self.env.get(&name) {
-                if sources.contains(&view::Source::Data(data.handle.identity())) { return self.fail(span,"B227","返回view不能超出临时dataset实参的实际寿命"); }
+                let resource=self.data_borrow(&[data.handle.identity()]);
+                self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:borrow.clone(),span})?;
             }
             self.finish_scoped_argument(&name, span)?;
         }

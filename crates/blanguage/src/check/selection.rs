@@ -106,8 +106,9 @@ impl Builder<'_> {
         } else {
             let yes_environment = self.env.clone();
             if yes_flow.continues() && no_flow.continues() {
-                yes.extend(self.application_join_releases(&yes_environment, &no_env));
-                no.extend(self.application_join_releases(&no_env, &yes_environment));
+                self.view_uses.after(span);
+                yes.extend(self.application_join_releases(&yes_environment, &no_env, a_result.as_ref())?);
+                no.extend(self.application_join_releases(&no_env, &yes_environment, b_result.as_ref())?);
             }
             if yes_flow.continues() && no_flow.continues() {
                 self.join_environment(&no_env, Some(&c));
