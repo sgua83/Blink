@@ -379,6 +379,66 @@ impl Emitter<'_> {
             self.u32(bits);
         }
     }
+    pub(super) fn cast(&mut self, dst: Reg, src: Reg) {
+        let from = self.stage.registers[src];
+        let into = self.stage.registers[dst];
+        let (d, source) = (self.location(dst), self.location(src));
+        if bit_copy(from, into) {
+            self.copy(d, source);
+        } else if into == Scalar::Bool {
+            if from == Scalar::F32 {
+                let left = match source {
+                    Location::Xmm(r) => r,
+                    _ => 0,
+                };
+                self.copy(Location::Xmm(left), source);
+                self.bytes(&[0x0f, 0x57, 0xc9]);
+                self.instruction(None, &[0x0f, 0x2e], false, left, Operand::Register(1));
+            } else {
+                let source = self.operand(source, 1);
+                self.instruction(None, &[0x83], false, 7, source);
+                self.bytes(&[0]);
+            }
+            self.comparison_result(dst, Comparison::NotEqual, from);
+        } else if from == Scalar::F32 {
+            let target = match d {
+                Location::Gpr(r) => r,
+                _ => 0,
+            };
+            let source = self.float_operand(source);
+            self.instruction(
+                Some(0xf3),
+                &[0x0f, 0x2c],
+                into == Scalar::U32,
+                target,
+                source,
+            );
+            self.copy(d, Location::Gpr(target));
+        } else {
+            let target = match d {
+                Location::Xmm(r) => r,
+                _ => 0,
+            };
+            let source = if from == Scalar::U32 && matches!(source, Location::Stack(_)) {
+                // 无符号转换读取零扩展的 64 位整数；栈值只有四字节。
+                self.copy(Location::Gpr(0), source);
+                Operand::Register(0)
+            } else {
+                // GPR 的 32 位生产者已清零高位，bool 则只有规范的 0／1。
+                self.operand(source, 1)
+            };
+            // CVTSI2SS 保留目标高 96 位，不让旧浮点结果成为新转换的依赖。
+            self.instruction(None, &[0x0f, 0x57], false, target, Operand::Register(target));
+            self.instruction(
+                Some(0xf3),
+                &[0x0f, 0x2a],
+                from == Scalar::U32,
+                target,
+                source,
+            );
+            self.copy(d, Location::Xmm(target));
+        }
+    }
     pub(super) fn float_sqrt(&mut self, dst: Reg, source: Reg) {
         let d = self.location(dst);
         let target = match d {

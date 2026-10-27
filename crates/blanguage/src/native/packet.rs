@@ -561,50 +561,70 @@ impl Emitter<'_> {
         self.packet_bool(target);
         self.packet_store(allocation, PrivateSlot::Register(dst), target);
     }
-    fn packet_cast(&mut self, from: Scalar, into: Scalar) {
-        if into == Scalar::Bool {
-            self.packet_constant(1, 0);
-            if from == Scalar::F32 {
-                self.packed(None, 0xc2, 0, 1);
-                self.bytes(&[4]);
-            } else {
-                self.packed(Some(0x66), 0x76, 0, 1);
-                self.packet_constant(1, u32::MAX);
-                self.packed(Some(0x66), 0xef, 0, 1);
-            }
-            self.packet_bool(0);
-        } else if into == Scalar::F32 && from != Scalar::F32 {
-            if from == Scalar::U32 || from == Scalar::Bool {
-                // 高低 16 位均能精确转换，乘二的幂也精确，只有最终加法产生一次舍入。
-                self.packed(None, 0x28, 1, 0);
+    fn packet_cast(
+        &mut self,
+        allocation: &PacketAllocation,
+        dst: Reg,
+        src: Reg,
+        from: Scalar,
+        into: Scalar,
+    ) {
+        use PrivateSlot::Register;
+        let target = match allocation.location(Register(dst)) {
+            PacketPlace::Register(r) => r,
+            _ => 0,
+        };
+        if into == Scalar::F32 && matches!(from, Scalar::I32 | Scalar::Bool)
+            || from == Scalar::F32 && into == Scalar::I32
+        {
+            let prefix = (from == Scalar::F32).then_some(0xf3);
+            self.instruction(
+                prefix,
+                &[0x0f, 0x5b],
+                false,
+                target,
+                allocation.location(Register(src)).into(),
+            );
+        } else {
+            self.packet_load(allocation, Register(src), target);
+            if into == Scalar::Bool {
+                self.packet_constant(1, 0);
+                if from == Scalar::F32 {
+                    self.packed(None, 0xc2, target, 1);
+                    self.bytes(&[4]);
+                } else {
+                    self.packed(Some(0x66), 0x76, target, 1);
+                    self.packet_constant(1, u32::MAX);
+                    self.packed(Some(0x66), 0xef, target, 1);
+                }
+                self.packet_bool(target);
+            } else if into == Scalar::F32 {
+                // u32 高低 16 位精确转换，仍只在最终加法舍入一次。
+                self.packed(None, 0x28, 1, target);
                 self.packet_constant(2, 0xffff);
-                self.packed(Some(0x66), 0xdb, 0, 2);
+                self.packed(Some(0x66), 0xdb, target, 2);
                 self.packed(Some(0x66), 0x72, 2, 1);
                 self.bytes(&[16]);
-                self.packed(None, 0x5b, 0, 0);
+                self.packed(None, 0x5b, target, target);
                 self.packed(None, 0x5b, 1, 1);
                 self.packet_constant(2, 65536.0f32.to_bits());
                 self.packed(None, 0x59, 1, 2);
-                self.packed(None, 0x58, 0, 1);
+                self.packed(None, 0x58, target, 1);
             } else {
-                self.packed(None, 0x5b, 0, 0);
-            }
-        } else if from == Scalar::F32 && into != Scalar::F32 {
-            if into == Scalar::U32 {
+                // f32 到 u32 仍按 2^31 拆分，转换本身的有效输入域不变。
                 self.packet_constant(1, 2147483648.0f32.to_bits());
                 self.packed(None, 0x28, 3, 1);
-                self.packed(None, 0xc2, 1, 0);
+                self.packed(None, 0xc2, 1, target);
                 self.bytes(&[2]);
                 self.packed(Some(0x66), 0xdb, 3, 1);
-                self.packed(None, 0x5c, 0, 3);
-                self.packed(Some(0xf3), 0x5b, 0, 0);
+                self.packed(None, 0x5c, target, 3);
+                self.packed(Some(0xf3), 0x5b, target, target);
                 self.packet_constant(2, 0x80000000);
                 self.packed(Some(0x66), 0xdb, 1, 2);
-                self.packed(Some(0x66), 0xef, 0, 1);
-            } else {
-                self.packed(Some(0xf3), 0x5b, 0, 0);
+                self.packed(Some(0x66), 0xef, target, 1);
             }
         }
+        self.packet_store(allocation, Register(dst), target);
     }
     pub(super) fn packet_loop(&mut self, plan: &Plan, allocation: &PacketAllocation) {
         let begin = self.code.len();
@@ -973,9 +993,7 @@ impl Emitter<'_> {
                     from,
                     into,
                 } => {
-                    self.packet_load(allocation, Register(*src), 0);
-                    self.packet_cast(*from, *into);
-                    self.packet_store(allocation, Register(*dst), 0);
+                    self.packet_cast(allocation, *dst, *src, *from, *into);
                 }
                 Step::Math { dst, op, args } => match op {
                     Math::Min => self.packet_binary(allocation, *dst, args[0], args[1], None, 0x5d),

@@ -563,44 +563,7 @@ impl Emitter<'_> {
                         self.integer_divide_value(*result, *src, *divisor)
                     }
                 },
-                Inst::Cast { dst, src } => {
-                    let a = self.stage.registers[*src];
-                    let b = self.stage.registers[*dst];
-                    if operands::bit_copy(a, b) {
-                        self.copy(self.location(*dst), self.location(*src));
-                        continue;
-                    }
-                    if a == Scalar::F32 {
-                        self.float(*src, 0);
-                        if b == Scalar::Bool {
-                            self.bytes(&[0x0f, 0x57, 0xc9]);
-                            self.bytes(&[0x0f, 0x2e, 0xc1]);
-                            self.comparison_result(*dst, Comparison::NotEqual, Scalar::F32);
-                        } else {
-                            self.bytes(if b == Scalar::U32 {
-                                &[0xf3, 0x48, 0x0f, 0x2c, 0xc0]
-                            } else {
-                                &[0xf3, 0x0f, 0x2c, 0xc0]
-                            });
-                            self.store(*dst);
-                        }
-                    } else {
-                        self.load(*src);
-                        if b == Scalar::F32 {
-                            self.bytes(if a == Scalar::I32 {
-                                &[0xf3, 0x0f, 0x2a, 0xc0]
-                            } else {
-                                &[0xf3, 0x48, 0x0f, 0x2a, 0xc0]
-                            });
-                            self.store_float(*dst);
-                        } else {
-                            if b == Scalar::Bool {
-                                self.bytes(&[0x85, 0xc0, 0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0]);
-                            }
-                            self.store(*dst);
-                        }
-                    }
-                }
+                Inst::Cast { dst, src } => self.cast(*dst, *src),
                 Inst::Math { dst, op, args } => match op {
                     MathOp::Sqrt => self.float_sqrt(*dst, args[0]),
                     MathOp::Min => self.float_binary(*dst, args[0], args[1], 0x5d),
