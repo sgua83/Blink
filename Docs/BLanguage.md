@@ -257,7 +257,7 @@ CPU dataset 游标的 `ordinal` 条件会精化当前实际位置的索引区间
 
 `upload(rows)` 将拥有的 CPU 存储交给同一应用的 GPU 设备，`download(rows)` 等待原生完成点后交回 CPU 存储。两者是语句，保持资源身份、容量和已拥有的有效域；没有第二份可写数据。方向、所有者与当前位置由前端检查。条件合流后要继续访问，相关分支须给出一致的位置；循环的继续路径须归还与入口相同的位置。read 借用不能转移存储。CPU 对 GPU 数据的索引或遍历不会隐式下载。
 
-CPU 应用的整份 inout 借用沿原函数静态内联和存储访问展开，不复制数据，也不增加引用 ABI、锁或调度器。固定形状、const 推导、nonempty／index 输入约束沿用同一资源长度与身份。并行实例只拥有当前独占元素，不能把它提升为整份 inout dataset；可继续按已有 write／inout T 规则转借当前元素。普通 CPU write dataset 借用的完整初始化义务见下节；它不能因已有物理零值而取得旧值读取权限。正式示例见 `sample/applications/borrow.b`。
+CPU应用的整份inout dataset借用沿普通原生调用交接原Frame的句柄和长度，数据访问仍由实际存储所有者执行，不复制数据，也不增加锁或调度器。固定形状、const 推导、nonempty／index 输入约束沿用同一资源长度与身份。并行实例只拥有当前独占元素，不能把它提升为整份 inout dataset；可继续按已有 write／inout T 规则转借当前元素。普通 CPU write dataset 借用的完整初始化义务见下节；它不能因已有物理零值而取得旧值读取权限。正式示例见 `sample/applications/borrow.b`。
 
 `target(cpu, name(args))` 与 `target(gpu, name(args))` 选择实际执行位置，入口可用原具体类型／const 语法。参数借用应用资源并按原 uniform 类型传值；类型、固定形状、目标与独占别名仍受原规则约束。同一资源在一次 计算函数 调用中只绑定一次。CPU 与 GPU 同步调用都等待本次真实执行完成；GPU 结果仍留在原 GPU 存储。CPU 消费通过显式 download 取得结果，计算完成不等于传输完成。原生 SDK 的异步提交接口继续保留自己的完成对象。prefix 关系沿同一所有者、实际参数重排及显式传输保留，CPU 写借用计数会撤回旧关系。
 
@@ -410,7 +410,34 @@ compute 值函数从 CPU 应用调用时可生成 CPU 原生函数；parallel �
 
 模块导出公开的有限具体实例，开放泛型可以在模块编译时重复指定`--instance 'function<args>'`；尚未导出的开放实例不能靠装入私有源码临时生成。普通CPU函数可包含同步CPU／GPU程序、返回拥有资源，跨对象仍借用同一个Frame；显式upload／download、设备真实完成和最后消费者释放的语义保持。
 
-目前跨对象的位置借用沿已有物理映射具体实例，任意新布局的通用借用ABI、一般拥有参数的CPU／GPU阶段合同、符号泛型模板、完整常量／依赖版本、设备普通跨模块调用及热更新尚未实现。含资源对象当前要求同一实际SDK／Rust执行框架ABI；这是当前私有表示的互操作限制，不是语言永久边界。链接不会编译实现或掩盖未知资源位置。
+CPU普通位置的跨对象借用现按逻辑分量／声明布局直接交接原地址，不再依赖调用方物理映射实例。借用返回、一般拥有参数的CPU／GPU阶段合同、符号泛型模板、完整常量／依赖版本、设备普通跨模块调用及热更新尚未实现。含资源对象当前要求同一实际SDK／Rust执行框架ABI；这是当前私有表示的互操作限制，不是语言永久边界。链接不会编译实现或掩盖未知资源位置。
+
+## 普通位置借用与contiguous（2026-10-27）
+
+普通CPU函数可以直接借用合法重排位置；独立模块也不要求为每个调用布局重编库。例如：
+
+```c
+void swap(inout uint2 value) on cpu { value = value.yx; }
+// uint4 data = uint4(1,2,3,4);
+// swap(data.zx); 之后 data 为 uint4(3,2,1,4)。
+```
+
+标量／记录／矩阵／数组按声明布局借原地址，向量按逻辑分量借各自原地址。调用、递归、字段与动态数组元素继续使用原存储，不复制后写回；重复独占分量及真正重叠的可写参数仍拒绝。
+
+完整C指针要求对应普通值按类型的字节偏移连续、顺序一致，并满足该类型对齐。包装未知布局的B向量借用时，使用现有requires明确这一前提，.h与.b合同保持一致：
+
+```c
+extern "C" void c_scale(inout uint2 value, u32 amount) on cpu
+    from "native.dll";
+void scale_native(inout uint2 value, u32 amount) on cpu
+    requires contiguous(value) {
+    c_scale(value, amount);
+}
+```
+
+对于uint4 data，data.xy和data.zw满足uint2的连续与8字节对齐；data.xz离散，data.yx顺序相反，data.yz虽然相邻但偏移不满足uint2对齐，因此不能交给上述接口。普通B的swap仍可接收这些合法独占位置，C的布局条件不会成为所有B借用的额外要求。
+
+`contiguous(parameter.field)`选择write／inout普通位置参数及其字段／swizzle，不读取载荷；可以只承诺某个子区域。调用点从真实位置满足条件，向量符号位置按当前函数声明的requires承接；递归及多层包装同样写清实际所需前提。它不授予初始化、重叠、原子、资源或生命周期权限，不生成运行时判断。C read之前仍须已初始化，write必须完整交付声明范围；缺少前提、对齐错误或借用未初始化内容分别按原接口／初始化诊断报告。独立库变更该requires后，旧调用对象不能用不同合同绑定。
 
 ## CPU 的外部 C ABI 函数（2026-10-26）
 
@@ -1311,6 +1338,7 @@ bool inside(u32 i, read dataset<Sample> source) on compute {
 |---|---|
 | `requires nonzero(value)` | 按值 u32／i32 标量或向量的每个选中分量非零；支持记录字段和 swizzle，不表示有符号数一定为正 |
 | `requires nonempty(resource)` | dataset／tile 或按值不可变 view 的长度至少为 1；view 可以是记录字段 |
+| `requires contiguous(position)` | write／inout普通位置参数或其字段／swizzle按所选类型连续、顺序匹配且对齐；不读取载荷 |
 | `requires index(value,resource)` | 按值 u32 标量或向量的每个选中分量都可索引该实际资源；同时可知该资源非空，不表示索引互异 |
 
 `.h` 示例：

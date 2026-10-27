@@ -504,7 +504,11 @@ impl Parser {
             } else {
                 false
             };
-            let kind = if self.take("cooperative") { FunctionKind::Cooperative } else { FunctionKind::Value };
+            let kind = if self.take("cooperative") {
+                FunctionKind::Cooperative
+            } else {
+                FunctionKind::Value
+            };
             let result = self.ty()?;
             let name = self.ident()?;
             let (types, values) = self.parameters()?;
@@ -579,6 +583,7 @@ impl Parser {
                     }
                     "nonzero" => ContractPredicate::Nonzero(self.qualified(".")?),
                     "nonempty" => ContractPredicate::Nonempty(self.qualified(".")?),
+                    "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
                     "index" => {
                         let value = self.qualified(".")?;
                         self.expect(",")?;
@@ -589,7 +594,7 @@ impl Parser {
                         return self.source.fail(
                             span,
                             "B225",
-                            "未知接口约束；使用 prefix、nonzero、nonempty 或 index",
+                            "未知接口约束；使用 prefix、nonzero、nonempty、index 或 contiguous",
                         );
                     }
                 };
@@ -811,8 +816,10 @@ impl Parser {
             } else {
                 self.at = save;
                 let lhs = self.expr(0)?;
-                if ["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]
-                    .contains(&self.peek())
+                if [
+                    "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
+                ]
+                .contains(&self.peek())
                 {
                     let op = self.peek().to_owned();
                     self.at += 1;
@@ -841,12 +848,19 @@ impl Parser {
             let target = match self.ident()?.as_str() {
                 "cpu" => Target::Cpu,
                 "gpu" => Target::Gpu,
-                _ => return self.source.fail(span, "B266", "target 的实际执行位置为 cpu 或 gpu"),
+                _ => {
+                    return self
+                        .source
+                        .fail(span, "B266", "target 的实际执行位置为 cpu 或 gpu");
+                }
             };
             self.expect(",")?;
             let call = self.expr(0)?;
             self.expect(")")?;
-            Expr { kind: ExprKind::Target(target, Box::new(call)), span }
+            Expr {
+                kind: ExprKind::Target(target, Box::new(call)),
+                span,
+            }
         } else if self.take("cooperate") {
             let mut name = self.qualified(".")?;
             while self.take("::") {

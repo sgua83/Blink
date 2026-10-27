@@ -161,10 +161,23 @@ struct CheckedTile {
     access: Access,
 }
 #[derive(Clone, PartialEq, Eq)]
+enum ReferenceAddress {
+    Contiguous([Reg; 2]),
+    Components(Vec<[Reg; 2]>),
+}
+impl ReferenceAddress {
+    fn component(&self, word: u32) -> ([Reg; 2], u32) {
+        match self {
+            Self::Contiguous(address) => (*address, word),
+            Self::Components(addresses) => (addresses[word as usize], 0),
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq)]
 enum Place {
     Reference {
         ty: Ty,
-        address: [Reg; 2],
+        address: ReferenceAddress,
         scope: usize,
         words: Vec<u32>,
     },
@@ -1222,21 +1235,27 @@ fn checked_function(
             if matches!(p.access, Access::InOut | Access::Write) {
                 let ty = cooperative::parameter_type(world, p, d)?;
                 let place = if b.application.is_some() {
-                    let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
-                    inputs.extend(address);
-                    parameters.push(CallParameter::Reference {
-                        ty: ty.clone(),
-                        access: p.access,
-                    });
-                    b.output_scopes += 1;
+                    let parts = native_function::reference_parameters(&ty);
+                    let mut addresses = Vec::new();
+                    for part in &parts {
+                        let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
+                        inputs.extend(address);
+                        addresses.push(address);
+                        parameters.push(CallParameter::Reference {
+                            ty: part.clone(),
+                            access: p.access,
+                        });
+                    }
+                    let address = if addresses.len() == 1 {
+                        ReferenceAddress::Contiguous(addresses[0])
+                    } else {
+                        ReferenceAddress::Components(addresses)
+                    };
                     Place::Reference {
-                        words: match interface.get(parameter_index) {
-                            Some(native_function::Parameter::Reference(words)) => words.clone(),
-                            _ => ty.components.iter().map(|(_, offset)| offset / 4).collect(),
-                        },
+                        words: ty.components.iter().map(|(_, offset)| offset / 4).collect(),
                         ty,
                         address,
-                        scope: b.output_scopes,
+                        scope: parameter_index,
                     }
                 } else {
                     let (slots, storage) = b.local_slots(&ty);
@@ -1692,16 +1711,17 @@ impl<'a> Builder<'a> {
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
+                    let (pointer, word) = address.component(*word);
                     let dst = self.reg(*scalar);
                     self.code.push(Inst::LoadIndexed {
                         dst,
                         source: IndexedSource::View {
-                            address: *address,
+                            address: pointer,
                             index: zero,
                             stride: 0,
                         },
                         offset: zero,
-                        word: *word,
+                        word,
                     });
                     regs.push(dst);
                 }
@@ -1875,14 +1895,15 @@ impl<'a> Builder<'a> {
                 self.initialize(p);
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 for (word, value) in words.iter().zip(value.regs) {
+                    let (pointer, word) = address.component(*word);
                     self.code.push(Inst::StoreIndexed {
                         source: IndexedSource::View {
-                            address: *address,
+                            address: pointer,
                             index: zero,
                             stride: 0,
                         },
                         offset: zero,
-                        word: *word,
+                        word,
                         value,
                     });
                 }
@@ -2126,7 +2147,12 @@ impl<'a> Builder<'a> {
             constant,
         }
     }
-    fn numeric_operands(&mut self, mut a: Value, mut b: Value, span: Span) -> Result<(Value, Value)> {
+    fn numeric_operands(
+        &mut self,
+        mut a: Value,
+        mut b: Value,
+        span: Span,
+    ) -> Result<(Value, Value)> {
         let literal = a.literal && b.literal;
         if a.ty.components[0].0 != b.ty.components[0].0 {
             if literal {

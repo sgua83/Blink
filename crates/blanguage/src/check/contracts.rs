@@ -61,6 +61,7 @@ impl Resource {
     }
 }
 enum Predicate {
+    Contiguous(Place),
     Nonzero(Selection),
     Nonempty(Resource),
     Index(Selection, Resource),
@@ -203,6 +204,10 @@ pub(super) fn resolve(
             );
         }
         let (predicate, description) = match &contract.predicate {
+            ContractPredicate::Contiguous(path) => (
+                Predicate::Contiguous(reference(builder, definition, env, path, contract.span)?),
+                format!("contiguous({path})"),
+            ),
             ContractPredicate::Nonzero(path) => {
                 let selection = select(builder, definition, env, path, contract.span)?;
                 if !selection.value.ty.is_numeric()
@@ -265,6 +270,7 @@ pub(super) fn resolve(
 pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: Span) -> Result<()> {
     for requirement in requirements {
         let holds = match &requirement.predicate {
+            Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.value.is_nonzero(),
             Predicate::Nonempty(resource) => {
                 builder.resource_minimum(resource.domain(), resource.minimum()) != 0
@@ -301,6 +307,7 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requir
     for requirement in requirements {
         for (name, binding) in env.iter_mut() {
             match &requirement.predicate {
+                Predicate::Contiguous(_) => {}
                 Predicate::Nonzero(selection) => {
                     if let Binding::Value(value) = binding
                         && selection.root == *name
@@ -324,4 +331,93 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requir
             }
         }
     }
+}
+
+fn reference(
+    builder: &Builder<'_>,
+    definition: &Definition,
+    env: &BTreeMap<String, Binding>,
+    path: &str,
+    span: Span,
+) -> Result<Place> {
+    let mut fields = path.split('.');
+    let root = fields.next().unwrap();
+    if !definition.function.params.iter().any(|param| {
+        param.name == root
+            && matches!(param.access, Access::Write | Access::InOut)
+            && !param.ty.dataset
+    }) {
+        return definition.source.fail(
+            span,
+            "B225",
+            "contiguous需要write／inout普通位置参数或其字段",
+        );
+    }
+    let Some(Binding::Owned(owner)) = env.get(root) else {
+        return definition
+            .source
+            .fail(span, "B225", "contiguous需要实际的位置借用");
+    };
+    let mut place = owner.place.clone();
+    for field in fields {
+        let (ty, components) = builder.member(place.ty(), field, span)?;
+        place = place.project(ty, &components);
+    }
+    Ok(place)
+}
+
+// Layout is stable under payload writes. Its sole assumption source is the current
+// function's declared requires, so recursion needs no new inference registry or pass.
+pub(super) fn contiguous_assumed(
+    builder: &Builder<'_>,
+    parameter: usize,
+    words: &[u32],
+    ty: &Ty,
+    span: Span,
+) -> Result<bool> {
+    let definition = &builder.definition;
+    let param = &definition.function.params[parameter];
+    for contract in &definition.function.contracts {
+        let ContractPredicate::Contiguous(path) = &contract.predicate else {
+            continue;
+        };
+        if contract.kind != ContractKind::Requires {
+            continue;
+        }
+        let mut fields = path.split('.');
+        if fields.next().unwrap() != param.name {
+            continue;
+        }
+        let mut selected = cooperative::parameter_type(builder.world, param, definition)?;
+        let mut guaranteed = selected
+            .components
+            .iter()
+            .map(|(_, offset)| offset / 4)
+            .collect::<Vec<_>>();
+        for field in fields {
+            let (next, components) = builder.member(&selected, field, span)?;
+            guaranteed = components.iter().map(|i| guaranteed[*i]).collect();
+            selected = next;
+        }
+        let Some(positions) = words
+            .iter()
+            .map(|word| guaranteed.iter().position(|candidate| candidate == word))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let first = selected.components[positions[0]].1;
+        if selected.align % ty.align == 0
+            && first % ty.align == 0
+            && positions
+                .iter()
+                .zip(&ty.components)
+                .all(|(position, (_, offset))| {
+                    selected.components[*position].1.checked_sub(first) == Some(*offset)
+                })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

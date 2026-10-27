@@ -184,6 +184,7 @@ pub enum ContractPredicate {
     },
     Nonzero(String),
     Nonempty(String),
+    Contiguous(String),
     Index {
         value: String,
         resource: String,

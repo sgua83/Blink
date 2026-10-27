@@ -79,7 +79,7 @@ impl Builder<'_> {
                 return Ok(None);
             };
             match place.storage() {
-                Place::Local(..) | Place::ApplicationElement { .. } => {
+                Place::Local(..) | Place::Reference { .. } | Place::ApplicationElement { .. } => {
                     self.require_initialized(&place, expr.span)?
                 }
                 Place::Element { binding, .. } if self.view_access[binding].writes() => {
@@ -100,9 +100,20 @@ impl Builder<'_> {
         place: &Place,
         access: Access,
         span: Span,
-    ) -> Result<(CallReference,Vec<u32>)> {
+    ) -> Result<CallReference> {
         let (storage, offset, words) = match place {
-            Place::Reference{address,words,..}=>(CallStorage::Indexed(IndexedSource::View{address:*address,index:self.constant(Scalar::U32,0).regs[0],stride:0}),None,words.clone()),
+            Place::Reference { address, words, .. } => {
+                let (pointer, word) = address.component(words[0]);
+                (
+                    CallStorage::Indexed(IndexedSource::View {
+                        address: pointer,
+                        index: self.constant(Scalar::U32, 0).regs[0],
+                        stride: 0,
+                    }),
+                    None,
+                    vec![word],
+                )
+            }
             Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => (
                 CallStorage::Local {
                     base: storage.start,
@@ -176,7 +187,11 @@ impl Builder<'_> {
                 ..
             } => {
                 let storage = match &**base {
-                    Place::Reference{address,..}=>CallStorage::Indexed(IndexedSource::View{address:*address,index:self.constant(Scalar::U32,0).regs[0],stride:0}),
+                    Place::Reference { address, .. } => CallStorage::Indexed(IndexedSource::View {
+                        address: address.component(0).0,
+                        index: self.constant(Scalar::U32, 0).regs[0],
+                        stride: 0,
+                    }),
                     Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => {
                         CallStorage::Local {
                             base: storage.start,
@@ -240,18 +255,22 @@ impl Builder<'_> {
             }
             _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
         };
-        let first=*words.iter().min().unwrap();
-        let layout=words.iter().map(|word|word-first).collect();
-        Ok((CallReference{storage,offset,word:first},layout))
+        Ok(CallReference {
+            storage,
+            offset,
+            word: words[0],
+        })
     }
-    pub(super) fn external_reference(&mut self,place:&Place,access:Access,span:Span)->Result<CallReference>{
-        let ty=place.ty();
-        let (address,words)=self.call_reference(place,access,span)?;
-        if address.word*4%ty.align!=0{return self.fail(span,"B264","C ABI 引用的实际地址偏移不满足参数对齐");}
-        if !words.iter().zip(&ty.components).all(|(word,(_,offset))|*word==offset/4){
-            return self.fail(span,"B264","C ABI 引用要求连续且顺序匹配的实际布局，不能借用重排或离散 swizzle");
+    pub(super) fn external_reference(
+        &mut self,
+        place: &Place,
+        access: Access,
+        span: Span,
+    ) -> Result<CallReference> {
+        if !self.reference_is_contiguous(place, span)? {
+            return self.fail(span,"B264","C ABI 借用需要按参数布局连续、顺序匹配且对齐的真实存储；符号位置需由 requires contiguous 指明这一前提");
         }
-        Ok(address)
+        self.call_reference(place, access, span)
     }
     pub(super) fn external_call(
         &mut self,
@@ -327,5 +346,107 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         }))
+    }
+}
+
+// These are views of the existing Place mapping, not another storage owner.
+fn reference_words(place: &Place) -> Option<Vec<u32>> {
+    Some(match place {
+        Place::Reference { words, .. }
+        | Place::Element { words, .. }
+        | Place::ApplicationElement { words, .. }
+        | Place::ViewElement { words, .. } => words.clone(),
+        Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => slots
+            .iter()
+            .map(|slot| (*slot - storage.start) as u32)
+            .collect(),
+        Place::Indexed { base, words, .. } => {
+            let first = match &**base {
+                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+                    (slots[0] - storage.start) as u32
+                }
+                _ => 0,
+            };
+            words.iter().map(|word| first + word).collect()
+        }
+        _ => return None,
+    })
+}
+impl Builder<'_> {
+    pub(super) fn native_references(
+        &mut self,
+        place: &Place,
+        access: Access,
+        span: Span,
+    ) -> Result<Vec<(Ty, CallReference)>> {
+        let parameters = native_function::reference_parameters(place.ty());
+        if parameters.len() == 1 {
+            return Ok(vec![(
+                parameters[0].clone(),
+                self.call_reference(place, access, span)?,
+            )]);
+        }
+        let Some(words) = reference_words(place) else {
+            return self.fail(span, "B264", "原生借用需要CPU普通值的实际位置");
+        };
+        if let Place::Reference {
+            address: ReferenceAddress::Components(addresses),
+            ..
+        } = place
+        {
+            let zero = self.constant(Scalar::U32, 0).regs[0];
+            return Ok(parameters
+                .into_iter()
+                .zip(words)
+                .map(|(ty, word)| {
+                    (
+                        ty,
+                        CallReference {
+                            storage: CallStorage::Indexed(IndexedSource::View {
+                                address: addresses[word as usize],
+                                index: zero,
+                                stride: 0,
+                            }),
+                            offset: None,
+                            word: 0,
+                        },
+                    )
+                })
+                .collect());
+        }
+        let base = self.call_reference(place, access, span)?;
+        Ok(parameters
+            .into_iter()
+            .zip(words)
+            .map(|(ty, word)| {
+                let mut address = base.clone();
+                address.word = word;
+                (ty, address)
+            })
+            .collect())
+    }
+    pub(super) fn reference_is_contiguous(&self, place: &Place, span: Span) -> Result<bool> {
+        let ty = place.ty();
+        if let Place::Reference {
+            address: ReferenceAddress::Components(_),
+            scope,
+            words,
+            ..
+        } = place
+        {
+            if ty.components.len() == 1 && ty.align == 4 {
+                return Ok(true);
+            }
+            return contracts::contiguous_assumed(self, *scope, words, ty, span);
+        }
+        let Some(words) = reference_words(place) else {
+            return self.fail(span, "B264", "C ABI借用需要CPU普通值的实际位置");
+        };
+        let first = words[0];
+        Ok(first * 4 % ty.align == 0
+            && words
+                .iter()
+                .zip(&ty.components)
+                .all(|(word, (_, offset))| word.checked_sub(first) == Some(offset / 4)))
     }
 }

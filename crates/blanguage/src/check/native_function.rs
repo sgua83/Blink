@@ -3,9 +3,27 @@ use super::*;
 use cooperative::Argument;
 use returns::Returned;
 
+// Only source vectors admit a different component placement with the same type.
+// Aggregate fields and arrays retain their declared layout.
+pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
+    if ty.array.is_none()
+        && ty.fields.is_empty()
+        && ty.view.is_none()
+        && ty.dataset.is_none()
+        && !ty.result
+        && !ty.enumeration
+        && ty.components.len() > 1
+    {
+        ty.components
+            .iter()
+            .map(|(scalar, _)| Ty::scalar(*scalar))
+            .collect()
+    } else {
+        vec![ty.clone()]
+    }
+}
 pub(super) enum Parameter {
     Value,
-    Reference(Vec<u32>),
     Owned(Returned),
 }
 fn resource_states(value: &Returned, states: &mut String) {
@@ -33,7 +51,6 @@ fn parameter_symbol(name: &str, parameters: &[Parameter]) -> String {
     let mut symbol = name.to_owned();
     for (i, parameter) in parameters.iter().enumerate() {
         match parameter {
-            Parameter::Reference(words) => symbol.push_str(&format!("#r{i}{words:?}")),
             Parameter::Owned(value) => {
                 symbol.push_str(&format!("#s{i}"));
                 resource_states(value, &mut symbol);
@@ -283,15 +300,16 @@ impl Builder<'_> {
                 }
                 Argument::Exclusive(place) if matches!(p.access, Access::Write | Access::InOut) => {
                     self.require_same(&ty, place.ty(), span)?;
-                    let (address, layout) = self.call_reference(&place, p.access, span)?;
-                    interface.push(Parameter::Reference(layout));
-                    arguments.push(CallArgument::Reference {
-                        ty,
-                        access: p.access,
-                        address,
-                    });
-                    // Pointer input identities are private to the callee; they do not alias caller scalar registers.
-                    actual.extend([None, None]);
+                    interface.push(Parameter::Value);
+                    for (part, address) in self.native_references(&place, p.access, span)? {
+                        arguments.push(CallArgument::Reference {
+                            ty: part,
+                            access: p.access,
+                            address,
+                        });
+                        // Actual pointer inputs are private to the callee, never caller scalar facts.
+                        actual.extend([None, None]);
+                    }
                     env.insert(
                         p.name.clone(),
                         Binding::Owned(self.borrow_owned(place.clone())),
@@ -659,15 +677,7 @@ fn default_symbol(world: &World, instance: &crate::generics::Instance) -> Result
     let mut name = instance.name.clone();
     for (index, param) in instance.definition.function.params.iter().enumerate() {
         let ty = cooperative::parameter_type(world, param, &instance.definition)?;
-        if !param.ty.dataset && matches!(param.access, Access::Write | Access::InOut) {
-            name.push_str(&format!(
-                "#r{index}{:?}",
-                ty.components
-                    .iter()
-                    .map(|(_, offset)| offset / 4)
-                    .collect::<Vec<_>>()
-            ));
-        } else if !param.ty.dataset && param.access == Access::Value && ty.owns_resources() {
+        if !param.ty.dataset && param.access == Access::Value && ty.owns_resources() {
             name.push_str(&format!("#s{index}"));
             states(&ty, &mut name);
         }
