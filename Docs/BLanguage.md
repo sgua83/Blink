@@ -14,6 +14,8 @@ B 与 C 一致，关键字和标识符区分大小写。`value`、`Value`、`VAL
 
 ## 统一函数与实际执行位置（2026-10-27）
 
+`program` 已从源语言移除，独立的 `program` 单词不能再用作声明关键字或标识符；词法阶段在其真实文件、行列报 B004，并说明应改用返回类型函数定义（无返回值用 `void`），并行域由 `parallel` 表达。该错误不依赖函数是否被调用，也不允许通过声明同名类型使旧写法变成合法函数。导入的 `.h`／`.b` 使用同一词法规则。注释和字符串不受此限制，`Program`、`PROGRAM` 和含有该子串的其他名称继续按区分大小写的名称规则处理。内部 `Program` 及 `--program` 产物入口选项不是源声明语法。
+
 普通值计算与整域计算均使用返回类型、函数名和参数定义；不再声明源语言 `program` 类别。`void step(inout dataset<u32> rows) on compute` 可在函数体内写 `parallel(v in rows)`，组合函数直接调用 `step(rows)`。在 CPU 主流程中，普通调用沿当前 CPU 位置执行，也可直接使用 parallel；参与范围由定义及实际调用关系推导，不要求手写 launch 许可。
 
 `on cpu`／`on gpu`／`on compute` 声明函数可用目标，不选择本次执行设备。`target(cpu, step(rows))`／`target(gpu, step(rows))` 选择本次位置，只包围一次函数调用。CPU target 同样支持普通值、拥有值和 try 的既有返回交接；GPU target 当前接收以借用 dataset 与普通统一参数组成的整域 void 函数。普通值跨 GPU 返回、元素内嵌套域、一般异步应用语法尚未实现，明确报错，不隐式换目标。

@@ -57,6 +57,13 @@ pub fn lex(source: &Source) -> Result<Vec<Token>> {
             while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
                 at += 1;
             }
+            if &source.text[start..at] == "program" {
+                return source.fail(
+                    Span { start, end: at },
+                    "B004",
+                    "`program` 已从源语言移除，不能用作声明关键字或标识符；请用返回类型定义函数（无返回值用 `void`），并用 `parallel` 表达并行域",
+                );
+            }
         } else if c.is_ascii_digit()
             || (c == b'.' && bytes.get(at + 1).is_some_and(u8::is_ascii_digit))
         {
