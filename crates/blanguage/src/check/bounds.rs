@@ -1,5 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
+use std::sync::Arc;
 
 pub(super) fn seeks(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match &statement.kind {
@@ -199,18 +200,21 @@ impl Proof {
                 _ => return None,
             })
         }
-        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Facts> {
+        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
             let translated = match value {
                 Fact::Boolean(id, truth) => {
                     let Some(value) = bindings.get(&id) else {
-                        return Some(Facts::new());
+                        return Clause::facts(Facts::new());
                     };
                     let condition = value.condition.as_deref().cloned().unwrap_or_default();
-                    let mut facts = condition.cases[usize::from(truth)].clone()?;
+                    let mut clause = condition.cases[usize::from(truth)].clone();
                     if let Some(id) = value.known_identity(0) {
-                        facts.insert(Fact::Boolean(id, truth));
+                        clause = Clause::both(
+                            &clause,
+                            &Clause::facts([Fact::Boolean(id, truth)].into()),
+                        );
                     }
-                    return Some(facts);
+                    return clause;
                 }
                 Fact::Equal(a, b) => identity(a, bindings)
                     .zip(identity(b, bindings))
@@ -222,7 +226,7 @@ impl Proof {
                 Fact::Maximum(id, n) => identity(id, bindings).map(|id| Fact::Maximum(id, n)),
                 Fact::NonZero(id) => identity(id, bindings).map(Fact::NonZero),
             };
-            Some(translated.into_iter().collect())
+            Clause::facts(translated.into_iter().collect())
         }
         let mut translated = self.clone();
         for (i, origins) in self.origins.iter().enumerate() {
@@ -271,21 +275,37 @@ impl Proof {
                 .collect();
         }
         if let Some(condition) = &mut translated.condition {
-            for case in &mut condition.cases {
-                *case = case.as_ref().and_then(|facts| {
-                    facts.iter().try_fold(Facts::new(), |current, value| {
-                        both(&Some(current), &fact(*value, bindings))
-                    })
-                });
+            let mut clauses = BTreeMap::new();
+            for clause in Clause::ordered(&condition.cases) {
+                let mapped = match &*clause.0 {
+                    ClauseNode::Impossible => Clause::impossible(),
+                    ClauseNode::Facts(facts) => facts
+                        .iter()
+                        .fold(Clause::facts(Facts::new()), |current, value| {
+                            Clause::both(&current, &fact(*value, bindings))
+                        }),
+                    ClauseNode::Both(a, b) => Clause::both(&clauses[&a.key()], &clauses[&b.key()]),
+                    ClauseNode::Either(a, b) => {
+                        Clause::either(&clauses[&a.key()], &clauses[&b.key()])
+                    }
+                };
+                clauses.insert(clause.key(), mapped);
             }
+            condition.cases = std::array::from_fn(|i| clauses[&condition.cases[i].key()].clone());
         }
         translated
     }
     pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<u32>> {
         if *ty == Ty::scalar(Scalar::Bool) {
-            return match &self.condition.as_deref()?.cases {
-                [None, Some(_)] => Some(vec![1]),
-                [Some(_), None] => Some(vec![0]),
+            return match self
+                .condition
+                .as_deref()?
+                .cases
+                .each_ref()
+                .map(Clause::possible)
+            {
+                [false, true] => Some(vec![1]),
+                [true, false] => Some(vec![0]),
                 _ => None,
             };
         }
@@ -499,7 +519,7 @@ impl Proof {
                     && let Some(condition) = self.condition.as_deref()
                 {
                     for truth in [false, true] {
-                        if condition.cases[usize::from(!truth)].is_none() {
+                        if !condition.cases[usize::from(!truth)].possible() {
                             facts.insert(Fact::Boolean(identity, truth));
                         }
                     }
@@ -534,8 +554,9 @@ impl Proof {
         if value.ty == Ty::scalar(Scalar::Bool) {
             let facts = environment_facts(environment);
             let mut condition = Condition::of(value);
-            for case in condition.cases.iter_mut().flatten() {
-                case.extend(facts.iter().copied());
+            let facts = Clause::facts(facts);
+            for case in &mut condition.cases {
+                *case = Clause::both(case, &facts);
             }
             proof.condition = Some(Box::new(condition));
         }
@@ -584,7 +605,7 @@ impl Proof {
                 let condition = self
                     .condition
                     .get_or_insert_with(|| Box::new(Condition::default()));
-                condition.cases[usize::from(!truth)] = None;
+                condition.cases[usize::from(!truth)] = Clause::impossible();
             }
             Fact::Index(_, domain) if ty.components[component].0 == Scalar::U32 => {
                 self.mark_domain(component, domain);
@@ -818,27 +839,122 @@ impl Value {
 }
 #[derive(Clone)]
 pub(super) struct Condition {
-    // false／true 各自必然成立的事实；None 表示该结果不可能。
-    cases: [Option<Facts>; 2],
+    // false／true 的条件图保留析取，实参代入后才提取各路径共有的事实。
+    cases: [Clause; 2],
 }
 impl Default for Condition {
     fn default() -> Self {
         Self {
-            cases: [Some(Facts::new()), Some(Facts::new())],
+            cases: std::array::from_fn(|_| Clause::facts(Facts::new())),
         }
     }
 }
-fn both(a: &Option<Facts>, b: &Option<Facts>) -> Option<Facts> {
-    let facts: Facts = a.as_ref()?.union(b.as_ref()?).copied().collect();
-    if facts.iter().any(|fact| {
+#[derive(Clone)]
+struct Clause(Arc<ClauseNode>);
+enum ClauseNode {
+    Impossible,
+    Facts(Facts),
+    Both(Clause, Clause),
+    Either(Clause, Clause),
+}
+impl Clause {
+    fn impossible() -> Self {
+        Self(Arc::new(ClauseNode::Impossible))
+    }
+    fn facts(facts: Facts) -> Self {
+        if contradictory(&facts) {
+            Self::impossible()
+        } else {
+            Self(Arc::new(ClauseNode::Facts(facts)))
+        }
+    }
+    fn both(a: &Self, b: &Self) -> Self {
+        match (&*a.0, &*b.0) {
+            (ClauseNode::Impossible, _) | (_, ClauseNode::Impossible) => Self::impossible(),
+            (ClauseNode::Facts(facts), _) if facts.is_empty() => b.clone(),
+            (_, ClauseNode::Facts(facts)) if facts.is_empty() => a.clone(),
+            (ClauseNode::Facts(a), ClauseNode::Facts(b)) => {
+                Self::facts(a.union(b).copied().collect())
+            }
+            _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
+            _ => Self(Arc::new(ClauseNode::Both(a.clone(), b.clone()))),
+        }
+    }
+    fn either(a: &Self, b: &Self) -> Self {
+        match (&*a.0, &*b.0) {
+            (ClauseNode::Impossible, _) => b.clone(),
+            (_, ClauseNode::Impossible) => a.clone(),
+            (ClauseNode::Facts(facts), _) if facts.is_empty() => a.clone(),
+            (_, ClauseNode::Facts(facts)) if facts.is_empty() => b.clone(),
+            (ClauseNode::Facts(left), ClauseNode::Facts(right)) if left.is_subset(right) => {
+                a.clone()
+            }
+            (ClauseNode::Facts(left), ClauseNode::Facts(right)) if right.is_subset(left) => {
+                b.clone()
+            }
+            _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
+            _ => Self(Arc::new(ClauseNode::Either(a.clone(), b.clone()))),
+        }
+    }
+    fn key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+    // 按子节点在先的顺序只访问每个共享节点一次，不展开路径的笛卡尔积。
+    fn ordered(roots: &[Self]) -> Vec<&Self> {
+        let mut pending: Vec<_> = roots.iter().rev().map(|root| (root, false)).collect();
+        let mut visited = BTreeSet::new();
+        let mut ordered = Vec::new();
+        while let Some((clause, ready)) = pending.pop() {
+            if visited.contains(&clause.key()) {
+                continue;
+            }
+            if !ready {
+                match &*clause.0 {
+                    ClauseNode::Both(a, b) | ClauseNode::Either(a, b) => {
+                        pending.extend([(clause, true), (b, false), (a, false)]);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            visited.insert(clause.key());
+            ordered.push(clause);
+        }
+        ordered
+    }
+    fn required(&self) -> Option<Facts> {
+        let mut facts = BTreeMap::new();
+        for clause in Self::ordered(std::slice::from_ref(self)) {
+            let required = match &*clause.0 {
+                ClauseNode::Impossible => None,
+                ClauseNode::Facts(facts) => Some(facts.clone()),
+                ClauseNode::Both(a, b) => both_facts(&facts[&a.key()], &facts[&b.key()]),
+                ClauseNode::Either(a, b) => {
+                    either_facts(facts[&a.key()].clone(), facts[&b.key()].clone())
+                }
+            };
+            facts.insert(clause.key(), required);
+        }
+        facts.remove(&self.key()).unwrap()
+    }
+    fn possible(&self) -> bool {
+        self.required().is_some()
+    }
+}
+fn contradictory(facts: &Facts) -> bool {
+    facts.iter().any(|fact| {
         matches!(fact, Fact::Boolean(id, truth) if facts.contains(&Fact::Boolean(*id, !truth)))
-    }) {
+    })
+}
+fn both_facts(a: &Option<Facts>, b: &Option<Facts>) -> Option<Facts> {
+    let facts: Facts = a.as_ref()?.union(b.as_ref()?).copied().collect();
+    if contradictory(&facts) {
         None
     } else {
         Some(facts)
     }
 }
-fn either(a: Option<Facts>, b: Option<Facts>) -> Option<Facts> {
+fn either_facts(a: Option<Facts>, b: Option<Facts>) -> Option<Facts> {
     match (a, b) {
         (Some(a), Some(b)) => {
             let left = equality_roots(&a);
@@ -910,7 +1026,7 @@ impl Condition {
         let [af, at] = a.cases;
         let [bf, bt] = b.cases;
         Self {
-            cases: [either(af, bf), either(at, bt)],
+            cases: [Clause::either(&af, &bf), Clause::either(&at, &bt)],
         }
     }
     pub fn of(value: &Value) -> Self {
@@ -920,14 +1036,15 @@ impl Condition {
             .as_deref()
             .cloned()
             .unwrap_or_default();
-        for (truth, facts) in condition.cases.iter_mut().enumerate() {
-            if let Some(facts) = facts {
-                facts.insert(Fact::Boolean(value.identity(), truth != 0));
-            }
+        for (truth, case) in condition.cases.iter_mut().enumerate() {
+            *case = Clause::both(
+                case,
+                &Clause::facts([Fact::Boolean(value.identity(), truth != 0)].into()),
+            );
         }
         // 常量排除相反结果，但不抹掉成立结果已经持有的范围与长度事实。
         if let Some(bits) = &value.constant {
-            condition.cases[usize::from(bits[0] == 0)] = None;
+            condition.cases[usize::from(bits[0] == 0)] = Clause::impossible();
         }
         condition
     }
@@ -941,9 +1058,9 @@ impl Condition {
     fn branch(c: Self, a: Self, b: Self) -> Self {
         Self {
             cases: std::array::from_fn(|truth| {
-                either(
-                    both(&c.cases[1], &a.cases[truth]),
-                    both(&c.cases[0], &b.cases[truth]),
+                Clause::either(
+                    &Clause::both(&c.cases[1], &a.cases[truth]),
+                    &Clause::both(&c.cases[0], &b.cases[truth]),
                 )
             }),
         }
@@ -954,13 +1071,13 @@ impl Condition {
             let b = Self::of(b);
             let equal = Self {
                 cases: [
-                    either(
-                        both(&a.cases[0], &b.cases[1]),
-                        both(&a.cases[1], &b.cases[0]),
+                    Clause::either(
+                        &Clause::both(&a.cases[0], &b.cases[1]),
+                        &Clause::both(&a.cases[1], &b.cases[0]),
                     ),
-                    either(
-                        both(&a.cases[0], &b.cases[0]),
-                        both(&a.cases[1], &b.cases[1]),
+                    Clause::either(
+                        &Clause::both(&a.cases[0], &b.cases[0]),
+                        &Clause::both(&a.cases[1], &b.cases[1]),
                     ),
                 ],
             };
@@ -1067,7 +1184,13 @@ impl Condition {
             }
         }
         Self {
-            cases: std::array::from_fn(|i| possible[i].then(|| std::mem::take(&mut facts[i]))),
+            cases: std::array::from_fn(|i| {
+                if possible[i] {
+                    Clause::facts(std::mem::take(&mut facts[i]))
+                } else {
+                    Clause::impossible()
+                }
+            }),
         }
     }
 }
@@ -1616,10 +1739,9 @@ impl Builder<'_> {
     }
     pub(super) fn refine_bounds(&mut self, value: &Value, truth: bool) {
         let condition = Condition::of(value);
-        let Some(facts) = &condition.cases[usize::from(truth)] else {
+        let Some(mut facts) = condition.cases[usize::from(truth)].required() else {
             return;
         };
-        let mut facts = facts.clone();
         facts.extend(environment_facts(&self.env));
         let roots = equality_roots(&facts);
         for binding in self.env.values_mut() {
@@ -1807,5 +1929,69 @@ crate::module::codec::record!(Proof {
     nonzero,
     domains
 });
-crate::module::codec::record!(Condition { cases });
+// 两个结果共享一个节点表；编码不受 Arc 的物理共享方式影响。
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum EncodedClause {
+    Impossible,
+    Facts(Facts),
+    Both(usize, usize),
+    Either(usize, usize),
+}
+crate::module::codec::variants!(EncodedClause{0=>Impossible,1=>Facts(facts),2=>Both(a,b),3=>Either(a,b)});
+impl crate::module::codec::Encode for Condition {
+    fn encode(&self, w: &mut crate::module::codec::Writer) {
+        // 旧格式首字节是 Option 的 0／1；双方在原接口解码处拒绝混用。
+        2u8.encode(w);
+        let mut nodes = Vec::new();
+        let mut unique = BTreeMap::new();
+        let mut indices = BTreeMap::new();
+        for clause in Clause::ordered(&self.cases) {
+            let node = match &*clause.0 {
+                ClauseNode::Impossible => EncodedClause::Impossible,
+                ClauseNode::Facts(facts) => EncodedClause::Facts(facts.clone()),
+                ClauseNode::Both(a, b) => EncodedClause::Both(indices[&a.key()], indices[&b.key()]),
+                ClauseNode::Either(a, b) => {
+                    EncodedClause::Either(indices[&a.key()], indices[&b.key()])
+                }
+            };
+            let index = *unique.entry(node.clone()).or_insert_with(|| {
+                let index = nodes.len();
+                nodes.push(node);
+                index
+            });
+            indices.insert(clause.key(), index);
+        }
+        nodes.encode(w);
+        self.cases
+            .each_ref()
+            .map(|case| indices[&case.key()])
+            .encode(w);
+    }
+}
+impl crate::module::codec::Decode for Condition {
+    fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
+        if u8::decode(r)? != 2 {
+            return Err("模块条件合同格式不兼容，需要用同一编译器重新编译".into());
+        }
+        fn node(nodes: &[Clause], index: usize) -> crate::module::codec::Result<Clause> {
+            nodes
+                .get(index)
+                .cloned()
+                .ok_or_else(|| "模块条件节点引用无效".into())
+        }
+        let mut nodes = Vec::new();
+        for encoded in Vec::<EncodedClause>::decode(r)? {
+            nodes.push(match encoded {
+                EncodedClause::Impossible => Clause::impossible(),
+                EncodedClause::Facts(facts) => Clause::facts(facts),
+                EncodedClause::Both(a, b) => Clause::both(&node(&nodes, a)?, &node(&nodes, b)?),
+                EncodedClause::Either(a, b) => Clause::either(&node(&nodes, a)?, &node(&nodes, b)?),
+            });
+        }
+        let [a, b] = <[usize; 2]>::decode(r)?;
+        Ok(Self {
+            cases: [node(&nodes, a)?, node(&nodes, b)?],
+        })
+    }
+}
 crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth)});
