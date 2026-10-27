@@ -5,7 +5,7 @@ dataset<Item> create_input(dataset<Item> storage, u32 length) on cpu {
     if (storage.length != length) {
         storage = dataset<Item>(length);
     }
-    run_cpu(seed(storage));
+    target(cpu, seed(storage));
     return storage;
 }
 
@@ -23,11 +23,11 @@ u32 main() on cpu {
     upload(selected);
     upload(count);
     upload(ordered);
-    run_gpu(select(input, selected, count));
-    run_gpu(order(selected, count, ordered));
+    target(gpu, select(input, selected, count));
+    target(gpu, order(selected, count, ordered));
     download(ordered);
     download(count);
-    run_cpu(summarize(ordered, count, offsets, total));
+    target(cpu, summarize(ordered, count, offsets, total));
 
     if (!println(count[0].value) || !println(total[0].value)) {
         return 1;

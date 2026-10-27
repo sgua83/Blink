@@ -25,6 +25,6 @@ typeset BLSimulatedBody {
 void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, Power> body, f32 dt, f32 strength) on compute;
 void measure_energy<T: floating>(write f32 target, T velocity) on compute;
 
-program integrate<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength) on compute;
-program energy<B: BLSimulatedBody>(inout dataset<B> bodies) on compute;
-program step<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength) on compute;
+void integrate<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength) on compute;
+void energy<B: BLSimulatedBody>(inout dataset<B> bodies) on compute;
+void step<B: BLSimulatedBody>(inout dataset<B> bodies, f32 dt, f32 strength) on compute;

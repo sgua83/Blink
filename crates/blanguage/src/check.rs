@@ -210,6 +210,9 @@ pub(crate) fn compile_program(
 ) -> Result<Program> {
     let name = &instance.name;
     let d = &instance.definition;
+    if !kernel_interface(world,d)? {
+        return d.source.fail(d.function.span,"B266","算法对象接口以借用数据与普通统一值交付结果；普通函数的独立调用／资源 ABI 产物尚未实现");
+    }
     let mut buffers = Vec::new();
     let mut accelerations = Vec::new();
     let mut textures = Vec::new();
@@ -389,6 +392,7 @@ fn expand_stages(
 ) -> Result<()> {
     for statement in body {
         match &statement.kind {
+            StmtKind::Return(None) => break,
             StmtKind::For(name, first, Some(last), body) => {
                 if env.contains_key(name) {
                     return d.source.fail(
@@ -588,21 +592,21 @@ fn expand_stages(
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
                 ..
-            }) if name == "clear_prefix" => {
+            }) if name == "clear_prefix" && world.resolve(name,&d.module,&d.imports,true).is_none() => {
                 append::clear(program, env, args, d, statement.span, facts)?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
                 ..
-            }) if name == "stable_sort_by_key" => {
+            }) if name == "stable_sort_by_key" && world.resolve(name,&d.module,&d.imports,true).is_none() => {
                 sort::compile(program, env, args, d, statement.span, facts)?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
                 ..
-            }) if name == "compact" => {
+            }) if name == "compact" && world.resolve(name,&d.module,&d.imports,true).is_none() => {
                 compact::compile(program, env, args, d, statement.span, facts)?;
                 *boundary = false;
             }
@@ -619,6 +623,8 @@ fn expand_stages(
                 } else {
                     None
                 };
+                let callee_key=world.resolve(name,&d.module,&d.imports,true);
+                if callee_key.is_none() {
                 if let Some(operator) =
                     CollectiveOperator::from_reduction_source(name).filter(|_| explicit.is_none())
                 {
@@ -681,13 +687,14 @@ fn expand_stages(
                     *boundary = false;
                     continue;
                 }
-                let Some(key) = world.resolve(name, &d.module, &d.imports, true) else {
+                }
+                let Some(key) = callee_key else {
                     return d
                         .source
                         .fail(statement.span, "B109", format!("未知计算程序 {name}"));
                 };
                 let callee = &world.functions[&key];
-                if callee.function.kind != FunctionKind::Program {
+                if callee.execution != crate::execution::Requirement::Domain {
                     return d.source.fail(
                         statement.span,
                         "B110",
@@ -962,7 +969,7 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     if d.function.external.is_some() {
         return external::validate_signature(d);
     }
-    if d.function.kind == FunctionKind::Program {
+    if d.execution == crate::execution::Requirement::Domain {
         return Ok(());
     }
     if (d.function.result.dataset || d.function.result.mentions_owned())
@@ -1475,14 +1482,10 @@ impl<'a> Builder<'a> {
                 return self.result_match(value, yes_name, yes, no_name, no, s.span);
             }
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span)?,
-            StmtKind::Parallel(..) => {
-                return self.fail(
-                    s.span,
-                    "B131",
-                    "当前版本的并行域位于 program 顶层；嵌套域需要明确协作语义，尚未实现",
-                );
+            StmtKind::Parallel(..) => return self.application_parallel(s),
+            StmtKind::Phase => {
+                if self.application.is_none(){return self.fail(s.span,"B163","phase 需要整域同步位置，不能位于元素实例中");}
             }
-            StmtKind::Phase => return self.fail(s.span, "B163", "phase 只能位于 program 阶段层"),
             StmtKind::Seek(name, position) => return self.seek_statement(name, position, s.span),
         }
         Ok(())
@@ -1819,6 +1822,12 @@ impl<'a> Builder<'a> {
             ExprKind::Unary(op, a) => self.unary_expr(op, a, e.span),
             ExprKind::Binary(op, a, b) => self.binary_expr(op, a, b, e.span),
             ExprKind::Select(c, a, b) => self.selection(c, a, b, e.span),
+            ExprKind::Target(target, call) => {
+                let result=self.target_call(*target,call,e.span)?;
+                if !self.flow.continues(){return Ok(None);}
+                let value=self.ordinary_return(result,e.span)?;
+                self.value_result(value,e.span).map(Some)
+            }
             ExprKind::Construct(ty, args) => self.record_expression(ty, args, e.span),
             ExprKind::Call(..) => {
                 let result = self.evaluate_returned(e, None)?;
@@ -2176,9 +2185,6 @@ impl<'a> Builder<'a> {
         }
         if matches!(name, "upload" | "download") {
             return self.application_transfer(name, args, span);
-        }
-        if matches!(name, "run_cpu" | "run_gpu") {
-            return self.application_run(name, args, span);
         }
         if name == "println" {
             return self.println(args, span);
@@ -3703,3 +3709,40 @@ impl<'a> Builder<'a> {
     }
 }
 use effects::{assigned_names, expression_assignments};
+
+pub(crate) fn stage_intrinsic(name: &str) -> bool {
+    matches!(name, "clear_prefix" | "stable_sort_by_key" | "compact")
+        || CollectiveOperator::from_reduction_source(name).is_some()
+        || CollectiveOperator::from_segmented_reduction_source(name).is_some()
+        || CollectiveOperator::from_scan_source(name).is_some()
+        || CollectiveOperator::from_segmented_scan_source(name).is_some()
+        || custom_reduce::Kind::from_source(name).is_some()
+}
+
+pub(crate) fn kernel_interface(world: &World, d: &Definition) -> Result<bool> {
+    let result = &d.function.result;
+    if result.name != "void"
+        || result.dataset
+        || result.tile
+        || result.view
+        || !result.arguments.is_empty()
+    {
+        return Ok(false);
+    }
+    for param in &d.function.params {
+        if param.ty.dataset {
+            if param.access == Access::Value {
+                return Ok(false);
+            }
+        } else if !param.ty.is_acceleration() && !param.ty.is_texture_resource() {
+            if param.access != Access::Value
+                || world
+                    .ty(&param.ty, &d.source, param.span, &d.module, &d.imports)?
+                    .owns_resources()
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}

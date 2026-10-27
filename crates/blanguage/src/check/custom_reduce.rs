@@ -51,7 +51,8 @@ fn function(
         return d.source.fail(expr.span, "B158", "未知或未导出的集合值函数");
     };
     let callee = &world.functions[&key];
-    if callee.function.kind != FunctionKind::Value
+    if callee.execution != crate::execution::Requirement::Invocation
+        || callee.function.kind != FunctionKind::Value
         || callee.function.target != Target::Compute
         || callee.function.params.len() != parameters.len() + captures.len()
         || callee

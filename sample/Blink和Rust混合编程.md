@@ -20,7 +20,7 @@ Rust 程序可以读取文件、响应输入、管理对象；其中需要大量
 
 书中的命令均在 Blink 仓库根目录执行，直接写出 exe 路径。每个 exe 都是一个有具体用途的示例程序。源码在 sample/hybrid 中，不需要另外安装 BLEngine 或配置 P4。
 
-后半部分摘读 BLEngine 截至 P4 CL12965 的已提交实现。B 算法保留原文和所需导入文件；Rust 节选省去计时等与当节无关的部分，逐段说明省略了什么。完整示例与引擎节选会分别标明。
+后半部分摘读 BLEngine 截至 P4 CL12965 的已提交实现。B 算法保留计算与所需导入文件；当前可编译副本仅将旧 program 声明迁移为统一 void 函数；Rust 节选省去计时等与当节无关的部分，逐段说明省略了什么。完整示例与引擎节选会分别标明。
 
 版本：2026 年 10 月 25 日。运行环境为 Windows x64，Blink v0.1。原始运行记录保存在 sample/hybrid/运行记录.txt，源码出处见同目录的 BLEngine摘录来源.md。
 
@@ -62,7 +62,7 @@ first/
 ```c
 module numbers;
 
-program transform(
+void transform(
     inout dataset<f32> values
 ) on compute;
 ```
@@ -78,7 +78,7 @@ inout 表示既读又写：算法读取原来的数，再把新值写回。on co
 ```c
 module numbers;
 
-program transform(
+void transform(
     inout dataset<f32> values
 ) on compute {
     parallel (value in values) {
@@ -278,7 +278,7 @@ Blink 为此提供 blanguage 与 blcompute 两个 Rust crate。blanguage 编译 
 入口位于 Programs/simulation/statistics.b，声明在同名 .h 中：
 
 ```c
-program step_and_total(
+void step_and_total(
     inout dataset<BLBody<float3,3>>
         bodies,
     write dataset<BLTotal,1> total,
@@ -594,7 +594,7 @@ let done = program
 两组粒子都使用第三章的 step_and_total。最后相加的入口位于 Programs/book/handoff.b；book 是配套示例的模块目录：
 
 ```c
-program finish(
+void finish(
     read dataset<BLTotal,1> left,
     read dataset<BLTotal,1> right,
     write dataset<BLTotal,1> combined
@@ -703,7 +703,7 @@ let triangles = device
     .freeze();
 ```
 
-program 是已经编译的一帧渲染程序。2 选中其中的实例数据集，"triangles" 选中这个实例类型里的 view 字段，count 是模型的三角形数量。
+计算函数 是已经编译的一帧渲染程序。2 选中其中的实例数据集，"triangles" 选中这个实例类型里的 view 字段，count 是模型的三角形数量。
 
 Dataset::for_view 按三角形格式分配一份数组。填入源模型数据后，upload 上传到 GPU，freeze 把它转成可共享的只读数据。这里省略的是与第三章同类的逐字段填充，三角形记录仍完整保留在正式源码中。
 
@@ -1382,7 +1382,7 @@ points 保存每个点的完整输入和颜色，pixels 只保存后续显示转
 pack 是连接这两种记录的小程序：
 
 ```c
-program pack(
+void pack(
     read dataset<BLShadingPoint,1000000>
         points,
     write dataset<BLPixel,1000000> pixels
@@ -1730,3 +1730,7 @@ BLEngine 还在开发，新版本可能改变渲染阶段或参数。对照其�
 本书教的是怎样把两种语言实际接起来。引擎整体结构、Stella 的后续实现与窗口平台细节，放在第三本《BLEngine 源码分析》中阅读。
 
 Copyright (c) 2026 Blink contributors。引擎摘录 Copyright (c) 2026 BLEngine contributors，MIT License。完整许可随配套源码保留。
+
+## 本版统一函数接口
+
+B 计算入口使用统一 void 函数定义，parallel 及原数据访问不变。Rust 的 Program、compile_entry、同步run与异步submit仍消费同一算法产物，不要求换一套宿主接口；--program是产物入口选项。B应用使用target选择本次CPU／GPU位置，同步GPU返回与显式下载分别完成计算与传输。普通函数的独立原生调用／模块契约、递归和一般异步应用语法仍待完成。原始运行记录与摘录出处保留实际版本，不把本次声明迁移写成重新取得全部旧性能或画面。

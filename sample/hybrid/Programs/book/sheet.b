@@ -1,5 +1,5 @@
 module book.sheet;
-program prepare<const W:u32,const H:u32>(write dataset<BLShadingPoint> points) on compute {
+void prepare<const W:u32,const H:u32>(write dataset<BLShadingPoint> points) on compute {
     parallel (point in points) {
         f32 x=(f32(index()%W)+0.5)/f32(W);
         f32 y=(f32(index()/W)+0.5)/f32(H);
@@ -14,17 +14,17 @@ program prepare<const W:u32,const H:u32>(write dataset<BLShadingPoint> points) o
         point.radiance=float3(0.0);
     }
 }
-program materials<const W:u32,const H:u32>(inout dataset<BLShadingPoint> points, read texture2d albedo) on compute {
+void materials<const W:u32,const H:u32>(inout dataset<BLShadingPoint> points, read texture2d albedo) on compute {
     prepare<W,H>(points);
     material.textured::shade(points,albedo);
 }
-program pack(read dataset<BLShadingPoint,1000000> points,
+void pack(read dataset<BLShadingPoint,1000000> points,
     write dataset<BLPixel,1000000> pixels) on compute {
     parallel (pixel in pixels) {
         pixel.radiance=points[index()].radiance;
     }
 }
-program image(inout dataset<BLShadingPoint,1000000> points,
+void image(inout dataset<BLShadingPoint,1000000> points,
     inout dataset<BLPixel,1000000> pixels,
     write dataset<BLDisplayPixel,1000000> display,
     read texture2d albedo) on gpu {

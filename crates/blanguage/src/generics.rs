@@ -288,7 +288,7 @@ fn substitute_expr(
                 substitute_expr(arg, types, values, source)?;
             }
         }
-        ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
+        ExprKind::Target(_,base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
             substitute_expr(base, types, values, source)?
         }
         ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {

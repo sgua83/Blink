@@ -1,5 +1,7 @@
 # B 语言源码分析
 
+本轮版本提示（2026-10-27）：当前 Blink 已统一普通与计算函数，源 program 声明改为返回类型（无值为 void），parallel 仍显式；应用用 target(cpu, ...)／target(gpu, ...) 选择位置，GPU 同步返回与显式下载分开。纯接口.h不再需要空.b。本书仍解读下述固定历史版本，源码节选及原生记录保留原文；当前规范和能力状态见 Docs/BLanguage.md 与 Docs/Issues.md。
+
 从一行算式到 CPU 与 GPU 的真实执行
 
 ## 写在前面

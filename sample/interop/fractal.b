@@ -1,6 +1,6 @@
 module interop.fractal;
 
-program render(write dataset<u32, Count> pixels, u32 limit) on compute {
+void render(write dataset<u32, Count> pixels, u32 limit) on compute {
     parallel (pixel in pixels) {
         u32 i = index();
         f32 cx = f32(i % Width) / f32(Width) * 3.5 - 2.5;

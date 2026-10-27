@@ -29,7 +29,7 @@ cargo build --workspace --release
 .\target\applications\start.exe
 ```
 
-上例直接显示 `3`，正常退出码为 `0`。`blc -c` 将普通 CPU `main` 编译为 COFF 目标文件，`bllink` 将目标文件链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／f32／bool 输出、普通函数、顺序逻辑、固定数组，以及应用拥有的动态 dataset、显式 CPU／GPU 传输和 program 调用。通用文本／文件及源码调试继续研发。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
+上例直接显示 `3`，正常退出码为 `0`。`blc -c` 将普通 CPU `main` 编译为 COFF 目标文件，`bllink` 将目标文件链接为 Windows x64 控制台应用，运行生成的 exe 无需 B 源码、编译器、运行器或另写的宿主。当前支持整数／f32／bool 输出、普通函数、顺序逻辑、固定数组，以及应用拥有的动态 dataset、显式 CPU／GPU 传输和 计算函数 调用。通用文本／文件及源码调试继续研发。完整入口规则与部署范围见 [独立应用示例](sample/applications/README.md)。
 
 `sample/applications/datasets.b` 由 B 创建百万条记录，显式 `upload／download`，组织 CPU 生成、GPU 筛选与排序、CPU 扫描与归约。使用 `blc -c sample/applications/datasets.b -o target/applications/datasets.obj -I sample` 编译，再用 `bllink target/applications/datasets.obj -o target/applications/datasets.exe` 链接，部署生成的 exe 及同目录的 `blink_app_*.dll`；编译时使用现有 Rust 工具链把执行框架编译为静态目标代码，链接时只使用本机链接工具，B 算法已由自研后端生成机器码／SPIR-V。GPU 执行需要对应 Vulkan 驱动。
 
@@ -58,7 +58,7 @@ blanguage 提供编译 API，blcompute 提供原生数据及执行 API 与 blrun
 
 ## C、C++ 与 Rust 集成
 
-blc 可将一个具体 program 编译为目标文件，再由 bllink 链接为 Windows x64 DLL，同时输出 C/C++ 的 .abi.h、MSVC 导入库 .lib 与 Rust 安全绑定 .rs。C++ 使用 RAII，Rust 使用切片、Result 与 Drop；两种宿主调用同一份 B 算法，可选择 CPU 多核或 Vulkan GPU。
+blc 可将一个具体 计算函数 编译为目标文件，再由 bllink 链接为 Windows x64 DLL，同时输出 C/C++ 的 .abi.h、MSVC 导入库 .lib 与 Rust 安全绑定 .rs。C++ 使用 RAII，Rust 使用切片、Result 与 Drop；两种宿主调用同一份 B 算法，可选择 CPU 多核或 Vulkan GPU。
 
 ```powershell
 .\target\release\blc.exe -c `
@@ -71,7 +71,7 @@ blc 可将一个具体 program 编译为目标文件，再由 bllink 链接为 W
     -o target\interop\map.dll
 ```
 
-DLL 携带构建时生成的 CPU 机器码、SPIR-V 和执行布局，create 只装载代码／pipeline，不再从内嵌值 IR 编译；消费者无需 Blink 源码或 Rust 工具链。编译算法目标文件使用源码 SDK 和 Rust 工具链；链接阶段只读取目标文件及其中的静态目标代码，使用 MSVC 链接工具和 Windows SDK。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。Rust SDK 也可先生成 ProgramImage，再通过 CpuProgram::from_image 或 Device::load 装载；数据布局消费 ProgramInterface，实际存储、设备驻留、异步提交与资源释放仍由原所有者负责。B 应用已能拥有动态 dataset 并显式组织 CPU／GPU program，见独立应用示例；资源返回及其余资源构造仍待 C-011。
+DLL 携带构建时生成的 CPU 机器码、SPIR-V 和执行布局，create 只装载代码／pipeline，不再从内嵌值 IR 编译；消费者无需 Blink 源码或 Rust 工具链。编译算法目标文件使用源码 SDK 和 Rust 工具链；链接阶段只读取目标文件及其中的静态目标代码，使用 MSVC 链接工具和 Windows SDK。run 为同步的完整数据调用，包含必要复制及 GPU 输出读回。Rust SDK 也可先生成 ProgramImage，再通过 CpuProgram::from_image 或 Device::load 装载；数据布局消费 ProgramInterface，实际存储、设备驻留、异步提交与资源释放仍由原所有者负责。B 应用已能拥有动态 dataset 并显式组织 CPU／GPU 计算函数，见独立应用示例；资源返回及其余资源构造仍待 C-011。
 
 完整 C、C++、Rust 宿主示例、串行／并行实测及部署说明见 [sample/interop](sample/interop/README.md) 和 [原生集成](Docs/NativeInterop.md)。DLL 数据 ABI 支持纯值 dataset 与 uniform。B 主流程也可通过 `extern "C"` 调用 Windows x64 C++／Rust DLL，普通值及 read／write／inout 借用见 [sample/extern](sample/extern/README.md)；其他平台、裸指针值、回调和静态对象链接仍待实现。
 
@@ -79,7 +79,7 @@ DLL 携带构建时生成的 CPU 机器码、SPIR-V 和执行布局，create 只
 
 program阶段层已支持编译期u32范围for与嵌套轮次，循环继续使用原parallel、集合、模块关系及phase；同容量where的提交内工作存储按实际消费顺序复用。设备驱动的动态阶段循环仍未实现。所有渲染及性能数据统一使用Release正式构建。
 
-函数、协作函数、program 和记录已支持 `const N:u32`，不再要求列出所有长度。普通数组、名义记录、固定 dataset 及纹理数组的静态形状可推导 N；具体入口通过 compile_entry 或 blc 的最后一个参数选择，例如 'run<uint3,37,11>'。实例沿原编译检查后直接生成原生代码，未使用的开放正文尚不做完整符号证明，详见 [语言规范](Docs/BLanguage.md#开放-u32-const静态形状推导与具体入口2026-10-25)。
+函数、协作函数、计算函数 和记录已支持 `const N:u32`，不再要求列出所有长度。普通数组、名义记录、固定 dataset 及纹理数组的静态形状可推导 N；具体入口通过 compile_entry 或 blc 的最后一个参数选择，例如 'run<uint3,37,11>'。实例沿原编译检查后直接生成原生代码，未使用的开放正文尚不做完整符号证明，详见 [语言规范](Docs/BLanguage.md#开放-u32-const静态形状推导与具体入口2026-10-25)。
 
 ## 已实现能力与原始观测
 
@@ -91,7 +91,7 @@ u32 普通索引支持逐分量数值区间、分支上下界和符号资源域�
 
 Blink 的 atomic dataset 显式表达共享修改，支持 u32/i32 的加载、存储、加减、交换、强比较交换、极值与按位操作，以及静态 relaxed/acquire/release/acq_rel 内存序。CPU／GPU 均生成原生指令，普通读写与原子访问不能混用；原子返回的数字不自动获得散写或前缀域能力。已运行争用直方图、唯一票号、单获胜者、跨页原子及 Count 驻留 GPU 的筛选流水，具体依据与限制见语言规范和问题列表。
 
-原生集合运算现有 map、用户值函数定义的有序归约与融合投影归约、数值标量／向量及整数按位全域／分段归约、整数 sum／min／max／AND／OR／XOR 连续与分段独占扫描、浮点标量／向量连续与分段独占 sum／min／max、稳定 compact 与 u32／i32／f32 稳定键排序；块内 tile 和 GPU subgroup 另有各自的值协作。扫描可写入记录字段并保留其他数据，GPU 的递归摘要和有效计数留在设备。多种跨 256 MiB 页的输入／输出已完成 CPU／GPU 完整核对，具体规模与未完成项见问题列表。通用 `compute` 入口直接执行自己的公开 `.h/.b` program，语义和文件格式见 [语言规范](Docs/BLanguage.md)。
+原生集合运算现有 map、用户值函数定义的有序归约与融合投影归约、数值标量／向量及整数按位全域／分段归约、整数 sum／min／max／AND／OR／XOR 连续与分段独占扫描、浮点标量／向量连续与分段独占 sum／min／max、稳定 compact 与 u32／i32／f32 稳定键排序；块内 tile 和 GPU subgroup 另有各自的值协作。扫描可写入记录字段并保留其他数据，GPU 的递归摘要和有效计数留在设备。多种跨 256 MiB 页的输入／输出已完成 CPU／GPU 完整核对，具体规模与未完成项见问题列表。通用 `compute` 入口直接执行自己的公开 `.h/.b` 计算函数，语义和文件格式见 [语言规范](Docs/BLanguage.md)。
 
 `parallel (item in where(data,flags.keep))` 只执行活跃元素，保留原 index 和该位置的独占写权限；也可筛选已有 prefix。GPU 私有索引与间接启动留在设备，CPU 直线正文收集四个选中原索引并使用既有 SSE2 计划，不复制完整记录或增加公开 Count。稀疏 tile 与复杂控制流 SIMD 仍待实现，详见[语言规范](Docs/BLanguage.md#保留原索引的稀疏并行域2026-10-25)。
 
@@ -116,7 +116,7 @@ Blink 已有原生 subgroup 值协作：数值标量／向量的 sum、exclusive
 
 `tile_reduce_sum`／`tile_scan_exclusive_sum` 已为 CPU／GPU 提供 f32、u32、i32 标量与向量的原生块内集合。CPU 每块计算一次，GPU 共享树与各分量复用工作区，后续可继续发布与计算；无消费者局部值连同输入与工作区消除。已原生核对宽度 1–1024、有效域与 3355445 条跨页记录。百万条、128 宽度的同算法对照及浮点误差单列于 [Issues](Docs/Issues.md)，不外推为完整引擎帧率或成熟实现对照。
 
-Blink 的 `.h/.b` 已支持 `cooperative` 函数、`tile<T>` 只读借用和显式 `cooperate` 调用。块宽度继承调用方，字段／swizzle 不复制输入快照；函数可嵌套组合归约、发布和扫描，静态展开到同一 CPU 范围／GPU 内核。已原生核对 1–1024 宽度、有效前缀及 3355445 条跨页记录，函数库可独立 check，原生 build 仍从 program 专门化。语义与当前限制见 [语言规范](Docs/BLanguage.md)。
+Blink 的 `.h/.b` 已支持 `cooperative` 函数、`tile<T>` 只读借用和显式 `cooperate` 调用。块宽度继承调用方，字段／swizzle 不复制输入快照；函数可嵌套组合归约、发布和扫描，静态展开到同一 CPU 范围／GPU 内核。已原生核对 1–1024 宽度、有效前缀及 3355445 条跨页记录，函数库可独立 check，原生 build 仍从 计算函数 专门化。语义与当前限制见 [语言规范](Docs/BLanguage.md)。
 
 `tile_atomic(value, width)` 原生表达逻辑块内的 u32/i32 原子共享值，`tile_barrier()` 明确整块阶段同步；cooperative 函数可用 atomic tile<T> 借用同一来源与字段。GPU 直接使用 Workgroup 原子，CPU 在独占块存储上生成无锁指令；与 Device dataset 原子、只读发布、块内集合和有效前缀流水使用同一 IR、布局与执行框架。同步位置、访问模式、类型和索引在编译期检查；原子读取不会冻结快照，算法仍须明确生产／读取／下一次修改之间的同步。具体实现与真实运行记录见语言规范和问题列表。
 
@@ -128,7 +128,7 @@ Blink 函数现支持整份 `read dataset<T[,N]>`／`atomic dataset<T[,N]>` 借�
 
 Blink 已把重复 dataset／tile 长度读取关联到真实资源身份；非空、最小长度与函数返回的 bool 可以用于后续普通索引和整数除余。for 的游标比较与 parallel 的实际执行域提供作用域内的非空事实，空域仍不执行正文；分支、资源和可变值的边界保持。前端复用原 Proof 和环境，不增加运行期检查、长度缓存或设备 ABI；等式闭包、重复数据装载和完整范围分析仍在问题列表中。
 
-Blink 普通／cooperative 函数现可用 `requires nonzero(...)`、`nonempty(...)`、`index(...,...)` 声明整数非零、资源非空与索引前提，支持向量、记录字段和只读 view。编译器在调用点证明后直接内联，算法库可以独立检查，不生成运行期断言或额外分支。program 的 prefix 关系与原宿主输入规则保持，第一类非零类型、通用精化、后置条件与完整语言仍需继续完成。
+Blink 普通／cooperative 函数现可用 `requires nonzero(...)`、`nonempty(...)`、`index(...,...)` 声明整数非零、资源非空与索引前提，支持向量、记录字段和只读 view。编译器在调用点证明后直接内联，算法库可以独立检查，不生成运行期断言或额外分支。计算函数 的 prefix 关系与原宿主输入规则保持，第一类非零类型、通用精化、后置条件与完整语言仍需继续完成。
 
 Blink 函数现支持 `inout T` 独占位置借用，可直接修改当前并行元素或局部变量的原字段，支持多层转交、互不重叠的字段与 swizzle，并与 cooperative 和显式原子参数组合。编译器拒绝别名冲突，跟踪条件／循环中的写效果，直接生成原有访存与局部 IR。现有 BLBody 模拟已接入；整份可写数组、动态任务与完整语言仍未完成，详见规范和问题列表。
 
@@ -142,11 +142,11 @@ Blink 已支持有限数值参数的泛型记录、显式构造、嵌套字段�
 
 Blink 已支持用户定义的有限类型集合：算法可在同一约束下处理布局不同的普通记录及具体泛型记录，全部成员在编译期检查，实际调用直接生成原生代码。BLBody 积分已使用 BLSimulatedBody 集合；集合成员不是运行期混合元素，开放接口约束／关联类型及完整语言仍待继续。
 
-Blink 的泛型已覆盖函数、记录与并行 program：同一套有限数值／用户类型集合在编译期确定实际布局和算法，program 调用从原数据绑定推导类型，并沿原阶段、权限与有效前缀规则组合。simulation.bodies 的四种 BLBody 布局共用 integrate／energy／step，statistics 继续直接消费 BLBody<float3,3>。泛型入口按完整具体名字执行，例如 `step<simulation.bodies::BLBody<float3,3>>`；详见 [语言规范](Docs/BLanguage.md#泛型并行-program-与阶段组合)。一般值域、开放接口、动态任务和完整语言仍未完成。
+Blink 的泛型已覆盖函数、记录与并行 计算函数：同一套有限数值／用户类型集合在编译期确定实际布局和算法，计算函数 调用从原数据绑定推导类型，并沿原阶段、权限与有效前缀规则组合。simulation.bodies 的四种 BLBody 布局共用 integrate／energy／step，statistics 继续直接消费 BLBody<float3,3>。泛型入口按完整具体名字执行，例如 `step<simulation.bodies::BLBody<float3,3>>`；详见 [语言规范](Docs/BLanguage.md#泛型并行-计算函数-与阶段组合)。一般值域、开放接口、动态任务和完整语言仍未完成。
 
 Blink 现支持模块级 const、跨模块依赖和命名数据集形状；向量／记录／bool 常量可直接进入阶段组合，已知一元运算与转换在编译期折叠。引擎渲染现由实际输出目标专门化 W／H／S 和 dataset 数量，不再使用固定 render.dimensions；BLEditor 消费者仍明确保持实际 4K／内部 8K。初始化无法完全求值时编译失败，不执行运行期初始化；一般值域与一般编译期解释器仍未完成。
 
-Blink 的函数／cooperative／program 已支持有限 u32 const 参数及显式类型／值调用，例如 `sum<T:numeric,const Width:u32 in {17,65}>` 和 `sum<uint3,65>(cells)`；也可只给值并推导类型。所有允许实例都编译检查，形状和块宽度在实例中固定，运行时不新增分派或参数。中心力场已用 Power∈{1,2,3} 专门化，现有模拟选择 3。一般值域、一般高阶参数与完整语言仍未完成。
+Blink 的函数／cooperative／计算函数 已支持有限 u32 const 参数及显式类型／值调用，例如 `sum<T:numeric,const Width:u32 in {17,65}>` 和 `sum<uint3,65>(cells)`；也可只给值并推导类型。所有允许实例都编译检查，形状和块宽度在实例中固定，运行时不新增分派或参数。中心力场已用 Power∈{1,2,3} 专门化，现有模拟选择 3。一般值域、一般高阶参数与完整语言仍未完成。
 
 Blink 的记录现可带有限 u32 const 参数，算法可从实际记录、嵌套记录和资源元素推导这些值，例如 BLBody<T,Power> 自动选择中心力场模型。CPU／GPU 消费同一具体实例；const 模型身份不增加记录字段或运行期模式参数。检查与调用从唯一原声明生成实例，已删除全局展开表；一般值域、符号泛型分析及完整语言仍未完成。示例与推导边界见 [语言规范](Docs/BLanguage.md#记录-const-参数与名义值推导)。
 
@@ -161,3 +161,5 @@ Blink 已支持固定内联 array<T,N>、嵌套值／矩阵／不可变引用数
 动态原子数组访问沿用原 dataset／tile、函数借用及显式内存序，可直接编写嵌套计数桶和块内并发累加。已运行争用票号／交换／比较交换、带填充聚合、GPU 分区和跨 256 MiB 页的逐记录状态转换；原子返回值仍不授予任意散写权限。64 位／浮点原子、设备自主动态任务与完整引擎仍未完成。
 
 只读纹理数组可在资源参数位置以 `unsafe_read(maps,index)` 接收外部资产边界建立的编号关系，继续使用原生采样与只读函数借用。普通下标的静态证明要求保持；资源不进入普通值或逃逸，实际图像由原提交持有。BLEngine 已用该能力接入正式材质资产与全图 UV／分组采样，详见语言规范和引擎记录。
+
+统一函数已取消源 program 类别：计算函数写 void／返回类型，parallel 显式定义域，普通调用沿当前 CPU 位置执行，target(cpu, f(...))／target(gpu, f(...)) 选择实际位置。同步 GPU target 完成本次原生执行后返回，结果仍留 GPU，CPU 读取须显式 download。纯接口模块不再需要空.b；普通原生调用、独立模块产物和递归仍待完成。详见语言规范与 C-021／C-022。

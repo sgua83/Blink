@@ -53,7 +53,7 @@ float3 direct_lighting(read dataset<BLLight> lights, read acceleration scene, BL
     float3 position, float3 normal, float3 view, float3 color, f32 roughness, f32 ior,
     bool floor_present, f32 ground_z, u32 seed) on gpu;
 
-program trace<const N:u32,const W:u32,const H:u32,const S:u32>(
+void trace<const N:u32,const W:u32,const H:u32,const S:u32>(
 write dataset<BLPixel> pixels,
 read dataset<BLInstance> instances,
 read dataset<BLOverlay> overlays,

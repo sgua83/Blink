@@ -6,7 +6,7 @@ u32 main() on cpu {
     dataset<Number, 1> total = dataset<Number>(1);
     upload(results);
     upload(total);
-    run_gpu(beginner.scores::run(results, total, 5));
+    target(gpu, beginner.scores::run(results, total, 5));
     download(results);
     download(total);
     for (i in 0..results.length) {

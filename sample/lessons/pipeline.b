@@ -1,6 +1,6 @@
 module lessons.pipeline;
 
-program seed(write dataset<Item> input) on compute {
+void seed(write dataset<Item> input) on compute {
     parallel (item in input) {
         item.id = index();
         item.key = (index() * 7 + 2) % 3;
@@ -9,20 +9,20 @@ program seed(write dataset<Item> input) on compute {
     }
 }
 
-program select(read dataset<Item> input, write dataset<Item> selected,
+void select(read dataset<Item> input, write dataset<Item> selected,
                write dataset<Count, 1> count) on compute
     ensures prefix(selected, count.value) {
     compact(input, input.keep, selected, count.value);
 }
 
-program order(read dataset<Item> selected, read dataset<Count, 1> count,
+void order(read dataset<Item> selected, read dataset<Count, 1> count,
               write dataset<Item> ordered) on compute
     requires prefix(selected, count.value)
     ensures prefix(ordered, count.value) {
     stable_sort_by_key(prefix(selected, count.value).key, ordered);
 }
 
-program summarize(read dataset<Item> ordered, read dataset<Count, 1> count,
+void summarize(read dataset<Item> ordered, read dataset<Count, 1> count,
                   write dataset<Offset> offsets,
                   write dataset<Count, 1> total) on compute
     requires prefix(ordered, count.value)
@@ -31,7 +31,7 @@ program summarize(read dataset<Item> ordered, read dataset<Count, 1> count,
     reduce_sum(prefix(ordered, count.value).units, total.value);
 }
 
-program run(read dataset<Item> input, inout dataset<Item> selected,
+void run(read dataset<Item> input, inout dataset<Item> selected,
             inout dataset<Item> ordered, inout dataset<Count, 1> count,
             write dataset<Offset> offsets, write dataset<Count, 1> total) on compute
     ensures prefix(ordered, count.value)
@@ -41,7 +41,7 @@ program run(read dataset<Item> input, inout dataset<Item> selected,
     summarize(ordered, count, offsets, total);
 }
 
-program demo(inout dataset<Item> input, inout dataset<Item> selected,
+void demo(inout dataset<Item> input, inout dataset<Item> selected,
              inout dataset<Item> ordered, inout dataset<Count, 1> count,
              write dataset<Offset> offsets, write dataset<Count, 1> total) on compute
     ensures prefix(ordered, count.value)

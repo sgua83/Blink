@@ -6,7 +6,7 @@ float3x4 compose_affine(float3x4 parent,float3x4 child) on compute {
                      product.r1+float4(0.0,0.0,0.0,parent.r1.w),
                      product.r2+float4(0.0,0.0,0.0,parent.r2.w));
 }
-program resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform> worlds) on compute {
+void resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform> worlds) on compute {
     parallel(world in worlds) {
         BLHierarchyNode node=unsafe_read(nodes,index());
         float3x4 matrix=node.local;
@@ -19,7 +19,7 @@ program resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransfo
         world.matrix=matrix;
     }
 }
-program descendants(read dataset<BLHierarchyNode> nodes,write dataset<BLSubtree> members,u32 root) on compute {
+void descendants(read dataset<BLHierarchyNode> nodes,write dataset<BLSubtree> members,u32 root) on compute {
     parallel(member in members){
         BLHierarchyNode node=unsafe_read(nodes,index());
         member.member=false;

@@ -166,7 +166,7 @@ impl Frame {
         Ok(address)
     }
     /// 同一帧只移动本次实际参数；没有被绑定的存储及其有效域继续由帧持有。
-    /// CPU 直接消费原存储；GPU 提交后返回，数据保持驻留并持有最后使用点。
+    /// CPU 直接消费原存储；GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
     pub fn run(&mut self, program: u32, handles: &[u32], values: &[Value]) -> Result<()> {
         let index = program as usize;
         let program = self.load(index)?;
@@ -210,6 +210,7 @@ impl Frame {
                     .collect::<Result<Vec<_>>>()?;
                 let result = program
                     .submit(DomainBindings { datasets, domains }, values)?
+                    .wait()?
                     .into_bindings();
                 (
                     result

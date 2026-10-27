@@ -253,7 +253,6 @@ pub struct ExternalName {
 pub enum FunctionKind {
     Value,
     Cooperative,
-    Program,
     Constant,
 }
 #[derive(Clone, Debug)]
@@ -289,6 +288,7 @@ pub enum ExprKind {
     Specialize(String, Vec<GenericArgument>, Vec<Expr>),
     FunctionRef(String, Vec<GenericArgument>),
     Cooperate(String, Option<Vec<GenericArgument>>, Vec<Expr>),
+    Target(Target, Box<Expr>),
     Unary(String, Box<Expr>),
     Binary(String, Box<Expr>, Box<Expr>),
     Select(Box<Expr>, Box<Expr>, Box<Expr>),

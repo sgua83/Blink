@@ -5,7 +5,7 @@ cooperative f32 center(tile<f32> values, f32 value) on compute {
     return value - total / f32(values.length);
 }
 
-program seed(write dataset<Cell> cells) on compute {
+void seed(write dataset<Cell> cells) on compute {
     parallel (cell in cells) {
         cell.value = f32(index() + 1);
         cell.total = 0.0;
@@ -14,7 +14,7 @@ program seed(write dataset<Cell> cells) on compute {
     }
 }
 
-program analyze<const Width: u32>(inout dataset<Cell> cells) on compute {
+void analyze<const Width: u32>(inout dataset<Cell> cells) on compute {
     parallel (cell in cells) {
         let values = tile_input(cells.value, Width);
         f32 total = tile_reduce_sum(values);
@@ -26,7 +26,7 @@ program analyze<const Width: u32>(inout dataset<Cell> cells) on compute {
     }
 }
 
-program publish<const Width: u32>(inout dataset<Cell> cells, f32 factor) on compute {
+void publish<const Width: u32>(inout dataset<Cell> cells, f32 factor) on compute {
     parallel (cell in cells) {
         let transformed = tile_publish(cell.value * factor, Width);
         f32 total = tile_reduce_sum(transformed);
@@ -36,12 +36,12 @@ program publish<const Width: u32>(inout dataset<Cell> cells, f32 factor) on comp
     }
 }
 
-program demo<const Width: u32>(inout dataset<Cell> cells) on compute {
+void demo<const Width: u32>(inout dataset<Cell> cells) on compute {
     seed(cells);
     analyze<Width>(cells);
 }
 
-program demo_publish<const Width: u32>(inout dataset<Cell> cells, f32 factor) on compute {
+void demo_publish<const Width: u32>(inout dataset<Cell> cells, f32 factor) on compute {
     seed(cells);
     publish<Width>(cells, factor);
 }

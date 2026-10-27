@@ -252,15 +252,6 @@ impl<'a> Builder<'a> {
         self.finish_arguments(&held, &mut arguments);
         Ok(Some(arguments))
     }
-    pub(super) fn invoke_function(
-        &mut self,
-        key: String,
-        args: Vec<Argument>,
-        span: Span,
-    ) -> Result<Option<Value>> {
-        let instance = self.specialized_function(key, &args, span)?;
-        self.invoke_instance(instance, args, span)
-    }
     pub(super) fn invoke_instance(
         &mut self,
         instance: crate::generics::Instance,
@@ -281,8 +272,17 @@ impl<'a> Builder<'a> {
                 .external_call(&instance.definition, args, span)
                 .map(|v| v.map(returns::Returned::Value));
         }
+        if instance.definition.execution == crate::execution::Requirement::Domain {
+            if self.application.is_some() {
+                if instance.definition.function.target==Target::Cpu
+                    && !super::kernel_interface(self.world,&instance.definition)? {
+                    return self.inline_instance(instance,args,span);
+                }
+                return self.application_execute(instance, args, Target::Cpu, span);
+            }
+            return self.fail(span,"B159","整域执行需要发起位置，不能由元素实例或协作成员发起");
+        }
         match instance.definition.function.kind {
-            FunctionKind::Program => self.fail(span, "B159", "program 调用只能位于程序阶段层"),
             FunctionKind::Cooperative => {
                 self.fail(span, "B208", "cooperative 函数需要显式 cooperate 根块调用")
             }

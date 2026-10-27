@@ -504,30 +504,9 @@ impl Parser {
             } else {
                 false
             };
-            let kind = if self.take("program") {
-                FunctionKind::Program
-            } else if self.take("cooperative") {
-                FunctionKind::Cooperative
-            } else {
-                FunctionKind::Value
-            };
-            let (result, name) = if kind == FunctionKind::Program {
-                (
-                    TypeName {
-                        name: "void".into(),
-                        canonical: false,
-                        arguments: Vec::new(),
-                        dataset: false,
-                        view: false,
-                        tile: false,
-                        count: None,
-                    },
-                    self.ident()?,
-                )
-            } else {
-                let ty = self.ty()?;
-                (ty, self.ident()?)
-            };
+            let kind = if self.take("cooperative") { FunctionKind::Cooperative } else { FunctionKind::Value };
+            let result = self.ty()?;
+            let name = self.ident()?;
             let (types, values) = self.parameters()?;
             self.expect("(")?;
             let mut params = Vec::new();
@@ -855,6 +834,17 @@ impl Parser {
                 kind: ExprKind::Unary(op, Box::new(self.expr(12)?)),
                 span,
             }
+        } else if self.peek() == "target" && self.tokens[self.at + 1].text == "(" {
+            self.at += 2;
+            let target = match self.ident()?.as_str() {
+                "cpu" => Target::Cpu,
+                "gpu" => Target::Gpu,
+                _ => return self.source.fail(span, "B266", "target 的实际执行位置为 cpu 或 gpu"),
+            };
+            self.expect(",")?;
+            let call = self.expr(0)?;
+            self.expect(")")?;
+            Expr { kind: ExprKind::Target(target, Box::new(call)), span }
         } else if self.take("cooperate") {
             let mut name = self.qualified(".")?;
             while self.take("::") {

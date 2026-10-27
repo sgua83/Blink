@@ -5,7 +5,7 @@ float3 textured_ggx(read texture2d albedo, float2 uv, f32 lod, float3 normal, fl
     return ggx_surface(normal, view, light, sample.xyz * tint, roughness, ior);
 }
 
-program shade(inout dataset<BLShadingPoint> points, read texture2d albedo) on compute {
+void shade(inout dataset<BLShadingPoint> points, read texture2d albedo) on compute {
     parallel (point in points) {
         point.radiance = textured_ggx(albedo, point.uv, point.lod, point.normal,
             point.view, point.light, point.tint, point.roughness, point.ior);

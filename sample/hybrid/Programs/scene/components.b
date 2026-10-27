@@ -1,5 +1,5 @@
 module scene.components;
-program cameras(read dataset<BLWorldTransform> worlds,read dataset<BLAttachedCamera> locals,
+void cameras(read dataset<BLWorldTransform> worlds,read dataset<BLAttachedCamera> locals,
                 write dataset<BLSceneCamera> output) on compute {
     parallel(camera in output) {
         BLAttachedCamera source=unsafe_read(locals,index());
@@ -11,7 +11,7 @@ program cameras(read dataset<BLWorldTransform> worlds,read dataset<BLAttachedCam
         camera=value;
     }
 }
-program lights(read dataset<BLWorldTransform> worlds,read dataset<BLAttachedLight> locals,
+void lights(read dataset<BLWorldTransform> worlds,read dataset<BLAttachedLight> locals,
                write dataset<BLLight> output) on compute {
     parallel(light in output) {
         BLAttachedLight source=unsafe_read(locals,index());
@@ -26,7 +26,7 @@ program lights(read dataset<BLWorldTransform> worlds,read dataset<BLAttachedLigh
         light=value;
     }
 }
-program evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
+void evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
                  read dataset<BLAttachedCamera> local_cameras,write dataset<BLSceneCamera> world_cameras,
                  read dataset<BLAttachedLight> local_lights,write dataset<BLLight> world_lights) on compute {
     resolve(nodes,worlds);

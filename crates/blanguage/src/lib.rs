@@ -4,6 +4,7 @@ pub mod ast;
 mod check;
 pub mod dll;
 mod generics;
+mod execution;
 pub mod ir;
 mod lexer;
 pub mod linker;
@@ -26,6 +27,7 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct Definition {
     function: Function,
+    execution: execution::Requirement,
     source: Source,
     module: String,
     imports: Vec<String>,
@@ -103,7 +105,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
         path,
         module_root,
         true,
-        Some((FunctionKind::Program, entry)),
+        Some((EntryKind::Domain, entry)),
     )
 }
 /// 编译独立 CPU 应用的普通值入口；启动与平台链接由 application 模块拥有。
@@ -113,7 +115,7 @@ pub fn compile_application(
     entry: &str,
 ) -> Result<application::Application> {
     Ok(
-        compile_module(path, module_root, false, Some((FunctionKind::Value, entry)))?
+        compile_module(path, module_root, false, Some((EntryKind::Application, entry)))?
             .applications
             .remove(0),
     )
@@ -122,11 +124,13 @@ pub fn compile_application(
 pub fn check(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, false, None)
 }
+#[derive(Clone, Copy)]
+enum EntryKind { Domain, Application }
 fn compile_module(
     path: &Path,
     module_root: &Path,
     require_program: bool,
-    requested: Option<(FunctionKind, &str)>,
+    requested: Option<(EntryKind, &str)>,
 ) -> Result<Compilation> {
     let mut world = World {
         sources: BTreeMap::new(),
@@ -138,6 +142,7 @@ fn compile_module(
     let mut loaded = BTreeSet::new();
     let mut visiting = BTreeSet::new();
     let entry = load(path, module_root, &mut world, &mut loaded, &mut visiting)?;
+    execution::infer(&mut world);
     let selected = if let Some((kind, request)) = requested {
         let source = Source {
             path: PathBuf::from("<entry>"),
@@ -153,7 +158,7 @@ fn compile_module(
                 message: format!("没有公开入口 {name}"),
             })?;
         let definition = &world.functions[&key];
-        if !definition.public || definition.module != entry || definition.function.kind != kind {
+        if !definition.public || definition.module != entry || definition.function.kind != FunctionKind::Value {
             return source.fail(
                 Span::default(),
                 "B240",
@@ -203,7 +208,8 @@ fn compile_module(
         for instance in generics::instances(&world, base, definition)? {
             let name = &instance.name;
             let d = &instance.definition;
-            if d.function.kind == FunctionKind::Program {
+            if d.execution==execution::Requirement::Domain
+                && (d.function.target!=Target::Cpu || check::kernel_interface(&world,d)?) {
                 let p = check::compile_program(&world, &instance)
                     .map_err(|error| instance_error(error, name))?;
                 if selected.is_none() && d.module == entry && d.public {
@@ -229,7 +235,7 @@ fn compile_module(
             definition,
             definition.function.span,
         )?;
-        if kind == FunctionKind::Value {
+        if matches!(kind, EntryKind::Application) {
             applications.push(check::compile_application(&world, &instance)?);
         } else {
             let p = check::compile_program(&world, &instance)
@@ -258,7 +264,7 @@ fn compile_module(
         if world.functions.values().any(|d| {
             d.module == entry
                 && d.public
-                && d.function.kind == FunctionKind::Program
+                && d.execution == execution::Requirement::Domain
                 && generics::is_open(&d.function.types, &d.function.values)
         }) {
             return world.sources[&entry].fail(
@@ -293,22 +299,38 @@ fn load(
     loaded: &mut BTreeSet<String>,
     visiting: &mut BTreeSet<String>,
 ) -> Result<String> {
-    let implementation = parser::parse(read(&path.with_extension("b"))?)?;
     let interface = parser::parse(read(&path.with_extension("h"))?)?;
-    if implementation.name != interface.name {
-        return implementation
+    let implementation_path = path.with_extension("b");
+    let present = implementation_path
+        .try_exists()
+        .map_err(|error| Diagnostic {
+            source: interface.source.clone(),
+            span: Span::default(),
+            code: "B020",
+            message: format!("无法访问实现源 {}：{error}", implementation_path.display()),
+        })?;
+    let implementation = if present {
+        Some(parser::parse(read(&implementation_path)?)?)
+    } else {
+        None
+    };
+    if let Some(module) = &implementation
+        && module.name != interface.name
+    {
+        return module
             .source
             .fail(Span::default(), "B022", ".h 与 .b 的模块名不一致");
     }
-    let name = implementation.name.clone();
+    let name = interface.name.clone();
+    let source = implementation
+        .as_ref()
+        .map_or(&interface.source, |module| &module.source);
     if loaded.contains(&name) {
         return Ok(name);
     }
-    world
-        .sources
-        .insert(name.clone(), implementation.source.clone());
+    world.sources.insert(name.clone(), source.clone());
     if !visiting.insert(name.clone()) {
-        return implementation.source.fail(
+        return source.fail(
             Span::default(),
             "B023",
             "模块导入存在环；公共类型应移入共同依赖模块",
@@ -317,7 +339,7 @@ fn load(
     let imports: Vec<_> = interface
         .imports
         .iter()
-        .chain(&implementation.imports)
+        .chain(implementation.iter().flat_map(|module| &module.imports))
         .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -326,7 +348,7 @@ fn load(
         let import_path: PathBuf = root.join(import.replace('.', "/")).with_extension("b");
         let actual = load(&import_path, root, world, loaded, visiting)?;
         if actual != *import {
-            return implementation.source.fail(
+            return source.fail(
                 Span::default(),
                 "B024",
                 format!("导入 {import}，文件却声明 {actual}"),
@@ -337,12 +359,12 @@ fn load(
         .records
         .iter()
         .map(|r| (r, &interface.source))
-        .chain(
-            implementation
+        .chain(implementation.iter().flat_map(|module| {
+            module
                 .records
                 .iter()
-                .map(|r| (r, &implementation.source)),
-        )
+                .map(move |record| (record, &module.source))
+        }))
     {
         if matches!(
             record.name.as_str(),
@@ -376,12 +398,12 @@ fn load(
         .type_sets
         .iter()
         .map(|s| (s, &interface.source))
-        .chain(
-            implementation
+        .chain(implementation.iter().flat_map(|module| {
+            module
                 .type_sets
                 .iter()
-                .map(|s| (s, &implementation.source)),
-        )
+                .map(move |set| (set, &module.source))
+        }))
     {
         let key = format!("{name}::{}", set.name);
         if world.records.contains_key(&key)
@@ -424,10 +446,15 @@ fn load(
                 .source
                 .fail(f.span, "B026", ".h 只声明接口，函数体放在 .b");
         }
-        let body = implementation
-            .functions
+        let (body, body_source) = implementation
             .iter()
-            .find(|x| x.name == f.name)
+            .flat_map(|module| {
+                module
+                    .functions
+                    .iter()
+                    .map(move |function| (function, &module.source))
+            })
+            .find(|(function, _)| function.name == f.name)
             .ok_or_else(|| Diagnostic {
                 source: interface.source.clone(),
                 span: f.span,
@@ -435,7 +462,7 @@ fn load(
                 message: format!("接口 {} 缺少 .b 实现", f.name),
             })?;
         if !same_signature(f, body) {
-            return implementation.source.fail(
+            return body_source.fail(
                 body.span,
                 "B028",
                 format!(
@@ -445,17 +472,20 @@ fn load(
             );
         }
     }
+    let declarations = &interface.functions;
     for (f, source, public) in interface
         .functions
         .iter()
         .filter(|f| f.kind == FunctionKind::Constant || f.external.is_some())
         .map(|f| (f, &interface.source, true))
-        .chain(implementation.functions.iter().map(|f| {
-            (
-                f,
-                &implementation.source,
-                interface.functions.iter().any(|x| x.name == f.name),
-            )
+        .chain(implementation.iter().flat_map(|module| {
+            module.functions.iter().map(move |function| {
+                (
+                    function,
+                    &module.source,
+                    declarations.iter().any(|decl| decl.name == function.name),
+                )
+            })
         }))
     {
         if f.body.is_none() && f.external.is_none() {
@@ -469,6 +499,7 @@ fn load(
             key,
             Arc::new(Definition {
                 function: f.clone(),
+                execution: execution::Requirement::Invocation,
                 source: source.clone(),
                 module: name.clone(),
                 imports: imports.clone(),

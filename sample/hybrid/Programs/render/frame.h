@@ -6,7 +6,7 @@ import scene.transforms;
 import scene.camera;
 import lighting.lights;
 
-program frame<const N:u32,const W:u32,const H:u32,const S:u32,const DC:u32,const IC:u32>(
+void frame<const N:u32,const W:u32,const H:u32,const S:u32,const DC:u32,const IC:u32>(
 inout dataset<BLPixel,IC> pixels,
 write dataset<BLDisplayPixel,DC> display,
 read dataset<BLInstance> instances,

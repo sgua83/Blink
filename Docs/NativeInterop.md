@@ -18,7 +18,7 @@ cargo build --workspace --release
     -o target\interop\map.dll
 ```
 
-`--program` 选择具体公开 program；开放 const 入口可以用 'run<float3,1000000>' 等实例。每个 DLL 导出一个无 requires 前置条件的具体入口；条件模板应先在 B 中组合成能够自行生产所需关系的 program。不会把裸指针中的 Count 当作编译器已经证明的 prefix 关系。
+`--program` 选择具体公开 计算函数；开放 const 入口可以用 'run<float3,1000000>' 等实例。每个 DLL 导出一个无 requires 前置条件的具体入口；条件模板应先在 B 中组合成能够自行生产所需关系的 计算函数。不会把裸指针中的 Count 当作编译器已经证明的 prefix 关系。
 
 | 输出 | 用途 |
 |---|---|
@@ -74,7 +74,7 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 - 每个数据指针配一个 u32 元素数，单位是完整记录。只读参数生成 const 指针／Rust 共享切片；可写参数生成可写指针／Rust 独占切片。各可写区间不得与其他参数重叠；调用期间宿主不能同时访问相应内存。
 - run 是一次同步调用：准备本次存储、复制输入、执行、等待实际完成，再复制输出。GPU 路径包含上传与输出读回；DLL 不在返回后借用调用方数组。数组始终由宿主分配和释放，handle 由 DLL 创建并由 DLL 的 destroy 释放。所有 handle 销毁后才能卸载 DLL。
 - create 的 backend 为 0（CPU）或 1（GPU）；目标限制与设备能力错误直接返回。相同 handle 可反复运行；调用及释放必须在创建线程串行执行。Rust 包装器以独占方法、Drop 和非 Send／Sync 类型表达这一所有权；C/C++ 遵守头文件中的相同约定。不同线程可分别创建自己的实例。
-- view、纹理、加速结构和有外部 prefix 前置条件的程序不在当前 DLL 数据 ABI 中；算法目标文件编译明确拒绝，不改写成其他算法。C++ 可以调用包含内部多阶段、集合、排序及内部有效前缀的完整 program。
+- view、纹理、加速结构和有外部 prefix 前置条件的程序不在当前 DLL 数据 ABI 中；算法目标文件编译明确拒绝，不改写成其他算法。C++ 可以调用包含内部多阶段、集合、排序及内部有效前缀的完整 计算函数。
 
 ## 性能的完整口径
 
@@ -84,7 +84,7 @@ CPU 结果与两个串行实现逐项相同。当前 GPU 的 f32 结果在分形
 
 ## B 主流程调用 C++ 或 Rust
 
-B 的普通 CPU main、函数和 CPU program 已支持调用 Windows x64 DLL 的 C 导出。例如 `.h` 声明：
+B 的普通 CPU main、函数和 CPU 计算函数 已支持调用 Windows x64 DLL 的 C 导出。例如 `.h` 声明：
 
 ```c
 extern "C" Pair add_values(Pair value, u32 amount) on cpu
@@ -101,7 +101,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 独立应用由 Windows 按实际导入装载库；原生 CpuProgram 用 LoadLibraryW／GetProcAddress 解析，原生代码所有者持有模块到最后一个消费者释放。装载／符号错误保留原生错误，不替换库或实现。外部调用的副作用不因返回值未使用而删除；parallel 实例的调用顺序不作保证。生成的 B 算法 DLL 也可在 CPU 后端调用其依赖库，GPU 后端明确拒绝宿主调用。
 
-当前只接受无泛型／契约的 on cpu 普通外部函数和非空普通值／void 返回。dataset、tile、view、纹理、加速结构、拥有 dataset 的结果及含资源记录不能跨此 ABI；CPU 端已合法取得的普通元素仍可借用。裸指针值、u64、opaque handle、回调、变参、静态对象链接及其他平台仍待实现。B 应用创建动态数据与组织 CPU／GPU program 仍归 C-011，不以外部调用或宿主已有能力冒充完成；原生 Rust 计算 API 保留。
+当前只接受无泛型／契约的 on cpu 普通外部函数和非空普通值／void 返回。dataset、tile、view、纹理、加速结构、拥有 dataset 的结果及含资源记录不能跨此 ABI；CPU 端已合法取得的普通元素仍可借用。裸指针值、u64、opaque handle、回调、变参、静态对象链接及其他平台仍待实现。B 应用创建动态数据与组织 CPU／GPU 计算函数 仍归 C-011，不以外部调用或宿主已有能力冒充完成；原生 Rust 计算 API 保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
 
@@ -124,3 +124,7 @@ B内部拥有记录组合dataset、拥有结果与嵌套记录；整份拥有记
 ## 嵌套表达式退出与外部效果
 
 普通函数的try错误退出可发生在C ABI实参的数值表达式或实际位置索引内；该路径不再求后续实参、不调用外部函数，也不交付相应write初始化。此前已发生的外部效果保留。正常路径仍传递原位置、遵守既有布局及借用，真实错误返回仍满足write完整输出契约；没有新增调用状态、ABI包装或回滚。PA3 Release原生观察已核对先前临时拥有资源释放、后续调用顺序以及实际外部写入是否发生，完整CPU／GPU与SDK范围记录于Issues。
+
+## 统一函数与算法产物
+
+源函数统一使用返回类型定义，整域计算可写 void 和显式 parallel；--program 仍选择生成算法对象的公开具体函数。内部 Program／ExecutionPlan 与生成的 C/C++／Rust ABI 名称保持原职责。该产物以借用数据及普通统一值为接口，不是普通函数独立调用 ABI；拥有参数与普通值返回的独立函数目标、递归及模块契约导出仍在研发。只有类型／外部接口的.h可以独立存在，实际DLL符号与布局责任不变。B的target为同步执行位置选择，低层SDK异步提交仍使用原完成对象。

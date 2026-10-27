@@ -1005,11 +1005,11 @@ dataset<u32> numbers = dataset<u32>(4);
 
 左边说明 numbers 保存 u32 元素，右边申请四个位置，初值都是零。numbers.length 是个数，numbers[0] 是第一个数。长度可以在运行时决定；这里先用四，方便逐项检查。
 
-numbers 在当前作用域中只有一个所有者。离开它所在的作用域时，执行框架释放其存储，不需要自己写释放命令。后面把它交给 program，是暂时借它计算。
+numbers 在当前作用域中只有一个所有者。离开它所在的作用域时，执行框架释放其存储，不需要自己写释放命令。后面把它交给 计算函数，是暂时借它计算。
 
 ![一个 B 应用怎样完成并行计算](figures/beginner-app-parallel.svg)
 
-*图 15-1：main 准备数据、调用计算、显示结果；program 描述数据上的工作。两者都写在 B 源码里。*
+*图 15-1：main 准备数据、调用计算、显示结果；计算函数 描述数据上的工作。两者都写在 B 源码里。*
 
 ### 15.2 先把顺序版本写出来
 
@@ -1066,7 +1066,7 @@ u32 main() on cpu {
 
 ### 15.3 再写并行版本
 
-算第二个位置不需要先得到第一个位置的结果。因此可以把“每个位置做什么”单独写成一个 program。
+算第二个位置不需要先得到第一个位置的结果。因此可以把“每个位置做什么”单独写成一个 计算函数。
 
 `numbers.h`：
 
@@ -1074,7 +1074,7 @@ u32 main() on cpu {
 module beginner.numbers;
 
 u32 main() on cpu;
-program run(write dataset<u32> numbers) on compute;
+void run(write dataset<u32> numbers) on compute;
 ```
 
 `numbers.b`：
@@ -1084,14 +1084,14 @@ module beginner.numbers;
 
 u32 main() on cpu {
     dataset<u32> numbers = dataset<u32>(4);
-    run_cpu(run(numbers));
+    target(cpu, run(numbers));
     for (i in 0..numbers.length) {
         println(numbers[i]);
     }
     return 0;
 }
 
-program run(write dataset<u32> numbers) on compute {
+void run(write dataset<u32> numbers) on compute {
     parallel (number in numbers) {
         u32 value = index() + 1;
         number = value * 2;
@@ -1099,7 +1099,7 @@ program run(write dataset<u32> numbers) on compute {
 }
 ```
 
-main 仍然负责创建 numbers 和显示结果。原来的计算循环放进 run，使用 parallel 逐个描述元素的工作。run_cpu(run(numbers)) 表示在 CPU 上执行这次计算，完成后才继续显示。
+main 仍然负责创建 numbers 和显示结果。原来的计算循环放进 run，使用 parallel 逐个描述元素的工作。target(cpu, run(numbers)) 表示在 CPU 上执行这次计算，完成后才继续显示。
 
 对照计算部分：
 
@@ -1142,7 +1142,7 @@ number 直接表示当前可写的那个元素。value 仍是各自计算时使�
 
 显示发生在计算完成之后，仍由 main 的 for 按编号进行。因此终端依次显示二、四、六、八。这里没有让并行参与者直接争着打印。
 
-想处理六个数，把 main 中创建长度的四改成六，重新编译、链接即可。program 不需要修改，显示循环也会跟着 numbers.length 遍历，结果为二、四、六、八、十、十二。
+想处理六个数，把 main 中创建长度的四改成六，重新编译、链接即可。计算函数 不需要修改，显示循环也会跟着 numbers.length 遍历，结果为二、四、六、八、十、十二。
 
 ### 15.5 编译后，目录里有什么
 
@@ -1162,9 +1162,9 @@ number 直接表示当前可写的那个元素。value 仍是各自计算时使�
 module beginner.stages;
 
 u32 main() on cpu;
-program seed(write dataset<u32> numbers) on compute;
-program scale(inout dataset<u32> numbers) on compute;
-program run(inout dataset<u32> numbers) on compute;
+void seed(write dataset<u32> numbers) on compute;
+void scale(inout dataset<u32> numbers) on compute;
+void run(inout dataset<u32> numbers) on compute;
 ```
 
 `stages.b`：
@@ -1174,26 +1174,26 @@ module beginner.stages;
 
 u32 main() on cpu {
     dataset<u32> numbers = dataset<u32>(4);
-    run_cpu(run(numbers));
+    target(cpu, run(numbers));
     for (i in 0..numbers.length) {
         println(numbers[i]);
     }
     return 0;
 }
 
-program seed(write dataset<u32> numbers) on compute {
+void seed(write dataset<u32> numbers) on compute {
     parallel (number in numbers) {
         number = index() + 1;
     }
 }
 
-program scale(inout dataset<u32> numbers) on compute {
+void scale(inout dataset<u32> numbers) on compute {
     parallel (number in numbers) {
         number = number * 2 + 1;
     }
 }
 
-program run(inout dataset<u32> numbers) on compute {
+void run(inout dataset<u32> numbers) on compute {
     seed(numbers);
     scale(numbers);
 }
@@ -1285,11 +1285,11 @@ module beginner.totals;
 
 struct Number { u32 value; };
 u32 main() on cpu;
-program seed(write dataset<Number> numbers) on compute;
-program summarize(read dataset<Number> numbers,
+void seed(write dataset<Number> numbers) on compute;
+void summarize(read dataset<Number> numbers,
                   write dataset<Number> before,
                   write dataset<Number, 1> total) on compute;
-program run(inout dataset<Number> numbers,
+void run(inout dataset<Number> numbers,
             write dataset<Number> before,
             write dataset<Number, 1> total) on compute;
 ```
@@ -1303,7 +1303,7 @@ u32 main() on cpu {
     dataset<Number> numbers = dataset<Number>(4);
     dataset<Number> before = dataset<Number>(4);
     dataset<Number, 1> total = dataset<Number>(1);
-    run_cpu(run(numbers, before, total));
+    target(cpu, run(numbers, before, total));
     for (i in 0..before.length) {
         println(before[i].value);
     }
@@ -1311,20 +1311,20 @@ u32 main() on cpu {
     return 0;
 }
 
-program seed(write dataset<Number> numbers) on compute {
+void seed(write dataset<Number> numbers) on compute {
     parallel (number in numbers) {
         number.value = index() + 1;
     }
 }
 
-program summarize(read dataset<Number> numbers,
+void summarize(read dataset<Number> numbers,
                   write dataset<Number> before,
                   write dataset<Number, 1> total) on compute {
     scan_exclusive_sum(numbers.value, before.value);
     reduce_sum(numbers.value, total.value);
 }
 
-program run(inout dataset<Number> numbers,
+void run(inout dataset<Number> numbers,
             write dataset<Number> before,
             write dataset<Number, 1> total) on compute {
     seed(numbers);
@@ -1389,7 +1389,7 @@ import beginner.stages;
 u32 main() on cpu {
     dataset<u32> numbers = dataset<u32>(4);
     upload(numbers);
-    run_gpu(beginner.stages::run(numbers));
+    target(gpu, beginner.stages::run(numbers));
     download(numbers);
     for (i in 0..numbers.length) {
         println(numbers[i]);
@@ -1404,15 +1404,15 @@ import 导入原来的计算。beginner.stages::run 指向那个模块的 run，
 
 ```b
 // CPU：数据创建后就在 CPU 一侧。
-run_cpu(run(numbers));
+target(cpu, run(numbers));
 
 // GPU：先交给 GPU，执行后再交回 CPU。
 upload(numbers);
-run_gpu(beginner.stages::run(numbers));
+target(gpu, beginner.stages::run(numbers));
 download(numbers);
 ```
 
-upload 将这份存储交给 GPU。run_gpu 提交计算。download 等待需要的 GPU 工作完成，把结果交回 CPU，后面的 for 才能读取并显示。
+upload 将这份存储交给 GPU。target(gpu, ...) 完成本次 GPU 计算后返回。download 把结果交回 CPU，后面的 for 才能读取并显示。
 
 ![数据从 CPU 到 GPU 再返回](figures/beginner-native-gpu.svg)
 
@@ -1446,7 +1446,7 @@ GPU 计算需要系统显卡驱动提供 Vulkan，编写本例无需安装 Vulka
 
 ### 17.3 为什么 main 还是 on cpu
 
-main 负责创建资源、发起计算、读取结果和标准输出。这些应用工作在 CPU 一侧进行。真正处理每个数字的是它调用的 GPU program。
+main 负责创建资源、发起计算、读取结果和标准输出。这些应用工作在 CPU 一侧进行。真正处理每个数字的是它调用的 GPU 计算函数。
 
 | 声明 | 允许在哪里执行 |
 |---|---|
@@ -1454,11 +1454,11 @@ main 负责创建资源、发起计算、读取结果和标准输出。这些应
 | on cpu | CPU |
 | on gpu | GPU |
 
-run_cpu 与 run_gpu 明确选择执行设备，传入数据要处在对应的存储位置。
+target(cpu, ...) 与 target(gpu, ...) 明确选择执行设备，传入数据要处在对应的存储位置。
 
 ### 17.4 几行代码背后的等待与释放
 
-CPU 调用完成以后，后面的代码才能读取 CPU 结果。GPU 调用提交后，后续 GPU 步骤可以继续依赖同一份数据；需要 CPU 读取时，以 download 明确完成交接。
+CPU 调用完成以后，后面的代码才能读取 CPU 结果。GPU 同步调用完成后，结果仍留在原 GPU 数据中；需要 CPU 读取时，以 download 明确完成传输交接。
 
 离开作用域会结束应用对资源的拥有。若 GPU 仍在使用，执行框架会保留物理存储到最后一次实际使用完成，不能因为 CPU 函数先返回就提前释放显存。
 
@@ -1480,7 +1480,7 @@ CPU 调用完成以后，后面的代码才能读取 CPU 结果。GPU 调用提�
 module beginner.shape;
 
 u32 main() on cpu;
-program run<const N: u32>(write dataset<u32, N> numbers) on compute;
+void run<const N: u32>(write dataset<u32, N> numbers) on compute;
 ```
 
 `shape.b`：
@@ -1490,14 +1490,14 @@ module beginner.shape;
 
 u32 main() on cpu {
     dataset<u32, 4> numbers = dataset<u32>(4);
-    run_cpu(run<4>(numbers));
+    target(cpu, run<4>(numbers));
     for (i in 0..numbers.length) {
         println(numbers[i]);
     }
     return 0;
 }
 
-program run<const N: u32>(write dataset<u32, N> numbers) on compute {
+void run<const N: u32>(write dataset<u32, N> numbers) on compute {
     parallel (number in numbers) {
         number = index() + 1;
     }
@@ -1506,7 +1506,7 @@ program run<const N: u32>(write dataset<u32, N> numbers) on compute {
 
 main 的 dataset<u32, 4> 声明固定四项。run<4>(numbers) 选择 N 等于四的计算实例。run 里面只写 N，一份做法就能用于不同的具体个数。
 
-main 仍然是应用入口。尖括号写在 B 源码的调用处，命令行不需要再指定 program 的特殊入口。
+main 仍然是应用入口。尖括号写在 B 源码的调用处，命令行不需要再指定 计算函数 的特殊入口。
 
 ### 18.2 编译并运行
 
@@ -1588,10 +1588,10 @@ struct Result {
 struct Number { u32 value; };
 u32 main() on cpu;
 u32 final_score(u32 score, u32 bonus) on compute;
-program fill(write dataset<Result> results, u32 bonus) on compute;
-program sum(read dataset<Result> results,
+void fill(write dataset<Result> results, u32 bonus) on compute;
+void sum(read dataset<Result> results,
             write dataset<Number, 1> total) on compute;
-program run(inout dataset<Result> results,
+void run(inout dataset<Result> results,
             write dataset<Number, 1> total, u32 bonus) on compute;
 ```
 
@@ -1603,7 +1603,7 @@ module beginner.scores;
 u32 main() on cpu {
     dataset<Result> results = dataset<Result>(4);
     dataset<Number, 1> total = dataset<Number>(1);
-    run_cpu(run(results, total, 5));
+    target(cpu, run(results, total, 5));
     for (i in 0..results.length) {
         println(results[i].original);
         println(results[i].adjusted);
@@ -1621,7 +1621,7 @@ u32 final_score(u32 score, u32 bonus) on compute {
     return adjusted;
 }
 
-program fill(write dataset<Result> results, u32 bonus) on compute {
+void fill(write dataset<Result> results, u32 bonus) on compute {
     parallel (result in results) {
         result.original = 45 + index() * 15;
         result.adjusted = final_score(result.original, bonus);
@@ -1629,12 +1629,12 @@ program fill(write dataset<Result> results, u32 bonus) on compute {
     }
 }
 
-program sum(read dataset<Result> results,
+void sum(read dataset<Result> results,
             write dataset<Number, 1> total) on compute {
     reduce_sum(results.adjusted, total.value);
 }
 
-program run(inout dataset<Result> results,
+void run(inout dataset<Result> results,
             write dataset<Number, 1> total, u32 bonus) on compute {
     fill(results, bonus);
     sum(results, total);
@@ -1703,7 +1703,7 @@ u32 main() on cpu {
     dataset<Number, 1> total = dataset<Number>(1);
     upload(results);
     upload(total);
-    run_gpu(beginner.scores::run(results, total, 5));
+    target(gpu, beginner.scores::run(results, total, 5));
     download(results);
     download(total);
     for (i in 0..results.length) {
@@ -1771,7 +1771,7 @@ CPU 与 GPU 的选择改变了执行位置和数据交接，成绩规则没有�
 | for 与 parallel | 明确的顺序重复；对数据域的独立工作 |
 | array 与 dataset | 普通固定数组值；由应用拥有、可交给并行计算的数据集合 |
 | let 与 const | 从初值推断局部类型；定义编译期值 |
-| main 与 program | 普通应用入口；具有数据与执行目标的计算入口 |
+| main 与 计算函数 | 普通应用入口；具有数据与执行目标的计算入口 |
 
 ### 20.3 输出、退出与错误
 
@@ -1788,7 +1788,7 @@ return 0;
 
 ### 20.4 当前能力与后续学习
 
-当前 Windows x64 独立应用支持普通函数、条件、顺序循环、记录、固定数组、向量和矩阵计算，支持应用拥有动态 dataset、调用 CPU／GPU program、显式传输和作用域释放。标准输出接受整数、小数和真假值。文本、键盘输入、文件、其他平台及更多资源类型仍在开发，完整状态以语言规范与问题列表为准。
+当前 Windows x64 独立应用支持普通函数、条件、顺序循环、记录、固定数组、向量和矩阵计算，支持应用拥有动态 dataset、调用 CPU／GPU 计算函数、显式传输和作用域释放。标准输出接受整数、小数和真假值。文本、键盘输入、文件、其他平台及更多资源类型仍在开发，完整状态以语言规范与问题列表为准。
 
 C/C++ 与 Rust 可以继续作为同等正式的宿主，通过生成 DLL 或原生接口调用 B 计算。混合编程是项目可选择的整合方式，详见《Blink 和 Rust 混合编程》，不影响前面普通 B 应用的独立使用。
 
@@ -1809,19 +1809,19 @@ C/C++ 与 Rust 可以继续作为同等正式的宿主，通过生成 DLL 或原
 
 ### A.1 两种借用，分别读懂
 
-program 的 read 表示只读，write 表示填写，inout 表示读取后修改。第十六章的 summarize 只读 numbers，却能写 before 和 total；权限分别属于各份参数。
+计算函数 的 read 表示只读，write 表示填写，inout 表示读取后修改。第十六章的 summarize 只读 numbers，却能写 before 和 total；权限分别属于各份参数。
 
-main 仍拥有它创建的 dataset。run_cpu 或 run_gpu 暂时借用这些资源完成程序，不会把同一份存储复制成第二个可写所有者。
+main 仍拥有它创建的 dataset。target(cpu, ...) 或 target(gpu, ...) 暂时借用这些资源完成程序，不会把同一份存储复制成第二个可写所有者。
 
 ### A.2 CPU 与 GPU 数据交接
 
-dataset 创建后位于 CPU 一侧。CPU program 直接借用；GPU program 使用前写 upload，CPU 读取 GPU 结果前写 download。不要把“GPU 已提交”理解成“CPU 现在就能读结果”。
+dataset 创建后位于 CPU 一侧。CPU 计算函数 直接借用；GPU 计算函数 使用前写 upload，CPU 读取 GPU 结果前写 download。不要把“GPU 已提交”理解成“CPU 现在就能读结果”。
 
 这些例子没有输入、输出数据文件参数。结果保存在应用自己的数据中，main 直接读取并显示；blrun 的文件读写工具继续可用于其他计算模块，不是本书应用的运行步骤。
 
 ### A.3 把程序交给别人
 
-只使用普通值的起步应用可以只生成 exe。使用动态 dataset 或 program 的应用还会生成同目录的 blink_app_*.dll，部署时把对应文件一起复制。不要给 DLL 改名，exe 已记录它的实际名称。
+只使用普通值的起步应用可以只生成 exe。使用动态 dataset 或 计算函数 的应用还会生成同目录的 blink_app_*.dll，部署时把对应文件一起复制。不要给 DLL 改名，exe 已记录它的实际名称。
 
 使用 GPU 的电脑需要支持所需 Vulkan 能力的显卡驱动。当前这些独立应用的输出目标是 Windows x64，不把语言的发展目标写成所有平台已经可用。
 
@@ -1859,6 +1859,10 @@ dataset 创建后位于 CPU 一侧。CPU program 直接借用；GPU program 使�
 
 ### B.4 并行例子与下一步
 
-并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 program。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都先由 blc 编译为 obj，再由 bllink 链接为 exe，最后直接运行。
+并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 计算函数。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都先由 blc 编译为 obj，再由 bllink 链接为 exe，最后直接运行。
 
 下一步可以阅读《并行编程的艺术》，学习更大规模的数据关系与真实效率；阅读《Blink 和 Rust 混合编程》，学习把 B 算法接入项目；对实现感兴趣时，再阅读《B 语言源码分析》。
+
+## 本版函数写法
+
+计算函数与普通函数使用同一套返回类型声明；无普通返回值写 void。parallel 明确表达并行域，普通调用不会自动成为异步。target(cpu, f(...))／target(gpu, f(...)) 明确本次执行位置；同步 GPU 调用完成计算后返回，结果仍留 GPU，download 才向 CPU 传输。本书早期运行记录中的旧关键字保留当时事实，配套源码与本版正文已同步新写法。PA3 的本轮原生验证范围单独记录，原 AMD 运行结果不改成 PA3 显卡结果。

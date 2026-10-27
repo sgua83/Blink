@@ -1,6 +1,6 @@
 module applications.borrow;
 
-program increment(inout dataset<Entry> rows) on compute {
+void increment(inout dataset<Entry> rows) on compute {
     parallel (row in rows) { row.value += 1; }
 }
 void prepare(write dataset<Entry> rows) on cpu {
@@ -9,7 +9,7 @@ void prepare(write dataset<Entry> rows) on cpu {
         row.tag = ordinal(row) ^ 305419896;
     }
 }
-void advance(inout dataset<Entry> rows) on cpu { run_cpu(increment(rows)); }
+void advance(inout dataset<Entry> rows) on cpu { target(cpu, increment(rows)); }
 u32 total(read dataset<Entry> rows) on cpu {
     u32 result = 0;
     for (row in rows) { result += row.value; }

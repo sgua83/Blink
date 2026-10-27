@@ -11,11 +11,11 @@ BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
     if (camera.projection==1) { return BLRay(camera.eye+offset,camera.forward); }
     return BLRay(camera.eye,normalize(camera.forward+offset));
 }
-program look_at(write dataset<BLCamera,1> cameras,
+void look_at(write dataset<BLCamera,1> cameras,
     float3 eye, float3 target, float3 up, f32 span, u32 projection, f32 near, f32 far) on compute {
     parallel (camera in cameras) { camera=camera_basis(eye,target,up,span,projection,near,far); }
 }
-program orbit(write dataset<BLCamera,1> cameras,
+void orbit(write dataset<BLCamera,1> cameras,
     float3 eye, float3 target, float3 up, f32 span, u32 projection, f32 near, f32 far,
     f32 yaw, f32 pitch, f32 distance) on compute {
     parallel (camera in cameras) {

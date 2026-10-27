@@ -1124,57 +1124,76 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_run(
+    pub(super) fn target_call(
         &mut self,
-        name: &str,
-        args: &[Expr],
+        target: Target,
+        call: &Expr,
         span: Span,
-    ) -> Result<Option<Value>> {
-        self.application_frame(span)?;
-        if args.len() != 1 {
-            return self.fail(span, "B266", "run_cpu／run_gpu 需要一个 program 调用");
+    ) -> Result<Option<returns::Returned>> {
+        if self.application.is_none() {
+            return self.fail(
+                span,
+                "B266",
+                "target 调用由 CPU 主流程发起，元素实例与协作成员不能选择发起位置",
+            );
         }
-        let (callee, explicit, arguments) = match &args[0].kind {
+        let (name, explicit, args) = match &call.kind {
             ExprKind::Call(name, args) => (name, None, args),
             ExprKind::Specialize(name, explicit, args) => (name, Some(explicit.as_slice()), args),
             _ => {
                 return self.fail(
                     span,
                     "B266",
-                    "执行位置包围实际 program 调用，例如 run_cpu(step(data))",
+                    "target 包围一次实际函数调用，例如 target(gpu, step(data))",
                 );
             }
         };
-        let definition = self.definition.clone();
-        let Some(key) = self
+        if target == Target::Cpu {
+            return self.evaluate_returned(call, None);
+        }
+        let key = self
             .world
-            .resolve(callee, &definition.module, &definition.imports, true)
-        else {
-            return self.fail(span, "B158", format!("未知或未导出的 program {callee}"));
-        };
-        let callee = self.world.functions[&key].clone();
-        if callee.function.kind != FunctionKind::Program
-            || arguments.len() != callee.function.params.len()
-        {
-            return self.fail(span, "B266", "run_cpu／run_gpu 需要参数完整的 program 调用");
+            .resolve(
+                name,
+                &self.definition.module,
+                &self.definition.imports,
+                true,
+            )
+            .ok_or_else(|| Diagnostic {
+                source: self.definition.source.clone(),
+                span,
+                code: "B158",
+                message: format!("未知或未导出的函数 {name}"),
+            })?;
+        if self.world.functions[&key].execution != crate::execution::Requirement::Domain {
+            return self.fail(
+                span,
+                "B266",
+                "当前 GPU target 消费整域函数；普通值调用的跨目标返回通道尚未实现",
+            );
         }
-        let target = if name == "run_cpu" {
-            Target::Cpu
-        } else {
-            Target::Gpu
-        };
-        if callee.function.target != Target::Compute && callee.function.target != target {
-            return self.fail(span, "B266", "program 的执行目标与调用位置不一致");
-        }
-        let Some(prepared) = self.function_arguments(&key, arguments, span)? else {
+        let Some(arguments) = self.function_arguments(&key, args, span)? else {
             return Ok(None);
         };
+        let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
+        self.application_execute(instance, arguments, target, span)
+    }
+    pub(super) fn application_execute(
+        &mut self,
+        instance: crate::generics::Instance,
+        prepared: Vec<Argument>,
+        target: Target,
+        span: Span,
+    ) -> Result<Option<returns::Returned>> {
+        self.application_frame(span)?;
+        let callee = &instance.definition;
+        if callee.function.target != Target::Compute && callee.function.target != target {
+            return self.fail(span, "B266", "函数声明的目标能力与本次调用位置不一致");
+        }
         let mut data = Vec::new();
         let mut uniforms = Vec::new();
-        let mut actuals = Vec::new();
         let mut held = Vec::new();
-        for ((parameter, arg), value) in callee.function.params.iter().zip(arguments).zip(prepared)
-        {
+        for (parameter, value) in callee.function.params.iter().zip(prepared) {
             if parameter.ty.dataset {
                 let value = match value {
                     Argument::ApplicationData(data) => data,
@@ -1182,57 +1201,43 @@ impl Builder<'_> {
                         held.push(owner);
                         data
                     }
-                    _ => return self.fail(arg.span, "B224", "program需要应用持有的实际dataset"),
+                    _ => return self.fail(span, "B224", "整域调用需要当前应用持有的实际 dataset"),
                 };
                 if parameter.access.writes() && !value.writable {
-                    return self.fail(arg.span, "B227", "只读 dataset 不能交给可写 program 参数");
+                    return self.fail(span, "B227", "只读 dataset 不能交给可写函数参数");
                 }
                 if value.residency != Some(target) {
                     return self.fail(
-                        arg.span,
+                        span,
                         "B266",
-                        "program 的物理存储与执行位置不一致；显式 upload／download 后再执行",
+                        "实际存储与调用位置不一致；先显式 upload／download",
                     );
                 }
                 if data
                     .iter()
                     .any(|existing: &Data| existing.handle.identity() == value.handle.identity())
                 {
-                    return self.fail(
-                        arg.span,
-                        "B227",
-                        "同一独占 dataset 不能在一次 program 调用中重复绑定",
-                    );
+                    return self.fail(span, "B227", "同一独占 dataset 不能在一次调用中重复绑定");
                 }
                 if parameter.access.reads() {
-                    self.require_application_initialized(&value, arg.span)?;
+                    self.require_application_initialized(&value, span)?;
                 }
-                actuals.push((value.ty.clone(), value.count));
                 data.push(value);
             } else {
                 let Argument::Value(value) = value else {
-                    return self.fail(arg.span, "B266", "program统一参数需要普通值");
+                    return self.fail(span, "B266", "当前整域统一参数需要普通值");
                 };
-                actuals.push((value.ty.clone(), None));
                 uniforms.push(value);
             }
         }
         for value in &data {
             self.application_handle_available(value.handle.identity(), span)?;
         }
-        let types = actuals
-            .iter()
-            .map(|(ty, count)| generics::Actual {
-                ty: Some(ty),
-                count: *count,
-            })
-            .collect::<Vec<_>>();
-        let instance = generics::specialize(self.world, &key, &types, explicit, &definition, span)?;
         let program = super::compile_program(self.world, &instance)?;
         for (value, buffer) in data.iter().zip(&program.buffers) {
             self.require_same(&buffer.ty, &value.ty, span)?;
             if buffer.count.is_some() && buffer.count != value.count {
-                return self.fail(span, "B167", "调用方没有声明 program 需要的数据形状");
+                return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
             }
         }
         for (value, uniform) in uniforms.iter().zip(&program.uniforms) {
@@ -1244,7 +1249,7 @@ impl Builder<'_> {
             .resources
             .programs
             .iter()
-            .position(|(at, existing)| *at == target && existing.name == program.name)
+            .position(|(at, p)| *at == target && p.name == program.name)
             .unwrap_or_else(|| {
                 let index = app.resources.programs.len();
                 app.resources.programs.push((target, program));
@@ -1270,7 +1275,87 @@ impl Builder<'_> {
         for name in held {
             self.finish_scoped_argument(&name, span)?;
         }
-        Ok(result)
+        Ok(result.map(returns::Returned::Value))
+    }
+    pub(super) fn application_parallel(&mut self, statement: &Stmt) -> Result<()> {
+        if self.application.is_none() {
+            return self.fail(
+                statement.span,
+                "B131",
+                "并行域由主流程或整域函数发起；元素实例中的嵌套域尚未实现",
+            );
+        }
+        let mut names = BTreeSet::new();
+        captured_names(std::slice::from_ref(statement), &mut names);
+        let mut params = Vec::new();
+        let mut args = Vec::new();
+        for name in names {
+            let Some(binding) = self.env.get(&name).cloned() else {
+                continue;
+            };
+            let expr = Expr {
+                kind: ExprKind::Name(name.clone()),
+                span: statement.span,
+            };
+            let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_)) {
+                let data = self.application_reference(&expr)?.unwrap();
+                let access = if !data.writable {
+                    Access::Read
+                } else if self.application_initialized(&data) {
+                    Access::InOut
+                } else {
+                    Access::Write
+                };
+                let mut ty = data.ty.syntax();
+                ty.dataset = true;
+                ty.count = data.count.map(Shape::Literal);
+                (ty, access, Argument::ApplicationData(data))
+            } else {
+                let value = self.name_expr(&name, &expr)?;
+                (value.ty.syntax(), Access::Value, Argument::Value(value))
+            };
+            params.push(Param {
+                name,
+                ty,
+                access,
+                span: statement.span,
+            });
+            args.push(arg);
+        }
+        let name = format!(
+            "{}@parallel{}:{:?}",
+            self.calls.last().unwrap(),
+            statement.span.start,
+            params.iter().map(|p| (&p.ty, p.access)).collect::<Vec<_>>()
+        );
+        let function = Function {
+            name: name.clone(),
+            types: Vec::new(),
+            values: Vec::new(),
+            params,
+            result: TypeName::named("void"),
+            kind: FunctionKind::Value,
+            target: Target::Cpu,
+            contracts: Vec::new(),
+            body: Some(vec![statement.clone()]),
+            external: None,
+            span: statement.span,
+        };
+        let definition = Arc::new(Definition {
+            function,
+            execution: crate::execution::Requirement::Domain,
+            source: self.definition.source.clone(),
+            module: self.definition.module.clone(),
+            imports: self.definition.imports.clone(),
+            public: false,
+        });
+        self.application_execute(
+            crate::generics::Instance { name, definition },
+            args,
+            Target::Cpu,
+            statement.span,
+        )?;
+        Ok(())
     }
     pub(super) fn application_cpu(&self, data: &Data, span: Span) -> Result<()> {
         if data.residency != Some(Target::Cpu) {
@@ -1389,4 +1474,99 @@ pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
         StmtKind::For(_, _, _, body) | StmtKind::While(_, body) => rebound(body, name),
         _ => false,
     })
+}
+
+fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
+    fn name(name: &str, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
+        if !bound.contains(name) {
+            names.insert(name.to_owned());
+        }
+    }
+    fn expr(e: &Expr, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
+        match &e.kind {
+            ExprKind::Name(n) => name(n, bound, names),
+            ExprKind::Call(_, args)
+            | ExprKind::Specialize(_, _, args)
+            | ExprKind::Construct(_, args)
+            | ExprKind::Cooperate(_, _, args) => {
+                for a in args {
+                    expr(a, bound, names);
+                }
+            }
+            ExprKind::Target(_, e) | ExprKind::Unary(_, e) | ExprKind::Member(e, _) => {
+                expr(e, bound, names)
+            }
+            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
+                expr(a, bound, names);
+                expr(b, bound, names);
+            }
+            ExprKind::Select(a, b, c) => {
+                expr(a, bound, names);
+                expr(b, bound, names);
+                expr(c, bound, names);
+            }
+            _ => {}
+        }
+    }
+    fn block(body: &[Stmt], bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
+        let mut bound = bound.clone();
+        for s in body {
+            match &s.kind {
+                StmtKind::Parallel(iterator, domain, body) => {
+                    name(&domain.dataset, &bound, names);
+                    if let Some(e) = &domain.count {
+                        expr(e, &bound, names);
+                    }
+                    if let Some(e) = &domain.selection {
+                        expr(e, &bound, names);
+                    }
+                    let mut nested = bound.clone();
+                    nested.insert(iterator.clone());
+                    block(body, &nested, names);
+                }
+                StmtKind::Let(_, local, e) => {
+                    expr(e, &bound, names);
+                    bound.insert(local.clone());
+                }
+                StmtKind::Declare(_, local) => {
+                    bound.insert(local.clone());
+                }
+                StmtKind::Expr(e) | StmtKind::Return(Some(e)) | StmtKind::Seek(_, e) => {
+                    expr(e, &bound, names)
+                }
+                StmtKind::Assign(a, _, b) => {
+                    expr(a, &bound, names);
+                    expr(b, &bound, names);
+                }
+                StmtKind::If(e, a, b) => {
+                    expr(e, &bound, names);
+                    block(a, &bound, names);
+                    block(b, &bound, names);
+                }
+                StmtKind::Match(e, yes_name, yes, no_name, no) => {
+                    expr(e, &bound, names);
+                    for (binding, branch) in [(yes_name, yes), (no_name, no)] {
+                        let mut nested = bound.clone();
+                        nested.extend(binding.iter().cloned());
+                        block(branch, &nested, names);
+                    }
+                }
+                StmtKind::While(e, body) => {
+                    expr(e, &bound, names);
+                    block(body, &bound, names);
+                }
+                StmtKind::For(iterator, a, b, body) => {
+                    expr(a, &bound, names);
+                    if let Some(b) = b {
+                        expr(b, &bound, names);
+                    }
+                    let mut nested = bound.clone();
+                    nested.insert(iterator.clone());
+                    block(body, &nested, names);
+                }
+                _ => {}
+            }
+        }
+    }
+    block(body, &BTreeSet::new(), names);
 }

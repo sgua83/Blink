@@ -220,7 +220,7 @@ fn expression_writes<'e>(
                 expression_writes(world, definition, arg, writes);
             }
         }
-        ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
+        ExprKind::Target(_,base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
             expression_writes(world, definition, base, writes)
         }
         ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
