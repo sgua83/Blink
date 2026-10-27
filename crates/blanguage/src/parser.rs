@@ -188,6 +188,7 @@ impl Parser {
             };
             Ok(TypeName {
                 name,
+                canonical: false,
                 arguments,
                 dataset: false,
                 view: false,
@@ -514,6 +515,7 @@ impl Parser {
                 (
                     TypeName {
                         name: "void".into(),
+                        canonical: false,
                         arguments: Vec::new(),
                         dataset: false,
                         view: false,

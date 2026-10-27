@@ -63,6 +63,7 @@ impl Ty {
                 .split_once('<')
                 .map_or(self.name.as_str(), |(base, _)| base),
         );
+        ty.canonical = ty.name.contains("::");
         ty.arguments = self
             .arguments
             .iter()

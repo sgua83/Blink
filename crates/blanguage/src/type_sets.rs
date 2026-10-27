@@ -49,7 +49,9 @@ impl World {
     ) -> Result<Vec<(TypeName, Ty)>> {
         if let TypeFamily::Named(name) = family {
             let key = resolve_name(name, module, imports, |key| {
-                self.type_sets.contains_key(key)
+                self.type_sets.get(key).is_some_and(|(_, source, owner, _)| {
+                    crate::type_visible(source, owner, module, imports)
+                })
             })
             .ok_or_else(|| Diagnostic {
                 source: source.clone(),

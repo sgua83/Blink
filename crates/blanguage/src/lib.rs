@@ -494,7 +494,9 @@ impl World {
                     d.module == module || (d.public && imports.contains(&d.module))
                 })
             } else {
-                self.records.contains_key(n)
+                self.records
+                    .get(n)
+                    .is_some_and(|(_, source, owner, _)| type_visible(source, owner, module, imports))
             }
         })
     }
@@ -660,7 +662,14 @@ impl World {
             }
             return Ok(ty);
         }
-        let Some(key) = self.resolve(&name.name, module, imports, false) else {
+        let key = if name.canonical {
+            self.records
+                .get_key_value(&name.name)
+                .map(|(key, _)| key.clone())
+        } else {
+            self.resolve(&name.name, module, imports, false)
+        };
+        let Some(key) = key else {
             return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name));
         };
         let (record, s, m, i) = &self.records[&key];
@@ -829,6 +838,11 @@ impl World {
     }
 }
 
+fn type_visible(source: &Source, owner: &str, module: &str, imports: &[String]) -> bool {
+    owner == module
+        || (source.path.extension().is_some_and(|extension| extension == "h")
+            && imports.iter().any(|import| import == owner))
+}
 fn resolve_name(
     name: &str,
     module: &str,

@@ -76,6 +76,8 @@ pub enum Target {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeName {
     pub name: String,
+    /// 已由实际 Ty 绑定的完整名义键；源码名称始终按词法作用域解析。
+    pub(crate) canonical: bool,
     pub arguments: Vec<GenericArgument>,
     pub dataset: bool,
     pub view: bool,
@@ -129,6 +131,7 @@ impl TypeName {
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            canonical: false,
             arguments: Vec::new(),
             dataset: false,
             view: false,
