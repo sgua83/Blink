@@ -519,10 +519,7 @@ impl Emitter<'_> {
                 Inst::Unary { dst, op, a } => {
                     match op {
                         UnaryOp::FloatNegate => {
-                            self.load(*a);
-                            self.bytes(&[0x35]);
-                            self.u32(0x80000000);
-                            self.store(*dst);
+                            self.float_sign(*dst, *a, true);
                         }
                         UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => {
                             self.integer_unary(*dst, *a, 0xf7, 3, None)
@@ -569,10 +566,7 @@ impl Emitter<'_> {
                     MathOp::Min => self.float_binary(*dst, args[0], args[1], 0x5d),
                     MathOp::Max => self.float_binary(*dst, args[0], args[1], 0x5f),
                     MathOp::Abs => {
-                        self.load(args[0]);
-                        self.bytes(&[0x25]);
-                        self.u32(0x7fffffff);
-                        self.store(*dst);
+                        self.float_sign(*dst, args[0], false);
                     }
                     MathOp::Sin => self.math_result(*dst, NativeIntrinsic::Sin, args),
                     MathOp::Cos => self.math_result(*dst, NativeIntrinsic::Cos, args),

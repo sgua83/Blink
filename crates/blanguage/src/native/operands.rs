@@ -428,7 +428,13 @@ impl Emitter<'_> {
                 self.operand(source, 1)
             };
             // CVTSI2SS 保留目标高 96 位，不让旧浮点结果成为新转换的依赖。
-            self.instruction(None, &[0x0f, 0x57], false, target, Operand::Register(target));
+            self.instruction(
+                None,
+                &[0x0f, 0x57],
+                false,
+                target,
+                Operand::Register(target),
+            );
             self.instruction(
                 Some(0xf3),
                 &[0x0f, 0x2a],
@@ -437,6 +443,33 @@ impl Emitter<'_> {
                 source,
             );
             self.copy(d, Location::Xmm(target));
+        }
+    }
+    pub(super) fn float_sign(&mut self, dst: Reg, src: Reg, negate: bool) {
+        let (mask, opcode, extension, accumulator) = if negate {
+            (0x80000000, 0x57, 6, 0x35)
+        } else {
+            (0x7fffffff, 0x54, 4, 0x25)
+        };
+        let (d, source) = (self.location(dst), self.location(src));
+        if let Location::Immediate(bits) = source {
+            self.literal(d, if negate { bits ^ mask } else { bits & mask });
+        } else if let Location::Xmm(target) = d {
+            self.copy(d, source);
+            // 掩码只读四字节；位操作不从字池读取额外十二字节。
+            self.literal(Location::Xmm(0), mask);
+            self.instruction(None, &[0x0f, opcode], false, target, Operand::Register(0));
+        } else {
+            let target = if d == source { d } else { Location::Gpr(0) };
+            self.copy(target, source);
+            if target == Location::Gpr(0) {
+                self.bytes(&[accumulator]);
+            } else {
+                let operand = self.operand(target, 1);
+                self.instruction(None, &[0x81], false, extension, operand);
+            }
+            self.u32(mask);
+            self.copy(d, target);
         }
     }
     pub(super) fn float_sqrt(&mut self, dst: Reg, source: Reg) {
