@@ -1468,15 +1468,36 @@ impl Program {
     pub fn selection_buffer(&self) -> usize {
         self.indirect_buffer() + 1
     }
+    pub fn scan_source_buffer(&self) -> usize {
+        self.selection_buffer() + 1
+    }
     pub fn auxiliary_buffers(&self) -> usize {
-        self.indirect_buffer() - self.buffers.len()
+        let original = self.indirect_buffer() - self.buffers.len()
             + usize::from(
                 self.stages
                     .iter()
                     .any(|s| s.prefix.is_some() || s.selection.is_some()),
             )
-            + usize::from(self.stages.iter().any(|s| s.selection.is_some()))
+            + usize::from(self.stages.iter().any(|s| s.selection.is_some()));
+        if self.stages.iter().any(|stage| match &stage.operation {
+            Operation::ScanExclusive(value) => value.values.source == value.values.target,
+            Operation::CustomScan(value) => {
+                value.values.fields.source == value.values.fields.target
+            }
+            Operation::SegmentedReduce(value) => {
+                value.values.fields.source == value.values.fields.target
+            }
+            Operation::CustomSegmentedReduce(value) => {
+                value.values.fields.source == value.values.fields.target
+            }
+            _ => false,
+        }) {
+            original.max(self.scan_source_buffer() + 1 - self.buffers.len())
+        } else {
+            original
+        }
     }
+
     pub fn requires_sort(&self) -> bool {
         self.stages
             .iter()

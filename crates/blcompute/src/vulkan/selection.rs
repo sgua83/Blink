@@ -56,6 +56,7 @@ pub(super) fn record(
         Some(indices),
         Some(&args.allocation),
         Some(root),
+        None,
     )?;
     prefix::dispatch(
         commands,

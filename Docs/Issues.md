@@ -8,6 +8,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-005／C-024 的独占数据集合字段访问：**实现与主线集成原生验证完成，待P4提交** | `192.168.10.5`／`GUA` | `01a161fa-3afe-7b63-b04e-e09926616c1a` | `B:/BLanguage/Saved/CollectiveFieldsWorkspace`，client `BLanguage_Gua_CollectiveFields`；仅修正归约／扫描实际字段权限和GPU递归摘要的真实源绑定，不复制输入或改变阶段。25组CPU／GPU全记录及6份独立B170拒绝已通过；引擎环境分布、批量输运和4K／内部8K管线已创建，7组方向环境的CPU／GPU采样积分及100003条HDR解码已运行。合入当前主线后Release 1分01秒，25组原生再次通过；主工作区16份源码的本轮差异逐项仍在。P4和Git分别回填。未修改PA2原生后端、PA3拥有类型或AS。 | 2026-10-27 |
 | C-021.1／C-004 的模块类型名称可见性：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；核对 .b 私有记录／枚举／类型集合泄露、未直接导入的限定名和同名解析，沿原声明来源及导入关系修正名称绑定；已解析的泛型实际类型必须保持原名义身份，不因被调模块未导入调用方而失效。预计 ast.rs／parser.rs 的编译期类型名绑定、lib.rs 解析、type_sets.rs 及 ir.rs 仅 Ty::syntax 交接和文档；避开 CollectiveFields 的 IR 阶段／集合字段与执行文件，PA2 spirv.rs 及新交付拥有记录正文。先原生基线、实现、Release、CPU／两 GPU 与现有消费者、清理，再分别回填 P4／Git。字段访问控制、接口依赖完整性和完整模块体系仍开放，不新增运行时类型表或可见性审核链。 | 2026-10-27 08:39 +08:00 |
 | C-004／C-005 的 GPU 浮点符号位操作：**正在修复** | `192.168.10.12`／`DESKTOP-4B3HN14` | Codex 会话 `01a17630-b20a-7a81-9b77-1b040d8edd04` | `D:/BLanguage`，client `BLanguage_PA2`；CPU 取负／abs 已按位翻转／清符号，SPIR-V 仍用 FNegate／FAbs，普通程序因此要求数学浮点能力。沿原 to_word／from_word 发射 u32 XOR／AND，普通指令分类按实际操作消费；范围 spirv.rs、ir.rs 的 requires_float32_preserve 内普通 Unary／Math 分支及规范／台账。ir.rs 与 Gua CollectiveFields 共享，只改上述分类，不改其集合 Operation／字段合同、三个已打开的集合 Shader、PA3 前端或 Vulkan。先认领、冻结 Release、实测基线，再实现／核对特殊位与原数学约束、清理和 P4／Git；其余 C-004／C-005 开放。 | 2026-10-27 08:36 +08:00 |
 | C-020.5 的表达式无继续值传播：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | D:/BLanguage，P4用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续CL13407／13409保留的return Ok(1+try(fail()))合法表达式报B228缺口，落实嵌套表达式的真实提前返回。原expr／位置／资源求值接口需表达不再继续，沿原Flow／Scope／Exit组织运算、构造、实参、索引／赋值位置、条件／循环与短路／选择的实际执行顺序；不生成假普通值、Diagnostic哨兵或第二套异常／退出服务，原Env／Frame负责真实资源。预计修改check.rs及results／selection／records／application／cooperative／owned_values／owned_records／returns、位置与实际builtin求值接点；如涉及custom_reduce.rs，仅改其求值结果传递，不改Gua正在处理的字段集合绑定和算法；不改native、公共IR、SPIR-V或Vulkan。先提交本认领，再冻结Release基线、实际修正、CPU／GPU及原生资源／ABI消费者、清理、源码P4／Git。完整错误系统、运行时失败、一般拥有数组／view、统一函数与长期C-020至C-024仍开放。 | 2026-10-27 08:29 +08:00 |
@@ -2589,3 +2590,17 @@ BLEngine新图像编码程序在使用`value |= expression`时，当前parser报
 ## C-004／C-005：GPU 浮点符号位操作（PA2，2026-10-27）
 
 - 状态：正在修复，先认领，尚未改源码。执行机 `192.168.10.12`／`DESKTOP-4B3HN14`，会话 `01a17630-b20a-7a81-9b77-1b040d8edd04`，工作区 `D:/BLanguage`／client `BLanguage_PA2`。CPU 标量／SSE2 及选择提前求值已将 f32 取负和 abs 视为符号位 XOR／AND，GPU 仍使用 FNegate／GLSL FAbs，普通指令能力分类也将它们计为浮点算术。拟在原 to_word／from_word 边界降低为相同符号位操作，普通程序分类只保留真实浮点运算所需能力；使用真实设备检查当前拒绝、完整位模式、控制流和其余数学约束，不预定全部目标结果。范围只含 spirv.rs、ir.rs 的 requires_float32_preserve 中普通 Unary／Math 分支及必要说明；ir.rs 已被 Gua CollectiveFields 打开，本轮保留其集合 Operation／字段区域和三个集合 Shader 文件，PA3 前端及 Vulkan 不改。公共 IR／ABI、求值顺序和原资源所有者保持，不添加运行时检查、备用路径或常驻验证资产；认领、基线、实现、Release、原生核对、清理、提交发布分别回填。
+
+## C-005／C-024：集合输入权限与同记录字段访问（2026-10-27）
+
+- BLEngine环境CDF准备在reduce_max(field.count,maximum.value)遇到B170，源为inout独占输入、目标为另一数据集；同记录count到begin的映射扫描也被整binding拒绝。当前修正在原Ty分量偏移上判断真实重叠，允许read／inout可读输入，仍拒绝write／atomic输入、源值／段头被目标覆盖及输入Count改写；不新建运行期别名状态或源数据镜像。
+- 首轮Release已通过56.39秒，但原生numeric<65>的GPU首个exclusive前缀错误地等于原输入值1662826026；CPU结果正确，0／1的两个后端结果通过。已定位vulkan/scan.rs在递归／传播时把摘要source和target依次写入原逻辑槽；源／目标字段同binding时后者覆盖前者。需要给这个实际不同的物理摘要输入独立原生描述，不增加扫描阶段、复制输入或改变数学。原失败collective-native.log保留，当前不能称原生修复完成。
+- min／max／clamp的当前内建只定义float重载，本轮整数行选择及寻址用已有条件表达式表达，初始B154保留compile-native.log；属于整数重载便利能力缺口，不是已实现重载的错误。后续compile-field-isolated.log中的B166来自parallel直接跨域读取inout maximum，保留真实访问边界，改为B阶段函数显式只读借用该实际归约结果，而非删除跨元素可写访问限制。
+
+- 完整实现：5个集合检查文件按同一Ty分量字节偏移判断真正交集；普通read／inout源可读，write／atomic源仍拒绝。GPU私有扫描源角色只在源与目标同逻辑binding的扫描／分段归约出现，沿原Program／ExecutionPlan、SPIR-V普通／分段／自定义扫描及Vulkan描述符交接实际摘要；原根字段、摘要分配和阶段数保持。描述符构造的原调用点显式无此输入，不改AS、ray.rs、execution.rs、PA2 native或PA3类型构造。
+- 隔离SDK Release第一次56.39秒，摘要源实现26.37秒、补齐独立分段发射53.39秒；原应用检查的未使用方法警告保留。首轮GPU在65条的普通前缀错误，以及下一轮分段前缀遗漏分别保留collective-native.log／collective-native-fixed.log；没有把前端接纳或小规模通过写成后端完成。
+- 最终25组原生：0／1／65／4099／1000003条的普通数值、64位映射值、两类分段归约／扫描，另有同绑定单元素归约和compact真实生产Count的四个prefix后续消费。两个后端全部记录、u32回绕／u64进位、源值／段头、未写字段、ABI填充及尾部同独立参考一致；百万条GPU范围约0.23～0.57ms仅为本次阶段实测，不作通用加速结论。原始collective-final.log保留。前一临时消费者误从programs取带requires的模板而panic，已改为真实compact生产关系的正式组合，不归为语言缺陷或伪造Count。
+- 六份拒绝来源分别独立编译，真实同字段扫描／归约、write输入、atomic输入、段头写入和输入Count改写均保持B170；初版混合非法program会提前报其他入口的错误，未作为六项证据，最终alias-rejections-final.log已逐项对应实际入口。没有以失败隔离增加常驻验证程序或规则。
+- 引擎5阶段环境分布准备、14绑定的批量输运和17绑定的完整4K／内部8K辐射程序均已编译并真实创建GPU管线；尚不等于环境积分数值、完整渲染或Stella交付。实际运行的设备能力由Device::for_programs统一声明，初次用计算设备拒绝光线程序是正确边界，不改成自动重建设备。
+
+- 集成当前P4主线的拥有记录、CPU位置调度及AS更新后，隔离Release用时1分01秒；25组原生完整记录再次通过，collective-integrated.log保留。主工作区仅采用16份本轮差异，逐片核对仍在，未覆盖其他会话的可写源码。BLEngine恒定环境的64轮4K／内部8K输出SHA256与前版完全相同（1a65588ce1c98b8e8fff5110c0ed87127ca55667b052c41b133fe757437d6abc）；方向环境积分另有7组、每后端及上下文共28次积分，对照独立解析参考均在实际统计误差内。

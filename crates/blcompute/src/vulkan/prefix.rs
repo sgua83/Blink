@@ -41,6 +41,7 @@ pub(super) fn prepare(
         None,
         Some(&args.allocation),
         None,
+        None,
     )?;
     unsafe {
         let f = &c.inner.functions;

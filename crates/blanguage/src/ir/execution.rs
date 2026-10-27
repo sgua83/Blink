@@ -193,6 +193,9 @@ impl ExecutionPlan {
     pub fn selection_buffer(&self) -> usize {
         self.indirect_buffer + 1
     }
+    pub fn scan_source_buffer(&self) -> usize {
+        self.selection_buffer() + 1
+    }
     pub fn auxiliary_buffers(&self) -> usize {
         self.auxiliary_buffers
     }

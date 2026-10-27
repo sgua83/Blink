@@ -119,7 +119,7 @@ impl Emitter<'_> {
         self.emit(250, &[active, read, read_end]);
         self.emit(248, &[read]);
         let source = if tail {
-            self.segment_address(scan, r.source, self.index)
+            self.segment_address(scan, self.scan_input_binding(r), self.index)
         } else {
             scan.ty
                 .components
@@ -290,7 +290,7 @@ impl Emitter<'_> {
             self.emit(247, &[end, 0]);
             self.emit(250, &[active, run, end]);
             self.emit(248, &[run]);
-            let prefix = self.segment_address(scan, r.source, group);
+            let prefix = self.segment_address(scan, self.scan_input_binding(r), group);
             let prefix = self.segment_read(&prefix);
             let target = self.segment_address(scan, r.target, self.index);
             let value = self.segment_read(&target);
@@ -308,7 +308,7 @@ impl Emitter<'_> {
         self.emit(250, &[active, read, read_end]);
         self.emit(248, &[read]);
         let mut input = if pass == Pass::ScanTail {
-            let source = self.segment_address(scan, r.source, self.index);
+            let source = self.segment_address(scan, self.scan_input_binding(r), self.index);
             self.segment_read(&source)
         } else {
             let source: Vec<_> = scan
@@ -563,7 +563,7 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
-        let prefix = self.segment_address(scan, r.source, group);
+        let prefix = self.segment_address(scan, self.scan_input_binding(r), group);
         let prefix = self.segment_read(&prefix);
         let target = self.segment_address(scan, r.target, self.index);
         let value = self.segment_read(&target);
@@ -624,7 +624,7 @@ impl Emitter<'_> {
         self.emit(248, &[add]);
         for (component, (scalar, offset)) in scan.ty.components.iter().enumerate() {
             let source = self.address_scalar(
-                r.source,
+                self.scan_input_binding(r),
                 group,
                 scan.summary_words() as u32,
                 component as u32,

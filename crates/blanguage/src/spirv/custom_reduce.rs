@@ -112,7 +112,11 @@ impl Emitter<'_> {
         self.emit(248, &[read]);
         for (i, reg) in kernel.source.iter().enumerate() {
             let source = self.address_scalar(
-                fields.source,
+                if tail {
+                    self.scan_input_binding(fields)
+                } else {
+                    fields.source
+                },
                 self.index,
                 if tail {
                     words as u32
@@ -140,7 +144,11 @@ impl Emitter<'_> {
         self.custom_write(&own[..k], &values);
         if let Some(head_word) = head_word {
             let source = self.address_scalar(
-                fields.source,
+                if tail {
+                    self.scan_input_binding(fields)
+                } else {
+                    fields.source
+                },
                 self.index,
                 if tail {
                     words as u32
@@ -166,8 +174,12 @@ impl Emitter<'_> {
             self.custom_write(&own[k..k + 1], &[flag]);
             if matches!(summary, Summary::Counted(_)) {
                 let count = if tail {
-                    let at =
-                        self.address_scalar(fields.source, self.index, words as u32, k as u32 + 1);
+                    let at = self.address_scalar(
+                        self.scan_input_binding(fields),
+                        self.index,
+                        words as u32,
+                        k as u32 + 1,
+                    );
                     self.custom_read(&[at])[0]
                 } else {
                     flag
@@ -490,7 +502,7 @@ impl Emitter<'_> {
             self.emit(247, &[end, 0]);
             self.emit(250, &[active, run, end]);
             self.emit(248, &[run]);
-            let prefix = self.custom_address(words, r.fields.source, group);
+            let prefix = self.custom_address(words, self.scan_input_binding(&r.fields), group);
             let prefix = self.custom_read(&prefix);
             let target = self.custom_address(words, r.fields.target, self.index);
             let value = self.custom_read(&target);
@@ -702,7 +714,7 @@ impl Emitter<'_> {
         } else {
             None
         };
-        let prefix = self.custom_address(words, r.fields.source, group);
+        let prefix = self.custom_address(words, self.scan_input_binding(&r.fields), group);
         let prefix = self.custom_read(&prefix);
         let target = if root {
             self.custom_target(r, self.index)

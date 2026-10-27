@@ -31,13 +31,21 @@ pub(super) fn compile(
             "分段归约需要同类型数值标量／向量；按位算子只接受整数",
         );
     }
-    if source_access != Access::Read
+    if !matches!(source_access, Access::Read | Access::InOut)
         || heads != source
-        || head_access != Access::Read
+        || !matches!(head_access, Access::Read | Access::InOut)
         || head_prefix.is_some_and(|p| Some(p) != prefix)
         || !target_access.writes()
         || !count_access.writes()
-        || source == target
+        || prefix::fields_overlap(source, source_word, &ty, target, target_word, &target_ty)
+        || prefix::fields_overlap(
+            source,
+            head_word,
+            &Ty::scalar(Scalar::Bool),
+            target,
+            target_word,
+            &target_ty,
+        )
         || source == count
         || target == count
         || prefix.is_some_and(|p| p.binding == target || p.binding == count)
@@ -45,7 +53,7 @@ pub(super) fn compile(
         return d.source.fail(
             span,
             "B170",
-            "分段归约需要同域不可变数值与段头，独立的可写目标和计数",
+            "分段归约需要同域可读数值与段头、非重叠可写目标及独立输出计数",
         );
     }
     if program.buffers[count].count != Some(1) || program.buffers[count].ty.components.len() != 1 {

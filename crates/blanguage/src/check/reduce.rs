@@ -23,15 +23,15 @@ pub(super) fn compile(
             "归约需要相同类型的数值标量／向量字段；按位归约只接受 u32/i32",
         );
     }
-    if source == target
-        || read != Access::Read
+    if prefix::fields_overlap(source, source_word, &ty, target, target_word, &target_ty)
+        || !matches!(read, Access::Read | Access::InOut)
         || !write.writes()
         || prefix.is_some_and(|p| p.binding == target)
     {
         return d.source.fail(
             span,
             "B170",
-            "归约需要独立 read 输入和可写输出，输出不得改写输入域计数",
+            "归约需要可读输入和可写输出，实际字段不能重叠或改写输入域计数",
         );
     }
     if program.buffers[target].count != Some(1) {

@@ -54,6 +54,7 @@ pub(super) fn record(
         Some(prefix),
         scratch.arguments.as_ref().map(|a| &a.allocation),
         None,
+        None,
     )?;
     scan::dispatch(
         commands,

@@ -141,13 +141,13 @@ pub(super) fn compile(
         let (heads, word, access, head_prefix) =
             prefix::field(program, env, &args[1], d, facts, Scalar::Bool)?;
         if heads != source
-            || access != Access::Read
+            || !matches!(access, Access::Read | Access::InOut)
             || head_prefix.is_some_and(|p| Some(p) != prefix)
         {
             return d.source.fail(
                 span,
                 "B170",
-                "分段起点必须来自同一 read 输入记录，和源值共享元素域",
+                "分段起点必须来自同一可读输入记录，和源值共享元素域",
             );
         }
         Some(word)
@@ -163,15 +163,25 @@ pub(super) fn compile(
             "无投影的集合需要相同普通值类型，聚合值不能持有资源引用",
         );
     }
-    if source == target
-        || read != Access::Read
+    if prefix::fields_overlap(source, source_word, &source_ty, target, target_word, &ty)
+        || head_word.is_some_and(|word| {
+            prefix::fields_overlap(
+                source,
+                word,
+                &Ty::scalar(Scalar::Bool),
+                target,
+                target_word,
+                &ty,
+            )
+        })
+        || !matches!(read, Access::Read | Access::InOut)
         || !write.writes()
         || prefix.is_some_and(|p| p.binding == target)
     {
         return d.source.fail(
             span,
             "B170",
-            "集合需要独立 read 输入和可写输出，输出不得改写输入域计数",
+            "集合需要可读输入和可写输出，目标不能覆盖源值、段头或输入域计数",
         );
     }
     let count = if counted {

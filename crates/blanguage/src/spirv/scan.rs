@@ -9,6 +9,22 @@ pub(super) struct SharedTree {
     pub operator: CollectiveOperator,
 }
 impl Emitter<'_> {
+    pub(super) fn scan_input_binding(&self, fields: &Reduction) -> usize {
+        if fields.source == fields.target
+            && matches!(
+                self.stage.operation,
+                Operation::ScanExclusive(_)
+                    | Operation::CustomScan(_)
+                    | Operation::SegmentedReduce(_)
+                    | Operation::CustomSegmentedReduce(_)
+            )
+        {
+            self.program.scan_source_buffer()
+        } else {
+            fields.source
+        }
+    }
+
     pub(super) fn shared_at(&mut self, pointer: u32, shared: u32, index: u32) -> u32 {
         let at = self.id();
         self.emit(65, &[pointer, at, shared, index]);
@@ -68,7 +84,11 @@ impl Emitter<'_> {
         let mut values = Vec::new();
         for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
             let at = self.address_scalar(
-                r.source,
+                if tail {
+                    self.scan_input_binding(r)
+                } else {
+                    r.source
+                },
                 self.index,
                 if tail {
                     components
@@ -283,7 +303,12 @@ impl Emitter<'_> {
                 None
             };
         for (component, (scalar, offset)) in scan.ty.components.iter().enumerate() {
-            let source = self.address_scalar(r.source, group, components, component as u32);
+            let source = self.address_scalar(
+                self.scan_input_binding(r),
+                group,
+                components,
+                component as u32,
+            );
             let prefix = self.id();
             self.emit(61, &[u, prefix, source, 2, 4]);
             let target = self.address_scalar(

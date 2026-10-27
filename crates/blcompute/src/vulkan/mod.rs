@@ -1469,6 +1469,7 @@ fn descriptor_set(
     auxiliary: Option<&Allocation>,
     indirect: Option<&Allocation>,
     selection: Option<&Allocation>,
+    scan_source: Option<&Allocation>,
 ) -> Result<u64> {
     unsafe {
         let f = &compiled.inner.functions;
@@ -1534,6 +1535,7 @@ fn descriptor_set(
             (infos.len(), auxiliary),
             (compiled.program.indirect_buffer(), indirect),
             (compiled.program.selection_buffer(), selection),
+            (compiled.program.scan_source_buffer(), scan_source),
         ]
         .into_iter()
         .filter_map(|(binding, allocation)| {
@@ -2058,8 +2060,16 @@ impl GpuProgram {
                         range: d.allocation.size,
                     })
                     .collect();
-                let set =
-                    descriptor_set(&mut commands, c, &infos, &accelerations, None, None, None)?;
+                let set = descriptor_set(
+                    &mut commands,
+                    c,
+                    &infos,
+                    &accelerations,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
                 let queries = QueryPoolCreateInfo {
                     s_type: 11,
                     next: null(),
@@ -2378,6 +2388,7 @@ impl GpuProgram {
                                             .as_ref()
                                             .and_then(|s| s.arguments.as_ref())
                                             .map(|a| &a.allocation),
+                                        None,
                                         None,
                                     )?;
                                     uniforms[2 + reduction.target] = groups;

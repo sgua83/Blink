@@ -121,7 +121,16 @@ pub(super) fn record(
     for key in (0..s.keys.len()).rev() {
         let mut pass_infos = infos.to_vec();
         pass_infos[s.target] = info(&storage.pairs[0].allocation);
-        let set = descriptor_set(commands, c, &pass_infos, accelerations, None, args, None)?;
+        let set = descriptor_set(
+            commands,
+            c,
+            &pass_infos,
+            accelerations,
+            None,
+            args,
+            None,
+            None,
+        )?;
         scan::dispatch(
             commands,
             c,
@@ -151,6 +160,7 @@ pub(super) fn record(
                 accelerations,
                 Some(&storage.histogram.allocation),
                 args,
+                None,
                 None,
             )?;
             scan::dispatch(
@@ -196,6 +206,7 @@ pub(super) fn record(
                 Some(&storage.prefixes.allocation),
                 args,
                 None,
+                None,
             )?;
             scan::dispatch(
                 commands,
@@ -218,6 +229,7 @@ pub(super) fn record(
         accelerations,
         Some(&storage.pairs[0].allocation),
         args,
+        None,
         None,
     )?;
     scan::dispatch(

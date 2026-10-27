@@ -60,7 +60,7 @@ pub(super) fn record(
         };
         let auxiliary = &temporary[level * 2].allocation;
         let mut pass_infos = infos.to_vec();
-        if level > 0 || r.target != c.program.selection_buffer() {
+        if r.source != r.target && (level > 0 || r.target != c.program.selection_buffer()) {
             pass_infos[r.source] = info(source);
         }
         if r.target < pass_infos.len() {
@@ -74,6 +74,7 @@ pub(super) fn record(
             Some(auxiliary),
             arguments.map(|a| &a.allocation),
             (r.target == c.program.selection_buffer()).then_some(target),
+            (r.source == r.target && level > 0).then_some(source),
         )?;
         let pipeline = kernels[usize::from(level != 0)];
         dispatch(
@@ -97,7 +98,9 @@ pub(super) fn record(
             &temporary[(level - 1) * 2 + 1].allocation
         };
         let mut pass_infos = infos.to_vec();
-        pass_infos[r.source] = info(source);
+        if r.source != r.target {
+            pass_infos[r.source] = info(source);
+        }
         if r.target < pass_infos.len() {
             pass_infos[r.target] = info(target);
         }
@@ -113,6 +116,7 @@ pub(super) fn record(
             },
             arguments.map(|a| &a.allocation),
             (r.target == c.program.selection_buffer()).then_some(target),
+            (r.source == r.target).then_some(source),
         )?;
         dispatch(
             commands,
@@ -156,7 +160,9 @@ pub(super) fn record_segmented_reduce(
         }
         let mut pass_infos = infos.to_vec();
         if level > 0 {
-            pass_infos[r.source] = info(&temporary[(level - 1) * 2].allocation);
+            if r.source != r.target {
+                pass_infos[r.source] = info(&temporary[(level - 1) * 2].allocation);
+            }
             pass_infos[r.target] = info(&temporary[(level - 1) * 2 + 1].allocation);
         }
         let set = descriptor_set(
@@ -167,6 +173,7 @@ pub(super) fn record_segmented_reduce(
             Some(&temporary[level * 2].allocation),
             arguments.map(|a| &a.allocation),
             None,
+            (r.source == r.target && level > 0).then(|| &temporary[(level - 1) * 2].allocation),
         )?;
         dispatch(
             commands,
@@ -184,7 +191,9 @@ pub(super) fn record_segmented_reduce(
     for level in (1..lengths.len() - 1).rev() {
         commands.barrier(0x800, 0x800, 0x40, 0x60);
         let mut pass_infos = infos.to_vec();
-        pass_infos[r.source] = info(&temporary[level * 2 + 1].allocation);
+        if r.source != r.target {
+            pass_infos[r.source] = info(&temporary[level * 2 + 1].allocation);
+        }
         pass_infos[r.target] = info(&temporary[(level - 1) * 2 + 1].allocation);
         let set = descriptor_set(
             commands,
@@ -194,6 +203,7 @@ pub(super) fn record_segmented_reduce(
             None,
             arguments.map(|a| &a.allocation),
             None,
+            (r.source == r.target).then_some(&temporary[level * 2 + 1].allocation),
         )?;
         dispatch(
             commands,
@@ -216,6 +226,7 @@ pub(super) fn record_segmented_reduce(
         accelerations,
         Some(prefix),
         arguments.map(|a| &a.allocation),
+        None,
         None,
     )?;
     dispatch(

@@ -192,3 +192,21 @@ pub(super) fn typed_field(
     let (binding, word, access, ty) = collective_value_field(program, env, &value, d)?;
     Ok((binding, word, access, prefix, ty))
 }
+
+/// 集合阶段只读取源字段并写目标的真实分量；同一独占记录的不同字不发生别名。
+pub(super) fn fields_overlap(
+    source: usize,
+    source_word: u32,
+    source_ty: &Ty,
+    target: usize,
+    target_word: u32,
+    target_ty: &Ty,
+) -> bool {
+    source == target
+        && source_ty.components.iter().any(|(_, a)| {
+            target_ty
+                .components
+                .iter()
+                .any(|(_, b)| source_word + a / 4 == target_word + b / 4)
+        })
+}
