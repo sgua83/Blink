@@ -669,6 +669,8 @@ PhysicalDevice::device／for_program／for_programs 在所选物理设备上创�
 
 ## C/C++ 与 Rust 宿主的 DLL 边界（2026-10-25）
 
+固定长度常量与头文件保护宏由原 DLL 生成器直接按名称身份产生，不对原标识符做有损大写折叠。小写 a 至 y 转为对应大写、数字保持，其余合法 ASCII 字节以 Z 加两位十六进制编码；大写字母、小写 z 与下划线保持可区分，也不会在生成宏中产生双下划线。该编码只消费本次实际名称，不维护名称表或冲突后的改名路径；C 导出、参数、类型、布局及执行协议继续由原边界负责。
+
 `blc -c ... --program name` 将已检查、无外部前置条件的具体入口编译成算法目标文件；`bllink input.obj -o output.dll` 再生成 Windows x64 DLL、C ABI 头文件、导入库与 Rust 安全包装器。B 前端、IR、原生代码、ABI 布局及执行框架静态代码的编译属于编译阶段；最终 PE 与原生依赖解析属于链接阶段。实际数据复制、CPU／GPU 执行、完成等待与本次资源释放仍属于 blcompute::ffi。DLL 内含最终机器码／SPIR-V，create 只装载代码／pipeline，不再编译 B 源码或值 IR。现有 Rust `dll::build` API 组合这两个正式阶段，原生 crate API 和公开 C/C++／Rust ABI 保持。
 
 C++ 与 Rust 是并列宿主；Rust 原生 crate、类型及异步资源接口保持不变，不经 C ABI 中转。DLL run 同步完成本次纯值数据调用，返回前完成必要输出读回；宿主拥有数组，DLL 拥有自己的 handle，跨界不传递 C++ 对象、Rust Vec／String 或分配器所有权。view、纹理、AS 和外部 prefix 条件不伪装成裸值 ABI。完整接口、当前限制与部署见 [原生集成](NativeInterop.md)。
