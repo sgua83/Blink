@@ -10,6 +10,7 @@
 
 | 问题与状态 | 执行机 IP／机器 | agent／会话 | 本轮范围与实际工作区 | 更新时间 |
 |---|---|---|---|---|
+| C-005／C-020.3 的原生位置参数内容身份与字段输出事实：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；接续CL13508记录的整份可写Ticket原生调用后旧index关系B137。沿原Proof／函数Contract及已有内容所有者，区分原生地址输入与位置入口内容身份，交接真实未改分量及输出事实；不追加机器参数、运行期载荷复制、额外装载或完成状态。主要check.rs的值身份／参数初始Proof、bounds静态翻译与编解码、native_function::canonical及调用点Proof映射；避让PA3独立整域模块的Contract结构／模块编译／执行入口与PA2 native／allocation／packet后端，不改物理参数／布局或原Frame。原生与提交发布结果分别回填，一般字段契约／递归推导仍按实际范围开放。 | 2026-10-27 16:40 +08:00 |
 | C-021.4／C-021.8 的独立整域模块CPU／GPU调用：**正在修复** | `192.168.10.13`／`DESKTOP-80G4Q60` | Codex 会话 `01a17891-5f8f-7bc3-8966-57a6f31772e0` | PA3／D:/BLanguage，用户PA3／client BLanguage_PA3，会话01a17891-5f8f-7bc3-8966-57a6f31772e0；接续CL13543普通位置ABI，交付独立模块的整域CPU／GPU调用。库编译拥有代码、执行映像及真实资源入口；导入消费公开参与要求、布局、初始化／访问及调用合同，应用与库共用原Frame，链接只绑定既有机器码与资源。移走库.h／.b后仍可在CPU／GPU调用，不以重读实现、源码重编、隐式传输或运行时注册冒充模块。 避让Gua的never结果／Flow／returns与PA2 native／allocation／packet分歧后端；必要接点限lib加载元数据、execution已编译参与要求、native_function模块编译／物理调用、application整域入口，以及module／object产物，不修改never结果分支或后端算法。 | 2026-10-27 16:20 +08:00 |
 | C-021.8／C-022.1 的 program 语法迁移状态与本地文档采用：**已修复（本轮文档与采用范围）；完整函数／调度能力待实现** | `192.168.10.5`／`GUA` | Codex 会话 `01a17c57-3bbb-7dd2-9f06-b8a4e950f270` | `B:/BLanguage`，client `BLanguage_Gua`；已三方核对并采用 22 份规范、书稿、十份正式 PDF 与配套说明，保留原规范／Issues 的其他会话内容。原设计、认领与候选记录改为明确历史范围，统一语法／同步 target 状态对应 CL13482 与消费者 CL13483；历史版本源码分析节选及内部 Program／Stage／ExecutionPlan 保留。修正入门 README 当前 GPU 调用名。现有 `target/release/blc.exe` 检查 50 个正式源码模块；三种旧写法实际拒绝；重新编译／链接的 CPU、GPU 阶段应用均输出 3／5／7／9，百万条 datasets 应用输出 500000／891896832，全部退出 0、stderr 空。本轮未修改编译器／运行时，未重新构建工具；原始命令、输出及工具 SHA256 在 `Saved/Measurements/ProgramSyntaxClosure`。文档通过隔离 client `BLanguage_Gua_ProgramSyntaxClosure` 聚焦提交，本记录所在 changelist 与单次异步 Git 发布回执分别为交付事实。 | 2026-10-27 16:10 +08:00 |
 | C-004／C-020.5 的never函数结果与非返回路径：**已修复（本轮函数结果与控制流子范围）；已提交发布并由主工作区采用；一般never类型组合待实现** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；11份前端及3份规范／架构／台账CL13549，Git07813aebc604dce73a3e2e7ce26aad54b2ceee0d的14份精确P4／SDK／Git一致，远端包含。原Flow与ReturnContext保留真实无返回，不伪造值、write初始化或正常参数归还；合入PA3 CL13543借用ABI，未改后端／Frame。集成Release60.76秒、主线61.17秒；两处均28项语义17合法／11正确拒绝，入口另B262；11个单对象原生应用及无库源码的双对象消费符合准确退出／输出，CPU／GPU各0／1／65／1000003条全记录与独立参考相同。主线采用17份必要源码／规则且138份crates文件与SDK一致；临时消费者、隔离target及比对副本已清理，主target／其他会话改动保留。原始记录Saved/Measurements/NeverReturnDevelopment；完整C-004及一般never数据／泛型组合继续待实现。 | 2026-10-27 16:33 +08:00 |
@@ -2257,6 +2258,7 @@ result=value;
 
 | 记录数／实际 payload | 物理页 | 基线／最终下载中位数 ms | 基线／最终 Rust 累计分配请求字节 | 每次 Rust 分配请求数 |
 |---|---|---|---|---|
+| C-005／C-020.3 的原生位置参数内容身份与字段输出事实：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；接续CL13508记录的整份可写Ticket原生调用后旧index关系B137。沿原Proof／函数Contract及已有内容所有者，区分原生地址输入与位置入口内容身份，交接真实未改分量及输出事实；不追加机器参数、运行期载荷复制、额外装载或完成状态。主要check.rs的值身份／参数初始Proof、bounds静态翻译与编解码、native_function::canonical及调用点Proof映射；避让PA3独立整域模块的Contract结构／模块编译／执行入口与PA2 native／allocation／packet后端，不改物理参数／布局或原Frame。原生与提交发布结果分别回填，一般字段契约／递归推导仍按实际范围开放。 | 2026-10-27 16:40 +08:00 |
 | 1000003／48000144 字节 | 1 | 131.0069／14.4246 | 96001515／48001371 | 23／22 |
 | 16777220／805306560 字节 | 4 | 1848.58915／195.93755 | 1610615331／805308771 | 32／28 |
 | 89478488／4294967424 字节 | 17 | 9994.8249／868.5370 | 8589941323／4294973899 | 71／54 |
@@ -2459,6 +2461,7 @@ Release 正式构建 59.90 秒。临时 Rust 消费者以 opt-level=3、thin LTO
 
 | 提交数 | 原版 Rust 请求字节 | 候选 Rust 请求字节 | 原版入队跨度 ms | 候选入队跨度 ms |
 |---|---|---|---|---|
+| C-005／C-020.3 的原生位置参数内容身份与字段输出事实：**正在修复** | `192.168.10.5`／`GUA` | `01a173d7-32a3-7ef2-b810-11486b8e8224` | `B:/BLanguage/Saved/ApplicationWorkspace`，client `BLanguage_Gua_Application`；接续CL13508记录的整份可写Ticket原生调用后旧index关系B137。沿原Proof／函数Contract及已有内容所有者，区分原生地址输入与位置入口内容身份，交接真实未改分量及输出事实；不追加机器参数、运行期载荷复制、额外装载或完成状态。主要check.rs的值身份／参数初始Proof、bounds静态翻译与编解码、native_function::canonical及调用点Proof映射；避让PA3独立整域模块的Contract结构／模块编译／执行入口与PA2 native／allocation／packet后端，不改物理参数／布局或原Frame。原生与提交发布结果分别回填，一般字段契约／递归推导仍按实际范围开放。 | 2026-10-27 16:40 +08:00 |
 | 256 | 1976967 | 1193655 | 38.0455 | 114.0157 |
 | 1024 | 17359239 | 4788663 | 252.3790 | 382.2966 |
 | 4096 | 220447111 | 19169719 | 1557.2545 | 1067.9313 |
@@ -2960,3 +2963,9 @@ BLEngine新图像编码程序在使用`value |= expression`时，当前parser报
 - 源码交付：14文件CL13549，成功后立即单次异步执行正式PublishGit，Git07813aebc604dce73a3e2e7ce26aad54b2ceee0d的精确P4 revision／SDK及Git blob全部相同，远端main包含，认领CL13533对应Git7040a3423a35e79dec2abf99013f4e8c2041a982为祖先。本台账闭合回填另行提交，并按既有规则执行一次发布。
 - 主工作区采用：安全比对原have／本地后同步17份必要源码／AGENTS／架构，138份crates文件与集成SDK完全相同；打开的规范与Issues只替换本轮段落，其他会话内容和三个既有sample改动保留。主线Release61.17秒，28项语义17合法／11正确拒绝及入口B262、11个单对象原生应用、无库源码的双对象77／退出53均再通过；CPU／GPU各四种长度8份全文件与独立参考相同。
 - 清理事实：SDK临时消费者113文件103515471字节、独占target67文件74652628字节；主线临时消费者101文件86622623字节、采用比对17文件643576字节及Issues快照1文件1097474字节已清理，源交付14份比对副本也已移除。任务目录及SDK target均不存在，主线正式target和原始测量记录保留。本轮具体缺陷已修复，未外推一般never数据／泛型、错误标准库、GPU终止能力或性能达标。更新时间：2026-10-27 16:33 +08:00。
+
+## C-005／C-020.3：原生位置参数内容身份与字段输出事实（2026-10-27）
+
+- 状态：**正在修复**。GUA／实际IP192.168.10.5，会话01a173d7-32a3-7ef2-b810-11486b8e8224，隔离client BLanguage_Gua_Application，先认领再修改源码。接续原OrdinalPositionDevelopment中open-native-record-postfacts：pair(output[0],ticket,seen.length)后，未改的ticket.index再作为seen下标仍B137。
+- 当前根因关系：原生引用只在实际ABI中交接地址；原Contract输入映射没有位置入口内容，独立函数的局部装载身份在canonical／at_call时无法对应调用者原字段。沿原Proof与参数所有者补全静态输入身份及其翻译，不改变普通值／引用ABI，不复制运行时数据或新增判断／注册／验证流程。
+- 协作范围：check.rs值身份／参数初始Proof、bounds静态翻译／编解码、native_function::canonical及调用点Proof映射。保留PA3进行中的独立整域模块Contract结构／module编译与执行入口及PA2原生后端工作。实现、Release、真实原生消费、P4／Git与清理分别回填；完整C-005／C-020.3继续开放。
