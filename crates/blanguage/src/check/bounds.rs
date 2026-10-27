@@ -166,16 +166,16 @@ pub(super) struct Proof {
 }
 impl Proof {
     // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
-    pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Value>) -> Self {
+    pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
         fn identity(
             id: ValueIdentity,
-            bindings: &BTreeMap<ValueIdentity, Value>,
+            bindings: &BTreeMap<ValueIdentity, Proof>,
         ) -> Option<ValueIdentity> {
-            bindings.get(&id).map(Value::identity)
+            bindings.get(&id)?.known_identity(0)
         }
         fn domain(
             value: IndexDomain,
-            bindings: &BTreeMap<ValueIdentity, Value>,
+            bindings: &BTreeMap<ValueIdentity, Proof>,
         ) -> Option<IndexDomain> {
             Some(match value {
                 IndexDomain::Fixed(n) => IndexDomain::Fixed(n),
@@ -198,7 +198,7 @@ impl Proof {
                 _ => return None,
             })
         }
-        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Value>) -> Option<Fact> {
+        fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Fact> {
             Some(match value {
                 Fact::Equal(a, b) => Fact::equal(identity(a, bindings)?, identity(b, bindings)?),
                 Fact::Index(id, d) => Fact::Index(identity(id, bindings)?, domain(d, bindings)?),
@@ -215,7 +215,7 @@ impl Proof {
                 .collect::<Vec<_>>();
             translated.origins[i] = values
                 .iter()
-                .flat_map(|value| value.component_origins(0))
+                .flat_map(|proof| proof.origins.first().into_iter().flatten().copied())
                 .collect();
             translated
                 .ranges
@@ -232,7 +232,7 @@ impl Proof {
                 .filter_map(|d| domain(d, bindings))
                 .collect();
             for value in values {
-                let incoming = value.component_ranges(0);
+                let incoming = value.range_set(0);
                 translated.ranges[i] = IntegerRanges::from_intervals(
                     translated.ranges[i].0.iter().flat_map(|(a, b)| {
                         incoming
@@ -241,8 +241,8 @@ impl Proof {
                             .map(move |(c, d)| ((*a).max(*c), (*b).min(*d)))
                     }),
                 );
-                translated.nonzero[i] |= value.component_nonzero(0);
-                translated.domains[i].extend(value.proof.domains(0));
+                translated.nonzero[i] |= value.nonzero.first() == Some(&true);
+                translated.domains[i].extend(value.domains(0));
             }
         }
         // Domains may exist without a captured origin (for example a proven index).
@@ -384,6 +384,14 @@ impl Proof {
         origins.insert(0, identity);
         self.origins = vec![origins];
         self
+    }
+    pub(super) fn parameter_content(parameter: usize, width: usize) -> Self {
+        Self {
+            origins: (0..width)
+                .map(|component| vec![ValueIdentity::ParameterContent(parameter, component)])
+                .collect(),
+            ..Self::default()
+        }
     }
     pub(super) fn domains(&self, component: usize) -> Domains {
         self.domains.get(component).cloned().unwrap_or_default()

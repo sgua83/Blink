@@ -59,6 +59,8 @@ enum ValueIdentity {
     // 资源的长度身份不随每次装载而变化；只存在于编译期。
     DataLength(usize),
     TileLength,
+    // 原生位置参数入口的内容身份，与传递地址的机器寄存器分开。
+    ParameterContent(usize, usize),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexDomain {
@@ -1270,8 +1272,15 @@ fn checked_function(
                 b.env.insert(
                     p.name.clone(),
                     Binding::Owned(OwnedBinding {
+                        proof: if p.access == Access::InOut && b.application.is_some() {
+                            bounds::Proof::parameter_content(
+                                parameter_index,
+                                place.ty().components.len(),
+                            )
+                        } else {
+                            bounds::Proof::default()
+                        },
                         place,
-                        proof: bounds::Proof::default(),
                         uniform: false,
                         initialization: None,
                     }),
@@ -4013,5 +4022,5 @@ crate::module::codec::record!(Value {
     uniform,
     constant
 });
-crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id)});

@@ -194,23 +194,26 @@ pub(super) fn canonical(
     inputs: &[Reg],
     written: Vec<Option<bounds::Proof>>,
 ) -> (Option<Returned>, Vec<Reg>, Vec<Option<bounds::Proof>>) {
-    let bindings = inputs
+    let mut bindings = inputs
         .iter()
         .enumerate()
         .map(|(index, reg)| {
             (
                 ValueIdentity::Register(*reg),
-                Value {
-                    ty: Ty::scalar(Scalar::U32),
-                    regs: vec![index],
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    uniform: false,
-                    constant: None,
-                },
+                bounds::Proof::default().with_identity(ValueIdentity::Register(index)),
             )
         })
         .collect::<BTreeMap<_, _>>();
+    for (parameter, p) in builder.definition.function.params.iter().enumerate() {
+        if p.access == Access::InOut
+            && let Some(Binding::Owned(owner)) = builder.env.get(&p.name)
+        {
+            for component in 0..owner.place.ty().components.len() {
+                let identity = ValueIdentity::ParameterContent(parameter, component);
+                bindings.insert(identity, bounds::Proof::default().with_identity(identity));
+            }
+        }
+    }
     let returned = returned.map(|model| {
         let storage = builder.returned_storage(&model);
         let value = Value {
@@ -265,14 +268,7 @@ impl Builder<'_> {
             .regs
             .iter()
             .map(|reg| {
-                Some(Value {
-                    ty: Ty::scalar(Scalar::U32),
-                    regs: vec![*reg],
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    uniform: false,
-                    constant: None,
-                })
+                Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)))
             })
             .collect::<Vec<_>>();
         let mut env = BTreeMap::new();
@@ -280,6 +276,7 @@ impl Builder<'_> {
         let mut written = Vec::new();
         let mut written_data = Vec::new();
         let mut held = Vec::new();
+        let mut contents = BTreeMap::new();
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg = match arg {
@@ -313,10 +310,27 @@ impl Builder<'_> {
                         // Actual pointer inputs are private to the callee, never caller scalar facts.
                         actual.extend([None, None]);
                     }
-                    env.insert(
-                        p.name.clone(),
-                        Binding::Owned(self.borrow_owned(place.clone())),
-                    );
+                    if p.access == Access::InOut {
+                        // Name unread entry contents without loading them. Unused virtual registers
+                        // are removed by value_code before native register allocation.
+                        let contents = ty
+                            .components
+                            .iter()
+                            .map(|(scalar, _)| self.reg(*scalar))
+                            .collect::<Vec<_>>();
+                        self.read_owned_proof(&place, &contents);
+                    }
+                    let owner = self.borrow_owned(place.clone());
+                    if p.access == Access::InOut {
+                        let width = ty.components.len();
+                        for component in 0..width {
+                            contents.insert(
+                                ValueIdentity::ParameterContent(index, component),
+                                owner.proof.project(&[component], width),
+                            );
+                        }
+                    }
+                    env.insert(p.name.clone(), Binding::Owned(owner));
                     written.push((index, place));
                 }
                 Argument::ApplicationData(data) if p.ty.dataset => {
@@ -419,7 +433,7 @@ impl Builder<'_> {
                     unit.contract.written.clone(),
                 )
             });
-        let (bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
+        let (mut bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
             (
                 inputs
                     .into_iter()
@@ -434,6 +448,7 @@ impl Builder<'_> {
         } else {
             (BTreeMap::new(), None, Vec::new())
         };
+        bindings.extend(contents);
         for (index, place) in written {
             let proof = writes
                 .get(index)
@@ -469,19 +484,17 @@ impl Builder<'_> {
         Ok(Some(returned))
     }
 }
-fn append_actual(actual: &mut Vec<Option<Value>>, value: &Value) {
-    for (i, (scalar, _)) in value.ty.components.iter().enumerate() {
-        actual.push(Some(Value {
-            ty: Ty::scalar(*scalar),
-            regs: vec![value.regs[i]],
-            proof: value.projected_proof(&[i]),
-            literal: false,
-            uniform: value.uniform,
-            constant: value.constant.as_ref().map(|v| vec![v[i]]),
-        }));
+fn append_actual(actual: &mut Vec<Option<bounds::Proof>>, value: &Value) {
+    let proof = bounds::Proof::capture(value);
+    for i in 0..value.regs.len() {
+        actual.push(Some(proof.project(&[i], value.regs.len())));
     }
 }
-fn translate_value(value: &mut Value, model: &Value, bindings: &BTreeMap<ValueIdentity, Value>) {
+fn translate_value(
+    value: &mut Value,
+    model: &Value,
+    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
+) {
     value.proof = bounds::Proof::capture(model).at_call(bindings);
     value.constant = model
         .constant
@@ -492,7 +505,7 @@ fn translate_value(value: &mut Value, model: &Value, bindings: &BTreeMap<ValueId
 fn translate_returned(
     value: &mut Returned,
     model: &Returned,
-    bindings: &BTreeMap<ValueIdentity, Value>,
+    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
 ) {
     match (value, model) {
         (Returned::Value(value), Returned::Value(model)) => translate_value(value, model, bindings),
