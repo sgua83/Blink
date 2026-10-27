@@ -37,6 +37,7 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_bool(&c, condition.span)?;
+        let partition = Arc::new(bounds::Condition::of(&c));
         let outer = std::mem::take(&mut self.code);
         let environment = self.env.clone();
         let path = self.path.clone();
@@ -50,7 +51,7 @@ impl Builder<'_> {
         expression_assignments(self.world, &self.definition, yes, &mut yes_modified);
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
-        self.refine_bounds(&c, true);
+        self.refine_bounds(&partition, true);
         self.flow = Flow::NEXT;
         let first_exit = self
             .return_context
@@ -77,7 +78,7 @@ impl Builder<'_> {
         let mut yes = std::mem::take(&mut self.code);
         self.restore_expression_environment(environment, &yes_modified);
         self.path = path;
-        self.refine_bounds(&c, false);
+        self.refine_bounds(&partition, false);
         self.flow = Flow::NEXT;
         let b_result = self.evaluate_returned(no, expected)?;
         if self.flow.continues() && b_result.is_none() {

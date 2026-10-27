@@ -206,12 +206,17 @@ impl Builder<'_> {
         }
         let mut aliases = bounds::Clause::default();
         if let Some(proof) = &proof {
-            aliases = bounds::Clause::both(&aliases, &proof.output_aliases(registers, &bindings));
+            aliases = bounds::Clause::both(
+                &aliases,
+                &proof.output_aliases(registers, &self.registers, &bindings),
+            );
         }
         for (name, owner) in borrowed.iter() {
             aliases = bounds::Clause::both(
                 &aliases,
-                &owner.proof.output_aliases(&written[name], &bindings),
+                &owner
+                    .proof
+                    .output_aliases(&written[name], &self.registers, &bindings),
             );
         }
         *path = bounds::Clause::both(&path.output_bound(&bindings), &aliases);

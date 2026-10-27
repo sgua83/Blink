@@ -2791,8 +2791,9 @@ impl<'a> Builder<'a> {
         yes_body: impl FnOnce(&mut Self) -> Result<()>,
         no_body: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
-        if let Some(truth) = c.boolean_constant() {
-            self.refine_bounds(&c, truth);
+        let partition = Arc::new(bounds::Condition::of(&c));
+        if let Some(truth) = partition.boolean_constant() {
+            self.refine_bounds(&partition, truth);
             return if truth { yes_body(self) } else { no_body(self) };
         }
         let environment = self.env.clone();
@@ -2801,7 +2802,7 @@ impl<'a> Builder<'a> {
         let init = self.application_initialization_state();
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
-        self.refine_bounds(&c, true);
+        self.refine_bounds(&partition, true);
         yes_body(self)?;
         let mut yes = std::mem::take(&mut self.code);
         let yes_init = self.application_initialization_state();
@@ -2813,7 +2814,7 @@ impl<'a> Builder<'a> {
         self.initialized = init;
         self.env = environment.clone();
         self.path = path;
-        self.refine_bounds(&c, false);
+        self.refine_bounds(&partition, false);
         no_body(self)?;
         let mut no = std::mem::take(&mut self.code);
         let no_init = self.take_application_initialization_state();
@@ -2870,9 +2871,10 @@ impl<'a> Builder<'a> {
             return Ok(());
         };
         self.require_bool(&c, condition.span)?;
+        let partition = Arc::new(bounds::Condition::of(&c));
         let mut condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
-            self.refine_bounds(&c, false);
+            self.refine_bounds(&partition, false);
             self.code = outer;
             self.code.extend(condition_code);
             return Ok(());
@@ -2884,7 +2886,7 @@ impl<'a> Builder<'a> {
         let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {
             None
         } else {
-            self.refine_bounds(&c, false);
+            self.refine_bounds(&partition, false);
             let exit = self.loop_state();
             self.env = condition_env;
             self.path = condition_path;
@@ -2892,7 +2894,7 @@ impl<'a> Builder<'a> {
         };
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
-        self.refine_bounds(&c, true);
+        self.refine_bounds(&partition, true);
         self.loop_depth += 1;
         self.iterators.push(None);
         self.block(body)?;
@@ -3128,11 +3130,12 @@ impl<'a> Builder<'a> {
         };
         let condition_env = self.env.clone();
         let condition_path = self.path.clone();
-        self.refine_bounds(&test, false);
+        let partition = Arc::new(bounds::Condition::of(&test));
+        self.refine_bounds(&partition, false);
         let mut natural = self.loop_state();
         self.env = condition_env;
         self.path = condition_path;
-        self.refine_bounds(&test, true);
+        self.refine_bounds(&partition, true);
         let control = self.control_uniform;
         self.control_uniform &= begin.uniform && limit.uniform;
         self.loop_depth += 1;

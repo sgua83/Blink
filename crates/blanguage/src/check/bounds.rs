@@ -209,16 +209,22 @@ impl Proof {
             }
         }
     }
-    pub(super) fn output_aliases(&self, registers: &[Reg], bindings: &OutputBindings) -> Clause {
+    pub(super) fn output_aliases(
+        &self,
+        registers: &[Reg],
+        types: &[Scalar],
+        bindings: &OutputBindings,
+    ) -> Clause {
         Clause::facts(
             self.origins
                 .iter()
                 .zip(registers)
+                .filter(|(_, reg)| matches!(types[**reg], Scalar::Bool | Scalar::U32 | Scalar::I32))
                 .flat_map(|(origins, reg)| {
                     let target = ValueIdentity::Register(*reg);
                     origins
                         .iter()
-                        .flat_map(|id| [*id, output_identity(*id, bindings)])
+                        .map(|id| output_identity(*id, bindings))
                         .filter(move |id| *id != target)
                         .map(move |id| Fact::equal(id, target))
                 })
@@ -417,6 +423,10 @@ impl Proof {
                             Clause::both(&current, &fact(*value, bindings))
                         }),
                     ClauseNode::Both(a, b) => Clause::both(&clauses[&a.key()], &clauses[&b.key()]),
+                    ClauseNode::Branch(parent, condition, truth) => Clause::both(
+                        &clauses[&parent.key()],
+                        &clauses[&condition.cases[usize::from(*truth)].key()],
+                    ),
                     ClauseNode::Either(a, b) => {
                         Clause::either(&clauses[&a.key()], &clauses[&b.key()])
                     }
@@ -728,7 +738,11 @@ impl Proof {
     }
     fn facts(&self, ty: &Ty) -> Facts {
         let mut facts = Facts::new();
-        for (component, (scalar, _)) in ty.components.iter().enumerate() {
+        for (component, (scalar, _)) in
+            ty.components.iter().enumerate().filter(|(_, (scalar, _))| {
+                matches!(scalar, Scalar::Bool | Scalar::U32 | Scalar::I32)
+            })
+        {
             let Some(origins) = self.origins.get(component) else {
                 continue;
             };
@@ -997,18 +1011,6 @@ impl Proof {
     }
 }
 impl Value {
-    pub(super) fn boolean_constant(&self) -> Option<bool> {
-        let condition = Condition::of(self);
-        match condition
-            .cases
-            .each_ref()
-            .map(|case| matches!(&*case.0, ClauseNode::Impossible))
-        {
-            [true, false] => Some(true),
-            [false, true] => Some(false),
-            _ => None,
-        }
-    }
     pub(super) fn is_nonzero(&self) -> bool {
         self.ty.is_numeric()
             && matches!(
@@ -1129,6 +1131,7 @@ enum ClauseNode {
     Facts(Facts),
     Both(Clause, Clause),
     Either(Clause, Clause),
+    Branch(Clause, Arc<Condition>, bool),
 }
 impl Clause {
     pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
@@ -1171,6 +1174,17 @@ impl Clause {
                 }
                 ClauseNode::Both(a, b) => Self::both(&clauses[&a.key()], &clauses[&b.key()]),
                 ClauseNode::Either(a, b) => Self::either(&clauses[&a.key()], &clauses[&b.key()]),
+                ClauseNode::Branch(parent, condition, truth) => {
+                    let case = &condition.cases[usize::from(*truth)];
+                    let next_parent = &clauses[&parent.key()];
+                    let next_case = &clauses[&case.key()];
+                    if Arc::ptr_eq(&next_parent.0, &parent.0) && Arc::ptr_eq(&next_case.0, &case.0)
+                    {
+                        clause.clone()
+                    } else {
+                        Self::both(next_parent, next_case)
+                    }
+                }
             };
             clauses.insert(clause.key(), next);
         }
@@ -1216,7 +1230,51 @@ impl Clause {
             _ => Self(Arc::new(ClauseNode::Both(a.clone(), b.clone()))),
         }
     }
+    fn branch(parent: &Self, condition: &Arc<Condition>, truth: bool) -> Self {
+        if matches!(&*parent.0, ClauseNode::Impossible)
+            || matches!(
+                &*condition.cases[usize::from(truth)].0,
+                ClauseNode::Impossible
+            )
+        {
+            return Self::impossible();
+        }
+        Self(Arc::new(ClauseNode::Branch(
+            parent.clone(),
+            condition.clone(),
+            truth,
+        )))
+    }
+    fn joined_branches(a: &Self, b: &Self) -> Option<Self> {
+        match (&*a.0, &*b.0) {
+            (ClauseNode::Branch(ap, ac, at), ClauseNode::Branch(bp, bc, bt))
+                if Arc::ptr_eq(&ap.0, &bp.0) && Arc::ptr_eq(ac, bc) && at != bt =>
+            {
+                Some(ap.clone())
+            }
+            _ => None,
+        }
+    }
     pub(super) fn either(a: &Self, b: &Self) -> Self {
+        if let Some(parent) = Self::joined_branches(a, b) {
+            return parent;
+        }
+        if let ClauseNode::Either(x, y) = &*a.0 {
+            if let Some(parent) = Self::joined_branches(y, b) {
+                return Self::either(x, &parent);
+            }
+            if let Some(parent) = Self::joined_branches(x, b) {
+                return Self::either(&parent, y);
+            }
+        }
+        if let ClauseNode::Either(x, y) = &*b.0 {
+            if let Some(parent) = Self::joined_branches(a, x) {
+                return Self::either(&parent, y);
+            }
+            if let Some(parent) = Self::joined_branches(a, y) {
+                return Self::either(x, &parent);
+            }
+        }
         match (&*a.0, &*b.0) {
             (ClauseNode::Impossible, _) => b.clone(),
             (_, ClauseNode::Impossible) => a.clone(),
@@ -1250,6 +1308,14 @@ impl Clause {
                         pending.extend([(clause, true), (b, false), (a, false)]);
                         continue;
                     }
+                    ClauseNode::Branch(parent, condition, truth) => {
+                        pending.extend([
+                            (clause, true),
+                            (&condition.cases[usize::from(*truth)], false),
+                            (parent, false),
+                        ]);
+                        continue;
+                    }
                     _ => {}
                 }
             }
@@ -1271,6 +1337,10 @@ impl Clause {
                     ClauseNode::Impossible => None,
                     ClauseNode::Facts(facts) => combine_facts(facts, &environment),
                     ClauseNode::Both(a, b) => both_facts(&facts[&a.key()], &facts[&b.key()]),
+                    ClauseNode::Branch(parent, condition, truth) => both_facts(
+                        &facts[&parent.key()],
+                        &facts[&condition.cases[usize::from(*truth)].key()],
+                    ),
                     ClauseNode::Either(a, b) => {
                         either_facts(facts[&a.key()].clone(), facts[&b.key()].clone())
                     }
@@ -1378,6 +1448,17 @@ fn maximums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
     result
 }
 impl Condition {
+    pub(super) fn boolean_constant(&self) -> Option<bool> {
+        match self
+            .cases
+            .each_ref()
+            .map(|case| matches!(&*case.0, ClauseNode::Impossible))
+        {
+            [true, false] => Some(true),
+            [false, true] => Some(false),
+            _ => None,
+        }
+    }
     fn common(a: Self, b: Self) -> Self {
         let [af, at] = a.cases;
         let [bf, bt] = b.cases;
@@ -2250,9 +2331,8 @@ impl Builder<'_> {
         }
         self.env = environment;
     }
-    pub(super) fn refine_bounds(&mut self, value: &Value, truth: bool) {
-        let condition = Condition::of(value);
-        self.path = Clause::both(&self.path, &condition.cases[usize::from(truth)]);
+    pub(super) fn refine_bounds(&mut self, condition: &Arc<Condition>, truth: bool) {
+        self.path = Clause::branch(&self.path, condition, truth);
         let Some(facts) = self.path.required_in(&environment_facts(&self.env)) else {
             return;
         };
@@ -2475,6 +2555,10 @@ impl crate::module::codec::Encode for Proof {
                     ClauseNode::Both(a, b) => {
                         EncodedClause::Both(indices[&a.key()], indices[&b.key()])
                     }
+                    ClauseNode::Branch(parent, condition, truth) => EncodedClause::Both(
+                        indices[&parent.key()],
+                        indices[&condition.cases[usize::from(*truth)].key()],
+                    ),
                     ClauseNode::Either(a, b) => {
                         EncodedClause::Either(indices[&a.key()], indices[&b.key()])
                     }
