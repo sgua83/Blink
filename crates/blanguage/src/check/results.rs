@@ -70,6 +70,15 @@ impl Builder<'_> {
                 word.proof = bounds::Proof::default();
             }
             word
+        } else if matches!(
+            (source, scalar),
+            (Scalar::Bool, Scalar::U32) | (Scalar::U32, Scalar::Bool)
+        ) {
+            // Result 的普通字存储只改变逻辑类型，不撤回活动 bool 载荷的事实。
+            let proof = bounds::Proof::capture(&word);
+            let mut word = self.cast(word, scalar);
+            word.proof = proof;
+            word
         } else {
             self.cast(word, scalar)
         }
@@ -155,8 +164,8 @@ impl Builder<'_> {
         })
     }
     pub(super) fn result_condition(&mut self, value: &Value, span: Span) -> Result<Value> {
-        let tag = self.result_word(value, 0, Scalar::U32);
-        let zero = self.constant(Scalar::U32, 0);
+        let tag = self.result_word(value, 0, Scalar::Bool);
+        let zero = self.constant(Scalar::Bool, 0);
         self.binary("==", tag, zero, span)
     }
     fn result_arm(

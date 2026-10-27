@@ -185,10 +185,7 @@ impl Builder<'_> {
             })
             .collect();
         let proof = match (&a, &b) {
-            (Some(a), Some(b)) if ty == Ty::scalar(Scalar::Bool) => {
-                bounds::Proof::condition(bounds::Condition::select(&c, a, b))
-            }
-            (Some(a), Some(b)) => bounds::Proof::common(a, b),
+            (Some(a), Some(b)) => bounds::Proof::selection(&c, a, b),
             _ => bounds::Proof::capture(storage),
         };
         let mut result = match (a_result.take(), b_result) {

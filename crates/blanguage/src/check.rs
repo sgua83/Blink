@@ -2333,7 +2333,7 @@ impl<'a> Builder<'a> {
                     .collect::<Option<Vec<_>>>()
             });
         let proof = if let Some(BinaryOp::Compare(op)) = operation {
-            bounds::Proof::condition(bounds::Condition::comparison(op, &a, &b))
+            bounds::Proof::comparison(op, &a, &b)
         } else {
             bounds::arithmetic(op, &a, &b)
         };

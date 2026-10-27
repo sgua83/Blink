@@ -24,6 +24,7 @@ enum Fact {
     Maximum(ValueIdentity, u32),
     NonZero(ValueIdentity),
     Boolean(ValueIdentity, bool),
+    Below(ValueIdentity, ValueIdentity, bool, bool),
 }
 type Facts = BTreeSet<Fact>;
 impl Place {
@@ -160,7 +161,7 @@ impl IntegerRanges {
 pub(super) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
     origins: Vec<Vec<ValueIdentity>>,
-    condition: Option<Box<Condition>>,
+    conditions: Vec<Option<Box<Condition>>>,
     // 整数按数值顺序编码；i32 翻转符号位，复用相同的区间与路径合流。
     ranges: Vec<IntegerRanges>,
     nonzero: Vec<bool>,
@@ -206,7 +207,7 @@ impl Proof {
                     let Some(value) = bindings.get(&id) else {
                         return Clause::facts(Facts::new());
                     };
-                    let condition = value.condition.as_deref().cloned().unwrap_or_default();
+                    let condition = value.component_condition(0).cloned().unwrap_or_default();
                     let mut clause = condition.cases[usize::from(truth)].clone();
                     if let Some(id) = value.known_identity(0) {
                         clause = Clause::both(
@@ -215,6 +216,40 @@ impl Proof {
                         );
                     }
                     return clause;
+                }
+                Fact::Below(lower, upper, strict, signed) => {
+                    let Some((lower_id, upper_id)) =
+                        identity(lower, bindings).zip(identity(upper, bindings))
+                    else {
+                        return Clause::facts(Facts::new());
+                    };
+                    let (lower, upper) = (&bindings[&lower], &bindings[&upper]);
+                    let same = lower.origins[0]
+                        .iter()
+                        .any(|id| upper.origins[0].contains(id));
+                    let possible = lower.range_set(0).0.iter().any(|&(a, b)| {
+                        upper.range_set(0).0.iter().any(|&(c, d)| {
+                            if same {
+                                !strict && a.max(c) <= b.min(d)
+                            } else if strict {
+                                a < d
+                            } else {
+                                a <= d
+                            }
+                        })
+                    });
+                    if !possible {
+                        return Clause::impossible();
+                    }
+                    let mut facts = Facts::new();
+                    constrain_proofs(
+                        &mut facts,
+                        (lower_id, lower),
+                        (upper_id, upper),
+                        strict,
+                        signed,
+                    );
+                    return Clause::facts(facts);
                 }
                 Fact::Equal(a, b) => identity(a, bindings)
                     .zip(identity(b, bindings))
@@ -274,9 +309,15 @@ impl Proof {
                 .filter_map(|d| domain(d, bindings))
                 .collect();
         }
-        if let Some(condition) = &mut translated.condition {
+        let roots: Vec<_> = self
+            .conditions
+            .iter()
+            .flatten()
+            .flat_map(|condition| condition.cases.iter().cloned())
+            .collect();
+        if !roots.is_empty() {
             let mut clauses = BTreeMap::new();
-            for clause in Clause::ordered(&condition.cases) {
+            for clause in Clause::ordered(&roots) {
                 let mapped = match &*clause.0 {
                     ClauseNode::Impossible => Clause::impossible(),
                     ClauseNode::Facts(facts) => facts
@@ -291,28 +332,47 @@ impl Proof {
                 };
                 clauses.insert(clause.key(), mapped);
             }
-            condition.cases = std::array::from_fn(|i| clauses[&condition.cases[i].key()].clone());
+            for condition in translated.conditions.iter_mut().flatten() {
+                condition.cases =
+                    std::array::from_fn(|i| clauses[&condition.cases[i].key()].clone());
+            }
+        }
+        // 输出仍是入口快照时，继续交接调用者已经持有的分量条件。
+        // 实参图属于调用者命名空间，不能再次按被调函数的身份替换。
+        for (i, origins) in self.origins.iter().enumerate() {
+            for incoming in origins.iter().filter_map(|id| bindings.get(id)) {
+                if let Some(condition) = incoming.component_condition(0) {
+                    translated
+                        .conditions
+                        .resize_with(translated.conditions.len().max(i + 1), || None);
+                    let current = translated.conditions[i]
+                        .get_or_insert_with(|| Box::new(Condition::default()));
+                    for truth in 0..2 {
+                        current.cases[truth] =
+                            Clause::both(&current.cases[truth], &condition.cases[truth]);
+                    }
+                }
+            }
         }
         translated
     }
     pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<u32>> {
-        if *ty == Ty::scalar(Scalar::Bool) {
-            return match self
-                .condition
-                .as_deref()?
-                .cases
-                .each_ref()
-                .map(Clause::possible)
-            {
-                [false, true] => Some(vec![1]),
-                [true, false] => Some(vec![0]),
-                _ => None,
-            };
-        }
         ty.components
             .iter()
             .enumerate()
             .map(|(component, (scalar, _))| {
+                if *scalar == Scalar::Bool {
+                    return match self
+                        .component_condition(component)?
+                        .cases
+                        .each_ref()
+                        .map(Clause::possible)
+                    {
+                        [false, true] => Some(1),
+                        [true, false] => Some(0),
+                        _ => None,
+                    };
+                }
                 let bias = match scalar {
                     Scalar::U32 => 0,
                     Scalar::I32 => 1 << 31,
@@ -336,30 +396,34 @@ impl Proof {
             *self = fresh;
         } else {
             self.origins.resize_with(width, Vec::new);
+            self.conditions.resize_with(width, || None);
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, IntegerRanges::default);
             self.domains.resize(width, Domains::new());
             for (j, &i) in components.iter().enumerate() {
                 self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
+                self.conditions[i] = fresh.conditions.get(j).cloned().flatten();
                 self.nonzero[i] = fresh.nonzero.get(j) == Some(&true);
                 self.ranges[i] = fresh.range_set(j);
                 self.domains[i] = fresh.domains(j);
             }
-            self.condition = None;
         }
     }
     pub(super) fn join(&mut self, other: &Self, width: usize, branch: Option<&Value>) {
-        let condition = if self.condition.is_some() || other.condition.is_some() {
-            let a = self.condition.as_deref().cloned().unwrap_or_default();
-            let b = other.condition.as_deref().cloned().unwrap_or_default();
-            Some(Box::new(if let Some(c) = branch {
-                Condition::branch(Condition::of(c), a, b)
-            } else {
-                Condition::common(a, b)
-            }))
-        } else {
-            None
-        };
+        let conditions = (0..width)
+            .map(|i| {
+                if self.component_condition(i).is_none() && other.component_condition(i).is_none() {
+                    return None;
+                }
+                let a = self.component_condition(i).cloned().unwrap_or_default();
+                let b = other.component_condition(i).cloned().unwrap_or_default();
+                Some(Box::new(if let Some(c) = branch {
+                    Condition::branch(Condition::of(c), a, b)
+                } else {
+                    Condition::common(a, b)
+                }))
+            })
+            .collect();
         self.origins = (0..width)
             .map(|i| {
                 let a = self.origins.get(i).cloned().unwrap_or_default();
@@ -383,29 +447,32 @@ impl Proof {
                     .collect()
             })
             .collect();
-        self.condition = condition;
+        self.conditions = conditions;
     }
     pub(super) fn project(&self, components: &[usize], width: usize) -> Self {
-        let mut proof = if components.iter().copied().eq(0..width) {
-            self.clone()
-        } else {
-            Self::default()
-        };
-        proof.origins = components
-            .iter()
-            .map(|&i| self.origins.get(i).cloned().unwrap_or_default())
-            .collect();
-        proof.nonzero = components
-            .iter()
-            .map(|&i| self.nonzero.get(i) == Some(&true))
-            .collect();
-        proof.ranges = components.iter().map(|&i| self.range_set(i)).collect();
-        proof.domains = components.iter().map(|&i| self.domains(i)).collect();
-        proof
+        if components.iter().copied().eq(0..width) {
+            return self.clone();
+        }
+        Self {
+            origins: components
+                .iter()
+                .map(|&i| self.origins.get(i).cloned().unwrap_or_default())
+                .collect(),
+            conditions: components
+                .iter()
+                .map(|&i| self.conditions.get(i).cloned().flatten())
+                .collect(),
+            nonzero: components
+                .iter()
+                .map(|&i| self.nonzero.get(i) == Some(&true))
+                .collect(),
+            ranges: components.iter().map(|&i| self.range_set(i)).collect(),
+            domains: components.iter().map(|&i| self.domains(i)).collect(),
+        }
     }
     pub fn condition(condition: Condition) -> Self {
         Self {
-            condition: Some(Box::new(condition)),
+            conditions: vec![Some(Box::new(condition))],
             ..Self::default()
         }
     }
@@ -436,6 +503,16 @@ impl Proof {
     }
     pub(super) fn domains(&self, component: usize) -> Domains {
         self.domains.get(component).cloned().unwrap_or_default()
+    }
+    fn component_condition(&self, component: usize) -> Option<&Condition> {
+        self.conditions.get(component)?.as_deref()
+    }
+    fn value_condition(value: &Value, component: usize) -> Option<Box<Condition>> {
+        if value.ty.components[component].0 == Scalar::Bool {
+            Some(Box::new(Condition::component(value, component)))
+        } else {
+            value.proof.conditions.get(component).cloned().flatten()
+        }
     }
     fn range(&self, component: usize) -> (u32, u32) {
         self.range_set(component).hull()
@@ -469,9 +546,9 @@ impl Proof {
         proof.origins = (0..value.regs.len())
             .map(|i| value.component_origins(i))
             .collect();
-        if value.ty == Ty::scalar(Scalar::Bool) {
-            proof.condition = Some(Box::new(Condition::of(value)));
-        }
+        proof.conditions = (0..value.regs.len())
+            .map(|i| Self::value_condition(value, i))
+            .collect();
         proof
     }
     pub fn common(a: &Value, b: &Value) -> Self {
@@ -485,8 +562,19 @@ impl Proof {
                         .collect()
                 })
                 .collect(),
-            condition: (a.ty == Ty::scalar(Scalar::Bool))
-                .then(|| Box::new(Condition::common(Condition::of(a), Condition::of(b)))),
+            conditions: (0..a.regs.len())
+                .map(|i| {
+                    let (a, b) = (Self::value_condition(a, i), Self::value_condition(b, i));
+                    if a.is_none() && b.is_none() {
+                        None
+                    } else {
+                        Some(Box::new(Condition::common(
+                            a.as_deref().cloned().unwrap_or_default(),
+                            b.as_deref().cloned().unwrap_or_default(),
+                        )))
+                    }
+                })
+                .collect(),
             ranges: (0..a.regs.len())
                 .map(|i| a.component_ranges(i).union(&b.component_ranges(i)))
                 .collect(),
@@ -505,6 +593,48 @@ impl Proof {
             ..Self::default()
         }
     }
+    pub fn selection(c: &Value, a: &Value, b: &Value) -> Self {
+        let mut proof = Self::common(a, b);
+        for (i, condition) in proof.conditions.iter_mut().enumerate() {
+            if condition.is_some() {
+                *condition = Some(Box::new(Condition::branch(
+                    Condition::of(c),
+                    Condition::component(a, i),
+                    Condition::component(b, i),
+                )));
+            }
+        }
+        proof
+    }
+    pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
+        let width = a.regs.len().max(b.regs.len());
+        if width == 1 {
+            return Self::condition(Condition::comparison(op, a, b));
+        }
+        fn component(value: &Value, i: usize) -> Value {
+            let i = i % value.regs.len();
+            Value {
+                ty: Ty::scalar(value.ty.components[i].0),
+                regs: vec![value.regs[i]],
+                proof: value.projected_proof(&[i]),
+                constant: value.constant.as_ref().map(|bits| vec![bits[i]]),
+                uniform: value.uniform,
+                literal: value.literal,
+            }
+        }
+        Self {
+            conditions: (0..width)
+                .map(|i| {
+                    Some(Box::new(Condition::comparison(
+                        op,
+                        &component(a, i),
+                        &component(b, i),
+                    )))
+                })
+                .collect(),
+            ..Self::default()
+        }
+    }
     fn facts(&self, ty: &Ty) -> Facts {
         let mut facts = Facts::new();
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
@@ -515,8 +645,8 @@ impl Proof {
                 facts.insert(Fact::equal(pair[0], pair[1]));
             }
             for &identity in origins {
-                if *ty == Ty::scalar(Scalar::Bool)
-                    && let Some(condition) = self.condition.as_deref()
+                if *scalar == Scalar::Bool
+                    && let Some(condition) = self.component_condition(component)
                 {
                     for truth in [false, true] {
                         if !condition.cases[usize::from(!truth)].possible() {
@@ -551,18 +681,22 @@ impl Proof {
     }
     pub(super) fn returning(value: &Value, environment: &BTreeMap<String, Binding>) -> Self {
         let mut proof = value.proof.clone();
-        if value.ty == Ty::scalar(Scalar::Bool) {
-            let facts = environment_facts(environment);
-            let mut condition = Condition::of(value);
-            let facts = Clause::facts(facts);
-            for case in &mut condition.cases {
-                *case = Clause::both(case, &facts);
+        proof.conditions = (0..value.regs.len())
+            .map(|i| Self::value_condition(value, i))
+            .collect();
+        if proof.conditions.iter().any(Option::is_some) {
+            let facts = Clause::facts(environment_facts(environment));
+            for condition in proof.conditions.iter_mut().flatten() {
+                for case in &mut condition.cases {
+                    *case = Clause::both(case, &facts);
+                }
             }
-            proof.condition = Some(Box::new(condition));
         }
         proof
     }
     pub fn append(&mut self, value: &Value) {
+        self.conditions
+            .extend((0..value.regs.len()).map(|i| Self::value_condition(value, i)));
         self.origins
             .extend((0..value.regs.len()).map(|i| value.component_origins(i)));
         self.nonzero
@@ -573,6 +707,7 @@ impl Proof {
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
     }
     pub fn splat(&mut self, width: usize) {
+        self.conditions = vec![self.conditions.first().cloned().flatten(); width];
         self.origins = vec![self.origins[0].clone(); width];
         self.nonzero = vec![self.nonzero[0]; width];
         self.ranges = vec![self.ranges[0].clone(); width];
@@ -601,9 +736,10 @@ impl Proof {
     }
     fn refine(&mut self, ty: &Ty, component: usize, fact: Fact) {
         match fact {
-            Fact::Boolean(_, truth) if *ty == Ty::scalar(Scalar::Bool) => {
-                let condition = self
-                    .condition
+            Fact::Boolean(_, truth) if ty.components[component].0 == Scalar::Bool => {
+                self.conditions
+                    .resize_with(self.conditions.len().max(component + 1), || None);
+                let condition = self.conditions[component]
                     .get_or_insert_with(|| Box::new(Condition::default()));
                 condition.cases[usize::from(!truth)] = Clause::impossible();
             }
@@ -678,7 +814,7 @@ impl Fact {
             | Self::Maximum(id, _)
             | Self::NonZero(id)
             | Self::Boolean(id, _) => Some(id),
-            Self::Equal(_, _) => None,
+            Self::Equal(_, _) | Self::Below(..) => None,
         }
     }
     fn at(self, id: ValueIdentity) -> Self {
@@ -689,6 +825,7 @@ impl Fact {
             Self::NonZero(_) => Self::NonZero(id),
             Self::Boolean(_, truth) => Self::Boolean(id, truth),
             equal @ Self::Equal(_, _) => equal,
+            below @ Self::Below(..) => below,
         }
     }
 }
@@ -830,7 +967,10 @@ impl Value {
     pub(super) fn projected_proof(&self, indices: &[usize]) -> Proof {
         Proof {
             origins: indices.iter().map(|i| self.component_origins(*i)).collect(),
-            condition: None,
+            conditions: indices
+                .iter()
+                .map(|i| self.proof.conditions.get(*i).cloned().flatten())
+                .collect(),
             ranges: indices.iter().map(|i| self.component_ranges(*i)).collect(),
             nonzero: indices.iter().map(|i| self.component_nonzero(*i)).collect(),
             domains: indices.iter().map(|i| self.proof.domains(*i)).collect(),
@@ -923,11 +1063,14 @@ impl Clause {
         ordered
     }
     fn required(&self) -> Option<Facts> {
+        self.required_in(&Facts::new())
+    }
+    fn required_in(&self, environment: &Facts) -> Option<Facts> {
         let mut facts = BTreeMap::new();
         for clause in Self::ordered(std::slice::from_ref(self)) {
             let required = match &*clause.0 {
                 ClauseNode::Impossible => None,
-                ClauseNode::Facts(facts) => Some(facts.clone()),
+                ClauseNode::Facts(facts) => combine_facts(facts, environment),
                 ClauseNode::Both(a, b) => both_facts(&facts[&a.key()], &facts[&b.key()]),
                 ClauseNode::Either(a, b) => {
                     either_facts(facts[&a.key()].clone(), facts[&b.key()].clone())
@@ -942,12 +1085,21 @@ impl Clause {
     }
 }
 fn contradictory(facts: &Facts) -> bool {
-    facts.iter().any(|fact| {
+    if facts.iter().any(|fact| {
         matches!(fact, Fact::Boolean(id, truth) if facts.contains(&Fact::Boolean(*id, !truth)))
-    })
+    }) {
+        return true;
+    }
+    let lower = minimums(facts);
+    maximums(facts)
+        .iter()
+        .any(|(id, upper)| lower.get(id).is_some_and(|lower| lower > upper))
 }
 fn both_facts(a: &Option<Facts>, b: &Option<Facts>) -> Option<Facts> {
-    let facts: Facts = a.as_ref()?.union(b.as_ref()?).copied().collect();
+    combine_facts(a.as_ref()?, b.as_ref()?)
+}
+fn combine_facts(a: &Facts, b: &Facts) -> Option<Facts> {
+    let facts: Facts = a.union(b).copied().collect();
     if contradictory(&facts) {
         None
     } else {
@@ -1030,30 +1182,35 @@ impl Condition {
         }
     }
     pub fn of(value: &Value) -> Self {
+        Self::component(value, 0)
+    }
+    fn component(value: &Value, component: usize) -> Self {
         let mut condition = value
             .proof
-            .condition
-            .as_deref()
+            .component_condition(component)
             .cloned()
             .unwrap_or_default();
         for (truth, case) in condition.cases.iter_mut().enumerate() {
             *case = Clause::both(
                 case,
-                &Clause::facts([Fact::Boolean(value.identity(), truth != 0)].into()),
+                &Clause::facts(
+                    [Fact::Boolean(
+                        value.component_identity(component),
+                        truth != 0,
+                    )]
+                    .into(),
+                ),
             );
         }
         // 常量排除相反结果，但不抹掉成立结果已经持有的范围与长度事实。
         if let Some(bits) = &value.constant {
-            condition.cases[usize::from(bits[0] == 0)] = Clause::impossible();
+            condition.cases[usize::from(bits[component] == 0)] = Clause::impossible();
         }
         condition
     }
     pub fn negate(mut self) -> Self {
         self.cases.swap(0, 1);
         self
-    }
-    pub fn select(c: &Value, a: &Value, b: &Value) -> Self {
-        Self::branch(Self::of(c), Self::of(a), Self::of(b))
     }
     fn branch(c: Self, a: Self, b: Self) -> Self {
         Self {
@@ -1195,25 +1352,41 @@ impl Condition {
     }
 }
 fn constrain(facts: &mut Facts, index: &Value, limit: &Value, strict: bool) {
-    if let Some(upper) = limit.component_range(0).1.checked_sub(u32::from(strict)) {
+    constrain_proofs(
+        facts,
+        (index.identity(), &Proof::capture(index)),
+        (limit.identity(), &Proof::capture(limit)),
+        strict,
+        index.ty == Ty::scalar(Scalar::I32),
+    );
+}
+fn constrain_proofs(
+    facts: &mut Facts,
+    (index_id, index): (ValueIdentity, &Proof),
+    (limit_id, limit): (ValueIdentity, &Proof),
+    strict: bool,
+    signed: bool,
+) {
+    facts.insert(Fact::Below(index_id, limit_id, strict, signed));
+    if let Some(upper) = limit.range(0).1.checked_sub(u32::from(strict)) {
         if upper != u32::MAX {
-            facts.insert(Fact::Maximum(index.identity(), upper));
+            facts.insert(Fact::Maximum(index_id, upper));
         }
     }
-    if index.ty == Ty::scalar(Scalar::U32) {
+    if !signed {
         facts.extend(
-            indices_below(&limit.proof.domains(0), strict)
+            indices_below(&limit.domains(0), strict)
                 .into_iter()
-                .map(|domain| Fact::Index(index.identity(), domain)),
+                .map(|domain| Fact::Index(index_id, domain)),
         );
     }
     if let Some(lower) = index
-        .component_range(0)
+        .range(0)
         .0
         .checked_add(u32::from(strict))
         .filter(|&lower| lower != 0)
     {
-        facts.insert(Fact::Minimum(limit.identity(), lower));
+        facts.insert(Fact::Minimum(limit_id, lower));
     }
 }
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
@@ -1739,10 +1912,11 @@ impl Builder<'_> {
     }
     pub(super) fn refine_bounds(&mut self, value: &Value, truth: bool) {
         let condition = Condition::of(value);
-        let Some(mut facts) = condition.cases[usize::from(truth)].required() else {
+        let Some(facts) =
+            condition.cases[usize::from(truth)].required_in(&environment_facts(&self.env))
+        else {
             return;
         };
-        facts.extend(environment_facts(&self.env));
         let roots = equality_roots(&facts);
         for binding in self.env.values_mut() {
             match binding {
@@ -1922,14 +2096,7 @@ impl crate::module::codec::Decode for IntegerRanges {
         Ok(Self(crate::module::codec::Decode::decode(r)?))
     }
 }
-crate::module::codec::record!(Proof {
-    origins,
-    condition,
-    ranges,
-    nonzero,
-    domains
-});
-// 两个结果共享一个节点表；编码不受 Arc 的物理共享方式影响。
+// 所有逻辑分量及其两个结果共享节点表；编码不受 Arc 的物理共享方式影响。
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum EncodedClause {
     Impossible,
@@ -1938,60 +2105,106 @@ enum EncodedClause {
     Either(usize, usize),
 }
 crate::module::codec::variants!(EncodedClause{0=>Impossible,1=>Facts(facts),2=>Both(a,b),3=>Either(a,b)});
-impl crate::module::codec::Encode for Condition {
+impl crate::module::codec::Encode for Proof {
     fn encode(&self, w: &mut crate::module::codec::Writer) {
-        // 旧格式首字节是 Option 的 0／1；双方在原接口解码处拒绝混用。
-        2u8.encode(w);
-        let mut nodes = Vec::new();
-        let mut unique = BTreeMap::new();
-        let mut indices = BTreeMap::new();
-        for clause in Clause::ordered(&self.cases) {
-            let node = match &*clause.0 {
-                ClauseNode::Impossible => EncodedClause::Impossible,
-                ClauseNode::Facts(facts) => EncodedClause::Facts(facts.clone()),
-                ClauseNode::Both(a, b) => EncodedClause::Both(indices[&a.key()], indices[&b.key()]),
-                ClauseNode::Either(a, b) => {
-                    EncodedClause::Either(indices[&a.key()], indices[&b.key()])
-                }
-            };
-            let index = *unique.entry(node.clone()).or_insert_with(|| {
-                let index = nodes.len();
-                nodes.push(node);
-                index
-            });
-            indices.insert(clause.key(), index);
+        self.origins.encode(w);
+        let width = self
+            .conditions
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        (width != 0).encode(w);
+        if width != 0 {
+            // 沿用原条件存在位；旧标量格式为 2，分量载体为 3，双方明确拒绝混用。
+            3u8.encode(w);
+            let roots: Vec<_> = self.conditions[..width]
+                .iter()
+                .flatten()
+                .flat_map(|condition| condition.cases.iter().cloned())
+                .collect();
+            let mut nodes = Vec::new();
+            let mut unique = BTreeMap::new();
+            let mut indices = BTreeMap::new();
+            for clause in Clause::ordered(&roots) {
+                let node = match &*clause.0 {
+                    ClauseNode::Impossible => EncodedClause::Impossible,
+                    ClauseNode::Facts(facts) => EncodedClause::Facts(facts.clone()),
+                    ClauseNode::Both(a, b) => {
+                        EncodedClause::Both(indices[&a.key()], indices[&b.key()])
+                    }
+                    ClauseNode::Either(a, b) => {
+                        EncodedClause::Either(indices[&a.key()], indices[&b.key()])
+                    }
+                };
+                let index = *unique.entry(node.clone()).or_insert_with(|| {
+                    let index = nodes.len();
+                    nodes.push(node);
+                    index
+                });
+                indices.insert(clause.key(), index);
+            }
+            nodes.encode(w);
+            self.conditions[..width]
+                .iter()
+                .map(|condition| {
+                    condition.as_deref().map(|condition| {
+                        condition.cases.each_ref().map(|case| indices[&case.key()])
+                    })
+                })
+                .collect::<Vec<_>>()
+                .encode(w);
         }
-        nodes.encode(w);
-        self.cases
-            .each_ref()
-            .map(|case| indices[&case.key()])
-            .encode(w);
+        self.ranges.encode(w);
+        self.nonzero.encode(w);
+        self.domains.encode(w);
     }
 }
-impl crate::module::codec::Decode for Condition {
+impl crate::module::codec::Decode for Proof {
     fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
-        if u8::decode(r)? != 2 {
-            return Err("模块条件合同格式不兼容，需要用同一编译器重新编译".into());
-        }
-        fn node(nodes: &[Clause], index: usize) -> crate::module::codec::Result<Clause> {
-            nodes
-                .get(index)
-                .cloned()
-                .ok_or_else(|| "模块条件节点引用无效".into())
-        }
-        let mut nodes = Vec::new();
-        for encoded in Vec::<EncodedClause>::decode(r)? {
-            nodes.push(match encoded {
-                EncodedClause::Impossible => Clause::impossible(),
-                EncodedClause::Facts(facts) => Clause::facts(facts),
-                EncodedClause::Both(a, b) => Clause::both(&node(&nodes, a)?, &node(&nodes, b)?),
-                EncodedClause::Either(a, b) => Clause::either(&node(&nodes, a)?, &node(&nodes, b)?),
-            });
-        }
-        let [a, b] = <[usize; 2]>::decode(r)?;
+        let origins = crate::module::codec::Decode::decode(r)?;
+        let conditions = if bool::decode(r)? {
+            if u8::decode(r)? != 3 {
+                return Err("模块分量条件合同格式不兼容，需要用同一编译器重新编译".into());
+            }
+            fn node(nodes: &[Clause], index: usize) -> crate::module::codec::Result<Clause> {
+                nodes
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| "模块条件节点引用无效".into())
+            }
+            let mut nodes = Vec::new();
+            for encoded in Vec::<EncodedClause>::decode(r)? {
+                nodes.push(match encoded {
+                    EncodedClause::Impossible => Clause::impossible(),
+                    EncodedClause::Facts(facts) => Clause::facts(facts),
+                    EncodedClause::Both(a, b) => Clause::both(&node(&nodes, a)?, &node(&nodes, b)?),
+                    EncodedClause::Either(a, b) => {
+                        Clause::either(&node(&nodes, a)?, &node(&nodes, b)?)
+                    }
+                });
+            }
+            Vec::<Option<[usize; 2]>>::decode(r)?
+                .into_iter()
+                .map(|roots| {
+                    roots
+                        .map(|[a, b]| {
+                            Ok(Box::new(Condition {
+                                cases: [node(&nodes, a)?, node(&nodes, b)?],
+                            }))
+                        })
+                        .transpose()
+                })
+                .collect::<crate::module::codec::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
-            cases: [node(&nodes, a)?, node(&nodes, b)?],
+            origins,
+            conditions,
+            ranges: crate::module::codec::Decode::decode(r)?,
+            nonzero: crate::module::codec::Decode::decode(r)?,
+            domains: crate::module::codec::Decode::decode(r)?,
         })
     }
 }
-crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth)});
+crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,signed)});
