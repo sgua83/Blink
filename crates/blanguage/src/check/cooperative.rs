@@ -17,6 +17,11 @@ pub(super) enum Argument {
 }
 impl Argument {
     fn overlaps(&self, other: &Self) -> bool {
+        if let (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) =
+            (self, other)
+        {
+            return a.overlaps(b);
+        }
         let handles = |arg: &Self| match arg {
             Self::ApplicationData(d) | Self::ScopedData { data: d, .. } => {
                 vec![d.handle.identity()]
@@ -30,22 +35,7 @@ impl Argument {
         };
         let a = handles(self);
         let b = handles(other);
-        if a.iter().any(|h| b.contains(h)) {
-            return true;
-        }
-        match (self, other) {
-            (Self::ApplicationData(a), Self::ApplicationData(b)) => {
-                a.handle.identity() == b.handle.identity()
-            }
-            (Self::ApplicationData(data), Self::Exclusive(place) | Self::Atomic(place))
-            | (Self::Exclusive(place) | Self::Atomic(place), Self::ApplicationData(data)) => {
-                matches!(place.storage(), Place::ApplicationElement { identity, .. } if *identity == data.handle.identity())
-            }
-            (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) => {
-                a.overlaps(b)
-            }
-            _ => false,
-        }
+        a.iter().any(|h| b.contains(h))
     }
 }
 pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definition) -> Result<Ty> {

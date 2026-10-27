@@ -24,6 +24,34 @@ enum Fact {
     NonZero(ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
+impl Place {
+    fn refine_position(
+        &mut self,
+        identity: ValueIdentity,
+        fact: Fact,
+        roots: &BTreeMap<ValueIdentity, ValueIdentity>,
+    ) {
+        match self {
+            Self::ApplicationElement {
+                index, index_range, ..
+            } => {
+                let position = ValueIdentity::Register(*index);
+                if roots.get(&position).unwrap_or(&position)
+                    == roots.get(&identity).unwrap_or(&identity)
+                {
+                    match fact {
+                        Fact::Minimum(_, lower) => index_range.0 = index_range.0.max(lower),
+                        Fact::Maximum(_, upper) => index_range.1 = index_range.1.min(upper),
+                        Fact::NonZero(_) => index_range.0 = index_range.0.max(1),
+                        _ => {}
+                    }
+                }
+            }
+            Self::Indexed { base, .. } => base.refine_position(identity, fact, roots),
+            _ => {}
+        }
+    }
+}
 #[derive(Clone)]
 struct IntegerRanges(Vec<(u32, u32)>);
 impl Default for IntegerRanges {
@@ -1545,6 +1573,7 @@ impl Builder<'_> {
                         }
                     }
                     Binding::Owned(owner) => {
+                        owner.place.refine_position(identity, *fact, &roots);
                         for component in 0..owner.proof.origins.len() {
                             if owner.proof.origins[component].contains(&identity) {
                                 owner.proof.refine(owner.place.ty(), component, *fact);

@@ -1,5 +1,26 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
+impl Place {
+    fn join_position_range(&mut self, other: &Self) {
+        match (self, other) {
+            (
+                Self::ApplicationElement { index_range: a, .. },
+                Self::ApplicationElement { index_range: b, .. },
+            ) => {
+                if a.0 > a.1 {
+                    *a = *b;
+                } else if b.0 <= b.1 {
+                    a.0 = a.0.min(b.0);
+                    a.1 = a.1.max(b.1);
+                }
+            }
+            (Self::Indexed { base: a, .. }, Self::Indexed { base: b, .. }) => {
+                a.join_position_range(b);
+            }
+            _ => {}
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Flow(u8);
@@ -212,6 +233,7 @@ impl Builder<'_> {
                     a.uniform &= b.uniform;
                 }
                 (Binding::Owned(a), Binding::Owned(b)) => {
+                    a.place.join_position_range(&b.place);
                     a.proof
                         .join(&b.proof, a.place.ty().components.len(), branch);
                     a.uniform &= b.uniform;

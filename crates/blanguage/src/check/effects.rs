@@ -18,6 +18,7 @@ impl Builder<'_> {
         name: &str,
         owner: &Place,
         iterator: Option<(&str, &Expr)>,
+        writes: &[Write<'_>],
     ) -> Result<Option<ComponentProjection>> {
         match &expr.kind {
             ExprKind::Name(root) => {
@@ -36,7 +37,7 @@ impl Builder<'_> {
             }
             ExprKind::Member(base, field) => {
                 let Some((ty, components)) =
-                    self.written_projection(base, name, owner, iterator)?
+                    self.written_projection(base, name, owner, iterator, writes)?
                 else {
                     return Ok(None);
                 };
@@ -47,8 +48,16 @@ impl Builder<'_> {
                 )))
             }
             ExprKind::Index(base, index) => {
-                if let Some(projection) = self.application_write_projection(base, owner) {
-                    return Ok(Some(projection));
+                if let Some((ty, mut components)) = self.application_write_projection(base, owner) {
+                    if let (Some(index), Place::ApplicationElement { index_range, .. }) =
+                        (self.constant_index(index, writes)?, owner.storage())
+                        && (index < index_range.0 || index > index_range.1)
+                    {
+                        for selected in &mut components {
+                            selected.clear();
+                        }
+                    }
+                    return Ok(Some((ty, components)));
                 }
                 if let ExprKind::Name(root) = &base.kind
                     && let Some(Binding::Data(view)) = self.env.get(root)
@@ -73,27 +82,14 @@ impl Builder<'_> {
                     return Ok(None);
                 }
                 let Some((ty, components)) =
-                    self.written_projection(base, name, owner, iterator)?
+                    self.written_projection(base, name, owner, iterator, writes)?
                 else {
                     return Ok(None);
                 };
                 let Some(element) = &ty.array else {
                     return Ok(None);
                 };
-                let constant = match &index.kind {
-                    ExprKind::StaticU32(value) => Some(*value),
-                    ExprKind::Number(text) => {
-                        let (ty, value) = number(&self.definition.source, index.span, text)?;
-                        (ty == Ty::scalar(Scalar::U32)).then_some(value)
-                    }
-                    ExprKind::Name(name) => match self.env.get(name) {
-                        Some(Binding::Value(value)) if value.ty == Ty::scalar(Scalar::U32) => {
-                            value.constant.as_ref().map(|bits| bits[0])
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                };
+                let constant = self.constant_index(index, writes)?;
                 let width = element.components.len();
                 let elements: Vec<_> = (0..ty.values[0] as usize)
                     .filter(|i| constant.is_none_or(|value| *i == value as usize))
@@ -110,6 +106,34 @@ impl Builder<'_> {
             }
             _ => Ok(None),
         }
+    }
+    fn constant_index(&self, index: &Expr, writes: &[Write<'_>]) -> Result<Option<u32>> {
+        Ok(match &index.kind {
+            ExprKind::StaticU32(value) => Some(*value),
+            ExprKind::Number(text) => {
+                let (ty, value) = number(&self.definition.source, index.span, text)?;
+                (ty == Ty::scalar(Scalar::U32)).then_some(value)
+            }
+            ExprKind::Name(name)
+                if !writes
+                    .iter()
+                    .any(|write| !write.contents && assigned_root(write.place) == Some(name)) =>
+            {
+                match self.env.get(name) {
+                    Some(Binding::Value(value)) if value.ty == Ty::scalar(Scalar::U32) => {
+                        value.constant.as_ref().map(|bits| bits[0])
+                    }
+                    Some(Binding::Owned(owner)) if *owner.place.ty() == Ty::scalar(Scalar::U32) => {
+                        owner
+                            .proof
+                            .known_value(owner.place.ty())
+                            .map(|bits| bits[0])
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
     }
     fn written_application_data(&self, expr: &Expr) -> Option<&application::Data> {
         if let ExprKind::Name(name) = &expr.kind
@@ -209,7 +233,7 @@ impl Builder<'_> {
                     let projection = if write.contents {
                         self.application_write_projection(write.place, &owner)
                     } else {
-                        self.written_projection(write.place, name, &owner, write.iterator)?
+                        self.written_projection(write.place, name, &owner, write.iterator, writes)?
                     };
                     if let Some((_, components)) = projection {
                         for component in components.into_iter().flatten() {
