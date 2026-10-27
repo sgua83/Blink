@@ -74,7 +74,7 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<u32>)
     let result = (|| {
         let definition = &world.functions[key];
         let ty = &definition.function.result;
-        if ty.dataset || ty.tile || ty.view || ty.name == "void" {
+        if ty.dataset || ty.tile || ty.view || ty.name == "void" || ty.is_never() {
             return definition.source.fail(
                 definition.function.span,
                 "B234",

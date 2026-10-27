@@ -46,7 +46,7 @@ pub(super) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
     for param in &d.function.params {
         value_type(world, d, &param.ty, param.span)?;
     }
-    if d.function.result.name != "void" {
+    if d.function.result.name != "void" && !d.function.result.is_never() {
         value_type(world, d, &d.function.result, d.function.span)?;
     }
     Ok(())
@@ -313,7 +313,7 @@ impl Builder<'_> {
                 _ => return self.fail(span, "B263", "C ABI 实参只接收普通值及实际位置"),
             });
         }
-        let result = if d.function.result.name == "void" {
+        let result = if d.function.result.name == "void" || d.function.result.is_never() {
             None
         } else {
             Some(value_type(
@@ -334,6 +334,10 @@ impl Builder<'_> {
             result: result.clone(),
             values: values.clone(),
         }));
+        if d.function.result.is_never() {
+            self.flow = Flow::STOP;
+            return Ok(None);
+        }
         for place in written {
             self.assign_owned_proof(&place, bounds::Proof::default(), false);
             self.initialize(&place);

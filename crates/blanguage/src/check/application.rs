@@ -58,7 +58,7 @@ pub(crate) fn compile_application(
 ) -> Result<crate::application::Application> {
     let d = &instance.definition;
     validate_signature(d)?;
-    let result = if d.function.result.name == "void" {
+    let result = if d.function.result.name == "void" || d.function.result.is_never() {
         None
     } else {
         Some(world.ty(

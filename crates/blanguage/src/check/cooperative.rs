@@ -368,8 +368,10 @@ impl<'a> Builder<'a> {
             })
             .collect();
         let result = self.inline_body(instance, args, span)?;
-        for name in held {
-            self.finish_scoped_argument(&name, span)?;
+        if self.flow.continues() {
+            for name in held {
+                self.finish_scoped_argument(&name, span)?;
+            }
         }
         Ok(result)
     }
@@ -591,38 +593,42 @@ impl<'a> Builder<'a> {
             value.literal = false;
         }
         self.calls.pop();
-        let updates: Vec<_> = borrowed
-            .iter()
-            .map(|(_, place)| self.borrow_owned(place.clone()))
-            .collect();
-        self.env = old_env;
-        for (data, scope) in &dataset_outputs {
-            self.initialized
-                .retain(|position| !position.uses_scope(*scope));
-            self.initialize_application(data);
-        }
-        let fresh_scopes: BTreeSet<_> = borrowed
-            .iter()
-            .zip(&updates)
-            .filter(|((access, _), _)| *access == Access::Write)
-            .flat_map(|(_, o)| o.initialization.iter().flatten())
-            .filter_map(|p| {
-                if let Position::Parameter(id, _) = p {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        self.initialized
-            .retain(|p| !fresh_scopes.iter().any(|scope| p.uses_scope(*scope)));
-        for (access, place) in &borrowed {
-            if *access == Access::Write {
-                self.initialize(place);
+        if self.flow.continues() {
+            let updates: Vec<_> = borrowed
+                .iter()
+                .map(|(_, place)| self.borrow_owned(place.clone()))
+                .collect();
+            self.env = old_env;
+            for (data, scope) in &dataset_outputs {
+                self.initialized
+                    .retain(|position| !position.uses_scope(*scope));
+                self.initialize_application(data);
             }
-        }
-        for owner in updates {
-            self.assign_owned_proof(&owner.place, owner.proof, owner.uniform);
+            let fresh_scopes: BTreeSet<_> = borrowed
+                .iter()
+                .zip(&updates)
+                .filter(|((access, _), _)| *access == Access::Write)
+                .flat_map(|(_, o)| o.initialization.iter().flatten())
+                .filter_map(|p| {
+                    if let Position::Parameter(id, _) = p {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.initialized
+                .retain(|p| !fresh_scopes.iter().any(|scope| p.uses_scope(*scope)));
+            for (access, place) in &borrowed {
+                if *access == Access::Write {
+                    self.initialize(place);
+                }
+            }
+            for owner in updates {
+                self.assign_owned_proof(&owner.place, owner.proof, owner.uniform);
+            }
+        } else {
+            self.env = old_env;
         }
         self.mutable_names = old_mutable_names;
         self.definition = old_definition;

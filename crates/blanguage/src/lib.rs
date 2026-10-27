@@ -467,6 +467,7 @@ fn load(
                 | "result"
                 | "texture2d"
                 | "void"
+                | "never"
         ) || ir::Ty::builtin(&record.name).is_some()
         {
             return source.fail(record.span, "B184", "记录名称不能覆盖内置类型");
@@ -503,6 +504,7 @@ fn load(
             || matches!(
                 set.name.as_str(),
                 "void"
+                    | "never"
                     | "dataset"
                     | "view"
                     | "tile"
@@ -658,6 +660,9 @@ impl World {
         }
         if name.name == "void" {
             return source.fail(span, "B228", "void 只能表示函数无返回值，不能作为数据类型");
+        }
+        if name.name == "never" {
+            return source.fail(span, "B228", "never 表示函数没有正常返回路径，不提供可存储的数据值");
         }
         if name.tile {
             return source.fail(

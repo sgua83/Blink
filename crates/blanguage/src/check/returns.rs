@@ -182,6 +182,15 @@ impl Builder<'_> {
                 "return 只能结束当前普通函数，不能退出 parallel 实例",
             );
         };
+        if self.definition.function.result.is_never() {
+            if let Some(expr) = expr {
+                self.evaluate_returned(expr, None)?;
+                if !self.flow.continues() {
+                    return Ok(());
+                }
+            }
+            return self.fail(span, "B228", "never 函数不能正常返回");
+        }
         let expected = context.expected.clone();
         let value = match (expected, expr) {
             (Some(Expected::Value(ty)), Some(expr)) => {
@@ -280,7 +289,9 @@ impl Builder<'_> {
     pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<Option<Returned>> {
         let definition = self.definition.clone();
         let name = &definition.function.result;
-        let expected = if name.name == "void" && !name.dataset && !name.tile && !name.view {
+        let expected = if (name.name == "void" && !name.dataset && !name.tile && !name.view)
+            || name.is_never()
+        {
             None
         } else {
             let ty = self.world.ty(
@@ -357,22 +368,19 @@ impl Builder<'_> {
             sequence = sequence.then(self.flow);
         }
         self.flow = sequence;
+        if name.is_never() && sequence.continues() {
+            return self.fail(
+                definition.function.span,
+                "B133",
+                "never 函数存在可以正常结束的路径",
+            );
+        }
         if sequence.continues() {
             if self.return_context.as_ref().unwrap().expected.is_some() {
                 return self.fail(
                     definition.function.span,
                     if body.is_empty() { "B132" } else { "B133" },
                     "函数存在未返回普通值的继续路径",
-                );
-            }
-            self.return_statement(None, definition.function.span)?;
-        }
-        if self.return_context.as_ref().unwrap().exits.is_empty() {
-            if self.return_context.as_ref().unwrap().expected.is_some() {
-                return self.fail(
-                    definition.function.span,
-                    "B133",
-                    "函数没有可交付普通值的返回路径",
                 );
             }
             self.return_statement(None, definition.function.span)?;
@@ -395,7 +403,10 @@ impl Builder<'_> {
         }
         self.initialized = initial;
         let mut exits = context.exits.into_iter();
-        let first = exits.next().unwrap();
+        let Some(first) = exits.next() else {
+            self.flow = Flow::STOP;
+            return Ok(None);
+        };
         let mut result = first.value;
         let mut borrowed = first.borrowed?;
         for exit in exits {

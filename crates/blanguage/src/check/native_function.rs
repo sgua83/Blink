@@ -384,7 +384,7 @@ impl Builder<'_> {
         contracts::prove(self, &requirements, span)?;
         instance.name = parameter_symbol(&instance.name, &interface);
         self.native_declaration(&instance, &interface)?;
-        let result = if d.function.result.name == "void" {
+        let result = if d.function.result.name == "void" || d.function.result.is_never() {
             None
         } else {
             let previous = std::mem::replace(&mut self.definition, d.clone());
@@ -403,6 +403,10 @@ impl Builder<'_> {
             result: result.clone(),
             values: values.clone(),
         }));
+        if d.function.result.is_never() {
+            self.flow = Flow::STOP;
+            return Ok(None);
+        }
         let prototype = self.application.as_ref().unwrap().functions.units[&instance.name]
             .as_ref()
             .map(|unit| {

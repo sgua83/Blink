@@ -1339,7 +1339,7 @@ fn checked_function(
             _ => None,
         })
         .collect();
-    let result = if d.function.result.name == "void" {
+    let result = if d.function.result.name == "void" || d.function.result.is_never() {
         None
     } else {
         Some(b.expected_storage(&d.function.result, d.function.span)?)

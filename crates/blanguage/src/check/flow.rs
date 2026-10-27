@@ -25,6 +25,7 @@ impl Place {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Flow(u8);
 impl Flow {
+    pub const STOP: Self = Self(0);
     pub const NEXT: Self = Self(1);
     pub const RETURN: Self = Self(2);
     pub const BREAK: Self = Self(4);

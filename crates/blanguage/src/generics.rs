@@ -142,6 +142,7 @@ pub(crate) fn validate_parameters(
             || matches!(
                 parameter.name.as_str(),
                 "void"
+                    | "never"
                     | "dataset"
                     | "view"
                     | "tile"

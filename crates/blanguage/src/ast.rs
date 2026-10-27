@@ -90,6 +90,14 @@ pub enum Shape {
     Constant(String),
 }
 impl TypeName {
+    pub fn is_never(&self) -> bool {
+        self.name == "never"
+            && self.arguments.is_empty()
+            && !self.dataset
+            && !self.view
+            && !self.tile
+            && self.count.is_none()
+    }
     pub fn mentions_owned(&self) -> bool {
         self.dataset
             || self
