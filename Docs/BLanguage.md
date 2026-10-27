@@ -208,9 +208,9 @@ u32 main() on cpu {
 
 ### 编译与链接的独立边界
 
-`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj] [--instance function<args>]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待编译的实现源码或值IR；独立模块携带其公开.h接口。
+`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待编译的实现源码或值IR；独立模块携带其公开.h接口。
 
-`bllink <input.obj> [module.obj ...] -o <output.exe|output.dll>` 只链接目标文件：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、blc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
+`bllink <input.obj> [module.obj|library.lib ...] -o <output.exe|output.dll>` 链接已编译对象及模块库：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、blc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
 
 编译时若需要执行框架，源码 SDK 使用现有 Rust 工具链把框架和 ABI 编译成静态目标代码，写进该目标文件；链接时只解析这些已经编译的代码及本机库依赖。当前每个目标文件是包含导入模块的一个完整应用或算法单元，不把这项能力写成通用多目标文件模块链接。`blc check` 与阶段代码导出 `blc build` 保留，不承担最终应用链接；旧的 `build-exe/build-dll` 合并命令已移除。
 
@@ -484,11 +484,29 @@ if (flags.index_ok && flags.divisor_ok) {
 .\target\modules\app.exe
 ```
 
-输出13。模块产物保存实际.h的公开声明／常量及已编译具体函数的布局、访问、结果／写后事实和原生符号；应用不需要该库的.h或.b文件。依赖模块分别通过重复的`--import`提供，最终链接显式列出需要的对象；缺失或不兼容的定义直接报错。未使用`--import`的原完整源码编译入口继续按原职责工作，不在导入失败后切换模式。
+输出13。模块产物保存实际.h的公开声明／常量及已编译具体函数的布局、访问、结果／写后事实和原生符号；应用不需要该库的.h或.b文件。依赖模块可通过重复的`--import`提供对象或下节的模块静态库，最终链接可列出对象及库，库成员按实际符号需求引入；缺失或不兼容的定义直接报错。未使用`--import`的原完整源码编译入口继续按原职责工作，不在导入失败后切换模式。
 
 模块导出公开的有限具体实例，开放泛型可以在模块编译时重复指定`--instance 'function<args>'`；尚未导出的开放实例不能靠装入私有源码临时生成。普通CPU函数可包含同步CPU／GPU程序、返回拥有资源，跨对象仍借用同一个Frame；显式upload／download、设备真实完成和最后消费者释放的语义保持。
 
 CPU普通位置的跨对象借用现按逻辑分量／声明布局直接交接原地址，不再依赖调用方物理映射实例。借用返回、一般拥有参数的CPU／GPU阶段合同、符号泛型模板、完整常量／依赖版本、设备普通跨模块调用及热更新尚未实现。含资源对象当前要求同一实际SDK／Rust执行框架ABI；这是当前私有表示的互操作限制，不是语言永久边界。链接不会编译实现或掩盖未知资源位置。
+
+## 模块静态库（2026-10-27）
+
+多个已编译独立模块可以保存为一个标准COFF库；同一语法用于导入和最终链接。例如，将上节的数学模块归档：
+
+```powershell
+.\target\release\blc.exe -c sample/beginner/math.b -I sample --module -o target/modules/math.obj
+.\target\release\bllink.exe --archive target/modules/math.obj -o target/modules/math.lib
+.\target\release\blc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.lib -o target/modules/app.obj
+.\target\release\bllink.exe target/modules/app.obj target/modules/math.lib -o target/modules/app.exe
+.\target\modules\app.exe
+```
+
+输出13。`bllink --archive <module.obj|library.lib>... -o <library.lib>`保留原成员对象字节，也可组合已有模块库；库不保存待编译实现。`--import`读取成员的原公开接口及已编译具体实例，库.h／.b无需分发；最终链接沿实际未解析符号及其成员依赖选择对象，只把选中成员的原生代码与资源交给原执行所有者。
+
+未使用成员的缺失依赖不会拖入应用，真正调用后仍须有实际定义。显式对象和库按真实符号绑定，库顺序决定首先引入的定义，合同不匹配直接拒绝，不搜索另一个“兼容实现”。同名成员文件以标准成员偏移区分，函数／模块名称仍区分大小写。CPU／GPU整域、拥有资源及明确导出的泛型实例沿同一合同和Frame交接；归档不增加隐式传输或运行时注册。
+
+Rust SDK的`blanguage::object::Input::read(...).objects()`、`blanguage::object::archive(...)`和`blanguage::linker::link_inputs(...)`使用相同实现。当前支持Microsoft COFF双链接成员目录中的B模块；BLCO成员保持版本4，资源模块仍遵守同一实际SDK／Rust ABI。一般外部C静态库绑定、符号泛型模板、完整版本依赖及热更新继续开放。
 
 ## 独立模块的整域CPU／GPU入口（2026-10-27）
 

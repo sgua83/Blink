@@ -1,5 +1,7 @@
 //! 编译完成的 Windows x64 COFF 目标文件；机器码、重定位和运行库均在编译阶段确定。
 mod archive;
+mod static_library;
+pub use static_library::{Input, archive};
 mod sdk_abi;
 pub(crate) use sdk_abi::identity as runtime_abi;
 mod coff;

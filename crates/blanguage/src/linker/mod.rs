@@ -5,19 +5,62 @@ mod pe;
 mod resources;
 use crate::{
     application::RUNTIME_LIBRARY,
-    object::{Kind, Object},
+    object::{Input, Kind, Object, Target},
 };
-use std::path::Path;
+use std::{
+    collections::{BTreeSet, VecDeque},
+    path::Path,
+};
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub fn link(input: &Path, output: &Path) -> Result<()> {
     link_inputs(&[input], output)
 }
 pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
-    let objects = inputs
+    let mut objects = Vec::new();
+    let mut libraries = Vec::new();
+    for input in inputs {
+        match Input::read(input.as_ref())? {
+            Input::Object(object) => objects.push(object),
+            Input::Library(library) => libraries.push(library),
+        }
+    }
+    let mut defined = objects
         .iter()
-        .map(|input| Object::read(input.as_ref()))
-        .collect::<Result<Vec<_>>>()?;
+        .flat_map(|o| o.symbols.iter().map(|s| s.name.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut pending = objects
+        .iter()
+        .flat_map(dependencies)
+        .map(str::to_owned)
+        .collect::<VecDeque<_>>();
+    while let Some(name) = pending.pop_front() {
+        if defined.contains(&name) {
+            continue;
+        }
+        for library in &mut libraries {
+            if let Some(object) = library.extract(&name)? {
+                defined.extend(object.symbols.iter().map(|s| s.name.clone()));
+                pending.extend(dependencies(&object).map(str::to_owned));
+                objects.push(object);
+                break;
+            }
+        }
+    }
     link_objects(objects, output)
+}
+// 库成员由实际未解析符号引入，后续合同及资源仍交给原组合所有者。
+fn dependencies(object: &Object) -> impl Iterator<Item = &str> {
+    object
+        .sections
+        .iter()
+        .flat_map(|s| &s.relocations)
+        .filter_map(|r| {
+            if let Target::Symbol(name, _) = &r.target {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        })
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(vec![object], path)

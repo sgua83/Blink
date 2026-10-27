@@ -13,7 +13,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
@@ -40,7 +40,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "-I" => root = PathBuf::from(value),
                 "--entry" => entry = value,
                 "--program" => program = Some(value.as_str()),
-                "--import" => imports.push(blanguage::object::Object::read(&PathBuf::from(value))?),
+                "--import" => imports
+                    .extend(blanguage::object::Input::read(&PathBuf::from(value))?.objects()?),
                 "--instance" => instances.push(value.clone()),
                 other => return Err(format!("未知编译选项 {other}").into()),
             }
