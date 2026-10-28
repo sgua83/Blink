@@ -1377,22 +1377,46 @@ impl Clause {
         self.required_in(&Facts::new())
     }
     fn required_in(&self, environment: &Facts) -> Option<Facts> {
-        let ordered = Self::ordered(std::slice::from_ref(self));
         let mut environment = environment.clone();
         loop {
-            let mut facts = BTreeMap::new();
-            for clause in &ordered {
-                let required = match &*clause.0 {
-                    ClauseNode::Impossible => None,
-                    ClauseNode::Facts(facts) => combine_facts(facts, &environment),
-                    ClauseNode::Both(a, b) => both_facts(&facts[&a.key()], &facts[&b.key()]),
-                    ClauseNode::Branch(parent, condition, truth) => both_facts(
-                        &facts[&parent.key()],
-                        &facts[&condition.cases[usize::from(*truth)].key()],
-                    ),
-                    ClauseNode::Either(a, b) => {
-                        either_facts(facts[&a.key()].clone(), facts[&b.key()].clone())
+            let mut facts: BTreeMap<usize, Option<Facts>> = BTreeMap::new();
+            let mut pending = vec![self];
+            while let Some(clause) = pending.pop() {
+                if facts.contains_key(&clause.key()) {
+                    continue;
+                }
+                let (left, right, alternative) = match &*clause.0 {
+                    ClauseNode::Impossible => {
+                        facts.insert(clause.key(), None);
+                        continue;
                     }
+                    ClauseNode::Facts(required) => {
+                        facts.insert(clause.key(), combine_facts(required, &environment));
+                        continue;
+                    }
+                    ClauseNode::Both(a, b) => (a, b, false),
+                    ClauseNode::Branch(parent, condition, truth) => {
+                        (parent, &condition.cases[usize::from(*truth)], false)
+                    }
+                    ClauseNode::Either(a, b) => (a, b, true),
+                };
+                let Some(a) = facts.get(&left.key()) else {
+                    pending.extend([clause, left]);
+                    continue;
+                };
+                // 合取的前提已不可能，另一侧没有本次查询的消费者。
+                if !alternative && a.is_none() {
+                    facts.insert(clause.key(), None);
+                    continue;
+                }
+                let Some(b) = facts.get(&right.key()) else {
+                    pending.extend([clause, right]);
+                    continue;
+                };
+                let required = if alternative {
+                    either_facts(a.clone(), b.clone())
+                } else {
+                    both_facts(a, b)
                 };
                 facts.insert(clause.key(), required);
             }
