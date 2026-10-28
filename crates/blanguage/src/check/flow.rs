@@ -290,6 +290,7 @@ impl Builder<'_> {
             self.loop_contexts.last_mut().unwrap().continues.push(state);
             return Ok(());
         }
+        let path=self.residency_path();
         let entry = &self.loop_contexts.last().unwrap().resources;
         for (name, binding) in &self.env {
             if let Binding::OwnedValue(result) = binding
@@ -308,6 +309,7 @@ impl Builder<'_> {
                         &mut self.residency,
                         &self.definition.source,
                         span,
+                        &path,
                     )
                 {
                     return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
@@ -329,6 +331,7 @@ impl Builder<'_> {
                         &data.residency,
                         &self.definition.source,
                         span,
+                        &path,
                     )
                 {
                     return self.fail(

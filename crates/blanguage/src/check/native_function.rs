@@ -405,6 +405,7 @@ impl Builder<'_> {
             let call = residency::Call {
                 function: instance.name.clone(),
                 arguments: locations.clone(),
+                path: self.residency_path(),
                 source: self.definition.source.clone(),
                 span,
             };
@@ -489,7 +490,7 @@ impl Builder<'_> {
             semantic+=regs.len();written_registers.insert(*index,regs);
         }
         view_arguments.extend(bindings.clone());
-        let view_call=if pending_view{Some(self.view_model.call(&instance.name,view_arguments,self.definition.source.clone(),span))}else{None};
+        let view_call=if pending_view{Some(self.view_model.call(&instance.name,view_arguments.clone(),self.definition.source.clone(),span))}else{None};
         for (index, place) in written {
             let mut proof = writes
                 .get(index)
@@ -502,7 +503,7 @@ impl Builder<'_> {
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();
                 let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
-                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations);}
+                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_place(&place,Returned::OwnedValue(value));
             }
             self.assign_owned_proof(&place, proof, false);
@@ -529,7 +530,7 @@ impl Builder<'_> {
             translate_returned(&mut returned, &model, &bindings);
             residency::returned(&mut returned, &locations);
         } else {
-            residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations);
+            residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations,&view_arguments);
         }
         if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
             for component in view_contracts::components(&value.ty){value.proof=value.proof.clone().with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Returned(component)));}
@@ -581,7 +582,7 @@ fn translate_returned(
                 bounds::Proof::capture(&value.length).with_domains(Domains::from([
                     IndexDomain::ApplicationLength(value.handle.identity()),
                 ]));
-            value.residency = model.residency.clone();
+            value.residency = model.residency.at_call(bindings);
             value.count = model.count;
         }
         (Returned::OwnedValue(value), Returned::OwnedValue(model)) => {

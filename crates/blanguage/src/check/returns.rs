@@ -51,6 +51,7 @@ impl Returned {
                 }
             }
             Self::Dataset(v) => {
+                v.residency=v.residency.output_bound(bindings);
                 value(&mut v.handle, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
             }
@@ -63,6 +64,14 @@ impl Returned {
             Self::Value(value) => value.regs.clone(),
             Self::Dataset(data) => vec![data.handle.regs[0], data.length.regs[0]],
         }
+    }
+    pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition){
+        fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition){match(target,a,b){
+            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone()),
+            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}},
+            _=>{},
+        }}
+        let before=self.clone();self.join(other.clone());restore(self,&before,&other,choice);
     }
     pub(super) fn join(&mut self, other: Self) {
         if matches!(self, Self::Unit) {
@@ -365,7 +374,7 @@ impl Builder<'_> {
         self.flow = Flow::RETURN;
         Ok(())
     }
-    pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<Option<Returned>> {
+    pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
         let entry = self.registers.len();
         let definition = self.definition.clone();
         let name = &definition.function.result;
@@ -487,7 +496,7 @@ impl Builder<'_> {
         let Some(first) = exits.next() else {
             self.flow = Flow::STOP;
             self.path = bounds::Clause::impossible();
-            return Ok(None);
+            return Ok((None,vec![None;definition.function.params.len()]));
         };
         let mut path = first.path;
         let mut result = first.value;
@@ -538,17 +547,20 @@ impl Builder<'_> {
                 &written,
                 entry,
             );
+            let choice=bounds::Condition::paths(self.path.clone(),path.clone());
             self.path = bounds::Clause::either(&self.path, &path);
             if let (Some(value), Some(other)) = (&mut result, other) {
-                value.join(other);
+                value.join_locations(other,&choice);
             }
             for (name, owner) in &mut borrowed {
                 let other = &other_borrowed[name];
-                owner.join(other.clone());
+                owner.join_locations(other.clone(),&choice);
             }
         }
-        for(name,mut model)in borrowed {
-            native_function::rebind_model(&mut model,written[&name].clone());
+        // 出口已分别检查并合流；不能再用最后解析分支的环境重建输出。
+        for(name,model)in &mut borrowed{native_function::rebind_model(model,written[name].clone());}
+        let output_models=definition.function.params.iter().map(|parameter|borrowed.get(&parameter.name).cloned()).collect();
+        for(name,model)in borrowed {
             let binding=match model {
                 Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize(&owner.place);Binding::Owned(owner)}
                 Returned::OwnedValue(mut value)=>{let place=self.env[&name].stored_place().unwrap();self.initialize(&place);value.place=Some(place);Binding::OwnedValue(value)}
@@ -561,7 +573,7 @@ impl Builder<'_> {
                 self.rebind_returned(value, registers);
             }
         }
-        Ok(result)
+        Ok((result,output_models))
     }
 }
 

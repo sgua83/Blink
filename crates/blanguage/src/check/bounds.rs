@@ -250,6 +250,29 @@ impl Proof {
                 .collect(),
         )
     }
+    pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
+        let mut proof=self.clone();
+        for sources in &mut proof.views {
+            sources.sources = sources.sources.iter().map(|source| source.bind_outputs(bindings)).collect();
+        }
+        for origins in &mut proof.origins {
+            for identity in origins {
+                *identity = output_identity(*identity, bindings);
+            }
+        }
+        for domains in &mut proof.domains {
+            *domains = domains
+                .iter()
+                .map(|d| output_domain(*d, bindings))
+                .collect();
+        }
+        for condition in proof.conditions.iter_mut().flatten() {
+            for case in &mut condition.cases {
+                *case = case.output_bound(bindings);
+            }
+        }
+        proof
+    }
     pub(super) fn bind_outputs(
         &mut self,
         ty: &Ty,
@@ -257,25 +280,7 @@ impl Proof {
         bindings: &OutputBindings,
         aliases: &Clause,
     ) {
-        for sources in &mut self.views {
-            sources.sources = sources.sources.iter().map(|source| source.bind_outputs(bindings)).collect();
-        }
-        for origins in &mut self.origins {
-            for identity in origins {
-                *identity = output_identity(*identity, bindings);
-            }
-        }
-        for domains in &mut self.domains {
-            *domains = domains
-                .iter()
-                .map(|d| output_domain(*d, bindings))
-                .collect();
-        }
-        for condition in self.conditions.iter_mut().flatten() {
-            for case in &mut condition.cases {
-                *case = case.output_bound(bindings);
-            }
-        }
+        *self=self.output_bound(bindings);
         if let Some(registers) = registers {
             self.origins.resize_with(registers.len(), Vec::new);
             for (origins, reg) in self.origins.iter_mut().zip(registers) {
@@ -1520,7 +1525,40 @@ fn maximums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
     }
     result
 }
+impl PartialEq for Condition {
+    fn eq(&self,other:&Self)->bool { self.cmp(other)==std::cmp::Ordering::Equal }
+}
+impl Eq for Condition {}
+impl PartialOrd for Condition {
+    fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}
+}
+impl Ord for Condition {
+    fn cmp(&self,other:&Self)->std::cmp::Ordering {
+        use crate::module::codec::Encode;
+        Proof::condition(self.clone()).bytes().cmp(&Proof::condition(other.clone()).bytes())
+    }
+}
+impl crate::module::codec::Encode for Condition {
+    fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&Proof::condition(self.clone()),w);}
+}
+impl crate::module::codec::Decode for Condition {
+    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
+        let proof=<Proof as crate::module::codec::Decode>::decode(r)?;
+        proof.conditions.into_iter().next().flatten().map(|value|*value).ok_or_else(||"模块资源位置缺少条件合同".into())
+    }
+}
 impl Condition {
+    pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
+    pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&*case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
+    pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
+    pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
+        Proof::condition(self.clone()).at_call(bindings).component_condition(0).unwrap().clone()
+    }
+    pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{Self{cases:self.cases.each_ref().map(|case|case.output_bound(bindings))}}
+    pub(super) fn assume(&self,path:&Clause,truth:bool)->Clause{Clause::both(path,&self.cases[usize::from(truth)])}
+    pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
+        if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
+    }
     pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Minimum(a,_)|Fact::Maximum(a,_)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
@@ -2409,6 +2447,7 @@ impl Builder<'_> {
         }
         self.env = environment;
     }
+    pub(super) fn residency_path(&self)->Clause{Clause::both(&self.path,&Clause::facts(environment_facts(&self.env)))}
     pub(super) fn condition_truth(&self,condition:&Condition,assuming:Option<&Condition>)->Option<bool>{
         let environment=environment_facts(&self.env);let mut path=self.path.clone();if let Some(assuming)=assuming{path=Clause::both(&path,&assuming.cases[1]);}
         if Clause::both(&path,&condition.cases[0]).required_in(&environment).is_none(){Some(true)}else if Clause::both(&path,&condition.cases[1]).required_in(&environment).is_none(){Some(false)}else{None}

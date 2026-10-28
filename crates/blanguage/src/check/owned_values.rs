@@ -75,6 +75,7 @@ impl OwnedValue {
         inputs: &mut residency::Inputs,
         source: &Source,
         span: Span,
+        path: &bounds::Clause,
     ) -> bool {
         self.ownership == other.ownership
             && self.payloads.iter().zip(&other.payloads).all(|(a, b)| {
@@ -82,10 +83,10 @@ impl OwnedValue {
                     (Some(Returned::Dataset(a)), Some(Returned::Dataset(b))) => {
                         a.ownership == b.ownership
                             && (a.ownership == Ownership::Moved
-                                || inputs.same(&a.residency, &b.residency, source, span))
+                                || inputs.same(&a.residency, &b.residency, source, span,path))
                     }
                     (Some(Returned::OwnedValue(a)), Some(Returned::OwnedValue(b))) => {
-                        a.loop_compatible(b, inputs, source, span)
+                        a.loop_compatible(b, inputs, source, span,path)
                     }
                     (None, Some(_)) => false,
                     _ => true,

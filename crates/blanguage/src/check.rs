@@ -1412,12 +1412,8 @@ fn checked_function(
     let requirements = contracts::resolve(&b, d, &b.env)?;
     contracts::assume(&mut b.env, &requirements);
     b.materialize_array_bindings();
-    let returned = b.function_body(d.function.body.as_ref().unwrap())?;
+    let (returned,written) = b.function_body(d.function.body.as_ref().unwrap())?;
     let output = returned.as_ref().map(|value| b.returned_storage(value));
-    let mut written=Vec::new();
-    for p in &d.function.params {
-        written.push(if matches!(p.access,Access::Write|Access::InOut) && !p.ty.dataset && !p.ty.tile {Some(b.written_model(&p.name,p.span)?)}else{None});
-    }
     let result = if d.function.result.name == "void" || d.function.result.is_never() {
         None
     } else {

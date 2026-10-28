@@ -628,7 +628,7 @@ impl<'a> Builder<'a> {
             None
         };
         self.calls.push(key);
-        let mut result = self.function_body(callee.function.body.as_ref().unwrap())?;
+        let (mut result,_) = self.function_body(callee.function.body.as_ref().unwrap())?;
         if let Some(returns::Returned::Value(value)) = &mut result {
             value.literal = false;
         }
