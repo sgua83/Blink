@@ -134,7 +134,7 @@ match (value) {
 
 ## 有载荷结果、分支与显式传播（2026-10-27）
 
-`result<T,E>` 分别声明成功和错误载荷。两种载荷都不拥有资源时，它是普通名义值，支持普通值及`void`，函数值载荷还可包含view；可嵌套结果、枚举、记录和内联数组。无view的普通值可用于模块const及dataset元素；含view的结果沿真实来源在函数参数／返回、普通位置借用、记录／数组和开放泛型间组合，不由此开放持久dataset中的变体view图。拥有 dataset 的结果按下节交接资源，不能按普通值复制。`void` 只在结果／变体分支中表示没有载荷，仍不能声明普通 void 数据；泛型可传递这个静态模型。
+`result<T,E>` 分别声明成功和错误载荷。两种载荷都不拥有资源时，它是普通名义值，支持普通值及`void`，函数值载荷还可包含view；可嵌套结果、枚举、记录和内联数组。无view的普通值可用于模块const及dataset元素；含view的结果沿真实来源在函数参数／返回、普通位置借用、记录／数组和开放泛型间组合，宿主持久dataset中的变体view图按本文末节的实际载荷和资源所有权绑定，源B保持只读消费。拥有 dataset 的结果按下节交接资源，不能按普通值复制。`void` 只在结果／变体分支中表示没有载荷，仍不能声明普通 void 数据；泛型可传递这个静态模型。
 
 ```c
 enum Error : u32 { Denied = 7; };
@@ -3525,4 +3525,20 @@ result<view<Row>,u32> choose(read dataset<Row> rows,bool active) on cpu {
 
 变体使用原判别字与重叠存储。某分支没有view是实际已知状态，与未知返回来源不同；纯Err／Empty可以形成合法来源合同，无正常来源的纯递归仍报B271。实际资源来源保存在原Data叶，Proof只记录类型中真实view的来源，资源输入按声明类型中的叶顺序命名，避免重叠句柄与view共享标量槽时混淆。
 
-CPU普通函数与独立B对象／归档交付相同合同；compute／GPU普通函数也可在已有宿主只读图上组合这些view值，不能据此构造持久变体view存储。当前BLCO7增加必要的编译来源身份，旧对象须重编；BLRI2、view的16字节／对齐8布局、原Frame与最后CPU／GPU消费者保持。自包含拥有view图、应用内GPU view构造、持久dataset中的变体view图、整份拥有聚合write／inout、动态容器、异步／远端和版本迁移继续开放。
+CPU普通函数与独立B对象／归档交付相同合同；compute／GPU普通函数也可在已有宿主只读图上组合这些view值，持久变体view存储由宿主按下一节绑定，普通值本身不拥有该图。当前BLCO7增加必要的编译来源身份，旧对象须重编；BLRI2、view的16字节／对齐8布局、原Frame与最后CPU／GPU消费者保持。自包含拥有view图、应用内GPU view构造、整份拥有聚合write／inout、动态容器、异步／远端和版本迁移继续开放。
+
+## 持久dataset中的变体view（2026-10-28）
+
+宿主现在可以按实际活动载荷，在不可变dataset中保存enum／Result的view及其记录、固定数组、间接view组合。源B通过原read dataset／view读取、match、普通函数和有界索引消费；仍不能写入view元数据、数值伪造地址或借此取得可写资源。例如：
+
+```b
+struct Row {u32 x;u32 y;};
+enum Ref:u32 {Empty=0;Some(view<Row>)=7;Number(u32)=19;};
+struct Node {array<Ref,2> entries;result<view<Row>,u32> answer;};
+```
+
+原Dataset::for_view通过声明路径取得某个分支的子元素类型。with_views只接收该记录真实活动路径，例如entries[0].Some或answer.Ok；空分支没有引用，不需要伪造占位源。数组下标、字段与分支名称共用原Ty布局，名称保持大小写；Some和其他分支即使复用相同字节，也不能互相替代实际活动路径。
+
+CPU仍以freeze交还真实不可变所有权，并通过with_views绑定子资源。GPU可上传闭合CPU图，或以upload_with_views绑定已经属于该逻辑设备的GPU子资源；download重新绑定真实主机来源。父与子资源、共享来源及最后CPU／GPU消费者沿原所有者持有，传输不从物理地址反向推导拥有权。读取原始字节不等于拥有引用，words_mut会放弃原图；活动view须重新绑定，无view分支则无子资源可要求。
+
+真实判别字决定每条记录的引用位置与数量；含多个view的分支、普通数值分支、负编号枚举及Root Result／数组遵守同一规则。bindings只记录实际字偏移和原source索引，CPU与GPU地址在相应目标的真实位置编码，跨页不改变声明布局。BLCO7／BLRI2及view的16字节／对齐8机器表示保持。当前宿主入口为原生Rust API；普通C ABI／算法DLL、自包含拥有图、应用内GPU构造、可写view和异步／远端按各自未完成范围记录。

@@ -26,19 +26,7 @@ pub(super) struct Function {
     pub uses:Vec<Use>,
 }
 pub(super) fn components(ty:&Ty)->BTreeSet<usize> {
-    fn visit(ty:&Ty,offset:u32,into:&mut BTreeSet<u32>) {
-        if ty.view.is_some(){into.insert(offset);return;}
-        if ty.has_variants(){let payload=ir::align_up(4,ty.align);for variant in &ty.variants{visit(&variant.ty,offset+payload,into);}}
-        else if let Some(element)=&ty.array{let stride=ir::align_up(element.size,element.align);for i in 0..ty.values[0]{visit(element,offset+i*stride,into);}}
-        else{for(_,at,field)in &ty.fields{visit(field,offset+at,into);}}
-    }
-    let mut offsets=BTreeSet::new();visit(ty,0,&mut offsets);
-    offsets.into_iter().map(|offset|ty.components.iter().position(|(_,at)|*at==offset).unwrap()).collect()
-}
-// 宿主持久图沿固定view字段持有真实引用；重叠载荷不能伪装成固定字段。
-pub(super) fn stored_views(ty:&Ty)->bool {
-    let fields=ty.view_fields();
-    components(ty).len()==fields.len() && fields.iter().all(|(_,element)|stored_views(element))
+    ty.view_fields().into_iter().map(|(offset,_)|ty.components.iter().position(|(_,at)|*at==offset).unwrap()).collect()
 }
 pub(super) fn pending(proof:&bounds::Proof,ty:&Ty)->bool {
     components(ty).into_iter().any(|component|{let borrow=proof.view_borrow(component);borrow.empty()||borrow.pending()||borrow.sources.contains(&Origin::Unresolved)})

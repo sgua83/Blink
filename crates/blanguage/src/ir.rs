@@ -335,7 +335,12 @@ impl Ty {
             || self.array.as_ref().is_some_and(|t| t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
     }
+    /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
     pub fn view_fields(&self) -> Vec<(u32, &Ty)> {
+        if self.has_variants() {
+            let payload=align_up(4,self.align);
+            return self.variants.iter().flat_map(|variant|variant.ty.view_fields().into_iter().map(move |(at,ty)|(payload+at,ty))).collect();
+        }
         if let Some(element) = &self.view {
             return vec![(0, element.as_ref())];
         }
@@ -359,16 +364,42 @@ impl Ty {
             })
             .collect()
     }
-    pub fn field(&self, path: &str) -> Option<(u32, &Ty)> {
+    /// 只遍历本条记录的实际活动载荷，引用子存储由其自身类型和所有者处理。
+    pub fn visit_view_fields<'a>(&'a self, words:&[u32], mut field:impl FnMut(u32,&'a Ty))->Result<(),String> {
+        fn visit<'a>(ty:&'a Ty,base:u32,words:&[u32],field:&mut impl FnMut(u32,&'a Ty))->Result<(),String> {
+            if !ty.contains_views(){return Ok(());}
+            if let Some(element)=&ty.view {field(base,element);}
+            else if ty.has_variants(){
+                let tag=words[base as usize/4];
+                let variant=ty.variants.iter().find(|variant|variant.discriminant==tag).ok_or_else(||format!("{}的活动变体编号{}没有声明的载荷",ty.name,tag))?;
+                visit(&variant.ty,base+align_up(4,ty.align),words,field)?;
+            }else if let Some(element)=&ty.array {
+                let stride=align_up(element.size,element.align);
+                for i in 0..ty.values[0]{visit(element,base+i*stride,words,field)?;}
+            }else{for(_,offset,ty)in &ty.fields{visit(ty,base+offset,words,field)?;}}
+            Ok(())
+        }
+        visit(self,0,words,&mut field)
+    }
+    pub fn field(&self, path: &str) -> Option<(u32, &Ty)> {self.field_in(path,None)}
+    /// 与field共用声明路径，在绑定原生引用时同时选择实际活动分支。
+    pub fn field_at(&self,path:&str,words:&[u32])->Option<(u32,&Ty)> {self.field_in(path,Some(words))}
+    fn field_in(&self, path:&str, words:Option<&[u32]>)->Option<(u32,&Ty)> {
         let mut ty = self;
         let mut offset = 0;
         for part in path.split('.') {
             let split = part.find('[').unwrap_or(part.len());
             let (name, mut indices) = part.split_at(split);
             if !name.is_empty() {
-                let (_, at, field) = ty.fields.iter().find(|(n, _, _)| n == name)?;
-                offset += at;
-                ty = field.as_ref();
+                if ty.has_variants(){
+                    let variant=ty.variants.iter().find(|variant|variant.name==name)?;
+                    if let Some(words)=words && words.get(offset as usize/4).copied()!=Some(variant.discriminant){return None;}
+                    offset+=align_up(4,ty.align);ty=&variant.ty;
+                }else{
+                    let (_, at, field) = ty.fields.iter().find(|(n, _, _)| n == name)?;
+                    offset += at;
+                    ty = field.as_ref();
+                }
             } else if indices.is_empty() {
                 return None;
             }

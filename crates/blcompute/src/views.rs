@@ -18,7 +18,8 @@ impl ReadDataset {
 /// 每个记录按类型声明顺序索引真实来源；执行地址由此图降低，不反向解析地址。
 pub(crate) struct Views<Source> {
     pub sources: Vec<Source>,
-    pub bindings: Vec<usize>,
+    // 按实际存储字偏移排序；仍由同一引用图持有原source索引。
+    pub bindings: Vec<(usize,usize)>,
 }
 impl<Source> Default for Views<Source> {
     fn default() -> Self {
@@ -33,23 +34,12 @@ impl<Source> Views<Source> {
         self.bindings.clear();
         self.sources.clear();
     }
-    pub fn encode(
-        &self,
-        fields: &[u32],
-        stride_words: usize,
-        base_record: usize,
-        words: &mut [u32],
-        headers: &[[u32; 3]],
-    ) {
-        if fields.is_empty() {
-            return;
-        }
-        for (record, words) in words.chunks_mut(stride_words).enumerate() {
-            let start = (base_record + record) * fields.len();
-            for (field, offset) in fields.iter().enumerate() {
-                let at = *offset as usize / 4;
-                words[at..at + 3].copy_from_slice(&headers[self.bindings[start + field]]);
-            }
+    pub fn encode(&self,base_word:usize,words:&mut[u32],headers:&[[u32;3]]) {
+        let start=self.bindings.partition_point(|(word,_)|*word<base_word);
+        let end=base_word+words.len();
+        for &(word,source)in self.bindings[start..].iter().take_while(|(word,_)|*word<end){
+            let at=word-base_word;
+            words[at..at+3].copy_from_slice(&headers[source]);
         }
     }
 }
@@ -82,12 +72,6 @@ impl Dataset {
     }
 
     pub(crate) fn attach_views(&mut self, views: Views<ReadDataset>) {
-        let fields: Vec<_> = self
-            .ty
-            .view_fields()
-            .iter()
-            .map(|(offset, _)| *offset)
-            .collect();
         let headers: Vec<_> = views
             .sources
             .iter()
@@ -96,8 +80,7 @@ impl Dataset {
                 [address as u32, (address >> 32) as u32, source.0.count]
             })
             .collect();
-        let stride = self.stride as usize / 4;
-        views.encode(&fields, stride, 0, self.words_mut(), &headers);
+        views.encode(0,self.words_mut(),&headers);
         self.views = views;
     }
 
@@ -106,35 +89,24 @@ impl Dataset {
         views: Vec<ViewBinding<'_, Source>>,
         source: impl for<'a> Fn(&'a Source) -> Result<(&'a Ty, usize)>,
     ) -> Result<Views<Source>> {
-        let fields: BTreeMap<_, _> = self
-            .ty
-            .view_fields()
-            .iter()
-            .enumerate()
-            .map(|(i, (offset, _))| (*offset, i))
-            .collect();
-        if views.len() as u64 != fields.len() as u64 * self.count as u64 {
-            return Err(error("view 字段必须逐记录绑定真实的不可变数据"));
+        let stride=self.stride as usize/4;
+        let mut references=Views{sources:Vec::new(),bindings:Vec::with_capacity(views.len())};
+        for(record,words)in self.words.chunks(stride).enumerate(){
+            self.ty.visit_view_fields(words,|offset,_|references.bindings.push((record*stride+offset as usize/4,usize::MAX))).map_err(error)?;
         }
+        if views.len()!=references.bindings.len(){return Err(error("view字段必须按各记录的实际活动载荷绑定真实不可变数据"));}
         let mut identities = BTreeMap::new();
-        let mut references = Views {
-            sources: Vec::new(),
-            bindings: vec![usize::MAX; views.len()],
-        };
         for view in views {
-            let (offset, ty) = self
-                .ty
-                .field(view.field)
-                .ok_or_else(|| error(format!("未知 view 字段 {}", view.field)))?;
-            if view.record >= self.count {
-                return Err(error("view 的记录范围与数据不一致"));
-            }
+            if view.record >= self.count {return Err(error("view的记录范围与数据不一致"));}
+            let begin=view.record as usize*stride;
+            let (offset,ty)=self.ty.field_at(view.field,&self.words[begin..begin+stride]).ok_or_else(||error(format!("view字段{}不属于该记录的实际活动载荷",view.field)))?;
             let (element, identity) = source(&view.source)?;
             if ty.view.as_deref() != Some(element) {
                 return Err(error("view 的元素类型与绑定存储不一致"));
             }
-            let binding = view.record as usize * fields.len() + fields[&offset];
-            if references.bindings[binding] != usize::MAX {
+            let index=references.bindings.binary_search_by_key(&(begin+offset as usize/4),|(word,_)|*word).unwrap();
+            let binding=&mut references.bindings[index].1;
+            if *binding != usize::MAX {
                 return Err(error("view 字段重复绑定"));
             }
             let index = if let Some(index) = identities.get(&identity) {
@@ -145,16 +117,18 @@ impl Dataset {
                 references.sources.push(view.source);
                 index
             };
-            references.bindings[binding] = index;
+            *binding = index;
         }
         Ok(references)
     }
 
     pub(crate) fn require_views(&self) -> Result<()> {
-        if self.count != 0 && self.ty.contains_views() && self.views.sources.is_empty() {
-            return Err(error(
-                "CPU view 数据缺少真实子资源所有权；原始字节不能代替 with_views 绑定",
-            ));
+        if self.ty.contains_views() && self.views.sources.is_empty(){
+            for words in self.words.chunks(self.stride as usize/4){
+                let mut present=false;
+                self.ty.visit_view_fields(words,|_,_|present=true).map_err(error)?;
+                if present{return Err(error("CPU view数据缺少实际子资源所有权；原始字节不能代替with_views绑定"));}
+            }
         }
         Ok(())
     }

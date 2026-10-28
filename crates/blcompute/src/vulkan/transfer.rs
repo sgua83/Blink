@@ -95,12 +95,6 @@ impl Device {
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
         let words_per_page = target.page_records() as usize * target.stride as usize / 4;
-        let fields: Vec<_> = target
-            .ty
-            .view_fields()
-            .iter()
-            .map(|(offset, _)| *offset)
-            .collect();
         let headers: Vec<_> = target
             .views
             .sources
@@ -121,9 +115,7 @@ impl Device {
                 words,
                 |mapped| {
                     target.views.encode(
-                        &fields,
-                        target.stride as usize / 4,
-                        index * target.page_records() as usize,
+                        index * words_per_page,
                         mapped,
                         &headers,
                     );

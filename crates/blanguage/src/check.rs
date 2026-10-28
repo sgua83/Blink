@@ -320,9 +320,6 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
             );
         }
         if p.ty.dataset {
-            if !view_contracts::stored_views(&ty) {
-                return d.source.fail(p.span,"B185","持久dataset的view图需要固定字段；变体view载荷当前只支持函数值");
-            }
             if p.access == Access::Value {
                 return d.source.fail(
                     p.span,

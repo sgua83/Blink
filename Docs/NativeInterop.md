@@ -175,3 +175,11 @@ PA3 Release已验证无库.h／.b的对象及归档消费，CPU／GPU完整双�
 PA3 Release已移走库.h／.b，通过对象与静态库导入Mixed、Work及Result的实际借用合同，覆盖零条、一条、六十五条和一百万零三条双字段记录，且从导入合同拒绝活动view期间的来源写入。公开合同保持的私有计算从1改为2后，原调用目标文件SHA256保持，直接重链得到新结果。CPU／GPU普通函数另在真实只读宿主图上核对view变体与Result，不宣称持久变体view图已交付。
 
 该能力属于B模块合同，普通extern C及算法DLL仍按各自接口边界。自包含拥有view图、应用内GPU构造、整份拥有聚合write／inout、动态部分移动／容器、完整资源阶段、异步／远端与版本迁移仍开放。前节BLCO6与当轮“尚未开放组合”是历史交付范围，当前范围以本节及语言规范为准。
+
+### 宿主持久变体view图（2026-10-28）
+
+原生Rust的Dataset::for_view、with_views／freeze及Device::upload／upload_with_views／download现可交接enum／Result及记录／固定数组中的实际活动view和间接子图。字段路径包含声明的分支名称，例如item.Some、entries[0].Some.rows及answer.Ok；声明路径只确定类型，实际绑定同时消费记录中的真实判别字。无view分支不要求子资源，未激活载荷不绑定，重叠的数值载荷不被地址覆盖。
+
+原Views继续持有实际共享子资源，bindings从固定字段序号改为实际排序字偏移及原source索引，不增加图注册、活动表或Frame。CPU／GPU地址仅在真实引用位置编码，分页上传和下载沿同一表交接；显式传输及真实完成仍归原运行库。编译器候选字段与宿主活动字段均来自Ty，删除原固定持久图限制及重复遍历；BLCO7／BLRI2、机器view及普通C／算法DLL边界保持。
+
+PA3 Release已完成二十三组CPU→GPU→CPU完整记录及根数组、Result、负编号枚举，百万大记录实际跨GPU两页；GPU直接绑定、十一项真实资源拒绝及十六轮原生提交／完成／释放通过。另以无库.h／.b的对象和归档交接原B函数view合同，原调用对象SHA256保持并在仅更新公开合同不变的私有计算后直接重链。后一事实不表示C已经支持持久图；普通extern C／算法DLL、B应用内图构造与完整三方SDK仍依各自范围推进。原始记录见Issues。
