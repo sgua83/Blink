@@ -1,6 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 pub(super) fn seeks(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match &statement.kind {
@@ -30,6 +30,12 @@ enum Fact {
     Zero(ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
+// 原事实在查询期间借用；实际合并的结果由本轮共享图持有到最后消费。
+type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
+struct QueryResult<'a> {
+    users: usize,
+    value: Option<Option<QueryFacts<'a>>>,
+}
 type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
 fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
     bindings.get(&identity).copied().unwrap_or(identity)
@@ -831,11 +837,13 @@ impl Proof {
                 facts.insert(Fact::equal(pair[0], pair[1]));
             }
             for &identity in origins {
+                // 环境快照只交付已有事实；完整条件在实际分支消费处求解。
+                // 不为每个布尔值及其别名重新求解已经持有的整张条件图。
                 if *scalar == Scalar::Bool
                     && let Some(condition) = self.component_condition(component)
                 {
                     for truth in [false, true] {
-                        if !condition.cases[usize::from(!truth)].possible() {
+                        if matches!(&*condition.cases[usize::from(!truth)].0, ClauseNode::Impossible) {
                             facts.insert(Fact::Boolean(identity, truth));
                         }
                     }
@@ -1071,9 +1079,9 @@ fn equality_roots(facts: &Facts) -> BTreeMap<ValueIdentity, ValueIdentity> {
     }
     roots
 }
-fn equivalent_facts(mut facts: Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> Facts {
+fn equivalent_facts<'a>(mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> QueryFacts<'a> {
     let mut inferred = Facts::new();
-    for fact in &facts {
+    for fact in facts.iter() {
         if let Some(identity) = fact.identity()
             && let Some(root) = roots.get(&identity)
         {
@@ -1081,11 +1089,14 @@ fn equivalent_facts(mut facts: Facts, roots: &BTreeMap<ValueIdentity, ValueIdent
                 roots
                     .iter()
                     .filter(|(_, group)| *group == root)
-                    .map(|(id, _)| fact.at(*id)),
+                    .map(|(id, _)| fact.at(*id))
+                    .filter(|fact| !facts.contains(fact)),
             );
         }
     }
-    facts.extend(inferred);
+    if !inferred.is_empty() {
+        Arc::make_mut(&mut facts).to_mut().extend(inferred);
+    }
     facts
 }
 impl Proof {
@@ -1413,6 +1424,40 @@ impl Clause {
             _ => Self(Arc::new(ClauseNode::Either(a.clone(), b.clone()))),
         }
     }
+    fn query_inputs(&self) -> Option<(&Self, &Self, bool)> {
+        match &*self.0 {
+            ClauseNode::Both(a, b) => Some((a, b, false)),
+            ClauseNode::Branch(parent, condition, truth) =>
+                Some((parent, &condition.cases[usize::from(*truth)], false)),
+            ClauseNode::Either(a, b) => Some((a, b, true)),
+            _ => None,
+        }
+    }
+    fn take_query<'a>(results: &mut BTreeMap<usize, QueryResult<'a>>, clause: &Self) -> Option<QueryFacts<'a>> {
+        let result = results.get_mut(&clause.key()).unwrap();
+        result.users -= 1;
+        if result.users == 0 {
+            results.remove(&clause.key()).unwrap().value.unwrap()
+        } else {
+            result.value.as_ref().unwrap().clone()
+        }
+    }
+    // 未求值的右侧也归还自己的输入使用；已经求值的节点已经消费过输入。
+    fn abandon_query<'a>(results: &mut BTreeMap<usize, QueryResult<'a>>, clause: &Self) {
+        let mut pending = vec![clause];
+        while let Some(clause) = pending.pop() {
+            let result = results.get_mut(&clause.key()).unwrap();
+            result.users -= 1;
+            if result.users == 0 {
+                let result = results.remove(&clause.key()).unwrap();
+                if result.value.is_none()
+                    && let Some((left, right, _)) = clause.query_inputs()
+                {
+                    pending.extend([left, right]);
+                }
+            }
+        }
+    }
     fn key(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }
@@ -1482,53 +1527,64 @@ impl Clause {
     fn required(&self) -> Option<Facts> {
         self.required_in(&Facts::new())
     }
-    fn required_in(&self, environment: &Facts) -> Option<Facts> {
-        let mut environment = environment.clone();
+    fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<Facts> {
+        let ordered = Self::ordered(std::slice::from_ref(self));
+        let mut environment: QueryFacts<'a> = Arc::new(Cow::Borrowed(environment));
         loop {
-            let mut facts: BTreeMap<usize, Option<Facts>> = BTreeMap::new();
+            let mut facts: BTreeMap<usize, QueryResult<'a>> = ordered.iter()
+                .map(|clause| (clause.key(), QueryResult { users: 0, value: None }))
+                .collect();
+            facts.get_mut(&self.key()).unwrap().users = 1;
+            for clause in &ordered {
+                if let Some((left, right, _)) = clause.query_inputs() {
+                    facts.get_mut(&left.key()).unwrap().users += 1;
+                    facts.get_mut(&right.key()).unwrap().users += 1;
+                }
+            }
             let mut pending = vec![self];
             while let Some(clause) = pending.pop() {
-                if facts.contains_key(&clause.key()) {
+                if facts[&clause.key()].value.is_some() {
                     continue;
                 }
-                let (left, right, alternative) = match &*clause.0 {
+                match &*clause.0 {
                     ClauseNode::Impossible => {
-                        facts.insert(clause.key(), None);
+                        facts.get_mut(&clause.key()).unwrap().value = Some(None);
                         continue;
                     }
                     ClauseNode::Facts(required) => {
-                        facts.insert(clause.key(), combine_facts(required, &environment));
+                        let required: QueryFacts<'a> = Arc::new(Cow::Borrowed(required));
+                        let value = combine_facts(required, environment.clone());
+                        facts.get_mut(&clause.key()).unwrap().value = Some(value);
                         continue;
                     }
-                    ClauseNode::Both(a, b) => (a, b, false),
-                    ClauseNode::Branch(parent, condition, truth) => {
-                        (parent, &condition.cases[usize::from(*truth)], false)
-                    }
-                    ClauseNode::Either(a, b) => (a, b, true),
-                };
-                let Some(a) = facts.get(&left.key()) else {
+                    _ => {}
+                }
+                let (left, right, alternative) = clause.query_inputs().unwrap();
+                if facts[&left.key()].value.is_none() {
                     pending.extend([clause, left]);
                     continue;
-                };
+                }
                 // 合取的前提已不可能，另一侧没有本次查询的消费者。
-                if !alternative && a.is_none() {
-                    facts.insert(clause.key(), None);
+                if !alternative && facts[&left.key()].value.as_ref().unwrap().is_none() {
+                    Self::take_query(&mut facts, left);
+                    Self::abandon_query(&mut facts, right);
+                    facts.get_mut(&clause.key()).unwrap().value = Some(None);
                     continue;
                 }
-                let Some(b) = facts.get(&right.key()) else {
+                if facts[&right.key()].value.is_none() {
                     pending.extend([clause, right]);
                     continue;
-                };
-                let required = if alternative {
-                    either_facts(a.clone(), b.clone())
-                } else {
-                    both_facts(a, b)
-                };
-                facts.insert(clause.key(), required);
+                }
+                let a = Self::take_query(&mut facts, left);
+                let b = Self::take_query(&mut facts, right);
+                let required = if alternative { either_facts(a, b) } else { both_facts(a, b) };
+                facts.get_mut(&clause.key()).unwrap().value = Some(required);
             }
-            let required = facts.remove(&self.key()).unwrap()?;
+            let required = Self::take_query(&mut facts, self)?;
             if required == environment {
-                return Some(required);
+                drop(facts);
+                drop(environment);
+                return Some(Arc::unwrap_or_clone(required).into_owned());
             }
             environment = required;
         }
@@ -1554,18 +1610,22 @@ fn contradictory(facts: &Facts) -> bool {
         .iter()
         .any(|(id, upper)| lower.get(id).is_some_and(|lower| lower > upper))
 }
-fn both_facts(a: &Option<Facts>, b: &Option<Facts>) -> Option<Facts> {
-    combine_facts(a.as_ref()?, b.as_ref()?)
+fn both_facts<'a>(a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
+    combine_facts(a?, b?)
 }
-fn combine_facts(a: &Facts, b: &Facts) -> Option<Facts> {
-    let facts: Facts = a.union(b).copied().collect();
-    if contradictory(&facts) {
-        None
+fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<QueryFacts<'a>> {
+    let facts = if a.is_subset(&b) {
+        b
+    } else if b.is_subset(&a) {
+        a
     } else {
-        Some(facts)
-    }
+        if a.len() < b.len() { std::mem::swap(&mut a, &mut b); }
+        Arc::make_mut(&mut a).to_mut().extend(b.iter().copied());
+        a
+    };
+    if contradictory(&facts) { None } else { Some(facts) }
 }
-fn either_facts(a: Option<Facts>, b: Option<Facts>) -> Option<Facts> {
+fn either_facts<'a>(a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
     match (a, b) {
         (Some(a), Some(b)) => {
             let left = equality_roots(&a);
@@ -1603,7 +1663,7 @@ fn either_facts(a: Option<Facts>, b: Option<Facts>) -> Option<Facts> {
                     common.insert(Fact::Minimum(identity, lower.min(*other)));
                 }
             }
-            Some(common)
+            Some(Arc::new(Cow::Owned(common)))
         }
         (a, None) | (None, a) => a,
     }
