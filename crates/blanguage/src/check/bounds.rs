@@ -1,6 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, sync::Arc};
 
 pub(super) fn seeks(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match &statement.kind {
@@ -1443,7 +1443,7 @@ impl Clause {
             _ => None,
         }
     }
-    fn take_query<'a>(results: &mut BTreeMap<usize, QueryResult<'a>>, clause: &Self) -> Option<QueryFacts<'a>> {
+    fn take_query<'a>(results: &mut HashMap<usize, QueryResult<'a>>, clause: &Self) -> Option<QueryFacts<'a>> {
         let result = results.get_mut(&clause.key()).unwrap();
         result.users -= 1;
         if result.users == 0 {
@@ -1453,7 +1453,7 @@ impl Clause {
         }
     }
     // 未求值的右侧也归还自己的输入使用；已经求值的节点已经消费过输入。
-    fn abandon_query<'a>(results: &mut BTreeMap<usize, QueryResult<'a>>, clause: &Self) {
+    fn abandon_query<'a>(results: &mut HashMap<usize, QueryResult<'a>>, clause: &Self) {
         let mut pending = vec![clause];
         while let Some(clause) = pending.pop() {
             let result = results.get_mut(&clause.key()).unwrap();
@@ -1474,7 +1474,7 @@ impl Clause {
     // 按子节点在先的顺序只访问每个共享节点一次，不展开路径的笛卡尔积。
     fn ordered(roots: &[Self]) -> Vec<&Self> {
         let mut pending: Vec<_> = roots.iter().rev().map(|root| (root, false)).collect();
-        let mut visited = BTreeSet::new();
+        let mut visited = HashSet::new();
         let mut ordered = Vec::new();
         while let Some((clause, ready)) = pending.pop() {
             if visited.contains(&clause.key()) {
@@ -1544,7 +1544,7 @@ impl Clause {
             if contradictory(&environment) {
                 return None;
             }
-            let mut facts: BTreeMap<usize, QueryResult<'a>> = ordered.iter()
+            let mut facts: HashMap<usize, QueryResult<'a>> = ordered.iter()
                 .map(|clause| (clause.key(), QueryResult { users: 0, value: None }))
                 .collect();
             facts.get_mut(&self.key()).unwrap().users = 1;
