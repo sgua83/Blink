@@ -30,7 +30,7 @@ enum Fact {
     Zero(ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
-// 原事实在查询期间借用；实际合并的结果由本轮共享图持有到最后消费。
+// 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
 type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
 struct QueryResult<'a> {
     users: usize,
@@ -1061,7 +1061,7 @@ impl Fact {
         }
     }
 }
-fn equality_roots(facts: &Facts) -> BTreeMap<ValueIdentity, ValueIdentity> {
+fn equality_roots<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, ValueIdentity> {
     let mut roots = BTreeMap::new();
     for fact in facts {
         if let Fact::Equal(a, b) = *fact {
@@ -1079,9 +1079,9 @@ fn equality_roots(facts: &Facts) -> BTreeMap<ValueIdentity, ValueIdentity> {
     }
     roots
 }
-fn equivalent_facts<'a>(mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> QueryFacts<'a> {
+fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> QueryFacts<'a> {
     let mut inferred = Facts::new();
-    for fact in facts.iter() {
+    for fact in environment.union(&facts) {
         if let Some(identity) = fact.identity()
             && let Some(root) = roots.get(&identity)
         {
@@ -1090,7 +1090,7 @@ fn equivalent_facts<'a>(mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentit
                     .iter()
                     .filter(|(_, group)| *group == root)
                     .map(|(id, _)| fact.at(*id))
-                    .filter(|fact| !facts.contains(fact)),
+                    .filter(|fact| !environment.contains(fact) && !facts.contains(fact)),
             );
         }
     }
@@ -1529,8 +1529,11 @@ impl Clause {
     }
     fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<Facts> {
         let ordered = Self::ordered(std::slice::from_ref(self));
-        let mut environment: QueryFacts<'a> = Arc::new(Cow::Borrowed(environment));
+        let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         loop {
+            if contradictory(&environment) {
+                return None;
+            }
             let mut facts: BTreeMap<usize, QueryResult<'a>> = ordered.iter()
                 .map(|clause| (clause.key(), QueryResult { users: 0, value: None }))
                 .collect();
@@ -1552,8 +1555,13 @@ impl Clause {
                         continue;
                     }
                     ClauseNode::Facts(required) => {
-                        let required: QueryFacts<'a> = Arc::new(Cow::Borrowed(required));
-                        let value = combine_facts(required, environment.clone());
+                        let required = if required.is_disjoint(&environment) {
+                            Cow::Borrowed(required)
+                        } else {
+                            Cow::Owned(required.difference(&environment).copied().collect())
+                        };
+                        let required: QueryFacts<'a> = Arc::new(required);
+                        let value = if additions_conflict(&environment, &required) { None } else { Some(required) };
                         facts.get_mut(&clause.key()).unwrap().value = Some(value);
                         continue;
                     }
@@ -1577,16 +1585,30 @@ impl Clause {
                 }
                 let a = Self::take_query(&mut facts, left);
                 let b = Self::take_query(&mut facts, right);
-                let required = if alternative { either_facts(a, b) } else { both_facts(a, b) };
+                let required = if alternative {
+                    either_facts(&environment, a, b)
+                } else {
+                    match (a, b) {
+                        (Some(a), Some(b)) => {
+                            // 叶子与合取已经检查；析取派生事实在本次合取消费处检查。
+                            if (matches!(&*left.0, ClauseNode::Either(..)) && additions_conflict(&environment, &a))
+                                || (matches!(&*right.0, ClauseNode::Either(..)) && additions_conflict(&environment, &b))
+                            {
+                                None
+                            } else {
+                                combine_facts(a, b)
+                            }
+                        }
+                        _ => None,
+                    }
+                };
                 facts.get_mut(&clause.key()).unwrap().value = Some(required);
             }
             let required = Self::take_query(&mut facts, self)?;
-            if required == environment {
-                drop(facts);
-                drop(environment);
-                return Some(Arc::unwrap_or_clone(required).into_owned());
+            if required.is_empty() {
+                return Some(environment.into_owned());
             }
-            environment = required;
+            environment.to_mut().extend(required.iter().copied());
         }
     }
     pub(super) fn possible(&self) -> bool {
@@ -1610,28 +1632,59 @@ fn contradictory(facts: &Facts) -> bool {
         .iter()
         .any(|(id, upper)| lower.get(id).is_some_and(|lower| lower > upper))
 }
-fn both_facts<'a>(a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
-    combine_facts(a?, b?)
+
+// 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。
+fn additions_conflict(environment: &Facts, additions: &Facts) -> bool {
+    contradictory(additions) || cross_conflict(environment, additions)
 }
+// 两侧各自已完成原矛盾检查，共有事实无须再次检查。
+fn cross_conflict(a: &Facts, b: &Facts) -> bool {
+    use std::ops::Bound::{Excluded, Included};
+    let (other, facts) = if a.len() < b.len() { (b, a) } else { (a, b) };
+    facts.difference(other).any(|fact| match *fact {
+        Fact::Boolean(id, truth) => other.contains(&Fact::Boolean(id, !truth)),
+        Fact::NonZero(id) => other.contains(&Fact::Zero(id)),
+        Fact::Zero(id) => other.contains(&Fact::NonZero(id)),
+        Fact::Index(id, domain) => other.contains(&Fact::Outside(id, domain)),
+        Fact::Outside(id, domain) => other.contains(&Fact::Index(id, domain)),
+        Fact::Below(a, b, strict, signed) => {
+            other.contains(&Fact::Below(b, a, !strict, signed))
+                || (strict && other.contains(&Fact::equal(a, b)))
+        }
+        Fact::Equal(a, b) => *fact == Fact::equal(a, b) && [false, true].into_iter().any(|signed| {
+            other.contains(&Fact::Below(a, b, true, signed))
+                || other.contains(&Fact::Below(b, a, true, signed))
+        }),
+        Fact::Minimum(id, lower) => other
+            .range(Fact::Maximum(id, 0)..Fact::Maximum(id, lower)).next().is_some(),
+        Fact::Maximum(id, upper) => other
+            .range((Excluded(Fact::Minimum(id, upper)), Included(Fact::Minimum(id, u32::MAX))))
+            .next().is_some(),
+    })
+}
+
+
 fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<QueryFacts<'a>> {
-    let facts = if a.is_subset(&b) {
-        b
-    } else if b.is_subset(&a) {
-        a
-    } else {
-        if a.len() < b.len() { std::mem::swap(&mut a, &mut b); }
-        Arc::make_mut(&mut a).to_mut().extend(b.iter().copied());
-        a
-    };
-    if contradictory(&facts) { None } else { Some(facts) }
+    if a.is_subset(&b) {
+        return Some(b);
+    }
+    if b.is_subset(&a) {
+        return Some(a);
+    }
+    if cross_conflict(&a, &b) {
+        return None;
+    }
+    if a.len() < b.len() { std::mem::swap(&mut a, &mut b); }
+    Arc::make_mut(&mut a).to_mut().extend(b.iter().copied());
+    Some(a)
 }
-fn either_facts<'a>(a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
+fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
     match (a, b) {
         (Some(a), Some(b)) => {
-            let left = equality_roots(&a);
-            let right = equality_roots(&b);
-            let a = equivalent_facts(a, &left);
-            let b = equivalent_facts(b, &right);
+            let left = equality_roots(environment.union(&a));
+            let right = equality_roots(environment.union(&b));
+            let a = equivalent_facts(environment, a, &left);
+            let b = equivalent_facts(environment, b, &right);
             let mut common: Facts = a.intersection(&b).copied().collect();
             let identities: BTreeSet<_> = left.keys().chain(right.keys()).copied().collect();
             let mut groups: BTreeMap<_, Vec<ValueIdentity>> = BTreeMap::new();
@@ -1649,26 +1702,27 @@ fn either_facts<'a>(a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Opt
                     common.insert(Fact::equal(group[0], *other));
                 }
             }
-            let upper_a = maximums(&a);
-            let upper_b = maximums(&b);
+            let upper_a = maximums(environment.union(&a));
+            let upper_b = maximums(environment.union(&b));
             for (identity, upper) in upper_a {
                 if let Some(other) = upper_b.get(&identity) {
                     common.insert(Fact::Maximum(identity, upper.max(*other)));
                 }
             }
-            let a = minimums(&a);
-            let b = minimums(&b);
+            let a = minimums(environment.union(&a));
+            let b = minimums(environment.union(&b));
             for (identity, lower) in a {
                 if let Some(other) = b.get(&identity) {
                     common.insert(Fact::Minimum(identity, lower.min(*other)));
                 }
             }
+            common.retain(|fact| !environment.contains(fact));
             Some(Arc::new(Cow::Owned(common)))
         }
         (a, None) | (None, a) => a,
     }
 }
-fn minimums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
+fn minimums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, u32> {
     let mut result: BTreeMap<ValueIdentity, u32> = BTreeMap::new();
     for fact in facts {
         if let Fact::Minimum(identity, lower) = fact {
@@ -1680,7 +1734,7 @@ fn minimums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
     }
     result
 }
-fn maximums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
+fn maximums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, u32> {
     let mut result: BTreeMap<ValueIdentity, u32> = BTreeMap::new();
     for fact in facts {
         if let Fact::Maximum(identity, upper) = fact {
