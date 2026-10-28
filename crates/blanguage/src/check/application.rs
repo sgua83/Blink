@@ -14,8 +14,10 @@ pub(super) enum Ownership {
     Moved,
     Conditional(Box<owned_presence::Presence>),
 }
+// CPU 应用的私有资源描述由原绑定持有，不铺进每层设备表达式的按值载荷。
+pub(super) type Data = Box<DataPayload>;
 #[derive(Clone)]
-pub(super) struct Data {
+pub(super) struct DataPayload {
     pub handle: Value,
     pub place: Option<Place>,
     pub initialization: Option<Position>,
@@ -320,7 +322,7 @@ impl Builder<'_> {
         } else {
             None
         };
-        Ok(Data {
+        Ok(Box::new(DataPayload {
             handle,
             place: None,
             initialization,
@@ -334,7 +336,7 @@ impl Builder<'_> {
             },
             writable: matches!(access, Access::Value | Access::InOut | Access::Write),
             residency: residency::Residency::parameter(parameter),
-        })
+        }))
     }
     pub(super) fn application_iteration_outputs(
         &self,
@@ -737,7 +739,7 @@ impl Builder<'_> {
         };
         self.env.insert(
             name.into(),
-            Binding::ApplicationData(Data {
+            Binding::ApplicationData(Box::new(DataPayload {
                 handle: value(handle),
                 length: value(length),
                 place: Some(Place::Local(Ty::owned_dataset(ty.clone(),count),slots.to_vec(),slots[0]..slots[1]+1)),
@@ -747,7 +749,7 @@ impl Builder<'_> {
                 ownership: Ownership::Moved,
                 writable: true,
                 residency: residency::Residency::default(),
-            }),
+            })),
         );
         Ok(())
     }
@@ -851,7 +853,7 @@ impl Builder<'_> {
         };
         let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
         let Some(returns::Returned::Dataset(data)) =
-            self.inline_instance(instance, arguments, span)?
+            self.invoke_returned(instance, arguments, span)?
         else {
             return self.fail(span, "B224", "资源函数没有交付声明的 dataset 所有权");
         };
@@ -949,7 +951,7 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
-        Ok(Some(Data {
+        Ok(Some(Box::new(DataPayload {
             handle,
             place: None,
             initialization: if ty.zero_valid(){None}else{Some(Position::Parameter(self.application_output_scope(),0))},
@@ -959,7 +961,7 @@ impl Builder<'_> {
             ownership: Ownership::Owned,
             writable: true,
             residency: residency::Residency::cpu(),
-        }))
+        })))
     }
     pub(super) fn application_element(
         data: &Data,
@@ -1585,12 +1587,12 @@ fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
 impl crate::module::codec::Encode for Ownership{fn encode(&self,w:&mut crate::module::codec::Writer){let tag:u32=match self{Self::Borrowed=>1,Self::Moved=>2,Self::Owned|Self::Conditional(_)=>0};crate::module::codec::Encode::encode(&tag,w);}}
 impl crate::module::codec::Decode for Ownership{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{match <u32 as crate::module::codec::Decode>::decode(r)?{0=>Ok(Self::Owned),1=>Ok(Self::Borrowed),2=>Ok(Self::Moved),_=>Err("invalid ownership tag".into())}}}
 // slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
-impl crate::module::codec::Encode for Data {
+impl crate::module::codec::Encode for DataPayload {
     fn encode(&self,w:&mut crate::module::codec::Writer) {
         self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.writable.encode(w);self.count.encode(w);self.residency.encode(w);
     }
 }
-impl crate::module::codec::Decode for Data {
+impl crate::module::codec::Decode for DataPayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
         Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,place:None,initialization:None})
     }

@@ -324,7 +324,7 @@ impl<'a> Builder<'a> {
                 if instance.definition.function.target == Target::Cpu
                     && !super::kernel_interface(self.world, &instance.definition)?
                 {
-                    return self.inline_instance(instance, args, span);
+                    return self.native_function(instance, args, span);
                 }
                 return self.application_execute(instance, args, Target::Cpu, span);
             }
@@ -338,7 +338,13 @@ impl<'a> Builder<'a> {
             FunctionKind::Cooperative => {
                 self.fail(span, "B208", "cooperative 函数需要显式 cooperate 根块调用")
             }
-            FunctionKind::Value => self.inline_instance(instance, args, span),
+            FunctionKind::Value => {
+                if self.application.is_some() && instance.definition.function.target != Target::Gpu {
+                    self.native_function(instance, args, span)
+                } else {
+                    self.inline_instance(instance, args, span)
+                }
+            }
             FunctionKind::Constant => {
                 self.fail(span, "B234", "const 通过名称读取，不能作为函数调用")
             }
@@ -401,35 +407,6 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
-        if self.application.is_some()
-            && instance.definition.function.kind == FunctionKind::Value
-            && instance.definition.function.target != Target::Gpu
-        {
-            return self.native_function(instance, args, span);
-        }
-        let mut held = Vec::new();
-        let args = args
-            .into_iter()
-            .map(|arg| match arg {
-                Argument::BorrowedData(reference) => Argument::ApplicationData(reference.data),
-                Argument::Scoped { value, owner } => {held.push(owner);Argument::resource(value)}
-                other => other,
-            })
-            .collect();
-        let result = self.inline_body(instance, args, span)?;
-        if self.flow.continues() {
-            for name in held {
-                self.finish_scoped_argument(&name, span)?;
-            }
-        }
-        Ok(result)
-    }
-    fn inline_body(
-        &mut self,
-        instance: crate::generics::Instance,
-        args: Vec<Argument>,
-        span: Span,
-    ) -> Result<Option<returns::Returned>> {
         let key = instance.name;
         let callee = &instance.definition;
         if self.calls.contains(&key) {
@@ -442,7 +419,6 @@ impl<'a> Builder<'a> {
         }
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
-        let mut dataset_outputs = Vec::new();
         for (param, arg) in callee.function.params.iter().zip(args) {
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
@@ -467,71 +443,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let ty = parameter_type(self.world, param, callee)?;
-            if let Argument::OwnedValue(value) = arg {
-                if param.access != Access::Value || !ty.owns_resources() {
-                    return self.fail(
-                        span,
-                        "B224",
-                        "拥有结果参数按值转移，不能冒充普通值或位置借用",
-                    );
-                }
-                self.require_same(&ty, &value.value.ty, span)?;
-                let mutable =
-                    application::rebound(callee.function.body.as_ref().unwrap(), &param.name)
-                        || !value.value.ty.has_variants();
-                let value = self.owned_value_binding(value, mutable);
-                env.insert(param.name.clone(), Binding::OwnedValue(value));
-                continue;
-            }
             let binding = match (param.ty.dataset, param.ty.tile, arg) {
-                (true, false, Argument::ApplicationData(mut data)) => {
-                    self.application_cpu(&data, span)?;
-                    self.require_same(&ty, &data.ty, span)?;
-                    if !matches!(
-                        param.access,
-                        Access::Read | Access::InOut | Access::Write | Access::Value
-                    ) {
-                        return self.fail(
-                            span,
-                            "B224",
-                            "CPU 应用函数按值取得 dataset 所有权或按 read／write／inout 借用；原子借用属于实际并行域",
-                        );
-                    }
-                    if matches!(param.access, Access::InOut | Access::Write) && !data.writable {
-                        return self.fail(span, "B227", "只读 dataset 借用不能提升为 write／inout");
-                    }
-                    if param.access == Access::Write {
-                        let scope = self.application_output_scope();
-                        dataset_outputs.push((data.clone(), scope));
-                        data.initialization = Some(Position::Parameter(scope,0));
-                    } else {
-                        self.require_application_initialized(&data, span)?;
-                    }
-                    if param.ty.count.is_some()
-                        && self.world.shape(
-                            &param.ty.count,
-                            &callee.source,
-                            param.span,
-                            &callee.module,
-                            &callee.imports,
-                        )? != data.count
-                    {
-                        return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
-                    }
-                    data.ownership = if param.access == Access::Value {
-                        application::Ownership::Owned
-                    } else {
-                        application::Ownership::Borrowed
-                    };
-                    data.writable =
-                        matches!(param.access, Access::Value | Access::InOut | Access::Write);
-                    if matches!(param.access, Access::InOut | Access::Write) {
-                        self.invalidate_application_contents(data.handle.identity());
-                    }
-                    let mutable =
-                        application::rebound(callee.function.body.as_ref().unwrap(), &param.name);
-                    Binding::ApplicationData(self.application_bind(data, mutable))
-                }
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
                     self.require_same(&ty, &self.program.buffers[binding].ty, span)?;
@@ -622,7 +534,6 @@ impl<'a> Builder<'a> {
             &mut self.mutable_names,
         );
         let old_definition = self.definition.clone();
-        let old_view_uses = std::mem::replace(&mut self.view_uses, if self.application.is_some() {view_liveness::State::new(self.world,callee)} else {view_liveness::State::default()});
         let old_in_function = self.in_function;
         let old_cooperative = self.cooperative_root;
         let old_block = self.block_depth;
@@ -649,11 +560,6 @@ impl<'a> Builder<'a> {
                 .map(|(_, place)| self.borrow_owned(place.clone()))
                 .collect();
             self.env = old_env;
-            for (data, scope) in &dataset_outputs {
-                self.initialized
-                    .retain(|position| !position.uses_scope(*scope));
-                self.initialize_application(data);
-            }
             let fresh_scopes: BTreeSet<_> = borrowed
                 .iter()
                 .zip(&updates)
@@ -682,7 +588,6 @@ impl<'a> Builder<'a> {
         }
         self.mutable_names = old_mutable_names;
         self.definition = old_definition;
-        self.view_uses = old_view_uses;
         self.in_function = old_in_function;
         self.cooperative_root = old_cooperative;
         self.block_depth = old_block;

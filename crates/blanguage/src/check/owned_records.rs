@@ -1,7 +1,7 @@
 //! 记录的字段投影保持原局部槽、Frame 数据和每个资源叶的唯一拥有关系。
 use super::*;
 use application::Ownership;
-use owned_values::OwnedValue;
+use owned_values::{OwnedValue, OwnedValuePayload};
 use returns::Returned;
 
 #[derive(Clone)]
@@ -137,12 +137,12 @@ impl Builder<'_> {
         }
         let mut value = self.pack_record(ty, values, span)?;
         value.proof.retain_view_borrows(&value.ty);
-        Ok(Some(Returned::OwnedValue(OwnedValue {
+        Ok(Some(Returned::OwnedValue(Box::new(OwnedValuePayload {
             value,
             payloads,
             ownership: Ownership::Owned,
             place: None,
-        })))
+        }))))
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
         match &expr.kind {

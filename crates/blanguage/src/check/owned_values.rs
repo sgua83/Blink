@@ -1,18 +1,20 @@
 //! 拥有值沿原 Frame 持有资源；记录按字段组合，结果判别实际交付或释放的载荷。
 use super::*;
-use application::{Data, Ownership};
+use application::{Data, DataPayload, Ownership};
 use returns::Returned;
 
+// 拥有聚合保持原资源树；间接持有其 CPU 元数据，不扩大设备表达式栈帧。
+pub(super) type OwnedValue = Box<OwnedValuePayload>;
 #[derive(Clone)]
-pub(super) struct OwnedValue {
+pub(super) struct OwnedValuePayload {
     pub value: Value,
     pub payloads: Vec<Option<Box<Returned>>>,
     pub ownership: Ownership,
     pub place: Option<Place>,
 }
-impl OwnedValue {
+impl OwnedValuePayload {
     pub(super) fn place(&self)->Option<Place>{self.place.clone()}
-    pub(super) fn join(&mut self, other: Self) {
+    pub(super) fn join(&mut self, other: OwnedValue) {
         if self.ownership != other.ownership {
             self.ownership = Ownership::Moved;
         }
@@ -365,7 +367,7 @@ impl Builder<'_> {
                 ]));
                 length.constant = Some(vec![n]);
             }
-            Returned::Dataset(Data {
+            Returned::Dataset(Box::new(DataPayload {
                 handle,
                 length,
                 ty: element.clone(),
@@ -379,7 +381,7 @@ impl Builder<'_> {
                 writable: true,
                 place: None,
                 initialization: None,
-            })
+            }))
         } else if value.ty.owns_resources() && !value.ty.has_variants() {
             let payloads = (0..value.ty.aggregate_len())
                 .map(|i| {
@@ -390,21 +392,21 @@ impl Builder<'_> {
                     Some(Box::new(self.template_returned(field, available)))
                 })
                 .collect();
-            Returned::OwnedValue(OwnedValue {
+            Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
                 payloads,
                 ownership: Ownership::Owned,
                 place: None,
-            })
+            }))
         } else if value.ty.owns_resources() {
             let mut payloads = vec![None;value.ty.variants.len()];
             if !available {
-                return Returned::OwnedValue(OwnedValue {
+                return Returned::OwnedValue(Box::new(OwnedValuePayload {
                     value,
                     payloads,
                     ownership: Ownership::Moved,
                     place: None,
-                });
+                }));
             }
             for index in 0..value.ty.variants.len() {
                 let payload = self.variant_payload(&value,index);
@@ -413,7 +415,7 @@ impl Builder<'_> {
                     None => Returned::Unit,
                 }));
             }
-            Returned::OwnedValue(OwnedValue {
+            Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
                 payloads,
                 ownership: if available {
@@ -422,7 +424,7 @@ impl Builder<'_> {
                     Ownership::Moved
                 },
                 place: None,
-            })
+            }))
         } else if value.ty.name == "void" {
             Returned::Unit
         } else {
@@ -581,12 +583,12 @@ impl Builder<'_> {
         };
         let mut result = if value.ty.has_variants() {
             let payloads=vec![None;value.ty.variants.len()];
-            OwnedValue {
+            Box::new(OwnedValuePayload {
                 value,
                 payloads,
                 ownership: Ownership::Moved,
                 place: None,
-            }
+            })
         } else {
             let Returned::OwnedValue(v) = self.template_returned(value, false) else {
                 unreachable!()
@@ -639,12 +641,12 @@ impl Builder<'_> {
         let value=self.variant_value(ty,index,Some(payload));
         let mut payloads=vec![None;count];
         payloads[index] = Some(Box::new(item));
-        Ok(Some(OwnedValue {
+        Ok(Some(Box::new(OwnedValuePayload {
             value,
             payloads,
             ownership: Ownership::Owned,
             place: None,
-        }))
+        })))
     }
     fn owned_condition(&mut self, value: &OwnedValue, span: Span) -> Result<Value> {
         self.owned_variant_condition(value,0,span)
@@ -855,12 +857,12 @@ impl Builder<'_> {
         if ty.owns_resources() {
             let mut payloads = vec![None;value.ty.variants.len()];
             payloads[usize::from(!success)] = Some(Box::new(item));
-            Returned::OwnedValue(OwnedValue {
+            Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
                 payloads,
                 ownership: Ownership::Owned,
                 place: None,
-            })
+            }))
         } else {
             Returned::Value(value)
         }
@@ -1064,9 +1066,9 @@ impl Builder<'_> {
     }
 }
 
-impl crate::module::codec::Encode for OwnedValue {
+impl crate::module::codec::Encode for OwnedValuePayload {
     fn encode(&self,w:&mut crate::module::codec::Writer){self.value.encode(w);self.payloads.encode(w);self.ownership.encode(w);}
 }
-impl crate::module::codec::Decode for OwnedValue {
+impl crate::module::codec::Decode for OwnedValuePayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{value:Value::decode(r)?,payloads:Vec::decode(r)?,ownership:Ownership::decode(r)?,place:None})}
 }
