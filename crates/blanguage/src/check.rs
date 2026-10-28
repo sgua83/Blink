@@ -24,6 +24,7 @@ mod flow;
 pub(crate) mod generics;
 mod matrix;
 mod owned_records;
+mod owned_borrows;
 mod owned_values;
 mod ownership;
 mod prefix;
@@ -1162,7 +1163,7 @@ struct CheckedFunction {
     body: FunctionBody,
     returned: Option<returns::Returned>,
     inputs: Vec<Reg>,
-    written: Vec<Option<bounds::Proof>>,
+    written: Vec<Option<returns::Returned>>,
     residency: residency::Inputs,
     view_model: view_contracts::Function,
     application: Option<application::Context>,
@@ -1335,6 +1336,14 @@ fn checked_function(
                 if p.access == Access::InOut {
                     b.initialize(&place);
                 }
+                if place.ty().owns_resources(){
+                    let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
+                    let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
+                    let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
+                    let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)else{unreachable!()};
+                    if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
+                    value.place=Some(place);b.env.insert(p.name.clone(),Binding::OwnedValue(value));continue;
+                }
                 b.env.insert(
                     p.name.clone(),
                     Binding::Owned(OwnedBinding {
@@ -1404,17 +1413,10 @@ fn checked_function(
     b.materialize_array_bindings();
     let returned = b.function_body(d.function.body.as_ref().unwrap())?;
     let output = returned.as_ref().map(|value| b.returned_storage(value));
-    let written = d
-        .function
-        .params
-        .iter()
-        .map(|p| match b.env.get(&p.name) {
-            Some(Binding::Owned(owner)) if matches!(p.access, Access::Write | Access::InOut) => {
-                Some(owner.proof.clone())
-            }
-            _ => None,
-        })
-        .collect();
+    let mut written=Vec::new();
+    for p in &d.function.params {
+        written.push(if matches!(p.access,Access::Write|Access::InOut) && !p.ty.dataset && !p.ty.tile {Some(b.written_model(&p.name,p.span)?)}else{None});
+    }
     let result = if d.function.result.name == "void" || d.function.result.is_never() {
         None
     } else {
@@ -3590,7 +3592,10 @@ impl<'a> Builder<'a> {
         match self.env.get(name).cloned() {
             Some(Binding::AtomicBorrow(place)) => Ok(place),
             Some(Binding::Owned(owner)) => Ok(owner.place),
-            Some(Binding::OwnedValue(owner)) => Ok(owner.place().unwrap()),
+            Some(Binding::OwnedValue(owner))=>{
+                if let Some(place)=owner.place(){return Ok(place);}
+                let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();self.env.insert(name.clone(),Binding::OwnedValue(owner));Ok(place)
+            },
             Some(Binding::Value(value)) if value.ty.contains_arrays() => {
                 let place = self.materialize_array(value);
                 self.env.insert(

@@ -43,7 +43,7 @@ impl Builder<'_> {
                     ty: None,
                     count: t.shape(self.program),
                 },
-                Argument::OwnedValue(v) => Actual::value(&v.value.ty),
+                Argument::OwnedValue(v) | Argument::OwnedReference{value:v,..} => Actual::value(&v.value.ty),
                 Argument::Value(v) => Actual::value(&v.ty),
                 Argument::Dataset(v) => Actual {
                     ty: Some(std::borrow::Cow::Borrowed(&self.program.buffers[v.binding].ty)),

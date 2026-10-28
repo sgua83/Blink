@@ -59,26 +59,11 @@ impl Builder<'_> {
         if let Returned::OwnedValue(child) = &mut item {
             child.value = value;
         }
-        if let Some(slots) = &owner.slots {
-            let (offset, ty) = owner.value.ty.aggregate_part(index);
-            let selected: Vec<_> = ty
-                .components
-                .iter()
-                .map(|(_, at)| {
-                    slots[owner
-                        .value
-                        .ty
-                        .components
-                        .iter()
-                        .position(|(_, word)| *word == offset + at)
-                        .unwrap()]
-                })
-                .collect();
-            match &mut item {
-                Returned::Dataset(data) => data.slots = Some([selected[0], selected[1]]),
-                Returned::OwnedValue(child) => child.slots = Some(selected),
-                _ => {}
-            }
+        if let Some(place)=owner.place(){
+            let(offset,ty)=owner.value.ty.aggregate_part(index);
+            let components=ty.components.iter().map(|(_,at)|owner.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()).collect::<Vec<_>>();
+            let place=place.project(ty.clone(),&components);
+            match &mut item {Returned::Dataset(data)=>data.place=Some(place),Returned::OwnedValue(child)=>child.place=Some(place),_=>{}}
         }
         item
     }
@@ -156,7 +141,7 @@ impl Builder<'_> {
             value,
             payloads,
             ownership: Ownership::Owned,
-            slots: None,
+            place: None,
         })))
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
@@ -255,7 +240,7 @@ impl Builder<'_> {
                 }
             }
             Returned::Dataset(data) if data.ownership != Ownership::Moved => {
-                Ok(Returned::Dataset(self.refresh_application_data(data)))
+                Ok(Returned::Dataset(self.refresh_application_data(data,span)?))
             }
             other => Ok(other),
         }
@@ -307,10 +292,10 @@ impl Builder<'_> {
             self.require_initialized(&place, span)?;
         }
         match &mut item {
-            Returned::Dataset(data) => data.slots = None,
+            Returned::Dataset(data) => data.place = None,
             Returned::OwnedValue(value) => {
-                self.load_owned_value(value);
-                value.slots = None;
+                self.load_owned_value(value,span)?;
+                value.place = None;
             }
             _ => {}
         }
@@ -389,11 +374,9 @@ impl Builder<'_> {
         let Binding::OwnedValue(root) = self.env.get_mut(&p.root).unwrap() else {
             unreachable!()
         };
-        let slots = root.slots.as_ref().unwrap();
-        for (component, reg) in p.components.iter().zip(&value.regs) {
-            self.code.push(Inst::StoreLocal(slots[*component], *reg));
-            self.initialized.insert(Position::Local(slots[*component]));
-        }
+        let place=root.place().unwrap().project(p.ty.clone(),&p.components);
+        self.write_storage_value(&place,&value,span)?;
+        let Binding::OwnedValue(root)=self.env.get_mut(&p.root).unwrap()else{unreachable!()};
         root.value.proof.assign(
             &p.components,
             root.value.ty.components.len(),
@@ -734,11 +717,9 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_initialized(&place, expr.span)?;
-        fn slots(position: &Position, into: &mut BTreeSet<usize>) {
+        fn slots(position: &Position, into: &mut BTreeSet<Position>) {
             match position {
-                Position::Local(slot) => {
-                    into.insert(*slot);
-                }
+                Position::Local(_) | Position::Parameter(..) => {into.insert(position.clone());}
                 Position::Indexed(choices, _) => {
                     for choice in choices.iter() {
                         slots(choice, into);
@@ -756,14 +737,14 @@ impl Builder<'_> {
         self.owned_resource_leaves(&owner, &mut leaves);
         let candidates: Vec<_> = leaves
             .into_iter()
-            .filter(|data| selected.contains(&data.slots.unwrap()[0]))
+            .filter(|data| selected.contains(&data.place.as_ref().unwrap().owned_positions().unwrap()[0]))
             .collect();
         for data in &candidates {
             self.application_available(data, expr.span)?;
         }
         fn initialization(position:&Position,candidates:&[Data])->Position {
             match position {
-                Position::Local(slot)=>candidates.iter().find(|data|data.slots.unwrap()[0]==*slot).unwrap().initialization.clone().unwrap_or(Position::Initialized),
+                Position::Local(_) | Position::Parameter(..)=>candidates.iter().find(|data|data.place.as_ref().unwrap().owned_positions().unwrap()[0]==*position).unwrap().initialization.clone().unwrap_or(Position::Initialized),
                 Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|initialization(choice,candidates)).collect(),*index),
                 _=>unreachable!(),
             }
@@ -773,7 +754,7 @@ impl Builder<'_> {
         data.initialization=Some(root);
         if candidates.len() == 1 {
             return Ok(Some(application::DataReference::direct(
-                self.refresh_application_data(data),
+                self.refresh_application_data(data,expr.span)?,
             )));
         }
         let sources = candidates
@@ -797,7 +778,7 @@ impl Builder<'_> {
         ]));
         data.ty = (**ty.dataset.as_ref().unwrap()).clone();
         data.ownership = Ownership::Borrowed;
-        data.slots = None;
+        data.place = None;
         Ok(Some(application::DataReference { data, sources }))
     }
 }

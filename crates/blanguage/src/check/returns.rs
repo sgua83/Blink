@@ -24,7 +24,7 @@ impl Expected {
 impl Returned {
     pub(super) fn view_value(&self)->Option<&Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&value.value),_=>None}}
     pub(super) fn view_value_mut(&mut self)->Option<&mut Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&mut value.value),_=>None}}
-    fn bind_outputs(
+    pub(super) fn bind_outputs(
         &mut self,
         registers: Option<&[Reg]>,
         bindings: &BTreeMap<ValueIdentity, ValueIdentity>,
@@ -104,7 +104,7 @@ impl Returned {
 struct ReturnExit {
     path: bounds::Clause,
     value: Option<Returned>,
-    borrowed: Result<BTreeMap<String, OwnedBinding>>,
+    borrowed: Result<BTreeMap<String, Returned>>,
 }
 pub(super) struct ReturnContext {
     expected: Option<Expected>,
@@ -189,10 +189,27 @@ fn owns_exit(code: &[Inst]) -> bool {
     })
 }
 impl Builder<'_> {
+    pub(super) fn written_model(&mut self,name:&str,span:Span)->Result<Returned> {
+        match self.env.get(name).cloned().unwrap() {
+            Binding::Owned(owner)=>{
+                if !self.is_initialized(&owner.place){return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
+                let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect();
+                Ok(Returned::Value(Value{ty:owner.place.ty().clone(),regs,proof:owner.proof,uniform:owner.uniform,literal:false,constant:None}))
+            }
+            Binding::OwnedValue(mut value)=>{
+                if !value.all_available(){return self.fail(span,"B229",format!("返回前没有归还独占参数 {name} 的全部活动拥有资源"));}
+                let place=value.place().unwrap();
+                if !value.value.ty.has_variants() && !self.is_initialized(&place){return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
+                self.load_owned_value(&mut value,span)?;
+                let mut model=Returned::OwnedValue(value);self.require_returned_initialized(&mut model,span)?;Ok(model)
+            }
+            _=>unreachable!(),
+        }
+    }
     fn bind_return_exit(
         &mut self,
         value: &mut Option<Returned>,
-        borrowed: &mut BTreeMap<String, OwnedBinding>,
+        borrowed: &mut BTreeMap<String, Returned>,
         path: &mut bounds::Clause,
         registers: &[Reg],
         written: &BTreeMap<String, Vec<Reg>>,
@@ -205,9 +222,7 @@ impl Builder<'_> {
             proof.output_bindings(registers, entry, &mut bindings);
         }
         for (name, owner) in borrowed.iter() {
-            owner
-                .proof
-                .output_bindings(&written[name], entry, &mut bindings);
+            bounds::Proof::capture(&self.returned_storage(owner)).output_bindings(&written[name],entry,&mut bindings);
         }
         let mut aliases = bounds::Clause::default();
         if let Some(proof) = &proof {
@@ -219,19 +234,16 @@ impl Builder<'_> {
         for (name, owner) in borrowed.iter() {
             aliases = bounds::Clause::both(
                 &aliases,
-                &owner
-                    .proof
-                    .output_aliases(&written[name], &self.registers, &bindings),
+                &bounds::Proof::capture(&self.returned_storage(owner)).output_aliases(&written[name],&self.registers,&bindings),
             );
         }
+        self.view_model.parameters.extend(bindings.clone());
         *path = bounds::Clause::both(&path.output_bound(&bindings), &aliases);
         if let Some(value) = value {
             value.bind_outputs(Some(registers), &bindings, &aliases);
         }
         for (name, owner) in borrowed.iter_mut() {
-            owner
-                .proof
-                .bind_outputs(owner.place.ty(), Some(&written[name]), &bindings, &aliases);
+            owner.bind_outputs(Some(&written[name]),&bindings,&aliases);
         }
     }
     pub(super) fn ordinary_return(
@@ -319,55 +331,22 @@ impl Builder<'_> {
             self.require_view_return(&value.value,span)?;
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
-        let output_views=self.definition.function.params.iter().filter_map(|param| {
-            if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset {
-                if let Some(Binding::Owned(owner))=self.env.get(&param.name){return Some(owner.proof.clone());}
-            }
-            None
-        }).collect::<Vec<_>>();
-        for proof in output_views {self.require_view_return_proof(&proof,span)?;}
-        self.release_application_data(None)?;
-        let borrowed = (|| -> Result<BTreeMap<String, OwnedBinding>> {
-            let mut borrowed = BTreeMap::new();
-            let definition = self.definition.clone();
+        let borrowed=(||->Result<BTreeMap<String,Returned>> {
+            let mut borrowed=BTreeMap::new();let definition=self.definition.clone();
             for param in &definition.function.params {
-                if param.ty.dataset
-                    && param.access == Access::Write
-                    && let Some(Binding::ApplicationData(data)) = self.env.get(&param.name)
-                    && !self.application_initialized(data)
-                {
-                    return self.fail(
-                        span,
-                        "B229",
-                        format!("返回前没有完整初始化 write dataset 参数 {}", param.name),
-                    );
+                if param.ty.dataset && param.access==Access::Write && let Some(Binding::ApplicationData(data))=self.env.get(&param.name) && !self.application_initialized(data) {
+                    return self.fail(span,"B229",format!("返回前没有完整初始化 write dataset 参数 {}",param.name));
                 }
-                if matches!(param.access, Access::Write | Access::InOut)
-                    && !param.ty.dataset
-                    && !param.ty.tile
-                {
-                    let place = self.name_place(
-                        &param.name,
-                        &Expr {
-                            kind: ExprKind::Name(param.name.clone()),
-                            span: param.span,
-                        },
-                    )?;
-                    if param.access == Access::Write && !self.is_initialized(&place) {
-                        return self.fail(
-                            span,
-                            "B229",
-                            format!("返回前没有完整初始化 write 参数 {}", param.name),
-                        );
-                    }
-                    let mut owner = self.borrow_owned(place);
-                    owner.uniform &= self.control_uniform;
-                    owner.proof.under_path(owner.place.ty(), &self.path);
-                    borrowed.insert(param.name.clone(), owner);
+                if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && !param.ty.tile {
+                    let mut model=self.written_model(&param.name,span)?;
+                    if let Some(value)=model.view_value_mut(){value.uniform&=self.control_uniform;value.proof.under_path(&value.ty,&self.path);}
+                    if let Some(value)=model.view_value(){self.require_view_return(value,span)?;}
+                    borrowed.insert(param.name.clone(),model);
                 }
             }
             Ok(borrowed)
         })();
+        self.release_application_data(None)?;
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {
@@ -530,10 +509,7 @@ impl Builder<'_> {
             .map(|(name, owner)| {
                 (
                     name.clone(),
-                    owner
-                        .place
-                        .ty()
-                        .components
+                    self.returned_storage(owner).ty.components
                         .iter()
                         .map(|(scalar, _)| self.reg(*scalar))
                         .collect(),
@@ -567,15 +543,17 @@ impl Builder<'_> {
             }
             for (name, owner) in &mut borrowed {
                 let other = &other_borrowed[name];
-                owner
-                    .proof
-                    .join(&other.proof, owner.place.ty().components.len(), None);
-                owner.uniform &= other.uniform;
+                owner.join(other.clone());
             }
         }
-        for (name, owner) in borrowed {
-            self.initialize(&owner.place);
-            self.env.insert(name, Binding::Owned(owner));
+        for(name,mut model)in borrowed {
+            native_function::rebind_model(&mut model,written[&name].clone());
+            let binding=match model {
+                Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize(&owner.place);Binding::Owned(owner)}
+                Returned::OwnedValue(mut value)=>{let place=self.env[&name].stored_place().unwrap();self.initialize(&place);value.place=Some(place);Binding::OwnedValue(value)}
+                _=>unreachable!(),
+            };
+            self.env.insert(name,binding);
         }
         if scoped {
             if let Some(value) = &mut result {

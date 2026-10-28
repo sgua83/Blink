@@ -9,6 +9,7 @@ pub(super) enum Argument {
     ApplicationData(application::Data),
     Scoped { value: returns::Returned, owner: String },
     OwnedValue(owned_values::OwnedValue),
+    OwnedReference{value:owned_values::OwnedValue,place:Place,owner:Option<String>},
     Tile(TileView),
     Atomic(Place),
     Exclusive(Place),
@@ -21,9 +22,10 @@ impl Argument {
         let place=|argument:&Self|match argument {
             Self::Exclusive(place)|Self::Atomic(place)=>Some(place.clone()),
             Self::OwnedValue(value)=>value.place(),
+            Self::OwnedReference{place,..}=>Some(place.clone()),
             Self::Scoped{owner,..}=>match env.get(owner){Some(Binding::OwnedValue(value))=>value.place(),_=>None},_=>None,
         };
-        if matches!(self,Self::Exclusive(_)|Self::Atomic(_))||matches!(other,Self::Exclusive(_)|Self::Atomic(_)) {
+        if matches!(self,Self::Exclusive(_)|Self::Atomic(_)|Self::OwnedReference{..})||matches!(other,Self::Exclusive(_)|Self::Atomic(_)|Self::OwnedReference{..}) {
             if let(Some(a),Some(b))=(place(self),place(other)) && a.overlaps(&b){return true;}
         }
         if let (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) =
@@ -35,7 +37,7 @@ impl Argument {
             Self::BorrowedData(reference) => reference.sources.clone(),
             Self::ApplicationData(d) => vec![d.handle.identity()],
             Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.handle.identity()],returns::Returned::OwnedValue(value)=>value.handles(),_=>Vec::new()},
-            Self::OwnedValue(r) => r.handles(),
+            Self::OwnedValue(r) | Self::OwnedReference{value:r,..} => r.handles(),
             Self::Value(v) => v.proof.borrowed_views().into_iter().filter_map(|s| if let view::Source::Data(id)=s {Some(id)}else{None}).collect(),
             Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
                 Place::ApplicationElement { sources, .. } => sources.clone(),
@@ -61,14 +63,14 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
     if ty.owns_resources()
         && (param.ty.dataset
             || param.ty.tile
-            || !matches!(param.access, Access::Value | Access::Read)
+            || !matches!(param.access, Access::Value | Access::Read | Access::Write | Access::InOut)
             || definition.function.kind != FunctionKind::Value
             || definition.function.target != Target::Cpu)
     {
         return definition.source.fail(
             param.span,
             "B224",
-            "拥有聚合通过普通CPU函数按值交接或read借用；其他访问与执行目标尚未实现",
+            "拥有聚合通过普通CPU函数按值交接或read／write／inout借用；其他访问与执行目标尚未实现",
         );
     }
     if matches!(param.access, Access::InOut | Access::Write)
@@ -181,11 +183,8 @@ impl<'a> Builder<'a> {
                         Argument::Atomic(place)
                     }
                 } else if matches!(param.access, Access::InOut | Access::Write) {
-                    let Some(place) = self.mutable_place(arg, param.access)? else {
-                        self.abandon_arguments(&held);
-                        return Ok(None);
-                    };
-                    Argument::Exclusive(place)
+                    let Some(argument)=self.mutable_argument(arg,param.access)?else{self.abandon_arguments(&held);return Ok(None);};
+                    argument
                 } else {
                     let expected =
                         if callee.function.types.is_empty() && callee.function.values.is_empty() {
@@ -220,8 +219,13 @@ impl<'a> Builder<'a> {
                 held.push((arguments.len() - 1, name));
             }
         }
+        self.finish_arguments(&held,&mut arguments);
         self.view_uses.invocation(span);
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
+            if let Argument::OwnedReference{value,..}=argument {
+                self.require_view_unborrowed(&value.handles(),span)?;
+                if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.handle.identity(),span)?;}}
+            }
             if let Argument::BorrowedData(reference) = argument {
                 if param.access.writes() { self.require_view_unborrowed(&reference.sources, span)?; }
                 for source in &reference.sources {
@@ -275,7 +279,6 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        self.finish_arguments(&held, &mut arguments);
         Ok(Some(arguments))
     }
     pub(super) fn invoke_instance(

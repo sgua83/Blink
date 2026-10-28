@@ -32,7 +32,7 @@ pub(crate) struct Contract {
     result: Option<Ty>,
     inputs: Vec<Reg>,
     returned: Option<Returned>,
-    written: Vec<Option<bounds::Proof>>,
+    written: Vec<Option<Returned>>,
     requires: BTreeSet<(ContractKind, ContractPredicate)>,
     target: Target,
     frame: bool,
@@ -142,19 +142,19 @@ fn declaration(
     Ok(context)
 }
 // 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
-fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
+pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
     match value {
         Returned::Unit => {}
         Returned::Value(value) => value.regs = registers,
         Returned::Dataset(data) => {
             data.handle.regs = vec![registers[0]];
             data.length.regs = vec![registers[1]];
-            data.slots = None;
+            data.place = None;
             data.initialization = None;
         }
         Returned::OwnedValue(value) => {
             value.value.regs = registers;
-            value.slots = None;
+            value.place = None;
             for (index, payload) in value.payloads.iter_mut().enumerate() {
                 if let Some(payload) = payload {
                     let (offset, ty) = if value.value.ty.has_variants() {
@@ -185,90 +185,36 @@ fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
         }
     }
 }
-pub(super) fn canonical(
-    builder: &mut Builder<'_>,
-    returned: Option<Returned>,
-    inputs: &[Reg],
-    written: Vec<Option<bounds::Proof>>,
-) -> (Option<Returned>, Vec<Reg>, Vec<Option<bounds::Proof>>) {
-    let mut bindings = inputs
-        .iter()
-        .enumerate()
-        .map(|(index, reg)| {
-            (
-                ValueIdentity::Register(*reg),
-                bounds::Proof::default().with_identity(ValueIdentity::Register(index)),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    for (parameter, p) in builder.definition.function.params.iter().enumerate() {
-        if p.access == Access::InOut
-            && let Some(Binding::Owned(owner)) = builder.env.get(&p.name)
-        {
-            for component in 0..owner.place.ty().components.len() {
-                let identity = ValueIdentity::ParameterContent(parameter, component);
-                bindings.insert(identity, bounds::Proof::default().with_identity(identity));
-            }
+pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],written:Vec<Option<Returned>>)->(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>) {
+    let mut bindings=inputs.iter().enumerate().map(|(index,reg)|(ValueIdentity::Register(*reg),bounds::Proof::default().with_identity(ValueIdentity::Register(index)))).collect::<BTreeMap<_,_>>();
+    for(parameter,p)in builder.definition.function.params.iter().enumerate(){
+        if p.access==Access::InOut && let Some(place)=builder.env.get(&p.name).and_then(Binding::stored_place){
+            for component in 0..place.ty().components.len(){let id=ValueIdentity::ParameterContent(parameter,component);bindings.insert(id,bounds::Proof::default().with_identity(id));}
         }
+        if let Some(Binding::OwnedValue(value))=builder.env.get(&p.name){for resource in 0..view::resource_paths(&value.value.ty).len(){let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Data(id)])));}}
     }
-    for(index,param)in builder.definition.function.params.iter().enumerate(){if let Some(Binding::OwnedValue(value))=builder.env.get(&param.name){for resource in 0..view::resource_paths(&value.value.ty).len(){let id=ValueIdentity::ResourceParameter(index,resource);bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Data(id)])));}}}
-    builder.view_model.parameters=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect();
-    if let Some(value)=returned.as_ref().and_then(Returned::view_value) {builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
-    for (index,proof)in written.iter().enumerate() {
-        if let Some(proof)=proof {
-            let parameter=&builder.definition.function.params[index];
-            if let Some((ty,_))=builder.env.get(&parameter.name).and_then(Binding::view_parts){builder.view_model.capture(proof,ty,|component|view_contracts::Output::Written(index,component));}
+    let output_aliases=std::mem::take(&mut builder.view_model.parameters);
+    if let Some(value)=returned.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
+    for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
+    let sources=returned.iter().chain(written.iter().flatten()).filter_map(Returned::view_value).flat_map(|value|value.proof.typed_view_borrow(&value.ty).sources).collect::<BTreeSet<_>>();
+    for source in sources{if let view::Source::Parameter(id)=source && let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));}}
+    fn resources(model:&mut Returned){match model{Returned::Dataset(data)=>data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::Register(data.handle.regs[0]))])),Returned::OwnedValue(value)=>for payload in value.payloads.iter_mut().flatten(){resources(payload);},_=>{}}}
+    let mut next=inputs.len();
+    let models=std::iter::once(returned).chain(written).map(|model|model.map(|mut model|{
+        resources(&mut model);let proof=bounds::Proof::capture(&builder.returned_storage(&model));let regs=model.registers();
+        let mut value=model.clone();rebind_model(&mut value,(next..next+regs.len()).collect());
+        for(component,(source,target))in regs.into_iter().zip(value.registers()).enumerate(){
+            let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target));
+            bindings.entry(ValueIdentity::Register(source)).or_insert_with(||bound.clone());
+            if let Some(id)=proof.known_identity(component){bindings.entry(id).or_insert(bound);}
         }
-    }
-    let parameter_sources = returned.as_ref().and_then(Returned::view_value).into_iter().flat_map(|value|value.proof.typed_view_borrow(&value.ty).sources)
-        .chain(written.iter().flatten().flat_map(|proof| proof.borrowed_views())).collect::<BTreeSet<_>>();
-    for source in parameter_sources {
-        if let view::Source::Parameter(id)=source && let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0) {
-            *proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));
-        }
-    }
-    // 拥有交接以实际返回句柄命名资源；局部循环中的资源沿革不成为公开借用源。
-    let mut returned=returned;
-    fn resource_identity(model:&mut Returned) {
-        match model {
-            Returned::Dataset(data)=>{data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::Register(data.handle.regs[0]))]));}
-            Returned::OwnedValue(value)=>{for item in value.payloads.iter_mut().flatten(){resource_identity(item);}},_=>{},
-        }
-    }
-    if let Some(model)=&mut returned {resource_identity(model);}
-    let count = returned.as_ref().map_or(0, |model| model.registers().len());
-    let models = returned.map(|model| {
-        let mut value = model.clone();
-        rebind_model(&mut value, (inputs.len()..inputs.len() + count).collect());
-        for (source, target) in model.registers().into_iter().zip(value.registers()) {
-            bindings
-                .entry(ValueIdentity::Register(source))
-                .or_insert_with(|| {
-                    bounds::Proof::default().with_identity(ValueIdentity::Register(target))
-                });
-        }
-        (value, model)
-    });
-    let mut next = inputs.len() + count;
-    for proof in written.iter().flatten() {
-        for component in 0..proof.width() {
-            if let Some(identity) = proof.known_identity(component) {
-                bindings.entry(identity).or_insert_with(|| {
-                    bounds::Proof::default().with_identity(ValueIdentity::Register(next))
-                });
-            }
-            next += 1;
-        }
-    }
-    let returned = models.map(|(mut value, model)| {
-        translate_returned(&mut value, &model, &bindings);
-        value
-    });
-    let written = written
-        .into_iter()
-        .map(|proof| proof.map(|proof| proof.at_call(&bindings)))
-        .collect();
-    (returned, (0..inputs.len()).collect(), written)
+        next+=value.registers().len();(value,model)
+    })).collect::<Vec<_>>();
+    let mut names=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect::<BTreeMap<_,_>>();
+    for(source,target)in output_aliases{if let Some(target)=names.get(&target).copied(){names.insert(source,target);}}
+    builder.view_model.parameters=names;
+    let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{translate_returned(&mut value,&model,&bindings);value}));
+    (models.next().unwrap(),(0..inputs.len()).collect(),models.collect())
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut context = declaration(world, instance, application::Context::default())?;
@@ -332,6 +278,20 @@ impl Builder<'_> {
                         values: value.regs.clone(),
                     });
                     env.insert(p.name.clone(), Binding::Value(value));
+                }
+                Argument::OwnedReference{mut value,place,owner} if matches!(p.access,Access::Write|Access::InOut)=>{
+                    self.require_same(&ty,&value.value.ty,span)?;
+                    if let Some(owner)=owner{held.push(owner);}
+                    for(part,address)in self.native_references(&place,p.access,span)?{arguments.push(CallArgument::Reference{ty:part,access:p.access,address});actual.extend([None,None]);}
+                    if p.access==Access::InOut {
+                        for data in value.resources(){self.require_application_initialized(data,span)?;}
+                        self.load_owned_value(&mut value,span)?;
+                        let proof=bounds::Proof::capture(&value.value);
+                        for component in 0..ty.components.len(){contents.insert(ValueIdentity::ParameterContent(index,component),proof.project(&[component],ty.components.len()));}
+                        residency::owned_argument(&mut locations,index,&mut value);
+                        for(resource,path)in view::resource_paths(&ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),bounds::Proof::default().with_view_borrow(0,borrow));}
+                    }else{self.drop_returned(Returned::OwnedValue(value.clone()),span)?;}
+                    env.insert(p.name.clone(),Binding::OwnedValue(value));written.push((index,place));
                 }
                 Argument::Exclusive(place) if matches!(p.access, Access::Write | Access::InOut) => {
                     self.require_same(&ty, place.ty(), span)?;
@@ -487,14 +447,12 @@ impl Builder<'_> {
                     unit.contract.written.clone(),
                 )
             });
+        let input_width=actual.len();
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
         view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
         let pending_view=result.as_ref().filter(|ty|ty.contains_views()).is_some_and(|ty| {
             prototype.as_ref().and_then(|(_,model,_)|model.as_ref()).is_none_or(|model|model.view_value().is_none_or(|value|view_contracts::pending(&value.proof,ty)))
-        })||written.iter().any(|(index,place)|place.ty().contains_views()&&prototype.as_ref().and_then(|(_,_,written)|written.get(*index)).and_then(Option::as_ref).is_none_or(|proof|view_contracts::pending(proof,place.ty())));
-        let view_call=if pending_view {
-            Some(self.view_model.call(&instance.name,view_arguments,self.definition.source.clone(),span))
-        }else{None};
+        })||written.iter().any(|(index,place)|place.ty().contains_views()&&prototype.as_ref().and_then(|(_,_,written)|written.get(*index)).and_then(Option::as_ref).is_none_or(|model|model.view_value().is_none_or(|value|view_contracts::pending(&value.proof,place.ty()))));
         let (mut bindings, model, writes) = if let Some((inputs, model, writes)) = prototype {
             (
                 inputs
@@ -519,27 +477,34 @@ impl Builder<'_> {
                 );
             }
         }
-        for (index, place) in &written {
-            if let Some(Some(proof)) = writes.get(*index) {
-                for (component, (scalar, _)) in place.ty().components.iter().enumerate() {
-                    if let Some(identity) = proof.known_identity(component) {
-                        bindings.entry(identity).or_insert_with(|| {
-                            let reg = self.reg(*scalar);
-                            bounds::Proof::default().with_identity(ValueIdentity::Register(reg))
-                        });
-                    }
-                }
-            }
+        let mut written_registers=BTreeMap::new();let mut semantic=input_width+values.len();
+        // 所有输出位置沿原合同编号映射；这些编号不是机器参数或元数据副本。
+        if model.is_none(){for(component,reg)in values.iter().enumerate(){bindings.insert(ValueIdentity::Register(semantic-values.len()+component),bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}}
+        for(index,place)in &written {
+            let regs=place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect::<Vec<_>>();
+            let contract=writes.get(*index).and_then(Option::as_ref);
+            let ids=contract.map(Returned::registers).unwrap_or_else(||(semantic..semantic+regs.len()).collect());
+            for(source,target)in ids.into_iter().zip(&regs){bindings.insert(ValueIdentity::Register(source),bounds::Proof::default().with_identity(ValueIdentity::Register(*target)));}
+            if let Some(model)=contract {let proof=bounds::Proof::capture(&self.returned_storage(model));for(component,reg)in regs.iter().enumerate(){if let Some(id)=proof.known_identity(component){bindings.entry(id).or_insert_with(||bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}}}
+            semantic+=regs.len();written_registers.insert(*index,regs);
         }
+        view_arguments.extend(bindings.clone());
+        let view_call=if pending_view{Some(self.view_model.call(&instance.name,view_arguments,self.definition.source.clone(),span))}else{None};
         for (index, place) in written {
             let mut proof = writes
                 .get(index)
                 .and_then(Option::as_ref)
-                .map(|proof| proof.at_call(&bindings))
+                .map(|model| bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings))
                 .unwrap_or_default();
             if let Some(call)=view_call {for component in view_contracts::components(place.ty()) {
                 proof=proof.with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
             }}
+            if place.ty().owns_resources(){
+                let regs=written_registers[&index].clone();
+                let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
+                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations);}
+                let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_reference(&place,value);
+            }
             self.assign_owned_proof(&place, proof, false);
             self.initialize(&place);
         }
@@ -564,7 +529,7 @@ impl Builder<'_> {
             translate_returned(&mut returned, &model, &bindings);
             residency::returned(&mut returned, &locations);
         } else {
-            residency::output(&mut returned, &instance.name, &locations);
+            residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations);
         }
         if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
             for component in view_contracts::components(&value.ty){value.proof=value.proof.clone().with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Returned(component)));}
@@ -639,8 +604,8 @@ fn view_outputs(contract:&Contract)->view_contracts::Outputs {
         for component in view_contracts::components(&value.ty){outputs.insert(view_contracts::Output::Returned(component),value.proof.view_borrow(component));}
     }
     // 位置参数的实际类型由原CallParameter携带；值输出合同保留原形参编号。
-    for (parameter,proof)in contract.written.iter().enumerate() {
-        if let Some(proof)=proof {for component in 0..proof.width() {
+    for (parameter,model)in contract.written.iter().enumerate() {
+        if let Some(value)=model.as_ref().and_then(Returned::view_value) {let proof=&value.proof;for component in 0..proof.width() {
             let borrow=proof.view_borrow(component);if !borrow.empty(){outputs.insert(view_contracts::Output::Written(parameter,component),borrow);}
         }}
     }
@@ -658,7 +623,7 @@ fn resolve_views(module:&mut Module)->Result<()> {
         for (output,borrow)in &outputs[name] {
             match *output {
                 view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
-                view_contracts::Output::Written(parameter,component)=>if let Some(proof)=&mut contract.written[parameter] {*proof=proof.clone().with_view_borrow(component,borrow.clone());},
+                view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
             }
         }
     }
@@ -671,6 +636,7 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
         (
             name.as_str(),
             unit.as_ref().unwrap().contract.returned.as_ref(),
+            unit.as_ref().unwrap().contract.written.as_slice(),
         )
     }));
     loop {
@@ -714,6 +680,7 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
             uses: Vec::new(),
         };
         inputs.apply_uses(&unit.residency_uses, &outputs, true)?;
+        for written in &mut unit.contract.written {if let Some(value)=written {if !residency::resolve_returned(value,&outputs){*written=None;}}}
         if let Some(returned) = &mut unit.contract.returned {
             if !residency::resolve_returned(returned, &outputs) {
                 unit.contract.returned = None;

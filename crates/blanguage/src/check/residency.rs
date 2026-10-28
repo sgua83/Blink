@@ -290,8 +290,11 @@ crate::module::codec::record!(Residency { origins });
 
 // 编译期调用结果是原资源来源表达式，不形成运行时位置表。
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum OutputKind {Returned,Written(usize)}
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 struct Output {
     function: String,
+    kind: OutputKind,
     fields: Vec<usize>,
     arguments: Arguments,
 }
@@ -332,7 +335,7 @@ impl Location {
         }
     }
 }
-pub(super) type Outputs = BTreeMap<String, BTreeMap<Vec<usize>, Location>>;
+pub(super) type Outputs = BTreeMap<String, BTreeMap<(OutputKind,Vec<usize>), Location>>;
 
 fn evaluate(value: &Residency, outputs: &Outputs) -> Location {
     let mut result = Location {
@@ -342,7 +345,7 @@ fn evaluate(value: &Residency, outputs: &Outputs) -> Location {
     for origin in &value.origins {
         match origin {
             Origin::Output(output) => {
-                if let Some(value) = outputs[&output.function].get(&output.fields) {
+                if let Some(value) = outputs[&output.function].get(&(output.kind.clone(),output.fields.clone())) {
                     result.unknown |= value.unknown;
                     for origin in &value.origins {
                         if let Origin::Input(input) = origin {
@@ -363,11 +366,12 @@ fn evaluate(value: &Residency, outputs: &Outputs) -> Location {
     result
 }
 
-pub(super) fn output(value: &mut Returned, function: &str, arguments: &Arguments) {
+pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, arguments: &Arguments) {
     visit(value, &mut Input::new(0), &mut |data, path| {
         data.residency = Residency {
             origins: BTreeSet::from([Origin::Output(Output {
                 function: function.into(),
+                kind:kind.clone(),
                 fields: path.fields.clone(),
                 arguments: arguments.clone(),
             })]),
@@ -376,7 +380,7 @@ pub(super) fn output(value: &mut Returned, function: &str, arguments: &Arguments
 }
 
 pub(super) fn solve_outputs<'a>(
-    units: impl Iterator<Item = (&'a str, Option<&'a Returned>)>,
+    units: impl Iterator<Item = (&'a str, Option<&'a Returned>, &'a [Option<Returned>])>,
 ) -> Outputs {
     fn collect<'a>(
         value: &'a Returned,
@@ -400,12 +404,14 @@ pub(super) fn solve_outputs<'a>(
         }
     }
     let equations = units
-        .map(|(name, value)| {
+        .map(|(name, value,written)| {
             let mut values = BTreeMap::new();
             if let Some(value) = value {
                 collect(value, &mut Vec::new(), &mut values);
             }
-            (name.to_owned(), values)
+            let mut all=values.into_iter().map(|(fields,value)|((OutputKind::Returned,fields),value)).collect::<BTreeMap<_,_>>();
+            for(index,value)in written.iter().enumerate(){if let Some(value)=value{let mut fields=BTreeMap::new();collect(value,&mut Vec::new(),&mut fields);all.extend(fields.into_iter().map(|(fields,value)|((OutputKind::Written(index),fields),value)));}}
+            (name.to_owned(), all)
         })
         .collect::<BTreeMap<_, _>>();
     let mut outputs = equations
@@ -533,8 +539,10 @@ impl Inputs {
         Ok(())
     }
 }
+crate::module::codec::variants!(OutputKind{0=>Returned,1=>Written(parameter)});
 crate::module::codec::record!(Output {
     function,
+    kind,
     fields,
     arguments
 });

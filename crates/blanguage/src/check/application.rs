@@ -16,7 +16,7 @@ pub(super) enum Ownership {
 #[derive(Clone)]
 pub(super) struct Data {
     pub handle: Value,
-    pub slots: Option<[usize; 2]>,
+    pub place: Option<Place>,
     pub initialization: Option<Position>,
     pub ty: Ty,
     pub length: Value,
@@ -321,7 +321,7 @@ impl Builder<'_> {
         };
         Ok(Data {
             handle,
-            slots: None,
+            place: None,
             initialization,
             ty: self.program.buffers[binding].ty.clone(),
             length,
@@ -578,17 +578,9 @@ impl Builder<'_> {
         }
         Ok(std::mem::replace(&mut self.code, old))
     }
-    pub(super) fn application_drop(&mut self, data: &Data) -> Vec<Inst> {
-        let mut code = Vec::new();
-        let handle = if let Some(slots) = data.slots {
-            let reg = self.reg(Scalar::U32);
-            code.push(Inst::LoadLocal(reg, slots[0]));
-            reg
-        } else {
-            data.handle.regs[0]
-        };
-        code.push(self.application_release(handle));
-        code
+    pub(super) fn application_drop(&mut self,data:&Data,span:Span)->Result<()> {
+        let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.handle.regs[0]};
+        self.code.push(self.application_release(handle));Ok(())
     }
     pub(super) fn application_available(&self, data: &Data, span: Span) -> Result<()> {
         if data.ownership == Ownership::Moved {
@@ -663,41 +655,30 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.application_available(&data, span)?;
-        data = self.refresh_application_data(data);
+        data = self.refresh_application_data(data,span)?;
         if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
             source.handle.proof = data.handle.proof.clone();
             source.length.proof = data.length.proof.clone();
         }
         Ok(Some(data))
     }
-    pub(super) fn refresh_application_data(&mut self, mut data: Data) -> Data {
-        if let Some(slots) = data.slots {
-            let handle = self.reg(Scalar::U32);
-            let length = self.reg(Scalar::U32);
-            self.code.push(Inst::LoadLocal(handle, slots[0]));
-            self.code.push(Inst::LoadLocal(length, slots[1]));
-            data.handle.regs = vec![handle];
-            data.length.regs = vec![length];
-            data.handle.proof = bounds::Proof::capture(&data.handle);
-            data.length.proof = bounds::Proof::capture(&data.length).with_domains(Domains::from([
-                IndexDomain::ApplicationLength(data.handle.identity()),
-            ]));
-            data.length.constant = data.length.proof.known_value(&data.length.ty);
+    pub(super) fn refresh_application_data(&mut self,mut data:Data,span:Span)->Result<Data> {
+        if let Some(place)=&data.place {
+            let value=self.read_storage_value(place,span)?;data.handle.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
+            data.handle.proof=bounds::Proof::capture(&data.handle);
+            data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(data.handle.identity())]));
+            data.length.constant=data.length.proof.known_value(&data.length.ty);
         }
-        data
+        Ok(data)
     }
     pub(super) fn application_bind(&mut self, mut data: Data, mutable: bool) -> Data {
-        data.slots = None;
+        data.place = None;
         data.handle.proof = bounds::Proof::capture(&data.handle);
         data.length.proof = bounds::Proof::capture(&data.length);
         if mutable {
-            let slots = [self.locals.len(), self.locals.len() + 1];
-            self.locals.extend([Scalar::U32, Scalar::U32]);
-            self.code
-                .push(Inst::StoreLocal(slots[0], data.handle.regs[0]));
-            self.code
-                .push(Inst::StoreLocal(slots[1], data.length.regs[0]));
-            data.slots = Some(slots);
+            let ty=Ty::owned_dataset(data.ty.clone(),data.count);let(slots,storage)=self.local_slots(&ty);
+            self.code.push(Inst::StoreLocal(slots[0],data.handle.regs[0]));self.code.push(Inst::StoreLocal(slots[1],data.length.regs[0]));
+            let place=Place::Local(ty,slots,storage);self.initialize(&place);data.place=Some(place);
         }
         data
     }
@@ -710,7 +691,7 @@ impl Builder<'_> {
                 Binding::ApplicationData(data) if data.ownership == Ownership::Owned => {
                     Some(binding.clone())
                 }
-                Binding::OwnedValue(result) if result.ownership == Ownership::Owned => {
+                Binding::OwnedValue(result) if result.ownership == Ownership::Owned && !matches!(result.place(),Some(Place::Reference{..})) => {
                     Some(binding.clone())
                 }
                 _ => None,
@@ -779,7 +760,7 @@ impl Builder<'_> {
             Binding::ApplicationData(Data {
                 handle: value(handle),
                 length: value(length),
-                slots: Some(slots),
+                place: Some(Place::Local(Ty::owned_dataset(ty.clone(),count),slots.to_vec(),slots[0]..slots[1]+1)),
                 initialization: None,
                 ty,
                 count,
@@ -819,12 +800,8 @@ impl Builder<'_> {
             self.application_movable(&old, span)?;
             self.release_application_handle(old.handle.regs[0]);
         }
-        let slots = target.slots.unwrap();
-        self.code
-            .push(Inst::StoreLocal(slots[0], value.handle.regs[0]));
-        self.code
-            .push(Inst::StoreLocal(slots[1], value.length.regs[0]));
-        value.slots = Some(slots);
+        let place=target.place.unwrap();let packed=self.returned_storage(&returns::Returned::Dataset(value.clone()));
+        self.write_storage_value(&place,&packed,span)?;value.place=Some(place);
         value.count = target.count;
         value.ownership = Ownership::Owned;
         value.writable = true;
@@ -861,7 +838,7 @@ impl Builder<'_> {
                 source.ownership = Ownership::Moved;
                 source.residency = residency::Residency::default();
             }
-            data.slots = None;
+            data.place = None;
             return Ok(Some(data));
         }
         let (name, explicit, args) = match &expr.kind {
@@ -995,7 +972,7 @@ impl Builder<'_> {
         ]));
         Ok(Some(Data {
             handle,
-            slots: None,
+            place: None,
             initialization: if ty.zero_valid(){None}else{Some(Position::Parameter(self.application_output_scope(),0))},
             ty,
             length,
@@ -1631,6 +1608,6 @@ impl crate::module::codec::Encode for Data {
 }
 impl crate::module::codec::Decode for Data {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,slots:None,initialization:None})
+        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,place:None,initialization:None})
     }
 }
