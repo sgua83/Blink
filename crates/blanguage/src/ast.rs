@@ -67,7 +67,7 @@ impl Access {
         matches!(self, Self::Write | Self::InOut | Self::Atomic)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
     Compute,
     Cpu,

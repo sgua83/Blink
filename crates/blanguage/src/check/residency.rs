@@ -97,111 +97,118 @@ impl Residency {
         (!result.absent()).then_some(result)
     }
 }
-pub(super) type Requirements = BTreeMap<Input, Target>;
-pub(super) type Arguments = BTreeMap<Input, Residency>;
-pub(super) struct Call {
-    pub function: String,
-    pub arguments: Arguments,
-    pub path: bounds::Clause,
-    pub source: Source,
-    pub span: Span,
+pub(super) type Requirements=BTreeMap<(Input,Target),BTreeSet<bounds::Condition>>;
+pub(super) type Arguments=BTreeMap<Input,Residency>;
+pub(super) struct Call{
+    pub function:String,
+    pub arguments:Arguments,
+    pub bindings:BTreeMap<ValueIdentity,bounds::Proof>,
+    pub path:bounds::Clause,
+    pub source:Source,
+    pub span:Span,
 }
 #[derive(Default)]
-pub(super) struct Inputs {
-    pub required: Requirements,
-    pub calls: Vec<Call>,
-    pub uses: Vec<Use>,
+pub(super) struct Inputs{
+    pub calls:Vec<Call>,
+    pub uses:Vec<Use>,
 }
-impl Inputs {
-    pub fn require(
-        &mut self,
-        value: &Residency,
-        target: Target,
-        source: &Source,
-        span: Span,
-        path: &bounds::Clause,
-    ) -> bool {
-        let value=value.under(path);
-        // compute 是声明能力；原 target 位置及资源合同只接受 CPU／GPU。
-        if target == Target::Compute || value.origins().is_empty() {
-            return false;
-        }
-        for origin in &value.origins() {
-            match origin {
-                Origin::Input(input) => {
-                    if self
-                        .required
-                        .get(input)
-                        .is_some_and(|known| *known != target)
-                    {
-                        return false;
-                    }
-                    self.required.insert(input.clone(), target);
-                }
-                Origin::Cpu if target != Target::Cpu => return false,
-                Origin::Gpu if target != Target::Gpu => return false,
-                _ => {}
-            }
-        }
-        if value
-            .origins()
-            .iter()
-            .any(|origin| matches!(origin, Origin::Output(_)))
-        {
-            self.uses.push(Use::At {
-                value: value.clone(),
-                path: path.clone(),
-                target,
-                source: source.clone(),
-                span,
-            });
-        }
-        true
+// 原使用点是局部检查与公共要求的共同来源，不维护另一份无条件输入状态。
+impl Inputs{
+    pub fn require(&mut self,value:&Residency,target:Target,source:&Source,span:Span,path:&bounds::Clause)->bool{
+        if target==Target::Compute||!known(value,target,path){return false;}
+        self.uses.push(Use::At{value:value.clone(),target,path:path.clone(),source:source.clone(),span});true
     }
-    fn resolve(&self,value:&Residency)->Residency{match value{
-        Residency::Origins(origins)=>Residency::Origins(origins.iter().map(|origin|if let Origin::Input(input)=origin{match self.required.get(input){Some(Target::Cpu)=>Origin::Cpu,Some(Target::Gpu)=>Origin::Gpu,_=>origin.clone()}}else{origin.clone()}).collect()),
-        Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),self.resolve(a),self.resolve(b)),
-        Residency::Absent=>Residency::Absent,
+    pub fn same(&mut self,a:&Residency,b:&Residency,source:&Source,span:Span,path:&bounds::Clause)->bool{
+        self.uses.push(Use::Same{before:a.clone(),after:b.clone(),path:path.clone(),source:source.clone(),span});true
+    }
+}
+fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{
+    if !path.possible(){return true;}
+    match value{
+        Residency::Absent=>true,
+        Residency::Selected(when,a,b)=>known(a,target,&when.assume(path,true))&&known(b,target,&when.assume(path,false)),
+        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{Origin::Cpu=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,_=>true}),
+    }
+}
+fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
+    if !when.active(){return true;}
+    if required.iter().any(|((other,place),guards)|*other==input&&*place!=target&&guards.iter().any(|guard|guard.overlaps(&when))){return false;}
+    let guards=required.entry((input,target)).or_default();
+    if guards.iter().any(|guard|guard.covers(&when)){return true;}
+    guards.retain(|guard|!when.covers(guard));guards.insert(when);true
+}
+fn consume(required:&mut Requirements,value:&Residency,target:Target,path:&bounds::Clause)->bool{
+    if !path.possible(){return true;}
+    match value{
+        Residency::Absent=>true,
+        Residency::Selected(when,a,b)=>consume(required,a,target,&when.assume(path,true))&&consume(required,b,target,&when.assume(path,false)),
+        Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{
+            Origin::Cpu=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,
+            Origin::Input(input)=>insert(required,input.clone(),target,bounds::Condition::guard(path.clone())),
+            Origin::Output(_)=>false,
+        }),
+    }
+}
+pub(super) fn input_parameters(parameters:&BTreeMap<ValueIdentity,ValueIdentity>,width:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
+    parameters.iter().filter(|(_,target)|match target{ValueIdentity::Register(n)=>*n<width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)=>true,_=>false}).map(|(source,target)|(*source,bounds::Proof::default().with_identity(*target))).collect()
+}
+pub(super) fn canonical(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,source:&Source,span:Span)->Result<Requirements>{
+    let mut result=Requirements::new();
+    for((input,target),guards)in required{for guard in guards{
+        if !insert(&mut result,input.clone(),*target,guard.guard_at_call(parameters)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
+    }}Ok(result)
+}
+fn local(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Requirements{
+    let mut inverse=BTreeMap::new();
+    for(source,target)in parameters{
+        let target=target.known_identity(0).unwrap();
+        let entry=inverse.entry(target).or_insert_with(||bounds::Proof::default().with_identity(*source));
+        if !matches!(target,ValueIdentity::Register(_))&&*source==target{*entry=bounds::Proof::default().with_identity(*source);}
+    }
+    required.iter().map(|(key,guards)|(key.clone(),guards.iter().map(|guard|guard.guard_at_call(&inverse)).collect())).collect()
+}
+pub(super) fn infer(inputs:&Inputs,known:&BTreeMap<String,Requirements>,outputs:&Outputs)->Result<Requirements>{
+    let mut required=Requirements::new();
+    for usage in &inputs.uses{if let Use::At{value,target,path,source,span}=usage{
+        let value=evaluate(value,outputs).under(path);
+        if !value.absent()&&!consume(&mut required,&value,*target,path){return source.fail(*span,"B266","实际资源来源不满足本次条件CPU／GPU位置要求");}
     }}
-    pub fn same(&mut self, a: &Residency, b: &Residency, source: &Source, span: Span,path:&bounds::Clause) -> bool {
-        let a=a.under(path);let b=b.under(path);
-        if a.origins()
-            .iter()
-            .chain(&b.origins())
-            .any(|origin| matches!(origin, Origin::Output(_)))
-        {
-            self.uses.push(Use::Same {
-                before: a.clone(),
-                after: b.clone(),
-                path: path.clone(),
-                source: source.clone(),
-                span,
-            });
-            true
-        } else {
-            self.resolve(&a) == self.resolve(&b)
-        }
-    }
-    pub fn apply(&mut self, required: &Requirements, call: &Call) -> Result<()> {
-        for (input, target) in required {
-            if let Some(value) = call.arguments.get(input) {
-                if !self.require(value, *target, &call.source, call.span,&call.path) {
-                    return call.source.fail(
-                        call.span,
-                        "B266",
-                        format!(
-                            "函数 {} 的第 {} 个资源参数（字段路径 {:?}）需要 {} 存储；实际位置不满足函数合同",
-                            call.function,
-                            input.parameter + 1,
-                            input.fields,
-                            if *target == Target::Cpu { "CPU" } else { "GPU" },
-                        ),
-                    );
-                }
+    for call in &inputs.calls{
+        for((input,target),guards)in &known[&call.function]{
+            let Some(value)=call.arguments.get(input)else{continue};let value=evaluate(value,outputs);
+            if value.absent(){continue;}
+            for guard in guards{
+                let path=guard.guard_at_call(&call.bindings).assume(&call.path,true);
+                if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（字段路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
             }
         }
-        Ok(())
     }
+    Ok(required)
+}
+fn refine(value:&Residency,required:&Requirements)->Residency{match value{
+    Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),refine(a,required),refine(b,required)),
+    Residency::Absent=>Residency::Absent,
+    Residency::Origins(origins)=>{
+        if origins.is_empty(){return value.clone();}let mut all=Residency::Absent;
+        for origin in origins{
+            let mut item=Residency::Origins(BTreeSet::from([origin.clone()]));
+            if let Origin::Input(input)=origin{for((other,target),guards)in required{if input==other{for guard in guards{item=Residency::conditional(guard.clone(),if *target==Target::Cpu{Residency::cpu()}else{Residency::gpu()},item);}}}}
+            all.join(&item);
+        }all
+    },
+}}
+fn equal_under(a:&Residency,b:&Residency,path:&bounds::Clause)->bool{
+    if !path.possible(){return true;}let a=a.under(path);let b=b.under(path);if a==b{return true;}
+    if let Residency::Selected(when,yes,no)=a{return equal_under(&yes,&b,&when.assume(path,true))&&equal_under(&no,&b,&when.assume(path,false));}
+    if let Residency::Selected(when,yes,no)=b{return equal_under(&a,&yes,&when.assume(path,true))&&equal_under(&a,&no,&when.assume(path,false));}
+    false
+}
+pub(super) fn check_loops(inputs:&Inputs,required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs)->Result<()>{
+    let required=local(required,parameters);
+    for usage in &inputs.uses{if let Use::Same{before,after,path,source,span}=usage{
+        let before=evaluate(before,outputs);let after=evaluate(after,outputs);if before.absent()||after.absent(){continue;}
+        if !equal_under(&refine(&before,&required),&refine(&after,&required),path){return source.fail(*span,"B266","循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");}
+    }}Ok(())
 }
 fn visit(
     value: &mut Returned,
@@ -415,24 +422,6 @@ pub(super) fn solve_outputs<'a>(
     }
 }
 
-pub(super) fn resolved_call(call: &Call, outputs: &Outputs) -> Call {
-    let arguments = call
-        .arguments
-        .iter()
-        .filter_map(|(input, value)| {
-            let value = evaluate(value, outputs);
-            let value=value.under(&call.path);
-            (!value.absent()).then(||(input.clone(),value))
-        })
-        .collect();
-    Call {
-        function: call.function.clone(),
-        arguments,
-        path: call.path.clone(),
-        source: call.source.clone(),
-        span: call.span,
-    }
-}
 pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool {
     fn resolve(value: &mut Returned, outputs: &Outputs) -> bool {
         match value {
@@ -461,56 +450,6 @@ pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool 
         }
     }
     resolve(value, outputs)
-}
-impl Inputs {
-    pub fn apply_uses(&mut self, uses: &[Use], outputs: &Outputs, final_pass: bool) -> Result<()> {
-        for usage in uses {
-            match usage {
-                Use::At {
-                    value,
-                    path,
-                    target,
-                    source,
-                    span,
-                } if !final_pass => {
-                    let value = evaluate(value, outputs).under(path);
-                    if value.absent() {
-                        continue;
-                    }
-                    if !self.require(&value, *target, source, *span,path) {
-                        return source.fail(
-                            *span,
-                            "B266",
-                            "递归调用返回资源的实际来源不满足本次CPU／GPU位置要求",
-                        );
-                    }
-                }
-                Use::Same {
-                    before,
-                    after,
-                    path,
-                    source,
-                    span,
-                } if final_pass => {
-                    let before = evaluate(before, outputs).under(path);
-                    let after = evaluate(after, outputs).under(path);
-                    if before.absent() || after.absent()
-                    {
-                        continue;
-                    }
-                    if self.resolve(&before) != self.resolve(&after) {
-                        return source.fail(
-                            *span,
-                            "B266",
-                            "递归资源结果在循环回边未归还入口相同的CPU／GPU存储位置",
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
 }
 crate::module::codec::variants!(OutputKind{0=>Returned,1=>Written(parameter)});
 crate::module::codec::record!(Output {

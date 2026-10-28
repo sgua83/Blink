@@ -56,8 +56,9 @@ struct Unit {
     contract: Contract,
     module: String,
     public: bool,
-    residency_calls: Vec<residency::Call>,
-    residency_uses: Vec<residency::Use>,
+    residency: residency::Inputs,
+    source: Source,
+    span: Span,
     view_model: view_contracts::Function,
 }
 fn declaration(
@@ -89,8 +90,9 @@ fn declaration(
                 contract,
                 module: instance.definition.module.clone(),
                 public: instance.definition.public,
-                residency_calls: Vec::new(),
-                residency_uses: Vec::new(),
+                residency: residency::Inputs::default(),
+                source: instance.definition.source.clone(),
+                span: instance.definition.function.span,
                 view_model: view_contracts::Function::default(),
             }),
         );
@@ -103,11 +105,7 @@ fn declaration(
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
     let checked = checked_function(world, &instance, Some(context))?;
-    let residency::Inputs {
-        required,
-        calls,
-        uses,
-    } = checked.residency;
+    let residency=checked.residency;
     let mut context = checked.application.unwrap();
     context.frame = frame;
     let mut function = checked.body;
@@ -124,7 +122,7 @@ fn declaration(
         target: instance.definition.function.target,
         frame: false,
         domain: None,
-        residency: required,
+        residency: BTreeMap::new(),
     };
     crate::optimize::value_code(&mut function.body);
     context.functions.units.insert(
@@ -134,8 +132,9 @@ fn declaration(
             contract,
             module: instance.definition.module.clone(),
             public: instance.definition.public,
-            residency_calls: calls,
-            residency_uses: uses,
+            residency,
+            source: instance.definition.source.clone(),
+            span: instance.definition.function.span,
             view_model: checked.view_model,
         }),
     );
@@ -401,19 +400,17 @@ impl Builder<'_> {
         let requirements = contracts::resolve(self, d, &env)?;
         contracts::prove(self, &requirements, span)?;
         self.native_declaration(&instance)?;
+        let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
+        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
         if !locations.is_empty() {
             let call = residency::Call {
                 function: instance.name.clone(),
                 arguments: locations.clone(),
+                bindings: view_arguments.clone(),
                 path: self.residency_path(),
                 source: self.definition.source.clone(),
                 span,
             };
-            if let Some(unit) =
-                self.application.as_ref().unwrap().functions.units[&instance.name].as_ref()
-            {
-                self.residency.apply(&unit.contract.residency, &call)?;
-            }
             self.residency.calls.push(call);
         }
         let result = if d.function.result.name == "void" || d.function.result.is_never() {
@@ -449,8 +446,6 @@ impl Builder<'_> {
                 )
             });
         let input_width=actual.len();
-        let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
-        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
         let pending_view=result.as_ref().filter(|ty|ty.contains_views()).is_some_and(|ty| {
             prototype.as_ref().and_then(|(_,model,_)|model.as_ref()).is_none_or(|model|model.view_value().is_none_or(|value|view_contracts::pending(&value.proof,ty)))
         })||written.iter().any(|(index,place)|place.ty().contains_views()&&prototype.as_ref().and_then(|(_,_,written)|written.get(*index)).and_then(Option::as_ref).is_none_or(|model|model.view_value().is_none_or(|value|view_contracts::pending(&value.proof,place.ty()))));
@@ -640,53 +635,21 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
             unit.as_ref().unwrap().contract.written.as_slice(),
         )
     }));
-    loop {
-        let known = module
-            .units
-            .iter()
-            .map(|(name, unit)| {
-                (
-                    name.clone(),
-                    unit.as_ref().unwrap().contract.residency.clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut changed = false;
-        for unit in module.units.values_mut() {
-            let unit = unit.as_mut().unwrap();
-            let mut inputs = residency::Inputs {
-                required: unit.contract.residency.clone(),
-                calls: Vec::new(),
-                uses: Vec::new(),
-            };
-            for call in &unit.residency_calls {
-                inputs.apply(
-                    &known[&call.function],
-                    &residency::resolved_call(call, &outputs),
-                )?;
-            }
-            inputs.apply_uses(&unit.residency_uses, &outputs, false)?;
-            changed |= inputs.required != unit.contract.residency;
-            unit.contract.residency = inputs.required;
+    loop{
+        let known=module.units.iter().map(|(name,unit)|(name.clone(),unit.as_ref().unwrap().contract.residency.clone())).collect::<BTreeMap<_,_>>();let mut changed=false;
+        for unit in module.units.values_mut(){let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
+            let required=residency::infer(&unit.residency,&known,&outputs)?;
+            let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
+            let required=residency::canonical(&required,&parameters,&unit.source,unit.span)?;
+            changed|=required!=unit.contract.residency;unit.contract.residency=required;
         }
-        if !changed {
-            break;
-        }
+        if !changed{break;}
     }
-    for unit in module.units.values_mut() {
-        let unit = unit.as_mut().unwrap();
-        let mut inputs = residency::Inputs {
-            required: unit.contract.residency.clone(),
-            calls: Vec::new(),
-            uses: Vec::new(),
-        };
-        inputs.apply_uses(&unit.residency_uses, &outputs, true)?;
-        for written in &mut unit.contract.written {if let Some(value)=written {if !residency::resolve_returned(value,&outputs){*written=None;}}}
-        if let Some(returned) = &mut unit.contract.returned {
-            if !residency::resolve_returned(returned, &outputs) {
-                unit.contract.returned = None;
-            }
-        }
+    for unit in module.units.values_mut(){let unit=unit.as_mut().unwrap();
+        let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
+        residency::check_loops(&unit.residency,&unit.contract.residency,&parameters,&outputs)?;
+        for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
+        if let Some(returned)=&mut unit.contract.returned{if !residency::resolve_returned(returned,&outputs){unit.contract.returned=None;}}
     }
     Ok(())
 }
@@ -1196,8 +1159,9 @@ fn build_domain(
             contract,
             module: d.module.clone(),
             public: d.public,
-            residency_calls: Vec::new(),
-            residency_uses: Vec::new(),
+            residency: residency::Inputs::default(),
+            source: d.source.clone(),
+            span: d.function.span,
                 view_model: view_contracts::Function::default(),
         }),
     );

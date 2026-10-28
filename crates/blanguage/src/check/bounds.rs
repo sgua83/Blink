@@ -26,6 +26,8 @@ enum Fact {
     NonZero(ValueIdentity),
     Boolean(ValueIdentity, bool),
     Below(ValueIdentity, ValueIdentity, bool, bool),
+    Outside(ValueIdentity,IndexDomain),
+    Zero(ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
 type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
@@ -381,9 +383,23 @@ impl Proof {
                 Fact::Index(id, d) => identity(id, bindings)
                     .zip(domain(d, bindings))
                     .map(|(id, d)| Fact::Index(id, d)),
-                Fact::Minimum(id, n) => identity(id, bindings).map(|id| Fact::Minimum(id, n)),
-                Fact::Maximum(id, n) => identity(id, bindings).map(|id| Fact::Maximum(id, n)),
-                Fact::NonZero(id) => identity(id, bindings).map(Fact::NonZero),
+                Fact::Minimum(id,n)=>{
+                    if let Some(value)=bindings.get(&id){let range=value.range_set(0).hull();if range.0>=n{return Clause::default();}if range.1<n{return Clause::impossible();}}
+                    identity(id,bindings).map(|id|Fact::Minimum(id,n))
+                },
+                Fact::Maximum(id,n)=>{
+                    if let Some(value)=bindings.get(&id){let range=value.range_set(0).hull();if range.1<=n{return Clause::default();}if range.0>n{return Clause::impossible();}}
+                    identity(id,bindings).map(|id|Fact::Maximum(id,n))
+                },
+                Fact::NonZero(id)=>{
+                    if bindings.get(&id).is_some_and(|value|value.nonzero.first()==Some(&true)){return Clause::default();}
+                    identity(id,bindings).map(Fact::NonZero)
+                },
+                Fact::Zero(id)=>{
+                    if bindings.get(&id).is_some_and(|value|value.nonzero.first()==Some(&true)){return Clause::impossible();}
+                    identity(id,bindings).map(Fact::Zero)
+                },
+                Fact::Outside(id,d)=>identity(id,bindings).zip(domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
             };
             Clause::facts(translated.into_iter().collect())
         }
@@ -817,6 +833,8 @@ impl Proof {
                 }
                 if matches!(scalar, Scalar::U32 | Scalar::I32) {
                     let (minimum, maximum) = self.range(component);
+                    let zero=if *scalar==Scalar::I32{0x8000_0000}else{0};
+                    if minimum==zero && maximum==zero{facts.insert(Fact::Zero(identity));}
                     if minimum != 0 {
                         facts.insert(Fact::Minimum(identity, minimum));
                     }
@@ -946,6 +964,11 @@ impl Proof {
                     .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
                 self.ranges[component] = self.ranges[component].restrict(0, upper);
             }
+            Fact::Zero(_) if matches!(ty.components[component].0,Scalar::U32|Scalar::I32)=>{
+                let zero=if ty.components[component].0==Scalar::I32{0x8000_0000}else{0};
+                self.ranges.resize_with(self.ranges.len().max(component+1),IntegerRanges::default);
+                self.ranges[component]=self.ranges[component].restrict(zero,zero);
+            },
             Fact::NonZero(_) if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) => {
                 self.mark_nonzero(component);
             }
@@ -993,6 +1016,8 @@ impl Fact {
     fn identity(self) -> Option<ValueIdentity> {
         match self {
             Self::Index(id, _)
+            | Self::Outside(id,_)
+            | Self::Zero(id)
             | Self::Minimum(id, _)
             | Self::Maximum(id, _)
             | Self::NonZero(id)
@@ -1003,6 +1028,8 @@ impl Fact {
     fn at(self, id: ValueIdentity) -> Self {
         match self {
             Self::Index(_, domain) => Self::Index(id, domain),
+            Self::Outside(_,domain)=>Self::Outside(id,domain),
+            Self::Zero(_)=>Self::Zero(id),
             Self::Minimum(_, bound) => Self::Minimum(id, bound),
             Self::Maximum(_, bound) => Self::Maximum(id, bound),
             Self::NonZero(_) => Self::NonZero(id),
@@ -1188,6 +1215,32 @@ enum ClauseNode {
     Branch(Clause, Arc<Condition>, bool),
 }
 impl Clause {
+    fn negate(&self)->Self{
+        fn fact(value:Fact)->Clause{match value{
+            Fact::Minimum(id,0)|Fact::Maximum(id,u32::MAX)=>{let _=id;Clause::impossible()},
+            Fact::Minimum(id,n)=>Clause::facts([Fact::Maximum(id,n-1)].into()),
+            Fact::Maximum(id,n)=>Clause::facts([Fact::Minimum(id,n+1)].into()),
+            Fact::NonZero(id)=>Clause::facts([Fact::Zero(id)].into()),
+            Fact::Zero(id)=>Clause::facts([Fact::NonZero(id)].into()),
+            Fact::Boolean(id,truth)=>Clause::facts([Fact::Boolean(id,!truth)].into()),
+            Fact::Equal(a,b)=>Clause::either(&Clause::facts([Fact::Below(a,b,true,false)].into()),&Clause::facts([Fact::Below(b,a,true,false)].into())),
+            Fact::Below(a,b,strict,signed)=>Clause::facts([Fact::Below(b,a,!strict,signed)].into()),
+            Fact::Index(id,IndexDomain::Fixed(n))=>Clause::facts([Fact::Minimum(id,n)].into()),
+            Fact::Index(id,d)=>Clause::facts([Fact::Outside(id,d)].into()),
+            Fact::Outside(id,d)=>Clause::facts([Fact::Index(id,d)].into()),
+        }}
+        let mut values=BTreeMap::new();
+        for clause in Self::ordered(std::slice::from_ref(self)){
+            let next=match &*clause.0{
+                ClauseNode::Impossible=>Self::default(),
+                ClauseNode::Facts(facts)=>facts.iter().fold(Self::impossible(),|all,value|Self::either(&all,&fact(*value))),
+                ClauseNode::Both(a,b)=>Self::either(&values[&a.key()],&values[&b.key()]),
+                ClauseNode::Either(a,b)=>Self::both(&values[&a.key()],&values[&b.key()]),
+                ClauseNode::Branch(parent,condition,truth)=>Self::either(&values[&parent.key()],&values[&condition.cases[usize::from(*truth)].key()]),
+            };values.insert(clause.key(),next);
+        }
+        values.remove(&self.key()).unwrap()
+    }
     pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
         if bindings.is_empty() {
             return self.clone();
@@ -1208,6 +1261,8 @@ impl Clause {
                             Fact::Minimum(id, n) => Fact::Minimum(identity(id), n),
                             Fact::Maximum(id, n) => Fact::Maximum(identity(id), n),
                             Fact::NonZero(id) => Fact::NonZero(identity(id)),
+                            Fact::Zero(id)=>Fact::Zero(identity(id)),
+                            Fact::Outside(id,d)=>Fact::Outside(identity(id),output_domain(d,bindings)),
                             Fact::Boolean(id, truth) => Fact::Boolean(identity(id), truth),
                             Fact::Below(a, b, strict, signed) => {
                                 Fact::Below(identity(a), identity(b), strict, signed)
@@ -1432,7 +1487,7 @@ impl Clause {
             environment = required;
         }
     }
-    fn possible(&self) -> bool {
+    pub(super) fn possible(&self) -> bool {
         self.required().is_some()
     }
 }
@@ -1442,6 +1497,12 @@ fn contradictory(facts: &Facts) -> bool {
     }) {
         return true;
     }
+    if facts.iter().any(|fact|match *fact{
+        Fact::NonZero(id)=>facts.contains(&Fact::Zero(id)),
+        Fact::Index(id,d)=>facts.contains(&Fact::Outside(id,d)),
+        Fact::Below(a,b,strict,signed)=>{(a==b&&strict)||facts.contains(&Fact::Below(b,a,!strict,signed))||(strict&&facts.contains(&Fact::equal(a,b)))},
+        _=>false,
+    }){return true;}
     let lower = minimums(facts);
     maximums(facts)
         .iter()
@@ -1548,6 +1609,14 @@ impl crate::module::codec::Decode for Condition {
     }
 }
 impl Condition {
+    pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
+    pub(super) fn guard_at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
+        // 先投影真实输入关系，再求补集；不可用的私有布尔不能成为接口条件。
+        let value=self.at_call(bindings);Self::guard(value.cases[1].clone())
+    }
+    pub(super) fn covers(&self,other:&Self)->bool{!Clause::both(&self.cases[0],&other.cases[1]).possible()}
+    pub(super) fn overlaps(&self,other:&Self)->bool{Clause::both(&self.cases[1],&other.cases[1]).possible()}
+    pub(super) fn active(&self)->bool{self.cases[1].possible()}
     pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&*case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
@@ -1559,7 +1628,7 @@ impl Condition {
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }
-    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Minimum(a,_)|Fact::Maximum(a,_)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
+    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,_)|Fact::Maximum(a,_)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
         let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};
@@ -2764,4 +2833,4 @@ impl crate::module::codec::Decode for Proof {
         })
     }
 }
-crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,signed)});
+crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,signed),7=>Outside(value,domain),8=>Zero(value)});
