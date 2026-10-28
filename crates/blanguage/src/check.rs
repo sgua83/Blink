@@ -457,10 +457,22 @@ fn expand_stages(
     boundary: &mut bool,
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
-) -> Result<()> {
+) -> Result<bool> {
     for statement in body {
         match &statement.kind {
-            StmtKind::Return(None) => break,
+            StmtKind::Return(None) => return Ok(true),
+            StmtKind::If(condition, yes, no) => {
+                let Root::Literal(ty, words) = stage_root(world, d, env, program, condition)? else {
+                    return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
+                };
+                if ty != Ty::scalar(Scalar::Bool) {
+                    return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool");
+                }
+                let selected = if words[0] == 0 { no } else { yes };
+                if expand_stages(world, d, selected, env, program, stack, boundary, facts, calls)? {
+                    return Ok(true);
+                }
+            }
             StmtKind::For(name, first, Some(last), body) => {
                 if env.contains_key(name) {
                     return d.source.fail(
@@ -487,9 +499,11 @@ fn expand_stages(
                         name.clone(),
                         Root::Literal(Ty::scalar(Scalar::U32), vec![index]),
                     );
-                    expand_stages(
+                    if expand_stages(
                         world, d, body, &child, program, stack, boundary, facts, calls,
-                    )?;
+                    )? {
+                        return Ok(true);
+                    }
                 }
             }
             StmtKind::Parallel(name, syntax, body) => {
@@ -988,7 +1002,7 @@ fn expand_stages(
             }
         }
     }
-    Ok(())
+    Ok(false)
 }
 fn stage_root(
     world: &World,

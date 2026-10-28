@@ -98,7 +98,9 @@ impl Body {
                     self.block(world, d, body);
                 }
                 StmtKind::If(e, a, b) => {
-                    self.local = true;
+                    // 设备阶段可按原常量环境选择分支；是否真为静态bool
+                    // 由阶段展开处判断。CPU主流程仍保留普通运行期控制。
+                    self.local |= d.function.target == Target::Cpu;
                     self.expr(world, d, e, false);
                     self.block(world, d, a);
                     self.block(world, d, b);

@@ -851,6 +851,12 @@ void iterate<const R:u32>(inout dataset<Item> items) on compute {
 
 空范围不展开正文；整个program可以没有执行阶段，原数据及有效域关系沿既有接口交接。展开阶段数量及编译资源随实际迭代数增加，不表示已经有设备驱动的动态阶段循环。普通parallel正文内的for／while保持原运行期控制流；阶段层已解析根为动态或非u32时报B251，包含运行期运算或副作用的派生范围沿B114拒绝；计数器改写沿B134，重复名称沿B125，跨program递归沿B105拒绝。
 
+### 编译期阶段条件（2026-10-28）
+
+计算函数的阶段层现支持`if (编译期bool) ... else ...`，条件沿原阶段环境和常量表达式求值，允许使用具体const值参数、静态for计数器及其派生比较。只展开实际分支，阶段资源绑定、访问、prefix事实与显式phase继续沿原数据流；不生成运行期CPU／GPU分支或复制数据。泛型值参数仍按当前u32规则声明，例如`const P:u32`后判断`P%2==0`，不能据此推导bool泛型值参数已经支持。
+
+阶段if可以嵌套并出现在静态for内，例如双缓冲算法按`pass%2`选择读写方向。阶段层的`return;`退出当前计算函数，包括从所选分支或静态循环内部返回；子函数返回后调用者继续。非bool或直接动态条件报B251，包含运行期派生运算的条件仍可能由原常量分析报B114；动态控制继续放在parallel或CPU普通主流程。CPU普通if及parallel内if保持原运行期语义。
+
 ## 受约束的数值泛型函数
 
 普通函数与 cooperative 函数支持 `T function<T: floating>(T value)` 形式，类型参数放在函数名之后，约束是编译器已知的有限类型集合。`.h/.b` 的类型参数名、顺序和约束必须相同。调用仍写普通函数名，从实际参数推导具体类型；同一 T 在多个参数中必须相同，不为推导而隐式改变数值类型或向量宽度。
@@ -3263,6 +3269,8 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 编译器从优化后的实际 IR 派生 f32 运算要求，包括算术、数值比较与转换、数学函数、块内集合、subgroup 数值协作和全域 f32 归约／扫描。主入口、f32 归约尾入口及扫描的递归／传播入口声明 `DenormPreserve 32` 和 `SignedZeroInfNanPreserve 32`；纯位复制、整数运算及已删除的浮点计算不引入该要求。该规则归属浮点运算本身，普通内核与使用极值集合的内核使用相同模式。
 
 同一 Vulkan 设备在既有属性查询链读取 `VkPhysicalDeviceFloatControlsProperties`，实际执行绑定检查所需的两个 32 位能力；不支持时明确报错。该能力来自 [Vulkan 1.2 浮点控制属性](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceFloatControlsProperties.html)，入口模式按 [SPIR-V float controls](https://github.khronos.org/SPIRV-Registry/extensions/KHR/SPV_KHR_float_controls.html) 编码。保留有符号零、次正规数、NaN／无穷语义不等于承诺所有 NaN 载荷、浮点结合顺序、近似数学结果和舍入误差一致；CPU 继续使用既有原生浮点指令。
+
+保留模式的实际指令覆盖与除法精度分别解释。[Vulkan的SPIR-V环境](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)没有将OpFDiv列入必须遵守DenormPreserve的指令集合；其单精度2.5ULP条件只覆盖规范指定的除数范围。不能据开启上述模式宣称次正规除数的结果与CPU一致。2026-10-28本机RX9070GRE原生对照中，独立输入的1e-38及更小正数各自相除，CPU均为1，GPU为无穷；原生输入、输出与日志见E:/BLEngineMeasurements/ReceiverReconstruction的Ratio记录。这是当前平台数值行为，未定性为新编译器正确性缺陷；算法须按真实数值尺度组织运算，不靠钳值或静默替换输出。
 
 ### GPU f32除法的当前范围（2026-10-27）
 
