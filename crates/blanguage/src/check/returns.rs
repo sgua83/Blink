@@ -51,7 +51,7 @@ impl Returned {
                 }
             }
             Self::Dataset(v) => {
-                v.residency=v.residency.output_bound(bindings);
+                v.residency=v.residency.output_bound(bindings).with_aliases(aliases);
                 value(&mut v.handle, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
             }

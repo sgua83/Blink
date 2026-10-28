@@ -40,8 +40,12 @@ impl Residency {
     fn arm(&self,condition:&bounds::Condition,truth:bool)->Self{match self{Self::Selected(known,a,b)if condition.exclusive() && known.as_ref()==condition=>if truth{a.as_ref().clone()}else{b.as_ref().clone()},_=>self.clone()}}
     pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{Self::conditional(when.condition(),a,b)}
     pub(super) fn conditional(when:bounds::Condition,mut a:Self,mut b:Self)->Self{
+        if when.impossible(){return Self::Absent;}
         if let Some(truth)=when.boolean_constant(){return if truth{a}else{b};}
         if when.unconstrained(){a.join(&b);return a;}
+        // 投影后条件可重叠；只吸收同一条件下已有的同来源分支，不扩张其有效域。
+        if let Self::Selected(inner,yes,no)=&b && **inner==when && a==**yes{return Self::conditional(when,a,no.as_ref().clone());}
+        if let Self::Selected(inner,yes,no)=&a && **inner==when && b==**no{return Self::conditional(when,yes.as_ref().clone(),b);}
         if !when.exclusive(){return if a==b{a}else{Self::Selected(Box::new(when),Box::new(a),Box::new(b))};}
         a=a.arm(&when,true);b=b.arm(&when,false);
         if a==b{return a;}
@@ -78,6 +82,22 @@ impl Residency {
         Self::Selected(when,a,b)=>Self::conditional(when.at_call(bindings),a.at_call(bindings),b.at_call(bindings)),
         Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(bindings))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
+    }}
+    // 合并重复来源而保留其成立域；Absent 不被提升为真实资源来源。
+    fn canonical(&self)->Self{
+        fn collect(value:&Residency,path:&bounds::Clause,terms:&mut BTreeMap<BTreeSet<Origin>,bounds::Clause>){match value{
+            Residency::Absent=>{},
+            Residency::Origins(origins)=>{let guard=terms.entry(origins.clone()).or_insert_with(bounds::Clause::impossible);*guard=bounds::Clause::either(guard,path);},
+            Residency::Selected(when,a,b)=>{collect(a,&when.assume(path,true),terms);collect(b,&when.assume(path,false),terms);},
+        }}
+        let mut terms=BTreeMap::new();collect(self,&bounds::Clause::default(),&mut terms);
+        terms.into_iter().fold(Self::Absent,|other,(origins,path)|Self::conditional(bounds::Condition::paths(path.canonical(),bounds::Clause::default()),Self::Origins(origins),other))
+    }
+    pub(super) fn with_aliases(&self,aliases:&bounds::Clause)->Self{match self{
+        Self::Selected(when,a,b)=>{
+            let yes=when.assume(aliases,true);let no=when.assume(aliases,false);
+            Self::conditional(when.with_aliases(aliases),a.with_aliases(&yes),b.with_aliases(&no))
+        },_=>self.clone(),
     }}
     pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.output_bound(bindings),a.output_bound(bindings),b.output_bound(bindings)),
@@ -410,7 +430,7 @@ pub(super) fn solve_outputs<'a>(
                     name.clone(),
                     values
                         .iter()
-                        .map(|(fields, value)| (fields.clone(), evaluate(value, &outputs)))
+                        .map(|(fields, value)| (fields.clone(), evaluate(value, &outputs).canonical()))
                         .collect(),
                 )
             })

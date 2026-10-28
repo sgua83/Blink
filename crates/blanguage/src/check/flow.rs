@@ -247,15 +247,27 @@ impl Builder<'_> {
         self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
     }
     pub(super) fn application_initial_loop(&self,body:&[Stmt])->bool{
+        fn exits(body:&[Stmt],nested:bool)->bool{body.iter().any(|statement|match &statement.kind{
+            StmtKind::Break=>!nested,StmtKind::Return(_)=>true,
+            StmtKind::If(_,yes,no)=>exits(yes,nested)||exits(no,nested),
+            StmtKind::Match(_,arms)=>arms.iter().any(|arm|exits(&arm.body,nested)),
+            StmtKind::While(_,body)|StmtKind::For(_,_,_,body)=>exits(body,true),
+            _=>false,
+        })}
+        // 资源出口先消费真实首轮；后续回边仍沿原构造进展及位置关系处理。
+        if self.application.is_some()&&self.env.values().any(|binding|!binding.application_resources().is_empty())&&exits(body,false){return true;}
         fn root(expr:&Expr)->Option<&str>{match &expr.kind{ExprKind::Name(name)=>Some(name),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root(base),_=>None}}
         effects::value_writes(self.world,&self.definition,body).iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}})
     }
     pub(super) fn next_initial_loop(&self,body:&[Stmt])->bool{
         if !self.application_initial_loop(body){return false;}
         if effects::value_writes(self.world,&self.definition,body).iter().any(|expr|self.initial_target(expr,false)==Some(true)){return true;}
-        #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>)}
+        #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}
         fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
-        let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.resources.keys(){let model=match environment.get(name){Some(Binding::ApplicationData(data))=>Some(returns::Returned::Dataset(data.clone())),Some(Binding::OwnedValue(value))=>Some(returns::Returned::OwnedValue(value.clone())),_=>None};if let Some(mut model)=model{self.resolve_owned_model(&mut model,None);let mut values=BTreeSet::new();collect(&model,&mut Vec::new(),&mut values);all.extend(values.into_iter().map(|value|(name.clone(),value)));}}all};let before=known(&context.resources);let after=known(&self.env);before.is_subset(&after)&&before!=after
+        let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.resources.keys(){
+            let scalar=match environment.get(name){Some(Binding::Value(value))=>Some((&value.ty,bounds::Proof::capture(value))),Some(Binding::Owned(value))=>Some((value.place.ty(),value.proof.clone())),Some(Binding::OwnedValue(value))=>Some((&value.value.ty,bounds::Proof::capture(&value.value))),_=>None};
+            if let Some((ty,proof))=scalar{for(component,(kind,_))in ty.components.iter().enumerate(){if *kind==Scalar::Bool && let Some(value)=proof.project(&[component],ty.components.len()).known_value(&Ty::scalar(Scalar::Bool)){all.insert((name.clone(),Known::Boolean(component,value[0]!=0)));}}}
+            let model=match environment.get(name){Some(Binding::ApplicationData(data))=>Some(returns::Returned::Dataset(data.clone())),Some(Binding::OwnedValue(value))=>Some(returns::Returned::OwnedValue(value.clone())),_=>None};if let Some(mut model)=model{self.resolve_owned_model(&mut model,None);let mut values=BTreeSet::new();collect(&model,&mut Vec::new(),&mut values);all.extend(values.into_iter().map(|value|(name.clone(),value)));}}all};let before=known(&context.resources);let after=known(&self.env);before.is_subset(&after)&&before!=after
     }
     pub(super) fn configure_initial_loop(
         &mut self,
@@ -353,23 +365,23 @@ impl Builder<'_> {
         self.release_application_data(Some(&names))
     }
     pub(super) fn remember_loop_control(&mut self,value:&Value){if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}}
-    pub(super) fn join_environment(&mut self,other:&BTreeMap<String,Binding>,branch:Option<&Value>){let when=branch.map(owned_presence::Presence::input);self.join_environment_selected(other,branch,when.as_ref());}
+    pub(super) fn join_environment(&mut self,other:&BTreeMap<String,Binding>,branch:Option<&Value>){let when=branch.map(owned_presence::Presence::input);self.join_environment_selected(other,when.as_ref());}
     fn join_environment_selected(
         &mut self,
         other: &BTreeMap<String, Binding>,
-        branch: Option<&Value>,
         when:Option<&owned_presence::Presence>,
     ) {
+        let choice=when.map(owned_presence::Presence::condition);
         for (name, binding) in &mut self.env {
             match (binding, &other[name]) {
                 (Binding::Value(a), Binding::Value(b)) => {
-                    a.proof.join(&b.proof, a.regs.len(), branch);
+                    a.proof.join_condition(&b.proof,a.regs.len(),choice.as_ref());
                     a.uniform &= b.uniform;
                 }
                 (Binding::Owned(a), Binding::Owned(b)) => {
                     a.place.join_position_range(&b.place);
                     a.proof
-                        .join(&b.proof, a.place.ty().components.len(), branch);
+                        .join_condition(&b.proof,a.place.ty().components.len(),choice.as_ref());
                     a.uniform &= b.uniform;
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
@@ -387,16 +399,7 @@ impl Builder<'_> {
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
-            resources: environment
-                .iter()
-                .filter_map(|(name, binding)| match binding {
-                    Binding::ApplicationData(_) | Binding::OwnedValue(_) => {
-                        Some((name.clone(), binding.clone()))
-                    }
-                    _ if binding.view_parts().is_some()=>Some((name.clone(),binding.clone())),
-                    _ => None,
-                })
-                .collect(),
+            resources: environment.clone(),
             exits: Vec::new(),
             initial: false,
             arrays: false,
@@ -500,7 +503,7 @@ impl Builder<'_> {
         let common=context.exits.iter().map(|state|state.initialized.clone()).reduce(|a,b|ownership::intersect_initialized(&a,&b));
         let mut guards=guards.into_iter();let mut exits=context.exits.into_iter();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok(false)};
         let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
-        for exit in exits{let when=guards.next().unwrap();let previous=std::mem::replace(&mut self.env,exit.env);self.join_environment_selected(&previous,None,Some(&when));self.path=bounds::Clause::either(&self.path,&exit.path);}
+        for exit in exits{let when=guards.next().unwrap();let previous=std::mem::replace(&mut self.env,exit.env);self.join_environment_selected(&previous,Some(&when));self.path=bounds::Clause::either(&self.path,&exit.path);}
         self.initialized=common.unwrap();self.initialized.extend(initialized);self.view_uses.after(span);Ok(true)
     }
 }

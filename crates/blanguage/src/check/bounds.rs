@@ -236,7 +236,11 @@ impl Proof {
         types: &[Scalar],
         bindings: &OutputBindings,
     ) -> Clause {
-        Clause::facts(
+        let mut outputs=self.output_bound(bindings);
+        outputs.origins.resize_with(registers.len(),Vec::new);
+        for(origins,reg)in outputs.origins.iter_mut().zip(registers){let id=ValueIdentity::Register(*reg);if !origins.contains(&id){origins.push(id);}}
+        let values=registers.iter().enumerate().filter(|(_,reg)|types[**reg]==Scalar::Bool).flat_map(|(component,_)|outputs.project(&[component],registers.len()).facts(&Ty::scalar(Scalar::Bool))).collect();
+        let mut aliases=Clause::both(&Clause::facts(values),&Clause::facts(
             self.origins
                 .iter()
                 .zip(registers)
@@ -250,7 +254,11 @@ impl Proof {
                         .map(move |id| Fact::equal(id, target))
                 })
                 .collect(),
-        )
+        ));
+        for(component,reg)in registers.iter().enumerate(){if types[*reg]==Scalar::Bool && let Some(condition)=outputs.component_condition(component){
+            let cases=std::array::from_fn::<_,2,_>(|truth|Clause::both(&condition.cases[truth],&Clause::facts([Fact::Boolean(ValueIdentity::Register(*reg),truth!=0)].into())));
+            aliases=Clause::both(&aliases,&Clause::either(&cases[0],&cases[1]));
+        }}aliases
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
         let mut proof=self.clone();
@@ -574,7 +582,8 @@ impl Proof {
             }
         }
     }
-    pub(super) fn join(&mut self, other: &Self, width: usize, branch: Option<&Value>) {
+    pub(super) fn join(&mut self,other:&Self,width:usize,branch:Option<&Value>){let choice=branch.map(Condition::of);self.join_condition(other,width,choice.as_ref());}
+    pub(super) fn join_condition(&mut self,other:&Self,width:usize,branch:Option<&Condition>){
         let conditions = (0..width)
             .map(|i| {
                 if self.component_condition(i).is_none() && other.component_condition(i).is_none() {
@@ -583,7 +592,7 @@ impl Proof {
                 let a = self.component_condition(i).cloned().unwrap_or_default();
                 let b = other.component_condition(i).cloned().unwrap_or_default();
                 Some(Box::new(if let Some(c) = branch {
-                    Condition::branch(Condition::of(c), a, b)
+                    Condition::branch(c.clone(), a, b)
                 } else {
                     Condition::common(a, b)
                 }))
@@ -1433,6 +1442,38 @@ impl Clause {
         }
         ordered
     }
+    // 同一资源来源的路径按事实合取去重，保留每个来源实际成立的完整条件。
+    pub(super) fn canonical(&self)->Self{
+        fn insert(terms:&mut BTreeSet<Facts>,facts:Facts){
+            if terms.iter().any(|old|old.is_subset(&facts)){return;}
+            terms.retain(|old|!facts.is_subset(old));terms.insert(facts);
+        }
+        fn facts(value:&Facts)->Option<Facts>{
+            if contradictory(value){return None;}
+            let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))).copied().collect::<Facts>();
+            next.extend(minimums(value).into_iter().filter(|(_,n)|*n!=0).map(|(id,n)|Fact::Minimum(id,n)));
+            next.extend(maximums(value).into_iter().filter(|(_,n)|*n!=u32::MAX).map(|(id,n)|Fact::Maximum(id,n)));
+            Some(next)
+        }
+        let mut values:BTreeMap<usize,BTreeSet<Facts>>=BTreeMap::new();
+        for clause in Self::ordered(std::slice::from_ref(self)){
+            let next=match &*clause.0{
+                ClauseNode::Impossible=>BTreeSet::new(),
+                ClauseNode::Facts(value)=>facts(value).into_iter().collect(),
+                ClauseNode::Either(a,b)=>{
+                    let mut terms=values[&a.key()].clone();for value in &values[&b.key()]{insert(&mut terms,value.clone());}terms
+                },
+                node=>{
+                    let (a,b)=match node{ClauseNode::Both(a,b)=>(a,b),ClauseNode::Branch(parent,condition,truth)=>(parent,&condition.cases[usize::from(*truth)]),_=>unreachable!()};
+                    let mut terms=BTreeSet::new();
+                    for left in &values[&a.key()]{for right in &values[&b.key()]{
+                        if let Some(value)=facts(&left.union(right).copied().collect()){insert(&mut terms,value);}
+                    }}terms
+                },
+            };values.insert(clause.key(),next);
+        }
+        values.remove(&self.key()).unwrap().into_iter().fold(Self::impossible(),|all,facts|Self::either(&all,&Self::facts(facts)))
+    }
     fn required(&self) -> Option<Facts> {
         self.required_in(&Facts::new())
     }
@@ -1617,6 +1658,14 @@ impl Condition {
     pub(super) fn covers(&self,other:&Self)->bool{!Clause::both(&self.cases[0],&other.cases[1]).possible()}
     pub(super) fn overlaps(&self,other:&Self)->bool{Clause::both(&self.cases[1],&other.cases[1]).possible()}
     pub(super) fn active(&self)->bool{self.cases[1].possible()}
+    pub(super) fn with_aliases(&self,aliases:&Clause)->Self{
+        let common=aliases.required();
+        Self{cases:self.cases.each_ref().map(|case|match Clause::both(case,aliases).required(){
+            Some(facts)=>Clause::both(case,&Clause::facts(facts.difference(common.as_ref().unwrap()).copied().collect())),
+            None=>Clause::impossible(),
+        })}
+    }
+    pub(super) fn impossible(&self)->bool{self.cases.iter().all(|case|!case.possible())}
     pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&*case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
