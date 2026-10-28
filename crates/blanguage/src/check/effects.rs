@@ -339,6 +339,9 @@ fn expression_writes<'e>(
         _ => {}
     }
 }
+pub(super) fn value_writes<'e>(world:&World,definition:&Definition,body:&'e[Stmt])->Vec<&'e Expr>{
+    let mut values=Vec::new();statement_writes(world,definition,body,&mut|write|{if !write.contents&&write.iterator.is_none(){values.push(write.place);}});values
+}
 fn statement_writes<'e>(
     world: &World,
     definition: &Definition,

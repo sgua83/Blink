@@ -7,11 +7,12 @@ pub(super) struct Context {
     pub resources: crate::application::Resources,
     pub functions: native_function::Module,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum Ownership {
     Owned,
     Borrowed,
     Moved,
+    Conditional(Box<owned_presence::Presence>),
 }
 #[derive(Clone)]
 pub(super) struct Data {
@@ -459,8 +460,10 @@ impl Builder<'_> {
         initialized: &BTreeSet<Position>,
     ) -> bool {
         let Some(scope)=&data.initialization else{return true;};
-        scope.application_word(None,word).initialized_by(initialized) ||
-            data.length.minimum()==data.length.maximum() && scope.application_prefix_initialized(data.length.minimum(),word,initialized)
+        let direct=scope.application_word(None,word);if direct.initialized_by(initialized){return true;}
+        let scope=self.resolve_owned_initialization(scope,None);let initialized=initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect();
+        scope.application_word(None,word).initialized_by(&initialized) ||
+            data.length.minimum()==data.length.maximum() && scope.application_prefix_initialized(data.length.minimum(),word,&initialized)
     }
     pub(super) fn require_application_initialized(&self, data: &Data, span: Span) -> Result<()> {
         if !self.application_initialized(data) {
@@ -552,38 +555,12 @@ impl Builder<'_> {
     pub(super) fn release_application_handle(&mut self, handle: Reg) {
         self.code.push(self.application_release(handle));
     }
-    pub(super) fn application_join_releases(
-        &mut self,
-        environment: &BTreeMap<String, Binding>,
-        other: &BTreeMap<String, Binding>,
-        result: Option<&returns::Returned>,
-    ) -> Result<Vec<Inst>> {
-        let mut retained=result.and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-        for (name,binding) in environment {retained.union(&self.live_view_borrow(name,binding));}
-        let old = std::mem::take(&mut self.code);
-        for (name, binding) in environment {
-            let a = match binding {
-                Binding::ApplicationData(d) => Some(returns::Returned::Dataset(d.clone())),
-                Binding::OwnedValue(v) => Some(returns::Returned::OwnedValue(v.clone())),
-                _ => None,
-            };
-            let b = match other.get(name) {
-                Some(Binding::ApplicationData(d)) => Some(returns::Returned::Dataset(d.clone())),
-                Some(Binding::OwnedValue(v)) => Some(returns::Returned::OwnedValue(v.clone())),
-                _ => None,
-            };
-            if let (Some(a), Some(b)) = (a, b) {
-                self.join_owned_releases(a, &b, &retained, self.definition.function.span)?;
-            }
-        }
-        Ok(std::mem::replace(&mut self.code, old))
-    }
     pub(super) fn application_drop(&mut self,data:&Data,span:Span)->Result<()> {
         let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.handle.regs[0]};
         self.code.push(self.application_release(handle));Ok(())
     }
     pub(super) fn application_available(&self, data: &Data, span: Span) -> Result<()> {
-        if data.ownership == Ownership::Moved {
+        if !self.resolve_ownership(&data.ownership,None).available() {
             return self.fail(
                 span,
                 "B227",
@@ -607,7 +584,7 @@ impl Builder<'_> {
             })
             .filter(|d| d.handle.proof.known_identity(0) == Some(identity))
             .peekable();
-        if matching.peek().is_some() && matching.all(|data| data.ownership == Ownership::Moved) {
+        if matching.peek().is_some() && matching.all(|data| !self.resolve_ownership(&data.ownership,None).available()) {
             return self.fail(
                 span,
                 "B227",
@@ -654,7 +631,10 @@ impl Builder<'_> {
         let Some(Binding::ApplicationData(mut data)) = self.env.get(name).cloned() else {
             return Ok(None);
         };
+        data.ownership=self.resolve_ownership(&data.ownership,None);
+        data.residency=self.resolve_owned_residency(&data.residency,None);
         self.application_available(&data, span)?;
+        self.prepare_owned_read(&returns::Returned::Dataset(data.clone()));
         data = self.refresh_application_data(data,span)?;
         if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
             source.handle.proof = data.handle.proof.clone();
@@ -688,10 +668,10 @@ impl Builder<'_> {
             .iter()
             .filter(|(name, _)| !keep.is_some_and(|names| names.contains(*name)))
             .filter_map(|(_, binding)| match binding {
-                Binding::ApplicationData(data) if data.ownership == Ownership::Owned => {
+                Binding::ApplicationData(data) if data.ownership.may_own() => {
                     Some(binding.clone())
                 }
-                Binding::OwnedValue(result) if result.ownership == Ownership::Owned && !matches!(result.place(),Some(Place::Reference{..})) => {
+                Binding::OwnedValue(result) if result.ownership.may_own() && !matches!(result.place(),Some(Place::Reference{..})) => {
                     Some(binding.clone())
                 }
                 _ => None,
@@ -1493,7 +1473,7 @@ pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
     fn root(expr: &Expr) -> Option<&str> {
         match &expr.kind {
             ExprKind::Name(name) => Some(name),
-            ExprKind::Member(base, _) => root(base),
+            ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(base),
             _ => None,
         }
     }
@@ -1599,7 +1579,9 @@ fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
     block(body, &BTreeSet::new(), names);
 }
 
-crate::module::codec::variants!(Ownership{0=>Owned,1=>Borrowed,2=>Moved});
+// 函数出口已要求完整拥有值；局部条件与Place一样不进入模块接口。
+impl crate::module::codec::Encode for Ownership{fn encode(&self,w:&mut crate::module::codec::Writer){let tag:u32=match self{Self::Borrowed=>1,Self::Moved=>2,Self::Owned|Self::Conditional(_)=>0};crate::module::codec::Encode::encode(&tag,w);}}
+impl crate::module::codec::Decode for Ownership{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{match <u32 as crate::module::codec::Decode>::decode(r)?{0=>Ok(Self::Owned),1=>Ok(Self::Borrowed),2=>Ok(Self::Moved),_=>Err("invalid ownership tag".into())}}}
 // slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
 impl crate::module::codec::Encode for Data {
     fn encode(&self,w:&mut crate::module::codec::Writer) {

@@ -16,57 +16,40 @@ impl Input {
     }
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Origin {
+pub(super) enum Origin {
     Cpu,
     Gpu,
     Input(Input),
     Output(Output),
 }
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Residency {
-    // 空集是尚未得到的位置，不能据此授予任何访问。
-    origins: BTreeSet<Origin>,
-}
-impl Residency {
-    pub fn cpu() -> Self {
-        Self {
-            origins: BTreeSet::from([Origin::Cpu]),
-        }
-    }
-    pub fn gpu() -> Self {
-        Self {
-            origins: BTreeSet::from([Origin::Gpu]),
-        }
-    }
-    pub fn parameter(parameter: usize) -> Self {
-        Self::input(Input::new(parameter))
-    }
-    fn input(input: Input) -> Self {
-        Self {
-            origins: BTreeSet::from([Origin::Input(input)]),
-        }
-    }
-    pub fn join(&mut self, other: &Self) {
-        if self.origins.is_empty() || other.origins.is_empty() {
-            self.origins.clear();
-        } else {
-            self.origins.extend(other.origins.iter().cloned());
-        }
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) enum Residency{Origins(BTreeSet<Origin>),Selected(Box<owned_presence::Presence>,Box<Residency>,Box<Residency>)}
+impl Default for Residency{fn default()->Self{Self::Origins(BTreeSet::new())}}
+impl Residency{
+    pub fn cpu()->Self{Self::Origins(BTreeSet::from([Origin::Cpu]))}
+    pub fn gpu()->Self{Self::Origins(BTreeSet::from([Origin::Gpu]))}
+    pub fn parameter(parameter:usize)->Self{Self::input(Input::new(parameter))}
+    fn input(input:Input)->Self{Self::Origins(BTreeSet::from([Origin::Input(input)]))}
+    fn origins(&self)->BTreeSet<Origin>{match self{Self::Origins(origins)=>origins.clone(),Self::Selected(_,a,b)=>{let mut value=a.clone();value.join(b);value.origins()}}}
+    pub fn join(&mut self,other:&Self){if self==other{return;}let mut origins=self.origins();let other=other.origins();if origins.is_empty()||other.is_empty(){origins.clear();}else{origins.extend(other);}*self=Self::Origins(origins);}
+    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{if a==b{return a;}match when{owned_presence::Presence::All=>a,owned_presence::Presence::None=>b,when=>Self::Selected(Box::new(when),Box::new(a),Box::new(b))}}
+    pub(super) fn resolve_selected(&self,assuming:Option<&owned_presence::Presence>,truth:&impl Fn(&owned_presence::Presence,Option<&owned_presence::Presence>)->Option<bool>)->Self{
+        match self{Self::Origins(_)=>self.clone(),Self::Selected(when,a,b)=>match truth(when,assuming){Some(true)=>a.resolve_selected(assuming,truth),Some(false)=>b.resolve_selected(assuming,truth),None=>{let yes=assuming.cloned().unwrap_or(owned_presence::Presence::All).and(when.as_ref().clone());let no=assuming.cloned().unwrap_or(owned_presence::Presence::All).and(when.as_ref().clone().not());Self::selected(when.as_ref().clone(),a.resolve_selected(Some(&yes),truth),b.resolve_selected(Some(&no),truth))}}}
     }
     fn bind(&self, arguments: &Arguments) -> Option<Self> {
-        if self.origins.is_empty() {
+        if self.origins().is_empty() {
             return Some(Self::default());
         }
         let mut origins = BTreeSet::new();
         let mut present = false;
         let mut unknown = false;
-        for origin in &self.origins {
+        for origin in &self.origins() {
             match origin {
                 Origin::Input(input) => {
                     if let Some(value) = arguments.get(input) {
                         present = true;
-                        unknown |= value.origins.is_empty();
-                        origins.extend(value.origins.iter().cloned());
+                        unknown |= value.origins().is_empty();
+                        origins.extend(value.origins());
                     }
                 }
                 Origin::Output(output) => {
@@ -91,7 +74,7 @@ impl Residency {
             if unknown {
                 Self::default()
             } else {
-                Self { origins }
+                Self::Origins(origins)
             }
         })
     }
@@ -119,10 +102,10 @@ impl Inputs {
         span: Span,
     ) -> bool {
         // compute 是声明能力；原 target 位置及资源合同只接受 CPU／GPU。
-        if target == Target::Compute || value.origins.is_empty() {
+        if target == Target::Compute || value.origins().is_empty() {
             return false;
         }
-        for origin in &value.origins {
+        for origin in &value.origins() {
             match origin {
                 Origin::Input(input) => {
                     if self
@@ -140,7 +123,7 @@ impl Inputs {
             }
         }
         if value
-            .origins
+            .origins()
             .iter()
             .any(|origin| matches!(origin, Origin::Output(_)))
         {
@@ -155,7 +138,7 @@ impl Inputs {
     }
     fn resolve(&self, value: &Residency) -> BTreeSet<Origin> {
         value
-            .origins
+            .origins()
             .iter()
             .map(|origin| {
                 if let Origin::Input(input) = origin {
@@ -170,9 +153,9 @@ impl Inputs {
             .collect()
     }
     pub fn same(&mut self, a: &Residency, b: &Residency, source: &Source, span: Span) -> bool {
-        if a.origins
+        if a.origins()
             .iter()
-            .chain(&b.origins)
+            .chain(&b.origins())
             .any(|origin| matches!(origin, Origin::Output(_)))
         {
             self.uses.push(Use::Same {
@@ -286,13 +269,14 @@ pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
 }
 crate::module::codec::record!(Input { parameter, fields });
 crate::module::codec::variants!(Origin { 0 => Cpu, 1 => Gpu, 2 => Input(input), 3 => Output(output) });
-crate::module::codec::record!(Residency { origins });
+impl crate::module::codec::Encode for Residency{fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&self.origins(),w);}}
+impl crate::module::codec::Decode for Residency{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self::Origins(crate::module::codec::Decode::decode(r)?))}}
 
 // 编译期调用结果是原资源来源表达式，不形成运行时位置表。
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum OutputKind {Returned,Written(usize)}
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-struct Output {
+pub(super) struct Output {
     function: String,
     kind: OutputKind,
     fields: Vec<usize>,
@@ -329,9 +313,7 @@ impl Location {
         if self.unknown {
             Residency::default()
         } else {
-            Residency {
-                origins: self.origins.clone(),
-            }
+            Residency::Origins(self.origins.clone())
         }
     }
 }
@@ -339,10 +321,10 @@ pub(super) type Outputs = BTreeMap<String, BTreeMap<(OutputKind,Vec<usize>), Loc
 
 fn evaluate(value: &Residency, outputs: &Outputs) -> Location {
     let mut result = Location {
-        unknown: value.origins.is_empty(),
+        unknown: value.origins().is_empty(),
         ..Location::default()
     };
-    for origin in &value.origins {
+    for origin in &value.origins() {
         match origin {
             Origin::Output(output) => {
                 if let Some(value) = outputs[&output.function].get(&(output.kind.clone(),output.fields.clone())) {
@@ -368,14 +350,12 @@ fn evaluate(value: &Residency, outputs: &Outputs) -> Location {
 
 pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, arguments: &Arguments) {
     visit(value, &mut Input::new(0), &mut |data, path| {
-        data.residency = Residency {
-            origins: BTreeSet::from([Origin::Output(Output {
+        data.residency = Residency::Origins(BTreeSet::from([Origin::Output(Output {
                 function: function.into(),
                 kind:kind.clone(),
                 fields: path.fields.clone(),
                 arguments: arguments.clone(),
-            })]),
-        };
+            })]));
     });
 }
 

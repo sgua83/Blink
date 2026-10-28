@@ -38,13 +38,13 @@ impl OwnedValue {
         self.ownership==Ownership::Owned && self.available()
     }
     pub(super) fn available(&self)->bool {
-        self.ownership != Ownership::Moved
+        self.ownership.available()
             && self.payloads.iter().enumerate().all(|(i, p)| {
                 if !self.value.ty.has_variants() && !self.value.ty.aggregate_part(i).1.owns_resources() {
                     return true;
                 }
                 match p.as_deref() {
-                    Some(Returned::Dataset(d)) => d.ownership != Ownership::Moved,
+                    Some(Returned::Dataset(d)) => d.ownership.available(),
                     Some(Returned::OwnedValue(v)) => v.available(),
                     None => self.value.ty.has_variants(),
                     _ => true,
@@ -445,6 +445,11 @@ impl Builder<'_> {
         result
     }
     pub(super) fn read_owned_aggregate(&mut self,expr:&Expr)->Result<Option<(OwnedValue,Option<String>)>> {
+        if self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){
+            let Some(place)=self.place(expr)?else{return Ok(None)};let model=self.owned_place_model(&place);let Returned::OwnedValue(mut value)=model else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
+            if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}self.prepare_owned_read(&Returned::OwnedValue(value.clone()));if !value.value.ty.has_variants(){self.require_initialized(&place,expr.span)?;}self.load_owned_value(&mut value,expr.span)?;value.borrow();return Ok(Some((value,None)));
+        }
+
         if let Some(projection)=self.owned_projection(expr) {
             let Returned::OwnedValue(mut value)=self.projected_owned(&projection,expr.span)? else {
                 return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体");
@@ -502,9 +507,10 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn take_owned_value(&mut self, name: &str, span: Span) -> Result<OwnedValue> {
-        let Some(Binding::OwnedValue(mut result)) = self.env.get(name).cloned() else {
+        let Some(Binding::OwnedValue(result)) = self.env.get(name).cloned() else {
             unreachable!()
         };
+        let mut model=Returned::OwnedValue(result);self.resolve_owned_model(&mut model,None);let Returned::OwnedValue(mut result)=model else{unreachable!()};
         self.require_view_unborrowed(&result.handles(),span)?;
         if result
             .handles()
@@ -516,6 +522,7 @@ impl Builder<'_> {
         if !result.all_available() {
             return self.fail(span, "B227", "拥有值存在未初始化或已移动的资源字段");
         }
+        self.prepare_owned_read(&Returned::OwnedValue(result.clone()));
         if !result.value.ty.has_variants()
             && let Some(place) = result.place()
         {
@@ -588,52 +595,6 @@ impl Builder<'_> {
         let(slots,storage)=self.local_slots(&result.value.ty);
         result.place=Some(Place::Local(result.value.ty.clone(),slots,storage));
         self.env.insert(name.clone(), Binding::OwnedValue(result));
-        Ok(())
-    }
-    pub(super) fn owned_value_assign(
-        &mut self,
-        name: &str,
-        target: OwnedValue,
-        op: &str,
-        rhs: &Expr,
-        span: Span,
-    ) -> Result<()> {
-        if target.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能替换其拥有绑定");}
-        if let Some(place)=target.place(){self.require_owned_writable(&place,span)?;}
-        if op != "=" {
-            return self.fail(span, "B224", "拥有结果交接整份载荷，不支持数值复合赋值");
-        }
-        let result = self.evaluate_returned(rhs, Some(&target.value.ty))?;
-        if !self.flow.continues() {
-            return Ok(());
-        }
-        let mut value = result.ok_or_else(|| Diagnostic {
-            source: self.definition.source.clone(),
-            span,
-            code: "B228",
-            message: "赋值需要结果".into(),
-        })?;
-        self.check_returned_type(&mut value, &target.value.ty, span)?;
-        self.view_uses.after(span);
-        if matches!(self.env.get(name),Some(Binding::OwnedValue(r)) if r.ownership==Ownership::Owned)
-        {
-            let Some(Binding::OwnedValue(old)) = self.env.get(name).cloned() else {
-                unreachable!()
-            };
-            self.movable_returned(&Returned::OwnedValue(old.clone()), span)?;
-            self.drop_returned(Returned::OwnedValue(old), span)?;
-        }
-        let Returned::OwnedValue(mut value) = value else {
-            return self.fail(span, "B224", "需要相同拥有结果类型");
-        };
-        if self.loop_depth > 0 {
-            value.join_payloads(target.payloads);
-        }
-        let place=target.place.unwrap();
-        self.write_storage_value(&place,&value.value,span)?;
-        value.place=Some(place);
-        self.initialize(&value.place().unwrap());
-        self.env.insert(name.into(), Binding::OwnedValue(value));
         Ok(())
     }
     fn make_owned_result(
@@ -965,7 +926,10 @@ impl Builder<'_> {
         }
     }
     pub(super) fn drop_returned(&mut self, value: Returned, span: Span) -> Result<()> {
+        self.prepare_owned_read(&value);
         match value {
+            Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_returned(Returned::Dataset(data),span)})}
+            Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_returned(Returned::OwnedValue(value),span)})}
             Returned::Dataset(data) if data.ownership == Ownership::Owned => {
                 self.application_frame(span)?;
                 self.application_drop(&data,span)?;

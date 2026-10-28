@@ -1,6 +1,6 @@
 //! 记录的字段投影保持原局部槽、Frame 数据和每个资源叶的唯一拥有关系。
 use super::*;
-use application::{Data, Ownership};
+use application::Ownership;
 use owned_values::OwnedValue;
 use returns::Returned;
 
@@ -166,6 +166,7 @@ impl Builder<'_> {
                         Binding::Value(value) if value.ty == Ty::scalar(Scalar::U32) => {
                             value.constant.as_ref()?.first().copied()?
                         }
+                        Binding::Owned(value)if value.place.ty()==&Ty::scalar(Scalar::U32)=>value.proof.known_value(value.place.ty())?.first().copied()?,
                         _ => return None,
                     },
                     _ => return None,
@@ -231,6 +232,7 @@ impl Builder<'_> {
                 _ => unreachable!(),
             };
         }
+        self.resolve_owned_model(&mut item,None);
         match item {
             Returned::Value(value) => {
                 if let Some(place) = self.projection_place(p) {
@@ -239,7 +241,8 @@ impl Builder<'_> {
                     Ok(Returned::Value(value))
                 }
             }
-            Returned::Dataset(data) if data.ownership != Ownership::Moved => {
+            Returned::Dataset(data) => {
+                let mut data=data;data.residency=self.resolve_owned_residency(&data.residency,None);self.application_available(&data,span)?;self.prepare_owned_read(&Returned::Dataset(data.clone()));
                 Ok(Returned::Dataset(self.refresh_application_data(data,span)?))
             }
             other => Ok(other),
@@ -247,12 +250,12 @@ impl Builder<'_> {
     }
     pub(super) fn movable_returned(&mut self, item: &Returned, span: Span) -> Result<()> {
         match item {
-            Returned::Dataset(d) if d.ownership == Ownership::Owned => {
+            Returned::Dataset(d) if d.ownership.may_own() => {
                 self.application_movable(d, span)
             }
             Returned::OwnedValue(v) => {
                 for d in v.resources() {
-                    if d.ownership == Ownership::Owned {
+                    if d.ownership.may_own() {
                         self.application_movable(d, span)?;
                     }
                 }
@@ -260,59 +263,6 @@ impl Builder<'_> {
             }
             _ => Ok(()),
         }
-    }
-    pub(super) fn take_owned_projection(
-        &mut self,
-        p: OwnedProjection,
-        span: Span,
-    ) -> Result<Returned> {
-        if p.path.is_empty() {
-            return self
-                .take_owned_value(&p.root, span)
-                .map(Returned::OwnedValue);
-        }
-        let mut item = self.projected_owned(&p, span)?;
-        self.movable_returned(&item, span)?;
-        match &mut item {
-            Returned::Dataset(data) => {
-                self.application_available(data, span)?;
-                if data.ownership != Ownership::Owned {
-                    return self.fail(span, "B227", "借用资源不能从字段移动");
-                }
-            }
-            Returned::OwnedValue(owner) => {
-                if !owner.all_available() {
-                    return self.fail(span, "B227", "记录字段仍有未初始化或已经移动的资源");
-                }
-            }
-            Returned::Value(_) => {}
-            Returned::Unit => unreachable!(),
-        }
-        if let Some(place) = self.projection_place(&p) {
-            self.require_initialized(&place, span)?;
-        }
-        match &mut item {
-            Returned::Dataset(data) => data.place = None,
-            Returned::OwnedValue(value) => {
-                self.load_owned_value(value,span)?;
-                value.place = None;
-            }
-            _ => {}
-        }
-        if p.ty.owns_resources() {
-            let Binding::OwnedValue(root) = self.env.get_mut(&p.root).unwrap() else {
-                unreachable!()
-            };
-            match metadata_mut(root, &p.path) {
-                Returned::Dataset(d) => {
-                    d.ownership = Ownership::Moved;
-                    d.residency = residency::Residency::default();
-                }
-                Returned::OwnedValue(v) => v.mark_moved(),
-                _ => unreachable!(),
-            }
-        }
-        Ok(item)
     }
     pub(super) fn application_reference(
         &mut self,
@@ -343,60 +293,6 @@ impl Builder<'_> {
         meta.length.proof = data.length.proof.clone();
         Ok(Some(application::DataReference::direct(data)))
     }
-    pub(super) fn assign_owned_projection(
-        &mut self,
-        p: OwnedProjection,
-        op: &str,
-        rhs: &Expr,
-        span: Span,
-    ) -> Result<()> {
-        if matches!(self.env.get(&p.root),Some(Binding::OwnedValue(value))if value.ownership==Ownership::Borrowed){return self.fail(span,"B227","read聚合的资源字段不能替换");}
-        if let Some(place)=self.projection_place(&p){self.require_owned_writable(&place,span)?;}
-        if op != "=" {
-            return self.fail(span, "B224", "资源字段只支持整份移动赋值");
-        }
-        let item = self.evaluate_returned(rhs, Some(&p.ty))?;
-        if !self.flow.continues() {
-            return Ok(());
-        }
-        let mut item = item.ok_or_else(|| Diagnostic {
-            source: self.definition.source.clone(),
-            span,
-            code: "B228",
-            message: "字段赋值需要值或拥有资源".into(),
-        })?;
-        self.check_returned_type(&mut item, &p.ty, span)?;
-        self.view_uses.after(span);
-        let old = self.projected_owned(&p, span)?;
-        self.movable_returned(&old, span)?;
-        self.drop_returned(old, span)?;
-        let value = self.returned_storage(&item);
-        let Binding::OwnedValue(root) = self.env.get_mut(&p.root).unwrap() else {
-            unreachable!()
-        };
-        let place=root.place().unwrap().project(p.ty.clone(),&p.components);
-        self.write_storage_value(&place,&value,span)?;
-        let Binding::OwnedValue(root)=self.env.get_mut(&p.root).unwrap()else{unreachable!()};
-        root.value.proof.assign(
-            &p.components,
-            root.value.ty.components.len(),
-            bounds::Proof::capture(&value),
-        );
-        root.value.proof.retain_view_borrows(&root.value.ty);
-        root.value.constant = None;
-        root.value.uniform = false;
-        let old = metadata_mut(root, &p.path);
-        if self.loop_depth > 0 {
-            match (&mut item, &*old) {
-                (Returned::OwnedValue(a), Returned::OwnedValue(b)) => {
-                    a.join_payloads(b.payloads.clone())
-                }
-                _ => {}
-            }
-        }
-        *old = item;
-        Ok(())
-    }
     pub(super) fn member_returned(
         &mut self,
         expr: &Expr,
@@ -407,13 +303,11 @@ impl Builder<'_> {
             .owned_element_type(expr)
             .is_some_and(|ty| ty.owns_resources())
         {
-            let Some(p) = self.resolve_owned_projection(expr)? else {
-                return Ok(None);
-            };
-            return self.take_owned_projection(p, expr.span).map(Some);
+            let Some(place)=self.place(expr)?else{return Ok(None)};
+            return self.take_owned_place(place,expr.span).map(Some);
         }
         if let Some(p) = self.owned_projection(expr) {
-            return self.take_owned_projection(p, expr.span).map(Some);
+            return self.projected_owned(&p, expr.span).map(Some);
         }
         if let Some(data) = self.application_reference(base)? {
             return if name == "length" {
@@ -471,41 +365,6 @@ impl Builder<'_> {
             _ => self.fail(expr.span, "B228", "字段访问需要值"),
         }
     }
-    pub(super) fn join_owned_releases(
-        &mut self,
-        a: Returned,
-        b: &Returned,
-        retained: &view::Borrow,
-        span: Span,
-    ) -> Result<()> {
-        match (a, b) {
-            (Returned::Dataset(a), Returned::Dataset(b))
-                if a.ownership == Ownership::Owned && b.ownership == Ownership::Moved =>
-            {
-                self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(&a),borrow:retained.clone(),span})?;
-                self.drop_returned(Returned::Dataset(a), span)
-            }
-            (Returned::OwnedValue(a), Returned::OwnedValue(b))
-                if a.ownership == Ownership::Owned =>
-            {
-                if b.ownership == Ownership::Moved {
-                    for data in a.resources() {self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
-                    return self.drop_returned(Returned::OwnedValue(a), span);
-                }
-                if !a.value.ty.has_variants() {
-                    for i in 0..a.value.ty.aggregate_len() {
-                        if a.value.ty.aggregate_part(i).1.owns_resources() {
-                            let x = self.unpack_record(&a, i);
-                            let y = self.unpack_record(b, i);
-                            self.join_owned_releases(x, &y, retained, span)?;
-                        }
-                    }
-                }
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
 }
 
 impl Binding {
@@ -548,66 +407,6 @@ impl Builder<'_> {
     pub(super) fn owned_element_type(&self, expr: &Expr) -> Option<Ty> {
         self.owned_expression_type(expr)
     }
-    pub(super) fn resolve_owned_projection(
-        &mut self,
-        expr: &Expr,
-    ) -> Result<Option<OwnedProjection>> {
-        let (mut projection, index) = match &expr.kind {
-            ExprKind::Name(_) => return Ok(self.owned_projection(expr)),
-            ExprKind::Member(base, field) => {
-                let Some(projection) = self.resolve_owned_projection(base)? else {
-                    return Ok(None);
-                };
-                let Some(index) = projection
-                    .ty
-                    .fields
-                    .iter()
-                    .position(|(name, _, _)| name == field)
-                else {
-                    return self.fail(expr.span, "B141", "拥有值字段不存在");
-                };
-                (projection, index)
-            }
-            ExprKind::Index(base, index) => {
-                let Some(projection) = self.resolve_owned_projection(base)? else {
-                    return Ok(None);
-                };
-                let Some(value) = self.expr(index)? else {
-                    return Ok(None);
-                };
-                self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
-                let count = projection.ty.values[0];
-                if !self.index_in(&value, IndexDomain::Fixed(count), count) {
-                    return self.fail(index.span, "B137", "拥有数组下标有效性无法静态证明");
-                }
-                if value.minimum() != value.maximum() {
-                    return self.fail(
-                        index.span,
-                        "B224",
-                        "动态选中拥有元素的移动与覆盖尚未实现；实际借用保持在原数组所有者处",
-                    );
-                }
-                (projection, value.minimum() as usize)
-            }
-            _ => return Ok(None),
-        };
-        let (offset, ty) = projection.ty.aggregate_part(index);
-        projection.components = ty
-            .components
-            .iter()
-            .map(|(_, at)| {
-                projection.components[projection
-                    .ty
-                    .components
-                    .iter()
-                    .position(|(_, word)| *word == offset + at)
-                    .unwrap()]
-            })
-            .collect();
-        projection.ty = ty.clone();
-        projection.path.push(index);
-        Ok(Some(projection))
-    }
     pub(super) fn owned_array_index(
         &mut self,
         expr: &Expr,
@@ -615,10 +414,8 @@ impl Builder<'_> {
         index: &Expr,
     ) -> Result<Option<Returned>> {
         if self.owned_expression_type(base).is_some() {
-            let Some(projection) = self.resolve_owned_projection(expr)? else {
-                return Ok(None);
-            };
-            return self.take_owned_projection(projection, expr.span).map(Some);
+            let Some(place)=self.place(expr)?else{return Ok(None)};
+            return self.take_owned_place(place,expr.span).map(Some);
         }
         let returned = self.evaluate_returned(base, None)?;
         if !self.flow.continues() {
@@ -652,133 +449,30 @@ impl Builder<'_> {
             }
             _ => return self.fail(expr.span, "B224", "拥有数组元素需要实际拥有数组值"),
         };
-        let held = self.hold_binding(Binding::OwnedValue(owner));
-        let Some(value) = self.expr(index)? else {
-            return Ok(None);
-        };
-        let Binding::OwnedValue(owner) = self.env.remove(&held).unwrap() else {
-            unreachable!()
-        };
-        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
-        let count = owner.value.ty.values[0];
-        if !self.index_in(&value, IndexDomain::Fixed(count), count) {
-            return self.fail(index.span, "B137", "拥有数组下标有效性无法静态证明");
-        }
-        if value.minimum() != value.maximum() {
-            return self.fail(index.span, "B224", "动态选中临时拥有数组元素的移动尚未实现");
-        }
-        let i = value.minimum() as usize;
-        let item = self.unpack_record(&owner, i);
-        let mut owner = owner;
-        match owner.payloads[i].as_deref_mut().unwrap() {
-            Returned::Dataset(data) => data.ownership = Ownership::Moved,
-            Returned::OwnedValue(value) => value.mark_moved(),
-            _ => unreachable!(),
-        }
-        self.drop_returned(Returned::OwnedValue(owner), expr.span)?;
+        let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();let held=self.hold_binding(Binding::OwnedValue(owner));
+        let Some(value)=self.expr(index)?else{return Ok(None)};let place=self.array_index(place,value,index.span)?;let item=self.take_owned_place(place,expr.span)?;
+        self.finish_scoped_argument(&held,expr.span)?;
         Ok(Some(item))
     }
 }
 
 impl Builder<'_> {
-    fn owned_resource_leaves(&mut self, value: &OwnedValue, leaves: &mut Vec<Data>) {
-        for index in 0..value.payloads.len() {
-            if value.payloads[index].is_none() {
-                continue;
-            }
-            match self.unpack_record(value, index) {
-                Returned::Dataset(data) => leaves.push(data),
-                Returned::OwnedValue(child) if !child.value.ty.has_variants() => {
-                    self.owned_resource_leaves(&child, leaves)
-                }
-                _ => {}
-            }
-        }
-    }
     fn indexed_application_reference(
         &mut self,
         expr: &Expr,
     ) -> Result<Option<application::DataReference>> {
-        let Some(ty) = self
-            .owned_element_type(expr)
-            .filter(|ty| ty.dataset.is_some())
-        else {
+        if !self.owned_element_type(expr).is_some_and(|ty|ty.dataset.is_some()) {
             return Ok(None);
         };
-        fn root(expr: &Expr) -> &str {
-            match &expr.kind {
-                ExprKind::Name(name) => name,
-                ExprKind::Index(base, _) | ExprKind::Member(base, _) => root(base),
-                _ => unreachable!(),
-            }
-        }
-        let name = root(expr).to_owned();
         let Some(place) = self.place(expr)? else {
             return Ok(None);
         };
-        self.require_initialized(&place, expr.span)?;
-        fn slots(position: &Position, into: &mut BTreeSet<Position>) {
-            match position {
-                Position::Local(_) | Position::Parameter(..) => {into.insert(position.clone());}
-                Position::Indexed(choices, _) => {
-                    for choice in choices.iter() {
-                        slots(choice, into);
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-        let mut selected = BTreeSet::new();
-        slots(&place.owned_positions().unwrap()[0], &mut selected);
-        let Binding::OwnedValue(owner) = self.env[&name].clone() else {
-            unreachable!()
-        };
-        let mut leaves = Vec::new();
-        self.owned_resource_leaves(&owner, &mut leaves);
-        let candidates: Vec<_> = leaves
-            .into_iter()
-            .filter(|data| selected.contains(&data.place.as_ref().unwrap().owned_positions().unwrap()[0]))
-            .collect();
-        for data in &candidates {
-            self.application_available(data, expr.span)?;
-        }
-        fn initialization(position:&Position,candidates:&[Data])->Position {
-            match position {
-                Position::Local(_) | Position::Parameter(..)=>candidates.iter().find(|data|data.place.as_ref().unwrap().owned_positions().unwrap()[0]==*position).unwrap().initialization.clone().unwrap_or(Position::Initialized),
-                Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|initialization(choice,candidates)).collect(),*index),
-                _=>unreachable!(),
-            }
-        }
-        let root=initialization(&place.owned_positions().unwrap()[0],&candidates);
-        let mut data = candidates[0].clone();
-        data.initialization=Some(root);
-        if candidates.len() == 1 {
-            return Ok(Some(application::DataReference::direct(
-                self.refresh_application_data(data,expr.span)?,
-            )));
-        }
-        let sources = candidates
-            .iter()
-            .map(|data| data.handle.identity())
-            .collect();
-        for other in &candidates[1..] {
-            data.residency.join(&other.residency);
-            data.writable &= other.writable;
-            if data.count != other.count {
-                data.count = None;
-            }
-        }
-        data.handle = self.read_place(
-            &place.clone().project(Ty::scalar(Scalar::U32), &[0]),
-            expr.span,
-        )?;
-        data.length = self.read_place(&place.project(Ty::scalar(Scalar::U32), &[1]), expr.span)?;
-        data.length.proof = bounds::Proof::capture(&data.length).with_domains(Domains::from([
-            IndexDomain::ApplicationLength(data.handle.identity()),
-        ]));
-        data.ty = (**ty.dataset.as_ref().unwrap()).clone();
-        data.ownership = Ownership::Borrowed;
-        data.place = None;
+        let candidates=self.owned_place_candidates(&place);
+        let model=self.owned_place_model(&place);self.prepare_owned_read(&model);self.require_initialized(&place,expr.span)?;
+        let Returned::Dataset(mut data)=model else{unreachable!()};self.application_available(&data,expr.span)?;
+
+        let sources=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.handle.identity()}).collect();
+        data=self.refresh_application_data(data,expr.span)?;data.ownership=Ownership::Borrowed;data.place=None;
         Ok(Some(application::DataReference { data, sources }))
     }
 }

@@ -196,7 +196,8 @@ impl Builder<'_> {
                 let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect();
                 Ok(Returned::Value(Value{ty:owner.place.ty().clone(),regs,proof:owner.proof,uniform:owner.uniform,literal:false,constant:None}))
             }
-            Binding::OwnedValue(mut value)=>{
+            Binding::OwnedValue(value)=>{
+                let mut model=Returned::OwnedValue(value);self.resolve_owned_model(&mut model,None);self.prepare_owned_read(&model);let Returned::OwnedValue(mut value)=model else{unreachable!()};
                 if !value.all_available(){return self.fail(span,"B229",format!("返回前没有归还独占参数 {name} 的全部活动拥有资源"));}
                 let place=value.place().unwrap();
                 if !value.value.ty.has_variants() && !self.is_initialized(&place){return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}

@@ -37,6 +37,7 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_bool(&c, condition.span)?;
+        self.remember_loop_control(&c);
         let partition = Arc::new(bounds::Condition::of(&c));
         let outer = std::mem::take(&mut self.code);
         let environment = self.env.clone();
@@ -104,12 +105,6 @@ impl Builder<'_> {
                 self.env = no_env.clone();
             }
         } else {
-            let yes_environment = self.env.clone();
-            if yes_flow.continues() && no_flow.continues() {
-                self.view_uses.after(span);
-                yes.extend(self.application_join_releases(&yes_environment, &no_env, a_result.as_ref())?);
-                no.extend(self.application_join_releases(&no_env, &yes_environment, b_result.as_ref())?);
-            }
             if yes_flow.continues() && no_flow.continues() {
                 self.join_environment(&no_env, Some(&c));
             }

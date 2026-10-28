@@ -64,6 +64,7 @@ pub(super) struct LoopContext {
     continues: Vec<LoopState>,
     iterator: Option<String>,
     initial_cursor: Option<Value>,
+    controls: BTreeMap<Reg,Value>,
     pub(super) view_inputs: Vec<view::InputSlot>,
     pub(super) view_resources: BTreeMap<ValueIdentity,view::Borrow>,
     pub(super) view_scope: Option<usize>,
@@ -237,19 +238,24 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn application_initial_loop(&self, body: &[Stmt]) -> bool {
-        self.env.iter().any(|(name, binding)| {
-            application::rebound(body, name)
-                && match binding {
-                    Binding::ApplicationData(data) => {
-                        data.ownership == application::Ownership::Moved
-                    }
-                    Binding::OwnedValue(result) => {
-                        result.ownership == application::Ownership::Moved || result.incomplete()
-                    }
-                    _ => false,
-                }
-        })
+    fn initial_target(&self,expr:&Expr,shape:bool)->Option<bool>{
+        use returns::Returned;use application::Ownership;
+        if let ExprKind::Name(name)=&expr.kind{if let Some(Binding::ApplicationData(data))=self.env.get(name){return Some(!self.resolve_ownership(&data.ownership,None).available());}}
+        if !self.owned_element_type(expr)?.owns_resources(){return Some(false);}
+        let projection=self.owned_projection(expr)?;let Binding::OwnedValue(root)=&self.env[&projection.root]else{unreachable!()};let mut model=Returned::OwnedValue(root.clone());
+        for index in projection.path{let Returned::OwnedValue(value)=model else{unreachable!()};model=value.payloads[index].as_deref().unwrap().clone();}
+        self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
+    }
+    pub(super) fn application_initial_loop(&self,body:&[Stmt])->bool{
+        fn root(expr:&Expr)->Option<&str>{match &expr.kind{ExprKind::Name(name)=>Some(name),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root(base),_=>None}}
+        effects::value_writes(self.world,&self.definition,body).iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}})
+    }
+    pub(super) fn next_initial_loop(&self,body:&[Stmt])->bool{
+        if !self.application_initial_loop(body){return false;}
+        if effects::value_writes(self.world,&self.definition,body).iter().any(|expr|self.initial_target(expr,false)==Some(true)){return true;}
+        #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>)}
+        fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
+        let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.resources.keys(){let model=match environment.get(name){Some(Binding::ApplicationData(data))=>Some(returns::Returned::Dataset(data.clone())),Some(Binding::OwnedValue(value))=>Some(returns::Returned::OwnedValue(value.clone())),_=>None};if let Some(mut model)=model{self.resolve_owned_model(&mut model,None);let mut values=BTreeSet::new();collect(&model,&mut Vec::new(),&mut values);all.extend(values.into_iter().map(|value|(name.clone(),value)));}}all};let before=known(&context.resources);let after=known(&self.env);before.is_subset(&after)&&before!=after
     }
     pub(super) fn configure_initial_loop(
         &mut self,
@@ -343,10 +349,13 @@ impl Builder<'_> {
         let names = self.loop_contexts.last().unwrap().names.clone();
         self.release_application_data(Some(&names))
     }
-    pub(super) fn join_environment(
+    pub(super) fn remember_loop_control(&mut self,value:&Value){if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}}
+    pub(super) fn join_environment(&mut self,other:&BTreeMap<String,Binding>,branch:Option<&Value>){let when=branch.map(owned_presence::Presence::input);self.join_environment_selected(other,branch,when.as_ref());}
+    fn join_environment_selected(
         &mut self,
         other: &BTreeMap<String, Binding>,
         branch: Option<&Value>,
+        when:Option<&owned_presence::Presence>,
     ) {
         for (name, binding) in &mut self.env {
             match (binding, &other[name]) {
@@ -362,22 +371,10 @@ impl Builder<'_> {
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
                 (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
-                    if a.ownership != b.ownership {
-                        a.ownership = application::Ownership::Moved;
-                    }
-                    a.join(b.clone());
+                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),when);let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
                 }
                 (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
-                    if a.ownership != b.ownership {
-                        a.ownership = application::Ownership::Moved;
-                    }
-                    a.handle.proof.join(&b.handle.proof, 1, None);
-                    a.length.proof.join(&b.length.proof, 1, None);
-                    a.length.uniform &= b.length.uniform;
-                    if a.length.constant != b.length.constant {
-                        a.length.constant = None;
-                    }
-                    a.residency.join(&b.residency);
+                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),when);let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
                 }
                 (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
                 _ => {}
@@ -403,6 +400,7 @@ impl Builder<'_> {
             continues: Vec::new(),
             iterator: None,
             initial_cursor: None,
+            controls: BTreeMap::new(),
             view_inputs: Vec::new(),view_resources: BTreeMap::new(),view_scope:None,
         });
     }
@@ -432,6 +430,7 @@ impl Builder<'_> {
     }
     fn restore_initial_edge(&mut self, state: LoopState) {
         self.env = state.env;
+        if let(Some(name),Some(cursor))=(&self.loop_contexts.last().unwrap().iterator,state.cursor){self.env.insert(name.clone(),Binding::Value(cursor));}
         self.path = state.path;
         self.initialized = state.initialized;
         self.control_uniform = state.control;
@@ -482,77 +481,42 @@ impl Builder<'_> {
     }
     pub(super) fn leave_loop(
         &mut self,
-        mut natural: Option<LoopState>,
-        condition: &mut Vec<Inst>,
-        test: Reg,
-        body: &mut Vec<Inst>,
-        span: Span,
-        nonempty: bool,
-    ) -> Result<bool> {
-        let mut context = self.loop_contexts.pop().unwrap();
-        // condition-false也是同一入口之后的真实出口，先关闭所有源码循环引用。
-        let natural_index=context.exits.len();
+        mut natural:Option<LoopState>,
+        test:&Value,
+        body:&[Inst],
+        span:Span,
+        nonempty:bool,
+    )->Result<bool>{
+        let mut context=self.loop_contexts.pop().unwrap();let natural_index=context.exits.len();
         if let Some(state)=natural.take(){context.exits.push(state);}
-        let view_natural=(context.exits.len()>natural_index).then_some(natural_index);
-        self.close_view_context(&mut context,view_natural,nonempty)?;
-        natural=if context.exits.len()>natural_index {Some(context.exits.pop().unwrap())}else{None};
-        let break_states: Vec<_> = context.exits.iter().map(|exit| exit.env.clone()).collect();
-        let natural_env = natural.as_ref().map(|exit| exit.env.clone());
-        context.exits.extend(natural);
-        let mut exits = context.exits.into_iter();
-        let Some(first) = exits.next() else {
-            self.env.retain(|name, _| context.names.contains(name));
-            self.path = bounds::Clause::impossible();
-            return Ok(false);
-        };
-        self.env = first.env;
-        self.path = first.path;
-        self.initialized = first.initialized;
-        for exit in exits {
-            self.path = bounds::Clause::either(&self.path, &exit.path);
-            self.initialized =
-                ownership::intersect_initialized(&self.initialized, &exit.initialized);
-            self.join_environment(&exit.env, None);
-        }
-        self.view_uses.after(span);
-        let final_environment = self.env.clone();
-        let releases: Vec<_> = break_states
-            .iter()
-            .map(|environment| self.application_join_releases(environment, &final_environment, None))
-            .collect::<Result<_>>()?;
-        insert_break_releases(body, &mut releases.into_iter());
-        if let Some(environment) = natural_env {
-            let no = self.application_join_releases(&environment, &final_environment, None)?;
-            if !no.is_empty() {
-                condition.push(Inst::If {
-                    condition: test,
-                    yes: Vec::new(),
-                    no,
-                });
-            }
-        }
-        Ok(true)
+        let view_natural=(context.exits.len()>natural_index).then_some(natural_index);self.close_view_context(&mut context,view_natural,nonempty)?;
+        natural=if context.exits.len()>natural_index{Some(context.exits.pop().unwrap())}else{None};
+        let mut guards=loop_exit_paths(body,&context.controls,&owned_presence::Presence::input(test));
+        if let Some(state)=natural{context.exits.push(state);guards.push(owned_presence::Presence::input(test).not());}
+        let initialized=context.exits.iter().zip(&guards).flat_map(|(state,when)|state.initialized.iter().map(move|position|Position::selected(when.clone(),position.clone(),Position::Initialized))).collect::<BTreeSet<_>>();
+        let common=context.exits.iter().map(|state|state.initialized.clone()).reduce(|a,b|ownership::intersect_initialized(&a,&b));
+        let mut guards=guards.into_iter();let mut exits=context.exits.into_iter();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok(false)};
+        let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
+        for exit in exits{let when=guards.next().unwrap();let previous=std::mem::replace(&mut self.env,exit.env);self.join_environment_selected(&previous,None,Some(&when));self.path=bounds::Clause::either(&self.path,&exit.path);}
+        self.initialized=common.unwrap();self.initialized.extend(initialized);self.view_uses.after(span);Ok(true)
     }
 }
-// 每个 break 仍属于原循环；内层循环已沿自己的出口完成交接。
-fn insert_break_releases(code: &mut Vec<Inst>, releases: &mut impl Iterator<Item = Vec<Inst>>) {
-    let mut result = Vec::new();
-    for mut instruction in std::mem::take(code) {
-        match &mut instruction {
-            Inst::Break => result.extend(releases.next().unwrap()),
-            Inst::If { yes, no, .. } => {
-                insert_break_releases(yes, releases);
-                insert_break_releases(no, releases);
-            }
-            Inst::Scope(body) => insert_break_releases(body, releases),
-            _ => {}
-        }
-        result.push(instruction);
+// 每个出口条件来自原Loop/If；不写运行时出口标记，也不丢弃其他路径的拥有内容。
+fn loop_exit_paths(code:&[Inst],controls:&BTreeMap<Reg,Value>,test:&owned_presence::Presence)->Vec<owned_presence::Presence>{
+    use owned_presence::Presence;
+    fn escapes(code:&[Inst],exit:bool)->bool{code.iter().any(|instruction|match instruction{Inst::Break|Inst::Continue=>true,Inst::Exit=>exit,Inst::If{yes,no,..}=>escapes(yes,exit)||escapes(no,exit),Inst::Scope(code)=>escapes(code,false),_=>false})}
+    fn walk(code:&[Inst],mut when:Presence,controls:&BTreeMap<Reg,Value>,breaks:&mut Vec<Presence>)->(Presence,Presence){
+        let mut exited=Presence::None;
+        for instruction in code{match instruction{
+            Inst::Break=>{breaks.push(when.clone());when=Presence::None;},Inst::Continue=>when=Presence::None,Inst::Exit=>{exited=exited.or(when);when=Presence::None;},
+            Inst::If{condition,yes,no}if escapes(yes,true)||escapes(no,true)=>{let selected=Presence::input(&controls[condition]);let(a,x)=walk(yes,when.clone().and(selected.clone()),controls,breaks);let(b,y)=walk(no,when.and(selected.not()),controls,breaks);when=a.or(b);exited=exited.or(x).or(y);},
+            Inst::Scope(code)if escapes(code,false)=>{let(a,b)=walk(code,when,controls,breaks);when=a.or(b);},_=>{}
+        }}(when,exited)
     }
-    *code = result;
+    let mut breaks=Vec::new();walk(code,Presence::All,controls,&mut breaks);breaks.into_iter().map(|when|test.clone().and(when)).collect()
 }
 
-// Continue is the real next-iteration edge. Compile its continuation directly, without an ownership flag.
+// Continue is the real next-iteration edge.// Continue is the real next-iteration edge. Compile its continuation directly, without an ownership flag.
 fn compile_initial_continuation<'a, F>(
     builder: &mut Builder<'a>,
     state: LoopState,

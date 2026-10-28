@@ -25,6 +25,7 @@ pub(crate) mod generics;
 mod matrix;
 mod owned_records;
 mod owned_borrows;
+mod owned_presence;
 mod owned_values;
 mod ownership;
 mod prefix;
@@ -2832,6 +2833,7 @@ impl<'a> Builder<'a> {
             self.refine_bounds(&partition, truth);
             return if truth { yes_body(self) } else { no_body(self) };
         }
+        self.remember_loop_control(&c);
         let environment = self.env.clone();
         let path = self.path.clone();
         let previous = std::mem::take(&mut self.code);
@@ -2840,7 +2842,7 @@ impl<'a> Builder<'a> {
         self.control_uniform &= c.uniform;
         self.refine_bounds(&partition, true);
         yes_body(self)?;
-        let mut yes = std::mem::take(&mut self.code);
+        let yes = std::mem::take(&mut self.code);
         let yes_init = self.application_initialization_state();
         let yes_env = self.env.clone();
         let yes_path = self.path.clone();
@@ -2852,7 +2854,7 @@ impl<'a> Builder<'a> {
         self.path = path;
         self.refine_bounds(&partition, false);
         no_body(self)?;
-        let mut no = std::mem::take(&mut self.code);
+        let no = std::mem::take(&mut self.code);
         let no_init = self.take_application_initialization_state();
         let no_flow = self.flow;
         let no_reachable = no_flow.continues();
@@ -2869,8 +2871,6 @@ impl<'a> Builder<'a> {
         } else if yes_reachable && no_reachable {
             self.path = bounds::Clause::either(&yes_path, &no_path);
             self.view_uses.after(span);
-            yes.extend(self.application_join_releases(&yes_env, &no_env, None)?);
-            no.extend(self.application_join_releases(&no_env, &yes_env, None)?);
             self.env = yes_env;
             self.join_initialization(&c, yes_init, no_init);
             self.join_environment(&no_env, Some(&c));
@@ -2913,7 +2913,7 @@ impl<'a> Builder<'a> {
         };
         self.require_bool(&c, condition.span)?;
         let partition = Arc::new(bounds::Condition::of(&c));
-        let mut condition_code = std::mem::take(&mut self.code);
+        let condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
             self.finish_view_condition()?;
             self.refine_bounds(&partition, false);
@@ -2948,13 +2948,14 @@ impl<'a> Builder<'a> {
         if initial {
             let (expanded, flow) =
                 self.expand_initial_loop(code, body_flow.continues(), |builder, _| {
-                    builder.while_loop(condition, body, false, span)
+                    let initial=builder.next_initial_loop(body);
+                    builder.while_loop(condition, body, initial, span)
                 })?;
             code = expanded;
             body_flow = body_flow.union(flow);
         }
-        let mut body = code;
-        let next = self.leave_loop(natural, &mut condition_code, c.regs[0], &mut body, span, false)?;
+        let body = code;
+        let next = self.leave_loop(natural, &c, &body, span, false)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3127,7 +3128,7 @@ impl<'a> Builder<'a> {
             },
         };
         let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
-        let mut condition = std::mem::take(&mut self.code);
+        let condition = std::mem::take(&mut self.code);
         self.env.insert(
             name.clone(),
             if let Some(domain) = data {
@@ -3209,13 +3210,15 @@ impl<'a> Builder<'a> {
                     cursor.initialization =
                         builder.application_iteration_prefix(&initialization, iteration);
                     cursor.begin = next.unwrap();
-                    builder.for_loop(cursor, body, span, false, false)
+                    let initial=builder.next_initial_loop(body);
+                    let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
+                    builder.for_loop(cursor, body, span, initial, nonempty)
                 })?;
             code = expanded;
             body_flow = body_flow.union(flow);
         }
-        let mut body = code;
-        let next = self.leave_loop(natural, &mut condition, test.regs[0], &mut body, span, nonempty)?;
+        let body = code;
+        let next = self.leave_loop(natural, &test, &body, span, nonempty)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3670,20 +3673,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
-        if !matches!(lhs.kind, ExprKind::Name(_))
-            && self
-                .owned_element_type(lhs)
-                .is_some_and(|ty| ty.owns_resources())
-        {
-            let Some(p) = self.resolve_owned_projection(lhs)? else {
-                return Ok(());
-            };
-            return self.assign_owned_projection(p, op, rhs, span);
-        }
-        if let ExprKind::Name(name) = &lhs.kind
-            && let Some(Binding::OwnedValue(value)) = self.env.get(name).cloned()
-        {
-            return self.owned_value_assign(name, value, op, rhs, span);
+        if self.owned_element_type(lhs).is_some_and(|ty|ty.owns_resources()) {
+            let Some(place)=self.place(lhs)?else{return Ok(())};
+            return self.assign_owned_storage(place,op,rhs,span);
         }
         if let ExprKind::Name(name) = &lhs.kind
             && let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned()

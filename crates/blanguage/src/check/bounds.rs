@@ -1248,7 +1248,7 @@ impl Clause {
                     Self::impossible()
                 }
             }
-            ownership::ApplicationIndex::Value(identity) => Self::facts(
+            ownership::ApplicationIndex::Value(identity,_) => Self::facts(
                 [
                     Fact::Minimum(identity, element as u32),
                     Fact::Maximum(identity, element as u32),
@@ -1521,6 +1521,16 @@ fn maximums(facts: &Facts) -> BTreeMap<ValueIdentity, u32> {
     result
 }
 impl Condition {
+    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Minimum(a,_)|Fact::Maximum(a,_)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
+    pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
+    pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
+        let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};
+        let n=element as u32;let mut no=Clause::impossible();
+        if n!=0{no=Clause::either(&no,&Clause::facts([Fact::Maximum(id,n-1)].into()));}
+        if n!=u32::MAX{no=Clause::either(&no,&Clause::facts([Fact::Minimum(id,n+1)].into()));}
+        Self{cases:[no,Clause::selection(index,element)]}
+    }
+    pub(super) fn logical(self,other:Self,any:bool)->Self{if any{Self{cases:[Clause::both(&self.cases[0],&other.cases[0]),Clause::either(&self.cases[1],&other.cases[1])]}}else{Self{cases:[Clause::either(&self.cases[0],&other.cases[0]),Clause::both(&self.cases[1],&other.cases[1])]}}}
     pub(super) fn boolean_constant(&self) -> Option<bool> {
         match self
             .cases
@@ -1606,6 +1616,7 @@ impl Condition {
         if (!signed && a.ty != Ty::scalar(Scalar::U32)) || b.ty != a.ty {
             return Self::default();
         }
+        if op==Comparison::NotEqual{return Self::comparison(Comparison::Equal,a,b).negate();}
         let left = a.component_ranges(0);
         let right = b.component_ranges(0);
         let same = a.same_component(0, b, 0);
@@ -1698,15 +1709,9 @@ impl Condition {
                 }
             }
         }
-        Self {
-            cases: std::array::from_fn(|i| {
-                if possible[i] {
-                    Clause::facts(std::mem::take(&mut facts[i]))
-                } else {
-                    Clause::impossible()
-                }
-            }),
-        }
+        let mut cases=std::array::from_fn(|i|if possible[i]{Clause::facts(std::mem::take(&mut facts[i]))}else{Clause::impossible()});
+        if op==Comparison::Equal{cases[0]=Clause::both(&cases[0],&Clause::either(&Self::comparison(Comparison::Less,a,b).cases[1],&Self::comparison(Comparison::Greater,a,b).cases[1]));}
+        Self{cases}
     }
 }
 fn constrain(facts: &mut Facts, index: &Value, limit: &Value, strict: bool) {
@@ -2403,6 +2408,10 @@ impl Builder<'_> {
             }
         }
         self.env = environment;
+    }
+    pub(super) fn condition_truth(&self,condition:&Condition,assuming:Option<&Condition>)->Option<bool>{
+        let environment=environment_facts(&self.env);let mut path=self.path.clone();if let Some(assuming)=assuming{path=Clause::both(&path,&assuming.cases[1]);}
+        if Clause::both(&path,&condition.cases[0]).required_in(&environment).is_none(){Some(true)}else if Clause::both(&path,&condition.cases[1]).required_in(&environment).is_none(){Some(false)}else{None}
     }
     pub(super) fn refine_bounds(&mut self, condition: &Arc<Condition>, truth: bool) {
         self.path = Clause::branch(&self.path, condition, truth);

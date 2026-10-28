@@ -1,20 +1,24 @@
 //! 独占位置保留原存储：元素函数静态投影，CPU 普通调用传递实际借用地址。
 use super::*;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy)]
 pub(super) enum ApplicationIndex {
     Constant(u32),
-    Value(ValueIdentity),
+    Value(ValueIdentity,Reg),
 }
 impl ApplicationIndex {
     pub(super) fn of(value: &Value) -> Self {
         if value.minimum() == value.maximum() {
             Self::Constant(value.minimum())
         } else {
-            Self::Value(value.identity())
+            Self::Value(value.identity(),value.regs[0])
         }
     }
 }
+impl PartialEq for ApplicationIndex {fn eq(&self,other:&Self)->bool{self.cmp(other).is_eq()}}
+impl Eq for ApplicationIndex {}
+impl PartialOrd for ApplicationIndex {fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
+impl Ord for ApplicationIndex {fn cmp(&self,other:&Self)->std::cmp::Ordering{match(self,other){(Self::Constant(a),Self::Constant(b))=>a.cmp(b),(Self::Value(a,_),Self::Value(b,_))=>a.cmp(b),(Self::Constant(_),Self::Value(..))=>std::cmp::Ordering::Less,_=>std::cmp::Ordering::Greater}}}
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
     Initialized,
@@ -23,13 +27,18 @@ pub(super) enum Position {
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
+    Conditional(Box<owned_presence::Presence>,Box<Position>,Box<Position>),
+    Both(Box<Position>,Box<Position>),
 }
 impl Position {
+    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{if a==b{return a;}match when{owned_presence::Presence::All=>a,owned_presence::Presence::None=>b,when=>Self::Conditional(Box::new(when),Box::new(a),Box::new(b))}}
+    pub(super) fn both(a:Self,b:Self)->Self{if a==b{return a;}match(a,b){(Self::Initialized,value)|(value,Self::Initialized)=>value,(a,b)=>Self::Both(Box::new(a),Box::new(b))}}
     pub(super) fn initialized_by(&self, initialized: &BTreeSet<Position>) -> bool {
         initialized.contains(self)
             || self.application_complete().is_some_and(|whole|initialized.contains(&whole))
             || match self {
                 Self::Initialized=>true,
+                Self::Both(a,b)|Self::Conditional(_,a,b)=>a.initialized_by(initialized)&&b.initialized_by(initialized),
                 Self::Indexed(choices, _) => choices
                     .iter()
                     .all(|choice| choice.initialized_by(initialized)),
@@ -43,6 +52,8 @@ impl Position {
         match self {
             Self::ApplicationElement(scope,_,word)=>Some(Self::Parameter(*scope,*word as usize)),
             Self::Initialized=>Some(Self::Initialized),
+            Self::Both(a,b)=>Some(Self::both(a.application_complete()?,b.application_complete()?)),
+            Self::Conditional(when,a,b)=>Some(Self::selected(when.as_ref().clone(),a.application_complete()?,b.application_complete()?)),
             Self::Indexed(choices,index)=>Some(Self::Indexed(choices.iter().map(Self::application_complete).collect::<Option<_>>()?,*index)),
             _=>None,
         }
@@ -50,6 +61,8 @@ impl Position {
     pub(super) fn application_word(&self,index:Option<ApplicationIndex>,word:u32)->Self {
         match self {
             Self::Initialized=>Self::Initialized,
+            Self::Both(a,b)=>Self::both(a.application_word(index,word),b.application_word(index,word)),
+            Self::Conditional(when,a,b)=>Self::selected(when.as_ref().clone(),a.application_word(index,word),b.application_word(index,word)),
             Self::Parameter(scope,_)=>match index {
                 Some(index)=>Self::ApplicationElement(*scope,index,word),
                 None=>Self::Parameter(*scope,word as usize),
@@ -61,12 +74,14 @@ impl Position {
     fn application_element_index(&self)->Option<ApplicationIndex> {
         match self {
             Self::ApplicationElement(_,index,_)=>Some(*index),
+            Self::Both(a,b)|Self::Conditional(_,a,b)=>a.application_element_index().or_else(||b.application_element_index()),
             Self::Indexed(choices,_)=>choices.iter().find_map(Self::application_element_index),
             _=>None,
         }
     }
     pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool {
         if self.application_word(None,word).initialized_by(initialized) {return true;}
+        if let Self::Both(a,b)|Self::Conditional(_,a,b)=self{if a.application_prefix_initialized(length,word,initialized)&&b.application_prefix_initialized(length,word,initialized){return true;}}
         if let Self::Indexed(choices,_)=self {
             if choices.iter().all(|choice|choice.application_prefix_initialized(length,word,initialized)){return true;}
         }
@@ -79,6 +94,7 @@ impl Position {
     pub(super) fn uses_scope(&self, scope: usize) -> bool {
         match self {
             Self::Parameter(owner, _) | Self::ApplicationElement(owner, _, _) => *owner == scope,
+            Self::Both(a,b)|Self::Conditional(_,a,b)=>a.uses_scope(scope)||b.uses_scope(scope),
             Self::Indexed(choices, _) => choices.iter().any(|choice| choice.uses_scope(scope)),
             _ => false,
         }
@@ -89,6 +105,8 @@ impl Position {
         }
         match self {
             Self::ApplicationElement(_, value, _) => *value == index,
+            Self::Both(a,b)=>a.uses_index(index)||b.uses_index(index),
+            Self::Conditional(when,a,b)=>when.uses_index(index)||a.uses_index(index)||b.uses_index(index),
             Self::Indexed(choices, value) => {
                 *value == index || choices.iter().any(|choice| choice.uses_index(index))
             }
@@ -384,9 +402,8 @@ impl Builder<'_> {
         }
     }
     pub(super) fn is_initialized(&self, place: &Place) -> bool {
-        self.positions(place)
-            .iter()
-            .all(|position| self.position_initialized_in(position, &self.initialized, &self.env))
+        let initialized=self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect();
+        self.positions(place).iter().all(|position|self.position_initialized_in(&self.resolve_owned_initialization(position,None),&initialized,&self.env))
     }
     pub(super) fn incomplete_arrays(&self) -> bool {
         self.env.values().any(|binding| match binding {
