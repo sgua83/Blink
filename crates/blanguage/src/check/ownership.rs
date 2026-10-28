@@ -402,8 +402,12 @@ impl Builder<'_> {
         }
     }
     pub(super) fn is_initialized(&self, place: &Place) -> bool {
+        let positions = self.positions(place);
+        if positions.iter().all(|position| self.position_initialized_in(position, &self.initialized, &self.env)) {
+            return true;
+        }
         let initialized=self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect();
-        self.positions(place).iter().all(|position|self.position_initialized_in(&self.resolve_owned_initialization(position,None),&initialized,&self.env))
+        positions.iter().all(|position|self.position_initialized_in(&self.resolve_owned_initialization(position,None),&initialized,&self.env))
     }
     pub(super) fn incomplete_arrays(&self) -> bool {
         self.env.values().any(|binding| match binding {
