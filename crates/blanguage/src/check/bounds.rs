@@ -194,10 +194,18 @@ pub(super) struct Proof {
 impl Proof {
     pub(super) fn borrow_state(&self)->Self {Self{views:self.views.clone(),..Self::default()}}
     pub(super) fn typed_view_borrow(&self,ty:&Ty)->view::Borrow {view_contracts::components(ty).into_iter().fold(view::Borrow::default(),|mut all,component|{all.union(&self.view_borrow(component));all})}
+    pub(super) fn select_view_borrows(&mut self,values:&[(Condition,Self)]){
+        let width=values.iter().map(|(_,proof)|proof.views.len()).max().unwrap_or(0);
+        self.views=(0..width).map(|component|{let mut value=view::Borrow::default();for(when,proof)in values{value.union(&proof.view_borrow(component).restricted(&when.assume(&Clause::default(),true)));}value}).collect();
+    }
+    pub(super) fn join_view_borrows(&mut self,a:&Self,b:&Self,choice:Option<&Condition>){
+        let a_when=choice.cloned().unwrap_or_else(||Condition::constant(true));let b_when=choice.cloned().map(Condition::negate).unwrap_or_else(||Condition::constant(true));
+        self.select_view_borrows(&[(a_when,a.borrow_state()),(b_when,b.borrow_state())]);
+    }
     pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
-    pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources}
+    pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(*source)).collect()}
     pub(super) fn with_view_sources(self,component:usize,sources:BTreeSet<view::Source>)->Self {self.with_view_borrow(component,view::Borrow::from_sources(sources))}
     pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
@@ -263,7 +271,7 @@ impl Proof {
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
         let mut proof=self.clone();
         for sources in &mut proof.views {
-            sources.sources = sources.sources.iter().map(|source| source.bind_outputs(bindings)).collect();
+            *sources=sources.output_bound(bindings);
         }
         for origins in &mut proof.origins {
             for identity in origins {
@@ -549,16 +557,13 @@ impl Proof {
         let fresh=Self { views:components.iter().map(|i|self.view_borrow(*i)).collect(),..Self::default() };
         self.assign(components,width,fresh);
     }
-    pub(super) fn possible_view_write(&mut self, positions:&[Position], owner:&[Position], fresh:&Self) {
-        fn contains(position:&Position, leaf:&Position)->bool {
-            position==leaf || matches!(position,Position::Indexed(choices,_) if choices.iter().any(|p|contains(p,leaf)))
-        }
-        for (component,position) in positions.iter().enumerate() {
+    pub(super) fn assign_view_borrows(&mut self,positions:&[Position],owner:&[Position],fresh:&Self){
+        self.views.resize_with(owner.len(),view::Borrow::default);
+        for(component,position)in positions.iter().enumerate(){
             let sources=fresh.view_borrow(component);
-            if sources.empty(){continue;}
-            self.views.resize_with(owner.len(),view::Borrow::default);
-            for (index,leaf) in owner.iter().enumerate() {
-                if contains(position,leaf) {self.views[index].union(&sources);}
+            for(index,leaf)in owner.iter().enumerate(){
+                let selected=owned_presence::Presence::selected(position,leaf);
+                if selected!=owned_presence::Presence::None{self.views[index]=view::Borrow::selected(&selected.condition(),&sources,&self.views[index]);}
             }
         }
     }
@@ -598,7 +603,7 @@ impl Proof {
                 }))
             })
             .collect();
-        self.views = (0..width).map(|i| self.view_borrow(i).joined(other.view_borrow(i))).collect();
+        self.views=(0..width).map(|i|if let Some(choice)=branch{view::Borrow::selected(choice,&self.view_borrow(i),&other.view_borrow(i))}else{self.view_borrow(i).joined(other.view_borrow(i))}).collect();
         self.origins = (0..width)
             .map(|i| {
                 let a = self.origins.get(i).cloned().unwrap_or_default();
@@ -2725,7 +2730,7 @@ impl Builder<'_> {
                     && let Some(components) = base.components_in(&owner)
                 {
                     proof.forget_value(&components, owner.ty().components.len());
-                    if let Some(owner)=owners.get(name) {proof.possible_view_write(&positions,owner,&fresh);}
+                    if let Some(owner)=owners.get(name) {proof.assign_view_borrows(&positions,owner,&fresh);}
                     *state = false;
                     true
                 } else if place.overlaps(&owner) {
@@ -2741,7 +2746,7 @@ impl Builder<'_> {
                         _ => (0..owner.ty().components.len()).collect(),
                     };
                     proof.forget_value(&components, owner.ty().components.len());
-                    if let Some(owner)=owners.get(name) {proof.possible_view_write(&positions,owner,&fresh);}
+                    if let Some(owner)=owners.get(name) {proof.assign_view_borrows(&positions,owner,&fresh);}
                     *state = false;
                     true
                 } else {

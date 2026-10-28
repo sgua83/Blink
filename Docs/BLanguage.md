@@ -3668,3 +3668,38 @@ CPU函数在for／while中显式download后break，调用者可以按同一真�
 bool报告本身不构成传输：函数只返回active而没有实际download时，GPU内容仍不能被CPU读取。错误方向、缺少传输及真实未知来源继续拒绝。编译器只在原静态条件图中去重相同来源的成立路径，保持无正常来源与未知位置的区别；不加入运行时位置标志、隐式迁移、资源副本或原生求解循环。
 
 当前BLCO10／BLRI2与原机器ABI保持，资源仍归Frame／blcompute及真实消费者。该实现覆盖本轮实际验证范围，不承诺一般回边不变式、完整资源阶段或稳定热更新；实际原生及交付状态见Issues。
+
+## CPU自包含拥有聚合与view生命周期
+
+普通CPU拥有聚合可以把dataset和指向其中实际存储的不可变view一起交付。view仍是借用，物理存储归原Frame；移动或返回聚合不复制dataset，也不因元数据位置变化使view失效。例如：
+
+```b
+struct Row { u32 x; };
+struct Graph { dataset<Row> rows; view<Row> refs; };
+
+Graph make(u32 seed) on cpu {
+    Graph value;
+    value.rows=dataset<Row>(3);
+    for(row in value.rows) { row.x=ordinal(row)+seed; }
+    value.refs=view<Row>(value.rows);
+    return value;
+}
+
+Graph choose(u32 count) on cpu {
+    let values=array<Graph,2>(make(7),make(17));
+    u32 cursor=0;
+    while(cursor<count) {
+        let index=cursor%2;
+        Graph item=values[index];
+        values[index]=item;
+        cursor+=1;
+    }
+    return values[0];
+}
+```
+
+动态取出只移动选中元素，原位补回也只更新同一位置的资源和view来源。返回values[0]后，其资源和refs共同存活，未选中的仍拥有资源沿实际出口释放。记录、固定数组、enum／Result、write／inout、普通转交和递归共用这份关系；来源及其选择条件随独立对象与归档交接，调用者不需要读取库源码。
+
+只移动本地拥有元数据不移动实际存储，因此仍存活的外部view可以继续读取原资源；把拥有值交给另一函数时则须同时满足该交接的借用合同。实际写入、CPU／GPU存储传输或释放不能越过仍有后续使用的view或元素位置。返回单独view而释放其本地资源、从临时拥有值提取会悬空的view、把一个数组元素的view附到另一个将独立返回的拥有值上，仍然拒绝。合法性取决于真实来源与消费者，不能仅凭两个值的来源集合相同推定关系成立。
+
+本节来源与访问合同使用BLCO13，旧BLCO12及更早对象须重编；BLRI2、16字节／对齐8的view及原Frame保持。先前章节关于自包含拥有view图未实现的描述是当时状态；当前仅开放本节CPU拥有聚合范围。动态容器、拥有资源的dataset元素、持久dataset图的B构造、应用内GPU图、可写view、完整资源阶段、异步／远端与版本迁移仍待实现，普通C ABI不据此开放拥有资源或view值。

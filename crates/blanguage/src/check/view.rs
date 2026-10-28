@@ -3,31 +3,70 @@ use super::*;
 // 循环引用只在原Proof中连接入口和实际回边；公共合同只编码闭合来源。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct LoopInput { pub level: usize, pub index: usize }
-#[derive(Clone, Default, PartialEq, Eq)]
-pub(super) struct Borrow {
-    pub sources: BTreeSet<Source>,
-    pub inputs: BTreeSet<LoopInput>,
-    pub calls: BTreeSet<view_contracts::CallResult>,
-}
-impl Borrow {
-    pub fn from_sources(sources:BTreeSet<Source>)->Self {Self{sources,..Self::default()}}
-    pub fn empty(&self)->bool {self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()}
-    pub fn union(&mut self,other:&Self) {self.sources.extend(&other.sources);self.inputs.extend(&other.inputs);self.calls.extend(&other.calls);}
-    pub fn joined(mut self,other:Self)->Self {self.union(&other);self}
-    pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
-        let mut result=Self{sources:BTreeSet::new(),inputs:self.inputs.clone(),calls:self.calls.clone()};
-        for source in &self.sources {result.union(&source.at_call(bindings));} result
+// 同一来源边携带实际成立条件；不复制资源或建立运行时拥有状态。
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) struct Edges<K:Ord>(BTreeMap<K,bounds::Condition>);
+impl<K:Ord> Default for Edges<K>{fn default()->Self{Self(BTreeMap::new())}}
+impl<K:Ord+Copy> Edges<K>{
+    pub fn insert(&mut self,key:K){self.insert_when(key,bounds::Clause::default());}
+    pub fn insert_when(&mut self,key:K,when:bounds::Clause){
+        // 不可能边仍表明来源已知；空图表示尚无来源关系，两者不能混为一谈。
+        let when=when.canonical();
+        self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
     }
-    pub fn pending(&self)->bool {!self.inputs.is_empty()||!self.calls.is_empty()}
+    pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.insert_when(*key,when.assume(&bounds::Clause::default(),true));}}
+    pub fn contains(&self,key:&K)->bool{self.0.get(key).is_some_and(bounds::Condition::active)}
+    pub fn is_empty(&self)->bool{self.0.is_empty()}
+    pub fn len(&self)->usize{self.0.len()}
+    pub fn iter(&self)->std::collections::btree_map::Keys<'_,K,bounds::Condition>{self.0.keys()}
+    pub fn entries(&self)->impl Iterator<Item=(&K,bounds::Clause)>{self.0.iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
+    pub fn into_entries(self)->impl Iterator<Item=(K,bounds::Clause)>{self.0.into_iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
+    pub fn when(&self,key:&K)->bounds::Clause{self.0.get(key).map(|when|when.assume(&bounds::Clause::default(),true)).unwrap_or_else(bounds::Clause::impossible)}
+    fn restricted(&self,path:&bounds::Clause)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(*key,when.assume(path,true));}result}
+    fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(*key,when.guard_at_call(bindings).assume(&bounds::Clause::default(),true));}result}
+    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut result=Self::default();for(key,when)in &self.0{result.insert_when(*key,when.output_bound(bindings).assume(&bounds::Clause::default(),true));}result}
 }
-impl crate::module::codec::Encode for Borrow {
-    fn encode(&self,w:&mut crate::module::codec::Writer) {crate::module::codec::Encode::encode(&self.sources,w);}
+impl<K:Ord+Copy,const N:usize> From<[K;N]> for Edges<K>{fn from(values:[K;N])->Self{values.into_iter().collect()}}
+impl<K:Ord+Copy> FromIterator<K> for Edges<K>{fn from_iter<T:IntoIterator<Item=K>>(values:T)->Self{let mut result=Self::default();for value in values{result.insert(value);}result}}
+impl<'a,K:Ord> IntoIterator for &'a Edges<K>{type Item=&'a K;type IntoIter=std::collections::btree_map::Keys<'a,K,bounds::Condition>;fn into_iter(self)->Self::IntoIter{self.0.keys()}}
+impl<K:Ord> IntoIterator for Edges<K>{type Item=K;type IntoIter=std::collections::btree_map::IntoKeys<K,bounds::Condition>;fn into_iter(self)->Self::IntoIter{self.0.into_keys()}}
+impl<K:Ord+Copy+crate::module::codec::Encode> crate::module::codec::Encode for Edges<K>{
+    fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&self.0,w);}
 }
-impl crate::module::codec::Decode for Borrow {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self::from_sources(crate::module::codec::Decode::decode(r)?))
+impl<K:Ord+Copy+crate::module::codec::Decode> crate::module::codec::Decode for Edges<K>{
+    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{let values=<BTreeMap<K,bounds::Condition> as crate::module::codec::Decode>::decode(r)?;let mut result=Self::default();for(key,when)in values{result.insert_when(key,when.assume(&bounds::Clause::default(),true));}Ok(result)}
+}
+#[derive(Clone,Default,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) struct Borrow{
+    pub sources:Edges<Source>,
+    pub inputs:Edges<LoopInput>,
+    pub calls:Edges<view_contracts::CallResult>,
+}
+impl Borrow{
+    pub fn from_sources(sources:impl IntoIterator<Item=Source>)->Self{Self{sources:sources.into_iter().collect(),..Self::default()}}
+    pub fn source(source:Source)->Self{Self::from_sources([source])}
+    pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()}
+    pub fn union(&mut self,other:&Self){self.sources.union(&other.sources);self.inputs.union(&other.inputs);self.calls.union(&other.calls);}
+    pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
+    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()}
+    pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())}
+    pub fn restricted(&self,path:&bounds::Clause)->Self{Self{sources:self.sources.restricted(path),inputs:self.inputs.restricted(path),calls:self.calls.restricted(path)}}
+    pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{a.restricted(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))}
+    pub fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{Self{sources:self.sources.guards_at_call(bindings),inputs:self.inputs.guards_at_call(bindings),calls:self.calls.guards_at_call(bindings)}}
+    pub fn map_sources(&self,map:impl Fn(Source)->Self)->Self{let mut result=Self{inputs:self.inputs.clone(),calls:self.calls.clone(),..Self::default()};for(source,when)in self.sources.entries(){result.union(&map(*source).restricted(&when));}result}
+    pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{self.guards_at_call(bindings).map_sources(|source|source.at_call(bindings))}
+    pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{
+        let mut result=Self{inputs:self.inputs.output_bound(bindings),calls:self.calls.output_bound(bindings),..Self::default()};
+        for(source,when)in self.sources.entries(){result.sources.insert_when(source.bind_outputs(bindings),when.output_bound(bindings));}result
     }
 }
+impl crate::module::codec::Encode for Borrow{fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&self.sources,w);}}
+impl crate::module::codec::Decode for Borrow{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{sources:crate::module::codec::Decode::decode(r)?,..Self::default()})}}
+pub(super) fn resource_borrow(data:&application::Data)->Borrow{
+    let mut value=data.handle.proof.view_borrow(0);if value.empty(){value.sources.insert(Source::Data(data.handle.identity()));}value
+}
+pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.handle.proof.clone().with_view_borrow(0,resource_borrow(data))}
+
 pub(super) enum InputSlot {
     Value {name:String,component:usize},
     Data {name:String,path:Vec<usize>,independent:bool},
@@ -73,22 +112,26 @@ pub(super) fn data_at_mut<'a>(binding:&'a mut Binding,path:&[usize])->Option<&'a
 #[derive(Clone)]
 pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,span:Span},
-    Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,span:Span},
+    Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
 }
 impl Requirement {
     pub fn borrow(&self)->&Borrow {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}=>borrow}}
-    pub fn pending(&self)->bool {self.borrow().pending()||matches!(self,Self::Unborrowed{resource,..}if resource.pending())}
+    pub fn pending(&self)->bool {self.borrow().pending()||matches!(self,Self::Unborrowed{resource,..}if resource.pending())||matches!(self,Self::Return{owned,..}if owned.pending())}
+    pub fn under_path(&self,path:&bounds::Clause)->Self{match self{
+        Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:borrow.restricted(path),allowed:allowed.clone(),owned:owned.clone(),span:*span},
+        Self::Unborrowed{..}=>self.mapped(|borrow|borrow.restricted(path)),
+    }}
     pub fn mapped(&self,map:impl Fn(&Borrow)->Borrow)->Self {
         match self {
             Self::Unborrowed{resource,borrow,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),span:*span},
-            Self::Return{borrow,allowed,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),span:*span},
+            Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
         }
     }
     pub fn check(&self,source:&crate::Source)->Result<()> {
-        if self.borrow().sources.contains(&Source::Unresolved){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
+        if self.borrow().sources.contains(&Source::Unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.sources.contains(&Source::Unresolved)){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         match self {
-            Self::Unborrowed{resource,borrow,span} if borrow.sources.iter().any(|source|matches!(source,Source::Data(_))&&resource.sources.contains(source))=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
-            Self::Return{borrow,allowed,span} if borrow.sources.iter().any(|source|matches!(source,Source::Data(id)if !allowed.contains(id)))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
+            Self::Unborrowed{resource,borrow,span} if borrow.sources.entries().any(|(source,when)|matches!(source,Source::Data(_))&&bounds::Clause::both(&when,&resource.sources.when(source)).possible())=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
+            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&bounds::Clause::both(&when,&bounds::Condition::guard(owned.sources.when(source)).assume(&bounds::Clause::default(),false)).possible()))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
             _=>Ok(()),
         }
     }
@@ -157,6 +200,10 @@ pub(super) fn owned_data_at<'a>(value:&'a owned_values::OwnedValue,path:&[usize]
     let(first,rest)=path.split_first()?;
     match value.payloads.get(*first)?.as_deref()? {returns::Returned::Dataset(data)if rest.is_empty()=>Some(data),returns::Returned::OwnedValue(child)=>owned_data_at(child,rest),_=>None}
 }
+pub(super) fn owned_data_at_mut<'a>(value:&'a mut owned_values::OwnedValue,path:&[usize])->Option<&'a mut application::Data>{
+    let(first,rest)=path.split_first()?;
+    match value.payloads.get_mut(*first)?.as_deref_mut()?{returns::Returned::Dataset(data)if rest.is_empty()=>Some(data),returns::Returned::OwnedValue(child)=>owned_data_at_mut(child,rest),_=>None}
+}
 impl Builder<'_> {
     fn mapped_data_borrow(&self,identity:ValueIdentity)->Option<Borrow> {
         self.loop_contexts.iter().rev().find_map(|context|context.view_resources.get(&identity).cloned())
@@ -173,12 +220,7 @@ impl Builder<'_> {
         }
         result
     }
-    pub(super) fn data_value_borrow(&self,data:&application::Data)->Borrow {
-        self.mapped_data_borrow(data.handle.identity()).unwrap_or_else(|| {
-            let mut borrow=data.handle.proof.view_borrow(0);
-            if borrow.empty(){borrow.sources.insert(Source::Data(data.handle.identity()));}borrow
-        })
-    }
+    pub(super) fn data_value_borrow(&self,data:&application::Data)->Borrow {resource_borrow(data)}
     pub(super) fn application_view_borrowed(&self, identity: ValueIdentity) -> bool {
         self.env
             .iter()
@@ -193,18 +235,15 @@ impl Builder<'_> {
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
         let borrow=requirement.borrow();
         if borrow.empty(){return Ok(());}
-        if let Requirement::Unborrowed{resource,borrow,..}=&requirement {
-            if resource.calls.is_empty() && borrow.calls.is_empty() && resource.sources.is_empty() && borrow.sources.is_empty() && !resource.inputs.is_empty() && !borrow.inputs.is_empty() && resource.inputs.iter().all(|a|borrow.inputs.iter().all(|b| {
-                a.level==b.level && a.index!=b.index && self.loop_contexts.iter().find(|context|context.view_scope==Some(a.level)).is_some_and(|context|context.view_inputs[a.index].independent() && context.view_inputs[b.index].independent())
-            })) {return Ok(());}
-        }
-        requirement.check(&self.definition.source)?;
-        if requirement.pending(){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone()});}
+        requirement.under_path(&self.path).check(&self.definition.source)?;
+        if requirement.pending()||matches!(&requirement,Requirement::Unborrowed{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, span: Span) -> Result<()> {
-        for source in value.proof.typed_view_borrow(&value.ty).sources {
-            match source {
+        let borrow=value.proof.typed_view_borrow(&value.ty).restricted(&self.path);
+        for(source,when)in borrow.sources.entries(){
+            if !when.possible(){continue;}
+            match *source {
                 Source::Data(id) => self.application_handle_available(id, span)?,
                 Source::Unresolved => {
                     return self.fail(span, "B271", "view返回的实际借用来源尚未形成合同");
@@ -214,16 +253,11 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn require_view_return(&mut self, value: &Value, span: Span) -> Result<()> {
-        self.require_view_available(value, span)?;
-        let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
-        self.require_view_return_proof(&proof, span)
-    }
-    pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,span:Span)->Result<()> {
+    pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,owned:Borrow,span:Span)->Result<()> {
         let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.handle.identity()).chain(data.handle.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
         for param in &self.definition.function.params {if matches!(param.access,Access::Write|Access::InOut) && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for data in value.resources(){if data.ownership!=application::Ownership::Moved{allowed.insert(data.handle.identity());allowed.extend(data.handle.proof.borrowed_views().into_iter().filter_map(|source|match source{Source::Data(id)=>Some(id),_=>None}));}}}}
         for(index,param)in self.definition.function.params.iter().enumerate(){if param.access==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
-        self.check_view_requirement(Requirement::Return{borrow:proof.borrowed_view(),allowed,span})
+        self.check_view_requirement(Requirement::Return{borrow:proof.borrowed_view(),allowed,owned,span})
     }
     pub(super) fn create_application_view(
         &mut self,

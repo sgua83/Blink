@@ -555,7 +555,8 @@ impl Builder<'_> {
     pub(super) fn release_application_handle(&mut self, handle: Reg) {
         self.code.push(self.application_release(handle));
     }
-    pub(super) fn application_drop(&mut self,data:&Data,span:Span)->Result<()> {
+    pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
+        self.application_movable(data,retained,span)?;
         let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.handle.regs[0]};
         self.code.push(self.application_release(handle));Ok(())
     }
@@ -593,8 +594,9 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_borrowed(&self, identity: ValueIdentity) -> bool {
-        self.application_view_borrowed(identity) || self.env.values().any(|binding| {
+    pub(super) fn application_borrowed(&self,identity:ValueIdentity)->bool{self.application_view_borrowed(identity)||self.application_position_borrowed(identity)}
+    pub(super) fn application_position_borrowed(&self, identity: ValueIdentity) -> bool {
+        self.env.iter().filter(|(name,_)|self.view_uses.used(name)).any(|(_,binding)| {
             let place = match binding {
                 Binding::DataReference(reference) => return reference.sources.contains(&identity),
                 Binding::Owned(owner) => &owner.place,
@@ -604,9 +606,11 @@ impl Builder<'_> {
             matches!(place.storage(), Place::ApplicationElement { sources, .. } if sources.contains(&identity))
         })
     }
-    pub(super) fn application_movable(&mut self, data: &Data, span: Span) -> Result<()> {
-        self.require_view_unborrowed(&[data.handle.identity()],span)?;
-        if self.application_borrowed(data.handle.identity()) {
+    pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
+        let mut borrow=retained.clone();
+        for(name,binding)in &self.env{borrow.union(&self.live_view_borrow(name,binding));}
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow,span})?;
+        if self.application_position_borrowed(data.handle.identity()) {
             return self.fail(
                 span,
                 "B227",
@@ -662,7 +666,7 @@ impl Builder<'_> {
         }
         data
     }
-    pub(super) fn release_application_data(&mut self, keep: Option<&BTreeSet<String>>) -> Result<()> {
+    pub(super) fn release_application_data(&mut self,keep:Option<&BTreeSet<String>>,retained:view::Borrow)->Result<()> {
         let bindings: Vec<_> = self
             .env
             .iter()
@@ -677,11 +681,7 @@ impl Builder<'_> {
                 _ => None,
             })
             .collect();
-        let dropping: BTreeSet<_> = bindings.iter().flat_map(|binding| binding.application_resources()).map(|data| data.handle.identity()).collect();
-        let mut retained=view::Borrow::default();
-        for (name,binding) in &self.env {if keep.is_some_and(|names|names.contains(name)){retained.union(&self.live_view_borrow(name,binding));}}
-        for identity in dropping {self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[identity]),borrow:retained.clone(),span:self.definition.function.span})?;}
-        for binding in bindings { self.drop_binding(binding, self.definition.function.span)?; }
+        for binding in bindings {self.drop_binding(binding,&retained,self.definition.function.span)?;}
         Ok(())
     }
     pub(super) fn application_data_type(
@@ -777,8 +777,7 @@ impl Builder<'_> {
         if matches!(&self.env[name], Binding::ApplicationData(data) if data.ownership == Ownership::Owned)
         {
             let old = self.application_value(name, span)?.unwrap();
-            self.application_movable(&old, span)?;
-            self.release_application_handle(old.handle.regs[0]);
+            self.application_drop(&old,&view::Borrow::default(),span)?;
         }
         let place=target.place.unwrap();let packed=self.returned_storage(&returns::Returned::Dataset(value.clone()));
         self.write_storage_value(&place,&packed,span)?;value.place=Some(place);
@@ -813,7 +812,7 @@ impl Builder<'_> {
             if data.ownership != Ownership::Owned {
                 return self.fail(span, "B227", "借用的 dataset 不能移动或作为拥有资源返回");
             }
-            self.application_movable(&data, span)?;
+            if self.application_position_borrowed(data.handle.identity()){return self.fail(span,"B227","dataset的元素仍被游标或位置借用，不能移动拥有值");}
             if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
                 source.ownership = Ownership::Moved;
                 source.residency = residency::Residency::default();
@@ -1396,7 +1395,7 @@ impl Builder<'_> {
             );
         }
         self.view_uses.invocation(span);
-        self.application_movable(&data, span)?;
+        self.application_movable(&data,&view::Borrow::default(),span)?;
         let (source, target) = if name == "upload" {
             (Target::Cpu, residency::Residency::gpu())
         } else {

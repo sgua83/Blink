@@ -220,10 +220,20 @@ impl<'a> Builder<'a> {
             }
         }
         self.finish_arguments(&held,&mut arguments);
+        // 拥有参数交给callee前，调用者仍将继续使用的外部view不能留指向这些资源。
+        self.view_uses.after(span);
+        let scoped=arguments.iter().filter_map(|argument|match argument{Argument::Scoped{owner,..}|Argument::OwnedReference{owner:Some(owner),..}=>Some(owner.as_str()),_=>None}).collect::<BTreeSet<_>>();
+        let transferred=arguments.iter().filter_map(|argument|if let Argument::OwnedReference{place,..}=argument{Some(place.clone())}else{None}).collect::<Vec<_>>();
+        let mut retained=view::Borrow::default();
+        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(name,binding,&transferred));}}
+        for(param,argument)in callee.function.params.iter().zip(&arguments){if param.access==Access::Value{
+            let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
+            for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
+        }}
         self.view_uses.invocation(span);
         for (param, argument) in callee.function.params.iter().zip(&arguments) {
             if let Argument::OwnedReference{value,..}=argument {
-                self.require_view_unborrowed(&value.handles(),span)?;
+                for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
                 if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.handle.identity(),span)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {

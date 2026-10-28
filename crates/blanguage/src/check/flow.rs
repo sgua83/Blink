@@ -88,7 +88,7 @@ impl Builder<'_> {
         let mut resources:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Data{name,path,..}=slot {
-                let input=Borrow{inputs:BTreeSet::from([LoopInput{level:scope,index}]),..Borrow::default()};
+                let input=Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()};
                 for environment in [&self.env,&self.loop_contexts[level].resources] {
                     if let Some(data)=environment.get(name).and_then(|b|data_at(b,path)) {resources.entry(data.handle.identity()).or_default().union(&input);}
                 }
@@ -97,13 +97,13 @@ impl Builder<'_> {
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Data{name,path,..}=slot {
                 let data=data_at_mut(self.env.get_mut(name).unwrap(),path).unwrap();
-                data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:BTreeSet::from([LoopInput{level:scope,index}]),..Borrow::default()});
+                data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
             }
         }
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Value{name,component}=slot {
                 let proof=self.env.get_mut(name).unwrap().view_proof_mut().unwrap();
-                *proof=proof.clone().with_view_borrow(*component,Borrow{inputs:BTreeSet::from([LoopInput{level:scope,index}]),..Borrow::default()});
+                *proof=proof.clone().with_view_borrow(*component,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
             }
         }
         self.loop_contexts[level].view_inputs=slots;self.loop_contexts[level].view_resources=resources;
@@ -117,13 +117,7 @@ impl Builder<'_> {
                 InputSlot::Data{name,path,..}=>self.data_value_borrow(data_at(&context.resources[name],path).unwrap()),
             });
         }
-        let mut resources=BTreeMap::new();
-        for outer in &self.loop_contexts {resources.extend(outer.view_resources.clone());}
-        resources.extend(context.view_resources.clone());
-        let data_value=|data:&application::Data|resources.get(&data.handle.identity()).cloned().unwrap_or_else(|| {
-            let mut borrow=data.handle.proof.view_borrow(0);
-            if borrow.empty(){borrow.sources.insert(Source::Data(data.handle.identity()));}borrow
-        });
+        let data_value=view::resource_borrow;
         let mut definitions=initial.clone();
         let mut continued=vec![Borrow::default();definitions.len()];
         for state in &context.continues {
@@ -142,7 +136,7 @@ impl Builder<'_> {
                         let proof=context.exits[natural].env.get_mut(name).unwrap().view_proof_mut().unwrap();
                         let mut borrow=proof.view_borrow(*component);
                         let inputs=std::mem::take(&mut borrow.inputs);
-                        for input in inputs {if input.level==scope {borrow.union(&continued[input.index]);}else{borrow.inputs.insert(input);}}
+                        for(input,when)in inputs.into_entries(){if input.level==scope{borrow.union(&continued[input.index].restricted(&when));}else{borrow.inputs.insert_when(input,when);}}
                         *proof=proof.clone().with_view_borrow(*component,borrow);
                     }
                 }
@@ -362,7 +356,7 @@ impl Builder<'_> {
     }
     pub(super) fn release_application_loop(&mut self) -> Result<()> {
         let names = self.loop_contexts.last().unwrap().names.clone();
-        self.release_application_data(Some(&names))
+        self.release_application_data(Some(&names),view::Borrow::default())
     }
     pub(super) fn remember_loop_control(&mut self,value:&Value){if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}}
     pub(super) fn join_environment(&mut self,other:&BTreeMap<String,Binding>,branch:Option<&Value>){let when=branch.map(owned_presence::Presence::input);self.join_environment_selected(other,when.as_ref());}

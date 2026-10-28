@@ -512,11 +512,11 @@ impl Builder<'_> {
             unreachable!()
         };
         let mut model=Returned::OwnedValue(result);self.resolve_owned_model(&mut model,None);let Returned::OwnedValue(mut result)=model else{unreachable!()};
-        self.require_view_unborrowed(&result.handles(),span)?;
+        // 元数据移动不迁移Frame存储；借用在实际调用、改写和释放处交接。
         if result
             .handles()
             .iter()
-            .any(|id| self.application_borrowed(*id))
+            .any(|id| self.application_position_borrowed(*id))
         {
             return self.fail(span, "B227", "资源字段仍被游标或位置借用，不能移动拥有值");
         }
@@ -898,10 +898,10 @@ impl Builder<'_> {
         let item=self.unpack_variant(value,index);
         if let Some(name)=name.as_ref().filter(|n|n.as_str()!="_") {
             self.bind_returned(name,item,span)?;self.block(body)?;
-            if self.flow.continues() { if let Some(binding)=self.env.remove(name) {self.drop_binding(binding,span)?;} }
+            if self.flow.continues() { if let Some(binding)=self.env.remove(name) {self.drop_binding(binding,&view::Borrow::default(),span)?;} }
             else {self.env.remove(name);}
             Ok(())
-        } else {self.drop_returned(item,span)?;self.block(body)}
+        } else {self.drop_returned(item,&view::Borrow::default(),span)?;self.block(body)}
     }
     pub(super) fn bind_returned(
         &mut self,
@@ -926,54 +926,54 @@ impl Builder<'_> {
             Returned::Unit => self.fail(span, "B228", "void分支没有可绑定值"),
         }
     }
-    pub(super) fn drop_returned(&mut self, value: Returned, span: Span) -> Result<()> {
+    pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
         self.prepare_owned_read(&value);
         match value {
-            Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_returned(Returned::Dataset(data),span)})}
-            Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_returned(Returned::OwnedValue(value),span)})}
+            Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_returned(Returned::Dataset(data),retained,span)})}
+            Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_returned(Returned::OwnedValue(value),retained,span)})}
             Returned::Dataset(data) if data.ownership == Ownership::Owned => {
                 self.application_frame(span)?;
-                self.application_drop(&data,span)?;
+                self.application_drop(&data,retained,span)?;
             }
             Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
                 if !result.value.ty.has_variants() {
                     for i in 0..result.value.ty.aggregate_len() {
                         if result.value.ty.aggregate_part(i).1.owns_resources() {
                             let field = self.unpack_record(&result, i);
-                            self.drop_returned(field, span)?;
+                            self.drop_returned(field,retained,span)?;
                         }
                     }
                     return Ok(());
                 }
                 self.load_owned_value(&mut result,span)?;
                 result.place=None;
-                self.drop_variant(&result,0,span)?;
+                self.drop_variant(&result,0,retained,span)?;
             }
             _ => {}
         }
         Ok(())
     }
-    fn drop_variant(&mut self,value:&OwnedValue,index:usize,span:Span)->Result<()> {
+    fn drop_variant(&mut self,value:&OwnedValue,index:usize,retained:&view::Borrow,span:Span)->Result<()> {
         if index+1==value.payloads.len() {
-            let item=self.unpack_variant(value,index);return self.drop_returned(item,span);
+            let item=self.unpack_variant(value,index);return self.drop_returned(item,retained,span);
         }
         let condition=self.owned_variant_condition(value,index,span)?;
         if let Some(bits)=&condition.constant {
-            if bits[0]!=0 {let item=self.unpack_variant(value,index);self.drop_returned(item,span)}
-            else {self.drop_variant(value,index+1,span)}
+            if bits[0]!=0 {let item=self.unpack_variant(value,index);self.drop_returned(item,retained,span)}
+            else {self.drop_variant(value,index+1,retained,span)}
         } else {
             let outer=std::mem::take(&mut self.code);
-            let item=self.unpack_variant(value,index);self.drop_returned(item,span)?;
+            let item=self.unpack_variant(value,index);self.drop_returned(item,retained,span)?;
             let yes=std::mem::take(&mut self.code);
-            self.drop_variant(value,index+1,span)?;
+            self.drop_variant(value,index+1,retained,span)?;
             let no=std::mem::replace(&mut self.code,outer);
             self.code.push(Inst::If{condition:condition.regs[0],yes,no});Ok(())
         }
     }
-    pub(super) fn drop_binding(&mut self, binding: Binding, span: Span) -> Result<()> {
+    pub(super) fn drop_binding(&mut self,binding:Binding,retained:&view::Borrow,span:Span) -> Result<()> {
         match binding {
-            Binding::OwnedValue(r) => self.drop_returned(Returned::OwnedValue(r), span),
-            Binding::ApplicationData(data) => self.drop_returned(Returned::Dataset(data), span),
+            Binding::OwnedValue(r) => self.drop_returned(Returned::OwnedValue(r),retained,span),
+            Binding::ApplicationData(data) => self.drop_returned(Returned::Dataset(data),retained,span),
             _ => Ok(()),
         }
     }
@@ -1060,7 +1060,7 @@ impl Builder<'_> {
     }
     pub(super) fn finish_scoped_argument(&mut self, name: &str, span: Span) -> Result<()> {
         let binding=self.env.remove(name).unwrap();
-        self.drop_binding(binding,span)
+        self.drop_binding(binding,&view::Borrow::default(),span)
     }
 }
 

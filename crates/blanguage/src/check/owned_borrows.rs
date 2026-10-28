@@ -54,17 +54,15 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
     fn move_owned_place(&mut self,place:&Place){
         for(name,path,mut old)in self.owned_place_candidates(place){let actual=storage(&old).unwrap();let when=Presence::selected(&place.owned_positions().unwrap()[0],&actual.owned_positions().unwrap()[0]);self.forget_owned_metadata(&old);old.restrict_owned(&when.not());self.store_owned_candidate(name,&path,old);}
     }
-    fn movable_owned_place(&mut self,place:&Place,span:Span)->Result<()>{
-        for(_,_,value)in self.owned_place_candidates(place){let when=Presence::selected(&place.owned_positions().unwrap()[0],&storage(&value).unwrap().owned_positions().unwrap()[0]);if self.owned_possible(&when){self.movable_returned(&value,span)?;}}
-        Ok(())
-    }
     pub(super) fn take_owned_place(&mut self,place:Place,span:Span)->Result<Returned>{
-        let mut value=self.owned_place_model(&place);self.movable_owned_place(&place,span)?;
+        let mut value=self.owned_place_model(&place);
+        let resources=match &value{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
+        for data in resources{if self.application_position_borrowed(data.handle.identity()){return self.fail(span,"B227","dataset的元素仍被游标或位置借用，不能移动拥有值");}}
         match &value{Returned::Dataset(data)=>{self.application_available(data,span)?;if data.ownership!=Ownership::Owned{return self.fail(span,"B227","借用资源不能从拥有位置移动");}},Returned::OwnedValue(value)=>{if !value.all_available(){return self.fail(span,"B227","拥有位置仍有未初始化或已经移动的资源");}},_=>unreachable!()}
         self.prepare_owned_read(&value);self.require_initialized(&place,span)?;let packed=self.read_storage_value(&place,span)?;
         self.move_owned_place(&place);
         fn handoff(value:&mut Returned,old:&Returned){match(value,old){
-            (Returned::Dataset(data),Returned::Dataset(old))=>{data.initialization=old.initialization.clone();let identity=ValueIdentity::Register(data.handle.regs[0]);data.handle.proof=bounds::Proof::default().with_identity(identity).with_view_sources(0,BTreeSet::from([view::Source::Data(identity)]));data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(identity)]));},
+            (Returned::Dataset(data),Returned::Dataset(old))=>{data.initialization=old.initialization.clone();let identity=ValueIdentity::Register(data.handle.regs[0]);let mut borrow=old.handle.proof.view_borrow(0);if borrow.empty(){borrow.sources.insert(view::Source::Data(old.handle.identity()));}data.handle.proof=bounds::Proof::default().with_identity(identity).with_view_borrow(0,borrow);data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(identity)]));},
             (Returned::OwnedValue(value),Returned::OwnedValue(old))=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{handoff(payload,old.payloads[index].as_deref().unwrap());}},_=>{}}}
         let old=value.clone();native_function::rebind_model(&mut value,packed.regs);handoff(&mut value,&old);Ok(value)
     }
@@ -72,7 +70,10 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         self.require_owned_writable(&place,span)?;if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;if !self.flow.continues(){return Ok(());}
         let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;self.check_returned_type(&mut value,place.ty(),span)?;
-        self.view_uses.after(span);let old=self.owned_place_model(&place);self.movable_owned_place(&place,span)?;self.drop_returned(old,span)?;
-        let packed=self.returned_storage(&value);self.write_storage_value(&place,&packed,span)?;self.assign_owned_place(&place,value);self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
+        self.view_uses.after(span);let old=self.owned_place_model(&place);let packed=self.returned_storage(&value);
+        // 覆盖结束旧元数据的生命周期；后续消费者读取实际右值的view关系。
+        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
+        self.drop_returned(old,&view::Borrow::default(),span)?;
+        self.write_storage_value(&place,&packed,span)?;self.assign_owned_place(&place,value);self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
     }
 }

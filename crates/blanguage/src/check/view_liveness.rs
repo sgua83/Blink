@@ -80,6 +80,7 @@ fn key(span: Span) -> Key {
 pub(super) struct State {
     points: BTreeMap<Key, Point>,
     current: Live,
+    outputs:Live,
 }
 impl State {
     pub(super) fn new(world: &World, definition: &Definition) -> Self {
@@ -105,8 +106,11 @@ impl State {
         Self {
             points: analysis.points,
             current,
+            outputs:analysis.outputs,
         }
     }
+    pub(super) fn used(&self,name:&str)->bool{name.starts_with('\0')||self.current.0.keys().any(|location|location.name==name)}
+    pub(super) fn returning(&mut self){self.current=self.outputs.clone();}
     pub(super) fn before(&mut self, span: Span) {
         if let Some(point) = self.points.get(&key(span)) {
             self.current = point.before.clone();
@@ -124,7 +128,7 @@ impl State {
             }
         }
     }
-    pub(super) fn borrow(&self, name: &str, binding: &Binding) -> view::Borrow {
+    pub(super) fn borrow(&self,name:&str,binding:&Binding,transferred:&[Place])->view::Borrow {
         if name.starts_with('\0') {
             return binding.view_borrow();
         }
@@ -144,12 +148,15 @@ impl State {
             Binding::ViewElement { view, .. } => return view.proof.borrowed_view(),
             _ => return view::Borrow::default(),
         };
+        let mut omitted=BTreeSet::new();
+        if let Some(root)=binding.stored_place(){for place in transferred{if let Some(components)=place.components_in(&root){omitted.extend(components);}}}
         let mut result = view::Borrow::default();
         for (location, excluded) in uses {
             let mut selected = components(ty, &location.path, 0);
             for path in excluded {
                 selected.retain(|i| !components(ty, path, 0).contains(i));
             }
+            selected.retain(|component|!omitted.contains(component));
             let views=view_contracts::components(ty);
             for component in selected.intersection(&views) {
                 result.union(&proof.view_borrow(*component));
@@ -498,13 +505,13 @@ impl Analysis<'_> {
     }
 }
 impl Builder<'_> {
-    pub(super) fn live_view_borrow(&self,name:&str,binding:&Binding)->view::Borrow {self.view_uses.borrow(name,binding)}
+    pub(super) fn live_view_borrow(&self,name:&str,binding:&Binding)->view::Borrow {self.view_uses.borrow(name,binding,&[])}
 
     pub(super) fn live_view_sources(
         &self,
         name: &str,
         binding: &Binding,
     ) -> BTreeSet<view::Source> {
-        self.view_uses.borrow(name, binding).sources
+        self.view_uses.borrow(name,binding,&[]).restricted(&self.path).sources.entries().filter_map(|(source,when)|when.possible().then_some(*source)).collect()
     }
 }

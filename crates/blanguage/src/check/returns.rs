@@ -67,8 +67,8 @@ impl Returned {
     }
     pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition){
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition){match(target,a,b){
-            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone()),
-            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}},
+            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.handle.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));},
+            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof.join_view_borrows(&a.value.proof,&b.value.proof,Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},
             _=>{},
         }}
         let before=self.clone();self.join(other.clone());restore(self,&before,&other,choice);
@@ -333,12 +333,10 @@ impl Builder<'_> {
     pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
         if let Some(value)=&mut value {self.require_returned_initialized(value,span)?;}
         if let Some(Returned::Value(value)) = &mut value {
-            self.require_view_return(value, span)?;
             value.uniform &= self.control_uniform;
             value.proof = bounds::Proof::returning(value, &self.env, &self.path);
         }
         if let Some(Returned::OwnedValue(value)) = &mut value {
-            self.require_view_return(&value.value,span)?;
             value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
         }
         let borrowed=(||->Result<BTreeMap<String,Returned>> {
@@ -350,13 +348,22 @@ impl Builder<'_> {
                 if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && !param.ty.tile {
                     let mut model=self.written_model(&param.name,span)?;
                     if let Some(value)=model.view_value_mut(){value.uniform&=self.control_uniform;value.proof.under_path(&value.ty,&self.path);}
-                    if let Some(value)=model.view_value(){self.require_view_return(value,span)?;}
                     borrowed.insert(param.name.clone(),model);
                 }
             }
             Ok(borrowed)
         })();
-        self.release_application_data(None)?;
+        let mut owned=view::Borrow::default();let mut retained=view::Borrow::default();
+        let outputs=value.iter().chain(borrowed.as_ref().ok().into_iter().flat_map(|written|written.values())).collect::<Vec<_>>();
+        for output in &outputs{for borrow in view_contracts::resource_borrows(output){owned.union(&borrow);}}
+        for output in outputs{if let Some(value)=output.view_value(){
+            let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
+            self.require_view_return_proof(&proof,owned.clone(),span)?;
+            retained.union(&proof.borrowed_view());
+        }}
+        // 返回表达式已消费；释放只面对实际输出消费者，不保留刚读完的操作数。
+        self.view_uses.returning();
+        self.release_application_data(None,retained)?;
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {

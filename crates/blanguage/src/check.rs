@@ -1672,7 +1672,7 @@ impl<'a> Builder<'a> {
         self.flow = flow;
         self.block_depth -= 1;
         if flow.continues() {
-            self.release_application_data(Some(&original))?;
+            self.release_application_data(Some(&original),view::Borrow::default())?;
         }
         self.env.retain(|k, _| original.contains(k));
         Ok(())
@@ -3725,7 +3725,7 @@ impl<'a> Builder<'a> {
             self.cooperate(name, explicit.as_deref(), args, e.span)?;
         } else {
             if let Some(value) = self.evaluate_returned(e, None)? {
-                self.drop_returned(value, e.span)?;
+                self.drop_returned(value,&view::Borrow::default(),e.span)?;
             }
         }
 

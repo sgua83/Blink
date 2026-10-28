@@ -248,22 +248,6 @@ impl Builder<'_> {
             other => Ok(other),
         }
     }
-    pub(super) fn movable_returned(&mut self, item: &Returned, span: Span) -> Result<()> {
-        match item {
-            Returned::Dataset(d) if d.ownership.may_own() => {
-                self.application_movable(d, span)
-            }
-            Returned::OwnedValue(v) => {
-                for d in v.resources() {
-                    if d.ownership.may_own() {
-                        self.application_movable(d, span)?;
-                    }
-                }
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
     pub(super) fn application_reference(
         &mut self,
         expr: &Expr,
@@ -348,7 +332,8 @@ impl Builder<'_> {
                         _ => unreachable!(),
                     }
                 }
-                self.drop_returned(Returned::OwnedValue(owner), expr.span)?;
+                let retained=item.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
+                self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span)?;
                 Ok(Some(item))
             }
             Some(Returned::Dataset(data)) => {
@@ -356,7 +341,7 @@ impl Builder<'_> {
                     return self.fail(expr.span, "B141", "dataset只公开只读length");
                 }
                 let length = data.length.clone();
-                self.drop_returned(Returned::Dataset(data), expr.span)?;
+                self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span)?;
                 Ok(Some(Returned::Value(length)))
             }
             Some(Returned::Value(value)) => self
