@@ -1063,14 +1063,19 @@ impl Fact {
 }
 fn equality_roots<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, ValueIdentity> {
     let mut roots = BTreeMap::new();
-    for fact in facts {
+    // Facts 及其 union 按 Fact 排序；Equal 是首个事实类别。
+    for fact in facts.into_iter().take_while(|fact| matches!(fact, Fact::Equal(..))) {
         if let Fact::Equal(a, b) = *fact {
             let a_root = roots.get(&a).copied().unwrap_or(a);
             let b_root = roots.get(&b).copied().unwrap_or(b);
             let root = a_root.min(b_root);
-            for current in roots.values_mut() {
-                if *current == a_root || *current == b_root {
-                    *current = root;
+            if a_root != b_root {
+                let merged = a_root.max(b_root);
+                // 只改被合并组；其成员身份不可能小于该组的最小代表值。
+                for (_, current) in roots.range_mut(merged..) {
+                    if *current == merged {
+                        *current = root;
+                    }
                 }
             }
             roots.insert(a, root);
@@ -1080,18 +1085,23 @@ fn equality_roots<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<Val
     roots
 }
 fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> QueryFacts<'a> {
+    // 等价组为空时没有别名事实需要派生，不读取无关事实集。
+    if roots.is_empty() {
+        return facts;
+    }
     let mut inferred = Facts::new();
+    // 仅将原关系表的借用引用排成同组连续的顺序。
+    let mut members: Vec<_> = roots.iter().map(|(id, group)| (group, id)).collect();
+    members.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     for fact in environment.union(&facts) {
         if let Some(identity) = fact.identity()
             && let Some(root) = roots.get(&identity)
         {
-            inferred.extend(
-                roots
-                    .iter()
-                    .filter(|(_, group)| *group == root)
-                    .map(|(id, _)| fact.at(*id))
-                    .filter(|fact| !environment.contains(fact) && !facts.contains(fact)),
-            );
+            let begin = members.partition_point(|(group, _)| *group < root);
+            let end = members.partition_point(|(group, _)| *group <= root);
+            inferred.extend(members[begin..end].iter()
+                .map(|(_, id)| fact.at(**id))
+                .filter(|fact| !environment.contains(fact) && !facts.contains(fact)));
         }
     }
     if !inferred.is_empty() {
