@@ -13,3 +13,4 @@ target/
 *.reloc
 *.layout
 /Docs/Issues.md
+/Docs/FixedIssues.md

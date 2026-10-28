@@ -4,6 +4,7 @@ param([string]$P4Client = 'BLanguage_Gua')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $depot = '//BLanguage/main/'
+$p4Only = @('Docs/Issues.md', 'Docs/FixedIssues.md')
 $utf8 = [Text.UTF8Encoding]::new($false)
 
 function Invoke-CommandText {
@@ -107,13 +108,15 @@ try {
             }
         }
         $lines = [Text.StringBuilder]::new()
-        # The issue ledger is P4-only, including when the previous Git tree tracked it.
-        [void]$lines.Append("0 $([string]::new('0', 40))`tDocs/Issues.md`0")
+        # Both ledgers are P4-only, including entries in a previous Git tree.
+        foreach ($ledger in $p4Only) {
+            [void]$lines.Append("0 $([string]::new('0', 40))`t$ledger`0")
+        }
         $fileNumber = 0
         foreach ($entry in $entries) {
             if (-not $entry.depotFile.StartsWith($depot, [StringComparison]::Ordinal)) { continue }
             $relative = $entry.depotFile.Substring($depot.Length)
-            if ($relative -ceq 'Docs/Issues.md') { continue }
+            if ($relative -cin $p4Only) { continue }
             if ($entry.action -in @('delete', 'move/delete')) {
                 if ($lastChange -ne 0) { [void]$lines.Append("0 $([string]::new('0', 40))`t$relative`0") }
                 continue
