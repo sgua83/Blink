@@ -20,7 +20,7 @@ pub(super) fn compile(
         return d.source.fail(
             span,
             "B175",
-            "归约需要相同类型的数值标量／向量字段；按位归约只接受 u32/i32",
+            "归约需要相同类型的数值标量／向量字段；按位归约只接受整数",
         );
     }
     if prefix::fields_overlap(source, source_word, &ty, target, target_word, &target_ty)

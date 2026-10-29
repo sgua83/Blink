@@ -112,7 +112,9 @@ pub(super) struct Plan {
 }
 impl Plan {
     pub fn new(program: &Program, stage: &Stage) -> Option<Self> {
-        if stage.has_tile_scope() || stage.writes.is_empty() {
+        if stage.has_tile_scope() || stage.writes.is_empty()
+            || stage.registers.iter().chain(&stage.locals).any(|scalar| scalar.size() != 4)
+        {
             return None;
         }
         let uniform = control::uniform_registers(stage);
@@ -146,7 +148,7 @@ impl Plan {
         let mut code = Vec::new();
         for inst in instructions {
             let step = match inst {
-                Inst::Constant(dst, _, bits) => Step::Constant(*dst, *bits),
+                Inst::Constant(dst, _, bits) => Step::Constant(*dst, *bits as u32),
                 Inst::Index(dst) => Step::Index(*dst),
                 Inst::Uniform(dst, offset) => Step::Uniform(*dst, *offset),
                 Inst::LoadLocal(dst, slot) => {

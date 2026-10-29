@@ -216,7 +216,7 @@ impl Analysis<'_> {
     fn literal_u32(&self,expr:&Expr)->Option<u32> {
         match &expr.kind {
             ExprKind::StaticU32(value)=>Some(*value),
-            ExprKind::Number(text)=>number(&self.definition.source,expr.span,text).ok().and_then(|(ty,value)|(ty==Ty::scalar(Scalar::U32)).then_some(value)),
+            ExprKind::Number(text)=>number(&self.definition.source,expr.span,text).ok().and_then(|(ty,value)|(ty==Ty::scalar(Scalar::U32)).then_some(value as u32)),
             _=>None,
         }
     }

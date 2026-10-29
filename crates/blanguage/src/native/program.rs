@@ -143,7 +143,7 @@ pub fn compile_program<P: Deref<Target = Program>>(
                     Some(ContinuationCode::ReductionTail(emit_custom_reduce_tail(
                         &program, i,
                     )?)),
-                    RangeResult::Values(reduction.ty.components.len()),
+                    RangeResult::Values(reduction.ty.size.div_ceil(4) as usize),
                 ),
                 Operation::Compact(compaction) => (
                     Some(ContinuationCode::CompactScatter(emit_compact_scatter(
@@ -152,7 +152,7 @@ pub fn compile_program<P: Deref<Target = Program>>(
                     RangeResult::UnsignedSum,
                 ),
                 Operation::Reduce(reduction) => {
-                    (None, RangeResult::Values(reduction.ty.components.len()))
+                    (None, RangeResult::Values(reduction.ty.size.div_ceil(4) as usize))
                 }
                 Operation::Map => (None, RangeResult::None),
             };

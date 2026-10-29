@@ -46,6 +46,8 @@ fn scalar(s: Scalar) -> (&'static str, &'static str) {
         Scalar::F32 => ("float", "f32"),
         Scalar::I32 => ("int32_t", "i32"),
         Scalar::U32 | Scalar::Bool => ("uint32_t", "u32"),
+        Scalar::U64 => ("uint64_t", "u64"),
+        Scalar::I64 => ("int64_t", "i64"),
     }
 }
 #[derive(Clone, Copy)]
@@ -99,7 +101,11 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
         writeln!(r, "pub type {name} = *mut core::ffi::c_void;")?;
         return Ok(());
     }
-    if ty.components.len() == 1 && ty.size == 4 && ty.align == 4 && ty.fields.is_empty() {
+    if ty.components.len() == 1
+        && ty.size == ty.components[0].0.size()
+        && ty.align == ty.components[0].0.align()
+        && ty.fields.is_empty()
+    {
         let (ct, rt) = scalar(ty.components[0].0);
         writeln!(c, "typedef {ct} {name};")?;
         writeln!(r, "pub type {name} = {rt};")?;
@@ -126,7 +132,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
         let (ct, rt, size) = match s {
             FieldType::Scalar(s) => {
                 let (ct, rt) = scalar(s);
-                (ct, rt, 4)
+                (ct, rt, s.size())
             }
             FieldType::Handle => ("void *", "*mut core::ffi::c_void", 8),
         };

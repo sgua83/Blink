@@ -220,7 +220,10 @@ impl ExecutionPlan {
             .iter()
             .map(|stage| {
                 let shared_bytes = stage.tile_bytes().max(match &stage.operation {
-                    Operation::CustomReduce(r) => r.ty.components.len() as u64 * 64 * 4,
+                    Operation::Reduce(r) => u64::from(r.ty.size) * 64,
+                    Operation::CustomReduce(r) => u64::from(r.ty.size) * 64,
+                    Operation::ScanExclusive(r) => r.summary_words() as u64 * 64 * 4,
+                    Operation::SegmentedReduce(r) => r.summary_words() as u64 * 64 * 4,
                     Operation::CustomScan(r) => r.summary_words() as u64 * 64 * 4,
                     Operation::CustomSegmentedReduce(r) => r.summary_words() as u64 * 64 * 4,
                     _ => 0,

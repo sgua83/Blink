@@ -3,7 +3,7 @@ mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ir::{CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
+    ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
     native::{NativeIntrinsic, NativeSymbol, RangeResult},
 };
 pub use dataset::CpuDataset;
@@ -155,6 +155,12 @@ extern "C" fn print_u32(value: u32) -> u32 {
 extern "C" fn print_i32(value: i32) -> u32 {
     print_line(value)
 }
+extern "C" fn print_u64(value: u64) -> u32 {
+    print_line(value)
+}
+extern "C" fn print_i64(value: i64) -> u32 {
+    print_line(value)
+}
 extern "C" fn print_bool(value: u32) -> u32 {
     print_line(value != 0)
 }
@@ -227,6 +233,8 @@ impl Executable {
                     NativeIntrinsic::Pow => pow as *const (),
                     NativeIntrinsic::PrintU32 => print_u32 as *const (),
                     NativeIntrinsic::PrintI32 => print_i32 as *const (),
+                    NativeIntrinsic::PrintU64 => print_u64 as *const (),
+                    NativeIntrinsic::PrintI64 => print_i64 as *const (),
                     NativeIntrinsic::PrintBool => print_bool as *const (),
                     NativeIntrinsic::PrintF32 => print_f32 as *const (),
                 },
@@ -286,32 +294,40 @@ extern "C" fn pow(x: f32, y: f32) -> f32 {
     x.powf(y)
 }
 
-fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: u32, b: u32) -> u32 {
-    match (scalar, operator) {
+fn collective_bits(scalar: Scalar, words: &[u32], word: usize) -> Bits {
+    let low = Bits::from(words[word]);
+    if scalar.size() == 8 { low | (Bits::from(words[word + 1]) << 32) } else { low }
+}
+fn store_collective_bits(scalar: Scalar, words: &mut [u32], word: usize, bits: Bits) {
+    words[word] = bits as u32;
+    if scalar.size() == 8 { words[word + 1] = (bits >> 32) as u32; }
+}
+fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: Bits, b: Bits) -> Bits {
+    scalar.truncate(match (scalar, operator) {
         (_, CollectiveOperator::BitAnd) => a & b,
         (_, CollectiveOperator::BitOr) => a | b,
         (_, CollectiveOperator::BitXor) => a ^ b,
-        (Scalar::F32, CollectiveOperator::Sum) => (f32::from_bits(a) + f32::from_bits(b)).to_bits(),
+        (Scalar::F32, CollectiveOperator::Sum) => Bits::from((f32::from_bits(a as u32) + f32::from_bits(b as u32)).to_bits()),
         (Scalar::F32, CollectiveOperator::Min) => {
-            if f32::from_bits(a) < f32::from_bits(b) {
+            if f32::from_bits(a as u32) < f32::from_bits(b as u32) {
                 a
             } else {
                 b
             }
         }
         (Scalar::F32, CollectiveOperator::Max) => {
-            if f32::from_bits(a) > f32::from_bits(b) {
+            if f32::from_bits(a as u32) > f32::from_bits(b as u32) {
                 a
             } else {
                 b
             }
         }
         (_, CollectiveOperator::Sum) => a.wrapping_add(b),
-        (Scalar::I32, CollectiveOperator::Min) => (a as i32).min(b as i32) as u32,
-        (Scalar::I32, CollectiveOperator::Max) => (a as i32).max(b as i32) as u32,
+        (_, CollectiveOperator::Min) if scalar.is_signed() => if scalar.signed(a) < scalar.signed(b) {a} else {b},
+        (_, CollectiveOperator::Max) if scalar.is_signed() => if scalar.signed(a) > scalar.signed(b) {a} else {b},
         (_, CollectiveOperator::Min) => a.min(b),
         (_, CollectiveOperator::Max) => a.max(b),
-    }
+    })
 }
 
 enum Continuation {
@@ -649,19 +665,23 @@ impl CpuCode {
             };
             self.execute(&mut ranges)?;
             if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
-                let scalar = reduction.ty.components[0].0;
-                for (component, (_, offset)) in reduction.ty.components.iter().enumerate() {
+                for (scalar, offset) in &reduction.ty.components {
                     let total = partials
-                        .chunks_exact(reduction.ty.components.len())
-                        .map(|p| p[component])
-                        .fold(reduction.operator.identity(scalar), |a, b| {
-                            collective_pair(scalar, reduction.operator, a, b)
+                        .chunks_exact(result.words())
+                        .map(|p| collective_bits(*scalar, p, (*offset/4) as usize))
+                        .fold(reduction.operator.identity(*scalar), |a, b| {
+                            collective_pair(*scalar, reduction.operator, a, b)
                         });
                     unsafe {
                         buffers[reduction.fields.target]
                             .pointer
                             .add((reduction.fields.target_word + offset / 4) as usize)
-                            .write(total);
+                            .write(total as u32);
+                        if scalar.size() == 8 {
+                            buffers[reduction.fields.target].pointer
+                                .add((reduction.fields.target_word + offset / 4 + 1) as usize)
+                                .write((total >> 32) as u32);
+                        }
                     }
                 }
             }
@@ -689,7 +709,7 @@ impl CpuCode {
                     }
                     Continuation::Apply(next) => {
                         if let blanguage::ir::Operation::CustomReduce(r) = &stage.operation {
-                            let k = r.ty.components.len();
+                            let k = r.ty.size.div_ceil(4) as usize;
                             let mut inputs = pointers.clone();
                             inputs[r.fields.source] = partials.as_mut_ptr();
                             let mut output = vec![0; k];
@@ -703,12 +723,13 @@ impl CpuCode {
                                     output.as_mut_ptr(),
                                 );
                             }
-                            for (value, (_, offset)) in output.into_iter().zip(&r.ty.components) {
+                            for (scalar, offset) in &r.ty.components {
                                 unsafe {
-                                    buffers[r.fields.target]
-                                        .pointer
-                                        .add((r.fields.target_word + offset / 4) as usize)
-                                        .write(value);
+                                    std::ptr::copy_nonoverlapping(
+                                        output.as_ptr().add((offset / 4) as usize),
+                                        buffers[r.fields.target].pointer.add((r.fields.target_word + offset / 4) as usize),
+                                        (scalar.size() / 4) as usize,
+                                    );
                                 }
                             }
                             continue;
@@ -716,20 +737,21 @@ impl CpuCode {
                             &stage.operation
                         {
                             let values = &reduction.values;
-                            let k = values.ty.components.len();
-                            let scalar = values.ty.components[0].0;
-                            let mut prefix = vec![values.operator.identity(scalar); k];
+                            let k = values.ty.size.div_ceil(4) as usize;
+                            let mut prefix: Vec<_> = values.ty.components.iter().map(|(scalar,_)| values.operator.identity(*scalar)).collect();
                             let mut segments = 0u32;
                             for total in partials.chunks_mut(reduction.summary_words()) {
                                 let reset = total[k] != 0;
                                 let next_segments = segments + total[k + 1];
-                                for (prefix, total) in prefix.iter_mut().zip(total.iter_mut()) {
+                                for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&values.ty.components) {
+                                    let word = (*offset/4) as usize;
+                                    let bits = collective_bits(*scalar, total, word);
                                     let next = if reset {
-                                        *total
+                                        bits
                                     } else {
-                                        collective_pair(scalar, values.operator, *prefix, *total)
+                                        collective_pair(*scalar, values.operator, *prefix, bits)
                                     };
-                                    *total = *prefix;
+                                    store_collective_bits(*scalar, total, word, *prefix);
                                     *prefix = next;
                                 }
                                 total[k] = count;
@@ -745,18 +767,19 @@ impl CpuCode {
                         } else if let blanguage::ir::Operation::ScanExclusive(scan) =
                             &stage.operation
                         {
-                            let scalar = scan.ty.components[0].0;
-                            let mut prefix =
-                                vec![scan.operator.identity(scalar); scan.ty.components.len()];
+                            let mut prefix: Vec<_> = scan.ty.components.iter().map(|(scalar,_)| scan.operator.identity(*scalar)).collect();
+                            let k = scan.ty.size.div_ceil(4) as usize;
                             for total in partials.chunks_mut(scan.summary_words()) {
-                                let reset = scan.head_word.is_some() && total[prefix.len()] != 0;
-                                for (prefix, total) in prefix.iter_mut().zip(total.iter_mut()) {
+                                let reset = scan.head_word.is_some() && total[k] != 0;
+                                for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&scan.ty.components) {
+                                    let word = (*offset/4) as usize;
+                                    let bits = collective_bits(*scalar, total, word);
                                     let next = if reset {
-                                        *total
+                                        bits
                                     } else {
-                                        collective_pair(scalar, scan.operator, *prefix, *total)
+                                        collective_pair(*scalar, scan.operator, *prefix, bits)
                                     };
-                                    *total = *prefix;
+                                    store_collective_bits(*scalar, total, word, *prefix);
                                     *prefix = next;
                                 }
                             }

@@ -112,7 +112,7 @@ impl Builder<'_> {
             ExprKind::StaticU32(value) => Some(*value),
             ExprKind::Number(text) => {
                 let (ty, value) = number(&self.definition.source, index.span, text)?;
-                (ty == Ty::scalar(Scalar::U32)).then_some(value)
+                (ty == Ty::scalar(Scalar::U32)).then_some(value as u32)
             }
             ExprKind::Name(name)
                 if !writes
@@ -121,13 +121,13 @@ impl Builder<'_> {
             {
                 match self.env.get(name) {
                     Some(Binding::Value(value)) if value.ty == Ty::scalar(Scalar::U32) => {
-                        value.constant.as_ref().map(|bits| bits[0])
+                        value.constant.as_ref().map(|bits| bits[0] as u32)
                     }
                     Some(Binding::Owned(owner)) if *owner.place.ty() == Ty::scalar(Scalar::U32) => {
                         owner
                             .proof
                             .known_value(owner.place.ty())
-                            .map(|bits| bits[0])
+                            .map(|bits| bits[0] as u32)
                     }
                     _ => None,
                 }

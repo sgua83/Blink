@@ -23,6 +23,8 @@ pub enum Value {
     U32(u32) = blanguage::resource::U32,
     I32(i32) = blanguage::resource::I32,
     Bool(bool) = blanguage::resource::BOOL,
+    U64(u64) = blanguage::resource::U64,
+    I64(i64) = blanguage::resource::I64,
 }
 impl Value {
     fn scalar(self) -> Scalar {
@@ -31,14 +33,25 @@ impl Value {
             Self::U32(_) => Scalar::U32,
             Self::I32(_) => Scalar::I32,
             Self::Bool(_) => Scalar::Bool,
+            Self::U64(_) => Scalar::U64,
+            Self::I64(_) => Scalar::I64,
         }
     }
-    fn bits(self) -> u32 {
+    fn bits(self) -> u64 {
         match self {
-            Self::F32(v) => v.to_bits(),
-            Self::U32(v) => v,
-            Self::I32(v) => v as u32,
-            Self::Bool(v) => v as u32,
+            Self::F32(v) => u64::from(v.to_bits()),
+            Self::U32(v) => u64::from(v),
+            Self::I32(v) => u64::from(v as u32),
+            Self::Bool(v) => u64::from(v),
+            Self::U64(v) => v,
+            Self::I64(v) => v as u64,
+        }
+    }
+    fn write_words(self, words: &mut [u32]) {
+        let bits = self.bits();
+        words[0] = bits as u32;
+        if self.scalar().size() == 8 {
+            words[1] = (bits >> 32) as u32;
         }
     }
 }
@@ -182,6 +195,25 @@ impl Dataset {
             .map(|(offset, _)| offset)
             .ok_or_else(|| error(format!("未知字段 {name}")))
     }
+    /// 按声明布局写入记录的单标量字段；与words_mut一样使原view绑定失效。
+    pub fn set_scalar(&mut self, index: u32, name: &str, value: Value) -> Result<()> {
+        if index >= self.count {
+            return Err(error("数据集记录下标越界"));
+        }
+        let stride = self.stride as usize / 4;
+        let start = index as usize * stride;
+        let (offset, ty) = self.ty
+            .field_at(name, &self.words[start..start + stride])
+            .ok_or_else(|| error(format!("未知或未激活的字段 {name}")))?;
+        let scalar = value.scalar();
+        if ty.components.as_slice() != [(scalar, 0)] || ty.size != scalar.size() {
+            return Err(error(format!("字段 {name} 的标量类型与值不匹配")));
+        }
+        let word = start + offset as usize / 4;
+        let count = scalar.size() as usize / 4;
+        value.write_words(&mut self.words_mut()[word..word + count]);
+        Ok(())
+    }
 }
 pub(crate) fn arguments<'a>(
     program: &ExecutionPlan,
@@ -280,7 +312,8 @@ pub(crate) fn arguments<'a>(
             if value.scalar() != *scalar {
                 return Err(error(format!("参数 {} 的分量类型不匹配", uniform.name)));
             }
-            words[((uniform.offset + offset) / 4) as usize] = value.bits();
+            let word = ((uniform.offset + offset) / 4) as usize;
+            value.write_words(&mut words[word..]);
             at += 1;
         }
     }

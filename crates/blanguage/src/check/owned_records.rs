@@ -165,9 +165,9 @@ impl Builder<'_> {
                     ExprKind::Number(text) => text.parse::<u32>().ok()?,
                     ExprKind::Name(name) => match self.env.get(name)? {
                         Binding::Value(value) if value.ty == Ty::scalar(Scalar::U32) => {
-                            value.constant.as_ref()?.first().copied()?
+                            value.constant.as_ref()?.first().copied()? as u32
                         }
-                        Binding::Owned(value)if value.place.ty()==&Ty::scalar(Scalar::U32)=>value.proof.known_value(value.place.ty())?.first().copied()?,
+                        Binding::Owned(value)if value.place.ty()==&Ty::scalar(Scalar::U32)=>value.proof.known_value(value.place.ty())?.first().copied()? as u32,
                         _ => return None,
                     },
                     _ => return None,

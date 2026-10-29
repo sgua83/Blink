@@ -1,18 +1,18 @@
-//! 整数常量使用源语言的模 32 位语义；已证明的值直接成为既有 IR 常量。
+//! 整数常量按实际标量位宽求值；已证明的值直接成为既有 IR 常量。
 use super::*;
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 
 impl Builder<'_> {
     pub(super) fn module_constant(&mut self, key: String) -> Result<Value> {
         let (ty, words) = evaluate(self.world, &key, &self.calls)?;
         Ok(self.constant_value(ty, words))
     }
-    pub(super) fn literal(&mut self, scalar: Scalar, bits: u32) -> Value {
+    pub(super) fn literal(&mut self, scalar: Scalar, bits: Bits) -> Value {
         let mut value = self.constant(scalar, bits);
         value.literal = true;
         value
     }
-    pub(super) fn constant_value(&mut self, ty: Ty, bits: Vec<u32>) -> Value {
+    pub(super) fn constant_value(&mut self, ty: Ty, bits: Vec<Bits>) -> Value {
         let regs = ty
             .components
             .iter()
@@ -30,7 +30,7 @@ impl Builder<'_> {
     }
 }
 /// 使用现有表达式、调用与常量分析；不编译或运行宿主／设备初始化函数。
-pub(super) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<u32>)> {
+pub(super) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<Bits>)> {
     evaluate(world, key, &[])
 }
 /// 阶段派生参数复用已有表达式及常量语义；没有宿主求值器或新增运行阶段。
@@ -62,7 +62,7 @@ pub(super) fn stage_expression(
     }
     Ok(Root::Literal(value.ty, value.constant.unwrap()))
 }
-fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<u32>)> {
+fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>)> {
     let definition = &world.functions[key];
     if !world.evaluating_constants.borrow_mut().insert(key.into()) {
         return definition.source.fail(
@@ -144,46 +144,74 @@ impl World {
                 if ty != Ty::scalar(Scalar::U32) {
                     return source.fail(span, "B015", "形状或 const 实参必须为 u32 标量");
                 }
-                Ok(Some(words[0]))
+                Ok(Some(words[0] as u32))
             }
         }
     }
 }
-pub(super) fn divide(scalar: Scalar, a: u32, divisor: NonZeroU32, remainder: bool) -> u32 {
-    let b = divisor.get();
-    if scalar == Scalar::I32 {
-        if remainder {
-            (a as i32).wrapping_rem(b as i32) as u32
+pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
+    if from == into {
+        return Some(into.truncate(bits));
+    }
+    if into == Scalar::Bool {
+        return Some(Bits::from(if from == Scalar::F32 {
+            f32::from_bits(bits as u32) != 0.0
         } else {
-            (a as i32).wrapping_div(b as i32) as u32
+            bits != 0
+        }));
+    }
+    if into == Scalar::F32 {
+        let value = if from.is_signed() { from.signed(bits) as f32 } else { bits as f32 };
+        return Some(Bits::from(value.to_bits()));
+    }
+    if from == Scalar::F32 {
+        let value = f32::from_bits(bits as u32);
+        let maximum = (1u128 << (into.size() * 8 - u32::from(into.is_signed()))) as f32;
+        let minimum = if into.is_signed() { -maximum } else { 0.0 };
+        if !(minimum..maximum).contains(&value) {
+            return None;
+        }
+        return Some(into.truncate(if into.is_signed() { value as i64 as Bits } else { value as Bits }));
+    }
+    Some(into.truncate(if from.is_signed() { from.signed(bits) as Bits } else { bits }))
+}
+pub(super) fn divide(scalar: Scalar, a: Bits, divisor: NonZeroU64, remainder: bool) -> Bits {
+    let b = divisor.get();
+    let bits = if scalar.is_signed() {
+        if remainder {
+            scalar.signed(a).wrapping_rem(scalar.signed(b)) as Bits
+        } else {
+            scalar.signed(a).wrapping_div(scalar.signed(b)) as Bits
         }
     } else if remainder {
         a % b
     } else {
         a / b
-    }
+    };
+    scalar.truncate(bits)
 }
-pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: u32, b: u32) -> Option<u32> {
+pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<Bits> {
     if scalar == Scalar::F32 {
         return None;
     }
-    Some(match op {
+    let shift = (b & (Bits::from(scalar.size()) * 8 - 1)) as u32;
+    let bits = match op {
         BinaryOp::IAdd => a.wrapping_add(b),
         BinaryOp::ISub => a.wrapping_sub(b),
         BinaryOp::IMul => a.wrapping_mul(b),
         BinaryOp::And => a & b,
         BinaryOp::Or => a | b,
         BinaryOp::Xor => a ^ b,
-        BinaryOp::ShiftLeft => a.wrapping_shl(b),
-        BinaryOp::ShiftRightLogical => a.wrapping_shr(b),
-        BinaryOp::ShiftRightArithmetic => (a as i32).wrapping_shr(b) as u32,
+        BinaryOp::ShiftLeft => a.wrapping_shl(shift),
+        BinaryOp::ShiftRightLogical => a.wrapping_shr(shift),
+        BinaryOp::ShiftRightArithmetic => scalar.signed(a).wrapping_shr(shift) as Bits,
         BinaryOp::Compare(c) => {
-            let ordering = if scalar == Scalar::I32 {
-                (a as i32).cmp(&(b as i32))
+            let ordering = if scalar.is_signed() {
+                scalar.signed(a).cmp(&scalar.signed(b))
             } else {
                 a.cmp(&b)
             };
-            u32::from(match c {
+            Bits::from(match c {
                 Comparison::Equal => ordering.is_eq(),
                 Comparison::NotEqual => !ordering.is_eq(),
                 Comparison::Less => ordering.is_lt(),
@@ -193,7 +221,8 @@ pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: u32, b: u32) -> Option<u32
             })
         }
         BinaryOp::FAdd | BinaryOp::FSub | BinaryOp::FMul | BinaryOp::FDiv => return None,
-    })
+    };
+    Some(scalar.truncate(bits))
 }
 
 // 编号表达式沿原常量求值，不建立另一份宿主表达式解释器。
@@ -221,7 +250,7 @@ pub(crate) fn variant_discriminant(world: &World, identity: &str, source: &Sourc
     if value.constant.is_none() || builder.code.iter().any(|inst| !matches!(inst, Inst::Constant(..))) {
         return source.fail(expression.span, "B268", "变体编号必须是可完全编译期求值的底层整数");
     }
-    Ok(value.constant.unwrap()[0])
+    Ok(value.constant.unwrap()[0] as u32)
     })();
     world.evaluating_constants.borrow_mut().remove(&key);
     result

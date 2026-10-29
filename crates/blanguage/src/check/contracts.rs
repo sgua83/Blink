@@ -215,15 +215,12 @@ pub(super) fn resolve(
             ContractPredicate::Nonzero(path) => {
                 let selection = select(builder, definition, env, path, contract.span)?;
                 if !selection.value.ty.is_numeric()
-                    || !matches!(
-                        selection.value.ty.components.first(),
-                        Some((Scalar::U32 | Scalar::I32, _))
-                    )
+                    || !selection.value.ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer())
                 {
                     return definition.source.fail(
                         contract.span,
                         "B225",
-                        "nonzero 需要 u32/i32 标量或向量的按值参数／字段",
+                        "nonzero 需要 u32/i32/u64/i64 标量或向量的按值参数／字段",
                     );
                 }
                 (Predicate::Nonzero(selection), format!("nonzero({path})"))

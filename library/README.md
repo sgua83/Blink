@@ -54,4 +54,4 @@ target/release/blc.exe -c library/blink/sequence.b -I library --module --instanc
 target/release/bllink.exe --archive target/sequence.obj -o target/sequence.lib
 ```
 
-实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。对象合同为BLCO18，资源ABI为BLRI4；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、字符串／字节库和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
+实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。对象合同为BLCO19，资源ABI为BLRI5；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、字符串／字节库和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。

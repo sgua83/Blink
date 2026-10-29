@@ -60,21 +60,20 @@ impl Emitter<'_> {
             } else {
                 0
             };
-        let components = scan.ty.components.len() as u32;
+        let words = scan.ty.size.div_ceil(4);
         let trees: Vec<_> = scan
             .ty
             .components
             .iter()
-            .enumerate()
-            .map(|(component, (scalar, _))| SharedTree {
+            .map(|(scalar, offset)| SharedTree {
                 shared,
                 pointer,
-                base_word: component as u32 * 64,
+                base_word: (offset/4) * 64,
                 scalar: *scalar,
                 operator: scan.operator,
             })
             .collect();
-        let identity = self.constant(Scalar::U32, scan.operator.identity(scan.ty.components[0].0));
+        let identity = self.raw_constant(scan.ty.components[0].0, scan.operator.identity(scan.ty.components[0].0));
         let before = self.current_label;
         let read = self.id();
         let read_end = self.id();
@@ -82,8 +81,8 @@ impl Emitter<'_> {
         self.emit(250, &[active, read, read_end]);
         self.emit(248, &[read]);
         let mut values = Vec::new();
-        for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
-            let at = self.address_scalar(
+        for (scalar, offset) in &scan.ty.components {
+            let value = self.load_raw_buffer(*scalar,
                 if tail {
                     self.scan_input_binding(r)
                 } else {
@@ -91,18 +90,16 @@ impl Emitter<'_> {
                 },
                 self.index,
                 if tail {
-                    components
+                    words
                 } else {
                     self.program.buffers[r.source].stride / 4
                 },
                 if tail {
-                    component as u32
+                    offset/4
                 } else {
                     r.source_word + offset / 4
                 },
             );
-            let value = self.id();
-            self.emit(61, &[u, value, at, 2, 4]);
             let value = if (matches!(self.stage.operation, Operation::Compact(_))
                 || self.stage.selection.is_some())
                 && !tail
@@ -122,21 +119,14 @@ impl Emitter<'_> {
         self.emit(248, &[read_end]);
         let inputs: Vec<_> = values
             .into_iter()
-            .map(|value| {
+            .zip(&scan.ty.components)
+            .map(|(value,(scalar,_))| {
                 let input = self.id();
-                self.emit(245, &[u, input, value, read, identity, before]);
+                self.emit(245, &[self.raw_type(*scalar), input, value, read, identity, before]);
                 input
             })
             .collect();
-        let own: Vec<_> = trees
-            .iter()
-            .zip(inputs)
-            .map(|(tree, input)| {
-                let at = self.tree_at(*tree, local);
-                self.emit(62, &[at, input]);
-                at
-            })
-            .collect();
+        for (tree,input) in trees.iter().zip(inputs) {self.tree_store(*tree,local,input);}
         self.scan_barrier();
         for width in [1, 2, 4, 8, 16, 32] {
             self.scan_tree(&trees, local, width, false, remaining);
@@ -152,17 +142,16 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
-        for (component, at) in own.iter().enumerate() {
-            let total = self.id();
-            self.emit(61, &[u, total, *at]);
-            let target = self.address_scalar(
+        for (tree, (_,offset)) in trees.iter().zip(&scan.ty.components) {
+            let total = self.tree_load(*tree,local);
+            self.store_raw_buffer(tree.scalar,
                 self.program.buffers.len(),
                 group,
-                components,
-                component as u32,
+                words,
+                offset/4,
+                total,
             );
-            self.emit(62, &[target, total, 2, 4]);
-            self.emit(62, &[*at, identity]);
+            self.tree_store(*tree,local,identity);
         }
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
@@ -176,24 +165,23 @@ impl Emitter<'_> {
         self.emit(250, &[active, write, end]);
         self.emit(248, &[write]);
         let root = !tail && matches!(self.stage.operation, Operation::ScanExclusive(_));
-        for (component, at) in own.iter().enumerate() {
-            let result = self.id();
-            self.emit(61, &[u, result, *at]);
-            let target = self.address_scalar(
+        for (tree, (_,offset)) in trees.iter().zip(&scan.ty.components) {
+            let result = self.tree_load(*tree,local);
+            self.store_raw_buffer(tree.scalar,
                 r.target,
                 self.index,
                 if root {
                     self.program.buffers[r.target].stride / 4
                 } else {
-                    components
+                    words
                 },
                 if root {
-                    r.target_word + scan.ty.components[component].1 / 4
+                    r.target_word + offset / 4
                 } else {
-                    component as u32
+                    offset/4
                 },
+                result,
             );
-            self.emit(62, &[target, result, 2, 4]);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
@@ -214,16 +202,28 @@ impl Emitter<'_> {
         self.emit(170, &[self.types[&Scalar::Bool], selected, bits, mask]);
         self.scan_tree_step(trees, local, width, selected, down, remaining);
     }
-    pub(super) fn tree_at(&mut self, tree: SharedTree, node: u32) -> u32 {
-        let at = if tree.base_word == 0 {
+    pub(super) fn tree_parts(&mut self, tree: SharedTree, node: u32) -> Vec<u32> {
+        let node = if tree.scalar.size()==4 {node} else {
+            let words=self.constant(Scalar::U32,tree.scalar.size()/4);
+            let scaled=self.id();self.emit(132,&[self.types[&Scalar::U32],scaled,node,words]);scaled
+        };
+        (0..tree.scalar.size()/4).map(|part| {
+        let at = if tree.base_word + part == 0 {
             node
         } else {
-            let base = self.constant(Scalar::U32, tree.base_word);
+            let base = self.constant(Scalar::U32, tree.base_word + part);
             let at = self.id();
             self.emit(128, &[self.types[&Scalar::U32], at, base, node]);
             at
         };
         self.shared_at(tree.pointer, tree.shared, at)
+        }).collect()
+    }
+    pub(super) fn tree_load(&mut self, tree: SharedTree, node: u32) -> u32 {
+        let pointers=self.tree_parts(tree,node);self.load_raw(tree.scalar,&pointers,false)
+    }
+    pub(super) fn tree_store(&mut self, tree: SharedTree, node: u32, value: u32) {
+        let pointers=self.tree_parts(tree,node);self.store_raw(tree.scalar,&pointers,value,false);
     }
     pub(super) fn scan_tree_step(
         &mut self,
@@ -245,12 +245,8 @@ impl Emitter<'_> {
             let width = self.constant(Scalar::U32, width);
             let other = self.id();
             self.emit(130, &[u, other, node, width]);
-            let a_ptr = self.tree_at(tree, other);
-            let b_ptr = self.tree_at(tree, node);
-            let a = self.id();
-            let bv = self.id();
-            self.emit(61, &[u, a, a_ptr]);
-            self.emit(61, &[u, bv, b_ptr]);
+            let a = self.tree_load(tree,other);
+            let bv = self.tree_load(tree,node);
             let (left, right) = if down && tree.operator != CollectiveOperator::Sum {
                 (bv, a)
             } else {
@@ -276,9 +272,9 @@ impl Emitter<'_> {
                 combined
             };
             if down {
-                self.emit(62, &[a_ptr, bv]);
+                self.tree_store(tree,other,bv);
             }
-            self.emit(62, &[b_ptr, sum]);
+            self.tree_store(tree,node,sum);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
@@ -287,7 +283,7 @@ impl Emitter<'_> {
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
         let r = &scan.values;
         let u = self.types[&Scalar::U32];
-        let components = scan.ty.components.len() as u32;
+        let words = scan.ty.size.div_ceil(4);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
@@ -302,40 +298,29 @@ impl Emitter<'_> {
             } else {
                 None
             };
-        for (component, (scalar, offset)) in scan.ty.components.iter().enumerate() {
-            let source = self.address_scalar(
+        for (scalar, offset) in &scan.ty.components {
+            let prefix = self.load_raw_buffer(*scalar,
                 self.scan_input_binding(r),
                 group,
-                components,
-                component as u32,
+                words,
+                offset/4,
             );
-            let prefix = self.id();
-            self.emit(61, &[u, prefix, source, 2, 4]);
-            let target = self.address_scalar(
+            let stride = if root {self.program.buffers[r.target].stride/4} else {words};
+            let word = if root {r.target_word + offset/4} else {offset/4};
+            let value = self.load_raw_buffer(*scalar,
                 r.target,
                 self.index,
-                if root {
-                    self.program.buffers[r.target].stride / 4
-                } else {
-                    components
-                },
-                if root {
-                    r.target_word + offset / 4
-                } else {
-                    component as u32
-                },
+                stride,word,
             );
-            let value = self.id();
-            self.emit(61, &[u, value, target, 2, 4]);
             let combined = self.collective_pair(*scalar, scan.operator, prefix, value);
             let result = if let Some(first) = first {
                 let result = self.id();
-                self.emit(169, &[u, result, first, prefix, combined]);
+                self.emit(169, &[self.raw_type(*scalar), result, first, prefix, combined]);
                 result
             } else {
                 combined
             };
-            self.emit(62, &[target, result, 2, 4]);
+            self.store_raw_buffer(*scalar,r.target,self.index,stride,word,result);
         }
     }
 }

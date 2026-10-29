@@ -1,5 +1,6 @@
 //! 每个原生范围拥有完整逻辑 tile；发布后按阶段执行所有 lane，私有值随 lane 保存。
 use super::*;
+use super::allocation::Location;
 impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
         self.frame.end as u32
@@ -25,6 +26,16 @@ impl Emitter<'_> {
         self.load(index);
         self.bytes(&[0x49, 0x89, 0xe7]);
         self.offset_address(4);
+        if self.stage.registers[dst].size() == 8 {
+            let base = self.tile_storage_base();
+            let low = base + self.stage.word_offset(self.stage.shared_word(tile, word)) as u32;
+            let high = base + self.stage.word_offset(self.stage.shared_word(tile, word + 1)) as u32;
+            self.instruction(None, &[0x8b], false, 0, operands::Operand::memory(15, low));
+            self.instruction(None, &[0x8b], false, 1, operands::Operand::memory(15, high));
+            self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
+            self.store(dst);
+            return;
+        }
         self.read_scalar(
             dst,
             15,
@@ -79,24 +90,35 @@ impl Emitter<'_> {
     fn private_stream(&self, slot: PrivateSlot) -> u32 {
         self.tile_storage_base()
             + self.stage.tile_data_bytes() as u32
-            + self.stage.tile_private_slots().range(..slot).count() as u32
+            + self.stage.tile_private_slots().range(..slot)
+                .map(|slot| self.stage.private_scalar(*slot).size()).sum::<u32>()
                 * self.stage.workgroup_width()
-                * 4
     }
     fn tile_restore(&mut self, slots: &std::collections::BTreeSet<PrivateSlot>) {
         self.tile_lane_pointer();
         for slot in slots {
             self.bytes(&[0x41, 0x8b, 0x82]);
             self.u32(self.private_stream(*slot));
-            self.store_location(self.allocation.location(*slot));
+            let scalar = self.stage.private_scalar(*slot);
+            if scalar.size() == 8 {
+                self.bytes(&[0x41, 0x8b, 0x8a]);
+                self.u32(self.private_stream(*slot) + self.stage.workgroup_width()*4);
+                self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
+            }
+            self.copy_scalar(self.allocation.location(*slot), Location::Gpr(0), scalar);
         }
     }
     fn tile_save(&mut self, slots: &std::collections::BTreeSet<PrivateSlot>) {
         self.tile_lane_pointer();
         for slot in slots {
-            self.load_location(self.allocation.location(*slot));
+            let scalar = self.stage.private_scalar(*slot);
+            self.copy_scalar(Location::Gpr(0), self.allocation.location(*slot), scalar);
             self.bytes(&[0x41, 0x89, 0x82]);
             self.u32(self.private_stream(*slot));
+            if scalar.size() == 8 {
+                self.bytes(&[0x48, 0xc1, 0xe8, 32, 0x41, 0x89, 0x82]);
+                self.u32(self.private_stream(*slot) + self.stage.workgroup_width()*4);
+            }
         }
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
@@ -111,6 +133,12 @@ impl Emitter<'_> {
                         word: *word,
                     }) as u32,
             );
+            if self.stage.registers[*value].size() == 8 {
+                self.bytes(&[0x48, 0xc1, 0xe8, 32, 0x41, 0x89, 0x82]);
+                self.u32(self.tile_storage_base() + self.stage.word_offset(SharedWord::Published {
+                    tile: publication.tile, word: *word + 1,
+                }) as u32);
+            }
         }
     }
     pub(super) fn tile_phases(&mut self) -> Result<(), &'static str> {
@@ -155,8 +183,24 @@ impl Emitter<'_> {
             self.u32(self.tile_length_slot());
             let scalar = self.stage.registers[*result];
             let float = scalar == Scalar::F32;
+            let wide = scalar.size() == 8;
             let operator = collective.op.operator();
             let identity = operator.identity(scalar);
+            let high_delta = if wide {
+                (self.stage.word_offset(self.stage.shared_word(collective.tile, *word + 1)) as i64
+                    - self.stage.word_offset(self.stage.shared_word(collective.tile, *word)) as i64) as u32
+            } else { 0 };
+            let store = |e: &mut Self| {
+                if float {
+                    e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x03]);
+                } else {
+                    e.bytes(&[0x41, 0x89, 0x03]);
+                    if wide {
+                        e.bytes(&[0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 32, 0x41, 0x89, 0x93]);
+                        e.u32(e.stage.workgroup_width()*4);
+                    }
+                }
+            };
             if identity == 0 {
                 self.bytes(if float {
                     &[0x0f, 0x57, 0xc0]
@@ -164,19 +208,16 @@ impl Emitter<'_> {
                     &[0x31, 0xc0]
                 });
             } else {
+                if wide {self.bytes(&[0x48]);}
                 self.bytes(&[0xb8]);
-                self.u32(identity);
+                if wide {self.bytes(&identity.to_le_bytes());} else {self.u32(identity as u32);}
                 if float {
                     self.bytes(&[0x66, 0x0f, 0x6e, 0xc0]);
                 }
             }
             let begin = self.code.len();
             if collective.op.exclusive() {
-                self.bytes(if float {
-                    &[0xf3, 0x41, 0x0f, 0x11, 0x03]
-                } else {
-                    &[0x41, 0x89, 0x03]
-                });
+                store(self);
                 self.bytes(&[0x49, 0x83, 0xc3, 0x04]);
             }
             if float {
@@ -195,6 +236,25 @@ impl Emitter<'_> {
                     .unwrap(),
                     0x02,
                 ]);
+            } else if wide {
+                self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
+                self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
+                self.bytes(&[0x49, 0xc1, 0xe0, 32, 0x4c, 0x09, 0xc2]);
+                let opcode = match operator {
+                    CollectiveOperator::Sum => Some(0x03),
+                    CollectiveOperator::BitAnd => Some(0x23),
+                    CollectiveOperator::BitOr => Some(0x0b),
+                    CollectiveOperator::BitXor => Some(0x33),
+                    CollectiveOperator::Min | CollectiveOperator::Max => None,
+                };
+                if let Some(opcode) = opcode {
+                    self.bytes(&[0x48, opcode, 0xc2]);
+                } else {
+                    let condition = match (scalar.is_signed(), operator == CollectiveOperator::Min) {
+                        (false,true)=>0x47,(true,true)=>0x4f,(false,false)=>0x42,(true,false)=>0x4c,
+                    };
+                    self.bytes(&[0x48, 0x39, 0xd0, 0x48, 0x0f, condition, 0xc2]);
+                }
             } else {
                 let opcode = match operator {
                     CollectiveOperator::Sum => Some(0x03),
@@ -209,7 +269,7 @@ impl Emitter<'_> {
                     self.bytes(&[0x41, 0x8b, 0x12, 0x39, 0xd0, 0x0f]);
                     let min = operator == CollectiveOperator::Min;
                     self.bytes(&[
-                        match (scalar == Scalar::I32, min) {
+                        match (scalar.is_signed(), min) {
                             (false, true) => 0x47,
                             (true, true) => 0x4f,
                             (false, false) => 0x42,
@@ -226,11 +286,7 @@ impl Emitter<'_> {
                 self.bytes(&[0x8b, 0x8c, 0x24]);
                 self.u32(self.tile_length_slot());
                 let fill = self.code.len();
-                self.bytes(if float {
-                    &[0xf3, 0x41, 0x0f, 0x11, 0x03]
-                } else {
-                    &[0x41, 0x89, 0x03]
-                });
+                store(self);
                 self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
                 let again = self.jump(Some(0x85));
                 self.patch(again, fill);

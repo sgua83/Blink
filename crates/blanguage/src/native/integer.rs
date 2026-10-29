@@ -1,15 +1,15 @@
-//! 常量使用精确倒数；动态有符号值在内部扩大除法宽度，保持 32 位取低位语义。
+//! 32位常量使用精确倒数；64位按实际无符号幅值除法保持有符号取低位语义。
 use super::*;
 use allocation::Location;
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 
 pub(super) enum Division {
     Shift(u8),
     Multiply { magic: u32, shift: u8, add: bool },
 }
 impl Division {
-    pub fn new(divisor: NonZeroU32, signed: bool) -> Self {
-        let bits = divisor.get();
+    pub fn new(divisor: NonZeroU64, signed: bool) -> Self {
+        let bits = divisor.get() as u32;
         let d = if signed {
             (bits as i32).unsigned_abs()
         } else {
@@ -46,6 +46,10 @@ impl Emitter<'_> {
         src: Reg,
         divisor: Reg,
     ) {
+        if self.stage.registers[src].size() == 8 {
+            self.integer_divide64(result, src, self.location(divisor));
+            return;
+        }
         self.copy(Location::Gpr(1), self.location(divisor));
         self.load(src);
         self.divide_value_instruction(self.stage.registers[src]);
@@ -77,8 +81,12 @@ impl Emitter<'_> {
         &mut self,
         result: IntegerDivisionResult,
         src: Reg,
-        divisor: NonZeroU32,
+        divisor: NonZeroU64,
     ) {
+        if self.stage.registers[src].size() == 8 {
+            self.integer_divide64(result, src, Location::Immediate(divisor.get()));
+            return;
+        }
         let signed = self.stage.registers[src] == Scalar::I32;
         self.unsigned_magnitude(src, signed);
         match Division::new(divisor, signed) {
@@ -113,7 +121,7 @@ impl Emitter<'_> {
                 self.bytes(&[0x89, 0xc1]); // ECX 保留商；生成余数之前不覆盖原分子。
             }
             self.bytes(&[0x69, 0xc0]);
-            self.u32(divisor.get());
+            self.u32(divisor.get() as u32);
             self.copy(Location::Gpr(2), self.location(src));
             self.bytes(&[0x29, 0xc2]);
             if let Some(quotient) = result.quotient() {
@@ -122,6 +130,46 @@ impl Emitter<'_> {
             self.copy(self.location(remainder), Location::Gpr(2));
         } else if let Some(dst) = result.quotient() {
             self.store(dst);
+        }
+    }
+
+    fn integer_divide64(&mut self, result: IntegerDivisionResult, src: Reg, divisor: Location) {
+        let scalar = self.stage.registers[src];
+        self.copy_scalar(Location::Gpr(1), divisor, scalar);
+        self.load(src);
+        if scalar.is_signed() {
+            // Divide unsigned magnitudes. MIN64 / -1 then has the source
+            // language's low-64-bit result, rather than an IDIV overflow trap.
+            self.bytes(&[
+                0x48, 0x89, 0xc2, 0x48, 0xc1, 0xfa, 63,
+                0x48, 0x31, 0xd0, 0x48, 0x29, 0xd0,
+                0x48, 0x89, 0xca, 0x48, 0xc1, 0xfa, 63,
+                0x48, 0x31, 0xd1, 0x48, 0x29, 0xd1,
+            ]);
+        }
+        self.bytes(&[0x31, 0xd2, 0x48, 0xf7, 0xf1]);
+        if scalar.is_signed() {
+            if result.quotient().is_some() {
+                self.copy_scalar(Location::Gpr(1), self.location(src), scalar);
+                match divisor {
+                    Location::Immediate(bits) => {
+                        if (bits as i64) < 0 { self.bytes(&[0x48, 0xf7, 0xd1]); }
+                    }
+                    location => {
+                        let operand = self.operand(location, 1);
+                        self.instruction(None, &[0x33], true, 1, operand);
+                    }
+                }
+                self.bytes(&[0x48, 0xc1, 0xf9, 63, 0x48, 0x31, 0xc8, 0x48, 0x29, 0xc8]);
+            }
+            if result.remainder().is_some() {
+                self.copy_scalar(Location::Gpr(1), self.location(src), scalar);
+                self.bytes(&[0x48, 0xc1, 0xf9, 63, 0x48, 0x31, 0xca, 0x48, 0x29, 0xca]);
+            }
+        }
+        if let Some(dst) = result.quotient() { self.store(dst); }
+        if let Some(dst) = result.remainder() {
+            self.copy_scalar(self.location(dst), Location::Gpr(2), scalar);
         }
     }
 }

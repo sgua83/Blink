@@ -8,14 +8,20 @@ pub fn emit_segmented_reduce_finish(
 }
 fn initialize(e: &mut Emitter<'_>, values: &ReductionSpec) {
     for (component, (scalar, _)) in values.ty.components.iter().enumerate() {
+        let wide = scalar.size() == 8;
+        if wide {e.bytes(&[0x48]);}
         e.bytes(&[0xb8]);
-        e.u32(values.operator.identity(*scalar));
-        e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
+        let identity = values.operator.identity(*scalar);
+        if wide {e.bytes(&identity.to_le_bytes());} else {e.u32(identity as u32);}
+        e.bytes(&[0x66]);
+        if wide {e.bytes(&[0x48]);}
+        e.bytes(&[0x0f, 0x6e, 0xc0 + component as u8 * 8]);
     }
 }
 fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
     for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
         let c = component as u8;
+        let wide = scalar.size() == 8;
         let float = match (*scalar, values.operator) {
             (Scalar::F32, CollectiveOperator::Sum) => Some(0x58),
             (Scalar::F32, CollectiveOperator::Min) => Some(0x5d),
@@ -26,7 +32,9 @@ fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
             e.bytes(&[0xf3, 0x41, 0x0f, opcode, 0x82 + c * 8]);
             e.u32(values.fields.source_word * 4 + offset);
         } else {
-            e.bytes(&[0x66, 0x0f, 0x7e, 0xc0 + c * 8]);
+            e.bytes(&[0x66]);
+            if wide {e.bytes(&[0x48]);}
+            e.bytes(&[0x0f, 0x7e, 0xc0 + c * 8]);
             let opcode = match values.operator {
                 CollectiveOperator::Sum => Some(0x03),
                 CollectiveOperator::BitAnd => Some(0x23),
@@ -35,13 +43,13 @@ fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
                 CollectiveOperator::Min | CollectiveOperator::Max => None,
             };
             if let Some(opcode) = opcode {
-                e.bytes(&[0x41, opcode, 0x82]);
+                e.bytes(&[if wide {0x49} else {0x41}, opcode, 0x82]);
                 e.u32(values.fields.source_word * 4 + offset);
             } else {
-                e.bytes(&[0x41, 0x3b, 0x82]);
+                e.bytes(&[if wide {0x49} else {0x41}, 0x3b, 0x82]);
                 e.u32(values.fields.source_word * 4 + offset);
                 let condition = match (
-                    *scalar == Scalar::I32,
+                    scalar.is_signed(),
                     values.operator == CollectiveOperator::Min,
                 ) {
                     (false, true) => 0x47,
@@ -49,17 +57,19 @@ fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
                     (false, false) => 0x42,
                     (true, false) => 0x4c,
                 };
-                e.bytes(&[0x41, 0x0f, condition, 0x82]);
+                e.bytes(&[if wide {0x49} else {0x41}, 0x0f, condition, 0x82]);
                 e.u32(values.fields.source_word * 4 + offset);
             }
-            e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + c * 8]);
+            e.bytes(&[0x66]);
+            if wide {e.bytes(&[0x48]);}
+            e.bytes(&[0x0f, 0x6e, 0xc0 + c * 8]);
         }
     }
 }
 pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bool) -> NativeCode {
     let values = &reduction.values;
     let r = &values.fields;
-    let k = values.ty.components.len();
+    let k = values.ty.size.div_ceil(4) as usize;
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
@@ -90,9 +100,9 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.u32((k as u32 + 1) * 4);
         e.bytes(&[0x66, 0x0f, 0x6e, 0xa2]);
         e.u32(k as u32 * 4);
-        for component in 0..k {
-            e.bytes(&[0xf3, 0x0f, 0x10, 0x82 + component as u8 * 8]);
-            e.u32(component as u32 * 4);
+        for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
+            e.bytes(&[0xf3, 0x0f, if scalar.size()==8 {0x7e} else {0x10}, 0x82 + component as u8 * 8]);
+            e.u32(*offset);
         }
     } else {
         e.bytes(&[0x31, 0xc9, 0x66, 0x0f, 0xef, 0xed]);
@@ -127,8 +137,9 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.bytes(&[0x89, 0xc8, 0xff, 0xc8]);
         e.scale_index(0, program.buffers[r.target].stride);
         e.bytes(&[0x49, 0x8d, 0x14, 0x03]); // rdx = target + (当前段数-1)*stride
-        for (component, (_, offset)) in values.ty.components.iter().enumerate() {
-            e.bytes(&[0xf3, 0x0f, 0x11, 0x82 + component as u8 * 8]);
+        for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
+            let wide = scalar.size() == 8;
+            e.bytes(&[if wide {0x66} else {0xf3}, 0x0f, if wide {0xd6} else {0x11}, 0x82 + component as u8 * 8]);
             e.u32(r.target_word * 4 + offset);
         }
         e.patch(not_tail, e.code.len());
@@ -141,9 +152,10 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     e.patch(end, e.code.len());
     if !finish {
         e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
-        for component in 0..k {
-            e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
-            e.u32(component as u32 * 4);
+        for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
+            let wide = scalar.size() == 8;
+            e.bytes(&[if wide {0x66} else {0xf3}, 0x41, 0x0f, if wide {0xd6} else {0x11}, 0x82 + component as u8 * 8]);
+            e.u32(*offset);
         }
         e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0xaa]);
         e.u32(k as u32 * 4);

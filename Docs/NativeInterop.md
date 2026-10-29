@@ -2,6 +2,23 @@
 
 C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 bllink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，继续作为正式 SDK 提供。
 
+## 宽标量、原声明布局与资源版本（2026-10-28）
+
+u64／i64为8字节、8对齐的普通标量，C／C++对应uint64_t／int64_t，Rust对应u64／i64；u32／i32／f32／bool及原向量布局保持。外部C函数、生成算法记录和B模块按实际字段偏移交接完整宽值，不将逻辑分量数当成物理u32字数。B源代码使用u64后缀或显式数值构造，不因此获得裸指针、回调或任意地址权限。
+
+原生Rust Value支持F32／U32／I32／Bool／U64／I64；共同模块C入口中的Value为16字节、8对齐，u32标签在偏移0，最大64位union载荷在偏移8。当前对象数值合同BLCO19、资源映像BLRI5，旧资源对象须重编，不能把旧8字节Value数组交给新入口。本文后续BLCO4／6／7／8及BLRI1／2为对应历史增量；当前表示以语言规范的64位章节和实际生成接口为准。资源版本不更换Frame或复制所有权。
+
+Rust的`Dataset::set_scalar(index,path,value)`从Dataset原Ty、实际记录下标及活动变体取得单标量字段的位置与类型，再写入完整值。嵌套路径沿既有field_at规则；路径、活动分支、标量类型或下标不符返回真实错误，错误调用保持存储。其他字段、相邻记录及ABI填充保持。此可写入口与words_mut具有相同的view绑定失效边界，实际view仍按原with_views重新绑定；不保存第二份schema或引擎参数表。
+
+例如接口中有`struct Item { u64 identifier; i64 delta; };`，由该程序取得的相应Dataset可写：
+
+```rust
+data.set_scalar(0, "identifier", Value::U64(0xfedcba9876543210))?;
+data.set_scalar(0, "delta", Value::I64(-(1i64 << 40)))?;
+```
+
+程序uniform继续按声明逻辑分量传入Value；原生C包装使用对应生成接口的类型与布局，不按裸字数猜测参数数量。CPU目标只考虑64位，当前机器后端仍是Windows x64；其他64位平台及完整模块演化、异步资源和稳定热更新分别按实际能力记录。
+
 ## 编译算法，再链接为 DLL
 
 当前目标为 Windows x64。使用源码 SDK，在 Visual Studio x64 Developer PowerShell 中构建 Blink，再执行：
@@ -101,7 +118,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 独立应用由 Windows 按实际导入装载库；原生 CpuProgram 用 LoadLibraryW／GetProcAddress 解析，原生代码所有者持有模块到最后一个消费者释放。装载／符号错误保留原生错误，不替换库或实现。外部调用的副作用不因返回值未使用而删除；parallel 实例的调用顺序不作保证。生成的 B 算法 DLL 也可在 CPU 后端调用其依赖库，GPU 后端明确拒绝宿主调用。
 
-当前只接受无泛型／契约的 on cpu 普通外部函数和非空普通值／void 返回。dataset、tile、view、纹理、加速结构、拥有 dataset 的结果及含资源记录不能跨此 ABI；CPU 端已合法取得的普通元素仍可借用。裸指针值、u64、opaque handle、回调、变参、静态对象链接及其他平台仍待实现。B 应用创建动态数据与组织 CPU／GPU 计算函数 仍归 C-011，不以外部调用或宿主已有能力冒充完成；原生 Rust 计算 API 保留。
+当前只接受无泛型／契约的 on cpu 普通外部函数和非空普通值／void 返回。dataset、tile、view、纹理、加速结构、拥有 dataset 的结果及含资源记录不能跨此 ABI；CPU 端已合法取得的普通元素仍可借用。裸指针值、回调、变参、静态对象链接及其他平台仍待实现。B 应用创建动态数据与组织 CPU／GPU 计算函数 仍归 C-011，不以外部调用或宿主已有能力冒充完成；原生 Rust 计算 API 保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
 
@@ -231,3 +248,11 @@ PA3 Release在删除临时provider.h／.b后，以对象及归档分别完成零
 ## BLCO18的精确常量偏移
 
 当前编译对象为BLCO18，原Proof／Domains新增输入快照的精确非回绕常量偏移；来源身份沿原模块输出重命名及调用绑定交接。常量距离直接进入合同，不能依赖只存在于库私有代码的常量寄存器。不匹配的旧元数据对象须重编，链接不读取B实现或再做代码生成。BLRI4、资源C入口、普通值机器ABI及唯一Frame保持。本节更新此前BLCO17的当前版本表述；一般while不变式仍按实际缺口记录。
+
+## BLCO19／BLRI5的完整宽值交接
+
+u64／i64普通值以真实8字节大小／对齐进入Windows x64调用和生成C++／Rust记录；handle仍按原void *／不透明指针身份交接。两种类型可以在同一普通聚合中保持各自声明偏移，不能用整数位宽替代句柄权限。外部声明继续信任准确C签名及实际初始化／借用合同，不引入对象模型、隐藏副本或跨边界Rust容器。
+
+当前对象合同为BLCO19，资源映像为BLRI5，C Value为16字节／对齐8：标签0／1／2／3／4／5分别为f32／u32／i32／bool／u64／i64，载荷位于偏移8。旧8字节Value及旧映像不兼容；实际资源版本由原ResourceBinding交接和拒绝。Frame、显式CPU／GPU传输、真实完成与最后消费者保持原所有者，宽subgroup按实际设备能力选择。
+
+本节更新此前BLCO11至18／BLRI4的当前版本表述，历史交付记录保持。源码、Release、原生C／Rust、独立对象／归档、引擎采用及发布分别见双台账；f64、原生地址／回调、窄类型、动态拥有容器和完整版本迁移不由本项宣称完成。

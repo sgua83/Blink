@@ -125,6 +125,16 @@ impl Stage {
             .flat_map(|p| p.live_out.iter().copied())
             .collect()
     }
+    pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {
+        match slot {
+            PrivateSlot::Register(r) => self.registers[r],
+            PrivateSlot::Local(s) => self.locals[s],
+        }
+    }
+    pub(crate) fn tile_private_bytes(&self) -> u64 {
+        self.tile_private_slots().into_iter().map(|slot| u64::from(self.private_scalar(slot).size())).sum::<u64>()
+            * u64::from(self.workgroup_width())
+    }
     fn tile_layout(&self) -> BTreeMap<SharedWord, usize> {
         fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>) {
             for inst in code {
@@ -150,8 +160,10 @@ impl Stage {
                             last.insert(stage.shared_word(*tile, word), phase);
                         }
                     }
-                    Inst::TileLoad { tile, word, .. } => {
-                        last.insert(stage.shared_word(*tile, *word), phase);
+                    Inst::TileLoad { dst, tile, word, .. } => {
+                        for part in 0..stage.registers[*dst].size()/4 {
+                            last.insert(stage.shared_word(*tile, *word + part), phase);
+                        }
                     }
                     Inst::Scope(body) => loads(stage, body, phase, last),
                     Inst::If { yes, no, .. } => {
@@ -178,8 +190,10 @@ impl Stage {
                     births.insert(publication.tile, phase as i64);
                 }
                 Some(TileStep::Collective(c)) => {
-                    for (word, _) in &c.results {
-                        last.insert(self.shared_word(c.tile, *word), phase as i64);
+                    for (word, result) in &c.results {
+                        for part in 0..self.registers[*result].size()/4 {
+                            last.insert(self.shared_word(c.tile, *word + part), phase as i64);
+                        }
                     }
                 }
                 Some(TileStep::Barrier) | None => {}
@@ -288,22 +302,22 @@ impl Stage {
         })
     }
     pub fn tile_scratch_bytes(&self) -> u64 {
-        let streams = self
+        let bytes_per_lane = self
             .code
             .iter()
             .filter_map(|i| match i {
                 Inst::TileCollective(c) if !c.results.is_empty() => {
                     Some(if c.op.operator() == CollectiveOperator::Sum {
-                        1
+                        c.results.iter().map(|(_,result)|self.registers[*result].size()).max().unwrap_or(0)
                     } else {
-                        c.results.len()
+                        c.results.iter().map(|(_,result)|self.registers[*result].size()).sum()
                     })
                 }
                 _ => None,
             })
             .max()
             .unwrap_or(0);
-        (self.workgroup_width() as u64).next_power_of_two() * 4 * streams as u64
+        (self.workgroup_width() as u64).next_power_of_two() * u64::from(bytes_per_lane)
     }
     pub fn tile_bytes(&self) -> u64 {
         self.tile_data_bytes() + self.tile_scratch_bytes()

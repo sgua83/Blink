@@ -35,8 +35,7 @@ impl Emitter<'_> {
         );
         self.offset_address(self.program.buffers[a.target].stride);
         for (word, value) in &a.values {
-            self.load(*value);
-            self.instruction(None, &[0x89], false, 0, Operand::memory(15, word * 4));
+            self.write_scalar(*value, 15, word * 4);
         }
         self.bytes(&[0xb8, 1, 0, 0, 0]);
         let done = self.jump(None);

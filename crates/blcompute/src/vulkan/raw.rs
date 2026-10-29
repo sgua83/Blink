@@ -35,6 +35,12 @@ pub struct VkPhysicalDeviceBufferDeviceAddressFeatures {
     pub bufferDeviceAddressMultiDevice: u32,
 }
 #[repr(C)]
+pub struct VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures {
+    pub sType: u32,
+    pub pNext: *mut c_void,
+    pub shaderSubgroupExtendedTypes: u32,
+}
+#[repr(C)]
 pub struct VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR {
     pub sType: u32,
     pub pNext: *mut c_void,

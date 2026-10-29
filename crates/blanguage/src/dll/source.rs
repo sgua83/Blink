@@ -101,7 +101,9 @@ variants!(Scalar {
     F32,
     U32,
     I32,
-    Bool
+    Bool,
+    U64,
+    I64
 });
 record!(Ty {
     name,
@@ -201,7 +203,8 @@ record!(SubgroupCapabilities {
     arithmetic,
     ballot,
     shuffle,
-    shuffle_relative
+    shuffle_relative,
+    extended_types
 });
 record!(DeviceRequirements {
     ray_query,
@@ -254,7 +257,9 @@ variants!(NativeIntrinsic {
     PrintU32,
     PrintI32,
     PrintBool,
-    PrintF32
+    PrintF32,
+    PrintU64,
+    PrintI64
 });
 variants!(NativeSymbol { Intrinsic(i), External(name), Function(name) });
 record!(Relocation { offset, target });
@@ -379,14 +384,18 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
                 let ty = match scalar {
                     Scalar::F32 => "f32",
                     Scalar::I32 => "i32",
+                    Scalar::U64 => "u64",
+                    Scalar::I64 => "i64",
                     _ => "u32",
                 };
                 params.push(format!("{name}:{ty}"));
                 let bits = match scalar {
-                    Scalar::F32 => format!("{name}.to_bits()"),
-                    Scalar::I32 => format!("{name} as u32"),
-                    Scalar::Bool => format!("u32::from({name} != 0)"),
-                    Scalar::U32 => name,
+                    Scalar::F32 => format!("u64::from({name}.to_bits())"),
+                    Scalar::I32 => format!("u64::from({name} as u32)"),
+                    Scalar::Bool => format!("u64::from({name} != 0)"),
+                    Scalar::U32 => format!("u64::from({name})"),
+                    Scalar::U64 => name,
+                    Scalar::I64 => format!("{name} as u64"),
                 };
                 words.push(format!(
                     "UniformValue{{kind:{},bits:{bits}}}",

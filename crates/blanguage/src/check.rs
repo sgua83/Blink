@@ -59,7 +59,7 @@ enum Root {
     Acceleration(usize),
     Texture(usize),
     Uniform(Ty, u32),
-    Literal(Ty, Vec<u32>),
+    Literal(Ty, Vec<Bits>),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ValueIdentity {
@@ -99,7 +99,7 @@ struct Value {
     ty: Ty,
     regs: Vec<Reg>,
     uniform: bool,
-    constant: Option<Vec<u32>>,
+    constant: Option<Vec<Bits>>,
 }
 #[derive(Clone)]
 enum Binding {
@@ -491,7 +491,7 @@ fn expand_stages(
                 }
                 let bound = |expr: &Expr| -> Result<u32> {
                     match stage_root(world, d, env, program, expr)? {
-                        Root::Literal(ty, words) if ty == Ty::scalar(Scalar::U32) => Ok(words[0]),
+                        Root::Literal(ty, words) if ty == Ty::scalar(Scalar::U32) => Ok(words[0] as u32),
                         _ => d.source.fail(
                             expr.span,
                             "B251",
@@ -505,7 +505,7 @@ fn expand_stages(
                     let mut child = env.clone();
                     child.insert(
                         name.clone(),
-                        Root::Literal(Ty::scalar(Scalar::U32), vec![index]),
+                        Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)]),
                     );
                     if expand_stages(
                         world, d, body, &child, program, stack, boundary, facts, calls,
@@ -1034,7 +1034,7 @@ fn stage_root(
                     .fail(arg.span, "B113", format!("未知参数或 const {n}"))
             }
         }
-        ExprKind::StaticU32(bits) => Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![*bits])),
+        ExprKind::StaticU32(bits) => Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*bits)])),
         ExprKind::Number(n) => {
             let (ty, bits) = number(&d.source, arg.span, n)?;
             Ok(Root::Literal(ty, vec![bits]))
@@ -1504,8 +1504,18 @@ fn finish_checked_function(
         application: b.application,
     }))
 }
-
-fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
+fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, Bits)> {
+    if let Some(text) = n.strip_suffix("u64") {
+        let bits = if let Some(hex) = text.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16)
+        } else {
+            text.parse::<u64>()
+        }.map_err(|_| Diagnostic {
+            source: source.clone(), span, code: "B123",
+            message: format!("非法 u64 常量 {n}"),
+        })?;
+        return Ok((Ty::scalar(Scalar::U64), bits));
+    }
     if !n.starts_with("0x")
         && (n.contains('.') || n.contains('e') || n.contains('E') || n.ends_with('f'))
     {
@@ -1521,7 +1531,7 @@ fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
         if !value.is_finite() {
             return source.fail(span, "B122", "浮点常量超出有限 f32 范围");
         }
-        Ok((Ty::scalar(Scalar::F32), value.to_bits()))
+        Ok((Ty::scalar(Scalar::F32), Bits::from(value.to_bits())))
     } else {
         let text = n.trim_end_matches('u');
         let bits = if let Some(hex) = text.strip_prefix("0x") {
@@ -1535,7 +1545,7 @@ fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
             code: "B123",
             message: format!("非法 u32 常量 {n}"),
         })?;
-        Ok((Ty::scalar(Scalar::U32), bits))
+        Ok((Ty::scalar(Scalar::U32), Bits::from(bits)))
     }
 }
 struct Builder<'a> {
@@ -1681,7 +1691,8 @@ impl<'a> Builder<'a> {
         self.registers.push(ty);
         r
     }
-    fn constant(&mut self, s: Scalar, bits: u32) -> Value {
+    fn constant(&mut self, s: Scalar, bits: Bits) -> Value {
+        let bits = s.truncate(bits);
         let r = self.reg(s);
         self.code.push(Inst::Constant(r, s, bits));
         Value {
@@ -2156,10 +2167,10 @@ impl<'a> Builder<'a> {
             ExprKind::Cooperate(..) => {
                 self.fail(e.span, "B208", "cooperate 调用只能作为协作根块的局部声明")
             }
-            ExprKind::StaticU32(bits) => self.constant_expression(Scalar::U32, *bits),
+            ExprKind::StaticU32(bits) => self.constant_expression(Scalar::U32, Bits::from(*bits)),
             ExprKind::Specialize(name, explicit, args) => self.specialized_expression(e, name, explicit, args),
             ExprKind::Number(n) => self.number_expression(n, e.span),
-            ExprKind::Bool(b) => self.constant_expression(Scalar::Bool, *b as u32),
+            ExprKind::Bool(b) => self.constant_expression(Scalar::Bool, Bits::from(*b)),
             ExprKind::Name(name) => self.name_expression(name, e),
             ExprKind::Member(base, field) => {
                 let result = self.member_returned(e, base, field)?;
@@ -2181,7 +2192,7 @@ impl<'a> Builder<'a> {
         }
     }
     #[inline(never)]
-    fn constant_expression(&mut self, scalar: Scalar, bits: u32) -> Result<Option<Value>> {
+    fn constant_expression(&mut self, scalar: Scalar, bits: Bits) -> Result<Option<Value>> {
         Ok(Some(self.constant(scalar, bits)))
     }
     #[inline(never)]
@@ -2211,7 +2222,10 @@ impl<'a> Builder<'a> {
     #[inline(never)]
     fn number_expression(&mut self, n: &str, span: Span) -> Result<Option<Value>> {
         let (t, b) = number(&self.definition.source, span, n)?;
-        Ok(Some(self.literal(t.components[0].0, b)))
+        let scalar = t.components[0].0;
+        let mut value = self.literal(scalar, b);
+        value.literal = scalar.size() == 4;
+        Ok(Some(value))
     }
     fn bitcast(&mut self, name: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
         if args.len() != 1 {
@@ -2255,39 +2269,13 @@ impl<'a> Builder<'a> {
     fn cast(&mut self, v: Value, s: Scalar) -> Value {
         let source = v.ty.components[0].0;
         let constant = v.constant.as_ref().and_then(|values| {
-            values
-                .iter()
-                .map(|bits| {
-                    Some(match (source, s) {
-                        (Scalar::F32, Scalar::U32) => {
-                            let n = f32::from_bits(*bits);
-                            if !(0.0..4294967296.0).contains(&n) {
-                                return None;
-                            }
-                            n as u32
-                        }
-                        (Scalar::F32, Scalar::I32) => {
-                            let n = f32::from_bits(*bits);
-                            if !(-2147483648.0..2147483648.0).contains(&n) {
-                                return None;
-                            }
-                            n as i32 as u32
-                        }
-                        (Scalar::F32, Scalar::Bool) => u32::from(f32::from_bits(*bits) != 0.0),
-                        (Scalar::I32, Scalar::F32) => (*bits as i32 as f32).to_bits(),
-                        (Scalar::U32 | Scalar::Bool, Scalar::F32) => (*bits as f32).to_bits(),
-                        (_, Scalar::Bool) => u32::from(*bits != 0),
-                        _ => *bits,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()
+            values.iter().map(|bits| constant::cast(source, s, *bits)).collect::<Option<Vec<_>>>()
         });
         let proof = if source == s {
             bounds::Proof::capture(&v)
-        } else if matches!(source, Scalar::I32 | Scalar::U32)
-            && matches!(s, Scalar::I32 | Scalar::U32)
+        } else if source.is_integer() && s.is_integer()
         {
-            bounds::Proof::integer_bits(&v)
+            bounds::Proof::integer_cast(&v, s)
         } else if source == Scalar::Bool && s == Scalar::U32 {
             bounds::Proof::unsigned(0, 1)
         } else {
@@ -2416,7 +2404,7 @@ impl<'a> Builder<'a> {
             match b.constant.as_ref().and_then(|v| {
                 v.iter()
                     .copied()
-                    .map(std::num::NonZeroU32::new)
+                    .map(std::num::NonZeroU64::new)
                     .collect::<Option<Vec<_>>>()
             }) {
                 Some(v) => Some(
@@ -2496,8 +2484,8 @@ impl<'a> Builder<'a> {
             let br = b.regs[i % b.regs.len()];
             if let Some(divisors) = &divisors {
                 let divisor = divisors[i % divisors.len()];
-                if scalar == Scalar::I32
-                    && matches!(divisor, IntegerDivisor::Constant(d) if d.get() == u32::MAX)
+                if scalar.is_signed()
+                    && matches!(divisor, IntegerDivisor::Constant(d) if d.get() == scalar.truncate(Bits::MAX))
                 {
                     if op == "/" {
                         self.code.push(Inst::Unary {
@@ -2506,7 +2494,7 @@ impl<'a> Builder<'a> {
                             a: ar,
                         });
                     } else {
-                        self.code.push(Inst::Constant(dst, Scalar::I32, 0));
+                        self.code.push(Inst::Constant(dst, scalar, 0));
                     }
                 } else {
                     self.code.push(Inst::IntegerDivide {
@@ -2549,7 +2537,7 @@ impl<'a> Builder<'a> {
         }
         if matches!(op, "min" | "max")
             && args.iter().all(|a| {
-                a.ty.is_numeric() && matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32)
+                a.ty.is_numeric() && a.ty.components[0].0.is_integer()
             })
         {
             let mut args = args.into_iter();
@@ -2808,9 +2796,12 @@ impl<'a> Builder<'a> {
                 return match ty.components[0].0 {
                     Scalar::F32 => Ok(Some(self.literal(Scalar::F32, bits ^ 0x80000000))),
                     Scalar::U32 if bits <= 0x80000000 => {
-                        Ok(Some(self.literal(Scalar::I32, 0u32.wrapping_sub(bits))))
+                        Ok(Some(self.literal(Scalar::I32, Scalar::I32.truncate(0u64.wrapping_sub(bits)))))
                     }
-                    _ => self.fail(span, "B180", "负整数字面量超出 i32 范围"),
+                    Scalar::U64 if bits <= 0x8000000000000000 => {
+                        Ok(Some(self.constant(Scalar::I64, 0u64.wrapping_sub(bits))))
+                    }
+                    _ => self.fail(span, "B180", "负整数字面量超出其有符号类型范围"),
                 };
             }
         }
@@ -2832,8 +2823,8 @@ impl<'a> Builder<'a> {
         let operation = match op.as_str() {
             "-" => match scalar {
                 Scalar::F32 => UnaryOp::FloatNegate,
-                Scalar::I32 => UnaryOp::SignedNegate,
-                Scalar::U32 => UnaryOp::UnsignedNegate,
+                Scalar::I32 | Scalar::I64 => UnaryOp::SignedNegate,
+                Scalar::U32 | Scalar::U64 => UnaryOp::UnsignedNegate,
                 Scalar::Bool => return self.fail(span, "B176", "bool 不能取负"),
             },
             "!" => UnaryOp::LogicalNot,
@@ -2845,9 +2836,9 @@ impl<'a> Builder<'a> {
                 .iter()
                 .map(|bits| match operation {
                     UnaryOp::FloatNegate => bits ^ 0x80000000,
-                    UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => 0u32.wrapping_sub(*bits),
-                    UnaryOp::LogicalNot => u32::from(*bits == 0),
-                    UnaryOp::BitNot => !bits,
+                    UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => scalar.truncate(0u64.wrapping_sub(*bits)),
+                    UnaryOp::LogicalNot => Bits::from(*bits == 0),
+                    UnaryOp::BitNot => scalar.truncate(!bits),
                     UnaryOp::Bitcast => *bits,
                 })
                 .collect()
@@ -4077,7 +4068,7 @@ impl<'a> Builder<'a> {
                 if field == "length"
                     && let Some(count) = reference.shape(self.program)
                 {
-                    return Ok(Some(self.constant(Scalar::U32, count)));
+                    return Ok(Some(self.constant(Scalar::U32, Bits::from(count))));
                 }
                 return self.fail(e.span, "B239", "纹理资源数组只公开只读 length");
             }
@@ -4100,7 +4091,7 @@ impl<'a> Builder<'a> {
                 return Ok(None);
             };
             if p.ty().array.is_some() && field == "length" {
-                return Ok(Some(self.constant(Scalar::U32, p.ty().values[0])));
+                return Ok(Some(self.constant(Scalar::U32, Bits::from(p.ty().values[0]))));
             }
             if p.ty().view.is_some() {
                 if field == "length" {
@@ -4121,7 +4112,7 @@ impl<'a> Builder<'a> {
     }
     pub(super) fn member_value(&mut self, v: Value, field: &String, span: Span) -> Result<Value> {
         if v.ty.array.is_some() && field == "length" {
-            return Ok(self.constant(Scalar::U32, v.ty.values[0]));
+            return Ok(self.constant(Scalar::U32, Bits::from(v.ty.values[0])));
         }
         if v.ty.view.is_some() && field == "length" {
             return Ok(Self::view_length(&v));

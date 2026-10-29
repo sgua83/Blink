@@ -1,5 +1,5 @@
 //! 全域数值归约：分量共用 64 路树的同步，递归结果在设备驻留。
-use super::*;
+use super::{scan::SharedTree, *};
 impl Emitter<'_> {
     pub(super) fn collective_pair(
         &mut self,
@@ -8,7 +8,7 @@ impl Emitter<'_> {
         a: u32,
         b: u32,
     ) -> u32 {
-        let u = self.types[&Scalar::U32];
+        let u = self.raw_type(scalar);
         let bitwise = match operator {
             CollectiveOperator::BitAnd => Some(199),
             CollectiveOperator::BitOr => Some(197),
@@ -20,7 +20,7 @@ impl Emitter<'_> {
             self.emit(opcode, &[u, result, a, b]);
             return result;
         }
-        let (av, bv) = if scalar == Scalar::U32 {
+        let (av, bv) = if scalar == Self::raw_scalar(scalar) {
             (a, b)
         } else {
             let ty = self.types[&scalar];
@@ -45,8 +45,8 @@ impl Emitter<'_> {
             let opcode = match (scalar, min) {
                 (Scalar::F32, true) => 184,
                 (Scalar::F32, false) => 186,
-                (Scalar::I32, true) => 177,
-                (Scalar::I32, false) => 173,
+                (_, true) if scalar.is_signed() => 177,
+                (_, false) if scalar.is_signed() => 173,
                 (_, true) => 176,
                 (_, false) => 172,
             };
@@ -68,18 +68,18 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.fields;
         let scalar = reduction.ty.components[0].0;
-        let components = reduction.ty.components.len() as u32;
+        let words = reduction.ty.size.div_ceil(4);
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
-        let identity = self.constant(Scalar::U32, reduction.operator.identity(scalar));
-        let own: Vec<_> = (0..components)
-            .map(|component| {
-                let base = self.constant(Scalar::U32, component * 64);
-                let index = self.id();
-                self.emit(128, &[u, index, base, local]);
-                let at = self.shared_at(pointer, shared, index);
-                self.emit(62, &[at, identity]);
+        let identity = self.raw_constant(scalar, reduction.operator.identity(scalar));
+        let trees:Vec<_>=reduction.ty.components.iter().map(|(scalar,offset)|SharedTree {
+            shared,pointer,base_word:(offset/4)*64,scalar:*scalar,operator:reduction.operator,
+        }).collect();
+        let own: Vec<_> = trees.iter()
+            .map(|tree| {
+                let at = self.tree_parts(*tree,local);
+                self.store_raw(tree.scalar,&at,identity,false);
                 at
             })
             .collect();
@@ -89,23 +89,22 @@ impl Emitter<'_> {
         self.emit(250, &[active, run, merged]);
         self.emit(248, &[run]);
         for (component, at) in own.iter().enumerate() {
-            let address = self.address_scalar(
+            let offset=reduction.ty.components[component].1/4;
+            let raw = self.load_raw_buffer(scalar,
                 r.source,
                 self.index,
                 if tail {
-                    components
+                    words
                 } else {
                     self.program.buffers[r.source].stride / 4
                 },
                 if tail {
-                    component as u32
+                    offset
                 } else {
-                    r.source_word + reduction.ty.components[component].1 / 4
+                    r.source_word + offset
                 },
             );
-            let raw = self.id();
-            self.emit(61, &[u, raw, address, 2, 4]);
-            self.emit(62, &[*at, raw]);
+            self.store_raw(scalar,at,raw,false);
         }
         self.emit(249, &[merged]);
         self.emit(248, &[merged]);
@@ -131,23 +130,17 @@ impl Emitter<'_> {
                 None
             };
             for (component, at) in own.iter().enumerate() {
-                let base = self.constant(Scalar::U32, component as u32 * 64);
-                let index = self.id();
-                self.emit(128, &[u, index, base, other]);
-                let other_at = self.shared_at(pointer, shared, index);
-                let a = self.id();
-                let bv = self.id();
-                self.emit(61, &[u, a, *at]);
-                self.emit(61, &[u, bv, other_at]);
+                let a = self.load_raw(scalar,at,false);
+                let bv = self.tree_load(trees[component],other);
                 let value = self.collective_pair(scalar, reduction.operator, a, bv);
                 let value = if let Some(valid) = valid {
                     let selected = self.id();
-                    self.emit(169, &[u, selected, valid, value, a]);
+                    self.emit(169, &[self.raw_type(scalar), selected, valid, value, a]);
                     selected
                 } else {
                     value
                 };
-                self.emit(62, &[*at, value]);
+                self.store_raw(scalar,at,value,false);
             }
             self.emit(249, &[end]);
             self.emit(248, &[end]);
@@ -157,11 +150,11 @@ impl Emitter<'_> {
         self.emit(170, &[b, first, local, zero]);
         self.reduction_output(r, &reduction.ty, &own, first);
     }
-    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, own: &[u32], first: u32) {
+    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, own: &[Vec<u32>], first: u32) {
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
-        let components = ty.components.len() as u32;
+        let words = ty.size.div_ceil(4);
         let write = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
@@ -196,23 +189,23 @@ impl Emitter<'_> {
         for (label, final_pass) in [(final_write, true), (partial_write, false)] {
             self.emit(248, &[label]);
             for (component, at) in own.iter().enumerate() {
-                let value = self.id();
-                self.emit(61, &[u, value, *at]);
-                let target = self.address_scalar(
+                let (scalar,offset)=ty.components[component];
+                let value = self.load_raw(scalar,at,false);
+                self.store_raw_buffer(scalar,
                     r.target,
                     if final_pass { zero } else { group },
                     if final_pass {
                         self.program.buffers[r.target].stride / 4
                     } else {
-                        components
+                        words
                     },
                     if final_pass {
-                        r.target_word + ty.components[component].1 / 4
+                        r.target_word + offset / 4
                     } else {
-                        component as u32
+                        offset/4
                     },
+                    value,
                 );
-                self.emit(62, &[target, value, 2, 4]);
             }
             self.emit(249, &[written]);
         }

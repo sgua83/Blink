@@ -366,7 +366,7 @@ impl Builder<'_> {
                 length.proof = bounds::Proof::unsigned(n, n).with_domains(Domains::from([
                     IndexDomain::ApplicationLength(handle.identity()),
                 ]));
-                length.constant = Some(vec![n]);
+                length.constant = Some(vec![Bits::from(n)]);
             }
             Returned::Dataset(Box::new(DataPayload {
                 handle,

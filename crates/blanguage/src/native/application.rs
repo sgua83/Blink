@@ -222,7 +222,7 @@ fn emit_value(
         if let Some(at) = result_pointer {
             e.instruction(None, &[0x8b], true, 1, Operand::memory(4, at));
             for ((_, offset), reg) in ty.components.iter().zip(&body.outputs) {
-                e.write_memory(e.location(*reg), 1, *offset);
+                e.write_scalar(*reg, 1, *offset);
             }
             e.bytes(&[0x48, 0x89, 0xc8]);
         } else if floating(ty) {

@@ -94,14 +94,15 @@ impl Emitter<'_> {
         let ticket = self.id();
         self.emit(128, &[u, ticket, shared_base, rank]);
         for (word, value) in &a.values {
+          for (part, raw) in self.to_words(*value).into_iter().enumerate() {
             let ptr = self.address_scalar(
                 a.target,
                 ticket,
                 self.program.buffers[a.target].stride / 4,
-                *word,
+                *word + part as u32,
             );
-            let raw = self.to_word(*value);
             self.emit(62, &[ptr, raw, 2, 4]);
+          }
         }
         self.emit(249, &[finish]);
         self.emit(248, &[finish]);

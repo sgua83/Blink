@@ -121,7 +121,7 @@ impl Emitter<'_> {
                 CallArgument::Value { ty, values } => {
                     let base = layout.copies[i].map_or(slot, |at| at as u32);
                     for ((_, offset), value) in ty.components.iter().zip(values) {
-                        self.write_memory(self.location(*value), 4, base + *offset);
+                        self.write_scalar(*value, 4, base + *offset);
                     }
                     if let Some(at) = layout.copies[i] {
                         self.stack_address(at as u32);

@@ -52,10 +52,14 @@ impl Emitter<'_> {
         self.shared_at(self.tile_pointer, self.tile_shared, at)
     }
     pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32) {
-        let at = self.tile_word_address(self.stage.shared_word(tile, word), self.value(index));
-        let raw = self.id();
-        self.emit(61, &[self.types[&Scalar::U32], raw, at]);
-        self.from_word(dst, raw);
+        let mut words = Vec::new();
+        for part in 0..self.stage.registers[dst].size()/4 {
+            let at = self.tile_word_address(self.stage.shared_word(tile, word + part), self.value(index));
+            let raw = self.id();
+            self.emit(61, &[self.types[&Scalar::U32], raw, at]);
+            words.push(raw);
+        }
+        self.from_words(dst, &words);
     }
     pub(super) fn tile_barrier(&mut self) {
         let scope = self.constant(Scalar::U32, 2);
@@ -64,15 +68,16 @@ impl Emitter<'_> {
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
         for (word, value) in &publication.values {
-            let raw = self.to_word(*value);
+          for (part, raw) in self.to_words(*value).into_iter().enumerate() {
             let at = self.tile_word_address(
                 SharedWord::Published {
                     tile: publication.tile,
-                    word: *word,
+                    word: *word + part as u32,
                 },
                 self.tile_lane,
             );
             self.emit(62, &[at, raw]);
+          }
         }
     }
     pub(super) fn tile_phases(&mut self, active: u32) -> Result<(), &'static str> {

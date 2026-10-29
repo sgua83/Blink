@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
-    Immediate(u32),
+    Immediate(Bits),
     Gpr(u8),
     Xmm(u8),
     Stack(u32),
@@ -350,7 +350,7 @@ impl Allocation {
     pub fn new(stage: &Stage, graph: &Graph) -> Self {
         // A register may be defined in several structured blocks. Only identical
         // literal definitions have no mutable storage; locals remain real slots.
-        fn literals(code: &[Inst], values: &mut [Option<Option<u32>>]) {
+        fn literals(code: &[Inst], values: &mut [Option<Option<Bits>>]) {
             for inst in code {
                 let literal = match inst {
                     Inst::Constant(_, _, bits) => Some(*bits),
@@ -410,9 +410,33 @@ impl Allocation {
                         .collect()
                 }
             },
-            |slot| Location::Stack((base + slot as u64 * 4) as u32),
+            Location::Stack,
         );
-        let mut data_end = base as u64 + spills as u64 * 4;
+        // Coloring chooses reusable spill identities. Their byte layout belongs
+        // to the actual scalar values sharing each identity, not a fixed word.
+        let mut spill_layout = vec![(0, 1); spills as usize];
+        for (location, scalar) in locations.iter().zip(&scalars) {
+            if let Location::Stack(slot) = location {
+                let (size, align) = &mut spill_layout[*slot as usize];
+                *size = (*size).max(scalar.size());
+                *align = (*align).max(scalar.align());
+            }
+        }
+        let mut data_end = base;
+        let spill_offsets: Vec<_> = spill_layout
+            .into_iter()
+            .map(|(size, align)| {
+                data_end = data_end.div_ceil(u64::from(align)) * u64::from(align);
+                let offset = data_end as u32;
+                data_end += u64::from(size);
+                offset
+            })
+            .collect();
+        for location in &mut locations {
+            if let Location::Stack(slot) = location {
+                *slot = spill_offsets[*slot as usize];
+            }
+        }
         for span in private_spans(&stage.code) {
             data_end = data_end.div_ceil(16) * 16;
             for slot in span.clone() {

@@ -1,5 +1,5 @@
 use crate::ast::{Access, Target};
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 mod external;
 pub use external::{
     Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody,
@@ -17,12 +17,57 @@ pub use custom_reduce::{
 };
 
 pub type Reg = usize;
+pub type Bits = u64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scalar {
     F32,
     U32,
     I32,
     Bool,
+    U64,
+    I64,
+}
+impl Scalar {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::U32 => "u32",
+            Self::I32 => "i32",
+            Self::Bool => "bool",
+            Self::U64 => "u64",
+            Self::I64 => "i64",
+        }
+    }
+    pub const fn size(self) -> u32 {
+        match self {
+            Self::F32 | Self::U32 | Self::I32 | Self::Bool => 4,
+            Self::U64 | Self::I64 => 8,
+        }
+    }
+    pub const fn align(self) -> u32 {
+        self.size()
+    }
+    pub const fn is_signed(self) -> bool {
+        matches!(self, Self::I32 | Self::I64)
+    }
+    pub const fn is_integer(self) -> bool {
+        matches!(self, Self::U32 | Self::I32 | Self::U64 | Self::I64)
+    }
+    pub const fn bit_width(self) -> u32 {
+        self.size() * 8
+    }
+    pub const fn bit_mask(self) -> Bits {
+        self.truncate(Bits::MAX)
+    }
+    pub const fn order_bias(self) -> Bits {
+        if self.is_signed() { 1 << (self.bit_width() - 1) } else { 0 }
+    }
+    pub const fn truncate(self, bits: Bits) -> Bits {
+        if self.size() == 4 { bits & u32::MAX as Bits } else { bits }
+    }
+    pub const fn signed(self, bits: Bits) -> i64 {
+        if self.size() == 4 { bits as u32 as i32 as i64 } else { bits as i64 }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Variant {
@@ -185,17 +230,11 @@ impl Ty {
     }
     pub fn scalar(s: Scalar) -> Self {
         Self {
-            name: match s {
-                Scalar::F32 => "f32",
-                Scalar::U32 => "u32",
-                Scalar::I32 => "i32",
-                Scalar::Bool => "bool",
-            }
-            .into(),
+            name: s.name().into(),
             arguments: Vec::new(),
             values: Vec::new(),
-            size: 4,
-            align: 4,
+            size: s.size(),
+            align: s.align(),
             components: vec![(s, 0)],
             fields: Vec::new(),
             view: None,
@@ -218,14 +257,16 @@ impl Ty {
                     Scalar::U32 => "uint",
                     Scalar::I32 => "int",
                     Scalar::Bool => "bool",
+                    Scalar::U64 => "u64x",
+                    Scalar::I64 => "i64x",
                 },
                 n
             ),
             arguments: Vec::new(),
             values: Vec::new(),
-            size: n as u32 * 4,
-            align: if n == 2 { 8 } else { 16 },
-            components: (0..n).map(|i| (s, i as u32 * 4)).collect(),
+            size: n as u32 * s.size(),
+            align: s.align() * if n == 2 { 2 } else { 4 },
+            components: (0..n).map(|i| (s, i as u32 * s.size())).collect(),
             fields: Vec::new(),
             view: None,
             array: None,
@@ -274,6 +315,8 @@ impl Ty {
             "u32" | "uint" => Self::scalar(Scalar::U32),
             "i32" | "int" => Self::scalar(Scalar::I32),
             "bool" => Self::scalar(Scalar::Bool),
+            "u64" => Self::scalar(Scalar::U64),
+            "i64" => Self::scalar(Scalar::I64),
             "handle" => {
                 let mut ty = Self::vector(Scalar::U32, 2);
                 ty.name = "handle".into();
@@ -540,7 +583,7 @@ impl BinaryOp {
             "^" => Xor,
             "<<" => ShiftLeft,
             ">>" => {
-                if scalar == Scalar::I32 {
+                if scalar.is_signed() {
                     ShiftRightArithmetic
                 } else {
                     ShiftRightLogical
@@ -552,7 +595,7 @@ impl BinaryOp {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IntegerDivisor {
-    Constant(NonZeroU32),
+    Constant(NonZeroU64),
     /// 当前控制域内已证明非零的整数 SSA 值；不得移出该证明成立的控制流。
     Value(Reg),
 }
@@ -782,7 +825,7 @@ pub enum Inst {
         maximum: Reg,
         result: RayResult,
     },
-    Constant(Reg, Scalar, u32),
+    Constant(Reg, Scalar, Bits),
     Index(Reg),
     Uniform(Reg, u32),
     LoadLocal(Reg, usize),
@@ -900,7 +943,7 @@ pub struct SegmentedReduction {
 }
 impl SegmentedReduction {
     pub fn summary_words(&self) -> usize {
-        self.values.ty.components.len() + 2
+        self.values.ty.size.div_ceil(4) as usize + 2
     }
 }
 #[derive(Clone, Debug)]
@@ -913,7 +956,7 @@ pub struct Scan {
 }
 impl Scan {
     pub fn summary_words(&self) -> usize {
-        self.ty.components.len() + usize::from(self.head_word.is_some())
+        self.ty.size.div_ceil(4) as usize + usize::from(self.head_word.is_some())
     }
     pub fn counts(values: Reduction) -> Self {
         Self {
@@ -1132,29 +1175,29 @@ impl CollectiveOperator {
     pub fn accepts(self, scalar: Scalar) -> bool {
         match self {
             Self::BitAnd | Self::BitOr | Self::BitXor => {
-                matches!(scalar, Scalar::U32 | Scalar::I32)
+                scalar.is_integer()
             }
             Self::Sum | Self::Min | Self::Max => scalar != Scalar::Bool,
         }
     }
-    pub fn identity(self, scalar: Scalar) -> u32 {
+    pub fn identity(self, scalar: Scalar) -> Bits {
         match self {
             Self::Sum | Self::BitOr | Self::BitXor => 0,
-            Self::BitAnd => u32::MAX,
+            Self::BitAnd => scalar.bit_mask(),
             Self::Min => {
                 if scalar == Scalar::F32 {
-                    f32::INFINITY.to_bits()
-                } else if scalar == Scalar::I32 {
-                    i32::MAX as u32
+                    Bits::from(f32::INFINITY.to_bits())
+                } else if scalar.is_signed() {
+                    scalar.order_bias() - 1
                 } else {
-                    u32::MAX
+                    scalar.bit_mask()
                 }
             }
             Self::Max => {
                 if scalar == Scalar::F32 {
-                    f32::NEG_INFINITY.to_bits()
-                } else if scalar == Scalar::I32 {
-                    i32::MIN as u32
+                    Bits::from(f32::NEG_INFINITY.to_bits())
+                } else if scalar.is_signed() {
+                    scalar.order_bias()
                 } else {
                     0
                 }
@@ -1205,6 +1248,7 @@ pub struct SubgroupCapabilities {
     pub ballot: bool,
     pub shuffle: bool,
     pub shuffle_relative: bool,
+    pub extended_types: bool,
 }
 impl Stage {
     pub(crate) fn has_external_effects(&self) -> bool {
@@ -1399,14 +1443,16 @@ impl Stage {
                                 .map(|w| stage.shared_word(*tile, w)),
                         );
                     }
-                    Inst::TileLoad { tile, word, .. } => {
-                        words.insert(stage.shared_word(*tile, *word));
+                    Inst::TileLoad { dst, tile, word, .. } => {
+                        words.extend((0..stage.registers[*dst].size()/4)
+                            .map(|part| stage.shared_word(*tile, *word + part)));
                     }
                     Inst::TileCollective(c) => {
                         words.extend(
                             c.results
                                 .iter()
-                                .map(|(word, _)| stage.shared_word(c.tile, *word)),
+                                .flat_map(|(word, result)| (0..stage.registers[*result].size()/4)
+                                    .map(move |part| stage.shared_word(c.tile, *word + part))),
                         );
                     }
                     Inst::Scope(body) => visit(stage, body, words),
@@ -1427,6 +1473,18 @@ impl Stage {
         let mut words = std::collections::BTreeSet::new();
         visit(self, &self.code, &mut words);
         words
+    }
+    fn requires_subgroup_extended_types(&self) -> bool {
+        fn visit(code: &[Inst], registers: &[Scalar]) -> bool {
+            code.iter().any(|inst| match inst {
+                Inst::Subgroup { dst, .. } => registers[*dst].size() == 8,
+                Inst::Scope(body) => visit(body, registers),
+                Inst::If { yes, no, .. } => visit(yes, registers) || visit(no, registers),
+                Inst::Loop { condition, body, .. } => visit(condition, registers) || visit(body, registers),
+                _ => false,
+            })
+        }
+        visit(&self.code, &self.registers)
     }
     pub fn subgroup_operations(&self) -> std::collections::BTreeSet<SubgroupOp> {
         fn visit(code: &[Inst], ops: &mut std::collections::BTreeSet<SubgroupOp>) {
@@ -1532,9 +1590,11 @@ impl Program {
             .any(Stage::requires_maximal_reconvergence)
     }
     pub fn subgroup_capabilities(&self) -> SubgroupCapabilities {
-        SubgroupCapabilities::from_operations(
+        let mut capabilities = SubgroupCapabilities::from_operations(
             self.stages.iter().flat_map(Stage::subgroup_operations),
-        )
+        );
+        capabilities.extended_types = self.stages.iter().any(Stage::requires_subgroup_extended_types);
+        capabilities
     }
     /// 内部设备绑定：集合中间量与间接域参数各有一个必要槽，不占源码参数。
     pub fn indirect_buffer(&self) -> usize {

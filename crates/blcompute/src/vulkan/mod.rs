@@ -209,7 +209,7 @@ impl PhysicalDevice {
         self.properties.deviceType == 2
     }
     pub fn device(&self) -> Result<Device> {
-        Device::create(self.clone(), false, false, false, false, false)
+        Device::create(self.clone(), false, false, false, false, false, false)
     }
     pub fn for_program(&self, program: &dyn ProgramInterface) -> Result<Device> {
         self.for_programs(std::iter::once(program))
@@ -219,8 +219,8 @@ impl PhysicalDevice {
         &self,
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Device> {
-        let (mut ray, mut sort, mut reconverge, mut textures, mut positions) =
-            (false, false, false, false, false);
+        let (mut ray, mut sort, mut reconverge, mut textures, mut positions, mut extended_types) =
+            (false, false, false, false, false, false);
         for program in programs {
             let required = program.requirements();
             ray |= required.ray_query;
@@ -228,8 +228,9 @@ impl PhysicalDevice {
             reconverge |= required.maximal_reconvergence;
             textures |= required.texture_indexing;
             positions |= required.position_fetch;
+            extended_types |= required.subgroup.extended_types;
         }
-        Device::create(self.clone(), ray, sort, reconverge, textures, positions)
+        Device::create(self.clone(), ray, sort, reconverge, textures, positions, extended_types)
     }
     fn default(presentation: bool) -> Result<Self> {
         Instance::create(presentation)?
@@ -350,6 +351,7 @@ struct Inner {
     texture_indexing: bool,
     position_fetch: bool,
     subgroup_operations: u32,
+    subgroup_extended_types: bool,
     float32_preserve: bool,
     next_submission: Cell<u64>,
 }
@@ -389,6 +391,7 @@ impl Device {
         maximal_reconvergence: bool,
         texture_indexing: bool,
         position_fetch: bool,
+        subgroup_extended_types: bool,
     ) -> Result<Self> {
         unsafe {
             let PhysicalDevice {
@@ -465,6 +468,12 @@ impl Device {
             if sorting {
                 features.pNext = (&mut subgroup_features as *mut sort::Features).cast();
             }
+            let mut extended_types: VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures = zero();
+            extended_types.sType = 1000175000;
+            if subgroup_extended_types {
+                extended_types.pNext = features.pNext;
+                features.pNext = (&mut extended_types as *mut VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures).cast();
+            }
             let mut reconvergence: VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR = zero();
             reconvergence.sType = 1000434000;
             if maximal_reconvergence {
@@ -480,6 +489,9 @@ impl Device {
                 features.pNext = (&mut indexing as *mut texture::IndexingFeatures).cast();
             }
             features_fn(physical, &mut features);
+            if subgroup_extended_types && extended_types.shaderSubgroupExtendedTypes == 0 {
+                return Err(error("64位subgroup运算需要设备支持shaderSubgroupExtendedTypes"));
+            }
             // VkPhysicalDeviceDescriptorIndexingFeatures::shaderSampledImageArrayNonUniformIndexing。
             if texture_indexing && indexing.capabilities[4] == 0 {
                 return Err(error("纹理资源数组需要 sampled-image 非一致下标能力"));
@@ -592,6 +604,14 @@ impl Device {
                 features.pNext = (&subgroup_enabled as *const sort::Features)
                     .cast_mut()
                     .cast();
+            }
+            let extended_types_enabled = VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures {
+                sType: 1000175000,
+                pNext: features.pNext,
+                shaderSubgroupExtendedTypes: 1,
+            };
+            if subgroup_extended_types {
+                features.pNext = (&extended_types_enabled as *const VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures).cast_mut().cast();
             }
             let reconvergence_enabled = VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR {
                 sType: 1000434000,
@@ -712,6 +732,7 @@ impl Device {
                     maximal_reconvergence,
                     texture_indexing,
                     position_fetch,
+                    subgroup_extended_types,
                     subgroup_operations: if subgroup.stages & 0x20 != 0 {
                         subgroup.operations
                     } else {
@@ -1581,6 +1602,9 @@ impl GpuProgram {
             ));
         }
         let caps = program.subgroup_capabilities();
+        if caps.extended_types && !inner.subgroup_extended_types {
+            return Err(error("64位subgroup程序必须以Device::for_program声明扩展类型能力"));
+        }
         if program
             .stages()
             .iter()
@@ -1922,7 +1946,7 @@ impl GpuProgram {
                     if count > 64 {
                         let size = count.div_ceil(64);
                         let ty =
-                            Ty::vector(blanguage::ir::Scalar::U32, reduction_ty.components.len());
+                            Ty::vector(blanguage::ir::Scalar::U32, reduction_ty.size.div_ceil(4) as usize);
                         let stride = ty.size;
                         Some(Scratch {
                             buffers: vec![

@@ -42,12 +42,12 @@ impl ReductionShape for CustomReduction {
 }
 impl<R: ReductionShape> CustomSegmentedReduction<R> {
     pub fn summary_words(&self) -> usize {
-        self.values.value_type().components.len() + 2
+        self.values.value_type().size.div_ceil(4) as usize + 2
     }
 }
 impl<R: ReductionShape> CustomScan<R> {
     pub fn summary_words(&self) -> usize {
-        self.values.value_type().components.len() + usize::from(self.head_word.is_some())
+        self.values.value_type().size.div_ceil(4) as usize + usize::from(self.head_word.is_some())
     }
     pub fn needs_root_add(&self, program: &dyn ProgramInterface) -> bool {
         program.buffers()[self.values.fields().source]

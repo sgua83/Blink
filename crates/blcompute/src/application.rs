@@ -159,9 +159,11 @@ impl Frame {
         if words > data.words.len() { data.words.try_reserve(words - data.words.len())?; }
         data.words.resize(words, 0);
         for row in data.count..count {
-            for (_, offset) in &data.ty.components {
+            for (scalar, offset) in &data.ty.components {
                 let word = *offset as usize / 4;
-                data.words[row as usize * stride + word] = unsafe { fill.add(word).read() };
+                for part in 0..scalar.size() as usize / 4 {
+                    data.words[row as usize * stride + word + part] = unsafe { fill.add(word + part).read() };
+                }
             }
         }
         data.count = count;

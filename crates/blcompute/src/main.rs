@@ -80,6 +80,8 @@ fn compute(args: &[String]) -> Result<()> {
                 Scalar::U32 => Value::U32(value.parse()?),
                 Scalar::I32 => Value::I32(value.parse()?),
                 Scalar::Bool => Value::Bool(value.parse()?),
+                Scalar::U64 => Value::U64(value.parse()?),
+                Scalar::I64 => Value::I64(value.parse()?),
             });
         }
     }

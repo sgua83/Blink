@@ -17,22 +17,23 @@ impl Emitter<'_> {
             collective.results.len()
         };
         for results in collective.results.chunks(batch) {
+            let mut base_word=(self.stage.tile_data_bytes()/4) as u32;
             let trees: Vec<_> = results
                 .iter()
-                .enumerate()
-                .map(|(component, (_, result))| SharedTree {
+                .map(|(_, result)| {
+                    let scalar=self.stage.registers[*result];
+                    let tree=SharedTree {
                     shared: self.tile_shared,
                     pointer: self.tile_pointer,
-                    base_word: (self.stage.tile_data_bytes() / 4) as u32
-                        + component as u32 * padded,
-                    scalar: self.stage.registers[*result],
+                    base_word,
+                    scalar,
                     operator: collective.op.operator(),
+                    };base_word+=padded*(scalar.size()/4);tree
                 })
                 .collect();
             for ((word, _), tree) in results.iter().zip(&trees) {
                 let tree = *tree;
-                let identity = self.constant(Scalar::U32, tree.operator.identity(tree.scalar));
-                let own = self.tree_at(tree, self.tile_lane);
+                let identity = self.raw_constant(tree.scalar, tree.operator.identity(tree.scalar));
                 let active = self.id();
                 self.emit(176, &[b, active, self.tile_lane, self.tile_length]);
                 let before = self.current_label;
@@ -41,17 +42,14 @@ impl Emitter<'_> {
                 self.emit(247, &[read_end, 0]);
                 self.emit(250, &[active, read, read_end]);
                 self.emit(248, &[read]);
-                let source = self.tile_word_address(
-                    self.stage.shared_word(collective.tile, *word),
-                    self.tile_lane,
-                );
-                let value = self.id();
-                self.emit(61, &[u, value, source]);
+                let source:Vec<_>=(0..tree.scalar.size()/4).map(|part|self.tile_word_address(
+                    self.stage.shared_word(collective.tile,*word+part),self.tile_lane)).collect();
+                let value = self.load_raw(tree.scalar,&source,false);
                 self.emit(249, &[read_end]);
                 self.emit(248, &[read_end]);
                 let input = self.id();
-                self.emit(245, &[u, input, value, read, identity, before]);
-                self.emit(62, &[own, input]);
+                self.emit(245, &[self.raw_type(tree.scalar), input, value, read, identity, before]);
+                self.tree_store(tree,self.tile_lane,input);
                 if padded > width {
                     let capacity = self.constant(Scalar::U32, padded);
                     let size = self.constant(Scalar::U32, width);
@@ -64,8 +62,7 @@ impl Emitter<'_> {
                     self.emit(247, &[end, 0]);
                     self.emit(250, &[fill, run, end]);
                     self.emit(248, &[run]);
-                    let at = self.tree_at(tree, index);
-                    self.emit(62, &[at, identity]);
+                    self.tree_store(tree,index,identity);
                     self.emit(249, &[end]);
                     self.emit(248, &[end]);
                 }
@@ -86,9 +83,8 @@ impl Emitter<'_> {
                 self.emit(248, &[run]);
                 let last = self.constant(Scalar::U32, padded - 1);
                 for tree in &trees {
-                    let identity = self.constant(Scalar::U32, tree.operator.identity(tree.scalar));
-                    let root = self.tree_at(*tree, last);
-                    self.emit(62, &[root, identity]);
+                    let identity = self.raw_constant(tree.scalar, tree.operator.identity(tree.scalar));
+                    self.tree_store(*tree,last,identity);
                 }
                 self.emit(249, &[end]);
                 self.emit(248, &[end]);
@@ -103,10 +99,9 @@ impl Emitter<'_> {
                 self.constant(Scalar::U32, padded - 1)
             };
             for ((_, result), tree) in results.iter().zip(&trees) {
-                let at = self.tree_at(*tree, final_index);
-                let raw = self.id();
-                self.emit(61, &[u, raw, at]);
-                self.from_word(*result, raw);
+                let raw = self.tree_load(*tree, final_index);
+                let words = self.split_words(tree.scalar,raw);
+                self.from_words(*result,&words);
             }
             // 各 lane 已取得本批所有分量，后续集合才可重用同一工作区。
             self.tile_barrier();

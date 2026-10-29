@@ -124,9 +124,9 @@ impl Builder<'_> {
                         | SubgroupOp::ExclusiveBitAnd
                         | SubgroupOp::ExclusiveBitOr
                         | SubgroupOp::ExclusiveBitXor
-                ) && !matches!(ty.components[0].0, Scalar::U32 | Scalar::I32)
+                ) && !ty.components[0].0.is_integer()
                 {
-                    return self.fail(span, "B197", "subgroup 按位协作只接受 u32/i32 标量或向量");
+                    return self.fail(span, "B197", "subgroup 按位协作只接受整数标量或向量");
                 }
                 ty.clone()
             }

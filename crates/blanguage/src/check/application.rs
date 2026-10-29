@@ -312,7 +312,7 @@ impl Builder<'_> {
                 .unwrap_or_default(),
             literal: false,
             uniform: false,
-            constant: count.map(|n| vec![n]),
+            constant: count.map(|n| vec![Bits::from(n)]),
         };
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
@@ -1060,7 +1060,7 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         };
-        let write = self.constant(Scalar::U32, u32::from(write));
+        let write = self.constant(Scalar::U32, Bits::from(write));
         let value = self
             .application_call("address", vec![handle, write], Some(pointer_type()), span)?
             .unwrap();
@@ -1450,7 +1450,7 @@ impl Builder<'_> {
             return self.fail(span, "B260", "println 是 CPU 标准输出操作，要求显式 on cpu");
         }
         if args.len() != 1 {
-            return self.fail(span, "B261", "println 需要一个 u32、i32、f32 或 bool 标量");
+            return self.fail(span, "B261", "println 需要一个整数、f32 或 bool 标量");
         }
         let Some(value) = self.expr(&args[0])? else {
             return Ok(None);
@@ -1458,6 +1458,8 @@ impl Builder<'_> {
         if ![
             Ty::scalar(Scalar::U32),
             Ty::scalar(Scalar::I32),
+            Ty::scalar(Scalar::U64),
+            Ty::scalar(Scalar::I64),
             Ty::scalar(Scalar::Bool),
             Ty::scalar(Scalar::F32),
         ]
@@ -1466,7 +1468,7 @@ impl Builder<'_> {
             return self.fail(
                 args[0].span,
                 "B261",
-                "println 当前接受 u32、i32、f32 或 bool 标量",
+                "println 当前接受 u32、i32、u64、i64、f32 或 bool 标量",
             );
         }
         let dst = self.reg(Scalar::Bool);

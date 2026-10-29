@@ -241,7 +241,7 @@ fn expression(
                     let discriminant = variant.discriminant;
                     let tag = builder.value_component(&value, 0);
                     let scalar = tag.ty.components[0].0;
-                    let expected = builder.constant(scalar, discriminant);
+                    let expected = builder.constant(scalar, Bits::from(discriminant));
                     ExprKind::Binary(
                         "==".into(),
                         Box::new(atom(values, tag, span)),
@@ -392,7 +392,7 @@ pub(super) fn contract_predicates(
             }
             OutputCondition::StaticU32(value) => OutputCondition::Constant(OutputConstant {
                 ty: Ty::scalar(Scalar::U32),
-                bits: vec![*value],
+                bits: vec![Bits::from(*value)],
             }),
             OutputCondition::Member(base, field) => {
                 let base = normalize(builder, definition, base, span)?;
@@ -408,7 +408,7 @@ pub(super) fn contract_predicates(
                         };
                         builder.constant(
                             Scalar::Bool,
-                            u32::from(value.bits[0] == variant.discriminant),
+                            Bits::from(value.bits[0] == Bits::from(variant.discriminant)),
                         )
                     } else {
                         let value = builder.constant_value(value.ty, value.bits);
@@ -483,7 +483,7 @@ impl Builder<'_> {
         fn index(builder: &mut Builder<'_>, index: ownership::ApplicationIndex) -> Value {
             match index {
                 ownership::ApplicationIndex::Constant(value) => {
-                    builder.constant(Scalar::U32, value)
+                    builder.constant(Scalar::U32, Bits::from(value))
                 }
                 ownership::ApplicationIndex::Value(id, reg) => Value {
                     ty: Ty::scalar(Scalar::U32),

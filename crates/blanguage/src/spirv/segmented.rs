@@ -7,7 +7,7 @@ struct Segment<'a> {
 }
 impl Segment<'_> {
     fn summary_words(&self) -> usize {
-        self.ty.components.len() + 1 + usize::from(self.counted)
+        self.ty.size.div_ceil(4) as usize + 1 + usize::from(self.counted)
     }
 }
 impl Emitter<'_> {
@@ -49,34 +49,55 @@ impl Emitter<'_> {
     }
     fn segment_identity(&mut self, scan: &Segment<'_>) -> Vec<u32> {
         let zero = self.constant(Scalar::U32, 0);
-        scan.ty
-            .components
-            .iter()
-            .map(|(scalar, _)| self.constant(Scalar::U32, scan.operator.identity(*scalar)))
-            .chain(std::iter::repeat_n(zero, 1 + usize::from(scan.counted)))
-            .collect()
+        let mut words=vec![zero;scan.summary_words()];
+        for (scalar,offset) in &scan.ty.components {
+            let value=self.raw_constant(*scalar,scan.operator.identity(*scalar));
+            for (part,word) in self.split_words(*scalar,value).into_iter().enumerate() {
+                words[(*offset/4) as usize+part]=word;
+            }
+        }
+        words
+    }
+    fn segment_source(&mut self, scan: &Segment<'_>, fields: &Reduction, head_word: u32) -> Vec<u32> {
+        let k=scan.ty.size.div_ceil(4) as usize;
+        let zero=self.constant(Scalar::U32,0);
+        let mut words=vec![zero;k+1];
+        let stride=self.program.buffers[fields.source].stride/4;
+        for (scalar,offset) in &scan.ty.components {
+            for part in 0..scalar.size()/4 {
+                let word=offset/4+part;
+                let at=self.address_scalar(fields.source,self.index,stride,fields.source_word+word);
+                words[word as usize]=self.segment_read(&[at])[0];
+            }
+        }
+        let at=self.address_scalar(fields.source,self.index,stride,head_word);
+        words[k]=self.segment_read(&[at])[0];
+        words
     }
     fn segment_combine(&mut self, scan: &Segment<'_>, left: &[u32], right: &[u32]) -> Vec<u32> {
         let u = self.types[&Scalar::U32];
-        let k = scan.ty.components.len();
+        let k = scan.ty.size.div_ceil(4) as usize;
         let zero = self.constant(Scalar::U32, 0);
         let head = self.id();
         self.emit(171, &[self.types[&Scalar::Bool], head, right[k], zero]);
-        let mut values = Vec::new();
-        for (component, (scalar, _)) in scan.ty.components.iter().enumerate() {
-            let merged =
-                self.collective_pair(*scalar, scan.operator, left[component], right[component]);
+        let mut values = vec![zero;scan.summary_words()];
+        for (scalar,offset) in &scan.ty.components {
+            let word=(offset/4) as usize;
+            let n=(scalar.size()/4) as usize;
+            let a=self.join_words(*scalar,&left[word..word+n]);
+            let b=self.join_words(*scalar,&right[word..word+n]);
+            let merged = self.collective_pair(*scalar, scan.operator, a, b);
             let tail = self.id();
-            self.emit(169, &[u, tail, head, right[component], merged]);
-            values.push(tail);
+            self.emit(169, &[self.raw_type(*scalar), tail, head, b, merged]);
+            values[word..word+n].copy_from_slice(&self.split_words(*scalar,tail));
         }
         let heads = self.id();
         self.emit(197, &[u, heads, left[k], right[k]]);
-        values.push(heads);
+        values[k]=heads;
         if scan.counted {
             let count = self.id();
             self.emit(128, &[u, count, left[k + 1], right[k + 1]]);
-            values.push(count);
+            values[k+1]=count;
         }
         values
     }
@@ -97,7 +118,7 @@ impl Emitter<'_> {
             operator: scan.operator,
             counted: false,
         };
-        let k = scan.ty.components.len();
+        let k = scan.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
@@ -118,25 +139,12 @@ impl Emitter<'_> {
         self.emit(247, &[read_end, 0]);
         self.emit(250, &[active, read, read_end]);
         self.emit(248, &[read]);
-        let source = if tail {
-            self.segment_address(scan, self.scan_input_binding(r), self.index)
+        let mut input = if tail {
+            let source=self.segment_address(scan,self.scan_input_binding(r),self.index);
+            self.segment_read(&source)
         } else {
-            scan.ty
-                .components
-                .iter()
-                .map(|(_, offset)| r.source_word + offset / 4)
-                .chain(std::iter::once(head_word))
-                .map(|word| {
-                    self.address_scalar(
-                        r.source,
-                        self.index,
-                        self.program.buffers[r.source].stride / 4,
-                        word,
-                    )
-                })
-                .collect()
+            self.segment_source(scan,r,head_word)
         };
-        let mut input = self.segment_read(&source);
         if !tail {
             let is_head = self.id();
             self.emit(171, &[b, is_head, input[k], zero]);
@@ -218,7 +226,9 @@ impl Emitter<'_> {
         if !tail {
             let is_head = self.id();
             self.emit(171, &[b, is_head, input[k], zero]);
-            for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
+            for (scalar,offset) in &scan.ty.components {
+              for part in 0..scalar.size()/4 {
+                let component=(offset/4+part) as usize;
                 let value = self.id();
                 self.emit(
                     169,
@@ -228,9 +238,10 @@ impl Emitter<'_> {
                     r.target,
                     self.index,
                     self.program.buffers[r.target].stride / 4,
-                    r.target_word + offset / 4,
+                    r.target_word + offset / 4 + part,
                 );
                 self.emit(62, &[target, value, 2, 4]);
+              }
             }
             let no_previous = self.id();
             self.emit(170, &[b, no_previous, result[k], zero]);
@@ -276,7 +287,7 @@ impl Emitter<'_> {
             operator: reduction.values.operator,
             counted: true,
         };
-        let k = scan.ty.components.len();
+        let k = scan.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
@@ -311,22 +322,7 @@ impl Emitter<'_> {
             let source = self.segment_address(scan, self.scan_input_binding(r), self.index);
             self.segment_read(&source)
         } else {
-            let source: Vec<_> = scan
-                .ty
-                .components
-                .iter()
-                .map(|(_, offset)| r.source_word + offset / 4)
-                .chain(std::iter::once(reduction.head_word))
-                .map(|word| {
-                    self.address_scalar(
-                        r.source,
-                        self.index,
-                        self.program.buffers[r.source].stride / 4,
-                        word,
-                    )
-                })
-                .collect();
-            let mut input = self.segment_read(&source);
+            let mut input = self.segment_source(scan,r,reduction.head_word);
             let head = self.id();
             self.emit(171, &[b, head, input[k], zero]);
             let first = self.id();
@@ -467,14 +463,16 @@ impl Emitter<'_> {
             self.emit(248, &[emit_tail]);
             let output = self.id();
             self.emit(130, &[u, output, total[k + 1], one]);
-            for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
+            for (scalar,offset) in &scan.ty.components {
+              for part in 0..scalar.size()/4 {
                 let target = self.address_scalar(
                     r.target,
                     output,
                     self.program.buffers[r.target].stride / 4,
-                    r.target_word + offset / 4,
+                    r.target_word + offset / 4 + part,
                 );
-                self.emit(62, &[target, total[component], 2, 4]);
+                self.emit(62, &[target, total[(offset/4+part) as usize], 2, 4]);
+              }
             }
             self.emit(249, &[emitted]);
             self.emit(248, &[emitted]);
@@ -602,7 +600,7 @@ impl Emitter<'_> {
             self.program.buffers.len(),
             group,
             scan.summary_words() as u32,
-            scan.ty.components.len() as u32,
+            scan.ty.size.div_ceil(4),
         );
         let head = self.id();
         self.emit(61, &[u, head, first, 2, 4]);
@@ -622,23 +620,19 @@ impl Emitter<'_> {
         self.emit(247, &[end, 0]);
         self.emit(250, &[before, add, end]);
         self.emit(248, &[add]);
-        for (component, (scalar, offset)) in scan.ty.components.iter().enumerate() {
-            let source = self.address_scalar(
+        for (scalar,offset) in &scan.ty.components {
+            let prefix = self.load_raw_buffer(*scalar,
                 self.scan_input_binding(r),
                 group,
                 scan.summary_words() as u32,
-                component as u32,
+                offset/4,
             );
-            let prefix = self.id();
-            self.emit(61, &[u, prefix, source, 2, 4]);
-            let target = self.address_scalar(
+            let value = self.load_raw_buffer(*scalar,
                 r.target,
                 self.index,
                 self.program.buffers[r.target].stride / 4,
                 r.target_word + offset / 4,
             );
-            let value = self.id();
-            self.emit(61, &[u, value, target, 2, 4]);
             let merged = self.collective_pair(*scalar, scan.operator, prefix, value);
             let result = if *scalar == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
                 let first = self.id();
@@ -649,7 +643,7 @@ impl Emitter<'_> {
             } else {
                 merged
             };
-            self.emit(62, &[target, result, 2, 4]);
+            self.store_raw_buffer(*scalar,r.target,self.index,self.program.buffers[r.target].stride/4,r.target_word+offset/4,result);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);

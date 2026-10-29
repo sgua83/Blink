@@ -59,8 +59,9 @@ impl LibraryProgram {
                 let words = data.words_mut();
                 for record in 0..buffer.count as usize {
                     // 只读真实字段，不读取 C/C++ 结构体未初始化的填充字节。
-                    for &(_, offset) in &layout.ty.components {
-                        let byte = record * layout.stride as usize + offset as usize;
+                    for &(scalar, offset) in &layout.ty.components {
+                      for part in 0..scalar.size()/4 {
+                        let byte = record * layout.stride as usize + (offset + part*4) as usize;
                         words[byte / 4] = unsafe {
                             buffer
                                 .data
@@ -69,6 +70,7 @@ impl LibraryProgram {
                                 .cast::<u32>()
                                 .read_unaligned()
                         };
+                      }
                     }
                 }
             }
@@ -102,8 +104,9 @@ impl LibraryProgram {
             let buffer = &buffers[i];
             let layout = &self.program().buffers()[i];
             for record in 0..buffer.count as usize {
-                for &(_, offset) in &layout.ty.components {
-                    let byte = record * layout.stride as usize + offset as usize;
+                for &(scalar, offset) in &layout.ty.components {
+                  for part in 0..scalar.size()/4 {
+                    let byte = record * layout.stride as usize + (offset + part*4) as usize;
                     unsafe {
                         buffer
                             .data
@@ -112,6 +115,7 @@ impl LibraryProgram {
                             .cast::<u32>()
                             .write_unaligned(data.words()[byte / 4]);
                     }
+                  }
                 }
             }
         }
@@ -127,17 +131,19 @@ pub unsafe fn uniform_values(data: *const c_void, ty: &blanguage::ir::Ty) -> Vec
     ty.components
         .iter()
         .map(|&(scalar, offset)| {
-            let bits = unsafe {
-                data.cast::<u8>()
-                    .add(offset as usize)
-                    .cast::<u32>()
-                    .read_unaligned()
+            let address = unsafe { data.cast::<u8>().add(offset as usize) };
+            let bits = if scalar.size() == 8 {
+                unsafe { address.cast::<u64>().read_unaligned() }
+            } else {
+                u64::from(unsafe { address.cast::<u32>().read_unaligned() })
             };
             match scalar {
-                Scalar::F32 => Value::F32(f32::from_bits(bits)),
-                Scalar::U32 => Value::U32(bits),
+                Scalar::F32 => Value::F32(f32::from_bits(bits as u32)),
+                Scalar::U32 => Value::U32(bits as u32),
                 Scalar::I32 => Value::I32(bits as i32),
                 Scalar::Bool => Value::Bool(bits != 0),
+                Scalar::U64 => Value::U64(bits),
+                Scalar::I64 => Value::I64(bits as i64),
             }
         })
         .collect()

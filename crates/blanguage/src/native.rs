@@ -73,6 +73,8 @@ pub enum NativeIntrinsic {
     PrintI32,
     PrintBool,
     PrintF32,
+    PrintU64,
+    PrintI64,
 }
 #[derive(Clone, Debug)]
 pub struct NativeCode {
@@ -254,7 +256,7 @@ impl Emitter<'_> {
                 self.bytes(&[0x0f, 0x9b, 0xc2, 0x20, 0xd0]);
             }
         } else {
-            let signed = s == Scalar::I32;
+            let signed = s.is_signed();
             let c = match operation {
                 Comparison::Equal => 0x94,
                 Comparison::NotEqual => 0x95,
@@ -321,7 +323,7 @@ impl Emitter<'_> {
             match inst {
                 Inst::Call(call) => self.native_call(call)?,
                 Inst::Print { dst, value } => {
-                    self.copy(allocation::Location::Gpr(1), self.location(*value));
+                    self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), self.stage.registers[*value]);
                     self.bytes(&[0x48, 0xb8]);
                     self.relocations.push(Relocation {
                         offset: self.code.len(),
@@ -330,6 +332,8 @@ impl Emitter<'_> {
                             Scalar::I32 => NativeIntrinsic::PrintI32,
                             Scalar::Bool => NativeIntrinsic::PrintBool,
                             Scalar::F32 => NativeIntrinsic::PrintF32,
+                            Scalar::U64 => NativeIntrinsic::PrintU64,
+                            Scalar::I64 => NativeIntrinsic::PrintI64,
                         }),
                     });
                     self.bytes(&[0; 8]);
@@ -446,7 +450,14 @@ impl Emitter<'_> {
                     word,
                 } => {
                     let memory = self.indexed_memory(source, *offset, *word);
-                    self.read_scalar_address(*dst, memory);
+                    if matches!(source, IndexedSource::Tile { .. }) && self.stage.registers[*dst].size() == 8 {
+                        self.instruction(None, &[0x8b], false, 1, memory.offset(self.stage.workgroup_width()*4).into());
+                        self.instruction(None, &[0x8b], false, 0, memory.into());
+                        self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
+                        self.store(*dst);
+                    } else {
+                        self.read_scalar_address(*dst, memory);
+                    }
                 }
                 Inst::StoreIndexed {
                     source,
@@ -455,7 +466,14 @@ impl Emitter<'_> {
                     value,
                 } => {
                     let memory = self.indexed_memory(source, *offset, *word);
-                    self.write_address(self.location(*value), memory);
+                    if matches!(source, IndexedSource::Tile { .. }) && self.stage.registers[*value].size() == 8 {
+                        self.copy_scalar(allocation::Location::Gpr(2), self.location(*value), self.stage.registers[*value]);
+                        self.instruction(None, &[0x89], false, 2, memory.into());
+                        self.bytes(&[0x48, 0xc1, 0xea, 32]);
+                        self.instruction(None, &[0x89], false, 2, memory.offset(self.stage.workgroup_width()*4).into());
+                    } else {
+                        self.write_scalar_address(*value, memory);
+                    }
                 }
                 Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
                 Inst::Index(dst) => {
@@ -471,13 +489,14 @@ impl Emitter<'_> {
                     {
                         self.read_scalar(*dst, 4, offset);
                     } else {
-                        self.copy(self.location(*dst), source);
+                        self.copy_scalar(self.location(*dst), source, self.stage.registers[*dst]);
                     }
                 }
                 Inst::StoreLocal(slot, src) => {
-                    self.copy(
+                    self.copy_scalar(
                         self.allocation.location(PrivateSlot::Local(*slot)),
                         self.location(*src),
+                        self.stage.registers[*src],
                     );
                 }
                 Inst::LoadLocalIndexed {
@@ -498,7 +517,7 @@ impl Emitter<'_> {
                     ..
                 } => {
                     let memory = self.private_memory(*base, *index, *word)?;
-                    self.write_address(self.location(*value), memory);
+                    self.write_scalar_address(*value, memory);
                 }
                 Inst::Load {
                     dst,
@@ -516,7 +535,7 @@ impl Emitter<'_> {
                     value,
                 } => {
                     let memory = self.data_memory(*binding, *index, *word);
-                    self.write_address(self.location(*value), memory);
+                    self.write_scalar_address(*value, memory);
                 }
                 Inst::Unary { dst, op, a } => {
                     match op {
@@ -694,7 +713,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         + if stage.has_tile_scope() {
             4 + stage.tile_data_bytes()
                 + if stage.has_tile_steps() {
-                    4 + stage.tile_private_slots().len() as u64 * stage.workgroup_width() as u64 * 4
+                    4 + stage.tile_private_bytes()
                 } else {
                     0
                 }

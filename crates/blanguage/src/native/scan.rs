@@ -11,7 +11,9 @@ pub(super) fn emit_scan(program: &Program, scan: &Scan, add: bool) -> NativeCode
 }
 pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     let r = &scan.values;
-    let float = scan.ty.components[0].0 == Scalar::F32;
+    let scalar = scan.ty.components[0].0;
+    let float = scalar == Scalar::F32;
+    let wide = scalar.size() == 8;
     let float_opcode = match scan.operator {
         CollectiveOperator::Min => 0x5d,
         CollectiveOperator::Max => 0x5f,
@@ -55,32 +57,34 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     // 主扫描的 eax/ecx/edx/r9d 各累计一个整数分量。
     // 传播内核从 rdx 取得范围前缀，随后保留 eax/ecx/r9d/r11d，edx 留作极值临时值。
     let registers = if add { [0u8, 1, 9, 11] } else { [0u8, 1, 2, 9] };
-    for (component, _) in scan.ty.components.iter().enumerate() {
+    for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
         let reg = registers[component];
         if float {
             if add {
                 e.bytes(&[0xf3, 0x0f, 0x10, 0x82 + component as u8 * 8]);
-                e.u32(component as u32 * 4);
+                e.u32(*offset);
             } else if scan.operator == CollectiveOperator::Sum {
                 e.bytes(&[0x0f, 0x57, 0xc0 + component as u8 * 9]);
             } else {
                 e.bytes(&[0xb8]);
-                e.u32(scan.operator.identity(Scalar::F32));
+                e.u32(scan.operator.identity(Scalar::F32) as u32);
                 e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
             }
         } else if add {
             e.bytes(&[
-                0x40 | if reg >= 8 { 4 } else { 0 },
+                0x40 | if wide { 8 } else { 0 } | if reg >= 8 { 4 } else { 0 },
                 0x8b,
                 0x82 + (reg & 7) * 8,
             ]);
-            e.u32(component as u32 * 4);
+            e.u32(*offset);
         } else {
-            if reg >= 8 {
-                e.bytes(&[0x41]);
+            let rex = 0x40 | if wide { 8 } else { 0 } | if reg >= 8 { 1 } else { 0 };
+            if rex != 0x40 {
+                e.bytes(&[rex]);
             }
             e.bytes(&[0xb8 + (reg & 7)]);
-            e.u32(scan.operator.identity(scan.ty.components[0].0));
+            let identity = scan.operator.identity(scalar);
+            if wide { e.bytes(&identity.to_le_bytes()); } else { e.u32(identity as u32); }
         }
     }
     if add && float && scan.operator != CollectiveOperator::Sum {
@@ -125,7 +129,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         };
         if !add {
             e.bytes(&[
-                0x41 | if reg >= 8 { 4 } else { 0 },
+                0x41 | if wide { 8 } else { 0 } | if reg >= 8 { 4 } else { 0 },
                 0x89,
                 0x83 + (reg & 7) * 8,
             ]);
@@ -133,7 +137,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         }
         if let Some(opcode) = opcode {
             e.bytes(&[
-                0x41 | if reg >= 8 { 4 } else { 0 },
+                0x41 | if wide { 8 } else { 0 } | if reg >= 8 { 4 } else { 0 },
                 opcode,
                 0x82 + (reg & 7) * 8,
             ]);
@@ -144,22 +148,22 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
             });
         } else {
             let min = scan.operator == CollectiveOperator::Min;
-            let condition = match (*scalar == Scalar::I32, min) {
+            let condition = match (scalar.is_signed(), min) {
                 (false, true) => 0x47,
                 (true, true) => 0x4f,
                 (false, false) => 0x42,
                 (true, false) => 0x4c,
             };
             if add {
-                e.bytes(&[0x41, 0x8b, 0x92]);
+                e.bytes(&[if wide {0x49} else {0x41}, 0x8b, 0x92]);
                 e.u32(r.target_word * 4 + offset);
-                let rex = 0x40 | if reg >= 8 { 1 } else { 0 };
+                let rex = 0x40 | if wide { 8 } else { 0 } | if reg >= 8 { 1 } else { 0 };
                 e.bytes(&[rex, 0x3b, 0xd0 + (reg & 7)]);
                 e.bytes(&[rex, 0x0f, condition, 0xd0 + (reg & 7)]);
-                e.bytes(&[0x41, 0x89, 0x92]);
+                e.bytes(&[if wide {0x49} else {0x41}, 0x89, 0x92]);
                 e.u32(r.target_word * 4 + offset);
             } else {
-                let rex = 0x41 | if reg >= 8 { 4 } else { 0 };
+                let rex = 0x41 | if wide { 8 } else { 0 } | if reg >= 8 { 4 } else { 0 };
                 e.bytes(&[rex, 0x3b, 0x82 + (reg & 7) * 8]);
                 e.u32(r.source_word * 4 + offset);
                 e.bytes(&[rex, 0x0f, condition, 0x82 + (reg & 7) * 8]);
@@ -180,18 +184,18 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     if !add {
         // 与归约同用第五个参数交付分量结果；普通扫描不再依赖单个 eax 返回值。
         e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
-        for (component, _) in scan.ty.components.iter().enumerate() {
+        for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
             let reg = registers[component];
             if float {
                 e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
             } else {
                 e.bytes(&[
-                    0x41 | if reg >= 8 { 4 } else { 0 },
+                    0x41 | if wide { 8 } else { 0 } | if reg >= 8 { 4 } else { 0 },
                     0x89,
                     0x82 + (reg & 7) * 8,
                 ]);
             }
-            e.u32(component as u32 * 4);
+            e.u32(*offset);
         }
     }
     e.bytes(&[0xc3]);
@@ -200,6 +204,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
     let r = &scan.values;
     let scalar = scan.ty.components[0].0;
+    let wide = scalar.size() == 8;
     let float_opcode = match scan.operator {
         CollectiveOperator::Min => 0x5d,
         CollectiveOperator::Max => 0x5f,
@@ -232,14 +237,18 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         e.bytes(&[0x49, 0x01, pointer]);
     }
     e.bytes(&[0x45, 0x29, 0xc8]); // r8d = 剩余数量；begin 已消费。
-    for (component, _) in scan.ty.components.iter().enumerate() {
+    for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
         if add {
-            e.bytes(&[0xf3, 0x0f, 0x10, 0x82 + component as u8 * 8]);
-            e.u32(component as u32 * 4);
+            e.bytes(&[0xf3, 0x0f, if wide {0x7e} else {0x10}, 0x82 + component as u8 * 8]);
+            e.u32(*offset);
         } else {
+            if wide {e.bytes(&[0x48]);}
             e.bytes(&[0xb8]);
-            e.u32(scan.operator.identity(scalar));
-            e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
+            let identity = scan.operator.identity(scalar);
+            if wide {e.bytes(&identity.to_le_bytes());} else {e.u32(identity as u32);}
+            e.bytes(&[0x66]);
+            if wide {e.bytes(&[0x48]);}
+            e.bytes(&[0x0f, 0x6e, 0xc0 + component as u8 * 8]);
         }
     }
     if add && scalar == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
@@ -259,9 +268,13 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         Some(e.jump(None))
     } else {
         for (component, _) in scan.ty.components.iter().enumerate() {
+            if wide {e.bytes(&[0x48]);}
             e.bytes(&[0xb8]);
-            e.u32(scan.operator.identity(scalar));
-            e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
+            let identity = scan.operator.identity(scalar);
+            if wide {e.bytes(&identity.to_le_bytes());} else {e.u32(identity as u32);}
+            e.bytes(&[0x66]);
+            if wide {e.bytes(&[0x48]);}
+            e.bytes(&[0x0f, 0x6e, 0xc0 + component as u8 * 8]);
         }
         e.bytes(&[0x41, 0xb9]);
         e.u32(1);
@@ -295,9 +308,11 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
             }
             continue;
         }
-        e.bytes(&[0x66, 0x0f, 0x7e, 0xc0 + c * 8]);
+        e.bytes(&[0x66]);
+        if wide {e.bytes(&[0x48]);}
+        e.bytes(&[0x0f, 0x7e, 0xc0 + c * 8]);
         if !add {
-            e.bytes(&[0x41, 0x89, 0x83]);
+            e.bytes(&[if wide {0x49} else {0x41}, 0x89, 0x83]);
             e.u32(r.target_word * 4 + offset);
         }
         let memory = if add { 0x83 } else { 0x82 };
@@ -310,13 +325,13 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
             CollectiveOperator::Min | CollectiveOperator::Max => None,
         };
         if let Some(opcode) = opcode {
-            e.bytes(&[0x41, opcode, memory]);
+            e.bytes(&[if wide {0x49} else {0x41}, opcode, memory]);
             e.u32(word);
         } else {
-            e.bytes(&[0x41, 0x3b, memory]);
+            e.bytes(&[if wide {0x49} else {0x41}, 0x3b, memory]);
             e.u32(word);
             let condition = match (
-                scalar == Scalar::I32,
+                scalar.is_signed(),
                 scan.operator == CollectiveOperator::Min,
             ) {
                 (false, true) => 0x47,
@@ -324,14 +339,16 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
                 (false, false) => 0x42,
                 (true, false) => 0x4c,
             };
-            e.bytes(&[0x41, 0x0f, condition, memory]);
+            e.bytes(&[if wide {0x49} else {0x41}, 0x0f, condition, memory]);
             e.u32(word);
         }
         if add {
-            e.bytes(&[0x41, 0x89, 0x83]);
+            e.bytes(&[if wide {0x49} else {0x41}, 0x89, 0x83]);
             e.u32(r.target_word * 4 + offset);
         } else {
-            e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + c * 8]);
+            e.bytes(&[0x66]);
+            if wide {e.bytes(&[0x48]);}
+            e.bytes(&[0x0f, 0x6e, 0xc0 + c * 8]);
         }
     }
     for (binding, pointer) in [(r.source, 0xc2), (r.target, 0xc3)] {
@@ -349,12 +366,12 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
     if !add {
         // 与普通扫描共用第五个参数：紧密数值分量，随后是段起点位。
         e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
-        for (component, _) in scan.ty.components.iter().enumerate() {
-            e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
-            e.u32(component as u32 * 4);
+        for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
+            e.bytes(&[if wide {0x66} else {0xf3}, 0x41, 0x0f, if wide {0xd6} else {0x11}, 0x82 + component as u8 * 8]);
+            e.u32(*offset);
         }
         e.bytes(&[0x45, 0x89, 0x8a]);
-        e.u32(scan.ty.components.len() as u32 * 4);
+        e.u32(scan.ty.size);
     }
     e.bytes(&[0xc3]);
     e.finish(0)

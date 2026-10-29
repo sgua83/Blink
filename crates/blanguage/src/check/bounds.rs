@@ -21,13 +21,14 @@ pub(super) fn for_cursor(begin: &Value, limit: &Value, body: &[Stmt]) -> Proof {
 enum Fact {
     Equal(ValueIdentity, ValueIdentity),
     Index(ValueIdentity, IndexDomain),
-    Minimum(ValueIdentity, u32),
-    Maximum(ValueIdentity, u32),
+    Minimum(ValueIdentity, Scalar, Bits),
+    Maximum(ValueIdentity, Scalar, Bits),
     NonZero(ValueIdentity),
     Boolean(ValueIdentity, bool),
-    Below(ValueIdentity, ValueIdentity, bool, bool),
+    Below(ValueIdentity, ValueIdentity, bool, Scalar),
     Outside(ValueIdentity,IndexDomain),
     Zero(ValueIdentity),
+    NotEqual(ValueIdentity, ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
@@ -79,8 +80,8 @@ impl Place {
                     == roots.get(&identity).unwrap_or(&identity)
                 {
                     match fact {
-                        Fact::Minimum(_, lower) => index_range.0 = index_range.0.max(lower),
-                        Fact::Maximum(_, upper) => index_range.1 = index_range.1.min(upper),
+                        Fact::Minimum(_, Scalar::U32, lower) => index_range.0 = index_range.0.max(lower as u32),
+                        Fact::Maximum(_, Scalar::U32, upper) => index_range.1 = index_range.1.min(upper as u32),
                         Fact::NonZero(_) => index_range.0 = index_range.0.max(1),
                         _ => {}
                     }
@@ -92,20 +93,20 @@ impl Place {
     }
 }
 #[derive(Clone)]
-struct IntegerRanges(Vec<(u32, u32)>);
+struct IntegerRanges(Vec<(Bits, Bits)>);
 impl Default for IntegerRanges {
     fn default() -> Self {
-        Self(vec![(0, u32::MAX)])
+        Self(vec![(0, Bits::MAX)])
     }
 }
 impl IntegerRanges {
-    fn from_intervals(intervals: impl IntoIterator<Item = (u32, u32)>) -> Self {
+    fn from_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
         let mut intervals: Vec<_> = intervals.into_iter().filter(|(a, b)| a <= b).collect();
         intervals.sort_unstable();
-        let mut merged: Vec<(u32, u32)> = Vec::new();
+        let mut merged: Vec<(Bits, Bits)> = Vec::new();
         for (lower, upper) in intervals {
             if let Some(last) = merged.last_mut()
-                && u64::from(lower) <= u64::from(last.1) + 1
+                && u128::from(lower) <= u128::from(last.1) + 1
             {
                 last.1 = last.1.max(upper);
             } else {
@@ -114,16 +115,16 @@ impl IntegerRanges {
         }
         Self(merged)
     }
-    fn interval(lower: u32, upper: u32) -> Self {
+    fn interval(lower: Bits, upper: Bits) -> Self {
         Self::from_intervals([(lower, upper)])
     }
-    fn hull(&self) -> (u32, u32) {
+    fn hull(&self) -> (Bits, Bits) {
         match (self.0.first(), self.0.last()) {
             (Some(first), Some(last)) => (first.0, last.1),
             _ => (1, 0),
         }
     }
-    fn contains(&self, value: u32) -> bool {
+    fn contains(&self, value: Bits) -> bool {
         self.0
             .iter()
             .any(|&(lower, upper)| lower <= value && value <= upper)
@@ -131,10 +132,10 @@ impl IntegerRanges {
     fn union(&self, other: &Self) -> Self {
         Self::from_intervals(self.0.iter().chain(&other.0).copied())
     }
-    fn restrict(&self, lower: u32, upper: u32) -> Self {
+    fn restrict(&self, lower: Bits, upper: Bits) -> Self {
         Self::from_intervals(self.0.iter().map(|&(a, b)| (a.max(lower), b.min(upper))))
     }
-    fn without(&self, value: u32) -> Self {
+    fn without(&self, value: Bits) -> Self {
         let mut intervals = Vec::new();
         for &(lower, upper) in &self.0 {
             if value < lower || value > upper {
@@ -150,23 +151,13 @@ impl IntegerRanges {
         }
         Self(intervals)
     }
-    fn map(&self, mut operation: impl FnMut((u32, u32)) -> Self) -> Self {
+    fn map(&self, mut operation: impl FnMut((Bits, Bits)) -> Self) -> Self {
         Self::from_intervals(self.0.iter().flat_map(|&interval| operation(interval).0))
     }
-    fn flip_sign_order(&self) -> Self {
+    fn shift_counts(&self, scalar: Scalar) -> Self {
+        let bias = scalar.order_bias();
         self.map(|(lower, upper)| {
-            integer_result_range(
-                (
-                    i128::from(lower) + (1i128 << 31),
-                    i128::from(upper) + (1i128 << 31),
-                ),
-                0,
-            )
-        })
-    }
-    fn shift_counts(&self, bias: u32) -> Self {
-        self.map(|(lower, upper)| {
-            let mask = u32::BITS - 1;
+            let mask = Bits::from(scalar.bit_width() - 1);
             if upper - lower >= mask {
                 return Self::interval(bias, bias | mask);
             }
@@ -182,7 +173,7 @@ impl IntegerRanges {
     fn combine(
         &self,
         other: &Self,
-        mut operation: impl FnMut((u32, u32), (u32, u32)) -> Self,
+        mut operation: impl FnMut((Bits, Bits), (Bits, Bits)) -> Self,
     ) -> Self {
         let mut intervals = Vec::new();
         for &left in &self.0 {
@@ -266,7 +257,7 @@ impl Proof {
             self.origins
                 .iter()
                 .zip(registers)
-                .filter(|(_, reg)| matches!(types[**reg], Scalar::Bool | Scalar::U32 | Scalar::I32))
+                .filter(|(_, reg)| types[**reg] == Scalar::Bool || types[**reg].is_integer())
                 .flat_map(|(origins, reg)| {
                     let target = ValueIdentity::Register(*reg);
                     origins
@@ -378,7 +369,7 @@ impl Proof {
                     }
                     return clause;
                 }
-                Fact::Below(lower, upper, strict, signed) => {
+                Fact::Below(lower, upper, strict, scalar) => {
                     let Some((lower_id, upper_id)) =
                         identity(lower, bindings).zip(identity(upper, bindings))
                     else {
@@ -388,8 +379,8 @@ impl Proof {
                     let same = lower.origins[0]
                         .iter()
                         .any(|id| upper.origins[0].contains(id));
-                    let possible = lower.range_set(0).0.iter().any(|&(a, b)| {
-                        upper.range_set(0).0.iter().any(|&(c, d)| {
+                    let possible = lower.range_set(0).restrict(0, scalar.bit_mask()).0.iter().any(|&(a, b)| {
+                        upper.range_set(0).restrict(0, scalar.bit_mask()).0.iter().any(|&(c, d)| {
                             if same {
                                 !strict && a.max(c) <= b.min(d)
                             } else if strict {
@@ -408,23 +399,42 @@ impl Proof {
                         (lower_id, lower),
                         (upper_id, upper),
                         strict,
-                        signed,
+                        scalar,
                     );
                     return Clause::facts(facts);
                 }
                 Fact::Equal(a, b) => identity(a, bindings)
                     .zip(identity(b, bindings))
                     .map(|(a, b)| Fact::equal(a, b)),
+                Fact::NotEqual(a, b) => {
+                    if let Some((left, right)) = bindings.get(&a).zip(bindings.get(&b)) {
+                        let same = left.known_identity(0).zip(right.known_identity(0))
+                            .is_some_and(|(a, b)| a == b);
+                        let booleans = left.component_condition(0).and_then(Condition::boolean_constant)
+                            .zip(right.component_condition(0).and_then(Condition::boolean_constant));
+                        let (al, ah) = left.range(0);
+                        let (bl, bh) = right.range(0);
+                        if same || booleans.is_some_and(|(a,b)| a == b)
+                            || (al == ah && bl == bh && al == bl) {
+                            return Clause::impossible();
+                        }
+                        if booleans.is_some_and(|(a,b)| a != b) || ah < bl || bh < al {
+                            return Clause::default();
+                        }
+                    }
+                    identity(a, bindings).zip(identity(b, bindings))
+                        .map(|(a,b)| Fact::NotEqual(a.min(b), a.max(b)))
+                },
                 Fact::Index(id, d) => identity(id, bindings)
                     .zip(domain(d, bindings))
                     .map(|(id, d)| Fact::Index(id, d)),
-                Fact::Minimum(id,n)=>{
-                    if let Some(value)=bindings.get(&id){let range=value.range_set(0).hull();if range.0>=n{return Clause::default();}if range.1<n{return Clause::impossible();}}
-                    identity(id,bindings).map(|id|Fact::Minimum(id,n))
+                Fact::Minimum(id, scalar, n)=>{
+                    if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return Clause::default();}if range.1<n{return Clause::impossible();}}
+                    identity(id,bindings).map(|id|Fact::Minimum(id, scalar, n))
                 },
-                Fact::Maximum(id,n)=>{
-                    if let Some(value)=bindings.get(&id){let range=value.range_set(0).hull();if range.1<=n{return Clause::default();}if range.0>n{return Clause::impossible();}}
-                    identity(id,bindings).map(|id|Fact::Maximum(id,n))
+                Fact::Maximum(id, scalar, n)=>{
+                    if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return Clause::default();}if range.0>n{return Clause::impossible();}}
+                    identity(id,bindings).map(|id|Fact::Maximum(id, scalar, n))
                 },
                 Fact::NonZero(id)=>{
                     if bindings.get(&id).is_some_and(|value|value.nonzero.first()==Some(&true)){return Clause::default();}
@@ -536,7 +546,7 @@ impl Proof {
         }
         translated
     }
-    pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<u32>> {
+    pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<Bits>> {
         ty.components
             .iter()
             .enumerate()
@@ -553,12 +563,9 @@ impl Proof {
                         _ => None,
                     };
                 }
-                let bias = match scalar {
-                    Scalar::U32 => 0,
-                    Scalar::I32 => 1 << 31,
-                    _ => return None,
-                };
-                match self.range_set(component).0.as_slice() {
+                if !scalar.is_integer() { return None; }
+                let bias = scalar.order_bias();
+                match self.range_set(component).restrict(0, scalar.bit_mask()).0.as_slice() {
                     [(lower, upper)] if lower == upper => Some(lower ^ bias),
                     _ => None,
                 }
@@ -678,7 +685,7 @@ impl Proof {
     }
     pub fn unsigned(minimum: u32, maximum: u32) -> Self {
         Self {
-            ranges: vec![IntegerRanges::interval(minimum, maximum)],
+            ranges: vec![IntegerRanges::interval(Bits::from(minimum), Bits::from(maximum))],
             ..Self::default()
         }
     }
@@ -735,23 +742,31 @@ impl Proof {
             value.proof.conditions.get(component).cloned().flatten()
         }
     }
-    fn range(&self, component: usize) -> (u32, u32) {
+    fn range(&self, component: usize) -> (Bits, Bits) {
         self.range_set(component).hull()
     }
     fn range_set(&self, component: usize) -> IntegerRanges {
         self.ranges.get(component).cloned().unwrap_or_default()
     }
-    pub fn integer_bits(value: &Value) -> Self {
+    pub fn integer_cast(value: &Value, target: Scalar) -> Self {
         Self {
             ranges: (0..value.regs.len())
-                .map(|i| value.component_ranges(i).flip_sign_order())
+                .map(|i| {
+                    let source = value.ty.components[i].0;
+                    value.component_ranges(i).map(|(lower,upper)| {
+                        let decode = |bits| if source.is_signed() {
+                            i128::from(source.signed(bits ^ source.order_bias()))
+                        } else { i128::from(bits) };
+                        integer_result_range((decode(lower),decode(upper)),target.order_bias(),target.bit_width())
+                    })
+                })
                 .collect(),
             nonzero: (0..value.regs.len())
-                .map(|i| value.component_nonzero(i))
+                .map(|i| target.size() >= value.ty.components[i].0.size() && value.component_nonzero(i))
                 .collect(),
             // 索引域约束原 u32 位模式；中间 i32 仍不能直接作为索引。
             domains: (0..value.regs.len())
-                .map(|i| value.proof.domains(i))
+                .map(|i| if target.size() == value.ty.components[i].0.size() { value.proof.domains(i) } else { Domains::new() })
                 .collect(),
             ..Self::default()
         }
@@ -859,7 +874,7 @@ impl Proof {
     }
     fn fact_components(ty: &Ty) -> impl Iterator<Item = usize> + '_ {
         ty.components.iter().enumerate().filter_map(|(component, (scalar, _))| {
-            matches!(scalar, Scalar::Bool | Scalar::U32 | Scalar::I32).then_some(component)
+            (*scalar == Scalar::Bool || scalar.is_integer()).then_some(component)
         })
     }
     fn facts(&self, ty: &Ty) -> Facts {
@@ -884,20 +899,20 @@ impl Proof {
                         }
                     }
                 }
-                if matches!(scalar, Scalar::U32 | Scalar::I32)
+                if scalar.is_integer()
                     && self.nonzero.get(component) == Some(&true)
                 {
                     facts.insert(Fact::NonZero(identity));
                 }
-                if matches!(scalar, Scalar::U32 | Scalar::I32) {
-                    let (minimum, maximum) = self.range(component);
-                    let zero=if *scalar==Scalar::I32{0x8000_0000}else{0};
+                if scalar.is_integer() {
+                    let (minimum, maximum) = self.range_set(component).restrict(0, scalar.bit_mask()).hull();
+                    let zero=scalar.order_bias();
                     if minimum==zero && maximum==zero{facts.insert(Fact::Zero(identity));}
                     if minimum != 0 {
-                        facts.insert(Fact::Minimum(identity, minimum));
+                        facts.insert(Fact::Minimum(identity, *scalar, minimum));
                     }
-                    if maximum != u32::MAX {
-                        facts.insert(Fact::Maximum(identity, maximum));
+                    if maximum != scalar.bit_mask() {
+                        facts.insert(Fact::Maximum(identity, *scalar, maximum));
                     }
                     if *scalar == Scalar::U32 {
                         facts.extend(
@@ -982,16 +997,15 @@ impl Proof {
             // 固定形状的索引事实同时给出数值上界；保留原有区间与空路径。
             self.ranges
                 .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
-            self.ranges[component] = self.ranges[component].restrict(0, count).without(count);
+            self.ranges[component] = self.ranges[component].restrict(0, Bits::from(count)).without(Bits::from(count));
         }
         self.domains
             .resize(self.domains.len().max(component + 1), Domains::new());
         self.domains[component].insert(domain);
     }
     pub(super) fn unsigned_minimum(&self, component: usize) -> u32 {
-        self.range(component)
-            .0
-            .max(u32::from(self.nonzero.get(component) == Some(&true)))
+        self.range_set(component).restrict(0, Bits::from(u32::MAX)).hull().0
+            .max(Bits::from(self.nonzero.get(component) == Some(&true))) as u32
     }
     fn refine(&mut self, ty: &Ty, component: usize, fact: Fact) {
         match fact {
@@ -1005,29 +1019,29 @@ impl Proof {
             Fact::Index(_, domain) if ty.components[component].0 == Scalar::U32 => {
                 self.mark_domain(component, domain);
             }
-            Fact::Minimum(_, lower)
-                if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) =>
+            Fact::Minimum(_, scalar, lower)
+                if ty.components[component].0 == scalar =>
             {
                 self.ranges
                     .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
-                self.ranges[component] = self.ranges[component].restrict(lower, u32::MAX);
-                if ty.components[component].0 == Scalar::U32 && lower != 0 {
+                self.ranges[component] = self.ranges[component].restrict(lower, scalar.bit_mask());
+                if !scalar.is_signed() && lower != 0 {
                     self.mark_nonzero(component);
                 }
             }
-            Fact::Maximum(_, upper)
-                if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) =>
+            Fact::Maximum(_, scalar, upper)
+                if ty.components[component].0 == scalar =>
             {
                 self.ranges
                     .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
                 self.ranges[component] = self.ranges[component].restrict(0, upper);
             }
-            Fact::Zero(_) if matches!(ty.components[component].0,Scalar::U32|Scalar::I32)=>{
-                let zero=if ty.components[component].0==Scalar::I32{0x8000_0000}else{0};
+            Fact::Zero(_) if ty.components[component].0.is_integer()=>{
+                let zero=ty.components[component].0.order_bias();
                 self.ranges.resize_with(self.ranges.len().max(component+1),IntegerRanges::default);
                 self.ranges[component]=self.ranges[component].restrict(zero,zero);
             },
-            Fact::NonZero(_) if matches!(ty.components[component].0, Scalar::U32 | Scalar::I32) => {
+            Fact::NonZero(_) if ty.components[component].0.is_integer() => {
                 self.mark_nonzero(component);
             }
             _ => {}
@@ -1076,11 +1090,11 @@ impl Fact {
             Self::Index(id, _)
             | Self::Outside(id,_)
             | Self::Zero(id)
-            | Self::Minimum(id, _)
-            | Self::Maximum(id, _)
+            | Self::Minimum(id, ..)
+            | Self::Maximum(id, ..)
             | Self::NonZero(id)
             | Self::Boolean(id, _) => Some(id),
-            Self::Equal(_, _) | Self::Below(..) => None,
+            Self::Equal(_, _) | Self::NotEqual(_, _) | Self::Below(..) => None,
         }
     }
     fn at(self, id: ValueIdentity) -> Self {
@@ -1088,11 +1102,12 @@ impl Fact {
             Self::Index(_, domain) => Self::Index(id, domain),
             Self::Outside(_,domain)=>Self::Outside(id,domain),
             Self::Zero(_)=>Self::Zero(id),
-            Self::Minimum(_, bound) => Self::Minimum(id, bound),
-            Self::Maximum(_, bound) => Self::Maximum(id, bound),
+            Self::Minimum(_, scalar, bound) => Self::Minimum(id, scalar, bound),
+            Self::Maximum(_, scalar, bound) => Self::Maximum(id, scalar, bound),
             Self::NonZero(_) => Self::NonZero(id),
             Self::Boolean(_, truth) => Self::Boolean(id, truth),
             equal @ Self::Equal(_, _) => equal,
+            unequal @ Self::NotEqual(_, _) => unequal,
             below @ Self::Below(..) => below,
         }
     }
@@ -1164,21 +1179,14 @@ impl Proof {
 impl Value {
     pub(super) fn is_nonzero(&self) -> bool {
         self.ty.is_numeric()
-            && matches!(
-                self.ty.components.first(),
-                Some((Scalar::U32 | Scalar::I32, _))
-            )
+            && self.ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer())
             && (0..self.regs.len()).all(|i| self.component_nonzero(i))
     }
     fn component_nonzero(&self, component: usize) -> bool {
-        matches!(self.ty.components[component].0, Scalar::U32 | Scalar::I32)
+        self.ty.components[component].0.is_integer()
             && (self.proof.nonzero.get(component) == Some(&true)
                 || !self.component_ranges(component).contains(
-                    if self.ty.components[component].0 == Scalar::I32 {
-                        0x8000_0000
-                    } else {
-                        0
-                    },
+                    self.ty.components[component].0.order_bias(),
                 )
                 || self.constant.as_ref().is_some_and(|v| v[component] != 0))
     }
@@ -1186,28 +1194,24 @@ impl Value {
         if self.ty != Ty::scalar(Scalar::U32) {
             return 0;
         }
-        self.component_range(0).0
+        self.component_range(0).0 as u32
     }
     pub(super) fn maximum(&self) -> u32 {
         if self.ty != Ty::scalar(Scalar::U32) {
             return u32::MAX;
         }
-        self.component_range(0).1
+        self.component_range(0).1 as u32
     }
-    fn component_range(&self, component: usize) -> (u32, u32) {
+    fn component_range(&self, component: usize) -> (Bits, Bits) {
         self.component_ranges(component).hull()
     }
     fn component_ranges(&self, component: usize) -> IntegerRanges {
         let scalar = self.ty.components[component].0;
-        if !matches!(scalar, Scalar::U32 | Scalar::I32) {
+        if !scalar.is_integer() {
             return IntegerRanges::default();
         }
-        let bias = if scalar == Scalar::I32 {
-            0x8000_0000
-        } else {
-            0
-        };
-        let mut ranges = self.proof.range_set(component);
+        let bias = scalar.order_bias();
+        let mut ranges = self.proof.range_set(component).restrict(0, scalar.bit_mask());
         if self.proof.nonzero.get(component) == Some(&true) {
             ranges = ranges.without(bias);
         }
@@ -1288,15 +1292,17 @@ enum ClauseNode {
 impl Clause {
     fn negate(&self)->Self{
         fn fact(value:Fact)->Clause{match value{
-            Fact::Minimum(id,0)|Fact::Maximum(id,u32::MAX)=>{let _=id;Clause::impossible()},
-            Fact::Minimum(id,n)=>Clause::facts([Fact::Maximum(id,n-1)].into()),
-            Fact::Maximum(id,n)=>Clause::facts([Fact::Minimum(id,n+1)].into()),
+            Fact::Minimum(_, _, 0)=>Clause::impossible(),
+            Fact::Maximum(_, scalar, n) if n==scalar.bit_mask()=>Clause::impossible(),
+            Fact::Minimum(id, scalar, n)=>Clause::facts([Fact::Maximum(id, scalar, n-1)].into()),
+            Fact::Maximum(id, scalar, n)=>Clause::facts([Fact::Minimum(id, scalar, n+1)].into()),
             Fact::NonZero(id)=>Clause::facts([Fact::Zero(id)].into()),
             Fact::Zero(id)=>Clause::facts([Fact::NonZero(id)].into()),
             Fact::Boolean(id,truth)=>Clause::facts([Fact::Boolean(id,!truth)].into()),
-            Fact::Equal(a,b)=>Clause::either(&Clause::facts([Fact::Below(a,b,true,false)].into()),&Clause::facts([Fact::Below(b,a,true,false)].into())),
+            Fact::Equal(a,b)=>Clause::facts([Fact::NotEqual(a,b)].into()),
+            Fact::NotEqual(a,b)=>Clause::facts([Fact::equal(a,b)].into()),
             Fact::Below(a,b,strict,signed)=>Clause::facts([Fact::Below(b,a,!strict,signed)].into()),
-            Fact::Index(id,IndexDomain::Fixed(n))=>Clause::facts([Fact::Minimum(id,n)].into()),
+            Fact::Index(id,IndexDomain::Fixed(n))=>Clause::facts([Fact::Minimum(id, Scalar::U32, Bits::from(n))].into()),
             Fact::Index(id,d)=>Clause::facts([Fact::Outside(id,d)].into()),
             Fact::Outside(id,d)=>Clause::facts([Fact::Index(id,d)].into()),
         }}
@@ -1326,11 +1332,12 @@ impl Clause {
                         .iter()
                         .map(|fact| match *fact {
                             Fact::Equal(a, b) => Fact::equal(identity(a), identity(b)),
+                            Fact::NotEqual(a, b) => {let (a,b)=(identity(a),identity(b));Fact::NotEqual(a.min(b),a.max(b))},
                             Fact::Index(id, domain) => {
                                 Fact::Index(identity(id), output_domain(domain, bindings))
                             }
-                            Fact::Minimum(id, n) => Fact::Minimum(identity(id), n),
-                            Fact::Maximum(id, n) => Fact::Maximum(identity(id), n),
+                            Fact::Minimum(id, scalar, n) => Fact::Minimum(identity(id), scalar, n),
+                            Fact::Maximum(id, scalar, n) => Fact::Maximum(identity(id), scalar, n),
                             Fact::NonZero(id) => Fact::NonZero(identity(id)),
                             Fact::Zero(id)=>Fact::Zero(identity(id)),
                             Fact::Outside(id,d)=>Fact::Outside(identity(id),output_domain(d,bindings)),
@@ -1381,8 +1388,8 @@ impl Clause {
             }
             ownership::ApplicationIndex::Value(identity,_) => Self::facts(
                 [
-                    Fact::Minimum(identity, element as u32),
-                    Fact::Maximum(identity, element as u32),
+                    Fact::Minimum(identity, Scalar::U32, element as Bits),
+                    Fact::Maximum(identity, Scalar::U32, element as Bits),
                 ]
                 .into(),
             ),
@@ -1547,8 +1554,8 @@ impl Clause {
         fn facts(value:&Facts)->Option<Facts>{
             if contradictory(value){return None;}
             let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))).copied().collect::<Facts>();
-            next.extend(minimums(value).into_iter().filter(|(_,n)|*n!=0).map(|(id,n)|Fact::Minimum(id,n)));
-            next.extend(maximums(value).into_iter().filter(|(_,n)|*n!=u32::MAX).map(|(id,n)|Fact::Maximum(id,n)));
+            next.extend(minimums(value).into_iter().filter(|(_,n)|*n!=0).map(|((id,scalar),n)|Fact::Minimum(id, scalar, n)));
+            next.extend(maximums(value).into_iter().filter(|((_,scalar),n)|*n!=scalar.bit_mask()).map(|((id,scalar),n)|Fact::Maximum(id, scalar, n)));
             Some(next)
         }
         let mut values:BTreeMap<usize,BTreeSet<Facts>>=BTreeMap::new();
@@ -1669,38 +1676,85 @@ impl Clause {
     }
 }
 fn contradictory(facts: &Facts) -> bool {
-    if facts.iter().any(|fact| {
-        matches!(fact, Fact::Boolean(id, truth) if facts.contains(&Fact::Boolean(*id, !truth)))
-    }) {
-        return true;
+    let roots = equality_roots(facts);
+    let root = |id| roots.get(&id).copied().unwrap_or(id);
+    let canonical = |fact: Fact| match fact {
+        Fact::Equal(a, b) => Fact::equal(root(a), root(b)),
+        Fact::NotEqual(a, b) => {
+            let (a, b) = (root(a), root(b));
+            Fact::NotEqual(a.min(b), a.max(b))
+        }
+        Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
+        value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
+    };
+    // 有真实别名时只排序原事实的借用引用，不复制范围、布尔或零值表。
+    let mut aliases: Vec<&Fact> = Vec::new();
+    if !roots.is_empty() {
+        aliases.extend(facts.iter());
+        aliases.sort_unstable_by_key(|fact| canonical(**fact));
     }
-    if facts.iter().any(|fact|match *fact{
-        Fact::NonZero(id)=>facts.contains(&Fact::Zero(id)),
-        Fact::Index(id,d)=>facts.contains(&Fact::Outside(id,d)),
-        Fact::Below(a,b,strict,signed)=>{(a==b&&strict)||facts.contains(&Fact::Below(b,a,!strict,signed))||(strict&&facts.contains(&Fact::equal(a,b)))},
-        _=>false,
-    }){return true;}
-    // 判定只读取同一身份的最强界限，不需要拥有两张查找表。
-    let mut lower = limit_facts(facts)
-        .filter_map(|(upper, id, value)| (!upper).then_some((id, value)))
-        .peekable();
-    let mut upper = limit_facts(facts)
-        .filter_map(|(upper, id, value)| upper.then_some((id, value)))
-        .peekable();
-    while let (Some(&(left, minimum)), Some(&(right, maximum))) = (lower.peek(), upper.peek()) {
-        match left.cmp(&right) {
-            std::cmp::Ordering::Less => { lower.next(); }
-            std::cmp::Ordering::Greater => { upper.next(); }
-            std::cmp::Ordering::Equal => {
-                if minimum > maximum {
-                    return true;
-                }
-                lower.next();
-                upper.next();
+    let select = |query: Fact, preceding: bool| {
+        if roots.is_empty() {
+            if preceding { facts.range(..=query).next_back().copied() }
+            else { facts.range(query..).next().copied() }
+        } else {
+            let index = aliases.partition_point(|fact| {
+                let value = canonical(**fact);
+                if preceding { value <= query } else { value < query }
+            });
+            if preceding {
+                index.checked_sub(1).map(|index| canonical(*aliases[index]))
+            } else {
+                aliases.get(index).map(|fact| canonical(**fact))
             }
         }
-    }
-    false
+    };
+    let contains = |fact| select(fact, false) == Some(fact);
+    let bounds = |id, scalar: Scalar| {
+        let lower = match select(Fact::Minimum(id, scalar, scalar.bit_mask()), true) {
+            Some(Fact::Minimum(other, actual, bound)) if (other, actual) == (id, scalar) => bound,
+            _ => 0,
+        };
+        let upper = match select(Fact::Maximum(id, scalar, 0), false) {
+            Some(Fact::Maximum(other, actual, bound)) if (other, actual) == (id, scalar) => bound,
+            _ => scalar.bit_mask(),
+        };
+        (lower, upper)
+    };
+    facts.iter().any(|fact| match canonical(*fact) {
+        Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
+        Fact::Zero(id) => contains(Fact::NonZero(id)),
+        Fact::NonZero(id) => contains(Fact::Zero(id)),
+        Fact::Index(id, domain) => contains(Fact::Outside(id, domain)),
+        Fact::Outside(id, domain) => contains(Fact::Index(id, domain)),
+        Fact::Minimum(id, scalar, _) | Fact::Maximum(id, scalar, _) => {
+            let (lower, upper) = bounds(id, scalar);
+            let zero = scalar.order_bias();
+            lower > upper
+                || (contains(Fact::Zero(id)) && !(lower <= zero && zero <= upper))
+                || (contains(Fact::NonZero(id)) && lower == upper && lower == zero)
+        }
+        Fact::NotEqual(a, b) => {
+            a == b
+                || (contains(Fact::Zero(a)) && contains(Fact::Zero(b)))
+                || [false, true].into_iter().any(|truth| {
+                    contains(Fact::Boolean(a, truth)) && contains(Fact::Boolean(b, truth))
+                })
+                || [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|scalar| {
+                    let value = |id| {
+                        if contains(Fact::Zero(id)) { Some(scalar.order_bias()) }
+                        else {
+                            let (lower, upper) = bounds(id, scalar);
+                            (lower == upper).then_some(lower)
+                        }
+                    };
+                    value(a).zip(value(b)).is_some_and(|(a, b)| a == b)
+                })
+        }
+        Fact::Below(a, b, strict, scalar) => (a == b && strict)
+            || contains(Fact::Below(b, a, !strict, scalar)),
+        Fact::Equal(..) => false,
+    })
 }
 
 // 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。
@@ -1717,18 +1771,20 @@ fn cross_conflict(a: &Facts, b: &Facts) -> bool {
         Fact::Zero(id) => other.contains(&Fact::NonZero(id)),
         Fact::Index(id, domain) => other.contains(&Fact::Outside(id, domain)),
         Fact::Outside(id, domain) => other.contains(&Fact::Index(id, domain)),
-        Fact::Below(a, b, strict, signed) => {
-            other.contains(&Fact::Below(b, a, !strict, signed))
+        Fact::Below(a, b, strict, scalar) => {
+            other.contains(&Fact::Below(b, a, !strict, scalar))
                 || (strict && other.contains(&Fact::equal(a, b)))
         }
-        Fact::Equal(a, b) => *fact == Fact::equal(a, b) && [false, true].into_iter().any(|signed| {
-            other.contains(&Fact::Below(a, b, true, signed))
-                || other.contains(&Fact::Below(b, a, true, signed))
-        }),
-        Fact::Minimum(id, lower) => other
-            .range(Fact::Maximum(id, 0)..Fact::Maximum(id, lower)).next().is_some(),
-        Fact::Maximum(id, upper) => other
-            .range((Excluded(Fact::Minimum(id, upper)), Included(Fact::Minimum(id, u32::MAX))))
+        Fact::Equal(a, b) => other.contains(&Fact::NotEqual(a, b))
+            || (*fact == Fact::equal(a, b) && [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|scalar| {
+                other.contains(&Fact::Below(a, b, true, scalar))
+                    || other.contains(&Fact::Below(b, a, true, scalar))
+            })),
+        Fact::NotEqual(a, b) => other.contains(&Fact::equal(a, b)),
+        Fact::Minimum(id, scalar, lower) => other
+            .range(Fact::Maximum(id, scalar, 0)..Fact::Maximum(id, scalar, lower)).next().is_some(),
+        Fact::Maximum(id, scalar, upper) => other
+            .range((Excluded(Fact::Minimum(id, scalar, upper)), Included(Fact::Minimum(id, scalar, scalar.bit_mask()))))
             .next().is_some(),
     })
 }
@@ -1772,20 +1828,20 @@ fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<Qu
             // 环境仍归原所有者；这里只生产两支共同新增的范围。
             let mut left = limit_facts(&a).peekable();
             let mut right = limit_facts(&b).peekable();
-            while let (Some(&(upper, identity, left_value)), Some(&(other_upper, other_identity, right_value))) = (left.peek(), right.peek()) {
-                match (upper, identity).cmp(&(other_upper, other_identity)) {
+            while let (Some(&(upper, identity, scalar, left_value)), Some(&(other_upper, other_identity, other_scalar, right_value))) = (left.peek(), right.peek()) {
+                match (upper, identity, scalar).cmp(&(other_upper, other_identity, other_scalar)) {
                     std::cmp::Ordering::Less => { left.next(); }
                     std::cmp::Ordering::Greater => { right.next(); }
                     std::cmp::Ordering::Equal => {
                         if upper {
                             let bound = left_value.max(right_value);
-                            if environment.range(Fact::Maximum(identity, 0)..=Fact::Maximum(identity, bound)).next().is_none() {
-                                common.insert(Fact::Maximum(identity, bound));
+                            if environment.range(Fact::Maximum(identity, scalar, 0)..=Fact::Maximum(identity, scalar, bound)).next().is_none() {
+                                common.insert(Fact::Maximum(identity, scalar, bound));
                             }
                         } else {
                             let bound = left_value.min(right_value);
-                            if environment.range(Fact::Minimum(identity, bound)..=Fact::Minimum(identity, u32::MAX)).next().is_none() {
-                                common.insert(Fact::Minimum(identity, bound));
+                            if environment.range(Fact::Minimum(identity, scalar, bound)..=Fact::Minimum(identity, scalar, scalar.bit_mask())).next().is_none() {
+                                common.insert(Fact::Minimum(identity, scalar, bound));
                             }
                         }
                         left.next();
@@ -1799,46 +1855,41 @@ fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<Qu
         (a, None) | (None, a) => a,
     }
 }
-// 事实已按类别、身份和数值排序；合流只顺序消费每个身份的最强界。
-fn limit_facts(facts: &Facts) -> impl Iterator<Item = (bool, ValueIdentity, u32)> + '_ {
+// Fact 按类别、身份、实际标量类型和值排序；这里只借用每一组的最强界。
+fn limit_facts(facts: &Facts) -> impl Iterator<Item = (bool, ValueIdentity, Scalar, Bits)> + '_ {
     let mut values = facts.iter().filter_map(|fact| match *fact {
-        Fact::Minimum(identity, value) => Some((false, identity, value)),
-        Fact::Maximum(identity, value) => Some((true, identity, value)),
+        Fact::Minimum(identity, scalar, value) => Some((false, identity, scalar, value)),
+        Fact::Maximum(identity, scalar, value) => Some((true, identity, scalar, value)),
         _ => None,
     }).peekable();
     std::iter::from_fn(move || {
-        let (upper, identity, mut value) = values.next()?;
-        while let Some(&(other_upper, other_identity, next)) = values.peek() {
-            if (upper, identity) != (other_upper, other_identity) {
-                break;
-            }
-            // 下界取末个最大值，上界保留首个最小值。
-            if !upper {
-                value = next;
-            }
+        let (upper, identity, scalar, mut value) = values.next()?;
+        while let Some(&(other_upper, other_identity, other_scalar, next)) = values.peek() {
+            if (upper, identity, scalar) != (other_upper, other_identity, other_scalar) { break; }
+            if !upper { value = next; }
             values.next();
         }
-        Some((upper, identity, value))
+        Some((upper, identity, scalar, value))
     })
 }
-fn minimums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, u32> {
-    let mut result: BTreeMap<ValueIdentity, u32> = BTreeMap::new();
+fn minimums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIdentity, Scalar), Bits> {
+    let mut result: BTreeMap<(ValueIdentity, Scalar), Bits> = BTreeMap::new();
     for fact in facts {
-        if let Fact::Minimum(identity, lower) = fact {
+        if let Fact::Minimum(identity, scalar, lower) = fact {
             result
-                .entry(*identity)
+                .entry((*identity, *scalar))
                 .and_modify(|v| *v = (*v).max(*lower))
                 .or_insert(*lower);
         }
     }
     result
 }
-fn maximums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, u32> {
-    let mut result: BTreeMap<ValueIdentity, u32> = BTreeMap::new();
+fn maximums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<(ValueIdentity, Scalar), Bits> {
+    let mut result: BTreeMap<(ValueIdentity, Scalar), Bits> = BTreeMap::new();
     for fact in facts {
-        if let Fact::Maximum(identity, upper) = fact {
+        if let Fact::Maximum(identity, scalar, upper) = fact {
             result
-                .entry(*identity)
+                .entry((*identity, *scalar))
                 .and_modify(|v| *v = (*v).min(*upper))
                 .or_insert(*upper);
         }
@@ -1895,13 +1946,13 @@ impl Condition {
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }
-    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,_)|Fact::Maximum(a,_)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
+    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
         let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};
         let n=element as u32;let mut no=Clause::impossible();
-        if n!=0{no=Clause::either(&no,&Clause::facts([Fact::Maximum(id,n-1)].into()));}
-        if n!=u32::MAX{no=Clause::either(&no,&Clause::facts([Fact::Minimum(id,n+1)].into()));}
+        if n!=0{no=Clause::either(&no,&Clause::facts([Fact::Maximum(id, Scalar::U32, Bits::from(n-1))].into()));}
+        if n!=u32::MAX{no=Clause::either(&no,&Clause::facts([Fact::Minimum(id, Scalar::U32, Bits::from(n+1))].into()));}
         Self{cases:[no,Clause::selection(index,element)]}
     }
     pub(super) fn logical(self,other:Self,any:bool)->Self{if any{Self{cases:[Clause::both(&self.cases[0],&other.cases[0]),Clause::either(&self.cases[1],&other.cases[1])]}}else{Self{cases:[Clause::either(&self.cases[0],&other.cases[0]),Clause::both(&self.cases[1],&other.cases[1])]}}}
@@ -1986,8 +2037,8 @@ impl Condition {
                 equal
             };
         }
-        let signed = a.ty == Ty::scalar(Scalar::I32);
-        if (!signed && a.ty != Ty::scalar(Scalar::U32)) || b.ty != a.ty {
+        let scalar = a.ty.components[0].0;
+        if !scalar.is_integer() || a.ty.components.len() != 1 || b.ty != a.ty {
             return Self::default();
         }
         if op==Comparison::NotEqual{return Self::comparison(Comparison::Equal,a,b).negate();}
@@ -2055,13 +2106,13 @@ impl Condition {
                     for (value, lower) in [(a, b.component_range(0).0), (b, a.component_range(0).0)]
                     {
                         if lower != 0 {
-                            facts.insert(Fact::Minimum(value.identity(), lower));
+                            facts.insert(Fact::Minimum(value.identity(), scalar, lower));
                         }
                     }
                     for (value, upper) in [(a, b.component_range(0).1), (b, a.component_range(0).1)]
                     {
-                        if upper != u32::MAX {
-                            facts.insert(Fact::Maximum(value.identity(), upper));
+                        if upper != scalar.bit_mask() {
+                            facts.insert(Fact::Maximum(value.identity(), scalar, upper));
                         }
                     }
                     for (value, other) in [(a, b), (b, a)] {
@@ -2071,16 +2122,20 @@ impl Condition {
                     }
                 }
                 Comparison::NotEqual => {
+                    let (a,b)=(a.identity(),b.identity());
+                    facts.insert(Fact::NotEqual(a.min(b),a.max(b)));
+                }
+            }
+            if op == Comparison::NotEqual {
                     for (value, other) in [(a, b), (b, a)] {
                         if other.constant.as_deref() == Some(&[0]) {
-                            facts.insert(if signed {
+                            facts.insert(if scalar.is_signed() {
                                 Fact::NonZero(value.identity())
                             } else {
-                                Fact::Minimum(value.identity(), 1)
+                                Fact::Minimum(value.identity(), scalar, 1)
                             });
                         }
                     }
-                }
             }
         }
         let mut cases=std::array::from_fn(|i|if possible[i]{Clause::facts(std::mem::take(&mut facts[i]))}else{Clause::impossible()});
@@ -2094,7 +2149,7 @@ fn constrain(facts: &mut Facts, index: &Value, limit: &Value, strict: bool) {
         (index.identity(), &Proof::capture(index)),
         (limit.identity(), &Proof::capture(limit)),
         strict,
-        index.ty == Ty::scalar(Scalar::I32),
+        index.ty.components[0].0,
     );
 }
 fn constrain_proofs(
@@ -2102,15 +2157,17 @@ fn constrain_proofs(
     (index_id, index): (ValueIdentity, &Proof),
     (limit_id, limit): (ValueIdentity, &Proof),
     strict: bool,
-    signed: bool,
+    scalar: Scalar,
 ) {
-    facts.insert(Fact::Below(index_id, limit_id, strict, signed));
-    if let Some(upper) = limit.range(0).1.checked_sub(u32::from(strict)) {
-        if upper != u32::MAX {
-            facts.insert(Fact::Maximum(index_id, upper));
+    facts.insert(Fact::Below(index_id, limit_id, strict, scalar));
+    let index_range = index.range_set(0).restrict(0, scalar.bit_mask()).hull();
+    let limit_range = limit.range_set(0).restrict(0, scalar.bit_mask()).hull();
+    if let Some(upper) = limit_range.1.checked_sub(Bits::from(strict)) {
+        if upper != scalar.bit_mask() {
+            facts.insert(Fact::Maximum(index_id, scalar, upper));
         }
     }
-    if !signed {
+    if scalar == Scalar::U32 {
         facts.insert(Fact::Index(index_id, IndexDomain::Upper(limit_id, u32::from(strict))));
         facts.extend(
             indices_below(&limit.domains(0), strict)
@@ -2118,28 +2175,27 @@ fn constrain_proofs(
                 .map(|domain| Fact::Index(index_id, domain)),
         );
     }
-    if let Some(lower) = index
-        .range(0)
-        .0
-        .checked_add(u32::from(strict))
-        .filter(|&lower| lower != 0)
+    if let Some(lower) = index_range.0
+        .checked_add(Bits::from(strict))
+        .filter(|&lower| lower != 0 && lower <= scalar.bit_mask())
     {
-        facts.insert(Fact::Minimum(limit_id, lower));
+        facts.insert(Fact::Minimum(limit_id, scalar, lower));
     }
 }
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
 pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
+    let scalar = a.ty.components[0].0;
     let mut proof = Proof {
-        ranges: if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
+        ranges: if scalar.is_integer() {
             (0..count)
                 .map(|i| {
                     let ai = i % a.regs.len();
                     let bi = i % b.regs.len();
                     let left = a.component_ranges(ai);
                     let mut right = b.component_ranges(bi);
-                    let signed = a.ty.components[0].0 == Scalar::I32;
-                    let bias = if signed { 0x8000_0000 } else { 0 };
+                    let signed = scalar.is_signed();
+                    let bias = scalar.order_bias();
                     if matches!(op, "-" | "^" | "&" | "|" | "/" | "%" | "min" | "max")
                         && a.same_component(ai, b, bi)
                     {
@@ -2157,19 +2213,19 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                         };
                     }
                     if matches!(op, "<<" | ">>") {
-                        right = right.shift_counts(bias);
+                        right = right.shift_counts(scalar);
                     }
                     left.combine(&right, |left, right| {
-                        let bitwise = |operation: fn(u32, u32) -> u32| {
-                            let (lower, upper) = bitwise_range(left, right, bias, operation);
+                        let bitwise = |operation: fn(Bits, Bits) -> Bits| {
+                            let (lower, upper) = bitwise_range(left, right, scalar, operation);
                             IntegerRanges::interval(lower, upper)
                         };
                         match op {
                             "&" => bitwise(|a, b| a & b),
                             "|" => bitwise(|a, b| a | b),
                             "^" => bitwise(|a, b| a ^ b),
-                            _ if signed => signed_range(op, left, right),
-                            _ => unsigned_range(op, left, right),
+                            _ if signed => signed_range(op, left, right, scalar),
+                            _ => unsigned_range(op, left, right, scalar),
                         }
                     })
                 })
@@ -2177,7 +2233,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         } else {
             Vec::new()
         },
-        nonzero: if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) && op == "|" {
+        nonzero: if scalar.is_integer() && op == "|" {
             (0..count)
                 .map(|i| {
                     a.component_nonzero(i % a.regs.len()) || b.component_nonzero(i % b.regs.len())
@@ -2195,7 +2251,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         },
         ..Proof::default()
     };
-    if matches!(a.ty.components[0].0, Scalar::U32 | Scalar::I32) {
+    if scalar.is_integer() {
         for component in 0..count {
             if let Some((value, source)) = arithmetic_source(op, a, b, component) {
                 let mut exact = value.projected_proof(&[source]);
@@ -2235,23 +2291,21 @@ fn arithmetic_source<'a>(
         };
     }
     if matches!(op, "<<" | ">>") {
-        return (b.component_ranges(bi).shift_counts(0).hull() == (0, 0)).then_some((a, ai));
+        let scalar = b.ty.components[bi].0;
+        return (b.component_ranges(bi).shift_counts(scalar).hull()
+            == (scalar.order_bias(), scalar.order_bias())).then_some((a, ai));
     }
     let (right, left) = match op {
         "+" | "|" | "^" => (0, Some(0)),
         "*" => (1, Some(1)),
         "-" => (0, None),
         "/" => (1, None),
-        "&" => (u32::MAX, Some(u32::MAX)),
+        "&" => {let mask=a.ty.components[ai].0.bit_mask(); (mask, Some(mask))},
         _ => return None,
     };
     let bits = |value: &Value, index| {
         let (lower, upper) = value.component_range(index);
-        let bias = if value.ty.components[index].0 == Scalar::I32 {
-            0x8000_0000
-        } else {
-            0
-        };
+        let bias = value.ty.components[index].0.order_bias();
         (lower == upper).then_some(lower ^ bias)
     };
     if bits(b, bi) == Some(right) {
@@ -2282,7 +2336,7 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
             || left.contains(&IndexDomain::Room(b_id)) || right.contains(&IndexDomain::Room(a_id));
         if no_wrap {
             domains.insert(IndexDomain::Sum(a_id, b_id));
-            for (base, source, amount) in [(a_id, &left, b.constant.as_ref().map(|v| v[bi])), (b_id, &right, a.constant.as_ref().map(|v| v[ai]))] {
+            for (base, source, amount) in [(a_id, &left, b.constant.as_ref().map(|v| v[bi] as u32)), (b_id, &right, a.constant.as_ref().map(|v| v[ai] as u32))] {
                 if let Some(amount) = amount.filter(|amount| *amount != 0) {
                     domains.insert(IndexDomain::Offset(base, amount));
                     for relation in source {
@@ -2293,7 +2347,7 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
                 }
             }
         }
-        for (source, addend) in [(&left, b.constant.as_ref().map(|v| v[bi])), (&right, a.constant.as_ref().map(|v| v[ai]))] {
+        for (source, addend) in [(&left, b.constant.as_ref().map(|v| v[bi] as u32)), (&right, a.constant.as_ref().map(|v| v[ai] as u32))] {
             if let Some(amount) = addend {
                 for relation in source {
                     let shifted = match *relation {
@@ -2307,9 +2361,9 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
         }
     }
     if op == "-" && a.component_range(ai).0 >= b.component_range(bi).1 {
-        domains.insert(IndexDomain::Upper(a_id, b.component_range(bi).0));
-        if a.constant.as_ref().is_some_and(|v| v[ai] == u32::MAX) { domains.insert(IndexDomain::Room(b_id)); }
-        if let Some(amount) = b.constant.as_ref().map(|v| v[bi]) {
+        domains.insert(IndexDomain::Upper(a_id, b.component_range(bi).0 as u32));
+        if a.constant.as_ref().is_some_and(|v| v[ai] == Bits::from(u32::MAX)) { domains.insert(IndexDomain::Room(b_id)); }
+        if let Some(amount) = b.constant.as_ref().map(|v| v[bi] as u32) {
             for relation in left {
                 let shifted = match relation {
                     IndexDomain::Upper(limit, distance) => distance.checked_add(amount).map(|d| IndexDomain::Upper(limit, d)),
@@ -2354,7 +2408,7 @@ fn inherited_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domain
         return indices_below(&left, strict);
     }
     if op == ">>" {
-        let strict = a.component_nonzero(ai) && !b.component_ranges(bi).shift_counts(0).contains(0);
+        let strict = a.component_nonzero(ai) && !b.component_ranges(bi).shift_counts(Scalar::U32).contains(0);
         return indices_below(&left, strict);
     }
     let Some(constant) = b.constant.as_ref().map(|values| values[bi]) else {
@@ -2371,29 +2425,30 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
         return Proof::condition(Condition::of(value).negate());
     }
     let mut proof = Proof::default();
-    if value.ty.components[0].0 == Scalar::U32 {
+    let scalar = value.ty.components[0].0;
+    if scalar.is_integer() && !scalar.is_signed() {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
                 value.component_ranges(i).map(|(lower, upper)| match op {
-                    UnaryOp::BitNot => IntegerRanges::interval(!upper, !lower),
+                    UnaryOp::BitNot => IntegerRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
                     UnaryOp::UnsignedNegate => {
-                        integer_result_range((-i128::from(upper), -i128::from(lower)), 0)
+                        integer_result_range((-i128::from(upper), -i128::from(lower)), 0, scalar.bit_width())
                     }
                     _ => IntegerRanges::default(),
                 })
             })
             .collect();
-    } else if value.ty.components[0].0 == Scalar::I32 {
+    } else if scalar.is_integer() && scalar.is_signed() {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
                 value.component_ranges(i).map(|(lower, upper)| match op {
-                    UnaryOp::BitNot => IntegerRanges::interval(!upper, !lower),
+                    UnaryOp::BitNot => IntegerRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
                     UnaryOp::SignedNegate => integer_result_range(
                         (
-                            -i128::from((upper ^ 0x8000_0000) as i32),
-                            -i128::from((lower ^ 0x8000_0000) as i32),
+                            -i128::from(scalar.signed(upper ^ scalar.order_bias())),
+                            -i128::from(scalar.signed(lower ^ scalar.order_bias())),
                         ),
-                        0x8000_0000,
+                        scalar.order_bias(), scalar.bit_width(),
                     ),
                     _ => IntegerRanges::default(),
                 })
@@ -2403,24 +2458,24 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     proof
 }
 fn bitwise_range(
-    (al, ah): (u32, u32),
-    (bl, bh): (u32, u32),
-    bias: u32,
-    operation: fn(u32, u32) -> u32,
-) -> (u32, u32) {
+    (al, ah): (Bits, Bits),
+    (bl, bh): (Bits, Bits),
+    scalar: Scalar,
+    operation: fn(Bits, Bits) -> Bits,
+) -> (Bits, Bits) {
     // 从高位向低位交付可达的输出前缀。四个松弛位分别表示两个输入已经
     // 严格大于下界／小于上界；相同状态的后缀选择相同，只需保留前缀极值。
     let mut prefixes = [None; 16];
-    prefixes[0] = Some((0u32, 0u32));
-    for bit in (0..u32::BITS).rev() {
+    prefixes[0] = Some((0, 0));
+    for bit in (0..scalar.bit_width()).rev() {
         let (al, ah, bl, bh) = (
             (al >> bit) & 1,
             (ah >> bit) & 1,
             (bl >> bit) & 1,
             (bh >> bit) & 1,
         );
-        let sign = (bias >> bit) & 1;
-        let mut next: [Option<(u32, u32)>; 16] = [None; 16];
+        let sign = (scalar.order_bias() >> bit) & 1;
+        let mut next: [Option<(Bits, Bits)>; 16] = [None; 16];
         for (loose, prefix) in prefixes.into_iter().enumerate() {
             let Some((lower, upper)) = prefix else {
                 continue;
@@ -2456,14 +2511,14 @@ fn bitwise_range(
     prefixes
         .into_iter()
         .flatten()
-        .fold((u32::MAX, 0), |(lower, upper), (a, b)| {
+        .fold((scalar.bit_mask(), 0), |(lower, upper), (a, b)| {
             (lower.min(a), upper.max(b))
         })
 }
-fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> IntegerRanges {
-    let decode = |value| i64::from((value ^ 0x8000_0000u32) as i32);
+fn signed_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> IntegerRanges {
+    let decode = |value| i128::from(scalar.signed(value ^ scalar.order_bias()));
     let (al, ah, bl, bh) = (decode(al), decode(ah), decode(bl), decode(bh));
-    let corners = |f: fn(i64, i64) -> i64| {
+    let corners = |f: fn(i128, i128) -> i128| {
         let values = [f(al, bl), f(al, bh), f(ah, bl), f(ah, bh)];
         (*values.iter().min().unwrap(), *values.iter().max().unwrap())
     };
@@ -2479,45 +2534,58 @@ fn signed_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> Integer
             (al.min(0).max(-maximum), ah.max(0).min(maximum))
         }
         ">>" => corners(|a, b| a >> b),
-        "<<" => corners(|a, b| a * (1i64 << b)),
-        _ => return IntegerRanges::default(),
+        "<<" => corners(|a, b| a * (1i128 << b)),
+        _ => return IntegerRanges::interval(0, scalar.bit_mask()),
     };
-    integer_result_range((i128::from(range.0), i128::from(range.1)), 0x8000_0000)
+    integer_result_range(range, scalar.order_bias(), scalar.bit_width())
 }
-fn integer_result_range((lower, upper): (i128, i128), bias: u32) -> IntegerRanges {
+fn integer_result_range((lower, upper): (i128, i128), bias: Bits, width: u32) -> IntegerRanges {
     // 按有序周期投影；不足一个完整周期的跨断点结果保留两侧区间。
-    let period = 1i128 << 32;
+    let period = 1i128 << width;
+    let mask = (period - 1) as Bits;
     let offset = i128::from(bias);
     if upper - lower >= period - 1 {
-        return IntegerRanges::default();
+        return IntegerRanges::interval(0, mask);
     }
-    let (a, b) = (lower as u32 ^ bias, upper as u32 ^ bias);
+    let (a, b) = ((lower as Bits & mask) ^ bias, (upper as Bits & mask) ^ bias);
     if (lower + offset).div_euclid(period) == (upper + offset).div_euclid(period) {
         IntegerRanges::interval(a, b)
     } else {
-        IntegerRanges::from_intervals([(0, b), (a, u32::MAX)])
+        IntegerRanges::from_intervals([(0, b), (a, mask)])
     }
 }
-fn unsigned_range(op: &str, (al, ah): (u32, u32), (bl, bh): (u32, u32)) -> IntegerRanges {
+fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> IntegerRanges {
+    if op == "-" {
+        return integer_result_range((i128::from(al)-i128::from(bh), i128::from(ah)-i128::from(bl)), 0, scalar.bit_width());
+    }
     let (al, ah, bl, bh) = (
-        i128::from(al),
-        i128::from(ah),
-        i128::from(bl),
-        i128::from(bh),
+        u128::from(al),
+        u128::from(ah),
+        u128::from(bl),
+        u128::from(bh),
     );
     let range = match op {
         "min" => (al.min(bl), ah.min(bh)),
         "max" => (al.max(bl), ah.max(bh)),
         "+" => (al + bl, ah + bh),
-        "-" => (al - bh, ah - bl),
         "*" => (al * bl, ah * bh),
         "/" if bl > 0 => (al / bh, ah / bl),
         "%" if bl > 0 => (0, ah.min(bh - 1)),
         ">>" => (al >> bh, ah >> bl),
         "<<" => (al << bl, ah << bh),
-        _ => return IntegerRanges::default(),
+        _ => return IntegerRanges::interval(0, scalar.bit_mask()),
     };
-    integer_result_range(range, 0)
+    // u64乘法的完整区间可能超过i128；按无符号数学值投影，避免先截断符号。
+    let period = 1u128 << scalar.bit_width();
+    if range.1 - range.0 >= period - 1 {
+        return IntegerRanges::interval(0, scalar.bit_mask());
+    }
+    let (lower, upper) = (range.0 as Bits & scalar.bit_mask(), range.1 as Bits & scalar.bit_mask());
+    if range.0 / period == range.1 / period {
+        IntegerRanges::interval(lower, upper)
+    } else {
+        IntegerRanges::from_intervals([(0, upper), (lower, scalar.bit_mask())])
+    }
 }
 pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
     domains
@@ -2685,7 +2753,7 @@ impl Builder<'_> {
                 view.length.refine(
                     &Ty::scalar(Scalar::U32),
                     0,
-                    Fact::Minimum(ValueIdentity::DataLength(self.domain), 1),
+                    Fact::Minimum(ValueIdentity::DataLength(self.domain), Scalar::U32, 1),
                 );
             }
         }
@@ -2727,7 +2795,7 @@ impl Builder<'_> {
         let lengths = self.resource_length_proofs(domain);
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
-        value.component_ranges(0).0.iter().all(|&(_, upper)| upper < limit)
+        value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
             || lengths.into_iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, component))
     }
     fn resource_length_proofs(&self, domain: IndexDomain) -> Vec<(&Proof, usize)> {
@@ -3144,4 +3212,4 @@ impl crate::module::codec::Decode for Proof {
         })
     }
 }
-crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,lower),3=>Maximum(value,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,signed),7=>Outside(value,domain),8=>Zero(value)});
+crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,scalar,lower),3=>Maximum(value,scalar,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,scalar),7=>Outside(value,domain),8=>Zero(value),9=>NotEqual(a,b)});

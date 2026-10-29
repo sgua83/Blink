@@ -12,7 +12,7 @@ impl Lower {
     }
     fn constant(&mut self, s: Scalar, bits: u32) -> Reg {
         let r = self.reg(s);
-        self.code.push(Inst::Constant(r, s, bits));
+        self.code.push(Inst::Constant(r, s, Bits::from(bits)));
         r
     }
     fn binary(&mut self, s: Scalar, op: BinaryOp, a: Reg, b: Reg) -> Reg {
@@ -127,7 +127,7 @@ impl Lower {
         for channel in 1..4 {
             let bits = if channel == 3 { 1.0f32.to_bits() } else { 0 };
             self.code
-                .push(Inst::Constant(result[channel], Scalar::F32, bits));
+                .push(Inst::Constant(result[channel], Scalar::F32, Bits::from(bits)));
         }
         let singles = std::mem::take(&mut self.code);
         let raw = self.reg(Scalar::U32);

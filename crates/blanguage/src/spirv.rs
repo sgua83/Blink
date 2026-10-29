@@ -58,7 +58,7 @@ struct Emitter<'a> {
     next: u32,
     types: BTreeMap<Scalar, u32>,
     pointers: BTreeMap<Scalar, u32>,
-    constants: BTreeMap<(Scalar, u32), u32>,
+    constants: BTreeMap<(Scalar, Bits), u32>,
     defs: Vec<u32>,
     decorations: Vec<u32>,
     body: Vec<u32>,
@@ -125,6 +125,10 @@ impl Emitter<'_> {
         v
     }
     fn constant(&mut self, s: Scalar, bits: u32) -> u32 {
+        self.constant_bits(s, Bits::from(bits))
+    }
+    fn constant_bits(&mut self, s: Scalar, bits: Bits) -> u32 {
+        let bits = s.truncate(bits);
         if let Some(id) = self.constants.get(&(s, bits)) {
             return *id;
         }
@@ -136,7 +140,9 @@ impl Emitter<'_> {
                 &[self.types[&s], id],
             );
         } else {
-            op(&mut self.defs, 43, &[self.types[&s], id, bits]);
+            let mut words = vec![self.types[&s], id, bits as u32];
+            if s.size() == 8 { words.push((bits >> 32) as u32); }
+            op(&mut self.defs, 43, &words);
         }
         self.constants.insert((s, bits), id);
         id
@@ -153,9 +159,10 @@ impl Emitter<'_> {
     fn ty(&self, r: Reg) -> u32 {
         self.types[&self.stage.registers[r]]
     }
-    fn signed_magnitude(&mut self, value: u32) -> (u32, u32) {
-        let i = self.types[&Scalar::I32];
-        let shift = self.constant(Scalar::I32, 31);
+    fn signed_magnitude(&mut self, value: u32, scalar: Scalar) -> (u32, u32) {
+        let i = self.types[&scalar];
+        let unsigned = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+        let shift = self.constant(scalar, scalar.size() * 8 - 1);
         let sign = self.id();
         self.emit(195, &[i, sign, value, shift]);
         let flipped = self.id();
@@ -163,14 +170,15 @@ impl Emitter<'_> {
         let magnitude = self.id();
         self.emit(130, &[i, magnitude, flipped, sign]);
         let bits = self.id();
-        self.emit(124, &[self.types[&Scalar::U32], bits, magnitude]);
+        self.emit(124, &[self.types[&unsigned], bits, magnitude]);
         (bits, sign)
     }
     fn signed_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: u32) {
-        // 幅值留在 u32，可表示 abs(MIN32)；所有符号恢复按 32 位模运算完成。
-        let (numerator, nsign) = self.signed_magnitude(self.value(src));
-        let (denominator, dsign) = self.signed_magnitude(divisor);
-        let i = self.types[&Scalar::I32];
+        let scalar = self.stage.registers[src];
+        let unsigned = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+        let (numerator, nsign) = self.signed_magnitude(self.value(src), scalar);
+        let (denominator, dsign) = self.signed_magnitude(divisor, scalar);
+        let i = self.types[&scalar];
         for (operator, dst) in result.outputs() {
             let raw = self.id();
             self.emit(
@@ -179,7 +187,7 @@ impl Emitter<'_> {
                 } else {
                     137
                 },
-                &[self.types[&Scalar::U32], raw, numerator, denominator],
+                &[self.types[&unsigned], raw, numerator, denominator],
             );
             let signed = self.id();
             self.emit(124, &[i, signed, raw]);
@@ -460,10 +468,14 @@ impl Emitter<'_> {
                     stride,
                     word,
                 } => {
-                    let ptr = self.view_address(address, *index, *stride, *word);
-                    let raw = self.id();
-                    self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                    self.from_word(*dst, raw);
+                    let mut words = Vec::new();
+                    for part in 0..self.stage.registers[*dst].size()/4 {
+                        let ptr = self.view_address(address, *index, *stride, *word + part);
+                        let raw = self.id();
+                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
+                        words.push(raw);
+                    }
+                    self.from_words(*dst, &words);
                 }
                 Inst::RayQuery {
                     scene,
@@ -481,10 +493,14 @@ impl Emitter<'_> {
                     offset,
                     word,
                 } => {
-                    let ptr = self.indexed_address(source, *offset, *word);
-                    let raw = self.id();
-                    self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                    self.from_word(*dst, raw);
+                    let mut words = Vec::new();
+                    for part in 0..self.stage.registers[*dst].size()/4 {
+                        let ptr = self.indexed_address(source, *offset, *word + part);
+                        let raw = self.id();
+                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
+                        words.push(raw);
+                    }
+                    self.from_words(*dst, &words);
                 }
                 Inst::StoreIndexed {
                     source,
@@ -492,44 +508,54 @@ impl Emitter<'_> {
                     word,
                     value,
                 } => {
-                    let ptr = self.indexed_address(source, *offset, *word);
-                    let raw = self.to_word(*value);
-                    self.emit(62, &[ptr, raw, 2, 4]);
+                    for (part, raw) in self.to_words(*value).into_iter().enumerate() {
+                        let ptr = self.indexed_address(source, *offset, *word + part as u32);
+                        self.emit(62, &[ptr, raw, 2, 4]);
+                    }
                 }
                 Inst::Constant(dst, Scalar::F32, bits) => {
-                    let word = self.constant(Scalar::U32, *bits);
+                    let word = self.constant_bits(Scalar::U32, *bits);
                     self.from_word(*dst, word);
                 }
                 Inst::Constant(dst, s, b) => {
-                    let c = self.constant(*s, *b);
+                    let c = self.constant_bits(*s, *b);
                     self.emit(83, &[self.ty(*dst), self.value(*dst), c]);
                 }
                 Inst::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
                 Inst::Uniform(dst, offset) => {
                     let zero = self.constant(Scalar::U32, 0);
-                    let word = self.constant(Scalar::U32, offset / 4);
-                    let ptr = self.id();
-                    self.emit(65, &[self.ptr_push_u32, ptr, self.push, zero, word]);
-                    let raw = self.id();
-                    self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                    self.from_word(*dst, raw);
+                    let mut words = Vec::new();
+                    for part in 0..self.stage.registers[*dst].size()/4 {
+                        let word = self.constant(Scalar::U32, offset / 4 + part);
+                        let ptr = self.id();
+                        self.emit(65, &[self.ptr_push_u32, ptr, self.push, zero, word]);
+                        let raw = self.id();
+                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
+                        words.push(raw);
+                    }
+                    self.from_words(*dst, &words);
                 }
                 Inst::LoadLocal(dst, slot) => {
                     if self.private_words.contains(slot) {
-                        let raw = self.id();
-                        self.emit(61, &[self.types[&Scalar::U32], raw, self.locals[*slot]]);
-                        self.from_word(*dst, raw);
+                        let mut words = Vec::new();
+                        for part in 0..self.stage.registers[*dst].size()/4 {
+                            let raw = self.id();
+                            self.emit(61, &[self.types[&Scalar::U32], raw, self.locals[*slot + part as usize]]);
+                            words.push(raw);
+                        }
+                        self.from_words(*dst, &words);
                     } else {
                         self.emit(61, &[self.ty(*dst), self.value(*dst), self.locals[*slot]])
                     }
                 }
                 Inst::StoreLocal(slot, src) => {
-                    let value = if self.private_words.contains(slot) {
-                        self.to_word(*src)
+                    if self.private_words.contains(slot) {
+                        for (part, raw) in self.to_words(*src).into_iter().enumerate() {
+                            self.emit(62, &[self.locals[*slot + part], raw]);
+                        }
                     } else {
-                        self.value(*src)
-                    };
-                    self.emit(62, &[self.locals[*slot], value])
+                        self.emit(62, &[self.locals[*slot], self.value(*src)]);
+                    }
                 }
                 Inst::LoadLocalIndexed {
                     dst,
@@ -538,10 +564,14 @@ impl Emitter<'_> {
                     word,
                     ..
                 } => {
-                    let pointer = self.private_address(*base, *index, *word);
-                    let raw = self.id();
-                    self.emit(61, &[self.types[&Scalar::U32], raw, pointer]);
-                    self.from_word(*dst, raw);
+                    let mut words = Vec::new();
+                    for part in 0..self.stage.registers[*dst].size()/4 {
+                        let pointer = self.private_address(*base, *index, *word + part);
+                        let raw = self.id();
+                        self.emit(61, &[self.types[&Scalar::U32], raw, pointer]);
+                        words.push(raw);
+                    }
+                    self.from_words(*dst, &words);
                 }
                 Inst::StoreLocalIndexed {
                     base,
@@ -550,9 +580,10 @@ impl Emitter<'_> {
                     value,
                     ..
                 } => {
-                    let pointer = self.private_address(*base, *index, *word);
-                    let value = self.to_word(*value);
-                    self.emit(62, &[pointer, value]);
+                    for (part, raw) in self.to_words(*value).into_iter().enumerate() {
+                        let pointer = self.private_address(*base, *index, *word + part as u32);
+                        self.emit(62, &[pointer, raw]);
+                    }
                 }
                 Inst::Load {
                     dst,
@@ -560,10 +591,14 @@ impl Emitter<'_> {
                     index,
                     word,
                 } => {
-                    let ptr = self.address(*binding, *index, *word);
-                    let raw = self.id();
-                    self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                    self.from_word(*dst, raw);
+                    let mut words = Vec::new();
+                    for part in 0..self.stage.registers[*dst].size()/4 {
+                        let ptr = self.address(*binding, *index, *word + part);
+                        let raw = self.id();
+                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
+                        words.push(raw);
+                    }
+                    self.from_words(*dst, &words);
                 }
                 Inst::Store {
                     binding,
@@ -571,9 +606,10 @@ impl Emitter<'_> {
                     word,
                     value,
                 } => {
-                    let ptr = self.address(*binding, *index, *word);
-                    let raw = self.to_word(*value);
-                    self.emit(62, &[ptr, raw, 2, 4]);
+                    for (part, raw) in self.to_words(*value).into_iter().enumerate() {
+                        let ptr = self.address(*binding, *index, *word + part as u32);
+                        self.emit(62, &[ptr, raw, 2, 4]);
+                    }
                 }
                 Inst::Unary {
                     dst,
@@ -607,10 +643,10 @@ impl Emitter<'_> {
                 } => {
                     let scalar = self.stage.registers[*src];
                     let divisor = match divisor {
-                        IntegerDivisor::Constant(divisor) => self.constant(scalar, divisor.get()),
+                        IntegerDivisor::Constant(divisor) => self.constant_bits(scalar, divisor.get()),
                         IntegerDivisor::Value(divisor) => self.value(*divisor),
                     };
-                    if scalar == Scalar::I32 {
+                    if scalar.is_signed() {
                         // Vulkan 未启用 maintenance8 时，负操作数的 OpSRem 没有定义。
                         // 常量与动态除数共用幅值降低，保持语言的带符号除余规则。
                         self.signed_divide(*result, *src, divisor);
@@ -635,7 +671,7 @@ impl Emitter<'_> {
                 } => {
                     let s = self.stage.registers[*a];
                     let f = s == Scalar::F32;
-                    let signed = s == Scalar::I32;
+                    let signed = s.is_signed();
                     let opcode = match operation {
                         BinaryOp::FAdd => 129,
                         BinaryOp::FSub => 131,
@@ -713,7 +749,7 @@ impl Emitter<'_> {
                             | BinaryOp::ShiftRightLogical
                             | BinaryOp::ShiftRightArithmetic
                     ) {
-                        let mask = self.constant(s, 31);
+                        let mask = self.constant(s, s.size() * 8 - 1);
                         let temp = self.id();
                         self.emit(199, &[self.types[&s], temp, self.value(*b), mask]);
                         temp
@@ -757,10 +793,11 @@ impl Emitter<'_> {
                         );
                     } else {
                         let opcode = match (a, b) {
-                            (Scalar::F32, Scalar::U32) => 109,
-                            (Scalar::F32, Scalar::I32) => 110,
-                            (Scalar::U32, Scalar::F32) => 112,
-                            (Scalar::I32, Scalar::F32) => 111,
+                            (Scalar::F32, Scalar::U32 | Scalar::U64) => 109,
+                            (Scalar::F32, Scalar::I32 | Scalar::I64) => 110,
+                            (Scalar::U32 | Scalar::U64, Scalar::F32) => 112,
+                            (Scalar::I32 | Scalar::I64, Scalar::F32) => 111,
+                            _ if a.size() != b.size() => if a.is_signed() { 114 } else { 113 },
                             _ => 124,
                         };
                         self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*src)]);
@@ -878,6 +915,82 @@ impl Emitter<'_> {
         let result = self.id();
         self.emit(opcode, &[self.types[&Scalar::U32], result, word, mask]);
         self.from_word(dst, result);
+    }
+    fn from_words(&mut self, dst: Reg, words: &[u32]) {
+        if self.stage.registers[dst].size() == 4 {
+            self.from_word(dst, words[0]);
+            return;
+        }
+        let scalar = self.stage.registers[dst];
+        let joined = self.join_words(scalar, words);
+        self.emit(if scalar==Scalar::U64 {83} else {124}, &[self.ty(dst), self.value(dst), joined]);
+    }
+    fn raw_scalar(scalar: Scalar) -> Scalar {
+        if scalar.size()==8 {Scalar::U64} else {Scalar::U32}
+    }
+    fn raw_type(&self, scalar: Scalar) -> u32 {
+        self.types[&Self::raw_scalar(scalar)]
+    }
+    fn raw_constant(&mut self, scalar: Scalar, bits: Bits) -> u32 {
+        self.constant_bits(Self::raw_scalar(scalar), bits)
+    }
+    fn join_words(&mut self, scalar: Scalar, words: &[u32]) -> u32 {
+        if scalar.size()==4 {return words[0];}
+        let low = self.id();
+        let high = self.id();
+        self.emit(113, &[self.u64_type, low, words[0]]);
+        self.emit(113, &[self.u64_type, high, words[1]]);
+        let width = self.constant(Scalar::U32, 32);
+        let shifted = self.id();
+        self.emit(196, &[self.u64_type, shifted, high, width]);
+        let joined = self.id();
+        self.emit(197, &[self.u64_type, joined, low, shifted]);
+        joined
+    }
+    fn to_words(&mut self, value: Reg) -> Vec<u32> {
+        if self.stage.registers[value].size() == 4 {
+            return vec![self.to_word(value)];
+        }
+        let bits = if self.stage.registers[value] == Scalar::U64 { self.value(value) } else {
+            let bits = self.id();
+            self.emit(124, &[self.u64_type, bits, self.value(value)]);
+            bits
+        };
+        self.split_words(self.stage.registers[value], bits)
+    }
+    fn split_words(&mut self, scalar: Scalar, bits: u32) -> Vec<u32> {
+        if scalar.size()==4 {return vec![bits];}
+        let low = self.id();
+        self.emit(113, &[self.types[&Scalar::U32], low, bits]);
+        let width = self.constant(Scalar::U32, 32);
+        let shifted = self.id();
+        self.emit(194, &[self.u64_type, shifted, bits, width]);
+        let high = self.id();
+        self.emit(113, &[self.types[&Scalar::U32], high, shifted]);
+        vec![low, high]
+    }
+    fn load_raw(&mut self, scalar: Scalar, pointers: &[u32], physical: bool) -> u32 {
+        let words:Vec<_> = pointers.iter().map(|pointer| {
+            let raw=self.id();
+            let mut args=vec![self.types[&Scalar::U32],raw,*pointer];
+            if physical {args.extend([2,4]);}
+            self.emit(61,&args);raw
+        }).collect();
+        self.join_words(scalar,&words)
+    }
+    fn store_raw(&mut self, scalar: Scalar, pointers: &[u32], value: u32, physical: bool) {
+        for (pointer,word) in pointers.iter().zip(self.split_words(scalar,value)) {
+            let mut args=vec![*pointer,word];if physical {args.extend([2,4]);}
+            self.emit(62,&args);
+        }
+    }
+    fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
+        let pointers:Vec<_>=(0..scalar.size()/4).map(|part|self.address_scalar(binding,index,stride,word+part)).collect();
+        self.load_raw(scalar,&pointers,true)
+    }
+    fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32, value: u32) {
+        let pointers:Vec<_>=(0..scalar.size()/4).map(|part|self.address_scalar(binding,index,stride,word+part)).collect();
+        self.store_raw(scalar,&pointers,value,true);
     }
     fn from_word(&mut self, dst: Reg, raw: u32) {
         match self.stage.registers[dst] {
@@ -1262,12 +1375,12 @@ pub fn emit_pass(
     op(&mut prelude, 14, &[5348, 1]);
     let void = e.id();
     op(&mut e.defs, 19, &[void]);
-    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool] {
+    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64] {
         let id = e.id();
         match s {
             Scalar::F32 => op(&mut e.defs, 22, &[id, 32]),
             Scalar::Bool => op(&mut e.defs, 20, &[id]),
-            _ => op(&mut e.defs, 21, &[id, 32, (s == Scalar::I32) as u32]),
+            _ => op(&mut e.defs, 21, &[id, s.size() * 8, u32::from(s.is_signed())]),
         };
         e.types.insert(s, id);
         let ptr = e.id();
@@ -1343,8 +1456,7 @@ pub fn emit_pass(
         ray_pointer = e.id();
         op(&mut e.defs, 32, &[ray_pointer, 7, query_type]);
     }
-    e.u64_type = e.id();
-    op(&mut e.defs, 21, &[e.u64_type, 64, 0]);
+    e.u64_type = e.types[&Scalar::U64];
     let v3 = e.id();
     op(&mut e.defs, 23, &[v3, u, 3]);
     let ptr_input = e.id();
@@ -1473,9 +1585,9 @@ pub fn emit_pass(
             if ranks {
                 32
             } else if let Operation::Reduce(r) = &stage.operation {
-                64 * r.ty.components.len() as u32
+                64 * r.ty.size.div_ceil(4)
             } else if let Operation::CustomReduce(r) = &stage.operation {
-                64 * r.ty.components.len() as u32
+                64 * r.ty.size.div_ceil(4)
             } else if let Operation::CustomScan(r) = &stage.operation {
                 64 * r.summary_words() as u32
             } else if let Operation::CustomSegmentedReduce(r) = &stage.operation {

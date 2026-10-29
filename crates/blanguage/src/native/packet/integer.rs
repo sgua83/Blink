@@ -1,7 +1,7 @@
 //! SSE2 四路整数乘法、除余与移位；常量使用精确倒数，动态值逐 lane 原生执行。
 use super::*;
 use crate::native::integer::Division;
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 
 impl Emitter<'_> {
     pub(super) fn packet_shift_values(
@@ -125,7 +125,7 @@ impl Emitter<'_> {
         allocation: &PacketAllocation,
         result: IntegerDivisionResult,
         src: Reg,
-        divisor: NonZeroU32,
+        divisor: NonZeroU64,
     ) {
         let signed = self.stage.registers[src] == Scalar::I32;
         self.packet_magnitude(allocation, src, 0, signed);
@@ -168,7 +168,7 @@ impl Emitter<'_> {
             if result.quotient().is_some() {
                 self.packed(None, 0x28, 3, 0);
             }
-            self.packet_constant(1, divisor.get());
+            self.packet_constant(1, divisor.get() as u32);
             self.packet_multiply(true);
             self.packet_load(allocation, PrivateSlot::Register(src), 1);
             self.packed(Some(0x66), 0xfa, 1, 0);

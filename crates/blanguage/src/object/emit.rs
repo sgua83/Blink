@@ -40,7 +40,9 @@ fn math(op: NativeIntrinsic) -> Option<Import> {
         NativeIntrinsic::PrintU32
         | NativeIntrinsic::PrintI32
         | NativeIntrinsic::PrintBool
-        | NativeIntrinsic::PrintF32 => {
+        | NativeIntrinsic::PrintF32
+        | NativeIntrinsic::PrintU64
+        | NativeIntrinsic::PrintI64 => {
             return None;
         }
     };
@@ -73,7 +75,8 @@ fn call(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
     patches.push((at, import));
 }
 fn print(op: NativeIntrinsic) -> Result<Helper> {
-    let signed = op == NativeIntrinsic::PrintI32;
+    let signed = matches!(op, NativeIntrinsic::PrintI32 | NativeIntrinsic::PrintI64);
+    let wide = matches!(op, NativeIntrinsic::PrintU64 | NativeIntrinsic::PrintI64);
     let boolean = op == NativeIntrinsic::PrintBool;
     let float = op == NativeIntrinsic::PrintF32;
     let saved = if signed { vec![3, 6, 7] } else { vec![3, 6] };
@@ -134,22 +137,27 @@ fn print(op: NativeIntrinsic) -> Result<Helper> {
         relative(&mut v, end, target)?;
         v.extend([0x48, 0x8d, 0x74, 0x24, 0x30]);
     } else {
+        if wide { v.push(0x48); }
         v.extend([0x89, 0xc8]);
         if signed {
-            v.extend([0x31, 0xff, 0x85, 0xc0]);
+            v.extend([0x31, 0xff]);
+            if wide { v.push(0x48); }
+            v.extend([0x85, 0xc0]);
             let positive = jmp(&mut v, Some(0x89));
+            if wide { v.push(0x48); }
             v.extend([0xf7, 0xd8, 0xbf, 1, 0, 0, 0]);
             let target = v.len();
             relative(&mut v, positive, target)?;
         }
         v.extend([
-            0x48, 0x8d, 0x74, 0x24, 0x40, 0xc6, 0x06, 10, 0xbb, 1, 0, 0, 0, 0xb9, 10, 0, 0, 0,
+            0x48, 0x8d, 0x74, 0x24, if wide { 0x48 } else { 0x40 }, 0xc6, 0x06, 10, 0xbb, 1, 0, 0, 0, 0xb9, 10, 0, 0, 0,
         ]);
         let begin = v.len();
-        v.extend([
-            0x31, 0xd2, 0xf7, 0xf1, 0x80, 0xc2, b'0', 0x48, 0xff, 0xce, 0x88, 0x16, 0xff, 0xc3,
-            0x85, 0xc0,
-        ]);
+        v.extend([0x31, 0xd2]);
+        if wide { v.push(0x48); }
+        v.extend([0xf7, 0xf1, 0x80, 0xc2, b'0', 0x48, 0xff, 0xce, 0x88, 0x16, 0xff, 0xc3]);
+        if wide { v.push(0x48); }
+        v.extend([0x85, 0xc0]);
         let back = jmp(&mut v, Some(0x85));
         relative(&mut v, back, begin)?;
         if signed {

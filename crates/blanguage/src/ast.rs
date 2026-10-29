@@ -226,7 +226,7 @@ pub enum OutputCondition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputConstant {
     pub ty: crate::ir::Ty,
-    pub bits: Vec<u32>,
+    pub bits: Vec<crate::ir::Bits>,
 }
 impl PartialOrd for OutputConstant {
     fn partial_cmp(&self, other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}

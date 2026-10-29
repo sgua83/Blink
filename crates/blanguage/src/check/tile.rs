@@ -152,7 +152,7 @@ impl Builder<'_> {
         let Some(bits) = value.constant else {
             return self.fail(expr.span, "B199", "tile 宽度需要编译期正 u32 值");
         };
-        let width = bits[0];
+        let width = bits[0] as u32;
         if value.ty != Ty::scalar(Scalar::U32)
             || width == 0
             || self
@@ -199,7 +199,7 @@ impl Builder<'_> {
             return self.fail(
                 args[0].span,
                 "B206",
-                "tile 集合运算需要数值标量／向量或其字段，按位操作只接受 u32/i32；不接受 bool、记录或资源",
+                "tile 集合运算需要数值标量／向量或其字段，按位操作只接受整数；不接受 bool、记录或资源",
             );
         }
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();

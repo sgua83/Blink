@@ -1,5 +1,6 @@
 //! 普通值 IR 直接成为范围累积与摘要合并机器码，不经宿主解释合并器。
 use super::*;
+use super::allocation::Location;
 use crate::ast::Access;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Pass {
@@ -67,7 +68,7 @@ fn segment_tail(
     index: Reg,
     length_slot: usize,
 ) {
-    let k = r.ty.components.len();
+    let k = r.ty.size.div_ceil(4) as usize;
     let one = reg(stage, Scalar::U32);
     let next = reg(stage, Scalar::U32);
     let length = reg(stage, Scalar::U32);
@@ -119,9 +120,9 @@ fn segment_tail(
             b: one,
         },
     ];
-    for (i, (scalar, offset)) in r.ty.components.iter().enumerate() {
+    for (scalar, offset) in &r.ty.components {
         let value = reg(stage, *scalar);
-        write.push(Inst::LoadLocal(value, carry + i));
+        write.push(Inst::LoadLocal(value, carry + (offset / 4) as usize));
         write.push(Inst::Store {
             binding: r.fields.target,
             index: target,
@@ -164,7 +165,7 @@ pub(super) fn emit(
         ),
         !apply,
     );
-    let k = r.ty.components.len();
+    let k = r.ty.size.div_ceil(4) as usize;
     let summary = k + usize::from(head_word.is_some()) + usize::from(counted);
     let mut stage = kernel.stage;
     let mut program = program.clone();
@@ -187,7 +188,10 @@ pub(super) fn emit(
     let mut combine = stage.code.split_off(kernel.project_end);
     let project = stage.code.split_off(kernel.initialize_end);
     let carry = stage.locals.len();
-    stage.locals.extend(r.ty.components.iter().map(|(s, _)| *s));
+    stage.locals.resize(carry + k, Scalar::U32);
+    for (scalar, offset) in &r.ty.components {
+        stage.locals[carry + (offset / 4) as usize] = *scalar;
+    }
     if head_word.is_some() && !apply {
         stage.locals.push(Scalar::Bool);
     }
@@ -216,20 +220,20 @@ pub(super) fn emit(
         stage.code.push(Inst::StoreLocal(length_slot, length));
     }
     if apply || finish {
-        for (i, (scalar, _)) in r.ty.components.iter().enumerate() {
+        for (scalar, offset) in &r.ty.components {
             let reg = stage.registers.len();
             stage.registers.push(*scalar);
             stage.code.push(Inst::Load {
                 dst: reg,
                 binding: private,
                 index: private_index,
-                word: i as u32,
+                word: offset / 4,
             });
-            stage.code.push(Inst::StoreLocal(carry + i, reg));
+            stage.code.push(Inst::StoreLocal(carry + (offset / 4) as usize, reg));
         }
     } else {
         for (i, reg) in kernel.initial.iter().enumerate() {
-            stage.code.push(Inst::StoreLocal(carry + i, *reg));
+            stage.code.push(Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, *reg));
         }
         if history {
             let zero = stage.registers.len();
@@ -296,7 +300,7 @@ pub(super) fn emit(
                 .initial
                 .iter()
                 .enumerate()
-                .map(|(i, reg)| Inst::StoreLocal(carry + i, *reg))
+                .map(|(i, reg)| Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, *reg))
                 .collect();
             if history {
                 let flag = reg(&mut stage, Scalar::Bool);
@@ -326,7 +330,7 @@ pub(super) fn emit(
         head
     });
     for (i, reg) in kernel.left.iter().enumerate() {
-        stage.code.push(Inst::LoadLocal(*reg, carry + i));
+        stage.code.push(Inst::LoadLocal(*reg, carry + (r.ty.components[i].1 / 4) as usize));
     }
     for (i, reg) in kernel.source.iter().enumerate() {
         stage.code.push(Inst::Load {
@@ -338,7 +342,7 @@ pub(super) fn emit(
             },
             index,
             word: if packed {
-                i as u32
+                r.ty.components[i].1 / 4
             } else if apply {
                 r.fields.target_word + r.ty.components[i].1 / 4
             } else {
@@ -365,7 +369,7 @@ pub(super) fn emit(
                 binding: r.fields.target,
                 index,
                 word: if packed {
-                    i as u32
+                    r.ty.components[i].1 / 4
                 } else {
                     r.fields.target_word + r.ty.components[i].1 / 4
                 },
@@ -419,7 +423,7 @@ pub(super) fn emit(
                 value: bind(*reg),
             });
         } else {
-            combine.push(Inst::StoreLocal(carry + i, bind(*reg)));
+            combine.push(Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, bind(*reg)));
         }
     }
     if let Some(head) = head.filter(|_| prefix) {
@@ -427,7 +431,7 @@ pub(super) fn emit(
             .projected
             .iter()
             .enumerate()
-            .map(|(i, reg)| Inst::StoreLocal(carry + i, *reg))
+            .map(|(i, reg)| Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, *reg))
             .collect();
         if history {
             let flag = reg(&mut stage, Scalar::Bool);
@@ -482,7 +486,7 @@ pub(super) fn emit(
     let loop_end = stage.code.len();
     stage.code.extend(after_code);
     let mut live: std::collections::BTreeSet<_> =
-        (0..k).map(|i| PrivateSlot::Local(carry + i)).collect();
+        r.ty.components.iter().map(|(_, offset)| PrivateSlot::Local(carry + (offset / 4) as usize)).collect();
     if history {
         live.insert(PrivateSlot::Local(carry + k));
     }
@@ -545,7 +549,12 @@ pub(super) fn emit(
     ) {
         e.bytes(&[0x4c, 0x8b, 0xbc, 0x24]);
         e.u32(frame + 80);
-        for i in 0..summary {
+        for (scalar, offset) in &r.ty.components {
+            let value = e.allocation.location(PrivateSlot::Local(carry + (offset / 4) as usize));
+            e.copy_scalar(Location::Gpr(0), value, *scalar);
+            e.instruction(None, &[0x89], scalar.size() == 8, 0, Memory::new(15, *offset).into());
+        }
+        for i in k..summary {
             let value = e.allocation.location(PrivateSlot::Local(carry + i));
             e.write_memory(value, 15, i as u32 * 4);
         }

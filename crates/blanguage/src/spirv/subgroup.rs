@@ -82,8 +82,8 @@ impl Emitter<'_> {
             SubgroupOp::Min | SubgroupOp::Max => {
                 let base = if op == SubgroupOp::Min { 353 } else { 356 };
                 let offset = match self.stage.registers[dst] {
-                    Scalar::I32 => 0,
-                    Scalar::U32 => 1,
+                    Scalar::I32 | Scalar::I64 => 0,
+                    Scalar::U32 | Scalar::U64 => 1,
                     Scalar::F32 | Scalar::Bool => 2,
                 };
                 self.emit(

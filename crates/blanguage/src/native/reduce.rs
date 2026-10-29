@@ -4,6 +4,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     let r = &reduction.fields;
     let scalar = reduction.ty.components[0].0;
     let float = scalar == Scalar::F32;
+    let wide = scalar.size() == 8;
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
@@ -27,15 +28,16 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     for (component, _) in reduction.ty.components.iter().enumerate() {
         if float {
             e.bytes(&[0xb8]);
-            e.u32(identity);
+            e.u32(identity as u32);
             e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
         } else {
             let register = registers[component];
-            if register >= 8 {
-                e.bytes(&[0x41]);
+            let rex = 0x40 | if wide { 8 } else { 0 } | if register >= 8 { 1 } else { 0 };
+            if rex != 0x40 {
+                e.bytes(&[rex]);
             }
             e.bytes(&[0xb8 + (register & 7)]);
-            e.u32(identity);
+            if wide { e.bytes(&identity.to_le_bytes()); } else { e.u32(identity as u32); }
         }
     }
     let begin = e.code.len();
@@ -61,7 +63,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
             e.u32(r.source_word * 4 + offset);
         } else {
             let register = registers[component];
-            let rex = 0x41 | if register >= 8 { 4 } else { 0 };
+            let rex = 0x41 | if wide { 8 } else { 0 } | if register >= 8 { 4 } else { 0 };
             let memory = 0x82 + (register & 7) * 8;
             let opcode = match reduction.operator {
                 CollectiveOperator::Sum => Some(0x03),
@@ -80,7 +82,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
                 e.bytes(&[
                     rex,
                     0x0f,
-                    match (scalar == Scalar::I32, min) {
+                    match (scalar.is_signed(), min) {
                         (false, true) => 0x47,
                         (true, true) => 0x4f,
                         (false, false) => 0x42,
@@ -100,18 +102,18 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     e.patch(end, e.code.len());
     // Windows x64：返回地址与四个 shadow slots 之后是第五个参数。
     e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
-    for (component, _) in reduction.ty.components.iter().enumerate() {
+    for (component, (_, offset)) in reduction.ty.components.iter().enumerate() {
         if float {
             e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
         } else {
             let register = registers[component];
             e.bytes(&[
-                0x41 | if register >= 8 { 4 } else { 0 },
+                0x41 | if wide { 8 } else { 0 } | if register >= 8 { 4 } else { 0 },
                 0x89,
                 0x82 + (register & 7) * 8,
             ]);
         }
-        e.u32(component as u32 * 4);
+        e.u32(*offset);
     }
     e.bytes(&[0xc3]);
     e.finish(0)
