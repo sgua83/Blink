@@ -1719,23 +1719,26 @@ fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<Qu
                 }
             }
             // 环境仍归原所有者；这里只生产两支共同新增的范围。
-            let upper_a = maximums(a.iter());
-            let upper_b = maximums(b.iter());
-            for (identity, upper) in upper_a {
-                if let Some(other) = upper_b.get(&identity) {
-                    let upper = upper.max(*other);
-                    if environment.range(Fact::Maximum(identity, 0)..=Fact::Maximum(identity, upper)).next().is_none() {
-                        common.insert(Fact::Maximum(identity, upper));
-                    }
-                }
-            }
-            let a = minimums(a.iter());
-            let b = minimums(b.iter());
-            for (identity, lower) in a {
-                if let Some(other) = b.get(&identity) {
-                    let lower = lower.min(*other);
-                    if environment.range(Fact::Minimum(identity, lower)..=Fact::Minimum(identity, u32::MAX)).next().is_none() {
-                        common.insert(Fact::Minimum(identity, lower));
+            let mut left = limit_facts(&a).peekable();
+            let mut right = limit_facts(&b).peekable();
+            while let (Some(&(upper, identity, left_value)), Some(&(other_upper, other_identity, right_value))) = (left.peek(), right.peek()) {
+                match (upper, identity).cmp(&(other_upper, other_identity)) {
+                    std::cmp::Ordering::Less => { left.next(); }
+                    std::cmp::Ordering::Greater => { right.next(); }
+                    std::cmp::Ordering::Equal => {
+                        if upper {
+                            let bound = left_value.max(right_value);
+                            if environment.range(Fact::Maximum(identity, 0)..=Fact::Maximum(identity, bound)).next().is_none() {
+                                common.insert(Fact::Maximum(identity, bound));
+                            }
+                        } else {
+                            let bound = left_value.min(right_value);
+                            if environment.range(Fact::Minimum(identity, bound)..=Fact::Minimum(identity, u32::MAX)).next().is_none() {
+                                common.insert(Fact::Minimum(identity, bound));
+                            }
+                        }
+                        left.next();
+                        right.next();
                     }
                 }
             }
@@ -1744,6 +1747,28 @@ fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<Qu
         }
         (a, None) | (None, a) => a,
     }
+}
+// 事实已按类别、身份和数值排序；合流只顺序消费每个身份的最强界。
+fn limit_facts(facts: &Facts) -> impl Iterator<Item = (bool, ValueIdentity, u32)> + '_ {
+    let mut values = facts.iter().filter_map(|fact| match *fact {
+        Fact::Minimum(identity, value) => Some((false, identity, value)),
+        Fact::Maximum(identity, value) => Some((true, identity, value)),
+        _ => None,
+    }).peekable();
+    std::iter::from_fn(move || {
+        let (upper, identity, mut value) = values.next()?;
+        while let Some(&(other_upper, other_identity, next)) = values.peek() {
+            if (upper, identity) != (other_upper, other_identity) {
+                break;
+            }
+            // 下界取末个最大值，上界保留首个最小值。
+            if !upper {
+                value = next;
+            }
+            values.next();
+        }
+        Some((upper, identity, value))
+    })
 }
 fn minimums<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, u32> {
     let mut result: BTreeMap<ValueIdentity, u32> = BTreeMap::new();
