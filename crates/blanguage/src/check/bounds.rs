@@ -55,12 +55,13 @@ fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain 
         IndexDomain::Upper(limit, distance) => IndexDomain::Upper(output_identity(limit, bindings), distance),
         IndexDomain::Room(base) => IndexDomain::Room(output_identity(base, bindings)),
         IndexDomain::Sum(left, right) => IndexDomain::Sum(output_identity(left, bindings), output_identity(right, bindings)),
+        IndexDomain::Offset(base, amount) => IndexDomain::Offset(output_identity(base, bindings), amount),
         IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(output_identity(base, bindings), output_identity(limit, bindings), distance),
         other => other,
     }
 }
 fn numeric_domain(domain: &IndexDomain) -> bool {
-    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..))
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..))
 }
 impl Place {
     fn refine_position(
@@ -356,6 +357,7 @@ impl Proof {
                 IndexDomain::Upper(limit, distance) => IndexDomain::Upper(identity(limit, bindings)?, distance),
                 IndexDomain::Room(base) => IndexDomain::Room(identity(base, bindings)?),
                 IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left, bindings)?, identity(right, bindings)?),
+                IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base, bindings)?, amount),
                 IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base, bindings)?, identity(limit, bindings)?, distance),
                 _ => return None,
             })
@@ -686,9 +688,17 @@ impl Proof {
         self.domains = vec![domains];
         self
     }
-    fn below_length(&self, length: &Self, component: usize) -> bool {
+    fn below_length(&self, identities: &[ValueIdentity], length: &Self, component: usize) -> bool {
         let bounds = self.domains(0);
         let origins = length.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+        if length.domains(component).iter().any(|domain| {
+            let IndexDomain::Offset(base, amount) = *domain else { return false; };
+            amount != 0 && identities.contains(&base) || bounds.iter().any(|bound| match *bound {
+                IndexDomain::Offset(source, offset) => source == base && offset < amount,
+                IndexDomain::Upper(limit, distance) => limit == base && (amount != 0 || distance != 0),
+                _ => false,
+            })
+        }) { return true; }
         bounds.iter().any(|bound| match *bound {
             IndexDomain::Upper(limit, distance) => distance != 0 && origins.contains(&limit),
             IndexDomain::Shifted(base, limit, distance) if distance != 0 => length.domains(component).iter().any(|sum| {
@@ -2270,7 +2280,19 @@ fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domai
         }
         let no_wrap = u64::from(a.component_range(ai).1) + u64::from(b.component_range(bi).1) <= u64::from(u32::MAX)
             || left.contains(&IndexDomain::Room(b_id)) || right.contains(&IndexDomain::Room(a_id));
-        if no_wrap { domains.insert(IndexDomain::Sum(a_id, b_id)); }
+        if no_wrap {
+            domains.insert(IndexDomain::Sum(a_id, b_id));
+            for (base, source, amount) in [(a_id, &left, b.constant.as_ref().map(|v| v[bi])), (b_id, &right, a.constant.as_ref().map(|v| v[ai]))] {
+                if let Some(amount) = amount.filter(|amount| *amount != 0) {
+                    domains.insert(IndexDomain::Offset(base, amount));
+                    for relation in source {
+                        if let IndexDomain::Offset(origin, previous) = *relation {
+                            if let Some(amount) = previous.checked_add(amount) { domains.insert(IndexDomain::Offset(origin, amount)); }
+                        }
+                    }
+                }
+            }
+        }
         for (source, addend) in [(&left, b.constant.as_ref().map(|v| v[bi])), (&right, a.constant.as_ref().map(|v| v[ai]))] {
             if let Some(amount) = addend {
                 for relation in source {
@@ -2706,7 +2728,7 @@ impl Builder<'_> {
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
         value.component_ranges(0).0.iter().all(|&(_, upper)| upper < limit)
-            || lengths.into_iter().any(|(proof, component)| value.proof.below_length(proof, component))
+            || lengths.into_iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, component))
     }
     fn resource_length_proofs(&self, domain: IndexDomain) -> Vec<(&Proof, usize)> {
         let length = match domain {
