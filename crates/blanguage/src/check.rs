@@ -3007,7 +3007,7 @@ impl<'a> Builder<'a> {
         let no_init = self.take_application_initialization_state();
         let no_flow = self.flow;
         let no_reachable = no_flow.continues();
-        let no_env = self.env.clone();
+        let mut no_env = self.env.clone();
         let no_path = self.path.clone();
         if yes_reachable && !no_reachable {
             self.path = yes_path;
@@ -3022,7 +3022,7 @@ impl<'a> Builder<'a> {
             self.view_uses.after(span);
             self.env = yes_env;
             self.join_initialization(&c, yes_init, no_init);
-            self.join_environment(&no_env, Some(&c));
+            self.join_environment_selected(&mut no_env, &owned_presence::Presence::input(&c));
         } else {
             self.path = bounds::Clause::impossible();
             self.env = environment;

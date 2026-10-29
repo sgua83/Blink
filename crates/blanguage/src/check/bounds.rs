@@ -3060,6 +3060,64 @@ impl Builder<'_> {
             }
         }
     }
+    pub(super) fn join_environment_selected(
+        &mut self,
+        other: &mut BTreeMap<String, Binding>,
+        when:&owned_presence::Presence,
+    ) {
+        let bindings=BTreeMap::new();
+        let mut names=[BTreeMap::new(),BTreeMap::new()];
+        let mut aliases=[bounds::Clause::default(),bounds::Clause::default()];
+        for(name,binding)in &mut self.env {
+            let Some((a,_,place))=binding.proof_storage()else{continue};
+            let Some((b,_,_))=other.get_mut(name).and_then(Binding::proof_storage)else{continue};
+            let ty=place.ty();let width=ty.components.len();
+            if (0..width).all(|i|a.known_identity(i).zip(b.known_identity(i)).is_some_and(|(a,b)|a==b)){continue;}
+            let regs=ty.components.iter().map(|(scalar,_)|{let reg=self.registers.len();self.registers.push(*scalar);reg}).collect::<Vec<_>>();
+            for((proof,alias),names)in [a,b].into_iter().zip(&mut aliases).zip(&mut names){
+                proof.output_bindings(&regs,0,names);
+                *alias=bounds::Clause::both(alias,&proof.output_aliases(&regs,&self.registers,&bindings));
+                proof.bind_outputs(ty,Some(&regs),&bindings,&bounds::Clause::default());
+            }
+        }
+        for(alias,names)in aliases.iter_mut().zip(&names){*alias=bounds::Clause::both(alias,&alias.output_bound(names));}
+        for(environment,names)in [&mut self.env,&mut *other].into_iter().zip(&names){
+            for binding in environment.values_mut(){
+                let proof=match binding{
+                    Binding::Value(value)=>&mut value.proof,
+                    binding=>{let Some((proof,_,_))=binding.proof_storage()else{continue};proof},
+                };
+                for condition in proof.conditions.iter_mut().flatten(){**condition=condition.output_bound(names);}
+            }
+        }
+        let choice=when.condition();
+        if !bounds::Condition::paths(aliases[0].clone(),aliases[1].clone()).unconstrained(){
+            self.path=bounds::Clause::both(&self.path,&bounds::Clause::either(&choice.assume(&aliases[0],true),&choice.assume(&aliases[1],false)));
+        }
+        for (name, binding) in &mut self.env {
+            match (binding, &other[name]) {
+                (Binding::Value(a), Binding::Value(b)) => {
+                    a.proof.join_condition(&b.proof,a.regs.len(),Some(&choice));
+                    a.uniform &= b.uniform;
+                }
+                (Binding::Owned(a), Binding::Owned(b)) => {
+                    a.place.join_position_range(&b.place);
+                    a.proof
+                        .join_condition(&b.proof,a.place.ty().components.len(),Some(&choice));
+                    a.uniform &= b.uniform;
+                }
+                (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
+                (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
+                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),Some(when));let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
+                }
+                (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
+                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),Some(when));let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
+                }
+                (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
+                _ => {}
+            }
+        }
+    }
     pub(super) fn read_owned_proof(&mut self, place: &Place, regs: &[Reg]) -> (Proof, bool) {
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
@@ -3240,9 +3298,9 @@ impl crate::module::codec::Decode for Proof {
                 nodes.push(match encoded {
                     EncodedClause::Impossible => Clause::impossible(),
                     EncodedClause::Facts(facts) => Clause::facts(facts),
-                    EncodedClause::Both(a, b) => Clause::both(&node(&nodes, a)?, &node(&nodes, b)?),
+                    EncodedClause::Both(a, b) => Clause(Arc::new(ClauseNode::Both(node(&nodes, a)?, node(&nodes, b)?))),
                     EncodedClause::Either(a, b) => {
-                        Clause::either(&node(&nodes, a)?, &node(&nodes, b)?)
+                        Clause(Arc::new(ClauseNode::Either(node(&nodes, a)?, node(&nodes, b)?)))
                     }
                 });
             }

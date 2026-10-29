@@ -99,7 +99,7 @@ impl Builder<'_> {
         let no_initial = no_init.clone();
         self.join_initialization(&c, yes_init, no_init);
         let mut no = std::mem::take(&mut self.code);
-        let no_env = std::mem::replace(&mut self.env, yes_env);
+        let mut no_env = std::mem::replace(&mut self.env, yes_env);
         if let Some(bits) = &c.constant {
             if bits[0] != 0 {
                 (self.reads, self.writes, self.cross_access) = yes_effects;
@@ -107,9 +107,6 @@ impl Builder<'_> {
                 self.env = no_env.clone();
             }
         } else {
-            if yes_flow.continues() && no_flow.continues() {
-                self.join_environment(&no_env, Some(&c));
-            }
             self.reads.extend(yes_effects.0);
             self.writes.extend(yes_effects.1);
             self.cross_access.extend(yes_effects.2);
@@ -136,6 +133,9 @@ impl Builder<'_> {
                 (false, true) => no_path,
                 (false, false) => bounds::Clause::impossible(),
             };
+            if yes_flow.continues() && no_flow.continues() {
+                self.join_environment_selected(&mut no_env, &owned_presence::Presence::input(&c));
+            }
             if yes_flow.continues() && !no_flow.continues() {
                 self.initialized = yes_initial;
             } else if !yes_flow.continues() && no_flow.continues() {

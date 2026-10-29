@@ -1,8 +1,8 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
-use super::view::{Borrow,InputSlot,LoopInput,Source,data_paths,data_at,data_at_mut};
+use super::view::{Borrow,InputSlot,LoopInput,data_paths,data_at,data_at_mut};
 impl Place {
-    fn join_position_range(&mut self, other: &Self) {
+    pub(super) fn join_position_range(&mut self, other: &Self) {
         match (self, other) {
             (
                 Self::ApplicationElement { index_range: a, .. },
@@ -359,37 +359,6 @@ impl Builder<'_> {
         self.release_application_data(Some(&names),view::Borrow::default())
     }
     pub(super) fn remember_loop_control(&mut self,value:&Value){if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}}
-    pub(super) fn join_environment(&mut self,other:&BTreeMap<String,Binding>,branch:Option<&Value>){let when=branch.map(owned_presence::Presence::input);self.join_environment_selected(other,when.as_ref());}
-    fn join_environment_selected(
-        &mut self,
-        other: &BTreeMap<String, Binding>,
-        when:Option<&owned_presence::Presence>,
-    ) {
-        let choice=when.map(owned_presence::Presence::condition);
-        for (name, binding) in &mut self.env {
-            match (binding, &other[name]) {
-                (Binding::Value(a), Binding::Value(b)) => {
-                    a.proof.join_condition(&b.proof,a.regs.len(),choice.as_ref());
-                    a.uniform &= b.uniform;
-                }
-                (Binding::Owned(a), Binding::Owned(b)) => {
-                    a.place.join_position_range(&b.place);
-                    a.proof
-                        .join_condition(&b.proof,a.place.ty().components.len(),choice.as_ref());
-                    a.uniform &= b.uniform;
-                }
-                (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
-                (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
-                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),when);let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
-                }
-                (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
-                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),when);let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
-                }
-                (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
-                _ => {}
-            }
-        }
-    }
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
@@ -497,7 +466,7 @@ impl Builder<'_> {
         let common=context.exits.iter().map(|state|state.initialized.clone()).reduce(|a,b|ownership::intersect_initialized(&a,&b));
         let mut guards=guards.into_iter();let mut exits=context.exits.into_iter();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok(false)};
         let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
-        for exit in exits{let when=guards.next().unwrap();let previous=std::mem::replace(&mut self.env,exit.env);self.join_environment_selected(&previous,Some(&when));self.path=bounds::Clause::either(&self.path,&exit.path);}
+        for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}
         self.initialized=common.unwrap();self.initialized.extend(initialized);self.view_uses.after(span);Ok(true)
     }
 }
