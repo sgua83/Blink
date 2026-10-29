@@ -219,3 +219,11 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源运行库新增Windows x64 C入口`uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill)`，返回同一Frame槽位的实际句柄；Frame保持不透明，只由根运行库创建、解释和最终释放。fill在本次同步调用内按存储Ty的实际声明布局借用完整普通值，必须不含拥有资源或view；运行库只读取声明分量，不读取未初始化填充。调用者必须拥有可调整的CPU存储，先结束真实地址／view／位置消费者；该原生可信入口不替调用者验证任意外部指针。
 
 非根模块通过原不透明Frame调用共同入口，不移动Rust容器或解释私有Frame。新增实际C入口使资源身份升为BLRI4，旧BLRI3资源对象须重编，BLCO16编码保持；本节覆盖此前“当前BLRI3”的版本表述。普通C／C++／Rust值接口不因此接收B拥有dataset，裸地址、动态拥有元素、异步及完整版本迁移仍按实际能力开放。实际无源码对象／归档、CPU／GPU往返与不匹配ABI拒绝分别记在P4台账。
+
+## 普通值序列库与BLCO17
+
+`blink.sequence`用普通B接口交接拥有dataset及Result，源码使用与实例范围见[库说明](../library/README.md)。通过`blc -c --module --instance NAME<T>`导出实际实例，`bllink --archive`生成标准COFF静态库；消费方用`--import`装入真实合同。没有导出的类型实例明确拒绝，不在对象消费或链接阶段读取库.b、重新生成模板或调用Rust编译器。
+
+原Proof／Domains新增无符号上界距离、不回绕和及拼接偏移关系，实际编码使当前模块格式升为BLCO17，旧对象／归档须重编。BLRI4、不透明Frame、资源C入口和普通值机器ABI保持；库没有新增原生运行时函数或普通C拥有容器接口。本节更新前文BLCO16的当前版本表述，历史交付版本保留。
+
+PA3 Release在删除临时provider.h／.b后，以对象及归档分别完成零、一、65、一百万零三条数据的真实GPU加一、显式download、序列编辑及逐项核对。旧元数据标签夹具和缺失实例均实际拒绝；标签夹具不是旧编译器执行。源实现、原生结果、P4／Git与引擎采用仍分别记录，一般资源阶段、版本迁移和二进制泛型模板分发仍未实现。

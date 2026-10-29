@@ -576,7 +576,8 @@ fn translate_value(
     model: &Value,
     bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
 ) {
-    value.proof = bounds::Proof::capture(model).at_call(bindings);
+    // 合同的未知来源保持未知；模型保留的寄存器不是本次真实返回值。
+    value.proof = model.proof.clone().at_call(bindings);
     value.constant = model
         .constant
         .clone()

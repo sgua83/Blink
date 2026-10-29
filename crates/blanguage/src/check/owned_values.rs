@@ -711,7 +711,7 @@ impl Builder<'_> {
                 if matches!(self.env.get(name), Some(Binding::ApplicationData(_))) =>
             {
                 return self
-                    .application_resource(expr, expr.span)
+                    .move_application_dataset(name, expr.span)
                     .map(|v| v.map(Returned::Dataset));
             }
             ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::OwnedValue(_))) => {
@@ -721,7 +721,7 @@ impl Builder<'_> {
             }
             ExprKind::Specialize(name, _, _) if name == "dataset" => {
                 return self
-                    .application_resource(expr, expr.span)
+                    .create_application_dataset(expr, expr.span)
                     .map(|v| v.map(Returned::Dataset));
             }
             ExprKind::Call(name, args)

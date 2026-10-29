@@ -83,6 +83,11 @@ enum IndexDomain {
     ViewLength([ValueIdentity; 3]),
     ApplicationData(ValueIdentity),
     ApplicationLength(ValueIdentity),
+    // 无符号整数关系；距离按数学整数解释，不进行机器回绕。
+    Upper(ValueIdentity, u32), // value + distance <= limit
+    Room(ValueIdentity), // value + base <= u32::MAX
+    Sum(ValueIdentity, ValueIdentity), // value == left + right，已证明不回绕
+    Shifted(ValueIdentity, ValueIdentity, u32), // value + distance <= base + limit
 }
 type Domains = BTreeSet<IndexDomain>;
 #[derive(Clone)]
@@ -4190,4 +4195,4 @@ crate::module::codec::record!(Value {
     constant
 });
 crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource)});
-crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id)});
+crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance)});

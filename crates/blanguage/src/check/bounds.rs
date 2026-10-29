@@ -52,8 +52,15 @@ fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain 
         IndexDomain::ApplicationLength(id) => {
             IndexDomain::ApplicationLength(output_identity(id, bindings))
         }
+        IndexDomain::Upper(limit, distance) => IndexDomain::Upper(output_identity(limit, bindings), distance),
+        IndexDomain::Room(base) => IndexDomain::Room(output_identity(base, bindings)),
+        IndexDomain::Sum(left, right) => IndexDomain::Sum(output_identity(left, bindings), output_identity(right, bindings)),
+        IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(output_identity(base, bindings), output_identity(limit, bindings), distance),
         other => other,
     }
+}
+fn numeric_domain(domain: &IndexDomain) -> bool {
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..))
 }
 impl Place {
     fn refine_position(
@@ -346,6 +353,10 @@ impl Proof {
                     identity(ids[1], bindings)?,
                     identity(ids[2], bindings)?,
                 ]),
+                IndexDomain::Upper(limit, distance) => IndexDomain::Upper(identity(limit, bindings)?, distance),
+                IndexDomain::Room(base) => IndexDomain::Room(identity(base, bindings)?),
+                IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left, bindings)?, identity(right, bindings)?),
+                IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base, bindings)?, identity(limit, bindings)?, distance),
                 _ => return None,
             })
         }
@@ -669,9 +680,22 @@ impl Proof {
             ..Self::default()
         }
     }
-    pub fn with_domains(mut self, domains: Domains) -> Self {
+    pub fn with_domains(mut self, mut domains: Domains) -> Self {
+        // 存储版本更换资源域，数值仍是实际同一份长度快照。
+        domains.extend(self.domains(0).into_iter().filter(numeric_domain));
         self.domains = vec![domains];
         self
+    }
+    fn below_length(&self, length: &Self, component: usize) -> bool {
+        let bounds = self.domains(0);
+        let origins = length.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+        bounds.iter().any(|bound| match *bound {
+            IndexDomain::Upper(limit, distance) => distance != 0 && origins.contains(&limit),
+            IndexDomain::Shifted(base, limit, distance) if distance != 0 => length.domains(component).iter().any(|sum| {
+                matches!(*sum, IndexDomain::Sum(left, right) if (left == base && right == limit) || (left == limit && right == base))
+            }),
+            _ => false,
+        })
     }
     pub fn with_identity(mut self, identity: ValueIdentity) -> Self {
         let mut origins = self.origins.first().cloned().unwrap_or_default();
@@ -2077,6 +2101,7 @@ fn constrain_proofs(
         }
     }
     if !signed {
+        facts.insert(Fact::Index(index_id, IndexDomain::Upper(limit_id, u32::from(strict))));
         facts.extend(
             indices_below(&limit.domains(0), strict)
                 .into_iter()
@@ -2228,6 +2253,54 @@ fn arithmetic_source<'a>(
     }
 }
 fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domains {
+    let ai = component % a.regs.len();
+    let bi = component % b.regs.len();
+    let mut domains = inherited_domains(op, a, b, component);
+    let left = a.proof.domains(ai);
+    let right = b.proof.domains(bi);
+    let a_id = a.component_origins(ai)[0];
+    let b_id = b.component_origins(bi)[0];
+    if op == "+" {
+        for (base, part) in [(a_id, &right), (b_id, &left)] {
+            for relation in part {
+                if let IndexDomain::Upper(limit, distance) = *relation {
+                    domains.insert(IndexDomain::Shifted(base, limit, distance));
+                }
+            }
+        }
+        let no_wrap = u64::from(a.component_range(ai).1) + u64::from(b.component_range(bi).1) <= u64::from(u32::MAX)
+            || left.contains(&IndexDomain::Room(b_id)) || right.contains(&IndexDomain::Room(a_id));
+        if no_wrap { domains.insert(IndexDomain::Sum(a_id, b_id)); }
+        for (source, addend) in [(&left, b.constant.as_ref().map(|v| v[bi])), (&right, a.constant.as_ref().map(|v| v[ai]))] {
+            if let Some(amount) = addend {
+                for relation in source {
+                    let shifted = match *relation {
+                        IndexDomain::Upper(limit, distance) => distance.checked_sub(amount).map(|d| IndexDomain::Upper(limit, d)),
+                        IndexDomain::Shifted(base, limit, distance) => distance.checked_sub(amount).map(|d| IndexDomain::Shifted(base, limit, d)),
+                        _ => None,
+                    };
+                    domains.extend(shifted);
+                }
+            }
+        }
+    }
+    if op == "-" && a.component_range(ai).0 >= b.component_range(bi).1 {
+        domains.insert(IndexDomain::Upper(a_id, b.component_range(bi).0));
+        if a.constant.as_ref().is_some_and(|v| v[ai] == u32::MAX) { domains.insert(IndexDomain::Room(b_id)); }
+        if let Some(amount) = b.constant.as_ref().map(|v| v[bi]) {
+            for relation in left {
+                let shifted = match relation {
+                    IndexDomain::Upper(limit, distance) => distance.checked_add(amount).map(|d| IndexDomain::Upper(limit, d)),
+                    IndexDomain::Shifted(base, limit, distance) => distance.checked_add(amount).map(|d| IndexDomain::Shifted(base, limit, d)),
+                    _ => None,
+                };
+                domains.extend(shifted);
+            }
+        }
+    }
+    domains
+}
+fn inherited_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domains {
     let ai = component % a.regs.len();
     let bi = component % b.regs.len();
     let left = a.proof.domains(ai);
@@ -2434,6 +2507,9 @@ pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
             IndexDomain::ApplicationLength(handle) if strict => {
                 Some(IndexDomain::ApplicationData(handle))
             }
+            IndexDomain::Upper(limit, distance) => distance.checked_add(u32::from(strict)).map(|d| IndexDomain::Upper(limit, d)),
+            domain @ IndexDomain::Room(_) => Some(domain),
+            IndexDomain::Shifted(base, limit, distance) => distance.checked_add(u32::from(strict)).map(|d| IndexDomain::Shifted(base, limit, d)),
             domain @ (IndexDomain::Data(_)
             | IndexDomain::Tile
             | IndexDomain::View(_)
@@ -2625,80 +2701,53 @@ impl Builder<'_> {
         )
     }
     pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32) -> bool {
-        if value.proof.domains(0).contains(&domain) {
-            return true;
-        }
-        let limit = self.resource_minimum(domain, minimum);
-        value
-            .component_ranges(0)
-            .0
-            .iter()
-            .all(|&(_, upper)| upper < limit)
+        if value.proof.domains(0).contains(&domain) { return true; }
+        let lengths = self.resource_length_proofs(domain);
+        let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
+        let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
+        value.component_ranges(0).0.iter().all(|&(_, upper)| upper < limit)
+            || lengths.into_iter().any(|(proof, component)| value.proof.below_length(proof, component))
     }
-    pub(super) fn resource_minimum(&self, domain: IndexDomain, minimum: u32) -> u32 {
+    fn resource_length_proofs(&self, domain: IndexDomain) -> Vec<(&Proof, usize)> {
         let length = match domain {
-            IndexDomain::Fixed(count) => return count,
             IndexDomain::Data(b) | IndexDomain::DataLength(b) => IndexDomain::DataLength(b),
             IndexDomain::Tile | IndexDomain::TileLength => IndexDomain::TileLength,
             IndexDomain::View(id) | IndexDomain::ViewLength(id) => IndexDomain::ViewLength(id),
-            IndexDomain::ApplicationData(handle) | IndexDomain::ApplicationLength(handle) => {
-                IndexDomain::ApplicationLength(handle)
-            }
+            IndexDomain::ApplicationData(handle) | IndexDomain::ApplicationLength(handle) => IndexDomain::ApplicationLength(handle),
+            _ => return Vec::new(),
         };
-        self.env.values().fold(minimum, |minimum, binding| {
-            let lower = match binding {
-                Binding::Value(v) => (0..v.regs.len())
-                    .filter(|&i| {
-                        v.ty.components[i].0 == Scalar::U32 && v.proof.domains(i).contains(&length)
-                    })
-                    .map(|i| v.component_range(i).0)
-                    .max()
-                    .unwrap_or(0),
-                Binding::Owned(owner) => (0..owner.place.ty().components.len())
-                    .filter(|&i| {
-                        owner.place.ty().components[i].0 == Scalar::U32
-                            && owner.proof.domains(i).contains(&length)
-                    })
-                    .map(|i| owner.proof.unsigned_minimum(i))
-                    .max()
-                    .unwrap_or(0),
-                Binding::OwnedValue(owner) => (0..owner.value.ty.components.len())
-                    .filter(|i| {
-                        owner.value.ty.components[*i].0 == Scalar::U32
-                            && owner.value.proof.domains(*i).contains(&length)
-                    })
-                    .map(|i| owner.value.proof.unsigned_minimum(i))
-                    .chain(
-                        owner
-                            .resources()
-                            .iter()
-                            .filter(|d| d.length.proof.domains(0).contains(&length))
-                            .map(|d| d.length.minimum()),
-                    )
-                    .max()
-                    .unwrap_or(0),
-                Binding::Data(DatasetView { length: proof, .. })
-                | Binding::Tile(TileView { length: proof, .. })
-                    if proof.domains(0).contains(&length) =>
-                {
-                    proof
-                        .range(0)
-                        .0
-                        .max(u32::from(proof.nonzero.get(0) == Some(&true)))
+        let mut proofs = Vec::new();
+        for binding in self.env.values() {
+            let mut value = None;
+            match binding {
+                Binding::Value(v) => value = Some((&v.ty, &v.proof)),
+                Binding::Owned(owner) => value = Some((owner.place.ty(), &owner.proof)),
+                Binding::OwnedValue(owner) => {
+                    value = Some((&owner.value.ty, &owner.value.proof));
+                    for data in owner.resources() {
+                        if data.length.proof.domains(0).contains(&length) { proofs.push((&data.length.proof, 0)); }
+                    }
                 }
-                Binding::ApplicationData(data)
-                    if data.length.proof.domains(0).contains(&length) =>
-                {
-                    data.length
-                        .proof
-                        .range(0)
-                        .0
-                        .max(u32::from(data.length.proof.nonzero.get(0) == Some(&true)))
+                Binding::ApplicationData(data) => {
+                    if data.length.proof.domains(0).contains(&length) { proofs.push((&data.length.proof, 0)); }
                 }
-                _ => 0,
-            };
-            minimum.max(lower)
-        })
+                Binding::DataReference(data) => {
+                    if data.length.proof.domains(0).contains(&length) { proofs.push((&data.length.proof, 0)); }
+                }
+                Binding::Data(DatasetView {length: proof, ..}) | Binding::Tile(TileView {length: proof, ..}) => {
+                    if proof.domains(0).contains(&length) { proofs.push((proof, 0)); }
+                }
+                _ => {}
+            }
+            if let Some((ty, proof)) = value {
+                proofs.extend(ty.components.iter().enumerate().filter(|(i,(scalar,_))| *scalar == Scalar::U32 && proof.domains(*i).contains(&length)).map(|(i,_)| (proof,i)));
+            }
+        }
+        proofs
+    }
+    pub(super) fn resource_minimum(&self, domain: IndexDomain, minimum: u32) -> u32 {
+        if let IndexDomain::Fixed(count) = domain { return count; }
+        self.resource_length_proofs(domain).into_iter().map(|(proof, component)| proof.unsigned_minimum(component)).fold(minimum, u32::max)
     }
     pub(super) fn restore_expression_environment(
         &mut self,

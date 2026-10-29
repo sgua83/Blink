@@ -794,73 +794,28 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
-        self.view_uses.before(expr.span);
+        match self.evaluate_returned(expr, None)? {
+            Some(returns::Returned::Dataset(data)) => Ok(Some(data)),
+            None => Ok(None),
+            _ => self.fail(span, "B224", "dataset 资源需要同类型拥有值，不能由普通值或聚合整体替代"),
+        }
+    }
+    pub(super) fn move_application_dataset(&mut self, name: &str, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
-        if let ExprKind::Call(name, args) = &expr.kind && name == "resize" {
-            return self.resize_application_dataset(args, span);
-        }
-        if let ExprKind::Call(name, args) = &expr.kind
-            && name == "try"
-        {
-            let value = self.propagate_returned(args, span)?;
-            if !self.flow.continues() {
-                return Ok(None);
-            }
-            return match value {
-                Some(returns::Returned::Dataset(data)) => Ok(Some(data)),
-                _ => self.fail(span, "B224", "try成功载荷不是dataset"),
-            };
-        }
-        if let ExprKind::Name(name) = &expr.kind {
-            let Some(mut data) = self.application_value(name, span)? else {
-                return self.fail(span, "B224", "dataset 移动需要应用拥有的实际资源");
-            };
-            if data.ownership != Ownership::Owned {
-                return self.fail(span, "B227", "借用的 dataset 不能移动或作为拥有资源返回");
-            }
-            if self.application_position_borrowed(data.handle.identity()){return self.fail(span,"B227","dataset的元素仍被游标或位置借用，不能移动拥有值");}
-            if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
-                source.ownership = Ownership::Moved;
-                source.residency = residency::Residency::default();
-            }
-            data.place = None;
-            return Ok(Some(data));
-        }
-        let (name, explicit, args) = match &expr.kind {
-            ExprKind::Specialize(name, _, _) if name == "dataset" => {
-                return self.create_application_dataset(expr, span);
-            }
-            ExprKind::Call(name, args) => (name, None, args),
-            ExprKind::Specialize(name, explicit, args) => (name, Some(explicit.as_slice()), args),
-            _ => {
-                return self.fail(
-                    span,
-                    "B266",
-                    "dataset 资源由构造或返回拥有资源的 CPU 函数取得",
-                );
-            }
+        let Some(mut data) = self.application_value(name, span)? else {
+            return self.fail(span, "B224", "dataset 移动需要应用拥有的实际资源");
         };
-        let Some(key) = self.world.resolve(
-            name,
-            &self.definition.module,
-            &self.definition.imports,
-            true,
-        ) else {
-            return self.fail(span, "B158", format!("未知或未导出的资源函数 {name}"));
-        };
-        let callee = &self.world.functions[&key];
-        if !callee.function.result.dataset {
-            return self.fail(span, "B224", "dataset 资源声明需要返回拥有 dataset 的函数");
+        if data.ownership != Ownership::Owned {
+            return self.fail(span, "B227", "借用的 dataset 不能移动或作为拥有资源返回");
         }
-        let Some(arguments) = self.function_arguments(&key, args, span)? else {
-            return Ok(None);
-        };
-        let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
-        let Some(returns::Returned::Dataset(data)) =
-            self.invoke_returned(instance, arguments, span)?
-        else {
-            return self.fail(span, "B224", "资源函数没有交付声明的 dataset 所有权");
-        };
+        if self.application_position_borrowed(data.handle.identity()) {
+            return self.fail(span, "B227", "dataset的元素仍被游标或位置借用，不能移动拥有值");
+        }
+        if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
+            source.ownership = Ownership::Moved;
+            source.residency = residency::Residency::default();
+        }
+        data.place = None;
         Ok(Some(data))
     }
     pub(super) fn resize_application_dataset(&mut self, args: &[Expr], span: Span) -> Result<Option<Data>> {
@@ -907,7 +862,7 @@ impl Builder<'_> {
             ownership: Ownership::Owned, writable: true, count: None, residency: residency::Residency::cpu(),
         })))
     }
-    fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
+    pub(super) fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
         let ExprKind::Specialize(constructor, explicit, args) = &expr.kind else {
             return self.fail(
