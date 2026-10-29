@@ -145,7 +145,7 @@ BLEngine现有源准备调用改为消费这些最终映像，并调用原CPU／
 
 调用方拥有一次可组合的Compiler会话，包含工作并行度或明确CPU集合及唯一可用执行许可；多个真实编译调用共享该会话。许可只对应当前实际编译工作，等待调用不另行启动工作；前端、闭合实例、机器码／SPIR-V、模块／应用／算法库及资源发射将同一许可交给下一阶段，内部不再询问整机资源或创建另一套预算。阶段可借用当前空闲许可，不能等待自己或其他父工作的许可而死锁。全部已启动消费者结束后才归还执行资源和释放输入，错误保持原诊断及实际OS错误，不重放工作。
 
-会话是本机执行资源的所有者，不是新的语义／产物权威，不持有Frame或Device，不建立常驻线程池、服务、TLS预算或全局编译互斥。返回的待发射App／Module只保留同一会话；活动许可不跨非执行存放期保留，已生成机器产物不带会话。显式CPU选择只用于本次创建的工作线程，调用者的既有线程保持原选择；采用Windows实际processor group及组内编号，不将32线程或单CPU组固化。Win32职责依据[SetThreadGroupAffinity](https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-setthreadgroupaffinity)；其他平台的显式资源绑定尚未设计时直接说明范围，不增加隐式替换。
+会话是本机执行资源的所有者，不是新的语义／产物权威，不持有Frame或Device，不建立常驻线程池、服务、TLS预算或全局编译互斥。返回的待发射App／Module只保留同一会话；活动许可不跨非执行存放期保留，已生成机器产物不带会话。普通调用在调用方原线程持有并使用许可，不创建多余根线程；显式CPU选择只用于本次创建的临时工作线程，调用者的既有线程保持原选择；采用Windows实际processor group及组内编号，不将32线程或单CPU组固化。Win32职责依据[SetThreadGroupAffinity](https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-setthreadgroupaffinity)；其他平台的显式资源绑定尚未设计时直接说明范围，不增加隐式替换。
 
 多模块构建依赖图、源输入固定、泛型／内联依赖及精确增量仍由C-021.5.1和C-021.5.2b继续，本设计不称它们已经交付；未来域Node交接本机资源时复用同一实际执行职责，当前不新增域程序。
 

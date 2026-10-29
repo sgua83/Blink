@@ -3402,6 +3402,23 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 
 开放参数使用原 AST 替换、名义布局与 IR 常量，使用后即为具体算法；不增加泛型运行时、宿主逐元素回调、动态编译服务、额外 uniform、运行期长度表或另一份资源状态。material.textured::indexed_ggx 已删除原固定长度清单，从实际纹理数组推导 N，索引仍必须满足 requires index；实际算法、资源完成和像素品质目标保持。
 
+## 共享编译会话与明确本机资源（C-021.5.2b.1，源码候选实现中）
+
+Compiler由SDK调用方持有，其clone共享同一CPU工作许可。创建普通会话用Compiler::available()，或以NonZeroUsize明确Compiler::with_workers的并行预算；Windows按Processor { group, number }列表调用Compiler::on_processors选择实际逻辑CPU。预算不是固定32，组内编号不是全机编号。OS绑定错误直接报告，不改用其他CPU。当前实际验证只有PA3单处理器组；多组机器实测及其他平台显式绑定仍未完成。
+
+现有源码函数对应同会话方法compile、check、compile_entry、compile_application、compile_application_with_modules及compile_native_module。CPU与SPIR-V映像使用compiler.native(program)／compiler.spirv(program)，正式入口复用使用compiler.build_entry(path,root,entry,target,output)，算法库对象使用compiler.compile_dll(program,prefix)。返回的App／Module的compile继续消费其创建时的会话；待发射物不持有活动执行许可，最终机器产物不带编译会话。需要跨调用共享预算时复用同一Compiler，多个自由函数调用不会偷偷成为全局预算或常驻服务。
+
+每个活动编译及内部独立阶段只使用已分配的真实许可；没有空闲许可时在当前工作完成，内部不等待父工作已经持有的许可。普通调用在原调用线程执行，显式CPU绑定使用本次临时工作线程，所有派生消费者汇合后才归还资源。运行库静态目标代码仍在编译阶段生成，其Cargo子工作使用当前这一份CPU许可，不另行扩大整机并发。已存在的完整模块推导、资源和Frame／Device职责及BLCO20／BLRI6保持。
+
+正式CLI在命令前声明资源，例如：
+
+```text
+blc --jobs 32 -c app.b -o app.obj -I Programs --entry main
+blc --cpus 0:2,0:4 check app.b Programs
+```
+
+--jobs与--cpus表达两种互斥的资源声明；它们经同一Compiler进入语义检查、代码生成和现有导出。bllink继续独立消费完成对象，不以此重读B源码或编译代码。单次工作并行不等于完整多模块图、精确增量或域编译，剩余能力继续按Issues记录。
+
 ## 单次本机编译的独立工作并行（2026-10-30）
 
 现有compile、check、compile_entry及应用入口使用本机独立工作并行，不需要新源语法。原装入器完成源码、接口和调用参与推导后，Declarations只读共享；每个worker的World只持有同一份定义与自己的const递归求值状态。有限声明按原顺序展开为闭合实例，各实例可独立检查与优化，同一泛型声明不再把全部实例绑在一个worker上。具体入口仍完整检查；不以并行省掉非法声明或访问／阶段边界。声明展开错误进入同一有序结果，早先函数体的真实错误仍优先报告。
