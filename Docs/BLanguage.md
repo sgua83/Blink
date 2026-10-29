@@ -3429,7 +3429,47 @@ blc --cpus 0:2,0:4 check app.b Programs
 
 native::compile_program与spirv::compile_program的Rust错误结果现为String，可完整表达本机线程资源错误；原静态发射错误文字保持。Frame、Device、C绑定、BLCO20及BLRI6编码保持，bllink仍只链接已编译对象，运行不增加编译器或调度进程。
 
-本段对应C-021.5.2a；跨多个SDK调用的预算组合与明确CPU选择已由上节C-021.5.2b.1实现，完整多模块构建图和真实消费者批量采用仍是C-021.5.2b，精确增量仍是C-021.5.1，域编译／跨机运行仍未实现。单个强依赖入口的语义／优化成本不因本项自动消失，不把小入口的并行结果称为完整4K冷启动达标。
+本段对应C-021.5.2a；跨多个SDK调用的预算组合与明确CPU选择已由上节C-021.5.2b.1实现，本次显式多单元图及B输入固定已由C-021.5.2b.2实现，真实消费者批量采用仍是C-021.5.2b，精确增量仍是C-021.5.1，域编译／跨机运行仍未实现。单个强依赖入口的语义／优化成本不因本项自动消失，不把小入口的并行结果称为完整4K冷启动达标。
+
+## 本次多单元构建图（C-021.5.2b.2）
+
+调用者用build::Unit声明本次编译单元、路径、模块根、依赖和输出，在同一Compiler上调用build_graph(&units)，或使用build::compile_graph。UnitKind::Object(ObjectKind)沿原对象构建；UnitKind::Entry { entry,target }沿原CPU／GPU入口映像构建。普通模块／应用以Dependency::Unit(index)引用本次提供者，或Dependency::Object(&object)借用已有模块，传递模块依赖自动沿这些绑定交接，不复制原机器码和运行库归档。单元引用可以向前，真实循环及越界直接报告；入口映像不能当作COFF模块提供者。
+
+例如已有math与app两份模块，可由实际构建调用组织：
+
+```rust
+use blanguage::{Compiler, build::{Dependency, ObjectKind, Unit, UnitKind}};
+use std::{num::NonZeroUsize, path::Path};
+
+let root = Path::new("src-b");
+let math = root.join("math.b");
+let app = root.join("app.b");
+let math_object = Path::new("target/graph/math.obj");
+let app_object = Path::new("target/graph/app.obj");
+let app_imports = [Dependency::Unit(0)];
+let units = [
+    Unit { path: &math, root, kind: UnitKind::Object(ObjectKind::Module(&[])),
+        dependencies: &[], output: math_object },
+    Unit { path: &app, root, kind: UnitKind::Object(ObjectKind::Application("main")),
+        dependencies: &app_imports, output: app_object },
+];
+let compiler = Compiler::with_workers(NonZeroUsize::new(32).unwrap());
+let outputs = compiler.build_graph(&units)?;
+```
+
+产物之后由独立bllink消费：
+
+```text
+bllink target/graph/app.obj target/graph/math.obj -o target/graph/app.exe
+```
+
+返回Vec按请求顺序保存build::Output::Object(Arc<ObjectCompilation>)或Output::Entry(Compilation)。原artifact、reused及程序／模板继续交给真实消费者；链接不读取B源码或调用编译器。每个对象单元使用调用方分配的独立输出，多个不同入口／目标可以共享BLBI输出目录；本接口不自动拆分所有源码导入，也不合并重复输出请求。当前CPU／GPU入口映像及算法库单元不接受COFF导入，普通模块／应用单元可以；完整模块DLL及更广泛的映像组合仍待实现。
+
+图在活动Compiler许可内先固定实际.h／.b及解析声明，提供者公开接口和其类型导入也进入同一输入。后续任务不再次读取／解析这些文件，已捕获的可选.b缺失保持为本次事实，后续编辑或创建不混入这次构建。命中与失效仍由原正式COFF／BLBI身份决定，不把整份图或不被装入的私有实现变成调用者输入；固定解析输入只属于本次调用，不是跨次IR缓存。SDK／受管工具链安装的一致性沿原生产者，任意并发改写Rust SDK或外部工具的固定输入与分发仍未交付。
+
+依赖满足即可继续后继，独立慢任务不建立整批屏障。所有实际编译与内层并行沿同一Compiler预算；等待图工作的线程不占CPU许可，选定CPU继续约束真实Cargo／rustc子工作。错误后不领取新的图工作，已开始消费者完成并汇合后才返回；不存在重试、后台重放或另一条编译路径。图及输入随本次调用结束释放，最终产物不持有编译会话。
+
+本节交付显式SDK构建图与B源码固定输入。BLEngine现有消费者的批量组织与实际采用、完整4K启动性能、细粒度依赖／泛型及内联分发、多个模块DLL、域编译／域运算保持各自未完成状态，见双台账。
 
 ## 原生目标文件的增量复用（C-021.5.1b.1）
 
@@ -3443,7 +3483,7 @@ SDK使用blanguage::build::compile_object，或在同一Compiler上调用build_o
 
 构建输入记录为COFF中可丢弃的.blbuild节（BLBO1），不保存待编译实现或值IR。先消费生产身份，只有真正命中才解码要复用的代码ABI；不存在、尚无构建信息或输入确变时正常生成新产物，真实包络／构建记录错误直接报告，不因解码失败而重新编译。构建信息不进入普通对象读取、归档或链接职责；链接可在没有B源码、Cargo及rustc时消费正式对象。纯类型.h仍不要求空.b。
 
-完整依赖图／共同编译单元、泛型／内联分发、多个B模块DLL的装载与热更新、域编译／域运算，以及BLEngine的批量构建采用保持各自未完成状态。实现、原生CPU／GPU结果、提交和Git发布分别见双台账。
+本次显式依赖图及B输入固定已沿C-021.5.2b.2实现；共同编译单元及更细依赖、泛型／内联分发、多个B模块DLL的装载与热更新、域编译／域运算，以及BLEngine的批量构建采用保持各自未完成状态。实现、原生CPU／GPU结果、提交和Git发布分别见双台账。
 
 ## 原生入口的正式产物复用（2026-10-29）
 

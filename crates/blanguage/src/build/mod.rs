@@ -1,6 +1,10 @@
 //! 正式入口构建：由实际源码闭包产生原生映像，执行端装入最终代码。
 pub(crate) mod hash;
 mod object;
+mod inputs;
+mod graph;
+pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
+pub(crate) use inputs::Inputs;
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
 use crate::module::codec::{Decode, Encode, record};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
@@ -41,7 +45,7 @@ impl crate::Compiler {
     pub fn build_entry(
         &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
     ) -> Result<Compilation> {
-        self.execute(|worker| compile_in(worker, path, root, entry, target, output))
+        self.execute(|worker| compile_in(worker, path, root, entry, target, output, None))
             .map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
@@ -50,14 +54,14 @@ impl crate::Compiler {
 }
 fn compile_in(
     worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
-    target: Target, output: &Path,
+    target: Target, output: &Path, inputs: Option<&Inputs>,
 ) -> Result<Compilation> {
     if target == Target::Compute {
         return Err("构建映像必须选择实际CPU或GPU后端".into());
     }
-    let path = path.canonicalize()?;
-    let root = root.canonicalize()?;
-    let (world, module) = crate::read_world(&path, &root, None, worker)?;
+    let path = if inputs.is_some() { path.into() } else { path.canonicalize()? };
+    let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
+    let (world, module) = crate::read_world(&path, &root, None, worker, inputs)?;
     let mut request = Vec::new();
     for value in [
         path.to_str().ok_or("入口路径不是UTF-8")?,

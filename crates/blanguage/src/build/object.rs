@@ -30,30 +30,31 @@ impl crate::Compiler {
     pub fn build_object(
         &self, path: &Path, root: &Path, dependencies: &[Object], kind: ObjectKind<'_>, output: &Path,
     ) -> Result<ObjectCompilation> {
-        self.execute(|worker| compile(worker, path, root, dependencies, kind, output))
+        self.execute(|worker| compile(worker, path, root, dependencies, kind, output, None))
             .map_err(|value| match value {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(value) => Box::new(value) as Box<dyn std::error::Error + Send + Sync>,
             })
     }
 }
-fn compile(
-    worker: &crate::compiler::Worker, path: &Path, root: &Path, dependencies: &[Object],
-    kind: ObjectKind<'_>, output: &Path,
+pub(super) fn compile<'a>(
+    worker: &crate::compiler::Worker, path: &Path, root: &Path,
+    dependencies: impl IntoIterator<Item = &'a Object>,
+    kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
 ) -> Result<ObjectCompilation> {
     let source_path = path;
     let source_root = root;
     // .h是模块来源；纯类型模块不依赖伪造的.b。
-    let path = path.with_extension("h").canonicalize()?;
-    let root = root.canonicalize()?;
+    let path = if inputs.is_some() { path.with_extension("h") } else { path.with_extension("h").canonicalize()? };
+    let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
     let artifact = std::path::absolute(output)?;
     let imports = if matches!(kind, ObjectKind::Library { .. }) { None }
         else { Some(crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.into(), text: "".into() },
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
         })?) };
-    let imported = imports.as_ref().filter(|_| !dependencies.is_empty());
-    let (world, module) = crate::read_world(source_path, source_root, imported, worker)?;
+    let imported = imports.as_ref().filter(|imports| !imports.modules.is_empty());
+    let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs)?;
     let mut bytes = Vec::new();
     for value in [path.as_os_str().as_encoded_bytes(), root.as_os_str().as_encoded_bytes(),
         env!("BLINK_COMPILER_ID").as_bytes()] { hash::field(&mut bytes, value); }

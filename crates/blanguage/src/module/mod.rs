@@ -18,7 +18,7 @@ pub(crate) struct Imports {
     pub modules: BTreeMap<String, Imported>,
 }
 impl Imports {
-    pub fn new(objects: &[Object]) -> codec::Result<Self> {
+    pub fn new<'a>(objects: impl IntoIterator<Item = &'a Object>) -> codec::Result<Self> {
         let mut imports = Self::default();
         for object in objects {
             let Kind::Module {
@@ -131,7 +131,7 @@ impl crate::Compiler {
                 span: crate::ast::Span::default(), code: "B270", message: error.to_string(),
             })?;
             let imported = if dependencies.is_empty() { None } else { Some(&imports) };
-            let (world, entry) = crate::read_world(path, module_root, imported, worker)?;
+            let (world, entry) = crate::read_world(path, module_root, imported, worker, None)?;
             crate::validate_types(&world)?;
             crate::check::compile_native_module(&world, &entry, instances)
         })

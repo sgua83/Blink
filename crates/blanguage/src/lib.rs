@@ -100,6 +100,10 @@ fn read(path: &Path) -> Result<Source> {
         text: text.into(),
     })
 }
+fn parse_input(path: &Path, inputs: Option<&build::Inputs>) -> Result<Arc<ast::Module>> {
+    if let Some(inputs) = inputs { inputs.read(path) }
+    else { parser::parse(read(path)?).map(Arc::new) }
+}
 fn contract_signature(f: &Function) -> BTreeSet<(ContractKind, &ContractPredicate)> {
     f.contracts.iter().map(|c| (c.kind, &c.predicate)).collect()
 }
@@ -180,7 +184,7 @@ fn compile_module_on(
     requested: Option<(EntryKind, &str)>, imported: Option<&module::Imports>,
 ) -> Result<Compilation> {
     compiler.ast(path, |worker| {
-        let (world, entry) = read_world(path, module_root, imported, worker)?;
+        let (world, entry) = read_world(path, module_root, imported, worker, None)?;
         compile_world(world, entry, require_program, requested)
     })
 }
@@ -205,7 +209,7 @@ impl Compiler {
                 source: Source { path: path.into(), text: "".into() },
                 span: Span::default(), code: "B270", message: error.to_string(),
             })?;
-            let (world, module) = read_world(path, root, Some(&imports), worker)?;
+            let (world, module) = read_world(path, root, Some(&imports), worker, None)?;
             Ok(compile_world(world, module, false, Some((EntryKind::Application, entry)))?
                 .applications.remove(0))
         })
@@ -376,6 +380,7 @@ fn read_world(
     module_root: &Path,
     imported: Option<&module::Imports>,
     worker: &compiler::Worker,
+    inputs: Option<&build::Inputs>,
 ) -> Result<(World, String)> {
     let mut world = Declarations {
         sources: BTreeMap::new(),
@@ -390,6 +395,7 @@ fn read_world(
         &mut world,
         imported,
         None,
+        inputs,
     )?;
     execution::infer(&mut world);
     Ok((World::new(Arc::new(world), worker.clone()), entry))
@@ -436,6 +442,7 @@ fn load(
     world: &mut Declarations,
     imported: Option<&module::Imports>,
     import: Option<&str>,
+    inputs: Option<&build::Inputs>,
 ) -> Result<String> {
     if let Some(name) = import
         && world.sources.contains_key(name)
@@ -444,16 +451,19 @@ fn load(
     }
     let compiled = imported.and_then(|imports| import.and_then(|name| imports.modules.get(name)));
     let interface = if let Some(compiled) = compiled {
-        parser::parse(Source {
+        if let Some(inputs) = inputs { inputs.interface(import.unwrap(), &compiled.header)? }
+        else { Arc::new(parser::parse(Source {
             path: PathBuf::from(format!("<{}>.h", import.unwrap())),
             text: compiled.header.clone().into(),
-        })?
+        })?) }
     } else {
-        parser::parse(read(&path.with_extension("h"))?)?
+        parse_input(&path.with_extension("h"), inputs)?
     };
     let implementation_path = path.with_extension("b");
     let present = if imported.is_some() && import.is_some() {
         false
+    } else if let Some(inputs) = inputs {
+        inputs.present(&implementation_path)
     } else {
         implementation_path
             .try_exists()
@@ -465,7 +475,7 @@ fn load(
             })?
     };
     let implementation = if present {
-        Some(parser::parse(read(&implementation_path)?)?)
+        Some(parse_input(&implementation_path, inputs)?)
     } else {
         None
     };
@@ -503,6 +513,7 @@ fn load(
             world,
             imported,
             Some(import),
+            inputs,
         )?;
         if actual != *import {
             return source.fail(
