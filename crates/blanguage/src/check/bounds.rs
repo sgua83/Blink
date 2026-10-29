@@ -1538,23 +1538,30 @@ impl Clause {
         self.required_in(&Facts::new())
     }
     fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<Facts> {
-        let ordered = Self::ordered(std::slice::from_ref(self));
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         loop {
             if contradictory(&environment) {
                 return None;
             }
-            let mut facts: HashMap<usize, QueryResult<'a>> = ordered.iter()
-                .map(|clause| (clause.key(), QueryResult { users: 0, value: None }))
-                .collect();
-            facts.get_mut(&self.key()).unwrap().users = 1;
-            for clause in &ordered {
+            let mut facts: HashMap<usize, QueryResult<'a>> = HashMap::new();
+            facts.insert(self.key(), QueryResult { users: 1, value: None });
+            let mut pending = vec![self];
+            while let Some(clause) = pending.pop() {
                 if let Some((left, right, _)) = clause.query_inputs() {
-                    facts.get_mut(&left.key()).unwrap().users += 1;
-                    facts.get_mut(&right.key()).unwrap().users += 1;
+                    for input in [left, right] {
+                        match facts.entry(input.key()) {
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(QueryResult { users: 1, value: None });
+                                pending.push(input);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                entry.get_mut().users += 1;
+                            }
+                        }
+                    }
                 }
             }
-            let mut pending = vec![self];
+            pending.push(self);
             while let Some(clause) = pending.pop() {
                 if facts[&clause.key()].value.is_some() {
                     continue;
