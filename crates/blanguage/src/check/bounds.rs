@@ -252,7 +252,7 @@ impl Proof {
         let mut outputs=self.output_bound(bindings);
         outputs.origins.resize_with(registers.len(),Vec::new);
         for(origins,reg)in outputs.origins.iter_mut().zip(registers){let id=ValueIdentity::Register(*reg);if !origins.contains(&id){origins.push(id);}}
-        let values=registers.iter().enumerate().filter(|(_,reg)|types[**reg]==Scalar::Bool).flat_map(|(component,_)|outputs.project(&[component],registers.len()).facts(&Ty::scalar(Scalar::Bool))).collect();
+        let values=registers.iter().enumerate().flat_map(|(component,reg)|outputs.project(&[component],registers.len()).facts(&Ty::scalar(types[*reg]))).collect();
         let mut aliases=Clause::both(&Clause::facts(values),&Clause::facts(
             self.origins
                 .iter()
@@ -268,7 +268,7 @@ impl Proof {
                 })
                 .collect(),
         ));
-        for(component,reg)in registers.iter().enumerate(){if types[*reg]==Scalar::Bool && let Some(condition)=outputs.component_condition(component){
+        for(component,reg)in registers.iter().enumerate(){if let Some(condition)=outputs.component_condition(component){
             let cases=std::array::from_fn::<_,2,_>(|truth|Clause::both(&condition.cases[truth],&Clause::facts([Fact::Boolean(ValueIdentity::Register(*reg),truth!=0)].into())));
             aliases=Clause::both(&aliases,&Clause::either(&cases[0],&cases[1]));
         }}aliases

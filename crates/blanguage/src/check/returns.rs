@@ -69,9 +69,9 @@ impl Returned {
     }
     pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition){
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition){match(target,a,b){
-            (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>target.proof.join_view_borrows(&a.proof,&b.proof,Some(choice)),
+            (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=a.proof.clone();target.proof.join_condition(&b.proof,target.regs.len(),Some(choice));},
             (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.handle.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));},
-            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof.join_view_borrows(&a.value.proof,&b.value.proof,Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},
+            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=a.value.proof.clone();target.value.proof.join_condition(&b.value.proof,target.value.regs.len(),Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},
             _=>{},
         }}
         let before=self.clone();self.join(other.clone());restore(self,&before,&other,choice);
