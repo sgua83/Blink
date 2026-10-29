@@ -11,7 +11,7 @@ impl<K:Ord+Copy> Edges<K>{
     pub fn insert(&mut self,key:K){self.insert_when(key,bounds::Clause::default());}
     pub fn insert_when(&mut self,key:K,when:bounds::Clause){
         // 不可能边仍表明来源已知；空图表示尚无来源关系，两者不能混为一谈。
-        let when=when.canonical();
+        // 新来源边直接持有原条件图；同一来源实际合流时才规整。
         self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
     }
     pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.insert_when(*key,when.assume(&bounds::Clause::default(),true));}}
@@ -51,7 +51,11 @@ impl Borrow{
     pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())}
     pub fn restricted(&self,path:&bounds::Clause)->Self{Self{sources:self.sources.restricted(path),inputs:self.inputs.restricted(path),calls:self.calls.restricted(path)}}
-    pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{a.restricted(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))}
+    pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{
+        // 完整借用相同，选支不改变来源；不生产随后无人需要的路径组合。
+        if a==b{return a.clone();}
+        a.restricted(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))
+    }
     pub fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{Self{sources:self.sources.guards_at_call(bindings),inputs:self.inputs.guards_at_call(bindings),calls:self.calls.guards_at_call(bindings)}}
     pub fn map_sources(&self,map:impl Fn(Source)->Self)->Self{let mut result=Self{inputs:self.inputs.clone(),calls:self.calls.clone(),..Self::default()};for(source,when)in self.sources.entries(){result.union(&map(*source).restricted(&when));}result}
     pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{self.guards_at_call(bindings).map_sources(|source|source.at_call(bindings))}

@@ -3015,20 +3015,22 @@ impl<'a> Builder<'a> {
             self.code.extend(condition_code);
             return Ok(());
         }
-        let condition_env = self.env.clone();
+        let mut condition_env = self.env.clone();
         let condition_path = self.path.clone();
+        self.refine_bounds(&partition, true);
+        if !initial { self.retain_while_bounds(condition, body, &environment, &mut condition_env)?; }
+        let body_env = std::mem::replace(&mut self.env, condition_env);
+        let body_path = std::mem::replace(&mut self.path, condition_path);
         let natural = if c.constant.as_ref().is_some_and(|bits| bits[0] != 0) {
             None
         } else {
             self.refine_bounds(&partition, false);
-            let exit = self.loop_state();
-            self.env = condition_env;
-            self.path = condition_path;
-            Some(exit)
+            Some(self.loop_state())
         };
+        self.env = body_env;
+        self.path = body_path;
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
-        self.refine_bounds(&partition, true);
         self.loop_depth += 1;
         self.iterators.push(None);
         self.block(body)?;

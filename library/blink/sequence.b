@@ -35,12 +35,12 @@ result<dataset<T>,SequenceFailure<T>> insert<T>(dataset<T> data,u32 index,T valu
     if (index > size) { return Err(SequenceFailure<T>(data,SequenceError::IndexOutOfRange)); }
     if (size == 4294967295) { return Err(SequenceFailure<T>(data,SequenceError::LengthOverflow)); }
     let output=resize(data,size+1,value);
-    T carry=value;
-    for (cursor in index..output.length) {
-        T previous=output[cursor];
-        output[cursor]=carry;
-        carry=previous;
+    u32 cursor=size;
+    while (cursor>index) {
+        output[cursor]=output[cursor-1];
+        cursor-=1;
     }
+    output[index]=value;
     return Ok(output);
 }
 

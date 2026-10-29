@@ -579,6 +579,19 @@ impl Proof {
             .copied()
     }
     // 数值事实失效不改变仍存在的view所借用的实际存储。
+    // 当前值只继承回边保持的界，不继承入口常量、相等身份或变体选择。
+    pub(super) fn retain_loop_bounds(&mut self, initial: &Self, component: usize, lower: bool, upper: bool) {
+        self.ranges.resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+        if lower {
+            self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(component)), Bits::from(u32::MAX));
+            if initial.unsigned_minimum(component) != 0 { self.mark_nonzero(component); }
+        }
+        if upper {
+            self.ranges[component] = self.ranges[component].restrict(0, Bits::from(initial.unsigned_maximum(component)));
+            for domain in indices_below(&initial.domains(component), false) { self.mark_domain(component, domain); }
+            if let Some(id) = initial.known_identity(component) { self.mark_domain(component, IndexDomain::Upper(id, 0)); }
+        }
+    }
     pub(super) fn forget_value(&mut self, components: &[usize], width: usize) {
         let fresh=Self { views:components.iter().map(|i|self.view_borrow(*i)).collect(),..Self::default() };
         self.assign(components,width,fresh);
@@ -1003,6 +1016,7 @@ impl Proof {
             .resize(self.domains.len().max(component + 1), Domains::new());
         self.domains[component].insert(domain);
     }
+    pub(super) fn unsigned_maximum(&self, component: usize) -> u32 { self.range_set(component).restrict(0, Bits::from(u32::MAX)).hull().1 as u32 }
     pub(super) fn unsigned_minimum(&self, component: usize) -> u32 {
         self.range_set(component).restrict(0, Bits::from(u32::MAX)).hull().0
             .max(Bits::from(self.nonzero.get(component) == Some(&true))) as u32
