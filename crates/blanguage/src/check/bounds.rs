@@ -1744,11 +1744,11 @@ fn contradictory(facts: &Facts) -> bool {
         Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
         value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
     };
-    // 有真实别名时只排序原事实的借用引用，不复制范围、布尔或零值表。
-    let mut aliases: Vec<&Fact> = Vec::new();
+    // 原查询只生产一次别名规范视图；排序、查找及判定不重复投影。
+    let mut aliases: Vec<Fact> = Vec::new();
     if !roots.is_empty() {
-        aliases.extend(facts.iter());
-        aliases.sort_unstable_by_key(|fact| canonical(**fact));
+        aliases.extend(facts.iter().copied().map(canonical));
+        aliases.sort_unstable();
     }
     let select = |query: Fact, preceding: bool| {
         if roots.is_empty() {
@@ -1756,13 +1756,13 @@ fn contradictory(facts: &Facts) -> bool {
             else { facts.range(query..).next().copied() }
         } else {
             let index = aliases.partition_point(|fact| {
-                let value = canonical(**fact);
+                let value = *fact;
                 if preceding { value <= query } else { value < query }
             });
             if preceding {
-                index.checked_sub(1).map(|index| canonical(*aliases[index]))
+                index.checked_sub(1).map(|index| aliases[index])
             } else {
-                aliases.get(index).map(|fact| canonical(**fact))
+                aliases.get(index).copied()
             }
         }
     };
@@ -1778,7 +1778,7 @@ fn contradictory(facts: &Facts) -> bool {
         };
         (lower, upper)
     };
-    facts.iter().any(|fact| match canonical(*fact) {
+    let conflict = |fact| match fact {
         Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
         Fact::Zero(id) => contains(Fact::NonZero(id)),
         Fact::NonZero(id) => contains(Fact::Zero(id)),
@@ -1811,7 +1811,9 @@ fn contradictory(facts: &Facts) -> bool {
         Fact::Below(a, b, strict, scalar) => (a == b && strict)
             || contains(Fact::Below(b, a, !strict, scalar)),
         Fact::Equal(..) => false,
-    })
+    };
+    if roots.is_empty() { facts.iter().copied().any(conflict) }
+    else { aliases.iter().copied().any(conflict) }
 }
 
 // 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。
