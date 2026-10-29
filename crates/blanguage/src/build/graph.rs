@@ -24,6 +24,15 @@ pub enum Output {
     Object(Arc<ObjectCompilation>),
     Entry(Compilation),
 }
+impl Output {
+    /// 交接入口映像；COFF对象不能按CPU／GPU程序装入。
+    pub fn into_entry(self) -> Result<Compilation> {
+        match self {
+            Self::Entry(compilation) => Ok(compilation),
+            Self::Object(object) => Err(format!("COFF对象{}不是入口映像", object.object.name()).into()),
+        }
+    }
+}
 struct Prepared<'a> {
     path: PathBuf,
     root: PathBuf,
