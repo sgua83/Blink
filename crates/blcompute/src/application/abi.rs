@@ -25,6 +25,14 @@ mod native {
         unsafe { finish(frame, result) }
     }
     /// # Safety
+    /// frame／handle 是唯一存储所有者；fill 提供该 Ty 的有效普通值分量，
+    /// 原地址与借用消费者已经结束，调用期间填充值存储保持有效。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_resize(frame: *mut Frame, handle: u32, count: u32, fill: *const u32) -> u32 {
+        let result = unsafe { (&mut *frame).resize(handle, count, fill) };
+        unsafe { finish(frame, result) }
+    }
+    /// # Safety
     /// frame／program 来自本次已绑定资源映像；data和values按该程序接口交付有效的
     /// 句柄和C布局标量数组。空数组同样具有有效对齐地址，借用保持到同步真实完成。
     #[unsafe(no_mangle)]

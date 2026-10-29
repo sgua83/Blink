@@ -796,6 +796,9 @@ impl Builder<'_> {
     pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.view_uses.before(expr.span);
         self.application_frame(span)?;
+        if let ExprKind::Call(name, args) = &expr.kind && name == "resize" {
+            return self.resize_application_dataset(args, span);
+        }
         if let ExprKind::Call(name, args) = &expr.kind
             && name == "try"
         {
@@ -859,6 +862,50 @@ impl Builder<'_> {
             return self.fail(span, "B224", "资源函数没有交付声明的 dataset 所有权");
         };
         Ok(Some(data))
+    }
+    pub(super) fn resize_application_dataset(&mut self, args: &[Expr], span: Span) -> Result<Option<Data>> {
+        if args.len() != 3 {
+            return self.fail(span, "B266", "resize(data,length,fill) 消费拥有的 CPU dataset，并以同类型普通值初始化新增元素");
+        }
+        let Some(returned) = self.evaluate_returned(&args[0], None)? else { return Ok(None); };
+        let returns::Returned::Dataset(data) = returned else {
+            return self.fail(args[0].span, "B224", "resize 需要一份拥有的 dataset");
+        };
+        let data = self.refresh_application_data(data, span)?;
+        if data.ownership != Ownership::Owned {
+            return self.fail(args[0].span, "B227", "dataset 借用不拥有调整存储长度的权利");
+        }
+        self.require_application_initialized(&data, span)?;
+        self.application_cpu(&data, span)?;
+        let Some(mut length) = self.expr(&args[1])? else { return Ok(None); };
+        self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[1].span)?;
+        let Some(fill) = self.expr_expected(&args[2], Some(&data.ty))? else { return Ok(None); };
+        self.require_same(&data.ty, &fill.ty, args[2].span)?;
+        if fill.ty.owns_resources() || fill.ty.contains_views() {
+            return self.fail(args[2].span, "B224", "resize 填充值需要可复制的普通存储，拥有资源和 view 图不在本操作范围");
+        }
+        self.view_uses.invocation(span);
+        self.application_movable(&data, &view::Borrow::default(), span)?;
+        let (slots, storage) = self.local_slots(&fill.ty);
+        for (slot, reg) in slots.into_iter().zip(fill.regs) { self.code.push(Inst::StoreLocal(slot, reg)); }
+        let frame = self.application_frame(span)?;
+        let reg = self.reg(Scalar::U32);
+        self.code.push(runtime_call("resize", vec![
+            argument(frame), argument(data.handle.clone()), argument(length.clone()),
+            CallArgument::Reference { ty: fill.ty, access: Access::Read, address: CallReference {
+                storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
+            } },
+        ], Some(Ty::scalar(Scalar::U32)), vec![reg]));
+        // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
+        let handle = self.application_handle(reg);
+        length.literal = false;
+        length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
+            IndexDomain::ApplicationLength(handle.identity()),
+        ]));
+        Ok(Some(Box::new(DataPayload {
+            handle, place: None, initialization: None, ty: data.ty, length,
+            ownership: Ownership::Owned, writable: true, count: None, residency: residency::Residency::cpu(),
+        })))
     }
     fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;

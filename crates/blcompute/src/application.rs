@@ -143,6 +143,32 @@ impl Frame {
         self.data.datasets.push(data);
         Ok(index)
     }
+    /// 调整实际 CPU 独占存储，保留共同前缀；新元素只读取填充值的声明分量。
+    ///
+    /// # Safety
+    /// handle 由本 Frame 独占持有且没有存活地址消费者。fill 按该存储的 Ty 布局
+    /// 提供全部已初始化分量，保持到本调用结束；填充字节不需要初始化。
+    pub unsafe fn resize(&mut self, handle: u32, count: u32, fill: *const u32) -> Result<u32> {
+        let index = handle as usize;
+        let source = self.data.datasets[index].take().unwrap().cpu()?;
+        let CpuDataset::Owned(mut data) = source else {
+            return Err(error("冻结的 CPU 存储不能调整长度"));
+        };
+        let stride = data.stride as usize / 4;
+        let words = stride.checked_mul(count as usize).ok_or_else(|| error("数据集长度溢出"))?;
+        if words > data.words.len() { data.words.try_reserve(words - data.words.len())?; }
+        data.words.resize(words, 0);
+        for row in data.count..count {
+            for (_, offset) in &data.ty.components {
+                let word = *offset as usize / 4;
+                data.words[row as usize * stride + word] = unsafe { fill.add(word).read() };
+            }
+        }
+        data.count = count;
+        self.data.datasets[index] = Some(ResidentData::Cpu(CpuDataset::Owned(data)));
+        self.data.domains.retain(|relation| relation.domain != index && relation.count.binding != index);
+        Ok(handle)
+    }
     pub fn release(&mut self, handle: u32) {
         let index = handle as usize;
         self.data.datasets[index] = None;

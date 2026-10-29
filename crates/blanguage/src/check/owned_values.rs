@@ -677,6 +677,7 @@ impl Builder<'_> {
         self.view_uses.before(expr.span);
         if self.inside_user_owner(expr)&&self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){return self.fail(expr.span,"B224","拥有包装的资源载荷须用into_inner移出，不能部分移动其字段");}
         if let ExprKind::Call(name,args)=&expr.kind {
+            if name=="resize" {return self.resize_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
             if name=="own" {return self.make_user_owned(args,expr.span);}
             if name=="into_inner" {return self.into_user_inner(args,expr.span);}
         }
