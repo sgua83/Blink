@@ -1696,20 +1696,17 @@ fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<Qu
             let a = equivalent_facts(environment, a, &left);
             let b = equivalent_facts(environment, b, &right);
             let mut common: Facts = a.intersection(&b).copied().collect();
-            let identities: BTreeSet<_> = left.keys().chain(right.keys()).copied().collect();
-            let mut groups: BTreeMap<_, Vec<ValueIdentity>> = BTreeMap::new();
-            for identity in identities {
-                groups
-                    .entry((
-                        left.get(&identity).copied().unwrap_or(identity),
-                        right.get(&identity).copied().unwrap_or(identity),
-                    ))
-                    .or_default()
-                    .push(identity);
-            }
-            for group in groups.values() {
-                for other in group.iter().skip(1) {
-                    common.insert(Fact::equal(group[0], *other));
+            let mut groups = BTreeMap::new();
+            for (identity, left_root) in &left {
+                if let Some(right_root) = right.get(identity) {
+                    match groups.entry((*left_root, *right_root)) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            entry.insert(*identity);
+                        }
+                        std::collections::btree_map::Entry::Occupied(entry) => {
+                            common.insert(Fact::equal(*entry.get(), *identity));
+                        }
+                    }
                 }
             }
             // 环境仍归原所有者；这里只生产两支共同新增的范围。
