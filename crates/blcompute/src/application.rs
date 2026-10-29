@@ -154,15 +154,18 @@ impl Frame {
         let CpuDataset::Owned(mut data) = source else {
             return Err(error("冻结的 CPU 存储不能调整长度"));
         };
-        let stride = data.stride as usize / 4;
-        let words = stride.checked_mul(count as usize).ok_or_else(|| error("数据集长度溢出"))?;
+        let stride = data.stride as usize;
+        let words = stride.checked_mul(count as usize).ok_or_else(|| error("数据集长度溢出"))?.div_ceil(4);
         if words > data.words.len() { data.words.try_reserve(words - data.words.len())?; }
         data.words.resize(words, 0);
         for row in data.count..count {
             for (scalar, offset) in &data.ty.components {
-                let word = *offset as usize / 4;
-                for part in 0..scalar.size() as usize / 4 {
-                    data.words[row as usize * stride + word + part] = unsafe { fill.add(word + part).read() };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        fill.cast::<u8>().add(*offset as usize),
+                        data.words.as_mut_ptr().cast::<u8>().add(row as usize * stride + *offset as usize),
+                        scalar.size() as usize,
+                    );
                 }
             }
         }

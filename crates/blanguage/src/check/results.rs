@@ -72,7 +72,7 @@ impl Builder<'_> {
         };
         Ok(Some(self.variant_value(ty,index,value)))
     }
-    fn result_word(&mut self, value: &Value, index: usize, scalar: Scalar) -> Value {
+    fn result_component(&mut self, value: &Value, index: usize, scalar: Scalar) -> Value {
         let source = value.ty.components[index].0;
         let mut word = Value {
             ty: Ty::scalar(source),
@@ -121,32 +121,45 @@ impl Builder<'_> {
             self.cast(word, scalar)
         }
     }
-    fn result_high_word(&mut self, value: &Value, index: usize) -> Value {
-        let value = self.result_word(value, index, Scalar::U64);
-        let amount = self.constant(Scalar::U64, 32);
-        let proof = bounds::arithmetic(">>", &value, &amount);
-        let constant = value.constant.as_ref().map(|bits| vec![bits[0] >> 32]);
-        let dst = self.reg(Scalar::U64);
-        self.code.push(Inst::Binary { dst, op: BinaryOp::ShiftRightLogical, a: value.regs[0], b: amount.regs[0] });
-        self.cast(Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst], proof, uniform: value.uniform,
-            literal: false, constant }, Scalar::U32)
-    }
-    fn result_wide_word(&mut self, value: &Value, low: usize, high: usize, scalar: Scalar) -> Value {
-        let low = self.result_word(value, low, Scalar::U64);
-        let high = self.result_word(value, high, Scalar::U64);
-        let amount = self.constant(Scalar::U64, 32);
-        let shifted = self.reg(Scalar::U64);
-        self.code.push(Inst::Binary { dst: shifted, op: BinaryOp::ShiftLeft, a: high.regs[0], b: amount.regs[0] });
-        let high = Value { ty: Ty::scalar(Scalar::U64), regs: vec![shifted],
-            proof: bounds::arithmetic("<<", &high, &amount), uniform: high.uniform, literal: false,
-            constant: high.constant.as_ref().map(|bits| vec![bits[0] << 32]) };
-        let dst = self.reg(Scalar::U64);
-        self.code.push(Inst::Binary { dst, op: BinaryOp::Or, a: low.regs[0], b: high.regs[0] });
-        let constant = low.constant.as_ref().zip(high.constant.as_ref()).map(|(a,b)| vec![a[0] | b[0]]);
-        let joined = Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst],
-            proof: bounds::arithmetic("|", &low, &high), uniform: low.uniform && high.uniform,
-            literal: false, constant };
-        self.result_word(&joined, 0, scalar)
+    fn result_word(&mut self, value: &Value, offset: u32, scalar: Scalar) -> Value {
+        let raw = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+        let mut joined: Option<Value> = None;
+        for (index, (source, at)) in value.ty.components.iter().enumerate() {
+            let begin = offset.max(*at);
+            let end = (offset + scalar.size()).min(at + source.size());
+            if begin >= end { continue; }
+            if offset == *at && scalar.size() == source.size() {
+                return self.result_component(value, index, scalar);
+            }
+            let source_raw = if source.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+            let mut word = self.result_component(value, index, source_raw);
+            let mask = raw.bit_mask() >> (raw.bit_width() - (end - begin) * 8);
+            for (name, op, target, bits) in [
+                (">>", BinaryOp::ShiftRightLogical, source_raw, Some(Bits::from((begin - at) * 8))),
+                ("&", BinaryOp::And, raw, Some(mask)),
+                ("<<", BinaryOp::ShiftLeft, raw, Some(Bits::from((begin - offset) * 8))),
+                ("|", BinaryOp::Or, raw, None),
+            ] {
+                word = self.cast(word, target);
+                let rhs = if let Some(bits) = bits {
+                    if (op == BinaryOp::And && bits == target.bit_mask()) || (op != BinaryOp::And && bits == 0) { continue; }
+                    self.constant(target, bits)
+                } else {
+                    let Some(previous) = joined.take() else { continue; };
+                    previous
+                };
+                let constant = word.constant.as_ref().zip(rhs.constant.as_ref())
+                    .and_then(|(a,b)| constant::binary(op, target, a[0], b[0]).map(|bits| vec![bits]));
+                let proof = bounds::arithmetic(name, &word, &rhs);
+                let dst = self.reg(target);
+                self.code.push(Inst::Binary { dst, op, a: word.regs[0], b: rhs.regs[0] });
+                word = Value { ty: Ty::scalar(target), regs: vec![dst], proof, uniform: word.uniform && rhs.uniform,
+                    literal: false, constant };
+            }
+            joined = Some(word);
+        }
+        let word = joined.unwrap_or_else(|| self.constant(raw, 0));
+        self.result_component(&word, 0, scalar)
     }
     pub(super) fn result_value(&mut self, ty: Ty, success: bool, payload: Option<Value>) -> Value {
         self.variant_value(ty,usize::from(!success),payload)
@@ -160,27 +173,15 @@ impl Builder<'_> {
             .assign(&[0], value.regs.len(), bounds::Proof::capture(&tag));
         if let Some(payload) = payload {
             let offset = ir::align_up(4, ty.align);
-            for (index, (scalar, position)) in payload.ty.components.iter().enumerate() {
-              for part in 0..scalar.size()/4 {
-                let component = ty
-                    .components
-                    .iter()
-                    .position(|(_, at)| *at == offset + position + part*4)
-                    .unwrap();
-                let word = if part == 0 { self.result_word(&payload, index, Scalar::U32) }
-                    else { self.result_high_word(&payload, index) };
+            for (component, (scalar, position)) in ty.components.iter().enumerate().skip(1) {
+                let word = self.result_word(&payload, position - offset, *scalar);
                 value.regs[component] = word.regs[0];
-                value.proof.assign(
-                    &[component],
-                    value.regs.len(),
-                    bounds::Proof::capture(&word),
-                );
+                value.proof.assign(&[component], value.regs.len(), bounds::Proof::capture(&word));
                 if let (Some(bits), Some(source)) = (&mut value.constant, &word.constant) {
                     bits[component] = source[0];
                 } else {
                     value.constant = None;
                 }
-              }
             }
             value.uniform = payload.uniform;
         }
@@ -203,26 +204,11 @@ impl Builder<'_> {
             return None;
         }
         let offset = ir::align_up(4, value.ty.align);
-        let words: Vec<_> = ty
-            .components
-            .iter()
-            .map(|(_, at)| {
-                value
-                    .ty
-                    .components
-                    .iter()
-                    .position(|(_, word)| *word == offset + at)
-                    .unwrap()
-            })
-            .collect();
         let mut proof = bounds::Proof::default();
         let mut regs = Vec::new();
         let mut constant = Some(Vec::new());
-        for (index, ((scalar, at), word)) in ty.components.iter().zip(words).enumerate() {
-            let fresh = if scalar.size() == 8 {
-                let high = value.ty.components.iter().position(|(_,position)| *position == offset + at + 4).unwrap();
-                self.result_wide_word(value, word, high, *scalar)
-            } else { self.result_word(value, word, *scalar) };
+        for (index, (scalar, at)) in ty.components.iter().enumerate() {
+            let fresh = self.result_word(value, offset + at, *scalar);
             regs.push(fresh.regs[0]);
             proof.assign(
                 &[index],

@@ -7,6 +7,14 @@ pub enum SharedWord {
     Input { binding: usize, word: u32 },
     Published { tile: usize, word: u32 },
 }
+impl SharedWord {
+    pub(crate) fn aligned(self) -> Self {
+        match self {
+            Self::Input { binding, word } => Self::Input { binding, word: word & !3 },
+            Self::Published { tile, word } => Self::Published { tile, word: word & !3 },
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PrivateSlot {
     Register(Reg),
@@ -56,14 +64,23 @@ impl Stage {
             TileSource::Published => SharedWord::Published { tile, word },
         }
     }
-    pub fn input_words(&self) -> BTreeSet<(usize, u32)> {
-        self.storage_words()
-            .into_iter()
-            .filter_map(|word| match word {
-                SharedWord::Input { binding, word } => Some((binding, word)),
-                SharedWord::Published { .. } => None,
-            })
-            .collect()
+    pub(crate) fn input_words(&self) -> BTreeMap<(usize, u32), BTreeSet<(u32, Scalar)>> {
+        let used = self.storage_words();
+        let mut words = BTreeMap::<_, BTreeSet<_>>::new();
+        for tile in &self.tiles {
+            if let TileSource::Input { binding, word: base } = tile.source {
+                for (scalar, byte) in &tile.ty.components {
+                    for part in 0..scalar.size().div_ceil(4) {
+                        let word = base + byte + part * 4;
+                        if used.contains(&SharedWord::Input { binding, word }) {
+                            let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+                            words.entry((binding, word & !3)).or_default().insert((word, unit));
+                        }
+                    }
+                }
+            }
+        }
+        words
     }
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
         let mut phases = Vec::new();
@@ -128,15 +145,18 @@ impl Stage {
     pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {
         match slot {
             PrivateSlot::Register(r) => self.registers[r],
-            PrivateSlot::Local(s) => self.locals[s],
+            PrivateSlot::Local(s) => {
+                let (end, ty) = self.locals.range(s + 1..).next().unwrap();
+                ty.components[s + ty.components.len() - end].0
+            }
         }
     }
     pub(crate) fn tile_private_bytes(&self) -> u64 {
-        self.tile_private_slots().into_iter().map(|slot| u64::from(self.private_scalar(slot).size())).sum::<u64>()
+        self.tile_private_slots().into_iter().map(|slot| u64::from(self.private_scalar(slot).size().div_ceil(4) * 4)).sum::<u64>()
             * u64::from(self.workgroup_width())
     }
     fn tile_layout(&self) -> BTreeMap<SharedWord, usize> {
-        fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>) {
+        fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>, groups: &mut Vec<Vec<SharedWord>>) {
             for inst in code {
                 match inst {
                     Inst::Atomic(Atomic {
@@ -145,7 +165,7 @@ impl Stage {
                         offset: None,
                         ..
                     }) => {
-                        last.insert(stage.shared_word(*tile, *word), phase);
+                        last.insert(stage.shared_word(*tile, *word).aligned(), phase);
                     }
                     Inst::LoadIndexed {
                         source: IndexedSource::Tile { tile, .. },
@@ -156,25 +176,38 @@ impl Stage {
                         offset: Some(_),
                         ..
                     }) => {
-                        for word in 0..stage.tiles[*tile].ty.size / 4 {
-                            last.insert(stage.shared_word(*tile, word), phase);
+                        for (scalar, byte) in &stage.tiles[*tile].ty.components {
+                            for part in 0..scalar.size().div_ceil(4) {
+                                last.insert(stage.shared_word(*tile, *byte + part * 4).aligned(), phase);
+                            }
                         }
+                        let bias = match stage.tiles[*tile].source { TileSource::Input { word, .. } => word % 4, TileSource::Published => 0 };
+                        let mut group: Vec<_> = (0..(stage.tiles[*tile].ty.size + bias).div_ceil(4))
+                            .map(|w| stage.shared_word(*tile, w * 4).aligned()).collect();
+                        let mut i = 0;
+                        while i < groups.len() {
+                            if groups[i].iter().any(|w| group.contains(w)) { group.extend(groups.remove(i)); }
+                            else { i += 1; }
+                        }
+                        group.sort_unstable();
+                        group.dedup();
+                        groups.push(group);
                     }
                     Inst::TileLoad { dst, tile, word, .. } => {
-                        for part in 0..stage.registers[*dst].size()/4 {
-                            last.insert(stage.shared_word(*tile, *word + part), phase);
+                        for part in 0..stage.registers[*dst].size().div_ceil(4) {
+                            last.insert(stage.shared_word(*tile, *word + part * 4).aligned(), phase);
                         }
                     }
-                    Inst::Scope(body) => loads(stage, body, phase, last),
+                    Inst::Scope(body) => loads(stage, body, phase, last, groups),
                     Inst::If { yes, no, .. } => {
-                        loads(stage, yes, phase, last);
-                        loads(stage, no, phase, last);
+                        loads(stage, yes, phase, last, groups);
+                        loads(stage, no, phase, last, groups);
                     }
                     Inst::Loop {
                         condition, body, ..
                     } => {
-                        loads(stage, condition, phase, last);
-                        loads(stage, body, phase, last);
+                        loads(stage, condition, phase, last, groups);
+                        loads(stage, body, phase, last, groups);
                     }
                     _ => {}
                 }
@@ -183,16 +216,17 @@ impl Stage {
         let phases = self.tile_phases();
         let mut last = BTreeMap::new();
         let mut births = BTreeMap::new();
+        let mut groups = Vec::new();
         for (phase, p) in phases.iter().enumerate() {
-            loads(self, p.code, phase as i64, &mut last);
+            loads(self, p.code, phase as i64, &mut last, &mut groups);
             match p.step {
                 Some(TileStep::Publish(publication)) => {
                     births.insert(publication.tile, phase as i64);
                 }
                 Some(TileStep::Collective(c)) => {
                     for (word, result) in &c.results {
-                        for part in 0..self.registers[*result].size()/4 {
-                            last.insert(self.shared_word(c.tile, *word + part), phase as i64);
+                        for part in 0..self.registers[*result].size().div_ceil(4) {
+                            last.insert(self.shared_word(c.tile, *word + part * 4).aligned(), phase as i64);
                         }
                     }
                 }
@@ -209,50 +243,6 @@ impl Stage {
                 (begin, *word, *end)
             })
             .collect();
-        let mut groups: Vec<Vec<SharedWord>> = Vec::new();
-        fn indexed_groups(stage: &Stage, code: &[Inst], groups: &mut Vec<Vec<SharedWord>>) {
-            for inst in code {
-                match inst {
-                    Inst::LoadIndexed {
-                        source: IndexedSource::Tile { tile, .. },
-                        ..
-                    }
-                    | Inst::Atomic(Atomic {
-                        target: AtomicTarget::Tile(tile),
-                        offset: Some(_),
-                        ..
-                    }) => {
-                        let mut group: Vec<_> = (0..stage.tiles[*tile].ty.size / 4)
-                            .map(|w| stage.shared_word(*tile, w))
-                            .collect();
-                        let mut i = 0;
-                        while i < groups.len() {
-                            if groups[i].iter().any(|w| group.contains(w)) {
-                                group.extend(groups.remove(i));
-                            } else {
-                                i += 1;
-                            }
-                        }
-                        group.sort_unstable();
-                        group.dedup();
-                        groups.push(group);
-                    }
-                    Inst::Scope(body) => indexed_groups(stage, body, groups),
-                    Inst::If { yes, no, .. } => {
-                        indexed_groups(stage, yes, groups);
-                        indexed_groups(stage, no, groups);
-                    }
-                    Inst::Loop {
-                        condition, body, ..
-                    } => {
-                        indexed_groups(stage, condition, groups);
-                        indexed_groups(stage, body, groups);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        indexed_groups(self, &self.code, &mut groups);
         let mut units: Vec<_> = groups
             .into_iter()
             .map(|group| {
@@ -294,7 +284,7 @@ impl Stage {
         layout
     }
     pub fn word_offset(&self, word: SharedWord) -> u64 {
-        self.tile_layout()[&word] as u64 * self.workgroup_width() as u64 * 4
+        self.tile_layout()[&word.aligned()] as u64 * self.workgroup_width() as u64 * 4
     }
     pub fn tile_data_bytes(&self) -> u64 {
         self.tile_layout().values().max().map_or(0, |slot| {
@@ -308,9 +298,9 @@ impl Stage {
             .filter_map(|i| match i {
                 Inst::TileCollective(c) if !c.results.is_empty() => {
                     Some(if c.op.operator() == CollectiveOperator::Sum {
-                        c.results.iter().map(|(_,result)|self.registers[*result].size()).max().unwrap_or(0)
+                        c.results.iter().map(|(_,result)|self.registers[*result].size().div_ceil(4) * 4).max().unwrap_or(0)
                     } else {
-                        c.results.iter().map(|(_,result)|self.registers[*result].size()).sum()
+                        c.results.iter().map(|(_,result)|self.registers[*result].size().div_ceil(4) * 4).sum()
                     })
                 }
                 _ => None,
@@ -542,17 +532,17 @@ impl Inst {
     }
 }
 pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {
-    fn collect(code: &[Inst], out: &mut Vec<std::ops::Range<usize>>) {
+    fn collect(code: &[Inst], out: &mut BTreeSet<(usize, usize)>) {
         for inst in code {
             match inst {
                 Inst::LoadLocalIndexed { base, len, .. }
-                | Inst::StoreLocalIndexed { base, len, .. } => out.push(*base..*base + *len),
+                | Inst::StoreLocalIndexed { base, len, .. } => { out.insert((*base, *base + *len)); }
                 Inst::Call(call) => {
                     for arg in &call.arguments {
                         if let CallArgument::Reference { address, .. } = arg
                             && let Some(range) = address.local_range()
                         {
-                            out.push(range);
+                            out.insert((range.start, range.end));
                         }
                     }
                 }
@@ -571,18 +561,7 @@ pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {
             }
         }
     }
-    let mut ranges = Vec::new();
+    let mut ranges = BTreeSet::new();
     collect(code, &mut ranges);
-    ranges.sort_unstable_by_key(|r| (r.start, r.end));
-    let mut result: Vec<std::ops::Range<usize>> = Vec::new();
-    for range in ranges {
-        if let Some(last) = result.last_mut()
-            && range.start < last.end
-        {
-            last.end = last.end.max(range.end);
-        } else {
-            result.push(range);
-        }
-    }
-    result
+    ranges.into_iter().map(|(begin, end)| begin..end).collect()
 }

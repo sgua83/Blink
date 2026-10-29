@@ -96,12 +96,11 @@ pub(super) fn relation(
     let (binding, word, access) = collective_field(program, env, &expr, d, Scalar::U32)?;
     if *domain == binding
         || program.buffers[binding].count != Some(1)
-        || program.buffers[binding].ty.components.len() != 1
     {
         return d.source.fail(
             contract.span,
             "B192",
-            "前缀域约束需要独立的形状 1、单 u32 字段计数",
+            "前缀域约束需要独立形状 1 资源中的 u32 计数字段",
         );
     }
     if contract.kind == ContractKind::Requires && !access.reads() {
@@ -223,6 +222,6 @@ pub(super) fn fields_overlap(
             target_ty
                 .components
                 .iter()
-                .any(|(_, b)| source_word + a / 4 == target_word + b / 4)
+                .any(|(_, b)| source_word + *a == target_word + *b)
         })
 }

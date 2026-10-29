@@ -1039,7 +1039,7 @@ impl World {
             arguments,
             values,
             size: 0,
-            align: 4,
+            align: 1,
             components: Vec::new(),
             fields: Vec::new(),
             view: None,

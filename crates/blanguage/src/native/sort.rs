@@ -42,7 +42,7 @@ fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> Native
         e.scale_index(0, stride);
         e.bytes(&[0x41, 0x8b, 0x84, 0x02]);
     }
-    e.u32(s.keys[key].0 * 4);
+    e.u32(s.keys[key].0);
     // 每个键仅装入一次全序编码；后续八轮共用键／原始序号。
     match s.keys[key].1 {
         SortKey::U32 => {}

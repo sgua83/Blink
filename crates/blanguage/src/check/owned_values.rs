@@ -449,52 +449,75 @@ impl Builder<'_> {
         };
         result
     }
-    pub(super) fn read_owned_aggregate(&mut self,expr:&Expr)->Result<Option<(OwnedValue,Option<String>)>> {
+    pub(super) fn read_aggregate(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<(Returned,Option<String>)>> {
         if self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){
             let Some(place)=self.place(expr)?else{return Ok(None)};let model=self.owned_place_model(&place);let Returned::OwnedValue(mut value)=model else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
-            if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}self.prepare_owned_read(&Returned::OwnedValue(value.clone()));if !value.value.ty.has_variants(){self.require_initialized(&place,expr.span)?;}self.load_owned_value(&mut value,expr.span)?;value.borrow();return Ok(Some((value,None)));
+            if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}self.prepare_owned_read(&Returned::OwnedValue(value.clone()));if !value.value.ty.has_variants(){self.require_initialized(&place,expr.span)?;}self.load_owned_value(&mut value,expr.span)?;value.borrow();return Ok(Some((Returned::OwnedValue(value),None)));
         }
-
         if let Some(projection)=self.owned_projection(expr) {
-            let Returned::OwnedValue(mut value)=self.projected_owned(&projection,expr.span)? else {
-                return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体");
-            };
+            let Returned::OwnedValue(mut value)=self.projected_owned(&projection,expr.span)? else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
             if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
             if !value.value.ty.has_variants() && let Some(place)=value.place(){self.require_initialized(&place,expr.span)?;}
-            self.load_owned_value(&mut value,expr.span)?;value.borrow();return Ok(Some((value,None)));
+            self.load_owned_value(&mut value,expr.span)?;value.borrow();return Ok(Some((Returned::OwnedValue(value),None)));
         }
         if let ExprKind::Member(base,field) = &expr.kind {
-            let Some((value,owner))=self.read_owned_aggregate(base)? else{return Ok(None)};
-                let index=value.value.ty.fields.iter().position(|(name,_,_)|name==field).ok_or_else(||Diagnostic{source:self.definition.source.clone(),span:expr.span,code:"B141",message:"拥有值字段不存在".into()})?;
-            let item=self.unpack_record(&value,index);
-            let Returned::OwnedValue(value)=item else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
-            return Ok(Some((value,owner)));
+            let Some((value,owner))=self.read_aggregate(base,None)? else{return Ok(None)};
+            let item=match value {
+                Returned::OwnedValue(value)=>{
+                    let index=value.value.ty.fields.iter().position(|(name,_,_)|name==field).ok_or_else(||Diagnostic{source:self.definition.source.clone(),span:expr.span,code:"B141",message:"拥有值字段不存在".into()})?;
+                    self.unpack_record(&value,index)
+                }
+                Returned::Value(value)=>Returned::value(self.member_value(*value,field,expr.span)?),
+                Returned::Dataset(data) if field=="length"=>Returned::value(data.length),
+                _=>return self.fail(expr.span,"B141","read字段需要实际记录或普通值"),
+            };
+            if let Returned::Value(value)=&item {
+                if let Some(owner)=owner {let binding=self.env.remove(&owner).unwrap();self.drop_binding(binding,&value.proof.typed_view_borrow(&value.ty),expr.span)?;}
+                return Ok(Some((item,None)));
+            }
+            return Ok(Some((item,owner)));
         }
         if let ExprKind::Index(base,index) = &expr.kind {
-            let Some((value,mut owner))=self.read_owned_aggregate(base)? else{return Ok(None)};
+            let Some((value,mut owner))=self.read_aggregate(base,None)? else{return Ok(None)};
+            let value=match value {
+                Returned::Value(value)=>{
+                    let value=if value.ty.array.is_some(){let Some(value)=self.array_value_index(*value,index)?else{return Ok(None)};value}
+                        else {let Some(place)=self.view_value_place(*value,index)?else{return Ok(None)};self.read_place(&place,expr.span)?};
+                    return Ok(Some((Returned::value(value),owner)));
+                }
+                Returned::Dataset(data)=>{let Some(place)=self.application_index(application::DataReference::direct(data),index)?else{return Ok(None)};return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),owner)));}
+                Returned::OwnedValue(value)=>value,
+                Returned::Unit=>return self.fail(expr.span,"B224","read下标需要实际数组或存储"),
+            };
             let Some(element)=value.value.ty.array.as_deref().cloned()else{return self.fail(expr.span,"B224","聚合只读下标需要固定拥有数组")};
             if owner.is_none(){owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));}
             let Some(index)=self.expr(index)? else{return Ok(None)};
             self.require_same(&Ty::scalar(Scalar::U32),&index.ty,expr.span)?;
             let count=value.value.ty.values[0];
             if !self.index_in(&index,IndexDomain::Fixed(count),count){return self.fail(expr.span,"B137","拥有数组下标有效性无法静态证明")};
-            let item=if index.minimum()==index.maximum(){self.unpack_record(&value,index.minimum()as usize)}else{
+            let mut item=if index.minimum()==index.maximum(){self.unpack_record(&value,index.minimum()as usize)}else{
                 let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
                 let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);
                 for i in selected{model.join(self.unpack_record(&value,i as usize));}
-                let place=self.materialize_array(value.value.clone());let place=self.array_index(place,index,expr.span)?;
+                let place=self.materialize_array(value.value.clone()).place;let place=self.array_index(place,index,expr.span)?;
                 let mut regs=Vec::new();
                 for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span)?.regs[0]);}
                 self.rebind_returned(&mut model,regs);model
             };
-            let Returned::OwnedValue(value)=item else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
-            return Ok(Some((value,owner)));
+            if let Returned::OwnedValue(value)=&mut item {value.borrow();}
+            return Ok(Some((item,owner)));
         }
-        let returned=self.evaluate_returned(expr,None)?;
+        let returned=self.evaluate_returned(expr,expected)?;
         if !self.flow.continues(){return Ok(None);}
-        let Some(Returned::OwnedValue(mut value))=returned else{return self.fail(expr.span,"B224","read聚合需要实际拥有值或其临时值")};
-        if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
-        let owner=self.hold_binding(Binding::OwnedValue(value.clone()));value.borrow();Ok(Some((value,Some(owner))))
+        match returned {
+            Some(Returned::OwnedValue(mut value))=>{
+                if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
+                let owner=self.hold_binding(Binding::OwnedValue(value.clone()));value.borrow();Ok(Some((Returned::OwnedValue(value),Some(owner))))
+            }
+            Some(Returned::Dataset(mut data))=>{let owner=self.hold_binding(Binding::ApplicationData(data.clone()));data.ownership=Ownership::Borrowed;Ok(Some((Returned::Dataset(data),Some(owner))))}
+            Some(Returned::Value(value))=>Ok(Some((Returned::Value(value),None))),
+            _=>self.fail(expr.span,"B224","read需要实际普通值或拥有聚合"),
+        }
     }
     // 资源只读取实际位置中的元数据；载荷仍由原Frame持有。
     pub(super) fn read_storage_value(&mut self,place:&Place,span:Span)->Result<Value> {
@@ -910,7 +933,7 @@ impl Builder<'_> {
         let mut root=expr;
         while let ExprKind::Member(base,_)|ExprKind::Index(base,_)=&root.kind{root=base;}
         let borrowed=self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) && matches!(&root.kind,ExprKind::Name(name)if matches!(self.env.get(name),Some(Binding::OwnedValue(value))if value.ownership==Ownership::Borrowed));
-        let (returned,held)=if borrowed {match self.read_owned_aggregate(expr)? {Some((value,held))=>(Some(Returned::OwnedValue(value)),held),None=>(None,None)}}else{(self.evaluate_returned(expr,None)?,None)};
+        let (returned,held)=if borrowed {match self.read_aggregate(expr,None)? {Some((value,held))=>(Some(value),held),None=>(None,None)}}else{(self.evaluate_returned(expr,None)?,None)};
         if !self.flow.continues() { return Ok(()); }
         let returned = returned.ok_or_else(|| Diagnostic { source:self.definition.source.clone(),span,code:"B269",message:"match需要变体值".into() })?;
         let value = self.returned_storage(&returned);
@@ -1025,14 +1048,21 @@ impl Builder<'_> {
 impl Builder<'_> {
     pub(super) fn hold_argument(
         &mut self,
-        argument: &cooperative::Argument,
+        argument: &mut cooperative::Argument,
         access: Access,
     ) -> Option<String> {
+        if let cooperative::Argument::Reference(owner)=argument {
+            if access.reads() {
+                let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect::<Vec<_>>();
+                (owner.proof,owner.uniform)=self.read_owned_proof(&owner.place,&regs);
+            } else {owner.proof=bounds::Proof::default();}
+        }
         let binding = match argument {
             cooperative::Argument::BorrowedData(reference) => {
                 Binding::DataReference(reference.clone())
             }
-            cooperative::Argument::Exclusive(place) | cooperative::Argument::Atomic(place)
+            cooperative::Argument::Reference(owner) => Binding::Owned(owner.clone()),
+            cooperative::Argument::Atomic(place)
                 if matches!(place.storage(), Place::ApplicationElement { .. }) =>
             {
                 Binding::AtomicBorrow(place.clone())
@@ -1067,6 +1097,7 @@ impl Builder<'_> {
                 continue;
             }
             arguments[*index] = match value {
+                Binding::Owned(owner) => cooperative::Argument::Reference(owner),
                 Binding::ApplicationData(data) => cooperative::Argument::ApplicationData(data),
                 Binding::OwnedValue(value) => cooperative::Argument::OwnedValue(value),
                 Binding::Value(value) => cooperative::Argument::Value(value),

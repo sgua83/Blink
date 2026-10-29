@@ -9,7 +9,7 @@ impl Emitter<'_> {
             15,
             Operand::memory(12, a.count.binding as u32 * 8),
         );
-        let counter = Operand::memory(15, a.count.word * 4);
+        let counter = Operand::memory(15, a.count.word);
         self.instruction(
             None,
             &[0x8b],
@@ -35,7 +35,7 @@ impl Emitter<'_> {
         );
         self.offset_address(self.program.buffers[a.target].stride);
         for (word, value) in &a.values {
-            self.write_scalar(*value, 15, word * 4);
+            self.write_scalar(*value, 15, *word);
         }
         self.bytes(&[0xb8, 1, 0, 0, 0]);
         let done = self.jump(None);

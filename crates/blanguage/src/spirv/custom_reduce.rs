@@ -20,25 +20,19 @@ impl Summary {
             Self::Counted(_) => 2,
         }
     }
-    fn scan(head: Option<u32>) -> Self {
-        head.map(Self::Segmented).unwrap_or(Self::Plain)
-    }
 }
 impl Emitter<'_> {
-    fn custom_values(&mut self, ty: &Ty, registers: &[Reg]) -> Vec<u32> {
-        let zero = self.constant(Scalar::U32, 0);
-        let mut values = vec![zero; ty.size.div_ceil(4) as usize];
-        for (reg, (_, offset)) in registers.iter().zip(&ty.components) {
-            let words = self.to_words(*reg);
-            let at = (offset / 4) as usize;
-            values[at..at + words.len()].copy_from_slice(&words);
-        }
-        values
-    }
     fn custom_arguments(&mut self, ty: &Ty, registers: &[Reg], values: &[u32]) {
         for (reg, (scalar, offset)) in registers.iter().zip(&ty.components) {
             let at = (offset / 4) as usize;
-            self.from_words(*reg, &values[at..at + (scalar.size() / 4) as usize]);
+            if offset % 4 != 0 {
+                let shift = self.constant(Scalar::U32, offset % 4 * 8);
+                let raw = self.id();
+                self.emit(194, &[self.types[&Scalar::U32], raw, values[at], shift]);
+                self.from_words(*reg, &[raw], Scalar::U32);
+            } else {
+                self.from_words(*reg, &values[at..at + scalar.size().div_ceil(4) as usize], Scalar::U32);
+            }
         }
     }
     fn custom_node(&mut self, k: usize, shared: u32, pointer: u32, node: u32) -> Vec<u32> {
@@ -53,7 +47,7 @@ impl Emitter<'_> {
     }
     fn custom_address(&mut self, words: usize, binding: usize, index: u32) -> Vec<u32> {
         (0..words as u32)
-            .map(|word| self.address_scalar(binding, index, words as u32, word))
+            .map(|word| self.address_scalar(binding, index, words as u32 * 4, word * 4))
             .collect()
     }
     fn custom_read(&mut self, pointers: &[u32]) -> Vec<u32> {
@@ -88,7 +82,8 @@ impl Emitter<'_> {
         self.custom_arguments(&r.ty, &kernel.left, left);
         self.custom_arguments(&r.ty, &kernel.right, right);
         self.block(&kernel.stage.code[kernel.project_end..], None)?;
-        Ok(self.custom_values(&r.ty, &kernel.result))
+        let values: Vec<_> = kernel.result.iter().map(|reg| self.to_words(*reg, Self::raw_scalar(self.stage.registers[*reg]))[0]).collect();
+        Ok(self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value))))
     }
     fn custom_input(
         &mut self,
@@ -111,7 +106,8 @@ impl Emitter<'_> {
             &kernel.stage.code[kernel.invariant_end..kernel.initialize_end],
             None,
         )?;
-        let mut identity = self.custom_values(&r.ty, &kernel.initial);
+        let initial: Vec<_> = kernel.initial.iter().map(|reg| self.to_words(*reg, Self::raw_scalar(self.stage.registers[*reg]))[0]).collect();
+        let mut identity = self.pack_words(r.ty.size, r.ty.components.iter().zip(&initial).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
         for _ in k..words {
             identity.push(self.constant(Scalar::U32, 0));
         }
@@ -124,8 +120,8 @@ impl Emitter<'_> {
         self.emit(248, &[read]);
         for (i, reg) in kernel.source.iter().enumerate() {
             let scalar = kernel.stage.registers[*reg];
-            let word = if tail { r.ty.components[i].1 / 4 } else { fields.source_word + r.source_ty.components[i].1 / 4 };
-            let source: Vec<_> = (0..scalar.size() / 4).map(|part| self.address_scalar(
+            let word = if tail { r.ty.components[i].1 } else { fields.source_word + r.source_ty.components[i].1 };
+            let raw = self.load_raw_buffer(scalar,
                 if tail {
                     self.scan_input_binding(fields)
                 } else {
@@ -133,14 +129,13 @@ impl Emitter<'_> {
                 },
                 self.index,
                 if tail {
-                    words as u32
+                    words as u32 * 4
                 } else {
-                    self.program.buffers[fields.source].stride / 4
+                    self.program.buffers[fields.source].stride
                 },
-                word + part,
-            )).collect();
-            let values = self.custom_read(&source);
-            self.from_words(*reg, &values);
+                word,
+            );
+            self.from_words(*reg, &[raw], Self::raw_scalar(scalar));
         }
         self.block(
             &kernel.stage.code[kernel.initialize_end..kernel.project_end],
@@ -149,7 +144,8 @@ impl Emitter<'_> {
         for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
             self.regs[*dst] = self.value(*src);
         }
-        let values = self.custom_values(&r.ty, &kernel.right);
+        let components: Vec<_> = kernel.right.iter().map(|reg| self.to_words(*reg, Self::raw_scalar(self.stage.registers[*reg]))[0]).collect();
+        let values = self.pack_words(r.ty.size, r.ty.components.iter().zip(&components).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
         self.custom_write(&own[..k], &values);
         if let Some(head_word) = head_word {
             let source = self.address_scalar(
@@ -160,11 +156,11 @@ impl Emitter<'_> {
                 },
                 self.index,
                 if tail {
-                    words as u32
+                    words as u32 * 4
                 } else {
-                    self.program.buffers[fields.source].stride / 4
+                    self.program.buffers[fields.source].stride
                 },
-                if tail { k as u32 } else { head_word },
+                if tail { k as u32 * 4 } else { head_word },
             );
             let raw = self.custom_read(&[source])[0];
             let mut head = self.id();
@@ -186,8 +182,8 @@ impl Emitter<'_> {
                     let at = self.address_scalar(
                         self.scan_input_binding(fields),
                         self.index,
-                        words as u32,
-                        k as u32 + 1,
+                        words as u32 * 4,
+                        (k as u32 + 1) * 4,
                     );
                     self.custom_read(&[at])[0]
                 } else {
@@ -380,7 +376,7 @@ impl Emitter<'_> {
         let last = self.constant(Scalar::U32, 63);
         let words = self.custom_node(r.ty.size.div_ceil(4) as usize, shared, pointer, last);
         let root:Vec<Vec<_>>=r.ty.components.iter().map(|(scalar,offset)|
-            (0..scalar.size()/4).map(|part|words[(offset/4+part) as usize]).collect()).collect();
+            (0..scalar.size().div_ceil(4)).map(|part|words[(offset/4+part) as usize]).collect()).collect();
         self.reduction_output(&r.fields, &r.ty, &root, owner);
         Ok(())
     }
@@ -398,7 +394,7 @@ impl Emitter<'_> {
         let r = &scan.values;
         let k = r.ty.size.div_ceil(4) as usize;
         let words = scan.summary_words();
-        let summary = Summary::scan(scan.head_word);
+        let summary = scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain);
         let (own, identity, input) = self.custom_input(
             r, kernel, tail, local, shared, pointer, active, summary, false,
         )?;
@@ -469,7 +465,7 @@ impl Emitter<'_> {
             let encoded = self.id();
             self.emit(128, &[u, encoded, local, one]);
             let target =
-                self.address_scalar(self.program.buffers.len(), group, words as u32, k as u32);
+                self.address_scalar(self.program.buffers.len(), group, words as u32 * 4, k as u32 * 4);
             self.custom_write(&[target], &[encoded]);
             self.emit(249, &[saved]);
             self.emit(248, &[saved]);
@@ -561,7 +557,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride / 4,
+                self.program.buffers[reduction.count.binding].stride,
                 reduction.count.word,
             );
             self.custom_write(&[target], &[zero]);
@@ -628,7 +624,7 @@ impl Emitter<'_> {
             let next_head = self.address_scalar(
                 r.fields.source,
                 next,
-                self.program.buffers[r.fields.source].stride / 4,
+                self.program.buffers[r.fields.source].stride,
                 reduction.head_word,
             );
             let next_head = self.custom_read(&[next_head])[0];
@@ -656,7 +652,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride / 4,
+                self.program.buffers[reduction.count.binding].stride,
                 reduction.count.word,
             );
             self.custom_write(&[target], &[total[k + 1]]);
@@ -667,27 +663,16 @@ impl Emitter<'_> {
         self.emit(248, &[end]);
         Ok(())
     }
-    fn custom_load_target(&mut self, r: &CustomReduction, index: u32) -> Vec<u32> {
-        let zero = self.constant(Scalar::U32, 0);
-        let mut values = vec![zero; r.ty.size.div_ceil(4) as usize];
-        for (scalar, offset) in &r.ty.components {
-            for part in 0..scalar.size() / 4 {
-                let word = offset / 4 + part;
-                let pointer = self.address_scalar(r.fields.target, index,
-                    self.program.buffers[r.fields.target].stride / 4, r.fields.target_word + word);
-                values[word as usize] = self.custom_read(&[pointer])[0];
-            }
-        }
-        values
-    }
     fn custom_store_target(&mut self, r: &CustomReduction, index: u32, values: &[u32]) {
         for (scalar, offset) in &r.ty.components {
-            for part in 0..scalar.size() / 4 {
-                let word = offset / 4 + part;
-                let pointer = self.address_scalar(r.fields.target, index,
-                    self.program.buffers[r.fields.target].stride / 4, r.fields.target_word + word);
-                self.custom_write(&[pointer], &[values[word as usize]]);
-            }
+            let at = (offset / 4) as usize;
+            let raw = if offset % 4 != 0 {
+                let shift = self.constant(Scalar::U32, offset % 4 * 8);
+                let shifted = self.id();
+                self.emit(194, &[self.types[&Scalar::U32], shifted, values[at], shift]);
+                self.join_words(*scalar, &[shifted], Scalar::U32)
+            } else { self.join_words(*scalar, &values[at..at + scalar.size().div_ceil(4) as usize], Scalar::U32) };
+            self.store_raw_buffer(*scalar, r.fields.target, index, self.program.buffers[r.fields.target].stride, r.fields.target_word + offset, raw);
         }
     }
     pub(super) fn custom_scan_add(
@@ -707,8 +692,8 @@ impl Emitter<'_> {
             let first = self.address_scalar(
                 self.program.buffers.len(),
                 group,
-                words as u32,
-                r.ty.size.div_ceil(4),
+                words as u32 * 4,
+                r.ty.size.div_ceil(4) * 4,
             );
             let first = self.custom_read(&[first])[0];
             let lane = self.id();
@@ -735,7 +720,10 @@ impl Emitter<'_> {
         let prefix = self.custom_address(words, self.scan_input_binding(&r.fields), group);
         let prefix = self.custom_read(&prefix);
         let values = if root {
-            self.custom_load_target(r, self.index)
+            let values: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| self.load_raw_buffer(
+                *scalar, r.fields.target, self.index, self.program.buffers[r.fields.target].stride, r.fields.target_word + offset,
+            )).collect();
+            self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value)))
         } else {
             let target = self.custom_address(words, r.fields.target, self.index);
             self.custom_read(&target)
@@ -748,7 +736,7 @@ impl Emitter<'_> {
             if root {
                 Summary::Plain
             } else {
-                Summary::scan(scan.head_word)
+                scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain)
             },
         )?;
         if root {

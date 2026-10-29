@@ -165,15 +165,7 @@ impl Builder<'_> {
             return Ok(None);
         };
         let ty = storage.ty.clone();
-        let slots: Vec<_> = ty
-            .components
-            .iter()
-            .map(|(s, _)| {
-                let i = self.locals.len();
-                self.locals.push(*s);
-                i
-            })
-            .collect();
+        let slots = self.local_slots(&ty).0;
         if let Some(a) = &a {
             for (slot, reg) in slots.iter().zip(&a.regs) {
                 yes.push(Inst::StoreLocal(*slot, *reg));

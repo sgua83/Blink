@@ -61,7 +61,7 @@ impl Emitter<'_> {
                 self.packet_read_base(allocation, source, lane);
             }
             self.packet_lane(allocation, index, lane, 0);
-            let memory = self.scaled_memory(15, 0, stride, word * 4);
+            let memory = self.scaled_memory(15, 0, stride, word);
             // XMM3 只在取 lane 时暂用，第四个读取在地址完成后才写入它。
             // 目标分配位置在四个源 lane 全部读取后写回，允许实际的寄存器复用。
             self.instruction(Some(0x66), &[0x0f, 0x6e], false, lane, memory.into());

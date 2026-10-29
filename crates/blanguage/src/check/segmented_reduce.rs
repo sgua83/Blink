@@ -56,11 +56,11 @@ pub(super) fn compile(
             "分段归约需要同域可读数值与段头、非重叠可写目标及独立输出计数",
         );
     }
-    if program.buffers[count].count != Some(1) || program.buffers[count].ty.components.len() != 1 {
+    if program.buffers[count].count != Some(1) {
         return d.source.fail(
             args[3].span,
             "B171",
-            "分段归约计数必须为形状 1、单 u32 字段",
+            "分段归约计数必须为形状 1 的 u32 计数字段",
         );
     }
     if let (Some(a), Some(b)) = (program.buffers[source].count, program.buffers[target].count)
@@ -106,7 +106,7 @@ pub(super) fn compile(
         }),
         boundary_before: true,
         registers: Vec::new(),
-        locals: Vec::new(),
+        locals: Default::default(),
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target, count.binding],

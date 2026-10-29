@@ -50,18 +50,18 @@ impl Emitter<'_> {
             self.integer_divide64(result, src, self.location(divisor));
             return;
         }
-        self.copy(Location::Gpr(1), self.location(divisor));
+        self.copy_scalar(Location::Gpr(1), self.location(divisor), self.stage.registers[divisor]);
         self.load(src);
         self.divide_value_instruction(self.stage.registers[src]);
         if let Some(dst) = result.quotient() {
             self.store(dst);
         }
         if let Some(dst) = result.remainder() {
-            self.copy(self.location(dst), Location::Gpr(2));
+            self.copy_scalar(self.location(dst), Location::Gpr(2), self.stage.registers[dst]);
         }
     }
     pub(super) fn divide_value_instruction(&mut self, scalar: Scalar) {
-        if scalar == Scalar::I32 {
+        if scalar.is_signed() {
             // sign_extend(i32) 后执行 IDIV64，MIN32 / -1 在 i64 内可表示。
             self.bytes(&[
                 0x48, 0x63, 0xc0, 0x48, 0x63, 0xc9, 0x48, 0x99, 0x48, 0xf7, 0xf9,
@@ -87,7 +87,9 @@ impl Emitter<'_> {
             self.integer_divide64(result, src, Location::Immediate(divisor.get()));
             return;
         }
-        let signed = self.stage.registers[src] == Scalar::I32;
+        let scalar = self.stage.registers[src];
+        let signed = scalar.is_signed();
+        let divisor = if signed { NonZeroU64::new(scalar.signed(divisor.get()) as u32 as u64).unwrap() } else { divisor };
         self.unsigned_magnitude(src, signed);
         match Division::new(divisor, signed) {
             Division::Shift(shift) => {
@@ -109,7 +111,7 @@ impl Emitter<'_> {
             }
         }
         if signed {
-            self.copy(Location::Gpr(2), self.location(src));
+            self.copy_scalar(Location::Gpr(2), self.location(src), scalar);
             self.bytes(&[0xc1, 0xfa, 31]);
             if (divisor.get() as i32) < 0 {
                 self.bytes(&[0xf7, 0xd2]);
@@ -122,12 +124,12 @@ impl Emitter<'_> {
             }
             self.bytes(&[0x69, 0xc0]);
             self.u32(divisor.get() as u32);
-            self.copy(Location::Gpr(2), self.location(src));
+            self.copy_scalar(Location::Gpr(2), self.location(src), scalar);
             self.bytes(&[0x29, 0xc2]);
             if let Some(quotient) = result.quotient() {
-                self.copy(self.location(quotient), Location::Gpr(1));
+                self.copy_scalar(self.location(quotient), Location::Gpr(1), scalar);
             }
-            self.copy(self.location(remainder), Location::Gpr(2));
+            self.copy_scalar(self.location(remainder), Location::Gpr(2), scalar);
         } else if let Some(dst) = result.quotient() {
             self.store(dst);
         }

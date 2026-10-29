@@ -73,7 +73,7 @@ impl Builder<'_> {
                                 words
                                     .iter()
                                     .enumerate()
-                                    .filter_map(|(i, word)| (*word == offset / 4).then_some(i))
+                                    .filter_map(|(i, word)| (*word == *offset).then_some(i))
                                     .collect()
                             })
                             .collect();
@@ -179,9 +179,9 @@ impl Builder<'_> {
                     words
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, word)| (*word == offset / 4).then_some(i))
+                        .filter_map(|(i, word)| (*word == *offset).then_some(i))
                         .collect()
-                } else if words.contains(&(offset / 4)) {
+                } else if words.contains(&(*offset)) {
                     (0..owner.ty().components.len()).collect()
                 } else {
                     Vec::new()

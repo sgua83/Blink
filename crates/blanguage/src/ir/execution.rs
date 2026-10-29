@@ -5,6 +5,7 @@ use std::{collections::BTreeSet, ops::Deref};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeviceRequirements {
     pub ray_query: bool, pub float64: bool,
+    pub integer8: bool, pub integer16: bool,
     pub sorting: bool,
     pub maximal_reconvergence: bool,
     pub texture_indexing: bool,
@@ -39,18 +40,24 @@ macro_rules! interface_fields {
 impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
-        DeviceRequirements {
+        let mut requirements = DeviceRequirements {
             ray_query: !self.accelerations.is_empty(),
-            float64: self.buffers.iter().any(|b| b.ty.components.iter().any(|(s,_)| *s==Scalar::F64))
-                || self.uniforms.iter().any(|b| b.ty.components.iter().any(|(s,_)| *s==Scalar::F64))
-                || self.stages.iter().any(|s| s.registers.iter().chain(&s.locals).any(|s| *s==Scalar::F64)
-                    || s.requires_float_preserve(Scalar::F64)),
+            float64: self.stages.iter().any(|s| s.requires_float_preserve(Scalar::F64)),
             sorting: self.requires_sort(),
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
             position_fetch: self.requires_ray_position_fetch(),
             subgroup: self.subgroup_capabilities(),
+            ..DeviceRequirements::default()
+        };
+        for scalar in self.buffers.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s)
+            .chain(self.uniforms.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s))
+            .chain(self.stages.iter().flat_map(|s| s.registers.iter().chain(s.locals.values().flat_map(|ty| ty.components.iter().map(|(s, _)| s))))) {
+            requirements.integer8 |= scalar.size() == 1;
+            requirements.integer16 |= scalar.size() == 2;
+            requirements.float64 |= *scalar == Scalar::F64;
         }
+        requirements
     }
 }
 impl<T: Deref> ProgramInterface for T
@@ -224,8 +231,8 @@ impl ExecutionPlan {
             .iter()
             .map(|stage| {
                 let shared_bytes = stage.tile_bytes().max(match &stage.operation {
-                    Operation::Reduce(r) => u64::from(r.ty.size) * 64,
-                    Operation::CustomReduce(r) => u64::from(r.ty.size) * 64,
+                    Operation::Reduce(r) => u64::from(r.ty.size.div_ceil(4)) * 64 * 4,
+                    Operation::CustomReduce(r) => u64::from(r.ty.size.div_ceil(4)) * 64 * 4,
                     Operation::ScanExclusive(r) => r.summary_words() as u64 * 64 * 4,
                     Operation::SegmentedReduce(r) => r.summary_words() as u64 * 64 * 4,
                     Operation::CustomScan(r) => r.summary_words() as u64 * 64 * 4,
@@ -259,7 +266,7 @@ impl ExecutionPlan {
                     operation,
                     reads: stage.reads.clone(),
                     writes: stage.writes.clone(),
-                    inputs: stage.input_words(),
+                    inputs: stage.input_words().into_keys().collect(),
                     tile_scope: stage.has_tile_scope(),
                     width: stage.workgroup_width(),
                     shared_bytes,

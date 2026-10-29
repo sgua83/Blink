@@ -82,6 +82,10 @@ fn compute(args: &[String]) -> Result<()> {
                 Scalar::Bool => Value::Bool(value.parse()?),
                 Scalar::U64 => Value::U64(value.parse()?),
                 Scalar::I64 => Value::I64(value.parse()?),
+                Scalar::U8 => Value::U8(value.parse()?),
+                Scalar::I8 => Value::I8(value.parse()?),
+                Scalar::U16 => Value::U16(value.parse()?),
+                Scalar::I16 => Value::I16(value.parse()?),
             });
         }
     }

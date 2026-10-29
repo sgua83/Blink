@@ -227,8 +227,8 @@ impl Executable {
                     })?
                 }
                 NativeSymbol::Print(scalar) => match scalar {
-                    Scalar::U32 => print_u32 as *const (),
-                    Scalar::I32 => print_i32 as *const (),
+                    Scalar::U8 | Scalar::U16 | Scalar::U32 => print_u32 as *const (),
+                    Scalar::I8 | Scalar::I16 | Scalar::I32 => print_i32 as *const (),
                     Scalar::U64 => print_u64 as *const (),
                     Scalar::I64 => print_i64 as *const (),
                     Scalar::Bool => print_bool as *const (),
@@ -265,13 +265,13 @@ impl Drop for Executable {
         }
     }
 }
-fn collective_bits(scalar: Scalar, words: &[u32], word: usize) -> Bits {
-    let low = Bits::from(words[word]);
-    if scalar.size() == 8 { low | (Bits::from(words[word + 1]) << 32) } else { low }
+fn collective_bits(scalar: Scalar, words: &[u32], byte: usize) -> Bits {
+    let mut bytes = [0; 8];
+    unsafe { std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>().add(byte), bytes.as_mut_ptr(), scalar.size() as usize); }
+    Bits::from_ne_bytes(bytes)
 }
-fn store_collective_bits(scalar: Scalar, words: &mut [u32], word: usize, bits: Bits) {
-    words[word] = bits as u32;
-    if scalar.size() == 8 { words[word + 1] = (bits >> 32) as u32; }
+fn store_collective_bits(scalar: Scalar, words: &mut [u32], byte: usize, bits: Bits) {
+    unsafe { std::ptr::copy_nonoverlapping(bits.to_ne_bytes().as_ptr(), words.as_mut_ptr().cast::<u8>().add(byte), scalar.size() as usize); }
 }
 fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: Bits, b: Bits) -> Bits {
     scalar.truncate(match (scalar, operator) {
@@ -594,8 +594,8 @@ impl CpuCode {
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {
                     buffers[prefix.binding]
-                        .pointer
-                        .add(prefix.word as usize)
+                        .pointer.cast::<u8>()
+                        .add(prefix.word as usize).cast::<u32>()
                         .read()
                 }
             } else {
@@ -642,20 +642,14 @@ impl CpuCode {
                 for (scalar, offset) in &reduction.ty.components {
                     let total = partials
                         .chunks_exact(result.words())
-                        .map(|p| collective_bits(*scalar, p, (*offset/4) as usize))
+                        .map(|p| collective_bits(*scalar, p, *offset as usize))
                         .fold(reduction.operator.identity(*scalar), |a, b| {
                             collective_pair(*scalar, reduction.operator, a, b)
                         });
                     unsafe {
-                        buffers[reduction.fields.target]
-                            .pointer
-                            .add((reduction.fields.target_word + offset / 4) as usize)
-                            .write(total as u32);
-                        if scalar.size() == 8 {
-                            buffers[reduction.fields.target].pointer
-                                .add((reduction.fields.target_word + offset / 4 + 1) as usize)
-                                .write((total >> 32) as u32);
-                        }
+                        std::ptr::copy_nonoverlapping(total.to_ne_bytes().as_ptr(),
+                            buffers[reduction.fields.target].pointer.cast::<u8>().add((reduction.fields.target_word + offset) as usize),
+                            scalar.size() as usize);
                     }
                 }
             }
@@ -700,9 +694,9 @@ impl CpuCode {
                             for (scalar, offset) in &r.ty.components {
                                 unsafe {
                                     std::ptr::copy_nonoverlapping(
-                                        output.as_ptr().add((offset / 4) as usize),
-                                        buffers[r.fields.target].pointer.add((r.fields.target_word + offset / 4) as usize),
-                                        (scalar.size() / 4) as usize,
+                                        output.as_ptr().cast::<u8>().add(*offset as usize),
+                                        buffers[r.fields.target].pointer.cast::<u8>().add((r.fields.target_word + offset) as usize),
+                                        scalar.size() as usize,
                                     );
                                 }
                             }
@@ -718,7 +712,7 @@ impl CpuCode {
                                 let reset = total[k] != 0;
                                 let next_segments = segments + total[k + 1];
                                 for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&values.ty.components) {
-                                    let word = (*offset/4) as usize;
+                                    let word = *offset as usize;
                                     let bits = collective_bits(*scalar, total, word);
                                     let next = if reset {
                                         bits
@@ -734,8 +728,8 @@ impl CpuCode {
                             }
                             unsafe {
                                 buffers[reduction.count.binding]
-                                    .pointer
-                                    .add(reduction.count.word as usize)
+                                    .pointer.cast::<u8>()
+                                    .add(reduction.count.word as usize).cast::<u32>()
                                     .write(segments);
                             }
                         } else if let blanguage::ir::Operation::ScanExclusive(scan) =
@@ -746,7 +740,7 @@ impl CpuCode {
                             for total in partials.chunks_mut(scan.summary_words()) {
                                 let reset = scan.head_word.is_some() && total[k] != 0;
                                 for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&scan.ty.components) {
-                                    let word = (*offset/4) as usize;
+                                    let word = *offset as usize;
                                     let bits = collective_bits(*scalar, total, word);
                                     let next = if reset {
                                         bits
@@ -767,8 +761,8 @@ impl CpuCode {
                             if let blanguage::ir::Operation::Compact(c) = &stage.operation {
                                 unsafe {
                                     buffers[c.count]
-                                        .pointer
-                                        .add(c.count_word as usize)
+                                        .pointer.cast::<u8>()
+                                        .add(c.count_word as usize).cast::<u32>()
                                         .write(prefix);
                                 }
                             }

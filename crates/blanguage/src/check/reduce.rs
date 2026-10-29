@@ -59,7 +59,7 @@ pub(super) fn compile(
         }),
         boundary_before: true,
         registers: Vec::new(),
-        locals: Vec::new(),
+        locals: Default::default(),
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target],

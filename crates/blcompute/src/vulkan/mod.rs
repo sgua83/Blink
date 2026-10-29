@@ -16,7 +16,7 @@ use crate::views::Views;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
-    ir::{ExecutionPlan as Program, ProgramInterface, Ty},
+    ir::{DeviceRequirements, ExecutionPlan as Program, ProgramInterface, Ty},
 };
 pub use execution::GpuCompletion;
 use execution::{Completion, Execution, ExecutionResources, QueryPool};
@@ -209,7 +209,7 @@ impl PhysicalDevice {
         self.properties.deviceType == 2
     }
     pub fn device(&self) -> Result<Device> {
-        Device::create(self.clone(), false, false, false, false, false, false, false)
+        Device::create(self.clone(), DeviceRequirements::default())
     }
     pub fn for_program(&self, program: &dyn ProgramInterface) -> Result<Device> {
         self.for_programs(std::iter::once(program))
@@ -219,19 +219,20 @@ impl PhysicalDevice {
         &self,
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Device> {
-        let (mut ray, mut sort, mut reconverge, mut textures, mut positions, mut extended_types) =
-            (false, false, false, false, false, false);
-        let mut float64 = false;
+        let mut requirements = DeviceRequirements::default();
         for program in programs {
-            let required = program.requirements(); float64 |= required.float64;
-            ray |= required.ray_query;
-            sort |= required.sorting;
-            reconverge |= required.maximal_reconvergence;
-            textures |= required.texture_indexing;
-            positions |= required.position_fetch;
-            extended_types |= required.subgroup.extended_types;
+            let required = program.requirements();
+            requirements.float64 |= required.float64;
+            requirements.integer8 |= required.integer8;
+            requirements.integer16 |= required.integer16;
+            requirements.ray_query |= required.ray_query;
+            requirements.sorting |= required.sorting;
+            requirements.maximal_reconvergence |= required.maximal_reconvergence;
+            requirements.texture_indexing |= required.texture_indexing;
+            requirements.position_fetch |= required.position_fetch;
+            requirements.subgroup.extended_types |= required.subgroup.extended_types;
         }
-        Device::create(self.clone(), ray, sort, reconverge, textures, positions, extended_types, float64)
+        Device::create(self.clone(), requirements)
     }
     fn default(presentation: bool) -> Result<Self> {
         Instance::create(presentation)?
@@ -355,6 +356,8 @@ struct Inner {
     subgroup_extended_types: bool,
     float32_preserve: bool,
     float64: bool,
+    integer8: bool,
+    integer16: bool,
     float64_preserve: bool,
     next_submission: Cell<u64>,
 }
@@ -387,16 +390,10 @@ impl Device {
     ) -> Result<Self> {
         PhysicalDevice::default(true)?.for_programs(programs)
     }
-    fn create(
-        selected: PhysicalDevice,
-        ray_query: bool,
-        sorting: bool,
-        maximal_reconvergence: bool,
-        texture_indexing: bool,
-        position_fetch: bool,
-        subgroup_extended_types: bool,
-        float64: bool,
-    ) -> Result<Self> {
+    fn create(selected: PhysicalDevice, requirements: DeviceRequirements) -> Result<Self> {
+        let DeviceRequirements { ray_query, sorting, maximal_reconvergence, texture_indexing,
+            position_fetch, float64, integer8, integer16, subgroup } = requirements;
+        let subgroup_extended_types = subgroup.extended_types;
         unsafe {
             let PhysicalDevice {
                 owner,
@@ -463,6 +460,21 @@ impl Device {
             features.sType = 1000059000;
             features.pNext =
                 (&mut address as *mut VkPhysicalDeviceBufferDeviceAddressFeatures).cast();
+            let mut storage8: VkPhysicalDevice8BitStorageFeatures = zero();
+            storage8.sType = 1000177000;
+            let mut arithmetic8: VkPhysicalDeviceShaderFloat16Int8Features = zero();
+            arithmetic8.sType = 1000082000;
+            if integer8 {
+                storage8.pNext = features.pNext;
+                arithmetic8.pNext = (&mut storage8 as *mut VkPhysicalDevice8BitStorageFeatures).cast();
+                features.pNext = (&mut arithmetic8 as *mut VkPhysicalDeviceShaderFloat16Int8Features).cast();
+            }
+            let mut storage16: VkPhysicalDevice16BitStorageFeatures = zero();
+            storage16.sType = 1000083000;
+            if integer16 {
+                storage16.pNext = features.pNext;
+                features.pNext = (&mut storage16 as *mut VkPhysicalDevice16BitStorageFeatures).cast();
+            }
             let mut subgroup_features = sort::Features {
                 kind: 1000225002,
                 next: features.pNext,
@@ -493,6 +505,12 @@ impl Device {
                 features.pNext = (&mut indexing as *mut texture::IndexingFeatures).cast();
             }
             features_fn(physical, &mut features);
+            if integer8 && (arithmetic8.shaderInt8 == 0 || storage8.storageBuffer8BitAccess == 0) {
+                return Err(error("程序需要shaderInt8与storageBuffer8BitAccess，目标GPU不支持"));
+            }
+            if integer16 && (features.features[41] == 0 || storage16.storageBuffer16BitAccess == 0) {
+                return Err(error("程序需要shaderInt16与storageBuffer16BitAccess，目标GPU不支持"));
+            }
             if subgroup_extended_types && extended_types.shaderSubgroupExtendedTypes == 0 {
                 return Err(error("64位subgroup运算需要设备支持shaderSubgroupExtendedTypes"));
             }
@@ -558,6 +576,7 @@ impl Device {
             features.features.fill(0);
             features.features[39] = u32::from(float64); // VkPhysicalDeviceFeatures::shaderFloat64.
             features.features[40] = 1; // VkPhysicalDeviceFeatures::shaderInt64。
+            features.features[41] = u32::from(integer16); // VkPhysicalDeviceFeatures::shaderInt16。
             let position_enabled = ray::PositionFetchFeatures {
                 kind: 1000481000,
                 next: null_mut(),
@@ -602,6 +621,24 @@ impl Device {
                 as *const VkPhysicalDeviceBufferDeviceAddressFeatures)
                 .cast_mut()
                 .cast();
+            if integer8 {
+                storage8.pNext = features.pNext;
+                storage8.storageBuffer8BitAccess = 1;
+                storage8.uniformAndStorageBuffer8BitAccess = 0;
+                storage8.storagePushConstant8 = 0;
+                arithmetic8.pNext = (&mut storage8 as *mut VkPhysicalDevice8BitStorageFeatures).cast();
+                arithmetic8.shaderFloat16 = 0;
+                arithmetic8.shaderInt8 = 1;
+                features.pNext = (&mut arithmetic8 as *mut VkPhysicalDeviceShaderFloat16Int8Features).cast();
+            }
+            if integer16 {
+                storage16.pNext = features.pNext;
+                storage16.storageBuffer16BitAccess = 1;
+                storage16.uniformAndStorageBuffer16BitAccess = 0;
+                storage16.storagePushConstant16 = 0;
+                storage16.storageInputOutput16 = 0;
+                features.pNext = (&mut storage16 as *mut VkPhysicalDevice16BitStorageFeatures).cast();
+            }
             let subgroup_enabled = sort::Features {
                 kind: 1000225002,
                 next: features.pNext,
@@ -748,6 +785,8 @@ impl Device {
                     },
                     next_submission: Cell::new(0),
                     float64,
+                    integer8,
+                    integer16,
                     float64_preserve: float_controls.shaderDenormPreserveFloat64 != 0
                         && float_controls.shaderSignedZeroInfNanPreserveFloat64 != 0,
                     float32_preserve: float_controls.shaderDenormPreserveFloat32 != 0
@@ -833,20 +872,20 @@ impl Device {
         self.download_graph(data, &mut std::collections::BTreeMap::new())
     }
     fn read_payload(&self, data: &GpuDataset) -> Result<Vec<u32>> {
-        let mut words = Vec::with_capacity(data.bytes() as usize / 4);
+        let mut words = vec![0; data.bytes().div_ceil(4) as usize];
         let Some(first) = data.pages.first() else {
             return Ok(words);
         };
         let target = Allocation::new(self.inner.clone(), first.size, 2, 6, 4)?;
         let mut remaining = data.bytes();
         for page in &data.pages {
-            let bytes = remaining.min(page.size);
+            let bytes = remaining.min(u64::from(data.page_records()) * u64::from(data.stride));
             let commands = Commands::new(self.inner.clone())?;
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let copy = VkBufferCopy {
                 srcOffset: 0,
                 dstOffset: 0,
-                size: bytes,
+                size: bytes.div_ceil(4) * 4,
             };
             unsafe {
                 (self.inner.functions.vkCmdCopyBuffer)(
@@ -862,7 +901,9 @@ impl Device {
                 Execution::prepare(data.dependency().cloned().into_iter().collect())?;
             self.submit_transfer(commands, Vec::new(), dependencies)?
                 .wait()?;
-            target.read(&mut words, bytes as usize / 4)?;
+            target.read_with(|pointer| unsafe {
+                std::ptr::copy_nonoverlapping(pointer, words.as_mut_ptr().cast::<u8>().add((data.bytes() - remaining) as usize), bytes as usize);
+            })?;
             remaining -= bytes;
         }
         Ok(words)
@@ -1148,7 +1189,7 @@ impl Allocation {
         unsafe { (self.inner.functions.vkGetBufferDeviceAddress)(self.inner.owner.device, &info) }
     }
     fn new(inner: Rc<Inner>, bytes: u64, usage: u32, flags: u32, alignment: u64) -> Result<Self> {
-        let size = bytes.max(4);
+        let size = (bytes.div_ceil(4) * 4).max(4);
         if let Some(limit) = inner.max_buffer_size {
             if size > limit {
                 return Err(error(format!(
@@ -1196,22 +1237,15 @@ impl Allocation {
         }
         Ok(self.memory.as_ref().unwrap().pointer())
     }
-    fn write_with(&self, words: &[u32], encode: impl FnOnce(&mut [u32])) -> Result<()> {
+    fn write_with<T: Copy>(&self, words: &[T], encode: impl FnOnce(&mut [u32])) -> Result<()> {
         let pointer = self.mapping()?.cast::<u32>();
+        let bytes = std::mem::size_of_val(words);
         unsafe {
-            std::ptr::copy_nonoverlapping(words.as_ptr(), pointer, words.len());
-            encode(std::slice::from_raw_parts_mut(pointer, words.len()));
+            std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>(), pointer.cast(), bytes);
+            std::ptr::write_bytes(pointer.cast::<u8>().add(bytes), 0, bytes.div_ceil(4) * 4 - bytes);
+            encode(std::slice::from_raw_parts_mut(pointer, bytes.div_ceil(4)));
         }
         Ok(())
-    }
-    fn read(&self, out: &mut Vec<u32>, count: usize) -> Result<()> {
-        out.reserve(count);
-        let start = out.len();
-        self.read_with(|ptr| unsafe {
-            // reserve 保留最终容量，完成的映射内容写入后才发布新长度。
-            std::ptr::copy_nonoverlapping(ptr.cast(), out.as_mut_ptr().add(start), count);
-            out.set_len(start + count);
-        })
     }
     fn read_with<T>(&self, read: impl FnOnce(*const u8) -> T) -> Result<T> {
         let value = read(self.mapping()?);
@@ -1614,6 +1648,12 @@ impl GpuProgram {
         }
         if program.requirements().float64 && !inner.float64 {
             return Err(error("f64 程序必须以 Device::for_program 声明 shaderFloat64 能力"));
+        }
+        if program.requirements().integer8 && !inner.integer8 {
+            return Err(error("8位整数程序须以Device::for_program声明设备能力"));
+        }
+        if program.requirements().integer16 && !inner.integer16 {
+            return Err(error("16位整数程序须以Device::for_program声明设备能力"));
         }
         if program.stages().iter().any(|s| s.float64_preserve) && !inner.float64_preserve {
             return Err(error("f64 运算需要设备支持64位 DenormPreserve 与 SignedZeroInfNanPreserve"));

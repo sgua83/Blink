@@ -52,7 +52,8 @@ pub(super) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
     Ok(())
 }
 impl Builder<'_> {
-    pub(super) fn external_read_place(&mut self, expr: &Expr) -> Result<Option<Place>> {
+    pub(super) fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
+        use cooperative::Argument;
         fn root(expr: &Expr) -> Option<&String> {
             match &expr.kind {
                 ExprKind::Name(name) => Some(name),
@@ -60,20 +61,10 @@ impl Builder<'_> {
                 _ => None,
             }
         }
-        if let Some(name) = root(expr) {
+        if let Some(name) = root(expr) && self.env.contains_key(name) && !self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) {
             if let Some(Binding::Value(value)) = self.env.get(name).cloned() {
-                let proof = bounds::Proof::capture(&value);
-                let uniform = value.uniform;
-                let place = self.materialize_array(value);
-                self.env.insert(
-                    name.clone(),
-                    Binding::Owned(OwnedBinding {
-                        place,
-                        proof,
-                        uniform,
-                        initialization: None,
-                    }),
-                );
+                let owner = self.materialize_array(value);
+                self.env.insert(name.clone(), Binding::Owned(owner));
             }
             let Some(place) = self.place(expr)? else {
                 return Ok(None);
@@ -87,12 +78,10 @@ impl Builder<'_> {
                 }
                 _ => {}
             }
-            Ok(Some(place))
+            Ok(Some(Argument::Reference(self.borrow_owned(place))))
         } else {
-            let Some(value) = self.expr(expr)? else {
-                return Ok(None);
-            };
-            Ok(Some(self.materialize_array(value)))
+            let Some((value,owner))=self.read_aggregate(expr,expected)?else{return Ok(None)};
+            Ok(Some(match owner {Some(owner)=>Argument::Scoped{value,owner},None=>Argument::resource(value)}))
         }
     }
     pub(super) fn call_reference(
@@ -114,16 +103,13 @@ impl Builder<'_> {
                     vec![word],
                 )
             }
-            Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => (
+            Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => (
                 CallStorage::Local {
                     base: storage.start,
                     len: storage.len(),
                 },
                 None,
-                slots
-                    .iter()
-                    .map(|s| (*s - storage.start) as u32)
-                    .collect::<Vec<_>>(),
+                reference_words(place, &self.locals).unwrap(),
             ),
             Place::Element {
                 binding,
@@ -183,7 +169,6 @@ impl Builder<'_> {
             Place::Indexed {
                 base,
                 offset,
-                words,
                 ..
             } => {
                 let storage = match &**base {
@@ -241,16 +226,10 @@ impl Builder<'_> {
                     }),
                     _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
                 };
-                let first = match &**base {
-                    Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
-                        (slots[0] - storage.start) as u32
-                    }
-                    _ => 0,
-                };
                 (
                     storage,
                     Some(*offset),
-                    words.iter().map(|w| first + *w).collect(),
+                    reference_words(place, &self.locals).unwrap(),
                 )
             }
             _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
@@ -290,9 +269,12 @@ impl Builder<'_> {
         for contract in &d.function.contracts {outputs::validate(self,d,contract)?;}
         let mut arguments = Vec::new();
         let mut written = Vec::new();
+        let mut held = Vec::new();
         let mut output_inputs=BTreeMap::new();
         for (index,(param, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
+            let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
+            let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
             arguments.push(match arg {
                 Argument::Value(value) if param.access == Access::Value => {
                     self.require_same(&ty, &value.ty, span)?;
@@ -302,7 +284,8 @@ impl Builder<'_> {
                         values: value.regs,
                     }
                 }
-                Argument::Exclusive(place) if param.access != Access::Value => {
+                Argument::Reference(owner) if param.access != Access::Value => {
+                    let place=owner.place;
                     self.require_same(&ty, place.ty(), span)?;
                     let address = self.external_reference(&place, param.access, span)?;
                     if param.access.writes() {
@@ -349,6 +332,7 @@ impl Builder<'_> {
             self.assign_owned_proof(&place, bounds::Proof::default(), false);
             self.initialize_output(&place,&guards);
         }
+        for name in held { self.finish_scoped_argument(&name, span)?; }
         Ok(result.map(|ty| Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -361,7 +345,7 @@ impl Builder<'_> {
 }
 
 // These are views of the existing Place mapping, not another storage owner.
-fn reference_words(place: &Place) -> Option<Vec<u32>> {
+fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Option<Vec<u32>> {
     Some(match place {
         Place::Reference { words, .. }
         | Place::Element { words, .. }
@@ -369,12 +353,12 @@ fn reference_words(place: &Place) -> Option<Vec<u32>> {
         | Place::ViewElement { words, .. } => words.clone(),
         Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => slots
             .iter()
-            .map(|slot| (*slot - storage.start) as u32)
+            .map(|slot| locals[&storage.end].components[*slot - storage.start].1)
             .collect(),
         Place::Indexed { base, words, .. } => {
             let first = match &**base {
                 Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
-                    (slots[0] - storage.start) as u32
+                    locals[&storage.end].components[slots[0] - storage.start].1
                 }
                 _ => 0,
             };
@@ -397,7 +381,7 @@ impl Builder<'_> {
                 self.call_reference(place, access, span)?,
             )]);
         }
-        let Some(words) = reference_words(place) else {
+        let Some(words) = reference_words(place, &self.locals) else {
             return self.fail(span, "B264", "原生借用需要CPU普通值的实际位置");
         };
         if let Place::Reference {
@@ -414,7 +398,7 @@ impl Builder<'_> {
                         ty,
                         CallReference {
                             storage: CallStorage::Indexed(IndexedSource::View {
-                                address: addresses[word as usize],
+                                address: addresses[&word],
                                 index: zero,
                                 stride: 0,
                             }),
@@ -445,19 +429,19 @@ impl Builder<'_> {
             ..
         } = place
         {
-            if ty.components.len() == 1 && ty.align == 4 {
+            if ty.components.len() == 1 {
                 return Ok(true);
             }
             return contracts::contiguous_assumed(self, *scope, words, ty, span);
         }
-        let Some(words) = reference_words(place) else {
+        let Some(words) = reference_words(place, &self.locals) else {
             return self.fail(span, "B264", "C ABI借用需要CPU普通值的实际位置");
         };
         let first = words[0];
-        Ok(first * 4 % ty.align == 0
+        Ok(first % ty.align == 0
             && words
                 .iter()
                 .zip(&ty.components)
-                .all(|(word, (_, offset))| word.checked_sub(first) == Some(offset / 4)))
+                .all(|(word, (_, offset))| word.checked_sub(first) == Some(*offset)))
     }
 }

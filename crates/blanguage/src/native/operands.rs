@@ -4,10 +4,8 @@ use allocation::Location;
 
 pub(super) fn bit_copy(from: Scalar, into: Scalar) -> bool {
     from == into
-        || matches!(from, Scalar::U32 | Scalar::I32 | Scalar::Bool)
-            && matches!(into, Scalar::U32 | Scalar::I32)
-        || matches!(from, Scalar::U64 | Scalar::I64)
-            && matches!(into, Scalar::U64 | Scalar::I64)
+        || from.is_integer() && into.is_integer() && from.size() == into.size()
+        || from == Scalar::Bool && matches!(into, Scalar::U32 | Scalar::I32)
 }
 
 #[derive(Clone, Copy)]
@@ -136,10 +134,10 @@ impl Emitter<'_> {
             self.bytes(&[0x49, 0x01, 0xc7]);
         }
     }
-    fn rex(&mut self, wide: bool, r: u8, b: u8, index: u8) {
+    fn rex(&mut self, wide: bool, r: u8, b: u8, index: u8, byte: bool) {
         let prefix =
             0x40 | (u8::from(wide) << 3) | ((r >> 3) << 2) | ((index >> 3) << 1) | (b >> 3);
-        if prefix != 0x40 {
+        if prefix != 0x40 || byte {
             self.bytes(&[prefix]);
         }
     }
@@ -155,10 +153,11 @@ impl Emitter<'_> {
             self.bytes(&[prefix]);
         }
         let field = (register & 7) << 3;
+        let byte = matches!(opcode, [0x88] | [0x8a] | [0x0f, 0xb6] | [0x0f, 0xbe]);
         match operand {
             Operand::Literal(bits, wide) => {
                 // Scalar literal reads end at disp32: ModRM 00/r/101 is RIP-relative.
-                self.rex(wide, register, 0, 0);
+                self.rex(wide, register, 0, 0, byte);
                 self.bytes(opcode);
                 self.bytes(&[field | 5]);
                 let at = self.code.len();
@@ -166,7 +165,7 @@ impl Emitter<'_> {
                 self.literals.entry((bits, wide)).or_default().push(at);
             }
             Operand::Register(r) => {
-                self.rex(wide, register, r, 0);
+                self.rex(wide, register, r, 0, byte);
                 self.bytes(opcode);
                 self.bytes(&[0xc0 | field | (r & 7)]);
             }
@@ -175,7 +174,7 @@ impl Emitter<'_> {
                 index,
                 offset,
             }) => {
-                self.rex(wide, register, base, index.map_or(0, |(r, _)| r));
+                self.rex(wide, register, base, index.map_or(0, |(r, _)| r), byte);
                 self.bytes(opcode);
                 let mode = if offset == 0 && base & 7 != 5 {
                     0
@@ -206,7 +205,23 @@ impl Emitter<'_> {
         self.copy_width(dst, src, false);
     }
     pub(super) fn copy_scalar(&mut self, dst: Location, src: Location, scalar: Scalar) {
-        self.copy_width(dst, src, scalar.size() == 8);
+        if scalar.size() >= 4 {
+            self.copy_width(dst, src, scalar.size() == 8);
+            return;
+        }
+        if matches!(dst, Location::Immediate(_)) { return; }
+        let target = match dst { Location::Gpr(r) => r, _ => 0 };
+        if let Location::Immediate(bits) = src {
+            let bits = if scalar.is_signed() { scalar.signed(bits) as u32 as Bits } else { scalar.truncate(bits) };
+            self.literal_width(Location::Gpr(target), bits, false);
+        } else {
+            let operand = self.operand(src, 1);
+            let opcode = if scalar.is_signed() { 0xbe } else { 0xb6 } + u8::from(scalar.size() == 2);
+            self.instruction(None, &[0x0f, opcode], false, target, operand);
+        }
+        if let Location::Stack(offset) = dst {
+            self.write_value_address(Location::Gpr(target), Memory::new(4, offset), scalar.size());
+        }
     }
     fn copy_width(&mut self, dst: Location, src: Location, wide: bool) {
         if dst == src {
@@ -265,14 +280,14 @@ impl Emitter<'_> {
         self.copy_scalar(self.location(r), Location::Xmm(0), self.stage.registers[r]);
     }
     pub(super) fn constant(&mut self, r: Reg, bits: Bits) {
-        self.literal_width(self.location(r), bits, self.stage.registers[r].size() == 8);
+        self.copy_scalar(self.location(r), Location::Immediate(bits), self.stage.registers[r]);
     }
     pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         match dst {
             Location::Immediate(_) => {}
             Location::Gpr(d) => {
                 let immediate64 = wide && bits > u32::MAX as Bits;
-                self.rex(immediate64, 0, d, 0);
+                self.rex(immediate64, 0, d, 0, false);
                 self.bytes(&[0xb8 | (d & 7)]);
                 if immediate64 { self.bytes(&bits.to_le_bytes()); } else { self.u32(bits as u32); }
             }
@@ -313,7 +328,13 @@ impl Emitter<'_> {
         self.read_scalar_address(dst, Memory::new(base, offset));
     }
     pub(super) fn read_scalar_address(&mut self, dst: Reg, memory: Memory) {
-        if self.stage.registers[dst] == Scalar::Bool {
+        let scalar = self.stage.registers[dst];
+        if scalar.size() < 4 {
+            let target = match self.location(dst) { Location::Gpr(r) => r, _ => memory.temporary_register() };
+            let opcode = if scalar.is_signed() { 0xbe } else { 0xb6 } + u8::from(scalar.size() == 2);
+            self.instruction(None, &[0x0f, opcode], false, target, memory.into());
+            self.copy_scalar(self.location(dst), Location::Gpr(target), scalar);
+        } else if scalar == Scalar::Bool {
             let temporary = memory.temporary_register();
             self.instruction(None, &[0x83], false, 7, memory.into());
             self.bytes(&[0, 0x0f, 0x95, 0xc0 | temporary]);
@@ -333,16 +354,19 @@ impl Emitter<'_> {
         self.write_address(src, Memory::new(base, offset));
     }
     pub(super) fn write_address(&mut self, src: Location, memory: Memory) {
-        self.write_value_address(src, memory, false);
+        self.write_value_address(src, memory, 4);
     }
     pub(super) fn write_scalar(&mut self, src: Reg, base: u8, offset: u32) {
         self.write_scalar_address(src, Memory::new(base, offset));
     }
     pub(super) fn write_scalar_address(&mut self, src: Reg, memory: Memory) {
-        self.write_value_address(self.location(src), memory, self.stage.registers[src].size() == 8);
+        self.write_value_address(self.location(src), memory, self.stage.registers[src].size());
     }
-    fn write_value_address(&mut self, src: Location, memory: Memory, wide: bool) {
+    pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         let target = memory.into();
+        let wide = size == 8;
+        let prefix = (size == 2).then_some(0x66);
+        let opcode = if size == 1 { 0x88 } else { 0x89 };
         match src {
             Location::Immediate(bits) => {
                 if wide {
@@ -350,16 +374,23 @@ impl Emitter<'_> {
                     self.literal_width(Location::Gpr(temporary), bits, true);
                     self.instruction(None, &[0x89], true, temporary, target);
                 } else {
-                    self.instruction(None, &[0xc7], false, 0, target);
-                    self.u32(bits as u32);
+                    self.instruction(prefix, &[if size == 1 { 0xc6 } else { 0xc7 }], false, 0, target);
+                    self.bytes(&bits.to_le_bytes()[..size as usize]);
                 }
             }
-            Location::Gpr(s) => self.instruction(None, &[0x89], wide, s, target),
+            Location::Gpr(s) => self.instruction(prefix, &[opcode], wide, s, target),
+            Location::Xmm(s) if size < 4 => {
+                let temporary = memory.temporary_register();
+                self.instruction(Some(0x66), &[0x0f, 0x7e], false, s, Operand::Register(temporary));
+                self.instruction(prefix, &[opcode], false, temporary, target);
+            }
             Location::Xmm(s) => self.instruction(Some(if wide { 0x66 } else { 0xf3 }), &[0x0f, if wide { 0xd6 } else { 0x11 }], false, s, target),
             Location::Stack(_) => {
                 let temporary = memory.temporary_register();
-                self.copy_width(Location::Gpr(temporary), src, wide);
-                self.instruction(None, &[0x89], wide, temporary, target);
+                let source = self.operand(src, 1);
+                let load: &[u8] = match size { 1 => &[0x0f, 0xb6], 2 => &[0x0f, 0xb7], _ => &[0x8b] };
+                self.instruction(None, load, wide, temporary, source);
+                self.instruction(prefix, &[opcode], wide, temporary, target);
             }
         }
     }
@@ -384,14 +415,18 @@ impl Emitter<'_> {
         opcode: &[u8],
         immediate: Option<u8>,
     ) {
-        let wide = self.stage.registers[dst].size() == 8;
+        let scalar = self.stage.registers[dst];
+        let wide = scalar.size() == 8;
         let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
         let target = match d {
             Location::Gpr(r) if d != b || a == b => r,
             _ => 0,
         };
-        self.copy_width(Location::Gpr(target), a, wide);
-        if let Location::Immediate(bits) = b {
+        self.copy_scalar(Location::Gpr(target), a, scalar);
+        if scalar.size() < 4 {
+            self.copy_scalar(Location::Gpr(1), b, scalar);
+            self.instruction(None, opcode, false, target, Operand::Register(1));
+        } else if let Location::Immediate(bits) = b {
             if wide && bits as i64 != bits as i32 as i64 {
                 self.literal_width(Location::Gpr(1), bits, true);
                 self.instruction(None, opcode, true, target, Operand::Register(1));
@@ -405,7 +440,7 @@ impl Emitter<'_> {
             let right = self.operand(b, 1);
             self.instruction(None, opcode, wide, target, right);
         }
-        self.copy_width(d, Location::Gpr(target), wide);
+        self.copy_scalar(d, Location::Gpr(target), scalar);
     }
     fn integer_immediate(&mut self, extension: u8, target: u8, bits: Bits, wide: bool) {
         let signed = if wide { bits as i64 } else { bits as i32 as i64 };
@@ -442,7 +477,10 @@ impl Emitter<'_> {
                 self.bytes(&[0x0f, 0x57, 0xc9]);
                 self.instruction(if from == Scalar::F64 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, left, Operand::Register(1));
             } else {
-                let source = self.operand(source, 1);
+                let source = if from.size() < 4 {
+                    self.copy_scalar(Location::Gpr(0), source, from);
+                    Operand::Register(0)
+                } else { self.operand(source, 1) };
                 self.instruction(None, &[0x83], from.size() == 8, 7, source);
                 self.bytes(&[0]);
             }
@@ -450,20 +488,20 @@ impl Emitter<'_> {
         } else if !from.is_float() && !into.is_float() {
             let target = match d { Location::Gpr(r) => r, _ => 0 };
             let register = Location::Gpr(target);
-            if into.size() == 4 {
-                self.copy_width(register, source, false);
-                if source == register {
+            if into.size() <= 4 {
+                self.copy_scalar(register, source, if from.size() < 4 { from } else { into });
+                if into.size() == 4 && from.size() >= 4 && source == register {
                     // A narrowing cast produces a real 32-bit value, including
                     // the zeroed upper half when allocation reuses the input.
                     self.instruction(None, &[0x8b], false, target, Operand::Register(target));
                 }
             } else {
-                self.copy_width(register, source, from.size() == 8);
-                if from == Scalar::I32 {
+                self.copy_scalar(register, source, from);
+                if from.is_signed() && from.size() < 8 {
                     self.instruction(None, &[0x63], true, target, Operand::Register(target));
                 }
             }
-            self.copy_width(d, register, into.size() == 8);
+            self.copy_scalar(d, register, into);
         } else if from.is_float() {
             let target = match d {
                 Location::Gpr(r) => r,
@@ -486,9 +524,9 @@ impl Emitter<'_> {
                 Location::Xmm(r) => r,
                 _ => 0,
             };
-            let source = if from == Scalar::U32 && matches!(source, Location::Stack(_)) {
+            let source = if from.size() < 4 || from == Scalar::U32 && matches!(source, Location::Stack(_)) {
                 // 无符号转换读取零扩展的 64 位整数；栈值只有四字节。
-                self.copy(Location::Gpr(0), source);
+                self.copy_scalar(Location::Gpr(0), source, from);
                 Operand::Register(0)
             } else {
                 // GPR 的 32 位生产者已清零高位，bool 则只有规范的 0／1。
@@ -575,40 +613,42 @@ impl Emitter<'_> {
         extension: u8,
         immediate: Option<u8>,
     ) {
-        let wide = self.stage.registers[dst].size() == 8;
+        let scalar = self.stage.registers[dst];
+        let wide = scalar.size() == 8;
         let (d, source) = (self.location(dst), self.location(source));
         let target = match d {
             Location::Gpr(_) => d,
-            Location::Stack(_) if d == source => d,
+            Location::Stack(_) if d == source && scalar.size() >= 4 => d,
             _ => Location::Gpr(0),
         };
-        self.copy_width(target, source, wide);
+        self.copy_scalar(target, source, scalar);
         let operand = self.operand(target, 1);
         self.instruction(None, &[opcode], wide, extension, operand);
         if let Some(value) = immediate {
             self.bytes(&[value]);
         }
-        self.copy_width(d, target, wide);
+        self.copy_scalar(d, target, scalar);
     }
     pub(super) fn shift(&mut self, dst: Reg, a: Reg, b: Reg, kind: u8) {
-        let wide = self.stage.registers[dst].size() == 8;
+        let scalar = self.stage.registers[dst];
+        let wide = scalar.size() == 8;
         let shift = self.location(b);
         if !matches!(shift, Location::Immediate(_)) {
-            self.copy(Location::Gpr(1), shift);
+            self.copy_scalar(Location::Gpr(1), shift, self.stage.registers[b]);
         }
         let d = self.location(dst);
         let target = match d {
             Location::Gpr(r) => r,
             _ => 0,
         };
-        self.copy_width(Location::Gpr(target), self.location(a), wide);
+        self.copy_scalar(Location::Gpr(target), self.location(a), scalar);
         if let Location::Immediate(bits) = shift {
             self.instruction(None, &[0xc1], wide, kind, Operand::Register(target));
             self.bytes(&[(bits & if wide { 63 } else { 31 }) as u8]);
         } else {
             self.instruction(None, &[0xd3], wide, kind, Operand::Register(target));
         }
-        self.copy_width(d, Location::Gpr(target), wide);
+        self.copy_scalar(d, Location::Gpr(target), scalar);
     }
     pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
         let scalar = self.stage.registers[a];
@@ -627,8 +667,11 @@ impl Emitter<'_> {
                 _ => 0,
             };
             let wide = scalar.size() == 8;
-            self.copy_width(Location::Gpr(left), a, wide);
-            if let Location::Immediate(bits) = b
+            self.copy_scalar(Location::Gpr(left), a, scalar);
+            if scalar.size() < 4 {
+                self.copy_scalar(Location::Gpr(1), b, scalar);
+                self.instruction(None, &[0x3b], false, left, Operand::Register(1));
+            } else if let Location::Immediate(bits) = b
                 && (!wide || bits as i64 == bits as i32 as i64)
             {
                 self.integer_immediate(7, left, bits, wide);
@@ -640,10 +683,11 @@ impl Emitter<'_> {
         self.comparison_result(dst, comparison, scalar);
     }
     pub(super) fn select(&mut self, dst: Reg, condition: Reg, a: Reg, b: Reg) {
-        let wide = self.stage.registers[dst].size() == 8;
+        let scalar = self.stage.registers[dst];
+        let wide = scalar.size() == 8;
         let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
         if let Location::Immediate(bits) = self.location(condition) {
-            self.copy_width(d, if bits != 0 { a } else { b }, wide);
+            self.copy_scalar(d, if bits != 0 { a } else { b }, scalar);
             return;
         }
         let condition = self.operand(self.location(condition), 2);
@@ -655,16 +699,16 @@ impl Emitter<'_> {
         };
         // 目标已有真值时改用 CMOVZ，避免先写入假值破坏尚未读取的真值。
         let (initial, source, opcode) = if d == a { (a, b, 0x44) } else { (b, a, 0x45) };
-        self.copy_width(Location::Gpr(target), initial, wide);
+        self.copy_scalar(Location::Gpr(target), initial, scalar);
         let source = match source {
-            Location::Xmm(_) | Location::Immediate(_) => {
-                self.copy_width(Location::Gpr(1), source, wide);
+            source if scalar.size() < 4 || matches!(source, Location::Xmm(_) | Location::Immediate(_)) => {
+                self.copy_scalar(Location::Gpr(1), source, scalar);
                 Operand::Register(1)
             }
             location => self.operand(location, 1),
         };
         self.instruction(None, &[0x0f, opcode], wide, target, source);
-        self.copy_width(d, Location::Gpr(target), wide);
+        self.copy_scalar(d, Location::Gpr(target), scalar);
     }
     pub(super) fn preserve_registers(&mut self, restore: bool) {
         for (r, offset) in self.frame.saved_gpr.clone() {

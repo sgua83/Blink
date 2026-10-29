@@ -478,11 +478,7 @@ impl Builder<'_> {
             expected
                 .iter()
                 .flat_map(Expected::scalars)
-                .map(|scalar| {
-                    let slot = self.locals.len();
-                    self.locals.push(scalar);
-                    slot
-                })
+                .map(|scalar| self.local_slots(&Ty::scalar(scalar)).0[0])
                 .collect()
         } else {
             Vec::new()
@@ -554,8 +550,9 @@ impl Builder<'_> {
             context
                 .slots
                 .iter()
-                .map(|slot| {
-                    let reg = self.reg(self.locals[*slot]);
+                .zip(context.expected.iter().flat_map(|expected| expected.scalars()))
+                .map(|(slot, scalar)| {
+                    let reg = self.reg(scalar);
                     self.code.push(Inst::LoadLocal(reg, *slot));
                     reg
                 })

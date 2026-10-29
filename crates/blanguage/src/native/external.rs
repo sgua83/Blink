@@ -9,7 +9,7 @@ pub(super) struct Layout {
     pub hidden: bool,
 }
 pub(super) fn indirect(ty: &Ty) -> bool {
-    !matches!(align_up(ty.size, ty.align), 4 | 8)
+    !matches!(align_up(ty.size, ty.align), 1 | 2 | 4 | 8)
 }
 pub(super) fn floating(ty: &Ty) -> bool {
     *ty == Ty::scalar(Scalar::F32) || *ty == Ty::scalar(Scalar::F64)
@@ -61,12 +61,12 @@ impl Emitter<'_> {
                 else {
                     return Err("C ABI 局部借用没有实际栈地址");
                 };
-                self.stack_address(offset + address.word * 4);
+                self.stack_address(offset + address.word);
                 if let Some(index) = address.offset {
                     // ABI argument registers are populated only after every call slot is ready.
                     self.bytes(&[0x48, 0x89, 0xc1]);
                     self.load(index);
-                    self.bytes(&[0x48, 0xc1, 0xe0, 2, 0x48, 0x01, 0xc8]);
+                    self.bytes(&[0x48, 0x01, 0xc8]);
                 }
             }
             CallStorage::Indexed(source) => {
@@ -78,7 +78,7 @@ impl Emitter<'_> {
                             self.address(*binding, *index);
                             if address.word != 0 {
                                 self.bytes(&[0x49, 0x81, 0xc7]);
-                                self.u32(address.word * 4);
+                                self.u32(address.word);
                             }
                         }
                         IndexedSource::View {
@@ -94,7 +94,7 @@ impl Emitter<'_> {
                             self.offset_address(*stride);
                             if address.word != 0 {
                                 self.bytes(&[0x49, 0x81, 0xc7]);
-                                self.u32(address.word * 4);
+                                self.u32(address.word);
                             }
                         }
                         IndexedSource::Tile { .. } => return Err("C ABI 不接受块内分量存储"),
@@ -168,7 +168,7 @@ impl Emitter<'_> {
                 for ((scalar, offset), reg) in ty.components.iter().zip(&call.values) {
                     self.bytes(&[0x48, 0x89, 0xc8]);
                     if *offset != 0 {
-                        self.bytes(&[0x48, 0xc1, 0xe8, 32]);
+                        self.bytes(&[0x48, 0xc1, 0xe8, (*offset * 8) as u8]);
                     }
                     if *scalar == Scalar::Bool {
                         self.bytes(&[0x85, 0xc0, 0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0]);

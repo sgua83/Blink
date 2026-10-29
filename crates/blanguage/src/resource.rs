@@ -1,9 +1,9 @@
-//! 模块资源 ABI 6：包含64位标量及宽subgroup设备要求；不传递 Rust 容器表示。
+//! 模块资源 ABI 7：标量值与实际字节布局；不传递 Rust 容器表示。
 use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variants};
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x06\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x07\0\0\0";
 pub const F32: u32 = 0;
 pub const U32: u32 = 1;
 pub const I32: u32 = 2;
@@ -11,6 +11,10 @@ pub const BOOL: u32 = 3;
 pub const U64: u32 = 4;
 pub const I64: u32 = 5;
 pub const F64: u32 = 6;
+pub const U8: u32 = 7;
+pub const I8: u32 = 8;
+pub const U16: u32 = 9;
+pub const I16: u32 = 10;
 pub(crate) const fn scalar_tag(scalar: Scalar) -> u32 {
     match scalar {
         Scalar::F32 => F32,
@@ -19,6 +23,10 @@ pub(crate) const fn scalar_tag(scalar: Scalar) -> u32 {
         Scalar::Bool => BOOL,
         Scalar::U64 => U64,
         Scalar::I64 => I64, Scalar::F64 => F64,
+        Scalar::U8 => U8,
+        Scalar::I8 => I8,
+        Scalar::U16 => U16,
+        Scalar::I16 => I16,
     }
 }
 #[derive(Clone, Debug)]
@@ -170,7 +178,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query, float64,
+    ray_query, float64, integer8, integer16,
     sorting,
     maximal_reconvergence,
     texture_indexing,

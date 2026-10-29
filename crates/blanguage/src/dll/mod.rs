@@ -48,6 +48,10 @@ fn scalar(s: Scalar) -> (&'static str, &'static str) {
         Scalar::U32 | Scalar::Bool => ("uint32_t", "u32"),
         Scalar::U64 => ("uint64_t", "u64"),
         Scalar::I64 => ("int64_t", "i64"),
+        Scalar::U8 => ("uint8_t", "u8"),
+        Scalar::I8 => ("int8_t", "i8"),
+        Scalar::U16 => ("uint16_t", "u16"),
+        Scalar::I16 => ("int16_t", "i16"),
     }
 }
 #[derive(Clone, Copy)]

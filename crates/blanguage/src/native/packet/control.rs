@@ -27,7 +27,7 @@ pub(super) fn uniform_registers(stage: &Stage) -> Vec<bool> {
     };
     analysis.block(
         &stage.code,
-        State(vec![false; stage.registers.len() + stage.locals.len()]),
+        State(vec![false; stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end)]),
         true,
     );
     analysis

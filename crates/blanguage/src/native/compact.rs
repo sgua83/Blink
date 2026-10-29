@@ -25,7 +25,7 @@ pub(super) fn emit_count(program: &Program, c: &Compaction) -> NativeCode {
     e.bytes(&[0x44, 0x39, 0xc1]);
     let end = e.jump(Some(0x83));
     e.bytes(&[0x41, 0x83, 0xba]);
-    e.u32(c.flag_word * 4);
+    e.u32(c.flag_word);
     e.bytes(&[0, 0x0f, 0x95, 0xc2, 0x0f, 0xb6, 0xd2, 0x01, 0xd0]);
     e.bytes(&[0x49, 0x81, 0xc2]);
     e.u32(program.buffers[c.flags].stride);
@@ -63,7 +63,7 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     e.bytes(&[0x44, 0x39, 0xe3]);
     let end = e.jump(Some(0x83));
     e.bytes(&[0x41, 0x83, 0xba]);
-    e.u32(c.flag_word * 4);
+    e.u32(c.flag_word);
     e.bytes(&[0]);
     let skip = e.jump(Some(0x84));
     let vectors = stride / 16;
@@ -83,11 +83,10 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
             e.patch(again, copy);
         }
     }
-    if stride % 16 >= 8 {
-        e.bytes(&[0x48, 0xa5]);
-    }
-    if stride % 8 != 0 {
-        e.bytes(&[0xa5]);
+    for (size, copy) in [(8, &[0x48, 0xa5][..]), (4, &[0xa5][..]), (2, &[0x66, 0xa5][..]), (1, &[0xa4][..])] {
+        if stride % (size * 2) >= size {
+            e.bytes(copy);
+        }
     }
     let next = e.jump(None);
     e.patch(skip, e.code.len());

@@ -90,14 +90,14 @@ impl Emitter<'_> {
                 },
                 self.index,
                 if tail {
-                    words
+                    words * 4
                 } else {
-                    self.program.buffers[r.source].stride / 4
+                    self.program.buffers[r.source].stride
                 },
                 if tail {
-                    offset/4
+                    *offset
                 } else {
-                    r.source_word + offset / 4
+                    r.source_word + offset
                 },
             );
             let value = if (matches!(self.stage.operation, Operation::Compact(_))
@@ -147,8 +147,8 @@ impl Emitter<'_> {
             self.store_raw_buffer(tree.scalar,
                 self.program.buffers.len(),
                 group,
-                words,
-                offset/4,
+                words * 4,
+                *offset,
                 total,
             );
             self.tree_store(*tree,local,identity);
@@ -171,14 +171,14 @@ impl Emitter<'_> {
                 r.target,
                 self.index,
                 if root {
-                    self.program.buffers[r.target].stride / 4
+                    self.program.buffers[r.target].stride
                 } else {
-                    words
+                    words * 4
                 },
                 if root {
-                    r.target_word + offset / 4
+                    r.target_word + offset
                 } else {
-                    offset/4
+                    *offset
                 },
                 result,
             );
@@ -203,11 +203,11 @@ impl Emitter<'_> {
         self.scan_tree_step(trees, local, width, selected, down, remaining);
     }
     pub(super) fn tree_parts(&mut self, tree: SharedTree, node: u32) -> Vec<u32> {
-        let node = if tree.scalar.size()==4 {node} else {
-            let words=self.constant(Scalar::U32,tree.scalar.size()/4);
+        let node = if tree.scalar.size()<=4 {node} else {
+            let words=self.constant(Scalar::U32,tree.scalar.size().div_ceil(4));
             let scaled=self.id();self.emit(132,&[self.types[&Scalar::U32],scaled,node,words]);scaled
         };
-        (0..tree.scalar.size()/4).map(|part| {
+        (0..tree.scalar.size().div_ceil(4)).map(|part| {
         let at = if tree.base_word + part == 0 {
             node
         } else {
@@ -220,10 +220,10 @@ impl Emitter<'_> {
         }).collect()
     }
     pub(super) fn tree_load(&mut self, tree: SharedTree, node: u32) -> u32 {
-        let pointers=self.tree_parts(tree,node);self.load_raw(tree.scalar,&pointers,false)
+        let pointers=self.tree_parts(tree,node);self.load_raw(tree.scalar, Scalar::U32,&pointers,false)
     }
     pub(super) fn tree_store(&mut self, tree: SharedTree, node: u32, value: u32) {
-        let pointers=self.tree_parts(tree,node);self.store_raw(tree.scalar,&pointers,value,false);
+        let pointers=self.tree_parts(tree,node);self.store_raw(tree.scalar, Scalar::U32,&pointers,value,false);
     }
     pub(super) fn scan_tree_step(
         &mut self,
@@ -302,11 +302,11 @@ impl Emitter<'_> {
             let prefix = self.load_raw_buffer(*scalar,
                 self.scan_input_binding(r),
                 group,
-                words,
-                offset/4,
+                words * 4,
+                *offset,
             );
-            let stride = if root {self.program.buffers[r.target].stride/4} else {words};
-            let word = if root {r.target_word + offset/4} else {offset/4};
+            let stride = if root {self.program.buffers[r.target].stride} else {words * 4};
+            let word = if root {r.target_word + offset} else {*offset};
             let value = self.load_raw_buffer(*scalar,
                 r.target,
                 self.index,

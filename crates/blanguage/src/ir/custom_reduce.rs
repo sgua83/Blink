@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone, Debug)]
 pub struct ValueCode {
     pub registers: Vec<Scalar>,
-    pub locals: Vec<Scalar>,
+    pub locals: BTreeMap<usize, Ty>,
     pub code: Vec<Inst>,
     pub inputs: Vec<Reg>,
     pub outputs: Vec<Reg>,
@@ -80,7 +80,7 @@ impl CustomReduction {
         stage.locals = if identity {
             self.identity.locals.clone()
         } else {
-            Vec::new()
+            BTreeMap::new()
         };
         stage.code = if identity {
             self.identity.code.clone()
@@ -90,12 +90,12 @@ impl CustomReduction {
         let initialize_end = stage.code.len();
         let projection = self.project.as_ref().filter(|_| project).map(|value| {
             let reg = stage.registers.len();
-            let slot = stage.locals.len();
+            let slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
             let mut code = value.code.clone();
             crate::optimize::map(&mut code, &|r| r + reg, &|s| s + slot);
             stage.code.extend(code);
             stage.registers.extend(&value.registers);
-            stage.locals.extend(&value.locals);
+            stage.locals.extend(value.locals.iter().map(|(end, ty)| (end + slot, ty.clone())));
             (
                 value.inputs.iter().map(|r| r + reg).collect(),
                 value.outputs.iter().map(|r| r + reg).collect(),
@@ -103,12 +103,12 @@ impl CustomReduction {
         });
         let project_end = stage.code.len();
         let reg = stage.registers.len();
-        let slot = stage.locals.len();
+        let slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let mut combine = self.combine.code.clone();
         crate::optimize::map(&mut combine, &|r| r + reg, &|s| s + slot);
         stage.code.extend(combine);
         stage.registers.extend(&self.combine.registers);
-        stage.locals.extend(&self.combine.locals);
+        stage.locals.extend(self.combine.locals.iter().map(|(end, ty)| (end + slot, ty.clone())));
         let k = self.ty.components.len();
         let right: Vec<_> = self.combine.inputs[k..].iter().map(|r| r + reg).collect();
         let (source, projected) = projection.unwrap_or_else(|| (right.clone(), right.clone()));

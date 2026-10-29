@@ -30,7 +30,7 @@ fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
         };
         if let Some(opcode) = float {
             e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, opcode, 0x82 + c * 8]);
-            e.u32(values.fields.source_word * 4 + offset);
+            e.u32(values.fields.source_word + offset);
         } else {
             e.bytes(&[0x66]);
             if wide {e.bytes(&[0x48]);}
@@ -42,23 +42,26 @@ fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
                 CollectiveOperator::BitXor => Some(0x33),
                 CollectiveOperator::Min | CollectiveOperator::Max => None,
             };
+            let prefix = (scalar.size() == 2).then_some(0x66);
+            let byte = u8::from(scalar.size() == 1);
+            let memory = Memory::new(10, values.fields.source_word + offset);
             if let Some(opcode) = opcode {
-                e.bytes(&[if wide {0x49} else {0x41}, opcode, 0x82]);
-                e.u32(values.fields.source_word * 4 + offset);
+                e.instruction(prefix, &[opcode - byte], wide, 0, memory.into());
             } else {
-                e.bytes(&[if wide {0x49} else {0x41}, 0x3b, 0x82]);
-                e.u32(values.fields.source_word * 4 + offset);
-                let condition = match (
-                    scalar.is_signed(),
-                    values.operator == CollectiveOperator::Min,
-                ) {
+                let condition = match (scalar.is_signed(), values.operator == CollectiveOperator::Min) {
                     (false, true) => 0x47,
                     (true, true) => 0x4f,
                     (false, false) => 0x42,
                     (true, false) => 0x4c,
                 };
-                e.bytes(&[if wide {0x49} else {0x41}, 0x0f, condition, 0x82]);
-                e.u32(values.fields.source_word * 4 + offset);
+                e.instruction(prefix, &[0x3b - byte], wide, 0, memory.into());
+                if scalar.size() == 1 {
+                    let skip = e.jump(Some((condition + 0x40) ^ 1));
+                    e.instruction(None, &[0x8a], false, 0, memory.into());
+                    e.patch(skip, e.code.len());
+                } else {
+                    e.instruction(prefix, &[0x0f, condition], wide, 0, memory.into());
+                }
             }
             e.bytes(&[0x66]);
             if wide {e.bytes(&[0x48]);}
@@ -114,7 +117,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     e.bytes(&[0x45, 0x85, 0xc9]);
     let first = e.jump(Some(0x84));
     e.bytes(&[0x41, 0x83, 0xba]);
-    e.u32(reduction.head_word * 4);
+    e.u32(reduction.head_word);
     e.bytes(&[0]);
     let no_head = e.jump(Some(0x84));
     e.patch(first, e.code.len());
@@ -130,7 +133,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.bytes(&[0x41, 0x8d, 0x41, 1, 0x66, 0x0f, 0x7e, 0xe2, 0x39, 0xd0]);
         let last = e.jump(Some(0x84));
         e.bytes(&[0x41, 0x83, 0xba]);
-        e.u32(program.buffers[r.source].stride + reduction.head_word * 4);
+        e.u32(program.buffers[r.source].stride + reduction.head_word);
         e.bytes(&[0]);
         let not_tail = e.jump(Some(0x84));
         e.patch(last, e.code.len());
@@ -138,9 +141,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.scale_index(0, program.buffers[r.target].stride);
         e.bytes(&[0x49, 0x8d, 0x14, 0x03]); // rdx = target + (当前段数-1)*stride
         for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
-            let wide = scalar.size() == 8;
-            e.bytes(&[if wide {0x66} else {0xf3}, 0x0f, if wide {0xd6} else {0x11}, 0x82 + component as u8 * 8]);
-            e.u32(r.target_word * 4 + offset);
+            e.write_value_address(allocation::Location::Xmm(component as u8), Memory::new(2, r.target_word + offset), scalar.size());
         }
         e.patch(not_tail, e.code.len());
     }
@@ -153,9 +154,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     if !finish {
         e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
         for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
-            let wide = scalar.size() == 8;
-            e.bytes(&[if wide {0x66} else {0xf3}, 0x41, 0x0f, if wide {0xd6} else {0x11}, 0x82 + component as u8 * 8]);
-            e.u32(*offset);
+            e.write_value_address(allocation::Location::Xmm(component as u8), Memory::new(10, *offset), scalar.size());
         }
         e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0xaa]);
         e.u32(k as u32 * 4);

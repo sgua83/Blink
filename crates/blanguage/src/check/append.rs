@@ -20,12 +20,11 @@ pub(super) fn clear(
         || !matches!(count_access, Access::Write | Access::InOut)
         || target == count
         || program.buffers[count].count != Some(1)
-        || program.buffers[count].ty.components.len() != 1
     {
         return d.source.fail(
             span,
             "B221",
-            "clear_prefix 需要独立的普通可写输出和形状 1、单 u32 计数",
+            "clear_prefix 需要独立的普通可写输出和形状 1 的 u32 计数字段",
         );
     }
     facts.written(&[count]);
@@ -43,7 +42,7 @@ pub(super) fn clear(
         operation: Operation::Map,
         boundary_before: true,
         registers: vec![Scalar::U32],
-        locals: Vec::new(),
+        locals: Default::default(),
         code: vec![
             Inst::Constant(0, Scalar::U32, 0),
             Inst::Store {
@@ -83,13 +82,12 @@ impl Builder<'_> {
             || self.view_access[&binding] != Access::InOut
             || target == binding
             || self.program.buffers[binding].count != Some(1)
-            || self.program.buffers[binding].ty.components.len() != 1
             || ty != Ty::scalar(Scalar::U32)
         {
             return self.fail(
                 span,
                 "B221",
-                "append 需要普通独占元素／tile 输入域之外的可写输出及独立 inout 单 u32 计数；两者不能别名",
+                "append 需要普通独占元素／tile 输入域之外的可写输出及独立 inout 形状 1 资源中的 u32 计数字段；两者不能别名",
             );
         }
         let Some(value) = self.expr(&args[2])? else {
@@ -127,7 +125,7 @@ impl Builder<'_> {
                 .components
                 .iter()
                 .zip(&value.regs)
-                .map(|((_, byte), r)| (byte / 4, *r))
+                .map(|((_, byte), r)| (*byte, *r))
                 .collect(),
         }));
         Ok(Some(Value {

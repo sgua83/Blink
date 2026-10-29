@@ -352,7 +352,7 @@ impl Builder<'_> {
                 || limit.identity() == data.length.identity()
                 || limit.minimum() == limit.maximum() && limit.minimum() == data.length.minimum() && limit.maximum() == data.length.maximum()) { return None; }
             let words = data.ty.components.iter().filter_map(|(_, offset)| {
-                let word = offset / 4;
+                let word = *offset;
                 let prefix = begin.minimum();
                 (self.application_field_initialized(data, word) || begin.maximum() == prefix &&
                     scope.application_prefix_initialized(prefix,word,&self.initialized)).then_some(word)
@@ -400,7 +400,7 @@ impl Builder<'_> {
     ) -> BTreeSet<Position> {
         for data in self.env.values().flat_map(Binding::application_resources) {
             if let Some(scope)=&data.initialization && data.length.maximum()==0 {
-                initialized.extend(data.ty.components.iter().map(|(_,offset)|scope.application_word(None,offset/4)));
+                initialized.extend(data.ty.components.iter().map(|(_,offset)|scope.application_word(None,*offset)));
             }
         }
         initialized
@@ -451,7 +451,7 @@ impl Builder<'_> {
         data.ty
             .components
             .iter()
-            .all(|(_, offset)| self.application_field_initialized(data, offset / 4))
+            .all(|(_, offset)| self.application_field_initialized(data, *offset))
     }
     pub(super) fn application_field_initialized(&self, data: &Data, word: u32) -> bool {
         self.application_field_initialized_in(data, word, &self.initialized)
@@ -727,8 +727,7 @@ impl Builder<'_> {
             &definition.module,
             &definition.imports,
         )?;
-        let slots = [self.locals.len(), self.locals.len() + 1];
-        self.locals.extend([Scalar::U32, Scalar::U32]);
+        let slots = self.local_slots(&Ty::owned_dataset(ty.clone(), count)).0;
         let handle = self.reg(Scalar::U32);
         let length = self.reg(Scalar::U32);
         // These are absent compile-time values. No native initialization or placeholder allocation is emitted.
@@ -993,7 +992,7 @@ impl Builder<'_> {
                 .ty
                 .components
                 .iter()
-                .map(|(_, offset)| offset / 4)
+                .map(|(_, offset)| *offset)
                 .collect(),
             writable: data.writable,
         }
@@ -1454,20 +1453,12 @@ impl Builder<'_> {
         let Some(value) = self.expr(&args[0])? else {
             return Ok(None);
         };
-        if ![
-            Ty::scalar(Scalar::U32),
-            Ty::scalar(Scalar::I32),
-            Ty::scalar(Scalar::U64),
-            Ty::scalar(Scalar::I64),
-            Ty::scalar(Scalar::Bool),
-            Ty::scalar(Scalar::F32), Ty::scalar(Scalar::F64),
-        ]
-        .contains(&value.ty)
+        if !value.ty.components.first().is_some_and(|(scalar, _)| value.ty == Ty::scalar(*scalar))
         {
             return self.fail(
                 args[0].span,
                 "B261",
-                "println 当前接受 u32、i32、u64、i64、f32、f64 或 bool 标量",
+                "println 接受整数、浮点或 bool 标量",
             );
         }
         let dst = self.reg(Scalar::Bool);

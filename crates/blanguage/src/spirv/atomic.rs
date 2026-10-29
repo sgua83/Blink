@@ -44,7 +44,8 @@ impl Emitter<'_> {
                     self.tile_word_address(
                         self.stage.shared_word(tile, atomic.word),
                         self.value(atomic.index),
-                    ),
+                        None,
+                    ).0,
                     2,
                     0x100,
                 ),
@@ -79,7 +80,7 @@ impl Emitter<'_> {
             AtomicOp::Xor(_) => 242,
         };
         if let AtomicOp::Store(value) = atomic.op {
-            let value = self.to_word(value);
+            let value = self.to_words(value, Scalar::U32)[0];
             self.emit(opcode, &[pointer, scope, semantics, value]);
             return;
         }
@@ -92,16 +93,16 @@ impl Emitter<'_> {
                 failure,
             } => {
                 operands.push(self.atomic_semantics(failure, memory));
-                operands.push(self.to_word(desired));
-                operands.push(self.to_word(expected));
+                operands.push(self.to_words(desired, Scalar::U32)[0]);
+                operands.push(self.to_words(expected, Scalar::U32)[0]);
             }
             ref op => {
-                operands.extend(op.operands().iter().map(|r| self.to_word(*r)));
+                operands.extend(op.operands().iter().map(|r| self.to_words(*r, Scalar::U32)[0]));
             }
         };
         self.emit(opcode, &operands);
         if let Some(dst) = atomic.result {
-            self.from_word(dst, result);
+            self.from_words(dst, &[result], Scalar::U32);
         }
     }
 }

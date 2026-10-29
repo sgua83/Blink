@@ -28,7 +28,7 @@ impl Emitter<'_> {
     }
     fn segment_address(&mut self, scan: &Segment<'_>, binding: usize, index: u32) -> Vec<u32> {
         (0..scan.summary_words() as u32)
-            .map(|word| self.address_scalar(binding, index, scan.summary_words() as u32, word))
+            .map(|word| self.address_scalar(binding, index, scan.summary_words() as u32 * 4, word * 4))
             .collect()
     }
     fn segment_node(
@@ -52,7 +52,7 @@ impl Emitter<'_> {
         let mut words=vec![zero;scan.summary_words()];
         for (scalar,offset) in &scan.ty.components {
             let value=self.raw_constant(*scalar,scan.operator.identity(*scalar));
-            for (part,word) in self.split_words(*scalar,value).into_iter().enumerate() {
+            for (part,word) in self.split_words(*scalar,value, Scalar::U32).into_iter().enumerate() {
                 words[(*offset/4) as usize+part]=word;
             }
         }
@@ -62,12 +62,11 @@ impl Emitter<'_> {
         let k=scan.ty.size.div_ceil(4) as usize;
         let zero=self.constant(Scalar::U32,0);
         let mut words=vec![zero;k+1];
-        let stride=self.program.buffers[fields.source].stride/4;
+        let stride=self.program.buffers[fields.source].stride;
         for (scalar,offset) in &scan.ty.components {
-            for part in 0..scalar.size()/4 {
-                let word=offset/4+part;
-                let at=self.address_scalar(fields.source,self.index,stride,fields.source_word+word);
-                words[word as usize]=self.segment_read(&[at])[0];
+            let raw = self.load_raw_buffer(*scalar, fields.source, self.index, stride, fields.source_word + offset);
+            for (part,word) in self.split_words(*scalar, raw, Scalar::U32).into_iter().enumerate() {
+                words[(offset / 4) as usize + part] = word;
             }
         }
         let at=self.address_scalar(fields.source,self.index,stride,head_word);
@@ -83,13 +82,13 @@ impl Emitter<'_> {
         let mut values = vec![zero;scan.summary_words()];
         for (scalar,offset) in &scan.ty.components {
             let word=(offset/4) as usize;
-            let n=(scalar.size()/4) as usize;
-            let a=self.join_words(*scalar,&left[word..word+n]);
-            let b=self.join_words(*scalar,&right[word..word+n]);
+            let n=scalar.size().div_ceil(4) as usize;
+            let a=self.join_words(*scalar,&left[word..word+n], Scalar::U32);
+            let b=self.join_words(*scalar,&right[word..word+n], Scalar::U32);
             let merged = self.collective_pair(*scalar, scan.operator, a, b);
             let tail = self.id();
             self.emit(169, &[self.raw_type(*scalar), tail, head, b, merged]);
-            values[word..word+n].copy_from_slice(&self.split_words(*scalar,tail));
+            values[word..word+n].copy_from_slice(&self.split_words(*scalar,tail, Scalar::U32));
         }
         let heads = self.id();
         self.emit(197, &[u, heads, left[k], right[k]]);
@@ -211,8 +210,8 @@ impl Emitter<'_> {
             let first = self.address_scalar(
                 self.program.buffers.len(),
                 group,
-                scan.summary_words() as u32,
-                k as u32,
+                scan.summary_words() as u32 * 4,
+                k as u32 * 4,
             );
             self.emit(62, &[first, zero, 2, 4]);
             self.emit(249, &[saved]);
@@ -227,21 +226,13 @@ impl Emitter<'_> {
             let is_head = self.id();
             self.emit(171, &[b, is_head, input[k], zero]);
             for (scalar,offset) in &scan.ty.components {
-              for part in 0..scalar.size()/4 {
-                let component=(offset/4+part) as usize;
+                let word = (offset / 4) as usize;
+                let n = scalar.size().div_ceil(4) as usize;
+                let current = self.join_words(*scalar, &result[word..word+n], Scalar::U32);
+                let empty = self.raw_constant(*scalar, scan.operator.identity(*scalar));
                 let value = self.id();
-                self.emit(
-                    169,
-                    &[u, value, is_head, identity[component], result[component]],
-                );
-                let target = self.address_scalar(
-                    r.target,
-                    self.index,
-                    self.program.buffers[r.target].stride / 4,
-                    r.target_word + offset / 4 + part,
-                );
-                self.emit(62, &[target, value, 2, 4]);
-              }
+                self.emit(169, &[self.raw_type(*scalar), value, is_head, empty, current]);
+                self.store_raw_buffer(*scalar, r.target, self.index, self.program.buffers[r.target].stride, r.target_word + offset, value);
             }
             let no_previous = self.id();
             self.emit(170, &[b, no_previous, result[k], zero]);
@@ -255,8 +246,8 @@ impl Emitter<'_> {
             let target = self.address_scalar(
                 self.program.buffers.len(),
                 group,
-                scan.summary_words() as u32,
-                k as u32,
+                scan.summary_words() as u32 * 4,
+                k as u32 * 4,
             );
             let one = self.constant(Scalar::U32, 1);
             let encoded = self.id();
@@ -380,7 +371,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride / 4,
+                self.program.buffers[reduction.count.binding].stride,
                 reduction.count.word,
             );
             self.emit(62, &[target, zero, 2, 4]);
@@ -446,7 +437,7 @@ impl Emitter<'_> {
             let next_head = self.address_scalar(
                 r.source,
                 next,
-                self.program.buffers[r.source].stride / 4,
+                self.program.buffers[r.source].stride,
                 reduction.head_word,
             );
             let next_head = self.segment_read(&[next_head])[0];
@@ -464,15 +455,10 @@ impl Emitter<'_> {
             let output = self.id();
             self.emit(130, &[u, output, total[k + 1], one]);
             for (scalar,offset) in &scan.ty.components {
-              for part in 0..scalar.size()/4 {
-                let target = self.address_scalar(
-                    r.target,
-                    output,
-                    self.program.buffers[r.target].stride / 4,
-                    r.target_word + offset / 4 + part,
-                );
-                self.emit(62, &[target, total[(offset/4+part) as usize], 2, 4]);
-              }
+                let word = (offset / 4) as usize;
+                let n = scalar.size().div_ceil(4) as usize;
+                let value = self.join_words(*scalar, &total[word..word+n], Scalar::U32);
+                self.store_raw_buffer(*scalar, r.target, output, self.program.buffers[r.target].stride, r.target_word + offset, value);
             }
             self.emit(249, &[emitted]);
             self.emit(248, &[emitted]);
@@ -484,7 +470,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride / 4,
+                self.program.buffers[reduction.count.binding].stride,
                 reduction.count.word,
             );
             self.emit(62, &[target, total[k + 1], 2, 4]);
@@ -599,8 +585,8 @@ impl Emitter<'_> {
         let first = self.address_scalar(
             self.program.buffers.len(),
             group,
-            scan.summary_words() as u32,
-            scan.ty.size.div_ceil(4),
+            scan.summary_words() as u32 * 4,
+            scan.ty.size.div_ceil(4) * 4,
         );
         let head = self.id();
         self.emit(61, &[u, head, first, 2, 4]);
@@ -624,14 +610,14 @@ impl Emitter<'_> {
             let prefix = self.load_raw_buffer(*scalar,
                 self.scan_input_binding(r),
                 group,
-                scan.summary_words() as u32,
-                offset/4,
+                scan.summary_words() as u32 * 4,
+                *offset,
             );
             let value = self.load_raw_buffer(*scalar,
                 r.target,
                 self.index,
-                self.program.buffers[r.target].stride / 4,
-                r.target_word + offset / 4,
+                self.program.buffers[r.target].stride,
+                r.target_word + offset,
             );
             let merged = self.collective_pair(*scalar, scan.operator, prefix, value);
             let result = if scalar.is_float() && scan.operator != CollectiveOperator::Sum {
@@ -643,7 +629,7 @@ impl Emitter<'_> {
             } else {
                 merged
             };
-            self.store_raw_buffer(*scalar,r.target,self.index,self.program.buffers[r.target].stride/4,r.target_word+offset/4,result);
+            self.store_raw_buffer(*scalar,r.target,self.index,self.program.buffers[r.target].stride,r.target_word+offset,result);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);

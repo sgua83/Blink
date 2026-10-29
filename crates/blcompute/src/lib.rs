@@ -25,6 +25,10 @@ pub enum Value {
     Bool(bool) = blanguage::resource::BOOL,
     U64(u64) = blanguage::resource::U64,
     I64(i64) = blanguage::resource::I64, F64(f64) = blanguage::resource::F64,
+    U8(u8) = blanguage::resource::U8,
+    I8(i8) = blanguage::resource::I8,
+    U16(u16) = blanguage::resource::U16,
+    I16(i16) = blanguage::resource::I16,
 }
 impl Value {
     fn scalar(self) -> Scalar {
@@ -35,6 +39,10 @@ impl Value {
             Self::Bool(_) => Scalar::Bool,
             Self::U64(_) => Scalar::U64,
             Self::I64(_) => Scalar::I64, Self::F64(_) => Scalar::F64,
+            Self::U8(_) => Scalar::U8,
+            Self::I8(_) => Scalar::I8,
+            Self::U16(_) => Scalar::U16,
+            Self::I16(_) => Scalar::I16,
         }
     }
     fn bits(self) -> u64 {
@@ -45,13 +53,25 @@ impl Value {
             Self::Bool(v) => u64::from(v),
             Self::U64(v) => v,
             Self::I64(v) => v as u64, Self::F64(v) => v.to_bits(),
+            Self::U8(v) => u64::from(v),
+            Self::I8(v) => u64::from(v as u8),
+            Self::U16(v) => u64::from(v),
+            Self::I16(v) => u64::from(v as u16),
         }
     }
-    fn write_words(self, words: &mut [u32]) {
+    fn write_words(self, words: &mut [u32], offset: usize) {
         let bits = self.bits();
-        words[0] = bits as u32;
-        if self.scalar().size() == 8 {
-            words[1] = (bits >> 32) as u32;
+        let word = offset / 4;
+        let scalar = self.scalar();
+        if scalar.size() < 4 {
+            let shift = (offset % 4) * 8;
+            let mask = (scalar.bit_mask() as u32) << shift;
+            words[word] = words[word] & !mask | (bits as u32) << shift;
+        } else {
+            words[word] = bits as u32;
+            if scalar.size() == 8 {
+                words[word + 1] = (bits >> 32) as u32;
+            }
         }
     }
 }
@@ -73,14 +93,14 @@ impl Dataset {
             .buffers()
             .get(binding)
             .ok_or_else(|| error("数据绑定编号越界"))?;
-        let stride_words = b.stride as usize / 4;
-        if words.len() % stride_words != 0 {
+        let bytes = words.len() * 4;
+        if bytes % b.stride as usize != 0 {
             return Err(error("打包数据不是完整记录"));
         }
         Ok(Self {
             ty: b.ty.clone(),
             stride: b.stride,
-            count: u32::try_from(words.len() / stride_words)?,
+            count: u32::try_from(bytes / b.stride as usize)?,
             words,
             views: views::Views::default(),
         })
@@ -117,8 +137,8 @@ impl Dataset {
             .checked_mul(count as usize)
             .ok_or_else(|| error("数据集长度溢出"))?;
         let mut words = Vec::new();
-        words.try_reserve_exact(bytes / 4)?;
-        words.resize(bytes / 4, 0);
+        words.try_reserve_exact(bytes.div_ceil(4))?;
+        words.resize(bytes.div_ceil(4), 0);
         Ok(Self {
             ty,
             stride,
@@ -148,12 +168,11 @@ impl Dataset {
         if word(16) != data.stride {
             return Err(error("BLDATA 步长与编译布局不一致"));
         }
-        for chunk in data.words.chunks_mut(16384) {
-            let mut bytes = vec![0u8; chunk.len() * 4];
-            input.read_exact(&mut bytes)?;
-            for (word, raw) in chunk.iter_mut().zip(bytes.chunks_exact(4)) {
-                *word = u32::from_le_bytes(raw.try_into().unwrap());
-            }
+        let length = data.stride as usize * data.count as usize;
+        for (index, word) in data.words.iter_mut().enumerate() {
+            let mut bytes = [0; 4];
+            input.read_exact(&mut bytes[..(length - index * 4).min(4)])?;
+            *word = u32::from_le_bytes(bytes);
         }
         let mut trailing = [0u8; 1];
         if input.read(&mut trailing)? != 0 {
@@ -168,9 +187,9 @@ impl Dataset {
         for word in [1, self.count, self.stride, steps] {
             file.write_all(&word.to_le_bytes())?;
         }
-        for chunk in self.words.chunks(16384) {
-            let bytes: Vec<_> = chunk.iter().flat_map(|w| w.to_le_bytes()).collect();
-            file.write_all(&bytes)?;
+        let length = self.stride as usize * self.count as usize;
+        for (index, word) in self.words.iter().enumerate() {
+            file.write_all(&word.to_le_bytes()[..(length - index * 4).min(4)])?;
         }
         file.flush()?;
         Ok(())
@@ -200,18 +219,16 @@ impl Dataset {
         if index >= self.count {
             return Err(error("数据集记录下标越界"));
         }
-        let stride = self.stride as usize / 4;
+        let stride = self.stride as usize;
         let start = index as usize * stride;
         let (offset, ty) = self.ty
-            .field_at(name, &self.words[start..start + stride])
+            .field_at(name, &self.words[start / 4..(start + stride).div_ceil(4)])
             .ok_or_else(|| error(format!("未知或未激活的字段 {name}")))?;
         let scalar = value.scalar();
         if ty.components.as_slice() != [(scalar, 0)] || ty.size != scalar.size() {
             return Err(error(format!("字段 {name} 的标量类型与值不匹配")));
         }
-        let word = start + offset as usize / 4;
-        let count = scalar.size() as usize / 4;
-        value.write_words(&mut self.words_mut()[word..word + count]);
+        value.write_words(self.words_mut(), start + offset as usize);
         Ok(())
     }
 }
@@ -312,8 +329,7 @@ pub(crate) fn arguments<'a>(
             if value.scalar() != *scalar {
                 return Err(error(format!("参数 {} 的分量类型不匹配", uniform.name)));
             }
-            let word = ((uniform.offset + offset) / 4) as usize;
-            value.write_words(&mut words[word..]);
+            value.write_words(&mut words, (uniform.offset + offset) as usize);
             at += 1;
         }
     }

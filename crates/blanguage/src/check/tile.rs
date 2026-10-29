@@ -129,7 +129,7 @@ impl Builder<'_> {
             .components
             .iter()
             .zip(&value.regs)
-            .map(|((_, byte), r)| (byte / 4, *r))
+            .map(|((_, byte), r)| (*byte, *r))
             .collect();
         self.tiles.push(CheckedTile {
             source: TileOrigin::Bound(TileSource::Published),
@@ -238,7 +238,7 @@ impl Builder<'_> {
     }
     pub(super) fn bind_tile(&mut self, name: &str, tile: usize) {
         let ty = self.tiles[tile].ty.clone();
-        let words = ty.components.iter().map(|(_, byte)| byte / 4).collect();
+        let words = ty.components.iter().map(|(_, byte)| *byte).collect();
         let length = bounds::Proof::unsigned(1, self.tile_width_bound())
             .with_domains(Domains::from([IndexDomain::TileLength]))
             .with_identity(ValueIdentity::TileLength);

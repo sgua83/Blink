@@ -54,7 +54,8 @@ impl Builder<'_> {
                 Argument::ApplicationData(data) => Actual::dataset(&data.ty,data.count),
                 Argument::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>Actual::dataset(&data.ty,data.count),returns::Returned::OwnedValue(value)=>Actual::value(&value.value.ty),returns::Returned::Value(value)=>Actual::value(&value.ty),returns::Returned::Unit=>unreachable!()},
                 Argument::Tile(v) => Actual::value(&v.ty),
-                Argument::Atomic(p) | Argument::Exclusive(p) => Actual::value(p.ty()),
+                Argument::Atomic(p) => Actual::value(p.ty()),
+                Argument::Reference(owner) => Actual::value(owner.place.ty()),
             })
             .collect();
         specialize(self.world, &key, &types, explicit, &self.definition, span)

@@ -394,7 +394,7 @@ pub(super) fn contiguous_assumed(
         let mut guaranteed = selected
             .components
             .iter()
-            .map(|(_, offset)| offset / 4)
+            .map(|(_, offset)| *offset)
             .collect::<Vec<_>>();
         for field in fields {
             let (next, components) = builder.member(&selected, field, span)?;

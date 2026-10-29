@@ -22,44 +22,73 @@ impl Emitter<'_> {
         self.emit(247, &[end, 0]);
         self.emit(250, &[active, load, end]);
         self.emit(248, &[load]);
-        for (source, word) in self.stage.input_words() {
-            let at = self.address_scalar(
-                source,
-                self.index,
-                self.program.buffers[source].stride / 4,
-                word,
-            );
-            let raw = self.id();
-            self.emit(61, &[u, raw, at, 2, 4]);
+        for ((source, word), fragments) in self.stage.input_words() {
+            let components: Vec<_> = fragments.into_iter().map(|(byte, unit)| {
+                let raw = self.load_raw_buffer(unit, source, self.index, self.program.buffers[source].stride, byte);
+                (unit, byte % 4, raw)
+            }).collect();
+            let raw = self.pack_words(4, components)[0];
             let target = self.tile_word_address(
                 SharedWord::Input {
                     binding: source,
                     word,
                 },
                 self.tile_lane,
+                None,
             );
-            self.emit(62, &[target, raw]);
+            self.emit(62, &[target.0, raw]);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
         self.tile_barrier();
     }
-    pub(super) fn tile_word_address(&mut self, word: SharedWord, index: u32) -> u32 {
+    pub(super) fn tile_word_address(&mut self, word: SharedWord, index: u32, offset: Option<u32>) -> (u32, u32) {
         let u = self.types[&Scalar::U32];
-        let offset = self.constant(Scalar::U32, (self.stage.word_offset(word) / 4) as u32);
-        let at = self.id();
-        self.emit(128, &[u, at, index, offset]);
-        self.shared_at(self.tile_pointer, self.tile_shared, at)
-    }
-    pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32) {
-        let mut words = Vec::new();
-        for part in 0..self.stage.registers[dst].size()/4 {
-            let at = self.tile_word_address(self.stage.shared_word(tile, word + part), self.value(index));
-            let raw = self.id();
-            self.emit(61, &[self.types[&Scalar::U32], raw, at]);
-            words.push(raw);
+        let bias = match word { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
+        let mut byte = self.constant(Scalar::U32, bias);
+        let mut index = index;
+        if let Some(offset) = offset {
+            let added = self.id();
+            self.emit(128, &[u, added, offset, byte]);
+            byte = added;
+            let four = self.constant(Scalar::U32, 4);
+            let component = self.id();
+            self.emit(134, &[u, component, byte, four]);
+            let width = self.constant(Scalar::U32, self.stage.workgroup_width());
+            let scaled = self.id();
+            self.emit(132, &[u, scaled, component, width]);
+            let lane = self.id();
+            self.emit(128, &[u, lane, index, scaled]);
+            index = lane;
         }
-        self.from_words(dst, &words);
+        let base = self.constant(Scalar::U32, (self.stage.word_offset(word) / 4) as u32);
+        let at = self.id();
+        self.emit(128, &[u, at, index, base]);
+        (self.shared_at(self.tile_pointer, self.tile_shared, at), byte)
+    }
+    pub(super) fn tile_read(&mut self, scalar: Scalar, tile: usize, index: u32, word: u32, offset: Option<u32>) -> u32 {
+        let mut pointers = Vec::new();
+        let mut shift = 0;
+        for part in 0..scalar.size().div_ceil(4) {
+            let (at, byte) = self.tile_word_address(self.stage.shared_word(tile, word + part * 4), index, offset);
+            pointers.push(at);
+            shift = byte;
+        }
+        if scalar.size() < 4 {
+            let four = self.constant(Scalar::U32, 4);
+            let byte = self.id();
+            self.emit(137, &[self.types[&Scalar::U32], byte, shift, four]);
+            let eight = self.constant(Scalar::U32, 8);
+            shift = self.id();
+            self.emit(132, &[self.types[&Scalar::U32], shift, byte, eight]);
+            let raw = self.id();
+            let shifted = self.id();
+            self.emit(61, &[self.types[&Scalar::U32], raw, pointers[0]]);
+            self.emit(194, &[self.types[&Scalar::U32], shifted, raw, shift]);
+            self.join_words(scalar, &[shifted], Scalar::U32)
+        } else {
+            self.load_raw(scalar, Scalar::U32, &pointers, false)
+        }
     }
     pub(super) fn tile_barrier(&mut self) {
         let scope = self.constant(Scalar::U32, 2);
@@ -67,17 +96,26 @@ impl Emitter<'_> {
         self.emit(224, &[scope, scope, semantics]);
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
+        let mut components = Vec::new();
         for (word, value) in &publication.values {
-          for (part, raw) in self.to_words(*value).into_iter().enumerate() {
+            let scalar = self.stage.registers[*value];
+            components.push((scalar, *word, self.to_words(*value, Self::raw_scalar(scalar))[0]));
+        }
+        let packed = self.pack_words(self.stage.tiles[publication.tile].ty.size, components);
+        let cells: std::collections::BTreeSet<_> = self.stage.storage_words().into_iter().filter_map(|word| match word {
+            SharedWord::Published { tile, word } if tile == publication.tile => Some(word / 4),
+            _ => None,
+        }).collect();
+        for word in cells {
             let at = self.tile_word_address(
                 SharedWord::Published {
                     tile: publication.tile,
-                    word: *word + part as u32,
+                    word: word * 4,
                 },
                 self.tile_lane,
+                None,
             );
-            self.emit(62, &[at, raw]);
-          }
+            self.emit(62, &[at.0, packed[word as usize]]);
         }
     }
     pub(super) fn tile_phases(&mut self, active: u32) -> Result<(), &'static str> {

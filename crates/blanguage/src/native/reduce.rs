@@ -58,11 +58,11 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
                 .unwrap(),
                 0x82 + component as u8 * 8,
             ]);
-            e.u32(r.source_word * 4 + offset);
+            e.u32(r.source_word + offset);
         } else {
             let register = registers[component];
-            let rex = 0x41 | if wide { 8 } else { 0 } | if register >= 8 { 4 } else { 0 };
-            let memory = 0x82 + (register & 7) * 8;
+            let prefix = (scalar.size() == 2).then_some(0x66);
+            let memory = Memory::new(10, r.source_word + offset);
             let opcode = match reduction.operator {
                 CollectiveOperator::Sum => Some(0x03),
                 CollectiveOperator::BitAnd => Some(0x23),
@@ -71,24 +71,23 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
                 CollectiveOperator::Min | CollectiveOperator::Max => None,
             };
             if let Some(opcode) = opcode {
-                e.bytes(&[rex, opcode, memory]);
-                e.u32(r.source_word * 4 + offset);
+                e.instruction(prefix, &[opcode - u8::from(scalar.size() == 1)], wide, register, memory.into());
             } else {
-                e.bytes(&[rex, 0x3b, memory]);
-                e.u32(r.source_word * 4 + offset);
-                let min = reduction.operator == CollectiveOperator::Min;
-                e.bytes(&[
-                    rex,
-                    0x0f,
-                    match (scalar.is_signed(), min) {
-                        (false, true) => 0x47,
-                        (true, true) => 0x4f,
-                        (false, false) => 0x42,
-                        (true, false) => 0x4c,
-                    },
-                    memory,
-                ]);
-                e.u32(r.source_word * 4 + offset);
+                let condition = match (scalar.is_signed(), reduction.operator == CollectiveOperator::Min) {
+                    (false, true) => 0x47,
+                    (true, true) => 0x4f,
+                    (false, false) => 0x42,
+                    (true, false) => 0x4c,
+                };
+                e.instruction(prefix, &[0x3b - u8::from(scalar.size() == 1)], wide, register, memory.into());
+                if scalar.size() == 1 {
+                    // CMOV没有字节形式；原字节比较之后只在实际取值时读取一个字节。
+                    let skip = e.jump(Some((condition + 0x40) ^ 1));
+                    e.instruction(None, &[0x8a], false, register, memory.into());
+                    e.patch(skip, e.code.len());
+                } else {
+                    e.instruction(prefix, &[0x0f, condition], wide, register, memory.into());
+                }
             }
         }
     }
@@ -101,17 +100,8 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     // Windows x64：返回地址与四个 shadow slots 之后是第五个参数。
     e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
     for (component, (_, offset)) in reduction.ty.components.iter().enumerate() {
-        if float {
-            e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
-        } else {
-            let register = registers[component];
-            e.bytes(&[
-                0x41 | if wide { 8 } else { 0 } | if register >= 8 { 4 } else { 0 },
-                0x89,
-                0x82 + (register & 7) * 8,
-            ]);
-        }
-        e.u32(*offset);
+        let value = if float { allocation::Location::Xmm(component as u8) } else { allocation::Location::Gpr(registers[component]) };
+        e.write_value_address(value, Memory::new(10, *offset), scalar.size());
     }
     e.bytes(&[0xc3]);
     e.finish(0)

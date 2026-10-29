@@ -27,6 +27,30 @@ pub struct VkPhysicalDeviceFeatures2 {
     pub features: [u32; 55],
 }
 #[repr(C)]
+pub struct VkPhysicalDevice8BitStorageFeatures {
+    pub sType: u32,
+    pub pNext: *mut c_void,
+    pub storageBuffer8BitAccess: u32,
+    pub uniformAndStorageBuffer8BitAccess: u32,
+    pub storagePushConstant8: u32,
+}
+#[repr(C)]
+pub struct VkPhysicalDevice16BitStorageFeatures {
+    pub sType: u32,
+    pub pNext: *mut c_void,
+    pub storageBuffer16BitAccess: u32,
+    pub uniformAndStorageBuffer16BitAccess: u32,
+    pub storagePushConstant16: u32,
+    pub storageInputOutput16: u32,
+}
+#[repr(C)]
+pub struct VkPhysicalDeviceShaderFloat16Int8Features {
+    pub sType: u32,
+    pub pNext: *mut c_void,
+    pub shaderFloat16: u32,
+    pub shaderInt8: u32,
+}
+#[repr(C)]
 pub struct VkPhysicalDeviceBufferDeviceAddressFeatures {
     pub sType: u32,
     pub pNext: *mut c_void,

@@ -223,8 +223,8 @@ impl Place {
                 .iter()
                 .map(|w| root.iter().position(|r| r == w))
                 .collect(),
-            (Self::ReadOnlyLocal(_, slots, ..), Self::ReadOnlyLocal(_, root, ..))
-            | (Self::Local(_, slots, ..), Self::Local(_, root, ..)) => slots
+            (Self::ReadOnlyLocal(_, slots, ..) | Self::Local(_, slots, ..),
+             Self::ReadOnlyLocal(_, root, ..) | Self::Local(_, root, ..)) => slots
                 .iter()
                 .map(|s| root.iter().position(|r| r == s))
                 .collect(),
@@ -327,7 +327,7 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         match place {
-            Place::Reference { words, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
+            Place::Reference { words, writable: true, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
             Place::ApplicationElement { words, sources, writable: true, .. } => {
                 self.require_view_unborrowed(sources,span)?;
                 Ok(words.iter().map(|word| *word as usize).collect())
@@ -431,7 +431,7 @@ impl Builder<'_> {
                     .any(|(_, offset)| {
                         !self
                             .initialized
-                            .contains(&Position::Element(*binding, offset / 4))
+                            .contains(&Position::Element(*binding, *offset))
                     })
         })
     }

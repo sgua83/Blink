@@ -94,7 +94,8 @@ impl Device {
         commands: &mut Commands,
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
-        let words_per_page = target.page_records() as usize * target.stride as usize / 4;
+        let bytes_per_page = target.page_records() as usize * target.stride as usize;
+        let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), target.bytes() as usize) };
         let headers: Vec<_> = target
             .views
             .sources
@@ -104,18 +105,18 @@ impl Device {
                 [address as u32, (address >> 32) as u32, source.0.count]
             })
             .collect();
-        for (index, (page, words)) in target
+        for (index, (page, bytes)) in target
             .pages
             .iter()
-            .zip(words.chunks(words_per_page))
+            .zip(bytes.chunks(bytes_per_page))
             .enumerate()
         {
             self.stage_page(
                 page,
-                words,
+                bytes,
                 |mapped| {
                     target.views.encode(
-                        index * words_per_page,
+                        index * bytes_per_page / 4,
                         mapped,
                         &headers,
                     );
@@ -126,10 +127,10 @@ impl Device {
         }
         Ok(())
     }
-    pub(super) fn stage_page(
+    pub(super) fn stage_page<T: Copy>(
         &self,
         target: &Allocation,
-        words: &[u32],
+        words: &[T],
         encode: impl FnOnce(&mut [u32]),
         commands: &mut Commands,
         staging: &mut Vec<Allocation>,
@@ -137,12 +138,13 @@ impl Device {
         if words.is_empty() {
             return Ok(());
         }
-        let source = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 1, 6, 4)?;
+        let bytes = std::mem::size_of_val(words) as u64;
+        let source = Allocation::new(self.inner.clone(), bytes, 1, 6, 4)?;
         source.write_with(words, encode)?;
         let copy = VkBufferCopy {
             srcOffset: 0,
             dstOffset: 0,
-            size: words.len() as u64 * 4,
+            size: bytes.div_ceil(4) * 4,
         };
         unsafe {
             (self.inner.functions.vkCmdCopyBuffer)(

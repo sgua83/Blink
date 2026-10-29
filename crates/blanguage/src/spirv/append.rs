@@ -21,7 +21,7 @@ impl Emitter<'_> {
         let counter = self.address_scalar(
             a.count.binding,
             zero,
-            self.program.buffers[a.count.binding].stride / 4,
+            self.program.buffers[a.count.binding].stride,
             a.count.word,
         );
         let word = self.constant(Scalar::U32, 2 + a.target as u32);
@@ -94,15 +94,9 @@ impl Emitter<'_> {
         let ticket = self.id();
         self.emit(128, &[u, ticket, shared_base, rank]);
         for (word, value) in &a.values {
-          for (part, raw) in self.to_words(*value).into_iter().enumerate() {
-            let ptr = self.address_scalar(
-                a.target,
-                ticket,
-                self.program.buffers[a.target].stride / 4,
-                *word + part as u32,
-            );
-            self.emit(62, &[ptr, raw, 2, 4]);
-          }
+            let scalar = self.stage.registers[*value];
+            let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+            self.store_raw_buffer(scalar, a.target, ticket, self.program.buffers[a.target].stride, *word, raw);
         }
         self.emit(249, &[finish]);
         self.emit(248, &[finish]);

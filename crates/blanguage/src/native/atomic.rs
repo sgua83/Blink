@@ -21,7 +21,7 @@ impl Emitter<'_> {
             Operand::memory(15, 0)
         } else {
             self.address(binding, atomic.index);
-            Operand::memory(15, atomic.word * 4)
+            Operand::memory(15, atomic.word)
         };
         match atomic.op {
             AtomicOp::Load => self.instruction(None, &[0x8b], false, 0, at),

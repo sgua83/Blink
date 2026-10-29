@@ -272,14 +272,15 @@ impl Graph {
         Self::with_live(stage, BTreeSet::new())
     }
     pub fn with_live(stage: &Stage, live: BTreeSet<PrivateSlot>) -> Self {
+        let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let mut graph = Graph {
             addressable: private_spans(&stage.code)
                 .into_iter()
                 .flat_map(|r| r.map(|s| stage.registers.len() + s))
                 .collect(),
-            edges: vec![BTreeSet::new(); stage.registers.len() + stage.locals.len()],
-            affinities: vec![BTreeSet::new(); stage.registers.len() + stage.locals.len()],
-            weights: vec![0; stage.registers.len() + stage.locals.len()],
+            edges: vec![BTreeSet::new(); slots],
+            affinities: vec![BTreeSet::new(); slots],
+            weights: vec![0; slots],
             across_call: BTreeSet::new(),
             outgoing_bytes: 0,
             registers: stage.registers.len(),
@@ -378,12 +379,12 @@ impl Allocation {
                 }
             }
         }
-        let mut constants = vec![None; stage.registers.len() + stage.locals.len()];
+        let mut constants = vec![None; stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end)];
         literals(&stage.code, &mut constants);
         let scalars: Vec<_> = stage
             .registers
             .iter()
-            .chain(&stage.locals)
+            .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
             .copied()
             .collect();
         // Tile input and phase handoff own R10/R11.
@@ -415,7 +416,9 @@ impl Allocation {
         // Coloring chooses reusable spill identities. Their byte layout belongs
         // to the actual scalar values sharing each identity, not a fixed word.
         let mut spill_layout = vec![(0, 1); spills as usize];
-        for (location, scalar) in locations.iter().zip(&scalars) {
+        for (id, (location, scalar)) in locations.iter().zip(&scalars).enumerate() {
+            // Addressed declarations get their physical storage from the original Ty below.
+            if graph.addressable.contains(&id) { continue; }
             if let Location::Stack(slot) = location {
                 let (size, align) = &mut spill_layout[*slot as usize];
                 *size = (*size).max(scalar.size());
@@ -438,12 +441,14 @@ impl Allocation {
             }
         }
         for span in private_spans(&stage.code) {
-            data_end = data_end.div_ceil(16) * 16;
-            for slot in span.clone() {
+            let ty = &stage.locals[&span.end];
+            let align = u64::from(ty.align.max(16));
+            data_end = data_end.div_ceil(align) * align;
+            for (slot, (_, offset)) in span.clone().zip(&ty.components) {
                 locations[stage.registers.len() + slot] =
-                    Location::Stack((data_end + (slot - span.start) as u64 * 4) as u32);
+                    Location::Stack((data_end + u64::from(*offset)) as u32);
             }
-            data_end += span.len() as u64 * 4;
+            data_end += u64::from(ty.size);
         }
         Self {
             locations,

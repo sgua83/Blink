@@ -78,9 +78,8 @@ struct Emitter<'a> {
     vec2_type: u32,
     push: u32,
     ptr_push_u32: u32,
-    ptr_buffer_u32: u32,
+    physical_pointers: BTreeMap<Scalar, u32>,
     ptr_table_u64: u32,
-    ptr_physical_u64: u32,
     u64_type: u32,
     index: u32,
     regs: Vec<u32>,
@@ -100,24 +99,39 @@ struct Emitter<'a> {
     return_scopes: Vec<returns::ReturnScope>,
 }
 impl Emitter<'_> {
-    fn private_address(&mut self, base: usize, index: Reg, word: u32) -> u32 {
+    fn private_address(&mut self, base: usize, index: Option<Reg>, word: u32, scalar: Scalar) -> (Scalar, Vec<u32>) {
         let (span, variable) = self
             .private_arrays
             .iter()
             .find(|(span, _)| span.contains(&base))
             .unwrap();
-        let offset = (base - span.start) as u32 + word;
+        let ty = &self.stage.locals[&span.end];
+        let unit = Self::raw_scalar(ty.components.iter().map(|(s, _)| *s).min_by_key(|s| s.size()).unwrap());
+        let unit = if unit.size() == 8 { Scalar::U32 } else { unit };
+        let offset = ty.components[base - span.start].1 + word;
         let variable = *variable;
-        let mut at = self.value(index);
+        let mut at = match index { Some(r) => self.value(r), None => self.constant(Scalar::U32, 0) };
         if offset != 0 {
             let offset = self.constant(Scalar::U32, offset);
             let sum = self.id();
             self.emit(128, &[self.types[&Scalar::U32], sum, at, offset]);
             at = sum;
         }
-        let pointer = self.id();
-        self.emit(65, &[self.pointers[&Scalar::U32], pointer, variable, at]);
-        pointer
+        let width = self.constant(Scalar::U32, unit.size());
+        let position = self.id();
+        self.emit(134, &[self.types[&Scalar::U32], position, at, width]);
+        let pointers = (0..scalar.size().div_ceil(unit.size())).map(|part| {
+            let mut at = position;
+            if part != 0 {
+                let offset = self.constant(Scalar::U32, part);
+                at = self.id();
+                self.emit(128, &[self.types[&Scalar::U32], at, position, offset]);
+            }
+            let pointer = self.id();
+            self.emit(65, &[self.pointers[&unit], pointer, variable, at]);
+            pointer
+        }).collect();
+        (unit, pointers)
     }
     fn id(&mut self) -> u32 {
         let v = self.next;
@@ -161,7 +175,7 @@ impl Emitter<'_> {
     }
     fn signed_magnitude(&mut self, value: u32, scalar: Scalar) -> (u32, u32) {
         let i = self.types[&scalar];
-        let unsigned = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+        let unsigned = Self::raw_scalar(scalar);
         let shift = self.constant(scalar, scalar.size() * 8 - 1);
         let sign = self.id();
         self.emit(195, &[i, sign, value, shift]);
@@ -175,7 +189,7 @@ impl Emitter<'_> {
     }
     fn signed_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: u32) {
         let scalar = self.stage.registers[src];
-        let unsigned = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+        let unsigned = Self::raw_scalar(scalar);
         let (numerator, nsign) = self.signed_magnitude(self.value(src), scalar);
         let (denominator, dsign) = self.signed_magnitude(divisor, scalar);
         let i = self.types[&scalar];
@@ -207,12 +221,12 @@ impl Emitter<'_> {
         self.address_scalar(
             binding,
             self.value(index),
-            self.program.buffers[binding].stride / 4,
+            self.program.buffers[binding].stride,
             word,
         )
     }
-    fn address_scalar(&mut self, binding: usize, index: u32, stride_words: u32, word: u32) -> u32 {
-        let (page, offset) = self.record_location(index, stride_words, word);
+    fn address_scalar(&mut self, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
+        let (page, offset) = self.record_location(index, stride, word);
         let zero = self.constant(Scalar::U32, 0);
         let table = self.id();
         self.emit(
@@ -223,30 +237,7 @@ impl Emitter<'_> {
         self.emit(61, &[self.u64_type, base, table]);
         self.word_pointer(base, offset)
     }
-    fn record_copy_type(&mut self, lanes: u32) -> (u32, u32) {
-        let mut vector = if lanes == 4 {
-            self.ballot_type
-        } else {
-            self.uint2_type
-        };
-        if vector == 0 {
-            vector = self.id();
-            op(
-                &mut self.defs,
-                23,
-                &[vector, self.types[&Scalar::U32], lanes],
-            );
-            if lanes == 4 {
-                self.ballot_type = vector;
-            } else {
-                self.uint2_type = vector;
-            }
-        }
-        let pointer = self.id();
-        op(&mut self.defs, 32, &[pointer, 5349, vector]);
-        (vector, pointer)
-    }
-    // 记录页不拆分记录；按原始字复制，保留填充及 bool／浮点编码。
+    // 记录页不拆分记录；原生复制完整字节布局，保留填充及 bool／浮点编码。
     fn copy_record(
         &mut self,
         source_binding: usize,
@@ -254,65 +245,36 @@ impl Emitter<'_> {
         target_binding: usize,
         target_index: u32,
     ) {
-        let stride = self.program.buffers[source_binding].stride / 4;
+        let stride = self.program.buffers[source_binding].stride;
+        let align = self.program.buffers[source_binding].ty.align;
+        let scalar = match align { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+        let length = self.constant(Scalar::U32, stride / scalar.size());
+        let ty = self.id();
+        op(&mut self.defs, 28, &[ty, self.types[&scalar], length]);
+        op(&mut self.decorations, 71, &[ty, 6, scalar.size()]);
+        let pointer = self.id();
+        op(&mut self.defs, 32, &[pointer, 5349, ty]);
         let source = self.address_scalar(source_binding, source_index, stride, 0);
         let target = self.address_scalar(target_binding, target_index, stride, 0);
-        let blocks = stride / 4 + (stride % 4) / 2 + stride % 2;
-        let bases = (blocks > 1).then(|| {
-            let from = self.id();
-            let to = self.id();
-            self.emit(117, &[self.u64_type, from, source]);
-            self.emit(117, &[self.u64_type, to, target]);
-            (from, to)
-        });
-        let mut word = 0;
-        for lanes in [4, 2, 1] {
-            if stride - word < lanes {
-                continue;
-            }
-            let (ty, pointer) = if lanes == 1 {
-                (self.types[&Scalar::U32], self.ptr_buffer_u32)
-            } else {
-                self.record_copy_type(lanes)
-            };
-            while stride - word >= lanes {
-                let (mut from, mut to) = if word == 0 {
-                    (source, target)
-                } else {
-                    let (from, to) = bases.unwrap();
-                    let bytes = self.constant(Scalar::U32, word * 4);
-                    (self.word_pointer(from, bytes), self.word_pointer(to, bytes))
-                };
-                if lanes != 1 {
-                    let vector_from = self.id();
-                    let vector_to = self.id();
-                    self.emit(124, &[pointer, vector_from, from]);
-                    self.emit(124, &[pointer, vector_to, to]);
-                    (from, to) = (vector_from, vector_to);
-                }
-                let value = self.id();
-                self.emit(61, &[ty, value, from, 2, 4]);
-                self.emit(62, &[to, value, 2, 4]);
-                word += lanes;
-            }
-        }
+        let from = self.id();
+        let to = self.id();
+        self.emit(124, &[pointer, from, source]);
+        self.emit(124, &[pointer, to, target]);
+        self.emit(63, &[to, from, 2, align]);
     }
-    fn record_location(&mut self, index: u32, stride_words: u32, word: u32) -> (u32, u32) {
-        let capacity = self.constant(Scalar::U32, PAGE_BYTES / (stride_words * 4));
+    fn record_location(&mut self, index: u32, stride: u32, word: u32) -> (u32, u32) {
+        let capacity = self.constant(Scalar::U32, PAGE_BYTES / stride);
         let page = self.id();
         self.emit(134, &[self.types[&Scalar::U32], page, index, capacity]);
         let local = self.id();
         self.emit(137, &[self.types[&Scalar::U32], local, index, capacity]);
-        let stride = self.constant(Scalar::U32, stride_words);
+        let stride = self.constant(Scalar::U32, stride);
         let scaled = self.id();
         self.emit(132, &[self.types[&Scalar::U32], scaled, local, stride]);
         let offset = self.constant(Scalar::U32, word);
         let at = self.id();
         self.emit(128, &[self.types[&Scalar::U32], at, scaled, offset]);
-        let four = self.constant(Scalar::U32, 4);
-        let bytes = self.id();
-        self.emit(132, &[self.types[&Scalar::U32], bytes, at, four]);
-        (page, bytes)
+        (page, at)
     }
     fn word_pointer(&mut self, base: u32, bytes: u32) -> u32 {
         let offset64 = self.id();
@@ -320,7 +282,7 @@ impl Emitter<'_> {
         let address = self.id();
         self.emit(128, &[self.u64_type, address, base, offset64]);
         let ptr = self.id();
-        self.emit(120, &[self.ptr_buffer_u32, ptr, address]);
+        self.emit(120, &[self.physical_pointers[&Scalar::U32], ptr, address]);
         ptr
     }
     fn view_address(&mut self, table: &[Reg; 2], index: Reg, stride: u32, word: u32) -> u32 {
@@ -333,7 +295,7 @@ impl Emitter<'_> {
         self.emit(196, &[self.u64_type, shifted, high, width]);
         let address = self.id();
         self.emit(197, &[self.u64_type, address, low, shifted]);
-        let (page, offset) = self.record_location(self.value(index), stride / 4, word);
+        let (page, offset) = self.record_location(self.value(index), stride, word);
         let page64 = self.id();
         self.emit(113, &[self.u64_type, page64, page]);
         let three = self.constant(Scalar::U32, 3);
@@ -342,20 +304,14 @@ impl Emitter<'_> {
         let entry = self.id();
         self.emit(128, &[self.u64_type, entry, address, page_bytes]);
         let pointer = self.id();
-        self.emit(120, &[self.ptr_physical_u64, pointer, entry]);
+        self.emit(120, &[self.physical_pointers[&Scalar::U64], pointer, entry]);
         let base = self.id();
         self.emit(61, &[self.u64_type, base, pointer, 2, 8]);
         self.word_pointer(base, offset)
     }
     fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> u32 {
-        let u = self.types[&Scalar::U32];
         if let IndexedSource::Tile { tile, index } = source {
-            let width = self.constant(Scalar::U32, self.stage.workgroup_width());
-            let scaled = self.id();
-            self.emit(132, &[u, scaled, self.value(offset), width]);
-            let at = self.id();
-            self.emit(128, &[u, at, self.value(*index), scaled]);
-            return self.tile_word_address(self.stage.shared_word(*tile, word), at);
+            return self.tile_word_address(self.stage.shared_word(*tile, word), self.value(*index), Some(self.value(offset))).0;
         }
         let pointer = match source {
             IndexedSource::Data { binding, index } => self.address(*binding, *index, word),
@@ -368,10 +324,7 @@ impl Emitter<'_> {
         };
         let address = self.id();
         self.emit(117, &[self.u64_type, address, pointer]);
-        let four = self.constant(Scalar::U32, 4);
-        let bytes = self.id();
-        self.emit(132, &[u, bytes, self.value(offset), four]);
-        self.word_pointer(address, bytes)
+        self.word_pointer(address, self.value(offset))
     }
     fn block(
         &mut self,
@@ -454,163 +407,115 @@ impl Emitter<'_> {
                     tile,
                     index,
                     word,
-                } => self.tile_load(*dst, *tile, *index, *word),
+                } => {
+                    let scalar = self.stage.registers[*dst];
+                    let raw = self.tile_read(scalar, *tile, self.value(*index), *word, None);
+                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
+                }
                 Inst::Subgroup {
                     dst,
                     op,
                     value,
                     argument,
                 } => self.subgroup(*dst, *op, *value, *argument),
-                Inst::ViewLoad {
-                    dst,
-                    address,
-                    index,
-                    stride,
-                    word,
-                } => {
-                    let mut words = Vec::new();
-                    for part in 0..self.stage.registers[*dst].size()/4 {
-                        let ptr = self.view_address(address, *index, *stride, *word + part);
-                        let raw = self.id();
-                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                        words.push(raw);
-                    }
-                    self.from_words(*dst, &words);
+                Inst::ViewLoad { dst, address, index, stride, word } => {
+                    let scalar = self.stage.registers[*dst];
+                    let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
+                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.view_address(address, *index, *stride, *word + part * 4)).collect();
+                    let raw = self.load_raw(scalar, unit, &pointers, true);
+                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::RayQuery {
-                    scene,
-                    origin,
-                    direction,
-                    minimum,
-                    maximum,
-                    result,
-                } => {
+                Inst::RayQuery { scene, origin, direction, minimum, maximum, result } => {
                     self.ray(*scene, origin, direction, *minimum, *maximum, result);
                 }
-                Inst::LoadIndexed {
-                    dst,
-                    source,
-                    offset,
-                    word,
-                } => {
-                    let mut words = Vec::new();
-                    for part in 0..self.stage.registers[*dst].size()/4 {
-                        let ptr = self.indexed_address(source, *offset, *word + part);
-                        let raw = self.id();
-                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                        words.push(raw);
-                    }
-                    self.from_words(*dst, &words);
+                Inst::LoadIndexed { dst, source, offset, word } => {
+                    let scalar = self.stage.registers[*dst];
+                    let raw = if let IndexedSource::Tile { tile, index } = source {
+                        self.tile_read(scalar, *tile, self.value(*index), *word, Some(self.value(*offset)))
+                    } else {
+                        let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
+                        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(source, *offset, *word + part * 4)).collect();
+                        self.load_raw(scalar, unit, &pointers, true)
+                    };
+                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::StoreIndexed {
-                    source,
-                    offset,
-                    word,
-                    value,
-                } => {
-                    for (part, raw) in self.to_words(*value).into_iter().enumerate() {
-                        let ptr = self.indexed_address(source, *offset, *word + part as u32);
-                        self.emit(62, &[ptr, raw, 2, 4]);
-                    }
+                Inst::StoreIndexed { source, offset, word, value } => {
+                    let scalar = self.stage.registers[*value];
+                    let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
+                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(source, *offset, *word + part * 4)).collect();
+                    let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+                    self.store_raw(scalar, unit, &pointers, raw, true);
                 }
                 Inst::Constant(dst, s, bits) if s.is_float() => {
                     let mut words = vec![self.constant(Scalar::U32, *bits as u32)];
                     if s.size() == 8 { words.push(self.constant(Scalar::U32, (*bits >> 32) as u32)); }
-                    self.from_words(*dst, &words);
+                    self.from_words(*dst, &words, Scalar::U32);
                 }
-                Inst::Constant(dst, s, b) => {
-                    let c = self.constant_bits(*s, *b);
-                    self.emit(83, &[self.ty(*dst), self.value(*dst), c]);
+                Inst::Constant(dst, s, bits) => {
+                    let constant = self.constant_bits(*s, *bits);
+                    self.emit(83, &[self.ty(*dst), self.value(*dst), constant]);
                 }
                 Inst::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
                 Inst::Uniform(dst, offset) => {
                     let zero = self.constant(Scalar::U32, 0);
                     let mut words = Vec::new();
-                    for part in 0..self.stage.registers[*dst].size()/4 {
+                    for part in 0..self.stage.registers[*dst].size().div_ceil(4) {
                         let word = self.constant(Scalar::U32, offset / 4 + part);
                         let ptr = self.id();
                         self.emit(65, &[self.ptr_push_u32, ptr, self.push, zero, word]);
-                        let raw = self.id();
+                        let mut raw = self.id();
                         self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
+                        if offset % 4 != 0 {
+                            let shift = self.constant(Scalar::U32, offset % 4 * 8);
+                            let shifted = self.id();
+                            self.emit(194, &[self.types[&Scalar::U32], shifted, raw, shift]);
+                            raw = shifted;
+                        }
                         words.push(raw);
                     }
-                    self.from_words(*dst, &words);
+                    self.from_words(*dst, &words, Scalar::U32);
                 }
                 Inst::LoadLocal(dst, slot) => {
                     if self.private_words.contains(slot) {
-                        let mut words = Vec::new();
-                        for part in 0..self.stage.registers[*dst].size()/4 {
-                            let raw = self.id();
-                            self.emit(61, &[self.types[&Scalar::U32], raw, self.locals[*slot + part as usize]]);
-                            words.push(raw);
-                        }
-                        self.from_words(*dst, &words);
+                        let scalar = self.stage.registers[*dst];
+                        let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
+                        let raw = self.load_raw(scalar, unit, &pointers, false);
+                        self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                     } else {
-                        self.emit(61, &[self.ty(*dst), self.value(*dst), self.locals[*slot]])
+                        self.emit(61, &[self.ty(*dst), self.value(*dst), self.locals[*slot]]);
                     }
                 }
                 Inst::StoreLocal(slot, src) => {
                     if self.private_words.contains(slot) {
-                        for (part, raw) in self.to_words(*src).into_iter().enumerate() {
-                            self.emit(62, &[self.locals[*slot + part], raw]);
-                        }
+                        let scalar = self.stage.registers[*src];
+                        let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
+                        let raw = self.to_words(*src, Self::raw_scalar(scalar))[0];
+                        self.store_raw(scalar, unit, &pointers, raw, false);
                     } else {
                         self.emit(62, &[self.locals[*slot], self.value(*src)]);
                     }
                 }
-                Inst::LoadLocalIndexed {
-                    dst,
-                    base,
-                    index,
-                    word,
-                    ..
-                } => {
-                    let mut words = Vec::new();
-                    for part in 0..self.stage.registers[*dst].size()/4 {
-                        let pointer = self.private_address(*base, *index, *word + part);
-                        let raw = self.id();
-                        self.emit(61, &[self.types[&Scalar::U32], raw, pointer]);
-                        words.push(raw);
-                    }
-                    self.from_words(*dst, &words);
+                Inst::LoadLocalIndexed { dst, base, index, word, .. } => {
+                    let scalar = self.stage.registers[*dst];
+                    let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
+                    let raw = self.load_raw(scalar, unit, &pointers, false);
+                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::StoreLocalIndexed {
-                    base,
-                    index,
-                    word,
-                    value,
-                    ..
-                } => {
-                    for (part, raw) in self.to_words(*value).into_iter().enumerate() {
-                        let pointer = self.private_address(*base, *index, *word + part as u32);
-                        self.emit(62, &[pointer, raw]);
-                    }
+                Inst::StoreLocalIndexed { base, index, word, value, .. } => {
+                    let scalar = self.stage.registers[*value];
+                    let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
+                    let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+                    self.store_raw(scalar, unit, &pointers, raw, false);
                 }
-                Inst::Load {
-                    dst,
-                    binding,
-                    index,
-                    word,
-                } => {
-                    let mut words = Vec::new();
-                    for part in 0..self.stage.registers[*dst].size()/4 {
-                        let ptr = self.address(*binding, *index, *word + part);
-                        let raw = self.id();
-                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                        words.push(raw);
-                    }
-                    self.from_words(*dst, &words);
+                Inst::Load { dst, binding, index, word } => {
+                    let scalar = self.stage.registers[*dst];
+                    let raw = self.load_raw_buffer(scalar, *binding, self.value(*index), self.program.buffers[*binding].stride, *word);
+                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::Store {
-                    binding,
-                    index,
-                    word,
-                    value,
-                } => {
-                    for (part, raw) in self.to_words(*value).into_iter().enumerate() {
-                        let ptr = self.address(*binding, *index, *word + part as u32);
-                        self.emit(62, &[ptr, raw, 2, 4]);
-                    }
+                Inst::Store { binding, index, word, value } => {
+                    let scalar = self.stage.registers[*value];
+                    let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
+                    self.store_raw_buffer(scalar, *binding, self.value(*index), self.program.buffers[*binding].stride, *word, raw);
                 }
                 Inst::Unary {
                     dst,
@@ -791,11 +696,10 @@ impl Emitter<'_> {
                         );
                     } else {
                         let opcode = match (a, b) {
-                            (Scalar::F32 | Scalar::F64, Scalar::U32 | Scalar::U64) => 109,
-                            (Scalar::F32 | Scalar::F64, Scalar::I32 | Scalar::I64) => 110,
-                            (Scalar::U32 | Scalar::U64, Scalar::F32 | Scalar::F64) => 112,
-                            (Scalar::I32 | Scalar::I64, Scalar::F32 | Scalar::F64) => 111,
-                            _ if a.is_float() && b.is_float() => if a == b { 83 } else { 115 }, _ if a.size() != b.size() => if a.is_signed() { 114 } else { 113 },
+                            _ if a.is_float() && b.is_integer() => if b.is_signed() { 110 } else { 109 },
+                            _ if a.is_integer() && b.is_float() => if a.is_signed() { 111 } else { 112 },
+                            _ if a.is_float() && b.is_float() => if a == b { 83 } else { 115 },
+                            _ if a.size() != b.size() => if a.is_signed() { 114 } else { 113 },
                             _ => 124,
                         };
                         self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*src)]);
@@ -912,26 +816,47 @@ impl Emitter<'_> {
         Ok(true)
     }
     fn sign_bits(&mut self, dst: Reg, src: Reg, opcode: u16, mask: u32) {
-        let scalar = self.stage.registers[src];
-        let mut words = self.to_words(src);
+        let mut words = self.to_words(src, Scalar::U32);
         let mask = self.constant(Scalar::U32, mask);
         let result = self.id();
-        let last = words.len()-1;
+        let last = words.len() - 1;
         self.emit(opcode, &[self.types[&Scalar::U32], result, words[last], mask]);
         words[last] = result;
-        if scalar.size() == 8 { self.from_words(dst, &words); } else { self.from_word(dst, result); }
+        self.from_words(dst, &words, Scalar::U32);
     }
-    fn from_words(&mut self, dst: Reg, words: &[u32]) {
-        if self.stage.registers[dst].size() == 4 {
-            self.from_word(dst, words[0]);
-            return;
-        }
+    fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
         let scalar = self.stage.registers[dst];
-        let joined = self.join_words(scalar, words);
-        self.emit(if scalar==Scalar::U64 {83} else {124}, &[self.ty(dst), self.value(dst), joined]);
+        let raw = self.join_words(scalar, words, unit);
+        if scalar == Scalar::Bool {
+            let zero = self.constant(Scalar::U32, 0);
+            self.emit(171, &[self.ty(dst), self.value(dst), raw, zero]);
+        } else {
+            self.emit(if scalar == Self::raw_scalar(scalar) { 83 } else { 124 }, &[self.ty(dst), self.value(dst), raw]);
+        }
+    }
+    fn pack_words(&mut self, size: u32, components: impl IntoIterator<Item = (Scalar, u32, u32)>) -> Vec<u32> {
+        let zero = self.constant(Scalar::U32, 0);
+        let mut values = vec![zero; size.div_ceil(4) as usize];
+        for (scalar, offset, value) in components {
+            for (part, mut word) in self.split_words(scalar, value, Scalar::U32).into_iter().enumerate() {
+                let at = (offset / 4) as usize + part;
+                if offset % 4 != 0 {
+                    let shift = self.constant(Scalar::U32, offset % 4 * 8);
+                    let shifted = self.id();
+                    self.emit(196, &[self.types[&Scalar::U32], shifted, word, shift]);
+                    word = shifted;
+                }
+                if values[at] == zero { values[at] = word; } else {
+                    let joined = self.id();
+                    self.emit(197, &[self.types[&Scalar::U32], joined, values[at], word]);
+                    values[at] = joined;
+                }
+            }
+        }
+        values
     }
     fn raw_scalar(scalar: Scalar) -> Scalar {
-        if scalar.size()==8 {Scalar::U64} else {Scalar::U32}
+        match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, 4 => Scalar::U32, _ => Scalar::U64 }
     }
     fn raw_type(&self, scalar: Scalar) -> u32 {
         self.types[&Self::raw_scalar(scalar)]
@@ -939,91 +864,92 @@ impl Emitter<'_> {
     fn raw_constant(&mut self, scalar: Scalar, bits: Bits) -> u32 {
         self.constant_bits(Self::raw_scalar(scalar), bits)
     }
-    fn join_words(&mut self, scalar: Scalar, words: &[u32]) -> u32 {
-        if scalar.size()==4 {return words[0];}
-        let low = self.id();
-        let high = self.id();
-        self.emit(113, &[self.u64_type, low, words[0]]);
-        self.emit(113, &[self.u64_type, high, words[1]]);
-        let width = self.constant(Scalar::U32, 32);
-        let shifted = self.id();
-        self.emit(196, &[self.u64_type, shifted, high, width]);
-        let joined = self.id();
-        self.emit(197, &[self.u64_type, joined, low, shifted]);
-        joined
-    }
-    fn to_words(&mut self, value: Reg) -> Vec<u32> {
-        if self.stage.registers[value].size() == 4 {
-            return vec![self.to_word(value)];
+    fn join_words(&mut self, scalar: Scalar, words: &[u32], unit: Scalar) -> u32 {
+        let raw = Self::raw_scalar(scalar);
+        let mut value = 0;
+        for (part, word) in words.iter().enumerate() {
+            let mut word = *word;
+            if raw != unit {
+                let converted = self.id();
+                self.emit(113, &[self.types[&raw], converted, word]);
+                word = converted;
+            }
+            if part == 0 { value = word; continue; }
+            let shift = self.constant(Scalar::U32, part as u32 * unit.bit_width());
+            let shifted = self.id();
+            self.emit(196, &[self.types[&raw], shifted, word, shift]);
+            let joined = self.id();
+            self.emit(197, &[self.types[&raw], joined, value, shifted]);
+            value = joined;
         }
-        let bits = if self.stage.registers[value] == Scalar::U64 { self.value(value) } else {
-            let bits = self.id();
-            self.emit(124, &[self.u64_type, bits, self.value(value)]);
-            bits
-        };
-        self.split_words(self.stage.registers[value], bits)
+        value
     }
-    fn split_words(&mut self, scalar: Scalar, bits: u32) -> Vec<u32> {
-        if scalar.size()==4 {return vec![bits];}
-        let low = self.id();
-        self.emit(113, &[self.types[&Scalar::U32], low, bits]);
-        let width = self.constant(Scalar::U32, 32);
-        let shifted = self.id();
-        self.emit(194, &[self.u64_type, shifted, bits, width]);
-        let high = self.id();
-        self.emit(113, &[self.types[&Scalar::U32], high, shifted]);
-        vec![low, high]
+    fn to_words(&mut self, value: Reg, unit: Scalar) -> Vec<u32> {
+        let scalar = self.stage.registers[value];
+        let mut bits = self.value(value);
+        if scalar == Scalar::Bool {
+            bits = self.id();
+            let one = self.constant(Scalar::U32, 1);
+            let zero = self.constant(Scalar::U32, 0);
+            self.emit(169, &[self.types[&Scalar::U32], bits, self.value(value), one, zero]);
+        } else if scalar != Self::raw_scalar(scalar) {
+            bits = self.id();
+            self.emit(124, &[self.raw_type(scalar), bits, self.value(value)]);
+        }
+        self.split_words(scalar, bits, unit)
     }
-    fn load_raw(&mut self, scalar: Scalar, pointers: &[u32], physical: bool) -> u32 {
-        let words:Vec<_> = pointers.iter().map(|pointer| {
-            let raw=self.id();
-            let mut args=vec![self.types[&Scalar::U32],raw,*pointer];
-            if physical {args.extend([2,4]);}
-            self.emit(61,&args);raw
+    fn split_words(&mut self, scalar: Scalar, bits: u32, unit: Scalar) -> Vec<u32> {
+        (0..scalar.size().div_ceil(unit.size())).map(|part| {
+            let mut value = bits;
+            if part != 0 {
+                let shift = self.constant(Scalar::U32, part * unit.bit_width());
+                value = self.id();
+                self.emit(194, &[self.raw_type(scalar), value, bits, shift]);
+            }
+            if Self::raw_scalar(scalar) != unit {
+                let converted = self.id();
+                self.emit(113, &[self.types[&unit], converted, value]);
+                value = converted;
+            }
+            value
+        }).collect()
+    }
+    fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], physical: bool) -> u32 {
+        let words: Vec<_> = pointers.iter().map(|pointer| {
+            let mut pointer = *pointer;
+            if physical && unit != Scalar::U32 {
+                let typed = self.id();
+                self.emit(124, &[self.physical_pointers[&unit], typed, pointer]);
+                pointer = typed;
+            }
+            let raw = self.id();
+            let mut args = vec![self.types[&unit], raw, pointer];
+            if physical { args.extend([2, unit.size()]); }
+            self.emit(61, &args);
+            raw
         }).collect();
-        self.join_words(scalar,&words)
+        self.join_words(scalar, &words, unit)
     }
-    fn store_raw(&mut self, scalar: Scalar, pointers: &[u32], value: u32, physical: bool) {
-        for (pointer,word) in pointers.iter().zip(self.split_words(scalar,value)) {
-            let mut args=vec![*pointer,word];if physical {args.extend([2,4]);}
-            self.emit(62,&args);
+    fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {
+        for (pointer, word) in pointers.iter().zip(self.split_words(scalar, value, unit)) {
+            let mut pointer = *pointer;
+            if physical && unit != Scalar::U32 {
+                let typed = self.id();
+                self.emit(124, &[self.physical_pointers[&unit], typed, pointer]);
+                pointer = typed;
+            }
+            let mut args = vec![pointer, word];
+            if physical { args.extend([2, unit.size()]); }
+            self.emit(62, &args);
         }
     }
     fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
-        let pointers:Vec<_>=(0..scalar.size()/4).map(|part|self.address_scalar(binding,index,stride,word+part)).collect();
-        self.load_raw(scalar,&pointers,true)
+        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(binding, index, stride, word + part * 4)).collect();
+        self.load_raw(scalar, Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 }), &pointers, true)
     }
     fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32, value: u32) {
-        let pointers:Vec<_>=(0..scalar.size()/4).map(|part|self.address_scalar(binding,index,stride,word+part)).collect();
-        self.store_raw(scalar,&pointers,value,true);
-    }
-    fn from_word(&mut self, dst: Reg, raw: u32) {
-        match self.stage.registers[dst] {
-            Scalar::U32 => self.emit(83, &[self.ty(dst), self.value(dst), raw]),
-            Scalar::Bool => {
-                let zero = self.constant(Scalar::U32, 0);
-                self.emit(171, &[self.ty(dst), self.value(dst), raw, zero]);
-            }
-            _ => self.emit(124, &[self.ty(dst), self.value(dst), raw]),
-        }
-    }
-    fn to_word(&mut self, value: Reg) -> u32 {
-        let s = self.stage.registers[value];
-        if s == Scalar::U32 {
-            return self.value(value);
-        }
-        let raw = self.id();
-        if s == Scalar::Bool {
-            let one = self.constant(Scalar::U32, 1);
-            let zero = self.constant(Scalar::U32, 0);
-            self.emit(
-                169,
-                &[self.types[&Scalar::U32], raw, self.value(value), one, zero],
-            );
-        } else {
-            self.emit(124, &[self.types[&Scalar::U32], raw, self.value(value)]);
-        }
-        raw
+        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(binding, index, stride, word + part * 4)).collect();
+        self.store_raw(scalar, Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 }), &pointers, value, true);
     }
     fn ray(
         &mut self,
@@ -1286,9 +1212,8 @@ pub fn emit_pass(
         vec2_type: 0,
         push: 0,
         ptr_push_u32: 0,
-        ptr_buffer_u32: 0,
+        physical_pointers: BTreeMap::new(),
         ptr_table_u64: 0,
-        ptr_physical_u64: 0,
         u64_type: 0,
         index: 0,
         regs: Vec::new(),
@@ -1313,6 +1238,16 @@ pub fn emit_pass(
     op(&mut prelude, 17, &[5347]);
     let float64 = program.requirements().float64;
     if float64 { op(&mut prelude, 17, &[10]); }
+    let integer8 = program.requirements().integer8;
+    let integer16 = program.requirements().integer16;
+    if integer8 {
+        op(&mut prelude, 17, &[39]);
+        op(&mut prelude, 17, &[4448]);
+    }
+    if integer16 {
+        op(&mut prelude, 17, &[22]);
+        op(&mut prelude, 17, &[4433]);
+    }
     let float64_preserve = matches!(pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd) && stage.requires_float_preserve(Scalar::F64);
     let float32_preserve = matches!(
         pass,
@@ -1356,6 +1291,12 @@ pub fn emit_pass(
         op(&mut prelude, 17, &[5307]);
     }
     // SPIR-V 的逻辑布局要求全部 Capability 先于全部 Extension。
+    if integer8 {
+        op(&mut prelude, 10, &string("SPV_KHR_8bit_storage"));
+    }
+    if integer16 {
+        op(&mut prelude, 10, &string("SPV_KHR_16bit_storage"));
+    }
     if program.requires_texture_indexing() {
         op(&mut prelude, 10, &string("SPV_EXT_descriptor_indexing"));
     }
@@ -1383,7 +1324,10 @@ pub fn emit_pass(
     op(&mut prelude, 14, &[5348, 1]);
     let void = e.id();
     op(&mut e.defs, 19, &[void]);
-    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64].into_iter().chain(float64.then_some(Scalar::F64)) {
+    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64].into_iter()
+        .chain(float64.then_some(Scalar::F64))
+        .chain(integer8.then_some([Scalar::U8, Scalar::I8]).into_iter().flatten())
+        .chain(integer16.then_some([Scalar::U16, Scalar::I16]).into_iter().flatten()) {
         let id = e.id();
         match s {
             Scalar::F32 | Scalar::F64 => op(&mut e.defs, 22, &[id, s.bit_width()]),
@@ -1489,12 +1433,15 @@ pub fn emit_pass(
     op(&mut e.decorations, 72, &[block, 0, 35, 0]);
     let ptr = e.id();
     op(&mut e.defs, 32, &[ptr, 12, block]);
-    e.ptr_buffer_u32 = e.id();
-    op(&mut e.defs, 32, &[e.ptr_buffer_u32, 5349, u]);
+    for scalar in [Scalar::U32, Scalar::U64, Scalar::U8, Scalar::U16] {
+        if let Some(ty) = e.types.get(&scalar).copied() {
+            let pointer = e.id();
+            op(&mut e.defs, 32, &[pointer, 5349, ty]);
+            e.physical_pointers.insert(scalar, pointer);
+        }
+    }
     e.ptr_table_u64 = e.id();
     op(&mut e.defs, 32, &[e.ptr_table_u64, 12, e.u64_type]);
-    e.ptr_physical_u64 = e.id();
-    op(&mut e.defs, 32, &[e.ptr_physical_u64, 5349, e.u64_type]);
     for i in 0..program.buffers.len() + program.auxiliary_buffers() {
         let id = e.id();
         op(&mut e.defs, 59, &[ptr, id, 12]);
@@ -1682,11 +1629,14 @@ pub fn emit_pass(
         e.emit(59, &[ray_pointer, id, 7]);
         e.ray_variables.insert(result, id);
     }
-    e.locals.resize(stage.locals.len(), 0);
+    e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
     for span in private_spans(&stage.code) {
-        let length = e.constant(Scalar::U32, span.len() as u32);
+        let ty = &stage.locals[&span.end];
+        let size = ty.components.iter().map(|(s, _)| s.size()).min().unwrap().min(4);
+        let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+        let length = e.constant(Scalar::U32, ty.size / size);
         let array = e.id();
-        op(&mut e.defs, 28, &[array, u, length]);
+        op(&mut e.defs, 28, &[array, e.types[&unit], length]);
         let pointer = e.id();
         op(&mut e.defs, 32, &[pointer, 7, array]);
         let variable = e.id();
@@ -1694,7 +1644,7 @@ pub fn emit_pass(
         e.private_words.extend(span.clone());
         e.private_arrays.push((span, variable));
     }
-    for (slot, s) in stage.locals.iter().enumerate() {
+    for (slot, s) in stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)).enumerate() {
         if e.private_words.contains(&slot) {
             continue;
         }
@@ -1706,14 +1656,6 @@ pub fn emit_pass(
     if ranks {
         temporary = e.id();
         e.emit(59, &[e.pointers[&shared_scalar], temporary, 7]);
-    }
-    for (span, variable) in e.private_arrays.clone() {
-        for slot in span.clone() {
-            let at = e.constant(Scalar::U32, (slot - span.start) as u32);
-            let pointer = e.id();
-            e.emit(65, &[e.pointers[&Scalar::U32], pointer, variable, at]);
-            e.locals[slot] = pointer;
-        }
     }
     let gid = e.id();
     e.emit(61, &[v3, gid, global]);
@@ -2008,7 +1950,7 @@ pub fn emit_pass(
             e.emit(250, &[active, execute, end]);
             e.emit(248, &[execute]);
             if stage.selection.is_some() {
-                let at = e.address_scalar(program.buffers.len(), e.index, 1, 0);
+                let at = e.address_scalar(program.buffers.len(), e.index, 4, 0);
                 let original = e.id();
                 e.emit(61, &[u, original, at, 2, 4]);
                 e.index = original;

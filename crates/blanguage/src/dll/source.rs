@@ -104,7 +104,11 @@ variants!(Scalar {
     Bool,
     U64,
     I64,
-    F64
+    F64,
+    U8,
+    I8,
+    U16,
+    I16
 });
 record!(Ty {
     name,
@@ -208,7 +212,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query, float64,
+    ray_query, float64, integer8, integer16,
     sorting,
     maximal_reconvergence,
     texture_indexing,
@@ -367,13 +371,7 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
         for uniform in &program.uniforms {
             for (scalar, _) in &uniform.ty.components {
                 let name = format!("value_{}", words.len());
-                let ty = match scalar {
-                    Scalar::F32 => "f32", Scalar::F64 => "f64",
-                    Scalar::I32 => "i32",
-                    Scalar::U64 => "u64",
-                    Scalar::I64 => "i64",
-                    _ => "u32",
-                };
+                let ty = if *scalar == Scalar::Bool { "u32" } else { scalar.name() };
                 params.push(format!("{name}:{ty}"));
                 let bits = match scalar {
                     Scalar::F32 => format!("u64::from({name}.to_bits())"), Scalar::F64 => format!("{name}.to_bits()"),
@@ -382,6 +380,9 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
                     Scalar::U32 => format!("u64::from({name})"),
                     Scalar::U64 => name,
                     Scalar::I64 => format!("{name} as u64"),
+                    Scalar::U8 | Scalar::U16 => format!("u64::from({name})"),
+                    Scalar::I8 => format!("u64::from({name} as u8)"),
+                    Scalar::I16 => format!("u64::from({name} as u16)"),
                 };
                 words.push(format!(
                     "UniformValue{{kind:{},bits:{bits}}}",

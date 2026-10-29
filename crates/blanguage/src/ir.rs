@@ -1,5 +1,5 @@
 use crate::ast::{Access, Target};
-use std::num::NonZeroU64;
+use std::{collections::BTreeMap, num::NonZeroU64};
 mod external;
 pub use external::{
     Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody,
@@ -27,6 +27,10 @@ pub enum Scalar {
     U64,
     I64,
     F64,
+    U8,
+    I8,
+    U16,
+    I16,
 }
 impl Scalar {
     pub const fn name(self) -> &'static str {
@@ -38,10 +42,16 @@ impl Scalar {
             Self::Bool => "bool",
             Self::U64 => "u64",
             Self::I64 => "i64",
+            Self::U8 => "u8",
+            Self::I8 => "i8",
+            Self::U16 => "u16",
+            Self::I16 => "i16",
         }
     }
     pub const fn size(self) -> u32 {
         match self {
+            Self::U8 | Self::I8 => 1,
+            Self::U16 | Self::I16 => 2,
             Self::F32 | Self::U32 | Self::I32 | Self::Bool => 4,
             Self::U64 | Self::I64 | Self::F64 => 8,
         }
@@ -50,10 +60,10 @@ impl Scalar {
         self.size()
     }
     pub const fn is_signed(self) -> bool {
-        matches!(self, Self::I32 | Self::I64)
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
     }
     pub const fn is_integer(self) -> bool {
-        matches!(self, Self::U32 | Self::I32 | Self::U64 | Self::I64)
+        !self.is_float() && !matches!(self, Self::Bool)
     }
     pub const fn is_float(self) -> bool {
         matches!(self, Self::F32 | Self::F64)
@@ -68,10 +78,11 @@ impl Scalar {
         if self.is_signed() { 1 << (self.bit_width() - 1) } else { 0 }
     }
     pub const fn truncate(self, bits: Bits) -> Bits {
-        if self.size() == 4 { bits & u32::MAX as Bits } else { bits }
+        bits & (Bits::MAX >> (64 - self.bit_width()))
     }
     pub const fn signed(self, bits: Bits) -> i64 {
-        if self.size() == 4 { bits as u32 as i32 as i64 } else { bits as i64 }
+        let shift = 64 - self.bit_width();
+        ((bits << shift) as i64) >> shift
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,19 +266,13 @@ impl Ty {
             return Self::scalar(s);
         }
         Self {
-            name: format!(
-                "{}{}",
-                match s {
-                    Scalar::F32 => "float",
-                    Scalar::F64 => "f64x",
-                    Scalar::U32 => "uint",
-                    Scalar::I32 => "int",
-                    Scalar::Bool => "bool",
-                    Scalar::U64 => "u64x",
-                    Scalar::I64 => "i64x",
-                },
-                n
-            ),
+            name: match s {
+                Scalar::F32 => format!("float{n}"),
+                Scalar::U32 => format!("uint{n}"),
+                Scalar::I32 => format!("int{n}"),
+                Scalar::Bool => format!("bool{n}"),
+                _ => format!("{}x{n}", s.name()),
+            },
             arguments: Vec::new(),
             values: Vec::new(),
             size: n as u32 * s.size(),
@@ -324,6 +329,10 @@ impl Ty {
             "bool" => Self::scalar(Scalar::Bool),
             "u64" => Self::scalar(Scalar::U64),
             "i64" => Self::scalar(Scalar::I64),
+            "u8" => Self::scalar(Scalar::U8),
+            "i8" => Self::scalar(Scalar::I8),
+            "u16" => Self::scalar(Scalar::U16),
+            "i16" => Self::scalar(Scalar::I16),
             "handle" => {
                 let mut ty = Self::vector(Scalar::U32, 2);
                 ty.name = "handle".into();
@@ -976,7 +985,7 @@ impl Scan {
     pub fn needs_root_add(&self, program: &dyn ProgramInterface) -> bool {
         self.head_word.is_some()
             || self.values.target_word != 0
-            || program.buffers()[self.values.target].stride != self.ty.components.len() as u32 * 4
+            || program.buffers()[self.values.target].stride != self.ty.size.div_ceil(4) * 4
     }
 }
 #[derive(Clone, Debug)]
@@ -1060,7 +1069,8 @@ pub struct Stage {
     pub operation: Operation,
     pub boundary_before: bool,
     pub registers: Vec<Scalar>,
-    pub locals: Vec<Scalar>,
+    // Key is the first logical component after this declaration; padding has no slot.
+    pub locals: BTreeMap<usize, Ty>,
     pub code: Vec<Inst>,
     pub reads: Vec<usize>,
     pub writes: Vec<usize>,
@@ -1446,20 +1456,21 @@ impl Stage {
                         ..
                     }) => {
                         words.extend(
-                            (0..stage.tiles[*tile].ty.size / 4)
-                                .map(|w| stage.shared_word(*tile, w)),
+                            stage.tiles[*tile].ty.components.iter().flat_map(|(scalar, byte)|
+                                (0..scalar.size().div_ceil(4)).map(move |part|
+                                    stage.shared_word(*tile, *byte + part * 4))),
                         );
                     }
                     Inst::TileLoad { dst, tile, word, .. } => {
-                        words.extend((0..stage.registers[*dst].size()/4)
-                            .map(|part| stage.shared_word(*tile, *word + part)));
+                        words.extend((0..stage.registers[*dst].size().div_ceil(4))
+                            .map(|part| stage.shared_word(*tile, *word + part * 4)));
                     }
                     Inst::TileCollective(c) => {
                         words.extend(
                             c.results
                                 .iter()
-                                .flat_map(|(word, result)| (0..stage.registers[*result].size()/4)
-                                    .map(move |part| stage.shared_word(c.tile, *word + part))),
+                                .flat_map(|(word, result)| (0..stage.registers[*result].size().div_ceil(4))
+                                    .map(move |part| stage.shared_word(c.tile, *word + part * 4))),
                         );
                     }
                     Inst::Scope(body) => visit(stage, body, words),
@@ -1484,7 +1495,7 @@ impl Stage {
     fn requires_subgroup_extended_types(&self) -> bool {
         fn visit(code: &[Inst], registers: &[Scalar]) -> bool {
             code.iter().any(|inst| match inst {
-                Inst::Subgroup { dst, .. } => registers[*dst].size() == 8,
+                Inst::Subgroup { dst, .. } => registers[*dst].size() != 4,
                 Inst::Scope(body) => visit(body, registers),
                 Inst::If { yes, no, .. } => visit(yes, registers) || visit(no, registers),
                 Inst::Loop { condition, body, .. } => visit(condition, registers) || visit(body, registers),

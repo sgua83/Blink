@@ -1,17 +1,35 @@
 //! 固定数组按值布局；动态下标由范围事实证明，直接生成地址访问。
 use super::*;
 impl Place {
+    pub(super) fn read_only(self) -> Self {
+        match self {
+            Self::Local(ty, slots, storage) => Self::ReadOnlyLocal(ty, slots, storage),
+            Self::Indexed { ty, initialization, base, offset, words } => Self::Indexed {
+                ty, initialization, base: Box::new((*base).read_only()), offset, words,
+            },
+            mut place => {
+                match &mut place {
+                    Self::Reference { writable, .. } | Self::Element { writable, .. }
+                    | Self::ApplicationElement { writable, .. } => *writable = false,
+                    _ => {}
+                }
+                place
+            }
+        }
+    }
     pub(super) fn project(self, ty: Ty, components: &[usize]) -> Self {
         match self {
             Self::Reference {
                 address,
                 scope,
                 words,
+                writable,
                 ..
             } => Self::Reference {
                 ty,
                 address,
                 scope,
+                writable,
                 words: components.iter().map(|i| words[*i]).collect(),
             },
             Self::ApplicationElement {
@@ -110,21 +128,10 @@ impl Place {
 }
 impl Builder<'_> {
     pub(super) fn local_slots(&mut self, ty: &Ty) -> (Vec<usize>, std::ops::Range<usize>) {
-        let base = self.locals.len();
-        self.locals.resize(
-            base + ir::align_up(ty.size, ty.align) as usize / 4,
-            Scalar::U32,
-        );
-        let slots = ty
-            .components
-            .iter()
-            .map(|(s, at)| {
-                let slot = base + *at as usize / 4;
-                self.locals[slot] = *s;
-                slot
-            })
-            .collect();
-        (slots, base..self.locals.len())
+        let base = self.locals.last_key_value().map_or(0, |(end, _)| *end);
+        let end = base + ty.components.len();
+        if end != base { self.locals.insert(end, ty.clone()); }
+        ((base..end).collect(), base..end)
     }
     pub(super) fn materialize_array_bindings(&mut self) {
         let values: Vec<_> = self
@@ -141,29 +148,21 @@ impl Builder<'_> {
             })
             .collect();
         for (name, value) in values {
-            let proof = bounds::Proof::capture(&value);
-            let uniform = value.uniform;
-            let place = self.materialize_array(value);
-            self.env.insert(
-                name,
-                Binding::Owned(OwnedBinding {
-                    place,
-                    proof,
-                    uniform,
-                    initialization: None,
-                }),
-            );
+            let owner = self.materialize_array(value);
+            self.env.insert(name, Binding::Owned(owner));
         }
     }
 
-    pub(super) fn materialize_array(&mut self, value: Value) -> Place {
+    pub(super) fn materialize_array(&mut self, value: Value) -> OwnedBinding {
+        let proof = bounds::Proof::capture(&value);
+        let uniform = value.uniform;
         let (slots, storage) = self.local_slots(&value.ty);
         for (slot, r) in slots.iter().zip(&value.regs) {
             self.code.push(Inst::StoreLocal(*slot, *r));
         }
         let place = Place::ReadOnlyLocal(value.ty, slots, storage);
         self.initialize(&place);
-        place
+        OwnedBinding { place, proof, uniform, initialization: None }
     }
     pub(super) fn array_place(&mut self, place: Place, expr: &Expr) -> Result<Option<Place>> {
         let held = matches!(place.storage(), Place::ApplicationElement { .. })
@@ -211,7 +210,7 @@ impl Builder<'_> {
         let array = value.ty.clone();
         let selected = ownership::ApplicationIndex::of(&index);
         let uniform = value.uniform && index.uniform;
-        let place = self.materialize_array(value);
+        let place = self.materialize_array(value).place;
         let place = self.array_index(place, index, expr.span)?;
         let mut result = self.read_place(&place, expr.span)?;
         result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
@@ -237,7 +236,7 @@ impl Builder<'_> {
             return Ok(place.project(element, &components));
         }
         let initialization = self.indexed_positions(&place, &index, element.components.len());
-        let stride = ir::align_up(element.size, element.align) / 4;
+        let stride = ir::align_up(element.size, element.align);
         let factor = self.constant(Scalar::U32, Bits::from(stride));
         let relative = self.binary("*", index, factor, span)?.regs[0];
         let (base, offset, first) = match place {
@@ -271,7 +270,7 @@ impl Builder<'_> {
         let words = element
             .components
             .iter()
-            .map(|(_, o)| first + o / 4)
+            .map(|(_, o)| first + o)
             .collect();
         Ok(Place::Indexed {
             ty: element,
@@ -361,13 +360,13 @@ impl Builder<'_> {
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
             let instruction = match &**base {
-                Place::Local(_, slots, ..) | Place::ReadOnlyLocal(_, slots, ..) => {
+                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
                     Inst::LoadLocalIndexed {
                         dst,
-                        base: slots[0],
-                        len: ir::align_up(base.ty().size, base.ty().align) as usize / 4,
+                        base: storage.start,
+                        len: storage.len(),
                         index: *offset,
-                        word: *word,
+                        word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
                     }
                 }
                 _ => Inst::LoadIndexed {
@@ -416,11 +415,11 @@ impl Builder<'_> {
         self.initialize(place);
         for (word, value) in words.iter().zip(value.regs) {
             let instruction = match &**base {
-                Place::Local(_, slots, ..) => Inst::StoreLocalIndexed {
-                    base: slots[0],
-                    len: ir::align_up(base.ty().size, base.ty().align) as usize / 4,
+                Place::Local(_, slots, storage) => Inst::StoreLocalIndexed {
+                    base: storage.start,
+                    len: storage.len(),
                     index: *offset,
-                    word: *word,
+                    word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
                     value,
                 },
                 Place::Reference { .. }

@@ -12,7 +12,7 @@ pub(super) enum Argument {
     OwnedReference{value:owned_values::OwnedValue,place:Place,owner:Option<String>},
     Tile(TileView),
     Atomic(Place),
-    Exclusive(Place),
+    Reference(OwnedBinding),
 }
 impl Argument {
     pub(super) fn resource(value:returns::Returned)->Self {
@@ -20,15 +20,15 @@ impl Argument {
     }
     fn overlaps(&self, other: &Self,env:&BTreeMap<String,Binding>) -> bool {
         let place=|argument:&Self|match argument {
-            Self::Exclusive(place)|Self::Atomic(place)=>Some(place.clone()),
+            Self::Reference(owner)=>Some(owner.place.clone()),Self::Atomic(place)=>Some(place.clone()),
             Self::OwnedValue(value)=>value.place(),
             Self::OwnedReference{place,..}=>Some(place.clone()),
-            Self::Scoped{owner,..}=>match env.get(owner){Some(Binding::OwnedValue(value))=>value.place(),_=>None},_=>None,
+            Self::Scoped{owner,..}=>match env.get(owner){Some(Binding::OwnedValue(value))=>value.place(),Some(Binding::Owned(value))=>Some(value.place.clone()),_=>None},_=>None,
         };
-        if matches!(self,Self::Exclusive(_)|Self::Atomic(_)|Self::OwnedReference{..})||matches!(other,Self::Exclusive(_)|Self::Atomic(_)|Self::OwnedReference{..}) {
+        if matches!(self,Self::Reference(_)|Self::Atomic(_)|Self::OwnedReference{..})||matches!(other,Self::Reference(_)|Self::Atomic(_)|Self::OwnedReference{..}) {
             if let(Some(a),Some(b))=(place(self),place(other)) && a.overlaps(&b){return true;}
         }
-        if let (Self::Exclusive(a) | Self::Atomic(a), Self::Exclusive(b) | Self::Atomic(b)) =
+        if let (Self::Reference(OwnedBinding{place:a,..}) | Self::Atomic(a), Self::Reference(OwnedBinding{place:b,..}) | Self::Atomic(b)) =
             (self, other)
         {
             return a.overlaps(b);
@@ -36,10 +36,10 @@ impl Argument {
         let handles = |arg: &Self| match arg {
             Self::BorrowedData(reference) => reference.sources.clone(),
             Self::ApplicationData(d) => vec![d.handle.identity()],
-            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.handle.identity()],returns::Returned::OwnedValue(value)=>value.handles(),_=>Vec::new()},
+            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.handle.identity()],returns::Returned::OwnedValue(value)=>value.handles(),returns::Returned::Value(v)=>v.proof.borrowed_views().into_iter().filter_map(|s|if let view::Source::Data(id)=s{Some(id)}else{None}).collect(),_=>Vec::new()},
             Self::OwnedValue(r) | Self::OwnedReference{value:r,..} => r.handles(),
             Self::Value(v) => v.proof.borrowed_views().into_iter().filter_map(|s| if let view::Source::Data(id)=s {Some(id)}else{None}).collect(),
-            Self::Exclusive(p) | Self::Atomic(p) => match p.storage() {
+            Self::Reference(OwnedBinding{place:p,..}) | Self::Atomic(p) => match p.storage() {
                 Place::ApplicationElement { sources, .. } => sources.clone(),
                 _ => Vec::new(),
             },
@@ -118,15 +118,7 @@ impl<'a> Builder<'a> {
         for (param, arg) in callee.function.params.iter().zip(args) {
             self.view_uses.before(arg.span);
             arguments.push(
-                if callee.function.external.is_some() && param.access == Access::Read {
-                    {
-                        let Some(place) = self.external_read_place(arg)? else {
-                            self.abandon_arguments(&held);
-                            return Ok(None);
-                        };
-                        Argument::Exclusive(place)
-                    }
-                } else if param.ty.is_acceleration() {
+                if param.ty.is_acceleration() {
                     let ExprKind::Name(name) = &arg.kind else {
                         return self.fail(arg.span, "B183", "acceleration 借用需要已有资源名称");
                     };
@@ -169,12 +161,6 @@ impl<'a> Builder<'a> {
                     }
                 } else if param.ty.tile {
                     Argument::Tile(self.tile_view(arg)?)
-                } else if param.access == Access::Read {
-                    let Some((value,owner))=self.read_owned_aggregate(arg)? else {
-                        self.abandon_arguments(&held);
-                        return Ok(None);
-                    };
-                    match owner {Some(owner)=>Argument::Scoped{value:returns::Returned::OwnedValue(value),owner},None=>Argument::OwnedValue(value)}
                 } else if param.access == Access::Atomic {
                     {
                         let Some(place) = self.atomic_place(arg)? else {
@@ -199,24 +185,20 @@ impl<'a> Builder<'a> {
                         } else {
                             None
                         };
-                    let returned = self.evaluate_returned(arg, expected.as_ref())?;
+                    let argument=if param.access==Access::Read {self.read_argument(arg,expected.as_ref())?}
+                        else {self.evaluate_returned(arg,expected.as_ref())?.filter(|value|!matches!(value,returns::Returned::Unit)).map(Argument::resource)};
                     if !self.flow.continues() {
                         self.abandon_arguments(&held);
                         return Ok(None);
                     }
-                    match returned {
-                        Some(returns::Returned::Value(v)) => Argument::Value(*v),
-                        Some(returns::Returned::OwnedValue(v)) => Argument::OwnedValue(v),
-                        Some(returns::Returned::Dataset(v)) => Argument::ApplicationData(v),
-                        _ => return self.fail(arg.span, "B228", "函数实参需要值或拥有资源"),
-                    }
+                    match argument {Some(argument)=>argument,None=>return self.fail(arg.span,"B228","函数实参需要值或拥有资源")}
                 },
             );
             if !self.flow.continues() {
                 self.abandon_arguments(&held);
                 return Ok(None);
             }
-            if let Some(name) = self.hold_argument(arguments.last().unwrap(), param.access) {
+            if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), param.access) {
                 held.push((arguments.len() - 1, name));
             }
         }
@@ -227,6 +209,7 @@ impl<'a> Builder<'a> {
         let transferred=arguments.iter().filter_map(|argument|if let Argument::OwnedReference{place,..}=argument{Some(place.clone())}else{None}).collect::<Vec<_>>();
         let mut retained=view::Borrow::default();
         for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(name,binding,&transferred));}}
+        for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
         for(param,argument)in callee.function.params.iter().zip(&arguments){if param.access==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
             for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
@@ -238,12 +221,12 @@ impl<'a> Builder<'a> {
                 if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.handle.identity(),span)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
-                if param.access.writes() { self.require_view_unborrowed(&reference.sources, span)?; }
+                if param.access.writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),span})?; }
                 for source in &reference.sources {
                     self.application_handle_available(*source, span)?;
                 }
             }
-            if let Argument::Exclusive(place) | Argument::Atomic(place) = argument
+            if let Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) = argument
                 && let Place::ApplicationElement { sources, .. } = place.storage()
             {
                 for source in sources {
@@ -256,14 +239,14 @@ impl<'a> Builder<'a> {
                 {
                     Some(data.handle.identity())
                 }
-                Argument::Exclusive(place) | Argument::Atomic(place) => match place.storage() {
+                Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) => match place.storage() {
                     Place::ApplicationElement { identity, .. } => Some(*identity),
                     _ => None,
                 },
                 _ => None,
             };
             if let Some(handle) = handle {
-                if param.access.writes() { self.require_view_unborrowed(&[handle], span)?; }
+                if param.access.writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[handle]),borrow:retained.clone(),span})?; }
                 self.application_handle_available(handle, span)?;
             }
         }
@@ -421,7 +404,10 @@ impl<'a> Builder<'a> {
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
         let mut data_access = Vec::new();
+        let mut held = Vec::new();
         for (parameter,(param, arg)) in callee.function.params.iter().zip(args).enumerate() {
+            let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
+            let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
                     return self.fail(span, "B183", "read acceleration 参数需要加速结构资源");
@@ -479,12 +465,15 @@ impl<'a> Builder<'a> {
                     self.require_same(&ty, place.ty(), span)?;
                     Binding::AtomicBorrow(place)
                 }
-                (false, false, Argument::Exclusive(place))
-                    if matches!(param.access, Access::InOut | Access::Write) =>
+                (false, false, Argument::Reference(mut owner))
+                    if matches!(param.access, Access::Read | Access::InOut | Access::Write) =>
                 {
-                    self.require_same(&ty, place.ty(), span)?;
-                    borrowed.push((parameter,param.access, place.clone()));
-                    Binding::Owned(if param.access == Access::Write {
+                    self.require_same(&ty, owner.place.ty(), span)?;
+                    let place=owner.place.clone();
+                    if param.access.writes() { borrowed.push((parameter,param.access, place.clone())); }
+                    Binding::Owned(if param.access == Access::Read {
+                        owner.place=owner.place.read_only();owner
+                    } else if param.access == Access::Write {
                         self.output_scopes += 1;
                         let initialization = Some(
                             (0..place.ty().components.len())
@@ -498,7 +487,7 @@ impl<'a> Builder<'a> {
                             uniform: false,
                         }
                     } else {
-                        self.borrow_owned(place)
+                        owner
                     })
                 }
                 (false, true, Argument::Tile(view)) => {
@@ -601,6 +590,7 @@ impl<'a> Builder<'a> {
         self.loop_depth = old_loop;
         self.iterators = old_iterators;
         for (binding, access) in data_access { self.view_access.insert(binding, access); }
+        for owner in held { self.finish_scoped_argument(&owner,span)?; }
         Ok(result)
     }
 }

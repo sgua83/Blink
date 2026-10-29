@@ -55,7 +55,7 @@ pub(super) fn compile(
         keys.extend(
             ty.components
                 .iter()
-                .map(|&(_, offset)| (word + offset / 4, key, order)),
+                .map(|&(_, offset)| (word + offset, key, order)),
         );
     }
     let output = args.last().unwrap();
@@ -103,7 +103,7 @@ pub(super) fn compile(
         }),
         boundary_before: true,
         registers: Vec::new(),
-        locals: Vec::new(),
+        locals: Default::default(),
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target],

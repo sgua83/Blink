@@ -53,11 +53,11 @@ pub(super) fn compile(
             .source
             .fail(args[2].span, "B189", "compact 输入／输出的记录类型必须相同");
     }
-    if program.buffers[count].count != Some(1) || program.buffers[count].ty.components.len() != 1 {
+    if program.buffers[count].count != Some(1) {
         return d.source.fail(
             args[3].span,
             "B171",
-            "compact 计数输出必须为形状 1、单 u32 字段",
+            "compact 计数输出必须为形状 1 的 u32 计数字段",
         );
     }
     if let (Some(a), Some(b)) = (program.buffers[source].count, program.buffers[flags].count) {
@@ -103,7 +103,7 @@ pub(super) fn compile(
         }),
         boundary_before: true,
         registers: Vec::new(),
-        locals: Vec::new(),
+        locals: Default::default(),
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target, count],

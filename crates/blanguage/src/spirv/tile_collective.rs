@@ -28,7 +28,7 @@ impl Emitter<'_> {
                     base_word,
                     scalar,
                     operator: collective.op.operator(),
-                    };base_word+=padded*(scalar.size()/4);tree
+                    };base_word+=padded*scalar.size().div_ceil(4);tree
                 })
                 .collect();
             for ((word, _), tree) in results.iter().zip(&trees) {
@@ -42,9 +42,7 @@ impl Emitter<'_> {
                 self.emit(247, &[read_end, 0]);
                 self.emit(250, &[active, read, read_end]);
                 self.emit(248, &[read]);
-                let source:Vec<_>=(0..tree.scalar.size()/4).map(|part|self.tile_word_address(
-                    self.stage.shared_word(collective.tile,*word+part),self.tile_lane)).collect();
-                let value = self.load_raw(tree.scalar,&source,false);
+                let value = self.tile_read(tree.scalar, collective.tile, self.tile_lane, *word, None);
                 self.emit(249, &[read_end]);
                 self.emit(248, &[read_end]);
                 let input = self.id();
@@ -100,8 +98,8 @@ impl Emitter<'_> {
             };
             for ((_, result), tree) in results.iter().zip(&trees) {
                 let raw = self.tree_load(*tree, final_index);
-                let words = self.split_words(tree.scalar,raw);
-                self.from_words(*result,&words);
+                let words = self.split_words(tree.scalar,raw, Scalar::U32);
+                self.from_words(*result,&words, Scalar::U32);
             }
             // 各 lane 已取得本批所有分量，后续集合才可重用同一工作区。
             self.tile_barrier();

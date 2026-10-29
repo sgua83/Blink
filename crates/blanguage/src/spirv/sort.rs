@@ -37,12 +37,12 @@ impl Emitter<'_> {
             let original = if first {
                 e.index
             } else {
-                e.sort_load(s.target, e.index, 2, 1)
+                e.sort_load(s.target, e.index, 8, 4)
             };
             let key = e.sort_load(
                 s.source,
                 original,
-                e.program.buffers[s.source].stride / 4,
+                e.program.buffers[s.source].stride,
                 s.keys[key_index].0,
             );
             let key_type = s.keys[key_index].1;
@@ -68,13 +68,13 @@ impl Emitter<'_> {
             } else {
                 key
             };
-            e.sort_store(s.target, e.index, 2, 0, key);
-            e.sort_store(s.target, e.index, 2, 1, original);
+            e.sort_store(s.target, e.index, 8, 0, key);
+            e.sort_store(s.target, e.index, 8, 4, original);
         });
     }
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {
         self.sort_when(active, |e| {
-            let original = e.sort_load(e.program.buffers.len(), e.index, 2, 1);
+            let original = e.sort_load(e.program.buffers.len(), e.index, 8, 4);
             e.copy_record(s.source, original, s.target, e.index);
         });
     }
@@ -119,7 +119,7 @@ impl Emitter<'_> {
         self.emit(176, &[b, active, self.index, count]);
         self.emit(62, &[temporary, zero]);
         self.sort_when(active, |e| {
-            let key = e.sort_load(s.source, e.index, 2, 0);
+            let key = e.sort_load(s.source, e.index, 8, 0);
             e.emit(62, &[temporary, key]);
         });
         let key = self.id();
@@ -184,7 +184,7 @@ impl Emitter<'_> {
                 let total = e.sort_binary(128, x, y);
                 let row = e.sort_binary(132, local, nonzero);
                 let at = e.sort_binary(128, row, group);
-                e.sort_store(e.program.buffers.len(), at, 1, 0, total);
+                e.sort_store(e.program.buffers.len(), at, 4, 0, total);
             });
         } else {
             self.sort_when(active, |e| {
@@ -198,11 +198,11 @@ impl Emitter<'_> {
                 let own_rank = e.sort_binary(128, rank, previous);
                 let row = e.sort_binary(132, digit, nonzero);
                 let at = e.sort_binary(128, row, group);
-                let offset = e.sort_load(e.program.buffers.len(), at, 1, 0);
+                let offset = e.sort_load(e.program.buffers.len(), at, 4, 0);
                 let target = e.sort_binary(128, offset, own_rank);
-                let original = e.sort_load(s.source, e.index, 2, 1);
-                e.sort_store(s.target, target, 2, 0, key);
-                e.sort_store(s.target, target, 2, 1, original);
+                let original = e.sort_load(s.source, e.index, 8, 4);
+                e.sort_store(s.target, target, 8, 0, key);
+                e.sort_store(s.target, target, 8, 4, original);
             });
         }
     }

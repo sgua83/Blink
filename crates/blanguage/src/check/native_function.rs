@@ -215,7 +215,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     builder.view_model.input_width=inputs.len();
     let mut bindings=inputs.iter().enumerate().map(|(index,reg)|(ValueIdentity::Register(*reg),bounds::Proof::default().with_identity(ValueIdentity::Register(index)))).collect::<BTreeMap<_,_>>();
     for(parameter,p)in builder.definition.function.params.iter().enumerate(){
-        if p.access==Access::InOut && let Some(place)=builder.env.get(&p.name).and_then(Binding::stored_place){
+        if matches!(p.access,Access::Read|Access::InOut) && let Some(place)=builder.env.get(&p.name).and_then(Binding::stored_place){
             for component in 0..place.ty().components.len(){let id=ValueIdentity::ParameterContent(parameter,component);bindings.insert(id,bounds::Proof::default().with_identity(id));}
         }
         if let Some(Binding::OwnedValue(value))=builder.env.get(&p.name){for resource in 0..view::resource_paths(&value.value.ty).len(){let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Data(id)])));}}
@@ -317,6 +317,7 @@ impl Builder<'_> {
                 Argument::Scoped { value, owner } => {held.push(owner);Argument::resource(value)}
                 other => other,
             };
+            let arg=match arg {Argument::Value(value) if p.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
             match arg {
                 Argument::Value(mut value) if p.access == Access::Value && !p.ty.dataset => {
                     self.require_same(&ty, &value.ty, span)?;
@@ -342,7 +343,8 @@ impl Builder<'_> {
                     }else{self.drop_returned(Returned::OwnedValue(value.clone()),&view::Borrow::default(),span)?;}
                     env.insert(p.name.clone(),Binding::OwnedValue(value));written.push((index,place));
                 }
-                Argument::Exclusive(place) if matches!(p.access, Access::Write | Access::InOut) => {
+                Argument::Reference(owner) if matches!(p.access, Access::Read | Access::Write | Access::InOut) => {
+                    let place=owner.place.clone();
                     self.require_same(&ty, place.ty(), span)?;
                     for (part, address) in self.native_references(&place, p.access, span)? {
                         arguments.push(CallArgument::Reference {
@@ -353,18 +355,7 @@ impl Builder<'_> {
                         // Actual pointer inputs are private to the callee, never caller scalar facts.
                         actual.extend([None, None]);
                     }
-                    if p.access == Access::InOut {
-                        // Name unread entry contents without loading them. Unused virtual registers
-                        // are removed by value_code before native register allocation.
-                        let contents = ty
-                            .components
-                            .iter()
-                            .map(|(scalar, _)| self.reg(*scalar))
-                            .collect::<Vec<_>>();
-                        self.read_owned_proof(&place, &contents);
-                    }
-                    let owner = self.borrow_owned(place.clone());
-                    if p.access == Access::InOut {
+                    if p.access.reads() {
                         let width = ty.components.len();
                         for component in 0..width {
                             contents.insert(
@@ -374,7 +365,7 @@ impl Builder<'_> {
                         }
                     }
                     env.insert(p.name.clone(), Binding::Owned(owner));
-                    written.push((index, place));
+                    if p.access.writes() { written.push((index, place)); }
                 }
                 Argument::ApplicationData(mut data) if p.ty.dataset => {
                     residency::argument(&mut locations, index, &data);
@@ -1188,7 +1179,7 @@ fn build_domain(
     let name = crate::module::domain::symbol(&instance.name, target);
     let body = ValueCode {
         registers,
-        locals: Vec::new(),
+        locals: Default::default(),
         inputs: inputs.clone(),
         outputs: Vec::new(),
         code,

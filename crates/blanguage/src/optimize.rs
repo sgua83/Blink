@@ -26,10 +26,10 @@ pub fn optimize(program: &mut Program) {
                 && !cross_dependency(&stage, previous)
             {
                 let base = previous.registers.len();
-                let local = previous.locals.len();
+                let local = previous.locals.last_key_value().map_or(0, |(end, _)| *end);
                 map(&mut stage.code, &|r| r + base, &|s| s + local);
                 previous.registers.extend(stage.registers);
-                previous.locals.extend(stage.locals);
+                previous.locals.extend(stage.locals.into_iter().map(|(end, ty)| (end + local, ty)));
                 previous.code.extend(stage.code);
                 previous.reads.extend(stage.reads);
                 previous.writes.extend(stage.writes);
@@ -73,11 +73,11 @@ pub fn optimize(program: &mut Program) {
             stage.code.retain_mut(|inst| {
                 if let Inst::TilePublish(publication) = inst {
                     let before = publication.values.len();
-                    publication.values.retain(|(word, _)| {
-                        words.contains(&SharedWord::Published {
+                    publication.values.retain(|(word, value)| {
+                        (0..stage.registers[*value].size().div_ceil(4)).any(|part| words.contains(&SharedWord::Published {
                             tile: publication.tile,
-                            word: *word,
-                        })
+                            word: *word + part * 4,
+                        }))
                     });
                     changed |= before != publication.values.len();
                     if publication.values.is_empty() && !preserve_scope {
@@ -159,7 +159,7 @@ pub fn optimize(program: &mut Program) {
                 }
                 _ => {}
             });
-            reads.extend(stage.input_words().iter().map(|(source, _)| *source));
+            reads.extend(stage.input_words().keys().map(|(source, _)| *source));
             reads.extend(stage.prefix.map(|p| p.binding));
             reads.extend(stage.selection.map(|s| s.binding));
             stage.reads = reads.into_iter().collect();
@@ -177,9 +177,21 @@ pub fn optimize(program: &mut Program) {
             slots.extend(i.local_writes());
         });
         let registers: Vec<_> = used.iter().map(|r| stage.registers[*r]).collect();
-        let locals: Vec<_> = slots.iter().map(|s| stage.locals[*s]).collect();
+        let mut locals = BTreeMap::new();
+        let mut local = BTreeMap::new();
+        for (end, ty) in &stage.locals {
+            let begin = end - ty.components.len();
+            if slots.range(begin..*end).count() == ty.components.len() {
+                for slot in begin..*end { local.insert(slot, local.len()); }
+                locals.insert(local.len(), ty.clone());
+            } else {
+                for slot in slots.range(begin..*end) {
+                    local.insert(*slot, local.len());
+                    locals.insert(local.len(), Ty::scalar(ty.components[slot - begin].0));
+                }
+            }
+        }
         let regs: BTreeMap<_, _> = used.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-        let local: BTreeMap<_, _> = slots.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
         map(&mut stage.code, &|r| regs[&r], &|s| local[&s]);
         stage.registers = registers;
         stage.locals = locals;
@@ -211,9 +223,21 @@ pub(crate) fn value_code(value: &mut ValueCode) {
         slots.extend(i.local_writes());
     });
     let registers = used.iter().map(|r| value.registers[*r]).collect();
-    let locals = slots.iter().map(|s| value.locals[*s]).collect();
+    let mut locals = BTreeMap::new();
+    let mut local = BTreeMap::new();
+    for (end, ty) in &value.locals {
+        let begin = end - ty.components.len();
+        if slots.range(begin..*end).count() == ty.components.len() {
+            for slot in begin..*end { local.insert(slot, local.len()); }
+            locals.insert(local.len(), ty.clone());
+        } else {
+            for slot in slots.range(begin..*end) {
+                local.insert(*slot, local.len());
+                locals.insert(local.len(), Ty::scalar(ty.components[slot - begin].0));
+            }
+        }
+    }
     let regs: BTreeMap<_, _> = used.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-    let local: BTreeMap<_, _> = slots.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
     map(&mut value.code, &|r| regs[&r], &|s| local[&s]);
     for r in value.inputs.iter_mut().chain(&mut value.outputs) {
         *r = regs[r];

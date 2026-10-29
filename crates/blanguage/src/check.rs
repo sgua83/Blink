@@ -182,13 +182,13 @@ struct CheckedTile {
 #[derive(Clone, PartialEq, Eq)]
 enum ReferenceAddress {
     Contiguous([Reg; 2]),
-    Components(Vec<[Reg; 2]>),
+    Components(BTreeMap<u32, [Reg; 2]>),
 }
 impl ReferenceAddress {
     fn component(&self, word: u32) -> ([Reg; 2], u32) {
         match self {
             Self::Contiguous(address) => (*address, word),
-            Self::Components(addresses) => (addresses[word as usize], 0),
+            Self::Components(addresses) => (addresses[&word], 0),
         }
     }
 }
@@ -199,6 +199,7 @@ enum Place {
         address: ReferenceAddress,
         scope: usize,
         words: Vec<u32>,
+        writable: bool,
     },
     ApplicationElement {
         ty: Ty,
@@ -566,7 +567,7 @@ fn expand_stages(
                 }
                 let element = if matches!(domain_access, Access::InOut | Access::Write) {
                     let ty = program.buffers[*domain].ty.clone();
-                    let words = ty.components.iter().map(|x| x.1 / 4).collect();
+                    let words = ty.components.iter().map(|x| x.1).collect();
                     Binding::Owned(OwnedBinding {
                         place: Place::Element {
                             ty,
@@ -594,7 +595,7 @@ fn expand_stages(
                                 .ty
                                 .components
                                 .iter()
-                                .map(|(_, offset)| Position::Element(*binding, offset / 4)),
+                                .map(|(_, offset)| Position::Element(*binding, *offset)),
                         );
                     }
                 }
@@ -635,7 +636,7 @@ fn expand_stages(
                     for (_, offset) in &program.buffers[binding].ty.components {
                         if !b
                             .initialized
-                            .contains(&Position::Element(binding, offset / 4))
+                            .contains(&Position::Element(binding, *offset))
                         {
                             return d.source.fail(
                                 statement.span,
@@ -1085,7 +1086,7 @@ fn collective_value_field(
     let Some((offset, ty)) = program.buffers[*binding].ty.field(&fields.join(".")) else {
         return d.source.fail(expr.span, "B174", "未知集合运算字段");
     };
-    Ok((*binding, offset / 4, *access, ty.clone()))
+    Ok((*binding, offset, *access, ty.clone()))
 }
 pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
     if d.function.external.is_some() {
@@ -1337,8 +1338,8 @@ fn function_parameters(
             b.bind_tile(&p.name, tile);
             continue;
         }
+        let ty=cooperative::parameter_type(world,p,d)?;
         if p.access==Access::Read {
-            let ty=cooperative::parameter_type(world,p,d)?;
             if ty.owns_resources() {
                 let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
                 inputs.extend(&regs);parameters.push(CallParameter::Value(ty.clone()));
@@ -1349,8 +1350,7 @@ fn function_parameters(
             }
         }
         if p.access != Access::Value {
-            if matches!(p.access, Access::InOut | Access::Write) {
-                let ty = cooperative::parameter_type(world, p, d)?;
+            if matches!(p.access, Access::Read | Access::InOut | Access::Write) {
                 let place = if b.application.is_some() {
                     let parts = native_function::reference_parameters(&ty);
                     let mut addresses = Vec::new();
@@ -1366,19 +1366,20 @@ fn function_parameters(
                     let address = if addresses.len() == 1 {
                         ReferenceAddress::Contiguous(addresses[0])
                     } else {
-                        ReferenceAddress::Components(addresses)
+                        ReferenceAddress::Components(ty.components.iter().map(|(_, offset)| *offset).zip(addresses).collect())
                     };
                     Place::Reference {
-                        words: ty.components.iter().map(|(_, offset)| offset / 4).collect(),
+                        words: ty.components.iter().map(|(_, offset)| *offset).collect(),
                         ty,
                         address,
                         scope: parameter_index,
+                        writable: p.access.writes(),
                     }
                 } else {
                     let (slots, storage) = b.local_slots(&ty);
                     Place::Local(ty, slots, storage)
                 };
-                if p.access == Access::InOut {
+                if p.access.reads() {
                     b.initialize(&place);
                 }
                 if place.ty().owns_resources(){
@@ -1392,7 +1393,7 @@ fn function_parameters(
                 b.env.insert(
                     p.name.clone(),
                     Binding::Owned(OwnedBinding {
-                        proof: if p.access == Access::InOut && b.application.is_some() {
+                        proof: if p.access.reads() && b.application.is_some() {
                             bounds::Proof::parameter_content(
                                 parameter_index,
                                 place.ty().components.len(),
@@ -1408,7 +1409,6 @@ fn function_parameters(
                 continue;
             }
             if p.access == Access::Atomic {
-                let ty = cooperative::parameter_type(world, p, d)?;
                 b.env.insert(
                     p.name.clone(),
                     Binding::AtomicBorrow(Place::AtomicParameter(ty)),
@@ -1421,7 +1421,6 @@ fn function_parameters(
                 "函数参数使用普通值、write／inout 独占位置、read dataset 或 atomic 借用",
             );
         }
-        let ty = cooperative::parameter_type(world, p, d)?;
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
         if b.application.is_some() {
             inputs.extend(&regs);
@@ -1569,7 +1568,7 @@ struct Builder<'a> {
     env: BTreeMap<String, Binding>,
     path: bounds::Clause,
     registers: Vec<Scalar>,
-    locals: Vec<Scalar>,
+    locals: BTreeMap<usize, Ty>,
     code: Vec<Inst>,
     global_index: Reg,
     reads: BTreeSet<usize>,
@@ -1621,7 +1620,7 @@ impl<'a> Builder<'a> {
             env: BTreeMap::new(),
             path: bounds::Clause::default(),
             registers: Vec::new(),
-            locals: Vec::new(),
+            locals: BTreeMap::new(),
             code: Vec::new(),
             global_index: usize::MAX,
             reads: BTreeSet::new(),
@@ -2879,12 +2878,10 @@ impl<'a> Builder<'a> {
         }
         let scalar = a.ty.components[0].0;
         let operation = match op.as_str() {
-            "-" => match scalar {
-                Scalar::F32 | Scalar::F64 => UnaryOp::FloatNegate,
-                Scalar::I32 | Scalar::I64 => UnaryOp::SignedNegate,
-                Scalar::U32 | Scalar::U64 => UnaryOp::UnsignedNegate,
-                Scalar::Bool => return self.fail(span, "B176", "bool 不能取负"),
-            },
+            "-" if scalar == Scalar::Bool => return self.fail(span, "B176", "bool 不能取负"),
+            "-" if scalar.is_float() => UnaryOp::FloatNegate,
+            "-" if scalar.is_signed() => UnaryOp::SignedNegate,
+            "-" => UnaryOp::UnsignedNegate,
             "!" => UnaryOp::LogicalNot,
             "~" if !scalar.is_float() => UnaryOp::BitNot,
             _ => return self.fail(span, "B177", "当前类型不支持该一元运算"),
@@ -3209,8 +3206,7 @@ impl<'a> Builder<'a> {
             _ => None,
         };
         let initial = self.application_initial_loop(body);
-        let slot = self.locals.len();
-        self.locals.push(Scalar::U32);
+        let slot = self.local_slots(&Ty::scalar(Scalar::U32)).0[0];
         self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
         let initialization = self.application_iteration_outputs(&begin, &limit, match &data {Some(CursorSource::ApplicationData(data))=>Some(&data.data),_=>None});
         self.for_loop(
@@ -3445,18 +3441,9 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
         if !self.mutable_names.contains(name) && value.ty.contains_arrays() {
-            let proof = bounds::Proof::capture(&value);
-            let uniform = value.uniform && self.control_uniform;
-            let place = self.materialize_array(value);
-            self.env.insert(
-                name.clone(),
-                Binding::Owned(OwnedBinding {
-                    place,
-                    proof,
-                    uniform,
-                    initialization: None,
-                }),
-            );
+            let mut owner = self.materialize_array(value);
+            owner.uniform &= self.control_uniform;
+            self.env.insert(name.clone(), Binding::Owned(owner));
             return Ok(());
         }
         if !self.mutable_names.contains(name) {
@@ -3750,7 +3737,7 @@ impl<'a> Builder<'a> {
             self.element_domains.insert(binding);
         }
         let ty = self.program.buffers[binding].ty.clone();
-        let words = ty.components.iter().map(|x| x.1 / 4).collect();
+        let words = ty.components.iter().map(|x| x.1).collect();
         Ok(Some(Place::Element {
             ty,
             binding,
@@ -3768,16 +3755,9 @@ impl<'a> Builder<'a> {
                 let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();self.env.insert(name.clone(),Binding::OwnedValue(owner));Ok(place)
             },
             Some(Binding::Value(value)) if value.ty.contains_arrays() => {
-                let place = self.materialize_array(value);
-                self.env.insert(
-                    name.clone(),
-                    Binding::Owned(OwnedBinding {
-                        place: place.clone(),
-                        proof: bounds::Proof::default(),
-                        uniform: false,
-                        initialization: None,
-                    }),
-                );
+                let owner = self.materialize_array(value);
+                let place = owner.place.clone();
+                self.env.insert(name.clone(), Binding::Owned(owner));
                 Ok(place)
             }
             Some(Binding::Element {
@@ -3786,7 +3766,7 @@ impl<'a> Builder<'a> {
                 writable,
             }) => {
                 let ty = self.program.buffers[binding].ty.clone();
-                let words = ty.components.iter().map(|x| x.1 / 4).collect();
+                let words = ty.components.iter().map(|x| x.1).collect();
                 Ok(Place::Element {
                     ty,
                     binding,
@@ -4027,7 +4007,7 @@ impl<'a> Builder<'a> {
                 };
                 self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
                 let ty = self.program.buffers[binding].ty.clone();
-                let words = ty.components.iter().map(|x| x.1 / 4).collect();
+                let words = ty.components.iter().map(|x| x.1).collect();
                 return self
                     .read_place(
                         &Place::Element {

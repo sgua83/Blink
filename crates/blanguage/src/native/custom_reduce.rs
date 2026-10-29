@@ -1,6 +1,5 @@
 //! 普通值 IR 直接成为范围累积与摘要合并机器码，不经宿主解释合并器。
 use super::*;
-use super::allocation::Location;
 use crate::ast::Access;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Pass {
@@ -68,7 +67,7 @@ fn segment_tail(
     index: Reg,
     length_slot: usize,
 ) {
-    let k = r.ty.size.div_ceil(4) as usize;
+    let fields = r.ty.components.len();
     let one = reg(stage, Scalar::U32);
     let next = reg(stage, Scalar::U32);
     let length = reg(stage, Scalar::U32);
@@ -87,8 +86,8 @@ fn segment_tail(
         a: next,
         b: length,
     });
-    let tail_slot = stage.locals.len();
-    stage.locals.push(Scalar::Bool);
+    let tail_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
+    stage.locals.insert(tail_slot + 1, Ty::scalar(Scalar::Bool));
     let is_last = reg(stage, Scalar::Bool);
     let next_head = reg(stage, Scalar::Bool);
     stage.code.push(Inst::If {
@@ -112,7 +111,7 @@ fn segment_tail(
     let segments = reg(stage, Scalar::U32);
     let target = reg(stage, Scalar::U32);
     let mut write = vec![
-        Inst::LoadLocal(segments, carry + k + 1),
+        Inst::LoadLocal(segments, carry + fields + 1),
         Inst::Binary {
             dst: target,
             op: BinaryOp::ISub,
@@ -120,13 +119,13 @@ fn segment_tail(
             b: one,
         },
     ];
-    for (scalar, offset) in &r.ty.components {
+    for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
         let value = reg(stage, *scalar);
-        write.push(Inst::LoadLocal(value, carry + (offset / 4) as usize));
+        write.push(Inst::LoadLocal(value, carry + field));
         write.push(Inst::Store {
             binding: r.fields.target,
             index: target,
-            word: r.fields.target_word + offset / 4,
+            word: r.fields.target_word + *offset,
             value,
         });
     }
@@ -166,6 +165,7 @@ pub(super) fn emit(
         !apply,
     );
     let k = r.ty.size.div_ceil(4) as usize;
+    let fields = r.ty.components.len();
     let summary = k + usize::from(head_word.is_some()) + usize::from(counted);
     let mut stage = kernel.stage;
     let mut program = program.clone();
@@ -187,16 +187,14 @@ pub(super) fn emit(
     }
     let mut combine = stage.code.split_off(kernel.project_end);
     let project = stage.code.split_off(kernel.initialize_end);
-    let carry = stage.locals.len();
-    stage.locals.resize(carry + k, Scalar::U32);
-    for (scalar, offset) in &r.ty.components {
-        stage.locals[carry + (offset / 4) as usize] = *scalar;
-    }
+    let carry = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
+    stage.locals.insert(carry + fields, r.ty.clone());
     if head_word.is_some() && !apply {
-        stage.locals.push(Scalar::Bool);
+        stage.locals.insert(carry + fields + 1, Ty::scalar(Scalar::Bool));
     }
+    let count_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
     if counted {
-        stage.locals.push(Scalar::U32);
+        stage.locals.insert(count_slot + 1, Ty::scalar(Scalar::U32));
     }
     if apply {
         stage.code.truncate(kernel.invariant_end);
@@ -207,39 +205,39 @@ pub(super) fn emit(
             .code
             .push(Inst::Constant(private_index, Scalar::U32, 0));
     }
-    let length_slot = stage.locals.len();
+    let length_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
     if finish {
-        stage.locals.push(Scalar::U32);
+        stage.locals.insert(length_slot + 1, Ty::scalar(Scalar::U32));
         let length = reg(&mut stage, Scalar::U32);
         stage.code.push(Inst::Load {
             dst: length,
             binding: private,
             index: private_index,
-            word: k as u32,
+            word: k as u32 * 4,
         });
         stage.code.push(Inst::StoreLocal(length_slot, length));
     }
     if apply || finish {
-        for (scalar, offset) in &r.ty.components {
+        for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
             let reg = stage.registers.len();
             stage.registers.push(*scalar);
             stage.code.push(Inst::Load {
                 dst: reg,
                 binding: private,
                 index: private_index,
-                word: offset / 4,
+                word: *offset,
             });
-            stage.code.push(Inst::StoreLocal(carry + (offset / 4) as usize, reg));
+            stage.code.push(Inst::StoreLocal(carry + field, reg));
         }
     } else {
         for (i, reg) in kernel.initial.iter().enumerate() {
-            stage.code.push(Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, *reg));
+            stage.code.push(Inst::StoreLocal(carry + i, *reg));
         }
         if history {
             let zero = stage.registers.len();
             stage.registers.push(Scalar::Bool);
             stage.code.push(Inst::Constant(zero, Scalar::Bool, 0));
-            stage.code.push(Inst::StoreLocal(carry + k, zero));
+            stage.code.push(Inst::StoreLocal(carry + fields, zero));
         }
     }
     if counted {
@@ -249,12 +247,12 @@ pub(super) fn emit(
                 dst: value,
                 binding: private,
                 index: private_index,
-                word: k as u32 + 1,
+                word: (k as u32 + 1) * 4,
             }
         } else {
             Inst::Constant(value, Scalar::U32, 0)
         });
-        stage.code.push(Inst::StoreLocal(carry + k + 1, value));
+        stage.code.push(Inst::StoreLocal(count_slot, value));
     }
     let initialize_end = stage.code.len();
     let index = stage.registers.len();
@@ -266,7 +264,7 @@ pub(super) fn emit(
             dst: raw,
             binding: r.fields.source,
             index,
-            word: if packed { k as u32 } else { word },
+            word: if packed { k as u32 * 4 } else { word },
         });
         let head = if counted && !packed {
             let zero = reg(&mut stage, Scalar::U32);
@@ -300,18 +298,18 @@ pub(super) fn emit(
                 .initial
                 .iter()
                 .enumerate()
-                .map(|(i, reg)| Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, *reg))
+                .map(|(i, reg)| Inst::StoreLocal(carry + i, *reg))
                 .collect();
             if history {
                 let flag = reg(&mut stage, Scalar::Bool);
                 reset.push(Inst::Constant(flag, Scalar::Bool, 1));
-                reset.push(Inst::StoreLocal(carry + k, flag));
+                reset.push(Inst::StoreLocal(carry + fields, flag));
             }
             if counted {
                 let before = reg(&mut stage, Scalar::U32);
                 let one = reg(&mut stage, Scalar::U32);
                 let after = reg(&mut stage, Scalar::U32);
-                reset.push(Inst::LoadLocal(before, carry + k + 1));
+                reset.push(Inst::LoadLocal(before, count_slot));
                 reset.push(Inst::Constant(one, Scalar::U32, 1));
                 reset.push(Inst::Binary {
                     dst: after,
@@ -319,7 +317,7 @@ pub(super) fn emit(
                     a: before,
                     b: one,
                 });
-                reset.push(Inst::StoreLocal(carry + k + 1, after));
+                reset.push(Inst::StoreLocal(count_slot, after));
             }
             stage.code.push(Inst::If {
                 condition: head,
@@ -330,7 +328,7 @@ pub(super) fn emit(
         head
     });
     for (i, reg) in kernel.left.iter().enumerate() {
-        stage.code.push(Inst::LoadLocal(*reg, carry + (r.ty.components[i].1 / 4) as usize));
+        stage.code.push(Inst::LoadLocal(*reg, carry + i));
     }
     for (i, reg) in kernel.source.iter().enumerate() {
         stage.code.push(Inst::Load {
@@ -342,11 +340,11 @@ pub(super) fn emit(
             },
             index,
             word: if packed {
-                r.ty.components[i].1 / 4
+                r.ty.components[i].1
             } else if apply {
-                r.fields.target_word + r.ty.components[i].1 / 4
+                r.fields.target_word + r.ty.components[i].1
             } else {
-                r.fields.source_word + r.source_ty.components[i].1 / 4
+                r.fields.source_word + r.source_ty.components[i].1
             },
         });
     }
@@ -356,7 +354,7 @@ pub(super) fn emit(
             dst: right,
             binding: r.fields.source,
             index,
-            word: k as u32 + 1,
+            word: (k as u32 + 1) * 4,
         });
         Some(right)
     } else {
@@ -369,9 +367,9 @@ pub(super) fn emit(
                 binding: r.fields.target,
                 index,
                 word: if packed {
-                    r.ty.components[i].1 / 4
+                    r.ty.components[i].1
                 } else {
-                    r.fields.target_word + r.ty.components[i].1 / 4
+                    r.fields.target_word + r.ty.components[i].1
                 },
                 value: *reg,
             });
@@ -379,11 +377,11 @@ pub(super) fn emit(
         if pass == Pass::ScanPrefix && head.is_some() {
             let flag = stage.registers.len();
             stage.registers.push(Scalar::Bool);
-            stage.code.push(Inst::LoadLocal(flag, carry + k));
+            stage.code.push(Inst::LoadLocal(flag, carry + fields));
             stage.code.push(Inst::Store {
                 binding: r.fields.target,
                 index,
-                word: k as u32,
+                word: k as u32 * 4,
                 value: flag,
             });
         }
@@ -391,17 +389,17 @@ pub(super) fn emit(
             let length = reg(&mut stage, Scalar::U32);
             let segments = reg(&mut stage, Scalar::U32);
             stage.code.push(Inst::Uniform(length, 0));
-            stage.code.push(Inst::LoadLocal(segments, carry + k + 1));
+            stage.code.push(Inst::LoadLocal(segments, count_slot));
             stage.code.push(Inst::Store {
                 binding: r.fields.target,
                 index,
-                word: k as u32,
+                word: k as u32 * 4,
                 value: length,
             });
             stage.code.push(Inst::Store {
                 binding: r.fields.target,
                 index,
-                word: k as u32 + 1,
+                word: (k as u32 + 1) * 4,
                 value: segments,
             });
         }
@@ -419,11 +417,11 @@ pub(super) fn emit(
             combine.push(Inst::Store {
                 binding: r.fields.target,
                 index,
-                word: r.fields.target_word + r.ty.components[i].1 / 4,
+                word: r.fields.target_word + r.ty.components[i].1,
                 value: bind(*reg),
             });
         } else {
-            combine.push(Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, bind(*reg)));
+            combine.push(Inst::StoreLocal(carry + i, bind(*reg)));
         }
     }
     if let Some(head) = head.filter(|_| prefix) {
@@ -431,12 +429,12 @@ pub(super) fn emit(
             .projected
             .iter()
             .enumerate()
-            .map(|(i, reg)| Inst::StoreLocal(carry + (r.ty.components[i].1 / 4) as usize, *reg))
+            .map(|(i, reg)| Inst::StoreLocal(carry + i, *reg))
             .collect();
         if history {
             let flag = reg(&mut stage, Scalar::Bool);
             reset.push(Inst::Constant(flag, Scalar::Bool, 1));
-            reset.push(Inst::StoreLocal(carry + k, flag));
+            reset.push(Inst::StoreLocal(carry + fields, flag));
         }
         stage.code.push(Inst::If {
             condition: head,
@@ -449,14 +447,14 @@ pub(super) fn emit(
     if let Some(right) = right_count {
         let before = reg(&mut stage, Scalar::U32);
         let after = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::LoadLocal(before, carry + k + 1));
+        stage.code.push(Inst::LoadLocal(before, count_slot));
         stage.code.push(Inst::Binary {
             dst: after,
             op: BinaryOp::IAdd,
             a: before,
             b: right,
         });
-        stage.code.push(Inst::StoreLocal(carry + k + 1, after));
+        stage.code.push(Inst::StoreLocal(count_slot, after));
     }
     if finish {
         segment_tail(&mut stage, r, head_word.unwrap(), carry, index, length_slot);
@@ -467,7 +465,7 @@ pub(super) fn emit(
         let zero = reg(&mut stage, Scalar::U32);
         let total = reg(&mut stage, Scalar::U32);
         stage.code.push(Inst::Constant(zero, Scalar::U32, 0));
-        stage.code.push(Inst::LoadLocal(total, carry + k + 1));
+        stage.code.push(Inst::LoadLocal(total, count_slot));
         stage.code.push(Inst::Store {
             binding: count.binding,
             index: zero,
@@ -486,12 +484,12 @@ pub(super) fn emit(
     let loop_end = stage.code.len();
     stage.code.extend(after_code);
     let mut live: std::collections::BTreeSet<_> =
-        r.ty.components.iter().map(|(_, offset)| PrivateSlot::Local(carry + (offset / 4) as usize)).collect();
+        (0..fields).map(|field| PrivateSlot::Local(carry + field)).collect();
     if history {
-        live.insert(PrivateSlot::Local(carry + k));
+        live.insert(PrivateSlot::Local(carry + fields));
     }
     if counted {
-        live.insert(PrivateSlot::Local(carry + k + 1));
+        live.insert(PrivateSlot::Local(count_slot));
     }
     if finish {
         live.insert(PrivateSlot::Local(length_slot));
@@ -549,13 +547,12 @@ pub(super) fn emit(
     ) {
         e.bytes(&[0x4c, 0x8b, 0xbc, 0x24]);
         e.u32(frame + 80);
-        for (scalar, offset) in &r.ty.components {
-            let value = e.allocation.location(PrivateSlot::Local(carry + (offset / 4) as usize));
-            e.copy_scalar(Location::Gpr(0), value, *scalar);
-            e.instruction(None, &[0x89], scalar.size() == 8, 0, Memory::new(15, *offset).into());
+        for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
+            let value = e.allocation.location(PrivateSlot::Local(carry + field));
+            e.write_value_address(value, Memory::new(15, *offset), scalar.size());
         }
         for i in k..summary {
-            let value = e.allocation.location(PrivateSlot::Local(carry + i));
+            let value = e.allocation.location(PrivateSlot::Local(carry + fields + i - k));
             e.write_memory(value, 15, i as u32 * 4);
         }
     }

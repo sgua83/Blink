@@ -81,11 +81,8 @@ impl Emitter<'_> {
             }
             SubgroupOp::Min | SubgroupOp::Max => {
                 let base = if op == SubgroupOp::Min { 353 } else { 356 };
-                let offset = match self.stage.registers[dst] {
-                    Scalar::I32 | Scalar::I64 => 0,
-                    Scalar::U32 | Scalar::U64 => 1,
-                    Scalar::F32 | Scalar::F64 | Scalar::Bool => 2,
-                };
+                let scalar = self.stage.registers[dst];
+                let offset = if scalar.is_signed() { 0 } else if scalar.is_integer() { 1 } else { 2 };
                 self.emit(
                     base + offset,
                     &[ty, result, scope, 0, self.value(value.unwrap())],

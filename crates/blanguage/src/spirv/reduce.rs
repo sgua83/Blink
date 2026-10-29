@@ -79,7 +79,7 @@ impl Emitter<'_> {
         let own: Vec<_> = trees.iter()
             .map(|tree| {
                 let at = self.tree_parts(*tree,local);
-                self.store_raw(tree.scalar,&at,identity,false);
+                self.store_raw(tree.scalar, Scalar::U32,&at,identity,false);
                 at
             })
             .collect();
@@ -89,14 +89,14 @@ impl Emitter<'_> {
         self.emit(250, &[active, run, merged]);
         self.emit(248, &[run]);
         for (component, at) in own.iter().enumerate() {
-            let offset=reduction.ty.components[component].1/4;
+            let offset=reduction.ty.components[component].1;
             let raw = self.load_raw_buffer(scalar,
                 r.source,
                 self.index,
                 if tail {
-                    words
+                    words * 4
                 } else {
-                    self.program.buffers[r.source].stride / 4
+                    self.program.buffers[r.source].stride
                 },
                 if tail {
                     offset
@@ -104,7 +104,7 @@ impl Emitter<'_> {
                     r.source_word + offset
                 },
             );
-            self.store_raw(scalar,at,raw,false);
+            self.store_raw(scalar, Scalar::U32,at,raw,false);
         }
         self.emit(249, &[merged]);
         self.emit(248, &[merged]);
@@ -130,7 +130,7 @@ impl Emitter<'_> {
                 None
             };
             for (component, at) in own.iter().enumerate() {
-                let a = self.load_raw(scalar,at,false);
+                let a = self.load_raw(scalar, Scalar::U32,at,false);
                 let bv = self.tree_load(trees[component],other);
                 let value = self.collective_pair(scalar, reduction.operator, a, bv);
                 let value = if let Some(valid) = valid {
@@ -140,7 +140,7 @@ impl Emitter<'_> {
                 } else {
                     value
                 };
-                self.store_raw(scalar,at,value,false);
+                self.store_raw(scalar, Scalar::U32,at,value,false);
             }
             self.emit(249, &[end]);
             self.emit(248, &[end]);
@@ -190,19 +190,28 @@ impl Emitter<'_> {
             self.emit(248, &[label]);
             for (component, at) in own.iter().enumerate() {
                 let (scalar,offset)=ty.components[component];
-                let value = self.load_raw(scalar,at,false);
+                let value = if scalar.size() < 4 {
+                    let mut raw = self.load_raw(Scalar::U32, Scalar::U32, at, false);
+                    if offset % 4 != 0 {
+                        let shift = self.constant(Scalar::U32, offset % 4 * 8);
+                        let shifted = self.id();
+                        self.emit(194, &[u, shifted, raw, shift]);
+                        raw = shifted;
+                    }
+                    self.join_words(scalar, &[raw], Scalar::U32)
+                } else { self.load_raw(scalar, Scalar::U32, at, false) };
                 self.store_raw_buffer(scalar,
                     r.target,
                     if final_pass { zero } else { group },
                     if final_pass {
-                        self.program.buffers[r.target].stride / 4
+                        self.program.buffers[r.target].stride
                     } else {
-                        words
+                        words * 4
                     },
                     if final_pass {
-                        r.target_word + offset / 4
+                        r.target_word + offset
                     } else {
-                        offset/4
+                        offset
                     },
                     value,
                 );

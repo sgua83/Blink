@@ -330,7 +330,7 @@ impl Builder<'_> {
     pub(super) fn view_element(view: &Value, index: Reg) -> Place {
         let ty = view.ty.view.as_deref().unwrap().clone();
         let stride = ir::align_up(ty.size, ty.align);
-        let words = ty.components.iter().map(|(_, offset)| offset / 4).collect();
+        let words = ty.components.iter().map(|(_, offset)| *offset).collect();
         Place::ViewElement {
             ty,
             address: [view.regs[0], view.regs[1]],
@@ -355,7 +355,7 @@ impl Builder<'_> {
             value
         };
         if view.ty.array.is_some() {
-            let place = self.materialize_array(view);
+            let place = self.materialize_array(view).place;
             return self.array_place(place, index);
         }
         self.view_value_place(view, index)

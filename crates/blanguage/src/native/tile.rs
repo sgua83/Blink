@@ -22,26 +22,39 @@ impl Emitter<'_> {
         self.bytes(&[0xf7, 0xf1, 0x89, 0xd0]);
         self.store(dst);
     }
-    pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32) {
-        self.load(index);
-        self.bytes(&[0x49, 0x89, 0xe7]);
-        self.offset_address(4);
-        if self.stage.registers[dst].size() == 8 {
+    pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32, offset: Option<Reg>) {
+        let scalar = self.stage.registers[dst];
+        let (memory, high) = if let Some(offset) = offset {
+            let source = IndexedSource::Tile { tile, index };
+            if scalar.size() < 4 {
+                self.indexed_base(&source);
+                self.load(offset);
+                let bias = match self.stage.tiles[tile].source { TileSource::Input { word, .. } => word % 4, TileSource::Published => 0 };
+                self.bytes(&[0x05]); self.u32(word + bias);
+                self.bytes(&[0x89, 0xc1, 0x83, 0xe1, 3, 0x83, 0xe0, 0xfc]);
+                self.scale_index(0, self.stage.workgroup_width());
+                self.bytes(&[0x48, 0x01, 0xc8, 0x49, 0x01, 0xc7]);
+                (Memory::new(15, 0), Memory::new(15, 0))
+            } else {
+                let memory = self.indexed_memory(&source, offset, word);
+                (memory, memory.offset(self.stage.workgroup_width()*4))
+            }
+        } else {
+            self.load(index);
+            self.bytes(&[0x49, 0x89, 0xe7]);
+            self.offset_address(4);
             let base = self.tile_storage_base();
-            let low = base + self.stage.word_offset(self.stage.shared_word(tile, word)) as u32;
-            let high = base + self.stage.word_offset(self.stage.shared_word(tile, word + 1)) as u32;
-            self.instruction(None, &[0x8b], false, 0, operands::Operand::memory(15, low));
-            self.instruction(None, &[0x8b], false, 1, operands::Operand::memory(15, high));
+            let bias = match self.stage.shared_word(tile, word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
+            let low = Memory::new(15, base + self.stage.word_offset(self.stage.shared_word(tile, word)) as u32 + bias);
+            let high = if scalar.size() == 8 { Memory::new(15, base + self.stage.word_offset(self.stage.shared_word(tile, word + 4)) as u32) } else { low };
+            (low, high)
+        };
+        if scalar.size() == 8 {
+            self.instruction(None, &[0x8b], false, 1, high.into());
+            self.instruction(None, &[0x8b], false, 0, memory.into());
             self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
             self.store(dst);
-            return;
-        }
-        self.read_scalar(
-            dst,
-            15,
-            self.tile_storage_base()
-                + self.stage.word_offset(self.stage.shared_word(tile, word)) as u32,
-        );
+        } else { self.read_scalar_address(dst, memory); }
     }
     pub(super) fn tile_input(&mut self) {
         let width = self.stage.workgroup_width();
@@ -54,7 +67,8 @@ impl Emitter<'_> {
         self.u32(width);
         self.bytes(&[0x39, 0xc8, 0x0f, 0x47, 0xc1, 0x89, 0x84, 0x24]);
         self.u32(self.tile_length_slot());
-        for (source, word) in self.stage.input_words() {
+        for ((source, word), fragments) in self.stage.input_words() {
+          for (byte, unit) in fragments {
             self.bytes(&[0x4d, 0x8b, 0x94, 0x24]);
             self.u32(source as u32 * 8);
             self.bytes(&[0x89, 0xd8]);
@@ -65,19 +79,23 @@ impl Emitter<'_> {
                     + self.stage.word_offset(SharedWord::Input {
                         binding: source,
                         word,
-                    }) as u32,
+                    }) as u32 + byte % 4,
             );
             self.bytes(&[0x8b, 0x8c, 0x24]);
             self.u32(self.tile_length_slot());
             let begin = self.code.len();
-            self.bytes(&[0x41, 0x8b, 0x82]);
-            self.u32(word * 4);
-            self.bytes(&[0x41, 0x89, 0x03]);
+            if unit.size() < 4 {
+                self.instruction(None, &[0x0f, 0xb6 + u8::from(unit.size() == 2)], false, 0, operands::Operand::memory(10, byte));
+            } else {
+                self.instruction(None, &[0x8b], false, 0, operands::Operand::memory(10, byte));
+            }
+            self.write_value_address(Location::Gpr(0), Memory::new(11, 0), unit.size());
             self.bytes(&[0x49, 0x81, 0xc2]);
             self.u32(self.program.buffers[source].stride);
             self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
             let again = self.jump(Some(0x85));
             self.patch(again, begin);
+          }
         }
         self.patch(skip, self.code.len());
     }
@@ -91,7 +109,7 @@ impl Emitter<'_> {
         self.tile_storage_base()
             + self.stage.tile_data_bytes() as u32
             + self.stage.tile_private_slots().range(..slot)
-                .map(|slot| self.stage.private_scalar(*slot).size()).sum::<u32>()
+                .map(|slot| self.stage.private_scalar(*slot).size().div_ceil(4) * 4).sum::<u32>()
                 * self.stage.workgroup_width()
     }
     fn tile_restore(&mut self, slots: &std::collections::BTreeSet<PrivateSlot>) {
@@ -123,21 +141,17 @@ impl Emitter<'_> {
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
         self.tile_lane_pointer();
+        let used = self.stage.storage_words();
         for (word, value) in &publication.values {
             self.load(*value);
-            self.bytes(&[0x41, 0x89, 0x82]);
-            self.u32(
-                self.tile_storage_base()
-                    + self.stage.word_offset(SharedWord::Published {
-                        tile: publication.tile,
-                        word: *word,
-                    }) as u32,
-            );
-            if self.stage.registers[*value].size() == 8 {
-                self.bytes(&[0x48, 0xc1, 0xe8, 32, 0x41, 0x89, 0x82]);
-                self.u32(self.tile_storage_base() + self.stage.word_offset(SharedWord::Published {
-                    tile: publication.tile, word: *word + 1,
-                }) as u32);
+            let scalar = self.stage.registers[*value];
+            for part in 0..scalar.size().div_ceil(4) {
+                if part != 0 { self.bytes(&[0x48, 0xc1, 0xe8, 32]); }
+                let shared = SharedWord::Published { tile: publication.tile, word: *word + part * 4 };
+                if used.contains(&shared) {
+                    let at = self.tile_storage_base() + self.stage.word_offset(shared) as u32 + word % 4;
+                    self.write_value_address(Location::Gpr(0), Memory::new(10, at), scalar.size().min(4));
+                }
             }
         }
     }
@@ -175,7 +189,8 @@ impl Emitter<'_> {
                     + self
                         .stage
                         .word_offset(self.stage.shared_word(collective.tile, *word))
-                        as u32,
+                        as u32
+                    + match self.stage.shared_word(collective.tile, *word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 },
             );
             self.bytes(&[0x4c, 0x8d, 0x9c, 0x24]);
             self.u32(self.private_stream(PrivateSlot::Register(*result)));
@@ -187,7 +202,7 @@ impl Emitter<'_> {
             let operator = collective.op.operator();
             let identity = operator.identity(scalar);
             let high_delta = if wide {
-                (self.stage.word_offset(self.stage.shared_word(collective.tile, *word + 1)) as i64
+                (self.stage.word_offset(self.stage.shared_word(collective.tile, *word + 4)) as i64
                     - self.stage.word_offset(self.stage.shared_word(collective.tile, *word)) as i64) as u32
             } else { 0 };
             let store = |e: &mut Self| {
@@ -244,10 +259,15 @@ impl Emitter<'_> {
                     .unwrap(),
                     0x02,
                 ]);
-            } else if wide {
-                self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
-                self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
-                self.bytes(&[0x49, 0xc1, 0xe0, 32, 0x4c, 0x09, 0xc2]);
+            } else {
+                let operand = if wide {
+                    self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
+                    self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
+                    self.bytes(&[0x49, 0xc1, 0xe0, 32, 0x4c, 0x09, 0xc2]);
+                    operands::Operand::Register(2)
+                } else { operands::Operand::memory(10, 0) };
+                let prefix = (scalar.size() == 2).then_some(0x66);
+                let byte = u8::from(scalar.size() == 1);
                 let opcode = match operator {
                     CollectiveOperator::Sum => Some(0x03),
                     CollectiveOperator::BitAnd => Some(0x23),
@@ -256,35 +276,17 @@ impl Emitter<'_> {
                     CollectiveOperator::Min | CollectiveOperator::Max => None,
                 };
                 if let Some(opcode) = opcode {
-                    self.bytes(&[0x48, opcode, 0xc2]);
+                    self.instruction(prefix, &[opcode - byte], wide, 0, operand);
                 } else {
                     let condition = match (scalar.is_signed(), operator == CollectiveOperator::Min) {
                         (false,true)=>0x47,(true,true)=>0x4f,(false,false)=>0x42,(true,false)=>0x4c,
                     };
-                    self.bytes(&[0x48, 0x39, 0xd0, 0x48, 0x0f, condition, 0xc2]);
-                }
-            } else {
-                let opcode = match operator {
-                    CollectiveOperator::Sum => Some(0x03),
-                    CollectiveOperator::BitAnd => Some(0x23),
-                    CollectiveOperator::BitOr => Some(0x0b),
-                    CollectiveOperator::BitXor => Some(0x33),
-                    CollectiveOperator::Min | CollectiveOperator::Max => None,
-                };
-                if let Some(opcode) = opcode {
-                    self.bytes(&[0x41, opcode, 0x02]);
-                } else {
-                    self.bytes(&[0x41, 0x8b, 0x12, 0x39, 0xd0, 0x0f]);
-                    let min = operator == CollectiveOperator::Min;
-                    self.bytes(&[
-                        match (scalar.is_signed(), min) {
-                            (false, true) => 0x47,
-                            (true, true) => 0x4f,
-                            (false, false) => 0x42,
-                            (true, false) => 0x4c,
-                        },
-                        0xc2,
-                    ]);
+                    self.instruction(prefix, &[0x3b - byte], wide, 0, operand);
+                    if byte != 0 {
+                        let skip = self.jump(Some(0x80 + (condition ^ 1) - 0x40));
+                        self.instruction(None, &[0x8a], false, 0, operand);
+                        self.patch(skip, self.code.len());
+                    } else { self.instruction(prefix, &[0x0f, condition], wide, 0, operand); }
                 }
             }
             self.bytes(&[0x49, 0x83, 0xc2, 0x04, 0xff, 0xc9]);

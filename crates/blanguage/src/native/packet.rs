@@ -113,7 +113,7 @@ pub(super) struct Plan {
 impl Plan {
     pub fn new(program: &Program, stage: &Stage) -> Option<Self> {
         if stage.has_tile_scope() || stage.writes.is_empty()
-            || stage.registers.iter().chain(&stage.locals).any(|scalar| scalar.size() != 4)
+            || stage.registers.iter().chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar))).any(|scalar| scalar.size() != 4)
         {
             return None;
         }
@@ -644,7 +644,7 @@ impl Emitter<'_> {
                 15,
                 0,
                 self.program.buffers[selection.binding].stride,
-                selection.word * 4,
+                selection.word,
             );
             self.instruction(None, &[0x83], false, 7, memory.into());
             self.bytes(&[0]);
@@ -825,7 +825,7 @@ impl Emitter<'_> {
                     if !sparse && !broadcast && stride == 4 {
                         let memory = self
                             .packet_memory(allocation, *binding, index, 0)
-                            .offset(word * 4);
+                            .offset(*word);
                         self.instruction(None, &[0x0f, 0x10], false, target, memory.into());
                     } else {
                         // Dense AoS lanes consume one shared address; sparse lanes consume their own.
@@ -842,7 +842,7 @@ impl Emitter<'_> {
                                 Some(memory) => memory,
                                 None => self.packet_memory(allocation, *binding, index, lane),
                             };
-                            let offset = word * 4 + if sparse { 0 } else { lane * stride };
+                            let offset = word + if sparse { 0 } else { lane * stride };
                             self.instruction(
                                 Some(0x66),
                                 &[0x0f, 0x6e],
@@ -879,7 +879,7 @@ impl Emitter<'_> {
                     if !sparse && stride == 4 {
                         let memory = self
                             .packet_memory(allocation, *binding, index, 0)
-                            .offset(word * 4);
+                            .offset(*word);
                         self.instruction(None, &[0x0f, 0x11], false, source, memory.into());
                     } else {
                         if !sparse {
@@ -894,7 +894,7 @@ impl Emitter<'_> {
                             if lane != 0 {
                                 self.shuffle(0, source, (lane * 0x55) as u8);
                             }
-                            let offset = word * 4 + if sparse { 0 } else { lane * stride };
+                            let offset = word + if sparse { 0 } else { lane * stride };
                             self.instruction(
                                 Some(0x66),
                                 &[0x0f, 0x7e],

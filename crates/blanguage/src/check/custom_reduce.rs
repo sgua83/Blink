@@ -201,11 +201,10 @@ pub(super) fn compile(
             );
         }
         if program.buffers[binding].count != Some(1)
-            || program.buffers[binding].ty.components.len() != 1
         {
             return d
                 .source
-                .fail(span, "B171", "分段归约计数必须为形状 1、单 u32 字段");
+                .fail(span, "B171", "分段归约计数必须为形状 1 的 u32 计数字段");
         }
         Some(PrefixCount { binding, word })
     } else {
@@ -299,7 +298,7 @@ pub(super) fn compile(
         },
         boundary_before: true,
         registers: Vec::new(),
-        locals: Vec::new(),
+        locals: Default::default(),
         code: Vec::new(),
         reads: reads.clone(),
         writes,

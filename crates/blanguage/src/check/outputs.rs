@@ -620,7 +620,7 @@ impl Builder<'_> {
         let path = self.path.clone();
         for ((_, offset), when) in data.ty.components.iter().zip(guards) {
             self.path = when.condition().assume(&path, true);
-            if self.path.possible() && !self.application_field_initialized(data, *offset / 4) {
+            if self.path.possible() && !self.application_field_initialized(data, *offset) {
                 return self.fail(span, "B229", "返回分支没有满足dataset字段的条件初始化合同");
             }
         }
@@ -632,7 +632,7 @@ impl Builder<'_> {
             for ((_, offset), when) in data.ty.components.iter().zip(guards) {
                 self.initialized.insert(Position::selected(
                     when.clone(),
-                    scope.application_word(None, *offset / 4),
+                    scope.application_word(None, *offset),
                     Position::Initialized,
                 ));
             }

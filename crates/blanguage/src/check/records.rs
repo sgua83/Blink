@@ -18,7 +18,7 @@ impl Builder<'_> {
                 let Some((offset, field)) = ty.field(name) else {
                     return self.fail(expr.span, "B141", "dataset 字段不存在");
                 };
-                Ok((binding, word + offset / 4, field.clone()))
+                Ok((binding, word + offset, field.clone()))
             }
             _ => self.fail(expr.span, "B200", "需要命名 dataset 或其字段"),
         }

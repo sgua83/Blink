@@ -154,7 +154,7 @@ impl Emitter<'_> {
             15,
             self.location(index),
             self.program.buffers[binding].stride,
-            word * 4,
+            word,
         )
     }
     fn private_memory(
@@ -168,7 +168,7 @@ impl Emitter<'_> {
         else {
             return Err("索引私有存储没有原生栈地址");
         };
-        Ok(self.value_memory(4, self.location(index), 4, offset + word * 4))
+        Ok(self.value_memory(4, self.location(index), 1, offset + word))
     }
     fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
         let stride = self.indexed_base(source);
@@ -203,10 +203,10 @@ impl Emitter<'_> {
                     self.tile_storage_base()
                         + self.stage.word_offset(self.stage.shared_word(*tile, 0)) as u32,
                 );
-                return self.stage.workgroup_width() * 4;
+                return self.stage.workgroup_width();
             }
         }
-        4
+        1
     }
     fn indexed_offset(&mut self, offset: Reg, word: u32) -> allocation::Location {
         if word != 0 {
@@ -386,7 +386,7 @@ impl Emitter<'_> {
                     tile,
                     index,
                     word,
-                } => self.tile_load(*dst, *tile, *index, *word),
+                } => self.tile_load(*dst, *tile, *index, *word, None),
                 Inst::Subgroup { .. } => return Err("CPU 后端不能执行 GPU subgroup 协作"),
                 Inst::RayQuery { .. } => return Err("CPU 后端不能执行硬件光线查询"),
                 Inst::ViewLoad {
@@ -400,7 +400,7 @@ impl Emitter<'_> {
                     self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
                     self.load(address[0]);
                     self.bytes(&[0x49, 0x09, 0xc7]);
-                    let memory = self.value_memory(15, self.location(*index), *stride, *word * 4);
+                    let memory = self.value_memory(15, self.location(*index), *stride, *word);
                     self.read_scalar_address(*dst, memory);
                 }
                 Inst::LoadIndexed {
@@ -409,13 +409,10 @@ impl Emitter<'_> {
                     offset,
                     word,
                 } => {
-                    let memory = self.indexed_memory(source, *offset, *word);
-                    if matches!(source, IndexedSource::Tile { .. }) && self.stage.registers[*dst].size() == 8 {
-                        self.instruction(None, &[0x8b], false, 1, memory.offset(self.stage.workgroup_width()*4).into());
-                        self.instruction(None, &[0x8b], false, 0, memory.into());
-                        self.bytes(&[0x48, 0xc1, 0xe1, 32, 0x48, 0x09, 0xc8]);
-                        self.store(*dst);
+                    if let IndexedSource::Tile { tile, index } = source {
+                        self.tile_load(*dst, *tile, *index, *word, Some(*offset));
                     } else {
+                        let memory = self.indexed_memory(source, *offset, *word);
                         self.read_scalar_address(*dst, memory);
                     }
                 }
@@ -426,14 +423,7 @@ impl Emitter<'_> {
                     value,
                 } => {
                     let memory = self.indexed_memory(source, *offset, *word);
-                    if matches!(source, IndexedSource::Tile { .. }) && self.stage.registers[*value].size() == 8 {
-                        self.copy_scalar(allocation::Location::Gpr(2), self.location(*value), self.stage.registers[*value]);
-                        self.instruction(None, &[0x89], false, 2, memory.into());
-                        self.bytes(&[0x48, 0xc1, 0xea, 32]);
-                        self.instruction(None, &[0x89], false, 2, memory.offset(self.stage.workgroup_width()*4).into());
-                    } else {
-                        self.write_scalar_address(*value, memory);
-                    }
+                    self.write_scalar_address(*value, memory);
                 }
                 Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
                 Inst::Index(dst) => {
@@ -714,7 +704,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
             0,
             1,
             program.buffers[selection.binding].stride,
-            selection.word * 4,
+            selection.word,
         );
         e.instruction(None, &[0x83], false, 7, memory.into());
         e.bytes(&[0]);
