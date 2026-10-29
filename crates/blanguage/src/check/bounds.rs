@@ -1712,18 +1712,25 @@ fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<Qu
                     common.insert(Fact::equal(group[0], *other));
                 }
             }
-            let upper_a = maximums(environment.union(&a));
-            let upper_b = maximums(environment.union(&b));
+            // 环境仍归原所有者；这里只生产两支共同新增的范围。
+            let upper_a = maximums(a.iter());
+            let upper_b = maximums(b.iter());
             for (identity, upper) in upper_a {
                 if let Some(other) = upper_b.get(&identity) {
-                    common.insert(Fact::Maximum(identity, upper.max(*other)));
+                    let upper = upper.max(*other);
+                    if environment.range(Fact::Maximum(identity, 0)..=Fact::Maximum(identity, upper)).next().is_none() {
+                        common.insert(Fact::Maximum(identity, upper));
+                    }
                 }
             }
-            let a = minimums(environment.union(&a));
-            let b = minimums(environment.union(&b));
+            let a = minimums(a.iter());
+            let b = minimums(b.iter());
             for (identity, lower) in a {
                 if let Some(other) = b.get(&identity) {
-                    common.insert(Fact::Minimum(identity, lower.min(*other)));
+                    let lower = lower.min(*other);
+                    if environment.range(Fact::Minimum(identity, lower)..=Fact::Minimum(identity, u32::MAX)).next().is_none() {
+                        common.insert(Fact::Minimum(identity, lower));
+                    }
                 }
             }
             common.retain(|fact| !environment.contains(fact));
