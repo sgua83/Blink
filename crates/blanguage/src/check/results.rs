@@ -2,6 +2,7 @@
 use super::*;
 
 impl Builder<'_> {
+    #[inline(never)]
     pub(super) fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
         let Some((parent,member))=name.rsplit_once("::") else{return Ok(None)};
         let Some(key)=self.world.resolve(parent,&self.definition.module,&self.definition.imports,false) else{return Ok(None)};
@@ -15,6 +16,7 @@ impl Builder<'_> {
         let Some(index)=ty.variants.iter().position(|variant|variant.name==member) else{return self.fail(span,"B269",format!("{}没有变体分支{member}",ty.name));};
         Ok(Some((ty,index)))
     }
+    #[inline(never)]
     pub(super) fn expr_expected(
         &mut self,
         e: &Expr,
@@ -50,6 +52,7 @@ impl Builder<'_> {
     ) -> Result<Option<Value>> {
         self.value_variant_constructor(ty,usize::from(!success),args,span)
     }
+    #[inline(never)]
     pub(super) fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&[Expr],span:Span)->Result<Option<Value>> {
         let payload=(*ty.variants[index].ty).clone();
         let value = if payload.name == "void" {

@@ -238,7 +238,7 @@ impl OwnedValuePayload {
 impl Builder<'_> {
     pub(super) fn returned_storage(&mut self, value: &Returned) -> Value {
         match value {
-            Returned::Value(value) => value.clone(),
+            Returned::Value(value) => (**value).clone(),
             Returned::OwnedValue(value) => value.value.clone(),
             Returned::Unit => Value {
                 ty: Ty::unit(),
@@ -430,7 +430,7 @@ impl Builder<'_> {
         } else if value.ty.name == "void" {
             Returned::Unit
         } else {
-            Returned::Value(value)
+            Returned::value(value)
         }
     }
     pub(super) fn value_component(&self, value: &Value, index: usize) -> Value {
@@ -511,6 +511,7 @@ impl Builder<'_> {
         if let Some(place)=result.place(){let value=self.read_storage_value(&place,span)?;result.value.regs=value.regs;result.value.proof=bounds::Proof::capture(&result.value);}
         Ok(())
     }
+    #[inline(never)]
     pub(super) fn take_owned_value(&mut self, name: &str, span: Span) -> Result<OwnedValue> {
         let Some(Binding::OwnedValue(result)) = self.env.get(name).cloned() else {
             unreachable!()
@@ -605,6 +606,7 @@ impl Builder<'_> {
         self.env.insert(name.clone(), Binding::OwnedValue(result));
         Ok(())
     }
+    #[inline(never)]
     fn make_owned_result(
         &mut self,
         ty: Ty,
@@ -614,6 +616,7 @@ impl Builder<'_> {
     ) -> Result<Option<OwnedValue>> {
         self.make_owned_variant(ty,usize::from(!success),args,span)
     }
+    #[inline(never)]
     fn make_owned_variant(&mut self,ty:Ty,index:usize,args:&[Expr],span:Span)->Result<Option<OwnedValue>> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span,"B224","拥有变体属于普通CPU应用资源组织");
@@ -666,7 +669,7 @@ impl Builder<'_> {
         let payload=self.variant_payload(&value.value,index);
         let Some(meta)=&value.payloads[index] else {return match payload {Some(value)=>self.template_returned(value,false),None=>Returned::Unit};};
         let mut item=(**meta).clone();if let Some(value)=payload {
-            match &mut item {Returned::Value(current)=>*current=value,Returned::OwnedValue(current)=>{current.value=value;current.place=None;},_=>self.rebind_returned(&mut item,value.regs)}
+            match &mut item {Returned::Value(current)=>**current=value,Returned::OwnedValue(current)=>{current.value=value;current.place=None;},_=>self.rebind_returned(&mut item,value.regs)}
         }item
     }
     pub(super) fn evaluate_returned(
@@ -675,37 +678,21 @@ impl Builder<'_> {
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
         self.view_uses.before(expr.span);
-        if self.inside_user_owner(expr)&&self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){return self.fail(expr.span,"B224","拥有包装的资源载荷须用into_inner移出，不能部分移动其字段");}
+        self.require_returned_projection(expr)?;
         if let ExprKind::Call(name,args)=&expr.kind {
             if name=="resize" {return self.resize_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
             if name=="own" {return self.make_user_owned(args,expr.span);}
             if name=="into_inner" {return self.into_user_inner(args,expr.span);}
         }
-        let constructor = match &expr.kind {
-            ExprKind::Call(name,args) => self.variant_constructor_type(name,None,expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
-            ExprKind::Specialize(name,types,args) => self.variant_constructor_type(name,Some(types),expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
-            _=>None,
-        };
-        if let Some((ty,index,args))=constructor {
-            return if ty.owns_resources() {self.make_owned_variant(ty,index,args,expr.span).map(|v|v.map(Returned::OwnedValue))}
-                else {self.value_variant_constructor(ty,index,args,expr.span).map(|v|v.map(Returned::Value))};
+        if let Some(value) = self.variant_call(expr, expected)? {
+            return Ok(value);
         }
         match &expr.kind {
             ExprKind::Target(target, call) => return self.target_call(*target, call, expr.span),
             ExprKind::Member(base, name) => return self.member_returned(expr, base, name),
-            ExprKind::Index(base, index)
-                if self
-                    .owned_element_type(base)
-                    .is_some_and(|ty| ty.array.is_some() && ty.owns_resources())
-                    || self.temporary_projection(base) =>
-            {
-                return self.owned_array_index(expr, base, index);
-            }
+            ExprKind::Index(base, index) => return self.indexed_returned(expr, base, index, expected),
             ExprKind::Construct(name, args) => {
-                let ty = self.expected_storage(name, expr.span)?;
-                if ty.owns_resources() {
-                    return self.make_owned_record(ty, args, expr.span);
-                }
+                return self.construct_record_returned(expr, name, args, expected);
             }
             ExprKind::Name(name)
                 if matches!(self.env.get(name), Some(Binding::ApplicationData(_))) =>
@@ -729,17 +716,11 @@ impl Builder<'_> {
                     && expected.is_some_and(Ty::owns_resources) =>
             {
                 return self
-                    .make_owned_result(expected.unwrap().clone(), name == "Ok", args, expr.span)
-                    .map(|v| v.map(Returned::OwnedValue));
+                    .expected_owned_result(expected.unwrap(), name == "Ok", args, expr.span);
             }
             ExprKind::Specialize(name, explicit, args) if matches!(name.as_str(), "Ok" | "Err") => {
-                let mut syntax = TypeName::named("result");
-                syntax.arguments = explicit.clone();
-                let ty = self.expected_storage(&syntax, expr.span)?;
-                if ty.owns_resources() {
-                    return self
-                        .make_owned_result(ty, name == "Ok", args, expr.span)
-                        .map(|v| v.map(Returned::OwnedValue));
+                if let Some(value) = self.owned_result_call(name, explicit, args, expr.span)? {
+                    return Ok(value);
                 }
             }
             ExprKind::Call(name, args) if name == "try" => {
@@ -749,25 +730,8 @@ impl Builder<'_> {
                 return self.selection_returned(c, a, b, expr.span, expected);
             }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
-                if matches!(name.as_str(),"array"|"owned")
-                    || self
-                        .world
-                        .resolve(
-                            name,
-                            &self.definition.module,
-                            &self.definition.imports,
-                            false,
-                        )
-                        .is_some()
-                {
-                    let mut syntax = TypeName::named(name);
-                    if let ExprKind::Specialize(_, explicit, _) = &expr.kind {
-                        syntax.arguments = explicit.clone();
-                    }
-                    let ty = self.expected_storage(&syntax, expr.span)?;
-                    if ty.owns_resources() {
-                        return self.make_owned_record(ty, args, expr.span);
-                    }
+                if let Some(value) = self.owned_record_call(name, args, expr)? {
+                    return Ok(value);
                 }
                 if let Some(key) = self.world.resolve(
                     name,
@@ -792,17 +756,80 @@ impl Builder<'_> {
         }
         if let ExprKind::Call(name, args) = &expr.kind {
             if matches!(name.as_str(), "Ok" | "Err") {
-                return self
-                    .expr_expected(expr, expected)
-                    .map(|v| v.map(Returned::Value));
+                return self.typed_value_returned(expr, expected);
             }
-            return self
-                .builtin_call(name, args, expr.span)
-                .map(|v| v.map(Returned::Value));
+            return self.builtin_returned(name, args, expr.span);
         }
-        self.expr_expected(expr, expected)
-            .map(|v| v.map(Returned::Value))
+        self.typed_value_returned(expr, expected)
     }
+    #[inline(never)]
+    fn typed_value_returned(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
+        self.expr_expected(expr,expected).map(|value|value.map(Returned::value))
+    }
+    #[inline(never)]
+    fn builtin_returned(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Returned>> {
+        self.builtin_call(name,args,span).map(|value|value.map(Returned::value))
+    }
+    #[inline(never)]
+    fn expected_owned_result(&mut self, expected: &Ty, success: bool, args: &[Expr], span: Span) -> Result<Option<Returned>> {
+        self.make_owned_result(expected.clone(),success,args,span).map(|value|value.map(Returned::OwnedValue))
+    }
+    #[inline(never)]
+    fn require_returned_projection(&self, expr: &Expr) -> Result<()> {
+        if self.inside_user_owner(expr) && self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) {
+            return self.fail(expr.span,"B224","拥有包装的资源载荷须用into_inner移出，不能部分移动其字段");
+        }
+        Ok(())
+    }
+    #[inline(never)]
+    fn variant_call(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Option<Returned>>> {
+        let constructor = match &expr.kind {
+            ExprKind::Call(name,args) => self.variant_constructor_type(name,None,expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
+            ExprKind::Specialize(name,types,args) => self.variant_constructor_type(name,Some(types),expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
+            _ => None,
+        };
+        let Some((ty,index,args)) = constructor else { return Ok(None); };
+        let value = if ty.owns_resources() {
+            self.make_owned_variant(ty,index,args,expr.span).map(|value|value.map(Returned::OwnedValue))
+        } else {
+            self.value_variant_constructor(ty,index,args,expr.span).map(|value|value.map(Returned::value))
+        };
+        value.map(Some)
+    }
+    #[inline(never)]
+    fn indexed_returned(&mut self, expr: &Expr, base: &Expr, index: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
+        if self.owned_element_type(base).is_some_and(|ty|ty.array.is_some() && ty.owns_resources()) || self.temporary_projection(base) {
+            return self.owned_array_index(expr,base,index);
+        }
+        self.expr_expected(expr,expected).map(|value|value.map(Returned::value))
+    }
+    #[inline(never)]
+    fn construct_record_returned(&mut self, expr: &Expr, name: &TypeName, args: &[Expr], expected: Option<&Ty>) -> Result<Option<Returned>> {
+        let ty = self.expected_storage(name,expr.span)?;
+        if ty.owns_resources() { return self.make_owned_record(ty,args,expr.span); }
+        self.expr_expected(expr,expected).map(|value|value.map(Returned::value))
+    }
+    #[inline(never)]
+    fn owned_result_call(&mut self, name: &str, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Option<Returned>>> {
+        let mut syntax = TypeName::named("result");
+        syntax.arguments = explicit.to_vec();
+        let ty = self.expected_storage(&syntax,span)?;
+        if ty.owns_resources() {
+            return self.make_owned_result(ty,name=="Ok",args,span).map(|value|Some(value.map(Returned::OwnedValue)));
+        }
+        Ok(None)
+    }
+    #[inline(never)]
+    fn owned_record_call(&mut self, name: &str, args: &[Expr], expr: &Expr) -> Result<Option<Option<Returned>>> {
+        if matches!(name,"array"|"owned") || self.world.resolve(name,&self.definition.module,&self.definition.imports,false).is_some() {
+            let mut syntax = TypeName::named(name);
+            if let ExprKind::Specialize(_,explicit,_) = &expr.kind { syntax.arguments = explicit.clone(); }
+            let ty = self.expected_storage(&syntax,expr.span)?;
+            if ty.owns_resources() { return self.make_owned_record(ty,args,expr.span).map(Some); }
+        }
+        Ok(None)
+    }
+    #[inline(never)]
     pub(super) fn propagate_returned(
         &mut self,
         args: &[Expr],
@@ -823,7 +850,7 @@ impl Builder<'_> {
         })?;
         let (value, owned) = match &source {
             Returned::OwnedValue(r) if r.value.ty.result => (r.value.clone(), Some(r)),
-            Returned::Value(v) if v.ty.result => (v.clone(), None),
+            Returned::Value(v) if v.ty.result => ((**v).clone(), None),
             _ => return self.fail(span, "B269", "try需要结果"),
         };
         let Some(expected) = self.result_return_type().filter(|ty| ty.result) else {
@@ -843,7 +870,7 @@ impl Builder<'_> {
                     b.unpack_owned(r, false)
                 } else {
                     b.result_payload(&value, false)
-                        .map_or(Returned::Unit, Returned::Value)
+                        .map_or(Returned::Unit, Returned::value)
                 };
                 let result = b.wrap_returned_result(expected, false, error);
                 b.finish_return(Some(result), span)
@@ -857,7 +884,7 @@ impl Builder<'_> {
             self.unpack_owned(r, true)
         } else {
             match self.result_payload(&value, true) {
-                Some(v) => Returned::Value(v),
+                Some(v) => Returned::value(v),
                 None => return Ok(None),
             }
         }))
@@ -875,9 +902,10 @@ impl Builder<'_> {
                 place: None, declaration: 0,
             }))
         } else {
-            Returned::Value(value)
+            Returned::value(value)
         }
     }
+    #[inline(never)]
     pub(super) fn match_returned(&mut self, expr: &Expr, arms: &[MatchArm], span: Span) -> Result<()> {
         let mut root=expr;
         while let ExprKind::Member(base,_)|ExprKind::Index(base,_)=&root.kind{root=base;}
@@ -923,7 +951,7 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<()> {
         match value {
-            Returned::Value(value) => self.bind_local_value(name, value, span),
+            Returned::Value(value) => self.bind_local_value(name, *value, span),
             Returned::OwnedValue(value) => self.bind_owned_value(name, value, span),
             Returned::Dataset(data) => {
                 if self.env.contains_key(name) {

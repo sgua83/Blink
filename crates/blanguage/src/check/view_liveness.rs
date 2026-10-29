@@ -83,6 +83,7 @@ pub(super) struct State {
     outputs:Live,
 }
 impl State {
+    #[inline(never)]
     pub(super) fn new(world: &World, definition: &Definition) -> Self {
         let mut analysis = Analysis {
             world,

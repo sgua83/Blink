@@ -26,6 +26,16 @@ pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
 pub(super) struct Module {
     units: BTreeMap<String, Option<Unit>>,
 }
+impl Module {
+    #[inline(never)]
+    fn declare(&mut self, name: &str) -> bool {
+        if self.units.contains_key(name) {
+            return false;
+        }
+        self.units.insert(name.to_owned(), None);
+        true
+    }
+}
 #[derive(Clone)]
 pub(crate) struct Contract {
     parameters: Vec<CallParameter>,
@@ -68,45 +78,62 @@ fn declaration(
     instance: &crate::generics::Instance,
     mut context: application::Context,
 ) -> Result<application::Context> {
-    if context.functions.units.contains_key(&instance.name) {
+    if !context.functions.declare(&instance.name) {
         return Ok(context);
     }
     if let Some(definitions) = &instance.definition.compiled {
-        use crate::module::codec::Decode;
-        let bytes = definitions.get(&instance.name).ok_or_else(|| Diagnostic {
-            source: instance.definition.source.clone(),
-            span: instance.definition.function.span,
-            code: "B270",
-            message: format!("已编译模块没有原生实例 {}", instance.name),
-        })?;
-        let contract = Contract::from_bytes(bytes).map_err(|error| Diagnostic {
-            source: instance.definition.source.clone(),
-            span: instance.definition.function.span,
-            code: "B270",
-            message: format!("模块函数接口错误：{error}"),
-        })?;
-        context.functions.units.insert(
-            instance.name.clone(),
-            Some(Unit {
-                function: None,
-                contract,
-                module: instance.definition.module.clone(),
-                public: instance.definition.public,
-                residency: residency::Inputs::default(),
-                source: instance.definition.source.clone(),
-                span: instance.definition.function.span,
-                view_model: view_contracts::Function::default(),
-            }),
-        );
-        return Ok(context);
+        return compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), context);
     }
-    context.functions.units.insert(instance.name.clone(), None);
     let frame = context.frame.take();
     let mut instance = instance.clone();
     if instance.definition.function.target == Target::Compute {
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
     let checked = checked_function(world, &instance, Some(context))?;
+    Ok(finish_declaration(&instance, frame, checked))
+}
+
+#[inline(never)]
+fn compiled_declaration(
+    instance: &crate::generics::Instance,
+    bytes: Option<&[u8]>,
+    mut context: application::Context,
+) -> Result<application::Context> {
+    use crate::module::codec::Decode;
+    let bytes = bytes.ok_or_else(|| Diagnostic {
+        source: instance.definition.source.clone(),
+        span: instance.definition.function.span,
+        code: "B270",
+        message: format!("已编译模块没有原生实例 {}", instance.name),
+    })?;
+    let contract = Contract::from_bytes(bytes).map_err(|error| Diagnostic {
+        source: instance.definition.source.clone(),
+        span: instance.definition.function.span,
+        code: "B270",
+        message: format!("模块函数接口错误：{error}"),
+    })?;
+    context.functions.units.insert(
+        instance.name.clone(),
+        Some(Unit {
+            function: None,
+            contract,
+            module: instance.definition.module.clone(),
+            public: instance.definition.public,
+            residency: residency::Inputs::default(),
+            source: instance.definition.source.clone(),
+            span: instance.definition.function.span,
+            view_model: view_contracts::Function::default(),
+        }),
+    );
+    Ok(context)
+}
+
+#[inline(never)]
+fn finish_declaration(
+    instance: &crate::generics::Instance,
+    frame: Option<Vec<Reg>>,
+    checked: Box<CheckedFunction>,
+) -> application::Context {
     let residency=checked.residency;
     let mut context = checked.application.unwrap();
     context.frame = frame;
@@ -138,7 +165,7 @@ fn declaration(
             view_model: checked.view_model,
         }),
     );
-    Ok(context)
+    context
 }
 // 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
 pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
@@ -244,10 +271,20 @@ impl Builder<'_> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<Returned>> {
-        let d = &instance.definition;
-        if d.function.target == Target::Gpu {
+        if instance.definition.function.target == Target::Gpu {
             return self.fail(span, "B161", "普通 CPU 调用不能改变函数声明的实际目标");
         }
+        self.native_declaration(&instance)?;
+        self.native_call(instance, args, span)
+    }
+    #[inline(never)]
+    fn native_call(
+        &mut self,
+        instance: crate::generics::Instance,
+        args: Vec<Argument>,
+        span: Span,
+    ) -> Result<Option<Returned>> {
+        let d = &instance.definition;
         let frame = self.application_frame(span)?;
         let mut arguments = vec![CallArgument::Value {
             ty: frame.ty.clone(),
@@ -414,7 +451,6 @@ impl Builder<'_> {
         let requirements = contracts::resolve(self, d, &env)?;
         contracts::prove(self, &requirements, span)?;
         let output_inputs=outputs::inputs(self,d,&env)?;
-        self.native_declaration(&instance)?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
         view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
         if !locations.is_empty() {

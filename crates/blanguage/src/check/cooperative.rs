@@ -16,7 +16,7 @@ pub(super) enum Argument {
 }
 impl Argument {
     pub(super) fn resource(value:returns::Returned)->Self {
-        match value {returns::Returned::Dataset(data)=>Self::ApplicationData(data),returns::Returned::OwnedValue(value)=>Self::OwnedValue(value),returns::Returned::Value(value)=>Self::Value(value),returns::Returned::Unit=>unreachable!()}
+        match value {returns::Returned::Dataset(data)=>Self::ApplicationData(data),returns::Returned::OwnedValue(value)=>Self::OwnedValue(value),returns::Returned::Value(value)=>Self::Value(*value),returns::Returned::Unit=>unreachable!()}
     }
     fn overlaps(&self, other: &Self,env:&BTreeMap<String,Binding>) -> bool {
         let place=|argument:&Self|match argument {
@@ -102,6 +102,7 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
     Ok(ty)
 }
 impl<'a> Builder<'a> {
+    #[inline(never)]
     pub(super) fn function_arguments(
         &mut self,
         key: &str,
@@ -204,7 +205,7 @@ impl<'a> Builder<'a> {
                         return Ok(None);
                     }
                     match returned {
-                        Some(returns::Returned::Value(v)) => Argument::Value(v),
+                        Some(returns::Returned::Value(v)) => Argument::Value(*v),
                         Some(returns::Returned::OwnedValue(v)) => Argument::OwnedValue(v),
                         Some(returns::Returned::Dataset(v)) => Argument::ApplicationData(v),
                         _ => return self.fail(arg.span, "B228", "函数实参需要值或拥有资源"),
@@ -309,7 +310,7 @@ impl<'a> Builder<'a> {
         if instance.definition.function.external.is_some() {
             return self
                 .external_call(&instance.definition, args, span)
-                .map(|v| v.map(returns::Returned::Value));
+                .map(|v| v.map(returns::Returned::value));
         }
         if instance.definition.compiled.is_some()
             && instance.definition.execution != crate::execution::Requirement::Domain

@@ -28,11 +28,12 @@ impl Builder<'_> {
                     self.require_user_owner(&mut owner,expr.span)?;
                     self.unpack_record(&owner,index)
                 },
-                Returned::Value(value)=>Returned::Value(self.record_component(&value,index)),_=>return Ok(()),
+                Returned::Value(value)=>Returned::value(self.record_component(&value,index)),_=>return Ok(()),
             };
         }
         Ok(())
     }
+    #[inline(never)]
     pub(super) fn make_user_owned(&mut self,args:&[Expr],span:Span)->Result<Option<Returned>>{
         if args.len()!=2{return self.fail(span,"B157","own(value,F)需要实际载荷和静态释放函数");}
         if self.application.is_none()||self.program.target!=Target::Cpu{return self.fail(span,"B224","用户拥有值由普通CPU应用组织");}
@@ -44,6 +45,7 @@ impl Builder<'_> {
         let payloads=vec![value.ty.arguments[0].owns_resources().then(||Box::new(payload))];
         Ok(Some(Returned::OwnedValue(Box::new(OwnedValuePayload{value,payloads,ownership:Ownership::Owned,place:None,declaration:0}))))
     }
+    #[inline(never)]
     pub(super) fn into_user_inner(&mut self,args:&[Expr],span:Span)->Result<Option<Returned>>{
         if args.len()!=1{return self.fail(span,"B157","into_inner需要一个实际拥有包装");}
         let Some(value)=self.evaluate_returned(&args[0],None)?else{return Ok(None)};

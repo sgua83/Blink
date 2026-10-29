@@ -4,7 +4,8 @@ use super::*;
 #[derive(Clone)]
 pub(super) enum Returned {
     Unit,
-    Value(Value),
+    // 跨阶段结果移动唯一载荷；普通表达式仍直接使用 Value。
+    Value(Box<Value>),
     Dataset(application::Data),
     OwnedValue(owned_values::OwnedValue),
 }
@@ -22,6 +23,7 @@ impl Expected {
     }
 }
 impl Returned {
+    pub(super) fn value(value: Value) -> Self { Self::Value(Box::new(value)) }
     pub(super) fn view_value(&self)->Option<&Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&value.value),_=>None}}
     pub(super) fn view_value_mut(&mut self)->Option<&mut Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&mut value.value),_=>None}}
     pub(super) fn bind_outputs(
@@ -92,12 +94,12 @@ impl Returned {
         }
         let (other, residency) = match &other {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),
-            Self::Value(value) => (value, None),
+            Self::Value(value) => (value.as_ref(), None),
             Self::Dataset(data) => (&data.length, Some(data.residency.clone())),
         };
         let value = match self {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),
-            Self::Value(value) => value,
+            Self::Value(value) => value.as_mut(),
             Self::Dataset(data) => &mut data.length,
         };
         value.proof = bounds::Proof::common(value, other);
@@ -116,11 +118,22 @@ struct ReturnExit {
     borrowed: Result<BTreeMap<String, Returned>>,
 }
 pub(super) struct ReturnContext {
-    expected: Option<Expected>,
+    expected: Option<Arc<Expected>>,
     scoped: bool,
     slots: Vec<usize>,
     exits: Vec<ReturnExit>,
     inputs: BTreeMap<String, Value>,
+}
+// 外层函数体的原状态按值交接，不复制当前返回模型或资源树。
+struct BodyState {
+    entry: usize,
+    definition: Arc<Definition>,
+    scoped: bool,
+    initial: BTreeSet<Position>,
+    caller: Option<ReturnContext>,
+    flow: Flow,
+    uniform: bool,
+    outer: Vec<Inst>,
 }
 impl ReturnContext {
     pub(super) fn exit_count(&self) -> usize {
@@ -204,7 +217,7 @@ impl Builder<'_> {
             Binding::Owned(owner)=>{
                 if !self.is_initialized(&owner.place){return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
                 let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect();
-                Ok(Returned::Value(Value{ty:owner.place.ty().clone(),regs,proof:owner.proof,uniform:owner.uniform,literal:false,constant:None}))
+                Ok(Returned::value(Value{ty:owner.place.ty().clone(),regs,proof:owner.proof,uniform:owner.uniform,literal:false,constant:None}))
             }
             Binding::OwnedValue(value)=>{
                 let mut model=Returned::OwnedValue(value);self.resolve_owned_model(&mut model,None);self.prepare_owned_read(&model);let Returned::OwnedValue(mut value)=model else{unreachable!()};
@@ -269,7 +282,7 @@ impl Builder<'_> {
                 "B224",
                 "拥有结果不能按普通值复制；使用绑定、match、try或拥有参数交接",
             ),
-            Some(Returned::Value(value)) => Ok(Some(value)),
+            Some(Returned::Value(value)) => Ok(Some(*value)),
             None => Ok(None),
             Some(Returned::Dataset(_)) => self.fail(
                 span,
@@ -296,9 +309,9 @@ impl Builder<'_> {
             return self.fail(span, "B228", "never 函数不能正常返回");
         }
         let expected = context.expected.clone();
-        let value = match (expected, expr) {
+        let value = match (expected.as_deref(), expr) {
             (Some(Expected::Value(ty)), Some(expr)) => {
-                let result = self.evaluate_returned(expr, Some(&ty))?;
+                let result = self.evaluate_returned(expr, Some(ty))?;
                 if !self.flow.continues() {
                     return Ok(());
                 }
@@ -308,15 +321,15 @@ impl Builder<'_> {
                     code: "B228",
                     message: "返回需要值或拥有资源".into(),
                 })?;
-                self.check_returned_type(&mut value, &ty, expr.span)?;
+                self.check_returned_type(&mut value, ty, expr.span)?;
                 Some(value)
             }
             (Some(Expected::Dataset { ty, count }), Some(expr)) => {
-                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone(),count)))?;
+                let returned=self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone(),*count)))?;
                 if !self.flow.continues(){return Ok(());}
                 let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
-                self.application_data_type(&mut data, &ty, count, span)?;
-                data.count = count;
+                self.application_data_type(&mut data, ty, *count, span)?;
+                data.count = *count;
                 Some(Returned::Dataset(data))
             }
             (None, None) => None,
@@ -326,7 +339,7 @@ impl Builder<'_> {
         self.finish_return(value, span)
     }
     pub(super) fn result_return_type(&self) -> Option<Ty> {
-        match self.return_context.as_ref()?.expected.as_ref()? {
+        match self.return_context.as_ref()?.expected.as_deref()? {
             Expected::Value(ty) => Some(ty.clone()),
             _ => None,
         }
@@ -394,6 +407,23 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+        let state = self.begin_function_body(body)?;
+        let mut sequence = Flow::NEXT;
+        for statement in body {
+            if !sequence.continues() {
+                break;
+            }
+            self.flow = Flow::NEXT;
+            self.statement(statement)?;
+            self.view_uses.after(statement.span);
+            sequence = sequence.then(self.flow);
+        }
+        self.flow = sequence;
+        self.finish_function_body(body, state)
+    }
+
+    #[inline(never)]
+    fn begin_function_body(&mut self, body: &[Stmt]) -> Result<Box<BodyState>> {
         let entry = self.registers.len();
         let definition = self.definition.clone();
         let name = &definition.function.result;
@@ -459,7 +489,7 @@ impl Builder<'_> {
         let initial = self.application_initialization_state();
         let inputs=outputs::entry_inputs(self,&definition)?;
         let caller = self.return_context.replace(ReturnContext {
-            expected,
+            expected: expected.map(Arc::new),
             scoped,
             slots,
             exits: Vec::new(),
@@ -468,17 +498,14 @@ impl Builder<'_> {
         let flow = std::mem::replace(&mut self.flow, Flow::NEXT);
         let uniform = self.control_uniform;
         let outer = std::mem::take(&mut self.code);
-        let mut sequence = Flow::NEXT;
-        for statement in body {
-            if !sequence.continues() {
-                break;
-            }
-            self.flow = Flow::NEXT;
-            self.statement(statement)?;
-            self.view_uses.after(statement.span);
-            sequence = sequence.then(self.flow);
-        }
-        self.flow = sequence;
+        Ok(Box::new(BodyState { entry, definition, scoped, initial, caller, flow, uniform, outer }))
+    }
+
+    #[inline(never)]
+    fn finish_function_body(&mut self, body: &[Stmt], state: Box<BodyState>) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
+        let BodyState { entry, definition, scoped, initial, caller, flow, uniform, outer } = *state;
+        let sequence = self.flow;
+        let name = &definition.function.result;
         if name.is_never() && sequence.continues() {
             return self.fail(
                 definition.function.span,

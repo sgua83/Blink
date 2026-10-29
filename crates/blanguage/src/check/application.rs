@@ -3,7 +3,7 @@ use super::cooperative::Argument;
 use super::*;
 #[derive(Default)]
 pub(super) struct Context {
-    pub frame: Option<Value>,
+    pub frame: Option<Vec<Reg>>,
     pub resources: crate::application::Resources,
     pub functions: native_function::Module,
 }
@@ -144,13 +144,13 @@ pub(crate) fn compile_application(
         inputs: app
             .frame
             .as_ref()
-            .map(|frame| frame.regs.clone())
+            .cloned()
             .unwrap_or_default(),
         outputs: result.regs,
     };
     crate::optimize::value_code(&mut body);
     if let Some(frame) = &mut app.frame {
-        frame.regs = std::mem::take(&mut body.inputs);
+        *frame = std::mem::take(&mut body.inputs);
     }
     let finalized = native_function::finish(std::mem::take(&mut app.functions), &mut body)?;
     let mut functions = finalized.functions;
@@ -264,7 +264,7 @@ fn live_resources(
                 }
         })
     }
-    if !uses(&body.code, &frame.regs) {
+    if !uses(&body.code, &frame) {
         return None;
     }
     let mut codes = std::iter::once(&mut body.code)
@@ -276,13 +276,13 @@ fn live_resources(
         runtime_call(
             "create",
             Vec::new(),
-            Some(frame.ty.clone()),
-            frame.regs.clone(),
+            Some(pointer_type()),
+            frame.clone(),
         ),
     );
     body.code.push(runtime_call(
         "destroy",
-        vec![argument(frame)],
+        vec![CallArgument::Value { ty: pointer_type(), values: frame }],
         None,
         Vec::new(),
     ));
@@ -485,19 +485,22 @@ impl Builder<'_> {
                 "动态数据与 CPU／GPU program 调用属于普通 CPU 应用主流程",
             );
         }
-        if let Some(frame) = self.application.as_ref().unwrap().frame.clone() {
-            return Ok(frame);
-        }
         let ty = pointer_type();
+        let regs = if let Some(regs) = self.application.as_ref().unwrap().frame.clone() {
+            regs
+        } else {
+            let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
+            self.application.as_mut().unwrap().frame = Some(regs.clone());
+            regs
+        };
         let frame = Value {
             proof: bounds::Proof::default(),
             literal: false,
-            regs: ty.components.iter().map(|(s, _)| self.reg(*s)).collect(),
+            regs,
             ty,
             uniform: false,
             constant: None,
         };
-        self.application.as_mut().unwrap().frame = Some(frame.clone());
         Ok(frame)
     }
     fn application_call(
@@ -534,7 +537,7 @@ impl Builder<'_> {
         runtime_call(
             "release",
             vec![
-                argument(frame),
+                CallArgument::Value { ty: pointer_type(), values: frame },
                 CallArgument::Value {
                     ty: Ty::scalar(Scalar::U32),
                     values: vec![handle],
@@ -793,6 +796,7 @@ impl Builder<'_> {
             .insert(name.into(), Binding::ApplicationData(value));
         Ok(())
     }
+    #[inline(never)]
     pub(super) fn application_resource(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         match self.evaluate_returned(expr, None)? {
             Some(returns::Returned::Dataset(data)) => Ok(Some(data)),
@@ -800,6 +804,7 @@ impl Builder<'_> {
             _ => self.fail(span, "B224", "dataset 资源需要同类型拥有值，不能由普通值或聚合整体替代"),
         }
     }
+    #[inline(never)]
     pub(super) fn move_application_dataset(&mut self, name: &str, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
         let Some(mut data) = self.application_value(name, span)? else {
@@ -818,6 +823,7 @@ impl Builder<'_> {
         data.place = None;
         Ok(Some(data))
     }
+    #[inline(never)]
     pub(super) fn resize_application_dataset(&mut self, args: &[Expr], span: Span) -> Result<Option<Data>> {
         if args.len() != 3 {
             return self.fail(span, "B266", "resize(data,length,fill) 消费拥有的 CPU dataset，并以同类型普通值初始化新增元素");
@@ -862,6 +868,7 @@ impl Builder<'_> {
             ownership: Ownership::Owned, writable: true, count: None, residency: residency::Residency::cpu(),
         })))
     }
+    #[inline(never)]
     pub(super) fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
         let ExprKind::Specialize(constructor, explicit, args) = &expr.kind else {
@@ -1120,6 +1127,7 @@ impl Builder<'_> {
         }
         Ok(())
     }
+    #[inline(never)]
     pub(super) fn target_call(
         &mut self,
         target: Target,
@@ -1285,6 +1293,7 @@ impl Builder<'_> {
         }
         Ok(Some(returns::Returned::Unit))
     }
+    #[inline(never)]
     pub(super) fn application_parallel(&mut self, statement: &Stmt) -> Result<()> {
         if self.application.is_none() {
             return self.fail(

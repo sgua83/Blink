@@ -1196,7 +1196,21 @@ fn checked_function(
     world: &World,
     instance: &crate::generics::Instance,
     application: Option<application::Context>,
-) -> Result<CheckedFunction> {
+) -> Result<Box<CheckedFunction>> {
+    let name = &instance.name;
+    let d = &instance.definition;
+    let program = function_program(world, instance)?;
+    let mut b = Box::new(Builder::new(world, d, &program, 0));
+    b.in_function = true;
+    b.application = application;
+    if b.application.is_some() { b.view_uses = view_liveness::State::new(world, d); }
+    let (parameters, inputs, output_contracts) = function_parameters(&mut b, name)?;
+    let (returned,written) = b.function_body(d.function.body.as_ref().unwrap())?;
+    finish_checked_function(b, name, parameters, inputs, output_contracts, returned, written)
+}
+
+#[inline(never)]
+fn function_program(world: &World, instance: &crate::generics::Instance) -> Result<Box<Program>> {
     let name = &instance.name;
     let d = &instance.definition;
     // CPU 参数是实际调用 ABI；设备参数仍使用原并行域的接口身份。
@@ -1243,10 +1257,18 @@ fn checked_function(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(),
     };
-    let mut b = Builder::new(world, d, &program, 0);
-    b.in_function = true;
-    b.application = application;
-    if b.application.is_some() { b.view_uses = view_liveness::State::new(world, d); }
+    Ok(Box::new(program))
+}
+
+// 参数准备与输出打包不在下一层函数体分析期间保留临时载荷。
+#[inline(never)]
+fn function_parameters(
+    b: &mut Builder<'_>,
+    name: &str,
+) -> Result<(Vec<CallParameter>, Vec<Reg>, BTreeSet<(ContractKind, ContractPredicate)>)> {
+    let world = b.world;
+    let definition = b.definition.clone();
+    let d = &definition;
     let mut inputs = Vec::new();
     let mut parameters = Vec::new();
     if b.application.is_some() {
@@ -1432,11 +1454,25 @@ fn checked_function(
             }),
         );
     }
-    let requirements = contracts::resolve(&b, d, &b.env)?;
+    let requirements = contracts::resolve(b, d, &b.env)?;
     contracts::assume(&mut b.env, &requirements);
     b.materialize_array_bindings();
-    let output_contracts=outputs::contract_predicates(&mut b,d)?;
-    let (returned,written) = b.function_body(d.function.body.as_ref().unwrap())?;
+    let output_contracts=outputs::contract_predicates(b,d)?;
+    Ok((parameters, inputs, output_contracts))
+}
+
+#[inline(never)]
+fn finish_checked_function(
+    mut b: Box<Builder<'_>>,
+    name: &String,
+    parameters: Vec<CallParameter>,
+    inputs: Vec<Reg>,
+    output_contracts: BTreeSet<(ContractKind, ContractPredicate)>,
+    returned: Option<returns::Returned>,
+    written: Vec<Option<returns::Returned>>,
+) -> Result<Box<CheckedFunction>> {
+    let definition = b.definition.clone();
+    let d = &definition;
     let output = returned.as_ref().map(|value| b.returned_storage(value));
     let result = if d.function.result.name == "void" || d.function.result.is_never() {
         None
@@ -1457,7 +1493,7 @@ fn checked_function(
             outputs: output.map(|v| v.regs).unwrap_or_default(),
         },
     };
-    Ok(CheckedFunction {
+    Ok(Box::new(CheckedFunction {
         body,
         returned,
         inputs: semantic_inputs,
@@ -1466,8 +1502,9 @@ fn checked_function(
         residency: b.residency,
         view_model: b.view_model,
         application: b.application,
-    })
+    }))
 }
+
 fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, u32)> {
     if !n.starts_with("0x")
         && (n.contains('.') || n.contains('e') || n.contains('E') || n.ends_with('f'))
@@ -1539,6 +1576,7 @@ struct Builder<'a> {
     prefix: Option<PrefixCount>,
 }
 impl<'a> Builder<'a> {
+    #[inline(never)]
     fn new(
         world: &'a World,
         definition: &Arc<Definition>,
@@ -1710,29 +1748,7 @@ impl<'a> Builder<'a> {
             StmtKind::For(name, start, end, body) => {
                 return self.for_statement(name, start, end, body, s.span);
             }
-            StmtKind::Break => {
-                if self.loop_depth == 0 {
-                    return self.fail(s.span, "B129", "break 只能用于局部顺序循环");
-                }
-                self.release_application_loop()?;
-                self.code.push(Inst::Break);
-                self.capture_break();
-                self.flow = Flow::BREAK;
-            }
-            StmtKind::Continue => {
-                if self.loop_depth == 0 {
-                    return self.fail(s.span, "B129", "continue 只能用于局部顺序循环");
-                }
-                self.release_application_loop()?;
-                if let Some(Some((_, slot))) = self.iterators.last().cloned() {
-                    let index = self.reg(Scalar::U32);
-                    self.code.push(Inst::LoadLocal(index, slot));
-                    self.advance_iterator(index, slot)?;
-                }
-                self.check_application_loop(s.span)?;
-                self.code.push(Inst::Continue);
-                self.flow = Flow::CONTINUE;
-            }
+            StmtKind::Break | StmtKind::Continue => return self.loop_control_statement(s),
             StmtKind::Match(value, arms) => { return self.match_returned(value,arms,s.span); }
             StmtKind::Return(value) => self.return_statement(value.as_ref(), s.span)?,
             StmtKind::Parallel(..) => return self.application_parallel(s),
@@ -1742,6 +1758,34 @@ impl<'a> Builder<'a> {
                 }
             }
             StmtKind::Seek(name, position) => return self.seek_statement(name, position, s.span),
+        }
+        Ok(())
+    }
+    // 循环出口的资源交接只在本语句分析时存活。
+    #[inline(never)]
+    fn loop_control_statement(&mut self, s: &Stmt) -> Result<()> {
+        let breaking = matches!(&s.kind, StmtKind::Break);
+        if self.loop_depth == 0 {
+            return self.fail(s.span, "B129", if breaking {
+                "break 只能用于局部顺序循环"
+            } else {
+                "continue 只能用于局部顺序循环"
+            });
+        }
+        self.release_application_loop()?;
+        if breaking {
+            self.code.push(Inst::Break);
+            self.capture_break();
+            self.flow = Flow::BREAK;
+        } else {
+            if let Some(Some((_, slot))) = self.iterators.last().cloned() {
+                let index = self.reg(Scalar::U32);
+                self.code.push(Inst::LoadLocal(index, slot));
+                self.advance_iterator(index, slot)?;
+            }
+            self.check_application_loop(s.span)?;
+            self.code.push(Inst::Continue);
+            self.flow = Flow::CONTINUE;
         }
         Ok(())
     }
@@ -2112,31 +2156,14 @@ impl<'a> Builder<'a> {
             ExprKind::Cooperate(..) => {
                 self.fail(e.span, "B208", "cooperate 调用只能作为协作根块的局部声明")
             }
-            ExprKind::StaticU32(bits) => Ok(Some(self.constant(Scalar::U32, *bits))),
-            ExprKind::Specialize(name, explicit, args) => {
-                if name == "view" { return self.create_application_view(explicit, args, e.span); }
-                if self.variant_constructor_type(name,Some(explicit),None,e.span)?.is_some() {
-                    let value=self.evaluate_returned(e,None)?;return self.ordinary_return(value,e.span);
-                }
-                let value = self.specialized_call(name, explicit, args, e.span)?;
-                if !self.flow.continues() {
-                    return Ok(None);
-                }
-                self.value_result(value, e.span).map(Some)
-            }
-            ExprKind::Number(n) => {
-                let (t, b) = number(&self.definition.source, e.span, n)?;
-                Ok(Some(self.literal(t.components[0].0, b)))
-            }
-            ExprKind::Bool(b) => Ok(Some(self.constant(Scalar::Bool, *b as u32))),
-            ExprKind::Name(name) => self.name_expr(name, e).map(Some),
+            ExprKind::StaticU32(bits) => self.constant_expression(Scalar::U32, *bits),
+            ExprKind::Specialize(name, explicit, args) => self.specialized_expression(e, name, explicit, args),
+            ExprKind::Number(n) => self.number_expression(n, e.span),
+            ExprKind::Bool(b) => self.constant_expression(Scalar::Bool, *b as u32),
+            ExprKind::Name(name) => self.name_expression(name, e),
             ExprKind::Member(base, field) => {
                 let result = self.member_returned(e, base, field)?;
-                if !self.flow.continues() {
-                    return Ok(None);
-                }
-                let value = self.ordinary_return(result, e.span)?;
-                self.value_result(value, e.span).map(Some)
+                self.returned_expression(result, e.span)
             }
             ExprKind::Index(base, index) => self.index_expr(base, index, e),
             ExprKind::Unary(op, a) => self.unary_expr(op, a, e.span),
@@ -2144,22 +2171,47 @@ impl<'a> Builder<'a> {
             ExprKind::Select(c, a, b) => self.selection(c, a, b, e.span),
             ExprKind::Target(target, call) => {
                 let result = self.target_call(*target, call, e.span)?;
-                if !self.flow.continues() {
-                    return Ok(None);
-                }
-                let value = self.ordinary_return(result, e.span)?;
-                self.value_result(value, e.span).map(Some)
+                self.returned_expression(result, e.span)
             }
             ExprKind::Construct(ty, args) => self.record_expression(ty, args, e.span),
             ExprKind::Call(..) => {
                 let result = self.evaluate_returned(e, None)?;
-                if !self.flow.continues() {
-                    return Ok(None);
-                }
-                let value = self.ordinary_return(result, e.span)?;
-                self.value_result(value, e.span).map(Some)
+                self.returned_expression(result, e.span)
             }
         }
+    }
+    #[inline(never)]
+    fn constant_expression(&mut self, scalar: Scalar, bits: u32) -> Result<Option<Value>> {
+        Ok(Some(self.constant(scalar, bits)))
+    }
+    #[inline(never)]
+    fn name_expression(&mut self, name: &String, e: &Expr) -> Result<Option<Value>> {
+        self.name_expr(name, e).map(Some)
+    }
+    #[inline(never)]
+    fn returned_expression(&mut self, result: Option<returns::Returned>, span: Span) -> Result<Option<Value>> {
+        if !self.flow.continues() {
+            return Ok(None);
+        }
+        let value = self.ordinary_return(result, span)?;
+        self.value_result(value, span).map(Some)
+    }
+    #[inline(never)]
+    fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &[GenericArgument], args: &[Expr]) -> Result<Option<Value>> {
+        if name == "view" { return self.create_application_view(explicit, args, e.span); }
+        if self.variant_constructor_type(name,Some(explicit),None,e.span)?.is_some() {
+            let value=self.evaluate_returned(e,None)?;return self.ordinary_return(value,e.span);
+        }
+        let value = self.specialized_call(name, explicit, args, e.span)?;
+        if !self.flow.continues() {
+            return Ok(None);
+        }
+        self.value_result(value, e.span).map(Some)
+    }
+    #[inline(never)]
+    fn number_expression(&mut self, n: &str, span: Span) -> Result<Option<Value>> {
+        let (t, b) = number(&self.definition.source, span, n)?;
+        Ok(Some(self.literal(t.components[0].0, b)))
     }
     fn bitcast(&mut self, name: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
         if args.len() != 1 {
@@ -2298,6 +2350,7 @@ impl<'a> Builder<'a> {
         }
         Ok((a, b))
     }
+    #[inline(never)]
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
         if a.ty.is_handle() || b.ty.is_handle() {
             self.require_same(&a.ty, &b.ty, span)?;
@@ -2747,6 +2800,7 @@ impl<'a> Builder<'a> {
         }
         self.fail(span, "B158", format!("未知函数或能力 {name}"))
     }
+    #[inline(never)]
     fn unary_expr(&mut self, op: &String, a: &Expr, span: Span) -> Result<Option<Value>> {
         if op == "-" {
             if let ExprKind::Number(literal) = &a.kind {
@@ -2824,37 +2878,39 @@ impl<'a> Builder<'a> {
             constant: None,
         }))
     }
-    fn binary_expr(
-        &mut self,
-        op: &String,
-        a: &Expr,
-        b: &Expr,
-        span: Span,
-    ) -> Result<Option<Value>> {
-        if op == "&&" || op == "||" {
-            let skipped = Expr {
-                kind: ExprKind::Bool(op == "||"),
-                span,
-            };
-            let (yes, no) = if op == "&&" {
-                (b, &skipped)
-            } else {
-                (&skipped, b)
-            };
-            let result = self.selection(a, yes, no, span)?;
-            if let Some(value) = &result {
-                self.require_bool(value, span)?;
-            }
-            return Ok(result);
-        }
-        let Some(a) = self.expr(a)? else {
-            return Ok(None);
-        };
-        let Some(b) = self.expr(b)? else {
-            return Ok(None);
-        };
-        self.binary(op, a, b, span).map(Some)
+    #[inline(never)]
+    fn binary_expr(&mut self, op: &String, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
+        if op == "&&" || op == "||" { return self.short_circuit_expr(op,a,b,span); }
+        let Some(a) = self.expr(a)? else { return Ok(None); };
+        self.binary_after_left(op,Box::new(a),b,span)
     }
+    #[inline(never)]
+    fn short_circuit_expr(&mut self, op: &String, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
+        let skipped = Expr {
+            kind: ExprKind::Bool(op == "||"),
+            span,
+        };
+        let (yes, no) = if op == "&&" {
+            (b, &skipped)
+        } else {
+            (&skipped, b)
+        };
+        let result = self.selection(a, yes, no, span)?;
+        if let Some(value) = &result {
+            self.require_bool(value, span)?;
+        }
+        Ok(result)
+    }
+    #[inline(never)]
+    fn binary_after_left(&mut self, op: &String, a: Box<Value>, b: &Expr, span: Span) -> Result<Option<Value>> {
+        let Some(b) = self.expr(b)? else { return Ok(None); };
+        self.binary_operands(op,a,b,span)
+    }
+    #[inline(never)]
+    fn binary_operands(&mut self, op: &str, a: Box<Value>, b: Value, span: Span) -> Result<Option<Value>> {
+        self.binary(op,*a,b,span).map(Some)
+    }
+    #[inline(never)]
     fn if_statement(
         &mut self,
         condition: &Expr,
@@ -3014,6 +3070,7 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
+    #[inline(never)]
     fn for_statement(
         &mut self,
         name: &String,
@@ -3277,6 +3334,7 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
+    #[inline(never)]
     fn let_statement(
         &mut self,
         annotation: &Option<TypeName>,
@@ -3304,10 +3362,10 @@ impl<'a> Builder<'a> {
             .transpose()?;
         let result = if let ExprKind::Cooperate(call, explicit, args) = &e.kind {
             self.cooperate(call, explicit.as_deref(), args, e.span)?
-                .map(returns::Returned::Value)
+                .map(returns::Returned::value)
         } else if let ExprKind::Call(call, args) = &e.kind {
             if let Some(op) = TileOp::from_source(call) {
-                Some(returns::Returned::Value(
+                Some(returns::Returned::value(
                     self.tile_collective(op, args, span)?,
                 ))
             } else {
@@ -3698,6 +3756,7 @@ impl<'a> Builder<'a> {
             _ => self.fail(e.span, "B134", format!("{name} 不是可赋值的元素或局部变量")),
         }
     }
+    #[inline(never)]
     fn declare_statement(
         &mut self,
         annotation: &TypeName,
@@ -3733,6 +3792,7 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
+    #[inline(never)]
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
         if self.owned_element_type(lhs).is_some_and(|ty|ty.owns_resources()) {
             let Some(place)=self.place(lhs)?else{return Ok(())};
@@ -3763,6 +3823,7 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
+    #[inline(never)]
     fn expression_statement(&mut self, e: &Expr) -> Result<()> {
         if let ExprKind::Call(name, args) = &e.kind
             && name == "atomic_store"
@@ -3798,6 +3859,7 @@ impl<'a> Builder<'a> {
         self.capture_loop_cursor(value);
         Ok(())
     }
+    #[inline(never)]
     fn seek_statement(&mut self, name: &String, position: &Expr, span: Span) -> Result<()> {
         let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {
             return self.fail(span, "B164", "seek 需要当前有界 for 游标");
@@ -4074,6 +4136,7 @@ impl<'a> Builder<'a> {
             constant: v.constant.map(|b| indices.iter().map(|i| b[*i]).collect()),
         })
     }
+    #[inline(never)]
     fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
         let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
@@ -4093,6 +4156,7 @@ impl<'a> Builder<'a> {
         };
         self.read_place(&p, e.span).map(Some)
     }
+    #[inline(never)]
     fn name_expr(&mut self, name: &String, e: &Expr) -> Result<Value> {
         match self.env.get(name).cloned() {
             Some(Binding::Value(v)) => Ok(v),

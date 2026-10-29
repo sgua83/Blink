@@ -52,7 +52,7 @@ impl Builder<'_> {
     pub(super) fn unpack_record(&mut self, owner: &OwnedValue, index: usize) -> Returned {
         let value = self.record_component(&owner.value, index);
         if !value.ty.owns_resources() {
-            return Returned::Value(value);
+            return Returned::value(value);
         }
         let mut item = (**owner.payloads[index].as_ref().unwrap()).clone();
         self.rebind_returned(&mut item, value.regs.clone());
@@ -67,6 +67,7 @@ impl Builder<'_> {
         }
         item
     }
+    #[inline(never)]
     pub(super) fn make_owned_record(
         &mut self,
         ty: Ty,
@@ -111,7 +112,7 @@ impl Builder<'_> {
             let binding = match &item {
                 Returned::Dataset(data) => Some(Binding::ApplicationData(data.clone())),
                 Returned::OwnedValue(value) => Some(Binding::OwnedValue(value.clone())),
-                Returned::Value(value) if value.ty.contains_views()=>Some(Binding::Value(value.clone())),
+                Returned::Value(value) if value.ty.contains_views()=>Some(Binding::Value((**value).clone())),
                 _ => None,
             };
             if let Some(binding) = binding {
@@ -124,7 +125,7 @@ impl Builder<'_> {
             fields[index] = match self.env.remove(&name).unwrap() {
                 Binding::ApplicationData(data) => Returned::Dataset(data),
                 Binding::OwnedValue(value) => Returned::OwnedValue(value),
-                Binding::Value(value)=>Returned::Value(value),
+                Binding::Value(value)=>Returned::value(value),
                 _ => unreachable!(),
             };
         }
@@ -229,7 +230,7 @@ impl Builder<'_> {
             if let Returned::OwnedValue(owner)=&mut item {self.require_user_owner(owner,span)?;}
             item = match item {
                 Returned::OwnedValue(owner) => self.unpack_record(&owner, *index),
-                Returned::Value(value) => Returned::Value(self.record_component(&value, *index)),
+                Returned::Value(value) => Returned::value(self.record_component(&value, *index)),
                 _ => unreachable!(),
             };
         }
@@ -237,7 +238,7 @@ impl Builder<'_> {
         match item {
             Returned::Value(value) => {
                 if let Some(place) = self.projection_place(p) {
-                    self.read_place(&place, span).map(Returned::Value)
+                    self.read_place(&place, span).map(Returned::value)
                 } else {
                     Ok(Returned::Value(value))
                 }
@@ -278,6 +279,7 @@ impl Builder<'_> {
         meta.length.proof = data.length.proof.clone();
         Ok(Some(application::DataReference::direct(data)))
     }
+    #[inline(never)]
     pub(super) fn member_returned(
         &mut self,
         expr: &Expr,
@@ -296,7 +298,7 @@ impl Builder<'_> {
         }
         if let Some(data) = self.application_reference(base)? {
             return if name == "length" {
-                Ok(Some(Returned::Value(data.length.clone())))
+                Ok(Some(Returned::value(data.length.clone())))
             } else {
                 self.fail(expr.span, "B141", "dataset只公开只读length")
             };
@@ -308,7 +310,7 @@ impl Builder<'_> {
         {
             return self
                 .member_expr(base, name, expr)
-                .map(|v| v.map(Returned::Value));
+                .map(|v| v.map(Returned::value));
         }
         let value = self.evaluate_returned(base, None)?;
         if !self.flow.continues() {
@@ -343,11 +345,11 @@ impl Builder<'_> {
                 }
                 let length = data.length.clone();
                 self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span)?;
-                Ok(Some(Returned::Value(length)))
+                Ok(Some(Returned::value(length)))
             }
             Some(Returned::Value(value)) => self
-                .member_value(value, name, expr.span)
-                .map(|v| Some(Returned::Value(v))),
+                .member_value(*value, name, expr.span)
+                .map(|v| Some(Returned::value(v))),
             _ => self.fail(expr.span, "B228", "字段访问需要值"),
         }
     }
@@ -393,6 +395,7 @@ impl Builder<'_> {
     pub(super) fn owned_element_type(&self, expr: &Expr) -> Option<Ty> {
         self.owned_expression_type(expr)
     }
+    #[inline(never)]
     pub(super) fn owned_array_index(
         &mut self,
         expr: &Expr,
@@ -418,20 +421,20 @@ impl Builder<'_> {
                 };
                 let value = self.read_place(&place, expr.span)?;
                 self.finish_scoped_argument(&held, expr.span)?;
-                return Ok(Some(Returned::Value(value)));
+                return Ok(Some(Returned::value(value)));
             }
             Some(Returned::Value(value)) if value.ty.array.is_some() => {
                 return self
-                    .array_value_index(value, index)
-                    .map(|v| v.map(Returned::Value));
+                    .array_value_index(*value, index)
+                    .map(|v| v.map(Returned::value));
             }
             Some(Returned::Value(value)) => {
-                let Some(place) = self.view_value_place(value, index)? else {
+                let Some(place) = self.view_value_place(*value, index)? else {
                     return Ok(None);
                 };
                 return self
                     .read_place(&place, expr.span)
-                    .map(|v| Some(Returned::Value(v)));
+                    .map(|v| Some(Returned::value(v)));
             }
             _ => return self.fail(expr.span, "B224", "拥有数组元素需要实际拥有数组值"),
         };

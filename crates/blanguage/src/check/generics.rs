@@ -25,6 +25,7 @@ impl Builder<'_> {
     ) -> Result<crate::generics::Instance> {
         self.specialized_arguments(key, args, None, span)
     }
+    #[inline(never)]
     pub(super) fn specialized_arguments(
         &self,
         key: String,

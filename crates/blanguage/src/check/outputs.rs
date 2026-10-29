@@ -683,7 +683,7 @@ impl Builder<'_> {
         }
         self.path = original_path.clone();
         let mut model = match binding {
-            Binding::Owned(owner) => Returned::Value(Value {
+            Binding::Owned(owner) => Returned::value(Value {
                 ty: place.ty().clone(),
                 regs: place
                     .ty()

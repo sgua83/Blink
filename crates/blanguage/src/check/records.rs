@@ -23,6 +23,7 @@ impl Builder<'_> {
             _ => self.fail(expr.span, "B200", "需要命名 dataset 或其字段"),
         }
     }
+    #[inline(never)]
     pub(super) fn record_expression(
         &mut self,
         name: &TypeName,

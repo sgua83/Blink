@@ -272,6 +272,7 @@ impl Builder<'_> {
         }
         self.call_reference(place, access, span)
     }
+    #[inline(never)]
     pub(super) fn external_call(
         &mut self,
         d: &Arc<Definition>,

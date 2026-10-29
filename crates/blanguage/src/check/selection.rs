@@ -1,6 +1,7 @@
 //! 选择式先检查两侧，在运行时只求值一侧；结果仍是普通值。
 use super::*;
 impl Builder<'_> {
+    #[inline(never)]
     pub(super) fn selection(
         &mut self,
         condition: &Expr,
@@ -25,6 +26,7 @@ impl Builder<'_> {
         let value = self.ordinary_return(result, span)?;
         self.value_result(value, span).map(Some)
     }
+    #[inline(never)]
     pub(super) fn selection_returned(
         &mut self,
         condition: &Expr,
