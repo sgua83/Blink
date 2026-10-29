@@ -194,6 +194,10 @@ pub(super) fn resolve(
 ) -> Result<Vec<Requirement>> {
     let mut result = Vec::new();
     for contract in &definition.function.contracts {
+        if matches!(contract.predicate, ContractPredicate::Initialized { .. }) {
+            outputs::validate(builder, definition, contract)?;
+            continue;
+        }
         if contract.kind != ContractKind::Requires
             && !matches!(contract.predicate, ContractPredicate::Prefix { .. })
         {
@@ -258,6 +262,7 @@ pub(super) fn resolve(
                     "前缀域约束只用于 program 接口",
                 );
             }
+            ContractPredicate::Initialized { .. } => unreachable!(),
         };
         result.push(Requirement {
             predicate,

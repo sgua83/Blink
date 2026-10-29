@@ -583,6 +583,16 @@ impl Parser {
                     "nonzero" => ContractPredicate::Nonzero(self.qualified(".")?),
                     "nonempty" => ContractPredicate::Nonempty(self.qualified(".")?),
                     "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
+                    "initialized" => {
+                        let value = self.qualified(".")?;
+                        self.expect(",")?;
+                        let expression = self.expr(0)?;
+                        let condition = OutputCondition::from_expr(&expression).ok_or_else(|| Diagnostic {
+                            source: self.source.clone(), span: expression.span, code: "B225",
+                            message: "initialized 条件使用输入值、returned、字段、布尔和纯数值运算；不执行调用或存储访问".into(),
+                        })?;
+                        ContractPredicate::Initialized { value, condition }
+                    }
                     "index" => {
                         let value = self.qualified(".")?;
                         self.expect(",")?;
@@ -593,7 +603,7 @@ impl Parser {
                         return self.source.fail(
                             span,
                             "B225",
-                            "未知接口约束；使用 prefix、nonzero、nonempty、index 或 contiguous",
+                            "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous 或 initialized",
                         );
                     }
                 };

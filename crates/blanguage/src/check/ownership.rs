@@ -457,7 +457,13 @@ impl Builder<'_> {
         self.initialized = if let Some(bits) = &condition.constant {
             if bits[0] != 0 { yes } else { no }
         } else {
-            intersect_initialized(&yes, &no)
+            let mut common=intersect_initialized(&yes,&no);
+            let choice=owned_presence::Presence::input(condition);
+            let yes=yes.difference(&common).cloned().collect::<Vec<_>>();
+            let no=no.difference(&common).cloned().collect::<Vec<_>>();
+            common.extend(yes.into_iter().map(|position|Position::selected(choice.clone(),position,Position::Initialized)));
+            common.extend(no.into_iter().map(|position|Position::selected(choice.clone().not(),position,Position::Initialized)));
+            common
         };
     }
     pub(super) fn borrow_owned(&self, place: Place) -> OwnedBinding {

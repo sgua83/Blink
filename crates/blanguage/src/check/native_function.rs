@@ -117,10 +117,7 @@ fn declaration(
         inputs: checked.inputs,
         returned: checked.returned,
         written: checked.written,
-        requires: crate::contract_signature(&instance.definition.function)
-            .into_iter()
-            .map(|(kind, predicate)| (kind, predicate.clone()))
-            .collect(),
+        requires: checked.contracts,
         target: instance.definition.function.target,
         frame: false,
         domain: None,
@@ -342,7 +339,7 @@ impl Builder<'_> {
                     env.insert(p.name.clone(), Binding::Owned(owner));
                     written.push((index, place));
                 }
-                Argument::ApplicationData(data) if p.ty.dataset => {
+                Argument::ApplicationData(mut data) if p.ty.dataset => {
                     residency::argument(&mut locations, index, &data);
                     self.require_same(&ty, &data.ty, span)?;
                     if !matches!(
@@ -372,8 +369,9 @@ impl Builder<'_> {
                     {
                         return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
                     }
-                    if p.access == Access::Write {
-                        written_data.push(data.clone());
+                    if matches!(p.access,Access::Write|Access::InOut) && outputs::declared(d,index){self.reset_data_output(&mut data,span)?;}
+                    if p.access == Access::Write || p.access==Access::InOut && outputs::declared(d,index) {
+                        written_data.push((index,data.clone()));
                     }
                     if matches!(p.access, Access::Write | Access::InOut) {
                         self.invalidate_application_contents(data.handle.identity());
@@ -415,6 +413,7 @@ impl Builder<'_> {
         }
         let requirements = contracts::resolve(self, d, &env)?;
         contracts::prove(self, &requirements, span)?;
+        let output_inputs=outputs::inputs(self,d,&env)?;
         self.native_declaration(&instance)?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
         view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
@@ -499,7 +498,12 @@ impl Builder<'_> {
         }
         view_arguments.extend(bindings.clone());
         let view_call=Some(self.view_model.call(&instance.name,view_arguments.clone(),self.path.clone(),self.definition.source.clone(),span));
+        let output_value=result.as_ref().map(|ty|Value{ty:ty.clone(),regs:values.clone(),
+            proof:model.as_ref().map(|model|bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings)).unwrap_or_default(),
+            uniform:false,literal:false,constant:None});
         for (index, place) in written {
+            let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())?;
+            if outputs::declared(d,index) {self.forget_output_initialization(&place,span)?;}
             let mut proof = writes
                 .get(index)
                 .and_then(Option::as_ref)
@@ -513,13 +517,15 @@ impl Builder<'_> {
                 let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
                 if let Some(call)=view_call{view_contracts::set_resource_borrows(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
+                if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_place(&place,Returned::OwnedValue(value));
             }
             self.assign_owned_proof(&place, proof, false);
-            self.initialize(&place);
+            self.initialize_output(&place,&guards);
         }
-        for data in written_data {
-            self.initialize_application(&data);
+        for (index,data) in written_data {
+            let guards=outputs::guards(self,d,index,&data.ty,&output_inputs,output_value.as_ref())?;
+            self.initialize_data_output(&data,&guards);
         }
         let Some(ty) = result else {
             self.view_uses.after(span);

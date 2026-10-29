@@ -2,6 +2,15 @@
 use crate::{ast::*, ir::Ty};
 use std::collections::BTreeMap;
 
+pub(crate) fn substitute_output_condition(condition:&mut OutputCondition,values:&BTreeMap<String,u32>){
+    match condition{
+        OutputCondition::Name(name)if name!="returned"=>if let Some(value)=values.get(name){*condition=OutputCondition::StaticU32(*value);},
+        OutputCondition::Member(base,_)|OutputCondition::Unary(_,base)=>substitute_output_condition(base,values),
+        OutputCondition::Binary(_,a,b)=>{substitute_output_condition(a,values);substitute_output_condition(b,values);},
+        _=>{}
+    }
+}
+
 pub(crate) fn validate(
     values: &[ValueParameter],
     owner: &str,

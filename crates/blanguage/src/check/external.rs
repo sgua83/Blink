@@ -8,7 +8,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.body.is_some()
         || !f.types.is_empty()
         || !f.values.is_empty()
-        || !f.contracts.is_empty()
+        || f.contracts.iter().any(|contract|contract.kind!=ContractKind::Ensures || !matches!(contract.predicate,ContractPredicate::Initialized{..}))
         || f.params.iter().any(|p| {
             p.ty.dataset
                 || p.ty.tile
@@ -19,7 +19,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.result.dataset
         || f.result.tile
     {
-        return d.source.fail(f.span,"B263","extern C 需要无正文、无泛型／契约的 on cpu 普通函数，只接收普通值及 read／write／inout 位置");
+        return d.source.fail(f.span,"B263","extern C 需要无正文、无泛型的 on cpu 普通函数，只接收普通值及 read／write／inout 位置；输出可声明 ensures initialized");
     }
     Ok(())
 }
@@ -286,13 +286,16 @@ impl Builder<'_> {
             );
         }
         check_declaration(self.world, d)?;
+        for contract in &d.function.contracts {outputs::validate(self,d,contract)?;}
         let mut arguments = Vec::new();
         let mut written = Vec::new();
-        for (param, arg) in d.function.params.iter().zip(args) {
+        let mut output_inputs=BTreeMap::new();
+        for (index,(param, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
             arguments.push(match arg {
                 Argument::Value(value) if param.access == Access::Value => {
                     self.require_same(&ty, &value.ty, span)?;
+                    output_inputs.insert(param.name.clone(),value.clone());
                     CallArgument::Value {
                         ty,
                         values: value.regs,
@@ -302,7 +305,7 @@ impl Builder<'_> {
                     self.require_same(&ty, place.ty(), span)?;
                     let address = self.external_reference(&place, param.access, span)?;
                     if param.access.writes() {
-                        written.push(place);
+                        written.push((index,place));
                     }
                     CallArgument::Reference {
                         ty,
@@ -338,9 +341,12 @@ impl Builder<'_> {
             self.flow = Flow::STOP;
             return Ok(None);
         }
-        for place in written {
+        let returned=result.clone().map(|ty|Value{ty,regs:values.clone(),proof:bounds::Proof::default(),literal:false,uniform:false,constant:None});
+        for (index,place) in written {
+            let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,returned.as_ref())?;
+            if outputs::declared(d,index){self.forget_output_initialization(&place,span)?;}
             self.assign_owned_proof(&place, bounds::Proof::default(), false);
-            self.initialize(&place);
+            self.initialize_output(&place,&guards);
         }
         Ok(result.map(|ty| Value {
             proof: bounds::Proof::default(),

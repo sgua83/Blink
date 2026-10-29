@@ -75,7 +75,11 @@ pub(crate) fn instantiate(
             }
             continue;
         }
-        contracts.push(contract.clone());
+        let mut contract=contract.clone();
+        if let ContractPredicate::Initialized{condition,..}=&mut contract.predicate{
+            crate::value_parameters::substitute_output_condition(condition,&value_map);
+        }
+        contracts.push(contract);
     }
     concrete.function.contracts = contracts;
     concrete.function.types.clear();

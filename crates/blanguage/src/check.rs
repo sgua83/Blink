@@ -28,6 +28,7 @@ mod owned_borrows;
 mod owned_presence;
 mod owned_values;
 mod ownership;
+mod outputs;
 mod prefix;
 mod records;
 mod reduce;
@@ -1179,6 +1180,7 @@ struct CheckedFunction {
     returned: Option<returns::Returned>,
     inputs: Vec<Reg>,
     written: Vec<Option<returns::Returned>>,
+    contracts: BTreeSet<(ContractKind, ContractPredicate)>,
     residency: residency::Inputs,
     view_model: view_contracts::Function,
     application: Option<application::Context>,
@@ -1426,6 +1428,7 @@ fn checked_function(
     let requirements = contracts::resolve(&b, d, &b.env)?;
     contracts::assume(&mut b.env, &requirements);
     b.materialize_array_bindings();
+    let output_contracts=outputs::contract_predicates(&mut b,d)?;
     let (returned,written) = b.function_body(d.function.body.as_ref().unwrap())?;
     let output = returned.as_ref().map(|value| b.returned_storage(value));
     let result = if d.function.result.name == "void" || d.function.result.is_never() {
@@ -1452,6 +1455,7 @@ fn checked_function(
         returned,
         inputs: semantic_inputs,
         written,
+        contracts: output_contracts,
         residency: b.residency,
         view_model: b.view_model,
         application: b.application,
@@ -1561,7 +1565,9 @@ impl<'a> Builder<'a> {
             cross_access: BTreeSet::new(),
             view_access: BTreeMap::new(),
             initialized: BTreeSet::new(),
-            output_scopes: 0,
+            // Reference parameters already own 0..params.len(); dataset and
+            // inline output origins share this allocator after that range.
+            output_scopes: definition.function.params.len(),
             control_uniform: true,
             loop_depth: 0,
             block_depth: 0,

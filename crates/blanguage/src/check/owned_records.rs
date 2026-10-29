@@ -457,7 +457,7 @@ impl Builder<'_> {
         let Returned::Dataset(mut data)=model else{unreachable!()};self.application_available(&data,expr.span)?;
 
         let sources=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.handle.identity()}).collect();
-        data=self.refresh_application_data(data,expr.span)?;data.ownership=Ownership::Borrowed;data.place=None;
+        data=self.refresh_application_data(data,expr.span)?;data.ownership=Ownership::Borrowed;data.place=Some(place);
         Ok(Some(application::DataReference { data, sources }))
     }
 }

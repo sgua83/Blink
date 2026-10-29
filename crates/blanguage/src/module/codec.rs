@@ -206,6 +206,8 @@ record!(ir::Ty {
 });
 variants!(ir::CallParameter{0=>Value(ty),1=>Reference{ty,access}});
 variants!(ast::ContractKind{0=>Requires,1=>Ensures});
-variants!(ast::ContractPredicate{0=>Prefix{data,count,field},1=>Nonzero(name),2=>Nonempty(name),3=>Index{value,resource},4=>Contiguous(name)});
+variants!(ast::ContractPredicate{0=>Prefix{data,count,field},1=>Nonzero(name),2=>Nonempty(name),3=>Index{value,resource},4=>Contiguous(name),5=>Initialized{value,condition}});
+variants!(ast::OutputCondition{0=>Name(name),1=>Number(number),2=>Bool(value),3=>Member(base,field),4=>Unary(op,value),5=>Binary(op,a,b),6=>StaticU32(value),7=>Constant(value)});
+record!(ast::OutputConstant{ty,bits});
 
 record!(crate::ir::Variant { name, discriminant, ty });

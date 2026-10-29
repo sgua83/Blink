@@ -63,7 +63,7 @@ struct CoffSymbol {
 }
 pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 13);
+    word(&mut meta, 15);
     string(&mut meta, &o.name)?;
     match &o.kind {
         Kind::Module {
@@ -354,7 +354,7 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 13 {
+    if tag != *b"BLCO" || read_word(&mut c)? != 15 {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;

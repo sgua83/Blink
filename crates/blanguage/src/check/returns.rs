@@ -120,6 +120,7 @@ pub(super) struct ReturnContext {
     scoped: bool,
     slots: Vec<usize>,
     exits: Vec<ReturnExit>,
+    inputs: BTreeMap<String, Value>,
 }
 impl ReturnContext {
     pub(super) fn exit_count(&self) -> usize {
@@ -341,12 +342,23 @@ impl Builder<'_> {
         }
         let borrowed=(||->Result<BTreeMap<String,Returned>> {
             let mut borrowed=BTreeMap::new();let definition=self.definition.clone();
-            for param in &definition.function.params {
-                if param.ty.dataset && param.access==Access::Write && let Some(Binding::ApplicationData(data))=self.env.get(&param.name) && !self.application_initialized(data) {
-                    return self.fail(span,"B229",format!("返回前没有完整初始化 write dataset 参数 {}",param.name));
+            let inputs=self.return_context.as_ref().unwrap().inputs.clone();
+            let returned=value.as_ref().map(|value|self.returned_storage(value));
+            for (index,param) in definition.function.params.iter().enumerate() {
+                if param.ty.dataset && matches!(param.access,Access::Write|Access::InOut) && let Some(Binding::ApplicationData(data))=self.env.get(&param.name).cloned() {
+                    if outputs::declared(&definition,index) {
+                        let guards=outputs::guards(self,&definition,index,&data.ty,&inputs,returned.as_ref())?;
+                        self.check_data_output(&data,&guards,span)?;
+                    }else if !self.application_initialized(&data) {
+                        return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name));
+                    }
                 }
                 if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && !param.ty.tile {
-                    let mut model=self.written_model(&param.name,span)?;
+                    let mut model=if outputs::declared(&definition,index) {
+                        let ty=self.env[&param.name].stored_place().unwrap().ty().clone();
+                        let guards=outputs::guards(self,&definition,index,&ty,&inputs,returned.as_ref())?;
+                        self.conditional_written_model(&param.name,&guards,span)?
+                    }else{self.written_model(&param.name,span)?};
                     if let Some(value)=model.view_value_mut(){value.uniform&=self.control_uniform;value.proof.under_path(&value.ty,&self.path);}
                     borrowed.insert(param.name.clone(),model);
                 }
@@ -445,11 +457,13 @@ impl Builder<'_> {
             Vec::new()
         };
         let initial = self.application_initialization_state();
+        let inputs=outputs::entry_inputs(self,&definition)?;
         let caller = self.return_context.replace(ReturnContext {
             expected,
             scoped,
             slots,
             exits: Vec::new(),
+            inputs,
         });
         let flow = std::mem::replace(&mut self.flow, Flow::NEXT);
         let uniform = self.control_uniform;
@@ -567,10 +581,15 @@ impl Builder<'_> {
         // 出口已分别检查并合流；不能再用最后解析分支的环境重建输出。
         for(name,model)in &mut borrowed{native_function::rebind_model(model,written[name].clone());}
         let output_models=definition.function.params.iter().map(|parameter|borrowed.get(&parameter.name).cloned()).collect();
-        for(name,model)in borrowed {
+        let returned=result.as_ref().map(|value|{let mut value=self.returned_storage(value);value.regs=registers.clone();value});
+        for(name,mut model)in borrowed {
+            let index=definition.function.params.iter().position(|parameter|parameter.name==name).unwrap();
+            let place=self.env[&name].stored_place().unwrap();
+            let guards=outputs::guards(self,&definition,index,place.ty(),&context.inputs,returned.as_ref())?;
+            if outputs::declared(&definition,index) && place.ty().owns_resources(){outputs::apply_ownership(&mut model,place.ty(),0,&guards);}
             let binding=match model {
-                Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize(&owner.place);Binding::Owned(owner)}
-                Returned::OwnedValue(mut value)=>{let place=self.env[&name].stored_place().unwrap();self.initialize(&place);value.place=Some(place);Binding::OwnedValue(value)}
+                Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize_output(&owner.place,&guards);Binding::Owned(owner)}
+                Returned::OwnedValue(mut value)=>{self.initialize_output(&place,&guards);value.place=Some(place);Binding::OwnedValue(value)}
                 _=>unreachable!(),
             };
             self.env.insert(name,binding);

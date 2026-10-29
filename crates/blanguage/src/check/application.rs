@@ -477,16 +477,6 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn initialize_application(&mut self, data: &Data) {
-        if let Some(scope) = &data.initialization {
-            self.initialized.extend(
-                data.ty
-                    .components
-                    .iter()
-                    .map(|(_, offset)| scope.application_word(None,offset/4)),
-            );
-        }
-    }
     pub(super) fn application_frame(&mut self, span: Span) -> Result<Value> {
         if self.application.is_none() {
             return self.fail(

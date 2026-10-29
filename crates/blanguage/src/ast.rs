@@ -205,6 +205,51 @@ pub enum ContractPredicate {
         value: String,
         resource: String,
     },
+    Initialized {
+        value: String,
+        condition: OutputCondition,
+    },
+}
+// A source interface expression has no calls, storage access or effects. Names
+// denote immutable input values; `returned` denotes this call's actual result.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OutputCondition {
+    Name(String),
+    Number(String),
+    Bool(bool),
+    Member(Box<Self>, String),
+    Unary(String, Box<Self>),
+    Binary(String, Box<Self>, Box<Self>),
+    StaticU32(u32),
+    Constant(OutputConstant),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputConstant {
+    pub ty: crate::ir::Ty,
+    pub bits: Vec<u32>,
+}
+impl PartialOrd for OutputConstant {
+    fn partial_cmp(&self, other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}
+}
+impl Ord for OutputConstant {
+    fn cmp(&self,other:&Self)->std::cmp::Ordering{
+        use crate::module::codec::Encode;
+        Encode::bytes(&self.ty).cmp(&Encode::bytes(&other.ty)).then_with(||self.bits.cmp(&other.bits))
+    }
+}
+impl OutputCondition {
+    pub fn from_expr(value: &Expr) -> Option<Self> {
+        Some(match &value.kind {
+            ExprKind::Name(name) => Self::Name(name.clone()),
+            ExprKind::Number(number) => Self::Number(number.clone()),
+            ExprKind::StaticU32(value) => Self::StaticU32(*value),
+            ExprKind::Bool(value) => Self::Bool(*value),
+            ExprKind::Member(base, field) => Self::Member(Box::new(Self::from_expr(base)?), field.clone()),
+            ExprKind::Unary(op, value) => Self::Unary(op.clone(), Box::new(Self::from_expr(value)?)),
+            ExprKind::Binary(op, a, b) => Self::Binary(op.clone(), Box::new(Self::from_expr(a)?), Box::new(Self::from_expr(b)?)),
+            _ => return None,
+        })
+    }
 }
 #[derive(Clone, Debug)]
 pub struct FunctionContract {

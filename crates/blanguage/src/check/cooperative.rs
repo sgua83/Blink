@@ -419,7 +419,7 @@ impl<'a> Builder<'a> {
         }
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
-        for (param, arg) in callee.function.params.iter().zip(args) {
+        for (parameter,(param, arg)) in callee.function.params.iter().zip(args).enumerate() {
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
                     return self.fail(span, "B183", "read acceleration 参数需要加速结构资源");
@@ -477,7 +477,7 @@ impl<'a> Builder<'a> {
                     if matches!(param.access, Access::InOut | Access::Write) =>
                 {
                     self.require_same(&ty, place.ty(), span)?;
-                    borrowed.push((param.access, place.clone()));
+                    borrowed.push((parameter,param.access, place.clone()));
                     Binding::Owned(if param.access == Access::Write {
                         self.output_scopes += 1;
                         let initialization = Some(
@@ -549,22 +549,24 @@ impl<'a> Builder<'a> {
             None
         };
         self.calls.push(key);
+        let output_inputs=outputs::inputs(self,callee,&self.env.clone())?;
         let (mut result,_) = self.function_body(callee.function.body.as_ref().unwrap())?;
         if let Some(returns::Returned::Value(value)) = &mut result {
             value.literal = false;
         }
         self.calls.pop();
         if self.flow.continues() {
-            let updates: Vec<_> = borrowed
-                .iter()
-                .map(|(_, place)| self.borrow_owned(place.clone()))
-                .collect();
+            let returned=result.as_ref().map(|value|self.returned_storage(value));
+            let mut updates=Vec::new();
+            for(index,_,place)in &borrowed {
+                updates.push((self.borrow_owned(place.clone()),outputs::guards(self,callee,*index,place.ty(),&output_inputs,returned.as_ref())?));
+            }
             self.env = old_env;
             let fresh_scopes: BTreeSet<_> = borrowed
                 .iter()
                 .zip(&updates)
-                .filter(|((access, _), _)| *access == Access::Write)
-                .flat_map(|(_, o)| o.initialization.iter().flatten())
+                .filter(|((_,access, _), _)| *access == Access::Write)
+                .flat_map(|(_, (o,_))| o.initialization.iter().flatten())
                 .filter_map(|p| {
                     if let Position::Parameter(id, _) = p {
                         Some(*id)
@@ -575,12 +577,11 @@ impl<'a> Builder<'a> {
                 .collect();
             self.initialized
                 .retain(|p| !fresh_scopes.iter().any(|scope| p.uses_scope(*scope)));
-            for (access, place) in &borrowed {
-                if *access == Access::Write {
-                    self.initialize(place);
-                }
+            for ((index,_,place),(_,guards)) in borrowed.iter().zip(&updates) {
+                if outputs::declared(callee,*index){self.forget_output_initialization(place,span)?;}
+                self.initialize_output(place,guards);
             }
-            for owner in updates {
+            for (owner,_) in updates {
                 self.assign_owned_proof(&owner.place, owner.proof, owner.uniform);
             }
         } else {
