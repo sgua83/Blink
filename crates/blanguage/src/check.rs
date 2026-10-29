@@ -268,9 +268,7 @@ pub(crate) fn compile_program(
             "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
         );
     }
-    let mut program = expanded.program;
-    crate::optimize::optimize(&mut program);
-    Ok(program)
+    Ok(expanded.program)
 }
 fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<ExpandedDomain> {
     let name = &instance.name;

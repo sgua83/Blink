@@ -12,7 +12,7 @@ mod integer;
 mod operands;
 use operands::Memory;
 mod packet;
-mod program;
+pub(crate) mod program;
 mod reads;
 pub use program::{
     ContinuationCode, ProgramImage, RangeResult, SortCode, StageCode, compile_program,

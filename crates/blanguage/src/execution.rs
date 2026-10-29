@@ -1,4 +1,4 @@
-use crate::{Definition, World, ast::*};
+use crate::{Definition, Declarations, ast::*};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 从定义推导的调用参与范围，不是源语言中的函数种类或运行期许可。
@@ -19,7 +19,7 @@ struct Body {
     statements: BTreeSet<String>,
 }
 impl Body {
-    fn call(&mut self, world: &World, d: &Definition, name: &str, statement: bool) {
+    fn call(&mut self, world: &Declarations, d: &Definition, name: &str, statement: bool) {
         if world.resolve(name, &d.module, &d.imports, false).is_some() {
             self.local |= statement || d.function.target == Target::Cpu;
             return;
@@ -42,7 +42,7 @@ impl Body {
             self.local |= statement || d.function.target == Target::Cpu;
         }
     }
-    fn expr(&mut self, world: &World, d: &Definition, e: &Expr, statement: bool) {
+    fn expr(&mut self, world: &Declarations, d: &Definition, e: &Expr, statement: bool) {
         match &e.kind {
             ExprKind::Target(_, call) => {
                 self.host = true;
@@ -83,7 +83,7 @@ impl Body {
             _ => {}
         }
     }
-    fn block(&mut self, world: &World, d: &Definition, body: &[Stmt]) {
+    fn block(&mut self, world: &Declarations, d: &Definition, body: &[Stmt]) {
         for s in body {
             match &s.kind {
                 StmtKind::Parallel(..) | StmtKind::Phase => self.domain = true,
@@ -134,7 +134,7 @@ impl Body {
     }
 }
 
-pub(crate) fn infer(world: &mut World) {
+pub(crate) fn infer(world: &mut Declarations) {
     let bodies: BTreeMap<_, _> = world
         .functions
         .iter()

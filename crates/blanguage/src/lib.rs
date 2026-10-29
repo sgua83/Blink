@@ -14,6 +14,7 @@ pub mod native;
 pub mod object;
 mod optimize;
 mod parser;
+mod parallel;
 pub mod resource;
 pub mod spirv;
 mod type_sets;
@@ -61,13 +62,25 @@ pub struct Compilation {
     pub open_generics: Vec<String>,
     pub applications: Vec<application::Application>,
 }
-pub(crate) struct World {
+pub(crate) struct Declarations {
     sources: BTreeMap<String, Source>,
     interfaces: BTreeMap<String, Source>,
     records: BTreeMap<String, (Record, Source, String, Vec<String>)>,
     functions: BTreeMap<String, Arc<Definition>>,
     type_sets: BTreeMap<String, (TypeSet, Source, String, Vec<String>)>,
+}
+pub(crate) struct World {
+    declarations: Arc<Declarations>,
     evaluating_constants: RefCell<BTreeSet<String>>,
+}
+impl std::ops::Deref for World {
+    type Target = Declarations;
+    fn deref(&self) -> &Declarations { &self.declarations }
+}
+impl World {
+    fn new(declarations: Arc<Declarations>) -> Self {
+        Self { declarations, evaluating_constants: RefCell::new(BTreeSet::new()) }
+    }
 }
 fn read(path: &Path) -> Result<Source> {
     let text = std::fs::read_to_string(path).map_err(|e| Diagnostic {
@@ -211,64 +224,89 @@ fn compile_world(
         None
     };
     validate_types(&world)?;
+    enum Job<'a> {
+        Instance(generics::Instance, bool),
+        Failed(Diagnostic),
+        Selected(&'a str, &'a Option<Vec<GenericArgument>>, EntryKind),
+    }
+    enum Output {
+        Programs(Vec<ir::Program>),
+        Application(application::Application),
+    }
+    let for_application = matches!(selected.as_ref(), Some((_, _, EntryKind::Application)));
+    let mut jobs = Vec::new();
+    let planned = (|| -> Result<()> {
+        for (base, definition) in &world.functions {
+            generics::validate_declaration(definition)?;
+            if definition.compiled.is_some()
+                || selected.as_ref().is_some_and(|(key, _, _)| key == base)
+            {
+                continue;
+            }
+            let retained = selected.is_none() && definition.module == entry && definition.public;
+            jobs.extend(generics::instances(&world, base, definition)?
+                .into_iter().map(|instance| Job::Instance(instance, retained)));
+        }
+        Ok(())
+    })();
+    if let Err(error) = planned {
+        jobs.push(Job::Failed(error));
+    } else if let Some((key, arguments, kind)) = &selected {
+        jobs.push(Job::Selected(key, arguments, *kind));
+    }
+    let declarations = &world.declarations;
+    let output = parallel::try_map(jobs, || World::new(Arc::clone(declarations)), |world, job| {
+        let mut programs = Vec::new();
+        match job {
+            Job::Failed(error) => return Err(error),
+            Job::Instance(instance, retained) => {
+                let name = &instance.name;
+                let d = &instance.definition;
+                if d.execution == execution::Requirement::Domain
+                    && (d.function.target != Target::Cpu || check::kernel_interface(world, d)?)
+                {
+                    if for_application {
+                        check::check_domain(world, &instance).map_err(|error| instance_error(error, name))?;
+                    } else {
+                        let mut program = check::compile_program(world, &instance).map_err(|error| instance_error(error, name))?;
+                        if retained {
+                            optimize::optimize(&mut program);
+                            programs.push(program);
+                        }
+                    }
+                } else {
+                    check::check_function(world, &instance).map_err(|error| instance_error(error, name))?;
+                }
+            }
+            Job::Selected(key, arguments, kind) => {
+                let definition = &world.functions[key];
+                let instance = check::generics::specialize(world, key, &[], arguments.as_deref(), definition, definition.function.span)?;
+                if matches!(kind, EntryKind::Application) {
+                    return check::compile_application(world, &instance).map(Output::Application);
+                }
+                let mut program = check::compile_program(world, &instance).map_err(|error| instance_error(error, &instance.name))?;
+                optimize::optimize(&mut program);
+                programs.push(program);
+            }
+        }
+        Ok(Output::Programs(programs))
+    }).map_err(|error| match error {
+        parallel::Error::Work(error) => error,
+        parallel::Error::Resource(error) => Diagnostic {
+            source: world.sources[&entry].clone(), span: Span::default(), code: "B020",
+            message: format!("无法创建本机编译工作：{error}"),
+        },
+    })?;
     let mut programs = Vec::new();
     let mut templates = Vec::new();
     let mut applications = Vec::new();
-    // 有限声明逐项检查；选定的入口与开放声明在具体使用处实例化。
-    for (base, definition) in &world.functions {
-        generics::validate_declaration(definition)?;
-        if definition.compiled.is_some() {
-            continue;
-        }
-        if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
-            continue;
-        }
-        for instance in generics::instances(&world, base, definition)? {
-            let name = &instance.name;
-            let d = &instance.definition;
-            if d.execution == execution::Requirement::Domain
-                && (d.function.target != Target::Cpu || check::kernel_interface(&world, d)?)
-            {
-                if matches!(selected.as_ref(), Some((_, _, EntryKind::Application))) {
-                    check::check_domain(&world, &instance)
-                        .map_err(|error| instance_error(error, name))?;
-                    continue;
-                }
-                let p = check::compile_program(&world, &instance)
-                    .map_err(|error| instance_error(error, name))?;
-                if selected.is_none() && d.module == entry && d.public {
-                    if p.prefix_requirements.is_empty() {
-                        programs.push(ExecutableProgram(p));
-                    } else {
-                        templates.push(TemplateProgram(p));
-                    }
-                }
-            } else {
-                check::check_function(&world, &instance)
-                    .map_err(|error| instance_error(error, name))?;
-            }
-        }
-    }
-    if let Some((key, arguments, kind)) = selected {
-        let definition = &world.functions[&key];
-        let instance = check::generics::specialize(
-            &world,
-            &key,
-            &[],
-            arguments.as_deref(),
-            definition,
-            definition.function.span,
-        )?;
-        if matches!(kind, EntryKind::Application) {
-            applications.push(check::compile_application(&world, &instance)?);
-        } else {
-            let p = check::compile_program(&world, &instance)
-                .map_err(|error| instance_error(error, &instance.name))?;
-            if p.prefix_requirements.is_empty() {
-                programs.push(ExecutableProgram(p));
-            } else {
-                templates.push(TemplateProgram(p));
-            }
+    for output in output {
+        match output {
+            Output::Application(application) => applications.push(application),
+            Output::Programs(images) => for program in images {
+                if program.prefix_requirements.is_empty() { programs.push(ExecutableProgram(program)); }
+                else { templates.push(TemplateProgram(program)); }
+            },
         }
     }
     let open_generics: Vec<_> = world
@@ -315,13 +353,12 @@ fn read_world(
     module_root: &Path,
     imported: Option<&module::Imports>,
 ) -> Result<(World, String)> {
-    let mut world = World {
+    let mut world = Declarations {
         sources: BTreeMap::new(),
         interfaces: BTreeMap::new(),
         records: BTreeMap::new(),
         functions: BTreeMap::new(),
         type_sets: BTreeMap::new(),
-        evaluating_constants: RefCell::new(BTreeSet::new()),
     };
     let entry = load(
         path,
@@ -331,7 +368,7 @@ fn read_world(
         None,
     )?;
     execution::infer(&mut world);
-    Ok((world, entry))
+    Ok((World::new(Arc::new(world)), entry))
 }
 fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {
@@ -372,7 +409,7 @@ fn instance_error(mut error: Diagnostic, name: &str) -> Diagnostic {
 fn load(
     path: &Path,
     root: &Path,
-    world: &mut World,
+    world: &mut Declarations,
     imported: Option<&module::Imports>,
     import: Option<&str>,
 ) -> Result<String> {
@@ -628,7 +665,7 @@ fn load(
     }
     Ok(name)
 }
-impl World {
+impl Declarations {
     fn resolve(
         &self,
         name: &str,
@@ -648,6 +685,8 @@ impl World {
             }
         })
     }
+}
+impl World {
     fn ty(
         &self,
         name: &TypeName,

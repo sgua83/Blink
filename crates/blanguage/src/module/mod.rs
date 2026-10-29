@@ -66,14 +66,10 @@ impl Module {
         &self.name
     }
     pub fn compile(&self) -> codec::Result<Object> {
-        let code = self
-            .functions
-            .iter()
-            .map(|function| {
-                native::emit_function(function).map(|code| (function.name.clone(), code))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(std::io::Error::other)?;
+        let code = crate::parallel::try_map(
+            self.functions.iter().collect(), || (),
+            |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),
+        ).map_err(|error| std::io::Error::other(error.to_string()))?;
         let stack_bytes = code
             .iter()
             .map(|(_, code)| code.code.stack_bytes)

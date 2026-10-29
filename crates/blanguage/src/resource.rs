@@ -48,19 +48,28 @@ record!(Module { types, images });
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
 
 pub(crate) fn compile(resources: &crate::application::Resources) -> codec::Result<Vec<u8>> {
-    let images = resources
-        .programs
-        .iter()
-        .map(|(target, program)| {
-            let template = TemplateProgram(program.clone());
-            if *target == Target::Cpu {
-                native::compile_program(template).map(Image::Cpu)
-            } else {
-                spirv::compile_program(template).map(Image::Gpu)
-            }
-            .map_err(std::io::Error::other)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let jobs = |cpu| resources.programs.iter().enumerate()
+        .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
+        .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
+        .collect();
+    let cpu = crate::parallel::try_map(jobs(true), || (), |_, (program, stage)| {
+        native::program::compile_stage(&resources.programs[program].1, stage)
+    }).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let gpu = crate::parallel::try_map(jobs(false), || (), |_, (program, stage)| {
+        spirv::program::compile_stage(&resources.programs[program].1, stage)
+    }).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut cpu = cpu.into_iter();
+    let mut gpu = gpu.into_iter();
+    let images = resources.programs.iter().map(|(target, program)| {
+        let plan = ExecutionPlan::from_program(program);
+        if *target == Target::Cpu {
+            let stages = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
+            Image::Cpu(unsafe { native::ProgramImage::from_compiler_output(plan, stages) })
+        } else {
+            let stages = program.stages().iter().map(|_| gpu.next().unwrap()).collect();
+            Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
+        }
+    }).collect();
     let mut bytes = ABI.to_vec();
     bytes.extend(
         Module {
