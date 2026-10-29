@@ -367,6 +367,11 @@ fn load(
     imported: Option<&module::Imports>,
     import: Option<&str>,
 ) -> Result<String> {
+    if let Some(name) = import
+        && world.sources.contains_key(name)
+    {
+        return Ok(name.to_owned());
+    }
     let compiled = imported.and_then(|imports| import.and_then(|name| imports.modules.get(name)));
     let interface = if let Some(compiled) = compiled {
         parser::parse(Source {
