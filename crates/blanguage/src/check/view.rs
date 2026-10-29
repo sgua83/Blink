@@ -134,8 +134,8 @@ impl Requirement {
     pub fn check(&self,source:&crate::Source)->Result<()> {
         if self.borrow().sources.contains(&Source::Unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.sources.contains(&Source::Unresolved)){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         match self {
-            Self::Unborrowed{resource,borrow,span} if borrow.sources.entries().any(|(source,when)|matches!(source,Source::Data(_))&&bounds::Clause::both(&when,&resource.sources.when(source)).possible())=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
-            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&bounds::Clause::both(&when,&bounds::Condition::guard(owned.sources.when(source)).assume(&bounds::Clause::default(),false)).possible()))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
+            Self::Unborrowed{resource,borrow,span} if borrow.sources.entries().any(|(source,when)|matches!(source,Source::Data(_))&&when.overlaps(&resource.sources.when(source)))=>source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放"),
+            Self::Return{borrow,allowed,owned,span} if !owned.pending()&&borrow.sources.entries().any(|(source,when)|matches!(source,Source::Data(id)if !allowed.contains(id)&&when.overlaps(&bounds::Condition::guard(owned.sources.when(source)).assume(&bounds::Clause::default(),false))))=>source.fail(*span,"B227","返回view不能借用当前函数将释放的dataset"),
             _=>Ok(()),
         }
     }

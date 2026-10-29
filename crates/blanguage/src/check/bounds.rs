@@ -1688,6 +1688,49 @@ impl Clause {
     pub(super) fn possible(&self) -> bool {
         self.required().is_some()
     }
+    pub(super) fn overlaps(&self,other:&Self) -> bool {
+        // 来源能否同时成立不能由各分支的共有事实代替。
+        // 只沿本次路径消费共享图；备选保留续点，不展开路径项组合。
+        fn push<'a>(goals:&mut Vec<(&'a Clause,Option<usize>)>,next:&mut Option<usize>,clause:&'a Clause){
+            goals.push((clause,*next));*next=Some(goals.len()-1);
+        }
+        let mut goals=vec![(self,None),(other,Some(0))];
+        let mut next=Some(1);
+        let mut alternatives:Vec<(&Self,Option<usize>,usize,usize,usize)>=Vec::new();
+        let mut facts=Facts::new();
+        let mut additions=Vec::new();
+        let mut visited=HashSet::new();
+        let mut visits=Vec::new();
+        loop {
+            let mut impossible=false;
+            while let Some(index)=next {
+                let (clause,remaining)=goals[index];next=remaining;
+                if !visited.insert(clause.key()){continue;}
+                visits.push(clause.key());
+                match &*clause.0 {
+                    ClauseNode::Impossible=>{impossible=true;break;},
+                    ClauseNode::Facts(required)=>{
+                        let before=additions.len();
+                        for fact in required {if facts.insert(*fact){additions.push(*fact);}}
+                        if additions.len()!=before && contradictory(&facts){impossible=true;break;}
+                    },
+                    _=>{
+                        let (left,right,alternative)=clause.query_inputs().unwrap();
+                        if alternative {
+                            alternatives.push((right,next,goals.len(),additions.len(),visits.len()));
+                        } else {push(&mut goals,&mut next,right);}
+                        push(&mut goals,&mut next,left);
+                    },
+                }
+            }
+            if !impossible{return true;}
+            let Some((right,remaining,goal_count,fact_count,visit_count))=alternatives.pop()else{return false;};
+            for fact in additions.drain(fact_count..){facts.remove(&fact);}
+            for key in visits.drain(visit_count..){visited.remove(&key);}
+            goals.truncate(goal_count);next=remaining;
+            push(&mut goals,&mut next,right);
+        }
+    }
 }
 fn contradictory(facts: &Facts) -> bool {
     let roots = equality_roots(facts);
