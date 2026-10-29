@@ -703,8 +703,30 @@ impl World {
                 enumeration: false,
                 result: false,
                 variants: Vec::new(),
-                dataset: None,
+                dataset: None, cleanup: None,
             });
+        }
+        if name.name == "owned" {
+            if name.arguments.len()!=2{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");}
+            let (GenericArgument::Type(payload),GenericArgument::Type(function))=(&name.arguments[0],&name.arguments[1])else{return source.fail(span,"B224","owned<T,F>需要载荷类型与静态释放函数");};
+            if function.dataset||function.tile||function.view||!function.arguments.is_empty(){return source.fail(span,"B224","释放函数由载荷推导泛型，声明处使用函数名称");}
+            let cleanup=if function.canonical&&self.functions.contains_key(&function.name){function.name.clone()}else{self.resolve(&function.name,module,imports,true).ok_or_else(||Diagnostic{source:source.clone(),span,code:"B158",message:format!("未知或未导出的释放函数 {}",function.name)})?};
+            let f=&self.functions[&cleanup].function;
+            if f.kind!=FunctionKind::Value||f.target!=Target::Cpu||f.params.len()!=1||f.params[0].access!=Access::Value||f.result!=TypeName::named("void"){return source.fail(span,"B224","释放函数必须是接收一个按值载荷并返回void的普通on cpu函数");}
+            let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
+            if payload.dataset {if ty.owns_resources(){return source.fail(span,"B033","dataset元素不能保存拥有资源");}ty=ir::Ty::owned_dataset(ty,self.shape(&payload.count,source,span,module,imports)?);}
+            let owner=ir::Ty::owned(ty,cleanup.clone());let identity=format!("owned contract:{}",owner.name);
+            if !stack.insert(identity.clone()){return source.fail(span,"B224","释放函数的载荷合同不能递归要求同一拥有包装");}
+            let definition=&self.functions[&cleanup];
+            let instance=check::generics::specialize(self,&cleanup,&[check::generics::Actual::value(&owner.arguments[0])],None,definition,definition.function.span).map_err(|error|Diagnostic{source:source.clone(),span,code:error.code,message:format!("释放函数 {}：{}",cleanup,error.message)})?;
+            let parameter=&instance.definition.function.params[0];
+            let mut expected=self.ty_inner(&parameter.ty,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports,stack)?;
+            if parameter.ty.dataset{expected=ir::Ty::owned_dataset(expected,self.shape(&parameter.ty.count,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports)?);}
+            stack.remove(&identity);
+            let payload=&owner.arguments[0];
+            let compatible=if let(Some(expected),Some(actual))=(&expected.dataset,&payload.dataset){expected==actual}else{expected==*payload};
+            if !compatible{return source.fail(span,"B124",format!("释放函数 {} 需要 {}，实际拥有载荷为 {}",cleanup,expected.name,payload.name));}
+            return Ok(owner);
         }
         if name.name == "result" {
             if name.arguments.len() != 2 {
@@ -799,7 +821,7 @@ impl World {
                 enumeration: false,
                 result: false,
                 variants: Vec::new(),
-                dataset: None,
+                dataset: None, cleanup: None,
             });
         }
         if let Some(ty) = ir::Ty::builtin(&name.name) {
@@ -953,7 +975,7 @@ impl World {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None,
+            dataset: None, cleanup: None,
         };
         let mut names = BTreeSet::new();
         for field in &record.fields {

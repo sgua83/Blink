@@ -141,7 +141,7 @@ impl Builder<'_> {
             value,
             payloads,
             ownership: Ownership::Owned,
-            place: None,
+            place: None, declaration: 0,
         }))))
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
@@ -226,6 +226,7 @@ impl Builder<'_> {
         };
         let mut item = Returned::OwnedValue(root);
         for index in &p.path {
+            if let Returned::OwnedValue(owner)=&mut item {self.require_user_owner(owner,span)?;}
             item = match item {
                 Returned::OwnedValue(owner) => self.unpack_record(&owner, *index),
                 Returned::Value(value) => Returned::Value(self.record_component(&value, *index)),

@@ -659,21 +659,32 @@ impl Builder<'_> {
         data
     }
     pub(super) fn release_application_data(&mut self,keep:Option<&BTreeSet<String>>,retained:view::Borrow)->Result<()> {
-        let bindings: Vec<_> = self
+        let mut bindings: Vec<_> = self
             .env
             .iter()
             .filter(|(name, _)| !keep.is_some_and(|names| names.contains(*name)))
-            .filter_map(|(_, binding)| match binding {
+            .filter_map(|(name, binding)| match binding {
                 Binding::ApplicationData(data) if data.ownership.may_own() => {
-                    Some(binding.clone())
+                    Some((name.clone(),binding.clone()))
                 }
                 Binding::OwnedValue(result) if result.ownership.may_own() && !matches!(result.place(),Some(Place::Reference{..})) => {
-                    Some(binding.clone())
+                    Some((name.clone(),binding.clone()))
                 }
                 _ => None,
             })
             .collect();
-        for binding in bindings {self.drop_binding(binding,&retained,self.definition.function.span)?;}
+        bindings.sort_by_key(|(name,binding)|{
+            let temporary=name.strip_prefix("\0argument:").map(|index|index.parse::<usize>().unwrap());
+            let declaration=match binding{Binding::OwnedValue(value)=>value.declaration,_=>0};
+            (temporary.is_some(),temporary.unwrap_or(declaration))
+        });
+        for (name,binding) in bindings.into_iter().rev() {
+            if matches!(&binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()) {
+                if name.starts_with('\0'){self.env.remove(&name);}
+                else if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
+            }
+            self.drop_binding(binding,&retained,self.definition.function.span)?;
+        }
         Ok(())
     }
     pub(super) fn application_data_type(

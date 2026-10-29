@@ -138,7 +138,7 @@ impl State {
             .iter()
             .filter(|(location, _)| location.name == name)
             .collect::<Vec<_>>();
-        if uses.is_empty() {
+        if uses.is_empty() && !matches!(binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()&&value.value.ty.contains_views()) {
             return view::Borrow::default();
         }
         let (ty, proof) = match binding {
@@ -150,7 +150,7 @@ impl State {
         };
         let mut omitted=BTreeSet::new();
         if let Some(root)=binding.stored_place(){for place in transferred{if let Some(components)=place.components_in(&root){omitted.extend(components);}}}
-        let mut result = view::Borrow::default();
+        let mut result = user_owned::cleanup_borrow(binding,&omitted);
         for (location, excluded) in uses {
             let mut selected = components(ty, &location.path, 0);
             for path in excluded {

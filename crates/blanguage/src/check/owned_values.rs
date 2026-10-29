@@ -11,6 +11,7 @@ pub(super) struct OwnedValuePayload {
     pub payloads: Vec<Option<Box<Returned>>>,
     pub ownership: Ownership,
     pub place: Option<Place>,
+    pub declaration: usize,
 }
 impl OwnedValuePayload {
     pub(super) fn place(&self)->Option<Place>{self.place.clone()}
@@ -180,7 +181,7 @@ impl OwnedValuePayload {
         }
     }
     pub(super) fn mark_moved(&mut self) {
-        if self.value.ty.has_variants() {
+        if self.value.ty.has_variants() || self.value.ty.cleanup.is_some() {
             self.ownership = Ownership::Moved;
             return;
         }
@@ -392,11 +393,12 @@ impl Builder<'_> {
                     Some(Box::new(self.template_returned(field, available)))
                 })
                 .collect();
+            let ownership=if value.ty.cleanup.is_some() && !available {Ownership::Moved}else{Ownership::Owned};
             Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
                 payloads,
-                ownership: Ownership::Owned,
-                place: None,
+                ownership,
+                place: None, declaration: 0,
             }))
         } else if value.ty.owns_resources() {
             let mut payloads = vec![None;value.ty.variants.len()];
@@ -405,7 +407,7 @@ impl Builder<'_> {
                     value,
                     payloads,
                     ownership: Ownership::Moved,
-                    place: None,
+                    place: None, declaration: 0,
                 }));
             }
             for index in 0..value.ty.variants.len() {
@@ -423,7 +425,7 @@ impl Builder<'_> {
                 } else {
                     Ownership::Moved
                 },
-                place: None,
+                place: None, declaration: 0,
             }))
         } else if value.ty.name == "void" {
             Returned::Unit
@@ -532,6 +534,7 @@ impl Builder<'_> {
             self.require_initialized(&place, span)?;
         }
         self.load_owned_value(&mut result,span)?;
+        self.forget_owned_metadata(&Returned::OwnedValue(result.clone()));
         if let Some(Binding::OwnedValue(source)) = self.env.get_mut(name) {
             source.mark_moved();
         }
@@ -564,7 +567,8 @@ impl Builder<'_> {
         }
         let mutable = application::rebound(self.definition.function.body.as_ref().unwrap(), name)
             || !result.value.ty.has_variants();
-        let result = self.owned_value_binding(result, mutable);
+        let mut result = self.owned_value_binding(result, mutable);
+        result.declaration=span.start;
         self.env.insert(name.clone(), Binding::OwnedValue(result));
         Ok(())
     }
@@ -587,7 +591,7 @@ impl Builder<'_> {
                 value,
                 payloads,
                 ownership: Ownership::Moved,
-                place: None,
+                place: None, declaration: 0,
             })
         } else {
             let Returned::OwnedValue(v) = self.template_returned(value, false) else {
@@ -597,6 +601,7 @@ impl Builder<'_> {
         };
         let(slots,storage)=self.local_slots(&result.value.ty);
         result.place=Some(Place::Local(result.value.ty.clone(),slots,storage));
+        result.declaration=span.start;
         self.env.insert(name.clone(), Binding::OwnedValue(result));
         Ok(())
     }
@@ -645,7 +650,7 @@ impl Builder<'_> {
             value,
             payloads,
             ownership: Ownership::Owned,
-            place: None,
+            place: None, declaration: 0,
         })))
     }
     fn owned_condition(&mut self, value: &OwnedValue, span: Span) -> Result<Value> {
@@ -670,6 +675,11 @@ impl Builder<'_> {
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
         self.view_uses.before(expr.span);
+        if self.inside_user_owner(expr)&&self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){return self.fail(expr.span,"B224","拥有包装的资源载荷须用into_inner移出，不能部分移动其字段");}
+        if let ExprKind::Call(name,args)=&expr.kind {
+            if name=="own" {return self.make_user_owned(args,expr.span);}
+            if name=="into_inner" {return self.into_user_inner(args,expr.span);}
+        }
         let constructor = match &expr.kind {
             ExprKind::Call(name,args) => self.variant_constructor_type(name,None,expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
             ExprKind::Specialize(name,types,args) => self.variant_constructor_type(name,Some(types),expected,expr.span)?.map(|(ty,index)|(ty,index,args)),
@@ -738,7 +748,7 @@ impl Builder<'_> {
                 return self.selection_returned(c, a, b, expr.span, expected);
             }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
-                if name == "array"
+                if matches!(name.as_str(),"array"|"owned")
                     || self
                         .world
                         .resolve(
@@ -861,7 +871,7 @@ impl Builder<'_> {
                 value,
                 payloads,
                 ownership: Ownership::Owned,
-                place: None,
+                place: None, declaration: 0,
             }))
         } else {
             Returned::Value(value)
@@ -938,8 +948,10 @@ impl Builder<'_> {
                 self.application_drop(&data,retained,span)?;
             }
             Returned::OwnedValue(mut result) if result.ownership == Ownership::Owned => {
+                if result.value.ty.cleanup.is_some(){return self.drop_user_owned(result,retained,span);}
+
                 if !result.value.ty.has_variants() {
-                    for i in 0..result.value.ty.aggregate_len() {
+                    for i in (0..result.value.ty.aggregate_len()).rev() {
                         if result.value.ty.aggregate_part(i).1.owns_resources() {
                             let field = self.unpack_record(&result, i);
                             self.drop_returned(field,retained,span)?;
@@ -1070,5 +1082,5 @@ impl crate::module::codec::Encode for OwnedValuePayload {
     fn encode(&self,w:&mut crate::module::codec::Writer){self.value.encode(w);self.payloads.encode(w);self.ownership.encode(w);}
 }
 impl crate::module::codec::Decode for OwnedValuePayload {
-    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{value:Value::decode(r)?,payloads:Vec::decode(r)?,ownership:Ownership::decode(r)?,place:None})}
+    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{value:Value::decode(r)?,payloads:Vec::decode(r)?,ownership:Ownership::decode(r)?,place:None,declaration:0})}
 }

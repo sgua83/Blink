@@ -68,7 +68,7 @@ impl Builder<'_> {
         if matches!(name, "Ok" | "Err") {
             return self.explicit_result(name, explicit, args, span);
         }
-        if name == "array"
+        if matches!(name, "array" | "owned")
             || self
                 .world
                 .resolve(

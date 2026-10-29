@@ -202,7 +202,8 @@ record!(ir::Ty {
     enumeration,
     result,
     variants,
-    dataset
+    dataset,
+    cleanup
 });
 variants!(ir::CallParameter{0=>Value(ty),1=>Reference{ty,access}});
 variants!(ast::ContractKind{0=>Requires,1=>Ensures});

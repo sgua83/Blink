@@ -460,7 +460,7 @@ pub(super) fn apply_ownership(model: &mut Returned, ty: &Ty, offset: u32, guards
             data.ownership = Ownership::Owned.restricted(&resource_guard(ty, offset, guards))
         }
         Returned::OwnedValue(value) => {
-            if value.value.ty.has_variants() {
+            if value.value.ty.has_variants() || value.value.ty.cleanup.is_some() {
                 value.ownership = Ownership::Owned.restricted(&resource_guard(ty, offset, guards));
             }
             for (index, payload) in value.payloads.iter_mut().enumerate() {
@@ -739,6 +739,13 @@ impl Builder<'_> {
                     }
                 }
                 Returned::OwnedValue(value) => {
+                    if value.value.ty.cleanup.is_some() {
+                        let when=resource_guard(root,offset,guards);
+                        builder.path=when.condition().assume(path,true);
+                        if builder.path.possible()&&!builder.resolve_ownership(&value.ownership,None).available(){return builder.fail(span,"B229","条件输出分支没有实际构造用户拥有值");}
+                        builder.path=when.condition().assume(path,false);
+                        if builder.path.possible()&&builder.resolve_ownership(&value.ownership,None).may_own(){return builder.fail(span,"B229","未交付分支仍拥有用户资源；按实际返回关系交付或由原所有者释放");}
+                    }
                     for (index, payload) in value.payloads.iter().enumerate() {
                         if let Some(payload) = payload {
                             let at = if value.value.ty.has_variants() {

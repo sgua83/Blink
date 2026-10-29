@@ -116,7 +116,8 @@ record!(Ty {
     enumeration,
     result,
     variants,
-    dataset
+    dataset,
+    cleanup
 });
 record!(Buffer {
     name,

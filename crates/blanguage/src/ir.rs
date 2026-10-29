@@ -45,9 +45,15 @@ pub struct Ty {
     pub result: bool,
     pub variants: Vec<Variant>,
     pub dataset: Option<Box<Ty>>,
+    pub cleanup: Option<String>,
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
+        if let Some(cleanup) = &self.cleanup {
+            let mut ty=crate::ast::TypeName::named("owned");
+            let mut release=crate::ast::TypeName::named(cleanup);release.canonical=true;
+            ty.arguments=vec![crate::ast::GenericArgument::Type(self.arguments[0].syntax()),crate::ast::GenericArgument::Type(release)];return ty;
+        }
         if let Some(element) = &self.dataset {
             let mut ty = element.syntax();
             ty.dataset = true;
@@ -84,10 +90,13 @@ impl Ty {
         ty
     }
     pub fn owns_resources(&self) -> bool {
-        self.dataset.is_some()
+        self.cleanup.is_some() || self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.owns_resources())
             || self.array.as_deref().is_some_and(Self::owns_resources)
             || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
+    }
+    pub(crate) fn contains_cleanup(&self)->bool {
+        self.cleanup.is_some()||self.array.as_deref().is_some_and(Self::contains_cleanup)||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
     }
     pub(crate) fn aggregate_len(&self) -> usize {
         if self.array.is_some() {
@@ -105,6 +114,9 @@ impl Ty {
         } else {
             (self.fields[index].1, &self.fields[index].2)
         }
+    }
+    pub fn owned(payload: Self, cleanup: String) -> Self {
+        Self {name:format!("owned<{},{}>",payload.name,cleanup),arguments:vec![payload.clone()],values:Vec::new(),size:payload.size,align:payload.align,components:payload.components.clone(),fields:vec![("value".into(),0,Box::new(payload))],view:None,array:None,enumeration:false,result:false,variants:Vec::new(),dataset:None,cleanup:Some(cleanup)}
     }
     pub fn owned_dataset(element: Self, count: Option<u32>) -> Self {
         Self {
@@ -124,7 +136,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: Some(Box::new(element)),
+            dataset: Some(Box::new(element)), cleanup: None,
         }
     }
     pub fn result(ok: Self, error: Self) -> Option<Self> {
@@ -145,12 +157,12 @@ impl Ty {
             name, arguments, values, size, align,
             components: std::iter::once((tag, 0)).chain((offset..size).step_by(4).map(|at| (Scalar::U32, at))).collect(),
             fields: Vec::new(), view: None, array: None, enumeration: false, result: false,
-            variants, dataset: None,
+            variants, dataset: None, cleanup: None,
         })
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
     pub(crate) fn zero_valid(&self)->bool {
-        if self.dataset.is_some() || self.view.is_some(){return false;}
+        if self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some(){return false;}
         if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
         self.array.as_deref().is_none_or(Self::zero_valid) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
     }
@@ -168,7 +180,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None,
+            dataset: None, cleanup: None,
         }
     }
     pub fn scalar(s: Scalar) -> Self {
@@ -191,7 +203,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None,
+            dataset: None, cleanup: None,
         }
     }
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -220,7 +232,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None,
+            dataset: None, cleanup: None,
         }
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
@@ -247,7 +259,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None,
+            dataset: None, cleanup: None,
         }
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
@@ -287,7 +299,7 @@ impl Ty {
                 enumeration: false,
                 result: false,
                 variants: Vec::new(),
-                dataset: None,
+                dataset: None, cleanup: None,
                 components: vec![
                     (Scalar::Bool, 0),
                     (Scalar::F32, 4),

@@ -24,6 +24,7 @@ mod flow;
 pub(crate) mod generics;
 mod matrix;
 mod owned_records;
+mod user_owned;
 mod owned_borrows;
 mod owned_presence;
 mod owned_values;
@@ -1745,6 +1746,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn place(&mut self, e: &Expr) -> Result<Option<Place>> {
+        self.require_user_projection(e)?;
         self.view_uses.before(e.span);
         match &e.kind {
             ExprKind::Name(name) => self.name_place(name, e).map(Some),
