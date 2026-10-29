@@ -21,9 +21,24 @@ pub(crate) const fn scalar_tag(scalar: Scalar) -> u32 {
         Scalar::I64 => I64, Scalar::F64 => F64,
     }
 }
-pub enum Image {
-    Cpu(native::ProgramImage<TemplateProgram>),
-    Gpu(spirv::ProgramImage<TemplateProgram>),
+#[derive(Clone, Debug)]
+pub enum Image<P = TemplateProgram> {
+    Cpu(native::ProgramImage<P>),
+    Gpu(spirv::ProgramImage<P>),
+}
+impl<P> std::ops::Deref for Image<P> {
+    type Target = ExecutionPlan;
+    fn deref(&self) -> &ExecutionPlan {
+        match self { Self::Cpu(image) => image.program(), Self::Gpu(image) => image.program() }
+    }
+}
+impl<P> Image<P> {
+    pub fn into_cpu(self) -> Result<native::ProgramImage<P>, &'static str> {
+        match self { Self::Cpu(image) => Ok(image), Self::Gpu(_) => Err("GPU映像不能作为CPU机器码装入") }
+    }
+    pub fn into_gpu(self) -> Result<spirv::ProgramImage<P>, &'static str> {
+        match self { Self::Gpu(image) => Ok(image), Self::Cpu(_) => Err("CPU映像不能作为SPIR-V装入") }
+    }
 }
 pub struct Module {
     pub types: Vec<Ty>,

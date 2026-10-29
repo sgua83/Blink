@@ -3402,6 +3402,26 @@ Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；�
 
 开放参数使用原 AST 替换、名义布局与 IR 常量，使用后即为具体算法；不增加泛型运行时、宿主逐元素回调、动态编译服务、额外 uniform、运行期长度表或另一份资源状态。material.textured::indexed_ggx 已删除原固定长度清单，从实际纹理数组推导 N，索引仍必须满足 requires index；实际算法、资源完成和像素品质目标保持。
 
+## 原生入口的正式产物复用（2026-10-29）
+
+原`compile_entry`仍返回已检查IR。需要跨启动复用最终代码时使用：
+
+```rust
+let mut compiled = blanguage::build::compile_entry(
+    path, module_root, "run<65>", blanguage::ast::Target::Gpu,
+    std::path::Path::new("target/blink"),
+)?;
+let program = device.load(compiled.programs.remove(0).into_gpu()?)?;
+```
+
+CPU使用`Target::Cpu`、`into_cpu()`及原`CpuProgram::from_image`；模板保留在`templates`，GPU继续交给`load_template`，不会作为无前置条件入口。`Program`／`Template`是持有最终映像的原`resource::Image`类型，接口仍为ExecutionPlan／ProgramInterface；不构造空IR或在装入时调用后端。
+
+生成目录由调用方明确指定。返回的`artifact`为BLBI1文件，`reused`对应本次是否复用了已完成产物。请求中的路径、模块根、大小写敏感入口及实际CPU／GPU后端区分生成位置；编译器实现生产身份和原World实际装入的全部.h／.b内容决定是否重编，修改时间与大小不参与判断。依赖实现变化、新增／删除可选实现和导入变化均重新生成；无关未装入文件不影响本入口。产物不存在即正常编译，已存在但读取或解码错误直接报告，不隐式重编。
+
+可信编译产物可通过`unsafe blanguage::build::load(path)`脱离源码读取，再交给原CPU／GPU装入入口；调用方必须保证文件确由可信编译器生成、代码和合同完整未修改。原BLRI6机器码、SPIR-V、布局、依赖及前缀合同保持；本轮没有改变资源C ABI。缓存替换不改变已经装入的代码版本和真实资源所有者。
+
+BLEngine现有算法准备、compute及simulate消费该API，产物位于其target/blink。本轮是入口闭包级复用，独立模块obj／lib的精确增量、共享泛型／内联依赖分发、本机并行编译、多个B模块DLL、域编译／域运算及热更新仍按Issues各项继续；缓存命中不代表首次冷编译或完整引擎启动已提速。
+
 ## 开放普通值类型形参（2026-10-27）
 
 记录、普通／cooperative 函数和当前 计算函数 可写不带集合约束的 `<T>`。T 在每次具体使用处绑定普通值类型：支持 bool、数值、矩阵、数组、用户记录及其合法组合，不要求把用户类型加入库的有限清单。例如 `.h`：

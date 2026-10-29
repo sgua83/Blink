@@ -1,6 +1,7 @@
 //! BLanguage .h/.b 前端、类型和访问检查、并行 IR 与原生代码生成。
 pub mod application;
 pub mod ast;
+pub mod build;
 mod check;
 pub mod dll;
 mod execution;
@@ -172,6 +173,14 @@ fn compile_module(
     imported: Option<&module::Imports>,
 ) -> Result<Compilation> {
     let (world, entry) = read_world(path, module_root, imported)?;
+    compile_world(world, entry, require_program, requested)
+}
+fn compile_world(
+    world: World,
+    entry: String,
+    require_program: bool,
+    requested: Option<(EntryKind, &str)>,
+) -> Result<Compilation> {
     let selected = if let Some((kind, request)) = requested {
         let source = Source {
             path: PathBuf::from("<entry>"),
