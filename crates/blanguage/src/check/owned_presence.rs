@@ -44,6 +44,11 @@ impl Returned{
     }
     pub(super) fn restrict_owned(&mut self,when:&Presence){match self{Self::Dataset(data)=>data.ownership=data.ownership.restricted(when),Self::OwnedValue(value)=>{if value.value.ty.has_variants(){value.ownership=value.ownership.restricted(when);}else{for payload in value.payloads.iter_mut().flatten(){payload.restrict_owned(when);}}},_=>{}}}
     pub(super) fn join_presence(&mut self,other:Self,choice:Option<&Presence>){
+        match choice {
+            Some(Presence::All) => return,
+            Some(Presence::None) => { *self=other; return; }
+            _ => {}
+        }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:Option<&Presence>){match(target,a,b){(Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.ownership=Ownership::either(&a.ownership,&b.ownership,choice);target.handle.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),choice.map(Presence::condition).as_ref());let ai=a.initialization.clone().unwrap_or(Position::Initialized);let bi=b.initialization.clone().unwrap_or(Position::Initialized);target.initialization=Some(if a.ownership==Ownership::Moved{bi}else if b.ownership==Ownership::Moved{ai}else if let Some(choice)=choice{Position::selected(choice.clone(),ai,bi)}else{Position::both(ai,bi)});if let Some(choice)=choice{target.residency=residency::Residency::selected(choice.clone(),a.residency.clone(),b.residency.clone());}if a.ownership==Ownership::Moved{target.residency=b.residency.clone();}else if b.ownership==Ownership::Moved{target.residency=a.residency.clone();}},(Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.ownership=Ownership::either(&a.ownership,&b.ownership,choice);target.value.proof.join_view_borrows(&a.value.proof,&b.value.proof,choice.map(Presence::condition).as_ref());for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},_=>{}}}
         let old=self.clone();self.join(other.clone());restore(self,&old,&other,choice);
     }
