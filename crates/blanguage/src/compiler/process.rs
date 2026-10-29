@@ -2,17 +2,17 @@
 use super::{Processor, Worker};
 use std::{ffi::OsString, io, path::Path, process::Output};
 impl Worker {
-    pub(crate) fn cargo_output(&self, arguments: &[OsString], directory: &Path) -> io::Result<Output> {
-        cargo_output(arguments, directory, self.processor())
+    pub(crate) fn cargo_output(&self, arguments: &[OsString], directory: &Path, working_directory: &Path) -> io::Result<Output> {
+        cargo_output(arguments, directory, working_directory, self.processor())
     }
 }
 #[cfg(not(windows))]
-fn cargo_output(arguments: &[OsString], _: &Path, _: Option<Processor>) -> io::Result<Output> {
-    std::process::Command::new("cargo").args(arguments).output()
+fn cargo_output(arguments: &[OsString], _: &Path, working_directory: &Path, _: Option<Processor>) -> io::Result<Output> {
+    std::process::Command::new("cargo").args(arguments).current_dir(working_directory).output()
 }
 #[cfg(windows)]
-fn cargo_output(arguments: &[OsString], directory: &Path, processor: Option<Processor>) -> io::Result<Output> {
-    windows::output(arguments, directory, processor)
+fn cargo_output(arguments: &[OsString], directory: &Path, working_directory: &Path, processor: Option<Processor>) -> io::Result<Output> {
+    windows::output(arguments, directory, working_directory, processor)
 }
 #[cfg(windows)]
 mod windows {
@@ -101,7 +101,7 @@ mod windows {
         command.push(34);
         Ok(())
     }
-    pub(super) fn output(arguments: &[OsString], directory: &Path, processor: Option<Processor>) -> io::Result<Output> {
+    pub(super) fn output(arguments: &[OsString], directory: &Path, working_directory: &Path, processor: Option<Processor>) -> io::Result<Output> {
         let stdout_path = directory.join("cargo.stdout");
         let stderr_path = directory.join("cargo.stderr");
         let input = File::open("NUL")?;
@@ -131,10 +131,11 @@ mod windows {
         argument(&mut command, OsStr::new("cargo.exe"))?;
         for value in arguments { argument(&mut command, value)?; }
         command.push(0);
+        let working_directory: Vec<u16> = working_directory.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut process: Process = unsafe { zeroed() };
         let flags = 0x80000 | 0x08000000;
         win32(unsafe { CreateProcessW(null(), command.as_mut_ptr(), null(), null(), 1, flags,
-            null(), null(), &startup, &mut process) })?;
+            null(), working_directory.as_ptr(), &startup, &mut process) })?;
         let process_handle = unsafe { OwnedHandle::from_raw_handle(process.process) };
         let thread_handle = unsafe { OwnedHandle::from_raw_handle(process.thread) };
         drop(attributes);

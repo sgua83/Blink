@@ -1,5 +1,7 @@
 //! 正式入口构建：由实际源码闭包产生原生映像，执行端装入最终代码。
-mod hash;
+pub(crate) mod hash;
+mod object;
+pub use object::{ObjectCompilation, ObjectKind, compile_object};
 use crate::module::codec::{Decode, Encode, record};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{

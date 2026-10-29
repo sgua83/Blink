@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
+const BUILD: &str = ".blbuild";
 fn u16_at(b: &mut [u8], p: usize, v: u16) {
     b[p..p + 2].copy_from_slice(&v.to_le_bytes());
 }
@@ -62,6 +63,9 @@ struct CoffSymbol {
     external: bool,
 }
 pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
+    encode_build(o, None)
+}
+pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
     word(&mut meta, 20);
     string(&mut meta, &o.name)?;
@@ -167,6 +171,7 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
         })
         .collect();
     sections.push((META, &meta, 0x840, &[]));
+    if let Some(build) = build { sections.push((BUILD, build, 0x840, &[])); }
     if let Some(a) = &o.archive {
         sections.push((ARCHIVE, &a.bytes, 0x840, &[]));
     }
@@ -303,10 +308,35 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     Ok(out)
 }
 pub(super) fn decode(b: &[u8]) -> Result<Object> {
-    if get16(b, 0)? != 0x8664 || get16(b, 16)? != 0 {
-        return Err("需要 Windows x64 COFF 目标文件".into());
+    Reader::new(b)?.object()
+}
+/// 同一COFF包络的借用视图；构建调用先消费输入记录，命中后才消费代码ABI。
+pub(crate) struct Reader<'a> {
+    bytes: &'a [u8],
+    headers: &'a [u8],
+}
+impl<'a> Reader<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Result<Self> {
+        if get16(bytes, 0)? != 0x8664 || get16(bytes, 16)? != 0 {
+            return Err("需要 Windows x64 COFF 目标文件".into());
+        }
+        let headers = slice(bytes, 20, get16(bytes, 2)? as usize * 40)?;
+        Ok(Self { bytes, headers })
     }
-    let n = get16(b, 2)? as usize;
+    pub(crate) fn build_inputs(&self) -> Result<Option<&'a [u8]>> {
+        for header in self.headers.chunks_exact(40) {
+            if &header[..8] == BUILD.as_bytes() {
+                return Ok(Some(slice(self.bytes, get32(header, 20)? as usize, get32(header, 16)? as usize)?));
+            }
+        }
+        Ok(None)
+    }
+    pub(crate) fn object(&self) -> Result<Object> {
+        decode_object(self)
+    }
+}
+fn decode_object(reader: &Reader<'_>) -> Result<Object> {
+    let b = reader.bytes;
     let sym = get32(b, 8)? as usize;
     let count = get32(b, 12)? as usize;
     let strings_at = sym + count * 18;
@@ -334,8 +364,7 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
         ));
     }
     let mut raw = Vec::new();
-    for i in 0..n {
-        let h = slice(b, 20 + i * 40, 40)?;
+    for h in reader.headers.chunks_exact(40) {
         let name =
             std::str::from_utf8(&h[..h[..8].iter().position(|&c| c == 0).unwrap_or(8)])?.to_owned();
         raw.push((
@@ -425,7 +454,7 @@ pub(super) fn decode(b: &[u8]) -> Result<Object> {
     let mut mapping = BTreeMap::new();
     let mut sections = Vec::new();
     for (i, (name, bytes, flags, _, _)) in raw.iter().enumerate() {
-        if name != META && name != ARCHIVE {
+        if name != META && name != ARCHIVE && name != BUILD {
             mapping.insert(i, sections.len());
             sections.push(Section {
                 name: name.clone(),

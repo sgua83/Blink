@@ -3,8 +3,9 @@ mod archive;
 mod static_library;
 pub use static_library::{Input, archive};
 mod coff;
+pub(crate) use coff::Reader as ObjectReader;
 mod emit;
-pub(crate) use archive::compile as compile_archive;
+pub(crate) use archive::{compile as compile_archive, inputs as native_inputs};
 pub(crate) use emit::{application as application_code, module as module_code};
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -80,6 +81,9 @@ impl Object {
     }
     pub fn read(path: &Path) -> Result<Self> {
         coff::decode(&std::fs::read(path)?)
+    }
+    pub(crate) fn build_bytes(&self, inputs: &[u8]) -> Result<Vec<u8>> {
+        coff::encode_build(self, Some(inputs))
     }
     pub fn name(&self) -> &str {
         &self.name

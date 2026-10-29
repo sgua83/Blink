@@ -260,7 +260,7 @@ impl crate::Compiler {
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
 }
-fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
     let (header, binding, source) = generate(program, &prefix, worker)?;
     let exports = ["create", "run", "destroy"]

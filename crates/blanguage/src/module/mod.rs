@@ -70,7 +70,7 @@ impl Module {
         self.compiler.execute(|worker| self.compile_in(worker).map_err(|error| error.to_string()))
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
-    fn compile_in(&self, worker: &crate::compiler::Worker) -> codec::Result<Object> {
+    pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> codec::Result<Object> {
         let code = crate::parallel::try_map(
             worker, self.functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),

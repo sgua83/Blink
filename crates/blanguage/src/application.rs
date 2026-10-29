@@ -28,7 +28,7 @@ impl Application {
         self.compiler.execute(|worker| self.compile_in(worker).map_err(|error| error.to_string()))
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
-    fn compile_in(&self, worker: &crate::compiler::Worker) -> Result<Object, Box<dyn std::error::Error>> {
+    pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> Result<Object, Box<dyn std::error::Error>> {
         let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
         let mut stack_bytes = code.code.stack_bytes;
         let functions = crate::parallel::try_map(worker, self.functions.iter().collect(), |_| (),

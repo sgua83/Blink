@@ -75,26 +75,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             i += 2;
         }
         let output = output.ok_or("缺少 -o 目标文件路径")?;
-        let object = if module {
-            compiler.compile_native_module(&path, &root, &imports, &instances)?.compile()?
+        let kind = if module {
+            blanguage::build::ObjectKind::Module(&instances)
         } else if let Some(entry) = program {
-            let compilation = compiler.compile_entry(&path, &root, entry)?;
-            let program = compilation
-                .programs
-                .first()
-                .ok_or("DLL 编译需要无前置条件的具体 program")?;
-            let prefix = output
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or("目标文件名不是 UTF-8")?;
-            compiler.compile_dll(program, prefix)?
-        } else if imports.is_empty() {
-            compiler.compile_application(&path, &root, entry)?.compile()?
+            let prefix = output.file_stem().and_then(|value| value.to_str())
+                .ok_or("目标文件名不是UTF-8")?;
+            blanguage::build::ObjectKind::Library { entry, prefix }
         } else {
-            compiler.compile_application_with_modules(&path, &root, entry, &imports)?.compile()?
+            blanguage::build::ObjectKind::Application(entry)
         };
-        object.write(&output)?;
-        println!("object {} -> {}", object.name(), output.display());
+        let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
+            .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+        println!("object {} -> {}{}", compiled.object.name(), output.display(),
+            if compiled.reused { " (reused)" } else { "" });
         return Ok(());
     }
     if !matches!(command.as_str(), "check" | "build") {
