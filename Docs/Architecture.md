@@ -147,6 +147,8 @@ BLEngine现有源准备调用改为消费这些最终映像，并调用原CPU／
 
 会话是本机执行资源的所有者，不是新的语义／产物权威，不持有Frame或Device，不建立常驻线程池、服务、TLS预算或全局编译互斥。返回的待发射App／Module只保留同一会话；活动许可不跨非执行存放期保留，已生成机器产物不带会话。普通调用在调用方原线程持有并使用许可，不创建多余根线程；显式CPU选择只用于本次创建的临时工作线程，调用者的既有线程保持原选择；采用Windows实际processor group及组内编号，不将32线程或单CPU组固化。Win32职责依据[SetThreadGroupAffinity](https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-setthreadgroupaffinity)；其他平台的显式资源绑定尚未设计时直接说明范围，不增加隐式替换。
 
+执行框架的Cargo／rustc子工作同样消费原许可；工作线程亲和性不等于子进程亲和性。原对象编译者在子进程创建处交接CPU组，并在初始线程开始前设置该子进程的掩码，后续子进程沿[Windows进程亲和性继承](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask)消费同一选择。进程／主线程及实际stdio由创建者持有，开始前OS设置失败则结束该未启动子工作并报告真实错误；原单元目录只持有其必要输入、产物及输出，结束后清除。不把限制施加到SDK调用者进程，不增加Job、常驻代理或重放链。
+
 多模块构建依赖图、源输入固定、泛型／内联依赖及精确增量仍由C-021.5.1和C-021.5.2b继续，本设计不称它们已经交付；未来域Node交接本机资源时复用同一实际执行职责，当前不新增域程序。
 
 ### 尚待确定的具体设计
