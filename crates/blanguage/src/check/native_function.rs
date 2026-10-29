@@ -46,7 +46,7 @@ pub(crate) struct Contract {
     requires: BTreeSet<(ContractKind, ContractPredicate)>,
     target: Target,
     frame: bool,
-    domain: Option<crate::module::domain::Interface>,
+    pub(super) domain: Option<crate::module::domain::Interface>,
     residency: residency::Requirements,
     view_access:BTreeSet<view_contracts::Access>,
 }
@@ -1067,8 +1067,11 @@ fn build_domain(
     }
     let inputs: Vec<_> = (0..registers.len()).collect();
     let mut code = Vec::new();
-    let mut interface = crate::module::domain::Interface::new(&signature, target);
-    interface.outputs.clear();
+    let mut interface = crate::module::domain::Interface {
+        instance: signature.name.clone(), target,
+        buffers: signature.buffers.clone(), uniforms: signature.uniforms.clone(),
+        outputs: expanded.outputs,
+    };
     let mut start = 0;
     let mut required = signature.prefix_requirements.clone();
     let split = !expanded.calls.is_empty();
@@ -1087,21 +1090,9 @@ fn build_domain(
             &data,
             &uniform_values,
             &mut code,
-            &mut interface,
         );
-        let callee = domain_at(world, &call.instance, context, target)?;
+        domain_at(world, &call.instance, context, target)?;
         let mut arguments = vec![frame.clone()];
-        let bindings = call
-            .arguments
-            .iter()
-            .filter_map(|root| {
-                if let Root::Data(i, _) = root {
-                    Some(*i)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
         for root in &call.arguments {
             arguments.push(match root {
                 Root::Data(i, _) => CallArgument::Value {
@@ -1149,13 +1140,6 @@ fn build_domain(
             result: None,
             values: Vec::new(),
         }));
-        interface
-            .outputs
-            .extend(callee.outputs.into_iter().map(|mut output| {
-                output.binding = bindings[output.binding];
-                output.domain = output.domain.map(|i| bindings[i]);
-                output
-            }));
         start = call.stage;
         required = call.after;
     }
@@ -1172,7 +1156,6 @@ fn build_domain(
         &data,
         &uniform_values,
         &mut code,
-        &mut interface,
     );
     interface.outputs.sort();
     interface.outputs.dedup();
@@ -1234,7 +1217,6 @@ fn emit_domain_part(
     data: &[[Reg; 2]],
     uniforms: &[CallArgument],
     code: &mut Vec<Inst>,
-    interface: &mut crate::module::domain::Interface,
 ) {
     if stages.is_empty() {
         return;
@@ -1249,9 +1231,6 @@ fn emit_domain_part(
     program.prefix_requirements = required.to_vec();
     program.prefix_guarantees = guaranteed.to_vec();
     crate::optimize::optimize(&mut program);
-    interface
-        .outputs
-        .extend(crate::module::domain::Interface::new(&program, target).outputs);
     let index = context.resources.programs.len();
     context.resources.programs.push((target, program));
     let mut arguments = vec![frame.clone()];

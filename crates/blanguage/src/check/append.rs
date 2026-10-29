@@ -8,7 +8,7 @@ pub(super) fn clear(
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
-) -> Result<()> {
+) -> Result<crate::module::domain::Output> {
     if args.len() != 2 {
         return d
             .source
@@ -57,7 +57,7 @@ pub(super) fn clear(
         cross_access: Vec::new(),
         tiles: Vec::new(),
     });
-    Ok(())
+    Ok(crate::module::domain::Output { binding: count, domain: None, words: vec![word] })
 }
 
 impl Builder<'_> {
@@ -79,7 +79,8 @@ impl Builder<'_> {
         let (binding, word, ty) = self.dataset_field(&args[1])?;
         let count = PrefixCount { binding, word };
         if !matches!(self.view_access[&target], Access::Write | Access::InOut)
-            || self.view_access[&binding] != Access::InOut
+            || !(self.view_access[&binding] == Access::InOut
+                || self.view_access[&binding] == Access::Write && self.initialized.contains(&Position::Element(binding, word)))
             || target == binding
             || self.program.buffers[binding].count != Some(1)
             || ty != Ty::scalar(Scalar::U32)

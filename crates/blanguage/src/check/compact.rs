@@ -34,8 +34,9 @@ pub(super) fn compile(
     let (target, write) = data(env, &args[2], d)?;
     let (count, count_word, count_write) =
         collective_field(program, env, &args[3], d, Scalar::U32)?;
-    if read != Access::Read
-        || flags_read != Access::Read
+    if !matches!(read, Access::Read | Access::InOut)
+        || !(matches!(flags_read, Access::Read | Access::InOut)
+            || flags_read == Access::Write && facts.initialized(program, flags, flag_word))
         || !write.writes()
         || !count_write.writes()
         || target == count

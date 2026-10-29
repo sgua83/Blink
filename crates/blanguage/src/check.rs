@@ -256,6 +256,7 @@ struct DomainCall {
 struct ExpandedDomain {
     program: Program,
     calls: Vec<DomainCall>,
+    outputs: Vec<crate::module::domain::Output>,
 }
 pub(crate) fn compile_program(
     world: &World,
@@ -395,7 +396,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
     expand_program(
         world,
         d,
-        &env,
+        &mut env,
         &mut program,
         &mut Vec::new(),
         &mut false,
@@ -403,12 +404,12 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         &mut calls,
     )?;
     program.source_stages = program.stages.len();
-    Ok(ExpandedDomain { program, calls })
+    Ok(ExpandedDomain { program, calls, outputs: facts.outputs })
 }
 fn expand_program(
     world: &World,
     d: &Arc<Definition>,
-    env: &BTreeMap<String, Root>,
+    env: &mut BTreeMap<String, Root>,
     program: &mut Program,
     stack: &mut Vec<String>,
     boundary: &mut bool,
@@ -458,7 +459,7 @@ fn expand_stages(
     world: &World,
     d: &Arc<Definition>,
     body: &[Stmt],
-    env: &BTreeMap<String, Root>,
+    env: &mut BTreeMap<String, Root>,
     program: &mut Program,
     stack: &mut Vec<String>,
     boundary: &mut bool,
@@ -466,6 +467,14 @@ fn expand_stages(
     calls: &mut Vec<DomainCall>,
 ) -> Result<bool> {
     for statement in body {
+        for root in env.values_mut() {
+            if let Root::Data(binding, access @ Access::Write) = root
+                && program.buffers[*binding].ty.components.iter().all(|(_, offset)| facts.initialized(program, *binding, *offset))
+            {
+                *access = Access::InOut;
+            }
+        }
+        let mut first_stage = program.stages.len();
         match &statement.kind {
             StmtKind::Return(None) => return Ok(true),
             StmtKind::If(condition, yes, no) => {
@@ -479,6 +488,7 @@ fn expand_stages(
                 if expand_stages(world, d, selected, env, program, stack, boundary, facts, calls)? {
                     return Ok(true);
                 }
+                first_stage = program.stages.len();
             }
             StmtKind::For(name, first, Some(last), body) => {
                 if env.contains_key(name) {
@@ -507,11 +517,12 @@ fn expand_stages(
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)]),
                     );
                     if expand_stages(
-                        world, d, body, &child, program, stack, boundary, facts, calls,
+                        world, d, body, &mut child, program, stack, boundary, facts, calls,
                     )? {
                         return Ok(true);
                     }
                 }
+                first_stage = program.stages.len();
             }
             StmtKind::Parallel(name, syntax, body) => {
                 let data = &syntax.dataset;
@@ -531,8 +542,8 @@ fn expand_stages(
                     .map(|expr| {
                         let (binding, word, access) =
                             collective_field(program, env, expr, d, Scalar::Bool)?;
-                        if access != Access::Read
-                            && !(binding == *domain && access == Access::InOut)
+                        if !matches!(access, Access::Read | Access::InOut)
+                            && !(access == Access::Write && facts.initialized(program, binding, word))
                         {
                             return d.source.fail(
                                 expr.span,
@@ -587,17 +598,11 @@ fn expand_stages(
                         writable: false,
                     }
                 };
-                // 每份inout输入的当前元素均由真实调用者提供初值。
+                // 输入内容与前序阶段的真实输出共同提供当前元素初值。
                 for (binding, access) in &b.view_access {
-                    if *access == Access::InOut {
-                        b.initialized.extend(
-                            program.buffers[*binding]
-                                .ty
-                                .components
-                                .iter()
-                                .map(|(_, offset)| Position::Element(*binding, *offset)),
-                        );
-                    }
+                    b.initialized.extend(program.buffers[*binding].ty.components.iter()
+                        .filter(|(_, offset)| *access == Access::InOut || facts.initialized(program, *binding, *offset))
+                        .map(|(_, offset)| Position::Element(*binding, *offset)));
                 }
                 b.env.insert(name.clone(), element);
                 if let Some(limit) = &prefix {
@@ -625,27 +630,17 @@ fn expand_stages(
                         statement.span,
                     )?;
                 }
-                let mut outputs = b.writes.clone();
-                outputs.insert(*domain);
-                for binding in outputs {
-                    if b.view_access[&binding] != Access::Write
-                        || b.appends.iter().any(|(output, _)| *output == binding)
-                    {
-                        continue;
-                    }
-                    for (_, offset) in &program.buffers[binding].ty.components {
-                        if !b
-                            .initialized
-                            .contains(&Position::Element(binding, *offset))
+                if prefix.is_none() && selection.is_none() {
+                    for &binding in &b.writes {
+                        if b.view_access[&binding] == Access::Write
+                            && !b.appends.iter().any(|(output, count)| *output == binding || count.binding == binding)
                         {
-                            return d.source.fail(
-                                statement.span,
-                                "B108",
-                                format!(
-                                    "write 数据集 {} 有字段未在所有路径初始化",
-                                    program.buffers[binding].name
-                                ),
-                            );
+                            let words: Vec<_> = program.buffers[binding].ty.components.iter()
+                                .filter(|(_, offset)| b.initialized.contains(&Position::Element(binding, *offset)) && !facts.initialized(program, binding, *offset))
+                                .map(|(_, offset)| *offset).collect();
+                            if !words.is_empty() {
+                                facts.outputs.push(crate::module::domain::Output { binding, domain: Some(*domain), words });
+                            }
                         }
                     }
                 }
@@ -687,7 +682,8 @@ fn expand_stages(
             }) if name == "clear_prefix"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                append::clear(program, env, args, d, statement.span, facts)?;
+                let output = append::clear(program, env, args, d, statement.span, facts)?;
+                facts.outputs.push(output);
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
@@ -711,7 +707,7 @@ fn expand_stages(
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args),
                 ..
-            }) => {
+            }) => 'call: {
                 let explicit = if let StmtKind::Expr(Expr {
                     kind: ExprKind::Specialize(_, types, _),
                     ..
@@ -728,7 +724,7 @@ fn expand_stages(
                     {
                         reduce::compile(program, env, operator, args, d, statement.span, facts)?;
                         *boundary = false;
-                        continue;
+                        break 'call;
                     }
                     if let Some(kind) =
                         custom_reduce::Kind::from_source(name).filter(|_| explicit.is_none())
@@ -745,7 +741,7 @@ fn expand_stages(
                             kind,
                         )?;
                         *boundary = false;
-                        continue;
+                        break 'call;
                     }
                     if let Some(operator) =
                         CollectiveOperator::from_segmented_reduction_source(name)
@@ -761,7 +757,7 @@ fn expand_stages(
                             facts,
                         )?;
                         *boundary = false;
-                        continue;
+                        break 'call;
                     }
                     if let Some(operator) =
                         CollectiveOperator::from_scan_source(name).filter(|_| explicit.is_none())
@@ -777,7 +773,7 @@ fn expand_stages(
                             facts,
                         )?;
                         *boundary = false;
-                        continue;
+                        break 'call;
                     }
                     if let Some(operator) = CollectiveOperator::from_segmented_scan_source(name)
                         .filter(|_| explicit.is_none())
@@ -793,7 +789,7 @@ fn expand_stages(
                             facts,
                         )?;
                         *boundary = false;
-                        continue;
+                        break 'call;
                     }
                 }
                 let Some(key) = callee_key else {
@@ -957,6 +953,26 @@ fn expand_stages(
                 }
                 let compiled = callee.compiled.is_some();
                 if compiled {
+                    use crate::module::codec::Decode;
+                    let target = if callee.function.target == Target::Gpu { Target::Gpu } else { Target::Cpu };
+                    let symbol = crate::module::domain::symbol(&instance.name, target);
+                    let bytes = callee.compiled.as_ref().unwrap().get(&symbol).ok_or_else(|| Diagnostic {
+                            source: d.source.clone(), span: statement.span, code: "B270",
+                            message: format!("缺少已编译整域入口合同 {symbol}"),
+                        })?;
+                    let contract = native_function::Contract::from_bytes(bytes).map_err(|error| Diagnostic {
+                        source: d.source.clone(), span: statement.span, code: "B270", message: error.to_string(),
+                    })?.domain.ok_or_else(|| Diagnostic {
+                        source: d.source.clone(), span: statement.span, code: "B270", message: format!("入口 {symbol} 不是整域合同"),
+                    })?;
+                    let bindings: Vec<_> = callee.function.params.iter().filter_map(|p| match child[&p.name] {
+                        Root::Data(binding, _) => Some(binding), _ => None,
+                    }).collect();
+                    facts.outputs.extend(contract.outputs.into_iter().map(|mut output| {
+                        output.binding = bindings[output.binding];
+                        output.domain = output.domain.map(|binding| bindings[binding]);
+                        output
+                    }));
                     calls.push(DomainCall {
                         stage: program.stages.len(),
                         instance: instance.clone(),
@@ -973,10 +989,11 @@ fn expand_stages(
                 } else {
                     facts.enter(&required);
                     expand_program(
-                        world, callee, &child, program, stack, boundary, facts, calls,
+                        world, callee, &mut child, program, stack, boundary, facts, calls,
                     )?;
                     facts.leave();
                 }
+                first_stage = program.stages.len();
                 let writable: Vec<_> = callee
                     .function
                     .params
@@ -1007,6 +1024,35 @@ fn expand_stages(
                     "B119",
                     "program 顶层表达阶段；局部控制流放在 parallel 内",
                 );
+            }
+        }
+        let mut add = |binding, domain, first, ty: &Ty| facts.outputs.push(crate::module::domain::Output {
+            binding,
+            domain,
+            words: ty.components.iter().map(|(_, offset)| first + offset).collect(),
+        });
+        for stage in &program.stages[first_stage..] {
+            match &stage.operation {
+                Operation::Reduce(v) => add(v.fields.target, None, v.fields.target_word, &v.ty),
+                Operation::CustomReduce(v) => add(v.fields.target, None, v.fields.target_word, &v.ty),
+                Operation::ScanExclusive(v) if stage.prefix.is_none() => add(
+                    v.values.target, Some(v.values.source), v.values.target_word, &v.ty,
+                ),
+                Operation::CustomScan(v) if stage.prefix.is_none() => add(
+                    v.values.fields.target, Some(v.values.fields.source),
+                    v.values.fields.target_word, &v.values.ty,
+                ),
+                Operation::StableSort(v) if stage.prefix.is_none() => {
+                    add(v.target, Some(v.source), 0, &program.buffers[v.target].ty);
+                }
+                Operation::Compact(v) => add(v.count, None, v.count_word, &Ty::scalar(Scalar::U32)),
+                Operation::SegmentedReduce(v) => add(
+                    v.count.binding, None, v.count.word, &Ty::scalar(Scalar::U32),
+                ),
+                Operation::CustomSegmentedReduce(v) => add(
+                    v.count.binding, None, v.count.word, &Ty::scalar(Scalar::U32),
+                ),
+                _ => {}
             }
         }
     }
@@ -3712,14 +3758,6 @@ impl<'a> Builder<'a> {
                 index.span,
                 "B137",
                 "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
-            );
-        }
-        if self.view_access[&binding] == Access::Write && !current
-        {
-            return self.fail(
-                index.span,
-                "B166",
-                "write 数据只允许访问当前独占元素；共享读取需要输入读取权限",
             );
         }
         if matches!(self.view_access[&binding], Access::Write | Access::InOut) {

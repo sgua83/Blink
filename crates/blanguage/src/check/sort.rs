@@ -35,7 +35,9 @@ pub(super) fn compile(
         let (field, order) = key(arg, d)?;
         let (binding, word, access, domain, ty) =
             prefix::typed_field(program, env, field, d, facts)?;
-        if binding != source || domain != prefix || access != Access::Read {
+        if binding != source || domain != prefix || !matches!(access, Access::Read | Access::InOut)
+            || !env.values().any(|root| matches!(root, Root::Data(binding, Access::Read | Access::InOut) if *binding == source))
+        {
             return d
                 .source
                 .fail(arg.span, "B170", "排序键必须来自同一 read 输入和同一有效域");
