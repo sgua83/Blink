@@ -31,7 +31,7 @@ impl Interface {
                 words: ty
                     .components
                     .iter()
-                    .map(|(_, offset)| first + offset / 4)
+                    .map(|(_, offset)| first + offset)
                     .collect(),
             });
         };
