@@ -420,6 +420,7 @@ impl<'a> Builder<'a> {
         }
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
+        let mut data_access = Vec::new();
         for (parameter,(param, arg)) in callee.function.params.iter().zip(args).enumerate() {
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
@@ -448,13 +449,17 @@ impl<'a> Builder<'a> {
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
                     self.require_same(&ty, &self.program.buffers[binding].ty, span)?;
-                    if !matches!(param.access, Access::Read | Access::Atomic)
-                        || param.access != self.view_access[&binding]
+                    let access = self.view_access[&binding];
+                    if param.access == Access::Read && access == Access::InOut {
+                        data_access.push((binding, access));
+                        self.view_access.insert(binding, Access::Read);
+                    } else if !matches!(param.access, Access::Read | Access::Atomic)
+                        || param.access != access
                     {
                         return self.fail(
                             span,
                             "B224",
-                            "并行实例只能转借已有 read／atomic dataset；整份 inout 借用需要 CPU 应用的独占资源",
+                            "并行实例只能转借 read／atomic dataset；read 可以借自本阶段的 inout，不能取得整份独占修改权",
                         );
                     }
                     if param.ty.count.is_some()
@@ -595,6 +600,7 @@ impl<'a> Builder<'a> {
         self.block_depth = old_block;
         self.loop_depth = old_loop;
         self.iterators = old_iterators;
+        for (binding, access) in data_access { self.view_access.insert(binding, access); }
         Ok(result)
     }
 }

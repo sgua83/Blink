@@ -608,6 +608,7 @@ fn expand_stages(
                 b.prefix = prefix;
                 let inputs = b.tile_inputs(body)?;
                 b.block(&body[inputs..])?;
+                b.parallel_access(statement.span)?;
                 let appended: Vec<_> = b
                     .appends
                     .iter()
@@ -1649,6 +1650,46 @@ impl<'a> Builder<'a> {
             appends: BTreeMap::new(),
             prefix: None,
         }
+    }
+    fn parallel_access(&self, span: Span) -> Result<()> {
+        let shared = |binding: usize, index: Reg| {
+            if self.appends.iter().any(|(output, count)| *output == binding || count.binding == binding) {
+                return self.fail(span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取");
+            }
+            if index != self.global_index && self.writes.contains(&binding) {
+                self.fail(span, "B166", format!(
+                    "同一 parallel 阶段不能共享读取并写入 {} 的其他元素",
+                    self.program.buffers[binding].name,
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let mut pending = vec![self.code.as_slice()];
+        while let Some(code) = pending.pop() {
+            for instruction in code {
+                match instruction {
+                    Inst::Load { binding, index, .. }
+                    | Inst::LoadIndexed { source: IndexedSource::Data { binding, index }, .. } => {
+                        shared(*binding, *index)?;
+                    }
+                    Inst::Call(call) => {
+                        for argument in &call.arguments {
+                            if let CallArgument::Reference { access, address: CallReference {
+                                storage: CallStorage::Indexed(IndexedSource::Data { binding, index }), ..
+                            }, .. } = argument && access.reads() {
+                                shared(*binding, *index)?;
+                            }
+                        }
+                    }
+                    Inst::Scope(body) => pending.push(body),
+                    Inst::If { yes, no, .. } => pending.extend([yes.as_slice(), no.as_slice()]),
+                    Inst::Loop { condition, body, .. } => pending.extend([condition.as_slice(), body.as_slice()]),
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
     }
     fn roots(&mut self, env: &BTreeMap<String, Root>) {
         for (name, root) in env {
@@ -3129,11 +3170,11 @@ impl<'a> Builder<'a> {
                 ),
                 Some(Binding::Data(view)) => {
                     let binding = view.binding;
-                    if !matches!(self.view_access[&binding], Access::Read | Access::Atomic) {
+                    if !matches!(self.view_access[&binding], Access::Read | Access::InOut | Access::Atomic) {
                         return self.fail(
                             start.span,
                             "B128",
-                            "顺序遍历需要 read 或 atomic 数据集；atomic 游标仍须显式原子访问",
+                            "只读顺序遍历需要 read／inout 或 atomic 数据集；atomic 游标仍须显式原子访问",
                         );
                     }
                     (
@@ -3688,14 +3729,12 @@ impl<'a> Builder<'a> {
                 "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
             );
         }
-        if self.view_access[&binding] != Access::Atomic
-            && self.view_access[&binding].writes()
-            && !current
+        if self.view_access[&binding] == Access::Write && !current
         {
             return self.fail(
                 index.span,
                 "B166",
-                "并行可写数据只允许访问当前独占元素；读取其他元素需要独立 read 数据集",
+                "write 数据只允许访问当前独占元素；共享读取需要输入读取权限",
             );
         }
         if matches!(self.view_access[&binding], Access::Write | Access::InOut) {
@@ -3978,11 +4017,11 @@ impl<'a> Builder<'a> {
             }
             if let Some(Binding::Data(view)) = self.env.get(data).cloned() {
                 let binding = view.binding;
-                if self.view_access[&binding] != Access::Read {
+                if !matches!(self.view_access[&binding], Access::Read | Access::InOut) {
                     return self.fail(
                         span,
                         "B181",
-                        "unsafe_read 只允许不可变数据集，不能别名读取并行写入的数据",
+                        "unsafe_read 需要 read 或本阶段共享只读的 inout 数据集",
                     );
                 }
                 let Some(index) = self.expr(&args[1])? else {
