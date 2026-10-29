@@ -24,7 +24,7 @@ pub enum Value {
     I32(i32) = blanguage::resource::I32,
     Bool(bool) = blanguage::resource::BOOL,
     U64(u64) = blanguage::resource::U64,
-    I64(i64) = blanguage::resource::I64,
+    I64(i64) = blanguage::resource::I64, F64(f64) = blanguage::resource::F64,
 }
 impl Value {
     fn scalar(self) -> Scalar {
@@ -34,7 +34,7 @@ impl Value {
             Self::I32(_) => Scalar::I32,
             Self::Bool(_) => Scalar::Bool,
             Self::U64(_) => Scalar::U64,
-            Self::I64(_) => Scalar::I64,
+            Self::I64(_) => Scalar::I64, Self::F64(_) => Scalar::F64,
         }
     }
     fn bits(self) -> u64 {
@@ -44,7 +44,7 @@ impl Value {
             Self::I32(v) => u64::from(v as u32),
             Self::Bool(v) => u64::from(v),
             Self::U64(v) => v,
-            Self::I64(v) => v as u64,
+            Self::I64(v) => v as u64, Self::F64(v) => v.to_bits(),
         }
     }
     fn write_words(self, words: &mut [u32]) {

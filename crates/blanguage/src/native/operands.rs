@@ -45,7 +45,7 @@ impl Memory {
 pub(super) enum Operand {
     Register(u8),
     Memory(Memory),
-    Literal(u32),
+    Literal(Bits, bool),
 }
 impl Operand {
     pub(super) fn memory(base: u8, offset: u32) -> Self {
@@ -58,9 +58,9 @@ impl From<Memory> for Operand {
     }
 }
 impl Emitter<'_> {
-    fn float_operand(&mut self, location: Location) -> Operand {
+    fn float_operand(&mut self, location: Location, scalar: Scalar) -> Operand {
         match location {
-            Location::Immediate(bits) => Operand::Literal(bits as u32),
+            Location::Immediate(bits) => Operand::Literal(bits, scalar.size() == 8),
             location => self.operand(location, 1),
         }
     }
@@ -156,14 +156,14 @@ impl Emitter<'_> {
         }
         let field = (register & 7) << 3;
         match operand {
-            Operand::Literal(bits) => {
+            Operand::Literal(bits, wide) => {
                 // Scalar literal reads end at disp32: ModRM 00/r/101 is RIP-relative.
                 self.rex(wide, register, 0, 0);
                 self.bytes(opcode);
                 self.bytes(&[field | 5]);
                 let at = self.code.len();
                 self.u32(0);
-                self.literals.entry(bits).or_default().push(at);
+                self.literals.entry((bits, wide)).or_default().push(at);
             }
             Operand::Register(r) => {
                 self.rex(wide, register, r, 0);
@@ -259,18 +259,15 @@ impl Emitter<'_> {
         self.copy_scalar(self.location(r), Location::Gpr(0), self.stage.registers[r]);
     }
     pub(super) fn float(&mut self, r: Reg, xmm: u8) {
-        self.copy(Location::Xmm(xmm), self.location(r));
+        self.copy_scalar(Location::Xmm(xmm), self.location(r), self.stage.registers[r]);
     }
     pub(super) fn store_float(&mut self, r: Reg) {
-        self.copy(self.location(r), Location::Xmm(0));
+        self.copy_scalar(self.location(r), Location::Xmm(0), self.stage.registers[r]);
     }
     pub(super) fn constant(&mut self, r: Reg, bits: Bits) {
         self.literal_width(self.location(r), bits, self.stage.registers[r].size() == 8);
     }
-    fn literal(&mut self, dst: Location, bits: Bits) {
-        self.literal_width(dst, bits, false);
-    }
-    fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
+    pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         match dst {
             Location::Immediate(_) => {}
             Location::Gpr(d) => {
@@ -295,7 +292,7 @@ impl Emitter<'_> {
                     self.literal_width(Location::Gpr(0), bits, true);
                     self.instruction(Some(0x66), &[0x0f, 0x6e], true, d, Operand::Register(0));
                 } else {
-                    self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, Operand::Literal(bits as u32));
+                    self.instruction(Some(0xf3), &[0x0f, 0x10], false, d, Operand::Literal(bits, false));
                 }
             }
         }
@@ -367,16 +364,17 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn float_binary(&mut self, dst: Reg, a: Reg, b: Reg, opcode: u8) {
+        let scalar = self.stage.registers[dst];
         let (d, a, b) = (self.location(dst), self.location(a), self.location(b));
         // legacy SSE 是两地址指令：目标若占了尚未读取的右值，先在 XMM0 计算。
         let target = match d {
             Location::Xmm(r) if d != b || a == b => r,
             _ => 0,
         };
-        self.copy(Location::Xmm(target), a);
-        let right = self.float_operand(b);
-        self.instruction(Some(0xf3), &[0x0f, opcode], false, target, right);
-        self.copy(d, Location::Xmm(target));
+        self.copy_scalar(Location::Xmm(target), a, scalar);
+        let right = self.float_operand(b, scalar);
+        self.instruction(Some(if scalar == Scalar::F64 { 0xf2 } else { 0xf3 }), &[0x0f, opcode], false, target, right);
+        self.copy_scalar(d, Location::Xmm(target), self.stage.registers[dst]);
     }
     pub(super) fn integer_binary(
         &mut self,
@@ -423,28 +421,33 @@ impl Emitter<'_> {
         let from = self.stage.registers[src];
         let into = self.stage.registers[dst];
         let (d, source) = (self.location(dst), self.location(src));
-        if from == Scalar::U64 && into == Scalar::F32 {
+        if from == Scalar::U64 && into.is_float() {
             self.unsigned64_to_float(dst, src);
-        } else if from == Scalar::F32 && into == Scalar::U64 {
+        } else if from.is_float() && into == Scalar::U64 {
             self.float_to_unsigned64(dst, src);
+        } else if from != into && from.is_float() && into.is_float() {
+            let target = match d { Location::Xmm(r) => r, _ => 0 };
+            let operand = self.float_operand(source, from);
+            self.instruction(Some(if from == Scalar::F64 { 0xf2 } else { 0xf3 }), &[0x0f, 0x5a], false, target, operand);
+            self.copy_scalar(d, Location::Xmm(target), into);
         } else if bit_copy(from, into) {
             self.copy_scalar(d, source, into);
         } else if into == Scalar::Bool {
-            if from == Scalar::F32 {
+            if from.is_float() {
                 let left = match source {
                     Location::Xmm(r) => r,
                     _ => 0,
                 };
-                self.copy(Location::Xmm(left), source);
+                self.copy_scalar(Location::Xmm(left), source, from);
                 self.bytes(&[0x0f, 0x57, 0xc9]);
-                self.instruction(None, &[0x0f, 0x2e], false, left, Operand::Register(1));
+                self.instruction(if from == Scalar::F64 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, left, Operand::Register(1));
             } else {
                 let source = self.operand(source, 1);
                 self.instruction(None, &[0x83], from.size() == 8, 7, source);
                 self.bytes(&[0]);
             }
             self.comparison_result(dst, Comparison::NotEqual, from);
-        } else if from != Scalar::F32 && into != Scalar::F32 {
+        } else if !from.is_float() && !into.is_float() {
             let target = match d { Location::Gpr(r) => r, _ => 0 };
             let register = Location::Gpr(target);
             if into.size() == 4 {
@@ -461,14 +464,14 @@ impl Emitter<'_> {
                 }
             }
             self.copy_width(d, register, into.size() == 8);
-        } else if from == Scalar::F32 {
+        } else if from.is_float() {
             let target = match d {
                 Location::Gpr(r) => r,
                 _ => 0,
             };
-            let source = self.float_operand(source);
+            let source = self.float_operand(source, from);
             self.instruction(
-                Some(0xf3),
+                Some(if from == Scalar::F64 { 0xf2 } else { 0xf3 }),
                 &[0x0f, 0x2c],
                 into == Scalar::U32 || into.size() == 8,
                 target,
@@ -500,77 +503,59 @@ impl Emitter<'_> {
                 Operand::Register(target),
             );
             self.instruction(
-                Some(0xf3),
+                Some(if into == Scalar::F64 { 0xf2 } else { 0xf3 }),
                 &[0x0f, 0x2a],
                 from == Scalar::U32 || from.size() == 8,
                 target,
                 source,
             );
-            self.copy(d, Location::Xmm(target));
+            self.copy_scalar(d, Location::Xmm(target), self.stage.registers[dst]);
         }
     }
     fn unsigned64_to_float(&mut self, dst: Reg, src: Reg) {
         let location = self.location(dst);
+        let prefix = if self.stage.registers[dst] == Scalar::F64 { 0xf2 } else { 0xf3 };
         let target = match location { Location::Xmm(r) => r, _ => 0 };
         self.load(src);
         self.bytes(&[0x48, 0x85, 0xc0]);
         let low = self.jump(Some(0x89));
         // The low bit supplies the sticky bit before the signed conversion.
-        // Rounding the half value to odd preserves the final f32 rounding.
+        // Rounding the half value to odd preserves the final floating-point rounding.
         self.bytes(&[0x48, 0x89, 0xc1, 0x83, 0xe1, 1, 0x48, 0xd1, 0xe8, 0x48, 0x09, 0xc8]);
         self.instruction(None, &[0x0f, 0x57], false, target, Operand::Register(target));
-        self.instruction(Some(0xf3), &[0x0f, 0x2a], true, target, Operand::Register(0));
-        self.instruction(Some(0xf3), &[0x0f, 0x58], false, target, Operand::Register(target));
+        self.instruction(Some(prefix), &[0x0f, 0x2a], true, target, Operand::Register(0));
+        self.instruction(Some(prefix), &[0x0f, 0x58], false, target, Operand::Register(target));
         let end = self.jump(None);
         self.patch(low, self.code.len());
         self.instruction(None, &[0x0f, 0x57], false, target, Operand::Register(target));
-        self.instruction(Some(0xf3), &[0x0f, 0x2a], true, target, Operand::Register(0));
+        self.instruction(Some(prefix), &[0x0f, 0x2a], true, target, Operand::Register(0));
         self.patch(end, self.code.len());
-        self.copy(location, Location::Xmm(target));
+        self.copy_scalar(location, Location::Xmm(target), self.stage.registers[dst]);
     }
     fn float_to_unsigned64(&mut self, dst: Reg, src: Reg) {
         let location = self.location(dst);
+        let prefix = if self.stage.registers[src] == Scalar::F64 { 0xf2 } else { 0xf3 };
         let target = match location { Location::Gpr(r) => r, _ => 0 };
         self.float(src, 0);
-        self.literal(Location::Xmm(1), 0x5f000000); // 2^63, exactly representable in f32.
-        self.instruction(None, &[0x0f, 0x2e], false, 0, Operand::Register(1));
+        self.literal_width(Location::Xmm(1), if prefix == 0xf2 { (2.0f64.powi(63)).to_bits() } else { 0x5f000000 }, prefix == 0xf2);
+        self.instruction(if prefix == 0xf2 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, 0, Operand::Register(1));
         let low = self.jump(Some(0x82));
-        self.instruction(Some(0xf3), &[0x0f, 0x5c], false, 0, Operand::Register(1));
-        self.instruction(Some(0xf3), &[0x0f, 0x2c], true, target, Operand::Register(0));
+        self.instruction(Some(prefix), &[0x0f, 0x5c], false, 0, Operand::Register(1));
+        self.instruction(Some(prefix), &[0x0f, 0x2c], true, target, Operand::Register(0));
         self.instruction(None, &[0x0f, 0xba], true, 5, Operand::Register(target));
         self.bytes(&[63]);
         let end = self.jump(None);
         self.patch(low, self.code.len());
-        self.instruction(Some(0xf3), &[0x0f, 0x2c], true, target, Operand::Register(0));
+        self.instruction(Some(prefix), &[0x0f, 0x2c], true, target, Operand::Register(0));
         self.patch(end, self.code.len());
         self.copy_scalar(location, Location::Gpr(target), Scalar::U64);
     }
     pub(super) fn float_sign(&mut self, dst: Reg, src: Reg, negate: bool) {
-        let (mask, opcode, extension, accumulator) = if negate {
-            (0x80000000, 0x57, 6, 0x35)
-        } else {
-            (0x7fffffff, 0x54, 4, 0x25)
-        };
-        let (d, source) = (self.location(dst), self.location(src));
-        if let Location::Immediate(bits) = source {
-            self.literal(d, if negate { bits ^ mask } else { bits & mask });
-        } else if let Location::Xmm(target) = d {
-            self.copy(d, source);
-            // 掩码只读四字节；位操作不从字池读取额外十二字节。
-            self.literal(Location::Xmm(0), mask);
-            self.instruction(None, &[0x0f, opcode], false, target, Operand::Register(0));
-        } else {
-            let target = if d == source { d } else { Location::Gpr(0) };
-            self.copy(target, source);
-            if target == Location::Gpr(0) {
-                self.bytes(&[accumulator]);
-            } else {
-                let operand = self.operand(target, 1);
-                self.instruction(None, &[0x81], false, extension, operand);
-            }
-            self.u32(mask as u32);
-            self.copy(d, target);
-        }
+        let scalar = self.stage.registers[src];
+        self.load(src);
+        self.instruction(None, &[0x0f, 0xba], scalar.size() == 8, if negate { 7 } else { 6 }, Operand::Register(0));
+        self.bytes(&[(scalar.bit_width()-1) as u8]);
+        self.store(dst);
     }
     pub(super) fn float_sqrt(&mut self, dst: Reg, source: Reg) {
         let d = self.location(dst);
@@ -578,9 +563,9 @@ impl Emitter<'_> {
             Location::Xmm(r) => r,
             _ => 0,
         };
-        let source = self.float_operand(self.location(source));
-        self.instruction(Some(0xf3), &[0x0f, 0x51], false, target, source);
-        self.copy(d, Location::Xmm(target));
+        let source = self.float_operand(self.location(source), self.stage.registers[source]);
+        self.instruction(Some(if self.stage.registers[dst] == Scalar::F64 { 0xf2 } else { 0xf3 }), &[0x0f, 0x51], false, target, source);
+        self.copy_scalar(d, Location::Xmm(target), self.stage.registers[dst]);
     }
     pub(super) fn integer_unary(
         &mut self,
@@ -628,14 +613,14 @@ impl Emitter<'_> {
     pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
         let scalar = self.stage.registers[a];
         let (a, b) = (self.location(a), self.location(b));
-        if scalar == Scalar::F32 {
+        if scalar.is_float() {
             let left = match a {
                 Location::Xmm(r) => r,
                 _ => 0,
             };
-            self.copy(Location::Xmm(left), a);
-            let right = self.float_operand(b);
-            self.instruction(None, &[0x0f, 0x2e], false, left, right);
+            self.copy_scalar(Location::Xmm(left), a, scalar);
+            let right = self.float_operand(b, scalar);
+            self.instruction(if scalar == Scalar::F64 { Some(0x66) } else { None }, &[0x0f, 0x2e], false, left, right);
         } else {
             let left = match a {
                 Location::Gpr(r) => r,

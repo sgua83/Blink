@@ -1,6 +1,6 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
 use super::{Import, Relocation, Result, Section, Target};
-use crate::native::{ApplicationCode, NativeIntrinsic, NativeSymbol, application_unwind};
+use crate::native::{ApplicationCode, NativeSymbol, application_unwind};
 use std::collections::{BTreeMap, BTreeSet};
 fn align(n: usize, a: usize) -> usize {
     n.div_ceil(a) * a
@@ -26,27 +26,6 @@ fn ucrt(name: &'static str) -> Import {
         dll: "ucrtbase.dll".into(),
         name: name.into(),
     }
-}
-fn math(op: NativeIntrinsic) -> Option<Import> {
-    let name = match op {
-        NativeIntrinsic::Sin => "sinf",
-        NativeIntrinsic::Cos => "cosf",
-        NativeIntrinsic::Floor => "floorf",
-        NativeIntrinsic::Exp => "expf",
-        NativeIntrinsic::Exp2 => "exp2f",
-        NativeIntrinsic::Log => "logf",
-        NativeIntrinsic::Log2 => "log2f",
-        NativeIntrinsic::Pow => "powf",
-        NativeIntrinsic::PrintU32
-        | NativeIntrinsic::PrintI32
-        | NativeIntrinsic::PrintBool
-        | NativeIntrinsic::PrintF32
-        | NativeIntrinsic::PrintU64
-        | NativeIntrinsic::PrintI64 => {
-            return None;
-        }
-    };
-    Some(ucrt(name))
 }
 struct Function {
     begin: usize,
@@ -74,11 +53,11 @@ fn call(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import) {
     v.extend([0; 4]);
     patches.push((at, import));
 }
-fn print(op: NativeIntrinsic) -> Result<Helper> {
-    let signed = matches!(op, NativeIntrinsic::PrintI32 | NativeIntrinsic::PrintI64);
-    let wide = matches!(op, NativeIntrinsic::PrintU64 | NativeIntrinsic::PrintI64);
-    let boolean = op == NativeIntrinsic::PrintBool;
-    let float = op == NativeIntrinsic::PrintF32;
+fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
+    let signed = scalar.is_signed();
+    let wide = scalar.size() == 8;
+    let boolean = scalar == crate::ir::Scalar::Bool;
+    let float = scalar.is_float();
     let saved = if signed { vec![3, 6, 7] } else { vec![3, 6] };
     let frame = if float {
         120u8
@@ -101,12 +80,17 @@ fn print(op: NativeIntrinsic) -> Result<Helper> {
     operations.push((at, vec![at, ((frame / 8 - 1) << 4) | 2]));
     let unwind = application_unwind(at, operations);
     if float {
-        // intrinsic 的参数仍是原始 32 位；只为 C 的 %g 参数提升到 double。
-        v.extend([
-            0x66, 0x0f, 0x6e, 0xc1, 0xf3, 0x0f, 0x5a, 0xc0, 0xf2, 0x0f, 0x11, 0x44, 0x24, 0x38,
-            0x66, 0xc7, 0x44, 0x24, 0x40, b'C', 0, 0xc7, 0x44, 0x24, 0x48, b'%', b'.', b'9', b'g',
-            0x66, 0xc7, 0x44, 0x24, 0x4c, 10, 0, 0xb9, 4, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x40,
-        ]);
+        // Intrinsics receive original bits; only f32 needs promotion for C's %g.
+        v.extend([0x66]);
+        if scalar == crate::ir::Scalar::F64 { v.push(0x48); }
+        v.extend([0x0f, 0x6e, 0xc1]);
+        if scalar == crate::ir::Scalar::F32 { v.extend([0xf3, 0x0f, 0x5a, 0xc0]); }
+        v.extend([0xf2, 0x0f, 0x11, 0x44, 0x24, 0x38,
+            0x66, 0xc7, 0x44, 0x24, 0x40, b'C', 0,
+            0xc7, 0x44, 0x24, 0x48, b'%', b'.', if scalar == crate::ir::Scalar::F64 { b'1' } else { b'9' }, if scalar == crate::ir::Scalar::F64 { b'7' } else { b'g' },
+            0xc7, 0x44, 0x24, 0x4c]);
+        v.extend(if scalar == crate::ir::Scalar::F64 { [b'g',10,0,0] } else { [10,0,0,0] });
+        v.extend([0xb9, 4, 0, 0, 0, 0x48, 0x8d, 0x54, 0x24, 0x40]);
         call(&mut v, &mut patches, ucrt("_create_locale"));
         v.extend([0x48, 0x85, 0xc0]);
         failures.push(jmp(&mut v, Some(0x84)));
@@ -295,21 +279,17 @@ fn functions(
                     },
                 },
             ),
-            NativeSymbol::Intrinsic(op) => {
-                if let Some(import) = math(op) {
-                    thunk(&mut text, &mut patches, import);
-                } else {
-                    let helper = print(op)?;
-                    text.extend(helper.bytes);
-                    for (at, import) in helper.patches {
-                        patches.push((begin + at, import));
-                    }
-                    functions.push(Function {
-                        begin,
-                        end: text.len(),
-                        unwind: helper.unwind,
-                    });
+            NativeSymbol::Print(scalar) => {
+                let helper = print(scalar)?;
+                text.extend(helper.bytes);
+                for (at, import) in helper.patches {
+                    patches.push((begin + at, import));
                 }
+                functions.push(Function {
+                    begin,
+                    end: text.len(),
+                    unwind: helper.unwind,
+                });
             }
         }
     }

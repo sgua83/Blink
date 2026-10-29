@@ -2,7 +2,7 @@
 use crate::{
     ExecutableProgram,
     native::{
-        ContinuationCode, NativeCode, NativeIntrinsic, NativeSymbol, RangeResult, Relocation,
+        ContinuationCode, NativeCode, NativeSymbol, RangeResult, Relocation,
         SortCode as NativeSortCode, StageCode as NativeStageCode,
     },
     spirv::{ShaderCode, StageCode as ShaderStageCode},
@@ -103,7 +103,8 @@ variants!(Scalar {
     I32,
     Bool,
     U64,
-    I64
+    I64,
+    F64
 });
 record!(Ty {
     name,
@@ -207,7 +208,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query,
+    ray_query, float64,
     sorting,
     maximal_reconvergence,
     texture_indexing,
@@ -237,7 +238,7 @@ record!(ExecutionStage {
     tile_scope,
     width,
     shared_bytes,
-    float32_preserve
+    float32_preserve, float64_preserve
 });
 record!(ExecutionPlan {
     interface,
@@ -245,23 +246,7 @@ record!(ExecutionPlan {
     indirect_buffer,
     auxiliary_buffers
 });
-variants!(NativeIntrinsic {
-    Sin,
-    Cos,
-    Floor,
-    Exp,
-    Exp2,
-    Log,
-    Log2,
-    Pow,
-    PrintU32,
-    PrintI32,
-    PrintBool,
-    PrintF32,
-    PrintU64,
-    PrintI64
-});
-variants!(NativeSymbol { Intrinsic(i), External(name), Function(name) });
+variants!(NativeSymbol { Print(scalar), External(name), Function(name) });
 record!(Relocation { offset, target });
 record!(NativeCode {
     bytes,
@@ -382,7 +367,7 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
             for (scalar, _) in &uniform.ty.components {
                 let name = format!("value_{}", words.len());
                 let ty = match scalar {
-                    Scalar::F32 => "f32",
+                    Scalar::F32 => "f32", Scalar::F64 => "f64",
                     Scalar::I32 => "i32",
                     Scalar::U64 => "u64",
                     Scalar::I64 => "i64",
@@ -390,7 +375,7 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
                 };
                 params.push(format!("{name}:{ty}"));
                 let bits = match scalar {
-                    Scalar::F32 => format!("u64::from({name}.to_bits())"),
+                    Scalar::F32 => format!("u64::from({name}.to_bits())"), Scalar::F64 => format!("{name}.to_bits()"),
                     Scalar::I32 => format!("u64::from({name} as u32)"),
                     Scalar::Bool => format!("u64::from({name} != 0)"),
                     Scalar::U32 => format!("u64::from({name})"),

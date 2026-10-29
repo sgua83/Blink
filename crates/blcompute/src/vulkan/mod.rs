@@ -209,7 +209,7 @@ impl PhysicalDevice {
         self.properties.deviceType == 2
     }
     pub fn device(&self) -> Result<Device> {
-        Device::create(self.clone(), false, false, false, false, false, false)
+        Device::create(self.clone(), false, false, false, false, false, false, false)
     }
     pub fn for_program(&self, program: &dyn ProgramInterface) -> Result<Device> {
         self.for_programs(std::iter::once(program))
@@ -221,8 +221,9 @@ impl PhysicalDevice {
     ) -> Result<Device> {
         let (mut ray, mut sort, mut reconverge, mut textures, mut positions, mut extended_types) =
             (false, false, false, false, false, false);
+        let mut float64 = false;
         for program in programs {
-            let required = program.requirements();
+            let required = program.requirements(); float64 |= required.float64;
             ray |= required.ray_query;
             sort |= required.sorting;
             reconverge |= required.maximal_reconvergence;
@@ -230,7 +231,7 @@ impl PhysicalDevice {
             positions |= required.position_fetch;
             extended_types |= required.subgroup.extended_types;
         }
-        Device::create(self.clone(), ray, sort, reconverge, textures, positions, extended_types)
+        Device::create(self.clone(), ray, sort, reconverge, textures, positions, extended_types, float64)
     }
     fn default(presentation: bool) -> Result<Self> {
         Instance::create(presentation)?
@@ -353,6 +354,8 @@ struct Inner {
     subgroup_operations: u32,
     subgroup_extended_types: bool,
     float32_preserve: bool,
+    float64: bool,
+    float64_preserve: bool,
     next_submission: Cell<u64>,
 }
 #[derive(Clone)]
@@ -392,6 +395,7 @@ impl Device {
         texture_indexing: bool,
         position_fetch: bool,
         subgroup_extended_types: bool,
+        float64: bool,
     ) -> Result<Self> {
         unsafe {
             let PhysicalDevice {
@@ -548,7 +552,11 @@ impl Device {
             if position_fetch && position_features.position_fetch == 0 {
                 return Err(error("程序读取命中顶点，需要 rayTracingPositionFetch"));
             }
+            if float64 && features.features[39] == 0 {
+                return Err(error("程序需要 shaderFloat64，目标 GPU 不支持"));
+            }
             features.features.fill(0);
+            features.features[39] = u32::from(float64); // VkPhysicalDeviceFeatures::shaderFloat64.
             features.features[40] = 1; // VkPhysicalDeviceFeatures::shaderInt64。
             let position_enabled = ray::PositionFetchFeatures {
                 kind: 1000481000,
@@ -739,6 +747,9 @@ impl Device {
                         0
                     },
                     next_submission: Cell::new(0),
+                    float64,
+                    float64_preserve: float_controls.shaderDenormPreserveFloat64 != 0
+                        && float_controls.shaderSignedZeroInfNanPreserveFloat64 != 0,
                     float32_preserve: float_controls.shaderDenormPreserveFloat32 != 0
                         && float_controls.shaderSignedZeroInfNanPreserveFloat32 != 0,
                 }),
@@ -1600,6 +1611,12 @@ impl GpuProgram {
             return Err(error(
                 "append 程序必须以 Device::for_program 声明 maximal reconvergence 能力",
             ));
+        }
+        if program.requirements().float64 && !inner.float64 {
+            return Err(error("f64 程序必须以 Device::for_program 声明 shaderFloat64 能力"));
+        }
+        if program.stages().iter().any(|s| s.float64_preserve) && !inner.float64_preserve {
+            return Err(error("f64 运算需要设备支持64位 DenormPreserve 与 SignedZeroInfNanPreserve"));
         }
         let caps = program.subgroup_capabilities();
         if caps.extended_types && !inner.subgroup_extended_types {

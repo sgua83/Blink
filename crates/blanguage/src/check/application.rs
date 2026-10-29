@@ -547,9 +547,7 @@ impl Builder<'_> {
             Vec::new(),
         )
     }
-    pub(super) fn release_application_handle(&mut self, handle: Reg) {
-        self.code.push(self.application_release(handle));
-    }
+
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         self.application_movable(data,retained,span)?;
         let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.handle.regs[0]};
@@ -1450,7 +1448,7 @@ impl Builder<'_> {
             return self.fail(span, "B260", "println 是 CPU 标准输出操作，要求显式 on cpu");
         }
         if args.len() != 1 {
-            return self.fail(span, "B261", "println 需要一个整数、f32 或 bool 标量");
+            return self.fail(span, "B261", "println 需要一个整数、f32、f64 或 bool 标量");
         }
         let Some(value) = self.expr(&args[0])? else {
             return Ok(None);
@@ -1461,14 +1459,14 @@ impl Builder<'_> {
             Ty::scalar(Scalar::U64),
             Ty::scalar(Scalar::I64),
             Ty::scalar(Scalar::Bool),
-            Ty::scalar(Scalar::F32),
+            Ty::scalar(Scalar::F32), Ty::scalar(Scalar::F64),
         ]
         .contains(&value.ty)
         {
             return self.fail(
                 args[0].span,
                 "B261",
-                "println 当前接受 u32、i32、u64、i64、f32 或 bool 标量",
+                "println 当前接受 u32、i32、u64、i64、f32、f64 或 bool 标量",
             );
         }
         let dst = self.reg(Scalar::Bool);

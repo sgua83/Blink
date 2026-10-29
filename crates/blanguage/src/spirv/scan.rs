@@ -51,7 +51,7 @@ impl Emitter<'_> {
         let zero = self.constant(Scalar::U32, 0);
         // 全域扫描的尾组与 tile 共用树；有效长度属于当前实际工作域。
         let remaining =
-            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
                 let group_begin = self.id();
                 self.emit(130, &[u, group_begin, self.index, local]);
                 let available = self.id();
@@ -253,7 +253,7 @@ impl Emitter<'_> {
                 (a, bv)
             };
             let combined = self.collective_pair(tree.scalar, tree.operator, left, right);
-            let sum = if tree.scalar == Scalar::F32
+            let sum = if tree.scalar.is_float()
                 && tree.operator != CollectiveOperator::Sum
                 && !down
             {
@@ -266,7 +266,7 @@ impl Emitter<'_> {
                     &[self.types[&Scalar::Bool], has_right, right_begin, remaining],
                 );
                 let sum = self.id();
-                self.emit(169, &[u, sum, has_right, combined, left]);
+                self.emit(169, &[self.raw_type(tree.scalar), sum, has_right, combined, left]);
                 sum
             } else {
                 combined
@@ -288,7 +288,7 @@ impl Emitter<'_> {
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
         let first =
-            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
                 let local = self.id();
                 self.emit(137, &[u, local, self.index, width]);
                 let zero = self.constant(Scalar::U32, 0);

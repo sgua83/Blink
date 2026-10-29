@@ -188,7 +188,7 @@ use crate::{ast, ir};
 pub(crate) use {record, variants};
 variants!(ast::Access{0=>Value,1=>Read,2=>Write,3=>InOut,4=>Atomic});
 variants!(ast::Target{0=>Compute,1=>Cpu,2=>Gpu});
-variants!(ir::Scalar{0=>F32,1=>U32,2=>I32,3=>Bool,4=>U64,5=>I64});
+variants!(ir::Scalar{0=>F32,1=>U32,2=>I32,3=>Bool,4=>U64,5=>I64,6=>F64});
 record!(ir::Ty {
     name,
     arguments,

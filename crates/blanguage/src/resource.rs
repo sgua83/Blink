@@ -1,15 +1,16 @@
-//! 模块资源 ABI 5：包含64位标量及宽subgroup设备要求；不传递 Rust 容器表示。
+//! 模块资源 ABI 6：包含64位标量及宽subgroup设备要求；不传递 Rust 容器表示。
 use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variants};
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x05\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x06\0\0\0";
 pub const F32: u32 = 0;
 pub const U32: u32 = 1;
 pub const I32: u32 = 2;
 pub const BOOL: u32 = 3;
 pub const U64: u32 = 4;
 pub const I64: u32 = 5;
+pub const F64: u32 = 6;
 pub(crate) const fn scalar_tag(scalar: Scalar) -> u32 {
     match scalar {
         Scalar::F32 => F32,
@@ -17,7 +18,7 @@ pub(crate) const fn scalar_tag(scalar: Scalar) -> u32 {
         Scalar::I32 => I32,
         Scalar::Bool => BOOL,
         Scalar::U64 => U64,
-        Scalar::I64 => I64,
+        Scalar::I64 => I64, Scalar::F64 => F64,
     }
 }
 pub enum Image {
@@ -145,7 +146,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query,
+    ray_query, float64,
     sorting,
     maximal_reconvergence,
     texture_indexing,
@@ -175,7 +176,7 @@ record!(ExecutionStage {
     tile_scope,
     width,
     shared_bytes,
-    float32_preserve
+    float32_preserve, float64_preserve
 });
 record!(ExecutionPlan {
     interface,
@@ -183,8 +184,7 @@ record!(ExecutionPlan {
     indirect_buffer,
     auxiliary_buffers
 });
-variants!(native::NativeIntrinsic {0=>Sin,1=>Cos,2=>Floor,3=>Exp,4=>Exp2,5=>Log,6=>Log2,7=>Pow,8=>PrintU32,9=>PrintI32,10=>PrintBool,11=>PrintF32,12=>PrintU64,13=>PrintI64});
-variants!(native::NativeSymbol {0=>Intrinsic(i),1=>External(name),2=>Function(name)});
+variants!(native::NativeSymbol {0=>Print(scalar),1=>External(name),2=>Function(name)});
 record!(native::Relocation { offset, target });
 record!(native::NativeCode {
     bytes,

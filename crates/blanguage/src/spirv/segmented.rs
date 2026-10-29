@@ -124,7 +124,7 @@ impl Emitter<'_> {
         let zero = self.constant(Scalar::U32, 0);
         let identity = self.segment_identity(scan);
         let remaining =
-            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
                 let group_begin = self.id();
                 self.emit(130, &[u, group_begin, self.index, local]);
                 let available = self.id();
@@ -567,7 +567,7 @@ impl Emitter<'_> {
         let value = self.segment_read(&target);
         let merged = self.segment_combine(scan, &prefix, &value);
         let merged =
-            if scan.ty.components[0].0 == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
                 let u = self.types[&Scalar::U32];
                 let local = self.id();
                 self.emit(137, &[u, local, self.index, width]);
@@ -634,11 +634,11 @@ impl Emitter<'_> {
                 r.target_word + offset / 4,
             );
             let merged = self.collective_pair(*scalar, scan.operator, prefix, value);
-            let result = if *scalar == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+            let result = if scalar.is_float() && scan.operator != CollectiveOperator::Sum {
                 let first = self.id();
                 self.emit(170, &[b, first, local, zero]);
                 let result = self.id();
-                self.emit(169, &[u, result, first, prefix, merged]);
+                self.emit(169, &[self.raw_type(*scalar), result, first, prefix, merged]);
                 result
             } else {
                 merged

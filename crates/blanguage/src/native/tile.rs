@@ -182,7 +182,7 @@ impl Emitter<'_> {
             self.bytes(&[0x8b, 0x8c, 0x24]);
             self.u32(self.tile_length_slot());
             let scalar = self.stage.registers[*result];
-            let float = scalar == Scalar::F32;
+            let float = scalar.is_float();
             let wide = scalar.size() == 8;
             let operator = collective.op.operator();
             let identity = operator.identity(scalar);
@@ -191,9 +191,10 @@ impl Emitter<'_> {
                     - self.stage.word_offset(self.stage.shared_word(collective.tile, *word)) as i64) as u32
             } else { 0 };
             let store = |e: &mut Self| {
-                if float {
+                if float && !wide {
                     e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x03]);
                 } else {
+                    if float { e.copy_scalar(allocation::Location::Gpr(0), allocation::Location::Xmm(0), scalar); }
                     e.bytes(&[0x41, 0x89, 0x03]);
                     if wide {
                         e.bytes(&[0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 32, 0x41, 0x89, 0x93]);
@@ -212,7 +213,7 @@ impl Emitter<'_> {
                 self.bytes(&[0xb8]);
                 if wide {self.bytes(&identity.to_le_bytes());} else {self.u32(identity as u32);}
                 if float {
-                    self.bytes(&[0x66, 0x0f, 0x6e, 0xc0]);
+                    self.instruction(Some(0x66), &[0x0f, 0x6e], wide, 0, operands::Operand::Register(0));
                 }
             }
             let begin = self.code.len();
@@ -220,7 +221,14 @@ impl Emitter<'_> {
                 store(self);
                 self.bytes(&[0x49, 0x83, 0xc3, 0x04]);
             }
-            if float {
+            if float && wide {
+                self.instruction(None, &[0x8b], false, 2, operands::Operand::memory(10, 0));
+                self.instruction(None, &[0x8b], false, 8, operands::Operand::memory(10, high_delta));
+                self.bytes(&[0x49, 0xc1, 0xe0, 32, 0x4c, 0x09, 0xc2]);
+                self.copy_scalar(allocation::Location::Xmm(1), allocation::Location::Gpr(2), scalar);
+                let opcode = match operator { CollectiveOperator::Min=>0x5d, CollectiveOperator::Max=>0x5f, _=>0x58 };
+                self.instruction(Some(0xf2), &[0x0f, opcode], false, 0, operands::Operand::Register(1));
+            } else if float {
                 self.bytes(&[
                     0xf3,
                     0x41,

@@ -82,14 +82,27 @@ impl Builder<'_> {
             literal: false,
             constant: value.constant.as_ref().map(|bits| vec![bits[index]]),
         };
-        if source == Scalar::F32 || scalar == Scalar::F32 {
-            if source != scalar {
-                let reg = self.reg(scalar);
+        if source.is_float() || scalar.is_float() {
+            if source == scalar { return word; }
+            if source.is_float() {
+                let raw = if source.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+                let reg = self.reg(raw);
                 self.code.push(Inst::Unary {
                     dst: reg,
                     op: UnaryOp::Bitcast,
                     a: word.regs[0],
                 });
+                word.ty = Ty::scalar(raw);
+                word.regs = vec![reg];
+                word.proof = bounds::Proof::default();
+            }
+            let raw = if scalar.is_float() {
+                if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 }
+            } else { scalar };
+            word = self.cast(word, raw);
+            if scalar.is_float() {
+                let reg = self.reg(scalar);
+                self.code.push(Inst::Unary { dst: reg, op: UnaryOp::Bitcast, a: word.regs[0] });
                 word.ty = Ty::scalar(scalar);
                 word.regs = vec![reg];
                 word.proof = bounds::Proof::default();
@@ -133,7 +146,7 @@ impl Builder<'_> {
         let joined = Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst],
             proof: bounds::arithmetic("|", &low, &high), uniform: low.uniform && high.uniform,
             literal: false, constant };
-        self.cast(joined, scalar)
+        self.result_word(&joined, 0, scalar)
     }
     pub(super) fn result_value(&mut self, ty: Ty, success: bool, payload: Option<Value>) -> Value {
         self.variant_value(ty,usize::from(!success),payload)

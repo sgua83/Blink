@@ -35,8 +35,8 @@ fn speculatable(
         | Inst::Math {
             op: MathOp::Abs, ..
         } => true,
-        Inst::Binary { a, .. } => registers[*a] != Scalar::F32,
-        Inst::Cast { dst, src } => registers[*dst] != Scalar::F32 && registers[*src] != Scalar::F32,
+        Inst::Binary { a, .. } => !registers[*a].is_float(),
+        Inst::Cast { dst, src } => !registers[*dst].is_float() && !registers[*src].is_float(),
         _ => false,
     }
 }

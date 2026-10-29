@@ -12,7 +12,7 @@ pub(super) fn indirect(ty: &Ty) -> bool {
     !matches!(align_up(ty.size, ty.align), 4 | 8)
 }
 pub(super) fn floating(ty: &Ty) -> bool {
-    *ty == Ty::scalar(Scalar::F32)
+    *ty == Ty::scalar(Scalar::F32) || *ty == Ty::scalar(Scalar::F64)
 }
 impl Layout {
     pub(super) fn new(call: &Call) -> Self {
@@ -139,8 +139,8 @@ impl Emitter<'_> {
                 continue;
             }
             let memory = Operand::memory(4, slot as u32 * 8);
-            if matches!(arg,CallArgument::Value{ty,..} if floating(ty)) {
-                self.instruction(Some(0xf3), &[0x0f, 0x10], false, slot as u8, memory);
+            if let CallArgument::Value { ty, .. } = arg && floating(ty) {
+                self.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x10], false, slot as u8, memory);
             } else {
                 self.instruction(None, &[0x8b], true, [1, 2, 8, 9][slot], memory);
             }

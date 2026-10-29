@@ -63,7 +63,7 @@ impl Emitter<'_> {
                 );
             }
             SubgroupOp::Sum | SubgroupOp::ExclusiveSum => {
-                let opcode = if self.stage.registers[dst] == Scalar::F32 {
+                let opcode = if self.stage.registers[dst].is_float() {
                     350
                 } else {
                     349
@@ -84,7 +84,7 @@ impl Emitter<'_> {
                 let offset = match self.stage.registers[dst] {
                     Scalar::I32 | Scalar::I64 => 0,
                     Scalar::U32 | Scalar::U64 => 1,
-                    Scalar::F32 | Scalar::Bool => 2,
+                    Scalar::F32 | Scalar::F64 | Scalar::Bool => 2,
                 };
                 self.emit(
                     base + offset,

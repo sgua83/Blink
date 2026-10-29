@@ -76,7 +76,7 @@ fn compute(args: &[String]) -> Result<()> {
                 .next()
                 .ok_or_else(|| error(format!("缺少参数 {}", uniform.name)))?;
             values.push(match scalar {
-                Scalar::F32 => Value::F32(value.parse()?),
+                Scalar::F32 => Value::F32(value.parse()?), Scalar::F64 => Value::F64(value.parse()?),
                 Scalar::U32 => Value::U32(value.parse()?),
                 Scalar::I32 => Value::I32(value.parse()?),
                 Scalar::Bool => Value::Bool(value.parse()?),

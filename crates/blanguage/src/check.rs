@@ -1505,6 +1505,16 @@ fn finish_checked_function(
     }))
 }
 fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, Bits)> {
+    if !n.starts_with("0x") && let Some(text) = n.strip_suffix("f64") {
+        let value = text.parse::<f64>().map_err(|_| Diagnostic {
+            source: source.clone(), span, code: "B121",
+            message: format!("非法 f64 常量 {n}"),
+        })?;
+        if !value.is_finite() {
+            return source.fail(span, "B122", "浮点常量超出有限 f64 范围");
+        }
+        return Ok((Ty::scalar(Scalar::F64), value.to_bits()));
+    }
     if let Some(text) = n.strip_suffix("u64") {
         let bits = if let Some(hex) = text.strip_prefix("0x") {
             u64::from_str_radix(hex, 16)
@@ -2231,15 +2241,16 @@ impl<'a> Builder<'a> {
         if args.len() != 1 {
             return self.fail(span, "B153", format!("{name} 需要一个参数"));
         }
-        let (source, target) = if name == "bitcast_u32" {
-            (Scalar::F32, Scalar::U32)
-        } else {
-            (Scalar::U32, Scalar::F32)
+        let (source, target) = match name {
+            "bitcast_u32" => (Scalar::F32, Scalar::U32),
+            "bitcast_f32" => (Scalar::U32, Scalar::F32),
+            "bitcast_u64" => (Scalar::F64, Scalar::U64),
+            _ => (Scalar::U64, Scalar::F64),
         };
         let value = args.remove(0);
         let n = value.regs.len();
-        if !(1..=4).contains(&n) || value.ty != Ty::vector(source, n) {
-            return self.fail(span, "B154", format!("{name} 需要对应的32位标量或向量"));
+        if !(1..=if source.size() == 8 { 1 } else { 4 }).contains(&n) || value.ty != Ty::vector(source, n) {
+            return self.fail(span, "B154", format!("{name} 需要对应位宽的数值标量；32位也接受向量"));
         }
         let ty = Ty::vector(target, n);
         if let Some(bits) = value.constant {
@@ -2393,14 +2404,14 @@ impl<'a> Builder<'a> {
         let (a, b) = self.numeric_operands(a, b, span)?;
         let n = a.regs.len().max(b.regs.len());
         let scalar = a.ty.components[0].0;
-        let literal = literal && scalar != Scalar::F32 && !comparison;
+        let literal = literal && !scalar.is_float() && !comparison;
         if scalar == Scalar::Bool && !matches!(op, "==" | "!=") {
             return self.fail(span, "B150", "bool 只支持逻辑或相等运算");
         }
-        if scalar == Scalar::F32 && matches!(op, "%" | "&" | "|" | "^" | "<<" | ">>") {
+        if scalar.is_float() && matches!(op, "%" | "&" | "|" | "^" | "<<" | ">>") {
             return self.fail(span, "B151", "位运算与取余需要整数");
         }
-        let divisors = if matches!(op, "/" | "%") && scalar != Scalar::F32 {
+        let divisors = if matches!(op, "/" | "%") && !scalar.is_float() {
             match b.constant.as_ref().and_then(|v| {
                 v.iter()
                     .copied()
@@ -2526,7 +2537,7 @@ impl<'a> Builder<'a> {
             constant: None,
         })
     }
-    fn math(&mut self, op: &str, args: Vec<Value>, span: Span) -> Result<Value> {
+    fn math(&mut self, op: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
         let arity = if matches!(op, "min" | "max" | "pow") {
             2
         } else {
@@ -2579,14 +2590,21 @@ impl<'a> Builder<'a> {
                 constant: None,
             });
         }
+        if args.len() == 2 {
+            let b = args.pop().unwrap();
+            let a = args.pop().unwrap();
+            let (a,b) = self.numeric_operands(a,b,span)?;
+            args = vec![a,b];
+        }
+        let scalar = args[0].ty.components[0].0;
         let n = args.iter().map(|v| v.regs.len()).max().unwrap();
         for a in &args {
-            if a.ty.components[0].0 != Scalar::F32
+            if !a.ty.components[0].0.is_float() || a.ty.components[0].0 != scalar
                 || !a.ty.fields.is_empty()
                 || a.ty.array.is_some()
                 || (a.regs.len() != 1 && a.regs.len() != n)
             {
-                return self.fail(span, "B154", format!("{op} 需要 f32 或相容 float 向量"));
+                return self.fail(span, "B154", format!("{op} 需要相同浮点类型；f32 向量须维度相容"));
             }
         }
         let uniform = args.iter().all(|v| v.uniform);
@@ -2598,7 +2616,7 @@ impl<'a> Builder<'a> {
         })?;
         let mut regs = Vec::new();
         for i in 0..n {
-            let dst = self.reg(Scalar::F32);
+            let dst = self.reg(scalar);
             self.code.push(Inst::Math {
                 dst,
                 op: operation,
@@ -2609,7 +2627,7 @@ impl<'a> Builder<'a> {
         Ok(Value {
             proof: bounds::Proof::default(),
             literal: false,
-            ty: Ty::vector(Scalar::F32, n),
+            ty: Ty::vector(scalar, n),
             regs,
             uniform,
             constant: None,
@@ -2745,7 +2763,7 @@ impl<'a> Builder<'a> {
         if let Some(ty) = Ty::builtin(name) {
             return self.value_constructor(ty, values, span).map(Some);
         }
-        if matches!(name, "bitcast_u32" | "bitcast_f32") {
+        if matches!(name, "bitcast_u32" | "bitcast_f32" | "bitcast_u64" | "bitcast_f64") {
             return self.bitcast(name, values, span).map(Some);
         }
         if matches!(
@@ -2795,6 +2813,7 @@ impl<'a> Builder<'a> {
                 let (ty, bits) = number(&self.definition.source, span, literal)?;
                 return match ty.components[0].0 {
                     Scalar::F32 => Ok(Some(self.literal(Scalar::F32, bits ^ 0x80000000))),
+                    Scalar::F64 => Ok(Some(self.constant(Scalar::F64, bits ^ 0x8000000000000000))),
                     Scalar::U32 if bits <= 0x80000000 => {
                         Ok(Some(self.literal(Scalar::I32, Scalar::I32.truncate(0u64.wrapping_sub(bits)))))
                     }
@@ -2822,20 +2841,20 @@ impl<'a> Builder<'a> {
         let scalar = a.ty.components[0].0;
         let operation = match op.as_str() {
             "-" => match scalar {
-                Scalar::F32 => UnaryOp::FloatNegate,
+                Scalar::F32 | Scalar::F64 => UnaryOp::FloatNegate,
                 Scalar::I32 | Scalar::I64 => UnaryOp::SignedNegate,
                 Scalar::U32 | Scalar::U64 => UnaryOp::UnsignedNegate,
                 Scalar::Bool => return self.fail(span, "B176", "bool 不能取负"),
             },
             "!" => UnaryOp::LogicalNot,
-            "~" if scalar != Scalar::F32 => UnaryOp::BitNot,
+            "~" if !scalar.is_float() => UnaryOp::BitNot,
             _ => return self.fail(span, "B177", "当前类型不支持该一元运算"),
         };
         let constant = a.constant.as_ref().map(|values| {
             values
                 .iter()
                 .map(|bits| match operation {
-                    UnaryOp::FloatNegate => bits ^ 0x80000000,
+                    UnaryOp::FloatNegate => bits ^ (1 << (scalar.bit_width() - 1)),
                     UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => scalar.truncate(0u64.wrapping_sub(*bits)),
                     UnaryOp::LogicalNot => Bits::from(*bits == 0),
                     UnaryOp::BitNot => scalar.truncate(!bits),

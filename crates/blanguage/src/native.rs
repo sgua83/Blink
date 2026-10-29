@@ -42,14 +42,14 @@ pub struct Relocation {
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NativeSymbol {
-    Intrinsic(NativeIntrinsic),
+    Print(Scalar),
     External(crate::ast::ExternalName),
     Function(String),
 }
 impl std::fmt::Debug for NativeSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Intrinsic(v) => v.fmt(f),
+            Self::Print(v) => f.debug_tuple("Print").field(v).finish(),
             Self::Function(v) => f.debug_tuple("Function").field(v).finish(),
             Self::External(v) => f
                 .debug_struct("External")
@@ -58,23 +58,6 @@ impl std::fmt::Debug for NativeSymbol {
                 .finish(),
         }
     }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NativeIntrinsic {
-    Sin,
-    Cos,
-    Floor,
-    Exp,
-    Exp2,
-    Log,
-    Log2,
-    Pow,
-    PrintU32,
-    PrintI32,
-    PrintBool,
-    PrintF32,
-    PrintU64,
-    PrintI64,
 }
 #[derive(Clone, Debug)]
 pub struct NativeCode {
@@ -85,7 +68,7 @@ pub struct NativeCode {
 struct Emitter<'a> {
     code: Vec<u8>,
     relocations: Vec<Relocation>,
-    literals: std::collections::BTreeMap<u32, Vec<usize>>,
+    literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
     stage: &'a Stage,
     program: &'a Program,
     breaks: Vec<Vec<usize>>,
@@ -98,10 +81,10 @@ impl Emitter<'_> {
     // Literal bytes belong to this code image, after all returning instructions
     // and any local helpers. Their references move with the same image.
     fn finish(mut self, stack_bytes: u32) -> NativeCode {
-        for (bits, references) in std::mem::take(&mut self.literals) {
+        for ((bits, wide), references) in std::mem::take(&mut self.literals) {
             self.code.resize(self.code.len().div_ceil(4) * 4, 0);
             let target = self.code.len();
-            self.u32(bits);
+            if wide { self.bytes(&bits.to_le_bytes()); } else { self.u32(bits as u32); }
             for at in references {
                 self.patch(at, target);
             }
@@ -240,7 +223,7 @@ impl Emitter<'_> {
             allocation::Location::Gpr(r) => r,
             _ => 0,
         };
-        if s == Scalar::F32 {
+        if s.is_float() {
             let c = match operation {
                 Comparison::Equal => 0x94,
                 Comparison::NotEqual => 0x95,
@@ -300,41 +283,18 @@ impl Emitter<'_> {
         );
         self.copy(self.location(dst), allocation::Location::Gpr(target));
     }
-    fn math_call(&mut self, intrinsic: NativeIntrinsic, args: &[Reg]) {
-        if args.len() == 2 {
-            self.float(args[1], 1);
-        }
-        self.bytes(&[0x48, 0xb8]);
-        let offset = self.code.len();
-        self.bytes(&[0; 8]);
-        self.relocations.push(Relocation {
-            offset,
-            target: NativeSymbol::Intrinsic(intrinsic),
-        });
-        self.bytes(&[0xff, 0xd0]);
-    }
-    fn math_result(&mut self, dst: Reg, intrinsic: NativeIntrinsic, args: &[Reg]) {
-        self.float(args[0], 0);
-        self.math_call(intrinsic, args);
-        self.store_float(dst);
-    }
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
             match inst {
                 Inst::Call(call) => self.native_call(call)?,
                 Inst::Print { dst, value } => {
-                    self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), self.stage.registers[*value]);
+                    let scalar = self.stage.registers[*value];
+                    self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);
+                    if scalar.is_float() { self.bytes(&[0xba]); self.u32(scalar.bit_width()); }
                     self.bytes(&[0x48, 0xb8]);
                     self.relocations.push(Relocation {
                         offset: self.code.len(),
-                        target: NativeSymbol::Intrinsic(match self.stage.registers[*value] {
-                            Scalar::U32 => NativeIntrinsic::PrintU32,
-                            Scalar::I32 => NativeIntrinsic::PrintI32,
-                            Scalar::Bool => NativeIntrinsic::PrintBool,
-                            Scalar::F32 => NativeIntrinsic::PrintF32,
-                            Scalar::U64 => NativeIntrinsic::PrintU64,
-                            Scalar::I64 => NativeIntrinsic::PrintI64,
-                        }),
+                        target: NativeSymbol::Print(scalar),
                     });
                     self.bytes(&[0; 8]);
                     self.bytes(&[0xff, 0xd0]);
@@ -550,7 +510,7 @@ impl Emitter<'_> {
                             self.integer_unary(*dst, *a, 0x83, 6, Some(1))
                         }
                         UnaryOp::BitNot => self.integer_unary(*dst, *a, 0xf7, 2, None),
-                        UnaryOp::Bitcast => self.copy(self.location(*dst), self.location(*a)),
+                        UnaryOp::Bitcast => self.copy_scalar(self.location(*dst), self.location(*a), self.stage.registers[*dst]),
                     };
                 }
                 Inst::Binary { dst, op, a, b } => match op {
@@ -582,21 +542,25 @@ impl Emitter<'_> {
                     }
                 },
                 Inst::Cast { dst, src } => self.cast(*dst, *src),
-                Inst::Math { dst, op, args } => match op {
-                    MathOp::Sqrt => self.float_sqrt(*dst, args[0]),
-                    MathOp::Min => self.float_binary(*dst, args[0], args[1], 0x5d),
-                    MathOp::Max => self.float_binary(*dst, args[0], args[1], 0x5f),
-                    MathOp::Abs => {
-                        self.float_sign(*dst, args[0], false);
-                    }
-                    MathOp::Sin => self.math_result(*dst, NativeIntrinsic::Sin, args),
-                    MathOp::Cos => self.math_result(*dst, NativeIntrinsic::Cos, args),
-                    MathOp::Floor => self.math_result(*dst, NativeIntrinsic::Floor, args),
-                    MathOp::Exp => self.math_result(*dst, NativeIntrinsic::Exp, args),
-                    MathOp::Exp2 => self.math_result(*dst, NativeIntrinsic::Exp2, args),
-                    MathOp::Log => self.math_result(*dst, NativeIntrinsic::Log, args),
-                    MathOp::Log2 => self.math_result(*dst, NativeIntrinsic::Log2, args),
-                    MathOp::Pow => self.math_result(*dst, NativeIntrinsic::Pow, args),
+                Inst::Math { dst, op, args } => {
+                    let name = match op {
+                        MathOp::Sqrt => { self.float_sqrt(*dst, args[0]); continue; }
+                        MathOp::Min => { self.float_binary(*dst, args[0], args[1], 0x5d); continue; }
+                        MathOp::Max => { self.float_binary(*dst, args[0], args[1], 0x5f); continue; }
+                        MathOp::Abs => { self.float_sign(*dst, args[0], false); continue; }
+                        MathOp::Sin => "sin", MathOp::Cos => "cos", MathOp::Floor => "floor",
+                        MathOp::Exp => "exp", MathOp::Exp2 => "exp2", MathOp::Log => "log",
+                        MathOp::Log2 => "log2", MathOp::Pow => "pow",
+                    };
+                    if args.len() == 2 { self.float(args[1], 1); }
+                    self.float(args[0], 0);
+                    self.bytes(&[0x48, 0xb8]);
+                    self.relocations.push(Relocation { offset: self.code.len(), target: NativeSymbol::External(crate::ast::ExternalName {
+                        library: "ucrtbase.dll".into(),
+                        symbol: if self.stage.registers[*dst] == Scalar::F32 { format!("{name}f") } else { name.into() },
+                    }) });
+                    self.bytes(&[0; 8]); self.bytes(&[0xff, 0xd0]);
+                    self.store_float(*dst);
                 },
                 Inst::Select {
                     dst,

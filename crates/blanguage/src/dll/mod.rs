@@ -43,7 +43,7 @@ fn plain(ty: &Ty) -> bool {
 }
 fn scalar(s: Scalar) -> (&'static str, &'static str) {
     match s {
-        Scalar::F32 => ("float", "f32"),
+        Scalar::F32 => ("float", "f32"), Scalar::F64 => ("double", "f64"),
         Scalar::I32 => ("int32_t", "i32"),
         Scalar::U32 | Scalar::Bool => ("uint32_t", "u32"),
         Scalar::U64 => ("uint64_t", "u64"),

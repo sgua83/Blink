@@ -150,8 +150,8 @@ fn emit_value(
             parameters.get(slot - usize::from(hidden))
         };
         let memory = Operand::memory(4, 8 + slot as u32 * 8);
-        if matches!(value,Some(CallParameter::Value(ty)) if floating(ty)) {
-            e.instruction(Some(0xf3), &[0x0f, 0x11], false, slot as u8, memory);
+        if let Some(CallParameter::Value(ty)) = value && floating(ty) {
+            e.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x11], false, slot as u8, memory);
         } else {
             e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
         }
@@ -226,7 +226,7 @@ fn emit_value(
             }
             e.bytes(&[0x48, 0x89, 0xc8]);
         } else if floating(ty) {
-            e.copy(allocation::Location::Xmm(0), e.location(body.outputs[0]));
+            e.float(body.outputs[0], 0);
         } else {
             e.bytes(&[0x31, 0xc9]);
             for ((_, offset), reg) in ty.components.iter().zip(&body.outputs) {

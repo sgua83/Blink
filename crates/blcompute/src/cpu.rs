@@ -4,7 +4,7 @@ use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
-    native::{NativeIntrinsic, NativeSymbol, RangeResult},
+    native::{NativeSymbol, RangeResult},
 };
 pub use dataset::CpuDataset;
 use std::ffi::c_void;
@@ -178,9 +178,13 @@ unsafe extern "C" {
     ) -> i32;
 }
 // 与独立 PE 使用同一 UCRT 格式及 C 数值区域，不改变宿主的当前区域设置。
-extern "C" fn print_f32(value: u32) -> u32 {
+extern "C" fn print_float(bits: u64, width: u32) -> u32 {
+    let (value, format) = if width == 64 {
+        (f64::from_bits(bits), c"%.17g\n")
+    } else {
+        (f32::from_bits(bits as u32) as f64, c"%.9g\n")
+    };
     let mut text = [0u8; 32];
-    let value = f32::from_bits(value) as f64;
     let count = unsafe {
         let locale = _create_locale(4, c"C".as_ptr());
         if locale.is_null() {
@@ -190,7 +194,7 @@ extern "C" fn print_f32(value: u32) -> u32 {
             2,
             text.as_mut_ptr().cast(),
             text.len(),
-            c"%.9g\n".as_ptr(),
+            format.as_ptr(),
             locale,
             (&value as *const f64).cast(),
         );
@@ -222,21 +226,13 @@ impl Executable {
                         error(format!("解析 {}!{} 失败：{e}", name.library, name.symbol))
                     })?
                 }
-                NativeSymbol::Intrinsic(intrinsic) => match intrinsic {
-                    NativeIntrinsic::Sin => sin as *const (),
-                    NativeIntrinsic::Cos => cos as *const (),
-                    NativeIntrinsic::Floor => floor as *const (),
-                    NativeIntrinsic::Exp => exp as *const (),
-                    NativeIntrinsic::Exp2 => exp2 as *const (),
-                    NativeIntrinsic::Log => log as *const (),
-                    NativeIntrinsic::Log2 => log2 as *const (),
-                    NativeIntrinsic::Pow => pow as *const (),
-                    NativeIntrinsic::PrintU32 => print_u32 as *const (),
-                    NativeIntrinsic::PrintI32 => print_i32 as *const (),
-                    NativeIntrinsic::PrintU64 => print_u64 as *const (),
-                    NativeIntrinsic::PrintI64 => print_i64 as *const (),
-                    NativeIntrinsic::PrintBool => print_bool as *const (),
-                    NativeIntrinsic::PrintF32 => print_f32 as *const (),
+                NativeSymbol::Print(scalar) => match scalar {
+                    Scalar::U32 => print_u32 as *const (),
+                    Scalar::I32 => print_i32 as *const (),
+                    Scalar::U64 => print_u64 as *const (),
+                    Scalar::I64 => print_i64 as *const (),
+                    Scalar::Bool => print_bool as *const (),
+                    Scalar::F32 | Scalar::F64 => print_float as *const (),
                 },
             };
             code.bytes[r.offset..r.offset + 8].copy_from_slice(&(ptr as u64).to_le_bytes());
@@ -269,31 +265,6 @@ impl Drop for Executable {
         }
     }
 }
-extern "C" fn sin(x: f32) -> f32 {
-    x.sin()
-}
-extern "C" fn cos(x: f32) -> f32 {
-    x.cos()
-}
-extern "C" fn floor(x: f32) -> f32 {
-    x.floor()
-}
-extern "C" fn exp(x: f32) -> f32 {
-    x.exp()
-}
-extern "C" fn exp2(x: f32) -> f32 {
-    x.exp2()
-}
-extern "C" fn log(x: f32) -> f32 {
-    x.ln()
-}
-extern "C" fn log2(x: f32) -> f32 {
-    x.log2()
-}
-extern "C" fn pow(x: f32, y: f32) -> f32 {
-    x.powf(y)
-}
-
 fn collective_bits(scalar: Scalar, words: &[u32], word: usize) -> Bits {
     let low = Bits::from(words[word]);
     if scalar.size() == 8 { low | (Bits::from(words[word + 1]) << 32) } else { low }
@@ -307,6 +278,9 @@ fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: Bits, b: Bit
         (_, CollectiveOperator::BitAnd) => a & b,
         (_, CollectiveOperator::BitOr) => a | b,
         (_, CollectiveOperator::BitXor) => a ^ b,
+        (Scalar::F64, CollectiveOperator::Sum) => (f64::from_bits(a)+f64::from_bits(b)).to_bits(),
+        (Scalar::F64, CollectiveOperator::Min) => if f64::from_bits(a)<f64::from_bits(b) { a } else { b },
+        (Scalar::F64, CollectiveOperator::Max) => if f64::from_bits(a)>f64::from_bits(b) { a } else { b },
         (Scalar::F32, CollectiveOperator::Sum) => Bits::from((f32::from_bits(a as u32) + f32::from_bits(b as u32)).to_bits()),
         (Scalar::F32, CollectiveOperator::Min) => {
             if f32::from_bits(a as u32) < f32::from_bits(b as u32) {

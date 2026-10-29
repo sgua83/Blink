@@ -12,7 +12,7 @@ pub(super) fn emit_scan(program: &Program, scan: &Scan, add: bool) -> NativeCode
 pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     let r = &scan.values;
     let scalar = scan.ty.components[0].0;
-    let float = scalar == Scalar::F32;
+    let float = scalar.is_float();
     let wide = scalar.size() == 8;
     let float_opcode = match scan.operator {
         CollectiveOperator::Min => 0x5d,
@@ -61,14 +61,12 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         let reg = registers[component];
         if float {
             if add {
-                e.bytes(&[0xf3, 0x0f, 0x10, 0x82 + component as u8 * 8]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x0f, 0x10, 0x82 + component as u8 * 8]);
                 e.u32(*offset);
             } else if scan.operator == CollectiveOperator::Sum {
                 e.bytes(&[0x0f, 0x57, 0xc0 + component as u8 * 9]);
             } else {
-                e.bytes(&[0xb8]);
-                e.u32(scan.operator.identity(Scalar::F32) as u32);
-                e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
+                e.literal_width(allocation::Location::Xmm(component as u8), scan.operator.identity(scalar), wide);
             }
         } else if add {
             e.bytes(&[
@@ -104,17 +102,17 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
                 } else {
                     None
                 };
-                e.bytes(&[0xf3, 0x41, 0x0f, float_opcode, 0xa2]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, float_opcode, 0xa2]);
                 e.u32(r.target_word * 4 + offset);
                 if let Some(first) = first {
                     e.patch(first, e.code.len());
                 }
-                e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0xa2]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0xa2]);
                 e.u32(r.target_word * 4 + offset);
             } else {
-                e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x83 + component as u8 * 8]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0x83 + component as u8 * 8]);
                 e.u32(r.target_word * 4 + offset);
-                e.bytes(&[0xf3, 0x41, 0x0f, float_opcode, 0x82 + component as u8 * 8]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, float_opcode, 0x82 + component as u8 * 8]);
                 e.u32(r.source_word * 4 + offset);
             }
             continue;
@@ -187,7 +185,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
             let reg = registers[component];
             if float {
-                e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
             } else {
                 e.bytes(&[
                     0x41 | if wide { 8 } else { 0 } | if reg >= 8 { 4 } else { 0 },
@@ -251,7 +249,7 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
             e.bytes(&[0x0f, 0x6e, 0xc0 + component as u8 * 8]);
         }
     }
-    if add && scalar == Scalar::F32 && scan.operator != CollectiveOperator::Sum {
+    if add && scalar.is_float() && scan.operator != CollectiveOperator::Sum {
         e.bytes(&[0x45, 0x89, 0xc1]);
     } else {
         e.bytes(&[0x45, 0x31, 0xc9]); // r9d = 范围是否含段起点
@@ -284,7 +282,7 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
     // xmm0–3 持有各分量；eax 是整数合并临时值，xmm4 是浮点传播临时值。
     for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
         let c = component as u8;
-        if scalar == Scalar::F32 {
+        if scalar.is_float() {
             if add {
                 e.bytes(&[0x0f, 0x28, 0xe0 + c]);
                 let first = if scan.operator != CollectiveOperator::Sum {
@@ -293,17 +291,17 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
                 } else {
                     None
                 };
-                e.bytes(&[0xf3, 0x41, 0x0f, float_opcode, 0xa3]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, float_opcode, 0xa3]);
                 e.u32(r.target_word * 4 + offset);
                 if let Some(first) = first {
                     e.patch(first, e.code.len());
                 }
-                e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0xa3]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0xa3]);
                 e.u32(r.target_word * 4 + offset);
             } else {
-                e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x83 + c * 8]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0x83 + c * 8]);
                 e.u32(r.target_word * 4 + offset);
-                e.bytes(&[0xf3, 0x41, 0x0f, float_opcode, 0x82 + c * 8]);
+                e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, float_opcode, 0x82 + c * 8]);
                 e.u32(r.source_word * 4 + offset);
             }
             continue;

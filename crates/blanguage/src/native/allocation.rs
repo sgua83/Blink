@@ -171,7 +171,7 @@ impl Graph {
                         Inst::Unary { dst, a, .. } => Some((Register(*dst), Register(*a))),
                         Inst::Binary { dst, op, a, b } => {
                             let source = if let BinaryOp::Compare(comparison) = op {
-                                let reverse = if registers[*a] == Scalar::F32 {
+                                let reverse = if registers[*a].is_float() {
                                     matches!(
                                         comparison,
                                         Comparison::Greater | Comparison::GreaterEqual
@@ -397,7 +397,7 @@ impl Allocation {
         let (mut locations, spills) = graph.allocate(
             |id| constants[id].flatten().map(Location::Immediate),
             |id, across_call| {
-                if scalars[id] == Scalar::F32 {
+                if scalars[id].is_float() {
                     (2..16)
                         .filter(|r| !across_call || *r >= 6)
                         .map(Location::Xmm)

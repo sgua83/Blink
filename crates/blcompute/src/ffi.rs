@@ -138,7 +138,7 @@ pub unsafe fn uniform_values(data: *const c_void, ty: &blanguage::ir::Ty) -> Vec
                 u64::from(unsafe { address.cast::<u32>().read_unaligned() })
             };
             match scalar {
-                Scalar::F32 => Value::F32(f32::from_bits(bits as u32)),
+                Scalar::F32 => Value::F32(f32::from_bits(bits as u32)), Scalar::F64 => Value::F64(f64::from_bits(bits)),
                 Scalar::U32 => Value::U32(bits as u32),
                 Scalar::I32 => Value::I32(bits as i32),
                 Scalar::Bool => Value::Bool(bits != 0),

@@ -513,9 +513,10 @@ impl Emitter<'_> {
                         self.emit(62, &[ptr, raw, 2, 4]);
                     }
                 }
-                Inst::Constant(dst, Scalar::F32, bits) => {
-                    let word = self.constant_bits(Scalar::U32, *bits);
-                    self.from_word(*dst, word);
+                Inst::Constant(dst, s, bits) if s.is_float() => {
+                    let mut words = vec![self.constant(Scalar::U32, *bits as u32)];
+                    if s.size() == 8 { words.push(self.constant(Scalar::U32, (*bits >> 32) as u32)); }
+                    self.from_words(*dst, &words);
                 }
                 Inst::Constant(dst, s, b) => {
                     let c = self.constant_bits(*s, *b);
@@ -670,7 +671,7 @@ impl Emitter<'_> {
                     b,
                 } => {
                     let s = self.stage.registers[*a];
-                    let f = s == Scalar::F32;
+                    let f = s.is_float();
                     let signed = s.is_signed();
                     let opcode = match operation {
                         BinaryOp::FAdd => 129,
@@ -772,14 +773,11 @@ impl Emitter<'_> {
                     let a = self.stage.registers[*src];
                     let b = self.stage.registers[*dst];
                     if a == Scalar::Bool {
-                        let one = self.constant(
-                            b,
-                            if b == Scalar::F32 {
-                                1.0f32.to_bits()
-                            } else {
-                                1
-                            },
-                        );
+                        let one = self.constant_bits(b, match b {
+                            Scalar::F32 => 1.0f32.to_bits() as Bits,
+                            Scalar::F64 => 1.0f64.to_bits(),
+                            _ => 1,
+                        });
                         let zero = self.constant(b, 0);
                         self.emit(
                             169,
@@ -788,16 +786,16 @@ impl Emitter<'_> {
                     } else if b == Scalar::Bool {
                         let zero = self.constant(a, 0);
                         self.emit(
-                            if a == Scalar::F32 { 183 } else { 171 },
+                            if a.is_float() { 183 } else { 171 },
                             &[self.ty(*dst), self.value(*dst), self.value(*src), zero],
                         );
                     } else {
                         let opcode = match (a, b) {
-                            (Scalar::F32, Scalar::U32 | Scalar::U64) => 109,
-                            (Scalar::F32, Scalar::I32 | Scalar::I64) => 110,
-                            (Scalar::U32 | Scalar::U64, Scalar::F32) => 112,
-                            (Scalar::I32 | Scalar::I64, Scalar::F32) => 111,
-                            _ if a.size() != b.size() => if a.is_signed() { 114 } else { 113 },
+                            (Scalar::F32 | Scalar::F64, Scalar::U32 | Scalar::U64) => 109,
+                            (Scalar::F32 | Scalar::F64, Scalar::I32 | Scalar::I64) => 110,
+                            (Scalar::U32 | Scalar::U64, Scalar::F32 | Scalar::F64) => 112,
+                            (Scalar::I32 | Scalar::I64, Scalar::F32 | Scalar::F64) => 111,
+                            _ if a.is_float() && b.is_float() => if a == b { 83 } else { 115 }, _ if a.size() != b.size() => if a.is_signed() { 114 } else { 113 },
                             _ => 124,
                         };
                         self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*src)]);
@@ -808,6 +806,10 @@ impl Emitter<'_> {
                     op: operation,
                     args,
                 } => {
+                    if self.stage.registers[*dst] == Scalar::F64 && matches!(operation,
+                        MathOp::Sin | MathOp::Cos | MathOp::Pow | MathOp::Exp | MathOp::Exp2 | MathOp::Log | MathOp::Log2) {
+                        return Err("GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度");
+                    }
                     let opcode = match operation {
                         MathOp::Abs => {
                             self.sign_bits(*dst, args[0], 199, 0x7fff_ffff);
@@ -910,11 +912,14 @@ impl Emitter<'_> {
         Ok(true)
     }
     fn sign_bits(&mut self, dst: Reg, src: Reg, opcode: u16, mask: u32) {
-        let word = self.to_word(src);
+        let scalar = self.stage.registers[src];
+        let mut words = self.to_words(src);
         let mask = self.constant(Scalar::U32, mask);
         let result = self.id();
-        self.emit(opcode, &[self.types[&Scalar::U32], result, word, mask]);
-        self.from_word(dst, result);
+        let last = words.len()-1;
+        self.emit(opcode, &[self.types[&Scalar::U32], result, words[last], mask]);
+        words[last] = result;
+        if scalar.size() == 8 { self.from_words(dst, &words); } else { self.from_word(dst, result); }
     }
     fn from_words(&mut self, dst: Reg, words: &[u32]) {
         if self.stage.registers[dst].size() == 4 {
@@ -1306,11 +1311,14 @@ pub fn emit_pass(
     op(&mut prelude, 17, &[1]);
     op(&mut prelude, 17, &[11]);
     op(&mut prelude, 17, &[5347]);
+    let float64 = program.requirements().float64;
+    if float64 { op(&mut prelude, 17, &[10]); }
+    let float64_preserve = matches!(pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd) && stage.requires_float_preserve(Scalar::F64);
     let float32_preserve = matches!(
         pass,
         Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
-    ) && stage.requires_float32_preserve();
-    if float32_preserve {
+    ) && stage.requires_float_preserve(Scalar::F32);
+    if float32_preserve || float64_preserve {
         op(&mut prelude, 17, &[4464]);
         op(&mut prelude, 17, &[4466]);
     }
@@ -1351,7 +1359,7 @@ pub fn emit_pass(
     if program.requires_texture_indexing() {
         op(&mut prelude, 10, &string("SPV_EXT_descriptor_indexing"));
     }
-    if float32_preserve {
+    if float32_preserve || float64_preserve {
         op(&mut prelude, 10, &string("SPV_KHR_float_controls"));
     }
     if maximal_reconvergence {
@@ -1375,10 +1383,10 @@ pub fn emit_pass(
     op(&mut prelude, 14, &[5348, 1]);
     let void = e.id();
     op(&mut e.defs, 19, &[void]);
-    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64] {
+    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64].into_iter().chain(float64.then_some(Scalar::F64)) {
         let id = e.id();
         match s {
-            Scalar::F32 => op(&mut e.defs, 22, &[id, 32]),
+            Scalar::F32 | Scalar::F64 => op(&mut e.defs, 22, &[id, s.bit_width()]),
             Scalar::Bool => op(&mut e.defs, 20, &[id]),
             _ => op(&mut e.defs, 21, &[id, s.size() * 8, u32::from(s.is_signed())]),
         };
@@ -1658,9 +1666,11 @@ pub fn emit_pass(
     if maximal_reconvergence {
         op(&mut prelude, 16, &[main, 6023]);
     }
-    if float32_preserve {
-        op(&mut prelude, 16, &[main, 4459, 32]);
-        op(&mut prelude, 16, &[main, 4461, 32]);
+    for (needed,width) in [(float32_preserve,32),(float64_preserve,64)] {
+        if needed {
+            op(&mut prelude, 16, &[main, 4459, width]);
+            op(&mut prelude, 16, &[main, 4461, width]);
+        }
     }
     e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
     e.emit(54, &[void, main, 0, fn_ty]);

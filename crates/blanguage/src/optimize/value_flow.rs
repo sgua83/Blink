@@ -134,7 +134,7 @@ impl Values {
                 Inst::Constant(_, scalar, bits) => Some(format!("C{scalar:?}:{bits}")),
                 Inst::Index(_) => Some("index".into()),
                 Inst::Uniform(_, offset) => Some(format!("U{offset}")),
-                Inst::Unary { op, a, .. } => Some(format!("unary{op:?}:{a}")),
+                Inst::Unary { dst, op, a } => Some(format!("unary{op:?}:{:?}:{a}", registers[*dst])),
                 Inst::Binary { op, a, b, .. } => Some(format!("binary{op:?}:{a}:{b}")),
                 Inst::Cast { dst, src } => Some(format!("cast{:?}:{src}", registers[*dst])),
                 Inst::Math { op, args, .. } => Some(format!("math{op:?}:{args:?}")),

@@ -154,19 +154,31 @@ pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
         return Some(into.truncate(bits));
     }
     if into == Scalar::Bool {
-        return Some(Bits::from(if from == Scalar::F32 {
-            f32::from_bits(bits as u32) != 0.0
-        } else {
-            bits != 0
+        return Some(Bits::from(match from {
+            Scalar::F32 => f32::from_bits(bits as u32) != 0.0,
+            Scalar::F64 => f64::from_bits(bits) != 0.0,
+            _ => bits != 0,
         }));
     }
-    if into == Scalar::F32 {
-        let value = if from.is_signed() { from.signed(bits) as f32 } else { bits as f32 };
-        return Some(Bits::from(value.to_bits()));
+    if into.is_float() {
+        let value = match from {
+            Scalar::F32 => f32::from_bits(bits as u32) as f64,
+            Scalar::F64 => f64::from_bits(bits),
+            _ if from.is_signed() => from.signed(bits) as f64,
+            _ => bits as f64,
+        };
+        // Integer-to-f32 rounds directly to f32, avoiding a double rounding through f64.
+        return Some(if into == Scalar::F64 { value.to_bits() } else {
+            (match from {
+                Scalar::F32 | Scalar::F64 => value as f32,
+                _ if from.is_signed() => from.signed(bits) as f32,
+                _ => bits as f32,
+            }).to_bits() as Bits
+        });
     }
-    if from == Scalar::F32 {
-        let value = f32::from_bits(bits as u32);
-        let maximum = (1u128 << (into.size() * 8 - u32::from(into.is_signed()))) as f32;
+    if from.is_float() {
+        let value = if from == Scalar::F64 { f64::from_bits(bits) } else { f32::from_bits(bits as u32) as f64 };
+        let maximum = (1u128 << (into.size() * 8 - u32::from(into.is_signed()))) as f64;
         let minimum = if into.is_signed() { -maximum } else { 0.0 };
         if !(minimum..maximum).contains(&value) {
             return None;
@@ -191,9 +203,20 @@ pub(super) fn divide(scalar: Scalar, a: Bits, divisor: NonZeroU64, remainder: bo
     scalar.truncate(bits)
 }
 pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<Bits> {
-    if scalar == Scalar::F32 {
-        return None;
+    if scalar == Scalar::F64 {
+        let (a,b) = (f64::from_bits(a),f64::from_bits(b));
+        return Some(match op {
+            BinaryOp::FAdd => (a+b).to_bits(), BinaryOp::FSub => (a-b).to_bits(),
+            BinaryOp::FMul => (a*b).to_bits(), BinaryOp::FDiv => (a/b).to_bits(),
+            BinaryOp::Compare(c) => Bits::from(match c {
+                Comparison::Equal => a==b, Comparison::NotEqual => a!=b,
+                Comparison::Less => a<b, Comparison::Greater => a>b,
+                Comparison::LessEqual => a<=b, Comparison::GreaterEqual => a>=b,
+            }),
+            _ => return None,
+        });
     }
+    if scalar == Scalar::F32 { return None; }
     let shift = (b & (Bits::from(scalar.size()) * 8 - 1)) as u32;
     let bits = match op {
         BinaryOp::IAdd => a.wrapping_add(b),

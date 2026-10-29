@@ -26,11 +26,13 @@ pub enum Scalar {
     Bool,
     U64,
     I64,
+    F64,
 }
 impl Scalar {
     pub const fn name(self) -> &'static str {
         match self {
             Self::F32 => "f32",
+            Self::F64 => "f64",
             Self::U32 => "u32",
             Self::I32 => "i32",
             Self::Bool => "bool",
@@ -41,7 +43,7 @@ impl Scalar {
     pub const fn size(self) -> u32 {
         match self {
             Self::F32 | Self::U32 | Self::I32 | Self::Bool => 4,
-            Self::U64 | Self::I64 => 8,
+            Self::U64 | Self::I64 | Self::F64 => 8,
         }
     }
     pub const fn align(self) -> u32 {
@@ -52,6 +54,9 @@ impl Scalar {
     }
     pub const fn is_integer(self) -> bool {
         matches!(self, Self::U32 | Self::I32 | Self::U64 | Self::I64)
+    }
+    pub const fn is_float(self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
     }
     pub const fn bit_width(self) -> u32 {
         self.size() * 8
@@ -254,6 +259,7 @@ impl Ty {
                 "{}{}",
                 match s {
                     Scalar::F32 => "float",
+                    Scalar::F64 => "f64x",
                     Scalar::U32 => "uint",
                     Scalar::I32 => "int",
                     Scalar::Bool => "bool",
@@ -312,6 +318,7 @@ impl Ty {
         }
         Some(match s {
             "f32" | "float" => Self::scalar(Scalar::F32),
+            "f64" => Self::scalar(Scalar::F64),
             "u32" | "uint" => Self::scalar(Scalar::U32),
             "i32" | "int" => Self::scalar(Scalar::I32),
             "bool" => Self::scalar(Scalar::Bool),
@@ -551,27 +558,27 @@ impl BinaryOp {
         use BinaryOp::*;
         Some(match op {
             "+" => {
-                if scalar == Scalar::F32 {
+                if scalar.is_float() {
                     FAdd
                 } else {
                     IAdd
                 }
             }
             "-" => {
-                if scalar == Scalar::F32 {
+                if scalar.is_float() {
                     FSub
                 } else {
                     ISub
                 }
             }
             "*" => {
-                if scalar == Scalar::F32 {
+                if scalar.is_float() {
                     FMul
                 } else {
                     IMul
                 }
             }
-            "/" if scalar == Scalar::F32 => FDiv,
+            "/" if scalar.is_float() => FDiv,
             "==" => Compare(Comparison::Equal),
             "!=" => Compare(Comparison::NotEqual),
             "<" => Compare(Comparison::Less),
@@ -1185,8 +1192,8 @@ impl CollectiveOperator {
             Self::Sum | Self::BitOr | Self::BitXor => 0,
             Self::BitAnd => scalar.bit_mask(),
             Self::Min => {
-                if scalar == Scalar::F32 {
-                    Bits::from(f32::INFINITY.to_bits())
+                if scalar.is_float() {
+                    if scalar == Scalar::F64 { f64::INFINITY.to_bits() } else { Bits::from(f32::INFINITY.to_bits()) }
                 } else if scalar.is_signed() {
                     scalar.order_bias() - 1
                 } else {
@@ -1194,8 +1201,8 @@ impl CollectiveOperator {
                 }
             }
             Self::Max => {
-                if scalar == Scalar::F32 {
-                    Bits::from(f32::NEG_INFINITY.to_bits())
+                if scalar.is_float() {
+                    if scalar == Scalar::F64 { f64::NEG_INFINITY.to_bits() } else { Bits::from(f32::NEG_INFINITY.to_bits()) }
                 } else if scalar.is_signed() {
                     scalar.order_bias()
                 } else {
@@ -1320,19 +1327,19 @@ impl Stage {
         }
         uses(&self.code)
     }
-    pub fn requires_float32_preserve(&self) -> bool {
-        fn arithmetic(code: &[Inst], registers: &[Scalar]) -> bool {
+    pub fn requires_float_preserve(&self, scalar: Scalar) -> bool {
+        fn arithmetic(code: &[Inst], registers: &[Scalar], scalar: Scalar) -> bool {
             code.iter().any(|inst| match inst {
-                Inst::Math { op, .. } => *op != MathOp::Abs,
-                Inst::Binary { a, .. } => registers[*a] == Scalar::F32,
+                Inst::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
+                Inst::Binary { a, .. } => registers[*a] == scalar,
                 Inst::Cast { dst, src } => {
-                    registers[*dst] == Scalar::F32 || registers[*src] == Scalar::F32
+                    registers[*dst] == scalar || registers[*src] == scalar
                 }
                 Inst::TileCollective(c) => {
-                    c.results.iter().any(|(_, r)| registers[*r] == Scalar::F32)
+                    c.results.iter().any(|(_, r)| registers[*r] == scalar)
                 }
                 Inst::Subgroup { dst, op, .. } => {
-                    registers[*dst] == Scalar::F32
+                    registers[*dst] == scalar
                         && matches!(
                             op,
                             SubgroupOp::Sum
@@ -1341,19 +1348,19 @@ impl Stage {
                                 | SubgroupOp::Max
                         )
                 }
-                Inst::Scope(body) => arithmetic(body, registers),
-                Inst::If { yes, no, .. } => arithmetic(yes, registers) || arithmetic(no, registers),
+                Inst::Scope(body) => arithmetic(body, registers, scalar),
+                Inst::If { yes, no, .. } => arithmetic(yes, registers, scalar) || arithmetic(no, registers, scalar),
                 Inst::Loop {
                     condition, body, ..
-                } => arithmetic(condition, registers) || arithmetic(body, registers),
+                } => arithmetic(condition, registers, scalar) || arithmetic(body, registers, scalar),
                 _ => false,
             })
         }
-        matches!(&self.operation, Operation::Reduce(r) if r.ty.components[0].0 == Scalar::F32)
-            || matches!(&self.operation, Operation::CustomReduce(r) | Operation::CustomScan(CustomScan { values:r, .. }) | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values:r, .. }) if r.identity.registers.iter().chain(&r.combine.registers).chain(r.project.iter().flat_map(|p|&p.registers)).any(|s| *s == Scalar::F32))
-            || matches!(&self.operation, Operation::SegmentedReduce(r) if r.values.ty.components[0].0 == Scalar::F32)
-            || matches!(&self.operation, Operation::ScanExclusive(s) if s.ty.components[0].0 == Scalar::F32)
-            || arithmetic(&self.code, &self.registers)
+        matches!(&self.operation, Operation::Reduce(r) if r.ty.components[0].0 == scalar)
+            || matches!(&self.operation, Operation::CustomReduce(r) | Operation::CustomScan(CustomScan { values:r, .. }) | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values:r, .. }) if r.identity.registers.iter().chain(&r.combine.registers).chain(r.project.iter().flat_map(|p|&p.registers)).any(|s| *s == scalar))
+            || matches!(&self.operation, Operation::SegmentedReduce(r) if r.values.ty.components[0].0 == scalar)
+            || matches!(&self.operation, Operation::ScanExclusive(s) if s.ty.components[0].0 == scalar)
+            || arithmetic(&self.code, &self.registers, scalar)
     }
     fn tile_usage(&self) -> (bool, std::collections::BTreeSet<usize>) {
         fn visit(code: &[Inst], scope: &mut bool, sources: &mut std::collections::BTreeSet<usize>) {

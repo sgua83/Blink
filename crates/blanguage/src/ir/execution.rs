@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, ops::Deref};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeviceRequirements {
-    pub ray_query: bool,
+    pub ray_query: bool, pub float64: bool,
     pub sorting: bool,
     pub maximal_reconvergence: bool,
     pub texture_indexing: bool,
@@ -41,6 +41,10 @@ impl ProgramInterface for Program {
     fn requirements(&self) -> DeviceRequirements {
         DeviceRequirements {
             ray_query: !self.accelerations.is_empty(),
+            float64: self.buffers.iter().any(|b| b.ty.components.iter().any(|(s,_)| *s==Scalar::F64))
+                || self.uniforms.iter().any(|b| b.ty.components.iter().any(|(s,_)| *s==Scalar::F64))
+                || self.stages.iter().any(|s| s.registers.iter().chain(&s.locals).any(|s| *s==Scalar::F64)
+                    || s.requires_float_preserve(Scalar::F64)),
             sorting: self.requires_sort(),
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
@@ -151,7 +155,7 @@ pub struct ExecutionStage {
     pub tile_scope: bool,
     pub width: u32,
     pub shared_bytes: u64,
-    pub float32_preserve: bool,
+    pub float32_preserve: bool, pub float64_preserve: bool,
 }
 impl ExecutionStage {
     pub fn has_tile_scope(&self) -> bool {
@@ -259,7 +263,7 @@ impl ExecutionPlan {
                     tile_scope: stage.has_tile_scope(),
                     width: stage.workgroup_width(),
                     shared_bytes,
-                    float32_preserve: stage.requires_float32_preserve(),
+                    float32_preserve: stage.requires_float_preserve(Scalar::F32), float64_preserve: stage.requires_float_preserve(Scalar::F64),
                 }
             })
             .collect();

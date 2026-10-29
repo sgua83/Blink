@@ -32,7 +32,7 @@ impl Emitter<'_> {
         };
         let result = self.id();
         if operator == CollectiveOperator::Sum {
-            if scalar == Scalar::F32 {
+            if scalar.is_float() {
                 let sum = self.id();
                 self.emit(129, &[self.types[&scalar], sum, av, bv]);
                 op(&mut self.decorations, 71, &[sum, 42]);
@@ -43,8 +43,8 @@ impl Emitter<'_> {
         } else {
             let min = operator == CollectiveOperator::Min;
             let opcode = match (scalar, min) {
-                (Scalar::F32, true) => 184,
-                (Scalar::F32, false) => 186,
+                (Scalar::F32 | Scalar::F64, true) => 184,
+                (Scalar::F32 | Scalar::F64, false) => 186,
                 (_, true) if scalar.is_signed() => 177,
                 (_, false) if scalar.is_signed() => 173,
                 (_, true) => 176,
@@ -120,7 +120,7 @@ impl Emitter<'_> {
             self.emit(248, &[run]);
             let other = self.id();
             self.emit(128, &[u, other, local, width]);
-            let valid = if reduction.operator != CollectiveOperator::Sum && scalar == Scalar::F32 {
+            let valid = if reduction.operator != CollectiveOperator::Sum && scalar.is_float() {
                 let other_global = self.id();
                 self.emit(128, &[u, other_global, self.index, width]);
                 let valid = self.id();

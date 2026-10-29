@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     let r = &reduction.fields;
     let scalar = reduction.ty.components[0].0;
-    let float = scalar == Scalar::F32;
+    let float = scalar.is_float();
     let wide = scalar.size() == 8;
     let mut e = Emitter {
         code: Vec::new(),
@@ -27,9 +27,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     let identity = reduction.operator.identity(scalar);
     for (component, _) in reduction.ty.components.iter().enumerate() {
         if float {
-            e.bytes(&[0xb8]);
-            e.u32(identity as u32);
-            e.bytes(&[0x66, 0x0f, 0x6e, 0xc0 + component as u8 * 8]);
+            e.literal_width(allocation::Location::Xmm(component as u8), identity, wide);
         } else {
             let register = registers[component];
             let rex = 0x40 | if wide { 8 } else { 0 } | if register >= 8 { 1 } else { 0 };
@@ -46,7 +44,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     for (component, (_, offset)) in reduction.ty.components.iter().enumerate() {
         if float {
             e.bytes(&[
-                0xf3,
+                if wide { 0xf2 } else { 0xf3 },
                 0x41,
                 0x0f,
                 match reduction.operator {
@@ -104,7 +102,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
     for (component, (_, offset)) in reduction.ty.components.iter().enumerate() {
         if float {
-            e.bytes(&[0xf3, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
+            e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, 0x11, 0x82 + component as u8 * 8]);
         } else {
             let register = registers[component];
             e.bytes(&[

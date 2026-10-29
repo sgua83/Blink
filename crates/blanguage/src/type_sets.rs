@@ -5,15 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 impl TypeFamily {
     pub(crate) fn builtin_members(&self) -> Option<&'static [&'static str]> {
         Some(match self {
-            Self::Floating => &["f32", "float2", "float3", "float4"],
+            Self::Floating => &["f32", "float2", "float3", "float4", "f64"],
             Self::Integer => &[
                 "u32", "uint2", "uint3", "uint4", "i32", "int2", "int3", "int4", "u64", "i64",
             ],
             Self::Numeric => &[
                 "f32", "float2", "float3", "float4", "u32", "uint2", "uint3", "uint4", "i32",
-                "int2", "int3", "int4", "u64", "i64",
+                "int2", "int3", "int4", "u64", "i64", "f64",
             ],
-            Self::ScalarNumeric => &["f32", "u32", "i32", "u64", "i64"],
+            Self::ScalarNumeric => &["f32", "u32", "i32", "u64", "i64", "f64"],
             Self::ScalarInteger => &["u32", "i32", "u64", "i64"],
             Self::Named(_) => return None,
         })

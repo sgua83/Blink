@@ -23,13 +23,13 @@ fn accumulate(e: &mut Emitter<'_>, values: &ReductionSpec) {
         let c = component as u8;
         let wide = scalar.size() == 8;
         let float = match (*scalar, values.operator) {
-            (Scalar::F32, CollectiveOperator::Sum) => Some(0x58),
-            (Scalar::F32, CollectiveOperator::Min) => Some(0x5d),
-            (Scalar::F32, CollectiveOperator::Max) => Some(0x5f),
+            (Scalar::F32 | Scalar::F64, CollectiveOperator::Sum) => Some(0x58),
+            (Scalar::F32 | Scalar::F64, CollectiveOperator::Min) => Some(0x5d),
+            (Scalar::F32 | Scalar::F64, CollectiveOperator::Max) => Some(0x5f),
             _ => None,
         };
         if let Some(opcode) = float {
-            e.bytes(&[0xf3, 0x41, 0x0f, opcode, 0x82 + c * 8]);
+            e.bytes(&[if wide { 0xf2 } else { 0xf3 }, 0x41, 0x0f, opcode, 0x82 + c * 8]);
             e.u32(values.fields.source_word * 4 + offset);
         } else {
             e.bytes(&[0x66]);
