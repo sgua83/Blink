@@ -911,6 +911,7 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[0].span)?;
+        length.literal = false;
         if count.is_some_and(|count| length.minimum() != count || length.maximum() != count) {
             return self.fail(
                 span,
