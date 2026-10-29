@@ -2,8 +2,7 @@
 use blanguage::{
     ast::Target,
     ir::{Operation, Program},
-    native::{self, ContinuationCode, NativeCode, StageCode as NativeStage},
-    spirv,
+    native::{ContinuationCode, NativeCode, StageCode as NativeStage},
 };
 use std::path::Path;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -28,9 +27,9 @@ fn shader_file(path: &Path, stem: &str, words: &[u32]) -> Result<()> {
     std::fs::write(path.join(format!("{stem}.spv")), bytes)?;
     Ok(())
 }
-pub fn program(program: &Program, out: &Path, stem: &str) -> Result<()> {
+pub fn program(compiler: &blanguage::Compiler, program: &Program, out: &Path, stem: &str) -> Result<()> {
     if program.target() != Target::Cpu {
-        let image = spirv::compile_program(program).map_err(std::io::Error::other)?;
+        let image = compiler.spirv(program).map_err(std::io::Error::other)?;
         for (i, code) in image.stages().iter().enumerate() {
             let name = format!("{stem}.{i}");
             shader_file(out, &name, &code.main)?;
@@ -66,7 +65,7 @@ pub fn program(program: &Program, out: &Path, stem: &str) -> Result<()> {
         }
     }
     if program.target() != Target::Gpu {
-        let image = native::compile_program(program).map_err(std::io::Error::other)?;
+        let image = compiler.native(program).map_err(std::io::Error::other)?;
         for (i, code) in image.stages().iter().enumerate() {
             let name = format!("{stem}.{i}");
             match code {

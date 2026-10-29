@@ -2,6 +2,8 @@
 pub mod application;
 pub mod ast;
 pub mod build;
+pub mod compiler;
+pub use compiler::{Compiler, Processor};
 mod check;
 pub mod dll;
 mod execution;
@@ -71,6 +73,7 @@ pub(crate) struct Declarations {
 }
 pub(crate) struct World {
     declarations: Arc<Declarations>,
+    worker: compiler::Worker,
     evaluating_constants: RefCell<BTreeSet<String>>,
 }
 impl std::ops::Deref for World {
@@ -78,8 +81,8 @@ impl std::ops::Deref for World {
     fn deref(&self) -> &Declarations { &self.declarations }
 }
 impl World {
-    fn new(declarations: Arc<Declarations>) -> Self {
-        Self { declarations, evaluating_constants: RefCell::new(BTreeSet::new()) }
+    fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
+        Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()) }
     }
 }
 fn read(path: &Path) -> Result<Source> {
@@ -150,24 +153,8 @@ pub fn compile_application_with_modules(
     entry: &str,
     dependencies: &[object::Object],
 ) -> Result<application::Application> {
-    let imports = module::Imports::new(dependencies).map_err(|error| Diagnostic {
-        source: Source {
-            path: path.into(),
-            text: "".into(),
-        },
-        span: Span::default(),
-        code: "B270",
-        message: error.to_string(),
-    })?;
-    Ok(compile_module(
-        path,
-        module_root,
-        false,
-        Some((EntryKind::Application, entry)),
-        Some(&imports),
-    )?
-    .applications
-    .remove(0))
+    let compiler = Compiler::available().map_err(|error| compiler::diagnostic(path, error))?;
+    compiler.compile_application_with_modules(path, module_root, entry, dependencies)
 }
 /// 库接口与完整导入闭包同样检查；无需为函数库伪造可执行 program。
 pub fn check(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -185,8 +172,44 @@ fn compile_module(
     requested: Option<(EntryKind, &str)>,
     imported: Option<&module::Imports>,
 ) -> Result<Compilation> {
-    let (world, entry) = read_world(path, module_root, imported)?;
-    compile_world(world, entry, require_program, requested)
+    let compiler = Compiler::available().map_err(|error| compiler::diagnostic(path, error))?;
+    compile_module_on(&compiler, path, module_root, require_program, requested, imported)
+}
+fn compile_module_on(
+    compiler: &Compiler, path: &Path, module_root: &Path, require_program: bool,
+    requested: Option<(EntryKind, &str)>, imported: Option<&module::Imports>,
+) -> Result<Compilation> {
+    compiler.ast(path, |worker| {
+        let (world, entry) = read_world(path, module_root, imported, worker)?;
+        compile_world(world, entry, require_program, requested)
+    })
+}
+impl Compiler {
+    pub fn compile(&self, path: &Path, root: &Path) -> Result<Compilation> {
+        compile_module_on(self, path, root, true, None, None)
+    }
+    pub fn check(&self, path: &Path, root: &Path) -> Result<Compilation> {
+        compile_module_on(self, path, root, false, None, None)
+    }
+    pub fn compile_entry(&self, path: &Path, root: &Path, entry: &str) -> Result<Compilation> {
+        compile_module_on(self, path, root, true, Some((EntryKind::Domain, entry)), None)
+    }
+    pub fn compile_application(&self, path: &Path, root: &Path, entry: &str) -> Result<application::Application> {
+        Ok(compile_module_on(self, path, root, false, Some((EntryKind::Application, entry)), None)?.applications.remove(0))
+    }
+    pub fn compile_application_with_modules(
+        &self, path: &Path, root: &Path, entry: &str, dependencies: &[object::Object],
+    ) -> Result<application::Application> {
+        self.ast(path, |worker| {
+            let imports = module::Imports::new(dependencies).map_err(|error| Diagnostic {
+                source: Source { path: path.into(), text: "".into() },
+                span: Span::default(), code: "B270", message: error.to_string(),
+            })?;
+            let (world, module) = read_world(path, root, Some(&imports), worker)?;
+            Ok(compile_world(world, module, false, Some((EntryKind::Application, entry)))?
+                .applications.remove(0))
+        })
+    }
 }
 fn compile_world(
     world: World,
@@ -255,7 +278,7 @@ fn compile_world(
         jobs.push(Job::Selected(key, arguments, *kind));
     }
     let declarations = &world.declarations;
-    let output = parallel::try_map(jobs, || World::new(Arc::clone(declarations)), |world, job| {
+    let output = parallel::try_map(&world.worker, jobs, |worker| World::new(Arc::clone(declarations), worker.clone()), |world, job| {
         let mut programs = Vec::new();
         match job {
             Job::Failed(error) => return Err(error),
@@ -352,6 +375,7 @@ fn read_world(
     path: &Path,
     module_root: &Path,
     imported: Option<&module::Imports>,
+    worker: &compiler::Worker,
 ) -> Result<(World, String)> {
     let mut world = Declarations {
         sources: BTreeMap::new(),
@@ -368,7 +392,7 @@ fn read_world(
         None,
     )?;
     execution::infer(&mut world);
-    Ok((World::new(Arc::new(world)), entry))
+    Ok((World::new(Arc::new(world), worker.clone()), entry))
 }
 fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {

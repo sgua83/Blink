@@ -150,7 +150,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &ExecutableProgram, prefix: &str) -> Result<(String, String, String)> {
+fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -233,7 +233,7 @@ fn generate(p: &ExecutableProgram, prefix: &str) -> Result<(String, String, Stri
         ("@SAFE_PARAMS@", safe_r.join(", ")),
         ("@SAFE_ARGS@", safe_args.join(", ")),
         ("@TYPES@", types),
-        ("@CREATE@", source::constructor(p)?),
+        ("@CREATE@", source::constructor(p, worker)?),
         ("@VALUES@", values),
         ("@BUFFERS@", buffers.join(", ")),
     ];
@@ -252,13 +252,22 @@ fn generate(p: &ExecutableProgram, prefix: &str) -> Result<(String, String, Stri
 
 /// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
 pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+    crate::Compiler::available()?.compile_dll(program, prefix)
+}
+impl crate::Compiler {
+    pub fn compile_dll(&self, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+        self.execute(|worker| compile_in(worker, program, prefix).map_err(|error| error.to_string()))
+            .map_err(|error| std::io::Error::other(error.to_string()).into())
+    }
+}
+fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source) = generate(program, &prefix)?;
+    let (header, binding, source) = generate(program, &prefix, worker)?;
     let exports = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
         .collect();
-    let archive = crate::object::compile_archive(&source, exports, &["blanguage", "blcompute"])?;
+    let archive = crate::object::compile_archive(&source, exports, &["blanguage", "blcompute"], worker)?;
     Ok(crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {

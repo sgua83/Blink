@@ -79,21 +79,36 @@ impl<P> ProgramImage<P> {
     }
 }
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
+    crate::Compiler::available().map_err(|error| error.to_string())?.native(program)
+}
+fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result<Vec<StageCode>, String> {
     if program.target() == crate::ast::Target::Gpu {
         return Err("GPU 专属程序不能提交给 CPU".into());
     }
-    let source = &*program;
-    let stages = crate::parallel::try_map(
-        (0..source.stages().len()).collect(),
-        || (),
-        |_, index| compile_stage(source, index),
-    )
-    .map_err(|error| error.to_string())?;
+    crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
+        |_, index| compile_stage(program, index)).map_err(|error| error.to_string())
+}
+pub(crate) fn compile_in<P: Deref<Target = Program>>(
+    worker: &crate::compiler::Worker, program: P,
+) -> Result<ProgramImage<P>, String> {
+    let stages = compile_stages(worker, &program)?;
     Ok(ProgramImage {
-        program: ExecutionPlan::from_program(&program),
-        stages,
+        program: ExecutionPlan::from_program(&program), stages,
         marker: std::marker::PhantomData,
     })
+}
+impl crate::Compiler {
+    pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
+        let source = &*program;
+        let (plan, stages) = self.execute(|worker| {
+            let stages = compile_stages(worker, source)?;
+            Ok::<_, String>((ExecutionPlan::from_program(source), stages))
+        }).map_err(|error| error.to_string())?;
+        Ok(ProgramImage {
+            program: plan, stages,
+            marker: std::marker::PhantomData,
+        })
+    }
 }
 
 pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'static str> {

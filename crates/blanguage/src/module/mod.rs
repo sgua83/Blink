@@ -53,6 +53,7 @@ impl Imports {
     }
 }
 pub struct Module {
+    pub(crate) compiler: crate::Compiler,
     pub(crate) name: String,
     pub(crate) header: String,
     pub(crate) requirements: BTreeMap<String, crate::execution::Requirement>,
@@ -66,8 +67,12 @@ impl Module {
         &self.name
     }
     pub fn compile(&self) -> codec::Result<Object> {
+        self.compiler.execute(|worker| self.compile_in(worker).map_err(|error| error.to_string()))
+            .map_err(|error| std::io::Error::other(error.to_string()).into())
+    }
+    fn compile_in(&self, worker: &crate::compiler::Worker) -> codec::Result<Object> {
         let code = crate::parallel::try_map(
-            self.functions.iter().collect(), || (),
+            worker, self.functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
         let stack_bytes = code
@@ -92,7 +97,7 @@ impl Module {
             })
             .collect();
         let archive =
-            crate::application::compile_resources(&self.name, self.resources.as_ref(), false)?;
+            crate::application::compile_resources(&self.name, self.resources.as_ref(), false, worker)?;
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Module {
@@ -113,17 +118,22 @@ pub fn compile(
     dependencies: &[Object],
     instances: &[String],
 ) -> crate::ast::Result<Module> {
-    let imports = Imports::new(dependencies).map_err(|error| crate::ast::Diagnostic {
-        source: crate::ast::Source {
-            path: path.into(),
-            text: "".into(),
-        },
-        span: crate::ast::Span::default(),
-        code: "B270",
-        message: error.to_string(),
-    })?;
-    let imported=if dependencies.is_empty(){None}else{Some(&imports)};
-    let (world, entry) = crate::read_world(path, module_root, imported)?;
-    crate::validate_types(&world)?;
-    crate::check::compile_native_module(&world, &entry, instances)
+    let compiler = crate::Compiler::available().map_err(|error| crate::compiler::diagnostic(path, error))?;
+    compiler.compile_native_module(path, module_root, dependencies, instances)
+}
+impl crate::Compiler {
+    pub fn compile_native_module(
+        &self, path: &Path, module_root: &Path, dependencies: &[Object], instances: &[String],
+    ) -> crate::ast::Result<Module> {
+        self.ast(path, |worker| {
+            let imports = Imports::new(dependencies).map_err(|error| crate::ast::Diagnostic {
+                source: crate::ast::Source { path: path.into(), text: "".into() },
+                span: crate::ast::Span::default(), code: "B270", message: error.to_string(),
+            })?;
+            let imported = if dependencies.is_empty() { None } else { Some(&imports) };
+            let (world, entry) = crate::read_world(path, module_root, imported, worker)?;
+            crate::validate_types(&world)?;
+            crate::check::compile_native_module(&world, &entry, instances)
+        })
+    }
 }

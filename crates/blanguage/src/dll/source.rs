@@ -275,11 +275,11 @@ record!(ShaderStageCode {
     sort
 });
 
-pub(super) fn constructor(p: &ExecutableProgram) -> Result<String, Box<dyn std::error::Error>> {
+pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<String, Box<dyn std::error::Error>> {
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
-        let image = crate::native::compile_program(p.clone()).map_err(std::io::Error::other)?;
+        let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
         format!(
             "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output({}, {}) }})?)",
             image.program().source(),
@@ -289,7 +289,7 @@ pub(super) fn constructor(p: &ExecutableProgram) -> Result<String, Box<dyn std::
     let gpu = if p.target() == Target::Cpu {
         "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()
     } else {
-        let image = crate::spirv::compile_program(p.clone()).map_err(std::io::Error::other)?;
+        let image = crate::spirv::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
         format!(
             "{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output({}, {}) }}; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}",
             image.program().source(),
@@ -305,6 +305,7 @@ pub(crate) fn application_source(
     resources: &crate::application::Resources,
     prefix: &str,
     root: bool,
+    worker: &crate::compiler::Worker,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::fmt::Write;
     let mut functions = String::new();
@@ -400,7 +401,7 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
         .replace("@PREFIX@", prefix)
         .replace(
             "@IMAGE@",
-            &format!("{:?}", crate::resource::compile(resources)?),
+            &format!("{:?}", crate::resource::compile(resources, worker)?),
         )
         .replace("@FUNCTIONS@", &functions))
 }

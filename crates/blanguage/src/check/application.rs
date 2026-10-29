@@ -157,6 +157,7 @@ pub(crate) fn compile_application(
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app);
     Ok(crate::application::Application {
+        compiler: world.worker.compiler().clone(),
         name: instance.name.clone(),
         body,
         functions,

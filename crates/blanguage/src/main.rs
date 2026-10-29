@@ -10,13 +10,40 @@ fn main() -> ExitCode {
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let mut jobs = None;
+    let mut cpus = None;
+    while args.first().is_some_and(|arg| matches!(arg.as_str(), "--jobs" | "--cpus")) {
+        let option = args.remove(0);
+        if args.is_empty() { return Err(format!("{option}缺少参数").into()); }
+        let value = args.remove(0);
+        if option == "--jobs" {
+            if jobs.is_some() { return Err("--jobs不能重复指定".into()); }
+            jobs = Some(value.parse::<std::num::NonZeroUsize>()?);
+        } else {
+            if cpus.is_some() { return Err("--cpus不能重复指定".into()); }
+            cpus = Some(value.split(',').map(|cpu| {
+                let (group, number) = cpu.split_once(':').ok_or("CPU写为组:编号")?;
+                Ok::<_, Box<dyn std::error::Error>>(blanguage::Processor {
+                    group: group.parse()?, number: number.parse()?,
+                })
+            }).collect::<Result<Vec<_>, _>>()?);
+        }
+    }
+    if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nGlobal resource options before command: --jobs N | --cpus group:number,...\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
+    let compiler = if let Some(cpus) = cpus {
+        blanguage::Compiler::on_processors(cpus)?
+    } else if let Some(jobs) = jobs {
+        blanguage::Compiler::with_workers(jobs)
+    } else {
+        blanguage::Compiler::available()?
+    };
     let command = &args[0];
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
     if command == "-c" {
@@ -49,9 +76,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let output = output.ok_or("缺少 -o 目标文件路径")?;
         let object = if module {
-            blanguage::module::compile(&path, &root, &imports, &instances)?.compile()?
+            compiler.compile_native_module(&path, &root, &imports, &instances)?.compile()?
         } else if let Some(entry) = program {
-            let compilation = blanguage::compile_entry(&path, &root, entry)?;
+            let compilation = compiler.compile_entry(&path, &root, entry)?;
             let program = compilation
                 .programs
                 .first()
@@ -60,11 +87,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .ok_or("目标文件名不是 UTF-8")?;
-            blanguage::dll::compile_object(program, prefix)?
+            compiler.compile_dll(program, prefix)?
         } else if imports.is_empty() {
-            blanguage::compile_application(&path, &root, entry)?.compile()?
+            compiler.compile_application(&path, &root, entry)?.compile()?
         } else {
-            blanguage::compile_application_with_modules(&path, &root, entry, &imports)?.compile()?
+            compiler.compile_application_with_modules(&path, &root, entry, &imports)?.compile()?
         };
         object.write(&output)?;
         println!("object {} -> {}", object.name(), output.display());
@@ -79,11 +106,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| path.parent().unwrap().into());
     let selected = args.get(if has_output { 4 } else { 3 });
     let compilation = if let Some(entry) = selected {
-        blanguage::compile_entry(&path, &root, entry)?
+        compiler.compile_entry(&path, &root, entry)?
     } else if command == "check" {
-        blanguage::check(&path, &root)?
+        compiler.check(&path, &root)?
     } else {
-        blanguage::compile(&path, &root)?
+        compiler.compile(&path, &root)?
     };
     if !compilation.open_generics.is_empty() {
         println!(
@@ -119,7 +146,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     p.name().replace("::", "_").replace('.', "_")
                 };
-                export::program(p, &out, &stem)?;
+                export::program(&compiler, p, &out, &stem)?;
             }
         }
         _ => return Err(format!("未知命令 {command}").into()),

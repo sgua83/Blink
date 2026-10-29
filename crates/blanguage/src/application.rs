@@ -8,6 +8,7 @@ use crate::{
 };
 use std::path::Path;
 pub struct Application {
+    pub(crate) compiler: crate::Compiler,
     pub(crate) name: String,
     pub(crate) body: ValueCode,
     pub(crate) functions: Vec<crate::ir::FunctionBody>,
@@ -24,22 +25,21 @@ impl Application {
         &self.name
     }
     pub fn compile(&self) -> Result<Object, Box<dyn std::error::Error>> {
+        self.compiler.execute(|worker| self.compile_in(worker).map_err(|error| error.to_string()))
+            .map_err(|error| std::io::Error::other(error.to_string()).into())
+    }
+    fn compile_in(&self, worker: &crate::compiler::Worker) -> Result<Object, Box<dyn std::error::Error>> {
         let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
         let mut stack_bytes = code.code.stack_bytes;
-        let functions = self
-            .functions
-            .iter()
-            .map(|function| {
-                native::emit_function(function).map(|code| (function.name.clone(), code))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(std::io::Error::other)?;
+        let functions = crate::parallel::try_map(worker, self.functions.iter().collect(), |_| (),
+            |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         for (_, function) in &functions {
             stack_bytes = stack_bytes.max(function.code.stack_bytes);
         }
         let sections =
             object::application_code(code, functions, &self.imports, &resource_prefix(&self.name))?;
-        let archive = compile_resources(&self.name, self.resources.as_ref(), true)?;
+        let archive = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Application { stack_bytes },
@@ -65,10 +65,11 @@ pub(crate) fn compile_resources(
     name: &str,
     resources: Option<&Resources>,
     root: bool,
+    worker: &crate::compiler::Worker,
 ) -> Result<Option<object::Archive>, Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
-        let source = crate::dll::application_source(resources, &prefix, root)?;
+        let source = crate::dll::application_source(resources, &prefix, root, worker)?;
         let mut exports = if root {
             [
                 "blink_destroy",
@@ -97,7 +98,7 @@ pub(crate) fn compile_resources(
         } else {
             &[]
         };
-        let mut archive = object::compile_archive(&source, exports, dependencies)?;
+        let mut archive = object::compile_archive(&source, exports, dependencies, worker)?;
         archive.resources = Some(object::ResourceBinding {
             prefix,
             types: u32::try_from(resources.types.len())?,

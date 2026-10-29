@@ -33,12 +33,29 @@ pub fn compile_entry(
     target: Target,
     output: &Path,
 ) -> Result<Compilation> {
+    crate::Compiler::available()?.build_entry(path, root, entry, target, output)
+}
+impl crate::Compiler {
+    pub fn build_entry(
+        &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
+    ) -> Result<Compilation> {
+        self.execute(|worker| compile_in(worker, path, root, entry, target, output))
+            .map_err(|error| match error {
+                crate::parallel::Error::Work(error) => error,
+                crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
+            })
+    }
+}
+fn compile_in(
+    worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
+    target: Target, output: &Path,
+) -> Result<Compilation> {
     if target == Target::Compute {
         return Err("构建映像必须选择实际CPU或GPU后端".into());
     }
     let path = path.canonicalize()?;
     let root = root.canonicalize()?;
-    let (world, module) = crate::read_world(&path, &root, None)?;
+    let (world, module) = crate::read_world(&path, &root, None, worker)?;
     let mut request = Vec::new();
     for value in [
         path.to_str().ok_or("入口路径不是UTF-8")?,
@@ -86,9 +103,9 @@ pub fn compile_entry(
         .chain(compilation.templates)
         .map(|p| {
             if target == Target::Cpu {
-                crate::native::compile_program(p).map(resource::Image::Cpu)
+                crate::native::program::compile_in(worker, p).map(resource::Image::Cpu)
             } else {
-                crate::spirv::compile_program(p).map(resource::Image::Gpu)
+                crate::spirv::program::compile_in(worker, p).map(resource::Image::Gpu)
             }
             .map_err(std::io::Error::other)
         })

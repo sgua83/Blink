@@ -1,6 +1,6 @@
 //! 编译阶段把执行框架和 ABI 编译为静态目标库；链接器不再调用 Cargo 或 rustc。
 use super::{Archive, Result};
-use std::{path::Path, process::Command};
+use std::{ffi::OsString, path::Path, sync::atomic::{AtomicU64, Ordering}};
 fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
@@ -12,23 +12,22 @@ pub(crate) fn compile(
     source: &str,
     exports: Vec<String>,
     dependencies: &[&str],
+    worker: &crate::compiler::Worker,
 ) -> Result<Archive> {
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap();
-    let id = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    );
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let unit = format!("blink_object_{}", id.replace('-', "_"));
-    let build = sdk.join("target/blc-object").join(id);
-    std::fs::create_dir_all(build.join("src"))?;
+    let workspaces = sdk.join("target/blc-object");
+    std::fs::create_dir_all(&workspaces)?;
+    let build = workspaces.join(id);
+    std::fs::create_dir(&build)?;
     let result = (|| {
+        std::fs::create_dir(build.join("src"))?;
         let dependencies = dependencies
             .iter()
             .map(|name| {
@@ -44,14 +43,13 @@ pub(crate) fn compile(
         std::fs::write(build.join("Cargo.toml"), manifest)?;
         std::fs::write(build.join("src/lib.rs"), source)?;
         let target = sdk.join("target/dll");
-        let output = Command::new("cargo")
-            .args(["rustc", "--offline", "--release", "--manifest-path"])
-            .arg(build.join("Cargo.toml"))
-            .arg("--target-dir")
-            .arg(&target)
-            .args(["--", "--print", "native-static-libs"])
-            .env("CARGO_TERM_COLOR", "never")
-            .output()?;
+        let arguments: Vec<OsString> = [
+            "rustc".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
+            "--manifest-path".into(), build.join("Cargo.toml").into_os_string(),
+            "--target-dir".into(), target.as_os_str().into(), "--color".into(), "never".into(),
+            "--".into(), "--print".into(), "native-static-libs".into(),
+        ].into();
+        let output = worker.cargo_output(&arguments, &build)?;
         let compilation = (|| {
             let stderr = String::from_utf8(output.stderr)?;
             if !output.status.success() {
@@ -77,14 +75,12 @@ pub(crate) fn compile(
             })
         })();
         let cleanup = (|| {
-            let output = Command::new("cargo")
-                .args(["clean", "--offline", "--release", "--manifest-path"])
-                .arg(build.join("Cargo.toml"))
-                .arg("--target-dir")
-                .arg(&target)
-                .args(["--package", &unit])
-                .env("CARGO_TERM_COLOR", "never")
-                .output()?;
+            let arguments: Vec<OsString> = [
+                "clean".into(), "--offline".into(), "--release".into(), "--manifest-path".into(),
+                build.join("Cargo.toml").into_os_string(), "--target-dir".into(), target.as_os_str().into(),
+                "--package".into(), unit.clone().into(), "--color".into(), "never".into(),
+            ].into();
+            let output = worker.cargo_output(&arguments, &build)?;
             if !output.status.success() {
                 return Err(format!(
                     "执行库单元产物清理失败：\n{}{}",

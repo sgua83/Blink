@@ -925,6 +925,7 @@ pub(crate) fn compile_module(
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, context.resources);
     Ok(crate::module::Module {
+        compiler: world.worker.compiler().clone(),
         name: entry.into(),
         header: world.interfaces[entry].text.to_string(),
         requirements: world

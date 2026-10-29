@@ -47,15 +47,15 @@ pub struct Module {
 record!(Module { types, images });
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
 
-pub(crate) fn compile(resources: &crate::application::Resources) -> codec::Result<Vec<u8>> {
+pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Vec<u8>> {
     let jobs = |cpu| resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
         .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
         .collect();
-    let cpu = crate::parallel::try_map(jobs(true), || (), |_, (program, stage)| {
+    let cpu = crate::parallel::try_map(worker, jobs(true), |_| (), |_, (program, stage)| {
         native::program::compile_stage(&resources.programs[program].1, stage)
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let gpu = crate::parallel::try_map(jobs(false), || (), |_, (program, stage)| {
+    let gpu = crate::parallel::try_map(worker, jobs(false), |_| (), |_, (program, stage)| {
         spirv::program::compile_stage(&resources.programs[program].1, stage)
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut cpu = cpu.into_iter();
