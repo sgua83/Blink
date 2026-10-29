@@ -823,13 +823,15 @@ impl Proof {
             ..Self::default()
         }
     }
+    fn fact_components(ty: &Ty) -> impl Iterator<Item = usize> + '_ {
+        ty.components.iter().enumerate().filter_map(|(component, (scalar, _))| {
+            matches!(scalar, Scalar::Bool | Scalar::U32 | Scalar::I32).then_some(component)
+        })
+    }
     fn facts(&self, ty: &Ty) -> Facts {
         let mut facts = Facts::new();
-        for (component, (scalar, _)) in
-            ty.components.iter().enumerate().filter(|(_, (scalar, _))| {
-                matches!(scalar, Scalar::Bool | Scalar::U32 | Scalar::I32)
-            })
-        {
+        for component in Self::fact_components(ty) {
+            let scalar = &ty.components[component].0;
             let Some(origins) = self.origins.get(component) else {
                 continue;
             };
@@ -2712,101 +2714,108 @@ impl Builder<'_> {
     }
     pub(super) fn refine_bounds(&mut self, condition: &Arc<Condition>, truth: bool) {
         self.path = Clause::branch(&self.path, condition, truth);
-        let Some(facts) = self.path.required_in(&environment_facts(&self.env)) else {
-            return;
-        };
-        let roots = equality_roots(&facts);
-        for binding in self.env.values_mut() {
-            match binding {
-                Binding::Value(value) => {
-                    value.proof.origins = (0..value.regs.len())
-                        .map(|i| value.component_origins(i))
-                        .collect();
-                    value.proof.extend_equalities(&roots);
-                }
-                Binding::Owned(owner) => owner.proof.extend_equalities(&roots),
-                Binding::OwnedValue(owner) => {
-                    owner.value.proof.extend_equalities(&roots);
-                    owner.resources_mut(&mut |data| data.length.proof.extend_equalities(&roots));
-                }
-                Binding::Data(view) => view.length.extend_equalities(&roots),
-                Binding::ApplicationData(data) => data.length.proof.extend_equalities(&roots),
-                Binding::Tile(view) => view.length.extend_equalities(&roots),
-                _ => {}
-            }
-        }
-        for fact in &facts {
-            let Some(identity) = fact.identity() else {
-                continue;
+        let environment = environment_facts(&self.env);
+        let mut consumers = self.env.values_mut().filter(|binding| match binding {
+            Binding::Value(value) => Proof::fact_components(&value.ty).next().is_some(),
+            Binding::Owned(_) | Binding::OwnedValue(_) | Binding::Data(_)
+            | Binding::ApplicationData(_) | Binding::Tile(_) => true,
+            _ => false,
+        });
+        if let Some(first) = consumers.next() {
+            let Some(facts) = self.path.required_in(&environment) else {
+                return;
             };
-            for binding in self.env.values_mut() {
-                match binding {
+            let roots = equality_roots(&facts);
+            for binding in std::iter::once(first).chain(consumers) {
+                match &mut *binding {
                     Binding::Value(value) => {
-                        for component in 0..value.regs.len() {
-                            if value.proof.origins[component].contains(&identity) {
-                                value.proof.refine(&value.ty, component, *fact);
-                            }
-                        }
+                        value.proof.origins = (0..value.regs.len())
+                            .map(|i| value.component_origins(i))
+                            .collect();
+                        value.proof.extend_equalities(&roots);
                     }
-                    Binding::Owned(owner) => {
-                        owner.place.refine_position(identity, *fact, &roots);
-                        for component in 0..owner.proof.origins.len() {
-                            if owner.proof.origins[component].contains(&identity) {
-                                owner.proof.refine(owner.place.ty(), component, *fact);
-                            }
-                        }
-                    }
+                    Binding::Owned(owner) => owner.proof.extend_equalities(&roots),
                     Binding::OwnedValue(owner) => {
-                        for component in 0..owner.value.proof.origins.len() {
-                            if owner.value.proof.origins[component].contains(&identity) {
-                                owner.value.proof.refine(&owner.value.ty, component, *fact);
+                        owner.value.proof.extend_equalities(&roots);
+                        owner.resources_mut(&mut |data| data.length.proof.extend_equalities(&roots));
+                    }
+                    Binding::Data(view) => view.length.extend_equalities(&roots),
+                    Binding::ApplicationData(data) => data.length.proof.extend_equalities(&roots),
+                    Binding::Tile(view) => view.length.extend_equalities(&roots),
+                    _ => {}
+                }
+                for fact in &facts {
+                    let Some(identity) = fact.identity() else {
+                        continue;
+                    };
+                    match &mut *binding {
+                        Binding::Value(value) => {
+                            for component in 0..value.regs.len() {
+                                if value.proof.origins[component].contains(&identity) {
+                                    value.proof.refine(&value.ty, component, *fact);
+                                }
                             }
                         }
-                        owner.resources_mut(&mut |data| {
+                        Binding::Owned(owner) => {
+                            owner.place.refine_position(identity, *fact, &roots);
+                            for component in 0..owner.proof.origins.len() {
+                                if owner.proof.origins[component].contains(&identity) {
+                                    owner.proof.refine(owner.place.ty(), component, *fact);
+                                }
+                            }
+                        }
+                        Binding::OwnedValue(owner) => {
+                            for component in 0..owner.value.proof.origins.len() {
+                                if owner.value.proof.origins[component].contains(&identity) {
+                                    owner.value.proof.refine(&owner.value.ty, component, *fact);
+                                }
+                            }
+                            owner.resources_mut(&mut |data| {
+                                if data
+                                    .length
+                                    .proof
+                                    .origins
+                                    .iter()
+                                    .flatten()
+                                    .any(|id| *id == identity)
+                                {
+                                    data.length.proof.refine(&data.length.ty, 0, *fact);
+                                }
+                            });
+                        }
+                        Binding::ApplicationData(data)
                             if data
                                 .length
                                 .proof
                                 .origins
                                 .iter()
                                 .flatten()
-                                .any(|id| *id == identity)
-                            {
-                                data.length.proof.refine(&data.length.ty, 0, *fact);
-                            }
-                        });
+                                .any(|id| *id == identity) =>
+                        {
+                            data.length.proof.refine(&data.length.ty, 0, *fact);
+                        }
+                        Binding::Data(view)
+                            if view
+                                .length
+                                .origins
+                                .iter()
+                                .flatten()
+                                .any(|id| *id == identity) =>
+                        {
+                            view.length.refine(&Ty::scalar(Scalar::U32), 0, *fact);
+                        }
+                        Binding::Tile(view)
+                            if view
+                                .length
+                                .origins
+                                .iter()
+                                .flatten()
+                                .any(|id| *id == identity) =>
+                        {
+                            view.length.refine(&Ty::scalar(Scalar::U32), 0, *fact);
+                        }
+                        _ => {}
                     }
-                    Binding::ApplicationData(data)
-                        if data
-                            .length
-                            .proof
-                            .origins
-                            .iter()
-                            .flatten()
-                            .any(|id| *id == identity) =>
-                    {
-                        data.length.proof.refine(&data.length.ty, 0, *fact);
-                    }
-                    Binding::Data(view)
-                        if view
-                            .length
-                            .origins
-                            .iter()
-                            .flatten()
-                            .any(|id| *id == identity) =>
-                    {
-                        view.length.refine(&Ty::scalar(Scalar::U32), 0, *fact);
-                    }
-                    Binding::Tile(view)
-                        if view
-                            .length
-                            .origins
-                            .iter()
-                            .flatten()
-                            .any(|id| *id == identity) =>
-                    {
-                        view.length.refine(&Ty::scalar(Scalar::U32), 0, *fact);
-                    }
-                    _ => {}
                 }
             }
         }
