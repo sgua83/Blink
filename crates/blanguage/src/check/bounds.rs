@@ -1646,10 +1646,27 @@ fn contradictory(facts: &Facts) -> bool {
         Fact::Below(a,b,strict,signed)=>{(a==b&&strict)||facts.contains(&Fact::Below(b,a,!strict,signed))||(strict&&facts.contains(&Fact::equal(a,b)))},
         _=>false,
     }){return true;}
-    let lower = minimums(facts);
-    maximums(facts)
-        .iter()
-        .any(|(id, upper)| lower.get(id).is_some_and(|lower| lower > upper))
+    // 判定只读取同一身份的最强界限，不需要拥有两张查找表。
+    let mut lower = limit_facts(facts)
+        .filter_map(|(upper, id, value)| (!upper).then_some((id, value)))
+        .peekable();
+    let mut upper = limit_facts(facts)
+        .filter_map(|(upper, id, value)| upper.then_some((id, value)))
+        .peekable();
+    while let (Some(&(left, minimum)), Some(&(right, maximum))) = (lower.peek(), upper.peek()) {
+        match left.cmp(&right) {
+            std::cmp::Ordering::Less => { lower.next(); }
+            std::cmp::Ordering::Greater => { upper.next(); }
+            std::cmp::Ordering::Equal => {
+                if minimum > maximum {
+                    return true;
+                }
+                lower.next();
+                upper.next();
+            }
+        }
+    }
+    false
 }
 
 // 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。
