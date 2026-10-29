@@ -1367,7 +1367,7 @@ impl Stage {
             })
         }
         matches!(&self.operation, Operation::Reduce(r) if r.ty.components[0].0 == scalar)
-            || matches!(&self.operation, Operation::CustomReduce(r) | Operation::CustomScan(CustomScan { values:r, .. }) | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values:r, .. }) if r.identity.registers.iter().chain(&r.combine.registers).chain(r.project.iter().flat_map(|p|&p.registers)).any(|s| *s == scalar))
+            || matches!(&self.operation, Operation::CustomReduce(r) | Operation::CustomScan(CustomScan { values:r, .. }) | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values:r, .. }) if [&r.identity,&r.combine].into_iter().chain(&r.project).any(|body| arithmetic(&body.code,&body.registers,scalar)))
             || matches!(&self.operation, Operation::SegmentedReduce(r) if r.values.ty.components[0].0 == scalar)
             || matches!(&self.operation, Operation::ScanExclusive(s) if s.ty.components[0].0 == scalar)
             || arithmetic(&self.code, &self.registers, scalar)

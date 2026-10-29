@@ -42,7 +42,6 @@ impl ProgramInterface for Program {
     fn requirements(&self) -> DeviceRequirements {
         let mut requirements = DeviceRequirements {
             ray_query: !self.accelerations.is_empty(),
-            float64: self.stages.iter().any(|s| s.requires_float_preserve(Scalar::F64)),
             sorting: self.requires_sort(),
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
@@ -52,7 +51,10 @@ impl ProgramInterface for Program {
         };
         for scalar in self.buffers.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s)
             .chain(self.uniforms.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s))
-            .chain(self.stages.iter().flat_map(|s| s.registers.iter().chain(s.locals.values().flat_map(|ty| ty.components.iter().map(|(s, _)| s))))) {
+            .chain(self.stages.iter().flat_map(|s| {
+                let custom=match &s.operation {Operation::CustomReduce(r)|Operation::CustomScan(CustomScan{values:r,..})|Operation::CustomSegmentedReduce(CustomSegmentedReduction{values:r,..})=>Some(r),_=>None};
+                s.registers.iter().chain(s.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s))).chain(custom.into_iter().flat_map(|r|[&r.identity,&r.combine].into_iter().chain(&r.project)).flat_map(|body|body.registers.iter().chain(body.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s)))))
+            })) {
             requirements.integer8 |= scalar.size() == 1;
             requirements.integer16 |= scalar.size() == 2;
             requirements.float64 |= *scalar == Scalar::F64;
