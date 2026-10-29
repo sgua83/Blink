@@ -1775,7 +1775,7 @@ impl<'a> Builder<'a> {
                 .collect();
             return Ok(((**sub).clone(), indices));
         }
-        if ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
+        if !ty.is_handle() && ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
         {
             let mut indices = Vec::new();
             for c in field.chars() {
@@ -2285,6 +2285,29 @@ impl<'a> Builder<'a> {
         Ok((a, b))
     }
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
+        if a.ty.is_handle() || b.ty.is_handle() {
+            self.require_same(&a.ty, &b.ty, span)?;
+            if !matches!(op, "==" | "!=") {
+                return self.fail(span, "B147", "handle 只支持完整身份的相等或不等比较");
+            }
+            // 原生句柄沿既有完整8字节载荷交接；这里只比较其全部位身份。
+            let mut a = a;
+            let mut b = b;
+            a.ty = Ty::vector(Scalar::U32, 2);
+            b.ty = Ty::vector(Scalar::U32, 2);
+            let bits = self.binary("^", a, b, span)?;
+            let word = |component| Value {
+                ty: Ty::scalar(Scalar::U32),
+                regs: vec![bits.regs[component]],
+                proof: bits.projected_proof(&[component]),
+                literal: false,
+                uniform: bits.uniform,
+                constant: bits.constant.as_ref().map(|values| vec![values[component]]),
+            };
+            let difference = self.binary("|", word(0), word(1), span)?;
+            let zero = self.constant(Scalar::U32, 0);
+            return self.binary(op, difference, zero, span);
+        }
         if a.ty.has_variants() || b.ty.has_variants() {
             return self.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
         }
@@ -2665,7 +2688,7 @@ impl<'a> Builder<'a> {
             values.push(value);
         }
         if let Some(ty) = Ty::builtin(name) {
-            return self.numeric_constructor(ty, values, span).map(Some);
+            return self.value_constructor(ty, values, span).map(Some);
         }
         if matches!(name, "bitcast_u32" | "bitcast_f32") {
             return self.bitcast(name, values, span).map(Some);
@@ -2727,7 +2750,7 @@ impl<'a> Builder<'a> {
             return Ok(None);
         };
         if op == "+" {
-            if a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
+            if a.ty.is_handle() || a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
                 return self.fail(span, "B146", "数值一元运算不能接受数组、枚举或结果");
             }
             return Ok(Some(a));
@@ -3339,7 +3362,21 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
-    fn numeric_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+    fn value_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+        if ty.is_handle() {
+            if values.is_empty() {
+                return Ok(self.constant_value(ty, vec![0, 0]));
+            }
+            if values.len() == 1 && values[0].ty == ty {
+                let mut value = values.pop().unwrap();
+                value.literal = false;
+                return Ok(value);
+            }
+            return self.fail(span, "B154", "handle 构造只接受空值或同类型身份，不接受数值载荷");
+        }
+        if values.iter().any(|value| value.ty.is_handle()) {
+            return self.fail(span, "B154", "不透明handle不能转换为数值或公开其载荷");
+        }
         if values.iter().any(|value| value.ty.has_variants()) {
             return self.fail(span, "B269", "结果值须先通过 match 或 try 取得对应载荷");
         }

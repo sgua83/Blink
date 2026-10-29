@@ -48,8 +48,15 @@ fn scalar(s: Scalar) -> (&'static str, &'static str) {
         Scalar::U32 | Scalar::Bool => ("uint32_t", "u32"),
     }
 }
-fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, Scalar, u32)>) -> Result<()> {
-    if !ty.fields.is_empty() {
+#[derive(Clone, Copy)]
+enum FieldType {
+    Scalar(Scalar),
+    Handle,
+}
+fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, FieldType, u32)>) -> Result<()> {
+    if ty.is_handle() {
+        out.push((name.into(), FieldType::Handle, base));
+    } else if !ty.fields.is_empty() {
         for (n, offset, t) in &ty.fields {
             let field = identifier(n)?.replace('z', "z7a").replace('_', "z5f");
             fields(
@@ -81,12 +88,17 @@ fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, Scalar, u32)>) 
             } else {
                 format!("{name}_{}", ["x", "y", "z", "w"][i])
             };
-            out.push((n, s, base + offset));
+            out.push((n, FieldType::Scalar(s), base + offset));
         }
     }
     Ok(())
 }
 fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
+    if ty.is_handle() {
+        writeln!(c, "typedef void *{name};")?;
+        writeln!(r, "pub type {name} = *mut core::ffi::c_void;")?;
+        return Ok(());
+    }
     if ty.components.len() == 1 && ty.size == 4 && ty.align == 4 && ty.fields.is_empty() {
         let (ct, rt) = scalar(ty.components[0].0);
         writeln!(c, "typedef {ct} {name};")?;
@@ -111,10 +123,16 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
             writeln!(c, "    uint8_t pad_{end}[{}];", offset - end)?;
             writeln!(r, "    pub pad_{end}: [u8; {}],", offset - end)?;
         }
-        let (ct, rt) = scalar(s);
+        let (ct, rt, size) = match s {
+            FieldType::Scalar(s) => {
+                let (ct, rt) = scalar(s);
+                (ct, rt, 4)
+            }
+            FieldType::Handle => ("void *", "*mut core::ffi::c_void", 8),
+        };
         writeln!(c, "    {ct} {n}; /* byte {offset} */")?;
         writeln!(r, "    pub {n}: {rt}, // byte {offset}")?;
-        end = offset + 4;
+        end = offset + size;
     }
     let size = align_up(ty.size, ty.align);
     if size > end {

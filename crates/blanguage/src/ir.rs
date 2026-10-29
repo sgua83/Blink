@@ -262,6 +262,11 @@ impl Ty {
             "u32" | "uint" => Self::scalar(Scalar::U32),
             "i32" | "int" => Self::scalar(Scalar::I32),
             "bool" => Self::scalar(Scalar::Bool),
+            "handle" => {
+                let mut ty = Self::vector(Scalar::U32, 2);
+                ty.name = "handle".into();
+                ty
+            }
             "float2" => Self::vector(Scalar::F32, 2),
             "float3" => Self::vector(Scalar::F32, 3),
             "float4" => Self::vector(Scalar::F32, 4),
@@ -315,8 +320,12 @@ impl Ty {
             _ => return None,
         })
     }
+    pub fn is_handle(&self) -> bool {
+        self.name == "handle"
+    }
     pub fn is_numeric(&self) -> bool {
-        !self.owns_resources()
+        !self.is_handle()
+            && !self.owns_resources()
             && !self.enumeration
             && !self.has_variants()
             && self.view.is_none()
