@@ -520,7 +520,6 @@ impl<'a> Builder<'a> {
         contracts::prove(self, &requirements, span)?;
         contracts::assume(&mut env, &requirements);
         let old_env = std::mem::replace(&mut self.env, env);
-        self.materialize_array_bindings();
         let old_mutable_names = std::mem::take(&mut self.mutable_names);
         assigned_names(
             self.world,
@@ -544,6 +543,16 @@ impl<'a> Builder<'a> {
             None
         };
         self.calls.push(key);
+        let local_initialization = self.env.values().all(|binding| matches!(binding,
+            Binding::Value(value) if !value.ty.contains_views() && !value.ty.owns_resources()
+        )) && if callee.function.result.name == "void" || callee.function.result.is_never() {
+            true
+        } else {
+            let ty = self.expected_storage(&callee.function.result, callee.function.span)?;
+            !ty.contains_views() && !ty.owns_resources()
+        };
+        let caller_initialization = local_initialization.then(|| std::mem::take(&mut self.initialized));
+        self.materialize_array_bindings();
         let output_inputs=outputs::inputs(self,callee,&self.env.clone())?;
         // With no fact or resource inputs/outputs, private range paths end at this call.
         let local_bounds = self.env.values().all(|binding| matches!(binding,
@@ -558,6 +567,9 @@ impl<'a> Builder<'a> {
         };
         let caller_path = std::mem::take(&mut self.path);
         let (mut result,_) = self.function_body(callee.function.body.as_ref().unwrap())?;
+        if let Some(initialized) = caller_initialization {
+            self.initialized = initialized;
+        }
         if let Some(returns::Returned::Value(value)) = &mut result {
             value.literal = false;
         }
