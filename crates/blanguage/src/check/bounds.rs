@@ -35,6 +35,7 @@ type Facts = BTreeSet<Fact>;
 type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
 struct QueryResult<'a> {
     users: usize,
+    remaining: usize,
     value: Option<Option<QueryFacts<'a>>>,
 }
 type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
@@ -1543,9 +1544,9 @@ impl Clause {
     }
     fn take_query<'a>(results: &mut HashMap<usize, QueryResult<'a>>, clause: &Self) -> Option<QueryFacts<'a>> {
         let result = results.get_mut(&clause.key()).unwrap();
-        result.users -= 1;
-        if result.users == 0 {
-            results.remove(&clause.key()).unwrap().value.unwrap()
+        result.remaining -= 1;
+        if result.remaining == 0 {
+            result.value.take().unwrap()
         } else {
             result.value.as_ref().unwrap().clone()
         }
@@ -1555,10 +1556,9 @@ impl Clause {
         let mut pending = vec![clause];
         while let Some(clause) = pending.pop() {
             let result = results.get_mut(&clause.key()).unwrap();
-            result.users -= 1;
-            if result.users == 0 {
-                let result = results.remove(&clause.key()).unwrap();
-                if result.value.is_none()
+            result.remaining -= 1;
+            if result.remaining == 0 {
+                if result.value.take().is_none()
                     && let Some((left, right, _)) = clause.query_inputs()
                 {
                     pending.extend([left, right]);
@@ -1636,29 +1636,34 @@ impl Clause {
         self.required_in(&Facts::new())
     }
     fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<Facts> {
-        let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
-        loop {
-            if contradictory(&environment) {
-                return None;
-            }
-            let environment_roots = equality_roots(environment.iter());
-            let mut facts: HashMap<usize, QueryResult<'a>> = HashMap::new();
-            facts.insert(self.key(), QueryResult { users: 1, value: None });
-            let mut pending = vec![self];
-            while let Some(clause) = pending.pop() {
-                if let Some((left, right, _)) = clause.query_inputs() {
-                    for input in [left, right] {
-                        match facts.entry(input.key()) {
-                            std::collections::hash_map::Entry::Vacant(entry) => {
-                                entry.insert(QueryResult { users: 1, value: None });
-                                pending.push(input);
-                            }
-                            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                                entry.get_mut().users += 1;
-                            }
+        if contradictory(environment) {
+            return None;
+        }
+        // One immutable Clause graph owns the input topology for this query.
+        let mut facts: HashMap<usize, QueryResult<'a>> = HashMap::new();
+        facts.insert(self.key(), QueryResult { users: 1, remaining: 0, value: None });
+        let mut pending = vec![self];
+        while let Some(clause) = pending.pop() {
+            if let Some((left, right, _)) = clause.query_inputs() {
+                for input in [left, right] {
+                    match facts.entry(input.key()) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(QueryResult { users: 1, remaining: 0, value: None });
+                            pending.push(input);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            entry.get_mut().users += 1;
                         }
                     }
                 }
+            }
+        }
+        let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
+        loop {
+            let environment_roots = equality_roots(environment.iter());
+            for result in facts.values_mut() {
+                result.remaining = result.users;
+                result.value = None;
             }
             pending.push(self);
             while let Some(clause) = pending.pop() {
@@ -1725,6 +1730,9 @@ impl Clause {
                 return Some(environment.into_owned());
             }
             environment.to_mut().extend(required.iter().copied());
+            if contradictory(&environment) {
+                return None;
+            }
         }
     }
     pub(super) fn possible(&self) -> bool {
