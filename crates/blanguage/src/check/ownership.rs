@@ -27,12 +27,12 @@ pub(super) enum Position {
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
-    Conditional(Box<owned_presence::Presence>,Box<Position>,Box<Position>),
-    Both(Box<Position>,Box<Position>),
+    Conditional(std::sync::Arc<owned_presence::Presence>,std::sync::Arc<Position>,std::sync::Arc<Position>),
+    Both(std::sync::Arc<Position>,std::sync::Arc<Position>),
 }
 impl Position {
-    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{if a==b{return a;}match when{owned_presence::Presence::All=>a,owned_presence::Presence::None=>b,when=>Self::Conditional(Box::new(when),Box::new(a),Box::new(b))}}
-    pub(super) fn both(a:Self,b:Self)->Self{if a==b{return a;}match(a,b){(Self::Initialized,value)|(value,Self::Initialized)=>value,(a,b)=>Self::Both(Box::new(a),Box::new(b))}}
+    pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{if a==b{return a;}match when{owned_presence::Presence::All=>a,owned_presence::Presence::None=>b,when=>Self::Conditional(std::sync::Arc::new(when),std::sync::Arc::new(a),std::sync::Arc::new(b))}}
+    pub(super) fn both(a:Self,b:Self)->Self{if a==b{return a;}match(a,b){(Self::Initialized,value)|(value,Self::Initialized)=>value,(a,b)=>Self::Both(std::sync::Arc::new(a),std::sync::Arc::new(b))}}
     pub(super) fn initialized_by(&self, initialized: &BTreeSet<Position>) -> bool {
         initialized.contains(self)
             || self.application_complete().is_some_and(|whole|initialized.contains(&whole))
