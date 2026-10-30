@@ -12,12 +12,12 @@ impl Emitter<'_> {
     }
     pub(super) fn atomic(&mut self, atomic: &Atomic) {
         let unit = Self::raw_scalar(atomic.scalar);
-        let (mut pointer, scope, memory) = match atomic.target {
+        let (pointer, scope, memory) = match atomic.target {
             AtomicTarget::Dataset(binding) => {
                 let at = if let Some(offset) = atomic.offset {
-                    self.indexed_address(Scalar::U32, &IndexedSource::Data { binding, index: atomic.index }, offset, atomic.word)
+                    self.indexed_address(unit, &IndexedSource::Data { binding, index: atomic.index }, offset, atomic.word)
                 } else {
-                    self.address(Scalar::U32, binding, atomic.index, atomic.word)
+                    self.address(unit, binding, atomic.index, atomic.word)
                 };
                 (at, 1, 0x40)
             }
@@ -31,11 +31,6 @@ impl Emitter<'_> {
                 0x100,
             ),
         };
-        if unit == Scalar::U64 {
-            let typed = self.id();
-            self.emit(124, &[self.physical_pointers[&unit], typed, pointer]);
-            pointer = typed;
-        }
         let scope = self.constant(Scalar::U32, scope);
         let semantics = self.atomic_semantics(atomic.order, memory);
         let u = self.types[&unit];

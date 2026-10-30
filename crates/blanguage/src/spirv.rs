@@ -308,12 +308,12 @@ impl Emitter<'_> {
             return self.tile_word_address(self.stage.shared_word(*tile, word), self.value(*index), Some(self.value(offset))).0;
         }
         let pointer = match source {
-            IndexedSource::Data { binding, index } => self.address(Scalar::U32, *binding, *index, word),
+            IndexedSource::Data { binding, index } => self.address(unit, *binding, *index, word),
             IndexedSource::View {
                 address,
                 index,
                 stride,
-            } => self.view_address(Scalar::U32, address, *index, *stride, word),
+            } => self.view_address(unit, address, *index, *stride, word),
             _ => unreachable!(),
         };
         let address = self.id();
