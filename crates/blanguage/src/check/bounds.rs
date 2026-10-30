@@ -1170,7 +1170,7 @@ fn additional_equality_roots<'a>(
     extend_equality_roots(&mut roots, equalities);
     Cow::Owned(roots)
 }
-fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> QueryFacts<'a> {
+fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>) -> QueryFacts<'a> {
     // 等价组为空时没有别名事实需要派生，不读取无关事实集。
     if roots.is_empty() {
         return facts;
@@ -1179,7 +1179,13 @@ fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &
     // 仅将原关系表的借用引用排成同组连续的顺序。
     let mut members: Vec<_> = roots.iter().map(|(id, group)| (group, id)).collect();
     members.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-    for fact in environment.union(&facts) {
+    // 原根的环境由本轮所有者交接；分支新根继续投影环境。
+    let empty = Facts::new();
+    let source_environment = match roots {
+        Cow::Borrowed(_) => &empty,
+        Cow::Owned(_) => environment,
+    };
+    for fact in source_environment.union(&facts) {
         if let Some(identity) = fact.identity()
             && let Some(root) = roots.get(&identity)
         {
@@ -1661,7 +1667,18 @@ impl Clause {
         }
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         loop {
-            let environment_roots = equality_roots(environment.iter());
+            // 共同环境的别名事实只在原环境所有者处生产一次。
+            let environment_roots = Cow::Owned(equality_roots(environment.iter()));
+            {
+                let inherited = equivalent_facts(
+                    &environment,
+                    Arc::new(Cow::Owned(Facts::new())),
+                    &environment_roots,
+                );
+                if !inherited.is_empty() {
+                    environment.to_mut().extend(inherited.iter().copied());
+                }
+            }
             for result in facts.values_mut() {
                 result.remaining = result.users;
                 result.value = None;
