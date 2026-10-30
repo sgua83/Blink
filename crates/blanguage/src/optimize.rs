@@ -531,15 +531,13 @@ fn dce(
             }
             Inst::If { condition, yes, no } => {
                 let mut a = needed.clone();
-                let mut b = needed.clone();
                 dce(yes, &mut a, break_live, continue_live, exit_live);
-                dce(no, &mut b, break_live, continue_live, exit_live);
+                dce(no, needed, break_live, continue_live, exit_live);
                 if yes.is_empty() && no.is_empty() {
                     continue;
                 }
-                a.extend(b);
-                a.insert(Register(*condition));
-                *needed = a;
+                needed.extend(a);
+                needed.insert(Register(*condition));
             }
             Inst::Loop {
                 condition,
