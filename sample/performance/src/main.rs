@@ -20,7 +20,7 @@ unsafe extern "C" {
 fn copies(program: &ExecutableProgram, data: &[Dataset]) -> Result<Vec<Dataset>> {
     data.iter()
         .enumerate()
-        .map(|(i, d)| Dataset::from_words(program, i, d.words().to_vec()))
+        .map(|(i, d)| Dataset::from_words(program, i, d.count(), d.words().to_vec()))
         .collect()
 }
 fn median(values: &mut [f64]) -> f64 {

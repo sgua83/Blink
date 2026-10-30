@@ -84,24 +84,24 @@ pub struct Dataset {
     pub(crate) views: views::Views<ReadDataset>,
 }
 impl Dataset {
-    /// 接收已经打包的记录存储，避免在上传前再次复制整个数据集。
+    /// 接收生产者的实际记录数量和打包存储；末字填充不成为额外记录，不复制数据。
     pub fn from_words(
         program: &dyn ProgramInterface,
         binding: usize,
+        count: u32,
         words: Vec<u32>,
     ) -> Result<Self> {
         let b = program
             .buffers()
             .get(binding)
             .ok_or_else(|| error("数据绑定编号越界"))?;
-        let bytes = words.len() * 4;
-        if bytes % b.stride as usize != 0 {
-            return Err(error("打包数据不是完整记录"));
+        if words.len() != (b.stride as usize * count as usize).div_ceil(4) {
+            return Err(error("打包数据长度与记录数量不符"));
         }
         Ok(Self {
             ty: b.ty.clone(),
             stride: b.stride,
-            count: u32::try_from(bytes / b.stride as usize)?,
+            count,
             words,
             views: views::Views::default(),
         })

@@ -264,3 +264,9 @@ f64标量按Windows x64的C double／Rust f64传参和返回；仅真实浮点�
 生成C／C++及Rust算法记录分别使用double与f64，uniform及Dataset::set_scalar使用Value::F64。C Value仍为16字节／对齐8，标签6、偏移8的完整64位载荷加入BLRI6；原f32及整数、bool标签保持。BLCO20还编码类型化数学入口与Float64设备要求，旧对象／归档及资源须重编，不靠布局猜测兼容。
 
 SDK可显式选择具有所需能力的物理设备；原C绑定的backend=GPU仍使用现有默认设备，缺失Float64或64位浮点控制时返回真实错误。CPU、GPU、外部C／Rust、对象／归档及实际消费者采用分别记录，未实现的GPU f64超越函数、完整JSON／容器迁移及版本演化不由本节宣称完成。
+
+## 打包存储的逻辑记录数量
+
+Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的实际记录数量及一份Vec<u32>，按值接收原存储，不复制数据。物理字数须等于ceil(stride*count/4)；末字中的非记录填充保持原字节，不从整字长度反推数量，也不要求填充为零。步长、类型来自原编译接口，逻辑数量存入原Dataset.count，不建立计数或布局副本。复制已有Dataset时交接其count；图像等外部生产者交接自己的实际元素数量。
+
+本入口的Rust源调用须传递count；普通C、资源ABI、数据布局与GPU最后消费者规则保持。输入物理存储与声明数量不符仍报真实输入错误，不以截断、补齐、兼容包装或猜测数量接收。
