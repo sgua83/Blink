@@ -1186,6 +1186,7 @@ fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &
             let begin = members.partition_point(|(group, _)| *group < root);
             let end = members.partition_point(|(group, _)| *group <= root);
             inferred.extend(members[begin..end].iter()
+                .filter(|(_, id)| **id != identity)
                 .map(|(_, id)| fact.at(**id))
                 .filter(|fact| !environment.contains(fact) && !facts.contains(fact)));
         }
