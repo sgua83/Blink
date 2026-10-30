@@ -1,9 +1,5 @@
 module blink.sequence;
 
-dataset<T> empty<T>() on cpu {
-    return dataset<T>(0);
-}
-
 result<T,SequenceIndexError> get<T>(read dataset<T> data,u32 index) on cpu {
     if (index < data.length) { return Ok(data[index]); }
     return Err(SequenceIndexError(index,data.length));
@@ -69,6 +65,3 @@ dataset<T> truncate<T>(dataset<T> data,u32 length) on cpu {
     return resize(data,length,fill);
 }
 
-dataset<T> clear<T>(dataset<T> data) on cpu {
-    return truncate(data,0);
-}

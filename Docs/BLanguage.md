@@ -3953,7 +3953,7 @@ println(values[0]);
 
 ## 普通值动态序列库与数值来源
 
-正式B模块`blink.sequence`位于`library/blink/sequence.h`和`.b`，通过`-I library`装入。接口、使用方式与失败返回见[标准库说明](../library/README.md)。它直接以拥有`dataset<T>`表达序列，当前支持可复制、不含拥有资源或view的普通存储元素。`get`／`set`提供动态下标的可失败访问；`push`／`pop`、`insert`／`remove`、`extend`、`truncate`／`clear`沿原所有权与resize组合，不另存长度、容量或资源身份。
+正式B模块`blink.sequence`位于`library/blink/sequence.h`和`.b`，通过`-I library`装入。接口、使用方式与失败返回见[标准库说明](../library/README.md)。它直接以拥有`dataset<T>`表达序列，当前支持可复制、不含拥有资源或view的普通存储元素；空序列直接构造`dataset<T>(0)`，清空直接使用`truncate(data,0)`。`get`／`set`提供动态下标的可失败访问；`push`／`pop`、`insert`／`remove`、`extend`、`truncate`沿原所有权与resize组合，不另存长度、容量或资源身份。
 
 修改型操作按值消费输入，成功交回新拥有值；预期的空序列、非法下标或长度溢出沿声明的Result交回原拥有数据。`get`只读借用，`set`独占内容借用，`extend`只借用尾序列且不能与被移动的输入重叠。长度上限按当前u32表示表达；分配和原生执行失败仍由原运行库处理，不把它们伪装成库中的下标或长度错误。CPU位置、初始化、实际view／游标消费者与GPU显式传输继续沿原规则。
 
