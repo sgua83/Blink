@@ -1800,6 +1800,7 @@ fn contradictory(facts: &Facts) -> bool {
     if !roots.is_empty() {
         aliases.extend(facts.iter().copied().map(canonical));
         aliases.sort_unstable();
+        aliases.dedup();
     }
     let select = |query: Fact, preceding: bool| {
         if roots.is_empty() {
