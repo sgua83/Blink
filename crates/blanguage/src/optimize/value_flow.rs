@@ -152,7 +152,7 @@ impl Values {
             }
             match &mut inst {
                 Inst::Scope(body) => {
-                    let mut scoped = self.clone();
+                    let mut scoped = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
                     let mut scope = scoped.block(body, registers);
                     merge(&mut scope.next, scope.exits.take());
                     continuing = self.resume(&mut flow, scope);
