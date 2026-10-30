@@ -234,8 +234,8 @@ impl Values {
                     // 循环下一次进入时可能已改变；不把进入前的局部值当作循环不变量。
                     self.locals.retain(|slot, _| !written.contains(slot));
                     let after = self.local_values();
+                    self.memory.clear();
                     let mut cycle = self.clone();
-                    cycle.memory.clear();
                     let condition_flow = cycle.block(condition, registers);
                     *test = cycle.root(*test);
                     let mut loop_flow = Flow {
