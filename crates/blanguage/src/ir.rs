@@ -1008,12 +1008,6 @@ impl Compaction {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SortKey {
-    U32,
-    I32,
-    F32,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortOrder {
     Ascending,
     Descending,
@@ -1021,7 +1015,7 @@ pub enum SortOrder {
 #[derive(Clone, Debug)]
 pub struct Sorting {
     pub source: usize,
-    pub keys: Vec<(u32, SortKey, SortOrder)>,
+    pub keys: Vec<(u32, Scalar, SortOrder)>,
     pub target: usize,
 }
 #[derive(Clone, Debug)]

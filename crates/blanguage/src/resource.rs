@@ -1,9 +1,9 @@
-//! 模块资源 ABI 7：标量值与实际字节布局；不传递 Rust 容器表示。
+//! 模块资源 ABI 8：标量值与实际字节布局；不传递 Rust 容器表示。
 use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variants};
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x07\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x08\0\0\0";
 pub const F32: u32 = 0;
 pub const U32: u32 = 1;
 pub const I32: u32 = 2;
@@ -153,7 +153,6 @@ record!(Compaction {
     count,
     count_word
 });
-variants!(SortKey {0=>U32,1=>I32,2=>F32});
 variants!(SortOrder {0=>Ascending,1=>Descending});
 record!(Sorting {
     source,

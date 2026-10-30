@@ -42,25 +42,25 @@ pub(super) fn compile(
                 .source
                 .fail(arg.span, "B170", "排序键必须来自同一 read 输入和同一有效域");
         }
-        let key = match ty.components.first().map(|&(scalar, _)| scalar) {
-            Some(Scalar::U32 | Scalar::U64) if ty.is_numeric() => SortKey::U32,
-            Some(Scalar::I32 | Scalar::I64) if ty.is_numeric() => SortKey::I32,
-            Some(Scalar::F32) if ty.is_numeric() => SortKey::F32,
-            _ => {
-                return d.source.fail(
-                    arg.span,
-                    "B175",
-                    "排序键需要 u32/i32/u64/i64/f32 数值字段；bool、记录、数组和资源不能作为键",
-                );
-            }
-        };
+        if !ty.is_numeric() {
+            return d.source.fail(
+                arg.span,
+                "B175",
+                "排序键需要数值字段；bool、记录、数组和资源不能作为键",
+            );
+        }
         for &(scalar, offset) in &ty.components {
             if scalar.size() == 8 {
-                keys.push((word + offset + 4, key, order));
-                keys.push((word + offset, SortKey::U32, order));
-            } else {
-                keys.push((word + offset, key, order));
+                let high = if scalar.is_float() {
+                    Scalar::F32
+                } else if scalar.is_signed() {
+                    Scalar::I32
+                } else {
+                    Scalar::U32
+                };
+                keys.push((word + offset + 4, high, order));
             }
+            keys.push((word + offset, scalar, order));
         }
     }
     let output = args.last().unwrap();

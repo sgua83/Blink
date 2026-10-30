@@ -176,7 +176,6 @@ record!(Compaction {
     count,
     count_word
 });
-variants!(SortKey { U32, I32, F32 });
 variants!(SortOrder {
     Ascending,
     Descending

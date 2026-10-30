@@ -16,12 +16,6 @@ impl Emitter<'_> {
         self.emit(op, &[self.types[&Scalar::U32], v, a, b]);
         v
     }
-    fn sort_load(&mut self, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
-        let at = self.address_scalar(binding, index, stride, word);
-        let v = self.id();
-        self.emit(61, &[self.types[&Scalar::U32], v, at, 2, 4]);
-        v
-    }
     fn sort_store(&mut self, binding: usize, index: u32, stride: u32, word: u32, value: u32) {
         let at = self.address_scalar(binding, index, stride, word);
         self.emit(62, &[at, value, 2, 4]);
@@ -37,30 +31,31 @@ impl Emitter<'_> {
             let original = if first {
                 e.index
             } else {
-                e.sort_load(s.target, e.index, 8, 4)
+                e.load_raw_buffer(Scalar::U32, s.target, e.index, 8, 4)
             };
-            let key = e.sort_load(
-                s.source,
-                original,
-                e.program.buffers[s.source].stride,
-                s.keys[key_index].0,
-            );
-            let key_type = s.keys[key_index].1;
-            let key = match key_type {
-                SortKey::U32 => key,
-                SortKey::I32 | SortKey::F32 => {
+            let scalar = s.keys[key_index].1;
+            let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+            let at = e.address_scalar(s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0);
+            let key = e.load_raw(Scalar::U32, unit, &[at], true);
+            let bias = scalar.order_bias() as u32;
+            let key = if scalar.is_float() {
+                let high = if scalar == Scalar::F64 {
+                    e.load_raw_buffer(Scalar::U32, s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0 + 4)
+                } else { key };
+                let shift = e.constant(Scalar::U32, 31);
+                let negative = e.sort_binary(194, high, shift);
+                let zero = e.constant(Scalar::U32, 0);
+                let inverse = e.sort_binary(130, zero, negative);
+                let mask = if scalar == Scalar::F32 {
                     let sign = e.constant(Scalar::U32, 0x8000_0000);
-                    let mask = if key_type == SortKey::F32 {
-                        let shift = e.constant(Scalar::U32, 31);
-                        let negative = e.sort_binary(194, key, shift);
-                        let zero = e.constant(Scalar::U32, 0);
-                        let inverse = e.sort_binary(130, zero, negative);
-                        e.sort_binary(197, inverse, sign)
-                    } else {
-                        sign
-                    };
-                    e.sort_binary(198, key, mask)
-                }
+                    e.sort_binary(197, inverse, sign)
+                } else { inverse };
+                e.sort_binary(198, key, mask)
+            } else if bias != 0 {
+                let sign = e.constant(Scalar::U32, bias);
+                e.sort_binary(198, key, sign)
+            } else {
+                key
             };
             let key = if s.keys[key_index].2 == SortOrder::Descending {
                 let mask = e.constant(Scalar::U32, u32::MAX);
@@ -74,7 +69,7 @@ impl Emitter<'_> {
     }
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {
         self.sort_when(active, |e| {
-            let original = e.sort_load(e.program.buffers.len(), e.index, 8, 4);
+            let original = e.load_raw_buffer(Scalar::U32, e.program.buffers.len(), e.index, 8, 4);
             e.copy_record(s.source, original, s.target, e.index);
         });
     }
@@ -119,7 +114,7 @@ impl Emitter<'_> {
         self.emit(176, &[b, active, self.index, count]);
         self.emit(62, &[temporary, zero]);
         self.sort_when(active, |e| {
-            let key = e.sort_load(s.source, e.index, 8, 0);
+            let key = e.load_raw_buffer(Scalar::U32, s.source, e.index, 8, 0);
             e.emit(62, &[temporary, key]);
         });
         let key = self.id();
@@ -198,9 +193,9 @@ impl Emitter<'_> {
                 let own_rank = e.sort_binary(128, rank, previous);
                 let row = e.sort_binary(132, digit, nonzero);
                 let at = e.sort_binary(128, row, group);
-                let offset = e.sort_load(e.program.buffers.len(), at, 4, 0);
+                let offset = e.load_raw_buffer(Scalar::U32, e.program.buffers.len(), at, 4, 0);
                 let target = e.sort_binary(128, offset, own_rank);
-                let original = e.sort_load(s.source, e.index, 8, 4);
+                let original = e.load_raw_buffer(Scalar::U32, s.source, e.index, 8, 4);
                 e.sort_store(s.target, target, 8, 0, key);
                 e.sort_store(s.target, target, 8, 4, original);
             });

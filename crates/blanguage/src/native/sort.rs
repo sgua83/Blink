@@ -35,27 +35,35 @@ fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> Native
     let begin = e.code.len();
     e.bytes(&[0x45, 0x39, 0xc1]);
     let end = e.jump(Some(0x83));
-    if first {
-        e.bytes(&[0x47, 0x89, 0x4c, 0xcb, 0x04, 0x41, 0x8b, 0x82]);
+    let word = s.keys[key].0;
+    let scalar = s.keys[key].1;
+    let memory = if first {
+        e.bytes(&[0x47, 0x89, 0x4c, 0xcb, 0x04]);
+        operands::Memory::new(10, word)
     } else {
         e.bytes(&[0x43, 0x8b, 0x44, 0xcb, 0x04]);
-        e.scale_index(0, stride);
-        e.bytes(&[0x41, 0x8b, 0x84, 0x02]);
+        e.scaled_memory(10, 0, stride, word)
+    };
+    if scalar == Scalar::F64 {
+        e.instruction(None, &[0x8b], false, 1, memory.offset(4).into());
     }
-    e.u32(s.keys[key].0);
-    // 每个键仅装入一次全序编码；后续八轮共用键／原始序号。
-    match s.keys[key].1 {
-        SortKey::U32 => {}
-        SortKey::I32 => {
-            e.bytes(&[0x35]);
-            e.u32(0x8000_0000);
-        }
-        SortKey::F32 => {
-            // 负数逐位取反，非负数翻转符号位；不执行浮点算术或改变源位值。
-            e.bytes(&[0x89, 0xc2, 0xc1, 0xfa, 0x1f, 0x81, 0xca]);
-            e.u32(0x8000_0000);
-            e.bytes(&[0x31, 0xd0]);
-        }
+    let load: &[u8] = match scalar.size() {
+        1 => &[0x0f, 0xb6],
+        2 => &[0x0f, 0xb7],
+        _ => &[0x8b],
+    };
+    e.instruction(None, load, false, 0, memory.into());
+    // 全序编码按32位子键装入；后续八轮共用键／原始序号。
+    let bias = scalar.order_bias() as u32;
+    if bias != 0 {
+        e.bytes(&[0x35]);
+        e.u32(bias);
+    } else if scalar == Scalar::F32 {
+        e.bytes(&[0x89, 0xc2, 0xc1, 0xfa, 0x1f, 0x81, 0xca]);
+        e.u32(0x8000_0000);
+        e.bytes(&[0x31, 0xd0]);
+    } else if scalar == Scalar::F64 {
+        e.bytes(&[0xc1, 0xf9, 0x1f, 0x31, 0xc8]);
     }
     if s.keys[key].2 == SortOrder::Descending {
         e.bytes(&[0xf7, 0xd0]); // not eax：反向全序编码，不改写原记录。
@@ -138,12 +146,10 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
             e.patch(again, copy);
         }
     }
-    if stride % 16 >= 8 {
-        e.bytes(&[0x48, 0xa5]);
-    }
-    // 记录步长是四字节的倍数；只复制实际剩余的一字，不能宽读下一条记录。
-    if stride % 8 != 0 {
-        e.bytes(&[0xa5]);
+    for (size, copy) in [(8, &[0x48, 0xa5][..]), (4, &[0xa5][..]), (2, &[0x66, 0xa5][..]), (1, &[0xa4][..])] {
+        if stride % (size * 2) >= size {
+            e.bytes(copy);
+        }
     }
     e.bytes(&[0x41, 0xff, 0xc1]);
     let back = e.jump(None);
