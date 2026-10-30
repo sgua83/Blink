@@ -131,19 +131,19 @@ impl Values {
                 }
             }
             let key = match &inst {
-                Inst::Constant(_, scalar, bits) => Some(format!("C{scalar:?}:{bits}")),
-                Inst::Index(_) => Some("index".into()),
-                Inst::Uniform(_, offset) => Some(format!("U{offset}")),
-                Inst::Unary { dst, op, a } => Some(format!("unary{op:?}:{:?}:{a}", registers[*dst])),
-                Inst::Binary { op, a, b, .. } => Some(format!("binary{op:?}:{a}:{b}")),
-                Inst::Cast { dst, src } => Some(format!("cast{:?}:{src}", registers[*dst])),
-                Inst::Math { op, args, .. } => Some(format!("math{op:?}:{args:?}")),
+                Inst::Constant(dst, scalar, bits) => Some((format!("C{scalar:?}:{bits}"), *dst)),
+                Inst::Index(dst) => Some(("index".into(), *dst)),
+                Inst::Uniform(dst, offset) => Some((format!("U{offset}"), *dst)),
+                Inst::Unary { dst, op, a } => Some((format!("unary{op:?}:{:?}:{a}", registers[*dst]), *dst)),
+                Inst::Binary { dst, op, a, b } => Some((format!("binary{op:?}:{a}:{b}"), *dst)),
+                Inst::Cast { dst, src } => Some((format!("cast{:?}:{src}", registers[*dst]), *dst)),
+                Inst::Math { dst, op, args } => Some((format!("math{op:?}:{args:?}"), *dst)),
                 Inst::Select {
-                    condition, a, b, ..
-                } => Some(format!("select{condition}:{a}:{b}")),
+                    dst, condition, a, b,
+                } => Some((format!("select{condition}:{a}:{b}"), *dst)),
                 _ => None,
             };
-            if let (Some(key), Some(dst)) = (key, destination(&inst)) {
+            if let Some((key, dst)) = key {
                 if let Some(old) = self.expressions.get(&key) {
                     self.aliases.insert(dst, *old);
                     continue;

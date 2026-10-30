@@ -251,25 +251,6 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
             || (a.reads.contains(r) && b.writes.contains(r))
     })
 }
-fn destination(i: &Inst) -> Option<Reg> {
-    if matches!(
-        i,
-        Inst::RayQuery { .. }
-            | Inst::TextureSample { .. }
-            | Inst::TextureSize { .. }
-            | Inst::TextureFetch { .. }
-            | Inst::TileCollective(_)
-            | Inst::Call(_)
-            | Inst::IntegerDivide {
-                result: IntegerDivisionResult::Both { .. },
-                ..
-            }
-    ) {
-        None
-    } else {
-        i.results().first().copied()
-    }
-}
 fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
     for i in code {
         f(i);
