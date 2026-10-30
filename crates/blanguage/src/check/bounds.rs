@@ -1683,7 +1683,7 @@ impl Clause {
                             Cow::Owned(required.difference(&environment).copied().collect())
                         };
                         let required: QueryFacts<'a> = Arc::new(required);
-                        let value = if additions_conflict(&environment, &required) { None } else { Some(required) };
+                        let value = if cross_conflict(&environment, &required) { None } else { Some(required) };
                         facts.get_mut(&clause.key()).unwrap().value = Some(value);
                         continue;
                     }
