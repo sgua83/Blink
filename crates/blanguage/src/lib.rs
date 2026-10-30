@@ -1,4 +1,6 @@
 //! BLanguage .h/.b 前端、类型和访问检查、并行 IR 与原生代码生成。
+/// Blink software version; module ABI and compiler cache identity are separate.
+pub const VERSION: &str = env!("BLINK_VERSION");
 pub mod application;
 pub mod ast;
 pub mod build;

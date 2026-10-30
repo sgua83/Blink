@@ -1,4 +1,5 @@
 //! 编译程序的设备执行、数据存储与生命周期所有者。
+pub use blanguage::VERSION;
 pub mod application;
 mod bindings;
 pub mod cpu;

@@ -11,6 +11,10 @@ fn main() -> ExitCode {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() == 1 && args[0] == "--version" {
+        println!("Blink compiler {}", blanguage::VERSION);
+        return Ok(());
+    }
     let mut jobs = None;
     let mut cpus = None;
     while args.first().is_some_and(|arg| matches!(arg.as_str(), "--jobs" | "--cpus")) {
@@ -33,7 +37,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nGlobal resource options before command: --jobs N | --cpus group:number,...\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nblc --version\nGlobal resource options before command: --jobs N | --cpus group:number,...\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }

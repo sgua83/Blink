@@ -16,7 +16,7 @@ The B in the name also stands for **Base**. Blink aims to become a foundational 
 
 This repository contains the B-language compiler, linker, native execution framework, language reference, and examples. B-language interfaces live in `.h` files and implementations in `.b` files. The compiler generates Windows x64 machine code or SPIR-V for the selected target. The execution framework owns data, devices, transfers, and completion. The compiler and framework are currently implemented in Rust, without third-party compilers, shader compilers, or parallel runtimes.
 
-> **In development — version 0.1.0.** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
+> **In development — software version in [VERSION](VERSION).** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
 
 ## Three core features
 

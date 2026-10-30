@@ -10,9 +10,13 @@ fn main() -> ExitCode {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() == 1 && args[0] == "--version" {
+        println!("Blink linker {}", blanguage::VERSION);
+        return Ok(());
+    }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink linker\nbllink <input.obj|library.lib>... -o <output.exe|output.dll>\nbllink --archive <module.obj|library.lib>... -o <library.lib>"
+            "Blink linker\nbllink --version\nbllink <input.obj|library.lib>... -o <output.exe|output.dll>\nbllink --archive <module.obj|library.lib>... -o <library.lib>"
         );
         return Ok(());
     }

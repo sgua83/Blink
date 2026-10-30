@@ -14,6 +14,10 @@ fn sources(path: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<
     Ok(())
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Software version is display metadata, separate from compilation identity.
+    println!("cargo:rerun-if-changed=../../VERSION");
+    let version = fs::read_to_string("../../VERSION")?;
+    println!("cargo:rustc-env=BLINK_VERSION={}", version.trim());
     let mut files = Vec::new();
     sources(Path::new("src"), &mut files)?;
     files.extend([

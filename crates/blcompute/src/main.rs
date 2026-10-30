@@ -7,8 +7,12 @@ fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync>
 
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() == 1 && args[0] == "--version" {
+        println!("Blink runner {}", blcompute::VERSION);
+        return Ok(());
+    }
     if args.is_empty() {
-        println!("Blink runner\nblrun <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]");
+        println!("Blink runner\nblrun --version\nblrun <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]");
         return Ok(());
     }
     compute(&args)
