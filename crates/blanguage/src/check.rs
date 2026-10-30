@@ -121,11 +121,6 @@ enum Binding {
     },
     Acceleration(usize),
     Texture(texture::TextureReference),
-    Element {
-        binding: usize,
-        index: Reg,
-        writable: bool,
-    },
 }
 #[derive(Clone)]
 struct OwnedBinding {
@@ -576,32 +571,24 @@ fn expand_stages(
                         .source
                         .fail(statement.span, "B107", "迭代变量不能覆盖参数");
                 }
-                let element = if matches!(domain_access, Access::InOut | Access::Write) {
-                    let ty = program.buffers[*domain].ty.clone();
-                    let words = ty.components.iter().map(|x| x.1).collect();
-                    Binding::Owned(OwnedBinding {
+                let ty = program.buffers[*domain].ty.clone();
+                let words = ty.components.iter().map(|x| x.1).collect();
+                let element = Binding::Owned(OwnedBinding {
                         place: Place::Element {
                             ty,
                             binding: *domain,
                             index,
                             words,
-                            writable: true,
+                            writable: matches!(domain_access, Access::InOut | Access::Write),
                         },
                         proof: bounds::Proof::default(),
                         uniform: false,
                         initialization: None,
-                    })
-                } else {
-                    Binding::Element {
-                        binding: *domain,
-                        index,
-                        writable: false,
-                    }
-                };
+                    });
                 // 输入内容与前序阶段的真实输出共同提供当前元素初值。
                 for (binding, access) in &b.view_access {
                     b.initialized.extend(program.buffers[*binding].ty.components.iter()
-                        .filter(|(_, offset)| *access == Access::InOut || facts.initialized(program, *binding, *offset))
+                        .filter(|(_, offset)| access.reads() || facts.initialized(program, *binding, *offset))
                         .map(|(_, offset)| Position::Element(*binding, *offset)));
                 }
                 b.env.insert(name.clone(), element);
@@ -2132,11 +2119,7 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
-                let proof = if self.view_access[binding].writes() {
-                    self.read_owned_proof(p, &regs).0
-                } else {
-                    bounds::Proof::default()
-                };
+                let proof = self.read_owned_proof(p, &regs).0;
                 Ok(Value {
                     proof,
                     literal: false,
@@ -3344,10 +3327,15 @@ impl<'a> Builder<'a> {
                         uniform: false,
                         initialization: None,
                     }),
-                    CursorSource::Data(binding) => Binding::Element {
-                        binding,
-                        index,
-                        writable: false,
+                    CursorSource::Data(binding) => {
+                        let ty = self.program.buffers[binding].ty.clone();
+                        let words = ty.components.iter().map(|x| x.1).collect();
+                        Binding::Owned(OwnedBinding {
+                            place: Place::Element { ty, binding, index, words, writable: false },
+                            proof: bounds::Proof::default(),
+                            uniform: false,
+                            initialization: None,
+                        })
                     },
                     CursorSource::Tile(view) => Binding::TileElement { view, index },
                     CursorSource::View(view) => Binding::ViewElement { view, index },
@@ -3798,21 +3786,6 @@ impl<'a> Builder<'a> {
                 self.env.insert(name.clone(), Binding::Owned(owner));
                 Ok(place)
             }
-            Some(Binding::Element {
-                binding,
-                index,
-                writable,
-            }) => {
-                let ty = self.program.buffers[binding].ty.clone();
-                let words = ty.components.iter().map(|x| x.1).collect();
-                Ok(Place::Element {
-                    ty,
-                    binding,
-                    index,
-                    words,
-                    writable,
-                })
-            }
             Some(Binding::TileElement { view, index }) => Ok(Place::TileElement {
                 ty: view.ty,
                 tile: view.tile,
@@ -4105,11 +4078,6 @@ impl<'a> Builder<'a> {
                 index,
                 self.data_index_proof(binding),
             ),
-            Some(Binding::Element { binding, index, .. }) => (
-                IndexDomain::Data(binding),
-                index,
-                self.data_index_proof(binding),
-            ),
             Some(Binding::TileElement { index, .. }) => {
                 (IndexDomain::Tile, index, self.tile_index_proof())
             }
@@ -4230,7 +4198,6 @@ impl<'a> Builder<'a> {
             Some(Binding::Owned(owner)) => self.read_place(&owner.place, e.span),
             Some(
                 Binding::AtomicBorrow(_)
-                | Binding::Element { .. }
                 | Binding::TileElement { .. }
                 | Binding::ViewElement { .. },
             ) => {
@@ -4265,7 +4232,6 @@ impl<'a> Builder<'a> {
                     self.env.get(n),
                     Some(
                         Binding::AtomicBorrow(_)
-                            | Binding::Element { .. }
                             | Binding::TileElement { .. }
                             | Binding::ViewElement { .. }
                             | Binding::Owned(_)

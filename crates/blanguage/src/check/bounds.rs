@@ -2814,6 +2814,9 @@ impl Builder<'_> {
                 }
                 _ => continue,
             };
+            if matches!(place.storage(), Place::Element { .. }) && !place.overlaps(&owner) {
+                continue;
+            }
             let owner_positions = self.positions(&owner);
             let choices: Option<Vec<_>> = positions
                 .iter()
