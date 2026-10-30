@@ -14,16 +14,10 @@ fn emitter(program: &Program) -> Emitter<'_> {
         frame: Frame::default(),
     }
 }
-fn finish(e: Emitter<'_>, stack_bytes: u32) -> NativeCode {
-    e.finish(stack_bytes)
-}
-pub(super) fn emit_initialize(program: &Program, s: &Sorting) -> NativeCode {
-    initialize(program, s, s.keys.len() - 1, true)
-}
 pub fn emit_sort_key(program: &Program, s: &Sorting, key: usize) -> NativeCode {
     initialize(program, s, key, false)
 }
-fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> NativeCode {
+pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> NativeCode {
     let mut e = emitter(program);
     let stride = program.buffers[s.source].stride;
     e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x18]);
@@ -78,7 +72,7 @@ fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> Native
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0xc3]);
-    finish(e, 0)
+    e.finish(0)
 }
 pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     let mut e = emitter(program);
@@ -95,7 +89,7 @@ pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0xc3]);
-    finish(e, 0)
+    e.finish(0)
 }
 pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     let mut e = emitter(program);
@@ -113,7 +107,7 @@ pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x5b, 0xc3]);
-    finish(e, 8)
+    e.finish(8)
 }
 pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     let mut e = emitter(program);
@@ -156,5 +150,5 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.bytes(&[0x5f, 0x5e, 0x5b, 0xc3]);
-    finish(e, 24)
+    e.finish(24)
 }

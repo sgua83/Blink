@@ -36,7 +36,6 @@ impl Residency {
     pub fn parameter(parameter:usize)->Self{Self::input(Input::new(parameter))}
     fn input(input:Input)->Self{Self::Origins(BTreeSet::from([Origin::Input(input)]))}
     fn absent(&self)->bool{matches!(self,Self::Absent)}
-    fn origins(&self)->BTreeSet<Origin>{match self{Self::Absent=>BTreeSet::new(),Self::Origins(origins)=>origins.clone(),Self::Selected(_,a,b)=>{if a.absent(){return b.origins();}if b.absent(){return a.origins();}let mut value=a.origins();let other=b.origins();if value.is_empty()||other.is_empty(){value.clear();}else{value.extend(other);}value}}}
     fn arm(&self,condition:&bounds::Condition,truth:bool)->Self{match self{Self::Selected(known,a,b)if condition.exclusive() && known.as_ref()==condition=>if truth{a.as_ref().clone()}else{b.as_ref().clone()},_=>self.clone()}}
     pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{Self::conditional(when.condition(),a,b)}
     pub(super) fn conditional(when:bounds::Condition,mut a:Self,mut b:Self)->Self{

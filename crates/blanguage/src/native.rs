@@ -633,7 +633,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         return Ok(segmented_reduce::emit(program, r, false));
     }
     if let Operation::StableSort(s) = &program.stages[index].operation {
-        return Ok(sort::emit_initialize(program, s));
+        return Ok(sort::initialize(program, s, s.keys.len() - 1, true));
     }
     if let Operation::Compact(c) = &program.stages[index].operation {
         return Ok(compact::emit_count(program, c));

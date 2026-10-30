@@ -17,7 +17,6 @@ impl<K:Ord+Copy> Edges<K>{
     pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.insert_when(*key,when.assume(&bounds::Clause::default(),true));}}
     pub fn contains(&self,key:&K)->bool{self.0.get(key).is_some_and(bounds::Condition::active)}
     pub fn is_empty(&self)->bool{self.0.is_empty()}
-    pub fn len(&self)->usize{self.0.len()}
     pub fn iter(&self)->std::collections::btree_map::Keys<'_,K,bounds::Condition>{self.0.keys()}
     pub fn entries(&self)->impl Iterator<Item=(&K,bounds::Clause)>{self.0.iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
     pub fn into_entries(self)->impl Iterator<Item=(K,bounds::Clause)>{self.0.into_iter().map(|(key,when)|(key,when.assume(&bounds::Clause::default(),true)))}
