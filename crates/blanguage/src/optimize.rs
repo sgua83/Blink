@@ -571,7 +571,7 @@ fn dce(
             _ => {
                 *needed = live_before(
                     std::slice::from_ref(&i),
-                    needed.clone(),
+                    std::mem::take(needed),
                     break_live,
                     continue_live,
                     exit_live,
