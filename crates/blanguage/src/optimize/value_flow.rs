@@ -29,10 +29,23 @@ impl Flow {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ExpressionKey {
+    Constant(Scalar, Bits),
+    Index,
+    Uniform(u32),
+    Unary(UnaryOp, Scalar, Reg),
+    Binary(BinaryOp, Reg, Reg),
+    Cast(Scalar, Reg),
+    Math(MathOp, Vec<Reg>),
+    Select(Reg, Reg, Reg),
+    Divide(IntegerDivisionOp, IntegerDivisor, Reg),
+}
+
 #[derive(Clone, Default)]
 struct Values {
     aliases: BTreeMap<Reg, Reg>,
-    expressions: BTreeMap<String, Reg>,
+    expressions: BTreeMap<ExpressionKey, Reg>,
     memory: BTreeMap<(usize, Reg, u32), Reg>,
     locals: BTreeMap<usize, Reg>,
 }
@@ -89,7 +102,7 @@ impl Values {
                 let mut quotient = None;
                 let mut remainder = None;
                 for (op, dst) in result.outputs() {
-                    let key = format!("divide{op:?}:{divisor:?}:{src}");
+                    let key = ExpressionKey::Divide(op, *divisor, *src);
                     if let Some(old) = self.expressions.get(&key) {
                         self.aliases.insert(dst, *old);
                     } else {
@@ -131,16 +144,16 @@ impl Values {
                 }
             }
             let key = match &inst {
-                Inst::Constant(dst, scalar, bits) => Some((format!("C{scalar:?}:{bits}"), *dst)),
-                Inst::Index(dst) => Some(("index".into(), *dst)),
-                Inst::Uniform(dst, offset) => Some((format!("U{offset}"), *dst)),
-                Inst::Unary { dst, op, a } => Some((format!("unary{op:?}:{:?}:{a}", registers[*dst]), *dst)),
-                Inst::Binary { dst, op, a, b } => Some((format!("binary{op:?}:{a}:{b}"), *dst)),
-                Inst::Cast { dst, src } => Some((format!("cast{:?}:{src}", registers[*dst]), *dst)),
-                Inst::Math { dst, op, args } => Some((format!("math{op:?}:{args:?}"), *dst)),
+                Inst::Constant(dst, scalar, bits) => Some((ExpressionKey::Constant(*scalar, *bits), *dst)),
+                Inst::Index(dst) => Some((ExpressionKey::Index, *dst)),
+                Inst::Uniform(dst, offset) => Some((ExpressionKey::Uniform(*offset), *dst)),
+                Inst::Unary { dst, op, a } => Some((ExpressionKey::Unary(*op, registers[*dst], *a), *dst)),
+                Inst::Binary { dst, op, a, b } => Some((ExpressionKey::Binary(*op, *a, *b), *dst)),
+                Inst::Cast { dst, src } => Some((ExpressionKey::Cast(registers[*dst], *src), *dst)),
+                Inst::Math { dst, op, args } => Some((ExpressionKey::Math(*op, args.clone()), *dst)),
                 Inst::Select {
                     dst, condition, a, b,
-                } => Some((format!("select{condition}:{a}:{b}"), *dst)),
+                } => Some((ExpressionKey::Select(*condition, *a, *b), *dst)),
                 _ => None,
             };
             if let Some((key, dst)) = key {

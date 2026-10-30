@@ -527,7 +527,7 @@ pub struct Uniform {
     pub ty: Ty,
     pub offset: u32,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Comparison {
     Equal,
     NotEqual,
@@ -536,7 +536,7 @@ pub enum Comparison {
     LessEqual,
     GreaterEqual,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UnaryOp {
     FloatNegate,
     SignedNegate,
@@ -545,7 +545,7 @@ pub enum UnaryOp {
     BitNot,
     Bitcast,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BinaryOp {
     FAdd,
     FSub,
@@ -615,7 +615,7 @@ pub enum IntegerDivisor {
     /// 当前控制域内已证明非零的整数 SSA 值；不得移出该证明成立的控制流。
     Value(Reg),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IntegerDivisionOp {
     Quotient,
     Remainder,
@@ -669,7 +669,7 @@ impl IntegerDivisionResult {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MathOp {
     Abs,
     Floor,
