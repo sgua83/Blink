@@ -22,12 +22,12 @@ impl Emitter<'_> {
             let empty = e.id();
             e.emit(170, &[b, empty, count, zero]);
             e.compact_when(empty, |e| {
-                let target = e.address_scalar(c.count, zero, 4, c.count_word);
+                let target = e.address_scalar(Scalar::U32, c.count, zero, 4, c.count_word);
                 e.emit(62, &[target, zero, 2, 4]);
             });
         });
         self.compact_when(active, |e| {
-            let flag = e.address_scalar(
+            let flag = e.address_scalar(Scalar::U32,
                 c.flags,
                 e.index,
                 e.program.buffers[c.flags].stride,
@@ -37,7 +37,7 @@ impl Emitter<'_> {
             e.emit(61, &[u, value, flag, 2, 4]);
             let keep = e.id();
             e.emit(171, &[b, keep, value, zero]);
-            let at = e.address_scalar(e.program.buffers.len(), e.index, 4, 0);
+            let at = e.address_scalar(Scalar::U32, e.program.buffers.len(), e.index, 4, 0);
             let prefix = e.id();
             e.emit(61, &[u, prefix, at, 2, 4]);
             e.compact_when(keep, |e| {
@@ -52,7 +52,7 @@ impl Emitter<'_> {
                 e.emit(169, &[u, chosen, keep, one, zero]);
                 let total = e.id();
                 e.emit(128, &[u, total, prefix, chosen]);
-                let target = e.address_scalar(c.count, zero, 4, c.count_word);
+                let target = e.address_scalar(Scalar::U32, c.count, zero, 4, c.count_word);
                 e.emit(62, &[target, total, 2, 4]);
             });
         });

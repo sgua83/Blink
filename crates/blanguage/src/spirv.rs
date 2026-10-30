@@ -217,15 +217,15 @@ impl Emitter<'_> {
             self.emit(130, &[i, self.value(dst), flipped, sign]);
         }
     }
-    fn address(&mut self, binding: usize, index: Reg, word: u32) -> u32 {
-        self.address_scalar(
+    fn address(&mut self, unit: Scalar, binding: usize, index: Reg, word: u32) -> u32 {
+        self.address_scalar(unit,
             binding,
             self.value(index),
             self.program.buffers[binding].stride,
             word,
         )
     }
-    fn address_scalar(&mut self, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
+    fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
         let (page, offset) = self.record_location(index, stride, word);
         let zero = self.constant(Scalar::U32, 0);
         let table = self.id();
@@ -235,7 +235,7 @@ impl Emitter<'_> {
         );
         let base = self.id();
         self.emit(61, &[self.u64_type, base, table]);
-        self.word_pointer(base, offset)
+        self.word_pointer(unit, base, offset)
     }
     // 记录页不拆分记录；原生复制完整字节布局，保留填充及 bool／浮点编码。
     fn copy_record(
@@ -248,19 +248,13 @@ impl Emitter<'_> {
         let stride = self.program.buffers[source_binding].stride;
         let align = self.program.buffers[source_binding].ty.align;
         let scalar = match align { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-        let length = self.constant(Scalar::U32, stride / scalar.size());
-        let ty = self.id();
-        op(&mut self.defs, 28, &[ty, self.types[&scalar], length]);
-        op(&mut self.decorations, 71, &[ty, 6, scalar.size()]);
-        let pointer = self.id();
-        op(&mut self.defs, 32, &[pointer, 5349, ty]);
-        let source = self.address_scalar(source_binding, source_index, stride, 0);
-        let target = self.address_scalar(target_binding, target_index, stride, 0);
-        let from = self.id();
-        let to = self.id();
-        self.emit(124, &[pointer, from, source]);
-        self.emit(124, &[pointer, to, target]);
-        self.emit(63, &[to, from, 2, align]);
+        for word in (0..stride).step_by(scalar.size() as usize) {
+            let source = self.address_scalar(scalar, source_binding, source_index, stride, word);
+            let target = self.address_scalar(scalar, target_binding, target_index, stride, word);
+            let value = self.id();
+            self.emit(61, &[self.types[&scalar], value, source, 2, scalar.size()]);
+            self.emit(62, &[target, value, 2, scalar.size()]);
+        }
     }
     fn record_location(&mut self, index: u32, stride: u32, word: u32) -> (u32, u32) {
         let capacity = self.constant(Scalar::U32, PAGE_BYTES / stride);
@@ -276,16 +270,16 @@ impl Emitter<'_> {
         self.emit(128, &[self.types[&Scalar::U32], at, scaled, offset]);
         (page, at)
     }
-    fn word_pointer(&mut self, base: u32, bytes: u32) -> u32 {
+    fn word_pointer(&mut self, unit: Scalar, base: u32, bytes: u32) -> u32 {
         let offset64 = self.id();
         self.emit(113, &[self.u64_type, offset64, bytes]);
         let address = self.id();
         self.emit(128, &[self.u64_type, address, base, offset64]);
         let ptr = self.id();
-        self.emit(120, &[self.physical_pointers[&Scalar::U32], ptr, address]);
+        self.emit(120, &[self.physical_pointers[&unit], ptr, address]);
         ptr
     }
-    fn view_address(&mut self, table: &[Reg; 2], index: Reg, stride: u32, word: u32) -> u32 {
+    fn view_address(&mut self, unit: Scalar, table: &[Reg; 2], index: Reg, stride: u32, word: u32) -> u32 {
         let low = self.id();
         let high = self.id();
         self.emit(113, &[self.u64_type, low, self.value(table[0])]);
@@ -307,24 +301,24 @@ impl Emitter<'_> {
         self.emit(120, &[self.physical_pointers[&Scalar::U64], pointer, entry]);
         let base = self.id();
         self.emit(61, &[self.u64_type, base, pointer, 2, 8]);
-        self.word_pointer(base, offset)
+        self.word_pointer(unit, base, offset)
     }
-    fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> u32 {
+    fn indexed_address(&mut self, unit: Scalar, source: &IndexedSource, offset: Reg, word: u32) -> u32 {
         if let IndexedSource::Tile { tile, index } = source {
             return self.tile_word_address(self.stage.shared_word(*tile, word), self.value(*index), Some(self.value(offset))).0;
         }
         let pointer = match source {
-            IndexedSource::Data { binding, index } => self.address(*binding, *index, word),
+            IndexedSource::Data { binding, index } => self.address(Scalar::U32, *binding, *index, word),
             IndexedSource::View {
                 address,
                 index,
                 stride,
-            } => self.view_address(address, *index, *stride, word),
+            } => self.view_address(Scalar::U32, address, *index, *stride, word),
             _ => unreachable!(),
         };
         let address = self.id();
         self.emit(117, &[self.u64_type, address, pointer]);
-        self.word_pointer(address, self.value(offset))
+        self.word_pointer(unit, address, self.value(offset))
     }
     fn block(
         &mut self,
@@ -421,7 +415,7 @@ impl Emitter<'_> {
                 Inst::ViewLoad { dst, address, index, stride, word } => {
                     let scalar = self.stage.registers[*dst];
                     let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.view_address(address, *index, *stride, *word + part * 4)).collect();
+                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.view_address(unit, address, *index, *stride, *word + part * 4)).collect();
                     let raw = self.load_raw(scalar, unit, &pointers, true);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
@@ -434,7 +428,7 @@ impl Emitter<'_> {
                         self.tile_read(scalar, *tile, self.value(*index), *word, Some(self.value(*offset)))
                     } else {
                         let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-                        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(source, *offset, *word + part * 4)).collect();
+                        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(unit, source, *offset, *word + part * 4)).collect();
                         self.load_raw(scalar, unit, &pointers, true)
                     };
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
@@ -442,7 +436,7 @@ impl Emitter<'_> {
                 Inst::StoreIndexed { source, offset, word, value } => {
                     let scalar = self.stage.registers[*value];
                     let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(source, *offset, *word + part * 4)).collect();
+                    let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(unit, source, *offset, *word + part * 4)).collect();
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
                     self.store_raw(scalar, unit, &pointers, raw, true);
                 }
@@ -916,14 +910,8 @@ impl Emitter<'_> {
     }
     fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], physical: bool) -> u32 {
         let words: Vec<_> = pointers.iter().map(|pointer| {
-            let mut pointer = *pointer;
-            if physical && unit != Scalar::U32 {
-                let typed = self.id();
-                self.emit(124, &[self.physical_pointers[&unit], typed, pointer]);
-                pointer = typed;
-            }
             let raw = self.id();
-            let mut args = vec![self.types[&unit], raw, pointer];
+            let mut args = vec![self.types[&unit], raw, *pointer];
             if physical { args.extend([2, unit.size()]); }
             self.emit(61, &args);
             raw
@@ -932,24 +920,20 @@ impl Emitter<'_> {
     }
     fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {
         for (pointer, word) in pointers.iter().zip(self.split_words(scalar, value, unit)) {
-            let mut pointer = *pointer;
-            if physical && unit != Scalar::U32 {
-                let typed = self.id();
-                self.emit(124, &[self.physical_pointers[&unit], typed, pointer]);
-                pointer = typed;
-            }
-            let mut args = vec![pointer, word];
+            let mut args = vec![*pointer, word];
             if physical { args.extend([2, unit.size()]); }
             self.emit(62, &args);
         }
     }
     fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
-        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(binding, index, stride, word + part * 4)).collect();
-        self.load_raw(scalar, Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 }), &pointers, true)
+        let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
+        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, stride, word + part * 4)).collect();
+        self.load_raw(scalar, unit, &pointers, true)
     }
     fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32, value: u32) {
-        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(binding, index, stride, word + part * 4)).collect();
-        self.store_raw(scalar, Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 }), &pointers, value, true);
+        let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
+        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, stride, word + part * 4)).collect();
+        self.store_raw(scalar, unit, &pointers, value, true);
     }
     fn ray(
         &mut self,
@@ -1951,7 +1935,7 @@ pub fn emit_pass(
             e.emit(250, &[active, execute, end]);
             e.emit(248, &[execute]);
             if stage.selection.is_some() {
-                let at = e.address_scalar(program.buffers.len(), e.index, 4, 0);
+                let at = e.address_scalar(Scalar::U32, program.buffers.len(), e.index, 4, 0);
                 let original = e.id();
                 e.emit(61, &[u, original, at, 2, 4]);
                 e.index = original;

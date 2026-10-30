@@ -28,7 +28,7 @@ impl Emitter<'_> {
     }
     fn segment_address(&mut self, scan: &Segment<'_>, binding: usize, index: u32) -> Vec<u32> {
         (0..scan.summary_words() as u32)
-            .map(|word| self.address_scalar(binding, index, scan.summary_words() as u32 * 4, word * 4))
+            .map(|word| self.address_scalar(Scalar::U32, binding, index, scan.summary_words() as u32 * 4, word * 4))
             .collect()
     }
     fn segment_node(
@@ -69,7 +69,7 @@ impl Emitter<'_> {
                 words[(offset / 4) as usize + part] = word;
             }
         }
-        let at=self.address_scalar(fields.source,self.index,stride,head_word);
+        let at=self.address_scalar(Scalar::U32, fields.source,self.index,stride,head_word);
         words[k]=self.segment_read(&[at])[0];
         words
     }
@@ -207,7 +207,7 @@ impl Emitter<'_> {
             self.emit(247, &[saved, 0]);
             self.emit(250, &[empty_last, save, saved]);
             self.emit(248, &[save]);
-            let first = self.address_scalar(
+            let first = self.address_scalar(Scalar::U32,
                 self.program.buffers.len(),
                 group,
                 scan.summary_words() as u32 * 4,
@@ -243,7 +243,7 @@ impl Emitter<'_> {
             self.emit(247, &[finish, 0]);
             self.emit(250, &[is_first, first, finish]);
             self.emit(248, &[first]);
-            let target = self.address_scalar(
+            let target = self.address_scalar(Scalar::U32,
                 self.program.buffers.len(),
                 group,
                 scan.summary_words() as u32 * 4,
@@ -368,7 +368,7 @@ impl Emitter<'_> {
             self.emit(247, &[end_empty, 0]);
             self.emit(250, &[empty, write_empty, end_empty]);
             self.emit(248, &[write_empty]);
-            let target = self.address_scalar(
+            let target = self.address_scalar(Scalar::U32,
                 reduction.count.binding,
                 zero,
                 self.program.buffers[reduction.count.binding].stride,
@@ -434,7 +434,7 @@ impl Emitter<'_> {
             self.emit(247, &[looked, 0]);
             self.emit(250, &[last, looked, look]);
             self.emit(248, &[look]);
-            let next_head = self.address_scalar(
+            let next_head = self.address_scalar(Scalar::U32,
                 r.source,
                 next,
                 self.program.buffers[r.source].stride,
@@ -467,7 +467,7 @@ impl Emitter<'_> {
             self.emit(247, &[counted, 0]);
             self.emit(250, &[last, emit_count, counted]);
             self.emit(248, &[emit_count]);
-            let target = self.address_scalar(
+            let target = self.address_scalar(Scalar::U32,
                 reduction.count.binding,
                 zero,
                 self.program.buffers[reduction.count.binding].stride,
@@ -582,7 +582,7 @@ impl Emitter<'_> {
         let local = self.id();
         self.emit(134, &[u, group, self.index, width]);
         self.emit(137, &[u, local, self.index, width]);
-        let first = self.address_scalar(
+        let first = self.address_scalar(Scalar::U32,
             self.program.buffers.len(),
             group,
             scan.summary_words() as u32 * 4,

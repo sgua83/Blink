@@ -18,7 +18,7 @@ impl Emitter<'_> {
         self.emit(342, &[u, rank, subgroup, 2, ballot]);
         let leader = self.id();
         self.emit(333, &[b, leader, subgroup]);
-        let counter = self.address_scalar(
+        let counter = self.address_scalar(Scalar::U32,
             a.count.binding,
             zero,
             self.program.buffers[a.count.binding].stride,

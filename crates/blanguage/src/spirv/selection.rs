@@ -15,8 +15,8 @@ impl Emitter<'_> {
         let u = self.types[&Scalar::U32];
         let zero = self.constant(Scalar::U32, 0);
         let one = self.constant(Scalar::U32, 1);
-        let at_x = self.address_scalar(self.program.indirect_buffer(), zero, 4, 0);
-        let at_y = self.address_scalar(self.program.indirect_buffer(), one, 4, 0);
+        let at_x = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), zero, 4, 0);
+        let at_y = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), one, 4, 0);
         let max_x = self.id();
         let max_y = self.id();
         self.emit(61, &[u, max_x, at_x, 2, 4]);
@@ -29,7 +29,7 @@ impl Emitter<'_> {
         let z = self.prefix_ceil(rows, max_y);
         for (word, value) in [x, y, z, count].into_iter().enumerate() {
             let index = self.constant(Scalar::U32, (PREFIX_LEVELS * 4 + word) as u32);
-            let target = self.address_scalar(self.program.indirect_buffer(), index, 4, 0);
+            let target = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), index, 4, 0);
             self.emit(62, &[target, value, 2, 4]);
         }
     }
@@ -46,7 +46,7 @@ impl Emitter<'_> {
             e.selection_when(empty, |e| e.selection_arguments(zero));
         });
         self.selection_when(active, |e| {
-            let flag = e.address_scalar(
+            let flag = e.address_scalar(Scalar::U32,
                 selection.binding,
                 e.index,
                 e.program.buffers[selection.binding].stride,
@@ -56,11 +56,11 @@ impl Emitter<'_> {
             e.emit(61, &[u, value, flag, 2, 4]);
             let keep = e.id();
             e.emit(171, &[b, keep, value, zero]);
-            let at = e.address_scalar(e.program.selection_buffer(), e.index, 4, 0);
+            let at = e.address_scalar(Scalar::U32, e.program.selection_buffer(), e.index, 4, 0);
             let prefix = e.id();
             e.emit(61, &[u, prefix, at, 2, 4]);
             e.selection_when(keep, |e| {
-                let target = e.address_scalar(e.program.buffers.len(), prefix, 4, 0);
+                let target = e.address_scalar(Scalar::U32, e.program.buffers.len(), prefix, 4, 0);
                 e.emit(62, &[target, e.index, 2, 4]);
             });
             let next = e.id();

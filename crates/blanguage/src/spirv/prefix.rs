@@ -44,7 +44,7 @@ impl Emitter<'_> {
         self.emit(247, &[end, 0]);
         self.emit(250, &[first, run, end]);
         self.emit(248, &[run]);
-        let source = self.address_scalar(
+        let source = self.address_scalar(Scalar::U32,
             prefix.binding,
             zero,
             self.program.buffers[prefix.binding].stride,
@@ -107,7 +107,7 @@ impl Emitter<'_> {
                         Scalar::U32,
                         ((series * PREFIX_LEVELS + level) * 4 + word) as u32,
                     );
-                    let target = self.address_scalar(self.program.indirect_buffer(), index, 4, 0);
+                    let target = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), index, 4, 0);
                     self.emit(62, &[target, value, 2, 4]);
                 }
                 count = groups;
@@ -162,7 +162,7 @@ impl Emitter<'_> {
         let base = self.prefix_push(1);
         let word = self.id();
         self.emit(128, &[u, word, base, three]);
-        let source = self.address_scalar(self.program.indirect_buffer(), word, 4, 0);
+        let source = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), word, 4, 0);
         let count = self.id();
         self.emit(61, &[u, count, source, 2, 4]);
         let count64 = self.id();

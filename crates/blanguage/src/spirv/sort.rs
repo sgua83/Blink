@@ -17,7 +17,7 @@ impl Emitter<'_> {
         v
     }
     fn sort_store(&mut self, binding: usize, index: u32, stride: u32, word: u32, value: u32) {
-        let at = self.address_scalar(binding, index, stride, word);
+        let at = self.address_scalar(Scalar::U32, binding, index, stride, word);
         self.emit(62, &[at, value, 2, 4]);
     }
     pub(super) fn sort_initialize(
@@ -35,7 +35,7 @@ impl Emitter<'_> {
             };
             let scalar = s.keys[key_index].1;
             let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-            let at = e.address_scalar(s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0);
+            let at = e.address_scalar(unit, s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0);
             let key = e.load_raw(Scalar::U32, unit, &[at], true);
             let bias = scalar.order_bias() as u32;
             let key = if scalar.is_float() {

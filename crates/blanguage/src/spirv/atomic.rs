@@ -15,9 +15,9 @@ impl Emitter<'_> {
         let (mut pointer, scope, memory) = match atomic.target {
             AtomicTarget::Dataset(binding) => {
                 let at = if let Some(offset) = atomic.offset {
-                    self.indexed_address(&IndexedSource::Data { binding, index: atomic.index }, offset, atomic.word)
+                    self.indexed_address(Scalar::U32, &IndexedSource::Data { binding, index: atomic.index }, offset, atomic.word)
                 } else {
-                    self.address(binding, atomic.index, atomic.word)
+                    self.address(Scalar::U32, binding, atomic.index, atomic.word)
                 };
                 (at, 1, 0x40)
             }
