@@ -133,9 +133,7 @@ impl Dataset {
     }
     pub(crate) fn with_type(ty: Ty, count: u32) -> Result<Self> {
         let stride = blanguage::ir::align_up(ty.size, ty.align);
-        let bytes = (stride as usize)
-            .checked_mul(count as usize)
-            .ok_or_else(|| error("数据集长度溢出"))?;
+        let bytes = stride as usize * count as usize;
         let mut words = Vec::new();
         words.try_reserve_exact(bytes.div_ceil(4))?;
         words.resize(bytes.div_ceil(4), 0);

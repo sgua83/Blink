@@ -155,7 +155,7 @@ impl Frame {
             return Err(error("冻结的 CPU 存储不能调整长度"));
         };
         let stride = data.stride as usize;
-        let words = stride.checked_mul(count as usize).ok_or_else(|| error("数据集长度溢出"))?.div_ceil(4);
+        let words = (stride * count as usize).div_ceil(4);
         if words > data.words.len() { data.words.try_reserve(words - data.words.len())?; }
         data.words.resize(words, 0);
         for row in data.count..count {
