@@ -213,24 +213,26 @@ impl Stage {
                 }
             }
         }
-        let phases = self.tile_phases();
         let mut last = BTreeMap::new();
         let mut births = BTreeMap::new();
         let mut groups = Vec::new();
-        for (phase, p) in phases.iter().enumerate() {
-            loads(self, p.code, phase as i64, &mut last, &mut groups);
-            match p.step {
-                Some(TileStep::Publish(publication)) => {
+        let mut phase = 0usize;
+        for inst in &self.code {
+            match inst {
+                Inst::TilePublish(publication) => {
                     births.insert(publication.tile, phase as i64);
+                    phase += 1;
                 }
-                Some(TileStep::Collective(c)) => {
+                Inst::TileCollective(c) => {
                     for (word, result) in &c.results {
                         for part in 0..self.registers[*result].size().div_ceil(4) {
                             last.insert(self.shared_word(c.tile, *word + part * 4).aligned(), phase as i64);
                         }
                     }
+                    phase += 1;
                 }
-                Some(TileStep::Barrier) | None => {}
+                Inst::TileBarrier => phase += 1,
+                _ => loads(self, std::slice::from_ref(inst), phase as i64, &mut last, &mut groups),
             }
         }
         let mut words: Vec<_> = last
