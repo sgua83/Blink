@@ -289,10 +289,11 @@ impl Proof {
                 .map(|d| output_domain(*d, bindings))
                 .collect();
         }
-        for condition in proof.conditions.iter_mut().flatten() {
-            for case in &mut condition.cases {
-                *case = case.output_bound(bindings);
-            }
+        let cases = proof.conditions.iter_mut().flatten()
+            .flat_map(|condition| condition.cases.iter_mut()).collect::<Vec<_>>();
+        let roots = cases.iter().map(|case| (**case).clone()).collect::<Vec<_>>();
+        for (case, bound) in cases.into_iter().zip(Clause::output_bounds(&roots, bindings)) {
+            *case = bound;
         }
         proof
     }
@@ -1333,12 +1334,32 @@ impl Clause {
         values.remove(&self.key()).unwrap()
     }
     pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
+        Self::output_bounds(std::slice::from_ref(self), bindings).pop().unwrap()
+    }
+    // One renaming owns all source roots and preserves shared condition identity.
+    fn output_bounds(roots: &[Self], bindings: &OutputBindings) -> Vec<Self> {
         if bindings.is_empty() {
-            return self.clone();
+            return roots.to_vec();
         }
         let identity = |id| output_identity(id, bindings);
         let mut clauses: BTreeMap<usize, Clause> = BTreeMap::new();
-        for clause in Self::ordered(std::slice::from_ref(self)) {
+        let mut conditions: BTreeMap<usize, Arc<Condition>> = BTreeMap::new();
+        let mut pending=roots.iter().rev().map(|root|(root,false)).collect::<Vec<_>>();
+        while let Some((clause,ready))=pending.pop(){
+            if clauses.contains_key(&clause.key()){continue;}
+            if !ready {
+                match &*clause.0 {
+                    ClauseNode::Both(a,b)|ClauseNode::Either(a,b)=>{
+                        pending.extend([(clause,true),(b,false),(a,false)]);
+                        continue;
+                    }
+                    ClauseNode::Branch(parent,condition,_)=>{
+                        pending.extend([(clause,true),(&condition.cases[1],false),(&condition.cases[0],false),(parent,false)]);
+                        continue;
+                    }
+                    _=>{}
+                }
+            }
             let next = match &*clause.0 {
                 ClauseNode::Impossible => clause.clone(),
                 ClauseNode::Facts(facts) => {
@@ -1376,20 +1397,21 @@ impl Clause {
                 ClauseNode::Both(a, b) => Self::both(&clauses[&a.key()], &clauses[&b.key()]),
                 ClauseNode::Either(a, b) => Self::either(&clauses[&a.key()], &clauses[&b.key()]),
                 ClauseNode::Branch(parent, condition, truth) => {
-                    let case = &condition.cases[usize::from(*truth)];
-                    let next_parent = &clauses[&parent.key()];
-                    let next_case = &clauses[&case.key()];
-                    if Arc::ptr_eq(&next_parent.0, &parent.0) && Arc::ptr_eq(&next_case.0, &case.0)
-                    {
+                    let next_parent=&clauses[&parent.key()];
+                    let next_condition=conditions.entry(Arc::as_ptr(condition) as usize).or_insert_with(||{
+                        let cases=std::array::from_fn(|i|clauses[&condition.cases[i].key()].clone());
+                        if (0..2).all(|i|Arc::ptr_eq(&cases[i].0,&condition.cases[i].0)){
+                            condition.clone()
+                        }else{Arc::new(Condition{cases})}
+                    });
+                    if Arc::ptr_eq(&next_parent.0,&parent.0)&&Arc::ptr_eq(next_condition,condition){
                         clause.clone()
-                    } else {
-                        Self::both(next_parent, next_case)
-                    }
+                    }else{Self::branch(next_parent,next_condition,*truth)}
                 }
             };
             clauses.insert(clause.key(), next);
         }
-        clauses.remove(&self.key()).unwrap()
+        roots.iter().map(|root| clauses[&root.key()].clone()).collect()
     }
     fn selection(index: ownership::ApplicationIndex, element: usize) -> Self {
         match index {
@@ -2000,7 +2022,10 @@ impl Condition {
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
         Proof::condition(self.clone()).at_call(bindings).component_condition(0).unwrap().clone()
     }
-    pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{Self{cases:self.cases.each_ref().map(|case|case.output_bound(bindings))}}
+    pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
+        let cases=Clause::output_bounds(&self.cases,bindings);
+        Self{cases:std::array::from_fn(|i|cases[i].clone())}
+    }
     pub(super) fn assume(&self,path:&Clause,truth:bool)->Clause{Clause::both(path,&self.cases[usize::from(truth)])}
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
@@ -2065,11 +2090,12 @@ impl Condition {
         self
     }
     fn branch(c: Self, a: Self, b: Self) -> Self {
+        let condition=Arc::new(c);
         Self {
             cases: std::array::from_fn(|truth| {
                 Clause::either(
-                    &Clause::both(&c.cases[1], &a.cases[truth]),
-                    &Clause::both(&c.cases[0], &b.cases[truth]),
+                    &Clause::branch(&a.cases[truth], &condition, true),
+                    &Clause::branch(&b.cases[truth], &condition, false),
                 )
             }),
         }
@@ -3072,23 +3098,31 @@ impl Builder<'_> {
             let Some((a,_,place))=binding.proof_storage()else{continue};
             let Some((b,_,_))=other.get_mut(name).and_then(Binding::proof_storage)else{continue};
             let ty=place.ty();let width=ty.components.len();
-            if (0..width).all(|i|a.known_identity(i).zip(b.known_identity(i)).is_some_and(|(a,b)|a==b)){continue;}
-            let regs=ty.components.iter().map(|(scalar,_)|{let reg=self.registers.len();self.registers.push(*scalar);reg}).collect::<Vec<_>>();
+            // Stable fields retain their value identity; snapshot only actual fact changes.
+            let components=Proof::fact_components(ty).filter(|&i|
+                !a.known_identity(i).zip(b.known_identity(i)).is_some_and(|(a,b)|a==b)
+            ).collect::<Vec<_>>();
+            if components.is_empty(){continue;}
+            let regs=components.iter().map(|&i|{let reg=self.registers.len();self.registers.push(ty.components[i].0);reg}).collect::<Vec<_>>();
             for((proof,alias),names)in [a,b].into_iter().zip(&mut aliases).zip(&mut names){
-                proof.output_bindings(&regs,0,names);
-                *alias=bounds::Clause::both(alias,&proof.output_aliases(&regs,&self.registers,&bindings));
-                proof.bind_outputs(ty,Some(&regs),&bindings,&bounds::Clause::default());
+                let selected=proof.project(&components,width);
+                selected.output_bindings(&regs,0,names);
+                *alias=bounds::Clause::both(alias,&selected.output_aliases(&regs,&self.registers,&bindings));
+                proof.origins.resize_with(width,Vec::new);
+                for(&component,&reg)in components.iter().zip(&regs){proof.origins[component].push(ValueIdentity::Register(reg));}
             }
         }
-        for(alias,names)in aliases.iter_mut().zip(&names){*alias=bounds::Clause::both(alias,&alias.output_bound(names));}
-        for(environment,names)in [&mut self.env,&mut *other].into_iter().zip(&names){
-            for binding in environment.values_mut(){
-                let proof=match binding{
-                    Binding::Value(value)=>&mut value.proof,
-                    binding=>{let Some((proof,_,_))=binding.proof_storage()else{continue};proof},
-                };
-                for condition in proof.conditions.iter_mut().flatten(){**condition=condition.output_bound(names);}
-            }
+        for((environment,names),alias)in [&mut self.env,&mut *other].into_iter().zip(&names).zip(&mut aliases){
+            let cases=environment.values_mut().filter_map(|binding|match binding{
+                Binding::Value(value)=>Some(&mut value.proof),
+                binding=>binding.proof_storage().map(|(proof,_,_)|proof),
+            }).flat_map(|proof|proof.conditions.iter_mut().flatten())
+                .flat_map(|condition|condition.cases.iter_mut()).collect::<Vec<_>>();
+            // Keep all source roots alive while the shared graph is renamed once.
+            let roots=std::iter::once(alias.clone()).chain(cases.iter().map(|case|(**case).clone())).collect::<Vec<_>>();
+            let bound=bounds::Clause::output_bounds(&roots,names);
+            *alias=bounds::Clause::both(alias,&bound[0]);
+            for(case,bound)in cases.into_iter().zip(bound.into_iter().skip(1)){*case=bound;}
         }
         let choice=when.condition();
         if !bounds::Condition::paths(aliases[0].clone(),aliases[1].clone()).unconstrained(){
