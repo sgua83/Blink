@@ -235,7 +235,7 @@ impl Values {
                     self.locals.retain(|slot, _| !written.contains(slot));
                     let after = self.local_values();
                     self.memory.clear();
-                    let mut cycle = self.clone();
+                    let mut cycle = Self { locals: std::mem::take(&mut self.locals), ..self.clone() };
                     let condition_flow = cycle.block(condition, registers);
                     *test = cycle.root(*test);
                     let mut loop_flow = Flow {
