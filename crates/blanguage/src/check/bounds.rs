@@ -3006,7 +3006,9 @@ impl Builder<'_> {
         let environment = environment_facts(&self.env);
         let mut consumers = self.env.values_mut().filter(|binding| match binding {
             Binding::Value(value) => Proof::fact_components(&value.ty).next().is_some(),
-            Binding::Owned(_) | Binding::OwnedValue(_) | Binding::Data(_)
+            Binding::Owned(owner) => matches!(owner.place.storage(), Place::ApplicationElement { .. })
+                || Proof::fact_components(owner.place.ty()).next().is_some(),
+            Binding::OwnedValue(_) | Binding::Data(_)
             | Binding::ApplicationData(_) | Binding::Tile(_) => true,
             _ => false,
         });
