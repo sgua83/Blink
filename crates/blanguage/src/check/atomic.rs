@@ -31,8 +31,8 @@ impl Builder<'_> {
             return Ok(None);
         };
         let ty = place.ty();
-        if *ty != Ty::scalar(Scalar::U32) && *ty != Ty::scalar(Scalar::I32) {
-            return self.fail(target.span, "B215", "原子目标只支持 u32/i32 标量字段");
+        if ![Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64].into_iter().any(|s| *ty == Ty::scalar(s)) {
+            return self.fail(target.span, "B215", "原子目标只支持 u32/i32/u64/i64 标量字段");
         }
         let scalar = ty.components[0].0;
         let (base, offset, word) = match &place {
@@ -58,6 +58,9 @@ impl Builder<'_> {
             }
             _ => unreachable!(),
         };
+        if scalar.size() == 8 && matches!(location, Some((AtomicTarget::Tile(_), ..))) {
+            return self.fail(target.span, "B215", "64位tile原子尚未实现");
+        }
         Ok(Some((location, scalar)))
     }
     fn atomic_order(&self, expr: &Expr) -> Result<MemoryOrder> {
@@ -112,6 +115,7 @@ impl Builder<'_> {
         if let Some((target, index, offset, word)) = location {
             self.atomic_effect(Atomic {
                 result: None,
+                scalar,
                 target,
                 index,
                 word,
@@ -206,6 +210,7 @@ impl Builder<'_> {
         if let Some((target, index, offset, word)) = location {
             self.atomic_effect(Atomic {
                 result: Some(result),
+                scalar,
                 target,
                 index,
                 word,

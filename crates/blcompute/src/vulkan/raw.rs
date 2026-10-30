@@ -44,6 +44,13 @@ pub struct VkPhysicalDevice16BitStorageFeatures {
     pub storageInputOutput16: u32,
 }
 #[repr(C)]
+pub struct VkPhysicalDeviceShaderAtomicInt64Features {
+    pub sType: u32,
+    pub pNext: *mut c_void,
+    pub shaderBufferInt64Atomics: u32,
+    pub shaderSharedInt64Atomics: u32,
+}
+#[repr(C)]
 pub struct VkPhysicalDeviceShaderFloat16Int8Features {
     pub sType: u32,
     pub pNext: *mut c_void,

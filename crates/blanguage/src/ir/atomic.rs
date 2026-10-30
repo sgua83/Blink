@@ -85,6 +85,7 @@ impl AtomicOp {
 #[derive(Clone, Debug)]
 pub struct Atomic {
     pub result: Option<Reg>,
+    pub scalar: Scalar,
     pub target: AtomicTarget,
     pub index: Reg,
     pub word: u32,
@@ -96,4 +97,18 @@ pub struct Atomic {
 pub enum AtomicTarget {
     Dataset(usize),
     Tile(usize),
+}
+impl Stage {
+    pub(crate) fn requires_atomic64(&self) -> bool {
+        fn uses(code: &[Inst]) -> bool {
+            code.iter().any(|inst| match inst {
+                Inst::Atomic(a) => a.scalar.size() == 8,
+                Inst::Scope(body) => uses(body),
+                Inst::If { yes, no, .. } => uses(yes) || uses(no),
+                Inst::Loop { condition, body, .. } => uses(condition) || uses(body),
+                _ => false,
+            })
+        }
+        uses(&self.code)
+    }
 }

@@ -211,7 +211,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query, float64, integer8, integer16,
+    ray_query, float64, integer8, integer16, atomic64,
     sorting,
     maximal_reconvergence,
     texture_indexing,

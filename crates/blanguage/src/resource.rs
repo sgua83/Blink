@@ -3,7 +3,7 @@ use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variant
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x08\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x09\0\0\0";
 pub const F32: u32 = 0;
 pub const U32: u32 = 1;
 pub const I32: u32 = 2;
@@ -177,7 +177,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query, float64, integer8, integer16,
+    ray_query, float64, integer8, integer16, atomic64,
     sorting,
     maximal_reconvergence,
     texture_indexing,

@@ -1235,6 +1235,7 @@ pub fn emit_pass(
     let mut prelude = Vec::new();
     op(&mut prelude, 17, &[1]);
     op(&mut prelude, 17, &[11]);
+    if stage.requires_atomic64() { op(&mut prelude, 17, &[12]); }
     op(&mut prelude, 17, &[5347]);
     let float64 = program.requirements().float64;
     if float64 { op(&mut prelude, 17, &[10]); }

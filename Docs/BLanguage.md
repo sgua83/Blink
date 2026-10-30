@@ -38,7 +38,7 @@ Windows x64普通调用和外部C声明按真实double／Rust f64签名交接。
 
 GPU的f64值需要实际shaderFloat64；64位subgroup还需shaderSubgroupExtendedTypes。相应运算按64位声明DenormPreserve与SignedZeroInfNanPreserve，设备查询、启用和装入在原Vulkan所有者内完成。不具备所需能力的目标明确拒绝，不隐式降为f32、改选设备或交给CPU。SDK调用者可以显式选择真实物理设备；C算法绑定现有backend选择与默认设备规则保持。
 
-CPU数学直接使用平台C ABI的f64函数。GPU当前直接支持标准允许64位的abs、floor、sqrt、min／max和既有数值集合／subgroup运算；Sin、Cos、Pow、Exp、Exp2、Log、Log2的GLSL.std.450指令不接受64位浮点，尚未实现的GPU f64超越函数明确报错。该限制不构成永久语言边界，也不表示全部输入上的严格浮点精度策略、64位原子或所有64位平台已完成。
+CPU数学直接使用平台C ABI的f64函数。GPU当前直接支持标准允许64位的abs、floor、sqrt、min／max和既有数值集合／subgroup运算；Sin、Cos、Pow、Exp、Exp2、Log、Log2的GLSL.std.450指令不接受64位浮点，尚未实现的GPU f64超越函数明确报错。该限制不构成永久语言边界，也不表示全部输入上的严格浮点精度策略、64位tile／全局原子或所有64位平台已完成。
 
 源码、Release、实际CPU／GPU、ABI、提交／发布和BLEngine采用分别按双台账记录；BLJson::Number(f64)所需的基础数值能力不等同于字符串、递归容器或JSON实现已经迁移。
 
@@ -627,13 +627,13 @@ CPU普通位置的跨对象借用现按逻辑分量／声明布局直接交接�
 
 ## 已编译模块的资源ABI
 
-当前B对象元数据为 **BLCO21**，模块资源C ABI与执行映像为 **BLRI8**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。
+当前B对象元数据为 **BLCO21**，模块资源C ABI与执行映像为 **BLRI9**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。
 
 独立模块工厂只返回C布局的静态字节描述；非根包装只调用共同分配／执行入口，Frame是不透明指针，仅由根运行库解释和释放。工厂字节保存编译后的类型、执行布局、CPU机器码／重定位及SPIR-V，create解码到原Frame，不重读B源码、运行值IR或重新编译。调用者不释放静态工厂字节，不跨模块传递Rust Vec／Box的私有表示。
 
 普通uniform沿逻辑分量传入。模块资源共同执行入口的每个逻辑标量项使用16字节、对齐8的Value：u32标签在偏移0，最大8字节union载荷在偏移8。标签0至10依次为f32、u32、i32、bool、u64、i64、f64、u8、i8、u16、i16；u8／i8／bool的活动载荷仅1字节，u16／i16仅2字节，u32／i32／f32为4字节，u64／i64／f64为8字节。bool活动字节为0／1，B普通bool的4字节布局保持；填充及非活动union字节不是值。现有[Value源码](../crates/blcompute/src/lib.rs)使用`#[repr(C,u32)]`，布局依据[Rust枚举C表示规则](https://doc.rust-lang.org/reference/type-layout.html#layout.repr.primitive-c)。生成包装保留原参数调用约定，并将这些值在栈上交给共同运行库，根直接借用到本次同步完成。类型／程序基址仍由链接器静态绑定，同一Frame的句柄、拥有关系、显式upload／download与实际CPU／GPU完成规则保持；此表示不是可跨任意Frame使用的通用资源句柄。
 
-资源ABI身份只随真实C签名、标量和映像编码／含义变化。无关编译器修改、Rust工具链或私有Frame布局变化不要求重编资源模块；实际ABI不匹配仍由原链接／资源入口拒绝。BLRI7资源提供者不能与BLRI8根运行库混用，相关资源产物须重编；BLCO21无资源普通对象不因这次资源映像变化失效。函数合同、外层对象格式及真实目标平台要求继续生效，不由资源版本替代。二进制编码、静态字节与Frame生命周期见Architecture的“模块资源C ABI与已编译映像”。
+资源ABI身份只随真实C签名、标量和映像编码／含义变化。无关编译器修改、Rust工具链或私有Frame布局变化不要求重编资源模块；实际ABI不匹配仍由原链接／资源入口拒绝。BLRI8及更早资源提供者不能与BLRI9根运行库混用，相关资源产物须重编；BLCO21无资源普通对象不因这次资源映像变化失效。函数合同、外层对象格式及真实目标平台要求继续生效，不由资源版本替代。二进制编码、静态字节与Frame生命周期见Architecture的“模块资源C ABI与已编译映像”。
 
 现有公开算法DLL及C/C++／Rust包装仍用原create／run／destroy接口。上述边界不代表完整版本演化、一般借用返回／资源阶段、任意迁移、跨机或稳定热更新完成；实际实现、Release和原生范围见Issues。
 
@@ -743,7 +743,7 @@ u32 main() on cpu;
 | read dataset | 共享读取；不能写入，也不能在调用时提升为 inout |
 | write dataset | 本作用域输入旧内容不可读；实际初始化字段可读，完整域和字段完成后可转借read／inout |
 | inout dataset | 计算函数 中读写当前独占元素；CPU 应用可将整份已初始化存储独占借给普通 CPU 函数 |
-| atomic dataset | 通过显式 u32/i32 原子操作共享修改；普通元素读写被拒绝 |
+| atomic dataset | 通过显式u32／i32／u64／i64原子操作共享修改；普通元素读写被拒绝 |
 | tile_atomic／atomic tile<T> | 同一逻辑块内的原子共享值及协作借用；不产生全局散写权限 |
 | tile_barrier() | 根块内整块同步；分支、循环、普通值函数内拒绝 |
 | clear_prefix／append | 建立空输出前缀并有界接纳完整记录；不开放裸票号或任意散写 |
@@ -935,7 +935,7 @@ void step(inout dataset<BLBody> bodies, f32 dt) on compute {
 
 该调用推导 T=float3；同一 advance 函数也能用于 f32、float2 和 float4。类型名 T 可用于返回、参数、无初值局部和普通局部类型，也可写 `T(0)` 等构造，复用具体类型原有的显式转换／分量构造语义。多类型参数写作 `T f<T: numeric, I: scalar_integer>(T value, I flag)`，分别从实际参数推导。
 
-数值泛型保留已有资源权限、形状、索引、requires、输出完整性和借用别名规则。只读／原子 dataset、不可变 view、独占／原子字段及 cooperative tile 都绑定原实际来源。块内宽度仍从调用方继承，泛型不引入第二份存储或隐式屏障。当前原子算子只接受u32／i32标量，应声明只含这两个成员的有限类型集合；scalar_integer已含u64／i64，不能据此宣称64位原子可用。把T约束到仍含不支持成员的numeric或scalar_integer，不是完整有效的原子接口。归约／扫描值函数也可为数值泛型；无元素参数的单位元可以通过 `bind(identity, uint3(0))` 等统一普通值参数推导，也可声明没有元素参数的 identity<T>()，但普通调用必须显式指定类型；集合回调可使用显式泛型函数引用，现有 bind 继续表达真实的统一普通值参数；详见“静态泛型算法参数”。
+数值泛型保留已有资源权限、形状、索引、requires、输出完整性和借用别名规则。只读／原子 dataset、不可变 view、独占／原子字段及 cooperative tile 都绑定原实际来源。块内宽度仍从调用方继承，泛型不引入第二份存储或隐式屏障。dataset原子接受u32／i32／u64／i64，tile仍只接受u32／i32；泛型接口须声明目标实际支持的有限类型集合。把T约束到仍含不支持成员的numeric或scalar_integer，不是完整有效的原子接口。归约／扫描值函数也可为数值泛型；无元素参数的单位元可以通过 `bind(identity, uint3(0))` 等统一普通值参数推导，也可声明没有元素参数的 identity<T>()，但普通调用必须显式指定类型；集合回调可使用显式泛型函数引用，现有 bind 继续表达真实的统一普通值参数；详见“静态泛型算法参数”。
 
 编译器在模块加载后从原声明生成每个泛型的所有允许类型组合，按原入口检查函数体；即使某种类型未被 计算函数 调用，也必须合法。例如 `T f<T: numeric>(T x) { return sqrt(x); }` 在整数实例上报 B154，应把约束改为 floating。错误会说明正在检查的具体泛型实例。这里只做编译期类型展开，逐元素泛型函数按实际调用类型内联到 计算函数 的原 IR，只为被调用的计算生成原生 x64／SPIR-V；不产生类型擦除、运行期类型分派、宿主每元素回调或独立执行框架。
 
@@ -1296,7 +1296,7 @@ void shift(inout dataset<Cell> cells, float3 delta) on compute {
 
 ## 显式原子 dataset 与内存序
 
-`.h` 用 `atomic dataset<T>` 声明共享原子访问能力，`.b` 必须保持相同签名。它要求已初始化的可读写数据，布局仍是原来的普通记录；当前仅能对 u32/i32 标量位置进行原子操作，可选择嵌套字段、向量的一个分量或已证明下标的固定数组元素。其他字段和填充不会被隐式读改写。它不是裸指针或可逃逸的原子引用；普通函数可以显式借用整份 atomic dataset，计算函数 继续拥有并行域与阶段组合。
+`.h` 用 `atomic dataset<T>` 声明共享原子访问能力，`.b` 必须保持相同签名。它要求已初始化的可读写数据，布局仍是原来的普通记录；支持u32／i32／u64／i64标量位置的原子操作，可选择嵌套字段、向量的一个分量或已证明下标的固定数组元素。其他字段和填充不会被隐式读改写。它不是裸指针或可逃逸的原子引用；普通函数可以显式借用整份 atomic dataset，计算函数 继续拥有并行域与阶段组合。
 
 ```c
 struct Sample { u32 key; u32 value; };
@@ -1314,32 +1314,32 @@ void histogram(read dataset<Sample> input,
 }
 ```
 
-长度仍是只读元数据，索引仍须由同一前端证明。多个 invocation 可以原子修改同一字段；该模式下，直接 `bins[k].count` 读写、把整条记录作为普通值读取，或用 tile_input 捕获其普通快照都被拒绝。read/write/inout 位置、局部变量和不可变 view 不能当作原子目标。原子目标错误报 B214，目标不是 u32/i32 标量报 B215，参数数量报 B217，值类型沿用 B124。
+长度仍是只读元数据，索引仍须由同一前端证明。多个 invocation 可以原子修改同一字段；该模式下，直接 `bins[k].count` 读写、把整条记录作为普通值读取，或用 tile_input 捕获其普通快照都被拒绝。read/write/inout 位置、局部变量和不可变 view 不能当作原子目标。原子目标错误报 B214，目标不是支持的整数标量或请求未实现的64位tile原子报B215，参数数量报 B217，值类型沿用 B124。
 
 | 内置操作 | 返回值 |
 |---|---|
 | `atomic_load(target, order)` | 当前原子值 |
 | `atomic_store(target, value, order);` | 语句，无返回值；绑定或用于表达式报 B218 |
 | `atomic_add`／`atomic_sub`／`atomic_exchange(target, value, order)` | 修改之前的旧值 |
-| `atomic_min`／`atomic_max(target, value, order)` | 旧值；i32 使用有符号极值，u32 使用无符号极值 |
-| `atomic_and`／`atomic_or`／`atomic_xor(target, value, order)` | 旧的完整 32 位值 |
+| `atomic_min`／`atomic_max(target, value, order)` | 旧值；i32／i64使用有符号极值，u32／u64使用无符号极值 |
+| `atomic_and`／`atomic_or`／`atomic_xor(target, value, order)` | 旧的完整32／64位值 |
 | `atomic_compare_exchange(target, expected, desired, success_order, failure_order)` | 旧值；与 expected 相等才写 desired，是不发生伪失败的强比较交换 |
 
-所有操作都显式提供静态内存序：`relaxed`、`acquire`、`release`、`acq_rel`。这些是该参数位置的语法，不接受运行时变量。load 只接受 relaxed/acquire，store 只接受 relaxed/release，读改写接受四种序。比较交换失败序只能 relaxed/acquire，且不能强于成功序；非法序报 B216。值参数不获得额外隐式数值转换，加减继续保留低 32 位。此语言的 CPU／GPU 共同配置不支持 seq_cst，也不把它替换成较弱的序；依据为 [Vulkan 内存模型](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
+所有操作都显式提供静态内存序：`relaxed`、`acquire`、`release`、`acq_rel`。这些是该参数位置的语法，不接受运行时变量。load 只接受 relaxed/acquire，store 只接受 relaxed/release，读改写接受四种序。比较交换失败序只能 relaxed/acquire，且不能强于成功序；非法序报 B216。值参数不获得额外隐式数值转换，加减按目标实际宽度保留低32／64位。此语言的 CPU／GPU 共同配置不支持 seq_cst，也不把它替换成较弱的序；依据为 [Vulkan 内存模型](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
 
 GPU 使用 Device 作用域，约束当前设备上的 buffer 原子；CPU 约束访问同一主机数据的执行线程。它们不会把主机和显存变成同一个地址或同一个原子域，显式上传／下载与资源所有权仍由原框架负责。relaxed 只约束该位置的原子性；release/acquire 只有实际读到对应发布时才建立同步，不是全域屏障，也不保证跨 workgroup 自旋循环能够推进。全域阶段继续由 计算函数 依赖和 phase 表达。
 
 同一数据集传给多个可写子程序参数时，只有这些别名全部声明 atomic 才能共享；混合普通读写别名仍报 B118。拥有 inout/atomic 能力的外层 计算函数 可调用相应子程序，read 或 write 单独不能升级成需要读写的 atomic 能力。不同访问阶段之间，编译器按真实读、写和跨元素访问保留依赖；原 cross_reads 统一为 cross_access，涵盖原子写入，不能把“先读取整域、再跨元素原子写入”错融成逐元素执行。
 
-原子效果不能作为纯表达式消除、缓存或提前到未选分支，忽略旧值也必须执行修改。CPU 自研 x64 直接使用对齐 MOV、LOCK XADD、内存 XCHG、LOCK CMPXCHG；极值和按位读改写由 CMPXCHG 构成同一个原子操作。GPU 直接编码 SPIR-V 原子指令，acquire/release 使用 UniformMemory 语义，沿用原物理页表地址；不增加宿主锁、逐元素回调或另一种 Shader 编译器。指令和比较交换的成功／失败规则见 [SPIR-V 原子规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpAtomicCompareExchange)。当前 CPU 原子阶段使用原生标量范围并行，尚未实现原子操作的四元素 SIMD。
+原子效果不能作为纯表达式消除、缓存或提前到未选分支，忽略旧值也必须执行修改。CPU 自研 x64 直接使用对齐 MOV、LOCK XADD、内存 XCHG、LOCK CMPXCHG；极值和按位读改写由 CMPXCHG 构成同一个原子操作。GPU直接编码SPIR-V原子指令，宽整数使用同一物理页地址的64位指针及Int64Atomics，64位store复用OpAtomicExchange并丢弃旧值以落实原子写入，原relaxed／release源合同保持；原Device按程序查询、启用[shaderBufferInt64Atomics](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceShaderAtomicInt64Features.html)，未声明或不支持时明确拒绝。acquire／release使用UniformMemory语义；不增加宿主锁、逐元素回调或另一种 Shader 编译器。指令和比较交换的成功／失败规则见 [SPIR-V 原子规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpAtomicCompareExchange)。当前 CPU 原子阶段使用原生标量范围并行，尚未实现原子操作的四元素 SIMD。
 
 前缀域在 CPU 启动范围／GPU 间接参数中已经捕获本次有效数量。阶段内原子改写原 Count 不改变本次范围；既有 written 规则撤销下一阶段的旧域关系，不能继续使用旧 prefix 或声称保留其 ensures。原子增量、返回的票号或单独的 Count 都不能自行签发安全散写／容量／prefix 能力。返回旧值依赖执行次序，CPU 与 GPU 的逐行票号可以不同；可交换整数归约的最终结果与票号唯一性分别评价。
 
-块内 u32/i32 共享原子与显式根块屏障见下文。64 位／浮点原子、可变 view、动态任务与有界并行预留类型仍待实现。原子接口并不等于已实现完整并发队列。
+块内u32／i32共享原子与显式根块屏障见下文。64位tile／全局及浮点原子、可变 view、动态任务与有界并行预留类型仍待实现。原子接口并不等于已实现完整并发队列。
 
 ### 原子数组下标与函数借用（2026-10-25）
 
-`atomic_add(bank.rows[row][slot].count,1,relaxed)` 可直接选择嵌套固定数组里的 u32／i32 位置，每层下标由原范围分析证明。类型、记录对齐、原子访问权和内存序保持，不转成逐项选择，也不增加宿主锁、回调或逐元素越界检查。
+`atomic_add(bank.rows[row][slot].count,1,relaxed)` 可直接选择嵌套固定数组里的u32／i32／u64／i64 dataset位置，每层下标由原范围分析证明。类型、记录对齐、原子访问权和内存序保持，不转成逐项选择，也不增加宿主锁、回调或逐元素越界检查。
 
 原 Atomic IR 增加可选动态字偏移，来源仍是已检查的 Place；地址依赖进入原寄存器活跃性、重映射和阶段效果。CPU／GPU 在原记录／共享存储地址上加偏移，再发出原子操作；固定下标保持原直接位置。Device 分页先按记录索引选择页面，数组偏移留在该记录内；Workgroup 索引保留共享流顺序、发布值与原生命周期。
 
@@ -3178,7 +3178,7 @@ u32 排序已验证到 33554433 条记录，i32／f32 已验证到 4194307 条�
 
 普通数值 `for (d in first..last)` 在进入时各求值一次起止表达式，正文中的 d 小于已捕获的 last。当前循环正文及其 if 分支中没有 seek 时，范围事实也保留已捕获 first 的数值下界；例如 `for (d in 2..8)` 内可用 d 作整数除数，动态起点已有的非零下界同样有效。普通自增与 continue 保持该下界，改写生产 first 的局部变量不改变已捕获起点。嵌套 for／while 拥有自己的循环控制，不撤回外层起点事实。当前循环存在 seek 时仍按任意 u32 重入处理，不把初始下界施加到跳转后的位置；seek 的一般范围不变式尚未推导，循环终止仍由算法负责。
 
-安全整数除法接受编译期非零常量；动态u32／i32／u64／i64标量及现有32位向量除数需逐分量证明当前值非零，标量操作数可广播；函数接口可沿既有requires nonzero合同交接。普通指针、任意地址散写、64 位／浮点原子、非原子任意共享写／动态屏障、GPU普通函数递归、动态任务和完整泛型仍未实现；普通CPU递归及开放泛型的当前范围按相应章节交付。
+安全整数除法接受编译期非零常量；动态u32／i32／u64／i64标量及现有32位向量除数需逐分量证明当前值非零，标量操作数可广播；函数接口可沿既有requires nonzero合同交接。普通指针、任意地址散写、64位tile／全局及浮点原子、非原子任意共享写／动态屏障、GPU普通函数递归、动态任务和完整泛型仍未实现；普通CPU递归及开放泛型的当前范围按相应章节交付。
 
 无小数点的正整数字面量当前为 u32，负整数字面量为 i32；带小数点的数值为 f32。整数按实际32或64位运算，溢出取对应低位；`0x` 十六进制中的 e/E/f 是数字，不作为浮点标记，紧随其后的加减仍是独立运算符；有符号最小值除以 -1 直接降低为取负，余数为 0，CPU 不执行会触发异常的 idiv。动态浮点到整数的转换必须满足目标范围；当前编译器不能完整证明所有数值定义域。
 
@@ -3973,7 +3973,7 @@ dataset声明、重赋值及拥有字段投影统一消费原Returned求值；�
 
 模块资源保留原不透明Frame、同步真实完成及最后消费者释放，改变的是实际宽标量、原生映像和C Value载荷编码。不能把重编成功等同于版本迁移或消费者已经采用。handle保持不透明身份，u64不授予地址或句柄操作；dataset长度／下标、const形状与枚举判别字保持自身32位合同。
 
-具体Release与原生、引擎接入和交付结果分别见双台账。f64、原生地址／指针宽整数／回调、窄整数／字符、动态拥有元素与递归容器、64位原子、u64排序、一般while不变式、异步及热更新仍按实际缺口处理。
+具体Release与原生、引擎接入和交付结果分别见双台账。f64、原生地址／指针宽整数／回调、窄整数／字符、动态拥有元素与递归容器、64位tile／全局原子、u64排序、一般while不变式、异步及热更新仍按实际缺口处理。
 
 ## while单调位移与入口数值界
 

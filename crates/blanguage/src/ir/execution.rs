@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, ops::Deref};
 pub struct DeviceRequirements {
     pub ray_query: bool, pub float64: bool,
     pub integer8: bool, pub integer16: bool,
+    pub atomic64: bool,
     pub sorting: bool,
     pub maximal_reconvergence: bool,
     pub texture_indexing: bool,
@@ -46,6 +47,7 @@ impl ProgramInterface for Program {
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
             position_fetch: self.requires_ray_position_fetch(),
+            atomic64: self.stages.iter().any(Stage::requires_atomic64),
             subgroup: self.subgroup_capabilities(),
             ..DeviceRequirements::default()
         };

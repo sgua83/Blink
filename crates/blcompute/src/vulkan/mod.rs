@@ -225,6 +225,7 @@ impl PhysicalDevice {
             requirements.float64 |= required.float64;
             requirements.integer8 |= required.integer8;
             requirements.integer16 |= required.integer16;
+            requirements.atomic64 |= required.atomic64;
             requirements.ray_query |= required.ray_query;
             requirements.sorting |= required.sorting;
             requirements.maximal_reconvergence |= required.maximal_reconvergence;
@@ -358,6 +359,7 @@ struct Inner {
     float64: bool,
     integer8: bool,
     integer16: bool,
+    atomic64: bool,
     float64_preserve: bool,
     next_submission: Cell<u64>,
 }
@@ -392,7 +394,7 @@ impl Device {
     }
     fn create(selected: PhysicalDevice, requirements: DeviceRequirements) -> Result<Self> {
         let DeviceRequirements { ray_query, sorting, maximal_reconvergence, texture_indexing,
-            position_fetch, float64, integer8, integer16, subgroup } = requirements;
+            position_fetch, float64, integer8, integer16, atomic64, subgroup } = requirements;
         let subgroup_extended_types = subgroup.extended_types;
         unsafe {
             let PhysicalDevice {
@@ -460,6 +462,12 @@ impl Device {
             features.sType = 1000059000;
             features.pNext =
                 (&mut address as *mut VkPhysicalDeviceBufferDeviceAddressFeatures).cast();
+            let mut atomics: VkPhysicalDeviceShaderAtomicInt64Features = zero();
+            atomics.sType = 1000180000;
+            if atomic64 {
+                atomics.pNext = features.pNext;
+                features.pNext = (&mut atomics as *mut VkPhysicalDeviceShaderAtomicInt64Features).cast();
+            }
             let mut storage8: VkPhysicalDevice8BitStorageFeatures = zero();
             storage8.sType = 1000177000;
             let mut arithmetic8: VkPhysicalDeviceShaderFloat16Int8Features = zero();
@@ -505,6 +513,9 @@ impl Device {
                 features.pNext = (&mut indexing as *mut texture::IndexingFeatures).cast();
             }
             features_fn(physical, &mut features);
+            if atomic64 && atomics.shaderBufferInt64Atomics == 0 {
+                return Err(error("64位dataset原子需要shaderBufferInt64Atomics，目标GPU不支持"));
+            }
             if integer8 && (arithmetic8.shaderInt8 == 0 || storage8.storageBuffer8BitAccess == 0) {
                 return Err(error("程序需要shaderInt8与storageBuffer8BitAccess，目标GPU不支持"));
             }
@@ -621,6 +632,12 @@ impl Device {
                 as *const VkPhysicalDeviceBufferDeviceAddressFeatures)
                 .cast_mut()
                 .cast();
+            if atomic64 {
+                atomics.pNext = features.pNext;
+                atomics.shaderBufferInt64Atomics = 1;
+                atomics.shaderSharedInt64Atomics = 0;
+                features.pNext = (&mut atomics as *mut VkPhysicalDeviceShaderAtomicInt64Features).cast();
+            }
             if integer8 {
                 storage8.pNext = features.pNext;
                 storage8.storageBuffer8BitAccess = 1;
@@ -787,6 +804,7 @@ impl Device {
                     float64,
                     integer8,
                     integer16,
+                    atomic64,
                     float64_preserve: float_controls.shaderDenormPreserveFloat64 != 0
                         && float_controls.shaderSignedZeroInfNanPreserveFloat64 != 0,
                     float32_preserve: float_controls.shaderDenormPreserveFloat32 != 0
@@ -1654,6 +1672,9 @@ impl GpuProgram {
         }
         if program.requirements().integer16 && !inner.integer16 {
             return Err(error("16位整数程序须以Device::for_program声明设备能力"));
+        }
+        if program.requirements().atomic64 && !inner.atomic64 {
+            return Err(error("64位dataset原子须以Device::for_program声明设备能力"));
         }
         if program.stages().iter().any(|s| s.float64_preserve) && !inner.float64_preserve {
             return Err(error("f64 运算需要设备支持64位 DenormPreserve 与 SignedZeroInfNanPreserve"));
