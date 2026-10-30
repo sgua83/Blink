@@ -41,7 +41,7 @@ where T: Send, R: Send, E: Send {
             let Some(helper) = current.compiler().try_worker() else { break; };
             let queue = &queue;
             let worker = &worker;
-            let executing = helper.clone();
+            let executing = helper;
             let handle = thread::Builder::new().spawn_scoped(scope, move || {
                 if let Err(error) = executing.bind() {
                     queue.lock().unwrap().1 = 0;
@@ -52,10 +52,10 @@ where T: Send, R: Send, E: Send {
                 queue.lock().unwrap().1 = 0;
                 Error::Resource(error)
             })?;
-            handles.push((handle, helper));
+            handles.push(handle);
         }
         let mut output = worker(current);
-        for (handle, _permit) in handles {
+        for handle in handles {
             output.extend(handle.join().unwrap_or_else(|error| std::panic::resume_unwind(error))
                 .map_err(Error::Resource)?);
         }

@@ -1078,6 +1078,8 @@ fn build_domain(
     let mut part = 0;
     for call in expanded.calls {
         emit_domain_part(
+            &world.worker,
+            &d.source.path,
             &signature,
             &stages[start..call.stage],
             &required,
@@ -1090,7 +1092,7 @@ fn build_domain(
             &data,
             &uniform_values,
             &mut code,
-        );
+        )?;
         domain_at(world, &call.instance, context, target)?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
@@ -1144,6 +1146,8 @@ fn build_domain(
         required = call.after;
     }
     emit_domain_part(
+        &world.worker,
+        &d.source.path,
         &signature,
         &stages[start..],
         &required,
@@ -1156,7 +1160,7 @@ fn build_domain(
         &data,
         &uniform_values,
         &mut code,
-    );
+    )?;
     interface.outputs.sort();
     interface.outputs.dedup();
     let name = crate::module::domain::symbol(&instance.name, target);
@@ -1205,6 +1209,8 @@ fn build_domain(
     Ok(())
 }
 fn emit_domain_part(
+    worker: &crate::compiler::Worker,
+    source: &std::path::Path,
     signature: &Program,
     stages: &[Stage],
     required: &[PrefixRelation],
@@ -1217,9 +1223,9 @@ fn emit_domain_part(
     data: &[[Reg; 2]],
     uniforms: &[CallArgument],
     code: &mut Vec<Inst>,
-) {
+) -> Result<()> {
     if stages.is_empty() {
-        return;
+        return Ok(());
     }
     let mut program = signature.clone();
     if split {
@@ -1230,7 +1236,7 @@ fn emit_domain_part(
     program.source_stages = stages.len();
     program.prefix_requirements = required.to_vec();
     program.prefix_guarantees = guaranteed.to_vec();
-    crate::optimize::optimize(&mut program);
+    crate::optimize::optimize(&mut program, worker).map_err(|error| crate::compiler::diagnostic(source, error))?;
     let index = context.resources.programs.len();
     context.resources.programs.push((target, program));
     let mut arguments = vec![frame.clone()];
@@ -1245,4 +1251,5 @@ fn emit_domain_part(
         None,
         Vec::new(),
     ));
+    Ok(())
 }

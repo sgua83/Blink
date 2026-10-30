@@ -6,7 +6,7 @@ mod selection;
 mod value_flow;
 pub(crate) use invariant::prepare_reduction;
 
-pub fn optimize(program: &mut Program) {
+pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std::io::Result<()> {
     let mut stages: Vec<Stage> = Vec::new();
     for mut stage in std::mem::take(&mut program.stages) {
         if let Some(previous) = stages.last_mut() {
@@ -45,159 +45,168 @@ pub fn optimize(program: &mut Program) {
         }
         stages.push(stage);
     }
-    for stage in &mut stages {
-        if let Operation::CustomReduce(r)
-        | Operation::CustomScan(CustomScan { values: r, .. })
-        | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values: r, .. }) =
-            &mut stage.operation
-        {
-            if let Some(project) = &mut r.project {
-                value_code(project);
-            }
-            value_code(&mut r.identity);
-            value_code(&mut r.combine);
-            continue;
+    stages = crate::parallel::try_map(worker, stages, |_| (), |_, mut stage| {
+        optimize_stage(&mut stage);
+        Ok::<_, std::convert::Infallible>(stage)
+    }).map_err(|error| match error {
+        crate::parallel::Error::Resource(error) => error,
+        crate::parallel::Error::Work(error) => match error {},
+    })?;
+    stages.retain(|stage| !matches!(stage.operation, Operation::Map) || !stage.code.is_empty());
+    program.stages = stages;
+    Ok(())
+}
+
+fn optimize_stage(stage: &mut Stage) {
+    if let Operation::CustomReduce(r)
+    | Operation::CustomScan(CustomScan { values: r, .. })
+    | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values: r, .. }) =
+        &mut stage.operation
+    {
+        if let Some(project) = &mut r.project {
+            value_code(project);
         }
-        value_flow::run(&mut stage.code, &stage.registers);
-        loop {
-            dce(
-                &mut stage.code,
-                &mut BTreeSet::new(),
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-            );
-            let preserve_scope = !stage.subgroup_operations().is_empty();
-            let words = stage.storage_words();
-            let mut changed = false;
-            stage.code.retain_mut(|inst| {
-                if let Inst::TilePublish(publication) = inst {
-                    let before = publication.values.len();
-                    publication.values.retain(|(word, value)| {
-                        (0..stage.registers[*value].size().div_ceil(4)).any(|part| words.contains(&SharedWord::Published {
-                            tile: publication.tile,
-                            word: *word + part * 4,
-                        }))
-                    });
-                    changed |= before != publication.values.len();
-                    if publication.values.is_empty() && !preserve_scope {
-                        changed = true;
-                        return false;
-                    }
-                }
-                if matches!(inst, Inst::TileCollective(c) if c.results.is_empty())
-                    && !preserve_scope
-                {
+        value_code(&mut r.identity);
+        value_code(&mut r.combine);
+        return;
+    }
+    value_flow::run(&mut stage.code, &stage.registers);
+    loop {
+        dce(
+            &mut stage.code,
+            &mut BTreeSet::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
+        let preserve_scope = !stage.subgroup_operations().is_empty();
+        let words = stage.storage_words();
+        let mut changed = false;
+        stage.code.retain_mut(|inst| {
+            if let Inst::TilePublish(publication) = inst {
+                let before = publication.values.len();
+                publication.values.retain(|(word, value)| {
+                    (0..stage.registers[*value].size().div_ceil(4)).any(|part| words.contains(&SharedWord::Published {
+                        tile: publication.tile,
+                        word: *word + part * 4,
+                    }))
+                });
+                changed |= before != publication.values.len();
+                if publication.values.is_empty() && !preserve_scope {
                     changed = true;
                     return false;
                 }
-                true
-            });
-            if selection::run(&mut stage.code, &stage.registers, stage.domain) {
+            }
+            if matches!(inst, Inst::TileCollective(c) if c.results.is_empty())
+                && !preserve_scope
+            {
                 changed = true;
-                value_flow::run(&mut stage.code, &stage.registers);
+                return false;
             }
-            if !changed {
-                break;
-            }
-        }
-        if matches!(stage.operation, Operation::Map) {
-            let mut reads = BTreeSet::new();
-            let mut writes = BTreeSet::new();
-            visit(&stage.code, &mut |i| match i {
-                Inst::Call(call) => {
-                    for arg in &call.arguments {
-                        if let CallArgument::Reference {
-                            access,
-                            address:
-                                CallReference {
-                                    storage:
-                                        CallStorage::Indexed(IndexedSource::Data {
-                                            binding, ..
-                                        }),
-                                    ..
-                                },
-                            ..
-                        } = arg
-                        {
-                            if access.reads() {
-                                reads.insert(*binding);
-                            }
-                            if access.writes() {
-                                writes.insert(*binding);
-                            }
-                        }
-                    }
-                }
-                Inst::Append(a) => {
-                    reads.insert(a.count.binding);
-                    writes.extend([a.target, a.count.binding]);
-                }
-                Inst::Atomic(a) => {
-                    if let AtomicTarget::Dataset(binding) = a.target {
-                        if a.op.reads() {
-                            reads.insert(binding);
-                        }
-                        if a.op.writes() {
-                            writes.insert(binding);
-                        }
-                    }
-                }
-                Inst::LoadIndexed {
-                    source: IndexedSource::Data { binding, .. },
-                    ..
-                }
-                | Inst::Load { binding, .. } => {
-                    reads.insert(*binding);
-                }
-                Inst::StoreIndexed {
-                    source: IndexedSource::Data { binding, .. },
-                    ..
-                }
-                | Inst::Store { binding, .. } => {
-                    writes.insert(*binding);
-                }
-                _ => {}
-            });
-            reads.extend(stage.input_words().keys().map(|(source, _)| *source));
-            reads.extend(stage.prefix.map(|p| p.binding));
-            reads.extend(stage.selection.map(|s| s.binding));
-            stage.reads = reads.into_iter().collect();
-            stage.writes = writes.into_iter().collect();
-            stage
-                .cross_access
-                .retain(|r| stage.reads.contains(r) || stage.writes.contains(r));
-        }
-        let mut used = BTreeSet::new();
-        let mut slots = BTreeSet::new();
-        visit(&stage.code, &mut |i| {
-            used.extend(i.results());
-            used.extend(i.operands());
-            slots.extend(i.local_reads());
-            slots.extend(i.local_writes());
+            true
         });
-        let registers: Vec<_> = used.iter().map(|r| stage.registers[*r]).collect();
-        let mut locals = BTreeMap::new();
-        let mut local = BTreeMap::new();
-        for (end, ty) in &stage.locals {
-            let begin = end - ty.components.len();
-            if slots.range(begin..*end).count() == ty.components.len() {
-                for slot in begin..*end { local.insert(slot, local.len()); }
-                locals.insert(local.len(), ty.clone());
-            } else {
-                for slot in slots.range(begin..*end) {
-                    local.insert(*slot, local.len());
-                    locals.insert(local.len(), Ty::scalar(ty.components[slot - begin].0));
+        if selection::run(&mut stage.code, &stage.registers, stage.domain) {
+            changed = true;
+            value_flow::run(&mut stage.code, &stage.registers);
+        }
+        if !changed {
+            break;
+        }
+    }
+    if matches!(stage.operation, Operation::Map) {
+        let mut reads = BTreeSet::new();
+        let mut writes = BTreeSet::new();
+        visit(&stage.code, &mut |i| match i {
+            Inst::Call(call) => {
+                for arg in &call.arguments {
+                    if let CallArgument::Reference {
+                        access,
+                        address:
+                            CallReference {
+                                storage:
+                                    CallStorage::Indexed(IndexedSource::Data {
+                                        binding, ..
+                                    }),
+                                ..
+                            },
+                        ..
+                    } = arg
+                    {
+                        if access.reads() {
+                            reads.insert(*binding);
+                        }
+                        if access.writes() {
+                            writes.insert(*binding);
+                        }
+                    }
                 }
             }
-        }
-        let regs: BTreeMap<_, _> = used.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
-        map(&mut stage.code, &|r| regs[&r], &|s| local[&s]);
-        stage.registers = registers;
-        stage.locals = locals;
+            Inst::Append(a) => {
+                reads.insert(a.count.binding);
+                writes.extend([a.target, a.count.binding]);
+            }
+            Inst::Atomic(a) => {
+                if let AtomicTarget::Dataset(binding) = a.target {
+                    if a.op.reads() {
+                        reads.insert(binding);
+                    }
+                    if a.op.writes() {
+                        writes.insert(binding);
+                    }
+                }
+            }
+            Inst::LoadIndexed {
+                source: IndexedSource::Data { binding, .. },
+                ..
+            }
+            | Inst::Load { binding, .. } => {
+                reads.insert(*binding);
+            }
+            Inst::StoreIndexed {
+                source: IndexedSource::Data { binding, .. },
+                ..
+            }
+            | Inst::Store { binding, .. } => {
+                writes.insert(*binding);
+            }
+            _ => {}
+        });
+        reads.extend(stage.input_words().keys().map(|(source, _)| *source));
+        reads.extend(stage.prefix.map(|p| p.binding));
+        reads.extend(stage.selection.map(|s| s.binding));
+        stage.reads = reads.into_iter().collect();
+        stage.writes = writes.into_iter().collect();
+        stage
+            .cross_access
+            .retain(|r| stage.reads.contains(r) || stage.writes.contains(r));
     }
-    stages.retain(|stage| !matches!(stage.operation, Operation::Map) || !stage.code.is_empty());
-    program.stages = stages;
+    let mut used = BTreeSet::new();
+    let mut slots = BTreeSet::new();
+    visit(&stage.code, &mut |i| {
+        used.extend(i.results());
+        used.extend(i.operands());
+        slots.extend(i.local_reads());
+        slots.extend(i.local_writes());
+    });
+    let registers: Vec<_> = used.iter().map(|r| stage.registers[*r]).collect();
+    let mut locals = BTreeMap::new();
+    let mut local = BTreeMap::new();
+    for (end, ty) in &stage.locals {
+        let begin = end - ty.components.len();
+        if slots.range(begin..*end).count() == ty.components.len() {
+            for slot in begin..*end { local.insert(slot, local.len()); }
+            locals.insert(local.len(), ty.clone());
+        } else {
+            for slot in slots.range(begin..*end) {
+                local.insert(*slot, local.len());
+                locals.insert(local.len(), Ty::scalar(ty.components[slot - begin].0));
+            }
+        }
+    }
+    let regs: BTreeMap<_, _> = used.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
+    map(&mut stage.code, &|r| regs[&r], &|s| local[&s]);
+    stage.registers = registers;
+    stage.locals = locals;
 }
 pub(crate) fn value_code(value: &mut ValueCode) {
     value_flow::run_value(&mut value.code, &value.registers, &mut value.outputs);

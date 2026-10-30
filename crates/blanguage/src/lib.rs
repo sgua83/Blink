@@ -299,7 +299,7 @@ fn compile_world(
                     } else {
                         let mut program = check::compile_program(world, &instance).map_err(|error| instance_error(error, name))?;
                         if retained {
-                            optimize::optimize(&mut program);
+                            optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&d.source.path, error))?;
                             programs.push(program);
                         }
                     }
@@ -314,7 +314,7 @@ fn compile_world(
                     return check::compile_application(world, &instance).map(Output::Application);
                 }
                 let mut program = check::compile_program(world, &instance).map_err(|error| instance_error(error, &instance.name))?;
-                optimize::optimize(&mut program);
+                optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&definition.source.path, error))?;
                 programs.push(program);
             }
         }
