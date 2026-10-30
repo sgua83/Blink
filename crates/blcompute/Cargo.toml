@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [[bin]]
 name = "blrun"
 path = "src/main.rs"

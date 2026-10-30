@@ -28,27 +28,50 @@ pub(crate) fn compile(
     std::fs::create_dir(&build)?;
     let result = (|| {
         std::fs::create_dir(build.join("src"))?;
-        let dependencies = dependencies
-            .iter()
-            .map(|name| {
-                format!(
-                    "{name}={{path={:?}}}\n",
-                    sdk.join("crates").join(name).to_string_lossy()
-                )
-            })
-            .collect::<String>();
+        let sdk_target = sdk.join("target");
+        if !dependencies.is_empty() {
+            let mut arguments: Vec<OsString> = [
+                "build".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
+                "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
+                "--target-dir".into(), sdk_target.as_os_str().into(),
+                "--lib".into(), "--color".into(), "never".into(),
+            ].into();
+            for name in dependencies {
+                arguments.extend([OsString::from("--package"), (*name).into()]);
+            }
+            let output = worker.cargo_output(&arguments, &build, sdk)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "SDK目标库编译失败：\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ).into());
+            }
+        }
         let manifest = format!(
-            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[dependencies]\n{dependencies}[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
+            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
         );
         std::fs::write(build.join("Cargo.toml"), manifest)?;
         std::fs::write(build.join("src/lib.rs"), source)?;
         let target = sdk.join("target/dll");
-        let arguments: Vec<OsString> = [
+        let mut arguments: Vec<OsString> = [
             "rustc".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
             "--manifest-path".into(), build.join("Cargo.toml").into_os_string(),
             "--target-dir".into(), target.as_os_str().into(), "--color".into(), "never".into(),
             "--".into(), "--print".into(), "native-static-libs".into(),
         ].into();
+        for name in dependencies {
+            arguments.extend([
+                OsString::from("--extern"),
+                format!("{name}={}", sdk_target.join(format!("release/lib{name}.rlib")).display()).into(),
+            ]);
+        }
+        if !dependencies.is_empty() {
+            arguments.extend([
+                OsString::from("-L"),
+                format!("dependency={}", sdk_target.join("release/deps").display()).into(),
+            ]);
+        }
         let output = worker.cargo_output(&arguments, &build, sdk)?;
         let compilation = (|| {
             let stderr = String::from_utf8(output.stderr)?;
