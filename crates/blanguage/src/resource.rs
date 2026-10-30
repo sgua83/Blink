@@ -1,4 +1,4 @@
-//! 模块资源 ABI 8：标量值与实际字节布局；不传递 Rust 容器表示。
+//! 模块资源 ABI：标量值与实际字节布局；不传递 Rust 容器表示。
 use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variants};
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
@@ -55,7 +55,8 @@ pub struct Module {
 record!(Module { types, images });
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
 
-pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Vec<u8>> {
+pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, u32)> {
+    use native::{ContinuationCode, StageCode};
     let jobs = |cpu| resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
         .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
@@ -66,6 +67,17 @@ pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate:
     let gpu = crate::parallel::try_map(worker, jobs(false), |_| (), |_, (program, stage)| {
         spirv::program::compile_stage(&resources.programs[program].1, stage)
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let stack_bytes = cpu.iter().map(|stage| match stage {
+        StageCode::Element { main, continuation, .. } => main.stack_bytes.max(match continuation {
+            None => 0,
+            Some(ContinuationCode::ReductionTail(code) | ContinuationCode::ScanAdd(code)
+                | ContinuationCode::CompactScatter(code) | ContinuationCode::SegmentedFinish(code)) => code.stack_bytes,
+            Some(ContinuationCode::Scan { prefix, apply, .. }) => prefix.stack_bytes.max(apply.stack_bytes),
+        }),
+        StageCode::Sort(code) => code.initialize.iter()
+            .chain([&code.histogram, &code.scatter, &code.gather])
+            .map(|code| code.stack_bytes).max().unwrap_or(0),
+    }).max().unwrap_or(0);
     let mut cpu = cpu.into_iter();
     let mut gpu = gpu.into_iter();
     let images = resources.programs.iter().map(|(target, program)| {
@@ -86,7 +98,7 @@ pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate:
         }
         .bytes(),
     );
-    Ok(bytes)
+    Ok((bytes, stack_bytes))
 }
 /// # Safety
 /// bytes 必须是此资源 ABI 的实际编译产物，原机器码、布局、访问与前缀合同未被伪造。

@@ -39,10 +39,10 @@ impl Application {
         }
         let sections =
             object::application_code(code, functions, &self.imports, &resource_prefix(&self.name))?;
-        let archive = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
+        let (archive, resource_stack) = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
         Ok(Object {
             name: self.name.clone(),
-            kind: Kind::Application { stack_bytes },
+            kind: Kind::Application { stack_bytes: stack_bytes.max(resource_stack) },
             sections,
             symbols: Vec::new(),
             archive,
@@ -66,10 +66,11 @@ pub(crate) fn compile_resources(
     resources: Option<&Resources>,
     root: bool,
     worker: &crate::compiler::Worker,
-) -> Result<Option<object::Archive>, Box<dyn std::error::Error>> {
+) -> Result<(Option<object::Archive>, u32), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
-        let source = crate::dll::application_source(resources, &prefix, root, worker)?;
+        let (image, stack_bytes) = crate::resource::compile(resources, worker)?;
+        let source = crate::dll::application_source(resources, &prefix, root, &image)?;
         let mut exports = if root {
             [
                 "blink_destroy",
@@ -105,8 +106,8 @@ pub(crate) fn compile_resources(
             programs: u32::try_from(resources.programs.len())?,
             abi: crate::resource::ABI.to_vec(),
         });
-        Some(archive)
+        (Some(archive), stack_bytes)
     } else {
-        None
+        (None, 0)
     })
 }

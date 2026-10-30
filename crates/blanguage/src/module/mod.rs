@@ -96,14 +96,14 @@ impl Module {
                 function: true,
             })
             .collect();
-        let archive =
+        let (archive, resource_stack) =
             crate::application::compile_resources(&self.name, self.resources.as_ref(), false, worker)?;
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Module {
                 interface: self.header.clone(),
                 requirements: self.requirements.clone(),
-                stack_bytes,
+                stack_bytes: stack_bytes.max(resource_stack),
             },
             sections,
             symbols,

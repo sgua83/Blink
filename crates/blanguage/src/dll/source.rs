@@ -308,7 +308,7 @@ pub(crate) fn application_source(
     resources: &crate::application::Resources,
     prefix: &str,
     root: bool,
-    worker: &crate::compiler::Worker,
+    image: &[u8],
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::fmt::Write;
     let mut functions = String::new();
@@ -399,10 +399,7 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
     }
     Ok(include_str!("../application/runtime.rs.in")
         .replace("@PREFIX@", prefix)
-        .replace(
-            "@IMAGE@",
-            &format!("{:?}", crate::resource::compile(resources, worker)?),
-        )
+        .replace("@IMAGE@", &format!("{image:?}"))
         .replace("@FUNCTIONS@", &functions))
 }
 
