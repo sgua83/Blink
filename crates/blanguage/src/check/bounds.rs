@@ -1069,7 +1069,7 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
         .values()
         .flat_map(|binding| match binding {
             Binding::ApplicationData(data) => data.length.proof.facts(&data.length.ty),
-            Binding::Value(value) => Proof::capture(value).facts(&value.ty),
+            Binding::Value(value) if Proof::fact_components(&value.ty).next().is_some() => Proof::capture(value).facts(&value.ty),
             Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
             Binding::OwnedValue(owner) => owner
                 .value
