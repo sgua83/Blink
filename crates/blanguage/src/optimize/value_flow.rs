@@ -214,7 +214,7 @@ impl Values {
                 }
                 Inst::If { yes, no, .. } => {
                     let mut y = self.clone();
-                    let mut n = self.clone();
+                    let mut n = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
                     let mut branches = y.block(yes, registers);
                     branches.join(n.block(no, registers));
                     // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
