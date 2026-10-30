@@ -51,15 +51,17 @@ impl ProgramInterface for Program {
             subgroup: self.subgroup_capabilities(),
             ..DeviceRequirements::default()
         };
+        let scalars = self.stages.iter().flat_map(|s| {
+            let custom=match &s.operation {Operation::CustomReduce(r)|Operation::CustomScan(CustomScan{values:r,..})|Operation::CustomSegmentedReduce(CustomSegmentedReduction{values:r,..})=>Some(r),_=>None};
+            let collective=match &s.operation {Operation::Reduce(r)=>Some(&r.ty),Operation::ScanExclusive(s)=>Some(&s.ty),Operation::SegmentedReduce(r)=>Some(&r.values.ty),_=>None};
+            s.registers.iter().chain(s.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s))).chain(custom.into_iter().flat_map(|r|[&r.identity,&r.combine].into_iter().chain(&r.project)).flat_map(|body|body.registers.iter().chain(body.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s)))))
+                .chain(collective.into_iter().flat_map(|ty|ty.components.iter().map(|(s,_)|s)))
+        });
+        requirements.float64 = scalars.clone().any(|s| *s == Scalar::F64);
         for scalar in self.buffers.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s)
-            .chain(self.uniforms.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s))
-            .chain(self.stages.iter().flat_map(|s| {
-                let custom=match &s.operation {Operation::CustomReduce(r)|Operation::CustomScan(CustomScan{values:r,..})|Operation::CustomSegmentedReduce(CustomSegmentedReduction{values:r,..})=>Some(r),_=>None};
-                s.registers.iter().chain(s.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s))).chain(custom.into_iter().flat_map(|r|[&r.identity,&r.combine].into_iter().chain(&r.project)).flat_map(|body|body.registers.iter().chain(body.locals.values().flat_map(|ty|ty.components.iter().map(|(s,_)|s)))))
-            })) {
+            .chain(self.uniforms.iter().flat_map(|b| &b.ty.components).map(|(s, _)| s)).chain(scalars) {
             requirements.integer8 |= scalar.size() == 1;
             requirements.integer16 |= scalar.size() == 2;
-            requirements.float64 |= *scalar == Scalar::F64;
         }
         requirements
     }
