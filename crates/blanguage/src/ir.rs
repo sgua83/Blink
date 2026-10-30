@@ -1337,7 +1337,7 @@ impl Stage {
                 Inst::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
                 Inst::Binary { a, .. } => registers[*a] == scalar,
                 Inst::Cast { dst, src } => {
-                    registers[*dst] == scalar || registers[*src] == scalar
+                    registers[*src].is_float() && !registers[*dst].is_integer() && ((registers[*dst] == scalar) != (registers[*src] == scalar))
                 }
                 Inst::TileCollective(c) => {
                     c.results.iter().any(|(_, r)| registers[*r] == scalar)
