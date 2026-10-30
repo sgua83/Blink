@@ -2362,7 +2362,7 @@ cooperative u32 accumulate(atomic tile<u32> bins, u32 value) on compute {
 
 IR 的 AtomicTarget 区分 Dataset 与 Tile，操作、结果、显式内存序与寄存器活跃性共用。GPU 的 dataset 地址保持 Device scope=1／UniformMemory；tile 地址使用已有 Workgroup 存储、scope=2／WorkgroupMemory，同一 shader 可同时操作两者。根块屏障复用已有 OpControlBarrier，Workgroup 执行／内存作用域覆盖当前逻辑块；不为一次屏障创建宿主提交。语义依据见 [SPIR-V 原子和屏障规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpControlBarrier)及 [Vulkan 内存模型](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
 
-CPU 按完整 tile 对齐领取范围，在原生范围函数的线程私有帧内持有共享值，逐阶段执行所有有效 lane。共享操作直接生成 MOV、算术、比较与条件移动，保留旧值返回；该存储不会被其他 CPU 线程访问，无需 LOCK、主机锁或宿主线程屏障。dataset 原子仍使用原有真正跨线程原子指令。两端允许合法的不同争用次序，不能要求逐行票号或获胜者相同。
+CPU 按完整 tile 对齐领取范围，在原生范围函数的线程私有帧内持有共享值，逐阶段执行所有有效 lane。CPU原子操作共用同一发射分派；tile在原位置使用MOV、无LOCK的XADD／CMPXCHG及普通极值／按位读改写，交换使用普通读取／写入，保留旧值返回。该存储不会被其他CPU线程访问，无需LOCK、主机锁或宿主线程屏障；dataset仍使用原有LOCK XADD／CMPXCHG和内存XCHG，真实范围所有权决定这一编译期区别。两端允许合法的不同争用次序，不能要求逐行票号或获胜者相同。
 
 共享布局将原子读与写都计入最后访问阶段，初始化字段按实际访问保留；仍在本阶段访问的 word 不能与新发布覆盖同一槽。显式屏障参加同一阶段切分和私有值活跃性，无载荷屏障仍保留同步职责。类型化非原子任意共享写、动态同步、64 位／浮点原子、有界并行预留与完整并发工作队列尚未实现。
 
