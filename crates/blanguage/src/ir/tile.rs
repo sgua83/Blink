@@ -323,18 +323,13 @@ pub(crate) fn loop_live(
     continue_live: &BTreeSet<PrivateSlot>,
     exit_live: &BTreeSet<PrivateSlot>,
 ) -> BTreeSet<PrivateSlot> {
-    let mut header = BTreeSet::new();
-    loop {
-        let mut need = live_before(body, header.clone(), after, &header, exit_live);
-        need.extend(after.iter().copied());
-        need.insert(PrivateSlot::Register(test));
-        let next = live_before(condition, need, break_live, continue_live, exit_live);
-        if next == header {
-            return header;
-        }
-        header = next;
-    }
+    // Gen/kill transfers are pointwise; the empty-header result closes the backedge.
+    let mut need = live_before(body, BTreeSet::new(), after, &BTreeSet::new(), exit_live);
+    need.extend(after.iter().copied());
+    need.insert(PrivateSlot::Register(test));
+    live_before(condition, need, break_live, continue_live, exit_live)
 }
+
 pub(crate) fn live_before(
     code: &[Inst],
     mut live: BTreeSet<PrivateSlot>,
