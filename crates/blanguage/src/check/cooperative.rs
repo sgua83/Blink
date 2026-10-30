@@ -545,6 +545,18 @@ impl<'a> Builder<'a> {
         };
         self.calls.push(key);
         let output_inputs=outputs::inputs(self,callee,&self.env.clone())?;
+        // With no fact or resource inputs/outputs, private range paths end at this call.
+        let local_bounds = self.env.values().all(|binding| matches!(binding,
+            Binding::Value(value) if !value.ty.contains_views() && !value.ty.owns_resources()
+                && bounds::Proof::fact_components(&value.ty).next().is_none()
+        )) && if callee.function.result.name == "void" || callee.function.result.is_never() {
+            true
+        } else {
+            let ty = self.expected_storage(&callee.function.result, callee.function.span)?;
+            !ty.contains_views() && !ty.owns_resources()
+                && bounds::Proof::fact_components(&ty).next().is_none()
+        };
+        let caller_path = local_bounds.then(|| std::mem::take(&mut self.path));
         let (mut result,_) = self.function_body(callee.function.body.as_ref().unwrap())?;
         if let Some(returns::Returned::Value(value)) = &mut result {
             value.literal = false;
@@ -582,6 +594,7 @@ impl<'a> Builder<'a> {
         } else {
             self.env = old_env;
         }
+        if let Some(path) = caller_path && self.flow.continues() { self.path = path; }
         self.mutable_names = old_mutable_names;
         self.definition = old_definition;
         self.in_function = old_in_function;

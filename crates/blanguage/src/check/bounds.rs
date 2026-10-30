@@ -886,7 +886,7 @@ impl Proof {
             ..Self::default()
         }
     }
-    fn fact_components(ty: &Ty) -> impl Iterator<Item = usize> + '_ {
+    pub(super) fn fact_components(ty: &Ty) -> impl Iterator<Item = usize> + '_ {
         ty.components.iter().enumerate().filter_map(|(component, (scalar, _))| {
             (*scalar == Scalar::Bool || scalar.is_integer()).then_some(component)
         })
@@ -1129,6 +1129,13 @@ impl Fact {
 }
 fn equality_roots<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, ValueIdentity> {
     let mut roots = BTreeMap::new();
+    extend_equality_roots(&mut roots, facts);
+    roots
+}
+fn extend_equality_roots<'a>(
+    roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
+    facts: impl IntoIterator<Item = &'a Fact>,
+) {
     // Facts 及其 union 按 Fact 排序；Equal 是首个事实类别。
     for fact in facts.into_iter().take_while(|fact| matches!(fact, Fact::Equal(..))) {
         if let Fact::Equal(a, b) = *fact {
@@ -1148,7 +1155,19 @@ fn equality_roots<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<Val
             roots.insert(b, root);
         }
     }
-    roots
+}
+// environment 在本轮固定点内不变；节点只合并自己实际新增的 Equal。
+fn additional_equality_roots<'a>(
+    environment: &'a BTreeMap<ValueIdentity, ValueIdentity>,
+    additions: &Facts,
+) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
+    let mut equalities = additions.iter().take_while(|fact| matches!(fact, Fact::Equal(..))).peekable();
+    if equalities.peek().is_none() {
+        return Cow::Borrowed(environment);
+    }
+    let mut roots = environment.clone();
+    extend_equality_roots(&mut roots, equalities);
+    Cow::Owned(roots)
 }
 fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> QueryFacts<'a> {
     // 等价组为空时没有别名事实需要派生，不读取无关事实集。
@@ -1622,6 +1641,7 @@ impl Clause {
             if contradictory(&environment) {
                 return None;
             }
+            let environment_roots = equality_roots(environment.iter());
             let mut facts: HashMap<usize, QueryResult<'a>> = HashMap::new();
             facts.insert(self.key(), QueryResult { users: 1, value: None });
             let mut pending = vec![self];
@@ -1682,7 +1702,7 @@ impl Clause {
                 let a = Self::take_query(&mut facts, left);
                 let b = Self::take_query(&mut facts, right);
                 let required = if alternative {
-                    either_facts(&environment, a, b)
+                    either_facts(&environment, &environment_roots, a, b)
                 } else {
                     match (a, b) {
                         (Some(a), Some(b)) => {
@@ -1885,16 +1905,16 @@ fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<Que
     Arc::make_mut(&mut a).to_mut().extend(b.iter().copied());
     Some(a)
 }
-fn either_facts<'a>(environment: &Facts, a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
+fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>, a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
     match (a, b) {
         (Some(a), Some(b)) => {
-            let left = equality_roots(environment.union(&a));
-            let right = equality_roots(environment.union(&b));
+            let left = additional_equality_roots(environment_roots, &a);
+            let right = additional_equality_roots(environment_roots, &b);
             let a = equivalent_facts(environment, a, &left);
             let b = equivalent_facts(environment, b, &right);
             let mut common: Facts = a.intersection(&b).copied().collect();
             let mut groups = BTreeMap::new();
-            for (identity, left_root) in &left {
+            for (identity, left_root) in left.iter() {
                 if let Some(right_root) = right.get(identity) {
                     match groups.entry((*left_root, *right_root)) {
                         std::collections::btree_map::Entry::Vacant(entry) => {
