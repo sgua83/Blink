@@ -1737,7 +1737,13 @@ impl Clause {
         }
     }
     pub(super) fn possible(&self) -> bool {
-        self.required().is_some()
+        match &*self.0 {
+            ClauseNode::Impossible => false,
+            ClauseNode::Facts(_) => true,
+            ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..) => {
+                self.required().is_some()
+            }
+        }
     }
     pub(super) fn overlaps(&self,other:&Self) -> bool {
         // 来源能否同时成立不能由各分支的共有事实代替。
