@@ -3021,7 +3021,7 @@ impl<'a> Builder<'a> {
         self.refine_bounds(&partition, true);
         yes_body(self)?;
         let yes = std::mem::take(&mut self.code);
-        let yes_init = self.application_initialization_state();
+        let yes_init = self.take_application_initialization_state();
         let yes_env = self.env.clone();
         let yes_path = self.path.clone();
         let yes_flow = self.flow;
