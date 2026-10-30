@@ -1954,7 +1954,8 @@ fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdent
                             entry.insert(*identity);
                         }
                         std::collections::btree_map::Entry::Occupied(entry) => {
-                            common.insert(Fact::equal(*entry.get(), *identity));
+                            let fact = Fact::equal(*entry.get(), *identity);
+                            if !environment.contains(&fact) { common.insert(fact); }
                         }
                     }
                 }
@@ -1983,7 +1984,6 @@ fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdent
                     }
                 }
             }
-            common.retain(|fact| !environment.contains(fact));
             Some(Arc::new(Cow::Owned(common)))
         }
         (a, None) | (None, a) => a,
