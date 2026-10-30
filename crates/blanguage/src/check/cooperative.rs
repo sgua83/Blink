@@ -556,13 +556,18 @@ impl<'a> Builder<'a> {
             !ty.contains_views() && !ty.owns_resources()
                 && bounds::Proof::fact_components(&ty).next().is_none()
         };
-        let caller_path = local_bounds.then(|| std::mem::take(&mut self.path));
+        let caller_path = std::mem::take(&mut self.path);
         let (mut result,_) = self.function_body(callee.function.body.as_ref().unwrap())?;
         if let Some(returns::Returned::Value(value)) = &mut result {
             value.literal = false;
         }
         self.calls.pop();
         if self.flow.continues() {
+            self.path = if local_bounds {
+                caller_path
+            } else {
+                bounds::Clause::both(&caller_path, &self.path)
+            };
             let returned=result.as_ref().map(|value|self.returned_storage(value));
             let mut updates=Vec::new();
             for(index,_,place)in &borrowed {
@@ -594,7 +599,6 @@ impl<'a> Builder<'a> {
         } else {
             self.env = old_env;
         }
-        if let Some(path) = caller_path && self.flow.continues() { self.path = path; }
         self.mutable_names = old_mutable_names;
         self.definition = old_definition;
         self.in_function = old_in_function;
