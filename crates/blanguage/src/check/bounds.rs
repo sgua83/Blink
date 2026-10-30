@@ -1895,11 +1895,11 @@ fn contradictory(facts: &Facts) -> bool {
 fn additions_conflict(environment: &Facts, additions: &Facts) -> bool {
     contradictory(additions) || cross_conflict(environment, additions)
 }
-// 两侧各自已完成原矛盾检查，共有事实无须再次检查。
+// 两侧已各自完成内部检查；共有事实不会与另一侧冲突。
 fn cross_conflict(a: &Facts, b: &Facts) -> bool {
     use std::ops::Bound::{Excluded, Included};
     let (other, facts) = if a.len() < b.len() { (b, a) } else { (a, b) };
-    facts.difference(other).any(|fact| match *fact {
+    facts.iter().any(|fact| match *fact {
         Fact::Boolean(id, truth) => other.contains(&Fact::Boolean(id, !truth)),
         Fact::NonZero(id) => other.contains(&Fact::Zero(id)),
         Fact::Zero(id) => other.contains(&Fact::NonZero(id)),
