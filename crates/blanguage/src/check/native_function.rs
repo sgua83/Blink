@@ -77,19 +77,20 @@ fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
     mut context: application::Context,
-) -> Result<application::Context> {
-    if !context.functions.declare(&instance.name) {
-        return Ok(context);
+    mut functions: Module,
+) -> Result<(application::Context, Module)> {
+    if !functions.declare(&instance.name) {
+        return Ok((context, functions));
     }
     if let Some(definitions) = &instance.definition.compiled {
-        return compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), context);
+        return compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), context, functions);
     }
     let frame = context.frame.take();
     let mut instance = instance.clone();
     if instance.definition.function.target == Target::Compute {
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
-    let checked = checked_function(world, &instance, Some(context))?;
+    let checked = checked_function(world, &instance, Some(context), functions)?;
     Ok(finish_declaration(&instance, frame, checked))
 }
 
@@ -97,8 +98,9 @@ fn declaration(
 fn compiled_declaration(
     instance: &crate::generics::Instance,
     bytes: Option<&[u8]>,
-    mut context: application::Context,
-) -> Result<application::Context> {
+    context: application::Context,
+    mut functions: Module,
+) -> Result<(application::Context, Module)> {
     use crate::module::codec::Decode;
     let bytes = bytes.ok_or_else(|| Diagnostic {
         source: instance.definition.source.clone(),
@@ -112,7 +114,7 @@ fn compiled_declaration(
         code: "B270",
         message: format!("模块函数接口错误：{error}"),
     })?;
-    context.functions.units.insert(
+    functions.units.insert(
         instance.name.clone(),
         Some(Unit {
             function: None,
@@ -125,7 +127,7 @@ fn compiled_declaration(
             view_model: view_contracts::Function::default(),
         }),
     );
-    Ok(context)
+    Ok((context, functions))
 }
 
 #[inline(never)]
@@ -133,8 +135,9 @@ fn finish_declaration(
     instance: &crate::generics::Instance,
     frame: Option<Vec<Reg>>,
     checked: Box<CheckedFunction>,
-) -> application::Context {
+) -> (application::Context, Module) {
     let residency=checked.residency;
+    let mut functions = checked.functions;
     let mut context = checked.application.unwrap();
     context.frame = frame;
     let mut function = checked.body;
@@ -152,7 +155,7 @@ fn finish_declaration(
         view_access:BTreeSet::new(),
     };
     crate::optimize::value_code(&mut function.body);
-    context.functions.units.insert(
+    functions.units.insert(
         instance.name.clone(),
         Some(Unit {
             function: Some(function),
@@ -165,7 +168,7 @@ fn finish_declaration(
             view_model: checked.view_model,
         }),
     );
-    context
+    (context, functions)
 }
 // 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
 pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
@@ -256,13 +259,15 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     (models.next().unwrap(),(0..inputs.len()).collect(),models.collect())
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let mut context = declaration(world, instance, application::Context::default())?;
-    resolve_residencies(&mut context.functions)
+    let (_, mut functions) = declaration(world, instance, application::Context::default(), Module::default())?;
+    resolve_residencies(&mut functions)
 }
 impl Builder<'_> {
     fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
         let context = self.application.take().unwrap();
-        self.application = Some(declaration(self.world, instance, context)?);
+        let (context, functions) = declaration(self.world, instance, context, std::mem::take(&mut self.functions))?;
+        self.application = Some(context);
+        self.functions = functions;
         Ok(())
     }
     pub(super) fn native_function(
@@ -478,7 +483,7 @@ impl Builder<'_> {
             self.flow = Flow::STOP;
             return Ok(None);
         }
-        let prototype = self.application.as_ref().unwrap().functions.units[&instance.name]
+        let prototype = self.functions.units[&instance.name]
             .as_ref()
             .map(|unit| {
                 (
@@ -843,6 +848,7 @@ pub(crate) fn compile_module(
     requests: &[String],
 ) -> Result<crate::module::Module> {
     let mut context = application::Context::default();
+    let mut functions = Module::default();
     let mut roots = BTreeSet::new();
     for (key, d) in &world.functions {
         crate::generics::validate_declaration(d)?;
@@ -853,7 +859,7 @@ pub(crate) fn compile_module(
             if d.execution == crate::execution::Requirement::Domain
                 && super::kernel_interface(world, &instance.definition)?
             {
-                roots.extend(domain_declaration(world, &instance, &mut context)?);
+                roots.extend(domain_declaration(world, &instance, &mut context, &mut functions)?);
             } else if d.function.external.is_none()
                 && d.function.kind == FunctionKind::Value
                 && d.function.target != Target::Gpu
@@ -861,7 +867,7 @@ pub(crate) fn compile_module(
                 if d.public {
                     roots.insert(instance.name.clone());
                 }
-                context = declaration(world, &instance, context)?;
+                (context, functions) = declaration(world, &instance, context, functions)?;
             } else if d.execution == crate::execution::Requirement::Domain {
                 compile_program(world, &instance)?;
             } else {
@@ -896,7 +902,7 @@ pub(crate) fn compile_module(
         if d.execution == crate::execution::Requirement::Domain
             && super::kernel_interface(world, &instance.definition)?
         {
-            roots.extend(domain_declaration(world, &instance, &mut context)?);
+            roots.extend(domain_declaration(world, &instance, &mut context, &mut functions)?);
             continue;
         }
         if d.function.external.is_some()
@@ -910,9 +916,9 @@ pub(crate) fn compile_module(
             );
         }
         roots.insert(instance.name.clone());
-        context = declaration(world, &instance, context)?;
+        (context, functions) = declaration(world, &instance, context, functions)?;
     }
-    let finalized = finalize(context.functions, roots, None, Some(entry))?;
+    let finalized = finalize(functions, roots, None, Some(entry))?;
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, context.resources);
     Ok(crate::module::Module {
@@ -936,19 +942,20 @@ fn domain_at(
     world: &World,
     instance: &crate::generics::Instance,
     context: &mut application::Context,
+    functions: &mut Module,
     target: Target,
 ) -> Result<crate::module::domain::Interface> {
     let name = crate::module::domain::symbol(&instance.name, target);
-    if !context.functions.units.contains_key(&name) {
+    if !functions.units.contains_key(&name) {
         if instance.definition.compiled.is_some() {
             let mut reference = instance.clone();
             reference.name = name.clone();
-            *context = declaration(world, &reference, std::mem::take(context))?;
+            (*context, *functions) = declaration(world, &reference, std::mem::take(context), std::mem::take(functions))?;
         } else {
-            build_domain(world, instance, context, target)?;
+            build_domain(world, instance, context, functions, target)?;
         }
     }
-    context.functions.units[&name]
+    functions.units[&name]
         .as_ref()
         .unwrap()
         .contract
@@ -968,7 +975,7 @@ impl Builder<'_> {
         target: Target,
     ) -> Result<crate::module::domain::Interface> {
         let mut context = self.application.take().unwrap();
-        let interface = domain_at(self.world, instance, &mut context, target)?;
+        let interface = domain_at(self.world, instance, &mut context, &mut self.functions, target)?;
         self.application = Some(context);
         Ok(interface)
     }
@@ -987,13 +994,14 @@ impl Builder<'_> {
     }
 }
 pub(crate) fn check_domain(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    domain_declaration(world, instance, &mut application::Context::default())?;
+    domain_declaration(world, instance, &mut application::Context::default(), &mut Module::default())?;
     Ok(())
 }
 fn domain_declaration(
     world: &World,
     instance: &crate::generics::Instance,
     context: &mut application::Context,
+    functions: &mut Module,
 ) -> Result<BTreeSet<String>> {
     let targets: &[Target] = match instance.definition.function.target {
         Target::Cpu => &[Target::Cpu],
@@ -1002,7 +1010,7 @@ fn domain_declaration(
     };
     let mut roots = BTreeSet::new();
     for &target in targets {
-        domain_at(world, instance, context, target)?;
+        domain_at(world, instance, context, functions, target)?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
@@ -1013,6 +1021,7 @@ fn build_domain(
     world: &World,
     instance: &crate::generics::Instance,
     context: &mut application::Context,
+    functions: &mut Module,
     target: Target,
 ) -> Result<()> {
     let d = &instance.definition;
@@ -1093,7 +1102,7 @@ fn build_domain(
             &uniform_values,
             &mut code,
         )?;
-        domain_at(world, &call.instance, context, target)?;
+        domain_at(world, &call.instance, context, functions, target)?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {
@@ -1193,7 +1202,7 @@ fn build_domain(
         residency: BTreeMap::new(),
         view_access:BTreeSet::new(),
     };
-    context.functions.units.insert(
+    functions.units.insert(
         name,
         Some(Unit {
             function: Some(function),

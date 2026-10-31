@@ -1213,7 +1213,7 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     if d.function.kind == FunctionKind::Value && d.function.target == Target::Cpu {
         return native_function::check(world, instance);
     }
-    checked_function(world, instance, None).map(|_| ())
+    checked_function(world, instance, None, native_function::Module::default()).map(|_| ())
 }
 struct CheckedFunction {
     body: FunctionBody,
@@ -1224,11 +1224,13 @@ struct CheckedFunction {
     residency: residency::Inputs,
     view_model: view_contracts::Function,
     application: Option<application::Context>,
+    functions: native_function::Module,
 }
 fn checked_function(
     world: &World,
     instance: &crate::generics::Instance,
     application: Option<application::Context>,
+    functions: native_function::Module,
 ) -> Result<Box<CheckedFunction>> {
     let name = &instance.name;
     let d = &instance.definition;
@@ -1236,6 +1238,7 @@ fn checked_function(
     let mut b = Box::new(Builder::new(world, d, &program, 0));
     b.in_function = true;
     b.application = application;
+    b.functions = functions;
     if b.application.is_some() { b.view_uses = view_liveness::State::new(world, d); }
     let (parameters, inputs, output_contracts) = function_parameters(&mut b, name)?;
     let (returned,written) = b.function_body(d.function.body.as_ref().unwrap())?;
@@ -1533,6 +1536,7 @@ fn finish_checked_function(
         residency: b.residency,
         view_model: b.view_model,
         application: b.application,
+        functions: b.functions,
     }))
 }
 fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, Bits)> {
@@ -1593,6 +1597,7 @@ struct Builder<'a> {
     residency: residency::Inputs,
     view_model: view_contracts::Function,
     application: Option<application::Context>,
+    functions: native_function::Module,
     world: &'a World,
     definition: Arc<Definition>,
     program: &'a Program,
@@ -1645,6 +1650,7 @@ impl<'a> Builder<'a> {
             residency: residency::Inputs::default(),
             view_model: view_contracts::Function::default(),
             application: None,
+            functions: native_function::Module::default(),
             world,
             definition: definition.clone(),
             program,

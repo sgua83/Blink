@@ -5,7 +5,6 @@ use super::*;
 pub(super) struct Context {
     pub frame: Option<Vec<Reg>>,
     pub resources: crate::application::Resources,
-    pub functions: native_function::Module,
 }
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Ownership {
@@ -152,7 +151,7 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         *frame = std::mem::take(&mut body.inputs);
     }
-    let finalized = native_function::finish(std::mem::take(&mut app.functions), &mut body)?;
+    let finalized = native_function::finish(builder.functions, &mut body)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app);
