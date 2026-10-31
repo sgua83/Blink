@@ -1689,33 +1689,53 @@ impl<'a> Builder<'a> {
         }
     }
     fn parallel_access(&self, span: Span) -> Result<()> {
-        let shared = |binding: usize, index: Reg| {
-            if self.appends.iter().any(|(output, count)| *output == binding || count.binding == binding) {
+        let mut regions: BTreeMap<usize, (BTreeSet<(u32, u32)>, BTreeSet<(u32, u32)>)> = BTreeMap::new();
+        let mut access = |binding: usize, index: Reg, range: (u32, u32), mode: Access| {
+            if mode.reads() && self.appends.iter().any(|(output, count)| *output == binding || count.binding == binding) {
                 return self.fail(span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取");
             }
-            if index != self.global_index && self.writes.contains(&binding) {
-                self.fail(span, "B166", format!(
-                    "同一 parallel 阶段不能共享读取并写入 {} 的其他元素",
-                    self.program.buffers[binding].name,
-                ))
-            } else {
-                Ok(())
-            }
+            let (reads, writes) = regions.entry(binding).or_default();
+            if mode.reads() && index != self.global_index { reads.insert(range); }
+            if mode.writes() { writes.insert(range); }
+            Ok(())
         };
         let mut pending = vec![self.code.as_slice()];
         while let Some(code) = pending.pop() {
             for instruction in code {
                 match instruction {
-                    Inst::Load { binding, index, .. }
-                    | Inst::LoadIndexed { source: IndexedSource::Data { binding, index }, .. } => {
-                        shared(*binding, *index)?;
+                    Inst::Load { dst, binding, index, word } => {
+                        access(*binding, *index, (*word, *word + self.registers[*dst].size()), Access::Read)?;
+                    }
+                    Inst::Store { binding, index, word, value } => {
+                        access(*binding, *index, (*word, *word + self.registers[*value].size()), Access::Write)?;
+                    }
+                    Inst::LoadIndexed { source: IndexedSource::Data { binding, index }, .. } => {
+                        access(*binding, *index, (0, self.program.buffers[*binding].ty.size), Access::Read)?;
+                    }
+                    Inst::StoreIndexed { source: IndexedSource::Data { binding, index }, .. } => {
+                        access(*binding, *index, (0, self.program.buffers[*binding].ty.size), Access::Write)?;
+                    }
+                    Inst::Atomic(atomic) if atomic.op.writes() => {
+                        if let AtomicTarget::Dataset(binding) = atomic.target {
+                            let range = if atomic.offset.is_some() {
+                                (0, self.program.buffers[binding].ty.size)
+                            } else {
+                                (atomic.word, atomic.word + atomic.scalar.size())
+                            };
+                            access(binding, atomic.index, range, Access::Write)?;
+                        }
                     }
                     Inst::Call(call) => {
                         for argument in &call.arguments {
-                            if let CallArgument::Reference { access, address: CallReference {
-                                storage: CallStorage::Indexed(IndexedSource::Data { binding, index }), ..
-                            }, .. } = argument && access.reads() {
-                                shared(*binding, *index)?;
+                            if let CallArgument::Reference { ty, access: mode, address: CallReference {
+                                storage: CallStorage::Indexed(IndexedSource::Data { binding, index }), offset, word,
+                            }} = argument {
+                                let range = if offset.is_some() {
+                                    (0, self.program.buffers[*binding].ty.size)
+                                } else {
+                                    (*word, *word + ty.size)
+                                };
+                                access(*binding, *index, range, *mode)?;
                             }
                         }
                     }
@@ -1723,6 +1743,18 @@ impl<'a> Builder<'a> {
                     Inst::If { yes, no, .. } => pending.extend([yes.as_slice(), no.as_slice()]),
                     Inst::Loop { condition, body, .. } => pending.extend([condition.as_slice(), body.as_slice()]),
                     _ => {}
+                }
+            }
+        }
+        for (binding, (reads, writes)) in regions {
+            let mut writes = writes.iter().filter(|(start, end)| start < end).peekable();
+            for read in reads.iter().filter(|(start, end)| start < end) {
+                while writes.peek().is_some_and(|write| write.1 <= read.0) { writes.next(); }
+                if writes.peek().is_some_and(|write| write.0 < read.1) {
+                    return self.fail(span, "B166", format!(
+                        "同一 parallel 阶段不能共享读取并写入 {} 的其他元素中的重叠位置",
+                        self.program.buffers[binding].name,
+                    ));
                 }
             }
         }
