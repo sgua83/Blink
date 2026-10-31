@@ -48,7 +48,7 @@
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
-      "sha256": "3dfb20916bae31b4c035c1da62711b631538e29d90b5510b353a5c80bcb9036d"
+      "sha256": "3d3833672ef5988a67faee5ff60f873430dbd84bbf72a491a17150f85a40c618"
     },
     {
       "path": "crates/blanguage/src/parser.rs",

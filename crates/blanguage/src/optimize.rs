@@ -494,14 +494,16 @@ fn dce(
             };
             *result = retained;
         }
-        let results = i.results();
         if !matches!(
             i,
             Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. } | Inst::Call(_)
-        ) && !results.is_empty()
-            && !results.iter().any(|r| needed.contains(&Register(*r)))
-        {
-            continue;
+        ) {
+            let mut results = i.results().peekable();
+            if results.peek().is_some()
+                && !results.any(|r| needed.contains(&Register(r)))
+            {
+                continue;
+            }
         }
         if matches!(&i, Inst::StoreLocal(slot, _) if !needed.contains(&Local(*slot))) {
             continue;
@@ -591,7 +593,6 @@ fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
         | Inst::TileBarrier => true,
         _ => inst
             .results()
-            .iter()
-            .any(|r| after.contains(&PrivateSlot::Register(*r))),
+            .any(|r| after.contains(&PrivateSlot::Register(r))),
     })
 }

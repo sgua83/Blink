@@ -386,25 +386,27 @@ pub(crate) fn live_before(
 }
 
 impl Inst {
-    pub(crate) fn results(&self) -> Vec<Reg> {
-        match self {
-            Self::Call(call) => call.values.clone(),
+    pub(crate) fn results(&self) -> impl Iterator<Item = Reg> {
+        let mut division = [None, None];
+        let mut collective = &[][..];
+        let values: &[Reg] = match self {
+            Self::Call(call) => &call.values,
             Self::TextureSample { result, .. } | Self::TextureFetch { result, .. } => {
-                result.to_vec()
+                result
             }
-            Self::TextureSize { result, .. } => result.to_vec(),
+            Self::TextureSize { result, .. } => result,
             Self::TextureLevels { dst, .. }
             | Self::TextureAddress { dst, .. }
             | Self::TextureFormat { dst, .. }
-            | Self::TextureRead { dst, .. } => vec![*dst],
-            Self::Append(a) => vec![a.accepted],
-            Self::Atomic(a) => a.result.iter().copied().collect(),
+            | Self::TextureRead { dst, .. } => std::slice::from_ref(dst),
+            Self::Append(a) => std::slice::from_ref(&a.accepted),
+            Self::Atomic(a) => a.result.as_slice(),
             Self::Constant(r, ..)
             | Self::Index(r)
             | Self::Uniform(r, _)
             | Self::LoadLocal(r, _)
             | Self::TileLength(r)
-            | Self::TileLane(r) => vec![*r],
+            | Self::TileLane(r) => std::slice::from_ref(r),
             Self::LoadIndexed { dst, .. }
             | Self::Load { dst, .. }
             | Self::LoadLocalIndexed { dst, .. }
@@ -416,12 +418,21 @@ impl Inst {
             | Self::Binary { dst, .. }
             | Self::Cast { dst, .. }
             | Self::Math { dst, .. }
-            | Self::Select { dst, .. } => vec![*dst],
-            Self::RayQuery { result, .. } => result.registers().to_vec(),
-            Self::IntegerDivide { result, .. } => result.outputs().map(|(_, r)| r).collect(),
-            Self::TileCollective(c) => c.results.iter().map(|(_, r)| *r).collect(),
-            _ => Vec::new(),
-        }
+            | Self::Select { dst, .. } => std::slice::from_ref(dst),
+            Self::RayQuery { result, .. } => result.registers(),
+            Self::IntegerDivide { result, .. } => {
+                division = [result.quotient(), result.remainder()];
+                &[]
+            },
+            Self::TileCollective(c) => {
+                collective = &c.results;
+                &[]
+            },
+            _ => &[],
+        };
+        values.iter().copied()
+            .chain(division.into_iter().flatten())
+            .chain(collective.iter().map(|(_, reg)| *reg))
     }
     pub(crate) fn operands(&self) -> Vec<Reg> {
         let mut values = match self {
