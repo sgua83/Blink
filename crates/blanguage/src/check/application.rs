@@ -1075,11 +1075,12 @@ impl Builder<'_> {
         &mut self,
         handle: Reg,
         identity: ValueIdentity,
-        write: bool,
+        offset: Value,
+        bytes: u32,
         span: Span,
     ) -> Result<[Reg; 2]> {
         self.application_handle_available(identity, span)?;
-        if write { self.require_view_unborrowed(&[identity],span)?; }
+        if bytes != 0 { self.require_view_unborrowed(&[identity],span)?; }
         if let Some(data) = self
             .env
             .values()
@@ -1104,9 +1105,9 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         };
-        let write = self.constant(Scalar::U32, Bits::from(write));
+        let bytes = self.constant(Scalar::U32, Bits::from(bytes));
         let value = self
-            .application_call("address", vec![handle, write], Some(pointer_type()), span)?
+            .application_call("address", vec![handle, offset, bytes], Some(pointer_type()), span)?
             .unwrap();
         Ok([value.regs[0], value.regs[1]])
     }
@@ -1172,8 +1173,43 @@ impl Builder<'_> {
         let result=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
         self.code.push(Inst::Cast{dst:result[0],src:pointer});self.code.push(Inst::Cast{dst:result[1],src:high});result
     }
-    pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,span:Span)->Result<([Reg;2],Reg,u32)>{
-        let address=self.application_address(handle,identity,write,span)?;
+    pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:&[(Scalar,u32)],span:Span)->Result<([Reg;2],Reg,u32)>{
+        let address = if write {
+            let (step, field) = match stride {
+                DataStride::Declared(step) => (self.constant(Scalar::U32, Bits::from(step)).regs[0], self.constant(Scalar::U32, 0).regs[0]),
+                DataStride::Parameter { stride, offset } => (stride, offset),
+            };
+            let widen = |builder: &mut Self, src| {
+                let dst = builder.reg(Scalar::U64);
+                builder.code.push(Inst::Cast { dst, src });
+                dst
+            };
+            let row = widen(self, index);
+            let step = widen(self, step);
+            let field = widen(self, field);
+            let scaled = self.reg(Scalar::U64);
+            self.code.push(Inst::Binary { dst: scaled, op: BinaryOp::IMul, a: row, b: step });
+            let mut start = self.reg(Scalar::U64);
+            self.code.push(Inst::Binary { dst: start, op: BinaryOp::IAdd, a: scaled, b: field });
+            if let Some(relative) = relative {
+                let relative = widen(self, relative);
+                let dst = self.reg(Scalar::U64);
+                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: start, b: relative });
+                start = dst;
+            }
+            let mut address = None;
+            for &(scalar, word) in components {
+                let word = self.constant(Scalar::U64, Bits::from(word)).regs[0];
+                let dst = self.reg(Scalar::U64);
+                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: start, b: word });
+                let offset = Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
+                address = Some(self.application_address(handle, identity, offset, scalar.size(), span)?);
+            }
+            address.unwrap()
+        } else {
+            let zero = self.constant(Scalar::U64, 0);
+            self.application_address(handle, identity, zero, 0, span)?
+        };
         Ok(match stride {
             DataStride::Declared(stride)=>(address,index,stride),
             DataStride::Parameter{stride,offset}=>{
@@ -1183,7 +1219,8 @@ impl Builder<'_> {
         })
     }
     pub(super) fn application_projection_address(&mut self,data:&DataReference,span:Span)->Result<[Reg;2]>{
-        let address=self.application_address(data.handle.regs[0],data.handle.identity(),false,span)?;
+        let zero = self.constant(Scalar::U64, 0);
+        let address=self.application_address(data.handle.regs[0],data.handle.identity(),zero,0,span)?;
         let(_,offset)=self.application_reference_layout(data);let zero=self.constant(Scalar::U32,0).regs[0];
         Ok(self.offset_application_address(address,zero,zero,offset.regs[0]))
     }
@@ -1197,7 +1234,7 @@ impl Builder<'_> {
         words: &[u32],
         span: Span,
     ) -> Result<Value> {
-        let (address,index,stride) = self.application_memory(handle,identity,index,stride,false,span)?;
+        let (address,index,stride) = self.application_memory(handle,identity,index,stride,false,None,&[],span)?;
         let mut regs = Vec::new();
         for (&(scalar, _), &word) in ty.components.iter().zip(words) {
             let dst = self.reg(scalar);
@@ -1232,9 +1269,9 @@ impl Builder<'_> {
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
-        let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,span)?;
         let zero = self.constant(Scalar::U32, 0).regs[0];
-        for (&word, value) in words.iter().zip(value.regs) {
+        for ((&(scalar, _), &word), value) in value.ty.components.iter().zip(words).zip(value.regs) {
+            let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,None,&[(scalar,word)],span)?;
             self.code.push(Inst::StoreIndexed {
                 source: IndexedSource::View {
                     address,

@@ -336,7 +336,7 @@ impl Builder<'_> {
         };
         Place::Indexed { ty, initialization, locations, base, offset, words: vec![0] }
     }
-    fn array_memory(&mut self, base: &Place, offset: Reg, word: u32, write: bool, span: Span) -> Result<(IndexedSource, Reg, u32)> {
+    fn array_memory(&mut self, base: &Place, offset: Reg, word: u32, scalar: Scalar, write: bool, span: Span) -> Result<(IndexedSource, Reg, u32)> {
         if let Place::Reference { address: ReferenceAddress::Components(addresses), words, .. } = base {
             let selected = if word == 0 { offset } else {
                 let number = self.constant(Scalar::U32, Bits::from(word)).regs[0];
@@ -365,7 +365,7 @@ impl Builder<'_> {
                 stride,
                 ..
             } => {
-                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,write,span)?;
+                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,write,Some(offset),&[(scalar,word)],span)?;
                 IndexedSource::View{address,index,stride}
             },
             Place::Element { binding, index, .. } => IndexedSource::Data {
@@ -442,7 +442,7 @@ impl Builder<'_> {
                     }
                 }
                 _ => {
-                    let (source, offset, word) = self.array_memory(base, *offset, *word, false, span)?;
+                    let (source, offset, word) = self.array_memory(base, *offset, *word, *scalar, false, span)?;
                     Inst::LoadIndexed { dst, source, offset, word }
                 },
             };
@@ -484,7 +484,7 @@ impl Builder<'_> {
         self.data_access(place, Access::Write);
         self.assign_owned_proof(place, bounds::Proof::capture(&value), false);
         self.initialize(place);
-        for (word, value) in words.iter().zip(value.regs) {
+        for ((word, &(scalar, _)), value) in words.iter().zip(&value.ty.components).zip(value.regs) {
             let instruction = match &**base {
                 Place::Local(_, slots, storage) => Inst::StoreLocalIndexed {
                     base: storage.start,
@@ -499,7 +499,7 @@ impl Builder<'_> {
                     if let Place::Element { binding, .. } = &**base {
                         self.writes.insert(*binding);
                     }
-                    let (source, offset, word) = self.array_memory(base, *offset, *word, true, span)?;
+                    let (source, offset, word) = self.array_memory(base, *offset, *word, scalar, true, span)?;
                     Inst::StoreIndexed { source, offset, word, value }
                 }
                 _ => unreachable!(),

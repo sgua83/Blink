@@ -187,23 +187,28 @@ impl Frame {
     ///
     /// # Safety
     /// 指针只在下一次可能移动该存储的执行／释放前有效。调用者必须遵守 B 的
-    /// 类型、索引域与独占访问语义；write=true 取得写借用并放弃依赖该计数的域关系。
-    pub unsafe fn address(&mut self, handle: u32, write: bool) -> Result<*mut u32> {
+    /// 类型、索引域与独占访问语义；非零bytes交接从offset开始的实际可写字节范围，
+    /// 只撤回与其重叠的计数字段关系。返回原根地址，消费不得写出本次交接范围。
+    pub unsafe fn address(&mut self, handle: u32, offset: u64, bytes: u32) -> Result<*mut u32> {
         let index = handle as usize;
         let source = self.data.datasets[index].take().unwrap();
         let mut data = source.cpu()?;
         let address = match &mut data {
             CpuDataset::Owned(data) => data.words.as_mut_ptr(),
             CpuDataset::Read(data) => {
-                if write {
+                if bytes != 0 {
                     return Err(error("冻结的 CPU 存储不能取得写借用"));
                 }
                 data.words().as_ptr().cast_mut()
             }
         };
         self.data.datasets[index] = Some(ResidentData::Cpu(data));
-        if write {
-            self.data.domains.retain(|r| r.count.binding != index);
+        if bytes != 0 {
+            self.data.domains.retain(|r| {
+                r.count.binding != index
+                    || u64::from(r.count.word) + 4 <= offset
+                    || offset + u64::from(bytes) <= u64::from(r.count.word)
+            });
         }
         Ok(address)
     }

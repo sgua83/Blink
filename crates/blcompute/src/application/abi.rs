@@ -85,8 +85,8 @@ mod native {
     /// # Safety
     /// 对应存储、访问、范围与指针期限由真实调用者遵守。
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn blink_address(frame: *mut Frame, handle: u32, write: u32) -> *mut u32 {
-        let result = unsafe { (&mut *frame).address(handle, write != 0) };
+    pub unsafe extern "C" fn blink_address(frame: *mut Frame, handle: u32, offset: u64, bytes: u32) -> *mut u32 {
+        let result = unsafe { (&mut *frame).address(handle, offset, bytes) };
         unsafe { finish(frame, result) }
     }
 }

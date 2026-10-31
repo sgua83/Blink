@@ -143,7 +143,8 @@ impl Builder<'_> {
                 words,
                 ..
             } => {
-                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),span)?;
+                let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), &word)| (scalar, word)).collect();
+                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),None,&components,span)?;
                 (CallStorage::Indexed(IndexedSource::View{address,index,stride}),None,words.clone())
             },
             Place::ViewElement {
@@ -200,7 +201,9 @@ impl Builder<'_> {
                         stride,
                         ..
                     } => {
-                        let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),span)?;
+                        let words = reference_words(place, &self.locals).unwrap();
+                        let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), word)| (scalar, word)).collect();
+                        let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),Some(*offset),&components,span)?;
                         CallStorage::Indexed(IndexedSource::View{address,index,stride})
                     },
                     Place::ViewElement {
