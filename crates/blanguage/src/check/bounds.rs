@@ -34,6 +34,8 @@ type Facts = BTreeSet<Fact>;
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
 type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
 struct QueryResult<'a> {
+    clause: &'a Clause,
+    inputs: Option<(usize, usize, bool)>,
     users: usize,
     remaining: usize,
     value: Option<Option<QueryFacts<'a>>>,
@@ -1549,8 +1551,8 @@ impl Clause {
             _ => None,
         }
     }
-    fn take_query<'a>(results: &mut HashMap<usize, QueryResult<'a>>, clause: &Self) -> Option<QueryFacts<'a>> {
-        let result = results.get_mut(&clause.key()).unwrap();
+    fn take_query<'a>(results: &mut [QueryResult<'a>], index: usize) -> Option<QueryFacts<'a>> {
+        let result = &mut results[index];
         result.remaining -= 1;
         if result.remaining == 0 {
             result.value.take().unwrap()
@@ -1559,14 +1561,14 @@ impl Clause {
         }
     }
     // 未求值的右侧也归还自己的输入使用；已经求值的节点已经消费过输入。
-    fn abandon_query<'a>(results: &mut HashMap<usize, QueryResult<'a>>, clause: &Self) {
-        let mut pending = vec![clause];
-        while let Some(clause) = pending.pop() {
-            let result = results.get_mut(&clause.key()).unwrap();
+    fn abandon_query<'a>(results: &mut [QueryResult<'a>], index: usize) {
+        let mut pending = vec![index];
+        while let Some(index) = pending.pop() {
+            let result = &mut results[index];
             result.remaining -= 1;
             if result.remaining == 0 {
                 if result.value.take().is_none()
-                    && let Some((left, right, _)) = clause.query_inputs()
+                    && let Some((left, right, _)) = result.inputs
                 {
                     pending.extend([left, right]);
                 }
@@ -1646,25 +1648,36 @@ impl Clause {
         if contradictory(environment) {
             return None;
         }
-        // One immutable Clause graph owns the input topology for this query.
-        let mut facts: HashMap<usize, QueryResult<'a>> = HashMap::new();
-        facts.insert(self.key(), QueryResult { users: 1, remaining: 0, value: None });
-        let mut pending = vec![self];
-        while let Some(clause) = pending.pop() {
-            if let Some((left, right, _)) = clause.query_inputs() {
-                for input in [left, right] {
-                    match facts.entry(input.key()) {
+        // Resolve graph identities once; rounds consume the same query-owned slots.
+        let mut indices = HashMap::from([(self.key(), 0)]);
+        let mut facts = vec![QueryResult {
+            clause: self, inputs: None, users: 1, remaining: 0, value: None,
+        }];
+        let mut index = 0;
+        while index < facts.len() {
+            if let Some((left, right, alternative)) = facts[index].clause.query_inputs() {
+                let mut inputs = [0; 2];
+                for (slot, input) in inputs.iter_mut().zip([left, right]) {
+                    match indices.entry(input.key()) {
                         std::collections::hash_map::Entry::Vacant(entry) => {
-                            entry.insert(QueryResult { users: 1, remaining: 0, value: None });
-                            pending.push(input);
+                            *slot = facts.len();
+                            entry.insert(*slot);
+                            facts.push(QueryResult {
+                                clause: input, inputs: None, users: 1, remaining: 0, value: None,
+                            });
                         }
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            entry.get_mut().users += 1;
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            *slot = *entry.get();
+                            facts[*slot].users += 1;
                         }
                     }
                 }
+                facts[index].inputs = Some((inputs[0], inputs[1], alternative));
             }
+            index += 1;
         }
+        drop(indices);
+        let mut pending = Vec::new();
         let mut environment: Cow<'a, Facts> = Cow::Borrowed(environment);
         loop {
             // 共同环境的别名事实只在原环境所有者处生产一次。
@@ -1679,18 +1692,18 @@ impl Clause {
                     environment.to_mut().extend(inherited.iter().copied());
                 }
             }
-            for result in facts.values_mut() {
+            for result in &mut facts {
                 result.remaining = result.users;
                 result.value = None;
             }
-            pending.push(self);
-            while let Some(clause) = pending.pop() {
-                if facts[&clause.key()].value.is_some() {
+            pending.push(0);
+            while let Some(index) = pending.pop() {
+                if facts[index].value.is_some() {
                     continue;
                 }
-                match &*clause.0 {
+                match &*facts[index].clause.0 {
                     ClauseNode::Impossible => {
-                        facts.get_mut(&clause.key()).unwrap().value = Some(None);
+                        facts[index].value = Some(None);
                         continue;
                     }
                     ClauseNode::Facts(required) => {
@@ -1701,25 +1714,25 @@ impl Clause {
                         };
                         let required: QueryFacts<'a> = Arc::new(required);
                         let value = if cross_conflict(&environment, &required) { None } else { Some(required) };
-                        facts.get_mut(&clause.key()).unwrap().value = Some(value);
+                        facts[index].value = Some(value);
                         continue;
                     }
                     _ => {}
                 }
-                let (left, right, alternative) = clause.query_inputs().unwrap();
-                if facts[&left.key()].value.is_none() {
-                    pending.extend([clause, left]);
+                let (left, right, alternative) = facts[index].inputs.unwrap();
+                if facts[left].value.is_none() {
+                    pending.extend([index, left]);
                     continue;
                 }
                 // 合取的前提已不可能，另一侧没有本次查询的消费者。
-                if !alternative && facts[&left.key()].value.as_ref().unwrap().is_none() {
+                if !alternative && facts[left].value.as_ref().unwrap().is_none() {
                     Self::take_query(&mut facts, left);
                     Self::abandon_query(&mut facts, right);
-                    facts.get_mut(&clause.key()).unwrap().value = Some(None);
+                    facts[index].value = Some(None);
                     continue;
                 }
-                if facts[&right.key()].value.is_none() {
-                    pending.extend([clause, right]);
+                if facts[right].value.is_none() {
+                    pending.extend([index, right]);
                     continue;
                 }
                 let a = Self::take_query(&mut facts, left);
@@ -1730,8 +1743,8 @@ impl Clause {
                     match (a, b) {
                         (Some(a), Some(b)) => {
                             // 叶子与合取已经检查；析取派生事实在本次合取消费处检查。
-                            if (matches!(&*left.0, ClauseNode::Either(..)) && additions_conflict(&environment, &a))
-                                || (matches!(&*right.0, ClauseNode::Either(..)) && additions_conflict(&environment, &b))
+                            if (matches!(&*facts[left].clause.0, ClauseNode::Either(..)) && additions_conflict(&environment, &a))
+                                || (matches!(&*facts[right].clause.0, ClauseNode::Either(..)) && additions_conflict(&environment, &b))
                             {
                                 None
                             } else {
@@ -1741,9 +1754,9 @@ impl Clause {
                         _ => None,
                     }
                 };
-                facts.get_mut(&clause.key()).unwrap().value = Some(required);
+                facts[index].value = Some(required);
             }
-            let required = Self::take_query(&mut facts, self)?;
+            let required = Self::take_query(&mut facts, 0)?;
             if required.is_empty() {
                 return Some(environment.into_owned());
             }
