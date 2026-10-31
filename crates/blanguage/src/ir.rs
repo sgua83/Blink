@@ -10,7 +10,7 @@ pub use execution::{
     ReductionLayout,
 };
 mod atomic;
-pub use atomic::{Atomic, AtomicOp, AtomicTarget, MemoryOrder};
+pub use atomic::{Atomic, AtomicOp, MemoryOrder};
 mod custom_reduce;
 pub use custom_reduce::{
     CustomReduction, CustomScan, CustomSegmentedReduction, ReductionKernel, ValueCode,
@@ -1375,7 +1375,7 @@ impl Stage {
                     | Inst::TilePublish(_)
                     | Inst::TileBarrier => *scope = true,
                     Inst::Atomic(Atomic {
-                        target: AtomicTarget::Tile(tile),
+                        target: IndexedSource::Tile { tile, .. },
                         ..
                     }) => {
                         *scope = true;
@@ -1433,7 +1433,7 @@ impl Stage {
             for inst in code {
                 match inst {
                     Inst::Atomic(Atomic {
-                        target: AtomicTarget::Tile(tile),
+                        target: IndexedSource::Tile { tile, .. },
                         word,
                         offset: None,
                         ..
@@ -1445,7 +1445,7 @@ impl Stage {
                         ..
                     }
                     | Inst::Atomic(Atomic {
-                        target: AtomicTarget::Tile(tile),
+                        target: IndexedSource::Tile { tile, .. },
                         offset: Some(_),
                         ..
                     }) => {

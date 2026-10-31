@@ -195,7 +195,7 @@ enum Place {
         address: ReferenceAddress,
         scope: usize,
         words: Vec<u32>,
-        writable: bool,
+        access: Access,
     },
     ApplicationElement {
         ty: Ty,
@@ -207,7 +207,7 @@ enum Place {
         index_range: (u32, u32),
         stride: application::DataStride,
         words: Vec<u32>,
-        writable: bool,
+        access: Access,
     },
     // 独立函数检查的符号位置；program 内联直接借用调用方的实际 Place。
     AtomicParameter(Ty),
@@ -1331,11 +1331,7 @@ fn function_parameters(
         }
         if p.ty.dataset {
             let binding = if d.function.kind == FunctionKind::Value
-                && d.function.target == Target::Cpu
-                && matches!(
-                    p.access,
-                    Access::Read | Access::InOut | Access::Write | Access::Value
-                ) {
+                && d.function.target == Target::Cpu {
                 {
                     let mut data = b.application_parameter(data_index, parameter_index, p.access)?;
                     if p.access!=Access::Value {
@@ -1383,7 +1379,7 @@ fn function_parameters(
                 b.bind_owned_value(&p.name,value,p.span)?;continue;
             }
         }
-        if p.access == Access::Atomic {
+        if p.access == Access::Atomic && b.application.is_none() {
             b.env.insert(
                 p.name.clone(),
                 Binding::AtomicBorrow(Place::AtomicParameter(ty)),
@@ -1413,7 +1409,7 @@ fn function_parameters(
                     ty,
                     address,
                     scope: parameter_index,
-                    writable: p.access.writes(),
+                    access: p.access,
                 }
             } else {
                 let (slots, storage) = b.local_slots(&ty);
@@ -1422,6 +1418,10 @@ fn function_parameters(
             };
             if p.access.reads() {
                 b.initialize(&place);
+            }
+            if p.access == Access::Atomic {
+                b.env.insert(p.name.clone(), Binding::AtomicBorrow(place));
+                continue;
             }
             if place.ty().owns_resources(){
                 let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
@@ -1950,6 +1950,11 @@ impl<'a> Builder<'a> {
             );
         }
         match p {
+            Place::AtomicParameter(_)
+            | Place::Reference { access: Access::Atomic, .. }
+            | Place::ApplicationElement { access: Access::Atomic, .. } => {
+                self.fail(span, "B214", "原子借用只能通过显式原子操作读取")
+            }
             Place::Reference {
                 ty, address, words, ..
             } => {
@@ -2000,9 +2005,6 @@ impl<'a> Builder<'a> {
                 Ok(value)
             }
             Place::Indexed { .. } => self.read_array_place(p, span),
-            Place::AtomicParameter(_) => {
-                self.fail(span, "B214", "原子借用只能通过显式原子操作读取")
-            }
             Place::ViewElement {
                 ty,
                 address,
@@ -2134,6 +2136,11 @@ impl<'a> Builder<'a> {
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
         match p {
+            Place::AtomicParameter(_)
+            | Place::Reference { access: Access::Atomic, .. }
+            | Place::ApplicationElement { access: Access::Atomic, .. } => {
+                return self.fail(span, "B214", "原子借用只能通过显式原子操作修改");
+            }
             Place::Reference { address, words, .. } => {
                 self.writable_storage(p, span)?;
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
@@ -2173,9 +2180,6 @@ impl<'a> Builder<'a> {
             Place::Indexed { .. } => return self.write_array_place(p, value, span),
             Place::ReadOnlyLocal(..) => {
                 return self.fail(span, "B144", "按值参数或不可变局部值不可写");
-            }
-            Place::AtomicParameter(_) => {
-                return self.fail(span, "B214", "原子借用只能通过显式原子操作修改");
             }
             Place::ViewElement { .. } => return self.fail(span, "B185", "view 的元素不可写"),
             Place::TileElement { tile, .. } => {

@@ -102,7 +102,8 @@ fn emit_value(
             | Inst::StoreLocalIndexed { .. }
             | Inst::ViewLoad { .. }
             | Inst::LoadIndexed { .. }
-            | Inst::StoreIndexed { .. } => true,
+            | Inst::StoreIndexed { .. }
+            | Inst::Atomic(_) => true,
             Inst::Scope(b) => scratch(b),
             Inst::If { yes, no, .. } => scratch(yes) || scratch(no),
             Inst::Loop {

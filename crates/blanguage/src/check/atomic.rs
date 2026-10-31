@@ -3,7 +3,9 @@ use super::*;
 impl Builder<'_> {
     pub(super) fn atomic_storage(&self, place: &Place) -> bool {
         match place.storage() {
-            Place::AtomicParameter(_) => true,
+            Place::AtomicParameter(_)
+            | Place::Reference { access: Access::Atomic, .. }
+            | Place::ApplicationElement { access: Access::Atomic, .. } => true,
             Place::Element { binding, .. } => self.view_access[binding] == Access::Atomic,
             Place::TileElement { tile, .. } => self.tiles[*tile].access == Access::Atomic,
             _ => false,
@@ -26,7 +28,8 @@ impl Builder<'_> {
     fn atomic_location(
         &mut self,
         target: &Expr,
-    ) -> Result<Option<(Option<(AtomicTarget, Reg, Option<Reg>, u32)>, Scalar)>> {
+        write: bool,
+    ) -> Result<Option<(Option<(IndexedSource, Option<Reg>, u32)>, Scalar)>> {
         let Some(place) = self.atomic_place(target)? else {
             return Ok(None);
         };
@@ -36,29 +39,32 @@ impl Builder<'_> {
         }
         let scalar = ty.components[0].0;
         let (base, offset, word) = match &place {
-            Place::Indexed {
-                base,
-                offset,
-                words,
-                ..
-            } => (&**base, Some(*offset), words[0]),
-            Place::Element { words, .. } | Place::TileElement { words, .. } => {
-                (&place, None, words[0])
-            }
+            Place::Indexed { base, offset, words, .. } => (&**base, Some(*offset), words[0]),
+            Place::Element { words, .. } | Place::TileElement { words, .. }
+            | Place::Reference { words, .. } | Place::ApplicationElement { words, .. } => (&place, None, words[0]),
             Place::AtomicParameter(_) => return Ok(Some((None, scalar))),
             _ => unreachable!(),
         };
         let location = match base {
             Place::AtomicParameter(_) => None,
-            Place::Element { binding, index, .. } => {
-                Some((AtomicTarget::Dataset(*binding), *index, offset, word))
+            Place::Element { binding, index, .. } => Some((IndexedSource::Data { binding: *binding, index: *index }, offset, word)),
+            Place::TileElement { tile, index, .. } => Some((IndexedSource::Tile { tile: *tile, index: *index }, offset, word)),
+            Place::Reference { .. } | Place::ApplicationElement { .. } if offset.is_some() => {
+                let (source, offset, word) = self.array_memory(base, offset.unwrap(), word, scalar, write, target.span)?;
+                Some((source, Some(offset), word))
             }
-            Place::TileElement { tile, index, .. } => {
-                Some((AtomicTarget::Tile(*tile), *index, offset, word))
+            Place::Reference { address, .. } => {
+                let (address, word) = address.component(word);
+                let index = self.constant(Scalar::U32, 0).regs[0];
+                Some((IndexedSource::View { address, index, stride: 0 }, None, word))
+            }
+            Place::ApplicationElement { handle, identity, index, stride, .. } => {
+                let (address, index, stride) = self.application_memory(*handle, *identity, *index, *stride, write, None, &[(scalar, word)], target.span)?;
+                Some((IndexedSource::View { address, index, stride }, None, word))
             }
             _ => unreachable!(),
         };
-        if scalar.size() == 8 && matches!(location, Some((AtomicTarget::Tile(_), ..))) {
+        if scalar.size() == 8 && matches!(location, Some((IndexedSource::Tile { .. }, ..))) {
             return self.fail(target.span, "B215", "64位tile原子尚未实现");
         }
         Ok(Some((location, scalar)))
@@ -83,7 +89,7 @@ impl Builder<'_> {
         Ok(Some(value.regs[0]))
     }
     fn atomic_effect(&mut self, atomic: Atomic) {
-        if let AtomicTarget::Dataset(binding) = atomic.target {
+        if let IndexedSource::Data { binding, .. } = atomic.target {
             if atomic.op.reads() {
                 self.reads.insert(binding);
             }
@@ -104,7 +110,7 @@ impl Builder<'_> {
         if args.len() != 3 {
             return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
         }
-        let Some((location, scalar)) = self.atomic_location(&args[0])? else {
+        let Some((location, scalar)) = self.atomic_location(&args[0], true)? else {
             return Ok(());
         };
         let Some(value) = self.atomic_operand(&args[1], scalar)? else {
@@ -118,12 +124,11 @@ impl Builder<'_> {
                 "atomic_store 的内存序只能是 relaxed 或 release",
             );
         }
-        if let Some((target, index, offset, word)) = location {
+        if let Some((target, offset, word)) = location {
             self.atomic_effect(Atomic {
                 result: None,
                 scalar,
                 target,
-                index,
                 word,
                 offset,
                 op: AtomicOp::Store(value),
@@ -152,7 +157,7 @@ impl Builder<'_> {
                 ),
             );
         }
-        let Some((location, scalar)) = self.atomic_location(&args[0])? else {
+        let Some((location, scalar)) = self.atomic_location(&args[0], name != "atomic_load")? else {
             return Ok(None);
         };
         let order_at = if name == "atomic_compare_exchange" {
@@ -213,12 +218,11 @@ impl Builder<'_> {
             }
         };
         let result = self.reg(scalar);
-        if let Some((target, index, offset, word)) = location {
+        if let Some((target, offset, word)) = location {
             self.atomic_effect(Atomic {
                 result: Some(result),
                 scalar,
                 target,
-                index,
                 word,
                 offset,
                 op,

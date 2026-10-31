@@ -379,14 +379,22 @@ impl Builder<'_> {
                     env.insert(p.name.clone(), Binding::Owned(owner));
                     if p.access.writes() { written.push((index, place)); }
                 }
+                Argument::Atomic(place) if p.access == Access::Atomic => {
+                    self.require_same(&ty, place.ty(), span)?;
+                    for (part, address) in self.native_references(&place, Access::Atomic, span)? {
+                        arguments.push(CallArgument::Reference { ty: part, access: Access::Atomic, address });
+                        actual.extend([None, None]);
+                    }
+                    env.insert(p.name.clone(), Binding::AtomicBorrow(place));
+                }
                 Argument::BorrowedData(mut reference) if p.ty.dataset=>{
                     residency::argument(&mut locations,index,&reference.data);
                     self.require_same(&ty,reference.element_layout().1,span)?;
-                    if !matches!(p.access,Access::Read|Access::Write|Access::InOut){
-                        return self.fail(span,"B224","CPU dataset借用需要read／write／inout");
+                    if !matches!(p.access,Access::Read|Access::Write|Access::InOut|Access::Atomic){
+                        return self.fail(span,"B224","CPU dataset借用需要read／write／inout／atomic");
                     }
-                    if p.access.writes()&&!reference.writable{
-                        return self.fail(span,"B227","只读dataset不能提升为可写借用");
+                    if !reference.permits(p.access){
+                        return self.fail(span,"B227","dataset借用的访问模式不能转换为被调参数权限");
                     }
                     if p.access!=Access::Write{self.require_application_reference_initialized(&reference,span)?;}
                     self.native_dataset_shape(p,d,reference.count,span)?;

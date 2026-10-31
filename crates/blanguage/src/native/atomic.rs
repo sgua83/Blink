@@ -2,39 +2,27 @@
 use super::{operands::Operand, *};
 impl Emitter<'_> {
     pub(super) fn atomic(&mut self, atomic: &Atomic) {
-        let shared = matches!(atomic.target, AtomicTarget::Dataset(_));
+        let shared = !matches!(atomic.target, IndexedSource::Tile { .. });
         let wide = atomic.scalar.size() == 8;
-        // 一个CPU范围独占完整tile，lane由原生循环执行，无跨线程原子性成本。
+        // 一个CPU范围独占完整tile；Data与实际CPU View均共享原地址。
         let at = if let Some(offset) = atomic.offset {
-            let source = match atomic.target {
-                AtomicTarget::Dataset(binding) => IndexedSource::Data {
-                    binding,
-                    index: atomic.index,
-                },
-                AtomicTarget::Tile(tile) => IndexedSource::Tile {
-                    tile,
-                    index: atomic.index,
-                },
-            };
-            self.indexed_address(&source, offset, atomic.word);
+            self.indexed_address(&atomic.target, offset, atomic.word);
             Operand::memory(15, 0)
         } else {
             match atomic.target {
-                AtomicTarget::Dataset(binding) => {
-                    self.address(binding, atomic.index);
+                IndexedSource::Data { binding, index } => {
+                    self.address(binding, index);
                     Operand::memory(15, atomic.word)
                 }
-                AtomicTarget::Tile(tile) => {
-                    self.load(atomic.index);
+                IndexedSource::Tile { tile, index } => {
+                    self.load(index);
                     self.bytes(&[0x4c, 0x8d, 0x3c, 0x84]); // r15 = rsp + index * 4
-                    Operand::memory(
-                        15,
-                        self.tile_storage_base()
-                            + self
-                                .stage
-                                .word_offset(self.stage.shared_word(tile, atomic.word))
-                                as u32,
-                    )
+                    Operand::memory(15, self.tile_storage_base()
+                        + self.stage.word_offset(self.stage.shared_word(tile, atomic.word)) as u32)
+                }
+                IndexedSource::View { .. } => {
+                    self.indexed_base(&atomic.target);
+                    Operand::memory(15, atomic.word)
                 }
             }
         };

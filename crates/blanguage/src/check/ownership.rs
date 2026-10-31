@@ -345,8 +345,8 @@ impl Builder<'_> {
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
         match place {
-            Place::Reference { words, writable: true, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
-            Place::ApplicationElement { words, sources, writable: true, .. } => {
+            Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
+            Place::ApplicationElement { words, sources, access: Access::Write | Access::InOut, .. } => {
                 self.require_view_unborrowed(sources,span)?;
                 Ok(words.iter().map(|word| *word as usize).collect())
             },

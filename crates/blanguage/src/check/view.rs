@@ -286,6 +286,9 @@ impl Builder<'_> {
         let Some(data) = self.application_reference(&args[0])? else {
             return self.fail(span, "B271", "view借用需要具有实际所有者的dataset位置");
         };
+        if !data.permits(Access::Read) {
+            return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
+        }
         self.require_same(ty.view.as_deref().unwrap(), data.element_layout().1, span)?;
         self.require_application_reference_initialized(&data, span)?;
         let element=data.element_layout().1;

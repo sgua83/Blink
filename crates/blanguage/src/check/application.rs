@@ -23,10 +23,20 @@ pub(super) struct DataPayload {
     pub ty: Ty,
     pub length: Value,
     pub ownership: Ownership,
-    pub writable: bool,
+    pub access: Access,
     pub count: Option<u32>,
     pub residency: residency::Residency,
     pub layout: DataLayout,
+}
+impl DataPayload {
+    pub(super) fn permits(&self, access: Access) -> bool {
+        match self.access {
+            Access::Atomic => access == Access::Atomic,
+            Access::Read => access == Access::Read,
+            Access::Write | Access::InOut => access != Access::Value,
+            Access::Value => unreachable!(),
+        }
+    }
 }
 impl Binding {
     pub(super) fn application_resources(&self)->Vec<&Data> {
@@ -365,7 +375,7 @@ impl Builder<'_> {
             } else {
                 Ownership::Borrowed
             },
-            writable: matches!(access, Access::Value | Access::InOut | Access::Write),
+            access: if access == Access::Value { Access::InOut } else { access },
             residency: residency::Residency::parameter(parameter),
             layout: DataLayout::Declared,
         }))
@@ -793,7 +803,7 @@ impl Builder<'_> {
                 ty,
                 count,
                 ownership: Ownership::Moved,
-                writable: true,
+                access: Access::InOut,
                 residency: residency::Residency::default(),
                 layout: DataLayout::Declared,
             })),
@@ -832,7 +842,7 @@ impl Builder<'_> {
         self.write_storage_value(&place,&packed,span)?;value.place=Some(place);
         value.count = target.count;
         value.ownership = Ownership::Owned;
-        value.writable = true;
+        value.access = Access::InOut;
         value.handle.proof = bounds::Proof::capture(&value.handle);
         value.length.proof = bounds::Proof::capture(&value.length);
         self.env
@@ -908,7 +918,7 @@ impl Builder<'_> {
         ]));
         Ok(Some(Box::new(DataPayload {
             handle, place: None, initialization: None, ty: data.ty, length,
-            ownership: Ownership::Owned, writable: true, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
+            ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         })))
     }
     #[inline(never)]
@@ -1013,7 +1023,7 @@ impl Builder<'_> {
             length,
             count,
             ownership: Ownership::Owned,
-            writable: true,
+            access: Access::InOut,
             residency: residency::Residency::cpu(),
             layout: DataLayout::Declared,
         })))
@@ -1040,7 +1050,7 @@ impl Builder<'_> {
                 .iter()
                 .map(|(_, offset)| *offset)
                 .collect(),
-            writable: data.writable,
+            access: data.access,
         }
     }
     pub(super) fn application_index(
@@ -1371,8 +1381,8 @@ impl Builder<'_> {
                     }
                     _ => return self.fail(span, "B224", "整域调用需要当前应用持有的实际 dataset"),
                 };
-                if parameter.access.writes() && !value.writable {
-                    return self.fail(span, "B227", "只读 dataset 不能交给可写函数参数");
+                if !value.permits(parameter.access) {
+                    return self.fail(span, "B227", "dataset借用的访问模式不能转换为被调参数权限");
                 }
                 let path=self.residency_path();
                 if !self
@@ -1454,7 +1464,9 @@ impl Builder<'_> {
             };
             let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_) | Binding::DataReference(_)) {
                 let data = self.application_reference(&expr)?.unwrap();
-                let access = if !data.writable {
+                let access = if data.access == Access::Atomic {
+                    Access::Atomic
+                } else if data.access == Access::Read {
                     Access::Read
                 } else if self.application_initialized(&data) {
                     Access::InOut
@@ -1735,11 +1747,11 @@ impl crate::module::codec::Decode for Ownership{fn decode(r:&mut crate::module::
 // slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
 impl crate::module::codec::Encode for DataPayload {
     fn encode(&self,w:&mut crate::module::codec::Writer) {
-        self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.writable.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);
+        self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.access.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);
     }
 }
 impl crate::module::codec::Decode for DataPayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,place:None,initialization:None})
+        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,place:None,initialization:None})
     }
 }

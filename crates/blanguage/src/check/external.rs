@@ -90,6 +90,9 @@ impl Builder<'_> {
         access: Access,
         span: Span,
     ) -> Result<CallReference> {
+        if self.atomic_storage(place) && access != Access::Atomic {
+            return self.fail(span, "B214", "原子位置只能转借给atomic参数");
+        }
         let (storage, offset, words) = match place {
             Place::Reference { address, words, .. } => {
                 let (pointer, word) = address.component(words[0]);
@@ -377,30 +380,11 @@ impl Builder<'_> {
         let Some(words) = reference_words(place, &self.locals) else {
             return self.fail(span, "B264", "原生借用需要CPU普通值的实际位置");
         };
-        if let Place::Reference {
-            address: ReferenceAddress::Components(addresses),
-            ..
-        } = place
-        {
-            let zero = self.constant(Scalar::U32, 0).regs[0];
-            return Ok(parameters
-                .into_iter()
-                .zip(words)
-                .map(|(ty, word)| {
-                    (
-                        ty,
-                        CallReference {
-                            storage: CallStorage::Indexed(IndexedSource::View {
-                                address: addresses[&word],
-                                index: zero,
-                                stride: 0,
-                            }),
-                            offset: None,
-                            word: 0,
-                        },
-                    )
-                })
-                .collect());
+        if let Place::Reference { address: ReferenceAddress::Components(_), .. } = place {
+            return parameters.into_iter().enumerate().map(|(component, ty)| {
+                let part = place.clone().project(ty.clone(), &[component]);
+                Ok((ty, self.call_reference(&part, access, span)?))
+            }).collect();
         }
         let base = self.call_reference(place, access, span)?;
         Ok(parameters

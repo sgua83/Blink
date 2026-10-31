@@ -146,7 +146,7 @@ fn optimize_stage(stage: &mut Stage) {
                 writes.extend([a.target, a.count.binding]);
             }
             Inst::Atomic(a) => {
-                if let AtomicTarget::Dataset(binding) = a.target {
+                if let IndexedSource::Data { binding, .. } = a.target {
                     if a.op.reads() {
                         reads.insert(binding);
                     }
@@ -382,7 +382,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             .iter_mut()
             .for_each(|(_, value)| *value = r(*value)),
         Inst::Atomic(a) => {
-            a.index = r(a.index);
+            a.target.map(r);
             a.offset = a.offset.map(r);
             a.op.map(r);
         }

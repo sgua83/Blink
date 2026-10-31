@@ -59,7 +59,7 @@ impl OwnedValuePayload {
         for item in self.payloads.iter_mut().flatten() {
             match item.as_mut() {
                 Returned::Dataset(data)=>{
-                    data.ownership=Ownership::Borrowed;data.writable=false;
+                    data.ownership=Ownership::Borrowed;data.access=Access::Read;
                     if data.handle.proof.view_borrow(0).empty(){data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(data.handle.identity())]));}
                 }
                 Returned::OwnedValue(value)=>value.borrow(),_=>{},
@@ -380,7 +380,7 @@ impl Builder<'_> {
                 } else {
                     Ownership::Moved
                 },
-                writable: true,
+                access: Access::InOut,
                 place: None,
                 initialization: None,
             }))

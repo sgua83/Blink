@@ -386,7 +386,7 @@ impl Emitter<'_> {
                     return Ok(false);
                 }
                 Inst::Append(append) => self.append(append),
-                Inst::Atomic(atomic) => self.atomic(atomic),
+                Inst::Atomic(atomic) => self.atomic(atomic)?,
                 Inst::TileBarrier => self.tile_barrier(),
                 Inst::TilePublish(publication) => self.publish_values(publication),
                 Inst::TileCollective(collective) => self.tile_collective(collective),

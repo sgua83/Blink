@@ -10,26 +10,27 @@ impl Emitter<'_> {
         };
         self.constant(Scalar::U32, semantics)
     }
-    pub(super) fn atomic(&mut self, atomic: &Atomic) {
+    pub(super) fn atomic(&mut self, atomic: &Atomic) -> Result<(), &'static str> {
         let unit = Self::raw_scalar(atomic.scalar);
         let (pointer, scope, memory) = match atomic.target {
-            AtomicTarget::Dataset(binding) => {
+            IndexedSource::Data { binding, index } => {
                 let at = if let Some(offset) = atomic.offset {
-                    self.indexed_address(unit, &IndexedSource::Data { binding, index: atomic.index }, offset, atomic.word)
+                    self.indexed_address(unit, &atomic.target, offset, atomic.word)
                 } else {
-                    self.address(unit, binding, atomic.index, atomic.word)
+                    self.address(unit, binding, index, atomic.word)
                 };
                 (at, 1, 0x40)
             }
-            AtomicTarget::Tile(tile) => (
+            IndexedSource::Tile { tile, index } => (
                 self.tile_word_address(
                     self.stage.shared_word(tile, atomic.word),
-                    self.value(atomic.index),
+                    self.value(index),
                     atomic.offset.map(|r| self.value(r)),
                 ).0,
                 2,
                 0x100,
             ),
+            IndexedSource::View { .. } => return Err("GPU原子不能使用CPU原生地址".into()),
         };
         let scope = self.constant(Scalar::U32, scope);
         let semantics = self.atomic_semantics(atomic.order, memory);
@@ -49,7 +50,7 @@ impl Emitter<'_> {
         if let AtomicOp::Store(value) = atomic.op && unit == Scalar::U32 {
             let value = self.to_words(value, unit)[0];
             self.emit(228, &[pointer, scope, semantics, value]);
-            return;
+            return Ok(());
         }
         let result = self.id();
         let mut operands = vec![u, result, pointer, scope, semantics];
@@ -71,5 +72,6 @@ impl Emitter<'_> {
         if let Some(dst) = atomic.result {
             self.from_words(dst, &[result], unit);
         }
+        Ok(())
     }
 }

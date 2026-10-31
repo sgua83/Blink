@@ -156,7 +156,7 @@ impl Stage {
             for inst in code {
                 match inst {
                     Inst::Atomic(Atomic {
-                        target: AtomicTarget::Tile(tile),
+                        target: IndexedSource::Tile { tile, .. },
                         word,
                         offset: None,
                         ..
@@ -168,7 +168,7 @@ impl Stage {
                         ..
                     }
                     | Inst::Atomic(Atomic {
-                        target: AtomicTarget::Tile(tile),
+                        target: IndexedSource::Tile { tile, .. },
                         offset: Some(_),
                         ..
                     }) => {
@@ -453,7 +453,7 @@ impl Inst {
                     AtomicOp::CompareExchange { expected, desired, .. } =>
                         f(*expected) && f(*desired),
                 };
-                operands && f(value.index) && value.offset.iter().all(|reg| f(*reg))
+                operands && value.target.all_operands(f) && value.offset.iter().all(|reg| f(*reg))
             }
             Self::TilePublish(value) => value.values.iter().all(|(_, reg)| f(*reg)),
             Self::RayQuery { origin, direction, minimum, maximum, .. } =>

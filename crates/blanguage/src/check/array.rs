@@ -9,8 +9,10 @@ impl Place {
             },
             mut place => {
                 match &mut place {
-                    Self::Reference { writable, .. } | Self::Element { writable, .. }
-                    | Self::ApplicationElement { writable, .. } => *writable = false,
+                    Self::Reference { access, .. } | Self::ApplicationElement { access, .. } => {
+                        if *access != Access::Atomic { *access = Access::Read; }
+                    }
+                    Self::Element { writable, .. } => *writable = false,
                     _ => {}
                 }
                 place
@@ -23,13 +25,13 @@ impl Place {
                 address,
                 scope,
                 words,
-                writable,
+                access,
                 ..
             } => Self::Reference {
                 ty,
                 address,
                 scope,
-                writable,
+                access,
                 words: components.iter().map(|i| words[*i]).collect(),
             },
             Self::ApplicationElement {
@@ -41,7 +43,7 @@ impl Place {
                 index_range,
                 stride,
                 words,
-                writable,
+                access,
                 ..
             } => Self::ApplicationElement {
                 ty,
@@ -52,7 +54,7 @@ impl Place {
                 index,
                 index_range,
                 stride,
-                writable,
+                access,
                 words: components.iter().map(|i| words[*i]).collect(),
             },
             Self::AtomicParameter(_) => Self::AtomicParameter(ty),
@@ -336,7 +338,7 @@ impl Builder<'_> {
         };
         Place::Indexed { ty, initialization, locations, base, offset, words: vec![0] }
     }
-    fn array_memory(&mut self, base: &Place, offset: Reg, word: u32, scalar: Scalar, write: bool, span: Span) -> Result<(IndexedSource, Reg, u32)> {
+    pub(super) fn array_memory(&mut self, base: &Place, offset: Reg, word: u32, scalar: Scalar, write: bool, span: Span) -> Result<(IndexedSource, Reg, u32)> {
         if let Place::Reference { address: ReferenceAddress::Components(addresses), words, .. } = base {
             let selected = if word == 0 { offset } else {
                 let number = self.constant(Scalar::U32, Bits::from(word)).regs[0];

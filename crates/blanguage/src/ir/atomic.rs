@@ -86,17 +86,11 @@ impl AtomicOp {
 pub struct Atomic {
     pub result: Option<Reg>,
     pub scalar: Scalar,
-    pub target: AtomicTarget,
-    pub index: Reg,
+    pub target: IndexedSource,
     pub word: u32,
     pub offset: Option<Reg>,
     pub op: AtomicOp,
     pub order: MemoryOrder,
-}
-#[derive(Clone, Copy, Debug)]
-pub enum AtomicTarget {
-    Dataset(usize),
-    Tile(usize),
 }
 impl Stage {
     pub(crate) fn requires_atomic64(&self) -> bool {
