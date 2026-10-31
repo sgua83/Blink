@@ -1193,13 +1193,6 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
                 "tile<T> 只能是 cooperative 的只读或 atomic 借用参数",
             );
         }
-        if !p.ty.dataset && !p.ty.tile && !p.ty.is_texture_resource() && p.access == Access::Read && !(d.function.kind==FunctionKind::Value && d.function.target==Target::Cpu) {
-            return d.source.fail(
-                p.span,
-                "B120",
-                "函数参数使用普通值、write／inout 独占位置、read dataset 或 atomic 借用",
-            );
-        }
     }
     Ok(())
 }
@@ -1387,77 +1380,71 @@ fn function_parameters(
                 b.bind_owned_value(&p.name,value,p.span)?;continue;
             }
         }
-        if p.access != Access::Value {
-            if matches!(p.access, Access::Read | Access::InOut | Access::Write) {
-                let place = if b.application.is_some() {
-                    let parts = native_function::reference_parameters(&ty);
-                    let mut addresses = Vec::new();
-                    for part in &parts {
-                        let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
-                        inputs.extend(address);
-                        addresses.push(address);
-                        parameters.push(CallParameter::Reference {
-                            ty: part.clone(),
-                            access: p.access,
-                        });
-                    }
-                    let address = if addresses.len() == 1 {
-                        ReferenceAddress::Contiguous(addresses[0])
-                    } else {
-                        ReferenceAddress::Components(ty.components.iter().map(|(_, offset)| *offset).zip(addresses).collect())
-                    };
-                    Place::Reference {
-                        words: ty.components.iter().map(|(_, offset)| *offset).collect(),
-                        ty,
-                        address,
-                        scope: parameter_index,
-                        writable: p.access.writes(),
-                    }
-                } else {
-                    let (slots, storage) = b.local_slots(&ty);
-                    Place::Local(ty, slots, storage)
-                };
-                if p.access.reads() {
-                    b.initialize(&place);
-                }
-                if place.ty().owns_resources(){
-                    let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
-                    let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
-                    let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
-                    let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)else{unreachable!()};
-                    if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
-                    value.place=Some(place);b.env.insert(p.name.clone(),Binding::OwnedValue(value));continue;
-                }
-                b.env.insert(
-                    p.name.clone(),
-                    Binding::Owned(OwnedBinding {
-                        proof: if p.access.reads() && b.application.is_some() {
-                            bounds::Proof::parameter_content(
-                                parameter_index,
-                                place.ty().components.len(),
-                            ).view_parameters(place.ty(), |i| ValueIdentity::ParameterContent(parameter_index,i))
-                        } else {
-                            bounds::Proof::default()
-                        },
-                        place,
-                        uniform: false,
-                        initialization: None,
-                    }),
-                );
-                continue;
-            }
-            if p.access == Access::Atomic {
-                b.env.insert(
-                    p.name.clone(),
-                    Binding::AtomicBorrow(Place::AtomicParameter(ty)),
-                );
-                continue;
-            }
-            return d.source.fail(
-                p.span,
-                "B120",
-                "函数参数使用普通值、write／inout 独占位置、read dataset 或 atomic 借用",
+        if p.access == Access::Atomic {
+            b.env.insert(
+                p.name.clone(),
+                Binding::AtomicBorrow(Place::AtomicParameter(ty)),
             );
+            continue;
+        }
+        if p.access != Access::Value {
+            let place = if b.application.is_some() {
+                let parts = native_function::reference_parameters(&ty);
+                let mut addresses = Vec::new();
+                for part in &parts {
+                    let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
+                    inputs.extend(address);
+                    addresses.push(address);
+                    parameters.push(CallParameter::Reference {
+                        ty: part.clone(),
+                        access: p.access,
+                    });
+                }
+                let address = if addresses.len() == 1 {
+                    ReferenceAddress::Contiguous(addresses[0])
+                } else {
+                    ReferenceAddress::Components(ty.components.iter().map(|(_, offset)| *offset).zip(addresses).collect())
+                };
+                Place::Reference {
+                    words: ty.components.iter().map(|(_, offset)| *offset).collect(),
+                    ty,
+                    address,
+                    scope: parameter_index,
+                    writable: p.access.writes(),
+                }
+            } else {
+                let (slots, storage) = b.local_slots(&ty);
+                if p.access == Access::Read { Place::ReadOnlyLocal(ty, slots, storage) }
+                else { Place::Local(ty, slots, storage) }
+            };
+            if p.access.reads() {
+                b.initialize(&place);
+            }
+            if place.ty().owns_resources(){
+                let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
+                let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
+                let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
+                let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)else{unreachable!()};
+                if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
+                value.place=Some(place);b.env.insert(p.name.clone(),Binding::OwnedValue(value));continue;
+            }
+            b.env.insert(
+                p.name.clone(),
+                Binding::Owned(OwnedBinding {
+                    proof: if p.access.reads() && b.application.is_some() {
+                        bounds::Proof::parameter_content(
+                            parameter_index,
+                            place.ty().components.len(),
+                        ).view_parameters(place.ty(), |i| ValueIdentity::ParameterContent(parameter_index,i))
+                    } else {
+                        bounds::Proof::default()
+                    },
+                    place,
+                    uniform: false,
+                    initialization: None,
+                }),
+            );
+            continue;
         }
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
         if b.application.is_some() {

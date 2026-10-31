@@ -592,7 +592,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3736`。
+源码节选：`crates/blanguage/src/check.rs:3723`。
 
 ```rust
         let binding = view.binding;
@@ -657,7 +657,7 @@ pub(super) enum Position {
 }
 ```
 
-普通函数接收 write/inout 参数时，检查器传递实际位置及字段投影，而不是只记录“它是个 float3”。整个记录与其中一个字段同时独占借用，可能重叠；不同字段则可能互不重叠。`Position` 与 Place 的比较帮助保持这个事实。
+普通函数接收 read／write／inout 参数时，检查器传递实际位置及字段投影，而不是只记录“它是个 float3”。元素阶段的 read 与 CPU 使用同一只读位置规则，命名位置不复制成输入快照；多个只读借用可以重合，独占借用不能与重叠只读位置同时交接。整个记录与其中一个字段可能重叠，不同字段则可能互不重叠。`Position` 与 Place 的比较帮助保持这个事实。
 
 **自己走一遍。** 两个变量类型相同，是否证明它们互不重叠？不能。类型说明如何解释数据，身份与偏移才说明是否指向同一处内容。
 
