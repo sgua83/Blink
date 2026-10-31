@@ -19,10 +19,10 @@ struct Body {
     statements: BTreeSet<String>,
 }
 impl Body {
-    fn call(&mut self, world: &Declarations, d: &Definition, name: &str, statement: bool) {
+    fn call(&mut self, world: &Declarations, d: &Definition, name: &str, statement: bool) -> bool {
         if world.resolve(name, &d.module, &d.imports, false).is_some() {
             self.local |= statement || d.function.target == Target::Cpu;
-            return;
+            return false;
         }
         if let Some(key) = world.resolve(name, &d.module, &d.imports, true) {
             self.calls.insert(key.clone());
@@ -38,9 +38,12 @@ impl Body {
             self.host = true;
         } else if crate::check::stage_intrinsic(name) {
             self.domain = true;
+            // 集合入口的字段／前缀参数由域展开解释，不在CPU主机求值。
+            return true;
         } else {
             self.local |= statement || d.function.target == Target::Cpu;
         }
+        false
     }
     fn expr(&mut self, world: &Declarations, d: &Definition, e: &Expr, statement: bool) {
         match &e.kind {
@@ -54,9 +57,10 @@ impl Body {
                 }
             }
             ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => {
-                self.call(world, d, name, statement);
-                for arg in args {
-                    self.expr(world, d, arg, false);
+                if !self.call(world, d, name, statement) {
+                    for arg in args {
+                        self.expr(world, d, arg, false);
+                    }
                 }
             }
             ExprKind::Construct(_, args) | ExprKind::Cooperate(_, _, args) => {

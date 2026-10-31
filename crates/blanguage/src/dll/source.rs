@@ -348,7 +348,7 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
     if !resources.programs.is_empty() {
         writeln!(
             functions,
-            "unsafe extern \"C\" {{ static {prefix}_program_base:u32; fn blink_run(frame:*mut c_void,program:u32,data:*const u32,words:*const UniformValue); }}"
+            "unsafe extern \"C\" {{ static {prefix}_program_base:u32; fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue); }}"
         )?;
     }
     for index in 0..resources.types.len() {
@@ -363,7 +363,8 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
             .map(|i| {
                 let name = format!("data_{i}");
                 params.push(format!("{name}:u32"));
-                name
+                params.push(format!("offset_{i}:u32"));
+                format!("DatasetBinding{{handle:{name},offset:offset_{i}}}")
             })
             .collect::<Vec<_>>();
         let mut words = Vec::new();

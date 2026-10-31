@@ -85,20 +85,27 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
+    e.bytes(&[0x41, 0x54, 0x41, 0x55]);
+    e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1,
+        r.source as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    if finish {
+        e.instruction(None, &[0x8b], true, 13, operands::Operand::memory(1,
+            r.target as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    }
     // r10 是当前源记录，r11 是目标基址；r9d 是真实源序号，r8d 是范围剩余数量。
     e.bytes(&[0x4c, 0x8b, 0x91]);
-    e.u32(r.source as u32 * 8);
+    e.u32(r.source as u32 * BUFFER_BYTES);
     if finish {
         e.bytes(&[0x4c, 0x8b, 0x99]);
-        e.u32(r.target as u32 * 8);
+        e.u32(r.target as u32 * BUFFER_BYTES);
     }
     e.bytes(&[0x44, 0x89, 0xc8]);
-    e.scale_index(0, program.buffers[r.source].stride);
+    e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
     e.bytes(&[0x49, 0x01, 0xc2, 0x45, 0x29, 0xc8]);
     if finish {
         // 同一范围参数块：K 个前缀分量、实际总长度、进入范围前的段数。
         e.bytes(&[0x48, 0x8b, 0x91]);
-        e.u32(program.buffers.len() as u32 * 8);
+        e.u32(program.buffers.len() as u32 * BUFFER_BYTES);
         e.bytes(&[0x8b, 0x8a]);
         e.u32((k as u32 + 1) * 4);
         e.bytes(&[0x66, 0x0f, 0x6e, 0xa2]);
@@ -132,27 +139,26 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         // 只让真实段尾写；范围末端仍可只读下一条源记录，不制造 halo 副本。
         e.bytes(&[0x41, 0x8d, 0x41, 1, 0x66, 0x0f, 0x7e, 0xe2, 0x39, 0xd0]);
         let last = e.jump(Some(0x84));
-        e.bytes(&[0x41, 0x83, 0xba]);
-        e.u32(program.buffers[r.source].stride + reduction.head_word);
+        e.instruction(None, &[0x83], false, 7,
+            Memory::indexed(10, 12, 0, reduction.head_word).into());
         e.bytes(&[0]);
         let not_tail = e.jump(Some(0x84));
         e.patch(last, e.code.len());
         e.bytes(&[0x89, 0xc8, 0xff, 0xc8]);
-        e.scale_index(0, program.buffers[r.target].stride);
+        e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(13));
         e.bytes(&[0x49, 0x8d, 0x14, 0x03]); // rdx = target + (当前段数-1)*stride
         for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
             e.write_value_address(allocation::Location::Xmm(component as u8), Memory::new(2, r.target_word + offset), scalar.size());
         }
         e.patch(not_tail, e.code.len());
     }
-    e.bytes(&[0x49, 0x81, 0xc2]);
-    e.u32(program.buffers[r.source].stride);
+    e.instruction(None, &[0x03], true, 10, operands::Operand::Register(12));
     e.bytes(&[0x41, 0xff, 0xc1, 0x41, 0xff, 0xc8]);
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
     if !finish {
-        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
+        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x38]);
         for (component, (scalar, offset)) in values.ty.components.iter().enumerate() {
             e.write_value_address(allocation::Location::Xmm(component as u8), Memory::new(10, *offset), scalar.size());
         }
@@ -161,6 +167,6 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         e.bytes(&[0x41, 0x89, 0x8a]);
         e.u32((k as u32 + 1) * 4);
     }
-    e.bytes(&[0xc3]);
-    e.finish(0)
+    e.bytes(&[0x41, 0x5d, 0x41, 0x5c, 0xc3]);
+    e.finish(16)
 }

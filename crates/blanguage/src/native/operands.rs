@@ -22,6 +22,9 @@ impl Memory {
             offset,
         }
     }
+    pub(super) fn indexed(base: u8, index: u8, shift: u8, offset: u32) -> Self {
+        Self { base, index: Some((index, shift)), offset }
+    }
     pub(super) fn offset(mut self, offset: u32) -> Self {
         self.offset += offset;
         self

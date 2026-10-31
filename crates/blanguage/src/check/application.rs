@@ -446,7 +446,7 @@ impl Builder<'_> {
     fn initialize_application_domain(
         &mut self,
         interface: &crate::module::domain::Interface,
-        data: &[Data],
+        data: &[DataReference],
     ) {
         let same_length = |a: &Data, b: &Data| {
             a.length.identity() == b.length.identity()
@@ -1123,16 +1123,30 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn application_reference_layout(&mut self,data:&DataReference)->(Value,Value) {
+    fn application_reference_offset(&mut self,data:&DataReference)->Value {
         let(field,_)=data.element_layout();
-        let(stride,offset)=match &data.data.layout {
-            DataLayout::Declared=>(self.constant(Scalar::U32,Bits::from(ir::align_up(data.data.ty.size,data.data.ty.align))),self.constant(Scalar::U32,0)),
-            DataLayout::Parameter{stride,offset,..}=>(stride.clone(),offset.clone()),
+        let offset=match &data.data.layout {
+            DataLayout::Declared=>self.constant(Scalar::U32,0),
+            DataLayout::Parameter{offset,..}=>offset.clone(),
         };
-        if field==0{return(stride,offset);}
+        if field==0{return offset;}
         let number=self.constant(Scalar::U32,Bits::from(field));let dst=self.reg(Scalar::U32);
         self.code.push(Inst::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]});
-        (stride,Value{ty:Ty::scalar(Scalar::U32),regs:vec![dst],proof:bounds::Proof::default(),literal:false,uniform:offset.uniform,constant:None})
+        Value{ty:Ty::scalar(Scalar::U32),regs:vec![dst],proof:bounds::Proof::default(),literal:false,uniform:offset.uniform,constant:None}
+    }
+    pub(super) fn application_reference_layout(&mut self,data:&DataReference)->(Value,Value) {
+        let stride=match &data.data.layout {
+            DataLayout::Declared=>self.constant(Scalar::U32,Bits::from(ir::align_up(data.data.ty.size,data.data.ty.align))),
+            DataLayout::Parameter{stride,..}=>stride.clone(),
+        };
+        (stride,self.application_reference_offset(data))
+    }
+    pub(super) fn domain_dataset_parameter_type()->Ty{
+        let mut ty=Ty::vector(Scalar::U32,2);ty.name="__blink_domain_dataset".into();ty
+    }
+    fn application_domain_argument(&mut self,data:&DataReference)->CallArgument{
+        let offset=self.application_reference_offset(data);
+        CallArgument::Value{ty:Self::domain_dataset_parameter_type(),values:vec![data.handle.regs[0],offset.regs[0]]}
     }
     pub(super) fn borrowed_dataset_parameter_type()->Ty{
         let mut ty=Ty::vector(Scalar::U32,4);ty.name="__blink_borrowed_dataset".into();ty
@@ -1306,19 +1320,21 @@ impl Builder<'_> {
         for (parameter, value) in callee.function.params.iter().zip(prepared) {
             if parameter.ty.dataset {
                 let value = match value {
-                    Argument::ApplicationData(data) => data,
+                    Argument::ApplicationData(data) => DataReference::direct(data),
                     Argument::BorrowedData(reference) => {
-                        self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
+                        if target != Target::Cpu || parameter.access != Access::Read {
+                            self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
+                        }
                         if parameter.access.writes() {
                             for source in &reference.sources {
                                 self.invalidate_application_contents(*source);
                             }
                         }
-                        reference.data
+                        reference
                     }
                     Argument::Scoped { value:returns::Returned::Dataset(data), owner } => {
                         held.push(owner);
-                        data
+                        DataReference::direct(data)
                     }
                     _ => return self.fail(span, "B224", "整域调用需要当前应用持有的实际 dataset"),
                 };
@@ -1339,7 +1355,7 @@ impl Builder<'_> {
                 if data
                     .iter()
                     .zip(callee.function.params.iter().filter(|p| p.ty.dataset))
-                    .any(|(existing, previous): (&Data, &Param)| {
+                    .any(|(existing, previous): (&DataReference, &Param)| {
                         existing.handle.identity() == value.handle.identity()
                             && (previous.access.writes() || parameter.access.writes())
                             && !(previous.access == Access::Atomic
@@ -1353,7 +1369,7 @@ impl Builder<'_> {
                     );
                 }
                 if parameter.access.reads() {
-                    self.require_application_initialized(&value, span)?;
+                    self.require_application_reference_initialized(&value, span)?;
                 }
                 data.push(value);
             } else {
@@ -1368,7 +1384,7 @@ impl Builder<'_> {
         }
         let interface = self.prepare_domain(&instance, target)?;
         for (value, buffer) in data.iter().zip(&interface.buffers) {
-            self.require_same(&buffer.ty, &value.ty, span)?;
+            self.require_same(&buffer.ty, value.element_layout().1, span)?;
             if buffer.count.is_some() && buffer.count != value.count {
                 return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
             }
@@ -1387,9 +1403,7 @@ impl Builder<'_> {
         for parameter in &callee.function.params {
             if parameter.ty.dataset {
                 let value = data.next().unwrap();
-                physical.push(argument(
-                    self.returned_storage(&returns::Returned::Dataset(value)),
-                ));
+                physical.push(self.application_domain_argument(&value));
             } else {
                 physical.push(argument(uniforms.next().unwrap()));
             }

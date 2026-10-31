@@ -10,6 +10,7 @@ use blanguage::{
 };
 
 mod abi;
+pub use blanguage::resource::DatasetBinding;
 
 pub enum ProgramImage {
     Cpu(blanguage::native::ProgramImage<TemplateProgram>),
@@ -207,16 +208,17 @@ impl Frame {
     }
     /// 同一帧只移动本次实际参数；没有被绑定的存储及其有效域继续由帧持有。
     /// CPU 直接消费原存储；GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
-    pub fn run(&mut self, program: u32, handles: &[u32], values: &[Value]) -> Result<()> {
+    pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value]) -> Result<()> {
         let index = program as usize;
         let program = self.load(index)?;
         let layout = program.layout();
         // 参数是存储的引用；同一物理存储只移动一次。
         let mut selected = Vec::new();
-        let mut order = Vec::with_capacity(handles.len());
-        for (logical, &handle) in handles.iter().enumerate() {
+        let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
+        for (logical, binding) in bindings.iter().enumerate() {
+            let handle = binding.handle;
             let slot = if let Some(slot) = selected.iter().position(|&h| h == handle) {
-                let first = order.iter().position(|&i| i == slot).unwrap();
+                let first = order.iter().position(|&(i, _)| i == slot).unwrap();
                 use blanguage::ast::Access::{Atomic, Read};
                 if !matches!(
                     (
@@ -232,7 +234,7 @@ impl Frame {
                 selected.push(handle);
                 selected.len() - 1
             };
-            order.push(slot);
+            order.push((slot, binding.offset));
         }
         let domains: Vec<_> = self
             .data
@@ -268,12 +270,16 @@ impl Frame {
                 )
             }
             Program::Gpu(program) => {
+                if order.iter().any(|&(_, offset)| offset != 0) {
+                    return Err(error("整域GPU字段投影尚未实现"));
+                }
+                let physical: Vec<_> = order.iter().map(|&(slot, _)| slot).collect();
                 let datasets = selected
                     .iter()
                     .map(|&handle| self.data.datasets[handle as usize].take().unwrap().gpu())
                     .collect::<Result<Vec<_>>>()?;
                 let result = program
-                    .submit_projected(DomainBindings { datasets, domains }, &order, values)?
+                    .submit_projected(DomainBindings { datasets, domains }, &physical, values)?
                     .wait()?
                     .into_bindings();
                 (
@@ -290,10 +296,14 @@ impl Frame {
             self.data.datasets[handle as usize] = Some(data);
         }
         self.data.domains.retain(|r| {
-            !handles
+            !bindings
                 .iter()
                 .zip(layout.buffers())
-                .any(|(&h, b)| h as usize == r.count.binding && b.access.writes())
+                .any(|(binding, b)| {
+                    binding.handle as usize == r.count.binding && b.access.writes()
+                        && u64::from(r.count.word) >= u64::from(binding.offset)
+                        && u64::from(r.count.word) < u64::from(binding.offset) + u64::from(b.ty.size)
+                })
         });
         self.data
             .domains

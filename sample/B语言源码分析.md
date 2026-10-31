@@ -635,7 +635,7 @@ impl Access {
     }
 ```
 
-第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。字段借用仍指向同一个原缓冲：检查器按声明字段路径取得元素类型和实际字节位置，容量与记录步幅保持。CPU／GPU元素阶段的函数转借、下标和只读游标沿同一位置映射访问，不复制整列数据；同阶段共享读取与独占写入在原位置降低时交接实际区域，动态数组、向量和嵌套字段保留全部合法候选位置；写参数的初始化义务与真实数据位置分别保持。判定直接消费同一份区域，不在IR丢失关系后再扫描重建；真实重叠与原范围约束保持。普通CPU原生read／write／inout dataset参数把原句柄、长度、真实步幅和字段偏移一起交接，所以同一个已编译函数能按权限读写不同父记录中的同型字段。DataPayload保存实际布局，DataReference只记原类型中的字段路径；初始化、借用和最后消费者仍沿原资源判断。连续view与完整Frame接口的布局要求进入原资源合同，不能把一列跨记录的字段误当成连续数组。独占借用按实际字段区域判断，write和条件输出只更新所选字段的原初始化位置，其他字段的关系保持；整域Frame投影继续待实现。
+第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。字段借用仍指向同一个原缓冲：检查器按声明字段路径取得元素类型和实际字节位置，容量与记录步幅保持。CPU／GPU元素阶段的函数转借、下标和只读游标沿同一位置映射访问，不复制整列数据；同阶段共享读取与独占写入在原位置降低时交接实际区域，动态数组、向量和嵌套字段保留全部合法候选位置；写参数的初始化义务与真实数据位置分别保持。判定直接消费同一份区域，不在IR丢失关系后再扫描重建；真实重叠与原范围约束保持。普通CPU原生read／write／inout dataset参数把原句柄、长度、真实步幅和字段偏移一起交接，所以同一个已编译函数能按权限读写不同父记录中的同型字段。DataPayload保存实际布局，DataReference只记原类型中的字段路径；初始化、借用和最后消费者仍沿原资源判断。连续view仍要求真实元素连续，不能把一列跨记录的字段误当成连续数组。只读CPU整域入口可以借用同一字段：整域参数只传根句柄和字段偏移，长度与物理步长由原Frame取得，原父记录类型与所有权保持。普通CPU函数按真实载荷访问需要消费原借用布局，独占借用按实际字段区域判断，write和条件输出只更新所选字段的原初始化位置。CPU可写及GPU整域字段投影继续待实现。
 
 `values[index()+1]` 在某些长度下可能合法，但多个实例的访问可能交错，且不再是当前独占元素。编译器不会因为下标仍在范围内，就自动授予普通并行写权限。这正是“范围证明”和“所有权证明”不能混为一谈的原因。
 
@@ -1006,12 +1006,12 @@ CPU 取得指令，读取寄存器或内存，做运算，再把结果放回相�
 
 若调用方把第一个参数放在 RCX，生成函数却从 RDX 读取，指针再正确也会用错。这套约定就是调用约定，属于 ABI 的一部分。
 
-本版 Windows x64 范围入口的四个参数依次是数据指针表、参数 word、结束下标、开始下标。Microsoft x64 ABI 使用 RCX、RDX、R8、R9 传递这四个整数／指针参数。这里的顺序在两边必须完全相同。
+本版 Windows x64 范围入口的四个参数依次是数据绑定表、参数 word、结束下标、开始下标。Microsoft x64 ABI 使用 RCX、RDX、R8、R9 传递这四个整数／指针参数。这里的顺序在两边必须完全相同。每个BufferAddress槽为十六字节：偏移零保存原地址，偏移八保存实际记录stride；字段投影从原地址加字段偏移开始，相邻记录仍按父布局跨步。标量与SSE2批次、扫描／排序及范围摘要消费同一布局，工作区替换时同时交接自己的真实步长，不另建逐行指针或列副本。
 
 源码节选：`crates/blcompute/src/cpu.rs:32`。
 
 ```rust
-type Entry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32);
+type Entry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32);
 ```
 
 读者可以把它理解为一个 C 函数类型，只是参数中的原始指针由执行框架组织。归约等入口还可能有额外结果参数，不能把所有范围函数都按同一个签名强转。
@@ -1022,7 +1022,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native.rs:116`。
+源码节选：`crates/blanguage/src/native.rs:126`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1096,7 +1096,7 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-源码节选：`crates/blanguage/src/native.rs:130`。
+源码节选：`crates/blanguage/src/native.rs:140`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1123,7 +1123,7 @@ pub(super) enum Location {
 
 Sin、Cos 等运算可能调用执行框架提供的原生辅助函数。生成时保存重定位位置与辅助函数类别，装载代码时再填入本进程中的真实地址。机器码字节与这张重定位清单共同构成 NativeCode。
 
-源码节选：`crates/blanguage/src/native.rs:62`。
+源码节选：`crates/blanguage/src/native.rs:72`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1165,7 +1165,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native.rs:649`。
+源码节选：`crates/blanguage/src/native.rs:667`。
 
 ```rust
     let stage = &lowered;
@@ -1545,7 +1545,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2694`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2697`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -1617,7 +1617,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2417`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2420`。
 
 ```rust
                                 let mut length = count;

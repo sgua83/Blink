@@ -35,6 +35,16 @@ pub use scan::emit_scan_add;
 pub use segmented_reduce::emit_segmented_reduce_finish;
 pub use sort::{emit_sort_gather, emit_sort_histogram, emit_sort_key, emit_sort_scatter};
 
+/// CPU范围入口的同一绑定表：原地址和实际记录步长。纹理槽只消费地址。
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BufferAddress {
+    pub address: *mut u32,
+    pub stride: usize,
+}
+const BUFFER_BYTES: u32 = std::mem::size_of::<BufferAddress>() as u32;
+const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
+
 #[derive(Clone, Debug)]
 pub struct Relocation {
     pub offset: usize,
@@ -143,19 +153,27 @@ impl Emitter<'_> {
     }
     fn address(&mut self, binding: usize, index: Reg) {
         self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-        self.u32(binding as u32 * 8);
+        self.u32(binding as u32 * BUFFER_BYTES);
         self.load(index);
-        self.offset_address(self.program.buffers[binding].stride);
+        self.offset_buffer_address(binding);
     }
     fn data_memory(&mut self, binding: usize, index: Reg, word: u32) -> Memory {
         self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-        self.u32(binding as u32 * 8);
-        self.value_memory(
-            15,
-            self.location(index),
-            self.program.buffers[binding].stride,
-            word,
-        )
+        self.u32(binding as u32 * BUFFER_BYTES);
+        self.load(index);
+        self.buffer_memory(binding, 0, word)
+    }
+    fn scale_buffer_index(&mut self, table: u8, binding: usize, index: u8) {
+        self.instruction(None, &[0x0f, 0xaf], true, index,
+            operands::Operand::memory(table, binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    }
+    fn offset_buffer_address(&mut self, binding: usize) {
+        self.scale_buffer_index(12, binding, 0);
+        self.bytes(&[0x49, 0x01, 0xc7]);
+    }
+    fn buffer_memory(&mut self, binding: usize, index: u8, word: u32) -> Memory {
+        self.scale_buffer_index(12, binding, index);
+        Memory::indexed(15, index, 0, word)
     }
     fn private_memory(
         &mut self,
@@ -698,14 +716,10 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     let skip_selection = stage.selection.map(|selection| {
         // R12 is the data table, EBX the original record index.
         e.bytes(&[0x49, 0x8b, 0x84, 0x24]);
-        e.u32(selection.binding as u32 * 8);
+        e.u32(selection.binding as u32 * BUFFER_BYTES);
         e.bytes(&[0x89, 0xd9]);
-        let memory = e.scaled_memory(
-            0,
-            1,
-            program.buffers[selection.binding].stride,
-            selection.word,
-        );
+        e.scale_buffer_index(12, selection.binding, 1);
+        let memory = Memory::indexed(0, 1, 0, selection.word);
         e.instruction(None, &[0x83], false, 7, memory.into());
         e.bytes(&[0]);
         e.jump(Some(0x84))

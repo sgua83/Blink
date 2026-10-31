@@ -233,15 +233,15 @@ impl Dataset {
 }
 pub(crate) fn arguments<'a>(
     program: &ExecutionPlan,
-    shapes: impl ExactSizeIterator<Item = (&'a Ty, u32, u32)>,
+    shapes: impl ExactSizeIterator<Item = (&'a Ty, u32)>,
     values: &[Value],
 ) -> Result<Vec<u32>> {
     if shapes.len() != program.buffers().len() {
         return Err(error("设备调用的数据集数量不匹配"));
     }
     let mut words = vec![0; program.uniform_bytes() as usize / 4];
-    for (i, ((ty, stride, count), expected)) in shapes.zip(program.buffers()).enumerate() {
-        if *ty != expected.ty || stride != expected.stride {
+    for (i, ((ty, count), expected)) in shapes.zip(program.buffers()).enumerate() {
+        if *ty != expected.ty {
             return Err(error(format!(
                 "绑定 {} 的数据布局与程序不一致",
                 expected.name

@@ -39,7 +39,7 @@ mod native {
     pub unsafe extern "C" fn blink_run(
         frame: *mut Frame,
         program: u32,
-        data: *const u32,
+        data: *const blanguage::resource::DatasetBinding,
         values: *const Value,
     ) {
         let plan = unsafe { &*frame }.programs[program as usize]

@@ -6,6 +6,8 @@ pub struct ModuleImage {
 }
 #[repr(C)]
 pub struct UniformValue { pub kind: u32, pub bits: u64 }
+#[repr(C)]
+pub struct DatasetBinding { pub handle: u32, pub offset: u32 }
 static IMAGE: &[u8] = &@IMAGE@;
 #[unsafe(no_mangle)]
 pub extern "C" fn @PREFIX@_resources() -> ModuleImage {

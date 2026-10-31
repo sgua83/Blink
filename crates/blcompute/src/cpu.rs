@@ -4,7 +4,7 @@ use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
-    native::{NativeSymbol, RangeResult},
+    native::{BufferAddress, NativeSymbol, RangeResult},
 };
 pub use dataset::CpuDataset;
 use std::ffi::c_void;
@@ -29,12 +29,12 @@ unsafe extern "system" {
     fn WaitForThreadpoolWorkCallbacks(work: *mut c_void, cancel: i32);
     fn CloseThreadpoolWork(work: *mut c_void);
 }
-type Entry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32);
-type UnsignedEntry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32) -> u32;
-type ValuesEntry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32, *mut u32);
+type Entry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32);
+type UnsignedEntry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32) -> u32;
+type ValuesEntry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32, *mut u32);
 struct RangeWork {
     entry: *mut c_void,
-    buffers: *const *mut u32,
+    buffers: *const BufferAddress,
     // 范围摘要替换数据集后的私有槽；普通 map 的完整表在其后还可包含纹理。
     range_parameter_slot: usize,
     uniforms: *const u32,
@@ -57,7 +57,7 @@ unsafe extern "system" fn execute_ranges(
     } else {
         let mut pointers =
             unsafe { std::slice::from_raw_parts(work.buffers, work.range_parameter_slot).to_vec() };
-        pointers.push(std::ptr::null_mut());
+        pointers.push(BufferAddress { address: std::ptr::null_mut(), stride: work.range_parameter_words * 4 });
         pointers
     };
     loop {
@@ -70,7 +70,7 @@ unsafe extern "system" fn execute_ranges(
             let buffers = if work.range_parameters.is_null() {
                 work.buffers
             } else {
-                private_buffers[work.range_parameter_slot] = work
+                private_buffers[work.range_parameter_slot].address = work
                     .range_parameters
                     .add(begin / work.grain * work.range_parameter_words)
                     .cast_mut();
@@ -433,7 +433,7 @@ impl CpuTemplate {
     pub(crate) fn run_projected(
         &self,
         bindings: DomainBindings<CpuDataset>,
-        order: &[usize],
+        order: &[(usize, u32)],
         values: &[Value],
     ) -> Result<DomainBindings<CpuDataset>> {
         self.code
@@ -448,8 +448,33 @@ struct CpuBuffer<'a> {
     pointer: *mut u32,
 }
 impl<'a> CpuBuffer<'a> {
+    fn require_storage(data: &Dataset) -> Result<()> {
+        if data.stride != blanguage::ir::align_up(data.ty.size, data.ty.align) {
+            return Err(error("原生CPU绑定的物理记录布局与其类型不一致"));
+        }
+        data.require_views()
+    }
+    fn projected(self, expected: &blanguage::ir::Buffer, offset: u32) -> Result<Self> {
+        fn at<'a>(ty: &'a Ty, offset: u32, expected: &Ty) -> Option<&'a Ty> {
+            if offset == 0 && ty == expected { return Some(ty); }
+            ty.fields.iter().find_map(|(_, byte, field)| {
+                offset.checked_sub(*byte).and_then(|offset| at(field, offset, expected))
+            })
+        }
+        let whole = offset == 0 && *self.ty == expected.ty;
+        if !whole && expected.access != blanguage::ast::Access::Read {
+            return Err(error("整域CPU可写字段投影尚未实现"));
+        }
+        let ty = at(self.ty, offset, &expected.ty)
+            .ok_or_else(|| error(format!("绑定 {} 的字段类型或偏移与原存储不一致", expected.name)))?;
+        Ok(Self {
+            ty,
+            pointer: self.pointer.cast::<u8>().wrapping_add(offset as usize).cast(),
+            ..self
+        })
+    }
     fn owned(data: &'a mut Dataset) -> Result<Self> {
-        data.require_views()?;
+        Self::require_storage(data)?;
         Ok(Self {
             ty: &data.ty,
             stride: data.stride,
@@ -458,7 +483,7 @@ impl<'a> CpuBuffer<'a> {
         })
     }
     fn read(data: &'a Dataset) -> Result<Self> {
-        data.require_views()?;
+        Self::require_storage(data)?;
         Ok(Self {
             ty: &data.ty,
             stride: data.stride,
@@ -524,7 +549,7 @@ impl CpuCode {
         values: &[Value],
     ) -> Result<DomainBindings<CpuDataset>> {
         let count = bindings.datasets.len();
-        self.run_owned_mapped(bindings, textures, values, count, |i| i)
+        self.run_owned_mapped(bindings, textures, values, count, |i| (i, 0))
     }
     fn run_owned_mapped(
         &self,
@@ -532,11 +557,11 @@ impl CpuCode {
         textures: &[crate::Texture2D],
         values: &[Value],
         count: usize,
-        physical: impl Fn(usize) -> usize + Copy,
+        physical: impl Fn(usize) -> (usize, u32) + Copy,
     ) -> Result<DomainBindings<CpuDataset>> {
         bindings.require(&self.program, physical)?;
         for (data, binding) in (0..count)
-            .map(|i| &bindings.datasets[physical(i)])
+            .map(|i| &bindings.datasets[physical(i).0])
             .zip(self.program.buffers())
         {
             if matches!(data, CpuDataset::Read(_)) && binding.access != blanguage::ast::Access::Read
@@ -553,7 +578,12 @@ impl CpuCode {
             })
             .collect::<Result<Vec<_>>>()?;
         // 只复制原指针描述符，不重复借用或复制实际数据。
-        let arguments: Vec<_> = (0..count).map(|i| buffers[physical(i)]).collect();
+        let arguments = (0..count).map(|i| {
+            let (physical, offset) = physical(i);
+            let expected = self.program.buffers().get(i)
+                .ok_or_else(|| error("设备调用的数据集数量不匹配"))?;
+            buffers[physical].projected(expected, offset)
+        }).collect::<Result<Vec<_>>>()?;
         self.run_buffers(&arguments, textures, values)?;
         bindings.completed(&self.program, physical);
         Ok(bindings)
@@ -582,13 +612,13 @@ impl CpuCode {
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
         let mut uniforms = arguments(
             &self.program,
-            buffers.iter().map(|d| (d.ty, d.stride, d.count)),
+            buffers.iter().map(|d| (d.ty, d.count)),
             values,
         )?;
         let pointers: Vec<_> = buffers
             .iter()
-            .map(|d| d.pointer)
-            .chain(texture_descriptors.pointers())
+            .map(|d| BufferAddress { address: d.pointer, stride: d.stride as usize })
+            .chain(texture_descriptors.pointers().map(|address| BufferAddress { address, stride: 0 }))
             .collect();
         for (stage, code) in self.program.stages().iter().zip(&self.stages) {
             let count = if let Some(prefix) = &stage.prefix {
@@ -662,8 +692,8 @@ impl CpuCode {
                         target,
                     } => {
                         let mut inputs = pointers.clone();
-                        inputs[*source] = partials.as_mut_ptr();
-                        inputs[*target] = partials.as_mut_ptr();
+                        inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
+                        inputs[*target] = inputs[*source];
                         let entry: Entry = unsafe { std::mem::transmute(prefix.address) };
                         unsafe {
                             entry(
@@ -679,7 +709,7 @@ impl CpuCode {
                         if let blanguage::ir::Operation::CustomReduce(r) = &stage.operation {
                             let k = r.ty.size.div_ceil(4) as usize;
                             let mut inputs = pointers.clone();
-                            inputs[r.fields.source] = partials.as_mut_ptr();
+                            inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
                             let mut output = vec![0; k];
                             let entry: ValuesEntry = unsafe { std::mem::transmute(next.address) };
                             unsafe {

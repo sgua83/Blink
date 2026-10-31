@@ -1,4 +1,4 @@
-//! 私有排序指针表：[原记录、目标记录、键索引输入、键索引输出、范围参数]。
+//! 私有排序绑定表：[原记录、目标记录、键索引输入、键索引输出、范围参数]。
 use super::*;
 fn emitter(program: &Program) -> Emitter<'_> {
     Emitter {
@@ -19,11 +19,12 @@ pub fn emit_sort_key(program: &Program, s: &Sorting, key: usize) -> NativeCode {
 }
 pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> NativeCode {
     let mut e = emitter(program);
-    let stride = program.buffers[s.source].stride;
-    e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x18]);
+    e.bytes(&[0x41, 0x54]);
+    e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1, BUFFER_STRIDE));
+    e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x30]);
     if first {
         e.bytes(&[0x44, 0x89, 0xc8]);
-        e.scale_index(0, stride);
+        e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
         e.bytes(&[0x49, 0x01, 0xc2]);
     }
     let begin = e.code.len();
@@ -36,7 +37,8 @@ pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool
         operands::Memory::new(10, word)
     } else {
         e.bytes(&[0x43, 0x8b, 0x44, 0xcb, 0x04]);
-        e.scaled_memory(10, 0, stride, word)
+        e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
+        Memory::indexed(10, 0, 0, word)
     };
     if scalar == Scalar::F64 {
         e.instruction(None, &[0x8b], false, 1, memory.offset(4).into());
@@ -64,20 +66,19 @@ pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool
     }
     e.bytes(&[0x43, 0x89, 0x04, 0xcb]);
     if first {
-        e.bytes(&[0x49, 0x81, 0xc2]);
-        e.u32(stride);
+        e.instruction(None, &[0x03], true, 10, operands::Operand::Register(12));
     }
     e.bytes(&[0x41, 0xff, 0xc1]);
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0xc3]);
-    e.finish(0)
+    e.bytes(&[0x41, 0x5c, 0xc3]);
+    e.finish(8)
 }
 pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     let mut e = emitter(program);
     // 参数行：[shift, 16 个本范围私有计数]。
-    e.bytes(&[0x4c, 0x8b, 0x51, 0x10, 0x48, 0x8b, 0x51, 0x20, 0x8b, 0x0a]);
+    e.bytes(&[0x4c, 0x8b, 0x51, 0x20, 0x48, 0x8b, 0x51, 0x40, 0x8b, 0x0a]);
     let begin = e.code.len();
     e.bytes(&[0x45, 0x39, 0xc1]);
     let end = e.jump(Some(0x83));
@@ -94,7 +95,7 @@ pub fn emit_sort_histogram(program: &Program) -> NativeCode {
 pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     let mut e = emitter(program);
     e.bytes(&[
-        0x53, 0x4c, 0x8b, 0x51, 0x10, 0x4c, 0x8b, 0x59, 0x18, 0x48, 0x8b, 0x51, 0x20, 0x8b, 0x0a,
+        0x53, 0x4c, 0x8b, 0x51, 0x20, 0x4c, 0x8b, 0x59, 0x30, 0x48, 0x8b, 0x51, 0x40, 0x8b, 0x0a,
     ]);
     let begin = e.code.len();
     e.bytes(&[0x45, 0x39, 0xc1]);
@@ -112,16 +113,17 @@ pub fn emit_sort_scatter(program: &Program) -> NativeCode {
 pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     let mut e = emitter(program);
     let stride = program.buffers[s.source].stride;
-    e.bytes(&[
-        0x53, 0x56, 0x57, 0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x08, 0x48, 0x8b, 0x51, 0x10,
-    ]);
+    e.bytes(&[0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55]);
+    e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1, BUFFER_STRIDE));
+    e.instruction(None, &[0x8b], true, 13, operands::Operand::memory(1, BUFFER_BYTES + BUFFER_STRIDE));
+    e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x10, 0x48, 0x8b, 0x51, 0x20]);
     let begin = e.code.len();
     e.bytes(&[0x45, 0x39, 0xc1]);
     let end = e.jump(Some(0x83));
     e.bytes(&[0x42, 0x8b, 0x44, 0xca, 0x04]);
-    e.scale_index(0, stride);
+    e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
     e.bytes(&[0x49, 0x8d, 0x34, 0x02, 0x44, 0x89, 0xc8]);
-    e.scale_index(0, stride);
+    e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(13));
     e.bytes(&[0x49, 0x8d, 0x3c, 0x03]);
     let vectors = stride / 16;
     if vectors != 0 {
@@ -149,6 +151,6 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0x5f, 0x5e, 0x5b, 0xc3]);
-    e.finish(24)
+    e.bytes(&[0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
+    e.finish(40)
 }

@@ -379,7 +379,7 @@ pub(super) fn lower(stage: &Stage) -> std::borrow::Cow<'_, Stage> {
 impl Emitter<'_> {
     pub(super) fn texture_pointer(&mut self, texture: TextureSource) {
         let offset =
-            (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * 8;
+            (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * u64::from(BUFFER_BYTES);
         // x64 位移为有符号 32 位，较远的绑定先用完整原生地址构造基址。
         if offset > i32::MAX as u64 {
             self.bytes(&[0x49, 0xbf]);

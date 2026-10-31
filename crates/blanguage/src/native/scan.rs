@@ -31,25 +31,30 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
+    e.bytes(&[0x41, 0x54]);
+    if !add { e.bytes(&[0x41, 0x55]); }
+    e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1,
+        (if add { r.target } else { r.source }) as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    if !add {
+        e.instruction(None, &[0x8b], true, 13, operands::Operand::memory(1,
+            r.target as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    }
     if add {
         e.bytes(&[0x48, 0x8b, 0x91]);
-        e.u32(program.buffers.len() as u32 * 8);
+        e.u32(program.buffers.len() as u32 * BUFFER_BYTES);
     }
     e.bytes(&[0x4c, 0x8b, 0x91]);
-    e.u32(if add { r.target } else { r.source } as u32 * 8);
+    e.u32(if add { r.target } else { r.source } as u32 * BUFFER_BYTES);
     if !add {
         e.bytes(&[0x4c, 0x8b, 0x99]);
-        e.u32(r.target as u32 * 8);
+        e.u32(r.target as u32 * BUFFER_BYTES);
     }
     e.bytes(&[0x44, 0x89, 0xc8]);
-    e.scale_index(
-        0,
-        program.buffers[if add { r.target } else { r.source }].stride,
-    );
+    e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
     e.bytes(&[0x49, 0x01, 0xc2]);
     if !add {
         e.bytes(&[0x44, 0x89, 0xc8]);
-        e.scale_index(0, program.buffers[r.target].stride);
+        e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(13));
         e.bytes(&[0x49, 0x01, 0xc3]);
     }
     e.bytes(&[0x45, 0x29, 0xc8]);
@@ -150,11 +155,9 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
             if add { e.write_value_address(allocation::Location::Gpr(target), memory, scalar.size()); }
         }
     }
-    e.bytes(&[0x49, 0x81, 0xc2]);
-    e.u32(program.buffers[if add { r.target } else { r.source }].stride);
+    e.instruction(None, &[0x03], true, 10, operands::Operand::Register(12));
     if !add {
-        e.bytes(&[0x49, 0x81, 0xc3]);
-        e.u32(program.buffers[r.target].stride);
+        e.instruction(None, &[0x03], true, 11, operands::Operand::Register(13));
     }
     e.bytes(&[0x41, 0xff, 0xc8]);
     let back = e.jump(None);
@@ -162,14 +165,15 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     e.patch(end, e.code.len());
     if !add {
         // 与归约同用第五个参数交付分量结果；普通扫描不再依赖单个 eax 返回值。
-        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
+        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x38]);
         for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
             let value = if float { allocation::Location::Xmm(component as u8) } else { allocation::Location::Gpr(registers[component]) };
             e.write_value_address(value, Memory::new(10, *offset), scalar.size());
         }
     }
-    e.bytes(&[0xc3]);
-    e.finish(0)
+    if !add { e.bytes(&[0x41, 0x5d]); }
+    e.bytes(&[0x41, 0x5c, 0xc3]);
+    e.finish(if add { 8 } else { 16 })
 }
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
     let r = &scan.values;
@@ -192,18 +196,23 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
+    e.bytes(&[0x41, 0x54, 0x41, 0x55]);
+    for (binding, register) in [(r.source, 12), (r.target, 13)] {
+        e.instruction(None, &[0x8b], true, register,
+            operands::Operand::memory(1, binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+    }
     if add {
         e.bytes(&[0x48, 0x8b, 0x91]);
-        e.u32(program.buffers.len() as u32 * 8);
+        e.u32(program.buffers.len() as u32 * BUFFER_BYTES);
     }
     // r10 = source，r11 = target；均为易失寄存器，不改变 Win64 非易失状态。
     for (binding, rex) in [(r.source, 0x91), (r.target, 0x99)] {
         e.bytes(&[0x4c, 0x8b, rex]);
-        e.u32(binding as u32 * 8);
+        e.u32(binding as u32 * BUFFER_BYTES);
     }
-    for (binding, pointer) in [(r.source, 0xc2), (r.target, 0xc3)] {
+    for (stride, pointer) in [(12, 0xc2), (13, 0xc3)] {
         e.bytes(&[0x44, 0x89, 0xc8]);
-        e.scale_index(0, program.buffers[binding].stride);
+        e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(stride));
         e.bytes(&[0x49, 0x01, pointer]);
     }
     e.bytes(&[0x45, 0x29, 0xc8]); // r8d = 剩余数量；begin 已消费。
@@ -320,9 +329,8 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
             e.bytes(&[0x0f, 0x6e, 0xc0 + c * 8]);
         }
     }
-    for (binding, pointer) in [(r.source, 0xc2), (r.target, 0xc3)] {
-        e.bytes(&[0x49, 0x81, pointer]);
-        e.u32(program.buffers[binding].stride);
+    for (stride, pointer) in [(12, 10), (13, 11)] {
+        e.instruction(None, &[0x03], true, pointer, operands::Operand::Register(stride));
     }
     e.bytes(&[0x41, 0xff, 0xc8]);
     let back = e.jump(None);
@@ -334,13 +342,13 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
     }
     if !add {
         // 与普通扫描共用第五个参数：紧密数值分量，随后是段起点位。
-        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
+        e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x38]);
         for (component, (_, offset)) in scan.ty.components.iter().enumerate() {
             e.write_value_address(allocation::Location::Xmm(component as u8), Memory::new(10, *offset), scalar.size());
         }
         e.bytes(&[0x45, 0x89, 0x8a]);
         e.u32(scan.ty.size.div_ceil(4) * 4);
     }
-    e.bytes(&[0xc3]);
-    e.finish(0)
+    e.bytes(&[0x41, 0x5d, 0x41, 0x5c, 0xc3]);
+    e.finish(16)
 }

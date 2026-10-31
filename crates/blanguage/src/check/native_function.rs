@@ -1046,20 +1046,13 @@ fn build_domain(
     let mut uniform_regs = BTreeMap::new();
     let mut ui = 0;
     for param in &d.function.params {
-        let ty = cooperative::parameter_type(world, param, d)?;
         let first = registers.len();
         if param.ty.dataset {
-            registers.extend([Scalar::U32, Scalar::U32]);
-            let count = world.shape(
-                &param.ty.count,
-                &d.source,
-                param.span,
-                &d.module,
-                &d.imports,
-            )?;
-            parameters.push(CallParameter::Value(Ty::owned_dataset(ty, count)));
+            registers.extend([Scalar::U32; 2]);
+            parameters.push(CallParameter::Value(Builder::domain_dataset_parameter_type()));
             data.push([first, first + 1]);
         } else {
+            let ty = cooperative::parameter_type(world, param, d)?;
             registers.extend(ty.components.iter().map(|(s, _)| *s));
             parameters.push(CallParameter::Value(ty.clone()));
             for (i, (scalar, offset)) in ty.components.iter().enumerate() {
@@ -1105,10 +1098,7 @@ fn build_domain(
         for root in &call.arguments {
             arguments.push(match root {
                 Root::Data(i, _) => CallArgument::Value {
-                    ty: Ty::owned_dataset(
-                        signature.buffers[*i].ty.clone(),
-                        signature.buffers[*i].count,
-                    ),
+                    ty: Builder::domain_dataset_parameter_type(),
                     values: data[*i].to_vec(),
                 },
                 Root::Uniform(ty, offset) => CallArgument::Value {
@@ -1247,9 +1237,9 @@ fn emit_domain_part(
     let index = context.resources.programs.len();
     context.resources.programs.push((target, program));
     let mut arguments = vec![frame.clone()];
-    arguments.extend(data.iter().map(|regs| CallArgument::Value {
+    arguments.extend(data.iter().flat_map(|regs| *regs).map(|reg| CallArgument::Value {
         ty: Ty::scalar(Scalar::U32),
-        values: vec![regs[0]],
+        values: vec![reg],
     }));
     arguments.extend_from_slice(uniforms);
     code.push(application::runtime_call(

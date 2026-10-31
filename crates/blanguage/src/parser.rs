@@ -577,7 +577,7 @@ impl Parser {
                         self.expect(",")?;
                         let count = self.ident()?;
                         self.expect(".")?;
-                        let field = self.ident()?;
+                        let field = self.qualified(".")?;
                         ContractPredicate::Prefix { data, count, field }
                     }
                     "nonzero" => ContractPredicate::Nonzero(self.qualified(".")?),

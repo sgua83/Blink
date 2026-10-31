@@ -420,7 +420,13 @@ impl Emitter<'_> {
                     Operand::memory(4, self.frame.end as u32 + lane * 4),
                 );
             }
-            Address::Element => self.bytes(&[0x89, 0xd8]),
+            Address::Element => {
+                self.bytes(&[0x89, 0xd8]);
+                if lane != 0 {
+                    self.instruction(None, &[0x83], true, 0, Operand::Register(0));
+                    self.bytes(&[lane as u8]);
+                }
+            },
             Address::Uniform(r) => match allocation.location(PrivateSlot::Register(*r)) {
                 PacketPlace::Register(xmm) => {
                     self.instruction(Some(0x66), &[0x0f, 0x7e], false, xmm, Operand::Register(0))
@@ -431,17 +437,7 @@ impl Emitter<'_> {
             },
         }
         self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-        self.u32(binding as u32 * 8);
-    }
-    fn packet_address(
-        &mut self,
-        allocation: &PacketAllocation,
-        binding: usize,
-        index: &Address,
-        lane: u32,
-    ) {
-        self.packet_base_index(allocation, binding, index, lane);
-        self.offset_address(self.program.buffers[binding].stride);
+        self.u32(binding as u32 * BUFFER_BYTES);
     }
     fn packet_memory(
         &mut self,
@@ -450,18 +446,8 @@ impl Emitter<'_> {
         index: &Address,
         lane: u32,
     ) -> Memory {
-        if matches!(index, Address::Element) && self.stage.selection.is_none() {
-            self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-            self.u32(binding as u32 * 8);
-            return self.value_memory(
-                15,
-                allocation::Location::Gpr(3),
-                self.program.buffers[binding].stride,
-                0,
-            );
-        }
         self.packet_base_index(allocation, binding, index, lane);
-        self.scaled_memory(15, 0, self.program.buffers[binding].stride, 0)
+        self.buffer_memory(binding, 0, 0)
     }
     fn packet_binary(
         &mut self,
@@ -638,14 +624,9 @@ impl Emitter<'_> {
             self.bytes(&[0x44, 0x39, 0xf3]);
             let tail = self.jump(Some(0x83));
             self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-            self.u32(selection.binding as u32 * 8);
+            self.u32(selection.binding as u32 * BUFFER_BYTES);
             self.bytes(&[0x89, 0xd8]);
-            let memory = self.scaled_memory(
-                15,
-                0,
-                self.program.buffers[selection.binding].stride,
-                selection.word,
-            );
+            let memory = self.buffer_memory(selection.binding, 0, selection.word);
             self.instruction(None, &[0x83], false, 7, memory.into());
             self.bytes(&[0]);
             let skip = self.jump(Some(0x84));
@@ -810,65 +791,38 @@ impl Emitter<'_> {
                         }
                     }
                 }
-                Step::Load {
-                    dst,
-                    binding,
-                    index,
-                    word,
-                } => {
-                    let stride = self.program.buffers[*binding].stride;
+                Step::Load { dst, binding, index, word } => {
                     let broadcast = matches!(index, Address::Uniform(_));
                     let target = match allocation.location(Register(*dst)) {
                         PacketPlace::Register(r) => r,
                         _ => 0,
                     };
-                    if !sparse && !broadcast && stride == 4 {
-                        let memory = self
-                            .packet_memory(allocation, *binding, index, 0)
-                            .offset(*word);
+                    let done = if !sparse && !broadcast && self.program.buffers[*binding].stride == 4 {
+                        self.instruction(None, &[0x83], true, 7,
+                            Operand::memory(12, *binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+                        self.bytes(&[4]);
+                        let strided = self.jump(Some(0x85));
+                        let memory = self.packet_memory(allocation, *binding, index, 0).offset(*word);
                         self.instruction(None, &[0x0f, 0x10], false, target, memory.into());
-                    } else {
-                        // Dense AoS lanes consume one shared address; sparse lanes consume their own.
-                        let shared = (!sparse || broadcast).then(|| {
-                            if broadcast {
-                                self.packet_memory(allocation, *binding, index, 0)
-                            } else {
-                                self.packet_address(allocation, *binding, index, 0);
-                                Memory::new(15, 0)
-                            }
-                        });
-                        for lane in 0..if broadcast { 1 } else { 4 } {
-                            let memory = match shared {
-                                Some(memory) => memory,
-                                None => self.packet_memory(allocation, *binding, index, lane),
-                            };
-                            let offset = word + if sparse { 0 } else { lane * stride };
-                            self.instruction(
-                                Some(0x66),
-                                &[0x0f, 0x6e],
-                                false,
-                                if lane == 0 { target } else { lane as u8 },
-                                memory.offset(offset).into(),
-                            );
-                        }
-                        if broadcast {
-                            self.shuffle(target, target, 0);
-                        } else {
-                            self.packed(Some(0x66), 0x62, target, 1);
-                            self.packed(Some(0x66), 0x62, 2, 3);
-                            self.packed(Some(0x66), 0x6c, target, 2);
-                        }
+                        let done = self.jump(None);
+                        self.patch(strided, self.code.len());
+                        Some(done)
+                    } else { None };
+                    for lane in 0..if broadcast { 1 } else { 4 } {
+                        let memory = self.packet_memory(allocation, *binding, index, lane).offset(*word);
+                        self.instruction(Some(0x66), &[0x0f, 0x6e], false,
+                            if lane == 0 { target } else { lane as u8 }, memory.into());
                     }
+                    if broadcast { self.shuffle(target, target, 0); } else {
+                        self.packed(Some(0x66), 0x62, target, 1);
+                        self.packed(Some(0x66), 0x62, 2, 3);
+                        self.packed(Some(0x66), 0x6c, target, 2);
+                    }
+                    if let Some(done) = done { self.patch(done, self.code.len()); }
                     self.packet_from_word(*dst, target);
                     self.packet_store(allocation, Register(*dst), target);
                 }
-                Step::Store {
-                    binding,
-                    index,
-                    word,
-                    value,
-                } => {
-                    let stride = self.program.buffers[*binding].stride;
+                Step::Store { binding, index, word, value } => {
                     let source = match allocation.location(Register(*value)) {
                         PacketPlace::Register(r) => r,
                         PacketPlace::Stack(_) => {
@@ -876,34 +830,24 @@ impl Emitter<'_> {
                             1
                         }
                     };
-                    if !sparse && stride == 4 {
-                        let memory = self
-                            .packet_memory(allocation, *binding, index, 0)
-                            .offset(*word);
+                    let done = if !sparse && self.program.buffers[*binding].stride == 4 {
+                        self.instruction(None, &[0x83], true, 7,
+                            Operand::memory(12, *binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+                        self.bytes(&[4]);
+                        let strided = self.jump(Some(0x85));
+                        let memory = self.packet_memory(allocation, *binding, index, 0).offset(*word);
                         self.instruction(None, &[0x0f, 0x11], false, source, memory.into());
-                    } else {
-                        if !sparse {
-                            self.packet_address(allocation, *binding, index, 0);
-                        }
-                        for lane in 0..4 {
-                            let memory = if sparse {
-                                self.packet_memory(allocation, *binding, index, lane)
-                            } else {
-                                Memory::new(15, 0)
-                            };
-                            if lane != 0 {
-                                self.shuffle(0, source, (lane * 0x55) as u8);
-                            }
-                            let offset = word + if sparse { 0 } else { lane * stride };
-                            self.instruction(
-                                Some(0x66),
-                                &[0x0f, 0x7e],
-                                false,
-                                if lane == 0 { source } else { 0 },
-                                memory.offset(offset).into(),
-                            );
-                        }
+                        let done = self.jump(None);
+                        self.patch(strided, self.code.len());
+                        Some(done)
+                    } else { None };
+                    for lane in 0..4 {
+                        let memory = self.packet_memory(allocation, *binding, index, lane).offset(*word);
+                        if lane != 0 { self.shuffle(0, source, (lane * 0x55) as u8); }
+                        self.instruction(Some(0x66), &[0x0f, 0x7e], false,
+                            if lane == 0 { source } else { 0 }, memory.into());
                     }
+                    if let Some(done) = done { self.patch(done, self.code.len()); }
                 }
                 Step::Gather {
                     dst,

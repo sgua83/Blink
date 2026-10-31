@@ -17,11 +17,14 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
-    // rcx=buffer pointers, r8d=end, r9d=begin；r10=当前源地址，ecx=当前元素。
+    // 同一绑定表持有地址与stride；R12保存源步长直到本范围完成。
+    e.bytes(&[0x41, 0x54]);
+    e.instruction(None, &[0x8b], true, 12,
+        operands::Operand::memory(1, r.source as u32 * BUFFER_BYTES + BUFFER_STRIDE));
     e.bytes(&[0x4c, 0x8b, 0x91]);
-    e.u32(r.source as u32 * 8);
+    e.u32(r.source as u32 * BUFFER_BYTES);
     e.bytes(&[0x44, 0x89, 0xc8]);
-    e.scale_index(0, program.buffers[r.source].stride);
+    e.instruction(None, &[0x0f, 0xaf], true, 0, operands::Operand::Register(12));
     e.bytes(&[0x49, 0x01, 0xc2, 0x44, 0x89, 0xc9]);
     let registers = [0u8, 2, 9, 11];
     let identity = reduction.operator.identity(scalar);
@@ -91,18 +94,17 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
             }
         }
     }
-    e.bytes(&[0x49, 0x81, 0xc2]);
-    e.u32(program.buffers[r.source].stride);
+    e.instruction(None, &[0x03], true, 10, operands::Operand::Register(12));
     e.bytes(&[0xff, 0xc1]);
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
     // Windows x64：返回地址与四个 shadow slots 之后是第五个参数。
-    e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x28]);
+    e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x30]);
     for (component, (_, offset)) in reduction.ty.components.iter().enumerate() {
         let value = if float { allocation::Location::Xmm(component as u8) } else { allocation::Location::Gpr(registers[component]) };
         e.write_value_address(value, Memory::new(10, *offset), scalar.size());
     }
-    e.bytes(&[0xc3]);
-    e.finish(0)
+    e.bytes(&[0x41, 0x5c, 0xc3]);
+    e.finish(8)
 }

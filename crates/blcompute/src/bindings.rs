@@ -190,7 +190,7 @@ impl<D> DomainBindings<D> {
     pub(crate) fn require(
         &self,
         program: &dyn ProgramInterface,
-        binding: impl Fn(usize) -> usize,
+        binding: impl Fn(usize) -> (usize, u32),
     ) -> Result<()>
     where
         D: DomainStorage,
@@ -203,9 +203,9 @@ impl<D> DomainBindings<D> {
         };
         for relation in program.prefix_requirements() {
             if !self.domains.iter().any(|known| {
-                same(known.domain, binding(relation.domain))
-                    && known.count.word == relation.count.word
-                    && same(known.count.binding, binding(relation.count.binding))
+                same(known.domain, binding(relation.domain).0)
+                    && u64::from(known.count.word) == u64::from(relation.count.word) + u64::from(binding(relation.count.binding).1)
+                    && same(known.count.binding, binding(relation.count.binding).0)
             }) {
                 return Err(error(format!(
                     "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",
@@ -220,21 +220,26 @@ impl<D> DomainBindings<D> {
     pub(crate) fn completed(
         &mut self,
         program: &dyn ProgramInterface,
-        binding: impl Fn(usize) -> usize,
+        binding: impl Fn(usize) -> (usize, u32),
     ) {
         self.domains.retain(|r| {
             !program
                 .buffers()
                 .iter()
                 .enumerate()
-                .any(|(i, b)| binding(i) == r.count.binding && b.access.writes())
+                .any(|(i, b)| {
+                    let (physical, offset) = binding(i);
+                    physical == r.count.binding && b.access.writes()
+                        && u64::from(r.count.word) >= u64::from(offset)
+                        && u64::from(r.count.word) < u64::from(offset) + u64::from(b.ty.size)
+                })
         });
         self.domains
             .extend(program.prefix_guarantees().iter().map(|r| PrefixRelation {
-                domain: binding(r.domain),
+                domain: binding(r.domain).0,
                 count: PrefixCount {
-                    binding: binding(r.count.binding),
-                    word: r.count.word,
+                    binding: binding(r.count.binding).0,
+                    word: r.count.word + binding(r.count.binding).1,
                 },
             }));
         self.domains.sort();

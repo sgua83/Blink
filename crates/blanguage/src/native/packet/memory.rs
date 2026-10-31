@@ -51,17 +51,16 @@ impl Emitter<'_> {
         if shared {
             self.packet_read_base(allocation, source, 0);
         }
-        let stride = match source {
-            ReadSource::Dataset(binding) => self.program.buffers[*binding].stride,
-            ReadSource::View { stride, .. } => *stride,
-        };
         for lane in 0..if broadcast { 1 } else { 4 } {
             // Lane extraction and indexed reads preserve R15's base.
             if !shared {
                 self.packet_read_base(allocation, source, lane);
             }
             self.packet_lane(allocation, index, lane, 0);
-            let memory = self.scaled_memory(15, 0, stride, word);
+            let memory = match source {
+                ReadSource::Dataset(binding) => self.buffer_memory(*binding, 0, word),
+                ReadSource::View { stride, .. } => self.scaled_memory(15, 0, *stride, word),
+            };
             // XMM3 只在取 lane 时暂用，第四个读取在地址完成后才写入它。
             // 目标分配位置在四个源 lane 全部读取后写回，允许实际的寄存器复用。
             self.instruction(Some(0x66), &[0x0f, 0x6e], false, lane, memory.into());
@@ -81,7 +80,7 @@ impl Emitter<'_> {
         match source {
             ReadSource::Dataset(binding) => {
                 self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
-                self.u32(*binding as u32 * 8);
+                self.u32(*binding as u32 * BUFFER_BYTES);
             }
             ReadSource::View { address, .. } => {
                 self.packet_lane(allocation, address[1], lane, 15);

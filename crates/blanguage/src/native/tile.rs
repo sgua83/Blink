@@ -70,9 +70,9 @@ impl Emitter<'_> {
         for ((source, word), fragments) in self.stage.input_words() {
           for (byte, unit) in fragments {
             self.bytes(&[0x4d, 0x8b, 0x94, 0x24]);
-            self.u32(source as u32 * 8);
+            self.u32(source as u32 * BUFFER_BYTES);
             self.bytes(&[0x89, 0xd8]);
-            self.scale_index(0, self.program.buffers[source].stride);
+            self.scale_buffer_index(12, source, 0);
             self.bytes(&[0x49, 0x01, 0xc2, 0x4c, 0x8d, 0x9c, 0x24]);
             self.u32(
                 self.tile_storage_base()
@@ -90,8 +90,7 @@ impl Emitter<'_> {
                 self.instruction(None, &[0x8b], false, 0, operands::Operand::memory(10, byte));
             }
             self.write_value_address(Location::Gpr(0), Memory::new(11, 0), unit.size());
-            self.bytes(&[0x49, 0x81, 0xc2]);
-            self.u32(self.program.buffers[source].stride);
+            self.instruction(None, &[0x03], true, 10, operands::Operand::memory(12, source as u32 * BUFFER_BYTES + BUFFER_STRIDE));
             self.bytes(&[0x49, 0x83, 0xc3, 0x04, 0xff, 0xc9]);
             let again = self.jump(Some(0x85));
             self.patch(again, begin);

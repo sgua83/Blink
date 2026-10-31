@@ -24,7 +24,7 @@ impl Code {
         })
     }
 }
-pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32) -> Result<()> {
+pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[BufferAddress], count: u32) -> Result<()> {
     let mut a = words(count as usize * 2)?;
     let mut b = words(count as usize * 2)?;
     let grain = (count as usize).div_ceil(host.workers * 4).max(1);
@@ -33,8 +33,8 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32
     let mut buffers = [
         pointers[code.source],
         pointers[code.target],
-        a.as_mut_ptr(),
-        a.as_mut_ptr(),
+        BufferAddress { address: a.as_mut_ptr(), stride: 8 },
+        BufferAddress { address: a.as_mut_ptr(), stride: 8 },
     ];
     let mut work = RangeWork {
         entry: code.initialize[0].address,
@@ -50,8 +50,8 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32
         range_parameter_words: 17,
     };
     for key in &code.initialize {
-        buffers[2] = a.as_mut_ptr();
-        buffers[3] = a.as_mut_ptr();
+        buffers[2].address = a.as_mut_ptr();
+        buffers[3].address = a.as_mut_ptr();
         work.buffers = buffers.as_ptr();
         work.entry = key.address;
         work.range_parameters = std::ptr::null();
@@ -62,8 +62,8 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32
             for row in rows.chunks_exact_mut(17) {
                 row[0] = shift;
             }
-            buffers[2] = a.as_mut_ptr();
-            buffers[3] = b.as_mut_ptr();
+            buffers[2].address = a.as_mut_ptr();
+            buffers[3].address = b.as_mut_ptr();
             work.buffers = buffers.as_ptr();
             work.entry = code.histogram.address;
             work.range_parameters = rows.as_mut_ptr();
@@ -84,7 +84,7 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[*mut u32], count: u32
             std::mem::swap(&mut a, &mut b);
         }
     }
-    buffers[2] = a.as_mut_ptr();
+    buffers[2].address = a.as_mut_ptr();
     work.buffers = buffers.as_ptr();
     work.entry = code.gather.address;
     work.range_parameters = std::ptr::null();

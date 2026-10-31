@@ -1919,7 +1919,7 @@ impl GpuProgram {
         physical: impl Fn(usize) -> usize + Copy,
     ) -> Result<Submission> {
         let c = &self.compiled;
-        owner.bindings.require(&c.program, physical)?;
+        owner.bindings.require(&c.program, |i| (physical(i), 0))?;
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
         {
@@ -1934,6 +1934,9 @@ impl GpuProgram {
             physical,
         };
         for (dataset, binding) in data.iter().zip(c.program.buffers()) {
+            if dataset.stride != binding.stride {
+                return Err(error(format!("绑定 {} 的GPU数据布局与程序不一致", binding.name)));
+            }
             if matches!(&*dataset.storage, DatasetStorage::Read(_))
                 && binding.access != blanguage::ast::Access::Read
             {
@@ -1974,7 +1977,7 @@ impl GpuProgram {
         }
         let mut uniforms = arguments(
             &c.program,
-            data.iter().map(|d| (&d.ty, d.stride, d.count)),
+            data.iter().map(|d| (&d.ty, d.count)),
             values,
         )?;
         let mut commands = Commands::new(c.inner.clone())?;
@@ -2517,7 +2520,7 @@ impl GpuProgram {
         for dataset in data.owners.iter_mut() {
             dataset.last_use = Some(execution.clone());
         }
-        owner.bindings.completed(&c.program, physical);
+        owner.bindings.completed(&c.program, |i| (physical(i), 0));
         Ok(Submission {
             execution,
             bindings: owner.bindings,
