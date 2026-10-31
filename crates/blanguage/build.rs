@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hash::field(&mut identity, &fs::read(path)?);
     }
     println!("cargo:rerun-if-changed=src");
+    // Cargo owns these inputs; the content identity uses their effective values.
     for name in [
-        "RUSTC",
         "TARGET",
         "HOST",
         "PROFILE",
@@ -46,7 +46,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_CFG_TARGET_FEATURE",
     ] {
-        println!("cargo:rerun-if-env-changed={name}");
         hash::field(&mut identity, name.as_bytes());
         match env::var_os(name) {
             Some(value) => {
