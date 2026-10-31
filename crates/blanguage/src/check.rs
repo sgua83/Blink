@@ -89,6 +89,7 @@ enum IndexDomain {
     Sum(ValueIdentity, ValueIdentity), // value == left + right，已证明不回绕
     Offset(ValueIdentity, u32), // value == base + amount，已证明不回绕
     Shifted(ValueIdentity, ValueIdentity, u32), // value + distance <= base + limit
+    Computed(bounds::IntegerExpression),
 }
 type Domains = BTreeSet<IndexDomain>;
 #[derive(Clone)]
@@ -2597,14 +2598,16 @@ impl<'a> Builder<'a> {
             }
             regs.push(dst);
         }
-        Ok(Value {
+        let value = Value {
             proof,
             literal,
             ty,
             regs,
             uniform: a.uniform && b.uniform,
             constant: None,
-        })
+        };
+        self.observe_integer_binary(op, &a, &b, &value);
+        Ok(value)
     }
     fn math(&mut self, op: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
         let arity = if matches!(op, "min" | "max" | "pow") {
@@ -4286,7 +4289,7 @@ crate::module::codec::record!(Value {
     constant
 });
 crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource)});
-crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount)});
+crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression)});
 
 
 // 已编译符号的空合同表示没有B函数合同；非空合同由原所有者交接规范身份。

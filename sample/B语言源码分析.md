@@ -592,7 +592,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3757`。
+源码节选：`crates/blanguage/src/check.rs:3760`。
 
 ```rust
         let binding = view.binding;
@@ -639,9 +639,9 @@ impl Access {
 
 `values[index()+1]` 在某些长度下可能合法，但多个实例的访问可能交错，且不再是当前独占元素。编译器不会因为下标仍在范围内，就自动授予普通并行写权限。这正是“范围证明”和“所有权证明”不能混为一谈的原因。
 
-普通CPU应用原生函数的read／write／inout／atomic dataset借用共用句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。DataPayload合同编码对应BLCO25，旧BLCO24目标文件须重新编译；资源C ABI仍为BLRI12。
+普通CPU应用原生函数的read／write／inout／atomic dataset借用共用句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。对象合同与资源C ABI采用语言规范“已编译模块的资源ABI”中的现行编码版本。
 
-GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。SPIR-V按物理步幅计算整记录分页，再叠加字段及真实分量偏移；归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view仍以原连续元素类型访问页数组，设备指针指到绑定头之后。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定映像语义对应BLRI12，Frame共同C签名及BLCO25对象容器编码保持；旧BLRI11模块须重新编译，不能与新映像混用。
+GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。SPIR-V按物理步幅计算整记录分页，再叠加字段及真实分量偏移；归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view仍以原连续元素类型访问页数组，设备指针指到绑定头之后。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定头遵守现行执行映像语义；Frame共同C签名与对象合同分别按其实际编码版本交接，不相容产物须重新编译。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -694,8 +694,9 @@ enum Fact {
     Zero(ValueIdentity),
     NotEqual(ValueIdentity, ValueIdentity),
 }
-type Facts = BTreeSet<Fact>;
 ```
+
+确定整数二元运算将实际类型、运算和已求值输入快照的结果关系交给原Clause。常量按类型与位模式表示；同一次事实查询沿相等输入推导相等结果，嵌套运算沿已有关系收敛。因此未改写数组上的`value.indices[ordinal(item)&1]`重复选择可以消费前次条件，直接重复算式下标也消费同一条路径，不要求手工保存所选标量。调用、原子读取与已改变内容分别保留真实快照；求值顺序、范围检查与资源所有者保持，不添加运行时缓存或逐元素判断。
 
 `Fact` 包含相等、索引域、最小值、最大值和非零。同文件的 `Proof` 按分量保存来源、条件、IntegerRanges、非零和索引域。整数范围可由多个有序区间组成，能够表达回绕后的不连续集合；float3 的三个分量也可能持有不同事实。
 
@@ -709,7 +710,7 @@ type Facts = BTreeSet<Fact>;
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:659`。
+源码节选：`crates/blanguage/src/check/bounds.rs:697`。
 
 ```rust
         self.nonzero = (0..width)
@@ -834,7 +835,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:386`。
+源码节选：`crates/blanguage/src/check.rs:387`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1410,7 +1411,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 ### 19.3 view 保存的是来源关系
 
-一个记录可以引用某份冻结的只读数据，用于共享模型、材质或几何。view不是把被引用数据嵌入每条记录，也不能把CPU地址原样当成设备地址。含view的持久dataset可作为read或inout整域参数；CPU／compute／GPU遵守同一规则。inout按原权限更新不含view的普通兄弟字段及其数组分量，原view载荷与来源保持；实际含view字段或整记录不能写入或作为普通write／inout位置借出，compact／排序／append也不能复制view载荷到持久输出。不含view的字段可按既有权限转借给普通函数。write完整根不能构造view图，atomic根及整域按值view仍不开放；只读view元素不获得写权限。本地普通view值及聚合仍可按既有来源规则组合、赋值和返回，不把持久图的写入限制扩大为局部值限制。根和共享子资源继续由原Dataset／GpuStorage.views及最后真实CPU／GPU消费者持有，字段更新不改图、不复制资源、不新增完成或所有权表；BLCO25／BLRI12及view机器布局保持。
+一个记录可以引用某份冻结的只读数据，用于共享模型、材质或几何。view不是把被引用数据嵌入每条记录，也不能把CPU地址原样当成设备地址。含view的持久dataset可作为read或inout整域参数；CPU／compute／GPU遵守同一规则。inout按原权限更新不含view的普通兄弟字段及其数组分量，原view载荷与来源保持；实际含view字段或整记录不能写入或作为普通write／inout位置借出，compact／排序／append也不能复制view载荷到持久输出。不含view的字段可按既有权限转借给普通函数。write完整根不能构造view图，atomic根及整域按值view仍不开放；只读view元素不获得写权限。本地普通view值及聚合仍可按既有来源规则组合、赋值和返回，不把持久图的写入限制扩大为局部值限制。根和共享子资源继续由原Dataset／GpuStorage.views及最后真实CPU／GPU消费者持有，字段更新不改图、不复制资源、不新增完成或所有权表；view机器布局与资源C ABI保持现行定义。
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 

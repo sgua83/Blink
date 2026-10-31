@@ -30,6 +30,42 @@ enum Fact {
     Zero(ValueIdentity),
     NotEqual(ValueIdentity, ValueIdentity),
 }
+// 运算关系只引用已求值的快照；常量使用实际类型与位模式。
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum IntegerOperand {
+    Value(ValueIdentity),
+    Constant(Scalar, Bits),
+}
+impl IntegerOperand {
+    fn of(value: &Value, component: usize) -> Self {
+        match &value.constant {
+            Some(bits) => Self::Constant(value.ty.components[component].0, bits[component]),
+            None => Self::Value(value.component_identity(component)),
+        }
+    }
+    fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
+        Some(match self {
+            Self::Value(value) => Self::Value(identity(value)?),
+            constant => constant,
+        })
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum IntegerOperation { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor, ShiftLeft, ShiftRight }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum IntegerExpression {
+    Binary(IntegerOperation, Scalar, IntegerOperand, IntegerOperand),
+}
+impl IntegerExpression {
+    fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
+        Some(match self {
+            Self::Binary(op, scalar, a, b) => Self::Binary(op, scalar, a.map(&identity)?, b.map(&identity)?),
+        })
+    }
+}
+crate::module::codec::variants!(IntegerOperand{0=>Value(identity),1=>Constant(scalar,bits)});
+crate::module::codec::variants!(IntegerOperation{0=>Add,1=>Subtract,2=>Multiply,3=>Divide,4=>Remainder,5=>And,6=>Or,7=>Xor,8=>ShiftLeft,9=>ShiftRight});
+crate::module::codec::variants!(IntegerExpression{0=>Binary(op,scalar,a,b)});
 type Facts = BTreeSet<Fact>;
 // 固定点环境只由本轮持有；节点仅交接环境之外的事实，保持到最后消费。
 type QueryFacts<'a> = Arc<Cow<'a, Facts>>;
@@ -61,6 +97,7 @@ fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain 
         IndexDomain::Sum(left, right) => IndexDomain::Sum(output_identity(left, bindings), output_identity(right, bindings)),
         IndexDomain::Offset(base, amount) => IndexDomain::Offset(output_identity(base, bindings), amount),
         IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(output_identity(base, bindings), output_identity(limit, bindings), distance),
+        IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(output_identity(id, bindings))).unwrap()),
         other => other,
     }
 }
@@ -354,6 +391,7 @@ impl Proof {
                 IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left, bindings)?, identity(right, bindings)?),
                 IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base, bindings)?, amount),
                 IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base, bindings)?, identity(limit, bindings)?, distance),
+                IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| identity(id, bindings))?),
                 _ => return None,
             })
         }
@@ -1130,10 +1168,40 @@ impl Fact {
         }
     }
 }
-fn equality_roots<'a>(facts: impl IntoIterator<Item = &'a Fact>) -> BTreeMap<ValueIdentity, ValueIdentity> {
+fn equality_roots<'a, I>(facts: I) -> BTreeMap<ValueIdentity, ValueIdentity>
+where I: IntoIterator<Item = &'a Fact>, I::IntoIter: Clone {
+    let facts = facts.into_iter();
     let mut roots = BTreeMap::new();
-    extend_equality_roots(&mut roots, facts);
+    extend_equality_roots(&mut roots, facts.clone());
+    extend_computed_roots(&mut roots, facts);
     roots
+}
+// 同一确定运算在相等输入上产生相等结果；嵌套结果沿本次查询收敛。
+fn extend_computed_roots<'a>(
+    roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
+    facts: impl IntoIterator<Item = &'a Fact>,
+) {
+    let expressions: Vec<_> = facts.into_iter().filter_map(|fact| match *fact {
+        Fact::Index(result, IndexDomain::Computed(expression)) => Some((result, expression)),
+        _ => None,
+    }).collect();
+    loop {
+        let mut produced = BTreeMap::new();
+        let mut equalities = Facts::new();
+        for &(result, expression) in &expressions {
+            let result = roots.get(&result).copied().unwrap_or(result);
+            let expression = expression.map(|id| Some(roots.get(&id).copied().unwrap_or(id))).unwrap();
+            match produced.entry(expression) {
+                std::collections::btree_map::Entry::Vacant(entry) => { entry.insert(result); },
+                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() != result => {
+                    equalities.insert(Fact::equal(*entry.get(), result));
+                },
+                _ => {},
+            }
+        }
+        if equalities.is_empty() { break; }
+        extend_equality_roots(roots, &equalities);
+    }
 }
 fn extend_equality_roots<'a>(
     roots: &mut BTreeMap<ValueIdentity, ValueIdentity>,
@@ -1159,17 +1227,18 @@ fn extend_equality_roots<'a>(
         }
     }
 }
-// environment 在本轮固定点内不变；节点只合并自己实际新增的 Equal。
+// environment 在本轮固定点内不变；节点合并本路径新增的相等与整数运算关系。
 fn additional_equality_roots<'a>(
-    environment: &'a BTreeMap<ValueIdentity, ValueIdentity>,
+    environment: &Facts,
+    environment_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
     additions: &Facts,
 ) -> Cow<'a, BTreeMap<ValueIdentity, ValueIdentity>> {
-    let mut equalities = additions.iter().take_while(|fact| matches!(fact, Fact::Equal(..))).peekable();
-    if equalities.peek().is_none() {
-        return Cow::Borrowed(environment);
+    if !additions.iter().any(|fact| matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_)))) {
+        return Cow::Borrowed(environment_roots);
     }
-    let mut roots = environment.clone();
-    extend_equality_roots(&mut roots, equalities);
+    let mut roots = environment_roots.clone();
+    extend_equality_roots(&mut roots, additions);
+    extend_computed_roots(&mut roots, environment.union(additions));
     Cow::Owned(roots)
 }
 fn equivalent_facts<'a>(environment: &Facts, mut facts: QueryFacts<'a>, roots: &Cow<'_, BTreeMap<ValueIdentity, ValueIdentity>>) -> QueryFacts<'a> {
@@ -1954,8 +2023,8 @@ fn combine_facts<'a>(mut a: QueryFacts<'a>, mut b: QueryFacts<'a>) -> Option<Que
 fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>, a: Option<QueryFacts<'a>>, b: Option<QueryFacts<'a>>) -> Option<QueryFacts<'a>> {
     match (a, b) {
         (Some(a), Some(b)) => {
-            let left = additional_equality_roots(environment_roots, &a);
-            let right = additional_equality_roots(environment_roots, &b);
+            let left = additional_equality_roots(environment, environment_roots, &a);
+            let right = additional_equality_roots(environment, environment_roots, &b);
             let a = equivalent_facts(environment, a, &left);
             let b = equivalent_facts(environment, b, &right);
             let mut common: Facts = a.intersection(&b).copied().collect();
@@ -2765,6 +2834,25 @@ pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
         .collect()
 }
 impl Builder<'_> {
+    pub(super) fn observe_integer_binary(&mut self, op: &str, a: &Value, b: &Value, result: &Value) {
+        let scalar = a.ty.components[0].0;
+        if !scalar.is_integer() || result.ty.components[0].0 == Scalar::Bool { return; }
+        let operation = match op {
+            "+" => IntegerOperation::Add, "-" => IntegerOperation::Subtract,
+            "*" => IntegerOperation::Multiply, "/" => IntegerOperation::Divide,
+            "%" => IntegerOperation::Remainder, "&" => IntegerOperation::And,
+            "|" => IntegerOperation::Or, "^" => IntegerOperation::Xor,
+            "<<" => IntegerOperation::ShiftLeft, ">>" => IntegerOperation::ShiftRight,
+            _ => return,
+        };
+        let facts = result.regs.iter().enumerate().map(|(component, _)| {
+            let left = IntegerOperand::of(a, component % a.regs.len());
+            let right = IntegerOperand::of(b, component % b.regs.len());
+            let expression = IntegerExpression::Binary(operation, scalar, left, right);
+            Fact::Index(result.component_identity(component), IndexDomain::Computed(expression))
+        }).collect();
+        self.path = Clause::both(&self.path, &Clause::facts(facts));
+    }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
         self.path = Clause::both(
             &self.path,
@@ -2977,12 +3065,29 @@ impl Builder<'_> {
         )
     }
     pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32) -> bool {
-        if value.proof.domains(0).contains(&domain) { return true; }
         let lengths = self.resource_length_proofs(domain);
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
-        value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
-            || lengths.into_iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, component))
+        let valid = |value: &Value| {
+            value.proof.domains(0).contains(&domain)
+                || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
+                || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component))
+        };
+        if valid(value) { return true; }
+        // 非固定范围消费同一条原路径；运算仍只求值一次，不新增运行时检查。
+        let mut value = value.clone();
+        value.proof = Proof::capture(&value);
+        let mut environment = environment_facts(&self.env);
+        environment.extend(value.proof.facts(&value.ty));
+        if let Some(facts) = self.path.required_in(&environment) {
+            value.proof.extend_equalities(&equality_roots(&facts));
+            for fact in facts {
+                if fact.identity().is_some_and(|identity| value.proof.origins[0].contains(&identity)) {
+                    value.proof.refine(&value.ty, 0, fact);
+                }
+            }
+        }
+        valid(&value)
     }
     fn resource_length_proofs(&self, domain: IndexDomain) -> Vec<(&Proof, usize)> {
         let length = match domain {
