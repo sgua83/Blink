@@ -461,10 +461,6 @@ impl<'a> CpuBuffer<'a> {
                 offset.checked_sub(*byte).and_then(|offset| at(field, offset, expected))
             })
         }
-        let whole = offset == 0 && *self.ty == expected.ty;
-        if !whole && !matches!(expected.access, blanguage::ast::Access::Read | blanguage::ast::Access::Write | blanguage::ast::Access::InOut) {
-            return Err(error("该访问类别的整域CPU字段投影尚未实现"));
-        }
         let ty = at(self.ty, offset, &expected.ty)
             .ok_or_else(|| error(format!("绑定 {} 的字段类型或偏移与原存储不一致", expected.name)))?;
         Ok(Self {
