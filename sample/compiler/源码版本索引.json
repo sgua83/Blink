@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "413d6023c02dc3723e1c1f4ea7396ff8f2194de186956fb413b4929c05262dd9"
+      "sha256": "768d9e28e42508d1c60355a3357e5731e8edf4285ed2a069d59312acb56fa43e"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -196,8 +196,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3725,
-      "end_line": 3762,
+      "start_line": 3728,
+      "end_line": 3765,
       "sha256": "9c90732ac360a37b09005c361d43832242264a080d54ddbd1293a343d7073a7d"
     },
     {

@@ -116,11 +116,29 @@ impl Residency {
         (!result.absent()).then_some(result)
     }
 }
-pub(super) type Requirements=BTreeMap<(Input,Target),BTreeSet<bounds::Condition>>;
+#[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) enum LayoutNeed { Whole, Contiguous(u32) }
+#[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
+pub(super) enum Need { Storage(Target), Layout(LayoutNeed) }
+#[derive(Clone)]
+pub(super) enum LayoutSource {
+    Declared { stride:u32, projected:bool },
+    Parameter { input:Input, projected:bool },
+}
+impl LayoutSource {
+    pub(super) fn parameter(parameter:usize,projected:bool)->Self {Self::Parameter{input:Input::new(parameter),projected}}
+}
+pub(super) type Layouts=BTreeMap<Input,LayoutSource>;
+pub(super) fn layout_argument(arguments:&mut Layouts,parameter:usize,value:LayoutSource){arguments.insert(Input::new(parameter),value);}
+pub(super) type Requirements=BTreeMap<(Input,Need),BTreeSet<bounds::Condition>>;
+crate::module::codec::variants!(LayoutNeed{0=>Whole,1=>Contiguous(stride)});
+crate::module::codec::variants!(Need{0=>Storage(target),1=>Layout(need)});
+
 pub(super) type Arguments=BTreeMap<Input,Residency>;
 pub(super) struct Call{
     pub function:String,
     pub arguments:Arguments,
+    pub layouts:Layouts,
     pub bindings:BTreeMap<ValueIdentity,bounds::Proof>,
     pub path:bounds::Clause,
     pub source:Source,
@@ -137,6 +155,10 @@ impl Inputs{
         if target==Target::Compute||!known(value,target,path){return false;}
         self.uses.push(Use::At{value:value.clone(),target,path:path.clone(),source:source.clone(),span});true
     }
+    pub fn require_layout(&mut self,value:LayoutSource,need:LayoutNeed,source:&Source,span:Span,path:&bounds::Clause)->bool {
+        if !consume_layout(&mut Requirements::new(),&value,need,path){return false;}
+        self.uses.push(Use::Layout{value,need,path:path.clone(),source:source.clone(),span});true
+    }
     pub fn same(&mut self,a:&Residency,b:&Residency,source:&Source,span:Span,path:&bounds::Clause)->bool{
         self.uses.push(Use::Same{before:a.clone(),after:b.clone(),path:path.clone(),source:source.clone(),span});true
     }
@@ -149,13 +171,29 @@ fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{
         Residency::Origins(origins)=>!origins.is_empty()&&origins.iter().all(|origin|match origin{Origin::Cpu=>target==Target::Cpu,Origin::Gpu=>target==Target::Gpu,_=>true}),
     }
 }
-fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
+fn insert_need(required:&mut Requirements,input:Input,need:Need,when:bounds::Condition)->bool{
     if !when.active(){return true;}
-    if required.iter().any(|((other,place),guards)|*other==input&&*place!=target&&guards.iter().any(|guard|guard.overlaps(&when))){return false;}
-    let guards=required.entry((input,target)).or_default();
+    if let Need::Storage(target)=need {
+        if required.iter().any(|((other,place),guards)|*other==input&&matches!(place,Need::Storage(other)if *other!=target)&&guards.iter().any(|guard|guard.overlaps(&when))){return false;}
+    }
+    let guards=required.entry((input,need)).or_default();
     if guards.iter().any(|guard|guard.covers(&when)){return true;}
     guards.retain(|guard|!when.covers(guard));guards.insert(when);true
 }
+fn insert(required:&mut Requirements,input:Input,target:Target,when:bounds::Condition)->bool{
+    insert_need(required,input,Need::Storage(target),when)
+}
+fn consume_layout(required:&mut Requirements,value:&LayoutSource,need:LayoutNeed,path:&bounds::Clause)->bool{
+    if !path.possible(){return true;}
+    match value {
+        LayoutSource::Declared{stride,projected}=>match need{LayoutNeed::Whole=>!*projected,LayoutNeed::Contiguous(expected)=>*stride==expected},
+        LayoutSource::Parameter{input,projected}=>{
+            if need==LayoutNeed::Whole&&*projected{return false;}
+            insert_need(required,input.clone(),Need::Layout(need),bounds::Condition::guard(path.clone()))
+        }
+    }
+}
+
 fn consume(required:&mut Requirements,value:&Residency,target:Target,path:&bounds::Clause)->bool{
     if !path.possible(){return true;}
     match value{
@@ -174,7 +212,7 @@ pub(super) fn input_parameters(parameters:&BTreeMap<ValueIdentity,ValueIdentity>
 pub(super) fn canonical(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,source:&Source,span:Span)->Result<Requirements>{
     let mut result=Requirements::new();
     for((input,target),guards)in required{for guard in guards{
-        if !insert(&mut result,input.clone(),*target,guard.guard_at_call(parameters)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
+        if !insert_need(&mut result,input.clone(),*target,guard.guard_at_call(parameters)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
     }}Ok(result)
 }
 fn local(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Requirements{
@@ -188,22 +226,36 @@ fn local(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof
 }
 pub(super) fn infer(inputs:&Inputs,known:&BTreeMap<String,Requirements>,outputs:&Outputs)->Result<Requirements>{
     let mut required=Requirements::new();
-    for usage in &inputs.uses{if let Use::At{value,target,path,source,span}=usage{
-        let value=evaluate(value,outputs).under(path);
-        if !value.absent()&&!consume(&mut required,&value,*target,path){return source.fail(*span,"B266","实际资源来源不满足本次条件CPU／GPU位置要求");}
+    for usage in &inputs.uses{match usage {
+        Use::At{value,target,path,source,span}=>{
+            let value=evaluate(value,outputs).under(path);
+            if !value.absent()&&!consume(&mut required,&value,*target,path){return source.fail(*span,"B266","实际资源来源不满足本次条件CPU／GPU位置要求");}
+        },
+        Use::Layout{value,need,path,source,span}=>{
+            if !consume_layout(&mut required,value,*need,path){return source.fail(*span,"B270","实际数据借用不满足原生接口的完整存储或连续元素布局");}
+        },
+        _=>{}
     }}
     for call in &inputs.calls{
-        for((input,target),guards)in &known[&call.function]{
-            let Some(value)=call.arguments.get(input)else{continue};let value=evaluate(value,outputs);
-            if value.absent(){continue;}
+        for((input,need),guards)in &known[&call.function]{
             for guard in guards{
                 let path=guard.guard_at_call(&call.bindings).assume(&call.path,true);
-                if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（字段路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
+                match need {
+                    Need::Storage(target)=>{
+                        let Some(value)=call.arguments.get(input)else{continue};let value=evaluate(value,outputs);
+                        if value.absent(){continue;}
+                        if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（字段路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
+                    },
+                    Need::Layout(need)=>{
+                        if !consume_layout(&mut required,&call.layouts[input],*need,&path){return call.source.fail(call.span,"B270",format!("函数 {} 的第 {} 个资源参数不满足已编译接口要求的{}布局",call.function,input.parameter+1,if *need==LayoutNeed::Whole{"完整资源"}else{"连续元素"}));}
+                    }
+                }
             }
         }
     }
     Ok(required)
 }
+
 fn refine(value:&Residency,required:&Requirements)->Residency{match value{
     Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),refine(a,required),refine(b,required)),
     Residency::Absent=>Residency::Absent,
@@ -211,7 +263,7 @@ fn refine(value:&Residency,required:&Requirements)->Residency{match value{
         if origins.is_empty(){return value.clone();}let mut all=Residency::Absent;
         for origin in origins{
             let mut item=Residency::Origins(BTreeSet::from([origin.clone()]));
-            if let Origin::Input(input)=origin{for((other,target),guards)in required{if input==other{for guard in guards{item=Residency::conditional(guard.clone(),if *target==Target::Cpu{Residency::cpu()}else{Residency::gpu()},item);}}}}
+            if let Origin::Input(input)=origin{for((other,target),guards)in required{if input==other && let Need::Storage(target)=target{for guard in guards{item=Residency::conditional(guard.clone(),if *target==Target::Cpu{Residency::cpu()}else{Residency::gpu()},item);}}}}
             all.join(&item);
         }all
     },
@@ -327,6 +379,7 @@ impl PartialOrd for Output{fn partial_cmp(&self,other:&Self)->Option<std::cmp::O
 impl Ord for Output{fn cmp(&self,other:&Self)->std::cmp::Ordering{use crate::module::codec::Encode;(self.function.as_str(),&self.kind,&self.fields,&self.arguments).cmp(&(other.function.as_str(),&other.kind,&other.fields,&other.arguments)).then_with(||self.bindings.iter().map(|(id,proof)|(*id,proof.bytes())).cmp(other.bindings.iter().map(|(id,proof)|(*id,proof.bytes()))))}}
 
 pub(super) enum Use {
+    Layout { value:LayoutSource, need:LayoutNeed, path:bounds::Clause, source:Source, span:Span },
     At {
         value: Residency,
         path: bounds::Clause,

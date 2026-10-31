@@ -364,10 +364,9 @@ impl Builder<'_> {
                 index,
                 stride,
                 ..
-            } => IndexedSource::View {
-                address: self.application_address(*handle, *identity, write, span)?,
-                index: *index,
-                stride: *stride,
+            } => {
+                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,write,span)?;
+                IndexedSource::View{address,index,stride}
             },
             Place::Element { binding, index, .. } => IndexedSource::Data {
                 binding: *binding,

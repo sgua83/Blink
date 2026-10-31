@@ -282,6 +282,12 @@ impl Builder<'_> {
         self.native_declaration(&instance)?;
         self.native_call(instance, args, span)
     }
+    fn native_dataset_shape(&self,param:&Param,definition:&Definition,count:Option<u32>,span:Span)->Result<()>{
+        if param.ty.count.is_some()&&self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?!=count{
+            return self.fail(span,"B167","调用方没有声明函数需要的数据形状");
+        }
+        Ok(())
+    }
     #[inline(never)]
     fn native_call(
         &mut self,
@@ -302,6 +308,7 @@ impl Builder<'_> {
             .collect::<Vec<_>>();
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
+        let mut layouts = residency::Layouts::new();
         let mut written = Vec::new();
         let mut written_data = Vec::new();
         let mut held = Vec::new();
@@ -309,18 +316,22 @@ impl Builder<'_> {
         let mut resource_inputs=BTreeMap::new();
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = cooperative::parameter_type(self.world, p, d)?;
-            let arg = match arg {
-                Argument::BorrowedData(mut reference) => {
-                    if p.access.writes() {
-                        for source in &reference.sources {
-                            self.invalidate_application_contents(*source);
-                        }
+            let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
+            let arg=match arg {
+                Argument::ApplicationData(data) if p.ty.dataset&&p.access==Access::Read=>Argument::BorrowedData(application::DataReference::direct(data)),
+                other=>other,
+            };
+            let arg=match arg {
+                Argument::BorrowedData(mut reference)=>{
+                    residency::layout_argument(&mut layouts,index,reference.layout_source());
+                    reference.data.handle.proof=reference.data.handle.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
+                    if p.access==Access::Read{Argument::BorrowedData(reference)}else{
+                        self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
+                        if p.access.writes(){for source in &reference.sources{self.invalidate_application_contents(*source);}}
+                        Argument::ApplicationData(reference.data)
                     }
-                    reference.data.handle.proof = reference.data.handle.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
-                    Argument::ApplicationData(reference.data)
-                }
-                Argument::Scoped { value, owner } => {held.push(owner);Argument::resource(value)}
-                other => other,
+                },
+                other=>other,
             };
             let arg=match arg {Argument::Value(value) if p.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
             match arg {
@@ -372,7 +383,18 @@ impl Builder<'_> {
                     env.insert(p.name.clone(), Binding::Owned(owner));
                     if p.access.writes() { written.push((index, place)); }
                 }
+                Argument::BorrowedData(reference) if p.ty.dataset&&p.access==Access::Read=>{
+                    residency::argument(&mut locations,index,&reference.data);
+                    self.require_same(&ty,reference.element_layout().1,span)?;
+                    self.require_application_reference_initialized(&reference,span)?;
+                    self.native_dataset_shape(p,d,reference.count,span)?;
+                    let value=self.application_reference_value(&reference);
+                    append_actual(&mut actual,&value);
+                    arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
+                    env.insert(p.name.clone(),Binding::DataReference(reference));
+                }
                 Argument::ApplicationData(mut data) if p.ty.dataset => {
+                    residency::layout_argument(&mut layouts,index,residency::LayoutSource::Declared{stride:ir::align_up(data.ty.size,data.ty.align),projected:false});
                     residency::argument(&mut locations, index, &data);
                     self.require_same(&ty, &data.ty, span)?;
                     if !matches!(
@@ -391,17 +413,7 @@ impl Builder<'_> {
                     if p.access != Access::Write {
                         self.require_application_initialized(&data, span)?;
                     }
-                    if p.ty.count.is_some()
-                        && self.world.shape(
-                            &p.ty.count,
-                            &d.source,
-                            p.span,
-                            &d.module,
-                            &d.imports,
-                        )? != data.count
-                    {
-                        return self.fail(span, "B167", "调用方没有声明函数需要的数据形状");
-                    }
+                    self.native_dataset_shape(p,d,data.count,span)?;
                     if matches!(p.access,Access::Write|Access::InOut) && outputs::declared(d,index){self.reset_data_output(&mut data,span)?;}
                     if p.access == Access::Write || p.access==Access::InOut && outputs::declared(d,index) {
                         written_data.push((index,data.clone()));
@@ -453,6 +465,7 @@ impl Builder<'_> {
             let call = residency::Call {
                 function: instance.name.clone(),
                 arguments: locations.clone(),
+                layouts,
                 bindings: view_arguments.clone(),
                 path: self.residency_path(),
                 source: self.definition.source.clone(),

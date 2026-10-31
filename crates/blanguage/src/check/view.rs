@@ -286,11 +286,12 @@ impl Builder<'_> {
         let Some(data) = self.application_reference(&args[0])? else {
             return self.fail(span, "B271", "view借用需要具有实际所有者的dataset位置");
         };
-        self.require_same(ty.view.as_deref().unwrap(), &data.ty, span)?;
-        self.require_application_initialized(&data, span)?;
+        self.require_same(ty.view.as_deref().unwrap(), data.element_layout().1, span)?;
+        self.require_application_reference_initialized(&data, span)?;
+        let element=data.element_layout().1;
+        self.application_layout_requirement(&data,residency::LayoutNeed::Contiguous(ir::align_up(element.size,element.align)),span)?;
         self.application_cpu(&data, span)?;
-        let address =
-            self.application_address(data.handle.regs[0], data.handle.identity(), false, span)?;
+        let address = self.application_projection_address(&data,span)?;
         let mut proof = bounds::Proof::default();
         let pointer = Value {
             proof: bounds::Proof::default(),

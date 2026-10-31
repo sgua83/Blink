@@ -255,9 +255,19 @@ impl Builder<'_> {
         expr: &Expr,
     ) -> Result<Option<application::DataReference>> {
         if let ExprKind::Name(name) = &expr.kind {
-            return self
-                .application_value(name, expr.span)
-                .map(|data| data.map(application::DataReference::direct));
+            if let Some(Binding::DataReference(data))=self.env.get(name).cloned(){
+                self.application_available(&data.data,expr.span)?;return Ok(Some(data));
+            }
+            return self.application_value(name,expr.span).map(|data|data.map(application::DataReference::direct));
+        }
+        if let ExprKind::Member(base,field)=&expr.kind {
+            if let Some(mut data)=self.application_reference(base)? {
+                let(_,ty)=data.element_layout();
+                let Some(index)=ty.fields.iter().position(|(name,..)|name==field)else{
+                    return if field=="length"{Ok(None)}else{self.fail(expr.span,"B141","dataset字段不存在")};
+                };
+                data.projection.push(index);return Ok(Some(data));
+            }
         }
         let Some(p) = self
             .owned_projection(expr)
@@ -463,7 +473,7 @@ impl Builder<'_> {
 
         let sources=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.handle.identity()}).collect();
         data=self.refresh_application_data(data,expr.span)?;data.ownership=Ownership::Borrowed;data.place=Some(place);
-        Ok(Some(application::DataReference { data, sources }))
+        Ok(Some(application::DataReference { data, sources, projection:Vec::new() }))
     }
 }
 

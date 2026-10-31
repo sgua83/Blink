@@ -47,6 +47,9 @@ impl Resource {
             (Self::Application { root, .. }, Binding::ApplicationData(data)) if root == name => {
                 data.length.proof.mark_nonzero(0);
             }
+            (Self::Application { root, .. }, Binding::DataReference(data)) if root == name => {
+                data.data.length.proof.mark_nonzero(0);
+            }
             (Self::Data { root, .. }, Binding::Data(view)) if root == name => {
                 view.length.mark_nonzero(0);
             }
@@ -125,6 +128,9 @@ fn resource(
     span: Span,
 ) -> Result<Resource> {
     match env.get(path) {
+        Some(Binding::DataReference(data))=>{
+            return Ok(Resource::Application{root:path.into(),handle:data.handle.identity(),minimum:data.length.minimum()});
+        }
         Some(Binding::ApplicationData(data)) => {
             return Ok(Resource::Application {
                 root: path.into(),

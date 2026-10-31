@@ -142,15 +142,10 @@ impl Builder<'_> {
                 stride,
                 words,
                 ..
-            } => (
-                CallStorage::Indexed(IndexedSource::View {
-                    address: self.application_address(*handle, *identity, access.writes(), span)?,
-                    index: *index,
-                    stride: *stride,
-                }),
-                None,
-                words.clone(),
-            ),
+            } => {
+                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),span)?;
+                (CallStorage::Indexed(IndexedSource::View{address,index,stride}),None,words.clone())
+            },
             Place::ViewElement {
                 address,
                 index,
@@ -204,16 +199,10 @@ impl Builder<'_> {
                         index,
                         stride,
                         ..
-                    } => CallStorage::Indexed(IndexedSource::View {
-                        address: self.application_address(
-                            *handle,
-                            *identity,
-                            access.writes(),
-                            span,
-                        )?,
-                        index: *index,
-                        stride: *stride,
-                    }),
+                    } => {
+                        let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,access.writes(),span)?;
+                        CallStorage::Indexed(IndexedSource::View{address,index,stride})
+                    },
                     Place::ViewElement {
                         address,
                         index,

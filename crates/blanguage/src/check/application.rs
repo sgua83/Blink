@@ -26,6 +26,7 @@ pub(super) struct DataPayload {
     pub writable: bool,
     pub count: Option<u32>,
     pub residency: residency::Residency,
+    pub layout: DataLayout,
 }
 impl Binding {
     pub(super) fn application_resources(&self)->Vec<&Data> {
@@ -37,7 +38,21 @@ impl Binding {
 pub(super) struct DataReference {
     pub data: Data,
     pub sources: Vec<ValueIdentity>,
+    pub projection: Vec<usize>,
 }
+#[derive(Clone)]
+pub(super) enum DataLayout {
+    Declared,
+    Parameter { parameter:usize, stride:Value, offset:Value },
+}
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub(super) enum DataStride {
+    Declared(u32),
+    Parameter { stride:Reg, offset:Reg },
+}
+crate::module::codec::variants!(DataLayout{0=>Declared,1=>Parameter{parameter,stride,offset}});
+crate::module::codec::variants!(DataStride{0=>Declared(stride),1=>Parameter{stride,offset}});
+
 impl std::ops::Deref for DataReference {
     type Target = Data;
     fn deref(&self) -> &Data {
@@ -47,7 +62,7 @@ impl std::ops::Deref for DataReference {
 impl DataReference {
     pub(super) fn direct(data: Data) -> Self {
         let sources = vec![data.handle.identity()];
-        Self { data, sources }
+        Self { data, sources, projection:Vec::new() }
     }
     pub(super) fn element(&self, index: &Value, range: (u32, u32)) -> Place {
         let mut place = Builder::application_element(&self.data, index, range);
@@ -55,7 +70,20 @@ impl DataReference {
             unreachable!()
         };
         *sources = self.sources.clone();
-        place
+        let (offset,ty)=self.element_layout();
+        let components=ty.components.iter().map(|(scalar,at)|self.data.ty.components.iter().position(|item|item==&(*scalar,offset+at)).unwrap()).collect::<Vec<_>>();
+        place.project(ty.clone(),&components)
+    }
+    pub(super) fn element_layout(&self)->(u32,&Ty){
+        let mut ty=&self.data.ty;let mut offset=0;
+        for field in &self.projection{let(_,at,next)=&ty.fields[*field];offset+=at;ty=next;}
+        (offset,ty)
+    }
+    pub(super) fn layout_source(&self)->residency::LayoutSource{
+        match &self.data.layout {
+            DataLayout::Declared=>residency::LayoutSource::Declared{stride:ir::align_up(self.data.ty.size,self.data.ty.align),projected:!self.projection.is_empty()},
+            DataLayout::Parameter{parameter,..}=>residency::LayoutSource::parameter(*parameter,!self.projection.is_empty()),
+        }
     }
 }
 
@@ -336,6 +364,7 @@ impl Builder<'_> {
             },
             writable: matches!(access, Access::Value | Access::InOut | Access::Write),
             residency: residency::Residency::parameter(parameter),
+            layout: DataLayout::Declared,
         }))
     }
     pub(super) fn application_iteration_outputs(
@@ -750,6 +779,7 @@ impl Builder<'_> {
                 ownership: Ownership::Moved,
                 writable: true,
                 residency: residency::Residency::default(),
+                layout: DataLayout::Declared,
             })),
         );
         Ok(())
@@ -862,7 +892,7 @@ impl Builder<'_> {
         ]));
         Ok(Some(Box::new(DataPayload {
             handle, place: None, initialization: None, ty: data.ty, length,
-            ownership: Ownership::Owned, writable: true, count: None, residency: residency::Residency::cpu(),
+            ownership: Ownership::Owned, writable: true, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         })))
     }
     #[inline(never)]
@@ -969,6 +999,7 @@ impl Builder<'_> {
             ownership: Ownership::Owned,
             writable: true,
             residency: residency::Residency::cpu(),
+            layout: DataLayout::Declared,
         })))
     }
     pub(super) fn application_element(
@@ -986,7 +1017,7 @@ impl Builder<'_> {
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
             index: index.regs[0],
             index_range,
-            stride: ir::align_up(data.ty.size, data.ty.align),
+            stride: match &data.layout {DataLayout::Declared=>DataStride::Declared(ir::align_up(data.ty.size,data.ty.align)),DataLayout::Parameter{stride,offset,..}=>DataStride::Parameter{stride:stride.regs[0],offset:offset.regs[0]}},
             words: data
                 .ty
                 .components
@@ -1063,17 +1094,80 @@ impl Builder<'_> {
             .unwrap();
         Ok([value.regs[0], value.regs[1]])
     }
+    pub(super) fn application_layout_requirement(&mut self,data:&DataReference,need:residency::LayoutNeed,span:Span)->Result<()> {
+        let path=self.residency_path();
+        if !self.residency.require_layout(data.layout_source(),need,&self.definition.source,span,&path){
+            return self.fail(span,"B270","该原生接口要求完整资源或连续元素布局，当前字段借用不满足");
+        }
+        Ok(())
+    }
+    pub(super) fn require_application_reference_initialized(&self,data:&DataReference,span:Span)->Result<()>{
+        let(offset,ty)=data.element_layout();
+        if !ty.components.iter().all(|(_,word)|self.application_field_initialized(&data.data,offset+word)){
+            return self.fail(span,"B142","读取了尚未完整初始化的数据集字段");
+        }
+        Ok(())
+    }
+    pub(super) fn application_reference_layout(&mut self,data:&DataReference)->(Value,Value) {
+        let(field,_)=data.element_layout();
+        let(stride,offset)=match &data.data.layout {
+            DataLayout::Declared=>(self.constant(Scalar::U32,Bits::from(ir::align_up(data.data.ty.size,data.data.ty.align))),self.constant(Scalar::U32,0)),
+            DataLayout::Parameter{stride,offset,..}=>(stride.clone(),offset.clone()),
+        };
+        if field==0{return(stride,offset);}
+        let number=self.constant(Scalar::U32,Bits::from(field));let dst=self.reg(Scalar::U32);
+        self.code.push(Inst::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]});
+        (stride,Value{ty:Ty::scalar(Scalar::U32),regs:vec![dst],proof:bounds::Proof::default(),literal:false,uniform:offset.uniform,constant:None})
+    }
+    pub(super) fn read_dataset_parameter_type()->Ty{
+        let mut ty=Ty::vector(Scalar::U32,4);ty.name="__blink_read_dataset".into();ty
+    }
+    pub(super) fn application_reference_value(&mut self,data:&DataReference)->Value{
+        let(stride,offset)=self.application_reference_layout(data);
+        let mut proof=bounds::Proof::default();
+        for value in [&data.handle,&data.length,&stride,&offset]{proof.append(value);}
+        Value{ty:Self::read_dataset_parameter_type(),regs:vec![data.handle.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None}
+    }
+    fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
+        let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::Cast{dst,src});dst};
+        let low=cast(self,address[0]);let high=cast(self,address[1]);
+        let width=self.constant(Scalar::U64,32).regs[0];
+        let shifted=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:shifted,op:BinaryOp::ShiftLeft,a:high,b:width});
+        let base=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:base,op:BinaryOp::Or,a:low,b:shifted});
+        let index=cast(self,index);let stride=cast(self,stride);let offset=cast(self,offset);
+        let scaled=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:scaled,op:BinaryOp::IMul,a:index,b:stride});
+        let at=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:at,op:BinaryOp::IAdd,a:scaled,b:offset});
+        let pointer=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:pointer,op:BinaryOp::IAdd,a:base,b:at});
+        let high=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:pointer,b:width});
+        let result=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
+        self.code.push(Inst::Cast{dst:result[0],src:pointer});self.code.push(Inst::Cast{dst:result[1],src:high});result
+    }
+    pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,span:Span)->Result<([Reg;2],Reg,u32)>{
+        let address=self.application_address(handle,identity,write,span)?;
+        Ok(match stride {
+            DataStride::Declared(stride)=>(address,index,stride),
+            DataStride::Parameter{stride,offset}=>{
+                let address=self.offset_application_address(address,index,stride,offset);
+                (address,self.constant(Scalar::U32,0).regs[0],0)
+            }
+        })
+    }
+    pub(super) fn application_projection_address(&mut self,data:&DataReference,span:Span)->Result<[Reg;2]>{
+        let address=self.application_address(data.handle.regs[0],data.handle.identity(),false,span)?;
+        let(_,offset)=self.application_reference_layout(data);let zero=self.constant(Scalar::U32,0).regs[0];
+        Ok(self.offset_application_address(address,zero,zero,offset.regs[0]))
+    }
     pub(super) fn read_application_place(
         &mut self,
         ty: &Ty,
         handle: Reg,
         identity: ValueIdentity,
         index: Reg,
-        stride: u32,
+        stride: DataStride,
         words: &[u32],
         span: Span,
     ) -> Result<Value> {
-        let address = self.application_address(handle, identity, false, span)?;
+        let (address,index,stride) = self.application_memory(handle,identity,index,stride,false,span)?;
         let mut regs = Vec::new();
         for (&(scalar, _), &word) in ty.components.iter().zip(words) {
             let dst = self.reg(scalar);
@@ -1100,7 +1194,7 @@ impl Builder<'_> {
         handle: Reg,
         identity: ValueIdentity,
         index: Reg,
-        stride: u32,
+        stride: DataStride,
         words: &[u32],
         value: Value,
         span: Span,
@@ -1108,7 +1202,7 @@ impl Builder<'_> {
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
-        let address = self.application_address(handle, identity, true, span)?;
+        let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,span)?;
         let zero = self.constant(Scalar::U32, 0).regs[0];
         for (&word, value) in words.iter().zip(value.regs) {
             self.code.push(Inst::StoreIndexed {
@@ -1199,6 +1293,7 @@ impl Builder<'_> {
                 let value = match value {
                     Argument::ApplicationData(data) => data,
                     Argument::BorrowedData(reference) => {
+                        self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
                         if parameter.access.writes() {
                             for source in &reference.sources {
                                 self.invalidate_application_contents(*source);
@@ -1311,7 +1406,7 @@ impl Builder<'_> {
                 kind: ExprKind::Name(name.clone()),
                 span: statement.span,
             };
-            let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_)) {
+            let (ty, access, arg) = if matches!(binding, Binding::ApplicationData(_) | Binding::DataReference(_)) {
                 let data = self.application_reference(&expr)?.unwrap();
                 let access = if !data.writable {
                     Access::Read
@@ -1320,7 +1415,7 @@ impl Builder<'_> {
                 } else {
                     Access::Write
                 };
-                let mut ty = data.ty.syntax();
+                let mut ty = data.element_layout().1.syntax();
                 ty.dataset = true;
                 ty.count = data.count.map(Shape::Literal);
                 (ty, access, Argument::BorrowedData(data))
@@ -1593,11 +1688,11 @@ impl crate::module::codec::Decode for Ownership{fn decode(r:&mut crate::module::
 // slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
 impl crate::module::codec::Encode for DataPayload {
     fn encode(&self,w:&mut crate::module::codec::Writer) {
-        self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.writable.encode(w);self.count.encode(w);self.residency.encode(w);
+        self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.writable.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);
     }
 }
 impl crate::module::codec::Decode for DataPayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,place:None,initialization:None})
+        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,writable:bool::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,place:None,initialization:None})
     }
 }

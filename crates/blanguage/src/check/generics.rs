@@ -50,7 +50,7 @@ impl Builder<'_> {
                     ty: Some(std::borrow::Cow::Borrowed(self.dataset_layout(v).1)),
                     count: self.program.buffers[v.binding].count,
                 },
-                Argument::BorrowedData(reference) => Actual::dataset(&reference.ty,reference.count),
+                Argument::BorrowedData(reference) => Actual::dataset(reference.element_layout().1,reference.count),
                 Argument::ApplicationData(data) => Actual::dataset(&data.ty,data.count),
                 Argument::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>Actual::dataset(&data.ty,data.count),returns::Returned::OwnedValue(value)=>Actual::value(&value.value.ty),returns::Returned::Value(value)=>Actual::value(&value.ty),returns::Returned::Unit=>unreachable!()},
                 Argument::Tile(v) => Actual::value(&v.ty),

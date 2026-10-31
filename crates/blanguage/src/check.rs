@@ -205,7 +205,7 @@ enum Place {
         initialization: Option<(Position, ownership::ApplicationIndex)>,
         index: Reg,
         index_range: (u32, u32),
-        stride: u32,
+        stride: application::DataStride,
         words: Vec<u32>,
         writable: bool,
     },
@@ -1337,17 +1337,20 @@ fn function_parameters(
                     Access::Read | Access::InOut | Access::Write | Access::Value
                 ) {
                 {
-                    let data = b.application_parameter(data_index, parameter_index, p.access)?;
-                    parameters.push(CallParameter::Value(Ty::owned_dataset(
-                        data.ty.clone(),
-                        data.count,
-                    )));
-                    inputs.extend([data.handle.regs[0], data.length.regs[0]]);
-                    let data = b.application_bind(
-                        data,
-                        application::rebound(d.function.body.as_ref().unwrap(), &p.name),
-                    );
-                    Binding::ApplicationData(data)
+                    let mut data = b.application_parameter(data_index, parameter_index, p.access)?;
+                    if p.access==Access::Read {
+                        let stride=b.reg(Scalar::U32);let offset=b.reg(Scalar::U32);
+                        let value=|reg|Value{ty:Ty::scalar(Scalar::U32),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
+                        parameters.push(CallParameter::Value(Builder::read_dataset_parameter_type()));
+                        inputs.extend([data.handle.regs[0],data.length.regs[0],stride,offset]);
+                        data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride),offset:value(offset)};
+                        Binding::ApplicationData(data)
+                    }else{
+                        parameters.push(CallParameter::Value(Ty::owned_dataset(data.ty.clone(),data.count)));
+                        inputs.extend([data.handle.regs[0],data.length.regs[0]]);
+                        let data=b.application_bind(data,application::rebound(d.function.body.as_ref().unwrap(),&p.name));
+                        Binding::ApplicationData(data)
+                    }
                 }
             } else {
                 b.view_access.insert(data_index, p.access);
