@@ -1962,15 +1962,20 @@ fn either_facts<'a>(environment: &Facts, environment_roots: &BTreeMap<ValueIdent
             let mut groups = BTreeMap::new();
             for (identity, left_root) in left.iter() {
                 if let Some(right_root) = right.get(identity) {
-                    match groups.entry((*left_root, *right_root)) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(*identity);
+                    let representative = if left_root == right_root {
+                        if identity == left_root { continue; }
+                        *left_root
+                    } else {
+                        match groups.entry((*left_root, *right_root)) {
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(*identity);
+                                continue;
+                            }
+                            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
                         }
-                        std::collections::btree_map::Entry::Occupied(entry) => {
-                            let fact = Fact::equal(*entry.get(), *identity);
-                            if !environment.contains(&fact) { common.insert(fact); }
-                        }
-                    }
+                    };
+                    let fact = Fact::equal(representative, *identity);
+                    if !environment.contains(&fact) { common.insert(fact); }
                 }
             }
             // 环境仍归原所有者；这里只生产两支共同新增的范围。
