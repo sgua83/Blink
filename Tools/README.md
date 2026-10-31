@@ -32,4 +32,4 @@ pwsh -NoProfile -File B:/BLanguage/Tools/PublishGit.ps1 -P4Client BLanguage_Gua
 | PA1／192.168.10.11／DESKTOP-R18H06O | PA1／BLanguage_PA1 | D:/BLanguage | //BLanguage/main/...的write |
 | 王岩／192.168.10.54／DESKTOP-75P7CSU | wangyan／BLanguage_wangyan | D:/BLanguage | //BLanguage/main/...的write |
 
-项目级 `.p4config` 选择本人的账号和client，不改变其他项目或全局P4设置。账号票据留在各自用户原生凭据文件，GitHub凭据不复制到这些节点。源码同步不自动表示Rust工具链、Release构建或CPU／GPU实际执行已经完成。
+项目级 `.p4config` 选择本人的账号和client，不改变全局P4USER／P4CLIENT或其他项目client。王岩原未配置查找文件名，本轮设置标准P4CONFIG=.p4config；项目P4IGNORE使用既有.gitignore。账号票据留在各自用户原生凭据文件，GitHub凭据不复制到这些节点。源码同步不自动表示Rust工具链、Release构建或CPU／GPU实际执行已经完成。
