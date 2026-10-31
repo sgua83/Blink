@@ -42,6 +42,7 @@ impl Builder<'_> {
         self.remember_loop_control(&c);
         let partition = Arc::new(bounds::Condition::of(&c));
         let outer = std::mem::take(&mut self.code);
+        let outer_regions = std::mem::take(&mut self.memory_regions);
         let environment = self.env.clone();
         let path = self.path.clone();
         let initialized = self.application_initialization_state();
@@ -79,6 +80,7 @@ impl Builder<'_> {
         let yes_init = std::mem::replace(&mut self.initialized, initialized);
         let yes_init = self.application_empty_initialization(yes_init);
         let mut yes = std::mem::take(&mut self.code);
+        let yes_regions = std::mem::take(&mut self.memory_regions);
         self.restore_expression_environment(environment, &yes_modified);
         self.path = path;
         self.refine_bounds(&partition, false);
@@ -99,6 +101,19 @@ impl Builder<'_> {
         let no_initial = no_init.clone();
         self.join_initialization(&c, yes_init, no_init);
         let mut no = std::mem::take(&mut self.code);
+        let no_regions = std::mem::replace(&mut self.memory_regions, outer_regions);
+        let selected = c.constant.as_ref().map(|bits| bits[0] != 0);
+        for (retain, regions) in [
+            (selected != Some(false), yes_regions),
+            (selected != Some(true), no_regions),
+        ] {
+            if retain {
+                for (binding, (reads, writes)) in regions {
+                    let entry = self.memory_regions.entry(binding).or_default();
+                    entry.0.extend(reads); entry.1.extend(writes);
+                }
+            }
+        }
         let mut no_env = std::mem::replace(&mut self.env, yes_env);
         if let Some(bits) = &c.constant {
             if bits[0] != 0 {

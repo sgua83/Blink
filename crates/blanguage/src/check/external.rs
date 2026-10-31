@@ -234,6 +234,7 @@ impl Builder<'_> {
             }
             _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
         };
+        self.data_access(place, access);
         Ok(CallReference {
             storage,
             offset,

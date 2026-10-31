@@ -89,6 +89,12 @@ impl Builder<'_> {
             }
             if atomic.op.writes() {
                 self.writes.insert(binding);
+                let range = if atomic.offset.is_some() {
+                    (0, self.program.buffers[binding].ty.size)
+                } else {
+                    (atomic.word, atomic.word + atomic.scalar.size())
+                };
+                self.memory_regions.entry(binding).or_default().1.insert(range);
             }
             self.cross_access.insert(binding);
         }

@@ -229,6 +229,7 @@ enum Place {
     Indexed {
         ty: Ty,
         initialization: Vec<Position>,
+        locations: Vec<Position>,
         base: Box<Place>,
         offset: Reg,
         words: Vec<u32>,
@@ -1613,6 +1614,7 @@ struct Builder<'a> {
     reads: BTreeSet<usize>,
     writes: BTreeSet<usize>,
     cross_access: BTreeSet<usize>,
+    memory_regions: BTreeMap<usize, (BTreeSet<(bool, u32, u32)>, BTreeSet<(u32, u32)>)>,
     view_access: BTreeMap<usize, Access>,
     initialized: BTreeSet<Position>,
     output_scopes: usize,
@@ -1666,6 +1668,7 @@ impl<'a> Builder<'a> {
             reads: BTreeSet::new(),
             writes: BTreeSet::new(),
             cross_access: BTreeSet::new(),
+            memory_regions: BTreeMap::new(),
             view_access: BTreeMap::new(),
             initialized: BTreeSet::new(),
             // Reference parameters already own 0..params.len(); dataset and
@@ -1688,72 +1691,36 @@ impl<'a> Builder<'a> {
             prefix: None,
         }
     }
-    fn parallel_access(&self, span: Span) -> Result<()> {
-        let mut regions: BTreeMap<usize, (BTreeSet<(u32, u32)>, BTreeSet<(u32, u32)>)> = BTreeMap::new();
-        let mut access = |binding: usize, index: Reg, range: (u32, u32), mode: Access| {
-            if mode.reads() && self.appends.iter().any(|(output, count)| *output == binding || count.binding == binding) {
-                return self.fail(span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取");
-            }
-            let (reads, writes) = regions.entry(binding).or_default();
-            if mode.reads() && index != self.global_index { reads.insert(range); }
-            if mode.writes() { writes.insert(range); }
-            Ok(())
-        };
-        let mut pending = vec![self.code.as_slice()];
-        while let Some(code) = pending.pop() {
-            for instruction in code {
-                match instruction {
-                    Inst::Load { dst, binding, index, word } => {
-                        access(*binding, *index, (*word, *word + self.registers[*dst].size()), Access::Read)?;
+    fn data_access(&mut self, place: &Place, access: Access) {
+        let Place::Element { index, .. } = place.storage() else { return; };
+        let cross = *index != self.global_index;
+        for ((scalar, _), position) in place.ty().components.iter().zip(place.data_positions()) {
+            let mut pending = vec![&position];
+            while let Some(position) = pending.pop() {
+                match position {
+                    Position::Element(binding, word) => {
+                        let (reads, writes) = self.memory_regions.entry(*binding).or_default();
+                        if access.reads() { reads.insert((cross, *word, *word + scalar.size())); }
+                        if access.writes() { writes.insert((*word, *word + scalar.size())); }
                     }
-                    Inst::Store { binding, index, word, value } => {
-                        access(*binding, *index, (*word, *word + self.registers[*value].size()), Access::Write)?;
-                    }
-                    Inst::LoadIndexed { source: IndexedSource::Data { binding, index }, .. } => {
-                        access(*binding, *index, (0, self.program.buffers[*binding].ty.size), Access::Read)?;
-                    }
-                    Inst::StoreIndexed { source: IndexedSource::Data { binding, index }, .. } => {
-                        access(*binding, *index, (0, self.program.buffers[*binding].ty.size), Access::Write)?;
-                    }
-                    Inst::Atomic(atomic) if atomic.op.writes() => {
-                        if let AtomicTarget::Dataset(binding) = atomic.target {
-                            let range = if atomic.offset.is_some() {
-                                (0, self.program.buffers[binding].ty.size)
-                            } else {
-                                (atomic.word, atomic.word + atomic.scalar.size())
-                            };
-                            access(binding, atomic.index, range, Access::Write)?;
-                        }
-                    }
-                    Inst::Call(call) => {
-                        for argument in &call.arguments {
-                            if let CallArgument::Reference { ty, access: mode, address: CallReference {
-                                storage: CallStorage::Indexed(IndexedSource::Data { binding, index }), offset, word,
-                            }} = argument {
-                                let range = if offset.is_some() {
-                                    (0, self.program.buffers[*binding].ty.size)
-                                } else {
-                                    (*word, *word + ty.size)
-                                };
-                                access(*binding, *index, range, *mode)?;
-                            }
-                        }
-                    }
-                    Inst::Scope(body) => pending.push(body),
-                    Inst::If { yes, no, .. } => pending.extend([yes.as_slice(), no.as_slice()]),
-                    Inst::Loop { condition, body, .. } => pending.extend([condition.as_slice(), body.as_slice()]),
+                    Position::Indexed(choices, _) => pending.extend(choices.iter()),
                     _ => {}
                 }
             }
         }
-        for (binding, (reads, writes)) in regions {
+    }
+    fn parallel_access(&self, span: Span) -> Result<()> {
+        for (binding, (reads, writes)) in &self.memory_regions {
+            if !reads.is_empty() && self.appends.iter().any(|(output, count)| output == binding || count.binding == *binding) {
+                return self.fail(span, "B221", "append 的共享输出／计数不能在同一阶段作为普通共享输入读取");
+            }
             let mut writes = writes.iter().filter(|(start, end)| start < end).peekable();
-            for read in reads.iter().filter(|(start, end)| start < end) {
-                while writes.peek().is_some_and(|write| write.1 <= read.0) { writes.next(); }
-                if writes.peek().is_some_and(|write| write.0 < read.1) {
+            for read in reads.iter().filter(|(cross, start, end)| *cross && start < end) {
+                while writes.peek().is_some_and(|write| write.1 <= read.1) { writes.next(); }
+                if writes.peek().is_some_and(|write| write.0 < read.2) {
                     return self.fail(span, "B166", format!(
                         "同一 parallel 阶段不能共享读取并写入 {} 的其他元素中的重叠位置",
-                        self.program.buffers[binding].name,
+                        self.program.buffers[*binding].name,
                     ));
                 }
             }
@@ -2143,6 +2110,7 @@ impl<'a> Builder<'a> {
                 if self.view_access[binding].writes() {
                     self.require_initialized(p, span)?;
                 }
+                self.data_access(p, Access::Read);
                 self.reads.insert(*binding);
                 if *index != self.global_index {
                     self.cross_access.insert(*binding);
@@ -2257,6 +2225,7 @@ impl<'a> Builder<'a> {
                 if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
                     return self.fail(span, "B143", "赋值位置包含重复分量");
                 }
+                self.data_access(p, Access::Write);
                 self.writes.insert(*binding);
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 for (word, value) in words.iter().zip(value.regs) {

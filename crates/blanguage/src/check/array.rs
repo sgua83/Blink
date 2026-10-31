@@ -4,8 +4,8 @@ impl Place {
     pub(super) fn read_only(self) -> Self {
         match self {
             Self::Local(ty, slots, storage) => Self::ReadOnlyLocal(ty, slots, storage),
-            Self::Indexed { ty, initialization, base, offset, words } => Self::Indexed {
-                ty, initialization, base: Box::new((*base).read_only()), offset, words,
+            Self::Indexed { ty, initialization, locations, base, offset, words } => Self::Indexed {
+                ty, initialization, locations, base: Box::new((*base).read_only()), offset, words,
             },
             mut place => {
                 match &mut place {
@@ -67,12 +67,14 @@ impl Place {
                 offset,
                 words,
                 initialization,
+                locations,
                 ..
             } => Self::Indexed {
                 ty,
                 base,
                 offset,
                 words: components.iter().map(|i| words[*i]).collect(),
+                locations: if locations.is_empty() { locations } else { components.iter().map(|i| locations[*i].clone()).collect() },
                 initialization: if initialization.is_empty() {
                     initialization
                 } else {
@@ -245,6 +247,7 @@ impl Builder<'_> {
             return Ok(self.vector_index(place, index, element));
         }
         let initialization = self.indexed_positions(&place, &index, element.components.len());
+        let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), element.components.len());
         let stride = ir::align_up(element.size, element.align);
         let factor = self.constant(Scalar::U32, Bits::from(stride));
         let relative = self.binary("*", index, factor, span)?.regs[0];
@@ -284,6 +287,7 @@ impl Builder<'_> {
         Ok(Place::Indexed {
             ty: element,
             initialization,
+            locations,
             base,
             offset,
             words,
@@ -305,6 +309,7 @@ impl Builder<'_> {
     }
     fn vector_index(&mut self, mut place: Place, index: Value, ty: Ty) -> Place {
         let initialization = self.indexed_positions(&place, &index, 1);
+        let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), 1);
         let offsets: Vec<_> = match &mut place {
             Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
                 let layout = &self.locals[&storage.end];
@@ -329,7 +334,7 @@ impl Builder<'_> {
             }
             base => (Box::new(base), relative),
         };
-        Place::Indexed { ty, initialization, base, offset, words: vec![0] }
+        Place::Indexed { ty, initialization, locations, base, offset, words: vec![0] }
     }
     fn array_memory(&mut self, base: &Place, offset: Reg, word: u32, write: bool, span: Span) -> Result<(IndexedSource, Reg, u32)> {
         if let Place::Reference { address: ReferenceAddress::Components(addresses), words, .. } = base {
@@ -423,6 +428,7 @@ impl Builder<'_> {
             }
             _ => {}
         }
+        self.data_access(place, Access::Read);
         let mut regs = Vec::new();
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
@@ -476,6 +482,7 @@ impl Builder<'_> {
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
+        self.data_access(place, Access::Write);
         self.assign_owned_proof(place, bounds::Proof::capture(&value), false);
         self.initialize(place);
         for (word, value) in words.iter().zip(value.regs) {
