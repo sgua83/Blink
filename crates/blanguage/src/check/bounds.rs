@@ -2941,6 +2941,19 @@ impl Builder<'_> {
             constant: None,
         }
     }
+    pub(super) fn index_proof(&self, index: Reg, proof: Proof) -> Proof {
+        let ty = Ty::scalar(Scalar::U32);
+        let mut proof = proof.with_identity(ValueIdentity::Register(index));
+        if let Some(facts) = self.path.required_in(&environment_facts(&self.env)) {
+            proof.extend_equalities(&equality_roots(&facts));
+            for fact in facts {
+                if fact.identity().is_some_and(|identity| proof.origins[0].contains(&identity)) {
+                    proof.refine(&ty, 0, fact);
+                }
+            }
+        }
+        proof
+    }
     pub(super) fn data_index_proof(&self, binding: usize) -> Proof {
         Proof::unsigned(
             0,
