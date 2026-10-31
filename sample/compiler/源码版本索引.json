@@ -72,7 +72,7 @@
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
-      "sha256": "f60e0316db76642236505e8e35925f7641169ba5091de6ca6e2e135255f1e43b"
+      "sha256": "20c611ce1c3f616c7ae5d383fed051c664c1693d6a3e13d2fe956a4f01415ea0"
     },
     {
       "path": "crates/blcompute/src/lib.rs",

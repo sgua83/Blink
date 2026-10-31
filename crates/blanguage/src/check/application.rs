@@ -455,6 +455,7 @@ impl Builder<'_> {
                     && a.length.maximum() == b.length.maximum()
         };
         for output in &interface.outputs {
+            let offset = data[output.binding].element_layout().0;
             let Some(scope) = &data[output.binding].initialization else {
                 continue;
             };
@@ -464,11 +465,11 @@ impl Builder<'_> {
                         output
                             .words
                             .iter()
-                            .map(|word| scope.application_word(None,*word)),
+                            .map(|word| scope.application_word(None,offset + word)),
                     );
                 }
                 None => self.initialized.extend(output.words.iter().map(|word| {
-                    scope.application_word(Some(ownership::ApplicationIndex::Constant(0)),*word)
+                    scope.application_word(Some(ownership::ApplicationIndex::Constant(0)),offset + word)
                 })),
                 _ => {}
             }
@@ -1322,7 +1323,7 @@ impl Builder<'_> {
                 let value = match value {
                     Argument::ApplicationData(data) => DataReference::direct(data),
                     Argument::BorrowedData(reference) => {
-                        if target != Target::Cpu || parameter.access != Access::Read {
+                        if target != Target::Cpu || !matches!(parameter.access, Access::Read | Access::Write | Access::InOut) {
                             self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
                         }
                         if parameter.access.writes() {
