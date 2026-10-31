@@ -392,6 +392,8 @@ Technical documentation and books are currently primarily in Chinese. Both READM
 
 ## Contributing
 
+P4 is the development source of truth. Each developer submits through their own account and client. GUA (192.168.10.5) publishes the GitHub mirror at 09:00 and 21:00 China time, continuing from the P4 watermark confirmed by the remote branch. The next invocation includes every change left unpublished by a failed run. Developer nodes do not need GitHub credentials. See [central mirror publication](Tools/README.md).
+
 Read the [project conventions](AGENTS.md) and [current implementation scope](Docs/Architecture.md) before making changes. Include B-language source code, exact commands, toolchain/device details, and original errors when reporting a problem. Distinguish design goals, implementation, native execution, and measured performance. Maintainer submission and publishing procedures are documented in the project conventions.
 
 ## License

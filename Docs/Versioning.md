@@ -26,7 +26,7 @@ powershell -NoProfile -File Tools/Submit.ps1 -Change 12345
 
 提交被拒绝时没有新的已提交版本；候选与真实错误保留，解决原冲突后再次调用入口重新计算，不自动重试。并发由同一 VERSION 文件的正常 P4 revision／resolve 处理，不建立计数服务或额外锁。其他任务在本 client 打开的 VERSION 不被覆盖。直接运行 `p4 submit` 不经过脚本，工程约定禁止绕过正式入口；没有安装服务器 trigger 或后台监控。
 
-成功后仍由调用方立即按 AGENTS 异步启动一次既有 `Tools/PublishGit.ps1`，PA3 提交、本机发布同理；失败不启动发布。Git 复制同一已提交 VERSION，不再次递增，失败不回滚 P4。两本台账只留 P4。
+任意节点成功提交后，由GUA／192.168.10.5的中央计划任务每天09:00和21:00调用 `Tools/PublishGit.ps1`，提交方不再启动Git发布，不需要GitHub凭据。每次读取GitHub远端main的P4-Change水位，覆盖其后所有节点的已提交变更；一次失败不推进远端水位，下次独立运行自然包含上次未发布范围。Git复制同一已提交VERSION，不再次递增，失败不回滚P4。两本台账只留P4。安装与操作见 [中央镜像发布](../Tools/README.md)。
 
 ## 构建、缓存与兼容身份
 

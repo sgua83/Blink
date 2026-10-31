@@ -1,11 +1,16 @@
 #requires -Version 7.2
-param([string]$P4Client = 'BLanguage_Gua')
+param(
+    [string]$P4Client = 'BLanguage_Gua',
+    [string]$MirrorDirectory
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $depot = '//BLanguage/main/'
 $p4Only = @('Docs/Issues.md', 'Docs/FixedIssues.md')
 $utf8 = [Text.UTF8Encoding]::new($false)
+if (-not $MirrorDirectory) { $MirrorDirectory = Join-Path $root 'Saved/GitPublish/Mirror.git' }
+$mirror = [IO.Path]::GetFullPath($MirrorDirectory)
 
 function Invoke-CommandText {
     param([string]$File, [string[]]$Arguments, [byte[]]$InputBytes)
@@ -39,7 +44,7 @@ function Invoke-CommandText {
 
 function Git {
     param([string[]]$Arguments, [byte[]]$InputBytes)
-    Invoke-CommandText git $Arguments $InputBytes
+    Invoke-CommandText git (@('--git-dir', $mirror) + $Arguments) $InputBytes
 }
 
 function P4Records {
@@ -53,58 +58,57 @@ function P4Records {
     }
 }
 
-$remote = Git @('remote', 'get-url', 'origin')
-if ($remote -ne 'https://github.com/sgua83/Blink.git') {
-    throw 'origin must identify the authorized sgua83/Blink repository.'
-}
-$branch = Git @('symbolic-ref', '--short', 'HEAD')
-if ($branch -ne 'main') { throw 'The publishing branch must be main.' }
-$localHead = Git @('for-each-ref', '--format=%(objectname)', 'refs/heads/main')
-Git @('fetch', 'origin') | Out-Null
-$remoteHead = Git @('for-each-ref', '--format=%(objectname)', 'refs/remotes/origin/main')
-if ($localHead -and $remoteHead -and $localHead -ne $remoteHead) {
-    Git @('merge-base', '--is-ancestor', $localHead, $remoteHead) | Out-Null
-}
-# Other machines may have published newer P4 changes. Continue from that history.
-$head = if ($remoteHead) { $remoteHead } else { $localHead }
-$message = if ($head) { Git @('log', '-1', '--format=%B', $head) } else { '' }
-$lastChange = if ($message -match '(?m)^P4-Change: (\d+)\s*$') { [int]$Matches[1] } else { 0 }
-$latest = @(P4Records @('changes', '-m', '1', '-s', 'submitted', "$depot..."))[0]
-$latestChange = [int]$latest.change
-if ($lastChange -eq $latestChange -and $remoteHead) {
-    Write-Output "UNCHANGED P4 CL $lastChange"
-    exit 0
-}
-$changes = if ($lastChange -eq 0) { @($latest) } else {
-    $lower = $lastChange + 1
-    @(P4Records @('changes', '-s', 'submitted', "$depot...@$lower,$latestChange") | Sort-Object { [int]$_.change })
-}
-$gitDirectory = Git @('rev-parse', '--absolute-git-dir')
-$index = Join-Path $gitDirectory 'index'
-$indexLock = Join-Path $gitDirectory 'index.lock'
-# Use Git's index ownership boundary. P4 operations do not use this lock.
-$lock = [IO.File]::Open($indexLock, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-$runDirectory = Join-Path $root ('Saved/GitPublish/' + [Guid]::NewGuid().ToString('N'))
-[IO.Directory]::CreateDirectory($runDirectory) | Out-Null
+[IO.Directory]::CreateDirectory($mirror) | Out-Null
+# The OS handle owns this publisher's repository for this invocation; no stale lock state.
+$lock = [IO.FileStream]::new((Join-Path $mirror 'publish.lock'), [IO.FileMode]::OpenOrCreate,
+    [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 4096, [IO.FileOptions]::DeleteOnClose)
+$runDirectory = Join-Path $mirror ('run-' + [Guid]::NewGuid().ToString('N'))
 $savedIndex = $env:GIT_INDEX_FILE
-$parent = $head
+$transcript = $false
 try {
-    Git @('diff', '--cached', '--quiet') | Out-Null
+    Start-Transcript -Path (Join-Path $mirror 'publish.log') -Append | Out-Null
+    $transcript = $true
+    if (-not (Test-Path -LiteralPath (Join-Path $mirror 'config'))) {
+        Invoke-CommandText git @('init', '--bare', $mirror) | Out-Null
+        Git @('remote', 'add', 'origin', 'https://github.com/sgua83/Blink.git') | Out-Null
+    }
+    $remote = Git @('config', '--get', 'remote.origin.url')
+    if ($remote -ne 'https://github.com/sgua83/Blink.git') {
+        throw 'origin must identify the authorized sgua83/Blink repository.'
+    }
+    Git @('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main') | Out-Null
+    $head = Git @('rev-parse', 'refs/remotes/origin/main')
+    $message = Git @('log', '-1', '--format=%B', $head)
+    if ($message -notmatch '(?m)^P4-Change: (\d+)\s*$') {
+        throw 'The published main commit has no P4-Change watermark.'
+    }
+    $lastChange = [int]$Matches[1]
+    if ($message -notmatch '(?m)^P4-Depot: //BLanguage/main/\s*$') {
+        throw 'The published watermark belongs to another P4 depot.'
+    }
+    $latest = @(P4Records @('changes', '-m', '1', '-s', 'submitted', "$depot..."))[0]
+    $latestChange = [int]$latest.change
+    if ($lastChange -gt $latestChange) { throw 'The published watermark is newer than the P4 source.' }
+    if ($lastChange -eq $latestChange) {
+        Write-Output "UNCHANGED P4 CL $lastChange"
+        exit 0
+    }
+    $lower = $lastChange + 1
+    $changes = @(P4Records @('changes', '-s', 'submitted', "$depot...@$lower,$latestChange") |
+        Sort-Object { [int]$_.change })
+    [IO.Directory]::CreateDirectory($runDirectory) | Out-Null
     $env:GIT_INDEX_FILE = Join-Path $runDirectory 'index'
-    if ($head) { Git @('read-tree', $head) | Out-Null } else { Git @('read-tree', '--empty') | Out-Null }
+    Git @('read-tree', $head) | Out-Null
+    $parent = $head
     foreach ($change in $changes) {
         $number = [int]$change.change
-        $entries = if ($lastChange -eq 0) {
-            @(P4Records @('files', "$depot...@$number"))
-        } else {
-            $description = @(P4Records @('describe', '-s', "$number"))[0]
-            for ($i = 0; $description.PSObject.Properties["depotFile$i"]; $i++) {
-                [pscustomobject]@{
-                    depotFile = $description."depotFile$i"
-                    rev = $description."rev$i"
-                    action = $description."action$i"
-                    type = $description."type$i"
-                }
+        $description = @(P4Records @('describe', '-s', "$number"))[0]
+        $entries = for ($i = 0; $description.PSObject.Properties["depotFile$i"]; $i++) {
+            [pscustomobject]@{
+                depotFile = $description."depotFile$i"
+                rev = $description."rev$i"
+                action = $description."action$i"
+                type = $description."type$i"
             }
         }
         $lines = [Text.StringBuilder]::new()
@@ -118,7 +122,7 @@ try {
             $relative = $entry.depotFile.Substring($depot.Length)
             if ($relative -cin $p4Only) { continue }
             if ($entry.action -in @('delete', 'move/delete')) {
-                if ($lastChange -ne 0) { [void]$lines.Append("0 $([string]::new('0', 40))`t$relative`0") }
+                [void]$lines.Append("0 $([string]::new('0', 40))`t$relative`0")
                 continue
             }
             $fileNumber++
@@ -132,9 +136,8 @@ try {
         }
         Git @('update-index', '-z', '--index-info') ($utf8.GetBytes($lines.ToString())) | Out-Null
         $tree = Git @('write-tree')
-        $description = Invoke-CommandText p4 @('-c', $P4Client, '-ztag', '-Mj', 'describe', '-s', "$number") | ConvertFrom-Json
         $subject = ($description.desc -split "`n")[0]
-        $commitMessage = "$subject`n`nP4-Change: $number`nP4-Depot: $depot`n"
+        $commitMessage = "$subject`n`nP4-Change: $number`nP4-Depot: $depot`nP4-User: $($description.user)`n"
         $commitArguments = @('commit-tree', $tree)
         if ($parent) { $commitArguments += @('-p', $parent) }
         $parent = Git $commitArguments ($utf8.GetBytes($commitMessage))
@@ -143,20 +146,20 @@ try {
     Git @('push', 'origin', "${parent}:refs/heads/main") | Out-Null
     $published = Git @('ls-remote', '--heads', 'origin', 'main')
     if (($published -split '\s+')[0] -ne $parent) { throw 'GitHub did not confirm the published commit.' }
-    $previous = if ($localHead) { $localHead } else { [string]::new('0', 40) }
-    Git @('update-ref', 'refs/heads/main', $parent, $previous) | Out-Null
-    $indexBytes = [IO.File]::ReadAllBytes($env:GIT_INDEX_FILE)
-    $lock.Write($indexBytes)
-    $lock.Dispose()
-    $lock = $null
-    [IO.File]::Move($indexLock, $index, $true)
+    Git @('update-ref', 'refs/heads/main', $parent) | Out-Null
     Write-Output "PUBLISHED P4 CL $latestChange -> $parent"
+} catch {
+    Write-Output "FAILED: $($_.Exception.Message)"
+    throw
 } finally {
     $env:GIT_INDEX_FILE = $savedIndex
-    if ($lock) { $lock.Dispose(); Remove-Item -LiteralPath $indexLock }
-    foreach ($file in Get-ChildItem -LiteralPath $runDirectory -File) {
-        if ($file.IsReadOnly) { $file.IsReadOnly = $false }
-        Remove-Item -LiteralPath $file.FullName
+    if (Test-Path -LiteralPath $runDirectory) {
+        foreach ($file in Get-ChildItem -LiteralPath $runDirectory -File) {
+            if ($file.IsReadOnly) { $file.IsReadOnly = $false }
+            Remove-Item -LiteralPath $file.FullName
+        }
+        Remove-Item -LiteralPath $runDirectory
     }
-    Remove-Item -LiteralPath $runDirectory
+    if ($transcript) { Stop-Transcript | Out-Null }
+    $lock.Dispose()
 }
