@@ -25,6 +25,7 @@ pub(super) enum Position {
     Local(usize),
     Element(usize, u32),
     ViewElement([ValueIdentity; 3], Reg, u32, u32),
+    TileElement(usize, Reg, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
@@ -49,8 +50,8 @@ impl Position {
         initialized.contains(self)
             || self.application_complete().is_some_and(|whole|initialized.contains(&whole))
             || match self {
-                // 不可变view已由原来源交接可读记录；位置身份不另存初始化状态。
-                Self::Initialized | Self::ViewElement(..) => true,
+                // 不可变view／tile已由原来源交接可读记录；位置身份不另存初始化状态。
+                Self::Initialized | Self::ViewElement(..) | Self::TileElement(..) => true,
                 Self::Both(a,b)|Self::Conditional(_,a,b)=>a.initialized_by(initialized)&&b.initialized_by(initialized),
                 Self::Indexed(choices, _) => choices
                     .iter()
@@ -142,13 +143,15 @@ impl Place {
             Self::Element { binding, words, .. } => words.iter().map(|word| Position::Element(*binding, *word)).collect(),
             Self::ViewElement { source, index, stride, words, .. } => words.iter()
                 .map(|word| Position::ViewElement(*source, *index, *stride, *word)).collect(),
+            Self::TileElement { tile, index, words, .. } => words.iter()
+                .map(|word| Position::TileElement(*tile, *index, *word)).collect(),
             Self::Indexed { locations, .. } => locations.clone(),
             _ => Vec::new(),
         }
     }
     pub(super) fn owned_positions(&self) -> Option<Vec<Position>> {
         match self {
-            Self::ViewElement { .. } => Some(self.data_positions()),
+            Self::ViewElement { .. } | Self::TileElement { .. } => Some(self.data_positions()),
             Self::ApplicationElement {
                 initialization,
                 words,
@@ -233,6 +236,13 @@ impl Place {
                 Self::ViewElement { source: a, index: i, stride: sa, words, .. },
                 Self::ViewElement { source: b, index: j, stride: sb, words: root, .. },
             ) if a == b && i == j && sa == sb => words
+                .iter()
+                .map(|word| root.iter().position(|root| root == word))
+                .collect(),
+            (
+                Self::TileElement { tile: a, index: i, words, .. },
+                Self::TileElement { tile: b, index: j, words: root, .. },
+            ) if a == b && i == j => words
                 .iter()
                 .map(|word| root.iter().position(|root| root == word))
                 .collect(),

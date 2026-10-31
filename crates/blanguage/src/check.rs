@@ -111,10 +111,6 @@ enum Binding {
     Value(Value),
     Data(DatasetView),
     Tile(TileView),
-    TileElement {
-        view: TileView,
-        index: Reg,
-    },
     ViewElement {
         view: Value,
         element: OwnedBinding,
@@ -2062,12 +2058,13 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
+                let (proof, uniform) = self.read_owned_proof(p, &regs);
                 Ok(Value {
-                    proof: bounds::Proof::default(),
+                    proof,
                     literal: false,
                     ty: ty.clone(),
                     regs,
-                    uniform: false,
+                    uniform,
                     constant: None,
                 })
             }
@@ -3340,7 +3337,21 @@ impl<'a> Builder<'a> {
                         initialization: None,
                     })
                 },
-                CursorSource::Tile(view) => Binding::TileElement { view, index },
+                CursorSource::Tile(view) => {
+                    let place = Place::TileElement {
+                        ty: view.ty,
+                        tile: view.tile,
+                        index,
+                        words: view.words,
+                    };
+                    let width = place.ty().components.len();
+                    let mut proof = bounds::Proof::default();
+                    for (component, (scalar, _)) in place.ty().components.iter().enumerate() {
+                        proof.assign(&[component], width, bounds::Proof::default()
+                            .with_identity(ValueIdentity::Register(self.reg(*scalar))));
+                    }
+                    Binding::Owned(OwnedBinding { place, proof, uniform: false, initialization: None })
+                },
                 CursorSource::View(view) => {
                     let place = Self::view_element(&view, index);
                     let width = place.ty().components.len();
@@ -3795,12 +3806,6 @@ impl<'a> Builder<'a> {
                 self.env.insert(name.clone(), Binding::Owned(owner));
                 Ok(place)
             }
-            Some(Binding::TileElement { view, index }) => Ok(Place::TileElement {
-                ty: view.ty,
-                tile: view.tile,
-                index,
-                words: view.words,
-            }),
             Some(Binding::ViewElement { element, .. }) => Ok(element.place),
             _ => self.fail(e.span, "B134", format!("{name} 不是可赋值的元素或局部变量")),
         }
@@ -4067,9 +4072,9 @@ impl<'a> Builder<'a> {
                 index,
                 self.data_index_proof(binding),
             ),
-            Some(Binding::TileElement { index, .. }) => {
-                (IndexDomain::Tile, index, self.tile_index_proof())
-            }
+            Some(Binding::Owned(OwnedBinding {
+                place: Place::TileElement { index, .. }, ..
+            })) => (IndexDomain::Tile, index, self.tile_index_proof()),
             Some(Binding::ViewElement {
                 view,
                 element: OwnedBinding { place: Place::ViewElement { index, .. }, .. },
@@ -4188,7 +4193,6 @@ impl<'a> Builder<'a> {
             Some(Binding::Owned(owner)) => self.read_place(&owner.place, e.span),
             Some(
                 Binding::AtomicBorrow(_)
-                | Binding::TileElement { .. }
                 | Binding::ViewElement { .. },
             ) => {
                 let p = self.name_place(name, e)?;
@@ -4222,7 +4226,6 @@ impl<'a> Builder<'a> {
                     self.env.get(n),
                     Some(
                         Binding::AtomicBorrow(_)
-                            | Binding::TileElement { .. }
                             | Binding::ViewElement { .. }
                             | Binding::Owned(_)
                             | Binding::OwnedValue(_)
