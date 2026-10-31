@@ -33,6 +33,17 @@ impl Argument {
         {
             return a.overlaps(b);
         }
+        let region=|argument:&Self|match argument {
+            Self::BorrowedData(data)=>Some((data.sources.clone(),data.words())),
+            Self::Reference(OwnedBinding{place,..})|Self::Atomic(place)=>match place.storage(){
+                Place::ApplicationElement{sources,words,..}=>Some((sources.clone(),words.clone())),
+                _=>None,
+            },
+            _=>None,
+        };
+        if let(Some((a,words)),Some((b,other)))=(region(self),region(other)){
+            return a.iter().any(|source|b.contains(source))&&words.iter().any(|word|other.contains(word));
+        }
         let handles = |arg: &Self| match arg {
             Self::BorrowedData(reference) => reference.sources.clone(),
             Self::ApplicationData(d) => vec![d.handle.identity()],
@@ -195,6 +206,11 @@ impl<'a> Builder<'a> {
             if !self.flow.continues() {
                 self.abandon_arguments(&held);
                 return Ok(None);
+            }
+            if param.ty.dataset && param.access.writes() && outputs::declared(callee,arguments.len()-1)
+                && let Some(Argument::BorrowedData(data))=arguments.last_mut()
+            {
+                self.prepare_data_output(&mut data.data,arg.span)?;
             }
             if let Some(name) = self.hold_argument(arguments.last_mut().unwrap(), param.access) {
                 held.push((arguments.len() - 1, name));

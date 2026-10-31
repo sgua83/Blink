@@ -318,18 +318,14 @@ impl Builder<'_> {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
             let arg=match arg {
-                Argument::ApplicationData(data) if p.ty.dataset&&p.access==Access::Read=>Argument::BorrowedData(application::DataReference::direct(data)),
+                Argument::ApplicationData(data) if p.ty.dataset&&p.access!=Access::Value=>Argument::BorrowedData(application::DataReference::direct(data)),
                 other=>other,
             };
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
                     residency::layout_argument(&mut layouts,index,reference.layout_source());
                     reference.data.handle.proof=reference.data.handle.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
-                    if p.access==Access::Read{Argument::BorrowedData(reference)}else{
-                        self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
-                        if p.access.writes(){for source in &reference.sources{self.invalidate_application_contents(*source);}}
-                        Argument::ApplicationData(reference.data)
-                    }
+                    Argument::BorrowedData(reference)
                 },
                 other=>other,
             };
@@ -383,51 +379,40 @@ impl Builder<'_> {
                     env.insert(p.name.clone(), Binding::Owned(owner));
                     if p.access.writes() { written.push((index, place)); }
                 }
-                Argument::BorrowedData(reference) if p.ty.dataset&&p.access==Access::Read=>{
+                Argument::BorrowedData(mut reference) if p.ty.dataset=>{
                     residency::argument(&mut locations,index,&reference.data);
                     self.require_same(&ty,reference.element_layout().1,span)?;
-                    self.require_application_reference_initialized(&reference,span)?;
+                    if !matches!(p.access,Access::Read|Access::Write|Access::InOut){
+                        return self.fail(span,"B224","CPU dataset借用需要read／write／inout");
+                    }
+                    if p.access.writes()&&!reference.writable{
+                        return self.fail(span,"B227","只读dataset不能提升为可写借用");
+                    }
+                    if p.access!=Access::Write{self.require_application_reference_initialized(&reference,span)?;}
                     self.native_dataset_shape(p,d,reference.count,span)?;
+                    if p.access.writes()&&outputs::declared(d,index){
+                        self.prepare_data_output(&mut reference.data,span)?;
+                        self.forget_data_output(&reference,span)?;
+                    }
+                    if p.access==Access::Write||p.access==Access::InOut&&outputs::declared(d,index){
+                        written_data.push((index,reference.clone()));
+                    }
+                    if p.access.writes(){for source in &reference.sources{self.invalidate_application_contents(*source);}}
                     let value=self.application_reference_value(&reference);
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::DataReference(reference));
                 }
-                Argument::ApplicationData(mut data) if p.ty.dataset => {
+                Argument::ApplicationData(data) if p.ty.dataset&&p.access==Access::Value=>{
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::Declared{stride:ir::align_up(data.ty.size,data.ty.align),projected:false});
-                    residency::argument(&mut locations, index, &data);
-                    self.require_same(&ty, &data.ty, span)?;
-                    if !matches!(
-                        p.access,
-                        Access::Value | Access::Read | Access::Write | Access::InOut
-                    ) {
-                        return self.fail(
-                            span,
-                            "B224",
-                            "CPU dataset 参数需要拥有交接或 read／write／inout 借用",
-                        );
-                    }
-                    if p.access.writes() && !data.writable {
-                        return self.fail(span, "B227", "只读 dataset 不能提升为可写借用");
-                    }
-                    if p.access != Access::Write {
-                        self.require_application_initialized(&data, span)?;
-                    }
+                    residency::argument(&mut locations,index,&data);
+                    self.require_same(&ty,&data.ty,span)?;
+                    self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;
-                    if matches!(p.access,Access::Write|Access::InOut) && outputs::declared(d,index){self.reset_data_output(&mut data,span)?;}
-                    if p.access == Access::Write || p.access==Access::InOut && outputs::declared(d,index) {
-                        written_data.push((index,data.clone()));
-                    }
-                    if matches!(p.access, Access::Write | Access::InOut) {
-                        self.invalidate_application_contents(data.handle.identity());
-                    }
-                    let value = self.returned_storage(&Returned::Dataset(data.clone()));
-                    append_actual(&mut actual, &value);
-                    arguments.push(CallArgument::Value {
-                        ty: value.ty,
-                        values: value.regs,
-                    });
-                    env.insert(p.name.clone(), Binding::ApplicationData(data));
+                    let value=self.returned_storage(&Returned::Dataset(data.clone()));
+                    append_actual(&mut actual,&value);
+                    arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
+                    env.insert(p.name.clone(),Binding::ApplicationData(data));
                 }
                 Argument::OwnedValue(mut value)
                     if matches!(p.access,Access::Value|Access::Read) && ty.owns_resources() =>
@@ -569,7 +554,7 @@ impl Builder<'_> {
             self.initialize_output(&place,&guards);
         }
         for (index,data) in written_data {
-            let guards=outputs::guards(self,d,index,&data.ty,&output_inputs,output_value.as_ref())?;
+            let guards=outputs::guards(self,d,index,data.element_layout().1,&output_inputs,output_value.as_ref())?;
             self.initialize_data_output(&data,&guards);
         }
         let Some(ty) = result else {

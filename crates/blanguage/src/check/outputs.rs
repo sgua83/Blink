@@ -100,6 +100,7 @@ fn collect_inputs(
             Binding::ApplicationData(data) => {
                 builder.returned_storage(&Returned::Dataset(data.clone()))
             }
+            Binding::DataReference(data)=>builder.returned_storage(&Returned::Dataset(data.data.clone())),
             _ => continue,
         };
         inputs.insert(parameter.name.clone(), value);
@@ -480,6 +481,9 @@ pub(super) fn apply_ownership(model: &mut Returned, ty: &Ty, offset: u32, guards
 
 impl Builder<'_> {
     pub(super) fn forget_output_initialization(&mut self, place: &Place, span: Span) -> Result<()> {
+        let changed=self.positions(place);self.forget_output_positions(&changed,span)
+    }
+    fn forget_output_positions(&mut self,changed:&[Position],span:Span)->Result<()> {
         fn index(builder: &mut Builder<'_>, index: ownership::ApplicationIndex) -> Value {
             match index {
                 ownership::ApplicationIndex::Constant(value) => {
@@ -505,6 +509,7 @@ impl Builder<'_> {
                 return Ok(Presence::All);
             }
             Ok(match (a, b) {
+                (Position::Parameter(a,word),Position::ApplicationElement(b,_,other)) if a==b && *word==*other as usize=>Presence::All,
                 (Position::Indexed(left, i), Position::Indexed(right, j)) if left == right => {
                     let left = index(builder, *i);
                     let right = index(builder, *j);
@@ -560,19 +565,19 @@ impl Builder<'_> {
                 }
             })
         }
-        let changed = self.positions(place);
         let previous = std::mem::take(&mut self.initialized);
         for position in previous {
-            let position = erase(self, &position, &changed, span)?;
+            let position = erase(self, &position, changed, span)?;
             self.initialized.insert(position);
         }
         Ok(())
     }
-    pub(super) fn reset_data_output(
+    pub(super) fn prepare_data_output(
         &mut self,
         data: &mut application::Data,
         span: Span,
     ) -> Result<()> {
+        if data.initialization.is_some(){return Ok(());}
         let scope = Position::Parameter(self.application_output_scope(), 0);
         let mut found = false;
         if let Some(place) = &data.place {
@@ -608,8 +613,14 @@ impl Builder<'_> {
         if !found {
             return self.fail(span, "B229", "条件dataset输出没有可交接的原初始化所有者");
         }
+        self.initialized.extend(data.ty.components.iter().map(|(_,word)|scope.application_word(None,*word)));
         data.initialization = Some(scope);
         Ok(())
+    }
+    pub(super) fn forget_data_output(&mut self,data:&application::DataReference,span:Span)->Result<()> {
+        let scope=data.initialization.as_ref().unwrap();
+        let changed=data.words().into_iter().map(|word|scope.application_word(None,word)).collect::<Vec<_>>();
+        self.forget_output_positions(&changed,span)
     }
     pub(super) fn check_data_output(
         &mut self,
@@ -627,12 +638,12 @@ impl Builder<'_> {
         self.path = path;
         Ok(())
     }
-    pub(super) fn initialize_data_output(&mut self, data: &application::Data, guards: &[Presence]) {
+    pub(super) fn initialize_data_output(&mut self, data: &application::DataReference, guards: &[Presence]) {
         if let Some(scope) = &data.initialization {
-            for ((_, offset), when) in data.ty.components.iter().zip(guards) {
+            for (offset, when) in data.words().into_iter().zip(guards) {
                 self.initialized.insert(Position::selected(
                     when.clone(),
-                    scope.application_word(None, *offset),
+                    scope.application_word(None, offset),
                     Position::Initialized,
                 ));
             }

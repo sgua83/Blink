@@ -1338,10 +1338,10 @@ fn function_parameters(
                 ) {
                 {
                     let mut data = b.application_parameter(data_index, parameter_index, p.access)?;
-                    if p.access==Access::Read {
+                    if p.access!=Access::Value {
                         let stride=b.reg(Scalar::U32);let offset=b.reg(Scalar::U32);
                         let value=|reg|Value{ty:Ty::scalar(Scalar::U32),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
-                        parameters.push(CallParameter::Value(Builder::read_dataset_parameter_type()));
+                        parameters.push(CallParameter::Value(Builder::borrowed_dataset_parameter_type()));
                         inputs.extend([data.handle.regs[0],data.length.regs[0],stride,offset]);
                         data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride),offset:value(offset)};
                         Binding::ApplicationData(data)

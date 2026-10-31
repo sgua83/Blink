@@ -79,6 +79,9 @@ impl DataReference {
         for field in &self.projection{let(_,at,next)=&ty.fields[*field];offset+=at;ty=next;}
         (offset,ty)
     }
+    pub(super) fn words(&self)->Vec<u32>{
+        let(offset,ty)=self.element_layout();ty.components.iter().map(|(_,word)|offset+word).collect()
+    }
     pub(super) fn layout_source(&self)->residency::LayoutSource{
         match &self.data.layout {
             DataLayout::Declared=>residency::LayoutSource::Declared{stride:ir::align_up(self.data.ty.size,self.data.ty.align),projected:!self.projection.is_empty()},
@@ -318,7 +321,7 @@ fn live_resources(
 }
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
-    // 原生调用交接同一 Frame 的句柄与长度，物理资源仍由原帧拥有。
+    // 原生借用交接原Frame句柄、长度与实际布局，拥有值仍交接句柄／长度。
     pub(super) fn application_parameter(
         &mut self,
         binding: usize,
@@ -1119,14 +1122,14 @@ impl Builder<'_> {
         self.code.push(Inst::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]});
         (stride,Value{ty:Ty::scalar(Scalar::U32),regs:vec![dst],proof:bounds::Proof::default(),literal:false,uniform:offset.uniform,constant:None})
     }
-    pub(super) fn read_dataset_parameter_type()->Ty{
-        let mut ty=Ty::vector(Scalar::U32,4);ty.name="__blink_read_dataset".into();ty
+    pub(super) fn borrowed_dataset_parameter_type()->Ty{
+        let mut ty=Ty::vector(Scalar::U32,4);ty.name="__blink_borrowed_dataset".into();ty
     }
     pub(super) fn application_reference_value(&mut self,data:&DataReference)->Value{
         let(stride,offset)=self.application_reference_layout(data);
         let mut proof=bounds::Proof::default();
         for value in [&data.handle,&data.length,&stride,&offset]{proof.append(value);}
-        Value{ty:Self::read_dataset_parameter_type(),regs:vec![data.handle.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None}
+        Value{ty:Self::borrowed_dataset_parameter_type(),regs:vec![data.handle.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None}
     }
     fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
         let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::Cast{dst,src});dst};

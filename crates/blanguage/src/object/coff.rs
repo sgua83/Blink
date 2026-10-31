@@ -67,7 +67,7 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 22);
+    word(&mut meta, 23);
     string(&mut meta, &o.name)?;
     match &o.kind {
         Kind::Module {
@@ -383,7 +383,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 22 {
+    if tag != *b"BLCO" || read_word(&mut c)? != 23 {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;
