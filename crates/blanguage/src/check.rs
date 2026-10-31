@@ -132,6 +132,7 @@ struct OwnedBinding {
 #[derive(Clone)]
 struct DatasetView {
     binding: usize,
+    projection: Vec<usize>,
     length: bounds::Proof,
 }
 #[derive(Clone)]
@@ -144,7 +145,7 @@ struct TileView {
 #[derive(Clone)]
 enum CursorSource {
     ApplicationData(application::DataReference),
-    Data(usize),
+    Data(DatasetView),
     Tile(TileView),
     View(Value),
 }
@@ -3181,7 +3182,7 @@ impl<'a> Builder<'a> {
             } else if let ExprKind::Name(name) = &start.kind {
                 self.env.get(name).cloned()
             } else {
-                None
+                self.dataset_reference(start)?.map(Binding::Data)
             };
             let begin = self.constant(Scalar::U32, 0);
             match source {
@@ -3210,7 +3211,7 @@ impl<'a> Builder<'a> {
                     (
                         begin,
                         self.data_length(&view),
-                        Some(CursorSource::Data(binding)),
+                        Some(CursorSource::Data(view)),
                     )
                 }
                 _ => {
@@ -3333,11 +3334,9 @@ impl<'a> Builder<'a> {
                         uniform: false,
                         initialization: None,
                     }),
-                    CursorSource::Data(binding) => {
-                        let ty = self.program.buffers[binding].ty.clone();
-                        let words = ty.components.iter().map(|x| x.1).collect();
+                    CursorSource::Data(view) => {
                         Binding::Owned(OwnedBinding {
-                            place: Place::Element { ty, binding, index, words, writable: false },
+                            place: self.dataset_element(&view, index, false),
                             proof: bounds::Proof::default(),
                             uniform: false,
                             initialization: None,
@@ -3725,13 +3724,12 @@ impl<'a> Builder<'a> {
         if let Some(data) = self.application_reference(base)? {
             return self.application_index(data, index);
         }
-        let ExprKind::Name(name) = &base.kind else {
-            return self.view_place(base, index);
-        };
-        if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
+        if let ExprKind::Name(name) = &base.kind
+            && let Some(Binding::Tile(view)) = self.env.get(name).cloned()
+        {
             return self.tile_place(view, index);
         }
-        let Some(Binding::Data(view)) = self.env.get(name).cloned() else {
+        let Some(view) = self.dataset_reference(base)? else {
             return self.view_place(base, index);
         };
         let binding = view.binding;
@@ -3768,15 +3766,9 @@ impl<'a> Builder<'a> {
             }
             self.element_domains.insert(binding);
         }
-        let ty = self.program.buffers[binding].ty.clone();
-        let words = ty.components.iter().map(|x| x.1).collect();
-        Ok(Some(Place::Element {
-            ty,
-            binding,
-            index: i.regs[0],
-            words,
-            writable: self.view_access[&binding].writes() && current,
-        }))
+        Ok(Some(self.dataset_element(
+            &view, i.regs[0], self.view_access[&binding].writes() && current,
+        )))
     }
     fn name_place(&mut self, name: &String, e: &Expr) -> Result<Place> {
         match self.env.get(name).cloned() {
@@ -4010,34 +4002,14 @@ impl<'a> Builder<'a> {
                     )
                     .map(Some);
             }
-            if let Some(Binding::Data(view)) = self.env.get(data).cloned() {
-                let binding = view.binding;
-                if !matches!(self.view_access[&binding], Access::Read | Access::InOut) {
-                    return self.fail(
-                        span,
-                        "B181",
-                        "unsafe_read 需要 read 或本阶段共享只读的 inout 数据集",
-                    );
-                }
-                let Some(index) = self.expr(&args[1])? else {
-                    return Ok(None);
-                };
-                self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
-                let ty = self.program.buffers[binding].ty.clone();
-                let words = ty.components.iter().map(|x| x.1).collect();
-                return self
-                    .read_place(
-                        &Place::Element {
-                            ty,
-                            binding,
-                            index: index.regs[0],
-                            words,
-                            writable: false,
-                        },
-                        span,
-                    )
-                    .map(Some);
+        }
+        if let Some(view) = self.dataset_reference(&args[0])? {
+            if !matches!(self.view_access[&view.binding], Access::Read | Access::InOut) {
+                return self.fail(span, "B181", "unsafe_read 需要 read 或本阶段共享只读的 inout 数据集");
             }
+            let Some(index) = self.expr(&args[1])? else { return Ok(None); };
+            self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
+            return self.read_place(&self.dataset_element(&view, index.regs[0], false), span).map(Some);
         }
         let Some(view) = self.expr(&args[0])? else {
             return Ok(None);
@@ -4129,11 +4101,9 @@ impl<'a> Builder<'a> {
                     _ => self.fail(e.span, "B141", "tile 只公开只读 length 与 lane"),
                 };
             }
-            if let Some(Binding::Data(view)) = self.env.get(name).cloned() {
-                if field == "length" {
-                    return Ok(Some(self.data_length(&view)));
-                }
-            }
+        }
+        if field == "length" && let Some(view) = self.dataset_reference(base)? {
+            return Ok(Some(self.data_length(&view)));
         }
         if self.is_place(base) {
             // 保留字段访问，避免为了读取一个字段先加载整个结构体。
@@ -4179,7 +4149,7 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
-        let resource = matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Data(_) | Binding::Tile(_) | Binding::ApplicationData(_))));
+        let resource = self.dataset_reference(base)?.is_some() || matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
             let Some(value) = self.expr(base)? else {
                 return Ok(None);

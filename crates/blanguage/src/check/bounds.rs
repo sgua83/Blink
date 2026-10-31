@@ -2920,6 +2920,7 @@ impl Builder<'_> {
     pub(super) fn dataset_view(&self, binding: usize) -> DatasetView {
         DatasetView {
             binding,
+            projection: Vec::new(),
             length: self.program.buffers[binding]
                 .count
                 .map_or_else(Proof::default, |n| Proof::unsigned(n, n))

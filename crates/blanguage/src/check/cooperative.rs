@@ -147,10 +147,8 @@ impl<'a> Builder<'a> {
                 } else if param.ty.dataset {
                     if let Some(data) = self.application_reference(arg)? {
                         Argument::BorrowedData(data)
-                    } else if let ExprKind::Name(name) = &arg.kind
-                        && let Some(Binding::Data(view)) = self.env.get(name)
-                    {
-                        Argument::Dataset(view.clone())
+                    } else if let Some(view) = self.dataset_reference(arg)? {
+                        Argument::Dataset(view)
                     } else {
                         let argument = self.scoped_argument(arg)?;
                         if !self.flow.continues() {
@@ -434,7 +432,7 @@ impl<'a> Builder<'a> {
             let binding = match (param.ty.dataset, param.ty.tile, arg) {
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
-                    self.require_same(&ty, &self.program.buffers[binding].ty, span)?;
+                    self.require_same(&ty, self.dataset_layout(&view).1, span)?;
                     let access = self.view_access[&binding];
                     if param.access == Access::Read && access == Access::InOut {
                         data_access.push((binding, access));

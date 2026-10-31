@@ -1,17 +1,50 @@
 //! 记录按声明字段构造；不对异构分量作统一数值强转，不产生运行时对象。
 use super::*;
 impl Builder<'_> {
+    pub(super) fn dataset_layout<'a>(&'a self, view: &DatasetView) -> (u32, &'a Ty) {
+        let mut ty = &self.program.buffers[view.binding].ty;
+        let mut offset = 0;
+        for index in &view.projection {
+            let (_, at, field) = &ty.fields[*index];
+            offset += at;
+            ty = field;
+        }
+        (offset, ty)
+    }
+    pub(super) fn dataset_reference(&self, expr: &Expr) -> Result<Option<DatasetView>> {
+        match &expr.kind {
+            ExprKind::Name(name) => Ok(match self.env.get(name) {
+                Some(Binding::Data(view)) => Some(view.clone()),
+                _ => None,
+            }),
+            ExprKind::Member(base, field) => {
+                let Some(mut view) = self.dataset_reference(base)? else { return Ok(None); };
+                let (_, ty) = self.dataset_layout(&view);
+                let Some(index) = ty.fields.iter().position(|(name, _, _)| name == field) else {
+                    return self.fail(expr.span, "B141", "dataset 字段不存在");
+                };
+                view.projection.push(index);
+                Ok(Some(view))
+            }
+            _ => Ok(None),
+        }
+    }
+    pub(super) fn dataset_element(&self, view: &DatasetView, index: Reg, writable: bool) -> Place {
+        let (offset, ty) = self.dataset_layout(view);
+        Place::Element {
+            ty: ty.clone(), binding: view.binding, index,
+            words: ty.components.iter().map(|(_, word)| offset + word).collect(),
+            writable,
+        }
+    }
     pub(super) fn dataset_field(&self, expr: &Expr) -> Result<(usize, u32, Ty)> {
         match &expr.kind {
             ExprKind::Name(name) => {
                 let Some(Binding::Data(view)) = self.env.get(name) else {
                     return self.fail(expr.span, "B200", "需要命名 dataset 或其字段");
                 };
-                Ok((
-                    view.binding,
-                    0,
-                    self.program.buffers[view.binding].ty.clone(),
-                ))
+                let (offset, ty) = self.dataset_layout(view);
+                Ok((view.binding, offset, ty.clone()))
             }
             ExprKind::Member(base, name) => {
                 let (binding, word, ty) = self.dataset_field(base)?;

@@ -306,7 +306,8 @@ impl Builder<'_> {
         if self.owned_element_type(base).is_some_and(|ty|ty.has_variants()) {return self.fail(expr.span,"B269","变体载荷通过match使用");}
         if !self.temporary_projection(base)
             && (self.is_place(expr)
-                || matches!(&base.kind,ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Data(_)|Binding::Tile(_)|Binding::Texture(_)))))
+                || self.dataset_reference(base)?.is_some()
+                || matches!(&base.kind,ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_)))))
         {
             return self
                 .member_expr(base, name, expr)

@@ -65,7 +65,8 @@ impl Builder<'_> {
                     if let Place::Element { binding, words, .. } = owner
                         && *binding == view.binding
                     {
-                        let ty = self.program.buffers[*binding].ty.clone();
+                        let (base, ty) = self.dataset_layout(view);
+                        let ty = ty.clone();
                         let components = ty
                             .components
                             .iter()
@@ -73,7 +74,7 @@ impl Builder<'_> {
                                 words
                                     .iter()
                                     .enumerate()
-                                    .filter_map(|(i, word)| (*word == *offset).then_some(i))
+                                    .filter_map(|(i, word)| (*word == base + offset).then_some(i))
                                     .collect()
                             })
                             .collect();

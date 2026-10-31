@@ -47,7 +47,7 @@ impl Builder<'_> {
                 Argument::OwnedValue(v) | Argument::OwnedReference{value:v,..} => Actual::value(&v.value.ty),
                 Argument::Value(v) => Actual::value(&v.ty),
                 Argument::Dataset(v) => Actual {
-                    ty: Some(std::borrow::Cow::Borrowed(&self.program.buffers[v.binding].ty)),
+                    ty: Some(std::borrow::Cow::Borrowed(self.dataset_layout(v).1)),
                     count: self.program.buffers[v.binding].count,
                 },
                 Argument::BorrowedData(reference) => Actual::dataset(&reference.ty,reference.count),

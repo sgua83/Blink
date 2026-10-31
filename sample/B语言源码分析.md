@@ -592,7 +592,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3737`。
+源码节选：`crates/blanguage/src/check.rs:3735`。
 
 ```rust
         let binding = view.binding;
@@ -629,19 +629,13 @@ impl Access {
             }
             self.element_domains.insert(binding);
         }
-        let ty = self.program.buffers[binding].ty.clone();
-        let words = ty.components.iter().map(|x| x.1).collect();
-        Ok(Some(Place::Element {
-            ty,
-            binding,
-            index: i.regs[0],
-            words,
-            writable: self.view_access[&binding].writes() && current,
-        }))
+        Ok(Some(self.dataset_element(
+            &view, i.regs[0], self.view_access[&binding].writes() && current,
+        )))
     }
 ```
 
-第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。
+第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。字段借用仍指向同一个原缓冲：检查器按声明字段路径取得元素类型和实际字节位置，容量与记录步幅保持。CPU／GPU元素阶段的函数转借、下标和只读游标沿同一位置映射访问，不复制整列数据；普通CPU原生参数的投影布局继续由模块与资源接口补齐。
 
 `values[index()+1]` 在某些长度下可能合法，但多个实例的访问可能交错，且不再是当前独占元素。编译器不会因为下标仍在范围内，就自动授予普通并行写权限。这正是“范围证明”和“所有权证明”不能混为一谈的原因。
 
@@ -830,7 +824,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:387`。
+源码节选：`crates/blanguage/src/check.rs:388`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
