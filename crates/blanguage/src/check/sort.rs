@@ -65,6 +65,9 @@ pub(super) fn compile(
     }
     let output = args.last().unwrap();
     let (target, write) = compact::data(env, output, d)?;
+    if program.buffers[target].ty.contains_views() {
+        return d.source.fail(output.span,"B185","排序不能复制持久view载荷；原引用图须保持");
+    }
     if !write.writes() || source == target || prefix.is_some_and(|p| p.binding == target) {
         return d.source.fail(
             span,

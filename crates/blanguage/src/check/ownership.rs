@@ -345,6 +345,7 @@ impl Builder<'_> {
         let Some(place) = self.place(expr)? else {
             return Ok(None);
         };
+        self.require_owned_writable(&place, expr.span)?;
         let positions = self.writable_storage(&place, expr.span)?;
         if positions.iter().copied().collect::<BTreeSet<_>>().len() != positions.len() {
             return self.fail(expr.span, "B227", "独占借用位置不能包含重复分量");
@@ -355,13 +356,15 @@ impl Builder<'_> {
         Ok(Some(place))
     }
     pub(super) fn require_owned_writable(&self,place:&Place,span:Span)->Result<()> {
+        if place.ty().contains_views() && matches!(place.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
+            return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
+        }
         if self.env.values().any(|binding|matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed && value.place().is_some_and(|root|place.overlaps(&root)))) {
             return self.fail(span,"B227","read聚合的元数据与普通字段不能写入或取得独占借用");
         }
         Ok(())
     }
     pub(super) fn writable_storage(&mut self, place: &Place, span: Span) -> Result<Vec<usize>> {
-        self.require_owned_writable(place,span)?;
         if let Place::Indexed { base, words, .. } = place {
             self.writable_storage(base, span)?;
             return Ok(words.iter().map(|w| *w as usize).collect());

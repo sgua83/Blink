@@ -250,7 +250,7 @@ resize 消费普通 CPU 拥有 dataset 并交回实际存储版本，GPU 数据�
 
 CPU 自包含拥有聚合可同时持有自身 dataset 的 view 和外部 view。移动元数据不迁移物理存储，实际拥有树和选择条件决定来源，不能按候选集合相同猜测两个选择相同。构造期间已产生的 view、返回输出及静态释放函数保持来源到最后真实使用；活动消费者存在时拒绝写入、移动、传输或释放来源。
 
-宿主持久不可变 view 图由原 Views 持有共享子资源；enum／Result 仅绑定真实活动载荷，按 Ty 字节位置编码 CPU 地址或 GPU 页表引用。显式传输不保留另一份 CPU 像素／载荷镜像。持久 dataset 图的 B 构造、应用内 GPU 图、可写 view、一般引用返回及异步／远端借用继续开放。
+宿主持久不可变view图由原Views持有共享子资源；enum／Result只绑定真实活动载荷，按Ty字节位置编码CPU地址或GPU页数组引用。含view的持久dataset可作为read或inout整域参数；CPU／compute／GPU遵守同一规则。inout按原权限更新不含view的普通兄弟字段及其数组分量，原view载荷与来源保持；实际含view字段或整记录不能写入或作为普通write／inout位置借出，compact／排序／append也不能复制view载荷到持久输出。不含view的字段可按既有权限转借给普通函数。write完整根不能构造view图，atomic根及整域按值view仍不开放；只读view元素不获得写权限。本地普通view值及聚合仍可按既有来源规则组合、赋值和返回，不把持久图的写入限制扩大为局部值限制。根和共享子资源继续由原Dataset／GpuStorage.views及最后真实CPU／GPU消费者持有，字段更新不改图、不复制资源、不新增完成或所有权表；BLCO25／BLRI12及view机器布局保持。显式传输不保留另一份CPU载荷镜像。持久dataset图的B构造、应用内GPU图、可写view、一般引用返回及异步／远端借用继续开放。
 
 ## 原生并行与CPU／GPU后端
 

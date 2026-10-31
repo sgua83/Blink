@@ -316,11 +316,11 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
                 "拥有结果属于CPU资源组织，不能成为program的普通存储或uniform",
             );
         }
-        if ty.contains_views() && (!p.ty.dataset || p.access != Access::Read) {
+        if ty.contains_views() && (!p.ty.dataset || !matches!(p.access, Access::Read | Access::InOut)) {
             return d.source.fail(
                 p.span,
                 "B185",
-                "view 只能由 program 的 read dataset 持有，不能写出或作为 program 按值参数绑定",
+                "含view的整域根需要read／inout dataset；write／atomic或uniform不能构造引用图",
             );
         }
         if p.ty.dataset {

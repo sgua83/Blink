@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "86d29a592607b9a10a9c43476e23aa6535a6abe0c29069a98afcc003c1698f3b"
+      "sha256": "54d10645519b743b2c80f0b33c4132ed6b80ba66b38d0bda7ce2ead89e8ee249"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -16,7 +16,7 @@
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
-      "sha256": "9e6771cc61aafcd9e6a344980537575ee151d2b20e3abc40aa3b92bc870719ca"
+      "sha256": "cd3a0bae8b2baef2835f9b94186e464a56626238932624d966670a2dbb29223e"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",

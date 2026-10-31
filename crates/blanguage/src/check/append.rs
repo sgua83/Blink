@@ -95,6 +95,9 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_same(&self.program.buffers[target].ty, &value.ty, args[2].span)?;
+        if value.ty.contains_views() {
+            return self.fail(args[2].span,"B185","append不能写出持久view载荷；原引用图须保持");
+        }
         if self.element_domains.contains(&target) || self.element_domains.contains(&binding) {
             return self.fail(
                 span,

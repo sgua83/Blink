@@ -32,6 +32,9 @@ pub(super) fn compile(
     let (source, read) = data(env, &input, d)?;
     let (flags, flag_word, flags_read) = collective_field(program, env, &args[1], d, Scalar::Bool)?;
     let (target, write) = data(env, &args[2], d)?;
+    if program.buffers[target].ty.contains_views() {
+        return d.source.fail(args[2].span,"B185","compact不能复制持久view载荷；原引用图须保持");
+    }
     let (count, count_word, count_write) =
         collective_field(program, env, &args[3], d, Scalar::U32)?;
     if !matches!(read, Access::Read | Access::InOut)

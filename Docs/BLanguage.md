@@ -1836,7 +1836,7 @@ CLI 同样在所有 dataset 文件之后，按上述展开顺序提供每张 `.b
 
 `view<T>` 是带元素类型与长度的不可变数据引用，可嵌入结构体。例如 `struct Instance { view<Triangle> triangles; view<Normal> normals; float4 tint; };`。`.length` 为 u32；由该引用的长度条件或有界游标证明后可用普通索引读取，外部索引契约仍使用 `unsafe_read(instance.triangles, primitive)`。源程序不能提取地址、把 view 转成数值或写回引用元数据。
 
-计算函数 的含 view 记录只能作为 read dataset，不能作为 write/inout/atomic 或 计算函数 按值参数；CPU／compute／GPU 目标共用这个限制。无写副作用的普通值函数可以按值接收／返回 view 或含 view 的记录，按既有目标规则组合；跨不相容目标仍报 B161。允许局部 view、嵌套只读记录、逐层读取与有界遍历；元数据不可写、数值伪造和可写 view 仍报 B185。可变视图及语言资源泛型尚未实现。
+含view的持久dataset可作为read或inout整域参数；CPU／compute／GPU遵守同一规则。inout按原权限更新不含view的普通兄弟字段及其数组分量，原view载荷与来源保持；实际含view字段或整记录不能写入或作为普通write／inout位置借出，compact／排序／append也不能复制view载荷到持久输出。不含view的字段可按既有权限转借给普通函数。write完整根不能构造view图，atomic根及整域按值view仍不开放；只读view元素不获得写权限。本地普通view值及聚合仍可按既有来源规则组合、赋值和返回，不把持久图的写入限制扩大为局部值限制。根和共享子资源继续由原Dataset／GpuStorage.views及最后真实CPU／GPU消费者持有，字段更新不改图、不复制资源、不新增完成或所有权表；BLCO25／BLRI12及view机器布局保持。无写副作用的普通值函数可以按值接收／返回view或含view记录，按原目标规则组合；不相容目标仍报B161。伪造数值地址或写view载荷报B185；可变view及完整语言资源泛型尚未实现。
 
 宿主用 `Dataset::for_view` 获取元素类型和布局。CPU 用 `Dataset::freeze()?` 交还可跨宿主线程共享的 `blcompute::ReadDataset`，以 `Dataset::with_views(Vec<ViewBinding>)` 绑定父记录；GPU 上传后用 `GpuDataset::freeze()` 交还 Vulkan 的 `ReadDataset`，通过 `Device::upload_with_views` 绑定已有设备数据。两端共用字段、逐记录数量、元素类型和唯一性处理，GPU 另外检查实际设备归属；不以地址字节代替真实资源。父数据持有按所有者身份去重的子引用；CPU 原生范围完成前保持根数据，GPU 提交继续持有根数据到 Fence 完成，子资源随最后一个真实引用释放。嵌套图通过相同不可变引用闭合，不增加宿主每元素回调。
 
