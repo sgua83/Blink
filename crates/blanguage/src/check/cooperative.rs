@@ -207,7 +207,7 @@ impl<'a> Builder<'a> {
                 self.abandon_arguments(&held);
                 return Ok(None);
             }
-            if param.ty.dataset && param.access.writes() && outputs::declared(callee,arguments.len()-1)
+            if param.ty.dataset && (param.access==Access::Write || param.access==Access::InOut && outputs::declared(callee,arguments.len()-1))
                 && let Some(Argument::BorrowedData(data))=arguments.last_mut()
             {
                 self.prepare_data_output(&mut data.data,arg.span)?;

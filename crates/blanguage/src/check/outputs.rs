@@ -577,8 +577,28 @@ impl Builder<'_> {
         data: &mut application::Data,
         span: Span,
     ) -> Result<()> {
-        if data.initialization.is_some(){return Ok(());}
-        let scope = Position::Parameter(self.application_output_scope(), 0);
+        fn materialize(value:&Position,scope:&mut impl FnMut()->Position)->Option<Position>{
+            match value {
+                Position::Initialized=>Some(scope()),
+                Position::Conditional(_,a,b)|Position::Both(a,b)=>{
+                    let left=materialize(a,scope);let right=materialize(b,scope);
+                    if left.is_none()&&right.is_none(){return None;}
+                    let left=left.unwrap_or_else(||a.as_ref().clone());let right=right.unwrap_or_else(||b.as_ref().clone());
+                    Some(match value{Position::Conditional(when,..)=>Position::selected(when.as_ref().clone(),left,right),_=>Position::both(left,right)})
+                },
+                Position::Indexed(choices,index)=>{
+                    let changed=choices.iter().map(|value|materialize(value,scope)).collect::<Vec<_>>();
+                    if changed.iter().all(Option::is_none){return None;}
+                    Some(Position::Indexed(choices.iter().zip(changed).map(|(old,new)|new.unwrap_or_else(||old.clone())).collect(),*index))
+                },
+                _=>None,
+            }
+        }
+        let old=data.initialization.clone().unwrap_or(Position::Initialized);
+        let mut created=None;
+        let initialization=materialize(&old,&mut||created.get_or_insert_with(||Position::Parameter(self.application_output_scope(),0)).clone());
+        let Some(initialization)=initialization else{return Ok(());};
+        let scope=created.unwrap();
         let mut found = false;
         if let Some(place) = &data.place {
             let root = place.owned_positions().unwrap()[0].clone();
@@ -590,8 +610,9 @@ impl Builder<'_> {
                         .initialization
                         .clone()
                         .unwrap_or(Position::Initialized);
+                    let scoped=materialize(&old,&mut||scope.clone()).unwrap_or_else(||old.clone());
                     candidate.initialization =
-                        Some(Position::selected(selected, scope.clone(), old));
+                        Some(Position::selected(selected, scoped, old));
                     self.assign_owned_place(&actual, Returned::Dataset(candidate));
                     found = true;
                 }
@@ -605,7 +626,8 @@ impl Builder<'_> {
                     .collect::<Vec<_>>();
                 for path in paths {
                     let owner = view::data_at_mut(binding, &path).unwrap();
-                    owner.initialization = Some(scope.clone());
+                    let old=owner.initialization.clone().unwrap_or(Position::Initialized);
+                    owner.initialization=Some(materialize(&old,&mut||scope.clone()).unwrap_or(old));
                     found = true;
                 }
             }
@@ -614,7 +636,7 @@ impl Builder<'_> {
             return self.fail(span, "B229", "条件dataset输出没有可交接的原初始化所有者");
         }
         self.initialized.extend(data.ty.components.iter().map(|(_,word)|scope.application_word(None,*word)));
-        data.initialization = Some(scope);
+        data.initialization = Some(initialization);
         Ok(())
     }
     pub(super) fn forget_data_output(&mut self,data:&application::DataReference,span:Span)->Result<()> {

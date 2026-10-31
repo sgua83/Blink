@@ -493,11 +493,23 @@ impl Builder<'_> {
         word: u32,
         initialized: &BTreeSet<Position>,
     ) -> bool {
+        fn complete(builder:&Builder<'_>,scope:&Position,word:u32,length:Option<u32>,initialized:&BTreeSet<Position>,assuming:owned_presence::Presence)->bool{
+            let scope=builder.resolve_owned_initialization(scope,Some(&assuming));
+            let facts=initialized.iter().map(|position|builder.resolve_owned_initialization(position,Some(&assuming))).collect();
+            if scope.application_word(None,word).initialized_by(&facts)
+                ||length.is_some_and(|length|scope.application_prefix_initialized(length,word,&facts)){return true;}
+            match scope {
+                Position::Conditional(when,a,b)=>complete(builder,&a,word,length,initialized,assuming.clone().and(when.as_ref().clone()))
+                    &&complete(builder,&b,word,length,initialized,assuming.and(when.as_ref().clone().not())),
+                Position::Both(a,b)=>complete(builder,&a,word,length,initialized,assuming.clone())
+                    &&complete(builder,&b,word,length,initialized,assuming),
+                Position::Indexed(choices,index)=>choices.iter().enumerate().all(|(element,choice)|complete(builder,choice,word,length,initialized,assuming.clone().and(owned_presence::Presence::Selected(index,element)))),
+                _=>false,
+            }
+        }
         let Some(scope)=&data.initialization else{return true;};
-        let direct=scope.application_word(None,word);if direct.initialized_by(initialized){return true;}
-        let scope=self.resolve_owned_initialization(scope,None);let initialized=initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect();
-        scope.application_word(None,word).initialized_by(&initialized) ||
-            data.length.minimum()==data.length.maximum() && scope.application_prefix_initialized(data.length.minimum(),word,&initialized)
+        let length=(data.length.minimum()==data.length.maximum()).then(||data.length.minimum());
+        complete(self,scope,word,length,initialized,owned_presence::Presence::All)
     }
     pub(super) fn require_application_initialized(&self, data: &Data, span: Span) -> Result<()> {
         if !self.application_initialized(data) {
