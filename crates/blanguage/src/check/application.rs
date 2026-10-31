@@ -1353,22 +1353,6 @@ impl Builder<'_> {
                         "实际存储与调用位置不一致；先显式 upload／download",
                     );
                 }
-                if data
-                    .iter()
-                    .zip(callee.function.params.iter().filter(|p| p.ty.dataset))
-                    .any(|(existing, previous): (&DataReference, &Param)| {
-                        existing.handle.identity() == value.handle.identity()
-                            && (previous.access.writes() || parameter.access.writes())
-                            && !(previous.access == Access::Atomic
-                                && parameter.access == Access::Atomic)
-                    })
-                {
-                    return self.fail(
-                        span,
-                        "B227",
-                        "同一存储的重复参数必须同为 read 或同为 atomic",
-                    );
-                }
                 if parameter.access.reads() {
                     self.require_application_reference_initialized(&value, span)?;
                 }
@@ -1461,6 +1445,7 @@ impl Builder<'_> {
             });
             args.push(arg);
         }
+        self.check_argument_aliases(&params, &args, |_| statement.span)?;
         let name = format!(
             "{}@parallel{}:{:?}",
             self.calls.last().unwrap(),

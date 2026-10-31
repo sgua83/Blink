@@ -264,9 +264,13 @@ impl<'a> Builder<'a> {
                 self.application_handle_available(handle, span)?;
             }
         }
-        for (index, (param, argument)) in callee.function.params.iter().zip(&arguments).enumerate()
+        self.check_argument_aliases(&callee.function.params, &arguments, |index| args[index].span)?;
+        Ok(Some(arguments))
+    }
+    pub(super) fn check_argument_aliases(&self, parameters: &[Param], arguments: &[Argument], span: impl Fn(usize) -> Span) -> Result<()> {
+        for (index, (param, argument)) in parameters.iter().zip(arguments).enumerate()
         {
-            for (other, before) in callee.function.params.iter().zip(&arguments).take(index) {
+            for (other, before) in parameters.iter().zip(arguments).take(index) {
                 if (matches!(param.access, Access::Write | Access::InOut)
                     || matches!(other.access, Access::Write | Access::InOut)
                     || (param.ty.dataset && param.access == Access::Value)
@@ -280,14 +284,14 @@ impl<'a> Builder<'a> {
                     && argument.overlaps(before,&self.env)
                 {
                     return self.fail(
-                        args[index].span,
+                        span(index),
                         "B227",
                         "同一次调用的独占借用不能重叠，也不能与同一存储的只读或原子借用重叠",
                     );
                 }
             }
         }
-        Ok(Some(arguments))
+        Ok(())
     }
     pub(super) fn invoke_instance(
         &mut self,

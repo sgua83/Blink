@@ -1,6 +1,6 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
-use blanguage::ir::{PrefixCount, PrefixRelation, ProgramInterface};
+use blanguage::ir::{PrefixCount, ProgramInterface};
 use std::collections::BTreeMap;
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
@@ -19,9 +19,17 @@ impl DomainStorage for crate::Dataset {
     }
 }
 
+// 运行期引用原物理存储及其中的实际数据字段；IR中的domain仍是逻辑参数索引。
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DomainRelation {
+    pub(crate) domain: usize,
+    pub(crate) offset: u32,
+    pub(crate) bytes: u32,
+    pub(crate) count: PrefixCount,
+}
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
-    pub(crate) domains: Vec<PrefixRelation>,
+    pub(crate) domains: Vec<DomainRelation>,
 }
 impl<D> From<Vec<D>> for DomainBindings<D> {
     fn from(datasets: Vec<D>) -> Self {
@@ -44,8 +52,10 @@ impl<D> DomainBindings<D> {
         let offset = self.datasets.len();
         self.datasets.extend(other.datasets);
         self.domains
-            .extend(other.domains.into_iter().map(|r| PrefixRelation {
+            .extend(other.domains.into_iter().map(|r| DomainRelation {
                 domain: r.domain + offset,
+                offset: r.offset,
+                bytes: r.bytes,
                 count: PrefixCount {
                     binding: r.count.binding + offset,
                     word: r.count.word,
@@ -112,8 +122,10 @@ impl<D> DomainBindings<D> {
             let (domain_part, domain) = positions[r.domain];
             let (count_part, binding) = positions[r.count.binding];
             if domain_part == count_part {
-                parts[domain_part].domains.push(PrefixRelation {
+                parts[domain_part].domains.push(DomainRelation {
                     domain,
+                    offset: r.offset,
+                    bytes: r.bytes,
                     count: PrefixCount {
                         binding,
                         word: r.count.word,
@@ -153,8 +165,10 @@ impl<D> DomainBindings<D> {
         for relation in &self.domains {
             for &domain in &positions[relation.domain] {
                 for &binding in &positions[relation.count.binding] {
-                    domains.push(PrefixRelation {
+                    domains.push(DomainRelation {
                         domain,
+                        offset: relation.offset,
+                        bytes: relation.bytes,
                         count: PrefixCount {
                             binding,
                             word: relation.count.word,
@@ -204,6 +218,8 @@ impl<D> DomainBindings<D> {
         for relation in program.prefix_requirements() {
             if !self.domains.iter().any(|known| {
                 same(known.domain, binding(relation.domain).0)
+                    && known.offset == binding(relation.domain).1
+                    && known.bytes == program.buffers()[relation.domain].ty.size
                     && u64::from(known.count.word) == u64::from(relation.count.word) + u64::from(binding(relation.count.binding).1)
                     && same(known.count.binding, binding(relation.count.binding).0)
             }) {
@@ -235,8 +251,10 @@ impl<D> DomainBindings<D> {
                 })
         });
         self.domains
-            .extend(program.prefix_guarantees().iter().map(|r| PrefixRelation {
+            .extend(program.prefix_guarantees().iter().map(|r| DomainRelation {
                 domain: binding(r.domain).0,
+                offset: binding(r.domain).1,
+                bytes: program.buffers()[r.domain].ty.size,
                 count: PrefixCount {
                     binding: binding(r.count.binding).0,
                     word: r.count.word + binding(r.count.binding).1,

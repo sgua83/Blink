@@ -4,9 +4,10 @@ use crate::{
     cpu::{CpuDataset, CpuTemplate},
     error, vulkan,
 };
+use crate::bindings::DomainRelation;
 use blanguage::{
     TemplateProgram,
-    ir::{ExecutionPlan, PrefixCount, PrefixRelation, Ty},
+    ir::{ExecutionPlan, PrefixCount, Ty},
 };
 
 mod abi;
@@ -218,16 +219,16 @@ impl Frame {
         for (logical, binding) in bindings.iter().enumerate() {
             let handle = binding.handle;
             let slot = if let Some(slot) = selected.iter().position(|&h| h == handle) {
-                let first = order.iter().position(|&(i, _)| i == slot).unwrap();
                 use blanguage::ast::Access::{Atomic, Read};
-                if !matches!(
-                    (
-                        layout.buffers()[first].access,
-                        layout.buffers()[logical].access
-                    ),
-                    (Read, Read) | (Atomic, Atomic)
-                ) {
-                    return Err(error("同一存储的重复参数必须同为 read 或同为 atomic"));
+                let current = &layout.buffers()[logical];
+                for (before, previous) in bindings[..logical].iter().zip(layout.buffers()) {
+                    if before.handle == handle
+                        && u64::from(before.offset) < u64::from(binding.offset) + u64::from(current.ty.size)
+                        && u64::from(binding.offset) < u64::from(before.offset) + u64::from(previous.ty.size)
+                        && !matches!((previous.access, current.access), (Read, Read) | (Atomic, Atomic))
+                    {
+                        return Err(error("同一存储重叠区域的重复参数必须同为 read 或同为 atomic"));
+                    }
                 }
                 slot
             } else {
@@ -241,8 +242,10 @@ impl Frame {
             .domains
             .iter()
             .filter_map(|r| {
-                Some(PrefixRelation {
+                Some(DomainRelation {
                     domain: selected.iter().position(|&h| h as usize == r.domain)?,
+                    offset: r.offset,
+                    bytes: r.bytes,
                     count: PrefixCount {
                         binding: selected
                             .iter()
@@ -307,8 +310,10 @@ impl Frame {
         });
         self.data
             .domains
-            .extend(domains.into_iter().map(|r| PrefixRelation {
+            .extend(domains.into_iter().map(|r| DomainRelation {
                 domain: selected[r.domain] as usize,
+                offset: r.offset,
+                bytes: r.bytes,
                 count: PrefixCount {
                     binding: selected[r.count.binding] as usize,
                     word: r.count.word,
