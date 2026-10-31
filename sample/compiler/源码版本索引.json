@@ -12,7 +12,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "337562662fd441cd4f59a644c71f82babf3f267c4b0a8dbd409264646f8d5eb9"
+      "sha256": "a2549a09a101ae10357588ed3cc1707656ba11ab5ed3804ae1e3391e494b3d12"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",

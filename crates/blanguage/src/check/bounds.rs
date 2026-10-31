@@ -3265,15 +3265,23 @@ impl Builder<'_> {
             false,
         )
     }
-    pub(super) fn invalidate_application_contents(&mut self, identity: ValueIdentity) {
+    pub(super) fn invalidate_application_contents(&mut self, data: &application::DataReference) {
+        let changed = data.words();
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
             };
-            if matches!(owner.storage(), Place::ApplicationElement { identity: source, .. } if *source == identity)
-            {
-                *proof = Proof::default();
-                *uniform = false;
+            let Place::ApplicationElement { sources, words, .. } = owner.storage() else {
+                continue;
+            };
+            if sources.iter().any(|source| data.sources.contains(source)) {
+                let components = words.iter().enumerate()
+                    .filter_map(|(i, word)| changed.contains(word).then_some(i))
+                    .collect::<Vec<_>>();
+                if !components.is_empty() {
+                    proof.forget_value(&components, owner.ty().components.len());
+                    *uniform = false;
+                }
             }
         }
     }

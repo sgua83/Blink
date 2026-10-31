@@ -1326,11 +1326,6 @@ impl Builder<'_> {
                         if target != Target::Cpu || !matches!(parameter.access, Access::Read | Access::Write | Access::InOut) {
                             self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
                         }
-                        if parameter.access.writes() {
-                            for source in &reference.sources {
-                                self.invalidate_application_contents(*source);
-                            }
-                        }
                         reference
                     }
                     Argument::Scoped { value:returns::Returned::Dataset(data), owner } => {
@@ -1374,7 +1369,7 @@ impl Builder<'_> {
                 return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
             }
             if buffer.access.writes() {
-                self.invalidate_application_contents(value.handle.identity());
+                self.invalidate_application_contents(value);
             }
         }
         for (value, uniform) in uniforms.iter().zip(&interface.uniforms) {

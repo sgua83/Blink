@@ -397,7 +397,7 @@ impl Builder<'_> {
                     if p.access==Access::Write||p.access==Access::InOut&&outputs::declared(d,index){
                         written_data.push((index,reference.clone()));
                     }
-                    if p.access.writes(){for source in &reference.sources{self.invalidate_application_contents(*source);}}
+                    if p.access.writes(){self.invalidate_application_contents(&reference);}
                     let value=self.application_reference_value(&reference);
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
