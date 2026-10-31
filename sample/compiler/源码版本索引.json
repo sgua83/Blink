@@ -8,11 +8,11 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "13fc856c78253eb6d446275c7235e33f91a06de2dd904f25daf71c5dfc5bcbec"
+      "sha256": "f8864c97ddd26662ace6e66077a62d5b432b8756d3af3bc1db97296bd9b7d361"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "a2549a09a101ae10357588ed3cc1707656ba11ab5ed3804ae1e3391e494b3d12"
+      "sha256": "c1f54ad319ea4065397d2f7b55e25ab38c3ebf6676ef7abdce66a59f4b29df93"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",

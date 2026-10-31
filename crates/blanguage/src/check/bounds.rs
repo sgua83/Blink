@@ -3409,7 +3409,11 @@ impl crate::module::codec::Encode for Proof {
         self.ranges.encode(w);
         self.nonzero.encode(w);
         self.domains.encode(w);
-        self.views.encode(w);
+        // 缺失分量与原读取规则的空借用相同；容器尾部空槽不属于合同身份。
+        let width = self.views.iter()
+            .rposition(|borrow| !borrow.sources.is_empty())
+            .map_or(0, |index| index + 1);
+        self.views[..width].encode(w);
     }
 }
 impl crate::module::codec::Decode for Proof {

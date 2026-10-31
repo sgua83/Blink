@@ -442,7 +442,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         let name = read_string(&mut c)?;
         let size = read_word(&mut c)? as usize;
         let at = c.position() as usize;
-        bindings.insert(name, slice(meta, at, size)?.to_vec());
+        bindings.insert(name, crate::check::canonical_function_contract(slice(meta, at, size)?)?);
         c.set_position((at + size) as u64);
     }
     let archive = raw.iter().find(|s| s.0 == ARCHIVE).map(|s| Archive {

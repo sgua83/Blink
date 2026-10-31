@@ -4267,3 +4267,13 @@ crate::module::codec::record!(Value {
 });
 crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount)});
+
+
+// 已编译符号的空合同表示没有B函数合同；非空合同由原所有者交接规范身份。
+pub(crate) fn canonical_function_contract(bytes: &[u8]) -> crate::module::codec::Result<Vec<u8>> {
+    use crate::module::codec::{Decode, Encode};
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(native_function::Contract::from_bytes(bytes)?.bytes())
+}
