@@ -106,11 +106,7 @@ impl Emitter<'_> {
         self.bytes(&[0x4c, 0x8d, 0x14, 0x84]);
     }
     fn private_stream(&self, slot: PrivateSlot) -> u32 {
-        self.tile_storage_base()
-            + self.stage.tile_data_bytes() as u32
-            + self.stage.tile_private_slots().range(..slot)
-                .map(|slot| self.stage.private_scalar(*slot).size().div_ceil(4) * 4).sum::<u32>()
-                * self.stage.workgroup_width()
+        self.frame.tile_private[&slot]
     }
     fn tile_restore(&mut self, slots: &std::collections::BTreeSet<PrivateSlot>) {
         self.tile_lane_pointer();

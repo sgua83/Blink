@@ -151,10 +151,6 @@ impl Stage {
             }
         }
     }
-    pub(crate) fn tile_private_bytes(&self) -> u64 {
-        self.tile_private_slots().into_iter().map(|slot| u64::from(self.private_scalar(slot).size().div_ceil(4) * 4)).sum::<u64>()
-            * u64::from(self.workgroup_width())
-    }
     fn tile_layout(&self) -> BTreeMap<SharedWord, usize> {
         fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>, groups: &mut Vec<Vec<SharedWord>>) {
             for inst in code {

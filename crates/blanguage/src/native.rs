@@ -654,26 +654,26 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         (plan, allocation)
     });
     drop(graph);
-    let frame_layout = Frame::new(
+    let mut frame_layout = Frame::new(
         &allocation,
         packet.as_ref().map(|(_, allocation)| allocation),
     );
-    let bytes = frame_layout.end
-        + if packet.is_some() && stage.selection.is_some() {
-            16
-        } else {
-            0
+    let mut tile_bytes = 0;
+    if stage.has_tile_scope() {
+        tile_bytes = 4 + stage.tile_data_bytes();
+        if stage.has_tile_steps() {
+            tile_bytes += 4;
+            // 本次 CPU 栈帧拥有私有流的唯一字节布局；保存／恢复不再重建阶段活跃图。
+            for slot in stage.tile_private_slots() {
+                frame_layout.tile_private.insert(slot, (frame_layout.end + tile_bytes) as u32);
+                tile_bytes += u64::from(stage.private_scalar(slot).size().div_ceil(4) * 4)
+                    * u64::from(stage.workgroup_width());
+            }
         }
-        + if stage.has_tile_scope() {
-            4 + stage.tile_data_bytes()
-                + if stage.has_tile_steps() {
-                    4 + stage.tile_private_bytes()
-                } else {
-                    0
-                }
-        } else {
-            0
-        };
+    }
+    let bytes = frame_layout.end
+        + if packet.is_some() && stage.selection.is_some() { 16 } else { 0 }
+        + tile_bytes;
     let frame = i32::try_from(bytes.div_ceil(16) * 16)
         .map_err(|_| "原生 tile 栈帧超过 x64 范围函数 ABI")? as u32;
     let mut e = Emitter {
