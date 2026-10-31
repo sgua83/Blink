@@ -10,7 +10,7 @@
 
 本书从向量开始。先用能手算的数字解释坐标和变换，再进入相机、裁剪、场景树和几何资产；随后沿真实命中进入材质、阴影、反射、折射与介质，最后回到 GPU 执行、资源寿命和窗口。读者可以依照这个顺序学习，也可以通过目录和源码索引回到某个具体函数。
 
-本版按修订时已提交的 **BLEngine P4 CL13541** 与 **Blink P4 CL13553** 阅读和运行当前实现。源码修订、SHA256 与重新取得的节选行号在 `engine/源码版本索引.json`；示例采用当前返回类型函数定义和正式执行接口。数学推导用于解释，代码框标明实际源码位置，运行记录来自本轮 Release 产物。
+本文沿当前BLEngine和Blink源码的真实职责阅读；节选的现行文件及行号见engine/源码版本索引.json。该索引只对应现行源码，不把旧运行结果作为当前产品验证。
 
 Blink 语言简称 B 语言，B 也寓意 Base。开源项目地址为 https://github.com/sgua83/Blink 。Blink 拥有语言、编译器与通用 CPU/GPU 执行框架；BLEngine 在其上实现引擎。当前 BLEngine 源码由独立 P4 工程管理，尚未随 Blink 仓库完整公开；本仓库提供书稿、获准摘录的源码和阅读场景，不能把下载 Blink 等同于取得完整引擎。
 
@@ -32,12 +32,12 @@ Blink 语言简称 B 语言，B 也寓意 Base。开源项目地址为 https://g
 
 ### 1.2 点积：判断两个方向有多接近
 
-源码：`src/math.rs:16`。
+源码节选：`src/math.rs:16`。
 
 ```rust
-pub fn dot(self, b: Self) -> f32 {
-    self.x * b.x + self.y * b.y + self.z * b.z
-}
+    pub fn dot(self, b: Self) -> f32 {
+        self.x * b.x + self.y * b.y + self.z * b.z
+    }
 ```
 
 取 `a=(1,0,0)`，`b=(0,1,0)`，点积为零，两方向垂直；取 `b=(1,0,0)`，点积为一，两方向相同；取 `b=(-1,0,0)`，结果为负，两方向相反。
@@ -46,16 +46,16 @@ pub fn dot(self, b: Self) -> f32 {
 
 ### 1.3 叉积：由一张平面找出垂直方向
 
-源码：`src/math.rs:19`。
+源码节选：`src/math.rs:19`。
 
 ```rust
-pub fn cross(self, b: Self) -> Self {
-    Self::new(
-        self.y * b.z - self.z * b.y,
-        self.z * b.x - self.x * b.z,
-        self.x * b.y - self.y * b.x,
-    )
-}
+    pub fn cross(self, b: Self) -> Self {
+        Self::new(
+            self.y * b.z - self.z * b.y,
+            self.z * b.x - self.x * b.z,
+            self.x * b.y - self.y * b.x,
+        )
+    }
 ```
 
 三角形有三点 `a=(0,0,0)`、`b=(2,0,0)`、`c=(0,1,0)`。两条边为 `b-a` 和 `c-a`，叉积是 `(0,0,2)`。它垂直于三角形，长度是平行四边形面积二；三角形面积因此是一。
@@ -123,7 +123,7 @@ z' = m20*x + m21*y + m22*z + tz
 
 `Programs/math/transform.b` 给出了很短的组合函数：
 
-源码：`Programs/math/transform.b:4`。
+源码节选：`Programs/math/transform.b:4`。
 
 ```b
 T compose<T: BLSquareMatrix>(T first, T second) { return second * first; }
@@ -135,7 +135,7 @@ T compose<T: BLSquareMatrix>(T first, T second) { return second * first; }
 
 ### 2.4 点的 w 是一，方向的 w 是零
 
-源码：`Programs/math/transform.b:7`。
+源码节选：`Programs/math/transform.b:7`。
 
 ```b
 float3 transform_point(float4x4 world_from_local, float3 position) {
@@ -154,7 +154,7 @@ float3 transform_point(float4x4 world_from_local, float3 position) {
 
 把法线的 x 分量反而缩小为一半，得到 `(.5,-1,0)`，与 `(2,1,0)` 点积仍为零。这正是逆矩阵再转置的效果。
 
-源码：`Programs/math/transform.b:20`。
+源码节选：`Programs/math/transform.b:20`。
 
 ```b
 float3 transform_normal(float3x3 world_from_local, float3 normal) {
@@ -164,7 +164,7 @@ float3 transform_normal(float3x3 world_from_local, float3 normal) {
 
 实际网格命中已经携带 `world_to_object`，它就是世界矩阵的逆。`Programs/geometry/normals.b` 直接转置其线性部分，避免另算并保存第二份法线矩阵。
 
-源码：`Programs/geometry/normals.b:2`。
+源码节选：`Programs/geometry/normals.b:2`。
 
 ```b
 float3x3 mesh_normal_basis(float3x4 world_to_object) on compute {
@@ -198,7 +198,7 @@ float3x3 mesh_normal_basis(float3x4 world_to_object) on compute {
 
 `stella.surface::surface_uv` 的实现与这个算式完全一致：
 
-源码：`Programs/stella/surface.b:17`。
+源码节选：`Programs/stella/surface.b:17`。
 
 ```b
 float2 surface_uv(BLShadingInstance instance, u32 primitive, float2 barycentric) on compute {
@@ -223,7 +223,7 @@ float2 surface_uv(BLShadingInstance instance, u32 primitive, float2 barycentric)
 
 相机有眼睛位置 `eye`、观察目标 `target` 和一个参考向上方向 `up`。先求 `forward=normalize(target-eye)`，再用叉积求 `right`，最后重新构造与前二者垂直的 `up`。
 
-源码：`Programs/scene/camera.b:3`。
+源码节选：`Programs/scene/camera.b:3`。
 
 ```b
 BLCamera camera_basis(float3 eye, float3 target, float3 up, f32 span, u32 projection, f32 near, f32 far, u32 medium) on compute {
@@ -241,7 +241,7 @@ BLCamera camera_basis(float3 eye, float3 target, float3 up, f32 span, u32 projec
 
 图像的左上角是像素 `(0,0)`，三维相机的“上”却通常取正方向。`stella.visibility::pixel_ray` 在像素中心取样，横向映射到 `[-1,1]`，纵向反过来映射到 `[1,-1]`；横向还乘宽高比，防止宽屏把物体压扁。
 
-源码：`Programs/stella/visibility.b:6`。
+源码节选：`Programs/stella/visibility.b:6`。
 
 ```b
 BLRay pixel_ray<const W:u32,const H:u32,const S:u32>(read dataset<BLCamera> cameras,u32 pixel,u32 layer) on compute {
@@ -255,7 +255,7 @@ BLRay pixel_ray<const W:u32,const H:u32,const S:u32>(read dataset<BLCamera> came
 
 ### 4.3 透视与正交只差一处，却产生两种空间感觉
 
-源码：`Programs/scene/camera.b:8`。
+源码节选：`Programs/scene/camera.b:8`。
 
 ```b
 BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
@@ -290,7 +290,7 @@ BLRay camera_ray(BLCamera camera, float2 ndc) on compute {
 
 `src/window.rs` 的 `BLNavigation` 保存导航的 yaw、pitch、distance。方向键和滚轮改变这些输入；`src/viewer.rs` 每次绘制把它们交给 `BLCameraPrograms::orbit`。Rust 收集输入，B 计算相机，不在窗口消息中重新实现三维数学。
 
-源码：`Programs/scene/camera.b:18`。
+源码节选：`Programs/scene/camera.b:18`。
 
 ```b
 void orbit(write dataset<BLCamera,1> cameras,
@@ -352,7 +352,7 @@ p(t) = origin + t * direction
 
 网格查询的核心可从更短的通用入口看清：
 
-源码：`Programs/scene/query.b:2`。
+源码节选：`Programs/scene/query.b:2`。
 
 ```b
 BLMeshHit mesh_intersect(BLMeshRay ray,read dataset<BLInstance> instances,read acceleration scene,u32 base) on gpu {
@@ -396,7 +396,7 @@ BLEngine 可以给独立 overlay 空间使用另一台相机和另一份顶层�
 
 ### 7.2 世界矩阵怎样算
 
-源码：`Programs/scene/hierarchy.b:9`。
+源码节选：`Programs/scene/hierarchy.b:9`。
 
 ```b
 void resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform> worlds) on compute {
@@ -438,7 +438,7 @@ void resolve(read dataset<BLHierarchyNode> nodes,write dataset<BLWorldTransform>
 
 场景保存的是本地节点组件，不再额外保存一份可独立修改的世界相机和世界灯光。`BLScenePrograms::evaluate` 把源数据打包交给 `scene.components::evaluate`：先求世界矩阵，再分别变换相机和灯。
 
-源码：`Programs/scene/components.b:29`。
+源码节选：`Programs/scene/components.b:29`。
 
 ```b
 void evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
@@ -462,7 +462,7 @@ void evaluate(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform
 
 普通 `placements/evaluate` 入口在原生 CPU B 中求值，把最终矩阵交给实例构建。`place_hierarchy_device` 则上传源节点，让 GPU B 求世界矩阵，再按真实可绘节点 gather 到设备实例记录。
 
-源码：`Programs/scene/device.b:9`。
+源码节选：`Programs/scene/device.b:9`。
 
 ```b
 void prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform> worlds,
@@ -487,21 +487,21 @@ void prepare(read dataset<BLHierarchyNode> nodes,inout dataset<BLWorldTransform>
 局部节选，外围未列出：`src/geometry.rs:137`。
 
 ```rust
-let key = (pi, ti, ni);
-let index = if let Some(index) = lookup.get(&key) {
-    *index
-} else {
-    let normal = ni
-        .map(|i| normals[i])
-        .ok_or_else(|| error("正式几何输入必须包含生成器法线"))?;
-    let uv = ti.map(|i| uvs[i]);
-    let index = u32::try_from(vertices.len())?;
-    vertices.push(BLVertex {
-        position: positions[pi],
-        normal,
-        uv,
-    });
-    lookup.insert(key, index);
+                        let key = (pi, ti, ni);
+                        let index = if let Some(index) = lookup.get(&key) {
+                            *index
+                        } else {
+                            let normal = ni
+                                .map(|i| normals[i])
+                                .ok_or_else(|| error("正式几何输入必须包含生成器法线"))?;
+                            let uv = ti.map(|i| uvs[i]);
+                            let index = u32::try_from(vertices.len())?;
+                            vertices.push(BLVertex {
+                                position: positions[pi],
+                                normal,
+                                uv,
+                            });
+                            lookup.insert(key, index);
 ```
 
 输入必须提供正式三角化和法线。当前读取器不自动剖分任意多边形，不凭空生成缺失法线，不读取 MTL 来推测完整材质。文件转换保留原精度几何，坐标单位换算放在实例矩阵中。
@@ -551,7 +551,7 @@ BLGpuScene 把原位置、索引与实例变换交给 Blink 的原生 AS 接口�
 
 查询身份记录 BLInstance 与着色记录分开。当前 `BLShadingInstance` 保存真实属性 view、tint、几何／属性来源身份，以及网格光使用的位置与索引：
 
-源码：`Programs/render/instance.h:1`。
+源码节选：`Programs/render/instance.h:1`。
 
 ```b
 module render.instance;
@@ -614,13 +614,13 @@ ground floor
 
 `stella.surface::surface_at` 先从实例取得三角形和材质组，再通过实例槽位表取得 surface。需要纹理坐标时，用重心插值原 UV；随后执行 `uv*scale+offset`，采样颜色，再乘实例 tint。
 
-局部节选，外围未列出：`Programs/stella/surface.b:38`。
+局部节选，外围未列出：`Programs/stella/surface.b:43`。
 
 ```b
-BLSurface surface=unsafe_read(surfaces,material);
-float2 uv=surface_coordinates(hit,surface,instances);
-float3 color=(texture_sample(unsafe_read(textures,surface.texture),uv,surface.lod).xyz*surface.color_scale+surface.color_bias)*tint;
-f32 roughness=surface.roughness;
+    BLSurface surface=unsafe_read(surfaces,material);
+    float2 uv=surface_coordinates(hit,surface,instances);
+    float3 color=(texture_sample(unsafe_read(textures,surface.texture),uv,surface.lod).xyz*surface.color_scale+surface.color_bias)*tint;
+    f32 roughness=surface.roughness;
 ```
 
 `uses_uv` 不是用来掩盖错误资产，而是表示该材质是否真的消费 UV。纹理材质缺失原 UV，资产入口应报告；常量色材质没有这个需求，不必为了凑字段制造无用数据。
@@ -631,7 +631,7 @@ f32 roughness=surface.roughness;
 
 `material.maps::normal_map` 用三角形边和 UV 边求出切线方向，把它与法线正交化，处理 UV 镜像朝向，再组合纹理方向。随后 `surface_at` 用实际命中的逆转置基变到世界空间。
 
-源码：`Programs/material/maps.b:8`。
+源码节选：`Programs/material/maps.b:8`。
 
 ```b
 float3 normal_map(float3 normal,float3 edge_u,float3 edge_v,float2 uv_u,float2 uv_v,float3 encoded,f32 strength) on compute {
@@ -654,16 +654,20 @@ float3 normal_map(float3 normal,float3 edge_u,float3 edge_v,float2 uv_u,float2 u
 
 `material.microfacet::microfacet_distribution` 实现 GGX 分布，当前 `alpha=roughness²`，分布使用 `a2=alpha²`。不要把粗糙度、alpha 和 a2 当成同一个参数。
 
-源码：`Programs/material/microfacet.b:2`。
+源码节选：`Programs/material/microfacet.b:2`。
 
 ```b
 f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute {
     f32 nh=max(dot(normal,half_vector),0.0);
     float3 tangent=cross(normal,half_vector);
     f32 denominator=dot(tangent,tangent)+a2*nh*nh;
-    return a2/(3.14159265359*denominator*denominator);
+    // Divide before the second denominator factor: its square may underflow
+    // even when the distribution itself is representable.
+    return (a2/denominator)/(3.14159265359*denominator);
 }
 ```
+
+实现先除一次denominator，再除另一因子，避免中间平方先下溢而使可表示结果失真；这是计算次序安排，没有把分母钳成经验阈值。
 
 完整不透明响应还包含 Fresnel 和 Smith 遮蔽项，位于 `material.surface::surface_response`。这些量分别描述界面反射比例、微表面朝向分布和微表面彼此挡住的影响。只保留一个“高光幂次”无法说明当前源码。
 
@@ -681,11 +685,11 @@ f32 microfacet_distribution(float3 normal,float3 half_vector,f32 a2) on compute 
 
 面光的世界位置加上 `[-1,1]` 范围的两条半边得到采样点。若两半边长度各为一且垂直，完整面积是四，不是一。源码中 `area_pdf` 的系数四来自这个定义：
 
-源码：`Programs/lighting/lights.b:37`。
+源码节选：`Programs/lighting/lights.b:40`。
 
 ```b
-density=area_pdf(light,direction,distance_squared);
-if (density==0.0) { return BLLightSample(direction,float3(0.0),target,true,false,0.0,0); }
+        density=area_pdf(light,direction,distance_squared);
+        if (density==0.0) { return BLLightSample(direction,float3(0.0),target,true,false,0.0,0); }
 ```
 
 `distance_squared/projected_area` 把按面积选点的概率换成按观察方向立体角计算的密度。距离越远，同一块灯占据的角度越小，这个密度就越大。
@@ -698,15 +702,15 @@ if (density==0.0) { return BLLightSample(direction,float3(0.0),target,true,false
 
 `stella.lighting::light_occluded` 对局部灯把最大距离限制到真实目标；`stella.visibility::occluded` 检查可选地面、其他解析面光与网格 `trace_any`。阴影只需回答有没有遮挡，通常不必拿回最近三角形的全部属性。
 
-源码：`Programs/stella/lighting.b:80`。
+源码节选：`Programs/stella/lighting.b:80`。
 
 ```b
 bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLightSample sample,f32 near,f32 far,
-    float3 origin,bool floor_present,f32 ground_z,u32 target_light,u32 area_root) on gpu {
+    float3 origin,bool floor_present,f32 ground_z,u32 target_light,view<BLAreaNode> areas) on gpu {
     f32 maximum=far;
     if(sample.local){maximum=min(maximum,length(sample.target-origin));}
     return occluded(scene,lights,BLRay(origin,sample.direction),near,maximum,
-        floor_present,ground_z,target_light,sample.local && sample.event==1,area_root);
+        floor_present,ground_z,target_light,sample.local && sample.event==1,areas);
 }
 ```
 
@@ -730,7 +734,7 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 ### 13.2 随机数从像素和维度得到
 
-源码：`Programs/sampling/random.b:17`。
+源码节选：`Programs/sampling/random.b:17`。
 
 ```b
     BLRandomStream stream=sample_stream(address,dimension);
@@ -753,7 +757,7 @@ bool light_occluded(read dataset<BLLight> lights,read acceleration scene,BLLight
 
 直接选灯容易找到小灯；按材质选方向容易找到窄反射。只用一种方法，某些场景会很难采到关键贡献。MIS 把两种方法按各自概率密度加权，避免对同一类路径重复计算完整能量。
 
-源码：`Programs/sampling/mis.b:2`。
+源码节选：`Programs/sampling/mis.b:2`。
 
 ```b
 f32 power_weight(f32 sampled_density,f32 other_density) on compute {
@@ -788,7 +792,7 @@ f32 power_weight(f32 sampled_density,f32 other_density) on compute {
 
 两介质相对折射率在当前实现中记为 `eta=目标IOR/当前IOR`。Snell 定律给出透射正弦为入射正弦除以 eta；若平方后大于或等于一，就没有可行的折射方向，产生全反射。
 
-源码：`Programs/material/dielectric.b:11`。
+源码节选：`Programs/material/dielectric.b:11`。
 
 ```b
 BLDielectricBoundary dielectric_boundary(float3 normal,float3 outgoing,f32 eta) on compute {
@@ -817,7 +821,7 @@ surface clear dielectric 0 0 vacuum glass 0 1 1 0 0
 
 `stella.surface::surface_at` 用真实几何法线判断当前处在边界哪侧，再交付目标介质；`surface_medium` 只有在路径穿过几何边界时切换编号：
 
-源码：`Programs/stella/surface.b:103`。
+源码节选：`Programs/stella/surface.b:113`。
 
 ```b
 u32 surface_medium(BLStellaSurface surface,float3 direction) on compute {
@@ -844,7 +848,7 @@ u32 surface_medium(BLStellaSurface surface,float3 direction) on compute {
 
 若纯吸收系数为 `.5`，走一单位透过约 `.607`，走两单位约 `.368`。这自然产生厚处更深、薄处更透的区别；固定乘一个表面颜色做不到这一点。
 
-源码：`Programs/material/medium.b:7`。
+源码节选：`Programs/material/medium.b:7`。
 
 ```b
 float3 medium_transmittance(BLMedium medium,f32 distance,bool infinite) on compute {
@@ -862,7 +866,7 @@ float3 medium_transmittance(BLMedium medium,f32 distance,bool infinite) on compu
 
 `material.medium::medium_sample` 以 RGB 消光的均匀混合提出距离：选一个通道，计算 `s=-log(1-u)/rate`。若发生散射，权重为 `Tr*sigma_s/PDF`；否则用生存概率补偿到达表面的权重。纯吸收没有必要随机造一次碰撞，直接计算确定性透过率。
 
-源码：`Programs/stella/volume.b:2`。
+源码节选：`Programs/stella/volume.b:2`。
 
 ```b
 BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,float2 random,bool overlay) on compute {
@@ -905,39 +909,15 @@ BLStellaSegment sample_segment(BLStellaHit geometry,BLRay ray,BLMedium medium,fl
 
 `Programs/stella/transport.b::integrate` 为每个内部像素建立主命中与采样地址，再由 path_radiance 累计路径贡献。当前主循环按真实事件和俄罗斯轮盘推进，下面保留初始化及循环主干：
 
-局部节选，外围未列出：`Programs/stella/transport.b:35`。
+局部节选，外围未列出：`Programs/stella/transport.b:67`。
 
 ```b
-float3 radiance=float3(0.0);
-f32 initial_ior=unsafe_read(media,initial.medium).ior;
-u32 vertex=0;
-bool illuminate=true;
-bool primary=true;
-while(illuminate){
-    float3 contribution=path.throughput*hit_radiance<N,G>(path,instances,surfaces,lights,distribution,candidates,cells,directions,guiding_cells,media,
-        scene,overlay_scene,textures,environment,emitters,mesh_lights,mesh_domains,settings,floor_present,ground_z,ground,overlay_start,address,
-        primary,fill && primary,sampling);
-    if(primary){radiance=contribution;}else{radiance+=contribution;}
-    primary=false;
-    illuminate=path.active;
-    if(path.active){
-        if(vertex>=roulette_start){
-            f32 relative_ior=unsafe_read(media,path.medium).ior/initial_ior;
-            f32 probability=path_survival(path.throughput,relative_ior,maximum_survival);
-            if(sample_unit3(address,5).x>=probability){return radiance;}
-            path.throughput/=probability;
-        }
-        path=scatter_hit<N,G>(path,instances,surfaces,directions,guiding_cells,settings,media,textures,ground,address);
-        illuminate=path.active;
-        if(path.active){
-            address=sample_address(sample_round,path.path,vertex+1);
-            path.light_density=environment_scatter_pdf(environment,settings,path.direction,path.light_density);
-            path=traverse_path(path,settings,lights,media,scene,overlay_scene,
-                floor_present,ground_z,overlay_start,address);
-        }
+    BLTransportState state=transport_begin(initial,initial_address,unsafe_read(media,initial.medium).ior);
+    while(state.active){
+        state=transport_step<N,G>(state,instances,surfaces,lights,distribution,candidates,cells,directions,guiding_cells,settings,media,
+            environment,emitters,mesh_lights,mesh_domains,scene,overlay_scene,textures,floor_present,ground_z,ground,overlay_start,
+            sample_round,roulette_start,maximum_survival,sampling,fill,include_initial_emission);
     }
-    vertex+=1;
-}
 ```
 
 `scatter_hit` 根据事件选择表面散射或体散射；`traverse_path` 查询下一次最近命中，并比较介质自由程；`hit_radiance` 处理环境、可见面光、体事件和普通表面照明。每一层的工作都有明确输入，而不是由一个巨大函数隐式保存全世界状态。
@@ -963,12 +943,12 @@ while(illuminate){
 程序体节选：`Programs/render/frame.b:26`。
 
 ```b
-radiance<N,W,H,S,DC,IC,Start,V,Shared,G>(pixels,display,instances,overlays,surfaces,cameras,lights,lighting,media,visible,distribution,candidates,candidate_round,cells,directions,guiding_cells,environment,emitters,mesh_lights,mesh_domains,
-    scene,overlay_scene,textures,flags,ground_z,ground,overlay_start,seed,sample_low,sample_high,direct_samples,mesh_samples,maximum_survival);
-resolve<W,H,S,DC,IC>(pixels,display,overlays);
+    radiance<N,W,H,S,DC,IC,Start,V,Shared,G>(pixels,display,instances,overlays,surfaces,cameras,lights,lighting,media,visible,distribution,candidates,candidate_round,cells,directions,guiding_cells,environment,emitters,mesh_lights,mesh_domains,
+        parameters,scene,overlay_scene,textures);
+    resolve<W,H,S,DC,IC>(pixels,display,overlays);
 ```
 
-第一段 `integrate` 为内部图像计算线性辐亮度，包含可见性、材质、直接光、后续输运和屏幕矩形合成；第二段 `resolve` 把内部图像变成显示图像。这是当前两段设备程序的组织，不是说引擎只有两件事情。
+第一段由radiance组织integrate，计算可见性、材质、直接光与后续输运的线性辐亮度；resolve消费内部图像和叠加输入，合成为显示图像。这是当前两段设备程序的组织，不是说引擎只有两件事情。
 
 数学意义上的求交、着色、散射等阶段，在第一段工作项内部通过函数和循环完成。它们没有必要各保存一张跨全屏中间图。源码章节的逻辑层次与 GPU dispatch 的数量应当分开理解。
 
@@ -1000,7 +980,7 @@ resolve 对平均值执行 `radiance/(radiance+1)`，再取约为 `1/2.2` 的幂
 
 以相机产生的内部像素为例，`parallel(pixel in pixels)` 为每个像素分配工作，`index()` 给出它在数据域中的编号。每个工作项写自己的 pixel，读取共享场景、材质和图像。
 
-Rust 不逐像素调用函数。它调用 `compile_entry` 取得选定入口的可执行程序，建立真实存储与绑定，再把整个计算域交给后端。CPU 后端生成原生 x64，GPU 后端生成 SPIR-V。`on compute` 的通用计算可以走 CPU 或 GPU；需要 acceleration 的 `on gpu` 程序使用 GPU 能力，不能据此假定整套渲染器也有同样的 CPU 路径。
+Rust 不逐像素调用函数。其准备入口共享Compiler，通过构建图和build_entry取得或复用最终编译映像，再装入CPU代码／GPU管线，建立真实存储与绑定，再把整个计算域交给后端。CPU 后端生成原生 x64，GPU 后端生成 SPIR-V。`on compute` 的通用计算可以走 CPU 或 GPU；需要 acceleration 的 `on gpu` 程序使用 GPU 能力，不能据此假定整套渲染器也有同样的 CPU 路径。
 
 ### 18.2 常量参数与每次输入有什么区别
 
@@ -1014,18 +994,15 @@ frame 中 integrate 写 pixels，resolve 读 pixels。B 编译结果保存这些
 
 当前 `BLRenderOutput::submit` 的设备交接如下，draw 在同一提交接口上明确等待：
 
-局部节选，外围未列出：`src/output.rs:221`。
+局部节选，外围未列出：`src/output.rs:286`。
 
 ```rust
-let submitted = self.program.submit(
-    Bindings {
-        datasets,
-        accelerations: scene.accelerations.clone(),
-        textures: inputs.materials.textures.clone(),
-    },
-    &values,
-)?;
-let (bindings, _, completion) = submitted.detach();
+        let mut bindings = inputs.frame_bindings(
+            scene, pixels, display, overlays, cameras, visible, parameters,
+        );
+        input.bindings(inputs, scene, self, &mut bindings)?;
+        let submitted = self.program.submit(bindings, &[])?;
+        let (bindings, _, completion) = submitted.detach();
 ```
 
 `Bindings` 汇合本次真正使用的数据集、加速结构和纹理。submit 交给设备；detach 交出绑定与独立完成观察，实际存储仍由最后使用关系持有。BLRenderSubmission 可以稍后等待，原场景来源无需被搬出再归还。显示或 CPU 读取须消费相应依赖，提交返回不能代替 GPU 完成。
@@ -1087,19 +1064,19 @@ Blink 的 `ExecutionResources` 分别持有计算、传输和 AS 构建需要的
 局部节选，外围未列出：`src/window.rs:354`。
 
 ```rust
-let got = PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, 1);
-// PeekMessage会先派发非队列消息，其输入也交给原目标窗口的消费者。
-self.deliver(None, &mut input)?;
-if got == 0 {
-    break;
-}
-if message.message == 0x12 {
-    self.class.quit.set(true);
-    break;
-}
-DispatchMessageW(&message);
-if !self.deliver(Some(BLWindowId(message.window)), &mut input)? {
-    TranslateMessage(&message);
+                let got = PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, 1);
+                // PeekMessage会先派发非队列消息，其输入也交给原目标窗口的消费者。
+                self.deliver(None, &mut input)?;
+                if got == 0 {
+                    break;
+                }
+                if message.message == 0x12 {
+                    self.class.quit.set(true);
+                    break;
+                }
+                DispatchMessageW(&message);
+                if !self.deliver(Some(BLWindowId(message.window)), &mut input)? {
+                    TranslateMessage(&message);
 ```
 
 消费者处理某个窗口的按键，不应让另一个窗口丢失文字转换。Win32 还可能在调用中重入窗口过程，因此跨原生调用不能一直持有对同一状态的独占可变借用。这些是平台资源和回调的真实约束，不是三维算法。
@@ -1120,7 +1097,7 @@ if !self.deliver(Some(BLWindowId(message.window)), &mut input)? {
 
 源码使用线程 DPI 上下文处理实际窗口和呈现边界，避免宿主进程的设置影响像素尺寸。当前阅读场景仍明确为 4K 输出、8K 内部采样。DPI 处理不代表支持任意动态 extent，也不应通过缩小目标绕过渲染规格。
 
-当前有多窗口、原生输入和呈现，动态调整窗口尺寸、OutOfDate 重建和完整异步视图仍未完成。本章按源码分析窗口机制，配套新运行记录是离屏帧与多相机导出，不把它冒充本次已运行的窗口验证。
+当前有多窗口、原生输入和呈现，动态调整窗口尺寸、OutOfDate 重建和完整异步视图仍未完成。本章按源码分析窗口机制，离屏输出与交互窗口的实际验证分别记录。
 
 ## 第二十一章 模拟：计算更新和渲染更新为什么要分开
 
@@ -1128,7 +1105,7 @@ if !self.deliver(Some(BLWindowId(message.window)), &mut input)? {
 
 `Programs/simulation/bodies` 保存位置、速度与能量。每步先由位置计算加速度，更新速度，再用新速度更新位置：
 
-源码：`Programs/simulation/bodies.b:3`。
+源码节选：`Programs/simulation/bodies.b:3`。
 
 ```b
 void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, Power> body, f32 dt, f32 strength) on compute {
@@ -1145,7 +1122,7 @@ void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, 
 
 每个 body 读写自己的状态，所以位置和速度更新可以并行。总动能却依赖所有 body，必须归约：
 
-源码：`Programs/simulation/statistics.b:7`。
+源码节选：`Programs/simulation/statistics.b:7`。
 
 ```b
 void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTotal, 1> total, f32 dt, f32 strength) on compute {
@@ -1162,11 +1139,6 @@ void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTot
 
 同一源码与输入、同一初值、一千二百个时间步，Release 原生运行如下。CPU 路径为原生多核 B，GPU 路径使状态驻留设备并在一次提交内推进。
 
-| 口径 | CPU | GPU |
-|---|---|---|
-| 程序内部执行计时 | 969.513 ms，CPU 墙钟 | 114.373 ms，GPU 设备时间 |
-| total_ms，同一命令计时范围 | 985.348 ms | 270.554 ms |
-| 总动能输出 | 63477.54 | 63477.547 |
 
 `total_ms` 包含各后端准备、执行、必要传输和输出写入，不包含共同的初值创建。按这一同口径范围，GPU 约为 CPU 的 **3.64 倍**。上行内部计时分别属于 CPU 墙钟和 GPU 时间戳，不能拿它替换同口径端到端加速比。
 
@@ -1202,7 +1174,7 @@ void step_and_total(inout dataset<BLBody<float3, 3>> bodies, write dataset<BLTot
 
 软件宇宙当前 `scene.pick` 使用节点球和标签矩形做命中，再通过归约选择最近结果：
 
-源码：`Programs/scene/pick.b:36`。
+源码节选：`Programs/scene/pick.b:36`。
 
 ```b
 void pick<const W:u32,const H:u32>(read dataset<BLNode> nodes, write dataset<BLResult,1> result,
@@ -1270,15 +1242,10 @@ Copy-Item `
 
 ### 23.3 真正执行的结果
 
-![原生运行记录](figures/engine-book-run.svg)
-
-*图 23-1：本轮源码 Release 原生日志排印，非终端截屏。GPU 两段时间分别来自 integrate 与 resolve；完整原始记录见 engine/运行记录.txt。*
-
-实际设备为 AMD Radeon RX 9070 GRE。输出是 `3840×2160`，内部为 `7680×4320`。一次 frame 的 GPU 程序跨度为 **227.346 ms**，两段时间为 **225.6618、1.4352 ms**；绘制、读回和写文件合计 **304.961 ms**。此范围不含前面的场景加载、源程序编译及资源准备，也不是窗口产品帧率。
 
 ![主相机完整帧](figures/engine-frame.png)
 
-*图 23-2：本轮源码原生 PPM 转换的完整 4K 输出。两个物体共用一个立方体模型；左侧使用棋盘表面，右侧选择蓝色表面。PDF 按页面缩放展示，配套 PNG 保留原分辨率。*
+*图 23-2：当前源码原生 PPM 转换的完整 4K 输出。两个物体共用一个立方体模型；左侧使用棋盘表面，右侧选择蓝色表面。PDF 按页面缩放展示，配套 PNG 保留原分辨率。*
 
 模型只有十二个三角形，这份画面用于观察关系与代码结果，不是超高精度字形、天然玉石或大型场景的品质与性能证明。
 
@@ -1291,13 +1258,13 @@ Copy-Item `
   Saved/Scene/views
 ```
 
-场景只加载一次，相机依次绘制到同一输出，文件名为 `camera-<节点下标>.ppm`。本场景相机下标为三和四。两视图 GPU 程序跨度之和为 **474.113 ms**，绘制、读回与文件写入共 **593.670 ms**。
+场景只加载一次，相机依次绘制到同一输出，文件名为camera-<节点下标>.ppm；设备程序、读回与文件输出分别计时。
 
 ![侧相机完整帧](figures/engine-side.png)
 
 *图 23-3：相同世界从第二台相机观察，模型、材质和灯光没有为这张图另建一套。*
 
-还可以执行 `blengine.exe view` 建立单窗口，或执行 `view-views` 为多相机建立多个窗口。当前新记录没有执行这两条交互入口，因此其行为分析来自本轮源码，而非本次运行画面的推断。
+还可以执行 `blengine.exe view` 建立单窗口，或执行 `view-views` 为多相机建立多个窗口。这些入口的当前行为以真实源码和实际运行分别确认，离屏输出不代替窗口验证。
 
 ### 23.5 运行模拟并读取计时
 
@@ -1421,172 +1388,202 @@ Copy-Item `
 
 ## 附录 A 源码节选与版本定位
 
-本版节选从 BLEngine CL13541 与 Blink CL13553 重新取得。完整文件修订、SHA256、节选行范围与本轮原生命令见 engine/源码版本索引.json。代码使用当前接口；下表中的最后修改号来自同一次已提交源码快照。
+正文节选对应当前源码，位置见现行源码索引；修订和原生运行历史只在P4双台账记录。
 
-| 源码路径 | 修订／最后修改 |
+| 源码路径 | 定位 |
 |---|---|
-| `Cargo.lock` | #1，CL12581 |
-| `Cargo.toml` | #2，CL12861 |
-| `Programs/geometry/normals.b` | #1，CL13031 |
-| `Programs/geometry/normals.h` | #1，CL13031 |
-| `Programs/geometry/primitives.b` | #3，CL13483 |
-| `Programs/geometry/primitives.h` | #3，CL13483 |
-| `Programs/image/mean.b` | #2，CL13483 |
-| `Programs/image/mean.h` | #2，CL13483 |
-| `Programs/image/texture.b` | #4，CL13483 |
-| `Programs/image/texture.h` | #4，CL13483 |
-| `Programs/lighting/area.b` | #1，CL13495 |
-| `Programs/lighting/area.h` | #1，CL13495 |
-| `Programs/lighting/directional.b` | #4，CL13483 |
-| `Programs/lighting/directional.h` | #4，CL13483 |
-| `Programs/lighting/distribution.b` | #7，CL13521 |
-| `Programs/lighting/distribution.h` | #7，CL13521 |
-| `Programs/lighting/environment.b` | #4，CL13421 |
-| `Programs/lighting/environment.h` | #3，CL13421 |
-| `Programs/lighting/environment_field.b` | #3，CL13483 |
-| `Programs/lighting/environment_field.h` | #3，CL13483 |
-| `Programs/lighting/field.b` | #4，CL13483 |
-| `Programs/lighting/field.h` | #4，CL13483 |
-| `Programs/lighting/guiding.b` | #3，CL13483 |
-| `Programs/lighting/guiding.h` | #3，CL13483 |
-| `Programs/lighting/lights.b` | #7，CL13119 |
-| `Programs/lighting/lights.h` | #9，CL13495 |
-| `Programs/lighting/mesh.b` | #1，CL13521 |
-| `Programs/lighting/mesh.h` | #1，CL13521 |
-| `Programs/lighting/resources.b` | #1，CL13495 |
-| `Programs/lighting/resources.h` | #1，CL13495 |
-| `Programs/material/conductor.b` | #1，CL13029 |
-| `Programs/material/conductor.h` | #1，CL13029 |
-| `Programs/material/dielectric.b` | #1，CL13009 |
-| `Programs/material/dielectric.h` | #1，CL13009 |
-| `Programs/material/maps.b` | #1，CL13026 |
-| `Programs/material/maps.h` | #1，CL13026 |
-| `Programs/material/medium.b` | #2，CL13013 |
-| `Programs/material/medium.h` | #2，CL13013 |
-| `Programs/material/microfacet.b` | #1，CL13009 |
-| `Programs/material/microfacet.h` | #1，CL13009 |
-| `Programs/material/palette.h` | #7，CL13501 |
-| `Programs/material/phase.b` | #1，CL13013 |
-| `Programs/material/phase.h` | #1，CL13013 |
-| `Programs/material/scattering.h` | #3，CL13029 |
-| `Programs/material/surface.b` | #7，CL13029 |
-| `Programs/material/surface.h` | #5，CL13029 |
-| `Programs/material/textured.b` | #7，CL13483 |
-| `Programs/material/textured.h` | #6，CL13483 |
-| `Programs/math/angles.b` | #1，CL13421 |
-| `Programs/math/angles.h` | #1，CL13421 |
-| `Programs/math/field.b` | #3，CL12835 |
-| `Programs/math/field.h` | #3，CL12835 |
-| `Programs/math/scalar.b` | #2，CL13495 |
-| `Programs/math/scalar.h` | #2，CL13495 |
-| `Programs/math/transform.b` | #2，CL12904 |
-| `Programs/math/transform.h` | #2，CL12904 |
-| `Programs/render/composite.b` | #4，CL13196 |
-| `Programs/render/composite.h` | #3，CL13196 |
-| `Programs/render/frame.b` | #33，CL13521 |
-| `Programs/render/frame.h` | #31，CL13521 |
-| `Programs/render/instance.h` | #4，CL13521 |
-| `Programs/render/resolve.b` | #6，CL13483 |
-| `Programs/render/resolve.h` | #7，CL13483 |
-| `Programs/sampling/counter.b` | #1，CL13119 |
-| `Programs/sampling/counter.h` | #1，CL13119 |
-| `Programs/sampling/direction.b` | #1，CL13311 |
-| `Programs/sampling/direction.h` | #1，CL13311 |
-| `Programs/sampling/frame.b` | #1，CL12997 |
-| `Programs/sampling/frame.h` | #1，CL12997 |
-| `Programs/sampling/mis.b` | #1，CL12997 |
-| `Programs/sampling/mis.h` | #1，CL12997 |
-| `Programs/sampling/random.b` | #2，CL13180 |
-| `Programs/sampling/random.h` | #2，CL13180 |
-| `Programs/sampling/reservoir.b` | #2，CL13180 |
-| `Programs/sampling/reservoir.h` | #2，CL13180 |
-| `Programs/scene/camera.b` | #4，CL13483 |
-| `Programs/scene/camera.h` | #4，CL13483 |
-| `Programs/scene/components.b` | #3，CL13483 |
-| `Programs/scene/components.h` | #3，CL13483 |
-| `Programs/scene/device.b` | #3，CL13483 |
-| `Programs/scene/device.h` | #3，CL13483 |
-| `Programs/scene/hierarchy.b` | #2，CL13483 |
-| `Programs/scene/hierarchy.h` | #2，CL13483 |
-| `Programs/scene/instance.h` | #4，CL13068 |
-| `Programs/scene/labels.b` | #4，CL13483 |
-| `Programs/scene/labels.h` | #4，CL13483 |
-| `Programs/scene/motion.b` | #3，CL13483 |
-| `Programs/scene/motion.h` | #3，CL13483 |
-| `Programs/scene/pick.b` | #5，CL13483 |
-| `Programs/scene/pick.h` | #5，CL13483 |
-| `Programs/scene/query.b` | #4，CL13483 |
-| `Programs/scene/query.h` | #4，CL13483 |
-| `Programs/scene/surface.b` | #3，CL13483 |
-| `Programs/scene/surface.h` | #2，CL13483 |
-| `Programs/scene/transforms.h` | #4，CL13024 |
-| `Programs/scene/universe.b` | #4，CL13483 |
-| `Programs/scene/universe.h` | #4，CL13483 |
-| `Programs/simulation/bodies.b` | #10，CL13483 |
-| `Programs/simulation/bodies.h` | #9，CL13483 |
-| `Programs/simulation/statistics.b` | #5，CL13483 |
-| `Programs/simulation/statistics.h` | #5，CL13483 |
-| `Programs/spatial/bounds.b` | #1，CL13281 |
-| `Programs/spatial/bounds.h` | #1，CL13281 |
-| `Programs/spatial/keys.b` | #1，CL13250 |
-| `Programs/spatial/keys.h` | #1，CL13250 |
-| `Programs/stella/guiding.b` | #1，CL13311 |
-| `Programs/stella/guiding.h` | #1，CL13311 |
-| `Programs/stella/history.b` | #2，CL13483 |
-| `Programs/stella/history.h` | #2，CL13483 |
-| `Programs/stella/lighting.b` | #27，CL13534 |
-| `Programs/stella/lighting.h` | #26，CL13534 |
-| `Programs/stella/reproject.b` | #2，CL13483 |
-| `Programs/stella/reproject.h` | #2，CL13483 |
-| `Programs/stella/scattering.b` | #13，CL13534 |
-| `Programs/stella/scattering.h` | #10，CL13534 |
-| `Programs/stella/surface.b` | #12，CL13521 |
-| `Programs/stella/surface.h` | #13，CL13521 |
-| `Programs/stella/termination.b` | #1，CL13369 |
-| `Programs/stella/termination.h` | #1，CL13369 |
-| `Programs/stella/transport.b` | #24，CL13534 |
-| `Programs/stella/transport.h` | #23，CL13534 |
-| `Programs/stella/traversal.b` | #13，CL13534 |
-| `Programs/stella/traversal.h` | #11，CL13534 |
-| `Programs/stella/visibility.b` | #10，CL13495 |
-| `Programs/stella/visibility.h` | #9，CL13495 |
-| `Programs/stella/volume.b` | #4，CL13534 |
-| `Programs/stella/volume.h` | #3，CL13534 |
-| `src/clipboard.rs` | #2，CL12904 |
-| `src/components.rs` | #2，CL13009 |
-| `src/editor.rs` | #27，CL13421 |
-| `src/environment.rs` | #1，CL13421 |
-| `src/geometry.rs` | #4，CL12941 |
-| `src/geometry_io.rs` | #1，CL12958 |
-| `src/gpu_scene.rs` | #8，CL13521 |
-| `src/guiding.rs` | #3，CL13454 |
-| `src/hdr.rs` | #1，CL13421 |
-| `src/hierarchy.rs` | #6，CL13135 |
-| `src/history.rs` | #1，CL13207 |
-| `src/identity.rs` | #3，CL13074 |
-| `src/image.rs` | #2，CL13207 |
-| `src/json.rs` | #3，CL12904 |
-| `src/labels.rs` | #6，CL13031 |
-| `src/lib.rs` | #25，CL13521 |
-| `src/lighting.rs` | #15，CL13495 |
-| `src/main.rs` | #21，CL13421 |
-| `src/material.rs` | #14，CL13521 |
-| `src/math.rs` | #2，CL12904 |
-| `src/mesh_lighting.rs` | #1，CL13521 |
-| `src/motion.rs` | #3，CL13074 |
-| `src/output.rs` | #24，CL13521 |
-| `src/primitives.rs` | #2，CL12904 |
-| `src/render.rs` | #44，CL13521 |
-| `src/scene.rs` | #22，CL13521 |
-| `src/scene_asset.rs` | #9，CL13421 |
-| `src/surface.rs` | #2，CL13110 |
-| `src/texture_import.rs` | #3，CL13421 |
-| `src/universe.rs` | #9，CL13031 |
-| `src/view.rs` | #12，CL13369 |
-| `src/viewer.rs` | #28，CL13466 |
-| `src/visibility.rs` | #1，CL13110 |
-| `src/wic.rs` | #1，CL13358 |
-| `src/window.rs` | #7，CL13152 |
+| `Cargo.lock` | 当前源码 |
+| `Cargo.toml` | 当前源码 |
+| `Programs/geometry/normals.b` | 当前源码 |
+| `Programs/geometry/normals.h` | 当前源码 |
+| `Programs/geometry/primitives.b` | 当前源码 |
+| `Programs/geometry/primitives.h` | 当前源码 |
+| `Programs/image/mean.b` | 当前源码 |
+| `Programs/image/mean.h` | 当前源码 |
+| `Programs/image/texture.b` | 当前源码 |
+| `Programs/image/texture.h` | 当前源码 |
+| `Programs/lighting/area.b` | 当前源码 |
+| `Programs/lighting/area.h` | 当前源码 |
+| `Programs/lighting/directional.b` | 当前源码 |
+| `Programs/lighting/directional.h` | 当前源码 |
+| `Programs/lighting/distribution.b` | 当前源码 |
+| `Programs/lighting/distribution.h` | 当前源码 |
+| `Programs/lighting/environment.b` | 当前源码 |
+| `Programs/lighting/environment.h` | 当前源码 |
+| `Programs/lighting/environment_field.b` | 当前源码 |
+| `Programs/lighting/environment_field.h` | 当前源码 |
+| `Programs/lighting/field.b` | 当前源码 |
+| `Programs/lighting/field.h` | 当前源码 |
+| `Programs/lighting/guiding.b` | 当前源码 |
+| `Programs/lighting/guiding.h` | 当前源码 |
+| `Programs/lighting/harmonics.b` | 当前源码 |
+| `Programs/lighting/harmonics.h` | 当前源码 |
+| `Programs/lighting/lights.b` | 当前源码 |
+| `Programs/lighting/lights.h` | 当前源码 |
+| `Programs/lighting/mesh.b` | 当前源码 |
+| `Programs/lighting/mesh.h` | 当前源码 |
+| `Programs/material/conductor.b` | 当前源码 |
+| `Programs/material/conductor.h` | 当前源码 |
+| `Programs/material/dielectric.b` | 当前源码 |
+| `Programs/material/dielectric.h` | 当前源码 |
+| `Programs/material/energy.b` | 当前源码 |
+| `Programs/material/energy.h` | 当前源码 |
+| `Programs/material/maps.b` | 当前源码 |
+| `Programs/material/maps.h` | 当前源码 |
+| `Programs/material/medium.b` | 当前源码 |
+| `Programs/material/medium.h` | 当前源码 |
+| `Programs/material/microfacet.b` | 当前源码 |
+| `Programs/material/microfacet.h` | 当前源码 |
+| `Programs/material/opaque.b` | 当前源码 |
+| `Programs/material/opaque.h` | 当前源码 |
+| `Programs/material/palette.h` | 当前源码 |
+| `Programs/material/phase.b` | 当前源码 |
+| `Programs/material/phase.h` | 当前源码 |
+| `Programs/material/scattering.h` | 当前源码 |
+| `Programs/material/surface.b` | 当前源码 |
+| `Programs/material/surface.h` | 当前源码 |
+| `Programs/material/textured.b` | 当前源码 |
+| `Programs/material/textured.h` | 当前源码 |
+| `Programs/math/angles.b` | 当前源码 |
+| `Programs/math/angles.h` | 当前源码 |
+| `Programs/math/field.b` | 当前源码 |
+| `Programs/math/field.h` | 当前源码 |
+| `Programs/math/scalar.b` | 当前源码 |
+| `Programs/math/scalar.h` | 当前源码 |
+| `Programs/math/transform.b` | 当前源码 |
+| `Programs/math/transform.h` | 当前源码 |
+| `Programs/render/composite.b` | 当前源码 |
+| `Programs/render/composite.h` | 当前源码 |
+| `Programs/render/frame.b` | 当前源码 |
+| `Programs/render/frame.h` | 当前源码 |
+| `Programs/render/instance.h` | 当前源码 |
+| `Programs/render/parameters.h` | 当前源码 |
+| `Programs/render/probe_frame.b` | 当前源码 |
+| `Programs/render/probe_frame.h` | 当前源码 |
+| `Programs/render/receiver_frame.b` | 当前源码 |
+| `Programs/render/receiver_frame.h` | 当前源码 |
+| `Programs/render/receiver_history.b` | 当前源码 |
+| `Programs/render/receiver_history.h` | 当前源码 |
+| `Programs/render/resolve.b` | 当前源码 |
+| `Programs/render/resolve.h` | 当前源码 |
+| `Programs/sampling/counter.b` | 当前源码 |
+| `Programs/sampling/counter.h` | 当前源码 |
+| `Programs/sampling/direction.b` | 当前源码 |
+| `Programs/sampling/direction.h` | 当前源码 |
+| `Programs/sampling/frame.b` | 当前源码 |
+| `Programs/sampling/frame.h` | 当前源码 |
+| `Programs/sampling/mis.b` | 当前源码 |
+| `Programs/sampling/mis.h` | 当前源码 |
+| `Programs/sampling/random.b` | 当前源码 |
+| `Programs/sampling/random.h` | 当前源码 |
+| `Programs/sampling/reservoir.b` | 当前源码 |
+| `Programs/sampling/reservoir.h` | 当前源码 |
+| `Programs/scene/camera.b` | 当前源码 |
+| `Programs/scene/camera.h` | 当前源码 |
+| `Programs/scene/components.b` | 当前源码 |
+| `Programs/scene/components.h` | 当前源码 |
+| `Programs/scene/device.b` | 当前源码 |
+| `Programs/scene/device.h` | 当前源码 |
+| `Programs/scene/hierarchy.b` | 当前源码 |
+| `Programs/scene/hierarchy.h` | 当前源码 |
+| `Programs/scene/instance.h` | 当前源码 |
+| `Programs/scene/labels.b` | 当前源码 |
+| `Programs/scene/labels.h` | 当前源码 |
+| `Programs/scene/motion.b` | 当前源码 |
+| `Programs/scene/motion.h` | 当前源码 |
+| `Programs/scene/pick.b` | 当前源码 |
+| `Programs/scene/pick.h` | 当前源码 |
+| `Programs/scene/query.b` | 当前源码 |
+| `Programs/scene/query.h` | 当前源码 |
+| `Programs/scene/surface.b` | 当前源码 |
+| `Programs/scene/surface.h` | 当前源码 |
+| `Programs/scene/transforms.h` | 当前源码 |
+| `Programs/scene/universe.b` | 当前源码 |
+| `Programs/scene/universe.h` | 当前源码 |
+| `Programs/simulation/bodies.b` | 当前源码 |
+| `Programs/simulation/bodies.h` | 当前源码 |
+| `Programs/simulation/statistics.b` | 当前源码 |
+| `Programs/simulation/statistics.h` | 当前源码 |
+| `Programs/spatial/bounds.b` | 当前源码 |
+| `Programs/spatial/bounds.h` | 当前源码 |
+| `Programs/spatial/keys.b` | 当前源码 |
+| `Programs/spatial/keys.h` | 当前源码 |
+| `Programs/stella/cached_transport.b` | 当前源码 |
+| `Programs/stella/cached_transport.h` | 当前源码 |
+| `Programs/stella/guiding.b` | 当前源码 |
+| `Programs/stella/guiding.h` | 当前源码 |
+| `Programs/stella/history.b` | 当前源码 |
+| `Programs/stella/history.h` | 当前源码 |
+| `Programs/stella/lighting.b` | 当前源码 |
+| `Programs/stella/lighting.h` | 当前源码 |
+| `Programs/stella/probe_volume.b` | 当前源码 |
+| `Programs/stella/probe_volume.h` | 当前源码 |
+| `Programs/stella/probes.b` | 当前源码 |
+| `Programs/stella/probes.h` | 当前源码 |
+| `Programs/stella/receiver_sampling.b` | 当前源码 |
+| `Programs/stella/receiver_sampling.h` | 当前源码 |
+| `Programs/stella/receiver_shading.b` | 当前源码 |
+| `Programs/stella/receiver_shading.h` | 当前源码 |
+| `Programs/stella/receiver_statistics.b` | 当前源码 |
+| `Programs/stella/receiver_statistics.h` | 当前源码 |
+| `Programs/stella/receiver_transport.b` | 当前源码 |
+| `Programs/stella/receiver_transport.h` | 当前源码 |
+| `Programs/stella/receivers.b` | 当前源码 |
+| `Programs/stella/receivers.h` | 当前源码 |
+| `Programs/stella/reproject.b` | 当前源码 |
+| `Programs/stella/reproject.h` | 当前源码 |
+| `Programs/stella/scattering.b` | 当前源码 |
+| `Programs/stella/scattering.h` | 当前源码 |
+| `Programs/stella/surface.b` | 当前源码 |
+| `Programs/stella/surface.h` | 当前源码 |
+| `Programs/stella/termination.b` | 当前源码 |
+| `Programs/stella/termination.h` | 当前源码 |
+| `Programs/stella/transport.b` | 当前源码 |
+| `Programs/stella/transport.h` | 当前源码 |
+| `Programs/stella/traversal.b` | 当前源码 |
+| `Programs/stella/traversal.h` | 当前源码 |
+| `Programs/stella/visibility.b` | 当前源码 |
+| `Programs/stella/visibility.h` | 当前源码 |
+| `Programs/stella/volume.b` | 当前源码 |
+| `Programs/stella/volume.h` | 当前源码 |
+| `src/clipboard.rs` | 当前源码 |
+| `src/components.rs` | 当前源码 |
+| `src/editor.rs` | 当前源码 |
+| `src/environment.rs` | 当前源码 |
+| `src/geometry.rs` | 当前源码 |
+| `src/geometry_io.rs` | 当前源码 |
+| `src/gpu_scene.rs` | 当前源码 |
+| `src/guiding.rs` | 当前源码 |
+| `src/hdr.rs` | 当前源码 |
+| `src/hierarchy.rs` | 当前源码 |
+| `src/history.rs` | 当前源码 |
+| `src/identity.rs` | 当前源码 |
+| `src/image.rs` | 当前源码 |
+| `src/json.rs` | 当前源码 |
+| `src/labels.rs` | 当前源码 |
+| `src/lib.rs` | 当前源码 |
+| `src/lighting.rs` | 当前源码 |
+| `src/main.rs` | 当前源码 |
+| `src/material.rs` | 当前源码 |
+| `src/math.rs` | 当前源码 |
+| `src/mesh_lighting.rs` | 当前源码 |
+| `src/motion.rs` | 当前源码 |
+| `src/output.rs` | 当前源码 |
+| `src/primitives.rs` | 当前源码 |
+| `src/probes.rs` | 当前源码 |
+| `src/receiver_statistics.rs` | 当前源码 |
+| `src/receivers.rs` | 当前源码 |
+| `src/render.rs` | 当前源码 |
+| `src/scene.rs` | 当前源码 |
+| `src/scene_asset.rs` | 当前源码 |
+| `src/surface.rs` | 当前源码 |
+| `src/texture_import.rs` | 当前源码 |
+| `src/universe.rs` | 当前源码 |
+| `src/view.rs` | 当前源码 |
+| `src/viewer.rs` | 当前源码 |
+| `src/visibility.rs` | 当前源码 |
+| `src/wic.rs` | 当前源码 |
+| `src/window.rs` | 当前源码 |
 
 ## 附录 B 阅读练习与答案
 
@@ -1608,6 +1605,6 @@ Copy-Item `
 
 BLEngine 源码节选遵守 MIT License，版权和完整许可见 `engine/BLEngine-LICENSE.txt`。数学推导、执行图与解释服务于源码阅读；示意图不冒充产品运行截图。
 
-`engine/assets` 提供正式阅读输入。`engine/运行记录.txt` 保留本次 Release 构建路径、设备、命令、原始输出与图像哈希。正文运行卡片按这些日志排印，主视图与侧视图由真实完整 PPM 转换，未拼接或重新绘制模型。
+`engine/assets` 提供正式阅读输入。P4双台账保留实际构建、命令、输出和图像历史。主视图与侧视图由真实完整 PPM 转换，未拼接或重新绘制模型。
 
 本书的 Markdown 与两种中文版 PDF 同步保存在项目 sample 目录。手机阅读版采用单栏、大字号与纵向图示；标准版保留适合桌面阅读和打印的页面宽度。

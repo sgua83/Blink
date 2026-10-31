@@ -41,4 +41,4 @@ GPU 例子需要驱动提供所需 Vulkan 能力。失败会直接返回；CPU �
 
 Programs 下是按当前 Blink 语法维护的引擎算法教学模块及所需导入。Programs/book 只准备示例输入和连接步骤；实际粒子、变换、GGX 与显示转换使用引擎实现。[来源清单](BLEngine摘录来源.md) 与 [MIT 许可](BLEngine-LICENSE.txt) 随源码保留。下载 Blink 后可运行这些独立例子，不要求 BLEngine 工作区或 P4。
 
-[原始运行记录](运行记录.txt) 保留正文图表和新版完整示例的输出。
+P4台账中的运行历史 保留正文图表和新版完整示例的输出。

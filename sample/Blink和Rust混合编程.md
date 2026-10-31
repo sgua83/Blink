@@ -20,9 +20,9 @@ Rust 程序可以读取文件、响应输入、管理对象；其中需要大量
 
 书中的命令均在 Blink 仓库根目录执行，直接写出 exe 路径。每个 exe 都是一个有具体用途的示例程序。源码在 sample/hybrid 中，不需要另外安装 BLEngine 或配置 P4。
 
-书中的独立教学模块以仓库现行 sample/hybrid 为准，采用当前统一函数语法，并由本轮 Blink Release 工具实际编译。它们演示粒子、变换、GGX 与图像组合；当前 BLEngine 的完整场景、Stella 和资源交接另见《BLEngine 源码分析》。Rust 节选省去与当节无关的计时或界面部分，完整示例注明真实路径。
+书中的独立教学模块以仓库现行 sample/hybrid 为准，采用当前统一函数语法，并由正式Blink工具编译。它们演示粒子、变换、GGX 与图像组合；当前 BLEngine 的完整场景、Stella 和资源交接另见《BLEngine 源码分析》。Rust 节选省去与当节无关的计时或界面部分，完整示例注明真实路径。
 
-版本：2026 年 10 月 27 日。运行环境为 Windows x64，Blink v0.1。原始运行记录保存在 sample/hybrid/运行记录.txt，源码出处见同目录的 BLEngine摘录来源.md。
+正文按当前语言规则与正式工具入口编写；软件版本见工程根VERSION，具体运行与交付历史保存在P4双台账。
 
 ## 1　让 Rust 调用一个 B 算法
 
@@ -183,7 +183,6 @@ before: [1.0, 2.0, 3.0, 4.0]
 after:  [3.0, 5.0, 7.0, 9.0]
 ```
 
-![图 1-3　第一个完整混合程序的实际输出。](figures/hybrid-first-run.svg)
 
 *图 1-3　由本章的 B 文件和 Rust 文件编译后原生运行。*
 
@@ -505,7 +504,6 @@ into_iter 依次取出 data 中的两个数据集，map 对每项调用 upload�
 .\target\release\particles.exe gpu 3
 ```
 
-![图 3-3　三个粒子在 CPU/GPU 上的原生输出。](figures/hybrid-run-particles.svg)
 
 *图 3-3　第一粒子的位置和总动能在这里显示的小数位上相同。*
 
@@ -557,7 +555,6 @@ GPU 还在使用的数据由提交记录继续保存。最后一次使用结束�
 .\target\release\particle-steps.exe
 ```
 
-![图 4-2　三步模拟后的实际结果。](figures/hybrid-run-steps.svg)
 
 *图 4-2　三步各为 0.01 秒；这不是把同一个输入重复三次来跑分。*
 
@@ -648,7 +645,6 @@ Rust 把尚在 GPU 上的两个总量交给 finish。相加在 B 中完成，Rus
 .\target\release\particle-flow.exe
 ```
 
-![图 5-2　两组动能与相加结果。](figures/hybrid-run-flow.svg)
 
 *图 5-2　left=1.500003，right=6.000003，combined=7.500006。*
 
@@ -672,7 +668,7 @@ Rust 把尚在 GPU 上的两个总量交给 finish。相加在 B 中完成，Rus
 
 ### 6.2　B 的实例记录中放了什么
 
-引擎的 render/trace.h 定义了：
+随书教学模块sample/hybrid/Programs/render/trace.h定义了：
 
 ```c
 struct BLInstance {
@@ -867,7 +863,6 @@ Rust 建立输入时应保证父索引有效、父链无环。这样遍历才会
 .\target\release\scene-evaluate.exe gpu
 ```
 
-![图 7-2　三节点场景的实际计算结果。](figures/hybrid-run-scene.svg)
 
 *图 7-2　两个后端都得到 (10,0,0)、(10,2,0)、(10,2,3)。相机和灯光的输出在下一章解释。*
 
@@ -1116,7 +1111,7 @@ let done = program.submit(
 .\target\release\material-samples.exe gpu
 ```
 
-两次运行都会输出 count=10000000 和中心点的颜色。CPU 中心点约为 (0.152368,0.172937,0.118156)，GPU 约为 (0.152371,0.172865,0.118214)。
+程序输出count=10000000及中心点颜色；浮点值以本次构建、实际设备和运行结果为准。
 
 它们存在浮点舍入差异，不能把打印得相近说成全部结果逐位相同。接下来先读懂耗时，第十三章再把这些颜色变成一张图片。
 
@@ -1130,21 +1125,7 @@ let done = program.submit(
 
 ### 10.2　把一次实际记录逐项读清楚
 
-本书原始观测使用 Ryzen 9 9950X、128 GB 内存和 Radeon RX 9070 GRE，Rust 1.95.0，release 构建。具体数值会随机器与负载变化。
-
-![图 10-1　一千万点的原生计时记录。](figures/hybrid-run-material.svg)
-
-*图 10-1　图中分别列出准备、第一次执行、复用后执行及完整下载。*
-
-| 计时范围 | CPU 多核 | GPU |
-|---|---|---|
-| 准备程序与数据 | 97.524 ms | 629.451 ms，包含上传入队 |
-| 第一次执行并等到完成 | 45.563 ms | 127.771 ms，受未完成上传影响 |
-| 使用已准备资源执行并等待 | 46.684 ms | 16.701 ms |
-| 设备上的程序时间 | 不适用 | 13.220 ms |
-| 全部点记录下载 | 主机上已有数据 | 2620.171 ms |
-
-这一回准备后的执行等待，CPU 为 46.684 ms，GPU 为 16.701 ms，约快 2.80 倍。比较用的是两边相同的“调用执行接口到完成”的范围。
+读取本次输出时，先区分程序与数据准备、首次执行等待、复用资源后的执行等待、设备时间戳和完整下载。前三项与下载使用各自墙钟边界，设备跨度单列；不能用GPU内核时间替代完整调用耗时，也不能把旧机器的观测当作当前结果。
 
 ### 10.3　为什么第一次没有这么快
 
@@ -1152,11 +1133,9 @@ let done = program.submit(
 
 如果应用只算一次，就应比较准备加执行的总时间。如果应用连续计算很多帧，就应同时关注第一次成本和之后每次的成本。
 
-13.220 ms 是显卡时间戳覆盖的程序区间；16.701 ms 还包含主机调用和等待。讨论真实调用耗时要用后者，讨论设备内核才看前者。
 
 ### 10.4　下载为什么比计算还慢
 
-一条采样点记录为 112 字节，一千万条约 1.12 GB。把这些记录全部复制回主机，本次用了约 2620 ms，远超过 13.220 ms 的设备计算。
 
 这是很实际的提醒：程序中需要的若只是最后一张图片，就没有必要下载所有法线、观察方向、粗糙度和中间颜色。第十三章会在 GPU 上完成显示转换，只下载最后的四字节显示像素。
 
@@ -1564,9 +1543,6 @@ cargo build --release `
 .\target\release\material-image.exe
 ```
 
-![图 13-2　完整图像程序的实际运行记录。](figures/hybrid-run-image.svg)
-
-*图 13-2　原始观测中，设备程序为 2.176 ms，调用并等待为 7.172 ms，显示像素下载为 11.708 ms。计时范围分别列出。*
 
 使用图像工具打开 Saved/HybridBook/materials.ppm，就能看到下图。书中 PNG 由这个实际输出转换而来。
 
@@ -1720,7 +1696,7 @@ GPU 例子需要驱动提供所需 Vulkan 能力。执行失败会返回错误�
 
 ### A.5　原始输出放在哪里
 
-sample/hybrid/运行记录.txt 保留图表使用的原始终端输出。第十章和第十三章的耗时来自其中所标明的原始观测；重新运行不会强制得到相同毫秒数。
+具体构建、设备、原始终端输出与测量历史只在P4双台账记录；当前运行以本次正式工具及实际输出为准。
 
 一千万点的采样例子与一百万像素的图片例子规模不同。比较耗时时先对齐输入规模和计时范围。CPU/GPU 浮点差异也保留在记录中。
 
@@ -1742,9 +1718,9 @@ sample/hybrid/运行记录.txt 保留图表使用的原始终端输出。第十�
 
 ### B.2　引擎节选的原文件
 
-模型 view 来自 BLEngine 的 render/trace.h 与 src/scene.rs；文件读取来自 src/geometry_io.rs；一帧资源调用来自 src/output.rs 和 render/frame.b。
+模型view采用随书sample/hybrid/Programs/render/trace.h；当前引擎使用render/instance.h及其真实场景资源；文件读取来自 src/geometry_io.rs；一帧资源调用来自 src/output.rs 和 render/frame.b。
 
-BLEngine摘录来源.md 列出各个文件的修订和 SHA256。该清单记录教学模块的最初来源与本轮文件 SHA256；现行 Programs 使用当前语言接口，并同时提供所需导入文件，直接由最新版编译器编译。
+文档只保留当前源码、语法、接口及能力范围；具体修订、构建和实际运行历史在P4双台账记录。
 
 Programs/book 是为这些例子准备输入和连接步骤的小模块。实际 GGX、粒子更新、场景变换和显示转换仍使用引擎实现。
 
@@ -1754,8 +1730,7 @@ BLEngine 还在开发，新版本可能改变渲染阶段或参数。对照其�
 
 本书教的是怎样把两种语言实际接起来。引擎整体结构、Stella 的后续实现与窗口平台细节，放在第三本《BLEngine 源码分析》中阅读。
 
-Copyright (c) 2026 Blink contributors。引擎摘录 Copyright (c) 2026 BLEngine contributors，MIT License。完整许可随配套源码保留。
 
-## 本版统一函数接口
+## 函数与宿主接口
 
-B 计算入口使用统一 void 函数定义，parallel 及原数据访问不变。Rust 的 Program、compile_entry、同步run与异步submit仍消费同一算法产物，不要求换一套宿主接口；--program是产物入口选项。B应用使用target选择本次CPU／GPU位置，同步GPU返回与显式下载分别完成计算与传输。普通 CPU 原生调用、递归与有限独立模块已经实现；完整模块／资源契约及一般异步应用语法仍待完成。原始性能记录注明真实来源和测量范围；当前编译与 CPU／GPU 调用结果分别记录。
+计算函数统一使用返回类型与显式parallel，on声明能力，target选择本次位置。同步GPU返回后结果仍在GPU，CPU读取须显式download；内部Program与CLI的--program保留产物职责。

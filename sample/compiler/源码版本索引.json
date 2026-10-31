@@ -1,1057 +1,94 @@
 {
-  "title": "B 语言源码分析",
-  "p4_changelist": 13553,
-  "date": "2026-10-27",
+  "title": "B语言源码分析",
+  "encoding": "UTF-8 without BOM",
   "source_files": [
     {
-      "path": "Cargo.lock",
-      "depot": "//BLanguage/main/Cargo.lock",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "de966aa6a6b740fc07abf61115e1c96697210989627ba0bae5b59c260258798e"
-    },
-    {
-      "path": "Cargo.toml",
-      "depot": "//BLanguage/main/Cargo.toml",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "20b850f64896e98cdf82e810f25771b2cf7ac5b87a1292294781388a51d79446"
-    },
-    {
-      "path": "crates/blanguage/Cargo.toml",
-      "depot": "//BLanguage/main/crates/blanguage/Cargo.toml",
-      "rev": 2,
-      "change": 13210,
-      "sha256": "41168858e03addaba01e378026ad251da315ba2bb3de58af60236a37cef3db0d"
-    },
-    {
-      "path": "crates/blanguage/src/application.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/application.rs",
-      "rev": 6,
-      "change": 13520,
-      "sha256": "967d53265c2ea1228169cb2f5af79859f2015a9a8b0bedfb38952c0128a4eea8"
-    },
-    {
-      "path": "crates/blanguage/src/application/runtime.rs.in",
-      "depot": "//BLanguage/main/crates/blanguage/src/application/runtime.rs.in",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "4e1e0a8dcaebd761af3b43533c2f2ebdbf479c5b17c0afee436c40ece17254e4"
-    },
-    {
       "path": "crates/blanguage/src/ast.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ast.rs",
-      "rev": 15,
-      "change": 13549,
-      "sha256": "fb10451f070a5cea956fda0280ba553cf0b39c734e67fca4b28932cb51db1116"
-    },
-    {
-      "path": "crates/blanguage/src/bin/bllink.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/bin/bllink.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "4b4c1b17fa159a3a7d4a99a55801e9d4d6805770c0087d014a4767b7a8b76451"
+      "sha256": "94624d5ee0ce80f00a71396b959ef74cc1b87707af5a21370a29c14ebfaead57"
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check.rs",
-      "rev": 38,
-      "change": 13549,
-      "sha256": "3d6477b84c12b75695f859661540bd2371415c313509c1c379041e5b6f23e849"
-    },
-    {
-      "path": "crates/blanguage/src/check/append.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/append.rs",
-      "rev": 4,
-      "change": 13435,
-      "sha256": "3df98cdf920a32a25b8fd389a235a971778550abdb38c7cd443cbab720d205ec"
-    },
-    {
-      "path": "crates/blanguage/src/check/application.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/application.rs",
-      "rev": 19,
-      "change": 13549,
-      "sha256": "a3cf25df538d4206b4ebad5ffd6797ba2c65a5985df04e34bb3aad185bb0bea9"
-    },
-    {
-      "path": "crates/blanguage/src/check/array.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/array.rs",
-      "rev": 9,
-      "change": 13543,
-      "sha256": "815bdee8b1424a50203399899cd2c0013714d6c037a3e0417a4658df32881aa2"
-    },
-    {
-      "path": "crates/blanguage/src/check/atomic.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/atomic.rs",
-      "rev": 2,
-      "change": 13435,
-      "sha256": "c3eb80a4e33b58d83b93b81410d3e595360b36d12970bf276e14d6c21217e74e"
+      "sha256": "0ee86ba57de4f51234a7439b838d1afdcf4469209ec84c7cb9f4c8150e162a90"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/bounds.rs",
-      "rev": 30,
-      "change": 13520,
-      "sha256": "f81fdf9361ca3694e83e3389089f1163f74656916d8694e8952716adaa53a433"
-    },
-    {
-      "path": "crates/blanguage/src/check/compact.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/compact.rs",
-      "rev": 2,
-      "change": 12981,
-      "sha256": "63ee781996acc0a7b612436dc9777b66de6e96fae99130ce6ba675b2bfefcd07"
-    },
-    {
-      "path": "crates/blanguage/src/check/constant.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/constant.rs",
-      "rev": 4,
-      "change": 13549,
-      "sha256": "2ad800256fac67b62cbb5a3b556c5363af1baaf5708ab1640231e820c23df7ef"
-    },
-    {
-      "path": "crates/blanguage/src/check/contracts.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/contracts.rs",
-      "rev": 5,
-      "change": 13543,
-      "sha256": "f3cae21229b5f050bdc2df15fcd4c170b48517502b63523c0493bbd153401d48"
-    },
-    {
-      "path": "crates/blanguage/src/check/cooperative.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/cooperative.rs",
-      "rev": 20,
-      "change": 13549,
-      "sha256": "c58d9e15fa665663d4aabe09d248e637149b0ae050234221ded45df06ccfb650"
-    },
-    {
-      "path": "crates/blanguage/src/check/custom_reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/custom_reduce.rs",
-      "rev": 6,
-      "change": 13482,
-      "sha256": "1440603f8af869a3028d5fc97a78e779c247b6c8f453ecf56c7dce6e7cfc90be"
-    },
-    {
-      "path": "crates/blanguage/src/check/effects.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/effects.rs",
-      "rev": 10,
-      "change": 13508,
-      "sha256": "a6b227bfeb2b92ea58b6d6a12143f00427c362bdae3288d1e8ba6a6bb0f0daf6"
-    },
-    {
-      "path": "crates/blanguage/src/check/external.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/external.rs",
-      "rev": 10,
-      "change": 13549,
-      "sha256": "19d82becb522c6f97a45189997ec035f33f393934b2cab10d812ffeeff7cebf7"
-    },
-    {
-      "path": "crates/blanguage/src/check/flow.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/flow.rs",
-      "rev": 11,
-      "change": 13549,
-      "sha256": "aa4521886dad456a391be23fc7629585b91a93e56cb2b9c45b5c0da43bf0c92f"
-    },
-    {
-      "path": "crates/blanguage/src/check/generics.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/generics.rs",
-      "rev": 9,
-      "change": 13435,
-      "sha256": "26623f92f273996411ce39ec371de378ab94b7fff84603b22a71951ee0a4cdc2"
-    },
-    {
-      "path": "crates/blanguage/src/check/matrix.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/matrix.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "23db2cf3ef06c8648570dbf86ed412aea2d32946ef9f4a454380cb9eea72092a"
-    },
-    {
-      "path": "crates/blanguage/src/check/native_function.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/native_function.rs",
-      "rev": 4,
-      "change": 13549,
-      "sha256": "e6b7c03643e3bdce62d884834c0a7e3ada644d43a4a16017cd03d41c95ae173b"
-    },
-    {
-      "path": "crates/blanguage/src/check/owned_records.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/owned_records.rs",
-      "rev": 2,
-      "change": 13435,
-      "sha256": "5a3244420e7efbc697f6b87e17c732bd81c02e75173bfbd4ea57e03c1beffa02"
-    },
-    {
-      "path": "crates/blanguage/src/check/owned_values.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/owned_values.rs",
-      "rev": 5,
-      "change": 13520,
-      "sha256": "0f793a36b051f663c18c55413ece8ad5049e5102feb450524a8b6e59a6e7b889"
+      "sha256": "9c1072111dd51d5e5699ad417aea1c7ec79e81446fb21a289e1741acc79ade71"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/ownership.rs",
-      "rev": 10,
-      "change": 13499,
-      "sha256": "ca17898d6334a0f13c2fe5f19819716cfb709f0718150420f12a645b40b45335"
-    },
-    {
-      "path": "crates/blanguage/src/check/prefix.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/prefix.rs",
-      "rev": 2,
-      "change": 13419,
-      "sha256": "f92231bef9edfcc36a50d2b6ae80e6e95ad187f4c8abae3d919a753730f9b0c9"
-    },
-    {
-      "path": "crates/blanguage/src/check/records.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/records.rs",
-      "rev": 5,
-      "change": 13435,
-      "sha256": "2fb031abe2b86c14447729d63e8580e2ea993184490a7733eec236a8f5e02165"
-    },
-    {
-      "path": "crates/blanguage/src/check/reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/reduce.rs",
-      "rev": 3,
-      "change": 13419,
-      "sha256": "1b7fd9da79292494721de80efed5345d095d1dec1964616a8f0b944a1b8ecea0"
-    },
-    {
-      "path": "crates/blanguage/src/check/results.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/results.rs",
-      "rev": 3,
-      "change": 13435,
-      "sha256": "d7e83cab96dcadf52d7175b682bba799f4dc1861438be7c18f9439f1a14d35d2"
-    },
-    {
-      "path": "crates/blanguage/src/check/returns.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/returns.rs",
-      "rev": 15,
-      "change": 13549,
-      "sha256": "2bd405b7ff15054c4c87529bf3668bde14919a252ffbcbe31ac3ef85721f4763"
-    },
-    {
-      "path": "crates/blanguage/src/check/scan.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/scan.rs",
-      "rev": 4,
-      "change": 13419,
-      "sha256": "c3374f75278359de84d827e24e51ff889b62cb2cb290268d098ed7a15aea9c57"
-    },
-    {
-      "path": "crates/blanguage/src/check/segmented_reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/segmented_reduce.rs",
-      "rev": 3,
-      "change": 13419,
-      "sha256": "fa0189c0a9f0e1f01ebab6697bd348cca33139fd50dddd03b1eb5a65a913d7ad"
-    },
-    {
-      "path": "crates/blanguage/src/check/selection.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/selection.rs",
-      "rev": 8,
-      "change": 13435,
-      "sha256": "4558584d7152835715f437a500f3cb443ab409c3ab12ae6899405fcf08092e24"
-    },
-    {
-      "path": "crates/blanguage/src/check/sort.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/sort.rs",
-      "rev": 4,
-      "change": 13082,
-      "sha256": "e179d49cba163506e6b08a07eb022c39dae9cc42460381f6ea3f2dce8b31c66e"
-    },
-    {
-      "path": "crates/blanguage/src/check/subgroup.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/subgroup.rs",
-      "rev": 3,
-      "change": 13435,
-      "sha256": "8f5a63ece49a7234ed4ea1b9e9512c88e0752404f01df459e2d3c0456ef00d10"
-    },
-    {
-      "path": "crates/blanguage/src/check/texture.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/texture.rs",
-      "rev": 3,
-      "change": 13435,
-      "sha256": "95394a0855fe059878c639c4a91441cefe7ef51b983eca493c1480668bc6c014"
-    },
-    {
-      "path": "crates/blanguage/src/check/tile.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/tile.rs",
-      "rev": 3,
-      "change": 13435,
-      "sha256": "eae1bd44decf4f560d14fd891d38aa83e27ec883449da5250d88449a20562737"
-    },
-    {
-      "path": "crates/blanguage/src/check/view.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/check/view.rs",
-      "rev": 2,
-      "change": 13435,
-      "sha256": "38516956d0fe3f6487c6328f13679819517c3c77893e58d2ed779dee25084eb8"
-    },
-    {
-      "path": "crates/blanguage/src/dll/binding.rs.in",
-      "depot": "//BLanguage/main/crates/blanguage/src/dll/binding.rs.in",
-      "rev": 1,
-      "change": 12966,
-      "sha256": "9cb13418c9fb4e300110f963acf24eeff51961e4ee639b9db24c36a341f4c3a4"
-    },
-    {
-      "path": "crates/blanguage/src/dll/header.h.in",
-      "depot": "//BLanguage/main/crates/blanguage/src/dll/header.h.in",
-      "rev": 2,
-      "change": 13339,
-      "sha256": "ee69ffcbe3a2deae7b8261635bc73950b92233e72745a497aa8825f234d88c47"
-    },
-    {
-      "path": "crates/blanguage/src/dll/library.rs.in",
-      "depot": "//BLanguage/main/crates/blanguage/src/dll/library.rs.in",
-      "rev": 3,
-      "change": 13134,
-      "sha256": "74d5fd57c07dc8d04db8453a9395d8c91ecb93a8ff4fb09b6ccee6f824c4faea"
+      "sha256": "9200c26d4bcc0dccb3131eeeffcafa06ce26a607ce7e264fdc89845dd1fc19e2"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/dll/mod.rs",
-      "rev": 10,
-      "change": 13520,
-      "sha256": "66a87146d8684ea4acb56ba2eeadadfafbb8fa672dd4ad0e1fd175f3c0a57fe7"
-    },
-    {
-      "path": "crates/blanguage/src/dll/source.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/dll/source.rs",
-      "rev": 15,
-      "change": 13520,
-      "sha256": "9bf0a9a0aab98250c6a3c4291cd6e348b0061aa9e10f6ffc287160f1276a44fe"
-    },
-    {
-      "path": "crates/blanguage/src/execution.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/execution.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "5faff9b8546e601cd3b4e1f413402501d1dae34c2052733676b3f118426a31cf"
-    },
-    {
-      "path": "crates/blanguage/src/export.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/export.rs",
-      "rev": 1,
-      "change": 13134,
-      "sha256": "78b5896a3f121804dc021797f55f935e64d1bb439f87a2fb831ce77affd3f06f"
+      "sha256": "9016285e1102722e0f6c859f1aac822b50541f3f1c3488c4ac44f53405076ea1"
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/generics.rs",
-      "rev": 8,
-      "change": 13549,
-      "sha256": "ac5e27c2e266c82accde568064ae18182ac3f9448f252c2fd337a57651919d5f"
+      "sha256": "bf88007a16e0106a5f813aa38cf068e5bb10bd3bd1cf9e99a97c3a95862b1c26"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ir.rs",
-      "rev": 21,
-      "change": 13499,
-      "sha256": "25ae8ddc60acb6955e07ee8dad249d0d1ebff7c4d22957e67d3732ecbedf848a"
-    },
-    {
-      "path": "crates/blanguage/src/ir/atomic.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ir/atomic.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "a9846143f3429384d105c49608a832ff0389d4c385625bddcae6702efec7b8f8"
-    },
-    {
-      "path": "crates/blanguage/src/ir/custom_reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ir/custom_reduce.rs",
-      "rev": 2,
-      "change": 13134,
-      "sha256": "fca3225b4a385a9791d17bfdc8567411f7e8a212991b6eee117ef8160a597393"
-    },
-    {
-      "path": "crates/blanguage/src/ir/execution.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ir/execution.rs",
-      "rev": 2,
-      "change": 13419,
-      "sha256": "56ae6b0a3f79e42a7a24acce4f3f66617104edb4ae45cc34d88ade5fe969d201"
-    },
-    {
-      "path": "crates/blanguage/src/ir/external.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ir/external.rs",
-      "rev": 2,
-      "change": 13499,
-      "sha256": "185ef4bd28d90320d9d92959e3f9eb2821db845626245e690b0b5426b99892a8"
-    },
-    {
-      "path": "crates/blanguage/src/ir/tile.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/ir/tile.rs",
-      "rev": 7,
-      "change": 13499,
-      "sha256": "55afd87f3ce01dd3693c152d4b2d33a8caf351f0f306b8f92e65028ce58184b5"
+      "sha256": "f3abc51f851bb1512ff77684fd8c8547087a5016a60ae8c1aee8ec86959bec5c"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/lexer.rs",
-      "rev": 3,
-      "change": 13523,
-      "sha256": "a1b6810d338b208f888ad95fb8440a76a4ab742fb0fa59d82196504b1ff082c9"
+      "sha256": "049f27632f7f4671b80b9b8c0917fde217836a0447062be173485a8dd63837de"
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/lib.rs",
-      "rev": 17,
-      "change": 13549,
-      "sha256": "930ed896ba5569fcc018a5c80c1637c36ee1bbb7b2004eccb28f8180c9771adc"
-    },
-    {
-      "path": "crates/blanguage/src/linker/combine.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/linker/combine.rs",
-      "rev": 1,
-      "change": 13520,
-      "sha256": "a329b11e8c0cb639c418ff4f7ab38904f60bdc7a5d9d97725508e444d71bd176"
-    },
-    {
-      "path": "crates/blanguage/src/linker/mod.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/linker/mod.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "52a5d5272346d0f9d880e7ac82d6e1ec551d8d2e9b269ebad39f4313a3bcb48f"
-    },
-    {
-      "path": "crates/blanguage/src/linker/msvc.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/linker/msvc.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "67869bbc825a7a90304b8867704cd85d16646b3ec47b26fa5dca057b6b3d8c8c"
-    },
-    {
-      "path": "crates/blanguage/src/linker/pe.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/linker/pe.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "a2cfd93854883dbd77df3bb59efd302a3d1093139085e930a0fca98bc098b659"
-    },
-    {
-      "path": "crates/blanguage/src/linker/resources.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/linker/resources.rs",
-      "rev": 1,
-      "change": 13520,
-      "sha256": "6ae761ce8a3a5159f2e7a8755b84cd12e30fa8edf8c8b3a22ee018f52e69a020"
-    },
-    {
-      "path": "crates/blanguage/src/main.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/main.rs",
-      "rev": 12,
-      "change": 13520,
-      "sha256": "1800683293ceccf5c70b748fbd4d8958051f56be34ef6885b1b3cc7d43d34b13"
-    },
-    {
-      "path": "crates/blanguage/src/module/codec.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/module/codec.rs",
-      "rev": 2,
-      "change": 13543,
-      "sha256": "f6d121ce88601709510d80ce0eb50c777ca98db238aca3cbcac686a44b1d629c"
-    },
-    {
-      "path": "crates/blanguage/src/module/mod.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/module/mod.rs",
-      "rev": 1,
-      "change": 13520,
-      "sha256": "ea4a85497fdd06e4eb5215cbf017e41865c45a1974f5e7859d7bd9133fe9a03e"
+      "sha256": "21cd925fb065903c754039203bec69967d6d6734786b7af8b83888237fa37075"
     },
     {
       "path": "crates/blanguage/src/native.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native.rs",
-      "rev": 22,
-      "change": 13499,
-      "sha256": "8170d153cb917f360d379d6a1f0719baf45674e0c76ada2d4bbe05ae7771a0c6"
+      "sha256": "3abc26385c4b761344a21fe34c877aa0136fbef4bb3bb76f82f02dec1f48e21d"
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/allocation.rs",
-      "rev": 11,
-      "change": 13499,
-      "sha256": "1c5570120704112fb10194280338d7f41f3490371650fd95a6d0408f46eeefbc"
-    },
-    {
-      "path": "crates/blanguage/src/native/append.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/append.rs",
-      "rev": 3,
-      "change": 13289,
-      "sha256": "00a6f4ee7c42d4c792c7b33bb8905b460a66ab5bcdaf0bd2bed293aeff40d6c8"
-    },
-    {
-      "path": "crates/blanguage/src/native/application.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/application.rs",
-      "rev": 7,
-      "change": 13499,
-      "sha256": "b09c8f74081b1f93cca4f07e455c9a00052189d577cb1652838ed70b212fa712"
-    },
-    {
-      "path": "crates/blanguage/src/native/atomic.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/atomic.rs",
-      "rev": 2,
-      "change": 13289,
-      "sha256": "ed44cdbf3fa76481b78dad65f73c4a1dc78806c47903a3a592ce5069b7c3589d"
-    },
-    {
-      "path": "crates/blanguage/src/native/compact.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/compact.rs",
-      "rev": 4,
-      "change": 13403,
-      "sha256": "79e358662b738766c659da9a47b2497365600bc254299e03cd74c91f52774ad0"
-    },
-    {
-      "path": "crates/blanguage/src/native/custom_reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/custom_reduce.rs",
-      "rev": 3,
-      "change": 13403,
-      "sha256": "51b49cb7d97aee392d2efc48dc74a59f429f18d05f21d66df29fa21f96eb6d0e"
-    },
-    {
-      "path": "crates/blanguage/src/native/external.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/external.rs",
-      "rev": 6,
-      "change": 13499,
-      "sha256": "9d54577265fe00bafc55259d4996ed73f09d74ef9b7e7e64f141ef10ee65281d"
-    },
-    {
-      "path": "crates/blanguage/src/native/integer.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/integer.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "83723fcf6c9424dcb89f5bb7b7216a775d7501f7e7fd7ea7f0b8a4172ec9971c"
-    },
-    {
-      "path": "crates/blanguage/src/native/operands.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/operands.rs",
-      "rev": 10,
-      "change": 13443,
-      "sha256": "e5fdbd1acbf6a6290b7f4ae3bbfecda401ebf5e0552bd080fae32231fd3dc8e9"
-    },
-    {
-      "path": "crates/blanguage/src/native/packet.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/packet.rs",
-      "rev": 13,
-      "change": 13429,
-      "sha256": "7192ef9d6ca6688ab24207b27b4dde3518df9b63bb95d401e296f1bf31c764e3"
-    },
-    {
-      "path": "crates/blanguage/src/native/packet/control.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/packet/control.rs",
-      "rev": 2,
-      "change": 13329,
-      "sha256": "181e55237158a09c1d99ba631b49418ef2db8cfc570280459a6a30382283f8bf"
-    },
-    {
-      "path": "crates/blanguage/src/native/packet/integer.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/packet/integer.rs",
-      "rev": 2,
-      "change": 13092,
-      "sha256": "52f321bf7db5f770c0114b826f156eadf5c0c9bdc2a8c5375f3b95c3c0dea99c"
-    },
-    {
-      "path": "crates/blanguage/src/native/packet/memory.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/packet/memory.rs",
-      "rev": 5,
-      "change": 13344,
-      "sha256": "b88b9085ff7481ed5e4a4ae645414d33d8591f1e3d5b8678319e96e8e42aa4c2"
-    },
-    {
-      "path": "crates/blanguage/src/native/program.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/program.rs",
-      "rev": 1,
-      "change": 13134,
-      "sha256": "fe0af494178e4a5a0a43244760992b6255ccc6fe66e8ceda0c2a20e731a39f98"
-    },
-    {
-      "path": "crates/blanguage/src/native/reads.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/reads.rs",
-      "rev": 2,
-      "change": 13391,
-      "sha256": "a65b03f9f5088ad938debb82f0542de51faab47784fe87d3a26f445d5ad94a4e"
-    },
-    {
-      "path": "crates/blanguage/src/native/reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/reduce.rs",
-      "rev": 3,
-      "change": 13403,
-      "sha256": "e36f9228bb40d5e78a2f52dc865e70158e3f622ce4eaacbc931ed0167c3326cc"
-    },
-    {
-      "path": "crates/blanguage/src/native/scan.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/scan.rs",
-      "rev": 4,
-      "change": 13403,
-      "sha256": "af4c312256764c3d0c4c14db967fdeffc07f0ef7c2409babda21d229510264a8"
-    },
-    {
-      "path": "crates/blanguage/src/native/segmented_reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/segmented_reduce.rs",
-      "rev": 3,
-      "change": 13403,
-      "sha256": "31ba03451c201fe03df6d5f2fbd7d5e88118a85419429a72f4d9dd4142a5a8b6"
-    },
-    {
-      "path": "crates/blanguage/src/native/sort.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/sort.rs",
-      "rev": 6,
-      "change": 13403,
-      "sha256": "30deccdaca7e46f12eb0c1e53b7b59e014504ce3ce325a7dfd5d8e8edfc9ad5b"
-    },
-    {
-      "path": "crates/blanguage/src/native/texture.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/texture.rs",
-      "rev": 3,
-      "change": 13383,
-      "sha256": "8a20debbaf5aae0889220108cc9ef414be847d75eac58acdaa92e22159bba929"
-    },
-    {
-      "path": "crates/blanguage/src/native/tile.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/native/tile.rs",
-      "rev": 2,
-      "change": 13277,
-      "sha256": "2427cb5f6ebc158cb82eea70901260663f71ebed03a3a03c920f541af727f397"
-    },
-    {
-      "path": "crates/blanguage/src/object/archive.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/object/archive.rs",
-      "rev": 3,
-      "change": 13520,
-      "sha256": "3a9ca4dc87f19c49deb083b7bf5e7117b40063bc4c692dc8b61a22c81470a220"
-    },
-    {
-      "path": "crates/blanguage/src/object/coff.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/object/coff.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "fdf415fe04e18c1064a086816f01200e03a120a9db116c80f36b6de129bb3abb"
-    },
-    {
-      "path": "crates/blanguage/src/object/emit.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/object/emit.rs",
-      "rev": 3,
-      "change": 13520,
-      "sha256": "17a8872af2139a20fbd6914984c402fdf823103d31eff5045249c527f736db84"
-    },
-    {
-      "path": "crates/blanguage/src/object/mod.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/object/mod.rs",
-      "rev": 2,
-      "change": 13520,
-      "sha256": "f5268f2c8f6b5505d066a65f567eec04a6c5069c83fa2bee6f17c66a94c5c5ec"
-    },
-    {
-      "path": "crates/blanguage/src/object/sdk_abi.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/object/sdk_abi.rs",
-      "rev": 1,
-      "change": 13520,
-      "sha256": "a1bcdb8cce98cb531f90a08025f143481b359e5189d3522b4e4fde94aa39677f"
+      "sha256": "9bb483d6793f778b1181d29abfda893a54ccef9ec84e2f7856fdc318cc68c3bd"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/optimize.rs",
-      "rev": 10,
-      "change": 13499,
-      "sha256": "3e419e050d0dc43f002559bb13f1c317b049d864472e2ad6abcf907a78ac7adc"
-    },
-    {
-      "path": "crates/blanguage/src/optimize/invariant.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/optimize/invariant.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "9ae4c8a07da96b845b86b607d8bf007bc1a4e5b148a7d67474930d02f90272c9"
-    },
-    {
-      "path": "crates/blanguage/src/optimize/selection.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/optimize/selection.rs",
-      "rev": 2,
-      "change": 13131,
-      "sha256": "754b891efc050628ebf884952e8189ccb1229c07c7f3f643767dee5c1793ec8e"
-    },
-    {
-      "path": "crates/blanguage/src/optimize/value_flow.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/optimize/value_flow.rs",
-      "rev": 4,
-      "change": 13499,
-      "sha256": "3919b316c64ec9aa80731cffa5161959d6506662c2c63e09bda2bc38b44a7935"
+      "sha256": "3dfb20916bae31b4c035c1da62711b631538e29d90b5510b353a5c80bcb9036d"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/parser.rs",
-      "rev": 14,
-      "change": 13543,
-      "sha256": "bf950a2071031f4c19046709d55629f4ef541a86826b619d2cad081cf6d4887b"
+      "sha256": "4b1483350a177aa7f6f152ee16fcf2cecc35664f09e3ca8b37ff8a9c298cd243"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv.rs",
-      "rev": 19,
-      "change": 13499,
-      "sha256": "01388b7285043d67a81fd1f97c42a43d325efe2312809db8031938a431ecb2cd"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/append.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/append.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "7f567f167378b40ee92b4c3507c0a8703e3f46e8355578e8a53528fbf621e2f8"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/atomic.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/atomic.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "9dab3814d9b6272c577114f7bcfd554a08511fa70da844b6153ca0a493165437"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/compact.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/compact.rs",
-      "rev": 2,
-      "change": 13254,
-      "sha256": "82eaef8d2d9017adb1e45ebcc31b950f1765624196ea48d78c394c232219ff8e"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/custom_reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/custom_reduce.rs",
-      "rev": 3,
-      "change": 13419,
-      "sha256": "d57edfd5e8f1912a8612a8e8799011e12d91de31a812cce2924e53d205565cf6"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/prefix.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/prefix.rs",
-      "rev": 2,
-      "change": 12981,
-      "sha256": "d2aac576be54b7bc023ddd28c201195e13373b5be0e7b32bfa480581d1ffc843"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/program.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/program.rs",
-      "rev": 1,
-      "change": 13134,
-      "sha256": "a22f4dfdc49a41fc3f89f9363484bbc5a8cc1431b401738d7440d6c8d754b716"
+      "sha256": "55db8669640d637b136a797b1463d3c19a082995a370f089b04c6b8d4b81a50a"
     },
     {
       "path": "crates/blanguage/src/spirv/reduce.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/reduce.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "f992f6b0a37b3721b4eae9b5c12cc57febb695ae4e2313a440b6b01d6dfd666e"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/returns.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/returns.rs",
-      "rev": 2,
-      "change": 13085,
-      "sha256": "7893062fb637cd921d8cbce2aaf192c1981ff5357cce3dd2352e6c42467eecd2"
+      "sha256": "670d33ea850002bd4c930cad6d4c8ed8d1328c34ff625384b966b6d86984f136"
     },
     {
       "path": "crates/blanguage/src/spirv/scan.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/scan.rs",
-      "rev": 4,
-      "change": 13419,
-      "sha256": "35061041a37fe8d86f2377c064787ee206d1fcfb07438d0bbb3ebb3d13e23986"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/segmented.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/segmented.rs",
-      "rev": 3,
-      "change": 13419,
-      "sha256": "3e5d05581168422fc0b1b189d8d69d602ec829acf67849725bfd5e0f533b7e85"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/selection.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/selection.rs",
-      "rev": 1,
-      "change": 12981,
-      "sha256": "a04feb98f84e7caa79f089e3dcdc3f55430a464b3873cb09eb6d1285283eb750"
+      "sha256": "df5667c6ef50efeb61d2aa2820e2732936e7b407235a2a9ba9cb9b78b24f9a96"
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/sort.rs",
-      "rev": 5,
-      "change": 13254,
-      "sha256": "71433c9086254b6c2397ed610eab19045e5ba82c4b9dfeb8cad634699632a8d6"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/subgroup.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/subgroup.rs",
-      "rev": 2,
-      "change": 13067,
-      "sha256": "8717d77780d05005c8f21b7ac0405701d9fcdb7746756471cd4647022387544d"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/texture.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/texture.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "5700ae176b9bbb7fda87f852bed87c3d85ce46b2b17b569825266beb73535b98"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/tile.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/tile.rs",
-      "rev": 2,
-      "change": 13085,
-      "sha256": "f6076bc8e9d7d6355e9a81a7b5292953803df42c96e8140ade207d5348f510e8"
-    },
-    {
-      "path": "crates/blanguage/src/spirv/tile_collective.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/spirv/tile_collective.rs",
-      "rev": 2,
-      "change": 12994,
-      "sha256": "2ebe712f98ba8d0d00c376ef93031f77ef4dbed8b4b7587cd5bdda990b91c13f"
-    },
-    {
-      "path": "crates/blanguage/src/type_sets.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/type_sets.rs",
-      "rev": 3,
-      "change": 13425,
-      "sha256": "8de904da57e54636d21a5d5b91c2bc9a13b9aa8848019da12e504f3867270d12"
-    },
-    {
-      "path": "crates/blanguage/src/value_parameters.rs",
-      "depot": "//BLanguage/main/crates/blanguage/src/value_parameters.rs",
-      "rev": 2,
-      "change": 12867,
-      "sha256": "4e2dcb7c98a96704ac9cc274b1df9ee4572858280b00285515b5fa8f40a64e1e"
-    },
-    {
-      "path": "crates/blcompute/Cargo.toml",
-      "depot": "//BLanguage/main/crates/blcompute/Cargo.toml",
-      "rev": 2,
-      "change": 12949,
-      "sha256": "25160958a49be02c0f5282183237339570d2cb1ec18c74be4c7d1e72a227c53e"
-    },
-    {
-      "path": "crates/blcompute/src/application.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/application.rs",
-      "rev": 4,
-      "change": 13520,
-      "sha256": "d63a381d8db520059e52f3074c1eab0c5e3f6d8542231dacd567c1725b966eae"
-    },
-    {
-      "path": "crates/blcompute/src/application/abi.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/application/abi.rs",
-      "rev": 1,
-      "change": 13520,
-      "sha256": "e43e3058d294133ff5d38189fcd66fc0992b0c08f6437ef8111327e2bb2e9d86"
-    },
-    {
-      "path": "crates/blcompute/src/bindings.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/bindings.rs",
-      "rev": 5,
-      "change": 13292,
-      "sha256": "e135706d77c31bcd7382a1a8ddc2e31e8f6783b43c13d8106514e92b6c89868a"
+      "sha256": "c372b0e9858fe641ffbf996dc404f832a59b51e3c0c11235f64348a67805db9c"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/cpu.rs",
-      "rev": 9,
-      "change": 13499,
-      "sha256": "c5c2c01d703602b46af6e3bfa350d9d3ae9be8d9333bbd1caaa37ce43f0d29d3"
-    },
-    {
-      "path": "crates/blcompute/src/cpu/dataset.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/cpu/dataset.rs",
-      "rev": 1,
-      "change": 13292,
-      "sha256": "5ad79a07921027f937f134e6d0879a89ffe8c6818b7e93e69f6d1889c17695e6"
-    },
-    {
-      "path": "crates/blcompute/src/cpu/sort.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/cpu/sort.rs",
-      "rev": 3,
-      "change": 13134,
-      "sha256": "ae46028a1f568772c6b67c3a7a8e4b7c455d860afe72962d027cca52a3b911bc"
-    },
-    {
-      "path": "crates/blcompute/src/ffi.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/ffi.rs",
-      "rev": 2,
-      "change": 13134,
-      "sha256": "b1592f4fbc1eb9028b25311c89cdf7fecb6cba9b5f02f30369c3d8b97de5cf50"
+      "sha256": "3c3c8e9711bcfc3cd3adcd5d336c5c7865784734bb6cae15fb59057727892042"
     },
     {
       "path": "crates/blcompute/src/lib.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/lib.rs",
-      "rev": 9,
-      "change": 13383,
-      "sha256": "e902b3c7a0d772fda0c3dc3d2b70662542a3d12c317e89a31888f89f8cd24e3b"
-    },
-    {
-      "path": "crates/blcompute/src/main.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/main.rs",
-      "rev": 1,
-      "change": 12949,
-      "sha256": "1737c5e4109d034971886e80ef29f2cadc7d2c99b0a313d51ec93fcc788c5ecf"
-    },
-    {
-      "path": "crates/blcompute/src/texture.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/texture.rs",
-      "rev": 4,
-      "change": 13383,
-      "sha256": "a517a82082889a7a76c8e0dc2b4f95b0d8e6c852d83fb2723a377a3af18b13c4"
-    },
-    {
-      "path": "crates/blcompute/src/views.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/views.rs",
-      "rev": 2,
-      "change": 13292,
-      "sha256": "857875acdc31a2da3bc3ef201b28a8d19501c0dc343c60279825651bb2e65cec"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/compact.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/compact.rs",
-      "rev": 3,
-      "change": 13419,
-      "sha256": "a15e1b5afd324d96ddb80142ab7d4297df5063670dd82a7265a4d26e33012cf6"
+      "sha256": "18419ab9df4b7392f66ae6cc385bdc0e9fd3b8753d7bd7b7480f36a4ba721d78"
     },
     {
       "path": "crates/blcompute/src/vulkan/execution.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/execution.rs",
-      "rev": 8,
-      "change": 13385,
       "sha256": "11c7097ec6798697c0b9d2123b0a5502aa9ebdc9d829979c00ea10411e0d73a4"
     },
     {
-      "path": "crates/blcompute/src/vulkan/memory.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/memory.rs",
-      "rev": 2,
-      "change": 13406,
-      "sha256": "c24ba4b4904fa02f72dfaaaaccf6d26bfb0eda141e9bfd930620b4f835166507"
-    },
-    {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/mod.rs",
-      "rev": 27,
-      "change": 13465,
-      "sha256": "fcaf474eacf9e1fd535ab7251c11825ac69d1175783099c1440934700eda5009"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/prefix.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/prefix.rs",
-      "rev": 5,
-      "change": 13419,
-      "sha256": "ddc4506dd2d223e921e274cf29e42270ea431a2bfd84ae183d38d5556b472c5c"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/present.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/present.rs",
-      "rev": 4,
-      "change": 13465,
-      "sha256": "07b3e7d3d25a58083b9b3fb75c495fc27041b7d623ac8383e97cd16b00fa89bc"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/raw.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/raw.rs",
-      "rev": 1,
-      "change": 12860,
-      "sha256": "9c05125837d42680403f770820b3c8b9c74ebd8a400a575bd1f9524183a237c3"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/ray.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/ray.rs",
-      "rev": 11,
-      "change": 13393,
-      "sha256": "f19286bd5bd68fe473283c98c7be696d48dbfe47ed2325ba8094821f9c849e29"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/scan.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/scan.rs",
-      "rev": 3,
-      "change": 13419,
-      "sha256": "57a1007dcee483cf48a65b4ab83976725527e057a606a54881b9110c17f01da7"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/selection.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/selection.rs",
-      "rev": 2,
-      "change": 13419,
-      "sha256": "dfc1ab5c0ec721464229aebf5913d21e601f4c8fa65e29fbecb424f3caab1894"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/sort.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/sort.rs",
-      "rev": 8,
-      "change": 13419,
-      "sha256": "1c463312ec90a304fde8b4e1a294464201fbf000288f524080cabb4dbe4a6211"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/texture.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/texture.rs",
-      "rev": 5,
-      "change": 13383,
-      "sha256": "435e8140435bcbc2037bfd6d12a99535e25307bf9b09ed0e84db9072eb1dd412"
-    },
-    {
-      "path": "crates/blcompute/src/vulkan/transfer.rs",
-      "depot": "//BLanguage/main/crates/blcompute/src/vulkan/transfer.rs",
-      "rev": 6,
-      "change": 13346,
-      "sha256": "e1db3b6bfdaa14cd669c45276abe57bff27b77014fe0c99b8bcc63c5a156f2ba"
-    },
-    {
-      "path": "sample/lessons/algebra.b",
-      "depot": "//BLanguage/main/sample/lessons/algebra.b",
-      "rev": 2,
-      "change": 13482,
-      "sha256": "2b532a143868633c19c2bb688fbc5c9e95c175f1c510552fa0d8ed7497a8d491"
-    },
-    {
-      "path": "sample/lessons/algebra.h",
-      "depot": "//BLanguage/main/sample/lessons/algebra.h",
-      "rev": 2,
-      "change": 13482,
-      "sha256": "0cae801d4fa719ebc6f8be6a9d74ca3436507c8b8b75ad8942e7f32a695dcb8e"
+      "sha256": "5056a318e39c846a37e5793a5aab41df215a037e6de843663cf9f67a23a8c4cd"
     },
     {
       "path": "sample/lessons/map.b",
-      "depot": "//BLanguage/main/sample/lessons/map.b",
-      "rev": 3,
-      "change": 13482,
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
-    },
-    {
-      "path": "sample/lessons/map.h",
-      "depot": "//BLanguage/main/sample/lessons/map.h",
-      "rev": 3,
-      "change": 13482,
-      "sha256": "ebdf405b5bfda0180844d493f83da541fc54d96806a7e7af28c895772886b288"
-    },
-    {
-      "path": "sample/lessons/pipeline.b",
-      "depot": "//BLanguage/main/sample/lessons/pipeline.b",
-      "rev": 2,
-      "change": 13482,
-      "sha256": "738fa398476b3087bf2348fe9dc86a0ecdefa5d3c783f89beb9215fd1c10c0fe"
-    },
-    {
-      "path": "sample/lessons/pipeline.h",
-      "depot": "//BLanguage/main/sample/lessons/pipeline.h",
-      "rev": 2,
-      "change": 13482,
-      "sha256": "78c673c75a066135d1c467edc889b6544e2e601868303938d75f23bf28d044bb"
-    },
-    {
-      "path": "sample/lessons/scan.b",
-      "depot": "//BLanguage/main/sample/lessons/scan.b",
-      "rev": 3,
-      "change": 13482,
-      "sha256": "494b9f4168ace5b837e53cefcdf55c63c53a477a3e8fa59076d5c0a9c65f9f89"
-    },
-    {
-      "path": "sample/lessons/scan.h",
-      "depot": "//BLanguage/main/sample/lessons/scan.h",
-      "rev": 3,
-      "change": 13482,
-      "sha256": "933bd2766f865e17bbc26c8fe4b7d84789c574970f75ab0cfa2e24f3b9f640c8"
-    },
-    {
-      "path": "sample/lessons/tiles.b",
-      "depot": "//BLanguage/main/sample/lessons/tiles.b",
-      "rev": 2,
-      "change": 13482,
-      "sha256": "e4cae25cb84e4b741723d7ed248c7bc2a1da214f55e443ec5ce99e8dd84a7400"
-    },
-    {
-      "path": "sample/lessons/tiles.h",
-      "depot": "//BLanguage/main/sample/lessons/tiles.h",
-      "rev": 2,
-      "change": 13482,
-      "sha256": "5d39d4ae9476236f405d6f2f2bfcc89fab0334acce8d6eb6d6d23303428dd720"
     }
   ],
   "excerpts": [
@@ -1059,556 +96,319 @@
       "path": "sample/lessons/map.b",
       "start_line": 9,
       "end_line": 13,
-      "sha256": "3a96243b6fba0c0a3d2ce9ab66b4a3e580949475dab652258c55f7703bbb7609"
+      "sha256": "f7dbd4fa0738d557586b187eddc121bef082a66b43b698f6538639961cd1a551"
     },
     {
       "path": "sample/lessons/map.b",
       "start_line": 1,
       "end_line": 7,
-      "sha256": "e9861cb4a4b5f68bdf67975c7f39b26e1d4c3dacd78abbb3f5df18bc40a52283"
+      "sha256": "561f84035f69dd74750360e311839b1d92cf51d456252ab0289b7472af04de9b"
     },
     {
       "path": "sample/lessons/map.b",
       "start_line": 15,
       "end_line": 18,
-      "sha256": "95fc48c51f627a6b26978272ad74bd80174871739cc8629edeacfa220e996850"
+      "sha256": "5e30ecaad9b7752b98a1b9a36b1273931a0ad9cd4c55b509a0a5ce6655c02970"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 163,
-      "end_line": 190,
-      "sha256": "da38045897d3a4121b388c8898bb5e4130def045854d83e7a7400c07d9e13ea5"
+      "start_line": 264,
+      "end_line": 289,
+      "sha256": "4f2b1048254381f3bbec608e79c267185f0830b879e058406599c5353cd79802"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 25,
-      "end_line": 39,
-      "sha256": "e2c2ba57b3da9ae62835774c0b2c7f39ca6c244eb6116054bcd6bd716c271e42"
+      "start_line": 94,
+      "end_line": 110,
+      "sha256": "863a74f7f3a900b40983d5cd3af7c03b37f4c9a77694c220d4b8cf11b53f033d"
     },
     {
       "path": "crates/blcompute/src/lib.rs",
-      "start_line": 43,
-      "end_line": 49,
-      "sha256": "fa5befe32f0abd1236e4b9b06d889a339baa76b8848e7acd9a29d891b60dcb31"
+      "start_line": 79,
+      "end_line": 85,
+      "sha256": "4a9c13a6ee9ea37677be3219434623a4f8ca358a542d071f8e5c61ab3249d908"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
       "start_line": 6,
       "end_line": 14,
-      "sha256": "423800c6d8a04c0ce541428a9948cc8940db29049e24d5cd509177e3ab53f4d4"
+      "sha256": "6d4e626548820b1370ff488f1799e9a0c4ce0256d6dead281c114ff3bd6d20ae"
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "start_line": 102,
-      "end_line": 114,
-      "sha256": "678da92a989f82c6cb7a17fbe71a5e696dbf1fb45fdb232202761a351d94f7a4"
+      "start_line": 126,
+      "end_line": 138,
+      "sha256": "f3cd02d756a18b10ae711e9fe9119f29c71c8cb7f266d020843178b17376a870"
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "start_line": 392,
-      "end_line": 403,
-      "sha256": "6a793386073189f973a8754455b3782058e6077684250ac5fca295e40d8e02ba"
+      "start_line": 449,
+      "end_line": 453,
+      "sha256": "e1b68eb7af3560243810d79d8b974c3f0eeba69351fd7d081e0989e884e9c320"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
       "start_line": 3,
       "end_line": 7,
-      "sha256": "d29a6ff8e9765fadcd70fe4f83b3b47250d4e4a8aad7ed00790518e194fd7f44"
+      "sha256": "c3742f4216a91c8fa13531fc9a80564e1f8f8a5f800b69c3ca79fbabdad0a7d2"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
-      "start_line": 78,
-      "end_line": 85,
-      "sha256": "3ea41ac63ef2ba27d35144af3290c1a23331b35168cf2680d5e8b44409c56e81"
+      "start_line": 85,
+      "end_line": 92,
+      "sha256": "e8fa33393ff0a34aa3c59f4973c2639bc5986c0c21245c0539f4b56fde737e62"
     },
     {
       "path": "crates/blanguage/src/ast.rs",
       "start_line": 3,
-      "end_line": 8,
-      "sha256": "4beca50239f1d3d156869e29d4f91144ed2c17cfa685e3a96c70e9a5b90d9b25"
+      "end_line": 7,
+      "sha256": "87b4cd94e6af642b7cecc29ce70dae66e2710f7324741b89a73bffc721eb7895"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
       "start_line": 31,
       "end_line": 50,
-      "sha256": "d531ad9ca198ebdf23485cf9aceaf5b0a805ae1d091722647a811e127a970f37"
+      "sha256": "c4af17a1ea14fed1b4c524b25d4847ca1aad9fd2932a24dec6f47816c40b6804"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "start_line": 1009,
-      "end_line": 1034,
-      "sha256": "51b5888edb22b27007560824f36d04bcf48381201210403b9939ca4a63974732"
+      "start_line": 997,
+      "end_line": 1022,
+      "sha256": "ca5be50a5c7bbf57509915a4d6a8ac5edfac8b60773cc1a6d79a1d897bd07660"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 141,
-      "end_line": 162,
-      "sha256": "4985bac6887bcafff06e4f38344513bc4ac882a3e4e9e70c57a22cf20f4432dc"
+      "start_line": 247,
+      "end_line": 263,
+      "sha256": "6d2d0eb8007fdcae817e42b8f10c1cba61cf55fb1bc897fc8fc12a455625514f"
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "start_line": 47,
-      "end_line": 58,
-      "sha256": "d9dbb3c211385890209b746db857b8c0c5dcee0b01a65d42b24434dfe289aa59"
+      "start_line": 50,
+      "end_line": 61,
+      "sha256": "9780eac81f1fc0e72fa5abf2b7327020061f58c8ae1186dfd0f902b8d1adb39e"
     },
     {
       "path": "crates/blanguage/src/ast.rs",
       "start_line": 54,
       "end_line": 69,
-      "sha256": "9847724d1927acbc7ec381988b6bc7c765ba65555f26c78efdfe0e0aa8b26357"
+      "sha256": "da1b54d8e7b9292cfffc441a9f77d4ade6172ea21ff004124cd3083141c6467c"
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3419,
-      "end_line": 3472,
-      "sha256": "1f70701f3a3af17b1d80c035b332eb474a6e41c439d3583552a48aa43389da54"
+      "start_line": 3737,
+      "end_line": 3780,
+      "sha256": "59565dcf7ba3f581670ae2754bfad56c5093be1760e4f8b9ea66ccdd3c716864"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
-      "start_line": 18,
-      "end_line": 25,
-      "sha256": "43add16fa30c6e7294f719a704a7c65336c6049a8c5d28a272aac20bbef18d29"
+      "start_line": 22,
+      "end_line": 32,
+      "sha256": "761bc1f1844a8e2669acd38e0efd129cfd880a04c45ac54016e96258bb59bcb7"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 19,
-      "end_line": 27,
-      "sha256": "1919b50b9b2eb0fb02bade44de502a83fb3f4a7dee28a7752b4760c9b646627a"
+      "start_line": 21,
+      "end_line": 33,
+      "sha256": "46234a3079a657f2e0fc95f0e681172d3786ec84ff3bb52643d4fe94ce288906"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 331,
-      "end_line": 344,
-      "sha256": "3ac57f18117bde570e91942408a3f978a1b31a69fb5294078a5367959aa7a54f"
+      "start_line": 659,
+      "end_line": 672,
+      "sha256": "7bf3a786eb49c02350fc6afd175356e927cfecf6bc1f9a91cbcad3ccccf17f5e"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 696,
-      "end_line": 700,
-      "sha256": "9fd4ed44f50e4cb9417176b4c5eb450c20626c511081b732f27d937bacc75af6"
+      "start_line": 844,
+      "end_line": 848,
+      "sha256": "02b9cd96f747df15267bee17db14af26bfbf8adcb5fe51ce0d42c6e55bcf075e"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 715,
-      "end_line": 737,
-      "sha256": "5d62e76dce3d019de6f4abb0822aa4008b0da9cf1d9a658c91a50a5dc6c1480d"
+      "start_line": 863,
+      "end_line": 885,
+      "sha256": "b7aaedbab5cb15a255d423a3df067bdcc22160c7a93fff331ac1ef3e565014aa"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 916,
-      "end_line": 930,
-      "sha256": "d3c4fb6093f1a76609b0a56667b30842e01547e6bef5f9e6c5665cb9f57889fb"
+      "start_line": 1058,
+      "end_line": 1073,
+      "sha256": "2cb551733663f329c2d1fe7b581fd36102ced79a68a41f881f05612af04d212c"
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 348,
-      "end_line": 363,
-      "sha256": "c28bf8cd6337bca1d19693290750558ab4005170ce4edf37cf6eccbf3fd2dcc4"
+      "start_line": 387,
+      "end_line": 403,
+      "sha256": "f2ea57bd89a3b606d066dfe4db8cb80ed121f0634d2f761404f6a69e4cd4a90e"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
       "start_line": 12,
       "end_line": 45,
-      "sha256": "defba598eb56d3f677bdc68fcfef957b84126c29286703d93b0c6a6675edc921"
+      "sha256": "b83f23e376f4b778ea20cc55da816e134e3b98dc7ce415d265c37192c12d509f"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
-      "start_line": 224,
-      "end_line": 229,
-      "sha256": "8628b308c128e531edbaea1eebd6d0e507e52f08bde51fe04a2eafe5d0f3c3e2"
+      "start_line": 257,
+      "end_line": 261,
+      "sha256": "58441613af1e5d9e91f6d6ef03c1b38c0821b2a9327684e57b6da6b490847eab"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 758,
-      "end_line": 772,
-      "sha256": "5fa3c99d5bdcd3fa3bc0b7930678922b3f7eaf4d008dbabe1d589eaa927b5bac"
+      "start_line": 906,
+      "end_line": 920,
+      "sha256": "f066d8f1640abc55fd72726420849c886bf34fe9520b96963e88aba5ca811157"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
       "start_line": 32,
       "end_line": 32,
-      "sha256": "120808e631a520d7b5d8e04bfa11f1c6cedf469597c5c8253e27f0387be32df5"
+      "sha256": "554a638c6c763d733411ffd6c1c118bf97b61329ca9a6f6787503ead72e01d9d"
     },
     {
       "path": "crates/blanguage/src/native.rs",
-      "start_line": 131,
-      "end_line": 138,
-      "sha256": "abb77ae8f7914329aaf1040ed9d38d3fecd74cca742e659fbdbceeae7d5ec92a"
+      "start_line": 116,
+      "end_line": 123,
+      "sha256": "29dc2a9e7c3dfaeab462be5912fdec5ead51eba6deb0969a86bdd451900caed0"
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
       "start_line": 5,
       "end_line": 11,
-      "sha256": "bcc1eb8802b97e175d17e7c360ee0374c37408cccbce69938ce6108bee8c91b9"
+      "sha256": "892ca54b513ccaef2904e8220bb5dd4fac183ee15f20747b47de1fe4cf25e715"
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
-      "start_line": 50,
+      "start_line": 51,
+      "end_line": 68,
+      "sha256": "93906ad71bb1bc2732789c12ee5beae35cee7ae6a68eb08f2062289618167c31"
+    },
+    {
+      "path": "crates/blanguage/src/native.rs",
+      "start_line": 130,
+      "end_line": 143,
+      "sha256": "8649c0b5b1b04d260a557134bb99d41d77ec2505d6df991d43ea21aa00ba9d91"
+    },
+    {
+      "path": "crates/blanguage/src/native.rs",
+      "start_line": 62,
       "end_line": 67,
-      "sha256": "7fe5a69dae12734c88fa17b1e87d0c909db29cf7f903f9ebebb56338ebfcc406"
-    },
-    {
-      "path": "crates/blanguage/src/native.rs",
-      "start_line": 145,
-      "end_line": 158,
-      "sha256": "cd51e878ed0a6b8a141c2127aaddaede9b61066743f6bd5a0561a9ae4256e5d8"
-    },
-    {
-      "path": "crates/blanguage/src/native.rs",
-      "start_line": 77,
-      "end_line": 82,
-      "sha256": "ea6ca1fe5448d9040b4c2ff92a86e2f6ec71d9d32fdb0c670613965cc93f5dad"
+      "sha256": "79de40f9a694949e30b9dff459e4170bcfc19bc1e4df5b29ae8db1805ee72303"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
       "start_line": 63,
       "end_line": 68,
-      "sha256": "ff51687ba21c0146f608616103b8b527db35c32f9a5496945cc07c5190cbd962"
+      "sha256": "1f85b59c4416ec6c51bd7bb674c96b54e84d1e4a23277a098128c3e41248994d"
     },
     {
       "path": "crates/blanguage/src/native.rs",
-      "start_line": 676,
-      "end_line": 687,
-      "sha256": "6b275e9e25664d72396a539fa503e7d32f5c1ce7dd43f519025413e8abf831a9"
+      "start_line": 649,
+      "end_line": 660,
+      "sha256": "46e5e416775193a39a95d56ae0a3e1c716b34415eda27b3079d388b68b612f75"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
-      "start_line": 234,
-      "end_line": 253,
-      "sha256": "99fdd300a7341f0077de8a8046f5cbfdcfb25d1cf8e4a1ee13745d01eeddff9f"
+      "start_line": 240,
+      "end_line": 259,
+      "sha256": "2064d3a5c82fbf510aad369dd634c7d391b7362775eed866e90c2ccb9f016b5e"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
       "start_line": 43,
       "end_line": 46,
-      "sha256": "499ab5670e43adc9ba7f0ec27f361cf4b399a49d66e1e588ed1bec11746623fe"
+      "sha256": "cb2f1f01c782224407c74c4e549441ee78702f366e7b75fcf907fd4b34c741f9"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
       "start_line": 21,
       "end_line": 37,
-      "sha256": "86e390b755fdd33bb3b356cfaf2e078cba0b252bf991c8c38e34cdd115dfa7c3"
+      "sha256": "7ccd9007574fbc3fd5a3086a609ccb8f614b086210b1ff243078541133a4b6e6"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1784,
-      "end_line": 1790,
-      "sha256": "515f43f65aa0d6fbd86ff7e2b01c81dc845b51cc50e9790025b96cc213f03004"
+      "start_line": 1837,
+      "end_line": 1843,
+      "sha256": "d21f3fe40fd07361c83ec266a04fef7e1b77d6d38249b02c58842c85fc09c5b1"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
       "start_line": 40,
       "end_line": 41,
-      "sha256": "0070efcce2ab23cb21741c4f054d9a49e537e71df89aa84f16c4ff040de0c54e"
+      "sha256": "28762975ecd9a67e1c9a125e65026f579dc70fc4b85ac0acdb6614ab2eb07bce"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1566,
-      "end_line": 1575,
-      "sha256": "85b86a97b7a10259146bc86b042f93fd9b2662c37b3995f9cb73fc7639b1bc4f"
+      "start_line": 1601,
+      "end_line": 1610,
+      "sha256": "d2ad30e21a1b18aa218370c73c6a706f8943227bed385257c78ed65d63f172fb"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1814,
-      "end_line": 1823,
-      "sha256": "2e3f4f33a185a005ea1b825e68acbfea755a204cb5ea63e57cdcbf84dc8dab38"
+      "start_line": 1867,
+      "end_line": 1876,
+      "sha256": "330b8f7a6354a7327a808e069c81b97c03a415370452e30f27a14b2731f68547"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 903,
-      "end_line": 923,
-      "sha256": "fc90689202891ac6fae11d77481a6ab19c1663e4d93cae59877a87db773592fc"
+      "start_line": 1006,
+      "end_line": 1026,
+      "sha256": "21a9e4ace359749d30866dd350f30d843e712cefcb97d5e58c83fc451f7c31d7"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 933,
-      "end_line": 943,
-      "sha256": "5bb0d040dd4c78d078533bc1f2d59b272b9415974e9d87c180c2f270cfae75be"
+      "start_line": 1036,
+      "end_line": 1046,
+      "sha256": "bb724cd76da39e691442eb9ff48c06f9adea442fa28fedea2da4c69ec41e620e"
     },
     {
       "path": "crates/blcompute/src/vulkan/execution.rs",
       "start_line": 27,
       "end_line": 33,
-      "sha256": "609e6bf6386d68477b69a99d8a09e5907dcb46fb31d57ad9f7064b75ca65f2a1"
+      "sha256": "546e0b3c216cc7efac8cad74c23a3944039ad9a2dfbceba02bbf223e207a79f7"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2579,
-      "end_line": 2594,
-      "sha256": "1b9250134bf807852db03568883cac273409a880f90b1a95a765b91458dd0088"
+      "start_line": 2694,
+      "end_line": 2709,
+      "sha256": "13af691a11199435dc26a65caa370be69091dd073ea6b94b3e2497cf38126649"
     },
     {
       "path": "crates/blanguage/src/spirv/reduce.rs",
-      "start_line": 112,
-      "end_line": 123,
-      "sha256": "768cfd7384f1454cee0a7f6b213553c7b83c58eac30ad5f6ecae8ca3fbf7dcc7"
+      "start_line": 111,
+      "end_line": 122,
+      "sha256": "d159ae7045ff754b9001ab6b0512d2bc05af5fa25d7c1515c8557db97b4b4b96"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2346,
-      "end_line": 2352,
-      "sha256": "f82024fa2686639f4fd3d063b85a28cc09604961db4d63d2221484b201de56ce"
+      "start_line": 2417,
+      "end_line": 2423,
+      "sha256": "b470575fc07420dcd734adc4fe9c0ea041a7ca49da9038108ed7c7ef67b0f2e4"
     },
     {
       "path": "crates/blanguage/src/spirv/scan.rs",
       "start_line": 33,
       "end_line": 37,
-      "sha256": "170bcbebf23f2d73b398bcb4209b2a020c14eeeb9bca372edb8acd6046c0352c"
+      "sha256": "4e00f055df7e1e35ec784882dfb7c32775fa5e338f07fb7afd179dbb5fa289d3"
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
-      "start_line": 71,
-      "end_line": 72,
-      "sha256": "633c0d4dd9ec48f519065bb9cb954a498175d36b242cdd9eb569cc605f80ca2a"
+      "start_line": 66,
+      "end_line": 67,
+      "sha256": "cf379d65b8bf18f8a646222daead2e9e1f9bc69f486f39f772c542adf8107caf"
     },
     {
       "path": "crates/blanguage/src/spirv/sort.rs",
-      "start_line": 49,
-      "end_line": 64,
-      "sha256": "e70db004cc8c19ac3de6117df03fb017f10731e0c8117de5e09182e65d9792e5"
+      "start_line": 36,
+      "end_line": 59,
+      "sha256": "61cefeee1a40ed4318f864f3b8b5ca18cb2ce9e3f3a6ff3d689afae11ce9e8c1"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "start_line": 229,
-      "end_line": 249,
-      "sha256": "122fbe435ca87f0c715efc6736b86fe3b40ab31c0b2dd37ca82dc91919778f02"
+      "start_line": 257,
+      "end_line": 286,
+      "sha256": "5c02eae48e6792f6d7b1a8bab6e66c77261ee5274d3c8e8d8ce244c20e51dd93"
     }
-  ],
-  "native_run": {
-    "blink_changelist": 13553,
-    "engine_changelist": 13541,
-    "records": [
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blc.exe",
-          "check",
-          "sample/lessons/map.b",
-          "sample",
-          "demo"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.10045010002795607,
-        "stdout": "program lessons.map::demo on Compute\npush_constants=12 bytes, source_stages=2, executable_stages=1\n  binding 0: InOut values : f32, stride=4, shape=None\n  stage 0: Map, domain=values, reads=[], writes=[0], scalar_values=8, locals=0, prefix=None, selection=None\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blc.exe",
-          "build",
-          "sample/lessons/map.b",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\MapCode",
-          "sample",
-          "demo"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.014656299958005548,
-        "stdout": "program lessons.map::demo on Compute\npush_constants=12 bytes, source_stages=2, executable_stages=1\n  binding 0: InOut values : f32, stride=4, shape=None\n  stage 0: Map, domain=values, reads=[], writes=[0], scalar_values=8, locals=0, prefix=None, selection=None\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blrun.exe",
-          "cpu",
-          "sample/lessons/map.b",
-          "demo",
-          "sample",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Mapcpu",
-          ":4"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.10527810000348836,
-        "stdout": "program lessons.map::demo on Compute\npush_constants=12 bytes, source_stages=2, executable_stages=1\n  binding 0: InOut values : f32, stride=4, shape=None\n  stage 0: Map, domain=values, reads=[], writes=[0], scalar_values=8, locals=0, prefix=None, selection=None\n\ncompute_elapsed_ms=0.634\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blrun.exe",
-          "gpu",
-          "sample/lessons/map.b",
-          "demo",
-          "sample",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Mapgpu",
-          ":4"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.1625422000652179,
-        "stdout": "program lessons.map::demo on Compute\npush_constants=12 bytes, source_stages=2, executable_stages=1\n  binding 0: InOut values : f32, stride=4, shape=None\n  stage 0: Map, domain=values, reads=[], writes=[0], scalar_values=8, locals=0, prefix=None, selection=None\n\nGPU AMD Radeon RX 9070 GRE\nGPU_program_ms=0.008\ncompute_elapsed_ms=125.873\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blc.exe",
-          "-c",
-          "sample/applications/start.b",
-          "-o",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\start.obj"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.015299799968488514,
-        "stdout": "object applications.start::main -> B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\start.obj\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\bllink.exe",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\start.obj",
-          "-o",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\start.exe"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.05122489994391799,
-        "stdout": "linked 1 object(s) -> B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\start.exe\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\start.exe"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage",
-        "exit": 0,
-        "wall_seconds": 0.034471899969503284,
-        "stdout": "3\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "device"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 0.20631020003929734,
-        "stdout": "Vulkan device: AMD Radeon RX 9070 GRE\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "cook",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\cube.obj",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\cube.blgeom"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 0.014088000054471195,
-        "stdout": "vertices=24 triangles=12 materials=2 output=B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\cube.blgeom\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "cook-scene",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\reading.blscene.txt",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\reading.blscene"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 0.012858600006438792,
-        "stdout": "scene_declared_meshes=1 scene_nodes=7 output=B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\reading.blscene\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "render",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\reading.blscene",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\frame.ppm"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 5.02579300000798,
-        "stdout": "GPU AMD Radeon RX 9070 GRE\nscene_declared_meshes=1 scene_nodes=7 scene_instances=2\nGPU_program_ms=227.346 stages_ms=[225.6618, 1.4352] render_readback_write_ms=304.961 output=B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\frame.ppm\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "render-views",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\reading.blscene",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\views"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 5.277314999955706,
-        "stdout": "GPU AMD Radeon RX 9070 GRE\nscene_declared_meshes=1 scene_nodes=7 scene_instances=2\nscene_views=2 GPU_program_ms=474.113 render_readback_write_ms=593.670 output=B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\Scene\\views\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "simulate",
-          "cpu",
-          "1000000",
-          "1200",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\bodies-cpu.bldata"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 1.0137844000710174,
-        "stdout": "CPU execution_ms=969.513\ntotal_kinetic_energy=63477.54\nelements=1000000 steps=1200 bytes=32000000 total_ms=985.348 output=B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\bodies-cpu.bldata\n",
-        "stderr": ""
-      },
-      {
-        "command": [
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe",
-          "simulate",
-          "gpu",
-          "1000000",
-          "1200",
-          "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\bodies-gpu.bldata"
-        ],
-        "cwd": "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine",
-        "exit": 0,
-        "wall_seconds": 0.3043931000865996,
-        "stdout": "GPU AMD Radeon RX 9070 GRE\nGPU_program_ms=114.373 submissions=1\ntotal_kinetic_energy=63477.547\nelements=1000000 steps=1200 bytes=32000000 total_ms=270.554 output=B:\\BLanguage\\Saved\\BookSyntaxRefresh\\Native\\bodies-gpu.bldata\n",
-        "stderr": ""
-      }
-    ],
-    "tools": {
-      "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blc.exe": "947f7fa60506eecb65f16fec76cc861acc099132e23749d2e269dc096e4b295e",
-      "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\bllink.exe": "1e0fe6c3ae9774e197a34f28b8c0268b3262deff485fbad2ecf8c19eb76f745d",
-      "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLanguage\\target\\release\\blrun.exe": "d9c2c5bfe2529fa6cfedc53ef555a5e826c6735156bbeae33dd1506a0d99b4db",
-      "B:\\BLanguage\\Saved\\BookSyntaxRefresh\\BLEngine\\target\\release\\blengine.exe": "41239da54d8e9e84344a8bdc4e4e0f59c434ccc8aef8bef2c62892497e68c869"
-    },
-    "exports": {
-      "lessons_map_demo.0.reloc": {
-        "bytes": 0,
-        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-      },
-      "lessons_map_demo.0.spv": {
-        "bytes": 1856,
-        "sha256": "b7719f23ac9bbda06f3ec7ef1f6ead1cd9a812b70f1191d4378af2d5927eda84"
-      },
-      "lessons_map_demo.0.x64": {
-        "bytes": 364,
-        "sha256": "d40cf07204348723c452324569601cc7366c4efc55965996dfee73960674132f"
-      },
-      "lessons_map_demo.layout": {
-        "bytes": 261,
-        "sha256": "df1686a4d7f98f9566b81072b4eb8607b75d8aab955b4afe4b82b53633ffa1c8"
-      }
-    },
-    "configuration": "Release",
-    "date": "2026-10-27",
-    "map_values": {
-      "cpu": [
-        3.0,
-        5.0,
-        7.0,
-        9.0
-      ],
-      "gpu": [
-        3.0,
-        5.0,
-        7.0,
-        9.0
-      ]
-    }
-  }
+  ]
 }

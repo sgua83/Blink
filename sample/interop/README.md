@@ -72,7 +72,6 @@ rustc --edition=2024 -C opt-level=3 `
 .\target\interop\rust.exe gpu
 ```
 
-编译器、执行框架及生成的 DLL 均为 Release；C++ 使用 /O2，Rust 使用 -C opt-level=3。2026-10-26 的重新实测见 [完整运行记录](../performance/运行记录.txt)。
 
 每次处理一百万像素；limit=256 是每个像素的最大递推次数。程序分别报告 create 的 setup_ms、各宿主串行的 serial_ms、完整 DLL 调用的 blink_call_ms、加速比、差异像素数与校验和。算法不包含文件输出的计时。两次预热后测量九次单次调用，取中位数，方法与全书其他案例一致。
 

@@ -16,11 +16,11 @@ Blink 简称 B 语言，B 也寓意 Base。它希望成为 AI 超算时代的基
 
 ### 怎样使用本书
 
-命令都在下载后的 Blink 项目根目录执行。每个动手例子给出完整的 B 实现、正式编译命令、运行命令和真实结果。命令末尾的反引号表示下一行仍属于同一条命令。
+命令都在下载后的 Blink 项目根目录执行。每个动手例子给出完整的 B 实现、正式编译命令、运行命令和输入与预期结果。命令末尾的反引号表示下一行仍属于同一条命令。
 
 `.h` 列出公开接口，`.b` 写具体做法。先照着第一例把两个文件编译成功；之后再逐步理解名字、类型和函数。修改 B 源码以后，重新编译、链接，再运行生成的 exe。
 
-本版二十一个应用均使用本次编译、链接分离实现的 **Release 工具**，分别编译为 obj、链接为 exe，再直接运行。运行地点为 Windows x64；GPU 示例使用 AMD Radeon RX 9070 GRE。完整命令、工具与源码哈希、标准输出和退出码见 [运行记录](beginner/运行记录.md)。运行图根据真实命令和终端输出重排，原理图说明计算过程。
+配套应用使用Release正式工具，先编译obj，再链接exe，最后直接执行。正文的输入与结果帮助理解算法；具体机器、构建和实际运行历史只在P4双台账记录。GPU调用要求实际驱动具备该程序所需能力。
 
 ## 第一章 先把 Blink 准备好
 
@@ -114,7 +114,7 @@ u32 main() on cpu {
 
 ![start 的实际构建与输出](figures/beginner-app-start.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 终端直接显示三。这里不需要准备输入数据文件，也不需要再读取输出文件。生成的 `target/start.exe` 可以直接启动；运行它不需要 B 源码、blc 或 blrun 留在旁边。
 
@@ -171,7 +171,7 @@ u32 main() on cpu {
 
 ![names 的实际构建与输出](figures/beginner-app-names.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 本章及后面的普通应用，`.h` 都采用第一例的形式：把 module 改为对应文件名，公开 `u32 main() on cpu;`。配套文件已经写好，可以直接打开阅读。
 
@@ -254,7 +254,7 @@ true
 
 ![types 的实际构建与输出](figures/beginner-app-types.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前两行是整数除法，分别得到三和负三；第三行说明七十五达到六十分。第四行直接显示温度 21.5，第五行显示小数除法的结果 3.5。
 
@@ -335,7 +335,7 @@ true
 
 ![choice 的实际构建与输出](figures/beginner-app-choice.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 score 为七十五，第一项不成立，第二项成立，于是 level 取二。后面的 else if 不再继续选一遍。第一行输出等级二，第二行输出是否及格 true。
 
@@ -433,7 +433,7 @@ u32 main() on cpu {
 
 ![loops 的实际构建与输出](figures/beginner-app-loops.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前两项都是十五；最后一项只加一、二、三，得到六。
 
@@ -490,7 +490,7 @@ u32 main() on cpu {
 
 ![functions 的实际构建与输出](figures/beginner-app-functions.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 `add_bonus(70, 5)` 得到七十五，再交给 level_of 得到二。参数按声明顺序对应。函数中的 score 是这次调用收到的值，不因名字相同就自动改写 main 里的变量。
 
@@ -559,7 +559,7 @@ u32 main() on cpu {
 
 ![borrow 的实际构建与输出](figures/beginner-app-borrow.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 add_one 把 main 的 value 从三改成四。twice 读取四，把八写入 output。两行分别显示四、八。
 
@@ -626,7 +626,7 @@ true
 
 ![records 的实际构建与输出](figures/beginner-app-records.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 点号选择一项字段，`student.score` 是成绩，`student.passed` 是判断结果。每一项在读取前都应有确定内容。
 
@@ -681,7 +681,7 @@ u32 main() on cpu {
 
 ![arrays 的实际构建与输出](figures/beginner-app-arrays.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前四行分别显示数组元素，最后一行显示总和十。这里是一个独立 exe，数组由应用代码直接声明，不是命令行另外申请的数据集。
 
@@ -751,7 +751,7 @@ u32 main() on cpu {
 
 ![vectors 的实际构建与输出](figures/beginner-app-vectors.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前两行是 moved 的 x、y：一、三。后两行是 rotated 的 x、y：负二、一。它们分别对应移动和旋转得到的两个坐标。
 
@@ -826,7 +826,7 @@ u32 main() on cpu {
 
 ![modules 的实际构建与输出](figures/beginner-app-modules.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 import 让本模块明确使用 beginner.math 的公开内容。这里的编译命令末尾增加 `sample`，告诉编译器从哪里寻找 `beginner/math.h/.b`；它是模块搜索根目录。第一例没有导入，无需这个参数。
 
@@ -881,7 +881,7 @@ u32 main() on cpu {
 
 ![generic 的实际构建与输出](figures/beginner-app-generic.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 T 是暂时使用的类型名，integer 规定它来自允许的整数类型集合。本例传三时推断为 u32，传负二时推断为 i32，分别得到六和负四。
 
@@ -974,7 +974,7 @@ true
 
 ![grades 的实际构建与输出](figures/beginner-app-grades.svg)
 
-*运行记录：Release 编译器生成 obj，链接器生成 exe 后直接执行，正常退出码为零；图中输出取自该 exe 的标准输出。*
+*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 每三行是一人的原成绩、新成绩、及格标志；最后一行是总和。按记录整理如下，数值取自上面的实际终端输出：
 
@@ -1224,7 +1224,7 @@ seed 只负责填写起始值，参数写 write。scale 既要读取原值又要
 
 例如第三格：seed 写入三，scale 读取三，算出三乘二加一，写回七。编译器可以在保持结果含义的前提下合并相邻的逐元素工作，减少中间读写；代码表达的先后关系不变。
 
-![stages 的真实编译和运行](figures/beginner-native-stages.svg)
+![stages 的编译和结果示意](figures/beginner-native-stages.svg)
 
 *运行图由正式版本的真实标准输出整理；终端结果直接来自应用。*
 
@@ -1358,7 +1358,7 @@ seed 填写输入；summarize 只读输入，填写两份结果；run 组织两�
 
 前四行是 before，最后一行是总和。结果就保存在当前应用的 dataset 中，显示时直接访问这些字段。
 
-![totals 的真实编译和运行](figures/beginner-native-totals.svg)
+![totals 的编译和结果示意](figures/beginner-native-totals.svg)
 
 ### 16.5 为什么不能大家随意加同一个变量
 
@@ -1863,6 +1863,6 @@ dataset 创建后位于 CPU 一侧。CPU 计算函数 直接借用；GPU 计算�
 
 下一步可以阅读《并行编程的艺术》，学习更大规模的数据关系与真实效率；阅读《Blink 和 Rust 混合编程》，学习把 B 算法接入项目；对实现感兴趣时，再阅读《B 语言源码分析》。
 
-## 本版函数写法
+## 函数与执行位置
 
-计算函数与普通函数使用同一套返回类型声明；无普通返回值写 void。parallel 明确表达并行域，普通调用不会自动成为异步。target(cpu, f(...))／target(gpu, f(...)) 明确本次执行位置；同步 GPU 调用完成计算后返回，结果仍留 GPU，download 才向 CPU 传输。本书早期运行记录中的旧关键字保留当时事实，配套源码与本版正文已同步新写法。PA3 的本轮原生验证范围单独记录，原 AMD 运行结果不改成 PA3 显卡结果。
+计算函数与普通函数使用同一套返回类型声明；无普通返回值写 void。parallel 明确表达并行域，普通调用不会自动成为异步。target(cpu, f(...))／target(gpu, f(...)) 明确本次执行位置；同步 GPU 调用完成计算后返回，结果仍留 GPU，download 才向 CPU 传输。

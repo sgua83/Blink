@@ -12,7 +12,7 @@
 
 遇到必要知识，我们先用能手算的例子说明，再进入源码。例如，先看乘法为什么应先于加法组成语法树，再看解析函数；先理解“两个值还要同时用，所以不能占同一个寄存器”，再看寄存器分配；先区分“工作已提交”和“工作已完成”，再看 GPU 资源释放。
 
-本版按修订时的已提交 **Blink P4 CL13553** 阅读当前实现。正文节选已从该源码重新取得，行号和文件 SHA256 记录在 `compiler/源码版本索引.json`；代码使用当前统一函数语法与正式工具入口。手算、伪代码和示意图用于解释，源码节选注明真实位置。
+本文沿当前Blink源码阅读；现行文件和节选行号见compiler/源码版本索引.json。源码、构建、原生执行和性能分别判断，历史结果保存在P4双台账。
 
 当前实现包括自研前端、并行中间表示、Windows x64／SPIR-V 后端及 CPU／Vulkan 执行框架，也能把普通 CPU 应用编译为目标文件，再由独立链接器生成可执行程序。普通 CPU 原生调用、递归与有限独立模块已有实现；完整模块／资源契约、其他目标调用、一般异步应用、基础库与跨平台能力仍分别开放。
 
@@ -32,7 +32,7 @@
 
 我们使用工程已有的 `sample/lessons/map.b`。这里的 map 表示逐元素计算；`lessons.map` 是教学模块名，不是标准库函数。先读最短的 `scale`：
 
-源码节选：`sample/lessons/map.b:9`，P4 CL13553。
+源码节选：`sample/lessons/map.b:9`。
 
 ```b
 void scale(inout dataset<f32> values) on compute {
@@ -58,7 +58,7 @@ C 循环描述一个接一个访问下标的过程，成熟 C/C++ 编译器在�
 
 ### 1.2 同一个例子为什么还有 seed 和 demo
 
-源码节选：`sample/lessons/map.b:1`，P4 CL13553。
+源码节选：`sample/lessons/map.b:1`。
 
 ```b
 module lessons.map;
@@ -72,7 +72,7 @@ void seed(write dataset<f32> values) on compute {
 
 `seed` 把元素设为从一开始的数字，`index()` 是从零开始的当前位置。第零项写入一，第一项写入二。
 
-源码节选：`sample/lessons/map.b:15`，P4 CL13553。
+源码节选：`sample/lessons/map.b:15`。
 
 ```b
 void demo(inout dataset<f32> values) on compute {
@@ -113,22 +113,11 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
 
 `:4` 申请四个初始为零的元素；`demo` 自己填入初值。结果保存在相应目录的 `values.bldata`。这属于当前执行工具的数据协议，不是 B 独立应用的最终使用方式。附录提供不加命令别名的直接读取方法。
 
-本次实际输出节选：
+正文节选对应当前源码，位置见现行源码索引；修订和原生运行历史只在P4双台账记录。
 
-```text
-program lessons.map::demo on Compute
-source_stages=2, executable_stages=1
-binding 0: InOut values : f32, stride=4
-CPU values = [3.0, 5.0, 7.0, 9.0]
-GPU values = [3.0, 5.0, 7.0, 9.0]
-GPU AMD Radeon RX 9070 GRE
-```
 
 上面的阶段、布局和设备名来自工具输出；两行 values 从实际 BLDATA 读取后排成可读文本。启动和准备成本没有混入四元素算式的性能结论。
 
-![本例的真实运行记录](figures/compiler-run.svg)
-
-*图 1-1：来自本书本版源码的 Release 构建与实际执行，显示数值和编译产物。四元素用于追踪实现，不承担性能比较任务。*
 
 ### 1.4 从输入文字到输出数字
 
@@ -157,37 +146,35 @@ GPU AMD Radeon RX 9070 GRE
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:163`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:264`。
 
 ```rust
-pub fn vector(s: Scalar, n: usize) -> Self {
-    if n == 1 {
-        return Self::scalar(s);
-    }
-    Self {
-        name: format!(
-            "{}{}",
-            match s {
-                Scalar::F32 => "float",
-                Scalar::U32 => "uint",
-                Scalar::I32 => "int",
-                Scalar::Bool => "bool",
+    pub fn vector(s: Scalar, n: usize) -> Self {
+        if n == 1 {
+            return Self::scalar(s);
+        }
+        Self {
+            name: match s {
+                Scalar::F32 => format!("float{n}"),
+                Scalar::U32 => format!("uint{n}"),
+                Scalar::I32 => format!("int{n}"),
+                Scalar::Bool => format!("bool{n}"),
+                _ => format!("{}x{n}", s.name()),
             },
-            n
-        ),
-        arguments: Vec::new(),
-        values: Vec::new(),
-        size: n as u32 * 4,
-        align: if n == 2 { 8 } else { 16 },
-        components: (0..n).map(|i| (s, i as u32 * 4)).collect(),
-        fields: Vec::new(),
-        view: None,
-        array: None,
-        enumeration: false,
-        result: false,
-        dataset: None,
+            arguments: Vec::new(),
+            values: Vec::new(),
+            size: n as u32 * s.size(),
+            align: s.align() * if n == 2 { 2 } else { 4 },
+            components: (0..n).map(|i| (s, i as u32 * s.size())).collect(),
+            fields: Vec::new(),
+            view: None,
+            array: None,
+            enumeration: false,
+            result: false,
+            variants: Vec::new(),
+            dataset: None, cleanup: None,
+        }
     }
-}
 ```
 
 不要从“内容十二字节”推出“任何地方都连续十二字节”。记录中的字段、矩阵的行、整个 dataset 的 stride 都要按编译器布局处理。C++ 或 Rust 的同名类型也未必具有相同布局。
@@ -198,7 +185,7 @@ pub fn vector(s: Scalar, n: usize) -> Self {
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:25`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:94`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,7 +201,9 @@ pub struct Ty {
     pub array: Option<Box<Ty>>,
     pub enumeration: bool,
     pub result: bool,
+    pub variants: Vec<Variant>,
     pub dataset: Option<Box<Ty>>,
+    pub cleanup: Option<String>,
 }
 ```
 
@@ -224,7 +213,7 @@ pub struct Ty {
 
 ### 2.4 Dataset 是布局的实际承载者
 
-源码节选：`crates/blcompute/src/lib.rs:43`，P4 CL13553。
+源码节选：`crates/blcompute/src/lib.rs:79`。
 
 ```rust
 pub struct Dataset {
@@ -254,7 +243,7 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 
 `Result<T,E>` 表示成功或错误：`Ok(value)` 与 `Err(error)`。函数调用后面的 `?` 表示成功就取出结果，失败就把错误交还上层。它不是重新尝试，也不是忽略错误。
 
-源码节选：`crates/blanguage/src/parser.rs:6`，P4 CL13553。
+源码节选：`crates/blanguage/src/parser.rs:6`。
 
 ```rust
 pub fn parse(source: Source) -> Result<Module> {
@@ -288,11 +277,11 @@ pub fn parse(source: Source) -> Result<Module> {
 
 ### 4.1 一个文件不等于整个程序
 
-`map.h` 声明可公开使用的接口，`map.b` 给出实现。导入模块以后，编译器还要读取其接口与实现。只解析当前文件，却不知道调用的函数来自哪里，无法完成可靠的类型、访问与阶段分析。
+`map.h` 声明可公开使用的接口，`map.b` 给出实现。源码模式按实际需要读取接口与存在的实现，产物导入则消费对象中的公开接口。只解析当前文件，却不知道调用的函数来自哪里，无法完成可靠的类型、访问与阶段分析。
 
 入口在 `crates/blanguage/src/lib.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/lib.rs:102`，P4 CL13553。
+源码节选：`crates/blanguage/src/lib.rs:126`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -312,30 +301,21 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 这些 API 接收文件路径与模块根目录。根目录用于把 `lessons.map` 这样的模块名映射到文件路径；它与 C 预处理器简单粘贴头文件的行为不同。
 
-### 4.2 已装载和正在装载为什么不同
+### 4.2 模块身份先进入同一来源表
 
-考虑 A 导入 B，B 又导入 A。装载 A 尚未完成，又从 B 回到 A，形成一个环。若只有“已经完成”列表，就发现不了正在递归的关系；若只标记见过，又可能把正常共享依赖误当成错误。
+A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-`loaded` 表示完成，`visiting` 表示当前递归路径。重复访问 completed 模块可以直接复用；回到 visiting 模块说明导入成环。这是深度优先遍历的一个实际应用。
-
-源码节选：`crates/blanguage/src/lib.rs:392`，P4 CL13553。
+源码节选：`crates/blanguage/src/lib.rs:449`。
 
 ```rust
-let implementation = if present {
-    Some(parser::parse(read(&implementation_path)?)?)
-} else {
-    None
-};
-if let Some(module) = &implementation
-    && module.name != interface.name
-{
-    return module
-        .source
-        .fail(Span::default(), "B022", ".h 与 .b 的模块名不一致");
-}
+    if let Some(name) = import
+        && world.sources.contains_key(name)
+    {
+        return Ok(name.to_owned());
+    }
 ```
 
-`.h` 是接口来源，只有实际存在的 `.b` 才参与实现解析；纯类型、常量和外部声明模块不需要空实现。普通函数声明仍必须有真实匹配函数体。已编译模块导入使用归档的公开接口，不重新读取其实现源码。loaded 与 visiting 两个集合只服务于本次装载和导入环检查。
+来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。
 
 ### 4.3 名字怎样变成唯一对象
 
@@ -343,7 +323,11 @@ if let Some(module) = &implementation
 
 `.h/.b` 的签名也要一致：名称相同还不够，参数类型、权限、参数名、执行目标和接口条件等都属于接口约定。否则调用者相信的接口与真正实现会是两回事。
 
-**自己走一遍。** A 与 B 都导入共同模块 C，C 会因此形成环吗？不会。C 完成后属于 loaded；只有沿尚未结束的递归路径回到原模块才是这里拒绝的循环。
+**自己走一遍。** A和B都导入C会复制一份C吗？不会，同一来源表保持模块身份。若记录按值包含自身，为什么仍须拒绝？那是无法形成有限布局的类型递归，归类型布局所有者处理。
+
+源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。入口映像与COFF保留完整输入身份，未变时直接复用最终产物，变化时重新执行必要编译。缓存命中不证明冷编译成本降低。
+
+native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，application::Context只持有编译期Frame寄存器及映像描述。真实Frame、设备与完成仍归blcompute；函数模块不是CPU应用上下文的附属状态。
 
 ### 4.4 统一函数怎样落到不同执行范围
 
@@ -363,7 +347,7 @@ CPU 主流程的普通调用沿当前 CPU 位置执行；`target(cpu, f(...))` �
 
 词法分析逐段读取字符，产生 token。这个版本的 Token 保存两项：文本与位置。
 
-源码节选：`crates/blanguage/src/lexer.rs:3`，P4 CL13553。
+源码节选：`crates/blanguage/src/lexer.rs:3`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -379,17 +363,17 @@ pub struct Token {
 
 `at` 是当前字节位置，`start` 是本次 token 的起点。空白和注释被跳过，普通标识符、数字、多字符运算符和单字符符号分别识别。最终切出 `[start,at)` 的原文。
 
-源码节选：`crates/blanguage/src/lexer.rs:78`，P4 CL13553。
+源码节选：`crates/blanguage/src/lexer.rs:85`。
 
 ```rust
-} else if let Some(op) = [
-    "<<=", ">>=", "::", "..", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "==", "!=",
-    "<=", ">=", "&&", "||", "<<", ">>",
-]
-.iter()
-.find(|op| bytes[at..].starts_with(op.as_bytes()))
-{
-    at += op.len();
+        } else if let Some(op) = [
+            "<<=", ">>=", "::", "..", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "==", "!=",
+            "<=", ">=", "&&", "||", "<<", ">>",
+        ]
+        .iter()
+        .find(|op| bytes[at..].starts_with(op.as_bytes()))
+        {
+            at += op.len();
 ```
 
 多字符运算符优先于单字符符号，正是为了保留 `<=` 和 `<<` 等整体。数字扫描允许指数写法的正负号，却不会把普通的加法号全部吞进数字。
@@ -398,7 +382,7 @@ pub struct Token {
 
 ### 5.3 Span 是诊断通向原文的线
 
-源码节选：`crates/blanguage/src/ast.rs:3`，P4 CL13553。
+源码节选：`crates/blanguage/src/ast.rs:3`。
 
 ```rust
 #[derive(Clone, Copy, Debug, Default)]
@@ -406,7 +390,6 @@ pub struct Span {
     pub start: usize,
     pub end: usize,
 }
-
 ```
 
 Span 的 start/end 是字节范围。错误显示时，再从源码求行号和字符列。因此中文注释的 UTF-8 字节数与人眼看到的字数不能直接混用。
@@ -429,7 +412,7 @@ Span 的 start/end 是字节范围。错误显示时，再从源码求行号和�
 
 ### 6.2 解析器怎样知道在哪里
 
-源码节选：`crates/blanguage/src/parser.rs:31`，P4 CL13553。
+源码节选：`crates/blanguage/src/parser.rs:31`。
 
 ```rust
 struct Parser {
@@ -460,35 +443,35 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1009`，P4 CL13553。
+源码节选：`crates/blanguage/src/parser.rs:997`。
 
 ```rust
-        let prec = match self.peek() {
-            "||" => 1,
-            "&&" => 2,
-            "|" => 3,
-            "^" => 4,
-            "&" => 5,
-            "==" | "!=" => 6,
-            "<" | ">" | "<=" | ">=" => 7,
-            "<<" | ">>" => 8,
-            "+" | "-" => 9,
-            "*" | "/" | "%" => 10,
-            _ => 0,
-        };
-        if prec == 0 || prec < min {
-            break;
+            let prec = match self.peek() {
+                "||" => 1,
+                "&&" => 2,
+                "|" => 3,
+                "^" => 4,
+                "&" => 5,
+                "==" | "!=" => 6,
+                "<" | ">" | "<=" | ">=" => 7,
+                "<<" | ">>" => 8,
+                "+" | "-" => 9,
+                "*" | "/" | "%" => 10,
+                _ => 0,
+            };
+            if prec == 0 || prec < min {
+                break;
+            }
+            let op = self.peek().to_owned();
+            self.at += 1;
+            let rhs = self.expr(prec + 1)?;
+            lhs = Expr {
+                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                span,
+            };
         }
-        let op = self.peek().to_owned();
-        self.at += 1;
-        let rhs = self.expr(prec + 1)?;
-        lhs = Expr {
-            kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
-            span,
-        };
+        Ok(lhs)
     }
-    Ok(lhs)
-}
 ```
 
 第一次阅读无需背下所有优先级数值。抓住两点：数值大小服务于结合次序，树形结构才是解析结果。括号则显式开启一个完整子表达式，读到右括号后再回到外层。
@@ -511,34 +494,29 @@ impl Parser {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:141`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:247`。
 
 ```rust
-pub fn scalar(s: Scalar) -> Self {
-    Self {
-        name: match s {
-            Scalar::F32 => "f32",
-            Scalar::U32 => "u32",
-            Scalar::I32 => "i32",
-            Scalar::Bool => "bool",
+    pub fn scalar(s: Scalar) -> Self {
+        Self {
+            name: s.name().into(),
+            arguments: Vec::new(),
+            values: Vec::new(),
+            size: s.size(),
+            align: s.align(),
+            components: vec![(s, 0)],
+            fields: Vec::new(),
+            view: None,
+            array: None,
+            enumeration: false,
+            result: false,
+            variants: Vec::new(),
+            dataset: None, cleanup: None,
         }
-        .into(),
-        arguments: Vec::new(),
-        values: Vec::new(),
-        size: 4,
-        align: 4,
-        components: vec![(s, 0)],
-        fields: Vec::new(),
-        view: None,
-        array: None,
-        enumeration: false,
-        result: false,
-        dataset: None,
     }
-}
 ```
 
-四种基本标量都用四字节存储，包含 bool。bool 在本版的内存布局里不是 C++ 的一字节 bool。一个记录被展开为多个带字节偏移的标量，字段保留名义结构。这样，通用代码生成可以逐分量处理，而不是为每个用户记录再写一套后端。
+Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／二字节，u32／i32／f32／bool为四字节，u64／i64／f64为八字节。B普通bool不是C++的一字节bool。逻辑分量和物理存储字不能混为一谈。一个记录被展开为多个带字节偏移的标量，字段保留名义结构。这样，通用代码生成可以逐分量处理，而不是为每个用户记录再写一套后端。
 
 设记录包含 `float3 position` 和 `f32 energy`：position 的三个分量在偏移零、四、八；后续字段和最终 stride 按类型布局计算。不能把语言规则照搬成任意外部平台 C 结构体的默认布局，跨语言时使用生成接口更明确。
 
@@ -546,21 +524,21 @@ pub fn scalar(s: Scalar) -> Self {
 
 “同一个函数能处理不同类型”有两种很不同的实现：运行时判断类型，或者编译前形成具体实例。Blink 当前主要采用后者。
 
-源码节选：`crates/blanguage/src/generics.rs:47`，P4 CL13553。
+源码节选：`crates/blanguage/src/generics.rs:50`。
 
 ```rust
-let replacements: BTreeMap<_, _> = function
-    .types
-    .iter()
-    .zip(arguments)
-    .map(|(p, t)| (p.name.clone(), t))
-    .collect();
-let value_map: BTreeMap<_, _> = function
-    .values
-    .iter()
-    .zip(values)
-    .map(|(p, v)| (p.name.clone(), *v))
-    .collect();
+    let replacements: BTreeMap<_, _> = function
+        .types
+        .iter()
+        .zip(arguments)
+        .map(|(p, t)| (p.name.clone(), t))
+        .collect();
+    let value_map: BTreeMap<_, _> = function
+        .values
+        .iter()
+        .zip(values)
+        .map(|(p, v)| (p.name.clone(), *v))
+        .collect();
 ```
 
 `replacements` 把类型参数映射到具体类型；`value_map` 把静态值参数映射到具体整数。随后替换函数签名、正文与条件，再进入原来的检查和代码生成路径。
@@ -583,7 +561,7 @@ let value_map: BTreeMap<_, _> = function
 
 ### 8.2 read、write、inout 和 atomic 表达不同关系
 
-源码节选：`crates/blanguage/src/ast.rs:54`，P4 CL13553。
+源码节选：`crates/blanguage/src/ast.rs:54`。
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -614,63 +592,53 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3419`，P4 CL13553。
+源码节选：`crates/blanguage/src/check.rs:3737`。
 
 ```rust
-    let binding = view.binding;
-    let Some(i) = self.expr(index)? else {
-        return Ok(None);
-    };
-    self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
-    let current = i.regs[0] == self.global_index;
-    let same_shape = self.program.buffers[binding].count.is_some()
-        && self.program.buffers[binding].count == self.program.buffers[self.domain].count;
-    if !self.index_in(
-        &i,
-        IndexDomain::Data(binding),
-        self.program.buffers[binding].count.unwrap_or(0),
-    ) && !(current && (binding == self.domain || same_shape))
-    {
-        return self.fail(
-            index.span,
-            "B137",
-            "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
-        );
-    }
-    if self.view_access[&binding] != Access::Atomic
-        && self.view_access[&binding].writes()
-        && !current
-    {
-        return self.fail(
-            index.span,
-            "B166",
-            "并行可写数据只允许访问当前独占元素；读取其他元素需要独立 read 数据集",
-        );
-    }
-    if matches!(self.view_access[&binding], Access::Write | Access::InOut) {
-        if self
-            .appends
-            .iter()
-            .any(|(output, count)| *output == binding || count.binding == binding)
+        let binding = view.binding;
+        let Some(i) = self.expr(index)? else {
+            return Ok(None);
+        };
+        self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
+        let current = i.regs[0] == self.global_index;
+        let same_shape = self.program.buffers[binding].count.is_some()
+            && self.program.buffers[binding].count == self.program.buffers[self.domain].count;
+        if !self.index_in(
+            &i,
+            IndexDomain::Data(binding),
+            self.program.buffers[binding].count.unwrap_or(0),
+        ) && !(current && (binding == self.domain || same_shape))
         {
             return self.fail(
                 index.span,
-                "B221",
-                "append 的共享输出／计数不能在同一阶段借为普通独占元素",
+                "B137",
+                "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
             );
         }
-        self.element_domains.insert(binding);
+        if matches!(self.view_access[&binding], Access::Write | Access::InOut) {
+            if self
+                .appends
+                .iter()
+                .any(|(output, count)| *output == binding || count.binding == binding)
+            {
+                return self.fail(
+                    index.span,
+                    "B221",
+                    "append 的共享输出／计数不能在同一阶段借为普通独占元素",
+                );
+            }
+            self.element_domains.insert(binding);
+        }
+        let ty = self.program.buffers[binding].ty.clone();
+        let words = ty.components.iter().map(|x| x.1).collect();
+        Ok(Some(Place::Element {
+            ty,
+            binding,
+            index: i.regs[0],
+            words,
+            writable: self.view_access[&binding].writes() && current,
+        }))
     }
-    let ty = self.program.buffers[binding].ty.clone();
-    let words = ty.components.iter().map(|x| x.1 / 4).collect();
-    Ok(Some(Place::Element {
-        ty,
-        binding,
-        index: i.regs[0],
-        words,
-        writable: self.view_access[&binding].writes() && current,
-    }))
-}
 ```
 
 第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。
@@ -679,16 +647,19 @@ impl Access {
 
 ### 8.4 跨函数也不能丢掉位置身份
 
-源码节选：`crates/blanguage/src/check/ownership.rs:18`，P4 CL13553。
+源码节选：`crates/blanguage/src/check/ownership.rs:22`。
 
 ```rust
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Position {
+    Initialized,
     Local(usize),
     Element(usize, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
+    Conditional(std::sync::Arc<owned_presence::Presence>,std::sync::Arc<Position>,std::sync::Arc<Position>),
+    Both(std::sync::Arc<Position>,std::sync::Arc<Position>),
 }
 ```
 
@@ -704,18 +675,22 @@ pub(super) enum Position {
 
 同样，整数除法要知道除数不为零。这里的知识不是无限强的数学证明器，而是沿当前路径维护的有限事实。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:19`，P4 CL13553。
+源码节选：`crates/blanguage/src/check/bounds.rs:21`。
 
 ```rust
 enum Fact {
     Equal(ValueIdentity, ValueIdentity),
     Index(ValueIdentity, IndexDomain),
-    Minimum(ValueIdentity, u32),
-    Maximum(ValueIdentity, u32),
+    Minimum(ValueIdentity, Scalar, Bits),
+    Maximum(ValueIdentity, Scalar, Bits),
     NonZero(ValueIdentity),
+    Boolean(ValueIdentity, bool),
+    Below(ValueIdentity, ValueIdentity, bool, Scalar),
+    Outside(ValueIdentity,IndexDomain),
+    Zero(ValueIdentity),
+    NotEqual(ValueIdentity, ValueIdentity),
 }
 type Facts = BTreeSet<Fact>;
-impl Place {
 ```
 
 `Fact` 包含相等、索引域、最小值、最大值和非零。同文件的 `Proof` 按分量保存来源、条件、IntegerRanges、非零和索引域。整数范围可由多个有序区间组成，能够表达回绕后的不连续集合；float3 的三个分量也可能持有不同事实。
@@ -730,23 +705,23 @@ impl Place {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:331`，P4 CL13553。
+源码节选：`crates/blanguage/src/check/bounds.rs:659`。
 
 ```rust
-self.nonzero = (0..width)
-    .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true))
-    .collect();
-self.ranges = (0..width)
-    .map(|i| self.range_set(i).union(&other.range_set(i)))
-    .collect();
-self.domains = (0..width)
-    .map(|i| {
-        self.domains(i)
-            .intersection(&other.domains(i))
-            .copied()
-            .collect()
-    })
-    .collect();
+        self.nonzero = (0..width)
+            .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true))
+            .collect();
+        self.ranges = (0..width)
+            .map(|i| self.range_set(i).union(&other.range_set(i)))
+            .collect();
+        self.domains = (0..width)
+            .map(|i| {
+                self.domains(i)
+                    .intersection(&other.domains(i))
+                    .copied()
+                    .collect()
+            })
+            .collect();
 ```
 
 这里对非零取共同条件，对范围取能容纳两条路径的区间。源码中的集合交集同样只保留两侧共同成立的域关系。合流不是把每条路径的最好结论全部相加。
@@ -784,49 +759,49 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:696`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:844`。
 
 ```rust
-Constant(Reg, Scalar, u32),
-Index(Reg),
-Uniform(Reg, u32),
-LoadLocal(Reg, usize),
-StoreLocal(usize, Reg),
+    Constant(Reg, Scalar, Bits),
+    Index(Reg),
+    Uniform(Reg, u32),
+    LoadLocal(Reg, usize),
+    StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:715`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:863`。
 
 ```rust
-Load {
-    dst: Reg,
-    binding: usize,
-    index: Reg,
-    word: u32,
-},
-Store {
-    binding: usize,
-    index: Reg,
-    word: u32,
-    value: Reg,
-},
-Unary {
-    dst: Reg,
-    op: UnaryOp,
-    a: Reg,
-},
-Binary {
-    dst: Reg,
-    op: BinaryOp,
-    a: Reg,
-    b: Reg,
-},
+    Load {
+        dst: Reg,
+        binding: usize,
+        index: Reg,
+        word: u32,
+    },
+    Store {
+        binding: usize,
+        index: Reg,
+        word: u32,
+        value: Reg,
+    },
+    Unary {
+        dst: Reg,
+        op: UnaryOp,
+        a: Reg,
+    },
+    Binary {
+        dst: Reg,
+        op: BinaryOp,
+        a: Reg,
+        b: Reg,
+    },
 ```
 
 `Constant` 保存位模式，Load/Store 保存实际绑定、下标及 word，Binary 用枚举表达运算。字段已在前端展开，所以一个记录操作可能对应多个标量结果。
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:916`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:1058`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -837,7 +812,8 @@ pub struct Stage {
     pub operation: Operation,
     pub boundary_before: bool,
     pub registers: Vec<Scalar>,
-    pub locals: Vec<Scalar>,
+    // Key is the first logical component after this declaration; padding has no slot.
+    pub locals: BTreeMap<usize, Ty>,
     pub code: Vec<Inst>,
     pub reads: Vec<usize>,
     pub writes: Vec<usize>,
@@ -854,24 +830,25 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:348`，P4 CL13553。
+源码节选：`crates/blanguage/src/check.rs:387`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
+    let mut calls = Vec::new();
     expand_program(
         world,
         d,
-        &env,
+        &mut env,
         &mut program,
         &mut Vec::new(),
         &mut false,
         &mut facts,
+        &mut calls,
     )?;
     program.source_stages = program.stages.len();
-    crate::optimize::optimize(&mut program);
-    Ok(program)
+    Ok(ExpandedDomain { program, calls, outputs: facts.outputs })
 }
 ```
 
@@ -902,43 +879,43 @@ pub struct Stage {
 
 这首先是减少数据往返与阶段开销，而不是增加更多线程。
 
-源码节选：`crates/blanguage/src/optimize.rs:12`，P4 CL13553。
+源码节选：`crates/blanguage/src/optimize.rs:12`。
 
 ```rust
-if let Some(previous) = stages.last_mut() {
-    if matches!(previous.operation, Operation::Map)
-        && matches!(stage.operation, Operation::Map)
-        && previous.subgroup_operations().is_empty()
-        && stage.subgroup_operations().is_empty()
-        && !previous.has_external_effects()
-        && !stage.has_external_effects()
-        && !previous.has_tile_scope()
-        && !stage.has_tile_scope()
-        && previous.domain == stage.domain
-        && previous.prefix == stage.prefix
-        && previous.selection == stage.selection
-        && !stage.boundary_before
-        && !cross_dependency(previous, &stage)
-        && !cross_dependency(&stage, previous)
-    {
-        let base = previous.registers.len();
-        let local = previous.locals.len();
-        map(&mut stage.code, &|r| r + base, &|s| s + local);
-        previous.registers.extend(stage.registers);
-        previous.locals.extend(stage.locals);
-        previous.code.extend(stage.code);
-        previous.reads.extend(stage.reads);
-        previous.writes.extend(stage.writes);
-        previous.cross_access.extend(stage.cross_access);
-        previous.reads.sort_unstable();
-        previous.reads.dedup();
-        previous.writes.sort_unstable();
-        previous.writes.dedup();
-        previous.cross_access.sort_unstable();
-        previous.cross_access.dedup();
-        continue;
-    }
-}
+        if let Some(previous) = stages.last_mut() {
+            if matches!(previous.operation, Operation::Map)
+                && matches!(stage.operation, Operation::Map)
+                && previous.subgroup_operations().is_empty()
+                && stage.subgroup_operations().is_empty()
+                && !previous.has_external_effects()
+                && !stage.has_external_effects()
+                && !previous.has_tile_scope()
+                && !stage.has_tile_scope()
+                && previous.domain == stage.domain
+                && previous.prefix == stage.prefix
+                && previous.selection == stage.selection
+                && !stage.boundary_before
+                && !cross_dependency(previous, &stage)
+                && !cross_dependency(&stage, previous)
+            {
+                let base = previous.registers.len();
+                let local = previous.locals.last_key_value().map_or(0, |(end, _)| *end);
+                map(&mut stage.code, &|r| r + base, &|s| s + local);
+                previous.registers.extend(stage.registers);
+                previous.locals.extend(stage.locals.into_iter().map(|(end, ty)| (end + local, ty)));
+                previous.code.extend(stage.code);
+                previous.reads.extend(stage.reads);
+                previous.writes.extend(stage.writes);
+                previous.cross_access.extend(stage.cross_access);
+                previous.reads.sort_unstable();
+                previous.reads.dedup();
+                previous.writes.sort_unstable();
+                previous.writes.dedup();
+                previous.cross_access.sort_unstable();
+                previous.cross_access.dedup();
+                continue;
+            }
+        }
 ```
 
 源码明确检查 Map、相同域、相同前缀与筛选条件、没有要求保留的边界、没有跨元素依赖，也排除当前不能这样融合的 subgroup/tile 情况。不能只看到两个 parallel 就无条件合并。
@@ -951,7 +928,7 @@ if let Some(previous) = stages.last_mut() {
 
 假设第二阶段读 `values[i-1]`。如果实例 i 的后半步先执行，而实例 i-1 的前半步还没完成，就会读到旧内容。阶段融合必须关心读取来自哪里，不只关心数组名字是否相同。
 
-源码节选：`crates/blanguage/src/optimize.rs:224`，P4 CL13553。
+源码节选：`crates/blanguage/src/optimize.rs:257`。
 
 ```rust
 fn cross_dependency(a: &Stage, b: &Stage) -> bool {
@@ -959,7 +936,6 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
         (a.writes.contains(r) && (b.reads.contains(r) || b.writes.contains(r)))
             || (a.reads.contains(r) && b.writes.contains(r))
     })
-}
 ```
 
 这段代码把跨元素访问与读写集合结合起来。阶段的关系信息在这里成为优化依据，因此前端漏记一次读取可能不是“少一条日志”，而会导致错误重排。
@@ -986,24 +962,24 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:758`，P4 CL13553。
+源码节选：`crates/blanguage/src/ir.rs:906`。
 
 ```rust
-If {
-    condition: Reg,
-    yes: Vec<Inst>,
-    no: Vec<Inst>,
-},
-Loop {
-    condition: Vec<Inst>,
-    test: Reg,
-    body: Vec<Inst>,
-},
-Break,
-Continue,
-// 当前静态展开函数的退出域；Exit 只离开最近的 Scope，不结束 invocation。
-Scope(Vec<Inst>),
-Exit,
+    If {
+        condition: Reg,
+        yes: Vec<Inst>,
+        no: Vec<Inst>,
+    },
+    Loop {
+        condition: Vec<Inst>,
+        test: Reg,
+        body: Vec<Inst>,
+    },
+    Break,
+    Continue,
+    // 当前静态展开函数的退出域；Exit 只离开最近的 Scope，不结束 invocation。
+    Scope(Vec<Inst>),
+    Exit,
 ```
 
 子指令列表使“这段代码在哪个条件内”仍然清楚。后端再把它变成目标所需的分支、标签与合流结构。
@@ -1038,7 +1014,7 @@ CPU 取得指令，读取寄存器或内存，做运算，再把结果放回相�
 
 本版 Windows x64 范围入口的四个参数依次是数据指针表、参数 word、结束下标、开始下标。Microsoft x64 ABI 使用 RCX、RDX、R8、R9 传递这四个整数／指针参数。这里的顺序在两边必须完全相同。
 
-源码节选：`crates/blcompute/src/cpu.rs:32`，P4 CL13553。
+源码节选：`crates/blcompute/src/cpu.rs:32`。
 
 ```rust
 type Entry = unsafe extern "C" fn(*const *mut u32, *const u32, u32, u32);
@@ -1052,17 +1028,17 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native.rs:131`，P4 CL13553。
+源码节选：`crates/blanguage/src/native.rs:116`。
 
 ```rust
-fn leave(&mut self, frame: u32) {
-    self.preserve_registers(true);
-    if frame > 0 {
-        self.bytes(&[0x48, 0x81, 0xc4]);
-        self.u32(frame);
+    fn leave(&mut self, frame: u32) {
+        self.preserve_registers(true);
+        if frame > 0 {
+            self.bytes(&[0x48, 0x81, 0xc4]);
+            self.u32(frame);
+        }
+        self.bytes(&[0x5b, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0xc3]);
     }
-    self.bytes(&[0x5b, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0xc3]);
-}
 ```
 
 `leave` 恢复寄存器与栈指针，最后的字节包括返回指令。看懂用途比背下每个十六进制编码更有价值；若要修改编码，必须回到目标指令集与 ABI 逐项核对。
@@ -1081,12 +1057,12 @@ fn leave(&mut self, frame: u32) {
 
 把每个值画成一个点，同时活跃的两个值连线。相连的点不能使用同一寄存器；不相连的点则有机会共用。把有限寄存器分给这些点，类似给冲突图着色。算法还要考虑不同寄存器类别、调用保存规则和使用频率。
 
-源码节选：`crates/blanguage/src/native/allocation.rs:5`，P4 CL13553。
+源码节选：`crates/blanguage/src/native/allocation.rs:5`。
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
-    Immediate(u32),
+    Immediate(Bits),
     Gpr(u8),
     Xmm(u8),
     Stack(u32),
@@ -1095,27 +1071,27 @@ pub(super) enum Location {
 
 位置分为通用寄存器、XMM 和栈。放不下的值进入栈槽，这叫溢出；同样不同时使用的溢出值仍可复用栈空间。
 
-源码节选：`crates/blanguage/src/native/allocation.rs:50`，P4 CL13553。
+源码节选：`crates/blanguage/src/native/allocation.rs:51`。
 
 ```rust
-fn edge(&mut self, a: usize, b: usize) {
-    if a != b && !self.addressable.contains(&a) && !self.addressable.contains(&b) {
-        self.edges[a].insert(b);
-        self.edges[b].insert(a);
-    }
-}
-fn together(&mut self, live: &BTreeSet<PrivateSlot>) {
-    let allocated: Vec<_> = live
-        .iter()
-        .map(|slot| self.id(*slot))
-        .filter(|id| !self.addressable.contains(id))
-        .collect();
-    for (i, &a) in allocated.iter().enumerate() {
-        for &b in &allocated[..i] {
-            self.edge(a, b);
+    fn edge(&mut self, a: usize, b: usize) {
+        if a != b && !self.addressable.contains(&a) && !self.addressable.contains(&b) {
+            self.edges[a].insert(b);
+            self.edges[b].insert(a);
         }
     }
-}
+    fn together(&mut self, live: &BTreeSet<PrivateSlot>) {
+        let allocated: Vec<_> = live
+            .iter()
+            .map(|slot| self.id(*slot))
+            .filter(|id| !self.addressable.contains(id))
+            .collect();
+        for (i, &a) in allocated.iter().enumerate() {
+            for &b in &allocated[..i] {
+                self.edge(a, b);
+            }
+        }
+    }
 ```
 
 `edge` 记录冲突，`together` 将同一时刻活跃的值关联起来。实际实现还处理条件、循环、调用和可寻址局部，不能把这两段短代码当作完整分配器。
@@ -1126,23 +1102,23 @@ fn together(&mut self, live: &BTreeSet<PrivateSlot>) {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-源码节选：`crates/blanguage/src/native.rs:145`，P4 CL13553。
+源码节选：`crates/blanguage/src/native.rs:130`。
 
 ```rust
-fn jump(&mut self, condition: Option<u8>) -> usize {
-    if let Some(c) = condition {
-        self.bytes(&[0x0f, c]);
-    } else {
-        self.bytes(&[0xe9]);
+    fn jump(&mut self, condition: Option<u8>) -> usize {
+        if let Some(c) = condition {
+            self.bytes(&[0x0f, c]);
+        } else {
+            self.bytes(&[0xe9]);
+        }
+        let at = self.code.len();
+        self.u32(0);
+        at
     }
-    let at = self.code.len();
-    self.u32(0);
-    at
-}
-fn patch(&mut self, at: usize, target: usize) {
-    let relative = (target as i64 - (at + 4) as i64) as i32;
-    self.code[at..at + 4].copy_from_slice(&relative.to_le_bytes());
-}
+    fn patch(&mut self, at: usize, target: usize) {
+        let relative = (target as i64 - (at + 4) as i64) as i32;
+        self.code[at..at + 4].copy_from_slice(&relative.to_le_bytes());
+    }
 ```
 
 一个前向跳转生成时，目标代码可能尚未出现。生成器先写占位位移，记住位置；目标出现后，`patch` 按“目标地址减去该跳转后续位置”补入相对位移。它不是运行时搜索标签。
@@ -1153,7 +1129,7 @@ fn patch(&mut self, at: usize, target: usize) {
 
 Sin、Cos 等运算可能调用执行框架提供的原生辅助函数。生成时保存重定位位置与辅助函数类别，装载代码时再填入本进程中的真实地址。机器码字节与这张重定位清单共同构成 NativeCode。
 
-源码节选：`crates/blanguage/src/native.rs:77`，P4 CL13553。
+源码节选：`crates/blanguage/src/native.rs:62`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1174,15 +1150,15 @@ pub struct NativeCode {
 
 一百万个元素不意味着创建一百万个操作系统线程。运行时把连续元素组成范围，每个工作者领取一段，用本机范围函数处理。
 
-源码节选：`crates/blcompute/src/cpu.rs:63`，P4 CL13553。
+源码节选：`crates/blcompute/src/cpu.rs:63`。
 
 ```rust
-loop {
-    let begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
-    if begin >= work.count {
-        break;
-    }
-    let end = (begin + work.grain).min(work.count);
+    loop {
+        let begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
+        if begin >= work.count {
+            break;
+        }
+        let end = (begin + work.grain).min(work.count);
 ```
 
 `fetch_add(grain)` 原子地领取下一个起点，末尾用 min 保证最后范围不超过 count。线程数与领取顺序会变化，但每个范围中的当前元素仍有自己的独占位置。
@@ -1193,23 +1169,23 @@ loop {
 
 多个线程使用多个核心；SIMD 则让一个核心的一条适当指令对多个分量工作。两者可以叠加：每个工作者领取连续范围，范围内再以四个元素组成 SSE2 批次。
 
-本版 `native/packet.rs` 为能够表达的直线计算建立四元素计划。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
+native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native.rs:676`，P4 CL13553。
+源码节选：`crates/blanguage/src/native.rs:649`。
 
 ```rust
-let stage = &lowered;
-let mut graph = allocation::Graph::new(stage);
-let allocation = Allocation::new(stage, &graph);
-let packet = packet::Plan::new(program, stage).map(|plan| {
-    let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
-    (plan, allocation)
-});
-drop(graph);
-let frame_layout = Frame::new(
-    &allocation,
-    packet.as_ref().map(|(_, allocation)| allocation),
-);
+    let stage = &lowered;
+    let mut graph = allocation::Graph::new(stage);
+    let allocation = Allocation::new(stage, &graph);
+    let packet = packet::Plan::new(program, stage).map(|plan| {
+        let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
+        (plan, allocation)
+    });
+    drop(graph);
+    let mut frame_layout = Frame::new(
+        &allocation,
+        packet.as_ref().map(|(_, allocation)| allocation),
+    );
 ```
 
 这里同时建立普通分配与可用的 packet 计划。复杂控制流、部分协作或无法这样降低的操作有其实际实现范围，书中不能把所有 B 指令都描述为已经四路 SIMD。
@@ -1220,29 +1196,29 @@ let frame_layout = Frame::new(
 
 ### 15.3 机器码怎样变成可调用函数
 
-源码节选：`crates/blcompute/src/cpu.rs:234`，P4 CL13553。
+源码节选：`crates/blcompute/src/cpu.rs:240`。
 
 ```rust
-    let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
-    if address.is_null() {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let out = Self {
-        address,
-        _libraries: libraries.into_values().collect(),
-    };
-    unsafe {
-        std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
-        let mut old = 0;
-        if VirtualProtect(address, code.bytes.len(), 0x20, &mut old) == 0 {
+        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
+        if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        if FlushInstructionCache(GetCurrentProcess(), address, code.bytes.len()) == 0 {
-            return Err(std::io::Error::last_os_error().into());
+        let out = Self {
+            address,
+            _libraries: libraries.into_values().collect(),
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
+            let mut old = 0;
+            if VirtualProtect(address, code.bytes.len(), 0x20, &mut old) == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            if FlushInstructionCache(GetCurrentProcess(), address, code.bytes.len()) == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
         }
+        Ok(out)
     }
-    Ok(out)
-}
 ```
 
 执行框架分配可写内存，复制指令、处理必要重定位，再把页面改成可执行并刷新指令缓存。CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。
@@ -1297,7 +1273,7 @@ SPIR-V 是标准二进制中间语言。它仍由驱动处理成设备执行形�
 
 ### 17.2 一条指令怎样装进 word
 
-源码节选：`crates/blanguage/src/spirv.rs:43`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv.rs:43`。
 
 ```rust
 fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
@@ -1330,7 +1306,7 @@ word 4：输入 B 的编号
 
 ### 17.4 一个语言阶段可能需要多个 GPU pass
 
-源码节选：`crates/blanguage/src/spirv.rs:21`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv.rs:21`。
 
 ```rust
 pub enum Pass {
@@ -1370,16 +1346,16 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 `GpuProgram` 持有编译结果与管线；提交路径建立本次数据关系与命令，最后返回 Submission。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1784`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1837`。
 
 ```rust
-pub fn submit(
-    &self,
-    data: impl Into<Bindings<DomainBindings<GpuDataset>>>,
-    values: &[Value],
-) -> Result<Submission> {
-    self.submit_steps(data, values, NonZeroU32::MIN)
-}
+    pub fn submit(
+        &self,
+        data: impl Into<Bindings<DomainBindings<GpuDataset>>>,
+        values: &[Value],
+    ) -> Result<Submission> {
+        self.submit_steps(data, values, NonZeroU32::MIN)
+    }
 ```
 
 `submit` 接收拥有的数据绑定。返回不是最终结果数组，而是尚可能在设备中运行的提交对象。
@@ -1402,7 +1378,7 @@ pub fn submit(
 
 当数据很大，单块分配会受到真实设备资源和分配条件约束。Blink 保留一份逻辑记录域，将数据存放到多个物理页，用页表保存各页的设备地址。
 
-源码节选：`crates/blanguage/src/spirv.rs:40`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv.rs:40`。
 
 ```rust
 /// GPU 存储页的最大字节数；每页只容纳完整记录，页表使用 64 位设备地址。
@@ -1434,7 +1410,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1566`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1601`。
 
 ```rust
 #[derive(Clone)]
@@ -1479,19 +1455,19 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1814`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1867`。
 
 ```rust
-/// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
-pub fn submit_after(
-    &self,
-    previous: Submission,
-    order: &[usize],
-    additional: impl Into<Bindings<DomainBindings<GpuDataset>>>,
-    values: &[Value],
-) -> Result<Submission> {
-    self.submit_join([previous], order, additional, values)
-}
+    /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
+    pub fn submit_after(
+        &self,
+        previous: Submission,
+        order: &[usize],
+        additional: impl Into<Bindings<DomainBindings<GpuDataset>>>,
+        values: &[Value],
+    ) -> Result<Submission> {
+        self.submit_join([previous], order, additional, values)
+    }
 ```
 
 本版主要是同一设备队列上的衔接，不等于多队列、多个 GPU 或所有分支都真正同时执行。接口表达可交接的关系，实际硬件并发还取决于实现与设备安排。
@@ -1511,7 +1487,7 @@ GPU：     A 仍在执行 → B 才开始读取
 
 ### 21.2 物理存储和最后使用点一起保存
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:903`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1006`。
 
 ```rust
 pub struct GpuDataset {
@@ -1539,7 +1515,7 @@ pub struct GpuStorage {
 
 `GpuDataset` 保存实际 GpuStorage 和可选 last_use。GpuStorage 持有页表、数据页、类型、容量、只读来源及相关实例资源。它们不是多份数组副本，而是同一物理存储的组成。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:933`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1036`。
 
 ```rust
 impl Drop for GpuDataset {
@@ -1559,7 +1535,7 @@ impl Drop for GpuDataset {
 
 ### 21.3 Completion 记录设备事实
 
-源码节选：`crates/blcompute/src/vulkan/execution.rs:27`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/execution.rs:27`。
 
 ```rust
 pub(super) struct Completion {
@@ -1575,7 +1551,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2579`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2694`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -1628,35 +1604,35 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 浮点 min/max 还要处理实际有效长度和比较语义，不能只塞入一个哨兵就假定 NaN、正负零等所有情况都正确。源码中的有效项选择正是这类细节；手算普通加法时可以先用零理解尾部。
 
-源码节选：`crates/blanguage/src/spirv/reduce.rs:112`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv/reduce.rs:111`。
 
 ```rust
-self.scan_barrier();
-for width in [32, 16, 8, 4, 2, 1] {
-    let width = self.constant(Scalar::U32, width);
-    let selected = self.id();
-    self.emit(176, &[b, selected, local, width]);
-    let run = self.id();
-    let end = self.id();
-    self.emit(247, &[end, 0]);
-    self.emit(250, &[selected, run, end]);
-    self.emit(248, &[run]);
-    let other = self.id();
-    self.emit(128, &[u, other, local, width]);
+        self.scan_barrier();
+        for width in [32, 16, 8, 4, 2, 1] {
+            let width = self.constant(Scalar::U32, width);
+            let selected = self.id();
+            self.emit(176, &[b, selected, local, width]);
+            let run = self.id();
+            let end = self.id();
+            self.emit(247, &[end, 0]);
+            self.emit(250, &[selected, run, end]);
+            self.emit(248, &[run]);
+            let other = self.id();
+            self.emit(128, &[u, other, local, width]);
 ```
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2346`，P4 CL13553。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2417`。
 
 ```rust
-let mut length = count;
-let mut pass = 0;
-loop {
-    let groups = length.div_ceil(64).max(1);
-    if pass > 0 {
-        commands.barrier(0x800, 0x800, 0x40, 0x60);
-    }
+                                let mut length = count;
+                                let mut pass = 0;
+                                loop {
+                                    let groups = length.div_ceil(64).max(1);
+                                    if pass > 0 {
+                                        commands.barrier(0x800, 0x800, 0x40, 0x60);
+                                    }
 ```
 
 实际行数在每层减少，组数按向上取整计算。只有一个组时写最终目标，否则写当前执行拥有的临时摘要。这里的多 pass 来自算法层次。
@@ -1691,14 +1667,14 @@ CPU 对各领取范围生成原生计算，得到部分结果，再按该操作�
 
 四项时，上行和下行各有三次树节点处理。对大规模数据，处理量仍随项数线性增长，树的深度随规模的对数增长。这是 work-efficient 的含义；它不声称小输入也必然值得启动 GPU。
 
-源码节选：`crates/blanguage/src/spirv/scan.rs:33`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv/scan.rs:33`。
 
 ```rust
-pub(super) fn scan_barrier(&mut self) {
-    let scope = self.constant(Scalar::U32, 2);
-    let semantics = self.constant(Scalar::U32, 0x108);
-    self.emit(224, &[scope, scope, semantics]);
-}
+    pub(super) fn scan_barrier(&mut self) {
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        self.emit(224, &[scope, scope, semantics]);
+    }
 ```
 
 这个 barrier 是组内共享树的同步。跨组递归由外层设备命令组织，它不能被一个组内 barrier 替代。
@@ -1739,11 +1715,11 @@ IR 的 PrefixCount 与 PrefixRelation 将数据和计数的对应保存下来。
 
 若一条记录很大，每轮排序都搬全部字段会增加大量内存流量。实现中间主要重排八字节的“键与原始序号”，等完整顺序确定后，再 gather 一次完整记录。
 
-源码节选：`crates/blanguage/src/spirv/sort.rs:71`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv/sort.rs:66`。
 
 ```rust
-e.sort_store(s.target, e.index, 2, 0, key);
-e.sort_store(s.target, e.index, 2, 1, original);
+            e.sort_store(s.target, e.index, 8, 0, key);
+            e.sort_store(s.target, e.index, 8, 4, original);
 ```
 
 对于多个字段的字典序键，先处理低优先级，再稳定处理高优先级；每次装入下一键时通过当前原序号读取原记录。这使已有排序结果保留下来，而不额外复制一份完整键记录。
@@ -1752,25 +1728,33 @@ e.sort_store(s.target, e.index, 2, 1, original);
 
 无符号整数的编码顺序直接对应大小。带符号整数要处理符号位，浮点数还要分别处理正负编码。此版本以位映射形成所定义的全序，原字段内容不修改。
 
-源码节选：`crates/blanguage/src/spirv/sort.rs:49`，P4 CL13553。
+源码节选：`crates/blanguage/src/spirv/sort.rs:36`。
 
 ```rust
-let key = match key_type {
-    SortKey::U32 => key,
-    SortKey::I32 | SortKey::F32 => {
-        let sign = e.constant(Scalar::U32, 0x8000_0000);
-        let mask = if key_type == SortKey::F32 {
-            let shift = e.constant(Scalar::U32, 31);
-            let negative = e.sort_binary(194, key, shift);
-            let zero = e.constant(Scalar::U32, 0);
-            let inverse = e.sort_binary(130, zero, negative);
-            e.sort_binary(197, inverse, sign)
-        } else {
-            sign
-        };
-        e.sort_binary(198, key, mask)
-    }
-};
+            let scalar = s.keys[key_index].1;
+            let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+            let at = e.address_scalar(unit, s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0);
+            let key = e.load_raw(Scalar::U32, unit, &[at], true);
+            let bias = scalar.order_bias() as u32;
+            let key = if scalar.is_float() {
+                let high = if scalar == Scalar::F64 {
+                    e.load_raw_buffer(Scalar::U32, s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0 + 4)
+                } else { key };
+                let shift = e.constant(Scalar::U32, 31);
+                let negative = e.sort_binary(194, high, shift);
+                let zero = e.constant(Scalar::U32, 0);
+                let inverse = e.sort_binary(130, zero, negative);
+                let mask = if scalar == Scalar::F32 {
+                    let sign = e.constant(Scalar::U32, 0x8000_0000);
+                    e.sort_binary(197, inverse, sign)
+                } else { inverse };
+                e.sort_binary(198, key, mask)
+            } else if bias != 0 {
+                let sign = e.constant(Scalar::U32, bias);
+                e.sort_binary(198, key, sign)
+            } else {
+                key
+            };
 ```
 
 这不等于随意用浮点 `<` 就能得到相同顺序：正负零、NaN 编码等在这里有明确处理方式。阅读排序结果时，应先看接口承诺的键顺序，而不是只凭平常数值比较猜测。
@@ -1823,18 +1807,27 @@ CPU 使用容量比较与原子比较交换等原生操作；GPU 将实际活动
 
 ### 26.2 DLL 内究竟装了什么
 
-源码节选：`crates/blanguage/src/dll/mod.rs:229`，P4 CL13553。
+源码节选：`crates/blanguage/src/dll/mod.rs:257`。
 
 ```rust
 /// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
 pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+    crate::Compiler::available()?.compile_dll(program, prefix)
+}
+impl crate::Compiler {
+    pub fn compile_dll(&self, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+        self.execute(|worker| compile_in(worker, program, prefix).map_err(|error| error.to_string()))
+            .map_err(|error| std::io::Error::other(error.to_string()).into())
+    }
+}
+pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source) = generate(program, &prefix)?;
+    let (header, binding, source) = generate(program, &prefix, worker)?;
     let exports = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
         .collect();
-    let archive = crate::object::compile_archive(&source, exports)?;
+    let archive = crate::object::compile_archive(&source, exports, &["blanguage", "blcompute"], worker)?;
     Ok(crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {
@@ -1921,7 +1914,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 ### A.1 从干净构建得到工具
 
-工程根目录执行 `cargo build --workspace --release`，生成 `target/release/blc.exe` 和 `blrun.exe`。本书记录来自 Blink CL13553 的独立 Release 构建，编译输入取自已提交源码。普通读者直接使用工程正式目录即可，不需要复制本书研发目录。
+工程根目录执行 `cargo build --workspace --release`，生成 `target/release/blc.exe`、`bllink.exe`和`blrun.exe`。实际程序以本次正式构建为准，不需要复制历史研发目录。
 
 ### A.2 读取四个浮点结果
 
@@ -1941,7 +1934,6 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 
 `.x64` 是 CPU 原生阶段字节，配套重定位说明辅助函数地址的装载位置；`.spv` 是对应 GPU pass，布局文件说明绑定、类型和参数。不同操作会生成不同数量的 pass。不要按“源函数一个，文件一定一个”推断。
 
-本次实际导出：
 
 | 文件 | 字节数 |
 |---|---|
@@ -1952,7 +1944,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 
 ## 附录 B 按职责查找源码
 
-下表是阅读索引，路径相对于工程根目录。完整精确文件列表和哈希另存于 `compiler/源码版本索引.json`。
+下表是阅读索引，路径相对于工程根目录。当前源码文件与节选位置见 `compiler/源码版本索引.json`。
 
 | 源码位置 | 主要阅读问题 |
 |---|---|
@@ -2008,7 +2000,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 
 ## 附录 D 版本与进一步阅读
 
-本版取材于修订时已提交的 P4 CL13553，工作日期为 2026-10-27。源码、节选行号、原生结果与索引随本版同步；书中页大小、组宽、向量化范围和当前平台属于具体实现，不升格为永久语言限制。
+正文按当前语言规则与正式工具入口编写；软件版本见工程根VERSION，具体运行与交付历史保存在P4双台账。
 
 - [Blink 开源工程](https://github.com/sgua83/Blink)：源码、学习资料与正式 PDF。
 - [语言规则](../Docs/BLanguage.md)：语法、类型、访问和集合操作的正式说明。
@@ -2018,4 +2010,3 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 - [Khronos SPIR-V 规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)：二进制格式、类型、控制流和执行环境。
 - [Khronos Vulkan 同步示例](https://docs.vulkan.org/guide/latest/synchronization_examples.html)：执行依赖与内存可见性的典型关系。
 - [Rust Arc](https://doc.rust-lang.org/std/sync/struct.Arc.html)：原子引用计数与共享所有权；实际单线程 GPU 对象所用 Rc 需区别理解。
-

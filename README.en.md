@@ -54,7 +54,7 @@ The first three chapters of [The Art of Parallel Programming](sample/并行编�
 
 [Chapter 1: element-wise parallelism](#map) · [Chapter 2: ownership of reads and writes](#ownership) · [Chapter 3: sum reduction](#reduction)
 
-Performance figures come from the book's recorded Release run: 2026-10-26, P4 CL12985, AMD Ryzen 9 9950X / Radeon RX 9070 GRE, MSVC 14.44, and Rust 1.95.0. They are historical observations, not measurements repeated for this README update or performance guarantees for other hardware.
+The examples use the current language rules and formal Release tools. Historical build, hardware and measurement records are kept in the P4 ledgers; run the supplied programs to obtain measurements for the current build.
 
 To reproduce them, build the additional measurement program as described in [Appendix A.5](sample/并行编程的艺术.md). A normal workspace build does not produce `bperf.exe`:
 
@@ -150,7 +150,6 @@ Run the same sources on a GPU by selecting `gpu` and another output directory:
 
 In the book's recorded runs, both `values.bldata` outputs contain `[3,5,7,9]`, with one f32 per record. The complete implementation is in [map.h](sample/lessons/map.h) and [map.b](sample/lessons/map.b).
 
-![Compilation and execution record for the element-wise transformation](sample/figures/execution-map.svg)
 
 *Execution record: excerpts of the program entry and actual output, with values read from BLDATA.*
 
@@ -173,23 +172,12 @@ Build the measurement program as described in [Appendix A.5](sample/并行编程
     map 100000000
 ```
 
-Serial C++ takes **17.512 ms**. B-language CPU takes **14.627 ms**, a **1.20×** speedup. Resident B-language GPU execution takes **4.143 ms**, a **4.23×** speedup. The formula is still the one introduced at the beginning.
-
-![Measured serial and parallel performance of the element-wise transformation](sample/figures/performance-map.svg)
-
-*Measurement record: map. Each transformation reads and updates the same set of numbers; all three implementations produce the same final result.*
 
 ### 1.7 · Put computation where it belongs
 
-For the same one hundred million numbers, serial C++ takes 17.512 ms, B-language CPU 14.627 ms, and resident B-language GPU execution 4.143 ms. CPU range parallelism divides work on the host-memory array, while the GPU distributes independent calculations across the device.
-
-If those numbers must be uploaded from host memory and downloaded after the transformation, the complete GPU time is 1102.336 ms. For a simple multiply-and-add, movement costs far more than the formula. Data already in host memory can use the faster B-language CPU version; data already resident on the GPU can continue using device computation.
-
-![Timing scope and data location for the same formula](sample/figures/performance-scope.svg)
 
 *Figure 1-3: compare equivalent computation first, then include the real cost of delivering the data.*
 
-Initial device creation, device-program preparation, and upload of initial values were measured separately at 486.681 ms on the book's machine. When a native execution command handles only four numbers, preparation and output costs dominate. That measurement describes a complete startup rather than large-scale compute throughput.
 
 <a id="ownership"></a>
 
@@ -343,7 +331,6 @@ Run the `demo_sum` entry on the CPU:
 
 `demo_sum` produces `[3,1,4,2]` and sums it. The single u32 in `total.bldata` is 10. This entry shares its input generator with the next chapter's scan example.
 
-![Compilation and execution record for sum reduction](sample/figures/execution-reduce.svg)
 
 *Execution record: excerpts of the program entry and actual output, with values read from BLDATA.*
 
@@ -356,13 +343,9 @@ The performance input contains ten million elements. The comparison measures one
     reduce 10000000
 ```
 
-Serial C++ takes **0.542 ms** and B-language CPU **0.311 ms**, a **1.74×** speedup. Resident B-language GPU execution takes **5.101 ms**. On the book's machine, CPU range parallelism is a better choice for this lightweight sum.
 
 Each input contributes one integer addition, and the optimized serial implementation is already compact. B-language CPU divides ten million items into parallel ranges and combines their summaries. GPU submission and waiting account for a larger share of this lightweight computation. Inputs repeat `[3,1,4,2]`; the sum is twenty-five million, and all three implementations produce the same integer result.
 
-![Measured sum reduction performance under matching conditions](sample/figures/performance-reduce.svg)
-
-*Measurement record: reduce. The primary GPU time includes command organization, submission, and waiting for actual completion; data round trips are measured separately.*
 
 ## Tools and native integration
 
@@ -392,7 +375,7 @@ Write standalone applications in the B language, or compile compute functions wr
 | Compute domains | Domain compilation and execution have a defined architectural scope; not implemented |
 | Stable hot updates | Version binding, state migration, and resource handover are architectural goals; not implemented |
 
-The B language **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. Current rules, native runs, and performance results are recorded separately in the [language reference](Docs/BLanguage.md) and [implementation records in the architecture](Docs/Architecture.md).
+The B language **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. Current rules, native runs, and performance results are recorded separately in the [language reference](Docs/BLanguage.md) and [current architecture](Docs/Architecture.md).
 
 ## Learn and explore
 

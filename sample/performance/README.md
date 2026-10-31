@@ -54,8 +54,5 @@ map 输入为 `(i % 17) / 8`；求和与扫描输入循环 `[3,1,4,2]`；筛选�
 
 程序在计时之外比较最终输出，报告浮点最大绝对差和整数不一致数量。浮点归约的分组不同，会改变舍入；`body_total` 另列逐粒子 f32 能量的 f64 累加参考，便于观察串行线性累加与并行归约的数值差异。`resolve` 的 B CPU 时间显示 `NaN`，表示该正式入口仅支持 GPU。
 
-2026-10-26 使用 Blink P4 CL12985 的已提交源码重新构建和实测。Release 档位为 opt-level=3、thin LTO、codegen-units=1、panic=abort；C++ 仍使用上述 /O2 等选项。第十四章 DLL 也重新以 Release 生成，Rust 串行宿主显式使用 -C opt-level=3。
 
-[完整运行记录](运行记录.txt) 保存实际可执行文件路径、构建输出、SHA-256、13 组原始 CSV 以及 C++/Rust DLL 调用结果。
-
-本次机器：AMD Ryzen 9 9950X（16 核、32 逻辑处理器）、AMD Radeon RX 9070 GRE、MSVC 14.44、Rust 1.95.0，Release 构建。正式书稿包含精选规模的时间与加速比；原始 stdout/stderr 保存在本机 `Saved/BookRelease`，历史测量保留在 `Saved/BookPerformance`。
+P4台账中的运行历史 保存实际可执行文件路径、构建输出、SHA-256、13 组原始 CSV 以及 C++/Rust DLL 调用结果。
