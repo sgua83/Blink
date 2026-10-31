@@ -1785,3 +1785,15 @@ impl Program {
 pub fn align_up(n: u32, a: u32) -> u32 {
     (n + a - 1) & !(a - 1)
 }
+
+impl Ty {
+    pub(crate) fn indexed_element(&self) -> Option<(Self, u32)> {
+        if let Some(element) = &self.array {
+            Some(((**element).clone(), self.values[0]))
+        } else if self.is_numeric() && self.components.len() > 1 {
+            Some((Self::scalar(self.components[0].0), self.components.len() as u32))
+        } else {
+            None
+        }
+    }
+}

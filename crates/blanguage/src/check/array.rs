@@ -1,4 +1,4 @@
-//! 固定数组按值布局；动态下标由范围事实证明，直接生成地址访问。
+//! 固定数组与数值向量按原逻辑分量索引；动态位置直接访问真实存储。
 use super::*;
 impl Place {
     pub(super) fn read_only(self) -> Self {
@@ -184,13 +184,13 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, expr.span)?;
-        let ty = (**value.ty.array.as_ref().unwrap()).clone();
+        let (ty, count) = value.ty.indexed_element().unwrap();
         if !self.index_in(
             &index,
-            IndexDomain::Fixed(value.ty.values[0]),
-            value.ty.values[0],
+            IndexDomain::Fixed(count),
+            count,
         ) {
-            return self.fail(expr.span, "B137", "数组下标有效性无法静态证明");
+            return self.fail(expr.span, "B137", "固定值下标有效性无法静态证明");
         }
         if let Some(bits) = &index.constant {
             let begin = bits[0] as usize * ty.components.len();
@@ -210,6 +210,13 @@ impl Builder<'_> {
         let array = value.ty.clone();
         let selected = ownership::ApplicationIndex::of(&index);
         let uniform = value.uniform && index.uniform;
+        if array.array.is_none() {
+            let choices: Vec<_> = value.regs.iter().enumerate().map(|(i, r)| (i as u32, *r)).collect();
+            let reg = self.select_component(index.regs[0], ty.components[0].0, &choices);
+            let proof = self.array_value_proof(&proof, &array, selected, &[reg]);
+            let constant = proof.known_value(&ty);
+            return Ok(Some(Value { ty, regs: vec![reg], proof, uniform, constant, literal: false }));
+        }
         let place = self.materialize_array(value).place;
         let place = self.array_index(place, index, expr.span)?;
         let mut result = self.read_place(&place, expr.span)?;
@@ -219,14 +226,13 @@ impl Builder<'_> {
         Ok(Some(result))
     }
     pub(super) fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
-        let element = (**place.ty().array.as_ref().unwrap()).clone();
-        let count = place.ty().values[0];
+        let (element, count) = place.ty().indexed_element().unwrap();
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;
         if !self.index_in(&index, IndexDomain::Fixed(count), count) {
             return self.fail(
                 span,
                 "B137",
-                "数组下标有效性无法静态证明；使用常量下标、有界循环或小于数组 length 的条件",
+                "固定值下标有效性无法静态证明；使用常量下标、有界循环或实际长度条件",
             );
         }
         self.observe_bounds(&index);
@@ -234,6 +240,9 @@ impl Builder<'_> {
             let first = bits[0] as usize * element.components.len();
             let components: Vec<_> = (first..first + element.components.len()).collect();
             return Ok(place.project(element, &components));
+        }
+        if place.ty().array.is_none() {
+            return Ok(self.vector_index(place, index, element));
         }
         let initialization = self.indexed_positions(&place, &index, element.components.len());
         let stride = ir::align_up(element.size, element.align);
@@ -280,8 +289,65 @@ impl Builder<'_> {
             words,
         })
     }
-    fn array_memory(&mut self, base: &Place, write: bool, span: Span) -> Result<IndexedSource> {
-        Ok(match base {
+    fn select_component(&mut self, index: Reg, scalar: Scalar, choices: &[(u32, Reg)]) -> Reg {
+        let mut selected = choices[0].1;
+        for (component, value) in &choices[1..] {
+            let number = self.constant(Scalar::U32, Bits::from(*component)).regs[0];
+            let condition = self.reg(Scalar::Bool);
+            self.code.push(Inst::Binary {
+                dst: condition, op: BinaryOp::Compare(ir::Comparison::Equal), a: index, b: number,
+            });
+            let dst = self.reg(scalar);
+            self.code.push(Inst::Select { dst, condition, a: *value, b: selected });
+            selected = dst;
+        }
+        selected
+    }
+    fn vector_index(&mut self, mut place: Place, index: Value, ty: Ty) -> Place {
+        let initialization = self.indexed_positions(&place, &index, 1);
+        let offsets: Vec<_> = match &mut place {
+            Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+                let layout = &self.locals[&storage.end];
+                let offsets: Vec<_> = slots.iter().map(|slot| layout.components[*slot - storage.start].1).collect();
+                let first = *offsets.iter().min().unwrap();
+                slots.sort_unstable();
+                offsets.into_iter().map(|offset| offset - first).collect()
+            }
+            Place::Reference { words, .. } | Place::ApplicationElement { words, .. }
+            | Place::Element { words, .. } | Place::ViewElement { words, .. }
+            | Place::TileElement { words, .. } | Place::Indexed { words, .. } => words.clone(),
+            Place::AtomicParameter(ty) => ty.components.iter().map(|(_, offset)| *offset).collect(),
+        };
+        let choices: Vec<_> = offsets.iter().enumerate()
+            .map(|(i, offset)| (i as u32, self.constant(Scalar::U32, Bits::from(*offset)).regs[0])).collect();
+        let relative = self.select_component(index.regs[0], Scalar::U32, &choices);
+        let (base, offset) = match place {
+            Place::Indexed { base, offset, .. } => {
+                let dst = self.reg(Scalar::U32);
+                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: offset, b: relative });
+                (base, dst)
+            }
+            base => (Box::new(base), relative),
+        };
+        Place::Indexed { ty, initialization, base, offset, words: vec![0] }
+    }
+    fn array_memory(&mut self, base: &Place, offset: Reg, word: u32, write: bool, span: Span) -> Result<(IndexedSource, Reg, u32)> {
+        if let Place::Reference { address: ReferenceAddress::Components(addresses), words, .. } = base {
+            let selected = if word == 0 { offset } else {
+                let number = self.constant(Scalar::U32, Bits::from(word)).regs[0];
+                let dst = self.reg(Scalar::U32);
+                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: offset, b: number });
+                dst
+            };
+            let mut address = [0; 2];
+            for (part, reg) in address.iter_mut().enumerate() {
+                let choices: Vec<_> = words.iter().map(|word| (*word, addresses[word][part])).collect();
+                *reg = self.select_component(selected, Scalar::U32, &choices);
+            }
+            let zero = self.constant(Scalar::U32, 0).regs[0];
+            return Ok((IndexedSource::View { address, index: zero, stride: 0 }, zero, 0));
+        }
+        let source = match base {
             Place::Reference { address, .. } => IndexedSource::View {
                 address: address.component(0).0,
                 index: self.constant(Scalar::U32, 0).regs[0],
@@ -317,7 +383,8 @@ impl Builder<'_> {
                 index: *index,
             },
             _ => unreachable!(),
-        })
+        };
+        Ok((source, offset, word))
     }
     pub(super) fn read_array_place(&mut self, place: &Place, span: Span) -> Result<Value> {
         if self.atomic_storage(place) {
@@ -369,11 +436,9 @@ impl Builder<'_> {
                         word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
                     }
                 }
-                _ => Inst::LoadIndexed {
-                    dst,
-                    source: self.array_memory(base, false, span)?,
-                    offset: *offset,
-                    word: *word,
+                _ => {
+                    let (source, offset, word) = self.array_memory(base, *offset, *word, false, span)?;
+                    Inst::LoadIndexed { dst, source, offset, word }
                 },
             };
             self.code.push(instruction);
@@ -428,12 +493,8 @@ impl Builder<'_> {
                     if let Place::Element { binding, .. } = &**base {
                         self.writes.insert(*binding);
                     }
-                    Inst::StoreIndexed {
-                        source: self.array_memory(base, true, span)?,
-                        offset: *offset,
-                        word: *word,
-                        value,
-                    }
+                    let (source, offset, word) = self.array_memory(base, *offset, *word, true, span)?;
+                    Inst::StoreIndexed { source, offset, word, value }
                 }
                 _ => unreachable!(),
             };

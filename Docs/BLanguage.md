@@ -3144,7 +3144,7 @@ Vulkan 不保证 LocalInvocationIndex 与 subgroup lane 的直接对应关系，
 
 ## 值类型与顺序控制
 
-支持 `f32`／`u32`／`i32`／`u64`／`i64`／`bool`，`float2/3/4`、`uint2/3/4`、`int2/3/4`，嵌套结构体、向量构造、固定 f32 矩阵和 swizzle。支持局部变量、赋值、if/else、while、范围 for、只读数据集游标、break／continue、短路布尔表达式、数值转换和常见标量／向量数学。
+支持 `f32`／`u32`／`i32`／`u64`／`i64`／`bool`，`float2/3/4`、`uint2/3/4`、`int2/3/4`，嵌套结构体、向量构造、固定 f32 矩阵和 swizzle。数值向量的value[index]按x／y／z／w逻辑顺序选择标量分量；u32下标须由常量、有界循环或现有范围关系证明小于分量数。可变局部、当前独占dataset字段和write／inout普通位置可写所选分量；重排swizzle及普通CPU位置借用保持真实分量地址，不要求连续布局、不复制载荷。基表达式及下标各按源码顺序求值一次；只读、原子、未初始化及实际越界沿原权限／范围规则处理，没有运行时范围检查。CPU与SPIR-V复用既有选择及索引IR，矩阵与记录仍通过其字段访问。支持局部变量、赋值、if/else、while、范围 for、只读数据集游标、break／continue、短路布尔表达式、数值转换和常见标量／向量数学。
 
 数学包括 dot、cross、length、normalize、abs、sqrt、floor、sin、cos、exp、log、exp2、log2、pow、min、max、clamp。数学定义域不会被隐式修正；normalize 零向量、非法 log 等仍是数值设计问题。
 

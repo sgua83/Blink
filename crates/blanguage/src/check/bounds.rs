@@ -2831,16 +2831,16 @@ impl Builder<'_> {
         index: ownership::ApplicationIndex,
         registers: &[Reg],
     ) -> Proof {
-        let element = array.array.as_ref().unwrap();
+        let (element, count) = array.indexed_element().unwrap();
         let width = element.components.len();
         let choices: Vec<Vec<_>> = (0..width)
             .map(|component| {
-                (0..array.values[0] as usize)
+                (0..count as usize)
                     .map(|i| (i * width + component, Clause::selection(index, i)))
                     .collect()
             })
             .collect();
-        self.selected_proof(proof, array, element, &choices, Some(registers))
+        self.selected_proof(proof, array, &element, &choices, Some(registers))
     }
     pub(super) fn projected_owned_proof(
         &self,

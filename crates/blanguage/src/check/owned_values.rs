@@ -481,7 +481,7 @@ impl Builder<'_> {
             let Some((value,mut owner))=self.read_aggregate(base,None)? else{return Ok(None)};
             let value=match value {
                 Returned::Value(value)=>{
-                    let value=if value.ty.array.is_some(){let Some(value)=self.array_value_index(*value,index)?else{return Ok(None)};value}
+                    let value=if value.ty.indexed_element().is_some(){let Some(value)=self.array_value_index(*value,index)?else{return Ok(None)};value}
                         else {let Some(place)=self.view_value_place(*value,index)?else{return Ok(None)};self.read_place(&place,expr.span)?};
                     return Ok(Some((Returned::value(value),owner)));
                 }

@@ -343,7 +343,7 @@ impl Builder<'_> {
             let Some(place) = self.place(base)? else {
                 return Ok(None);
             };
-            if place.ty().array.is_some() {
+            if place.ty().indexed_element().is_some() {
                 return self.array_place(place, index);
             }
             self.read_place(&place, base.span)?

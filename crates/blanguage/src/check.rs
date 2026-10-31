@@ -4184,7 +4184,7 @@ impl<'a> Builder<'a> {
             let Some(value) = self.expr(base)? else {
                 return Ok(None);
             };
-            if value.ty.array.is_some() {
+            if value.ty.indexed_element().is_some() {
                 return self.array_value_index(value, index);
             }
             let Some(place) = self.view_value_place(value, index)? else {

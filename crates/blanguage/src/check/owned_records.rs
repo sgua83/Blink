@@ -423,7 +423,7 @@ impl Builder<'_> {
                 self.finish_scoped_argument(&held, expr.span)?;
                 return Ok(Some(Returned::value(value)));
             }
-            Some(Returned::Value(value)) if value.ty.array.is_some() => {
+            Some(Returned::Value(value)) if value.ty.indexed_element().is_some() => {
                 return self
                     .array_value_index(*value, index)
                     .map(|v| v.map(Returned::value));

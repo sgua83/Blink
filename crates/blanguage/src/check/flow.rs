@@ -60,7 +60,7 @@ pub(super) struct LoopContext {
     resources: BTreeMap<String, Binding>,
     exits: Vec<LoopState>,
     initial: bool,
-    arrays: bool,
+    initialization: bool,
     continues: Vec<LoopState>,
     iterator: Option<String>,
     initial_cursor: Option<Value>,
@@ -269,9 +269,9 @@ impl Builder<'_> {
         iterator: Option<String>,
         cursor: Option<Value>,
     ) {
-        let arrays = iterator.is_some() && self.incomplete_arrays();
+        let initialization = iterator.is_some() && self.incomplete_positions();
         let context = self.loop_contexts.last_mut().unwrap();
-        context.arrays = arrays;
+        context.initialization = initialization;
         context.initial = initial;
         context.iterator = iterator;
         context.initial_cursor = cursor;
@@ -348,7 +348,7 @@ impl Builder<'_> {
                 }
             }
         }
-        if !self.loop_contexts.last().unwrap().view_inputs.is_empty() || self.loop_contexts.last().unwrap().arrays || self.env.values().any(|binding| binding.application_resources().iter().any(|data|data.initialization.is_some())) {
+        if !self.loop_contexts.last().unwrap().view_inputs.is_empty() || self.loop_contexts.last().unwrap().initialization || self.env.values().any(|binding| binding.application_resources().iter().any(|data|data.initialization.is_some())) {
             let state = self.loop_state();
             self.loop_contexts.last_mut().unwrap().continues.push(state);
         }
@@ -365,7 +365,7 @@ impl Builder<'_> {
             resources: environment.clone(),
             exits: Vec::new(),
             initial: false,
-            arrays: false,
+            initialization: false,
             continues: Vec::new(),
             iterator: None,
             initial_cursor: None,

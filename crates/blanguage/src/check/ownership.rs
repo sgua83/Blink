@@ -409,21 +409,19 @@ impl Builder<'_> {
         let initialized=self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect();
         positions.iter().all(|position|self.position_initialized_in(&self.resolve_owned_initialization(position,None),&initialized,&self.env))
     }
-    pub(super) fn incomplete_arrays(&self) -> bool {
+    pub(super) fn incomplete_positions(&self) -> bool {
         self.env.values().any(|binding| match binding {
             Binding::Owned(owner) => {
-                owner.place.ty().contains_arrays() && !self.is_initialized(&owner.place)
+                !self.is_initialized(&owner.place)
             }
             Binding::OwnedValue(owner) => {
-                owner.value.ty.contains_arrays()
-                    && owner
+                owner
                         .place()
                         .is_some_and(|place| !self.is_initialized(&place))
             }
             _ => false,
         }) || self.view_access.iter().any(|(binding, access)| {
             *access == Access::Write
-                && self.program.buffers[*binding].ty.contains_arrays()
                 && self.program.buffers[*binding]
                     .ty
                     .components
