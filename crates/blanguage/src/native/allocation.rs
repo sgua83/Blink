@@ -251,9 +251,14 @@ impl Graph {
                         let preserved: Vec<_> = live.iter().map(|slot| self.id(*slot)).collect();
                         self.across_call.extend(preserved);
                     }
-                    let mut uses: Vec<_> = inst.operands().into_iter().map(Register).collect();
-                    uses.extend(inst.local_reads().into_iter().map(Local));
-                    for slot in uses {
+                    inst.all_operands(&mut |reg| {
+                        let slot = Register(reg);
+                        let id = self.id(slot);
+                        self.weights[id] = self.weights[id].saturating_add(weight);
+                        live.insert(slot);
+                        true
+                    });
+                    for slot in inst.local_reads().into_iter().map(Local) {
                         let id = self.id(slot);
                         self.weights[id] = self.weights[id].saturating_add(weight);
                         live.insert(slot);

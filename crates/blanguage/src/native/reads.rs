@@ -38,11 +38,14 @@ impl Pending {
                 }
             } else if let Some(inst) = &self.code[id] {
                 work.push((id, true));
-                for source in inst.operands().into_iter().rev() {
+                let begin = work.len();
+                inst.all_operands(&mut |source| {
                     if let Some(&producer) = self.producers.get(&source) {
                         work.push((producer, false));
                     }
-                }
+                    true
+                });
+                work[begin..].reverse();
             }
         }
     }
@@ -141,9 +144,10 @@ pub(super) fn place(code: &mut Vec<Inst>, writes: &[usize]) {
             Inst::Scope(body) => place(body, writes),
             _ => {}
         }
-        for reg in inst.operands() {
+        inst.all_operands(&mut |reg| {
             pending.consume(reg, &mut out);
-        }
+            true
+        });
         out.push(inst);
     }
     pending.flush(&mut out);

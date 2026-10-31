@@ -131,7 +131,7 @@ impl Plan {
             Inst::Store { value, .. } => {
                 values.insert(*value);
             }
-            _ => values.extend(inst.operands()),
+            _ => { inst.all_operands(&mut |reg| { values.insert(reg); true }); }
         });
         let address_only = indices.difference(&values).copied().collect();
         control::remove_address_indices(&mut code, &address_only);

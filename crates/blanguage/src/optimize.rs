@@ -184,7 +184,7 @@ fn optimize_stage(stage: &mut Stage) {
     let mut slots = BTreeSet::new();
     visit(&stage.code, &mut |i| {
         used.extend(i.results());
-        used.extend(i.operands());
+        i.all_operands(&mut |reg| { used.insert(reg); true });
         slots.extend(i.local_reads());
         slots.extend(i.local_writes());
     });
@@ -227,7 +227,7 @@ pub(crate) fn value_code(value: &mut ValueCode) {
     let mut slots = BTreeSet::new();
     visit(&value.code, &mut |i| {
         used.extend(i.results());
-        used.extend(i.operands());
+        i.all_operands(&mut |reg| { used.insert(reg); true });
         slots.extend(i.local_reads());
         slots.extend(i.local_writes());
     });

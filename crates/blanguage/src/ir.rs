@@ -720,10 +720,10 @@ pub enum IndexedSource {
     },
 }
 impl IndexedSource {
-    pub(crate) fn operands(&self) -> Vec<Reg> {
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         match self {
-            Self::Data { index, .. } | Self::Tile { index, .. } => vec![*index],
-            Self::View { address, index, .. } => vec![address[0], address[1], *index],
+            Self::Data { index, .. } | Self::Tile { index, .. } => f(*index),
+            Self::View { address, index, .. } => f(address[0]) && f(address[1]) && f(*index),
         }
     }
     pub(crate) fn map(&mut self, r: &impl Fn(Reg) -> Reg) {
@@ -1287,7 +1287,7 @@ impl Stage {
             queries: &mut Vec<[Reg; 39]>,
         ) {
             for inst in code {
-                used.extend(inst.operands());
+                inst.all_operands(&mut |reg| { used.insert(reg); true });
                 match inst {
                     Inst::RayQuery {
                         result: RayResult::Closest(regs),

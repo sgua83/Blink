@@ -54,19 +54,11 @@ impl CallReference {
             _ => None,
         }
     }
-    pub(crate) fn operands(&self) -> Vec<Reg> {
-        let mut regs = self.offset.into_iter().collect::<Vec<_>>();
-        match &self.storage {
-            CallStorage::Local { .. } => {}
-            CallStorage::Indexed(
-                IndexedSource::Data { index, .. } | IndexedSource::Tile { index, .. },
-            ) => regs.push(*index),
-            CallStorage::Indexed(IndexedSource::View { address, index, .. }) => {
-                regs.extend(address);
-                regs.push(*index);
-            }
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        self.offset.iter().all(|reg| f(*reg)) && match &self.storage {
+            CallStorage::Local { .. } => true,
+            CallStorage::Indexed(source) => source.all_operands(f),
         }
-        regs
     }
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
         self.offset = self.offset.map(r);
@@ -85,14 +77,11 @@ impl CallReference {
     }
 }
 impl Call {
-    pub(crate) fn operands(&self) -> Vec<Reg> {
-        self.arguments
-            .iter()
-            .flat_map(|a| match a {
-                CallArgument::Value { values, .. } => values.clone(),
-                CallArgument::Reference { address, .. } => address.operands(),
-            })
-            .collect()
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        self.arguments.iter().all(|argument| match argument {
+            CallArgument::Value { values, .. } => values.iter().all(|reg| f(*reg)),
+            CallArgument::Reference { address, .. } => address.all_operands(f),
+        })
     }
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
         for argument in &mut self.arguments {

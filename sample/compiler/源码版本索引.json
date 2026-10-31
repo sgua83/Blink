@@ -28,7 +28,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "f3abc51f851bb1512ff77684fd8c8547087a5016a60ae8c1aee8ec86959bec5c"
+      "sha256": "243e2584b0671e0bcd7764a0d134d5482c21f83fdbad190f985f078f7a786f85"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
@@ -44,11 +44,11 @@
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
-      "sha256": "9bb483d6793f778b1181d29abfda893a54ccef9ec84e2f7856fdc318cc68c3bd"
+      "sha256": "c915686512869b792bf279ae56c8d24f45e03774b040721333255a944e6fe6d9"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
-      "sha256": "3d3833672ef5988a67faee5ff60f873430dbd84bbf72a491a17150f85a40c618"
+      "sha256": "7b063db67db103c50e704280ca7f116ee90735f0fee97bba3b464bf99319147c"
     },
     {
       "path": "crates/blanguage/src/parser.rs",

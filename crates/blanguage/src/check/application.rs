@@ -253,7 +253,7 @@ fn live_resources(
     let frame = app.frame?;
     fn uses(code: &[Inst], registers: &[Reg]) -> bool {
         code.iter().any(|inst| {
-            inst.operands().iter().any(|reg| registers.contains(reg))
+            !inst.all_operands(&mut |reg| !registers.contains(&reg))
                 || match inst {
                     Inst::Scope(code) => uses(code, registers),
                     Inst::If { yes, no, .. } => uses(yes, registers) || uses(no, registers),

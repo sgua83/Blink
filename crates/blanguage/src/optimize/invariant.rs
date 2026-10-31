@@ -17,7 +17,7 @@ fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut BTreeSet<R
                     ..
                 }
         );
-        if pure && inst.operands().iter().all(|r| uniform.contains(r)) {
+        if pure && inst.all_operands(&mut |reg| uniform.contains(&reg)) {
             uniform.extend(inst.results());
             entry.push(inst.clone());
             false

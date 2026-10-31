@@ -377,7 +377,7 @@ pub(crate) fn live_before(
                 for dst in inst.results() {
                     live.remove(&Register(dst));
                 }
-                live.extend(inst.operands().into_iter().map(Register));
+                inst.all_operands(&mut |reg| { live.insert(Register(reg)); true });
                 live.extend(inst.local_reads().into_iter().map(Local));
             }
         }
@@ -434,89 +434,60 @@ impl Inst {
             .chain(division.into_iter().flatten())
             .chain(collective.iter().map(|(_, reg)| *reg))
     }
-    pub(crate) fn operands(&self) -> Vec<Reg> {
-        let mut values = match self {
-            Self::Call(call) => call.operands(),
-            Self::TextureSample {
-                coordinate, lod, ..
-            } => vec![coordinate[0], coordinate[1], *lod],
-            Self::TextureFetch {
-                coordinate, level, ..
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        let values = match self {
+            Self::Call(call) => call.all_operands(f),
+            Self::TextureSample { coordinate, lod, .. } =>
+                coordinate.iter().all(|reg| f(*reg)) && f(*lod),
+            Self::TextureFetch { coordinate, level, .. }
+            | Self::TextureRead { coordinate, level, .. } =>
+                coordinate.iter().all(|reg| f(*reg)) && f(*level),
+            Self::TextureSize { level, .. } => f(*level),
+            Self::Append(value) => value.values.iter().all(|(_, reg)| f(*reg)),
+            Self::Atomic(value) => {
+                let operands = match &value.op {
+                    AtomicOp::Load => true,
+                    AtomicOp::Store(reg) | AtomicOp::Add(reg) | AtomicOp::Sub(reg)
+                    | AtomicOp::Exchange(reg) | AtomicOp::Min(reg) | AtomicOp::Max(reg)
+                    | AtomicOp::And(reg) | AtomicOp::Or(reg) | AtomicOp::Xor(reg) => f(*reg),
+                    AtomicOp::CompareExchange { expected, desired, .. } =>
+                        f(*expected) && f(*desired),
+                };
+                operands && f(value.index) && value.offset.iter().all(|reg| f(*reg))
             }
-            | Self::TextureRead {
-                coordinate, level, ..
-            } => vec![coordinate[0], coordinate[1], *level],
-            Self::TextureSize { level, .. } => vec![*level],
-            Self::Append(a) => a.values.iter().map(|(_, r)| *r).collect(),
-            Self::Atomic(a) => {
-                let mut values = a.op.operands();
-                values.push(a.index);
-                values.extend(a.offset);
-                values
-            }
-            Self::TilePublish(p) => p.values.iter().map(|(_, r)| *r).collect(),
-            Self::RayQuery {
-                origin,
-                direction,
-                minimum,
-                maximum,
-                ..
-            } => {
-                let mut r = origin.to_vec();
-                r.extend(direction);
-                r.extend([*minimum, *maximum]);
-                r
-            }
-            Self::LoadIndexed { source, offset, .. } => {
-                let mut r = source.operands();
-                r.push(*offset);
-                r
-            }
-            Self::StoreIndexed {
-                source,
-                offset,
-                value,
-                ..
-            } => {
-                let mut r = source.operands();
-                r.extend([*offset, *value]);
-                r
-            }
-            Self::StoreLocal(_, r) => vec![*r],
-            Self::LoadLocalIndexed { index, .. } => vec![*index],
-            Self::StoreLocalIndexed { index, value, .. } => vec![*index, *value],
-            Self::Subgroup {
-                value, argument, ..
-            } => value.iter().chain(argument).copied().collect(),
-            Self::Print { value, .. } => vec![*value],
-            Self::ViewLoad { address, index, .. } => vec![address[0], address[1], *index],
-            Self::Load { index, .. } | Self::TileLoad { index, .. } => vec![*index],
-            Self::Store { index, value, .. } => vec![*index, *value],
-            Self::Unary { a, .. } | Self::Cast { src: a, .. } => vec![*a],
-            Self::IntegerDivide { src, divisor, .. } => match divisor {
-                IntegerDivisor::Constant(_) => vec![*src],
-                IntegerDivisor::Value(r) => vec![*src, *r],
+            Self::TilePublish(value) => value.values.iter().all(|(_, reg)| f(*reg)),
+            Self::RayQuery { origin, direction, minimum, maximum, .. } =>
+                origin.iter().chain(direction).all(|reg| f(*reg)) && f(*minimum) && f(*maximum),
+            Self::LoadIndexed { source, offset, .. } => source.all_operands(f) && f(*offset),
+            Self::StoreIndexed { source, offset, value, .. } =>
+                source.all_operands(f) && f(*offset) && f(*value),
+            Self::StoreLocal(_, value) | Self::Print { value, .. } => f(*value),
+            Self::LoadLocalIndexed { index, .. } | Self::Load { index, .. }
+            | Self::TileLoad { index, .. } => f(*index),
+            Self::StoreLocalIndexed { index, value, .. } | Self::Store { index, value, .. } =>
+                f(*index) && f(*value),
+            Self::Subgroup { value, argument, .. } =>
+                value.iter().chain(argument).all(|reg| f(*reg)),
+            Self::ViewLoad { address, index, .. } => address.iter().all(|reg| f(*reg)) && f(*index),
+            Self::Unary { a, .. } | Self::Cast { src: a, .. } => f(*a),
+            Self::IntegerDivide { src, divisor, .. } => f(*src) && match divisor {
+                IntegerDivisor::Constant(_) => true,
+                IntegerDivisor::Value(reg) => f(*reg),
             },
-            Self::Binary { a, b, .. } => vec![*a, *b],
-            Self::Math { args, .. } => args.clone(),
-            Self::Select {
-                condition, a, b, ..
-            } => vec![*condition, *a, *b],
-            Self::If { condition, .. } => vec![*condition],
-            Self::Loop { test, .. } => vec![*test],
-            _ => Vec::new(),
+            Self::Binary { a, b, .. } => f(*a) && f(*b),
+            Self::Math { args, .. } => args.iter().all(|reg| f(*reg)),
+            Self::Select { condition, a, b, .. } => f(*condition) && f(*a) && f(*b),
+            Self::If { condition, .. } => f(*condition),
+            Self::Loop { test, .. } => f(*test),
+            _ => true,
         };
-        if let Self::TextureSample { texture, .. }
-        | Self::TextureFetch { texture, .. }
-        | Self::TextureSize { texture, .. }
-        | Self::TextureLevels { texture, .. }
-        | Self::TextureAddress { texture, .. }
-        | Self::TextureFormat { texture, .. }
-        | Self::TextureRead { texture, .. } = self
-        {
-            values.extend(texture.element);
+        values && match self {
+            Self::TextureSample { texture, .. } | Self::TextureFetch { texture, .. }
+            | Self::TextureSize { texture, .. } | Self::TextureLevels { texture, .. }
+            | Self::TextureAddress { texture, .. } | Self::TextureFormat { texture, .. }
+            | Self::TextureRead { texture, .. } => texture.element.iter().all(|reg| f(*reg)),
+            _ => true,
         }
-        values
     }
     pub(crate) fn local_reads(&self) -> Vec<usize> {
         match self {

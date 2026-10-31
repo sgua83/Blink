@@ -118,7 +118,7 @@ impl Uniformity<'_> {
                             !self.stage.writes.contains(binding) && state.0[*index]
                         }
                         Inst::LoadLocal(_, slot) => state.0[self.stage.registers.len() + slot],
-                        _ => inst.operands().iter().all(|r| state.0[*r]),
+                        _ => inst.all_operands(&mut |reg| state.0[reg]),
                     };
                     for dst in inst.results() {
                         state.0[dst] = uniform;
