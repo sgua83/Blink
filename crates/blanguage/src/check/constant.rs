@@ -1,4 +1,4 @@
-//! 整数常量按实际标量位宽求值；已证明的值直接成为既有 IR 常量。
+//! 标量常量按实际类型与位宽求值；已知值直接成为既有 IR 常量。
 use super::*;
 use std::num::NonZeroU64;
 
@@ -216,7 +216,16 @@ pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<B
             _ => return None,
         });
     }
-    if scalar == Scalar::F32 { return None; }
+    if scalar == Scalar::F32 {
+        let (a, b) = (f32::from_bits(a as u32), f32::from_bits(b as u32));
+        return Some(Bits::from(match op {
+            BinaryOp::FAdd => (a + b).to_bits(),
+            BinaryOp::FSub => (a - b).to_bits(),
+            BinaryOp::FMul => (a * b).to_bits(),
+            BinaryOp::FDiv => (a / b).to_bits(),
+            _ => return None,
+        }));
+    }
     let shift = (b & (Bits::from(scalar.size()) * 8 - 1)) as u32;
     let bits = match op {
         BinaryOp::IAdd => a.wrapping_add(b),
