@@ -1,7 +1,8 @@
 #requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)][int]$Change,
-    [ValidateSet('patch', 'minor', 'major')][string]$Bump = 'patch'
+    [ValidateSet('patch', 'minor', 'major')][string]$Bump = 'patch',
+    [uint64]$UserStage
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -34,14 +35,15 @@ try {
         throw 'VERSION is opened in another change on this client.'
     }
     $previous = ((Invoke-P4 @('print', '-q', ($depot + 'VERSION#head')) | ForEach-Object { $_.data }) -join '').Trim()
-    if ($previous -notmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)$') {
-        throw 'Submitted VERSION must contain major.minor.patch.'
+    if ($previous -notmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$') {
+        throw 'Submitted VERSION must contain user.major.minor.patch.'
     }
-    $major = [long]$Matches[1]; $minor = [long]$Matches[2]; $patch = [long]$Matches[3]
+    $stage = if ($PSBoundParameters.ContainsKey('UserStage')) { $UserStage } else { [uint64]$Matches[1] }
+    $major = [long]$Matches[2]; $minor = [long]$Matches[3]; $patch = [long]$Matches[4]
     $next = switch ($Bump) {
-        'major' { '{0}.0.0' -f ($major + 1) }
-        'minor' { '{0}.{1}.0' -f $major, ($minor + 1) }
-        'patch' { '{0}.{1}.{2}' -f $major, $minor, ($patch + 1) }
+        'major' { '{0}.{1}.0.0' -f $stage, ($major + 1) }
+        'minor' { '{0}.{1}.{2}.0' -f $stage, $major, ($minor + 1) }
+        'patch' { '{0}.{1}.{2}.{3}' -f $stage, $major, $minor, ($patch + 1) }
     }
     Invoke-P4 @('edit', '-c', "$Change", 'VERSION') | ConvertTo-Json -Compress
     [IO.File]::WriteAllText((Join-Path $root 'VERSION'), "$next`n", $utf8)
