@@ -173,13 +173,13 @@ impl Binding {
     pub(super) fn view_parts(&self)->Option<(&Ty,&bounds::Proof)> {
         match self {
             Self::Value(v) if v.ty.contains_views()=>Some((&v.ty,&v.proof)),
-            Self::Owned(v) if v.place.ty().contains_views()=>Some((v.place.ty(),&v.proof)),
+            Self::Owned(v) | Self::ViewElement { element: v, .. } if v.place.ty().contains_views()=>Some((v.place.ty(),&v.proof)),
             Self::OwnedValue(v) if v.value.ty.contains_views()=>Some((&v.value.ty,&v.value.proof)),
             _=>None,
         }
     }
     pub(super) fn view_proof_mut(&mut self)->Option<&mut bounds::Proof> {
-        match self {Self::Value(v) if v.ty.contains_views()=>Some(&mut v.proof),Self::Owned(v) if v.place.ty().contains_views()=>Some(&mut v.proof),Self::OwnedValue(v) if v.value.ty.contains_views()=>Some(&mut v.value.proof),_=>None}
+        match self {Self::Value(v) if v.ty.contains_views()=>Some(&mut v.proof),Self::Owned(v) | Self::ViewElement { element: v, .. } if v.place.ty().contains_views()=>Some(&mut v.proof),Self::OwnedValue(v) if v.value.ty.contains_views()=>Some(&mut v.value.proof),_=>None}
     }
     pub(super) fn view_borrow(&self)->Borrow {
         if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
@@ -336,6 +336,7 @@ impl Builder<'_> {
         let words = ty.components.iter().map(|(_, offset)| *offset).collect();
         Place::ViewElement {
             ty,
+            source: view.view_identity(),
             address: [view.regs[0], view.regs[1]],
             index,
             stride,

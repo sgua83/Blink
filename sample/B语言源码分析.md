@@ -592,7 +592,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3732`。
+源码节选：`crates/blanguage/src/check.rs:3746`。
 
 ```rust
         let binding = view.binding;
@@ -653,6 +653,7 @@ pub(super) enum Position {
     Initialized,
     Local(usize),
     Element(usize, u32),
+    ViewElement([ValueIdentity; 3], Reg, u32, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
@@ -662,6 +663,8 @@ pub(super) enum Position {
 ```
 
 普通函数接收 read／write／inout 参数时，检查器传递实际位置及字段投影，而不是只记录“它是个 float3”。元素阶段的 read 与 CPU 使用同一只读位置规则，命名位置不复制成输入快照；多个只读借用可以重合，独占借用不能与重叠只读位置同时交接。整个记录与其中一个字段可能重叠，不同字段则可能互不重叠。`Position` 与 Place 的比较帮助保持这个事实。
+
+不可变view游标保留原view的活动借用，并以同一OwnedBinding保存该行内容的事实。view三分量语义来源、行寄存器、记录步长与字段字节偏移共同标识位置；固定字段和静态数组分量的重复读取取得同一内容来源。每次建立游标时，各字段具有自己的未知值身份，短路条件中尚未读取的一侧也沿这份身份合流。实际CPU／GPU装载仍读取原地址，字段值、资源借用和最后消费者的生命周期分别保持。一般动态数组分量的重复选择关系仍是独立能力缺口。
 
 **自己走一遍。** 两个变量类型相同，是否证明它们互不重叠？不能。类型说明如何解释数据，身份与偏移才说明是否指向同一处内容。
 
@@ -828,7 +831,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:389`。
+源码节选：`crates/blanguage/src/check.rs:390`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;

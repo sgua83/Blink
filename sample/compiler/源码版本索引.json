@@ -8,15 +8,15 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "f8864c97ddd26662ace6e66077a62d5b432b8756d3af3bc1db97296bd9b7d361"
+      "sha256": "afb089f1dca0a480016f68b4f480dc3f60808ff85b7b6b02eee5fbbb9989be4e"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "c1f54ad319ea4065397d2f7b55e25ab38c3ebf6676ef7abdce66a59f4b29df93"
+      "sha256": "566a7493a5dde1915f9bd9745492fa9a9e7fd9afdfea6d8cbf0749850288313e"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
-      "sha256": "acc0c0f61a63b60f2dfa15c5f6633d31c8732c323f0599c06e5c0391b63628ff"
+      "sha256": "81658add1fd5145fc36d5d926c8f49b4f4940b1990f6aa90349f94ceae68f5ec"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
@@ -196,15 +196,15 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3732,
-      "end_line": 3769,
+      "start_line": 3746,
+      "end_line": 3783,
       "sha256": "9c90732ac360a37b09005c361d43832242264a080d54ddbd1293a343d7073a7d"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
       "start_line": 22,
-      "end_line": 32,
-      "sha256": "761bc1f1844a8e2669acd38e0efd129cfd880a04c45ac54016e96258bb59bcb7"
+      "end_line": 33,
+      "sha256": "b7eaf9f9b98553b43496fddc8a8a8f1cd594cf201a6ef5d8deaaf2e1e25608e2"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -238,8 +238,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 389,
-      "end_line": 405,
+      "start_line": 390,
+      "end_line": 406,
       "sha256": "f2ea57bd89a3b606d066dfe4db8cb80ed121f0634d2f761404f6a69e4cd4a90e"
     },
     {

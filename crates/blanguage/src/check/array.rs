@@ -100,6 +100,7 @@ impl Place {
                 writable,
             },
             Self::ViewElement {
+                source,
                 address,
                 index,
                 stride,
@@ -107,6 +108,7 @@ impl Place {
                 ..
             } => Self::ViewElement {
                 ty,
+                source,
                 address,
                 index,
                 stride,

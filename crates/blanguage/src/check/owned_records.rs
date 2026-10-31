@@ -369,7 +369,7 @@ impl Builder<'_> {
 impl Binding {
     pub(super) fn proof_storage(&mut self) -> Option<(&mut bounds::Proof, &mut bool, Place)> {
         match self {
-            Binding::Owned(owner) => {
+            Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => {
                 Some((&mut owner.proof, &mut owner.uniform, owner.place.clone()))
             }
             Binding::OwnedValue(owner) => {
@@ -381,7 +381,7 @@ impl Binding {
     }
     pub(super) fn stored_place(&self) -> Option<Place> {
         match self {
-            Binding::Owned(owner) => Some(owner.place.clone()),
+            Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => Some(owner.place.clone()),
             Binding::OwnedValue(owner) => owner.place(),
             _ => None,
         }

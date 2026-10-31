@@ -1072,7 +1072,7 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
         .flat_map(|binding| match binding {
             Binding::ApplicationData(data) => data.length.proof.facts(&data.length.ty),
             Binding::Value(value) if Proof::fact_components(&value.ty).next().is_some() => Proof::capture(value).facts(&value.ty),
-            Binding::Owned(owner) => owner.proof.facts(owner.place.ty()),
+            Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => owner.proof.facts(owner.place.ty()),
             Binding::OwnedValue(owner) => owner
                 .value
                 .proof
@@ -2876,7 +2876,7 @@ impl Builder<'_> {
         }
         for binding in self.env.values() {
             let (proof, owner) = match binding {
-                Binding::Owned(owner) => (&owner.proof, owner.place.clone()),
+                Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => (&owner.proof, owner.place.clone()),
                 Binding::OwnedValue(owner) => {
                     let Some(place) = owner.place() else {
                         continue;
@@ -2984,7 +2984,7 @@ impl Builder<'_> {
             let mut value = None;
             match binding {
                 Binding::Value(v) => value = Some((&v.ty, &v.proof)),
-                Binding::Owned(owner) => value = Some((owner.place.ty(), &owner.proof)),
+                Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => value = Some((owner.place.ty(), &owner.proof)),
                 Binding::OwnedValue(owner) => {
                     value = Some((&owner.value.ty, &owner.value.proof));
                     for data in owner.resources() {
@@ -3043,8 +3043,8 @@ impl Builder<'_> {
                     }
                 }
             }
-            if let Binding::Owned(owner) = binding {
-                if let Some(Binding::Owned(current)) = self.env.get(name) {
+            if let Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } = binding {
+                if let Some(Binding::Owned(current) | Binding::ViewElement { element: current, .. }) = self.env.get(name) {
                     owner
                         .proof
                         .origins
@@ -3071,7 +3071,7 @@ impl Builder<'_> {
         let environment = environment_facts(&self.env);
         let mut consumers = self.env.values_mut().filter(|binding| match binding {
             Binding::Value(value) => Proof::fact_components(&value.ty).next().is_some(),
-            Binding::Owned(owner) => matches!(owner.place.storage(), Place::ApplicationElement { .. })
+            Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => matches!(owner.place.storage(), Place::ApplicationElement { .. })
                 || Proof::fact_components(owner.place.ty()).next().is_some(),
             Binding::OwnedValue(_) | Binding::Data(_)
             | Binding::ApplicationData(_) | Binding::Tile(_) => true,
@@ -3090,7 +3090,7 @@ impl Builder<'_> {
                             .collect();
                         value.proof.extend_equalities(&roots);
                     }
-                    Binding::Owned(owner) => owner.proof.extend_equalities(&roots),
+                    Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => owner.proof.extend_equalities(&roots),
                     Binding::OwnedValue(owner) => {
                         owner.value.proof.extend_equalities(&roots);
                         owner.resources_mut(&mut |data| data.length.proof.extend_equalities(&roots));
@@ -3112,7 +3112,7 @@ impl Builder<'_> {
                                 }
                             }
                         }
-                        Binding::Owned(owner) => {
+                        Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => {
                             owner.place.refine_position(identity, *fact, &roots);
                             for component in 0..owner.proof.origins.len() {
                                 if owner.proof.origins[component].contains(&identity) {
@@ -3224,7 +3224,8 @@ impl Builder<'_> {
                     a.proof.join_condition(&b.proof,a.regs.len(),Some(&choice));
                     a.uniform &= b.uniform;
                 }
-                (Binding::Owned(a), Binding::Owned(b)) => {
+                (Binding::Owned(a), Binding::Owned(b))
+                | (Binding::ViewElement { element: a, .. }, Binding::ViewElement { element: b, .. }) => {
                     a.place.join_position_range(&b.place);
                     a.proof
                         .join_condition(&b.proof,a.place.ty().components.len(),Some(&choice));

@@ -117,7 +117,7 @@ enum Binding {
     },
     ViewElement {
         view: Value,
-        index: Reg,
+        element: OwnedBinding,
     },
     Acceleration(usize),
     Texture(texture::TextureReference),
@@ -213,6 +213,7 @@ enum Place {
     AtomicParameter(Ty),
     ViewElement {
         ty: Ty,
+        source: [ValueIdentity; 3],
         address: [Reg; 2],
         index: Reg,
         stride: u32,
@@ -2011,6 +2012,7 @@ impl<'a> Builder<'a> {
                 index,
                 stride,
                 words,
+                ..
             } => {
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
@@ -2024,12 +2026,13 @@ impl<'a> Builder<'a> {
                     });
                     regs.push(dst);
                 }
+                let (proof, uniform) = self.read_owned_proof(p, &regs);
                 Ok(Value {
-                    proof: bounds::Proof::default(),
+                    proof,
                     literal: false,
                     ty: ty.clone(),
                     regs,
-                    uniform: false,
+                    uniform,
                     constant: None,
                 })
             }
@@ -3313,46 +3316,57 @@ impl<'a> Builder<'a> {
         };
         let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
         let condition = std::mem::take(&mut self.code);
-        self.env.insert(
-            name.clone(),
-            if let Some(domain) = data {
-                match domain {
-                    CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
-                        place: data.element(
-                            &cursor,
-                            (
-                                cursor.minimum(),
-                                cursor
-                                    .maximum()
-                                    .min(data.length.maximum().saturating_sub(1)),
-                            ),
+        let binding = if let Some(domain) = data {
+            match domain {
+                CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
+                    place: data.element(
+                        &cursor,
+                        (
+                            cursor.minimum(),
+                            cursor
+                                .maximum()
+                                .min(data.length.maximum().saturating_sub(1)),
                         ),
+                    ),
+                    proof: bounds::Proof::default(),
+                    uniform: false,
+                    initialization: None,
+                }),
+                CursorSource::Data(view) => {
+                    Binding::Owned(OwnedBinding {
+                        place: self.dataset_element(&view, index, false),
                         proof: bounds::Proof::default(),
                         uniform: false,
                         initialization: None,
-                    }),
-                    CursorSource::Data(view) => {
-                        Binding::Owned(OwnedBinding {
-                            place: self.dataset_element(&view, index, false),
-                            proof: bounds::Proof::default(),
-                            uniform: false,
-                            initialization: None,
-                        })
-                    },
-                    CursorSource::Tile(view) => Binding::TileElement { view, index },
-                    CursorSource::View(view) => Binding::ViewElement { view, index },
-                }
-            } else {
-                Binding::Value(Value {
-                    proof: if initial {
-                        bounds::Proof::capture(&cursor)
-                    } else {
-                        bounds::for_cursor(&begin, &limit, body)
-                    },
-                    ..cursor.clone()
-                })
-            },
-        );
+                    })
+                },
+                CursorSource::Tile(view) => Binding::TileElement { view, index },
+                CursorSource::View(view) => {
+                    let place = Self::view_element(&view, index);
+                    let width = place.ty().components.len();
+                    let mut proof = bounds::Proof::default();
+                    // 同一只读行的内容身份从游标建立时存在，不随分支是否先装载而改变。
+                    for (component, (scalar, _)) in place.ty().components.iter().enumerate() {
+                        proof.assign(&[component], width, bounds::Proof::default()
+                            .with_identity(ValueIdentity::Register(self.reg(*scalar))));
+                    }
+                    Binding::ViewElement {
+                        element: OwnedBinding { place, proof, uniform: false, initialization: None },
+                        view,
+                    }
+                },
+            }
+        } else {
+            Binding::Value(Value {
+                proof: if initial {
+                    bounds::Proof::capture(&cursor)
+                } else {
+                    bounds::for_cursor(&begin, &limit, body)
+                },
+                ..cursor.clone()
+            })
+        };
+        self.env.insert(name.clone(), binding);
         let iteration = match self.env.get(&name) {
             Some(Binding::Value(value)) => ownership::ApplicationIndex::of(value),
             _ => ownership::ApplicationIndex::of(&cursor),
@@ -3787,7 +3801,7 @@ impl<'a> Builder<'a> {
                 index,
                 words: view.words,
             }),
-            Some(Binding::ViewElement { view, index }) => Ok(Self::view_element(&view, index)),
+            Some(Binding::ViewElement { element, .. }) => Ok(element.place),
             _ => self.fail(e.span, "B134", format!("{name} 不是可赋值的元素或局部变量")),
         }
     }
@@ -4056,7 +4070,10 @@ impl<'a> Builder<'a> {
             Some(Binding::TileElement { index, .. }) => {
                 (IndexDomain::Tile, index, self.tile_index_proof())
             }
-            Some(Binding::ViewElement { view, index }) => {
+            Some(Binding::ViewElement {
+                view,
+                element: OwnedBinding { place: Place::ViewElement { index, .. }, .. },
+            }) => {
                 let proof = bounds::Proof::unsigned(
                     0,
                     Self::view_length(&view).maximum().saturating_sub(1),
