@@ -39,6 +39,8 @@ use std::collections::BTreeMap;
 
 /// GPU 存储页的最大字节数；每页只容纳完整记录，页表使用 64 位设备地址。
 pub const PAGE_BYTES: u32 = 256 * 1024 * 1024;
+/// 页表绑定头为页数组地址、物理stride和字段offset；GPU view仍指向页数组。
+pub const BINDING_BYTES: u32 = 16;
 
 fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
     out.push(((args.len() as u32 + 1) << 16) | code as u32);
@@ -221,21 +223,40 @@ impl Emitter<'_> {
         self.address_scalar(unit,
             binding,
             self.value(index),
-            self.program.buffers[binding].stride,
-            word,
-        )
+            word)
     }
-    fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
-        let (page, offset) = self.record_location(index, stride, word);
+    fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         let zero = self.constant(Scalar::U32, 0);
-        let table = self.id();
-        self.emit(
-            65,
-            &[self.ptr_table_u64, table, self.buffers[binding], zero, page],
-        );
+        let mut header = [0; 2];
+        for (part, value) in header.iter_mut().enumerate() {
+            let field = self.constant(Scalar::U32, part as u32);
+            let pointer = self.id();
+            self.emit(65, &[self.ptr_table_u64, pointer, self.buffers[binding], zero, field]);
+            *value = self.id();
+            self.emit(61, &[self.u64_type, *value, pointer]);
+        }
+        let stride = self.id();
+        self.emit(113, &[self.types[&Scalar::U32], stride, header[1]]);
+        let bits = self.constant(Scalar::U32, 32);
+        let shifted = self.id();
+        self.emit(194, &[self.u64_type, shifted, header[1], bits]);
+        let field = self.id();
+        self.emit(113, &[self.types[&Scalar::U32], field, shifted]);
+        let (page, offset) = self.record_location(index, stride, word);
+        let at = self.id();
+        self.emit(128, &[self.types[&Scalar::U32], at, offset, field]);
+        let page64 = self.id();
+        self.emit(113, &[self.u64_type, page64, page]);
+        let three = self.constant(Scalar::U32, 3);
+        let page_bytes = self.id();
+        self.emit(196, &[self.u64_type, page_bytes, page64, three]);
+        let entry = self.id();
+        self.emit(128, &[self.u64_type, entry, header[0], page_bytes]);
+        let pointer = self.id();
+        self.emit(120, &[self.physical_pointers[&Scalar::U64], pointer, entry]);
         let base = self.id();
-        self.emit(61, &[self.u64_type, base, table]);
-        self.word_pointer(unit, base, offset)
+        self.emit(61, &[self.u64_type, base, pointer, 2, 8]);
+        self.word_pointer(unit, base, at)
     }
     // 记录页不拆分记录；原生复制完整字节布局，保留填充及 bool／浮点编码。
     fn copy_record(
@@ -249,20 +270,21 @@ impl Emitter<'_> {
         let align = self.program.buffers[source_binding].ty.align;
         let scalar = match align { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
         for word in (0..stride).step_by(scalar.size() as usize) {
-            let source = self.address_scalar(scalar, source_binding, source_index, stride, word);
-            let target = self.address_scalar(scalar, target_binding, target_index, stride, word);
+            let source = self.address_scalar(scalar, source_binding, source_index, word);
+            let target = self.address_scalar(scalar, target_binding, target_index, word);
             let value = self.id();
             self.emit(61, &[self.types[&scalar], value, source, 2, scalar.size()]);
             self.emit(62, &[target, value, 2, scalar.size()]);
         }
     }
     fn record_location(&mut self, index: u32, stride: u32, word: u32) -> (u32, u32) {
-        let capacity = self.constant(Scalar::U32, PAGE_BYTES / stride);
+        let bytes = self.constant(Scalar::U32, PAGE_BYTES);
+        let capacity = self.id();
+        self.emit(134, &[self.types[&Scalar::U32], capacity, bytes, stride]);
         let page = self.id();
         self.emit(134, &[self.types[&Scalar::U32], page, index, capacity]);
         let local = self.id();
         self.emit(137, &[self.types[&Scalar::U32], local, index, capacity]);
-        let stride = self.constant(Scalar::U32, stride);
         let scaled = self.id();
         self.emit(132, &[self.types[&Scalar::U32], scaled, local, stride]);
         let offset = self.constant(Scalar::U32, word);
@@ -289,6 +311,7 @@ impl Emitter<'_> {
         self.emit(196, &[self.u64_type, shifted, high, width]);
         let address = self.id();
         self.emit(197, &[self.u64_type, address, low, shifted]);
+        let stride = self.constant(Scalar::U32, stride);
         let (page, offset) = self.record_location(self.value(index), stride, word);
         let page64 = self.id();
         self.emit(113, &[self.u64_type, page64, page]);
@@ -503,13 +526,13 @@ impl Emitter<'_> {
                 }
                 Inst::Load { dst, binding, index, word } => {
                     let scalar = self.stage.registers[*dst];
-                    let raw = self.load_raw_buffer(scalar, *binding, self.value(*index), self.program.buffers[*binding].stride, *word);
+                    let raw = self.load_raw_buffer(scalar, *binding, self.value(*index), *word);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
                 Inst::Store { binding, index, word, value } => {
                     let scalar = self.stage.registers[*value];
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
-                    self.store_raw_buffer(scalar, *binding, self.value(*index), self.program.buffers[*binding].stride, *word, raw);
+                    self.store_raw_buffer(scalar, *binding, self.value(*index), *word, raw);
                 }
                 Inst::Unary {
                     dst,
@@ -925,14 +948,14 @@ impl Emitter<'_> {
             self.emit(62, &args);
         }
     }
-    fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32) -> u32 {
+    fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, stride, word + part * 4)).collect();
+        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, word + part * 4)).collect();
         self.load_raw(scalar, unit, &pointers, true)
     }
-    fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, stride: u32, word: u32, value: u32) {
+    fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32, value: u32) {
         let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
-        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, stride, word + part * 4)).collect();
+        let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.address_scalar(unit, binding, index, word + part * 4)).collect();
         self.store_raw(scalar, unit, &pointers, value, true);
     }
     fn ray(
@@ -1935,7 +1958,7 @@ pub fn emit_pass(
             e.emit(250, &[active, execute, end]);
             e.emit(248, &[execute]);
             if stage.selection.is_some() {
-                let at = e.address_scalar(Scalar::U32, program.buffers.len(), e.index, 4, 0);
+                let at = e.address_scalar(Scalar::U32, program.buffers.len(), e.index, 0);
                 let original = e.id();
                 e.emit(61, &[u, original, at, 2, 4]);
                 e.index = original;

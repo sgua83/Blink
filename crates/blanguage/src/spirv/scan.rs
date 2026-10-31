@@ -60,7 +60,6 @@ impl Emitter<'_> {
             } else {
                 0
             };
-        let words = scan.ty.size.div_ceil(4);
         let trees: Vec<_> = scan
             .ty
             .components
@@ -90,16 +89,10 @@ impl Emitter<'_> {
                 },
                 self.index,
                 if tail {
-                    words * 4
-                } else {
-                    self.program.buffers[r.source].stride
-                },
-                if tail {
                     *offset
                 } else {
                     r.source_word + offset
-                },
-            );
+                });
             let value = if (matches!(self.stage.operation, Operation::Compact(_))
                 || self.stage.selection.is_some())
                 && !tail
@@ -147,10 +140,8 @@ impl Emitter<'_> {
             self.store_raw_buffer(tree.scalar,
                 self.program.buffers.len(),
                 group,
-                words * 4,
                 *offset,
-                total,
-            );
+                total);
             self.tree_store(*tree,local,identity);
         }
         self.emit(249, &[saved]);
@@ -171,17 +162,11 @@ impl Emitter<'_> {
                 r.target,
                 self.index,
                 if root {
-                    self.program.buffers[r.target].stride
-                } else {
-                    words * 4
-                },
-                if root {
                     r.target_word + offset
                 } else {
                     *offset
                 },
-                result,
-            );
+                result);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);
@@ -283,7 +268,6 @@ impl Emitter<'_> {
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
         let r = &scan.values;
         let u = self.types[&Scalar::U32];
-        let words = scan.ty.size.div_ceil(4);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
@@ -302,16 +286,11 @@ impl Emitter<'_> {
             let prefix = self.load_raw_buffer(*scalar,
                 self.scan_input_binding(r),
                 group,
-                words * 4,
-                *offset,
-            );
-            let stride = if root {self.program.buffers[r.target].stride} else {words * 4};
+                *offset);
             let word = if root {r.target_word + offset} else {*offset};
             let value = self.load_raw_buffer(*scalar,
                 r.target,
-                self.index,
-                stride,word,
-            );
+                self.index,word);
             let combined = self.collective_pair(*scalar, scan.operator, prefix, value);
             let result = if let Some(first) = first {
                 let result = self.id();
@@ -320,7 +299,7 @@ impl Emitter<'_> {
             } else {
                 combined
             };
-            self.store_raw_buffer(*scalar,r.target,self.index,stride,word,result);
+            self.store_raw_buffer(*scalar,r.target,self.index,word,result);
         }
     }
 }

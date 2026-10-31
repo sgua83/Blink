@@ -172,6 +172,7 @@ pub(super) enum ExecutionResources {
         _compiled: Rc<Compiled>,
         _accelerations: Vec<Acceleration>,
         _scratch: Vec<Option<Scratch>>,
+        _binding_parameters: Option<Allocation>,
         _queries: Option<Rc<QueryPool>>,
     },
     Transfer {

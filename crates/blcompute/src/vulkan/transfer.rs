@@ -101,7 +101,7 @@ impl Device {
             .sources
             .iter()
             .map(|source| {
-                let address = source.0.allocation.address();
+                let address = source.0.allocation.address() + u64::from(blanguage::spirv::BINDING_BYTES);
                 [address as u32, (address >> 32) as u32, source.0.count]
             })
             .collect();

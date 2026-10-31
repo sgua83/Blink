@@ -1370,9 +1370,6 @@ impl Builder<'_> {
                 let value = match value {
                     Argument::ApplicationData(data) => DataReference::direct(data),
                     Argument::BorrowedData(reference) => {
-                        if target != Target::Cpu {
-                            self.application_layout_requirement(&reference,residency::LayoutNeed::Whole,span)?;
-                        }
                         reference
                     }
                     Argument::Scoped { value:returns::Returned::Dataset(data), owner } => {

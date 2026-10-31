@@ -25,8 +25,8 @@ pub(super) fn record(
     kernels: [VkPipeline; 4],
     r: &blanguage::ir::Reduction,
     segmented: bool,
-    input: &GpuDataset,
-    root_target: &Allocation,
+    source: (u32, VkDescriptorBufferInfo),
+    root_target: VkDescriptorBufferInfo,
     temporary: &[GpuDataset],
     arguments: Option<&GpuDataset>,
     infos: &[VkDescriptorBufferInfo],
@@ -36,7 +36,7 @@ pub(super) fn record(
     argument_base: usize,
 ) -> Result<()> {
     let mut lengths = Vec::new();
-    let mut length = input.count;
+    let mut length = source.0;
     loop {
         lengths.push(length);
         if length <= 64 {
@@ -49,30 +49,30 @@ pub(super) fn record(
             commands.barrier(0x800, 0x800, 0x40, 0x60);
         }
         let source = if level == 0 {
-            &input.allocation
+            source.1
         } else {
-            &temporary[(level - 1) * 2].allocation
+            temporary[(level - 1) * 2].allocation.descriptor()
         };
         let target = if level == 0 {
             root_target
         } else {
-            &temporary[(level - 1) * 2 + 1].allocation
+            temporary[(level - 1) * 2 + 1].allocation.descriptor()
         };
         let auxiliary = &temporary[level * 2].allocation;
         let mut pass_infos = infos.to_vec();
         if r.source != r.target && (level > 0 || r.target != c.program.selection_buffer()) {
-            pass_infos[r.source] = info(source);
+            pass_infos[r.source] = source;
         }
         if r.target < pass_infos.len() {
-            pass_infos[r.target] = info(target);
+            pass_infos[r.target] = target;
         }
         let set = descriptor_set(
             commands,
             c,
             &pass_infos,
             accelerations,
-            Some(auxiliary),
-            arguments.map(|a| &a.allocation),
+            Some((auxiliary).descriptor()),
+            arguments.map(|a| a.allocation.descriptor()),
             (r.target == c.program.selection_buffer()).then_some(target),
             (r.source == r.target && level > 0).then_some(source),
         )?;
@@ -91,18 +91,18 @@ pub(super) fn record(
     }
     for level in (0..lengths.len() - 1).rev() {
         commands.barrier(0x800, 0x800, 0x40, 0x60);
-        let source = &temporary[level * 2 + 1].allocation;
+        let source = temporary[level * 2 + 1].allocation.descriptor();
         let target = if level == 0 {
             root_target
         } else {
-            &temporary[(level - 1) * 2 + 1].allocation
+            temporary[(level - 1) * 2 + 1].allocation.descriptor()
         };
         let mut pass_infos = infos.to_vec();
         if r.source != r.target {
-            pass_infos[r.source] = info(source);
+            pass_infos[r.source] = source;
         }
         if r.target < pass_infos.len() {
-            pass_infos[r.target] = info(target);
+            pass_infos[r.target] = target;
         }
         let set = descriptor_set(
             commands,
@@ -110,11 +110,11 @@ pub(super) fn record(
             &pass_infos,
             accelerations,
             if level == 0 && segmented {
-                Some(&temporary[0].allocation)
+                Some(temporary[0].allocation.descriptor())
             } else {
                 None
             },
-            arguments.map(|a| &a.allocation),
+            arguments.map(|a| a.allocation.descriptor()),
             (r.target == c.program.selection_buffer()).then_some(target),
             (r.source == r.target).then_some(source),
         )?;
@@ -161,19 +161,19 @@ pub(super) fn record_segmented_reduce(
         let mut pass_infos = infos.to_vec();
         if level > 0 {
             if r.source != r.target {
-                pass_infos[r.source] = info(&temporary[(level - 1) * 2].allocation);
+                pass_infos[r.source] = (&temporary[(level - 1) * 2].allocation).descriptor();
             }
-            pass_infos[r.target] = info(&temporary[(level - 1) * 2 + 1].allocation);
+            pass_infos[r.target] = (&temporary[(level - 1) * 2 + 1].allocation).descriptor();
         }
         let set = descriptor_set(
             commands,
             c,
             &pass_infos,
             accelerations,
-            Some(&temporary[level * 2].allocation),
-            arguments.map(|a| &a.allocation),
+            Some((&temporary[level * 2].allocation).descriptor()),
+            arguments.map(|a| a.allocation.descriptor()),
             None,
-            (r.source == r.target && level > 0).then(|| &temporary[(level - 1) * 2].allocation),
+            (r.source == r.target && level > 0).then(|| (temporary[(level - 1) * 2].allocation).descriptor()),
         )?;
         dispatch(
             commands,
@@ -192,18 +192,18 @@ pub(super) fn record_segmented_reduce(
         commands.barrier(0x800, 0x800, 0x40, 0x60);
         let mut pass_infos = infos.to_vec();
         if r.source != r.target {
-            pass_infos[r.source] = info(&temporary[level * 2 + 1].allocation);
+            pass_infos[r.source] = (&temporary[level * 2 + 1].allocation).descriptor();
         }
-        pass_infos[r.target] = info(&temporary[(level - 1) * 2 + 1].allocation);
+        pass_infos[r.target] = (&temporary[(level - 1) * 2 + 1].allocation).descriptor();
         let set = descriptor_set(
             commands,
             c,
             &pass_infos,
             accelerations,
             None,
-            arguments.map(|a| &a.allocation),
+            arguments.map(|a| a.allocation.descriptor()),
             None,
-            (r.source == r.target).then_some(&temporary[level * 2 + 1].allocation),
+            (r.source == r.target).then_some((&temporary[level * 2 + 1].allocation).descriptor()),
         )?;
         dispatch(
             commands,
@@ -224,8 +224,8 @@ pub(super) fn record_segmented_reduce(
         c,
         infos,
         accelerations,
-        Some(prefix),
-        arguments.map(|a| &a.allocation),
+        Some((prefix).descriptor()),
+        arguments.map(|a| a.allocation.descriptor()),
         None,
         None,
     )?;
@@ -241,13 +241,6 @@ pub(super) fn record_segmented_reduce(
         0,
     );
     Ok(())
-}
-fn info(a: &Allocation) -> VkDescriptorBufferInfo {
-    VkDescriptorBufferInfo {
-        buffer: a.buffer,
-        offset: 0,
-        range: a.size,
-    }
 }
 pub(super) fn dispatch(
     commands: &Commands,

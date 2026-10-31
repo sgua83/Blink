@@ -1014,7 +1014,7 @@ enum DatasetStorage {
 /// 不透明物理存储；可读借用不允许交换存储与它的执行寿命。
 #[doc(hidden)]
 pub struct GpuStorage {
-    // allocation 是只读页表；数据页与它一起随唯一存储转移。
+    // allocation 持有16字节绑定头及原页数组；数据页随唯一存储转移。
     allocation: Allocation,
     pages: Vec<Allocation>,
     ty: Ty,
@@ -1151,7 +1151,7 @@ impl GpuDataset {
             )?);
             remaining -= n;
         }
-        let allocation = Self::table(inner, &pages)?;
+        let allocation = Self::table(inner, &pages, stride)?;
         Ok(Self {
             storage: ManuallyDrop::new(DatasetStorage::Owned(GpuStorage {
                 allocation,
@@ -1166,9 +1166,11 @@ impl GpuDataset {
             last_use: None,
         })
     }
-    fn table(inner: Rc<Inner>, pages: &[Allocation]) -> Result<Allocation> {
-        let table = Allocation::new(inner.clone(), (pages.len() as u64 * 8).max(8), 0x20020, 6, 8)?;
-        let mut words = Vec::with_capacity(pages.len() * 2);
+    fn table(inner: Rc<Inner>, pages: &[Allocation], stride: u32) -> Result<Allocation> {
+        let header = u64::from(blanguage::spirv::BINDING_BYTES);
+        let table = Allocation::new(inner.clone(), header + pages.len() as u64 * 8, 0x20020, 6, 8)?;
+        let address = table.address() + header;
+        let mut words = vec![address as u32, (address >> 32) as u32, stride, 0];
         for page in pages {
             let info = VkBufferDeviceAddressInfo {
                 sType: 1000244001,
@@ -1198,6 +1200,9 @@ struct Allocation {
     host_visible: bool,
 }
 impl Allocation {
+    fn descriptor(&self) -> VkDescriptorBufferInfo {
+        VkDescriptorBufferInfo { buffer: self.buffer, offset: 0, range: self.size }
+    }
     fn address(&self) -> u64 {
         let info = VkBufferDeviceAddressInfo {
             sType: 1000244001,
@@ -1498,10 +1503,10 @@ fn descriptor_set(
     compiled: &Compiled,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
-    auxiliary: Option<&Allocation>,
-    indirect: Option<&Allocation>,
-    selection: Option<&Allocation>,
-    scan_source: Option<&Allocation>,
+    auxiliary: Option<VkDescriptorBufferInfo>,
+    indirect: Option<VkDescriptorBufferInfo>,
+    selection: Option<VkDescriptorBufferInfo>,
+    scan_source: Option<VkDescriptorBufferInfo>,
 ) -> Result<u64> {
     unsafe {
         let f = &compiled.inner.functions;
@@ -1570,18 +1575,7 @@ fn descriptor_set(
             (compiled.program.scan_source_buffer(), scan_source),
         ]
         .into_iter()
-        .filter_map(|(binding, allocation)| {
-            allocation.map(|a| {
-                (
-                    binding,
-                    VkDescriptorBufferInfo {
-                        buffer: a.buffer,
-                        offset: 0,
-                        range: a.size,
-                    },
-                )
-            })
-        })
+        .filter_map(|(binding, info)| info.map(|info| (binding, info)))
         .collect();
         for (binding, info) in &auxiliary_infos {
             let mut w: VkWriteDescriptorSet = zero();
@@ -1908,7 +1902,7 @@ impl GpuProgram {
         steps: NonZeroU32,
     ) -> Result<Submission> {
         let count = owner.bindings.datasets.len();
-        self.submit_owned_mapped(owner, values, steps, count, |i| i)
+        self.submit_owned_mapped(owner, values, steps, count, |i| (i, 0))
     }
     fn submit_owned_mapped(
         &self,
@@ -1916,10 +1910,11 @@ impl GpuProgram {
         values: &[Value],
         steps: NonZeroU32,
         count: usize,
-        physical: impl Fn(usize) -> usize + Copy,
+        location: impl Fn(usize) -> (usize, u32) + Copy,
     ) -> Result<Submission> {
         let c = &self.compiled;
-        owner.bindings.require(&c.program, |i| (physical(i), 0))?;
+        owner.bindings.require(&c.program, location)?;
+        let physical = |i| location(i).0;
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
         {
@@ -1933,10 +1928,11 @@ impl GpuProgram {
             count,
             physical,
         };
+        let fields = data.iter().zip(c.program.buffers()).enumerate().map(|(i, (dataset, binding))| {
+            dataset.ty.field_layout_at(location(i).1, &binding.ty)
+                .ok_or_else(|| error(format!("绑定 {} 的字段类型或偏移与原GPU存储不一致", binding.name)))
+        }).collect::<Result<Vec<_>>>()?;
         for (dataset, binding) in data.iter().zip(c.program.buffers()) {
-            if dataset.stride != binding.stride {
-                return Err(error(format!("绑定 {} 的GPU数据布局与程序不一致", binding.name)));
-            }
             if matches!(&*dataset.storage, DatasetStorage::Read(_))
                 && binding.access != blanguage::ast::Access::Read
             {
@@ -1977,7 +1973,7 @@ impl GpuProgram {
         }
         let mut uniforms = arguments(
             &c.program,
-            data.iter().map(|d| (&d.ty, d.count)),
+            data.iter().zip(fields).map(|(d, ty)| (ty, d.count)),
             values,
         )?;
         let mut commands = Commands::new(c.inner.clone())?;
@@ -1997,6 +1993,7 @@ impl GpuProgram {
         let f = &c.inner.functions;
         let device = c.inner.owner.device;
         let mut scratch = Vec::new();
+        let mut binding_parameters = None;
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_indices = Vec::new();
         let mut selected_storage = BTreeMap::new();
@@ -2120,14 +2117,29 @@ impl GpuProgram {
                     (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
                     "vkCreateDescriptorPool",
                 )?;
-                let infos: Vec<_> = data
-                    .iter()
-                    .map(|d| VkDescriptorBufferInfo {
-                        buffer: d.allocation.buffer,
-                        offset: 0,
-                        range: d.allocation.size,
-                    })
-                    .collect();
+                let field_count = (0..count).filter(|&i| location(i).1 != 0).count();
+                let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
+                let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
+                let step = bytes.div_ceil(alignment) * alignment;
+                if field_count != 0 {
+                    binding_parameters = Some(Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?);
+                }
+                let mut words = vec![0; step as usize * field_count / 4];
+                let mut field_index = 0;
+                let infos: Vec<_> = data.iter().enumerate().map(|(i, d)| {
+                    let offset = location(i).1;
+                    if offset == 0 {
+                        VkDescriptorBufferInfo { buffer: d.allocation.buffer, offset: 0, range: bytes }
+                    } else {
+                        let at = step * field_index;
+                        let address = d.allocation.address() + bytes;
+                        words[at as usize / 4..at as usize / 4 + 4]
+                            .copy_from_slice(&[address as u32, (address >> 32) as u32, d.stride, offset]);
+                        field_index += 1;
+                        VkDescriptorBufferInfo { buffer: binding_parameters.as_ref().unwrap().buffer, offset: at, range: bytes }
+                    }
+                }).collect();
+                if let Some(parameters) = &binding_parameters { parameters.write(&words)?; }
                 let set = descriptor_set(
                     &mut commands,
                     c,
@@ -2354,8 +2366,8 @@ impl GpuProgram {
                                     [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
                                     &r.values,
                                     r.head_word.is_some(),
-                                    &data[r.values.source],
-                                    &data[r.values.target].allocation,
+                                    (data[r.values.source].count, infos[r.values.source]),
+                                    infos[r.values.target],
                                     &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
                                     scratch[scratch_indices[i]]
                                         .as_ref()
@@ -2381,8 +2393,8 @@ impl GpuProgram {
                                     [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
                                     fields,
                                     r.head_word.is_some(),
-                                    &data[fields.source],
-                                    &data[fields.target].allocation,
+                                    (data[fields.source].count, infos[fields.source]),
+                                    infos[fields.target],
                                     &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
                                     scratch[scratch_indices[i]]
                                         .as_ref()
@@ -2425,30 +2437,19 @@ impl GpuProgram {
                                         commands.barrier(0x800, 0x800, 0x40, 0x60);
                                     }
                                     let source = if pass == 0 {
-                                        &data[reduction.source].allocation
+                                        infos[reduction.source]
                                     } else {
-                                        &scratch[scratch_indices[i]].as_ref().unwrap().buffers
-                                            [(pass - 1) % 2]
-                                            .allocation
+                                        let source = &scratch[scratch_indices[i]].as_ref().unwrap().buffers[(pass - 1) % 2].allocation;
+                                        VkDescriptorBufferInfo { buffer: source.buffer, offset: 0, range: source.size }
                                     };
                                     let target = if groups == 1 {
-                                        &data[reduction.target].allocation
+                                        infos[reduction.target]
                                     } else {
-                                        &scratch[scratch_indices[i]].as_ref().unwrap().buffers
-                                            [pass % 2]
-                                            .allocation
+                                        scratch[scratch_indices[i]].as_ref().unwrap().buffers[pass % 2].allocation.descriptor()
                                     };
                                     let mut pass_infos = infos.clone();
-                                    pass_infos[reduction.source] = VkDescriptorBufferInfo {
-                                        buffer: source.buffer,
-                                        offset: 0,
-                                        range: source.size,
-                                    };
-                                    pass_infos[reduction.target] = VkDescriptorBufferInfo {
-                                        buffer: target.buffer,
-                                        offset: 0,
-                                        range: target.size,
-                                    };
+                                    pass_infos[reduction.source] = source;
+                                    pass_infos[reduction.target] = target;
                                     let pass_set = descriptor_set(
                                         &mut commands,
                                         c,
@@ -2458,7 +2459,7 @@ impl GpuProgram {
                                         scratch[scratch_indices[i]]
                                             .as_ref()
                                             .and_then(|s| s.arguments.as_ref())
-                                            .map(|a| &a.allocation),
+                                            .map(|a| a.allocation.descriptor()),
                                         None,
                                         None,
                                     )?;
@@ -2513,6 +2514,7 @@ impl GpuProgram {
                 _compiled: c.clone(),
                 _accelerations: owner.accelerations.clone(),
                 _scratch: scratch,
+                _binding_parameters: binding_parameters,
                 _queries: queries.clone(),
             },
             owner.dependencies,
@@ -2520,7 +2522,7 @@ impl GpuProgram {
         for dataset in data.owners.iter_mut() {
             dataset.last_use = Some(execution.clone());
         }
-        owner.bindings.completed(&c.program, |i| (physical(i), 0));
+        owner.bindings.completed(&c.program, location);
         Ok(Submission {
             execution,
             bindings: owner.bindings,
@@ -2547,7 +2549,7 @@ impl GpuTemplate {
     pub(crate) fn submit_projected(
         &self,
         bindings: DomainBindings<GpuDataset>,
-        order: &[usize],
+        order: &[(usize, u32)],
         values: &[Value],
     ) -> Result<Submission> {
         self.code.submit_owned_mapped(

@@ -96,13 +96,6 @@ pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
         }),
     })
 }
-fn info(a: &Allocation) -> VkDescriptorBufferInfo {
-    VkDescriptorBufferInfo {
-        buffer: a.buffer,
-        offset: 0,
-        range: a.size,
-    }
-}
 pub(super) fn record(
     commands: &mut Commands,
     c: &Compiled,
@@ -118,10 +111,10 @@ pub(super) fn record(
 ) -> Result<()> {
     let kernels = c.sorts[stage].as_ref().unwrap();
     let n = data[s.source].count;
-    let args = arguments.map(|a| &a.allocation);
+    let args = arguments.map(|a| a.allocation.descriptor());
     for key in (0..s.keys.len()).rev() {
         let mut pass_infos = infos.to_vec();
-        pass_infos[s.target] = info(&storage.pairs[0].allocation);
+        pass_infos[s.target] = (&storage.pairs[0].allocation).descriptor();
         let set = descriptor_set(
             commands,
             c,
@@ -152,14 +145,14 @@ pub(super) fn record(
             let input = &storage.pairs[pass % 2].allocation;
             let target = &storage.pairs[(pass + 1) % 2].allocation;
             pass_infos = infos.to_vec();
-            pass_infos[s.source] = info(input);
-            pass_infos[s.target] = info(target);
+            pass_infos[s.source] = (input).descriptor();
+            pass_infos[s.target] = (target).descriptor();
             let set = descriptor_set(
                 commands,
                 c,
                 &pass_infos,
                 accelerations,
-                Some(&storage.histogram.allocation),
+                Some((&storage.histogram.allocation).descriptor()),
                 args,
                 None,
                 None,
@@ -188,8 +181,8 @@ pub(super) fn record(
                 kernels.scan(),
                 &r,
                 false,
-                &storage.histogram,
-                &storage.prefixes.allocation,
+                (storage.histogram.count, storage.histogram.allocation.descriptor()),
+                storage.prefixes.allocation.descriptor(),
                 &storage.scan,
                 arguments,
                 infos,
@@ -204,7 +197,7 @@ pub(super) fn record(
                 c,
                 &pass_infos,
                 accelerations,
-                Some(&storage.prefixes.allocation),
+                Some((&storage.prefixes.allocation).descriptor()),
                 args,
                 None,
                 None,
@@ -228,7 +221,7 @@ pub(super) fn record(
         c,
         infos,
         accelerations,
-        Some(&storage.pairs[0].allocation),
+        Some((&storage.pairs[0].allocation).descriptor()),
         args,
         None,
         None,

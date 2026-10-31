@@ -37,8 +37,8 @@ pub(super) fn record(
         ],
         &selected.scan(c.program.selection_buffer()),
         false,
-        &data[c.program.stages()[stage].domain],
-        root,
+        (data[c.program.stages()[stage].domain].count, infos[selected.binding]),
+        root.descriptor(),
         &scratch.buffers,
         Some(args),
         infos,
@@ -53,9 +53,9 @@ pub(super) fn record(
         c,
         infos,
         accelerations,
-        Some(indices),
-        Some(&args.allocation),
-        Some(root),
+        Some((indices).descriptor()),
+        Some((&args.allocation).descriptor()),
+        Some((root).descriptor()),
         None,
     )?;
     prefix::dispatch(

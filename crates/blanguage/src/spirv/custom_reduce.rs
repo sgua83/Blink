@@ -47,7 +47,7 @@ impl Emitter<'_> {
     }
     fn custom_address(&mut self, words: usize, binding: usize, index: u32) -> Vec<u32> {
         (0..words as u32)
-            .map(|word| self.address_scalar(Scalar::U32, binding, index, words as u32 * 4, word * 4))
+            .map(|word| self.address_scalar(Scalar::U32, binding, index, word * 4))
             .collect()
     }
     fn custom_read(&mut self, pointers: &[u32]) -> Vec<u32> {
@@ -128,13 +128,7 @@ impl Emitter<'_> {
                     fields.source
                 },
                 self.index,
-                if tail {
-                    words as u32 * 4
-                } else {
-                    self.program.buffers[fields.source].stride
-                },
-                word,
-            );
+                word);
             self.from_words(*reg, &[raw], Self::raw_scalar(scalar));
         }
         self.block(
@@ -155,13 +149,7 @@ impl Emitter<'_> {
                     fields.source
                 },
                 self.index,
-                if tail {
-                    words as u32 * 4
-                } else {
-                    self.program.buffers[fields.source].stride
-                },
-                if tail { k as u32 * 4 } else { head_word },
-            );
+                if tail { k as u32 * 4 } else { head_word });
             let raw = self.custom_read(&[source])[0];
             let mut head = self.id();
             let zero = self.constant(Scalar::U32, 0);
@@ -182,9 +170,7 @@ impl Emitter<'_> {
                     let at = self.address_scalar(Scalar::U32,
                         self.scan_input_binding(fields),
                         self.index,
-                        words as u32 * 4,
-                        (k as u32 + 1) * 4,
-                    );
+                        (k as u32 + 1) * 4);
                     self.custom_read(&[at])[0]
                 } else {
                     flag
@@ -465,7 +451,7 @@ impl Emitter<'_> {
             let encoded = self.id();
             self.emit(128, &[u, encoded, local, one]);
             let target =
-                self.address_scalar(Scalar::U32, self.program.buffers.len(), group, words as u32 * 4, k as u32 * 4);
+                self.address_scalar(Scalar::U32, self.program.buffers.len(), group, k as u32 * 4);
             self.custom_write(&[target], &[encoded]);
             self.emit(249, &[saved]);
             self.emit(248, &[saved]);
@@ -557,9 +543,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(Scalar::U32,
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride,
-                reduction.count.word,
-            );
+                reduction.count.word);
             self.custom_write(&[target], &[zero]);
             self.emit(249, &[end]);
             self.emit(248, &[end]);
@@ -624,9 +608,7 @@ impl Emitter<'_> {
             let next_head = self.address_scalar(Scalar::U32,
                 r.fields.source,
                 next,
-                self.program.buffers[r.fields.source].stride,
-                reduction.head_word,
-            );
+                reduction.head_word);
             let next_head = self.custom_read(&[next_head])[0];
             let head = self.id();
             self.emit(171, &[b, head, next_head, zero]);
@@ -652,9 +634,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(Scalar::U32,
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride,
-                reduction.count.word,
-            );
+                reduction.count.word);
             self.custom_write(&[target], &[total[k + 1]]);
             self.emit(249, &[counted]);
             self.emit(248, &[counted]);
@@ -672,7 +652,7 @@ impl Emitter<'_> {
                 self.emit(194, &[self.types[&Scalar::U32], shifted, values[at], shift]);
                 self.join_words(*scalar, &[shifted], Scalar::U32)
             } else { self.join_words(*scalar, &values[at..at + scalar.size().div_ceil(4) as usize], Scalar::U32) };
-            self.store_raw_buffer(*scalar, r.fields.target, index, self.program.buffers[r.fields.target].stride, r.fields.target_word + offset, raw);
+            self.store_raw_buffer(*scalar, r.fields.target, index, r.fields.target_word + offset, raw);
         }
     }
     pub(super) fn custom_scan_add(
@@ -692,9 +672,7 @@ impl Emitter<'_> {
             let first = self.address_scalar(Scalar::U32,
                 self.program.buffers.len(),
                 group,
-                words as u32 * 4,
-                r.ty.size.div_ceil(4) * 4,
-            );
+                r.ty.size.div_ceil(4) * 4);
             let first = self.custom_read(&[first])[0];
             let lane = self.id();
             self.emit(137, &[u, lane, self.index, width]);
@@ -721,8 +699,7 @@ impl Emitter<'_> {
         let prefix = self.custom_read(&prefix);
         let values = if root {
             let values: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| self.load_raw_buffer(
-                *scalar, r.fields.target, self.index, self.program.buffers[r.fields.target].stride, r.fields.target_word + offset,
-            )).collect();
+                *scalar, r.fields.target, self.index, r.fields.target_word + offset)).collect();
             self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value)))
         } else {
             let target = self.custom_address(words, r.fields.target, self.index);

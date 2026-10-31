@@ -40,7 +40,7 @@ pub(super) fn prepare(
         infos,
         accelerations,
         None,
-        Some(&args.allocation),
+        Some((&args.allocation).descriptor()),
         None,
         None,
     )?;

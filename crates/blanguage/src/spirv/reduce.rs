@@ -68,7 +68,6 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.fields;
         let scalar = reduction.ty.components[0].0;
-        let words = reduction.ty.size.div_ceil(4);
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
@@ -94,16 +93,10 @@ impl Emitter<'_> {
                 r.source,
                 self.index,
                 if tail {
-                    words * 4
-                } else {
-                    self.program.buffers[r.source].stride
-                },
-                if tail {
                     offset
                 } else {
                     r.source_word + offset
-                },
-            );
+                });
             self.store_raw(scalar, Scalar::U32,at,raw,false);
         }
         self.emit(249, &[merged]);
@@ -154,7 +147,6 @@ impl Emitter<'_> {
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
-        let words = ty.size.div_ceil(4);
         let write = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
@@ -204,17 +196,11 @@ impl Emitter<'_> {
                     r.target,
                     if final_pass { zero } else { group },
                     if final_pass {
-                        self.program.buffers[r.target].stride
-                    } else {
-                        words * 4
-                    },
-                    if final_pass {
                         r.target_word + offset
                     } else {
                         offset
                     },
-                    value,
-                );
+                    value);
             }
             self.emit(249, &[written]);
         }

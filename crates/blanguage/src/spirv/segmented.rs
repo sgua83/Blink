@@ -28,7 +28,7 @@ impl Emitter<'_> {
     }
     fn segment_address(&mut self, scan: &Segment<'_>, binding: usize, index: u32) -> Vec<u32> {
         (0..scan.summary_words() as u32)
-            .map(|word| self.address_scalar(Scalar::U32, binding, index, scan.summary_words() as u32 * 4, word * 4))
+            .map(|word| self.address_scalar(Scalar::U32, binding, index, word * 4))
             .collect()
     }
     fn segment_node(
@@ -62,14 +62,13 @@ impl Emitter<'_> {
         let k=scan.ty.size.div_ceil(4) as usize;
         let zero=self.constant(Scalar::U32,0);
         let mut words=vec![zero;k+1];
-        let stride=self.program.buffers[fields.source].stride;
         for (scalar,offset) in &scan.ty.components {
-            let raw = self.load_raw_buffer(*scalar, fields.source, self.index, stride, fields.source_word + offset);
+            let raw = self.load_raw_buffer(*scalar, fields.source, self.index, fields.source_word + offset);
             for (part,word) in self.split_words(*scalar, raw, Scalar::U32).into_iter().enumerate() {
                 words[(offset / 4) as usize + part] = word;
             }
         }
-        let at=self.address_scalar(Scalar::U32, fields.source,self.index,stride,head_word);
+        let at=self.address_scalar(Scalar::U32, fields.source,self.index,head_word);
         words[k]=self.segment_read(&[at])[0];
         words
     }
@@ -210,9 +209,7 @@ impl Emitter<'_> {
             let first = self.address_scalar(Scalar::U32,
                 self.program.buffers.len(),
                 group,
-                scan.summary_words() as u32 * 4,
-                k as u32 * 4,
-            );
+                k as u32 * 4);
             self.emit(62, &[first, zero, 2, 4]);
             self.emit(249, &[saved]);
             self.emit(248, &[saved]);
@@ -232,7 +229,7 @@ impl Emitter<'_> {
                 let empty = self.raw_constant(*scalar, scan.operator.identity(*scalar));
                 let value = self.id();
                 self.emit(169, &[self.raw_type(*scalar), value, is_head, empty, current]);
-                self.store_raw_buffer(*scalar, r.target, self.index, self.program.buffers[r.target].stride, r.target_word + offset, value);
+                self.store_raw_buffer(*scalar, r.target, self.index, r.target_word + offset, value);
             }
             let no_previous = self.id();
             self.emit(170, &[b, no_previous, result[k], zero]);
@@ -246,9 +243,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(Scalar::U32,
                 self.program.buffers.len(),
                 group,
-                scan.summary_words() as u32 * 4,
-                k as u32 * 4,
-            );
+                k as u32 * 4);
             let one = self.constant(Scalar::U32, 1);
             let encoded = self.id();
             self.emit(128, &[u, encoded, local, one]);
@@ -371,9 +366,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(Scalar::U32,
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride,
-                reduction.count.word,
-            );
+                reduction.count.word);
             self.emit(62, &[target, zero, 2, 4]);
             self.emit(249, &[end_empty]);
             self.emit(248, &[end_empty]);
@@ -437,9 +430,7 @@ impl Emitter<'_> {
             let next_head = self.address_scalar(Scalar::U32,
                 r.source,
                 next,
-                self.program.buffers[r.source].stride,
-                reduction.head_word,
-            );
+                reduction.head_word);
             let next_head = self.segment_read(&[next_head])[0];
             let head = self.id();
             self.emit(171, &[b, head, next_head, zero]);
@@ -458,7 +449,7 @@ impl Emitter<'_> {
                 let word = (offset / 4) as usize;
                 let n = scalar.size().div_ceil(4) as usize;
                 let value = self.join_words(*scalar, &total[word..word+n], Scalar::U32);
-                self.store_raw_buffer(*scalar, r.target, output, self.program.buffers[r.target].stride, r.target_word + offset, value);
+                self.store_raw_buffer(*scalar, r.target, output, r.target_word + offset, value);
             }
             self.emit(249, &[emitted]);
             self.emit(248, &[emitted]);
@@ -470,9 +461,7 @@ impl Emitter<'_> {
             let target = self.address_scalar(Scalar::U32,
                 reduction.count.binding,
                 zero,
-                self.program.buffers[reduction.count.binding].stride,
-                reduction.count.word,
-            );
+                reduction.count.word);
             self.emit(62, &[target, total[k + 1], 2, 4]);
             self.emit(249, &[counted]);
             self.emit(248, &[counted]);
@@ -585,9 +574,7 @@ impl Emitter<'_> {
         let first = self.address_scalar(Scalar::U32,
             self.program.buffers.len(),
             group,
-            scan.summary_words() as u32 * 4,
-            scan.ty.size.div_ceil(4) * 4,
-        );
+            scan.ty.size.div_ceil(4) * 4);
         let head = self.id();
         self.emit(61, &[u, head, first, 2, 4]);
         let one = self.constant(Scalar::U32, 1);
@@ -610,15 +597,11 @@ impl Emitter<'_> {
             let prefix = self.load_raw_buffer(*scalar,
                 self.scan_input_binding(r),
                 group,
-                scan.summary_words() as u32 * 4,
-                *offset,
-            );
+                *offset);
             let value = self.load_raw_buffer(*scalar,
                 r.target,
                 self.index,
-                self.program.buffers[r.target].stride,
-                r.target_word + offset,
-            );
+                r.target_word + offset);
             let merged = self.collective_pair(*scalar, scan.operator, prefix, value);
             let result = if scalar.is_float() && scan.operator != CollectiveOperator::Sum {
                 let first = self.id();
@@ -629,7 +612,7 @@ impl Emitter<'_> {
             } else {
                 merged
             };
-            self.store_raw_buffer(*scalar,r.target,self.index,self.program.buffers[r.target].stride,r.target_word+offset,result);
+            self.store_raw_buffer(*scalar,r.target,self.index,r.target_word+offset,result);
         }
         self.emit(249, &[end]);
         self.emit(248, &[end]);

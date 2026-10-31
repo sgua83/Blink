@@ -635,11 +635,13 @@ impl Access {
     }
 ```
 
-第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。字段借用仍指向同一个原缓冲：检查器按声明字段路径取得元素类型和实际字节位置，容量与记录步幅保持。CPU／GPU元素阶段的函数转借、下标和只读游标沿同一位置映射访问，不复制整列数据；同阶段共享读取与独占写入在原位置降低时交接实际区域，动态数组、向量和嵌套字段保留全部合法候选位置；写参数的初始化义务与真实数据位置分别保持。判定直接消费同一份区域，不在IR丢失关系后再扫描重建；真实重叠与原范围约束保持。普通CPU原生read／write／inout／atomic dataset参数把原句柄、长度、真实步幅和字段偏移一起交接，所以同一个已编译函数能按权限读写不同父记录中的同型字段。DataPayload保存实际布局，DataReference只记原类型中的字段路径；初始化、借用和最后消费者仍沿原资源判断。连续view仍要求真实元素连续，不能把一列跨记录的字段误当成连续数组。CPU整域read／write／inout入口可以借用同一字段：整域参数只传根句柄和字段偏移，长度与物理步长由原Frame取得，原父记录类型与所有权保持。普通CPU函数按真实载荷访问需要消费原借用布局，独占借用按实际字段区域判断，write和条件输出只更新所选字段的原初始化位置。整域输出的逻辑字段偏移叠加实际投影偏移，写入只交付真实保证的字段初始化；兄弟字段不因此获得初始化。同根不同字段可以分别read／write／inout借用；普通调用与自动parallel消费同一份字段区域检查，整域入口不重复按根句柄拦截。Frame沿原绑定列表核对所有前置同根参数的真实区域，普通可写重叠仍拒绝，同一根只交接一份存储。有效域只属于原根中的实际数据区域，字段偏移与范围随计数来源交接；相邻字段或同起点更大的父记录不能取得该关系。写入按原来源与字段分量撤回内容事实，未写兄弟位置的范围、非零和索引关系保持；已复制值仍是自己的快照。整域只做一次失效，普通CPU借用共用原操作，不另建事实表。运行期普通CPU载荷地址也交接真实写入范围：原行号乘物理步幅，加字段及动态数组偏移，得到64位字节位置；每个实际写入标量按自己的字节宽度交接。Frame只撤回与这些字节重叠的四字节计数来源，未写兄弟字段保持原有效域；零写入字节表示读取。共同入口返回原根地址，不新增关系表、区域拥有者或另一条失效路径。CPU整域atomic字段也复用这一原布局，先要求所选字段已初始化，按原32／64位原子指令修改原地址；同根原子别名和与普通读写的区域互斥保持。普通CPU应用的atomic dataset原生参数也保持原Access与借用布局，字段、游标及atomic T转借在原CPU地址执行32／64位原子指令；GPU整域字段仍按其能力缺口推进。
+第一问是下标是否有效：是否属于该数据集允许的域。第二问是是否有权写：即使数字没有越界，也不表示当前实例拥有那个位置。字段借用仍指向同一个原缓冲：检查器按声明字段路径取得元素类型和实际字节位置，容量与记录步幅保持。CPU／GPU元素阶段的函数转借、下标和只读游标沿同一位置映射访问，不复制整列数据；同阶段共享读取与独占写入在原位置降低时交接实际区域，动态数组、向量和嵌套字段保留全部合法候选位置；写参数的初始化义务与真实数据位置分别保持。判定直接消费同一份区域，不在IR丢失关系后再扫描重建；真实重叠与原范围约束保持。普通CPU原生read／write／inout／atomic dataset参数把原句柄、长度、真实步幅和字段偏移一起交接，所以同一个已编译函数能按权限读写不同父记录中的同型字段。DataPayload保存实际布局，DataReference只记原类型中的字段路径；初始化、借用和最后消费者仍沿原资源判断。连续view仍要求真实元素连续，不能把一列跨记录的字段误当成连续数组。CPU／GPU整域read／write／inout／atomic入口可以借用同一字段：整域参数只传根句柄和字段偏移，长度与物理步长由原Frame取得，原父记录类型与所有权保持。普通CPU函数按真实载荷访问需要消费原借用布局，独占借用按实际字段区域判断，write和条件输出只更新所选字段的原初始化位置。整域输出的逻辑字段偏移叠加实际投影偏移，写入只交付真实保证的字段初始化；兄弟字段不因此获得初始化。同根不同字段可以分别read／write／inout借用；普通调用与自动parallel消费同一份字段区域检查，整域入口不重复按根句柄拦截。Frame沿原绑定列表核对所有前置同根参数的真实区域，普通可写重叠仍拒绝，同一根只交接一份存储。有效域只属于原根中的实际数据区域，字段偏移与范围随计数来源交接；相邻字段或同起点更大的父记录不能取得该关系。写入按原来源与字段分量撤回内容事实，未写兄弟位置的范围、非零和索引关系保持；已复制值仍是自己的快照。整域只做一次失效，普通CPU借用共用原操作，不另建事实表。运行期普通CPU载荷地址也交接真实写入范围：原行号乘物理步幅，加字段及动态数组偏移，得到64位字节位置；每个实际写入标量按自己的字节宽度交接。Frame只撤回与这些字节重叠的四字节计数来源，未写兄弟字段保持原有效域；零写入字节表示读取。共同入口返回原根地址，不新增关系表、区域拥有者或另一条失效路径。CPU整域atomic字段也复用这一原布局，先要求所选字段已初始化，按原32／64位原子指令修改原地址；同根原子别名和与普通读写的区域互斥保持。普通CPU应用的atomic dataset原生参数也保持原Access与借用布局，字段、游标及atomic T转借在原CPU地址执行32／64位原子指令；GPU整域字段沿同一物理根的页数组、步幅和偏移交接。
 
 `values[index()+1]` 在某些长度下可能合法，但多个实例的访问可能交错，且不再是当前独占元素。编译器不会因为下标仍在范围内，就自动授予普通并行写权限。这正是“范围证明”和“所有权证明”不能混为一谈的原因。
 
-普通CPU应用原生函数的read／write／inout／atomic dataset借用共用句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。DataPayload合同编码对应BLCO25，旧BLCO24目标文件须重新编译；资源C ABI仍为BLRI11。
+普通CPU应用原生函数的read／write／inout／atomic dataset借用共用句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。DataPayload合同编码对应BLCO25，旧BLCO24目标文件须重新编译；资源C ABI仍为BLRI12。
+
+GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。SPIR-V按物理步幅计算整记录分页，再叠加字段及真实分量偏移；归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view仍以原连续元素类型访问页数组，设备指针指到绑定头之后。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定映像语义对应BLRI12，Frame共同C签名及BLCO25对象容器编码保持；旧BLRI11模块须重新编译，不能与新映像混用。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -755,7 +757,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:844`。
+源码节选：`crates/blanguage/src/ir.rs:851`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -765,7 +767,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:863`。
+源码节选：`crates/blanguage/src/ir.rs:870`。
 
 ```rust
     Load {
@@ -797,7 +799,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1058`。
+源码节选：`crates/blanguage/src/ir.rs:1065`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -958,7 +960,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:906`。
+源码节选：`crates/blanguage/src/ir.rs:913`。
 
 ```rust
     If {
@@ -1269,7 +1271,7 @@ SPIR-V 是标准二进制中间语言。它仍由驱动处理成设备执行形�
 
 ### 17.2 一条指令怎样装进 word
 
-源码节选：`crates/blanguage/src/spirv.rs:43`。
+源码节选：`crates/blanguage/src/spirv.rs:45`。
 
 ```rust
 fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
@@ -1342,7 +1344,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 `GpuProgram` 持有编译结果与管线；提交路径建立本次数据关系与命令，最后返回 Submission。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1837`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1831`。
 
 ```rust
     pub fn submit(
@@ -1406,7 +1408,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1601`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1595`。
 
 ```rust
 #[derive(Clone)]
@@ -1451,7 +1453,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1867`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1861`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -1497,7 +1499,7 @@ enum DatasetStorage {
 /// 不透明物理存储；可读借用不允许交换存储与它的执行寿命。
 #[doc(hidden)]
 pub struct GpuStorage {
-    // allocation 是只读页表；数据页与它一起随唯一存储转移。
+    // allocation 持有16字节绑定头及原页数组；数据页随唯一存储转移。
     allocation: Allocation,
     pages: Vec<Allocation>,
     ty: Ty,
@@ -1547,7 +1549,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2697`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2699`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -1600,7 +1602,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 浮点 min/max 还要处理实际有效长度和比较语义，不能只塞入一个哨兵就假定 NaN、正负零等所有情况都正确。源码中的有效项选择正是这类细节；手算普通加法时可以先用零理解尾部。
 
-源码节选：`crates/blanguage/src/spirv/reduce.rs:111`。
+源码节选：`crates/blanguage/src/spirv/reduce.rs:104`。
 
 ```rust
         self.scan_barrier();
@@ -1619,7 +1621,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2420`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2432`。
 
 ```rust
                                 let mut length = count;
@@ -1714,8 +1716,8 @@ IR 的 PrefixCount 与 PrefixRelation 将数据和计数的对应保存下来。
 源码节选：`crates/blanguage/src/spirv/sort.rs:66`。
 
 ```rust
-            e.sort_store(s.target, e.index, 8, 0, key);
-            e.sort_store(s.target, e.index, 8, 4, original);
+            e.sort_store(s.target, e.index, 0, key);
+            e.sort_store(s.target, e.index, 4, original);
 ```
 
 对于多个字段的字典序键，先处理低优先级，再稳定处理高优先级；每次装入下一键时通过当前原序号读取原记录。这使已有排序结果保留下来，而不额外复制一份完整键记录。
@@ -1729,12 +1731,12 @@ IR 的 PrefixCount 与 PrefixRelation 将数据和计数的对应保存下来。
 ```rust
             let scalar = s.keys[key_index].1;
             let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-            let at = e.address_scalar(unit, s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0);
+            let at = e.address_scalar(unit, s.source, original, s.keys[key_index].0);
             let key = e.load_raw(Scalar::U32, unit, &[at], true);
             let bias = scalar.order_bias() as u32;
             let key = if scalar.is_float() {
                 let high = if scalar == Scalar::F64 {
-                    e.load_raw_buffer(Scalar::U32, s.source, original, e.program.buffers[s.source].stride, s.keys[key_index].0 + 4)
+                    e.load_raw_buffer(Scalar::U32, s.source, original, s.keys[key_index].0 + 4)
                 } else { key };
                 let shift = e.constant(Scalar::U32, 31);
                 let negative = e.sort_binary(194, high, shift);

@@ -278,16 +278,12 @@ impl Frame {
                 )
             }
             Program::Gpu(program) => {
-                if order.iter().any(|&(_, offset)| offset != 0) {
-                    return Err(error("整域GPU字段投影尚未实现"));
-                }
-                let physical: Vec<_> = order.iter().map(|&(slot, _)| slot).collect();
                 let datasets = selected
                     .iter()
                     .map(|&handle| self.data.datasets[handle as usize].take().unwrap().gpu())
                     .collect::<Result<Vec<_>>>()?;
                 let result = program
-                    .submit_projected(DomainBindings { datasets, domains }, &physical, values)?
+                    .submit_projected(DomainBindings { datasets, domains }, &order, values)?
                     .wait()?
                     .into_bindings();
                 (

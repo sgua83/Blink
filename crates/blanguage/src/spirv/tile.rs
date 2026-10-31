@@ -24,7 +24,7 @@ impl Emitter<'_> {
         self.emit(248, &[load]);
         for ((source, word), fragments) in self.stage.input_words() {
             let components: Vec<_> = fragments.into_iter().map(|(byte, unit)| {
-                let raw = self.load_raw_buffer(unit, source, self.index, self.program.buffers[source].stride, byte);
+                let raw = self.load_raw_buffer(unit, source, self.index, byte);
                 (unit, byte % 4, raw)
             }).collect();
             let raw = self.pack_words(4, components)[0];

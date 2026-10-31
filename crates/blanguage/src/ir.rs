@@ -461,6 +461,13 @@ impl Ty {
         }
         visit(self,0,words,&mut field)
     }
+    /// 已编译逻辑参数按真实字节位置借用同一声明字段；不改写物理根类型。
+    pub fn field_layout_at(&self, offset: u32, expected: &Ty) -> Option<&Ty> {
+        if offset == 0 && self == expected { return Some(self); }
+        self.fields.iter().find_map(|(_, byte, field)| {
+            offset.checked_sub(*byte).and_then(|offset| field.field_layout_at(offset, expected))
+        })
+    }
     pub fn field(&self, path: &str) -> Option<(u32, &Ty)> {self.field_in(path,None)}
     /// 与field共用声明路径，在绑定原生引用时同时选择实际活动分支。
     pub fn field_at(&self,path:&str,words:&[u32])->Option<(u32,&Ty)> {self.field_in(path,Some(words))}

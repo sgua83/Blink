@@ -455,13 +455,7 @@ impl<'a> CpuBuffer<'a> {
         data.require_views()
     }
     fn projected(self, expected: &blanguage::ir::Buffer, offset: u32) -> Result<Self> {
-        fn at<'a>(ty: &'a Ty, offset: u32, expected: &Ty) -> Option<&'a Ty> {
-            if offset == 0 && ty == expected { return Some(ty); }
-            ty.fields.iter().find_map(|(_, byte, field)| {
-                offset.checked_sub(*byte).and_then(|offset| at(field, offset, expected))
-            })
-        }
-        let ty = at(self.ty, offset, &expected.ty)
+        let ty = self.ty.field_layout_at(offset, &expected.ty)
             .ok_or_else(|| error(format!("绑定 {} 的字段类型或偏移与原存储不一致", expected.name)))?;
         Ok(Self {
             ty,
