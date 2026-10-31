@@ -492,7 +492,7 @@ impl Builder<'_> {
             common
         };
     }
-    pub(super) fn borrow_owned(&self, place: Place) -> OwnedBinding {
+    pub(super) fn borrow_owned(&mut self, place: Place) -> OwnedBinding {
         for binding in self.env.values() {
             if let Binding::OwnedValue(owner) = binding
                 && let Some(root) = owner.place()

@@ -2772,44 +2772,49 @@ impl Builder<'_> {
         );
     }
     fn selected_proof(
-        &self,
+        path: &Clause,
+        mut environment: Facts,
         proof: &Proof,
         source: &Ty,
         ty: &Ty,
         choices: &[Vec<(usize, Clause)>],
         registers: Option<&[Reg]>,
-    ) -> Proof {
-        let environment = environment_facts(&self.env);
+    ) -> (Proof, Clause) {
+        environment.extend(proof.facts(source));
+        let mut path = path.clone();
+        // 实际装载的候选关系交给原路径；同次聚合的分量共享同一选择。
+        if let Some(registers) = registers {
+            for (register, candidates) in registers.iter().zip(choices) {
+                let mut related = Clause::impossible();
+                for (component, selection) in candidates {
+                    let facts = proof
+                        .project(&[*component], source.components.len())
+                        .with_identity(ValueIdentity::Register(*register))
+                        .facts(&Ty::scalar(source.components[*component].0));
+                    related = Clause::either(
+                        &related,
+                        &Clause::both(selection, &Clause::facts(facts)),
+                    );
+                }
+                path = Clause::both(&path, &related);
+            }
+        }
         let mut result = Proof::default();
         for (component, ((scalar, _), candidates)) in ty.components.iter().zip(choices).enumerate()
         {
             let mut selected: Option<Proof> = None;
             for (source_component, condition) in candidates {
-                let mut path = Clause::both(&self.path, condition);
+                let path = Clause::both(&path, condition);
                 let Some(context) = path.required_in(&environment) else {
                     continue;
                 };
-                // 同次聚合读取的字段来自同一选择，不能在合流前拆散其身份关系。
-                if let Some(registers) = registers {
-                    for (register, siblings) in registers.iter().zip(choices) {
-                        let mut related = Clause::impossible();
-                        for (sibling, selection) in siblings {
-                            if selection.required_in(&context).is_none() {
-                                continue;
-                            }
-                            let facts = proof
-                                .project(&[*sibling], source.components.len())
-                                .with_identity(ValueIdentity::Register(*register))
-                                .facts(&Ty::scalar(source.components[*sibling].0));
-                            related = Clause::either(
-                                &related,
-                                &Clause::both(selection, &Clause::facts(facts)),
-                            );
-                        }
-                        path = Clause::both(&path, &related);
+                let mut next = proof.project(&[*source_component], source.components.len());
+                next.extend_equalities(&equality_roots(&context));
+                for fact in context {
+                    if fact.identity().is_some_and(|identity| next.origins.iter().flatten().any(|origin| *origin == identity)) {
+                        next.refine(&Ty::scalar(*scalar), 0, fact);
                     }
                 }
-                let mut next = proof.project(&[*source_component], source.components.len());
                 next.under_path(&Ty::scalar(*scalar), &path);
                 match &mut selected {
                     Some(selected) => selected.join(&next, 1, None),
@@ -2822,10 +2827,10 @@ impl Builder<'_> {
                 selected.unwrap_or_default(),
             );
         }
-        result
+        (result, path)
     }
     pub(super) fn array_value_proof(
-        &self,
+        &mut self,
         proof: &Proof,
         array: &Ty,
         index: ownership::ApplicationIndex,
@@ -2840,10 +2845,14 @@ impl Builder<'_> {
                     .collect()
             })
             .collect();
-        self.selected_proof(proof, array, &element, &choices, Some(registers))
+        let (result, path) = Self::selected_proof(
+            &self.path, environment_facts(&self.env), proof, array, &element, &choices, Some(registers),
+        );
+        self.path = path;
+        result
     }
     pub(super) fn projected_owned_proof(
-        &self,
+        &mut self,
         place: &Place,
         registers: Option<&[Reg]>,
     ) -> Option<Proof> {
@@ -2874,19 +2883,10 @@ impl Builder<'_> {
         if positions.is_empty() {
             return None;
         }
-        for binding in self.env.values() {
-            let (proof, owner) = match binding {
-                Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => (&owner.proof, owner.place.clone()),
-                Binding::OwnedValue(owner) => {
-                    let Some(place) = owner.place() else {
-                        continue;
-                    };
-                    (&owner.value.proof, place)
-                }
-                _ => continue,
-            };
+        let (name, source, choices) = self.env.iter().find_map(|(name, binding)| {
+            let owner = binding.stored_place()?;
             if matches!(place.storage(), Place::Element { .. }) && !place.overlaps(&owner) {
-                continue;
+                return None;
             }
             let owner_positions = self.positions(&owner);
             let choices: Option<Vec<_>> = positions
@@ -2897,12 +2897,25 @@ impl Builder<'_> {
                     Some(choices)
                 })
                 .collect();
-            let Some(choices) = choices else {
-                continue;
-            };
-            return Some(self.selected_proof(proof, owner.ty(), place.ty(), &choices, registers));
+            Some((name.clone(), owner.ty().clone(), choices?))
+        })?;
+        let environment = environment_facts(&self.env);
+        let (proof, _, _) = self.env.get_mut(&name)?.proof_storage()?;
+        if registers.is_some() {
+            proof.origins.resize_with(source.components.len(), Vec::new);
+            for (component, _) in choices.iter().flatten() {
+                if proof.origins[*component].is_empty() {
+                    let register = self.registers.len();
+                    self.registers.push(source.components[*component].0);
+                    proof.origins[*component].push(ValueIdentity::Register(register));
+                }
+            }
         }
-        None
+        let (result, path) = Self::selected_proof(
+            &self.path, environment, proof, &source, place.ty(), &choices, registers,
+        );
+        self.path = path;
+        Some(result)
     }
     pub(super) fn refine_parallel_domain(&mut self) {
         for binding in self.env.values_mut() {
