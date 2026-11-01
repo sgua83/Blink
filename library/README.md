@@ -221,4 +221,56 @@ target/release/bc.exe -c main.b -I library --import target/process.lib -o target
 target/release/blink.exe target/main.obj target/process.lib -o target/main.exe
 ```
 
-调用方保留.h接口，提供者.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。argv解析、环境输入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照代替这些能力。
+调用方保留.h接口，提供者.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。argv解析、按名字环境查询／写入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照代替这些能力。
+
+## blink.windows.environment
+
+本模块以纯`.h`直接交接Windows x64的只读环境快照及其匹配释放，不需要`.b`。`GetEnvironmentStringsW()`返回`address`，零地址表示未取得快照；成功后可按UTF-16代码单元读取NUL分隔的条目，空条目结束。它提供本次进程环境的独立快照，条目及其顺序、空值、隐藏驱动器项和原始代码单元由OS提供；枚举时不按字符标量验证、大小写归一化、过滤或另建环境镜像。
+
+本次调用方负责保持快照至最后实际读取者结束，然后把**取得时的原始地址**交给`FreeEnvironmentStringsW(address block)`一次。不能把逐项推进的游标、其他分配器地址或原命令行地址交给它；不得修改快照、重复释放或在释放后读取任何地址副本。原OS快照不进入B的Frame拥有树，复制address不新增拥有权；接口不自动释放或替应用决定进程寿命。已取得快照可以和后续进程环境变化分开使用。
+
+释放入口按原Windows BOOL返回`i32`，非零表示成功、零表示失败，状态不被吞掉或改成B bool。失败时按原API约定紧接读取`blink.windows.error::GetLastError()`，先于打印或其他系统调用；Getter只按其官方合同声明NULL失败，不虚构额外错误码或初始化保证。两个接口不增加重试、释放队列、空指针探测、块长度上限或隐式状态。
+
+下面的普通B程序枚举条目数，最后读取完成后释放原块：
+
+```b
+module main;
+import blink.windows.environment;
+import blink.windows.error;
+
+u32 main() on cpu {
+    address block=GetEnvironmentStringsW();
+    if (block == address()) { return 1; }
+    usize cursor=address_bits(block);
+    usize count=0u64;
+    u16 unit=unsafe_position<u16>(unsafe_address(cursor));
+    while (unit != u16(0)) {
+        while (unit != u16(0)) {
+            cursor+=2;
+            unit=unsafe_position<u16>(unsafe_address(cursor));
+        }
+        count+=1u64; cursor+=2;
+        unit=unsafe_position<u16>(unsafe_address(cursor));
+    }
+    i32 released=FreeEnvironmentStringsW(block);
+    if (released == 0) {
+        u32 error=GetLastError();
+        println(error); return 1;
+    }
+    println(count);
+    return 0;
+}
+```
+
+配套`main.h`声明`module main; u32 main() on cpu;`，使用`bc -c main.b -I library -o target/main.obj`再独立链接。这里的unsafe_position只解释OS已提供且仍存活的实际CPU地址；不能借此访问GPU／远端资源。Getter失败时不读空地址；成功后原块一直保持至枚举结束，释放前的cursor不取代原block身份。
+
+纯声明模块也可交付独立对象／静态库：
+
+```powershell
+target/release/bc.exe -c library/blink/windows/environment.h -I library --module -o target/environment.obj
+target/release/blink.exe --archive target/environment.obj -o target/environment.lib
+target/release/bc.exe -c main.b -I library --import target/environment.lib -o target/main.obj
+target/release/blink.exe target/main.obj target/environment.lib -o target/main.exe
+```
+
+原environment.h不可读取时，调用方仍可通过已编译接口及归档消费这两个声明；编译和链接保持各自职责。按名称查询、环境写入、完整B文本集合及编译器／BLEngine实际迁移继续按对应台账建设。平台合同：[取得快照](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentstringsw)、[匹配释放](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-freeenvironmentstringsw)、[环境块格式](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)。

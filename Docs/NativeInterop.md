@@ -321,4 +321,10 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 
 `blink.windows.process::command_line() on cpu`以普通B函数交回独立拥有的`dataset<u16>`。私有GetCommandLineW只在真实Windows x64 C ABI上取得OS管理的地址，B按原unsafe_position<u16>同步只读至首个NUL，复制实际代码单元，不修改／释放系统字符串或将其地址／view交给调用者。结果不含终止符，不解析参数、不验证或替换孤立代理单元；需要其他编码由原Unicode库显式处理。
 
-返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；实际argv、环境与进程控制仍未实现。
+返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；实际argv、按名字环境查询／写入与进程控制仍未实现。
+
+## Windows环境块的原地址与最后消费者
+
+`blink.windows.environment`直接声明`address GetEnvironmentStringsW()`与`i32 FreeEnvironmentStringsW(address block)`，分别保留LPWCH与BOOL的真实Windows x64 C ABI。成功取得的是本次只读UTF-16环境快照，B可用原unsafe_position逐条读取；本次调用方保持原地址及所有读取者，最后消费者结束后匹配释放一次，Free失败状态及其立即GetLastError由调用者处理。
+
+外部存储不进入Frame，address复制、游标推进和函数返回不改变原拥有者或延长释放后的有效期。模块不包装为可自动销毁的B字符串，不建立全局环境副本、释放队列或第二运行库。纯.h与其已编译对象／归档可直接消费，无需空.b；完整原型、枚举示例及官方合同见[环境接口](../library/README.md#blinkwindowsenvironment)。环境按名字查询／写入、B拥有文本集合及实际引擎／编译器采用分别建设。
