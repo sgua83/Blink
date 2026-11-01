@@ -3,7 +3,7 @@ use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variant
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x0c\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x0d\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +213,7 @@ record!(ProgramLayout {
     uniform_bytes,
     prefix_requirements,
     prefix_guarantees,
+    length_requirements,
     requirements
 });
 record!(ExecutionStage {

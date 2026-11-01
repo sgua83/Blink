@@ -205,6 +205,7 @@ pub enum ContractPredicate {
         value: String,
         resource: String,
     },
+    SameLength { left: String, right: String },
     Initialized {
         value: String,
         condition: OutputCondition,

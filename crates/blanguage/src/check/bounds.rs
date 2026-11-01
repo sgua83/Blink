@@ -237,6 +237,20 @@ pub(super) struct Proof {
     views: Vec<view::Borrow>,
 }
 impl Proof {
+    pub(super) fn assume_same_length(&mut self, other: &Self) {
+        self.origins.resize_with(self.origins.len().max(1), Vec::new);
+        for &identity in other.origins.first().into_iter().flatten() {
+            if !self.origins[0].contains(&identity) { self.origins[0].push(identity); }
+        }
+        let range = self.range_set(0).combine(&other.range_set(0),
+            |(a,b),(c,d)| IntegerRanges::interval(a.max(c),b.min(d)));
+        self.ranges.resize_with(self.ranges.len().max(1), IntegerRanges::default);
+        self.ranges[0] = range;
+        self.nonzero.resize(self.nonzero.len().max(1), false);
+        self.nonzero[0] |= other.nonzero.first() == Some(&true);
+        self.domains.resize_with(self.domains.len().max(1), Domains::new);
+        self.domains[0].extend(other.domains(0));
+    }
     pub(super) fn borrow_state(&self)->Self {Self{views:self.views.clone(),..Self::default()}}
     pub(super) fn typed_view_borrow(&self,ty:&Ty)->view::Borrow {view_contracts::components(ty).into_iter().fold(view::Borrow::default(),|mut all,component|{all.union(&self.view_borrow(component));all})}
     pub(super) fn select_view_borrows(&mut self,values:&[(Condition,Self)]){
@@ -2834,6 +2848,35 @@ pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
         .collect()
 }
 impl Builder<'_> {
+    pub(super) fn length_proofs_equal(&self, a: &Proof, b: &Proof) -> bool {
+        let equal = |a: &Proof, b: &Proof| {
+            let ar = a.range_set(0).hull();
+            let br = b.range_set(0).hull();
+            ar.0 == ar.1 && ar == br
+                || a.origins.first().into_iter().flatten()
+                    .any(|id| b.origins.first().is_some_and(|origins| origins.contains(id)))
+        };
+        if equal(a,b) { return true; }
+        let mut environment = environment_facts(&self.env);
+        environment.extend(a.facts(&Ty::scalar(Scalar::U32)));
+        environment.extend(b.facts(&Ty::scalar(Scalar::U32)));
+        let Some(facts) = self.path.required_in(&environment) else { return false; };
+        let roots = equality_roots(&facts);
+        let mut a = a.clone();
+        let mut b = b.clone();
+        for proof in [&mut a, &mut b] {
+            proof.extend_equalities(&roots);
+            for fact in &facts {
+                if fact.identity().is_some_and(|identity| proof.origins.first().is_some_and(|origins| origins.contains(&identity))) {
+                    proof.refine(&Ty::scalar(Scalar::U32),0,*fact);
+                }
+            }
+        }
+        equal(&a,&b)
+    }
+    pub(super) fn lengths_equal(&self, a: &Value, b: &Value) -> bool {
+        self.length_proofs_equal(&Proof::capture(a), &Proof::capture(b))
+    }
     pub(super) fn observe_integer_binary(&mut self, op: &str, a: &Value, b: &Value, result: &Value) {
         let scalar = a.ty.components[0].0;
         if !scalar.is_integer() || result.ty.components[0].0 == Scalar::Bool { return; }
@@ -3008,7 +3051,7 @@ impl Builder<'_> {
     pub(super) fn refine_parallel_domain(&mut self) {
         for binding in self.env.values_mut() {
             if let Binding::Data(view) = binding
-                && view.binding == self.domain
+                && self.program.same_length(view.binding, self.domain)
             {
                 view.length.refine(
                     &Ty::scalar(Scalar::U32),
@@ -3022,11 +3065,18 @@ impl Builder<'_> {
         DatasetView {
             binding,
             projection: Vec::new(),
-            length: self.program.buffers[binding]
-                .count
-                .map_or_else(Proof::default, |n| Proof::unsigned(n, n))
-                .with_domains(Domains::from([IndexDomain::DataLength(binding)]))
-                .with_identity(ValueIdentity::DataLength(binding)),
+            length: {
+                let mut proof = Proof::default().with_identity(ValueIdentity::DataLength(binding));
+                for (other, buffer) in self.program.buffers.iter().enumerate() {
+                    if self.program.same_length(binding, other) {
+                        let related = buffer.count.map_or_else(Proof::default, |n| Proof::unsigned(n,n))
+                            .with_domains(Domains::from([IndexDomain::DataLength(other)]))
+                            .with_identity(ValueIdentity::DataLength(other));
+                        proof.assume_same_length(&related);
+                    }
+                }
+                proof
+            },
         }
     }
     pub(super) fn data_length(&mut self, view: &DatasetView) -> Value {

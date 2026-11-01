@@ -13,6 +13,7 @@ pub(crate) struct Interface {
     pub target: Target,
     pub buffers: Vec<Buffer>,
     pub uniforms: Vec<Uniform>,
+    pub length_requirements: Vec<(usize, usize)>,
     pub outputs: Vec<Output>,
 }
 pub(crate) fn symbol(name: &str, target: Target) -> String {
@@ -39,5 +40,6 @@ super::codec::record!(Interface {
     target,
     buffers,
     uniforms,
+    length_requirements,
     outputs
 });

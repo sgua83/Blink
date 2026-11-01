@@ -1082,6 +1082,7 @@ fn build_domain(
     let mut interface = crate::module::domain::Interface {
         instance: signature.name.clone(), target,
         buffers: signature.buffers.clone(), uniforms: signature.uniforms.clone(),
+        length_requirements: signature.length_requirements.clone(),
         outputs: expanded.outputs,
     };
     let mut start = 0;

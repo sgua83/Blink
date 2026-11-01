@@ -1,6 +1,50 @@
 //! 函数约束只精化原参数 Proof；调用点证明真实前提，不生成运行期检查。
 use super::*;
 
+pub(super) fn root_lengths(
+    env: &BTreeMap<String, Root>,
+    definition: &Definition,
+) -> Result<Vec<(usize, usize)>> {
+    let mut relations = BTreeSet::new();
+    for contract in &definition.function.contracts {
+        let ContractPredicate::SameLength { left, right } = &contract.predicate else { continue; };
+        if contract.kind != ContractKind::Requires {
+            return definition.source.fail(contract.span, "B225", "same_length声明输入dataset的requires前提");
+        }
+        let (Some(Root::Data(a, _)), Some(Root::Data(b, _))) = (env.get(left), env.get(right)) else {
+            return definition.source.fail(contract.span, "B225", "same_length需要两个dataset形参");
+        };
+        relations.insert(((*a).min(*b), (*a).max(*b)));
+    }
+    Ok(relations.into_iter().collect())
+}
+struct Length {
+    root: String,
+    proof: bounds::Proof,
+}
+fn length(
+    definition: &Definition,
+    env: &BTreeMap<String, Binding>,
+    name: &str,
+    span: Span,
+) -> Result<Length> {
+    let proof = match env.get(name) {
+        Some(Binding::ApplicationData(data)) => bounds::Proof::capture(&data.length),
+        Some(Binding::DataReference(data)) => bounds::Proof::capture(&data.length),
+        Some(Binding::Data(data)) => data.length.clone(),
+        _ => return definition.source.fail(span, "B225", "same_length需要两个dataset形参"),
+    };
+    Ok(Length { root: name.into(), proof })
+}
+fn assume_length(name: &str, binding: &mut Binding, selected: &Length, other: &Length) {
+    if name != selected.root { return; }
+    match binding {
+        Binding::ApplicationData(data) => data.length.proof.assume_same_length(&other.proof),
+        Binding::DataReference(data) => data.data.length.proof.assume_same_length(&other.proof),
+        Binding::Data(data) => data.length.assume_same_length(&other.proof),
+        _ => {}
+    }
+}
 struct Selection {
     root: String,
     components: Vec<usize>,
@@ -64,6 +108,7 @@ impl Resource {
     }
 }
 enum Predicate {
+    SameLength(Length, Length),
     Contiguous(Place),
     Nonzero(Selection),
     Nonempty(Resource),
@@ -214,6 +259,10 @@ pub(super) fn resolve(
             );
         }
         let (predicate, description) = match &contract.predicate {
+            ContractPredicate::SameLength { left, right } => (
+                Predicate::SameLength(length(definition, env, left, contract.span)?, length(definition, env, right, contract.span)?),
+                format!("same_length({left},{right})"),
+            ),
             ContractPredicate::Contiguous(path) => (
                 Predicate::Contiguous(reference(builder, definition, env, path, contract.span)?),
                 format!("contiguous({path})"),
@@ -278,6 +327,7 @@ pub(super) fn resolve(
 pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: Span) -> Result<()> {
     for requirement in requirements {
         let holds = match &requirement.predicate {
+            Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.value.is_nonzero(),
             Predicate::Nonempty(resource) => {
@@ -315,6 +365,10 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requir
     for requirement in requirements {
         for (name, binding) in env.iter_mut() {
             match &requirement.predicate {
+                Predicate::SameLength(left, right) => {
+                    assume_length(name, binding, left, right);
+                    assume_length(name, binding, right, left);
+                }
                 Predicate::Contiguous(_) => {}
                 Predicate::Nonzero(selection) => {
                     if let Binding::Value(value) = binding

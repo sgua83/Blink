@@ -23,6 +23,22 @@ pub trait ProgramInterface {
     fn uniform_bytes(&self) -> u32;
     fn prefix_requirements(&self) -> &[PrefixRelation];
     fn prefix_guarantees(&self) -> &[PrefixRelation];
+    fn length_requirements(&self) -> &[(usize, usize)];
+    fn same_length(&self, a: usize, b: usize) -> bool {
+        let fixed = |a: usize, b: usize| a == b
+            || self.buffers()[a].count.is_some() && self.buffers()[a].count == self.buffers()[b].count;
+        let mut pending = vec![a];
+        let mut visited = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if fixed(current, b) { return true; }
+            if !visited.insert(current) { continue; }
+            for &(left, right) in self.length_requirements() {
+                if fixed(current, left) { pending.push(right); }
+                if fixed(current, right) { pending.push(left); }
+            }
+        }
+        false
+    }
     fn requirements(&self) -> DeviceRequirements;
 }
 macro_rules! interface_fields {
@@ -36,6 +52,7 @@ macro_rules! interface_fields {
         $vis fn uniform_bytes(&self) -> u32 { self.uniform_bytes }
         $vis fn prefix_requirements(&self) -> &[PrefixRelation] { &self.prefix_requirements }
         $vis fn prefix_guarantees(&self) -> &[PrefixRelation] { &self.prefix_guarantees }
+        $vis fn length_requirements(&self) -> &[(usize, usize)] { &self.length_requirements }
     };
 }
 impl ProgramInterface for Program {
@@ -97,6 +114,9 @@ where
     fn prefix_guarantees(&self) -> &[PrefixRelation] {
         self.deref().prefix_guarantees()
     }
+    fn length_requirements(&self) -> &[(usize, usize)] {
+        self.deref().length_requirements()
+    }
     fn requirements(&self) -> DeviceRequirements {
         self.deref().requirements()
     }
@@ -112,6 +132,7 @@ pub struct ProgramLayout {
     pub uniform_bytes: u32,
     pub prefix_requirements: Vec<PrefixRelation>,
     pub prefix_guarantees: Vec<PrefixRelation>,
+    pub length_requirements: Vec<(usize, usize)>,
     pub requirements: DeviceRequirements,
 }
 impl ProgramInterface for ProgramLayout {
@@ -291,6 +312,7 @@ impl ExecutionPlan {
                 uniform_bytes: program.uniform_bytes,
                 prefix_requirements: program.prefix_requirements.clone(),
                 prefix_guarantees: program.prefix_guarantees.clone(),
+                length_requirements: program.length_requirements.clone(),
                 requirements: program.requirements(),
             },
             stages,

@@ -33,8 +33,7 @@ impl Facts {
         let buffer = &program.buffers[binding];
         buffer.count == Some(0) || self.outputs[self.scopes.last().unwrap().1..].iter().any(|output| {
             output.binding == binding && output.words.contains(&word) && match output.domain {
-                Some(domain) => domain == binding
-                    || buffer.count.is_some() && buffer.count == program.buffers[domain].count,
+                Some(domain) => program.same_length(domain, binding),
                 None => buffer.count == Some(1),
             }
         })
@@ -93,7 +92,7 @@ pub(super) fn relation(
         return d.source.fail(
             contract.span,
             "B225",
-            "program 接口只接受 prefix 域约束；值约束用于普通／cooperative 函数",
+            "整域接口接受prefix域约束及same_length长度前提；值约束用于普通／cooperative函数",
         );
     };
     let Some(Root::Data(domain, _)) = env.get(data) else {
@@ -143,7 +142,7 @@ pub(super) fn relations(
         .function
         .contracts
         .iter()
-        .filter(|c| c.kind == kind)
+        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. }))
         .map(|c| relation(program, env, d, c))
         .collect::<Result<Vec<_>>>()?;
     result.sort_by_key(|r| (r.domain, r.count.binding, r.count.word));

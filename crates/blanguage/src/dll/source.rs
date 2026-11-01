@@ -228,6 +228,7 @@ record!(ProgramLayout {
     uniform_bytes,
     prefix_requirements,
     prefix_guarantees,
+    length_requirements,
     requirements
 });
 record!(ExecutionStage {

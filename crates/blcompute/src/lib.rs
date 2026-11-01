@@ -256,6 +256,15 @@ pub(crate) fn arguments<'a>(
         words[2 + i] = count;
     }
     let length = |binding: usize| words[2 + binding];
+    for &(left, right) in program.length_requirements() {
+        if length(left) != length(right) {
+            return Err(error(format!(
+                "程序 {} 的 same_length({}, {}) 不满足：实际元素数 {} 与 {}",
+                program.name(), program.buffers()[left].name, program.buffers()[right].name,
+                length(left), length(right)
+            )));
+        }
+    }
     for stage in program.stages() {
         if let Some(selection) = stage.selection
             && length(selection.binding) < length(stage.domain)

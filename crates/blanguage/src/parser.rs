@@ -593,6 +593,13 @@ impl Parser {
                         })?;
                         ContractPredicate::Initialized { value, condition }
                     }
+                    "same_length" => {
+                        let left = self.qualified(".")?;
+                        self.expect(",")?;
+                        let right = self.qualified(".")?;
+                        let (left, right) = if left <= right { (left, right) } else { (right, left) };
+                        ContractPredicate::SameLength { left, right }
+                    }
                     "index" => {
                         let value = self.qualified(".")?;
                         self.expect(",")?;
@@ -603,7 +610,7 @@ impl Parser {
                         return self.source.fail(
                             span,
                             "B225",
-                            "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous 或 initialized",
+                            "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length 或 initialized",
                         );
                     }
                 };

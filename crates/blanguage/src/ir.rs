@@ -1581,6 +1581,7 @@ pub struct Program {
     pub(crate) stages: Vec<Stage>,
     pub(crate) prefix_requirements: Vec<PrefixRelation>,
     pub(crate) prefix_guarantees: Vec<PrefixRelation>,
+    pub(crate) length_requirements: Vec<(usize, usize)>,
 }
 impl Program {
     pub fn textures(&self) -> &[TextureBinding] {

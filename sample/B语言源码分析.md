@@ -443,7 +443,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:997`。
+源码节选：`crates/blanguage/src/parser.rs:1004`。
 
 ```rust
             let prec = match self.peek() {
@@ -592,7 +592,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3760`。
+源码节选：`crates/blanguage/src/check.rs:3766`。
 
 ```rust
         let binding = view.binding;
@@ -601,8 +601,7 @@ impl Access {
         };
         self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
         let current = i.regs[0] == self.global_index;
-        let same_shape = self.program.buffers[binding].count.is_some()
-            && self.program.buffers[binding].count == self.program.buffers[self.domain].count;
+        let same_shape = self.program.same_length(binding, self.domain);
         if !self.index_in(
             &i,
             IndexDomain::Data(binding),
@@ -698,6 +697,8 @@ enum Fact {
 
 确定整数二元运算将实际类型、运算和已求值输入快照的结果关系交给原Clause。常量按类型与位模式表示；同一次事实查询沿相等输入推导相等结果，嵌套运算沿已有关系收敛。因此未改写数组上的`value.indices[ordinal(item)&1]`重复选择可以消费前次条件，直接重复算式下标也消费同一条路径，不要求手工保存所选标量。调用、原子读取与已改变内容分别保留真实快照；求值顺序、范围检查与资源所有者保持，不添加运行时缓存或逐元素判断。
 
+动态数据集的长度关系由原参数Proof和Clause表达。`requires same_length(a,b)`只约束两个dataset形参的实际长度，不合并存储、布局或权限；固定相同形状、同一长度值和当前路径上的相等事实可以证明调用。普通CPU调用消费原合同，整域接口及ProgramLayout把根参数关系交给已编译模块和执行映像。CPU应用提取parallel时只传递已成立的同长关系，并以一棵关系树避免为每对资源重复编码。真实入口复用blcompute::arguments已有的长度参数字，在执行前比较声明的关系；CPU、GPU与Frame共用这一入口，不逐元素判断，也不按运行期N生成代码。零长保持合法，借用、初始化和最后消费者仍由原所有者负责。
+
 `Fact` 包含相等、索引域、最小值、最大值和非零。同文件的 `Proof` 按分量保存来源、条件、IntegerRanges、非零和索引域。整数范围可由多个有序区间组成，能够表达回绕后的不连续集合；float3 的三个分量也可能持有不同事实。
 
 ### 9.2 为什么事实跟随值，而不是永远跟随变量名
@@ -710,7 +711,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:697`。
+源码节选：`crates/blanguage/src/check/bounds.rs:711`。
 
 ```rust
         self.nonzero = (0..width)
@@ -835,7 +836,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:387`。
+源码节选：`crates/blanguage/src/check.rs:388`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;

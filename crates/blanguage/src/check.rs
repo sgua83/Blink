@@ -382,8 +382,9 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
     };
+    program.length_requirements = contracts::root_lengths(&env, d)?;
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
@@ -928,6 +929,11 @@ fn expand_stages(
                         }
                     }
                 }
+                for (left, right) in contracts::root_lengths(&child, callee)? {
+                    if !program.same_length(left, right) {
+                        return d.source.fail(statement.span, "B226", "整域调用前未证明same_length数据集长度关系");
+                    }
+                }
                 let required = prefix::relations(program, &child, callee, ContractKind::Requires)?;
                 for relation in &required {
                     prefix::prove(
@@ -1284,7 +1290,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
     };
     Ok(Box::new(program))
 }
@@ -3763,8 +3769,7 @@ impl<'a> Builder<'a> {
         };
         self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span)?;
         let current = i.regs[0] == self.global_index;
-        let same_shape = self.program.buffers[binding].count.is_some()
-            && self.program.buffers[binding].count == self.program.buffers[self.domain].count;
+        let same_shape = self.program.same_length(binding, self.domain);
         if !self.index_in(
             &i,
             IndexDomain::Data(binding),

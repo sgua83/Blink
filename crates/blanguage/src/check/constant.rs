@@ -92,7 +92,7 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
             source_stages: 0,
             stages: Vec::new(),
             prefix_requirements: Vec::new(),
-            prefix_guarantees: Vec::new(),
+            prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
         };
         let mut builder = Builder::new(world, definition, &context, 0);
         builder.in_function = true;
@@ -273,7 +273,7 @@ pub(crate) fn variant_discriminant(world: &World, identity: &str, source: &Sourc
     });
     let context = Program { name: definition.function.name.clone(), target: Target::Compute,
         buffers: Vec::new(), accelerations: Vec::new(), textures: Vec::new(), uniforms: Vec::new(), uniform_bytes: 0,
-        source_stages: 0, stages: Vec::new(), prefix_requirements: Vec::new(), prefix_guarantees: Vec::new() };
+        source_stages: 0, stages: Vec::new(), prefix_requirements: Vec::new(), prefix_guarantees: Vec::new(), length_requirements:Vec::new() };
     let mut builder = Builder::new(world, &definition, &context, 0);
     builder.in_function = true;
     let result = builder.expr(expression)?;

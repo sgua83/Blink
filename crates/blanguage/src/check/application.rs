@@ -169,7 +169,7 @@ pub(crate) fn compile_application(
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
     };
     let mut builder = Builder::new(world, d, &context, 0);
     builder.application = Some(Context::default());
@@ -458,19 +458,13 @@ impl Builder<'_> {
         interface: &crate::module::domain::Interface,
         data: &[DataReference],
     ) {
-        let same_length = |a: &Data, b: &Data| {
-            a.length.identity() == b.length.identity()
-                || a.length.minimum() == a.length.maximum()
-                    && a.length.minimum() == b.length.minimum()
-                    && a.length.maximum() == b.length.maximum()
-        };
         for output in &interface.outputs {
             let offset = data[output.binding].element_layout().0;
             let Some(scope) = &data[output.binding].initialization else {
                 continue;
             };
             match output.domain {
-                Some(domain) if same_length(&data[output.binding], &data[domain]) => {
+                Some(domain) if self.lengths_equal(&data[output.binding].length, &data[domain].length) => {
                     self.initialized.extend(
                         output
                             .words
@@ -1407,6 +1401,11 @@ impl Builder<'_> {
             self.application_handle_available(value.handle.identity(), span)?;
         }
         let interface = self.prepare_domain(&instance, target)?;
+        for &(left, right) in &interface.length_requirements {
+            if !self.lengths_equal(&data[left].length, &data[right].length) {
+                return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
+            }
+        }
         for (value, buffer) in data.iter().zip(&interface.buffers) {
             self.require_same(&buffer.ty, value.element_layout().1, span)?;
             if buffer.count.is_some() && buffer.count != value.count {
@@ -1487,6 +1486,27 @@ impl Builder<'_> {
             args.push(arg);
         }
         self.check_argument_aliases(&params, &args, |_| statement.span)?;
+        let mut contracts = Vec::new();
+        let mut groups: Vec<usize> = Vec::new();
+        for (index, argument) in args.iter().enumerate() {
+            let Argument::BorrowedData(data) = argument else { continue; };
+            let representative = groups.iter().copied().find(|&previous| {
+                let Argument::BorrowedData(other) = &args[previous] else { return false; };
+                self.lengths_equal(&data.length, &other.length)
+            });
+            if let Some(previous) = representative {
+                contracts.push(FunctionContract {
+                    kind: ContractKind::Requires,
+                    predicate: ContractPredicate::SameLength {
+                        left: params[previous].name.clone(),
+                        right: params[index].name.clone(),
+                    },
+                    span: statement.span,
+                });
+            } else {
+                groups.push(index);
+            }
+        }
         let name = format!(
             "{}@parallel{}:{:?}",
             self.calls.last().unwrap(),
@@ -1501,7 +1521,7 @@ impl Builder<'_> {
             result: TypeName::named("void"),
             kind: FunctionKind::Value,
             target: Target::Cpu,
-            contracts: Vec::new(),
+            contracts,
             body: Some(vec![statement.clone()]),
             external: None,
             span: statement.span,
