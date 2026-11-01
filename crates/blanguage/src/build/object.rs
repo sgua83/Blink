@@ -21,9 +21,10 @@ pub(crate) enum Declaration {
     TypeSet(String),
     External(String),
     ValueName { name: String, module: String, imports: Vec<String> },
+    RecordName { name: String, module: String, imports: Vec<String> },
 }
-variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports } });
-const MAGIC: &[u8; 8] = b"BLBO\x07\0\0\0";
+variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports }, 5 => RecordName { name, module, imports } });
+const MAGIC: &[u8; 8] = b"BLBO\x08\0\0\0";
 struct Inputs {
     source: [u8; 32],
     imports: [u8; 32],
@@ -67,6 +68,10 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
                 hash::field(&mut bytes, &declarations.resolve(name, module, imports, true).bytes());
                 continue;
             }
+            Declaration::RecordName { name, module, imports } => {
+                hash::field(&mut bytes, &declarations.resolve(name, module, imports, false).bytes());
+                continue;
+            }
             Declaration::Constant(key) => declarations.functions.get(key)
                 .filter(|definition| definition.function.kind == crate::ast::FunctionKind::Constant)
                 .map(|definition| (&definition.source, definition.function.span)),
@@ -100,12 +105,8 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
                 || definition.function.kind == crate::ast::FunctionKind::Constant
                     && !definition.function.name.contains("::")))
         .map(|definition| definition.function.span).collect::<Vec<_>>();
-    // 记录／变体与集合名称尚按原粒度保留；值名由原查询绑定交接。
+    // 值与记录名由实际查询绑定交接；集合名称仍保留原粒度。
     for (record, ..) in declarations.records.values().filter(|(_, owner, ..)| owner.path == source.path) {
-        hash::field(bytes, b"type");
-        hash::field(bytes, record.name.as_bytes());
-        hash::field(bytes, &(record.variants.len() as u64).to_le_bytes());
-        for variant in &record.variants { hash::field(bytes, variant.name.as_bytes()); }
         spans.push(record.span);
     }
     for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {

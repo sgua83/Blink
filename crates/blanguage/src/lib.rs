@@ -89,10 +89,13 @@ impl World {
         Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_declarations: None }
     }
     fn resolve(&self, name: &str, module: &str, imports: &[String], functions: bool) -> Option<String> {
-        if functions && let Some(inputs) = &self.build_declarations {
-            inputs.borrow_mut().insert(build::Declaration::ValueName {
-                name: name.into(), module: module.into(), imports: imports.to_vec(),
-            });
+        if let Some(inputs) = &self.build_declarations {
+            let query = if functions {
+                build::Declaration::ValueName { name: name.into(), module: module.into(), imports: imports.to_vec() }
+            } else {
+                build::Declaration::RecordName { name: name.into(), module: module.into(), imports: imports.to_vec() }
+            };
+            inputs.borrow_mut().insert(query);
         }
         self.declarations.resolve(name, module, imports, functions)
     }

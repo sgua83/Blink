@@ -21,6 +21,11 @@ struct Body<'a> {
 }
 impl Body<'_> {
     fn call(&mut self, world: &Declarations, d: &Definition, name: &str, statement: bool) -> bool {
+        if let Some(inputs) = self.inputs {
+            inputs.borrow_mut().insert(Declaration::RecordName {
+                name: name.into(), module: d.module.clone(), imports: d.imports.clone(),
+            });
+        }
         if world.resolve(name, &d.module, &d.imports, false).is_some() {
             self.local |= statement || d.function.target == Target::Cpu;
             return false;
