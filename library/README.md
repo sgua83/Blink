@@ -52,11 +52,11 @@ target/release/bc.exe -c library/blink/sequence.b -I library --module --instance
 target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 ```
 
-实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、完整字符串、整段文本处理和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
+实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、完整字符串、字符长度／切片和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
 
 ## blink.unicode
 
-`blink.unicode`是纯B实现的严格UTF-8／UTF-16单标量编解码模块。以`import blink.unicode;`导入，源码根仍为`-I library`；普通CPU函数和CPU并行域均可调用。
+`blink.unicode`以纯B实现严格UTF-8／UTF-16标量编解码和整段转换。以`import blink.unicode;`导入，源码根仍为`-I library`。标量接口可在普通CPU函数和CPU并行域调用；拥有输出的整段转换属于普通CPU资源组织。
 
 | 函数 | 成功与失败 |
 |---|---|
@@ -64,30 +64,37 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 | `decode_utf16(read dataset<u16> text,u32 offset)` | 同一Result；offset及next按u16代码单元计 |
 | `encode_utf8(u32 value)` | `Result<Utf8Encoding,u32>`；成功为One(u8)、Two(array<u8,2>)、Three(array<u8,3>)或Four(array<u8,4>) |
 | `encode_utf16(u32 value)` | `Result<Utf16Encoding,u32>`；成功为One(u16)或Two(array<u16,2>) |
+| `to_utf16(read dataset<u8> text)` | `Result<dataset<u16>,TextError>`；严格解码整个UTF-8输入，Ok交回拥有UTF-16序列 |
+| `to_utf8(read dataset<u16> text)` | `Result<dataset<u8>,TextError>`；严格解码整个UTF-16输入，Ok交回拥有UTF-8字节序列 |
 
-`DecodedScalar`含`value`与第一个尚未消费位置`next`。解码只借用原CPU数据，不改内容、不移动资源或修改调用者的offset；调用者在Ok分支自行采用next。编码成功载荷的变体决定实际单位数，不另存长度或默认填充缓冲；Err保留原非法u32值。UTF-16接口交接逻辑u16单位，字节序列化由实际输入／输出接口处理。
+`DecodedScalar`含`value`与第一个尚未消费位置`next`。解码只借用原CPU数据，调用者在Ok分支自行采用next，输入和原offset仍由调用者持有。编码成功载荷的变体决定实际单位数；Err保留原非法u32值。UTF-16接口交接逻辑u16单位，字节序列化由实际输入／输出接口处理。
 
-`DecodeError`含`index`与`DecodeReason`。offset不小于length时为EndOfInput，index保留所请求offset；合法前缀后缺单位为Truncated，index是第一个缺失位置。InvalidLead及InvalidContinuation指向实际非法首／续字节；InvalidSequence指向违反UTF-8最短形式、代理区间或最大标量限制的第二字节。UTF-16孤立低代理或错误代理对用InvalidSurrogate，分别定位该低代理或高代理后不合法的第二单位。没有替换字符、隐式跳过或错误后的自动推进。
+`DecodeError`含`index`与`DecodeReason`。offset不小于length时为EndOfInput，index保留所请求offset；合法前缀后缺单位为Truncated，index是第一个缺失位置。InvalidLead及InvalidContinuation指向实际非法首／续字节；InvalidSequence指向违反UTF-8最短形式、代理区间或最大标量限制的第二字节。UTF-16孤立低代理或错误代理对用InvalidSurrogate，分别定位该低代理或高代理后不合法的第二单位。
 
-合法标量为U+0000至U+10FFFF，排除U+D800至U+DFFF。NUL、BOM、未分配码点及noncharacter按普通合法标量原样保留，不追加终止符，不做规范化或大小写折叠。UTF-8拒绝非最短形式、代理编码及越界序列；UTF-16严格按高／低代理配对。规则来自[Unicode编码形式](https://www.unicode.org/versions/Unicode18.0.0/core-spec/chapter-3/)，不把文本格式边界扩大为普通u32类型限制。
+整段转换从offset零顺序扫描至输入末尾，空输入返回空拥有序列。`TextError::Decode(DecodeError)`保留第一个解码错误及其原输入中的绝对位置；`TextError::Sequence(SequenceError)`保留序列操作的原原因，当前push的预期失败为u32输出长度溢出。失败时本次部分输出沿原Frame退出释放；输入仍归调用者，只有Ok交接完整输出。存储增长复用`blink.sequence`、resize及原Vec容量，长度与释放继续只有原所有者；分配／执行失败按原运行库语义处理。
+
+合法标量为U+0000至U+10FFFF，排除U+D800至U+DFFF。NUL、BOM、未分配码点及noncharacter原样保留，输出长度按实际代码单元计。接口不追加终止符、不剥离BOM、不做替换、规范化、大小写折叠或错误后的自动跳过；UTF-8拒绝非最短形式、代理编码及越界序列，UTF-16严格按高／低代理配对。规则来自[Unicode编码形式](https://www.unicode.org/versions/Unicode18.0.0/core-spec/chapter-3/)。
 
 ```b
 import blink.unicode;
 
-result<u32,DecodeError> first_scalar(read dataset<u8> text) on cpu {
-    DecodedScalar decoded=try(decode_utf8(text,0));
-    return Ok(decoded.value);
+result<dataset<u8>,TextError> roundtrip(read dataset<u8> text) on cpu {
+    dataset<u16> wide=try(to_utf16(text));
+    return to_utf8(wide);
 }
 ```
 
-上述函数按普通模块的.h／.b接口规则声明和实现。独立模块可一次导出四个非泛型接口：
+同名.h按原模块规则声明上述函数；wide在调用期间只读借用，返回后沿原退出释放。独立模块按实际依赖分别编译序列和Unicode，再组成标准COFF静态库：
 
 ```powershell
-target/release/bc.exe -c library/blink/unicode.b -I library --module -o target/unicode.obj
-target/release/blink.exe --archive target/unicode.obj -o target/unicode.lib
+target/release/bc.exe -c library/blink/sequence.b -I library --module --instance 'push<u8>' --instance 'push<u16>' -o target/sequence.obj
+target/release/bc.exe -c library/blink/unicode.b -I library --module --import target/sequence.obj -o target/unicode.obj
+target/release/blink.exe --archive target/unicode.obj target/sequence.obj -o target/unicode.lib
 ```
 
-调用方用`--import target/unicode.obj`或`.lib`编译，并与同一对象／库链接；提供者.b无需进入调用方编译或链接。完整文本值、整段转换、字符长度／切片、源码字符串字面量和OS字符串地址／生命周期仍待实现；本模块不表示BLEngine JSON、窗口或IME业务已经迁移。
+调用方用`--import target/unicode.lib`编译，并与同一库链接；使用分立对象时同时导入并链接unicode.obj及sequence.obj。两份提供者.b无需进入调用方编译或链接，公开.h继续提供接口。标量公开输入检查与转换共用同一私有编码载荷生产者；转换只将成功解码的标量交给它，不复制编码算法或另造宿主执行路径。
+
+完整文本值、字符长度／切片、源码字符串字面量和OS字符串地址／生命周期仍待实现；本模块不表示BLEngine JSON、窗口或IME业务已经迁移。
 
 ## blink.windows.system
 

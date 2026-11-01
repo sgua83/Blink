@@ -70,25 +70,78 @@ result<DecodedScalar,DecodeError> decode_utf16(read dataset<u16> text,u32 offset
     return Ok(DecodedScalar(0x10000+((first-0xd800)<<10)+(second-0xdc00),second_index+1));
 }
 
-result<Utf8Encoding,u32> encode_utf8(u32 value) on cpu {
-    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) {
-        return Err(value);
-    }
-    if (value < 0x80) { return Ok(Utf8Encoding::One(u8(value))); }
+Utf8Encoding utf8_encoding(u32 value) on cpu {
+    if (value < 0x80) { return Utf8Encoding::One(u8(value)); }
     if (value < 0x800) {
-        return Ok(Utf8Encoding::Two(array<u8,2>(u8(0xc0|(value>>6)),u8(0x80|(value&0x3f)))));
+        return Utf8Encoding::Two(array<u8,2>(u8(0xc0|(value>>6)),u8(0x80|(value&0x3f))));
     }
     if (value < 0x10000) {
-        return Ok(Utf8Encoding::Three(array<u8,3>(u8(0xe0|(value>>12)),u8(0x80|((value>>6)&0x3f)),u8(0x80|(value&0x3f)))));
+        return Utf8Encoding::Three(array<u8,3>(u8(0xe0|(value>>12)),u8(0x80|((value>>6)&0x3f)),u8(0x80|(value&0x3f))));
     }
-    return Ok(Utf8Encoding::Four(array<u8,4>(u8(0xf0|(value>>18)),u8(0x80|((value>>12)&0x3f)),u8(0x80|((value>>6)&0x3f)),u8(0x80|(value&0x3f)))));
+    return Utf8Encoding::Four(array<u8,4>(u8(0xf0|(value>>18)),u8(0x80|((value>>12)&0x3f)),u8(0x80|((value>>6)&0x3f)),u8(0x80|(value&0x3f))));
+}
+
+Utf16Encoding utf16_encoding(u32 value) on cpu {
+    if (value < 0x10000) { return Utf16Encoding::One(u16(value)); }
+    u32 rest=value-0x10000;
+    return Utf16Encoding::Two(array<u16,2>(u16(0xd800+(rest>>10)),u16(0xdc00+(rest&0x3ff))));
+}
+
+result<Utf8Encoding,u32> encode_utf8(u32 value) on cpu {
+    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) { return Err(value); }
+    return Ok(utf8_encoding(value));
 }
 
 result<Utf16Encoding,u32> encode_utf16(u32 value) on cpu {
-    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) {
-        return Err(value);
-    }
-    if (value < 0x10000) { return Ok(Utf16Encoding::One(u16(value))); }
-    u32 rest=value-0x10000;
-    return Ok(Utf16Encoding::Two(array<u16,2>(u16(0xd800+(rest>>10)),u16(0xdc00+(rest&0x3ff)))));
+    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) { return Err(value); }
+    return Ok(utf16_encoding(value));
 }
+
+result<dataset<T>,TextError> append_units<T,const N:u32>(dataset<T> output,array<T,N> units) on cpu {
+    for (index in 0..N) {
+        match (blink.sequence::push(output,units[index])) {
+            Ok(next) { output=next; }
+            Err(failure) { return Err(TextError::Sequence(failure.reason)); }
+        }
+    }
+    return Ok(output);
+}
+
+result<dataset<u16>,TextError> to_utf16(read dataset<u8> text) on cpu {
+    dataset<u16> output=dataset<u16>(0);
+    u32 offset=0;
+    while (offset<text.length) {
+        match (decode_utf8(text,offset)) {
+            Ok(decoded) {
+                match (utf16_encoding(decoded.value)) {
+                    Utf16Encoding::One(units) { output=try(append_units(output,array<u16,1>(units))); }
+                    Utf16Encoding::Two(units) { output=try(append_units(output,units)); }
+                }
+                offset=decoded.next;
+            }
+            Err(error) { return Err(TextError::Decode(error)); }
+        }
+    }
+    return Ok(output);
+}
+
+result<dataset<u8>,TextError> to_utf8(read dataset<u16> text) on cpu {
+    dataset<u8> output=dataset<u8>(0);
+    u32 offset=0;
+    while (offset<text.length) {
+        match (decode_utf16(text,offset)) {
+            Ok(decoded) {
+                match (utf8_encoding(decoded.value)) {
+                    Utf8Encoding::One(units) { output=try(append_units(output,array<u8,1>(units))); }
+                    Utf8Encoding::Two(units) { output=try(append_units(output,units)); }
+                    Utf8Encoding::Three(units) { output=try(append_units(output,units)); }
+                    Utf8Encoding::Four(units) { output=try(append_units(output,units)); }
+                }
+                offset=decoded.next;
+            }
+            Err(error) { return Err(TextError::Decode(error)); }
+        }
+    }
+    return Ok(output);
+}
+
