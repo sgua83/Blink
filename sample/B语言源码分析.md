@@ -146,7 +146,7 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:264`。
+源码节选：`crates/blanguage/src/ir.rs:269`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -279,6 +279,48 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
     }
 ```
 
+cfn<R,P...>把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
+
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。记录通过函数签名回指自身的名义引用仍待实现；函数地址的有限大小不能被元数据展开误认为对象按值递归。当前这份值还不产生源级间接Call，B系统回调及代码最后消费者的生命周期按各自能力继续建设，不能把宿主调用一个回传地址写成B编译器已完成间接调用。
+
+源码节选：`crates/blanguage/src/function_types.rs:24`。
+
+```rust
+    pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String], stack: &mut BTreeSet<String>) -> crate::Result<Ty> {
+        if name.arguments.is_empty() {
+            return source.fail(span, "B263", "cfn<R,P...>至少需要一个返回类型");
+        }
+        let mut types = Vec::new();
+        for (index, argument) in name.arguments.iter().enumerate() {
+            let GenericArgument::Type(argument) = argument else {
+                return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值");
+            };
+            if index == 0 && matches!(argument.name.as_str(), "void" | "never")
+                && argument.arguments.is_empty() && !argument.dataset && !argument.view && !argument.tile && argument.count.is_none() {
+                types.push(marker(argument.name.clone(), Vec::new()));
+                continue;
+            }
+            if index != 0 && matches!(argument.name.as_str(), "read" | "write" | "inout")
+                && !argument.dataset && !argument.view && !argument.tile {
+                let [GenericArgument::Type(element)] = argument.arguments.as_slice() else {
+                    return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
+                };
+                let ty = self.ty_inner(element, source, span, module, imports, stack)?;
+                ordinary(&ty, element, source, span)?;
+                types.push(marker(format!("{}<{}>", argument.name, ty.name), vec![ty]));
+            } else {
+                let ty = self.ty_inner(argument, source, span, module, imports, stack)?;
+                ordinary(&ty, argument, source, span)?;
+                types.push(ty);
+            }
+        }
+        let mut ty = Ty::scalar(Scalar::U64);
+        ty.name = format!("cfn<{}>", types.iter().map(|ty| ty.name.as_str()).collect::<Vec<_>>().join(","));
+        ty.arguments = types;
+        Ok(ty)
+    }
+```
+
 ### 2.4 Dataset 是布局的实际承载者
 
 源码节选：`crates/blcompute/src/lib.rs:79`。
@@ -349,7 +391,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 入口在 `crates/blanguage/src/lib.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/lib.rs:141`。
+源码节选：`crates/blanguage/src/lib.rs:142`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -373,7 +415,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:490`。
+源码节选：`crates/blanguage/src/lib.rs:491`。
 
 ```rust
     if let Some(name) = import
@@ -562,7 +604,7 @@ impl Parser {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:247`。
+源码节选：`crates/blanguage/src/ir.rs:252`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -660,7 +702,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3817`。
+源码节选：`crates/blanguage/src/check.rs:3867`。
 
 ```rust
         let binding = view.binding;
@@ -833,7 +875,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:860`。
+源码节选：`crates/blanguage/src/ir.rs:869`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -843,7 +885,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:879`。
+源码节选：`crates/blanguage/src/ir.rs:888`。
 
 ```rust
     Load {
@@ -875,7 +917,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1074`。
+源码节选：`crates/blanguage/src/ir.rs:1083`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1036,7 +1078,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:922`。
+源码节选：`crates/blanguage/src/ir.rs:931`。
 
 ```rust
     If {

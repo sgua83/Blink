@@ -110,6 +110,11 @@ pub struct Ty {
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
+        if self.is_c_function() {
+            let mut ty = crate::ast::TypeName::named("cfn");
+            ty.arguments = self.arguments.iter().map(|ty| crate::ast::GenericArgument::Type(ty.syntax())).collect();
+            return ty;
+        }
         if let Some(cleanup) = &self.cleanup {
             let mut ty=crate::ast::TypeName::named("owned");
             let mut release=crate::ast::TypeName::named(cleanup);release.canonical=true;
@@ -402,8 +407,12 @@ impl Ty {
     pub fn is_handle(&self) -> bool {
         self.name == "handle"
     }
+    pub fn is_c_function(&self) -> bool {
+        self.name.starts_with("cfn<")
+    }
     pub fn is_numeric(&self) -> bool {
-        !self.is_handle()
+        !self.is_c_function()
+            && !self.is_handle()
             && !self.is_address()
             && !self.owns_resources()
             && !self.enumeration

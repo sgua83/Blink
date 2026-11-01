@@ -2297,6 +2297,29 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &[GenericArgument], args: &[Expr]) -> Result<Option<Value>> {
+        if name == "cfn" {
+            let mut syntax = TypeName::named("cfn");
+            syntax.arguments = explicit.to_vec();
+            let ty = self.world.ty(&syntax, &self.definition.source, e.span, &self.definition.module, &self.definition.imports)?;
+            let mut values = Vec::new();
+            for arg in args { let Some(value) = self.expr(arg)? else { return Ok(None); }; values.push(value); }
+            return self.value_constructor(ty, values, e.span).map(Some);
+        }
+        if name == "unsafe_function" {
+            if self.program.target != Target::Cpu {
+                return self.fail(e.span, "B265", "unsafe_function只解释本进程CPU函数地址");
+            }
+            let ([GenericArgument::Type(signature)], [arg]) = (explicit, args) else {
+                return self.fail(e.span, "B153", "unsafe_function<cfn<...>>需要明确签名和一个address实参");
+            };
+            let ty = self.world.ty(signature, &self.definition.source, e.span, &self.definition.module, &self.definition.imports)?;
+            if !ty.is_c_function() { return self.fail(e.span, "B263", "unsafe_function需要cfn原生C签名"); }
+            let Some(mut value) = self.expr(arg)? else { return Ok(None); };
+            self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
+            value.ty = ty;
+            value.literal = false;
+            return Ok(Some(value));
+        }
         if name == "unsafe_position" {
             let Some(place) = self.external_position(explicit, args, e.span)? else { return Ok(None); };
             return self.read_place(&place, e.span).map(Some);
@@ -2433,6 +2456,15 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
+        if a.ty.is_c_function() || b.ty.is_c_function() {
+            self.require_same(&a.ty, &b.ty, span)?;
+            if !matches!(op, "==" | "!=") {
+                return self.fail(span, "B147", "C函数地址只比较同签名的完整身份，不参与数值运算或次序比较");
+            }
+            let mut a = a; let mut b = b;
+            a.ty = Ty::scalar(Scalar::U64); b.ty = Ty::scalar(Scalar::U64);
+            return self.binary(op, a, b, span);
+        }
         if a.ty.is_address() || b.ty.is_address() {
             self.require_same(&a.ty, &b.ty, span)?;
             if !matches!(op, "==" | "!=") {
@@ -2857,6 +2889,14 @@ impl<'a> Builder<'a> {
             };
             values.push(value);
         }
+        if name == "function_address" {
+            if self.program.target != Target::Cpu { return self.fail(span, "B265", "function_address只取得本进程CPU函数地址"); }
+            if values.len() != 1 { return self.fail(span, "B153", "function_address需要一个cfn实参"); }
+            let mut value = values.pop().unwrap();
+            if !value.ty.is_c_function() { return self.fail(span, "B263", "function_address需要cfn原生C签名值"); }
+            value.ty = Ty::builtin("address").unwrap(); value.literal = false;
+            return Ok(Some(value));
+        }
         if matches!(name, "unsafe_address" | "address_bits") {
             if self.program.target != Target::Cpu {
                 return self.fail(span, "B265", "CPU本地地址只能在on cpu位置解释或取得位模式");
@@ -2945,7 +2985,7 @@ impl<'a> Builder<'a> {
             return Ok(None);
         };
         if op == "+" {
-            if a.ty.is_handle() || a.ty.is_address() || a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
+            if a.ty.is_c_function() || a.ty.is_handle() || a.ty.is_address() || a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
                 return self.fail(span, "B146", "数值一元运算需要数值类型");
             }
             return Ok(Some(a));
@@ -3580,6 +3620,16 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn value_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+        if ty.is_c_function() {
+            if values.is_empty() { return Ok(self.constant_value(ty, vec![0])); }
+            if values.len() == 1 && values[0].ty == ty {
+                let mut value = values.pop().unwrap(); value.literal = false; return Ok(value);
+            }
+            return self.fail(span, "B154", "cfn构造只接受空值或同签名函数值；原生地址解释须显式unsafe_function");
+        }
+        if values.iter().any(|value| value.ty.is_c_function()) {
+            return self.fail(span, "B154", "C函数地址不能转换为数值或其他身份；地址解释须显式function_address");
+        }
         if ty.is_address() {
             if values.is_empty() {
                 return Ok(self.constant_value(ty, vec![0]));

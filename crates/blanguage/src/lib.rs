@@ -9,6 +9,7 @@ pub use compiler::{Compiler, Processor};
 mod check;
 pub mod dll;
 mod execution;
+mod function_types;
 mod generics;
 pub mod ir;
 mod lexer;
@@ -784,6 +785,9 @@ impl World {
         imports: &[String],
         stack: &mut BTreeSet<String>,
     ) -> Result<ir::Ty> {
+        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
+            return self.c_function_type(name, source, span, module, imports, stack);
+        }
         if name.name == "texture2d" {
             return source.fail(
                 span,
