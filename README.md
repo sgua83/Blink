@@ -393,6 +393,7 @@ B 语言 **不采用面向对象**，以数据、函数、模块和执行域组�
 | [《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) | 从最小调用到模拟与连续 GPU 计算；[示例](sample/hybrid/README.md) |
 | [《B 语言源码分析》](sample/B语言源码分析.md) | 阅读编译器、IR、后端及执行框架；[版本与阅读资料](sample/compiler/README.md) |
 | [《BLEngine 源码分析》](sample/BLEngine源码分析.md) | 首个消费者如何使用语言、场景与光照；[阅读资料](sample/engine/README.md) |
+| [B标准库](library/README.md) | 普通值动态序列、严格UTF-8／UTF-16标量编解码及Windows系统信息接口 |
 | [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [计算域](Docs/ComputeDomain.md) | 当前规则、长期边界和后续设计 |
 
 技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。
