@@ -159,7 +159,11 @@ impl Builder<'_> {
             joined = Some(word);
         }
         let word = joined.unwrap_or_else(|| self.constant(raw, 0));
-        self.result_component(&word, 0, scalar)
+        let mut word = self.result_component(&word, 0, scalar);
+        if scalar.is_integer() && value.nonzero_bytes(offset, scalar.size(), &self.residency_path()) {
+            word.proof.mark_nonzero(0);
+        }
+        word
     }
     pub(super) fn result_value(&mut self, ty: Ty, success: bool, payload: Option<Value>) -> Value {
         self.variant_value(ty,usize::from(!success),payload)
@@ -171,6 +175,9 @@ impl Builder<'_> {
         value
             .proof
             .assign(&[0], value.regs.len(), bounds::Proof::capture(&tag));
+        if let Some(bits) = &mut value.constant {
+            bits[0] = Bits::from(ty.variants[index].discriminant);
+        }
         if let Some(payload) = payload {
             let offset = ir::align_up(4, ty.align);
             for (component, (scalar, position)) in ty.components.iter().enumerate().skip(1) {
@@ -183,10 +190,8 @@ impl Builder<'_> {
                     value.constant = None;
                 }
             }
+            value.retain_payload_nonzero(&payload, offset);
             value.uniform = payload.uniform;
-        }
-        if let Some(bits) = &mut value.constant {
-            bits[0] = Bits::from(ty.variants[index].discriminant);
         }
         value.proof.retain_view_borrows(&ty);
         let offset=ir::align_up(4,ty.align);

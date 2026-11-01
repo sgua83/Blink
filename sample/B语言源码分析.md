@@ -281,7 +281,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。记录通过函数签名回指自身的名义引用仍待实现；函数地址的有限大小不能被元数据展开误认为对象按值递归。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；B系统回调入口与可保留上下文的寿命继续建设。宽值经过Result的4字节逻辑分量拆分／重组后，完整非零关系尚有分析缺口，具体见Issues的C-020.5.3；它不是永久语言限制。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。记录通过函数签名回指自身的名义引用仍待实现；函数地址的有限大小不能被元数据展开误认为对象按值递归。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
 源码节选：`crates/blanguage/src/function_types.rs:24`。
 
@@ -387,6 +387,69 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 ```
 
 循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。
+
+
+变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
+
+源码节选：`crates/blanguage/src/check/bounds.rs:1331`。
+
+```rust
+    pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
+        let mut required = Clause::default();
+        for (component, (scalar, at)) in payload.ty.components.iter().enumerate() {
+            if !scalar.is_integer() || scalar.size() <= 4 || !payload.component_nonzero(component) { continue; }
+            let mut either = Clause::impossible();
+            for (word, (part, position)) in self.ty.components.iter().enumerate().skip(1) {
+                if *position < offset + at || position + part.size() > offset + at + scalar.size() { continue; }
+                either = Clause::either(&either, &Clause::facts(
+                    [Fact::NonZero(ValueIdentity::Register(self.regs[word]))].into()));
+            }
+            required = Clause::both(&required, &either);
+        }
+        if matches!(&*required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
+        let mut condition = Condition::component(self, 0);
+        for case in &mut condition.cases { *case = Clause::both(case, &required); }
+        self.proof.conditions.resize_with(self.regs.len(), || None);
+        self.proof.conditions[0] = Some(Box::new(condition));
+    }
+```
+
+一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
+
+源码节选：`crates/blanguage/src/check/bounds.rs:2290`。
+
+```rust
+    pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
+        let mut result = Self::compare(op, a, b);
+        if a.ty.components.len() == 1 && a.ty == b.ty
+            && a.ty.components[0].0.is_integer() && a.ty.components[0].0 != Scalar::Bool {
+            for value in [a, b] {
+                if value.proof.component_condition(0).is_none() { continue; }
+                let condition = Self::component(value, 0);
+                let facts = Clause::either(&condition.cases[0], &condition.cases[1]);
+                for case in &mut result.cases { *case = Clause::both(case, &facts); }
+            }
+        }
+        result
+    }
+```
+
+重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
+
+源码节选：`crates/blanguage/src/check/bounds.rs:1321`。
+
+```rust
+    pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
+        let mut zero = Facts::new();
+        for (component, (scalar, at)) in self.ty.components.iter().enumerate() {
+            if !scalar.is_integer() || *at < offset || at + scalar.size() > offset + size { continue; }
+            if self.component_nonzero(component) { return true; }
+            zero.extend(self.component_origins(component).into_iter().map(Fact::Zero));
+            zero.insert(Fact::Zero(ValueIdentity::Register(self.regs[component])));
+        }
+        !zero.is_empty() && !Clause::both(path, &Clause::facts(zero)).possible()
+    }
+```
 
 ### 2.4 Dataset 是布局的实际承载者
 

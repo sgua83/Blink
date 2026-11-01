@@ -1317,6 +1317,35 @@ impl Value {
                 )
                 || self.constant.as_ref().is_some_and(|v| v[component] != 0))
     }
+    // A complete byte range is nonzero when its contained integer words cannot all be zero.
+    pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
+        let mut zero = Facts::new();
+        for (component, (scalar, at)) in self.ty.components.iter().enumerate() {
+            if !scalar.is_integer() || *at < offset || at + scalar.size() > offset + size { continue; }
+            if self.component_nonzero(component) { return true; }
+            zero.extend(self.component_origins(component).into_iter().map(Fact::Zero));
+            zero.insert(Fact::Zero(ValueIdentity::Register(self.regs[component])));
+        }
+        !zero.is_empty() && !Clause::both(path, &Clause::facts(zero)).possible()
+    }
+    pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
+        let mut required = Clause::default();
+        for (component, (scalar, at)) in payload.ty.components.iter().enumerate() {
+            if !scalar.is_integer() || scalar.size() <= 4 || !payload.component_nonzero(component) { continue; }
+            let mut either = Clause::impossible();
+            for (word, (part, position)) in self.ty.components.iter().enumerate().skip(1) {
+                if *position < offset + at || position + part.size() > offset + at + scalar.size() { continue; }
+                either = Clause::either(&either, &Clause::facts(
+                    [Fact::NonZero(ValueIdentity::Register(self.regs[word]))].into()));
+            }
+            required = Clause::both(&required, &either);
+        }
+        if matches!(&*required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
+        let mut condition = Condition::component(self, 0);
+        for case in &mut condition.cases { *case = Clause::both(case, &required); }
+        self.proof.conditions.resize_with(self.regs.len(), || None);
+        self.proof.conditions[0] = Some(Box::new(condition));
+    }
     pub(super) fn minimum(&self) -> u32 {
         if self.ty != Ty::scalar(Scalar::U32) {
             return 0;
@@ -2221,17 +2250,21 @@ impl Condition {
             .component_condition(component)
             .cloned()
             .unwrap_or_default();
+        let scalar = value.ty.components[component].0;
+        let identity = value.component_identity(component);
         for (truth, case) in condition.cases.iter_mut().enumerate() {
-            *case = Clause::both(
-                case,
-                &Clause::facts(
-                    [Fact::Boolean(
-                        value.component_identity(component),
-                        truth != 0,
-                    )]
-                    .into(),
-                ),
-            );
+            let fact = if scalar == Scalar::Bool {
+                Fact::Boolean(identity, truth != 0)
+            } else if scalar.is_integer() {
+                if truth != 0 { Fact::NonZero(identity) } else { Fact::Zero(identity) }
+            } else { continue; };
+            let mut facts = Facts::from([fact]);
+            if scalar.is_integer() {
+                let (minimum, maximum) = value.component_range(component);
+                if minimum != 0 { facts.insert(Fact::Minimum(identity, scalar, minimum)); }
+                if maximum != scalar.bit_mask() { facts.insert(Fact::Maximum(identity, scalar, maximum)); }
+            }
+            *case = Clause::both(case, &Clause::facts(facts));
         }
         // 常量排除相反结果，但不抹掉成立结果已经持有的范围与长度事实。
         if let Some(bits) = &value.constant {
@@ -2255,6 +2288,19 @@ impl Condition {
         }
     }
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
+        let mut result = Self::compare(op, a, b);
+        if a.ty.components.len() == 1 && a.ty == b.ty
+            && a.ty.components[0].0.is_integer() && a.ty.components[0].0 != Scalar::Bool {
+            for value in [a, b] {
+                if value.proof.component_condition(0).is_none() { continue; }
+                let condition = Self::component(value, 0);
+                let facts = Clause::either(&condition.cases[0], &condition.cases[1]);
+                for case in &mut result.cases { *case = Clause::both(case, &facts); }
+            }
+        }
+        result
+    }
+    fn compare(op: Comparison, a: &Value, b: &Value) -> Self {
         if a.ty == Ty::scalar(Scalar::Bool) && b.ty == a.ty {
             let a = Self::of(a);
             let b = Self::of(b);
@@ -2280,7 +2326,7 @@ impl Condition {
         if !scalar.is_integer() || a.ty.components.len() != 1 || b.ty != a.ty {
             return Self::default();
         }
-        if op==Comparison::NotEqual{return Self::comparison(Comparison::Equal,a,b).negate();}
+        if op==Comparison::NotEqual{return Self::compare(Comparison::Equal,a,b).negate();}
         let left = a.component_ranges(0);
         let right = b.component_ranges(0);
         let same = a.same_component(0, b, 0);
@@ -2378,7 +2424,7 @@ impl Condition {
             }
         }
         let mut cases=std::array::from_fn(|i|if possible[i]{Clause::facts(std::mem::take(&mut facts[i]))}else{Clause::impossible()});
-        if op==Comparison::Equal{cases[0]=Clause::both(&cases[0],&Clause::either(&Self::comparison(Comparison::Less,a,b).cases[1],&Self::comparison(Comparison::Greater,a,b).cases[1]));}
+        if op==Comparison::Equal{cases[0]=Clause::both(&cases[0],&Clause::either(&Self::compare(Comparison::Less,a,b).cases[1],&Self::compare(Comparison::Greater,a,b).cases[1]));}
         Self{cases}
     }
 }
