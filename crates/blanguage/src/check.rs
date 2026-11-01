@@ -4,6 +4,7 @@ use crate::{
     ir::{self, *},
 };
 mod append;
+mod address;
 mod array;
 mod atomic;
 mod bounds;
@@ -172,15 +173,16 @@ struct CheckedTile {
     width: TileWidth,
     access: Access,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 enum ReferenceAddress {
     Contiguous([Reg; 2]),
     Components(BTreeMap<u32, [Reg; 2]>),
+    External { address: [Reg; 2], identity: address::Identity },
 }
 impl ReferenceAddress {
     fn component(&self, word: u32) -> ([Reg; 2], u32) {
         match self {
-            Self::Contiguous(address) => (*address, word),
+            Self::Contiguous(address) | Self::External { address, .. } => (*address, word),
             Self::Components(addresses) => (addresses[&word], 0),
         }
     }
@@ -190,7 +192,7 @@ enum Place {
     Reference {
         ty: Ty,
         address: ReferenceAddress,
-        scope: usize,
+        scope: Option<usize>,
         words: Vec<u32>,
         access: Access,
     },
@@ -1412,7 +1414,7 @@ fn function_parameters(
                     words: ty.components.iter().map(|(_, offset)| *offset).collect(),
                     ty,
                     address,
-                    scope: parameter_index,
+                    scope: Some(parameter_index),
                     access: p.access,
                 }
             } else {
@@ -1892,6 +1894,9 @@ impl<'a> Builder<'a> {
         self.view_uses.before(e.span);
         match &e.kind {
             ExprKind::Name(name) => self.name_place(name, e).map(Some),
+            ExprKind::Specialize(name, explicit, args) if name == "unsafe_position" => {
+                self.external_position(explicit, args, e.span)
+            }
             ExprKind::Member(base, field) => self.member_place(base, field, e),
             ExprKind::Index(base, index) => self.index_place(base, index),
             _ => self.fail(e.span, "B138", "表达式不是可赋值位置"),
@@ -2295,6 +2300,10 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &[GenericArgument], args: &[Expr]) -> Result<Option<Value>> {
+        if name == "unsafe_position" {
+            let Some(place) = self.external_position(explicit, args, e.span)? else { return Ok(None); };
+            return self.read_place(&place, e.span).map(Some);
+        }
         if name == "view" { return self.create_application_view(explicit, args, e.span); }
         if self.variant_constructor_type(name,Some(explicit),None,e.span)?.is_some() {
             let value=self.evaluate_returned(e,None)?;return self.ordinary_return(value,e.span);
@@ -4287,6 +4296,7 @@ impl<'a> Builder<'a> {
             }
             ExprKind::Member(b, _) => self.is_place(b),
             ExprKind::Index(..) => true,
+            ExprKind::Specialize(name, _, _) if name == "unsafe_position" => true,
             _ => false,
         }
     }

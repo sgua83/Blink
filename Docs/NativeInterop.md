@@ -22,7 +22,9 @@ data.set_scalar(0, "delta", Value::I64(-(1i64 << 40)))?;
 
 普通C调用中的address按Windows x64真实8字节指针值交接；usize／isize分别复用u64／i64，记录和输出位置保持原Ty偏移及连续位置借用。address是非拥有地址值，handle仍是不透明身份；地址形成和取位见[语言规范](BLanguage.md#原生地址值与指针宽整数)。系统返回值的有效期、可写性及释放责任由该API及实际调用者保持，不由B复制地址取得所有权。
 
-本节不将单个地址值等同于已可解引用位置、带长度借用、函数地址或回调。生成的算法数据接口仍按实际逻辑标量和公开布局交接载荷，地址字段的64位位模式不自动成为GPU／远端资源或延长其指向存储寿命。
+unsafe_position<T>(address)在CPU中直接形成外部存储的T位置；普通值读取、字段／固定数组写入及B／C的read、write、inout调用均消费原地址。T沿原非空普通POD布局，不包含Blink拥有资源或view；外部存储不登记为Frame资源，不由位置表达式隐式释放。调用者保证实际范围、对齐、权限、读取所需合法初始化与整个真实调用期间存活，并保证原始地址访问不冲突于仍活跃的B借用；已知同址／字节重叠沿原静态借用检查拒绝。
+
+C ABI传入位置仍只允许在调用期间借用、不得保留。返回address的外部API只能按自己的真实外部存储合同使用，不能返回B借用地址后在调用结束继续访问来伪造外部来源。带来源的B自有取址、一般借用返回、函数地址和回调分别保持待实现。生成算法数据接口仍按实际逻辑标量和公开布局交接载荷，地址字段的64位位模式不自动成为GPU／远端资源或延长其指向存储寿命。
 
 ## 编译算法，再链接为 DLL
 
@@ -125,7 +127,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 独立应用由 Windows 按实际导入装载库；原生 CpuProgram 用 LoadLibraryW／GetProcAddress 解析，原生代码所有者持有模块到最后一个消费者释放。装载／符号错误保留原生错误，不替换库或实现。外部调用的副作用不因返回值未使用而删除；parallel 实例的调用顺序不作保证。生成的 B 算法 DLL 也可在 CPU 后端调用其依赖库，GPU 后端明确拒绝宿主调用。
 
-外部声明接收无泛型的on cpu普通函数和支持的普通值／void／never返回；ensures initialized可声明准确条件输出，不开放其他一般requires／ensures。dataset、tile、view、纹理、AS及拥有资源值不能跨普通C ABI；其合法CPU普通元素仍可借用。address值与指针宽整数按语言规范交接；由地址取得位置及其原生访问、回调、变参、静态对象链接及其他平台仍待实现。B应用的动态dataset和CPU／GPU组织已按规范支持，原生Rust计算API继续保留。
+外部声明接收无泛型的on cpu普通函数和支持的普通值／void／never返回；ensures initialized可声明准确条件输出，不开放其他一般requires／ensures。dataset、tile、view、纹理、AS及拥有资源值不能跨普通C ABI；其合法CPU普通元素仍可借用。address值与指针宽整数按语言规范交接；外部地址位置读写与调用借用见原生地址章节；B自有位置取址、回调、变参、静态对象链接及其他平台仍待实现。B应用的动态dataset和CPU／GPU组织已按规范支持，原生Rust计算API继续保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
 
@@ -220,7 +222,7 @@ B内部合同不开放普通extern C的整份拥有资源接口。完整资源�
 
 普通外部声明仍是信任边界；必须按实际C签名及输出语义声明。`write handle`承诺每条正常返回完整初始化，可能失败且保留旧输出的系统API应使用已初始化的inout位置或其真实接口合同，不能因正常C返回就假定成功写出句柄。
 
-真实句柄由对应资源所有者在最后消费者完成后关闭，GPU仅消费身份值，不访问外部OS对象。owned<T,F>可表达CPU静态释放，但从地址取得位置／访问、系统回调、字符／字符串及完整系统库仍未实现，不外推为完整窗口或COM支持。
+真实句柄由对应资源所有者在最后消费者完成后关闭，GPU仅消费身份值，不访问外部OS对象。owned<T,F>可表达CPU静态释放，但B自有位置取址、系统回调、字符／字符串及完整系统库仍未实现，不外推为完整窗口或COM支持。
 
 
 ## 用户拥有包装与原生互操作

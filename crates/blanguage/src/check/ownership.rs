@@ -169,7 +169,7 @@ impl Place {
             Self::Reference { scope, words, .. } => Some(
                 words
                     .iter()
-                    .map(|word| Position::Parameter(*scope, *word as usize))
+                    .flat_map(|word| scope.map(|scope| Position::Parameter(scope, *word as usize)))
                     .collect(),
             ),
             Self::Indexed { initialization, .. } => Some(initialization.clone()),
@@ -292,14 +292,12 @@ impl Place {
         match (self, other) {
             (
                 Self::Reference {
-                    address: a, words, ..
+                    ty, address: a, words, ..
                 },
                 Self::Reference {
-                    address: b,
-                    words: other,
-                    ..
+                    ty: other_ty, address: b, words: other, ..
                 },
-            ) => a == b && words.iter().any(|word| other.contains(word)),
+            ) => a.overlaps(ty, words, b, other_ty, other),
             (
                 Self::ApplicationElement {
                     sources: a,

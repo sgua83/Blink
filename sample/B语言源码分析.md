@@ -211,7 +211,73 @@ pub struct Ty {
 
 这样，一个 `float3` 在前端仍有完整类型，在后端却可拆成三个 `f32` 分量。语言向量不保证每一处都会使用一条硬件向量指令；是否批量执行，还取决于计算、访问和后端计划。
 
-address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。原生地址位置与借用、系统结构及回调按各自实际能力继续建设，类型值不替代这些交付。
+address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。外部地址的显式CPU位置复用原Reference读写与调用借用；B自有位置取址、完整系统ABI消费者与回调仍按各自具体缺口建设。
+
+unsafe_position<T>消费明确外部CPU存储，直接形成原Reference位置。载荷仍按Ty的真实字节偏移读写，read／write／inout借用原地址；外部位置没有B参数初始化scope，不登记为Frame拥有资源。调用者保证范围、对齐、权限、读取所需初始化和最后消费者前的存活，不能与仍活跃的B借用冲突。
+
+源码节选：`crates/blanguage/src/check/address.rs:42`。
+
+```rust
+    pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
+        if self.program.target != Target::Cpu {
+            return self.fail(span, "B265", "unsafe_position只解释本进程CPU地址");
+        }
+        let ([GenericArgument::Type(name)], [arg]) = (explicit, args) else {
+            return self.fail(span, "B153", "unsafe_position<T>需要一个明确普通类型和一个address实参");
+        };
+        let ty = self.world.ty(name, &self.definition.source, span, &self.definition.module, &self.definition.imports)?;
+        if ty.owns_resources() {
+            return self.fail(span, "B224", "外部地址位置不能创建Blink拥有资源");
+        }
+        if ty.contains_views() || ty.components.is_empty() {
+            return self.fail(span, "B263", "外部地址位置需要非空普通值布局，不能解释Blink资源引用");
+        }
+        let Some(mut value) = self.expr(arg)? else { return Ok(None); };
+        self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
+        let identity = match bounds::Proof::capture(&value).known_value(&value.ty) {
+            Some(bits) => Identity::Constant(bits[0]),
+            None => Identity::Value(value.component_origins(0)),
+        };
+        value.ty = Ty::scalar(Scalar::U64);
+        let low = self.cast(value.clone(), Scalar::U32).regs[0];
+        let shift = self.constant(Scalar::U64, 32);
+        let high = self.binary(">>", value, shift, span)?;
+        let high = self.cast(high, Scalar::U32).regs[0];
+        Ok(Some(Place::Reference {
+            words: ty.components.iter().map(|(_, offset)| *offset).collect(),
+            ty,
+            address: ReferenceAddress::External { address: [low, high], identity },
+            scope: None,
+            access: Access::InOut,
+        }))
+    }
+```
+
+已知地址身份与真实标量宽度共同判断借用重叠；同址u64与其第4字节处的u32不能因为逻辑分量不同而被误认为不相交。未知外部别名仍属于unsafe调用者的真实合同，不增加运行时扫描、另一个地址表或全局写效果。
+
+源码节选：`crates/blanguage/src/check/address.rs:21`。
+
+```rust
+    pub(super) fn overlaps(&self, ty: &Ty, words: &[u32], other: &Self, other_ty: &Ty, other_words: &[u32]) -> bool {
+        let (base, other_base) = match (self, other) {
+            (Self::External { identity: Identity::Constant(a), .. },
+             Self::External { identity: Identity::Constant(b), .. }) => (u128::from(*a), u128::from(*b)),
+            (Self::External { identity: Identity::Value(a), .. },
+             Self::External { identity: Identity::Value(b), .. })
+                if a.iter().any(|identity| b.contains(identity)) => (0, 0),
+            _ if self == other => (0, 0),
+            _ => return false,
+        };
+        ty.components.iter().zip(words).any(|((scalar, _), word)| {
+            let begin = base + u128::from(*word);
+            other_ty.components.iter().zip(other_words).any(|((other_scalar, _), other_word)| {
+                let other_begin = other_base + u128::from(*other_word);
+                begin < other_begin + u128::from(other_scalar.size())
+                    && other_begin < begin + u128::from(scalar.size())
+            })
+        })
+    }
+```
 
 ### 2.4 Dataset 是布局的实际承载者
 
@@ -594,7 +660,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3811`。
+源码节选：`crates/blanguage/src/check.rs:3820`。
 
 ```rust
         let binding = view.binding;
@@ -838,7 +904,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:388`。
+源码节选：`crates/blanguage/src/check.rs:390`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;

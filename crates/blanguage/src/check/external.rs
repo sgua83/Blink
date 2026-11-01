@@ -61,8 +61,11 @@ impl Builder<'_> {
                 _ => None,
             }
         }
-        if let Some(name) = root(expr) && self.env.contains_key(name) && !self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) {
-            if let Some(Binding::Value(value)) = self.env.get(name).cloned() {
+        if (root(expr).is_some_and(|name| self.env.contains_key(name))
+            || self.is_place(expr) && !self.temporary_projection(expr))
+            && !self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) {
+            if let Some(name) = root(expr)
+                && let Some(Binding::Value(value)) = self.env.get(name).cloned() {
                 let owner = self.materialize_array(value);
                 self.env.insert(name.clone(), Binding::Owned(owner));
             }
@@ -401,7 +404,7 @@ impl Builder<'_> {
         let ty = place.ty();
         if let Place::Reference {
             address: ReferenceAddress::Components(_),
-            scope,
+            scope: Some(scope),
             words,
             ..
         } = place

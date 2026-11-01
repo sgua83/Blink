@@ -1359,7 +1359,7 @@ impl Value {
             .copied()
             .unwrap_or(ValueIdentity::Register(self.regs[index]))
     }
-    fn component_origins(&self, index: usize) -> Vec<ValueIdentity> {
+    pub(super) fn component_origins(&self, index: usize) -> Vec<ValueIdentity> {
         self.proof
             .origins
             .get(index)

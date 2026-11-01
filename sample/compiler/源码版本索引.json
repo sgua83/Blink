@@ -8,15 +8,15 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "4dd2b90db3183a3c4a12a69c1c706d24ceed05139a6e1c94e3c71d4743813ba8"
+      "sha256": "a04fb684c4e6c2f38d9999c94438057d80827a4a6f61fcbf34cc63b84db8ebf7"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "a0fef5df352cac8cd18144a6a9222ac9793a237e5533f728c82389fcd05202cf"
+      "sha256": "8f5dab93643ced4e5483f98cf3561c58b6f10920e7c563e7b6659374e3941949"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
-      "sha256": "11d5f5459a6f5e9cfedeb41ea44e37b6e96ed3ba777b69594c18514ab7264d31"
+      "sha256": "a5e92f17daa62024c3019d197483feeb9d6e3f5dd9a1c9d1c944fa3a32e92ef5"
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
@@ -89,6 +89,10 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
+    },
+    {
+      "path": "crates/blanguage/src/check/address.rs",
+      "sha256": "0226efb4f826826991e84afe555b77135b5d0e7a9600262bbec5f11ecc9bca1b"
     }
   ],
   "excerpts": [
@@ -196,8 +200,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3811,
-      "end_line": 3847,
+      "start_line": 3820,
+      "end_line": 3856,
       "sha256": "7f4cf191d9744ff742fe6ef2abafdd0fecfec6bd7bd24574084008cc8a869be0"
     },
     {
@@ -238,8 +242,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 388,
-      "end_line": 404,
+      "start_line": 390,
+      "end_line": 406,
       "sha256": "f2ea57bd89a3b606d066dfe4db8cb80ed121f0634d2f761404f6a69e4cd4a90e"
     },
     {
@@ -409,6 +413,18 @@
       "start_line": 257,
       "end_line": 287,
       "sha256": "7625eafd6a01e8bb6e4f32fca1ee17bde012610eed60ccb2aaaeb24e7f8bc3fc"
+    },
+    {
+      "path": "crates/blanguage/src/check/address.rs",
+      "start_line": 42,
+      "end_line": 74,
+      "sha256": "6db57a140a60f5b149a6e358e42e59b8164223d1e4e6196e9561da8646323db5"
+    },
+    {
+      "path": "crates/blanguage/src/check/address.rs",
+      "start_line": 21,
+      "end_line": 39,
+      "sha256": "24af0a0bbd7a4806f73020facf76df4e1a46198268a120397fe221cdc8519afc"
     }
   ]
 }
