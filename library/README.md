@@ -52,11 +52,11 @@ target/release/bc.exe -c library/blink/sequence.b -I library --module --instance
 target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 ```
 
-实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、完整字符串、字符长度／切片和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
+实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、完整字符串、借用字符切片和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
 
 ## blink.unicode
 
-`blink.unicode`以纯B实现严格UTF-8／UTF-16标量编解码和整段转换。以`import blink.unicode;`导入，源码根仍为`-I library`。标量接口可在普通CPU函数和CPU并行域调用；拥有输出的整段转换属于普通CPU资源组织。
+`blink.unicode`以纯B实现严格UTF-8／UTF-16标量编解码、标量长度、拥有切片和整段转换。以`import blink.unicode;`导入，源码根仍为`-I library`。标量接口可在普通CPU函数和CPU并行域调用；拥有输出的切片与整段转换属于普通CPU资源组织。
 
 | 函数 | 成功与失败 |
 |---|---|
@@ -64,12 +64,18 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 | `decode_utf16(read dataset<u16> text,u32 offset)` | 同一Result；offset及next按u16代码单元计 |
 | `scalar_length_utf8(read dataset<u8> text)` | `Result<u32,DecodeError>`；严格扫描整个UTF-8输入，交回Unicode标量数 |
 | `scalar_length_utf16(read dataset<u16> text)` | 同一Result；合法UTF-16代理对计一个标量 |
+| `slice_utf8(read dataset<u8> text,u32 start,u32 end)` | `Result<dataset<u8>,SliceError>`；按Unicode标量半开区间[start,end)交回独立拥有UTF-8序列 |
+| `slice_utf16(read dataset<u16> text,u32 start,u32 end)` | 同一错误类型，成功为拥有dataset<u16>；代理对不会被拆开 |
 | `encode_utf8(u32 value)` | `Result<Utf8Encoding,u32>`；成功为One(u8)、Two(array<u8,2>)、Three(array<u8,3>)或Four(array<u8,4>) |
 | `encode_utf16(u32 value)` | `Result<Utf16Encoding,u32>`；成功为One(u16)或Two(array<u16,2>) |
 | `to_utf16(read dataset<u8> text)` | `Result<dataset<u16>,TextError>`；严格解码整个UTF-8输入，Ok交回拥有UTF-16序列 |
 | `to_utf8(read dataset<u16> text)` | `Result<dataset<u8>,TextError>`；严格解码整个UTF-16输入，Ok交回拥有UTF-8字节序列 |
 
 标量长度接口只读借用原CPU序列，以原decoder交回的next前进；空输入返回Ok(0)，输入内容、长度与拥有者保持，不分配文本副本或保存计数缓存。NUL和BOM各计一个标量，组合标记独立计数；补充平面字符在UTF-8的四字节或UTF-16的代理对均计一个标量。它们不报告字节数、UTF-16代码单元数或用户感知的字素簇数，不规范化或合并字符。第一个非法编码原样返回DecodeError的绝对index和reason，不交付部分长度、不替换或跳过错误；已有dataset.length仍表示该序列的单元数。
+
+拥有切片要求`start <= end <= 标量长度`，区间按Unicode标量计数，输出保留原代码单元。合法空区间（含文本末尾）返回空拥有序列。NUL、BOM及组合标记仍分别计一个标量，不按字素簇切片；不追加NUL或变换编码。两个函数严格解码**整个输入**，第一个编码错误优先返回`SliceError::Decode(DecodeError)`，即使错误在所选区间之外或请求区间本身非法；位置与原因仍以原输入为准。完整输入合法后，反向或越界区间返回`SliceError::Range(ScalarRangeError)`，其中start／end保留原请求，length为实际标量数。半开端点避免以start加count计算末尾；空文本仅[0,0)成功。
+
+输入只读借用，成功输出是独立拥有dataset：修改或释放其中一份不改变另一份。实现沿原decoder的next选择原始代码单元，由resize增长同一输出的原Vec容量；不重新编码、不保存边界表、计数缓存或另一资源所有者。输出单元数不超过输入，沿原u32长度，不增加溢出错误分支或人为上限。解码或范围失败时不交付部分输出，本次存储由原Frame退出释放；分配／执行失败仍遵循原运行库。切片不返回指向输入的view，不能据此认为借用文本切片或完整字符串类型已经实现。
 
 `DecodedScalar`含`value`与第一个尚未消费位置`next`。解码只借用原CPU数据，调用者在Ok分支自行采用next，输入和原offset仍由调用者持有。编码成功载荷的变体决定实际单位数；Err保留原非法u32值。UTF-16接口交接逻辑u16单位，字节序列化由实际输入／输出接口处理。
 
@@ -98,7 +104,7 @@ target/release/blink.exe --archive target/unicode.obj target/sequence.obj -o tar
 
 调用方用`--import target/unicode.lib`编译，并与同一库链接；使用分立对象时同时导入并链接unicode.obj及sequence.obj。两份提供者.b无需进入调用方编译或链接，公开.h继续提供接口。标量公开输入检查与转换共用同一私有编码载荷生产者；转换只将成功解码的标量交给它，不复制编码算法或另造宿主执行路径。
 
-完整文本值、字符切片、源码字符串字面量和OS字符串地址／生命周期仍待实现；本模块不表示BLEngine JSON、窗口或IME业务已经迁移。
+完整文本值、借用字符切片、源码字符串字面量和OS字符串地址／生命周期仍待实现；本模块不表示BLEngine JSON、窗口或IME业务已经迁移。
 
 ## blink.windows.system
 

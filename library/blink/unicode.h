@@ -29,6 +29,14 @@ result<u32,DecodeError> scalar_length_utf16(read dataset<u16> text) on cpu;
 result<Utf8Encoding,u32> encode_utf8(u32 value) on cpu;
 result<Utf16Encoding,u32> encode_utf16(u32 value) on cpu;
 
+struct ScalarRangeError { u32 start; u32 end; u32 length; };
+enum SliceError : u32 {
+    Decode(DecodeError) = 1;
+    Range(ScalarRangeError) = 2;
+};
+result<dataset<u8>,SliceError> slice_utf8(read dataset<u8> text,u32 start,u32 end) on cpu;
+result<dataset<u16>,SliceError> slice_utf16(read dataset<u16> text,u32 start,u32 end) on cpu;
+
 enum TextError : u32 {
     Decode(DecodeError) = 1;
     Sequence(SequenceError) = 2;
