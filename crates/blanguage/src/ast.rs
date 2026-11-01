@@ -347,6 +347,7 @@ pub enum ExprKind {
     Member(Box<Expr>, String),
     Index(Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
+    Invoke(Box<Expr>, Vec<Expr>),
     Construct(TypeName, Vec<Expr>),
     Specialize(String, Vec<GenericArgument>, Vec<Expr>),
     FunctionRef(String, Vec<GenericArgument>),

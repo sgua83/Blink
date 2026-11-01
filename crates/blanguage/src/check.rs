@@ -563,7 +563,7 @@ fn expand_stages(
                         Ok(Selection { binding, word })
                     })
                     .transpose()?;
-                let mut b = Builder::new(world, d, program, *domain);
+                let mut b = Builder::new(world, d, program, *domain)?;
                 b.roots(env);
                 let index = b.reg(Scalar::U32);
                 b.code.push(Inst::Index(index));
@@ -1233,7 +1233,7 @@ fn checked_function(
     let name = &instance.name;
     let d = &instance.definition;
     let program = function_program(world, instance)?;
-    let mut b = Box::new(Builder::new(world, d, &program, 0));
+    let mut b = Box::new(Builder::new(world, d, &program, 0)?);
     b.in_function = true;
     b.application = application;
     b.functions = functions;
@@ -1634,15 +1634,15 @@ impl<'a> Builder<'a> {
         definition: &Arc<Definition>,
         program: &'a Program,
         domain: usize,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut mutable_names = BTreeSet::new();
         assigned_names(
             world,
             definition,
             definition.function.body.as_ref().unwrap(),
             &mut mutable_names,
-        );
-        Self {
+        )?;
+        Ok(Self {
             residency: residency::Inputs::default(),
             view_model: view_contracts::Function::default(),
             application: None,
@@ -1682,7 +1682,7 @@ impl<'a> Builder<'a> {
             tiles: Vec::new(),
             appends: BTreeMap::new(),
             prefix: None,
-        }
+        })
     }
     fn data_access(&mut self, place: &Place, access: Access) {
         let Place::Element { index, .. } = place.storage() else { return; };
@@ -2273,7 +2273,7 @@ impl<'a> Builder<'a> {
                 self.returned_expression(result, e.span)
             }
             ExprKind::Construct(ty, args) => self.record_expression(ty, args, e.span),
-            ExprKind::Call(..) => {
+            ExprKind::Call(..) | ExprKind::Invoke(..) => {
                 let result = self.evaluate_returned(e, None)?;
                 self.returned_expression(result, e.span)
             }
@@ -3159,7 +3159,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn while_statement(&mut self, condition: &Expr, body: &[Stmt], span: Span) -> Result<()> {
-        let initial = self.application_initial_loop(body);
+        let initial = self.application_initial_loop(body)?;
         self.while_loop(condition, body, initial, span)
     }
     fn while_loop(&mut self, condition: &Expr, body: &[Stmt], initial: bool, span: Span) -> Result<()> {
@@ -3218,7 +3218,7 @@ impl<'a> Builder<'a> {
         if initial {
             let (expanded, flow) =
                 self.expand_initial_loop(code, body_flow.continues(), |builder, _| {
-                    let initial=builder.next_initial_loop(body);
+                    let initial=builder.next_initial_loop(body)?;
                     builder.while_loop(condition, body, initial, span)
                 })?;
             code = expanded;
@@ -3324,7 +3324,7 @@ impl<'a> Builder<'a> {
             Some(CursorSource::ApplicationData(data)) => Some(data.handle.identity()),
             _ => None,
         };
-        let initial = self.application_initial_loop(body);
+        let initial = self.application_initial_loop(body)?;
         let slot = self.local_slots(&Ty::scalar(Scalar::U32)).0[0];
         self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
         let initialization = self.application_iteration_outputs(&begin, &limit, match &data {Some(CursorSource::ApplicationData(data))=>Some(&data.data),_=>None});
@@ -3508,7 +3508,7 @@ impl<'a> Builder<'a> {
                     cursor.initialization =
                         builder.application_iteration_prefix(&initialization, iteration);
                     cursor.begin = next.unwrap();
-                    let initial=builder.next_initial_loop(body);
+                    let initial=builder.next_initial_loop(body)?;
                     let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
                     builder.for_loop(cursor, body, span, initial, nonempty)
                 })?;

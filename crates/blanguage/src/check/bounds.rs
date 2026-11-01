@@ -1305,7 +1305,7 @@ impl Proof {
 }
 impl Value {
     pub(super) fn is_nonzero(&self) -> bool {
-        self.ty.is_numeric()
+        (self.ty.is_numeric() || self.ty.is_c_function())
             && self.ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer())
             && (0..self.regs.len()).all(|i| self.component_nonzero(i))
     }

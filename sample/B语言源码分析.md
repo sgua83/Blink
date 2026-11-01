@@ -281,7 +281,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。记录通过函数签名回指自身的名义引用仍待实现；函数地址的有限大小不能被元数据展开误认为对象按值递归。当前这份值还不产生源级间接Call，B系统回调及代码最后消费者的生命周期按各自能力继续建设，不能把宿主调用一个回传地址写成B编译器已完成间接调用。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。记录通过函数签名回指自身的名义引用仍待实现；函数地址的有限大小不能被元数据展开误认为对象按值递归。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；B系统回调入口与可保留上下文的寿命继续建设。宽值经过Result的4字节逻辑分量拆分／重组后，完整非零关系尚有分析缺口，具体见Issues的C-020.5.3；它不是永久语言限制。
 
 源码节选：`crates/blanguage/src/function_types.rs:24`。
 
@@ -320,6 +320,73 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
         Ok(ty)
     }
 ```
+
+
+函数值调用复用直接C调用的实参求值、read／write／inout借用、连续布局及返回投影。外部声明与函数值只提供各自真实目标和签名，共用c_call，不造一个不存在的DLL或Definition来转接。
+
+源码节选：`crates/blanguage/src/check/external.rs:254`。
+
+```rust
+    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
+        for contract in &d.function.contracts { outputs::validate(self, d, contract)?; }
+        let parameters = d.function.params.iter().map(|param| {
+            let ty = value_type(self.world, d, &param.ty, param.span)?;
+            Ok(if param.access == Access::Value { CallParameter::Value(ty) }
+                else { CallParameter::Reference { ty, access: param.access } })
+        }).collect::<Result<Vec<_>>>()?;
+        let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
+            else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
+        self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
+            d.function.result.is_never(), Some(d.as_ref()), span)
+    }
+```
+
+目标是原Call的一份真正操作数，存活分析和寄存器重写必须保留它；否则参数正确也可能调用到被覆盖的地址。
+
+源码节选：`crates/blanguage/src/ir/external.rs:27`。
+
+```rust
+pub enum CallTarget {
+    External(crate::ast::ExternalName),
+    Defined(String),
+    Indirect(Reg),
+}
+```
+
+源码节选：`crates/blanguage/src/ir/external.rs:81`。
+
+```rust
+    pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        if let CallTarget::Indirect(reg) = &self.target && !f(*reg) { return false; }
+        self.arguments.iter().all(|argument| match argument {
+            CallArgument::Value { values, .. } => values.iter().all(|reg| f(*reg)),
+            CallArgument::Reference { address, .. } => address.all_operands(f),
+        })
+    }
+```
+
+Windows x64在原调用区为间接目标留一个独立槽，准备实参前保存该地址；参数寄存器设置完成后再取出并执行call。槽位属于本次调用栈，不产生额外代码所有者或运行时登记。
+
+源码节选：`crates/blanguage/src/native/external.rs:123`。
+
+```rust
+        if let CallTarget::Indirect(reg) = call.target {
+            self.load(reg);
+            self.instruction(None, &[0x89], true, 0, Operand::memory(4, layout.target.unwrap() as u32));
+        }
+```
+
+源码节选：`crates/blanguage/src/native/external.rs:165`。
+
+```rust
+        match &call.target {
+            CallTarget::Indirect(_) => self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)),
+            CallTarget::External(name) => self.native_code_address(NativeSymbol::External(name.clone())),
+            CallTarget::Defined(name) => self.native_code_address(NativeSymbol::Function(name.clone())),
+        }
+```
+
+循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。
 
 ### 2.4 Dataset 是布局的实际承载者
 

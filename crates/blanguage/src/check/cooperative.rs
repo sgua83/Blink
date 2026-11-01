@@ -114,19 +114,24 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
 }
 impl<'a> Builder<'a> {
     #[inline(never)]
-    pub(super) fn function_arguments(
+    pub(super) fn function_arguments(&mut self, key: &str, args: &[Expr], span: Span) -> Result<Option<Vec<Argument>>> {
+        let callee = self.world.functions[key].clone();
+        self.call_arguments(&callee.function.params, Some(callee.as_ref()), args, span)
+    }
+    #[inline(never)]
+    pub(super) fn call_arguments(
         &mut self,
-        key: &str,
+        parameters: &[Param],
+        definition: Option<&Definition>,
         args: &[Expr],
         span: Span,
     ) -> Result<Option<Vec<Argument>>> {
-        let callee = &self.world.functions[key];
-        if args.len() != callee.function.params.len() {
+        if args.len() != parameters.len() {
             return self.fail(span, "B162", "函数参数数量不匹配");
         }
         let mut arguments = Vec::new();
         let mut held = Vec::new();
-        for (param, arg) in callee.function.params.iter().zip(args) {
+        for (param, arg) in parameters.iter().zip(args) {
             self.view_uses.before(arg.span);
             arguments.push(
                 if param.ty.is_acceleration() {
@@ -182,18 +187,10 @@ impl<'a> Builder<'a> {
                     let Some(argument)=self.mutable_argument(arg,param.access)?else{self.abandon_arguments(&held);return Ok(None);};
                     argument
                 } else {
-                    let expected =
-                        if callee.function.types.is_empty() && callee.function.values.is_empty() {
-                            Some(self.world.ty(
-                                &param.ty,
-                                &callee.source,
-                                param.span,
-                                &callee.module,
-                                &callee.imports,
-                            )?)
-                        } else {
-                            None
-                        };
+                    let expected = if definition.is_none_or(|d| d.function.types.is_empty() && d.function.values.is_empty()) {
+                        let context = definition.unwrap_or(self.definition.as_ref());
+                        Some(self.world.ty(&param.ty, &context.source, param.span, &context.module, &context.imports)?)
+                    } else { None };
                     let argument=if param.access==Access::Read {self.read_argument(arg,expected.as_ref())?}
                         else {self.evaluate_returned(arg,expected.as_ref())?.filter(|value|!matches!(value,returns::Returned::Unit)).map(Argument::resource)};
                     if !self.flow.continues() {
@@ -207,7 +204,7 @@ impl<'a> Builder<'a> {
                 self.abandon_arguments(&held);
                 return Ok(None);
             }
-            if param.ty.dataset && (param.access==Access::Write || param.access==Access::InOut && outputs::declared(callee,arguments.len()-1))
+            if param.ty.dataset && (param.access==Access::Write || param.access==Access::InOut && definition.is_some_and(|d| outputs::declared(d,arguments.len()-1)))
                 && let Some(Argument::BorrowedData(data))=arguments.last_mut()
             {
                 self.prepare_data_output(&mut data.data,arg.span)?;
@@ -224,12 +221,12 @@ impl<'a> Builder<'a> {
         let mut retained=view::Borrow::default();
         for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(name,binding,&transferred));}}
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
-        for(param,argument)in callee.function.params.iter().zip(&arguments){if param.access==Access::Value{
+        for(param,argument)in parameters.iter().zip(&arguments){if param.access==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
             for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
         }}
         self.view_uses.invocation(span);
-        for (param, argument) in callee.function.params.iter().zip(&arguments) {
+        for (param, argument) in parameters.iter().zip(&arguments) {
             if let Argument::OwnedReference{value,..}=argument {
                 for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
                 if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.handle.identity(),span)?;}}
@@ -264,7 +261,7 @@ impl<'a> Builder<'a> {
                 self.application_handle_available(handle, span)?;
             }
         }
-        self.check_argument_aliases(&callee.function.params, &arguments, |index| args[index].span)?;
+        self.check_argument_aliases(&parameters, &arguments, |index| args[index].span)?;
         Ok(Some(arguments))
     }
     pub(super) fn check_argument_aliases(&self, parameters: &[Param], arguments: &[Argument], span: impl Fn(usize) -> Span) -> Result<()> {
@@ -544,7 +541,7 @@ impl<'a> Builder<'a> {
             callee,
             callee.function.body.as_ref().unwrap(),
             &mut self.mutable_names,
-        );
+        )?;
         let old_definition = self.definition.clone();
         let old_in_function = self.in_function;
         let old_cooperative = self.cooperative_root;

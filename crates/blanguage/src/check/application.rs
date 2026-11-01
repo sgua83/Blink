@@ -171,7 +171,7 @@ pub(crate) fn compile_application(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
     };
-    let mut builder = Builder::new(world, d, &context, 0);
+    let mut builder = Builder::new(world, d, &context, 0)?;
     builder.application = Some(Context::default());
     builder.in_function = true;
     let result = builder.native_function(instance.clone(), Vec::new(), d.function.span)?;
@@ -1676,8 +1676,15 @@ fn captured_names(body: &[Stmt], names: &mut BTreeSet<String>) {
     fn expr(e: &Expr, bound: &BTreeSet<String>, names: &mut BTreeSet<String>) {
         match &e.kind {
             ExprKind::Name(n) => name(n, bound, names),
-            ExprKind::Call(_, args)
-            | ExprKind::Specialize(_, _, args)
+            ExprKind::Invoke(callee, args) => {
+                expr(callee, bound, names);
+                for arg in args { expr(arg, bound, names); }
+            }
+            ExprKind::Call(callee, args) => {
+                name(callee, bound, names);
+                for arg in args { expr(arg, bound, names); }
+            }
+            ExprKind::Specialize(_, _, args)
             | ExprKind::Construct(_, args)
             | ExprKind::Cooperate(_, _, args) => {
                 for a in args {

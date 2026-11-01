@@ -7,6 +7,7 @@ pub(super) struct Layout {
     pub result: Option<u64>,
     pub copies: Vec<Option<u64>>,
     pub hidden: bool,
+    target: Option<u64>,
 }
 pub(super) fn indirect(ty: &Ty) -> bool {
     !matches!(align_up(ty.size, ty.align), 1 | 2 | 4 | 8)
@@ -42,11 +43,18 @@ impl Layout {
                 },
             );
         }
+        let target = if matches!(call.target, CallTarget::Indirect(_)) {
+            bytes = bytes.div_ceil(8) * 8;
+            let at = bytes;
+            bytes += 8;
+            Some(at)
+        } else { None };
         Self {
             bytes: bytes.div_ceil(16) * 16,
             result,
             copies,
             hidden,
+            target,
         }
     }
 }
@@ -105,8 +113,17 @@ impl Emitter<'_> {
         }
         Ok(())
     }
+    fn native_code_address(&mut self, target: NativeSymbol) {
+        self.bytes(&[0x48, 0xb8]);
+        self.relocations.push(Relocation { offset: self.code.len(), target });
+        self.bytes(&[0; 8]);
+    }
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
         let layout = Layout::new(call);
+        if let CallTarget::Indirect(reg) = call.target {
+            self.load(reg);
+            self.instruction(None, &[0x89], true, 0, Operand::memory(4, layout.target.unwrap() as u32));
+        }
         if let Some(at) = layout.result {
             self.stack_address(at as u32);
             self.instruction(None, &[0x89], true, 0, Operand::memory(4, 0));
@@ -145,15 +162,11 @@ impl Emitter<'_> {
                 self.instruction(None, &[0x8b], true, [1, 2, 8, 9][slot], memory);
             }
         }
-        self.bytes(&[0x48, 0xb8]);
-        self.relocations.push(Relocation {
-            offset: self.code.len(),
-            target: match &call.target {
-                CallTarget::External(name) => NativeSymbol::External(name.clone()),
-                CallTarget::Defined(name) => NativeSymbol::Function(name.clone()),
-            },
-        });
-        self.bytes(&[0; 8]);
+        match &call.target {
+            CallTarget::Indirect(_) => self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)),
+            CallTarget::External(name) => self.native_code_address(NativeSymbol::External(name.clone())),
+            CallTarget::Defined(name) => self.native_code_address(NativeSymbol::Function(name.clone())),
+        }
         self.bytes(&[0xff, 0xd0]);
         if let Some(ty) = &call.result {
             if let Some(at) = layout.result {

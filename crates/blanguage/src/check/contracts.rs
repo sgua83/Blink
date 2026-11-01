@@ -269,13 +269,13 @@ pub(super) fn resolve(
             ),
             ContractPredicate::Nonzero(path) => {
                 let selection = select(builder, definition, env, path, contract.span)?;
-                if !selection.value.ty.is_numeric()
+                if !(selection.value.ty.is_numeric() || selection.value.ty.is_c_function())
                     || !selection.value.ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer())
                 {
                     return definition.source.fail(
                         contract.span,
                         "B225",
-                        "nonzero 需要 u32/i32/u64/i64 标量或向量的按值参数／字段",
+                        "nonzero 需要整数标量／向量或cfn函数地址的按值参数／字段",
                     );
                 }
                 (Predicate::Nonzero(selection), format!("nonzero({path})"))

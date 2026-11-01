@@ -483,6 +483,7 @@ impl Builder<'_> {
             ExprKind::Index(base, _) | ExprKind::Member(base, _) => self.temporary_projection(base),
             ExprKind::Specialize(name, _, _) if name == "unsafe_position" => false,
             ExprKind::Call(..)
+            | ExprKind::Invoke(..)
             | ExprKind::Specialize(..)
             | ExprKind::Construct(..)
             | ExprKind::Select(..)

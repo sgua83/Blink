@@ -67,7 +67,7 @@ fn function(
             "集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后",
         );
     }
-    let mut builder = Builder::new(world, d, program, 0);
+    let mut builder = Builder::new(world, d, program, 0)?;
     builder.roots(env);
     let mut inputs = Vec::new();
     let mut args = Vec::new();

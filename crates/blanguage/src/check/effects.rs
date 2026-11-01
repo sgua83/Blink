@@ -1,11 +1,14 @@
 //! 从已声明的 write／inout 参数追踪调用方位置写入，覆盖表达式与各控制流入口。
 use super::*;
+mod sources;
+use sources::{Local, Scope};
 
 type ComponentProjection = (Ty, Vec<Vec<usize>>);
 
 #[derive(Clone, Copy)]
 struct Write<'e> {
     place: &'e Expr,
+    call: Option<&'e Expr>,
     contents: bool,
     iterator: Option<(&'e str, &'e Expr)>,
 }
@@ -263,9 +266,9 @@ impl Builder<'_> {
     }
     pub(super) fn invalidate_expression(&mut self, expr: &Expr) -> Result<()> {
         let mut writes = Vec::new();
-        expression_writes(self.world, &self.definition, expr, &mut |place| {
+        expression_writes(self, expr, &mut |place| {
             writes.push(place)
-        });
+        })?;
         self.invalidate_writes(&writes, None)
     }
     pub(super) fn invalidate_assigned(
@@ -274,9 +277,9 @@ impl Builder<'_> {
         borrowed_data: Option<ValueIdentity>,
     ) -> Result<()> {
         let mut writes = Vec::new();
-        statement_writes(self.world, &self.definition, body, &mut |place| {
+        statement_writes(self, body, &mut |place| {
             writes.push(place)
-        });
+        })?;
         self.invalidate_writes(&writes, borrowed_data)
     }
 }
@@ -288,147 +291,150 @@ fn assigned_root(expr: &Expr) -> Option<&str> {
         _ => None,
     }
 }
-fn expression_writes<'e>(
-    world: &World,
-    definition: &Definition,
-    expr: &'e Expr,
-    writes: &mut dyn FnMut(Write<'e>),
-) {
-    match &expr.kind {
-        ExprKind::Call(name, args)
-        | ExprKind::Cooperate(name, _, args)
-        | ExprKind::Specialize(name, _, args) => {
-            let record = matches!(expr.kind, ExprKind::Specialize(..))
-                && world
-                    .resolve(name, &definition.module, &definition.imports, false)
-                    .is_some();
-            if !record
-                && let Some(key) =
-                    world.resolve(name, &definition.module, &definition.imports, true)
-            {
-                for (param, arg) in world.functions[&key].function.params.iter().zip(args) {
-                    if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
-                        writes(Write {
-                            place: arg,
-                            contents: param.ty.dataset,
-                            iterator: None,
-                        });
-                    }
-                }
-            }
-            for arg in args {
-                expression_writes(world, definition, arg, writes);
+impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
+    fn function_writes(&self, ty: Ty, args: &'e [Expr], call: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+        if !ty.is_c_function() { return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值"); }
+        for (parameter, arg) in ty.c_parameters().iter().zip(args) {
+            if matches!(parameter, CallParameter::Reference { access: Access::Write | Access::InOut, .. }) {
+                writes(Write { place: arg, call: Some(call), contents: false, iterator: None });
             }
         }
-        ExprKind::Construct(_, args) => {
-            for arg in args {
-                expression_writes(world, definition, arg, writes);
-            }
-        }
-        ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => {
-            expression_writes(world, definition, base, writes)
-        }
-        ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => {
-            expression_writes(world, definition, a, writes);
-            expression_writes(world, definition, b, writes);
-        }
-        ExprKind::Select(a, b, c) => {
-            expression_writes(world, definition, a, writes);
-            expression_writes(world, definition, b, writes);
-            expression_writes(world, definition, c, writes);
-        }
-        _ => {}
+        Ok(())
     }
-}
-pub(super) fn value_writes<'e>(world:&World,definition:&Definition,body:&'e[Stmt])->Vec<&'e Expr>{
-    let mut values=Vec::new();statement_writes(world,definition,body,&mut|write|{if !write.contents&&write.iterator.is_none(){values.push(write.place);}});values
-}
-fn statement_writes<'e>(
-    world: &World,
-    definition: &Definition,
-    code: &'e [Stmt],
-    writes: &mut dyn FnMut(Write<'e>),
-) {
-    for s in code {
-        match &s.kind {
-            StmtKind::Assign(lhs, _, rhs) => {
-                writes(Write {
-                    place: lhs,
-                    contents: false,
-                    iterator: None,
-                });
-                expression_writes(world, definition, lhs, writes);
-                expression_writes(world, definition, rhs, writes);
+    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+        match &expr.kind {
+            ExprKind::Invoke(callee, args) => {
+                let ty = self.expression(callee)?.ok_or_else(|| Diagnostic {
+                    source: self.definition.source.clone(), span: callee.span, code: "B263",
+                    message: "不能从原声明与词法来源取得间接调用签名".into(),
+                })?;
+                self.function_writes(ty, args, expr, writes)?;
+                self.writes_expression(callee, writes)?;
+                for arg in args { self.writes_expression(arg, writes)?; }
             }
-            StmtKind::Let(_, _, expr)
-            | StmtKind::Expr(expr)
-            | StmtKind::Return(Some(expr))
-            | StmtKind::Seek(_, expr) => expression_writes(world, definition, expr, writes),
-            StmtKind::If(expr, a, b) => {
-                expression_writes(world, definition, expr, writes);
-                statement_writes(world, definition, a, writes);
-                statement_writes(world, definition, b, writes);
-            }
-            StmtKind::Match(value, arms) => {
-                expression_writes(world,definition,value,writes);
-                for arm in arms {statement_writes(world,definition,&arm.body,writes);}
-            }
-            StmtKind::While(expr, body) => {
-                expression_writes(world, definition, expr, writes);
-                statement_writes(world, definition, body, writes);
-            }
-            StmtKind::For(name, start, end, body) => {
-                expression_writes(world, definition, start, writes);
-                if let Some(end) = end {
-                    expression_writes(world, definition, end, writes);
-                }
-                statement_writes(world, definition, body, &mut |mut write| {
-                    if end.is_none() && assigned_root(write.place) == Some(name) {
-                        write.iterator = Some((name, start));
+            ExprKind::Call(name, args) | ExprKind::Cooperate(name, _, args) | ExprKind::Specialize(name, _, args) => {
+                let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
+                if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
+                else {
+                    let record = matches!(expr.kind, ExprKind::Specialize(..))
+                        && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
+                    if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
+                        for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
+                            if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
+                                writes(Write { place: arg, call: Some(expr), contents: param.ty.dataset, iterator: None });
+                            }
+                        }
                     }
-                    writes(write);
-                });
-            }
-            StmtKind::Parallel(_, domain, body) => {
-                if let Some(count) = &domain.count {
-                    expression_writes(world, definition, count, writes);
                 }
-                if let Some(selection) = &domain.selection {
-                    expression_writes(world, definition, selection, writes);
-                }
-                statement_writes(world, definition, body, writes);
+                for arg in args { self.writes_expression(arg, writes)?; }
             }
+            ExprKind::Construct(_, args) => for arg in args { self.writes_expression(arg, writes)?; },
+            ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => self.writes_expression(base, writes)?,
+            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; }
+            ExprKind::Select(a, b, c) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; self.writes_expression(c, writes)?; }
             _ => {}
         }
+        Ok(())
+    }
+    fn writes_statements(&mut self, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+        let outer = self.bindings.len();
+        for statement in code {
+            match &statement.kind {
+                StmtKind::Declare(ty, name) => self.bindings.push((name, Local::Typed(ty))),
+                StmtKind::Let(ty, name, expr) => {
+                    self.writes_expression(expr, writes)?;
+                    self.bindings.push((name, ty.as_ref().map_or(Local::Inferred(expr), Local::Typed)));
+                }
+                StmtKind::Assign(lhs, _, rhs) => {
+                    writes(Write { place: lhs, call: None, contents: false, iterator: None });
+                    self.writes_expression(lhs, writes)?;
+                    self.writes_expression(rhs, writes)?;
+                }
+                StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => self.writes_expression(expr, writes)?,
+                StmtKind::If(expr, yes, no) => {
+                    self.writes_expression(expr, writes)?;
+                    self.writes_statements(yes, writes)?; self.writes_statements(no, writes)?;
+                }
+                StmtKind::Match(value, arms) => {
+                    self.writes_expression(value, writes)?;
+                    for arm in arms {
+                        if let Some(name) = &arm.binding { self.bindings.push((name, Local::Payload(value, &arm.variant))); }
+                        self.writes_statements(&arm.body, writes)?;
+                        if arm.binding.is_some() { self.bindings.pop(); }
+                    }
+                }
+                StmtKind::While(expr, body) => { self.writes_expression(expr, writes)?; self.writes_statements(body, writes)?; }
+                StmtKind::For(name, start, end, body) => {
+                    self.writes_expression(start, writes)?;
+                    if let Some(end) = end { self.writes_expression(end, writes)?; }
+                    self.bindings.push((name, if end.is_some() { Local::Range } else { Local::Element(start) }));
+                    self.writes_statements(body, &mut |mut write| {
+                        if end.is_none() && assigned_root(write.place) == Some(name) { write.iterator = Some((name, start)); }
+                        writes(write);
+                    })?;
+                    self.bindings.pop();
+                }
+                StmtKind::Parallel(name, domain, body) => {
+                    if let Some(count) = &domain.count { self.writes_expression(count, writes)?; }
+                    if let Some(selection) = &domain.selection { self.writes_expression(selection, writes)?; }
+                    self.bindings.push((name, Local::NamedElement(&domain.dataset)));
+                    self.writes_statements(body, writes)?; self.bindings.pop();
+                }
+                _ => {}
+            }
+        }
+        self.bindings.truncate(outer);
+        Ok(())
     }
 }
-pub(super) fn expression_assignments(
-    world: &World,
-    definition: &Definition,
-    expr: &Expr,
-    names: &mut BTreeSet<String>,
-) {
-    expression_writes(world, definition, expr, &mut |write| {
-        if !write.contents
-            && let Some(root) = assigned_root(write.place)
-        {
-            names.insert(root.to_owned());
-        }
-    });
+fn expression_writes<'e>(builder: &Builder<'_>, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+    Scope::current(builder).writes_expression(expr, writes)
 }
-pub(super) fn assigned_names(
-    world: &World,
-    definition: &Definition,
-    code: &[Stmt],
-    names: &mut BTreeSet<String>,
-) {
-    statement_writes(world, definition, code, &mut |write| {
-        if !write.contents
-            && let Some(root) = assigned_root(write.place)
-        {
-            names.insert(root.to_owned());
-        }
-    });
+fn statement_writes<'e>(builder: &Builder<'_>, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+    Scope::current(builder).writes_statements(code, writes)
+}
+pub(super) fn value_writes<'e>(builder: &Builder<'_>, body: &'e [Stmt]) -> Result<Vec<&'e Expr>> {
+    let mut values = Vec::new();
+    statement_writes(builder, body, &mut |write| {
+        if !write.contents && write.iterator.is_none() { values.push(write.place); }
+    })?;
+    Ok(values)
+}
+pub(super) fn expression_assignments(builder: &Builder<'_>, expr: &Expr, names: &mut BTreeSet<String>) -> Result<()> {
+    expression_writes(builder, expr, &mut |write| {
+        if !write.contents && let Some(root) = assigned_root(write.place) { names.insert(root.to_owned()); }
+    })
+}
+pub(super) fn assigned_names(world: &World, definition: &Definition, code: &[Stmt], names: &mut BTreeSet<String>) -> Result<()> {
+    Scope::declared(world, definition).writes_statements(code, &mut |write| {
+        if !write.contents && let Some(root) = assigned_root(write.place) { names.insert(root.to_owned()); }
+    })
+}
+fn contains_expression(root: &Expr, selected: &Expr) -> bool {
+    if std::ptr::eq(root, selected) { return true; }
+    match &root.kind {
+        ExprKind::Invoke(callee, args) => contains_expression(callee, selected) || args.iter().any(|arg| contains_expression(arg, selected)),
+        ExprKind::Call(_, args) | ExprKind::Specialize(_, _, args) | ExprKind::Cooperate(_, _, args) | ExprKind::Construct(_, args) =>
+            args.iter().any(|arg| contains_expression(arg, selected)),
+        ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => contains_expression(base, selected),
+        ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => contains_expression(a, selected) || contains_expression(b, selected),
+        ExprKind::Select(a, b, c) => contains_expression(a, selected) || contains_expression(b, selected) || contains_expression(c, selected),
+        _ => false,
+    }
+}
+fn contains_statement(statement: &Stmt, selected: &Expr) -> bool {
+    let expression = |expr: &Expr| contains_expression(expr, selected);
+    let block = |body: &[Stmt]| body.iter().any(|statement| contains_statement(statement, selected));
+    match &statement.kind {
+        StmtKind::Let(_, _, expr) | StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => expression(expr),
+        StmtKind::Assign(a, _, b) => expression(a) || expression(b),
+        StmtKind::If(expr, yes, no) => expression(expr) || block(yes) || block(no),
+        StmtKind::Match(expr, arms) => expression(expr) || arms.iter().any(|arm| block(&arm.body)),
+        StmtKind::While(expr, body) => expression(expr) || block(body),
+        StmtKind::For(_, start, end, body) => expression(start) || end.as_ref().is_some_and(expression) || block(body),
+        StmtKind::Parallel(_, domain, body) => domain.count.as_ref().is_some_and(expression) || domain.selection.as_ref().is_some_and(expression) || block(body),
+        _ => false,
+    }
 }
 pub(super) fn modified_owners(
     env: &BTreeMap<String, Binding>,
@@ -493,8 +499,9 @@ impl Builder<'_> {
         Ok(projection.is_some_and(|(_,parts)|parts.iter().any(|part|part.contains(&component))))
     }
     fn numeric_expression_effect(&self, expr: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
-        let mut changes=Vec::new();expression_writes(self.world,&self.definition,expr,&mut|write|changes.push(write));
-        for write in changes { if self.numeric_write(write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); } }
+        for write in writes.iter().filter(|write| write.call.is_some_and(|call| contains_expression(expr, call))) {
+            if self.numeric_write(*write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); }
+        }
         Ok(NumericEffect::shift(0))
     }
     fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
@@ -538,8 +545,10 @@ impl Builder<'_> {
                 StmtKind::Continue=>{*continues=join_numeric_paths(*continues,Some(before));None},
                 StmtKind::Break|StmtKind::Return(_)=>None,
                 StmtKind::While(..)|StmtKind::For(..)|StmtKind::Parallel(..)=>{
-                    let mut changes=Vec::new();statement_writes(self.world,&self.definition,std::slice::from_ref(statement),&mut|write|changes.push(write));
-                    let mut effect=NumericEffect::shift(0);for write in changes { if self.numeric_write(write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;} }
+                    let mut effect=NumericEffect::shift(0);
+                    for write in writes.iter().filter(|write| contains_statement(statement, write.call.unwrap_or(write.place))) {
+                        if self.numeric_write(*write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}
+                    }
                     Some(before.then(effect))
                 },
                 _=>Some(before),
@@ -548,7 +557,7 @@ impl Builder<'_> {
         Ok(next)
     }
     pub(super) fn retain_while_bounds(&mut self, condition:&Expr, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<()> {
-        let mut writes=Vec::new();statement_writes(self.world,&self.definition,body,&mut|write|writes.push(write));expression_writes(self.world,&self.definition,condition,&mut|write|writes.push(write));
+        let mut writes=Vec::new();statement_writes(self,body,&mut|write|writes.push(write))?;expression_writes(self,condition,&mut|write|writes.push(write))?;
         let mut retained=Vec::new();
         for (name,binding) in initial {
             let (owner,proof)=match binding { Binding::Owned(owner)=>(owner.place.clone(),&owner.proof),Binding::OwnedValue(owner)=>{let Some(place)=owner.place()else{continue};(place,&owner.value.proof)},_=>continue };

@@ -52,7 +52,7 @@ impl Builder<'_> {
             self.cross_access.clone(),
         );
         let mut yes_modified = BTreeSet::new();
-        expression_assignments(self.world, &self.definition, yes, &mut yes_modified);
+        expression_assignments(self, yes, &mut yes_modified)?;
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&partition, true);

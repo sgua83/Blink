@@ -251,95 +251,93 @@ impl Builder<'_> {
         self.call_reference(place, access, span)
     }
     #[inline(never)]
-    pub(super) fn external_call(
-        &mut self,
-        d: &Arc<Definition>,
-        args: Vec<Argument>,
-        span: Span,
-    ) -> Result<Option<Value>> {
+    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
+        for contract in &d.function.contracts { outputs::validate(self, d, contract)?; }
+        let parameters = d.function.params.iter().map(|param| {
+            let ty = value_type(self.world, d, &param.ty, param.span)?;
+            Ok(if param.access == Access::Value { CallParameter::Value(ty) }
+                else { CallParameter::Reference { ty, access: param.access } })
+        }).collect::<Result<Vec<_>>>()?;
+        let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
+            else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
+        self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
+            d.function.result.is_never(), Some(d.as_ref()), span)
+    }
+    pub(super) fn function_value_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Result<Option<returns::Returned>> {
         if self.program.target != Target::Cpu {
-            return self.fail(
-                span,
-                "B265",
-                "C ABI 外部函数只能从 on cpu 执行，GPU／compute 不能调用宿主函数",
-            );
+            return self.fail(span, "B265", "原生C函数地址只能在CPU位置调用");
         }
-        for contract in &d.function.contracts {outputs::validate(self,d,contract)?;}
+        let Some(value) = self.expr(callee)? else { return Ok(None); };
+        if !value.ty.is_c_function() { return self.fail(callee.span, "B263", "间接调用目标需要cfn原生C签名值"); }
+        if !value.is_nonzero() {
+            return self.fail(callee.span, "B137", "调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero");
+        }
+        let parameters = value.ty.c_parameters();
+        let source_parameters = parameters.iter().enumerate().map(|(index, parameter)| {
+            let (ty, access) = match parameter {
+                CallParameter::Value(ty) => (ty, Access::Value),
+                CallParameter::Reference { ty, access } => (ty, *access),
+            };
+            Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
+        }).collect::<Vec<_>>();
+        let Some(arguments) = self.call_arguments(&source_parameters, None, args, span)? else { return Ok(None); };
+        let result = &value.ty.arguments[0];
+        let never = result.name == "never";
+        let result = (!matches!(result.name.as_str(), "void" | "never")).then(|| result.clone());
+        self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, None, span)
+            .map(|value| value.map(returns::Returned::value))
+    }
+    #[inline(never)]
+    fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
+        never: bool, definition: Option<&Definition>, span: Span) -> Result<Option<Value>> {
+        if self.program.target != Target::Cpu { return self.fail(span, "B265", "C ABI调用只能在CPU位置执行"); }
         let mut arguments = Vec::new();
         let mut written = Vec::new();
         let mut held = Vec::new();
-        let mut output_inputs=BTreeMap::new();
-        for (index,(param, arg)) in d.function.params.iter().zip(args).enumerate() {
-            let ty = value_type(self.world, d, &param.ty, param.span)?;
-            let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
-            let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
-            arguments.push(match arg {
-                Argument::Value(value) if param.access == Access::Value => {
-                    self.require_same(&ty, &value.ty, span)?;
-                    output_inputs.insert(param.name.clone(),value.clone());
-                    CallArgument::Value {
-                        ty,
-                        values: value.regs,
-                    }
+        let mut output_inputs = BTreeMap::new();
+        for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
+            let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
+            let arg = match arg {
+                Argument::Value(value) if matches!(parameter, CallParameter::Reference { access: Access::Read, .. }) =>
+                    Argument::Reference(self.materialize_array(value)),
+                other => other,
+            };
+            arguments.push(match (parameter, arg) {
+                (CallParameter::Value(ty), Argument::Value(value)) => {
+                    self.require_same(ty, &value.ty, span)?;
+                    if let Some(d) = definition { output_inputs.insert(d.function.params[index].name.clone(), value.clone()); }
+                    CallArgument::Value { ty: ty.clone(), values: value.regs }
                 }
-                Argument::Reference(owner) if param.access != Access::Value => {
-                    let place=owner.place;
-                    self.require_same(&ty, place.ty(), span)?;
-                    let address = self.external_reference(&place, param.access, span)?;
-                    if param.access.writes() {
-                        written.push((index,place));
-                    }
-                    CallArgument::Reference {
-                        ty,
-                        access: param.access,
-                        address,
-                    }
+                (CallParameter::Reference { ty, access }, Argument::Reference(owner)) => {
+                    let place = owner.place;
+                    self.require_same(ty, place.ty(), span)?;
+                    let address = self.external_reference(&place, *access, span)?;
+                    if access.writes() { written.push((index, place)); }
+                    CallArgument::Reference { ty: ty.clone(), access: *access, address }
                 }
-                _ => return self.fail(span, "B263", "C ABI 实参只接收普通值及实际位置"),
+                _ => return self.fail(span, "B263", "C ABI实参只接收普通值及实际位置"),
             });
         }
-        let result = if d.function.result.name == "void" || d.function.result.is_never() {
-            None
-        } else {
-            Some(value_type(
-                self.world,
-                d,
-                &d.function.result,
-                d.function.span,
-            )?)
-        };
-        let values = result
-            .iter()
-            .flat_map(|t| t.components.iter().map(|(s, _)| *s))
-            .map(|s| self.reg(s))
-            .collect::<Vec<_>>();
-        self.code.push(Inst::Call(Call {
-            target: CallTarget::External(d.function.external.clone().unwrap()),
-            arguments,
-            result: result.clone(),
-            values: values.clone(),
-        }));
-        if d.function.result.is_never() {
-            self.flow = Flow::STOP;
-            return Ok(None);
-        }
-        let returned=result.clone().map(|ty|Value{ty,regs:values.clone(),proof:bounds::Proof::default(),literal:false,uniform:false,constant:None});
-        for (index,place) in written {
-            let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,returned.as_ref())?;
-            if outputs::declared(d,index){self.forget_output_initialization(&place,span)?;}
+        let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
+            .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
+        self.code.push(Inst::Call(Call { target, arguments, result: result.clone(), values: values.clone() }));
+        if never { self.flow = Flow::STOP; return Ok(None); }
+        let returned = result.clone().map(|ty| Value {
+            ty, regs: values.clone(), proof: bounds::Proof::default(), literal: false, uniform: false, constant: None,
+        });
+        for (index, place) in written {
+            let guards = if let Some(d) = definition {
+                let guards = outputs::guards(self, d, index, place.ty(), &output_inputs, returned.as_ref())?;
+                if outputs::declared(d, index) { self.forget_output_initialization(&place, span)?; }
+                guards
+            } else { vec![owned_presence::Presence::All; place.ty().components.len()] };
             self.assign_owned_proof(&place, bounds::Proof::default(), false);
-            self.initialize_output(&place,&guards);
+            self.initialize_output(&place, &guards);
         }
         for name in held { self.finish_scoped_argument(&name, span)?; }
-        Ok(result.map(|ty| Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty,
-            regs: values,
-            uniform: false,
-            constant: None,
-        }))
+        Ok(returned)
     }
+
 }
 
 // These are views of the existing Place mapping, not another storage owner.

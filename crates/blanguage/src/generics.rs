@@ -260,6 +260,10 @@ pub(crate) fn substitute_expr(
         ExprKind::Name(name) if values.contains_key(name) => {
             expr.kind = ExprKind::StaticU32(values[name]);
         }
+        ExprKind::Invoke(callee, args) => {
+            substitute_expr(callee, types, values, source)?;
+            for arg in args { substitute_expr(arg, types, values, source)?; }
+        }
         ExprKind::Construct(ty, args) => {
             substitute_type(ty, types, source, expr.span)?;
             crate::value_parameters::substitute_type(ty, values);

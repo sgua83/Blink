@@ -41,7 +41,7 @@ pub(super) fn stage_expression(
     program: &Program,
     expression: &Expr,
 ) -> Result<Root> {
-    let mut builder = Builder::new(world, definition, program, 0);
+    let mut builder = Builder::new(world, definition, program, 0)?;
     builder.in_function = true;
     builder.roots(roots);
     // roots中的无关uniform装载不是当前表达式的计算，不要求它们为常量。
@@ -94,7 +94,7 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
             prefix_requirements: Vec::new(),
             prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
         };
-        let mut builder = Builder::new(world, definition, &context, 0);
+        let mut builder = Builder::new(world, definition, &context, 0)?;
         builder.in_function = true;
         builder.calls = calls.to_vec();
         let value = builder
@@ -277,7 +277,7 @@ pub(crate) fn variant_discriminant(world: &World, identity: &str, source: &Sourc
     let context = Program { name: definition.function.name.clone(), target: Target::Compute,
         buffers: Vec::new(), accelerations: Vec::new(), textures: Vec::new(), uniforms: Vec::new(), uniform_bytes: 0,
         source_stages: 0, stages: Vec::new(), prefix_requirements: Vec::new(), prefix_guarantees: Vec::new(), length_requirements:Vec::new() };
-    let mut builder = Builder::new(world, &definition, &context, 0);
+    let mut builder = Builder::new(world, &definition, &context, 0)?;
     builder.in_function = true;
     let result = builder.expr(expression)?;
     let value = builder.value_result(result, expression.span)?;

@@ -1,5 +1,5 @@
 //! C函数地址的签名复用原类型参数；访问包装只作签名元数据，不分配存储。
-use crate::{ast::*, ir::{Scalar, Ty}, Source, World};
+use crate::{ast::*, ir::{CallParameter, Scalar, Ty}, Source, World};
 use std::collections::BTreeSet;
 
 fn marker(name: String, arguments: Vec<Ty>) -> Ty {
@@ -53,5 +53,22 @@ impl World {
         ty.name = format!("cfn<{}>", types.iter().map(|ty| ty.name.as_str()).collect::<Vec<_>>().join(","));
         ty.arguments = types;
         Ok(ty)
+    }
+}
+
+impl Ty {
+    pub(crate) fn c_parameters(&self) -> Vec<CallParameter> {
+        self.arguments[1..].iter().map(|ty| {
+            let access = match ty.name.split_once('<').map(|(name, _)| name) {
+                Some("read") => Some(Access::Read),
+                Some("write") => Some(Access::Write),
+                Some("inout") => Some(Access::InOut),
+                _ => None,
+            };
+            match access {
+                Some(access) => CallParameter::Reference { ty: ty.arguments[0].clone(), access },
+                None => CallParameter::Value(ty.clone()),
+            }
+        }).collect()
     }
 }

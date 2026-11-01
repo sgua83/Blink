@@ -173,6 +173,7 @@ fn propagates(body: &[Stmt]) -> bool {
     fn expr(e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Call(name, args) => name == "try" || args.iter().any(expr),
+            ExprKind::Invoke(callee, args) => expr(callee) || args.iter().any(expr),
             ExprKind::Specialize(_, _, args)
             | ExprKind::Cooperate(_, _, args)
             | ExprKind::Construct(_, args) => args.iter().any(expr),

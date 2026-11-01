@@ -27,6 +27,7 @@ pub enum CallArgument {
 pub enum CallTarget {
     External(crate::ast::ExternalName),
     Defined(String),
+    Indirect(Reg),
 }
 #[derive(Clone, Debug)]
 pub enum CallParameter {
@@ -78,12 +79,14 @@ impl CallReference {
 }
 impl Call {
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
+        if let CallTarget::Indirect(reg) = &self.target && !f(*reg) { return false; }
         self.arguments.iter().all(|argument| match argument {
             CallArgument::Value { values, .. } => values.iter().all(|reg| f(*reg)),
             CallArgument::Reference { address, .. } => address.all_operands(f),
         })
     }
     pub(crate) fn map_operands(&mut self, r: &impl Fn(Reg) -> Reg) {
+        if let CallTarget::Indirect(reg) = &mut self.target { *reg = r(*reg); }
         for argument in &mut self.arguments {
             match argument {
                 CallArgument::Value { values, .. } => {

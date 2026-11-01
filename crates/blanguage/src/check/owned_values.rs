@@ -703,6 +703,14 @@ impl Builder<'_> {
     ) -> Result<Option<Returned>> {
         self.view_uses.before(expr.span);
         self.require_returned_projection(expr)?;
+        match &expr.kind {
+            ExprKind::Invoke(callee, args) => return self.function_value_call(callee, args, expr.span),
+            ExprKind::Call(name, args) if self.env.contains_key(name) => {
+                let callee = Expr { kind: ExprKind::Name(name.clone()), span: expr.span };
+                return self.function_value_call(&callee, args, expr.span);
+            }
+            _ => {}
+        }
         if let ExprKind::Call(name,args)=&expr.kind {
             if name=="resize" {return self.resize_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
             if name=="own" {return self.make_user_owned(args,expr.span);}

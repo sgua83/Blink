@@ -334,7 +334,18 @@ impl Analysis<'_> {
                             self.expression(arg, live, edges)
                         };
                     }
+                    if function.is_none() {
+                        live.read(Location { name: name.clone(), path: Vec::new() });
+                    }
                     live
+                }
+                ExprKind::Invoke(callee, args) => {
+                    self.points.insert(key(expr.span), Point {
+                        before: Live::default(), after: after.clone(), invocation: Some(after.clone()),
+                    });
+                    let mut live = after.clone();
+                    for arg in args.iter().rev() { live = self.expression(arg, live, edges); }
+                    self.expression(callee, live, edges)
                 }
                 ExprKind::Construct(_, args) => {
                     let mut live = after.clone();

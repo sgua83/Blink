@@ -985,7 +985,7 @@ impl Parser {
                         ExprKind::FunctionRef(name, arguments) => {
                             ExprKind::Specialize(name, arguments, args)
                         }
-                        _ => return self.source.fail(span, "B014", "只允许直接函数调用"),
+                        kind => ExprKind::Invoke(Box::new(Expr { kind, span }), args),
                     },
                     span,
                 };

@@ -74,6 +74,11 @@ impl Body<'_> {
                     }
                 }
             }
+            ExprKind::Invoke(callee, args) => {
+                self.local |= statement || d.function.target == Target::Cpu;
+                self.expr(world, d, callee, false);
+                for arg in args { self.expr(world, d, arg, false); }
+            }
             ExprKind::Construct(_, args) | ExprKind::Cooperate(_, _, args) => {
                 self.local |= d.function.target == Target::Cpu;
                 for arg in args {
