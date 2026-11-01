@@ -28,7 +28,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "25a981397c8d5a7a92ada1b13d9afd0fe88c6ba9c78c6db77417c6d1f7804a34"
+      "sha256": "ae9ade2bcdde9efa922ef50920c9feaf7f0babed18fd1e1874266b9b1f117c13"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",

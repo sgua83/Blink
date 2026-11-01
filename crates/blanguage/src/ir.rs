@@ -1789,7 +1789,7 @@ impl Program {
                     "    tile_width={}, shared_values={}, phases={}, shared_bytes={}, collective_scratch_bytes={}\n",
                     s.workgroup_width(),
                     s.storage_tiles().len(),
-                    s.tile_phases().len(),
+                    s.code.iter().filter(|inst| matches!(inst, Inst::TilePublish(_) | Inst::TileCollective(_) | Inst::TileBarrier)).count() + 1,
                     s.tile_bytes(),
                     s.tile_scratch_bytes()
                 );
