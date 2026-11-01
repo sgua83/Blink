@@ -4,16 +4,6 @@ use crate::object::{Kind, Object, Section, Target};
 use std::collections::BTreeMap;
 
 pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::object::Archive>)> {
-    let entries = objects
-        .iter()
-        .enumerate()
-        .filter(|(_, object)| matches!(object.kind, Kind::Application { .. }))
-        .map(|(i, _)| i)
-        .collect::<Vec<_>>();
-    if entries.len() != 1 {
-        return Err("应用链接需要且只能有一个实际入口对象".into());
-    }
-    objects.swap(0, entries[0]);
     let name = objects[0].name.clone();
     let stack_bytes = objects
         .iter()
@@ -31,9 +21,6 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
     let mut symbols = BTreeMap::new();
     let mut archives = Vec::new();
     for object in &mut objects {
-        if !matches!(object.kind, Kind::Application { .. } | Kind::Module { .. }) {
-            return Err(format!("{} 不是普通模块或应用对象", object.name).into());
-        }
         if let Some(archive) = object.archive.take() {
             archives.push(archive);
         }
@@ -61,19 +48,14 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
         }
         for symbol in &object.symbols {
             let (section, begin) = positions[symbol.section];
-            if symbols
-                .insert(
+            symbols.insert(
                     symbol.name.clone(),
                     (
                         section,
                         begin.checked_add(symbol.value).ok_or("模块符号地址溢出")?,
                         symbol.contract.clone(),
                     ),
-                )
-                .is_some()
-            {
-                return Err(format!("重复定义模块符号 {}", symbol.name).into());
-            }
+                );
         }
         placements.push(positions);
     }

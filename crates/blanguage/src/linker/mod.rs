@@ -8,7 +8,7 @@ use crate::{
     object::{Input, Kind, Object, Target},
 };
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     path::Path,
 };
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -24,29 +24,7 @@ pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
             Input::Library(library) => libraries.push(library),
         }
     }
-    let mut defined = objects
-        .iter()
-        .flat_map(|o| o.symbols.iter().map(|s| s.name.clone()))
-        .collect::<BTreeSet<_>>();
-    let mut pending = objects
-        .iter()
-        .flat_map(dependencies)
-        .map(str::to_owned)
-        .collect::<VecDeque<_>>();
-    while let Some(name) = pending.pop_front() {
-        if defined.contains(&name) {
-            continue;
-        }
-        for library in &mut libraries {
-            if let Some(object) = library.extract(&name)? {
-                defined.extend(object.symbols.iter().map(|s| s.name.clone()));
-                pending.extend(dependencies(&object).map(str::to_owned));
-                objects.push(object);
-                break;
-            }
-        }
-    }
-    link_objects(objects, output)
+    link_objects(objects, libraries, output)
 }
 // 库成员由实际未解析符号引入，后续合同及资源仍交给原组合所有者。
 fn dependencies(object: &Object) -> impl Iterator<Item = &str> {
@@ -63,9 +41,59 @@ fn dependencies(object: &Object) -> impl Iterator<Item = &str> {
         })
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
-    link_objects(vec![object], path)
+    link_objects(vec![object], Vec::new(), path)
 }
-fn link_objects(mut objects: Vec<Object>, path: &Path) -> Result<()> {
+fn link_objects(objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
+    let root = if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
+        0
+    } else {
+        let entries = objects.iter().enumerate()
+            .filter(|(_, object)| matches!(object.kind, Kind::Application { .. }))
+            .map(|(index, _)| index).collect::<Vec<_>>();
+        if entries.len() != 1 {
+            return Err("应用链接需要且只能有一个实际入口对象".into());
+        }
+        for object in &objects {
+            if !matches!(object.kind, Kind::Application { .. } | Kind::Module { .. }) {
+                return Err(format!("{} 不是普通模块或应用对象", object.name).into());
+            }
+        }
+        entries[0]
+    };
+    let mut defined = BTreeMap::new();
+    for (index, object) in objects.iter().enumerate() {
+        for symbol in &object.symbols {
+            if defined.insert(symbol.name.clone(), index).is_some() {
+                return Err(format!("重复定义模块符号 {}", symbol.name).into());
+            }
+        }
+    }
+    let mut candidates = objects.into_iter().map(Some).collect::<Vec<_>>();
+    let mut objects = vec![candidates[root].take().unwrap()];
+    let mut pending = dependencies(&objects[0]).map(str::to_owned).collect::<VecDeque<_>>();
+    while let Some(name) = pending.pop_front() {
+        if let Some(&index) = defined.get(&name) {
+            if let Some(object) = candidates[index].take() {
+                pending.extend(dependencies(&object).map(str::to_owned));
+                objects.push(object);
+            }
+            continue;
+        }
+        for library in &mut libraries {
+            if let Some(object) = library.extract(&name)? {
+                let index = candidates.len();
+                for symbol in &object.symbols {
+                    if defined.insert(symbol.name.clone(), index).is_some() {
+                        return Err(format!("重复定义模块符号 {}", symbol.name).into());
+                    }
+                }
+                candidates.push(None);
+                pending.extend(dependencies(&object).map(str::to_owned));
+                objects.push(object);
+                break;
+            }
+        }
+    }
     let (object, archives) =
         if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
             let mut object = objects.remove(0);

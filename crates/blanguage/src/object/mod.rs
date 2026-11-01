@@ -2,6 +2,7 @@
 mod archive;
 mod static_library;
 pub use static_library::{Input, archive};
+pub(crate) use static_library::Library;
 mod coff;
 pub(crate) use coff::Reader as ObjectReader;
 mod emit;
