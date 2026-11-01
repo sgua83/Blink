@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/blanguage", "crates/blcompute"]
+members = ["crates/blanguage", "crates/blcompute", "crates/blink-installer"]
 resolver = "3"
 
 [profile.release]

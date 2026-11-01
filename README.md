@@ -38,7 +38,7 @@
 
 软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示构建时的同一版本。
 
-正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。各节点下载同包覆盖安装到%ProgramFiles%/Blink，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。以下为源码SDK开发方式。
+正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。当前Windows x64下载Blink-Setup-windows-x64.exe，双击或运维--quiet覆盖安装到%ProgramFiles%/Blink，自动配置系统PATH，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。以下为源码SDK开发方式。
 
 ## 快速开始
 

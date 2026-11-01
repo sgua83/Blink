@@ -12,3 +12,7 @@ version = "0.1.0"
 dependencies = [
  "blanguage",
 ]
+
+[[package]]
+name = "blink-installer"
+version = "0.1.0"

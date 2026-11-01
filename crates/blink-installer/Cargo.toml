@@ -1,0 +1,13 @@
+[package]
+name = "blink-installer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+windows-installer = []
+
+[[bin]]
+name = "blink-setup"
+path = "src/main.rs"
+required-features = ["windows-installer"]

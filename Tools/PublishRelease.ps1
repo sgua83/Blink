@@ -18,10 +18,27 @@ $repository = 'sgua83/Blink'
 $scriptRoot = Split-Path $PSScriptRoot -Parent
 
 function Native {
-    param([string]$File, [string[]]$Arguments)
-    $output = & $File @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "$File exited $LASTEXITCODE`: $($output -join "`n")" }
-    ($output | ForEach-Object { "$_" }) -join "`n"
+    param([string]$File, [string[]]$Arguments, [Text.Encoding]$StandardOutputEncoding = $utf8)
+    $start = [Diagnostics.ProcessStartInfo]::new($File)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.WorkingDirectory = (Get-Location).ProviderPath
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = $StandardOutputEncoding
+    $start.StandardErrorEncoding = $utf8
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        $process.Start() | Out-Null
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $output = ($stdout.GetAwaiter().GetResult() + "`n" + $stderr.GetAwaiter().GetResult()).TrimEnd()
+        if ($process.ExitCode -ne 0) { throw "$File exited $($process.ExitCode)`: $output" }
+        $output
+    } finally { $process.Dispose() }
 }
 function ReadP4 {
     param([string[]]$Arguments)
@@ -36,7 +53,7 @@ function ReadP4 {
     }
 }
 function InstallNodes {
-    param([string]$ReleaseVersion)
+    param([string]$ReleaseVersion, [string]$DownloadDirectory)
     $targets = @($MaintenanceTargets)
     if ($NodeRegistry) {
         $clients = @(ReadP4 @('clients', '-e', 'BLanguage_*'))
@@ -63,31 +80,30 @@ function InstallNodes {
         $owner = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 29083 -State Listen
         $Supervisor = (Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.OwningProcess)").ExecutablePath
     }
+    $name = 'Blink-Setup-windows-x64.exe'
+    $package = Join-Path $DownloadDirectory $name
+    Invoke-WebRequest -Uri "https://github.com/$repository/releases/download/v$ReleaseVersion/$name" -OutFile $package
+    Write-Output "DOWNLOADED v$ReleaseVersion $package"
     $failures = @()
     foreach ($node in $targets) {
         try {
-            $bootstrap = @"
-`$ErrorActionPreference='Stop'
-`$work=Join-Path `$env:TEMP 'Blink-install-download'
-[IO.Directory]::CreateDirectory(`$work)|Out-Null
-`$script=Join-Path `$work 'Install.ps1'
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/$repository/releases/download/v$ReleaseVersion/Install.ps1' -OutFile `$script
-& `$script -Version '$ReleaseVersion' -DownloadDirectory `$work
-Remove-Item -LiteralPath `$script
-[IO.File]::Delete((Join-Path `$work 'Blink-windows-x64.zip'))
-Remove-Item -LiteralPath `$work
-"@
-            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
-            $clientArguments = @('system-exec', $node, "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded")
-            if ($MaintenanceConfig) { $clientArguments += @('--remote-config', $MaintenanceConfig) }
-            Native $Supervisor $clientArguments | Write-Output
+            $configuration = @()
+            if ($MaintenanceConfig) { $configuration = @('--remote-config', $MaintenanceConfig) }
+            # The existing maintenance transport owns distribution; nodes need no Internet proxy.
+            $temporary = Native $Supervisor (@('exec', $node, 'cmd.exe /d /u /c echo %TEMP%') + $configuration) ([Text.Encoding]::Unicode)
+            if ($temporary -notmatch '(?m)^([A-Za-z]:\\[^\r\n]+)\r?$') { throw 'The node did not return its temporary directory.' }
+            $packagePath = Join-Path $Matches[1] $name
+            Native $Supervisor (@('put', $node, $package, $packagePath) + $configuration) | Write-Output
+            Native $Supervisor (@('system-exec', $node, ('"' + $packagePath + '" --quiet')) + $configuration) | Write-Output
+            $complete = '"' + $packagePath + '" --refresh-environment && del "' + $packagePath + '"'
+            Native $Supervisor (@('exec', $node, $complete) + $configuration) | Write-Output
         } catch {
             $failures += "$node`: $($_.Exception.Message)"
             Write-Output "INSTALL_FAILED $node`: $($_.Exception.Message)"
         }
     }
     if ($failures.Count -gt 0) { throw ($failures -join "`n") }
+    Remove-Item -LiteralPath $package
 }
 Push-Location $scriptRoot
 $lock = $null
@@ -129,7 +145,7 @@ try {
         $published = @($releases | Where-Object { -not $_.draft -and -not $_.prerelease })
         if ($published.Count -gt 0 -and $published[0].tag_name -eq $tag) {
             Write-Output "UNCHANGED RELEASE $tag"
-            InstallNodes $version
+            InstallNodes $version $dist
             return
         }
         Write-Output "SOURCE P4 $change $commit VERSION $version"
@@ -156,7 +172,7 @@ try {
         [IO.Directory]::CreateDirectory($directory) | Out-Null
     }
     if (-not $BuildOnly) {
-    $inputs = @('Cargo.toml', 'Cargo.lock', 'VERSION', 'LICENSE', 'crates', 'library', 'Tools/Install.ps1')
+    $inputs = @('Cargo.toml', 'Cargo.lock', 'VERSION', 'LICENSE', 'crates', 'library')
     $configuration = Native git @('--git-dir', $mirror, 'ls-tree', '--name-only', $commit, '.cargo', 'rust-toolchain', 'rust-toolchain.toml')
     $inputs += @($configuration -split "`n" | Where-Object { $_ })
     Native git (@('--git-dir', $mirror, 'archive', '--format=zip', '-o', $sourceZip, $commit) + $inputs) | Out-Null
@@ -164,6 +180,9 @@ try {
     }
     Native cargo @('build', '--workspace', '--release', '--locked', '--features', 'blanguage/installed',
         '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target) | Write-Output
+    Native cargo @('rustc', '--release', '--locked', '--package', 'blink-installer', '--features', 'windows-installer',
+        '--manifest-path', (Join-Path $source 'Cargo.toml'), '--target-dir', $target,
+        '--', '-C', 'target-feature=+crt-static') | Write-Output
     [IO.Directory]::CreateDirectory((Join-Path $package 'bin')) | Out-Null
     foreach ($tool in @('bc', 'blink', 'brun')) {
         $executable = Join-Path $target "release/$tool.exe"
@@ -181,8 +200,6 @@ try {
         $path = Join-Path $source $configuration
         if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $package -Recurse }
     }
-    [IO.Directory]::CreateDirectory((Join-Path $package 'Tools')) | Out-Null
-    [IO.File]::Copy((Join-Path $source 'Tools/Install.ps1'), (Join-Path $package 'Tools/Install.ps1'))
     # P4's source-file attributes are workspace metadata, not package ownership.
     Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object { $_.IsReadOnly = $false }
     $files = @(Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object {
@@ -191,9 +208,9 @@ try {
     $record = [ordered]@{ version = $version; source_change = $change; git_commit = $commit;
         target = 'x86_64-pc-windows-msvc'; profile = 'release'; files = $files }
     [IO.File]::WriteAllText((Join-Path $package 'release.json'), ($record | ConvertTo-Json -Depth 4), $utf8)
-    $archive = Join-Path $dist 'Blink-windows-x64.zip'
+    $archive = Join-Path $dist 'Blink-Setup-windows-x64.exe'
     if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive }
-    [IO.Compression.ZipFile]::CreateFromDirectory($package, $archive)
+    Native (Join-Path $target 'release/blink-setup.exe') @('--pack', $package, $archive) | Write-Output
     Write-Output "BUILT $archive P4 $change VERSION $version"
     if ($BuildOnly) { return }
 
@@ -202,11 +219,11 @@ try {
         if (-not $existing[0].draft) { throw "Release $tag already exists." }
         Invoke-RestMethod -Method Delete -Uri "$api/releases/$($existing[0].id)" -Headers $headers | Out-Null
     }
-    $body = "P4-Change: $change`nGit-Commit: $commit`n`nWindows x64 Release工具与源码SDK。安装到%ProgramFiles%/Blink，只保留当前版。运行框架编译仍需要Rust MSVC及Windows构建工具；GPU使用系统Vulkan驱动。当前能力与限制见本提交的Docs/BLanguage.md。此发行不代表所有新功能完成或B自举完成。"
+    $body = "P4-Change: $change`nGit-Commit: $commit`n`nWindows x64原生自解压安装EXE，双击安装或由管理员入口执行--quiet。自动配置系统PATH，安装到%ProgramFiles%/Blink，只保留当前版。包内为Release工具与源码SDK；运行框架编译仍需要Rust MSVC及Windows构建工具，GPU使用系统Vulkan驱动。当前能力与限制见本提交的Docs/BLanguage.md。"
     $draft = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body (
         @{tag_name=$tag;target_commitish=$commit;name="Blink $version";body=$body;draft=$true;prerelease=$false} | ConvertTo-Json)
     $upload = ($draft.upload_url -split '\{')[0]
-    foreach ($asset in @($archive, (Join-Path $source 'Tools/Install.ps1'))) {
+    foreach ($asset in @($archive)) {
         $name = [Uri]::EscapeDataString([IO.Path]::GetFileName($asset))
         Invoke-RestMethod -Method Post -Uri "${upload}?name=$name" -Headers $headers -ContentType 'application/octet-stream' -InFile $asset | Out-Null
     }
@@ -216,7 +233,7 @@ try {
     foreach ($directory in @($source, $package)) { Remove-Item -LiteralPath $directory -Recurse }
     Remove-Item -LiteralPath $sourceZip
     Remove-Item -LiteralPath $archive
-    InstallNodes $version
+    InstallNodes $version $dist
 } finally {
     if ($transcript) { Stop-Transcript | Out-Null }
     if ($lock) { $lock.Dispose() }

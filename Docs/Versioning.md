@@ -40,20 +40,28 @@ VERSION 更新工具内嵌显示，但不加入 BLINK_COMPILER_ID 或原生框�
 
 正式发行沿用快照中的VERSION，不再次递增。编译失败如实结束，沿原研发流程修复并通过Submit.ps1提交；修复后再针对新快照构建。新功能未完成时说明当前限制，不以所有长期Issues清零作为发行条件，也不把Release构建成功写成所有能力已完成或无bug保证。
 
-PublishRelease.ps1从实际P4 client Root及Cargo target_directory取得路径，不固定任何开发盘符。正式构建输入是本轮Git镜像的精确快照，临时源码在原target/dist/source，输出复用原target；包为target/dist/Blink-windows-x64.zip。该包包含同源的bc、blink、brun、源码SDK、标准库及安装入口。源码SDK编译运行框架仍需要Rust MSVC、C++构建工具和Windows SDK；GPU使用实际系统Vulkan驱动。发行包上传sgua83/Blink的GitHub Releases，标签为v<VERSION>，关联原Git提交。Git main源码镜像与正式发行分别记录。
+PublishRelease.ps1从实际P4 client Root及Cargo target_directory取得路径，不固定开发盘符。正式构建输入是本轮Git镜像的精确快照，临时源码在原target/dist/source，输出复用原target。版本与平台包分别命名，同一个VERSION可以对应多个平台／架构资产；当前实际交付Windows x64的target/dist/Blink-Setup-windows-x64.exe，其他平台包尚未实现。GitHub Releases标签为v<VERSION>，关联原Git提交。
 
--BuildOnly是研发打包入口，只构建当前工作区并标明working tree，不发布、不宣称已提交快照；正式定时入口不使用此选项。
+Windows包是原生自解压EXE，嵌入同源bc、blink、brun、Rust源码SDK、标准库及release.json；安装使用Rust标准库与Windows原生压缩／权限／环境接口，不需要用户执行PowerShell脚本或另装解压软件。源码SDK编译运行框架仍需要Rust MSVC、C++构建工具和Windows SDK；GPU使用实际系统Vulkan驱动。Git main源码镜像与正式发行分别记录。
 
-## 节点安装与构建输入输出
+-BuildOnly只构建当前工作区并标明working tree，不发布、不宣称已提交快照；正式定时入口不使用此选项。
 
-各节点（包括中央机）统一从GitHub Releases下载同一个Windows x64发行包，通过现有运维底座的管理员入口安装到%ProgramFiles%/Blink。安装包读取节点自己的环境，不嵌入中央机源码绝对路径。只保留当前安装，新版覆盖旧版；安装器直接从压缩包写入正式目录，成功后删除本次下载包，历史发行包留在GitHub，不在节点积累版本目录。
+## 安装与环境变量
 
-bin持有三个正式工具，安装根中的VERSION、Cargo文件、crates和library组成实际SDK输入；源码由同一发行包交付。安装器只移除旧包清单内已经退出的新版本文件，不清理工程、target或用户资料。机器PATH增加正式bin，新终端可直接使用；原研发命令中的显式工具路径不变。
+普通用户从GitHub Releases下载本机平台的安装资产；Windows x64用户双击Blink-Setup-windows-x64.exe，由Windows正常管理员授权后安装。EXE把内容直接解压到本机%ProgramFiles%/Blink，新版覆盖旧版，只有当前安装，不建立版本目录。安装文件清单仍由同一release.json拥有；只移除上一包清单中已退出的文件，不清理工程、target或用户资料。下载文件由下载者持有，运维自动安装成功后清理本次下载，历史发行留在GitHub。
 
-源码SDK的普通构建不启用installed特性，仍从原源码根读取SDK并使用原SDK target。正式发行启用blanguage/installed：SDK从%ProgramFiles%/Blink读取，临时单元和运行框架输出写当前工程target。正式Compiler会话持有安装VERSION的真实只读使用句柄，直到最后共享消费者结束；安装器取得同一文件的排他使用权后才覆盖。占用失败明确结束，不杀进程、不伪造安装成功，不在使用中覆盖输入。部分覆盖失败撤销安装VERSION，避免把残缺目录作为可用正式SDK。
+安装末尾自动把实际Blink/bin加入机器PATH，保留已有环境项且不重复追加，并向桌面广播Environment更新。新终端可直接使用bc、blink、brun；已运行进程持有原环境，不能把注册表已写入冒称所有既有终端已刷新。源码SDK的原显式工具路径不改。
 
-中央发布与各节点安装分别输出PUBLISHED及INSTALLED；离线或安装失败不代表其他节点未发布，也不能宣称全体已采用。多节点安装沿已有BLSupervisor system-exec和BLAdmin权限边界，不增加服务或分发GitHub写凭据。消费者由Matrix真实节点登记与BLanguage P4工作区Owner／Host及项目关系取得，不固定节点清单；没有新发行时仍可使之前离线的消费者安装当前版本，已对应相同Git提交及VERSION的节点不重复下载。各节点独立执行，单节点失败不跳过其他节点，最终失败如实汇总。
+同一个EXE支持--quiet管理员静默安装，返回真实退出码和INSTALLED／ALREADY_INSTALLED及PATH_CONFIGURED。--quiet不弹窗、不发起UAC；权限由既有管理员运维入口提供。普通用户会话通过同一EXE的--refresh-environment完成桌面通知，运维随后清理下载，不分发脚本、GitHub写凭据或新增服务。
+
+## 节点运维与构建输入输出
+
+中央机与所有节点从同一GitHub Release下载对应平台／架构资产。中央普通用户从GitHub下载该版本的平台资产到原target/dist，再由现有BLSupervisor put分发同一EXE至节点真实普通用户TEMP；system-exec／BLAdmin执行--quiet安装，普通用户通知桌面与清理本次文件。节点只需要现有运维网络，不要求额外外网或代理。下载路径来自节点真实执行结果，不嵌入中央开发路径，不复制代理配置。消费者由Matrix真实节点登记与BLanguage P4工作区Owner／Host及项目关系取得，不固定节点清单。
+
+源码SDK的普通构建不启用installed特性，仍从原源码根读取SDK并使用原SDK target。正式发行启用blanguage/installed：SDK从%ProgramFiles%/Blink读取，临时单元和运行框架输出写当前工程target。正式Compiler会话持有安装VERSION的真实只读使用句柄，直到最后共享消费者结束；原生安装器取得同一文件的排他使用权后才覆盖。占用失败明确结束，不杀进程、不伪造成功，不在使用中覆盖输入。部分覆盖失败撤销安装VERSION，避免把残缺目录作为可用SDK。
+
+中央发布与节点安装分别输出PUBLISHED及INSTALLED；离线或安装失败不否定已发布事实，也不能宣称全体已采用。各节点独立执行，一台失败继续其他节点，最终汇总真实失败，不重试。没有新发行不重复发包，但仍可沿原维护入口使消费者安装当前版本；安装器遇到相同发行记录与VERSION时报告ALREADY_INSTALLED并确认PATH配置。
 
 ## 正式工具与后续自举
 
-正式发行（本项目采用的稳定发行身份）是按每周流程编译并发布的确切版本，不保证全部新功能可用。当前编译器仍由Rust实现；B自举及CPU/GPU协作编译各按真实实现记录。自举使用正式安装的工具与库作为本轮输入，研发源码是待编译内容，新工具写工程target；本轮输入消费者结束后，才由独立PowerShell安装动作覆盖正式目录。开发产物不能成为自己唯一的构建前提。
+正式发行（本项目采用的稳定发行身份）是按每周流程编译并发布的确切版本，不保证全部新功能可用。当前编译器仍由Rust实现；B自举及CPU/GPU协作编译各按真实实现记录。自举使用正式安装的工具与库作为本轮输入，研发源码是待编译内容，新工具写工程target；本轮输入消费者结束后，才由独立原生安装器覆盖正式目录。开发产物不能成为自己唯一的构建前提。

@@ -46,12 +46,21 @@ pwsh -NoProfile -File ./Tools/PublishGit.ps1 -P4Client <本机实际client>
 pwsh -NoProfile -File ./Tools/PublishRelease.ps1 -P4Client <本机实际client>
 ```
 
-脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存。GitHub写凭据只从中央用户现有Git凭据管理器取用，不打印、不落盘。完整包为target/dist/Blink-windows-x64.zip，GitHub Release同时提供Install.ps1。所有上传完成后才公开发行，正式发行版本不二次递增。失败日志在target/dist/release.log，本次未完成输入保留定位；成功后清理打包临时源码、展开目录和本机压缩包，不清理可复用target。
+脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存；GitHub写凭据只使用中央用户原有凭据管理器。当前Windows x64资产为target/dist/Blink-Setup-windows-x64.exe，是包含正式工具与源码SDK的原生自解压安装程序。上传完整资产后公开发行，版本不二次递增。失败日志为target/dist/release.log；成功清理打包临时源码、package目录及本机分发EXE，不清理可复用target。
 
-普通研发打包可用-BuildOnly：只编译当前工作区，release.json中P4和Git身份为空，不上传；不能将它当作正式已提交发行。
+普通研发打包用-BuildOnly：构建当前工作区，release.json的P4／Git身份为空，不上传。版本与平台资产分开，同一版本可以有多个架构／平台包；当前只交付Windows x64，不能把资产命名写成其他平台已支持。
 
-现有运维底座可向实际节点执行管理员安装：从对应GitHub Release下载Install.ps1，用Windows PowerShell运行，传入-Version <四段版本>和本次临时下载目录。无参数版本选择最新正式发行。中央自动安装向PublishRelease.ps1传入-NodeRegistry <现有Matrix节点登记接口>。入口按真实BLanguage P4工作区的Owner／Host及节点工作区关系选取消费者，用登记的节点身份与地址执行维护；既有BLSupervisor客户端从本机29083控制端口的实际进程取得，默认使用其原生维护身份配置。不在代码里写死机器清单或源码盘符。调用方也可显式传入-Supervisor、-MaintenanceConfig及-MaintenanceTargets以使用现有其他维护入口。
+Windows用户从GitHub Releases下载EXE并双击，由系统管理员授权后覆盖安装%ProgramFiles%/Blink。安装器自动配置机器PATH，保留已有项，通知桌面更新；新终端直接运行bc、blink、brun。用户不执行PS脚本，不手动解压或配置环境变量。只保留当前安装，原研发源码、target和BLEngine依赖保持。
 
-Install.ps1公开下载不需要GitHub写凭据。其-ApplyPackage入口由已有管理员维护者消费已经下载的本次包，是普通下载与ProgramFiles写入的真实权限交接；不会触发UAC或要求例行人工确认。普通用户无安装权时准确返回已下载包和所需维护入口，不假称安装成功。正式目录为%ProgramFiles%/Blink，只有当前版；研发源码、原target及BLEngine源码依赖不改。
+现有运维底座直接支持同一EXE：
 
-已经发布同一版本时不再构建或发包，但仍沿现有维护入口检查消费者的当前安装；安装记录已经对应该Git提交和VERSION的节点直接报告ALREADY_INSTALLED。各节点独立处理，一台失败继续其他节点，最后汇总真实失败，不重试。
+```text
+BLSupervisor put <实际节点> <从GitHub下载的本机EXE> <节点实际临时路径>
+BLSupervisor system-exec <实际节点> "<该节点实际下载路径> --quiet"
+```
+
+中央普通用户从GitHub下载已发布EXE一次，再通过现有BLSupervisor put分发到节点的实际普通用户TEMP；节点无需外网、代理或脚本环境。特权入口只执行本地EXE的--quiet，不从SYSTEM发起GitHub网络请求。静默安装真实返回退出码及安装／PATH结果，不弹UAC。随后普通用户执行同一EXE的--refresh-environment，向其桌面通知环境更新，再清理本次下载文件。
+
+中央自动安装向PublishRelease.ps1传入-NodeRegistry <现有Matrix节点登记接口>，按真实BLanguage P4工作区Owner／Host及项目关系选取消费者。BLSupervisor从本机29083实际控制进程取得，默认使用原生维护身份配置；也可显式传入-Supervisor、-MaintenanceConfig及-MaintenanceTargets。不固定节点或源码盘符，不分发GitHub写凭据、不新增服务。
+
+已发布同一版本时不重复构建或发包；各节点独立处理，一台失败继续其他节点，最后汇总真实失败，不重试。安装器遇到相同发行记录及VERSION时报告ALREADY_INSTALLED并确认PATH；源码发布、节点安装和实际命令可用分别记录。
