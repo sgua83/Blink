@@ -29,14 +29,15 @@ enum Fact {
     Outside(ValueIdentity,IndexDomain),
     Zero(ValueIdentity),
     NotEqual(ValueIdentity, ValueIdentity),
+    Predicate(FloatPredicate, bool),
 }
 // 运算关系只引用已求值的快照；常量使用实际类型与位模式。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum IntegerOperand {
+pub(super) enum Operand {
     Value(ValueIdentity),
     Constant(Scalar, Bits),
 }
-impl IntegerOperand {
+impl Operand {
     fn of(value: &Value, component: usize) -> Self {
         match &value.constant {
             Some(bits) => Self::Constant(value.ty.components[component].0, bits[component]),
@@ -50,11 +51,55 @@ impl IntegerOperand {
         })
     }
 }
+// A floating predicate records its actual result, not an integer range or
+// an ordered complement: NaN makes !(a < b) different from a >= b.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct FloatPredicate {
+    op: Comparison,
+    scalar: Scalar,
+    a: Operand,
+    b: Operand,
+}
+impl FloatPredicate {
+    fn new(mut op: Comparison, scalar: Scalar, mut a: Operand, mut b: Operand) -> Self {
+        match op {
+            Comparison::Greater => { op = Comparison::Less; std::mem::swap(&mut a, &mut b); }
+            Comparison::GreaterEqual => { op = Comparison::LessEqual; std::mem::swap(&mut a, &mut b); }
+            Comparison::Equal | Comparison::NotEqual if b < a => std::mem::swap(&mut a, &mut b),
+            _ => {}
+        }
+        Self { op, scalar, a, b }
+    }
+    fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
+        Some(Self::new(self.op, self.scalar, self.a.map(&identity)?, self.b.map(&identity)?))
+    }
+    fn mentions(self, identity: ValueIdentity) -> bool {
+        [self.a, self.b].contains(&Operand::Value(identity))
+    }
+    fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+        let operand = |operand| Some(match operand {
+            Operand::Value(id) => {
+                let proof = bindings.get(&id)?;
+                // Capture already preserves a constant's exact storage bits.
+                // This is identity substitution, never floating range inference.
+                let bits = proof.range_set(0);
+                match bits.0.as_slice() {
+                    [(a, b)] if a == b => Operand::Constant(self.scalar, *a),
+                    _ => Operand::Value(proof.known_identity(0)?),
+                }
+            }
+            constant => constant,
+        });
+        Some(Self::new(self.op, self.scalar, operand(self.a)?, operand(self.b)?))
+    }
+}
+crate::module::codec::variants!(Comparison{0=>Equal,1=>NotEqual,2=>Less,3=>Greater,4=>LessEqual,5=>GreaterEqual});
+crate::module::codec::record!(FloatPredicate { op, scalar, a, b });
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntegerOperation { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor, ShiftLeft, ShiftRight }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntegerExpression {
-    Binary(IntegerOperation, Scalar, IntegerOperand, IntegerOperand),
+    Binary(IntegerOperation, Scalar, Operand, Operand),
 }
 impl IntegerExpression {
     fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
@@ -63,7 +108,7 @@ impl IntegerExpression {
         })
     }
 }
-crate::module::codec::variants!(IntegerOperand{0=>Value(identity),1=>Constant(scalar,bits)});
+crate::module::codec::variants!(Operand{0=>Value(identity),1=>Constant(scalar,bits)});
 crate::module::codec::variants!(IntegerOperation{0=>Add,1=>Subtract,2=>Multiply,3=>Divide,4=>Remainder,5=>And,6=>Or,7=>Xor,8=>ShiftLeft,9=>ShiftRight});
 crate::module::codec::variants!(IntegerExpression{0=>Binary(op,scalar,a,b)});
 type Facts = BTreeSet<Fact>;
@@ -501,6 +546,7 @@ impl Proof {
                     identity(id,bindings).map(Fact::Zero)
                 },
                 Fact::Outside(id,d)=>identity(id,bindings).zip(domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
+                Fact::Predicate(predicate,truth)=>predicate.at_call(bindings).map(|predicate|Fact::Predicate(predicate,truth)),
             };
             Clause::facts(translated.into_iter().collect())
         }
@@ -842,9 +888,13 @@ impl Proof {
     }
     pub fn capture(value: &Value) -> Self {
         let mut proof = value.proof.clone();
-        proof.ranges = (0..value.regs.len())
-            .map(|i| value.component_ranges(i))
-            .collect();
+        proof.ranges = (0..value.regs.len()).map(|i| {
+            if value.ty.components[i].0.is_float() && let Some(bits) = &value.constant {
+                // Only an exact floating constant's storage bits cross the
+                // call contract. component_ranges still excludes float order.
+                IntegerRanges::interval(bits[i], bits[i])
+            } else { value.component_ranges(i) }
+        }).collect();
         proof.nonzero = (0..value.regs.len())
             .map(|i| value.component_nonzero(i))
             .collect();
@@ -1164,7 +1214,7 @@ impl Fact {
             | Self::Maximum(id, ..)
             | Self::NonZero(id)
             | Self::Boolean(id, _) => Some(id),
-            Self::Equal(_, _) | Self::NotEqual(_, _) | Self::Below(..) => None,
+            Self::Equal(_, _) | Self::NotEqual(_, _) | Self::Below(..) | Self::Predicate(..) => None,
         }
     }
     fn at(self, id: ValueIdentity) -> Self {
@@ -1179,6 +1229,7 @@ impl Fact {
             equal @ Self::Equal(_, _) => equal,
             unequal @ Self::NotEqual(_, _) => unequal,
             below @ Self::Below(..) => below,
+            predicate @ Self::Predicate(..) => predicate,
         }
     }
 }
@@ -1455,6 +1506,7 @@ impl Clause {
             Fact::NonZero(id)=>Clause::facts([Fact::Zero(id)].into()),
             Fact::Zero(id)=>Clause::facts([Fact::NonZero(id)].into()),
             Fact::Boolean(id,truth)=>Clause::facts([Fact::Boolean(id,!truth)].into()),
+            Fact::Predicate(predicate,truth)=>Clause::facts([Fact::Predicate(predicate,!truth)].into()),
             Fact::Equal(a,b)=>Clause::facts([Fact::NotEqual(a,b)].into()),
             Fact::NotEqual(a,b)=>Clause::facts([Fact::equal(a,b)].into()),
             Fact::Below(a,b,strict,signed)=>Clause::facts([Fact::Below(b,a,!strict,signed)].into()),
@@ -1518,6 +1570,7 @@ impl Clause {
                             Fact::Zero(id)=>Fact::Zero(identity(id)),
                             Fact::Outside(id,d)=>Fact::Outside(identity(id),output_domain(d,bindings)),
                             Fact::Boolean(id, truth) => Fact::Boolean(identity(id), truth),
+                            Fact::Predicate(predicate, truth) => Fact::Predicate(predicate.map(|id|Some(identity(id))).unwrap(), truth),
                             Fact::Below(a, b, strict, signed) => {
                                 Fact::Below(identity(a), identity(b), strict, signed)
                             }
@@ -1941,6 +1994,7 @@ fn contradictory(facts: &Facts) -> bool {
             Fact::NotEqual(a.min(b), a.max(b))
         }
         Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
+        Fact::Predicate(predicate, truth) => Fact::Predicate(predicate.map(|id|Some(root(id))).unwrap(), truth),
         value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
     };
     // 原查询只生产一次别名规范视图；排序、查找及判定不重复投影。
@@ -1980,6 +2034,7 @@ fn contradictory(facts: &Facts) -> bool {
     };
     let conflict = |fact| match fact {
         Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
+        Fact::Predicate(predicate, truth) => contains(Fact::Predicate(predicate, !truth)),
         Fact::Zero(id) => contains(Fact::NonZero(id)),
         Fact::NonZero(id) => contains(Fact::Zero(id)),
         Fact::Index(id, domain) => contains(Fact::Outside(id, domain)),
@@ -2026,6 +2081,7 @@ fn cross_conflict(a: &Facts, b: &Facts) -> bool {
     let (other, facts) = if a.len() < b.len() { (b, a) } else { (a, b) };
     facts.iter().any(|fact| match *fact {
         Fact::Boolean(id, truth) => other.contains(&Fact::Boolean(id, !truth)),
+        Fact::Predicate(predicate, truth) => other.contains(&Fact::Predicate(predicate, !truth)),
         Fact::NonZero(id) => other.contains(&Fact::Zero(id)),
         Fact::Zero(id) => other.contains(&Fact::NonZero(id)),
         Fact::Index(id, domain) => other.contains(&Fact::Outside(id, domain)),
@@ -2213,7 +2269,7 @@ impl Condition {
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }
-    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
+    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Predicate(predicate,_)=>predicate.mentions(identity),Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
         let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};
@@ -2323,9 +2379,15 @@ impl Condition {
             };
         }
         let scalar = a.ty.components[0].0;
-        if !scalar.is_integer() || a.ty.components.len() != 1 || b.ty != a.ty {
-            return Self::default();
+        if a.ty.components.len() != 1 || b.ty != a.ty { return Self::default(); }
+        if scalar.is_float() {
+            let predicate = FloatPredicate::new(if op == Comparison::NotEqual { Comparison::Equal } else { op },
+                scalar, Operand::of(a, 0), Operand::of(b, 0));
+            let condition = Self { cases: std::array::from_fn(|truth|
+                Clause::facts([Fact::Predicate(predicate, truth != 0)].into())) };
+            return if op == Comparison::NotEqual { condition.negate() } else { condition };
         }
+        if !scalar.is_integer() { return Self::default(); }
         if op==Comparison::NotEqual{return Self::compare(Comparison::Equal,a,b).negate();}
         let left = a.component_ranges(0);
         let right = b.component_ranges(0);
@@ -2935,8 +2997,8 @@ impl Builder<'_> {
             _ => return,
         };
         let facts = result.regs.iter().enumerate().map(|(component, _)| {
-            let left = IntegerOperand::of(a, component % a.regs.len());
-            let right = IntegerOperand::of(b, component % b.regs.len());
+            let left = Operand::of(a, component % a.regs.len());
+            let right = Operand::of(b, component % b.regs.len());
             let expression = IntegerExpression::Binary(operation, scalar, left, right);
             Fact::Index(result.component_identity(component), IndexDomain::Computed(expression))
         }).collect();
@@ -3680,4 +3742,4 @@ impl crate::module::codec::Decode for Proof {
         })
     }
 }
-crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,scalar,lower),3=>Maximum(value,scalar,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,scalar),7=>Outside(value,domain),8=>Zero(value),9=>NotEqual(a,b)});
+crate::module::codec::variants!(Fact{0=>Equal(a,b),1=>Index(value,domain),2=>Minimum(value,scalar,lower),3=>Maximum(value,scalar,upper),4=>NonZero(value),5=>Boolean(value,truth),6=>Below(lower,upper,strict,scalar),7=>Outside(value,domain),8=>Zero(value),9=>NotEqual(a,b),10=>Predicate(predicate,truth)});
