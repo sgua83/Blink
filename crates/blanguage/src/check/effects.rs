@@ -293,9 +293,11 @@ fn assigned_root(expr: &Expr) -> Option<&str> {
 }
 impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
     fn function_writes(&self, ty: Ty, args: &'e [Expr], call: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
-        if !ty.is_c_function() { return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值"); }
-        for (parameter, arg) in ty.c_parameters().iter().zip(args) {
-            if matches!(parameter, CallParameter::Reference { access: Access::Write | Access::InOut, .. }) {
+        let Some(function) = &ty.function else {
+            return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值");
+        };
+        for ((access, _), arg) in function.parameters.iter().zip(args) {
+            if matches!(access, Access::Write | Access::InOut) {
                 writes(Write { place: arg, call: Some(call), contents: false, iterator: None });
             }
         }

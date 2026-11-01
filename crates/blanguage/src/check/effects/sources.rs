@@ -75,11 +75,13 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     pub fn named(&self, name: &str, span: Span) -> Result<Option<Ty>> {
         if self.bound(name, self.bindings.len()) { self.name(name, span, self.bindings.len()) } else { Ok(None) }
     }
-    fn returned(&self, ty: Ty) -> Option<Ty> {
-        ty.is_c_function().then(|| ty.arguments[0].clone()).filter(|ty| !matches!(ty.name.as_str(), "void" | "never"))
+    fn returned(&self, ty: Ty, span: Span) -> Result<Option<Ty>> {
+        let Some(function) = ty.function else { return Ok(None); };
+        if matches!(function.result.name.as_str(), "void" | "never") { return Ok(None); }
+        self.declared_type(&function.result, self.definition, span).map(Some)
     }
     fn call(&self, name: &str, explicit: Option<&[GenericArgument]>, args: &[Expr], span: Span, limit: usize) -> Result<Option<Ty>> {
-        if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return Ok(self.returned(ty)); }
+        if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
         if matches!(name, "unsafe_function" | "unsafe_position")
             && let Some([GenericArgument::Type(ty)]) = explicit {
             return self.declared_type(ty, self.definition, span).map(Some);
@@ -114,7 +116,9 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             ExprKind::Call(name, args) => self.call(name, None, args, expr.span, limit)?,
             ExprKind::Specialize(name, explicit, args) => self.call(name, Some(explicit), args, expr.span, limit)?,
             ExprKind::Cooperate(name, explicit, args) => self.call(name, explicit.as_deref(), args, expr.span, limit)?,
-            ExprKind::Invoke(callee, _) => self.ty(callee, limit)?.and_then(|ty| self.returned(ty)),
+            ExprKind::Invoke(callee, _) => match self.ty(callee, limit)? {
+                Some(ty) => self.returned(ty, expr.span)?, None => None,
+            },
             ExprKind::Construct(ty, _) => Some(self.declared_type(ty, self.definition, expr.span)?),
             ExprKind::Target(_, base) | ExprKind::Unary(_, base) => self.ty(base, limit)?,
             ExprKind::Binary(op, a, b) => if matches!(op.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||") {

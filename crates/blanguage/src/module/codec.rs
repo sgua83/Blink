@@ -203,8 +203,13 @@ record!(ir::Ty {
     result,
     variants,
     dataset,
-    cleanup
+    cleanup,
+    function
 });
+record!(ir::CFunctionType { result, parameters });
+record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count });
+variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name) });
+variants!(ast::GenericArgument { 0=>Type(ty), 1=>Value(shape) });
 variants!(ir::CallParameter{0=>Value(ty),1=>Reference{ty,access}});
 variants!(ast::ContractKind{0=>Requires,1=>Ensures});
 variants!(ast::ContractPredicate{0=>Prefix{data,count,field},1=>Nonzero(name),2=>Nonempty(name),3=>Index{value,resource},4=>Contiguous(name),5=>Initialized{value,condition},6=>SameLength{left,right}});

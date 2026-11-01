@@ -777,7 +777,9 @@ impl World {
         module: &str,
         imports: &[String],
     ) -> Result<ir::Ty> {
-        self.ty_inner(name, source, span, module, imports, &mut BTreeSet::new())
+        let ty = self.ty_inner(name, source, span, module, imports, &mut BTreeSet::new())?;
+        self.validate_c_functions(&ty, source, span, module, imports, &mut BTreeSet::new())?;
+        Ok(ty)
     }
     fn ty_inner(
         &self,
@@ -789,7 +791,7 @@ impl World {
         stack: &mut BTreeSet<String>,
     ) -> Result<ir::Ty> {
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
-            return self.c_function_type(name, source, span, module, imports, stack);
+            return self.c_function_type(name, source, span, module, imports);
         }
         if name.name == "texture2d" {
             return source.fail(
@@ -836,7 +838,7 @@ impl World {
                 enumeration: false,
                 result: false,
                 variants: Vec::new(),
-                dataset: None, cleanup: None,
+                dataset: None, cleanup: None, function: None,
             });
         }
         if name.name == "owned" {
@@ -954,7 +956,7 @@ impl World {
                 enumeration: false,
                 result: false,
                 variants: Vec::new(),
-                dataset: None, cleanup: None,
+                dataset: None, cleanup: None, function: None,
             });
         }
         if let Some(ty) = ir::Ty::builtin(&name.name) {
@@ -1108,7 +1110,7 @@ impl World {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         };
         let mut names = BTreeSet::new();
         for field in &record.fields {

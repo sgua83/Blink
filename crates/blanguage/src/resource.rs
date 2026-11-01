@@ -3,7 +3,7 @@ use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variant
 use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x0d\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x0e\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -97,43 +97,63 @@ pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate:
             Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
         }
     }).collect();
-    let mut bytes = ABI.to_vec();
-    bytes.extend(
-        Module {
-            types: resources.types.clone(),
-            images,
-        }
-        .bytes(),
-    );
+    let bytes = compiler_output(&Module { types: resources.types.clone(), images });
     Ok((bytes, stack_bytes))
+}
+fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
+    let mut bytes = ABI.to_vec();
+    bytes.extend(value.bytes());
+    bytes
+}
+fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
+    let bytes = bytes.strip_prefix(ABI).ok_or("不支持的模块资源 ABI")?;
+    T::from_bytes(bytes)
 }
 /// # Safety
 /// bytes 必须是此资源 ABI 的实际编译产物，原机器码、布局、访问与前缀合同未被伪造。
 /// 资源 ABI 不使用生成它的 Rust 容器布局或编译器源码身份。
 pub unsafe fn from_compiler_output(bytes: &[u8]) -> codec::Result<Module> {
-    let bytes = bytes.strip_prefix(ABI).ok_or("不支持的模块资源 ABI")?;
-    Module::from_bytes(bytes)
+    decode_compiler_output(bytes)
 }
-impl Encode for native::ProgramImage<TemplateProgram> {
+macro_rules! image_output {
+    ($backend:ident) => {
+        impl<P> $backend::ProgramImage<P> {
+            pub(crate) fn compiler_output_bytes(&self) -> Vec<u8> { compiler_output(self) }
+            /// 从同一P入口的本版本编译产物恢复映像，不改变入口类别。
+            ///
+            /// # Safety
+            /// bytes必须来自此ABI的同一P入口，代码、布局、访问、目标与前缀合同完整未改。
+            /// 不得用宿主输入或另一个入口类别伪造已编译程序。
+            #[doc(hidden)]
+            pub unsafe fn from_compiler_output_bytes(bytes: &[u8]) -> std::io::Result<Self> {
+                decode_compiler_output(bytes).map_err(|error|
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+            }
+        }
+    };
+}
+image_output!(native);
+image_output!(spirv);
+impl<P> Encode for native::ProgramImage<P> {
     fn encode(&self, writer: &mut Writer) {
         self.program().encode(writer);
         self.stages().encode(writer);
     }
 }
-impl Decode for native::ProgramImage<TemplateProgram> {
+impl<P> Decode for native::ProgramImage<P> {
     fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
         let program = ExecutionPlan::decode(reader)?;
         let stages = Vec::<native::StageCode>::decode(reader)?;
         Ok(unsafe { Self::from_compiler_output(program, stages) })
     }
 }
-impl Encode for spirv::ProgramImage<TemplateProgram> {
+impl<P> Encode for spirv::ProgramImage<P> {
     fn encode(&self, writer: &mut Writer) {
         self.program().encode(writer);
         self.stages().encode(writer);
     }
 }
-impl Decode for spirv::ProgramImage<TemplateProgram> {
+impl<P> Decode for spirv::ProgramImage<P> {
     fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
         let program = ExecutionPlan::decode(reader)?;
         let stages = Vec::<spirv::StageCode>::decode(reader)?;

@@ -34,7 +34,7 @@
 
 源码节选：`sample/lessons/map.b:9`。
 
-```b
+```rust
 void scale(inout dataset<f32> values) on compute {
     parallel (value in values) {
         value = value * 2.0 + 1.0;
@@ -60,7 +60,7 @@ C 循环描述一个接一个访问下标的过程，成熟 C/C++ 编译器在�
 
 源码节选：`sample/lessons/map.b:1`。
 
-```b
+```rust
 module lessons.map;
 
 void seed(write dataset<f32> values) on compute {
@@ -74,7 +74,7 @@ void seed(write dataset<f32> values) on compute {
 
 源码节选：`sample/lessons/map.b:15`。
 
-```b
+```rust
 void demo(inout dataset<f32> values) on compute {
     seed(values);
     scale(values);
@@ -146,7 +146,7 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:269`。
+源码节选：`crates/blanguage/src/ir.rs:271`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -172,7 +172,7 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         }
     }
 ```
@@ -189,6 +189,11 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CFunctionType {
+    pub result: crate::ast::TypeName,
+    pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
     pub name: String,
     pub arguments: Vec<Ty>,
@@ -204,6 +209,7 @@ pub struct Ty {
     pub variants: Vec<Variant>,
     pub dataset: Option<Box<Ty>>,
     pub cleanup: Option<String>,
+    pub function: Option<Box<CFunctionType>>,
 }
 ```
 
@@ -281,42 +287,35 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。记录通过函数签名回指自身的名义引用仍待实现；函数地址的有限大小不能被元数据展开误认为对象按值递归。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。原类型实参、const与usize／isize别名继续使用同一规范身份，不复制Node布局或新建类型权威。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
-源码节选：`crates/blanguage/src/function_types.rs:24`。
+源码节选：`crates/blanguage/src/function_types.rs:116`。
 
 ```rust
-    pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String], stack: &mut BTreeSet<String>) -> crate::Result<Ty> {
-        if name.arguments.is_empty() {
+    pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
+        let Some((result, parameters)) = name.arguments.split_first() else {
             return source.fail(span, "B263", "cfn<R,P...>至少需要一个返回类型");
-        }
-        let mut types = Vec::new();
-        for (index, argument) in name.arguments.iter().enumerate() {
-            let GenericArgument::Type(argument) = argument else {
-                return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值");
-            };
-            if index == 0 && matches!(argument.name.as_str(), "void" | "never")
-                && argument.arguments.is_empty() && !argument.dataset && !argument.view && !argument.tile && argument.count.is_none() {
-                types.push(marker(argument.name.clone(), Vec::new()));
-                continue;
-            }
-            if index != 0 && matches!(argument.name.as_str(), "read" | "write" | "inout")
-                && !argument.dataset && !argument.view && !argument.tile {
-                let [GenericArgument::Type(element)] = argument.arguments.as_slice() else {
+        };
+        let GenericArgument::Type(result) = result else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
+        let result = self.c_signature_type(result, source, span, module, imports)?;
+        let mut parsed = Vec::new();
+        for parameter in parameters {
+            let GenericArgument::Type(parameter) = parameter else { return source.fail(span, "B263", "cfn签名只接受类型，不接受const数值"); };
+            let access = if !parameter.dataset && !parameter.view && !parameter.tile {
+                match parameter.name.as_str() { "read" => Access::Read, "write" => Access::Write, "inout" => Access::InOut, _ => Access::Value }
+            } else { Access::Value };
+            let parameter = if access == Access::Value { parameter } else {
+                let [GenericArgument::Type(element)] = parameter.arguments.as_slice() else {
                     return source.fail(span, "B263", "cfn位置参数使用read<T>／write<T>／inout<T>");
                 };
-                let ty = self.ty_inner(element, source, span, module, imports, stack)?;
-                ordinary(&ty, element, source, span)?;
-                types.push(marker(format!("{}<{}>", argument.name, ty.name), vec![ty]));
-            } else {
-                let ty = self.ty_inner(argument, source, span, module, imports, stack)?;
-                ordinary(&ty, argument, source, span)?;
-                types.push(ty);
-            }
+                element
+            };
+            parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
         }
+        let function = CFunctionType { result, parameters: parsed };
         let mut ty = Ty::scalar(Scalar::U64);
-        ty.name = format!("cfn<{}>", types.iter().map(|ty| ty.name.as_str()).collect::<Vec<_>>().join(","));
-        ty.arguments = types;
+        ty.name = type_name(&function.syntax());
+        ty.function = Some(Box::new(function));
         Ok(ty)
     }
 ```
@@ -449,6 +448,74 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
         }
         !zero.is_empty() && !Clause::both(path, &Clause::facts(zero)).possible()
     }
+```
+
+
+签名引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，再沿同一引用闭包检查普通C值、位置访问和资源限制；一次查询已经消费的同一签名不反复展开，未知、非法资源或直接按值递归不会因此跳过。
+
+源码节选：`crates/blanguage/src/function_types.rs:158`。
+
+```rust
+    pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
+        if let Some(function) = &ty.function && consumed.insert(ty.name.clone()) {
+            let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
+            for parameter in parameters {
+                let ty = match parameter { CallParameter::Value(ty) | CallParameter::Reference { ty, .. } => ty };
+                self.validate_c_functions(&ty, source, span, module, imports, consumed)?;
+            }
+            if let Some(result) = result { self.validate_c_functions(&result, source, span, module, imports, consumed)?; }
+        }
+        for nested in ty.arguments.iter().chain(ty.fields.iter().map(|(_, _, ty)| ty.as_ref()))
+            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
+            .chain(ty.array.as_deref()).chain(ty.view.as_deref()).chain(ty.dataset.as_deref()) {
+            self.validate_c_functions(nested, source, span, module, imports, consumed)?;
+        }
+        Ok(())
+    }
+```
+
+算法DLL与普通应用包装消费同一resource映像编码。类型、执行计划与CPU／GPU代码在编译时已形成，生成Rust包装只嵌入这些字节；构造实际程序时保持本次ProgramImage<P>的原入口身份，解码错误交回原FFI错误结果，不重建一份Rust类型／阶段字面量，也不将条件模板改成已验证入口。
+
+源码节选：`crates/blanguage/src/resource.rs:103`。
+
+```rust
+fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
+    let mut bytes = ABI.to_vec();
+    bytes.extend(value.bytes());
+    bytes
+}
+fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
+    let bytes = bytes.strip_prefix(ABI).ok_or("不支持的模块资源 ABI")?;
+    T::from_bytes(bytes)
+}
+```
+
+源码节选：`crates/blanguage/src/dll/source.rs:4`。
+
+```rust
+pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<String, Box<dyn std::error::Error>> {
+    let cpu = if p.target() == Target::Gpu {
+        "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
+    } else {
+        let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
+        format!(
+            "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?)?)",
+            image.compiler_output_bytes()
+        )
+    };
+    let gpu = if p.target() == Target::Cpu {
+        "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()
+    } else {
+        let image = crate::spirv::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
+        format!(
+            "{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}",
+            image.compiler_output_bytes()
+        )
+    };
+    Ok(format!(
+        "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
+    ))
+}
 ```
 
 ### 2.4 Dataset 是布局的实际承载者
@@ -734,7 +801,7 @@ impl Parser {
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:252`。
+源码节选：`crates/blanguage/src/ir.rs:254`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -751,7 +818,7 @@ impl Parser {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         }
     }
 ```
@@ -1005,7 +1072,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:869`。
+源码节选：`crates/blanguage/src/ir.rs:871`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1015,7 +1082,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:888`。
+源码节选：`crates/blanguage/src/ir.rs:890`。
 
 ```rust
     Load {
@@ -1047,7 +1114,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1083`。
+源码节选：`crates/blanguage/src/ir.rs:1085`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1208,7 +1275,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:931`。
+源码节选：`crates/blanguage/src/ir.rs:933`。
 
 ```rust
     If {
@@ -2093,7 +2160,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
 
 应用链接以唯一实际入口为根，沿机器符号选择显式模块与按库顺序抽取的成员，再沿实际函数节和重定位继续。每个函数的机器代码与内部字面量在同一个 COMDAT 节；pdata／xdata 以标准 COFF 关联随这个函数保留。递归和共享打印／导入跳板按原节身份闭合，未调用函数不把缺失依赖或 DLL 导入带进应用；真正需要的定义须有匹配合同，显式重复仍拒绝。
 
-模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。BLCO28明确交接 COFF 辅助符号与节关联，旧27对象须重编；资源 C ABI13保持。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
+模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。当前BLCO29交接真实类型合同、COFF辅助符号与节关联，模块资源及执行映像为BLRI14；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
 
 DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有装载与驱动准备成本；消费者不需要 B 源码或 Rust 工具链。编译、链接、装载、数据传输与一次算法执行的成本应分别记录。
 

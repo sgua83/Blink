@@ -268,11 +268,14 @@ impl Builder<'_> {
             return self.fail(span, "B265", "原生C函数地址只能在CPU位置调用");
         }
         let Some(value) = self.expr(callee)? else { return Ok(None); };
-        if !value.ty.is_c_function() { return self.fail(callee.span, "B263", "间接调用目标需要cfn原生C签名值"); }
+        let Some(function) = value.ty.function.as_deref() else {
+            return self.fail(callee.span, "B263", "间接调用目标需要cfn原生C签名值");
+        };
         if !value.is_nonzero() {
             return self.fail(callee.span, "B137", "调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero");
         }
-        let parameters = value.ty.c_parameters();
+        let (parameters, result, never) = self.world.c_function_signature(
+            function, &self.definition.source, span, &self.definition.module, &self.definition.imports)?;
         let source_parameters = parameters.iter().enumerate().map(|(index, parameter)| {
             let (ty, access) = match parameter {
                 CallParameter::Value(ty) => (ty, Access::Value),
@@ -281,9 +284,6 @@ impl Builder<'_> {
             Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
         }).collect::<Vec<_>>();
         let Some(arguments) = self.call_arguments(&source_parameters, None, args, span)? else { return Ok(None); };
-        let result = &value.ty.arguments[0];
-        let never = result.name == "never";
-        let result = (!matches!(result.name.as_str(), "void" | "never")).then(|| result.clone());
         self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, None, span)
             .map(|value| value.map(returns::Returned::value))
     }

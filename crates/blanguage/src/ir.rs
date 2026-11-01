@@ -92,6 +92,11 @@ pub struct Variant {
     pub ty: Box<Ty>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CFunctionType {
+    pub result: crate::ast::TypeName,
+    pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
     pub name: String,
     pub arguments: Vec<Ty>,
@@ -107,14 +112,11 @@ pub struct Ty {
     pub variants: Vec<Variant>,
     pub dataset: Option<Box<Ty>>,
     pub cleanup: Option<String>,
+    pub function: Option<Box<CFunctionType>>,
 }
 impl Ty {
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
-        if self.is_c_function() {
-            let mut ty = crate::ast::TypeName::named("cfn");
-            ty.arguments = self.arguments.iter().map(|ty| crate::ast::GenericArgument::Type(ty.syntax())).collect();
-            return ty;
-        }
+        if let Some(function) = &self.function { return function.syntax(); }
         if let Some(cleanup) = &self.cleanup {
             let mut ty=crate::ast::TypeName::named("owned");
             let mut release=crate::ast::TypeName::named(cleanup);release.canonical=true;
@@ -182,7 +184,7 @@ impl Ty {
         }
     }
     pub fn owned(payload: Self, cleanup: String) -> Self {
-        Self {name:format!("owned<{},{}>",payload.name,cleanup),arguments:vec![payload.clone()],values:Vec::new(),size:payload.size,align:payload.align,components:payload.components.clone(),fields:vec![("value".into(),0,Box::new(payload))],view:None,array:None,enumeration:false,result:false,variants:Vec::new(),dataset:None,cleanup:Some(cleanup)}
+        Self {name:format!("owned<{},{}>",payload.name,cleanup),arguments:vec![payload.clone()],values:Vec::new(),size:payload.size,align:payload.align,components:payload.components.clone(),fields:vec![("value".into(),0,Box::new(payload))],view:None,array:None,enumeration:false,result:false,variants:Vec::new(),dataset:None,cleanup:Some(cleanup),function:None}
     }
     pub fn owned_dataset(element: Self, count: Option<u32>) -> Self {
         Self {
@@ -202,7 +204,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: Some(Box::new(element)), cleanup: None,
+            dataset: Some(Box::new(element)), cleanup: None, function: None,
         }
     }
     pub fn result(ok: Self, error: Self) -> Option<Self> {
@@ -223,7 +225,7 @@ impl Ty {
             name, arguments, values, size, align,
             components: std::iter::once((tag, 0)).chain((offset..size).step_by(4).map(|at| (Scalar::U32, at))).collect(),
             fields: Vec::new(), view: None, array: None, enumeration: false, result: false,
-            variants, dataset: None, cleanup: None,
+            variants, dataset: None, cleanup: None, function: None,
         })
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
@@ -246,7 +248,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         }
     }
     pub fn scalar(s: Scalar) -> Self {
@@ -263,7 +265,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         }
     }
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -289,7 +291,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         }
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
@@ -316,7 +318,7 @@ impl Ty {
             enumeration: false,
             result: false,
             variants: Vec::new(),
-            dataset: None, cleanup: None,
+            dataset: None, cleanup: None, function: None,
         }
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
@@ -368,7 +370,7 @@ impl Ty {
                 enumeration: false,
                 result: false,
                 variants: Vec::new(),
-                dataset: None, cleanup: None,
+                dataset: None, cleanup: None, function: None,
                 components: vec![
                     (Scalar::Bool, 0),
                     (Scalar::F32, 4),
@@ -408,7 +410,7 @@ impl Ty {
         self.name == "handle"
     }
     pub fn is_c_function(&self) -> bool {
-        self.name.starts_with("cfn<")
+        self.function.is_some()
     }
     pub fn is_numeric(&self) -> bool {
         !self.is_c_function()
