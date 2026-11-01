@@ -771,7 +771,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
 
 **自己走一遍。** A和B都导入C会复制一份C吗？不会，同一来源表保持模块身份。若记录按值包含自身，为什么仍须拒绝？那是无法形成有限布局的类型递归，归类型布局所有者处理。
 
-源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。入口映像与COFF保留完整输入身份，未变时直接复用最终产物，变化时重新执行必要编译。缓存命中不证明冷编译成本降低。
+源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。入口映像与COFF按声明及实现依赖复用；无关实现变化保持产物，实际依赖变化重新编译。缓存命中不证明冷编译成本降低。
 
 native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，application::Context只持有编译期Frame寄存器及映像描述。真实Frame、设备与完成仍归blcompute；函数模块不是CPU应用上下文的附属状态。
 
@@ -990,7 +990,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 “同一个函数能处理不同类型”有两种很不同的实现：运行时判断类型，或者编译前形成具体实例。Blink 当前主要采用后者。
 
-源码节选：`crates/blanguage/src/generics.rs:53`。
+源码节选：`crates/blanguage/src/generics.rs:58`。
 
 ```rust
     let replacements: BTreeMap<_, _> = function

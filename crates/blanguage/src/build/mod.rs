@@ -1,11 +1,12 @@
 //! 正式入口构建：由实际源码闭包产生原生映像，执行端装入最终代码。
 pub(crate) mod hash;
 mod object;
+mod identity;
 mod inputs;
 mod graph;
 pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
-pub(crate) use object::Declaration;
+pub(crate) use identity::Declaration;
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
 use crate::module::codec::{Decode, Encode, record};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
@@ -62,7 +63,8 @@ fn compile_in(
     }
     let path = if inputs.is_some() { path.into() } else { path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
-    let (world, module) = crate::read_world(&path, &root, None, worker, inputs, None)?;
+    let (world, module) = crate::read_world(&path, &root, None, worker, inputs,
+        Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let mut request = Vec::new();
     for value in [
         path.to_str().ok_or("入口路径不是UTF-8")?,
@@ -83,19 +85,15 @@ fn compile_in(
     let mut inputs = request;
     hash::field(&mut inputs, env!("BLINK_COMPILER_ID").as_bytes());
     hash::field(&mut inputs, &worker.compiler().max_parameter_bytes().to_le_bytes());
-    for (name, source) in world.interfaces.iter().map(|(name, module)| (name, &module.source)).chain(&world.sources) {
-        hash::field(&mut inputs, name.as_bytes());
-        hash::field(
-            &mut inputs,
-            source.path.to_str().ok_or("源码路径不是UTF-8")?.as_bytes(),
-        );
-        hash::field(&mut inputs, source.text.as_bytes());
-    }
-    let identity = hash::digest(&inputs).to_vec();
+    identity::sources(&mut inputs, &world, &module, None, false);
+    let source = hash::digest(&inputs);
     match fs::read(&artifact) {
         Ok(bytes) => {
             let stored = decode(&bytes)?;
-            if stored.identity == identity {
+            if let Some(inputs) = identity::decode(&stored.identity)?
+                && inputs.source == source
+                && inputs.imports == identity::references(&world.declarations, None, std::iter::empty(), &inputs.declarations)
+            {
                 return stored.compilation(artifact, true);
             }
         }
@@ -124,8 +122,10 @@ fn compile_in(
     };
     let mut encoded = resource::ABI.to_vec();
     encoded.extend(image.bytes());
+    let declarations = world.build_declarations.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
+    let imports = identity::references(&world.declarations, None, std::iter::empty(), &declarations);
     let stored = Artifact {
-        identity,
+        identity: identity::Inputs { source, imports, native: None, declarations }.encode(),
         image: encoded,
     };
     fs::create_dir_all(output)?;
