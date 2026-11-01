@@ -36,14 +36,15 @@ try {
     }
     $previous = ((Invoke-P4 @('print', '-q', ($depot + 'VERSION#head')) | ForEach-Object { $_.data }) -join '').Trim()
     if ($previous -notmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$') {
-        throw 'Submitted VERSION must contain user.major.minor.patch.'
+        throw 'Submitted VERSION must contain user.carry.change.revision.'
     }
     $stage = if ($PSBoundParameters.ContainsKey('UserStage')) { $UserStage } else { [uint64]$Matches[1] }
-    $major = [long]$Matches[2]; $minor = [long]$Matches[3]; $patch = [long]$Matches[4]
-    $next = switch ($Bump) {
-        'major' { '{0}.{1}.0.0' -f $stage, ($major + 1) }
-        'minor' { '{0}.{1}.{2}.0' -f $stage, $major, ($minor + 1) }
-        'patch' { '{0}.{1}.{2}.{3}' -f $stage, $major, $minor, ($patch + 1) }
+    $carry = [long]$Matches[2]; $majorChange = [long]$Matches[3]; $revision = [long]$Matches[4]
+    $next = if ($Bump -eq 'major') {
+        if ($majorChange -eq 999) { '{0}.{1}.0.0' -f $stage, ($carry + 1) }
+        else { '{0}.{1}.{2}.0' -f $stage, $carry, ($majorChange + 1) }
+    } else {
+        '{0}.{1}.{2}.{3}' -f $stage, $carry, $majorChange, ($revision + 1)
     }
     Invoke-P4 @('edit', '-c', "$Change", 'VERSION') | ConvertTo-Json -Compress
     [IO.File]::WriteAllText((Join-Path $root 'VERSION'), "$next`n", $utf8)
