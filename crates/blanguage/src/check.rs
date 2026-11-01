@@ -370,7 +370,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         return d.source.fail(
             d.function.span,
             "B103",
-            format!("程序参数占 {offset} 字节，当前设备 ABI 上限 128；大块参数应使用 read dataset"),
+            format!("程序参数占 {offset} 字节，超过当前编译参数 ABI 的 128 字节上限；此处未查询实际设备能力"),
         );
     }
     let mut program = Program {
