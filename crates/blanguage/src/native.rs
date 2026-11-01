@@ -443,6 +443,7 @@ impl Emitter<'_> {
                     let memory = self.indexed_memory(source, *offset, *word);
                     self.write_scalar_address(*value, memory);
                 }
+                Inst::FunctionAddress(dst, name) => { self.native_code_address(NativeSymbol::Function(name.clone())); self.store(*dst); }
                 Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
                 Inst::Index(dst) => {
                     self.copy(self.location(*dst), allocation::Location::Gpr(3));

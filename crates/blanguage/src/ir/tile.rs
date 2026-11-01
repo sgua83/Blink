@@ -402,6 +402,7 @@ impl Inst {
             Self::Append(a) => std::slice::from_ref(&a.accepted),
             Self::Atomic(a) => a.result.as_slice(),
             Self::Constant(r, ..)
+            | Self::FunctionAddress(r, _)
             | Self::Index(r)
             | Self::Uniform(r, _)
             | Self::LoadLocal(r, _)

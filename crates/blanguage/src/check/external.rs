@@ -5,7 +5,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
     let f = &d.function;
     if f.kind != FunctionKind::Value
         || f.target != Target::Cpu
-        || f.body.is_some()
+        || (f.external.is_some() && f.body.is_some())
         || !f.types.is_empty()
         || !f.values.is_empty()
         || f.contracts.iter().any(|contract|contract.kind!=ContractKind::Ensures || !matches!(contract.predicate,ContractPredicate::Initialized{..}))
@@ -19,7 +19,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.result.dataset
         || f.result.tile
     {
-        return d.source.fail(f.span,"B263","extern C 需要无正文、无泛型的 on cpu 普通函数，只接收普通值及 read／write／inout 位置；输出可声明 ensures initialized");
+        return d.source.fail(f.span,"B263","extern C 需要具体的 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入无正文，B定义保留正文，输出可声明 ensures initialized");
     }
     Ok(())
 }
@@ -372,7 +372,9 @@ impl Builder<'_> {
         place: &Place,
         access: Access,
         span: Span,
+        c_abi: bool,
     ) -> Result<Vec<(Ty, CallReference)>> {
+        if c_abi { return Ok(vec![(place.ty().clone(), self.external_reference(place, access, span)?)]); }
         let parameters = native_function::reference_parameters(place.ty());
         if parameters.len() == 1 {
             return Ok(vec![(

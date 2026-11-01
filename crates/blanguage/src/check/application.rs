@@ -1523,6 +1523,7 @@ impl Builder<'_> {
             target: Target::Cpu,
             contracts,
             body: Some(vec![statement.clone()]),
+            c_abi: false,
             external: None,
             span: statement.span,
         };

@@ -288,7 +288,7 @@ pub(crate) fn variant_discriminant(world: &World, identity: &str, source: &Sourc
         execution: crate::execution::Requirement::Invocation,
         function: Function { name: "<variant-number>".into(), types: Vec::new(), values: Vec::new(), params: Vec::new(),
             result: representation.syntax(), kind: FunctionKind::Constant, target: Target::Compute,
-            contracts: Vec::new(), external: None, body: Some(vec![Stmt { span: expression.span, kind: StmtKind::Return(Some(expression.clone())) }]), span: expression.span },
+            contracts: Vec::new(), c_abi: false, external: None, body: Some(vec![Stmt { span: expression.span, kind: StmtKind::Return(Some(expression.clone())) }]), span: expression.span },
     });
     let context = Program { name: definition.function.name.clone(), target: Target::Compute,
         buffers: Vec::new(), accelerations: Vec::new(), textures: Vec::new(), uniforms: Vec::new(), uniform_bytes: 0,

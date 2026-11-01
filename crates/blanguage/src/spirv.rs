@@ -463,6 +463,7 @@ impl Emitter<'_> {
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
                     self.store_raw(scalar, unit, &pointers, raw, true);
                 }
+                Inst::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
                 Inst::Constant(dst, s, bits) if s.is_float() => {
                     let mut words = vec![self.constant(Scalar::U32, *bits as u32)];
                     if s.size() == 8 { words.push(self.constant(Scalar::U32, (*bits >> 32) as u32)); }

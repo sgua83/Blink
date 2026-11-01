@@ -288,7 +288,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明匹配仍待实现。B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明匹配仍待实现。明确C ABI的B定义可形成直接原生入口；需执行上下文的回调与可保留代码／状态寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
 源码节选：`crates/blanguage/src/function_types.rs:199`。
 
@@ -727,7 +727,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 入口在 `crates/blanguage/src/lib.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/lib.rs:145`。
+源码节选：`crates/blanguage/src/lib.rs:146`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -751,7 +751,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:494`。
+源码节选：`crates/blanguage/src/lib.rs:495`。
 
 ```rust
     if let Some(name) = import
@@ -889,7 +889,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1046`。
+源码节选：`crates/blanguage/src/parser.rs:1048`。
 
 ```rust
             let prec = match self.peek() {
@@ -1038,7 +1038,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3748`。
+源码节选：`crates/blanguage/src/check.rs:3750`。
 
 ```rust
         let binding = view.binding;
@@ -1216,13 +1216,14 @@ r4 = r2 + r3
 
 ```rust
     Constant(Reg, Scalar, Bits),
+    FunctionAddress(Reg, String),
     Index(Reg),
     Uniform(Reg, u32),
     LoadLocal(Reg, usize),
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:891`。
+源码节选：`crates/blanguage/src/ir.rs:892`。
 
 ```rust
     Load {
@@ -1254,7 +1255,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1086`。
+源码节选：`crates/blanguage/src/ir.rs:1087`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1283,7 +1284,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:440`。
+源码节选：`crates/blanguage/src/check.rs:441`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1415,7 +1416,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:934`。
+源码节选：`crates/blanguage/src/ir.rs:935`。
 
 ```rust
     If {
@@ -1624,7 +1625,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native.rs:667`。
+源码节选：`crates/blanguage/src/native.rs:668`。
 
 ```rust
     let stage = &lowered;
@@ -2313,6 +2314,48 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 ### 26.4 反向调用与独立应用是另两项能力
 
 B 的普通 CPU 应用已能通过明确的 `extern "C"` 声明调用 Windows x64 DLL，并能独立编译、链接和启动。它使用 C 导出、普通值与明确位置借用，不把 C++ 类、Rust 对象或任意资源布局直接当作跨语言 ABI。普通 B 模块调用、算法 DLL 与系统库互操作分别承担各自接口和生命周期职责。
+
+B也可用不带from的extern "C"定义具体CPU函数，c_function(Name)形成同一函数代码的cfn地址。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。声明类型在装入时检查一次，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
+
+源码节选：`crates/blanguage/src/check/callback.rs:19`。
+
+```rust
+    pub(super) fn c_function_value(&mut self, args: &[Expr], span: Span) -> Result<Value> {
+        if self.program.target != Target::Cpu || self.application.is_none() {
+            return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
+        }
+        let [Expr { kind: ExprKind::Name(name), .. }] = args else {
+            return self.fail(span, "B153", "c_function需要一个明确的B C ABI函数名");
+        };
+        let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) else {
+            return self.fail(span, "B158", format!("未知函数 {name}"));
+        };
+        let definition = self.world.functions[&key].clone();
+        if !definition.function.c_abi || definition.function.external.is_some() {
+            return self.fail(span, "B263", "c_function需要B定义的extern C函数，不自动改变普通B函数ABI");
+        }
+        let f = &definition.function;
+        let outputs = f.contracts.iter().filter_map(|contract| {
+            if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
+                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
+            } else { None }
+        }).collect();
+        let syntax = CFunctionType {
+            result: f.result.clone(),
+            parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
+            outputs,
+        }.syntax();
+        let ty = self.world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
+        let instance = crate::generics::instantiate(self.world, &key, &definition, Vec::new(), &[])?;
+        self.native_declaration(&instance)?;
+        let reg = self.reg(Scalar::U64);
+        self.code.push(Inst::FunctionAddress(reg, instance.name));
+        let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
+        Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
+    }
+```
+
+函数地址不执行代码，也不持有模块／状态的所有权。真正注册方须等注销及最后回调完成后才能释放；需要Frame的回调、可保留上下文及动态热卸载仍有独立缺口，不能由静态B窗口过程推出全部寿命能力。
 
 **自己走一遍。** 为什么生成头文件比手写一个“看起来一样”的结构更可靠？它取自同一编译布局，避免 bool 宽度、向量对齐和字段偏移在两个工程里各自猜测。
 

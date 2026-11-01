@@ -4,11 +4,11 @@
   "source_files": [
     {
       "path": "crates/blanguage/src/ast.rs",
-      "sha256": "fbdbb61fe781938e3ea59ea0b62a8cc009e5e3087311505fd5d77919668ae2e4"
+      "sha256": "9a71c0dce15592f670caa2b85ebba7c8f502fbe7cba594f291a1265526e07f9c"
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "cec745c11857bf79b8ab1922404aedd29e65e23e271a3f8af5f2c5421320b2e7"
+      "sha256": "e400e5e37d300a275de3c6362bc46af4f162053a68999bf9ce5944f2ce9b3e1c"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -28,7 +28,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "a81137bc8d459476416ef1a9c21ead80d5c97b0ccd0302099ced8449df0ccaaa"
+      "sha256": "25a981397c8d5a7a92ada1b13d9afd0fe88c6ba9c78c6db77417c6d1f7804a34"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
@@ -36,11 +36,11 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "sha256": "7e5a5a82a026f2815a1c62965fb79d5e110b6753e138f7ac939b1665b7fd69f2"
+      "sha256": "27a7334a36e7ef48927d7de5e1c4b713eba6a593e21f9621fdafab7c7976a23a"
     },
     {
       "path": "crates/blanguage/src/native.rs",
-      "sha256": "9a60749bcf9cf94b8f9179fdc77df3761f0d0675bb245125a70076e8f4bccef1"
+      "sha256": "84f8ad8110792525ae3bcbb4930de6b50c0d364b07986a57625764fd96ca69f5"
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",
@@ -48,15 +48,15 @@
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
-      "sha256": "ad9afc5453c64eee6048136906bd2ed45429d7cdacc444f6c9d5f0cd0d3ebdf7"
+      "sha256": "f8b88258dc67d37b3b4b0bcea3ff3be61136b9effdca6842f73afded89dfd6e8"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "sha256": "ec4791f8ee6e622bc4b925f5260db58b3443cd7933780eb6b83688f448146d04"
+      "sha256": "f852488a669331cee2ecccc1fe5486d94298f4a7a24243dde8890852ce3b4a09"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
-      "sha256": "ad3388e80d54656290dd85a08298ea1bf133981a022da626379be5600453e7e0"
+      "sha256": "7123ca9bf622a507ae748bd9ff19b2c55f0271564f279bdeac41463ec9a837cb"
     },
     {
       "path": "crates/blanguage/src/spirv/reduce.rs",
@@ -100,7 +100,7 @@
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
-      "sha256": "69559d72895488bd6f9c0c8f72dfc08c9557f44eb0aba3ded04cb1667a2ae040"
+      "sha256": "4bf38a4a8b9d94c854388c93e875874629927ec471612a9a9f0d93301d8b058f"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/native/external.rs",
-      "sha256": "dd492c37ede7a907c493ea87acf67d46ac368756c20784aa8458bc0970ad0b9b"
+      "sha256": "c69863ec04bf44a0c08aac085bd00a156b8980bc3fe4679dd4a21d13b7e6254a"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -129,6 +129,10 @@
     {
       "path": "crates/blanguage/src/check/outputs.rs",
       "sha256": "8f7fe1eac8734f9a33c3e5f8e8aa391baec0b7f5f67c8497304b7f9b3366aeaf"
+    },
+    {
+      "path": "crates/blanguage/src/check/callback.rs",
+      "sha256": "df219f9a4cb972cef2aa40724f5cd506a830a7d68cbea60a3aebd24808c2ce35"
     }
   ],
   "excerpts": [
@@ -176,14 +180,14 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "start_line": 145,
-      "end_line": 157,
+      "start_line": 146,
+      "end_line": 158,
       "sha256": "f3cd02d756a18b10ae711e9fe9119f29c71c8cb7f266d020843178b17376a870"
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "start_line": 494,
-      "end_line": 498,
+      "start_line": 495,
+      "end_line": 499,
       "sha256": "e1b68eb7af3560243810d79d8b974c3f0eeba69351fd7d081e0989e884e9c320"
     },
     {
@@ -212,8 +216,8 @@
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "start_line": 1046,
-      "end_line": 1071,
+      "start_line": 1048,
+      "end_line": 1073,
       "sha256": "ca5be50a5c7bbf57509915a4d6a8ac5edfac8b60773cc1a6d79a1d897bd07660"
     },
     {
@@ -236,8 +240,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3748,
-      "end_line": 3784,
+      "start_line": 3750,
+      "end_line": 3786,
       "sha256": "7f4cf191d9744ff742fe6ef2abafdd0fecfec6bd7bd24574084008cc8a869be0"
     },
     {
@@ -261,25 +265,25 @@
     {
       "path": "crates/blanguage/src/ir.rs",
       "start_line": 872,
-      "end_line": 876,
-      "sha256": "02b9cd96f747df15267bee17db14af26bfbf8adcb5fe51ce0d42c6e55bcf075e"
+      "end_line": 877,
+      "sha256": "4c39bd5ca5ccecbc3d340e3371e1e5d6288f1c8001e111ffec556c229626b557"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 891,
-      "end_line": 913,
+      "start_line": 892,
+      "end_line": 914,
       "sha256": "b7aaedbab5cb15a255d423a3df067bdcc22160c7a93fff331ac1ef3e565014aa"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 1086,
-      "end_line": 1101,
+      "start_line": 1087,
+      "end_line": 1102,
       "sha256": "2cb551733663f329c2d1fe7b581fd36102ced79a68a41f881f05612af04d212c"
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 440,
-      "end_line": 456,
+      "start_line": 441,
+      "end_line": 457,
       "sha256": "f2ea57bd89a3b606d066dfe4db8cb80ed121f0634d2f761404f6a69e4cd4a90e"
     },
     {
@@ -296,8 +300,8 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 934,
-      "end_line": 948,
+      "start_line": 935,
+      "end_line": 949,
       "sha256": "f066d8f1640abc55fd72726420849c886bf34fe9520b96963e88aba5ca811157"
     },
     {
@@ -344,8 +348,8 @@
     },
     {
       "path": "crates/blanguage/src/native.rs",
-      "start_line": 667,
-      "end_line": 678,
+      "start_line": 668,
+      "end_line": 679,
       "sha256": "46e5e416775193a39a95d56ae0a3e1c716b34415eda27b3079d388b68b612f75"
     },
     {
@@ -545,6 +549,12 @@
       "start_line": 633,
       "end_line": 702,
       "sha256": "cddc91c394dd67cd4d245360384157d6eae6a2ee8d859d8cc4a183e1c2ec8399"
+    },
+    {
+      "path": "crates/blanguage/src/check/callback.rs",
+      "start_line": 19,
+      "end_line": 51,
+      "sha256": "6a69db14911f7c33ff00c0902253ccb096ccd2420a863e815226e62c31d5d015"
     }
   ]
 }

@@ -260,7 +260,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
             || (a.reads.contains(r) && b.writes.contains(r))
     })
 }
-fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
+pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
     for i in code {
         f(i);
         match i {
@@ -297,6 +297,7 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
             Inst::IntegerDivide { result, .. } => result.map(r),
             Inst::TileCollective(c) => c.results.iter_mut().for_each(|(_, dst)| *dst = r(*dst)),
             Inst::Constant(dst, ..)
+            | Inst::FunctionAddress(dst, _)
             | Inst::Index(dst)
             | Inst::Uniform(dst, _)
             | Inst::TileLength(dst)

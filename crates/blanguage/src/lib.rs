@@ -130,6 +130,7 @@ fn contract_signature(f: &Function) -> BTreeSet<(ContractKind, &ContractPredicat
 }
 fn same_signature(a: &Function, b: &Function) -> bool {
     a.kind == b.kind
+        && a.c_abi == b.c_abi
         && a.external == b.external
         && a.types == b.types
         && a.values == b.values
@@ -441,7 +442,7 @@ fn read_world(
         }
     }
     validate_types(&world)?;
-    for definition in world.functions.values().filter(|definition| definition.function.external.is_some()) {
+    for definition in world.functions.values().filter(|definition| definition.function.c_abi) {
         check::external::check_declaration(&world, definition)?;
     }
     world.build_declarations = build_declarations;

@@ -870,6 +870,7 @@ pub enum Inst {
         result: RayResult,
     },
     Constant(Reg, Scalar, Bits),
+    FunctionAddress(Reg, String),
     Index(Reg),
     Uniform(Reg, u32),
     LoadLocal(Reg, usize),

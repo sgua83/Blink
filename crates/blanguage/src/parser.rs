@@ -508,6 +508,7 @@ impl Parser {
                         span,
                         kind: StmtKind::Return(Some(value)),
                     }]),
+                    c_abi: false,
                     external: None,
                     span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
                 });
@@ -558,7 +559,7 @@ impl Parser {
                             name: format!("{name}::{}", variant.name),
                             types: Vec::new(), values: Vec::new(), params: Vec::new(),
                             result: TypeName::named(&name), kind: FunctionKind::Constant,
-                            target: Target::Compute, contracts: Vec::new(), external: None, span,
+                            target: Target::Compute, contracts: Vec::new(), c_abi: false, external: None, span,
                             body: Some(vec![Stmt { span, kind: StmtKind::Return(Some(Expr {
                                 span, kind: ExprKind::Call(name.clone(), vec![variant.discriminant.clone()]),
                             })) }]),
@@ -604,7 +605,7 @@ impl Parser {
                 });
                 continue;
             }
-            let external = if self.take("extern") {
+            let c_abi = if self.take("extern") {
                 if self.link_string()? != "C" {
                     return self.source.fail(span, "B263", "外部函数使用 C ABI");
                 }
@@ -673,7 +674,7 @@ impl Parser {
             while matches!(self.peek(), "requires" | "ensures") {
                 contracts.push(self.contract()?);
             }
-            let external = if external {
+            let external = if c_abi && self.peek() == "from" {
                 if !types.is_empty() || !values.is_empty() {
                     return self.source.fail(
                         span,
@@ -707,6 +708,7 @@ impl Parser {
                 target,
                 contracts,
                 body,
+                c_abi,
                 external,
                 span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
             });

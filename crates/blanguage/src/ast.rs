@@ -307,6 +307,7 @@ pub struct Function {
     pub target: Target,
     pub contracts: Vec<FunctionContract>,
     pub body: Option<Vec<Stmt>>,
+    pub c_abi: bool,
     pub external: Option<ExternalName>,
     pub span: Span,
 }

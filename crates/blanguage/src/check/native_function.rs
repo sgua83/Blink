@@ -68,6 +68,7 @@ struct Unit {
     contract: Contract,
     module: String,
     public: bool,
+    c_abi: bool,
     residency: residency::Inputs,
     source: Source,
     span: Span,
@@ -121,6 +122,7 @@ fn compiled_declaration(
             contract,
             module: instance.definition.module.clone(),
             public: instance.definition.public,
+            c_abi: instance.definition.function.c_abi,
             residency: residency::Inputs::default(),
             source: instance.definition.source.clone(),
             span: instance.definition.function.span,
@@ -162,6 +164,7 @@ fn finish_declaration(
             contract,
             module: instance.definition.module.clone(),
             public: instance.definition.public,
+            c_abi: instance.definition.function.c_abi,
             residency,
             source: instance.definition.source.clone(),
             span: instance.definition.function.span,
@@ -263,7 +266,7 @@ pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Resu
     resolve_residencies(&mut functions)
 }
 impl Builder<'_> {
-    fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
+    pub(super) fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
         let context = self.application.take().unwrap();
         let (context, functions) = declaration(self.world, instance, context, std::mem::take(&mut self.functions))?;
         self.application = Some(context);
@@ -344,7 +347,7 @@ impl Builder<'_> {
                 Argument::OwnedReference{mut value,place,owner} if matches!(p.access,Access::Write|Access::InOut)=>{
                     self.require_same(&ty,&value.value.ty,span)?;
                     if let Some(owner)=owner{held.push(owner);}
-                    for(part,address)in self.native_references(&place,p.access,span)?{arguments.push(CallArgument::Reference{ty:part,access:p.access,address});actual.extend([None,None]);}
+                    for(part,address)in self.native_references(&place,p.access,span,d.function.c_abi)?{arguments.push(CallArgument::Reference{ty:part,access:p.access,address});actual.extend([None,None]);}
                     if p.access==Access::InOut {
                         for data in value.resources(){self.require_application_initialized(data,span)?;}
                         self.load_owned_value(&mut value,span)?;
@@ -358,7 +361,7 @@ impl Builder<'_> {
                 Argument::Reference(owner) if matches!(p.access, Access::Read | Access::Write | Access::InOut) => {
                     let place=owner.place.clone();
                     self.require_same(&ty, place.ty(), span)?;
-                    for (part, address) in self.native_references(&place, p.access, span)? {
+                    for (part, address) in self.native_references(&place, p.access, span, d.function.c_abi)? {
                         arguments.push(CallArgument::Reference {
                             ty: part,
                             access: p.access,
@@ -381,7 +384,7 @@ impl Builder<'_> {
                 }
                 Argument::Atomic(place) if p.access == Access::Atomic => {
                     self.require_same(&ty, place.ty(), span)?;
-                    for (part, address) in self.native_references(&place, Access::Atomic, span)? {
+                    for (part, address) in self.native_references(&place, Access::Atomic, span, d.function.c_abi)? {
                         arguments.push(CallArgument::Reference { ty: part, access: Access::Atomic, address });
                         actual.extend([None, None]);
                     }
@@ -737,13 +740,14 @@ fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
 }
 fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    calls(&mut body.code, &mut |call| {
-        if let CallTarget::Defined(name) = &call.target {
+    crate::optimize::visit(&body.code, &mut |inst| {
+        if let Inst::Call(Call { target: CallTarget::Defined(name), .. }) | Inst::FunctionAddress(_, name) = inst {
             names.insert(name.clone());
         }
     });
     names
 }
+
 pub(super) struct Finalized {
     pub functions: Vec<FunctionBody>,
     pub imports: BTreeMap<String, Vec<u8>>,
@@ -793,12 +797,11 @@ fn finalize(
         let mut next = frame.clone();
         for (name, unit) in &mut units {
             if let Some(function) = &mut unit.function {
-                if dependencies(&mut function.body)
-                    .iter()
-                    .any(|callee| frame.contains(callee))
-                {
-                    next.insert(name.clone());
-                }
+                calls(&mut function.body.code, &mut |call| {
+                    if matches!(&call.target, CallTarget::Defined(callee) if frame.contains(callee)) {
+                        next.insert(name.clone());
+                    }
+                });
             }
         }
         if next == frame {
@@ -809,6 +812,9 @@ fn finalize(
     let mut imports = BTreeMap::new();
     for (name, unit) in &mut units {
         unit.contract.frame = frame.contains(name);
+        if unit.c_abi && unit.contract.frame {
+            return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
+        }
         if unit.function.is_none() || owner.is_some_and(|owner| unit.module != owner) {
             imports.insert(name.clone(), unit.contract.bytes());
         }
@@ -1212,6 +1218,7 @@ fn build_domain(
             contract,
             module: d.module.clone(),
             public: d.public,
+            c_abi: false,
             residency: residency::Inputs::default(),
             source: d.source.clone(),
             span: d.function.span,

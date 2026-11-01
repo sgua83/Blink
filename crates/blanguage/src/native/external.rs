@@ -113,7 +113,7 @@ impl Emitter<'_> {
         }
         Ok(())
     }
-    fn native_code_address(&mut self, target: NativeSymbol) {
+    pub(super) fn native_code_address(&mut self, target: NativeSymbol) {
         self.bytes(&[0x48, 0xb8]);
         self.relocations.push(Relocation { offset: self.code.len(), target });
         self.bytes(&[0; 8]);

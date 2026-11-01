@@ -9,6 +9,7 @@ mod array;
 mod atomic;
 mod bounds;
 mod compact;
+mod callback;
 mod constant;
 pub(crate) use constant::constant_value;
 pub(crate) use constant::variant_discriminant;
@@ -1451,7 +1452,7 @@ fn function_parameters(
         }
         if p.access != Access::Value {
             let place = if b.application.is_some() {
-                let parts = native_function::reference_parameters(&ty);
+                let parts = if d.function.c_abi { vec![ty.clone()] } else { native_function::reference_parameters(&ty) };
                 let mut addresses = Vec::new();
                 for part in &parts {
                     let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
@@ -2676,6 +2677,7 @@ impl<'a> Builder<'a> {
         })
     }
     fn builtin_call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
+        if name == "c_function" { return self.c_function_value(args, span).map(Some); }
         if matches!(name, "Ok" | "Err") {
             return self.fail(
                 span,
