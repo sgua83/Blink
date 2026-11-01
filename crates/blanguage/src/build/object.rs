@@ -22,18 +22,21 @@ struct Inputs {
 }
 record!(Inputs { source, imports, native });
 fn error(value: impl ToString) -> Error { Error::other(value.to_string()) }
-fn import_identity(imported: Option<&crate::module::Imports>, object: &Object) -> [u8; 32] {
+fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, object: &Object) -> [u8; 32] {
     let mut bytes = Vec::new();
     for symbol in object.imports.keys() {
         hash::field(&mut bytes, symbol.as_bytes());
+        // 实例与域入口复用原源声明，名字规则来自generics::key／domain::symbol。
+        let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
+        let declaration = declarations.functions.get(&symbol[..end]);
         let input = imported.and_then(|imports| imports.modules.values()
             .find(|input| input.definitions.contains_key(symbol)));
-        match input {
-            Some(input) => {
+        match (input, declaration) {
+            (Some(input), Some(declaration)) => {
                 hash::field(&mut bytes, &[1]);
                 hash::field(&mut bytes, &input.definitions[symbol]);
-                // 实例与域入口复用原源声明要求，名字规则来自generics::key／domain::symbol。
-                let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
+                let span = declaration.function.span;
+                hash::field(&mut bytes, declaration.source.text[span.start..span.end].as_bytes());
                 match input.requirements.get(&symbol[..end]) {
                     Some(requirement) => hash::field(&mut bytes, &[1, match requirement {
                         crate::execution::Requirement::Invocation => 0,
@@ -43,10 +46,25 @@ fn import_identity(imported: Option<&crate::module::Imports>, object: &Object) -
                     None => hash::field(&mut bytes, &[0]),
                 }
             }
-            None => hash::field(&mut bytes, &[0]),
+            _ => hash::field(&mut bytes, &[0]),
         }
     }
     hash::digest(&bytes)
+}
+
+fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, source: &crate::ast::Source) {
+    let mut functions = declarations.functions.values()
+        .filter(|definition| definition.compiled.is_some() && definition.source.path == source.path)
+        .collect::<Vec<_>>();
+    functions.sort_by_key(|definition| definition.function.span.start);
+    let mut start = 0;
+    for definition in functions {
+        let function = &definition.function;
+        hash::field(bytes, source.text[start..function.span.start].as_bytes());
+        hash::field(bytes, function.name.as_bytes());
+        start = function.span.end;
+    }
+    hash::field(bytes, source.text[start..].as_bytes());
 }
 
 pub fn compile_object(
@@ -83,6 +101,7 @@ pub(super) fn compile<'a>(
         })?) };
     let imported = imports.as_ref().filter(|imports| !imports.modules.is_empty());
     let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs)?;
+    let declarations = world.declarations.clone();
     let mut bytes = Vec::new();
     for value in [path.as_os_str().as_encoded_bytes(), root.as_os_str().as_encoded_bytes(),
         env!("BLINK_COMPILER_ID").as_bytes()] { hash::field(&mut bytes, value); }
@@ -102,7 +121,7 @@ pub(super) fn compile<'a>(
     for (name, source) in world.interfaces.iter().chain(&world.sources) {
         hash::field(&mut bytes, name.as_bytes());
         hash::field(&mut bytes, source.path.as_os_str().as_encoded_bytes());
-        hash::field(&mut bytes, source.text.as_bytes());
+        source_identity(&mut bytes, &declarations, source);
     }
     let source = hash::digest(&bytes);
     let runtime = !matches!(kind, ObjectKind::Module(_));
@@ -115,7 +134,7 @@ pub(super) fn compile<'a>(
                 let stored = Inputs::from_bytes(stored).map_err(error)?;
                 if stored.source == source {
                     let object = reader.object().map_err(error)?;
-                    if stored.imports == import_identity(imported, &object) {
+                    if stored.imports == import_identity(&declarations, imported, &object) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
                         if stored.native == native {
                             return Ok(ObjectCompilation { object, artifact, reused: true });
@@ -143,7 +162,7 @@ pub(super) fn compile<'a>(
         }
     };
     let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime)?) } else { None };
-    let imports = import_identity(imported, &object);
+    let imports = import_identity(&declarations, imported, &object);
     let mut stored = MAGIC.to_vec(); stored.extend(Inputs { source, imports, native }.bytes());
     let bytes = object.build_bytes(&stored).map_err(error)?;
     fs::create_dir_all(artifact.parent().unwrap())?;

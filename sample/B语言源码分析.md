@@ -305,7 +305,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:449`。
+源码节选：`crates/blanguage/src/lib.rs:451`。
 
 ```rust
     if let Some(name) = import

@@ -266,10 +266,9 @@ fn compile_world(
     let mut jobs = Vec::new();
     let planned = (|| -> Result<()> {
         for (base, definition) in &world.functions {
+            if definition.compiled.is_some() { continue; }
             generics::validate_declaration(definition)?;
-            if definition.compiled.is_some()
-                || selected.as_ref().is_some_and(|(key, _, _)| key == base)
-            {
+            if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
                 continue;
             }
             let retained = selected.is_none() && definition.module == entry && definition.public;
@@ -400,6 +399,9 @@ fn read_world(
         inputs,
     )?;
     execution::infer(&mut world);
+    for definition in world.functions.values().filter(|definition| definition.compiled.is_some()) {
+        generics::validate_declaration(definition)?;
+    }
     Ok((World::new(Arc::new(world), worker.clone()), entry))
 }
 fn validate_types(world: &World) -> Result<()> {

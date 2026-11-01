@@ -656,7 +656,7 @@ impl Parser {
                 contracts,
                 body,
                 external,
-                span,
+                span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
             });
         }
         Ok(Module {

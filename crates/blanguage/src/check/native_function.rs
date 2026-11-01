@@ -861,8 +861,9 @@ pub(crate) fn compile_module(
     let mut functions = Module::default();
     let mut roots = BTreeSet::new();
     for (key, d) in &world.functions {
+        if d.compiled.is_some() { continue; }
         crate::generics::validate_declaration(d)?;
-        if d.module != entry || d.compiled.is_some() {
+        if d.module != entry {
             continue;
         }
         for instance in crate::generics::instances(world, key, d)? {
