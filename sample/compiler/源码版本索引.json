@@ -12,7 +12,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "f500fe9d4e578a830058b09bbb6dc7fc3d949515afcce75ed8fb0c06bdc2c284"
+      "sha256": "190d1d3e625c7bf41147479d60ad05255002b6d8020b01721664c249a6d59de6"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
@@ -504,8 +504,8 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 2346,
-      "end_line": 2358,
+      "start_line": 2368,
+      "end_line": 2380,
       "sha256": "654206cab5b6e1a4d0bf75a9224ad083a0501709ef7165350eecc7782c767d46"
     },
     {

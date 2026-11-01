@@ -50,19 +50,33 @@ pub(crate) struct Contract {
     residency: residency::Requirements,
     view_access:BTreeSet<view_contracts::Access>,
 }
-crate::module::codec::record!(Contract {
-    parameters,
-    result,
-    inputs,
-    returned,
-    written,
-    requires,
-    target,
-    frame,
-    domain,
-    residency,
-    view_access
-});
+// The wire still stores a vector of guards. Its meaning is one requirement
+// whenever any use is active, independent of the number of source use sites.
+impl crate::module::codec::Encode for Contract {
+    fn encode(&self,w:&mut crate::module::codec::Writer){
+        self.parameters.encode(w);self.result.encode(w);self.inputs.encode(w);
+        self.returned.encode(w);self.written.encode(w);self.requires.encode(w);
+        self.target.encode(w);self.frame.encode(w);self.domain.encode(w);
+        self.residency.len().encode(w);
+        for(key,guards)in &self.residency{
+            key.encode(w);1usize.encode(w);
+            guards.iter().cloned().fold(bounds::Condition::constant(false),|a,b|a.logical(b,true)).encode(w);
+        }
+        self.view_access.encode(w);
+    }
+}
+impl crate::module::codec::Decode for Contract {
+    fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
+        use crate::module::codec::Decode;
+        Ok(Self{
+            parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,
+            returned:Decode::decode(r)?,written:Decode::decode(r)?,requires:Decode::decode(r)?,
+            target:Decode::decode(r)?,frame:Decode::decode(r)?,domain:Decode::decode(r)?,
+            residency:Decode::decode(r)?,view_access:Decode::decode(r)?,
+        })
+    }
+}
+
 struct Unit {
     function: Option<FunctionBody>,
     contract: Contract,

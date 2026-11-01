@@ -1776,9 +1776,9 @@ impl Clause {
     }
     // 同一资源来源的路径按事实合取去重，保留每个来源实际成立的完整条件。
     pub(super) fn canonical(&self)->Self{
-        fn insert(terms:&mut BTreeSet<Facts>,facts:Facts){
-            if terms.iter().any(|old|old.is_subset(&facts)){return;}
-            terms.retain(|old|!facts.is_subset(old));terms.insert(facts);
+        fn insert(terms:&mut BTreeSet<Facts>,facts:Facts)->bool{
+            if terms.iter().any(|old|old.is_subset(&facts)){return false;}
+            terms.retain(|old|!facts.is_subset(old));terms.insert(facts)
         }
         fn facts(value:&Facts)->Option<Facts>{
             if contradictory(value){return None;}
@@ -1804,7 +1804,29 @@ impl Clause {
                 },
             };values.insert(clause.key(),next);
         }
-        values.remove(&self.key()).unwrap().into_iter().fold(Self::impossible(),|all,facts|Self::either(&all,&Self::facts(facts)))
+        let mut terms=values.remove(&self.key()).unwrap();
+        // Consensus removes the short-circuit partition: A || (!A && B)
+        // has the same complete sum as A || B. Negation stays with Clause.
+        loop {
+            let mut additions=BTreeSet::new();
+            for left in &terms {
+                for right in terms.range((std::ops::Bound::Excluded(left),std::ops::Bound::Unbounded)) {
+                    for fact in left {
+                        let opposite=Self::facts([*fact].into()).negate();
+                        let ClauseNode::Facts(opposite)=&*opposite.0 else{continue};
+                        let Some(other)=opposite.first().filter(|_|opposite.len()==1)else{continue};
+                        if !right.contains(other){continue;}
+                        let combined=left.iter().filter(|value|*value!=fact)
+                            .chain(right.iter().filter(|value|*value!=other)).copied().collect();
+                        if let Some(value)=facts(&combined){insert(&mut additions,value);}
+                    }
+                }
+            }
+            let mut changed=false;
+            for value in additions{changed|=insert(&mut terms,value);}
+            if !changed{break;}
+        }
+        terms.into_iter().fold(Self::impossible(),|all,facts|Self::either(&all,&Self::facts(facts)))
     }
     fn required(&self) -> Option<Facts> {
         self.required_in(&Facts::new())
@@ -2230,7 +2252,7 @@ impl Ord for Condition {
     }
 }
 impl crate::module::codec::Encode for Condition {
-    fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&Proof::condition(self.clone()),w);}
+    fn encode(&self,w:&mut crate::module::codec::Writer){let condition=Self{cases:self.cases.each_ref().map(Clause::canonical)};crate::module::codec::Encode::encode(&Proof::condition(condition),w);}
 }
 impl crate::module::codec::Decode for Condition {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{
