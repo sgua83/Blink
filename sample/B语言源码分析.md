@@ -1842,6 +1842,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
         },
         sections: Vec::new(),
         symbols: Vec::new(),
+        imports: std::collections::BTreeMap::new(),
         archive: Some(archive),
     })
 }

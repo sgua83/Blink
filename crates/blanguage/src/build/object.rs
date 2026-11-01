@@ -14,13 +14,41 @@ pub struct ObjectCompilation {
     pub artifact: PathBuf,
     pub reused: bool,
 }
-const MAGIC: &[u8; 8] = b"BLBO\x01\0\0\0";
+const MAGIC: &[u8; 8] = b"BLBO\x02\0\0\0";
 struct Inputs {
     source: [u8; 32],
+    imports: [u8; 32],
     native: Option<[u8; 32]>,
 }
-record!(Inputs { source, native });
+record!(Inputs { source, imports, native });
 fn error(value: impl ToString) -> Error { Error::other(value.to_string()) }
+fn import_identity(imported: Option<&crate::module::Imports>, object: &Object) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    for symbol in object.imports.keys() {
+        hash::field(&mut bytes, symbol.as_bytes());
+        let input = imported.and_then(|imports| imports.modules.values()
+            .find(|input| input.definitions.contains_key(symbol)));
+        match input {
+            Some(input) => {
+                hash::field(&mut bytes, &[1]);
+                hash::field(&mut bytes, &input.definitions[symbol]);
+                // 实例与域入口复用原源声明要求，名字规则来自generics::key／domain::symbol。
+                let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
+                match input.requirements.get(&symbol[..end]) {
+                    Some(requirement) => hash::field(&mut bytes, &[1, match requirement {
+                        crate::execution::Requirement::Invocation => 0,
+                        crate::execution::Requirement::Domain => 1,
+                        crate::execution::Requirement::Host => 2,
+                    }]),
+                    None => hash::field(&mut bytes, &[0]),
+                }
+            }
+            None => hash::field(&mut bytes, &[0]),
+        }
+    }
+    hash::digest(&bytes)
+}
+
 pub fn compile_object(
     path: &Path, root: &Path, dependencies: &[Object], kind: ObjectKind<'_>, output: &Path,
 ) -> Result<ObjectCompilation> {
@@ -76,36 +104,22 @@ pub(super) fn compile<'a>(
         hash::field(&mut bytes, source.path.as_os_str().as_encoded_bytes());
         hash::field(&mut bytes, source.text.as_bytes());
     }
-    if let Some(imported) = imported {
-        for name in world.interfaces.keys() {
-            if let Some(input) = imported.modules.get(name) {
-                hash::field(&mut bytes, name.as_bytes());
-                hash::field(&mut bytes, &input.definitions.bytes());
-                hash::field(&mut bytes, &input.requirements.len().to_le_bytes());
-                for (name, requirement) in &input.requirements {
-                    hash::field(&mut bytes, name.as_bytes());
-                    hash::field(&mut bytes, &[match requirement {
-                        crate::execution::Requirement::Invocation => 0,
-                        crate::execution::Requirement::Domain => 1,
-                        crate::execution::Requirement::Host => 2,
-                    }]);
-                }
-            }
-        }
-    }
     let source = hash::digest(&bytes);
     let runtime = !matches!(kind, ObjectKind::Module(_));
     match fs::read(&artifact) {
         Ok(bytes) => {
             let reader = crate::object::ObjectReader::new(&bytes).map_err(error)?;
-            if let Some(stored) = reader.build_inputs().map_err(error)? {
-                let stored = Inputs::from_bytes(stored.strip_prefix(MAGIC)
-                    .ok_or_else(|| Error::other("不支持的目标文件构建信息"))?).map_err(error)?;
+            if let Some(stored) = reader.build_inputs().map_err(error)?
+                .and_then(|stored| stored.strip_prefix(MAGIC))
+            {
+                let stored = Inputs::from_bytes(stored).map_err(error)?;
                 if stored.source == source {
-                    let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
-                    if stored.native == native {
-                        let object = reader.object().map_err(error)?;
-                        return Ok(ObjectCompilation { object, artifact, reused: true });
+                    let object = reader.object().map_err(error)?;
+                    if stored.imports == import_identity(imported, &object) {
+                        let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
+                        if stored.native == native {
+                            return Ok(ObjectCompilation { object, artifact, reused: true });
+                        }
                     }
                 }
             }
@@ -129,7 +143,8 @@ pub(super) fn compile<'a>(
         }
     };
     let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime)?) } else { None };
-    let mut stored = MAGIC.to_vec(); stored.extend(Inputs { source, native }.bytes());
+    let imports = import_identity(imported, &object);
+    let mut stored = MAGIC.to_vec(); stored.extend(Inputs { source, imports, native }.bytes());
     let bytes = object.build_bytes(&stored).map_err(error)?;
     fs::create_dir_all(artifact.parent().unwrap())?;
     publish(&artifact, &bytes)?;

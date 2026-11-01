@@ -20,7 +20,7 @@
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "sha256": "9016285e1102722e0f6c859f1aac822b50541f3f1c3488c4ac44f53405076ea1"
+      "sha256": "8e2a696cd8fe552728675467906a104aaeed6bc1e7660b2adc03003c837a8db7"
     },
     {
       "path": "crates/blanguage/src/generics.rs",
@@ -407,8 +407,8 @@
     {
       "path": "crates/blanguage/src/dll/mod.rs",
       "start_line": 257,
-      "end_line": 286,
-      "sha256": "5c02eae48e6792f6d7b1a8bab6e66c77261ee5274d3c8e8d8ce244c20e51dd93"
+      "end_line": 287,
+      "sha256": "7625eafd6a01e8bb6e4f32fca1ee17bde012610eed60ccb2aaaeb24e7f8bc3fc"
     }
   ]
 }

@@ -141,15 +141,11 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     for symbol in &o.symbols {
         bindings.insert(symbol.name.clone(), symbol.contract.clone());
     }
-    for section in &o.sections {
-        for relocation in &section.relocations {
-            if let Target::Symbol(name, contract) = &relocation.target {
-                if let Some(expected) = bindings.insert(name.clone(), contract.clone())
-                    && expected != *contract
-                {
-                    return Err(format!("对象内模块接口冲突 {name}").into());
-                }
-            }
+    for (name, contract) in &o.imports {
+        if let Some(expected) = bindings.insert(name.clone(), contract.clone())
+            && expected != *contract
+        {
+            return Err(format!("对象内模块接口冲突 {name}").into());
         }
     }
     word(&mut meta, u32::try_from(bindings.len())?);
@@ -209,7 +205,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     }
     for section in &o.sections {
         for relocation in &section.relocations {
-            if let Target::Symbol(name, _) = &relocation.target
+            if let Target::Symbol(name) = &relocation.target
                 && !names.contains_key(name)
             {
                 names.insert(name.clone(), symbols.len());
@@ -276,7 +272,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             word(&mut out, u32::try_from(r.offset)?);
             let symbol = match &r.target {
                 Target::Section(i, _) => *i,
-                Target::Symbol(name, _) => names[name],
+                Target::Symbol(name) => names[name],
                 Target::Import(i) => imports[i],
             };
             word(&mut out, u32::try_from(symbol)?);
@@ -488,13 +484,8 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             } else if s.0.starts_with("__blink_import$") {
                 Target::Import(read_import(&s.0)?)
             } else {
-                Target::Symbol(
-                    s.0.clone(),
-                    bindings
-                        .get(&s.0)
-                        .ok_or("未定义符号缺少模块接口合同")?
-                        .clone(),
-                )
+                bindings.get(&s.0).ok_or("未定义符号缺少模块接口合同")?;
+                Target::Symbol(s.0.clone())
             };
             sections[*index].relocations.push(Relocation {
                 offset: get32(r, 0)? as usize,
@@ -503,9 +494,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             });
         }
     }
-    Ok(Object {
-        name,
-        symbols: symbols
+    let symbols = symbols
             .into_iter()
             .filter(|(name, section, _, class, _)| {
                 *class == 2
@@ -516,9 +505,8 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
                 Ok(super::Symbol {
                     function,
                     contract: bindings
-                        .get(&name)
-                        .ok_or("导出符号缺少模块接口合同")?
-                        .clone(),
+                        .remove(&name)
+                        .ok_or("导出符号缺少模块接口合同")?,
                     name,
                     section: *mapping
                         .get(&(section as usize - 1))
@@ -526,7 +514,11 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
                     value,
                 })
             })
-            .collect::<Result<_>>()?,
+            .collect::<Result<_>>()?;
+    Ok(Object {
+        name,
+        symbols,
+        imports: bindings,
         sections,
         archive,
         kind,

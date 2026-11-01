@@ -107,6 +107,7 @@ impl Module {
             },
             sections,
             symbols,
+            imports: self.imports.clone(),
             archive,
         })
     }

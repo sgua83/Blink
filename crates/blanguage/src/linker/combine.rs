@@ -78,6 +78,7 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
         placements.push(positions);
     }
     for (object, positions) in objects.into_iter().zip(placements) {
+        let imports = object.imports;
         for (section, (index, base)) in object.sections.into_iter().zip(&positions) {
             for mut relocation in section.relocations {
                 relocation.offset += *base as usize;
@@ -86,11 +87,12 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
                         let (index, begin) = positions[old];
                         Target::Section(index, begin.checked_add(value).ok_or("模块节地址溢出")?)
                     }
-                    Target::Symbol(name, expected) => {
+                    Target::Symbol(name) => {
+                        let expected = &imports[&name];
                         let (section, value, actual) = symbols
                             .get(&name)
                             .ok_or_else(|| format!("未定义模块符号 {name}"))?;
-                        if actual != &expected {
+                        if actual != expected {
                             return Err(format!("模块接口不匹配 {name}；调用方与定义须使用相同的类型、布局、访问及函数事实").into());
                         }
                         Target::Section(*section, *value)
@@ -107,6 +109,7 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
             kind: Kind::Application { stack_bytes },
             sections,
             symbols: Vec::new(),
+            imports: BTreeMap::new(),
             archive: None,
         },
         archives,

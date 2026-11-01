@@ -40,13 +40,16 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
         },
     ];
     let mut relocations = Vec::new();
+    let mut imports = std::collections::BTreeMap::new();
     let mut types = 0u32;
     let mut programs = 0u32;
     for (index, module) in modules.into_iter().enumerate() {
+        let resource = format!("{}_resources", module.prefix);
+        imports.insert(resource.clone(), Vec::new());
         relocations.push(Relocation {
             offset: 8 + 8 * index,
             kind: 1,
-            target: Target::Symbol(format!("{}_resources", module.prefix), Vec::new()),
+            target: Target::Symbol(resource),
         });
         for (suffix, value) in [("type_base", types), ("program_base", programs)] {
             symbols.push(Symbol {
@@ -79,6 +82,7 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
             relocations,
         }],
         symbols,
+        imports,
         archive: None,
     }))
 }

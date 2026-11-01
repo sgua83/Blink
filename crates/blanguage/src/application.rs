@@ -45,6 +45,7 @@ impl Application {
             kind: Kind::Application { stack_bytes: stack_bytes.max(resource_stack) },
             sections,
             symbols: Vec::new(),
+            imports: self.imports.clone(),
             archive,
         })
     }

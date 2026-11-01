@@ -300,7 +300,7 @@ fn functions(
             let target = if let NativeSymbol::Function(name) = &relocation.target
                 && !targets.contains_key(&relocation.target)
             {
-                Target::Symbol(name.clone(), imports[name].clone())
+                Target::Symbol(name.clone())
             } else {
                 put64(&mut text, at, targets[&relocation.target] as u64);
                 Target::Section(0, 0)

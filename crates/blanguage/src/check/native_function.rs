@@ -806,6 +806,13 @@ fn finalize(
         }
         frame = next;
     }
+    let mut imports = BTreeMap::new();
+    for (name, unit) in &mut units {
+        unit.contract.frame = frame.contains(name);
+        if unit.function.is_none() || owner.is_some_and(|owner| unit.module != owner) {
+            imports.insert(name.clone(), unit.contract.bytes());
+        }
+    }
     units.retain(|name, _| reachable.contains(name));
     fn prune(body: &mut ValueCode, frame: &BTreeSet<String>) {
         calls(&mut body.code, &mut |call| {
@@ -819,11 +826,10 @@ fn finalize(
     }
     let mut result = Finalized {
         functions: Vec::new(),
-        imports: BTreeMap::new(),
+        imports,
         exports: BTreeMap::new(),
     };
     for (name, mut unit) in units {
-        unit.contract.frame = frame.contains(&name);
         let local = unit.function.is_some() && owner.is_none_or(|owner| unit.module == owner);
         if local {
             let mut function = unit.function.take().unwrap();
@@ -837,8 +843,6 @@ fn finalize(
             if owner.is_some() && unit.public {
                 result.exports.insert(name, unit.contract.bytes());
             }
-        } else {
-            result.imports.insert(name, unit.contract.bytes());
         }
     }
     Ok(result)

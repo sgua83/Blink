@@ -55,7 +55,7 @@ fn dependencies(object: &Object) -> impl Iterator<Item = &str> {
         .iter()
         .flat_map(|s| &s.relocations)
         .filter_map(|r| {
-            if let Target::Symbol(name, _) = &r.target {
+            if let Target::Symbol(name) = &r.target {
                 Some(name.as_str())
             } else {
                 None

@@ -29,7 +29,7 @@ pub(crate) struct Symbol {
     pub function: bool,
 }
 pub(crate) enum Target {
-    Symbol(String, Vec<u8>),
+    Symbol(String),
     Section(usize, u32),
     Import(Import),
 }
@@ -70,6 +70,7 @@ pub struct Object {
     pub(crate) kind: Kind,
     pub(crate) sections: Vec<Section>,
     pub(crate) symbols: Vec<Symbol>,
+    pub(crate) imports: std::collections::BTreeMap<String, Vec<u8>>,
     pub(crate) archive: Option<Archive>,
 }
 impl Object {
