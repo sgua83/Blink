@@ -286,3 +286,9 @@ SDK可显式选择具有所需能力的物理设备；原C绑定的backend=GPU�
 Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的实际记录数量及一份Vec<u32>，按值接收原存储，不复制数据。物理字数须等于ceil(stride*count/4)；末字中的非记录填充保持原字节，不从整字长度反推数量，也不要求填充为零。步长、类型来自原编译接口，逻辑数量存入原Dataset.count，不建立计数或布局副本。复制已有Dataset时交接其count；图像等外部生产者交接自己的实际元素数量。
 
 本入口的Rust源调用须传递count；普通C、资源ABI、数据布局与GPU最后消费者规则保持。输入物理存储与声明数量不符仍报真实输入错误，不以截断、补齐、兼容包装或猜测数量接收。
+
+## Windows高精度计时的原生输出
+
+`blink.windows.time`以纯`.h`直接声明Kernel32的`QueryPerformanceCounter`与`QueryPerformanceFrequency`。Windows `BOOL`按`i32`原值返回，`LARGE_INTEGER`输出按大小8／对齐8的`i64`位置借用；`ensures initialized(output,returned != 0)`只在本次非零状态交付输出。接口不将可能失败的输出伪装为无条件初始化，也不增加包装DLL、运行时时钟服务或第二份输出。
+
+计数是ticks，频率是ticks／秒；调用者决定错误处理与区间换算，原位置在调用期间借出，OS返回后仍归原调用者。签名、用法、时间语义与官方合同见[标准库计时接口](../library/README.md#blinkwindowstime)。它不提供日历时间或GPU计时，也不表示BLEngine的Rust时间消费者已迁移。
