@@ -119,7 +119,13 @@ try {
         $tag = "v$version"
         $api = "https://api.github.com/repos/$repository"
         $headers = @{ Accept = 'application/vnd.github+json' }
-        $releases = @(Invoke-RestMethod -Uri "$api/releases?per_page=100" -Headers $headers)
+        # The release owner must also see unpublished drafts from earlier invocations.
+        $credential = "protocol=https`nhost=github.com`n`n" | & git credential fill
+        if ($LASTEXITCODE -ne 0) { throw 'GitHub credential lookup failed.' }
+        $secret = ($credential | Where-Object { $_.StartsWith('password=') }).Substring(9)
+        $headers.Authorization = "Bearer $secret"
+        $credential = $null; $secret = $null
+        $releases = Invoke-RestMethod -Uri "$api/releases?per_page=100" -Headers $headers
         $published = @($releases | Where-Object { -not $_.draft -and -not $_.prerelease })
         if ($published.Count -gt 0 -and $published[0].tag_name -eq $tag) {
             Write-Output "UNCHANGED RELEASE $tag"
@@ -191,12 +197,6 @@ try {
     Write-Output "BUILT $archive P4 $change VERSION $version"
     if ($BuildOnly) { return }
 
-    # Use the central user's existing Git credential. Never print or persist it.
-    $credential = "protocol=https`nhost=github.com`n`n" | & git credential fill
-    if ($LASTEXITCODE -ne 0) { throw 'GitHub credential lookup failed.' }
-    $secret = ($credential | Where-Object { $_.StartsWith('password=') }).Substring(9)
-    $headers.Authorization = "Bearer $secret"
-    $credential = $null; $secret = $null
     $existing = @($releases | Where-Object { $_.tag_name -eq $tag })
     if ($existing.Count -gt 0) {
         if (-not $existing[0].draft) { throw "Release $tag already exists." }
