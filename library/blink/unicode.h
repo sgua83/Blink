@@ -24,6 +24,8 @@ enum Utf16Encoding : u32 {
 
 result<DecodedScalar,DecodeError> decode_utf8(read dataset<u8> text,u32 offset) on cpu;
 result<DecodedScalar,DecodeError> decode_utf16(read dataset<u16> text,u32 offset) on cpu;
+result<u32,DecodeError> scalar_length_utf8(read dataset<u8> text) on cpu;
+result<u32,DecodeError> scalar_length_utf16(read dataset<u16> text) on cpu;
 result<Utf8Encoding,u32> encode_utf8(u32 value) on cpu;
 result<Utf16Encoding,u32> encode_utf16(u32 value) on cpu;
 

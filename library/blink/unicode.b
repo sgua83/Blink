@@ -70,6 +70,28 @@ result<DecodedScalar,DecodeError> decode_utf16(read dataset<u16> text,u32 offset
     return Ok(DecodedScalar(0x10000+((first-0xd800)<<10)+(second-0xdc00),second_index+1));
 }
 
+result<u32,DecodeError> scalar_length_utf8(read dataset<u8> text) on cpu {
+    u32 offset=0;
+    u32 count=0;
+    while (offset<text.length) {
+        DecodedScalar decoded=try(decode_utf8(text,offset));
+        offset=decoded.next;
+        count+=1;
+    }
+    return Ok(count);
+}
+
+result<u32,DecodeError> scalar_length_utf16(read dataset<u16> text) on cpu {
+    u32 offset=0;
+    u32 count=0;
+    while (offset<text.length) {
+        DecodedScalar decoded=try(decode_utf16(text,offset));
+        offset=decoded.next;
+        count+=1;
+    }
+    return Ok(count);
+}
+
 Utf8Encoding utf8_encoding(u32 value) on cpu {
     if (value < 0x80) { return Utf8Encoding::One(u8(value)); }
     if (value < 0x800) {
