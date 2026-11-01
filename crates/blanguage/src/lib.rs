@@ -69,7 +69,7 @@ pub struct Compilation {
 }
 pub(crate) struct Declarations {
     sources: BTreeMap<String, Source>,
-    interfaces: BTreeMap<String, Source>,
+    interfaces: BTreeMap<String, Arc<ast::Module>>,
     records: BTreeMap<String, (Record, Source, String, Vec<String>)>,
     functions: BTreeMap<String, Arc<Definition>>,
     type_sets: BTreeMap<String, (TypeSet, Source, String, Vec<String>)>,
@@ -134,14 +134,13 @@ fn same_signature(a: &Function, b: &Function) -> bool {
         && a.external == b.external
         && a.types == b.types
         && a.values == b.values
-        && a.result == b.result
         && a.target == b.target
         && contract_signature(a) == contract_signature(b)
         && a.params.len() == b.params.len()
         && a.params
             .iter()
             .zip(&b.params)
-            .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.access == b.access)
+            .all(|(a, b)| a.name == b.name && a.access == b.access)
 }
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
     compile_module(path, module_root, true, None, None)
@@ -441,6 +440,11 @@ fn read_world(
             check::constant_value(&world, key)?;
         }
     }
+    for definition in world.functions.values().filter(|definition| {
+        definition.function.types.is_empty() && definition.function.values.is_empty()
+    }) {
+        world.check_interface_types(definition, &definition.function, &BTreeMap::new(), &BTreeMap::new())?;
+    }
     validate_types(&world)?;
     for definition in world.functions.values().filter(|definition| definition.function.c_abi) {
         check::external::check_declaration(&world, definition)?;
@@ -544,7 +548,7 @@ fn load(
     world.sources.insert(name.clone(), source.clone());
     world
         .interfaces
-        .insert(name.clone(), interface.source.clone());
+        .insert(name.clone(), Arc::clone(&interface));
     let imports: Vec<_> = interface
         .imports
         .iter()

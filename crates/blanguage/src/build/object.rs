@@ -175,7 +175,7 @@ pub(super) fn compile<'a>(
             hash::field(&mut bytes, prefix.as_bytes());
         }
     }
-    for (name, source) in world.interfaces.iter().chain(&world.sources) {
+    for (name, source) in world.interfaces.iter().map(|(name, module)| (name, &module.source)).chain(&world.sources) {
         hash::field(&mut bytes, name.as_bytes());
         hash::field(&mut bytes, source.path.as_os_str().as_encoded_bytes());
         source_identity(&mut bytes, definitions, source, name != &module && imported.is_some_and(|imports| imports.modules.contains_key(name)));

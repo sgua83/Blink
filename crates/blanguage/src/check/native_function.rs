@@ -942,7 +942,7 @@ pub(crate) fn compile_module(
     Ok(crate::module::Module {
         compiler: world.worker.compiler().clone(),
         name: entry.into(),
-        header: world.interfaces[entry].text.to_string(),
+        header: world.interfaces[entry].source.text.to_string(),
         requirements: world
             .functions
             .iter()

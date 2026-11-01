@@ -24,7 +24,7 @@
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "sha256": "cd84a899c099910930f950ef89c287053843b69035527ed845c9ff806f9d6cdb"
+      "sha256": "6f629ab3c7db38fe983b065808a77911a5865ab02228e45b062334f36958328c"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
@@ -36,7 +36,7 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "sha256": "27a7334a36e7ef48927d7de5e1c4b713eba6a593e21f9621fdafab7c7976a23a"
+      "sha256": "f9da6b31f59ab38e86d9c53cf056584a2a20b779bdc3a577c465c96592be71d2"
     },
     {
       "path": "crates/blanguage/src/native.rs",
@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
-      "sha256": "4da9538b4131994a4ba176f5ed5a73dd10f1b54aba0e8b554ecce035084e72f8"
+      "sha256": "e68731164b229c63cae281d05e566afefc785e1906ab3d1bd80a323c57bfdc7e"
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
@@ -180,14 +180,14 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "start_line": 146,
-      "end_line": 158,
+      "start_line": 145,
+      "end_line": 157,
       "sha256": "f3cd02d756a18b10ae711e9fe9119f29c71c8cb7f266d020843178b17376a870"
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "start_line": 495,
-      "end_line": 499,
+      "start_line": 499,
+      "end_line": 503,
       "sha256": "e1b68eb7af3560243810d79d8b974c3f0eeba69351fd7d081e0989e884e9c320"
     },
     {
@@ -468,8 +468,8 @@
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
-      "start_line": 199,
-      "end_line": 227,
+      "start_line": 239,
+      "end_line": 267,
       "sha256": "c5717c2a0da6687609e83a1e04dd781039087f5a13d94c4b5e5908975f59c2f9"
     },
     {
@@ -522,8 +522,8 @@
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
-      "start_line": 244,
-      "end_line": 261,
+      "start_line": 284,
+      "end_line": 301,
       "sha256": "410a649ec411b82d26eee5647d2ba448d0a4e272f6f5ab6b3a4e9031b3da1e09"
     },
     {

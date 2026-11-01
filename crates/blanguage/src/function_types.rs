@@ -1,6 +1,6 @@
 //! C函数签名只持有原TypeName名义引用；对象布局与实际C调用仍由World产生。
 use crate::{ast::*, ir::{CFunctionType, CallParameter, Scalar, Ty}, Source, World};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::Result<()> {
     if syntax.dataset || ty.owns_resources() {
@@ -70,6 +70,46 @@ impl CFunctionType {
     }
 }
 impl World {
+    pub(crate) fn check_interface_types(&self, definition: &crate::Definition, actual: &Function,
+        types: &BTreeMap<String, TypeName>, values: &BTreeMap<String, u32>,
+    ) -> crate::Result<()> {
+        if !definition.public || definition.compiled.is_some() { return Ok(()); }
+        let interface = &self.interfaces[&definition.module];
+        let Some(declaration) = interface.functions.iter().find(|function| {
+            function.name == actual.name && function.kind != FunctionKind::Constant && function.external.is_none()
+        }) else { return Ok(()); };
+        let bind = |name: &TypeName, source: &Source, span: Span| -> crate::Result<TypeName> {
+            let mut name = name.clone();
+            crate::generics::substitute_type(&mut name, types, source, span)?;
+            crate::value_parameters::substitute_type(&mut name, values);
+            self.interface_type(&name, source, span, &definition.module, &definition.imports)
+        };
+        let mut same = bind(&declaration.result, &interface.source, declaration.span)?
+            == self.interface_type(&actual.result, &definition.source, actual.span, &definition.module, &definition.imports)?;
+        for (declared, implemented) in declaration.params.iter().zip(&actual.params) {
+            same &= bind(&declared.ty, &interface.source, declared.span)?
+                == self.interface_type(&implemented.ty, &definition.source, implemented.span, &definition.module, &definition.imports)?;
+        }
+        if !same {
+            return definition.source.fail(actual.span, "B028", format!("{} 的实际类型或函数值合同与 .h 不一致", actual.name));
+        }
+        Ok(())
+    }
+    fn interface_type(&self, name: &TypeName, source: &Source, span: Span, module: &str,
+        imports: &[String],
+    ) -> crate::Result<TypeName> {
+        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
+            return Ok(self.c_function_type(name, source, span, module, imports)?.syntax());
+        }
+        let mut name = name.clone();
+        for argument in &mut name.arguments {
+            if let GenericArgument::Type(ty) = argument {
+                *ty = self.interface_type(ty, source, span, module, imports)?;
+            }
+        }
+        Ok(name)
+    }
+
     // Resolve names and const arguments without asking a signature reference for its record layout.
     fn c_signature_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<TypeName> {
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {

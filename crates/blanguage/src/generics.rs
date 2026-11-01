@@ -102,6 +102,7 @@ pub(crate) fn instantiate(
         substitute_block(body, &replacements, &value_map, &definition.source)?;
     }
     names.extend(values.iter().map(u32::to_string));
+    world.check_interface_types(definition, &concrete.function, &replacements, &value_map)?;
     Ok(Instance {
         name: key(base, &names),
         definition: std::sync::Arc::new(concrete),
