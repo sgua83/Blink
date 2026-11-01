@@ -90,8 +90,8 @@ impl Module {
             .iter()
             .map(|(name, contract)| Symbol {
                 name: name.clone(),
-                section: 0,
-                value: positions[name],
+                section: positions[name].0,
+                value: positions[name].1,
                 contract: contract.clone(),
                 function: true,
             })

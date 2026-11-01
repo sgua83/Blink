@@ -61,13 +61,14 @@ struct CoffSymbol {
     value: u32,
     function: bool,
     external: bool,
+    auxiliary: Option<[u8; 18]>,
 }
 pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     encode_build(o, None)
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 27);
+    word(&mut meta, 28);
     string(&mut meta, &o.name)?;
     match &o.kind {
         Kind::Module {
@@ -171,18 +172,48 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     if let Some(a) = &o.archive {
         sections.push((ARCHIVE, &a.bytes, 0x840, &[]));
     }
+    let mut owners = vec![None; o.sections.len()];
+    for (index, section) in o.sections.iter().enumerate() {
+        for &associated in &section.associated { owners[associated] = Some(index); }
+    }
     let mut symbols: Vec<CoffSymbol> = o
         .sections
         .iter()
         .enumerate()
-        .map(|(i, s)| CoffSymbol {
+        .map(|(i, s)| Ok(CoffSymbol {
             name: s.name.clone(),
-            section: i as i16 + 1,
+            section: i16::try_from(i + 1)?,
             value: 0,
             function: false,
             external: false,
-        })
-        .collect();
+            auxiliary: if s.flags & 0x1000 != 0 {
+                let mut row = [0; 18];
+                u32_at(&mut row, 0, u32::try_from(s.bytes.len())?);
+                u16_at(&mut row, 4, s.relocations.len().min(u16::MAX as usize) as u16);
+                if let Some(owner) = owners[i] {
+                    u16_at(&mut row, 12, u16::try_from(owner + 1)?);
+                    row[14] = 5;
+                } else { row[14] = 1; }
+                Some(row)
+            } else { None },
+        }))
+        .collect::<Result<_>>()?;
+    let mut next_symbol = 0;
+    let section_symbols = symbols.iter().map(|symbol| {
+        let index = next_symbol;
+        next_symbol += 1 + usize::from(symbol.auxiliary.is_some());
+        index
+    }).collect::<Vec<_>>();
+    for (index, section) in o.sections.iter().enumerate() {
+        if section.flags & 0x1000 != 0 {
+            symbols.push(CoffSymbol {
+                name: format!("__blink_section${}${index}", o.name),
+                section: i16::try_from(index + 1)?, value: 0,
+                function: false, external: false, auxiliary: None,
+            });
+            next_symbol += 1;
+        }
+    }
     if matches!(o.kind, Kind::Application { .. }) {
         symbols.push(CoffSymbol {
             name: "mainCRTStartup".into(),
@@ -190,32 +221,38 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             value: 0,
             function: true,
             external: true,
+            auxiliary: None,
         });
+        next_symbol += 1;
     }
     let mut names = BTreeMap::new();
     for symbol in &o.symbols {
-        names.insert(symbol.name.clone(), symbols.len());
+        names.insert(symbol.name.clone(), next_symbol);
         symbols.push(CoffSymbol {
             name: symbol.name.clone(),
             section: i16::try_from(symbol.section + 1)?,
             value: symbol.value,
             function: symbol.function,
             external: true,
+            auxiliary: None,
         });
+        next_symbol += 1;
     }
     for section in &o.sections {
         for relocation in &section.relocations {
             if let Target::Symbol(name) = &relocation.target
                 && !names.contains_key(name)
             {
-                names.insert(name.clone(), symbols.len());
+                names.insert(name.clone(), next_symbol);
                 symbols.push(CoffSymbol {
                     name: name.clone(),
                     section: 0,
                     value: 0,
                     function: true,
                     external: true,
+                    auxiliary: None,
                 });
+                next_symbol += 1;
             }
         }
     }
@@ -228,14 +265,16 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         }
     }
     for (i, index) in &mut imports {
-        *index = symbols.len();
+        *index = next_symbol;
         symbols.push(CoffSymbol {
             name: import_name(i),
             section: 0,
             value: 0,
             function: true,
             external: true,
+            auxiliary: None,
         });
+        next_symbol += 1;
     }
     let mut out = vec![0; 20 + 40 * sections.len()];
     u16_at(&mut out, 0, 0x8664);
@@ -271,7 +310,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         for r in *relocs {
             word(&mut out, u32::try_from(r.offset)?);
             let symbol = match &r.target {
-                Target::Section(i, _) => *i,
+                Target::Section(i, _) => section_symbols[*i],
                 Target::Symbol(name) => names[name],
                 Target::Import(i) => imports[i],
             };
@@ -281,7 +320,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     }
     let p = out.len();
     u32_at(&mut out, 8, u32::try_from(p)?);
-    u32_at(&mut out, 12, u32::try_from(symbols.len())?);
+    u32_at(&mut out, 12, u32::try_from(next_symbol)?);
     let mut strings = vec![0; 4];
     for symbol in symbols {
         let mut row = [0; 18];
@@ -296,7 +335,9 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         u16_at(&mut row, 12, symbol.section as u16);
         u16_at(&mut row, 14, if symbol.function { 0x20 } else { 0 });
         row[16] = if symbol.external { 2 } else { 3 };
+        row[17] = u8::from(symbol.auxiliary.is_some());
         out.extend(row);
+        if let Some(auxiliary) = symbol.auxiliary { out.extend(auxiliary); }
     }
     let n = u32::try_from(strings.len())?;
     u32_at(&mut strings, 0, n);
@@ -337,8 +378,10 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let count = get32(b, 12)? as usize;
     let strings_at = sym + count * 18;
     let strings = slice(b, strings_at, get32(b, strings_at)? as usize)?;
-    let mut symbols = Vec::new();
-    for i in 0..count {
+    let mut symbols = vec![None; count];
+    let mut definitions = BTreeMap::new();
+    let mut i = 0;
+    while i < count {
         let r = slice(b, sym + i * 18, 18)?;
         let name = if get32(r, 0)? == 0 {
             let p = get32(r, 4)? as usize;
@@ -351,13 +394,18 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         } else {
             std::str::from_utf8(&r[..r[..8].iter().position(|&c| c == 0).unwrap_or(8)])?.to_owned()
         };
-        symbols.push((
+        if r[16] == 3 && get16(r, 12)? as i16 > 0 && r[17] > 0 {
+            let auxiliary = slice(b, sym + (i + 1) * 18, 18)?;
+            definitions.insert(get16(r, 12)? as usize - 1, (auxiliary[14], get16(auxiliary, 12)?));
+        }
+        symbols[i] = Some((
             name,
             get16(r, 12)? as i16,
             get32(r, 8)?,
             r[16],
             get16(r, 14)? == 0x20,
         ));
+        i += 1 + r[17] as usize;
     }
     let mut raw = Vec::new();
     for h in reader.headers.chunks_exact(40) {
@@ -379,7 +427,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 27 {
+    if tag != *b"BLCO" || read_word(&mut c)? != 28 {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;
@@ -453,11 +501,25 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         if name != META && name != ARCHIVE && name != BUILD {
             mapping.insert(i, sections.len());
             sections.push(Section {
+                associated: Vec::new(),
                 name: name.clone(),
                 bytes: bytes.clone(),
                 flags: *flags,
                 relocations: Vec::new(),
             });
+        }
+    }
+    for (old, &index) in &mapping {
+        if raw[*old].2 & 0x1000 == 0 { continue; }
+        match definitions.get(old).ok_or("COFF COMDAT节缺少定义辅助记录")? {
+            (1, _) => (),
+            (5, owner) => {
+                let owner = *mapping.get(&(*owner as usize).checked_sub(1).ok_or("COFF关联节编号错误")?)
+                    .ok_or("COFF关联节不可装载")?;
+                if sections[owner].flags & 0x1000 == 0 { return Err("COFF关联所有者不是COMDAT节".into()); }
+                sections[owner].associated.push(index);
+            }
+            _ => return Err("不支持的Blink COFF COMDAT选择".into()),
         }
     }
     for (old, index) in &mapping {
@@ -473,6 +535,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             let r = slice(b, p + i * 10, 10)?;
             let s = symbols
                 .get(get32(r, 4)? as usize)
+                .and_then(Option::as_ref)
                 .ok_or("COFF 重定位符号越界")?;
             let target = if s.1 > 0 {
                 Target::Section(
@@ -496,6 +559,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     }
     let symbols = symbols
             .into_iter()
+            .flatten()
             .filter(|(name, section, _, class, _)| {
                 *class == 2
                     && *section > 0

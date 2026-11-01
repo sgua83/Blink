@@ -21,6 +21,7 @@ pub(crate) struct Section {
     pub bytes: Vec<u8>,
     pub flags: u32,
     pub relocations: Vec<Relocation>,
+    pub associated: Vec<usize>,
 }
 pub(crate) struct Symbol {
     pub name: String,

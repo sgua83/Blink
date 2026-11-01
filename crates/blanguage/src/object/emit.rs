@@ -2,9 +2,6 @@
 use super::{Import, Relocation, Result, Section, Target};
 use crate::native::{ApplicationCode, NativeSymbol, application_unwind};
 use std::collections::{BTreeMap, BTreeSet};
-fn align(n: usize, a: usize) -> usize {
-    n.div_ceil(a) * a
-}
 fn put32(v: &mut [u8], at: usize, n: u32) {
     v[at..at + 4].copy_from_slice(&n.to_le_bytes());
 }
@@ -27,10 +24,30 @@ fn ucrt(name: &'static str) -> Import {
         name: name.into(),
     }
 }
-struct Function {
-    begin: usize,
-    end: usize,
-    unwind: Vec<u8>,
+fn function(sections: &mut Vec<Section>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>) -> usize {
+    let text = sections.len();
+    sections.push(Section {
+        name: ".text".into(), bytes, flags: 0x60501020,
+        relocations: Vec::new(), associated: Vec::new(),
+    });
+    if let Some((end, unwind)) = unwind {
+        let pdata = text + 1;
+        let xdata = text + 2;
+        sections[text].associated = vec![pdata, xdata];
+        let mut bytes = vec![0; 12];
+        put32(&mut bytes, 4, end);
+        sections.push(Section {
+            name: ".pdata".into(), bytes, flags: 0x40301040,
+            relocations: [(0, text), (4, text), (8, xdata)].into_iter()
+                .map(|(offset, section)| Relocation { offset, kind: 3, target: Target::Section(section, 0) }).collect(),
+            associated: Vec::new(),
+        });
+        sections.push(Section {
+            name: ".xdata".into(), bytes: unwind, flags: 0x40301040,
+            relocations: Vec::new(), associated: Vec::new(),
+        });
+    }
+    text
 }
 struct Helper {
     bytes: Vec<u8>,
@@ -200,7 +217,7 @@ pub(crate) fn module(
     defined: Vec<(String, ApplicationCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, u32>)> {
+) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>)> {
     functions(None, defined, imports, prefix)
 }
 fn functions(
@@ -208,50 +225,31 @@ fn functions(
     defined: Vec<(String, ApplicationCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, u32>)> {
-    let mut text = Vec::new();
-    let mut patches = Vec::new();
-    let mut functions = Vec::new();
+) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>)> {
+    let mut sections = Vec::new();
     let mut images = Vec::new();
     let mut symbols = BTreeMap::new();
     if let Some(native) = native {
-        text.extend([0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1]);
-        call(&mut text, &mut patches, kernel("ExitProcess"));
-        functions.push(Function {
-            begin: 0,
-            end: text.len(),
-            unwind: application_unwind(4, vec![(4, vec![4, 0x42])]),
-        });
-        text.resize(align(text.len(), 16), 0x90);
-        let main = text.len();
-        relative(&mut text, 5, main)?;
-        text.extend(&native.code.bytes);
-        functions.push(Function {
-            begin: main,
-            end: main + native.function_end as usize,
-            unwind: native.unwind,
-        });
-        images.push((main, native.code));
+        let mut bytes = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
+        let mut patches = Vec::new();
+        call(&mut bytes, &mut patches, kernel("ExitProcess"));
+        let end = u32::try_from(bytes.len())?;
+        let entry = function(&mut sections, bytes, Some((end, application_unwind(4, vec![(4, vec![4, 0x42])]))));
+        let main = function(&mut sections, native.code.bytes, Some((native.function_end, native.unwind)));
+        sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
+        sections[entry].relocations.extend(patches.into_iter()
+            .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
+        images.push((main, native.code.relocations));
     }
     let mut targets = BTreeMap::new();
-    for (name, function) in defined {
-        text.resize(align(text.len(), 16), 0x90);
-        let begin = text.len();
-        symbols.insert(name.clone(), u32::try_from(begin)?);
-        targets.insert(NativeSymbol::Function(name), begin);
-        text.extend(&function.code.bytes);
-        functions.push(Function {
-            begin,
-            end: begin + function.function_end as usize,
-            unwind: function.unwind,
-        });
-        images.push((begin, function.code));
+    for (name, code) in defined {
+        let text = function(&mut sections, code.code.bytes, Some((code.function_end, code.unwind)));
+        symbols.insert(name.clone(), (text, 0));
+        targets.insert(NativeSymbol::Function(name), text);
+        images.push((text, code.code.relocations));
     }
-    let operations: BTreeSet<_> = images
-        .iter()
-        .flat_map(|(_, code)| &code.relocations)
-        .map(|r| r.target.clone())
-        .collect();
+    let operations: BTreeSet<_> = images.iter().flat_map(|(_, relocations)| relocations)
+        .map(|r| r.target.clone()).collect();
     for op in operations {
         if let NativeSymbol::Function(name) = &op {
             if !targets.contains_key(&op) && !imports.contains_key(name) {
@@ -259,106 +257,42 @@ fn functions(
             }
             continue;
         }
-        text.resize(align(text.len(), 16), 0x90);
-        let begin = text.len();
-        targets.insert(op.clone(), begin);
-        match op {
+        let mut patches = Vec::new();
+        let text = match &op {
             NativeSymbol::Function(_) => unreachable!(),
-            NativeSymbol::External(name) => thunk(
-                &mut text,
-                &mut patches,
-                Import {
+            NativeSymbol::External(name) => {
+                let mut bytes = Vec::new();
+                thunk(&mut bytes, &mut patches, Import {
                     dll: name.library.clone(),
                     name: if name.library == crate::application::RUNTIME_LIBRARY
-                        && (name.symbol.starts_with("blink_allocate_")
-                            || name.symbol.starts_with("blink_run_"))
-                    {
+                        && (name.symbol.starts_with("blink_allocate_") || name.symbol.starts_with("blink_run_")) {
                         format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
-                    } else {
-                        name.symbol
-                    },
-                },
-            ),
-            NativeSymbol::Print(scalar) => {
-                let helper = print(scalar)?;
-                text.extend(helper.bytes);
-                for (at, import) in helper.patches {
-                    patches.push((begin + at, import));
-                }
-                functions.push(Function {
-                    begin,
-                    end: text.len(),
-                    unwind: helper.unwind,
+                    } else { name.symbol.clone() },
                 });
+                function(&mut sections, bytes, None)
             }
-        }
+            NativeSymbol::Print(scalar) => {
+                let helper = print(*scalar)?;
+                patches = helper.patches;
+                let end = u32::try_from(helper.bytes.len())?;
+                function(&mut sections, helper.bytes, Some((end, helper.unwind)))
+            }
+        };
+        targets.insert(op, text);
+        sections[text].relocations.extend(patches.into_iter()
+            .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
     }
-    let mut locations = Vec::new();
-    for (begin, code) in images {
-        for relocation in code.relocations {
-            let at = begin + relocation.offset;
+    for (section, relocations) in images {
+        for relocation in relocations {
             let target = if let NativeSymbol::Function(name) = &relocation.target
-                && !targets.contains_key(&relocation.target)
-            {
+                && !targets.contains_key(&relocation.target) {
                 Target::Symbol(name.clone())
             } else {
-                put64(&mut text, at, targets[&relocation.target] as u64);
-                Target::Section(0, 0)
+                put64(&mut sections[section].bytes, relocation.offset, 0);
+                Target::Section(targets[&relocation.target], 0)
             };
-            locations.push(Relocation {
-                offset: at,
-                kind: 1,
-                target,
-            });
+            sections[section].relocations.push(Relocation { offset: relocation.offset, kind: 1, target });
         }
     }
-
-    for (at, import) in patches {
-        locations.push(Relocation {
-            offset: at,
-            kind: 4,
-            target: Target::Import(import),
-        });
-    }
-    functions.sort_by_key(|f| f.begin);
-    let mut pdata = vec![0; functions.len() * 12];
-    let mut xdata = Vec::new();
-    let mut relocations = Vec::new();
-    for (i, f) in functions.iter().enumerate() {
-        xdata.resize(align(xdata.len(), 4), 0);
-        put32(&mut pdata, i * 12, f.begin as u32);
-        put32(&mut pdata, i * 12 + 4, f.end as u32);
-        put32(&mut pdata, i * 12 + 8, xdata.len() as u32);
-        xdata.extend(&f.unwind);
-        for (offset, section) in [(0, 0), (4, 0), (8, 2)] {
-            relocations.push(Relocation {
-                offset: i * 12 + offset,
-                kind: 3,
-                target: Target::Section(section, 0),
-            });
-        }
-    }
-    Ok((
-        vec![
-            Section {
-                name: ".text".into(),
-                bytes: text,
-                flags: 0x60500020,
-                relocations: locations,
-            },
-            Section {
-                name: ".pdata".into(),
-                bytes: pdata,
-                flags: 0x40300040,
-                relocations,
-            },
-            Section {
-                name: ".xdata".into(),
-                bytes: xdata,
-                flags: 0x40300040,
-                relocations: Vec::new(),
-            },
-        ],
-        symbols,
-    ))
+    Ok((sections, symbols))
 }

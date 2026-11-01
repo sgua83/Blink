@@ -26,11 +26,12 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
         }
         let mut positions = Vec::new();
         for section in &object.sections {
-            let flags = section.flags & !0x01000000;
+            let flags = section.flags & !(0x01000000 | 0x1000);
             let key = (section.name.clone(), flags);
             let index = *groups.entry(key).or_insert_with(|| {
                 let index = sections.len();
                 sections.push(Section {
+                    associated: Vec::new(),
                     name: section.name.clone(),
                     bytes: Vec::new(),
                     flags,

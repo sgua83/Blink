@@ -26,24 +26,101 @@ pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
     }
     link_objects(objects, libraries, output)
 }
-// 库成员由实际未解析符号引入，后续合同及资源仍交给原组合所有者。
-fn dependencies(object: &Object) -> impl Iterator<Item = &str> {
-    object
-        .sections
-        .iter()
-        .flat_map(|s| &s.relocations)
-        .filter_map(|r| {
-            if let Target::Symbol(name) = &r.target {
-                Some(name.as_str())
-            } else {
-                None
+// 符号与节的存活只属于本次原生链接；展开节沿编译产物的真实关联跟随代码。
+fn define(object: &Object, index: usize, defined: &mut BTreeMap<String, (usize, usize)>) -> Result<()> {
+    for symbol in &object.symbols {
+        if defined.insert(symbol.name.clone(), (index, symbol.section)).is_some() {
+            return Err(format!("重复定义模块符号 {}", symbol.name).into());
+        }
+    }
+    Ok(())
+}
+fn include(objects: &[Object], selected: &mut [Option<Vec<bool>>], pending: &mut VecDeque<(usize, usize)>, object: usize, section: usize) {
+    if selected[object].is_none() {
+        let mut live = vec![false; objects[object].sections.len()];
+        for (index, section) in objects[object].sections.iter().enumerate() {
+            if section.flags & 0x1000 == 0 {
+                live[index] = true;
+                pending.push_back((object, index));
             }
-        })
+        }
+        selected[object] = Some(live);
+    }
+    let live = selected[object].as_mut().unwrap();
+    if !live[section] {
+        live[section] = true;
+        pending.push_back((object, section));
+    }
+}
+fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) -> Result<Vec<Object>> {
+    let mut defined = BTreeMap::new();
+    for (index, object) in objects.iter().enumerate() { define(object, index, &mut defined)?; }
+    if matches!(objects[0].kind, Kind::Library { .. }) { return Ok(objects); }
+    let mut selected = objects.iter().map(|_| None).collect::<Vec<_>>();
+    let mut pending = VecDeque::new();
+    include(&objects, &mut selected, &mut pending, 0, 0);
+    while let Some((object, section)) = pending.pop_front() {
+        for index in 0..objects[object].sections[section].associated.len() {
+            let associated = objects[object].sections[section].associated[index];
+            include(&objects, &mut selected, &mut pending, object, associated);
+        }
+        for index in 0..objects[object].sections[section].relocations.len() {
+            let target = match &objects[object].sections[section].relocations[index].target {
+                Target::Section(section, _) => (object, *section),
+                Target::Import(_) => continue,
+                Target::Symbol(name) => {
+                    if let Some(&target) = defined.get(name) { target } else {
+                        let mut provider = None;
+                        for library in &mut libraries {
+                            if let Some(object) = library.extract(name)? { provider = Some(object); break; }
+                        }
+                        let Some(provider) = provider else { continue; };
+                        let next = objects.len();
+                        define(&provider, next, &mut defined)?;
+                        let target = defined[name];
+                        objects.push(provider);
+                        selected.push(None);
+                        target
+                    }
+                }
+            };
+            include(&objects, &mut selected, &mut pending, target.0, target.1);
+        }
+    }
+    let mut output = Vec::new();
+    for (mut object, live) in objects.into_iter().zip(selected) {
+        let Some(live) = live else { continue; };
+        let mut count = 0;
+        let mapping = live.iter().map(|&keep| if keep { let index = count; count += 1; Some(index) } else { None }).collect::<Vec<_>>();
+        object.sections = object.sections.into_iter().enumerate().filter_map(|(index, mut section)| {
+            if !live[index] { return None; }
+            for relocation in &mut section.relocations {
+                if let Target::Section(index, _) = &mut relocation.target { *index = mapping[*index].unwrap(); }
+            }
+            for associated in &mut section.associated { *associated = mapping[*associated].unwrap(); }
+            Some(section)
+        }).collect();
+        object.symbols.retain(|symbol| live[symbol.section]);
+        for symbol in &mut object.symbols { symbol.section = mapping[symbol.section].unwrap(); }
+        if matches!(object.kind, Kind::Module { .. }) {
+            let used = object.sections.iter().flat_map(|section| &section.relocations).filter_map(|relocation| {
+                if let Target::Import(import) = &relocation.target && import.dll == RUNTIME_LIBRARY { Some(import.name.as_str()) } else { None }
+            }).collect::<std::collections::BTreeSet<_>>();
+            if let Some(archive) = &mut object.archive {
+                if archive.exports.iter().any(|name| used.contains(name.as_str())) {
+                    let factory = archive.resources.as_ref().map(|resource| format!("{}_resources", resource.prefix));
+                    archive.exports.retain(|name| used.contains(name.as_str()) || factory.as_ref() == Some(name));
+                } else { object.archive = None; }
+            }
+        }
+        output.push(object);
+    }
+    Ok(output)
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(vec![object], Vec::new(), path)
 }
-fn link_objects(objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
+fn link_objects(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
     let root = if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
         0
     } else {
@@ -60,40 +137,8 @@ fn link_objects(objects: Vec<Object>, mut libraries: Vec<crate::object::Library>
         }
         entries[0]
     };
-    let mut defined = BTreeMap::new();
-    for (index, object) in objects.iter().enumerate() {
-        for symbol in &object.symbols {
-            if defined.insert(symbol.name.clone(), index).is_some() {
-                return Err(format!("重复定义模块符号 {}", symbol.name).into());
-            }
-        }
-    }
-    let mut candidates = objects.into_iter().map(Some).collect::<Vec<_>>();
-    let mut objects = vec![candidates[root].take().unwrap()];
-    let mut pending = dependencies(&objects[0]).map(str::to_owned).collect::<VecDeque<_>>();
-    while let Some(name) = pending.pop_front() {
-        if let Some(&index) = defined.get(&name) {
-            if let Some(object) = candidates[index].take() {
-                pending.extend(dependencies(&object).map(str::to_owned));
-                objects.push(object);
-            }
-            continue;
-        }
-        for library in &mut libraries {
-            if let Some(object) = library.extract(&name)? {
-                let index = candidates.len();
-                for symbol in &object.symbols {
-                    if defined.insert(symbol.name.clone(), index).is_some() {
-                        return Err(format!("重复定义模块符号 {}", symbol.name).into());
-                    }
-                }
-                candidates.push(None);
-                pending.extend(dependencies(&object).map(str::to_owned));
-                objects.push(object);
-                break;
-            }
-        }
-    }
+    objects.swap(0, root);
+    let mut objects = select(objects, libraries)?;
     let (object, archives) =
         if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
             let mut object = objects.remove(0);
