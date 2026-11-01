@@ -143,7 +143,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 ## B代码直接作为C回调
 
-不带from的extern "C"声明由B正文实现，c_function(Name)从该真实声明取得匹配的非零cfn；源文件及模块接口保留同一C标记，具体写法见[语言规范](BLanguage.md#b定义的原生c入口)。Windows x64的标量、栈参数、普通聚合返回及连续位置参数沿原C ABI交接，bool仍为4字节。符号地址来自原已编译B函数，不经Rust逐次转发，也不将普通B向量的分量指针当成C连续指针。
+不带from的extern "C"声明由B正文实现；c_function(Name)或c_function(Name<T,...,N>)从实际具体实例取得匹配的非零cfn，类型／u32 const按既有静态引用与实例规则绑定，泛型定义不等于C ABI含未定类型。独立模块／archive只交付已明确导出的实例，取址不在链接期展开模板；源文件及模块接口保留同一C标记，具体写法见[语言规范](BLanguage.md#b定义的原生c入口)。Windows x64的标量、栈参数、普通聚合返回及连续位置参数沿原C ABI交接，bool仍为4字节。符号地址来自原已编译B函数，不经Rust逐次转发，也不将普通B向量的分量指针当成C连续指针。
 
 这类C入口的实际调用闭包必须不需要隐藏Frame；普通B辅助函数仍可沿原ABI调用，原完成阶段删除不需要的Frame参数。需要资源执行上下文的回调继续待设计，不能用全局Frame或另起宿主补足。bc生成代码与地址重定位，blink只消费COFF／archive；原公开合同和非零关系交给调用者，链接不重读实现。
 

@@ -24,7 +24,7 @@
     },
     {
       "path": "crates/blanguage/src/generics.rs",
-      "sha256": "6f629ab3c7db38fe983b065808a77911a5865ab02228e45b062334f36958328c"
+      "sha256": "a0f8ceec6318dbfe9abcb1650fecb24449398ebdcd1286d2ede5b4f0704cbb57"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
@@ -100,7 +100,7 @@
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
-      "sha256": "4bf38a4a8b9d94c854388c93e875874629927ec471612a9a9f0d93301d8b058f"
+      "sha256": "58b7bdc953c48689c79c083f164ddae575d6c3dd4f112dd06d384504b9235915"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
@@ -112,7 +112,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
-      "sha256": "0d64ce1b452b14563e7960bbd724583b4c715721260fc402a4a075de93ed2d18"
+      "sha256": "f201bdf3a0e3f74f63560ab2b066464a599903a7112929b3638a20d99f66e148"
     },
     {
       "path": "crates/blanguage/src/resource.rs",
@@ -132,7 +132,7 @@
     },
     {
       "path": "crates/blanguage/src/check/callback.rs",
-      "sha256": "df219f9a4cb972cef2aa40724f5cd506a830a7d68cbea60a3aebd24808c2ce35"
+      "sha256": "0a2a5b42c35f6b8136287350c1cbf5688e541d749632acd8d70cf0a159416217"
     }
   ],
   "excerpts": [
@@ -474,8 +474,8 @@
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
-      "start_line": 253,
-      "end_line": 263,
+      "start_line": 258,
+      "end_line": 268,
       "sha256": "1a25873bae17dd50e01831537ca125681802485129faa173984e55257604aa2b"
     },
     {
@@ -552,9 +552,15 @@
     },
     {
       "path": "crates/blanguage/src/check/callback.rs",
-      "start_line": 19,
-      "end_line": 51,
-      "sha256": "6a69db14911f7c33ff00c0902253ccb096ccd2420a863e815226e62c31d5d015"
+      "start_line": 51,
+      "end_line": 61,
+      "sha256": "e87212b6048ec38f8df4a3f32cc5b0ae6f6fe223a3b17b53186a281773fbc3b4"
+    },
+    {
+      "path": "crates/blanguage/src/check/callback.rs",
+      "start_line": 18,
+      "end_line": 49,
+      "sha256": "13503a6df50d8ff56c81de166f2d54e9434e64afb1dcff8e3d5c84fa7393e173"
     }
   ]
 }

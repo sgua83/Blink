@@ -327,7 +327,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 
 函数值调用复用直接C调用的实参求值、read／write／inout借用、连续布局及返回投影。外部声明与函数值只提供各自真实目标和签名，共用c_call，不造一个不存在的DLL或Definition来转接。
 
-源码节选：`crates/blanguage/src/check/external.rs:253`。
+源码节选：`crates/blanguage/src/check/external.rs:258`。
 
 ```rust
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
@@ -2315,44 +2315,61 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 
 B 的普通 CPU 应用已能通过明确的 `extern "C"` 声明调用 Windows x64 DLL，并能独立编译、链接和启动。它使用 C 导出、普通值与明确位置借用，不把 C++ 类、Rust 对象或任意资源布局直接当作跨语言 ABI。普通 B 模块调用、算法 DLL 与系统库互操作分别承担各自接口和生命周期职责。
 
-B也可用不带from的extern "C"定义具体CPU函数，c_function(Name)形成同一函数代码的cfn地址。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。声明类型在装入时检查一次，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
+B也可用不带from的extern "C"定义普通CPU函数或泛型模板；c_function(Name)与c_function(Name<T,...,N>)沿原静态引用和具体实例形成同一函数代码的cfn地址。模板的实际类型／u32 const、结果和输出条件先完成原替换，再检查真实C签名；DLL导入仍为固定符号。取址没有运行实参，不从接收变量猜模板参数。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。具体声明装入时检查，模板的实际C合同在原实例生产处检查，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
 
-源码节选：`crates/blanguage/src/check/callback.rs:19`。
+源码节选：`crates/blanguage/src/check/callback.rs:51`。
 
 ```rust
     pub(super) fn c_function_value(&mut self, args: &[Expr], span: Span) -> Result<Value> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
         }
-        let [Expr { kind: ExprKind::Name(name), .. }] = args else {
-            return self.fail(span, "B153", "c_function需要一个明确的B C ABI函数名");
-        };
-        let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) else {
-            return self.fail(span, "B158", format!("未知函数 {name}"));
-        };
-        let definition = self.world.functions[&key].clone();
-        if !definition.function.c_abi || definition.function.external.is_some() {
-            return self.fail(span, "B263", "c_function需要B定义的extern C函数，不自动改变普通B函数ABI");
-        }
-        let f = &definition.function;
-        let outputs = f.contracts.iter().filter_map(|contract| {
-            if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
-                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
-            } else { None }
-        }).collect();
-        let syntax = CFunctionType {
-            result: f.result.clone(),
-            parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
-            outputs,
-        }.syntax();
-        let ty = self.world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
-        let instance = crate::generics::instantiate(self.world, &key, &definition, Vec::new(), &[])?;
+        let (instance, ty) = signature(self.world, &self.definition, args, span)?;
         self.native_declaration(&instance)?;
         let reg = self.reg(Scalar::U64);
         self.code.push(Inst::FunctionAddress(reg, instance.name));
         let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
         Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
     }
+```
+
+纯签名绑定把类型生产与地址降低分清：原Scope词法来源分析与Builder共同消费同一实例和CFunctionType，原effects据此识别推导函数值的write／inout位置。没有额外的初始化状态或运行时写回；模板的requires nonzero(N)在原const实例替换时检查并消费。
+
+源码节选：`crates/blanguage/src/check/callback.rs:18`。
+
+```rust
+pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span: Span) -> Result<(crate::generics::Instance, Ty)> {
+    let [reference] = args else {
+        return caller.source.fail(span, "B153", "c_function需要一个明确的B C ABI函数引用");
+    };
+    let (name, explicit) = match &reference.kind {
+        ExprKind::Name(name) => (name, None),
+        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
+        _ => return caller.source.fail(reference.span, "B153", "c_function需要B C ABI函数名及具体类型／const实参"),
+    };
+    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true) else {
+        return caller.source.fail(span, "B158", format!("未知函数 {name}"));
+    };
+    let definition = world.functions[&key].clone();
+    if !definition.function.c_abi || definition.function.external.is_some() {
+        return caller.source.fail(span, "B263", "c_function需要B定义的extern C函数，不自动改变普通B函数ABI");
+    }
+    let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
+    let definition = &instance.definition;
+    let f = &definition.function;
+    let outputs = f.contracts.iter().filter_map(|contract| {
+        if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
+            Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
+        } else { None }
+    }).collect();
+    let syntax = CFunctionType {
+        result: f.result.clone(),
+        parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
+        outputs,
+    }.syntax();
+    let ty = world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
+    Ok((instance, ty))
+}
 ```
 
 函数地址不执行代码，也不持有模块／状态的所有权。真正注册方须等注销及最后回调完成后才能释放；需要Frame的回调、可保留上下文及动态热卸载仍有独立缺口，不能由静态B窗口过程推出全部寿命能力。

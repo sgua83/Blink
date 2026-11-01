@@ -6,9 +6,13 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
     if f.kind != FunctionKind::Value
         || f.target != Target::Cpu
         || (f.external.is_some() && f.body.is_some())
-        || !f.types.is_empty()
-        || !f.values.is_empty()
-        || f.contracts.iter().any(|contract|contract.kind!=ContractKind::Ensures || !matches!(contract.predicate,ContractPredicate::Initialized{..}))
+        || (f.external.is_some() && (!f.types.is_empty() || !f.values.is_empty()))
+        || f.contracts.iter().any(|contract| !match &contract.predicate {
+            ContractPredicate::Initialized { .. } => contract.kind == ContractKind::Ensures,
+            ContractPredicate::Nonzero(name) => contract.kind == ContractKind::Requires
+                && f.values.iter().any(|parameter| parameter.name == *name),
+            _ => false,
+        })
         || f.params.iter().any(|p| {
             p.ty.dataset
                 || p.ty.tile
@@ -19,7 +23,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.result.dataset
         || f.result.tile
     {
-        return d.source.fail(f.span,"B263","extern C 需要具体的 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入无正文，B定义保留正文，输出可声明 ensures initialized");
+        return d.source.fail(f.span,"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输出可声明 ensures initialized");
     }
     Ok(())
 }
@@ -43,6 +47,7 @@ fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Resul
 }
 pub(crate) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
     validate_signature(d)?;
+    if !d.function.types.is_empty() || !d.function.values.is_empty() { return Ok(()); }
     let parameters = d.function.params.iter()
         .map(|param| value_type(world, d, &param.ty, param.span))
         .collect::<Result<Vec<_>>>()?;

@@ -15,34 +15,44 @@ fn condition(value: &OutputCondition, parameters: &[Param]) -> OutputCondition {
         value => value.clone(),
     }
 }
+pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span: Span) -> Result<(crate::generics::Instance, Ty)> {
+    let [reference] = args else {
+        return caller.source.fail(span, "B153", "c_function需要一个明确的B C ABI函数引用");
+    };
+    let (name, explicit) = match &reference.kind {
+        ExprKind::Name(name) => (name, None),
+        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
+        _ => return caller.source.fail(reference.span, "B153", "c_function需要B C ABI函数名及具体类型／const实参"),
+    };
+    let Some(key) = world.resolve(name, &caller.module, &caller.imports, true) else {
+        return caller.source.fail(span, "B158", format!("未知函数 {name}"));
+    };
+    let definition = world.functions[&key].clone();
+    if !definition.function.c_abi || definition.function.external.is_some() {
+        return caller.source.fail(span, "B263", "c_function需要B定义的extern C函数，不自动改变普通B函数ABI");
+    }
+    let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
+    let definition = &instance.definition;
+    let f = &definition.function;
+    let outputs = f.contracts.iter().filter_map(|contract| {
+        if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
+            Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
+        } else { None }
+    }).collect();
+    let syntax = CFunctionType {
+        result: f.result.clone(),
+        parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
+        outputs,
+    }.syntax();
+    let ty = world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
+    Ok((instance, ty))
+}
 impl Builder<'_> {
     pub(super) fn c_function_value(&mut self, args: &[Expr], span: Span) -> Result<Value> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
         }
-        let [Expr { kind: ExprKind::Name(name), .. }] = args else {
-            return self.fail(span, "B153", "c_function需要一个明确的B C ABI函数名");
-        };
-        let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) else {
-            return self.fail(span, "B158", format!("未知函数 {name}"));
-        };
-        let definition = self.world.functions[&key].clone();
-        if !definition.function.c_abi || definition.function.external.is_some() {
-            return self.fail(span, "B263", "c_function需要B定义的extern C函数，不自动改变普通B函数ABI");
-        }
-        let f = &definition.function;
-        let outputs = f.contracts.iter().filter_map(|contract| {
-            if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
-                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
-            } else { None }
-        }).collect();
-        let syntax = CFunctionType {
-            result: f.result.clone(),
-            parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
-            outputs,
-        }.syntax();
-        let ty = self.world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
-        let instance = crate::generics::instantiate(self.world, &key, &definition, Vec::new(), &[])?;
+        let (instance, ty) = signature(self.world, &self.definition, args, span)?;
         self.native_declaration(&instance)?;
         let reg = self.reg(Scalar::U64);
         self.code.push(Inst::FunctionAddress(reg, instance.name));

@@ -775,7 +775,7 @@ from导入只允许无正文、具体签名的 `on cpu` 普通函数；不接受
 
 ## B定义的原生C入口
 
-`extern "C"`不带`from`时声明由B实现的Windows x64 C ABI函数；`.h`与`.b`保持相同标记、具体签名、目标及输出合同。普通C值、void／never结果和read／write／inout沿上节真实C布局；当前定义使用具体签名，只在on cpu普通函数中使用，输出可声明ensures initialized；泛型／const定义的具体C入口实例沿Issues的C-021.6.1.2.3继续建设。它控制调用ABI，符号仍属于原B模块，不自动成为同名PE导出。
+`extern "C"`不带`from`时声明由B实现的Windows x64 C ABI函数；`.h`与`.b`保持相同C标记、类型／const形参、参数、目标及输出合同。B定义可以是泛型模板，实际C入口必须是已经实例化的具体签名；普通C值、void／never结果和read／write／inout沿上节真实C布局，只在on cpu普通函数中使用，输出可声明ensures initialized。from导入代表固定DLL符号，不声明泛型模板。它控制调用ABI，符号仍属于原B模块，不自动成为同名PE导出。
 
 例如`.h`声明`extern "C" u32 add_seven(u32 value) on cpu;`与原main声明，`.b`可实现：
 
@@ -789,7 +789,7 @@ u32 main() on cpu {
 }
 ```
 
-两份文件仍写匹配的module声明。c_function接受可见的B C ABI函数名，返回按真实参数与结果推导的cfn；条件输出中的形参名按argument0起的位置进入签名。取得地址不执行函数，原符号解析成功后该值非零，可直接沿原间接调用或准确的外部参数交接；普通B函数不自动改变ABI，from导入不作为该入口的B定义。
+两份文件仍写匹配的module声明。c_function接受可见的B C ABI函数名或既有静态函数引用Name<T,...,N>，例如c_function(identity<u64>)、c_function(adjust<u64,7>)。取址没有运行实参，泛型／const须显式给出，不能靠接收变量的cfn类型猜实例；原specialize按调用者可见性、类型集合及u32 const约束绑定，产生原具体实例符号。实际参数、结果和输出条件完成原类型／const替换后形成cfn，条件形参名按argument0起的位置进入签名。普通命名调用继续沿原实参推导。模板的requires nonzero(N)由原u32 const实例化在编译期检查并消费，不成为C调用者的隐藏运行前提。推导的let函数值与显式cfn声明共享实际签名和write／inout位置分析，不要求为位置写入额外补类型注解。独立模块用既有--instance导出需要的开放模板实例，调用方只取该已编译符号；链接不读源码或生成模板。取得地址不执行函数，原符号解析成功后该值非零，可直接沿原间接调用或准确的外部参数交接；普通B函数不自动改变ABI，from导入不作为该入口的B定义。
 
 C位置参数是一个满足T连续布局／对齐的原指针，包含向量时也如此；普通B位置的分量地址ABI保持。C调用从真实位置满足这一条件，不复制／写回以模拟连续位置。B正文按原初始化、只读与独占规则检查，条件输出不伪装为无条件写出。
 

@@ -101,6 +101,7 @@ pub(crate) fn instantiate(
     if let Some(body) = &mut concrete.function.body {
         substitute_block(body, &replacements, &value_map, &definition.source)?;
     }
+    if function.c_abi { crate::check::external::check_declaration(world, &concrete)?; }
     names.extend(values.iter().map(u32::to_string));
     world.check_interface_types(definition, &concrete.function, &replacements, &value_map)?;
     Ok(Instance {

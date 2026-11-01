@@ -82,6 +82,9 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     }
     fn call(&self, name: &str, explicit: Option<&[GenericArgument]>, args: &[Expr], span: Span, limit: usize) -> Result<Option<Ty>> {
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
+        if name == "c_function" && explicit.is_none() {
+            return callback::signature(self.world, self.definition, args, span).map(|(_, ty)| Some(ty));
+        }
         if matches!(name, "unsafe_function" | "unsafe_position")
             && let Some([GenericArgument::Type(ty)]) = explicit {
             return self.declared_type(ty, self.definition, span).map(Some);
