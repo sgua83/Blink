@@ -87,7 +87,7 @@ pub(super) fn validate_named(world: &World, definition: &Definition,
             || definition.function.target != Target::Cpu {
             return definition.source.fail(contract.span, "B225", "initialized 是普通CPU函数的 ensures 输出合同");
         }
-        let condition = normalize(world, definition.into(), condition, contract.span)?;
+        let condition = normalize(world, definition.into(), &definition.function.result, condition, contract.span)?;
         validate_output(value, &condition, &input, returned, &definition.source, contract.span)?;
     }
     Ok(())
@@ -411,14 +411,14 @@ pub(super) fn contract_predicates(
     for contract in &definition.function.contracts {
         let mut predicate = contract.predicate.clone();
         if let ContractPredicate::Initialized { condition, .. } = &mut predicate {
-            *condition = normalize(builder.world, definition.into(), condition, contract.span)?;
+            *condition = normalize(builder.world, definition.into(), &definition.function.result, condition, contract.span)?;
         }
         predicates.insert((contract.kind, predicate));
     }
     Ok(predicates)
 }
 
-fn normalize(
+fn bind_constants(
     world: &World,
     definition: Contract<'_>,
     value: &OutputCondition,
@@ -444,7 +444,7 @@ fn normalize(
             ty: Ty::scalar(Scalar::U32), bits: vec![Bits::from(*value)],
         }),
         OutputCondition::Member(base, field) => {
-            let base = normalize(world, definition, base, span)?;
+            let base = bind_constants(world, definition, base, span)?;
             if let OutputCondition::Constant(value) = base {
                 let selected = if value.ty.has_variants() {
                     let Some(variant) = value.ty.variants.iter().find(|v| v.name == *field) else {
@@ -465,16 +465,154 @@ fn normalize(
             }
         }
         OutputCondition::Unary(op, value) => OutputCondition::Unary(
-            op.clone(), Box::new(normalize(world, definition, value, span)?)),
+            op.clone(), Box::new(bind_constants(world, definition, value, span)?)),
         OutputCondition::Binary(op, a, b) => OutputCondition::Binary(
-            op.clone(), Box::new(normalize(world, definition, a, span)?),
-            Box::new(normalize(world, definition, b, span)?)),
+            op.clone(), Box::new(bind_constants(world, definition, a, span)?),
+            Box::new(bind_constants(world, definition, b, span)?)),
         value => value.clone(),
     })
 }
 
+// Only the original type/literal relation is transient here. The signature
+// stores typed constants, not source spelling or another run-time state.
+struct IdentityTerm<'a> {
+    value: OutputCondition,
+    original: &'a OutputCondition,
+    ty: Option<Ty>,
+    literal: bool,
+}
+impl IdentityTerm<'_> {
+    fn ty(&self, path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span) -> Result<Ty> {
+        if let Some(ty) = &self.ty { Ok(ty.clone()) }
+        else { condition_type(&self.value, path, source, span).map(|(ty, _)| ty) }
+    }
+    fn cast(&mut self, scalar: Scalar) {
+        if let OutputCondition::Constant(value) = &self.value {
+            let from = value.ty.components[0].0;
+            let bits = value.bits.iter().map(|bits| constant::cast(from, scalar, *bits))
+                .collect::<Option<Vec<_>>>();
+            let ty = Ty::vector(scalar, value.bits.len());
+            self.ty = Some(ty.clone());
+            // A conversion without a compile-time value remains the original
+            // expression and uses its existing lowering; no invented bits.
+            self.value = match bits {
+                Some(bits) => OutputCondition::Constant(OutputConstant { ty, bits }),
+                None => self.original.clone(),
+            };
+        }
+    }
+}
+fn identity<'a>(value: &'a OutputCondition,
+    path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span,
+) -> Result<IdentityTerm<'a>> {
+    let constant = |ty: Ty, bits: Vec<Bits>, literal| IdentityTerm {
+        value: OutputCondition::Constant(OutputConstant { ty: ty.clone(), bits }),
+        original: value, ty: Some(ty), literal,
+    };
+    Ok(match value {
+        OutputCondition::Number(text) => {
+            let (ty, bits) = number(source, span, text)?;
+            let literal = ty.components[0].0.size() == 4;
+            constant(ty, vec![bits], literal)
+        }
+        OutputCondition::Bool(value) => constant(Ty::scalar(Scalar::Bool), vec![Bits::from(*value)], false),
+        OutputCondition::StaticU32(value) => constant(Ty::scalar(Scalar::U32), vec![Bits::from(*value)], false),
+        OutputCondition::Constant(value) => constant(value.ty.clone(), value.bits.clone(), false),
+        OutputCondition::Name(_) | OutputCondition::Member(..) => IdentityTerm {
+            value: value.clone(), original: value, ty: None, literal: false,
+        },
+        OutputCondition::Unary(op, operand) => {
+            if op == "-" && let OutputCondition::Number(text) = operand.as_ref() {
+                let (ty, bits) = operators::negative_number(source, span, text)?;
+                let literal = ty.components[0].0.size() == 4;
+                constant(ty, vec![bits], literal)
+            } else {
+                let operand = identity(operand, path, source, span)?;
+                if operand.literal && let OutputCondition::Constant(value) = &operand.value {
+                    let ty = operand.ty(path, source, span)?;
+                    let operation = operators::unary(op, &ty, source, span)?;
+                    let bits = value.bits.iter().copied().map(|bits| operation
+                        .map_or(bits, |op| constant::unary(op, ty.components[0].0, bits))).collect();
+                    constant(ty, bits, true)
+                } else {
+                    IdentityTerm { value: OutputCondition::Unary(op.clone(), Box::new(operand.value)),
+                        original: value, ty: (op == "!").then(|| Ty::scalar(Scalar::Bool)), literal: false }
+                }
+            }
+        }
+        OutputCondition::Binary(op, left, right) => {
+            let mut left = identity(left, path, source, span)?;
+            let mut right = identity(right, path, source, span)?;
+            let comparison = matches!(op.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=");
+            let logical = matches!(op.as_str(), "&&" | "||");
+            let mut ty = (comparison || logical).then(|| Ty::scalar(Scalar::Bool));
+            let mut literal = false;
+            if !logical && (left.literal || right.literal) {
+                let a = left.ty(path, source, span)?;
+                let b = right.ty(path, source, span)?;
+                let (result, kind) = operators::binary(op, &a, left.literal, &b, right.literal, source, span)?;
+                match kind {
+                    operators::Binary::Numeric { operands, comparison, operation } => {
+                        literal = left.literal && right.literal && !operands.scalar.is_float() && !comparison;
+                        if operands.cast_left { left.cast(operands.scalar); }
+                        if operands.cast_right { right.cast(operands.scalar); }
+                        if literal && let (OutputCondition::Constant(a), OutputCondition::Constant(b)) = (&left.value, &right.value) {
+                            let bits = (0..result.components.len()).map(|i| {
+                                let a = a.bits[i % a.bits.len()]; let b = b.bits[i % b.bits.len()];
+                                if let Some(operation) = operation {
+                                    Ok(constant::binary(operation, operands.scalar, a, b).unwrap())
+                                } else {
+                                    let divisor = std::num::NonZeroU64::new(b).ok_or_else(|| Diagnostic {
+                                        source: source.clone(), span, code: "B152",
+                                        message: "整数除数的每个分量都必须是非零常量或在当前作用域已证明非零的值".into(),
+                                    })?;
+                                    Ok(constant::divide(operands.scalar, a, divisor, op == "%"))
+                                }
+                            }).collect::<Result<Vec<_>>>()?;
+                            return Ok(constant(result, bits, true));
+                        }
+                    }
+                    operators::Binary::Matrix(matrix::Binary::MatrixScalar { cast: true, .. }) => right.cast(Scalar::F32),
+                    operators::Binary::Matrix(matrix::Binary::ScalarMatrix { cast: true, .. }) => left.cast(Scalar::F32),
+                    _ => {}
+                }
+                ty = Some(result);
+            }
+            IdentityTerm { value: OutputCondition::Binary(op.clone(), Box::new(left.value), Box::new(right.value)),
+                original: value, ty, literal }
+        }
+    })
+}
+fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
+    value: &OutputCondition, span: Span,
+) -> Result<OutputCondition> {
+    let value = bind_constants(world, definition, value, span)?;
+    let path = |value: &OutputCondition| {
+        fn components<'a>(value: &'a OutputCondition, fields: &mut Vec<&'a str>) -> Option<&'a str> {
+            match value {
+                OutputCondition::Name(name) => Some(name),
+                OutputCondition::Member(base, field) => { let name = components(base, fields)?; fields.push(field); Some(name) }
+                _ => None,
+            }
+        }
+        let mut fields = Vec::new();
+        let name = components(value, &mut fields).ok_or_else(|| Diagnostic {
+            source: definition.source.clone(), span, code: "B225", message: "输出条件的字段来自输入或returned".into(),
+        })?;
+        if name == "returned" && (returned.name == "void" || returned.is_never()) {
+            return definition.source.fail(span, "B225", "无返回值的函数没有returned输入");
+        }
+        let syntax = if name == "returned" { Some(returned) }
+            else { definition.parameters.iter().find(|p| p.name == name).map(|p| &p.ty) };
+        let syntax = syntax.ok_or_else(|| Diagnostic { source: definition.source.clone(), span, code: "B225",
+            message: format!("输出条件没有输入{name}") })?;
+        world.output_path_type(syntax, &fields, definition.source, span, definition.module, definition.imports)
+    };
+    Ok(identity(&value, &path, definition.source, span)?.value)
+}
+
 pub(crate) fn bind_function_outputs(
-    world: &World, parameters: &[(Access, TypeName)], outputs: &[ContractPredicate],
+    world: &World, result: &TypeName, parameters: &[(Access, TypeName)], outputs: &[ContractPredicate],
     source: &crate::Source, span: Span, module: &str, imports: &[String],
 ) -> Result<Vec<ContractPredicate>> {
     if outputs.is_empty() { return Ok(Vec::new()); }
@@ -488,45 +626,44 @@ pub(crate) fn bind_function_outputs(
             return source.fail(span, "B225", "cfn输出合同使用ensures initialized");
         };
         bound.insert(ContractPredicate::Initialized { value: value.clone(),
-            condition: normalize(world, contract, condition, span)? });
+            condition: normalize(world, contract, result, condition, span)? });
     }
     Ok(bound.into_iter().collect())
 }
-fn condition_type(
-    value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
-    returned: Option<&Ty>, source: &Source, span: Span,
-) -> Result<(Ty, bool)> {
-    fn path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
-        returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
-        match value {
-            OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
-                source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
-            }),
-            OutputCondition::Name(name) => {
-                let Some((access, ty)) = input(name) else {
-                    return source.fail(span, "B225", format!("输出条件没有输入{name}"));
-                };
-                if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
-                else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
-            }
-            OutputCondition::Member(base, field) => {
-                let ty = path(base, input, returned, source, span)?;
-                if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
-                    return Ok(Ty::scalar(Scalar::U32));
-                }
-                if ty.has_variants() {
-                    return if ty.variants.iter().any(|variant| variant.name == *field) {
-                        Ok(Ty::scalar(Scalar::Bool))
-                    } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
-                }
-                member_type(&ty, field, source, span).map(|(ty, _)| ty)
-            }
-            _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
+fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
+    returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
+    match value {
+        OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
+            source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
+        }),
+        OutputCondition::Name(name) => {
+            let Some((access, ty)) = input(name) else {
+                return source.fail(span, "B225", format!("输出条件没有输入{name}"));
+            };
+            if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
+            else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
         }
+        OutputCondition::Member(base, field) => {
+            let ty = typed_path(base, input, returned, source, span)?;
+            if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
+                return Ok(Ty::scalar(Scalar::U32));
+            }
+            if ty.has_variants() {
+                return if ty.variants.iter().any(|variant| variant.name == *field) {
+                    Ok(Ty::scalar(Scalar::Bool))
+                } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
+            }
+            member_type(&ty, field, source, span).map(|(ty, _)| ty)
+        }
+        _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
     }
+}
+fn condition_type(value: &OutputCondition,
+    path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span,
+) -> Result<(Ty, bool)> {
     Ok(match value {
         OutputCondition::Name(_) | OutputCondition::Member(..) =>
-            (path(value, input, returned, source, span)?, false),
+            (path(value)?, false),
         OutputCondition::Number(text) => {
             let (ty, _) = number(source, span, text)?;
             let literal = ty.components[0].0.size() == 4;
@@ -541,14 +678,14 @@ fn condition_type(
                 let literal = ty.components[0].0.size() == 4;
                 (ty, literal)
             } else {
-                let (ty, literal) = condition_type(value, input, returned, source, span)?;
+                let (ty, literal) = condition_type(value, path, source, span)?;
                 operators::unary(op, &ty, source, span)?;
                 (ty, literal)
             }
         }
         OutputCondition::Binary(op, a, b) => {
-            let (a, a_literal) = condition_type(a, input, returned, source, span)?;
-            let (b, b_literal) = condition_type(b, input, returned, source, span)?;
+            let (a, a_literal) = condition_type(a, path, source, span)?;
+            let (b, b_literal) = condition_type(b, path, source, span)?;
             if matches!(op.as_str(), "&&" | "||") {
                 let boolean = Ty::scalar(Scalar::Bool);
                 operators::same(&boolean, &a, source, span)?;
@@ -576,7 +713,8 @@ fn validate_output(value: &str, condition: &OutputCondition,
     // conditions consume the original handle/length storage type.
     if let Some(element) = &ty.dataset { ty = element.as_ref().clone(); }
     for field in fields { ty = member_type(&ty, field, source, span)?.0; }
-    let (condition, _) = condition_type(condition, input, returned, source, span)?;
+    let path = |value: &OutputCondition| typed_path(value, input, returned, source, span);
+    let (condition, _) = condition_type(condition, &path, source, span)?;
     operators::same(&Ty::scalar(Scalar::Bool), &condition, source, span)
 }
 

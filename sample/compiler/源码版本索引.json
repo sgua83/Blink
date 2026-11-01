@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "8c008b4fc4acffd23192c96f2e8bfc1d3944f9bc8a4beeb00fd6162db7d6fab6"
+      "sha256": "cec745c11857bf79b8ab1922404aedd29e65e23e271a3f8af5f2c5421320b2e7"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
-      "sha256": "46e4309a941b8aea58857ad0743e8dc00803752815c337f9ae9353132f892975"
+      "sha256": "4da9538b4131994a4ba176f5ed5a73dd10f1b54aba0e8b554ecce035084e72f8"
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
@@ -128,7 +128,7 @@
     },
     {
       "path": "crates/blanguage/src/check/outputs.rs",
-      "sha256": "9eafee646e8dfe9b4b32446ec6f48724ce8df140b0bb72d58d2fb2863908a170"
+      "sha256": "8f7fe1eac8734f9a33c3e5f8e8aa391baec0b7f5f67c8497304b7f9b3366aeaf"
     }
   ],
   "excerpts": [
@@ -236,8 +236,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3754,
-      "end_line": 3790,
+      "start_line": 3748,
+      "end_line": 3784,
       "sha256": "7f4cf191d9744ff742fe6ef2abafdd0fecfec6bd7bd24574084008cc8a869be0"
     },
     {
@@ -464,9 +464,9 @@
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
-      "start_line": 136,
-      "end_line": 164,
-      "sha256": "7ff6e7ca773eb88f4ffc3dfe60e34ba633a9d4e450c1c02d7cce80794f19b7a6"
+      "start_line": 199,
+      "end_line": 227,
+      "sha256": "c5717c2a0da6687609e83a1e04dd781039087f5a13d94c4b5e5908975f59c2f9"
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
@@ -518,8 +518,8 @@
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
-      "start_line": 181,
-      "end_line": 198,
+      "start_line": 244,
+      "end_line": 261,
       "sha256": "410a649ec411b82d26eee5647d2ba448d0a4e272f6f5ab6b3a4e9031b3da1e09"
     },
     {
@@ -542,9 +542,9 @@
     },
     {
       "path": "crates/blanguage/src/check/outputs.rs",
-      "start_line": 495,
-      "end_line": 565,
-      "sha256": "6c997d772708f01a4e93f85329474b94d22172a6e2b6fd46934b0d290530bc9c"
+      "start_line": 633,
+      "end_line": 702,
+      "sha256": "cddc91c394dd67cd4d245360384157d6eae6a2ee8d859d8cc4a183e1c2ec8399"
     }
   ]
 }

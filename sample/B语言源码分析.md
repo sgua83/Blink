@@ -288,9 +288,9 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。原类型实参、const与usize／isize别名继续使用同一规范身份，不复制Node布局或新建类型权威。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量／类型化常量身份归一化仍见Issues的C-021.6.1.1.3.4。B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量沿原运算绑定同类型同位值；声明匹配及浮点初始化仍有独立缺口。B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
-源码节选：`crates/blanguage/src/function_types.rs:136`。
+源码节选：`crates/blanguage/src/function_types.rs:199`。
 
 ```rust
     pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
@@ -314,7 +314,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
             parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
         }
         let outputs = crate::check::outputs::bind_function_outputs(
-            self, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
+            self, &result, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
             source, span, module, imports)?;
         let function = CFunctionType { result, parameters: parsed, outputs };
         let mut ty = Ty::scalar(Scalar::U64);
@@ -456,7 +456,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 签名引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，再沿同一引用闭包检查普通C值、位置访问和资源限制；一次查询已经消费的同一签名不反复展开，未知、非法资源或直接按值递归不会因此跳过。
 
-源码节选：`crates/blanguage/src/function_types.rs:181`。
+源码节选：`crates/blanguage/src/function_types.rs:244`。
 
 ```rust
     pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -582,44 +582,43 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 
 原OutputCondition只负责纯表达式组织；路径来自真实按值快照、资源长度与返回值，字段消费原member_type。dataset的存储类型使用原Ty::owned_dataset及真实count，initialized位置仍选择实际元素。根结果必须是bool；泛型类型及const沿原实例化闭合，不生成假函数或声明用执行IR。
 
-源码节选：`crates/blanguage/src/check/outputs.rs:495`。
+源码节选：`crates/blanguage/src/check/outputs.rs:633`。
 
 ```rust
-fn condition_type(
-    value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
-    returned: Option<&Ty>, source: &Source, span: Span,
-) -> Result<(Ty, bool)> {
-    fn path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
-        returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
-        match value {
-            OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
-                source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
-            }),
-            OutputCondition::Name(name) => {
-                let Some((access, ty)) = input(name) else {
-                    return source.fail(span, "B225", format!("输出条件没有输入{name}"));
-                };
-                if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
-                else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
-            }
-            OutputCondition::Member(base, field) => {
-                let ty = path(base, input, returned, source, span)?;
-                if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
-                    return Ok(Ty::scalar(Scalar::U32));
-                }
-                if ty.has_variants() {
-                    return if ty.variants.iter().any(|variant| variant.name == *field) {
-                        Ok(Ty::scalar(Scalar::Bool))
-                    } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
-                }
-                member_type(&ty, field, source, span).map(|(ty, _)| ty)
-            }
-            _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
+fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
+    returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
+    match value {
+        OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
+            source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
+        }),
+        OutputCondition::Name(name) => {
+            let Some((access, ty)) = input(name) else {
+                return source.fail(span, "B225", format!("输出条件没有输入{name}"));
+            };
+            if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
+            else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
         }
+        OutputCondition::Member(base, field) => {
+            let ty = typed_path(base, input, returned, source, span)?;
+            if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
+                return Ok(Ty::scalar(Scalar::U32));
+            }
+            if ty.has_variants() {
+                return if ty.variants.iter().any(|variant| variant.name == *field) {
+                    Ok(Ty::scalar(Scalar::Bool))
+                } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
+            }
+            member_type(&ty, field, source, span).map(|(ty, _)| ty)
+        }
+        _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
     }
+}
+fn condition_type(value: &OutputCondition,
+    path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span,
+) -> Result<(Ty, bool)> {
     Ok(match value {
         OutputCondition::Name(_) | OutputCondition::Member(..) =>
-            (path(value, input, returned, source, span)?, false),
+            (path(value)?, false),
         OutputCondition::Number(text) => {
             let (ty, _) = number(source, span, text)?;
             let literal = ty.components[0].0.size() == 4;
@@ -634,14 +633,14 @@ fn condition_type(
                 let literal = ty.components[0].0.size() == 4;
                 (ty, literal)
             } else {
-                let (ty, literal) = condition_type(value, input, returned, source, span)?;
+                let (ty, literal) = condition_type(value, path, source, span)?;
                 operators::unary(op, &ty, source, span)?;
                 (ty, literal)
             }
         }
         OutputCondition::Binary(op, a, b) => {
-            let (a, a_literal) = condition_type(a, input, returned, source, span)?;
-            let (b, b_literal) = condition_type(b, input, returned, source, span)?;
+            let (a, a_literal) = condition_type(a, path, source, span)?;
+            let (b, b_literal) = condition_type(b, path, source, span)?;
             if matches!(op.as_str(), "&&" | "||") {
                 let boolean = Ty::scalar(Scalar::Bool);
                 operators::same(&boolean, &a, source, span)?;
@@ -1039,7 +1038,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3754`。
+源码节选：`crates/blanguage/src/check.rs:3748`。
 
 ```rust
         let binding = view.binding;

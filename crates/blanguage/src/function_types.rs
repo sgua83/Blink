@@ -133,6 +133,69 @@ impl World {
         }
         Ok(syntax)
     }
+    /// Contract expressions project nominal fields before requesting a layout;
+    /// a callback signature may refer to the containing record itself.
+    pub(crate) fn output_path_type(&self, name: &TypeName, fields: &[&str], source: &Source,
+        span: Span, module: &str, imports: &[String],
+    ) -> crate::Result<Ty> {
+        if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
+            return source.fail(span, if fields.is_empty() { "B148" } else { "B225" },
+                "函数签名没有数值运算或字段；原生地址通过function_address显式取得");
+        }
+        let resolved = self.c_signature_type(name, source, span, module, imports)?;
+        let name = &resolved;
+        if let Some((field, rest)) = fields.split_first() {
+            if *field == "length" && (name.dataset || name.name == "array") {
+                return if rest.is_empty() { Ok(Ty::scalar(Scalar::U32)) }
+                    else { source.fail(span, "B225", "长度值没有后续字段") };
+            }
+            if let Some(ty) = Ty::builtin(&name.name) {
+                let mut ty = ty;
+                for field in fields { ty = crate::check::member_type(&ty, field, source, span)?.0; }
+                return Ok(ty);
+            }
+            if name.name == "result" && matches!(*field, "Ok" | "Err") {
+                return if rest.is_empty() { Ok(Ty::scalar(Scalar::Bool)) }
+                    else { source.fail(span, "B225", "变体条件没有后续字段") };
+            }
+            let key = if name.canonical { self.records.get_key_value(&name.name).map(|(key, _)| key.clone()) }
+                else { self.resolve(&name.name, module, imports, false) };
+            let Some(key) = key else { return source.fail(span, "B031", format!("未知类型 {}", name.name)); };
+            let (record, record_source, record_module, record_imports) = self.record(&key);
+            if record.variants.iter().any(|variant| variant.name == *field) {
+                return if rest.is_empty() { Ok(Ty::scalar(Scalar::Bool)) }
+                    else { source.fail(span, "B225", "变体条件没有后续字段") };
+            }
+            let selected = record.fields.iter().find(|candidate| candidate.name == *field)
+                .ok_or_else(|| crate::Diagnostic { source: source.clone(), span, code: "B225",
+                    message: format!("类型 {} 没有字段 {field}", name.name) })?;
+            let types = record.types.iter().zip(&name.arguments).map(|(parameter, argument)| {
+                let GenericArgument::Type(ty) = argument else {
+                    return source.fail(span, "B232", "此记录参数需要类型实参");
+                };
+                Ok((parameter.name.clone(), ty.clone()))
+            }).collect::<crate::Result<_>>()?;
+            let values = record.values.iter().zip(&name.arguments[record.types.len()..]).map(|(parameter, argument)| {
+                let shape = argument.shape().unwrap();
+                Ok((parameter.name.clone(), self.shape(&Some(shape), source, span, module, imports)?.unwrap()))
+            }).collect::<crate::Result<_>>()?;
+            let mut selected = selected.ty.clone();
+            crate::generics::substitute_type(&mut selected, &types, record_source, span)?;
+            crate::value_parameters::substitute_type(&mut selected, &values);
+            return self.output_path_type(&selected, rest, record_source, span, record_module, record_imports);
+        }
+        // A literal cannot numerically operate on an ordinary record. Decide
+        // that existing type error from its declaration, without expanding a
+        // recursive callback just to discover the record's machine layout.
+        if let Some(key) = if name.canonical { self.records.contains_key(&name.name).then_some(name.name.clone()) }
+            else { self.resolve(&name.name, module, imports, false) } {
+            let record = &self.record(&key).0;
+            if record.enumeration.is_none() {
+                return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
+            }
+        }
+        self.ty(name, source, span, module, imports)
+    }
     pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
         let Some((result, parameters)) = name.arguments.split_first() else {
             return source.fail(span, "B263", "cfn<R,P...>至少需要一个返回类型");
@@ -154,7 +217,7 @@ impl World {
             parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
         }
         let outputs = crate::check::outputs::bind_function_outputs(
-            self, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
+            self, &result, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
             source, span, module, imports)?;
         let function = CFunctionType { result, parameters: parsed, outputs };
         let mut ty = Ty::scalar(Scalar::U64);

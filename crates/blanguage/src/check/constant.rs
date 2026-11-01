@@ -159,6 +159,15 @@ impl World {
         }
     }
 }
+pub(super) fn unary(operation: UnaryOp, scalar: Scalar, bits: Bits) -> Bits {
+    match operation {
+        UnaryOp::FloatNegate => bits ^ (1 << (scalar.bit_width() - 1)),
+        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => scalar.truncate(0u64.wrapping_sub(bits)),
+        UnaryOp::LogicalNot => Bits::from(bits == 0),
+        UnaryOp::BitNot => scalar.truncate(!bits),
+        UnaryOp::Bitcast => bits,
+    }
+}
 pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
     if from == into {
         return Some(into.truncate(bits));

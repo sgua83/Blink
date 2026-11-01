@@ -2895,13 +2895,7 @@ impl<'a> Builder<'a> {
         let constant = a.constant.as_ref().map(|values| {
             values
                 .iter()
-                .map(|bits| match operation {
-                    UnaryOp::FloatNegate => bits ^ (1 << (scalar.bit_width() - 1)),
-                    UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => scalar.truncate(0u64.wrapping_sub(*bits)),
-                    UnaryOp::LogicalNot => Bits::from(*bits == 0),
-                    UnaryOp::BitNot => scalar.truncate(!bits),
-                    UnaryOp::Bitcast => *bits,
-                })
+                .map(|bits| constant::unary(operation, scalar, *bits))
                 .collect()
         });
         let proof = bounds::unary(operation, &a);
