@@ -362,6 +362,8 @@ demo_sum 产生 `[3,1,4,2]`，再求和。`total.bldata` 中唯一的 u32 结果
 | `blanguage` | 前端、类型与访问检查、并行 IR、优化和原生后端 |
 | `blcompute` | 数据存储、设备资源、传输、原生执行与完成后的释放 |
 
+编译参数容量使用`bc --max-parameter-bytes N -c ...`显式选择，Rust调用方使用`Compiler::with_max_parameter_bytes`；默认128字节。实际布局要求随产物交给设备加载，配置、缓存及目标选择见[语言规范](Docs/BLanguage.md#abi-与代码生成)。
+
 你可以用 B 语言构建独立应用，也可以把用 B 语言编写的计算函数编译成 DLL，供 **C、C++ 与 Rust** 程序调用。工具链同时生成 C ABI 头文件、导入库、C++ 包装和 Rust 绑定；原生 Rust API 支持驻留资源和异步提交。
 
 - [独立应用](sample/applications/README.md)：CPU 入口、动态数据与显式 CPU／GPU 计算。

@@ -17,6 +17,7 @@ pub struct Processor {
 #[derive(Clone)]
 pub struct Compiler {
     resources: Arc<Resources>,
+    max_parameter_bytes: u32,
 }
 struct Resources {
     workers: usize,
@@ -65,7 +66,7 @@ impl Compiler {
         Ok(Self::resources(processors.len(), Some(processors)))
     }
     fn resources(workers: usize, processors: Option<Vec<Processor>>) -> Self {
-        Self { resources: Arc::new(Resources {
+        Self { max_parameter_bytes: 128, resources: Arc::new(Resources {
             workers, processors,
             available: Mutex::new((0..workers).rev().collect()),
             released: Condvar::new(),
@@ -74,6 +75,12 @@ impl Compiler {
         }) }
     }
     pub fn workers(&self) -> usize { self.resources.workers }
+    /// 本次新生成参数布局的字节上限；不会查询或改变执行设备。
+    pub fn with_max_parameter_bytes(mut self, bytes: u32) -> Self {
+        self.max_parameter_bytes = bytes;
+        self
+    }
+    pub fn max_parameter_bytes(&self) -> u32 { self.max_parameter_bytes }
     #[cfg(feature = "installed")]
     fn hold_sdk_input(&self) -> io::Result<()> {
         let mut input = self.resources.sdk_input.lock().unwrap();

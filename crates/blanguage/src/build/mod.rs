@@ -82,6 +82,7 @@ fn compile_in(
     let artifact = output.join(format!("{}.blbi", hash::hex(&hash::digest(&request))));
     let mut inputs = request;
     hash::field(&mut inputs, env!("BLINK_COMPILER_ID").as_bytes());
+    hash::field(&mut inputs, &worker.compiler().max_parameter_bytes().to_le_bytes());
     for (name, source) in world.interfaces.iter().chain(&world.sources) {
         hash::field(&mut inputs, name.as_bytes());
         hash::field(

@@ -158,6 +158,8 @@ Proof／Domains 持有真实值快照、类型化范围、来源及访问关系�
 
 SDK 调用方持有 Compiler，其 clone 共用同一 CPU 活动许可预算。Compiler::available 使用实际可用并行度，with_workers 显式设置预算，Windows on_processors 使用 processor group 和组内编号选择实际 CPU。普通调用使用调用方线程的许可；临时 worker 使用同一预算，不在每层重新扩增整机线程数，不固定为三十二核。
 
+本次新生成参数布局的容量由同一Compiler的max_parameter_bytes配置持有，with_max_parameter_bytes显式选择、默认128字节；Worker／World直接消费该值，编译图及现有缓存沿同一真实输入交接。blcompute的PhysicalDevice公开其已查询的max_push_constant_bytes，调用者可据此配置编译并继续使用同一物理句柄；编译器不承担设备枚举或创建。产物只交付实际uniform_bytes要求，独立加载仍由原Device对真实限制负责，不新增目标状态、运行时登记或链接时生成路径。完整使用规则见[规范ABI章节](BLanguage.md#abi-与代码生成)。
+
 完成装入与参与推导的定义作为只读输入。每个实际工作持有自己的 const 求值栈、Builder、事实和发射上下文；独立具体实例、入口、函数和阶段在依赖允许处并行，融合后的 Stage 局部优化也使用同一预算。声明展开和结果按原稳定顺序交接，保留最早源顺序的真实诊断。
 
 Compiler 只拥有编译工作资源，不持有 Frame、Device、常驻线程池或新的产物权威。错误停止领取未开始工作，已经开始的工作在原身份下结束，最后一个真实消费者结束后才释放输入；线程与绑定错误直接报告，不重放工作。

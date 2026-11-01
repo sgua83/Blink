@@ -17,14 +17,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut jobs = None;
     let mut cpus = None;
-    while args.first().is_some_and(|arg| matches!(arg.as_str(), "--jobs" | "--cpus")) {
+    let mut max_parameter_bytes = None;
+    while args.first().is_some_and(|arg| matches!(arg.as_str(), "--jobs" | "--cpus" | "--max-parameter-bytes")) {
         let option = args.remove(0);
         if args.is_empty() { return Err(format!("{option}缺少参数").into()); }
         let value = args.remove(0);
         if option == "--jobs" {
             if jobs.is_some() { return Err("--jobs不能重复指定".into()); }
             jobs = Some(value.parse::<std::num::NonZeroUsize>()?);
-        } else {
+        } else if option == "--cpus" {
             if cpus.is_some() { return Err("--cpus不能重复指定".into()); }
             cpus = Some(value.split(',').map(|cpu| {
                 let (group, number) = cpu.split_once(':').ok_or("CPU写为组:编号")?;
@@ -32,12 +33,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     group: group.parse()?, number: number.parse()?,
                 })
             }).collect::<Result<Vec<_>, _>>()?);
+        } else {
+            if max_parameter_bytes.is_some() { return Err("--max-parameter-bytes不能重复指定".into()); }
+            max_parameter_bytes = Some(value.parse::<u32>()?);
         }
     }
     if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nbc --version\nGlobal resource options before command: --jobs N | --cpus group:number,...\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nbc --version\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
@@ -48,6 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         blanguage::Compiler::available()?
     };
+    let compiler = if let Some(bytes) = max_parameter_bytes { compiler.with_max_parameter_bytes(bytes) } else { compiler };
     let command = &args[0];
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
     if command == "-c" {

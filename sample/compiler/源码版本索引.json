@@ -8,7 +8,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "c3126966c1a7237f448a444abe7293caf853efe816ae0c197f550ca01ac7f9f5"
+      "sha256": "d6faaf0973c4edd3aa71c43d45aef1c75c770a906a4d9bf79423c869bf16a6b1"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -84,7 +84,7 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "d5a096c002b126d87fd27beadadf881a762f1a2ab6aad4aee64abcfe8a66ebdd"
+      "sha256": "18b09c8ec836603b961f57dd8c49e2ac171de3f12164040fb8e207cbbca9a00a"
     },
     {
       "path": "sample/lessons/map.b",
@@ -360,8 +360,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1831,
-      "end_line": 1837,
+      "start_line": 1835,
+      "end_line": 1841,
       "sha256": "d21f3fe40fd07361c83ec266a04fef7e1b77d6d38249b02c58842c85fc09c5b1"
     },
     {
@@ -372,26 +372,26 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1595,
-      "end_line": 1604,
+      "start_line": 1599,
+      "end_line": 1608,
       "sha256": "d2ad30e21a1b18aa218370c73c6a706f8943227bed385257c78ed65d63f172fb"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1861,
-      "end_line": 1870,
+      "start_line": 1865,
+      "end_line": 1874,
       "sha256": "330b8f7a6354a7327a808e069c81b97c03a415370452e30f27a14b2731f68547"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1006,
-      "end_line": 1026,
+      "start_line": 1010,
+      "end_line": 1030,
       "sha256": "ae70b961bc37ebf906eedba731c541a46fea705f47a7336e6ebf10e04291f998"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1036,
-      "end_line": 1046,
+      "start_line": 1040,
+      "end_line": 1050,
       "sha256": "bb724cd76da39e691442eb9ff48c06f9adea442fa28fedea2da4c69ec41e620e"
     },
     {
@@ -402,8 +402,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2699,
-      "end_line": 2714,
+      "start_line": 2703,
+      "end_line": 2718,
       "sha256": "13af691a11199435dc26a65caa370be69091dd073ea6b94b3e2497cf38126649"
     },
     {
@@ -414,8 +414,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2432,
-      "end_line": 2438,
+      "start_line": 2436,
+      "end_line": 2442,
       "sha256": "b470575fc07420dcd734adc4fe9c0ea041a7ca49da9038108ed7c7ef67b0f2e4"
     },
     {

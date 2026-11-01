@@ -161,6 +161,7 @@ pub(super) fn compile<'a>(
     let mut bytes = Vec::new();
     for value in [path.as_os_str().as_encoded_bytes(), root.as_os_str().as_encoded_bytes(),
         env!("BLINK_COMPILER_ID").as_bytes()] { hash::field(&mut bytes, value); }
+    hash::field(&mut bytes, &worker.compiler().max_parameter_bytes().to_le_bytes());
     match kind {
         ObjectKind::Module(instances) => {
             hash::field(&mut bytes, b"module");

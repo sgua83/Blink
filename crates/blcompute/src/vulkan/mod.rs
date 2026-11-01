@@ -205,6 +205,10 @@ impl PhysicalDevice {
             .to_string_lossy()
             .into_owned()
     }
+    /// 本物理句柄已查询的推送常量容量，单位为字节。
+    pub fn max_push_constant_bytes(&self) -> u32 {
+        self.properties.limits.maxPushConstantsSize
+    }
     pub fn is_discrete(&self) -> bool {
         self.properties.deviceType == 2
     }

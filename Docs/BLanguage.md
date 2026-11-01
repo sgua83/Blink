@@ -3289,9 +3289,27 @@ u32 total = tile_reduce_sum(values);
 | 结构体 | 字段按自身对齐排列，最终步长按最大字段对齐 |
 | BLBody | position@0、velocity@16、energy@28、stride=32 |
 | 小参数 | word0 为范围末端、word1 为分区起点，随后数据集长度与对齐后的值参数 |
-| 当前编译小参数 ABI | 固定128字节；这是软件编译ABI，不是查询所得的物理设备上限 |
+| 编译小参数容量 | Compiler.max_parameter_bytes，默认128字节；可按本次目标显式配置 |
 
-B103报告按上述布局及实际类型对齐算出的完整字节数，并明确当前编译ABI的128字节限制；该前端路径没有查询实际设备能力。可调目标参数能力仍待实现，不能从B103推断所选GPU的maxPushConstantsSize，也不能将修改诊断视为已支持更大推送参数。
+B103按上述布局及实际类型对齐报告完整字节数，并与本次Compiler的参数容量比较；该前端路径不查询设备。Rust调用方以with_max_parameter_bytes(bytes)配置，max_parameter_bytes()读取同一实例的值；Compiler clone共享原CPU许可预算并携带该配置，对clone设置新值不改变另一实例。CLI在命令前使用--max-parameter-bytes N，可与--jobs或--cpus组合；未指定时沿用128字节。字节数是本次编译选择，不是语言永久上限或硬件查询结果。
+
+```powershell
+bc --max-parameter-bytes 256 -c workload.b --module -o target/workload.obj
+```
+
+需要按真实GPU编译时，调用方先从既有Instance枚举并选定PhysicalDevice，使用其max_push_constant_bytes()返回的已查询属性；该句柄继续交给for_program／for_programs创建实际Device。编译器不依赖blcompute或另行选择设备：
+
+```rust
+let compiler = blanguage::Compiler::available()?
+    .with_max_parameter_bytes(physical.max_push_constant_bytes());
+let built = compiler.build_entry(
+    path, root, entry, blanguage::ast::Target::Gpu, output,
+)?;
+```
+
+配置只约束本次新生成的参数布局，包含检查、CPU应用内提取入口、独立模块和算法库；数据类型、对齐及CPU／GPU存储规则保持。原BLBI与COFF缓存将该真实编译配置计入输入身份，同配置可复用，配置变化重新按本次上限生成或拒绝，旧大容量产物不能让较小配置跳过检查。
+
+产物的ExecutionPlan／ProgramInterface继续通过uniform_bytes记录实际布局要求，不记录或占满编译时允许的全部容量。独立对象／归档及应用按已编译映像交接该要求；链接不重读源码或重新选择编译配置。导入的既有程序保持自身实际要求，不因调用方新生成布局采用较小配置而改写。实际Vulkan加载仍在原Device::load按该物理设备的maxPushConstantsSize检查；例如编译配置允许512字节、实际产物需要260字节、设备只有256字节时，加载准确拒绝。该容量选择不改变其他数值／设备能力及资源完成规则，ABI编码身份保持原值。原生属性和命令范围见[Vulkan limits](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceLimits.html)及[vkCmdPushConstants](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPushConstants.html)。
 
 Rust 消费者从编译结果获取布局，不能手写另一份结构体步长。CPU 普通范围函数 ABI 为 `(buffer pointers, parameter words, end index, begin index)`；数值归约与普通扫描经第五个结果指针按类型实际字节偏移写出分量。第二个参数始终指向程序统一参数，扫描／压缩／分段归约的范围前缀与排序范围元数据通过指针表末尾的私有项传递；每个工作回调只持有自己的指针表，原记录、统一参数和摘要数据不复制。自定义传播把私有项作为仅原生降低可见的只读 Buffer，用已有 Load IR 读取，不新增源语言资源或 GPU binding。分段计数沿值摘要之后的标记／u32计数存储字交接，源程序不暴露这些执行参数。
 
