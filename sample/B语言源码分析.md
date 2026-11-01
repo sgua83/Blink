@@ -2004,7 +2004,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2703`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2699`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -2076,7 +2076,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2436`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2432`。
 
 ```rust
                                 let mut length = count;

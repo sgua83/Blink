@@ -1932,10 +1932,6 @@ impl GpuProgram {
             count,
             physical,
         };
-        let fields = data.iter().zip(c.program.buffers()).enumerate().map(|(i, (dataset, binding))| {
-            dataset.ty.field_layout_at(location(i).1, &binding.ty)
-                .ok_or_else(|| error(format!("绑定 {} 的字段类型或偏移与原GPU存储不一致", binding.name)))
-        }).collect::<Result<Vec<_>>>()?;
         for (dataset, binding) in data.iter().zip(c.program.buffers()) {
             if matches!(&*dataset.storage, DatasetStorage::Read(_))
                 && binding.access != blanguage::ast::Access::Read
@@ -1977,7 +1973,7 @@ impl GpuProgram {
         }
         let mut uniforms = arguments(
             &c.program,
-            data.iter().zip(fields).map(|(d, ty)| (ty, d.count)),
+            data.iter().enumerate().map(|(i, d)| (&d.ty, d.count, Some(location(i).1))),
             values,
         )?;
         let mut commands = Commands::new(c.inner.clone())?;

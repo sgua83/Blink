@@ -602,7 +602,7 @@ impl CpuCode {
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
         let mut uniforms = arguments(
             &self.program,
-            buffers.iter().map(|d| (d.ty, d.count)),
+            buffers.iter().map(|d| (d.ty, d.count, None)),
             values,
         )?;
         let pointers: Vec<_> = buffers
