@@ -71,3 +71,17 @@ inout 函数可在范围内读写和转借，返回后数据仍由 main 拥有�
 CPU 应用支持拥有 dataset 的移动／返回、资源重赋值与重新初始化，以及 write dataset 的完整遍历／已知域输出。记录、Result、固定拥有数组及其普通 CPU read／write／inout 参数按原资源树交接，动态拥有位置的移出／补回和 CPU 自包含拥有 view 聚合按[语言规范](../../Docs/BLanguage.md)使用。动态拥有元素容器、应用内 GPU view 图、完整资源阶段与异步交接仍按各自未完成范围研发。计算函数的每个并行实例仍只拥有当前独占元素。
 
 计算函数采用普通 void 定义；可直接沿 CPU 调用，或写 target(cpu, f(...))／target(gpu, f(...))。GPU 同步返回已经完成本次计算，数据仍留 GPU；download 负责实际读回。CPU 主流程可直接写 parallel，普通 CPU 函数支持原生调用、自递归和互递归；应用异步语法仍未实现。
+
+## 读取Windows系统信息
+
+`system_info.b`是直接消费正式`blink.windows.system`接口的Windows x64 B程序。它通过Kernel32取得一份`SystemInfo`普通记录并依次显示：架构编号、页大小、最低应用地址、最高应用地址、当前组处理器掩码、当前组逻辑处理器数量、原生处理器类型、分配粒度、处理器级别、修订号。地址按`address_bits`的完整64位数值显示；保留字段不输出。数值来自运行机器，不在程序中固定机器参数。
+
+在工程根执行：
+
+```powershell
+target/release/bc.exe -c sample/applications/system_info.b -I library -o target/applications/system_info.obj
+target/release/blink.exe target/applications/system_info.obj -o target/applications/system_info.exe
+target/applications/system_info.exe
+```
+
+应用只需要生成的exe和Windows系统DLL，未创建Blink拥有资源或其他宿主程序。输出成功返回0，标准输出失败返回1；系统API本身返回void，不添加另一份错误状态。处理器数量／掩码属于当前处理器组，记录与原生布局见[标准库接口](../../library/README.md#blinkwindowssystem)。这个模块不提供B自有位置取址、系统回调或通用文本／文件库。

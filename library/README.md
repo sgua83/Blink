@@ -53,3 +53,38 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 ```
 
 实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、字符串／字节库和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。
+
+## blink.windows.system
+
+`blink.windows.system`是Windows x64的原生系统信息接口。它只有一份`.h`，公开普通记录`SystemInfo`和`extern "C" void GetNativeSystemInfo(write SystemInfo info) on cpu`；直接调用Kernel32的同名函数，没有B转发实现或常驻服务。记录未初始化时可作为这个完整write输出；同步返回后记录仍由原B调用者持有。
+
+```b
+import blink.windows.system;
+
+SystemInfo info;
+GetNativeSystemInfo(info);
+println(info.page_size);
+println(info.number_of_processors);
+```
+
+这些语句写在普通CPU函数内。`number_of_processors`及`active_processor_mask`描述当前处理器组；不据此推算所有处理器组的总量。实际数值随系统而变。
+
+| B字段 | Windows SYSTEM_INFO成员 | x64字节偏移／类型 |
+|---|---|---|
+| processor_architecture | wProcessorArchitecture | 0／u16 |
+| reserved | wReserved | 2／u16 |
+| page_size | dwPageSize | 4／u32 |
+| minimum_application_address | lpMinimumApplicationAddress | 8／address |
+| maximum_application_address | lpMaximumApplicationAddress | 16／address |
+| active_processor_mask | dwActiveProcessorMask | 24／usize |
+| number_of_processors | dwNumberOfProcessors | 32／u32 |
+| processor_type | dwProcessorType | 36／u32 |
+| allocation_granularity | dwAllocationGranularity | 40／u32 |
+| processor_level | wProcessorLevel | 44／u16 |
+| processor_revision | wProcessorRevision | 46／u16 |
+
+该记录大小48、对齐8；第一个原生union使用官方建议的架构分支。`reserved`没有应用语义，`processor_type`是原生ABI保留的过时成员；判断架构使用`processor_architecture`。地址字段是系统报告的应用地址空间边界，不拥有所指存储；取`address_bits`只观察完整64位地址，不授予访问或释放权限。API返回void，信息由输出记录交付。
+
+完整B程序与构建命令见[系统信息应用](../sample/applications/README.md#读取windows系统信息)。当前验证目标为Windows x64；模块接口不表示其他64位平台或完整Windows系统库已经交付。正式源码发行包沿既有library目录包含此模块。
+
+原生合同来源：[SYSTEM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-system_info)、[GetNativeSystemInfo](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getnativesysteminfo)。

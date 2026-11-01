@@ -141,6 +141,12 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
 
+## Windows系统信息的原生布局
+
+标准库`blink.windows.system`直接声明Kernel32的GetNativeSystemInfo及其SystemInfo输出记录。Windows x64真实结构的两个u16、u32、两个address、usize及后续窄／普通整数按原Ty布局交接，大小48、对齐8；接口来源、全部字段偏移与实际B消费者见[标准库](../library/README.md#blinkwindowssystem)及[系统信息应用](../sample/applications/README.md#读取windows系统信息)。纯类型与extern声明模块使用.h，不需要空.b或Rust转发包装。
+
+本次同步write借用只在OS调用期间有效，输出仍归原B位置；系统报告的最小／最大应用地址不是新分配的资源。数量和掩码的处理器组语义遵守原Windows合同。其他系统结构、地址保留／释放、回调及引擎业务采用按各自真实接口继续建设，不把这个具体模块视为完整Windows SDK。
+
 ## B 业务结果与调用状态
 
 B 的 `result<T,E>` 是业务数据，和生成 DLL 的 create／run 返回状态分别处理。C ABI 的0／-1、C++异常及Rust包装器Result报告装载／设备／执行／接口调用；一个合法执行可以在输出记录中产生业务Err，不因此变成DLL调用失败。B的try只传播显式业务结果，不自动捕获平台失败、外部异常或回滚已经发生的写入。
