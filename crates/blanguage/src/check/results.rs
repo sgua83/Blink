@@ -6,7 +6,7 @@ impl Builder<'_> {
     pub(super) fn variant_constructor_type(&self,name:&str,explicit:Option<&[GenericArgument]>,expected:Option<&Ty>,span:Span)->Result<Option<(Ty,usize)>> {
         let Some((parent,member))=name.rsplit_once("::") else{return Ok(None)};
         let Some(key)=self.world.resolve(parent,&self.definition.module,&self.definition.imports,false) else{return Ok(None)};
-        if self.world.records[&key].0.variants.is_empty(){return Ok(None);}
+        if self.world.record(&key).0.variants.is_empty(){return Ok(None);}
         let mut syntax=TypeName::named(parent);
         if let Some(arguments)=explicit {syntax.arguments=arguments.to_vec();}
         else if let Some(expected)=expected.filter(|ty|ty.name.split_once('<').map_or(ty.name.as_str(),|(root,_)|root)==key) {

@@ -133,7 +133,6 @@ impl crate::Compiler {
             })?;
             let imported = if dependencies.is_empty() { None } else { Some(&imports) };
             let (world, entry) = crate::read_world(path, module_root, imported, worker, None)?;
-            crate::validate_types(&world)?;
             crate::check::compile_native_module(&world, &entry, instances)
         })
     }

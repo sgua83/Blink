@@ -5,6 +5,7 @@ mod inputs;
 mod graph;
 pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
+pub(crate) use object::Declaration;
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
 use crate::module::codec::{Decode, Encode, record};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};

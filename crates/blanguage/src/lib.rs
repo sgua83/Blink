@@ -77,7 +77,7 @@ pub(crate) struct World {
     declarations: Arc<Declarations>,
     worker: compiler::Worker,
     evaluating_constants: RefCell<BTreeSet<String>>,
-    build_constants: Option<RefCell<BTreeSet<String>>>,
+    build_declarations: Option<RefCell<BTreeSet<build::Declaration>>>,
 }
 impl std::ops::Deref for World {
     type Target = Declarations;
@@ -85,7 +85,13 @@ impl std::ops::Deref for World {
 }
 impl World {
     fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
-        Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_constants: None }
+        Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_declarations: None }
+    }
+    fn record(&self, key: &str) -> &(Record, Source, String, Vec<String>) {
+        if let Some(inputs) = &self.build_declarations {
+            inputs.borrow_mut().insert(build::Declaration::Record(key.into()));
+        }
+        &self.records[key]
     }
 }
 fn read(path: &Path) -> Result<Source> {
@@ -253,7 +259,6 @@ fn compile_world(
     } else {
         None
     };
-    validate_types(&world)?;
     enum Job<'a> {
         Instance(generics::Instance, bool),
         Failed(Diagnostic),
@@ -284,10 +289,10 @@ fn compile_world(
         jobs.push(Job::Selected(key, arguments, *kind));
     }
     let declarations = &world.declarations;
-    let collect_constants = world.build_constants.is_some();
+    let collect_declarations = world.build_declarations.is_some();
     let output = parallel::try_map(&world.worker, jobs, |worker| {
         let mut world = World::new(Arc::clone(declarations), worker.clone());
-        if collect_constants { world.build_constants = Some(RefCell::new(BTreeSet::new())); }
+        if collect_declarations { world.build_declarations = Some(RefCell::new(BTreeSet::new())); }
         world
     }, |world, job| {
         let output = (|| -> Result<Output> {
@@ -326,9 +331,9 @@ fn compile_world(
         }
         Ok(Output::Programs(programs))
         })()?;
-        let constants = world.build_constants.as_ref()
+        let used = world.build_declarations.as_ref()
             .map(|inputs| std::mem::take(&mut *inputs.borrow_mut())).unwrap_or_default();
-        Ok((output, constants))
+        Ok((output, used))
     }).map_err(|error| match error {
         parallel::Error::Work(error) => error,
         parallel::Error::Resource(error) => Diagnostic {
@@ -339,8 +344,8 @@ fn compile_world(
     let mut programs = Vec::new();
     let mut templates = Vec::new();
     let mut applications = Vec::new();
-    for (output, constants) in output {
-        if let Some(inputs) = &world.build_constants { inputs.borrow_mut().extend(constants); }
+    for (output, used) in output {
+        if let Some(inputs) = &world.build_declarations { inputs.borrow_mut().extend(used); }
         match output {
             Output::Application(application) => applications.push(application),
             Output::Programs(images) => for program in images {
@@ -421,6 +426,7 @@ fn read_world(
             check::constant_value(&world, key)?;
         }
     }
+    validate_types(&world)?;
     Ok((world, entry))
 }
 fn validate_types(world: &World) -> Result<()> {
@@ -946,7 +952,7 @@ impl World {
         let Some(key) = key else {
             return source.fail(span, "B031", format!("未知或不明确的类型 {}", name.name));
         };
-        let (record, s, m, i) = &self.records[&key];
+        let (record, s, m, i) = self.record(&key);
         if record.types.len() + record.values.len() != name.arguments.len() {
             return source.fail(
                 span,

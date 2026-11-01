@@ -283,7 +283,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 入口在 `crates/blanguage/src/lib.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/lib.rs:127`。
+源码节选：`crates/blanguage/src/lib.rs:133`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -307,7 +307,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:470`。
+源码节选：`crates/blanguage/src/lib.rs:476`。
 
 ```rust
     if let Some(name) = import
@@ -445,7 +445,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1004`。
+源码节选：`crates/blanguage/src/parser.rs:1005`。
 
 ```rust
             let prec = match self.peek() {

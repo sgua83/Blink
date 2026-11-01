@@ -116,8 +116,8 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
         Ok((value.ty, value.constant.unwrap()))
     })();
     world.evaluating_constants.borrow_mut().remove(key);
-    if result.is_ok() && let Some(inputs) = &world.build_constants {
-        inputs.borrow_mut().insert(key.into());
+    if result.is_ok() && let Some(inputs) = &world.build_declarations {
+        inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
     }
     result
 }

@@ -459,7 +459,8 @@ impl Parser {
                     variants.clear();
                 }
                 records.push(Record { name, types, values, stride: None,
-                    enumeration: Some(representation), variants, fields: Vec::new(), span });
+                    enumeration: Some(representation), variants, fields: Vec::new(),
+                    span: Span { start: span.start, end: self.tokens[self.at - 1].span.end } });
                 continue;
             }
             if self.take("struct") {
@@ -491,7 +492,7 @@ impl Parser {
                     enumeration: None,
                     variants: Vec::new(),
                     fields,
-                    span,
+                    span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
                 });
                 continue;
             }
