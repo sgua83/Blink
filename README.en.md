@@ -383,7 +383,6 @@ The B language **does not adopt object-oriented programming**. Programs are orga
 
 | Start here | What it covers |
 |---|---|
-| [B Language Programming](sample/B语言编程.md) | Installation through functions, data, and parallelism; [examples](sample/beginner/README.md) · [mobile PDF](sample/pdf/B语言编程-手机阅读版.pdf) · [standard PDF](sample/pdf/B语言编程.pdf) |
 | [The Art of Parallel Programming](sample/并行编程的艺术.md) | Moving from C/C++ to parallel thinking |
 | [Blink and Rust](sample/Blink和Rust混合编程.md) | Minimal integration through simulation and repeated GPU execution; [examples](sample/hybrid/README.md) |
 | [B Language Source Analysis](sample/B语言源码分析.md) | Compiler, IR, backends, and execution framework; [version and reading notes](sample/compiler/README.md) |

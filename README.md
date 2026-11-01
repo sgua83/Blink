@@ -388,7 +388,6 @@ B 语言 **不采用面向对象**，以数据、函数、模块和执行域组�
 
 | 从哪里开始 | 内容 |
 |---|---|
-| [《B 语言编程》](sample/B语言编程.md) | 从下载、第一个程序到函数、数据和并行；[完整示例](sample/beginner/README.md) · [手机 PDF](sample/pdf/B语言编程-手机阅读版.pdf) · [标准 PDF](sample/pdf/B语言编程.pdf) |
 | [《并行编程的艺术》](sample/并行编程的艺术.md) | 从 C／C++ 走向并行思考 |
 | [《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) | 从最小调用到模拟与连续 GPU 计算；[示例](sample/hybrid/README.md) |
 | [《B 语言源码分析》](sample/B语言源码分析.md) | 阅读编译器、IR、后端及执行框架；[版本与阅读资料](sample/compiler/README.md) |
