@@ -21,6 +21,9 @@ pub(crate) fn instantiate(
     values: &[u32],
 ) -> Result<Instance> {
     let function = &definition.function;
+    if function.external.is_some() && let Some(inputs) = &world.build_declarations {
+        inputs.borrow_mut().insert(crate::build::Declaration::External(base.into()));
+    }
     if function.types.is_empty() && function.values.is_empty() {
         return Ok(Instance {
             name: base.into(),

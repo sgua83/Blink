@@ -213,7 +213,7 @@ pub struct Ty {
 
 address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。外部地址的显式CPU位置复用原Reference读写与调用借用；B自有位置取址、完整系统ABI消费者与回调仍按各自具体缺口建设。
 
-unsafe_position<T>消费明确外部CPU存储，直接形成原Reference位置。载荷仍按Ty的真实字节偏移读写，read／write／inout借用原地址；外部位置没有B参数初始化scope，不登记为Frame拥有资源。调用者保证范围、对齐、权限、读取所需初始化和最后消费者前的存活，不能与仍活跃的B借用冲突。
+`unsafe_position<T>`消费明确外部CPU存储，直接形成原Reference位置。载荷仍按Ty的真实字节偏移读写，read／write／inout借用原地址；外部位置没有B参数初始化scope，不登记为Frame拥有资源。调用者保证范围、对齐、权限、读取所需初始化和最后消费者前的存活，不能与仍活跃的B借用冲突。
 
 源码节选：`crates/blanguage/src/check/address.rs:42`。
 
@@ -373,7 +373,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:476`。
+源码节选：`crates/blanguage/src/lib.rs:480`。
 
 ```rust
     if let Some(name) = import
@@ -383,7 +383,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
     }
 ```
 
-来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。
+来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。装入器统一检查常量、类型和外部C声明的签名及普通值ABI，应用、对象模块与源码SDK共用这一职责；未调用的非法声明也在产物复用前拒绝。实际外部实例再向原构建输入集合交接声明键，不在运行期维护第二份接口表。
 
 ### 4.3 名字怎样变成唯一对象
 
@@ -592,7 +592,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 “同一个函数能处理不同类型”有两种很不同的实现：运行时判断类型，或者编译前形成具体实例。Blink 当前主要采用后者。
 
-源码节选：`crates/blanguage/src/generics.rs:50`。
+源码节选：`crates/blanguage/src/generics.rs:53`。
 
 ```rust
     let replacements: BTreeMap<_, _> = function
@@ -660,7 +660,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3820`。
+源码节选：`crates/blanguage/src/check.rs:3817`。
 
 ```rust
         let binding = view.binding;

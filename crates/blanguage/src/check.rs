@@ -17,7 +17,7 @@ mod contracts;
 mod cooperative;
 mod custom_reduce;
 mod effects;
-mod external;
+pub(crate) mod external;
 mod native_function;
 mod residency;
 pub(crate) use native_function::{check_domain, compile_module as compile_native_module};
@@ -1205,9 +1205,6 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
 pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let name = &instance.name;
     let d = &instance.definition;
-    if d.function.external.is_some() {
-        return external::check_declaration(world, d);
-    }
     if d.function.kind == FunctionKind::Constant {
         return constant_value(world, name).map(|_| ());
     }

@@ -272,7 +272,8 @@ fn compile_world(
     let mut jobs = Vec::new();
     let planned = (|| -> Result<()> {
         for (base, definition) in &world.functions {
-            if definition.compiled.is_some() || definition.function.kind == FunctionKind::Constant { continue; }
+            if definition.compiled.is_some() || definition.function.kind == FunctionKind::Constant
+                || definition.function.external.is_some() { continue; }
             generics::validate_declaration(definition)?;
             if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
                 continue;
@@ -427,6 +428,9 @@ fn read_world(
         }
     }
     validate_types(&world)?;
+    for definition in world.functions.values().filter(|definition| definition.function.external.is_some()) {
+        check::external::check_declaration(&world, definition)?;
+    }
     Ok((world, entry))
 }
 fn validate_types(world: &World) -> Result<()> {

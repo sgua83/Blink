@@ -19,9 +19,10 @@ pub(crate) enum Declaration {
     Constant(String),
     Record(String),
     TypeSet(String),
+    External(String),
 }
-variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name) });
-const MAGIC: &[u8; 8] = b"BLBO\x05\0\0\0";
+variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name) });
+const MAGIC: &[u8; 8] = b"BLBO\x06\0\0\0";
 struct Inputs {
     source: [u8; 32],
     imports: [u8; 32],
@@ -68,6 +69,9 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
                 .map(|(record, source, ..)| (source, record.span)),
             Declaration::TypeSet(key) => declarations.type_sets.get(key)
                 .map(|(set, source, ..)| (source, set.span)),
+            Declaration::External(key) => declarations.functions.get(key)
+                .filter(|definition| definition.function.external.is_some())
+                .map(|definition| (&definition.source, definition.function.span)),
         };
         match input {
             Some((source, span)) => {
@@ -84,8 +88,9 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
     let mut spans = declarations.functions.values()
         .filter(|definition| definition.source.path == source.path
             && (definition.compiled.is_some() || imported
-                && definition.function.kind == crate::ast::FunctionKind::Constant
-                && !definition.function.name.contains("::")))
+                && (definition.function.external.is_some()
+                    || definition.function.kind == crate::ast::FunctionKind::Constant
+                        && !definition.function.name.contains("::"))))
         .map(|definition| definition.function.span).collect::<Vec<_>>();
     if imported {
         // 保留完整值／类型／变体名称；此处只移除未消费声明的内容身份。

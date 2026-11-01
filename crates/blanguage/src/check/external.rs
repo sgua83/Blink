@@ -41,7 +41,7 @@ fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Resul
     }
     Ok(ty)
 }
-pub(super) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
+pub(crate) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
     validate_signature(d)?;
     for param in &d.function.params {
         value_type(world, d, &param.ty, param.span)?;
@@ -264,7 +264,6 @@ impl Builder<'_> {
                 "C ABI 外部函数只能从 on cpu 执行，GPU／compute 不能调用宿主函数",
             );
         }
-        check_declaration(self.world, d)?;
         for contract in &d.function.contracts {outputs::validate(self,d,contract)?;}
         let mut arguments = Vec::new();
         let mut written = Vec::new();
