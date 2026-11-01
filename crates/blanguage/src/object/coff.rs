@@ -68,7 +68,7 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 31);
+    word(&mut meta, 32);
     string(&mut meta, &o.name)?;
     match &o.kind {
         Kind::Module {
@@ -154,6 +154,20 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         string(&mut meta, name)?;
         word(&mut meta, u32::try_from(contract.len())?);
         meta.extend(contract);
+    }
+    word(&mut meta, u32::try_from(o.stack.len())?);
+    for frame in &o.stack {
+        string(&mut meta, &frame.name)?;
+        word(&mut meta, u32::try_from(frame.section)?);
+        word(&mut meta, frame.start);
+        word(&mut meta, frame.local);
+        word(&mut meta, u32::try_from(frame.calls.len())?);
+        for call in &frame.calls {
+            match call {
+                stack::Call::Reference { offset, tail } => { word(&mut meta, u32::from(*tail)); word(&mut meta, u32::try_from(*offset)?); }
+                stack::Call::Indirect => word(&mut meta, 2),
+            }
+        }
     }
     let mut sections: Vec<(&str, &[u8], u32, &[Relocation])> = o
         .sections
@@ -427,7 +441,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 31 {
+    if tag != *b"BLCO" || read_word(&mut c)? != 32 {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;
@@ -488,6 +502,22 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         let at = c.position() as usize;
         bindings.insert(name, crate::check::canonical_function_contract(slice(meta, at, size)?)?);
         c.set_position((at + size) as u64);
+    }
+    let mut stack = Vec::new();
+    for _ in 0..read_word(&mut c)? {
+        let name = read_string(&mut c)?;
+        let section = read_word(&mut c)? as usize;
+        let start = read_word(&mut c)?;
+        let local = read_word(&mut c)?;
+        let mut calls = Vec::new();
+        for _ in 0..read_word(&mut c)? {
+            calls.push(match read_word(&mut c)? {
+                tag @ (0 | 1) => stack::Call::Reference { offset: read_word(&mut c)? as usize, tail: tag == 1 },
+                2 => stack::Call::Indirect,
+                _ => return Err("未知的栈调用引用种类".into()),
+            });
+        }
+        stack.push(stack::Frame { name, section, start, local, calls });
     }
     let archive = raw.iter().find(|s| s.0 == ARCHIVE).map(|s| Archive {
         bytes: s.1.clone(),
@@ -579,12 +609,16 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
                 })
             })
             .collect::<Result<_>>()?;
-    Ok(Object {
+    for frame in &mut stack { frame.section = *mapping.get(&frame.section).ok_or("栈信息引用不可装载的节")?; }
+    let object = Object {
+        stack,
         name,
         symbols,
         imports: bindings,
         sections,
         archive,
         kind,
-    })
+    };
+    stack::validate(&object)?;
+    Ok(object)
 }

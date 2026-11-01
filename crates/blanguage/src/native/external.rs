@@ -113,10 +113,16 @@ impl Emitter<'_> {
         }
         Ok(())
     }
-    pub(super) fn native_code_address(&mut self, target: NativeSymbol) {
+    pub(super) fn native_code_address(&mut self, target: NativeSymbol) -> usize {
         self.bytes(&[0x48, 0xb8]);
-        self.relocations.push(Relocation { offset: self.code.len(), target });
+        let at = self.code.len();
+        self.relocations.push(Relocation { offset: at, target });
         self.bytes(&[0; 8]);
+        at
+    }
+    pub(super) fn invoke(&mut self, reference: Option<usize>) {
+        self.calls.push(reference);
+        self.bytes(&[0xff, 0xd0]);
     }
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
         let layout = Layout::new(call);
@@ -162,12 +168,12 @@ impl Emitter<'_> {
                 self.instruction(None, &[0x8b], true, [1, 2, 8, 9][slot], memory);
             }
         }
-        match &call.target {
-            CallTarget::Indirect(_) => self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)),
-            CallTarget::External(name) => self.native_code_address(NativeSymbol::External(name.clone())),
-            CallTarget::Defined(name) => self.native_code_address(NativeSymbol::Function(name.clone())),
-        }
-        self.bytes(&[0xff, 0xd0]);
+        let reference = match &call.target {
+            CallTarget::Indirect(_) => { self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)); None }
+            CallTarget::External(name) => Some(self.native_code_address(NativeSymbol::External(name.clone()))),
+            CallTarget::Defined(name) => Some(self.native_code_address(NativeSymbol::Function(name.clone()))),
+        };
+        self.invoke(reference);
         if let Some(ty) = &call.result {
             if let Some(at) = layout.result {
                 for ((_, offset), reg) in ty.components.iter().zip(&call.values) {

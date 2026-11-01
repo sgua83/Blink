@@ -69,6 +69,7 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
             .ok_or("模块程序索引超出原生 ABI")?;
     }
     Ok(Some(Object {
+        stack: Vec::new(),
         name: "@blink.resources@".into(),
         kind: Kind::Module {
             interface: String::new(),

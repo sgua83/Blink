@@ -37,13 +37,14 @@ impl Application {
         for (_, function) in &functions {
             stack_bytes = stack_bytes.max(function.code.stack_bytes);
         }
-        let sections =
-            object::application_code(code, functions, &self.imports, &resource_prefix(&self.name))?;
+        let (sections, stack) =
+            object::application_code(code, functions, &self.imports, &resource_prefix(&self.name), &self.name)?;
         let (archive, resource_stack) = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Application { stack_bytes: stack_bytes.max(resource_stack) },
             sections,
+            stack,
             symbols: Vec::new(),
             imports: self.imports.clone(),
             archive,

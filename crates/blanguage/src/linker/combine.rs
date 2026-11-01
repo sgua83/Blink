@@ -16,6 +16,7 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
         .max()
         .unwrap();
     let mut sections: Vec<Section> = Vec::new();
+    let mut stack = Vec::new();
     let mut groups = BTreeMap::new();
     let mut placements = Vec::new();
     let mut symbols = BTreeMap::new();
@@ -58,6 +59,15 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
                     ),
                 );
         }
+        for mut frame in std::mem::take(&mut object.stack) {
+            let (section, base) = positions[frame.section];
+            frame.section = section;
+            frame.start = frame.start.checked_add(base).ok_or("栈函数节地址溢出")?;
+            for call in &mut frame.calls {
+                if let crate::object::stack::Call::Reference { offset, .. } = call { *offset += base as usize; }
+            }
+            stack.push(frame);
+        }
         placements.push(positions);
     }
     for (object, positions) in objects.into_iter().zip(placements) {
@@ -91,6 +101,7 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
             name,
             kind: Kind::Application { stack_bytes },
             sections,
+            stack,
             symbols: Vec::new(),
             imports: BTreeMap::new(),
             archive: None,

@@ -4,6 +4,7 @@ mod static_library;
 pub use static_library::{Input, archive};
 pub(crate) use static_library::Library;
 mod coff;
+pub(crate) mod stack;
 pub(crate) use coff::Reader as ObjectReader;
 mod emit;
 pub(crate) use archive::{compile as compile_archive, inputs as native_inputs};
@@ -76,8 +77,10 @@ pub struct Object {
     pub(crate) symbols: Vec<Symbol>,
     pub(crate) imports: std::collections::BTreeMap<String, Vec<u8>>,
     pub(crate) archive: Option<Archive>,
+    pub(crate) stack: Vec<stack::Frame>,
 }
 impl Object {
+    pub fn stack_report(&self, budget: Option<u64>) -> String { stack::report(self, budget, None) }
     pub fn write(&self, path: &Path) -> Result<()> {
         let path = std::path::absolute(path)?;
         std::fs::create_dir_all(path.parent().unwrap())?;

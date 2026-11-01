@@ -512,6 +512,7 @@ pub(super) fn emit(
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        calls: Vec::new(),
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
         program: &program,

@@ -99,6 +99,7 @@ struct Section {
     bytes: Vec<u8>,
     flags: u32,
 }
+pub(super) fn stack_reserve(stack_bytes: u32) -> u64 { align(stack_bytes as usize + 1024 * 1024, 65536) as u64 }
 pub(super) fn link(object: &Object, runtime: Option<&str>) -> Result<Vec<u8>> {
     let stack_bytes = match object.kind {
         Kind::Application { stack_bytes } => stack_bytes,
@@ -241,7 +242,7 @@ pub(super) fn link(object: &Object, runtime: Option<&str>) -> Result<Vec<u8>> {
     put64(
         &mut output,
         optional + 72,
-        align(stack_bytes as usize + 1024 * 1024, 65536) as u64,
+        stack_reserve(stack_bytes),
     );
     put64(&mut output, optional + 80, 4096);
     put64(&mut output, optional + 88, 1024 * 1024);

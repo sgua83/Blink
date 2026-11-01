@@ -14,7 +14,7 @@
 
 The B in the name also stands for **Base**. Blink aims to become a foundational programming language for the AI supercomputing era, with parallelism, data relationships, and cooperation built into the language, while developing complete general-purpose and systems programming capabilities.
 
-This repository contains the B-language compiler, linker, native execution framework, language reference, and examples. B-language interfaces live in `.h` files and implementations in `.b` files. The compiler generates Windows x64 machine code or SPIR-V for the selected target. The execution framework owns data, devices, transfers, and completion. The compiler and framework are currently implemented in Rust, without third-party compilers, shader compilers, or parallel runtimes.
+This repository contains the B-language compiler, linker, native execution framework, language reference, and examples. B-language interfaces live in `.h` files and implementations in `.b` files. The compiler generates Windows x64 machine code or SPIR-V for the selected target. The execution framework owns data, devices, transfers, and completion. The lexer is implemented in B and statically compiled by a stable Blink seed; the remaining compiler and execution framework are implemented in Rust, without third-party compilers, shader compilers, or parallel runtimes.
 
 > **In development — software version in [VERSION](VERSION).** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
 
@@ -47,6 +47,8 @@ cargo build --workspace --release
 ```
 
 Run all subsequent commands from the Blink root. CPU examples need no GPU. GPU examples need a Vulkan driver supporting each program's requirements, without a separate Vulkan SDK. The f32 example currently requires `DenormPreserve` and `SignedZeroInfNanPreserve`; unsupported devices receive an explicit error.
+
+Optional CPU stack reports are available through `bc -c ... --stack-report <file>` and `blink --stack-report <compiled-inputs>... -o <file>`. They expose actual frames, closed call-chain bounds, and unknown recursive, external, or indirect ranges. A caller-supplied remaining stack budget is used only for reporting; PE reserve is not assumed to be a thread’s remaining capacity. See the [stack report specification](Docs/BLanguage.md#cpu调用链的静态栈报告).
 
 <a id="parallel-programming"></a>
 

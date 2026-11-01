@@ -369,7 +369,7 @@ pub enum CallTarget {
 
 Windows x64在原调用区为间接目标留一个独立槽，准备实参前保存该地址；参数寄存器设置完成后再取出并执行call。槽位属于本次调用栈，不产生额外代码所有者或运行时登记。
 
-源码节选：`crates/blanguage/src/native/external.rs:123`。
+源码节选：`crates/blanguage/src/native/external.rs:129`。
 
 ```rust
         if let CallTarget::Indirect(reg) = call.target {
@@ -378,14 +378,14 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
         }
 ```
 
-源码节选：`crates/blanguage/src/native/external.rs:165`。
+源码节选：`crates/blanguage/src/native/external.rs:171`。
 
 ```rust
-        match &call.target {
-            CallTarget::Indirect(_) => self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)),
-            CallTarget::External(name) => self.native_code_address(NativeSymbol::External(name.clone())),
-            CallTarget::Defined(name) => self.native_code_address(NativeSymbol::Function(name.clone())),
-        }
+        let reference = match &call.target {
+            CallTarget::Indirect(_) => { self.instruction(None, &[0x8b], true, 0, Operand::memory(4, layout.target.unwrap() as u32)); None }
+            CallTarget::External(name) => Some(self.native_code_address(NativeSymbol::External(name.clone()))),
+            CallTarget::Defined(name) => Some(self.native_code_address(NativeSymbol::Function(name.clone()))),
+        };
 ```
 
 循环写入预分析借用`check/effects/sources.rs`中的原声明、词法绑定与泛型实例，取得本次函数值签名；写范围仍进入原effects消费者。数值回边分析消费同一份已收集的写入及其源调用，不重复生成写图，不按未知函数名一律清空其他位置的事实。
@@ -1502,7 +1502,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native.rs:126`。
+源码节选：`crates/blanguage/src/native.rs:127`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1576,7 +1576,7 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-源码节选：`crates/blanguage/src/native.rs:140`。
+源码节选：`crates/blanguage/src/native.rs:141`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1645,7 +1645,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native.rs:668`。
+源码节选：`crates/blanguage/src/native.rs:663`。
 
 ```rust
     let stage = &lowered;
@@ -2309,7 +2309,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections: Vec::new(),
+        sections: Vec::new(), stack: Vec::new(),
         symbols: Vec::new(),
         imports: std::collections::BTreeMap::new(),
         archive: Some(archive),
@@ -2321,7 +2321,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
 
 应用链接以唯一实际入口为根，沿机器符号选择显式模块与按库顺序抽取的成员，再沿实际函数节和重定位继续。每个函数的机器代码与内部字面量在同一个 COMDAT 节；pdata／xdata 以标准 COFF 关联随这个函数保留。递归和共享打印／导入跳板按原节身份闭合，未调用函数不把缺失依赖或 DLL 导入带进应用；真正需要的定义须有匹配合同，显式重复仍拒绝。
 
-模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。当前BLCO31交接真实类型合同、COFF辅助符号与节关联，模块资源及执行映像为BLRI15；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
+模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。当前BLCO32交接真实类型合同、COFF辅助符号与节关联，模块资源及执行映像为BLRI15；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
 
 DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有装载与驱动准备成本；消费者不需要 B 源码或 Rust 工具链。编译、链接、装载、数据传输与一次算法执行的成本应分别记录。
 

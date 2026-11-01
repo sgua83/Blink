@@ -16,6 +16,10 @@ pub fn link(input: &Path, output: &Path) -> Result<()> {
     link_inputs(&[input], output)
 }
 pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
+    let (objects, libraries) = read_inputs(inputs)?;
+    link_objects(objects, libraries, output)
+}
+fn read_inputs(inputs: &[impl AsRef<Path>]) -> Result<(Vec<Object>, Vec<crate::object::Library>)> {
     let mut objects = Vec::new();
     let mut libraries = Vec::new();
     for input in inputs {
@@ -24,7 +28,7 @@ pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
             Input::Library(library) => libraries.push(library),
         }
     }
-    link_objects(objects, libraries, output)
+    Ok((objects, libraries))
 }
 // 符号与节的存活只属于本次原生链接；展开节沿编译产物的真实关联跟随代码。
 fn define(object: &Object, index: usize, defined: &mut BTreeMap<String, (usize, usize)>) -> Result<()> {
@@ -100,6 +104,8 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
             for associated in &mut section.associated { *associated = mapping[*associated].unwrap(); }
             Some(section)
         }).collect();
+        object.stack.retain(|frame| live[frame.section]);
+        for frame in &mut object.stack { frame.section = mapping[frame.section].unwrap(); }
         object.symbols.retain(|symbol| live[symbol.section]);
         for symbol in &mut object.symbols { symbol.section = mapping[symbol.section].unwrap(); }
         if matches!(object.kind, Kind::Module { .. }) {
@@ -120,7 +126,7 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(vec![object], Vec::new(), path)
 }
-fn link_objects(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
+fn prepare(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>) -> Result<(Object, Vec<crate::object::Archive>)> {
     let root = if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
         0
     } else {
@@ -147,6 +153,16 @@ fn link_objects(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>
         } else {
             combine::objects(objects)?
         };
+    Ok((object, archives))
+}
+pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
+    let (objects, libraries) = read_inputs(inputs)?;
+    let (object, _) = prepare(objects, libraries)?;
+    let reserve = match object.kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
+    Ok(crate::object::stack::report(&object, budget, reserve))
+}
+fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
+    let (object, archives) = prepare(objects, libraries)?;
     if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         return Err("本机链接当前输出 Windows x64".into());
     }

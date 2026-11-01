@@ -22,6 +22,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        calls: Vec::new(),
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,
@@ -187,6 +188,7 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        calls: Vec::new(),
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,

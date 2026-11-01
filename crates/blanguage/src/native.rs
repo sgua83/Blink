@@ -78,6 +78,7 @@ pub struct NativeCode {
 struct Emitter<'a> {
     code: Vec<u8>,
     relocations: Vec<Relocation>,
+    calls: Vec<Option<usize>>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
     stage: &'a Stage,
     program: &'a Program,
@@ -309,13 +310,8 @@ impl Emitter<'_> {
                     let scalar = self.stage.registers[*value];
                     self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);
                     if scalar.is_float() { self.bytes(&[0xba]); self.u32(scalar.bit_width()); }
-                    self.bytes(&[0x48, 0xb8]);
-                    self.relocations.push(Relocation {
-                        offset: self.code.len(),
-                        target: NativeSymbol::Print(scalar),
-                    });
-                    self.bytes(&[0; 8]);
-                    self.bytes(&[0xff, 0xd0]);
+                    let reference = self.native_code_address(NativeSymbol::Print(scalar));
+                    self.invoke(Some(reference));
                     self.store(*dst);
                 }
                 Inst::TextureSample { .. } => return Err("原生采样尚未降低到纹理读取 IR"),
@@ -563,12 +559,11 @@ impl Emitter<'_> {
                     };
                     if args.len() == 2 { self.float(args[1], 1); }
                     self.float(args[0], 0);
-                    self.bytes(&[0x48, 0xb8]);
-                    self.relocations.push(Relocation { offset: self.code.len(), target: NativeSymbol::External(crate::ast::ExternalName {
+                    let reference = self.native_code_address(NativeSymbol::External(crate::ast::ExternalName {
                         library: "ucrtbase.dll".into(),
                         symbol: if self.stage.registers[*dst] == Scalar::F32 { format!("{name}f") } else { name.into() },
-                    }) });
-                    self.bytes(&[0; 8]); self.bytes(&[0xff, 0xd0]);
+                    }));
+                    self.invoke(Some(reference));
                     self.store_float(*dst);
                 },
                 Inst::Select {
@@ -698,6 +693,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        calls: Vec::new(),
         literals: std::collections::BTreeMap::new(),
         stage,
         program,

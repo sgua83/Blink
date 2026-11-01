@@ -4,6 +4,7 @@ fn emitter(program: &Program) -> Emitter<'_> {
     Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        calls: Vec::new(),
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,

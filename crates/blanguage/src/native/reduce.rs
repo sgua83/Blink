@@ -8,6 +8,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     let mut e = Emitter {
         code: Vec::new(),
         relocations: Vec::new(),
+        calls: Vec::new(),
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
         program,

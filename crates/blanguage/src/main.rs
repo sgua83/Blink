@@ -41,7 +41,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nbc --version\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nbc --version\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
@@ -63,6 +63,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             parent.to_path_buf()
         };
         let mut output = None;
+        let mut stack_report = None;
+        let mut stack_budget = None;
         let mut entry = "main";
         let mut program = None;
         let mut module = false;
@@ -78,6 +80,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let value = args.get(i + 1).ok_or("编译选项缺少参数")?;
             match args[i].as_str() {
                 "-o" => output = Some(PathBuf::from(value)),
+                "--stack-report" => stack_report = Some(PathBuf::from(value)),
+                "--stack-budget" => stack_budget = Some(value.parse::<u64>()?),
                 "-I" => root = PathBuf::from(value),
                 "--entry" => entry = value,
                 "--program" => program = Some(value.as_str()),
@@ -88,6 +92,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             i += 2;
         }
+        if stack_budget.is_some() && stack_report.is_none() { return Err("--stack-budget需要--stack-report输出".into()); }
         let output = output.ok_or("缺少 -o 目标文件路径")?;
         let kind = if module {
             blanguage::build::ObjectKind::Module(&instances)
@@ -100,6 +105,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
             .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+        if let Some(path) = stack_report {
+            let path = std::path::absolute(path)?;
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(path, compiled.object.stack_report(stack_budget))?;
+        }
         println!("object {} -> {}{}", compiled.object.name(), output.display(),
             if compiled.reused { " (reused)" } else { "" });
         return Ok(());

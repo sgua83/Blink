@@ -80,7 +80,7 @@ impl Module {
             .map(|(_, code)| code.code.stack_bytes)
             .max()
             .unwrap_or(0);
-        let (sections, positions) = object::module_code(
+        let (sections, positions, stack) = object::module_code(
             code,
             &self.imports,
             &crate::application::resource_prefix(&self.name),
@@ -106,6 +106,7 @@ impl Module {
                 stack_bytes: stack_bytes.max(resource_stack),
             },
             sections,
+            stack,
             symbols,
             imports: self.imports.clone(),
             archive,

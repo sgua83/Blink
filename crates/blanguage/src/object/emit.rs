@@ -1,5 +1,5 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
-use super::{Import, Relocation, Result, Section, Target};
+use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
 use crate::native::{ApplicationCode, NativeSymbol, application_unwind};
 use std::collections::{BTreeMap, BTreeSet};
 fn put32(v: &mut [u8], at: usize, n: u32) {
@@ -24,8 +24,9 @@ fn ucrt(name: &'static str) -> Import {
         name: name.into(),
     }
 }
-fn function(sections: &mut Vec<Section>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>) -> usize {
+fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, local: u32, calls: Vec<Call>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>) -> usize {
     let text = sections.len();
+    frames.push(Frame { name, section: text, start: 0, local, calls });
     sections.push(Section {
         name: ".text".into(), bytes, flags: 0x60501020,
         relocations: Vec::new(), associated: Vec::new(),
@@ -50,6 +51,7 @@ fn function(sections: &mut Vec<Section>, bytes: Vec<u8>, unwind: Option<(u32, Ve
     text
 }
 struct Helper {
+    local: u32,
     bytes: Vec<u8>,
     patches: Vec<(usize, Import)>,
     unwind: Vec<u8>,
@@ -194,6 +196,7 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
     }
     v.push(0xc3);
     Ok(Helper {
+        local: u32::from(frame) + saved.len() as u32 * 8,
         bytes: v,
         patches,
         unwind,
@@ -210,32 +213,37 @@ pub(crate) fn application(
     defined: Vec<(String, ApplicationCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<Vec<Section>> {
-    Ok(functions(Some(native), defined, imports, prefix)?.0)
+    name: &str,
+) -> Result<(Vec<Section>, Vec<Frame>)> {
+    let (sections, _, frames) = functions(Some((name.into(), native)), defined, imports, prefix)?;
+    Ok((sections, frames))
 }
 pub(crate) fn module(
     defined: Vec<(String, ApplicationCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>)> {
+) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
     functions(None, defined, imports, prefix)
 }
 fn functions(
-    native: Option<ApplicationCode>,
+    native: Option<(String, ApplicationCode)>,
     defined: Vec<(String, ApplicationCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>)> {
+) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
     let mut sections = Vec::new();
+    let mut frames = Vec::new();
     let mut images = Vec::new();
     let mut symbols = BTreeMap::new();
-    if let Some(native) = native {
+    if let Some((name, native)) = native {
         let mut bytes = vec![0x48, 0x83, 0xec, 0x28, 0xe8, 0, 0, 0, 0, 0x89, 0xc1];
         let mut patches = Vec::new();
         call(&mut bytes, &mut patches, kernel("ExitProcess"));
         let end = u32::try_from(bytes.len())?;
-        let entry = function(&mut sections, bytes, Some((end, application_unwind(4, vec![(4, vec![4, 0x42])]))));
-        let main = function(&mut sections, native.code.bytes, Some((native.function_end, native.unwind)));
+        let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
+        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, application_unwind(4, vec![(4, vec![4, 0x42])]))));
+        let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let main = function(&mut sections, &mut frames, format!("entry {name}"), native.local_bytes, calls, native.code.bytes, Some((native.function_end, native.unwind)));
         sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
         sections[entry].relocations.extend(patches.into_iter()
             .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
@@ -243,7 +251,8 @@ fn functions(
     }
     let mut targets = BTreeMap::new();
     for (name, code) in defined {
-        let text = function(&mut sections, code.code.bytes, Some((code.function_end, code.unwind)));
+        let calls = code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let text = function(&mut sections, &mut frames, name.clone(), code.local_bytes, calls, code.code.bytes, Some((code.function_end, code.unwind)));
         symbols.insert(name.clone(), (text, 0));
         targets.insert(NativeSymbol::Function(name), text);
         images.push((text, code.code.relocations));
@@ -269,13 +278,15 @@ fn functions(
                         format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
                     } else { name.symbol.clone() },
                 });
-                function(&mut sections, bytes, None)
+                let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: true }).collect();
+                function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None)
             }
             NativeSymbol::Print(scalar) => {
                 let helper = print(*scalar)?;
                 patches = helper.patches;
                 let end = u32::try_from(helper.bytes.len())?;
-                function(&mut sections, helper.bytes, Some((end, helper.unwind)))
+                let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false }).collect();
+                function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)))
             }
         };
         targets.insert(op, text);
@@ -294,5 +305,5 @@ fn functions(
             sections[section].relocations.push(Relocation { offset: relocation.offset, kind: 1, target });
         }
     }
-    Ok((sections, symbols))
+    Ok((sections, symbols, frames))
 }

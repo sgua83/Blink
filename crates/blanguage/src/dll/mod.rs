@@ -279,7 +279,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections: Vec::new(),
+        sections: Vec::new(), stack: Vec::new(),
         symbols: Vec::new(),
         imports: std::collections::BTreeMap::new(),
         archive: Some(archive),
