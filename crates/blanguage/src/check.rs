@@ -2427,6 +2427,17 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
+        if a.ty.is_address() || b.ty.is_address() {
+            self.require_same(&a.ty, &b.ty, span)?;
+            if !matches!(op, "==" | "!=") {
+                return self.fail(span, "B147", "address只比较完整地址身份；数值运算须显式取得address_bits");
+            }
+            let mut a = a;
+            let mut b = b;
+            a.ty = Ty::scalar(Scalar::U64);
+            b.ty = Ty::scalar(Scalar::U64);
+            return self.binary(op, a, b, span);
+        }
         if a.ty.is_handle() || b.ty.is_handle() {
             self.require_same(&a.ty, &b.ty, span)?;
             if !matches!(op, "==" | "!=") {
@@ -2840,6 +2851,26 @@ impl<'a> Builder<'a> {
             };
             values.push(value);
         }
+        if matches!(name, "unsafe_address" | "address_bits") {
+            if self.program.target != Target::Cpu {
+                return self.fail(span, "B265", "CPU本地地址只能在on cpu位置解释或取得位模式");
+            }
+            if values.len() != 1 {
+                return self.fail(span, "B153", format!("{name}需要一个实参"));
+            }
+            let address = Ty::builtin("address").unwrap();
+            let integer = Ty::scalar(Scalar::U64);
+            let (input, output) = if name == "unsafe_address" {
+                (integer, address)
+            } else {
+                (address, integer)
+            };
+            let mut value = values.pop().unwrap();
+            self.require_same(&input, &value.ty, span)?;
+            value.ty = output;
+            value.literal = false;
+            return Ok(Some(value));
+        }
         if let Some(ty) = Ty::builtin(name) {
             return self.value_constructor(ty, values, span).map(Some);
         }
@@ -2908,8 +2939,8 @@ impl<'a> Builder<'a> {
             return Ok(None);
         };
         if op == "+" {
-            if a.ty.is_handle() || a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
-                return self.fail(span, "B146", "数值一元运算不能接受数组、枚举或结果");
+            if a.ty.is_handle() || a.ty.is_address() || a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
+                return self.fail(span, "B146", "数值一元运算需要数值类型");
             }
             return Ok(Some(a));
         }
@@ -3543,6 +3574,20 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn value_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
+        if ty.is_address() {
+            if values.is_empty() {
+                return Ok(self.constant_value(ty, vec![0]));
+            }
+            if values.len() == 1 && values[0].ty == ty {
+                let mut value = values.pop().unwrap();
+                value.literal = false;
+                return Ok(value);
+            }
+            return self.fail(span, "B154", "address构造只接受空值或同型地址；整数解释须显式unsafe_address");
+        }
+        if values.iter().any(|value| value.ty.is_address()) {
+            return self.fail(span, "B154", "address不能隐式转换为数值；位模式须显式address_bits");
+        }
         if ty.is_handle() {
             if values.is_empty() {
                 return Ok(self.constant_value(ty, vec![0, 0]));

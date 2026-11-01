@@ -211,6 +211,8 @@ pub struct Ty {
 
 这样，一个 `float3` 在前端仍有完整类型，在后端却可拆成三个 `f32` 分量。语言向量不保证每一处都会使用一条硬件向量指令；是否批量执行，还取决于计算、访问和后端计划。
 
+address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。原生地址位置与借用、系统结构及回调按各自实际能力继续建设，类型值不替代这些交付。
+
 ### 2.4 Dataset 是布局的实际承载者
 
 源码节选：`crates/blcompute/src/lib.rs:79`。
@@ -592,7 +594,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3766`。
+源码节选：`crates/blanguage/src/check.rs:3811`。
 
 ```rust
         let binding = view.binding;
@@ -765,7 +767,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:851`。
+源码节选：`crates/blanguage/src/ir.rs:860`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -775,7 +777,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:870`。
+源码节选：`crates/blanguage/src/ir.rs:879`。
 
 ```rust
     Load {
@@ -807,7 +809,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1065`。
+源码节选：`crates/blanguage/src/ir.rs:1074`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -968,7 +970,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:913`。
+源码节选：`crates/blanguage/src/ir.rs:922`。
 
 ```rust
     If {

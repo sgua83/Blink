@@ -327,8 +327,13 @@ impl Ty {
             "u32" | "uint" => Self::scalar(Scalar::U32),
             "i32" | "int" => Self::scalar(Scalar::I32),
             "bool" => Self::scalar(Scalar::Bool),
-            "u64" => Self::scalar(Scalar::U64),
-            "i64" => Self::scalar(Scalar::I64),
+            "u64" | "usize" => Self::scalar(Scalar::U64),
+            "i64" | "isize" => Self::scalar(Scalar::I64),
+            "address" => {
+                let mut ty = Self::scalar(Scalar::U64);
+                ty.name = "address".into();
+                ty
+            },
             "u8" => Self::scalar(Scalar::U8),
             "i8" => Self::scalar(Scalar::I8),
             "u16" => Self::scalar(Scalar::U16),
@@ -391,11 +396,15 @@ impl Ty {
             _ => return None,
         })
     }
+    pub fn is_address(&self) -> bool {
+        self.name == "address"
+    }
     pub fn is_handle(&self) -> bool {
         self.name == "handle"
     }
     pub fn is_numeric(&self) -> bool {
         !self.is_handle()
+            && !self.is_address()
             && !self.owns_resources()
             && !self.enumeration
             && !self.has_variants()
