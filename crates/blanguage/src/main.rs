@@ -51,7 +51,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command = &args[0];
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
     if command == "-c" {
-        let mut root = path.parent().unwrap().to_path_buf();
+        let parent = path.parent().unwrap();
+        let mut root = if parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            parent.to_path_buf()
+        };
         let mut output = None;
         let mut entry = "main";
         let mut program = None;
