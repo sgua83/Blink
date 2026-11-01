@@ -288,7 +288,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。原类型实参、const与usize／isize别名继续使用同一规范身份，不复制Node布局或新建类型权威。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。未调用合同的完整类型检查及字面量／类型化常量身份归一化仍见Issues的C-021.6.1.1.3.3／.4。B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。原类型实参、const与usize／isize别名继续使用同一规范身份，不复制Node布局或新建类型权威。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量／类型化常量身份归一化仍见Issues的C-021.6.1.1.3.4。B系统回调入口与可保留上下文的寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
 源码节选：`crates/blanguage/src/function_types.rs:136`。
 
@@ -327,11 +327,10 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 
 函数值调用复用直接C调用的实参求值、read／write／inout借用、连续布局及返回投影。外部声明与函数值只提供各自真实目标和签名，共用c_call，不造一个不存在的DLL或Definition来转接。
 
-源码节选：`crates/blanguage/src/check/external.rs:254`。
+源码节选：`crates/blanguage/src/check/external.rs:253`。
 
 ```rust
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
-        for contract in &d.function.contracts { outputs::validate(self, d, contract)?; }
         let parameters = d.function.params.iter().map(|param| {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
             Ok(if param.access == Access::Value { CallParameter::Value(ty) }
@@ -521,6 +520,141 @@ pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worke
     Ok(format!(
         "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
     ))
+}
+```
+
+声明检查读取真实类型、字面量许可和源位置，不借用一次执行的寄存器或Proof。原数值转换、向量维度、矩阵形状及地址身份规则由同一纯函数选择；原二元IR运算码也在此选择，执行端不再重复解析／检查，只按选择执行原转换和降低；原除数非零与控制路径证明仍在实际Builder。这样未调用合同也不能留下错误的运算类型，且不复制一套运算符检查器。
+
+源码节选：`crates/blanguage/src/check/operators.rs:48`。
+
+```rust
+pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
+    source: &Source, span: Span) -> Result<(Ty, Binary)> {
+    if a.is_c_function() || b.is_c_function() || a.is_address() || b.is_address()
+        || a.is_handle() || b.is_handle() {
+        same(a, b, source, span)?;
+        if !matches!(op, "==" | "!=") {
+            let message = if a.is_c_function() {
+                "C函数地址只比较同签名的完整身份，不参与数值运算或次序比较"
+            } else if a.is_address() {
+                "address只比较完整地址身份；数值运算须显式取得address_bits"
+            } else { "handle 只支持完整身份的相等或不等比较" };
+            return source.fail(span, "B147", message);
+        }
+        return Ok((Ty::scalar(Scalar::Bool),
+            if a.is_handle() { Binary::Handle } else { Binary::Identity }));
+    }
+    if a.has_variants() || b.has_variants() {
+        return source.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
+    }
+    let comparison = matches!(op, "==" | "!=" | "<" | ">" | "<=" | ">=");
+    if a.enumeration || b.enumeration {
+        same(a, b, source, span)?;
+        if !comparison {
+            return source.fail(span, "B268", "编号枚举只直接比较同类型值；数值运算先显式取得声明的整数表示");
+        }
+    }
+    if a.matrix_shape().is_some() || b.matrix_shape().is_some() {
+        let (ty, kind) = matrix::binary_type(op, a, a_literal, b, b_literal, source, span)?;
+        return Ok((ty, Binary::Matrix(kind)));
+    }
+    if a.array.is_some() || b.array.is_some() || !a.fields.is_empty() || !b.fields.is_empty()
+        || a.contains_views() || b.contains_views() {
+        return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
+    }
+    let operands = numeric(a, a_literal, b, b_literal, source, span)?;
+    let scalar = operands.scalar;
+    if scalar == Scalar::Bool && !matches!(op, "==" | "!=") {
+        return source.fail(span, "B150", "bool 只支持逻辑或相等运算");
+    }
+    if scalar.is_float() && matches!(op, "%" | "&" | "|" | "^" | "<<" | ">>") {
+        return source.fail(span, "B151", "位运算与取余需要整数");
+    }
+    let operation = if matches!(op, "/" | "%") && !scalar.is_float() { None } else {
+        Some(BinaryOp::from_source(op, scalar).ok_or_else(|| Diagnostic {
+            source: source.clone(), span, code: "B178", message: format!("未知二元运算 {op}"),
+        })?)
+    };
+    Ok((Ty::vector(if comparison { Scalar::Bool } else { scalar },
+        a.components.len().max(b.components.len())), Binary::Numeric { operands, comparison, operation }))
+}
+```
+
+原OutputCondition只负责纯表达式组织；路径来自真实按值快照、资源长度与返回值，字段消费原member_type。dataset的存储类型使用原Ty::owned_dataset及真实count，initialized位置仍选择实际元素。根结果必须是bool；泛型类型及const沿原实例化闭合，不生成假函数或声明用执行IR。
+
+源码节选：`crates/blanguage/src/check/outputs.rs:495`。
+
+```rust
+fn condition_type(
+    value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
+    returned: Option<&Ty>, source: &Source, span: Span,
+) -> Result<(Ty, bool)> {
+    fn path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
+        returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
+        match value {
+            OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
+                source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
+            }),
+            OutputCondition::Name(name) => {
+                let Some((access, ty)) = input(name) else {
+                    return source.fail(span, "B225", format!("输出条件没有输入{name}"));
+                };
+                if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
+                else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
+            }
+            OutputCondition::Member(base, field) => {
+                let ty = path(base, input, returned, source, span)?;
+                if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
+                    return Ok(Ty::scalar(Scalar::U32));
+                }
+                if ty.has_variants() {
+                    return if ty.variants.iter().any(|variant| variant.name == *field) {
+                        Ok(Ty::scalar(Scalar::Bool))
+                    } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
+                }
+                member_type(&ty, field, source, span).map(|(ty, _)| ty)
+            }
+            _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
+        }
+    }
+    Ok(match value {
+        OutputCondition::Name(_) | OutputCondition::Member(..) =>
+            (path(value, input, returned, source, span)?, false),
+        OutputCondition::Number(text) => {
+            let (ty, _) = number(source, span, text)?;
+            let literal = ty.components[0].0.size() == 4;
+            (ty, literal)
+        }
+        OutputCondition::StaticU32(_) => (Ty::scalar(Scalar::U32), false),
+        OutputCondition::Constant(value) => (value.ty.clone(), false),
+        OutputCondition::Bool(_) => (Ty::scalar(Scalar::Bool), false),
+        OutputCondition::Unary(op, value) => {
+            if op == "-" && let OutputCondition::Number(text) = value.as_ref() {
+                let (ty, _) = operators::negative_number(source, span, text)?;
+                let literal = ty.components[0].0.size() == 4;
+                (ty, literal)
+            } else {
+                let (ty, literal) = condition_type(value, input, returned, source, span)?;
+                operators::unary(op, &ty, source, span)?;
+                (ty, literal)
+            }
+        }
+        OutputCondition::Binary(op, a, b) => {
+            let (a, a_literal) = condition_type(a, input, returned, source, span)?;
+            let (b, b_literal) = condition_type(b, input, returned, source, span)?;
+            if matches!(op.as_str(), "&&" | "||") {
+                let boolean = Ty::scalar(Scalar::Bool);
+                operators::same(&boolean, &a, source, span)?;
+                operators::same(&boolean, &b, source, span)?;
+                (boolean, false)
+            } else {
+                let (ty, kind) = operators::binary(op, &a, a_literal, &b, b_literal, source, span)?;
+                let literal = matches!(kind, operators::Binary::Numeric { operands, comparison: false, .. }
+                    if a_literal && b_literal && !operands.scalar.is_float());
+                (ty, literal)
+            }
+        }
+    })
 }
 ```
 
@@ -905,7 +1039,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3870`。
+源码节选：`crates/blanguage/src/check.rs:3754`。
 
 ```rust
         let binding = view.binding;
@@ -1149,7 +1283,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:439`。
+源码节选：`crates/blanguage/src/check.rs:440`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;

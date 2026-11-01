@@ -1,6 +1,49 @@
 //! 固定维度矩阵按行布局；算术静态降低到既有标量值 IR。
 use super::*;
 
+pub(super) enum Binary {
+    Elements(usize),
+    Product { rows: usize, inner: usize, columns: usize },
+    MatrixScalar { count: usize, cast: bool },
+    ScalarMatrix { count: usize, cast: bool },
+    MatrixVector { rows: usize, columns: usize },
+    VectorMatrix { rows: usize, columns: usize },
+}
+pub(super) fn binary_type(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
+    source: &Source, span: Span) -> Result<(Ty, Binary)> {
+    match (a.matrix_shape(), b.matrix_shape()) {
+        (Some((rows, columns)), Some(other))
+            if matches!(op, "+" | "-") && other == (rows, columns) =>
+                Ok((a.clone(), Binary::Elements(rows * columns))),
+        (Some((rows, inner)), Some((other, columns))) if op == "*" && inner == other =>
+            Ok((Ty::matrix(rows, columns), Binary::Product { rows, inner, columns })),
+        (Some((rows, columns)), None) => {
+            let cast = b_literal && b.components.len() == 1 && b.is_numeric();
+            let scalar = b == &Ty::scalar(Scalar::F32) || cast;
+            if scalar && matches!(op, "*" | "/") {
+                return Ok((a.clone(), Binary::MatrixScalar { count: rows * columns, cast }));
+            }
+            if op == "*" && b == &Ty::vector(Scalar::F32, columns) {
+                return Ok((Ty::vector(Scalar::F32, rows), Binary::MatrixVector { rows, columns }));
+            }
+            source.fail(span, "B237", "矩阵运算需要相容矩阵、f32 标量或匹配列数的 float 向量")
+        }
+        (None, Some((rows, columns))) => {
+            let cast = a_literal && a.components.len() == 1 && a.is_numeric();
+            let scalar = a == &Ty::scalar(Scalar::F32) || cast;
+            if op == "*" && scalar {
+                return Ok((b.clone(), Binary::ScalarMatrix { count: rows * columns, cast }));
+            }
+            if op == "*" && a == &Ty::vector(Scalar::F32, rows) {
+                return Ok((Ty::vector(Scalar::F32, columns), Binary::VectorMatrix { rows, columns }));
+            }
+            source.fail(span, "B237", "左侧需要 f32 标量或匹配行数的 float 向量，且只支持乘法")
+        }
+        _ => source.fail(span, "B237", "矩阵维度或运算不相容；乘法使用行列内积"),
+    }
+}
+
+
 impl Builder<'_> {
     fn matrix_component(value: &Value, at: usize) -> Value {
         Value {
@@ -91,116 +134,66 @@ impl Builder<'_> {
         Ok(result)
     }
     pub(super) fn matrix_binary(
-        &mut self,
-        op: &str,
-        mut a: Value,
-        mut b: Value,
-        span: Span,
+        &mut self, op: &str, a: Value, b: Value, kind: Binary, span: Span,
     ) -> Result<Value> {
-        let left = a.ty.matrix_shape();
-        let right = b.ty.matrix_shape();
-        match (left, right) {
-            (Some((rows, columns)), Some(other))
-                if matches!(op, "+" | "-") && other == (rows, columns) =>
-            {
+        match kind {
+            Binary::Elements(count) => {
                 let mut values = Vec::new();
-                for i in 0..rows * columns {
-                    values.push(self.binary(
-                        op,
-                        Self::matrix_component(&a, i),
-                        Self::matrix_component(&b, i),
-                        span,
-                    )?);
+                for i in 0..count {
+                    values.push(self.binary(op, Self::matrix_component(&a, i),
+                        Self::matrix_component(&b, i), span)?);
                 }
                 Ok(Self::matrix_result(a.ty, values))
             }
-            (Some((rows, inner)), Some((other, columns))) if op == "*" && inner == other => {
+            Binary::Product { rows, inner, columns } => {
                 let mut values = Vec::new();
                 for r in 0..rows {
                     for c in 0..columns {
                         let lhs: Vec<_> = (0..inner)
-                            .map(|k| Self::matrix_component(&a, r * inner + k))
-                            .collect();
+                            .map(|k| Self::matrix_component(&a, r * inner + k)).collect();
                         let rhs: Vec<_> = (0..inner)
-                            .map(|k| Self::matrix_component(&b, k * columns + c))
-                            .collect();
+                            .map(|k| Self::matrix_component(&b, k * columns + c)).collect();
                         values.push(self.matrix_dot(&lhs, &rhs, span)?);
                     }
                 }
                 Ok(Self::matrix_result(Ty::matrix(rows, columns), values))
             }
-            (Some((rows, columns)), None) => {
-                if b.literal && b.regs.len() == 1 && b.ty.is_numeric() {
-                    b = self.cast(b, Scalar::F32);
+            Binary::MatrixScalar { count, cast } => {
+                let b = if cast { self.cast(b, Scalar::F32) } else { b };
+                let mut values = Vec::new();
+                for i in 0..count {
+                    values.push(self.binary(op, Self::matrix_component(&a, i), b.clone(), span)?);
                 }
-                if b.ty == Ty::scalar(Scalar::F32) && matches!(op, "*" | "/") {
-                    let mut values = Vec::new();
-                    for i in 0..rows * columns {
-                        values.push(self.binary(
-                            op,
-                            Self::matrix_component(&a, i),
-                            b.clone(),
-                            span,
-                        )?);
-                    }
-                    return Ok(Self::matrix_result(a.ty, values));
-                }
-                if op == "*" && b.ty == Ty::vector(Scalar::F32, columns) {
-                    let rhs: Vec<_> = (0..columns)
-                        .map(|i| Self::matrix_component(&b, i))
-                        .collect();
-                    let mut values = Vec::new();
-                    for r in 0..rows {
-                        let lhs: Vec<_> = (0..columns)
-                            .map(|c| Self::matrix_component(&a, r * columns + c))
-                            .collect();
-                        values.push(self.matrix_dot(&lhs, &rhs, span)?);
-                    }
-                    return Ok(Self::matrix_result(Ty::vector(Scalar::F32, rows), values));
-                }
-                self.fail(
-                    span,
-                    "B237",
-                    "矩阵运算需要相容矩阵、f32 标量或匹配列数的 float 向量",
-                )
+                Ok(Self::matrix_result(a.ty, values))
             }
-            (None, Some((rows, columns))) => {
-                if a.literal && a.regs.len() == 1 && a.ty.is_numeric() {
-                    a = self.cast(a, Scalar::F32);
+            Binary::ScalarMatrix { count, cast } => {
+                let a = if cast { self.cast(a, Scalar::F32) } else { a };
+                let mut values = Vec::new();
+                for i in 0..count {
+                    values.push(self.binary(op, a.clone(), Self::matrix_component(&b, i), span)?);
                 }
-                if op == "*" && a.ty == Ty::scalar(Scalar::F32) {
-                    let mut values = Vec::new();
-                    for i in 0..rows * columns {
-                        values.push(self.binary(
-                            op,
-                            a.clone(),
-                            Self::matrix_component(&b, i),
-                            span,
-                        )?);
-                    }
-                    return Ok(Self::matrix_result(b.ty, values));
-                }
-                if op == "*" && a.ty == Ty::vector(Scalar::F32, rows) {
-                    let lhs: Vec<_> = (0..rows).map(|i| Self::matrix_component(&a, i)).collect();
-                    let mut values = Vec::new();
-                    for c in 0..columns {
-                        let rhs: Vec<_> = (0..rows)
-                            .map(|r| Self::matrix_component(&b, r * columns + c))
-                            .collect();
-                        values.push(self.matrix_dot(&lhs, &rhs, span)?);
-                    }
-                    return Ok(Self::matrix_result(
-                        Ty::vector(Scalar::F32, columns),
-                        values,
-                    ));
-                }
-                self.fail(
-                    span,
-                    "B237",
-                    "左侧需要 f32 标量或匹配行数的 float 向量，且只支持乘法",
-                )
+                Ok(Self::matrix_result(b.ty, values))
             }
-            _ => self.fail(span, "B237", "矩阵维度或运算不相容；乘法使用行列内积"),
+            Binary::MatrixVector { rows, columns } => {
+                let rhs: Vec<_> = (0..columns).map(|i| Self::matrix_component(&b, i)).collect();
+                let mut values = Vec::new();
+                for r in 0..rows {
+                    let lhs: Vec<_> = (0..columns)
+                        .map(|c| Self::matrix_component(&a, r * columns + c)).collect();
+                    values.push(self.matrix_dot(&lhs, &rhs, span)?);
+                }
+                Ok(Self::matrix_result(Ty::vector(Scalar::F32, rows), values))
+            }
+            Binary::VectorMatrix { rows, columns } => {
+                let lhs: Vec<_> = (0..rows).map(|i| Self::matrix_component(&a, i)).collect();
+                let mut values = Vec::new();
+                for c in 0..columns {
+                    let rhs: Vec<_> = (0..rows)
+                        .map(|r| Self::matrix_component(&b, r * columns + c)).collect();
+                    values.push(self.matrix_dot(&lhs, &rhs, span)?);
+                }
+                Ok(Self::matrix_result(Ty::vector(Scalar::F32, columns), values))
+            }
         }
     }
     fn matrix_determinant(&mut self, values: &[Value], size: usize, span: Span) -> Result<Value> {

@@ -43,13 +43,12 @@ fn value_type(world: &World, d: &Definition, ty: &TypeName, span: Span) -> Resul
 }
 pub(crate) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
     validate_signature(d)?;
-    for param in &d.function.params {
-        value_type(world, d, &param.ty, param.span)?;
-    }
-    if d.function.result.name != "void" && !d.function.result.is_never() {
-        value_type(world, d, &d.function.result, d.function.span)?;
-    }
-    Ok(())
+    let parameters = d.function.params.iter()
+        .map(|param| value_type(world, d, &param.ty, param.span))
+        .collect::<Result<Vec<_>>>()?;
+    let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
+        else { Some(value_type(world, d, &d.function.result, d.function.span)?) };
+    outputs::validate_named(world, d, &parameters, result.as_ref())
 }
 impl Builder<'_> {
     pub(super) fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
@@ -252,7 +251,6 @@ impl Builder<'_> {
     }
     #[inline(never)]
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
-        for contract in &d.function.contracts { outputs::validate(self, d, contract)?; }
         let parameters = d.function.params.iter().map(|param| {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
             Ok(if param.access == Access::Value { CallParameter::Value(ty) }

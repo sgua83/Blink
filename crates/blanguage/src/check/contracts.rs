@@ -242,10 +242,10 @@ pub(super) fn resolve(
     definition: &Definition,
     env: &BTreeMap<String, Binding>,
 ) -> Result<Vec<Requirement>> {
+    outputs::validate(builder.world, definition)?;
     let mut result = Vec::new();
     for contract in &definition.function.contracts {
         if matches!(contract.predicate, ContractPredicate::Initialized { .. }) {
-            outputs::validate(builder, definition, contract)?;
             continue;
         }
         if contract.kind != ContractKind::Requires

@@ -24,6 +24,7 @@ pub(crate) use native_function::{check_domain, compile_module as compile_native_
 mod flow;
 pub(crate) mod generics;
 mod matrix;
+mod operators;
 mod owned_records;
 mod user_owned;
 mod owned_borrows;
@@ -1844,15 +1845,7 @@ impl<'a> Builder<'a> {
         }
     }
     fn require_same(&self, a: &Ty, b: &Ty, span: Span) -> Result<()> {
-        if a == b {
-            Ok(())
-        } else {
-            self.fail(
-                span,
-                "B124",
-                format!("类型不匹配：需要 {}，实际为 {}", a.name, b.name),
-            )
-        }
+        operators::same(a, b, &self.definition.source, span)
     }
     fn require_bool(&self, v: &Value, span: Span) -> Result<()> {
         self.require_same(&Ty::scalar(Scalar::Bool), &v.ty, span)
@@ -2427,118 +2420,48 @@ impl<'a> Builder<'a> {
             constant,
         }
     }
-    fn numeric_operands(
-        &mut self,
-        mut a: Value,
-        mut b: Value,
-        span: Span,
-    ) -> Result<(Value, Value)> {
-        let literal = a.literal && b.literal;
-        if a.ty.components[0].0 != b.ty.components[0].0 {
-            if literal {
-                let scalar =
-                    if a.ty.components[0].0 == Scalar::F32 || b.ty.components[0].0 == Scalar::F32 {
-                        Scalar::F32
-                    } else {
-                        Scalar::I32
-                    };
-                a = self.cast(a, scalar);
-                b = self.cast(b, scalar);
-            } else if a.literal && b.ty.components[0].0 != Scalar::Bool {
-                a = self.cast(a, b.ty.components[0].0);
-            } else if b.literal && a.ty.components[0].0 != Scalar::Bool {
-                b = self.cast(b, a.ty.components[0].0);
-            } else {
-                return self.fail(span, "B148", "不同数值类型必须显式转换");
-            }
-        }
-        if a.regs.len() != b.regs.len() && a.regs.len() != 1 && b.regs.len() != 1 {
-            return self.fail(span, "B149", "向量维度不匹配");
-        }
+    fn numeric_operands(&mut self, a: Value, b: Value, span: Span) -> Result<(Value, Value)> {
+        let types = operators::numeric(&a.ty, a.literal, &b.ty, b.literal,
+            &self.definition.source, span)?;
+        let a = if types.cast_left { self.cast(a, types.scalar) } else { a };
+        let b = if types.cast_right { self.cast(b, types.scalar) } else { b };
         Ok((a, b))
     }
     #[inline(never)]
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
-        if a.ty.is_c_function() || b.ty.is_c_function() {
-            self.require_same(&a.ty, &b.ty, span)?;
-            if !matches!(op, "==" | "!=") {
-                return self.fail(span, "B147", "C函数地址只比较同签名的完整身份，不参与数值运算或次序比较");
+        let (ty, kind) = operators::binary(op, &a.ty, a.literal, &b.ty, b.literal,
+            &self.definition.source, span)?;
+        let operands = match kind {
+            operators::Binary::Identity => {
+                let mut a = a; let mut b = b;
+                a.ty = Ty::scalar(Scalar::U64); b.ty = Ty::scalar(Scalar::U64);
+                return self.binary(op, a, b, span);
             }
-            let mut a = a; let mut b = b;
-            a.ty = Ty::scalar(Scalar::U64); b.ty = Ty::scalar(Scalar::U64);
-            return self.binary(op, a, b, span);
-        }
-        if a.ty.is_address() || b.ty.is_address() {
-            self.require_same(&a.ty, &b.ty, span)?;
-            if !matches!(op, "==" | "!=") {
-                return self.fail(span, "B147", "address只比较完整地址身份；数值运算须显式取得address_bits");
+            operators::Binary::Handle => {
+                let mut a = a; let mut b = b;
+                a.ty = Ty::vector(Scalar::U32, 2);
+                b.ty = Ty::vector(Scalar::U32, 2);
+                let bits = self.binary("^", a, b, span)?;
+                let word = |component| Value {
+                    ty: Ty::scalar(Scalar::U32),
+                    regs: vec![bits.regs[component]],
+                    proof: bits.projected_proof(&[component]),
+                    literal: false, uniform: bits.uniform,
+                    constant: bits.constant.as_ref().map(|values| vec![values[component]]),
+                };
+                let difference = self.binary("|", word(0), word(1), span)?;
+                let zero = self.constant(Scalar::U32, 0);
+                return self.binary(op, difference, zero, span);
             }
-            let mut a = a;
-            let mut b = b;
-            a.ty = Ty::scalar(Scalar::U64);
-            b.ty = Ty::scalar(Scalar::U64);
-            return self.binary(op, a, b, span);
-        }
-        if a.ty.is_handle() || b.ty.is_handle() {
-            self.require_same(&a.ty, &b.ty, span)?;
-            if !matches!(op, "==" | "!=") {
-                return self.fail(span, "B147", "handle 只支持完整身份的相等或不等比较");
-            }
-            // 原生句柄沿既有完整8字节载荷交接；这里只比较其全部位身份。
-            let mut a = a;
-            let mut b = b;
-            a.ty = Ty::vector(Scalar::U32, 2);
-            b.ty = Ty::vector(Scalar::U32, 2);
-            let bits = self.binary("^", a, b, span)?;
-            let word = |component| Value {
-                ty: Ty::scalar(Scalar::U32),
-                regs: vec![bits.regs[component]],
-                proof: bits.projected_proof(&[component]),
-                literal: false,
-                uniform: bits.uniform,
-                constant: bits.constant.as_ref().map(|values| vec![values[component]]),
-            };
-            let difference = self.binary("|", word(0), word(1), span)?;
-            let zero = self.constant(Scalar::U32, 0);
-            return self.binary(op, difference, zero, span);
-        }
-        if a.ty.has_variants() || b.ty.has_variants() {
-            return self.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
-        }
-        let comparison = ["==", "!=", "<", ">", "<=", ">="].contains(&op);
-        if a.ty.enumeration || b.ty.enumeration {
-            self.require_same(&a.ty, &b.ty, span)?;
-            if !comparison {
-                return self.fail(
-                    span,
-                    "B268",
-                    "编号枚举只直接比较同类型值；数值运算先显式取得声明的整数表示",
-                );
-            }
-        }
-        if a.ty.matrix_shape().is_some() || b.ty.matrix_shape().is_some() {
-            return self.matrix_binary(op, a, b, span);
-        }
-        if a.ty.array.is_some()
-            || b.ty.array.is_some()
-            || !a.ty.fields.is_empty()
-            || !b.ty.fields.is_empty()
-            || a.ty.contains_views()
-            || b.ty.contains_views()
-        {
-            return self.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
-        }
-        let literal = a.literal && b.literal;
-        let (a, b) = self.numeric_operands(a, b, span)?;
-        let n = a.regs.len().max(b.regs.len());
-        let scalar = a.ty.components[0].0;
-        let literal = literal && !scalar.is_float() && !comparison;
-        if scalar == Scalar::Bool && !matches!(op, "==" | "!=") {
-            return self.fail(span, "B150", "bool 只支持逻辑或相等运算");
-        }
-        if scalar.is_float() && matches!(op, "%" | "&" | "|" | "^" | "<<" | ">>") {
-            return self.fail(span, "B151", "位运算与取余需要整数");
-        }
+            operators::Binary::Matrix(kind) => return self.matrix_binary(op, a, b, kind, span),
+            operators::Binary::Numeric { operands, comparison, operation } => (operands, comparison, operation),
+        };
+        let (operands, comparison, operation) = operands;
+        let literal = a.literal && b.literal && !operands.scalar.is_float() && !comparison;
+        let a = if operands.cast_left { self.cast(a, operands.scalar) } else { a };
+        let b = if operands.cast_right { self.cast(b, operands.scalar) } else { b };
+        let n = ty.components.len();
+        let scalar = operands.scalar;
         let divisors = if matches!(op, "/" | "%") && !scalar.is_float() {
             match b.constant.as_ref().and_then(|v| {
                 v.iter()
@@ -2565,17 +2488,6 @@ impl<'a> Builder<'a> {
         } else {
             None
         };
-        let operation = if divisors.is_some() {
-            None
-        } else {
-            Some(BinaryOp::from_source(op, scalar).ok_or_else(|| Diagnostic {
-                source: self.definition.source.clone(),
-                span,
-                code: "B178",
-                message: format!("未知二元运算 {op}"),
-            })?)
-        };
-        let ty = Ty::vector(if comparison { Scalar::Bool } else { scalar }, n);
         let constant = a
             .constant
             .as_ref()
@@ -2968,46 +2880,18 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn unary_expr(&mut self, op: &String, a: &Expr, span: Span) -> Result<Option<Value>> {
-        if op == "-" {
-            if let ExprKind::Number(literal) = &a.kind {
-                let (ty, bits) = number(&self.definition.source, span, literal)?;
-                return match ty.components[0].0 {
-                    Scalar::F32 => Ok(Some(self.literal(Scalar::F32, bits ^ 0x80000000))),
-                    Scalar::F64 => Ok(Some(self.constant(Scalar::F64, bits ^ 0x8000000000000000))),
-                    Scalar::U32 if bits <= 0x80000000 => {
-                        Ok(Some(self.literal(Scalar::I32, Scalar::I32.truncate(0u64.wrapping_sub(bits)))))
-                    }
-                    Scalar::U64 if bits <= 0x8000000000000000 => {
-                        Ok(Some(self.constant(Scalar::I64, 0u64.wrapping_sub(bits))))
-                    }
-                    _ => self.fail(span, "B180", "负整数字面量超出其有符号类型范围"),
-                };
-            }
+        if op == "-" && let ExprKind::Number(literal) = &a.kind {
+            let (ty, bits) = operators::negative_number(&self.definition.source, span, literal)?;
+            let scalar = ty.components[0].0;
+            let mut value = self.constant_value(ty, vec![bits]);
+            value.literal = scalar.size() == 4;
+            return Ok(Some(value));
         }
-        let Some(a) = self.expr(a)? else {
-            return Ok(None);
-        };
-        if op == "+" {
-            if a.ty.is_c_function() || a.ty.is_handle() || a.ty.is_address() || a.ty.array.is_some() || a.ty.enumeration || a.ty.has_variants() {
-                return self.fail(span, "B146", "数值一元运算需要数值类型");
-            }
+        let Some(a) = self.expr(a)? else { return Ok(None); };
+        let Some(operation) = operators::unary(op, &a.ty, &self.definition.source, span)? else {
             return Ok(Some(a));
-        }
-        if op == "!" {
-            self.require_bool(&a, span)?;
-        } else if !a.ty.is_numeric() && !(op == "-" && a.ty.matrix_shape().is_some()) {
-            return self.fail(span, "B146", "数值一元运算需要数值类型");
-        }
-        let scalar = a.ty.components[0].0;
-        let operation = match op.as_str() {
-            "-" if scalar == Scalar::Bool => return self.fail(span, "B176", "bool 不能取负"),
-            "-" if scalar.is_float() => UnaryOp::FloatNegate,
-            "-" if scalar.is_signed() => UnaryOp::SignedNegate,
-            "-" => UnaryOp::UnsignedNegate,
-            "!" => UnaryOp::LogicalNot,
-            "~" if !scalar.is_float() => UnaryOp::BitNot,
-            _ => return self.fail(span, "B177", "当前类型不支持该一元运算"),
         };
+        let scalar = a.ty.components[0].0;
         let constant = a.constant.as_ref().map(|values| {
             values
                 .iter()

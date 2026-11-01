@@ -52,41 +52,43 @@ impl<'a> Contract<'a> {
     }
 }
 
-pub(super) fn validate(
-    builder: &Builder<'_>,
-    definition: &Definition,
-    contract: &FunctionContract,
-) -> Result<()> {
-    let ContractPredicate::Initialized { value, .. } = &contract.predicate else {
+pub(super) fn validate(world: &World, definition: &Definition) -> Result<()> {
+    if !definition.function.contracts.iter()
+        .any(|contract| matches!(contract.predicate, ContractPredicate::Initialized { .. })) {
         return Ok(());
-    };
-    if contract.kind != ContractKind::Ensures
-        || definition.function.kind != FunctionKind::Value
-        || definition.function.target != Target::Cpu
-    {
-        return definition.source.fail(
-            contract.span,
-            "B225",
-            "initialized 是普通CPU函数的 ensures 输出合同",
-        );
     }
-    let mut fields = value.split('.');
-    let root = fields.next().unwrap();
-    let Some(parameter) = definition
-        .function
-        .params
-        .iter()
-        .find(|p| p.name == root && matches!(p.access, Access::Write | Access::InOut))
-    else {
-        return definition.source.fail(
-            contract.span,
-            "B225",
-            "initialized 需要实际 write／inout 参数或字段",
-        );
+    let parameters = definition.function.params.iter().map(|param| {
+        let ty = cooperative::parameter_type(world, param, definition)?;
+        Ok(if param.ty.dataset {
+            Ty::owned_dataset(ty, world.shape(&param.ty.count, &definition.source, param.span,
+                &definition.module, &definition.imports)?)
+        } else { ty })
+    }).collect::<Result<Vec<_>>>()?;
+    let result = &definition.function.result;
+    let result = if result.name == "void" || result.is_never() { None } else {
+        let ty = world.ty(result, &definition.source, definition.function.span,
+            &definition.module, &definition.imports)?;
+        Some(if result.dataset {
+            Ty::owned_dataset(ty, world.shape(&result.count, &definition.source,
+                definition.function.span, &definition.module, &definition.imports)?)
+        } else { ty })
     };
-    let mut ty = cooperative::parameter_type(builder.world, parameter, definition)?;
-    for field in fields {
-        ty = member_type(&ty, field, &builder.definition.source, contract.span)?.0;
+    validate_named(world, definition, &parameters, result.as_ref())
+}
+pub(super) fn validate_named(world: &World, definition: &Definition,
+    parameters: &[Ty], returned: Option<&Ty>,
+) -> Result<()> {
+    let input = |name: &str| definition.function.params.iter().enumerate()
+        .find(|(_, param)| param.name == name)
+        .map(|(index, param)| (param.access, parameters[index].clone()));
+    for contract in &definition.function.contracts {
+        let ContractPredicate::Initialized { value, condition } = &contract.predicate else { continue; };
+        if contract.kind != ContractKind::Ensures || definition.function.kind != FunctionKind::Value
+            || definition.function.target != Target::Cpu {
+            return definition.source.fail(contract.span, "B225", "initialized 是普通CPU函数的 ensures 输出合同");
+        }
+        let condition = normalize(world, definition.into(), condition, contract.span)?;
+        validate_output(value, &condition, &input, returned, &definition.source, contract.span)?;
     }
     Ok(())
 }
@@ -490,33 +492,28 @@ pub(crate) fn bind_function_outputs(
     }
     Ok(bound.into_iter().collect())
 }
-pub(crate) fn validate_function_outputs(
-    parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
-    source: &crate::Source, span: Span,
-) -> Result<()> {
-    if outputs.is_empty() { return Ok(()); }
-    fn parameter(parameters: &[CallParameter], name: &str) -> Option<usize> {
-        parameters.iter().enumerate().find_map(|(index, _)|
-            (name == format!("argument{index}")).then_some(index))
-    }
-    fn path(parameters: &[CallParameter], result: Option<&Ty>, value: &OutputCondition,
-        source: &crate::Source, span: Span) -> Result<Ty> {
+fn condition_type(
+    value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
+    returned: Option<&Ty>, source: &Source, span: Span,
+) -> Result<(Ty, bool)> {
+    fn path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
+        returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
         match value {
-            OutputCondition::Name(name) if name == "returned" => result.cloned()
-                .ok_or_else(|| Diagnostic { source: source.clone(), span, code: "B225",
-                    message: "无返回值的cfn没有returned输入".into() }),
+            OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
+                source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
+            }),
             OutputCondition::Name(name) => {
-                let Some(index) = parameter(parameters, name) else {
-                    return source.fail(span, "B225", format!("cfn输出条件没有输入{name}"));
+                let Some((access, ty)) = input(name) else {
+                    return source.fail(span, "B225", format!("输出条件没有输入{name}"));
                 };
-                match &parameters[index] {
-                    CallParameter::Value(ty) => Ok(ty.clone()),
-                    _ => source.fail(span, "B225", "输出条件引用按值输入快照或实际returned"),
-                }
+                if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
+                else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
             }
             OutputCondition::Member(base, field) => {
-                let ty = path(parameters, result, base, source, span)?;
-                if ty.array.is_some() && field == "length" { return Ok(Ty::scalar(Scalar::U32)); }
+                let ty = path(base, input, returned, source, span)?;
+                if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
+                    return Ok(Ty::scalar(Scalar::U32));
+                }
                 if ty.has_variants() {
                     return if ty.variants.iter().any(|variant| variant.name == *field) {
                         Ok(Ty::scalar(Scalar::Bool))
@@ -527,34 +524,77 @@ pub(crate) fn validate_function_outputs(
             _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
         }
     }
-    fn inputs(parameters: &[CallParameter], result: Option<&Ty>, value: &OutputCondition,
-        source: &crate::Source, span: Span) -> Result<()> {
-        match value {
-            OutputCondition::Name(_) | OutputCondition::Member(..) => {
-                path(parameters, result, value, source, span)?; Ok(())
-            }
-            OutputCondition::Unary(_, value) => inputs(parameters, result, value, source, span),
-            OutputCondition::Binary(_, a, b) => {
-                inputs(parameters, result, a, source, span)?;
-                inputs(parameters, result, b, source, span)
-            }
-            _ => Ok(()),
+    Ok(match value {
+        OutputCondition::Name(_) | OutputCondition::Member(..) =>
+            (path(value, input, returned, source, span)?, false),
+        OutputCondition::Number(text) => {
+            let (ty, _) = number(source, span, text)?;
+            let literal = ty.components[0].0.size() == 4;
+            (ty, literal)
         }
-    }
+        OutputCondition::StaticU32(_) => (Ty::scalar(Scalar::U32), false),
+        OutputCondition::Constant(value) => (value.ty.clone(), false),
+        OutputCondition::Bool(_) => (Ty::scalar(Scalar::Bool), false),
+        OutputCondition::Unary(op, value) => {
+            if op == "-" && let OutputCondition::Number(text) = value.as_ref() {
+                let (ty, _) = operators::negative_number(source, span, text)?;
+                let literal = ty.components[0].0.size() == 4;
+                (ty, literal)
+            } else {
+                let (ty, literal) = condition_type(value, input, returned, source, span)?;
+                operators::unary(op, &ty, source, span)?;
+                (ty, literal)
+            }
+        }
+        OutputCondition::Binary(op, a, b) => {
+            let (a, a_literal) = condition_type(a, input, returned, source, span)?;
+            let (b, b_literal) = condition_type(b, input, returned, source, span)?;
+            if matches!(op.as_str(), "&&" | "||") {
+                let boolean = Ty::scalar(Scalar::Bool);
+                operators::same(&boolean, &a, source, span)?;
+                operators::same(&boolean, &b, source, span)?;
+                (boolean, false)
+            } else {
+                let (ty, kind) = operators::binary(op, &a, a_literal, &b, b_literal, source, span)?;
+                let literal = matches!(kind, operators::Binary::Numeric { operands, comparison: false, .. }
+                    if a_literal && b_literal && !operands.scalar.is_float());
+                (ty, literal)
+            }
+        }
+    })
+}
+fn validate_output(value: &str, condition: &OutputCondition,
+    input: &impl Fn(&str) -> Option<(Access, Ty)>, returned: Option<&Ty>,
+    source: &Source, span: Span,
+) -> Result<()> {
+    let mut fields = value.split('.');
+    let root = fields.next().unwrap();
+    let Some((Access::Write | Access::InOut, mut ty)) = input(root) else {
+        return source.fail(span, "B225", "initialized需要实际write／inout参数或字段");
+    };
+    // Dataset output positions describe initialized elements; input/return
+    // conditions consume the original handle/length storage type.
+    if let Some(element) = &ty.dataset { ty = element.as_ref().clone(); }
+    for field in fields { ty = member_type(&ty, field, source, span)?.0; }
+    let (condition, _) = condition_type(condition, input, returned, source, span)?;
+    operators::same(&Ty::scalar(Scalar::Bool), &condition, source, span)
+}
+
+pub(crate) fn validate_function_outputs(
+    parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
+    source: &crate::Source, span: Span,
+) -> Result<()> {
+    let input = |name: &str| parameters.iter().enumerate()
+        .find(|(index, _)| name == format!("argument{index}"))
+        .map(|(_, parameter)| match parameter {
+            CallParameter::Value(ty) => (Access::Value, ty.clone()),
+            CallParameter::Reference { ty, access } => (*access, ty.clone()),
+        });
     for output in outputs {
         let ContractPredicate::Initialized { value, condition } = output else {
             return source.fail(span, "B225", "cfn输出合同使用ensures initialized");
         };
-        let mut fields = value.split('.');
-        let Some(index) = fields.next().and_then(|name| parameter(parameters, name)) else {
-            return source.fail(span, "B225", "initialized需要实际write／inout参数或字段");
-        };
-        let CallParameter::Reference { ty, access: Access::Write | Access::InOut } = &parameters[index] else {
-            return source.fail(span, "B225", "initialized需要实际write／inout参数或字段");
-        };
-        let mut ty = ty.clone();
-        for field in fields { ty = member_type(&ty, field, source, span)?.0; }
-        inputs(parameters, result, condition, source, span)?;
+        validate_output(value, condition, &input, result, source, span)?;
     }
     Ok(())
 }
