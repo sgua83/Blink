@@ -16,3 +16,6 @@ name = "blink"
 path = "src/bin/blink.rs"
 
 [dependencies]
+
+[features]
+installed = []

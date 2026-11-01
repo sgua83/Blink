@@ -1,5 +1,7 @@
 # C、C++ 与 Rust 集成
 
+正式发行工具与源码SDK统一由GitHub Releases下载，安装到%ProgramFiles%/Blink；安装版读取该SDK，编译临时单元及框架输出写当前工程target。普通源码SDK构建仍沿原源码根与原target，BLEngine现有相邻源码依赖不变。安装权限、版本与完整操作统一见[版本说明](Versioning.md)和[发布安装入口](../Tools/README.md)。当前框架静态目标编译仍使用Rust MSVC／Windows构建工具；源码SDK不是运行生成应用的前置。
+
 C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 blink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，继续作为正式 SDK 提供。
 
 ## 宽标量、原声明布局与资源版本

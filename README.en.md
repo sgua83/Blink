@@ -34,6 +34,8 @@ Parallelism is a language capability. Parallel domains, access permissions, coop
 
 This capability is currently in design. Each build or execution uses resources within its selected domain; applications orchestrate workflows between domains. See the [compute-domain design](Docs/ComputeDomain.md) for responsibilities, deployment, and interfaces.
 
+Formal releases are built every Sunday at 21:00 Beijing time from the latest submitted source snapshot. All nodes download the same Windows x64 package from [GitHub Releases](https://github.com/sgua83/Blink/releases) and replace the current installation at %ProgramFiles%/Blink. Development roots and existing target directories remain unchanged. See [release and installation](Tools/README.md) and [versioning](Docs/Versioning.md). The commands below build the source SDK. 
+
 ## Quick start
 
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:

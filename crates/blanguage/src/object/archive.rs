@@ -1,6 +1,20 @@
 //! 编译阶段把执行框架和 ABI 编译为静态目标库；链接器不再调用 Cargo 或 rustc。
 use super::{Archive, Result};
-use std::{ffi::OsString, path::Path, sync::atomic::{AtomicU64, Ordering}};
+use std::{ffi::OsString, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
+
+pub(crate) fn sdk_root() -> std::io::Result<PathBuf> {
+    #[cfg(feature = "installed")]
+    { Ok(PathBuf::from(std::env::var_os("ProgramFiles").ok_or_else(||
+        std::io::Error::new(std::io::ErrorKind::NotFound, "缺少Windows ProgramFiles安装根"))?).join("Blink")) }
+    #[cfg(not(feature = "installed"))]
+    { Ok(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().into()) }
+}
+fn build_root(sdk: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(feature = "installed")]
+    { let _ = sdk; Ok(std::env::current_dir()?.join("target")) }
+    #[cfg(not(feature = "installed"))]
+    { Ok(sdk.join("target")) }
+}
 fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
@@ -14,21 +28,17 @@ pub(crate) fn compile(
     dependencies: &[&str],
     worker: &crate::compiler::Worker,
 ) -> Result<Archive> {
-    let sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+    let sdk = sdk_root()?;
+    let sdk_target = build_root(&sdk)?;
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let id = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let unit = format!("blink_object_{}", id.replace('-', "_"));
-    let workspaces = sdk.join("target/blc-object");
+    let workspaces = sdk_target.join("blc-object");
     std::fs::create_dir_all(&workspaces)?;
     let build = workspaces.join(id);
     std::fs::create_dir(&build)?;
     let result = (|| {
         std::fs::create_dir(build.join("src"))?;
-        let sdk_target = sdk.join("target");
         if !dependencies.is_empty() {
             let mut arguments: Vec<OsString> = [
                 "build".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
@@ -39,7 +49,9 @@ pub(crate) fn compile(
             for name in dependencies {
                 arguments.extend([OsString::from("--package"), (*name).into()]);
             }
-            let output = worker.cargo_output(&arguments, &build, sdk)?;
+            #[cfg(feature = "installed")]
+            arguments.extend([OsString::from("--features"), "blanguage/installed".into()]);
+            let output = worker.cargo_output(&arguments, &build, &sdk)?;
             if !output.status.success() {
                 return Err(format!(
                     "SDK目标库编译失败：\n{}{}",
@@ -53,7 +65,7 @@ pub(crate) fn compile(
         );
         std::fs::write(build.join("Cargo.toml"), manifest)?;
         std::fs::write(build.join("src/lib.rs"), source)?;
-        let target = sdk.join("target/dll");
+        let target = sdk_target.join("dll");
         let mut arguments: Vec<OsString> = [
             "rustc".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
             "--manifest-path".into(), build.join("Cargo.toml").into_os_string(),
@@ -72,7 +84,7 @@ pub(crate) fn compile(
                 format!("dependency={}", sdk_target.join("release/deps").display()).into(),
             ]);
         }
-        let output = worker.cargo_output(&arguments, &build, sdk)?;
+        let output = worker.cargo_output(&arguments, &build, &sdk)?;
         let compilation = (|| {
             let stderr = String::from_utf8(output.stderr)?;
             if !output.status.success() {
@@ -103,7 +115,7 @@ pub(crate) fn compile(
                 build.join("Cargo.toml").into_os_string(), "--target-dir".into(), target.as_os_str().into(),
                 "--package".into(), unit.clone().into(), "--color".into(), "never".into(),
             ].into();
-            let output = worker.cargo_output(&arguments, &build, sdk)?;
+            let output = worker.cargo_output(&arguments, &build, &sdk)?;
             if !output.status.success() {
                 return Err(format!(
                     "执行库单元产物清理失败：\n{}{}",
@@ -145,7 +157,7 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
         }
         Ok(())
     }
-    let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let sdk = sdk_root()?;
     let mut bytes = Vec::from(b"BlinkNativeInputs1".as_slice());
     hash::field(&mut bytes, sdk.as_os_str().as_encoded_bytes());
     let variables = std::env::vars_os().filter(|(name, _)| {

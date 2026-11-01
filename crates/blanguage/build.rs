@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "DEBUG",
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_CFG_TARGET_FEATURE",
+        "CARGO_FEATURE_INSTALLED",
     ] {
         hash::field(&mut identity, name.as_bytes());
         match env::var_os(name) {

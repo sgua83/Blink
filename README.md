@@ -38,6 +38,8 @@
 
 软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示构建时的同一版本。
 
+正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。各节点下载同包覆盖安装到%ProgramFiles%/Blink，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。以下为源码SDK开发方式。
+
 ## 快速开始
 
 准备 Windows x64、[Rust stable MSVC 工具链](https://rust-lang.org/tools/install)和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK）。在 x64 Developer PowerShell 中执行：

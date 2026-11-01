@@ -23,6 +23,8 @@ struct Resources {
     processors: Option<Vec<Processor>>,
     available: Mutex<Vec<usize>>,
     released: Condvar,
+    #[cfg(feature = "installed")]
+    sdk_input: Mutex<Option<std::fs::File>>,
 }
 struct Permit {
     compiler: Compiler,
@@ -67,9 +69,23 @@ impl Compiler {
             workers, processors,
             available: Mutex::new((0..workers).rev().collect()),
             released: Condvar::new(),
+            #[cfg(feature = "installed")]
+            sdk_input: Mutex::new(None),
         }) }
     }
     pub fn workers(&self) -> usize { self.resources.workers }
+    #[cfg(feature = "installed")]
+    fn hold_sdk_input(&self) -> io::Result<()> {
+        let mut input = self.resources.sdk_input.lock().unwrap();
+        if input.is_none() {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(windows)]
+            { use std::os::windows::fs::OpenOptionsExt; options.share_mode(1); }
+            *input = Some(options.open(crate::object::sdk_root()?.join("VERSION"))?);
+        }
+        Ok(())
+    }
     fn worker(&self, slot: usize) -> Worker {
         Worker { permit: Arc::new(Permit { compiler: self.clone(), slot }) }
     }
@@ -86,6 +102,8 @@ impl Compiler {
     pub(crate) fn execute<T: Send, E: Send>(
         &self, compile: impl FnOnce(&Worker) -> Result<T, E> + Send,
     ) -> Result<T, Error<E>> {
+        #[cfg(feature = "installed")]
+        self.hold_sdk_input().map_err(Error::Resource)?;
         let worker = self.acquire();
         if self.resources.processors.is_none() {
             return compile(&worker).map_err(Error::Work);
