@@ -349,7 +349,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 入口在 `crates/blanguage/src/lib.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/lib.rs:133`。
+源码节选：`crates/blanguage/src/lib.rs:141`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -373,7 +373,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:480`。
+源码节选：`crates/blanguage/src/lib.rs:490`。
 
 ```rust
     if let Some(name) = import
@@ -383,7 +383,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
     }
 ```
 
-来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。装入器统一检查常量、类型和外部C声明的签名及普通值ABI，应用、对象模块与源码SDK共用这一职责；未调用的非法声明也在产物复用前拒绝。实际外部实例再向原构建输入集合交接声明键，不在运行期维护第二份接口表。
+来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。装入器统一检查常量、类型和外部C声明的签名及普通值ABI，应用、对象模块与源码SDK共用这一职责；未调用的非法声明也在产物复用前拒绝。对象构建按实际值名称查询保存输入，参与范围推导也属于消费者；重算原绑定后决定是否复用，不能只看最终机器重定位。原常量、类型内容及外部实例仍向同一本次集合交接声明键，不在运行期维护第二份名称或接口表。
 
 ### 4.3 名字怎样变成唯一对象
 

@@ -87,6 +87,14 @@ impl World {
     fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
         Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_declarations: None }
     }
+    fn resolve(&self, name: &str, module: &str, imports: &[String], functions: bool) -> Option<String> {
+        if functions && let Some(inputs) = &self.build_declarations {
+            inputs.borrow_mut().insert(build::Declaration::ValueName {
+                name: name.into(), module: module.into(), imports: imports.to_vec(),
+            });
+        }
+        self.declarations.resolve(name, module, imports, functions)
+    }
     fn record(&self, key: &str) -> &(Record, Source, String, Vec<String>) {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(build::Declaration::Record(key.into()));
@@ -193,7 +201,7 @@ fn compile_module_on(
     requested: Option<(EntryKind, &str)>, imported: Option<&module::Imports>,
 ) -> Result<Compilation> {
     compiler.ast(path, |worker| {
-        let (world, entry) = read_world(path, module_root, imported, worker, None)?;
+        let (world, entry) = read_world(path, module_root, imported, worker, None, None)?;
         compile_world(&world, entry, require_program, requested)
     })
 }
@@ -218,7 +226,7 @@ impl Compiler {
                 source: Source { path: path.into(), text: "".into() },
                 span: Span::default(), code: "B270", message: error.to_string(),
             })?;
-            let (world, module) = read_world(path, root, Some(&imports), worker, None)?;
+            let (world, module) = read_world(path, root, Some(&imports), worker, None, None)?;
             Ok(compile_world(&world, module, false, Some((EntryKind::Application, entry)))?
                 .applications.remove(0))
         })
@@ -400,6 +408,7 @@ fn read_world(
     imported: Option<&module::Imports>,
     worker: &compiler::Worker,
     inputs: Option<&build::Inputs>,
+    build_declarations: Option<RefCell<BTreeSet<build::Declaration>>>,
 ) -> Result<(World, String)> {
     let mut world = Declarations {
         sources: BTreeMap::new(),
@@ -416,11 +425,11 @@ fn read_world(
         None,
         inputs,
     )?;
-    execution::infer(&mut world);
+    execution::infer(&mut world, build_declarations.as_ref());
     for definition in world.functions.values().filter(|definition| definition.compiled.is_some()) {
         generics::validate_declaration(definition)?;
     }
-    let world = World::new(Arc::new(world), worker.clone());
+    let mut world = World::new(Arc::new(world), worker.clone());
     for (key, definition) in &world.functions {
         if definition.function.kind == FunctionKind::Constant {
             generics::validate_declaration(definition)?;
@@ -431,6 +440,7 @@ fn read_world(
     for definition in world.functions.values().filter(|definition| definition.function.external.is_some()) {
         check::external::check_declaration(&world, definition)?;
     }
+    world.build_declarations = build_declarations;
     Ok((world, entry))
 }
 fn validate_types(world: &World) -> Result<()> {

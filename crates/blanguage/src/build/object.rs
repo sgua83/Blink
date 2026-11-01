@@ -20,9 +20,10 @@ pub(crate) enum Declaration {
     Record(String),
     TypeSet(String),
     External(String),
+    ValueName { name: String, module: String, imports: Vec<String> },
 }
-variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name) });
-const MAGIC: &[u8; 8] = b"BLBO\x06\0\0\0";
+variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports } });
+const MAGIC: &[u8; 8] = b"BLBO\x07\0\0\0";
 struct Inputs {
     source: [u8; 32],
     imports: [u8; 32],
@@ -62,6 +63,10 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
     for entry in used {
         hash::field(&mut bytes, &entry.bytes());
         let input = match entry {
+            Declaration::ValueName { name, module, imports } => {
+                hash::field(&mut bytes, &declarations.resolve(name, module, imports, true).bytes());
+                continue;
+            }
             Declaration::Constant(key) => declarations.functions.get(key)
                 .filter(|definition| definition.function.kind == crate::ast::FunctionKind::Constant)
                 .map(|definition| (&definition.source, definition.function.span)),
@@ -85,39 +90,32 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
 }
 
 fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, source: &crate::ast::Source, imported: bool) {
+    if !imported {
+        hash::field(bytes, source.text.as_bytes());
+        return;
+    }
     let mut spans = declarations.functions.values()
         .filter(|definition| definition.source.path == source.path
-            && (definition.compiled.is_some() || imported
-                && (definition.function.external.is_some()
-                    || definition.function.kind == crate::ast::FunctionKind::Constant
-                        && !definition.function.name.contains("::"))))
+            && (definition.compiled.is_some() || definition.function.external.is_some()
+                || definition.function.kind == crate::ast::FunctionKind::Constant
+                    && !definition.function.name.contains("::")))
         .map(|definition| definition.function.span).collect::<Vec<_>>();
-    if imported {
-        // 保留完整值／类型／变体名称；此处只移除未消费声明的内容身份。
-        for definition in declarations.functions.values().filter(|definition| definition.source.path == source.path) {
-            hash::field(bytes, b"value");
-            hash::field(bytes, definition.function.name.as_bytes());
-        }
-        for (record, ..) in declarations.records.values().filter(|(_, owner, ..)| owner.path == source.path) {
-            hash::field(bytes, b"type");
-            hash::field(bytes, record.name.as_bytes());
-            hash::field(bytes, &(record.variants.len() as u64).to_le_bytes());
-            for variant in &record.variants { hash::field(bytes, variant.name.as_bytes()); }
-            spans.push(record.span);
-        }
-        for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {
-            hash::field(bytes, b"typeset");
-            hash::field(bytes, set.name.as_bytes());
-            spans.push(set.span);
-        }
+    // 记录／变体与集合名称尚按原粒度保留；值名由原查询绑定交接。
+    for (record, ..) in declarations.records.values().filter(|(_, owner, ..)| owner.path == source.path) {
+        hash::field(bytes, b"type");
+        hash::field(bytes, record.name.as_bytes());
+        hash::field(bytes, &(record.variants.len() as u64).to_le_bytes());
+        for variant in &record.variants { hash::field(bytes, variant.name.as_bytes()); }
+        spans.push(record.span);
     }
-    spans.sort_by_key(|span| span.start);
-    let mut start = 0;
-    for span in spans {
-        hash::field(bytes, source.text[start..span.start].as_bytes());
-        start = span.end;
+    for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {
+        hash::field(bytes, b"typeset");
+        hash::field(bytes, set.name.as_bytes());
+        spans.push(set.span);
     }
-    hash::field(bytes, source.text[start..].as_bytes());
+    // 模块与import在声明之前；声明间／后的空白注释不产生额外身份。
+    let end = spans.iter().map(|span| span.start).min().unwrap_or(source.text.len());
+    hash::field(bytes, source.text[..end].trim_end().as_bytes());
 }
 
 pub fn compile_object(
@@ -153,8 +151,8 @@ pub(super) fn compile<'a>(
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
         })?) };
     let imported = imports.as_ref().filter(|imports| !imports.modules.is_empty());
-    let (mut world, module) = crate::read_world(source_path, source_root, imported, worker, inputs)?;
-    world.build_declarations = Some(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs,
+        Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let definitions = &world.declarations;
     let mut bytes = Vec::new();
     for value in [path.as_os_str().as_encoded_bytes(), root.as_os_str().as_encoded_bytes(),

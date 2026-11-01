@@ -1,5 +1,5 @@
-use crate::{Definition, Declarations, ast::*};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::{Definition, Declarations, ast::*, build::Declaration};
+use std::{cell::RefCell, collections::{BTreeMap, BTreeSet}};
 
 /// 从定义推导的调用参与范围，不是源语言中的函数种类或运行期许可。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -11,18 +11,24 @@ pub(crate) enum Requirement {
 }
 
 #[derive(Default)]
-struct Body {
+struct Body<'a> {
+    inputs: Option<&'a RefCell<BTreeSet<Declaration>>>,
     domain: bool,
     local: bool,
     host: bool,
     calls: BTreeSet<String>,
     statements: BTreeSet<String>,
 }
-impl Body {
+impl Body<'_> {
     fn call(&mut self, world: &Declarations, d: &Definition, name: &str, statement: bool) -> bool {
         if world.resolve(name, &d.module, &d.imports, false).is_some() {
             self.local |= statement || d.function.target == Target::Cpu;
             return false;
+        }
+        if let Some(inputs) = self.inputs {
+            inputs.borrow_mut().insert(Declaration::ValueName {
+                name: name.into(), module: d.module.clone(), imports: d.imports.clone(),
+            });
         }
         if let Some(key) = world.resolve(name, &d.module, &d.imports, true) {
             self.calls.insert(key.clone());
@@ -138,12 +144,12 @@ impl Body {
     }
 }
 
-pub(crate) fn infer(world: &mut Declarations) {
+pub(crate) fn infer(world: &mut Declarations, inputs: Option<&RefCell<BTreeSet<Declaration>>>) {
     let bodies: BTreeMap<_, _> = world
         .functions
         .iter()
         .map(|(key, d)| {
-            let mut body = Body::default();
+            let mut body = Body { inputs, ..Body::default() };
             if d.compiled.is_some() {
                 body.domain = d.execution == Requirement::Domain;
                 body.host = d.execution == Requirement::Host;
