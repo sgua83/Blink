@@ -48,11 +48,12 @@ impl World {
         stack: &mut BTreeSet<String>,
     ) -> Result<Vec<(TypeName, Ty)>> {
         if let TypeFamily::Named(name) = family {
-            let key = resolve_name(name, module, imports, |key| {
-                self.type_sets.get(key).is_some_and(|(_, source, owner, _)| {
-                    crate::type_visible(source, owner, module, imports)
-                })
-            })
+            if let Some(inputs) = &self.build_declarations {
+                inputs.borrow_mut().insert(crate::build::Declaration::TypeSetName {
+                    name: name.clone(), module: module.into(), imports: imports.to_vec(),
+                });
+            }
+            let key = self.declarations.resolve_type_set(name, module, imports)
             .ok_or_else(|| Diagnostic {
                 source: source.clone(),
                 span,
@@ -104,5 +105,15 @@ impl World {
         }
         stack.remove(&identity);
         Ok(members.into_values().collect())
+    }
+}
+
+impl crate::Declarations {
+    pub(crate) fn resolve_type_set(&self, name: &str, module: &str, imports: &[String]) -> Option<String> {
+        resolve_name(name, module, imports, |key| {
+            self.type_sets.get(key).is_some_and(|(_, source, owner, _)| {
+                crate::type_visible(source, owner, module, imports)
+            })
+        })
     }
 }

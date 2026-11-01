@@ -22,9 +22,10 @@ pub(crate) enum Declaration {
     External(String),
     ValueName { name: String, module: String, imports: Vec<String> },
     RecordName { name: String, module: String, imports: Vec<String> },
+    TypeSetName { name: String, module: String, imports: Vec<String> },
 }
-variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports }, 5 => RecordName { name, module, imports } });
-const MAGIC: &[u8; 8] = b"BLBO\x08\0\0\0";
+variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports }, 5 => RecordName { name, module, imports }, 6 => TypeSetName { name, module, imports } });
+const MAGIC: &[u8; 8] = b"BLBO\x09\0\0\0";
 struct Inputs {
     source: [u8; 32],
     imports: [u8; 32],
@@ -72,6 +73,10 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
                 hash::field(&mut bytes, &declarations.resolve(name, module, imports, false).bytes());
                 continue;
             }
+            Declaration::TypeSetName { name, module, imports } => {
+                hash::field(&mut bytes, &declarations.resolve_type_set(name, module, imports).bytes());
+                continue;
+            }
             Declaration::Constant(key) => declarations.functions.get(key)
                 .filter(|definition| definition.function.kind == crate::ast::FunctionKind::Constant)
                 .map(|definition| (&definition.source, definition.function.span)),
@@ -105,13 +110,11 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
                 || definition.function.kind == crate::ast::FunctionKind::Constant
                     && !definition.function.name.contains("::")))
         .map(|definition| definition.function.span).collect::<Vec<_>>();
-    // 值与记录名由实际查询绑定交接；集合名称仍保留原粒度。
+    // 声明名称由实际查询绑定交接，正文由原内容键交接。
     for (record, ..) in declarations.records.values().filter(|(_, owner, ..)| owner.path == source.path) {
         spans.push(record.span);
     }
     for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {
-        hash::field(bytes, b"typeset");
-        hash::field(bytes, set.name.as_bytes());
         spans.push(set.span);
     }
     // 模块与import在声明之前；声明间／后的空白注释不产生额外身份。
