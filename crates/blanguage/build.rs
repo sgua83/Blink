@@ -42,10 +42,6 @@ fn bootstrap_lexer() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lexer_object = bootstrap_lexer()?;
-    // Software version is display metadata, separate from compilation identity.
-    println!("cargo:rerun-if-changed=../../VERSION");
-    let version = fs::read_to_string("../../VERSION")?;
-    println!("cargo:rustc-env=BLINK_VERSION={}", version.trim());
     let mut files = Vec::new();
     sources(Path::new("src"), &mut files)?;
     files.extend([

@@ -8,7 +8,7 @@ fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync>
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
-        println!("Blink runner {}", blcompute::VERSION);
+        println!("Blink runner {}", include_str!("../../../VERSION").trim());
         return Ok(());
     }
     if args.is_empty() {

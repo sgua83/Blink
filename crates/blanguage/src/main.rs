@@ -12,7 +12,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
-        println!("Blink compiler {}", blanguage::VERSION);
+        println!("Blink compiler {}", include_str!("../../../VERSION").trim());
         return Ok(());
     }
     let mut jobs = None;

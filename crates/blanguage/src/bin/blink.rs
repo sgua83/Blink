@@ -11,7 +11,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
-        println!("Blink linker {}", blanguage::VERSION);
+        println!("Blink linker {}", include_str!("../../../../VERSION").trim());
         return Ok(());
     }
     if args.is_empty() || args[0] == "--help" {
