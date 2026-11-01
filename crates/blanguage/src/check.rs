@@ -475,6 +475,15 @@ fn expand_stages(
         let mut first_stage = program.stages.len();
         match &statement.kind {
             StmtKind::Return(None) => return Ok(true),
+            StmtKind::Let(annotation, name, expression) => {
+                if env.contains_key(name) {
+                    return d.source.fail(statement.span, "B125", format!("重复局部变量或覆盖参数 {name}"));
+                }
+                let value = constant::stage_expression(
+                    world, d, env, program, expression, annotation.as_ref(),
+                )?;
+                env.insert(name.clone(), value);
+            }
             StmtKind::If(condition, yes, no) => {
                 let Root::Literal(ty, words) = stage_root(world, d, env, program, condition)? else {
                     return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
@@ -483,7 +492,8 @@ fn expand_stages(
                     return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool");
                 }
                 let selected = if words[0] == 0 { no } else { yes };
-                if expand_stages(world, d, selected, env, program, stack, boundary, facts, calls)? {
+                let mut child = env.clone();
+                if expand_stages(world, d, selected, &mut child, program, stack, boundary, facts, calls)? {
                     return Ok(true);
                 }
                 first_stage = program.stages.len();
@@ -1080,7 +1090,7 @@ fn stage_root(
             let (ty, bits) = number(&d.source, arg.span, n)?;
             Ok(Root::Literal(ty, vec![bits]))
         }
-        _ => constant::stage_expression(world, d, env, program, arg),
+        _ => constant::stage_expression(world, d, env, program, arg, None),
     }
 }
 fn collective_field(

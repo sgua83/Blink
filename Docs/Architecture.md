@@ -95,7 +95,7 @@ B 的关键字与标识符区分大小写，与 C 一致。`value`、`Value` 和
 
 ### 统一函数、结果与执行位置
 
-普通值计算和整域计算统一使用返回类型函数定义。`parallel` 显式表达并行域；`on cpu`、`on gpu`、`on compute` 声明目标能力；`target(cpu, call(...))`、`target(gpu, call(...))` 选择本次执行位置。源语言不使用独立 program 类别或手写 launch 许可；内部 Program、Stage、ExecutionPlan 和 CLI 的 --program 仍有各自职责。
+普通值计算和整域计算统一使用返回类型函数定义。`parallel` 显式表达并行域；`on cpu`、`on gpu`、`on compute` 声明目标能力；`target(cpu, call(...))`、`target(gpu, call(...))` 选择本次执行位置。源语言不使用独立 program 类别或手写 launch 许可；内部 Program、Stage、ExecutionPlan 和 CLI 的 --program 仍有各自职责。 参与要求沿实际执行及调用推导；设备整域的局部编译期普通值由原阶段常量环境交接，声明本身不构成宿主控制。原类型、词法作用域与真实输出初始化仍由各自所有者检查，CPU运行期局部与宿主操作保持原语义，不引入新的求值器或运行阶段。
 
 CPU 主流程可以直接 parallel，也可以同步调用独立模块的整域 CPU／GPU 入口。参与要求、初始化效果和输入／输出资源关系随已编译合同交接。GPU target 当前接收借用 dataset 和普通统一参数组成的整域 void 调用，等待本次真实提交完成，结果保留在 GPU；download 执行显式传回。普通值跨 GPU 返回、GPU／CPU 元素阶段的普通原生调用、选择性内联和异步应用语法仍待实现。
 

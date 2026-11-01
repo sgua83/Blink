@@ -135,7 +135,8 @@ impl Body<'_> {
                     self.block(world, d, b);
                 }
                 StmtKind::Let(_, _, e) => {
-                    self.local = true;
+                    // 设备阶段的值绑定由原阶段常量语义解释，声明本身不是宿主控制。
+                    self.local |= d.function.target == Target::Cpu;
                     self.expr(world, d, e, false);
                 }
                 StmtKind::Assign(a, _, b) => {

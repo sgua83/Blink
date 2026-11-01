@@ -40,14 +40,21 @@ pub(super) fn stage_expression(
     roots: &BTreeMap<String, Root>,
     program: &Program,
     expression: &Expr,
+    annotation: Option<&TypeName>,
 ) -> Result<Root> {
     let mut builder = Builder::new(world, definition, program, 0)?;
     builder.in_function = true;
     builder.roots(roots);
     // roots中的无关uniform装载不是当前表达式的计算，不要求它们为常量。
     let first = builder.code.len();
-    let result = builder.expr(expression)?;
+    let expected = annotation
+        .map(|ty| builder.expected_storage(ty, expression.span))
+        .transpose()?;
+    let result = builder.expr_expected(expression, expected.as_ref())?;
     let value = builder.value_result(result, expression.span)?;
+    if let Some(expected) = expected {
+        builder.require_same(&expected, &value.ty, expression.span)?;
+    }
     if value.ty.contains_views()
         || value.constant.is_none()
         || builder.code[first..]

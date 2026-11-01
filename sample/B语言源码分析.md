@@ -899,7 +899,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3867`。
+源码节选：`crates/blanguage/src/check.rs:3877`。
 
 ```rust
         let binding = view.binding;
