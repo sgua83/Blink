@@ -125,7 +125,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 独立应用由 Windows 按实际导入装载库；原生 CpuProgram 用 LoadLibraryW／GetProcAddress 解析，原生代码所有者持有模块到最后一个消费者释放。装载／符号错误保留原生错误，不替换库或实现。外部调用的副作用不因返回值未使用而删除；parallel 实例的调用顺序不作保证。生成的 B 算法 DLL 也可在 CPU 后端调用其依赖库，GPU 后端明确拒绝宿主调用。
 
-外部声明接收无泛型的on cpu普通函数和支持的普通值／void／never返回；ensures initialized可声明准确条件输出，不开放其他一般requires／ensures。dataset、tile、view、纹理、AS及拥有资源值不能跨普通C ABI；其合法CPU普通元素仍可借用。原生地址、回调、变参、静态对象链接及其他平台仍待实现。B应用的动态dataset和CPU／GPU组织已按规范支持，原生Rust计算API继续保留。
+外部声明接收无泛型的on cpu普通函数和支持的普通值／void／never返回；ensures initialized可声明准确条件输出，不开放其他一般requires／ensures。dataset、tile、view、纹理、AS及拥有资源值不能跨普通C ABI；其合法CPU普通元素仍可借用。address值与指针宽整数按语言规范交接；由地址取得位置及其原生访问、回调、变参、静态对象链接及其他平台仍待实现。B应用的动态dataset和CPU／GPU组织已按规范支持，原生Rust计算API继续保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
 
@@ -220,7 +220,7 @@ B内部合同不开放普通extern C的整份拥有资源接口。完整资源�
 
 普通外部声明仍是信任边界；必须按实际C签名及输出语义声明。`write handle`承诺每条正常返回完整初始化，可能失败且保留旧输出的系统API应使用已初始化的inout位置或其真实接口合同，不能因正常C返回就假定成功写出句柄。
 
-真实句柄由对应资源所有者在最后消费者完成后关闭，GPU仅消费身份值，不访问外部OS对象。owned<T,F>可表达CPU静态释放，但原生地址、系统回调、字符／字符串及完整系统库仍未实现，不外推为完整窗口或COM支持。
+真实句柄由对应资源所有者在最后消费者完成后关闭，GPU仅消费身份值，不访问外部OS对象。owned<T,F>可表达CPU静态释放，但从地址取得位置／访问、系统回调、字符／字符串及完整系统库仍未实现，不外推为完整窗口或COM支持。
 
 
 ## 用户拥有包装与原生互操作
@@ -234,7 +234,7 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 
 源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源运行库新增Windows x64 C入口`uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill)`，返回同一Frame槽位的实际句柄；Frame保持不透明，只由根运行库创建、解释和最终释放。fill在本次同步调用内按存储Ty的实际声明布局借用完整普通值，必须不含拥有资源或view；运行库只读取声明分量，不读取未初始化填充。调用者必须拥有可调整的CPU存储，先结束真实地址／view／位置消费者；该原生可信入口不替调用者验证任意外部指针。
 
-非根模块通过同一不透明Frame调用共同入口，不移动Rust私有容器或解释Frame。普通C值接口不因此接收B拥有dataset；原生地址、动态拥有元素、异步和完整版本迁移仍待实现。
+非根模块通过同一不透明Frame调用共同入口，不移动Rust私有容器或解释Frame。普通C值接口不因此接收B拥有dataset；address值不代替指向位置访问；动态拥有元素、异步和完整版本迁移仍待实现。
 
 ## 普通值序列库与独立实例
 
