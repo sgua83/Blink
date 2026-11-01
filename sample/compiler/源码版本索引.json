@@ -52,7 +52,7 @@
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "sha256": "07a76f789ce60032bb3e35c345bea8e24119356ad3527618e258f35873080255"
+      "sha256": "90836f58901c53d830ea1f97ff292c04ccc940e616084145bb530e9f249e0acb"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",

@@ -778,8 +778,8 @@ impl Parser {
         } else if self.take("continue") {
             self.expect(";")?;
             StmtKind::Continue
-        } else if self.take("phase") {
-            self.expect(";")?;
+        } else if self.peek() == "phase" && self.tokens[self.at + 1].text == ";" {
+            self.at += 2;
             StmtKind::Phase
         } else if self.take("seek") {
             self.expect("(")?;
