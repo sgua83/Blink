@@ -8,11 +8,11 @@ license = "MIT"
 path = "src/lib.rs"
 
 [[bin]]
-name = "blc"
+name = "bc"
 path = "src/main.rs"
 
 [[bin]]
-name = "bllink"
-path = "src/bin/bllink.rs"
+name = "blink"
+path = "src/bin/blink.rs"
 
 [dependencies]

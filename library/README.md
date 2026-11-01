@@ -40,16 +40,16 @@ u32 main() on cpu {
 配套`main.h`声明`module main; u32 main() on cpu;`。在工程根使用正式工具：
 
 ```powershell
-target/release/blc.exe -c main.b -I library -o target/main.obj
-target/release/bllink.exe target/main.obj -o target/main.exe
+target/release/bc.exe -c main.b -I library -o target/main.obj
+target/release/blink.exe target/main.obj -o target/main.exe
 target/main.exe
 ```
 
 也可用`blink.sequence::push`等限定名。开放泛型按装入的B源码实例化；独立对象／归档只导出明确请求的实例，例如：
 
 ```powershell
-target/release/blc.exe -c library/blink/sequence.b -I library --module --instance 'push<u32>' -o target/sequence.obj
-target/release/bllink.exe --archive target/sequence.obj -o target/sequence.lib
+target/release/bc.exe -c library/blink/sequence.b -I library --module --instance 'push<u32>' -o target/sequence.obj
+target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 ```
 
 实际应用须导出其使用的各个实例，并通过`--import target/sequence.lib`编译，再与该库链接。当前对象与资源ABI版本见[语言规范](../Docs/BLanguage.md#已编译模块的资源abi)；缺失实例拒绝，链接不重读B源码。动态拥有元素、递归容器、持久view图、字符串／字节库和一般while回边不变式继续待实现；本库交付不等于BLEngine业务已迁移。

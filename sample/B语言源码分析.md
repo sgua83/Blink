@@ -98,8 +98,8 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
 先检查，再导出 CPU/GPU 代码：
 
 ```powershell
-.\target\release\blc.exe check sample\lessons\map.b sample demo
-.\target\release\blc.exe build sample\lessons\map.b Saved\MapCode sample demo
+.\target\release\bc.exe check sample\lessons\map.b sample demo
+.\target\release\bc.exe build sample\lessons\map.b Saved\MapCode sample demo
 ```
 
 这里的 `build` 输出可供研究的阶段代码与布局，尚不是应用 `.exe`。在这本源码分析书里，我们正要观察这些中间产物，因此会使用这一命令。
@@ -107,8 +107,8 @@ Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink
 若要执行这个计算模块，使用现有模块运行器：
 
 ```powershell
-.\target\release\blrun.exe cpu sample\lessons\map.b demo sample Saved\MapCpu :4
-.\target\release\blrun.exe gpu sample\lessons\map.b demo sample Saved\MapGpu :4
+.\target\release\brun.exe cpu sample\lessons\map.b demo sample Saved\MapCpu :4
+.\target\release\brun.exe gpu sample\lessons\map.b demo sample Saved\MapGpu :4
 ```
 
 `:4` 申请四个初始为零的元素；`demo` 自己填入初值。结果保存在相应目录的 `values.bldata`。这属于当前执行工具的数据协议，不是 B 独立应用的最终使用方式。附录提供不加命令别名的直接读取方法。
@@ -2049,7 +2049,7 @@ CPU 使用容量比较与原子比较交换等原生操作；GPU 将实际活动
 
 跨语言调用需要稳定约定：函数叫什么，参数怎样传递，数据怎样布局，错误怎样返回，谁分配和释放。C ABI 是当前 DLL 的共同边界，不把普通 Rust Vec 或 C++ 对象的内部结构直接当跨语言协议。
 
-`blc -c <module.b> --program <入口> -o <算法.obj>` 编译算法目标文件，`bllink <算法.obj> -o <算法.dll>` 链接 DLL 及配套 C／C++、Rust 接口。普通应用使用同一编译命令选择 main，再链接为 exe。编译与链接是两个正式阶段，C++ 包装和 Rust 切片、Result、Drop 消费同一接口与布局。
+`bc -c <module.b> --program <入口> -o <算法.obj>` 编译算法目标文件，`blink <算法.obj> -o <算法.dll>` 链接 DLL 及配套 C／C++、Rust 接口。普通应用使用同一编译命令选择 main，再链接为 exe。编译与链接是两个正式阶段，C++ 包装和 Rust 切片、Result、Drop 消费同一接口与布局。
 
 ### 26.2 DLL 内究竟装了什么
 
@@ -2165,7 +2165,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 ### A.1 从干净构建得到工具
 
-工程根目录执行 `cargo build --workspace --release`，生成 `target/release/blc.exe`、`bllink.exe`和`blrun.exe`。实际程序以本次正式构建为准，不需要复制历史研发目录。
+工程根目录执行 `cargo build --workspace --release`，生成 `target/release/bc.exe`、`blink.exe`和`brun.exe`。实际程序以本次正式构建为准，不需要复制历史研发目录。
 
 ### A.2 读取四个浮点结果
 
@@ -2224,7 +2224,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `vulkan/prefix.rs`、各集合操作文件 | 设备计数、间接参数与临时摘要怎样衔接 |
 | `vulkan/texture.rs`、`ray.rs`、`present.rs` | 图像、加速结构和交换链怎样分别拥有资源 |
 | `ffi.rs` | DLL 边界的数据转换、执行、错误与释放 |
-| `main.rs` | 现有 blrun 怎样准备输入、运行并写 BLDATA |
+| `main.rs` | 现有 brun 怎样准备输入、运行并写 BLDATA |
 
 ## 附录 C 底层知识与对应章节
 

@@ -125,12 +125,12 @@ If the answers are shared read-only inputs, exclusive outputs, and no waiting fo
 Run this command in PowerShell:
 
 ```powershell
-.\target\release\blrun.exe cpu `
+.\target\release\brun.exe cpu `
     sample/lessons/map.b demo `
     sample Saved/Book/map :4
 ```
 
-This invokes `blrun.exe` on the CPU and selects the `demo` entry in `sample/lessons/map.b`. `sample` is the module search root; `Saved/Book/map` is the output directory; `:4` allocates four zero-initialized records. `demo` first fills them with `[1,2,3,4]`, then performs the multiply-and-add transformation.
+This invokes `brun.exe` on the CPU and selects the `demo` entry in `sample/lessons/map.b`. `sample` is the module search root; `Saved/Book/map` is the output directory; `:4` allocates four zero-initialized records. `demo` first fills them with `[1,2,3,4]`, then performs the multiply-and-add transformation.
 
 The resulting `values.bldata` contains four numbers:
 
@@ -138,12 +138,12 @@ The resulting `values.bldata` contains four numbers:
 [3, 5, 7, 9]
 ```
 
-`blrun` prints program information and execution timing; computed values are written to BLDATA files. The numbers in the figure were read from that file. To read it yourself, see [Appendix A.3 of the book](sample/并行编程的艺术.md).
+`brun` prints program information and execution timing; computed values are written to BLDATA files. The numbers in the figure were read from that file. To read it yourself, see [Appendix A.3 of the book](sample/并行编程的艺术.md).
 
 Run the same sources on a GPU by selecting `gpu` and another output directory:
 
 ```powershell
-.\target\release\blrun.exe gpu `
+.\target\release\brun.exe gpu `
     sample/lessons/map.b demo `
     sample Saved/Book/map-gpu :4
 ```
@@ -316,7 +316,7 @@ CPU and GPU reductions can group operations differently and therefore have round
 Run the `demo_sum` entry on the CPU:
 
 ```powershell
-.\target\release\blrun.exe cpu `
+.\target\release\brun.exe cpu `
     sample/lessons/scan.b demo_sum `
     sample Saved/Book/reduce :4 :1
 ```
@@ -324,7 +324,7 @@ Run the `demo_sum` entry on the CPU:
 `:4` allocates four input records and `:1` allocates one total record. Run on the GPU with:
 
 ```powershell
-.\target\release\blrun.exe gpu `
+.\target\release\brun.exe gpu `
     sample/lessons/scan.b demo_sum `
     sample Saved/Book/reduce-gpu :4 :1
 ```
@@ -351,9 +351,9 @@ Each input contributes one integer addition, and the optimized serial implementa
 
 | Tool / library | Purpose |
 |---|---|
-| `blc` | Check sources, compile COFF objects, and export native CPU/GPU compute code |
-| `bllink` | Link compiled objects into Windows x64 executables or compute libraries (DLLs) |
-| `blrun` | Bind data and execute CPU/GPU compute modules |
+| `bc` | Check sources, compile COFF objects, and export native CPU/GPU compute code |
+| `blink` | Link compiled objects into Windows x64 executables or compute libraries (DLLs) |
+| `brun` | Bind data and execute CPU/GPU compute modules |
 | `blanguage` | Frontend, type/access checking, parallel IR, optimization, and native backends |
 | `blcompute` | Data, device resources, transfers, native execution, and release after completion |
 

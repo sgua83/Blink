@@ -38,7 +38,7 @@ cd Blink
 cargo build --workspace --release
 ```
 
-第一条下载源码，第二条进入项目，第三条构建正式优化版本。第一次构建可能需要一些时间。完成后，编译器位于 `target/release/blc.exe`，链接器位于 `target/release/bllink.exe`。
+第一条下载源码，第二条进入项目，第三条构建正式优化版本。第一次构建可能需要一些时间。完成后，编译器位于 `target/release/bc.exe`，链接器位于 `target/release/blink.exe`。
 
 ### 1.2 认识三个目录
 
@@ -55,13 +55,13 @@ Blink/
 
 写完源码后，先编译，再链接，最后运行。
 
-编译器 `blc.exe` 读取 B 源码，检查写法，生成机器指令，保存为 `.obj` 目标文件。目标文件已经含有编译结果，但还不能当作应用启动。
+编译器 `bc.exe` 读取 B 源码，检查写法，生成机器指令，保存为 `.obj` 目标文件。目标文件已经含有编译结果，但还不能当作应用启动。
 
-链接器 `bllink.exe` 读取目标文件，安排代码和数据的位置，连接程序使用的系统函数，生成操作系统能启动的 `.exe`。它不再读取 B 源码，也不重新编译算法。
+链接器 `blink.exe` 读取目标文件，安排代码和数据的位置，连接程序使用的系统函数，生成操作系统能启动的 `.exe`。它不再读取 B 源码，也不重新编译算法。
 
 最后运行自己的 exe，才开始执行计算。下一章用三条命令走完这三步。改过源码以后，重新编译、链接，再运行新程序。
 
-`cargo build --workspace --release` 用来构建 Blink 工具本身；日常编译、链接 B 应用使用刚得到的 blc 和 bllink。
+`cargo build --workspace --release` 用来构建 Blink 工具本身；日常编译、链接 B 应用使用刚得到的 bc 和 blink。
 
 ## 第二章 第一个程序：直接显示 3
 
@@ -95,16 +95,16 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/start.b `
     -o target/start.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/start.obj `
     -o target/start.exe
 .\target\start.exe
 ```
 
-第一条运行编译器 blc，把 start.b 编译为 start.obj。第二条运行链接器 bllink，把 start.obj 链接为 start.exe。第三条才运行自己写的程序。两个工具的 exe 是构建工具，start.exe 是这份源码生成的应用。
+第一条运行编译器 bc，把 start.b 编译为 start.obj。第二条运行链接器 blink，把 start.obj 链接为 start.exe。第三条才运行自己写的程序。两个工具的 exe 是构建工具，start.exe 是这份源码生成的应用。
 
 实际终端输出：
 
@@ -114,9 +114,9 @@ u32 main() on cpu {
 
 ![start 的实际构建与输出](figures/beginner-app-start.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
-终端直接显示三。这里不需要准备输入数据文件，也不需要再读取输出文件。生成的 `target/start.exe` 可以直接启动；运行它不需要 B 源码、blc 或 blrun 留在旁边。
+终端直接显示三。这里不需要准备输入数据文件，也不需要再读取输出文件。生成的 `target/start.exe` 可以直接启动；运行它不需要 B 源码、bc 或 brun 留在旁边。
 
 ### 2.3 文件外面的几行分别是什么
 
@@ -154,10 +154,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/names.b `
     -o target/names.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/names.obj `
     -o target/names.exe
 .\target\names.exe
@@ -171,7 +171,7 @@ u32 main() on cpu {
 
 ![names 的实际构建与输出](figures/beginner-app-names.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 本章及后面的普通应用，`.h` 都采用第一例的形式：把 module 改为对应文件名，公开 `u32 main() on cpu;`。配套文件已经写好，可以直接打开阅读。
 
@@ -233,10 +233,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/types.b `
     -o target/types.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/types.obj `
     -o target/types.exe
 .\target\types.exe
@@ -254,7 +254,7 @@ true
 
 ![types 的实际构建与输出](figures/beginner-app-types.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前两行是整数除法，分别得到三和负三；第三行说明七十五达到六十分。第四行直接显示温度 21.5，第五行显示小数除法的结果 3.5。
 
@@ -317,10 +317,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/choice.b `
     -o target/choice.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/choice.obj `
     -o target/choice.exe
 .\target\choice.exe
@@ -335,7 +335,7 @@ true
 
 ![choice 的实际构建与输出](figures/beginner-app-choice.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 score 为七十五，第一项不成立，第二项成立，于是 level 取二。后面的 else if 不再继续选一遍。第一行输出等级二，第二行输出是否及格 true。
 
@@ -414,10 +414,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/loops.b `
     -o target/loops.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/loops.obj `
     -o target/loops.exe
 .\target\loops.exe
@@ -433,7 +433,7 @@ u32 main() on cpu {
 
 ![loops 的实际构建与输出](figures/beginner-app-loops.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前两项都是十五；最后一项只加一、二、三，得到六。
 
@@ -472,10 +472,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/functions.b `
     -o target/functions.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/functions.obj `
     -o target/functions.exe
 .\target\functions.exe
@@ -490,7 +490,7 @@ u32 main() on cpu {
 
 ![functions 的实际构建与输出](figures/beginner-app-functions.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 `add_bonus(70, 5)` 得到七十五，再交给 level_of 得到二。参数按声明顺序对应。函数中的 score 是这次调用收到的值，不因名字相同就自动改写 main 里的变量。
 
@@ -541,10 +541,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/borrow.b `
     -o target/borrow.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/borrow.obj `
     -o target/borrow.exe
 .\target\borrow.exe
@@ -559,7 +559,7 @@ u32 main() on cpu {
 
 ![borrow 的实际构建与输出](figures/beginner-app-borrow.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 add_one 把 main 的 value 从三改成四。twice 读取四，把八写入 output。两行分别显示四、八。
 
@@ -608,10 +608,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/records.b `
     -o target/records.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/records.obj `
     -o target/records.exe
 .\target\records.exe
@@ -626,7 +626,7 @@ true
 
 ![records 的实际构建与输出](figures/beginner-app-records.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 点号选择一项字段，`student.score` 是成绩，`student.passed` 是判断结果。每一项在读取前都应有确定内容。
 
@@ -660,10 +660,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/arrays.b `
     -o target/arrays.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/arrays.obj `
     -o target/arrays.exe
 .\target\arrays.exe
@@ -681,7 +681,7 @@ u32 main() on cpu {
 
 ![arrays 的实际构建与输出](figures/beginner-app-arrays.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前四行分别显示数组元素，最后一行显示总和十。这里是一个独立 exe，数组由应用代码直接声明，不是命令行另外申请的数据集。
 
@@ -731,10 +731,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/vectors.b `
     -o target/vectors.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/vectors.obj `
     -o target/vectors.exe
 .\target\vectors.exe
@@ -751,7 +751,7 @@ u32 main() on cpu {
 
 ![vectors 的实际构建与输出](figures/beginner-app-vectors.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 前两行是 moved 的 x、y：一、三。后两行是 rotated 的 x、y：负二、一。它们分别对应移动和旋转得到的两个坐标。
 
@@ -808,11 +808,11 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/modules.b `
     -o target/modules.obj `
     -I sample
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/modules.obj `
     -o target/modules.exe
 .\target\modules.exe
@@ -826,7 +826,7 @@ u32 main() on cpu {
 
 ![modules 的实际构建与输出](figures/beginner-app-modules.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 import 让本模块明确使用 beginner.math 的公开内容。这里的编译命令末尾增加 `sample`，告诉编译器从哪里寻找 `beginner/math.h/.b`；它是模块搜索根目录。第一例没有导入，无需这个参数。
 
@@ -863,10 +863,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/generic.b `
     -o target/generic.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/generic.obj `
     -o target/generic.exe
 .\target\generic.exe
@@ -881,7 +881,7 @@ u32 main() on cpu {
 
 ![generic 的实际构建与输出](figures/beginner-app-generic.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 T 是暂时使用的类型名，integer 规定它来自允许的整数类型集合。本例传三时推断为 u32，传负二时推断为 i32，分别得到六和负四。
 
@@ -945,10 +945,10 @@ final_score 只负责一人的调整。main 负责数组、循环、显示和求
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/grades.b `
     -o target/grades.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/grades.obj `
     -o target/grades.exe
 .\target\grades.exe
@@ -974,7 +974,7 @@ true
 
 ![grades 的实际构建与输出](figures/beginner-app-grades.svg)
 
-*结果示意：blc生成obj，bllink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
+*结果示意：bc生成obj，blink生成exe，再运行应用；图示用于理解输入与输出，实际运行结果以终端为准。*
 
 每三行是一人的原成绩、新成绩、及格标志；最后一行是总和。按记录整理如下，数值取自上面的实际终端输出：
 
@@ -1046,10 +1046,10 @@ u32 main() on cpu {
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/numbers_serial.b `
     -o target/numbers_serial.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/numbers_serial.obj `
     -o target/numbers_serial.exe
 .\target\numbers_serial.exe
@@ -1114,10 +1114,10 @@ number 直接表示当前可写的那个元素。value 仍是各自计算时使�
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/numbers.b `
     -o target/numbers.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/numbers.obj `
     -o target/numbers.exe
 .\target\numbers.exe
@@ -1146,7 +1146,7 @@ number 直接表示当前可写的那个元素。value 仍是各自计算时使�
 
 ### 15.5 编译后，目录里有什么
 
-这些例子使用动态数据和计算执行框架。blc 先把应用和必要的执行框架编译进 obj；bllink 再生成 exe，并在同目录生成一个名称形如 blink_app_*.dll 的执行库。星号部分由链接器命名。
+这些例子使用动态数据和计算执行框架。bc 先把应用和必要的执行框架编译进 obj；blink 再生成 exe，并在同目录生成一个名称形如 blink_app_*.dll 的执行库。星号部分由链接器命名。
 
 日常仍然直接运行 numbers.exe。把程序复制给另一台 Windows x64 电脑时，要把它对应的 DLL 一起放在同目录。运行不需要携带 B 源码、编译器或 Rust 工具链；构建这个源码 SDK 时需要的工具已在第一章准备。
 
@@ -1206,10 +1206,10 @@ seed 只负责填写起始值，参数写 write。scale 既要读取原值又要
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/stages.b `
     -o target/stages.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/stages.obj `
     -o target/stages.exe
 .\target\stages.exe
@@ -1339,10 +1339,10 @@ seed 填写输入；summarize 只读输入，填写两份结果；run 组织两�
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/totals.b `
     -o target/totals.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/totals.obj `
     -o target/totals.exe
 .\target\totals.exe
@@ -1421,11 +1421,11 @@ upload 将这份存储交给 GPU。target(gpu, ...) 完成本次 GPU 计算后�
 ### 17.2 编译与直接运行
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/stages_gpu.b `
     -o target/stages_gpu.obj `
     -I sample
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/stages_gpu.obj `
     -o target/stages_gpu.exe
 .\target\stages_gpu.exe
@@ -1511,10 +1511,10 @@ main 仍然是应用入口。尖括号写在 B 源码的调用处，命令行不
 ### 18.2 编译并运行
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/shape.b `
     -o target/shape.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/shape.obj `
     -o target/shape.exe
 .\target\shape.exe
@@ -1646,10 +1646,10 @@ main 创建四条 Result 和一条总和。fill 给每条成绩填写三个字�
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/scores.b `
     -o target/scores.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/scores.obj `
     -o target/scores.exe
 .\target\scores.exe
@@ -1721,11 +1721,11 @@ results 和 total 都交给 GPU，因为计算既要写成绩，也要写总和�
 编译、链接并运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/scores_gpu.b `
     -o target/scores_gpu.obj `
     -I sample
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/scores_gpu.obj `
     -o target/scores_gpu.exe
 .\target\scores_gpu.exe
@@ -1817,7 +1817,7 @@ main 仍拥有它创建的 dataset。target(cpu, ...) 或 target(gpu, ...) 暂�
 
 dataset 创建后位于 CPU 一侧。CPU 计算函数 直接借用；GPU 计算函数 使用前写 upload，CPU 读取 GPU 结果前写 download。不要把“GPU 已提交”理解成“CPU 现在就能读结果”。
 
-这些例子没有输入、输出数据文件参数。结果保存在应用自己的数据中，main 直接读取并显示；blrun 的文件读写工具继续可用于其他计算模块，不是本书应用的运行步骤。
+这些例子没有输入、输出数据文件参数。结果保存在应用自己的数据中，main 直接读取并显示；brun 的文件读写工具继续可用于其他计算模块，不是本书应用的运行步骤。
 
 ### A.3 把程序交给别人
 
@@ -1859,7 +1859,7 @@ dataset 创建后位于 CPU 一侧。CPU 计算函数 直接借用；GPU 计算�
 
 ### B.4 并行例子与下一步
 
-并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 计算函数。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都先由 blc 编译为 obj，再由 bllink 链接为 exe，最后直接运行。
+并行应用包括 `numbers`、`stages`、`totals`、`shape` 和 `scores`，每个模块同时公开自己的 main 与计算 计算函数。`numbers_serial` 提供简单的顺序对照；`stages_gpu` 和 `scores_gpu` 导入原计算模块，由自己的 main 明确组织 GPU 传输、执行与显示。各例都先由 bc 编译为 obj，再由 blink 链接为 exe，最后直接运行。
 
 下一步可以阅读《并行编程的艺术》，学习更大规模的数据关系与真实效率；阅读《Blink 和 Rust 混合编程》，学习把 B 算法接入项目；对实现感兴趣时，再阅读《B 语言源码分析》。
 

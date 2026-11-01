@@ -6,12 +6,12 @@
 
 ```powershell
 cargo build --workspace --release
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/hybrid/first/numbers.b `
     -o target/hybrid/numbers.obj `
     -I sample/hybrid/first `
     --program transform
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/hybrid/numbers.obj `
     -o target/hybrid/numbers.dll
 
@@ -29,7 +29,7 @@ before: [1.0, 2.0, 3.0, 4.0]
 after:  [3.0, 5.0, 7.0, 9.0]
 ```
 
-blc 先生成 numbers.obj；bllink 再输出 numbers.dll、numbers.lib、numbers.rs 和 numbers.abi.h。生成的 numbers.rs 是 Rust 的调用接口，由 main.rs 的 mod numbers 引入；它与自己编写的 main.rs 是两个文件。rustc 编译 main.rs，并链接 numbers.lib；最终 numbers.exe 在运行时加载同目录的 numbers.dll。
+bc 先生成 numbers.obj；blink 再输出 numbers.dll、numbers.lib、numbers.rs 和 numbers.abi.h。生成的 numbers.rs 是 Rust 的调用接口，由 main.rs 的 mod numbers 引入；它与自己编写的 main.rs 是两个文件。rustc 编译 main.rs，并链接 numbers.lib；最终 numbers.exe 在运行时加载同目录的 numbers.dll。
 
 GPU 版继续使用这些生成文件：
 

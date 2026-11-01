@@ -18,7 +18,7 @@
 | [tiles](lessons/tiles.b) | 输入快照、发布、协作函数与静态块宽度 |
 | [algebra](lessons/algebra.b) | 保持输入顺序的自定义组合与前缀 |
 
-每个模块的 `.h` 提供接口，`.b` 提供实现。各章直接使用 `target/release/blrun.exe` 编译并运行源码，给出 CPU/GPU 命令和预期结果。单独检查、导出代码与读取 BLDATA 的方法集中在附录 A；[BLEngine 摘录来源](BLEngine摘录来源.md) 记录原文件与摘录版本。
+每个模块的 `.h` 提供接口，`.b` 提供实现。各章直接使用 `target/release/brun.exe` 编译并运行源码，给出 CPU/GPU 命令和预期结果。单独检查、导出代码与读取 BLDATA 的方法集中在附录 A；[BLEngine 摘录来源](BLEngine摘录来源.md) 记录原文件与摘录版本。
 
 [性能示例](performance/README.md) 提供同算法的优化 C++ 串行对照和 B CPU／GPU 原生执行，覆盖 13 组计算。性能数据统一来自 Release 正式构建，附有P4台账中的运行历史。各章同时给出手算输入和用于体现效率优势的大规模输入，报告墙钟耗时、加速比与 GPU 数据往返成本。
 

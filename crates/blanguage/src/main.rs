@@ -37,7 +37,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nblc --version\nGlobal resource options before command: --jobs N | --cpus group:number,...\nblc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nblc check <module.b> [module-root] [program<args>]\nblc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: bllink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nbc --version\nGlobal resource options before command: --jobs N | --cpus group:number,...\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
@@ -100,7 +100,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if !matches!(command.as_str(), "check" | "build") {
-        return Err(format!("未知命令 {command}；编译使用 blc -c，链接使用 bllink").into());
+        return Err(format!("未知命令 {command}；编译使用 bc -c，链接使用 blink").into());
     }
     let has_output = command == "build";
     let root = if has_output { args.get(3) } else { args.get(2) }

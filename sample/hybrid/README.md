@@ -1,6 +1,6 @@
 # 《Blink 和 Rust 混合编程》配套示例
 
-从 [第一个 DLL 调用例子](first/README.md) 开始。自己写 numbers.h、numbers.b、main.rs，使用 blc -c 编译目标文件，再由 bllink 生成算法库，再用 rustc 编译 Rust 调用方，直接运行 numbers.exe。B 完成乘二加一，Rust 提供输入并打印结果。
+从 [第一个 DLL 调用例子](first/README.md) 开始。自己写 numbers.h、numbers.b、main.rs，使用 bc -c 编译目标文件，再由 blink 生成算法库，再用 rustc 编译 Rust 调用方，直接运行 numbers.exe。B 完成乘二加一，Rust 提供输入并打印结果。
 
 第一、二章完整解释这次调用；第三章再使用 blanguage、blcompute 原生 Rust 接口，逐步准备粒子、执行 B 并读取结果。书稿见 [《Blink 和 Rust 混合编程》](../Blink和Rust混合编程.md)。
 

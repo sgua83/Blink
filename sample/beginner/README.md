@@ -6,10 +6,10 @@
 
 ```powershell
 cargo build --workspace --release
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/beginner/start.b `
     -o target/start.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/start.obj `
     -o target/start.exe
 .\target\start.exe

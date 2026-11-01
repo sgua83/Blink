@@ -20,7 +20,7 @@
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "sha256": "8e2a696cd8fe552728675467906a104aaeed6bc1e7660b2adc03003c837a8db7"
+      "sha256": "66769842c0a750a6f8d98a31c12c9f1176a90d4f1e21e3502feb890c0a83a14d"
     },
     {
       "path": "crates/blanguage/src/generics.rs",

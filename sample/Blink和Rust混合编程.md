@@ -113,7 +113,7 @@ fn main() -> Result<(), String> {
 
 先看 main 中间的四件事：创建四个数，准备 CPU 算法，调用 run，打印改过的数组。Rust 中已经没有“乘二加一”的循环；这个公式保存在 numbers.b 中。
 
-开头的 mod numbers 引入一份由 blc 生成的 Rust 接口。path 指定它的位置；路径相对于这个 main.rs。这个生成文件也叫 numbers.rs，与我们自己写的 main.rs 是两个文件。
+开头的 mod numbers 引入一份由 bc 生成的 Rust 接口。path 指定它的位置；路径相对于这个 main.rs。这个生成文件也叫 numbers.rs，与我们自己写的 main.rs 是两个文件。
 
 Program::new 准备所选后端，run 才执行算法。这里选择 Backend::Cpu。values 前面的 mut 允许修改数组；&mut values 表示本次调用可以修改它。
 
@@ -130,21 +130,21 @@ Set-Location Blink
 cargo build --workspace --release
 ```
 
-这条 cargo 命令构建 Blink 工具链。完成后，Blink 编译器位于 target/release/blc.exe。下面一直在这个 Blink 目录中操作。
+这条 cargo 命令构建 Blink 工具链。完成后，Blink 编译器位于 target/release/bc.exe。下面一直在这个 Blink 目录中操作。
 
 ### 1.7　编译与链接：把 B 做成 DLL
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/hybrid/first/numbers.b `
     -o target/hybrid/numbers.obj `
     -I sample/hybrid/first --program transform
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/hybrid/numbers.obj `
     -o target/hybrid/numbers.dll
 ```
 
-第一步由 Blink 编译器读取 numbers.b，从 sample/hybrid/first 查找模块，选择 transform 入口并输出已编译的 numbers.obj；第二步由 bllink 链接该目标文件，生成 numbers.dll 和配套接口。链接阶段不重读 B 源码、不生成 B 机器码，也不调用 Cargo 或 rustc。
+第一步由 Blink 编译器读取 numbers.b，从 sample/hybrid/first 查找模块，选择 transform 入口并输出已编译的 numbers.obj；第二步由 blink 链接该目标文件，生成 numbers.dll 和配套接口。链接阶段不重读 B 源码、不生成 B 机器码，也不调用 Cargo 或 rustc。
 
 编译器同时读取同目录的 numbers.h，并生成以下文件：
 
@@ -1249,7 +1249,7 @@ if let Err(e) = self.finish() {
 先用 Blink 编译器检查这段程序：
 
 ```powershell
-.\target\release\blc.exe check `
+.\target\release\bc.exe check `
     sample/hybrid/Programs/render/frame.b `
     sample/hybrid/Programs `
     'frame<1,1000,1000,1,1000000,1000000>'
@@ -1566,7 +1566,7 @@ cargo build --release `
 
 | 做法 | 怎样使用 | 适合的情况 |
 |---|---|---|
-| blc -c／bllink | 先生成库，再由 Rust/C++ 链接调用 | 给已有项目交付一个数组算法 |
+| bc -c／blink | 先生成库，再由 Rust/C++ 链接调用 | 给已有项目交付一个数组算法 |
 | blanguage、blcompute | 在 Rust 中加载 B，直接创建和传递资源 | 连续 GPU 计算、共享纹理和复杂步骤组合 |
 
 第一章已经完整演示 DLL。第三章以后使用原生 API，是为了把上传、设备数据和等待都写出来。两种方式都保留，按项目需要选择。
@@ -1580,11 +1580,11 @@ numbers.dll 同时生成 numbers.abi.h 和 numbers.lib。C++ 通过生成头文�
 仓库里的 sample/interop/map.cpp 提供了完整例子；下列命令在 Blink 根目录运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/lessons/map.b `
     -o target/interop/map.obj `
     -I sample --program scale
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/interop/map.obj -o target/interop/map.dll
 
 cl /nologo /utf-8 /EHsc `
@@ -1597,7 +1597,7 @@ cl /nologo /utf-8 /EHsc `
 .\target\interop\map-cpp.exe
 ```
 
-输出为 3 5 7 9。编译 B 的是 blc，编译 C++ 调用方的是 cl。Rust 和 C++ 都可以作为正式调用方；Rust 仍可直接使用原生 crate。
+输出为 3 5 7 9。编译 B 的是 bc，编译 C++ 调用方的是 cl。Rust 和 C++ 都可以作为正式调用方；Rust 仍可直接使用原生 crate。
 
 B 的普通 CPU 应用已支持通过 extern "C" 声明调用 Windows x64 DLL 的 C 导出；Rust 与 C++ 可以各自按 C ABI 导出函数。普通值、位置借用与连续布局合同有明确边界，不直接导入语言对象或普通 Rust ABI。完整范围见 Docs/NativeInterop.md。
 
@@ -1637,11 +1637,11 @@ cargo build --workspace --release
 ### A.2　编译第一个 DLL，运行 CPU 和 GPU 版
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/hybrid/first/numbers.b `
     -o target/hybrid/numbers.obj `
     -I sample/hybrid/first --program transform
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/hybrid/numbers.obj `
     -o target/hybrid/numbers.dll
 
@@ -1686,7 +1686,7 @@ GPU 例子需要驱动提供所需 Vulkan 能力。执行失败会返回错误�
 ### A.4　查看 B 采样程序的编译结果
 
 ```powershell
-.\target\release\blc.exe check `
+.\target\release\bc.exe check `
     sample/hybrid/Programs/book/sheet.b `
     sample/hybrid/Programs `
     'materials<10000,1000>'

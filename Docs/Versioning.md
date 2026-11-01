@@ -30,7 +30,7 @@ powershell -NoProfile -File Tools/Submit.ps1 -Change 12345
 
 ## 构建、缓存与兼容身份
 
-`blc --version`、`bllink --version`、`blrun --version` 及 `blanguage::VERSION`／`blcompute::VERSION` 读取同一构建版本。已发布 Git 源码可离线构建，不要求查询 P4、Git 或网络。Rust Cargo 包的既有 `0.1.0` 是内部包元数据，不作为 Blink 软件版本。
+`bc --version`、`blink --version`、`brun --version` 及 `blanguage::VERSION`／`blcompute::VERSION` 读取同一构建版本。已发布 Git 源码可离线构建，不要求查询 P4、Git 或网络。Rust Cargo 包的既有 `0.1.0` 是内部包元数据，不作为 Blink 软件版本。
 
 VERSION 更新工具内嵌显示，但不加入 BLINK_COMPILER_ID 或原生框架输入身份；仅版本或文档变化不使 B 对象／入口缓存全部失效。实际实现、源码依赖、公开合同、目标、工具链及配置继续按原规则失效。软件版本不替代 BLCO／BLRI 等实际格式和 ABI 身份，不承诺不同版本的产物一定兼容。
 

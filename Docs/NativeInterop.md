@@ -1,6 +1,6 @@
 # C、C++ 与 Rust 集成
 
-C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 bllink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，继续作为正式 SDK 提供。
+C++ 与 Rust 都是 Blink 的正式宿主。C/C++ 可直接链接 blink 生成的 DLL；Rust 可使用同一 DLL 的安全包装器，也可继续使用 blanguage、blcompute 原生 crate。原生 Rust 的编译、CPU 执行、GPU 驻留、异步提交和所有权接口不经过 C ABI，继续作为正式 SDK 提供。
 
 ## 宽标量、原声明布局与资源版本
 u64／i64为8字节、8对齐的普通标量，C／C++对应uint64_t／int64_t，Rust对应u64／i64；u32／i32／f32／bool及原向量布局保持。外部C函数、生成算法记录和B模块按实际字段偏移交接完整宽值，不将逻辑分量数当成物理u32字数。B源代码使用u64后缀或显式数值构造，不因此获得裸指针、回调或任意地址权限。
@@ -40,12 +40,12 @@ unsafe_function<cfn<...>>(address)和function_address(value)仅作CPU显式签�
 
 ```powershell
 cargo build --workspace --release
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample\lessons\map.b `
     -o target\interop\map.obj `
     -I sample `
     --program scale
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target\interop\map.obj `
     -o target\interop\map.dll
 ```
@@ -63,9 +63,9 @@ B 的源码接口 map.h 和生成的 C 头文件 map.abi.h 是不同文件。导
 
 固定长度的 `COUNT` 常量与 C 头文件保护宏保留名称的原大小写身份：小写 `a` 至 `y` 写成对应大写，数字保持；小写 `z`、原大写字母及下划线写成 `Z` 加原 ASCII 字节的两位大写十六进制。`a`／`A` 因而分别编码为 `A`／`Z41`，`z41`／`Z41` 为 `Z7A41`／`Z5A41`，`input_data` 为 `INPUTZ5FDATA`。Rust 使用 `<编码参数名>_COUNT`，C 使用 `<编码导出前缀>_<编码参数名>_COUNT`；保护宏使用同一前缀编码。按实际生成接口读取常量，不将不同参数或库的大小写折叠；原 `fractal`／`pixels` 仍生成 `FRACTAL_PIXELS_COUNT` 和 `PIXELS_COUNT`。C 导出符号、类型及参数名称保留原规则，实际数据布局与调用协议保持。
 
-blc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检查，并用自研后端生成全部 CPU 机器码与 SPIR-V，包括集合尾部、扫描传播、排序和间接启动入口。DLL 携带最终代码、重定位和执行布局，不内嵌值 IR。create 只装载 CPU 代码或 Vulkan pipeline；CPU 的机器码生成已移到构建时，GPU 驱动仍负责接收 SPIR-V 并建立实际管线。声明 on cpu／on gpu 的入口只生成对应后端，on compute 生成两端，无法编译的目标明确失败。
+bc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检查，并用自研后端生成全部 CPU 机器码与 SPIR-V，包括集合尾部、扫描传播、排序和间接启动入口。DLL 携带最终代码、重定位和执行布局，不内嵌值 IR。create 只装载 CPU 代码或 Vulkan pipeline；CPU 的机器码生成已移到构建时，GPU 驱动仍负责接收 SPIR-V 并建立实际管线。声明 on cpu／on gpu 的入口只生成对应后端，on compute 生成两端，无法编译的目标明确失败。
 
-编译阶段由 blc 生成 B 算法原生代码，并使用 Rust 工具链把既有执行框架和 C ABI 编译成静态目标库，随 COFF 目标文件保存。链接阶段由 bllink 读取目标文件，调用 MSVC 本机链接器生成 DLL，不调用 blc、Cargo 或 rustc，也不需要 B 源码。编译使用源码 SDK 与 Rust 工具链，链接使用 Visual Studio C++ 工具和 Windows SDK；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。C 导出及生成的 C++／Rust 调用签名保持。Rust SDK 提供整程序编译映像与装载入口，数据创建接口消费只读的 ProgramInterface；已装载程序的 program() 返回不含 IR 的 ExecutionPlan，数据布局消费者使用该接口。
+编译阶段由 bc 生成 B 算法原生代码，并使用 Rust 工具链把既有执行框架和 C ABI 编译成静态目标库，随 COFF 目标文件保存。链接阶段由 blink 读取目标文件，调用 MSVC 本机链接器生成 DLL，不调用 bc、Cargo 或 rustc，也不需要 B 源码。编译使用源码 SDK 与 Rust 工具链，链接使用 Visual Studio C++ 工具和 Windows SDK；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。C 导出及生成的 C++／Rust 调用签名保持。Rust SDK 提供整程序编译映像与装载入口，数据创建接口消费只读的 ProgramInterface；已装载程序的 program() 返回不含 IR 的 ExecutionPlan，数据布局消费者使用该接口。
 
 编译期根包装所需的 SDK 库由原 SDK Cargo 工作区按正式 Release 配置生产；SDK 同时交付 Rust rlib 与本机 staticlib，使库成员实际包含本机代码，包装通过对应 rlib 及依赖目录消费这些代码，不在私有 Cargo 工作区重新声明 SDK 源码依赖。正式 SDK 的 thin LTO、单代码生成单元及 abort 配置保持，包装自身沿原配置编译。真实 SDK 输入变化仍由原 Cargo 构建处理，共享 SDK 产物保留；源码 SDK 已完成正式构建时，首次新应用只编译必要的包装内容。
 
@@ -127,7 +127,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
     from "blink_rust.dll";
 ```
 
-`.b` 主流程可以取得 C++ 返回的 Pair，再将同一位置借给 Rust 修改。`as "真实符号"` 可指定与 B 函数不同的导出名称；省略时使用函数名。完整 B、C++、Rust 源码与构建部署命令见 [sample/extern](../sample/extern/README.md)。blc 生成机器码和导入重定位，bllink 生成 PE 和导入表；外部 C++／Rust 工具链只构建各自的库。部署时携带实际 DLL 及其依赖，不需要 B 源码或编译器。
+`.b` 主流程可以取得 C++ 返回的 Pair，再将同一位置借给 Rust 修改。`as "真实符号"` 可指定与 B 函数不同的导出名称；省略时使用函数名。完整 B、C++、Rust 源码与构建部署命令见 [sample/extern](../sample/extern/README.md)。bc 生成机器码和导入重定位，blink 生成 PE 和导入表；外部 C++／Rust 工具链只构建各自的库。部署时携带实际 DLL 及其依赖，不需要 B 源码或编译器。
 
 普通值按 Windows x64 C ABI 传递；read／write／inout 分别是实际存储的只读／完整输出／读写指针。前端保持类型、初始化和重叠借用限制。这里的普通值使用 B 的偏移、对齐、填充和数组步长；bool 使用 32 位 `uint32_t／u32`，向量是 POD 布局，不等同于 C++ 向量内建类型。C++ 的导出使用 extern C，Rust 使用 extern C 与 repr(C) 等实际匹配布局；普通 Rust ABI 和 C++ 类／模板 ABI 不属于该接口。
 
@@ -248,7 +248,7 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 
 ## 普通值序列库与独立实例
 
-`blink.sequence`用普通B接口交接拥有dataset及Result，源码使用与实例范围见[库说明](../library/README.md)。通过`blc -c --module --instance NAME<T>`导出实际实例，`bllink --archive`生成标准COFF静态库；消费方用`--import`装入真实合同。没有导出的类型实例明确拒绝，不在对象消费或链接阶段读取库.b、重新生成模板或调用Rust编译器。
+`blink.sequence`用普通B接口交接拥有dataset及Result，源码使用与实例范围见[库说明](../library/README.md)。通过`bc -c --module --instance NAME<T>`导出实际实例，`blink --archive`生成标准COFF静态库；消费方用`--import`装入真实合同。没有导出的类型实例明确拒绝，不在对象消费或链接阶段读取库.b、重新生成模板或调用Rust编译器。
 
 模块合同传递无符号上界距离、不回绕和及拼接偏移关系；数值事实与资源版本分开。普通C不接收拥有容器，库不建立第二Frame或独立运行时容器。
 

@@ -14,7 +14,7 @@
 <line x1="372" y1="272" x2="380" y2="284" stroke="#147d86" stroke-width="3" />
 <line x1="388" y1="272" x2="380" y2="284" stroke="#147d86" stroke-width="3" />
 <rect x="100" y="290" width="560" height="130" rx="12" fill="#ffffff" stroke="#d9e4eb" />
-<text x="125" y="333" font-size="35" fill="#147d86">blc 生成的算法 DLL</text>
+<text x="125" y="333" font-size="35" fill="#147d86">bc 生成的算法 DLL</text>
 <text x="125" y="374" font-size="31" fill="#263746">create → run → destroy</text>
 <text x="125" y="407" font-size="27" fill="#657787">.abi.h / .rs / .lib</text>
 <line x1="190" y1="420" x2="190" y2="477" stroke="#147d86" stroke-width="3" />

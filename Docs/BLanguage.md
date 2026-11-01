@@ -102,7 +102,7 @@ B 与 C 一致，关键字和标识符区分大小写。`value`、`Value`、`VAL
 
 模块导入关系可以形成合法函数闭包，不等同于按值类型递归；数据布局和常量求值仍在各自所有者处检查，分别保留B032／B160。接口声明仍必须有真实匹配实现，不能用已遇到模块名代替实现检查。
 
-独立模块的`blc -c file.b --module -o file.obj`在没有实际目标文件依赖时编译源闭包；提供`--import`产物时，已提供库只使用产物中的接口和函数事实，不补读库.b。当前模块只交付自己拥有的代码与实际符号依赖，其他模块的私有实现不成为额外导入。函数合同导出与对象读取交接同一规范编码；末尾空借用槽按原缺省读取语义省略，中间位置和非空来源及其条件保留。链接仍精确比较类型、布局、访问和函数事实；内部空槽数量不构成接口变化，既有对象读取不会修改原文件。随后仍由独立bllink消费目标文件，不在链接时重读B源或生成代码。完整泛型分发、资源阶段及版本演化继续按实际缺口推进。
+独立模块的`bc -c file.b --module -o file.obj`在没有实际目标文件依赖时编译源闭包；提供`--import`产物时，已提供库只使用产物中的接口和函数事实，不补读库.b。当前模块只交付自己拥有的代码与实际符号依赖，其他模块的私有实现不成为额外导入。函数合同导出与对象读取交接同一规范编码；末尾空借用槽按原缺省读取语义省略，中间位置和非空来源及其条件保留。链接仍精确比较类型、布局、访问和函数事实；内部空槽数量不构成接口变化，既有对象读取不会修改原文件。随后仍由独立blink消费目标文件，不在链接时重读B源或生成代码。完整泛型分发、资源阶段及版本演化继续按实际缺口推进。
 
 ## 接口、实现与并行域
 
@@ -297,28 +297,28 @@ u32 main() on cpu {
 对应 `.h` 声明 `module applications.start; u32 main() on cpu;`。直接构建与运行：
 
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample/applications/start.b `
     -o target/applications/start.obj
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target/applications/start.obj `
     -o target/applications/start.exe
 .\target\applications\start.exe
 ```
 
-正常输出 `3` 和 LF 换行，进程退出码为 `0`。`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main]` 默认以源文件所在目录作为模块根、选择本模块公开的 `main`；显式入口也沿用具体类型／const 参数选择。返回值的原始 32 位作为退出码，`i32(-7)` 保留相同比特。入口参数、其他返回类型或其他执行目标报 B262，私有或不存在的入口沿用 B240。函数体继续按既有类型、返回、初始化和索引规则检查。
+正常输出 `3` 和 LF 换行，进程退出码为 `0`。`bc -c <module.b> -o <output.obj> [-I module-root] [--entry main]` 默认以源文件所在目录作为模块根、选择本模块公开的 `main`；显式入口也沿用具体类型／const 参数选择。返回值的原始 32 位作为退出码，`i32(-7)` 保留相同比特。入口参数、其他返回类型或其他执行目标报 B262，私有或不存在的入口沿用 B240。函数体继续按既有类型、返回、初始化和索引规则检查。
 
 ### 编译与链接的独立边界
 
-`blc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待编译的实现源码或值IR；独立模块携带其公开.h接口。
+`bc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>]` 只输出 Windows x64 COFF 目标文件；普通应用默认选择 main，`--program` 选择具体算法入口。目标文件保存已经生成的机器码、SPIR-V、符号、标准地址重定位及必要的静态运行库代码，不保存待编译的实现源码或值IR；独立模块携带其公开.h接口。
 
-`bllink <input.obj> [module.obj|library.lib ...] -o <output.exe|output.dll>` 链接已编译对象及模块库：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、blc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
+`blink <input.obj> [module.obj|library.lib ...] -o <output.exe|output.dll>` 链接已编译对象及模块库：普通应用生成 exe，算法单元生成 DLL 和宿主调用接口。链接可以在没有 B 源码、bc、Cargo 或 rustc 的目录执行。含执行框架的目标文件仍需 Visual Studio C++ 本机链接工具和 Windows SDK；仅含普通值的应用由 Blink 自有 PE 链接器输出。
 
-编译时若需要执行框架，源码 SDK 使用现有 Rust 工具链把框架和 ABI 编译成静态目标代码，写进该目标文件；链接时只解析这些已经编译的代码及本机库依赖。独立原生模块与模块静态库按后节的明确导入和链接方式组合。`blc check` 与阶段代码导出 `blc build` 保留，不承担最终应用链接；旧的 `build-exe/build-dll` 合并命令已移除。
+编译时若需要执行框架，源码 SDK 使用现有 Rust 工具链把框架和 ABI 编译成静态目标代码，写进该目标文件；链接时只解析这些已经编译的代码及本机库依赖。独立原生模块与模块静态库按后节的明确导入和链接方式组合。`bc check` 与阶段代码导出 `bc build` 保留，不承担最终应用链接；旧的 `build-exe/build-dll` 合并命令已移除。
 
 `bool println(value)`接受单个当前整数、f32、f64或bool标量。整数使用十进制，bool 使用 `true／false`；f64使用17位有效数字，f32按C数值区域的 `%.9g` 格式输出，最多 9 位有效十进制数字，小数点为 `.`，按数值使用普通或科学计数法并去除末尾无用零。负零保留符号，无穷和 NaN 使用系统 UCRT 的 `inf／nan` 形式（NaN 可以带符号或分类后缀）；文本不保存 NaN 的负载。末尾附加一个 LF，完整写出返回 true，格式化失败、写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU 计算函数 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、向量等不支持的类型报 B261。
 
-生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，f32 格式化与超越函数使用系统 UCRT。运行无需 B 源码、编译器、blrun 或手写宿主。动态数据与 计算函数 组织见下一节；通用字符串与 UTF-8 库、输入、文件、命令行参数、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
+生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，f32 格式化与超越函数使用系统 UCRT。运行无需 B 源码、编译器、brun 或手写宿主。动态数据与 计算函数 组织见下一节；通用字符串与 UTF-8 库、输入、文件、命令行参数、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
 
 ## 应用拥有的动态 dataset 与显式执行
 普通 CPU 应用及其普通 CPU 函数可声明本地独占资源：
@@ -366,7 +366,7 @@ CPU应用的整份inout dataset借用沿普通原生调用交接原Frame的句�
 
 编译器在构建时生成 main 机器码及全部被调用 计算函数 的原生映像。优化掉的调用不生产对应映像或运行库依赖；运行时仅在实际首次调用时装载范围函数／GPU 管线，实际上传或 GPU 执行时才创建设备。应用帧只绑定资源变量，记录、传输、执行和完成后的释放继续由原 Dataset、DomainBindings 与设备所有者负责。正常块结束、return、break、continue 和 seek 释放相应局部资源；最后的 GPU 消费者结束前不释放物理存储。
 
-带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，bllink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 blrun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态部分移动的拥有数组／动态容器与view图、其他资源种类返回、一般动态子域／数组初始化推导、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
+带这些资源的 Windows x64 应用输出 exe 与同目录的 `blink_app_*.dll`；源码 SDK 在编译阶段使用 Rust 工具链生成框架与 ABI 的静态目标代码，blink 在链接阶段生成执行 DLL，B 算法不转译为 Rust。部署复制两者及用户声明的外部 DLL，使用 GPU 时具备系统驱动；运行不携带编译器、SDK、B 源码或 brun。运行库错误输出真实原因并以非零码结束。完整 CPU→GPU→CPU 示例见 `sample/applications/datasets.b`；动态部分移动的拥有数组／动态容器与view图、其他资源种类返回、一般动态子域／数组初始化推导、其他执行域的整份独占资源借用、GPU view／纹理／AS 的应用构造及通用标准库继续开发。
 
 ### CPU 函数的整份 write dataset 输出
 
@@ -641,9 +641,9 @@ dataset<T> relay<T>(u32 depth, dataset<T> rows) on cpu {
 将普通CPU适用函数库编译为模块对象，再让应用只消费已编译接口：
 
 ```powershell
-.\target\release\blc.exe -c sample/beginner/math.b -I sample --module -o target/modules/math.obj
-.\target\release\blc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.obj -o target/modules/app.obj
-.\target\release\bllink.exe target/modules/math.obj target/modules/app.obj -o target/modules/app.exe
+.\target\release\bc.exe -c sample/beginner/math.b -I sample --module -o target/modules/math.obj
+.\target\release\bc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.obj -o target/modules/app.obj
+.\target\release\blink.exe target/modules/math.obj target/modules/app.obj -o target/modules/app.exe
 .\target\modules\app.exe
 ```
 
@@ -674,14 +674,14 @@ CPU普通位置的跨对象借用现按逻辑分量／声明布局直接交接�
 多个已编译独立模块可以保存为一个标准COFF库；同一语法用于导入和最终链接。例如，将上节的数学模块归档：
 
 ```powershell
-.\target\release\blc.exe -c sample/beginner/math.b -I sample --module -o target/modules/math.obj
-.\target\release\bllink.exe --archive target/modules/math.obj -o target/modules/math.lib
-.\target\release\blc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.lib -o target/modules/app.obj
-.\target\release\bllink.exe target/modules/app.obj target/modules/math.lib -o target/modules/app.exe
+.\target\release\bc.exe -c sample/beginner/math.b -I sample --module -o target/modules/math.obj
+.\target\release\blink.exe --archive target/modules/math.obj -o target/modules/math.lib
+.\target\release\bc.exe -c sample/beginner/modules.b -I sample --import target/modules/math.lib -o target/modules/app.obj
+.\target\release\blink.exe target/modules/app.obj target/modules/math.lib -o target/modules/app.exe
 .\target\modules\app.exe
 ```
 
-输出13。`bllink --archive <module.obj|library.lib>... -o <library.lib>`保留原成员对象字节，也可组合已有模块库；库不保存待编译实现。`--import`读取成员的原公开接口及已编译具体实例，库.h／.b无需分发；应用链接从唯一实际入口沿实际机器符号选择显式模块及库成员，在成员内继续其真实函数节、重定位目标与关联展开节，只把实际可达的原生代码和DLL导入交给原组合所有者。函数内字面量保持，递归／共享辅助函数沿同一节身份闭合。模块资源archive只在本模块分配／执行包装被调用时保留，仅导出实际调用包装及原工厂；资源仍使用原完整模块映像和本地索引，不裁剪或重排映像条目。栈预留继续消费所选对象声明的上界，不等于函数级最小栈需求报告。
+输出13。`blink --archive <module.obj|library.lib>... -o <library.lib>`保留原成员对象字节，也可组合已有模块库；库不保存待编译实现。`--import`读取成员的原公开接口及已编译具体实例，库.h／.b无需分发；应用链接从唯一实际入口沿实际机器符号选择显式模块及库成员，在成员内继续其真实函数节、重定位目标与关联展开节，只把实际可达的原生代码和DLL导入交给原组合所有者。函数内字面量保持，递归／共享辅助函数沿同一节身份闭合。模块资源archive只在本模块分配／执行包装被调用时保留，仅导出实际调用包装及原工厂；资源仍使用原完整模块映像和本地索引，不裁剪或重排映像条目。栈预留继续消费所选对象声明的上界，不等于函数级最小栈需求报告。
 
 未消费的显式模块、未使用库成员及已选模块内未使用函数的缺失依赖、DLL导入或资源包装不会拖入应用，真正消费后仍须有实际定义。显式对象先提供明确符号；显式符号重复、实际抽取成员与明确提供者冲突仍拒绝。库顺序决定首先引入的定义，合同不匹配直接拒绝，不搜索另一个“兼容实现”。原输入格式读取、唯一实际入口与对象种类边界保持，单对象算法DLL仍以其既有对象为根；SDK单对象构建与文件输入交给同一链接所有者。同名成员文件以标准成员偏移区分，函数／模块名称仍区分大小写。CPU／GPU整域、拥有资源及明确导出的泛型实例沿同一合同和Frame交接；归档不增加隐式传输或运行时注册。
 
@@ -697,7 +697,7 @@ target(gpu, step(items, 7));    // GPU位置，结果仍在GPU
 download(items);
 ```
 
-库先用原`blc -c ... --module`编译，应用用`--import library.obj`，最后由`bllink`消费对象。移走库.h／.b后仍可使用；不在链接时生成CPU／GPU代码。on cpu或on gpu的声明只导出对应位置，on compute导出两者；真正不支持的设备能力仍明确报错。开放泛型／const只交付指定`--instance`的具体实现，未使用的开放声明可以保留在接口，不能临时装入库源码补出缺少的实例。
+库先用原`bc -c ... --module`编译，应用用`--import library.obj`，最后由`blink`消费对象。移走库.h／.b后仍可使用；不在链接时生成CPU／GPU代码。on cpu或on gpu的声明只导出对应位置，on compute导出两者；真正不支持的设备能力仍明确报错。开放泛型／const只交付指定`--instance`的具体实现，未使用的开放声明可以保留在接口，不能临时装入库源码补出缺少的实例。
 
 普通CPU包装可调用这些入口并返回拥有资源，仍使用同一Frame。模块接口保留推导参与要求、布局与实际初始化效果，完整输出和筛选输出分别处理；write参数未被完整初始化时不得正常返回。私有实现变化且合同保持时，应用对象可直接重新链接；初始化／布局等合同变化使原调用对象不能绑定。不匹配格式的对象需在编译阶段重建。
 
@@ -1101,7 +1101,7 @@ requires／ensures prefix 可以与泛型并用。调用先从实际绑定推导
 
 入口模块公开的泛型 计算函数 按具体类型导出到原 Compilation.programs／templates，例如 `generic_work::run<uint3>`；导入模块的实例只供检查和调用，不变成当前入口模块的公开接口。现有 compute 命令接受完整名字或带完整类型后缀的本地名 `run<uint3>`；记录实参保留限定名，例如 `step<simulation.bodies::BLBody<float3,3>>`。未给类型的 `run` 不是可执行实例；有 requires 的模板仍只能经持有域关系的原生绑定或满足前提的 计算函数 组合执行。
 
-blc build 的泛型导出文件使用 `模块_入口.instance-序号`，避免 Windows 文件名中的尖括号，并通过同名 .layout 记录完整的 计算函数 名字与布局；序号是本次导出列表的位置，不是稳定 ABI。普通具体入口的文件名不变。具体程序的原生 ABI 只包含实际资源与普通值参数，不含类型标签或泛型调度器。
+bc build 的泛型导出文件使用 `模块_入口.instance-序号`，避免 Windows 文件名中的尖括号，并通过同名 .layout 记录完整的 计算函数 名字与布局；序号是本次导出列表的位置，不是稳定 ABI。普通具体入口的文件名不变。具体程序的原生 ABI 只包含实际资源与普通值参数，不含类型标签或泛型调度器。
 
 simulation.bodies 的 integrate、energy、step 按 BLSimulatedBody 声明，覆盖四种浮点维度与三种 Power 的 BLBody<T,Power>。step 组合前两个泛型 计算函数；statistics 明确消费 BLBody<float3,3>，调用自动推导，两个 map 仍可融合成一个实际阶段。Power 只属于编译期模型身份，不增加物理字段；源码阶段数变化不等同于设备性能提高。
 
@@ -1152,7 +1152,7 @@ const 参数作为固定 u32 值进入原类型、数值与索引分析，不保
 
 实例从原声明使用同一泛型 AST 替换生成，完整检查与实际调用共用实例化入口，不保存全部具体定义的全局副本；不加入运行期类型／值分派、额外 uniform、设备参数表或初始化阶段。实际调用仍静态内联，计算函数 保持原阶段、融合、phase、访问、前缀有效域和完成所有权。静态块宽度不等于物理 subgroup 宽度；cooperative 函数仍继承真实 tile 作用域，不因增加 const 参数就能另建隐藏固定块。循环边界已知不表示循环一定展开，编译期值也不能替代设备真实有效 Count 或伪造 prefix 关系。
 
-入口模块的公开 计算函数 为每个类型／值组合导出具体实例，例如 `blocks::run<uint3,65,7>`、`sized::lookup<17>`；compute 命令按这一完整后缀选择。导入／私有实例仍只服务已有调用与检查，blc 使用原 instance 序号文件名。类型与值组合的检查量随笛卡尔积增长，不承诺无限参数集合或零编译成本。
+入口模块的公开 计算函数 为每个类型／值组合导出具体实例，例如 `blocks::run<uint3,65,7>`、`sized::lookup<17>`；compute 命令按这一完整后缀选择。导入／私有实例仍只服务已有调用与检查，bc 使用原 instance 序号文件名。类型与值组合的检查量随笛卡尔积增长，不承诺无限参数集合或零编译成本。
 
 声明、值域、实参数量／成员和非法遮蔽报 B235，类型实参与推导继续使用 B231／B232／B124；签名不一致 B028、形状 B167、权限／别名、初始化、整数除数和协作的诊断保持。含 {0,17} 的块宽度程序会因 0 实例不合法而拒绝，不能只挑 17 隐藏它；递归仍拒绝。函数写效果在显式调用中同样进入原可变性、确定初始化与当前内容证明。
 
@@ -2510,10 +2510,10 @@ cell.position = value;
 
 类型检查函数库时，编译器保存真实的符号块范围及借用来源，不填入假宽度或伪造数据集。在 计算函数 调用处，参数视图绑定到实际来源，发布宽度继承为具体值；封闭执行 IR 只包含具体布局和既有发布／集合／普通指令。cooperative 函数静态内联到同一个原生范围／GPU 内核，不增加函数任务、宿主调度或 GPU 提交。函数自己的根块、循环和游标上下文与调用方分开，值与借用通过参数传递；共用 IR 的局部值转发、x64 物理寄存器分配及可表达的普通直线及统一控制流逐元素阶段的 SIMD 已接入，tile 协作阶段仍按标量 lane 执行。
 
-跨模块函数必须在该模块 `.h` 导出，并由使用方直接 import；限定名不能绕过接口。层级模块沿用点分路径，例如 `cooperate lib.blocks::centered(...)`。未导出的同模块辅助函数可以在本模块内使用。`blc check`／`blanguage::check` 能检查不含 计算函数 的类型／函数库，同时检查 `.h/.b`、完整导入闭包和未调用函数。原生 build／`blanguage::compile` 仍需要公开 计算函数；库检查成功不表示已经产出可执行内核。
+跨模块函数必须在该模块 `.h` 导出，并由使用方直接 import；限定名不能绕过接口。层级模块沿用点分路径，例如 `cooperate lib.blocks::centered(...)`。未导出的同模块辅助函数可以在本模块内使用。`bc check`／`blanguage::check` 能检查不含 计算函数 的类型／函数库，同时检查 `.h/.b`、完整导入闭包和未调用函数。原生 build／`blanguage::compile` 仍需要公开 计算函数；库检查成功不表示已经产出可执行内核。
 
 ```powershell
-.\target\release\blc.exe check ..\BLEngine\Programs\math\field.b ..\BLEngine\Programs
+.\target\release\bc.exe check ..\BLEngine\Programs\math\field.b ..\BLEngine\Programs
 ```
 
 借用类型位置错误报 B207，将 tile 当作普通值报 B145；非法协作位置／效果报 B208；接口效果不一致报 B028；借用元素类型错误报 B124，未导出／未直接 import 的调用报 B158，递归报 B160，设备不相容报 B161。当前未实现控制流内动态协作、递归、tile 返回、一般高阶函数、完整泛型及独立二进制函数链接。
@@ -2564,7 +2564,7 @@ void bounds(read dataset<Vertex> vertices,
 
 GPU 每组 64 线程、最多 1024 字节归约共享存储，各分量共用同步层。递归中间记录紧密保存数值分量，不复制整份目标记录；只有最终目标绑定使用原记录布局及字段偏移。有效前缀的实际数量由设备间接参数交付，目标布局由当前绑定的结果域决定，不能用有效数量提前缩到单组来推断已经绑定最终输出。所有部分结果与原有间接参数由同一提交持有并留在显存，不中途读回或由 CPU 计算 GPU 归约结果。
 
-`blc build` 导出主／递归 tail SPIR-V 及原生 x64。集合阶段沿用既有依赖、prefix requires／ensures 与跨提交所有权；输出形状和权限、数据绑定及生命周期仍由原边界负责。自定义普通值归约见下节，分段归约见后文；跨块邻域和设备自主任务尚未实现。
+`bc build` 导出主／递归 tail SPIR-V 及原生 x64。集合阶段沿用既有依赖、prefix requires／ensures 与跨提交所有权；输出形状和权限、数据绑定及生命周期仍由原边界负责。自定义普通值归约见下节，分段归约见后文；跨块邻域和设备自主任务尚未实现。
 
 ### 自定义普通值归约与投影归约
 
@@ -2603,7 +2603,7 @@ combine 必须在算法使用的值域中满足结合律，identity 必须是双
 
 CPU 的单位元、投影、逐范围累积和范围摘要合并都由自研 x64 编码执行，跨调用值和跨迭代累积值参加同一寄存器／溢出槽活跃性分析；最终只按类型偏移写出结果。GPU 按相邻子树从左到右合并 64 路输入，每次静态展开都拥有独立 SSA 结果，空右子树直接保留左结果；纯合并器中的数据相关循环不引入屏障。共享载荷为64乘结果Ty.size字节，内部摘要按Ty实际大小／字段偏移保存物理u32字；一个64位逻辑分量占两字。原生值函数仍按逻辑分量绑定寄存器，不把内部填充当作字段读写。真实设备能力在既有编译资源边界绑定，根源／目标继续使用各自记录ABI并保持填充。
 
-这些运算复用原归约的阶段、递归参数、双摘要缓冲、原生 Fence 与存储所有权，不创建另一套调度器。`blc build` 导出主／递归 SPIR-V、CPU 主／`.tail.x64` 及各自 reloc；递归 CPU 函数同样支持必要的数学链接。自定义扫描与分段归约见后文；动态任务、完整泛型及自动证明结合律仍未实现。
+这些运算复用原归约的阶段、递归参数、双摘要缓冲、原生 Fence 与存储所有权，不创建另一套调度器。`bc build` 导出主／递归 SPIR-V、CPU 主／`.tail.x64` 及各自 reloc；递归 CPU 函数同样支持必要的数学链接。自定义扫描与分段归约见后文；动态任务、完整泛型及自动证明结合律仍未实现。
 
 ### 集合值函数的执行参数绑定
 
@@ -2716,7 +2716,7 @@ void chain(read dataset<Local> local,
 
 CPU 首遍按范围产生局部独占结果及紧密 K-word 摘要；自研 x64 前缀函数原地扫描少量范围摘要，第二遍 x64 合并范围前缀与局部结果。三部分复用同一值 IR、寄存器分配及 Windows ABI，数学调用跨迭代值仍由活跃集持有；Rust 不解释用户合并器。GPU 复用既有 64 路扫描调度，以有序共享树上扫、根置单位元及下扫产生局部独占值，递归摘要与逐级传播保持 `combine(前置摘要,局部值)`。共享存储为 `64*K*4` 字节；没有真实输入的右子树不参与上扫。所有摘要与有效数量留在设备，临时资源沿原提交寿命释放。
 
-`blc build` 导出主、`.tail.spv`、`.add.spv`、必要的 `.root-add.spv`，以及 CPU 主、`.prefix.x64`、`.add.x64` 和各自数学 reloc。运行时直接消费编译产物对象，不依赖导出文件形成第二份状态。自定义分段扫描／归约见后文；完整泛型仍需实现。
+`bc build` 导出主、`.tail.spv`、`.add.spv`、必要的 `.root-add.spv`，以及 CPU 主、`.prefix.x64`、`.add.x64` 和各自数学 reloc。运行时直接消费编译产物对象，不依赖导出文件形成第二份状态。自定义分段扫描／归约见后文；完整泛型仍需实现。
 
 ### 自定义普通值分段独占扫描
 
@@ -2740,7 +2740,7 @@ void chains(read dataset<SegmentItem> local,
 
 CPU 主范围函数遇到段头后重置累积；原生摘要前缀函数直接合并／重置摘要，传播函数到范围内首个段头即结束。需要跨迭代保留的单位元和累积值进入既有活跃集，数学调用遵守相同 ABI。GPU 在原共享树中处理 K+1 分量，上扫与下扫保持逻辑顺序，根阶段输出当前段头的单位元。根摘要最后一个 word 同时编码首个段头的 lane+1，零表示没有段头；递归将非零解释为含段头，最终传播只修改该工作组首个段头之前的值。共享存储为 `64*(K+1)*4` 字节，所有摘要、有效计数和递归间接参数留在设备，资源仍由原提交持有到最后消费。
 
-导出文件与普通自定义扫描相同，`blc build` 的 CPU prefix／add 也包含需要的数学链接。它没有增加另一个运行时、同步协议或调度器。用户定义分段归约见下节；动态协作／任务和完整语言仍未完成。
+导出文件与普通自定义扫描相同，`bc build` 的 CPU prefix／add 也包含需要的数学链接。它没有增加另一个运行时、同步协议或调度器。用户定义分段归约见下节；动态协作／任务和完整语言仍未完成。
 
 ### 自定义普通值分段归约
 
@@ -2769,7 +2769,7 @@ void segment_boxes(read dataset<Point> points,
 
 GPU 第一遍只写工作组摘要，递归扫描及反向传播只处理这些摘要，最后一遍直接写各段尾的唯一结果位置与实际段数。使用同一有序共享树，显式共享为 `64*(K+2)*4` 字节；源值、有效数量、段数及所有摘要留在设备，不中途读回。两端都遍历源两次，投影在这两次原始源遍历中执行，递归摘要不再投影；这是用源重算避免 N 条投影／段号中间数组的实现取舍，不代表所有负载的最优吞吐。投影仍必须是无资源副作用的纯值函数。
 
-`blc build` 导出主、tail、add、finish SPIR-V、必要的有效域 dispatch，以及 CPU 主、prefix、finish x64 和各自数学 reloc。运行框架共用既有分段归约的递归命令、扫描缓冲及提交寿命，不创建另一套调度器。完整泛型、动态协作／任务仍未实现。
+`bc build` 导出主、tail、add、finish SPIR-V、必要的有效域 dispatch，以及 CPU 主、prefix、finish x64 和各自数学 reloc。运行框架共用既有分段归约的递归命令、扫描缓冲及提交寿命，不创建另一套调度器。完整泛型、动态协作／任务仍未实现。
 
 ### 整数按位全域归约
 
@@ -2827,7 +2827,7 @@ void offsets(read dataset<Work> input,
 
 GPU 每组 64 线程执行 work-efficient Blelloch 扫描，各分量共用同步层，普通扫描最多使用 1024 字节共享树。有效尾组的全部线程参加必要的屏障，域外位置贡献对应单位元；递归摘要和前缀紧密保存真实分量，不复制整份输出记录，也不读回 CPU。最终传播使用原目标记录步长与字段偏移；它们与紧密摘要布局不同时，复用现有根输出传播 pass，相同时使用同一传播内核，不额外建立重复管线。三分量向量的记录填充与其他字段同样保留。提交继续持有全部临时页到真实完成。
 
-稳定 compact 与键排序的内部计数仍使用同一扫描实现中的 u32 求和定义；各自的布尔规范化、稳定散写和计数所有权保持。有效前缀扫描交付原 Count 对应的输出域，后续可直接读取该前缀；容量尾部不参与扫描，也不被修改。GPU 额外绑定的扫描页表属于既有执行框架，不增加源参数或提交协议。`blc build` 输出主 `.spv`、`.tail.spv`、`.add.spv` 和 CPU `.x64`／`.add.x64`，最终布局不同或分段时另输出 `.root-add.spv`。浮点、用户普通值及分段扫描见相应章节；设备生成新任务仍未实现。
+稳定 compact 与键排序的内部计数仍使用同一扫描实现中的 u32 求和定义；各自的布尔规范化、稳定散写和计数所有权保持。有效前缀扫描交付原 Count 对应的输出域，后续可直接读取该前缀；容量尾部不参与扫描，也不被修改。GPU 额外绑定的扫描页表属于既有执行框架，不增加源参数或提交协议。`bc build` 输出主 `.spv`、`.tail.spv`、`.add.spv` 和 CPU `.x64`／`.add.x64`，最终布局不同或分段时另输出 `.root-add.spv`。浮点、用户普通值及分段扫描见相应章节；设备生成新任务仍未实现。
 
 ### 浮点全域独占扫描
 
@@ -2893,7 +2893,7 @@ GPU 每组 64 个 invocation，在 `64*(K+1)*4` 字节 workgroup 存储中完成
 
 浮点求和沿用上述 f32 运算，极值沿用严格比较与右值选择，两者使用原设备保留模式；同一段的 CPU 顺序、范围组合和 GPU 树形结合顺序不同，不承诺逐位一致、固定误差界或 NaN 载荷相同。新段分别从 +0.0／+Infinity／-Infinity 开始，不把上一段的 NaN／无穷前缀带进新段。浮点按位扫描仍不开放；整数按位操作不等于原子或全域屏障，数值前缀不签发任意散写权限。
 
-`blc build` 对内置分段扫描导出主 `.spv`、递归 `.tail.spv`、摘要修正 `.add.spv`、根输出修正 `.root-add.spv` 和 CPU `.x64`／`.add.x64`。执行框架直接持有编译结果与全部临时资源到实际完成。用户自定义扫描与分段归约见前文；设备自主分配输出仍未实现，内置分段归约见下节。
+`bc build` 对内置分段扫描导出主 `.spv`、递归 `.tail.spv`、摘要修正 `.add.spv`、根输出修正 `.root-add.spv` 和 CPU `.x64`／`.add.x64`。执行框架直接持有编译结果与全部临时资源到实际完成。用户自定义扫描与分段归约见前文；设备自主分配输出仍未实现，内置分段归约见下节。
 
 ### 原生分段归约
 
@@ -2924,7 +2924,7 @@ CPU 自研 x64 首次遍历产生各范围摘要，执行框架只组合这些�
 
 GPU 首次遍历只写组摘要，递归扫描与传播只处理摘要，最后一次遍历读取源与组前缀并直接写段尾；没有逐元素全局中间数组或原子计数器。64 路共享树显式占 `64*(K+2)*4` 字节，即 768–1536 字节；临时全局存储从 ceil(N/64) 个摘要开始递归。无效右子树不参与归约，填充身份值不改写实际尾值。首个有效 lane 拥有组摘要写入；最后一条有效输入写总段数，空域由首组写 0，矩形间接启动补齐的无效组不取得输出权限。
 
-完整域／有效域共用 SegmentedReduce IR、阶段依赖和既有范围／Vulkan 提交所有权。GPU 的有效计数、摘要与所有递归启动参数留在设备；命令及临时存储仍按容量预留，不代表设备已经能动态构造任意任务图。`blc build` 导出主、tail、add、finish SPIR-V，以及 CPU 主函数和 `.finish.x64`。自定义普通值／投影分段归约见前文；稀疏集合、动态协作及设备自主任务仍待完成。
+完整域／有效域共用 SegmentedReduce IR、阶段依赖和既有范围／Vulkan 提交所有权。GPU 的有效计数、摘要与所有递归启动参数留在设备；命令及临时存储仍按容量预留，不代表设备已经能动态构造任意任务图。`bc build` 导出主、tail、add、finish SPIR-V，以及 CPU 主函数和 `.finish.x64`。自定义普通值／投影分段归约见前文；稀疏集合、动态协作及设备自主任务仍待完成。
 
 ### 稳定压缩筛选
 
@@ -2945,7 +2945,7 @@ void select(read dataset<Item> input,
 
 CPU 用自研 x64 范围计数与稳定复制：先并行计数，计算少量范围前缀，再并行复制每个范围的所选记录。GPU 将 bool 归一为 0/1，重用独占扫描层级；每条被选记录取得唯一的前缀序号，最后一条输入写出总数，空输入单独写出 0。扫描、散写和计数全部由同一提交持有资源，全程不读回 CPU。源程序没有获得任意散写权限。
 
-`compact` 是全域集合阶段，保留前后依赖；可以与 map、scan、sum 同属一个程序。`blc build` 对该阶段额外输出 `.tail.spv`、`.add.spv`、`.scatter.spv` 和 CPU `.scatter.x64`。普通 parallel 仍表示绑定容量；使用下面的 prefix 域直接消费 GPU 有效计数。
+`compact` 是全域集合阶段，保留前后依赖；可以与 map、scan、sum 同属一个程序。`bc build` 对该阶段额外输出 `.tail.spv`、`.add.spv`、`.scatter.spv` 和 CPU `.scatter.x64`。普通 parallel 仍表示绑定容量；使用下面的 prefix 域直接消费 GPU 有效计数。
 
 ### 原生有效前缀并行域
 
@@ -2968,7 +2968,7 @@ CPU 直接读取自己存储中的已生产计数，按该长度执行原生范�
 
 X 分区按 64 线程工作组对齐，并受设备上限与 `with_partition_elements` 控制；Y/Z 根据实际组数展开。主程序将多维全局坐标以 u64 线性化，先与有效数量比较，再提供语言层 u32 index，防止矩形网格补齐后发生 32 位回绕。空前缀的 map 产生零维启动；集合运算保留写出单位元或计数所需的工作组。间接参数缓冲区具有真实 INDIRECT_BUFFER 用途，参数写入到间接读取／Shader 读取之间具有明确内存依赖；同一提交的后续时间步覆盖参数前也等待此前读者。ABI 与用法依据 [Vulkan 间接启动规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdDispatchIndirect.html)和[参数结构规范](https://docs.vulkan.org/refpages/latest/refpages/source/VkDispatchIndirectCommand.html)。
 
-`blc build` 为有效域额外输出 `.dispatch.spv`。模块接口可以声明和传递前缀域能力，跨提交由相同数据的所有权承载，见下节；通用动态任务仍待完成；前缀集合运算见下文。
+`bc build` 为有效域额外输出 `.dispatch.spv`。模块接口可以声明和传递前缀域能力，跨提交由相同数据的所有权承载，见下节；通用动态任务仍待完成；前缀集合运算见下文。
 
 ### 保留原索引的稀疏并行域
 `where(dataset, dataset.bool_field)` 在原元素域中只执行 bool 字段为真的元素；第二个 dataset 可以是另一个只读数据集。它是 parallel 的域语法。例如：
@@ -2992,7 +2992,7 @@ void accumulate<const C:u32>(read dataset<Path,C> paths,
 
 CPU 原生范围函数按原索引读取 bool，只对选中元素执行正文。GPU 用既有分层扫描稳定生成私有 u32 原索引序列，再按设备选中数量间接启动正文；原前缀的六层启动参数与选中正文的第七项分开，避免覆盖仍在读取的参数。计数、索引、摘要与参数由当前 Commands／Execution／Completion 持有，不增加公开 Count、逆映射、资源服务或 CPU 计数读回。
 
-只有域、prefix 和 selection 相同，且通过原依赖分析的 map 才可能融合。谓词读进入阶段读集合，自身谓词的读写冲突保留必要边界。CPU 直线及统一控制流稀疏正文使用下述四元素 SSE2 计划，按原顺序收集四个选中索引，原索引的读取与独占写入逐 lane 寻址；未选中元素不执行正文，余下至多三个选中元素由同一原生范围函数完成。逐元素分歧及其他尚无批次表示的正文仍按原标量指令执行。GPU subgroup 按实际执行参与者协作，不授予额外写权限。稀疏 tile 的邻接与发布尚未定义，含 tile 的 where 阶段报 B250。`blc build` 额外导出 selection、tail、add、scatter 和 dispatch SPIR-V，DLL 携带同一选择域的最终代码与执行布局。
+只有域、prefix 和 selection 相同，且通过原依赖分析的 map 才可能融合。谓词读进入阶段读集合，自身谓词的读写冲突保留必要边界。CPU 直线及统一控制流稀疏正文使用下述四元素 SSE2 计划，按原顺序收集四个选中索引，原索引的读取与独占写入逐 lane 寻址；未选中元素不执行正文，余下至多三个选中元素由同一原生范围函数完成。逐元素分歧及其他尚无批次表示的正文仍按原标量指令执行。GPU subgroup 按实际执行参与者协作，不授予额外写权限。稀疏 tile 的邻接与发布尚未定义，含 tile 的 where 阶段报 B250。`bc build` 额外导出 selection、tail、add、scatter 和 dispatch SPIR-V，DLL 携带同一选择域的最终代码与执行布局。
 
 ### 模块接口中的有效域
 
@@ -3030,7 +3030,7 @@ void run(read dataset<Item> input, inout dataset<Item> output,
 
 每个 计算函数 只在自己的 requires 下检查。调用时，编译器先满足被调用者的条件，再按声明的 write/inout 参数使调用方旧计数关系失效，最后接收被调用者已证明的 ensures；不从私有实现推断额外承诺。read 计数不能被模块改写，因此调用方已有关系可继续保留；函数直接改写计数后，必须重新生产对应关系才能交付。访问权限仍独立生效，write 参数不会因存在前缀关系而变为 read。
 
-编译结果将无前置条件的公开入口保存为 `ExecutableProgram`，条件模板保存为 `Compilation.templates` 中的 `TemplateProgram`。两个类型都只能由编译器构造，只读访问已检查 IR。`CpuProgram::new`／`Device::compile` 只接收前者；`CpuTemplate::new`／`Device::compile_template` 接收后者，条件执行接口必须取得实际存储持有的域关系。`blc check/build` 可以检查与导出条件模板的原生代码，通用 `compute` 文件入口不能直接绑定裸 Count 执行条件模板。跨模块组合仍可在一个闭合入口中执行，不为普通模块调用读回计数或新增一次提交。
+编译结果将无前置条件的公开入口保存为 `ExecutableProgram`，条件模板保存为 `Compilation.templates` 中的 `TemplateProgram`。两个类型都只能由编译器构造，只读访问已检查 IR。`CpuProgram::new`／`Device::compile` 只接收前者；`CpuTemplate::new`／`Device::compile_template` 接收后者，条件执行接口必须取得实际存储持有的域关系。`bc check/build` 可以检查与导出条件模板的原生代码，通用 `compute` 文件入口不能直接绑定裸 Count 执行条件模板。跨模块组合仍可在一个闭合入口中执行，不为普通模块调用读回计数或新增一次提交。
 
 `CpuProgram::program()` 与 `GpuProgram::program()` 只读借用实际执行程序的布局；原生消费者据此创建 dataset、读取字段偏移和步长，不为长期执行另保留一份 IR／字段布局镜像。
 
@@ -3214,7 +3214,7 @@ Vulkan 不保证 LocalInvocationIndex 与 subgroup lane 的直接对应关系，
 
 有效域排序一次生成两组间接参数：记录域及其 `16 * max(ceil(N/64),1)` 直方图域，各自具有当前 u32 范围所需的六层参数。八轮的初始化、直方图、扫描、scatter 和最终 gather 均直接消费设备计数；空结果仍生成正确的零直方图。中间存储和命令层级继续按容量预留，没有 CPU 中途读回计数，也未实现 GPU 动态创建任意命令图。
 
-`blc build` 导出初始化 `.spv/.x64`、各 shift 的 `.histogram.spv`／`.scatter.spv`、扫描 `.scan/.tail/.add.spv`、最终 `.gather.spv`，以及 CPU histogram／scatter／gather `.x64`；有效域另有 `.dispatch.spv`。自研 SPIR-V 生成 API 返回 Result，不适用于排序的后端 pass 明确返回错误。运行时仍直接消费编译结果，不以这些调试导出文件建立另一套执行状态。
+`bc build` 导出初始化 `.spv/.x64`、各 shift 的 `.histogram.spv`／`.scatter.spv`、扫描 `.scan/.tail/.add.spv`、最终 `.gather.spv`，以及 CPU histogram／scatter／gather `.x64`；有效域另有 `.dispatch.spv`。自研 SPIR-V 生成 API 返回 Result，不适用于排序的后端 pass 明确返回错误。运行时仍直接消费编译结果，不以这些调试导出文件建立另一套执行状态。
 
 排序及提交的具体规模、数值、性能与设备观测只在双台账记录；现有算子支持不表示达到成熟排序库吞吐或改善产品帧率。
 
@@ -3288,8 +3288,8 @@ Rust 消费者从编译结果获取布局，不能手写另一份结构体步长
 SPIR-V 1.4 直接按标准编码。GPU 的逻辑数据集通过只读的 u64 设备地址页表访问最多 256 MiB 的物理页；记录不跨页，源语言的元素索引仍是 u32。源语言u64普通整数与这里的物理地址分别表达；普通u64不自动授予原生指针或资源权限。分页、上传、读回和递归归约临时存储由同一执行框架拥有。当前普通 GPU map 每组默认 64 个线程，tile 阶段使用其源码宽度；这不是假定硬件 wave 必须为 64，也与 Burley SSS 的采样数无关。驱动仍负责把 SPIR-V 转成具体 GPU 指令；自研语言不等于绕开硬件驱动。
 
 ```powershell
-.\target\release\blc.exe check ..\BLEngine\Programs\render\frame.b ..\BLEngine\Programs 'frame<2,3840,2160,2,8294400,33177600>'
-.\target\release\blc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
+.\target\release\bc.exe check ..\BLEngine\Programs\render\frame.b ..\BLEngine\Programs 'frame<2,3840,2160,2,8294400,33177600>'
+.\target\release\bc.exe build ..\BLEngine\Programs\simulation\statistics.b Saved\Compiled ..\BLEngine\Programs
 ```
 
 build 输出 `.spv`、归约 `.tail.spv`、CPU `.x64`、数学入口 `.reloc` 和布局 `.layout`。引擎运行时直接使用同一编译器结果和后端，不靠这些调试导出文件再建立第二套权威表示。
@@ -3448,16 +3448,16 @@ void run<T:numeric,const Width:u32,const Bias:u32>(inout dataset<Cell<T>> rows) 
 }
 ```
 
-blc 可选择公开 计算函数 的具体入口：
+bc 可选择公开 计算函数 的具体入口：
 
 ```powershell
-.\target\release\blc.exe check <module.b> <module-root> 'run<uint3,37,11>'
-.\target\release\blc.exe build <module.b> Saved\Compiled <module-root> 'run<uint3,37,11>'
+.\target\release\bc.exe check <module.b> <module-root> 'run<uint3,37,11>'
+.\target\release\bc.exe build <module.b> Saved\Compiled <module-root> 'run<uint3,37,11>'
 ```
 
 Rust API 为 `blanguage::compile_entry(path,module_root,"run<uint3,37,11>")`；入口必须公开且属于入口模块，可用限定名和模块 const。返回的 programs／templates 只包含所选具体入口，名字使用规范化类型与值；原类型、访问、索引、初始化、阶段和 prefix 检查完成后才产生 ExecutableProgram 或 TemplateProgram。条件模板仍需真实 DomainBindings，普通 compute 文件入口不能绕过。BLEngine compute 命令使用相同入口选择，无需先在源码中写一个具体包装 计算函数。
 
-不带具体入口的 check／build 保持有限实例检查；开放声明不枚举 u32 全域，也不隐式选择一个值。其通用声明结构与固有资源权限先检查，依赖具体值的布局和函数体在实际使用时完整编译检查。Compilation.open_generics 与 blc 输出列出开放声明，并明确 body checked on instantiation；只检查未使用开放库不证明所有可能实例的正文都合法。只有开放 计算函数 且没有可导出具体入口时，build 报 B240，要求选择入口。完整符号泛型体分析仍未实现。
+不带具体入口的 check／build 保持有限实例检查；开放声明不枚举 u32 全域，也不隐式选择一个值。其通用声明结构与固有资源权限先检查，依赖具体值的布局和函数体在实际使用时完整编译检查。Compilation.open_generics 与 bc 输出列出开放声明，并明确 body checked on instantiation；只检查未使用开放库不证明所有可能实例的正文都合法。只有开放 计算函数 且没有可导出具体入口时，build 报 B240，要求选择入口。完整符号泛型体分析仍未实现。
 
 开放参数使用原 AST 替换、名义布局与 IR 常量，使用后即为具体算法；不增加泛型运行时、宿主逐元素回调、动态编译服务、额外 uniform、运行期长度表或另一份资源状态。material.textured::indexed_ggx 已删除原固定长度清单，从实际纹理数组推导 N，索引仍必须满足 requires index；实际算法、资源完成和像素品质目标保持。
 
@@ -3472,11 +3472,11 @@ Compiler由SDK调用方持有，其clone共享同一CPU工作许可。创建普�
 正式CLI在命令前声明资源，例如：
 
 ```text
-blc --jobs 32 -c app.b -o app.obj -I Programs --entry main
-blc --cpus 0:2,0:4 check app.b Programs
+bc --jobs 32 -c app.b -o app.obj -I Programs --entry main
+bc --cpus 0:2,0:4 check app.b Programs
 ```
 
---jobs与--cpus表达两种互斥的资源声明；它们经同一Compiler进入语义检查、代码生成和现有导出。bllink继续独立消费完成对象，不以此重读B源码或编译代码。单次工作并行不等于完整多模块图、精确增量或域编译，剩余能力继续按Issues记录。
+--jobs与--cpus表达两种互斥的资源声明；它们经同一Compiler进入语义检查、代码生成和现有导出。blink继续独立消费完成对象，不以此重读B源码或编译代码。单次工作并行不等于完整多模块图、精确增量或域编译，剩余能力继续按Issues记录。
 
 ## 单次本机编译的独立工作并行
 现有compile、check、compile_entry及应用入口使用本机独立工作并行，不需要新源语法。原装入器完成源码、接口和调用参与推导后，Declarations只读共享；每个worker的World只持有同一份定义与自己的const递归求值状态。有限声明按原顺序展开为闭合实例，各实例可独立检查与优化，同一泛型声明不再把全部实例绑在一个worker上。具体入口仍完整检查；不以并行省掉非法声明或访问／阶段边界。声明展开错误进入同一有序结果，早先函数体的真实错误仍优先报告。
@@ -3485,7 +3485,7 @@ blc --cpus 0:2,0:4 check app.b Programs
 
 本次阶段只拥有真实工作队列和临时上下文；工作／产物按原顺序汇合。错误保留原源顺序的最早诊断，已启动消费者结束后释放共享输入；线程资源错误直接报告，不重试或转为另一路编译。worker上限来自同一Compiler的可用执行许可与工作数量，普通会话默认预算由Rust可用并行度估计，并行度来自实际会话资源，不以某台机器的处理器数规定语言上限。
 
-native::compile_program与spirv::compile_program的Rust错误结果现为String，可完整表达本机线程资源错误；原静态发射错误文字保持。Frame、Device与C绑定职责保持，bllink仍只链接已编译对象，运行不增加编译器或调度进程。
+native::compile_program与spirv::compile_program的Rust错误结果现为String，可完整表达本机线程资源错误；原静态发射错误文字保持。Frame、Device与C绑定职责保持，blink仍只链接已编译对象，运行不增加编译器或调度进程。
 
 跨SDK调用共享预算、明确CPU选择及显式多单元构建图按相应章节提供，BLEngine沿真实准备依赖采用同一Compiler。完整精确增量、域编译和跨机运行仍未实现。单个强依赖入口的语义／优化成本不因本项自动消失，不把小入口的并行结果称为完整4K冷启动达标。
 
@@ -3515,10 +3515,10 @@ let compiler = Compiler::with_workers(NonZeroUsize::new(32).unwrap());
 let outputs = compiler.build_graph(&units)?;
 ```
 
-产物之后由独立bllink消费：
+产物之后由独立blink消费：
 
 ```text
-bllink target/graph/app.obj target/graph/math.obj -o target/graph/app.exe
+blink target/graph/app.obj target/graph/math.obj -o target/graph/app.exe
 ```
 
 返回Vec按请求顺序保存build::Output::Object(Arc<ObjectCompilation>)或Output::Entry(Compilation)。原artifact、reused及程序／模板继续交给真实消费者；链接不读取B源码或调用编译器。每个对象单元使用调用方分配的独立输出，多个不同入口／目标可以共享BLBI输出目录；本接口不自动拆分所有源码导入，也不合并重复输出请求。当前CPU／GPU入口映像及算法库单元不接受COFF导入，普通模块／应用单元可以；完整模块DLL及更广泛的映像组合仍待实现。
@@ -3531,7 +3531,7 @@ bllink target/graph/app.obj target/graph/math.obj -o target/graph/app.exe
 
 ## 原生目标文件的增量复用（C-021.5.1b.1）
 
-现有blc -c应用、--module普通模块及--program算法库直接复用输出的正式COFF目标文件。输入未变时输出末尾标明(reused)，原文件的内容与修改时间保持；不再做B检查、优化或CPU／SPIR-V发射。原始源码及已编译接口仍由原装入器读取一次，用于确定本次真实输入；没有常驻编译器、IR缓存或旁车清单。
+现有bc -c应用、--module普通模块及--program算法库直接复用输出的正式COFF目标文件。输入未变时输出末尾标明(reused)，原文件的内容与修改时间保持；不再做B检查、优化或CPU／SPIR-V发射。原始源码及已编译接口仍由原装入器读取一次，用于确定本次真实输入；没有常驻编译器、IR缓存或旁车清单。
 
 SDK使用blanguage::build::compile_object，或在同一Compiler上调用build_object(path,root,dependencies,kind,output)。kind为build::ObjectKind::Module(&instances)、Application(entry)或Library { entry,prefix }。返回ObjectCompilation的object是可交给原对象／归档／链接API的已编译对象，artifact是实际COFF路径，reused表示本次是否复用。自由编译API继续无条件产生编译结果；需要跨调用统一CPU预算时由调用者复用同一Compiler。
 
@@ -3584,7 +3584,7 @@ void assign<T>(write T target, T value) on compute { target = value; }
 
 开放T可实例化为合法view函数值，仍不擦除dataset、tile、texture2d、acceleration或view包装的权限与寿命；`view<T>`／`dataset<T>` 等仍通过原显式接口声明引用或资源访问。普通记录内部合法的 view 字段继续遵守原引用图及目标限制，开放类型不授予构造、写出、传输或逃逸权限。void 不是数据类型。write／inout、完整初始化、借用重叠、模块可见性、设备、索引和返回规则在实际实例上保持。
 
-完全有限的泛型声明仍枚举并检查全部允许实例。只要声明含开放类型或开放 const，就不能枚举其所有替换；依赖类型／值的布局和正文在实际使用时完整检查，未使用声明仅检查原通用签名并列入 Compilation.open_generics，CLI 输出 `open generic declarations (body checked on instantiation)`。检查未调用的开放库不证明所有类型都能执行其正文；错误仍定位到实际具体类型和源码。只有开放 计算函数 而未选择具体入口时，build 报 B240；具体入口沿原 `compile_entry` 或 `blc -c --program` 语法选择，例如 `copy<UserRecord,65>`。
+完全有限的泛型声明仍枚举并检查全部允许实例。只要声明含开放类型或开放 const，就不能枚举其所有替换；依赖类型／值的布局和正文在实际使用时完整检查，未使用声明仅检查原通用签名并列入 Compilation.open_generics，CLI 输出 `open generic declarations (body checked on instantiation)`。检查未调用的开放库不证明所有类型都能执行其正文；错误仍定位到实际具体类型和源码。只有开放 计算函数 而未选择具体入口时，build 报 B240；具体入口沿原 `compile_entry` 或 `bc -c --program` 语法选择，例如 `copy<UserRecord,65>`。
 
 开放类型用于现有静态实例化和集合函数引用，不新增类型擦除、运行期分派、宿主逐元素回调、额外 uniform、布局表或新 IR／ABI。CPU普通原生调用及独立模块已有前述有限实现；通用约束接口、关联类型、符号泛型体检查与一般模块／资源契约仍未完成；统一函数／结果模型按架构设计继续推进，当前语法范围不构成永久函数分类。
 
@@ -3610,21 +3610,21 @@ let gpu = device.load(gpu_image)?;
 
 ProgramInterface 是编译结果与已装载程序共同提供的只读接口。Dataset 创建、不可变 view、域关系和引擎数据打包消费该接口；已装载 CPU／GPU 程序的 program() 返回 ExecutionPlan，不再为了旧类型签名保留整份 IR。编译器内部的 ir::Program 继续拥有指令和优化。生成 DLL 使用同版本编译器的可信 ProgramImage::from_compiler_output 恢复最终代码及其布局；该 unsafe 边界不能接收宿主输入、改写代码或伪造条件模板的前缀关系，原整份 IR 恢复入口已删除。
 
-blc build、算法目标文件编译和 SDK 使用同一份程序映像；阶段导出沿用原文件名及布局描述，不重新挑选或发射辅助代码。值 IR 和集合函数正文在编译侧结束，物理数据及完成点仍由既有执行所有者持有。这里没有新增 B 应用的动态数据、CPU／GPU 调用语法或隐式数据传输；这些继续属于 C-011，不能用 Rust SDK 或算法 DLL 的完成代替。
+bc build、算法目标文件编译和 SDK 使用同一份程序映像；阶段导出沿用原文件名及布局描述，不重新挑选或发射辅助代码。值 IR 和集合函数正文在编译侧结束，物理数据及完成点仍由既有执行所有者持有。这里没有新增 B 应用的动态数据、CPU／GPU 调用语法或隐式数据传输；这些继续属于 C-011，不能用 Rust SDK 或算法 DLL 的完成代替。
 
 ## Windows x64 DLL 与 C/C++／Rust 入口
 ```powershell
-.\target\release\blc.exe -c `
+.\target\release\bc.exe -c `
     sample\lessons\map.b `
     -o target\interop\map.obj `
     -I sample `
     --program scale
-.\target\release\bllink.exe `
+.\target\release\blink.exe `
     target\interop\map.obj `
     -o target\interop\map.dll
 ```
 
-`blc -c ... --program name` 接收一个公开、具体且无 requires 前置条件的 计算函数；泛型使用既有 compile_entry 的具体入口语法。编译输出 .obj，再由 `bllink input.obj -o output.dll` 输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
+`bc -c ... --program name` 接收一个公开、具体且无 requires 前置条件的 计算函数；泛型使用既有 compile_entry 的具体入口语法。编译输出 .obj，再由 `blink input.obj -o output.dll` 输出 .dll、.lib、.abi.h 和 .rs。B 的 .h 仍是语言接口，.abi.h 是供 C/C++ 编译器包含的头文件。接口字段布局来自原 Ty，dataset 传指针与完整记录元素数，uniform 传生成类型的只读指针。当前接受不含 view 的纯值类型、向量／矩阵、记录和固定内联数组；纹理、AS 与条件模板明确拒绝。内部集合、阶段和 prefix 仍由 B 编译器检查并执行。
 
 C ABI create／run 返回 0 或 -1，并写调用方错误缓冲区；destroy 释放 DLL 自己创建的 handle。run 为同步、包含数据交付的完整调用。C++ 使用 RAII，Rust 绑定提供独占切片、Result、Drop 与创建线程所有权。Rust 仍可直接调用原有 compile_entry、CpuProgram、Device、GpuProgram 和所有权 API。B 调用宿主 DLL 使用前述 CPU extern C 声明，不改变这里由宿主持有的算法入口与资源。详见 [原生集成](NativeInterop.md)。
 

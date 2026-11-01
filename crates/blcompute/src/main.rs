@@ -12,7 +12,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if args.is_empty() {
-        println!("Blink runner\nblrun --version\nblrun <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]");
+        println!("Blink runner\nbrun --version\nbrun <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]");
         return Ok(());
     }
     compute(&args)
@@ -42,7 +42,7 @@ fn compute(args: &[String]) -> Result<()> {
         || program.buffers().iter().any(|b| b.ty.contains_views())
     {
         return Err(error(
-            "blrun 文件入口接收普通值数据；加速结构和 GPU 引用通过原生 Bindings API 绑定",
+            "brun 文件入口接收普通值数据；加速结构和 GPU 引用通过原生 Bindings API 绑定",
         ));
     }
     let data_end = 5 + program.buffers().len();

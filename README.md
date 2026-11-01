@@ -36,7 +36,7 @@
 
 这一能力目前处于设计阶段。一次构建或执行使用所选域内资源，跨域业务级联由上层应用组织。完整职责、部署与接口设计见[计算域方案](Docs/ComputeDomain.md)。
 
-软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`blc --version`、`bllink --version`、`blrun --version`显示构建时的同一版本。
+软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示构建时的同一版本。
 
 ## 快速开始
 
@@ -129,12 +129,12 @@ C/C++ 编译器也可能自动向量化简单循环；B 语言则通过工作域
 在 PowerShell 中执行下面这一条命令：
 
 ```powershell
-.\target\release\blrun.exe cpu `
+.\target\release\brun.exe cpu `
     sample/lessons/map.b demo `
     sample Saved/Book/map :4
 ```
 
-这条命令运行 blrun.exe，选择 CPU 执行 `sample/lessons/map.b` 中的 demo 入口。后面的 `sample` 是查找模块的根目录，`Saved/Book/map` 是保存结果的目录；`:4` 申请四条全零记录。demo 先填入 `[1,2,3,4]`，再执行乘二加一。
+这条命令运行 brun.exe，选择 CPU 执行 `sample/lessons/map.b` 中的 demo 入口。后面的 `sample` 是查找模块的根目录，`Saved/Book/map` 是保存结果的目录；`:4` 申请四条全零记录。demo 先填入 `[1,2,3,4]`，再执行乘二加一。
 
 运行完成后，结果目录中的 `values.bldata` 文件保存四个数：
 
@@ -142,12 +142,12 @@ C/C++ 编译器也可能自动向量化简单循环；B 语言则通过工作域
 [3, 5, 7, 9]
 ```
 
-blrun 会在命令行显示程序信息和运行时间，计算结果则写入 BLDATA 文件。图中的数值来自这个文件；想自己读取它，可以参照[原书附录 A.3](sample/并行编程的艺术.md)。
+brun 会在命令行显示程序信息和运行时间，计算结果则写入 BLDATA 文件。图中的数值来自这个文件；想自己读取它，可以参照[原书附录 A.3](sample/并行编程的艺术.md)。
 
 在 GPU 上执行同一份源码，只需选择 gpu，并使用另一个结果目录：
 
 ```powershell
-.\target\release\blrun.exe gpu `
+.\target\release\brun.exe gpu `
     sample/lessons/map.b demo `
     sample Saved/Book/map-gpu :4
 ```
@@ -318,7 +318,7 @@ CPU 与 GPU 的归约分组可能不同，结果也可能存在舍入差异。�
 在 CPU 上运行求和入口 demo_sum：
 
 ```powershell
-.\target\release\blrun.exe cpu `
+.\target\release\brun.exe cpu `
     sample/lessons/scan.b demo_sum `
     sample Saved/Book/reduce :4 :1
 ```
@@ -326,7 +326,7 @@ CPU 与 GPU 的归约分组可能不同，结果也可能存在舍入差异。�
 `:4` 为输入申请四条记录，`:1` 为总量申请一条记录。在 GPU 上执行：
 
 ```powershell
-.\target\release\blrun.exe gpu `
+.\target\release\brun.exe gpu `
     sample/lessons/scan.b demo_sum `
     sample Saved/Book/reduce-gpu :4 :1
 ```
@@ -354,9 +354,9 @@ demo_sum 产生 `[3,1,4,2]`，再求和。`total.bldata` 中唯一的 u32 结果
 
 | 工具／库 | 用途 |
 |---|---|
-| `blc` | 检查源码、编译 COFF 目标文件、导出 CPU／GPU 计算代码 |
-| `bllink` | 链接已编译对象，生成 Windows x64 exe 或计算库（DLL） |
-| `blrun` | 绑定数据并执行 CPU／GPU 计算模块 |
+| `bc` | 检查源码、编译 COFF 目标文件、导出 CPU／GPU 计算代码 |
+| `blink` | 链接已编译对象，生成 Windows x64 exe 或计算库（DLL） |
+| `brun` | 绑定数据并执行 CPU／GPU 计算模块 |
 | `blanguage` | 前端、类型与访问检查、并行 IR、优化和原生后端 |
 | `blcompute` | 数据存储、设备资源、传输、原生执行与完成后的释放 |
 

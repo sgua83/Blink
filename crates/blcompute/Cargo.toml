@@ -8,7 +8,7 @@ license = "MIT"
 crate-type = ["rlib", "staticlib"]
 
 [[bin]]
-name = "blrun"
+name = "brun"
 path = "src/main.rs"
 
 [dependencies]
