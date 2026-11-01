@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Span {
     pub start: usize,

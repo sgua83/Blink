@@ -35,7 +35,7 @@ struct Parser {
 }
 impl Parser {
     fn peek(&self) -> &str {
-        &self.tokens[self.at].text
+        self.tokens[self.at].text(&self.source)
     }
     fn span(&self) -> Span {
         self.tokens[self.at].span
@@ -60,14 +60,14 @@ impl Parser {
         }
     }
     fn ident(&mut self) -> Result<String> {
-        let t = self.tokens[self.at].clone();
-        if t.text
+        let t = self.tokens[self.at];
+        if t.text(&self.source)
             .as_bytes()
             .first()
             .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
         {
             self.at += 1;
-            Ok(t.text)
+            Ok(t.text(&self.source).to_owned())
         } else {
             self.source.fail(t.span, "B011", "需要标识符")
         }
@@ -122,7 +122,6 @@ impl Parser {
     fn type_close(&mut self) -> Result<()> {
         if self.peek() == ">>" {
             // 类型上下文消费首个 >，保留第二个；表达式中的右移 token 不变。
-            self.tokens[self.at].text = ">".into();
             self.tokens[self.at].span.start += 1;
             Ok(())
         } else {
@@ -130,23 +129,23 @@ impl Parser {
         }
     }
     fn angle_end(&self, at: usize) -> Option<usize> {
-        if self.tokens.get(at)?.text != "<" {
+        if self.tokens.get(at)?.text(&self.source) != "<" {
             return None;
         }
         let mut depth = 0isize;
         let mut parentheses = 0usize;
         for (index, token) in self.tokens.iter().enumerate().skip(at) {
             if parentheses != 0 {
-                match token.text.as_str() { "(" => parentheses += 1, ")" => parentheses -= 1, _ => {} }
+                match token.text(&self.source) { "(" => parentheses += 1, ")" => parentheses -= 1, _ => {} }
                 continue;
             }
-            if token.text == "(" && index >= 2
-                && self.tokens[index - 1].text == "initialized"
-                && self.tokens[index - 2].text == "ensures" {
+            if token.text(&self.source) == "(" && index >= 2
+                && self.tokens[index - 1].text(&self.source) == "initialized"
+                && self.tokens[index - 2].text(&self.source) == "ensures" {
                 parentheses = 1;
                 continue;
             }
-            match token.text.as_str() {
+            match token.text(&self.source) {
                 "<" => depth += 1,
                 ">" => depth -= 1,
                 ">>" => depth -= 2,
@@ -223,16 +222,16 @@ impl Parser {
         Ok(FunctionContract { kind, predicate, span })
     }
     fn output_clause(&self, at: usize) -> bool {
-        self.tokens.get(at).is_some_and(|t| t.text == "ensures")
-            && self.tokens.get(at + 1).is_some_and(|t| t.text == "initialized")
-            && self.tokens.get(at + 2).is_some_and(|t| t.text == "(")
+        self.tokens.get(at).is_some_and(|t| t.text(&self.source) == "ensures")
+            && self.tokens.get(at + 1).is_some_and(|t| t.text(&self.source) == "initialized")
+            && self.tokens.get(at + 2).is_some_and(|t| t.text(&self.source) == "(")
     }
     fn output_suffix_end(&self, mut at: usize) -> Option<usize> {
         while self.output_clause(at) {
             at += 3;
             let mut depth = 1usize;
             while depth != 0 {
-                match self.tokens.get(at)?.text.as_str() {
+                match self.tokens.get(at)?.text(&self.source) {
                     "(" => depth += 1, ")" => depth -= 1, _ => {}
                 }
                 at += 1;
@@ -438,7 +437,7 @@ impl Parser {
     fn declaration_type(&self) -> bool {
         let ident = |at: usize| {
             self.tokens.get(at).is_some_and(|t| {
-                t.text
+                t.text(&self.source)
                     .as_bytes()
                     .first()
                     .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
@@ -448,7 +447,7 @@ impl Parser {
             return false;
         }
         if matches!(self.peek(), "view" | "tile")
-            && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "<")
+            && self.tokens.get(self.at + 1).is_some_and(|t| t.text(&self.source) == "<")
         {
             return true;
         }
@@ -459,12 +458,12 @@ impl Parser {
         while self
             .tokens
             .get(at)
-            .is_some_and(|t| matches!(t.text.as_str(), "." | "::"))
+            .is_some_and(|t| matches!(t.text(&self.source), "." | "::"))
             && ident(at + 1)
         {
             at += 2;
         }
-        if self.tokens.get(at).is_some_and(|t| t.text == "<") {
+        if self.tokens.get(at).is_some_and(|t| t.text(&self.source) == "<") {
             let Some(end) = self.angle_end(at) else {
                 return false;
             };
@@ -740,13 +739,13 @@ impl Parser {
             let name = self.ident()?;
             self.expect("in")?;
             let selected = self.peek() == "where"
-                && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "(");
+                && self.tokens.get(self.at + 1).is_some_and(|t| t.text(&self.source) == "(");
             if selected {
                 self.at += 1;
                 self.expect("(")?;
             }
             let prefix = self.peek() == "prefix"
-                && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "(");
+                && self.tokens.get(self.at + 1).is_some_and(|t| t.text(&self.source) == "(");
             let mut domain = if prefix {
                 self.at += 1;
                 self.expect("(")?;
@@ -831,7 +830,7 @@ impl Parser {
         } else if self.take("continue") {
             self.expect(";")?;
             StmtKind::Continue
-        } else if self.peek() == "phase" && self.tokens[self.at + 1].text == ";" {
+        } else if self.peek() == "phase" && self.tokens[self.at + 1].text(&self.source) == ";" {
             self.at += 2;
             StmtKind::Phase
         } else if self.take("seek") {
@@ -892,7 +891,7 @@ impl Parser {
                 kind: ExprKind::Unary(op, Box::new(self.expr(12)?)),
                 span,
             }
-        } else if self.peek() == "target" && self.tokens[self.at + 1].text == "(" {
+        } else if self.peek() == "target" && self.tokens[self.at + 1].text(&self.source) == "(" {
             self.at += 2;
             let target = match self.ident()?.as_str() {
                 "cpu" => Target::Cpu,
@@ -927,9 +926,9 @@ impl Parser {
                 span,
             }
         } else if self.peek() == "cfn"
-            && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "<")
+            && self.tokens.get(self.at + 1).is_some_and(|t| t.text(&self.source) == "<")
             && self.angle_end(self.at + 1).is_some_and(|at| {
-                self.tokens.get(at).is_some_and(|t| t.text == "(")
+                self.tokens.get(at).is_some_and(|t| t.text(&self.source) == "(")
                     || self.output_clause(at)
             }) {
             let ty = self.ty()?;
@@ -1009,7 +1008,7 @@ impl Parser {
                 && self.angle_end(self.at).is_some_and(|at| {
                     self.tokens
                         .get(at)
-                        .is_some_and(|t| matches!(t.text.as_str(), "(" | "," | ")" | ";"))
+                        .is_some_and(|t| matches!(t.text(&self.source), "(" | "," | ")" | ";"))
                 })
             {
                 let name = name.clone();

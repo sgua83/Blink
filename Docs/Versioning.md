@@ -35,7 +35,7 @@ powershell -NoProfile -File Tools/Submit.ps1 -Change 12345
 
 ## 构建、缓存与兼容身份
 
-`bc --version`、`blink --version`、`brun --version` 及 `blanguage::VERSION`／`blcompute::VERSION` 读取同一构建版本。已发布 Git 源码可离线构建，不要求查询 P4、Git 或网络。Rust Cargo 包的既有 `0.1.0` 是内部包元数据，不作为 Blink 软件版本。
+`bc --version`、`blink --version`、`brun --version` 及 `blanguage::VERSION`／`blcompute::VERSION` 读取同一构建版本。已安装可用稳定Blink种子及Rust／Windows构建工具后，已发布Git源码可离线构建，不要求查询P4、Git或网络。Rust Cargo 包的既有 `0.1.0` 是内部包元数据，不作为 Blink 软件版本。
 
 VERSION 更新工具内嵌显示，但不加入 BLINK_COMPILER_ID 或原生框架输入身份；仅版本或文档变化不使 B 对象／入口缓存全部失效。实际实现、源码依赖、公开合同、目标、工具链及配置继续按原规则失效。软件版本不替代 BLCO／BLRI 等实际格式和 ABI 身份，不承诺不同版本的产物一定兼容。
 
@@ -69,4 +69,4 @@ Windows包是原生自解压EXE，嵌入同源bc、blink、brun、Rust源码SDK�
 
 ## 正式工具与后续自举
 
-正式发行（本项目采用的稳定发行身份）是按每周流程编译并发布的确切版本，不保证全部新功能可用。当前编译器仍由Rust实现；B自举及CPU/GPU协作编译各按真实实现记录。自举使用正式安装的工具与库作为本轮输入，研发源码是待编译内容，新工具写工程target；本轮输入消费者结束后，才由独立原生安装器覆盖正式目录。开发产物不能成为自己唯一的构建前提。
+正式发行（本项目采用的稳定发行身份）是按每周流程编译并发布的确切版本，不保证全部新功能可用。当前B词法模块由已安装的稳定bc／blink编译、静态链接到工具，其他编译器模块仍由Rust实现；B自举及CPU/GPU协作编译各按真实实现记录。自举使用正式安装的工具与库作为本轮输入，研发源码是待编译内容，新工具写工程target；本轮输入消费者结束后，才由独立原生安装器覆盖正式目录。开发产物不能成为自己唯一的构建前提。

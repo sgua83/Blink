@@ -1,115 +1,53 @@
 use crate::ast::*;
 
-#[derive(Clone, Debug)]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
 pub struct Token {
-    pub text: String,
     pub span: Span,
 }
-pub fn lex(source: &Source) -> Result<Vec<Token>> {
-    let bytes = source.text.as_bytes();
-    let mut at = 0;
-    let mut out = Vec::new();
-    while at < bytes.len() {
-        let start = at;
-        let c = bytes[at];
-        if c.is_ascii_whitespace() {
-            at += 1;
-            continue;
-        }
-        if bytes[at..].starts_with(b"//") {
-            while at < bytes.len() && bytes[at] != b'\n' {
-                at += 1;
-            }
-            continue;
-        }
-        if bytes[at..].starts_with(b"/*") {
-            at += 2;
-            while at + 1 < bytes.len() && !bytes[at..].starts_with(b"*/") {
-                at += 1;
-            }
-            if at + 1 >= bytes.len() {
-                return source.fail(Span { start, end: at }, "B001", "块注释没有结束");
-            }
-            at += 2;
-            continue;
-        }
-        if c == b'"' {
-            at += 1;
-            while at < bytes.len() && bytes[at] != b'"' {
-                if bytes[at] == b'\\' {
-                    at += 1;
-                }
-                at += 1;
-            }
-            if at >= bytes.len() {
-                return source.fail(
-                    Span {
-                        start,
-                        end: bytes.len(),
-                    },
-                    "B003",
-                    "链接字符串没有结束",
-                );
-            }
-            at += 1;
-        } else if c.is_ascii_alphabetic() || c == b'_' {
-            at += 1;
-            while at < bytes.len() && (bytes[at].is_ascii_alphanumeric() || bytes[at] == b'_') {
-                at += 1;
-            }
-            if &source.text[start..at] == "program" {
-                return source.fail(
-                    Span { start, end: at },
-                    "B004",
-                    "`program` 已从源语言移除，不能用作声明关键字或标识符；请用返回类型定义函数（无返回值用 `void`），并用 `parallel` 表达并行域",
-                );
-            }
-        } else if c.is_ascii_digit()
-            || (c == b'.' && bytes.get(at + 1).is_some_and(u8::is_ascii_digit))
-        {
-            let hexadecimal = bytes[start..].starts_with(b"0x");
-            at += 1;
-            while at < bytes.len() {
-                let x = bytes[at];
-                if x.is_ascii_alphanumeric()
-                    || (!hexadecimal && x == b'.' && !bytes[at..].starts_with(b".."))
-                    || (!hexadecimal
-                        && (x == b'+' || x == b'-')
-                        && matches!(bytes[at - 1], b'e' | b'E'))
-                {
-                    at += 1;
-                } else {
-                    break;
-                }
-            }
-        } else if let Some(op) = [
-            "<<=", ">>=", "::", "..", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "==", "!=",
-            "<=", ">=", "&&", "||", "<<", ">>",
-        ]
-        .iter()
-        .find(|op| bytes[at..].starts_with(op.as_bytes()))
-        {
-            at += op.len();
-        } else if b"{}()[];,.?:+-*/%!=<>&|^~".contains(&c) {
-            at += 1;
-        } else {
-            return source.fail(
-                Span {
-                    start,
-                    end: start + 1,
-                },
-                "B002",
-                "不支持的源字符；标识符使用 ASCII，中文可写在注释中",
-            );
-        }
-        out.push(Token {
-            text: source.text[start..at].into(),
-            span: Span { start, end: at },
-        });
+impl Token {
+    pub fn text<'a>(&self, source: &'a Source) -> &'a str {
+        &source.text[self.span.start..self.span.end]
     }
-    out.push(Token {
-        text: String::new(),
-        span: Span { start: at, end: at },
-    });
-    Ok(out)
+}
+
+// These discriminants are produced by bootstrap/lexer.b through its C ABI.
+#[repr(u32)]
+#[allow(dead_code)]
+enum ScanError {
+    None,
+    BlockComment,
+    SourceCharacter,
+    LinkString,
+    RemovedProgram,
+}
+#[repr(C)]
+struct ScanResult {
+    count: usize,
+    start: usize,
+    end: usize,
+    error: ScanError,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.lexer::scan"]
+    fn scan(source: *const u8, length: usize, tokens: *mut Token) -> ScanResult;
+}
+pub fn lex(source: &Source) -> Result<Vec<Token>> {
+    // Every non-EOF token consumes at least one byte. B writes into this
+    // caller-owned storage synchronously and retains neither address.
+    let mut out = Vec::<Token>::with_capacity(source.text.len() + 1);
+    let result = unsafe { scan(source.text.as_ptr(), source.text.len(), out.as_mut_ptr()) };
+    let span = Span { start: result.start, end: result.end };
+    let (code, message) = match result.error {
+        ScanError::None => {
+            // The scanner initialized exactly count C-layout spans, including EOF.
+            unsafe { out.set_len(result.count); }
+            return Ok(out);
+        }
+        ScanError::BlockComment => ("B001", "块注释没有结束"),
+        ScanError::SourceCharacter => ("B002", "不支持的源字符；标识符使用 ASCII，中文可写在注释中"),
+        ScanError::LinkString => ("B003", "链接字符串没有结束"),
+        ScanError::RemovedProgram => ("B004", "`program` 已从源语言移除，不能用作声明关键字或标识符；请用返回类型定义函数（无返回值用 `void`），并用 `parallel` 表达并行域"),
+    };
+    source.fail(span, code, message)
 }

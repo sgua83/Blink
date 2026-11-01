@@ -93,7 +93,7 @@ cd Blink
 cargo build --workspace --release
 ```
 
-Rust 在这里编译的是 Blink 编译器和执行框架，B 算法仍由 Blink 自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
+源码构建先安装一份可独立取得的稳定Blink种子。原build.rs用该bc／blink生成B词法静态模块，Rust编译其余编译器与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
 
 先检查，再导出 CPU/GPU 代码：
 
@@ -789,48 +789,51 @@ CPU 主流程的普通调用沿当前 CPU 位置执行；`target(cpu, f(...))` �
 
 ### 5.1 为什么不能直接按空格切开
 
-`value=value*2.0+1.0;` 没有空格，依然是完整语句。`<=` 是一个比较符，不能先吃掉 `<` 再把 `=` 留成另一项。小数点、范围 `..`、名字里的下划线、行注释与块注释也各有意义。
+`value=value*2.0+1.0;`没有空格，依然是完整语句。`<=`是一个比较符，不能先吃掉`<`再把`=`留成另一项。小数点、范围`..`、名字里的下划线、行注释与块注释各有意义。
 
-词法分析逐段读取字符，产生 token。这个版本的 Token 保存两项：文本与位置。
+Token只保存原文的字节范围。文字只属于Source，解析器通过同一范围借用切片；不为每个token分配、复制和释放一份String。
 
 源码节选：`crates/blanguage/src/lexer.rs:3`。
 
 ```rust
-#[derive(Clone, Debug)]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
 pub struct Token {
-    pub text: String,
     pub span: Span,
+}
+impl Token {
+    pub fn text<'a>(&self, source: &'a Source) -> &'a str {
+        &source.text[self.span.start..self.span.end]
+    }
 }
 ```
 
-这里没有先把每个关键字编成独立枚举；解析器会比较 token 文本。这是当前实现的选择，不是所有编译器必须采用的做法。
+这里没有把每个关键字编成独立枚举；解析器仍比较原文。AST需要长期持有独立名称或数字文字时，由Parser在实际构造处取得自己的String。
 
-### 5.2 一个扫描位置贯穿整个循环
+### 5.2 一个扫描位置贯穿整个B循环
 
-`at` 是当前字节位置，`start` 是本次 token 的起点。空白和注释被跳过，普通标识符、数字、多字符运算符和单字符符号分别识别。最终切出 `[start,at)` 的原文。
+扫描由`src/bootstrap/lexer.b`实现。`at`是当前字节位置，`start`是本次token起点；B直接读取借入的UTF-8字节。空白和注释被跳过，标识符、数字、链接字符串与运算符各按现有语言规则识别。最终输出`[start,at)`，不复制原文。
 
-源码节选：`crates/blanguage/src/lexer.rs:85`。
+源码节选：`crates/blanguage/src/bootstrap/lexer.b:81`。
 
-```rust
-        } else if let Some(op) = [
-            "<<=", ">>=", "::", "..", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "==", "!=",
-            "<=", ">=", "&&", "||", "<<", ">>",
-        ]
-        .iter()
-        .find(|op| bytes[at..].starts_with(op.as_bytes()))
-        {
-            at += op.len();
+```b
+        } else if (at + 2u64 < length && byte_at(source,at+2u64) == 61
+            && (c == 60 || c == 62) && byte_at(source,at+1u64) == c) {
+            at += 3u64;
+        } else if (at + 1u64 < length && double_operator(c,byte_at(source,at+1u64))) {
+            at += 2u64;
+        } else if (single_operator(c)) { at += 1u64; }
+        else { return ScanResult(0u64,start,start+1u64,2); }
 ```
 
-多字符运算符优先于单字符符号，正是为了保留 `<=` 和 `<<` 等整体。数字扫描允许指数写法的正负号，却不会把普通的加法号全部吞进数字。
+三个字符的移位赋值先于双字符、单字符运算符，保持最长匹配。数字允许指数里的正负号，不把普通加法全部吞入。`value*2.0+1.0`得到`value`、`*`、`2.0`、`+`、`1.0`；词法层不判断value的类型或可写性。
 
-对 `value*2.0+1.0`，逻辑上得到 `value`、`*`、`2.0`、`+`、`1.0`。词法层只确认形状，不负责判断 `value` 是否已声明、是否浮点数或能不能写入。
-
-### 5.3 Span 是诊断通向原文的线
+### 5.3 Span、输出存储与诊断属于谁
 
 源码节选：`crates/blanguage/src/ast.rs:3`。
 
 ```rust
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Span {
     pub start: usize,
@@ -838,11 +841,28 @@ pub struct Span {
 }
 ```
 
-Span 的 start/end 是字节范围。错误显示时，再从源码求行号和字符列。因此中文注释的 UTF-8 字节数与人眼看到的字数不能直接混用。
+Span的start/end是字节范围；诊断再从原Source计算行号和字符列，不能把中文UTF-8字节数当成人眼字数。`repr(C)`让这两个64位位置按B／Rust共同的C布局交接；Token是同一Span的透明包装。
 
-本版标识符使用 ASCII，中文可写在注释里；lexer 已支持外部链接所需的双引号字符串，通用文本值与字符串库仍未完成。讲解实现时，应从 lexer 的实际分支得出结论，而非凭语言愿景补出一个不存在的 token。
+源码节选：`crates/blanguage/src/bootstrap/lexer.h:1`。
 
-**自己走一遍。** `a<=b` 应得到三个 token 还是四个？三个：`a`、`<=`、`b`。`a < = b` 则不能因为外观相似就自动当成同一运算。
+```b
+module bootstrap.lexer;
+struct TokenSpan { u64 start; u64 end; };
+struct ScanResult { u64 count; u64 start; u64 end; u32 error; };
+extern "C" ScanResult scan(address source, u64 length, address tokens) on cpu;
+```
+
+Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界提供输出空间。同步调用只借出源码、长度和原输出地址；B写Span并返回数量，成功后Rust才设置Vec长度。B不分配、不保留地址，错误交回B001至B004的原字节位置，Diagnostic仍沿原Source显示。最后消费者和释放仍由原Rust所有者负责，没有第二份token表或资源释放链。
+
+本版标识符使用ASCII，大小写有区别；中文可写在注释与链接字符串中，具体链接名的ASCII限制由原链接合同检查。通用文本值和字符串库仍未完成。类型里的`>>`只推进当前Span的起点，剩余切片成为`>`；表达式中的右移不变。
+
+### 5.4 稳定种子怎样参与正式构建
+
+原build.rs调用已安装稳定发行的bc与blink，把B词法模块编译成无Frame的标准COFF对象和静态库，再链接进正式编译器。种子输入的VERSION使用句柄保持到子进程结束，新工具写工程target；不会在编译器运行时再生成自己的词法模块，也不反向依赖blcompute或调用Rust逐字符扫描。
+
+词法由B接管，其余解析、检查、IR、后端及执行框架仍由Rust实现。新工具能重编同一B词法模块，是模块迁移的实际消费，不等于完整编译器已完成两代自举或GPU参与编译。
+
+**自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
 ## 第六章 语法：算式为什么是一棵树
 
@@ -868,7 +888,7 @@ struct Parser {
 }
 impl Parser {
     fn peek(&self) -> &str {
-        &self.tokens[self.at].text
+        self.tokens[self.at].text(&self.source)
     }
     fn span(&self) -> Span {
         self.tokens[self.at].span
@@ -889,7 +909,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1048`。
+源码节选：`crates/blanguage/src/parser.rs:1047`。
 
 ```rust
             let prec = match self.peek() {
@@ -1007,7 +1027,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 
 ### 8.2 read、write、inout 和 atomic 表达不同关系
 
-源码节选：`crates/blanguage/src/ast.rs:54`。
+源码节选：`crates/blanguage/src/ast.rs:55`。
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2468,7 +2488,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 |---|---|
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs` | 怎样装载模块、核对接口、选择具体入口并形成 Compilation |
-| `lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
+| `bootstrap/lexer.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
 | `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |
 | `check.rs` | 参数、资源、函数、表达式与 parallel 怎样形成 IR |
 | `check/ownership.rs`、`view.rs` | 位置身份、字段借用与只读来源怎样传递 |
