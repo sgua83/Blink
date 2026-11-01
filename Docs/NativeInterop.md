@@ -292,3 +292,9 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 `blink.windows.time`以纯`.h`直接声明Kernel32的`QueryPerformanceCounter`与`QueryPerformanceFrequency`。Windows `BOOL`按`i32`原值返回，`LARGE_INTEGER`输出按大小8／对齐8的`i64`位置借用；`ensures initialized(output,returned != 0)`只在本次非零状态交付输出。接口不将可能失败的输出伪装为无条件初始化，也不增加包装DLL、运行时时钟服务或第二份输出。
 
 计数是ticks，频率是ticks／秒；调用者决定错误处理与区间换算，原位置在调用期间借出，OS返回后仍归原调用者。签名、用法、时间语义与官方合同见[标准库计时接口](../library/README.md#blinkwindowstime)。它不提供日历时间或GPU计时，也不表示BLEngine的Rust时间消费者已迁移。
+
+## Windows线程错误码的原生交接
+
+`blink.windows.error`以纯`.h`直接声明Kernel32的`u32 GetLastError()`与`void SetLastError(u32 code)`，Windows DWORD按完整32位无符号值交接。唯一可变错误槽属于原OS线程，库不创建全局last-error、宿主转发或清除策略；读取得到的普通u32快照由原调用者保存和使用。
+
+调用者只在原API规定的返回条件下立即读取，必须先于打印、释放或其他可能改写线程错误的调用。清零同样由真实API合同决定，不自动包住所有系统入口。模块不提供错误字符串或通用错误对象，不替应用退出进程；完整用法与官方合同见[标准库错误码接口](../library/README.md#blinkwindowserror)。B接口可用和BLEngine原Rust错误处理已迁移分别记录。

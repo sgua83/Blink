@@ -158,4 +158,29 @@ if (!println(seconds)) { return 2; }
 
 先在整数域求计数差，再转换为f64并除以实际频率，避免先转换两个大绝对计数造成精度损失。Windows保证同次系统启动的频率固定且跨处理器一致；本模块不持有频率缓存，应用可按自身生命周期保存返回值。QPC适合测量本机时间区间，不是UTC／日历时间，不能直接比较不同机器的绝对计数，也不表示GPU实际执行时间。具体GPU完成仍由原设备／执行消费者负责。
 
-官方合同：[QueryPerformanceCounter](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter)、[QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency)、[高精度时间戳](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)。日历时间、系统错误上下文、跨平台时间抽象及BLEngine计时职责的实际迁移仍未交付。
+官方合同：[QueryPerformanceCounter](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter)、[QueryPerformanceFrequency](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancefrequency)、[高精度时间戳](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)。日历时间、错误文本与调用上下文、跨平台时间抽象及BLEngine计时职责的实际迁移仍未交付；原线程错误码接口见下节。
+
+## blink.windows.error
+
+Windows x64的`blink.windows.error`只有`error.h`，通过`-I library`装入，直接按原生C ABI调用Kernel32：
+
+| 函数 | 原生合同 |
+|---|---|
+| `u32 GetLastError()` | 读取本调用线程的32位last-error原值 |
+| `void SetLastError(u32 code)` | 将本调用线程的last-error设为code，没有返回值 |
+
+错误槽由Windows按线程持有；B模块不缓存、不复制为全局状态，也不包装系统调用。不同线程的错误码互不覆盖。只有原API文档说明的返回条件才赋予该值本次调用的错误意义；有些成功调用也会改写它，未声明设置错误的函数不能据此判断成功或失败。
+
+在原API返回表明应读取错误后，立即调用GetLastError，再打印、关闭资源或调用其他可能改写线程错误的函数。取得的u32是原调用者可保存、返回或放入自身业务结果的普通快照。SetLastError(0)只在实际API合同需要先清除错误时由调用者明确使用；设置或清零错误槽不执行、重放或证明任何系统工作成功。
+
+```b
+import blink.windows.error;
+
+// 在原API规定读取last-error的失败分支中，先保存，再报告。
+u32 code = GetLastError();
+println(code);
+```
+
+这些语句放在普通CPU函数中。模块不提供错误文本、自动Result转换或进程退出政策；外部句柄、缓冲区及其最后消费者仍归原调用者。其他平台和BLEngine窗口／等待等Rust职责的实际迁移继续按对应问题推进。
+
+官方合同：[GetLastError](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror)、[SetLastError](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setlasterror)。
