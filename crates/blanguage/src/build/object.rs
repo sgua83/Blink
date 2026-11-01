@@ -18,9 +18,10 @@ pub struct ObjectCompilation {
 pub(crate) enum Declaration {
     Constant(String),
     Record(String),
+    TypeSet(String),
 }
-variants!(Declaration { 0 => Constant(name), 1 => Record(name) });
-const MAGIC: &[u8; 8] = b"BLBO\x04\0\0\0";
+variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name) });
+const MAGIC: &[u8; 8] = b"BLBO\x05\0\0\0";
 struct Inputs {
     source: [u8; 32],
     imports: [u8; 32],
@@ -65,6 +66,8 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
                 .map(|definition| (&definition.source, definition.function.span)),
             Declaration::Record(key) => declarations.records.get(key)
                 .map(|(record, source, ..)| (source, record.span)),
+            Declaration::TypeSet(key) => declarations.type_sets.get(key)
+                .map(|(set, source, ..)| (source, set.span)),
         };
         match input {
             Some((source, span)) => {
@@ -96,6 +99,11 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
             hash::field(bytes, &(record.variants.len() as u64).to_le_bytes());
             for variant in &record.variants { hash::field(bytes, variant.name.as_bytes()); }
             spans.push(record.span);
+        }
+        for (set, ..) in declarations.type_sets.values().filter(|(_, owner, ..)| owner.path == source.path) {
+            hash::field(bytes, b"typeset");
+            hash::field(bytes, set.name.as_bytes());
+            spans.push(set.span);
         }
     }
     spans.sort_by_key(|span| span.start);

@@ -74,6 +74,9 @@ impl World {
         key: &str,
         stack: &mut BTreeSet<String>,
     ) -> Result<Vec<(TypeName, Ty)>> {
+        if let Some(inputs) = &self.build_declarations {
+            inputs.borrow_mut().insert(crate::build::Declaration::TypeSet(key.into()));
+        }
         let (set, source, module, imports) = &self.type_sets[key];
         if set.members.is_empty() {
             return source.fail(set.span, "B233", "类型集合至少需要一个具体成员类型");

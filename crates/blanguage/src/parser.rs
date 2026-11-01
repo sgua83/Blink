@@ -417,7 +417,7 @@ impl Parser {
                 type_sets.push(TypeSet {
                     name,
                     members,
-                    span,
+                    span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
                 });
                 continue;
             }
