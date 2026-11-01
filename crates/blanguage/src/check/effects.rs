@@ -44,7 +44,7 @@ impl Builder<'_> {
                 else {
                     return Ok(None);
                 };
-                let (ty, selected) = self.member(&ty, field, expr.span)?;
+                let (ty, selected) = member_type(&ty, field, &self.definition.source, expr.span)?;
                 Ok(Some((
                     ty,
                     selected.iter().map(|i| components[*i].clone()).collect(),

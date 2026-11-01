@@ -790,6 +790,9 @@ impl World {
         imports: &[String],
         stack: &mut BTreeSet<String>,
     ) -> Result<ir::Ty> {
+        if name.outputs.is_some() && name.name != "cfn" {
+            return source.fail(span, "B225", "条件输出合同属于cfn函数签名");
+        }
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
             return self.c_function_type(name, source, span, module, imports);
         }

@@ -206,8 +206,8 @@ record!(ir::Ty {
     cleanup,
     function
 });
-record!(ir::CFunctionType { result, parameters });
-record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count });
+record!(ir::CFunctionType { result, parameters, outputs });
+record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count, outputs });
 variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name) });
 variants!(ast::GenericArgument { 0=>Type(ty), 1=>Value(shape) });
 variants!(ir::CallParameter{0=>Value(ty),1=>Reference{ty,access}});

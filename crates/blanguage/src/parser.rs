@@ -134,7 +134,18 @@ impl Parser {
             return None;
         }
         let mut depth = 0isize;
+        let mut parentheses = 0usize;
         for (index, token) in self.tokens.iter().enumerate().skip(at) {
+            if parentheses != 0 {
+                match token.text.as_str() { "(" => parentheses += 1, ")" => parentheses -= 1, _ => {} }
+                continue;
+            }
+            if token.text == "(" && index >= 2
+                && self.tokens[index - 1].text == "initialized"
+                && self.tokens[index - 2].text == "ensures" {
+                parentheses = 1;
+                continue;
+            }
             match token.text.as_str() {
                 "<" => depth += 1,
                 ">" => depth -= 1,
@@ -154,6 +165,100 @@ impl Parser {
             }
         }
         None
+    }
+    fn contract(&mut self) -> Result<FunctionContract> {
+        let span = self.span();
+        let kind = if self.take("requires") {
+            ContractKind::Requires
+        } else {
+            self.expect("ensures")?;
+            ContractKind::Ensures
+        };
+        let predicate = self.ident()?;
+        self.expect("(")?;
+        let predicate = match predicate.as_str() {
+            "prefix" => {
+                let data = self.ident()?;
+                self.expect(",")?;
+                let count = self.ident()?;
+                self.expect(".")?;
+                let field = self.qualified(".")?;
+                ContractPredicate::Prefix { data, count, field }
+            }
+            "nonzero" => ContractPredicate::Nonzero(self.qualified(".")?),
+            "nonempty" => ContractPredicate::Nonempty(self.qualified(".")?),
+            "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
+            "initialized" => {
+                let value = self.qualified(".")?;
+                self.expect(",")?;
+                let expression = self.expr(0)?;
+                let condition = OutputCondition::from_expr(&expression).ok_or_else(|| Diagnostic {
+                    source: self.source.clone(), span: expression.span, code: "B225",
+                    message: "initialized 条件使用输入值、returned、字段、布尔和纯数值运算；不执行调用或存储访问".into(),
+                })?;
+                ContractPredicate::Initialized { value, condition }
+            }
+            "same_length" => {
+                let left = self.qualified(".")?;
+                self.expect(",")?;
+                let right = self.qualified(".")?;
+                let (left, right) = if left <= right { (left, right) } else { (right, left) };
+                ContractPredicate::SameLength { left, right }
+            }
+            "index" => {
+                let value = self.qualified(".")?;
+                self.expect(",")?;
+                let resource = self.qualified(".")?;
+                ContractPredicate::Index { value, resource }
+            }
+            _ => {
+                return self.source.fail(
+                    span,
+                    "B225",
+                    "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length 或 initialized",
+                );
+            }
+        };
+        self.expect(")")?;
+        Ok(FunctionContract { kind, predicate, span })
+    }
+    fn output_clause(&self, at: usize) -> bool {
+        self.tokens.get(at).is_some_and(|t| t.text == "ensures")
+            && self.tokens.get(at + 1).is_some_and(|t| t.text == "initialized")
+            && self.tokens.get(at + 2).is_some_and(|t| t.text == "(")
+    }
+    fn output_suffix_end(&self, mut at: usize) -> Option<usize> {
+        while self.output_clause(at) {
+            at += 3;
+            let mut depth = 1usize;
+            while depth != 0 {
+                match self.tokens.get(at)?.text.as_str() {
+                    "(" => depth += 1, ")" => depth -= 1, _ => {}
+                }
+                at += 1;
+            }
+        }
+        Some(at)
+    }
+    fn function_outputs(&mut self) -> Result<Option<Box<Vec<ContractPredicate>>>> {
+        let mut outputs = Vec::new();
+        while self.output_clause(self.at) {
+            let contract = self.contract()?;
+            outputs.push(contract.predicate);
+        }
+        Ok(if outputs.is_empty() { None } else { Some(Box::new(outputs)) })
+    }
+    fn arguments(&mut self) -> Result<Vec<Expr>> {
+        self.expect("(")?;
+        let mut args = Vec::new();
+        if !self.take(")") {
+            loop {
+                args.push(self.expr(0)?);
+                if self.take(")") { break; }
+                self.expect(",")?;
+            }
+        }
+        Ok(args)
     }
     fn ty(&mut self) -> Result<TypeName> {
         let name = self.type_name()?;
@@ -186,6 +291,7 @@ impl Parser {
             } else {
                 Vec::new()
             };
+            let outputs = if name == "cfn" { self.function_outputs()? } else { None };
             Ok(TypeName {
                 name,
                 canonical: false,
@@ -194,6 +300,7 @@ impl Parser {
                 view: false,
                 tile: false,
                 count: None,
+                outputs,
             })
         }
     }
@@ -363,6 +470,7 @@ impl Parser {
             };
             at = end;
         }
+        let Some(at) = self.output_suffix_end(at) else { return false; };
         ident(at)
     }
     fn module(mut self) -> Result<Module> {
@@ -563,64 +671,7 @@ impl Parser {
             };
             let mut contracts = Vec::new();
             while matches!(self.peek(), "requires" | "ensures") {
-                let span = self.span();
-                let kind = if self.take("requires") {
-                    ContractKind::Requires
-                } else {
-                    self.expect("ensures")?;
-                    ContractKind::Ensures
-                };
-                let predicate = self.ident()?;
-                self.expect("(")?;
-                let predicate = match predicate.as_str() {
-                    "prefix" => {
-                        let data = self.ident()?;
-                        self.expect(",")?;
-                        let count = self.ident()?;
-                        self.expect(".")?;
-                        let field = self.qualified(".")?;
-                        ContractPredicate::Prefix { data, count, field }
-                    }
-                    "nonzero" => ContractPredicate::Nonzero(self.qualified(".")?),
-                    "nonempty" => ContractPredicate::Nonempty(self.qualified(".")?),
-                    "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
-                    "initialized" => {
-                        let value = self.qualified(".")?;
-                        self.expect(",")?;
-                        let expression = self.expr(0)?;
-                        let condition = OutputCondition::from_expr(&expression).ok_or_else(|| Diagnostic {
-                            source: self.source.clone(), span: expression.span, code: "B225",
-                            message: "initialized 条件使用输入值、returned、字段、布尔和纯数值运算；不执行调用或存储访问".into(),
-                        })?;
-                        ContractPredicate::Initialized { value, condition }
-                    }
-                    "same_length" => {
-                        let left = self.qualified(".")?;
-                        self.expect(",")?;
-                        let right = self.qualified(".")?;
-                        let (left, right) = if left <= right { (left, right) } else { (right, left) };
-                        ContractPredicate::SameLength { left, right }
-                    }
-                    "index" => {
-                        let value = self.qualified(".")?;
-                        self.expect(",")?;
-                        let resource = self.qualified(".")?;
-                        ContractPredicate::Index { value, resource }
-                    }
-                    _ => {
-                        return self.source.fail(
-                            span,
-                            "B225",
-                            "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length 或 initialized",
-                        );
-                    }
-                };
-                self.expect(")")?;
-                contracts.push(FunctionContract {
-                    kind,
-                    predicate,
-                    span,
-                });
+                contracts.push(self.contract()?);
             }
             let external = if external {
                 if !types.is_empty() || !values.is_empty() {
@@ -868,21 +919,20 @@ impl Parser {
             } else {
                 None
             };
-            self.expect("(")?;
-            let mut args = Vec::new();
-            if !self.take(")") {
-                loop {
-                    args.push(self.expr(0)?);
-                    if self.take(")") {
-                        break;
-                    }
-                    self.expect(",")?;
-                }
-            }
+            let args = self.arguments()?;
             Expr {
                 kind: ExprKind::Cooperate(name, explicit, args),
                 span,
             }
+        } else if self.peek() == "cfn"
+            && self.tokens.get(self.at + 1).is_some_and(|t| t.text == "<")
+            && self.angle_end(self.at + 1).is_some_and(|at| {
+                self.tokens.get(at).is_some_and(|t| t.text == "(")
+                    || self.output_clause(at)
+            }) {
+            let ty = self.ty()?;
+            let args = self.arguments()?;
+            Expr { kind: ExprKind::Construct(ty, args), span }
         } else if self.take("(") {
             let e = self.expr(0)?;
             self.expect(")")?;
@@ -968,17 +1018,8 @@ impl Parser {
                 };
                 continue;
             }
-            if self.take("(") {
-                let mut args = Vec::new();
-                if !self.take(")") {
-                    loop {
-                        args.push(self.expr(0)?);
-                        if self.take(")") {
-                            break;
-                        }
-                        self.expect(",")?;
-                    }
-                }
+            if self.peek() == "(" {
+                let args = self.arguments()?;
                 lhs = Expr {
                     kind: match lhs.kind {
                         ExprKind::Name(name) => ExprKind::Call(name, args),

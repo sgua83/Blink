@@ -28,7 +28,26 @@ fn type_name(ty: &TypeName) -> String {
                 else { format!("{prefix}<{name}>") };
         }
     }
+    if let Some(outputs) = &ty.outputs {
+        for output in outputs.iter() {
+            if let ContractPredicate::Initialized { value, condition } = output {
+                name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
+            }
+        }
+    }
     name
+}
+fn condition_name(condition: &OutputCondition) -> String {
+    match condition {
+        OutputCondition::Name(name) | OutputCondition::Number(name) => name.clone(),
+        OutputCondition::Bool(value) => value.to_string(),
+        OutputCondition::StaticU32(value) => value.to_string(),
+        OutputCondition::Member(base, field) => format!("{}.{}", condition_name(base), field),
+        OutputCondition::Unary(op, value) => format!("({op}{})", condition_name(value)),
+        OutputCondition::Binary(op, a, b) => format!("({}{op}{})", condition_name(a), condition_name(b)),
+        OutputCondition::Constant(value) => format!("{}[{}]", value.ty.name,
+            value.bits.iter().map(|bits| format!("{bits:016x}")).collect::<Vec<_>>().join(",")),
+    }
 }
 impl CFunctionType {
     pub(crate) fn syntax(&self) -> TypeName {
@@ -46,6 +65,7 @@ impl CFunctionType {
             } else { ty.clone() };
             GenericArgument::Type(ty)
         }));
+        if !self.outputs.is_empty() { syntax.outputs = Some(Box::new(self.outputs.clone())); }
         syntax
     }
 }
@@ -133,7 +153,10 @@ impl World {
             };
             parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
         }
-        let function = CFunctionType { result, parameters: parsed };
+        let outputs = crate::check::outputs::bind_function_outputs(
+            self, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
+            source, span, module, imports)?;
+        let function = CFunctionType { result, parameters: parsed, outputs };
         let mut ty = Ty::scalar(Scalar::U64);
         ty.name = type_name(&function.syntax());
         ty.function = Some(Box::new(function));
@@ -158,6 +181,8 @@ impl World {
     pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
         if let Some(function) = &ty.function && consumed.insert(ty.name.clone()) {
             let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
+            crate::check::outputs::validate_function_outputs(
+                &parameters, result.as_ref(), &function.outputs, source, span)?;
             for parameter in parameters {
                 let ty = match parameter { CallParameter::Value(ty) | CallParameter::Reference { ty, .. } => ty };
                 self.validate_c_functions(&ty, source, span, module, imports, consumed)?;

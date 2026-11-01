@@ -6,6 +6,52 @@ use application::Ownership;
 use owned_presence::Presence;
 use returns::Returned;
 
+#[derive(Clone, Copy)]
+enum Clauses<'a> {
+    Declaration(&'a [FunctionContract]),
+    Signature(&'a [ContractPredicate], Span),
+}
+/// A borrowed view of the original declaration or bound function-value contract.
+#[derive(Clone, Copy)]
+pub(super) struct Contract<'a> {
+    source: &'a crate::Source,
+    module: &'a str,
+    imports: &'a [String],
+    public: bool,
+    pub(super) parameters: &'a [Param],
+    clauses: Clauses<'a>,
+}
+impl<'a> From<&'a Definition> for Contract<'a> {
+    fn from(definition: &'a Definition) -> Self {
+        Self { source: &definition.source, module: &definition.module,
+            imports: &definition.imports, public: definition.public,
+            parameters: &definition.function.params,
+            clauses: Clauses::Declaration(&definition.function.contracts) }
+    }
+}
+impl<'a> From<&'a Arc<Definition>> for Contract<'a> {
+    fn from(definition: &'a Arc<Definition>) -> Self { definition.as_ref().into() }
+}
+impl<'a> Contract<'a> {
+    pub(super) fn signature(source: &'a crate::Source, module: &'a str, imports: &'a [String],
+        parameters: &'a [Param], outputs: &'a [ContractPredicate], span: Span) -> Self {
+        Self { source, module, imports, public: false, parameters,
+            clauses: Clauses::Signature(outputs, span) }
+    }
+    fn len(self) -> usize {
+        match self.clauses { Clauses::Declaration(clauses) => clauses.len(),
+            Clauses::Signature(clauses, _) => clauses.len() }
+    }
+    fn at(self, index: usize) -> (ContractKind, &'a ContractPredicate, Span) {
+        match self.clauses {
+            Clauses::Declaration(clauses) => {
+                let clause = &clauses[index]; (clause.kind, &clause.predicate, clause.span)
+            }
+            Clauses::Signature(clauses, span) => (ContractKind::Ensures, &clauses[index], span),
+        }
+    }
+}
+
 pub(super) fn validate(
     builder: &Builder<'_>,
     definition: &Definition,
@@ -40,17 +86,16 @@ pub(super) fn validate(
     };
     let mut ty = cooperative::parameter_type(builder.world, parameter, definition)?;
     for field in fields {
-        ty = builder.member(&ty, field, contract.span)?.0;
+        ty = member_type(&ty, field, &builder.definition.source, contract.span)?.0;
     }
     Ok(())
 }
 
-pub(super) fn declared(definition: &Definition, parameter: usize) -> bool {
-    let name = &definition.function.params[parameter].name;
-    definition.function.contracts.iter().any(|contract| {
-        matches!(&contract.predicate,
-        ContractPredicate::Initialized { value, .. } if value.split('.').next() == Some(name))
-    })
+pub(super) fn declared<'a>(definition: impl Into<Contract<'a>>, parameter: usize) -> bool {
+    let definition = definition.into();
+    let name = &definition.parameters[parameter].name;
+    (0..definition.len()).any(|index| matches!(definition.at(index).1,
+        ContractPredicate::Initialized { value, .. } if value.split('.').next() == Some(name)))
 }
 
 fn input_names(definition: &Definition) -> BTreeSet<String> {
@@ -140,7 +185,7 @@ pub(super) fn entry_inputs(
 
 fn expression(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    definition: Contract<'_>,
     condition: &OutputCondition,
     inputs: &BTreeMap<String, Value>,
     returned: Option<&Value>,
@@ -156,7 +201,7 @@ fn expression(
     }
     fn path(
         builder: &mut Builder<'_>,
-        definition: &Definition,
+        definition: Contract<'_>,
         value: &OutputCondition,
         inputs: &BTreeMap<String, Value>,
         returned: Option<&Value>,
@@ -172,7 +217,7 @@ fn expression(
                 if let Some(value) = value {
                     return Ok(value.clone());
                 }
-                if name == "returned" || definition.function.params.iter().any(|p| p.name == *name)
+                if name == "returned" || definition.parameters.iter().any(|p| p.name == *name)
                 {
                     return definition.source.fail(
                         span,
@@ -218,7 +263,7 @@ fn expression(
     }
     fn convert(
         builder: &mut Builder<'_>,
-        definition: &Definition,
+        definition: Contract<'_>,
         condition: &OutputCondition,
         inputs: &BTreeMap<String, Value>,
         returned: Option<&Value>,
@@ -307,18 +352,20 @@ fn expression(
     Ok(value)
 }
 
-pub(super) fn guards(
+pub(super) fn guards<'a>(
     builder: &mut Builder<'_>,
-    definition: &Definition,
+    definition: impl Into<Contract<'a>>,
     parameter: usize,
     ty: &Ty,
     inputs: &BTreeMap<String, Value>,
     returned: Option<&Value>,
 ) -> Result<Vec<Presence>> {
-    let name = &definition.function.params[parameter].name;
+    let definition = definition.into();
+    let name = &definition.parameters[parameter].name;
     let mut guards = vec![None::<Presence>; ty.components.len()];
-    for contract in &definition.function.contracts {
-        let ContractPredicate::Initialized { value, condition } = &contract.predicate else {
+    for index in 0..definition.len() {
+        let (_, predicate, span) = definition.at(index);
+        let ContractPredicate::Initialized { value, condition } = predicate else {
             continue;
         };
         let mut fields = value.split('.');
@@ -328,7 +375,7 @@ pub(super) fn guards(
         let mut selected = ty.clone();
         let mut components = (0..ty.components.len()).collect::<Vec<_>>();
         for field in fields {
-            let (next, projection) = builder.member(&selected, field, contract.span)?;
+            let (next, projection) = member_type(&selected, field, definition.source, span)?;
             components = projection.iter().map(|i| components[*i]).collect();
             selected = next;
         }
@@ -338,7 +385,7 @@ pub(super) fn guards(
             condition,
             inputs,
             returned,
-            contract.span,
+            span,
         )?);
         for component in components {
             guards[component] = Some(
@@ -358,92 +405,158 @@ pub(super) fn contract_predicates(
     builder: &mut Builder<'_>,
     definition: &Definition,
 ) -> Result<BTreeSet<(ContractKind, ContractPredicate)>> {
-    fn normalize(
-        builder: &mut Builder<'_>,
-        definition: &Definition,
-        value: &OutputCondition,
-        span: Span,
-    ) -> Result<OutputCondition> {
-        Ok(match value {
-            OutputCondition::Name(name)
-                if name != "returned"
-                    && !definition.function.params.iter().any(|p| p.name == *name) =>
-            {
-                let key = builder
-                    .world
-                    .resolve(name, &definition.module, &definition.imports, true)
-                    .filter(|key| {
-                        builder.world.functions[key].function.kind == FunctionKind::Constant
-                    })
-                    .ok_or_else(|| Diagnostic {
-                        source: definition.source.clone(),
-                        span,
-                        code: "B225",
-                        message: format!("输出条件没有编译期常量 {name}"),
-                    })?;
-                if definition.public && !builder.world.functions[&key].public {
-                    return definition.source.fail(
-                        span,
-                        "B225",
-                        "公开输出条件的模块常量必须在接口中可见",
-                    );
-                }
-                let (ty, bits) = constant_value(builder.world, &key)?;
-                OutputCondition::Constant(OutputConstant { ty, bits })
-            }
-            OutputCondition::StaticU32(value) => OutputCondition::Constant(OutputConstant {
-                ty: Ty::scalar(Scalar::U32),
-                bits: vec![Bits::from(*value)],
-            }),
-            OutputCondition::Member(base, field) => {
-                let base = normalize(builder, definition, base, span)?;
-                if let OutputCondition::Constant(value) = base {
-                    let selected = if value.ty.has_variants() {
-                        let Some(variant) = value.ty.variants.iter().find(|v| v.name == *field)
-                        else {
-                            return definition.source.fail(
-                                span,
-                                "B225",
-                                "输出条件使用声明的变体名称",
-                            );
-                        };
-                        builder.constant(
-                            Scalar::Bool,
-                            Bits::from(value.bits[0] == Bits::from(variant.discriminant)),
-                        )
-                    } else {
-                        let value = builder.constant_value(value.ty, value.bits);
-                        builder.member_value(value, field, span)?
-                    };
-                    OutputCondition::Constant(OutputConstant {
-                        ty: selected.ty,
-                        bits: selected.constant.unwrap(),
-                    })
-                } else {
-                    OutputCondition::Member(Box::new(base), field.clone())
-                }
-            }
-            OutputCondition::Unary(op, value) => OutputCondition::Unary(
-                op.clone(),
-                Box::new(normalize(builder, definition, value, span)?),
-            ),
-            OutputCondition::Binary(op, a, b) => OutputCondition::Binary(
-                op.clone(),
-                Box::new(normalize(builder, definition, a, span)?),
-                Box::new(normalize(builder, definition, b, span)?),
-            ),
-            value => value.clone(),
-        })
-    }
     let mut predicates = BTreeSet::new();
     for contract in &definition.function.contracts {
         let mut predicate = contract.predicate.clone();
         if let ContractPredicate::Initialized { condition, .. } = &mut predicate {
-            *condition = normalize(builder, definition, condition, contract.span)?;
+            *condition = normalize(builder.world, definition.into(), condition, contract.span)?;
         }
         predicates.insert((contract.kind, predicate));
     }
     Ok(predicates)
+}
+
+fn normalize(
+    world: &World,
+    definition: Contract<'_>,
+    value: &OutputCondition,
+    span: Span,
+) -> Result<OutputCondition> {
+    Ok(match value {
+        OutputCondition::Name(name)
+            if name != "returned" && !definition.parameters.iter().any(|p| p.name == *name) =>
+        {
+            let key = world.resolve(name, definition.module, definition.imports, true)
+                .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
+                .ok_or_else(|| Diagnostic {
+                    source: definition.source.clone(), span, code: "B225",
+                    message: format!("输出条件没有编译期常量 {name}"),
+                })?;
+            if definition.public && !world.functions[&key].public {
+                return definition.source.fail(span, "B225", "公开输出条件的模块常量必须在接口中可见");
+            }
+            let (ty, bits) = constant_value(world, &key)?;
+            OutputCondition::Constant(OutputConstant { ty, bits })
+        }
+        OutputCondition::StaticU32(value) => OutputCondition::Constant(OutputConstant {
+            ty: Ty::scalar(Scalar::U32), bits: vec![Bits::from(*value)],
+        }),
+        OutputCondition::Member(base, field) => {
+            let base = normalize(world, definition, base, span)?;
+            if let OutputCondition::Constant(value) = base {
+                let selected = if value.ty.has_variants() {
+                    let Some(variant) = value.ty.variants.iter().find(|v| v.name == *field) else {
+                        return definition.source.fail(span, "B225", "输出条件使用声明的变体名称");
+                    };
+                    OutputConstant { ty: Ty::scalar(Scalar::Bool),
+                        bits: vec![Bits::from(value.bits[0] == Bits::from(variant.discriminant))] }
+                } else if value.ty.array.is_some() && field == "length" {
+                    OutputConstant { ty: Ty::scalar(Scalar::U32),
+                        bits: vec![Bits::from(value.ty.values[0])] }
+                } else {
+                    let (ty, components) = member_type(&value.ty, field, definition.source, span)?;
+                    OutputConstant { ty, bits: components.iter().map(|i| value.bits[*i]).collect() }
+                };
+                OutputCondition::Constant(selected)
+            } else {
+                OutputCondition::Member(Box::new(base), field.clone())
+            }
+        }
+        OutputCondition::Unary(op, value) => OutputCondition::Unary(
+            op.clone(), Box::new(normalize(world, definition, value, span)?)),
+        OutputCondition::Binary(op, a, b) => OutputCondition::Binary(
+            op.clone(), Box::new(normalize(world, definition, a, span)?),
+            Box::new(normalize(world, definition, b, span)?)),
+        value => value.clone(),
+    })
+}
+
+pub(crate) fn bind_function_outputs(
+    world: &World, parameters: &[(Access, TypeName)], outputs: &[ContractPredicate],
+    source: &crate::Source, span: Span, module: &str, imports: &[String],
+) -> Result<Vec<ContractPredicate>> {
+    if outputs.is_empty() { return Ok(Vec::new()); }
+    let parameters = parameters.iter().enumerate().map(|(index, (access, ty))|
+        Param { name: format!("argument{index}"), ty: ty.clone(), access: *access, span }
+    ).collect::<Vec<_>>();
+    let contract = Contract::signature(source, module, imports, &parameters, outputs, span);
+    let mut bound = BTreeSet::new();
+    for predicate in outputs {
+        let ContractPredicate::Initialized { value, condition } = predicate else {
+            return source.fail(span, "B225", "cfn输出合同使用ensures initialized");
+        };
+        bound.insert(ContractPredicate::Initialized { value: value.clone(),
+            condition: normalize(world, contract, condition, span)? });
+    }
+    Ok(bound.into_iter().collect())
+}
+pub(crate) fn validate_function_outputs(
+    parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
+    source: &crate::Source, span: Span,
+) -> Result<()> {
+    if outputs.is_empty() { return Ok(()); }
+    fn parameter(parameters: &[CallParameter], name: &str) -> Option<usize> {
+        parameters.iter().enumerate().find_map(|(index, _)|
+            (name == format!("argument{index}")).then_some(index))
+    }
+    fn path(parameters: &[CallParameter], result: Option<&Ty>, value: &OutputCondition,
+        source: &crate::Source, span: Span) -> Result<Ty> {
+        match value {
+            OutputCondition::Name(name) if name == "returned" => result.cloned()
+                .ok_or_else(|| Diagnostic { source: source.clone(), span, code: "B225",
+                    message: "无返回值的cfn没有returned输入".into() }),
+            OutputCondition::Name(name) => {
+                let Some(index) = parameter(parameters, name) else {
+                    return source.fail(span, "B225", format!("cfn输出条件没有输入{name}"));
+                };
+                match &parameters[index] {
+                    CallParameter::Value(ty) => Ok(ty.clone()),
+                    _ => source.fail(span, "B225", "输出条件引用按值输入快照或实际returned"),
+                }
+            }
+            OutputCondition::Member(base, field) => {
+                let ty = path(parameters, result, base, source, span)?;
+                if ty.array.is_some() && field == "length" { return Ok(Ty::scalar(Scalar::U32)); }
+                if ty.has_variants() {
+                    return if ty.variants.iter().any(|variant| variant.name == *field) {
+                        Ok(Ty::scalar(Scalar::Bool))
+                    } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
+                }
+                member_type(&ty, field, source, span).map(|(ty, _)| ty)
+            }
+            _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
+        }
+    }
+    fn inputs(parameters: &[CallParameter], result: Option<&Ty>, value: &OutputCondition,
+        source: &crate::Source, span: Span) -> Result<()> {
+        match value {
+            OutputCondition::Name(_) | OutputCondition::Member(..) => {
+                path(parameters, result, value, source, span)?; Ok(())
+            }
+            OutputCondition::Unary(_, value) => inputs(parameters, result, value, source, span),
+            OutputCondition::Binary(_, a, b) => {
+                inputs(parameters, result, a, source, span)?;
+                inputs(parameters, result, b, source, span)
+            }
+            _ => Ok(()),
+        }
+    }
+    for output in outputs {
+        let ContractPredicate::Initialized { value, condition } = output else {
+            return source.fail(span, "B225", "cfn输出合同使用ensures initialized");
+        };
+        let mut fields = value.split('.');
+        let Some(index) = fields.next().and_then(|name| parameter(parameters, name)) else {
+            return source.fail(span, "B225", "initialized需要实际write／inout参数或字段");
+        };
+        let CallParameter::Reference { ty, access: Access::Write | Access::InOut } = &parameters[index] else {
+            return source.fail(span, "B225", "initialized需要实际write／inout参数或字段");
+        };
+        let mut ty = ty.clone();
+        for field in fields { ty = member_type(&ty, field, source, span)?.0; }
+        inputs(parameters, result, condition, source, span)?;
+    }
+    Ok(())
 }
 
 fn resource_guard(ty: &Ty, offset: u32, guards: &[Presence]) -> Presence {

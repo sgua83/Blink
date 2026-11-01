@@ -261,7 +261,7 @@ impl Builder<'_> {
         let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
             else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
         self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
-            d.function.result.is_never(), Some(d.as_ref()), span)
+            d.function.result.is_never(), Some(d.as_ref().into()), span)
     }
     pub(super) fn function_value_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Result<Option<returns::Returned>> {
         if self.program.target != Target::Cpu {
@@ -284,12 +284,17 @@ impl Builder<'_> {
             Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
         }).collect::<Vec<_>>();
         let Some(arguments) = self.call_arguments(&source_parameters, None, args, span)? else { return Ok(None); };
-        self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, None, span)
+        let definition = self.definition.clone();
+        let contract = if function.outputs.is_empty() { None } else {
+            Some(outputs::Contract::signature(&definition.source, &definition.module,
+                &definition.imports, &source_parameters, &function.outputs, span))
+        };
+        self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span)
             .map(|value| value.map(returns::Returned::value))
     }
     #[inline(never)]
     fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
-        never: bool, definition: Option<&Definition>, span: Span) -> Result<Option<Value>> {
+        never: bool, definition: Option<outputs::Contract<'_>>, span: Span) -> Result<Option<Value>> {
         if self.program.target != Target::Cpu { return self.fail(span, "B265", "C ABI调用只能在CPU位置执行"); }
         let mut arguments = Vec::new();
         let mut written = Vec::new();
@@ -305,7 +310,7 @@ impl Builder<'_> {
             arguments.push(match (parameter, arg) {
                 (CallParameter::Value(ty), Argument::Value(value)) => {
                     self.require_same(ty, &value.ty, span)?;
-                    if let Some(d) = definition { output_inputs.insert(d.function.params[index].name.clone(), value.clone()); }
+                    if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
                     CallArgument::Value { ty: ty.clone(), values: value.regs }
                 }
                 (CallParameter::Reference { ty, access }, Argument::Reference(owner)) => {

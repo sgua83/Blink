@@ -95,6 +95,7 @@ pub struct Variant {
 pub struct CFunctionType {
     pub result: crate::ast::TypeName,
     pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
+    pub outputs: Vec<crate::ast::ContractPredicate>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {

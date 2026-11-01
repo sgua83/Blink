@@ -84,21 +84,9 @@ impl Builder<'_> {
             values.push(value);
         }
         for name in held { self.env.remove(&name); }
-        self.record_value(name, values, span).map(Some)
-    }
-    pub(super) fn record_value(
-        &mut self,
-        name: &TypeName,
-        values: Vec<Value>,
-        span: Span,
-    ) -> Result<Value> {
-        let ty = self.world.ty(
-            name,
-            &self.definition.source,
-            span,
-            &self.definition.module,
-            &self.definition.imports,
-        )?;
+        if ty.is_c_function() {
+            return self.value_constructor(ty, values, span).map(Some);
+        }
         if ty.owns_resources() {
             return self.fail(span, "B224", "拥有资源的记录通过移动构造，不能复制为普通值");
         }
@@ -119,13 +107,13 @@ impl Builder<'_> {
             }
             value.ty = ty;
             value.literal = false;
-            return Ok(value);
+            return Ok(Some(value));
         }
         if ty.matrix_shape().is_some() {
-            return self.matrix_construct(ty, values, span);
+            return self.matrix_construct(ty, values, span).map(Some);
         }
         if ty.array.is_some() && values.len() == 1 && values[0].ty == ty {
-            return Ok(values.into_iter().next().unwrap());
+            return Ok(Some(values.into_iter().next().unwrap()));
         }
         if let Some(element) = &ty.array {
             let count = ty.values[0] as usize;
@@ -152,16 +140,16 @@ impl Builder<'_> {
                     a
                 });
             }
-            return Ok(Value {
+            return Ok(Some(Value {
                 proof,
                 literal: false,
                 ty,
                 regs,
                 uniform,
                 constant,
-            });
+            }));
         }
-        self.pack_record(ty, values, span)
+        self.pack_record(ty, values, span).map(Some)
     }
     pub(super) fn pack_record(&mut self, ty: Ty, values: Vec<Value>, span: Span) -> Result<Value> {
         if values.len() != ty.aggregate_len() {

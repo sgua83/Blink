@@ -138,8 +138,7 @@ fn select(
     let mut value = value.clone();
     let mut components: Vec<_> = (0..value.regs.len()).collect();
     for field in fields {
-        let (ty, indices) = builder
-            .member(&value.ty, field, span)
+        let (ty, indices) = member_type(&value.ty, field, &builder.definition.source, span)
             .map_err(|error| Diagnostic {
                 source: definition.source.clone(),
                 span,
@@ -422,7 +421,7 @@ fn reference(
     };
     let mut place = owner.place.clone();
     for field in fields {
-        let (ty, components) = builder.member(place.ty(), field, span)?;
+        let (ty, components) = member_type(place.ty(), field, &builder.definition.source, span)?;
         place = place.project(ty, &components);
     }
     Ok(place)
@@ -457,7 +456,7 @@ pub(super) fn contiguous_assumed(
             .map(|(_, offset)| *offset)
             .collect::<Vec<_>>();
         for field in fields {
-            let (next, components) = builder.member(&selected, field, span)?;
+            let (next, components) = member_type(&selected, field, &builder.definition.source, span)?;
             guaranteed = components.iter().map(|i| guaranteed[*i]).collect();
             selected = next;
         }

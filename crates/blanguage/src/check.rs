@@ -30,7 +30,7 @@ mod owned_borrows;
 mod owned_presence;
 mod owned_values;
 mod ownership;
-mod outputs;
+pub(crate) mod outputs;
 mod prefix;
 mod records;
 mod reduce;
@@ -53,6 +53,55 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+
+pub(crate) fn member_type(ty: &Ty, field: &str, source: &crate::Source, span: Span) -> Result<(Ty, Vec<usize>)> {
+    if ty.has_variants() {
+        return source.fail(
+            span,
+            "B269",
+            "结果载荷通过 match 或 try 使用，不公开原始判别字／载荷字段",
+        );
+    }
+    if ty.view.is_some() {
+        return if field == "length" {
+            Ok((Ty::scalar(Scalar::U32), vec![2]))
+        } else {
+            source.fail(span, "B185", "view 只公开只读 length，不公开设备地址分量")
+        };
+    }
+    if let Some((_, offset, sub)) = ty.fields.iter().find(|(n, _, _)| n == field) {
+        let indices = sub
+            .components
+            .iter()
+            .map(|(_, o)| {
+                ty.components
+                    .iter()
+                    .position(|(_, v)| *v == offset + o)
+                    .unwrap()
+            })
+            .collect();
+        return Ok(((**sub).clone(), indices));
+    }
+    if !ty.is_handle() && ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
+    {
+        let mut indices = Vec::new();
+        for c in field.chars() {
+            let i = match c {
+                'x' | 'r' => 0,
+                'y' | 'g' => 1,
+                'z' | 'b' => 2,
+                'w' | 'a' => 3,
+                _ => return source.fail(span, "B139", format!("未知字段 {field}")),
+            };
+            if i >= ty.components.len() {
+                return source.fail(span, "B140", "向量分量越界");
+            }
+            indices.push(i);
+        }
+        return Ok((Ty::vector(ty.components[0].0, indices.len()), indices));
+    }
+    source.fail(span, "B141", format!("{} 没有字段 {field}", ty.name))
+}
 
 #[derive(Clone)]
 enum Root {
@@ -1909,54 +1958,6 @@ impl<'a> Builder<'a> {
             _ => self.fail(e.span, "B138", "表达式不是可赋值位置"),
         }
     }
-    fn member(&self, ty: &Ty, field: &str, span: Span) -> Result<(Ty, Vec<usize>)> {
-        if ty.has_variants() {
-            return self.fail(
-                span,
-                "B269",
-                "结果载荷通过 match 或 try 使用，不公开原始判别字／载荷字段",
-            );
-        }
-        if ty.view.is_some() {
-            return if field == "length" {
-                Ok((Ty::scalar(Scalar::U32), vec![2]))
-            } else {
-                self.fail(span, "B185", "view 只公开只读 length，不公开设备地址分量")
-            };
-        }
-        if let Some((_, offset, sub)) = ty.fields.iter().find(|(n, _, _)| n == field) {
-            let indices = sub
-                .components
-                .iter()
-                .map(|(_, o)| {
-                    ty.components
-                        .iter()
-                        .position(|(_, v)| *v == offset + o)
-                        .unwrap()
-                })
-                .collect();
-            return Ok(((**sub).clone(), indices));
-        }
-        if !ty.is_handle() && ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
-        {
-            let mut indices = Vec::new();
-            for c in field.chars() {
-                let i = match c {
-                    'x' | 'r' => 0,
-                    'y' | 'g' => 1,
-                    'z' | 'b' => 2,
-                    'w' | 'a' => 3,
-                    _ => return self.fail(span, "B139", format!("未知字段 {field}")),
-                };
-                if i >= ty.components.len() {
-                    return self.fail(span, "B140", "向量分量越界");
-                }
-                indices.push(i);
-            }
-            return Ok((Ty::vector(ty.components[0].0, indices.len()), indices));
-        }
-        self.fail(span, "B141", format!("{} 没有字段 {field}", ty.name))
-    }
     fn read_place(&mut self, p: &Place, span: Span) -> Result<Value> {
         if p.ty().owns_resources() {
             return self.fail(
@@ -2307,14 +2308,6 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn specialized_expression(&mut self, e: &Expr, name: &str, explicit: &[GenericArgument], args: &[Expr]) -> Result<Option<Value>> {
-        if name == "cfn" {
-            let mut syntax = TypeName::named("cfn");
-            syntax.arguments = explicit.to_vec();
-            let ty = self.world.ty(&syntax, &self.definition.source, e.span, &self.definition.module, &self.definition.imports)?;
-            let mut values = Vec::new();
-            for arg in args { let Some(value) = self.expr(arg)? else { return Ok(None); }; values.push(value); }
-            return self.value_constructor(ty, values, e.span).map(Some);
-        }
         if name == "unsafe_function" {
             if self.program.target != Target::Cpu {
                 return self.fail(e.span, "B265", "unsafe_function只解释本进程CPU函数地址");
@@ -3859,7 +3852,7 @@ impl<'a> Builder<'a> {
         if p.ty().view.is_some() {
             return self.fail(e.span, "B185", "view 元数据不可修改或按分量访问");
         }
-        let (sub, components) = self.member(p.ty(), field, e.span)?;
+        let (sub, components) = member_type(p.ty(), field, &self.definition.source, e.span)?;
         Ok(Some(p.project(sub, &components)))
     }
     fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
@@ -4258,7 +4251,7 @@ impl<'a> Builder<'a> {
                 }
                 return self.fail(e.span, "B185", "view 只公开只读 length，不公开设备地址分量");
             }
-            let (sub, components) = self.member(p.ty(), field, e.span)?;
+            let (sub, components) = member_type(p.ty(), field, &self.definition.source, e.span)?;
             return self
                 .read_place(&p.project(sub, &components), e.span)
                 .map(Some);
@@ -4275,7 +4268,7 @@ impl<'a> Builder<'a> {
         if v.ty.view.is_some() && field == "length" {
             return Ok(Self::view_length(&v));
         }
-        let (ty, indices) = self.member(&v.ty, field, span)?;
+        let (ty, indices) = member_type(&v.ty, field, &self.definition.source, span)?;
         Ok(Value {
             proof: v.projected_proof(&indices),
             literal: false,

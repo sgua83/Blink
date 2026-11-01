@@ -225,7 +225,7 @@ impl Builder<'_> {
             },
             ExprKind::Member(base, field) => {
                 let view = self.tile_view(base)?;
-                let (ty, indices) = self.member(&view.ty, field, expr.span)?;
+                let (ty, indices) = member_type(&view.ty, field, &self.definition.source, expr.span)?;
                 Ok(TileView {
                     tile: view.tile,
                     ty,
