@@ -401,7 +401,7 @@ impl Parser {
                         kind: StmtKind::Return(Some(value)),
                     }]),
                     external: None,
-                    span,
+                    span: Span { start: span.start, end: self.tokens[self.at - 1].span.end },
                 });
                 continue;
             }

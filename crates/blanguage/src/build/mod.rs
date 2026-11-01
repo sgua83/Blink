@@ -101,7 +101,7 @@ fn compile_in(
         Err(error) => return Err(error.into()),
     }
     let compilation =
-        crate::compile_world(world, module, true, Some((crate::EntryKind::Domain, entry)))?;
+        crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)))?;
     let compiled_images = compilation
         .programs
         .into_iter()

@@ -12,7 +12,7 @@ impl Builder<'_> {
         value.literal = true;
         value
     }
-    pub(super) fn constant_value(&mut self, ty: Ty, bits: Vec<Bits>) -> Value {
+    pub(crate) fn constant_value(&mut self, ty: Ty, bits: Vec<Bits>) -> Value {
         let regs = ty
             .components
             .iter()
@@ -30,7 +30,7 @@ impl Builder<'_> {
     }
 }
 /// 使用现有表达式、调用与常量分析；不编译或运行宿主／设备初始化函数。
-pub(super) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<Bits>)> {
+pub(crate) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<Bits>)> {
     evaluate(world, key, &[])
 }
 /// 阶段派生参数复用已有表达式及常量语义；没有宿主求值器或新增运行阶段。
@@ -116,6 +116,9 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
         Ok((value.ty, value.constant.unwrap()))
     })();
     world.evaluating_constants.borrow_mut().remove(key);
+    if result.is_ok() && let Some(inputs) = &world.build_constants {
+        inputs.borrow_mut().insert(key.into());
+    }
     result
 }
 impl World {

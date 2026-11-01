@@ -9,7 +9,7 @@ mod atomic;
 mod bounds;
 mod compact;
 mod constant;
-use constant::constant_value;
+pub(crate) use constant::constant_value;
 pub(crate) use constant::variant_discriminant;
 mod application;
 mod contracts;

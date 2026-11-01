@@ -14,15 +14,16 @@ pub struct ObjectCompilation {
     pub artifact: PathBuf,
     pub reused: bool,
 }
-const MAGIC: &[u8; 8] = b"BLBO\x02\0\0\0";
+const MAGIC: &[u8; 8] = b"BLBO\x03\0\0\0";
 struct Inputs {
     source: [u8; 32],
     imports: [u8; 32],
     native: Option<[u8; 32]>,
+    constants: Vec<String>,
 }
-record!(Inputs { source, imports, native });
+record!(Inputs { source, imports, native, constants });
 fn error(value: impl ToString) -> Error { Error::other(value.to_string()) }
-fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, object: &Object) -> [u8; 32] {
+fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, object: &Object, constants: &[String]) -> [u8; 32] {
     let mut bytes = Vec::new();
     for symbol in object.imports.keys() {
         hash::field(&mut bytes, symbol.as_bytes());
@@ -49,12 +50,27 @@ fn import_identity(declarations: &crate::Declarations, imported: Option<&crate::
             _ => hash::field(&mut bytes, &[0]),
         }
     }
+    hash::field(&mut bytes, &(constants.len() as u64).to_le_bytes());
+    for key in constants {
+        hash::field(&mut bytes, key.as_bytes());
+        match declarations.functions.get(key).filter(|definition| definition.function.kind == crate::ast::FunctionKind::Constant) {
+            Some(definition) => {
+                hash::field(&mut bytes, &[1]);
+                let span = definition.function.span;
+                hash::field(&mut bytes, definition.source.text[span.start..span.end].as_bytes());
+            }
+            None => hash::field(&mut bytes, &[0]),
+        }
+    }
     hash::digest(&bytes)
 }
 
-fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, source: &crate::ast::Source) {
+fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, source: &crate::ast::Source, imported: bool) {
     let mut functions = declarations.functions.values()
-        .filter(|definition| definition.compiled.is_some() && definition.source.path == source.path)
+        .filter(|definition| definition.source.path == source.path
+            && (definition.compiled.is_some() || imported
+                && definition.function.kind == crate::ast::FunctionKind::Constant
+                && !definition.function.name.contains("::")))
         .collect::<Vec<_>>();
     functions.sort_by_key(|definition| definition.function.span.start);
     let mut start = 0;
@@ -100,7 +116,8 @@ pub(super) fn compile<'a>(
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
         })?) };
     let imported = imports.as_ref().filter(|imports| !imports.modules.is_empty());
-    let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs)?;
+    let (mut world, module) = crate::read_world(source_path, source_root, imported, worker, inputs)?;
+    world.build_constants = Some(std::cell::RefCell::new(std::collections::BTreeSet::new()));
     let declarations = world.declarations.clone();
     let mut bytes = Vec::new();
     for value in [path.as_os_str().as_encoded_bytes(), root.as_os_str().as_encoded_bytes(),
@@ -121,7 +138,7 @@ pub(super) fn compile<'a>(
     for (name, source) in world.interfaces.iter().chain(&world.sources) {
         hash::field(&mut bytes, name.as_bytes());
         hash::field(&mut bytes, source.path.as_os_str().as_encoded_bytes());
-        source_identity(&mut bytes, &declarations, source);
+        source_identity(&mut bytes, &declarations, source, imported.is_some_and(|imports| imports.modules.contains_key(name)));
     }
     let source = hash::digest(&bytes);
     let runtime = !matches!(kind, ObjectKind::Module(_));
@@ -134,7 +151,7 @@ pub(super) fn compile<'a>(
                 let stored = Inputs::from_bytes(stored).map_err(error)?;
                 if stored.source == source {
                     let object = reader.object().map_err(error)?;
-                    if stored.imports == import_identity(&declarations, imported, &object) {
+                    if stored.imports == import_identity(&declarations, imported, &object, &stored.constants) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
                         if stored.native == native {
                             return Ok(ObjectCompilation { object, artifact, reused: true });
@@ -152,18 +169,19 @@ pub(super) fn compile<'a>(
             crate::check::compile_native_module(&world, &module, instances)?.compile_in(worker).map_err(error)?
         }
         ObjectKind::Application(entry) => {
-            crate::compile_world(world, module, false, Some((crate::EntryKind::Application, entry)))?
+            crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)))?
                 .applications.remove(0).compile_in(worker).map_err(error)?
         }
         ObjectKind::Library { entry, prefix } => {
-            let compilation = crate::compile_world(world, module, true, Some((crate::EntryKind::Domain, entry)))?;
+            let compilation = crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)))?;
             let program = compilation.programs.first().ok_or_else(|| Error::other("DLL 编译需要无前置条件的具体 program"))?;
             crate::dll::compile_in(worker, program, prefix).map_err(error)?
         }
     };
     let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime)?) } else { None };
-    let imports = import_identity(&declarations, imported, &object);
-    let mut stored = MAGIC.to_vec(); stored.extend(Inputs { source, imports, native }.bytes());
+    let constants = world.build_constants.as_ref().unwrap().borrow().iter().cloned().collect::<Vec<_>>();
+    let imports = import_identity(&declarations, imported, &object, &constants);
+    let mut stored = MAGIC.to_vec(); stored.extend(Inputs { source, imports, native, constants }.bytes());
     let bytes = object.build_bytes(&stored).map_err(error)?;
     fs::create_dir_all(artifact.parent().unwrap())?;
     publish(&artifact, &bytes)?;

@@ -77,6 +77,7 @@ pub(crate) struct World {
     declarations: Arc<Declarations>,
     worker: compiler::Worker,
     evaluating_constants: RefCell<BTreeSet<String>>,
+    build_constants: Option<RefCell<BTreeSet<String>>>,
 }
 impl std::ops::Deref for World {
     type Target = Declarations;
@@ -84,7 +85,7 @@ impl std::ops::Deref for World {
 }
 impl World {
     fn new(declarations: Arc<Declarations>, worker: compiler::Worker) -> Self {
-        Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()) }
+        Self { declarations, worker, evaluating_constants: RefCell::new(BTreeSet::new()), build_constants: None }
     }
 }
 fn read(path: &Path) -> Result<Source> {
@@ -187,7 +188,7 @@ fn compile_module_on(
 ) -> Result<Compilation> {
     compiler.ast(path, |worker| {
         let (world, entry) = read_world(path, module_root, imported, worker, None)?;
-        compile_world(world, entry, require_program, requested)
+        compile_world(&world, entry, require_program, requested)
     })
 }
 impl Compiler {
@@ -212,13 +213,13 @@ impl Compiler {
                 span: Span::default(), code: "B270", message: error.to_string(),
             })?;
             let (world, module) = read_world(path, root, Some(&imports), worker, None)?;
-            Ok(compile_world(world, module, false, Some((EntryKind::Application, entry)))?
+            Ok(compile_world(&world, module, false, Some((EntryKind::Application, entry)))?
                 .applications.remove(0))
         })
     }
 }
 fn compile_world(
-    world: World,
+    world: &World,
     entry: String,
     require_program: bool,
     requested: Option<(EntryKind, &str)>,
@@ -266,7 +267,7 @@ fn compile_world(
     let mut jobs = Vec::new();
     let planned = (|| -> Result<()> {
         for (base, definition) in &world.functions {
-            if definition.compiled.is_some() { continue; }
+            if definition.compiled.is_some() || definition.function.kind == FunctionKind::Constant { continue; }
             generics::validate_declaration(definition)?;
             if selected.as_ref().is_some_and(|(key, _, _)| key == base) {
                 continue;
@@ -283,7 +284,13 @@ fn compile_world(
         jobs.push(Job::Selected(key, arguments, *kind));
     }
     let declarations = &world.declarations;
-    let output = parallel::try_map(&world.worker, jobs, |worker| World::new(Arc::clone(declarations), worker.clone()), |world, job| {
+    let collect_constants = world.build_constants.is_some();
+    let output = parallel::try_map(&world.worker, jobs, |worker| {
+        let mut world = World::new(Arc::clone(declarations), worker.clone());
+        if collect_constants { world.build_constants = Some(RefCell::new(BTreeSet::new())); }
+        world
+    }, |world, job| {
+        let output = (|| -> Result<Output> {
         let mut programs = Vec::new();
         match job {
             Job::Failed(error) => return Err(error),
@@ -318,6 +325,10 @@ fn compile_world(
             }
         }
         Ok(Output::Programs(programs))
+        })()?;
+        let constants = world.build_constants.as_ref()
+            .map(|inputs| std::mem::take(&mut *inputs.borrow_mut())).unwrap_or_default();
+        Ok((output, constants))
     }).map_err(|error| match error {
         parallel::Error::Work(error) => error,
         parallel::Error::Resource(error) => Diagnostic {
@@ -328,7 +339,8 @@ fn compile_world(
     let mut programs = Vec::new();
     let mut templates = Vec::new();
     let mut applications = Vec::new();
-    for output in output {
+    for (output, constants) in output {
+        if let Some(inputs) = &world.build_constants { inputs.borrow_mut().extend(constants); }
         match output {
             Output::Application(application) => applications.push(application),
             Output::Programs(images) => for program in images {
@@ -402,7 +414,14 @@ fn read_world(
     for definition in world.functions.values().filter(|definition| definition.compiled.is_some()) {
         generics::validate_declaration(definition)?;
     }
-    Ok((World::new(Arc::new(world), worker.clone()), entry))
+    let world = World::new(Arc::new(world), worker.clone());
+    for (key, definition) in &world.functions {
+        if definition.function.kind == FunctionKind::Constant {
+            generics::validate_declaration(definition)?;
+            check::constant_value(&world, key)?;
+        }
+    }
+    Ok((world, entry))
 }
 fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {
