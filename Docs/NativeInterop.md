@@ -256,7 +256,7 @@ B内部合同不开放普通extern C的整份拥有资源接口。完整资源�
 
 普通外部声明仍是信任边界；必须按实际C签名及输出语义声明。`write handle`承诺每条正常返回完整初始化，可能失败且保留旧输出的系统API应使用已初始化的inout位置或其真实接口合同，不能因正常C返回就假定成功写出句柄。
 
-真实句柄由对应资源所有者在最后消费者完成后关闭，GPU仅消费身份值，不访问外部OS对象。owned<T,F>可表达CPU静态释放，但B自有位置取址、需执行上下文的回调及保留寿命、字符／字符串及完整系统库仍未实现，不外推为完整窗口或COM支持。
+真实句柄由对应资源所有者在最后消费者完成后关闭，GPU仅消费身份值，不访问外部OS对象。owned<T,F>可表达CPU静态释放，但B自有位置取址、需执行上下文的回调及保留寿命、通用拥有字符串、借用字符切片及完整系统库仍未实现，不外推为完整窗口或COM支持。
 
 
 ## 用户拥有包装与原生互操作
@@ -316,3 +316,9 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 `blink.windows.error`以纯`.h`直接声明Kernel32的`u32 GetLastError()`与`void SetLastError(u32 code)`，Windows DWORD按完整32位无符号值交接。唯一可变错误槽属于原OS线程，库不创建全局last-error、宿主转发或清除策略；读取得到的普通u32快照由原调用者保存和使用。
 
 调用者只在原API规定的返回条件下立即读取，必须先于打印、释放或其他可能改写线程错误的调用。清零同样由真实API合同决定，不自动包住所有系统入口。模块不提供错误字符串或通用错误对象，不替应用退出进程；完整用法与官方合同见[标准库错误码接口](../library/README.md#blinkwindowserror)。B接口可用和BLEngine原Rust错误处理已迁移分别记录。
+
+## Windows当前进程的命令行输入
+
+`blink.windows.process::command_line() on cpu`以普通B函数交回独立拥有的`dataset<u16>`。私有GetCommandLineW只在真实Windows x64 C ABI上取得OS管理的地址，B按原unsafe_position<u16>同步只读至首个NUL，复制实际代码单元，不修改／释放系统字符串或将其地址／view交给调用者。结果不含终止符，不解析参数、不验证或替换孤立代理单元；需要其他编码由原Unicode库显式处理。
+
+返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；实际argv、环境与进程控制仍未实现。

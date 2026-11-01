@@ -32,7 +32,7 @@ unsafe_position<T>(address_value)在CPU执行位置解释一份真实外部地�
 
 例如unsafe_position<Pair>(pointer).left直接访问原记录字段；修改函数change(inout Pair value)接收unsafe_position<Pair>(pointer)时借用同一原位置。array<u32,4>等固定数组保留声明步长及原下标规则，读取复制出的普通值是独立快照，不成为对原存储的长期引用。
 
-B自有位置取址、带来源地址及借用返回沿C-020.2.7.2.2继续建设；Windows x64系统信息的具体B接口、实际结构／地址输出与原生消费范围见[blink.windows.system](../library/README.md#blinkwindowssystem)；高精度计数与频率以[blink.windows.time](../library/README.md#blinkwindowstime)的i32状态／条件write i64直接交接，分别保留ticks与ticks／秒，不代表日历时间或GPU计时；[blink.windows.error](../library/README.md#blinkwindowserror)直接交接原OS线程的32位错误码读取／设置，错误快照由调用者立即保存，不自动清零或转换业务结果；其他系统库仍按真实API逐项建设；C函数地址签名值及实际调用见下节；系统回调及最后消费者寿命归C-021.6.1的剩余叶项。设备地址、GPU／远端资源和本地CPU地址仍由各自真实存储所有者交接，本地地址位模式不授予跨设备或跨机访问能力。
+B自有位置取址、带来源地址及借用返回沿C-020.2.7.2.2继续建设；Windows x64系统信息的具体B接口、实际结构／地址输出与原生消费范围见[blink.windows.system](../library/README.md#blinkwindowssystem)；高精度计数与频率以[blink.windows.time](../library/README.md#blinkwindowstime)的i32状态／条件write i64直接交接，分别保留ticks与ticks／秒，不代表日历时间或GPU计时；[blink.windows.error](../library/README.md#blinkwindowserror)直接交接原OS线程的32位错误码读取／设置，错误快照由调用者立即保存，不自动清零或转换业务结果；[blink.windows.process](../library/README.md#blinkwindowsprocess)以纯B同步读取OS原命令行并交回独立拥有dataset<u16>，不含NUL、不解析argv或替换UTF-16代码单元；原系统字符串不得修改／释放，输出按原Frame拥有结果交接。其他系统库仍按真实API逐项建设；C函数地址签名值及实际调用见下节；系统回调及最后消费者寿命归C-021.6.1的剩余叶项。设备地址、GPU／远端资源和本地CPU地址仍由各自真实存储所有者交接，本地地址位模式不授予跨设备或跨机访问能力。
 
 算法DLL的CPU／GPU后端使用编译阶段已生成的原生映像，和应用包装共用resource编码；生成的Rust包装只嵌入映像字节，不重建类型、执行计划和阶段对象源码。映像保留同一入口类别、目标、版本与真实代码合同，实际装入、调用及释放仍归原运行库和宿主。
 

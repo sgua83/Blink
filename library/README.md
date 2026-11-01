@@ -194,3 +194,31 @@ println(code);
 这些语句放在普通CPU函数中。模块不提供错误文本、自动Result转换或进程退出政策；外部句柄、缓冲区及其最后消费者仍归原调用者。其他平台和BLEngine窗口／等待等Rust职责的实际迁移继续按对应问题推进。
 
 官方合同：[GetLastError](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror)、[SetLastError](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setlasterror)。
+
+## blink.windows.process
+
+`command_line() on cpu`返回`dataset<u16>`，内容是本次Windows进程的原始命令行，不含末尾NUL。以`import blink.windows.process;`和`-I library`使用；返回值是调用者独立拥有的CPU序列，按UTF-16代码单元计数。引号、空格、制表、反斜线、BOM、补充平面字符的代理对和孤立代理单元原样保留，不按参数拆分、去引号、规范化或替换编码。需要严格UTF-8时由调用者显式使用`blink.unicode::to_utf8`并处理其真实解码结果；命令行代码单元不被自动认定为合法Unicode标量序列。
+
+```b
+module main;
+import blink.windows.process;
+
+u32 main() on cpu {
+    dataset<u16> line=command_line();
+    println(line.length);
+    return 0;
+}
+```
+
+配套`main.h`声明`module main; u32 main() on cpu;`。上例输出UTF-16代码单元数量，不是参数个数。原存储由Windows进程管理，库只同步读取、不修改或释放；纯B实现沿原resize增长同一输出Vec，最终由Frame及调用者的实际资源寿命释放。两次调用取得独立拥有序列，修改或释放一份不改变另一份或OS原存储；没有全局命令行缓存、外部地址泄漏或第二份资源权威。分配／执行失败仍遵循原运行库处理，GetCommandLineW本身没有定义额外失败状态，本接口不猜空指针错误或添加长度限制。
+
+独立对象与静态库仍沿正式阶段交付：
+
+```powershell
+target/release/bc.exe -c library/blink/windows/process.b -I library --module -o target/process.obj
+target/release/blink.exe --archive target/process.obj -o target/process.lib
+target/release/bc.exe -c main.b -I library --import target/process.lib -o target/main.obj
+target/release/blink.exe target/main.obj target/process.lib -o target/main.exe
+```
+
+调用方保留.h接口，提供者.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。argv解析、环境输入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照代替这些能力。

@@ -389,7 +389,7 @@ The B language **does not adopt object-oriented programming**. Programs are orga
 | [Blink and Rust](sample/Blink和Rust混合编程.md) | Minimal integration through simulation and repeated GPU execution; [examples](sample/hybrid/README.md) |
 | [B Language Source Analysis](sample/B语言源码分析.md) | Compiler, IR, backends, and execution framework; [version and reading notes](sample/compiler/README.md) |
 | [BLEngine Source Analysis](sample/BLEngine源码分析.md) | How the first consumer uses the language, scenes, and lighting; [reading notes](sample/engine/README.md) |
-| [B standard library](library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs and whole-text conversions, plus Windows system information and high-resolution timing |
+| [B standard library](library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs, whole-text conversions and owned slices, plus Windows system information, timing, thread error codes and raw command-line snapshots |
 | [Language reference](Docs/BLanguage.md) · [Architecture](Docs/Architecture.md) · [Compute domains](Docs/ComputeDomain.md) | Current rules, long-term boundaries, and future design |
 
 Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions.
