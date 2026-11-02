@@ -41,7 +41,12 @@ use blcompute::application::{Frame, ProgramImage};
 type Factory = unsafe extern "C" fn() -> ModuleImage;
 unsafe extern "C" { static __blink_module_count: usize; static __blink_module_factories: Factory; }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_create() -> *mut c_void {
+pub unsafe extern "C" fn blink_application_error(_context: *mut c_void, data: *const u8, bytes: usize) {
+    let message = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, bytes)) };
+    eprintln!("{message}");
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void) -> *mut c_void {
     let factories = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(__blink_module_factories), __blink_module_count) };
     let mut types = Vec::new();
     let mut programs = Vec::new();
@@ -50,7 +55,11 @@ pub unsafe extern "C" fn blink_create() -> *mut c_void {
         let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
         let module = match unsafe { blanguage::resource::from_compiler_output(bytes) } {
             Ok(module) => module,
-            Err(error) => { eprintln!("{error}"); std::process::exit(1) }
+            Err(error) => {
+                let message = error.to_string();
+                unsafe { on_error(context, message.as_ptr(), message.len()) };
+                return std::ptr::null_mut();
+            }
         };
         types.extend(module.types);
         programs.extend(module.images.into_iter().map(|image| match image {

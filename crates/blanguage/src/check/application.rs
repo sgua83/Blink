@@ -314,21 +314,40 @@ fn live_resources(
         .chain(functions.iter_mut().map(|function| &mut function.body.code))
         .collect::<Vec<_>>();
     let resources = declarations(&mut codes, app.resources);
-    body.code.insert(
-        0,
-        runtime_call(
-            "create",
-            Vec::new(),
-            Some(pointer_type()),
-            frame.clone(),
-        ),
-    );
-    body.code.push(runtime_call(
+    let base = body.registers.len();
+    body.registers.extend([Scalar::U64, Scalar::U64, Scalar::U32, Scalar::U32, Scalar::Bool]);
+    let [receiver, context, address, zero, ready] = [base, base + 1, base + 2, base + 3, base + 4];
+    let mut code = std::mem::take(&mut body.code);
+    code.push(runtime_call(
         "destroy",
-        vec![CallArgument::Value { ty: pointer_type(), values: frame }],
+        vec![CallArgument::Value { ty: pointer_type(), values: frame.clone() }],
         None,
         Vec::new(),
     ));
+    body.code = vec![
+        Inst::FunctionAddress(receiver, CallTarget::External(ExternalName {
+            library: crate::application::RUNTIME_LIBRARY.into(),
+            symbol: "blink_application_error".into(),
+        })),
+        Inst::Constant(context, Scalar::U64, 0),
+        runtime_call(
+            "create",
+            vec![
+                CallArgument::Value { ty: Ty::scalar(Scalar::U64), values: vec![receiver] },
+                CallArgument::Value { ty: Ty::scalar(Scalar::U64), values: vec![context] },
+            ],
+            Some(pointer_type()),
+            frame.clone(),
+        ),
+        Inst::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] },
+        Inst::Constant(zero, Scalar::U32, 0),
+        Inst::Binary { dst: ready, op: BinaryOp::Compare(Comparison::NotEqual), a: address, b: zero },
+        Inst::If {
+            condition: ready,
+            yes: code,
+            no: vec![Inst::Constant(body.outputs[0], body.registers[body.outputs[0]], 1)],
+        },
+    ];
     Some(resources)
 }
 impl Builder<'_> {

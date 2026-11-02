@@ -76,7 +76,7 @@
     },
     {
       "path": "crates/blanguage/src/dll/source.rs",
-      "sha256": "2fcd336aaadcfd7597d5c6a92eee38e7c1bd56463e8304e82dbd9e44337c488a"
+      "sha256": "88b856c662047702eaf5fb25fc7b18ec201fabd23f980609765e552916049de4"
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
@@ -136,7 +136,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "165315c94a9751f7a46474ca5675a7cced0801b57557521a6500fa34b6e009b5"
+      "sha256": "7b1b36ade68531080d16581c0e32bb5072b3c673929e0d6c606277d8c058e2e2"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",

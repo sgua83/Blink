@@ -94,7 +94,7 @@ pub(crate) fn compile_resources(
         exports.extend((0..resources.types.len()).map(|i| format!("{prefix}_allocate_{i}")));
         exports.extend((0..resources.programs.len()).map(|i| format!("{prefix}_run_{i}")));
         if root {
-            exports.push("blink_create".into());
+            exports.extend(["blink_create".into(), "blink_application_error".into()]);
         }
         exports.push(format!("{prefix}_resources"));
         let dependencies: &[&str] = if root {
