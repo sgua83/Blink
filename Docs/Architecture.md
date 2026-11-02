@@ -136,7 +136,9 @@ enum／result 是数据表达。无载荷编号枚举直接使用声明整数标
 
 词法生产由`src/bootstrap/lexer.h／.b`拥有，泛型尖括号前瞻由`src/bootstrap/parser.h／.b`拥有。前瞻直接借用同一Source字节与原Vec的TokenSpan，B完成嵌套尖括号、>>及括号内表达式扫描，Rust仅交接原游标与Option结果；其余Parser仍构造唯一AST。COFF静态归档的布局、两个链接成员、长名称、符号排序及原对象字节输出由`src/bootstrap/archive.h／.b`拥有。Rust仅将现有名字／对象／符号交为同步C ABI借用视图，B布局阶段写入同一视图的实际成员／名称位置，编码阶段直接填原Rust Vec的唯一输出存储；原Rust格式计算和字节生成退出。符号按名称及原成员顺序排序，同名仍选择原首成员；对象载荷不复制为另一输入或重新编译，B不保留地址。读取、目录容器及成员抽取继续由原static_library.rs处理，未写成已由B接管。
 
-标准COFF对象的包络写出由src/bootstrap/coff.h／.b负责：原coff.rs固定对象语义、节／符号选择与重定位绑定，B借用本轮名字、节载荷和已绑定重定位，计算文件布局并直接填充原Rust Vec的唯一输出。B写出AMD64头、节头、COMDAT辅助行、重定位溢出、符号及字符串表；原Rust对应字节生产退出。输入与输出保持到同步调用结束，B不保留地址，不复制对象载荷或Rust私有容器；COFF读取与符号绑定继续由原Rust所有者负责。
+对象符号选择与重定位绑定由src/bootstrap/bindings.h／.b负责：原Object继续拥有节、名字、定义与原始引用，Rust仅交接借用字段并提供按实际条目上界分配的存储。B在同一节点区内维护名字与DLL／名字两棵有序树，保留原定义顺序、重复定义的最后绑定、首次未解析名字及导入的UTF-8字节确定顺序；辅助行计入真实COFF索引，COMDAT关联与全部重定位由同一目录绑定。准备阶段只生成一次符号目录并计算派生名字长度；原COFF布局确认实际格式宽度后，B消费同一目录物化派生名字，不重新选择或复制原始名字。
+
+标准COFF对象的包络写出由src/bootstrap/coff.h／.b负责：B借用已选择符号、原节载荷与已绑定重定位，计算文件布局并直接填充原Rust Vec的唯一输出，写出AMD64头、节头、COMDAT辅助行、重定位溢出、符号及字符串表。原Rust符号选择／绑定及对应字节生产退出。各输入、调用方存储与输出保持到同步消费结束，B不保留地址，不跨Rust私有容器；不引入Frame、运行库、分配回调或另一份符号权威。COFF解码、对象语义／合同及栈记录生产继续由原Rust所有者负责。
 
 对象元数据外层与栈字段由src/bootstrap/metadata.h／.b布局并直接填充同一个Rust Vec，包含对象身份／种类、接口参与要求、库／导出、既有资源描述、函数合同及真实Frame／Call。对象语义、合同冲突和栈调用事实仍由原所有者生成，资源描述内部继续使用共同codec；Rust只交接本轮同步借用视图，不克隆合同载荷，不预格式化栈字节或保留第二份元数据。B保留直接／尾调用、间接调用及未报告原因，原Rust对应word／string写出退出；当前对象格式身份由coff.rs的FORMAT唯一给出并传给B，读取沿同一身份检查，不绑定软件VERSION。
 
@@ -212,7 +214,7 @@ build::compile_entry／build_entry 使用明确源码位置、模块根、大小
 
 ## 普通 CPU 应用、函数与链接
 
-compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff组织已生成的对象语义及符号绑定，B的bootstrap.metadata写出元数据，bootstrap.coff写出标准AMD64 COFF字节。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。
+compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff交接已生成的对象语义及原始字段，B的bootstrap.bindings选择符号并绑定COFF重定位，bootstrap.metadata写出元数据，bootstrap.coff写出标准AMD64 COFF字节。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。
 
 普通 CPU 函数拥有独立 FunctionBody 和原生符号，自递归／互递归通过真实调用帧衔接。native_function::Module 由 Builder、CheckedFunction 和模块编译入口按值交接；application::Context 只持有编译期 Frame 寄存器及资源映像描述，不持有函数模块。真实运行期 Frame、设备、存储及完成不进入编译上下文。
 

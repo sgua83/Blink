@@ -891,7 +891,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、对象元数据、COFF对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
 
-词法扫描、泛型尖括号前瞻、对象元数据及栈字段写出、标准COFF对象字节写出及静态归档格式生成由B接管；对象语义／合同及栈记录生成、符号绑定、归档输入I/O、对象解码、目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、对象元数据及栈字段写出、对象符号选择与重定位绑定、标准COFF对象字节写出及静态归档格式生成由B接管；对象语义／合同及栈记录生成、归档输入I/O、对象解码、目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -2414,7 +2414,39 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
 
 编译阶段已经生成 CPU 机器码、SPIR-V 与 ProgramImage；执行布局只交付绑定、访问、集合和实际设备需求。编译算法对象时，既有执行框架和 C ABI 被编成静态目标库。目标文件不携带等待运行时生成代码的值 IR；链接器只消费目标文件与静态代码，不调用 Cargo／rustc，也不重读 B 实现。
 
-标准COFF对象的文件布局和字节写出由bootstrap/coff.h／.b负责。Rust对象仍持有真实节、名字、重定位及元数据；已绑定的同步借用视图交给B，B计算文件内偏移、节表和符号／字符串表，再直接填充同一个Rust Vec。辅助记录按实际节及COMDAT关联生成，65535条起的重定位使用标准溢出行；未解析符号、DLL导入及对象元数据的语义选择继续归原Rust所有者。输出完成前输入保持，B不保留地址、不复制载荷，原Rust包络字节生产退出。
+对象的符号选择与重定位绑定由bootstrap/bindings.h／.b负责。Rust借用原Object的名字、节、定义与引用，并提供按真实条目上界分配的存储；B在同一个节点区维护名字和DLL／名字两棵有序树，产生唯一的本轮符号目录及重定位索引。定义保留原顺序，重复名字引用最后定义；未解析名字按首次出现加入，DLL导入按UTF-8字节确定排序。COMDAT关联和辅助行参与真实行号，原始名字不复制。
+
+B的prepare只选择一次并算出派生名字的精确长度；COFF布局确认实际字段宽度后，materialize消费同一目录填充名字存储，随后写出最终对象。所有存储仍由同步调用方持有，最后消费者结束后正常释放；没有Frame、运行库、分配回调或额外符号服务。下面的C ABI视图只属于编译器内部，不改变目标文件与资源ABI。
+
+源码节选：`crates/blanguage/src/bootstrap/bindings.h:1`。
+
+```b
+module bootstrap.bindings;
+import bootstrap.coff;
+// Windows x64 C ABI and caller-owned array strides.
+const u64 SECTION_BYTES=72u64;
+const u64 DEFINITION_BYTES=40u64;
+const u64 INPUT_RELOCATION_BYTES=64u64;
+const u64 NODE_BYTES=72u64;
+const u64 OUTPUT_RELOCATION_BYTES=24u64;
+struct BindingBytes {address bytes;u64 length;};
+struct BindingKey {BindingBytes first;BindingBytes second;};
+struct BindingNode {BindingKey key;u64 value;u64 parent;u64 left;u64 right;u64 red;};
+struct BindingSection {
+    BindingBytes name;u64 flags;address relocations;u64 relocation_count;
+    address associated;u64 associated_count;u64 owner;u64 symbol;
+};
+struct BindingDefinition {BindingBytes name;u64 section;u64 value;u64 function;};
+struct BindingRelocation {u64 offset;u64 kind;u64 target;u64 section;BindingBytes name;BindingBytes dll;};
+struct BoundRelocation {u64 offset;u64 symbol;u64 kind;};
+struct BindingInput {BindingBytes name;u64 application;address sections;u64 section_count;address definitions;u64 definition_count;};
+struct BindingWork {address symbols;address nodes;address relocations;};
+struct BindingPlan {u64 symbols;u64 names;u64 relocations;u32 error;};
+extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
+extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu;
+```
+
+标准COFF对象的文件布局和字节写出由bootstrap/coff.h／.b负责。B借用本轮符号、原节载荷和已绑定重定位，计算文件内偏移、节表和符号／字符串表，再直接填充同一个Rust Vec。辅助记录按实际节及COMDAT关联生成，65535条起的重定位使用标准溢出行；对象语义／合同及栈记录生产、COFF解码继续归原Rust所有者。输出完成前输入保持，B不保留地址、不复制载荷。
 
 源码节选：`crates/blanguage/src/bootstrap/coff.h:1`。
 
@@ -2422,7 +2454,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
 module bootstrap.coff;
 // Windows x64 C ABI; all borrowed-view fields occupy eight bytes.
 const u64 SECTION_BYTES=72u64;
-const u64 SYMBOL_BYTES=64u64;
+const u64 SYMBOL_BYTES=80u64;
 const u64 RELOCATION_BYTES=24u64;
 struct CoffSection {
     address name;u64 name_length;address bytes;u64 byte_length;u64 flags;
@@ -2430,7 +2462,7 @@ struct CoffSection {
 };
 struct CoffSymbol {
     address name;u64 name_length;u64 section;u64 value;
-    u64 function;u64 external;u64 auxiliary;u64 owner;
+    u64 function;u64 external;u64 auxiliary;u64 owner;u64 generated;u64 source;
 };
 struct CoffRelocation {u64 offset;u64 symbol;u64 kind;};
 struct CoffInput {address sections;u64 section_count;address symbols;u64 symbol_count;};
