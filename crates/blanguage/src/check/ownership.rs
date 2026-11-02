@@ -30,6 +30,7 @@ pub(super) enum Position {
     TileElement(usize, Reg, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
+    ApplicationInput(view::LoopInput, Option<ApplicationIndex>, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
     Conditional(std::sync::Arc<owned_presence::Presence>,std::sync::Arc<Position>,std::sync::Arc<Position>),
     Both(std::sync::Arc<Position>,std::sync::Arc<Position>),
@@ -67,6 +68,7 @@ impl Position {
     fn application_complete(&self)->Option<Self> {
         match self {
             Self::ApplicationElement(scope,_,word)=>Some(Self::Parameter(*scope,*word as usize)),
+            Self::ApplicationInput(input,_,word)=>Some(Self::ApplicationInput(*input,None,*word)),
             Self::Initialized=>Some(Self::Initialized),
             Self::Both(a,b)=>Some(Self::both(a.application_complete()?,b.application_complete()?)),
             Self::Conditional(when,a,b)=>Some(Self::selected(when.as_ref().clone(),a.application_complete()?,b.application_complete()?)),
@@ -79,6 +81,7 @@ impl Position {
             Self::Initialized=>Self::Initialized,
             Self::Both(a,b)=>Self::both(a.application_word(index,word),b.application_word(index,word)),
             Self::Conditional(when,a,b)=>Self::selected(when.as_ref().clone(),a.application_word(index,word),b.application_word(index,word)),
+            Self::ApplicationInput(input,_,_)=>Self::ApplicationInput(*input,index,word),
             Self::Parameter(scope,_)=>match index {
                 Some(index)=>Self::ApplicationElement(*scope,index,word),
                 None=>Self::Parameter(*scope,word as usize),
@@ -90,6 +93,7 @@ impl Position {
     fn application_element_index(&self)->Option<ApplicationIndex> {
         match self {
             Self::ApplicationElement(_,index,_)=>Some(*index),
+            Self::ApplicationInput(_,index,_)=>*index,
             Self::Both(a,b)|Self::Conditional(_,a,b)=>a.application_element_index().or_else(||b.application_element_index()),
             Self::Indexed(choices,_)=>choices.iter().find_map(Self::application_element_index),
             _=>None,
@@ -121,6 +125,7 @@ impl Position {
         }
         match self {
             Self::ApplicationElement(_, value, _) => *value == index,
+            Self::ApplicationInput(_,Some(value),_)=>*value==index,
             Self::Both(a,b)=>a.uses_index(index)||b.uses_index(index),
             Self::Conditional(when,a,b)=>when.uses_index(index)||a.uses_index(index)||b.uses_index(index),
             Self::Indexed(choices, value) => {
@@ -480,7 +485,7 @@ impl Builder<'_> {
             initialized:self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
         };
         let effects=address::initialization_effects(&read.initialized,&bounds::Clause::default());
-        if !effects.iter().any(address::InitializationEffect::pending){return Ok(false);}
+        if !effects.iter().any(address::InitializationEffect::pending) && read.borrow().inputs.is_empty(){return Ok(false);}
         let borrow=read.borrow();
         self.check_view_requirement(view::Requirement::Initialized{borrow,read,code,span})?;
         Ok(true)

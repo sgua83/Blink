@@ -47,23 +47,23 @@ impl Flow {
         Self((self.0 & 2) | u8::from(next))
     }
 }
-#[derive(Clone)]
+#[derive(Clone,Default)]
 pub(super) struct LoopState {
-    env: BTreeMap<String, Binding>,
-    path: bounds::Clause,
-    initialized: BTreeSet<Position>,
+    pub(super) env: BTreeMap<String, Binding>,
+    pub(super) path: bounds::Clause,
+    pub(super) initialized: BTreeSet<Position>,
     control: bool,
-    cursor: Option<Value>,
+    pub(super) cursor: Option<Value>,
 }
 pub(super) struct LoopContext {
     names: BTreeSet<String>,
-    resources: BTreeMap<String, Binding>,
+    entry: LoopState,
     exits: Vec<LoopState>,
     initial: bool,
     initialization: bool,
     continues: Vec<LoopState>,
     iterator: Option<String>,
-    initial_cursor: Option<Value>,
+    pub(super) control_source: view_contracts::LoopControl,
     controls: BTreeMap<Reg,Value>,
     pub(super) view_inputs: Vec<view::InputSlot>,
     pub(super) view_resources: BTreeMap<ValueIdentity,view::Borrow>,
@@ -76,7 +76,7 @@ impl Builder<'_> {
         let scope=self.view_model.scope();
         self.loop_contexts[level].view_scope=Some(scope);
         let mut slots=Vec::new();
-        for (name,binding) in &self.loop_contexts[level].resources {
+        for (name,binding) in &self.loop_contexts[level].entry.env {
             for (path,_,independent) in data_paths(binding){slots.push(InputSlot::Data{name:name.clone(),path,independent});}
             if let Some((ty,_))=binding.view_parts() {
                 for component in view_contracts::components(ty) {
@@ -89,7 +89,7 @@ impl Builder<'_> {
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Data{name,path,..}=slot {
                 let input=Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()};
-                for environment in [&self.env,&self.loop_contexts[level].resources] {
+                for environment in [&self.env,&self.loop_contexts[level].entry.env] {
                     if let Some(data)=environment.get(name).and_then(|b|data_at(b,path)) {resources.entry(data.handle.identity()).or_default().union(&input);}
                 }
             }
@@ -97,7 +97,13 @@ impl Builder<'_> {
         for (index,slot) in slots.iter().enumerate() {
             if let InputSlot::Data{name,path,..}=slot {
                 let data=data_at_mut(self.env.get_mut(name).unwrap(),path).unwrap();
-                data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
+                let input=LoopInput{level:scope,index};
+                let before=data_at(&self.loop_contexts[level].entry.env[name],path).unwrap();
+                if !data.ty.zero_valid() && (data.handle.proof.known_identity(0)!=before.handle.proof.known_identity(0)
+                    || data.handle.proof.view_borrow(0)!=before.handle.proof.view_borrow(0)) {
+                    data.initialization=Some(Position::ApplicationInput(input,None,0));
+                }
+                data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});
             }
         }
         for (index,slot) in slots.iter().enumerate() {
@@ -113,8 +119,8 @@ impl Builder<'_> {
         let mut initial=Vec::new();
         for slot in &context.view_inputs {
             initial.push(match slot {
-                InputSlot::Value{name,component}=>context.resources[name].view_parts().unwrap().1.view_borrow(*component),
-                InputSlot::Data{name,path,..}=>self.data_value_borrow(data_at(&context.resources[name],path).unwrap()),
+                InputSlot::Value{name,component}=>context.entry.env[name].view_parts().unwrap().1.view_borrow(*component),
+                InputSlot::Data{name,path,..}=>self.data_value_borrow(data_at(&context.entry.env[name],path).unwrap()),
             });
         }
         let data_value=view::resource_borrow;
@@ -144,10 +150,18 @@ impl Builder<'_> {
         }
         // 直接自身边不向循环来源的最小不动点贡献新来源。
         let mut unchanged=vec![false;initial.len()];
+        let control=Arc::new(std::mem::take(&mut context.control_source));
+        let mut producers=std::mem::take(&mut context.continues);
+        producers.insert(0,std::mem::take(&mut context.entry));
+        let producers:Arc<[LoopState]>=producers.into();
         for (index,mut definition)in definitions.into_iter().enumerate(){
             let input=LoopInput{level:scope,index};definition.inputs.remove(&input);
             unchanged[index]=matches!(&context.view_inputs[index],InputSlot::Data{..})&&definition==initial[index];
-            self.view_model.loops.insert(input,definition);
+            let resource=match &context.view_inputs[index] {
+                InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone(),states:producers.clone(),control:control.clone()}),
+                _=>None,
+            };
+            self.view_model.loops.insert(input,view_contracts::LoopDefinition{borrow:definition,resource});
         }
         // 来源定义未改变的资源直接交接初始来源；存储版本变化仍保留原循环关系。
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
@@ -284,10 +298,10 @@ impl Builder<'_> {
         if effects::value_writes(self,body)?.iter().any(|expr|self.initial_target(expr,false)==Some(true)){return Ok(true);}
         #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}
         fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
-        let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.resources.keys(){
+        let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.entry.env.keys(){
             let scalar=match environment.get(name){Some(Binding::Value(value))=>Some((&value.ty,bounds::Proof::capture(value))),Some(Binding::Owned(value))=>Some((value.place.ty(),value.proof.clone())),Some(Binding::OwnedValue(value))=>Some((&value.value.ty,bounds::Proof::capture(&value.value))),_=>None};
             if let Some((ty,proof))=scalar{for(component,(kind,_))in ty.components.iter().enumerate(){if *kind==Scalar::Bool && let Some(value)=proof.project(&[component],ty.components.len()).known_value(&Ty::scalar(Scalar::Bool)){all.insert((name.clone(),Known::Boolean(component,value[0]!=0)));}}}
-            let model=match environment.get(name){Some(Binding::ApplicationData(data))=>Some(returns::Returned::Dataset(data.clone())),Some(Binding::OwnedValue(value))=>Some(returns::Returned::OwnedValue(value.clone())),_=>None};if let Some(mut model)=model{self.resolve_owned_model(&mut model,None);let mut values=BTreeSet::new();collect(&model,&mut Vec::new(),&mut values);all.extend(values.into_iter().map(|value|(name.clone(),value)));}}all};let before=known(&context.resources);let after=known(&self.env);Ok(before.is_subset(&after)&&before!=after)
+            let model=match environment.get(name){Some(Binding::ApplicationData(data))=>Some(returns::Returned::Dataset(data.clone())),Some(Binding::OwnedValue(value))=>Some(returns::Returned::OwnedValue(value.clone())),_=>None};if let Some(mut model)=model{self.resolve_owned_model(&mut model,None);let mut values=BTreeSet::new();collect(&model,&mut Vec::new(),&mut values);all.extend(values.into_iter().map(|value|(name.clone(),value)));}}all};let before=known(&context.entry.env);let after=known(&self.env);Ok(before.is_subset(&after)&&before!=after)
     }
     pub(super) fn configure_initial_loop(
         &mut self,
@@ -300,12 +314,13 @@ impl Builder<'_> {
         context.initialization = initialization;
         context.initial = initial;
         context.iterator = iterator;
-        context.initial_cursor = cursor;
+        context.entry.cursor=cursor.clone();
+        context.control_source.cursor=cursor;
     }
-    pub(super) fn initial_loop_cursor(&self) -> Option<Value> {
+    pub(super) fn loop_cursor(&self) -> Option<Value> {
         self.loop_contexts
             .last()
-            .and_then(|context| context.initial_cursor.clone())
+            .and_then(|context| context.control_source.cursor.clone())
     }
     pub(super) fn capture_loop_cursor(&mut self, value: Value) {
         if let Some(name) = self
@@ -323,7 +338,7 @@ impl Builder<'_> {
             return Ok(());
         }
         let path=self.residency_path();
-        let entry = &self.loop_contexts.last().unwrap().resources;
+        let entry = &self.loop_contexts.last().unwrap().entry.env;
         for (name, binding) in &self.env {
             if let Binding::OwnedValue(result) = binding
                 && let Some(Binding::OwnedValue(before)) = entry.get(name)
@@ -384,7 +399,20 @@ impl Builder<'_> {
         let names = self.loop_contexts.last().unwrap().names.clone();
         self.release_application_data(Some(&names),view::Borrow::default())
     }
-    pub(super) fn remember_loop_control(&mut self,value:&Value){if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}}
+    pub(super) fn remember_loop_control(&mut self,value:&Value){
+        if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}
+        let condition=bounds::Condition::of(value);
+        let lengths=self.env.values().flat_map(view::data_paths).filter_map(|(_,data,_)|{
+            let Some(Position::ApplicationInput(input,..))=&data.initialization else{return None;};
+            let id=data.length.identity();condition.mentions(id).then_some((*input,id))
+        }).collect::<Vec<_>>();
+        for(input,id)in lengths {
+            if let Some(context)=self.loop_contexts.iter_mut().find(|context|context.view_scope==Some(input.level))
+                && let InputSlot::Data{name,path,..}=&context.view_inputs[input.index] {
+                context.control_source.inputs.insert(id,view_contracts::ControlInput::Length{name:name.clone(),path:path.clone()});
+            }
+        }
+    }
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         // The saved entry still has its real length. Complete storage no longer
         // depends on that length's precision after loop writes are projected.
@@ -398,13 +426,13 @@ impl Builder<'_> {
         }
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
-            resources,
+            entry:LoopState{env:resources,path:self.path.clone(),initialized:self.application_initialization_state(),control:self.control_uniform,cursor:None},
             exits: Vec::new(),
             initial: false,
             initialization: false,
             continues: Vec::new(),
             iterator: None,
-            initial_cursor: None,
+            control_source:view_contracts::LoopControl::default(),
             controls: BTreeMap::new(),
             view_inputs: Vec::new(),view_resources: BTreeMap::new(),view_scope:None,
         });

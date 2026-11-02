@@ -255,6 +255,7 @@ impl InitializationRead {
     }
     pub fn borrow(&self)->view::Borrow {
         fn visit(position:&Position,result:&mut view::Borrow) {match position {
+            Position::ApplicationInput(input,..)=>result.inputs.insert(*input),
             Position::Borrowed(borrow,layout,word)=>{
                 let(scalar,_)=layout.parts.iter().find(|(_,at)|at==word).unwrap();
                 let part=Layout{size:scalar.size(),align:scalar.size(),parts:Arc::from([(*scalar,0)])};

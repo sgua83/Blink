@@ -3093,6 +3093,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         };
         self.require_bool(&c, condition.span)?;
+        self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&c,&self.env,None);
         let partition = Arc::new(bounds::Condition::of(&c));
         let condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
@@ -3289,7 +3290,7 @@ impl<'a> Builder<'a> {
             self.invalidate_assigned(body, borrowed)?;
         }
         self.enter_loop(&environment);
-        self.configure_initial_loop(initial, Some(name.clone()), initial.then(|| begin.clone()));
+        self.configure_initial_loop(initial, Some(name.clone()), Some(begin.clone()));
         self.prepare_view_loop();
         let outer = std::mem::take(&mut self.code);
         let index = self.reg(Scalar::U32);
@@ -3312,6 +3313,10 @@ impl<'a> Builder<'a> {
         };
         let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
         let condition = std::mem::take(&mut self.code);
+        let body_cursor=Value {
+            proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,&limit,body)},
+            ..cursor.clone()
+        };
         let binding = if let Some(domain) = data {
             match domain {
                 CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
@@ -3367,16 +3372,10 @@ impl<'a> Builder<'a> {
                 },
             }
         } else {
-            Binding::Value(Value {
-                proof: if initial {
-                    bounds::Proof::capture(&cursor)
-                } else {
-                    bounds::for_cursor(&begin, &limit, body)
-                },
-                ..cursor.clone()
-            })
+            Binding::Value(body_cursor.clone())
         };
         self.env.insert(name.clone(), binding);
+        self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(&test,&self.env,Some(body_cursor));
         let iteration = match self.env.get(&name) {
             Some(Binding::Value(value)) => ownership::ApplicationIndex::of(value),
             _ => ownership::ApplicationIndex::of(&cursor),
@@ -3921,7 +3920,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn advance_iterator(&mut self, index: Reg, slot: usize) -> Result<()> {
-        let mut source = self.initial_loop_cursor().unwrap_or(Value {
+        let mut source = self.loop_cursor().unwrap_or(Value {
             proof: bounds::Proof::default(),
             literal: false,
             ty: Ty::scalar(Scalar::U32),

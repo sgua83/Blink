@@ -29,11 +29,68 @@ struct Call {
     span:Span,
 }
 pub(super) struct Use { pub requirement:Requirement, pub source:crate::Source, pub path:bounds::Clause, pub active_loops:BTreeSet<usize> }
+
+#[derive(Clone)]
+pub(super) enum ControlInput {Value{name:String,component:usize},Length{name:String,path:Vec<usize>}}
+#[derive(Clone,Default)]
+pub(super) struct LoopControl {
+    pub cursor:Option<Value>,
+    pub test:Option<bounds::Condition>,
+    pub inputs:BTreeMap<ValueIdentity,ControlInput>,
+}
+fn binding_value(binding:&Binding)->Option<(&Ty,bounds::Proof)> {
+    match binding {
+        Binding::Value(value)=>Some((&value.ty,bounds::Proof::capture(value))),
+        Binding::Owned(value)|Binding::ViewElement{element:value,..}=>Some((value.place.ty(),value.proof.clone())),
+        Binding::OwnedValue(value)=>Some((&value.value.ty,bounds::Proof::capture(&value.value))),
+        _=>None,
+    }
+}
+impl LoopControl {
+    pub fn capture(test:&Value,environment:&BTreeMap<String,Binding>,cursor:Option<Value>)->Self {
+        let condition=bounds::Condition::of(test);let mut inputs=BTreeMap::new();
+        for(name,binding)in environment {
+            if let Some((ty,proof))=binding_value(binding) {
+                for component in 0..ty.components.len() {
+                    if let Some(id)=proof.known_identity(component) && condition.mentions(id) {
+                        inputs.insert(id,ControlInput::Value{name:name.clone(),component});
+                    }
+                }
+            }
+            for(path,data,_)in view::data_paths(binding) {
+                let id=data.length.identity();
+                if condition.mentions(id){inputs.insert(id,ControlInput::Length{name:name.clone(),path});}
+            }
+        }
+        Self{cursor,test:Some(condition),inputs}
+    }
+    fn bindings(&self,producer:&flow::LoopState)->BTreeMap<ValueIdentity,bounds::Proof> {
+        let mut values=BTreeMap::new();
+        for(id,input)in &self.inputs {
+            let proof=match input {
+                ControlInput::Value{name,component}=>producer.env.get(name).and_then(binding_value)
+                    .map(|(ty,proof)|proof.project(&[*component],ty.components.len())),
+                ControlInput::Length{name,path}=>producer.env.get(name).and_then(|binding|view::data_at(binding,path))
+                    .map(|data|bounds::Proof::capture(&data.length)),
+            };
+            if let Some(proof)=proof{values.insert(*id,proof);}
+        }
+        if let(Some(cursor),Some(next))=(&self.cursor,&producer.cursor){values.insert(cursor.identity(),bounds::Proof::capture(next));}
+        values
+    }
+}
+pub(super) struct LoopResource {
+    pub name:String,
+    pub path:Vec<usize>,
+    pub states:Arc<[flow::LoopState]>,
+    pub control:Arc<LoopControl>,
+}
+pub(super) struct LoopDefinition {pub borrow:Borrow,pub resource:Option<LoopResource>}
 #[derive(Default)]
 pub(super) struct Function {
     next_scope:usize,
     calls:Vec<Call>,
-    pub loops:BTreeMap<LoopInput,Borrow>,
+    pub loops:BTreeMap<LoopInput,LoopDefinition>,
     pub independent:BTreeSet<LoopInput>,
     pub outputs:Outputs,
     pub initialization:Vec<address::InitializationEffect>,
@@ -128,6 +185,7 @@ type States=BTreeMap<String,State>;
 // Loop sources are solved only for actual output, contract and memory consumers.
 fn position_roots(position:&Position,roots:&mut Vec<Borrow>) {
     match position {
+        Position::ApplicationInput(input,..)=>roots.push(Borrow{inputs:view::Edges::from([*input]),..Borrow::default()}),
         Position::Borrowed(borrow,..)=>roots.push(borrow.as_ref().clone()),
         Position::Initialization(effect)=>initialization_roots(effect,roots),
         Position::Both(a,b)|Position::Conditional(_,a,b)=>{position_roots(a,roots);position_roots(b,roots);}
@@ -175,7 +233,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
                     match &origin.root {address::Root::Resource(borrow)|address::Root::Derived(borrow)=>roots.push(borrow.clone()),_=>{}}
                 }
             }
-            for input in &borrow.inputs{if loops.insert(*input){roots.push(function.loops[input].clone());}}
+            for input in &borrow.inputs{if loops.insert(*input){roots.push(function.loops[input].borrow.clone());}}
             for result in &borrow.calls{if calls.insert(result.call){roots.extend(function.calls[result.call].arguments.values().map(bounds::Proof::borrowed_view));}}
         }
         (name.clone(),loops)
@@ -225,20 +283,80 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<ValueIdentity>,exp
     }
 }
 
-fn resolved_position(position:&Position,path:&bounds::Clause,map:&impl Fn(&Borrow)->Borrow)->Position {
+
+fn resolved_position(position:&Position,path:&bounds::Clause,map:&impl Fn(&Borrow)->Borrow,application:&impl Fn(LoopInput,Option<ownership::ApplicationIndex>,u32)->Position)->Position {
     match position {
+        Position::ApplicationInput(input,index,word)=>application(*input,*index,*word),
         Position::Borrowed(borrow,layout,word)=>{
             let borrow=address::borrow_in_path(&map(borrow),path);
-            address::borrowed_positions(&borrow,layout,&[*word]).remove(0)
+            let next=address::borrowed_positions(&borrow,layout,&[*word]).remove(0);
+            if next==*position{next}else{resolved_position(&next,path,map,application)}
         }
-        Position::Both(a,b)=>Position::both(resolved_position(a,path,map),resolved_position(b,path,map)),
+        Position::Both(a,b)=>Position::both(resolved_position(a,path,map,application),resolved_position(b,path,map,application)),
         Position::Conditional(when,a,b)=>match when.condition().truth_in(path) {
-            Some(true)=>resolved_position(a,path,map),Some(false)=>resolved_position(b,path,map),
-            None=>Position::selected(when.as_ref().clone(),resolved_position(a,path,map),resolved_position(b,path,map)),
+            Some(true)=>resolved_position(a,path,map,application),Some(false)=>resolved_position(b,path,map,application),
+            None=>Position::selected(when.as_ref().clone(),resolved_position(a,path,map,application),resolved_position(b,path,map,application)),
         },
-        Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|resolved_position(choice,path,map)).collect(),*index),
+        Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|resolved_position(choice,path,map,application)).collect(),*index),
         _=>position.clone(),
     }
+}
+fn bind_application_position(position:&Position,input:LoopInput,scope:&Position,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,path:&bounds::Clause)->Position {
+    match position {
+        Position::ApplicationInput(at,index,word)if *at==input=>scope.application_word(*index,*word),
+        Position::Both(a,b)=>Position::both(bind_application_position(a,input,scope,bindings,path),bind_application_position(b,input,scope,bindings,path)),
+        Position::Conditional(when,a,b)=>match when.condition().at_call(bindings).truth_in(path) {
+            Some(true)=>bind_application_position(a,input,scope,bindings,path),
+            Some(false)=>bind_application_position(b,input,scope,bindings,path),
+            None=>Position::selected(when.as_ref().clone(),bind_application_position(a,input,scope,bindings,path),bind_application_position(b,input,scope,bindings,path)),
+        },
+        Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|bind_application_position(choice,input,scope,bindings,path)).collect(),*index),
+        _=>position.clone(),
+    }
+}
+fn resolved_application_position(input:LoopInput,index:Option<ownership::ApplicationIndex>,word:u32,initialized:&BTreeSet<Position>,path:&bounds::Clause,function:&Function,state:&State,known:&States,visiting:&mut BTreeSet<Position>)->Position {
+    let position=Position::ApplicationInput(input,index,word);
+    if position.initialized_by(initialized){return Position::Initialized;}
+    // An unchanged cycle supplies no counterexample; every actual entry and
+    // continued producer is still checked below in the same source graph.
+    if !visiting.insert(position.clone()){return Position::Initialized;}
+    let resource=function.loops[&input].resource.as_ref().unwrap();
+    let mut result=Position::Initialized;
+    let mut invariant=function.parameters.keys().map(|id|(*id,bounds::Proof::default().with_identity(*id))).collect::<BTreeMap<_,_>>();
+    for(name,binding)in &resource.states[0].env {
+        if let Some((ty,proof))=binding_value(binding) {
+            for component in 0..ty.components.len() {
+                if let Some(id)=proof.known_identity(component) && resource.states.iter().skip(1).all(|producer|
+                    producer.env.get(name).and_then(binding_value).is_some_and(|(_,proof)|proof.known_identity(component)==Some(id))) {
+                    invariant.insert(id,bounds::Proof::default().with_identity(id));
+                }
+            }
+        }
+    }
+    for producer in resource.states.iter() {
+        let mut bindings=invariant.clone();bindings.extend(resource.control.bindings(producer));
+        let mut source_path=producer.path.clone();
+        if let Some(test)=&resource.control.test {
+            source_path=test.at_call(&bindings).assume(&source_path,true);
+        }
+        let read_path=bounds::Condition::guard(path.clone()).guard_at_call(&bindings).assume(&bounds::Clause::default(),true);
+        source_path=bounds::Clause::both(&source_path,&read_path);
+        if !source_path.possible(){continue;}
+        let Some(data)=producer.env.get(&resource.name).and_then(|binding|view::data_at(binding,&resource.path))else{continue;};
+        let Some(scope)=&data.initialization else{continue;};
+        let mut facts=resolved_initialization(&producer.initialized,&source_path,function,state,known);
+        facts.extend(initialized.iter().map(|fact|bind_application_position(fact,input,scope,&bindings,&source_path)));
+        let wanted=scope.application_word(index,word);
+        let ready=wanted.initialized_by(&facts) || index.is_none() && data.length.minimum()==data.length.maximum()
+            && scope.application_prefix_initialized(data.length.minimum(),word,&facts);
+        let value=if ready{Position::Initialized}else{
+            let visit=std::cell::RefCell::new(&mut *visiting);
+            resolved_position(&wanted,&source_path,&|borrow|evaluate(borrow,function,state,known,true),
+                &|next,at,word|resolved_application_position(next,at,word,&facts,&source_path,function,state,known,&mut visit.borrow_mut()))
+        };
+        result=Position::both(result,value);
+    }
+    visiting.remove(&position);result
 }
 
 struct InitializedEffects {
@@ -289,12 +407,17 @@ fn resolved_initialization(initialized:&BTreeSet<Position>,path:&bounds::Clause,
     let effects=address::initialization_effects(initialized,&bounds::Clause::default());
     let effects=initialization_effects(&effects,function,state,known);
     let mut result=initialized.iter().filter(|position|!matches!(position,Position::Initialization(_)))
-        .map(|position|resolved_position(position,path,&map)).collect::<BTreeSet<_>>();
+        .map(|position|resolved_position(position,path,&map,&|input,index,word|Position::ApplicationInput(input,index,word))).collect::<BTreeSet<_>>();
     result.extend(effects.positions(path));result
 }
 fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function:&Function,state:&State,known:&States)->address::InitializationRead {
     let initialized=resolved_initialization(&read.initialized,path,function,state,known);
-    address::InitializationRead{positions:read.positions.iter().map(|position|resolved_position(position,path,&|borrow|evaluate(borrow,function,state,known,true))).collect(),initialized}
+    let positions=read.positions.iter().map(|position|{
+        let visiting=std::cell::RefCell::new(BTreeSet::new());
+        resolved_position(position,path,&|borrow|evaluate(borrow,function,state,known,true),
+            &|input,index,word|resolved_application_position(input,index,word,&initialized,path,function,state,known,&mut visiting.borrow_mut()))
+    }).collect();
+    address::InitializationRead{positions,initialized}
 }
 
 fn refreshed_at_call(borrow:&Borrow,call:&Call,function:&Function,state:&State,known:&States)->Borrow {
@@ -441,7 +564,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         let mut next=known.clone();
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
-            for input in state.loops.keys(){result.loops.insert(*input,evaluate(&function.loops[input],function,state,known,true));}
+            for input in state.loops.keys(){result.loops.insert(*input,evaluate(&function.loops[input].borrow,function,state,known,true));}
             let physical=function.outputs.iter().map(|(output,definition)|(*output,evaluate(definition,function,state,known,true))).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
