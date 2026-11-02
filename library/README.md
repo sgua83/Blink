@@ -221,7 +221,56 @@ target/release/bc.exe -c main.b -I library --import target/process.lib -o target
 target/release/blink.exe target/main.obj target/process.lib -o target/main.exe
 ```
 
-调用方保留.h接口，提供者.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。argv解析、按名字环境查询／写入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照代替这些能力。
+调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；按名字环境查询／写入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照或参数库代替这些能力。
+
+### Windows参数序列
+
+同一模块的`parse_command_line(read dataset<u16> line) on cpu`以B解析不含终止NUL的原始命令行内容，返回`Arguments`；`arguments() on cpu`读取本次进程快照，再调用同一解析器。`command_line()`仍只交回原始代码单元。参数库不调用Rust解析、Shell32或命令解释器，不展开环境变量、通配符或shell符号。
+
+```b
+struct ArgumentRange { u32 start; u32 length; };
+struct Arguments { dataset<u16> units; dataset<ArgumentRange> ranges; };
+```
+
+`units`按参数顺序持有去引号／转义后的代码单元，`ranges`逐项保存同一存储中的start与length。第0项是argv[0]；合法空参数的length为0，可以与后一项共用起点。范围不是指针或view，不持有OS字符串地址；调用者保持这两份数据至最后实际使用，最终释放仍归原Frame。解析先统计代码单元与参数数目，再精确分配两份结果并写入，不为每个字符扩容。解析器只读借用line，返回不引用它，修改或释放原快照不改变结果；两次调用的拥有结果互相独立。当前输入与序列长度沿既有u32 dataset范围，不增设字符／参数数量上限；分配／执行失败仍遵循原运行库处理，未改成业务Result。
+
+规则采用[Microsoft C参数解析](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments)：argv[0]单独处理，引号改变是否把空格／制表当作结束，反斜线在此不转义引号；其余参数在引号外由空格或制表分隔。引号前连续反斜线按奇偶交接，其他反斜线原样保留；引号内的两个连续引号产生一个字面引号。未闭合引号把已读内容交给最后参数，`""`保留空参数，换行／回车及其他代码单元不是分隔符。前导空白形成空argv[0]；纯解析空序列也保留一个空argv[0]，不查询或补入可执行文件名。实际`arguments()`只消费OS提供的快照，启动器的空lpCommandLine不保证该快照为空。
+
+只解析上述ASCII语法单元，不验证／替换代理单元、不改变大小写或Unicode规范形；需要严格Unicode转换时由调用者显式调用原Unicode库。现有编译器Rust CLI尚未接入这些B函数，完整文本值、一般拥有容器、参数选项业务及其他平台仍按各自台账推进。
+
+```b
+module main;
+import blink.windows.process;
+import blink.sequence;
+
+u32 main() on cpu {
+    Arguments args=arguments();
+    println(args.ranges.length);
+    for (range in args.ranges) {
+        println(range.length);
+        for (index in 0..range.length) {
+            match(get(args.units,range.start+index)) {
+                Ok(unit) { println(unit); }
+                Err(error) { println(error.index);return 1; }
+            }
+        }
+    }
+    return 0;
+}
+```
+
+配套main.h沿上节，入口仍为u32 main() on cpu。示例先输出含argv[0]的参数数目，再逐项输出长度与代码单元，适用于空参数及未配对代理。使用归档接口时，两个实际模块依赖都需编译、导入并链接：
+
+```powershell
+target/release/bc.exe -c library/blink/windows/process.b -I library --module -o target/process.obj
+target/release/blink.exe --archive target/process.obj -o target/process.lib
+target/release/bc.exe -c library/blink/sequence.b -I library --module --instance 'get<u16>' -o target/sequence-u16.obj
+target/release/blink.exe --archive target/sequence-u16.obj -o target/sequence-u16.lib
+target/release/bc.exe -c main.b -I . --import target/process.lib --import target/sequence-u16.lib -o target/main.obj
+target/release/blink.exe target/main.obj target/process.lib target/sequence-u16.lib -o target/main.exe
+```
+
+调用方通过归档接口取得两个模块，不再补读提供方.h／.b；返回结构、资源ABI及编译／链接职责保持。
 
 ## blink.windows.environment
 

@@ -32,7 +32,7 @@ unsafe_position<T>(address_value)在CPU执行位置解释一份真实外部地�
 
 例如unsafe_position<Pair>(pointer).left直接访问原记录字段；修改函数change(inout Pair value)接收unsafe_position<Pair>(pointer)时借用同一原位置。array<u32,4>等固定数组保留声明步长及原下标规则，读取复制出的普通值是独立快照，不成为对原存储的长期引用。
 
-B自有位置取址、带来源地址及借用返回沿C-020.2.7.2.2继续建设；Windows x64系统信息的具体B接口、实际结构／地址输出与原生消费范围见[blink.windows.system](../library/README.md#blinkwindowssystem)；高精度计数与频率以[blink.windows.time](../library/README.md#blinkwindowstime)的i32状态／条件write i64直接交接，分别保留ticks与ticks／秒，不代表日历时间或GPU计时；[blink.windows.error](../library/README.md#blinkwindowserror)直接交接原OS线程的32位错误码读取／设置，错误快照由调用者立即保存，不自动清零或转换业务结果；[blink.windows.process](../library/README.md#blinkwindowsprocess)以纯B同步读取OS原命令行并交回独立拥有dataset<u16>，不含NUL、不解析argv或替换UTF-16代码单元；原系统字符串不得修改／释放，输出按原Frame拥有结果交接。[blink.windows.environment](../library/README.md#blinkwindowsenvironment)直接交接原只读UTF-16环境快照地址和i32释放状态；调用者在最后读取完成后成对释放原OS块，它不由Frame自动回收。其他系统库仍按真实API逐项建设；C函数地址签名值及实际调用见下节；系统回调及最后消费者寿命归C-021.6.1的剩余叶项。设备地址、GPU／远端资源和本地CPU地址仍由各自真实存储所有者交接，本地地址位模式不授予跨设备或跨机访问能力。
+B自有位置取址、带来源地址及借用返回沿C-020.2.7.2.2继续建设；Windows x64系统信息的具体B接口、实际结构／地址输出与原生消费范围见[blink.windows.system](../library/README.md#blinkwindowssystem)；高精度计数与频率以[blink.windows.time](../library/README.md#blinkwindowstime)的i32状态／条件write i64直接交接，分别保留ticks与ticks／秒，不代表日历时间或GPU计时；[blink.windows.error](../library/README.md#blinkwindowserror)直接交接原OS线程的32位错误码读取／设置，错误快照由调用者立即保存，不自动清零或转换业务结果；[blink.windows.process](../library/README.md#blinkwindowsprocess)以纯B同步读取OS原命令行并交回独立拥有dataset<u16>，不含NUL、不替换UTF-16代码单元；同模块parse_command_line／arguments以B按Windows规则解析为拥有的Arguments{units,ranges}，保留空参数和实际代码单元，argv[0]单独处理；原系统字符串不得修改／释放，输出按原Frame拥有结果交接。[blink.windows.environment](../library/README.md#blinkwindowsenvironment)直接交接原只读UTF-16环境快照地址和i32释放状态；调用者在最后读取完成后成对释放原OS块，它不由Frame自动回收。其他系统库仍按真实API逐项建设；C函数地址签名值及实际调用见下节；系统回调及最后消费者寿命归C-021.6.1的剩余叶项。设备地址、GPU／远端资源和本地CPU地址仍由各自真实存储所有者交接，本地地址位模式不授予跨设备或跨机访问能力。
 
 算法DLL的CPU／GPU后端使用编译阶段已生成的原生映像，和应用包装共用resource编码；生成的Rust包装只嵌入映像字节，不重建类型、执行计划和阶段对象源码。映像保留同一入口类别、目标、版本与真实代码合同，实际装入、调用及释放仍归原运行库和宿主。
 
@@ -328,7 +328,7 @@ u32 main() on cpu {
 
 `bool println(value)`接受单个当前整数、f32、f64或bool标量。整数使用十进制，bool 使用 `true／false`；f64使用17位有效数字，f32按C数值区域的 `%.9g` 格式输出，最多 9 位有效十进制数字，小数点为 `.`，按数值使用普通或科学计数法并去除末尾无用零。负零保留符号，无穷和 NaN 使用系统 UCRT 的 `inf／nan` 形式（NaN 可以带符号或分类后缀）；文本不保存 NaN 的负载。末尾附加一个 LF，完整写出返回 true，格式化失败、写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU 计算函数 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、向量等不支持的类型报 B261。
 
-生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，f32 格式化与超越函数使用系统 UCRT。运行无需 B 源码、编译器、brun 或手写宿主。动态数据与 计算函数 组织见下一节；通用字符串、借用字符切片、输入、文件、命令行参数、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
+生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，f32 格式化与超越函数使用系统 UCRT。运行无需 B 源码、编译器、brun 或手写宿主。动态数据与 计算函数 组织见下一节；Windows命令行快照及参数序列已有标准库接口，编译器CLI采用、通用字符串、借用字符切片、其他输入、文件、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
 
 ## 应用拥有的动态 dataset 与显式执行
 普通 CPU 应用及其普通 CPU 函数可声明本地独占资源：

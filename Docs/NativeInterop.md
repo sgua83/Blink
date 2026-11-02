@@ -321,7 +321,7 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 
 `blink.windows.process::command_line() on cpu`以普通B函数交回独立拥有的`dataset<u16>`。私有GetCommandLineW只在真实Windows x64 C ABI上取得OS管理的地址，B按原unsafe_position<u16>同步只读至首个NUL，复制实际代码单元，不修改／释放系统字符串或将其地址／view交给调用者。结果不含终止符，不解析参数、不验证或替换孤立代理单元；需要其他编码由原Unicode库显式处理。
 
-返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；实际argv、按名字环境查询／写入与进程控制仍未实现。
+返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；同模块parse_command_line／arguments已以B实现Windows参数序列：只读原始代码单元，返回独立拥有的Arguments{units,ranges}，参数范围索引自己的结果存储，不返回OS地址或依赖输入快照继续存活；argv[0]、连续引号、反斜线奇偶及空参数规则见上述标准库文档。按名字环境查询／写入、进程控制和编译器CLI采用仍未实现。
 
 ## Windows环境块的原地址与最后消费者
 

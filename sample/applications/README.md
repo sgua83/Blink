@@ -18,7 +18,7 @@ $LASTEXITCODE
 
 入口在 `.h` 中公开，在 `.b` 中实现，形式为无参数的 `u32 main() on cpu` 或 `i32 main() on cpu`。返回值按原始 32 位作为进程退出码。`bc -c` 的 `-I` 指定模块根目录，`--entry` 选择具体入口，默认入口是 `main`；`-o` 指定输出目标文件，再由 blink 单独链接；普通函数、条件、顺序循环和固定数组使用既有语言规则。
 
-当前输出为 PE32+，目标是 Windows x64 控制台应用。启动和标准输出使用 Windows 系统接口，使用超越函数时导入系统 UCRT 数学入口；调用 C++／Rust DLL 见 [外部 C ABI 示例](../extern/README.md)。字符串、输入、文件、命令行参数、其他平台和源码调试继续研发。
+当前输出为 PE32+，目标是 Windows x64 控制台应用。启动和标准输出使用 Windows 系统接口，使用超越函数时导入系统 UCRT 数学入口；调用 C++／Rust DLL 见 [外部 C ABI 示例](../extern/README.md)。Windows命令行快照与参数序列已有[标准库接口](../../library/README.md#windows参数序列)，通用字符串、其他输入、文件、其他平台和源码调试继续研发；现有Rust CLI尚未采用该B库。
 
 ## 浮点结果直接输出
 
