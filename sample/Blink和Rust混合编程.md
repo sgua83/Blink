@@ -1084,10 +1084,10 @@ let output = program.run_owned(
         textures: vec![albedo],
     },
     &[],
-)?;
+).map_err(|(error, _)| error)?;
 ```
 
-Bindings 在这里就是“这次传入的资源集合”：datasets 放数据集，textures 放纹理。run_owned 接收这些对象，执行后交回结果。
+Bindings 持有数据集和纹理。成功交回数据与域关系；失败交回 (error, bindings)。本例结束失败输入并返回原错误。
 
 GPU 则先把 points 和 albedo 上传。下面的 points 和 albedo 已是设备上的对象：
 

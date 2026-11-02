@@ -3136,7 +3136,7 @@ void run(read dataset<Item> input, inout dataset<Item> output,
 
 `DomainBindings<Dataset>`／`DomainBindings<GpuDataset>` 移动实际存储及其已生产的关系。关系由成功执行的编译程序交付，不能从任意计数、原始文件或相同数值重新构造；没有全局计数注册表、哈希或版本票据。`datasets()` 只提供不可变借用，`into_datasets()` 取出存储并放弃关系，宿主随后可自行修改。
 
-- CPU 闭合入口使用 `CpuProgram::run_owned` 返回带关系的绑定；`CpuTemplate::run` 只接收这类绑定。既有 `CpuProgram::run(&mut [Dataset], ...)` 继续执行普通程序，它不交付可持续持有的域关系。
+- CPU 闭合入口使用 `CpuProgram::run_owned` 在成功时返回带关系的绑定；`CpuTemplate::run` 只接收这类绑定，失败输入交接见下述拥有型接口。既有 `CpuProgram::run(&mut [Dataset], ...)` 继续执行普通程序，它不交付可持续持有的域关系。
 - `rebind(order, additional)` 按旧绑定和追加绑定的联合顺序选取并重排所有权，同时重排关系中的数据／计数索引。未一起保留的数据与计数不再构成关系，同一存储不能重复绑定为两个可写所有者。追加的普通数据没有域关系。
 - 每次执行后，按接口声明的 write/inout 计数权限使旧关系失效，再接收经过编译证明的 ensures；read 计数保留调用方原关系，即使被调用模块没有重复声明 ensures。前端模块调用和宿主分次执行使用相同权限规则。
 - `Device::upload_domains`／`download_domains` 移动实际传输后的存储及关系。上传／下载仍是显式物理传输，不把 CPU 与显存伪装成同一存储。普通值记录可直接往返消费；CPU／GPU view 分别通过 `with_views`／`upload_with_views` 绑定真实不可变资源。物理地址复制不转移引用图，也不能替代引用所有权。
@@ -3186,13 +3186,13 @@ let pending = combine.submit(joined, &[])?;
 
 关系只认原编译器已交付的来源与计数字段。同一冻结 Count 的别名可在 join 后直接满足接口，也可在 rebind 中保留任一个别名；独立且数值相同的 Count、裸数据向量和已被修改的 Count 不能据此取得关系。冻结数据不能绑定 write／inout／atomic；未冻结的唯一存储仍不能重复取出。DomainStorage 由存储实现提供只读身份与绑定；通用绑定辅助函数可扩展，CPU 借用入口接受 Dataset，拥有型入口接受 CpuDataset，GPU 入口接受 GpuDataset，其他存储实现不能代替目标物理存储。不另加封闭类型列表；原 C ABI 与 B 类型／语法不变；CPU 共享绑定见下段。
 
-CPU 的拥有型 `CpuProgram::run_owned`／`CpuTemplate::run` 接收绑定并返回 `DomainBindings<CpuDataset>`。`CpuDataset::Owned(Dataset)` 持有独占数据，`CpuDataset::Read(ReadDataset)` 持有原 Arc 冻结存储；`Dataset`、`ReadDataset` 可直接转为相应绑定，普通 Dataset 向量仍可作为输入。返回绑定以同一 read 接口暴露 words／布局；`CpuDataset::words_mut()` 只允许独占存储并返回 Result，冻结存储不转成可写切片。旧 `CpuProgram::run(&mut [Dataset],...)` 和 C ABI 保持，复用同一阶段执行主体。
+CPU 的拥有型 `CpuProgram::run_owned`／`CpuTemplate::run` 返回 `cpu::OwnedRunResult`：成功为 `Ok(DomainBindings<CpuDataset>)`，失败为 `Err((error, Bindings<DomainBindings<CpuDataset>>))`。错误携带原 `Box<dyn Error + Send + Sync>` 和输入经既有 `Into` 转换后实际持有的同一组数据、域关系及全部纹理；移动这些所有者，不复制载荷，不承诺转换前不同 Rust 容器的头部地址。前置拒绝保留原内容与有效域；已取得写访问后的失败交回实际部分写入及原 Count 失效结果，只有全部阶段完成才产生新保证。调用者可继续持有失败输入，或显式结束它并传播原错误；没有自动重放。成功后纹理的本次同步消费结束，返回的数据继续持有其实际所有权。`CpuDataset::Owned(Dataset)` 持有独占数据，`CpuDataset::Read(ReadDataset)` 持有原 Arc 冻结存储；`Dataset`、`ReadDataset` 可直接转为相应绑定，普通 Dataset 向量仍可作为输入。返回绑定以同一 read 接口暴露 words／布局；`CpuDataset::words_mut()` 只允许独占存储并返回 Result，冻结存储不转成可写切片。旧 `CpuProgram::run(&mut [Dataset],...)` 和 C ABI 保持，复用同一阶段执行主体。
 
 `DomainBindings<CpuDataset>::freeze(&[count_binding])` 保留原 payload、实际地址、子资源与域关系，原 `ReadDataset::binding()` 也可直接产生 CPU read 绑定。partition／join／rebind 的只读别名规则与 GPU 相同；独立 CPU 消费者可持有同一只读 Count，实际调用归还前数据与子资源一直由原所有者持有。额外独占输出需要转为 CpuDataset，例如 `owned.rebind(&[0,1,2],vec![output.into()])`。不以 Count 数值相同恢复关系，也不允许共享绑定进入 write／inout／atomic 参数。
 
 显式 `Device::upload_domains` 接收 CPU 带域绑定，`download_domains` 返回 `DomainBindings<CpuDataset>`；在一次传输原有的局部映射内，根绑定和 view 子资源按同一实际冻结所有者共享目标，只读能力保持。多个 Count 别名不分别分配数据页／CPU 数组；内容相同的独立来源仍分别传输。CPU 地址与 GPU 页表地址由目标真实所有者生成，映射随操作结束释放，没有隐式迁移、跨操作缓存或统一地址空间。单个 `Device::download` 仍返回显式读回的新 Dataset，不交付原有效域；拥有型 CPU 结果继续保留实际关系。
 
-CPU 的 `CpuProgram::run_owned`／`CpuTemplate::run` 结果可直接分区。GPU 的 `Submission::partition(groups)` 可在生产者仍 pending 时直接分叉；`Submission::into_bindings()` 同样不等待，返回的绑定可 join、partition 或传给下一次 submit。Completed 的绑定也使用同一分区实现。分区只转移独立数据及其执行寿命，不下载数据、不复制记录、不申请 GPU 数据页。
+CPU 的 `CpuProgram::run_owned`／`CpuTemplate::run` 成功结果可直接分区。GPU 的 `Submission::partition(groups)` 可在生产者仍 pending 时直接分叉；`Submission::into_bindings()` 同样不等待，返回的绑定可 join、partition 或传给下一次 submit。Completed 的绑定也使用同一分区实现。分区只转移独立数据及其执行寿命，不下载数据、不复制记录、不申请 GPU 数据页。
 
 例如一个生产者依次绑定 source_a／temporary_a／count_a／output_a／source_b／temporary_b／count_b／output_b，交付两个独立有效域；advance 的参数为 queue／count，combine 为 a／ca／b／cb／total：
 

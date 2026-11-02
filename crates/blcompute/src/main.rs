@@ -107,7 +107,8 @@ fn compute(args: &[String]) -> Result<()> {
     let start = Instant::now();
     let result = match backend.as_str() {
         "cpu" => CpuProgram::new(program)?
-            .run_owned(blcompute::cpu::Bindings { datasets, textures }, &values)?
+            .run_owned(blcompute::cpu::Bindings { datasets, textures }, &values)
+            .map_err(|(error, _)| error)?
             .into_datasets(),
         "gpu" => {
             let device = Device::for_program(&program)?;

@@ -308,7 +308,7 @@ fn main() -> Result<()> {
                         },
                     },
                     &values,
-                )?
+                ).map_err(|(error, _)| error)?
                 .into_datasets();
             let elapsed = ms(start);
             black_box(&cpu);

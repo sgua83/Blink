@@ -338,6 +338,11 @@ pub struct Bindings<D = Vec<Dataset>> {
     pub datasets: D,
     pub textures: Vec<crate::Texture2D>,
 }
+/// 错误连同本次实际拥有组交回；数据及纹理只移动，已发生的CPU写入保持。
+pub type OwnedRunResult = std::result::Result<
+    DomainBindings<CpuDataset>,
+    (Box<dyn std::error::Error + Send + Sync>, Bindings<DomainBindings<CpuDataset>>),
+>;
 impl<D: Into<CpuDataset>> From<Vec<D>> for Bindings<DomainBindings<CpuDataset>> {
     fn from(datasets: Vec<D>) -> Self {
         Self {
@@ -408,9 +413,8 @@ impl CpuProgram {
         &self,
         bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
         values: &[Value],
-    ) -> Result<DomainBindings<CpuDataset>> {
-        let Bindings { datasets, textures } = bindings.into();
-        self.code.run_owned(datasets, &textures, values)
+    ) -> OwnedRunResult {
+        self.code.run_owned(bindings.into(), values)
     }
 }
 impl CpuTemplate {
@@ -430,9 +434,8 @@ impl CpuTemplate {
         &self,
         bindings: impl Into<Bindings<DomainBindings<CpuDataset>>>,
         values: &[Value],
-    ) -> Result<DomainBindings<CpuDataset>> {
-        let Bindings { datasets, textures } = bindings.into();
-        self.code.run_owned(datasets, &textures, values)
+    ) -> OwnedRunResult {
+        self.code.run_owned(bindings.into(), values)
     }
     pub(crate) fn run_projected(
         &self,
@@ -545,13 +548,14 @@ impl CpuCode {
     }
     fn run_owned(
         &self,
-        mut bindings: DomainBindings<CpuDataset>,
-        textures: &[crate::Texture2D],
+        mut bindings: Bindings<DomainBindings<CpuDataset>>,
         values: &[Value],
-    ) -> Result<DomainBindings<CpuDataset>> {
-        let count = bindings.datasets.len();
-        self.run_mapped(&mut bindings, textures, values, count, |i| (i, 0), || {})?;
-        Ok(bindings)
+    ) -> OwnedRunResult {
+        let count = bindings.datasets.datasets.len();
+        match self.run_mapped(&mut bindings.datasets, &bindings.textures, values, count, |i| (i, 0), || {}) {
+            Ok(()) => Ok(bindings.datasets),
+            Err(error) => Err((error, bindings)),
+        }
     }
     fn run_mapped(
         &self,

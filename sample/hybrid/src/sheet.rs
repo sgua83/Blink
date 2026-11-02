@@ -36,7 +36,7 @@ pub fn run(backend: &str) -> Result<()> {
                     textures: vec![albedo.clone()],
                 },
                 &[],
-            )?;
+            ).map_err(|(error, _)| error)?;
             println!("first_run_wait_ms={:.3}", elapsed(start));
             let start = Instant::now();
             let output = code.run_owned(
@@ -45,7 +45,7 @@ pub fn run(backend: &str) -> Result<()> {
                     textures: vec![albedo],
                 },
                 &[],
-            )?;
+            ).map_err(|(error, _)| error)?;
             println!("resident_run_wait_ms={:.3}", elapsed(start));
             output.into_datasets().remove(0)
         }
