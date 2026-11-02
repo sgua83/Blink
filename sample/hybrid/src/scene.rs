@@ -66,7 +66,7 @@ pub fn run(backend: &str) -> Result<()> {
                 .map(|d| device.upload(d))
                 .collect::<Result<Vec<_>>>()?;
             let code = device.compile(code)?;
-            let done = code.submit(data, &[])?.wait()?;
+            let done = code.submit(data, &[])?.wait().map_err(|(error, _)| error)?;
             done.datasets()
                 .iter()
                 .map(|d| device.download(d))

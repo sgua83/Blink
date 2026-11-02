@@ -47,7 +47,7 @@ fn main() -> Result<()> {
             },
             &[],
         )?
-        .wait()?;
+        .wait().map_err(|(error, _)| error)?;
     println!(
         "image_run_wait_ms={:.3} gpu_ms={:.3}",
         start.elapsed().as_secs_f64() * 1000.0,

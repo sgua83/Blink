@@ -131,7 +131,7 @@ fn compute(args: &[String]) -> Result<()> {
                     },
                     &values,
                 )?
-                .wait()?;
+                .wait().map_err(|(error, _)| error)?;
             println!("GPU_program_ms={:.3}", done.timings.elapsed_ms);
             // 只读数据的所有权仍随完成对象释放，文件消费者只读回实际输出。
             std::fs::create_dir_all(out)?;

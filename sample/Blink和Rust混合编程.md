@@ -490,7 +490,7 @@ let data = data.into_iter()
 let program = device.compile(code)?;
 let done = program
     .submit(data, &values)?
-    .wait()?;
+    .wait().map_err(|(error, _)| error)?;
 let bodies = device.download(
     &done.datasets()[0]
 )?;
@@ -507,7 +507,7 @@ into_iter 依次取出 data 中的两个数据集，map 对每项调用 upload�
 
 *图 3-3　第一粒子的位置和总动能在这里显示的小数位上相同。*
 
-submit 返回一次提交记录，wait 等到这次计算结束，download 才把设备数据取回 Rust。下一章将去掉中间不必要的下载，让第二步直接使用第一步的 GPU 数据。
+wait 成功交回 Completed；失败交回 (error, submission)，原输入和完成点仍归 submission。本例用 map_err 结束失败提交并返回原错误，成功后才下载结果。
 
 ## 4　连续模拟：让下一步直接用上一步的结果
 
@@ -534,7 +534,7 @@ let second = program.submit_after(
 let third = program.submit_after(
     second, &[0, 1], vec![], &values
 )?;
-let done = third.wait()?;
+let done = third.wait().map_err(|(error, _)| error)?;
 ```
 
 first 是第一步的提交。submit_after 接收它，使第二步接着使用第一步的数据。[0,1] 选中 bodies 和 total，顺序与第三章相同。vec![] 表示没有补入新的数据集，values 仍然传入同样的 dt 和 strength。
@@ -570,7 +570,7 @@ BLEngine 的模拟命令还使用下列形式：
 let steps = NonZeroU32::new(3).unwrap();
 let done = program
     .submit_steps(data, &values, steps)?
-    .wait()?;
+    .wait().map_err(|(error, _)| error)?;
 ```
 
 当每步使用同一程序、同一组参数时，submit_steps 可以把这些物理时间步放在一次设备提交中。上面的 3 已知不为零，NonZeroU32 用来表达这一要求。
@@ -622,7 +622,7 @@ let done = finish.submit_join(
     &[1, 3, 4],
     vec![combined],
     &[],
-)?.wait()?;
+)?.wait().map_err(|(error, _)| error)?;
 ```
 
 submit_join 先按顺序看两次提交里各有哪些数据，再接上新建的 combined。把这五项列出来，就能读懂 [1,3,4]：
@@ -1099,7 +1099,7 @@ let done = program.submit(
         textures: vec![albedo],
     },
     &[],
-)?.wait()?;
+)?.wait().map_err(|(error, _)| error)?;
 ```
 
 本例按采样点直接算材质，不做几何求交，因此 accelerations 为空。&[] 说明没有额外普通参数。准备、执行与结果读取的完整代码位于 src/sheet.rs 的 run 函数。
@@ -1318,7 +1318,7 @@ let done = self.program.submit(
         textures: inputs.textures.clone(),
     },
     &values,
-)?.wait()?;
+)?.wait().map_err(|(error, _)| error)?;
 ```
 
 Bindings 的三组资源分别对应数据集、加速结构和纹理。std::mem::take 把已有加速结构列表移给这次提交；纹理 clone 则共享已有纹理存储。两者都没有重新复制整个场景。
@@ -1474,7 +1474,7 @@ fn main() -> Result<()> {
             textures: vec![albedo],
         },
         &[],
-    )?.wait()?;
+    )?.wait().map_err(|(error, _)| error)?;
     let display = device.download(
         &done.datasets()[2]
     )?;

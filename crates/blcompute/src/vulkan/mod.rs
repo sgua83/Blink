@@ -2735,12 +2735,19 @@ impl Submission {
     pub fn partition(self, groups: &[&[usize]]) -> Result<Vec<DomainBindings<GpuDataset>>> {
         self.into_bindings().partition(groups)
     }
-    pub fn wait(mut self) -> Result<Completed> {
-        let timings = GpuCompletion {
-            execution: self.execution,
-            queries: self.queries,
-        }
-        .wait()?;
+    /// 等待真实完成并读取时间戳；失败交回原提交及其全部输入和最后使用点。
+    pub fn wait(mut self) -> std::result::Result<Completed, (Box<dyn std::error::Error + Send + Sync>, Self)> {
+        let result = (|| {
+            self.execution.wait()?;
+            match &self.queries {
+                Some(queries) => queries.read(),
+                None => Ok(GpuTimings { elapsed_ms: 0.0, stage_ms: Vec::new() }),
+            }
+        })();
+        let timings = match result {
+            Ok(timings) => timings,
+            Err(error) => return Err((error, self)),
+        };
         for dataset in &mut self.bindings.datasets {
             dataset.last_use = None;
         }

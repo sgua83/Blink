@@ -344,7 +344,7 @@ fn main() -> Result<()> {
                 },
                 &values,
             )?
-            .wait()?;
+            .wait().map_err(|(error, _)| error)?;
         let elapsed = ms(start);
         if repeat >= 2 {
             gpu_times.push(elapsed);
@@ -389,7 +389,7 @@ fn main() -> Result<()> {
                 },
                 &values,
             )?
-            .wait()?;
+            .wait().map_err(|(error, _)| error)?;
         for (i, binding) in program.buffers().iter().enumerate() {
             if binding.access != Access::Read {
                 black_box(device.download(&done.datasets()[i])?);

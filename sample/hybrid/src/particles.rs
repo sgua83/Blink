@@ -52,7 +52,7 @@ pub fn run(backend: &str, count: u32) -> Result<()> {
                 .collect::<Result<Vec<_>>>()?;
             println!("upload_enqueue_ms={:.3}", elapsed(transfer));
             let start = Instant::now();
-            let done = code.submit(data, &values())?.wait()?;
+            let done = code.submit(data, &values())?.wait().map_err(|(error, _)| error)?;
             println!(
                 "run_wait_ms={:.3} gpu_ms={:.3}",
                 elapsed(start),
@@ -94,7 +94,7 @@ pub fn steps() -> Result<()> {
     let first = code.submit(data, &values())?;
     let second = code.submit_after(first, &[0, 1], vec![], &values())?;
     let third = code.submit_after(second, &[0, 1], vec![], &values())?;
-    let done = third.wait()?;
+    let done = third.wait().map_err(|(error, _)| error)?;
     let bodies = device.download(&done.datasets()[0])?;
     let total = device.download(&done.datasets()[1])?;
     println!("physical_steps=3 dt=0.01 simulated_seconds=0.03");
@@ -131,7 +131,7 @@ pub fn flow() -> Result<()> {
     let right = code.submit(right, &values())?;
     let joined = finish
         .submit_join([left, right], &[1, 3, 4], vec![output], &[])?
-        .wait()?;
+        .wait().map_err(|(error, _)| error)?;
     let data = joined
         .datasets()
         .iter()

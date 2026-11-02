@@ -704,7 +704,7 @@ CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配�
 
 当前B对象元数据为 **BLCO36**，模块资源C ABI与执行映像为 **BLRI18**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
 
-Rust SDK的Frame操作通过原Result交回错误。CPU／GPU模板装入失败分别沿CpuTemplate::from_image／Device::load_template的Err((error,image))交回原错误和同一未改映像，Frame接回原程序槽；原数据及其他程序继续由Frame持有，调用方可在依赖满足后显式再次调用，没有自动重放。run先借用原程序布局完成同根参数重叠检查，再装入程序并执行；参数重叠拒绝保留原程序槽、输入存储及域关系，后续合法调用仍消费该程序。CPU／GPU驻留拒绝发生在实际执行／提交前；拒绝的当前输入和此前已取出的同类参数由原参数Vec交回Frame原槽，同一Loaded程序接回原程序槽，未取出的后缀与原域关系保持。逻辑只读别名继续沿原selected只移动一份物理存储；调用者显式完成download或upload后可提交下一次合法调用，不自动传输、重放或复制原资源。CPU同步执行借用原参数拥有组，原错误与成功都交回同一存储及程序槽；输入域、冻结权限、实际字段和标量参数的拒绝保持原数据及有效域。参数接收后才沿同一Count关系撤回本次可能写计数字段的许可，指向未绑定数据的关系同样随其实际计数写入失效；只有全部阶段／延续真实完成才发布原prefix输出保证。线程池工作创建失败直接沿Result交回原OS错误；已有CPU写入仍留在原存储，不回滚或自动重放，也不将未完成调用当作新有效域。GPU调用准备借用原InputOwner，准备错误将原GPU存储及同一程序交回Frame原槽，已有域关系保持；错误不产生另一份资源或自动重放。命令录制使用原局部last记录本次阶段关系，物理producer与最后使用点只在成功提交后发布；成功才将原绑定移入Submission。已接受GPU提交后的等待失败及部分效果仍是独立未完成范围，不能用参数拒绝证明其完成。upload借用原CPU输入，CPU暂存读取及GPU提交成功交回GPU存储后才替换原槽；驻留拒绝或上传错误不提前移除原输入，在途暂存区和GPU完成仍由原GpuDataset.last_use持有。address直接借用原位置，驻留或写权限拒绝不移走或释放原存储；成功取得地址后的范围、权限和期限仍由实际调用者遵守。resize在扩容申请失败时保留原存储；download借用Frame中的原GPU输入，仅在完整CPU结果返回后替换原槽，驻留拒绝或下载错误不提前释放输入。保留资源所有权不表示设备故障后的数据已经可用，实际设备失败与部分效果仍由原结果交接。当前已有Frame的共同C ABI操作在错误时仍结束进程；创建失败的交接见下，分配、执行、传输及业务结果的完整失败合同继续沿Issues C-020.5.2.1至.4建设。
+Rust SDK的Frame操作通过原Result交回错误。CPU／GPU模板装入失败分别沿CpuTemplate::from_image／Device::load_template的Err((error,image))交回原错误和同一未改映像，Frame接回原程序槽；原数据及其他程序继续由Frame持有，调用方可在依赖满足后显式再次调用，没有自动重放。run先借用原程序布局完成同根参数重叠检查，再装入程序并执行；参数重叠拒绝保留原程序槽、输入存储及域关系，后续合法调用仍消费该程序。CPU／GPU驻留拒绝发生在实际执行／提交前；拒绝的当前输入和此前已取出的同类参数由原参数Vec交回Frame原槽，同一Loaded程序接回原程序槽，未取出的后缀与原域关系保持。逻辑只读别名继续沿原selected只移动一份物理存储；调用者显式完成download或upload后可提交下一次合法调用，不自动传输、重放或复制原资源。CPU同步执行借用原参数拥有组，原错误与成功都交回同一存储及程序槽；输入域、冻结权限、实际字段和标量参数的拒绝保持原数据及有效域。参数接收后才沿同一Count关系撤回本次可能写计数字段的许可，指向未绑定数据的关系同样随其实际计数写入失效；只有全部阶段／延续真实完成才发布原prefix输出保证。线程池工作创建失败直接沿Result交回原OS错误；已有CPU写入仍留在原存储，不回滚或自动重放，也不将未完成调用当作新有效域。GPU调用准备借用原InputOwner，准备错误将原GPU存储及同一程序交回Frame原槽，已有域关系保持；错误不产生另一份资源或自动重放。命令录制使用原局部last记录本次阶段关系，物理producer与最后使用点只在成功提交后发布；成功才将原绑定移入Submission。Submission::wait成功交回Completed；完成等待或时间戳读取失败交回(error, submission)，同一Submission继续持有原绑定、加速结构、查询池与真实完成点。错误不承诺设备数据可用，调用者决定继续持有或明确结束原提交；原Execution与最后使用点继续承担实际消费者完成后的释放，不自动重放。已接受GPU提交后，Frame沿原Count关系撤回本次可能写计数字段的旧许可；等待失败从同一Submission取回实际存储并接回原程序槽，不发布本次条件输出保证。未写Count字段及无关原域关系保持，已有GPU写入不回滚；原GPU完成与最后使用点继续持有实际资源。upload借用原CPU输入，CPU暂存读取及GPU提交成功交回GPU存储后才替换原槽；驻留拒绝或上传错误不提前移除原输入，在途暂存区和GPU完成仍由原GpuDataset.last_use持有。address直接借用原位置，驻留或写权限拒绝不移走或释放原存储；成功取得地址后的范围、权限和期限仍由实际调用者遵守。resize在扩容申请失败时保留原存储；download借用Frame中的原GPU输入，仅在完整CPU结果返回后替换原槽，驻留拒绝或下载错误不提前释放输入。保留资源所有权不表示设备故障后的数据已经可用，实际设备失败与部分效果仍由原结果交接。当前已有Frame的共同C ABI操作在错误时仍结束进程；创建失败的交接见下，分配、执行、传输及业务结果的完整失败合同继续沿Issues C-020.5.2.1至.4建设。
 
 独立模块工厂只返回C布局的静态字节描述；非根包装只调用共同分配／执行入口，Frame是不透明指针，仅由根运行库解释和释放。工厂字节保存编译后的类型、执行布局、CPU机器码／重定位及SPIR-V，create解码到原Frame，不重读B源码、运行值IR或重新编译。调用者不释放静态工厂字节，不跨模块传递Rust Vec／Box的私有表示。根创建入口为Frame* blink_create(on_error, context)，on_error的C签名为void(void* context, const uint8_t* data, size_t bytes)。接收函数和上下文由调用者保持到创建调用返回；错误UTF8字节只借用到本次接收函数返回，保留文本由调用者复制，不形成运行库错误状态或额外释放入口。首个模块解码失败后不再调用后续工厂，不建立Frame，原局部资源正常释放并返回空指针；运行库不结束宿主进程。B应用入口直接交付生成根中的blink_application_error符号，输出错误后将空指针结果映射为退出码1，跳过未取得Frame的正文和destroy；创建成功仍执行原正文并由原根释放Frame。
 
@@ -3150,7 +3150,7 @@ let pending = consumer.submit_after(
     pending, &[1, 2], Vec::<blcompute::vulkan::GpuDataset>::new(),
     &[blcompute::Value::U32(100)],
 )?;
-let persistent = pending.wait()?.into_bindings();
+let persistent = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 ```
 
 `submit_after` 消费前项提交和数据，不先等待它。GPU 直接读取前项 Count 并生成间接启动参数，CPU 不读回计数。跨提交只支持同一设备队列；原生宿主绑定边界检查实际存储与接口条件，类型、访问、条件证明和模块实现继续在编译期检查，不把动态 Rust 绑定顺序误称为静态证明。
@@ -3207,12 +3207,12 @@ let pending = combine.submit_join(
     [right, left], &[2, 3, 0, 1, 4], vec![total],
     &[blcompute::Value::U32(3), blcompute::Value::U32(5)],
 )?;
-let results = pending.wait()?.into_bindings();
+let results = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 ```
 
 这些接口消费原所有者，Rust 不允许分叉后继续使用原 Submission 或重复移动同一分支。多份独立输出各自拥有 Count；它们可独立计算再汇合，但不能把同一可写存储或 Count 复制给两个分支。丢弃一个 pending 分支时，它的存储延迟至最后使用点完成才释放，其他分支不必为此等待。延后使用的分支保留自己的数据，即使生产者的命令和临时页已经释放。
 
-执行资源与时间戳的消费者不同：`is_complete()` 可释放已完成命令、临时页及 Fence；原 Submission 仍保留查询池，之后 `wait()` 可读取正确的 `GpuTimings`，不再次进行原生等待。消费 Submission 做分区或后续提交时，不再保留无人读取的旧时间戳；查询池仍由实际 GPU 命令持有到完成。
+本节示例用map_err显式结束失败提交并返回原错误；需要继续持有输入的调用者应匹配Err((error, submission))。执行资源与时间戳的消费者不同：`is_complete()` 可释放已完成命令、临时页及 Fence；原 Submission 仍保留查询池，之后 `wait()` 可读取正确的 `GpuTimings`，不再次进行原生等待。消费 Submission 做分区或后续提交时，不再保留无人读取的旧时间戳；查询池仍由实际 GPU 命令持有到完成。
 
 `GpuProgram::submit_join`／`GpuTemplate::submit_join` 消费同队列的多个未等待提交。order 索引按照传入生产者的数据槽依次连接，再接追加数据；接口参数次序可独立于原生提交次序。假设两个 select 的绑定依次为 source／queue／count，消费接口依次为 a／ca／b／cb／total 和两个增量，且声明两份 requires：
 
@@ -3224,7 +3224,7 @@ let pending = consumer.submit_join(
     [right, left], &[4, 5, 1, 2, 6], vec![total],
     &[blcompute::Value::U32(3), blcompute::Value::U32(5)],
 )?;
-let results = pending.wait()?.into_bindings();
+let results = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 ```
 
 每个生产者的 Count 继续在 GPU 上生成和消费，汇合不先等待生产者或读回计数。原生队列所有者只在成功 vkQueueSubmit 后记录私有 u64 提交顺序；执行资源按该顺序归并回收，Fence 仍是完成事实源。该序号不进入源语言数据、不签发域能力，也不替代 Count。未继续绑定的物理存储交回它实际的最后使用点，不依赖传入生产者的逻辑位置。交接失败时，存储也沿相同寿命释放；仍有兄弟分支持有该执行时，失败分支不阻塞它。

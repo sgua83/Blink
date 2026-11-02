@@ -702,7 +702,7 @@ pub struct Dataset {
 
 `words` 是 CPU 上的存储，`count` 是记录数，`stride` 是相邻记录间隔。这里使用 `Vec<u32>` 保存四字节 word，是保存原始位模式的容器，并不表示其中的所有字段都是 `u32`。
 
-Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。驻留拒绝或GPU提交准备失败时，原输入、程序及域关系仍归Frame。GPU准备借用原拥有组，成功提交才发布producer与最后使用点。调用者显式传输或修正实参后可再调用；只读别名只移动一份存储，不增拥有表。
+Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
@@ -2124,15 +2124,13 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2738`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2747`。
 
 ```rust
-    pub fn wait(mut self) -> Result<Completed> {
-        let timings = GpuCompletion {
-            execution: self.execution,
-            queries: self.queries,
-        }
-        .wait()?;
+        let timings = match result {
+            Ok(timings) => timings,
+            Err(error) => return Err((error, self)),
+        };
         for dataset in &mut self.bindings.datasets {
             dataset.last_use = None;
         }
@@ -2145,7 +2143,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 }
 ```
 
-Submission 的 wait 先等待真实执行，取得时间查询结果，再交还 Completed。数据的未决使用标记在这里清除。后续可以继续交接设备数据，也可以读回 CPU，不强迫每次等待都下载全部结果。
+wait先等待真实执行，再读取时间戳。成功交回Completed并清除last_use；失败交回(error,self)，同一Submission仍持有绑定、加速结构、查询池与原完成点。调用者可继续持有或明确结束原提交；错误不承诺数据可用。
 
 ![提交、消费与释放的寿命线](figures/compiler-lifetime.svg)
 

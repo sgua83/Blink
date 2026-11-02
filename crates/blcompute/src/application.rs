@@ -329,17 +329,24 @@ impl Frame {
                         return Err(error);
                     }
                 };
-                let result = submission.wait()?.into_bindings();
                 crate::bindings::invalidate(&mut self.data.domains, layout,
                     |i| (bindings[i].handle as usize, bindings[i].offset));
+                let (inputs, result) = match submission.wait() {
+                    Ok(completed) => (completed.into_bindings(), Ok(())),
+                    Err((error, submission)) => {
+                        let mut inputs = submission.into_bindings();
+                        inputs.domains.clear();
+                        (inputs, Err(error))
+                    }
+                };
                 (
-                    result
+                    inputs
                         .datasets
                         .into_iter()
                         .map(ResidentData::Gpu)
                         .collect::<Vec<_>>(),
-                    result.domains,
-                    Ok(()),
+                    inputs.domains,
+                    result,
                 )
             }
         };

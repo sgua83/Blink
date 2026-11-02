@@ -89,7 +89,7 @@ impl LibraryProgram {
                     .into_iter()
                     .map(|d| device.upload(d))
                     .collect::<Result<Vec<_>>>()?;
-                let completed = program.submit(uploaded, values)?.wait()?;
+                let completed = program.submit(uploaded, values)?.wait().map_err(|(error, _)| error)?;
                 completed
                     .datasets()
                     .iter()

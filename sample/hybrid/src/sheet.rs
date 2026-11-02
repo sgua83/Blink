@@ -66,7 +66,7 @@ pub fn run(backend: &str) -> Result<()> {
                     },
                     &[],
                 )?
-                .wait()?;
+                .wait().map_err(|(error, _)| error)?;
             println!(
                 "first_run_wait_ms={:.3} gpu_ms={:.3}",
                 elapsed(start),
@@ -82,7 +82,7 @@ pub fn run(backend: &str) -> Result<()> {
                     },
                     &[],
                 )?
-                .wait()?;
+                .wait().map_err(|(error, _)| error)?;
             println!(
                 "resident_run_wait_ms={:.3} gpu_ms={:.3}",
                 elapsed(start),

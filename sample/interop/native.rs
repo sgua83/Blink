@@ -14,7 +14,7 @@ fn main() -> blcompute::Result<()> {
         let device = Device::for_program(&program)?;
         let input = device.upload(data)?;
         let program = device.compile(program)?;
-        let completed = program.submit(vec![input], &[])?.wait()?;
+        let completed = program.submit(vec![input], &[])?.wait().map_err(|(error, _)| error)?;
         device.download(&completed.datasets()[0])?
     } else {
         let program = CpuProgram::new(program)?;
