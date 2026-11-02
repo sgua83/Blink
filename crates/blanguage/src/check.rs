@@ -3250,7 +3250,7 @@ impl<'a> Builder<'a> {
         self.for_loop(
             ForLoop {
                 name: name.clone(),
-                begin,
+                begin: begin.clone(),
                 limit,
                 data,
                 borrowed,
@@ -3261,6 +3261,7 @@ impl<'a> Builder<'a> {
             span,
             initial,
             nonempty,
+            &begin,
         )
     }
     fn for_loop(
@@ -3270,6 +3271,7 @@ impl<'a> Builder<'a> {
         span: Span,
         initial: bool,
         nonempty: bool,
+        original_begin: &Value,
     ) -> Result<()> {
         self.flow = Flow::NEXT;
         let ForLoop {
@@ -3322,6 +3324,9 @@ impl<'a> Builder<'a> {
             proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,&limit,body)},
             ..cursor.clone()
         };
+        if !bounds::seeks(body) {
+            self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual, original_begin, &cursor)), true);
+        }
         let binding = if let Some(domain) = data {
             match domain {
                 CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
@@ -3428,7 +3433,7 @@ impl<'a> Builder<'a> {
                     cursor.begin = next.unwrap();
                     let initial=builder.next_initial_loop(body)?;
                     let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
-                    builder.for_loop(cursor, body, span, initial, nonempty)
+                    builder.for_loop(cursor, body, span, initial, nonempty, original_begin)
                 })?;
             code = expanded;
             body_flow = body_flow.union(flow);
