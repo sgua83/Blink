@@ -36,7 +36,7 @@
     },
     {
       "path": "crates/blanguage/src/lib.rs",
-      "sha256": "f44650b580e2d3a54ca6aad35b130007d7881db23946b08606bb09e79fb5b4de"
+      "sha256": "d2679f976873cf2f1ead9f617fc826ae7b6735908403731d94ee332faed19919"
     },
     {
       "path": "crates/blanguage/src/native.rs",

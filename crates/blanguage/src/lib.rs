@@ -1072,10 +1072,13 @@ impl World {
         }
         if let Some(representation) = &record.enumeration {
             let mut ty = self.ty_inner(representation, s, record.span, m, i, stack)?;
-            if ty != ir::Ty::scalar(ir::Scalar::U32) && ty != ir::Ty::scalar(ir::Scalar::I32) {
-                return s.fail(record.span, "B268", "编号枚举的表示类型需要 u32 或 i32");
+            if !ty.is_numeric() || ty.components.len() != 1 || !ty.components[0].0.is_integer() {
+                return s.fail(record.span, "B268", "编号枚举的表示类型需要整数标量");
             }
             if !record.variants.is_empty() {
+                if ty != ir::Ty::scalar(ir::Scalar::U32) && ty != ir::Ty::scalar(ir::Scalar::I32) {
+                    return s.fail(record.span, "B268", "带载荷变体的表示类型需要 u32 或 i32");
+                }
                 let representation = ty;
                 let mut alternatives = Vec::new();
                 let mut names = BTreeSet::new(); let mut tags = BTreeSet::new();
