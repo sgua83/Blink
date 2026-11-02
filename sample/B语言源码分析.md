@@ -1911,11 +1911,9 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 ### 18.2 编译程序和执行一次是两回事
 
-同一份已编译 GPU 程序可以消费多次不同数据，不必每次重新创建管线。一次执行需要的临时扫描空间、描述符和命令则属于这次执行。把两类资源混在一起，会导致重复创建或寿命不清。
+同一份GPU程序复用管线，临时空间、描述符和命令属于每次执行。装入借用原计划与SPIR-V，由原`Compiled`持有部分设备资源；全部成功才取得计划，失败沿原`Drop`释放资源。`Device::load_template`以`Err((error,image))`交回同一未改输入，`Frame`接回原槽。调用方显式再装入，终端消费者释放输入并传播原错误，不自动重试；借用与拥有只是装入期类型区别，没有第二计划、状态表或新包装。
 
-`GpuProgram` 持有编译结果与管线；提交路径建立本次数据关系与命令，最后返回 Submission。
-
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1837`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1862`。
 
 ```rust
     pub fn submit(
@@ -1927,7 +1925,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
     }
 ```
 
-`submit` 接收拥有的数据绑定。返回不是最终结果数组，而是尚可能在设备中运行的提交对象。
+`submit`接收拥有的数据绑定，建立本次数据关系与命令；返回的`Submission`仍可能在设备中运行。装入尚未提交计算。
 
 ### 18.3 源码阶段怎样变成命令
 
@@ -2024,7 +2022,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1867`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1892`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -2120,7 +2118,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2701`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2726`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -2192,7 +2190,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2434`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2459`。
 
 ```rust
                                 let mut length = count;

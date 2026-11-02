@@ -168,7 +168,7 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "c7bf4ccb37ccad140b6dd016993d7d35c8c86471da06b5231a8ed63e76e5252e"
+      "sha256": "0d4cf27184c5bbfb7cdff7d6935aa6319316b5ef0fd78f4a090d00a44b98f75d"
     },
     {
       "path": "sample/lessons/map.b",
@@ -580,8 +580,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1837,
-      "end_line": 1843,
+      "start_line": 1862,
+      "end_line": 1868,
       "sha256": "b56642a96ce73a2b95d466461b6d2457bc87cec51838ffeff6bb36b7ca3dad11"
     },
     {
@@ -598,8 +598,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1867,
-      "end_line": 1876,
+      "start_line": 1892,
+      "end_line": 1901,
       "sha256": "b9d24207f3c4216ba86e6d6f6cc43de5d4bbbc5cd4aead6871ce7b0c3015da3d"
     },
     {
@@ -622,8 +622,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2701,
-      "end_line": 2716,
+      "start_line": 2726,
+      "end_line": 2741,
       "sha256": "1b9250134bf807852db03568883cac273409a880f90b1a95a765b91458dd0088"
     },
     {
@@ -634,8 +634,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2434,
-      "end_line": 2440,
+      "start_line": 2459,
+      "end_line": 2465,
       "sha256": "7d7b294d818dbc009723ed7be968c7e38e66da930cfd35e57877bcf46e5d2bc5"
     },
     {

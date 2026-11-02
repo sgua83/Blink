@@ -37,7 +37,7 @@ impl Drop for Pipelines {
     }
 }
 impl Pipelines {
-    pub fn load(c: &Compiled, shaders: Vec<blanguage::spirv::ShaderCode>) -> Result<Self> {
+    pub fn load<P>(c: &Compiled<P>, shaders: &[blanguage::spirv::ShaderCode]) -> Result<Self> {
         let mut out = Self {
             inner: c.inner.clone(),
             handles: Vec::new(),

@@ -108,12 +108,15 @@ impl Frame {
                     }
                 }
             }
-            ProgramSlot::Image(ProgramImage::Gpu(image)) => self
-                .device
-                .as_ref()
-                .unwrap()
-                .load_template(image)
-                .map(Program::Gpu),
+            ProgramSlot::Image(ProgramImage::Gpu(image)) => {
+                match self.device.as_ref().unwrap().load_template(image) {
+                    Ok(program) => Ok(Program::Gpu(program)),
+                    Err((error, image)) => {
+                        self.programs[index] = Some(ProgramSlot::Image(ProgramImage::Gpu(image)));
+                        Err(error)
+                    }
+                }
+            }
         }
     }
     fn create_device(&mut self) -> Result<()> {
