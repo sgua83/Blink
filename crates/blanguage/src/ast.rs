@@ -84,7 +84,7 @@ pub struct TypeName {
     pub view: bool,
     pub tile: bool,
     pub count: Option<Shape>,
-    pub outputs: Option<Box<Vec<ContractPredicate>>>,
+    pub contracts: Option<Box<Vec<ContractPredicate>>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Shape {
@@ -100,7 +100,7 @@ impl TypeName {
             && !self.view
             && !self.tile
             && self.count.is_none()
-            && self.outputs.is_none()
+            && self.contracts.is_none()
     }
     pub fn mentions_owned(&self) -> bool {
         self.dataset
@@ -149,7 +149,7 @@ impl TypeName {
             view: false,
             tile: false,
             count: None,
-            outputs: None,
+            contracts: None,
         }
     }
     pub fn mentions(&self, name: &str) -> bool {

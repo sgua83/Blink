@@ -95,7 +95,7 @@ pub struct Variant {
 pub struct CFunctionType {
     pub result: crate::ast::TypeName,
     pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
-    pub outputs: Vec<crate::ast::ContractPredicate>,
+    pub contracts: Vec<crate::ast::ContractPredicate>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
@@ -1897,7 +1897,7 @@ impl CFunctionType {
             } else { ty.clone() };
             GenericArgument::Type(ty)
         }));
-        if !self.outputs.is_empty() { syntax.outputs = Some(Box::new(self.outputs.clone())); }
+        if !self.contracts.is_empty() { syntax.contracts = Some(Box::new(self.contracts.clone())); }
         syntax
     }
 }

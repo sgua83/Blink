@@ -212,8 +212,8 @@ record!(ir::Ty {
     cleanup,
     function
 });
-record!(ir::CFunctionType { result, parameters, outputs });
-record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count, outputs });
+record!(ir::CFunctionType { result, parameters, contracts });
+record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count, contracts });
 variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name), 2=>Expression(value) });
 record!(ast::Span { start, end });
 record!(ast::Expr { kind, span });

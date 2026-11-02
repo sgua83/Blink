@@ -14,7 +14,7 @@ enum Clauses<'a> {
 /// A borrowed view of the original declaration or bound function-value contract.
 #[derive(Clone, Copy)]
 pub(super) struct Contract<'a> {
-    source: &'a crate::Source,
+    pub(super) source: &'a crate::Source,
     module: &'a str,
     imports: &'a [String],
     public: bool,
@@ -38,6 +38,12 @@ impl<'a> Contract<'a> {
         Self { source, module, imports, public: false, parameters,
             clauses: Clauses::Signature(outputs, span) }
     }
+    pub(super) fn nonzero_inputs(self) -> impl Iterator<Item = (&'a str, Span)> {
+        (0..self.len()).filter_map(move |index| match self.at(index) {
+            (ContractKind::Requires, ContractPredicate::Nonzero(path), span) => Some((path.as_str(), span)),
+            _ => None,
+        })
+    }
     fn len(self) -> usize {
         match self.clauses { Clauses::Declaration(clauses) => clauses.len(),
             Clauses::Signature(clauses, _) => clauses.len() }
@@ -47,7 +53,12 @@ impl<'a> Contract<'a> {
             Clauses::Declaration(clauses) => {
                 let clause = &clauses[index]; (clause.kind, &clause.predicate, clause.span)
             }
-            Clauses::Signature(clauses, span) => (ContractKind::Ensures, &clauses[index], span),
+            Clauses::Signature(clauses, span) => {
+                let kind = if matches!(clauses[index], ContractPredicate::Nonzero(_)) {
+                    ContractKind::Requires
+                } else { ContractKind::Ensures };
+                (kind, &clauses[index], span)
+            },
         }
     }
 }
@@ -82,6 +93,11 @@ pub(super) fn validate_named(world: &World, definition: &Definition,
         .find(|(_, param)| param.name == name)
         .map(|(index, param)| (param.access, parameters[index].clone()));
     for contract in &definition.function.contracts {
+        if definition.function.c_abi && contract.kind == ContractKind::Requires
+            && let ContractPredicate::Nonzero(path) = &contract.predicate {
+            contracts::validate_nonzero_input(path, &input, &definition.source, contract.span)?;
+            continue;
+        }
         let ContractPredicate::Initialized { value, condition } = &contract.predicate else { continue; };
         if contract.kind != ContractKind::Ensures || definition.function.kind != FunctionKind::Value
             || definition.function.target != Target::Cpu {
@@ -611,7 +627,7 @@ fn normalize(world: &World, definition: Contract<'_>, returned: &TypeName,
     Ok(identity(&value, &path, definition.source, span)?.value)
 }
 
-pub(crate) fn bind_function_outputs(
+pub(crate) fn bind_function_contracts(
     world: &World, result: &TypeName, parameters: &[(Access, TypeName)], outputs: &[ContractPredicate],
     source: &crate::Source, span: Span, module: &str, imports: &[String],
 ) -> Result<Vec<ContractPredicate>> {
@@ -622,11 +638,14 @@ pub(crate) fn bind_function_outputs(
     let contract = Contract::signature(source, module, imports, &parameters, outputs, span);
     let mut bound = BTreeSet::new();
     for predicate in outputs {
-        let ContractPredicate::Initialized { value, condition } = predicate else {
-            return source.fail(span, "B225", "cfn输出合同使用ensures initialized");
-        };
-        bound.insert(ContractPredicate::Initialized { value: value.clone(),
-            condition: normalize(world, contract, result, condition, span)? });
+        match predicate {
+            ContractPredicate::Nonzero(path) => { bound.insert(ContractPredicate::Nonzero(path.clone())); }
+            ContractPredicate::Initialized { value, condition } => {
+                bound.insert(ContractPredicate::Initialized { value: value.clone(),
+                    condition: normalize(world, contract, result, condition, span)? });
+            }
+            _ => return source.fail(span, "B225", "cfn合同使用requires nonzero及ensures initialized"),
+        }
     }
     Ok(bound.into_iter().collect())
 }
@@ -718,7 +737,7 @@ fn validate_output(value: &str, condition: &OutputCondition,
     operators::same(&Ty::scalar(Scalar::Bool), &condition, source, span)
 }
 
-pub(crate) fn validate_function_outputs(
+pub(crate) fn validate_function_contracts(
     parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
     source: &crate::Source, span: Span,
 ) -> Result<()> {
@@ -729,10 +748,11 @@ pub(crate) fn validate_function_outputs(
             CallParameter::Reference { ty, access } => (*access, ty.clone()),
         });
     for output in outputs {
-        let ContractPredicate::Initialized { value, condition } = output else {
-            return source.fail(span, "B225", "cfn输出合同使用ensures initialized");
-        };
-        validate_output(value, condition, &input, result, source, span)?;
+        match output {
+            ContractPredicate::Nonzero(path) => contracts::validate_nonzero_input(path, &input, source, span)?,
+            ContractPredicate::Initialized { value, condition } => validate_output(value, condition, &input, result, source, span)?,
+            _ => return source.fail(span, "B225", "cfn合同使用requires nonzero及ensures initialized"),
+        }
     }
     Ok(())
 }

@@ -34,15 +34,19 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
     let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
     let definition = &instance.definition;
     let f = &definition.function;
-    let outputs = f.contracts.iter().filter_map(|contract| {
-        if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
-            Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
-        } else { None }
+    let contracts = f.contracts.iter().filter_map(|contract| {
+        match &contract.predicate {
+            ContractPredicate::Nonzero(value) if contract.kind == ContractKind::Requires =>
+                Some(ContractPredicate::Nonzero(parameter_name(value, &f.params))),
+            ContractPredicate::Initialized { value, condition: when } =>
+                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) }),
+            _ => None,
+        }
     }).collect();
     let syntax = CFunctionType {
         result: f.result.clone(),
         parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
-        outputs,
+        contracts,
     }.syntax();
     let ty = world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
     Ok((instance, ty))

@@ -28,9 +28,11 @@ fn type_name(ty: &TypeName) -> String {
                 else { format!("{prefix}<{name}>") };
         }
     }
-    if let Some(outputs) = &ty.outputs {
+    if let Some(outputs) = &ty.contracts {
         for output in outputs.iter() {
-            if let ContractPredicate::Initialized { value, condition } = output {
+            if let ContractPredicate::Nonzero(value) = output {
+                name.push_str(&format!(" requires nonzero({value})"));
+            } else if let ContractPredicate::Initialized { value, condition } = output {
                 name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
             }
         }
@@ -261,10 +263,10 @@ impl World {
             };
             parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
         }
-        let outputs = crate::check::outputs::bind_function_outputs(
-            self, &result, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
+        let contracts = crate::check::outputs::bind_function_contracts(
+            self, &result, &parsed, name.contracts.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
             source, span, module, imports)?;
-        let function = CFunctionType { result, parameters: parsed, outputs };
+        let function = CFunctionType { result, parameters: parsed, contracts };
         let mut ty = Ty::scalar(Scalar::U64);
         ty.name = type_name(&function.syntax());
         ty.function = Some(Box::new(function));
@@ -289,8 +291,8 @@ impl World {
     pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
         if let Some(function) = &ty.function && consumed.insert(ty.name.clone()) {
             let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
-            crate::check::outputs::validate_function_outputs(
-                &parameters, result.as_ref(), &function.outputs, source, span)?;
+            crate::check::outputs::validate_function_contracts(
+                &parameters, result.as_ref(), &function.contracts, source, span)?;
             for parameter in parameters {
                 let ty = match parameter { CallParameter::Value(ty) | CallParameter::Reference { ty, .. } => ty };
                 self.validate_c_functions(&ty, source, span, module, imports, consumed)?;

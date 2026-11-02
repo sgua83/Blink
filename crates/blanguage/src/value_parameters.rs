@@ -67,7 +67,7 @@ pub(crate) fn substitute_shape(shape: &mut Shape, values: &BTreeMap<String,u32>,
     Ok(())
 }
 pub(crate) fn substitute_type(ty: &mut TypeName, values: &BTreeMap<String, u32>, source:&Source)->Result<()> {
-    if let Some(outputs) = &mut ty.outputs {
+    if let Some(outputs) = &mut ty.contracts {
         for output in outputs.iter_mut() {
             if let ContractPredicate::Initialized { condition, .. } = output {
                 substitute_output_condition(condition, values);

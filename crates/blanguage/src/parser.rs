@@ -223,13 +223,12 @@ impl Parser {
         self.expect(")")?;
         Ok(FunctionContract { kind, predicate, span })
     }
-    fn output_clause(&self, at: usize) -> bool {
-        self.tokens.get(at).is_some_and(|t| t.text(&self.source) == "ensures")
-            && self.tokens.get(at + 1).is_some_and(|t| t.text(&self.source) == "initialized")
+    fn function_clause(&self, at: usize) -> bool {
+        self.tokens.get(at).is_some_and(|t| matches!(t.text(&self.source), "requires" | "ensures"))
             && self.tokens.get(at + 2).is_some_and(|t| t.text(&self.source) == "(")
     }
-    fn output_suffix_end(&self, mut at: usize) -> Option<usize> {
-        while self.output_clause(at) {
+    fn function_suffix_end(&self, mut at: usize) -> Option<usize> {
+        while self.function_clause(at) {
             at += 3;
             let mut depth = 1usize;
             while depth != 0 {
@@ -241,13 +240,18 @@ impl Parser {
         }
         Some(at)
     }
-    fn function_outputs(&mut self) -> Result<Option<Box<Vec<ContractPredicate>>>> {
-        let mut outputs = Vec::new();
-        while self.output_clause(self.at) {
+    fn function_contracts(&mut self) -> Result<Option<Box<Vec<ContractPredicate>>>> {
+        let mut contracts = Vec::new();
+        while self.function_clause(self.at) {
             let contract = self.contract()?;
-            outputs.push(contract.predicate);
+            if !matches!((&contract.kind, &contract.predicate),
+                (ContractKind::Requires, ContractPredicate::Nonzero(_))
+                | (ContractKind::Ensures, ContractPredicate::Initialized { .. })) {
+                return self.source.fail(contract.span, "B225", "cfn合同使用requires nonzero输入前提及ensures initialized输出条件");
+            }
+            contracts.push(contract.predicate);
         }
-        Ok(if outputs.is_empty() { None } else { Some(Box::new(outputs)) })
+        Ok(if contracts.is_empty() { None } else { Some(Box::new(contracts)) })
     }
     fn arguments(&mut self) -> Result<Vec<Expr>> {
         self.expect("(")?;
@@ -292,7 +296,7 @@ impl Parser {
             } else {
                 Vec::new()
             };
-            let outputs = if name == "cfn" { self.function_outputs()? } else { None };
+            let contracts = if name == "cfn" { self.function_contracts()? } else { None };
             Ok(TypeName {
                 name,
                 canonical: false,
@@ -301,7 +305,7 @@ impl Parser {
                 view: false,
                 tile: false,
                 count: None,
-                outputs,
+                contracts,
             })
         }
     }
@@ -468,7 +472,7 @@ impl Parser {
             };
             at = end;
         }
-        let Some(at) = self.output_suffix_end(at) else { return false; };
+        let Some(at) = self.function_suffix_end(at) else { return false; };
         ident(at)
     }
     fn module(mut self) -> Result<Module> {
@@ -928,7 +932,7 @@ impl Parser {
             && self.tokens.get(self.at + 1).is_some_and(|t| t.text(&self.source) == "<")
             && self.angle_end(self.at + 1).is_some_and(|at| {
                 self.tokens.get(at).is_some_and(|t| t.text(&self.source) == "(")
-                    || self.output_clause(at)
+                    || self.function_clause(at)
             }) {
             let ty = self.ty()?;
             let args = self.arguments()?;

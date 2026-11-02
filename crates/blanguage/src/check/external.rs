@@ -9,8 +9,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || (f.external.is_some() && (!f.types.is_empty() || !f.values.is_empty()))
         || f.contracts.iter().any(|contract| !match &contract.predicate {
             ContractPredicate::Initialized { .. } => contract.kind == ContractKind::Ensures,
-            ContractPredicate::Nonzero(name) => contract.kind == ContractKind::Requires
-                && f.values.iter().any(|parameter| parameter.name == *name),
+            ContractPredicate::Nonzero(_) => contract.kind == ContractKind::Requires,
             _ => false,
         })
         || f.params.iter().any(|p| {
@@ -23,7 +22,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.result.dataset
         || f.result.tile
     {
-        return d.source.fail(f.span,"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输出可声明 ensures initialized");
+        return d.source.fail(f.span,"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized");
     }
     Ok(())
 }
@@ -284,9 +283,9 @@ impl Builder<'_> {
         }).collect::<Vec<_>>();
         let Some(arguments) = self.call_arguments(&source_parameters, None, args, span)? else { return Ok(None); };
         let definition = self.definition.clone();
-        let contract = if function.outputs.is_empty() { None } else {
+        let contract = if function.contracts.is_empty() { None } else {
             Some(outputs::Contract::signature(&definition.source, &definition.module,
-                &definition.imports, &source_parameters, &function.outputs, span))
+                &definition.imports, &source_parameters, &function.contracts, span))
         };
         self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span)
             .map(|value| value.map(returns::Returned::value))
@@ -324,6 +323,9 @@ impl Builder<'_> {
                 }
                 _ => return self.fail(span, "B263", "C ABI实参只接收普通值及实际位置"),
             });
+        }
+        if let Some(contract) = definition {
+            contracts::prove_c_inputs(self, contract, &output_inputs, span)?;
         }
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();

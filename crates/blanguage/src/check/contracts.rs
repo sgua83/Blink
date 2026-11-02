@@ -120,27 +120,23 @@ pub(super) struct Requirement {
 }
 
 fn select(
-    builder: &Builder<'_>,
-    definition: &Definition,
-    env: &BTreeMap<String, Binding>,
-    path: &str,
-    span: Span,
+    definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
 ) -> Result<Selection> {
+    let root = path.split('.').next().unwrap();
+    let Some(Binding::Value(value)) = env.get(root) else {
+        return definition.source.fail(span, "B225", "值约束需要按值参数或其字段；不能读取原子位置或数据集元素");
+    };
+    select_value(value, path, &definition.source, span)
+}
+fn select_value(value: &Value, path: &str, source: &Source, span: Span) -> Result<Selection> {
     let mut fields = path.split('.');
     let root = fields.next().unwrap();
-    let Some(Binding::Value(value)) = env.get(root) else {
-        return definition.source.fail(
-            span,
-            "B225",
-            "值约束需要按值参数或其字段；不能读取原子位置或数据集元素",
-        );
-    };
     let mut value = value.clone();
     let mut components: Vec<_> = (0..value.regs.len()).collect();
     for field in fields {
-        let (ty, indices) = member_type(&value.ty, field, &builder.definition.source, span)
+        let (ty, indices) = member_type(&value.ty, field, source, span)
             .map_err(|error| Diagnostic {
-                source: definition.source.clone(),
+                source: source.clone(),
                 span,
                 code: "B225",
                 message: format!("约束字段 {path}：{}", error.message),
@@ -164,6 +160,41 @@ fn select(
         value,
     })
 }
+fn validate_nonzero_type(ty: &Ty, source: &Source, span: Span) -> Result<()> {
+    if !(ty.is_numeric() || ty.is_c_function())
+        || !ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer()) {
+        return source.fail(span, "B225", "nonzero 需要整数标量／向量或cfn函数地址的按值参数／字段");
+    }
+    Ok(())
+}
+pub(super) fn validate_nonzero_input(path: &str,
+    input: &impl Fn(&str) -> Option<(Access, Ty)>, source: &Source, span: Span,
+) -> Result<()> {
+    let mut fields = path.split('.');
+    let root = fields.next().unwrap();
+    let Some((Access::Value, mut ty)) = input(root) else {
+        return source.fail(span, "B225", "nonzero需要实际按值输入或其字段");
+    };
+    for field in fields { ty = member_type(&ty, field, source, span)?.0; }
+    validate_nonzero_type(&ty, source, span)
+}
+pub(super) fn prove_c_inputs(builder: &Builder<'_>, contract: outputs::Contract<'_>,
+    inputs: &BTreeMap<String, Value>, span: Span,
+) -> Result<()> {
+    let requirements = contract.nonzero_inputs().map(|(path, at)| {
+        let root = path.split('.').next().unwrap();
+        let value = inputs.get(root).ok_or_else(|| Diagnostic {
+            source: contract.source.clone(), span: at, code: "B225",
+            message: "nonzero需要实际按值输入或其字段".into(),
+        })?;
+        let selection = select_value(value, path, contract.source, at)?;
+        validate_nonzero_type(&selection.value.ty, contract.source, at)?;
+        Ok(Requirement { predicate: Predicate::Nonzero(selection),
+            description: format!("requires nonzero({path})") })
+    }).collect::<Result<Vec<_>>>()?;
+    prove(builder, &requirements, span)
+}
+
 fn resource(
     builder: &Builder<'_>,
     definition: &Definition,
@@ -223,7 +254,7 @@ fn resource(
             return Ok(Resource::Array(ty.values[0]));
         }
     }
-    let selection = select(builder, definition, env, path, span)?;
+    let selection = select(definition, env, path, span)?;
     if selection.value.ty.array.is_some() {
         return Ok(Resource::Array(selection.value.ty.values[0]));
     }
@@ -267,16 +298,8 @@ pub(super) fn resolve(
                 format!("contiguous({path})"),
             ),
             ContractPredicate::Nonzero(path) => {
-                let selection = select(builder, definition, env, path, contract.span)?;
-                if !(selection.value.ty.is_numeric() || selection.value.ty.is_c_function())
-                    || !selection.value.ty.components.first().is_some_and(|(scalar, _)| scalar.is_integer())
-                {
-                    return definition.source.fail(
-                        contract.span,
-                        "B225",
-                        "nonzero 需要整数标量／向量或cfn函数地址的按值参数／字段",
-                    );
-                }
+                let selection = select(definition, env, path, contract.span)?;
+                validate_nonzero_type(&selection.value.ty, &definition.source, contract.span)?;
                 (Predicate::Nonzero(selection), format!("nonzero({path})"))
             }
             ContractPredicate::Nonempty(path) => (
@@ -287,7 +310,7 @@ pub(super) fn resolve(
                 value,
                 resource: path,
             } => {
-                let selection = select(builder, definition, env, value, contract.span)?;
+                let selection = select(definition, env, value, contract.span)?;
                 if !selection.value.ty.is_numeric()
                     || !matches!(
                         selection.value.ty.components.first(),

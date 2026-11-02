@@ -192,7 +192,7 @@ cargo build --workspace --release
 pub struct CFunctionType {
     pub result: crate::ast::TypeName,
     pub parameters: Vec<(crate::ast::Access, crate::ast::TypeName)>,
-    pub outputs: Vec<crate::ast::ContractPredicate>,
+    pub contracts: Vec<crate::ast::ContractPredicate>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ty {
@@ -312,9 +312,9 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 `cfn<R,P...>`把原生C函数地址的返回及参数签名放进原Ty参数结构；read／write／inout包装只在签名元数据里存在，不分配数据或增加Scalar。函数值自身仍是8字节、8对齐的U64载荷；不同签名保持不同名义身份，空值与真实调用分别定义。
 
-CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明已按语义匹配。明确C ABI的B定义可形成直接原生入口；需执行上下文的回调与可保留代码／状态寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
+CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的非零输入前提与条件输出写在cfn签名后，使用argument0起的位置名；静态命名、外部和间接调用借用原合同的同一视图，实际已求值输入沿原Nonzero选择／prove满足前提，入口沿原resolve／assume取得事实；实际返回值与Proof／Position继续交接初始化。TypeName和CFunctionType的contracts向量保存同一份输入／输出元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明已按语义匹配。明确C ABI的B定义可形成直接原生入口；需执行上下文的回调与可保留代码／状态寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
-源码节选：`crates/blanguage/src/function_types.rs:244`。
+源码节选：`crates/blanguage/src/function_types.rs:246`。
 
 ```rust
     pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
@@ -337,10 +337,10 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
             };
             parsed.push((access, self.c_signature_type(parameter, source, span, module, imports)?));
         }
-        let outputs = crate::check::outputs::bind_function_outputs(
-            self, &result, &parsed, name.outputs.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
+        let contracts = crate::check::outputs::bind_function_contracts(
+            self, &result, &parsed, name.contracts.as_ref().map(|value| value.as_slice()).unwrap_or(&[]),
             source, span, module, imports)?;
-        let function = CFunctionType { result, parameters: parsed, outputs };
+        let function = CFunctionType { result, parameters: parsed, contracts };
         let mut ty = Ty::scalar(Scalar::U64);
         ty.name = type_name(&function.syntax());
         ty.function = Some(Box::new(function));
@@ -351,7 +351,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 
 函数值调用复用直接C调用的实参求值、read／write／inout借用、连续布局及返回投影。外部声明与函数值只提供各自真实目标和签名，共用c_call，不造一个不存在的DLL或Definition来转接。
 
-源码节选：`crates/blanguage/src/check/external.rs:254`。
+源码节选：`crates/blanguage/src/check/external.rs:253`。
 
 ```rust
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
@@ -480,14 +480,14 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 签名引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，再沿同一引用闭包检查普通C值、位置访问和资源限制；一次查询已经消费的同一签名不反复展开，未知、非法资源或直接按值递归不会因此跳过。
 
-源码节选：`crates/blanguage/src/function_types.rs:289`。
+源码节选：`crates/blanguage/src/function_types.rs:291`。
 
 ```rust
     pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
         if let Some(function) = &ty.function && consumed.insert(ty.name.clone()) {
             let (parameters, result, _) = self.c_function_signature(function, source, span, module, imports)?;
-            crate::check::outputs::validate_function_outputs(
-                &parameters, result.as_ref(), &function.outputs, source, span)?;
+            crate::check::outputs::validate_function_contracts(
+                &parameters, result.as_ref(), &function.contracts, source, span)?;
             for parameter in parameters {
                 let ty = match parameter { CallParameter::Value(ty) | CallParameter::Reference { ty, .. } => ty };
                 self.validate_c_functions(&ty, source, span, module, imports, consumed)?;
@@ -606,7 +606,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 
 原OutputCondition只负责纯表达式组织；路径来自真实按值快照、资源长度与返回值，字段消费原member_type。dataset的存储类型使用原Ty::owned_dataset及真实count，initialized位置仍选择实际元素。根结果必须是bool；泛型类型及const沿原实例化闭合，不生成假函数或声明用执行IR。
 
-源码节选：`crates/blanguage/src/check/outputs.rs:633`。
+源码节选：`crates/blanguage/src/check/outputs.rs:652`。
 
 ```rust
 fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
@@ -935,7 +935,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1047`。
+源码节选：`crates/blanguage/src/parser.rs:1051`。
 
 ```rust
             let prec = match self.peek() {
@@ -2351,7 +2351,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
 
 应用链接以唯一实际入口为根，沿机器符号选择显式模块与按库顺序抽取的成员，再沿实际函数节和重定位继续。每个函数的机器代码与内部字面量在同一个 COMDAT 节；pdata／xdata 以标准 COFF 关联随这个函数保留。递归和共享打印／导入跳板按原节身份闭合，未调用函数不把缺失依赖或 DLL 导入带进应用；真正需要的定义须有匹配合同，显式重复仍拒绝。
 
-模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。当前BLCO33交接真实类型合同、COFF辅助符号与节关联，模块资源及执行映像为BLRI15；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
+模块资源包装只在真实调用后进入执行库导出，原工厂及本地类型／程序索引保持；没有资源包装消费者的模块不带入自己的资源 archive。需要的模块资源映像仍完整交给原 Frame，不重排条目。对象栈声明仍是原上界，本项不替代函数级最小栈分析。当前BLCO34交接真实类型合同、COFF辅助符号与节关联，模块资源及执行映像为BLRI15；签名使用名义TypeName编码，真实不匹配由各自格式入口拒绝。入口和符号选择归原链接器，物理节、重定位、合同与资源仍由原所有者交接；SDK单对象算法 DLL 也使用同一链接入口。
 
 DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有装载与驱动准备成本；消费者不需要 B 源码或 Rust 工具链。编译、链接、装载、数据传输与一次算法执行的成本应分别记录。
 
@@ -2367,7 +2367,7 @@ B 的普通 CPU 应用已能通过明确的 `extern "C"` 声明调用 Windows x6
 
 B也可用不带from的extern "C"定义普通CPU函数或泛型模板；c_function(Name)与c_function(Name<T,...,N>)沿原静态引用和具体实例形成同一函数代码的cfn地址。模板的实际类型／u32 const、结果和输出条件先完成原替换，再检查真实C签名；DLL导入仍为固定符号。取址没有运行实参，不从接收变量猜模板参数。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。具体声明装入时检查，模板的实际C合同在原实例生产处检查，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
 
-源码节选：`crates/blanguage/src/check/callback.rs:51`。
+源码节选：`crates/blanguage/src/check/callback.rs:55`。
 
 ```rust
     pub(super) fn c_function_value(&mut self, args: &[Expr], span: Span) -> Result<Value> {
@@ -2383,7 +2383,7 @@ B也可用不带from的extern "C"定义普通CPU函数或泛型模板；c_functi
     }
 ```
 
-纯签名绑定把类型生产与地址降低分清：原Scope词法来源分析与Builder共同消费同一实例和CFunctionType，原effects据此识别推导函数值的write／inout位置。没有额外的初始化状态或运行时写回；模板的requires nonzero(N)在原const实例替换时检查并消费。
+纯签名绑定把类型生产与地址降低分清：原Scope词法来源分析与Builder共同消费同一实例和CFunctionType，原effects据此识别推导函数值的write／inout位置。运行期按值整数或cfn参数及其字段的requires nonzero随同一签名传递；c_function取址把参数名称规范化到argument0起的位置，间接调用仍检查该输入义务，不能只证明调用目标本身非零后省略实参前提。外部C／Rust调用者履行实际接口承诺，不增加隐藏Frame或运行时判空。没有额外的初始化状态或运行时写回；模板的requires nonzero(N)在原const实例替换时检查并消费。
 
 源码节选：`crates/blanguage/src/check/callback.rs:18`。
 
@@ -2407,15 +2407,19 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
     let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
     let definition = &instance.definition;
     let f = &definition.function;
-    let outputs = f.contracts.iter().filter_map(|contract| {
-        if let ContractPredicate::Initialized { value, condition: when } = &contract.predicate {
-            Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) })
-        } else { None }
+    let contracts = f.contracts.iter().filter_map(|contract| {
+        match &contract.predicate {
+            ContractPredicate::Nonzero(value) if contract.kind == ContractKind::Requires =>
+                Some(ContractPredicate::Nonzero(parameter_name(value, &f.params))),
+            ContractPredicate::Initialized { value, condition: when } =>
+                Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) }),
+            _ => None,
+        }
     }).collect();
     let syntax = CFunctionType {
         result: f.result.clone(),
         parameters: f.params.iter().map(|parameter| (parameter.access, parameter.ty.clone())).collect(),
-        outputs,
+        contracts,
     }.syntax();
     let ty = world.c_function_type(&syntax, &definition.source, f.span, &definition.module, &definition.imports)?;
     Ok((instance, ty))
