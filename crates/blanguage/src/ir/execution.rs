@@ -55,6 +55,7 @@ macro_rules! interface_fields {
         $vis fn length_requirements(&self) -> &[(usize, usize)] { &self.length_requirements }
     };
 }
+#[cfg(feature = "compiler")]
 impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
@@ -169,6 +170,7 @@ impl custom_reduce::ReductionShape for ReductionLayout {
         &self.fields
     }
 }
+#[cfg(feature = "compiler")]
 impl From<&CustomReduction> for ReductionLayout {
     fn from(value: &CustomReduction) -> Self {
         Self {
@@ -252,6 +254,7 @@ impl ExecutionPlan {
     pub fn subgroup_capabilities(&self) -> SubgroupCapabilities {
         self.requirements().subgroup
     }
+    #[cfg(feature = "compiler")]
     pub(crate) fn from_program(program: &Program) -> Self {
         let stages = program
             .stages
