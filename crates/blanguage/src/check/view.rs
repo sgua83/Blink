@@ -279,14 +279,14 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
-        if matches!(&requirement,Requirement::Initialized{..}) {
+        if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}) {
             self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});
             return Ok(());
         }
         let borrow=requirement.borrow();
         if borrow.empty(){return Ok(());}
         requirement.under_path(&self.path).check(&self.definition.source)?;
-        if requirement.pending()||matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
+        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, span: Span) -> Result<()> {
