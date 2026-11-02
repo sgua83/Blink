@@ -186,7 +186,8 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
 }
 fn publish(path: &Path, bytes: &[u8]) -> Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let temporary = path.with_extension(format!(
+    let mut temporary = path.to_path_buf();
+    temporary.set_extension(format!(
         "{}.{}.tmp",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
