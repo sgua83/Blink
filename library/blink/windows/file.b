@@ -1,7 +1,7 @@
 module blink.windows.file;
 import blink.windows.error;
 
-result<dataset<u8>,ReadError> read_bytes(address file) on cpu {
+result<dataset<u8>,ReadError> read_bytes(handle file) on cpu {
     dataset<u8> data=dataset<u8>(0);
     while (true) {
         dataset<u8> buffer=dataset<u8>(65536);
@@ -18,8 +18,8 @@ result<dataset<u8>,ReadError> read_bytes(address file) on cpu {
 }
 
 result<dataset<u8>,SourceError> read_binary(address path) on cpu {
-    address file=CreateFileW(path,2147483648,7,address(),3,128,address());
-    if (address_bits(file) == 18446744073709551615u64) {
+    handle file=CreateFileW(path,2147483648,7,address(),3,128,handle());
+    if (file == INVALID_HANDLE_VALUE) {
         return Err(SourceError::Open(GetLastError()));
     }
     result<dataset<u8>,ReadError> contents=read_bytes(file);
@@ -51,7 +51,7 @@ result<dataset<u8>,SourceError> read_utf8(address path) on cpu {
     }
 }
 
-result<u32,WriteError> write_bytes(address file,read dataset<u8> data) on cpu {
+result<u32,WriteError> write_bytes(handle file,read dataset<u8> data) on cpu {
     u32 completed=0;
     while (completed<data.length) {
         u32 written=0;
@@ -67,8 +67,8 @@ result<u32,WriteError> write_bytes(address file,read dataset<u8> data) on cpu {
 }
 
 result<u32,OutputError> write_file(address path,read dataset<u8> data,u32 creation) on cpu {
-    address file=CreateFileW(path,1073741824,7,address(),creation,128,address());
-    if (address_bits(file) == 18446744073709551615u64) {
+    handle file=CreateFileW(path,1073741824,7,address(),creation,128,handle());
+    if (file == INVALID_HANDLE_VALUE) {
         return Err(OutputError::Open(GetLastError()));
     }
     result<u32,WriteError> outcome=write_bytes(file,data);
@@ -99,8 +99,8 @@ result<u32,OutputError> create_new_binary(address path,read dataset<u8> data) on
 
 result<void,FileChangeError> change_file(address path,i32 information_class,
     address information,u32 bytes,u32 flags) on cpu {
-    address file=CreateFileW(path,65536,7,address(),3,flags,address());
-    if (address_bits(file) == 18446744073709551615u64) {
+    handle file=CreateFileW(path,65536,7,address(),3,flags,handle());
+    if (file == INVALID_HANDLE_VALUE) {
         return Err(FileChangeError::Open(GetLastError()));
     }
     i32 applied=SetFileInformationByHandle(file,information_class,information,bytes);

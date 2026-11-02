@@ -2,20 +2,22 @@ module blink.windows.file;
 import blink.sequence;
 import blink.unicode;
 
-extern "C" address CreateFileW(address path,u32 access,u32 sharing,address security,
-    u32 creation,u32 flags,address template_file) on cpu
+const handle INVALID_HANDLE_VALUE=unsafe_handle(18446744073709551615u64);
+
+extern "C" handle CreateFileW(address path,u32 access,u32 sharing,address security,
+    u32 creation,u32 flags,handle template_file) on cpu
     from "KERNEL32.dll";
-extern "C" i32 ReadFile(address file,address buffer,u32 capacity,write u32 received,
+extern "C" i32 ReadFile(handle file,address buffer,u32 capacity,write u32 received,
     address overlapped) on cpu from "KERNEL32.dll";
-extern "C" i32 WriteFile(address file,address buffer,u32 bytes,write u32 written,
+extern "C" i32 WriteFile(handle file,address buffer,u32 bytes,write u32 written,
     address overlapped) on cpu from "KERNEL32.dll";
-extern "C" i32 CloseHandle(address handle) on cpu from "KERNEL32.dll";
+extern "C" i32 CloseHandle(handle handle) on cpu from "KERNEL32.dll";
 
 enum ReadError : u32 {
     System(u32) = 1;
     Sequence(SequenceError) = 2;
 };
-struct CloseError { address handle; u32 code; };
+struct CloseError { handle handle; u32 code; };
 struct ReadCloseError { ReadError read; CloseError close; };
 enum SourceError : u32 {
     Open(u32) = 1;
@@ -40,11 +42,11 @@ enum OutputError : u32 {
     WriteAndClose(WriteCloseError) = 4;
 };
 
-result<u32,WriteError> write_bytes(address file,read dataset<u8> data) on cpu;
+result<u32,WriteError> write_bytes(handle file,read dataset<u8> data) on cpu;
 result<u32,OutputError> write_binary(address path,read dataset<u8> data) on cpu;
 result<u32,OutputError> create_new_binary(address path,read dataset<u8> data) on cpu;
 
-extern "C" i32 SetFileInformationByHandle(address file,i32 information_class,
+extern "C" i32 SetFileInformationByHandle(handle file,i32 information_class,
     address information,u32 bytes) on cpu from "KERNEL32.dll";
 
 struct FileApplyCloseError { u32 code; CloseError close; };

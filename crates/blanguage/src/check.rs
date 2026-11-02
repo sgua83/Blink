@@ -2818,6 +2818,27 @@ impl<'a> Builder<'a> {
             value.literal = false;
             return Ok(Some(value));
         }
+        if name == "unsafe_handle" {
+            if values.len() != 1 {
+                return self.fail(span, "B153", "unsafe_handle需要一个usize实参");
+            }
+            let value = values.pop().unwrap();
+            self.require_same(&Ty::scalar(Scalar::U64), &value.ty, span)?;
+            let low = self.cast(value.clone(), Scalar::U32);
+            let shift = self.constant(Scalar::U64, 32);
+            let high = self.binary(">>", value, shift, span)?;
+            let high = self.cast(high, Scalar::U32);
+            let constant = low.constant.as_ref().zip(high.constant.as_ref())
+                .map(|(low, high)| vec![low[0], high[0]]);
+            return Ok(Some(Value {
+                ty: Ty::builtin("handle").unwrap(),
+                regs: vec![low.regs[0], high.regs[0]],
+                proof: bounds::Proof::default(),
+                literal: false,
+                uniform: low.uniform && high.uniform,
+                constant,
+            }));
+        }
         if matches!(name, "unsafe_address" | "address_bits") {
             if self.program.target != Target::Cpu {
                 return self.fail(span, "B265", "CPU本地地址只能在on cpu位置解释或取得位模式");
@@ -3546,7 +3567,7 @@ impl<'a> Builder<'a> {
                 value.literal = false;
                 return Ok(value);
             }
-            return self.fail(span, "B154", "handle 构造只接受空值或同类型身份，不接受数值载荷");
+            return self.fail(span, "B154", "handle构造只接受空值或同类型身份；外部身份解释须显式unsafe_handle");
         }
         if values.iter().any(|value| value.ty.is_handle()) {
             return self.fail(span, "B154", "不透明handle不能转换为数值或公开其载荷");

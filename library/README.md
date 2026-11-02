@@ -407,7 +407,7 @@ ReadError继续为System(u32)或Sequence(SequenceError)，分配与执行错误�
 
 ### 同步完整写入与文件创建
 
-`result<u32,WriteError> write_bytes(address file,read dataset<u8> data) on cpu`在调用方已有的同步可写句柄上完整输出CPU字节，成功返回data.length。空数据返回0而不发起零长度WriteFile；原句柄、文件位置及关闭仍归调用方。每次WriteFile只写当前剩余部分，只有非零成功进展才推进原游标；成功短写继续其未写尾部，失败立即返回，不重放已完成前缀或重试失败。
+`result<u32,WriteError> write_bytes(handle file,read dataset<u8> data) on cpu`在调用方已有的同步可写句柄上完整输出CPU字节，成功返回data.length。空数据返回0而不发起零长度WriteFile；原句柄、文件位置及关闭仍归调用方。每次WriteFile只写当前剩余部分，只有非零成功进展才推进原游标；成功短写继续其未写尾部，失败立即返回，不重放已完成前缀或重试失败。
 
 WriteError::System(WriteSystemError{completed,code})保留此前成功完成的前缀长度及该次失败后立即保存的原GetLastError；失败调用可能发生部分效果，completed不是失败回滚或完整文件长度。WriteError::NoProgress(u32)保留成功返回但写入数为0时此前完成的前缀：它是完整写入未完成的库结果，不伪造OS错误、等待、重试或声称成功。Win32允许成功短写，例如非阻塞字节管道；同步库不会用BOOL非零代替实际完成数。
 
@@ -422,7 +422,7 @@ WriteError::System(WriteSystemError{completed,code})保留此前成功完成的�
 
 源dataset只读借用，字节不经文本校验；在同步调用返回前不得修改、resize、迁移或释放载荷。已打开文件的句柄由同一调用保持到真实写入结束，关闭只执行一次；关闭失败由结果交回真实身份，不隐藏再关或复制拥有权。输出不承诺事务、原子替换、失败恢复或磁盘持久化；部分写入和截断不会自动撤销，最终产物发布仍归原消费者。
 
-底层CreateFileW、ReadFile、WriteFile和CloseHandle直接使用Windows C ABI。ReadFile／WriteFile的计数为原write u32输出；直接原生调用者按实际同步／异步模式负责缓冲、句柄、位置及最后完成，不能把原生address接口当成自动建立的异步B借用。普通库入口仅以零overlapped作同步I/O。平台合同见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)、[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+底层CreateFileW、ReadFile、WriteFile、CloseHandle及SetFileInformationByHandle直接使用Windows C ABI。文件对象、CreateFileW模板及CloseError.handle均为不透明handle，名称、数据、security与overlapped仍为address；模板空值用handle()。模块公开常量INVALID_HANDLE_VALUE以unsafe_handle解释SDK的完整64位失败哨兵，直接比较同型身份，不从文件对象抽取地址位。返回的原句柄可直接赋给blink.windows.process的StartupInfo.std_input／std_output／std_error并用于其SetHandleInformation；复制身份不改变原拥有者或关闭职责。ReadFile／WriteFile的计数为原write u32输出；直接原生调用者按实际同步／异步模式负责缓冲、句柄、位置及最后完成，不能把原生缓冲地址与对象句柄当成自动建立的异步B借用。普通库入口仅以零overlapped作同步I/O。平台合同见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)、[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
 ### 文件重命名、替换与删除
 
