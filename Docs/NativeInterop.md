@@ -175,6 +175,12 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 WaitForSingleObject保留原u32状态，超时不终止工作；只有实际结束等待后，GetExitCodeProcess的u32才用作该进程的退出码。259既可能是结束前STILL_ACTIVE，也可能是已经结束进程的实际退出码，不能仅据这一值反推寿命。接口没有状态镜像、轮询、隐式取消、结果截断或错误重放。基础StartupInfo保持104字节读取；blink.windows.process_extended的StartupInfoEx为112字节／8对齐，attributes偏移104，同模块限定名CreateProcessW按完整read StartupInfoEx调用同一Kernel32导出。扩展cb使用sizeof扩展结构并设置EXTENDED_STARTUPINFO_PRESENT，不向基础前缀伪装完整扩展对象。InitializeProcThreadAttributeList的inout usize保留实际字节查询与原122错误，UpdateProcThreadAttribute以usize键／字节数和原地址交接句柄集合，Delete只销毁属性而不释放调用方存储。属性值及其实际存储保持到Delete，原始地址边界的范围、对齐、保留关系与寿命由调用方负责，不自动推导为B异步借用。SetHandleInformation直接修改原句柄继承位，原BOOL／GetLastError及拥有者保持；句柄列表只选择实际可继承的真实句柄，inherit_handles=1，不包含伪句柄。完整构建进程／I/O捕获及编译器采用继续按具体缺口建设，完整接口与寿命见上述标准库。
 
+## Windows文件字节与同步完成
+
+blink.windows.file以普通B实现原始字节读取、严格UTF-8输入及同步完整字节输出。原生CreateFileW／ReadFile／WriteFile／CloseHandle只交接实际Windows x64指针、u32计数与i32状态；普通库入口的overlapped为零，数据和句柄保持到真实同步返回。读写计数不能用BOOL成功代替，非零成功短写继续剩余部分，失败立即保存原OS错误；成功但0进展交NoProgress，不当成OS错误或循环等待。
+
+read_binary复用唯一原文件句柄，read_utf8在同一读取／关闭后校验编码；成功资源归原Frame，错误不交付部分源码。write_bytes只借用CPU dataset及既有同步句柄，不替调用方关闭；write_binary／create_new_binary分别用真实CREATE_ALWAYS／CREATE_NEW，完整输出后关闭本次原句柄。原失败、此前完成前缀与关闭失败原身份分别交回，排他创建不以先查存在替代，不重试、回滚或自动重新关闭。原address调用者仍负责外部范围、权限与异步保留关系；更高层缓存发布、目录及平台替换不是本接口的完成结果。精确返回类型和责任见[文件I/O标准库](../library/README.md#blinkwindowsfile)。
+
 ## B 业务结果与调用状态
 
 B 的 `result<T,E>` 是业务数据，和生成 DLL 的 create／run 返回状态分别处理。C ABI 的0／-1、C++异常及Rust包装器Result报告装载／设备／执行／接口调用；一个合法执行可以在输出记录中产生业务Err，不因此变成DLL调用失败。B的try只传播显式业务结果，不自动捕获平台失败、外部异常或回滚已经发生的写入。

@@ -17,7 +17,7 @@ result<dataset<u8>,ReadError> read_bytes(address file) on cpu {
     }
 }
 
-result<dataset<u8>,SourceError> read_utf8(address path) on cpu {
+result<dataset<u8>,SourceError> read_binary(address path) on cpu {
     address file=CreateFileW(path,2147483648,7,address(),3,128,address());
     if (address_bits(file) == 18446744073709551615u64) {
         return Err(SourceError::Open(GetLastError()));
@@ -29,10 +29,7 @@ result<dataset<u8>,SourceError> read_utf8(address path) on cpu {
     match (contents) {
         Ok(data) {
             if (closed == 0) { return Err(SourceError::Close(CloseError(file,close_error))); }
-            match (scalar_length_utf8(data)) {
-                Ok(count) { return Ok(data); }
-                Err(error) { return Err(SourceError::Decode(error)); }
-            }
+            return Ok(data);
         }
         Err(error) {
             if (closed == 0) {
@@ -41,4 +38,61 @@ result<dataset<u8>,SourceError> read_utf8(address path) on cpu {
             return Err(SourceError::Read(error));
         }
     }
+}
+result<dataset<u8>,SourceError> read_utf8(address path) on cpu {
+    match (read_binary(path)) {
+        Ok(data) {
+            match (scalar_length_utf8(data)) {
+                Ok(count) { return Ok(data); }
+                Err(error) { return Err(SourceError::Decode(error)); }
+            }
+        }
+        Err(error) { return Err(error); }
+    }
+}
+
+result<u32,WriteError> write_bytes(address file,read dataset<u8> data) on cpu {
+    u32 completed=0;
+    while (completed<data.length) {
+        u32 written=0;
+        i32 status=WriteFile(file,address_of(data[completed]),data.length-completed,
+            written,address());
+        if (status == 0) {
+            return Err(WriteError::System(WriteSystemError(completed,GetLastError())));
+        }
+        if (written == 0) { return Err(WriteError::NoProgress(completed)); }
+        completed+=written;
+    }
+    return Ok(completed);
+}
+
+result<u32,OutputError> write_file(address path,read dataset<u8> data,u32 creation) on cpu {
+    address file=CreateFileW(path,1073741824,7,address(),creation,128,address());
+    if (address_bits(file) == 18446744073709551615u64) {
+        return Err(OutputError::Open(GetLastError()));
+    }
+    result<u32,WriteError> outcome=write_bytes(file,data);
+    i32 closed=CloseHandle(file);
+    u32 close_error=0;
+    if (closed == 0) { close_error=GetLastError(); }
+    match (outcome) {
+        Ok(completed) {
+            if (closed == 0) { return Err(OutputError::Close(CloseError(file,close_error))); }
+            return Ok(completed);
+        }
+        Err(error) {
+            if (closed == 0) {
+                return Err(OutputError::WriteAndClose(WriteCloseError(error,CloseError(file,close_error))));
+            }
+            return Err(OutputError::Write(error));
+        }
+    }
+}
+
+result<u32,OutputError> write_binary(address path,read dataset<u8> data) on cpu {
+    return write_file(path,data,2);
+}
+
+result<u32,OutputError> create_new_binary(address path,read dataset<u8> data) on cpu {
+    return write_file(path,data,1);
 }
