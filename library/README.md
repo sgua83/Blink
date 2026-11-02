@@ -361,3 +361,13 @@ ReadError为System(u32)或Sequence(SequenceError)，后者只交接现有dataset
 底层CreateFileW、ReadFile和CloseHandle保留原Windows C ABI；直接调用者自行持有有效路径、实际缓冲区及句柄，按同步／异步模式遵循OS合同。ReadFile的received是原write u32输出，不把BOOL或输出缓冲伪造为成功。平台接口见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
 本函数是C-032.2.3模块装入迁移所需的文件输入能力；当前Rust装入器尚未采用，不代表源码捕获、路径库、完整B解析器或自举已经完成。文件输出与目录枚举仍按Issues各自子项推进。
+
+## blink.windows.path
+
+`result<bool,ExistsError> try_exists(address path) on cpu`查询Windows x64目标是否存在。path由调用者在同步调用期间保持为有效、NUL结尾的UTF-16路径；文件、目录、原名称和相对基准由OS解释。接口跟随实际符号链接或junction目标：目标不存在及中间路径不存在返回Ok(false)，断开的链接也返回false，不能由链接条目自身存在推定目标存在。
+
+实现通过一次零desired-access的CreateFileW元数据打开，允许读／写／删除共享，以FILE_FLAG_BACKUP_SEMANTICS打开目录且不使用FILE_FLAG_OPEN_REPARSE_POINT。打开成功后关闭本次原句柄再交回Ok(true)；不要求内容可读，不保存路径缓存、存在性镜像或目录状态，也不保证后续读取时目标仍未改变。只有原OS错误2／3交接为真实不存在；非法名称、访问失败、链接环等其他结果均保留原错误，不能被压成false。
+
+`ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle是本次原句柄、code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，查询所需的C ABI声明留在私有实现。
+
+模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；调用方只需path.lib的公开接口，无需提供者.h／.b或文件内容库。这里交付存在性输入，当前Rust编译器Inputs::file尚未采用；绝对路径、规范路径、路径组合和扩展名仍按各自Issues推进。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
