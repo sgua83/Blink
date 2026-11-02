@@ -1,6 +1,6 @@
 module blink.windows.path;
 
-struct ExistsCloseError { address handle; u32 code; };
+struct ExistsCloseError { handle handle; u32 code; };
 enum ExistsError : u32 {
     Query(u32) = 1;
     Close(ExistsCloseError) = 2;
@@ -20,7 +20,7 @@ enum CanonicalQueryError : u32 {
     System(u32) = 1;
     BufferTooSmall(u32) = 2;
 };
-struct CanonicalCloseError { address handle; u32 code; };
+struct CanonicalCloseError { handle handle; u32 code; };
 struct CanonicalQueryCloseError { CanonicalQueryError query; CanonicalCloseError close; };
 enum CanonicalError : u32 {
     Open(u32) = 1;

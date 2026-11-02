@@ -2,13 +2,15 @@ module blink.windows.path;
 import blink.windows.error;
 import blink.sequence;
 
-extern "C" address CreateFileW(address path,u32 access,u32 sharing,address security,
-    u32 creation,u32 flags,address template_file) on cpu from "KERNEL32.dll";
-extern "C" i32 CloseHandle(address handle) on cpu from "KERNEL32.dll";
+const handle INVALID_HANDLE_VALUE=unsafe_handle(18446744073709551615u64);
+
+extern "C" handle CreateFileW(address path,u32 access,u32 sharing,address security,
+    u32 creation,u32 flags,handle template_file) on cpu from "KERNEL32.dll";
+extern "C" i32 CloseHandle(handle handle) on cpu from "KERNEL32.dll";
 
 result<bool,ExistsError> try_exists(address path) on cpu {
-    address file=CreateFileW(path,0,7,address(),3,33554432,address());
-    if (address_bits(file) == 18446744073709551615u64) {
+    handle file=CreateFileW(path,0,7,address(),3,33554432,handle());
+    if (file == INVALID_HANDLE_VALUE) {
         u32 code=GetLastError();
         if (code == 2 || code == 3) { return Ok(false); }
         return Err(ExistsError::Query(code));
@@ -61,10 +63,10 @@ result<dataset<u16>,AbsoluteError> absolute(address path) on cpu {
     return Ok(resize(output,written,u16(0)));
 }
 
-extern "C" u32 GetFinalPathNameByHandleW(address file,address output,u32 capacity,
+extern "C" u32 GetFinalPathNameByHandleW(handle file,address output,u32 capacity,
     u32 flags) on cpu from "KERNEL32.dll";
 
-result<dataset<u16>,CanonicalQueryError> final_path(address file) on cpu {
+result<dataset<u16>,CanonicalQueryError> final_path(handle file) on cpu {
     u32 capacity=GetFinalPathNameByHandleW(file,address(),0,0);
     if (capacity == 0) { return Err(CanonicalQueryError::System(GetLastError())); }
     dataset<u16> output=dataset<u16>(capacity);
@@ -133,15 +135,15 @@ result<dataset<u16>,AbsoluteError> canonical_native_name(address path) on cpu {
     }
 }
 
-result<address,CanonicalError> canonical_open_path(address path) on cpu {
-    address file=CreateFileW(path,0,7,address(),3,33554432,address());
-    if (address_bits(file) == 18446744073709551615u64) {
+result<handle,CanonicalError> canonical_open_path(address path) on cpu {
+    handle file=CreateFileW(path,0,7,address(),3,33554432,handle());
+    if (file == INVALID_HANDLE_VALUE) {
         return Err(CanonicalError::Open(GetLastError()));
     }
     return Ok(file);
 }
 
-result<address,CanonicalError> canonical_open(address path) on cpu {
+result<handle,CanonicalError> canonical_open(address path) on cpu {
     if (verbatim(path) || canonical_nt_prefix(path) || unsafe_position<u16>(path) == u16(0)) {
         return canonical_open_path(path);
     }
@@ -151,7 +153,7 @@ result<address,CanonicalError> canonical_open(address path) on cpu {
     }
 }
 result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu {
-    address file;
+    handle file;
     match (canonical_open(path)) {
         Ok(opened) { file=opened; }
         Err(error) { return Err(error); }

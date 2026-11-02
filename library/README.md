@@ -480,9 +480,9 @@ target/release/blink.exe --archive target/file.obj -o target/file.lib
 
 `result<bool,ExistsError> try_exists(address path) on cpu`查询Windows x64目标是否存在。path由调用者在同步调用期间保持为有效、NUL结尾的UTF-16路径；文件、目录、原名称和相对基准由OS解释。接口跟随实际符号链接或junction目标：目标不存在及中间路径不存在返回Ok(false)，断开的链接也返回false，不能由链接条目自身存在推定目标存在。
 
-实现通过一次零desired-access的CreateFileW元数据打开，允许读／写／删除共享，以FILE_FLAG_BACKUP_SEMANTICS打开目录且不使用FILE_FLAG_OPEN_REPARSE_POINT。打开成功后关闭本次原句柄再交回Ok(true)；不要求内容可读，不保存路径缓存、存在性镜像或目录状态，也不保证后续读取时目标仍未改变。只有原OS错误2／3交接为真实不存在；非法名称、访问失败、链接环等其他结果均保留原错误，不能被压成false。
+原CreateFileW返回／模板、CloseHandle及GetFinalPathNameByHandleW直接使用不透明handle；空模板为handle()，INVALID_HANDLE_VALUE以unsafe_handle解释完整64位平台哨兵，同型直接比较，不取得地址位。文件句柄、错误载荷及最后关闭沿同一原身份交接，不作为B内存view；名称、security及实际字符缓冲仍为address。实现通过一次零desired-access的CreateFileW元数据打开，允许读／写／删除共享，以FILE_FLAG_BACKUP_SEMANTICS打开目录且不使用FILE_FLAG_OPEN_REPARSE_POINT。打开成功后关闭本次原句柄再交回Ok(true)；不要求内容可读，不保存路径缓存、存在性镜像或目录状态，也不保证后续读取时目标仍未改变。只有原OS错误2／3交接为真实不存在；非法名称、访问失败、链接环等其他结果均保留原错误，不能被压成false。
 
-`ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle是本次原句柄、code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，查询所需的C ABI声明留在私有实现。
+`ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle字段为正式不透明handle、本次原句柄身份保持，code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，查询所需的C ABI声明留在私有实现。
 
 模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。当前Rust编译器Inputs::file尚未采用；规范路径接口见下节，扩展名词法替换见后节，路径组合接口见后节。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
 
@@ -512,7 +512,7 @@ target/release/blink.exe --archive target/file.obj -o target/file.lib
 
 ```b
 enum CanonicalQueryError : u32 { System(u32)=1; BufferTooSmall(u32)=2; };
-struct CanonicalCloseError { address handle; u32 code; };
+struct CanonicalCloseError { handle handle; u32 code; };
 struct CanonicalQueryCloseError { CanonicalQueryError query; CanonicalCloseError close; };
 enum CanonicalError : u32 {
     Open(u32)=1;
