@@ -927,7 +927,7 @@ pub enum Inst {
         result: RayResult,
     },
     Constant(Reg, Scalar, Bits),
-    FunctionAddress(Reg, String),
+    FunctionAddress(Reg, CallTarget),
     PositionAddress { dst: Reg, address: CallReference },
     Index(Reg),
     Uniform(Reg, u32),

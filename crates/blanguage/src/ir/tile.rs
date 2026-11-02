@@ -441,6 +441,7 @@ impl Inst {
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         let values = match self {
             Self::Call(call) => call.all_operands(f),
+            Self::FunctionAddress(_, CallTarget::Indirect(reg)) => f(*reg),
             Self::PositionAddress { address, .. } => address.all_operands(f),
             Self::TextureSample { coordinate, lod, .. } =>
                 coordinate.iter().all(|reg| f(*reg)) && f(*lod),

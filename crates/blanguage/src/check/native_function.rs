@@ -810,7 +810,7 @@ fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
 fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     crate::optimize::visit(&body.code, &mut |inst| {
-        if let Inst::Call(Call { target: CallTarget::Defined(name), .. }) | Inst::FunctionAddress(_, name) = inst {
+        if let Inst::Call(Call { target: CallTarget::Defined(name), .. }) | Inst::FunctionAddress(_, CallTarget::Defined(name)) = inst {
             names.insert(name.clone());
         }
     });

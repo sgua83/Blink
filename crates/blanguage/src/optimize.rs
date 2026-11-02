@@ -345,6 +345,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
     }
     match i {
         Inst::PositionAddress { address, .. } => address.map_operands(r),
+        Inst::FunctionAddress(_, CallTarget::Indirect(reg)) => *reg = r(*reg),
         Inst::TextureSample {
             coordinate, lod, ..
         } => {

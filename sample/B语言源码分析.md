@@ -1314,7 +1314,7 @@ r4 = r2 + r3
 
 ```rust
     Constant(Reg, Scalar, Bits),
-    FunctionAddress(Reg, String),
+    FunctionAddress(Reg, CallTarget),
     PositionAddress { dst: Reg, address: CallReference },
     Index(Reg),
     Uniform(Reg, u32),
@@ -1727,7 +1727,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:642`。
+源码节选：`crates/blanguage/src/native/codegen.rs:649`。
 
 ```rust
     let stage = &lowered;
@@ -2493,7 +2493,7 @@ DLL 的 create 装载已生成的 CPU 代码或建立 GPU 管线，仍可能有�
 
 B 的普通 CPU 应用已能通过明确的 `extern "C"` 声明调用 Windows x64 DLL，并能独立编译、链接和启动。它使用 C 导出、普通值与明确位置借用，不把 C++ 类、Rust 对象或任意资源布局直接当作跨语言 ABI。普通 B 模块调用、算法 DLL 与系统库互操作分别承担各自接口和生命周期职责。
 
-B也可用不带from的extern "C"定义普通CPU函数或泛型模板；c_function(Name)与c_function(Name<T,...,N>)沿原静态引用和具体实例形成同一函数代码的cfn地址。模板的实际类型／u32 const、结果和输出条件先完成原替换，再检查真实C签名；DLL导入仍为固定符号。取址没有运行实参，不从接收变量猜模板参数。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。具体声明装入时检查，模板的实际C合同在原实例生产处检查，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
+c_function接受显式C ABI的声明或定义：不带from的B函数沿原具体实例取得代码地址，带from的外部声明直接交接原ExternalName的DLL符号；两者继续使用同一cfn签名、参数和结果合同。c_function(Name<T,...,N>)沿原静态引用完成具体实例绑定。模板的实际类型／u32 const、结果和输出条件先完成原替换，再检查真实C签名；DLL导入仍为固定符号。取址没有运行实参，不从接收变量猜模板参数。源码接口保存真实C标记；向量位置在这里是一份连续指针，普通B函数的分量地址规则仍归原ABI。具体声明装入时检查，模板的实际C合同在原实例生产处检查，正文继续原访问／初始化检查。地址进入原符号可达关系，Frame需求只随真实调用闭包传播；C入口若仍需Frame便不能按没有上下文的C ABI交付，不建立全局当前Frame或转发宿主。
 
 源码节选：`crates/blanguage/src/check/callback.rs:55`。
 
@@ -2503,9 +2503,14 @@ B也可用不带from的extern "C"定义普通CPU函数或泛型模板；c_functi
             return self.fail(span, "B265", "c_function在普通CPU应用或模块中取得C函数符号地址");
         }
         let (instance, ty) = signature(self.world, &self.definition, args, span)?;
-        self.native_declaration(&instance)?;
+        let target = if let Some(name) = &instance.definition.function.external {
+            CallTarget::External(name.clone())
+        } else {
+            self.native_declaration(&instance)?;
+            CallTarget::Defined(instance.name)
+        };
         let reg = self.reg(Scalar::U64);
-        self.code.push(Inst::FunctionAddress(reg, instance.name));
+        self.code.push(Inst::FunctionAddress(reg, target));
         let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
         Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
     }
@@ -2518,19 +2523,19 @@ B也可用不带from的extern "C"定义普通CPU函数或泛型模板；c_functi
 ```rust
 pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span: Span) -> Result<(crate::generics::Instance, Ty)> {
     let [reference] = args else {
-        return caller.source.fail(span, "B153", "c_function需要一个明确的B C ABI函数引用");
+        return caller.source.fail(span, "B153", "c_function需要一个明确的C ABI函数引用");
     };
     let (name, explicit) = match &reference.kind {
         ExprKind::Name(name) => (name, None),
         ExprKind::FunctionRef(name, arguments) => (name, Some(arguments.as_slice())),
-        _ => return caller.source.fail(reference.span, "B153", "c_function需要B C ABI函数名及具体类型／const实参"),
+        _ => return caller.source.fail(reference.span, "B153", "c_function需要C ABI函数名及具体类型／const实参"),
     };
     let Some(key) = world.resolve(name, &caller.module, &caller.imports, true) else {
         return caller.source.fail(span, "B158", format!("未知函数 {name}"));
     };
     let definition = world.functions[&key].clone();
-    if !definition.function.c_abi || definition.function.external.is_some() {
-        return caller.source.fail(span, "B263", "c_function需要B定义的extern C函数，不自动改变普通B函数ABI");
+    if !definition.function.c_abi {
+        return caller.source.fail(span, "B263", "c_function需要明确的extern C声明或定义，不自动改变普通B函数ABI");
     }
     let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
     let definition = &instance.definition;

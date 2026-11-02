@@ -418,7 +418,14 @@ impl Emitter<'_> {
                     self.write_scalar_address(*value, memory);
                 }
                 Inst::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
-                Inst::FunctionAddress(dst, name) => { self.native_code_address(NativeSymbol::Function(name.clone())); self.store(*dst); }
+                Inst::FunctionAddress(dst, target) => {
+                    match target {
+                        CallTarget::Defined(name) => { self.native_code_address(NativeSymbol::Function(name.clone())); }
+                        CallTarget::External(name) => { self.native_code_address(NativeSymbol::External(name.clone())); }
+                        CallTarget::Indirect(reg) => self.load(*reg),
+                    }
+                    self.store(*dst);
+                }
                 Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
                 Inst::Index(dst) => {
                     self.copy(self.location(*dst), allocation::Location::Gpr(3));
