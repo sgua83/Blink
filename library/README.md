@@ -221,7 +221,7 @@ target/release/bc.exe -c main.b -I library --import target/process.lib -o target
 target/release/blink.exe target/main.obj target/process.lib -o target/main.exe
 ```
 
-调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；环境写入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照或参数库代替这些能力。
+调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照或参数库代替这些能力。
 
 ### Windows参数序列
 
@@ -322,7 +322,7 @@ target/release/bc.exe -c main.b -I library --import target/environment.lib -o ta
 target/release/blink.exe target/main.obj target/environment.lib -o target/main.exe
 ```
 
-提供方environment.h／environment.b不可读取时，调用方仍可通过已编译对象／归档消费原生声明与普通B读取函数；编译和链接保持各自职责。环境写入、完整B文本集合及编译器／BLEngine实际迁移继续按对应台账建设。平台合同：[取得快照](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentstringsw)、[匹配释放](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-freeenvironmentstringsw)、[环境块格式](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)。
+提供方environment.h／environment.b不可读取时，调用方仍可通过已编译对象／归档消费原生声明与普通B读取函数；编译和链接保持各自职责。完整B文本集合及编译器／BLEngine实际迁移继续按对应台账建设。平台合同：[取得快照](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentstringsw)、[匹配释放](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-freeenvironmentstringsw)、[环境块格式](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)。
 
 ### 按名称读取拥有值
 
@@ -333,4 +333,12 @@ target/release/blink.exe target/main.obj target/environment.lib -o target/main.e
 两次调用之间进程环境可以变化。若实际读取报告缓冲区不足，`VariableError::BufferTooSmall(required)`保留本次原API报告的、含NUL的必要容量；该分支的缓冲内容未定义，函数不会返回它、截断或重新读取。若变为空值、删除、缩短或等长替换，交回实际读取的值或错误。接口不承诺原子环境快照，不添加固定大小上限；需要独立快照时使用原GetEnvironmentStringsW及匹配释放。
 
 底层`u32 GetEnvironmentVariableW(address name,address buffer,u32 capacity)`同时保留原C ABI：capacity按UTF-16代码单元计且包含NUL空间，成功返回实际长度且不含NUL，空间不足返回含NUL所需容量。调用方直接使用该入口时自行保持名称／缓冲区、权限及其实际最后消费者。具体返回合同见[GetEnvironmentVariableW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentvariablew)。编译器CLI采用是独立迁移工作，不能由本库交付代替。
+
+### 设置与删除当前进程变量
+
+`i32 SetEnvironmentVariableW(address name,address value) on cpu`直接保留Windows x64的LPCWSTR／LPCWSTR／BOOL接口。name是本次调用期间实际有效、NUL结尾的UTF-16名称；value为零地址时删除变量，非零地址指向NUL空串时设置空值，其他内容按原UTF-16代码单元写入。名称查找及合法性由OS处理，不改变B的名称大小写规则，不加入固定长度限制或复制环境状态。
+
+调用方消费原i32返回：非零成功，零失败后立即从blink.windows.error::GetLastError取得原u32错误码；成功不解释残留错误。接口没有另一层B包装、错误转换或自动重放。OS在同步调用期间复制输入，返回后调用方可继续修改、释放自己的名称／值存储；输入地址不被登记为环境所有者，原Frame与OS各保持自己的资源。
+
+后续查询及新取得的环境快照观察本次进程的新环境；已经取得的独立环境快照和B拥有读取结果保持原值。后续子进程在使用默认继承环境时获得创建时的环境，显式环境块由实际创建者决定；本调用不更新既有其他进程、用户／机器注册表环境或旧快照。子进程创建／等待的B标准库接口仍按C-020.6.2.3.5／.6建设。平台合同见[SetEnvironmentVariableW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-setenvironmentvariablew)。
 
