@@ -595,13 +595,17 @@ impl Builder<'_> {
         for (index, place) in written {
             let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())?;
             if outputs::declared(d,index) {self.forget_output_initialization(&place,span)?;}
-            let mut proof = writes
+            let model = writes
                 .get(index)
                 .and_then(Option::as_ref)
-                .map(|model| bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings))
+                .map(|model| bounds::Proof::capture(&self.returned_storage(model)))
                 .unwrap_or_default();
+            let mut proof=model.at_call(&bindings);
             if let Some(call)=view_call {for component in view_contracts::components(place.ty()) {
-                proof=proof.with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
+                let relation=model.view_borrow(component);
+                if relation.empty()||relation.pending()||relation.unresolved(){
+                    proof=proof.with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
+                }
             }}
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();

@@ -156,24 +156,31 @@ impl Builder<'_> {
         let producers:Arc<[LoopState]>=producers.into();
         for (index,mut definition)in definitions.into_iter().enumerate(){
             let input=LoopInput{level:scope,index};definition.inputs.remove(&input);
-            unchanged[index]=matches!(&context.view_inputs[index],InputSlot::Data{..})&&definition==initial[index];
+            unchanged[index]=definition==initial[index];
             let resource=match &context.view_inputs[index] {
                 InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone(),states:producers.clone(),control:control.clone()}),
                 _=>None,
             };
             self.view_model.loops.insert(input,view_contracts::LoopDefinition{borrow:definition,resource});
         }
-        // 来源定义未改变的资源直接交接初始来源；存储版本变化仍保留原循环关系。
+        // 来源定义未改变的槽交回原入口；实际来源及存储版本变化保留原循环关系。
+        let resolve=|mut borrow:Borrow| {
+            let inputs=std::mem::take(&mut borrow.inputs);
+            for(input,when)in inputs.into_entries(){
+                if input.level==scope&&unchanged[input.index]{borrow.union(&initial[input.index].restricted(&when));}
+                else{borrow.inputs.insert_when(input,when);}
+            }
+            borrow
+        };
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
             for binding in environment.values_mut() {
-                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|{
-                    let mut borrow=data_value(data);let inputs=std::mem::take(&mut borrow.inputs);
-                    for(input,when)in inputs.into_entries(){
-                        if input.level==scope&&unchanged[input.index]{borrow.union(&initial[input.index].restricted(&when));}
-                        else{borrow.inputs.insert_when(input,when);}
-                    }
-                    (path,borrow)
-                }).collect::<BTreeMap<_,_>>();
+                if let Some(components)=binding.view_parts().map(|(ty,_)|view_contracts::components(ty)){
+                    let proof=binding.view_proof_mut().unwrap();
+                    let mut value=std::mem::take(proof);
+                    for component in components{let borrow=resolve(value.view_borrow(component));value=value.with_view_borrow(component,borrow);}
+                    *proof=value;
+                }
+                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data)))).collect::<BTreeMap<_,_>>();
                 match binding {
                     Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}}
                     Binding::OwnedValue(value)=>{
