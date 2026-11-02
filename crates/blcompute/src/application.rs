@@ -53,14 +53,6 @@ enum ResidentData {
     Cpu(CpuDataset),
     Gpu(vulkan::GpuDataset),
 }
-impl ResidentData {
-    fn gpu(self) -> Result<vulkan::GpuDataset> {
-        match self {
-            Self::Cpu(_) => Err(error("GPU 执行需要先显式 upload 数据")),
-            Self::Gpu(d) => Ok(d),
-        }
-    }
-}
 
 /// 一个实际 B 应用调用帧的唯一数据所有者。句柄只由编译后的资源声明取得，
 /// 源语言不提供从整数构造句柄或复制独占所有权的操作。
@@ -304,12 +296,22 @@ impl Frame {
                     result.domains,
                 )
             }
-            Program::Gpu(program) => {
-                let datasets = selected
-                    .iter()
-                    .map(|&handle| self.data.datasets[handle as usize].take().unwrap().gpu())
-                    .collect::<Result<Vec<_>>>()?;
-                let result = program
+            Program::Gpu(gpu_program) => {
+                let mut datasets = Vec::with_capacity(selected.len());
+                for &handle in &selected {
+                    match self.data.datasets[handle as usize].take().unwrap() {
+                        ResidentData::Gpu(data) => datasets.push(data),
+                        data @ ResidentData::Cpu(_) => {
+                            self.data.datasets[handle as usize] = Some(data);
+                            for (&handle, data) in selected.iter().zip(datasets) {
+                                self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
+                            }
+                            self.programs[index] = Some(ProgramSlot::Loaded(loaded));
+                            return Err(error("GPU 执行需要先显式 upload 数据"));
+                        }
+                    }
+                }
+                let result = gpu_program
                     .submit_projected(DomainBindings { datasets, domains }, &order, values)?
                     .wait()?
                     .into_bindings();
