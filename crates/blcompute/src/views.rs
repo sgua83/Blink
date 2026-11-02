@@ -65,6 +65,7 @@ impl Dataset {
     }
 
     /// 在原记录中编码主机引用，并持有去重的真实子资源；不复制子记录。
+    /// 无view类型接受空绑定，保留原字节布局和记录数量。
     pub fn with_views(mut self, views: Vec<ViewBinding<'_>>) -> Result<Self> {
         let views = self.bind_views(views, |source| Ok((&source.0.ty, source.identity())))?;
         self.attach_views(views);
@@ -91,8 +92,10 @@ impl Dataset {
     ) -> Result<Views<Source>> {
         let stride=self.stride as usize/4;
         let mut references=Views{sources:Vec::new(),bindings:Vec::with_capacity(views.len())};
-        for(record,words)in self.words.chunks(stride).enumerate(){
-            self.ty.visit_view_fields(words,|offset,_|references.bindings.push((record*stride+offset as usize/4,usize::MAX))).map_err(error)?;
+        if self.ty.contains_views() {
+            for(record,words)in self.words.chunks(stride).enumerate(){
+                self.ty.visit_view_fields(words,|offset,_|references.bindings.push((record*stride+offset as usize/4,usize::MAX))).map_err(error)?;
+            }
         }
         if views.len()!=references.bindings.len(){return Err(error("view字段必须按各记录的实际活动载荷绑定真实不可变数据"));}
         let mut identities = BTreeMap::new();

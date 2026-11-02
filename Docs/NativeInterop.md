@@ -253,6 +253,8 @@ CPU自包含拥有view聚合、整份拥有聚合write／inout及固定数组动
 ### 宿主持久变体view图
 原生Rust的Dataset::for_view、with_views／freeze及Device::upload／upload_with_views／download现可交接enum／Result及记录／固定数组中的实际活动view和间接子图。字段路径包含声明的分支名称，例如item.Some、entries[0].Some.rows及answer.Ok；声明路径只确定类型，实际绑定同时消费记录中的真实判别字。无view分支不要求子资源，未激活载荷不绑定，重叠的数值载荷不被地址覆盖。
 
+实际类型没有view字段时，Dataset::with_views与Device::upload_with_views接受空绑定，保持原数据、记录数及声明的字节步长；u8／u16窄元素和零字节类型不被扩大为u32记录，也不产生子资源。非空绑定仍须对应实际活动view字段，字段数量、类型、记录范围和重复绑定继续按同一资源合同检查。
+
 原Views继续持有实际共享子资源，bindings保存实际排序字偏移及原source索引，不增加图注册、活动表或Frame。CPU／GPU地址仅在真实引用位置编码，分页上传和下载沿同一表交接；显式传输及真实完成仍归原运行库。编译器候选字段与宿主活动字段均来自Ty，机器view和普通C／算法DLL边界保持。
 
 普通extern C／算法DLL不传递持久资源图；CPU自包含拥有聚合使用B模块合同，持久dataset图的B构造与GPU应用内图仍未实现。
