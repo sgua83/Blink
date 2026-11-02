@@ -7,3 +7,11 @@ enum ExistsError : u32 {
 };
 
 result<bool,ExistsError> try_exists(address path) on cpu;
+
+enum AbsoluteError : u32 {
+    System(u32) = 1;
+    BufferTooSmall(u32) = 2;
+    LengthOverflow = 3;
+};
+
+result<dataset<u16>,AbsoluteError> absolute(address path) on cpu;

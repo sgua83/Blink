@@ -370,4 +370,20 @@ ReadError为System(u32)或Sequence(SequenceError)，后者只交接现有dataset
 
 `ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle是本次原句柄、code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，查询所需的C ABI声明留在私有实现。
 
-模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；调用方只需path.lib的公开接口，无需提供者.h／.b或文件内容库。这里交付存在性输入，当前Rust编译器Inputs::file尚未采用；绝对路径、规范路径、路径组合和扩展名仍按各自Issues推进。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
+模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。当前Rust编译器Inputs::file尚未采用，规范路径、路径组合和扩展名仍按各自Issues推进。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
+
+### 取得绝对路径
+
+`result<dataset<u16>,AbsoluteError> absolute(address path) on cpu`交回独立拥有的Windows绝对路径UTF-16代码单元，不含终止NUL。输入仍由调用者在同步调用期间保持为有效、NUL结尾的UTF-16路径。输出由原Frame及实际调用者持有，返回后不保留输入地址；原输入可以修改、截断或释放。函数不查询目标是否存在，不打开文件、不解析符号链接，也不验证／替换Unicode代理单元。
+
+普通Windows路径由GetFullPathNameW解释本次进程当前目录、盘符相对路径、根相对路径、UNC及点目录语义。先查询含NUL的必要容量，再取得一次实际结果并按不含NUL的返回长度交接；原OS零返回立即保存GetLastError。进程当前目录是OS共享状态，两次调用间可能改变：若本次结果需要更大容量，BufferTooSmall保留该次含NUL的必要容量，不返回部分输出或重新查询；本函数不保存当前目录镜像或承诺原子快照。调用者取得结果后应沿该实际绝对路径继续本次工作。
+
+精确的反斜线verbatim前缀`\\?\`按平台语义原样交回拥有副本，不再送入普通Win32路径展开；盘符、UNC、点目录、分隔符、尾部点／空格和UTF-16代码单元均不改写。前缀识别按实际NUL顺序读取，短输入不会为识别前缀读取终止符以后的单元。拥有副本通过原sequence::push增长，不建立文本运行时、路径缓存或第二资源所有者。
+
+| AbsoluteError载荷 | 实际含义 |
+|---|---|
+| `System(u32)` | GetFullPathNameW失败后立即取得的原OS错误码；空路径按原OS结果失败 |
+| `BufferTooSmall(u32)` | 本次取得结果所需容量，包含终止NUL；原缓冲内容不作为结果交付 |
+| `LengthOverflow()` | verbatim副本增长超过当前dataset可表达长度，沿原sequence::push交接；不是另一个路径长度阈值 |
+
+绝对路径的归档消费编译时导入path.lib，链接时同时提供实际使用的`push<u16>`序列实例；它只服务verbatim拥有副本，不成为纯值try_exists调用的链接前置。提供者源码不可读取时仍按已编译接口组合，根Frame和最后消费者规则保持。当前Rust构建图尚未采用本B函数，规范路径及路径组合／扩展名仍待各自实现。平台规则见[GetFullPathNameW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfullpathnamew)及[本次真实Rust消费者的绝对路径实现](https://github.com/rust-lang/rust/blob/1.97.1/library/std/src/sys/path/windows.rs#L169)。
