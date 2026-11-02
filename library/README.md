@@ -442,6 +442,14 @@ WriteError::System(WriteSystemError{completed,code})保留此前成功完成的�
 
 底层CreateFileW、ReadFile、WriteFile、CloseHandle及SetFileInformationByHandle直接使用Windows C ABI。文件对象、CreateFileW模板及CloseError.handle均为不透明handle，名称、数据、security与overlapped仍为address；模板空值用handle()。模块公开常量INVALID_HANDLE_VALUE以unsafe_handle解释SDK的完整64位失败哨兵，直接比较同型身份，不从文件对象抽取地址位。返回的原句柄可直接赋给blink.windows.process的StartupInfo.std_input／std_output／std_error并用于其SetHandleInformation；复制身份不改变原拥有者或关闭职责。ReadFile／WriteFile的计数为原write u32输出；直接原生调用者按实际同步／异步模式负责缓冲、句柄、位置及最后完成，不能把原生缓冲地址与对象句柄当成自动建立的异步B借用。普通库入口仅以零overlapped作同步I/O。平台合同见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)、[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
+### 保持共享读输入
+
+需要在消费期间保持安装SDK等原输入时，调用者可直接使用本模块已有CreateFileW：GENERIC_READ=2147483648、FILE_SHARE_READ=1、OPEN_EXISTING=3、普通文件属性128，security为空address、template为handle()。失败与INVALID_HANDLE_VALUE同型比较后立即保存GetLastError；成功取得的同一handle交给ReadFile及最后实际消费者，名字缓冲只需保持到打开返回。
+
+FILE_SHARE_READ允许其他读者，不允许新增冲突的写／删除访问；共享关系保持到该原handle关闭，安装替换同样由真实OS共享结果决定。多个独立读句柄须各自结束后才允许相应替换。SDK会话中仍有Compilation、Module或后续代码生成消费者时应继续持有原输入，不能只以一个函数／工作返回推断整次SDK使用已结束。
+
+调用者可用已有owned<T,F>移动／返回实际拥有者，F按原释放合同直接结束原handle；若需显式可失败结束，先以into_inner接回原handle，再交回CloseHandle的真实结果及尚未释放的原身份。取消包装的静态释放不等于OS已关闭，复制不透明身份也不取得另一次关闭权。退出、业务Err／try和并发读取者仍沿实际消费者及原所有者交接；库不增加SDK专用包装或安装状态。owned的具体合同见[CPU用户拥有值与静态释放](../Docs/BLanguage.md#cpu用户拥有值与静态释放c-02031)，原平台共享说明见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)。
+
 ### 文件重命名、替换与删除
 
 `result<void,RenameError> rename(address source,read dataset<u16> target) on cpu`把实际源文件／目录交给Windows文件句柄重命名。source为调用期间有效的NUL结尾UTF-16地址；target是只读CPU UTF-16名称代码单元，不含NUL；唯一字段编码入口遇首个NUL即交RenameError::Nul(u32单元下标)，源尚未打开／改名。它不执行Unicode标量验证、路径规范化或大小写改写，合法孤立代理单元保持。目标可为绝对名称或按本次OS当前目录解释的相对名称；相对基准不是库状态。完整名称按Windows x64 FILE_RENAME_INFO的Flags@0、RootDirectory@8、FileNameLength@16、FileName@20构建8对齐缓冲，字节长度不含NUL，末尾保持NUL。真实缓冲区大小受原API DWORD限制，超出返回RenameError::LengthOverflow，不增加另一个路径长度上限。
