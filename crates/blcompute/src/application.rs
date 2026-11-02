@@ -192,6 +192,7 @@ impl Frame {
             .retain(|r| r.domain != index && r.count.binding != index);
     }
     /// 借用当前 CPU 存储，不复制记录或隐式下载 GPU 存储。
+    /// 直接借用 Frame 中的原位置；驻留或写权限拒绝时仍保留原存储。
     ///
     /// # Safety
     /// 指针只在下一次可能移动该存储的执行／释放前有效。调用者必须遵守 B 的
@@ -199,9 +200,11 @@ impl Frame {
     /// 只撤回与其重叠的计数字段关系。返回原根地址，消费不得写出本次交接范围。
     pub unsafe fn address(&mut self, handle: u32, offset: u64, bytes: u32) -> Result<*mut u32> {
         let index = handle as usize;
-        let source = self.data.datasets[index].take().unwrap();
-        let mut data = source.cpu()?;
-        let address = match &mut data {
+        let data = match self.data.datasets[index].as_mut().unwrap() {
+            ResidentData::Cpu(data) => data,
+            ResidentData::Gpu(_) => return Err(error("CPU 访问需要先显式 download 数据")),
+        };
+        let address = match data {
             CpuDataset::Owned(data) => data.words.as_mut_ptr(),
             CpuDataset::Read(data) => {
                 if bytes != 0 {
@@ -210,7 +213,6 @@ impl Frame {
                 data.words().as_ptr().cast_mut()
             }
         };
-        self.data.datasets[index] = Some(ResidentData::Cpu(data));
         if bytes != 0 {
             self.data.domains.retain(|r| {
                 r.count.binding != index
