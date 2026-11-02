@@ -134,7 +134,11 @@ enum／result 是数据表达。无载荷编号枚举直接使用声明整数标
 
 ## 源码装入、检查与原生生成
 
-词法生产由`src/bootstrap/lexer.h／.b`拥有，泛型尖括号前瞻由`src/bootstrap/parser.h／.b`拥有。前瞻直接借用同一Source字节与原Vec的TokenSpan，B完成嵌套尖括号、>>及括号内表达式扫描，Rust仅交接原游标与Option结果；其余Parser仍构造唯一AST。COFF静态归档的布局、两个链接成员、长名称、符号排序及原对象字节输出由`src/bootstrap/archive.h／.b`拥有。Rust仅将现有名字／对象／符号交为同步C ABI借用视图，B布局阶段写入同一视图的实际成员／名称位置，编码阶段直接填原Rust Vec的唯一输出存储；原Rust格式计算和字节生成退出。符号按名称及原成员顺序排序，同名仍选择原首成员；对象载荷不复制为另一输入或重新编译，B不保留地址。读取、目录容器及成员抽取继续由原static_library.rs处理，未写成已由B接管。完整compiler角色构建时，原`build.rs`使用已安装稳定发行的`bc`逐模块编译无Frame的B引导对象，再由同一次`blink`归档并静态链接到Rust编译器；输入VERSION使用句柄保持到全部B模块编译及统一归档子进程结束，研发target工具不作为唯一种子，不增加blcompute或Cargo反向依赖。编译器身份包含B源码和实际生成的原生对象，软件显示版本仍不参与语义身份。仅运行角色没有源码编译器身份的消费者，不生成该身份或调用前端种子；共同IR、原生／SPIR-V后端及映像编码仍由原语言crate持有，唯一字节编码位于codec.rs。
+词法生产由`src/bootstrap/lexer.h／.b`拥有，泛型尖括号前瞻由`src/bootstrap/parser.h／.b`拥有。前瞻直接借用同一Source字节与原Vec的TokenSpan，B完成嵌套尖括号、>>及括号内表达式扫描，Rust仅交接原游标与Option结果；其余Parser仍构造唯一AST。COFF静态归档的布局、两个链接成员、长名称、符号排序及原对象字节输出由`src/bootstrap/archive.h／.b`拥有。Rust仅将现有名字／对象／符号交为同步C ABI借用视图，B布局阶段写入同一视图的实际成员／名称位置，编码阶段直接填原Rust Vec的唯一输出存储；原Rust格式计算和字节生成退出。符号按名称及原成员顺序排序，同名仍选择原首成员；对象载荷不复制为另一输入或重新编译，B不保留地址。读取、目录容器及成员抽取继续由原static_library.rs处理，未写成已由B接管。
+
+标准COFF对象的包络写出由src/bootstrap/coff.h／.b负责：原coff.rs固定对象元数据、节／符号选择与重定位绑定，B借用本轮名字、节载荷和已绑定重定位，计算文件布局并直接填充原Rust Vec的唯一输出。B写出AMD64头、节头、COMDAT辅助行、重定位溢出、符号及字符串表；原Rust对应字节生产退出。输入与输出保持到同步调用结束，B不保留地址，不复制对象载荷或Rust私有容器；元数据编码、COFF读取与符号绑定继续由原Rust所有者负责。
+
+完整compiler角色构建时，原`build.rs`使用已安装稳定发行的`bc`逐模块编译无Frame的B引导对象，再由同一次`blink`归档并静态链接到Rust编译器；输入VERSION使用句柄保持到全部B模块编译及统一归档子进程结束，研发target工具不作为唯一种子，不增加blcompute或Cargo反向依赖。编译器身份包含B源码和实际生成的原生对象，软件显示版本仍不参与语义身份。仅运行角色没有源码编译器身份的消费者，不生成该身份或调用前端种子；共同IR、原生／SPIR-V后端及映像编码仍由原语言crate持有，唯一字节编码位于codec.rs。
 
 Rust词法入口只持有原Source及Vec，按同步C ABI借出原UTF-8字节和输出存储，消费B返回的Span与B001至B004诊断；B不分配或保留地址。n字节最多形成n个非空token及EOF，输出容量沿该数学上界提供。Token只保存原源码字节范围；Parser读取同一Source切片，只在AST需要独立名称时构造字符串。类型中的`>>`仅推进原Span，表达式右移保持原义。Rust逐字符扫描和每token文本副本均不保留。
 
@@ -206,7 +210,7 @@ build::compile_entry／build_entry 使用明确源码位置、模块根、大小
 
 ## 普通 CPU 应用、函数与链接
 
-compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff 生成 AMD64 COFF。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。
+compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff固定对象元数据及符号绑定，B的bootstrap.coff写出标准AMD64 COFF字节。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。
 
 普通 CPU 函数拥有独立 FunctionBody 和原生符号，自递归／互递归通过真实调用帧衔接。native_function::Module 由 Builder、CheckedFunction 和模块编译入口按值交接；application::Context 只持有编译期 Frame 寄存器及资源映像描述，不持有函数模块。真实运行期 Frame、设备、存储及完成不进入编译上下文。
 

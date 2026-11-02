@@ -5,12 +5,6 @@ use std::io::{Cursor, Read};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
-fn u16_at(b: &mut [u8], p: usize, v: u16) {
-    b[p..p + 2].copy_from_slice(&v.to_le_bytes());
-}
-fn u32_at(b: &mut [u8], p: usize, v: u32) {
-    b[p..p + 4].copy_from_slice(&v.to_le_bytes());
-}
 fn word(b: &mut Vec<u8>, v: u32) {
     b.extend(v.to_le_bytes());
 }
@@ -61,8 +55,42 @@ struct CoffSymbol {
     value: u32,
     function: bool,
     external: bool,
-    auxiliary: Option<[u8; 18]>,
+    auxiliary: Option<u16>,
 }
+// One synchronous C ABI borrow; names, bodies and relocation owners stay in Rust.
+#[repr(C)]
+struct CoffSectionView {
+    name: *const u8, name_length: usize,
+    bytes: *const u8, byte_length: usize, flags: u64,
+    relocations: *const CoffRelocationView, relocation_count: usize,
+    offset: usize, relocation_offset: usize,
+}
+#[repr(C)]
+struct CoffSymbolView {
+    name: *const u8, name_length: usize, section: u64, value: u64,
+    function: u64, external: u64, auxiliary: u64, owner: u64,
+}
+#[repr(C)]
+struct CoffRelocationView { offset: u64, symbol: u64, kind: u64 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CoffInput {
+    sections: *mut CoffSectionView, section_count: usize,
+    symbols: *const CoffSymbolView, symbol_count: usize,
+}
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum CoffError { None, SectionCount, SectionSize, Offset, RelocationCount, SymbolCount, Strings }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CoffLayout { length: usize, symbols: usize, strings: usize, symbol_count: usize, error: CoffError }
+unsafe extern "C" {
+    #[link_name = "bootstrap.coff::layout"]
+    fn coff_layout(input: CoffInput) -> CoffLayout;
+    #[link_name = "bootstrap.coff::encode"]
+    fn coff_encode(input: CoffInput, layout: CoffLayout, output: *mut u8);
+}
+
 pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     encode_build(o, None)
 }
@@ -206,14 +234,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             function: false,
             external: false,
             auxiliary: if s.flags & 0x1000 != 0 {
-                let mut row = [0; 18];
-                u32_at(&mut row, 0, u32::try_from(s.bytes.len())?);
-                u16_at(&mut row, 4, s.relocations.len().min(u16::MAX as usize) as u16);
-                if let Some(owner) = owners[i] {
-                    u16_at(&mut row, 12, u16::try_from(owner + 1)?);
-                    row[14] = 5;
-                } else { row[14] = 1; }
-                Some(row)
+                Some(if let Some(owner) = owners[i] { u16::try_from(owner + 1)? } else { 0 })
             } else { None },
         }))
         .collect::<Result<_>>()?;
@@ -295,73 +316,50 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         });
         next_symbol += 1;
     }
-    let mut out = vec![0; 20 + 40 * sections.len()];
-    u16_at(&mut out, 0, 0x8664);
-    u16_at(&mut out, 2, u16::try_from(sections.len())?);
-    for (i, (name, bytes, flags, relocs)) in sections.iter().enumerate() {
-        let h = 20 + i * 40;
-        out[h..h + name.len()].copy_from_slice(name.as_bytes());
-        u32_at(&mut out, h + 16, u32::try_from(bytes.len())?);
-        let p = out.len();
-        u32_at(&mut out, h + 20, u32::try_from(p)?);
-        out.extend(*bytes);
-        let p = out.len();
-        u32_at(&mut out, h + 24, u32::try_from(p)?);
-        let overflow = relocs.len() >= u16::MAX as usize;
-        u16_at(
-            &mut out,
-            h + 32,
-            if overflow {
-                u16::MAX
-            } else {
-                relocs.len() as u16
-            },
-        );
-        u32_at(
-            &mut out,
-            h + 36,
-            *flags | if overflow { 0x01000000 } else { 0 },
-        );
-        if overflow {
-            word(&mut out, u32::try_from(relocs.len() + 1)?);
-            out.extend([0; 6]);
-        }
-        for r in *relocs {
-            word(&mut out, u32::try_from(r.offset)?);
-            let symbol = match &r.target {
+    let relocations = sections.iter().map(|(_, _, _, relocations)| {
+        relocations.iter().map(|r| Ok(CoffRelocationView {
+            offset: u64::from(u32::try_from(r.offset)?),
+            symbol: match &r.target {
                 Target::Section(i, _) => section_symbols[*i],
                 Target::Symbol(name) => names[name],
                 Target::Import(i) => imports[i],
-            };
-            word(&mut out, u32::try_from(symbol)?);
-            out.extend(r.kind.to_le_bytes());
-        }
+            } as u64,
+            kind: u64::from(r.kind),
+        })).collect::<Result<Vec<_>>>()
+    }).collect::<Result<Vec<_>>>()?;
+    let mut sections = sections.iter().zip(&relocations).map(|((name, bytes, flags, _), relocations)| CoffSectionView {
+        name: name.as_ptr(), name_length: name.len(),
+        bytes: bytes.as_ptr(), byte_length: bytes.len(), flags: u64::from(*flags),
+        relocations: relocations.as_ptr(), relocation_count: relocations.len(),
+        offset: 0, relocation_offset: 0,
+    }).collect::<Vec<_>>();
+    let symbols = symbols.iter().map(|symbol| CoffSymbolView {
+        name: symbol.name.as_ptr(), name_length: symbol.name.len(),
+        section: u64::from(symbol.section as u16), value: u64::from(symbol.value),
+        function: u64::from(symbol.function), external: u64::from(symbol.external),
+        auxiliary: u64::from(symbol.auxiliary.is_some()), owner: u64::from(symbol.auxiliary.unwrap_or(0)),
+    }).collect::<Vec<_>>();
+    let input = CoffInput {
+        sections: sections.as_mut_ptr(), section_count: sections.len(),
+        symbols: symbols.as_ptr(), symbol_count: symbols.len(),
+    };
+    let layout = unsafe { coff_layout(input) };
+    match layout.error {
+        CoffError::None => (),
+        CoffError::SectionCount => return Err("COFF节数量超过16位字段".into()),
+        CoffError::SectionSize => return Err("COFF节长度超过32位字段".into()),
+        CoffError::Offset => return Err("COFF文件偏移超过32位字段".into()),
+        CoffError::RelocationCount => return Err("COFF重定位数量超过32位字段".into()),
+        CoffError::SymbolCount => return Err("COFF符号数量超过32位字段".into()),
+        CoffError::Strings => return Err("COFF字符串表超过32位字段".into()),
     }
-    let p = out.len();
-    u32_at(&mut out, 8, u32::try_from(p)?);
-    u32_at(&mut out, 12, u32::try_from(next_symbol)?);
-    let mut strings = vec![0; 4];
-    for symbol in symbols {
-        let mut row = [0; 18];
-        if symbol.name.len() <= 8 {
-            row[..symbol.name.len()].copy_from_slice(symbol.name.as_bytes());
-        } else {
-            u32_at(&mut row, 4, u32::try_from(strings.len())?);
-            strings.extend(symbol.name.as_bytes());
-            strings.push(0);
-        }
-        u32_at(&mut row, 8, symbol.value);
-        u16_at(&mut row, 12, symbol.section as u16);
-        u16_at(&mut row, 14, if symbol.function { 0x20 } else { 0 });
-        row[16] = if symbol.external { 2 } else { 3 };
-        row[17] = u8::from(symbol.auxiliary.is_some());
-        out.extend(row);
-        if let Some(auxiliary) = symbol.auxiliary { out.extend(auxiliary); }
+    let mut output = Vec::with_capacity(layout.length);
+    unsafe {
+        coff_encode(input, layout, output.as_mut_ptr());
+        output.set_len(layout.length);
     }
-    let n = u32::try_from(strings.len())?;
-    u32_at(&mut strings, 0, n);
-    out.extend(strings);
-    Ok(out)
+    Ok(output)
+
 }
 pub(super) fn decode(b: &[u8]) -> Result<Object> {
     Reader::new(b)?.object()
