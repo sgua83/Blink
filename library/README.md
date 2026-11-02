@@ -558,3 +558,24 @@ enum JoinError : u32 { LengthOverflow=1; };
 LengthOverflow表示实际拥有数据集在本次组合中无法用当前u32长度继续表达，结果及必要的临时组件数据均沿原dataset／resize规则交接；没有MAX_PATH或预设组件数上限。临时组件是本次算法的普通数据，结束后由原Frame释放，不形成路径缓存或新的运行时拥有表。
 
 源码消费使用`import blink.windows.path;`与`-I library`；归档消费只导入path.lib，链接只提供本次实际路径归档及原运行库代码，join不要求sequence.lib或提供者.h／.b。当前Rust模块装入／构建图仍使用原Rust路径调用，本B接口的原生可用、编译器迁移、中央镜像及正式周发行分别记录。平台组合规则见[Rust PathBuf::push](https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.push)。
+
+### 创建目录及缺失父级
+
+`result<void,DirectoryError> create_dir_all(address path) on cpu`以普通B代码逐级创建Windows目录。输入为本次同步调用期间有效、NUL结尾的UTF-16路径；空串成功而不创建目录。调用者保持原文本，库不改大小写、不验证／替换代理单元，结束后不保留输入。普通路径的点／父目录按原词法组件决定实际创建层级，已抵消的组件不创建；每一级仍从原文本交给Win32解释相对基准及设备身份。显式verbatim与NT名称保留原组件。长路径沿原绝对名称和扩展前缀交给平台，短路径保留Win32目录命名空间；248单元是平台旧目录路径容量的转换选择，不是B长度上限，也不添加另一组件数限制。
+
+每级CreateDirectoryW只调用一次；成功直接进入下一级，失败立即保存原OS错误。仅ERROR_ALREADY_EXISTS=183打开实际目标，以零desired-access、读／写／删除共享和FILE_FLAG_BACKUP_SEMANTICS取得HANDLE，读取FileStandardInfo并关闭一次；只有真实目录可继续，普通文件不能被当作已有目录，符号链接／junction跟随真实目标。根路径检查其实际目录目标。操作不承诺原子目录树，失败前已创建的父目录保持；并发创建得到真实已有目录同样成功，不保存目录状态、不先查存在、不重试失败。
+
+| DirectoryError载荷 | 交回的实际结果 |
+|---|---|
+| `Input(AbsoluteError)` | 原UTF-16副本／名称准备失败；System、BufferTooSmall及当前dataset长度溢出保持原含义 |
+| `Create(u32)` | CreateDirectoryW的原OS错误；183且实际目标为普通文件也保持183 |
+| `Open(u32)` | 已有目标或根目录的实际HANDLE打开失败；断链按真实打开错误返回 |
+| `Query(u32)` | FileStandardInfo查询失败，原HANDLE已关闭 |
+| `Close(DirectoryCloseError)` | 查询后关闭失败，保留本次原不透明handle与原code，不宣称释放 |
+| `QueryAndClose(DirectoryQueryCloseError)` | 同时保留查询原code及关闭的原handle／code |
+| `NotDirectory()` | 根路径真实目标不是目录，原HANDLE已关闭 |
+
+FILE_STANDARD_INFO沿Windows x64的24字节、8字节对齐布局交接，目录标志为偏移21的BOOLEAN。DirectoryCloseError.handle为正式不透明handle，可直接交接匹配的原Windows文件HANDLE接口，不属于数值或B内存view；复制身份不取得对象或关闭责任，原资源仍归实际调用者，不自动再次关闭。分配／执行失败沿原Frame边界；业务Err不回滚已经发生的目录创建。
+
+源码消费导入blink.windows.path；独立消费编译path模块，并以原`--instance "push<u16>"`在sequence模块交付实际使用的泛型实例，应用编译导入相应path.lib及sequence.lib，再由blink链接已编译产物。库实现及头文件不成为应用的编译／运行前置。当前Rust构建／缓存输出者尚未采用本B函数，目录枚举、完整缓存发布和编译器迁移分别按Issues推进；本入口可用不等于这些职责已迁移。平台行为见[CreateDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)及[FILE_STANDARD_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info)。
+

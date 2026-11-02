@@ -91,16 +91,18 @@ bool canonical_nt_prefix(address path) on cpu {
     return false;
 }
 
-result<dataset<u16>,AbsoluteError> canonical_terminated(dataset<u16> units) on cpu {
+result<dataset<u16>,AbsoluteError> terminated_name(dataset<u16> units) on cpu {
     match (push(units,u16(0))) {
         Ok(terminated) { return Ok(terminated); }
         Err(failure) { return Err(AbsoluteError::LengthOverflow()); }
     }
 }
 
-result<dataset<u16>,AbsoluteError> canonical_native_name(address path) on cpu {
+result<dataset<u16>,AbsoluteError> native_name(address path,bool prefer_verbatim) on cpu {
     match (absolute(path)) {
         Ok(full) {
+            // Legacy directory paths reserve 12 units of MAX_PATH, including NUL.
+            if (!prefer_verbatim && full.length < 247) { return terminated_name(full); }
             bool prefix=false;
             bool unc=false;
             u32 skip=0;
@@ -116,7 +118,7 @@ result<dataset<u16>,AbsoluteError> canonical_native_name(address path) on cpu {
                     }
                 }
             }
-            if (!prefix) { return canonical_terminated(full); }
+            if (!prefix) { return terminated_name(full); }
             dataset<u16> output=dataset<u16>(4);
             output[0]=u16(92);output[1]=u16(92);output[2]=u16(63);output[3]=u16(92);
             if (unc) {
@@ -129,7 +131,7 @@ result<dataset<u16>,AbsoluteError> canonical_native_name(address path) on cpu {
                     Err(failure) { return Err(AbsoluteError::LengthOverflow()); }
                 }
             }
-            return canonical_terminated(output);
+            return terminated_name(output);
         }
         Err(error) { return Err(error); }
     }
@@ -147,7 +149,7 @@ result<handle,CanonicalError> canonical_open(address path) on cpu {
     if (verbatim(path) || canonical_nt_prefix(path) || unsafe_position<u16>(path) == u16(0)) {
         return canonical_open_path(path);
     }
-    match (canonical_native_name(path)) {
+    match (native_name(path,true)) {
         Ok(name) { return canonical_open_path(address_of(name[0])); }
         Err(error) { return Err(CanonicalError::Input(error)); }
     }
@@ -199,11 +201,11 @@ u32 lexical_component_end(read dataset<u16> path,u32 start,bool literal) on cpu 
 
 struct LexicalPrefix { u32 end; bool literal; };
 
-LexicalPrefix lexical_prefix(read dataset<u16> path) on cpu {
+LexicalPrefix lexical_prefix(read dataset<u16> path,bool nt_prefix) on cpu {
     if (path.length >= 2) {
-        if (lexical_separator(path[0],false) && lexical_separator(path[1],false)) {
+        if ((lexical_separator(path[0],false) && lexical_separator(path[1],false)) || nt_prefix) {
             if (path.length >= 4) {
-                if (path[0] == u16(92) && path[1] == u16(92) &&
+                if ((nt_prefix || (path[0] == u16(92) && path[1] == u16(92))) &&
                     path[2] == u16(63) && path[3] == u16(92)) {
                     if (path.length >= 8) {
                         if (path[4] == u16(85) && path[5] == u16(78) &&
@@ -296,7 +298,7 @@ result<dataset<u16>,ExtensionError> with_extension(
             return Err(ExtensionError::Separator(index));
         }
     }
-    ExtensionScan name=extension_name(path,lexical_prefix(path));
+    ExtensionScan name=extension_name(path,lexical_prefix(path,false));
     dataset<u16> output=dataset<u16>(path.length);
     for (index in 0..path.length) { output[index]=path[index]; }
     if (!name.found) { return Ok(output); }
@@ -434,9 +436,9 @@ result<dataset<u16>,JoinError> join_verbatim(
 }
 
 result<dataset<u16>,JoinError> join(read dataset<u16> base,read dataset<u16> path) on cpu {
-    LexicalPrefix right=lexical_prefix(path);
+    LexicalPrefix right=lexical_prefix(path,false);
     if (right.end > 0) { return Ok(join_copy(path)); }
-    LexicalPrefix left=lexical_prefix(base);
+    LexicalPrefix left=lexical_prefix(base,false);
     if (left.literal && path.length > 0) { return join_verbatim(base,path,left); }
     dataset<u16> output=join_copy(base);
     bool rooted=false;
@@ -449,4 +451,92 @@ result<dataset<u16>,JoinError> join(read dataset<u16> base,read dataset<u16> pat
         if (separator) { output=try(join_push(output,u16(92))); }
     }
     return join_tail(output,path);
+}
+
+extern "C" i32 CreateDirectoryW(address path,address security) on cpu from "KERNEL32.dll";
+extern "C" i32 GetFileInformationByHandleEx(handle file,u32 kind,address data,
+    u32 bytes) on cpu from "KERNEL32.dll";
+
+result<bool,DirectoryError> directory_target(address path) on cpu {
+    handle file=CreateFileW(path,0,7,address(),3,33554432,handle());
+    if (file == INVALID_HANDLE_VALUE) {
+        return Err(DirectoryError::Open(GetLastError()));
+    }
+    dataset<u64> info=dataset<u64>(3);
+    i32 queried=GetFileInformationByHandleEx(file,1,address_of(info[0]),24);
+    u32 query_error=0;
+    if (queried == 0) { query_error=GetLastError(); }
+    i32 closed=CloseHandle(file);
+    u32 close_error=0;
+    if (closed == 0) { close_error=GetLastError(); }
+    if (queried == 0) {
+        if (closed == 0) {
+            return Err(DirectoryError::QueryAndClose(
+                DirectoryQueryCloseError(query_error,DirectoryCloseError(file,close_error))));
+        }
+        return Err(DirectoryError::Query(query_error));
+    }
+    if (closed == 0) { return Err(DirectoryError::Close(DirectoryCloseError(file,close_error))); }
+    return Ok(((info[2] >> 40) & 255u64) != 0u64);
+}
+
+result<void,DirectoryError> directory_create(address path) on cpu {
+    if (CreateDirectoryW(path,address()) != 0) { return Ok(); }
+    u32 code=GetLastError();
+    if (code == 183) {
+        if (try(directory_target(path))) { return Ok(); }
+    }
+    return Err(DirectoryError::Create(code));
+}
+
+result<void,DirectoryError> directory_component(address path) on cpu {
+    if (verbatim(path) || canonical_nt_prefix(path)) { return directory_create(path); }
+    match (native_name(path,false)) {
+        Ok(name) { return directory_create(address_of(name[0])); }
+        Err(error) { return Err(DirectoryError::Input(error)); }
+    }
+}
+
+result<void,DirectoryError> create_dir_all(address path) on cpu {
+    if (unsafe_position<u16>(path) == u16(0)) { return Ok(); }
+    dataset<u16> units;
+    bool nt=canonical_nt_prefix(path);
+    match (copy_verbatim(path)) {
+        Ok(raw) { units=raw; }
+        Err(error) { return Err(DirectoryError::Input(error)); }
+    }
+    u32 length=units.length;
+    LexicalPrefix prefix=lexical_prefix(units,nt);
+    u32 body=prefix.end;
+    if (body < units.length) {
+        if (lexical_separator(units[body],prefix.literal)) { body+=1; }
+    }
+    if (body == length) {
+        if (try(directory_target(path))) { return Ok(); }
+        return Err(DirectoryError::NotDirectory());
+    }
+    dataset<JoinComponent> parts;
+    match (join_components(dataset<JoinComponent>(0),units,body,prefix.literal,prefix.literal)) {
+        Ok(parsed) { parts=parsed; }
+        Err(error) { return Err(DirectoryError::Input(AbsoluteError::LengthOverflow())); }
+    }
+    if (parts.length == 0) { return directory_component(path); }
+    dataset<u16> terminated;
+    match (terminated_name(units)) {
+        Ok(prepared) { terminated=prepared; }
+        Err(error) { return Err(DirectoryError::Input(error)); }
+    }
+    u32 next=0;
+    for (end in body..terminated.length) {
+        if (next < parts.length) {
+            if (end == parts[next].start+parts[next].length) {
+                u16 saved=terminated[end];
+                terminated[end]=u16(0);
+                try(directory_component(address_of(terminated[0])));
+                terminated[end]=saved;
+                next+=1;
+            }
+        }
+    }
+    return Ok();
 }

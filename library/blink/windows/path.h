@@ -41,3 +41,16 @@ result<dataset<u16>,ExtensionError> with_extension(
 
 enum JoinError : u32 { LengthOverflow = 1; };
 result<dataset<u16>,JoinError> join(read dataset<u16> base,read dataset<u16> path) on cpu;
+
+struct DirectoryCloseError { handle handle; u32 code; };
+struct DirectoryQueryCloseError { u32 query; DirectoryCloseError close; };
+enum DirectoryError : u32 {
+    Input(AbsoluteError) = 1;
+    Create(u32) = 2;
+    Open(u32) = 3;
+    Query(u32) = 4;
+    Close(DirectoryCloseError) = 5;
+    QueryAndClose(DirectoryQueryCloseError) = 6;
+    NotDirectory = 7;
+};
+result<void,DirectoryError> create_dir_all(address path) on cpu;
