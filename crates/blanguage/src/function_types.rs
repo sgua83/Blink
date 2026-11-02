@@ -74,26 +74,6 @@ fn condition_name(condition: &OutputCondition) -> String {
             value.bits.iter().map(|bits| format!("{bits:016x}")).collect::<Vec<_>>().join(",")),
     }
 }
-impl CFunctionType {
-    pub(crate) fn syntax(&self) -> TypeName {
-        let mut syntax = TypeName::named("cfn");
-        syntax.arguments.push(GenericArgument::Type(self.result.clone()));
-        syntax.arguments.extend(self.parameters.iter().map(|(access, ty)| {
-            let wrapper = match access {
-                Access::Value => None, Access::Read => Some("read"), Access::Write => Some("write"),
-                Access::InOut => Some("inout"), Access::Atomic => Some("atomic"),
-            };
-            let ty = if let Some(wrapper) = wrapper {
-                let mut syntax = TypeName::named(wrapper);
-                syntax.arguments.push(GenericArgument::Type(ty.clone()));
-                syntax
-            } else { ty.clone() };
-            GenericArgument::Type(ty)
-        }));
-        if !self.outputs.is_empty() { syntax.outputs = Some(Box::new(self.outputs.clone())); }
-        syntax
-    }
-}
 impl World {
     pub(crate) fn check_interface_types(&self, definition: &crate::Definition, actual: &Function,
         types: &BTreeMap<String, TypeName>, values: &BTreeMap<String, u32>,

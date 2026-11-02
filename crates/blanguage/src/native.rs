@@ -4,6 +4,7 @@ mod allocation;
 mod append;
 mod atomic;
 use allocation::{Allocation, Frame, PacketAllocation};
+#[cfg(feature = "compiler")]
 mod application;
 mod compact;
 mod custom_reduce;
@@ -22,6 +23,7 @@ mod scan;
 mod segmented_reduce;
 mod sort;
 mod texture;
+#[cfg(feature = "compiler")]
 pub(crate) use application::{
     ApplicationCode, emit as emit_application, emit_function, unwind as application_unwind,
 };

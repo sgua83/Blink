@@ -241,7 +241,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:579`。
+源码节选：`crates/blanguage/src/check/address.rs:580`。
 
 ```rust
     pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
@@ -286,7 +286,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 已知地址身份与真实标量宽度共同判断借用重叠；同址u64与其第4字节处的u32不能因为逻辑分量不同而被误认为不相交。未知外部别名仍属于unsafe调用者的真实合同，不增加运行时扫描、另一个地址表或全局写效果。
 
-源码节选：`crates/blanguage/src/check/address.rs:436`。
+源码节选：`crates/blanguage/src/check/address.rs:437`。
 
 ```rust
     pub(super) fn overlaps(&self, ty: &Ty, words: &[u32], other: &Self, other_ty: &Ty, other_words: &[u32]) -> bool {
@@ -314,7 +314,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 CPU的unsafe_function显式把外部address解释为cfn签名，function_address取得同一原地址；普通B参数、结果、记录／数组和模块保留签名。函数签名以原TypeName保存已绑定的名义引用，函数地址本体保持8字节；原World先完成真实布局，再验证签名闭包，实际调用才取得完整参数／返回布局。记录因而可以通过函数签名自引用或互引用，按值接收或返回记录也不改变地址大小；直接按值嵌入自身仍拒绝。类型、const与usize／isize别名保持原规范身份。B源码的value(args...)通过原Call产生实际间接调用，目标先于实参求值，字段、数组元素和返回表达式也可作目标；调用消费原Proof已知非零或requires nonzero前提，不插入运行时判空分支。真实签名、已装载代码及最后消费者前存活仍由外部来源负责；函数值的条件输出写在cfn签名后，使用argument0起的位置名；静态命名调用与实际间接调用借用原合同的同一视图，原输入快照、实际返回值与Proof／Position共同交接初始化。TypeName和CFunctionType保存这些元数据，条款顺序／重复统一，模块常量绑定真实类型和值，不另造函数定义、运行时初始化标志或资源所有者。唯一Construct分派保留第一次真实Ty，cfn交给原值构造器，普通聚合沿原打包路径；函数地址没有记录字段，不按空记录构造。具体合同的声明与执行共用原运算类型规则，声明类型闭合时检查完整表达式及根bool，不依赖真实调用来触发检查；泛型在原实例化闭合后消费同一规则。字面量按原运算统一身份；浮点谓词已交接初始化，声明已按语义匹配。明确C ABI的B定义可形成直接原生入口；需执行上下文的回调与可保留代码／状态寿命继续建设。Result与一般变体的宽载荷沿原条件图保留完整非零关系；实际标签选择后，重组取得同一次载荷的许可，零值、其他分支及改写后内容保持原前提。
 
-源码节选：`crates/blanguage/src/function_types.rs:239`。
+源码节选：`crates/blanguage/src/function_types.rs:244`。
 
 ```rust
     pub(crate) fn c_function_type(&self, name: &TypeName, source: &Source, span: Span, module: &str, imports: &[String]) -> crate::Result<Ty> {
@@ -480,7 +480,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 签名引用只绑定原声明和const数值；它不会提前展开被引用记录。完整Ty在原World中产生，再沿同一引用闭包检查普通C值、位置访问和资源限制；一次查询已经消费的同一签名不反复展开，未知、非法资源或直接按值递归不会因此跳过。
 
-源码节选：`crates/blanguage/src/function_types.rs:284`。
+源码节选：`crates/blanguage/src/function_types.rs:289`。
 
 ```rust
     pub(crate) fn validate_c_functions(&self, ty: &Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
@@ -505,7 +505,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 算法DLL与普通应用包装消费同一resource映像编码。类型、执行计划与CPU／GPU代码在编译时已形成，生成Rust包装只嵌入这些字节；构造实际程序时保持本次ProgramImage<P>的原入口身份，解码错误交回原FFI错误结果，不重建一份Rust类型／阶段字面量，也不将条件模板改成已验证入口。
 
-源码节选：`crates/blanguage/src/resource.rs:103`。
+源码节选：`crates/blanguage/src/resource.rs:106`。
 
 ```rust
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
@@ -749,9 +749,9 @@ pub fn parse(source: Source) -> Result<Module> {
 
 `map.h` 声明可公开使用的接口，`map.b` 给出实现。源码模式按实际需要读取接口与存在的实现，产物导入则消费对象中的公开接口。只解析当前文件，却不知道调用的函数来自哪里，无法完成可靠的类型、访问与阶段分析。
 
-入口在 `crates/blanguage/src/lib.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
+公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/lib.rs:143`。
+源码节选：`crates/blanguage/src/frontend.rs:101`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -775,7 +775,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/lib.rs:497`。
+源码节选：`crates/blanguage/src/frontend.rs:455`。
 
 ```rust
     if let Some(name) = import
@@ -798,6 +798,8 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
 源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。入口映像与COFF按声明及实现依赖复用；无关实现变化保持产物，实际依赖变化重新编译。缓存命中不证明冷编译成本降低。
 
 native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，application::Context只持有编译期Frame寄存器及映像描述。真实Frame、设备与完成仍归blcompute；函数模块不是CPU应用上下文的附属状态。
+
+默认Cargo功能compiler保留完整源码编译与工具入口；B资源包装对原blanguage／blcompute路径依赖关闭该功能，仅消费共同表示、原已编译映像／资源编码和仍需的后端助手。共同codec.rs持有唯一字节编码，Frame与CPU／GPU资源仍归原执行框架。包装与运行库由一次Cargo依赖图生产，沿原target/dll复用实际依赖；仅运行角色不生产源码编译器身份，也不调用B词法种子。运行库仍有原生／SPIR-V生成消费者，这不代表后端预编译或运行库B迁移已经完成。
 
 ### 4.4 统一函数怎样落到不同执行范围
 
@@ -954,7 +956,7 @@ impl Parser {
             }
             let op = self.peek().to_owned();
             self.at += 1;
-            let rhs = self.expr(prec + 1)?;
+            let rhs = self.expr(prec + 1,type_argument)?;
             lhs = Expr {
                 kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
                 span,
@@ -1082,7 +1084,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3760`。
+源码节选：`crates/blanguage/src/check.rs:3780`。
 
 ```rust
         let binding = view.binding;
@@ -1148,6 +1150,7 @@ pub(super) enum Position {
     TileElement(usize, Reg, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),
+    ApplicationInput(view::LoopInput, Option<ApplicationIndex>, u32),
     Indexed(std::sync::Arc<[Position]>, ApplicationIndex),
     Conditional(std::sync::Arc<owned_presence::Presence>,std::sync::Arc<Position>,std::sync::Arc<Position>),
     Both(std::sync::Arc<Position>,std::sync::Arc<Position>),
@@ -1529,7 +1532,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native.rs:127`。
+源码节选：`crates/blanguage/src/native.rs:129`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1603,7 +1606,7 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-源码节选：`crates/blanguage/src/native.rs:141`。
+源码节选：`crates/blanguage/src/native.rs:143`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1630,7 +1633,7 @@ pub(super) enum Location {
 
 Sin、Cos 等运算可能调用执行框架提供的原生辅助函数。生成时保存重定位位置与辅助函数类别，装载代码时再填入本进程中的真实地址。机器码字节与这张重定位清单共同构成 NativeCode。
 
-源码节选：`crates/blanguage/src/native.rs:72`。
+源码节选：`crates/blanguage/src/native.rs:74`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1672,7 +1675,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native.rs:661`。
+源码节选：`crates/blanguage/src/native.rs:663`。
 
 ```rust
     let stage = &lowered;
@@ -2514,7 +2517,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | 源码位置 | 主要阅读问题 |
 |---|---|
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
-| `lib.rs` | 怎样装载模块、核对接口、选择具体入口并形成 Compilation |
+| `lib.rs`、`frontend.rs` | 公开入口及源码装载、接口核对、具体入口选择与 Compilation |
 | `bootstrap/lexer.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
 | `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |
 | `check.rs` | 参数、资源、函数、表达式与 parallel 怎样形成 IR |

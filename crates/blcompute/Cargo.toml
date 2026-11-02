@@ -9,7 +9,12 @@ crate-type = ["rlib", "staticlib"]
 
 [[bin]]
 name = "brun"
+required-features = ["compiler"]
 path = "src/main.rs"
 
 [dependencies]
-blanguage = { path = "../blanguage" }
+blanguage = { path = "../blanguage", default-features = false }
+
+[features]
+default = ["compiler"]
+compiler = ["blanguage/compiler"]

@@ -6,6 +6,7 @@ use std::{
     thread,
 };
 use crate::parallel::Error;
+#[cfg(feature = "compiler")]
 mod process;
 
 /// Windows处理器组中的一个逻辑处理器；不是跨机器地址。
@@ -24,7 +25,7 @@ struct Resources {
     processors: Option<Vec<Processor>>,
     available: Mutex<Vec<usize>>,
     released: Condvar,
-    #[cfg(feature = "installed")]
+    #[cfg(all(feature = "installed", feature = "compiler"))]
     sdk_input: Mutex<Option<std::fs::File>>,
 }
 struct Permit {
@@ -70,7 +71,7 @@ impl Compiler {
             workers, processors,
             available: Mutex::new((0..workers).rev().collect()),
             released: Condvar::new(),
-            #[cfg(feature = "installed")]
+            #[cfg(all(feature = "installed", feature = "compiler"))]
             sdk_input: Mutex::new(None),
         }) }
     }
@@ -81,7 +82,7 @@ impl Compiler {
         self
     }
     pub fn max_parameter_bytes(&self) -> u32 { self.max_parameter_bytes }
-    #[cfg(feature = "installed")]
+    #[cfg(all(feature = "installed", feature = "compiler"))]
     fn hold_sdk_input(&self) -> io::Result<()> {
         let mut input = self.resources.sdk_input.lock().unwrap();
         if input.is_none() {
@@ -109,7 +110,7 @@ impl Compiler {
     pub(crate) fn execute<T: Send, E: Send>(
         &self, compile: impl FnOnce(&Worker) -> Result<T, E> + Send,
     ) -> Result<T, Error<E>> {
-        #[cfg(feature = "installed")]
+        #[cfg(all(feature = "installed", feature = "compiler"))]
         self.hold_sdk_input().map_err(Error::Resource)?;
         let worker = self.acquire();
         if self.resources.processors.is_none() {

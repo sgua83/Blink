@@ -9,13 +9,17 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "bc"
+required-features = ["compiler"]
 path = "src/main.rs"
 
 [[bin]]
 name = "blink"
+required-features = ["compiler"]
 path = "src/bin/blink.rs"
 
 [dependencies]
 
 [features]
+default = ["compiler"]
+compiler = []
 installed = []

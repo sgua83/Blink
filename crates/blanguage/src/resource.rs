@@ -1,6 +1,8 @@
 //! 模块资源 ABI：标量值与实际字节布局；不传递 Rust 容器表示。
-use crate::module::codec::{self, Decode, Encode, Reader, Writer, record, variants};
-use crate::{TemplateProgram, ast::Target, ir::*, native, spirv};
+use crate::codec::{self, Decode, Encode, Reader, Writer, record, variants};
+use crate::{TemplateProgram, ir::*, native, spirv};
+#[cfg(feature = "compiler")]
+use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
 pub const ABI: &[u8; 8] = b"BLRI\x0f\0\0\0";
@@ -62,6 +64,7 @@ pub struct Module {
 record!(Module { types, images });
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
 
+#[cfg(feature = "compiler")]
 pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, u32)> {
     use native::{ContinuationCode, StageCode};
     let jobs = |cpu| resources.programs.iter().enumerate()

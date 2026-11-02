@@ -38,7 +38,7 @@
 
 软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示构建时的同一版本。
 
-正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。当前Windows x64下载Blink-Setup-windows-x64.exe，双击或运维--quiet覆盖安装到%ProgramFiles%/Blink，自动配置系统PATH，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。源码SDK构建先安装一份可独立取得、支持当前词法源码的稳定Blink发行；原build.rs从%ProgramFiles%/Blink/bin调用bc与blink，静态生成B词法模块，不依赖target中新工具。以下为源码SDK开发方式。
+正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。当前Windows x64下载Blink-Setup-windows-x64.exe，双击或运维--quiet覆盖安装到%ProgramFiles%/Blink，自动配置系统PATH，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。源码SDK构建先安装一份可独立取得、支持当前词法源码的稳定Blink发行；完整compiler角色的原build.rs从%ProgramFiles%/Blink/bin调用bc与blink，静态生成B词法模块，不依赖target中新工具。默认源码SDK保留完整编译接口；仅执行角色关闭compiler功能，不调用词法种子或装入源码前端。以下为源码SDK开发方式。
 
 ## 快速开始
 

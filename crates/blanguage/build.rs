@@ -41,6 +41,10 @@ fn bootstrap_lexer() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if env::var_os("CARGO_FEATURE_COMPILER").is_none() {
+        println!("cargo:rerun-if-changed=build.rs");
+        return Ok(());
+    }
     let lexer_object = bootstrap_lexer()?;
     let mut files = Vec::new();
     sources(Path::new("src"), &mut files)?;
@@ -71,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_CFG_TARGET_FEATURE",
         "CARGO_FEATURE_INSTALLED",
+        "CARGO_FEATURE_COMPILER",
     ] {
         hash::field(&mut identity, name.as_bytes());
         match env::var_os(name) {

@@ -1879,3 +1879,25 @@ impl Ty {
         }
     }
 }
+
+impl CFunctionType {
+    pub(crate) fn syntax(&self) -> crate::ast::TypeName {
+        use crate::ast::{TypeName, GenericArgument};
+        let mut syntax = TypeName::named("cfn");
+        syntax.arguments.push(GenericArgument::Type(self.result.clone()));
+        syntax.arguments.extend(self.parameters.iter().map(|(access, ty)| {
+            let wrapper = match access {
+                Access::Value => None, Access::Read => Some("read"), Access::Write => Some("write"),
+                Access::InOut => Some("inout"), Access::Atomic => Some("atomic"),
+            };
+            let ty = if let Some(wrapper) = wrapper {
+                let mut syntax = TypeName::named(wrapper);
+                syntax.arguments.push(GenericArgument::Type(ty.clone()));
+                syntax
+            } else { ty.clone() };
+            GenericArgument::Type(ty)
+        }));
+        if !self.outputs.is_empty() { syntax.outputs = Some(Box::new(self.outputs.clone())); }
+        syntax
+    }
+}

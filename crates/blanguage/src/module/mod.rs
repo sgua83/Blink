@@ -1,5 +1,5 @@
 //! 已编译模块公开接口、原生定义和实际产物；导入不读取实现源码。
-pub(crate) mod codec;
+pub(crate) use crate::codec;
 pub(crate) mod domain;
 use crate::{
     application::Resources,

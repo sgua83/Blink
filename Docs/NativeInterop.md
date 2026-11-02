@@ -81,7 +81,7 @@ bc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检�
 
 编译阶段由 bc 生成 B 算法原生代码，并使用 Rust 工具链把既有执行框架和 C ABI 编译成静态目标库，随 COFF 目标文件保存。链接阶段由 blink 读取目标文件，调用 MSVC 本机链接器生成 DLL，不调用 bc、Cargo 或 rustc，也不需要 B 源码。编译使用源码 SDK 与 Rust 工具链，链接使用 Visual Studio C++ 工具和 Windows SDK；消费已生成 DLL 的 C/C++ 项目无需安装 Rust、Blink 编译器或 Blink 源码。C 导出及生成的 C++／Rust 调用签名保持。Rust SDK 提供整程序编译映像与装载入口，数据创建接口消费只读的 ProgramInterface；已装载程序的 program() 返回不含 IR 的 ExecutionPlan，数据布局消费者使用该接口。
 
-编译期根包装所需的 SDK 库由原 SDK Cargo 工作区按正式 Release 配置生产；SDK 同时交付 Rust rlib 与本机 staticlib，使库成员实际包含本机代码，包装通过对应 rlib 及依赖目录消费这些代码，不在私有 Cargo 工作区重新声明 SDK 源码依赖。正式 SDK 的 thin LTO、单代码生成单元及 abort 配置保持，包装自身沿原配置编译。真实 SDK 输入变化仍由原 Cargo 构建处理，共享 SDK 产物保留；源码 SDK 已完成正式构建时，首次新应用只编译必要的包装内容。
+编译期根包装通过Cargo清单直接引用原SDK中实际需要的blanguage／blcompute包，关闭默认compiler功能；这条运行依赖不装入源码前端和对象／链接工具。运行库与包装在一次Cargo依赖图中编译，使用原target/dll及既有Release包装配置（优化级别3、lto=false、单代码生成单元、panic=abort），不单独先构建完整SDK或手工选择顶层rlib。完整源码SDK和工具的默认compiler功能、正式thin LTO配置及公开Rust编译接口保持。实际依赖由Cargo管理，首次运行角色的真实输入变化会编译必要SDK，后续新包装复用同一运行依赖产物；生成单元清理不删除这些共享产物。
 
 公开 ABI 前缀只决定外部接口，不再作为编译暂存静态库的身份。同一 SDK 中两个相同前缀的编译各自消费本编译单元的私有库，目标文件归档后清除该单元的生成源码与 Cargo package 产物，共享框架依赖缓存保留。应用编译同样沿此路径，不再为私有 Cargo 库单独计算源码散列前缀；应用执行 DLL 的既有内容身份继续由链接器使用。编译失败如实返回并结束暂存生命周期，链接和最终 DLL 无需保留这些临时产物。
 

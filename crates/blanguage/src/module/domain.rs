@@ -22,14 +22,6 @@ pub(crate) fn symbol(name: &str, target: Target) -> String {
         if target == Target::Cpu { "cpu" } else { "gpu" }
     )
 }
-super::codec::record!(Buffer {
-    name,
-    access,
-    ty,
-    stride,
-    count
-});
-super::codec::record!(Uniform { name, ty, offset });
 super::codec::record!(Output {
     binding,
     domain,

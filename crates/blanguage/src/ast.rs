@@ -239,7 +239,7 @@ impl PartialOrd for OutputConstant {
 }
 impl Ord for OutputConstant {
     fn cmp(&self,other:&Self)->std::cmp::Ordering{
-        use crate::module::codec::Encode;
+        use crate::codec::Encode;
         Encode::bytes(&self.ty).cmp(&Encode::bytes(&other.ty)).then_with(||self.bits.cmp(&other.bits))
     }
 }

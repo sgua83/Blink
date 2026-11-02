@@ -180,14 +180,14 @@ tuple!(A:0,B:1);
 tuple!(A:0,B:1,C:2);
 macro_rules! record{
     ($ty:ty{$($field:ident),*$(,)?})=>{
-        impl $crate::module::codec::Encode for $ty{fn encode(&self,w:&mut $crate::module::codec::Writer){$($crate::module::codec::Encode::encode(&self.$field,w);)*}}
-        impl $crate::module::codec::Decode for $ty{fn decode(r:&mut $crate::module::codec::Reader<'_>)->$crate::module::codec::Result<Self>{Ok(Self{$($field:$crate::module::codec::Decode::decode(r)?,)*})}}
+        impl $crate::codec::Encode for $ty{fn encode(&self,w:&mut $crate::codec::Writer){$($crate::codec::Encode::encode(&self.$field,w);)*}}
+        impl $crate::codec::Decode for $ty{fn decode(r:&mut $crate::codec::Reader<'_>)->$crate::codec::Result<Self>{Ok(Self{$($field:$crate::codec::Decode::decode(r)?,)*})}}
     };
 }
 macro_rules! variants{
     ($ty:ty{$($tag:literal=>$variant:ident$(($($binding:ident),*))?$({$($field:ident),*})?),*$(,)?})=>{
-        impl $crate::module::codec::Encode for $ty{fn encode(&self,w:&mut $crate::module::codec::Writer){match self{$(Self::$variant$(($($binding),*))?$({$($field),*})?=>{$crate::module::codec::Encode::encode(&($tag as u32),w);$($($crate::module::codec::Encode::encode($binding,w);)*)?$($($crate::module::codec::Encode::encode($field,w);)*)?}),*}}}
-        impl $crate::module::codec::Decode for $ty{fn decode(r:&mut $crate::module::codec::Reader<'_>)->$crate::module::codec::Result<Self>{Ok(match <u32 as $crate::module::codec::Decode>::decode(r)?{$($tag=>Self::$variant$(( $( {let $binding=$crate::module::codec::Decode::decode(r)?;$binding} ),* ))?$({$($field:$crate::module::codec::Decode::decode(r)?),*})?),*,_=>return Err(concat!("模块枚举编码错误：",stringify!($ty)).into())})}}
+        impl $crate::codec::Encode for $ty{fn encode(&self,w:&mut $crate::codec::Writer){match self{$(Self::$variant$(($($binding),*))?$({$($field),*})?=>{$crate::codec::Encode::encode(&($tag as u32),w);$($($crate::codec::Encode::encode($binding,w);)*)?$($($crate::codec::Encode::encode($field,w);)*)?}),*}}}
+        impl $crate::codec::Decode for $ty{fn decode(r:&mut $crate::codec::Reader<'_>)->$crate::codec::Result<Self>{Ok(match <u32 as $crate::codec::Decode>::decode(r)?{$($tag=>Self::$variant$(( $( {let $binding=$crate::codec::Decode::decode(r)?;$binding} ),* ))?$({$($field:$crate::codec::Decode::decode(r)?),*})?),*,_=>return Err(concat!("模块枚举编码错误：",stringify!($ty)).into())})}}
     };
 }
 use crate::{ast, ir};
@@ -232,3 +232,12 @@ variants!(ast::OutputCondition{0=>Name(name),1=>Number(number),2=>Bool(value),3=
 record!(ast::OutputConstant{ty,bits});
 
 record!(crate::ir::Variant { name, discriminant, ty });
+
+record!(ir::Buffer {
+    name,
+    access,
+    ty,
+    stride,
+    count
+});
+record!(ir::Uniform { name, ty, offset });
