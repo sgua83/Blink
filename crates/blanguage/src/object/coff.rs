@@ -6,13 +6,7 @@ const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
 const FORMAT: u32 = 36;
-fn get16(b: &[u8], p: usize) -> Result<u16> {
-    Ok(u16::from_le_bytes(slice(b, p, 2)?.try_into()?))
-}
-fn get32(b: &[u8], p: usize) -> Result<u32> {
-    Ok(u32::from_le_bytes(slice(b, p, 4)?.try_into()?))
-}
-fn slice(b: &[u8], p: usize, n: usize) -> Result<&[u8]> {
+fn metadata_slice(b: &[u8], p: usize, n: usize) -> Result<&[u8]> {
     Ok(b.get(p..p.checked_add(n).ok_or("目标文件偏移溢出")?)
         .ok_or("目标文件被截断")?)
 }
@@ -24,7 +18,7 @@ fn read_word(c: &mut Cursor<&[u8]>) -> Result<u32> {
 fn read_string(c: &mut Cursor<&[u8]>) -> Result<String> {
     let n = read_word(c)? as usize;
     let p = c.position() as usize;
-    let s = std::str::from_utf8(slice(c.get_ref(), p, n)?)?.to_owned();
+    let s = std::str::from_utf8(metadata_slice(c.get_ref(), p, n)?)?.to_owned();
     c.set_position((p + n) as u64);
     Ok(s)
 }
@@ -109,6 +103,74 @@ unsafe extern "C" {
     fn binding_prepare(input: BindingInput, work: BindingWork) -> BindingPlan;
     #[link_name = "bootstrap.bindings::materialize"]
     fn binding_materialize(input: BindingInput, work: BindingWork, plan: BindingPlan, names: *mut u8);
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadBytes { bytes: *const u8, length: usize }
+impl ReadBytes {
+    fn new(bytes: &[u8]) -> Self { Self { bytes: bytes.as_ptr(), length: bytes.len() } }
+    unsafe fn borrowed<'a>(self) -> &'a [u8] { unsafe { std::slice::from_raw_parts(self.bytes, self.length) } }
+}
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+enum ReadError { None = 0, Machine = 1, Truncated = 2, StringOffset = 4, Unterminated = 5, RelocationCount = 6 }
+impl ReadError {
+    fn check(self) -> Result<()> {
+        match self {
+            Self::None => Ok(()),
+            Self::Machine => Err("需要 Windows x64 COFF 目标文件".into()),
+            Self::Truncated => Err("目标文件被截断".into()),
+            Self::StringOffset => Err("COFF 字符串偏移错误".into()),
+            Self::Unterminated => Err("COFF 符号缺少结尾".into()),
+            Self::RelocationCount => Err("COFF 重定位数量错误".into()),
+        }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadRange { bytes: ReadBytes, error: ReadError }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadBuild { bytes: ReadBytes, present: u64, error: ReadError }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadSymbols { strings: ReadBytes, offset: usize, count: usize, error: ReadError }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadSymbol {
+    name: ReadBytes, section: i64, value: u64, storage: u64, function: u64,
+    auxiliary: u64, selection: u64, owner: u64, next: usize, error: ReadError,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadSection {
+    name: ReadBytes, bytes: ReadBytes, flags: u64, relocations: usize, relocation_count: usize, error: ReadError,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadRelocations { offset: usize, count: usize, error: ReadError }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadRelocation { offset: usize, symbol: usize, kind: u64, error: ReadError }
+unsafe extern "C" {
+    #[link_name = "bootstrap.coff_read::headers"]
+    fn read_headers(input: ReadBytes) -> ReadRange;
+    #[link_name = "bootstrap.coff_read::build_inputs"]
+    fn read_build_inputs(input: ReadBytes, headers: ReadBytes) -> ReadBuild;
+    #[link_name = "bootstrap.coff_read::symbols"]
+    fn read_symbols(input: ReadBytes) -> ReadSymbols;
+    #[link_name = "bootstrap.coff_read::symbol"]
+    fn read_symbol(input: ReadBytes, table: ReadSymbols, index: usize) -> ReadSymbol;
+    #[link_name = "bootstrap.coff_read::section"]
+    fn read_section(input: ReadBytes, headers: ReadBytes, index: usize) -> ReadSection;
+    #[link_name = "bootstrap.coff_read::relocations"]
+    fn read_relocations(input: ReadBytes, offset: usize, count: usize, flags: u64) -> ReadRelocations;
+    #[link_name = "bootstrap.coff_read::relocation"]
+    fn read_relocation(input: ReadBytes, offset: usize, index: usize) -> ReadRelocation;
+}
+fn read_text(bytes: ReadBytes) -> Result<String> {
+    Ok(std::str::from_utf8(unsafe { bytes.borrowed() })?.to_owned())
 }
 
 // Synchronous borrowed metadata views; the original Object owns every field.
@@ -364,19 +426,14 @@ pub(crate) struct Reader<'a> {
 }
 impl<'a> Reader<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Result<Self> {
-        if get16(bytes, 0)? != 0x8664 || get16(bytes, 16)? != 0 {
-            return Err("需要 Windows x64 COFF 目标文件".into());
-        }
-        let headers = slice(bytes, 20, get16(bytes, 2)? as usize * 40)?;
-        Ok(Self { bytes, headers })
+        let headers = unsafe { read_headers(ReadBytes::new(bytes)) };
+        headers.error.check()?;
+        Ok(Self { bytes, headers: unsafe { headers.bytes.borrowed() } })
     }
     pub(crate) fn build_inputs(&self) -> Result<Option<&'a [u8]>> {
-        for header in self.headers.chunks_exact(40) {
-            if &header[..8] == BUILD.as_bytes() {
-                return Ok(Some(slice(self.bytes, get32(header, 20)? as usize, get32(header, 16)? as usize)?));
-            }
-        }
-        Ok(None)
+        let input = unsafe { read_build_inputs(ReadBytes::new(self.bytes), ReadBytes::new(self.headers)) };
+        input.error.check()?;
+        Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
     pub(crate) fn object(&self) -> Result<Object> {
         decode_object(self)
@@ -384,57 +441,38 @@ impl<'a> Reader<'a> {
 }
 fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let b = reader.bytes;
-    let sym = get32(b, 8)? as usize;
-    let count = get32(b, 12)? as usize;
-    let strings_at = sym + count * 18;
-    let strings = slice(b, strings_at, get32(b, strings_at)? as usize)?;
-    let mut symbols = vec![None; count];
+    let input = ReadBytes::new(b);
+    let table = unsafe { read_symbols(input) };
+    table.error.check()?;
+    let mut symbols = vec![None; table.count];
     let mut definitions = BTreeMap::new();
     let mut i = 0;
-    while i < count {
-        let r = slice(b, sym + i * 18, 18)?;
-        let name = if get32(r, 0)? == 0 {
-            let p = get32(r, 4)? as usize;
-            let tail = strings.get(p..).ok_or("COFF 字符串偏移错误")?;
-            let n = tail
-                .iter()
-                .position(|&c| c == 0)
-                .ok_or("COFF 符号缺少结尾")?;
-            std::str::from_utf8(&tail[..n])?.to_owned()
-        } else {
-            std::str::from_utf8(&r[..r[..8].iter().position(|&c| c == 0).unwrap_or(8)])?.to_owned()
-        };
-        if r[16] == 3 && get16(r, 12)? as i16 > 0 && r[17] > 0 {
-            let auxiliary = slice(b, sym + (i + 1) * 18, 18)?;
-            definitions.insert(get16(r, 12)? as usize - 1, (auxiliary[14], get16(auxiliary, 12)?));
+    while i < table.count {
+        let row = unsafe { read_symbol(input, table, i) };
+        row.error.check()?;
+        let name = read_text(row.name)?;
+        if row.storage == 3 && row.section > 0 && row.auxiliary > 0 {
+            definitions.insert(row.section as usize - 1, (row.selection as u8, row.owner as u16));
         }
-        symbols[i] = Some((
-            name,
-            get16(r, 12)? as i16,
-            get32(r, 8)?,
-            r[16],
-            get16(r, 14)? == 0x20,
-        ));
-        i += 1 + r[17] as usize;
+        symbols[i] = Some((name, row.section as i16, row.value as u32, row.storage as u8, row.function != 0));
+        i = row.next;
     }
+    let headers = ReadBytes::new(reader.headers);
     let mut raw = Vec::new();
-    for h in reader.headers.chunks_exact(40) {
-        let name =
-            std::str::from_utf8(&h[..h[..8].iter().position(|&c| c == 0).unwrap_or(8)])?.to_owned();
+    for index in 0..reader.headers.len() / 40 {
+        let row = unsafe { read_section(input, headers, index) };
+        row.error.check()?;
         raw.push((
-            name,
-            slice(b, get32(h, 20)? as usize, get32(h, 16)? as usize)?.to_vec(),
-            get32(h, 36)?,
-            get32(h, 24)? as usize,
-            get16(h, 32)? as usize,
+            read_text(row.name)?,
+            unsafe { row.bytes.borrowed() },
+            row.flags as u32,
+            row.relocations,
+            row.relocation_count,
         ));
     }
-    let meta = &raw
-        .iter()
-        .find(|s| s.0 == META)
-        .ok_or("缺少 Blink 目标文件元数据")?
-        .1;
-    let mut c = Cursor::new(meta.as_slice());
+    let meta = raw.iter().find(|s| s.0 == META)
+        .ok_or("缺少 Blink 目标文件元数据")?.1;
+    let mut c = Cursor::new(meta);
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
     if tag != *b"BLCO" || read_word(&mut c)? != FORMAT {
@@ -479,7 +517,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     use crate::module::codec::{Decode, Reader};
     let size = read_word(&mut c)? as usize;
     let at = c.position() as usize;
-    let mut resource = Reader::new(slice(meta, at, size)?);
+    let mut resource = Reader::new(metadata_slice(meta, at, size)?);
     c.set_position((at + size) as u64);
     let resources = if bool::decode(&mut resource)? {
         Some(ResourceBinding {
@@ -496,7 +534,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         let name = read_string(&mut c)?;
         let size = read_word(&mut c)? as usize;
         let at = c.position() as usize;
-        bindings.insert(name, crate::check::canonical_function_contract(slice(meta, at, size)?)?);
+        bindings.insert(name, crate::check::canonical_function_contract(metadata_slice(meta, at, size)?)?);
         c.set_position((at + size) as u64);
     }
     let mut stack = Vec::new();
@@ -520,7 +558,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         stack.push(stack::Frame { name, coff, local, calls });
     }
     let archive = raw.iter().find(|s| s.0 == ARCHIVE).map(|s| Archive {
-        bytes: s.1.clone(),
+        bytes: s.1.to_vec(),
         libraries,
         exports,
         resources,
@@ -533,7 +571,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             sections.push(Section {
                 associated: Vec::new(),
                 name: name.clone(),
-                bytes: bytes.clone(),
+                bytes: bytes.to_vec(),
                 flags: *flags,
                 relocations: Vec::new(),
             });
@@ -554,18 +592,12 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     }
     for (old, index) in &mapping {
         let (_, _, flags, p, count) = &raw[*old];
-        let (mut p, mut count) = (*p, *count);
-        if flags & 0x01000000 != 0 {
-            count = (get32(b, p)? as usize)
-                .checked_sub(1)
-                .ok_or("COFF 重定位数量错误")?;
-            p += 10;
-        }
-        for i in 0..count {
-            let r = slice(b, p + i * 10, 10)?;
-            let s = symbols
-                .get(get32(r, 4)? as usize)
-                .and_then(Option::as_ref)
+        let table = unsafe { read_relocations(input, *p, *count, u64::from(*flags)) };
+        table.error.check()?;
+        for i in 0..table.count {
+            let r = unsafe { read_relocation(input, table.offset, i) };
+            r.error.check()?;
+            let s = symbols.get(r.symbol).and_then(Option::as_ref)
                 .ok_or("COFF 重定位符号越界")?;
             let target = if s.1 > 0 {
                 Target::Section(
@@ -581,8 +613,8 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
                 Target::Symbol(s.0.clone())
             };
             sections[*index].relocations.push(Relocation {
-                offset: get32(r, 0)? as usize,
-                kind: get16(r, 8)?,
+                offset: r.offset,
+                kind: r.kind as u16,
                 target,
             });
         }

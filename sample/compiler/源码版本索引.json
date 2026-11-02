@@ -4,7 +4,7 @@
   "source_files": [
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "ffebf69c82040e7b0f9d62fe9f9eedb69fa8a36918396421abee3a50ae890a22"
+      "sha256": "a2f699df8fcb976fcecacc84a533703aa352226fed996c7c909f9954db31d424"
     },
     {
       "path": "crates/blanguage/src/ast.rs",
@@ -196,7 +196,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "6460c71c7b262d04daf5cbc774b7bc74a935ad7629511c8857f8280a949387cb"
+      "sha256": "c248c1de6f4a209e739a0bbf0e733e8a499d3dc50150a681cf13991494bd385f"
     },
     {
       "path": "crates/blanguage/src/bootstrap/coff.h",
@@ -221,6 +221,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/bindings.b",
       "sha256": "8fbf1f802d1e630912b281ebcb02a6876a604e7ef621beef33d8661615256c5c"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/coff_read.h",
+      "sha256": "c413844e111fd78150101cff86229f1f564ff9ca98774445df536f7378c73857"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/coff_read.b",
+      "sha256": "38dfa768396df184e6697350f5919a013b74e5df9459705a15801f115c3d42b7"
     }
   ],
   "excerpts": [
@@ -673,6 +681,12 @@
       "start_line": 1,
       "end_line": 18,
       "sha256": "74511932f77ed2c76e3b674bef6861e0beab0bb4763b2c100c0d4dc5020bcea3"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/coff_read.h",
+      "start_line": 1,
+      "end_line": 22,
+      "sha256": "c413844e111fd78150101cff86229f1f564ff9ca98774445df536f7378c73857"
     },
     {
       "path": "crates/blanguage/src/bootstrap/metadata.h",
