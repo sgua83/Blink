@@ -15,6 +15,7 @@ impl<K:Ord+Copy> Edges<K>{
         self.0.entry(key).and_modify(|old|*old=bounds::Condition::guard(bounds::Clause::either(&old.assume(&bounds::Clause::default(),true),&when).canonical())).or_insert_with(||bounds::Condition::guard(when));
     }
     pub fn union(&mut self,other:&Self){for(key,when)in &other.0{self.insert_when(*key,when.assume(&bounds::Clause::default(),true));}}
+    pub fn remove(&mut self,key:&K){self.0.remove(key);}
     pub fn contains(&self,key:&K)->bool{self.0.get(key).is_some_and(bounds::Condition::active)}
     pub fn is_empty(&self)->bool{self.0.is_empty()}
     pub fn iter(&self)->std::collections::btree_map::Keys<'_,K,bounds::Condition>{self.0.keys()}

@@ -142,7 +142,8 @@ impl Builder<'_> {
                 }
             }
         }
-        for (index,definition)in definitions.into_iter().enumerate(){self.view_model.loops.insert(LoopInput{level:scope,index},definition);}
+        // 直接自身边不向循环来源的最小不动点贡献新来源。
+        for (index,mut definition)in definitions.into_iter().enumerate(){let input=LoopInput{level:scope,index};definition.inputs.remove(&input);self.view_model.loops.insert(input,definition);}
         // 每个出口保留自己实际交还的资源，再用同一入口关系消去局部循环引用。
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
             for binding in environment.values_mut() {
@@ -462,8 +463,8 @@ impl Builder<'_> {
         natural=if context.exits.len()>natural_index{Some(context.exits.pop().unwrap())}else{None};
         let mut guards=loop_exit_paths(body,&context.controls,&owned_presence::Presence::input(test));
         if let Some(state)=natural{context.exits.push(state);guards.push(owned_presence::Presence::input(test).not());}
-        let initialized=context.exits.iter().zip(&guards).flat_map(|(state,when)|state.initialized.iter().map(move|position|Position::selected(when.clone(),position.clone(),Position::Initialized))).collect::<BTreeSet<_>>();
         let common=context.exits.iter().map(|state|state.initialized.clone()).reduce(|a,b|ownership::intersect_initialized(&a,&b));
+        let initialized=context.exits.iter().zip(&guards).flat_map(|(state,when)|state.initialized.difference(common.as_ref().unwrap()).map(move|position|Position::selected(when.clone(),position.clone(),Position::Initialized))).collect::<BTreeSet<_>>();
         let mut guards=guards.into_iter();let mut exits=context.exits.into_iter();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok(false)};
         let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
         for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}

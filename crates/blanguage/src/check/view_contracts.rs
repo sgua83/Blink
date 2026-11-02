@@ -97,6 +97,29 @@ impl Function {
 #[derive(Clone,Default,PartialEq,Eq)]
 struct State { loops:BTreeMap<LoopInput,Borrow>, interface:Interface }
 type States=BTreeMap<String,State>;
+// 仅求解正式输出、真实使用及可传播访问合同所需的循环来源。
+fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Interface>)->BTreeMap<String,BTreeSet<LoopInput>> {
+    let mut access=closed.iter().filter_map(|(name,interface)|(!interface.access.is_empty()).then_some(name.clone())).collect::<BTreeSet<_>>();
+    access.extend(functions.iter().filter_map(|(name,function)|function.uses.iter().any(|usage|matches!(usage.requirement,Requirement::Unborrowed{..})).then_some(name.clone())));
+    loop {
+        let needed=functions.iter().filter_map(|(name,function)|function.calls.iter().any(|call|access.contains(&call.function)).then_some(name.clone())).collect::<BTreeSet<_>>();
+        let before=access.len();access.extend(needed);if before==access.len(){break;}
+    }
+    functions.iter().map(|(name,function)|{
+        let mut roots=function.outputs.values().cloned().collect::<Vec<_>>();
+        for usage in &function.uses {match &usage.requirement {
+            Requirement::Unborrowed{resource,borrow,..}=>{roots.push(resource.clone());roots.push(borrow.clone());},
+            Requirement::Return{borrow,owned,..}=>{roots.push(borrow.clone());roots.push(owned.clone());},
+        }}
+        for call in &function.calls {if access.contains(&call.function){roots.extend(call.arguments.values().map(bounds::Proof::borrowed_view));}}
+        let mut loops=BTreeSet::new();let mut calls=BTreeSet::new();
+        while let Some(borrow)=roots.pop() {
+            for input in &borrow.inputs {if loops.insert(*input){roots.push(function.loops[input].clone());}}
+            for result in &borrow.calls {if calls.insert(result.call){roots.extend(function.calls[result.call].arguments.values().map(bounds::Proof::borrowed_view));}}
+        }
+        (name.clone(),loops)
+    }).collect()
+}
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
     let mut value=Borrow{sources:borrow.sources.clone(),..Borrow::default()};
     for(input,when)in borrow.inputs.entries(){if expand_loops{value.union(&state.loops[input].restricted(&when));}else{value.inputs.insert_when(*input,when.clone());}}
@@ -132,7 +155,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         let mut next=known.clone();
         for(name,function)in functions{
             let state=&known[name];let result=next.get_mut(name).unwrap();
-            for(input,definition)in &function.loops{result.loops.insert(*input,evaluate(definition,function,state,known,true));}
+            for input in state.loops.keys(){result.loops.insert(*input,evaluate(&function.loops[input],function,state,known,true));}
             let physical=function.outputs.iter().map(|(output,definition)|(*output,evaluate(definition,function,state,known,true))).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
@@ -157,9 +180,10 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
     }
 }
 pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>)->Result<BTreeMap<String,Interface>>{
+    let loops=used_loops(functions,&closed);
     let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
     for(name,function)in functions{known.insert(name.clone(),State{
-        loops:function.loops.keys().map(|input|(*input,Borrow::default())).collect(),
+        loops:loops[name].iter().map(|input|(*input,Borrow::default())).collect(),
         interface:Interface{outputs:function.outputs.keys().map(|output|(*output,Borrow::default())).collect(),access:BTreeSet::new()},
     });}
     converge(functions,&mut known,&BTreeSet::new());
