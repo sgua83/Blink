@@ -312,7 +312,7 @@ resize 消费普通 CPU 拥有 dataset 并交回实际存储版本，GPU 数据�
 
 ### view来源与最后消费者
 
-不可变 view 的机器布局为十六字节、对齐八。CPU的`view<T>(source,start,end)`从已有dataset或view借用半开元素区间，原条件关系证明start<=end<=length，允许空区间；create_application_view直接复用原offset_application_address按类型步幅执行64位偏移，长度为end-start。源码实参按原顺序求值一次，区间实参求值期间原借用保持；不复制载荷、不增加运行时范围判断、表示、所有者或ABI类别。编译期 Proof 记录原存储完整来源及成立条件；普通值、记录、数组、变体、函数返回和 write／inout 输出沿同一合同交接。数值事实失效不清空引用来源，循环和递归在公共合同形成前闭合局部关系，局部存储地址不得逃逸。
+不可变 view 的机器布局为十六字节、对齐八。CPU的`view<T>(source,start,end)`从已有dataset或view借用半开元素区间，原Proof上界／偏移与路径关系共同证明start<=end<=length，允许空区间；create_application_view直接复用原offset_application_address按类型步幅执行64位偏移，长度为end-start。源码实参按原顺序求值一次，区间实参求值期间原借用保持；不复制载荷、不增加运行时范围判断、表示、所有者或ABI类别。编译期 Proof 记录原存储完整来源及成立条件；普通值、记录、数组、变体、函数返回和 write／inout 输出沿同一合同交接。数值事实失效不清空引用来源，循环和递归在公共合同形成前闭合局部关系，局部存储地址不得逃逸。
 
 不可变view的for游标保留原引用及活动借用，行内容沿原OwnedBinding／Place／Position交接。view三分量语义来源、行、步长和字段偏移标识同一位置；固定字段、静态数组分量和嵌套view元数据的重复读取共享该行未知值身份，条件、bool、continue及普通函数消费同一事实。身份在游标建立时存在，实际CPU／GPU装载继续读取原地址；不同来源、行、字段和游标周期分别处理。一般动态分量重复选择另按实际能力缺口推进。
 

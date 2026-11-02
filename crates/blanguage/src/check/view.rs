@@ -379,7 +379,7 @@ impl Builder<'_> {
             for limit in [&start, &end] { self.require_same(&Ty::scalar(Scalar::U32), &limit.ty, span)?; }
             let length = Self::view_length(&value);
             for (a, b) in [(&start, &end), (&end, &length)] {
-                if bounds::Condition::comparison(Comparison::LessEqual, a, b).truth_in(&self.path) != Some(true) {
+                if !(a.proof.below_length(&a.component_origins(0), &bounds::Proof::capture(b), 0, false) || bounds::Condition::comparison(Comparison::LessEqual, a, b).truth_in(&self.path) == Some(true)) {
                     return self.fail(span, "B137", "view区间需要证明start<=end<=原长度");
                 }
             }

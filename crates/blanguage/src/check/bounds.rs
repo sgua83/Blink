@@ -819,20 +819,20 @@ impl Proof {
         self.domains = vec![domains];
         self
     }
-    fn below_length(&self, identities: &[ValueIdentity], length: &Self, component: usize) -> bool {
+    pub(super) fn below_length(&self, identities: &[ValueIdentity], length: &Self, component: usize, strict: bool) -> bool {
         let bounds = self.domains(0);
         let origins = length.origins.get(component).map(Vec::as_slice).unwrap_or_default();
         if length.domains(component).iter().any(|domain| {
             let IndexDomain::Offset(base, amount) = *domain else { return false; };
-            amount != 0 && identities.contains(&base) || bounds.iter().any(|bound| match *bound {
-                IndexDomain::Offset(source, offset) => source == base && offset < amount,
-                IndexDomain::Upper(limit, distance) => limit == base && (amount != 0 || distance != 0),
+            amount >= u32::from(strict) && identities.contains(&base) || bounds.iter().any(|bound| match *bound {
+                IndexDomain::Offset(source, offset) => source == base && if strict { offset < amount } else { offset <= amount },
+                IndexDomain::Upper(limit, distance) => limit == base && (!strict || amount != 0 || distance != 0),
                 _ => false,
             })
         }) { return true; }
         bounds.iter().any(|bound| match *bound {
-            IndexDomain::Upper(limit, distance) => distance != 0 && origins.contains(&limit),
-            IndexDomain::Shifted(base, limit, distance) if distance != 0 => length.domains(component).iter().any(|sum| {
+            IndexDomain::Upper(limit, distance) => distance >= u32::from(strict) && origins.contains(&limit),
+            IndexDomain::Shifted(base, limit, distance) if distance >= u32::from(strict) => length.domains(component).iter().any(|sum| {
                 matches!(*sum, IndexDomain::Sum(left, right) if (left == base && right == limit) || (left == limit && right == base))
             }),
             _ => false,
@@ -3279,7 +3279,7 @@ impl Builder<'_> {
         let valid = |value: &Value| {
             value.proof.domains(0).contains(&domain)
                 || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
-                || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component))
+                || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component, true))
         };
         if valid(value) { return true; }
         // 非固定范围消费同一条原路径；运算仍只求值一次，不新增运行时检查。
