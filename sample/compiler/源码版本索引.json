@@ -176,11 +176,11 @@
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.h",
-      "sha256": "5b2b7d95c570fe3706191dc8c776ee7ed47e40362958e0c14bcf00dfeb79dad2"
+      "sha256": "be49fa8f69fb039096dc270aa2b1c7cec675e73b7fe4cc09e3ea663621b33528"
     },
     {
       "path": "crates/blanguage/src/bootstrap/archive.b",
-      "sha256": "66f17659bb282b21aebba4807864757794e106a4ac243052acacdc9f1f5a2e20"
+      "sha256": "dcbd8881dda1166bbf1f43ae742ea171d961867bd1f6861222a5e3901716fbb1"
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",
