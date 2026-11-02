@@ -93,7 +93,7 @@ cd Blink
 cargo build --workspace --release
 ```
 
-源码构建先安装一份可独立取得的稳定Blink种子。原build.rs用该bc逐模块生成B词法、泛型前瞻、COFF对象写出及归档生成对象，再由同一次blink归档静态链接；Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
+源码构建先安装一份可独立取得的稳定Blink种子。原build.rs用该bc逐模块生成B词法、泛型前瞻、对象元数据、COFF对象写出及归档生成对象，再由同一次blink归档静态链接；Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
 
 先检查，再导出 CPU/GPU 代码：
 
@@ -889,9 +889,9 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 5.4 稳定种子怎样参与正式构建
 
-原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、COFF对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
+原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、对象元数据、COFF对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
 
-词法扫描、泛型尖括号前瞻、标准COFF对象字节写出及静态归档格式生成由B接管；对象元数据、符号绑定、归档输入I/O、对象解码、目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、对象元数据及栈字段写出、标准COFF对象字节写出及静态归档格式生成由B接管；对象语义／合同及栈记录生成、符号绑定、归档输入I/O、对象解码、目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -2426,6 +2426,42 @@ struct CoffInput {address sections;u64 section_count;address symbols;u64 symbol_
 struct CoffLayout {u64 length;u64 symbols;u64 strings;u64 symbol_count;u32 error;};
 extern "C" CoffLayout layout(CoffInput input) on cpu;
 extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu;
+```
+
+对象元数据外层由bootstrap/metadata.h／.b写出。Rust保持本次对象名／种类、参与要求、依赖库／导出、共同资源描述、函数合同及真实栈调用字段；必要C ABI只借出原字节和小型字段视图。B计算完整长度并直接填充同一个Rust Vec，不先在Rust拼好栈字节再复制。函数合同引用原载荷，冲突仍由语义所有者拒绝；资源描述内部继续复用共同codec，原Rust外层word／string生产退出。直接／尾调用、间接及未知调用的真实原因都进入同一元数据，栈报告语义没有迁移到字节写出器。对象格式身份沿coff.rs的FORMAT交接给B，读取使用同一值；软件VERSION不承担格式或ABI身份。
+
+源码节选：`crates/blanguage/src/bootstrap/metadata.h:1`。
+
+```b
+module bootstrap.metadata;
+// Windows x64 C ABI: borrowed fields and array strides.
+const u64 BYTES_BYTES=16u64;
+const u64 REQUIREMENT_BYTES=24u64;
+const u64 BINDING_BYTES=32u64;
+const u64 FRAME_BYTES=64u64;
+const u64 CALL_BYTES=32u64;
+struct MetadataBytes {address bytes;u64 length;};
+struct MetadataRequirement {MetadataBytes name;u64 kind;};
+struct MetadataBinding {MetadataBytes name;MetadataBytes value;};
+struct MetadataCall {u64 kind;u64 offset;MetadataBytes reason;};
+struct MetadataFrame {
+    MetadataBytes name;u64 has_coff;u64 section;u64 start;u64 local;
+    address calls;u64 call_count;
+};
+struct MetadataInput {
+    u64 format_version;MetadataBytes name;u64 kind;
+    MetadataBytes interface;u64 stack_bytes;
+    MetadataBytes prefix;MetadataBytes header;MetadataBytes binding;
+    address requirements;u64 requirement_count;
+    address libraries;u64 library_count;
+    address exports;u64 export_count;
+    MetadataBytes resource;
+    address bindings;u64 binding_count;
+    address frames;u64 frame_count;
+};
+struct MetadataLayout {u64 length;u32 error;};
+extern "C" MetadataLayout layout(MetadataInput input) on cpu;
+extern "C" void encode(MetadataInput input,address output) on cpu;
 ```
 
 COFF静态归档的格式由crates/blanguage/src/bootstrap/archive.h／.b生成，原static_library.rs负责输入I/O、COFF对象身份及唯一Vec输出存储。B布局阶段给出两个链接成员、长名称及对象成员的位置和总字节数，写出阶段直接消费这些位置并填同一输出；原对象字节保持。符号按UTF-8字节名称与原成员顺序排序，同名选择仍是原首成员；Rust借用视图只交接必要C ABI，不复制载荷或保留另一份目录权威。归档读取及按需抽取仍沿原Rust所有者，不能把格式写出等同整个链接器已经用B实现。

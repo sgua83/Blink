@@ -5,14 +5,7 @@ use std::io::{Cursor, Read};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
-fn word(b: &mut Vec<u8>, v: u32) {
-    b.extend(v.to_le_bytes());
-}
-fn string(b: &mut Vec<u8>, s: &str) -> Result<()> {
-    word(b, u32::try_from(s.len())?);
-    b.extend(s.as_bytes());
-    Ok(())
-}
+const FORMAT: u32 = 36;
 fn get16(b: &[u8], p: usize) -> Result<u16> {
     Ok(u16::from_le_bytes(slice(b, p, 2)?.try_into()?))
 }
@@ -91,68 +84,51 @@ unsafe extern "C" {
     fn coff_encode(input: CoffInput, layout: CoffLayout, output: *mut u8);
 }
 
-pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
-    encode_build(o, None)
+// Synchronous borrowed metadata views; the original Object owns every field.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetadataBytes { bytes: *const u8, length: usize }
+impl MetadataBytes {
+    fn new(bytes: &[u8]) -> Self { Self { bytes: bytes.as_ptr(), length: bytes.len() } }
 }
-pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 36);
-    string(&mut meta, &o.name)?;
-    match &o.kind {
-        Kind::Module {
-            interface,
-            requirements,
-            stack_bytes,
-        } => {
-            word(&mut meta, 2);
-            string(&mut meta, interface)?;
-            word(&mut meta, u32::try_from(requirements.len())?);
-            for (name, requirement) in requirements {
-                string(&mut meta, name)?;
-                word(
-                    &mut meta,
-                    match requirement {
-                        crate::execution::Requirement::Invocation => 0,
-                        crate::execution::Requirement::Domain => 1,
-                        crate::execution::Requirement::Host => 2,
-                    },
-                );
-            }
-            word(&mut meta, *stack_bytes);
-        }
-        Kind::Application { stack_bytes } => {
-            word(&mut meta, 0);
-            word(&mut meta, *stack_bytes);
-        }
-        Kind::Library {
-            prefix,
-            header,
-            binding,
-        } => {
-            word(&mut meta, 1);
-            string(&mut meta, prefix)?;
-            string(&mut meta, header)?;
-            string(&mut meta, binding)?;
-        }
-    }
-    word(
-        &mut meta,
-        u32::try_from(o.archive.as_ref().map_or(0, |a| a.libraries.len()))?,
-    );
-    if let Some(a) = &o.archive {
-        for l in &a.libraries {
-            string(&mut meta, l)?;
-        }
-    }
-    word(
-        &mut meta,
-        u32::try_from(o.archive.as_ref().map_or(0, |a| a.exports.len()))?,
-    );
-    if let Some(a) = &o.archive {
-        for e in &a.exports {
-            string(&mut meta, e)?;
-        }
-    }
+#[repr(C)]
+struct MetadataRequirement { name: MetadataBytes, kind: u64 }
+#[repr(C)]
+struct MetadataBinding { name: MetadataBytes, value: MetadataBytes }
+#[repr(C)]
+struct MetadataCall { kind: u64, offset: u64, reason: MetadataBytes }
+#[repr(C)]
+struct MetadataFrame {
+    name: MetadataBytes, has_coff: u64, section: u64, start: u64, local: u64,
+    calls: *const MetadataCall, call_count: usize,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetadataInput {
+    format_version: u64, name: MetadataBytes, kind: u64,
+    interface: MetadataBytes, stack_bytes: u64,
+    prefix: MetadataBytes, header: MetadataBytes, binding: MetadataBytes,
+    requirements: *const MetadataRequirement, requirement_count: usize,
+    libraries: *const MetadataBytes, library_count: usize,
+    exports: *const MetadataBytes, export_count: usize,
+    resource: MetadataBytes,
+    bindings: *const MetadataBinding, binding_count: usize,
+    frames: *const MetadataFrame, frame_count: usize,
+}
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum MetadataError { None, Count, Field, SectionSize }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MetadataLayout { length: usize, error: MetadataError }
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata::layout"]
+    fn metadata_layout(input: MetadataInput) -> MetadataLayout;
+    #[link_name = "bootstrap.metadata::encode"]
+    fn metadata_encode(input: MetadataInput, output: *mut u8);
+}
+
+fn metadata(o: &Object) -> Result<Vec<u8>> {
     use crate::module::codec::{Encode, Writer};
     let mut resource = Writer(Vec::new());
     if let Some(binding) = o.archive.as_ref().and_then(|a| a.resources.as_ref()) {
@@ -164,44 +140,96 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     } else {
         false.encode(&mut resource);
     }
-    word(&mut meta, u32::try_from(resource.0.len())?);
-    meta.extend(resource.0);
     let mut bindings = BTreeMap::new();
     for symbol in &o.symbols {
-        bindings.insert(symbol.name.clone(), symbol.contract.clone());
+        bindings.insert(symbol.name.as_str(), symbol.contract.as_slice());
     }
     for (name, contract) in &o.imports {
-        if let Some(expected) = bindings.insert(name.clone(), contract.clone())
-            && expected != *contract
+        if let Some(expected) = bindings.insert(name.as_str(), contract.as_slice())
+            && expected != contract.as_slice()
         {
             return Err(format!("对象内模块接口冲突 {name}").into());
         }
     }
-    word(&mut meta, u32::try_from(bindings.len())?);
-    for (name, contract) in &bindings {
-        string(&mut meta, name)?;
-        word(&mut meta, u32::try_from(contract.len())?);
-        meta.extend(contract);
-    }
-    word(&mut meta, u32::try_from(o.stack.len())?);
-    for frame in &o.stack {
-        string(&mut meta, &frame.name)?;
-        match frame.coff {
-            None => word(&mut meta, 0),
-            Some((section, start)) => {
-                word(&mut meta, 1); word(&mut meta, u32::try_from(section)?); word(&mut meta, start);
-            }
+    let bindings = bindings.iter().map(|(name, value)| MetadataBinding {
+        name: MetadataBytes::new(name.as_bytes()), value: MetadataBytes::new(value),
+    }).collect::<Vec<_>>();
+    let libraries = o.archive.iter().flat_map(|a| &a.libraries)
+        .map(|name| MetadataBytes::new(name.as_bytes())).collect::<Vec<_>>();
+    let exports = o.archive.iter().flat_map(|a| &a.exports)
+        .map(|name| MetadataBytes::new(name.as_bytes())).collect::<Vec<_>>();
+    let requirements = if let Kind::Module { requirements, .. } = &o.kind {
+        requirements.iter().map(|(name, requirement)| MetadataRequirement {
+            name: MetadataBytes::new(name.as_bytes()),
+            kind: match requirement {
+                crate::execution::Requirement::Invocation => 0,
+                crate::execution::Requirement::Domain => 1,
+                crate::execution::Requirement::Host => 2,
+            },
+        }).collect::<Vec<_>>()
+    } else { Vec::new() };
+    let empty = MetadataBytes::new(&[]);
+    let calls = o.stack.iter().map(|frame| frame.calls.iter().map(|call| {
+        let (kind, offset, reason) = match call {
+            stack::Call::Reference { offset, tail } => (u64::from(*tail), *offset as u64, empty),
+            stack::Call::Indirect => (2, 0, empty),
+            stack::Call::Unreported(reason) => (3, 0, MetadataBytes::new(reason.as_bytes())),
+        };
+        MetadataCall { kind, offset, reason }
+    }).collect::<Vec<_>>()).collect::<Vec<_>>();
+    let frames = o.stack.iter().zip(&calls).map(|(frame, calls)| {
+        let (has_coff, section, start) = match frame.coff {
+            Some((section, start)) => (1, section as u64, u64::from(start)),
+            None => (0, 0, 0),
+        };
+        MetadataFrame {
+            name: MetadataBytes::new(frame.name.as_bytes()), has_coff, section, start,
+            local: u64::from(frame.local), calls: calls.as_ptr(), call_count: calls.len(),
         }
-        word(&mut meta, frame.local);
-        word(&mut meta, u32::try_from(frame.calls.len())?);
-        for call in &frame.calls {
-            match call {
-                stack::Call::Reference { offset, tail } => { word(&mut meta, u32::from(*tail)); word(&mut meta, u32::try_from(*offset)?); }
-                stack::Call::Indirect => word(&mut meta, 2),
-                stack::Call::Unreported(reason) => { word(&mut meta, 3); string(&mut meta, reason)?; }
-            }
+    }).collect::<Vec<_>>();
+    let mut input = MetadataInput {
+        format_version: u64::from(FORMAT), name: MetadataBytes::new(o.name.as_bytes()), kind: 0,
+        interface: empty, stack_bytes: 0, prefix: empty, header: empty, binding: empty,
+        requirements: requirements.as_ptr(), requirement_count: requirements.len(),
+        libraries: libraries.as_ptr(), library_count: libraries.len(),
+        exports: exports.as_ptr(), export_count: exports.len(), resource: MetadataBytes::new(&resource.0),
+        bindings: bindings.as_ptr(), binding_count: bindings.len(),
+        frames: frames.as_ptr(), frame_count: frames.len(),
+    };
+    match &o.kind {
+        Kind::Application { stack_bytes } => input.stack_bytes = u64::from(*stack_bytes),
+        Kind::Library { prefix, header, binding } => {
+            input.kind = 1;
+            input.prefix = MetadataBytes::new(prefix.as_bytes());
+            input.header = MetadataBytes::new(header.as_bytes());
+            input.binding = MetadataBytes::new(binding.as_bytes());
+        }
+        Kind::Module { interface, stack_bytes, .. } => {
+            input.kind = 2;
+            input.interface = MetadataBytes::new(interface.as_bytes());
+            input.stack_bytes = u64::from(*stack_bytes);
         }
     }
+    let layout = unsafe { metadata_layout(input) };
+    match layout.error {
+        MetadataError::None => (),
+        MetadataError::Count => return Err("对象元数据条目数量超过32位字段".into()),
+        MetadataError::Field => return Err("对象元数据字段超过32位编码".into()),
+        MetadataError::SectionSize => return Err("COFF元数据节超过32位长度字段".into()),
+    }
+    let mut output = Vec::with_capacity(layout.length);
+    unsafe {
+        metadata_encode(input, output.as_mut_ptr());
+        output.set_len(layout.length);
+    }
+    Ok(output)
+}
+
+pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
+    encode_build(o, None)
+}
+pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
+    let meta = metadata(o)?;
     let mut sections: Vec<(&str, &[u8], u32, &[Relocation])> = o
         .sections
         .iter()
@@ -444,7 +472,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 36 {
+    if tag != *b"BLCO" || read_word(&mut c)? != FORMAT {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;
