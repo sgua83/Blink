@@ -84,7 +84,7 @@ pub(crate) fn member_type(ty: &Ty, field: &str, source: &crate::Source, span: Sp
             .collect();
         return Ok(((**sub).clone(), indices));
     }
-    if !ty.is_handle() && !ty.is_execution_context() && ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
+    if !ty.is_handle() && ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
     {
         let mut indices = Vec::new();
         for c in field.chars() {
@@ -1521,9 +1521,6 @@ fn function_parameters(
         if b.application.is_some() {
             inputs.extend(&regs);
             parameters.push(CallParameter::Value(ty.clone()));
-            if parameter_index == 0 && d.function.c_abi && ty.is_execution_context() {
-                b.application.as_mut().unwrap().frame = Some(regs.clone());
-            }
         }
         if ty.owns_resources() {
             let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));
@@ -2682,12 +2679,6 @@ impl<'a> Builder<'a> {
     }
     fn builtin_call(&mut self, name: &str, args: &[Expr], span: Span) -> Result<Option<Value>> {
         if name == "c_function" { return self.c_function_value(args, span).map(Some); }
-        if name == "current_context" {
-            if !args.is_empty() { return self.fail(span, "B153", "current_context不接受实参"); }
-            let mut frame = self.application_frame(span)?;
-            frame.ty = Ty::builtin("execution_context").unwrap();
-            return Ok(Some(frame));
-        }
         if matches!(name, "Ok" | "Err") {
             return self.fail(
                 span,
@@ -3547,15 +3538,6 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn value_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
-        if ty.is_execution_context() {
-            if values.len() == 1 && values[0].ty == ty {
-                let mut value = values.pop().unwrap(); value.literal = false; return Ok(value);
-            }
-            return self.fail(span, "B154", "execution_context只复制同型上下文；实际上下文由current_context取得并由原所有者保持");
-        }
-        if values.iter().any(|value| value.ty.is_execution_context()) {
-            return self.fail(span, "B154", "执行上下文不能转换为数值、地址或其他身份");
-        }
         if ty.is_c_function() {
             if values.is_empty() { return Ok(self.constant_value(ty, vec![0])); }
             if values.len() == 1 && values[0].ty == ty {

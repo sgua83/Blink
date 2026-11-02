@@ -153,7 +153,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 独立应用由 Windows 按实际导入装载库；原生 CpuProgram 用 LoadLibraryW／GetProcAddress 解析，原生代码所有者持有模块到最后一个消费者释放。装载／符号错误保留原生错误，不替换库或实现。外部调用的副作用不因返回值未使用而删除；parallel 实例的调用顺序不作保证。生成的 B 算法 DLL 也可在 CPU 后端调用其依赖库，GPU 后端明确拒绝宿主调用。
 
-外部声明接收无泛型的on cpu普通函数和支持的普通值／void／never返回；requires nonzero可声明按值输入或字段的非零前提，ensures initialized可声明准确条件输出；其他requires／ensures仍未开放。dataset、tile、view、纹理、AS及拥有资源值不能跨普通C ABI；其合法CPU普通元素仍可借用。address值与指针宽整数按语言规范交接；外部地址位置读写与调用借用见原生地址章节；B自有位置取址及普通B／模块的来源交接见原生地址章节；显式执行上下文的回调见下节；完整可保留寿命协议、变参、静态对象链接及其他平台仍待实现。B应用的动态dataset和CPU／GPU组织已按规范支持，原生Rust计算API继续保留。
+外部声明接收无泛型的on cpu普通函数和支持的普通值／void／never返回；requires nonzero可声明按值输入或字段的非零前提，ensures initialized可声明准确条件输出；其他requires／ensures仍未开放。dataset、tile、view、纹理、AS及拥有资源值不能跨普通C ABI；其合法CPU普通元素仍可借用。address值与指针宽整数按语言规范交接；外部地址位置读写与调用借用见原生地址章节；B自有位置取址及普通B／模块的来源交接见原生地址章节；无需Frame的B C回调见下节；资源型回调、完整可保留寿命协议、变参、静态对象链接及其他平台仍待实现。B应用的动态dataset和CPU／GPU组织已按规范支持，原生Rust计算API继续保留。
 
 参考：[Microsoft DLL 使用指南](https://learn.microsoft.com/en-us/cpp/build/walkthrough-creating-and-using-a-dynamic-link-library-cpp)、[Rust extern 块](https://doc.rust-lang.org/reference/items/external-blocks.html)、[Rust 链接规则](https://doc.rust-lang.org/reference/linkage.html)。
 
@@ -161,7 +161,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 不带from的extern "C"声明由B正文实现；c_function(Name)或c_function(Name<T,...,N>)从实际具体实例取得匹配的非零cfn，类型／u32 const按既有静态引用与实例规则绑定，泛型定义不等于C ABI含未定类型。独立模块／archive只交付已明确导出的实例，取址不在链接期展开模板；源文件及模块接口保留同一C标记与输入／输出合同；非零输入前提进入完整cfn签名并在间接调用点由实际实参证明，C／Rust调用者按真实外部接口履行前提，具体写法见[语言规范](BLanguage.md#b定义的原生c入口)。Windows x64的标量、栈参数、普通聚合返回及连续位置参数沿原C ABI交接，bool仍为4字节。符号地址来自原已编译B函数，不经Rust逐次转发，也不将普通B向量的分量指针当成C连续指针。
 
-这类C入口没有隐藏Frame。需要B资源或CPU／GPU执行的入口，将首个源形参声明为按值execution_context，直接使用调用者提供的同一Frame；current_context()在CPU应用或该入口中取得实际上下文。execution_context是8字节、8对齐的不透明借用值，C／Rust按void *／*mut c_void表示，不能由B的数值、handle、address或空构造取得。普通B辅助函数继续沿原ABI继承实际Frame；没有正确显式上下文而实际闭包需要Frame仍报B263。Windows固定回调签名可通过其真实用户状态交接该值，再由无资源的B C入口调用显式上下文资源函数，不使用全局Frame或宿主转发。外部调用者保持兼容的原Frame、代码和资源到最后消费者，遵守同一Frame访问顺序，不并发重入可变资源操作；复制值不增加保留权或关闭责任。bc生成代码与地址重定位，blink只消费COFF／archive；原公开合同和非零关系交给调用者，链接不重读实现。
+这类C入口没有隐藏Frame，其真实调用闭包必须无需Frame。普通B内部调用继续使用原Frame参数，C入口若直接或经辅助函数分配B资源、执行CPU／GPU程序，沿原需求闭包报B263；源语言不公开Frame身份或取得当前Frame的入口，也不按某个普通参数猜测活动运行库。根运行库与B模块资源C ABI仍通过其实际不透明Frame指针交接，但这不成为普通C函数可自行取得的权限。bc生成代码与地址重定位，blink只消费COFF／archive；原公开合同和非零关系交给调用者，链接不重读实现。需要Frame的资源型回调仍待真实代码／状态／访问／最后消费者关系设计，不另建Frame或增加宿主资源转发。
 
 注册到Windows或其他库的函数地址及状态，必须由真实注册方保持至注销及最后一次回调完成。当前直接入口不提供动态代码／上下文保留协议或模块热卸载保证，也不表示BLEngine窗口与消息业务已迁移。平台合同见[WNDPROC](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc)与[RegisterClassW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerclassw)。
 

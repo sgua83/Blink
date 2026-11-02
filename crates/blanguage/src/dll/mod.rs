@@ -60,7 +60,7 @@ enum FieldType {
     Handle,
 }
 fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, FieldType, u32)>) -> Result<()> {
-    if ty.is_handle() || ty.is_execution_context() {
+    if ty.is_handle() {
         out.push((name.into(), FieldType::Handle, base));
     } else if !ty.fields.is_empty() {
         for (n, offset, t) in &ty.fields {
@@ -100,7 +100,7 @@ fn fields(ty: &Ty, name: &str, base: u32, out: &mut Vec<(String, FieldType, u32)
     Ok(())
 }
 fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
-    if ty.is_handle() || ty.is_execution_context() {
+    if ty.is_handle() {
         writeln!(c, "typedef void *{name};")?;
         writeln!(r, "pub type {name} = *mut core::ffi::c_void;")?;
         return Ok(());

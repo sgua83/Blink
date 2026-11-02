@@ -90,12 +90,6 @@ struct Unit {
     span: Span,
     view_model: view_contracts::Function,
 }
-impl Unit {
-    fn explicit_context(&self) -> bool {
-        self.c_abi && matches!(self.contract.parameters.get(1),
-            Some(CallParameter::Value(ty)) if ty.is_execution_context())
-    }
-}
 fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
@@ -888,7 +882,6 @@ fn finalize(
     loop {
         let mut next = frame.clone();
         for (name, unit) in &mut units {
-            if unit.explicit_context() { continue; }
             if let Some(function) = &mut unit.function {
                 calls(&mut function.body.code, &mut |call| {
                     if matches!(&call.target, CallTarget::Defined(callee) if frame.contains(callee)) {

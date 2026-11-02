@@ -559,7 +559,7 @@ pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worke
 pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
     source: &Source, span: Span) -> Result<(Ty, Binary)> {
     if a.is_c_function() || b.is_c_function() || a.is_address() || b.is_address()
-        || a.is_handle() || b.is_handle() || a.is_execution_context() || b.is_execution_context() {
+        || a.is_handle() || b.is_handle() {
         same(a, b, source, span)?;
         if !matches!(op, "==" | "!=") {
             let message = if a.is_c_function() {
@@ -570,7 +570,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
             return source.fail(span, "B147", message);
         }
         return Ok((Ty::scalar(Scalar::Bool),
-            if a.is_handle() || a.is_execution_context() { Binary::Handle } else { Binary::Identity }));
+            if a.is_handle() { Binary::Handle } else { Binary::Identity }));
     }
     if a.has_variants() || b.has_variants() {
         return source.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
@@ -1135,7 +1135,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3803`。
+源码节选：`crates/blanguage/src/check.rs:3785`。
 
 ```rust
         let binding = view.binding;
@@ -1316,7 +1316,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:929`。
+源码节选：`crates/blanguage/src/ir.rs:925`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1328,7 +1328,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:950`。
+源码节选：`crates/blanguage/src/ir.rs:946`。
 
 ```rust
     Load {
@@ -1360,7 +1360,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1145`。
+源码节选：`crates/blanguage/src/ir.rs:1141`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1521,7 +1521,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:993`。
+源码节选：`crates/blanguage/src/ir.rs:989`。
 
 ```rust
     If {
@@ -2654,7 +2654,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
 }
 ```
 
-函数地址不执行代码，也不持有模块／状态的所有权。execution_context是借用原Frame的不透明指针身份，CPU主流程通过current_context()取得；C入口首个按值execution_context形参绑定原application.frame，普通B辅助函数继承这个实际上下文。finalize只传播真正隐式需要的Frame，显式C入口保留原C参数而不生成隐藏参数或转发器；上下文类型及普通模块合同继续沿原Ty和参数编码交接。资源型回调内可创建B资源并沿原Frame执行CPU／GPU工作，资源仍由最后真实消费者释放。真正注册方保持匹配资源ABI的Frame、代码与状态，遵守原访问和顺序，直到注销及最后回调完成；复制execution_context不延长寿命，不允许并发重入Frame可变操作。完整可保留关系及动态热卸载仍有独立缺口，不能由静态B窗口过程推出全部寿命能力。
+函数地址不执行代码，也不持有模块／状态的所有权。普通B函数通过原内部参数使用同一Frame，finalize从真实操作数及普通调用传播Frame需求，删除无需的内部首参。C入口必须在整个实际调用闭包中无需Frame，直接或间接分配B资源、发起CPU／GPU程序仍报B263；普通参数不能自动成为活动Frame。源语言不公开Frame身份值，也没有取得当前Frame的内建入口，根运行库资源C ABI和内部调用则保持原职责。代码、外部状态和真实资源继续由其所有者保持至注销及最后一次回调，签名和非零检查不证明这些寿命。资源型可保留回调及动态热卸载仍有独立缺口，不能由无Frame的静态C入口推出全部能力，也不为此增加第二个Frame、运行时登记或宿主转发。
 
 **自己走一遍。** 为什么生成头文件比手写一个“看起来一样”的结构更可靠？它取自同一编译布局，避免 bool 宽度、向量对齐和字段偏移在两个工程里各自猜测。
 

@@ -48,7 +48,7 @@ pub(super) enum Binary {
 pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
     source: &Source, span: Span) -> Result<(Ty, Binary)> {
     if a.is_c_function() || b.is_c_function() || a.is_address() || b.is_address()
-        || a.is_handle() || b.is_handle() || a.is_execution_context() || b.is_execution_context() {
+        || a.is_handle() || b.is_handle() {
         same(a, b, source, span)?;
         if !matches!(op, "==" | "!=") {
             let message = if a.is_c_function() {
@@ -59,7 +59,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
             return source.fail(span, "B147", message);
         }
         return Ok((Ty::scalar(Scalar::Bool),
-            if a.is_handle() || a.is_execution_context() { Binary::Handle } else { Binary::Identity }));
+            if a.is_handle() { Binary::Handle } else { Binary::Identity }));
     }
     if a.has_variants() || b.has_variants() {
         return source.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
@@ -98,7 +98,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 }
 pub(super) fn unary(op: &str, ty: &Ty, source: &Source, span: Span) -> Result<Option<UnaryOp>> {
     if op == "+" {
-        if ty.components.is_empty() || ty.is_c_function() || ty.is_handle() || ty.is_execution_context() || ty.is_address() || ty.array.is_some()
+        if ty.components.is_empty() || ty.is_c_function() || ty.is_handle() || ty.is_address() || ty.array.is_some()
             || ty.enumeration || ty.has_variants() {
             return source.fail(span, "B146", "数值一元运算需要数值类型");
         }
