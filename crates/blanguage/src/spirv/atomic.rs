@@ -21,6 +21,8 @@ impl Emitter<'_> {
                 };
                 (at, 1, 0x40)
             }
+            IndexedSource::Tile { .. } if atomic.scalar.size() == 8 =>
+                return Err("64位GPU tile原子尚未实现"),
             IndexedSource::Tile { tile, index } => (
                 self.tile_word_address(
                     self.stage.shared_word(tile, atomic.word),

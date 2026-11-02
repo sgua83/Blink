@@ -64,9 +64,6 @@ impl Builder<'_> {
             }
             _ => unreachable!(),
         };
-        if scalar.size() == 8 && matches!(location, Some((IndexedSource::Tile { .. }, ..))) {
-            return self.fail(target.span, "B215", "64位tile原子尚未实现");
-        }
         Ok(Some((location, scalar)))
     }
     fn atomic_order(&self, expr: &Expr) -> Result<MemoryOrder> {

@@ -1521,11 +1521,11 @@ impl Stage {
                 match inst {
                     Inst::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
-                        word,
+                        word, scalar,
                         offset: None,
                         ..
                     }) => {
-                        words.insert(stage.shared_word(*tile, *word));
+                        words.extend((0..scalar.size().div_ceil(4)).map(|part| stage.shared_word(*tile, *word + part * 4)));
                     }
                     Inst::LoadIndexed {
                         source: IndexedSource::Tile { tile, .. },

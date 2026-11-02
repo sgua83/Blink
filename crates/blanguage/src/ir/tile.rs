@@ -157,11 +157,13 @@ impl Stage {
                 match inst {
                     Inst::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
-                        word,
+                        word, scalar,
                         offset: None,
                         ..
                     }) => {
-                        last.insert(stage.shared_word(*tile, *word).aligned(), phase);
+                        for part in 0..scalar.size().div_ceil(4) {
+                            last.insert(stage.shared_word(*tile, *word + part * 4).aligned(), phase);
+                        }
                     }
                     Inst::LoadIndexed {
                         source: IndexedSource::Tile { tile, .. },

@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "a9bed291167209fed3ad0985dcb897c139a110d2c78ec670ba34ea899c45216c"
+      "sha256": "e89c7711d5adeda6102b903fd785063bfe6c957573ce825c0969dd4fa886e4e5"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
