@@ -201,7 +201,7 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
 }
 fn canonical(borrow:Borrow,function:&Function,resource:Option<ValueIdentity>,exposed:&BTreeMap<ValueIdentity,Borrow>)->Borrow {
     let parameters=function.parameters.iter().map(|(a,b)|(*a,bounds::Proof::default().with_identity(*b))).collect();
-    borrow.map_sources(|source|match source {
+    let renamed=|source|match source {
         Origin::Data(id)=>{
             let input=function.parameters.get(&id).copied().filter(|id|function.input(*id));
             if let Some(input)=input{Borrow::source(Origin::Data(input))}
@@ -216,7 +216,13 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<ValueIdentity>,exp
             Borrow::source(Origin::Position(Arc::new(value)))
         }
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
-    }).guards_at_call(&parameters)
+    };
+    match resource {
+        // 拥有输出的来源改名不附加条件，先投影正式输入关系。
+        Some(_)=>borrow.guards_at_call(&parameters).map_sources(renamed),
+        // 借用输出需先合成实际拥有者条件，保留来源相关性。
+        None=>borrow.map_sources(renamed).guards_at_call(&parameters),
+    }
 }
 
 fn resolved_position(position:&Position,path:&bounds::Clause,map:&impl Fn(&Borrow)->Borrow)->Position {

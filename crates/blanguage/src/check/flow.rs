@@ -143,11 +143,23 @@ impl Builder<'_> {
             }
         }
         // 直接自身边不向循环来源的最小不动点贡献新来源。
-        for (index,mut definition)in definitions.into_iter().enumerate(){let input=LoopInput{level:scope,index};definition.inputs.remove(&input);self.view_model.loops.insert(input,definition);}
-        // 每个出口保留自己实际交还的资源，再用同一入口关系消去局部循环引用。
+        let mut unchanged=vec![false;initial.len()];
+        for (index,mut definition)in definitions.into_iter().enumerate(){
+            let input=LoopInput{level:scope,index};definition.inputs.remove(&input);
+            unchanged[index]=matches!(&context.view_inputs[index],InputSlot::Data{..})&&definition==initial[index];
+            self.view_model.loops.insert(input,definition);
+        }
+        // 来源定义未改变的资源直接交接初始来源；存储版本变化仍保留原循环关系。
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
             for binding in environment.values_mut() {
-                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,data_value(data))).collect::<BTreeMap<_,_>>();
+                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|{
+                    let mut borrow=data_value(data);let inputs=std::mem::take(&mut borrow.inputs);
+                    for(input,when)in inputs.into_entries(){
+                        if input.level==scope&&unchanged[input.index]{borrow.union(&initial[input.index].restricted(&when));}
+                        else{borrow.inputs.insert_when(input,when);}
+                    }
+                    (path,borrow)
+                }).collect::<BTreeMap<_,_>>();
                 match binding {
                     Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}}
                     Binding::OwnedValue(value)=>{
