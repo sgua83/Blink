@@ -164,11 +164,11 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "sha256": "b744dc8087d2d5545d4e68bacdc23d19dae95c63b495753a509a7702a406f2ad"
+      "sha256": "db16e6f3e041cebc0e4c583233bccda2504a4285c2af37dd6ae77126d46d1228"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
-      "sha256": "d856dc37299514f0d5f3da682af2469f0b777d81a04a0685899a1ef76799403d"
+      "sha256": "61a009a890376d25942261dbb8c98a40a8863821a8fb590e9da64fc09de978b5"
     },
     {
       "path": "crates/blcompute/src/lib.rs",

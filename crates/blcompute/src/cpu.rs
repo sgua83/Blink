@@ -436,12 +436,13 @@ impl CpuTemplate {
     }
     pub(crate) fn run_projected(
         &self,
-        bindings: DomainBindings<CpuDataset>,
+        bindings: &mut DomainBindings<CpuDataset>,
         order: &[(usize, u32)],
         values: &[Value],
-    ) -> Result<DomainBindings<CpuDataset>> {
+        writing: impl FnOnce(),
+    ) -> Result<()> {
         self.code
-            .run_owned_mapped(bindings, &[], values, order.len(), |i| order[i])
+            .run_mapped(bindings, &[], values, order.len(), |i| order[i], writing)
     }
 }
 #[derive(Clone, Copy)]
@@ -544,21 +545,23 @@ impl CpuCode {
     }
     fn run_owned(
         &self,
-        bindings: DomainBindings<CpuDataset>,
+        mut bindings: DomainBindings<CpuDataset>,
         textures: &[crate::Texture2D],
         values: &[Value],
     ) -> Result<DomainBindings<CpuDataset>> {
         let count = bindings.datasets.len();
-        self.run_owned_mapped(bindings, textures, values, count, |i| (i, 0))
+        self.run_mapped(&mut bindings, textures, values, count, |i| (i, 0), || {})?;
+        Ok(bindings)
     }
-    fn run_owned_mapped(
+    fn run_mapped(
         &self,
-        mut bindings: DomainBindings<CpuDataset>,
+        bindings: &mut DomainBindings<CpuDataset>,
         textures: &[crate::Texture2D],
         values: &[Value],
         count: usize,
         physical: impl Fn(usize) -> (usize, u32) + Copy,
-    ) -> Result<DomainBindings<CpuDataset>> {
+        writing: impl FnOnce(),
+    ) -> Result<()> {
         bindings.require(&self.program, physical)?;
         for (data, binding) in (0..count)
             .map(|i| &bindings.datasets[physical(i).0])
@@ -584,9 +587,12 @@ impl CpuCode {
                 .ok_or_else(|| error("设备调用的数据集数量不匹配"))?;
             buffers[physical].projected(expected, offset)
         }).collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&arguments, textures, values)?;
-        bindings.completed(&self.program, physical);
-        Ok(bindings)
+        self.run_buffers(&arguments, textures, values, || {
+            crate::bindings::invalidate(&mut bindings.domains, &self.program, physical);
+            writing();
+        })?;
+        bindings.produced(&self.program, physical);
+        Ok(())
     }
     fn run(
         &self,
@@ -598,13 +604,14 @@ impl CpuCode {
             .iter_mut()
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, values)
+        self.run_buffers(&buffers, textures, values, || {})
     }
     fn run_buffers(
         &self,
         buffers: &[CpuBuffer<'_>],
         textures: &[crate::Texture2D],
         values: &[Value],
+        writing: impl FnOnce(),
     ) -> Result<()> {
         if textures.len() != self.program.texture_count() {
             return Err(error("纹理绑定数量与程序接口不一致"));
@@ -620,6 +627,9 @@ impl CpuCode {
             .map(|d| BufferAddress { address: d.pointer, stride: d.stride as usize })
             .chain(texture_descriptors.pointers().map(|address| BufferAddress { address, stride: 0 }))
             .collect();
+        // 原参数及投影已接受；取得可写访问时撤回旧计数关系。
+        // 后续失败可能已有写入，不将未完成调用发布为完整保证。
+        writing();
         for (stage, code) in self.program.stages().iter().zip(&self.stages) {
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {

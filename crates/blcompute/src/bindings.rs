@@ -238,18 +238,14 @@ impl<D> DomainBindings<D> {
         program: &dyn ProgramInterface,
         binding: impl Fn(usize) -> (usize, u32),
     ) {
-        self.domains.retain(|r| {
-            !program
-                .buffers()
-                .iter()
-                .enumerate()
-                .any(|(i, b)| {
-                    let (physical, offset) = binding(i);
-                    physical == r.count.binding && b.access.writes()
-                        && u64::from(r.count.word) >= u64::from(offset)
-                        && u64::from(r.count.word) < u64::from(offset) + u64::from(b.ty.size)
-                })
-        });
+        invalidate(&mut self.domains, program, &binding);
+        self.produced(program, binding);
+    }
+    pub(crate) fn produced(
+        &mut self,
+        program: &dyn ProgramInterface,
+        binding: impl Fn(usize) -> (usize, u32),
+    ) {
         self.domains
             .extend(program.prefix_guarantees().iter().map(|r| DomainRelation {
                 domain: binding(r.domain).0,
@@ -263,4 +259,23 @@ impl<D> DomainBindings<D> {
         self.domains.sort();
         self.domains.dedup();
     }
+}
+
+pub(crate) fn invalidate(
+    domains: &mut Vec<DomainRelation>,
+    program: &dyn ProgramInterface,
+    binding: impl Fn(usize) -> (usize, u32),
+) {
+    domains.retain(|r| {
+        !program
+            .buffers()
+            .iter()
+            .enumerate()
+            .any(|(i, b)| {
+                let (physical, offset) = binding(i);
+                physical == r.count.binding && b.access.writes()
+                    && u64::from(r.count.word) >= u64::from(offset)
+                    && u64::from(r.count.word) < u64::from(offset) + u64::from(b.ty.size)
+            })
+    });
 }

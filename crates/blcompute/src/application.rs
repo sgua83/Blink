@@ -221,7 +221,9 @@ impl Frame {
         Ok(address)
     }
     /// 同一帧只移动本次实际参数；没有被绑定的存储及其有效域继续由帧持有。
-    /// CPU 直接消费原存储；GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
+    /// CPU 直接消费原存储，错误与成功均交回原输入及程序；参数拒绝保持原域，
+    /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。
+    /// GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value]) -> Result<()> {
         let index = program as usize;
         let layout = self.programs[index].as_ref().unwrap().layout();
@@ -269,7 +271,7 @@ impl Frame {
             .collect();
         let loaded = self.load(index)?;
         let layout = loaded.layout();
-        let (datasets, domains) = match &loaded {
+        let (datasets, domains, result) = match &loaded {
             Program::Cpu(program) => {
                 let mut datasets = Vec::new();
                 for &handle in &selected {
@@ -285,15 +287,19 @@ impl Frame {
                         }
                     }
                 }
-                let result =
-                    program.run_projected(DomainBindings { datasets, domains }, &order, values)?;
+                let mut inputs = DomainBindings { datasets, domains };
+                let result = program.run_projected(&mut inputs, &order, values, || {
+                    crate::bindings::invalidate(&mut self.data.domains, layout,
+                        |i| (bindings[i].handle as usize, bindings[i].offset));
+                });
                 (
-                    result
+                    inputs
                         .datasets
                         .into_iter()
                         .map(ResidentData::Cpu)
                         .collect::<Vec<_>>(),
-                    result.domains,
+                    inputs.domains,
+                    result,
                 )
             }
             Program::Gpu(gpu_program) => {
@@ -315,6 +321,8 @@ impl Frame {
                     .submit_projected(DomainBindings { datasets, domains }, &order, values)?
                     .wait()?
                     .into_bindings();
+                crate::bindings::invalidate(&mut self.data.domains, layout,
+                    |i| (bindings[i].handle as usize, bindings[i].offset));
                 (
                     result
                         .datasets
@@ -322,22 +330,13 @@ impl Frame {
                         .map(ResidentData::Gpu)
                         .collect::<Vec<_>>(),
                     result.domains,
+                    Ok(()),
                 )
             }
         };
         for (&handle, data) in selected.iter().zip(datasets) {
             self.data.datasets[handle as usize] = Some(data);
         }
-        self.data.domains.retain(|r| {
-            !bindings
-                .iter()
-                .zip(layout.buffers())
-                .any(|(binding, b)| {
-                    binding.handle as usize == r.count.binding && b.access.writes()
-                        && u64::from(r.count.word) >= u64::from(binding.offset)
-                        && u64::from(r.count.word) < u64::from(binding.offset) + u64::from(b.ty.size)
-                })
-        });
         self.data
             .domains
             .extend(domains.into_iter().map(|r| DomainRelation {
@@ -352,6 +351,6 @@ impl Frame {
         self.data.domains.sort();
         self.data.domains.dedup();
         self.programs[index] = Some(ProgramSlot::Loaded(loaded));
-        Ok(())
+        result
     }
 }
