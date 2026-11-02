@@ -2,82 +2,6 @@
 use super::*;
 use std::ops::Deref;
 
-#[derive(Clone, Copy, Debug)]
-pub enum RangeResult {
-    None,
-    Values(usize),
-    UnsignedSum,
-}
-impl RangeResult {
-    pub fn words(self) -> usize {
-        match self {
-            Self::None => 0,
-            Self::Values(n) => n,
-            Self::UnsignedSum => 1,
-        }
-    }
-}
-#[derive(Clone, Debug)]
-pub enum ContinuationCode {
-    ReductionTail(NativeCode),
-    ScanAdd(NativeCode),
-    CompactScatter(NativeCode),
-    SegmentedFinish(NativeCode),
-    Scan {
-        prefix: NativeCode,
-        apply: NativeCode,
-        source: usize,
-        target: usize,
-    },
-}
-#[derive(Clone, Debug)]
-pub struct SortCode {
-    pub source: usize,
-    pub target: usize,
-    pub initialize: Vec<NativeCode>,
-    pub histogram: NativeCode,
-    pub scatter: NativeCode,
-    pub gather: NativeCode,
-}
-#[derive(Clone, Debug)]
-pub enum StageCode {
-    Element {
-        main: NativeCode,
-        continuation: Option<ContinuationCode>,
-        result: RangeResult,
-    },
-    Sort(SortCode),
-}
-#[derive(Clone, Debug)]
-pub struct ProgramImage<P> {
-    program: ExecutionPlan,
-    marker: std::marker::PhantomData<fn() -> P>,
-    stages: Vec<StageCode>,
-}
-impl<P> ProgramImage<P> {
-    /// 恢复本版本编译器输出的原生代码与执行布局。
-    ///
-    /// # Safety
-    /// 必须来自本版本编译器的同一个 P 入口，包含完整未修改的机器码、重定位、
-    /// 入口 ABI、调度及前缀关系；不得由宿主输入构造或伪造条件模板的证明。
-    #[doc(hidden)]
-    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode>) -> Self {
-        Self {
-            program,
-            stages,
-            marker: std::marker::PhantomData,
-        }
-    }
-    pub fn program(&self) -> &ExecutionPlan {
-        &self.program
-    }
-    pub fn stages(&self) -> &[StageCode] {
-        &self.stages
-    }
-    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode>) {
-        (self.program, self.stages)
-    }
-}
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.native(program)
 }
@@ -92,10 +16,7 @@ pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
 ) -> Result<ProgramImage<P>, String> {
     let stages = compile_stages(worker, &program)?;
-    Ok(ProgramImage {
-        program: ExecutionPlan::from_program(&program), stages,
-        marker: std::marker::PhantomData,
-    })
+    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages) })
 }
 impl crate::Compiler {
     pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
@@ -104,10 +25,7 @@ impl crate::Compiler {
             let stages = compile_stages(worker, source)?;
             Ok::<_, String>((ExecutionPlan::from_program(source), stages))
         }).map_err(|error| error.to_string())?;
-        Ok(ProgramImage {
-            program: plan, stages,
-            marker: std::marker::PhantomData,
-        })
+        Ok(unsafe { ProgramImage::from_compiler_output(plan, stages) })
     }
 }
 

@@ -3,8 +3,11 @@ use super::*;
 use allocation::{PacketAllocation, PacketPlace};
 use operands::Operand;
 use std::collections::BTreeSet;
+#[path="packet/control.rs"]
 mod control;
+#[path="packet/integer.rs"]
 mod integer;
+#[path="packet/memory.rs"]
 mod memory;
 
 enum Binary {

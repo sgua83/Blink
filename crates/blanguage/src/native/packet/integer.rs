@@ -1,6 +1,6 @@
 //! SSE2 四路整数乘法、除余与移位；常量使用精确倒数，动态值逐 lane 原生执行。
 use super::*;
-use crate::native::integer::Division;
+use super::super::integer::Division;
 use std::num::NonZeroU64;
 
 impl Emitter<'_> {

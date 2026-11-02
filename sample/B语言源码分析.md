@@ -1581,7 +1581,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native.rs:129`。
+源码节选：`crates/blanguage/src/native/codegen.rs:107`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1655,7 +1655,9 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-源码节选：`crates/blanguage/src/native.rs:143`。
+native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 的编译入口与 SPIR-V 发射目前仍在执行 SDK 中，完整角色分离尚未完成。
+
+源码节选：`crates/blanguage/src/native/codegen.rs:121`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1682,7 +1684,7 @@ pub(super) enum Location {
 
 Sin、Cos 等运算可能调用执行框架提供的原生辅助函数。生成时保存重定位位置与辅助函数类别，装载代码时再填入本进程中的真实地址。机器码字节与这张重定位清单共同构成 NativeCode。
 
-源码节选：`crates/blanguage/src/native.rs:74`。
+源码节选：`crates/blanguage/src/native/image.rs:35`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1724,7 +1726,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native.rs:663`。
+源码节选：`crates/blanguage/src/native/codegen.rs:641`。
 
 ```rust
     let stage = &lowered;
@@ -2580,7 +2582,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `check/tile.rs`、`subgroup.rs`、`atomic.rs`、`append.rs` | 协作、共享与接纳怎样保持语言含义 |
 | `ir.rs`、`ir/*` | 布局、指令、阶段、集合操作和能力怎样共同表示 |
 | `optimize.rs`、`optimize/*` | 哪些阶段可以融合，哪些值与效果必须保留 |
-| `native.rs`、`native/operands.rs`、`integer.rs` | 怎样选操作数、编码指令和处理跳转 |
+| `native/codegen.rs`、`native/operands.rs`、`native/integer.rs` | 怎样选操作数、编码指令和处理跳转 |
 | `native/allocation.rs`、`packet/*` | 活跃性、寄存器、栈槽与四元素 SIMD 怎样落实 |
 | `native/reduce.rs`、`scan.rs`、`compact.rs`、`sort.rs` | CPU 集合内核与范围摘要怎样生成 |
 | `spirv.rs`、`spirv/*` | 类型、结果编号、控制流、协作与多 pass 怎样编码 |

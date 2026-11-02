@@ -148,7 +148,7 @@ Rust词法入口只持有原Source及Vec，按同步C ABI借出原UTF-8字节和
 
 ProgramImage 在编译侧一次拥有最终 CPU 机器码、重定位、SPIR-V 和 ExecutionPlan。集合的主遍历、递归摘要、传播、排序及间接启动代码均在此生成。ExecutionPlan 只保存执行需要的接口、布局、访问、前缀及设备要求；编译结束不保留无消费者的 IR 函数体。
 
-CPU 执行器装载代码、解析符号并拥有可执行内存；GPU 执行器根据最终 SPIR-V 建立管线。原 CpuProgram::new／Device::compile 复用这一映像生产入口；算法 DLL 的 create 不重新编译 B。可信映像的 unsafe 装入是原生代码和合同的信任边界，不接收未经约定的动态宿主数据。
+CPU 执行器装载代码、解析符号并拥有可执行内存；GPU 执行器根据最终 SPIR-V 建立管线。CPU 的 BufferAddress、NativeCode、StageCode 和 ProgramImage 由 native/image.rs 单独持有，编译器与执行器消费同一份定义；x64 发射及阶段编译只在现有 compiler feature 中编入。CpuProgram::new、CpuTemplate::new 及 ffi::LibraryProgram::new 属于该编译角色；关闭 compiler 的执行 SDK 使用 from_image 装入已编译 CPU 映像，不编入 CPU 发射器。Device::compile／compile_template 与 SPIR-V 发射目前仍在执行 SDK 中，完整角色分离仍按 Issues 的 C-032.1.3 推进。算法 DLL 的 create 不重新编译 B。可信映像的 unsafe 装入是原生代码和合同的信任边界，不接收未经约定的动态宿主数据。
 
 算法DLL与应用包装都持有本次真实编译的CPU／GPU映像字节，使用resource中的同一类型、执行计划、机器码／SPIR-V及ABI编码；算法DLL不再把这些对象重建为另一套Rust类型／阶段字面量。原ProgramImage<P>的入口类别随同一次编译保持，字节恢复与原from_compiler_output承担相同的真实编译输出前提，不将Template改成Executable。目标专属限制、DLL backend选择、实际装入与资源所有者保持；解码错误直接交回调用者。
 

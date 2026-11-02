@@ -390,6 +390,7 @@ impl CpuProgram {
     pub fn program(&self) -> &Program {
         &self.code.program
     }
+    #[cfg(feature="compiler")]
     pub fn new(program: ExecutableProgram) -> Result<Self> {
         Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
     }
@@ -414,6 +415,7 @@ impl CpuTemplate {
     pub fn program(&self) -> &Program {
         &self.code.program
     }
+    #[cfg(feature="compiler")]
     pub fn new(program: TemplateProgram) -> Result<Self> {
         Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
     }

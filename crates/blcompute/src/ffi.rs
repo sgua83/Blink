@@ -6,9 +6,10 @@ use crate::{
     vulkan::{Device, GpuProgram},
 };
 use blanguage::{
-    ExecutableProgram,
     ir::{ExecutionPlan as Program, Scalar},
 };
+#[cfg(feature="compiler")]
+use blanguage::ExecutableProgram;
 use std::ffi::{c_char, c_void};
 
 /// 指针指向 count 个编译器声明的完整记录；记录的字段与布局来自生成的头文件。
@@ -21,6 +22,7 @@ pub enum LibraryProgram {
     Gpu { device: Device, program: GpuProgram },
 }
 impl LibraryProgram {
+    #[cfg(feature="compiler")]
     pub fn new(program: ExecutableProgram, backend: u32) -> Result<Self> {
         match backend {
             0 => Ok(Self::Cpu(CpuProgram::new(program)?)),
