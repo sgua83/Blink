@@ -13,8 +13,10 @@ mod atomic;
 pub use atomic::{Atomic, AtomicOp, MemoryOrder};
 mod custom_reduce;
 pub use custom_reduce::{
-    CustomReduction, CustomScan, CustomSegmentedReduction, ReductionKernel, ValueCode,
+    CustomReduction, CustomScan, CustomSegmentedReduction, ValueCode,
 };
+#[cfg(feature = "compiler")]
+pub use custom_reduce::ReductionKernel;
 
 pub type Reg = usize;
 pub type Bits = u64;

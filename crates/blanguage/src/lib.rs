@@ -4,7 +4,9 @@ pub mod application;
 pub mod ast;
 #[cfg(feature = "compiler")]
 pub mod build;
+#[cfg(feature = "compiler")]
 pub mod compiler;
+#[cfg(feature = "compiler")]
 pub use compiler::{Compiler, Processor};
 #[cfg(feature = "compiler")]
 mod check;
@@ -26,9 +28,11 @@ pub mod module;
 pub mod native;
 #[cfg(feature = "compiler")]
 pub mod object;
+#[cfg(feature = "compiler")]
 mod optimize;
 #[cfg(feature = "compiler")]
 mod parser;
+#[cfg(feature = "compiler")]
 mod parallel;
 pub mod resource;
 pub mod spirv;

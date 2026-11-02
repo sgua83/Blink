@@ -146,7 +146,7 @@ cargo build --workspace --release
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:272`。
+源码节选：`crates/blanguage/src/ir.rs:274`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -187,7 +187,7 @@ cargo build --workspace --release
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:94`。
+源码节选：`crates/blanguage/src/ir.rs:96`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1035,7 +1035,7 @@ C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结�
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:255`。
+源码节选：`crates/blanguage/src/ir.rs:257`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -1310,7 +1310,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:927`。
+源码节选：`crates/blanguage/src/ir.rs:929`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1322,7 +1322,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:948`。
+源码节选：`crates/blanguage/src/ir.rs:950`。
 
 ```rust
     Load {
@@ -1354,7 +1354,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1143`。
+源码节选：`crates/blanguage/src/ir.rs:1145`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1515,7 +1515,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:991`。
+源码节选：`crates/blanguage/src/ir.rs:993`。
 
 ```rust
     If {
@@ -1655,7 +1655,7 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，Compiler／预算及优化等剩余共同依赖仍待分离。
+native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。
 
 源码节选：`crates/blanguage/src/native/codegen.rs:121`。
 

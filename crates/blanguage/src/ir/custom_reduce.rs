@@ -55,6 +55,7 @@ impl<R: ReductionShape> CustomScan<R> {
             .is_none_or(|n| n > 64)
     }
 }
+#[cfg(feature = "compiler")]
 pub struct ReductionKernel {
     pub stage: Stage,
     pub invariant_end: usize,
@@ -68,6 +69,7 @@ pub struct ReductionKernel {
     pub right: Vec<Reg>,
     pub result: Vec<Reg>,
 }
+#[cfg(feature = "compiler")]
 impl CustomReduction {
     /// 两后端在编译期使用同一寄存器／局部值重定位；源 Program 保持不可变。
     pub fn kernel(&self, stage: &Stage, project: bool, identity: bool) -> ReductionKernel {
