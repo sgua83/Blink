@@ -507,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 算法DLL与普通应用包装消费同一resource映像编码。类型、执行计划与CPU／GPU代码在编译时已形成，生成Rust包装只嵌入这些字节；构造实际程序时保持本次`ProgramImage<P>`的原入口身份，解码错误交回原FFI错误结果，不重建一份Rust类型／阶段字面量，也不将条件模板改成已验证入口。 CPU主入口的局部帧直接取自同一次编译的映像并交给对象报告；它没有静态COFF地址，未报告的调用图仍为未知，不把已知局部字节当作完整线程栈上界。
 
-源码节选：`crates/blanguage/src/resource.rs:108`。
+源码节选：`crates/blanguage/src/resource.rs:112`。
 
 ```rust
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
@@ -1917,7 +1917,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 同一份GPU程序复用管线，临时空间、描述符和命令属于每次执行。装入借用原计划与SPIR-V，由原`Compiled`持有部分设备资源；全部成功才取得计划，失败沿原`Drop`释放资源。`Device::load_template`以`Err((error,image))`交回同一未改输入，`Frame`接回原槽。调用方显式再装入，终端消费者释放输入并传播原错误，不自动重试；借用与拥有只是装入期类型区别，没有第二计划、状态表或新包装。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1862`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1871`。
 
 ```rust
     pub fn submit(
@@ -1981,7 +1981,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1601`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1607`。
 
 ```rust
 #[derive(Clone)]
@@ -2026,7 +2026,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1892`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1901`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -2058,7 +2058,7 @@ GPU：     A 仍在执行 → B 才开始读取
 
 ### 21.2 物理存储和最后使用点一起保存
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1012`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1018`。
 
 ```rust
 pub struct GpuDataset {
@@ -2086,7 +2086,7 @@ pub struct GpuStorage {
 
 `GpuDataset` 保存实际 GpuStorage 和可选 last_use。GpuStorage 持有页表、数据页、类型、容量、只读来源及相关实例资源。它们不是多份数组副本，而是同一物理存储的组成。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1042`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1048`。
 
 ```rust
 impl Drop for GpuDataset {
@@ -2122,7 +2122,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2726`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2735`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -2194,7 +2194,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2459`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2468`。
 
 ```rust
                                 let mut length = count;

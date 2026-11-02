@@ -151,7 +151,8 @@ impl Stage {
             }
         }
     }
-    fn tile_layout(&self) -> BTreeMap<SharedWord, usize> {
+    // (实际单元类型，所属类型平面的槽，单元内字节)；CPU继续使用原u32字流。
+    pub(crate) fn tile_layout(&self, wide: bool) -> BTreeMap<SharedWord, (Scalar, usize, u32)> {
         fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>, groups: &mut Vec<Vec<SharedWord>>) {
             for inst in code {
                 match inst {
@@ -233,6 +234,32 @@ impl Stage {
                 _ => loads(self, std::slice::from_ref(inst), phase as i64, &mut last, &mut groups),
             }
         }
+        let mut cells = BTreeMap::new();
+        if wide {
+            for (tile, data) in self.tiles.iter().enumerate() {
+                for (scalar, byte) in &data.ty.components {
+                    let word = self.shared_word(tile, *byte).aligned();
+                    let unit = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
+                    cells.insert(word, (unit, word, 0));
+                    if unit == Scalar::U64 {
+                        cells.insert(self.shared_word(tile, *byte + 4).aligned(), (unit, word, 4));
+                    }
+                }
+            }
+            let mut canonical = BTreeMap::<_, i64>::new();
+            for (word, end) in last {
+                canonical.entry(cells[&word].1).and_modify(|old| *old = (*old).max(end)).or_insert(end);
+            }
+            last = canonical;
+            let cells = &cells;
+            groups = groups.into_iter().flat_map(|group| {
+                [Scalar::U32, Scalar::U64].into_iter().filter_map(move |unit| {
+                    let words: BTreeSet<_> = group.iter().filter_map(|word| cells.get(word))
+                        .filter(|(kind, _, _)| *kind == unit).map(|(_, word, _)| *word).collect();
+                    (!words.is_empty()).then(|| words.into_iter().collect())
+                })
+            }).collect();
+        }
         let mut words: Vec<_> = last
             .iter()
             .map(|(word, end)| {
@@ -264,30 +291,40 @@ impl Stage {
             .collect();
         units.extend(words.into_iter().map(|(b, w, e)| (b, vec![w], e)));
         units.sort_unstable();
-        let mut ends = Vec::new();
+        let mut ends = BTreeMap::<Scalar, Vec<i64>>::new();
         let mut layout = BTreeMap::new();
         for (begin, group, end) in units {
-            // 动态下标所在流保持物理字顺序，其余流仍按真实生命周期复用。
-            let width = group.len();
+            let unit = if wide { cells[&group[0]].0 } else { Scalar::U32 };
+            let byte = |word: SharedWord| match word {
+                SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
+            };
+            let first = byte(group[0]);
+            let width = ((byte(*group.last().unwrap()) - first) / unit.size() + 1) as usize;
+            let ends = ends.entry(unit).or_default();
+            // 动态字段保持声明字节步长；各类型平面仍由同一阶段生命周期复用。
             let slot = (0..=ends.len())
-                .find(|start| {
-                    (*start..*start + width)
-                        .all(|i| ends.get(i).is_none_or(|previous| *previous < begin))
-                })
+                .find(|start| (*start..*start + width)
+                    .all(|i| ends.get(i).is_none_or(|previous| *previous < begin)))
                 .unwrap();
             ends.resize(ends.len().max(slot + width), i64::MIN);
-            for (i, word) in group.into_iter().enumerate() {
-                ends[slot + i] = end;
-                layout.insert(word, slot + i);
+            ends[slot..slot + width].fill(end);
+            for word in group {
+                layout.insert(word, (unit, slot + ((byte(word) - first) / unit.size()) as usize, 0));
             }
         }
-        layout
+        if wide {
+            cells.into_iter().filter_map(|(word, (_, canonical, byte))| {
+                layout.get(&canonical).map(|(unit, slot, _)| (word, (*unit, *slot, byte)))
+            }).collect()
+        } else {
+            layout
+        }
     }
     pub fn word_offset(&self, word: SharedWord) -> u64 {
-        self.tile_layout()[&word.aligned()] as u64 * self.workgroup_width() as u64 * 4
+        self.tile_layout(false)[&word.aligned()].1 as u64 * self.workgroup_width() as u64 * 4
     }
     pub fn tile_data_bytes(&self) -> u64 {
-        self.tile_layout().values().max().map_or(0, |slot| {
+        self.tile_layout(false).values().map(|(_, slot, _)| slot).max().map_or(0, |slot| {
             (*slot as u64 + 1) * self.workgroup_width() as u64 * 4
         })
     }

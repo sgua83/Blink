@@ -105,6 +105,9 @@ struct Emitter<'a> {
     ext: u32,
     subgroup_inputs: BTreeMap<SubgroupOp, u32>,
     ballot_type: u32,
+    tile_layout: BTreeMap<SharedWord, (Scalar, usize, u32)>,
+    tile_shared64: u32,
+    tile_pointer64: u32,
     tile_shared: u32,
     tile_pointer: u32,
     tile_length: u32,
@@ -1178,6 +1181,11 @@ pub fn emit_pass(
     stage_index: usize,
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
+    emit_shader(program, stage_index, pass).map(|(words, _)| words)
+}
+fn emit_shader(
+    program: &Program, stage_index: usize, pass: Pass,
+) -> Result<(Vec<u32>, u64), &'static str> {
     if program.buffers.iter().any(|b| {
         b.stride > PAGE_BYTES
             || b.ty
@@ -1247,6 +1255,9 @@ pub fn emit_pass(
         ext: 0,
         subgroup_inputs: BTreeMap::new(),
         ballot_type: 0,
+        tile_layout: stage.tile_layout(true),
+        tile_shared64: 0,
+        tile_pointer64: 0,
         tile_shared: 0,
         tile_pointer: 0,
         tile_length: 0,
@@ -1257,7 +1268,8 @@ pub fn emit_pass(
     let mut prelude = Vec::new();
     op(&mut prelude, 17, &[1]);
     op(&mut prelude, 17, &[11]);
-    if stage.requires_atomic64() { op(&mut prelude, 17, &[12]); }
+    let (atomic64, shared_atomic64) = stage.atomic64_requirements();
+    if atomic64 || shared_atomic64 { op(&mut prelude, 17, &[12]); }
     op(&mut prelude, 17, &[5347]);
     let float64 = program.requirements().float64;
     if float64 { op(&mut prelude, 17, &[10]); }
@@ -1557,9 +1569,9 @@ pub fn emit_pass(
             e.subgroup_inputs.insert(operation, variable);
         }
     }
+    let mut shared_bytes = 0u64;
     if reduction || ranks {
-        let count = e.constant(
-            Scalar::U32,
+        let words =
             if ranks {
                 32
             } else if let Operation::Reduce(r) = &stage.operation {
@@ -1576,8 +1588,9 @@ pub fn emit_pass(
                 64 * r.summary_words() as u32
             } else {
                 64
-            },
-        );
+            };
+        shared_bytes += u64::from(words) * 4;
+        let count = e.constant(Scalar::U32, words);
         let array = e.id();
         op(&mut e.defs, 28, &[array, e.types[&shared_scalar], count]);
         let array_ptr = e.id();
@@ -1591,18 +1604,30 @@ pub fn emit_pass(
             &[shared_pointer, 4, e.types[&shared_scalar]],
         );
     }
-    if pass == Pass::Main && stage.tile_bytes() != 0 {
-        let words = u32::try_from(stage.tile_bytes() / 4)
-            .map_err(|_| "tile 共享数组超过 SPIR-V 长度范围")?;
-        let length = e.constant(Scalar::U32, words);
-        let array = e.id();
-        op(&mut e.defs, 28, &[array, u, length]);
-        let array_ptr = e.id();
-        op(&mut e.defs, 32, &[array_ptr, 4, array]);
-        e.tile_shared = e.id();
-        op(&mut e.defs, 59, &[array_ptr, e.tile_shared, 4]);
-        e.tile_pointer = e.id();
-        op(&mut e.defs, 32, &[e.tile_pointer, 4, u]);
+    if pass == Pass::Main {
+        for unit in [Scalar::U32, Scalar::U64] {
+            let cells = e.tile_layout.values().filter(|(kind, _, _)| *kind == unit)
+                .map(|(_, slot, _)| *slot as u64 + 1).max().unwrap_or(0);
+            let words = cells * u64::from(stage.workgroup_width())
+                + if unit == Scalar::U32 { stage.tile_scratch_bytes() / 4 } else { 0 };
+            if words == 0 { continue; }
+            let words = u32::try_from(words).map_err(|_| "tile 共享数组超过 SPIR-V 长度范围")?;
+            shared_bytes += u64::from(words) * u64::from(unit.size());
+            let length = e.constant(Scalar::U32, words);
+            let array = e.id();
+            op(&mut e.defs, 28, &[array, e.types[&unit], length]);
+            let array_ptr = e.id();
+            op(&mut e.defs, 32, &[array_ptr, 4, array]);
+            let shared = e.id();
+            op(&mut e.defs, 59, &[array_ptr, shared, 4]);
+            let pointer = e.id();
+            op(&mut e.defs, 32, &[pointer, 4, e.types[&unit]]);
+            if unit == Scalar::U32 {
+                e.tile_shared = shared; e.tile_pointer = pointer;
+            } else {
+                e.tile_shared64 = shared; e.tile_pointer64 = pointer;
+            }
+        }
     }
     let fn_ty = e.id();
     op(&mut e.defs, 33, &[fn_ty, void]);
@@ -1628,9 +1653,7 @@ pub fn emit_pass(
     }
     entry_words.extend_from_slice(&subgroup_inputs);
     entry_words.extend(e.subgroup_inputs.values().copied());
-    if e.tile_shared != 0 {
-        entry_words.push(e.tile_shared);
-    }
+    entry_words.extend([e.tile_shared, e.tile_shared64].into_iter().filter(|v| *v != 0));
     op(&mut prelude, 15, &entry_words);
     op(&mut prelude, 16, &[main, 17, stage.workgroup_width(), 1, 1]);
     if maximal_reconvergence {
@@ -1991,5 +2014,5 @@ pub fn emit_pass(
     out.extend(e.decorations);
     out.extend(e.defs);
     out.extend(e.body);
-    Ok(out)
+    Ok((out, shared_bytes))
 }

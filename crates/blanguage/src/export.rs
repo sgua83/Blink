@@ -28,9 +28,11 @@ fn shader_file(path: &Path, stem: &str, words: &[u32]) -> Result<()> {
     Ok(())
 }
 pub fn program(compiler: &blanguage::Compiler, program: &Program, out: &Path, stem: &str) -> Result<()> {
+    let mut layout = program.describe();
     if program.target() != Target::Cpu {
         let image = compiler.spirv(program).map_err(std::io::Error::other)?;
         for (i, code) in image.stages().iter().enumerate() {
+            layout.push_str(&format!("gpu_stage={i}, shared_bytes={}\n", image.program().stages()[i].shared_bytes()));
             let name = format!("{stem}.{i}");
             shader_file(out, &name, &code.main)?;
             for (suffix, words) in [
@@ -117,6 +119,6 @@ pub fn program(compiler: &blanguage::Compiler, program: &Program, out: &Path, st
             }
         }
     }
-    std::fs::write(out.join(format!("{stem}.layout")), program.describe())?;
+    std::fs::write(out.join(format!("{stem}.layout")), layout)?;
     Ok(())
 }

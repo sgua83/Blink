@@ -17,7 +17,7 @@ impl Emitter<'_> {
             collective.results.len()
         };
         for results in collective.results.chunks(batch) {
-            let mut base_word=(self.stage.tile_data_bytes()/4) as u32;
+            let mut base_word = self.tile_data_words(Scalar::U32);
             let trees: Vec<_> = results
                 .iter()
                 .map(|(_, result)| {

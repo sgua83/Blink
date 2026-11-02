@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x11\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x12\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -92,13 +92,17 @@ pub(crate) fn compile(name: &str, resources: &crate::application::Resources, wor
     let mut gpu = gpu.into_iter();
     let mut stack = Vec::new();
     let images = resources.programs.iter().enumerate().map(|(index, (target, program))| {
-        let plan = ExecutionPlan::from_program(program);
+        let mut plan = ExecutionPlan::from_program(program);
         if *target == Target::Cpu {
             let stages: Vec<_> = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
             stack.extend(crate::object::stack::compute(&format!("{name} resource {index} ({})", program.name()), &stages));
             Image::Cpu(unsafe { native::ProgramImage::from_compiler_output(plan, stages) })
         } else {
-            let stages = program.stages().iter().map(|_| gpu.next().unwrap()).collect();
+            let stages = plan.stages.iter_mut().map(|stage| {
+                let (code, bytes) = gpu.next().unwrap();
+                stage.shared_bytes = bytes;
+                code
+            }).collect();
             Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
         }
     }).collect();
@@ -221,7 +225,7 @@ record!(SubgroupCapabilities {
     extended_types
 });
 record!(DeviceRequirements {
-    ray_query, float64, integer8, integer16, atomic64,
+    ray_query, float64, integer8, integer16, atomic64, shared_atomic64,
     sorting,
     maximal_reconvergence,
     texture_indexing,

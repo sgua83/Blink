@@ -93,16 +93,21 @@ pub struct Atomic {
     pub order: MemoryOrder,
 }
 impl Stage {
-    pub(crate) fn requires_atomic64(&self) -> bool {
-        fn uses(code: &[Inst]) -> bool {
-            code.iter().any(|inst| match inst {
-                Inst::Atomic(a) => a.scalar.size() == 8,
+    pub(crate) fn atomic64_requirements(&self) -> (bool, bool) {
+        fn uses(code: &[Inst]) -> (bool, bool) {
+            code.iter().map(|inst| match inst {
+                Inst::Atomic(a) if a.scalar.size() == 8 => match a.target {
+                    IndexedSource::Tile { .. } => (false, true),
+                    IndexedSource::Data { .. } => (true, false),
+                    IndexedSource::View { .. } | IndexedSource::Pointer { .. } => (false, false),
+                },
                 Inst::Scope(body) => uses(body),
-                Inst::If { yes, no, .. } => uses(yes) || uses(no),
-                Inst::Loop { condition, body, .. } => uses(condition) || uses(body),
-                _ => false,
-            })
+                Inst::If { yes, no, .. } => merge(uses(yes), uses(no)),
+                Inst::Loop { condition, body, .. } => merge(uses(condition), uses(body)),
+                _ => (false, false),
+            }).fold((false, false), merge)
         }
+        fn merge(a: (bool, bool), b: (bool, bool)) -> (bool, bool) { (a.0 || b.0, a.1 || b.1) }
         uses(&self.code)
     }
 }

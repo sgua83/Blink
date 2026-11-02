@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, ops::Deref};
 pub struct DeviceRequirements {
     pub ray_query: bool, pub float64: bool,
     pub integer8: bool, pub integer16: bool,
-    pub atomic64: bool,
+    pub atomic64: bool, pub shared_atomic64: bool,
     pub sorting: bool,
     pub maximal_reconvergence: bool,
     pub texture_indexing: bool,
@@ -59,13 +59,15 @@ macro_rules! interface_fields {
 impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
+        let (atomic64, shared_atomic64) = self.stages.iter().map(Stage::atomic64_requirements)
+            .fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1));
         let mut requirements = DeviceRequirements {
             ray_query: !self.accelerations.is_empty(),
             sorting: self.requires_sort(),
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
             position_fetch: self.requires_ray_position_fetch(),
-            atomic64: self.stages.iter().any(Stage::requires_atomic64),
+            atomic64, shared_atomic64,
             subgroup: self.subgroup_capabilities(),
             ..DeviceRequirements::default()
         };
@@ -190,6 +192,7 @@ pub struct ExecutionStage {
     pub inputs: BTreeSet<(usize, u32)>,
     pub tile_scope: bool,
     pub width: u32,
+    /// GPU各入口静态Workgroup声明总字节的峰值，由发射者交出；CPU映像不分配Workgroup。
     pub shared_bytes: u64,
     pub float32_preserve: bool, pub float64_preserve: bool,
 }
@@ -260,15 +263,6 @@ impl ExecutionPlan {
             .stages
             .iter()
             .map(|stage| {
-                let shared_bytes = stage.tile_bytes().max(match &stage.operation {
-                    Operation::Reduce(r) => u64::from(r.ty.size.div_ceil(4)) * 64 * 4,
-                    Operation::CustomReduce(r) => u64::from(r.ty.size.div_ceil(4)) * 64 * 4,
-                    Operation::ScanExclusive(r) => r.summary_words() as u64 * 64 * 4,
-                    Operation::SegmentedReduce(r) => r.summary_words() as u64 * 64 * 4,
-                    Operation::CustomScan(r) => r.summary_words() as u64 * 64 * 4,
-                    Operation::CustomSegmentedReduce(r) => r.summary_words() as u64 * 64 * 4,
-                    _ => 0,
-                });
                 let operation = match &stage.operation {
                     Operation::Map => Operation::Map,
                     Operation::Reduce(r) => Operation::Reduce(r.clone()),
@@ -299,7 +293,7 @@ impl ExecutionPlan {
                     inputs: stage.input_words().into_keys().collect(),
                     tile_scope: stage.has_tile_scope(),
                     width: stage.workgroup_width(),
-                    shared_bytes,
+                    shared_bytes: 0,
                     float32_preserve: stage.requires_float_preserve(Scalar::F32), float64_preserve: stage.requires_float_preserve(Scalar::F64),
                 }
             })

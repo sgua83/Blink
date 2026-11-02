@@ -5,31 +5,41 @@ use std::ops::Deref;
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.spirv(program)
 }
-fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result<Vec<StageCode>, String> {
+fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result<(ExecutionPlan, Vec<StageCode>), String> {
     if program.target() == crate::ast::Target::Cpu {
         return Err("CPU 专属程序不能提交给 GPU".into());
     }
-    crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
-        |_, index| compile_stage(program, index)).map_err(|error| error.to_string())
+    let compiled = crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
+        |_, index| compile_stage(program, index)).map_err(|error| error.to_string())?;
+    let mut plan = ExecutionPlan::from_program(program);
+    let stages = compiled.into_iter().zip(&mut plan.stages).map(|((code, bytes), stage)| {
+        stage.shared_bytes = bytes;
+        code
+    }).collect();
+    Ok((plan, stages))
 }
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
 ) -> Result<ProgramImage<P>, String> {
-    let stages = compile_stages(worker, &program)?;
-    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages) })
+    let (plan, stages) = compile_stages(worker, &program)?;
+    Ok(unsafe { ProgramImage::from_compiler_output(plan, stages) })
 }
 impl crate::Compiler {
     pub fn spirv<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
         let source = &*program;
-        let (plan, stages) = self.execute(|worker| {
-            let stages = compile_stages(worker, source)?;
-            Ok::<_, String>((ExecutionPlan::from_program(source), stages))
-        }).map_err(|error| error.to_string())?;
+        let (plan, stages) = self.execute(|worker| compile_stages(worker, source))
+            .map_err(|error| error.to_string())?;
         Ok(unsafe { ProgramImage::from_compiler_output(plan, stages) })
     }
 }
 
-pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'static str> {
+pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<(StageCode, u64), &'static str> {
+    let mut shared_bytes = 0;
+    let mut emit = |pass| {
+        let (words, bytes) = emit_shader(program, i, pass)?;
+        shared_bytes = shared_bytes.max(bytes);
+        Ok::<_, &'static str>(words)
+    };
     let stage = &program.stages()[i];
     let selected = stage.selection.is_some();
     let tail = match stage.operation {
@@ -89,7 +99,7 @@ pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'
             passes
                 .map(|pass| {
                     Ok(ShaderCode {
-                        words: emit_pass(program, i, pass)?,
+                        words: emit(pass)?,
                         ranks: matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_)),
                     })
                 })
@@ -98,17 +108,18 @@ pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'
     } else {
         None
     };
-    Ok(StageCode {
-        main: emit(program, i)?,
-        tail: tail.map(|p| emit_pass(program, i, p)).transpose()?,
-        scan_add: scan_add.map(|p| emit_pass(program, i, p)).transpose()?,
+    let code = StageCode {
+        main: emit(Pass::Main)?,
+        tail: tail.map(|p| emit(p)).transpose()?,
+        scan_add: scan_add.map(|p| emit(p)).transpose()?,
         finish: finish
-            .map(|(name, p)| Ok((name.into(), emit_pass(program, i, p)?)))
+            .map(|(name, p)| Ok((name.into(), emit(p)?)))
             .transpose()?,
-        dispatch: dispatch.map(|p| emit_pass(program, i, p)).transpose()?,
+        dispatch: dispatch.map(|p| emit(p)).transpose()?,
         selector: selected
-            .then(|| emit_pass(program, i, Pass::SelectionScan))
+            .then(|| emit(Pass::SelectionScan))
             .transpose()?,
         sort,
-    })
+    };
+    Ok((code, shared_bytes))
 }
