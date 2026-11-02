@@ -510,6 +510,7 @@ target/release/blink.exe --archive target/file.obj -o target/file.lib
 
 普通Windows路径由GetFullPathNameW解释本次进程当前目录、盘符相对路径、根相对路径、UNC及点目录语义。先查询含NUL的必要容量，再取得一次实际结果并按不含NUL的返回长度交接；原OS零返回立即保存GetLastError。进程当前目录是OS共享状态，两次调用间可能改变：若本次结果需要更大容量，BufferTooSmall保留该次含NUL的必要容量，不返回部分输出或重新查询；本函数不保存当前目录镜像或承诺原子快照。调用者取得结果后应沿该实际绝对路径继续本次工作。
 
+需要取得本次目录以继续组合构建路径时，可向原absolute传入NUL结尾的UTF-16目录形式`.\`，再以原join组合`target`。Windows盘根下单独`.`的原GetFullPathNameW结果可能是`C:`或`D:`，不能将其在后续cwd变化后当成原盘根；目录形式保留根分隔符。普通目录结果可带末尾分隔符，不能把它的字节形式冒称GetCurrentDirectory结果；实际消费者需要的最终组合路径按原join交接。取得的dataset由原Frame独立拥有，输入及后续进程cwd改变不会改写已有结果；后续新查询仍消费当时真实cwd。此用法复用原路径库，不新增current_dir包装、目录镜像或原生入口；Rust构建目录的实际B采用仍待迁移。
 精确的反斜线verbatim前缀`\\?\`按平台语义原样交回拥有副本，不再送入普通Win32路径展开；盘符、UNC、点目录、分隔符、尾部点／空格和UTF-16代码单元均不改写。前缀识别按实际NUL顺序读取，短输入不会为识别前缀读取终止符以后的单元。拥有副本通过原sequence::push增长，不建立文本运行时、路径缓存或第二资源所有者。
 
 | AbsoluteError载荷 | 实际含义 |
