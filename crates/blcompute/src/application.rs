@@ -54,12 +54,6 @@ enum ResidentData {
     Gpu(vulkan::GpuDataset),
 }
 impl ResidentData {
-    fn cpu(self) -> Result<CpuDataset> {
-        match self {
-            Self::Cpu(d) => Ok(d),
-            Self::Gpu(_) => Err(error("CPU 访问需要先显式 download 数据")),
-        }
-    }
     fn gpu(self) -> Result<vulkan::GpuDataset> {
         match self {
             Self::Cpu(_) => Err(error("GPU 执行需要先显式 upload 数据")),
@@ -281,14 +275,24 @@ impl Frame {
                 })
             })
             .collect();
-        let program = self.load(index)?;
-        let layout = program.layout();
-        let (datasets, domains) = match &program {
+        let loaded = self.load(index)?;
+        let layout = loaded.layout();
+        let (datasets, domains) = match &loaded {
             Program::Cpu(program) => {
-                let datasets = selected
-                    .iter()
-                    .map(|&handle| self.data.datasets[handle as usize].take().unwrap().cpu())
-                    .collect::<Result<Vec<_>>>()?;
+                let mut datasets = Vec::new();
+                for &handle in &selected {
+                    match self.data.datasets[handle as usize].take().unwrap() {
+                        ResidentData::Cpu(data) => datasets.push(data),
+                        data @ ResidentData::Gpu(_) => {
+                            self.data.datasets[handle as usize] = Some(data);
+                            for (&handle, data) in selected.iter().zip(datasets) {
+                                self.data.datasets[handle as usize] = Some(ResidentData::Cpu(data));
+                            }
+                            self.programs[index] = Some(ProgramSlot::Loaded(loaded));
+                            return Err(error("CPU 访问需要先显式 download 数据"));
+                        }
+                    }
+                }
                 let result =
                     program.run_projected(DomainBindings { datasets, domains }, &order, values)?;
                 (
@@ -345,7 +349,7 @@ impl Frame {
             }));
         self.data.domains.sort();
         self.data.domains.dedup();
-        self.programs[index] = Some(ProgramSlot::Loaded(program));
+        self.programs[index] = Some(ProgramSlot::Loaded(loaded));
         Ok(())
     }
 }
