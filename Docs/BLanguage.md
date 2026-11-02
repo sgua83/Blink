@@ -698,6 +698,8 @@ CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配�
 
 当前B对象元数据为 **BLCO35**，模块资源C ABI与执行映像为 **BLRI15**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
 
+Rust SDK的Frame操作通过原Result交回错误。resize在扩容申请失败时保留原存储；download借用Frame中的原GPU输入，仅在完整CPU结果返回后替换原槽，驻留拒绝或下载错误不提前释放输入。保留资源所有权不表示设备故障后的数据已经可用，实际设备失败与部分效果仍由原结果交接。当前共同C ABI在操作错误时结束进程，可分发宿主的完整失败合同仍待Issues C-020.5.2.1至.4实现。
+
 独立模块工厂只返回C布局的静态字节描述；非根包装只调用共同分配／执行入口，Frame是不透明指针，仅由根运行库解释和释放。工厂字节保存编译后的类型、执行布局、CPU机器码／重定位及SPIR-V，create解码到原Frame，不重读B源码、运行值IR或重新编译。调用者不释放静态工厂字节，不跨模块传递Rust Vec／Box的私有表示。
 
 普通uniform沿逻辑分量传入。模块资源共同执行入口的每个逻辑标量项使用16字节、对齐8的Value：u32标签在偏移0，最大8字节union载荷在偏移8。标签0至10依次为f32、u32、i32、bool、u64、i64、f64、u8、i8、u16、i16；u8／i8／bool的活动载荷仅1字节，u16／i16仅2字节，u32／i32／f32为4字节，u64／i64／f64为8字节。bool活动字节为0／1，B普通bool的4字节布局保持；填充及非活动union字节不是值。现有[Value源码](../crates/blcompute/src/lib.rs)使用`#[repr(C,u32)]`，布局依据[Rust枚举C表示规则](https://doc.rust-lang.org/reference/type-layout.html#layout.repr.primitive-c)。生成包装保留原参数调用约定，并将这些值在栈上交给共同运行库，根直接借用到本次同步完成。类型／程序基址仍由链接器静态绑定，同一Frame的句柄、拥有关系、显式upload／download与实际CPU／GPU完成规则保持；此表示不是可跨任意Frame使用的通用资源句柄。
@@ -4090,7 +4092,7 @@ Frame继续唯一拥有原Dataset和CPU存储，resize直接借用该存储，�
 
 read／write／inout dataset借用不取得扩缩容权；inout拥有聚合仍按原规则保留容器位置，允许其独占拥有内容移动、调整并在返回前归还，不把两种借用混为一谈。元素游标、显式view及静态释放函数等真实后续消费者仍按原借用／最后消费者关系检查。GPU驻留先由拥有者显式download，再调整CPU存储；操作不隐式下载或等待其他工作。嵌套拥有字段、普通返回、Result／try、开放泛型及无源码模块／归档使用原所有权和资源位置合同，不能将外部地址当作独立所有者。
 
-资源C入口`blink_resize(frame,handle,count,fill_address)->handle`；fill_address仅在本次调用中借用声明布局下的实际普通值分量，Frame只读取这些分量，不能读取未初始化的填充。唯一Frame创建、解释和释放责任保持。变长存储沿原资源C入口交接；普通C／C++／Rust的值接口和view机器表示保持。 Rust Frame::resize的Result在扩容申请失败时交回错误并保留原存储；当前共同C ABI仍在操作错误时结束进程，其可分发宿主失败合同待Issues C-020.5.2.1至.4实现。
+资源C入口`blink_resize(frame,handle,count,fill_address)->handle`；fill_address仅在本次调用中借用声明布局下的实际普通值分量，Frame只读取这些分量，不能读取未初始化的填充。唯一Frame创建、解释和释放责任保持。变长存储沿原资源C入口交接；普通C／C++／Rust的值接口和view机器表示保持。
 
 本范围是普通值动态存储基础；动态拥有元素、持久view图构造、递归容器、完整字符串、借用字符切片、异步／远端和BLEngine实际替换仍按Issues保持开放。当前u32长度不是64位CPU或语言长期索引上限的替代规格，不将已有原生结果当作完整容器库或性能达标。
 

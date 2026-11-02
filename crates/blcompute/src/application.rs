@@ -127,10 +127,15 @@ impl Frame {
         self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
         Ok(())
     }
+    /// 借用原 GPU 存储完成下载；取得完整 CPU 结果后才替换原槽。
+    /// 驻留拒绝或下载错误仍沿原 Result 返回，原输入资源继续由 Frame 持有。
     pub fn download(&mut self, handle: u32) -> Result<()> {
-        let data = self.data.datasets[handle as usize].take().unwrap().gpu()?;
-        let data = self.device.as_ref().unwrap().download(&data)?;
-        self.data.datasets[handle as usize] = Some(ResidentData::Cpu(data.into()));
+        let index = handle as usize;
+        let ResidentData::Gpu(data) = self.data.datasets[index].as_ref().unwrap() else {
+            return Err(error("GPU 执行需要先显式 upload 数据"));
+        };
+        let data = self.device.as_ref().unwrap().download(data)?;
+        self.data.datasets[index] = Some(ResidentData::Cpu(data.into()));
         Ok(())
     }
     pub fn allocate(&mut self, ty: u32, count: u32) -> Result<u32> {
