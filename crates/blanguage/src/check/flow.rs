@@ -386,9 +386,19 @@ impl Builder<'_> {
     }
     pub(super) fn remember_loop_control(&mut self,value:&Value){if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}}
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
+        // The saved entry still has its real length. Complete storage no longer
+        // depends on that length's precision after loop writes are projected.
+        let complete=environment.iter().flat_map(|(name,binding)|data_paths(binding).into_iter()
+            .filter(|(_,data,_)|self.application_initialized(data))
+            .map(move|(path,_,_)|(name.clone(),path))).collect::<Vec<_>>();
+        let mut resources=environment.clone();
+        for(name,path)in complete {
+            data_at_mut(resources.get_mut(&name).unwrap(),&path).unwrap().initialization=None;
+            data_at_mut(self.env.get_mut(&name).unwrap(),&path).unwrap().initialization=None;
+        }
         self.loop_contexts.push(LoopContext {
             names: environment.keys().cloned().collect(),
-            resources: environment.clone(),
+            resources,
             exits: Vec::new(),
             initial: false,
             initialization: false,
