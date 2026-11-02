@@ -342,3 +342,22 @@ target/release/blink.exe target/main.obj target/environment.lib -o target/main.e
 
 后续查询及新取得的环境快照观察本次进程的新环境；已经取得的独立环境快照和B拥有读取结果保持原值。后续子进程在使用默认继承环境时获得创建时的环境，显式环境块由实际创建者决定；本调用不更新既有其他进程、用户／机器注册表环境或旧快照。子进程创建／等待的B标准库接口仍按C-020.6.2.3.5／.6建设。平台合同见[SetEnvironmentVariableW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-setenvironmentvariablew)。
 
+## blink.windows.file
+
+`result<dataset<u8>,SourceError> read_utf8(address path) on cpu`以普通B代码同步读取Windows x64文件，交回唯一拥有、严格UTF-8的原始字节。path是调用期间有效、NUL结尾的UTF-16路径，名称、相对基准与代码单元由调用者和OS解释；本函数不改大小写、规范化路径或处理路径身份。使用`import blink.windows.file;`及`-I library`。
+
+函数以GENERIC_READ、OPEN_EXISTING及读／写／删除共享打开文件，连续读取至实际EOF，再关闭取得的同一句柄，最后沿现有Unicode库检查整个输入。空文件成功返回空dataset；BOM、NUL、换行及非ASCII字节保持，不追加终止符或转码，UTF-8标量可以跨读取块。源文件可在共享规则允许时被其他进程修改，本接口不承诺原子文件快照；固定一次模块输入的职责仍归原装入器。
+
+| SourceError载荷 | 实际含义 |
+|---|---|
+| `Open(u32)` | CreateFileW返回INVALID_HANDLE_VALUE后立即取得的原OS错误码 |
+| `Read(ReadError)` | 读取失败或输出序列不能表达真实总长度；句柄已成功关闭 |
+| `Close(CloseError)` | 读取完成但CloseHandle失败；载荷保留原handle及原OS code，不宣称句柄已释放 |
+| `ReadAndClose(ReadCloseError)` | 同时保留原read错误和close的原句柄／错误码 |
+| `Decode(DecodeError)` | 句柄已关闭后，原Unicode解码器交回的第一个非法UTF-8绝对字节位置及原因 |
+
+ReadError为System(u32)或Sequence(SequenceError)，后者只交接现有dataset的LengthOverflow，不规定另一个文件大小上限。分配与执行错误仍沿原Frame／运行库处理。失败不交付部分源码；成功的存储由原Frame及实际调用者持有，不保留文件句柄、路径借用、文件缓存或另一份来源。关闭失败只交回真实身份与错误，不重放读取或自动再次关闭。需要按DecodeReason判断时直接导入blink.unicode，序列原因则直接导入blink.sequence。
+
+底层CreateFileW、ReadFile和CloseHandle保留原Windows C ABI；直接调用者自行持有有效路径、实际缓冲区及句柄，按同步／异步模式遵循OS合同。ReadFile的received是原write u32输出，不把BOOL或输出缓冲伪造为成功。平台接口见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+
+本函数是C-032.2.3模块装入迁移所需的文件输入能力；当前Rust装入器尚未采用，不代表源码捕获、路径库、完整B解析器或自举已经完成。文件输出与目录枚举仍按Issues各自子项推进。
