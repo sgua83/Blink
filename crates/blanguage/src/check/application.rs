@@ -1186,7 +1186,7 @@ impl Builder<'_> {
         for value in [&data.handle,&data.length,&stride,&offset]{proof.append(value);}
         Value{ty:Self::borrowed_dataset_parameter_type(),regs:vec![data.handle.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None}
     }
-    fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
+    pub(super) fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
         let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::Cast{dst,src});dst};
         let low=cast(self,address[0]);let high=cast(self,address[1]);
         let width=self.constant(Scalar::U64,32).regs[0];

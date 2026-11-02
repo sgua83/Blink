@@ -3805,7 +3805,7 @@ Release原生消费者覆盖0、1、65、4099、1000003条记录的普通与映�
 
 ## CPU应用中的dataset不可变借用
 
-`view<T>(rows)`借用一个现有、已完整初始化且实际位于CPU的`dataset<T>`位置，也可借用拥有记录／固定数组中的实际dataset。它取得原存储的只读引用，`.length`、有界游标和普通索引沿原view规则；没有载荷复制、地址提取或隐式download。例如，接口.h声明同一函数，.b实现：
+`view<T>(rows)`借用一个现有、已完整初始化且实际位于CPU的`dataset<T>`位置，也可借用拥有记录／固定数组中的实际dataset，或复制同型的现有view。它取得原存储的只读引用，`.length`、有界游标和普通索引沿原view规则；没有载荷复制、地址提取或隐式download。例如，接口.h声明同一函数，.b实现：
 
 ```b
 view<Row> inspect(read dataset<Row> rows) on cpu {
@@ -3817,6 +3817,8 @@ u32 total(view<Row> rows) on cpu {
     return sum;
 }
 ```
+
+`view<T>(source,start,end)`借用同型CPU dataset或view的半开元素区间`[start,end)`。start／end为u32，必须沿已有条件证明`start<=end<=source.length`，否则报B137；合法空区间与末尾空区间保留。地址按T的真实连续元素步幅乘start，以64位寻址偏移，长度为end-start，不复制载荷、不钳制或新增运行时范围检查。source、start、end按原顺序各求值一次；后续实参不能写入、移动或传输已经借用的来源。区间保留原view全部来源及寿命，缩小区间不获得底层写权；普通记录、固定数组、泛型、递归及write／inout输出沿同一合同。GPU存储须先显式download，跨记录的非连续字段不能当作连续view。
 
 view及含view的普通记录／固定数组可在CPU函数间复制、参数传递与返回，也可通过write／inout普通值输出；开放类型实例沿实际元素类型组合。返回引用保留调用者真实存储的来源，独立B模块／静态库导出同一合同，不需要库实现源码。分支选择或动态资源下标保留全部可能来源；不能以不同临时寄存器名推断存储不同。
 

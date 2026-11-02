@@ -320,8 +320,8 @@ impl Builder<'_> {
         args: &[Expr],
         span: Span,
     ) -> Result<Option<Value>> {
-        if self.application.is_none() || explicit.len() != 1 || args.len() != 1 {
-            return self.fail(span, "B271", "CPU应用以view<T>(dataset)借用现有存储");
+        if self.application.is_none() || explicit.len() != 1 || !matches!(args.len(), 1 | 3) {
+            return self.fail(span, "B271", "CPU应用以view<T>(dataset或view[,start,end])借用现有存储");
         }
         let GenericArgument::Type(element) = &explicit[0] else {
             return self.fail(span, "B271", "view<T>需要元素类型");
@@ -335,9 +335,7 @@ impl Builder<'_> {
             &self.definition.module,
             &self.definition.imports,
         )?;
-        let Some(data) = self.application_reference(&args[0])? else {
-            return self.fail(span, "B271", "view借用需要具有实际所有者的dataset位置");
-        };
+        let mut value = if let Some(data) = self.application_reference(&args[0])? {
         if !data.permits(Access::Read) {
             return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
         }
@@ -359,14 +357,46 @@ impl Builder<'_> {
         proof.append(&pointer);
         proof.append(&data.length);
         proof = proof.with_view_borrow(0, self.data_borrow(&data.sources));
-        Ok(Some(Value {
+        Value {
             proof,
             literal: false,
             ty,
             regs: vec![address[0], address[1], data.length.regs[0]],
             uniform: false,
             constant: None,
-        }))
+        }
+        } else {
+            let Some(value) = self.expr(&args[0])? else { return Ok(None); };
+            self.require_same(&ty, &value.ty, args[0].span)?;
+            value
+        };
+        if args.len() == 3 {
+            let held = self.hold_binding(Binding::Value(value.clone()));
+            let evaluated = args[1..].iter().map(|arg| self.expr(arg)).collect::<Result<Option<Vec<_>>>>();
+            self.env.remove(&held);
+            let Some(mut limits) = evaluated? else { return Ok(None); };
+            let end = limits.pop().unwrap(); let start = limits.pop().unwrap();
+            for limit in [&start, &end] { self.require_same(&Ty::scalar(Scalar::U32), &limit.ty, span)?; }
+            let length = Self::view_length(&value);
+            for (a, b) in [(&start, &end), (&end, &length)] {
+                if bounds::Condition::comparison(Comparison::LessEqual, a, b).truth_in(&self.path) != Some(true) {
+                    return self.fail(span, "B137", "view区间需要证明start<=end<=原长度");
+                }
+            }
+            let borrow = value.proof.view_borrow(0);
+            let length = self.binary("-", end, start.clone(), span)?;
+            let element = value.ty.view.as_deref().unwrap();
+            let stride = self.constant(Scalar::U32, Bits::from(ir::align_up(element.size, element.align))).regs[0];
+            let zero = self.constant(Scalar::U32, 0).regs[0];
+            let address = self.offset_application_address([value.regs[0], value.regs[1]], start.regs[0], stride, zero);
+            let pointer = Value { proof: bounds::Proof::default(), ty: Ty::vector(Scalar::U32, 2),
+                regs: address.to_vec(), literal: false, uniform: false, constant: None };
+            value.proof = bounds::Proof::default();
+            value.proof.append(&pointer); value.proof.append(&length);
+            value.proof = value.proof.with_view_borrow(0, borrow);
+            value.regs = vec![address[0], address[1], length.regs[0]];
+        }
+        Ok(Some(value))
     }
 }
 impl Builder<'_> {
