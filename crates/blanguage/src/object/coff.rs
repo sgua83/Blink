@@ -1,27 +1,10 @@
 //! COFF 节、符号与 AMD64 重定位；Blink 元数据不替代标准重定位表。
 use super::*;
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
 const FORMAT: u32 = 36;
-fn metadata_slice(b: &[u8], p: usize, n: usize) -> Result<&[u8]> {
-    Ok(b.get(p..p.checked_add(n).ok_or("目标文件偏移溢出")?)
-        .ok_or("目标文件被截断")?)
-}
-fn read_word(c: &mut Cursor<&[u8]>) -> Result<u32> {
-    let mut b = [0; 4];
-    c.read_exact(&mut b)?;
-    Ok(u32::from_le_bytes(b))
-}
-fn read_string(c: &mut Cursor<&[u8]>) -> Result<String> {
-    let n = read_word(c)? as usize;
-    let p = c.position() as usize;
-    let s = std::str::from_utf8(metadata_slice(c.get_ref(), p, n)?)?.to_owned();
-    c.set_position((p + n) as u64);
-    Ok(s)
-}
 fn read_import(s: &str) -> Result<Import> {
     let s = s
         .strip_prefix("__blink_import$")
@@ -171,6 +154,83 @@ unsafe extern "C" {
 }
 fn read_text(bytes: ReadBytes) -> Result<String> {
     Ok(std::str::from_utf8(unsafe { bytes.borrowed() })?.to_owned())
+}
+
+// One metadata cursor; B owns byte interpretation, Rust owns the recovered values.
+#[repr(C)]
+struct MetadataReadCursor { input: ReadBytes, position: usize }
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum MetadataReadError { None, Word, Field, Version, Kind, Requirement, Coff, Call }
+impl MetadataReadError {
+    fn check(self) -> Result<()> {
+        match self {
+            Self::None => Ok(()),
+            Self::Word => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer").into()),
+            Self::Field => Err("目标文件被截断".into()),
+            Self::Version => Err("不支持的 Blink 目标文件版本".into()),
+            Self::Kind => Err("未知目标文件种类".into()),
+            Self::Requirement => Err("未知的模块参与要求".into()),
+            Self::Coff => Err("未知的栈代码位置种类".into()),
+            Self::Call => Err("未知的栈调用引用种类".into()),
+        }
+    }
+}
+#[repr(u64)]
+#[derive(Clone, Copy)]
+enum ReadObjectKind { Application, Library, Module }
+#[repr(u64)]
+#[derive(Clone, Copy)]
+enum ReadRequirementKind { Invocation, Domain, Host }
+#[repr(u64)]
+#[derive(Clone, Copy)]
+enum ReadCallKind { Reference, Tail, Indirect, Unreported }
+#[repr(C)]
+struct MetadataReadWord { value: u64, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadField { value: ReadBytes, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadHeader {
+    name: ReadBytes, kind: ReadObjectKind, interface: ReadBytes, prefix: ReadBytes, header: ReadBytes, binding: ReadBytes,
+    requirements: u64, stack: u64, error: MetadataReadError,
+}
+#[repr(C)]
+struct MetadataReadRequirement { name: ReadBytes, kind: ReadRequirementKind, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadBinding { name: ReadBytes, value: ReadBytes, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadFrame { name: ReadBytes, has_coff: u64, section: u64, start: u64, local: u64, calls: u64, error: MetadataReadError }
+#[repr(C)]
+struct MetadataReadCall { kind: ReadCallKind, offset: u64, reason: ReadBytes, error: MetadataReadError }
+unsafe extern "C" {
+    #[link_name = "bootstrap.metadata_read::word"]
+    fn metadata_read_word(cursor: *mut MetadataReadCursor) -> MetadataReadWord;
+    #[link_name = "bootstrap.metadata_read::bytes"]
+    fn metadata_read_bytes(cursor: *mut MetadataReadCursor) -> MetadataReadField;
+    #[link_name = "bootstrap.metadata_read::header"]
+    fn metadata_read_header(cursor: *mut MetadataReadCursor, format: u64) -> MetadataReadHeader;
+    #[link_name = "bootstrap.metadata_read::requirement"]
+    fn metadata_read_requirement(cursor: *mut MetadataReadCursor) -> MetadataReadRequirement;
+    #[link_name = "bootstrap.metadata_read::binding"]
+    fn metadata_read_binding(cursor: *mut MetadataReadCursor) -> MetadataReadBinding;
+    #[link_name = "bootstrap.metadata_read::frame"]
+    fn metadata_read_frame(cursor: *mut MetadataReadCursor) -> MetadataReadFrame;
+    #[link_name = "bootstrap.metadata_read::call"]
+    fn metadata_read_call(cursor: *mut MetadataReadCursor) -> MetadataReadCall;
+}
+impl MetadataReadCursor {
+    fn new(input: &[u8]) -> Self { Self { input: ReadBytes::new(input), position: 0 } }
+    fn word(&mut self) -> Result<u32> {
+        let value = unsafe { metadata_read_word(self) };
+        value.error.check()?;
+        Ok(value.value as u32)
+    }
+    fn bytes(&mut self) -> Result<ReadBytes> {
+        let value = unsafe { metadata_read_bytes(self) };
+        value.error.check()?;
+        Ok(value.value)
+    }
+    fn string(&mut self) -> Result<String> { read_text(self.bytes()?) }
 }
 
 // Synchronous borrowed metadata views; the original Object owns every field.
@@ -472,53 +532,35 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     }
     let meta = raw.iter().find(|s| s.0 == META)
         .ok_or("缺少 Blink 目标文件元数据")?.1;
-    let mut c = Cursor::new(meta);
-    let mut tag = [0; 4];
-    c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != FORMAT {
-        return Err("不支持的 Blink 目标文件版本".into());
-    }
-    let name = read_string(&mut c)?;
-    let kind = match read_word(&mut c)? {
-        2 => Kind::Module {
-            interface: read_string(&mut c)?,
-            requirements: (0..read_word(&mut c)?)
-                .map(|_| {
-                    let name = read_string(&mut c)?;
-                    let requirement = match read_word(&mut c)? {
-                        0 => crate::execution::Requirement::Invocation,
-                        1 => crate::execution::Requirement::Domain,
-                        2 => crate::execution::Requirement::Host,
-                        _ => return Err("未知的模块参与要求".into()),
-                    };
-                    Ok((name, requirement))
-                })
-                .collect::<Result<_>>()?,
-            stack_bytes: read_word(&mut c)?,
+    let mut c = MetadataReadCursor::new(meta);
+    let header = unsafe { metadata_read_header(&mut c, u64::from(FORMAT)) };
+    header.error.check()?;
+    let name = read_text(header.name)?;
+    let kind = match header.kind {
+        ReadObjectKind::Module => {
+            let interface = read_text(header.interface)?;
+            let requirements = (0..header.requirements).map(|_| {
+                let value = unsafe { metadata_read_requirement(&mut c) };
+                value.error.check()?;
+                let requirement = match value.kind {
+                    ReadRequirementKind::Invocation => crate::execution::Requirement::Invocation,
+                    ReadRequirementKind::Domain => crate::execution::Requirement::Domain,
+                    ReadRequirementKind::Host => crate::execution::Requirement::Host,
+                };
+                Ok((read_text(value.name)?, requirement))
+            }).collect::<Result<_>>()?;
+            Kind::Module { interface, requirements, stack_bytes: c.word()? }
+        }
+        ReadObjectKind::Application => Kind::Application { stack_bytes: header.stack as u32 },
+        ReadObjectKind::Library => Kind::Library {
+            prefix: read_text(header.prefix)?, header: read_text(header.header)?, binding: read_text(header.binding)?,
         },
-        0 => Kind::Application {
-            stack_bytes: read_word(&mut c)?,
-        },
-        1 => Kind::Library {
-            prefix: read_string(&mut c)?,
-            header: read_string(&mut c)?,
-            binding: read_string(&mut c)?,
-        },
-        _ => return Err("未知目标文件种类".into()),
     };
-    let mut libraries = Vec::new();
-    for _ in 0..read_word(&mut c)? {
-        libraries.push(read_string(&mut c)?);
-    }
-    let mut exports = Vec::new();
-    for _ in 0..read_word(&mut c)? {
-        exports.push(read_string(&mut c)?);
-    }
+    let libraries = (0..c.word()?).map(|_| c.string()).collect::<Result<Vec<_>>>()?;
+    let exports = (0..c.word()?).map(|_| c.string()).collect::<Result<Vec<_>>>()?;
     use crate::module::codec::{Decode, Reader};
-    let size = read_word(&mut c)? as usize;
-    let at = c.position() as usize;
-    let mut resource = Reader::new(metadata_slice(meta, at, size)?);
-    c.set_position((at + size) as u64);
+    let bytes = c.bytes()?;
+    let mut resource = Reader::new(unsafe { bytes.borrowed() });
     let resources = if bool::decode(&mut resource)? {
         Some(ResourceBinding {
             prefix: String::decode(&mut resource)?,
@@ -530,32 +572,29 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         None
     };
     let mut bindings = BTreeMap::new();
-    for _ in 0..read_word(&mut c)? {
-        let name = read_string(&mut c)?;
-        let size = read_word(&mut c)? as usize;
-        let at = c.position() as usize;
-        bindings.insert(name, crate::check::canonical_function_contract(metadata_slice(meta, at, size)?)?);
-        c.set_position((at + size) as u64);
+    for _ in 0..c.word()? {
+        let value = unsafe { metadata_read_binding(&mut c) };
+        value.error.check()?;
+        bindings.insert(read_text(value.name)?, crate::check::canonical_function_contract(unsafe { value.value.borrowed() })?);
     }
     let mut stack = Vec::new();
-    for _ in 0..read_word(&mut c)? {
-        let name = read_string(&mut c)?;
-        let coff = match read_word(&mut c)? {
-            0 => None,
-            1 => Some((read_word(&mut c)? as usize, read_word(&mut c)?)),
-            _ => return Err("未知的栈代码位置种类".into()),
-        };
-        let local = read_word(&mut c)?;
+    for _ in 0..c.word()? {
+        let value = unsafe { metadata_read_frame(&mut c) };
+        value.error.check()?;
+        let name = read_text(value.name)?;
+        let coff = if value.has_coff == 0 { None } else { Some((value.section as usize, value.start as u32)) };
         let mut calls = Vec::new();
-        for _ in 0..read_word(&mut c)? {
-            calls.push(match read_word(&mut c)? {
-                tag @ (0 | 1) => stack::Call::Reference { offset: read_word(&mut c)? as usize, tail: tag == 1 },
-                2 => stack::Call::Indirect,
-                3 => stack::Call::Unreported(read_string(&mut c)?),
-                _ => return Err("未知的栈调用引用种类".into()),
+        for _ in 0..value.calls {
+            let call = unsafe { metadata_read_call(&mut c) };
+            call.error.check()?;
+            calls.push(match call.kind {
+                ReadCallKind::Reference => stack::Call::Reference { offset: call.offset as usize, tail: false },
+                ReadCallKind::Tail => stack::Call::Reference { offset: call.offset as usize, tail: true },
+                ReadCallKind::Indirect => stack::Call::Indirect,
+                ReadCallKind::Unreported => stack::Call::Unreported(read_text(call.reason)?),
             });
         }
-        stack.push(stack::Frame { name, coff, local, calls });
+        stack.push(stack::Frame { name, coff, local: value.local as u32, calls });
     }
     let archive = raw.iter().find(|s| s.0 == ARCHIVE).map(|s| Archive {
         bytes: s.1.to_vec(),

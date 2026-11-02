@@ -893,7 +893,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、对象元数据、COFF对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
 
-词法扫描、泛型尖括号前瞻、对象元数据及栈字段写出、对象符号选择与重定位绑定、标准COFF结构读取／字节写出及静态归档格式生成由B接管；对象语义／合同及栈记录生成、归档输入I/O、Blink元数据读取及语言对象恢复、归档目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出及静态归档格式生成由B接管；对象语义／合同及栈记录生成、归档输入I/O、语言对象恢复、归档目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -2448,7 +2448,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
 extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu;
 ```
 
-标准COFF对象的文件布局和字节写出由bootstrap/coff.h／.b负责。B借用本轮符号、原节载荷和已绑定重定位，计算文件内偏移、节表和符号／字符串表，再直接填充同一个Rust Vec。辅助记录按实际节及COMDAT关联生成，65535条起的重定位使用标准溢出行；Blink元数据读取、语言对象恢复及对象语义／合同／栈记录生产继续归原Rust所有者。输出完成前输入保持，B不保留地址、不复制载荷。
+标准COFF对象的文件布局和字节写出由bootstrap/coff.h／.b负责。B借用本轮符号、原节载荷和已绑定重定位，计算文件内偏移、节表和符号／字符串表，再直接填充同一个Rust Vec。辅助记录按实际节及COMDAT关联生成，65535条起的重定位使用标准溢出行；语言对象恢复及对象语义／合同／栈记录生产继续归原Rust所有者。输出完成前输入保持，B不保留地址、不复制载荷。
 
 源码节选：`crates/blanguage/src/bootstrap/coff.h:1`。
 
@@ -2475,7 +2475,7 @@ extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu;
 
 标准COFF结构读取由bootstrap/coff_read.h／.b负责。原Reader继续持有本次文件快照，B从实际字节读取AMD64头、节载荷范围、短／长符号名、辅助记录、重定位溢出与原始字段；Rust接收借用描述符，完成真实UTF-8字符串及原容器的构造。节载荷沿原快照借用，到最终Section／Archive才形成拥有数据，不建立中间载荷副本。
 
-构建入口先只读取.blbuild，决定输入复用后才读取代码与Blink元数据；不因迁移而提前完整解码。物理范围与标准COFF字段只由B读取入口解释，既有Blink元数据外层、共享资源／合同编码和语言对象恢复仍由原Rust消费者负责。B不保留地址、不引入Frame、分配回调或额外目录。
+构建入口先只读取.blbuild，决定输入复用后才读取代码与Blink元数据；不因迁移而提前完整解码。物理范围与标准COFF字段只由B读取入口解释，共享资源／合同编码和语言对象恢复仍由原Rust消费者负责。B不保留地址、不引入Frame、分配回调或额外目录。
 
 源码节选：`crates/blanguage/src/bootstrap/coff_read.h:1`。
 
@@ -2502,6 +2502,36 @@ extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu
 extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on cpu;
 extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 flags) on cpu;
 extern "C" ReadRelocation relocation(ReadBytes input,u64 offset,u64 index) on cpu;
+```
+
+对象元数据外层读取由bootstrap/metadata_read.h／.b负责。同一份输入和原Cursor位置交给B，B读出BLCO头、三类前缀、参与要求、长度前缀字节、合同包络、帧及四类调用。Rust消费类型化字段，构造原Kind、字符串、Vec和BTreeMap；共享资源codec和函数合同规范化仍在原位置消费原blob，后续COFF映射与栈验证保持原职责。
+
+读取器只有输入与位置，没有另一套阶段状态机、事件协议或目录；字符串和二进制字段共用同一个长度前缀读取。原输入保持到最后同步消费者，B不保留地址、不分配Rust容器或创建Frame。当前FORMAT仍由coff.rs传入，软件版本与实际格式身份分别处理。
+
+源码节选：`crates/blanguage/src/bootstrap/metadata_read.h:1`。
+
+```b
+module bootstrap.metadata_read;
+import bootstrap.coff_read;
+// One borrowed input and the original sequential read position.
+struct MetaCursor {ReadBytes input;u64 position;};
+struct MetaWord {u64 value;u32 error;};
+struct MetaField {ReadBytes value;u32 error;};
+struct MetaHeader {
+    ReadBytes name;u64 kind;ReadBytes interface;ReadBytes prefix;ReadBytes header;ReadBytes binding;
+    u64 requirements;u64 stack;u32 error;
+};
+struct MetaRequirement {ReadBytes name;u64 kind;u32 error;};
+struct MetaBinding {ReadBytes name;ReadBytes value;u32 error;};
+struct MetaFrame {ReadBytes name;u64 has_coff;u64 section;u64 start;u64 local;u64 calls;u32 error;};
+struct MetaCall {u64 kind;u64 offset;ReadBytes reason;u32 error;};
+extern "C" MetaWord word(inout MetaCursor cursor) on cpu;
+extern "C" MetaField bytes(inout MetaCursor cursor) on cpu;
+extern "C" MetaHeader header(inout MetaCursor cursor,u64 format) on cpu;
+extern "C" MetaRequirement requirement(inout MetaCursor cursor) on cpu;
+extern "C" MetaBinding binding(inout MetaCursor cursor) on cpu;
+extern "C" MetaFrame frame(inout MetaCursor cursor) on cpu;
+extern "C" MetaCall call(inout MetaCursor cursor) on cpu;
 ```
 
 对象元数据外层由bootstrap/metadata.h／.b写出。Rust保持本次对象名／种类、参与要求、依赖库／导出、共同资源描述、函数合同及真实栈调用字段；必要C ABI只借出原字节和小型字段视图。B计算完整长度并直接填充同一个Rust Vec，不先在Rust拼好栈字节再复制。函数合同引用原载荷，冲突仍由语义所有者拒绝；资源描述内部继续复用共同codec，原Rust外层word／string生产退出。直接／尾调用、间接及未知调用的真实原因都进入同一元数据，栈报告语义没有迁移到字节写出器。对象格式身份沿coff.rs的FORMAT交接给B，读取使用同一值；软件VERSION不承担格式或ABI身份。
