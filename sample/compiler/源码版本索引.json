@@ -172,7 +172,7 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "sha256": "db16e6f3e041cebc0e4c583233bccda2504a4285c2af37dd6ae77126d46d1228"
+      "sha256": "d4f29cc10a4caaee918eace92b7d662ce5fe4bde7e2f0717180c824530fbe140"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
@@ -188,7 +188,7 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "fe3887e3105326bdbb55ba4926e15c950e0748a6f0aa384bee259b74ec25c340"
+      "sha256": "c330d4a006de612aae89c6c54b33dd0be7899284d58b86c16bbee11644f9a92f"
     },
     {
       "path": "sample/lessons/map.b",
@@ -658,8 +658,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2735,
-      "end_line": 2750,
+      "start_line": 2738,
+      "end_line": 2753,
       "sha256": "1b9250134bf807852db03568883cac273409a880f90b1a95a765b91458dd0088"
     },
     {

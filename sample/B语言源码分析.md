@@ -702,7 +702,7 @@ pub struct Dataset {
 
 `words` 是 CPU 上的存储，`count` 是记录数，`stride` 是相邻记录间隔。这里使用 `Vec<u32>` 保存四字节 word，是保存原始位模式的容器，并不表示其中的所有字段都是 `u32`。
 
-Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。CPU／GPU入口拒绝驻留不符的参数时，原Vec交回当前输入、已取出的存储及同一程序，域关系保持。调用方显式download或upload后可再调用；只读别名只移动一份存储，不增拥有表。
+Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。驻留拒绝或GPU提交准备失败时，原输入、程序及域关系仍归Frame。GPU准备借用原拥有组，成功提交才发布producer与最后使用点。调用者显式传输或修正实参后可再调用；只读别名只移动一份存储，不增拥有表。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
@@ -2124,7 +2124,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2735`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2738`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {

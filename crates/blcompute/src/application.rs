@@ -317,10 +317,19 @@ impl Frame {
                         }
                     }
                 }
-                let result = gpu_program
-                    .submit_projected(DomainBindings { datasets, domains }, &order, values)?
-                    .wait()?
-                    .into_bindings();
+                let submission = match gpu_program
+                    .submit_projected(DomainBindings { datasets, domains }, &order, values)
+                {
+                    Ok(submission) => submission,
+                    Err((error, bindings)) => {
+                        for (&handle, data) in selected.iter().zip(bindings.datasets) {
+                            self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
+                        }
+                        self.programs[index] = Some(ProgramSlot::Loaded(loaded));
+                        return Err(error);
+                    }
+                };
+                let result = submission.wait()?.into_bindings();
                 crate::bindings::invalidate(&mut self.data.domains, layout,
                     |i| (bindings[i].handle as usize, bindings[i].offset));
                 (

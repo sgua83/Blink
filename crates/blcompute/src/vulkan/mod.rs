@@ -1937,16 +1937,16 @@ impl GpuProgram {
     }
     fn submit_owned(
         &self,
-        owner: InputOwner,
+        mut owner: InputOwner,
         values: &[Value],
         steps: NonZeroU32,
     ) -> Result<Submission> {
         let count = owner.bindings.datasets.len();
-        self.submit_owned_mapped(owner, values, steps, count, |i| (i, 0))
+        self.submit_owned_mapped(&mut owner, values, steps, count, |i| (i, 0))
     }
     fn submit_owned_mapped(
         &self,
-        mut owner: InputOwner,
+        owner: &mut InputOwner,
         values: &[Value],
         steps: NonZeroU32,
         count: usize,
@@ -2121,6 +2121,7 @@ impl GpuProgram {
             };
             scratch.push(temporary);
         }
+        let mut last: Vec<_> = data.owners.iter().map(|d| d.producer).collect();
         if query_count != 0 {
             unsafe {
                 let sets = u32::try_from(1 + extra_sets)?;
@@ -2201,7 +2202,6 @@ impl GpuProgram {
                 (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
                 let mut pending: BTreeSet<_> = (0..data.owners.len()).collect();
                 let mut pending_reads = BTreeSet::new();
-                let mut last: Vec<_> = data.owners.iter().map(|d| d.producer).collect();
                 for step in 0..steps.get() {
                     for (i, stage) in c.program.stages().iter().enumerate() {
                         let affected: Vec<_> = stage
@@ -2536,7 +2536,6 @@ impl GpuProgram {
                         for b in &stage.writes {
                             pending.insert(physical(*b));
                             last[physical(*b)] = Usage::Compute;
-                            data[*b].owned_storage()?.producer = Usage::Compute;
                         }
                     }
                 }
@@ -2553,16 +2552,19 @@ impl GpuProgram {
                 _binding_parameters: binding_parameters,
                 _queries: queries.clone(),
             },
-            owner.dependencies,
+            std::mem::take(&mut owner.dependencies),
         );
-        for dataset in data.owners.iter_mut() {
+        for (dataset, producer) in data.owners.iter_mut().zip(last) {
+            if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
+                storage.producer = producer;
+            }
             dataset.last_use = Some(execution.clone());
         }
         owner.bindings.completed(&c.program, location);
         Ok(Submission {
             execution,
-            bindings: owner.bindings,
-            accelerations: owner.accelerations,
+            bindings: std::mem::replace(&mut owner.bindings, Vec::new().into()),
+            accelerations: std::mem::take(&mut owner.accelerations),
             queries,
         })
     }
@@ -2587,19 +2589,20 @@ impl GpuTemplate {
         bindings: DomainBindings<GpuDataset>,
         order: &[(usize, u32)],
         values: &[Value],
-    ) -> Result<Submission> {
+    ) -> std::result::Result<Submission, (Box<dyn std::error::Error + Send + Sync>, DomainBindings<GpuDataset>)> {
+        let mut owner = InputOwner {
+            dependencies: Vec::new(),
+            bindings,
+            accelerations: Vec::new(),
+            textures: Vec::new(),
+        };
         self.code.submit_owned_mapped(
-            InputOwner {
-                dependencies: Vec::new(),
-                bindings,
-                accelerations: Vec::new(),
-                textures: Vec::new(),
-            },
+            &mut owner,
             values,
             NonZeroU32::MIN,
             order.len(),
             |i| order[i],
-        )
+        ).map_err(|error| (error, owner.bindings))
     }
     pub fn submit_after(
         &self,
