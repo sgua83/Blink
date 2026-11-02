@@ -690,7 +690,7 @@ CPU普通位置的跨对象借用现按逻辑分量／声明布局直接交接�
 
 原生Rust SDK的`Object::stack_report(Option<u64>)`查看该对象，`linker::stack_report_inputs(inputs,Option<u64>)`查看同一实际选择／组合结果；`None`不声明预算。报告元数据随当前COFF交付，缓存对象保留同一信息；旧格式对象须用当前工具重新生成，不读取旧源码补填或猜测旧对象的调用图。资源C ABI及映像版本仍见下一节。
 
-CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配、保存寄存器与出参空间，不含本入口返回地址；普通函数的对象Frame及PE输入消费同一字段，不另存一份local_bytes。范围及自定义集合的五次64位保存计入40字节，普通函数仅在实际使用scratch寄存器时计入其8字节保存；手写集合入口各按真实指令统计。应用、独立模块与算法DLL的CPU执行映像将每个Element主入口的同一字段交给对象报告，行名为CPU、程序身份与stage序号；这些入口没有静态COFF位置，不伪造地址。已知路径只含自身局部帧与8字节返回地址，未报告的计算调用图明确使Upper及完整容量比较为unknown；本帧已超过所给预算时仍如实标注。模块资源未被选中时相应行一并裁掉，GPU专属映像不产生CPU行。四种单入口延续ReductionTail、ScanAdd、CompactScatter、SegmentedFinish也从同一映像交接局部帧，行名分别注明reduction tail、scan add、compact scatter、segmented finish；它们由运行库在主范围完成后独立调用，不与主入口的局部帧相加。双入口延续的prefix／apply、排序及实际辅助调用覆盖仍分别沿C-024.1.1.2.3.2／.3／.4开放；运行库与实际线程的完整调用栈仍归原所有者，未知不作零栈。
+CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配、保存寄存器与出参空间，不含本入口返回地址；普通函数的对象Frame及PE输入消费同一字段，不另存一份local_bytes。范围及自定义集合的五次64位保存计入40字节，普通函数仅在实际使用scratch寄存器时计入其8字节保存；手写集合入口各按真实指令统计。应用、独立模块与算法DLL的CPU执行映像将每个Element主入口的同一字段交给对象报告，行名为CPU、程序身份与stage序号；这些入口没有静态COFF位置，不伪造地址。已知路径只含自身局部帧与8字节返回地址，未报告的计算调用图明确使Upper及完整容量比较为unknown；本帧已超过所给预算时仍如实标注。模块资源未被选中时相应行一并裁掉，GPU专属映像不产生CPU行。四种单入口延续ReductionTail、ScanAdd、CompactScatter、SegmentedFinish也从同一映像交接局部帧，行名分别注明reduction tail、scan add、compact scatter、segmented finish；它们由运行库在主范围完成后独立调用，不与主入口的局部帧相加。ContinuationCode::Scan的双入口也分别按scan prefix／scan apply交付同一映像中的局部帧；自定义扫描和自定义分段归约共用这两个字段，宿主先调用prefix再独立执行apply，不把两帧相加为线程上界。排序及实际辅助调用覆盖仍分别沿C-024.1.1.2.3.3／.4开放；运行库与实际线程的完整调用栈仍归原所有者，未知不作零栈。
 
 ## 已编译模块的资源ABI
 

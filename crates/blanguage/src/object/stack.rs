@@ -17,17 +17,19 @@ pub(crate) enum Call {
 pub(crate) fn compute(name: &str, stages: &[crate::native::StageCode]) -> Vec<Frame> {
     use crate::native::{ContinuationCode, StageCode};
     stages.iter().enumerate().flat_map(|(index, stage)| {
-        let entries = match stage {
-            StageCode::Element { main, continuation, .. } => [Some(("", main)), match continuation {
-                Some(ContinuationCode::ReductionTail(code)) => Some((" reduction tail", code)),
-                Some(ContinuationCode::ScanAdd(code)) => Some((" scan add", code)),
-                Some(ContinuationCode::CompactScatter(code)) => Some((" compact scatter", code)),
-                Some(ContinuationCode::SegmentedFinish(code)) => Some((" segmented finish", code)),
-                None | Some(ContinuationCode::Scan { .. }) => None,
-            }],
-            StageCode::Sort(_) => [None, None],
+        let (main, continuation) = match stage {
+            StageCode::Element { main, continuation, .. } => (Some(("", main)), match continuation {
+                Some(ContinuationCode::ReductionTail(code)) => [Some((" reduction tail", code)), None],
+                Some(ContinuationCode::ScanAdd(code)) => [Some((" scan add", code)), None],
+                Some(ContinuationCode::CompactScatter(code)) => [Some((" compact scatter", code)), None],
+                Some(ContinuationCode::SegmentedFinish(code)) => [Some((" segmented finish", code)), None],
+                Some(ContinuationCode::Scan { prefix, apply, .. }) =>
+                    [Some((" scan prefix", prefix)), Some((" scan apply", apply))],
+                None => [None, None],
+            }),
+            StageCode::Sort(_) => (None, [None, None]),
         };
-        entries.into_iter().flatten().map(move |(entry, code)| Frame {
+        std::iter::once(main).chain(continuation).flatten().map(move |(entry, code)| Frame {
             name: format!("CPU {name} stage {index}{entry}"), coff: None, local: code.stack_bytes,
             calls: vec![Call::Unreported],
         })
