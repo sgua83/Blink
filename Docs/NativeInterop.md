@@ -344,3 +344,7 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 `blink.windows.environment`直接声明`address GetEnvironmentStringsW()`与`i32 FreeEnvironmentStringsW(address block)`，分别保留LPWCH与BOOL的真实Windows x64 C ABI。成功取得的是本次只读UTF-16环境快照，B可用原unsafe_position逐条读取；本次调用方保持原地址及所有读取者，最后消费者结束后匹配释放一次，Free失败状态及其立即GetLastError由调用者处理。同模块GetEnvironmentVariableW保持address／address／u32→u32的真实C ABI，容量与返回值分别按原含NUL必要空间／不含NUL实际长度解释；直接调用者保持实际名称及缓冲区。普通B函数variable(address name)以原API交回result<dataset<u16>,VariableError>，成功只含实际代码单元，未定义203、空值、原系统失败及容量不足不混同；不足时不消费未定义输出或重新执行。返回资源沿原模块资源C ABI和Frame交接，不把外部环境快照变成B资源。SetEnvironmentVariableW保持address／address→i32的原LPCWSTR／可选LPCWSTR／BOOL接口：零value地址删除，NUL空串地址设置空值，非零成功／零失败及立即GetLastError由原调用方消费。OS只复制本次调用的输入，不持有调用方地址；原存储可在返回后修改／释放，旧快照和B拥有读取结果不被回写。本次进程写入不修改其他既有进程或注册表环境，不封装为额外状态或自动重放。
 
 外部存储不进入Frame，address复制、游标推进和函数返回不改变原拥有者或延长释放后的有效期。模块不包装为可自动销毁的B字符串，不建立全局环境副本、释放队列或第二运行库。纯.h与其已编译对象／归档可直接消费，无需空.b；完整原型、枚举示例及官方合同见[环境接口](../library/README.md#blinkwindowsenvironment)。环境按名字查询／写入、B拥有文本集合及实际引擎／编译器采用分别建设。
+
+## Windows当前进程标准句柄
+
+blink.windows.process::GetStdHandle以原u32 DWORD选择值交给Kernel32，返回原8字节handle；三个STD选择值、失败的全一身份及没有标准句柄时的零值分别保持。返回的身份借自进程表，不因复制成为B拥有资源；标准端点的替换／关闭与余下读写仍归原所有者。ReadFile／WriteFile继续交接实际字节范围、i32状态、字节数和OS错误，缓冲只在本次真实同步调用完成后重用。具体借用及EOF语义见[标准句柄接口](../library/README.md#当前进程的标准句柄)。

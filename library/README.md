@@ -290,6 +290,16 @@ target/release/blink.exe target/main.obj target/process.lib target/sequence-u16.
 
 调用方通过归档接口取得两个模块，不再补读提供方.h／.b；返回结构、资源ABI及编译／链接职责保持。
 
+### 当前进程的标准句柄
+
+GetStdHandle(u32 standard_handle)直接返回当前进程表中的标准handle。STD_INPUT_HANDLE、STD_OUTPUT_HANDLE、STD_ERROR_HANDLE分别为DWORD的0xfffffff6、0xfffffff5、0xfffffff4；它们是32位无符号选择值，返回的handle保留完整64位身份。源码位于原process.h，无B转发实现。
+
+返回值只是表项的复制，借用者不会因此取得独占拥有权，也不因用完getter而CloseHandle。进程及实际更换／关闭句柄的所有者负责余下消费者；Frame不接管这些外部对象。GetStdHandle失败时返回INVALID_HANDLE_VALUE，立即用blink.windows.error::GetLastError取得本次错误；没有关联标准句柄时返回handle()的NULL，含义与失败分别保留。
+
+标准端点可能是控制台、文件或管道，也可能已被调用方替换。getter不校验表项、不增加读写权或更改同步模式。同步字节输入／输出直接使用blink.windows.file的ReadFile／WriteFile，调用者保持缓冲到实际调用完成，并消费原i32状态、实际字节数及即时OS错误；标准输入、输出、错误分别选择，不隐式合并。ReadFile成功且读取零字节的文件EOF，与匿名管道写端关闭时的ERROR_BROKEN_PIPE=109保持原结果，由实际消费者按输入类型解释，不在库中重试或吞错。
+
+原始字节不被自动认作UTF-8，也不在这些入口增加文本编码、行缓冲、控制台附着或流对象。完整控制台文本策略、统一跨平台标准流及编译器CLI采用仍待建设。平台合同见[GetStdHandle](https://learn.microsoft.com/en-us/windows/console/getstdhandle)与[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)。
+
 ### Windows原生子进程
 
 本模块直接声明Kernel32入口，不经过命令解释器或Rust转发；创建、等待、查询与关闭分别交接原OS结果：

@@ -45,6 +45,12 @@ const u32 WAIT_TIMEOUT=0x00000102;
 const u32 WAIT_FAILED=0xffffffff;
 const u32 STILL_ACTIVE=259;
 
+const u32 STD_INPUT_HANDLE=0xfffffff6;
+const u32 STD_OUTPUT_HANDLE=0xfffffff5;
+const u32 STD_ERROR_HANDLE=0xfffffff4;
+
+extern "C" handle GetStdHandle(u32 standard_handle) on cpu from "KERNEL32.dll";
+
 extern "C" i32 CreateProcessW(
     address application,address command_line,
     address process_attributes,address thread_attributes,
