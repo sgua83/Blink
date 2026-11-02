@@ -558,5 +558,5 @@ pub(super) fn emit(
         }
     }
     e.leave(frame);
-    Ok(e.finish(frame))
+    Ok(e.finish(frame + 40))
 }

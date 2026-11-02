@@ -40,7 +40,7 @@
     },
     {
       "path": "crates/blanguage/src/native.rs",
-      "sha256": "3bf3e8962762014f63af849ba2281b57409175172a702671200cf0c3bbff08a0"
+      "sha256": "06497736e5eb2afed8862045f40195754e8614a7765fce20dfe8bf4bea3804ac"
     },
     {
       "path": "crates/blanguage/src/native/allocation.rs",

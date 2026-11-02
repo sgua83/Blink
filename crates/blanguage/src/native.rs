@@ -737,5 +737,5 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     e.patch(back, begin);
     e.patch(end, e.code.len());
     e.leave(frame);
-    Ok(e.finish(frame))
+    Ok(e.finish(frame + 40))
 }
