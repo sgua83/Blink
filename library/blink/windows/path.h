@@ -15,3 +15,19 @@ enum AbsoluteError : u32 {
 };
 
 result<dataset<u16>,AbsoluteError> absolute(address path) on cpu;
+
+enum CanonicalQueryError : u32 {
+    System(u32) = 1;
+    BufferTooSmall(u32) = 2;
+};
+struct CanonicalCloseError { address handle; u32 code; };
+struct CanonicalQueryCloseError { CanonicalQueryError query; CanonicalCloseError close; };
+enum CanonicalError : u32 {
+    Open(u32) = 1;
+    Query(CanonicalQueryError) = 2;
+    Close(CanonicalCloseError) = 3;
+    QueryAndClose(CanonicalQueryCloseError) = 4;
+    Input(AbsoluteError) = 5;
+};
+
+result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu;
