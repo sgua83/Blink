@@ -930,7 +930,7 @@ impl World {
                 source: source.clone(),
                 span,
                 code: "B238",
-                message: "array 长度需要 u32 字面量或 const 名称".into(),
+                message: "array 长度需要 u32 编译期表达式".into(),
             })?;
             let count = self
                 .shape(&Some(length), source, span, module, imports)?
@@ -1033,7 +1033,7 @@ impl World {
                 source: source.clone(),
                 span,
                 code: "B235",
-                message: "记录 const 实参需要 u32 字面量或 const 名称".into(),
+                message: "记录 const 实参需要 u32 编译期表达式".into(),
             })?;
             let value = self
                 .shape(&Some(shape), source, span, module, imports)?
@@ -1087,7 +1087,7 @@ impl World {
                     if !tags.insert(tag) { return s.fail(variant.span, "B268", "带载荷变体的编号必须唯一，才能确定活动载荷"); }
                     let mut syntax = variant.payload.clone();
                     generics::substitute_type(&mut syntax, &replacements, s, variant.span)?;
-                    value_parameters::substitute_type(&mut syntax, &value_map);
+                    value_parameters::substitute_type(&mut syntax, &value_map,s)?;
                     if syntax.tile { return s.fail(variant.span, "B269", "tile是执行域借用，不能作为变体载荷"); }
                     let mut payload = if syntax == TypeName::named("void") { ir::Ty::unit() }
                         else { self.ty_inner(&syntax, s, variant.span, m, i, stack)? };
@@ -1128,7 +1128,7 @@ impl World {
             }
             let mut field_type = field.ty.clone();
             generics::substitute_type(&mut field_type, &replacements, s, field.span)?;
-            value_parameters::substitute_type(&mut field_type, &value_map);
+            value_parameters::substitute_type(&mut field_type, &value_map,s)?;
             let mut f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
             if field_type.dataset {
                 if f.owns_resources() || f.contains_views() {
@@ -1163,10 +1163,9 @@ impl World {
             message: "记录对齐后超过 u32 字节地址范围".into(),
         })?;
         if let Some(shape) = &record.stride {
-            let stride = match shape {
-                Shape::Constant(name) if value_map.contains_key(name) => value_map[name],
-                _ => self.shape(&record.stride, s, record.span, m, i)?.unwrap(),
-            };
+            let mut shape=shape.clone();
+            value_parameters::substitute_shape(&mut shape,&value_map,s)?;
+            let stride=self.shape(&Some(shape),s,record.span,m,i)?.unwrap();
             if stride < ty.size || stride % ty.align != 0 {
                 return s.fail(
                     record.span,

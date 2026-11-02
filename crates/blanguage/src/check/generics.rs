@@ -218,7 +218,7 @@ pub(crate) fn specialize(
                 source: source.clone(),
                 span,
                 code: "B235",
-                message: "const 实参需要 u32 字面量或 const 名称".into(),
+                message: "const 实参需要 u32 编译期表达式".into(),
             })?;
             world
                 .shape(&Some(shape), source, span, &caller.module, &caller.imports)?

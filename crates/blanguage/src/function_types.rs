@@ -12,7 +12,7 @@ fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::R
     Ok(())
 }
 fn type_name(ty: &TypeName) -> String {
-    let shape = |value: &Shape| match value { Shape::Literal(value) => value.to_string(), Shape::Constant(name) => name.clone() };
+    let shape = |value: &Shape| match value { Shape::Literal(value) => value.to_string(), Shape::Constant(name) => name.clone(), Shape::Expression(expression)=>expression_name(expression) };
     let mut name = ty.name.clone();
     if !ty.arguments.is_empty() {
         name.push('<');
@@ -36,6 +36,31 @@ fn type_name(ty: &TypeName) -> String {
         }
     }
     name
+}
+pub(crate) fn expression_name(expression:&Expr)->String {
+    let arguments=|values:&[Expr]|values.iter().map(expression_name).collect::<Vec<_>>().join(",");
+    let generic=|values:&[GenericArgument]|values.iter().map(|value|match value {
+        GenericArgument::Type(ty)=>type_name(ty),
+        GenericArgument::Value(Shape::Literal(value))=>value.to_string(),
+        GenericArgument::Value(Shape::Constant(name))=>name.clone(),
+        GenericArgument::Value(Shape::Expression(value))=>expression_name(value),
+    }).collect::<Vec<_>>().join(",");
+    match &expression.kind {
+        ExprKind::Number(value)|ExprKind::Name(value)=>value.clone(),
+        ExprKind::StaticU32(value)=>value.to_string(),ExprKind::Bool(value)=>value.to_string(),
+        ExprKind::Member(base,field)=>format!("{}.{}",expression_name(base),field),
+        ExprKind::Index(base,index)=>format!("{}[{}]",expression_name(base),expression_name(index)),
+        ExprKind::Unary(op,value)=>format!("({op}{})",expression_name(value)),
+        ExprKind::Binary(op,a,b)=>format!("({}{op}{})",expression_name(a),expression_name(b)),
+        ExprKind::Select(a,b,c)=>format!("({}?{}:{})",expression_name(a),expression_name(b),expression_name(c)),
+        ExprKind::Call(name,args)=>format!("{name}({})",arguments(args)),
+        ExprKind::Invoke(callee,args)=>format!("{}({})",expression_name(callee),arguments(args)),
+        ExprKind::Construct(ty,args)=>format!("{}({})",type_name(ty),arguments(args)),
+        ExprKind::Specialize(name,types,args)=>format!("{name}<{}>({})",generic(types),arguments(args)),
+        ExprKind::FunctionRef(name,types)=>format!("{name}<{}>",generic(types)),
+        ExprKind::Cooperate(name,types,args)=>format!("cooperate {name}{}({})",types.as_ref().map(|types|format!("<{}>",generic(types))).unwrap_or_default(),arguments(args)),
+        ExprKind::Target(target,value)=>format!("target({},{})",match target {Target::Cpu=>"cpu",Target::Gpu=>"gpu",Target::Compute=>"compute"},expression_name(value)),
+    }
 }
 fn condition_name(condition: &OutputCondition) -> String {
     match condition {
@@ -81,7 +106,7 @@ impl World {
         let bind = |name: &TypeName, source: &Source, span: Span| -> crate::Result<TypeName> {
             let mut name = name.clone();
             crate::generics::substitute_type(&mut name, types, source, span)?;
-            crate::value_parameters::substitute_type(&mut name, values);
+            crate::value_parameters::substitute_type(&mut name, values,source)?;
             self.interface_type(&name, source, span, &definition.module, &definition.imports)
         };
         let mut same = bind(&declaration.result, &interface.source, declaration.span)?
@@ -161,7 +186,7 @@ impl World {
                 GenericArgument::Type(self.c_signature_type(ty, source, span, module, imports)?)
             } else {
                 let value = argument.shape().ok_or_else(|| crate::Diagnostic {
-                    source: source.clone(), span, code: "B235", message: "const实参需要u32字面量或const名称".into(),
+                    source: source.clone(), span, code: "B235", message: "const实参需要u32编译期表达式".into(),
                 })?;
                 let value = self.shape(&Some(value), source, span, module, imports)?.unwrap();
                 GenericArgument::Value(Shape::Literal(value))
@@ -221,7 +246,7 @@ impl World {
             }).collect::<crate::Result<_>>()?;
             let mut selected = selected.ty.clone();
             crate::generics::substitute_type(&mut selected, &types, record_source, span)?;
-            crate::value_parameters::substitute_type(&mut selected, &values);
+            crate::value_parameters::substitute_type(&mut selected, &values,record_source)?;
             return self.output_path_type(&selected, rest, record_source, span, record_module, record_imports);
         }
         // A literal cannot numerically operate on an ordinary record. Decide

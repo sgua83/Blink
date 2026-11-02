@@ -214,7 +214,16 @@ record!(ir::Ty {
 });
 record!(ir::CFunctionType { result, parameters, outputs });
 record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count, outputs });
-variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name) });
+variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name), 2=>Expression(value) });
+record!(ast::Span { start, end });
+record!(ast::Expr { kind, span });
+variants!(ast::ExprKind {
+    0=>Number(value),1=>StaticU32(value),2=>Bool(value),3=>Name(name),
+    4=>Member(base,field),5=>Index(base,index),6=>Call(name,args),7=>Invoke(callee,args),
+    8=>Construct(ty,args),9=>Specialize(name,types,args),10=>FunctionRef(name,types),
+    11=>Cooperate(name,types,args),12=>Target(target,value),13=>Unary(op,value),
+    14=>Binary(op,a,b),15=>Select(a,b,c)
+});
 variants!(ast::GenericArgument { 0=>Type(ty), 1=>Value(shape) });
 variants!(ir::CallParameter{0=>Value(ty),1=>Reference{ty,access}});
 variants!(ast::ContractKind{0=>Requires,1=>Ensures});

@@ -69,6 +69,21 @@ pub(super) fn stage_expression(
     }
     Ok(Root::Literal(value.ty, value.constant.unwrap()))
 }
+fn constant_context(name:&str)->Program {
+Program {
+            name: name.into(),
+            target: Target::Compute,
+            buffers: Vec::new(),
+            accelerations: Vec::new(),
+            textures: Vec::new(),
+            uniforms: Vec::new(),
+            uniform_bytes: 0,
+            source_stages: 0,
+            stages: Vec::new(),
+            prefix_requirements: Vec::new(),
+            prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
+        }
+}
 fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>)> {
     let definition = &world.functions[key];
     if !world.evaluating_constants.borrow_mut().insert(key.into()) {
@@ -88,19 +103,7 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
                 "const 需要普通值类型，不能持有资源或 void",
             );
         }
-        let context = Program {
-            name: key.into(),
-            target: Target::Compute,
-            buffers: Vec::new(),
-            accelerations: Vec::new(),
-            textures: Vec::new(),
-            uniforms: Vec::new(),
-            uniform_bytes: 0,
-            source_stages: 0,
-            stages: Vec::new(),
-            prefix_requirements: Vec::new(),
-            prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
-        };
+        let context=constant_context(key);
         let mut builder = Builder::new(world, definition, &context, 0)?;
         builder.in_function = true;
         builder.calls = calls.to_vec();
@@ -140,6 +143,11 @@ impl World {
         match shape {
             None => Ok(None),
             Some(Shape::Literal(n)) => Ok(Some(*n)),
+            Some(Shape::Expression(expression))=>{
+                let key=format!("<shape>:{}:{module}:{}",source.path.display(),crate::function_types::expression_name(expression));
+                Ok(Some(integer_expression(self,&key,source,module,imports,&Ty::scalar(Scalar::U32),expression,
+                    ("B234","形状或const实参必须完全在编译期求值，不能包含运行期运算或副作用"))?))
+            },
             Some(Shape::Constant(name)) => {
                 let key = self
                     .resolve(name, module, imports, true)
@@ -276,33 +284,32 @@ pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<B
     Some(scalar.truncate(bits))
 }
 
-// 编号表达式沿原常量求值，不建立另一份宿主表达式解释器。
-pub(crate) fn variant_discriminant(world: &World, identity: &str, source: &Source, module: &str, imports: &[String], representation: &Ty, expression: &Expr) -> Result<u32> {
-    let key=format!("<variant-tag>:{identity}");
-    if !world.evaluating_constants.borrow_mut().insert(key.clone()) {
-        return source.fail(expression.span,"B160",format!("编译期变体编号与类型递归依赖 {identity}"));
+// 编号与形状共享原整数表达式、类型及常量求值所有者。
+pub(crate) fn variant_discriminant(world:&World,identity:&str,source:&Source,module:&str,imports:&[String],representation:&Ty,expression:&Expr)->Result<u32> {
+    integer_expression(world,&format!("<variant-tag>:{identity}"),source,module,imports,representation,expression,
+        ("B268","变体编号必须是可完全编译期求值的底层整数"))
+}
+fn integer_expression(world:&World,key:&str,source:&Source,module:&str,imports:&[String],representation:&Ty,expression:&Expr,diagnostic:(&'static str,&'static str))->Result<u32> {
+    if !world.evaluating_constants.borrow_mut().insert(key.into()) {
+        return source.fail(expression.span,"B160",format!("编译期表达式与类型递归依赖 {key}"));
     }
     let result=(|| {
-    let definition = Arc::new(Definition {
-        source: source.clone(), module: module.into(), imports: imports.to_vec(), public: false, compiled: None,
-        execution: crate::execution::Requirement::Invocation,
-        function: Function { name: "<variant-number>".into(), types: Vec::new(), values: Vec::new(), params: Vec::new(),
-            result: representation.syntax(), kind: FunctionKind::Constant, target: Target::Compute,
-            contracts: Vec::new(), c_abi: false, external: None, body: Some(vec![Stmt { span: expression.span, kind: StmtKind::Return(Some(expression.clone())) }]), span: expression.span },
-    });
-    let context = Program { name: definition.function.name.clone(), target: Target::Compute,
-        buffers: Vec::new(), accelerations: Vec::new(), textures: Vec::new(), uniforms: Vec::new(), uniform_bytes: 0,
-        source_stages: 0, stages: Vec::new(), prefix_requirements: Vec::new(), prefix_guarantees: Vec::new(), length_requirements:Vec::new() };
-    let mut builder = Builder::new(world, &definition, &context, 0)?;
-    builder.in_function = true;
-    let result = builder.expr(expression)?;
-    let value = builder.value_result(result, expression.span)?;
-    builder.require_same(representation, &value.ty, expression.span)?;
-    if value.constant.is_none() || builder.code.iter().any(|inst| !matches!(inst, Inst::Constant(..))) {
-        return source.fail(expression.span, "B268", "变体编号必须是可完全编译期求值的底层整数");
-    }
-    Ok(value.constant.unwrap()[0] as u32)
+        let definition=Arc::new(Definition {
+            source:source.clone(),module:module.into(),imports:imports.to_vec(),public:false,compiled:None,
+            execution:crate::execution::Requirement::Invocation,
+            function:Function {name:"<integer-expression>".into(),types:Vec::new(),values:Vec::new(),params:Vec::new(),
+                result:representation.syntax(),kind:FunctionKind::Constant,target:Target::Compute,
+                contracts:Vec::new(),c_abi:false,external:None,
+                body:Some(vec![Stmt {span:expression.span,kind:StmtKind::Return(Some(expression.clone()))}]),span:expression.span},
+        });
+        let context=constant_context(&definition.function.name);
+        let mut builder=Builder::new(world,&definition,&context,0)?;builder.in_function=true;
+        let result=builder.expr(expression)?;let value=builder.value_result(result,expression.span)?;
+        builder.require_same(representation,&value.ty,expression.span)?;
+        if value.constant.is_none()||builder.code.iter().any(|instruction|!matches!(instruction,Inst::Constant(..))) {
+            return source.fail(expression.span,diagnostic.0,diagnostic.1);
+        }
+        Ok(value.constant.unwrap()[0]as u32)
     })();
-    world.evaluating_constants.borrow_mut().remove(&key);
-    result
+    world.evaluating_constants.borrow_mut().remove(key);result
 }

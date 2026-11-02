@@ -134,22 +134,24 @@ impl Parser {
         }
         let mut depth = 0isize;
         let mut parentheses = 0usize;
+        let mut brackets = 0usize;
         for (index, token) in self.tokens.iter().enumerate().skip(at) {
-            if parentheses != 0 {
-                match token.text(&self.source) { "(" => parentheses += 1, ")" => parentheses -= 1, _ => {} }
+            if parentheses != 0 || brackets != 0 {
+                match token.text(&self.source) {
+                    "("=>parentheses+=1,
+                    ")"=>parentheses=parentheses.checked_sub(1)?,
+                    "["=>brackets+=1,
+                    "]"=>brackets=brackets.checked_sub(1)?,
+                    _=>{},
+                }
                 continue;
             }
-            if token.text(&self.source) == "(" && index >= 2
-                && self.tokens[index - 1].text(&self.source) == "initialized"
-                && self.tokens[index - 2].text(&self.source) == "ensures" {
-                parentheses = 1;
-                continue;
-            }
+            match token.text(&self.source) {"("=>{parentheses=1;continue;},"["=>{brackets=1;continue;},_=>{}}
             match token.text(&self.source) {
                 "<" => depth += 1,
                 ">" => depth -= 1,
                 ">>" => depth -= 2,
-                "," | "." | "::" => {}
+                ","|"."|"::"|"+"|"-"|"*"|"/"|"%"|"&"|"|"|"^"|"~"|"!"|"?"|":"|"<<"|"=="|"!="|"<="|">="|"&&"|"||"=>{}
                 text if text
                     .as_bytes()
                     .first()
@@ -190,7 +192,7 @@ impl Parser {
             "initialized" => {
                 let value = self.qualified(".")?;
                 self.expect(",")?;
-                let expression = self.expr(0)?;
+                let expression = self.expr(0,false)?;
                 let condition = OutputCondition::from_expr(&expression).ok_or_else(|| Diagnostic {
                     source: self.source.clone(), span: expression.span, code: "B225",
                     message: "initialized 条件使用输入值、returned、字段、布尔和纯数值运算；不执行调用或存储访问".into(),
@@ -252,7 +254,7 @@ impl Parser {
         let mut args = Vec::new();
         if !self.take(")") {
             loop {
-                args.push(self.expr(0)?);
+                args.push(self.expr(0,false)?);
                 if self.take(")") { break; }
                 self.expect(",")?;
             }
@@ -304,35 +306,32 @@ impl Parser {
         }
     }
     fn shape_argument(&mut self) -> Result<Shape> {
-        if self
-            .peek()
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_digit)
-        {
-            let span = self.span();
-            let n = self.peek().parse::<u32>().map_err(|_| Diagnostic {
-                source: self.source.clone(),
-                span,
-                code: "B015",
-                message: "编译期值需要十进制 u32 或 const 名称".into(),
-            })?;
-            self.at += 1;
-            Ok(Shape::Literal(n))
-        } else {
-            Ok(Shape::Constant(self.type_name()?))
+        let expression=self.expr(0,true)?;
+        Ok(match &expression.kind {
+            ExprKind::Number(number) if number.parse::<u32>().is_ok()=>Shape::Literal(number.parse().unwrap()),
+            ExprKind::StaticU32(value)=>Shape::Literal(*value),
+            ExprKind::Name(name)=>Shape::Constant(name.clone()),
+            _=>Shape::Expression(Box::new(expression)),
+        })
+    }
+    fn value_argument(&self)->bool {
+        let first=self.peek();
+        if first.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            || matches!(first,"("|"+"|"-"|"!"|"~"|"true"|"false") {return true;}
+        let mut at=self.at+1;
+        while self.tokens.get(at).is_some_and(|token|matches!(token.text(&self.source),"."|"::")) {at+=2;}
+        if self.tokens.get(at).is_some_and(|token|token.text(&self.source)=="<") {
+            let Some(end)=self.angle_end(at)else{return false;};at=end;
         }
+        self.tokens.get(at).is_some_and(|token|matches!(token.text(&self.source),
+            "("|"+"|"-"|"*"|"/"|"%"|"&"|"|"|"^"|"<<"|"=="|"!="|"<="|">="|"&&"|"||"|"?"))
     }
     fn generic_arguments(&mut self) -> Result<Vec<GenericArgument>> {
         self.expect("<")?;
         let mut result = Vec::new();
         loop {
             result.push(
-                if self
-                    .peek()
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_digit)
+                if self.value_argument()
                 {
                     GenericArgument::Value(self.shape_argument()?)
                 } else {
@@ -491,7 +490,7 @@ impl Parser {
                 let result = self.ty()?;
                 let name = self.ident()?;
                 self.expect("=")?;
-                let value = self.expr(0)?;
+                let value = self.expr(0,false)?;
                 self.expect(";")?;
                 // const 初始化沿同一表达式与返回类型分析，不生成运行期函数入口。
                 functions.push(Function {
@@ -546,7 +545,7 @@ impl Parser {
                         else { let ty = self.ty()?; self.expect(")")?; ty }
                     } else { TypeName::named("void") };
                     self.expect("=")?;
-                    let discriminant = self.expr(0)?;
+                    let discriminant = self.expr(0,false)?;
                     self.expect(";")?;
                     variants.push(VariantDeclaration { name: member, payload, discriminant, span: at });
                 }
@@ -751,7 +750,7 @@ impl Parser {
                 self.expect("(")?;
                 let dataset = self.ident()?;
                 self.expect(",")?;
-                let count = self.expr(0)?;
+                let count = self.expr(0,false)?;
                 self.expect(")")?;
                 ParallelDomain {
                     dataset,
@@ -767,14 +766,14 @@ impl Parser {
             };
             if selected {
                 self.expect(",")?;
-                domain.selection = Some(self.expr(0)?);
+                domain.selection = Some(self.expr(0,false)?);
                 self.expect(")")?;
             }
             self.expect(")")?;
             StmtKind::Parallel(name, domain, self.block()?)
         } else if self.take("if") {
             self.expect("(")?;
-            let c = self.expr(0)?;
+            let c = self.expr(0,false)?;
             self.expect(")")?;
             let a = self.block()?;
             let b = if self.take("else") {
@@ -789,7 +788,7 @@ impl Parser {
             StmtKind::If(c, a, b)
         } else if self.take("match") {
             self.expect("(")?;
-            let value = self.expr(0)?;
+            let value = self.expr(0,false)?;
             self.expect(")")?;
             self.expect("{")?;
             let mut arms=Vec::new();
@@ -801,16 +800,16 @@ impl Parser {
             StmtKind::Match(value,arms)
         } else if self.take("while") {
             self.expect("(")?;
-            let c = self.expr(0)?;
+            let c = self.expr(0,false)?;
             self.expect(")")?;
             StmtKind::While(c, self.block()?)
         } else if self.take("for") {
             self.expect("(")?;
             let name = self.ident()?;
             self.expect("in")?;
-            let start = self.expr(0)?;
+            let start = self.expr(0,false)?;
             let end = if self.take("..") {
-                Some(self.expr(0)?)
+                Some(self.expr(0,false)?)
             } else {
                 None
             };
@@ -820,7 +819,7 @@ impl Parser {
             if self.take(";") {
                 StmtKind::Return(None)
             } else {
-                let e = self.expr(0)?;
+                let e = self.expr(0,false)?;
                 self.expect(";")?;
                 StmtKind::Return(Some(e))
             }
@@ -837,14 +836,14 @@ impl Parser {
             self.expect("(")?;
             let name = self.ident()?;
             self.expect(",")?;
-            let position = self.expr(0)?;
+            let position = self.expr(0,false)?;
             self.expect(")")?;
             self.expect(";")?;
             StmtKind::Seek(name, position)
         } else if self.take("let") {
             let name = self.ident()?;
             self.expect("=")?;
-            let e = self.expr(0)?;
+            let e = self.expr(0,false)?;
             self.expect(";")?;
             StmtKind::Let(None, name, e)
         } else {
@@ -857,13 +856,13 @@ impl Parser {
                     StmtKind::Declare(ty, name)
                 } else {
                     self.expect("=")?;
-                    let e = self.expr(0)?;
+                    let e = self.expr(0,false)?;
                     self.expect(";")?;
                     StmtKind::Let(Some(ty), name, e)
                 }
             } else {
                 self.at = save;
-                let lhs = self.expr(0)?;
+                let lhs = self.expr(0,false)?;
                 if [
                     "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=",
                 ]
@@ -871,7 +870,7 @@ impl Parser {
                 {
                     let op = self.peek().to_owned();
                     self.at += 1;
-                    let rhs = self.expr(0)?;
+                    let rhs = self.expr(0,false)?;
                     self.expect(";")?;
                     StmtKind::Assign(lhs, op, rhs)
                 } else {
@@ -882,13 +881,13 @@ impl Parser {
         };
         Ok(Stmt { kind, span })
     }
-    fn expr(&mut self, min: u8) -> Result<Expr> {
+    fn expr(&mut self, min: u8, type_argument: bool) -> Result<Expr> {
         let span = self.span();
         let mut lhs = if ["-", "+", "!", "~"].contains(&self.peek()) {
             let op = self.peek().to_owned();
             self.at += 1;
             Expr {
-                kind: ExprKind::Unary(op, Box::new(self.expr(12)?)),
+                kind: ExprKind::Unary(op, Box::new(self.expr(12,type_argument)?)),
                 span,
             }
         } else if self.peek() == "target" && self.tokens[self.at + 1].text(&self.source) == "(" {
@@ -903,7 +902,7 @@ impl Parser {
                 }
             };
             self.expect(",")?;
-            let call = self.expr(0)?;
+            let call = self.expr(0,false)?;
             self.expect(")")?;
             Expr {
                 kind: ExprKind::Target(target, Box::new(call)),
@@ -935,7 +934,7 @@ impl Parser {
             let args = self.arguments()?;
             Expr { kind: ExprKind::Construct(ty, args), span }
         } else if self.take("(") {
-            let e = self.expr(0)?;
+            let e = self.expr(0,false)?;
             self.expect(")")?;
             e
         } else if self.take("true") {
@@ -995,7 +994,7 @@ impl Parser {
                 continue;
             }
             if self.take("[") {
-                let index = self.expr(0)?;
+                let index = self.expr(0,false)?;
                 self.expect("]")?;
                 lhs = Expr {
                     kind: ExprKind::Index(Box::new(lhs), Box::new(index)),
@@ -1035,15 +1034,16 @@ impl Parser {
             }
             if self.peek() == "?" && min == 0 {
                 self.at += 1;
-                let a = self.expr(0)?;
+                let a = self.expr(0,false)?;
                 self.expect(":")?;
-                let b = self.expr(0)?;
+                let b = self.expr(0,type_argument)?;
                 lhs = Expr {
                     kind: ExprKind::Select(Box::new(lhs), Box::new(a), Box::new(b)),
                     span,
                 };
                 continue;
             }
+            if type_argument && matches!(self.peek(),">"|">>") {break;}
             let prec = match self.peek() {
                 "||" => 1,
                 "&&" => 2,
@@ -1062,7 +1062,7 @@ impl Parser {
             }
             let op = self.peek().to_owned();
             self.at += 1;
-            let rhs = self.expr(prec + 1)?;
+            let rhs = self.expr(prec + 1,type_argument)?;
             lhs = Expr {
                 kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
                 span,

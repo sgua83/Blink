@@ -58,14 +58,15 @@ pub(crate) fn combinations(values: &[ValueParameter]) -> Vec<Vec<u32>> {
     }
     result
 }
-pub(crate) fn substitute_shape(shape: &mut Shape, values: &BTreeMap<String, u32>) {
-    if let Shape::Constant(name) = shape {
-        if let Some(value) = values.get(name) {
-            *shape = Shape::Literal(*value);
-        }
+pub(crate) fn substitute_shape(shape: &mut Shape, values: &BTreeMap<String,u32>, source:&Source)->Result<()> {
+    match shape {
+        Shape::Constant(name)=>if let Some(value)=values.get(name){*shape=Shape::Literal(*value);},
+        Shape::Expression(expression)=>crate::generics::substitute_expr(expression,&BTreeMap::new(),values,source)?,
+        Shape::Literal(_)=>{},
     }
+    Ok(())
 }
-pub(crate) fn substitute_type(ty: &mut TypeName, values: &BTreeMap<String, u32>) {
+pub(crate) fn substitute_type(ty: &mut TypeName, values: &BTreeMap<String, u32>, source:&Source)->Result<()> {
     if let Some(outputs) = &mut ty.outputs {
         for output in outputs.iter_mut() {
             if let ContractPredicate::Initialized { condition, .. } = output {
@@ -74,13 +75,14 @@ pub(crate) fn substitute_type(ty: &mut TypeName, values: &BTreeMap<String, u32>)
         }
     }
     if let Some(shape) = &mut ty.count {
-        substitute_shape(shape, values);
+        substitute_shape(shape, values,source)?;
     }
     for arg in &mut ty.arguments {
-        substitute_argument(arg, values);
+        substitute_argument(arg, values,source)?;
     }
+    Ok(())
 }
-pub(crate) fn substitute_argument(arg: &mut GenericArgument, values: &BTreeMap<String, u32>) {
+pub(crate) fn substitute_argument(arg: &mut GenericArgument, values: &BTreeMap<String, u32>, source:&Source)->Result<()> {
     match arg {
         GenericArgument::Type(ty)
             if ty.arguments.is_empty()
@@ -91,7 +93,8 @@ pub(crate) fn substitute_argument(arg: &mut GenericArgument, values: &BTreeMap<S
         {
             *arg = GenericArgument::Value(Shape::Literal(values[&ty.name]));
         }
-        GenericArgument::Type(ty) => substitute_type(ty, values),
-        GenericArgument::Value(shape) => substitute_shape(shape, values),
+        GenericArgument::Type(ty) => substitute_type(ty, values,source)?,
+        GenericArgument::Value(shape) => substitute_shape(shape, values,source)?,
     }
+    Ok(())
 }

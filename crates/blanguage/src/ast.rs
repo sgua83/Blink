@@ -74,7 +74,7 @@ pub enum Target {
     Cpu,
     Gpu,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName {
     pub name: String,
     /// 已由实际 Ty 绑定的完整名义键；源码名称始终按词法作用域解析。
@@ -90,6 +90,7 @@ pub struct TypeName {
 pub enum Shape {
     Literal(u32),
     Constant(String),
+    Expression(Box<Expr>),
 }
 impl TypeName {
     pub fn is_never(&self) -> bool {
@@ -281,7 +282,7 @@ pub struct ValueParameter {
     pub name: String,
     pub choices: Option<Vec<u32>>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GenericArgument {
     Type(TypeName),
     Value(Shape),
@@ -343,7 +344,12 @@ pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
-#[derive(Clone, Debug)]
+// Source positions locate syntax; expression identity is its actual syntax.
+impl PartialEq for Expr { fn eq(&self,other:&Self)->bool { self.kind==other.kind } }
+impl Eq for Expr {}
+impl PartialOrd for Expr {fn partial_cmp(&self,other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}}
+impl Ord for Expr {fn cmp(&self,other:&Self)->std::cmp::Ordering{self.kind.cmp(&other.kind)}}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExprKind {
     Number(String),
     StaticU32(u32),

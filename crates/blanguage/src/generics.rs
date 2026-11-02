@@ -98,10 +98,10 @@ pub(crate) fn instantiate(
         &definition.source,
         function.span,
     )?;
-    crate::value_parameters::substitute_type(&mut concrete.function.result, &value_map);
+    crate::value_parameters::substitute_type(&mut concrete.function.result, &value_map,&definition.source)?;
     for p in &mut concrete.function.params {
         substitute_type(&mut p.ty, &replacements, &definition.source, p.span)?;
-        crate::value_parameters::substitute_type(&mut p.ty, &value_map);
+        crate::value_parameters::substitute_type(&mut p.ty, &value_map,&definition.source)?;
     }
     if let Some(body) = &mut concrete.function.body {
         substitute_block(body, &replacements, &value_map, &definition.source)?;
@@ -211,8 +211,10 @@ pub(crate) fn substitute_type(
     span: Span,
 ) -> Result<()> {
     for argument in &mut ty.arguments {
-        if let GenericArgument::Type(ty) = argument {
-            substitute_type(ty, replacements, source, span)?;
+        match argument {
+            GenericArgument::Type(ty)=>substitute_type(ty,replacements,source,span)?,
+            GenericArgument::Value(Shape::Expression(expression))=>substitute_expr(expression,replacements,&BTreeMap::new(),source)?,
+            _=>{},
         }
     }
     if let Some(actual) = replacements.get(&ty.name) {
@@ -232,6 +234,9 @@ pub(crate) fn substitute_type(
             ty.tile = tile;
             ty.count = count;
         }
+    }
+    if let Some(Shape::Expression(expression))=&mut ty.count {
+        substitute_expr(expression,replacements,&BTreeMap::new(),source)?;
     }
     Ok(())
 }
@@ -253,7 +258,7 @@ fn substitute_reference(
         if let GenericArgument::Type(ty) = arg {
             substitute_type(ty, types, source, span)?;
         }
-        crate::value_parameters::substitute_argument(arg, values);
+        crate::value_parameters::substitute_argument(arg, values,source)?;
     }
     Ok(())
 }
@@ -273,7 +278,7 @@ pub(crate) fn substitute_expr(
         }
         ExprKind::Construct(ty, args) => {
             substitute_type(ty, types, source, expr.span)?;
-            crate::value_parameters::substitute_type(ty, values);
+            crate::value_parameters::substitute_type(ty, values,source)?;
             for arg in args {
                 substitute_expr(arg, types, values, source)?;
             }
@@ -350,12 +355,12 @@ fn substitute_block(
         match &mut stmt.kind {
             StmtKind::Declare(ty, _) => {
                 substitute_type(ty, types, source, stmt.span)?;
-                crate::value_parameters::substitute_type(ty, values);
+                crate::value_parameters::substitute_type(ty, values,source)?;
             }
             StmtKind::Let(annotation, _, expr) => {
                 if let Some(ty) = annotation {
                     substitute_type(ty, types, source, stmt.span)?;
-                    crate::value_parameters::substitute_type(ty, values);
+                    crate::value_parameters::substitute_type(ty, values,source)?;
                 }
                 substitute_expr(expr, types, values, source)?;
             }
