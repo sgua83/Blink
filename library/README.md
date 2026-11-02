@@ -424,6 +424,27 @@ WriteError::System(WriteSystemError{completed,code})保留此前成功完成的�
 
 底层CreateFileW、ReadFile、WriteFile和CloseHandle直接使用Windows C ABI。ReadFile／WriteFile的计数为原write u32输出；直接原生调用者按实际同步／异步模式负责缓冲、句柄、位置及最后完成，不能把原生address接口当成自动建立的异步B借用。普通库入口仅以零overlapped作同步I/O。平台合同见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)、[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)、[WriteFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile)及[CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
+### 文件重命名、替换与删除
+
+`result<void,RenameError> rename(address source,read dataset<u16> target) on cpu`把实际源文件／目录交给Windows文件句柄重命名。source为调用期间有效的NUL结尾UTF-16地址；target是只读CPU UTF-16名称代码单元，不含NUL；唯一字段编码入口遇首个NUL即交RenameError::Nul(u32单元下标)，源尚未打开／改名。它不执行Unicode标量验证、路径规范化或大小写改写，合法孤立代理单元保持。目标可为绝对名称或按本次OS当前目录解释的相对名称；相对基准不是库状态。完整名称按Windows x64 FILE_RENAME_INFO的Flags@0、RootDirectory@8、FileNameLength@16、FileName@20构建8对齐缓冲，字节长度不含NUL，末尾保持NUL。真实缓冲区大小受原API DWORD限制，超出返回RenameError::LengthOverflow，不增加另一个路径长度上限。
+
+源以DELETE权限、读／写／删除共享、OPEN_REPARSE_POINT及BACKUP_SEMANTICS打开，保持实际文件／目录／链接身份。随后只调用一次SetFileInformationByHandle的FileRenameInfoEx，使用REPLACE_IF_EXISTS及POSIX_SEMANTICS，关闭同一源句柄；不存在目标可以接收原对象，已有文件／空目录按实际系统规则替换，非空目标目录、共享、权限及跨卷失败保留。已打开的旧目标消费者持有原OS对象，新打开者使用新路径身份；同卷替换不复制源内容，不用路径预查询代替操作，不宣称磁盘持久化或任意文件系统上的事务。
+
+`result<void,FileChangeError> remove_file(address path) on cpu`以DELETE、OPEN_REPARSE_POINT及读／写／删除共享打开实际文件，再单次调用FileDispositionInfoEx，使用DELETE、POSIX_SEMANTICS和IGNORE_READONLY_ATTRIBUTE，最后关闭本次句柄。普通文件、只读文件和文件符号链接按原平台合同删除，删除链接不访问其目标；不改写只读属性。实际目录不在此入口的打开范围，不递归删除、不删除目录内容。返回成功表示本次OS操作和本次关闭都成功，既有文件消费者仍持有原对象到其最后关闭，不能将名称退出或本次CPU返回冒充存储立即回收。
+
+两个入口共用唯一的打开／变更／关闭实现及FileChangeError：
+
+| FileChangeError | 实际含义 |
+|---|---|
+| `Open(u32)` | 未获得本次源句柄，交原打开错误 |
+| `Apply(u32)` | 原变更失败，本次句柄已关闭 |
+| `Close(CloseError)` | 原变更已成功，关闭失败，保留原句柄／code；不能当作变更未发生 |
+| `ApplyAndClose(FileApplyCloseError)` | 同时保留变更的原code与关闭的原身份／code |
+
+rename的准备长度错误为LengthOverflow，NUL名称框架错误为Nul(u32)，实际文件错误包在RenameError::Change中；原缓冲由同一Frame持有到SetFileInformationByHandle同步返回，不新增OS堆或运行时拥有表。两个入口直接依赖Windows10及文件系统支持的扩展信息类，实际不支持时保留原OS错误；不另查版本、不改用另一平台入口、复制／删除源、重试或隐藏原失败。完整Rust消费者迁移仍归C-032。
+
+平台依据：[SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)、[FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info)及实际Windows SDK的FILE_DISPOSITION_INFO_EX／FILE_INFO_BY_HANDLE_CLASS定义。其他平台与文件系统能力按原Issues记录，不构成永久语言边界。
+
 独立模块先交付实际泛型实例，再分别编译其消费者：
 
 ```powershell
@@ -435,7 +456,7 @@ target/release/bc.exe -c library/blink/windows/file.b -I library --module --impo
 target/release/blink.exe --archive target/file.obj -o target/file.lib
 ```
 
-调用方分别--import这三份实际归档并链接，不需要提供者.h／.b或-I；也可以按同一正式archive入口将实际对象组合成一个库。开放sequence声明不等于已交付其所有类型实例，未导出的实例仍按原规则拒绝；链接不重新编译源码。编译器Rust装入、对象输出和缓存发布尚未迁移；目录创建／枚举、同平台替换及删除继续按Issues各自具体子项推进。
+调用方分别--import这三份实际归档并链接，不需要提供者.h／.b或-I；也可以按同一正式archive入口将实际对象组合成一个库。开放sequence声明不等于已交付其所有类型实例，未导出的实例仍按原规则拒绝；链接不重新编译源码。编译器Rust装入、对象输出和缓存发布尚未迁移；目录创建／枚举继续按Issues各自具体子项推进。
 
 ## blink.windows.path
 

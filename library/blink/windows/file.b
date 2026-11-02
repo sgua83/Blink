@@ -96,3 +96,63 @@ result<u32,OutputError> write_binary(address path,read dataset<u8> data) on cpu 
 result<u32,OutputError> create_new_binary(address path,read dataset<u8> data) on cpu {
     return write_file(path,data,1);
 }
+
+result<void,FileChangeError> change_file(address path,i32 information_class,
+    address information,u32 bytes,u32 flags) on cpu {
+    address file=CreateFileW(path,65536,7,address(),3,flags,address());
+    if (address_bits(file) == 18446744073709551615u64) {
+        return Err(FileChangeError::Open(GetLastError()));
+    }
+    i32 applied=SetFileInformationByHandle(file,information_class,information,bytes);
+    u32 apply_error=0;
+    if (applied == 0) { apply_error=GetLastError(); }
+    i32 closed=CloseHandle(file);
+    u32 close_error=0;
+    if (closed == 0) { close_error=GetLastError(); }
+    if (applied == 0) {
+        if (closed == 0) {
+            return Err(FileChangeError::ApplyAndClose(FileApplyCloseError(
+                apply_error,CloseError(file,close_error))));
+        }
+        return Err(FileChangeError::Apply(apply_error));
+    }
+    if (closed == 0) { return Err(FileChangeError::Close(CloseError(file,close_error))); }
+    return Ok();
+}
+
+result<void,RenameError> rename(address source,read dataset<u16> target) on cpu {
+    u32 words=target.length/4+3;
+    if (target.length%4>=2) { words+=1; }
+    if (words>4294967295/8) { return Err(RenameError::LengthOverflow()); }
+    dataset<u64> buffer=dataset<u64>(words);
+    for (word in 0..buffer.length) {
+        u64 value=u64(0);
+        if (word == 0) { value=u64(3); }
+        if (word == 2) { value=u64(target.length)*u64(2); }
+        if (word>=2) {
+            for (lane in 0..4) {
+                u32 field=word*4+lane;
+                if (field>=10) {
+                    u32 index=field-10;
+                    if (index<target.length) {
+                        u16 unit=target[index];
+                        if (unit == u16(0)) { return Err(RenameError::Nul(index)); }
+                        value|=u64(unit)<<u64(lane*16);
+                    }
+                }
+            }
+        }
+        buffer[word]=value;
+    }
+    match (change_file(source,i32(22),address_of(buffer[0]),words*8,35651584)) {
+        Ok() { return Ok(); }
+        Err(error) { return Err(RenameError::Change(error)); }
+    }
+}
+
+struct DispositionInfo { u32 flags; };
+
+result<void,FileChangeError> remove_file(address path) on cpu {
+    DispositionInfo info=DispositionInfo(19);
+    return change_file(path,i32(21),address_of(info),u32(size_of<DispositionInfo>()),2097152);
+}

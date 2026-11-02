@@ -179,7 +179,7 @@ WaitForSingleObject保留原u32状态，超时不终止工作；只有实际结�
 
 blink.windows.file以普通B实现原始字节读取、严格UTF-8输入及同步完整字节输出。原生CreateFileW／ReadFile／WriteFile／CloseHandle只交接实际Windows x64指针、u32计数与i32状态；普通库入口的overlapped为零，数据和句柄保持到真实同步返回。读写计数不能用BOOL成功代替，非零成功短写继续剩余部分，失败立即保存原OS错误；成功但0进展交NoProgress，不当成OS错误或循环等待。
 
-read_binary复用唯一原文件句柄，read_utf8在同一读取／关闭后校验编码；成功资源归原Frame，错误不交付部分源码。write_bytes只借用CPU dataset及既有同步句柄，不替调用方关闭；write_binary／create_new_binary分别用真实CREATE_ALWAYS／CREATE_NEW，完整输出后关闭本次原句柄。原失败、此前完成前缀与关闭失败原身份分别交回，排他创建不以先查存在替代，不重试、回滚或自动重新关闭。原address调用者仍负责外部范围、权限与异步保留关系；更高层缓存发布、目录及平台替换不是本接口的完成结果。精确返回类型和责任见[文件I/O标准库](../library/README.md#blinkwindowsfile)。
+read_binary复用唯一原文件句柄，read_utf8在同一读取／关闭后校验编码；成功资源归原Frame，错误不交付部分源码。write_bytes只借用CPU dataset及既有同步句柄，不替调用方关闭；write_binary／create_new_binary分别用真实CREATE_ALWAYS／CREATE_NEW，完整输出后关闭本次原句柄。原失败、此前完成前缀与关闭失败原身份分别交回，排他创建不以先查存在替代，不重试、回滚或自动重新关闭。原address调用者仍负责外部范围、权限与异步保留关系；rename在唯一名称编码入口拒绝NUL并交回UTF-16单元下标，源尚未打开／改名；完整名称长度不被原生NUL字符串解释截断。它以实际源句柄和8对齐的完整FILE_RENAME_INFO名称缓冲直接交FileRenameInfoEx，remove_file以实际文件句柄和4字节flags交FileDispositionInfoEx；操作／关闭错误共用FileChangeError，准备及外部缓冲保持原Frame。原变更已成功但关闭失败不能当作未发生，既有旧目标／文件消费者仍使用其原OS对象；不支持的信息类或文件系统返回原错误，不另改路径或分配器。更高层缓存发布、目录创建／枚举不是本接口的完成结果。精确返回类型和责任见[文件I/O标准库](../library/README.md#blinkwindowsfile)。
 
 ## B 业务结果与调用状态
 

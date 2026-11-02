@@ -43,3 +43,21 @@ enum OutputError : u32 {
 result<u32,WriteError> write_bytes(address file,read dataset<u8> data) on cpu;
 result<u32,OutputError> write_binary(address path,read dataset<u8> data) on cpu;
 result<u32,OutputError> create_new_binary(address path,read dataset<u8> data) on cpu;
+
+extern "C" i32 SetFileInformationByHandle(address file,i32 information_class,
+    address information,u32 bytes) on cpu from "KERNEL32.dll";
+
+struct FileApplyCloseError { u32 code; CloseError close; };
+enum FileChangeError : u32 {
+    Open(u32) = 1;
+    Apply(u32) = 2;
+    Close(CloseError) = 3;
+    ApplyAndClose(FileApplyCloseError) = 4;
+};
+enum RenameError : u32 {
+    LengthOverflow = 1;
+    Change(FileChangeError) = 2;
+    Nul(u32) = 3;
+};
+result<void,RenameError> rename(address source,read dataset<u16> target) on cpu;
+result<void,FileChangeError> remove_file(address path) on cpu;
