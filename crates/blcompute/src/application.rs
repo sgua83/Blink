@@ -118,12 +118,15 @@ impl Frame {
         self.device = Some(vulkan::Device::for_programs(programs)?);
         Ok(())
     }
+    /// 上传借用原CPU输入；成功交回GPU存储后替换，原暂存区仍按实际完成释放。
     pub fn upload(&mut self, handle: u32) -> Result<()> {
         if self.device.is_none() {
             self.create_device()?;
         }
-        let data = self.data.datasets[handle as usize].take().unwrap().cpu()?;
-        let data = self.device.as_ref().unwrap().upload(data)?;
+        let ResidentData::Cpu(data) = self.data.datasets[handle as usize].as_ref().unwrap() else {
+            return Err(error("CPU 访问需要先显式 download 数据"));
+        };
+        let data = self.device.as_ref().unwrap().upload_cpu(data, &mut std::collections::BTreeMap::new())?;
         self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
         Ok(())
     }

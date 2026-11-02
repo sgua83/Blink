@@ -168,7 +168,7 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "51d4ee283ed03e10e2810438c3cb34c479dc80f29767d126c67564c3f6388335"
+      "sha256": "c7bf4ccb37ccad140b6dd016993d7d35c8c86471da06b5231a8ed63e76e5252e"
     },
     {
       "path": "sample/lessons/map.b",

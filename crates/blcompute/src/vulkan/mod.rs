@@ -824,7 +824,7 @@ impl Device {
     }
     /// 显式复制闭合只读资源图；共享来源在本次传输内只复制一次。
     pub fn upload(&self, data: impl Into<crate::cpu::CpuDataset>) -> Result<GpuDataset> {
-        self.upload_cpu(data.into(), &mut std::collections::BTreeMap::new())
+        self.upload_cpu(&data.into(), &mut std::collections::BTreeMap::new())
     }
     pub fn upload_with_views(
         &self,
@@ -962,7 +962,7 @@ impl Device {
         let datasets = bindings
             .datasets
             .into_iter()
-            .map(|d| self.upload_cpu(d, &mut memo))
+            .map(|d| self.upload_cpu(&d, &mut memo))
             .collect::<Result<Vec<_>>>()?;
         Ok(DomainBindings {
             datasets,
