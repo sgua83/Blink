@@ -507,9 +507,12 @@ fn load(
             text: compiled.header.clone().into(),
         })?) }
     } else {
-        parse_input(&path.with_extension("h"), inputs)?
+        let mut header_path = path.to_path_buf();
+        header_path.set_extension("h");
+        parse_input(&header_path, inputs)?
     };
-    let implementation_path = path.with_extension("b");
+    let mut implementation_path = path.to_path_buf();
+    implementation_path.set_extension("b");
     let present = if imported.is_some() && import.is_some() {
         false
     } else if let Some(inputs) = inputs {

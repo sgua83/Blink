@@ -19,8 +19,10 @@ impl Inputs {
         Ok(self.files[path].clone())
     }
     pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<ast::Module>> {
-        self.file(&path.with_extension("h"), false)?;
-        self.read(&path.with_extension("h"))
+        let mut header = path.to_path_buf();
+        header.set_extension("h");
+        self.file(&header, false)?;
+        self.read(&header)
     }
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeSet<String>,
@@ -29,7 +31,11 @@ impl Inputs {
         let interface = self.header(path)?;
         if !visited.insert(interface.name.clone()) { return Ok(()); }
         let implementation = if imported && !providers.is_empty() { None }
-            else { self.file(&path.with_extension("b"), true)? };
+            else {
+                let mut implementation_path = path.to_path_buf();
+                implementation_path.set_extension("b");
+                self.file(&implementation_path, true)?
+            };
         let imports = interface.imports.iter()
             .chain(implementation.iter().flat_map(|module| &module.imports))
             .collect::<BTreeSet<_>>();

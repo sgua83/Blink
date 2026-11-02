@@ -39,7 +39,9 @@ pub(super) fn compile<'a>(
     let source_path = path;
     let source_root = root;
     // .h是模块来源；纯类型模块不依赖伪造的.b。
-    let path = if inputs.is_some() { path.with_extension("h") } else { path.with_extension("h").canonicalize()? };
+    let mut header_path = path.to_path_buf();
+    header_path.set_extension("h");
+    let path = if inputs.is_some() { header_path } else { header_path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
     let artifact = std::path::absolute(output)?;
     let imports = if matches!(kind, ObjectKind::Library { .. }) { None }

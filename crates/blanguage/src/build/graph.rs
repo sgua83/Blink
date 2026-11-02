@@ -100,8 +100,10 @@ impl Compiler {
         let mut expanded = vec![None; units.len()];
         for index in 0..units.len() { expand(index, units, &mut BTreeSet::new(), &mut expanded)?; }
         let prepared = units.iter().enumerate().map(|(index, unit)| {
-            let header = unit.path.with_extension("h").canonicalize()?;
-            let path = header.with_extension(unit.path.extension().unwrap_or_else(|| std::ffi::OsStr::new("b")));
+            let mut path = unit.path.to_path_buf();
+            path.set_extension("h");
+            let mut path = path.canonicalize()?;
+            path.set_extension(unit.path.extension().unwrap_or_else(|| std::ffi::OsStr::new("b")));
             Ok(Prepared { path, root: unit.root.canonicalize()?, output: std::path::absolute(unit.output)?,
                 kind: unit.kind, providers: expanded[index].take().unwrap() })
         }).collect::<Result<Vec<_>>>()?;
