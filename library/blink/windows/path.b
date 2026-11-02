@@ -197,7 +197,7 @@ u32 lexical_component_end(read dataset<u16> path,u32 start,bool literal) on cpu 
 
 struct LexicalPrefix { u32 end; bool literal; };
 
-LexicalPrefix extension_prefix(read dataset<u16> path) on cpu {
+LexicalPrefix lexical_prefix(read dataset<u16> path) on cpu {
     if (path.length >= 2) {
         if (lexical_separator(path[0],false) && lexical_separator(path[1],false)) {
             if (path.length >= 4) {
@@ -294,7 +294,7 @@ result<dataset<u16>,ExtensionError> with_extension(
             return Err(ExtensionError::Separator(index));
         }
     }
-    ExtensionScan name=extension_name(path,extension_prefix(path));
+    ExtensionScan name=extension_name(path,lexical_prefix(path));
     dataset<u16> output=dataset<u16>(path.length);
     for (index in 0..path.length) { output[index]=path[index]; }
     if (!name.found) { return Ok(output); }
@@ -307,4 +307,144 @@ result<dataset<u16>,ExtensionError> with_extension(
     let full=resize(output,begin+extension.length,u16(46));
     for (index in 0..extension.length) { full[begin+index]=extension[index]; }
     return Ok(full);
+}
+
+dataset<u16> join_copy(read dataset<u16> path) on cpu {
+    dataset<u16> output=dataset<u16>(path.length);
+    for (index in 0..path.length) { output[index]=path[index]; }
+    return output;
+}
+
+result<dataset<T>,JoinError> join_push<T>(dataset<T> data,T value) on cpu {
+    u32 length=data.length;
+    if (length == 4294967295) { return Err(JoinError::LengthOverflow); }
+    return Ok(resize(data,length+1,value));
+}
+
+result<dataset<u16>,JoinError> join_tail(dataset<u16> data,read dataset<u16> tail) on cpu {
+    u32 begin=data.length;
+    if (tail.length > 4294967295-begin) { return Err(JoinError::LengthOverflow); }
+    let output=resize(data,begin+tail.length,u16(0));
+    for (index in 0..tail.length) { output[begin+index]=tail[index]; }
+    return Ok(output);
+}
+
+const u32 JoinPrefix=0;
+const u32 JoinRoot=1;
+const u32 JoinCurrent=2;
+const u32 JoinParent=3;
+const u32 JoinNormal=4;
+struct JoinComponent { bool from_base; u32 start; u32 length; u32 kind; };
+
+result<dataset<JoinComponent>,JoinError> join_component(
+    dataset<JoinComponent> parts,bool from_base,u32 start,u32 length,bool dots) on cpu {
+    if (length == 0) { return Ok(parts); }
+    u32 kind=JoinNormal;
+    if (dots && length == 1) { kind=JoinCurrent; }
+    if (dots && length == 2) { kind=JoinParent; }
+    if (!from_base) {
+        if (kind == JoinCurrent) { return Ok(parts); }
+        if (kind == JoinParent) {
+            if (parts.length > 0) {
+                u32 last=parts.length-1;
+                if (parts[last].kind == JoinNormal) {
+                    return Ok(resize(parts,last,JoinComponent(false,0,0,JoinNormal)));
+                }
+            }
+            return Ok(parts);
+        }
+    }
+    return join_push(parts,JoinComponent(from_base,start,length,kind));
+}
+
+result<dataset<JoinComponent>,JoinError> join_components(
+    dataset<JoinComponent> input,read dataset<u16> path,
+    u32 body,bool from_base,bool literal) on cpu {
+    dataset<JoinComponent> parts=input;
+    u32 start=body;
+    u32 length=0;
+    bool dots=true;
+    for (index in body..path.length) {
+        u16 unit=path[index];
+        if (lexical_separator(unit,literal)) {
+            parts=try(join_component(parts,from_base,start,length,dots));
+            start=index+1;length=0;dots=true;
+        }
+        else {
+            length+=1;
+            if (unit != u16(46)) { dots=false; }
+        }
+    }
+    return join_component(parts,from_base,start,length,dots);
+}
+
+result<dataset<u16>,JoinError> join_component_units(
+    dataset<u16> input,read dataset<u16> path,JoinComponent component) on cpu {
+    dataset<u16> output=input;
+    for (index in component.start..path.length) {
+        if (index-component.start >= component.length) { break; }
+        output=try(join_push(output,path[index]));
+    }
+    return Ok(output);
+}
+
+result<dataset<u16>,JoinError> join_verbatim(
+    read dataset<u16> base,read dataset<u16> path,LexicalPrefix prefix) on cpu {
+    dataset<JoinComponent> parts=dataset<JoinComponent>(1);
+    parts[0]=JoinComponent(true,0,prefix.end,JoinPrefix);
+    u32 body=prefix.end;
+    if (body < base.length) {
+        if (lexical_separator(base[body],false)) {
+            parts=try(join_push(parts,JoinComponent(true,body,1,JoinRoot)));
+            body+=1;
+        }
+    }
+    parts=try(join_components(parts,base,body,true,true));
+    u32 right_body=0;
+    if (path.length > 0) {
+        if (lexical_separator(path[0],false)) {
+            parts=resize(parts,1,JoinComponent(true,0,prefix.end,JoinPrefix));
+            parts=try(join_push(parts,JoinComponent(false,0,1,JoinRoot)));
+            right_body=1;
+        }
+    }
+    parts=try(join_components(parts,path,right_body,false,false));
+    dataset<u16> output=dataset<u16>(0);
+    bool separator=false;
+    for (index in 0..parts.length) {
+        JoinComponent component=parts[index];
+        if (separator && component.kind != JoinRoot) {
+            output=try(join_push(output,u16(92)));
+        }
+        if (component.kind == JoinRoot) {
+            output=try(join_push(output,u16(92)));
+            separator=false;
+        }
+        else {
+            if (component.from_base) {
+                output=try(join_component_units(output,base,component));
+            }
+            else { output=try(join_component_units(output,path,component)); }
+            separator=true;
+        }
+    }
+    return Ok(output);
+}
+
+result<dataset<u16>,JoinError> join(read dataset<u16> base,read dataset<u16> path) on cpu {
+    LexicalPrefix right=lexical_prefix(path);
+    if (right.end > 0) { return Ok(join_copy(path)); }
+    LexicalPrefix left=lexical_prefix(base);
+    if (left.literal && path.length > 0) { return join_verbatim(base,path,left); }
+    dataset<u16> output=join_copy(base);
+    bool rooted=false;
+    if (path.length > 0) { rooted=lexical_separator(path[0],false); }
+    if (rooted) { output=resize(output,left.end,u16(0)); }
+    else {
+        bool separator=false;
+        if (base.length > 0) { separator=!lexical_separator(base[base.length-1],false); }
+        if (left.end == 2 && base.length == 2) { separator=false; }
+        if (separator) { output=try(join_push(output,u16(92))); }
+    }
+    return join_tail(output,path);
 }

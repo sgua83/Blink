@@ -38,3 +38,6 @@ enum ExtensionError : u32 {
 };
 result<dataset<u16>,ExtensionError> with_extension(
     read dataset<u16> path,read dataset<u16> extension) on cpu;
+
+enum JoinError : u32 { LengthOverflow = 1; };
+result<dataset<u16>,JoinError> join(read dataset<u16> base,read dataset<u16> path) on cpu;
