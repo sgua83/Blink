@@ -100,7 +100,13 @@ impl Frame {
         match self.programs[index].take().unwrap() {
             ProgramSlot::Loaded(program) => Ok(program),
             ProgramSlot::Image(ProgramImage::Cpu(image)) => {
-                CpuTemplate::from_image(image).map(Program::Cpu)
+                match CpuTemplate::from_image(image) {
+                    Ok(program) => Ok(Program::Cpu(program)),
+                    Err((error, image)) => {
+                        self.programs[index] = Some(ProgramSlot::Image(ProgramImage::Cpu(image)));
+                        Err(error)
+                    }
+                }
             }
             ProgramSlot::Image(ProgramImage::Gpu(image)) => self
                 .device

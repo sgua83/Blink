@@ -1752,19 +1752,30 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 ### 15.3 机器码怎样变成可调用函数
 
-源码节选：`crates/blcompute/src/cpu.rs:240`。
+源码节选：`crates/blcompute/src/cpu.rs:211`。
 
 ```rust
         let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
         if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let out = Self {
-            address,
-            _libraries: libraries.into_values().collect(),
-        };
+        let mut out = Self { address, _libraries: Vec::new() };
         unsafe {
             std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
+        }
+```
+
+执行内存从创建起由原 Executable 持有；原映像只被借用，解析后的地址写入这份真实内存。DLL 引用在装入期间由原 Library 持有，失败时随本次实际消费结束。
+
+源码节选：`crates/blcompute/src/cpu.rs:246`。
+
+```rust
+            unsafe {
+                std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), address.cast::<u8>().add(r.offset), 8);
+            }
+        }
+        out._libraries = libraries.into_values().collect();
+        unsafe {
             let mut old = 0;
             if VirtualProtect(address, code.bytes.len(), 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
@@ -1777,7 +1788,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
     }
 ```
 
-执行框架分配可写内存，复制指令、处理必要重定位，再把页面改成可执行并刷新指令缓存。CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。
+执行框架分配可写内存，复制指令、处理必要重定位，再把页面改成可执行并刷新指令缓存。CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。 CPU模板在全部阶段装入成功后才移动原执行布局；失败沿同一Result交回原错误与未改映像，Frame接回原程序槽。这里没有保留第二份代码或自动重放；普通CpuProgram的按值构造仍在失败时结束输入消费。
 
 可写和可执行内存、页面权限与函数签名属于这段代码必须满足的真实平台要求。它们与“变量是否乘二”处在不同层次。
 

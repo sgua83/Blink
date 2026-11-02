@@ -207,7 +207,15 @@ extern "C" fn print_float(bits: u64, width: u32) -> u32 {
     write_stdout(&text[..count as usize])
 }
 impl Executable {
-    fn new(mut code: blanguage::native::NativeCode) -> Result<Self> {
+    fn new(code: &blanguage::native::NativeCode) -> Result<Self> {
+        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
+        if address.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut out = Self { address, _libraries: Vec::new() };
+        unsafe {
+            std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
+        }
         let mut libraries = std::collections::BTreeMap::new();
         for r in &code.relocations {
             let ptr = match &r.target {
@@ -235,18 +243,12 @@ impl Executable {
                     Scalar::F32 | Scalar::F64 => print_float as *const (),
                 },
             };
-            code.bytes[r.offset..r.offset + 8].copy_from_slice(&(ptr as u64).to_le_bytes());
+            unsafe {
+                std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), address.cast::<u8>().add(r.offset), 8);
+            }
         }
-        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
-        if address.is_null() {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let out = Self {
-            address,
-            _libraries: libraries.into_values().collect(),
-        };
+        out._libraries = libraries.into_values().collect();
         unsafe {
-            std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
             let mut old = 0;
             if VirtualProtect(address, code.bytes.len(), 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
@@ -396,7 +398,7 @@ impl CpuProgram {
     }
     pub fn from_image(image: blanguage::native::ProgramImage<ExecutableProgram>) -> Result<Self> {
         Ok(Self {
-            code: CpuCode::from_image(image)?,
+            code: CpuCode::from_image(image).map_err(|(error, _)| error)?,
         })
     }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
@@ -418,11 +420,11 @@ impl CpuTemplate {
     #[cfg(feature="compiler")]
     pub fn new(program: TemplateProgram) -> Result<Self> {
         Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
+            .map_err(|(error, _)| error)
     }
-    pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> Result<Self> {
-        Ok(Self {
-            code: CpuCode::from_image(image)?,
-        })
+    /// 装入失败交回原错误和同一未改映像；本调用没有执行数据。
+    pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram>)> {
+        CpuCode::from_image(image).map(|code| Self { code })
     }
     pub fn run(
         &self,
@@ -485,12 +487,14 @@ impl<'a> CpuBuffer<'a> {
     }
 }
 impl CpuCode {
-    fn from_image<P>(image: blanguage::native::ProgramImage<P>) -> Result<Self> {
+    fn from_image<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         use blanguage::native::{ContinuationCode, StageCode as ImageStage};
-        let (program, images) = image.into_parts();
-        let workers = std::thread::available_parallelism()?.get();
-        let stages = images
-            .into_iter()
+        let workers = match std::thread::available_parallelism() {
+            Ok(workers) => workers.get(),
+            Err(error) => return Err((error.into(), image)),
+        };
+        let stages = match image.stages()
+            .iter()
             .map(|image| {
                 Ok(match image {
                     ImageStage::Sort(code) => StageCode::Sort(sort::Code::load(code)?),
@@ -500,7 +504,7 @@ impl CpuCode {
                         result,
                     } => StageCode::Element {
                         main: Executable::new(main)?,
-                        continuation: continuation
+                        continuation: continuation.as_ref()
                             .map(|continuation| -> Result<Continuation> {
                                 Ok(match continuation {
                                     ContinuationCode::ReductionTail(code)
@@ -517,17 +521,21 @@ impl CpuCode {
                                     } => Continuation::Scan {
                                         prefix: Executable::new(prefix)?,
                                         apply: Executable::new(apply)?,
-                                        source,
-                                        target,
+                                        source: *source,
+                                        target: *target,
                                     },
                                 })
                             })
                             .transpose()?,
-                        result,
+                        result: *result,
                     },
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>() {
+                Ok(stages) => stages,
+                Err(error) => return Err((error, image)),
+            };
+        let (program, _) = image.into_parts();
         Ok(Self {
             program,
             stages,
