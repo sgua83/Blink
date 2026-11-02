@@ -195,7 +195,9 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
                 return Err("DLL 目标文件没有静态目标库".into());
             }
             msvc::library(&archives, &output, true)?;
-            std::fs::write(output.with_extension("abi.h"), header)?;
+            let mut header_path = output.clone();
+            header_path.set_extension("abi.h");
+            std::fs::write(header_path, header)?;
             let library = output
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -204,7 +206,9 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
                 &format!("#[link(name=\"{prefix}\")]"),
                 &format!("#[link(name=\"{library}\")]"),
             );
-            std::fs::write(output.with_extension("rs"), binding)?;
+            let mut binding_path = output;
+            binding_path.set_extension("rs");
+            std::fs::write(binding_path, binding)?;
         }
     }
     Ok(())

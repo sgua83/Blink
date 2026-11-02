@@ -151,7 +151,9 @@ pub(super) fn library(archives: &[Archive], path: &Path, import_library: bool) -
             .arg(format!("/OUT:{}", path.display()))
             .args(&temporary);
         if import_library {
-            command.arg(format!("/IMPLIB:{}", path.with_extension("lib").display()));
+            let mut import_path = path.to_path_buf();
+            import_path.set_extension("lib");
+            command.arg(format!("/IMPLIB:{}", import_path.display()));
         } else {
             command.arg("/NOIMPLIB");
         }
