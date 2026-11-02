@@ -5,3 +5,13 @@ extern "C" address GetEnvironmentStringsW() on cpu
 
 extern "C" i32 FreeEnvironmentStringsW(address block) on cpu
     from "KERNEL32.dll";
+
+extern "C" u32 GetEnvironmentVariableW(address name,address buffer,u32 capacity) on cpu
+    from "KERNEL32.dll";
+
+enum VariableError : u32 {
+    System(u32) = 1;
+    BufferTooSmall(u32) = 2;
+};
+
+result<dataset<u16>,VariableError> variable(address name) on cpu;

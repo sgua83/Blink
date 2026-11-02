@@ -221,7 +221,7 @@ target/release/bc.exe -c main.b -I library --import target/process.lib -o target
 target/release/blink.exe target/main.obj target/process.lib -o target/main.exe
 ```
 
-调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；按名字环境查询／写入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照或参数库代替这些能力。
+调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；环境写入、子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照或参数库代替这些能力。
 
 ### Windows参数序列
 
@@ -274,7 +274,7 @@ target/release/blink.exe target/main.obj target/process.lib target/sequence-u16.
 
 ## blink.windows.environment
 
-本模块以纯`.h`直接交接Windows x64的只读环境快照及其匹配释放，不需要`.b`。`GetEnvironmentStringsW()`返回`address`，零地址表示未取得快照；成功后可按UTF-16代码单元读取NUL分隔的条目，空条目结束。它提供本次进程环境的独立快照，条目及其顺序、空值、隐藏驱动器项和原始代码单元由OS提供；枚举时不按字符标量验证、大小写归一化、过滤或另建环境镜像。
+本模块直接交接Windows x64的环境原生接口，`environment.b`以普通B函数提供单个变量的拥有值读取。`GetEnvironmentStringsW()`返回`address`，零地址表示未取得快照；成功后可按UTF-16代码单元读取NUL分隔的条目，空条目结束。它提供本次进程环境的独立快照，条目及其顺序、空值、隐藏驱动器项和原始代码单元由OS提供；枚举时不按字符标量验证、大小写归一化、过滤或另建环境镜像。
 
 本次调用方负责保持快照至最后实际读取者结束，然后把**取得时的原始地址**交给`FreeEnvironmentStringsW(address block)`一次。不能把逐项推进的游标、其他分配器地址或原命令行地址交给它；不得修改快照、重复释放或在释放后读取任何地址副本。原OS快照不进入B的Frame拥有树，复制address不新增拥有权；接口不自动释放或替应用决定进程寿命。已取得快照可以和后续进程环境变化分开使用。
 
@@ -316,10 +316,21 @@ u32 main() on cpu {
 纯声明模块也可交付独立对象／静态库：
 
 ```powershell
-target/release/bc.exe -c library/blink/windows/environment.h -I library --module -o target/environment.obj
+target/release/bc.exe -c library/blink/windows/environment.b -I library --module -o target/environment.obj
 target/release/blink.exe --archive target/environment.obj -o target/environment.lib
 target/release/bc.exe -c main.b -I library --import target/environment.lib -o target/main.obj
 target/release/blink.exe target/main.obj target/environment.lib -o target/main.exe
 ```
 
-原environment.h不可读取时，调用方仍可通过已编译接口及归档消费这两个声明；编译和链接保持各自职责。按名称查询、环境写入、完整B文本集合及编译器／BLEngine实际迁移继续按对应台账建设。平台合同：[取得快照](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentstringsw)、[匹配释放](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-freeenvironmentstringsw)、[环境块格式](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)。
+提供方environment.h／environment.b不可读取时，调用方仍可通过已编译对象／归档消费原生声明与普通B读取函数；编译和链接保持各自职责。环境写入、完整B文本集合及编译器／BLEngine实际迁移继续按对应台账建设。平台合同：[取得快照](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentstringsw)、[匹配释放](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-freeenvironmentstringsw)、[环境块格式](https://learn.microsoft.com/en-us/windows/win32/procthread/environment-variables)。
+
+### 按名称读取拥有值
+
+`result<dataset<u16>,VariableError> variable(address name) on cpu`读取当前进程的指定变量。name由调用者保持为本次真实调用期间有效、NUL结尾的UTF-16名称；原OS负责按名查找，B不改名称大小写或另建环境镜像。成功交回独立、唯一拥有的UTF-16代码单元，不含终止NUL，允许零长度及孤立代理单元，不转码或替换内容；返回后资源仍归原Frame及真实调用方。
+
+`VariableError::System(code)`交回零返回时立即取得的原32位Windows错误码；未定义变量保留`ERROR_ENVVAR_NOT_FOUND=203`，与成功的空值分别表达。函数先向GetEnvironmentVariableW查询含NUL所需容量，再分配一次输出并读取一次；长度查询的零返回直接失败，实际读取前用SetLastError(0)区分零长度成功和失败，不保存／恢复旧错误状态。
+
+两次调用之间进程环境可以变化。若实际读取报告缓冲区不足，`VariableError::BufferTooSmall(required)`保留本次原API报告的、含NUL的必要容量；该分支的缓冲内容未定义，函数不会返回它、截断或重新读取。若变为空值、删除、缩短或等长替换，交回实际读取的值或错误。接口不承诺原子环境快照，不添加固定大小上限；需要独立快照时使用原GetEnvironmentStringsW及匹配释放。
+
+底层`u32 GetEnvironmentVariableW(address name,address buffer,u32 capacity)`同时保留原C ABI：capacity按UTF-16代码单元计且包含NUL空间，成功返回实际长度且不含NUL，空间不足返回含NUL所需容量。调用方直接使用该入口时自行保持名称／缓冲区、权限及其实际最后消费者。具体返回合同见[GetEnvironmentVariableW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentvariablew)。编译器CLI采用是独立迁移工作，不能由本库交付代替。
+
