@@ -227,6 +227,7 @@ impl Builder<'_> {
             }
         }
         proof.retain_view_borrows(&ty);
+        let proof = self.path_proof(&ty, proof);
         Some(Value {
             ty,
             regs,

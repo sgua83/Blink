@@ -2749,10 +2749,10 @@ impl<'a> Builder<'a> {
                 );
             }
             return Ok(Some(Value {
-                proof: self.index_proof(
-                    self.global_index,
+                proof: self.path_proof(
+                    &Ty::scalar(Scalar::U32),
                     self.data_index_proof(self.domain)
-                        .with_domains(Domains::from([IndexDomain::Data(self.domain)])),
+                        .with_domains(Domains::from([IndexDomain::Data(self.domain)])).with_identity(ValueIdentity::Register(self.global_index)),
                 ),
                 literal: false,
                 ty: Ty::scalar(Scalar::U32),
@@ -4133,7 +4133,7 @@ impl<'a> Builder<'a> {
             _ => return self.fail(span, "B168", "ordinal 只能用于元素游标"),
         };
         return Ok(Some(Value {
-            proof: self.index_proof(index, proof.with_domains(Domains::from([domain]))),
+            proof: self.path_proof(&Ty::scalar(Scalar::U32), proof.with_domains(Domains::from([domain])).with_identity(ValueIdentity::Register(index))),
             literal: false,
             ty: Ty::scalar(Scalar::U32),
             regs: vec![index],
