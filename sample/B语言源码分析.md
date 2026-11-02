@@ -93,7 +93,7 @@ cd Blink
 cargo build --workspace --release
 ```
 
-源码构建先安装一份可独立取得的稳定Blink种子。原build.rs用该bc／blink生成B词法静态模块，Rust编译其余编译器与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
+源码构建先安装一份可独立取得的稳定Blink种子。原build.rs用该bc逐模块生成B词法及泛型前瞻对象，再由同一次blink归档静态链接；Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
 
 先检查，再导出 CPU/GPU 代码：
 
@@ -713,7 +713,7 @@ C 结构体保存字段，Rust 的 `struct` 也如此。Rust 的 `enum` 还可�
 
 `Result<T,E>` 表示成功或错误：`Ok(value)` 与 `Err(error)`。函数调用后面的 `?` 表示成功就取出结果，失败就把错误交还上层。它不是重新尝试，也不是忽略错误。
 
-源码节选：`crates/blanguage/src/parser.rs:6`。
+源码节选：`crates/blanguage/src/parser.rs:16`。
 
 ```rust
 pub fn parse(source: Source) -> Result<Module> {
@@ -799,7 +799,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
 
 native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，application::Context只持有编译期Frame寄存器及映像描述。真实Frame、设备与完成仍归blcompute；函数模块不是CPU应用上下文的附属状态。
 
-默认Cargo功能compiler保留完整源码编译与工具入口；B资源包装对原blanguage／blcompute路径依赖关闭该功能，仅消费共同表示、原已编译映像／资源编码和仍需的后端助手。共同codec.rs持有唯一字节编码，Frame与CPU／GPU资源仍归原执行框架。包装与运行库由一次Cargo依赖图生产，沿原target/dll复用实际依赖；仅运行角色不生产源码编译器身份，也不调用B词法种子。运行库仍有原生／SPIR-V生成消费者，这不代表后端预编译或运行库B迁移已经完成。
+默认Cargo功能compiler保留完整源码编译与工具入口；B资源包装对原blanguage／blcompute路径依赖关闭该功能，仅消费共同表示、原已编译映像／资源编码和仍需的后端助手。共同codec.rs持有唯一字节编码，Frame与CPU／GPU资源仍归原执行框架。包装与运行库由一次Cargo依赖图生产，沿原target/dll复用实际依赖；仅运行角色不生产源码编译器身份，也不调用B前端种子。运行库仍有原生／SPIR-V生成消费者，这不代表后端预编译或运行库B迁移已经完成。
 
 ### 4.4 统一函数怎样落到不同执行范围
 
@@ -884,9 +884,9 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 5.4 稳定种子怎样参与正式构建
 
-原build.rs调用已安装稳定发行的bc与blink，把B词法模块编译成无Frame的标准COFF对象和静态库，再链接进正式编译器。种子输入的VERSION使用句柄保持到子进程结束，新工具写工程target；不会在编译器运行时再生成自己的词法模块，也不反向依赖blcompute或调用Rust逐字符扫描。
+原build.rs调用已安装稳定发行的bc，分别生成B词法与泛型前瞻的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
 
-词法由B接管，其余解析、检查、IR、后端及执行框架仍由Rust实现。新工具能重编同一B词法模块，是模块迁移的实际消费，不等于完整编译器已完成两代自举或GPU参与编译。
+词法扫描与泛型尖括号前瞻由B接管，其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B前端模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -904,7 +904,7 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 6.2 解析器怎样知道在哪里
 
-源码节选：`crates/blanguage/src/parser.rs:31`。
+源码节选：`crates/blanguage/src/parser.rs:41`。
 
 ```rust
 struct Parser {
@@ -935,7 +935,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1051`。
+源码节选：`crates/blanguage/src/parser.rs:1029`。
 
 ```rust
             let prec = match self.peek() {
@@ -975,6 +975,50 @@ impl Parser {
 `array<array<u32,4>,3>` 中连续的 `>>` 在类型上下文是两个闭合尖括号；表达式中的 `>>` 则是右移。解析器的 `type_close` 专门区分这两个位置。同样的字符在不同语法位置可以承担不同意义。
 
 **自己走一遍。** `2 + 3 * 4` 的根是加法，右子树是乘法，结果十四。若代码生成器收到错误的树，后端再正确也只会忠实计算错误的结构。
+
+### 6.5 泛型尖括号怎样与移位区别
+
+`array<array<u32,2>,3>`包含嵌套类型，连续的`>>`可结束两层泛型；`value<N+(x>>2)>`中的右移处在值表达式括号内，不能关闭外层泛型。前瞻只寻找结束之后的token游标，完整语法仍由Parser构造原AST。
+
+`bootstrap/parser.b`直接借用原Source字节和词法已写入的同一TokenSpan数组。B维护尖括号、圆括号与方括号深度，沿原接受规则返回结束游标或无结果。函数不改变Parser当前at，也不分配或保留Token；输入及其释放仍属于原调用者。
+
+源码节选：`crates/blanguage/src/bootstrap/parser.b:17`。
+
+```b
+extern "C" AngleEnd angle_end(address source,address tokens,u64 count,u64 at) on cpu {
+    if(at>=count){return AngleEnd(0u64,0);}
+    TokenSpan start=span_at(tokens,at);
+    if(start.end-start.start!=1u64||byte_at(source,start.start)!=60){return AngleEnd(0u64,0);}
+    i64 depth=i64(0);u64 parentheses=0u64;u64 brackets=0u64;u64 index=at;
+    while(index<count){
+        TokenSpan token=span_at(tokens,index);u64 length=token.end-token.start;
+        u32 first=0;u32 second=0;
+        if(length>0u64){first=byte_at(source,token.start);}
+        if(length>1u64){second=byte_at(source,token.start+1u64);}
+        if(parentheses!=0u64||brackets!=0u64){
+            if(length==1u64){
+                if(first==40){parentheses+=1u64;}
+                else if(first==41){if(parentheses==0u64){return AngleEnd(0u64,0);}parentheses-=1u64;}
+                else if(first==91){brackets+=1u64;}
+                else if(first==93){if(brackets==0u64){return AngleEnd(0u64,0);}brackets-=1u64;}
+            }
+            index+=1u64;continue;
+        }
+        if(length==1u64&&first==40){parentheses=1u64;index+=1u64;continue;}
+        if(length==1u64&&first==91){brackets=1u64;index+=1u64;continue;}
+        if(length==1u64&&first==60){depth+=i64(1);}
+        else if(length==1u64&&first==62){depth-=i64(1);}
+        else if(length==2u64&&first==62&&second==62){depth-=i64(2);}
+        else if(!accepted(length,first,second)){return AngleEnd(0u64,0);}
+        if(depth==i64(0)){return AngleEnd(index+1u64,1);}
+        if(depth<i64(0)){return AngleEnd(0u64,0);}
+        index+=1u64;
+    }
+    return AngleEnd(0u64,0);
+}
+```
+
+C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结果交回type_argument_is_value、declaration_type及表达式解析的四处消费者。类型消费`>>`时仍推进原Span起点，后续前瞻读取这个实际范围。当前只有词法和这段前瞻由B实现，其他Parser职责及完整自举的剩余范围见Issues的C-032.2.2。
 
 ## 第七章 类型与布局：不只检查能不能相加
 
@@ -2522,7 +2566,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 |---|---|
 | `crates/blanguage/src/main.rs` | 命令行怎样选择检查、代码导出与目标文件编译 |
 | `lib.rs`、`frontend.rs` | 公开入口及源码装载、接口核对、具体入口选择与 Compilation |
-| `bootstrap/lexer.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
+| `bootstrap/lexer.h／.b`、`bootstrap/parser.h／.b`、`lexer.rs`、`parser.rs`、`ast.rs` | 原文怎样变成 token、树与可定位诊断 |
 | `generics.rs`、`value_parameters.rs`、`type_sets.rs` | 具体类型、静态值与类型集合怎样形成实例 |
 | `check.rs` | 参数、资源、函数、表达式与 parallel 怎样形成 IR |
 | `check/ownership.rs`、`view.rs` | 位置身份、字段借用与只读来源怎样传递 |

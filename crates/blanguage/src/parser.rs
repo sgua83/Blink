@@ -3,6 +3,16 @@ use crate::{
     lexer::{self, Token},
 };
 
+#[repr(C)]
+struct AngleEnd {
+    end: usize,
+    present: u32,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.parser::angle_end"]
+    fn angle_end(source: *const u8, tokens: *const Token, count: usize, at: usize) -> AngleEnd;
+}
+
 pub fn parse(source: Source) -> Result<Module> {
     let tokens = lexer::lex(&source)?;
     Parser {
@@ -129,43 +139,11 @@ impl Parser {
         }
     }
     fn angle_end(&self, at: usize) -> Option<usize> {
-        if self.tokens.get(at)?.text(&self.source) != "<" {
-            return None;
-        }
-        let mut depth = 0isize;
-        let mut parentheses = 0usize;
-        let mut brackets = 0usize;
-        for (index, token) in self.tokens.iter().enumerate().skip(at) {
-            if parentheses != 0 || brackets != 0 {
-                match token.text(&self.source) {
-                    "("=>parentheses+=1,
-                    ")"=>parentheses=parentheses.checked_sub(1)?,
-                    "["=>brackets+=1,
-                    "]"=>brackets=brackets.checked_sub(1)?,
-                    _=>{},
-                }
-                continue;
-            }
-            match token.text(&self.source) {"("=>{parentheses=1;continue;},"["=>{brackets=1;continue;},_=>{}}
-            match token.text(&self.source) {
-                "<" => depth += 1,
-                ">" => depth -= 1,
-                ">>" => depth -= 2,
-                ","|"."|"::"|"+"|"-"|"*"|"/"|"%"|"&"|"|"|"^"|"~"|"!"|"?"|":"|"<<"|"=="|"!="|"<="|">="|"&&"|"||"=>{}
-                text if text
-                    .as_bytes()
-                    .first()
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') => {}
-                _ => return None,
-            }
-            if depth == 0 {
-                return Some(index + 1);
-            }
-            if depth < 0 {
-                return None;
-            }
-        }
-        None
+        // Source and the lexer-owned spans remain borrowed for this call.
+        let result = unsafe {
+            angle_end(self.source.text.as_ptr(), self.tokens.as_ptr(), self.tokens.len(), at)
+        };
+        (result.present != 0).then_some(result.end)
     }
     fn contract(&mut self) -> Result<FunctionContract> {
         let span = self.span();

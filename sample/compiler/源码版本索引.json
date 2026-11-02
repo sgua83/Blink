@@ -52,7 +52,7 @@
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "sha256": "dc55f4be73305236aea63d76908e8714a3498c7e060337a520201ce5a52f266d"
+      "sha256": "1b8a670dfddcc0871a679297bdac9cd6bd2bdb2261dd0dce4c1496428058f148"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
@@ -144,7 +144,7 @@
     },
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "e213084686181442265e695822f79420dfeb9d6dafa425bbe0fd9bdd26a98d92"
+      "sha256": "fff8365cf9070a1db2a617fcbfb75bf20ec4dd96d66107ac3a88e262280c2823"
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
@@ -157,6 +157,14 @@
     {
       "path": "crates/blanguage/src/codec.rs",
       "sha256": "61e198e5b21f70a8a7a126ecba952f466b132ad808aeb39ee8d35417d899a0c7"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/parser.h",
+      "sha256": "cc4961bd9eee7ea911ab9898284d88633599affefff1b7391271e4cdca49c8da"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/parser.b",
+      "sha256": "3493eb5d3edd48e96212add7cc741819ffbae94ec2223ef7d6dcaff14bd8424c"
     }
   ],
   "excerpts": [
@@ -300,8 +308,8 @@
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "start_line": 6,
-      "end_line": 14,
+      "start_line": 16,
+      "end_line": 24,
       "sha256": "423800c6d8a04c0ce541428a9948cc8940db29049e24d5cd509177e3ab53f4d4"
     },
     {
@@ -342,15 +350,21 @@
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "start_line": 31,
-      "end_line": 50,
+      "start_line": 41,
+      "end_line": 60,
       "sha256": "79b502e2aee9030014c63132b2aa43c215166cba8afd1215f144fc9d13fef39e"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "start_line": 1051,
-      "end_line": 1076,
+      "start_line": 1029,
+      "end_line": 1054,
       "sha256": "ce32a6740691fe00f7393851a8f125be48c5053879067341bec6c2a8589b7809"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/parser.b",
+      "start_line": 17,
+      "end_line": 47,
+      "sha256": "100ba1fc8b06322b7780c09afffa41e778f8b1cb52f80287f6cfeb41bba5782d"
     },
     {
       "path": "crates/blanguage/src/ir.rs",

@@ -14,7 +14,7 @@
 
 名字中的 B 也寓意 **Base**。Blink 希望成为 AI 超算时代的基础编程语言，让并行、数据关系与协作成为编程语言的基本能力，并逐步完善通用与系统编程所需的功能。
 
-本仓库提供 B 语言的编译器、链接器、原生执行框架、语言规范和示例。B 语言使用 `.h` 声明接口，使用 `.b` 编写实现；编译器根据目标生成 Windows x64 机器码或 SPIR-V，执行框架负责数据、设备、传输和真实完成。当前词法扫描由B实现，编译器其余模块与执行框架仍由Rust实现，无第三方编译器、Shader 编译器或并行运行时依赖。
+本仓库提供 B 语言的编译器、链接器、原生执行框架、语言规范和示例。B 语言使用 `.h` 声明接口，使用 `.b` 编写实现；编译器根据目标生成 Windows x64 机器码或 SPIR-V，执行框架负责数据、设备、传输和真实完成。当前词法扫描与泛型尖括号前瞻由B实现，其余语法构造、AST、检查、IR、后端与执行框架仍由Rust实现，无第三方编译器、Shader 编译器或并行运行时依赖。
 
 > **项目状态：研发中，软件版本见 [VERSION](VERSION)。** 已有单机 CPU／GPU 原生执行；域编译、域运行和稳定热更新是确定的设计目标，尚未实现。设计目标与当前实现范围见[架构](Docs/Architecture.md)。
 
@@ -38,7 +38,7 @@
 
 软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示构建时的同一版本。
 
-正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。当前Windows x64下载Blink-Setup-windows-x64.exe，双击或运维--quiet覆盖安装到%ProgramFiles%/Blink，自动配置系统PATH，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。源码SDK构建先安装一份可独立取得、支持当前词法源码的稳定Blink发行；完整compiler角色的原build.rs从%ProgramFiles%/Blink/bin调用bc与blink，静态生成B词法模块，不依赖target中新工具。默认源码SDK保留完整编译接口；仅执行角色关闭compiler功能，不调用词法种子或装入源码前端。以下为源码SDK开发方式。
+正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。当前Windows x64下载Blink-Setup-windows-x64.exe，双击或运维--quiet覆盖安装到%ProgramFiles%/Blink，自动配置系统PATH，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。源码SDK构建先安装一份可独立取得、支持当前前端B源码的稳定Blink发行；完整compiler角色的原build.rs从%ProgramFiles%/Blink/bin调用bc与blink，静态生成B词法及泛型前瞻模块，不依赖target中新工具。默认源码SDK保留完整编译接口；仅执行角色关闭compiler功能，不调用前端种子或装入源码前端。以下为源码SDK开发方式。
 
 ## 快速开始
 
