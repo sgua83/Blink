@@ -84,9 +84,6 @@ impl Builder<'_> {
             values.push(value);
         }
         for name in held { self.env.remove(&name); }
-        if ty.is_c_function() {
-            return self.value_constructor(ty, values, span).map(Some);
-        }
         if ty.owns_resources() {
             return self.fail(span, "B224", "拥有资源的记录通过移动构造，不能复制为普通值");
         }
@@ -111,6 +108,9 @@ impl Builder<'_> {
         }
         if ty.matrix_shape().is_some() {
             return self.matrix_construct(ty, values, span).map(Some);
+        }
+        if ty.is_c_function() || ty.is_numeric() {
+            return self.value_constructor(ty, values, span).map(Some);
         }
         if ty.array.is_some() && values.len() == 1 && values[0].ty == ty {
             return Ok(Some(values.into_iter().next().unwrap()));

@@ -845,7 +845,7 @@ impl Token {
 
 ### 5.2 一个扫描位置贯穿整个B循环
 
-扫描由`src/bootstrap/lexer.b`实现。`at`是当前字节位置，`start`是本次token起点；B直接读取借入的UTF-8字节。空白和注释被跳过，标识符、数字、链接字符串与运算符各按现有语言规则识别。最终输出`[start,at)`，不复制原文。
+扫描由`src/bootstrap/lexer.b`实现。`at`是当前字节位置，`start`是本次token起点；B直接读取借入的UTF-8字节。空白和注释被跳过，标识符、数字、引号字符串与运算符各按现有语言规则识别。最终输出`[start,at)`，不复制原文；引号内容的具体含义由原语法消费者决定。
 
 源码节选：`crates/blanguage/src/bootstrap/lexer.b:81`。
 
@@ -887,7 +887,7 @@ extern "C" ScanResult scan(address source, u64 length, address tokens) on cpu;
 
 Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界提供输出空间。同步调用只借出源码、长度和原输出地址；B写Span并返回数量，成功后Rust才设置Vec长度。B不分配、不保留地址，错误交回B001至B004的原字节位置，Diagnostic仍沿原Source显示。最后消费者和释放仍由原Rust所有者负责，没有第二份token表或资源释放链。
 
-本版标识符使用ASCII，大小写有区别；中文可写在注释与链接字符串中，具体链接名的ASCII限制由原链接合同检查。通用文本值和字符串库仍未完成。类型里的`>>`只推进当前Span的起点，剩余切片成为`>`；表达式中的右移不变。
+本版标识符使用ASCII，大小写有区别；中文可写在文本字面量与注释中。普通引号文本由Parser解码为既有array<u8,N>：N是实际UTF-8字节数，允许空文本，不自动补NUL。原Construct节点明确指定u8类型，因此用户同名函数或局部名称不会改变字节；常量、记录、模块和CPU／GPU后端继续消费原数组。转义支持反斜线、引号、换行、回车、制表、零字节及Unicode标量，非法转义直接报错。链接名仍由原link_string检查非空、非NUL的ASCII及其有限转义，动态文本容器和完整字符串库继续待实现。类型里的`>>`只推进当前Span的起点，剩余切片成为`>`；表达式中的右移不变。
 
 ### 5.4 稳定种子怎样参与正式构建
 
@@ -942,7 +942,7 @@ impl Parser {
 
 本版表达式使用带最低优先级参数的 `expr`。先解析一个基本表达式，再不断查看后续运算符。只有运算符优先级达到当前要求，才把它接入树中；右侧递归使用相应门槛，从而保持乘法先于加法等关系。
 
-源码节选：`crates/blanguage/src/parser.rs:1029`。
+源码节选：`crates/blanguage/src/parser.rs:1076`。
 
 ```rust
             let prec = match self.peek() {

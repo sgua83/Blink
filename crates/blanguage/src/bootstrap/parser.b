@@ -7,7 +7,7 @@ TokenSpan span_at(address tokens,u64 at) on cpu {
     return unsafe_position<TokenSpan>(unsafe_address(address_bits(tokens)+at*16u64));
 }
 bool accepted(u64 length,u32 first,u32 second) on cpu {
-    return first>=65&&first<=90 || first>=97&&first<=122 || first>=48&&first<=57 || first==95
+    return first>=65&&first<=90 || first>=97&&first<=122 || first>=48&&first<=57 || first==95 || first==34
         || length==1u64 && (first==44||first==46||first==43||first==45||first==42||first==47
             ||first==37||first==38||first==124||first==94||first==126||first==33||first==63||first==58)
         || length==2u64 && (first==58&&second==58 || first==60&&second==60

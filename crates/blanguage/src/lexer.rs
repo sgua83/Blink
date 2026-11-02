@@ -18,7 +18,7 @@ enum ScanError {
     None,
     BlockComment,
     SourceCharacter,
-    LinkString,
+    QuotedString,
     RemovedProgram,
 }
 #[repr(C)]
@@ -45,8 +45,8 @@ pub fn lex(source: &Source) -> Result<Vec<Token>> {
             return Ok(out);
         }
         ScanError::BlockComment => ("B001", "块注释没有结束"),
-        ScanError::SourceCharacter => ("B002", "不支持的源字符；标识符使用 ASCII，中文可写在注释中"),
-        ScanError::LinkString => ("B003", "链接字符串没有结束"),
+        ScanError::SourceCharacter => ("B002", "不支持的源字符；标识符使用 ASCII，中文可写在文本字面量或注释中"),
+        ScanError::QuotedString => ("B003", "字符串没有结束"),
         ScanError::RemovedProgram => ("B004", "`program` 已从源语言移除，不能用作声明关键字或标识符；请用返回类型定义函数（无返回值用 `void`），并用 `parallel` 表达并行域"),
     };
     source.fail(span, code, message)

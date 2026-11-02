@@ -299,6 +299,7 @@ impl Parser {
     fn value_argument(&self)->bool {
         let first=self.peek();
         if first.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            || first.starts_with('"')
             || matches!(first,"("|"+"|"-"|"!"|"~"|"true"|"false") {return true;}
         let mut at=self.at+1;
         while self.tokens.get(at).is_some_and(|token|matches!(token.text(&self.source),"."|"::")) {at+=2;}
@@ -929,6 +930,52 @@ impl Parser {
                 kind: ExprKind::Bool(false),
                 span,
             }
+        } else if self.peek().starts_with('"') {
+            let text = self.peek();
+            let mut chars = text[1..text.len() - 1].chars();
+            let mut value = String::new();
+            while let Some(c) = chars.next() {
+                value.push(if c == '\\' {
+                    match chars.next() {
+                        Some('\\') => '\\',
+                        Some('"') => '"',
+                        Some('n') => '\n',
+                        Some('r') => '\r',
+                        Some('t') => '\t',
+                        Some('0') => '\0',
+                        Some('u') => {
+                            if chars.next() != Some('{') {
+                                return self.source.fail(span, "B385", "Unicode 转义使用 \\u{十六进制标量}");
+                            }
+                            let Some((digits, rest)) = chars.as_str().split_once('}') else {
+                                return self.source.fail(span, "B385", "Unicode 转义缺少 }");
+                            };
+                            let Some(scalar) = u32::from_str_radix(digits, 16).ok()
+                                .filter(|_| digits.bytes().all(|c| c.is_ascii_hexdigit()))
+                                .and_then(char::from_u32) else {
+                                return self.source.fail(span, "B385", "Unicode 转义必须是有效的十六进制 Unicode 标量");
+                            };
+                            chars = rest.chars();
+                            scalar
+                        }
+                        _ => return self.source.fail(span, "B385", "文本转义支持 \\\\、\\\"、\\n、\\r、\\t、\\0 和 \\u{标量}"),
+                    }
+                } else { c });
+            }
+            let mut ty = TypeName::named("array");
+            ty.arguments = vec![
+                GenericArgument::Type(TypeName::named("u8")),
+                GenericArgument::Value(Shape::Expression(Box::new(Expr {
+                    kind: ExprKind::Number(value.len().to_string()), span,
+                }))),
+            ];
+            let values = value.bytes().map(|byte| Expr {
+                kind: ExprKind::Construct(TypeName::named("u8"), vec![Expr {
+                    kind: ExprKind::Number(byte.to_string()), span,
+                }]), span,
+            }).collect();
+            self.at += 1;
+            Expr { kind: ExprKind::Construct(ty, values), span }
         } else if self
             .peek()
             .as_bytes()
