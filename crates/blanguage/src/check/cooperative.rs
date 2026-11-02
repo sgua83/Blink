@@ -84,15 +84,6 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
             "拥有聚合通过普通CPU函数按值交接或read／write／inout借用；其他访问与执行目标尚未实现",
         );
     }
-    if matches!(param.access, Access::InOut | Access::Write)
-        && !param.ty.dataset
-        && !param.ty.tile
-        && ty.components.is_empty()
-    {
-        return definition
-            .source
-            .fail(param.span, "B227", "write／inout 参数需要非空值类型");
-    }
     if param.ty.tile && ty.contains_views() {
         return definition.source.fail(
             param.span,
@@ -102,12 +93,12 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
     }
     if param.access == Access::Atomic
         && !param.ty.tile
-        && (ty.contains_views() || ty.components.is_empty())
+        && ty.contains_views()
     {
         return definition.source.fail(
             param.span,
             "B223",
-            "原子借用参数需要非空普通值类型，不能包含资源 view",
+            "原子借用参数不能包含资源 view",
         );
     }
     Ok(ty)

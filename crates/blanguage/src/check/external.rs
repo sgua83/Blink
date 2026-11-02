@@ -384,6 +384,7 @@ impl Builder<'_> {
     ) -> Result<Vec<(Ty, CallReference)>> {
         if c_abi { return Ok(vec![(place.ty().clone(), self.external_reference(place, access, span)?)]); }
         let parameters = native_function::reference_parameters(place.ty());
+        if parameters.is_empty() { return Ok(Vec::new()); }
         if parameters.len() == 1 {
             return Ok(vec![(
                 parameters[0].clone(),

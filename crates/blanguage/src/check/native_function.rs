@@ -6,6 +6,7 @@ use returns::Returned;
 // Only source vectors admit a different component placement with the same type.
 // Aggregate fields and arrays retain their declared layout.
 pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
+    if ty.components.is_empty() { return Vec::new(); }
     if ty.array.is_none()
         && ty.fields.is_empty()
         && ty.view.is_none()

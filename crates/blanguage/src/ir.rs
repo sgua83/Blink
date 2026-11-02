@@ -161,11 +161,11 @@ impl Ty {
     pub fn owns_resources(&self) -> bool {
         self.cleanup.is_some() || self.dataset.is_some()
             || self.variants.iter().any(|v| v.ty.owns_resources())
-            || self.array.as_deref().is_some_and(Self::owns_resources)
+            || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.owns_resources())
             || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
     }
     pub(crate) fn contains_cleanup(&self)->bool {
-        self.cleanup.is_some()||self.array.as_deref().is_some_and(Self::contains_cleanup)||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
+        self.cleanup.is_some()||self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_cleanup())||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
     }
     pub(crate) fn aggregate_len(&self) -> usize {
         if self.array.is_some() {
@@ -233,7 +233,7 @@ impl Ty {
     pub(crate) fn zero_valid(&self)->bool {
         if self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some() || self.is_execution_context(){return false;}
         if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
-        self.array.as_deref().is_none_or(Self::zero_valid) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
+        self.array.as_deref().is_none_or(|ty| self.values[0] == 0 || ty.zero_valid()) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
     }
     pub fn unit() -> Self {
         Self {
@@ -427,7 +427,7 @@ impl Ty {
             && self.view.is_none()
             && self.array.is_none()
             && self.fields.is_empty()
-            && self.components.iter().all(|x| x.0 != Scalar::Bool)
+            && !self.components.is_empty() && self.components.iter().all(|x| x.0 != Scalar::Bool)
     }
     pub fn contains_arrays(&self) -> bool {
         self.variants.iter().any(|v| v.ty.contains_arrays())
@@ -437,14 +437,14 @@ impl Ty {
     pub fn contains_views(&self) -> bool {
         self.variants.iter().any(|v| v.ty.contains_views())
             || self.view.is_some()
-            || self.array.as_ref().is_some_and(|t| t.contains_views())
+            || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
     }
     pub(crate) fn contains_borrows(&self) -> bool {
         self.is_address()
             || self.view.is_some()
             || self.variants.iter().any(|v| v.ty.contains_borrows())
-            || self.array.as_ref().is_some_and(|t| t.contains_borrows())
+            || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_borrows())
             || self.fields.iter().any(|(_, _, t)| t.contains_borrows())
     }
     /// Borrow-bearing values in this layout, without following their pointees.

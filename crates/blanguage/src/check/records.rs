@@ -117,6 +117,9 @@ impl Builder<'_> {
         }
         if let Some(element) = &ty.array {
             let count = ty.values[0] as usize;
+            for value in &values {
+                self.require_same(element, &value.ty, span)?;
+            }
             let values = if values.len() == 1 {
                 vec![values[0].clone(); count]
             } else {
@@ -124,9 +127,6 @@ impl Builder<'_> {
             };
             if values.len() != count {
                 return self.fail(span, "B157", "array 构造需要全部元素，或一个填充值");
-            }
-            for value in &values {
-                self.require_same(element, &value.ty, span)?;
             }
             let mut proof = bounds::Proof::default();
             let uniform = values.iter().all(|v| v.uniform);

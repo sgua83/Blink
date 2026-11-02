@@ -1138,22 +1138,22 @@ impl GpuDataset {
         extra_usage: u32,
         alignment: u64,
     ) -> Result<Self> {
-        let capacity = blanguage::spirv::PAGE_BYTES / stride;
-        if capacity == 0 {
-            return Err(error("GPU 页寻址要求单条记录能容纳于一个物理页"));
-        }
         let mut pages = Vec::new();
-        let mut remaining = count;
+        let mut remaining = u64::from(count) * u64::from(stride);
         while remaining > 0 {
-            let n = remaining.min(capacity);
+            let capacity = blanguage::spirv::PAGE_BYTES / stride;
+            if capacity == 0 {
+                return Err(error("GPU 页寻址要求单条记录能容纳于一个物理页"));
+            }
+            let bytes = remaining.min(u64::from(capacity) * u64::from(stride));
             pages.push(Allocation::new(
                 inner.clone(),
-                n as u64 * stride as u64,
+                bytes,
                 0x20023 | extra_usage,
                 1,
                 alignment.max(u64::from(ty.align)),
             )?);
-            remaining -= n;
+            remaining -= bytes;
         }
         let allocation = Self::table(inner, &pages, stride)?;
         Ok(Self {

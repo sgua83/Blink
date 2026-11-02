@@ -94,7 +94,6 @@ impl Device {
         commands: &mut Commands,
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
-        let bytes_per_page = target.page_records() as usize * target.stride as usize;
         let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), target.bytes() as usize) };
         let headers: Vec<_> = target
             .views
@@ -105,12 +104,10 @@ impl Device {
                 [address as u32, (address >> 32) as u32, source.0.count]
             })
             .collect();
-        for (index, (page, bytes)) in target
-            .pages
-            .iter()
-            .zip(bytes.chunks(bytes_per_page))
-            .enumerate()
-        {
+        for (index, page) in target.pages.iter().enumerate() {
+            let bytes_per_page = target.page_records() as usize * target.stride as usize;
+            let start = index * bytes_per_page;
+            let bytes = &bytes[start..(start + bytes_per_page).min(bytes.len())];
             self.stage_page(
                 page,
                 bytes,

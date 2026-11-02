@@ -416,7 +416,7 @@ impl Builder<'_> {
     }
     pub(super) fn function_body(&mut self, body: &[Stmt]) -> Result<(Option<Returned>,Vec<Option<Returned>>)> {
         let state = self.begin_function_body(body)?;
-        let mut sequence = Flow::NEXT;
+        let mut sequence = if self.residency_path().possible() { Flow::NEXT } else { Flow::STOP };
         for statement in body {
             if !sequence.continues() {
                 break;

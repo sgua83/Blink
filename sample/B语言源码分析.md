@@ -177,6 +177,8 @@ cargo build --workspace --release
     }
 ```
 
+零长度array<T,0>保留T的对齐和完整类型身份，载荷字节数为零；无字段记录及仅含零尺寸字段的记录也沿同一Ty布局存在，不是void或数值。B参数／返回与位置降低不为这些值生产机器分量，GPU只按实际字节生成数据页，逻辑记录数量和原绑定表仍保留；普通C ABI直接零尺寸按值交接与裸取址仍以现行可表示范围为准。
+
 不要从“内容十二字节”推出“任何地方都连续十二字节”。记录中的字段、矩阵的行、整个 dataset 的 stride 都要按编译器布局处理。C++ 或 Rust 的同名类型也未必具有相同布局。
 
 ![记录布局和地址计算](figures/compiler-memory.svg)
@@ -582,7 +584,8 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
         let (ty, kind) = matrix::binary_type(op, a, a_literal, b, b_literal, source, span)?;
         return Ok((ty, Binary::Matrix(kind)));
     }
-    if a.array.is_some() || b.array.is_some() || !a.fields.is_empty() || !b.fields.is_empty()
+    if a.components.is_empty() || b.components.is_empty()
+        || a.array.is_some() || b.array.is_some() || !a.fields.is_empty() || !b.fields.is_empty()
         || a.contains_views() || b.contains_views() {
         return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
     }

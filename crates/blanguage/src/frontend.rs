@@ -893,9 +893,6 @@ impl World {
             let count = self
                 .shape(&Some(length), source, span, module, imports)?
                 .unwrap();
-            if count == 0 {
-                return source.fail(span, "B238", "普通值 array 的固定长度必须为正");
-            }
             let stride = ir::align_up(element.size, element.align);
             let size = stride.checked_mul(count).ok_or_else(|| Diagnostic {
                 source: source.clone(),
@@ -1112,9 +1109,6 @@ impl World {
             ty.size = end as u32;
             ty.align = ty.align.max(f.align);
             ty.fields.push((field.name.clone(), offset, Box::new(f)));
-        }
-        if ty.components.is_empty() {
-            return source.fail(span, "B035", "空结构体不能作为计算数据");
         }
         let size = (ty.size as u64).div_ceil(ty.align as u64) * ty.align as u64;
         ty.size = u32::try_from(size).map_err(|_| Diagnostic {

@@ -75,7 +75,8 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
         let (ty, kind) = matrix::binary_type(op, a, a_literal, b, b_literal, source, span)?;
         return Ok((ty, Binary::Matrix(kind)));
     }
-    if a.array.is_some() || b.array.is_some() || !a.fields.is_empty() || !b.fields.is_empty()
+    if a.components.is_empty() || b.components.is_empty()
+        || a.array.is_some() || b.array.is_some() || !a.fields.is_empty() || !b.fields.is_empty()
         || a.contains_views() || b.contains_views() {
         return source.fail(span, "B147", "结构体和资源视图不能作为数值进行运算");
     }
@@ -97,7 +98,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 }
 pub(super) fn unary(op: &str, ty: &Ty, source: &Source, span: Span) -> Result<Option<UnaryOp>> {
     if op == "+" {
-        if ty.is_c_function() || ty.is_handle() || ty.is_execution_context() || ty.is_address() || ty.array.is_some()
+        if ty.components.is_empty() || ty.is_c_function() || ty.is_handle() || ty.is_execution_context() || ty.is_address() || ty.array.is_some()
             || ty.enumeration || ty.has_variants() {
             return source.fail(span, "B146", "数值一元运算需要数值类型");
         }
