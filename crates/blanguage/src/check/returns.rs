@@ -68,6 +68,12 @@ impl Returned {
         }
     }
     pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition){
+        if let (Self::Value(value),Self::Value(other))=(&mut *self,&other){
+            value.proof.join_condition(&other.proof,value.regs.len(),Some(choice));
+            value.uniform &= other.uniform;
+            if value.constant != other.constant { value.constant=None; }
+            return;
+        }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition){match(target,a,b){
             (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=a.proof.clone();target.proof.join_condition(&b.proof,target.regs.len(),Some(choice));},
             (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.handle.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));},

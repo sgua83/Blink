@@ -1279,6 +1279,8 @@ enum Fact {
 
 这里对非零取共同条件，对范围取能容纳两条路径的区间。源码中的集合交集同样只保留两侧共同成立的域关系。合流不是把每条路径的最好结论全部相加。
 
+返回出口的选支已知时，`check/returns.rs::Returned::join_locations`把原条件直接交给`Proof::join_condition`，只合流一次普通Value的来源。uniform取两侧共有值，constant只保留相同常量；dataset与拥有载荷仍沿各自原模型交接。
+
 ![条件与事实的合流](figures/compiler-facts.svg)
 
 *图 9-1：条件内的知识属于该路径和实际值；合流时留下共同事实。重新赋值会产生新的内容身份。*

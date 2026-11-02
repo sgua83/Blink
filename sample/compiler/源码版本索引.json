@@ -67,6 +67,10 @@
       "sha256": "4ad8656eb98a7050ec7302a71789c7c0423575a8a7fceca18db9e761c21b8599"
     },
     {
+      "path": "crates/blanguage/src/check/returns.rs",
+      "sha256": "ff69982753d602535e0e3658a1f030001c468518a023a4bdb2a225e0b0909adc"
+    },
+    {
       "path": "crates/blanguage/src/codec.rs",
       "sha256": "61e198e5b21f70a8a7a126ecba952f466b132ad808aeb39ee8d35417d899a0c7"
     },
