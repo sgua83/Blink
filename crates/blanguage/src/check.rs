@@ -2810,14 +2810,9 @@ impl<'a> Builder<'a> {
             return self.record_expression(&TypeName::named(name), args, span);
         }
         if name == "address_of" { return self.position_address(args, span); }
-        let mut values = Vec::new();
-        for a in args {
-            let Some(value) = self.expr(a)? else {
-                return Ok(None);
-            };
-            values.push(value);
-        }
+        let values = args.iter().map(|arg| self.expr(arg));
         if name == "function_address" {
+            let Some(mut values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             if self.program.target != Target::Cpu { return self.fail(span, "B265", "function_address只取得本进程CPU函数地址"); }
             if values.len() != 1 { return self.fail(span, "B153", "function_address需要一个cfn实参"); }
             let mut value = values.pop().unwrap();
@@ -2828,6 +2823,7 @@ impl<'a> Builder<'a> {
             return Ok(Some(value));
         }
         if name == "unsafe_handle" {
+            let Some(mut values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             if values.len() != 1 {
                 return self.fail(span, "B153", "unsafe_handle需要一个usize实参");
             }
@@ -2849,6 +2845,7 @@ impl<'a> Builder<'a> {
             }));
         }
         if matches!(name, "unsafe_address" | "address_bits") {
+            let Some(mut values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             if self.program.target != Target::Cpu {
                 return self.fail(span, "B265", "CPU本地地址只能在on cpu位置解释或取得位模式");
             }
@@ -2874,9 +2871,11 @@ impl<'a> Builder<'a> {
             return Ok(Some(value));
         }
         if let Some(ty) = Ty::builtin(name) {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self.value_constructor(ty, values, span).map(Some);
         }
         if matches!(name, "bitcast_u32" | "bitcast_f32" | "bitcast_u64" | "bitcast_f64") {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self.bitcast(name, values, span).map(Some);
         }
         if matches!(
@@ -2894,30 +2893,36 @@ impl<'a> Builder<'a> {
                 | "max"
                 | "pow"
         ) {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self.math(name, values, span).map(Some);
         }
         if matches!(name, "transpose" | "determinant" | "inverse") {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self.matrix_intrinsic(name, values, span).map(Some);
         }
         if name == "dot" {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self.dot_value(values, span).map(Some);
         }
         if matches!(name, "length" | "normalize") {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self
                 .length_value(values, name == "normalize", span)
                 .map(Some);
         }
         if name == "cross" {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             return self.cross_value(values, span).map(Some);
         }
         if name == "clamp" {
+            let Some(values) = values.collect::<Result<Option<Vec<_>>>>()? else { return Ok(None); };
             if values.len() != 3 {
                 return self.fail(span, "B153", "clamp 需要三个参数");
             }
             let a = self.math("max", vec![values[0].clone(), values[1].clone()], span)?;
             return self.math("min", vec![a, values[2].clone()], span).map(Some);
         }
-        self.fail(span, "B158", format!("未知函数或能力 {name}"))
+        self.fail(span, "B158", format!("未知或未导出的函数或能力 {name}"))
     }
     #[inline(never)]
     fn unary_expr(&mut self, op: &String, a: &Expr, span: Span) -> Result<Option<Value>> {
