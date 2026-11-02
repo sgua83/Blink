@@ -4,7 +4,7 @@
   "source_files": [
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "fff8365cf9070a1db2a617fcbfb75bf20ec4dd96d66107ac3a88e262280c2823"
+      "sha256": "cc0914c9bd2927f2575ebf2741533b3a51104c33ca536eb5a0117104c1dc65dc"
     },
     {
       "path": "crates/blanguage/src/ast.rs",
@@ -173,6 +173,18 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/archive.h",
+      "sha256": "5b2b7d95c570fe3706191dc8c776ee7ed47e40362958e0c14bcf00dfeb79dad2"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/archive.b",
+      "sha256": "66f17659bb282b21aebba4807864757794e106a4ac243052acacdc9f1f5a2e20"
+    },
+    {
+      "path": "crates/blanguage/src/object/static_library.rs",
+      "sha256": "b5c4f7a4bc26f4c4f9f05a34182e203ea9582953f6c8205d59c80ae81d8ec09a"
     }
   ],
   "excerpts": [

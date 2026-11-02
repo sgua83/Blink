@@ -13,16 +13,16 @@ fn sources(path: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<
     }
     Ok(())
 }
-fn bootstrap_frontend() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn bootstrap_modules() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt, path::PathBuf};
     let seed = PathBuf::from(env::var_os("ProgramFiles").ok_or("缺少ProgramFiles")?).join("Blink");
-    // Keep the installed input until all frontend compilation and archiving ends.
+    // Keep the installed input until all bootstrap compilation and archiving ends.
     let _seed_use = OpenOptions::new().read(true).share_mode(1).open(seed.join("VERSION"))?;
     for name in ["VERSION", "bin/bc.exe", "bin/blink.exe"] {
         println!("cargo:rerun-if-changed={}", seed.join(name).display());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
-    let modules = ["lexer", "parser"];
+    let modules = ["lexer", "parser", "archive"];
     let objects: Vec<_> = modules.iter().map(|name| out.join(format!("blink_compiler_{name}.obj"))).collect();
     for (name, object) in modules.iter().zip(&objects) {
         let compiled = Command::new(seed.join("bin/bc.exe"))
@@ -36,7 +36,7 @@ fn bootstrap_frontend() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let archived = Command::new(seed.join("bin/blink.exe"))
         .arg("--archive").args(&objects).arg("-o").arg(&archive).status()?;
     if !archived.success() {
-        return Err("稳定Blink种子归档前端模块失败".into());
+        return Err("稳定Blink种子归档B引导模块失败".into());
     }
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=blink_compiler_bootstrap");
@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed=build.rs");
         return Ok(());
     }
-    let frontend_objects = bootstrap_frontend()?;
+    let bootstrap_objects = bootstrap_modules()?;
     let mut files = Vec::new();
     sources(Path::new("src"), &mut files)?;
     files.extend([
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ]);
     files.sort();
     let mut identity = Vec::new();
-    hash::field(&mut identity, &frontend_objects);
+    hash::field(&mut identity, &bootstrap_objects);
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());
         hash::field(

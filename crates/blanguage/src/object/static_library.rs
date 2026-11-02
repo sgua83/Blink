@@ -145,29 +145,49 @@ impl Library {
         Ok(Some(object))
     }
 }
-fn member(output: &mut Vec<u8>, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut header = [b' '; 60];
-    for (begin, width, value) in [
-        (0, 16, name.to_owned()),
-        (16, 12, "0".into()),
-        (40, 8, "0".into()),
-        (48, 10, bytes.len().to_string()),
-    ] {
-        if value.len() > width {
-            return Err("静态库成员头字段超出 COFF 格式".into());
-        }
-        header[begin..begin + value.len()].copy_from_slice(value.as_bytes());
-    }
-    header[58..].copy_from_slice(b"`\n");
-    output.extend(header);
-    output.extend(bytes);
-    if output.len() % 2 != 0 {
-        output.push(b'\n');
-    }
-    Ok(())
+// The C layout borrows the existing names/objects for one synchronous B call.
+// Only the caller owns the views and final Vec; B retains no pointer.
+#[repr(C)]
+struct ArchiveMember {
+    name: *const u8,
+    name_length: usize,
+    bytes: *const u8,
+    byte_length: usize,
+    offset: usize,
+    name_offset: usize,
 }
-fn span(size: usize) -> usize {
-    60 + size + size % 2
+#[repr(C)]
+struct ArchiveSymbol {
+    name: *const u8,
+    name_length: usize,
+    member: usize,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ArchiveInput {
+    members: *mut ArchiveMember,
+    member_count: usize,
+    symbols: *mut ArchiveSymbol,
+    symbol_count: usize,
+}
+// Discriminants and field layout are shared with bootstrap/archive.h.
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum ArchiveError { None, MemberField, MemberOffset, SymbolCount, MemberCount, MemberIndex }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ArchiveLayout {
+    length: usize,
+    first: usize,
+    second: usize,
+    names: usize,
+    error: ArchiveError,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.archive::layout"]
+    fn archive_layout(input: ArchiveInput) -> ArchiveLayout;
+    #[link_name = "bootstrap.archive::encode"]
+    fn archive_encode(input: ArchiveInput, layout: ArchiveLayout, output: *mut u8);
 }
 
 /// 将已编译模块保存为标准 COFF 静态库；原对象字节保持，不调用编译器。
@@ -190,61 +210,40 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         }
     }
     let mut symbols = Vec::new();
-    let mut longnames = Vec::new();
-    let mut names = Vec::new();
     for (index, member) in members.iter().enumerate() {
         let object = member.object()?;
         if !matches!(object.kind, Kind::Module { .. }) {
             return Err(format!("{} 不是独立模块产物", member.name).into());
         }
         symbols.extend(object.symbols.into_iter().map(|s| (index, s.name)));
-        names.push(longnames.len());
-        longnames.extend(member.name.as_bytes());
-        longnames.push(0);
     }
-    let strings = symbols
-        .iter()
-        .map(|(_, name)| name.len() + 1)
-        .sum::<usize>();
-    let first = 4 + 4 * symbols.len() + strings;
-    let second = 8 + 4 * members.len() + 2 * symbols.len() + strings;
-    let mut at = SIGNATURE.len() + span(first) + span(second) + span(longnames.len());
-    let mut offsets = Vec::new();
-    for member in &members {
-        offsets.push(u32::try_from(at)?);
-        at = at
-            .checked_add(span(member.bytes.len()))
-            .ok_or("静态库大小溢出")?;
+    let mut member_views: Vec<_> = members.iter().map(|member| ArchiveMember {
+        name: member.name.as_ptr(), name_length: member.name.len(),
+        bytes: member.bytes.as_ptr(), byte_length: member.bytes.len(),
+        offset: 0, name_offset: 0,
+    }).collect();
+    let mut symbol_views: Vec<_> = symbols.iter().map(|(member, name)| ArchiveSymbol {
+        name: name.as_ptr(), name_length: name.len(), member: *member,
+    }).collect();
+    let input = ArchiveInput {
+        members: member_views.as_mut_ptr(), member_count: member_views.len(),
+        symbols: symbol_views.as_mut_ptr(), symbol_count: symbol_views.len(),
+    };
+    let layout = unsafe { archive_layout(input) };
+    match layout.error {
+        ArchiveError::None => {}
+        ArchiveError::MemberField => return Err("静态库成员头字段超出 COFF 格式".into()),
+        ArchiveError::MemberOffset => return Err("静态库成员偏移超出 COFF u32 范围".into()),
+        ArchiveError::SymbolCount => return Err("静态库符号数量超出 COFF u32 范围".into()),
+        ArchiveError::MemberCount => return Err("静态库成员数量超出 COFF u32 范围".into()),
+        ArchiveError::MemberIndex => return Err("静态库符号的成员编号超出 COFF u16 范围".into()),
     }
-    let count = u32::try_from(symbols.len())?;
-    let mut directory = count.to_be_bytes().to_vec();
-    for (index, _) in &symbols {
-        directory.extend(offsets[*index].to_be_bytes());
-    }
-    for (_, name) in &symbols {
-        directory.extend(name.as_bytes());
-        directory.push(0);
-    }
-    let mut output = SIGNATURE.to_vec();
-    member(&mut output, "/", &directory)?;
-    directory.clear();
-    directory.extend(u32::try_from(members.len())?.to_le_bytes());
-    for offset in &offsets {
-        directory.extend(offset.to_le_bytes());
-    }
-    directory.extend(count.to_le_bytes());
-    symbols.sort_by(|(_, a), (_, b)| a.cmp(b));
-    for (index, _) in &symbols {
-        directory.extend(u16::try_from(index + 1)?.to_le_bytes());
-    }
-    for (_, name) in &symbols {
-        directory.extend(name.as_bytes());
-        directory.push(0);
-    }
-    member(&mut output, "/", &directory)?;
-    member(&mut output, "//", &longnames)?;
-    for (item, name) in members.iter().zip(names) {
-        member(&mut output, &format!("/{name}"), &item.bytes)?;
+    let mut output = Vec::<u8>::with_capacity(layout.length);
+    // Layout initialized every member position. Encode initializes the complete
+    // final buffer, including headers and padding, before the Vec takes its length.
+    unsafe {
+        archive_encode(input, layout, output.as_mut_ptr());
+        output.set_len(layout.length);
     }
     let path = std::path::absolute(path)?;
     std::fs::create_dir_all(path.parent().unwrap())?;
