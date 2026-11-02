@@ -37,6 +37,7 @@ pub struct NativeCode {
     pub bytes: Vec<u8>,
     pub relocations: Vec<Relocation>,
     pub stack_bytes: u32,
+    pub calls: Vec<Option<usize>>,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

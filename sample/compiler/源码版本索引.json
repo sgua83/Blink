@@ -116,7 +116,7 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "sha256": "21d0a48af93893ea47a5270caf0760156a0178fc26f3f1a955cfcc5e77661f30"
+      "sha256": "4a2238a740529508f13f1a19fac0ceb9f0b56f04403856b1efadda45abfe5241"
     },
     {
       "path": "crates/blanguage/src/native/external.rs",
@@ -124,7 +124,7 @@
     },
     {
       "path": "crates/blanguage/src/native/image.rs",
-      "sha256": "69f0dfc7950e4e73fe0f255c7eb35e76bfd32fe233e6d8953f5d513b7ad6c15a"
+      "sha256": "d493e3fe7482c15dba52d54fb4fee424eb5724f1e8d64d23847644c5cfbb3171"
     },
     {
       "path": "crates/blanguage/src/optimize.rs",
@@ -136,7 +136,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "dbcf9d1c84c838402d7be7fb539712e5357e78ac3e4e0946bcea6a4ceda64089"
+      "sha256": "165315c94a9751f7a46474ca5675a7cced0801b57557521a6500fa34b6e009b5"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
@@ -196,7 +196,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "66fedcf73a5eeb276fbb6678a4dfd0fdba0548e16e25e329108231c51fa9edfd"
+      "sha256": "e01b8a6b9818f3b62b33d045e1512aa7ba34f60cc10af8e0f3291c5af08abadd"
     },
     {
       "path": "crates/blanguage/src/bootstrap/coff.h",
@@ -498,8 +498,8 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 107,
-      "end_line": 114,
+      "start_line": 108,
+      "end_line": 115,
       "sha256": "0ee30b5ca4e36912acd21496c3e35dd267743568efb0f7de5ada81ae9b899367"
     },
     {
@@ -516,15 +516,15 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 121,
-      "end_line": 134,
+      "start_line": 122,
+      "end_line": 135,
       "sha256": "c3d2eb796d9cd313d91de71288e8b08df5a0650b31a8ef9c9eb553c93122df2b"
     },
     {
       "path": "crates/blanguage/src/native/image.rs",
       "start_line": 35,
-      "end_line": 40,
-      "sha256": "ea6ca1fe5448d9040b4c2ff92a86e2f6ec71d9d32fdb0c670613965cc93f5dad"
+      "end_line": 41,
+      "sha256": "83a05af7ddfa8125044b5d3d7428d48e5cc6bf4b10e37ef0a3a45e9a51c1dfab"
     },
     {
       "path": "crates/blcompute/src/cpu.rs",
@@ -534,8 +534,8 @@
     },
     {
       "path": "crates/blanguage/src/native/codegen.rs",
-      "start_line": 641,
-      "end_line": 652,
+      "start_line": 642,
+      "end_line": 653,
       "sha256": "a601489cc4cfcc83c58e45d0f5ca044221cdbfea964023eb964c052d17889aef"
     },
     {

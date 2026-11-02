@@ -1581,7 +1581,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:107`。
+源码节选：`crates/blanguage/src/native/codegen.rs:108`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1657,7 +1657,7 @@ pub(super) enum Location {
 
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:121`。
+源码节选：`crates/blanguage/src/native/codegen.rs:122`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1682,7 +1682,7 @@ native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 c
 
 ### 14.4 重定位解决外部地址
 
-Sin、Cos 等运算可能调用执行框架提供的原生辅助函数。生成时保存重定位位置与辅助函数类别，装载代码时再填入本进程中的真实地址。机器码字节与这张重定位清单共同构成 NativeCode。
+打印和外部 C 调用在装载时取得真实地址，生成的重定位清单随机器码保留。取得函数地址也需要重定位，但取址本身不是调用。发射器只在实际 invoke 处记录调用，把调用重定位位置或间接目标事实交给同一 NativeCode；栈报告消费这份记录，不从重定位数量猜测调用。
 
 源码节选：`crates/blanguage/src/native/image.rs:35`。
 
@@ -1692,6 +1692,7 @@ pub struct NativeCode {
     pub bytes: Vec<u8>,
     pub relocations: Vec<Relocation>,
     pub stack_bytes: u32,
+    pub calls: Vec<Option<usize>>,
 }
 ```
 
@@ -1726,7 +1727,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:641`。
+源码节选：`crates/blanguage/src/native/codegen.rs:642`。
 
 ```rust
     let stage = &lowered;

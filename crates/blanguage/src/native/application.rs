@@ -5,7 +5,6 @@ pub(crate) struct ApplicationCode {
     pub code: NativeCode,
     pub function_end: u32,
     pub unwind: Vec<u8>,
-    pub calls: Vec<Option<usize>>,
 }
 pub(crate) fn unwind(prolog: u8, mut operations: Vec<(u8, Vec<u8>)>) -> Vec<u8> {
     operations.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
@@ -274,9 +273,7 @@ fn emit_value(
         e.patch(tail, e.code.len());
         e.bytes(&[0x4d, 0x29, 0xda, 0x41, 0x85, 0x02, 0xc3]);
     }
-    let calls = std::mem::take(&mut e.calls);
     Ok(ApplicationCode {
-        calls,
         code: e.finish(frame + u32::from(scratch) * 8),
         function_end: end,
         unwind: metadata,

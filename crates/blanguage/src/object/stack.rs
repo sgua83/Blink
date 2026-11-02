@@ -11,7 +11,7 @@ pub(crate) struct Frame {
 pub(crate) enum Call {
     Reference { offset: usize, tail: bool },
     Indirect,
-    Unreported,
+    Unreported(String),
 }
 
 pub(crate) fn compute(name: &str, stages: &[crate::native::StageCode]) -> Vec<Frame> {
@@ -20,7 +20,15 @@ pub(crate) fn compute(name: &str, stages: &[crate::native::StageCode]) -> Vec<Fr
     for (index, stage) in stages.iter().enumerate() {
         let mut record = |entry: &str, code: &crate::native::NativeCode| frames.push(Frame {
             name: format!("CPU {name} stage {index}{entry}"), coff: None, local: code.stack_bytes,
-            calls: vec![Call::Unreported],
+            calls: code.calls.iter().map(|reference| match reference {
+                None => Call::Indirect,
+                Some(offset) => Call::Unreported(match &code.relocations.iter()
+                    .find(|relocation| relocation.offset == *offset).unwrap().target {
+                    crate::native::NativeSymbol::Print(scalar) => format!("native print {}", scalar.name()),
+                    crate::native::NativeSymbol::External(name) => format!("external {}!{}", name.library, name.symbol),
+                    crate::native::NativeSymbol::Function(name) => format!("native module {name}"),
+                }),
+            }).collect(),
         });
         match stage {
             StageCode::Element { main, continuation, .. } => {
@@ -89,8 +97,9 @@ pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64
     for (index, frame) in object.stack.iter().enumerate() {
         for call in &frame.calls {
             let (target, tail) = match call {
-                Call::Unreported => {
-                    unknown[index].insert("compute call graph not reported".into());
+                Call::Unreported(reason) => {
+                    unknown[index].insert(reason.clone());
+                    prefix[index] = prefix[index].max(u128::from(frame.local) + 16);
                     continue;
                 }
                 Call::Indirect => {

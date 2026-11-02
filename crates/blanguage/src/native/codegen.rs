@@ -84,6 +84,7 @@ impl Emitter<'_> {
             bytes: self.code,
             relocations: self.relocations,
             stack_bytes,
+            calls: self.calls,
         }
     }
     fn enter(&mut self, frame: u32) {

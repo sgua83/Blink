@@ -242,7 +242,7 @@ fn functions(
         let end = u32::try_from(bytes.len())?;
         let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
         let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, application_unwind(4, vec![(4, vec![4, 0x42])]))));
-        let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let calls = native.code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.code.stack_bytes, calls, native.code.bytes, Some((native.function_end, native.unwind)));
         sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
         sections[entry].relocations.extend(patches.into_iter()
@@ -251,7 +251,7 @@ fn functions(
     }
     let mut targets = BTreeMap::new();
     for (name, code) in defined {
-        let calls = code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let calls = code.code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
         let text = function(&mut sections, &mut frames, name.clone(), code.code.stack_bytes, calls, code.code.bytes, Some((code.function_end, code.unwind)));
         symbols.insert(name.clone(), (text, 0));
         targets.insert(NativeSymbol::Function(name), text);

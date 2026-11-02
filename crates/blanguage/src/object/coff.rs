@@ -96,7 +96,7 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut meta = Vec::from(*b"BLCO");
-    word(&mut meta, 35);
+    word(&mut meta, 36);
     string(&mut meta, &o.name)?;
     match &o.kind {
         Kind::Module {
@@ -198,7 +198,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             match call {
                 stack::Call::Reference { offset, tail } => { word(&mut meta, u32::from(*tail)); word(&mut meta, u32::try_from(*offset)?); }
                 stack::Call::Indirect => word(&mut meta, 2),
-                stack::Call::Unreported => word(&mut meta, 3),
+                stack::Call::Unreported(reason) => { word(&mut meta, 3); string(&mut meta, reason)?; }
             }
         }
     }
@@ -444,7 +444,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let mut c = Cursor::new(meta.as_slice());
     let mut tag = [0; 4];
     c.read_exact(&mut tag)?;
-    if tag != *b"BLCO" || read_word(&mut c)? != 35 {
+    if tag != *b"BLCO" || read_word(&mut c)? != 36 {
         return Err("不支持的 Blink 目标文件版本".into());
     }
     let name = read_string(&mut c)?;
@@ -520,7 +520,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             calls.push(match read_word(&mut c)? {
                 tag @ (0 | 1) => stack::Call::Reference { offset: read_word(&mut c)? as usize, tail: tag == 1 },
                 2 => stack::Call::Indirect,
-                3 => stack::Call::Unreported,
+                3 => stack::Call::Unreported(read_string(&mut c)?),
                 _ => return Err("未知的栈调用引用种类".into()),
             });
         }
