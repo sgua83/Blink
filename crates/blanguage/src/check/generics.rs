@@ -85,15 +85,18 @@ impl Builder<'_> {
             ty.arguments = explicit.to_vec();
             return self.record_expression(&ty, args, span);
         }
-        let key = self
-            .world
-            .resolve(
-                name,
-                &self.definition.module,
-                &self.definition.imports,
-                true,
-            )
-            .ok_or_else(|| Diagnostic {
+        let key = self.world.resolve(
+            name, &self.definition.module, &self.definition.imports, true,
+        );
+        if key.is_none() && matches!(name, "size_of" | "align_of") {
+            let ([GenericArgument::Type(syntax)], []) = (explicit, args) else {
+                return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
+            };
+            let ty = self.expected_storage(syntax, span)?;
+            let bytes = if name == "size_of" { ty.size } else { ty.align };
+            return Ok(Some(self.constant(Scalar::U64, Bits::from(bytes))));
+        }
+        let key = key.ok_or_else(|| Diagnostic {
                 source: self.definition.source.clone(),
                 span,
                 code: "B158",

@@ -90,6 +90,11 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             && let Some([GenericArgument::Type(ty)]) = explicit {
             return self.declared_type(ty, self.definition, span).map(Some);
         }
+        if explicit.is_some() && matches!(name, "size_of" | "align_of")
+            && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_none()
+            && self.world.resolve(name, &self.definition.module, &self.definition.imports, true).is_none() {
+            return Ok(Some(Ty::scalar(Scalar::U64)));
+        }
         if name == "try" && let [value] = args {
             return Ok(self.ty(value, limit)?.and_then(|ty| ty.variants.first().map(|variant| *variant.ty.clone())));
         }

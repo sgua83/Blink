@@ -216,6 +216,23 @@ pub struct Ty {
 
 `size` 是类型内容占用，`align` 是对齐，`components` 把值分解为标量及偏移，`fields` 保留记录字段。`view` 与 `array` 说明它是否还包含引用式只读资源或内联数组。
 
+B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，结果是usize编译期常量。原expected_storage完成具体类型及dataset包装，泛型／const闭合后仍沿原类型服务；查询不构造对象、不执行owned释放，也不生成运行时节点或布局表。dataset查询其描述值，view查询其引用值，owned保持载荷布局，实际存储仍归Frame／blcompute。float3的大小12、对齐16与array<float3,2>的大小32各保留原语义。
+
+源码节选：`crates/blanguage/src/check/generics.rs:91`。
+
+```rust
+        if key.is_none() && matches!(name, "size_of" | "align_of") {
+            let ([GenericArgument::Type(syntax)], []) = (explicit, args) else {
+                return self.fail(span, "B153", format!("{name}<T>()需要一个明确类型且不接收值实参"));
+            };
+            let ty = self.expected_storage(syntax, span)?;
+            let bytes = if name == "size_of" { ty.size } else { ty.align };
+            return Ok(Some(self.constant(Scalar::U64, Bits::from(bytes))));
+        }
+```
+
+普通同名类型／函数继续原解析。公开接口若保存查询表达式，消费者须支持该语法；仅实现内部使用查询的已编译obj／lib，沿既有常量、符号及BLCO／BLRI格式交接，不要求链接阶段重读实现或再次编译。源类型修改仍由原对象依赖规则决定重编；这里不再计算第二份布局。
+
 这样，一个 `float3` 在前端仍有完整类型，在后端却可拆成三个 `f32` 分量。语言向量不保证每一处都会使用一条硬件向量指令；是否批量执行，还取决于计算、访问和后端计划。
 
 address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
