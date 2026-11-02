@@ -391,7 +391,7 @@ ReadError为System(u32)或Sequence(SequenceError)，后者只交接现有dataset
 
 `ExistsError::Query(u32)`保留打开失败后立即取得的原GetLastError。关闭失败交回`ExistsError::Close(ExistsCloseError)`，其中handle是本次原句柄、code是原OS错误；结果不宣称该句柄已释放，不自动再次关闭或重新查询。正常结果不把任何句柄或路径借用留给调用者。公开接口不依赖文件内容、Unicode或序列模块，查询所需的C ABI声明留在私有实现。
 
-模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。当前Rust编译器Inputs::file尚未采用；规范路径接口见下节，路径组合和扩展名仍按各自Issues推进。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
+模块以`import blink.windows.path;`及`-I library`装入，也可将path.b编译为模块并归档；仅消费try_exists的调用方只需path.lib，无需提供者.h／.b、文件内容库、序列代码或运行库sidecar。绝对路径的实际代码依赖见下节。当前Rust编译器Inputs::file尚未采用；规范路径接口见下节，扩展名词法替换见后节，路径组合仍按Issues推进。平台调用见[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，当前真实消费者语义见[Path::try_exists](https://doc.rust-lang.org/std/path/struct.Path.html#method.try_exists)。
 
 ### 取得绝对路径
 
@@ -407,7 +407,7 @@ ReadError为System(u32)或Sequence(SequenceError)，后者只交接现有dataset
 | `BufferTooSmall(u32)` | 本次取得结果所需容量，包含终止NUL；原缓冲内容不作为结果交付 |
 | `LengthOverflow()` | verbatim副本增长超过当前dataset可表达长度，沿原sequence::push交接；不是另一个路径长度阈值 |
 
-绝对路径的归档消费编译时导入path.lib，链接时同时提供实际使用的`push<u16>`序列实例；在absolute中它服务verbatim拥有副本，不成为纯值try_exists调用的链接前置。提供者源码不可读取时仍按已编译接口组合，根Frame和最后消费者规则保持。当前Rust构建图尚未采用本B函数；规范路径接口见下节，路径组合／扩展名仍待各自实现。平台规则见[GetFullPathNameW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfullpathnamew)及[本次真实Rust消费者的绝对路径实现](https://github.com/rust-lang/rust/blob/1.97.1/library/std/src/sys/path/windows.rs#L169)。
+绝对路径的归档消费编译时导入path.lib，链接时同时提供实际使用的`push<u16>`序列实例；在absolute中它服务verbatim拥有副本，不成为纯值try_exists调用的链接前置。提供者源码不可读取时仍按已编译接口组合，根Frame和最后消费者规则保持。当前Rust构建图尚未采用本B函数；规范路径接口见下节，扩展名词法替换见后节，路径组合仍待实现。平台规则见[GetFullPathNameW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfullpathnamew)及[本次真实Rust消费者的绝对路径实现](https://github.com/rust-lang/rust/blob/1.97.1/library/std/src/sys/path/windows.rs#L169)。
 
 ### 取得规范路径身份
 
@@ -433,3 +433,19 @@ enum CanonicalError : u32 {
 Open交回真实打开错误；Query表示查询失败且句柄已成功关闭。Close与QueryAndClose保留关闭失败时仍由调用者持有的原句柄及原错误，后者同时保留查询错误，不伪称资源已经释放。临时名称、查询缓冲与成功拥有结果继续由原Frame和最后消费者管理，不新增路径缓存或释放链。
 
 归档消费编译只导入path.lib；链接提供path.lib及实际使用的`push<u16>`序列实例，提供者.h／.b不必可读取。当前Rust编译器的build/object.rs与build/mod.rs仍使用原Rust实现，本B库原生可用与编译器迁移、正式周发行及采用分别记录。平台契约见[GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)及[Rust当前Windows规范路径消费者](https://github.com/rust-lang/rust/blob/1.97.1/library/std/src/sys/fs/windows.rs)。
+
+### 替换路径扩展名
+
+`result<dataset<u16>,ExtensionError> with_extension(read dataset<u16> path,read dataset<u16> extension) on cpu`是Windows路径的纯词法操作。两个输入均为按实际长度借用的UTF-16代码单元，不需要终止NUL；输出是独立拥有的数据集，返回后不保留输入借用。原大小写、非ASCII代码单元、未配对代理项及内部NUL原样参与词法组合；它不验证OS是否接受最终名称，不查询文件存在、不解析链接、不读取当前目录。
+
+函数识别普通盘符、UNC、设备和精确verbatim前缀，保留原前缀及文件名之前的实际代码单元。普通路径按反斜线与斜线分隔，verbatim主体只按反斜线分隔。最后的普通文件名按最后一个非首位点分成stem与旧扩展名；点文件名的首位点不作为扩展名分隔。普通末尾空组件及点组件不成为文件名，verbatim末尾点组件与末尾父目录组件没有可替换文件名；无文件名时交回原路径的独立副本。
+
+存在文件名时，结果截到stem末尾，再按需附加一个点及完整新扩展名；空扩展名只移去旧扩展名，包含多个点的新扩展名整体追加。路径末尾被忽略的分隔符／点组件随实际stem截断，不恢复为另一份规范化路径。
+
+```b
+enum ExtensionError : u32 { Separator(u32)=1; LengthOverflow=2; };
+```
+
+新扩展名中的第一个斜线或反斜线由Separator交回其UTF-16单元索引，即使原路径没有文件名也不把它当成有效扩展名。LengthOverflow仅表示最终拥有数据集无法用当前u32长度表达，没有MAX_PATH或其他固定路径长度阈值。输入只读、输出修改及资源释放沿原dataset／Frame与最后消费者，不建立路径对象缓存或第二拥有者。
+
+归档调用方编译只导入path.lib，链接只需实际路径归档及生成物的原运行库代码，不要求sequence.lib或提供者.h／.b。当前Rust装入器与构建输入仍使用原Rust路径调用；本B库能力、消费者迁移与正式周发行分别记录。直接替换规则见[Rust PathBuf::set_extension](https://doc.rust-lang.org/std/path/struct.PathBuf.html#method.set_extension)。

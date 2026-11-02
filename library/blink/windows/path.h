@@ -31,3 +31,10 @@ enum CanonicalError : u32 {
 };
 
 result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu;
+
+enum ExtensionError : u32 {
+    Separator(u32) = 1;
+    LengthOverflow = 2;
+};
+result<dataset<u16>,ExtensionError> with_extension(
+    read dataset<u16> path,read dataset<u16> extension) on cpu;

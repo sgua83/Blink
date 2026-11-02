@@ -176,3 +176,135 @@ result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu {
         }
     }
 }
+
+bool lexical_separator(u16 unit,bool literal) on cpu {
+    return unit == u16(92) || (!literal && unit == u16(47));
+}
+
+bool lexical_drive(u16 unit) on cpu {
+    return (unit >= u16(65) && unit <= u16(90)) ||
+        (unit >= u16(97) && unit <= u16(122));
+}
+
+u32 lexical_component_end(read dataset<u16> path,u32 start,bool literal) on cpu {
+    u32 end=start;
+    while (end < path.length) {
+        if (lexical_separator(path[end],literal)) { return end; }
+        end+=1;
+    }
+    return end;
+}
+
+struct LexicalPrefix { u32 end; bool literal; };
+
+LexicalPrefix extension_prefix(read dataset<u16> path) on cpu {
+    if (path.length >= 2) {
+        if (lexical_separator(path[0],false) && lexical_separator(path[1],false)) {
+            if (path.length >= 4) {
+                if (path[0] == u16(92) && path[1] == u16(92) &&
+                    path[2] == u16(63) && path[3] == u16(92)) {
+                    if (path.length >= 8) {
+                        if (path[4] == u16(85) && path[5] == u16(78) &&
+                            path[6] == u16(67) && path[7] == u16(92)) {
+                            u32 server=lexical_component_end(path,8,true);
+                            u32 share_start=server;
+                            if (share_start < path.length) { share_start+=1; }
+                            u32 share=lexical_component_end(path,share_start,true);
+                            if (share > share_start) { return LexicalPrefix(share,true); }
+                            return LexicalPrefix(server,true);
+                        }
+                    }
+                    if (path.length >= 6) {
+                        if (lexical_drive(path[4]) && path[5] == u16(58)) {
+                            if (path.length == 6) { return LexicalPrefix(6,true); }
+                            if (lexical_separator(path[6],false)) { return LexicalPrefix(6,true); }
+                        }
+                    }
+                    return LexicalPrefix(lexical_component_end(path,4,true),true);
+                }
+                if (path[2] == u16(46) && lexical_separator(path[3],false)) {
+                    return LexicalPrefix(lexical_component_end(path,4,false),false);
+                }
+            }
+            u32 server=lexical_component_end(path,2,false);
+            if (server > 2 && server < path.length) {
+                u32 share_start=server+1;
+                u32 share=lexical_component_end(path,share_start,false);
+                if (share > share_start) { return LexicalPrefix(share,false); }
+            }
+            return LexicalPrefix(0,false);
+        }
+        if (lexical_drive(path[0]) && path[1] == u16(58)) {
+            return LexicalPrefix(2,false);
+        }
+    }
+    return LexicalPrefix(0,false);
+}
+
+struct ExtensionScan {
+    bool found; u32 stem; u32 size; bool only_dots;
+    bool has_dot; u32 dot; u32 end;
+};
+
+ExtensionScan extension_component(ExtensionScan input,bool literal) on cpu {
+    ExtensionScan scan=input;
+    if (scan.size > 0) {
+        if (scan.only_dots && scan.size <= 2) {
+            if (scan.size == 2 || literal) { scan.found=false; }
+        }
+        else {
+            scan.found=true;
+            scan.stem=scan.end;
+            if (scan.has_dot) { scan.stem=scan.dot; }
+        }
+    }
+    scan.size=0;
+    scan.only_dots=true;
+    scan.has_dot=false;
+    return scan;
+}
+
+ExtensionScan extension_name(read dataset<u16> path,LexicalPrefix prefix) on cpu {
+    u32 body=prefix.end;
+    if (body < path.length) {
+        if (lexical_separator(path[body],false)) { body+=1; }
+    }
+    ExtensionScan scan=ExtensionScan(false,0,0,true,false,0,0);
+    for (index in body..path.length) {
+        u16 unit=path[index];
+        if (lexical_separator(unit,prefix.literal)) {
+            scan=extension_component(scan,prefix.literal);
+        }
+        else {
+            if (unit == u16(46)) {
+                if (scan.size > 0) { scan.has_dot=true;scan.dot=index; }
+            }
+            else { scan.only_dots=false; }
+            scan.size+=1;
+            scan.end=index+1;
+        }
+    }
+    return extension_component(scan,prefix.literal);
+}
+
+result<dataset<u16>,ExtensionError> with_extension(
+    read dataset<u16> path,read dataset<u16> extension) on cpu {
+    for (index in 0..extension.length) {
+        if (lexical_separator(extension[index],false)) {
+            return Err(ExtensionError::Separator(index));
+        }
+    }
+    ExtensionScan name=extension_name(path,extension_prefix(path));
+    dataset<u16> output=dataset<u16>(path.length);
+    for (index in 0..path.length) { output[index]=path[index]; }
+    if (!name.found) { return Ok(output); }
+    output=resize(output,name.stem,u16(0));
+    if (extension.length == 0) { return Ok(output); }
+    u32 stem=output.length;
+    if (stem == 4294967295) { return Err(ExtensionError::LengthOverflow()); }
+    u32 begin=stem+1;
+    if (extension.length > 4294967295-begin) { return Err(ExtensionError::LengthOverflow()); }
+    let full=resize(output,begin+extension.length,u16(46));
+    for (index in 0..extension.length) { full[begin+index]=extension[index]; }
+    return Ok(full);
+}
