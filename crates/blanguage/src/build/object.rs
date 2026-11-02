@@ -70,7 +70,7 @@ pub(super) fn compile<'a>(
             hash::field(&mut bytes, prefix.as_bytes());
         }
     }
-    identity::sources(&mut bytes, &world, &module, imported, matches!(kind, ObjectKind::Module(_)));
+    identity::sources(&mut bytes, &world, &module, matches!(kind, ObjectKind::Module(_)));
     let source = hash::digest(&bytes);
     let runtime = !matches!(kind, ObjectKind::Module(_));
     match fs::read(&artifact) {

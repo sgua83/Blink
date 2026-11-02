@@ -131,14 +131,13 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
     }
 }
 pub(super) fn sources(bytes: &mut Vec<u8>, world: &crate::World, module: &str,
-    imported: Option<&crate::module::Imports>, exports: bool,
+    exports: bool,
 ) {
     for (name, source) in world.interfaces.iter().map(|(name, module)| (name, &module.source)).chain(&world.sources) {
         hash::field(bytes, name.as_bytes());
         hash::field(bytes, source.path.as_os_str().as_encoded_bytes());
         let implementation = source.path != world.interfaces[name].source.path;
-        let imported = name != module && imported.is_some_and(|imports| imports.modules.contains_key(name));
-        source_identity(bytes, &world.declarations, source, imported || implementation, implementation);
+        source_identity(bytes, &world.declarations, source, name != module || implementation, implementation);
     }
     if exports {
         // A module owns the inferred participation contract of every public declaration,

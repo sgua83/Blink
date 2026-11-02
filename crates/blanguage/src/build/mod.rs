@@ -85,7 +85,7 @@ fn compile_in(
     let mut inputs = request;
     hash::field(&mut inputs, env!("BLINK_COMPILER_ID").as_bytes());
     hash::field(&mut inputs, &worker.compiler().max_parameter_bytes().to_le_bytes());
-    identity::sources(&mut inputs, &world, &module, None, false);
+    identity::sources(&mut inputs, &world, &module, false);
     let source = hash::digest(&inputs);
     match fs::read(&artifact) {
         Ok(bytes) => {
