@@ -16,24 +16,39 @@ pub(crate) enum Call {
 
 pub(crate) fn compute(name: &str, stages: &[crate::native::StageCode]) -> Vec<Frame> {
     use crate::native::{ContinuationCode, StageCode};
-    stages.iter().enumerate().flat_map(|(index, stage)| {
-        let (main, continuation) = match stage {
-            StageCode::Element { main, continuation, .. } => (Some(("", main)), match continuation {
-                Some(ContinuationCode::ReductionTail(code)) => [Some((" reduction tail", code)), None],
-                Some(ContinuationCode::ScanAdd(code)) => [Some((" scan add", code)), None],
-                Some(ContinuationCode::CompactScatter(code)) => [Some((" compact scatter", code)), None],
-                Some(ContinuationCode::SegmentedFinish(code)) => [Some((" segmented finish", code)), None],
-                Some(ContinuationCode::Scan { prefix, apply, .. }) =>
-                    [Some((" scan prefix", prefix)), Some((" scan apply", apply))],
-                None => [None, None],
-            }),
-            StageCode::Sort(_) => (None, [None, None]),
-        };
-        std::iter::once(main).chain(continuation).flatten().map(move |(entry, code)| Frame {
+    let mut frames = Vec::new();
+    for (index, stage) in stages.iter().enumerate() {
+        let mut record = |entry: &str, code: &crate::native::NativeCode| frames.push(Frame {
             name: format!("CPU {name} stage {index}{entry}"), coff: None, local: code.stack_bytes,
             calls: vec![Call::Unreported],
-        })
-    }).collect()
+        });
+        match stage {
+            StageCode::Element { main, continuation, .. } => {
+                record("", main);
+                match continuation {
+                    Some(ContinuationCode::ReductionTail(code)) => record(" reduction tail", code),
+                    Some(ContinuationCode::ScanAdd(code)) => record(" scan add", code),
+                    Some(ContinuationCode::CompactScatter(code)) => record(" compact scatter", code),
+                    Some(ContinuationCode::SegmentedFinish(code)) => record(" segmented finish", code),
+                    Some(ContinuationCode::Scan { prefix, apply, .. }) => {
+                        record(" scan prefix", prefix);
+                        record(" scan apply", apply);
+                    }
+                    None => {}
+                }
+            }
+            StageCode::Sort(sort) => {
+                for (entry, code) in sort.initialize.iter().enumerate() {
+                    record(&format!(" sort initialize {entry}"), code);
+                }
+                for (entry, code) in [(" sort histogram", &sort.histogram),
+                    (" sort scatter", &sort.scatter), (" sort gather", &sort.gather)] {
+                    record(entry, code);
+                }
+            }
+        }
+    }
+    frames
 }
 
 // Validate only the new references crossing the compiled-object boundary.
