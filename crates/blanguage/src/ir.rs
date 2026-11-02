@@ -231,7 +231,7 @@ impl Ty {
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
     pub(crate) fn zero_valid(&self)->bool {
-        if self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some(){return false;}
+        if self.cleanup.is_some() || self.dataset.is_some() || self.view.is_some() || self.is_execution_context(){return false;}
         if self.has_variants(){return self.variants.iter().any(|variant|variant.discriminant==0 && variant.ty.zero_valid());}
         self.array.as_deref().is_none_or(Self::zero_valid) && self.fields.iter().all(|(_,_,ty)|ty.zero_valid())
     }
@@ -346,9 +346,9 @@ impl Ty {
             "i8" => Self::scalar(Scalar::I8),
             "u16" => Self::scalar(Scalar::U16),
             "i16" => Self::scalar(Scalar::I16),
-            "handle" => {
+            "handle" | "execution_context" => {
                 let mut ty = Self::vector(Scalar::U32, 2);
-                ty.name = "handle".into();
+                ty.name = s.into();
                 ty
             }
             "float2" => Self::vector(Scalar::F32, 2),
@@ -410,12 +410,16 @@ impl Ty {
     pub fn is_handle(&self) -> bool {
         self.name == "handle"
     }
+    pub fn is_execution_context(&self) -> bool {
+        self.name == "execution_context"
+    }
     pub fn is_c_function(&self) -> bool {
         self.function.is_some()
     }
     pub fn is_numeric(&self) -> bool {
         !self.is_c_function()
             && !self.is_handle()
+            && !self.is_execution_context()
             && !self.is_address()
             && !self.owns_resources()
             && !self.enumeration

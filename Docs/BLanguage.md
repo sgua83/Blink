@@ -800,7 +800,7 @@ u32 main() on cpu;
 
 这是可信外部 ABI 声明：声明者负责真实导出、布局、读写权限及调用约定一致，外部代码只在调用期间借用、不得越过对象访问、保留指针或让异常／longjmp 跨边界。未声明initialized条件时，`write` 约定每次正常返回都完整初始化全部逻辑字段，即使另外返回了失败状态。编译器不读取 DLL 机器签名，也不证明外部实现遵守声明。
 
-from导入只允许无正文、具体签名的 `on cpu` 普通函数；可声明requires nonzero的按值输入／字段前提及ensures initialized条件输出，其他requires／ensures仍未开放。dataset、tile、view、纹理、加速结构及含资源的值不能穿过这个 ABI，atomic 权限也不支持；可以借用其 CPU 端已合法取得的普通数据元素。address值及unsafe_position<T>按本规范原生地址章节交接；自有地址的完整初始化结果与寿命交接、需Frame的回调及保留寿命、变参、C++ 类／模板 ABI、静态对象链接与其他平台仍待实现；直接B C入口见下节。已装入的外部声明在应用、模块及源码SDK共同的装入阶段检查签名和普通值ABI，即使未调用或已有可复用对象也不能忽略非法类型；声明错误报 B263，未知类型沿原B031报告，实际位置布局不符报 B264；GPU／compute 调用报 B265，不能调用宿主 DLL。已有 CPU 计算函数 与生成的算法 DLL 同样使用此调用实现，普通程序的资源所有者仍属于 blcompute。
+from导入只允许无正文、具体签名的 `on cpu` 普通函数；可声明requires nonzero的按值输入／字段前提及ensures initialized条件输出，其他requires／ensures仍未开放。dataset、tile、view、纹理、加速结构及含资源的值不能穿过这个 ABI，atomic 权限也不支持；可以借用其 CPU 端已合法取得的普通数据元素。address值及unsafe_position<T>按本规范原生地址章节交接；自有地址的完整初始化结果与寿命交接、可保留回调的寿命协议、变参、C++ 类／模板 ABI、静态对象链接与其他平台仍待实现；显式执行上下文及直接B C入口见下节。已装入的外部声明在应用、模块及源码SDK共同的装入阶段检查签名和普通值ABI，即使未调用或已有可复用对象也不能忽略非法类型；声明错误报 B263，未知类型沿原B031报告，实际位置布局不符报 B264；GPU／compute 调用报 B265，不能调用宿主 DLL。已有 CPU 计算函数 与生成的算法 DLL 同样使用此调用实现，普通程序的资源所有者仍属于 blcompute。
 
 独立应用按实际调用在 PE 导入表记录库与符号，由 Windows 装载；嵌入式 CPU 执行使用 LoadLibraryW／GetProcAddress，错误保留库名、符号及操作系统错误。原生代码所有者持有对应模块到最后一个代码消费者释放。DLL 或符号缺失即失败，不替换目标或吞错。应用启动、寄存器、栈参数与结构体返回遵循 [Windows x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)。
 
@@ -824,7 +824,26 @@ u32 main() on cpu {
 
 C位置参数是一个满足T连续布局／对齐的原指针，包含向量时也如此；普通B位置的分量地址ABI保持。C调用从真实位置满足这一条件，不复制／写回以模拟连续位置。B正文按原初始化、只读与独占规则检查，条件输出不伪装为无条件写出。
 
-原普通调用图在完成真实Frame需求闭包后移除无需的隐藏参数；C入口直接采用同一函数代码，不生成转发器。入口及其实际调用闭包若需要Frame，明确拒绝：C调用没有隐含执行上下文，不能读取全局当前Frame或自动另建Frame。需资源执行的回调沿C-021.6.1.2.2设计，不将这项范围冻结为永久语言限制。
+普通B调用沿原隐藏参数传递实际Frame；完成真实需求闭包后移除无需的参数。C入口直接采用同一函数代码，没有隐藏Frame或转发器。需要资源的C入口必须将第一个源形参声明为按值的execution_context；该显式参数就是函数体和普通B辅助调用使用的同一执行上下文。形参名称不影响此规则；read／write／inout位置形参或其他位置的上下文值不自动成为活动上下文。没有这个显式参数而实际调用闭包需要Frame的C入口仍报B263。
+
+execution_context是借用执行上下文的独立不透明值，Windows x64大小和对齐均为8字节，C／Rust分别按不透明void *／*mut c_void交接。CPU应用中的current_context()不接收实参，取得当前函数实际使用的Frame身份；普通B辅助函数按原调用ABI继承它，显式上下文C入口取得的则是调用者提供的同一身份，不读取全局／线程局部状态、不创建另一个Frame。上下文可按值复制、传参、返回或组合到普通记录；execution_context(existing)只复制同型值，不提供空值、数值／handle／address构造、分量访问或算术，只比较同型完整身份的相等／不等。
+
+例如.h声明下列evaluate及原main，.b可实现：
+
+```b
+extern "C" u32 evaluate(execution_context context,u32 value) on cpu {
+    dataset<u32> values=dataset<u32>(1);
+    values[0]=value+7;
+    return values[0];
+}
+u32 main() on cpu {
+    let callback=c_function(evaluate);
+    u32 value=callback(current_context(),35);
+    return value==42 ? 0 : 1;
+}
+```
+
+上下文不拥有Frame或延长其寿命。原调用者保持根运行库、代码、原资源合同及实际Frame，直到全部回调和派生CPU／GPU消费者完成；外部调用者必须提供仍有效、匹配原资源ABI的上下文，并遵守同一Frame的访问与顺序，不能并发重入其可变资源操作。普通C ABI仍不传递dataset或拥有值，回调内创建的资源继续由原Frame及最后真实消费者释放。Windows签名没有上下文首参时，普通B C适配入口可从调用者明确提供的用户状态中取得该值，再显式调用资源入口；适配入口本身不因此隐式获得Frame。完整可保留关系、跨异步消费者寿命及动态卸载继续沿C-021.6.1.3建设，复制上下文不提供这些保证。
 
 bc在编译阶段生成函数及符号地址，blink只解析原COFF／归档重定位；提供者源码无需进入对象消费者。保存或复制cfn不延长模块代码和上下文寿命。注册方必须保持真实代码／状态到注销和最后回调结束，普通C位置只在本次调用内借用；完整可保留关系及动态卸载／热更新沿C-021.6.1.3继续，不能据静态入口宣称已实现。
 

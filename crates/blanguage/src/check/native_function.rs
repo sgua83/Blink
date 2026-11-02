@@ -89,6 +89,12 @@ struct Unit {
     span: Span,
     view_model: view_contracts::Function,
 }
+impl Unit {
+    fn explicit_context(&self) -> bool {
+        self.c_abi && matches!(self.contract.parameters.get(1),
+            Some(CallParameter::Value(ty)) if ty.is_execution_context())
+    }
+}
 fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
@@ -815,6 +821,27 @@ pub(super) struct Finalized {
     pub imports: BTreeMap<String, Vec<u8>>,
     pub exports: BTreeMap<String, Vec<u8>>,
 }
+fn uses_frame(code: &[Inst], registers: &[Reg]) -> bool {
+    code.iter().any(|inst| {
+        let mut other = |reg| !registers.contains(&reg);
+        let operands = match inst {
+            // The first argument is the provisional implicit Frame. Its need is
+            // propagated from the actual callee below; source arguments are real uses.
+            Inst::Call(call) if matches!(call.target, CallTarget::Defined(_)) =>
+                call.arguments.iter().skip(1).all(|argument| match argument {
+                    CallArgument::Value { values, .. } => values.iter().all(|reg| other(*reg)),
+                    CallArgument::Reference { address, .. } => address.all_operands(&mut other),
+                }),
+            _ => inst.all_operands(&mut other),
+        };
+        !operands || match inst {
+            Inst::Scope(code) => uses_frame(code, registers),
+            Inst::If { yes, no, .. } => uses_frame(yes, registers) || uses_frame(no, registers),
+            Inst::Loop { condition, body, .. } => uses_frame(condition, registers) || uses_frame(body, registers),
+            _ => false,
+        }
+    })
+}
 fn finalize(
     mut module: Module,
     mut reachable: BTreeSet<String>,
@@ -849,18 +876,18 @@ fn finalize(
         if unit.contract.frame {
             frame.insert(name.clone());
         }
-        if let Some(function) = &mut unit.function {
-            calls(&mut function.body.code, &mut |call| {
-                if matches!(&call.target,CallTarget::External(name) if name.library==crate::application::RUNTIME_LIBRARY)
-                {
-                    frame.insert(name.clone());
-                }
-            });
+        if let Some(function) = &unit.function {
+            let registers = &function.body.inputs[..2];
+            if uses_frame(&function.body.code, registers)
+                || function.body.outputs.iter().any(|reg| registers.contains(reg)) {
+                frame.insert(name.clone());
+            }
         }
     }
     loop {
         let mut next = frame.clone();
         for (name, unit) in &mut units {
+            if unit.explicit_context() { continue; }
             if let Some(function) = &mut unit.function {
                 calls(&mut function.body.code, &mut |call| {
                     if matches!(&call.target, CallTarget::Defined(callee) if frame.contains(callee)) {

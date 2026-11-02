@@ -48,18 +48,18 @@ pub(super) enum Binary {
 pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
     source: &Source, span: Span) -> Result<(Ty, Binary)> {
     if a.is_c_function() || b.is_c_function() || a.is_address() || b.is_address()
-        || a.is_handle() || b.is_handle() {
+        || a.is_handle() || b.is_handle() || a.is_execution_context() || b.is_execution_context() {
         same(a, b, source, span)?;
         if !matches!(op, "==" | "!=") {
             let message = if a.is_c_function() {
                 "C函数地址只比较同签名的完整身份，不参与数值运算或次序比较"
             } else if a.is_address() {
                 "address只比较完整地址身份；数值运算须显式取得address_bits"
-            } else { "handle 只支持完整身份的相等或不等比较" };
+            } else { "不透明身份只支持完整身份的相等或不等比较" };
             return source.fail(span, "B147", message);
         }
         return Ok((Ty::scalar(Scalar::Bool),
-            if a.is_handle() { Binary::Handle } else { Binary::Identity }));
+            if a.is_handle() || a.is_execution_context() { Binary::Handle } else { Binary::Identity }));
     }
     if a.has_variants() || b.has_variants() {
         return source.fail(span, "B269", "结果值的运算先通过 match 或 try 取得对应载荷");
@@ -97,7 +97,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 }
 pub(super) fn unary(op: &str, ty: &Ty, source: &Source, span: Span) -> Result<Option<UnaryOp>> {
     if op == "+" {
-        if ty.is_c_function() || ty.is_handle() || ty.is_address() || ty.array.is_some()
+        if ty.is_c_function() || ty.is_handle() || ty.is_execution_context() || ty.is_address() || ty.array.is_some()
             || ty.enumeration || ty.has_variants() {
             return source.fail(span, "B146", "数值一元运算需要数值类型");
         }
