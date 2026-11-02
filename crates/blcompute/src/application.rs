@@ -146,15 +146,19 @@ impl Frame {
         Ok(index)
     }
     /// 调整实际 CPU 独占存储，保留共同前缀；新元素只读取填充值的声明分量。
+    /// 扩容申请失败时原存储、长度及域关系仍由本 Frame 持有。
     ///
     /// # Safety
     /// handle 由本 Frame 独占持有且没有存活地址消费者。fill 按该存储的 Ty 布局
     /// 提供全部已初始化分量，保持到本调用结束；填充字节不需要初始化。
     pub unsafe fn resize(&mut self, handle: u32, count: u32, fill: *const u32) -> Result<u32> {
         let index = handle as usize;
-        let source = self.data.datasets[index].take().unwrap().cpu()?;
-        let CpuDataset::Owned(mut data) = source else {
-            return Err(error("冻结的 CPU 存储不能调整长度"));
+        let data = match self.data.datasets[index].as_mut().unwrap() {
+            ResidentData::Cpu(CpuDataset::Owned(data)) => data,
+            ResidentData::Cpu(CpuDataset::Read(_)) => {
+                return Err(error("冻结的 CPU 存储不能调整长度"));
+            }
+            ResidentData::Gpu(_) => return Err(error("CPU 访问需要先显式 download 数据")),
         };
         let stride = data.stride as usize;
         let words = (stride * count as usize).div_ceil(4);
@@ -172,7 +176,6 @@ impl Frame {
             }
         }
         data.count = count;
-        self.data.datasets[index] = Some(ResidentData::Cpu(CpuDataset::Owned(data)));
         self.data.domains.retain(|relation| relation.domain != index && relation.count.binding != index);
         Ok(handle)
     }
