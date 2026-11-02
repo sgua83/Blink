@@ -1043,11 +1043,12 @@ impl Proof {
                         facts.insert(Fact::Maximum(identity, *scalar, maximum));
                     }
                     if *scalar == Scalar::U32 {
-                        facts.extend(
-                            self.domains(component)
-                                .into_iter()
-                                .map(|d| Fact::Index(identity, d)),
-                        );
+                        for domain in self.domains(component) {
+                            facts.insert(Fact::Index(identity, domain));
+                            if let IndexDomain::Offset(base, amount) = domain {
+                                facts.insert(Fact::Below(base, identity, amount != 0, Scalar::U32));
+                            }
+                        }
                     }
                 }
             }
