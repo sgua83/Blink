@@ -62,3 +62,8 @@ extern "C" i32 GetExitCodeProcess(handle process,write u32 code) on cpu
 
 extern "C" i32 CloseHandle(handle object) on cpu
     from "KERNEL32.dll";
+
+const u32 HANDLE_FLAG_INHERIT=0x00000001;
+
+extern "C" i32 SetHandleInformation(handle object,u32 mask,u32 flags) on cpu
+    from "KERNEL32.dll";

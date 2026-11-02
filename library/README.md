@@ -282,6 +282,7 @@ target/release/blink.exe target/main.obj target/process.lib target/sequence-u16.
 | `WaitForSingleObject` | 原u32等待状态；进程`WAIT_OBJECT_0`表示已结束，`WAIT_TIMEOUT`保持原工作，`WAIT_FAILED`后立即保存OS错误 |
 | `GetExitCodeProcess` | i32 BOOL，非零时初始化write u32退出状态；失败时输出不可读 |
 | `CloseHandle` | 原i32 BOOL，调用者消费实际关闭结果；失败后立即保存OS错误 |
+| `SetHandleInformation` | 原i32 BOOL，按mask修改原句柄flags；HANDLE_FLAG_INHERIT为继承位，设置和清除都保持原拥有权 |
 
 `StartupInfo`按基础STARTUPINFOW布局保存cb、三个UTF-16地址、八个u32、两个u16、reserved2地址及三个标准句柄；Windows x64大小104、对齐8，std_input／std_output／std_error偏移80／88／96。cb由`u32(size_of<StartupInfo>())`取得，其余字段按实际标志初始化，保留字段遵守OS合同。`ProcessInformation`为24字节、对齐8，process／thread两个句柄偏移0／8，process_id／thread_id两个u32偏移16／20。read／write沿同一声明位置与C指针ABI，不复制OS对象。
 
@@ -291,7 +292,28 @@ application、可写command_line、可选安全属性、environment与directory�
 
 `INFINITE`为0xffffffff，零等待立即观察本次状态；原等待函数亦可服务其他合法可等待对象，`WAIT_ABANDONED`等原状态不改写为进程完成。退出查询在进程未结束时可返回`STILL_ACTIVE`（259），真实等待完成后查询到259则仍是该进程的真实退出码。完整u32状态不截断，不把非零业务退出码改成创建失败，不以魔数循环判断进程寿命。等待期间不得关闭对应句柄。平台依据：[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)、[等待](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)、[退出查询](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess)及[关闭句柄](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
 
-已编译消费者须提供实际模块依赖：process.obj／lib交付本模块的完整接口和普通B函数，依赖它的模块与应用分别用`--import`导入，并把对应对象／归档交给blink链接；不能只交桥接模块而漏掉其process依赖。当前专用记录是基础StartupInfo；STARTUPINFOEX属性列表及按列表继承句柄的库接口仍待建设，不能向基础记录交付扩展启动标志。更高层命令构造、I/O捕获、异步任务及编译器实际迁移仍按原具体Issues推进。
+已编译消费者须提供实际模块依赖：process.obj／lib交付本模块的完整接口和普通B函数，依赖它的模块与应用分别用`--import`导入，并把对应对象／归档交给blink链接；不能只交桥接模块而漏掉其process依赖。基础记录只能交给基础创建接口；扩展结构及选择性继承由下节的准确入口交接，不向基础记录交付扩展启动标志。更高层命令构造、I/O捕获、异步任务及编译器实际迁移仍按原具体Issues推进。
+
+## blink.windows.process_extended
+
+本模块是纯接口，导入blink.windows.process的原结构与句柄规则；无需空.b。`StartupInfoEx { StartupInfo startup; address attributes; }`对应STARTUPINFOEXW，Windows x64大小112、对齐8，attributes偏移104。使用`u32(size_of<StartupInfoEx>())`设置startup.cb，creation_flags包含`EXTENDED_STARTUPINFO_PRESENT`。模块内CreateProcessW以read StartupInfoEx读取完整扩展结构，以原BOOL非零保证write ProcessInformation初始化；基础模块的同名函数保持read StartupInfo。两者都是同一个Kernel32原生导出，B用原模块限定名区分，例如`blink.windows.process_extended::CreateProcessW(...)`，没有包装函数、动态分发或截断指针。
+
+`InitializeProcThreadAttributeList(address attributes,u32 count,u32 flags,inout usize bytes)`交接不透明属性列表。先以零attributes和flags=0查询实际字节数；该查询按OS合同返回零，并由GetLastError及bytes交付ERROR_INSUFFICIENT_BUFFER（122）和所需空间，不是重试或初始化成功。调用方分配实际足量、正确对齐的存储，再以该地址和容量执行一次初始化；原i32 BOOL和即时错误分别保留。
+
+`UpdateProcThreadAttribute(address attributes,u32 flags,usize attribute,address value,usize bytes,address previous_value,address return_size)`的flags为0，后两个保留地址为零。`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`为原指针宽整数键；value指向实际handle数组，bytes为该数组的字节数。列表中的每个真实句柄必须可继承，创建的inherit_handles必须为1；不得列入伪句柄。调用方可通过基础模块SetHandleInformation及HANDLE_FLAG_INHERIT设置／清除原句柄的继承位。清除继承位与设置本次子进程的继承列表是不同操作；并行创建各自以实际列表选择自己的集合，不能用继承全部句柄代替。
+
+属性值及其存储必须保持到`DeleteProcThreadAttributeList(address attributes)`；已初始化的列表存储保持到Delete结束，然后仍由原分配者释放。Delete返回void，只删除列表内部属性，不释放调用方缓冲、不关闭列表中的句柄或进程。创建后可删除该次列表，父进程中的输入／输出句柄按最后实际消费者各自关闭；子进程实际继承的句柄是它自己的OS引用。原始address互操作不为外部API所保留的地址自动建立B借用，调用方负责真实范围、对齐、权限和上述寿命；不能在最后原生消费者前移动、resize或释放存储。没有第二份拥有表、隐式关闭、等待或取消。
+
+纯头接口可直接作为模块编译输入，不需要空实现：
+
+```powershell
+bc -c library/blink/windows/process.b -I library --module -o target/process.obj
+blink --archive target/process.obj -o target/process.lib
+bc -c library/blink/windows/process_extended.h --import target/process.lib --module -o target/process_extended.obj
+blink --archive target/process_extended.obj -o target/process_extended.lib
+```
+
+独立模块及最终应用分别以--import导入实际接口依赖，链接时交付对应对象／归档；仅有桥接模块不代替process.lib与process_extended.lib。消费这些已编译接口不需要提供者.h／.b或library搜索路径。此处提供原生启动能力，编译器Rust构建代码尚未迁移。依据：[STARTUPINFOEXW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexw)、[初始化](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist)、[更新属性及值寿命](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)、[删除列表](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-deleteprocthreadattributelist)及[句柄属性](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-sethandleinformation)。
 
 ## blink.windows.environment
 

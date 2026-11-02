@@ -173,7 +173,7 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 命令行是可写NUL结尾UTF-16，环境与目录按真实地址和创建标志交接；B拥有存储／借用保持到该次同步调用返回。两个输出句柄由调用者分别保持到最后真实消费者后CloseHandle，原关闭i32结果及失败OS错误继续由调用方消费；句柄复制不复制拥有权，关闭不替代进程结束。owned可沿原静态F组合，进入C ABI的仍是实际普通handle载荷。
 
-WaitForSingleObject保留原u32状态，超时不终止工作；只有实际结束等待后，GetExitCodeProcess的u32才用作该进程的退出码。259既可能是结束前STILL_ACTIVE，也可能是已经结束进程的实际退出码，不能仅据这一值反推寿命。接口没有状态镜像、轮询、隐式取消、结果截断或错误重放。基础StartupInfo不承诺STARTUPINFOEX属性列表，扩展库接口及完整构建进程／I/O捕获继续按具体缺口建设。
+WaitForSingleObject保留原u32状态，超时不终止工作；只有实际结束等待后，GetExitCodeProcess的u32才用作该进程的退出码。259既可能是结束前STILL_ACTIVE，也可能是已经结束进程的实际退出码，不能仅据这一值反推寿命。接口没有状态镜像、轮询、隐式取消、结果截断或错误重放。基础StartupInfo保持104字节读取；blink.windows.process_extended的StartupInfoEx为112字节／8对齐，attributes偏移104，同模块限定名CreateProcessW按完整read StartupInfoEx调用同一Kernel32导出。扩展cb使用sizeof扩展结构并设置EXTENDED_STARTUPINFO_PRESENT，不向基础前缀伪装完整扩展对象。InitializeProcThreadAttributeList的inout usize保留实际字节查询与原122错误，UpdateProcThreadAttribute以usize键／字节数和原地址交接句柄集合，Delete只销毁属性而不释放调用方存储。属性值及其实际存储保持到Delete，原始地址边界的范围、对齐、保留关系与寿命由调用方负责，不自动推导为B异步借用。SetHandleInformation直接修改原句柄继承位，原BOOL／GetLastError及拥有者保持；句柄列表只选择实际可继承的真实句柄，inherit_handles=1，不包含伪句柄。完整构建进程／I/O捕获及编译器采用继续按具体缺口建设，完整接口与寿命见上述标准库。
 
 ## B 业务结果与调用状态
 
@@ -331,7 +331,7 @@ Rust入口Dataset::from_words(program,binding,count,words)接收原生产者的�
 
 `blink.windows.process::command_line() on cpu`以普通B函数交回独立拥有的`dataset<u16>`。私有GetCommandLineW只在真实Windows x64 C ABI上取得OS管理的地址，B按原unsafe_position<u16>同步只读至首个NUL，复制实际代码单元，不修改／释放系统字符串或将其地址／view交给调用者。结果不含终止符，不解析参数、不验证或替换孤立代理单元；需要其他编码由原Unicode库显式处理。
 
-返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；同模块parse_command_line／arguments已以B实现Windows参数序列：只读原始代码单元，返回独立拥有的Arguments{units,ranges}，参数范围索引自己的结果存储，不返回OS地址或依赖输入快照继续存活；argv[0]、连续引号、反斜线奇偶及空参数规则见上述标准库文档。按名字环境查询／写入、进程控制和编译器CLI采用仍未实现。
+返回资源和模块调用沿原Frame、拥有结果及现行对象／资源ABI交接，没有新增C ABI或运行期注册。独立模块可在提供者.b缺席时编译调用方并链接运行。完整签名、实例用法、OS存储及程序名的合同见[标准库进程输入](../library/README.md#blinkwindowsprocess)；同模块parse_command_line／arguments已以B实现Windows参数序列：只读原始代码单元，返回独立拥有的Arguments{units,ranges}，参数范围索引自己的结果存储，不返回OS地址或依赖输入快照继续存活；argv[0]、连续引号、反斜线奇偶及空参数规则见上述标准库文档。按名字环境查询／写入、基础及扩展进程控制的当前接口与实际所有权见标准库对应章节；编译器CLI及Rust构建路径的B采用仍沿C-032推进。
 
 ## Windows环境块的原地址与最后消费者
 
