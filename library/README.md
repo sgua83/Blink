@@ -150,6 +150,8 @@ Windows x64的高精度区间计时接口只有`time.h`，直接导入Kernel32�
 | `QueryPerformanceCounter(write i64 count)` | 当前计数，单位为ticks | 原生`i32`状态非零时count已初始化 |
 | `QueryPerformanceFrequency(write i64 frequency)` | 每秒计数，单位为ticks／秒 | 原生`i32`状态非零时frequency已初始化 |
 
+FileTime以low／high两个u32保留原FILETIME，大小8、对齐4；目录项中的三个文件时间复用此布局，不改成对齐8的u64字段，也不将文件时间当作QPC计数。
+
 两个入口按Windows x64 C ABI交接`BOOL`与`LARGE_INTEGER`；B分别使用32位有符号状态和64位有符号计数。调用者先检查本次状态，再读取对应输出；接口保留原始状态，不在库中退出进程或改写单位。输出由调用者的原普通位置持有，借用仅持续到同步OS调用返回。纯接口模块不需要空`.b`。
 
 在导入`blink.windows.time`的普通CPU main中可写：
@@ -194,6 +196,22 @@ println(code);
 这些语句放在普通CPU函数中。模块不提供错误文本、自动Result转换或进程退出政策；外部句柄、缓冲区及其最后消费者仍归原调用者。其他平台和BLEngine窗口／等待等Rust职责的实际迁移继续按对应问题推进。
 
 官方合同：[GetLastError](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror)、[SetLastError](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setlasterror)。
+
+## blink.windows.directory
+
+纯接口directory.h直接导入Kernel32的FindFirstFileW、FindNextFileW和FindClose，没有B转发实现。应用导入blink.windows.directory并以-I library装入。FindData对应当前Windows x64的WIN32_FIND_DATAW，大小592、对齐4：attributes在0，created／accessed／written在4／12／20，size_high／size_low在28／32，reserved0／reserved1在36／40，name为偏移44的260个u16，alternate_name为偏移564的14个u16。FileTime来自blink.windows.time，直接写出该类型名时也须导入该模块；文件大小由high和low两段原u32组成，保留完整64位域。
+
+| 入口 | 原生结果与生命周期 |
+|---|---|
+| FindFirstFileW(address pattern,inout FindData data) | 返回搜索handle并给出首项；失败为INVALID_HANDLE_VALUE，即完整64位全一身份，立即用GetLastError取得原因。 |
+| FindNextFileW(handle search,inout FindData data) | 返回i32 BOOL；非零给出下一项，零时立即读GetLastError，18即ERROR_NO_MORE_FILES，其他原错误保持失败。 |
+| FindClose(handle search) | 在最后一次搜索调用结束后关闭原搜索句柄；返回原i32状态，零时立即保存OS错误，不以CloseHandle代替。 |
+
+调用者先完整初始化FindData，再以inout交给OS；NUL后的数组尾部、非活动或保留字段不因一次成功写入变成有意义的目录数据。只有本次FindFirst／FindNext成功后才解释相应目录项，失败或结束时不消费数据缓冲中的旧值／未定义内容。名称按NUL结尾UTF-16代码单元使用；reserved0仅在attributes含FILE_ATTRIBUTE_REPARSE_POINT时按实际重解析标签解释，reserved1保持保留用途。
+
+pattern为同步调用期间有效的NUL结尾UTF-16地址，保留Windows通配符、命名空间和原错误；数组的260／14是原OS结构ABI，不是B路径长度限制。首项失败没有可关闭的搜索；成功后原调用者负责一次FindClose。成功目录项已写入调用者自己的缓冲，搜索关闭不撤销这些普通值；继续调用失败后的缓冲则不能作为有效目录项读取。复制handle身份不会建立另一份所有权，Frame不自动回收这个外部搜索，库不提供隐式关闭、重试、过滤或排序。目录顺序及调用期间的并发变化由文件系统决定，不把一次搜索当作完整快照。
+
+官方合同：[FindFirstFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirstfilew)、[FindNextFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findnextfilew)、[FindClose](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findclose)。字段按实际Windows SDK的WIN32_FIND_DATAW定义。编译器／SDK目录消费者采用、安装输入共享句柄和其他平台仍按Issues各自范围推进。
 
 ## blink.windows.process
 
@@ -456,7 +474,7 @@ target/release/bc.exe -c library/blink/windows/file.b -I library --module --impo
 target/release/blink.exe --archive target/file.obj -o target/file.lib
 ```
 
-调用方分别--import这三份实际归档并链接，不需要提供者.h／.b或-I；也可以按同一正式archive入口将实际对象组合成一个库。开放sequence声明不等于已交付其所有类型实例，未导出的实例仍按原规则拒绝；链接不重新编译源码。编译器Rust装入、对象输出和缓存发布尚未迁移；目录创建／枚举继续按Issues各自具体子项推进。
+调用方分别--import这三份实际归档并链接，不需要提供者.h／.b或-I；也可以按同一正式archive入口将实际对象组合成一个库。开放sequence声明不等于已交付其所有类型实例，未导出的实例仍按原规则拒绝；链接不重新编译源码。编译器Rust装入、对象输出和缓存发布尚未迁移；目录创建与编译器／SDK目录枚举采用继续按Issues各自具体子项推进。
 
 ## blink.windows.path
 
