@@ -3718,7 +3718,7 @@ let cpu = blcompute::cpu::CpuProgram::from_image(cpu_image)?;
 let gpu = device.load(gpu_image)?;
 ```
 
-普通入口使用 CpuProgram::from_image／Device::load；条件入口使用 CpuTemplate::from_image／Device::load_template，仍须交付真实 DomainBindings。默认 compiler feature 提供 CpuProgram::new、CpuTemplate::new 及 ffi::LibraryProgram::new，这些入口先调用同一整程序编译，再进入相同装载路径。关闭 compiler 后，CPU 只保留映像表示和 from_image 装入，不编入 native/codegen.rs 及其 x64 发射模块；公共 CPU 映像与范围 ABI 定义统一在 native/image.rs。Device::compile／compile_template、SPIR-V 发射及所需编译预算目前仍被执行 SDK 消费，完整分离见 Issues 的 C-032.1.3。CPU 装载保留真实 DLL 重定位和代码消费者的模块所有权；GPU 装载按编译布局建立原管线与资源，设备能力错误直接报告。
+普通入口使用 CpuProgram::from_image／Device::load；条件入口使用 CpuTemplate::from_image／Device::load_template，仍须交付真实 DomainBindings。默认 compiler feature 提供 CpuProgram::new、CpuTemplate::new、ffi::LibraryProgram::new 和 Device::compile／compile_template，这些入口先调用同一整程序编译，再进入相同装载路径。关闭 compiler 后，CPU／GPU 只保留映像表示和原装入入口，不编入 native/codegen.rs、spirv/codegen.rs 及其发射模块；公共 CPU 映像与范围 ABI 定义统一在 native/image.rs，GPU 映像、PAGE_BYTES／BINDING_BYTES 页绑定及 PREFIX_LEVELS 前缀布局定义统一在 spirv/image.rs。Compiler／预算与优化等共同依赖仍在，完整分离见 Issues 的 C-032.1.3。CPU 装载保留真实 DLL 重定位和代码消费者的模块所有权；GPU 装载按编译布局建立原管线与资源，设备能力错误直接报告。
 
 ProgramInterface 是编译结果与已装载程序共同提供的只读接口。Dataset 创建、不可变 view、域关系和引擎数据打包消费该接口；已装载 CPU／GPU 程序的 program() 返回 ExecutionPlan，不再为了旧类型签名保留整份 IR。编译器内部的 ir::Program 继续拥有指令和优化。生成 DLL 使用同版本编译器的可信 ProgramImage::from_compiler_output 恢复最终代码及其布局；该 unsafe 边界不能接收宿主输入、改写代码或伪造条件模板的前缀关系，原整份 IR 恢复入口已删除。
 

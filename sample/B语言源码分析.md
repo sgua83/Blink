@@ -1655,7 +1655,7 @@ pub(super) enum Location {
 
 ### 14.3 Emitter 把结果写成真实字节
 
-native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 的编译入口与 SPIR-V 发射目前仍在执行 SDK 中，完整角色分离尚未完成。
+native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，Compiler／预算及优化等剩余共同依赖仍待分离。
 
 源码节选：`crates/blanguage/src/native/codegen.rs:121`。
 
@@ -1822,13 +1822,15 @@ GPU 把大量实例组织成工作组。每个实例有本组编号和组内编�
 
 ### 17.1 SPIR-V 位于哪里
 
+spirv.rs 是公开入口，spirv/codegen.rs 及其子模块在 compiler feature 中生成 SPIR-V；spirv/image.rs 保存编译器和执行器共用的 Shader、阶段映像、页绑定和前缀布局。执行 SDK 的 Device::load／load_template 直接装入这些映像，Device::compile／compile_template 由默认编译角色提供。两种入口沿同一 Device 和资源所有者工作。
+
 SPIR-V 是标准二进制中间语言。它仍由驱动处理成设备执行形式，不是某一种 GPU 的最终机器指令。Blink 自己把 IR 写成 SPIR-V，不先生成 GLSL/HLSL 再调用另一编译器。
 
 标准规定模块、类型、结果编号、存储类别、控制流与能力。详见 [Khronos SPIR-V 规范](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)。理解“它是有类型和结构的程序”，比把 `.spv` 当作一团不透明字节更有帮助。
 
 ### 17.2 一条指令怎样装进 word
 
-源码节选：`crates/blanguage/src/spirv.rs:45`。
+源码节选：`crates/blanguage/src/spirv/codegen.rs:57`。
 
 ```rust
 fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
@@ -1861,7 +1863,7 @@ word 4：输入 B 的编号
 
 ### 17.4 一个语言阶段可能需要多个 GPU pass
 
-源码节选：`crates/blanguage/src/spirv.rs:21`。
+源码节选：`crates/blanguage/src/spirv/codegen.rs:38`。
 
 ```rust
 pub enum Pass {
@@ -1901,7 +1903,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 `GpuProgram` 持有编译结果与管线；提交路径建立本次数据关系与命令，最后返回 Submission。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1835`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1837`。
 
 ```rust
     pub fn submit(
@@ -1933,7 +1935,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 当数据很大，单块分配会受到真实设备资源和分配条件约束。Blink 保留一份逻辑记录域，将数据存放到多个物理页，用页表保存各页的设备地址。
 
-源码节选：`crates/blanguage/src/spirv.rs:40`。
+源码节选：`crates/blanguage/src/spirv/image.rs:4`。
 
 ```rust
 /// GPU 存储页的最大字节数；每页只容纳完整记录，页表使用 64 位设备地址。
@@ -1965,7 +1967,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1599`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1601`。
 
 ```rust
 #[derive(Clone)]
@@ -2010,7 +2012,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1865`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1867`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -2042,7 +2044,7 @@ GPU：     A 仍在执行 → B 才开始读取
 
 ### 21.2 物理存储和最后使用点一起保存
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1010`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1012`。
 
 ```rust
 pub struct GpuDataset {
@@ -2070,7 +2072,7 @@ pub struct GpuStorage {
 
 `GpuDataset` 保存实际 GpuStorage 和可选 last_use。GpuStorage 持有页表、数据页、类型、容量、只读来源及相关实例资源。它们不是多份数组副本，而是同一物理存储的组成。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1040`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1042`。
 
 ```rust
 impl Drop for GpuDataset {
@@ -2106,7 +2108,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2699`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2701`。
 
 ```rust
     pub fn wait(mut self) -> Result<Completed> {
@@ -2178,7 +2180,7 @@ Submission 的 wait 先等待真实执行，取得时间查询结果，再交还
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2432`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2434`。
 
 ```rust
                                 let mut length = count;
@@ -2587,7 +2589,7 @@ python -c "import struct; from pathlib import Path; p=Path('Saved/MapCpu/values.
 | `native/codegen.rs`、`native/operands.rs`、`native/integer.rs` | 怎样选操作数、编码指令和处理跳转 |
 | `native/allocation.rs`、`packet/*` | 活跃性、寄存器、栈槽与四元素 SIMD 怎样落实 |
 | `native/reduce.rs`、`scan.rs`、`compact.rs`、`sort.rs` | CPU 集合内核与范围摘要怎样生成 |
-| `spirv.rs`、`spirv/*` | 类型、结果编号、控制流、协作与多 pass 怎样编码 |
+| `spirv/codegen.rs`、`spirv/*` | 类型、结果编号、控制流、协作与多 pass 怎样编码 |
 | `dll/mod.rs`、`source.rs`、`*.in` | 已生成代码怎样形成算法对象，三种语言接口怎样生成 |
 | `crates/blcompute/src/lib.rs`、`bindings.rs` | 数据、参数与有效域关系怎样由实际对象持有 |
 | `cpu.rs`、`cpu/sort.rs` | 机器码怎样装载，范围任务与集合尾部怎样执行 |

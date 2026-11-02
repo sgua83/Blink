@@ -930,9 +930,11 @@ impl Device {
         }
         Ok(words)
     }
+    #[cfg(feature = "compiler")]
     pub fn compile(&self, program: ExecutableProgram) -> Result<GpuProgram> {
         self.load(blanguage::spirv::compile_program(program).map_err(error)?)
     }
+    #[cfg(feature = "compiler")]
     pub fn compile_template(&self, program: TemplateProgram) -> Result<GpuTemplate> {
         self.load_template(blanguage::spirv::compile_program(program).map_err(error)?)
     }

@@ -2,51 +2,6 @@
 use super::*;
 use std::ops::Deref;
 
-#[derive(Clone, Debug)]
-pub struct ShaderCode {
-    pub words: Vec<u32>,
-    pub ranks: bool,
-}
-#[derive(Clone, Debug)]
-pub struct StageCode {
-    pub main: Vec<u32>,
-    pub tail: Option<Vec<u32>>,
-    pub scan_add: Option<Vec<u32>>,
-    pub finish: Option<(String, Vec<u32>)>,
-    pub dispatch: Option<Vec<u32>>,
-    pub selector: Option<Vec<u32>>,
-    pub sort: Option<Vec<ShaderCode>>,
-}
-#[derive(Clone, Debug)]
-pub struct ProgramImage<P> {
-    program: ExecutionPlan,
-    marker: std::marker::PhantomData<fn() -> P>,
-    stages: Vec<StageCode>,
-}
-impl<P> ProgramImage<P> {
-    /// 恢复本版本编译器输出的 SPIR-V 与执行布局。
-    ///
-    /// # Safety
-    /// 必须来自本版本编译器的同一个 P 入口，包含完整未修改的 Shader、
-    /// 调度、设备需求及前缀关系；不得由宿主输入构造或伪造条件模板的证明。
-    #[doc(hidden)]
-    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode>) -> Self {
-        Self {
-            program,
-            stages,
-            marker: std::marker::PhantomData,
-        }
-    }
-    pub fn program(&self) -> &ExecutionPlan {
-        &self.program
-    }
-    pub fn stages(&self) -> &[StageCode] {
-        &self.stages
-    }
-    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode>) {
-        (self.program, self.stages)
-    }
-}
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.spirv(program)
 }
@@ -61,10 +16,7 @@ pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
 ) -> Result<ProgramImage<P>, String> {
     let stages = compile_stages(worker, &program)?;
-    Ok(ProgramImage {
-        program: ExecutionPlan::from_program(&program), stages,
-        marker: std::marker::PhantomData,
-    })
+    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages) })
 }
 impl crate::Compiler {
     pub fn spirv<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
@@ -73,10 +25,7 @@ impl crate::Compiler {
             let stages = compile_stages(worker, source)?;
             Ok::<_, String>((ExecutionPlan::from_program(source), stages))
         }).map_err(|error| error.to_string())?;
-        Ok(ProgramImage {
-            program: plan, stages,
-            marker: std::marker::PhantomData,
-        })
+        Ok(unsafe { ProgramImage::from_compiler_output(plan, stages) })
     }
 }
 
