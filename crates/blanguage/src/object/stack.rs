@@ -15,12 +15,22 @@ pub(crate) enum Call {
 }
 
 pub(crate) fn compute(name: &str, stages: &[crate::native::StageCode]) -> Vec<Frame> {
-    stages.iter().enumerate().filter_map(|(index, stage)| match stage {
-        crate::native::StageCode::Element { main, .. } => Some(Frame {
-            name: format!("CPU {name} stage {index}"), coff: None, local: main.stack_bytes,
+    use crate::native::{ContinuationCode, StageCode};
+    stages.iter().enumerate().flat_map(|(index, stage)| {
+        let entries = match stage {
+            StageCode::Element { main, continuation, .. } => [Some(("", main)), match continuation {
+                Some(ContinuationCode::ReductionTail(code)) => Some((" reduction tail", code)),
+                Some(ContinuationCode::ScanAdd(code)) => Some((" scan add", code)),
+                Some(ContinuationCode::CompactScatter(code)) => Some((" compact scatter", code)),
+                Some(ContinuationCode::SegmentedFinish(code)) => Some((" segmented finish", code)),
+                None | Some(ContinuationCode::Scan { .. }) => None,
+            }],
+            StageCode::Sort(_) => [None, None],
+        };
+        entries.into_iter().flatten().map(move |(entry, code)| Frame {
+            name: format!("CPU {name} stage {index}{entry}"), coff: None, local: code.stack_bytes,
             calls: vec![Call::Unreported],
-        }),
-        crate::native::StageCode::Sort(_) => None,
+        })
     }).collect()
 }
 
