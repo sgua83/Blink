@@ -167,6 +167,14 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 本次同步write借用只在OS调用期间有效，输出仍归原B位置；系统报告的最小／最大应用地址不是新分配的资源。数量和掩码的处理器组语义遵守原Windows合同。其他系统结构、地址保留／释放、回调及引擎业务采用按各自真实接口继续建设，不把这个具体模块视为完整Windows SDK。
 
+## Windows子进程的原生位置与完成
+
+`blink.windows.process`的StartupInfo对应基础STARTUPINFOW：大小104、对齐8；ProcessInformation大小24、对齐8，两个handle后接两个u32 ID。CreateProcessW的startup是read位置，info是write位置，只有原i32 BOOL非零才交付已初始化输出；GetExitCodeProcess同样只在非零BOOL后交付u32 code。创建的十个参数沿原Windows x64寄存器／栈和连续记录指针ABI传递，不通过Rust或另一进程服务。具体字段及输入寿命见[标准库](../library/README.md#windows原生子进程)。
+
+命令行是可写NUL结尾UTF-16，环境与目录按真实地址和创建标志交接；B拥有存储／借用保持到该次同步调用返回。两个输出句柄由调用者分别保持到最后真实消费者后CloseHandle，原关闭i32结果及失败OS错误继续由调用方消费；句柄复制不复制拥有权，关闭不替代进程结束。owned可沿原静态F组合，进入C ABI的仍是实际普通handle载荷。
+
+WaitForSingleObject保留原u32状态，超时不终止工作；只有实际结束等待后，GetExitCodeProcess的u32才用作该进程的退出码。259既可能是结束前STILL_ACTIVE，也可能是已经结束进程的实际退出码，不能仅据这一值反推寿命。接口没有状态镜像、轮询、隐式取消、结果截断或错误重放。基础StartupInfo不承诺STARTUPINFOEX属性列表，扩展库接口及完整构建进程／I/O捕获继续按具体缺口建设。
+
 ## B 业务结果与调用状态
 
 B 的 `result<T,E>` 是业务数据，和生成 DLL 的 create／run 返回状态分别处理。C ABI 的0／-1、C++异常及Rust包装器Result报告装载／设备／执行／接口调用；一个合法执行可以在输出记录中产生业务Err，不因此变成DLL调用失败。B的try只传播显式业务结果，不自动捕获平台失败、外部异常或回滚已经发生的写入。

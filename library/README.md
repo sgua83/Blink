@@ -221,7 +221,7 @@ target/release/bc.exe -c main.b -I library --import target/process.lib -o target
 target/release/blink.exe target/main.obj target/process.lib -o target/main.exe
 ```
 
-调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；子进程创建／等待及编译器CLI实际迁移继续沿C-020.6.2.3／C-032推进，不能用原始命令行快照或参数库代替这些能力。
+调用方以`--import`读取归档中的实际模块接口，提供者.h／.b可以不在交付机器上；原资源C ABI、Frame及对象／归档选择保持。程序名采用OS实际提供的形式，可能与启动器传入名称不同；启动器传空命令行也不保证进程收到空串。平台合同见[GetCommandLineW](https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getcommandlinew)及[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。Windows参数序列接口见下文；本模块的原生子进程接口见下节；编译器CLI及原std::process构建工作尚未迁移，继续沿C-032推进。
 
 ### Windows参数序列
 
@@ -271,6 +271,27 @@ target/release/blink.exe target/main.obj target/process.lib target/sequence-u16.
 ```
 
 调用方通过归档接口取得两个模块，不再补读提供方.h／.b；返回结构、资源ABI及编译／链接职责保持。
+
+### Windows原生子进程
+
+本模块直接声明Kernel32入口，不经过命令解释器或Rust转发；创建、等待、查询与关闭分别交接原OS结果：
+
+| 入口 | 返回及输出 |
+|---|---|
+| `CreateProcessW` | i32 BOOL，非零时初始化`ProcessInformation`；零时立即读取`blink.windows.error::GetLastError()` |
+| `WaitForSingleObject` | 原u32等待状态；进程`WAIT_OBJECT_0`表示已结束，`WAIT_TIMEOUT`保持原工作，`WAIT_FAILED`后立即保存OS错误 |
+| `GetExitCodeProcess` | i32 BOOL，非零时初始化write u32退出状态；失败时输出不可读 |
+| `CloseHandle` | 原i32 BOOL，调用者消费实际关闭结果；失败后立即保存OS错误 |
+
+`StartupInfo`按基础STARTUPINFOW布局保存cb、三个UTF-16地址、八个u32、两个u16、reserved2地址及三个标准句柄；Windows x64大小104、对齐8，std_input／std_output／std_error偏移80／88／96。cb由`u32(size_of<StartupInfo>())`取得，其余字段按实际标志初始化，保留字段遵守OS合同。`ProcessInformation`为24字节、对齐8，process／thread两个句柄偏移0／8，process_id／thread_id两个u32偏移16／20。read／write沿同一声明位置与C指针ABI，不复制OS对象。
+
+application、可写command_line、可选安全属性、environment与directory均为原CPU地址；字符串必须是实际NUL结尾UTF-16，完整输入在同步创建期间保持。命令行允许OS原地修改，不能传只读文本；程序选择、引用、路径搜索、句柄继承和权限由调用者按真实平台合同决定。environment零地址继承本次父环境；显式UTF-16块使用`CREATE_UNICODE_ENVIRONMENT`并按OS要求排序／双NUL结束，双NUL空块与继承不同。directory零地址继承父目录。`CREATE_NO_WINDOW`和`STARTF_USESTDHANDLES`直接交接对应平台标志，不自动改写标志或重建输入。
+
+成功创建只交回原进程／主线程句柄与ID，不表示初始化或业务已成功，也不隐式等待。两个句柄各有一份实际关闭责任；数值复制不产生新拥有者。调用方保持句柄到最后等待／查询／用户结束，再各关闭一次；`CloseHandle`本身不终止对应进程或线程。可按原`owned<T,F>`组合明确静态释放，但库不提供丢失CloseHandle结果的自动关闭包装，不增加状态表、后台监控或释放链。
+
+`INFINITE`为0xffffffff，零等待立即观察本次状态；原等待函数亦可服务其他合法可等待对象，`WAIT_ABANDONED`等原状态不改写为进程完成。退出查询在进程未结束时可返回`STILL_ACTIVE`（259），真实等待完成后查询到259则仍是该进程的真实退出码。完整u32状态不截断，不把非零业务退出码改成创建失败，不以魔数循环判断进程寿命。等待期间不得关闭对应句柄。平台依据：[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)、[等待](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)、[退出查询](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess)及[关闭句柄](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)。
+
+已编译消费者须提供实际模块依赖：process.obj／lib交付本模块的完整接口和普通B函数，依赖它的模块与应用分别用`--import`导入，并把对应对象／归档交给blink链接；不能只交桥接模块而漏掉其process依赖。当前专用记录是基础StartupInfo；STARTUPINFOEX属性列表及按列表继承句柄的库接口仍待建设，不能向基础记录交付扩展启动标志。更高层命令构造、I/O捕获、异步任务及编译器实际迁移仍按原具体Issues推进。
 
 ## blink.windows.environment
 
