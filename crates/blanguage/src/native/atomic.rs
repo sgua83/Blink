@@ -20,7 +20,7 @@ impl Emitter<'_> {
                     Operand::memory(15, self.tile_storage_base()
                         + self.stage.word_offset(self.stage.shared_word(tile, atomic.word)) as u32)
                 }
-                IndexedSource::View { .. } => {
+                IndexedSource::View { .. } | IndexedSource::Pointer { .. } => {
                     self.indexed_base(&atomic.target);
                     Operand::memory(15, atomic.word)
                 }

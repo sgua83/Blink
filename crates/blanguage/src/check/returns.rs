@@ -117,6 +117,7 @@ struct ReturnExit {
     path: bounds::Clause,
     value: Option<Returned>,
     borrowed: Result<BTreeMap<String, Returned>>,
+    initialized: Vec<address::InitializationEffect>,
 }
 pub(super) struct ReturnContext {
     expected: Option<Arc<Expected>>,
@@ -217,7 +218,7 @@ impl Builder<'_> {
     pub(super) fn written_model(&mut self,name:&str,span:Span)->Result<Returned> {
         match self.env.get(name).cloned().unwrap() {
             Binding::Owned(owner)=>{
-                if !self.is_initialized(&owner.place){return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
+                if !self.is_initialized(&owner.place)&&!self.defer_initialization(&owner.place,"B229",span)?{return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
                 let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect();
                 Ok(Returned::value(Value{ty:owner.place.ty().clone(),regs,proof:owner.proof,uniform:owner.uniform,literal:false,constant:None}))
             }
@@ -225,7 +226,7 @@ impl Builder<'_> {
                 let mut model=Returned::OwnedValue(value);self.resolve_owned_model(&mut model,None);self.prepare_owned_read(&model);let Returned::OwnedValue(mut value)=model else{unreachable!()};
                 if !value.all_available(){return self.fail(span,"B229",format!("返回前没有归还独占参数 {name} 的全部活动拥有资源"));}
                 let place=value.place().unwrap();
-                if !value.value.ty.has_variants() && !self.is_initialized(&place){return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
+                if !value.value.ty.has_variants() && !self.is_initialized(&place)&&!self.defer_initialization(&place,"B229",span)?{return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
                 self.load_owned_value(&mut value,span)?;
                 let mut model=Returned::OwnedValue(value);self.require_returned_initialized(&mut model,span)?;Ok(model)
             }
@@ -236,6 +237,7 @@ impl Builder<'_> {
         &mut self,
         value: &mut Option<Returned>,
         borrowed: &mut BTreeMap<String, Returned>,
+        initialized: &mut [address::InitializationEffect],
         path: &mut bounds::Clause,
         registers: &[Reg],
         written: &BTreeMap<String, Vec<Reg>>,
@@ -264,6 +266,7 @@ impl Builder<'_> {
             );
         }
         self.view_model.parameters.extend(bindings.clone());
+        for effect in initialized {*effect=effect.output_bound(&bindings);}
         *path = bounds::Clause::both(&path.output_bound(&bindings), &aliases);
         if let Some(value) = value {
             value.bind_outputs(Some(registers), &bindings, &aliases);
@@ -364,7 +367,8 @@ impl Builder<'_> {
                     if outputs::declared(&definition,index) {
                         let guards=outputs::guards(self,&definition,index,&data.ty,&inputs,returned.as_ref())?;
                         self.check_data_output(&data,&guards,span)?;
-                    }else if !self.application_initialized(&data) {
+                    }else if !self.application_initialized(&data)
+                        && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B229",span)? {
                         return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name));
                     }
                 }
@@ -391,6 +395,7 @@ impl Builder<'_> {
         // 返回表达式已消费；释放只面对实际输出消费者，不保留刚读完的操作数。
         self.view_uses.returning();
         self.release_application_data(None,retained)?;
+        let initialized=address::initialization_effects(&self.initialized,&self.path);
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {
@@ -404,6 +409,7 @@ impl Builder<'_> {
             path: self.path.clone(),
             value,
             borrowed,
+            initialized,
         });
         self.flow = Flow::RETURN;
         Ok(())
@@ -547,6 +553,7 @@ impl Builder<'_> {
         let mut path = first.path;
         let mut result = first.value;
         let mut borrowed = first.borrowed?;
+        let mut initialized=first.initialized;
         let registers: Vec<_> = if scoped {
             context
                 .slots
@@ -576,6 +583,7 @@ impl Builder<'_> {
         self.bind_return_exit(
             &mut result,
             &mut borrowed,
+            &mut initialized,
             &mut path,
             &registers,
             &written,
@@ -586,14 +594,17 @@ impl Builder<'_> {
             let mut path = exit.path;
             let mut other = exit.value;
             let mut other_borrowed = exit.borrowed?;
+            let mut other_initialized=exit.initialized;
             self.bind_return_exit(
                 &mut other,
                 &mut other_borrowed,
+                &mut other_initialized,
                 &mut path,
                 &registers,
                 &written,
                 entry,
             );
+            initialized.extend(other_initialized);
             let choice=bounds::Condition::paths(self.path.clone(),path.clone());
             self.path = bounds::Clause::either(&self.path, &path);
             if let (Some(value), Some(other)) = (&mut result, other) {
@@ -625,6 +636,7 @@ impl Builder<'_> {
                 self.rebind_returned(value, registers);
             }
         }
+        if self.return_context.is_none(){self.view_model.initialization=initialized;self.view_model.normal_returns=Some(bounds::Condition::execution(&self.path));}
         Ok((result,output_models))
     }
 }

@@ -322,7 +322,7 @@ impl Builder<'_> {
             ),
         }
     }
-    pub(super) fn require_returned_initialized(&self,value:&mut Returned,span:Span)->Result<()> {
+    pub(super) fn require_returned_initialized(&mut self,value:&mut Returned,span:Span)->Result<()> {
         match value {
             Returned::Dataset(data)=>{self.require_application_initialized(data,span)?;data.initialization=None;},
             Returned::OwnedValue(value)=>{
@@ -1076,7 +1076,7 @@ impl Builder<'_> {
             {
                 Binding::AtomicBorrow(place.clone())
             }
-            cooperative::Argument::Value(value) if value.ty.contains_views() => Binding::Value(value.clone()),
+            cooperative::Argument::Value(value) if value.ty.contains_borrows() => Binding::Value(value.clone()),
             cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
             cooperative::Argument::OwnedReference{value,owner,..}=>{if let Some(owner)=owner{return Some(owner.clone());}let mut value=value.clone();value.borrow();Binding::OwnedValue(value)},
             cooperative::Argument::ApplicationData(data) if access == Access::Value => {

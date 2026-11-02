@@ -62,7 +62,7 @@ impl Emitter<'_> {
     fn stack_address(&mut self, offset: u32) {
         self.instruction(None, &[0x8d], true, 0, Operand::memory(4, offset));
     }
-    fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
+    pub(super) fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
         match &address.storage {
             CallStorage::Local { base, .. } => {
                 let Location::Stack(offset) = self.allocation.location(PrivateSlot::Local(*base))
@@ -89,11 +89,8 @@ impl Emitter<'_> {
                                 self.u32(address.word);
                             }
                         }
-                        IndexedSource::View {
-                            address: parts,
-                            index,
-                            stride,
-                        } => {
+                        IndexedSource::View { address: parts, index, stride }
+                        | IndexedSource::Pointer { address: parts, index, stride, .. } => {
                             self.load(parts[1]);
                             self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
                             self.load(parts[0]);

@@ -20,7 +20,7 @@ impl Builder<'_> {
             .map(|((s, _), b)| self.constant(*s, *b).regs[0])
             .collect();
         Value {
-            proof: bounds::Proof::default(),
+            proof: bounds::Proof::default().with_external_borrows(&ty),
             literal: false,
             ty,
             regs,

@@ -80,5 +80,5 @@ pub(super) fn cleanup_borrow(binding:&Binding,omitted:&BTreeSet<usize>)->view::B
         }}
     }
     let Binding::OwnedValue(value)=binding else{return view::Borrow::default()};
-    let mut result=view::Borrow::default();if value.value.ty.contains_views(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,&mut result);}result
+    let mut result=view::Borrow::default();if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,&mut result);}result
 }

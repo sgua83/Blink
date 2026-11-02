@@ -2,7 +2,7 @@ use crate::ast::{Access, Target};
 use std::{collections::BTreeMap, num::NonZeroU64};
 mod external;
 pub use external::{
-    Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody,
+    Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody, MemoryAccess, MemoryAlias,
 };
 mod execution;
 pub use execution::{
@@ -436,6 +436,32 @@ impl Ty {
             || self.array.as_ref().is_some_and(|t| t.contains_views())
             || self.fields.iter().any(|(_, _, t)| t.contains_views())
     }
+    pub(crate) fn contains_borrows(&self) -> bool {
+        self.is_address()
+            || self.view.is_some()
+            || self.variants.iter().any(|v| v.ty.contains_borrows())
+            || self.array.as_ref().is_some_and(|t| t.contains_borrows())
+            || self.fields.iter().any(|(_, _, t)| t.contains_borrows())
+    }
+    /// Borrow-bearing values in this layout, without following their pointees.
+    pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> {
+        if self.view.is_some() || self.is_address() { return vec![(0, self)]; }
+        if self.has_variants() {
+            let payload = align_up(4, self.align);
+            return self.variants.iter().flat_map(|v|
+                v.ty.borrow_fields().into_iter().map(move |(at, ty)| (payload + at, ty))
+            ).collect();
+        }
+        if let Some(element) = &self.array {
+            let stride = align_up(element.size, element.align);
+            return (0..self.values[0]).flat_map(|i|
+                element.borrow_fields().into_iter().map(move |(at, ty)| (i * stride + at, ty))
+            ).collect();
+        }
+        self.fields.iter().flat_map(|(_, offset, t)|
+            t.borrow_fields().into_iter().map(move |(at, ty)| (offset + at, ty))
+        ).collect()
+    }
     /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
     pub fn view_fields(&self) -> Vec<(u32, &Ty)> {
         if self.has_variants() {
@@ -742,6 +768,12 @@ pub enum IndexedSource {
         index: Reg,
         stride: u32,
     },
+    Pointer {
+        address: [Reg; 2],
+        index: Reg,
+        stride: u32,
+        aliases: Vec<MemoryAlias>,
+    },
     Tile {
         tile: usize,
         index: Reg,
@@ -751,15 +783,34 @@ impl IndexedSource {
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         match self {
             Self::Data { index, .. } | Self::Tile { index, .. } => f(*index),
-            Self::View { address, index, .. } => f(address[0]) && f(address[1]) && f(*index),
+            Self::View { address, index, .. } | Self::Pointer { address, index, .. } =>
+                f(address[0]) && f(address[1]) && f(*index),
         }
     }
     pub(crate) fn map(&mut self, r: &impl Fn(Reg) -> Reg) {
         match self {
             Self::Data { index, .. } | Self::Tile { index, .. } => *index = r(*index),
-            Self::View { address, index, .. } => {
+            Self::View { address, index, .. } | Self::Pointer { address, index, .. } => {
                 address.iter_mut().for_each(|v| *v = r(*v));
                 *index = r(*index);
+            }
+        }
+    }
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = MemoryAlias> + '_ {
+        let direct = match self {
+            Self::Data { binding, .. } => Some(MemoryAlias::Data(*binding)),
+            _ => None,
+        };
+        let aliases = match self {
+            Self::Pointer { aliases, .. } => aliases.as_slice(),
+            _ => &[],
+        };
+        direct.into_iter().chain(aliases.iter().copied())
+    }
+    pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
+        if let Self::Pointer { aliases, .. } = self {
+            for alias in aliases {
+                alias.map_locals(s);
             }
         }
     }
@@ -871,6 +922,7 @@ pub enum Inst {
     },
     Constant(Reg, Scalar, Bits),
     FunctionAddress(Reg, String),
+    PositionAddress { dst: Reg, address: CallReference },
     Index(Reg),
     Uniform(Reg, u32),
     LoadLocal(Reg, usize),

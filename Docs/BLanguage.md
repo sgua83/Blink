@@ -18,7 +18,7 @@ address表示本进程CPU地址空间中的原始字节地址，大小与对齐�
 
 usize与isize分别是u64与i64的同义类型，固定为64位，仅用于明确指针宽度的计数和偏移意图；与uint／u32的既有同义规则一致，不生成另一份数值实现，不建设32位CPU支线，也不改变dataset下标及const形状的既有类型。
 
-CPU位置的unsafe_address(usize_value)将完整64位整数位模式交给address，address_bits(address_value)取回同一usize位模式；二者不访问存储。形成地址的调用者负责实际来源、空值用途、指向布局与对齐、允许读写范围及存活期；非零、对齐数字或某次比较本身不能证明地址可访问。不能通过普通u64／bool／浮点构造、bitcast或handle转换绕开这一次显式地址解释。系统API返回的地址按其真实合同使用；例如GetCommandLineW的存储由系统管理，应用不能修改或释放。
+CPU位置的unsafe_address(usize_value)将完整64位整数位模式交给address，address_bits(address_value)取回同一usize位模式；二者不访问存储。address及记录／固定数组中地址字段的静态来源沿原Proof／Borrow保留，普通B实参、返回和输出合同交接同一来源；它不是资源拥有者。常量地址、unsafe_address、function_address及C返回／输出和外部位置读取由其真实生产入口明确标为External，表示没有Blink数据所有者，不把未知来源或未活动变体视为外部地址。address_bits只交出整数位模式，其数值结果不继续携带地址借用；重新unsafe_address属于新的显式外部解释。形成地址的调用者负责实际来源、空值用途、指向布局与对齐、允许读写范围及存活期；非零、对齐数字或某次比较本身不能证明地址可访问。不能通过普通u64／bool／浮点构造、bitcast或handle转换绕开这一次显式地址解释。系统API返回的地址按其真实合同使用；例如GetCommandLineW的存储由系统管理，应用不能修改或释放。
 
 address可作为普通值、记录／固定数组／变体字段及普通函数参数／结果，已编译模块保留其类型身份、大小、对齐及公开合同。Windows x64外部C调用按真实8字节POINTER值及原寄存器／栈参数布局交接，read／write地址位置按已有连续位置ABI交接其存储地址。地址数值与所指对象对齐分别判断：一个地址字段自身按8字节对齐，不因此声称所指对象已满足布局。平台依据见[Windows x64 ABI](https://learn.microsoft.com/en-us/cpp/build/x64-software-conventions)。
 
@@ -32,7 +32,9 @@ unsafe_position<T>(address_value)在CPU执行位置解释一份真实外部地�
 
 例如unsafe_position<Pair>(pointer).left直接访问原记录字段；修改函数change(inout Pair value)接收unsafe_position<Pair>(pointer)时借用同一原位置。array<u32,4>等固定数组保留声明步长及原下标规则，读取复制出的普通值是独立快照，不成为对原存储的长期引用。
 
-B自有位置取址、带来源地址及借用返回沿C-020.2.7.2.2继续建设；Windows x64系统信息的具体B接口、实际结构／地址输出与原生消费范围见[blink.windows.system](../library/README.md#blinkwindowssystem)；高精度计数与频率以[blink.windows.time](../library/README.md#blinkwindowstime)的i32状态／条件write i64直接交接，分别保留ticks与ticks／秒，不代表日历时间或GPU计时；[blink.windows.error](../library/README.md#blinkwindowserror)直接交接原OS线程的32位错误码读取／设置，错误快照由调用者立即保存，不自动清零或转换业务结果；[blink.windows.process](../library/README.md#blinkwindowsprocess)以纯B同步读取OS原命令行并交回独立拥有dataset<u16>，不含NUL、不替换UTF-16代码单元；同模块parse_command_line／arguments以B按Windows规则解析为拥有的Arguments{units,ranges}，保留空参数和实际代码单元，argv[0]单独处理；原系统字符串不得修改／释放，输出按原Frame拥有结果交接。[blink.windows.environment](../library/README.md#blinkwindowsenvironment)直接交接原只读UTF-16环境快照地址和i32释放状态；调用者在最后读取完成后成对释放原OS块，它不由Frame自动回收。其他系统库仍按真实API逐项建设；C函数地址签名值及实际调用见下节；系统回调及最后消费者寿命归C-021.6.1的剩余叶项。设备地址、GPU／远端资源和本地CPU地址仍由各自真实存储所有者交接，本地地址位模式不授予跨设备或跨机访问能力。
+address_of(place)取得现有连续CPU普通位置的真实地址，不先读取或复制载荷。局部变量、字段、固定数组元素及满足原连续布局合同的位置参数共用原位置；CPU资源元素保留原资源来源。地址沿原Proof／借用合同保存位置布局、只读／可写权限和初始化来源，unsafe_position<T>不能改变已知原布局或升级只读权限；读取仍须原位置已初始化。普通值、记录／固定数组、B函数返回及独立对象／静态库交接同一来源，写入效果使实际受影响位置的旧数值事实失效。当前函数的局部存储或将释放资源不能作为地址结果逃出；仅移动本地拥有元数据、保持实际存储和资源身份的操作沿原规则允许，真实存储迁移／释放不得越过仍活跃消费者。
+
+普通B调用、条件分支、提前返回及独立对象／静态库已交接通过address确定写入的原分量与成立条件；函数布尔结果可供调用方在对应分支读取已初始化位置。字段只要求其真实分量，不能由左字段写入推定右字段完成；选择地址只初始化实际所选位置，不能把全部候选标成完成。私有分支可能漏写时不构成无条件保证；全部正常返回均已写入时，调用方无需再次证明被调内部的私有出口条件。自递归／互递归沿实际写入位置及原正常退出的写入／调用条件归纳确定结果，保留条件、字段及参数置换；读取与调用前提只消费该时点已有事实，不能由后续写入补足。现有退出条件不能闭合的递归数值关系不推定完成。已闭合B调用的确定写入交接原位置，可用于固定数组及CPU write dataset的完整for初始化，字段、continue与提前break保持原覆盖规则；递归写入的完整for覆盖、循环后的实际读取／转借，以及被调函数内完整循环形成的正常返回保证沿同一合同交接；提前break、跳过元素和未写字段仍不能当作完整初始化；普通位置及dataset字段的条件输出查询也在原guard下保留该时点的Position／原uses，闭合后按同一声明判断，false及漏写不获初始化。取址和可能写入都不等于初始化完成。拥有记录可同时返回CPU资源及指向其实际存储的地址，普通返回／转交和拥有字段移动保持原资源身份；原局部或没有相应拥有者的地址仍不能逃逸。own的静态释放F所保存地址计入原最后消费者，在其结束前不得resize、迁移或释放实际存储；最后读取之后原拥有者可以继续resize。该能力不表示任意借用返回、异步外部回调或跨设备地址已实现。Windows x64系统信息的具体B接口、实际结构／地址输出与原生消费范围见[blink.windows.system](../library/README.md#blinkwindowssystem)；高精度计数与频率以[blink.windows.time](../library/README.md#blinkwindowstime)的i32状态／条件write i64直接交接，分别保留ticks与ticks／秒，不代表日历时间或GPU计时；[blink.windows.error](../library/README.md#blinkwindowserror)直接交接原OS线程的32位错误码读取／设置，错误快照由调用者立即保存，不自动清零或转换业务结果；[blink.windows.process](../library/README.md#blinkwindowsprocess)以纯B同步读取OS原命令行并交回独立拥有dataset<u16>，不含NUL、不替换UTF-16代码单元；同模块parse_command_line／arguments以B按Windows规则解析为拥有的Arguments{units,ranges}，保留空参数和实际代码单元，argv[0]单独处理；原系统字符串不得修改／释放，输出按原Frame拥有结果交接。[blink.windows.environment](../library/README.md#blinkwindowsenvironment)直接交接原只读UTF-16环境快照地址和i32释放状态；调用者在最后读取完成后成对释放原OS块，它不由Frame自动回收。其他系统库仍按真实API逐项建设；C函数地址签名值及实际调用见下节；系统回调及最后消费者寿命归C-021.6.1的剩余叶项。设备地址、GPU／远端资源和本地CPU地址仍由各自真实存储所有者交接，本地地址位模式不授予跨设备或跨机访问能力。
 
 算法DLL的CPU／GPU后端使用编译阶段已生成的原生映像，和应用包装共用resource编码；生成的Rust包装只嵌入映像字节，不重建类型、执行计划和阶段对象源码。映像保留同一入口类别、目标、版本与真实代码合同，实际装入、调用及释放仍归原运行库和宿主。
 
@@ -42,7 +44,7 @@ cfn<R,P...>表示当前Windows x64 C ABI的一份函数地址值，大小8字节
 
 cfn<u32>()构造空函数地址；cfn<R,...>(existing)只复制相同完整签名值。相等／不等比较保留完整64位，仅允许同签名比较；空值可以保存、复制和传入准确的可空外部接口。函数值不是numeric、address或handle，不能数值运算、次序比较、bitcast或普通数值构造。
 
-CPU中的unsafe_function<cfn<R,...>>(address_value)显式解释原地址的C签名，function_address(function_value)取得同一address身份；二者不调用代码，不装载或拥有DLL，也不延长目标代码寿命。非空地址的真实导出、调用约定、完整签名及代码装载和最后消费者前存活由调用者保证；编译器不读取DLL机器签名。空地址在这里只是空值，不因签名解释获得调用许可。
+CPU中的unsafe_function<cfn<R,...>>(address_value)显式解释原地址的C签名，function_address(function_value)取得同一address身份；二者不调用代码，不装载或拥有DLL，也不延长目标代码寿命。unsafe_function产生cfn代码身份，不把原address的数据借用带入函数值；function_address在原地址值来源图中明确交接External。非空地址的真实导出、调用约定、完整签名及代码装载和最后消费者前存活由调用者保证；编译器不读取DLL机器签名。空地址在这里只是空值，不因签名解释获得调用许可。
 
 函数签名保存原TypeName中已绑定的名义类型引用，实际cfn本体仅保存8字节地址，签名参数的read／write／inout只作为类型元数据；普通函数参数、结果、记录、固定数组、泛型及已编译B模块保持同一名义身份和8字节物理载荷。普通C ABI按实际函数指针值传递与返回；生成的通用算法数据载荷仍按物理U64交接，签名以B接口为准，不能把任意数值载荷当作真实可调用代码。复制函数地址不复制代码或外部模块所有者。
 
@@ -69,7 +71,7 @@ Result及一般带载荷变体保留活动载荷的完整整数／函数地址�
 
 普通CPU调用、外部Windows x64 C ABI、编译对象／静态库和生成C++／Rust算法接口均按实际大小交接u64／i64。内置归约、扫描、分段及tile的数值与按位整数运算，自定义值函数集合和GPU subgroup支持相应宽标量；摘要容量按类型物理大小，寄存器参数按逻辑分量绑定。GPU数值依赖shaderInt64；64位subgroup还需shaderSubgroupExtendedTypes，原Device按实际程序查询并启用，不提供CPU subgroup替代。f32的既有精度能力要求保持。
 
-数值宽度不授予地址、资源或索引能力。当前dataset长度／下标、const形状与枚举判别字仍为u32／i32原合同。u64／i64的dataset原子已支持，64位tile原子、窄原子与浮点原子仍未实现；实际原子、窄整数及数值排序范围见各自章节。address值及指针宽整数按原生地址章节定义；外部地址的CPU位置读写与调用借用按上节支持；B自有位置取址、需执行上下文的回调及其保留寿命、通用字符串、动态拥有元素容器和其他CPU后端仍未实现。源码、Release、原生、引擎采用及提交／发布状态分别见Issues。
+数值宽度不授予地址、资源或索引能力。当前dataset长度／下标、const形状与枚举判别字仍为u32／i32原合同。u64／i64的dataset原子已支持，64位tile原子、窄原子与浮点原子仍未实现；实际原子、窄整数及数值排序范围见各自章节。address值及指针宽整数按原生地址章节定义；外部地址的CPU位置读写与调用借用按上节支持；自有地址的完整初始化结果与寿命交接、需执行上下文的回调及其保留寿命、通用字符串、动态拥有元素容器和其他CPU后端仍未实现。源码、Release、原生、引擎采用及提交／发布状态分别见Issues。
 
 ## f64原生浮点值
 `f64`是8字节大小、8字节对齐的浮点标量，一个逻辑分量占两个物理u32字。普通函数、记录、固定数组、enum／result载荷、泛型与模块、dataset／view／tile沿原Ty布局交接；floating、numeric与scalar_numeric类型族包含f64，不新增64位浮点向量名称。CPU控制位置、资源驻留及真实完成继续分别由原Frame和运行库拥有。
@@ -684,7 +686,7 @@ CPU并行范围、延续及集合内核的已知局部帧尚未进入本报告�
 
 ## 已编译模块的资源ABI
 
-当前B对象元数据为 **BLCO32**，模块资源C ABI与执行映像为 **BLRI15**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
+当前B对象元数据为 **BLCO33**，模块资源C ABI与执行映像为 **BLRI15**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
 
 独立模块工厂只返回C布局的静态字节描述；非根包装只调用共同分配／执行入口，Frame是不透明指针，仅由根运行库解释和释放。工厂字节保存编译后的类型、执行布局、CPU机器码／重定位及SPIR-V，create解码到原Frame，不重读B源码、运行值IR或重新编译。调用者不释放静态工厂字节，不跨模块传递Rust Vec／Box的私有表示。
 
@@ -790,7 +792,7 @@ u32 main() on cpu;
 
 这是可信外部 ABI 声明：声明者负责真实导出、布局、读写权限及调用约定一致，外部代码只在调用期间借用、不得越过对象访问、保留指针或让异常／longjmp 跨边界。未声明initialized条件时，`write` 约定每次正常返回都完整初始化全部逻辑字段，即使另外返回了失败状态。编译器不读取 DLL 机器签名，也不证明外部实现遵守声明。
 
-from导入只允许无正文、具体签名的 `on cpu` 普通函数；不接受requires或其他ensures，但可按末节声明ensures initialized条件输出。dataset、tile、view、纹理、加速结构及含资源的值不能穿过这个 ABI，atomic 权限也不支持；可以借用其 CPU 端已合法取得的普通数据元素。address值及unsafe_position<T>按本规范原生地址章节交接；B自有位置取址、需Frame的回调及保留寿命、变参、C++ 类／模板 ABI、静态对象链接与其他平台仍待实现；直接B C入口见下节。已装入的外部声明在应用、模块及源码SDK共同的装入阶段检查签名和普通值ABI，即使未调用或已有可复用对象也不能忽略非法类型；声明错误报 B263，未知类型沿原B031报告，实际位置布局不符报 B264；GPU／compute 调用报 B265，不能调用宿主 DLL。已有 CPU 计算函数 与生成的算法 DLL 同样使用此调用实现，普通程序的资源所有者仍属于 blcompute。
+from导入只允许无正文、具体签名的 `on cpu` 普通函数；不接受requires或其他ensures，但可按末节声明ensures initialized条件输出。dataset、tile、view、纹理、加速结构及含资源的值不能穿过这个 ABI，atomic 权限也不支持；可以借用其 CPU 端已合法取得的普通数据元素。address值及unsafe_position<T>按本规范原生地址章节交接；自有地址的完整初始化结果与寿命交接、需Frame的回调及保留寿命、变参、C++ 类／模板 ABI、静态对象链接与其他平台仍待实现；直接B C入口见下节。已装入的外部声明在应用、模块及源码SDK共同的装入阶段检查签名和普通值ABI，即使未调用或已有可复用对象也不能忽略非法类型；声明错误报 B263，未知类型沿原B031报告，实际位置布局不符报 B264；GPU／compute 调用报 B265，不能调用宿主 DLL。已有 CPU 计算函数 与生成的算法 DLL 同样使用此调用实现，普通程序的资源所有者仍属于 blcompute。
 
 独立应用按实际调用在 PE 导入表记录库与符号，由 Windows 装载；嵌入式 CPU 执行使用 LoadLibraryW／GetProcAddress，错误保留库名、符号及操作系统错误。原生代码所有者持有对应模块到最后一个代码消费者释放。DLL 或符号缺失即失败，不替换目标或吞错。应用启动、寄存器、栈参数与结构体返回遵循 [Windows x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170)。
 
@@ -4103,7 +4105,7 @@ slice_utf8(read dataset<u8>,u32 start,u32 end)和slice_utf16(read dataset<u16>,u
 
 模块资源保留原不透明Frame、同步真实完成及最后消费者释放，改变的是实际宽标量、原生映像和C Value载荷编码。不能把重编成功等同于版本迁移或消费者已经采用。handle保持不透明身份，u64不授予地址或句柄操作；dataset长度／下标、const形状与枚举判别字保持自身32位合同。
 
-address值与usize／isize按原生地址章节交接；外部地址CPU位置读写按原生地址章节使用；B自有位置取址、回调、通用字符串、借用字符切片、动态拥有元素与递归容器、64位tile／浮点原子、一般while不变式、异步及热更新仍待实现。f64、窄整数和数值排序按本文对应章节的当前范围使用。
+address值与usize／isize按原生地址章节交接；外部地址CPU位置读写按原生地址章节使用；自有地址的完整初始化结果与寿命交接、回调、通用字符串、借用字符切片、动态拥有元素与递归容器、64位tile／浮点原子、一般while不变式、异步及热更新仍待实现。f64、窄整数和数值排序按本文对应章节的当前范围使用。
 
 ## while单调位移与入口数值界
 

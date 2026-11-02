@@ -119,25 +119,19 @@ fn optimize_stage(stage: &mut Stage) {
         visit(&stage.code, &mut |i| match i {
             Inst::Call(call) => {
                 for arg in &call.arguments {
-                    if let CallArgument::Reference {
-                        access,
-                        address:
-                            CallReference {
-                                storage:
-                                    CallStorage::Indexed(IndexedSource::Data {
-                                        binding, ..
-                                    }),
-                                ..
-                            },
-                        ..
-                    } = arg
-                    {
-                        if access.reads() {
-                            reads.insert(*binding);
+                    if let CallArgument::Reference { access, address, .. } = arg {
+                        for alias in address.aliases() {
+                            if let MemoryAlias::Data(binding) = alias {
+                                if access.reads() { reads.insert(binding); }
+                                if access.writes() { writes.insert(binding); }
+                            }
                         }
-                        if access.writes() {
-                            writes.insert(*binding);
-                        }
+                    }
+                }
+                for effect in &call.memory {
+                    if let MemoryAlias::Data(binding) = effect.alias {
+                        if effect.access.reads() { reads.insert(binding); }
+                        if effect.access.writes() { writes.insert(binding); }
                     }
                 }
             }
@@ -146,29 +140,21 @@ fn optimize_stage(stage: &mut Stage) {
                 writes.extend([a.target, a.count.binding]);
             }
             Inst::Atomic(a) => {
-                if let IndexedSource::Data { binding, .. } = a.target {
-                    if a.op.reads() {
-                        reads.insert(binding);
-                    }
-                    if a.op.writes() {
-                        writes.insert(binding);
+                for alias in a.target.aliases() {
+                    if let MemoryAlias::Data(binding) = alias {
+                        if a.op.reads() { reads.insert(binding); }
+                        if a.op.writes() { writes.insert(binding); }
                     }
                 }
             }
-            Inst::LoadIndexed {
-                source: IndexedSource::Data { binding, .. },
-                ..
+            Inst::LoadIndexed { source, .. } => {
+                reads.extend(source.aliases().filter_map(|a| match a { MemoryAlias::Data(b) => Some(b), _ => None }));
             }
-            | Inst::Load { binding, .. } => {
-                reads.insert(*binding);
+            Inst::Load { binding, .. } => { reads.insert(*binding); }
+            Inst::StoreIndexed { source, .. } => {
+                writes.extend(source.aliases().filter_map(|a| match a { MemoryAlias::Data(b) => Some(b), _ => None }));
             }
-            Inst::StoreIndexed {
-                source: IndexedSource::Data { binding, .. },
-                ..
-            }
-            | Inst::Store { binding, .. } => {
-                writes.insert(*binding);
-            }
+            Inst::Store { binding, .. } => { writes.insert(*binding); }
             _ => {}
         });
         reads.extend(stage.input_words().keys().map(|(source, _)| *source));
@@ -188,6 +174,7 @@ fn optimize_stage(stage: &mut Stage) {
         slots.extend(i.local_reads());
         slots.extend(i.local_writes());
     });
+    slots.extend(private_spans(&stage.code).into_iter().flatten());
     let registers: Vec<_> = used.iter().map(|r| stage.registers[*r]).collect();
     let mut locals = BTreeMap::new();
     let mut local = BTreeMap::new();
@@ -231,6 +218,7 @@ pub(crate) fn value_code(value: &mut ValueCode) {
         slots.extend(i.local_reads());
         slots.extend(i.local_writes());
     });
+    slots.extend(private_spans(&value.code).into_iter().flatten());
     let registers = used.iter().map(|r| value.registers[*r]).collect();
     let mut locals = BTreeMap::new();
     let mut local = BTreeMap::new();
@@ -292,7 +280,7 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
             | Inst::TextureFormat { dst, .. }
             | Inst::TextureRead { dst, .. } => *dst = r(*dst),
             Inst::Append(a) => a.accepted = r(a.accepted),
-            Inst::Atomic(a) => a.result = a.result.map(r),
+            Inst::Atomic(a) => { a.result = a.result.map(r); a.target.map_locals(s); }
             Inst::RayQuery { result, .. } => result.map(r),
             Inst::IntegerDivide { result, .. } => result.map(r),
             Inst::TileCollective(c) => c.results.iter_mut().for_each(|(_, dst)| *dst = r(*dst)),
@@ -313,19 +301,13 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
             }
             Inst::StoreLocalIndexed { base, .. } => *base = s(*base),
             Inst::Call(call) => {
-                for value in &mut call.values {
-                    *value = r(*value);
-                }
-                for arg in &mut call.arguments {
-                    if let CallArgument::Reference { address, .. } = arg
-                        && let CallStorage::Local { base, .. } = &mut address.storage
-                    {
-                        *base = s(*base);
-                    }
-                }
+                for value in &mut call.values { *value = r(*value); }
+                call.map_locals(s);
             }
-            Inst::LoadIndexed { dst, .. }
-            | Inst::Load { dst, .. }
+            Inst::PositionAddress { dst, address } => { *dst = r(*dst); address.map_locals(s); }
+            Inst::LoadIndexed { dst, source, .. } => { *dst = r(*dst); source.map_locals(s); }
+            Inst::StoreIndexed { source, .. } => source.map_locals(s),
+            Inst::Load { dst, .. }
             | Inst::Subgroup { dst, .. }
             | Inst::Print { dst, .. }
             | Inst::TileLoad { dst, .. }
@@ -362,6 +344,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
         texture.element = texture.element.map(r);
     }
     match i {
+        Inst::PositionAddress { address, .. } => address.map_operands(r),
         Inst::TextureSample {
             coordinate, lod, ..
         } => {

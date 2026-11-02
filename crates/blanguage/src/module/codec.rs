@@ -123,6 +123,12 @@ impl<T: Decode> Decode for Box<T> {
         Ok(Box::new(T::decode(r)?))
     }
 }
+impl<T: Encode> Encode for std::sync::Arc<T> {
+    fn encode(&self,w:&mut Writer) { (**self).encode(w); }
+}
+impl<T: Decode> Decode for std::sync::Arc<T> {
+    fn decode(r:&mut Reader<'_>)->Result<Self> { Ok(std::sync::Arc::new(T::decode(r)?)) }
+}
 impl<T: Encode + Ord> Encode for BTreeSet<T> {
     fn encode(&self, w: &mut Writer) {
         self.len().encode(w);

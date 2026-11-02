@@ -408,7 +408,8 @@ impl Inst {
             | Self::LoadLocal(r, _)
             | Self::TileLength(r)
             | Self::TileLane(r) => std::slice::from_ref(r),
-            Self::LoadIndexed { dst, .. }
+            Self::PositionAddress { dst, .. }
+            | Self::LoadIndexed { dst, .. }
             | Self::Load { dst, .. }
             | Self::LoadLocalIndexed { dst, .. }
             | Self::Subgroup { dst, .. }
@@ -438,6 +439,7 @@ impl Inst {
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         let values = match self {
             Self::Call(call) => call.all_operands(f),
+            Self::PositionAddress { address, .. } => address.all_operands(f),
             Self::TextureSample { coordinate, lod, .. } =>
                 coordinate.iter().all(|reg| f(*reg)) && f(*lod),
             Self::TextureFetch { coordinate, level, .. }
@@ -495,6 +497,8 @@ impl Inst {
             Self::Call(call) => call.locals(false),
             Self::LoadLocal(_, slot) => vec![*slot],
             Self::LoadLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
+            Self::LoadIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
+            Self::Atomic(a) if a.op.reads() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
             _ => Vec::new(),
         }
     }
@@ -503,6 +507,8 @@ impl Inst {
             Self::Call(call) => call.locals(true),
             Self::StoreLocal(slot, _) => vec![*slot],
             Self::StoreLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
+            Self::StoreIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
+            Self::Atomic(a) if a.op.writes() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
             _ => Vec::new(),
         }
     }
@@ -515,12 +521,22 @@ pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {
                 | Inst::StoreLocalIndexed { base, len, .. } => { out.insert((*base, *base + *len)); }
                 Inst::Call(call) => {
                     for arg in &call.arguments {
-                        if let CallArgument::Reference { address, .. } = arg
-                            && let Some(range) = address.local_range()
-                        {
-                            out.insert((range.start, range.end));
+                        if let CallArgument::Reference { address, .. } = arg {
+                            out.extend(address.local_ranges().map(|r| (r.start, r.end)));
                         }
                     }
+                    for effect in &call.memory {
+                        if let Some(range) = effect.alias.local_range() { out.insert((range.start, range.end)); }
+                    }
+                }
+                Inst::PositionAddress { address, .. } => {
+                    out.extend(address.local_ranges().map(|r| (r.start, r.end)));
+                }
+                Inst::LoadIndexed { source, .. } | Inst::StoreIndexed { source, .. } => {
+                    out.extend(source.aliases().filter_map(MemoryAlias::local_range).map(|r| (r.start, r.end)));
+                }
+                Inst::Atomic(a) => {
+                    out.extend(a.target.aliases().filter_map(MemoryAlias::local_range).map(|r| (r.start, r.end)));
                 }
                 Inst::Scope(body) => collect(body, out),
                 Inst::If { yes, no, .. } => {

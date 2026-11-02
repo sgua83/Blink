@@ -123,6 +123,8 @@ pub(super) fn runtime_call(
             symbol: format!("blink_{name}"),
         }),
         arguments,
+        memory: Vec::new(),
+        memory_use: None,
         result,
         values,
     })
@@ -516,8 +518,9 @@ impl Builder<'_> {
         let length=(data.length.minimum()==data.length.maximum()).then(||data.length.minimum());
         complete(self,scope,word,length,initialized,owned_presence::Presence::All)
     }
-    pub(super) fn require_application_initialized(&self, data: &Data, span: Span) -> Result<()> {
-        if !self.application_initialized(data) {
+    pub(super) fn require_application_initialized(&mut self, data: &Data, span: Span) -> Result<()> {
+        if !self.application_initialized(data)
+            && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B142",span)? {
             return self.fail(
                 span,
                 "B142",
@@ -1122,9 +1125,10 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn require_application_reference_initialized(&self,data:&DataReference,span:Span)->Result<()>{
+    pub(super) fn require_application_reference_initialized(&mut self,data:&DataReference,span:Span)->Result<()>{
         let(offset,ty)=data.element_layout();
-        if !ty.components.iter().all(|(_,word)|self.application_field_initialized(&data.data,offset+word)){
+        if !ty.components.iter().all(|(_,word)|self.application_field_initialized(&data.data,offset+word))
+            && !self.defer_position_initialization(ty.components.iter().map(|(_,word)|data.data.initialization.as_ref().unwrap().application_word(None,offset+word)).collect(),"B142",span)? {
             return self.fail(span,"B142","读取了尚未完整初始化的数据集字段");
         }
         Ok(())

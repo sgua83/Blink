@@ -139,7 +139,7 @@ impl State {
             .iter()
             .filter(|(location, _)| location.name == name)
             .collect::<Vec<_>>();
-        if uses.is_empty() && !matches!(binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()&&value.value.ty.contains_views()) {
+        if uses.is_empty() && !matches!(binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()&&value.value.ty.contains_borrows()) {
             return view::Borrow::default();
         }
         let (ty, proof) = match binding {
@@ -524,6 +524,6 @@ impl Builder<'_> {
         name: &str,
         binding: &Binding,
     ) -> BTreeSet<view::Source> {
-        self.view_uses.borrow(name,binding,&[]).restricted(&self.path).sources.entries().filter_map(|(source,when)|when.possible().then_some(*source)).collect()
+        self.view_uses.borrow(name,binding,&[]).restricted(&self.path).sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()
     }
 }

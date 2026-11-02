@@ -102,13 +102,10 @@ impl Builder<'_> {
         }
         let (storage, offset, words) = match place {
             Place::Reference { address, words, .. } => {
-                let (pointer, word) = address.component(words[0]);
+                let zero=self.constant(Scalar::U32,0).regs[0];
+                let (source,word)=address.source_at(words[0],zero);
                 (
-                    CallStorage::Indexed(IndexedSource::View {
-                        address: pointer,
-                        index: self.constant(Scalar::U32, 0).regs[0],
-                        stride: 0,
-                    }),
+                    CallStorage::Indexed(source),
                     None,
                     vec![word],
                 )
@@ -178,11 +175,10 @@ impl Builder<'_> {
                 ..
             } => {
                 let storage = match &**base {
-                    Place::Reference { address, .. } => CallStorage::Indexed(IndexedSource::View {
-                        address: address.component(0).0,
-                        index: self.constant(Scalar::U32, 0).regs[0],
-                        stride: 0,
-                    }),
+                    Place::Reference { address, .. } => {
+                        let zero=self.constant(Scalar::U32,0).regs[0];
+                        CallStorage::Indexed(address.source_at(0,zero).0)
+                    },
                     Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => {
                         CallStorage::Local {
                             base: storage.start,
@@ -303,6 +299,7 @@ impl Builder<'_> {
         let mut written = Vec::new();
         let mut held = Vec::new();
         let mut output_inputs = BTreeMap::new();
+        let mut memory_borrow=view::Borrow::default();
         for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
             let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
             let arg = match arg {
@@ -313,10 +310,12 @@ impl Builder<'_> {
             arguments.push(match (parameter, arg) {
                 (CallParameter::Value(ty), Argument::Value(value)) => {
                     self.require_same(ty, &value.ty, span)?;
+                    memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
                     CallArgument::Value { ty: ty.clone(), values: value.regs }
                 }
                 (CallParameter::Reference { ty, access }, Argument::Reference(owner)) => {
+                    if access.reads(){memory_borrow.union(&self.address_contents(ty,&owner.proof));}
                     let place = owner.place;
                     self.require_same(ty, place.ty(), span)?;
                     let address = self.external_reference(&place, *access, span)?;
@@ -328,10 +327,12 @@ impl Builder<'_> {
         }
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
-        self.code.push(Inst::Call(Call { target, arguments, result: result.clone(), values: values.clone() }));
+        let memory_use=self.call_address_memory(memory_borrow,span)?;
+        self.code.push(Inst::Call(Call { target, arguments, memory: Vec::new(), memory_use, result: result.clone(), values: values.clone() }));
         if never { self.flow = Flow::STOP; return Ok(None); }
         let returned = result.clone().map(|ty| Value {
-            ty, regs: values.clone(), proof: bounds::Proof::default(), literal: false, uniform: false, constant: None,
+            proof: bounds::Proof::default().with_external_borrows(&ty),
+            ty, regs: values.clone(), literal: false, uniform: false, constant: None,
         });
         for (index, place) in written {
             let guards = if let Some(d) = definition {
@@ -339,7 +340,7 @@ impl Builder<'_> {
                 if outputs::declared(d, index) { self.forget_output_initialization(&place, span)?; }
                 guards
             } else { vec![owned_presence::Presence::All; place.ty().components.len()] };
-            self.assign_owned_proof(&place, bounds::Proof::default(), false);
+            self.assign_owned_proof(&place, bounds::Proof::default().with_external_borrows(place.ty()), false);
             self.initialize_output(&place, &guards);
         }
         for name in held { self.finish_scoped_argument(&name, span)?; }
@@ -349,7 +350,7 @@ impl Builder<'_> {
 }
 
 // These are views of the existing Place mapping, not another storage owner.
-fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Option<Vec<u32>> {
+pub(super) fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Option<Vec<u32>> {
     Some(match place {
         Place::Reference { words, .. }
         | Place::Element { words, .. }

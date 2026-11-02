@@ -315,6 +315,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 for arg in args { self.writes_expression(arg, writes)?; }
             }
             ExprKind::Call(name, args) | ExprKind::Cooperate(name, _, args) | ExprKind::Specialize(name, _, args) => {
+                if name == "address_of" && let [place] = args.as_slice() {
+                    writes(Write { place, call: Some(expr), contents: false, iterator: None });
+                }
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
                 if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
                 else {

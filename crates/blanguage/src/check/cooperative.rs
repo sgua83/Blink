@@ -559,25 +559,25 @@ impl<'a> Builder<'a> {
         };
         self.calls.push(key);
         let local_initialization = self.env.values().all(|binding| matches!(binding,
-            Binding::Value(value) if !value.ty.contains_views() && !value.ty.owns_resources()
+            Binding::Value(value) if !value.ty.contains_borrows() && !value.ty.owns_resources()
         )) && if callee.function.result.name == "void" || callee.function.result.is_never() {
             true
         } else {
             let ty = self.expected_storage(&callee.function.result, callee.function.span)?;
-            !ty.contains_views() && !ty.owns_resources()
+            !ty.contains_borrows() && !ty.owns_resources()
         };
         let caller_initialization = local_initialization.then(|| std::mem::take(&mut self.initialized));
         self.materialize_array_bindings();
         let output_inputs=outputs::inputs(self,callee,&self.env.clone())?;
         // With no fact or resource inputs/outputs, private range paths end at this call.
         let local_bounds = self.env.values().all(|binding| matches!(binding,
-            Binding::Value(value) if !value.ty.contains_views() && !value.ty.owns_resources()
+            Binding::Value(value) if !value.ty.contains_borrows() && !value.ty.owns_resources()
                 && bounds::Proof::fact_components(&value.ty).next().is_none()
         )) && if callee.function.result.name == "void" || callee.function.result.is_never() {
             true
         } else {
             let ty = self.expected_storage(&callee.function.result, callee.function.span)?;
-            !ty.contains_views() && !ty.owns_resources()
+            !ty.contains_borrows() && !ty.owns_resources()
                 && bounds::Proof::fact_components(&ty).next().is_none()
         };
         let caller_path = std::mem::take(&mut self.path);

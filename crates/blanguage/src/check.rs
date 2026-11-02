@@ -123,6 +123,8 @@ enum ValueIdentity {
     ParameterContent(usize, usize),
     // 资源叶输入与重叠载荷中的view值分开命名，不占机器参数。
     ResourceParameter(usize, usize),
+    // Semantic storage input, separate from native pointer bits and parameter contents.
+    ParameterStorage(usize),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexDomain {
@@ -229,11 +231,12 @@ enum ReferenceAddress {
     Contiguous([Reg; 2]),
     Components(BTreeMap<u32, [Reg; 2]>),
     External { address: [Reg; 2], identity: address::Identity },
+    Borrowed { address: [Reg;2], identity: address::Identity, borrow:view::Borrow, layout:address::Layout },
 }
 impl ReferenceAddress {
     fn component(&self, word: u32) -> ([Reg; 2], u32) {
         match self {
-            Self::Contiguous(address) | Self::External { address, .. } => (*address, word),
+            Self::Contiguous(address) | Self::External { address, .. } | Self::Borrowed { address, .. } => (*address, word),
             Self::Components(addresses) => (addresses[&word], 0),
         }
     }
@@ -1282,6 +1285,7 @@ struct CheckedFunction {
     contracts: BTreeSet<(ContractKind, ContractPredicate)>,
     residency: residency::Inputs,
     view_model: view_contracts::Function,
+    initialization:Option<Vec<address::Initialization>>,
     application: Option<application::Context>,
     functions: native_function::Module,
 }
@@ -1569,7 +1573,7 @@ fn finish_checked_function(
     } else {
         Some(b.expected_storage(&d.function.result, d.function.span)?)
     };
-    let (returned, semantic_inputs, written) =
+    let (returned, semantic_inputs, written, initialization) =
         native_function::canonical(&mut b, returned, &inputs, written);
     let body = FunctionBody {
         name: name.clone(),
@@ -1591,6 +1595,7 @@ fn finish_checked_function(
         contracts: output_contracts,
         residency: b.residency,
         view_model: b.view_model,
+        initialization,
         application: b.application,
         functions: b.functions,
     }))
@@ -1973,21 +1978,20 @@ impl<'a> Builder<'a> {
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
-                    let (pointer, word) = address.component(*word);
+                    let (source, word) = address.source_at(*word, zero);
                     let dst = self.reg(*scalar);
                     self.code.push(Inst::LoadIndexed {
                         dst,
-                        source: IndexedSource::View {
-                            address: pointer,
-                            index: zero,
-                            stride: 0,
-                        },
+                        source,
                         offset: zero,
                         word,
                     });
                     regs.push(dst);
                 }
-                let (proof, uniform) = self.read_owned_proof(p, &regs);
+                let (mut proof, uniform) = self.read_owned_proof(p, &regs);
+                if matches!(address, ReferenceAddress::External { .. }) {
+                    proof = proof.with_external_borrows(ty);
+                }
                 Ok(Value {
                     proof,
                     literal: false,
@@ -2161,13 +2165,9 @@ impl<'a> Builder<'a> {
                 self.initialize(p);
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 for (word, value) in words.iter().zip(value.regs) {
-                    let (pointer, word) = address.component(*word);
+                    let (source, word) = address.source_at(*word, zero);
                     self.code.push(Inst::StoreIndexed {
-                        source: IndexedSource::View {
-                            address: pointer,
-                            index: zero,
-                            stride: 0,
-                        },
+                        source,
                         offset: zero,
                         word,
                         value,
@@ -2314,6 +2314,7 @@ impl<'a> Builder<'a> {
             let Some(mut value) = self.expr(arg)? else { return Ok(None); };
             self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
             value.ty = ty;
+            value.proof.retain_view_borrows(&value.ty);
             value.literal = false;
             return Ok(Some(value));
         }
@@ -2799,6 +2800,7 @@ impl<'a> Builder<'a> {
         {
             return self.record_expression(&TypeName::named(name), args, span);
         }
+        if name == "address_of" { return self.position_address(args, span); }
         let mut values = Vec::new();
         for a in args {
             let Some(value) = self.expr(a)? else {
@@ -2811,7 +2813,9 @@ impl<'a> Builder<'a> {
             if values.len() != 1 { return self.fail(span, "B153", "function_address需要一个cfn实参"); }
             let mut value = values.pop().unwrap();
             if !value.ty.is_c_function() { return self.fail(span, "B263", "function_address需要cfn原生C签名值"); }
-            value.ty = Ty::builtin("address").unwrap(); value.literal = false;
+            value.ty = Ty::builtin("address").unwrap();
+            value.proof = value.proof.with_external_borrows(&value.ty);
+            value.literal = false;
             return Ok(Some(value));
         }
         if matches!(name, "unsafe_address" | "address_bits") {
@@ -2831,6 +2835,11 @@ impl<'a> Builder<'a> {
             let mut value = values.pop().unwrap();
             self.require_same(&input, &value.ty, span)?;
             value.ty = output;
+            if name == "unsafe_address" {
+                value.proof = value.proof.with_external_borrows(&value.ty);
+            } else {
+                value.proof.retain_view_borrows(&value.ty);
+            }
             value.literal = false;
             return Ok(Some(value));
         }
@@ -3382,6 +3391,7 @@ impl<'a> Builder<'a> {
             initial,
             body,
         );
+        self.defer_iteration_exit(&mut natural,&begin,&limit,&initialization,iteration,initial,body);
         let natural = (!nonempty || (!initial && body_flow.iterates())).then_some(natural);
         if initial {
             let specification = cursor_specification.clone();
@@ -4278,7 +4288,7 @@ crate::module::codec::record!(Value {
     uniform,
     constant
 });
-crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource)});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression)});
 
 

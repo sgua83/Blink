@@ -80,7 +80,7 @@ impl Builder<'_> {
             let Some(value) = self.expr_expected(arg, expected)? else {
                 return Ok(None);
             };
-            if value.ty.contains_views() { held.push(self.hold_binding(Binding::Value(value.clone()))); }
+            if value.ty.contains_borrows() { held.push(self.hold_binding(Binding::Value(value.clone()))); }
             values.push(value);
         }
         for name in held { self.env.remove(&name); }

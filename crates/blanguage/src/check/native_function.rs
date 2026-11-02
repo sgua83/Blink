@@ -49,6 +49,7 @@ pub(crate) struct Contract {
     pub(super) domain: Option<crate::module::domain::Interface>,
     residency: residency::Requirements,
     view_access:BTreeSet<view_contracts::Access>,
+    initialization:Option<Vec<address::Initialization>>,
 }
 // The wire still stores a vector of guards. Its meaning is one requirement
 // whenever any use is active, independent of the number of source use sites.
@@ -62,7 +63,7 @@ impl crate::module::codec::Encode for Contract {
             key.encode(w);1usize.encode(w);
             guards.iter().cloned().fold(bounds::Condition::constant(false),|a,b|a.logical(b,true)).encode(w);
         }
-        self.view_access.encode(w);
+        self.view_access.encode(w);self.initialization.as_ref().unwrap().encode(w);
     }
 }
 impl crate::module::codec::Decode for Contract {
@@ -72,7 +73,7 @@ impl crate::module::codec::Decode for Contract {
             parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,
             returned:Decode::decode(r)?,written:Decode::decode(r)?,requires:Decode::decode(r)?,
             target:Decode::decode(r)?,frame:Decode::decode(r)?,domain:Decode::decode(r)?,
-            residency:Decode::decode(r)?,view_access:Decode::decode(r)?,
+            residency:Decode::decode(r)?,view_access:Decode::decode(r)?,initialization:Some(Decode::decode(r)?),
         })
     }
 }
@@ -156,7 +157,7 @@ fn finish_declaration(
     let mut functions = checked.functions;
     let mut context = checked.application.unwrap();
     context.frame = frame;
-    let mut function = checked.body;
+    let function = checked.body;
     let contract = Contract {
         parameters: function.parameters.clone(),
         result: function.result.clone(),
@@ -169,8 +170,8 @@ fn finish_declaration(
         domain: None,
         residency: BTreeMap::new(),
         view_access:BTreeSet::new(),
+        initialization:checked.initialization,
     };
-    crate::optimize::value_code(&mut function.body);
     functions.units.insert(
         instance.name.clone(),
         Some(Unit {
@@ -231,10 +232,14 @@ pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
         }
     }
 }
-pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],written:Vec<Option<Returned>>)->(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>) {
+pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,inputs:&[Reg],written:Vec<Option<Returned>>)->(Option<Returned>,Vec<Reg>,Vec<Option<Returned>>,Option<Vec<address::Initialization>>) {
     builder.view_model.input_width=inputs.len();
     let mut bindings=inputs.iter().enumerate().map(|(index,reg)|(ValueIdentity::Register(*reg),bounds::Proof::default().with_identity(ValueIdentity::Register(index)))).collect::<BTreeMap<_,_>>();
     for(parameter,p)in builder.definition.function.params.iter().enumerate(){
+        if p.access!=Access::Value && !p.ty.dataset && !p.ty.tile {
+            let id=ValueIdentity::ParameterStorage(parameter);
+            bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id))));
+        }
         if matches!(p.access,Access::Read|Access::InOut) && let Some(place)=builder.env.get(&p.name).and_then(Binding::stored_place){
             for component in 0..place.ty().components.len(){let id=ValueIdentity::ParameterContent(parameter,component);bindings.insert(id,bounds::Proof::default().with_identity(id));}
         }
@@ -271,9 +276,19 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     })).collect::<Vec<_>>();
     let mut names=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect::<BTreeMap<_,_>>();
     for(source,target)in output_aliases{if let Some(target)=names.get(&target).copied(){names.insert(source,target);}}
+    let initialization=builder.view_model.initialization.iter().map(|effect|match effect {
+        address::InitializationEffect::Position(fact)=>if fact.origin.pending(){None}else{Some(fact.clone())},
+        address::InitializationEffect::Call{..}|address::InitializationEffect::Iteration{..}=>None,
+    }).collect::<Option<Vec<_>>>().map(|facts|{
+        let facts=address::merge_initializations(facts.into_iter().filter(|fact|!fact.origin.has_local()));
+        address::merge_initializations(facts.into_iter().map(|mut fact|{
+            fact.when=builder.view_model.initialization_when(fact.when);
+            fact.output_bound(&names)
+        }))
+    });
     builder.view_model.parameters=names;
     let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{translate_returned(&mut value,&model,&bindings);value}));
-    (models.next().unwrap(),(0..inputs.len()).collect(),models.collect())
+    (models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization)
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let (_, mut functions) = declaration(world, instance, application::Context::default(), Module::default())?;
@@ -331,6 +346,8 @@ impl Builder<'_> {
         let mut held = Vec::new();
         let mut contents = BTreeMap::new();
         let mut resource_inputs=BTreeMap::new();
+        let mut storage_inputs=BTreeMap::new();
+        let mut memory_borrow=view::Borrow::default();
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
@@ -351,6 +368,8 @@ impl Builder<'_> {
                 Argument::Value(mut value) if p.access == Access::Value && !p.ty.dataset => {
                     self.require_same(&ty, &value.ty, span)?;
                     value.literal = false;
+                    value.proof=self.current_address_proof(&value.ty,&value.proof);
+                    memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     append_actual(&mut actual, &value);
                     arguments.push(CallArgument::Value {
                         ty: value.ty.clone(),
@@ -372,9 +391,12 @@ impl Builder<'_> {
                     }else{self.drop_returned(Returned::OwnedValue(value.clone()),&view::Borrow::default(),span)?;}
                     env.insert(p.name.clone(),Binding::OwnedValue(value));written.push((index,place));
                 }
-                Argument::Reference(owner) if matches!(p.access, Access::Read | Access::Write | Access::InOut) => {
+                Argument::Reference(mut owner) if matches!(p.access, Access::Read | Access::Write | Access::InOut) => {
                     let place=owner.place.clone();
                     self.require_same(&ty, place.ty(), span)?;
+                    if p.access.reads(){owner.proof=self.current_address_proof(&ty,&owner.proof);memory_borrow.union(&self.address_contents(&ty,&owner.proof));}
+                    let origin=self.position_origin(&place,span)?;
+                    storage_inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Position(Arc::new(origin)))));
                     for (part, address) in self.native_references(&place, p.access, span, d.function.c_abi)? {
                         arguments.push(CallArgument::Reference {
                             ty: part,
@@ -470,7 +492,7 @@ impl Builder<'_> {
         contracts::prove(self, &requirements, span)?;
         let output_inputs=outputs::inputs(self,d,&env)?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
-        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());
+        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());view_arguments.extend(storage_inputs.clone());
         if !locations.is_empty() {
             let call = residency::Call {
                 function: instance.name.clone(),
@@ -496,9 +518,12 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
+        let memory_use=self.call_address_memory(memory_borrow,span)?;
         self.code.push(Inst::Call(Call {
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
+            memory: Vec::new(),
+            memory_use,
             result: result.clone(),
             values: values.clone(),
         }));
@@ -531,7 +556,7 @@ impl Builder<'_> {
         } else {
             (BTreeMap::new(), None, Vec::new())
         };
-        bindings.extend(contents);bindings.extend(resource_inputs);
+        bindings.extend(contents);bindings.extend(resource_inputs);bindings.extend(storage_inputs);
         if let Some(model) = &model {
             for (source, target) in model.registers().into_iter().zip(&values) {
                 bindings.insert(
@@ -552,7 +577,17 @@ impl Builder<'_> {
             semantic+=regs.len();written_registers.insert(*index,regs);
         }
         view_arguments.extend(bindings.clone());
-        let view_call=Some(self.view_model.call(&instance.name,view_arguments.clone(),self.path.clone(),self.definition.source.clone(),span));
+        let view_call=Some(self.view_model.call(&instance.name,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
+        let initialized=self.functions.units[&instance.name].as_ref().and_then(|unit|unit.contract.initialization.as_ref());
+        let effects=match initialized {
+            Some(facts)=>facts.iter().map(|fact|address::InitializationEffect::Position(fact.at_call(&bindings))).collect::<Vec<_>>(),
+            None=>vec![address::InitializationEffect::Call{call:view_call.unwrap(),when:bounds::Condition::constant(true)}],
+        };
+        let positions=effects.into_iter().flat_map(|effect|match &effect {
+            address::InitializationEffect::Position(fact)if fact.when.truth_in(&self.path)==Some(true)=>fact.positions(&self.path),
+            _=>vec![Position::Initialization(Arc::new(effect))],
+        }).collect::<Vec<_>>();
+        self.initialized.extend(positions);
         let output_value=result.as_ref().map(|ty|Value{ty:ty.clone(),regs:values.clone(),
             proof:model.as_ref().map(|model|bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings)).unwrap_or_default(),
             uniform:false,literal:false,constant:None});
@@ -604,7 +639,11 @@ impl Builder<'_> {
         }
         if let Some(call)=view_call{view_contracts::set_resource_borrows(&mut returned,|resource|self.view_model.result(call,view_contracts::Output::ReturnedResource(resource)));}
         if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
-            for component in view_contracts::components(&value.ty){value.proof=value.proof.clone().with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Returned(component)));}
+            for component in view_contracts::components(&value.ty){
+                let actual=value.proof.view_borrow(component);
+                let resolved=self.view_model.result(call,view_contracts::Output::Returned(component));
+                if actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
+            }
         }
         self.view_uses.after(span);
         let borrow=returned.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
@@ -682,7 +721,7 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     }
     if let Some(value)=&contract.returned{for(resource,borrow)in view_contracts::resource_borrows(value).into_iter().enumerate(){outputs.insert(view_contracts::Output::ReturnedResource(resource),borrow);}}
     for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_borrows(value).into_iter().enumerate(){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
-    view_contracts::Interface{outputs,access:contract.view_access.clone()}
+    view_contracts::Interface{outputs,access:contract.view_access.clone(),initialization:contract.initialization.clone().unwrap()}
 }
 fn resolve_views(module:&mut Module)->Result<()> {
     let mut functions=BTreeMap::new();let mut closed=BTreeMap::new();
@@ -692,8 +731,14 @@ fn resolve_views(module:&mut Module)->Result<()> {
     }
     let outputs=view_contracts::solve(&functions,closed)?;
     for (name,unit)in &mut module.units {
-        let contract=&mut unit.as_mut().unwrap().contract;
-        let interface=&outputs[name];contract.view_access=interface.access.clone();
+        let unit=unit.as_mut().unwrap();
+        let contract=&mut unit.contract;
+        let interface=&outputs.interfaces[name];
+        if interface.outputs.values().any(view::Borrow::has_local) {
+            return unit.source.fail(unit.span,"B227","地址不能返回或输出当前函数的局部存储");
+        }
+        contract.view_access=interface.access.clone();
+        contract.initialization=Some(interface.initialization.clone());
         for (output,borrow)in &interface.outputs {
             match *output {
                 view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
@@ -701,6 +746,9 @@ fn resolve_views(module:&mut Module)->Result<()> {
                 view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_value_mut(value,resource)){value.handle.proof=value.handle.proof.clone().with_view_borrow(0,borrow.clone());},
                 view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[parameter].as_mut().and_then(|value|view_contracts::resource_value_mut(value,resource)){value.handle.proof=value.handle.proof.clone().with_view_borrow(0,borrow.clone());},
             }
+        }
+        if let Some(function)=&mut unit.function {
+            if let Some(memory)=outputs.memory.get(name) {address::apply_memory(&mut function.body.code,memory);}
         }
     }
     Ok(())
@@ -775,6 +823,9 @@ fn finalize(
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     resolve_residencies(&mut module)?;
+    for unit in module.units.values_mut().flatten() {
+        if let Some(function)=&mut unit.function {crate::optimize::value_code(&mut function.body);}
+    }
     let mut units = module
         .units
         .into_iter()
@@ -1020,6 +1071,8 @@ impl Builder<'_> {
         self.code.push(Inst::Call(Call {
             target: CallTarget::Defined(crate::module::domain::symbol(&instance.name, target)),
             arguments,
+            memory: Vec::new(),
+            memory_use: None,
             result: None,
             values: Vec::new(),
         }));
@@ -1171,6 +1224,8 @@ fn build_domain(
         code.push(Inst::Call(Call {
             target: CallTarget::Defined(crate::module::domain::symbol(&call.instance.name, target)),
             arguments,
+            memory: Vec::new(),
+            memory_use: None,
             result: None,
             values: Vec::new(),
         }));
@@ -1224,6 +1279,7 @@ fn build_domain(
         domain: Some(interface),
         residency: BTreeMap::new(),
         view_access:BTreeSet::new(),
+        initialization:Some(Vec::new()),
     };
     functions.units.insert(
         name,

@@ -112,7 +112,7 @@ impl Builder<'_> {
             let binding = match &item {
                 Returned::Dataset(data) => Some(Binding::ApplicationData(data.clone())),
                 Returned::OwnedValue(value) => Some(Binding::OwnedValue(value.clone())),
-                Returned::Value(value) if value.ty.contains_views()=>Some(Binding::Value((**value).clone())),
+                Returned::Value(value) if value.ty.contains_borrows()=>Some(Binding::Value((**value).clone())),
                 _ => None,
             };
             if let Some(binding) = binding {

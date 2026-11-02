@@ -111,6 +111,7 @@ fn emit_value(
             Inst::Loop {
                 condition, body, ..
             } => scratch(condition) || scratch(body),
+            Inst::PositionAddress { address, .. } => matches!(address.storage, CallStorage::Indexed(_)),
             Inst::Call(call) => call.arguments.iter().any(|a| {
                 matches!(
                     a,

@@ -50,6 +50,16 @@ struct Values {
     locals: BTreeMap<usize, Reg>,
 }
 impl Values {
+    fn invalidate(&mut self, aliases: impl Iterator<Item = MemoryAlias>) {
+        for alias in aliases {
+            match alias {
+                MemoryAlias::Local { base, len } =>
+                    self.locals.retain(|slot, _| !(base..base + len).contains(slot)),
+                MemoryAlias::Data(binding) =>
+                    self.memory.retain(|(b, _, _), _| *b != binding),
+            }
+        }
+    }
     fn root(&self, mut r: Reg) -> Reg {
         while let Some(next) = self.aliases.get(&r) {
             r = *next;
@@ -182,7 +192,11 @@ impl Values {
                     merge(&mut flow.continues, Some(self.local_values()));
                     continuing = false;
                 }
-                Inst::Atomic(_) | Inst::Append(_) | Inst::TileBarrier => self.memory.clear(),
+                Inst::Atomic(a) => {
+                    if a.op.writes() { self.invalidate(a.target.aliases()); }
+                    self.memory.clear();
+                }
+                Inst::Append(_) | Inst::TileBarrier => self.memory.clear(),
                 Inst::LoadLocal(dst, slot) => {
                     if let Some(value) = self.locals.get(slot).copied() {
                         self.aliases.insert(*dst, self.root(value));
@@ -198,10 +212,7 @@ impl Values {
                     self.locals
                         .retain(|slot, _| !(*base..*base + *len).contains(slot));
                 }
-                Inst::StoreIndexed {
-                    source: IndexedSource::Data { binding, .. },
-                    ..
-                } => self.memory.retain(|(b, _, _), _| b != binding),
+                Inst::StoreIndexed { source, .. } => self.invalidate(source.aliases()),
                 Inst::Load {
                     dst,
                     binding,
@@ -269,7 +280,19 @@ impl Values {
                     for slot in call.locals(true) {
                         self.locals.remove(&slot);
                     }
-                    if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,address:CallReference{storage:CallStorage::Indexed(_),..},..} if access.writes())) {self.memory.clear();}
+                    for effect in &call.memory {
+                        if effect.access.writes() && let MemoryAlias::Data(binding) = effect.alias {
+                            self.memory.retain(|(b, _, _), _| *b != binding);
+                        }
+                    }
+                    for arg in &call.arguments {
+                        if let CallArgument::Reference { access, address: CallReference { storage: CallStorage::Indexed(source), .. }, .. } = arg
+                            && access.writes()
+                        {
+                            if matches!(source, IndexedSource::Pointer { .. }) { self.invalidate(source.aliases()); }
+                            else { self.memory.clear(); }
+                        }
+                    }
                 }
                 _ => {}
             }

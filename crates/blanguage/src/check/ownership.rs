@@ -23,6 +23,8 @@ impl Ord for ApplicationIndex {fn cmp(&self,other:&Self)->std::cmp::Ordering{mat
 pub(super) enum Position {
     Initialized,
     Local(usize),
+    Borrowed(Arc<view::Borrow>,address::Layout,u32),
+    Initialization(Arc<address::InitializationEffect>),
     Element(usize, u32),
     ViewElement([ValueIdentity; 3], Reg, u32, u32),
     TileElement(usize, Reg, u32),
@@ -166,6 +168,7 @@ impl Place {
                     })
                     .collect(),
             ),
+            Self::Reference { address: address @ ReferenceAddress::Borrowed { .. }, words, .. } => address.positions(words),
             Self::Reference { scope, words, .. } => Some(
                 words
                     .iter()
@@ -199,6 +202,12 @@ impl Place {
         }
     }
     pub(super) fn components_in(&self, owner: &Place) -> Option<Vec<usize>> {
+        if matches!(self, Self::Reference { address:ReferenceAddress::Borrowed { .. }, .. })
+            || matches!(owner, Self::Reference { address:ReferenceAddress::Borrowed { .. }, .. }) {
+            let selected=self.owned_positions()?;
+            let root=owner.owned_positions()?;
+            return selected.iter().map(|position|root.iter().position(|other|other==position)).collect();
+        }
         match (self, owner) {
             (
                 Self::Reference {
@@ -367,6 +376,9 @@ impl Builder<'_> {
             self.writable_storage(base, span)?;
             return Ok(words.iter().map(|w| *w as usize).collect());
         }
+        if let Some(borrow)=self.reference_position_borrow(place,span)? {
+            self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),writes:true,initialized:false,span})?;
+        }
         match place {
             Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
             Place::ApplicationElement { words, sources, access: Access::Write | Access::InOut, .. } => {
@@ -420,7 +432,7 @@ impl Builder<'_> {
         initialized: &BTreeSet<Position>,
         environment: &BTreeMap<String, Binding>,
     ) -> bool {
-        position.initialized_by(initialized) || match position {
+        position.initialized_by(initialized) || address::initialized_by_effects(position,initialized,&self.path) || match position {
             Position::Indexed(choices, _) => choices.iter().all(|choice| self.position_initialized_in(choice, initialized, environment)),
             Position::ApplicationElement(scope, _, word) => environment.values().flat_map(Binding::application_resources).any(|data|
                 data.initialization.as_ref()==Some(&Position::Parameter(*scope,0)) && self.application_field_initialized_in(data,*word,initialized)),
@@ -459,8 +471,26 @@ impl Builder<'_> {
                     })
         })
     }
-    pub(super) fn require_initialized(&self, place: &Place, span: Span) -> Result<()> {
+    pub(super) fn defer_initialization(&mut self,place:&Place,code:&'static str,span:Span)->Result<bool> {
+        self.defer_position_initialization(self.positions(place),code,span)
+    }
+    pub(super) fn defer_position_initialization(&mut self,positions:Vec<Position>,code:&'static str,span:Span)->Result<bool> {
+        let read=address::InitializationRead{
+            positions:positions.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
+            initialized:self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
+        };
+        let effects=address::initialization_effects(&read.initialized,&bounds::Clause::default());
+        if !effects.iter().any(address::InitializationEffect::pending){return Ok(false);}
+        let borrow=read.borrow();
+        self.check_view_requirement(view::Requirement::Initialized{borrow,read,code,span})?;
+        Ok(true)
+    }
+    pub(super) fn require_initialized(&mut self, place: &Place, span: Span) -> Result<()> {
         if !self.is_initialized(place) {
+            if self.defer_initialization(place,"B142",span)?{return Ok(());}
+            if let Some(borrow)=self.reference_position_borrow(place,span)? {
+                return self.check_view_requirement(view::Requirement::Address {borrow,layout:address::Layout::of(place.ty()),writes:false,initialized:true,span});
+            }
             return self.fail(
                 span,
                 "B142",

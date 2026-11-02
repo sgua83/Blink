@@ -203,11 +203,8 @@ impl Emitter<'_> {
     fn indexed_base(&mut self, source: &IndexedSource) -> u32 {
         match source {
             IndexedSource::Data { binding, index } => self.address(*binding, *index),
-            IndexedSource::View {
-                address,
-                index,
-                stride,
-            } => {
+            IndexedSource::View { address, index, stride }
+            | IndexedSource::Pointer { address, index, stride, .. } => {
                 self.load(address[1]);
                 self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
                 self.load(address[0]);
@@ -439,6 +436,7 @@ impl Emitter<'_> {
                     let memory = self.indexed_memory(source, *offset, *word);
                     self.write_scalar_address(*value, memory);
                 }
+                Inst::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
                 Inst::FunctionAddress(dst, name) => { self.native_code_address(NativeSymbol::Function(name.clone())); self.store(*dst); }
                 Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
                 Inst::Index(dst) => {

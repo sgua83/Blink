@@ -219,20 +219,33 @@ impl Builder<'_> {
             }) {
                 continue;
             }
-            if begin.maximum() < limit.minimum() && !position.uses_index(index) {
-                exit.initialized.insert(position.clone());
-            }
-            if begin.minimum() == begin.maximum()
-                && limit.minimum() == limit.maximum()
-                && let Position::Indexed(choices, at) = &position
-                && *at == index
-                && let Some(covered) =
-                    choices.get(begin.minimum() as usize..limit.minimum() as usize)
-            {
-                exit.initialized.extend(covered.iter().cloned());
-            }
+            exit.initialized.extend(array_iteration_position(
+                &position,index,
+                (begin.minimum()==begin.maximum()&&limit.minimum()==limit.maximum()).then(||(begin.minimum(),limit.minimum())),
+                begin.maximum()<limit.minimum(),
+            ));
         }
     }
+
+    pub(super) fn defer_iteration_exit(
+        &self,exit:&mut LoopState,begin:&Value,limit:&Value,outputs:&[(application::Data,Vec<u32>)],
+        index:ownership::ApplicationIndex,initial:bool,body:&[Stmt],
+    ) {
+        if initial||bounds::seeks(body){return;}
+        let states=&self.loop_contexts.last().unwrap().continues;
+        if !states.iter().any(|state|address::initialization_effects(&state.initialized,&bounds::Clause::default()).iter().any(address::InitializationEffect::pending)){return;}
+        let iteration=address::Iteration{
+            states:states.iter().map(|state|address::InitializationState{initialized:state.initialized.clone(),path:bounds::Condition::execution(&state.path)}).collect(),
+            index,
+            range:(begin.minimum()==begin.maximum()&&limit.minimum()==limit.maximum()).then(||(begin.minimum(),limit.minimum())),
+            nonempty:begin.maximum()<limit.minimum(),
+            outputs:outputs.iter().map(|(data,words)|(data.initialization.as_ref().unwrap().clone(),words.clone())).collect(),
+        };
+        exit.initialized.insert(Position::Initialization(Arc::new(address::InitializationEffect::Iteration{
+            iteration:Arc::new(iteration),when:bounds::Condition::constant(true),
+        })));
+    }
+
     fn initial_target(&self,expr:&Expr,shape:bool)->Option<bool>{
         use returns::Returned;use application::Ownership;
         if let ExprKind::Name(name)=&expr.kind{if let Some(Binding::ApplicationData(data))=self.env.get(name){return Some(!self.resolve_ownership(&data.ownership,None).available());}}
@@ -571,6 +584,35 @@ where
         result.push(instruction);
     }
     Ok(result)
+}
+
+
+fn array_iteration_position(position:&Position,index:ownership::ApplicationIndex,range:Option<(u32,u32)>,nonempty:bool)->Vec<Position> {
+    let mut result=Vec::new();
+    if nonempty&&!position.uses_index(index){result.push(position.clone());}
+    if let Some((begin,limit))=range
+        &&let Position::Indexed(choices,at)=position&&*at==index
+        &&let Some(covered)=choices.get(begin as usize..limit as usize) {
+        result.extend(covered.iter().cloned());
+    }
+    result
+}
+pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSet<Position>])->BTreeSet<Position> {
+    let mut result=BTreeSet::new();
+    for(scope,words)in &iteration.outputs {
+        for word in words {
+            if states.iter().all(|state|initialized_application_word(state,scope,iteration.index,*word)){
+                result.insert(scope.application_word(None,*word));
+            }
+        }
+    }
+    let positions=states.iter().flat_map(|state|state.iter().cloned()).collect::<BTreeSet<_>>();
+    for position in positions {
+        if states.iter().all(|state|position.initialized_by(state)){
+            result.extend(array_iteration_position(&position,iteration.index,iteration.range,iteration.nonempty));
+        }
+    }
+    result
 }
 
 pub(super) fn initialized_application_word(

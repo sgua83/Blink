@@ -309,8 +309,17 @@ impl Proof {
     pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
-    pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(*source)).collect()}
+    pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()}
     pub(super) fn with_view_sources(self,component:usize,sources:BTreeSet<view::Source>)->Self {self.with_view_borrow(component,view::Borrow::from_sources(sources))}
+    pub(super) fn with_external_borrows(mut self,ty:&Ty)->Self {
+        for (offset,field) in ty.borrow_fields() {
+            if field.is_address() {
+                let component=ty.components.iter().position(|(_,at)|*at==offset).unwrap();
+                self=self.with_view_sources(component,BTreeSet::from([view::Source::External]));
+            }
+        }
+        self
+    }
     pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
     }
@@ -1647,6 +1656,10 @@ impl Clause {
             _ => Self(Arc::new(ClauseNode::Both(a.clone(), b.clone()))),
         }
     }
+    fn observed(parent:&Self,facts:Facts)->Self {
+        let known=Arc::new(Condition{cases:[Self::impossible(),Self::facts(facts)]});
+        Self::branch(parent,&known,true)
+    }
     fn branch(parent: &Self, condition: &Arc<Condition>, truth: bool) -> Self {
         if matches!(&*parent.0, ClauseNode::Impossible)
             || matches!(
@@ -2262,6 +2275,24 @@ impl crate::module::codec::Decode for Condition {
 }
 impl Condition {
     pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
+    pub(super) fn execution(path:&Clause)->Self {
+        let mut conditions:BTreeMap<usize,Self>=BTreeMap::new();
+        for clause in Clause::ordered(std::slice::from_ref(path)){
+            let condition=match &*clause.0 {
+                ClauseNode::Impossible=>Self::constant(false),
+                ClauseNode::Facts(_)=>Self::guard(clause.clone()),
+                ClauseNode::Both(a,b)=>conditions[&a.key()].clone().logical(conditions[&b.key()].clone(),false),
+                ClauseNode::Either(a,b)=>conditions[&a.key()].clone().logical(conditions[&b.key()].clone(),true),
+                ClauseNode::Branch(parent,condition,truth)=>conditions[&parent.key()].clone().logical(if *truth{condition.as_ref().clone()}else{condition.as_ref().clone().negate()},false),
+            };
+            conditions.insert(clause.key(),condition);
+        }
+        conditions.remove(&path.key()).unwrap()
+    }
+    pub(super) fn guaranteed_at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self {
+        let value=self.at_call(bindings);
+        Self::guard(value.cases[0].clone()).negate()
+    }
     pub(super) fn guard_at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
         // 先投影真实输入关系，再求补集；不可用的私有布尔不能成为接口条件。
         let value=self.at_call(bindings);Self::guard(value.cases[1].clone())
@@ -3024,13 +3055,10 @@ impl Builder<'_> {
             let expression = IntegerExpression::Binary(operation, scalar, left, right);
             Fact::Index(result.component_identity(component), IndexDomain::Computed(expression))
         }).collect();
-        self.path = Clause::both(&self.path, &Clause::facts(facts));
+        self.path = Clause::observed(&self.path,facts);
     }
     pub(super) fn observe_bounds(&mut self, value: &Value) {
-        self.path = Clause::both(
-            &self.path,
-            &Clause::facts(Proof::capture(value).facts(&value.ty)),
-        );
+        self.path = Clause::observed(&self.path,Proof::capture(value).facts(&value.ty));
     }
     fn selected_proof(
         path: &Clause,
@@ -3585,10 +3613,10 @@ impl Builder<'_> {
         }
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
-        let positions=if place.ty().contains_views(){self.positions(place)}else{Vec::new()};
+        let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};
         let owners:BTreeMap<_,_>=self.env.iter().filter_map(|(name,binding)| {
             let owner=binding.stored_place()?;
-            owner.ty().contains_views().then(||(name.clone(),self.positions(&owner)))
+            owner.ty().contains_borrows().then(||(name.clone(),self.positions(&owner)))
         }).collect();
         for (name,binding) in &mut self.env {
             let modified = {

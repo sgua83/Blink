@@ -944,7 +944,8 @@ impl Builder<'_> {
         let path = self.path.clone();
         for ((_, offset), when) in data.ty.components.iter().zip(guards) {
             self.path = when.condition().assume(&path, true);
-            if self.path.possible() && !self.application_field_initialized(data, *offset) {
+            if self.path.possible() && !self.application_field_initialized(data, *offset)
+                && !self.defer_position_initialization(vec![data.initialization.as_ref().unwrap().application_word(None,*offset)],"B229",span)? {
                 return self.fail(span, "B229", "返回分支没有满足dataset字段的条件初始化合同");
             }
         }
@@ -995,7 +996,7 @@ impl Builder<'_> {
                 let selected = place
                     .clone()
                     .project(Ty::scalar(place.ty().components[component].0), &[component]);
-                if !self.is_initialized(&selected) {
+                if !self.is_initialized(&selected)&&!self.defer_initialization(&selected,"B229",span)? {
                     return self.fail(
                         span,
                         "B229",

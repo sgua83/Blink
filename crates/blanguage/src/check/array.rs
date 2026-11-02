@@ -183,7 +183,7 @@ impl Builder<'_> {
         self.array_index(place, index, expr.span).map(Some)
     }
     pub(super) fn array_value_index(&mut self, value: Value, expr: &Expr) -> Result<Option<Value>> {
-        let held = value.ty.contains_views().then(|| self.hold_binding(Binding::Value(value.clone())));
+        let held = value.ty.contains_borrows().then(|| self.hold_binding(Binding::Value(value.clone())));
         let evaluated = self.expr(expr);
         if let Some(name) = held { self.env.remove(&name); }
         let Some(index) = evaluated? else {
@@ -357,10 +357,9 @@ impl Builder<'_> {
             return Ok((IndexedSource::View { address, index: zero, stride: 0 }, zero, 0));
         }
         let source = match base {
-            Place::Reference { address, .. } => IndexedSource::View {
-                address: address.component(0).0,
-                index: self.constant(Scalar::U32, 0).regs[0],
-                stride: 0,
+            Place::Reference { address, .. } => {
+                let zero=self.constant(Scalar::U32,0).regs[0];
+                address.source_at(0,zero).0
             },
             Place::ApplicationElement {
                 handle,

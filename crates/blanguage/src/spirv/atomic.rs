@@ -30,7 +30,7 @@ impl Emitter<'_> {
                 2,
                 0x100,
             ),
-            IndexedSource::View { .. } => return Err("GPU原子不能使用CPU原生地址".into()),
+            IndexedSource::View { .. } | IndexedSource::Pointer { .. } => return Err("GPU原子不能使用CPU原生地址".into()),
         };
         let scope = self.constant(Scalar::U32, scope);
         let semantics = self.atomic_semantics(atomic.order, memory);

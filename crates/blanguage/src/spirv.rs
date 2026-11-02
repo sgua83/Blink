@@ -445,6 +445,10 @@ impl Emitter<'_> {
                 Inst::RayQuery { scene, origin, direction, minimum, maximum, result } => {
                     self.ray(*scene, origin, direction, *minimum, *maximum, result);
                 }
+                Inst::PositionAddress { .. }
+                | Inst::LoadIndexed { source: IndexedSource::Pointer { .. }, .. }
+                | Inst::StoreIndexed { source: IndexedSource::Pointer { .. }, .. } =>
+                    return Err("CPU原生位置地址不能在GPU内核中使用"),
                 Inst::LoadIndexed { dst, source, offset, word } => {
                     let scalar = self.stage.registers[*dst];
                     let raw = if let IndexedSource::Tile { tile, index } = source {
