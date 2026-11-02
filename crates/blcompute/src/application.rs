@@ -229,8 +229,7 @@ impl Frame {
     /// CPU 直接消费原存储；GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value]) -> Result<()> {
         let index = program as usize;
-        let program = self.load(index)?;
-        let layout = program.layout();
+        let layout = self.programs[index].as_ref().unwrap().layout();
         // 参数是存储的引用；同一物理存储只移动一次。
         let mut selected = Vec::new();
         let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
@@ -273,6 +272,8 @@ impl Frame {
                 })
             })
             .collect();
+        let program = self.load(index)?;
+        let layout = program.layout();
         let (datasets, domains) = match &program {
             Program::Cpu(program) => {
                 let datasets = selected
