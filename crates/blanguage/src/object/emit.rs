@@ -26,7 +26,7 @@ fn ucrt(name: &'static str) -> Import {
 }
 fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, local: u32, calls: Vec<Call>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>) -> usize {
     let text = sections.len();
-    frames.push(Frame { name, section: text, start: 0, local, calls });
+    frames.push(Frame { name, coff: Some((text, 0)), local, calls });
     sections.push(Section {
         name: ".text".into(), bytes, flags: 0x60501020,
         relocations: Vec::new(), associated: Vec::new(),

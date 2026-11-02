@@ -4,26 +4,40 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub(crate) struct Frame {
     pub name: String,
-    pub section: usize,
-    pub start: u32,
+    pub coff: Option<(usize, u32)>,
     pub local: u32,
     pub calls: Vec<Call>,
 }
 pub(crate) enum Call {
     Reference { offset: usize, tail: bool },
     Indirect,
+    Unreported,
+}
+
+pub(crate) fn compute(name: &str, stages: &[crate::native::StageCode]) -> Vec<Frame> {
+    stages.iter().enumerate().filter_map(|(index, stage)| match stage {
+        crate::native::StageCode::Element { main, .. } => Some(Frame {
+            name: format!("CPU {name} stage {index}"), coff: None, local: main.stack_bytes,
+            calls: vec![Call::Unreported],
+        }),
+        crate::native::StageCode::Sort(_) => None,
+    }).collect()
 }
 
 // Validate only the new references crossing the compiled-object boundary.
 pub(super) fn validate(object: &Object) -> Result<()> {
     let mut positions = BTreeSet::new();
     for frame in &object.stack {
-        let section = object.sections.get(frame.section).ok_or("栈信息引用不存在的节")?;
-        if frame.start as usize >= section.bytes.len() || !positions.insert((frame.section, frame.start)) {
-            return Err("栈信息的函数位置无效或重复".into());
+        if let Some((index, start)) = frame.coff {
+            let section = object.sections.get(index).ok_or("栈信息引用不存在的节")?;
+            if start as usize >= section.bytes.len() || !positions.insert((index, start)) {
+                return Err("栈信息的函数位置无效或重复".into());
+            }
         }
         for call in &frame.calls {
             if let Call::Reference { offset, .. } = call {
+                let (index, _) = frame.coff.ok_or("没有COFF位置的入口不能引用COFF调用")?;
+                let section = &object.sections[index];
                 if !section.relocations.iter().any(|relocation| relocation.offset == *offset) {
                     return Err("栈调用信息缺少对应的原生重定位".into());
                 }
@@ -36,7 +50,7 @@ pub(super) fn validate(object: &Object) -> Result<()> {
 pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64>) -> String {
     use std::fmt::Write;
     let positions: BTreeMap<_, _> = object.stack.iter().enumerate()
-        .map(|(index, frame)| ((frame.section, frame.start), index)).collect();
+        .filter_map(|(index, frame)| frame.coff.map(|position| (position, index))).collect();
     let symbols: BTreeMap<_, _> = object.symbols.iter()
         .map(|symbol| (symbol.name.as_str(), (symbol.section, symbol.value))).collect();
     let count = object.stack.len();
@@ -48,13 +62,17 @@ pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64
     for (index, frame) in object.stack.iter().enumerate() {
         for call in &frame.calls {
             let (target, tail) = match call {
+                Call::Unreported => {
+                    unknown[index].insert("compute call graph not reported".into());
+                    continue;
+                }
                 Call::Indirect => {
                     unknown[index].insert("indirect target".into());
                     prefix[index] = prefix[index].max(u128::from(frame.local) + 16);
                     continue;
                 }
                 Call::Reference { offset, tail } => {
-                    (&object.sections[frame.section].relocations.iter()
+                    (&object.sections[frame.coff.unwrap().0].relocations.iter()
                         .find(|relocation| relocation.offset == *offset).unwrap().target, *tail)
                 }
             };

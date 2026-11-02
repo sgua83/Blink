@@ -1,11 +1,13 @@
 //! 原生包装交接同一次真实编译的映像字节，不重建类型或阶段对象源码。
 use crate::{ExecutableProgram, ast::Target, ir::Scalar};
 
-pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<String, Box<dyn std::error::Error>> {
+pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<(String, Vec<crate::object::stack::Frame>), Box<dyn std::error::Error>> {
+    let mut stack = Vec::new();
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
         let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
+        stack = crate::object::stack::compute(p.name(), image.stages());
         format!(
             "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?)?)",
             image.compiler_output_bytes()
@@ -20,9 +22,9 @@ pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worke
             image.compiler_output_bytes()
         )
     };
-    Ok(format!(
+    Ok((format!(
         "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
-    ))
+    ), stack))
 }
 
 pub(crate) fn application_source(

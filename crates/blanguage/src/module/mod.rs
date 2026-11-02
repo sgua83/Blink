@@ -80,7 +80,7 @@ impl Module {
             .map(|(_, code)| code.code.stack_bytes)
             .max()
             .unwrap_or(0);
-        let (sections, positions, stack) = object::module_code(
+        let (sections, positions, mut stack) = object::module_code(
             code,
             &self.imports,
             &crate::application::resource_prefix(&self.name),
@@ -96,8 +96,9 @@ impl Module {
                 function: true,
             })
             .collect();
-        let (archive, resource_stack) =
+        let (archive, resource_stack, compute) =
             crate::application::compile_resources(&self.name, self.resources.as_ref(), false, worker)?;
+        stack.extend(compute);
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Module {

@@ -154,7 +154,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String)> {
+fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String, Vec<crate::object::stack::Frame>)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -228,6 +228,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let c_run = cp.join(", ");
     let r_run = rp.join(", ");
     let comma = if cp.is_empty() { "" } else { ", " };
+    let (constructor, stack) = source::constructor(p, worker)?;
     let replacements = [
         ("@PREFIX@", prefix.to_owned()),
         ("@COMMA@", comma.to_owned()),
@@ -237,7 +238,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         ("@SAFE_PARAMS@", safe_r.join(", ")),
         ("@SAFE_ARGS@", safe_args.join(", ")),
         ("@TYPES@", types),
-        ("@CREATE@", source::constructor(p, worker)?),
+        ("@CREATE@", constructor),
         ("@VALUES@", values),
         ("@BUFFERS@", buffers.join(", ")),
     ];
@@ -251,7 +252,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     c.push_str(&render(include_str!("header.h.in")));
     let r = render(include_str!("binding.rs.in"));
     let dll = render(include_str!("library.rs.in"));
-    Ok((c, r, dll))
+    Ok((c, r, dll, stack))
 }
 
 /// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
@@ -266,7 +267,7 @@ impl crate::Compiler {
 }
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source) = generate(program, &prefix, worker)?;
+    let (header, binding, source, stack) = generate(program, &prefix, worker)?;
     let exports = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
@@ -279,7 +280,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections: Vec::new(), stack: Vec::new(),
+        sections: Vec::new(), stack,
         symbols: Vec::new(),
         imports: std::collections::BTreeMap::new(),
         archive: Some(archive),

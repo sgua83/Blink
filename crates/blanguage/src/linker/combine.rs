@@ -60,11 +60,13 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
                 );
         }
         for mut frame in std::mem::take(&mut object.stack) {
-            let (section, base) = positions[frame.section];
-            frame.section = section;
-            frame.start = frame.start.checked_add(base).ok_or("栈函数节地址溢出")?;
-            for call in &mut frame.calls {
-                if let crate::object::stack::Call::Reference { offset, .. } = call { *offset += base as usize; }
+            if let Some((section, start)) = &mut frame.coff {
+                let (index, base) = positions[*section];
+                *section = index;
+                *start = start.checked_add(base).ok_or("栈函数节地址溢出")?;
+                for call in &mut frame.calls {
+                    if let crate::object::stack::Call::Reference { offset, .. } = call { *offset += base as usize; }
+                }
             }
             stack.push(frame);
         }

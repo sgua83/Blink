@@ -37,9 +37,10 @@ impl Application {
         for (_, function) in &functions {
             stack_bytes = stack_bytes.max(function.code.stack_bytes);
         }
-        let (sections, stack) =
+        let (sections, mut stack) =
             object::application_code(code, functions, &self.imports, &resource_prefix(&self.name), &self.name)?;
-        let (archive, resource_stack) = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
+        let (archive, resource_stack, compute) = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
+        stack.extend(compute);
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Application { stack_bytes: stack_bytes.max(resource_stack) },
@@ -68,10 +69,10 @@ pub(crate) fn compile_resources(
     resources: Option<&Resources>,
     root: bool,
     worker: &crate::compiler::Worker,
-) -> Result<(Option<object::Archive>, u32), Box<dyn std::error::Error>> {
+) -> Result<(Option<object::Archive>, u32, Vec<object::stack::Frame>), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
-        let (image, stack_bytes) = crate::resource::compile(resources, worker)?;
+        let (image, stack_bytes, stack) = crate::resource::compile(name, resources, worker)?;
         let source = crate::dll::application_source(resources, &prefix, root, &image)?;
         let mut exports = if root {
             [
@@ -108,8 +109,8 @@ pub(crate) fn compile_resources(
             programs: u32::try_from(resources.programs.len())?,
             abi: crate::resource::ABI.to_vec(),
         });
-        (Some(archive), stack_bytes)
+        (Some(archive), stack_bytes, stack)
     } else {
-        (None, 0)
+        (None, 0, Vec::new())
     })
 }

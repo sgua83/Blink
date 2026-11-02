@@ -65,7 +65,7 @@ record!(Module { types, images });
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
 
 #[cfg(feature = "compiler")]
-pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, u32)> {
+pub(crate) fn compile(name: &str, resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, u32, Vec<crate::object::stack::Frame>)> {
     use native::{ContinuationCode, StageCode};
     let jobs = |cpu| resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
@@ -90,10 +90,12 @@ pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate:
     }).max().unwrap_or(0);
     let mut cpu = cpu.into_iter();
     let mut gpu = gpu.into_iter();
-    let images = resources.programs.iter().map(|(target, program)| {
+    let mut stack = Vec::new();
+    let images = resources.programs.iter().enumerate().map(|(index, (target, program))| {
         let plan = ExecutionPlan::from_program(program);
         if *target == Target::Cpu {
-            let stages = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
+            let stages: Vec<_> = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
+            stack.extend(crate::object::stack::compute(&format!("{name} resource {index} ({})", program.name()), &stages));
             Image::Cpu(unsafe { native::ProgramImage::from_compiler_output(plan, stages) })
         } else {
             let stages = program.stages().iter().map(|_| gpu.next().unwrap()).collect();
@@ -101,7 +103,7 @@ pub(crate) fn compile(resources: &crate::application::Resources, worker: &crate:
         }
     }).collect();
     let bytes = compiler_output(&Module { types: resources.types.clone(), images });
-    Ok((bytes, stack_bytes))
+    Ok((bytes, stack_bytes, stack))
 }
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
     let mut bytes = ABI.to_vec();

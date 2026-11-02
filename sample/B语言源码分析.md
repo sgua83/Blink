@@ -505,9 +505,9 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
     }
 ```
 
-算法DLL与普通应用包装消费同一resource映像编码。类型、执行计划与CPU／GPU代码在编译时已形成，生成Rust包装只嵌入这些字节；构造实际程序时保持本次ProgramImage<P>的原入口身份，解码错误交回原FFI错误结果，不重建一份Rust类型／阶段字面量，也不将条件模板改成已验证入口。
+算法DLL与普通应用包装消费同一resource映像编码。类型、执行计划与CPU／GPU代码在编译时已形成，生成Rust包装只嵌入这些字节；构造实际程序时保持本次`ProgramImage<P>`的原入口身份，解码错误交回原FFI错误结果，不重建一份Rust类型／阶段字面量，也不将条件模板改成已验证入口。 CPU主入口的局部帧直接取自同一次编译的映像并交给对象报告；它没有静态COFF地址，未报告的调用图仍为未知，不把已知局部字节当作完整线程栈上界。
 
-源码节选：`crates/blanguage/src/resource.rs:106`。
+源码节选：`crates/blanguage/src/resource.rs:108`。
 
 ```rust
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
@@ -524,11 +524,13 @@ fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
 源码节选：`crates/blanguage/src/dll/source.rs:4`。
 
 ```rust
-pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<String, Box<dyn std::error::Error>> {
+pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<(String, Vec<crate::object::stack::Frame>), Box<dyn std::error::Error>> {
+    let mut stack = Vec::new();
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
         let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
+        stack = crate::object::stack::compute(p.name(), image.stages());
         format!(
             "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?)?)",
             image.compiler_output_bytes()
@@ -543,9 +545,9 @@ pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worke
             image.compiler_output_bytes()
         )
     };
-    Ok(format!(
+    Ok((format!(
         "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
-    ))
+    ), stack))
 }
 ```
 
@@ -2358,7 +2360,7 @@ CPU 使用容量比较与原子比较交换等原生操作；GPU 将实际活动
 
 ### 26.2 DLL 内究竟装了什么
 
-源码节选：`crates/blanguage/src/dll/mod.rs:257`。
+源码节选：`crates/blanguage/src/dll/mod.rs:258`。
 
 ```rust
 /// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
@@ -2373,7 +2375,7 @@ impl crate::Compiler {
 }
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source) = generate(program, &prefix, worker)?;
+    let (header, binding, source, stack) = generate(program, &prefix, worker)?;
     let exports = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
@@ -2386,7 +2388,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections: Vec::new(), stack: Vec::new(),
+        sections: Vec::new(), stack,
         symbols: Vec::new(),
         imports: std::collections::BTreeMap::new(),
         archive: Some(archive),

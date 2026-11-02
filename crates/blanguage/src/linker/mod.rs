@@ -104,8 +104,6 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
             for associated in &mut section.associated { *associated = mapping[*associated].unwrap(); }
             Some(section)
         }).collect();
-        object.stack.retain(|frame| live[frame.section]);
-        for frame in &mut object.stack { frame.section = mapping[frame.section].unwrap(); }
         object.symbols.retain(|symbol| live[symbol.section]);
         for symbol in &mut object.symbols { symbol.section = mapping[symbol.section].unwrap(); }
         if matches!(object.kind, Kind::Module { .. }) {
@@ -119,6 +117,14 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
                 } else { object.archive = None; }
             }
         }
+        let resources = object.archive.is_some();
+        object.stack.retain_mut(|frame| match frame.coff {
+            None => resources,
+            Some((section, start)) => {
+                frame.coff = mapping[section].map(|index| (index, start));
+                frame.coff.is_some()
+            }
+        });
         output.push(object);
     }
     Ok(output)
