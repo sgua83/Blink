@@ -20,7 +20,7 @@ address表示本进程CPU地址空间中的原始字节地址，大小与对齐�
 
 usize与isize分别是u64与i64的同义类型，固定为64位，仅用于明确指针宽度的计数和偏移意图；与uint／u32的既有同义规则一致，不生成另一份数值实现，不建设32位CPU支线，也不改变dataset下标及const形状的既有类型。
 
-CPU位置的unsafe_address(usize_value)将完整64位整数位模式交给address，address_bits(address_value)取回同一usize位模式；二者不访问存储。address及记录／固定数组中地址字段的静态来源沿原Proof／Borrow保留，普通B实参、返回和输出合同交接同一来源；它不是资源拥有者。常量地址、unsafe_address、function_address及C返回／输出和外部位置读取由其真实生产入口明确标为External，表示没有Blink数据所有者，不把未知来源或未活动变体视为外部地址。address_bits只交出整数位模式，其数值结果不继续携带地址借用；重新unsafe_address属于新的显式外部解释。形成地址的调用者负责实际来源、空值用途、指向布局与对齐、允许读写范围及存活期；非零、对齐数字或某次比较本身不能证明地址可访问。不能通过普通u64／bool／浮点构造、bitcast或handle转换绕开这一次显式地址解释。系统API返回的地址按其真实合同使用；例如GetCommandLineW的存储由系统管理，应用不能修改或释放。
+CPU位置的unsafe_address(usize_value)将完整64位整数位模式交给address，address_bits(address_value)取回同一usize位模式；二者不访问存储。address及记录／固定数组中地址字段的静态来源沿原Proof／Borrow保留，普通B实参、返回和输出合同交接同一来源；它不是资源拥有者。常量地址、unsafe_address、function_address及C返回／输出和外部位置读取由其真实生产入口明确标为External，表示该值未携带Blink数据所有者来源；这一标记本身不证明实际地址不相交，不把未知来源或未活动变体视为外部地址。address_bits只交出整数位模式，其数值结果不继续携带地址借用；重新unsafe_address属于新的显式外部解释。当前将B自有地址转为整数后重新解释的位置读写，以及C整数userdata的原存储别名／写入效果，尚未完成交接；具体待设计／实现范围见[C-020.2.7.2.3.2](Issues.md#c-020-2-7-2-3-2)及[.3](Issues.md#c-020-2-7-2-3-3)。位模式往返不等于已有原生访问支持，公开暴露、权限及存活期规则仍须沿这些真实消费者完善；此缺口不是B的永久系统编程限制。形成地址的调用者负责实际来源、空值用途、指向布局与对齐、允许读写范围及存活期；非零、对齐数字或某次比较本身不能证明地址可访问。不能通过普通u64／bool／浮点构造、bitcast或handle转换绕开这一次显式地址解释。系统API返回的地址按其真实合同使用；例如GetCommandLineW的存储由系统管理，应用不能修改或释放。
 
 address可作为普通值、记录／固定数组／变体字段及普通函数参数／结果，已编译模块保留其类型身份、大小、对齐及公开合同。Windows x64外部C调用按真实8字节POINTER值及原寄存器／栈参数布局交接，read／write地址位置按已有连续位置ABI交接其存储地址。地址数值与所指对象对齐分别判断：一个地址字段自身按8字节对齐，不因此声称所指对象已满足布局。平台依据见[Windows x64 ABI](https://learn.microsoft.com/en-us/cpp/build/x64-software-conventions)。
 
