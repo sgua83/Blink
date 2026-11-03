@@ -2243,7 +2243,7 @@ impl<'a> Builder<'a> {
             }
         }
     }
-    fn write_place(&mut self, p: &Place, value: Value, span: Span) -> Result<()> {
+    fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
         self.require_owned_writable(p,span)?;
         self.require_view_available(&value, span)?;
         let ty = p.ty();
@@ -2305,7 +2305,9 @@ impl<'a> Builder<'a> {
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 self.initialize(p);
                 for (slot, value) in slots.iter().zip(value.regs) {
-                    self.emit(InstKind::StoreLocal(*slot, value));
+                    let kind=InstKind::StoreLocal(*slot,value);
+                    if let Some(origin)=&local_origin {self.code.push(Inst::generated(kind,origin.clone()));}
+                    else {self.emit(kind);}
                 }
             }
             Place::Element {
@@ -4011,7 +4013,7 @@ impl<'a> Builder<'a> {
             value = self.binary(&op[..op.len() - 1], current, value, span)?;
         }
         self.view_uses.after(span);
-        self.write_place(&place, value, span)?;
+        self.write_place(&place, value, span, None)?;
 
         Ok(())
     }

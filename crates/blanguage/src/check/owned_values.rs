@@ -549,8 +549,8 @@ impl Builder<'_> {
         let(proof,uniform)=self.read_owned_proof(place,&regs);
         Ok(Value{ty,regs,proof,uniform,literal:false,constant:None})
     }
-    pub(super) fn write_storage_value(&mut self,place:&Place,value:&Value,span:Span)->Result<()> {
-        for(index,(scalar,_))in value.ty.components.iter().enumerate(){self.write_place(&place.clone().project(Ty::scalar(*scalar),&[index]),self.value_component(value,index),span)?;}
+    pub(super) fn write_storage_value(&mut self,place:&Place,value:&Value,span:Span,local_origin:Option<Arc<GeneratedOrigin>>)->Result<()> {
+        for(index,(scalar,_))in value.ty.components.iter().enumerate(){self.write_place(&place.clone().project(Ty::scalar(*scalar),&[index]),self.value_component(value,index),span,local_origin.clone())?;}
         Ok(())
     }
     pub(super) fn load_owned_value(&mut self,result:&mut OwnedValue,span:Span)->Result<()> {

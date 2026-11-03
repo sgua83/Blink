@@ -1082,7 +1082,8 @@ impl Builder<'_> {
             self.application_drop(&old,&view::Borrow::default(),span)?;
         }
         let place=target.place.unwrap();let packed=self.returned_storage(&returns::Returned::Dataset(value.clone()));
-        self.write_storage_value(&place,&packed,span)?;value.place=Some(place);
+        let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetAssignSlots,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
+        self.write_storage_value(&place,&packed,span,Some(origin))?;value.place=Some(place);
         value.count = target.count;
         value.ownership = Ownership::Owned;
         value.access = Access::InOut;
@@ -2362,7 +2363,7 @@ impl Builder<'_> {
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
         self.drop_returned(old,&view::Borrow::default(),span)?;
         if let Some(name)=held{self.env.remove(&name);}
-        self.write_storage_value(&place,&packed,span)?;
+        self.write_storage_value(&place,&packed,span,None)?;
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {

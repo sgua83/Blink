@@ -297,7 +297,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-2"></a>
 
-**dataset分配与初始化包装。** 父职责只汇总，下列三条原生产消费链独立交付，输入／输出、唯一所有者和语义分别明确；没有资源分配或原生写入时不伪造操作。原application_declare只建未初始化编译模型；原构造、可选factory和绑定写入并非同一阶段。来源材料只由原IR按最后消费者共享，不新增资源拥有表或释放链。见[父台账](Issues.md#c-021-7-9-7-2-4-5-2)。
+**dataset分配与初始化包装。** 父职责只汇总，下列三条原生产消费链独立交付，输入／输出、唯一所有者和语义分别明确；没有资源分配或原生写入时不伪造操作。原application_declare只建未初始化编译模型；原构造、可选factory和绑定写入并非同一阶段。来源材料只由原IR按最后消费者共享，不新增资源拥有表或释放链。分配Call、生成函数初始化及新绑定／重新赋值槽位来源均已按下列职责交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2)。
 
 <a id="tool-7-2-4-5-2-1"></a>
 
@@ -309,15 +309,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-2-3"></a>
 
-**dataset拥有值槽位绑定来源。** 父职责只汇总，下列新绑定和重新赋值分别交给实际生产者，不占源码。句柄／长度写入、构造分配及真实资源拥有分别保持；application_declare只建原未初始化编译模型，无原生初始化时不造操作。来源归原Inst，资源归原Frame／Data；见[父台账](Issues.md#c-021-7-9-7-2-4-5-2-3)。
+**dataset拥有值槽位绑定来源。** 父职责只汇总，下列新绑定和重新赋值分别交给实际生产者，不占源码。句柄／长度写入、构造分配及真实资源拥有分别保持；application_declare只建原未初始化编译模型，无原生初始化时不造操作。来源归原Inst，资源归原Frame／Data；新绑定和重新赋值两叶已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-3)。
 
 <a id="tool-7-2-4-5-2-3-1"></a>
 
-**dataset新绑定的局部槽位来源。** 输入／输出及生产消费：原bind_returned、实际Data及原rebound结果→application_bind的两个原StoreLocal→原Local Place／绑定。只有原mutable分支需要槽位时，句柄后长度的两个真实写入共享DatasetBindSlots和原发射SourceSite形成的Syntax锚点；源定义、实际实例、inlined_at和domain_path保持。Let、Match等触发按当时已有语法上下文范围交接，不把整个匹配范围伪装为单独的模式变量；缺失材料明确，不能从名字或最终槽号猜补。无槽位写入时不加写入、材料或寄存器；数据根、长度、Proof／initialize、原rebound选择与唯一拥有保持。材料仅由原IR共享及最后消费者后释放，不存第二绑定／资源表。原优化可以删除未使用写入，返回IR的保留材料不冒充完整消除记录，不为观察保活。当前已交接原新绑定槽位的生成理由与原语法锚点，仍缺重新赋值.3.2；见[规范](BLanguage.md#dataset新绑定的局部槽位来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-3-1)。
+**dataset新绑定的局部槽位来源。** 输入／输出及生产消费：原bind_returned、实际Data及原rebound结果→application_bind的两个原StoreLocal→原Local Place／绑定。只有原mutable分支需要槽位时，句柄后长度的两个真实写入共享DatasetBindSlots和原发射SourceSite形成的Syntax锚点；源定义、实际实例、inlined_at和domain_path保持。Let、Match等触发按当时已有语法上下文范围交接，不把整个匹配范围伪装为单独的模式变量；缺失材料明确，不能从名字或最终槽号猜补。无槽位写入时不加写入、材料或寄存器；数据根、长度、Proof／initialize、原rebound选择与唯一拥有保持。材料仅由原IR共享及最后消费者后释放，不存第二绑定／资源表。原优化可以删除未使用写入，返回IR的保留材料不冒充完整消除记录，不为观察保活。当前已交接原新绑定槽位的生成理由与原语法锚点，重新赋值沿下一职责交接；见[规范](BLanguage.md#dataset新绑定的局部槽位来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-3-1)。
 
 <a id="tool-7-2-4-5-2-3-2"></a>
 
-**dataset重新赋值的槽位写入来源。** 输入／输出及生产消费：原赋值目标、RHS与Data→application_assign／write_storage_value／write_place原Local写入→原Place／绑定。生成材料须在原真实写入生产者交接，保留访问／Proof／初始化及各原Place职责，不另写一套资源赋值或从已发射末指令猜身份。RHS求值与分配／初始化、原覆盖前释放、移动及槽位更新分别表达，释放仍归.5.3，不新增拥有表或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-3-2)。
+**dataset重新赋值的槽位写入来源。** 输入／输出及生产消费：原赋值目标、RHS与Data→application_assign／write_storage_value／write_place原Local写入→原Place／绑定。application_assign在原右值求值及覆盖前释放后取得原赋值SourceSite，创建DatasetAssignSlots；原write_storage_value按既有Ty分量顺序把同一可选材料交给write_place，只有原Local分支的实际StoreLocal持有该生成来源，句柄后长度顺序不变。没有原SourceSite时trigger缺失；原语法类别、实例、inlined_at与domain_path直接共享，不从目标名字、最终槽号或末条指令猜身份。原访问／Proof／初始化及其他Place职责保持；普通赋值、拥有聚合与元素替换没有该材料，继续原来源。RHS分配／初始化、覆盖前释放、移动及槽位更新分别表达，释放归.5.3。材料仅原IR共享并按最后消费者结束，不持有资源、AST／World或Builder状态，不新增拥有表、资源赋值算法或释放链；原优化可删除写入，不为观察保活。当前已交接原重新赋值Local写入来源；见[规范](BLanguage.md#dataset重新赋值的槽位写入来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-3-2)。
 
 <a id="tool-7-2-4-5-3"></a>
 

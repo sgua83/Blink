@@ -79,6 +79,6 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
         self.drop_returned(old,&view::Borrow::default(),span)?;
         if let Some(name)=held{self.env.remove(&name);}
-        self.write_storage_value(&place,&packed,span)?;self.assign_owned_place(&place,value);self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
+        self.write_storage_value(&place,&packed,span,None)?;self.assign_owned_place(&place,value);self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
     }
 }

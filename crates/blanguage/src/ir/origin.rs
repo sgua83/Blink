@@ -187,7 +187,7 @@ pub enum GenerationReason {
     DatasetAllocate,
     DatasetInitializeCursor, DatasetInitializeCondition, DatasetInitializeCall,
     DatasetInitializeWrite, DatasetInitializeAdvance, DatasetInitializeLoop,
-    DatasetBindSlots,
+    DatasetBindSlots, DatasetAssignSlots,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -231,6 +231,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetInitializeAdvance => "dataset_initialize_advance",
             GenerationReason::DatasetInitializeLoop => "dataset_initialize_loop",
             GenerationReason::DatasetBindSlots => "dataset_bind_slots",
+            GenerationReason::DatasetAssignSlots => "dataset_assign_slots",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
