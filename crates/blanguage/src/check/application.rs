@@ -2332,11 +2332,17 @@ impl Builder<'_> {
             let proof=bounds::Proof::capture(value);
             for id in value.component_origins(0){out.insert(id,proof.clone());}
         }
-        for binding in self.env.values(){
+        for (name,binding) in &self.env{
+            let parameter=self.definition.function.params.iter().any(|p|p.name==*name);
             let value=match binding{Binding::Value(value)=>Some(value),Binding::OwnedValue(value)=>Some(&value.value),_=>None};
-            if let Some(value)=value{for component in view_contracts::components(&value.ty){
-                let component=self.value_component(value,component);let proof=bounds::Proof::capture(&component);
-                for id in component.component_origins(0){out.entry(id).or_insert_with(||proof.clone());}
+            let captured=if let Some(value)=value{
+                Some((bounds::Proof::capture(value),if parameter{(0..value.regs.len()).collect()}else{view_contracts::components(&value.ty)}))
+            }else if parameter && let Binding::Owned(owner)=binding{
+                Some((owner.proof.clone(),(0..owner.proof.width()).collect()))
+            }else{None};
+            if let Some((proof,components))=captured{for component in components{
+                let part=proof.project(&[component],proof.width());
+                for &id in &proof.origins[component]{out.entry(id).or_insert_with(||part.clone());}
             }}
             for(_,source,_)in view::data_paths(binding){
                 for value in [&source.root,&source.length]{

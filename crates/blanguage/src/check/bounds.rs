@@ -286,7 +286,7 @@ impl IntegerRanges {
 #[derive(Clone, Default)]
 pub(super) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
-    origins: Vec<Vec<ValueIdentity>>,
+    pub(super) origins: Vec<Vec<ValueIdentity>>,
     conditions: Vec<Option<Box<Condition>>>,
     // 整数按数值顺序编码；i32 翻转符号位，复用相同的区间与路径合流。
     ranges: Vec<IntegerRanges>,

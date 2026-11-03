@@ -2155,6 +2155,8 @@ void consume(dataset<owned<u32,dispose>> input) on cpu
 
 调用`consume(dataset<owned<u32,dispose>>(2,make))`时，调用方从真实生成结果的共同Proof证明前提，函数入口在原Data.elements中接收同一条件，最后静态F仍检查自己的nonzero要求。真实零值或写入后无法继续保证所有元素非零时，在实际调用处B226；没有该前提的普通consume不能隐式取得F的要求。已证明实际元素数为零时，空集合满足共同元素前提，却不提供`input[0]`访问；读取仍需独立的nonempty或index事实。只有运行时恰好为空、编译时范围没有证明时，不能借空集合跳过未成立的前提。
 
+普通CPU函数将实际按值或read／inout参数捕获为新空dataset的唯一新增拥有元素时，原参数分量、子资源长度及同元素索引关系沿同一共同模型交给调用者；泛型、已编译对象与归档保持该关系。参数真实改写后只保留当前快照，原非零／长度事实不能继续授权。增长后旧新元素的共同关系及多输入分支返回仍分别见Issues C-020.1.6.4.2.2.3.2／.3.3。
+
 在原类型与借用能力范围内，该选择用于普通CPU dataset的按值、read或inout输入，以及相应记录字段；字段列借用按原projection和真实布局选择，函数内写入与调用写入效果照原规则撤回旧事实。write旧内容及atomic内容不成为这项稳定数值输入。普通值／字段不含`[*]`时保持原按值规则；C ABI、cfn和GPU program没有新增共同元素元数据入口。接口中的相同路径沿.h／.b及已编译对象／归档保存；选择不产生运行时扫描、判空、另一元素对象或新的合同权威。共同子资源nonempty见[独立规则](#common-element-nonempty)；同一元素的值—资源index关系见[独立规则](#common-element-index)。
 
 <a id="common-element-nonempty"></a>
