@@ -153,8 +153,15 @@ impl Function {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
-            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External) =>
-                canonical(Borrow::source(Origin::Position(origin)),self,None,&BTreeMap::new()),
+            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)) =>
+                {
+                    let mut origin=(*origin).clone();
+                    if let address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
+                        *borrow=borrow.map_sources(|source|match source{Origin::Position(origin)if origin.has_local()=>Borrow::default(),source=>Borrow::source(source)});
+                        if !borrow.active(){return Borrow::default();}
+                    }
+                    canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new())
+                },
             Origin::Unresolved|Origin::External=>Borrow::source(source),
             _=>Borrow::default(),
         });
@@ -296,6 +303,9 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<ValueIdentity>,exp
         Origin::Element{parent,fields}=>Borrow::element(canonical(*parent,function,None,exposed),fields),
         Origin::Position(origin)=>{
             let mut value=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,exposed));
+            if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
+                *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
+            }
             if !matches!(value.root,address::Root::Local { .. }) {value.positions=Arc::from([]);}
             Borrow::source(Origin::Position(Arc::new(value)))
         }

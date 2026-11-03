@@ -294,6 +294,8 @@ pub(super) struct Proof {
     domains: Vec<Domains>,
     // view分量的实际借用来源，与数值事实分别合流；只存在于编译期。
     views: Vec<view::Borrow>,
+    // Address bits describe storage numerically; they grant no borrow or lifetime.
+    pub(super) addresses: Vec<Option<address::Identity>>,
 }
 impl Proof {
     pub(super) fn assume_same_length(&mut self, other: &Self) {
@@ -398,6 +400,7 @@ impl Proof {
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
         let mut proof=self.clone();
+        proof.addresses=self.addresses.iter().map(|value|value.as_ref().map(|value|value.output_bound(bindings))).collect();
         for sources in &mut proof.views {
             *sources=sources.output_bound(bindings);
         }
@@ -577,6 +580,7 @@ impl Proof {
         }
         let mut translated = self.clone();
         translated.views = self.views.iter().map(|borrow|borrow.at_call(bindings)).collect();
+        translated.addresses=self.addresses.iter().map(|value|value.as_ref().map(|value|value.at_call(bindings))).collect();
         for (i, origins) in self.origins.iter().enumerate() {
             let values = origins
                 .iter()
@@ -601,6 +605,7 @@ impl Proof {
                 .filter_map(|d| domain(d, bindings))
                 .collect();
             for value in values {
+                if let Some(address)=value.addresses.first().cloned().flatten(){translated.addresses.resize_with(translated.addresses.len().max(i+1),||None);translated.addresses[i]=Some(address);}
                 let incoming = value.range_set(0);
                 translated.ranges[i] = IntegerRanges::from_intervals(
                     translated.ranges[i].0.iter().flat_map(|(a, b)| {
@@ -748,7 +753,9 @@ impl Proof {
             self.nonzero.resize(width, false);
             self.ranges.resize_with(width, IntegerRanges::default);
             self.domains.resize(width, Domains::new());
+            if !self.addresses.is_empty()||!fresh.addresses.is_empty(){self.addresses.resize_with(width,||None);}
             for (j, &i) in components.iter().enumerate() {
+                if !self.addresses.is_empty(){self.addresses[i]=fresh.addresses.get(j).cloned().flatten();}
                 self.views[i] = fresh.view_borrow(j);
                 self.origins[i] = fresh.origins.get(j).cloned().unwrap_or_default();
                 self.conditions[i] = fresh.conditions.get(j).cloned().flatten();
@@ -760,6 +767,7 @@ impl Proof {
     }
     pub(super) fn join(&mut self,other:&Self,width:usize,branch:Option<&Value>){let choice=branch.map(Condition::of);self.join_condition(other,width,choice.as_ref());}
     pub(super) fn join_condition(&mut self,other:&Self,width:usize,branch:Option<&Condition>){
+        if !self.addresses.is_empty()||!other.addresses.is_empty(){self.addresses=(0..width).map(|i|address::Identity::selected(branch,self.addresses.get(i).and_then(Option::as_ref),other.addresses.get(i).and_then(Option::as_ref))).collect();}
         let conditions = (0..width)
             .map(|i| {
                 if self.component_condition(i).is_none() && other.component_condition(i).is_none() {
@@ -816,6 +824,7 @@ impl Proof {
         }
         Self {
             views: components.iter().map(|&i| self.view_borrow(i)).collect(),
+            addresses: if self.addresses.is_empty(){Vec::new()}else{components.iter().map(|&i|self.addresses.get(i).cloned().flatten()).collect()},
             origins: components
                 .iter()
                 .map(|&i| self.origins.get(i).cloned().unwrap_or_default())
@@ -907,6 +916,7 @@ impl Proof {
         let mut proof = Self::capture(value);
         for (i, &(source, _)) in value.ty.components.iter().enumerate() {
             if source == target { continue; }
+            if !(source.is_integer()&&target.is_integer()&&source.size()==8&&target.size()==8)&&let Some(address)=proof.addresses.get_mut(i){*address=None;}
             let integers = source.is_integer() && target.is_integer();
             let same_value = integers && !source.is_signed() && !target.is_signed() && target.size() > source.size();
             proof.ranges[i] = if integers {
@@ -957,6 +967,7 @@ impl Proof {
     }
     pub fn selection(c: &Value, a: &Value, b: &Value) -> Self {
         let mut proof = Self::common(a, b);
+        if !proof.addresses.is_empty(){let choice=Condition::of(c);proof.addresses=(0..a.regs.len()).map(|i|address::Identity::selected(Some(&choice),a.proof.addresses.get(i).and_then(Option::as_ref),b.proof.addresses.get(i).and_then(Option::as_ref))).collect();}
         for (i, condition) in proof.conditions.iter_mut().enumerate() {
             if condition.is_some() {
                 *condition = Some(Box::new(Condition::branch(
@@ -1093,6 +1104,7 @@ impl Proof {
         }
     }
     pub fn append(&mut self, value: &Value) {
+        if !self.addresses.is_empty()||!value.proof.addresses.is_empty(){self.addresses.resize_with(self.origins.len(),||None);self.addresses.extend((0..value.regs.len()).map(|i|value.proof.addresses.get(i).cloned().flatten()));}
         self.views.extend((0..value.regs.len()).map(|i| value.proof.view_borrow(i)));
         self.conditions
             .extend((0..value.regs.len()).map(|i| Self::value_condition(value, i)));
@@ -1106,6 +1118,7 @@ impl Proof {
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i)));
     }
     pub fn splat(&mut self, width: usize) {
+        if !self.addresses.is_empty(){self.addresses=vec![self.addresses[0].clone();width];}
         self.views = vec![self.view_borrow(0); width];
         self.conditions = vec![self.conditions.first().cloned().flatten(); width];
         self.origins = vec![self.origins[0].clone(); width];
@@ -1472,6 +1485,7 @@ impl Value {
     pub(super) fn projected_proof(&self, indices: &[usize]) -> Proof {
         Proof {
             views: indices.iter().map(|i| self.proof.view_borrow(*i)).collect(),
+            addresses: if self.proof.addresses.is_empty(){Vec::new()}else{indices.iter().map(|i|self.proof.addresses.get(*i).cloned().flatten()).collect()},
             origins: indices.iter().map(|i| self.component_origins(*i)).collect(),
             conditions: indices
                 .iter()
@@ -3803,6 +3817,7 @@ impl crate::module::codec::Encode for Proof {
             .rposition(|borrow| !borrow.sources.is_empty())
             .map_or(0, |index| index + 1);
         self.views[..width].encode(w);
+        let width=self.addresses.iter().rposition(Option::is_some).map_or(0,|i|i+1);self.addresses[..width].encode(w);
     }
 }
 impl crate::module::codec::Decode for Proof {
@@ -3851,6 +3866,7 @@ impl crate::module::codec::Decode for Proof {
             nonzero: crate::module::codec::Decode::decode(r)?,
             domains: crate::module::codec::Decode::decode(r)?,
             views: crate::module::codec::Decode::decode(r)?,
+            addresses: crate::module::codec::Decode::decode(r)?,
         })
     }
 }

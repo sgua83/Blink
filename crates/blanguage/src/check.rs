@@ -2242,11 +2242,7 @@ impl<'a> Builder<'a> {
         self.require_view_available(&value, span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
-        if let Place::Reference{address,..}=p.storage() && match address {
-            ReferenceAddress::External{..}=>true,
-            ReferenceAddress::Borrowed{borrow,..}=>address::external_memory(borrow),
-            _=>false,
-        } {self.external_write_values();}
+        if let Some(borrow)=self.reference_position_borrow(p,span)? {self.write_address_values(&borrow);}
         match p {
             Place::AtomicParameter(_)
             | Place::Reference { access: Access::Atomic, .. }

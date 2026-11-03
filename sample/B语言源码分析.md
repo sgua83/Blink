@@ -247,13 +247,13 @@ B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，�
 
 这样，一个 `float3` 在前端仍有完整类型，在后端却可拆成三个 `f32` 分量。语言向量不保证每一处都会使用一条硬件向量指令；是否批量执行，还取决于计算、访问和后端计划。
 
-address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。原Scope的声明扫描保留取址所需的Local存储；当前值分析消费真实写入，取址本身不使循环中的原数值事实失效。沿已有builder是否存在区分这两个阶段，不增加存储表、值流或效果图。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。整数地址往返不保留静态借用；同一普通CPU函数直接读写自身局部存储时，External仍可能与原Local相交。原内存结果区分已知来源与External，再沿原局部表的实际区间填写Pointer别名；真实写入及循环写分析使受影响的旧数值事实失效，不能继续把它们作为常量；未知写入仍保留可能有效的原地址借用，并加入External来源，不把可能覆盖当作确定覆盖。局部表键为逻辑分量区间终点，原Ty仍决定字节布局。不透明C调用通过原MemoryTarget交接External内存效果，原MemoryEffect在本函数局部表上填写实际InOut别名；同步回调经整数userdata读写显式取址的局部存储后，原位置读取和字段／固定数组仍消费真实内存。原Scope::Write同时表达具体位置及整次不透明C效果，循环预分析与数值出口沿同一结果失效，不增加第二张效果图。已取出的普通SSA快照保持。该编译期交接不创建运行时地址登记，也不凭未知写入推定初始化；普通B调用沿原Access合同交接资源互斥、类型位置及实际Memory效果；原Function.calls连接自身MemoryTarget，实际内存效果沿原函数图闭合后填入Call.memory，独立对象／归档保留同一合同。调用IR只消费原闭合Access的实际读写方向，不重复叠加实参地址能力；Position的writes与initialized交接Write、Read或InOut，后者是实际读取，不能因来源已初始化而清掉。原MemoryEffect的External与Known保持同一Access方向，在原局部表展开真实可能相交的范围；读写合流保留双方操作，不以位置可写能力添加写入。指针形成仍只交接原别名，不透明C仍交接原Memory效果。类型位置仍持有真实布局，Memory不伪造类型；never调用也保留真实读取。形成地址及B实参暴露不冒充实际访问，原IR别名继续消费这些地址；Position交接真正读写，Memory交接不透明C效果。External位置沿原读写接点交接，原Origin的初始化事实不清掉实际读取。已有闭合访问合同的B调用按实际条件使真正写入与不透明C可能影响的数值事实失效，纯地址值、只读及原SSA快照保持。源函数完成时沿原Function.calls闭合尚未完成的分量，已闭合直接依赖消费原接口；未闭合与合法空访问合同分别表示，公开编码仍为原闭合集合。同源和obj／lib调用使用同一访问合同，构造中递归边的数值事实、循环预分析、其他存储范围及异步保留回调仍有独立缺口。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
+address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。原Scope的声明扫描保留取址所需的Local存储；当前值分析消费真实写入，取址本身不使循环中的原数值事实失效。沿已有builder是否存在区分这两个阶段，不增加存储表、值流或效果图。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。整数地址往返不保留静态借用。编译期在原Proof中按实际值分量交接可证明的地址位模式与原存储／字节区间关系；它与静态借用分开，不授予权限、初始化或寿命。复制、记录／固定数组、条件选择及普通B参数／返回／输出保留同一数值来源；同宽64位整数转换保持位模式，缩窄或改变位模式的运算撤去该关系。真实写入按原布局投影到相交位置，仅撤回这些位置的旧数值事实；未知地址及无法闭合的字节范围继续按真实External处理，不用类型或是否取址排除可能写入。公开对象合同只用原输入重绑定，不导出被调私有Local／slot，整数结果不延长原存储寿命。原Proof.addresses只保存稀疏的编译期数值关系，原Proof.views继续交接借用；原Identity／Origin保存真实布局与条件，原写范围消费者复用同一位置失效。External仍可能与原Local相交。原内存结果区分已知来源与External，再沿原局部表的实际区间填写Pointer别名；真实写入及循环写分析使受影响的旧数值事实失效，不能继续把它们作为常量；未知写入仍保留可能有效的原地址借用，并加入External来源，不把可能覆盖当作确定覆盖。局部表键为逻辑分量区间终点，原Ty仍决定字节布局。不透明C调用通过原MemoryTarget交接External内存效果，原MemoryEffect在本函数局部表上填写实际InOut别名；同步回调经整数userdata读写显式取址的局部存储后，原位置读取和字段／固定数组仍消费真实内存。原Scope::Write同时表达具体位置及整次不透明C效果，循环预分析与数值出口沿同一结果失效，不增加第二张效果图。已取出的普通SSA快照保持。该编译期交接不创建运行时地址登记，也不凭未知写入推定初始化；普通B调用沿原Access合同交接资源互斥、类型位置及实际Memory效果；原Function.calls连接自身MemoryTarget，实际内存效果沿原函数图闭合后填入Call.memory，独立对象／归档保留同一合同。调用IR只消费原闭合Access的实际读写方向，不重复叠加实参地址能力；Position的writes与initialized交接Write、Read或InOut，后者是实际读取，不能因来源已初始化而清掉。原MemoryEffect的External与Known保持同一Access方向，在原局部表展开真实可能相交的范围；读写合流保留双方操作，不以位置可写能力添加写入。指针形成仍只交接原别名，不透明C仍交接原Memory效果。类型位置仍持有真实布局，Memory不伪造类型；never调用也保留真实读取。形成地址及B实参暴露不冒充实际访问，原IR别名继续消费这些地址；Position交接真正读写，Memory交接不透明C效果。External位置沿原读写接点交接，原Origin的初始化事实不清掉实际读取。已有闭合访问合同的B调用按实际条件使真正写入与不透明C可能影响的数值事实失效，纯地址值、只读及原SSA快照保持。源函数完成时沿原Function.calls闭合尚未完成的分量，已闭合直接依赖消费原接口；未闭合与合法空访问合同分别表示，公开编码仍为原闭合集合。同源和obj／lib调用使用同一访问合同，构造中递归边的数值事实、循环预分析、其他存储范围及异步保留回调仍有独立缺口。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
 
 `unsafe_position<T>`直接形成原Reference位置，按Ty的真实字节偏移读写，read／write／inout借用原地址。已知B来源保留布局、只读／可写权限和逐分量初始化；外部位置没有B参数初始化scope，不登记为Frame拥有资源，实际范围、对齐、权限、初始化与最后消费者前存活由调用者负责。地址位模式、可能借用与确定初始化分别表达，不能因取址就认为已写入，也不能把条件地址的全部候选都标为完成。
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:636`。
+源码节选：`crates/blanguage/src/check/address.rs:706`。
 
 ```rust
     pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
@@ -275,30 +275,32 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
         let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
         self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),writes:false,initialized:false,span})?;
         let external=!borrow.pending()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|matches!(source,view::Source::External));
-        let identity = match bounds::Proof::capture(&value).known_value(&value.ty) {
+        let identity = value.proof.addresses.first().cloned().flatten().unwrap_or_else(||match bounds::Proof::capture(&value).known_value(&value.ty) {
             Some(bits) => Identity::Constant(bits[0]),
             None => Identity::Value(value.component_origins(0)),
-        };
+        });
         value.ty = Ty::scalar(Scalar::U64);
         let low = self.cast(value.clone(), Scalar::U32).regs[0];
         let shift = self.constant(Scalar::U64, 32);
         let high = self.binary(">>", value, shift, span)?;
         let high = self.cast(high, Scalar::U32).regs[0];
-        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:borrow.clone(),span})?;
-        Ok(Some(Place::Reference {
+        let place=Place::Reference {
             words: ty.components.iter().map(|(_, offset)| *offset).collect(),
             ty:ty.clone(),
             address: if external{ReferenceAddress::External{address:[low,high],identity}}
                 else{ReferenceAddress::Borrowed{address:[low,high],identity,borrow:borrow.clone(),layout:Layout::of(&ty)}},
             scope: None,
             access: Access::InOut,
-        }))
+        };
+        let memory=if external{self.position_origin(&place,span)?.normalize()}else{borrow};
+        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:memory,span})?;
+        Ok(Some(place))
     }
 ```
 
 已知地址身份与真实标量宽度共同判断借用重叠；同址u64与其第4字节处的u32不能因为逻辑分量不同而被误认为不相交。未知外部别名仍属于unsafe调用者的真实合同，不增加运行时扫描、另一个地址表或全局写效果。
 
-源码节选：`crates/blanguage/src/check/address.rs:482`。
+源码节选：`crates/blanguage/src/check/address.rs:538`。
 
 ```rust
     pub(super) fn overlaps(&self, ty: &Ty, words: &[u32], other: &Self, other_ty: &Ty, other_words: &[u32]) -> bool {
@@ -429,7 +431,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1395`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1408`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -454,7 +456,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2439`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2453`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -474,7 +476,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1385`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1398`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1266,7 +1268,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3879`。
+源码节选：`crates/blanguage/src/check.rs:3875`。
 
 ```rust
         let binding = view.binding;
@@ -1414,7 +1416,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:805`。
+源码节选：`crates/blanguage/src/check/bounds.rs:813`。
 
 ```rust
         self.nonzero = (0..width)
@@ -1427,7 +1429,7 @@ enum Fact {
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:953`。
+源码节选：`crates/blanguage/src/check/bounds.rs:963`。
 
 ```rust
     pub fn common(a: &Value, b: &Value) -> Self {
@@ -1457,7 +1459,7 @@ enum Fact {
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1512`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1526`。
 
 ```rust
 impl Drop for Clause {
