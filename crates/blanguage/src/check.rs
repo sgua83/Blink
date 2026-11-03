@@ -653,7 +653,7 @@ fn expand_stages(
                 let operation_source = operation_source(instance, statement.span, SourceSyntax::Statement, domain_path);
                 let index = b.reg(Scalar::U32);
                 b.code.push(Inst::generated(InstKind::Index(index), Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::ParallelIndex, trigger: operation_source.clone(),
+                    reason: GenerationReason::ParallelIndex, trigger: operation_source.clone().map(GenerationAnchor::Syntax),
                 })));
                 b.global_index = index;
                 b.refine_parallel_domain();
@@ -1637,6 +1637,7 @@ fn finish_checked_function(
         result,
         body: ValueCode {
             entry_origin: None,
+            generated_origin: None,
             registers: b.registers,
             locals: b.locals,
             code: b.code,

@@ -325,14 +325,14 @@ impl<'a> Builder<'a> {
             if self.application.is_none() && self.program.target != Target::Cpu {
                 return self.fail(span, "B161", "已编译普通CPU模块调用需要CPU执行目标");
             }
-            return self.native_function(instance, args, span);
+            return self.native_function(instance, args, span, None);
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application.is_some() {
                 if instance.definition.function.target == Target::Cpu
                     && !super::kernel_interface(self.world, &instance.definition)?
                 {
-                    return self.native_function(instance, args, span);
+                    return self.native_function(instance, args, span, None);
                 }
                 return self.application_execute(instance, args, Target::Cpu, span);
             }
@@ -348,7 +348,7 @@ impl<'a> Builder<'a> {
             }
             FunctionKind::Value => {
                 if self.application.is_some() && instance.definition.function.target != Target::Gpu {
-                    self.native_function(instance, args, span)
+                    self.native_function(instance, args, span, None)
                 } else {
                     self.inline_instance(instance, args, span)
                 }

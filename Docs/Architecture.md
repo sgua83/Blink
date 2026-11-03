@@ -293,7 +293,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-1"></a>
 
-**程序入口及根Frame生命周期。** 输入／输出及生产消费：原选择入口Instance→compile_application／live_resources→原Application.body与根包装Call／前后序Inst。原定义实例锚点与实际表达式锚点分开，完整标明进入、错误接收器／上下文、创建、原就绪分支、失败退出值及正常销毁；没有资源时不伪造Frame。原GeneratedOrigin以GenerationAnchor区分Syntax和Definition；定义实例只含原定义快照（可以缺失）与实际入口名，不保留World／AST。原Application.body可有generated_origin描述整个隐式入口，其内部各Frame步骤仍分别分类，普通源函数体及域包装不借用此入口材料。Frame创建失败分支与正常销毁保留原代码和原语义；没有活资源时不增加Frame、接收器或分支。来源只编译角色，静态生成事实不证明分支已实际执行。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-1)。
+**程序入口及根Frame生命周期。** 输入／输出及生产消费：原选择入口Instance→compile_application／live_resources→原Application.body与根包装Call／前后序Inst。原定义实例锚点与实际表达式锚点分开，完整标明进入、错误接收器／上下文、创建、原就绪分支、失败退出值及正常销毁；没有资源时不伪造Frame。原GeneratedOrigin以GenerationAnchor区分Syntax和Definition；定义实例只含原定义快照（可以缺失）与实际入口名，不保留World／AST。原Application.body可有generated_origin描述整个隐式入口，其内部各Frame步骤仍分别分类，普通源函数体及域包装不借用此入口材料。Frame创建失败分支与正常销毁保留原代码和原语义；没有活资源时不增加Frame、接收器或分支。来源只编译角色，静态生成事实不证明分支已实际执行。当前已交接原入口与根Frame生成事实，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-1)与[规范](BLanguage.md#应用入口与根frame的生成来源)；其余七叶仍未实现。
 
 <a id="tool-7-2-4-5-2"></a>
 

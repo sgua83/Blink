@@ -172,6 +172,8 @@ impl ValueCode {
         node("value_ir", &[
             #[cfg(feature = "compiler")]
             ("entry_origin", optional(self.entry_origin(), ValueCodeEntry::ir_json)),
+            #[cfg(feature = "compiler")]
+            ("generated_origin", optional(self.generated_origin(), GeneratedOrigin::ir_json)),
             ("registers", array(self.registers.iter().map(name))), ("locals", locals(&self.locals)), ("inputs", numbers(&self.inputs)), ("outputs", numbers(&self.outputs)), ("code", code(&self.code))])
     }
 }

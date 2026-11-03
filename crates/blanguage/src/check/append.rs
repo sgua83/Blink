@@ -36,7 +36,7 @@ pub(super) fn clear(
             word,
         },
     });
-    let generated_origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ClearPrefix, trigger });
+    let generated_origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ClearPrefix, trigger: trigger.map(GenerationAnchor::Syntax) });
     program.stages.push(Stage {
         operation_source: None,
         generated_origin: Some(generated_origin.clone()),

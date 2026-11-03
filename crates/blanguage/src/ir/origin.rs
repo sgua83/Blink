@@ -181,21 +181,52 @@ impl super::ValueCode {
 
 /// A real compiler generation responsibility, independent of an optional syntax trigger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GenerationReason { ParallelIndex, ClearPrefix }
+pub enum GenerationReason {
+    ParallelIndex, ClearPrefix, ApplicationEntry, ApplicationEntryCall,
+    FrameErrorReceiver, FrameErrorContext, FrameCreate, FrameReadiness, FrameFailureExit, FrameDestroy,
+}
+#[derive(Clone, Debug)]
+pub enum GenerationAnchor {
+    Syntax(std::sync::Arc<SourceSite>),
+    Definition { origin: Option<std::sync::Arc<SourceOrigin>>, instance: std::sync::Arc<str> },
+}
+impl GenerationAnchor {
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref() } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance) } }
+    pub fn ir_json(&self) -> String {
+        match self {
+            Self::Syntax(site) => site.ir_json(),
+            Self::Definition { origin, instance } => format!("{{\"kind\":\"definition_instance\",\"definition\":{},\"instance\":{}}}",
+                origin.as_deref().map_or_else(|| "null".into(), SourceOrigin::ir_json), text(instance)),
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct GeneratedOrigin {
     pub(crate) reason: GenerationReason,
-    pub(crate) trigger: Option<std::sync::Arc<SourceSite>>,
+    pub(crate) trigger: Option<GenerationAnchor>,
 }
 impl GeneratedOrigin {
     pub fn reason(&self) -> GenerationReason { self.reason }
-    pub fn trigger(&self) -> Option<&SourceSite> { self.trigger.as_deref() }
+    /// Returns only an actual syntax trigger; implicit entry points use a definition anchor.
+    pub fn trigger(&self) -> Option<&SourceSite> { self.trigger.as_ref().and_then(GenerationAnchor::syntax) }
+    pub fn anchor(&self) -> Option<&GenerationAnchor> { self.trigger.as_ref() }
     pub fn ir_json(&self) -> String {
-        let reason = match self.reason { GenerationReason::ParallelIndex => "parallel_index", GenerationReason::ClearPrefix => "clear_prefix" };
+        let reason = match self.reason {
+            GenerationReason::ParallelIndex => "parallel_index", GenerationReason::ClearPrefix => "clear_prefix",
+            GenerationReason::ApplicationEntry => "application_entry", GenerationReason::ApplicationEntryCall => "application_entry_call",
+            GenerationReason::FrameErrorReceiver => "frame_error_receiver", GenerationReason::FrameErrorContext => "frame_error_context",
+            GenerationReason::FrameCreate => "frame_create", GenerationReason::FrameReadiness => "frame_readiness",
+            GenerationReason::FrameFailureExit => "frame_failure_exit", GenerationReason::FrameDestroy => "frame_destroy",
+        };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
-            self.trigger().map_or_else(|| "null".into(), SourceSite::ir_json))
+            self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
     }
 }
 impl super::Stage {
+    pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
+}
+impl super::ValueCode {
     pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
 }

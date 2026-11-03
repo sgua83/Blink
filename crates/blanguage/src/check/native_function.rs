@@ -318,12 +318,13 @@ impl Builder<'_> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
+        generated_origin: Option<Arc<GeneratedOrigin>>,
     ) -> Result<Option<Returned>> {
         if instance.definition.function.target == Target::Gpu {
             return self.fail(span, "B161", "普通 CPU 调用不能改变函数声明的实际目标");
         }
         self.native_declaration(&instance)?;
-        self.native_call(instance, args, span)
+        self.native_call(instance, args, span, generated_origin)
     }
     fn native_dataset_shape(&self,param:&Param,definition:&Definition,count:Option<u32>,span:Span)->Result<()>{
         if param.ty.count.is_some()&&self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?!=count{
@@ -337,6 +338,7 @@ impl Builder<'_> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
+        generated_origin: Option<Arc<GeneratedOrigin>>,
     ) -> Result<Option<Returned>> {
         let d = &instance.definition;
         let implicit = self.functions.units[&instance.name].as_ref()
@@ -611,14 +613,15 @@ impl Builder<'_> {
             self.native_dataset_reads(&access,&view_arguments)
         }else{Vec::new()};
         let memory_use=self.call_address_memory(memory_borrow,span)?;
-        self.emit(InstKind::Call(Call {
+        let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
+        self.code.push(Inst { kind: InstKind::Call(Call {
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
             memory,
             memory_use:Some(memory_use),
             result: result.clone(),
             values: values.clone(),
-        }));
+        }), source_site, generated_origin });
         let prototype = self.functions.units[&instance.name]
             .as_ref()
             .map(|unit| {
@@ -1383,6 +1386,7 @@ fn build_domain(
     let name = crate::module::domain::symbol(&instance.name, target);
     let body = ValueCode {
         entry_origin: None,
+        generated_origin: None,
         registers,
         locals: Default::default(),
         inputs: inputs.clone(),

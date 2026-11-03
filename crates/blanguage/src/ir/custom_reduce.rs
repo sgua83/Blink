@@ -4,6 +4,8 @@ use super::*;
 pub struct ValueCode {
     #[cfg(feature = "compiler")]
     pub(crate) entry_origin: Option<std::sync::Arc<ValueCodeEntry>>,
+    #[cfg(feature = "compiler")]
+    pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,
     pub registers: Vec<Scalar>,
     pub locals: BTreeMap<usize, Ty>,
     pub code: Vec<Inst>,

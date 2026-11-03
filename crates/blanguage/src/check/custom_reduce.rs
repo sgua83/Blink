@@ -122,6 +122,7 @@ fn function(
     let imports = std::mem::take(&mut builder.functions).into_imports();
     let code = ValueCode {
         entry_origin: Some(entry_origin),
+        generated_origin: None,
         registers: builder.registers,
         locals: builder.locals,
         code: builder.code,

@@ -320,15 +320,40 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 #### 原IR生成原因与触发语法
 
-compiler功能的`Inst::generated_origin()`与`Stage::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；`reason()`交回`GenerationReason`，`trigger()`借用可选原SourceSite，`ir_json()`输出kind=generated_origin、reason及trigger。当前真实原因有ParallelIndex／parallel_index和ClearPrefix／clear_prefix。语法触发保持原定义快照、真实实例、域路径、原范围及单位；没有触发材料时trigger为null，已知生成原因独立保留。每个compiler指令及stage_ir增加generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
+compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`及`ValueCode::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir和value_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
+
+GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
+
+当前真实生成原因及其消费如下；GenerationReason公开枚举增加变体，Rust SDK的穷尽匹配需要相应适配，本次源按major提交。B语法、资源ABI和必要执行编码不因此改变。
+
+| Rust原因 | JSON reason | 原生产职责 |
+|---|---|---|
+| ParallelIndex | parallel_index | 原parallel索引建立 |
+| ClearPrefix | clear_prefix | 原空前缀阶段与清零操作 |
+| ApplicationEntry | application_entry | 原Application.body隐式入口包装 |
+| ApplicationEntryCall | application_entry_call | 原包装调用实际选中B入口 |
+| FrameErrorReceiver | frame_error_receiver | 原错误接收函数地址 |
+| FrameErrorContext | frame_error_context | 原接收器上下文值 |
+| FrameCreate | frame_create | 原blink_create调用 |
+| FrameReadiness | frame_readiness | 原地址／零值／比较及就绪If，指令种类各自保持 |
+| FrameFailureExit | frame_failure_exit | 原创建失败分支的退出值 |
+| FrameDestroy | frame_destroy | 原正常路径blink_destroy调用 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
 原clear_prefix调用由append::clear生成原Map、零常量和计数Store；同一Stage和两个Inst共享clear_prefix的GeneratedOrigin，trigger为真实调用Expr范围及当前实际实例／域路径。当前解析器的普通调用范围通常覆盖clear_prefix标识符；原诊断用语句Span保持，不扩大为未取得的完整参数列表。没有额外Index、另一个Stage或输出清空，原计数归零与空prefix关系保持；生成Stage.operation_source及两节点source_site仍为null，不伪造用户直接Map／赋值。
 
-Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。Frame、资源参数及域包装的生成原因仍归.2.4.5／.6；当前两个原因不冒称全部框架生成。
+Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口与根Frame见下节；资源分配、释放、寻址、参数、传输和发起仍归.2.4.5.2至.8，原生域包装归.2.4.6，不以本项冒称全部框架生成。
 
-材料沿原Inst／Stage不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
+材料沿原Inst／Stage／ValueCode不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
+
+#### 应用入口与根Frame的生成来源
+
+原compile_application从本次真实选择的Instance构造Definition锚点，Application.body的generated_origin为application_entry；其原生Call以application_entry_call交接同一实际入口。它们属于原隐式包装，不额外创建FunctionBody或把根定义Span伪装成一次用户调用。普通源函数、集合值核及其他域包装的ValueCode.generated_origin不借用此入口，原source_origin／entry_origin保持各自语义。用完整应用IR查询观察body；函数选择仍返回实际B函数，不能把它当根包装。
+
+live_resources仅在原Frame实际被保留的路径交接错误接收器、上下文、create、就绪检查／分支、失败退出值和正常destroy等真实原因。每个节点仍是原操作，FrameReadiness的多个节点共享同一不可变材料；各理由的Definition锚点共享原入口定义快照及实例。根锚点说明应用拥有的隐式生命周期，不声称某个资源表达式独自导致Frame，也不覆盖其余资源原语的实际源触发。没有活资源、或资源路径已经消除时，不生成Frame接收器、create、就绪分支或destroy；原入口包装仍有自己的生成材料。
+
+Frame失败分支与正常路径保持原代码／原语义，静态生成材料不证明分支已执行。正常资源入口沿原CPU／GPU及Frame资源完成运行，根元数据不拥有或延长运行资源，不新增条件、Builder状态、调用图、拥有表、调度、释放或错误路径。Source、名字与材料随原IR不可变共享，最后IR消费者后释放；查询不重读后续磁盘文件，不持有World／AST，只有显式查询承担摘要、行列和JSON成本。完整优化、重写／消除及机器范围仍由原叶交接，不为材料保活代码。资源级分配、初始化、扩容、释放、参数接收、传输及计算发起的细分职责仍待实现，不从根锚点猜补。
 
 #### 集合值核的入口与捕获来源
 

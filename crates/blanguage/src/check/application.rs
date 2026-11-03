@@ -180,13 +180,19 @@ pub(crate) fn compile_application(
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     let mut builder = Builder::new(world, d, &context, 0, Some(&instance.name))?;
+    let entry_anchor = GenerationAnchor::Definition {
+        origin: d.source_origin().map(Arc::new), instance: Arc::from(instance.name.as_str()),
+    };
     builder.application = Some(Context::default());
     builder.in_function = true;
-    let result = builder.native_function(instance.clone(), Vec::new(), d.function.span)?;
+    let result = builder.native_function(instance.clone(), Vec::new(), d.function.span, Some(Arc::new(GeneratedOrigin {
+        reason: GenerationReason::ApplicationEntryCall, trigger: Some(entry_anchor.clone()),
+    })))?;
     let result = builder.ordinary_return(result, d.function.span)?.unwrap();
     let mut app = builder.application.take().unwrap();
     let mut body = ValueCode {
         entry_origin: None,
+        generated_origin: Some(Arc::new(GeneratedOrigin { reason: GenerationReason::ApplicationEntry, trigger: Some(entry_anchor.clone()) })),
         registers: builder.registers,
         locals: builder.locals,
         code: builder.code,
@@ -204,7 +210,7 @@ pub(crate) fn compile_application(
     let finalized = native_function::finish(builder.functions, &mut body)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
-    let resources = live_resources(&mut body, &mut functions, app);
+    let resources = live_resources(&mut body, &mut functions, app, &entry_anchor);
     Ok(crate::application::Application {
         compiler: world.worker.compiler().clone(),
         name: instance.name.clone(),
@@ -299,6 +305,7 @@ fn live_resources(
     body: &mut ValueCode,
     functions: &mut [FunctionBody],
     app: Context,
+    entry_anchor: &GenerationAnchor,
 ) -> Option<crate::application::Resources> {
     let frame = app.frame?;
     fn uses(code: &[Inst], registers: &[Reg]) -> bool {
@@ -324,20 +331,23 @@ fn live_resources(
     let base = body.registers.len();
     body.registers.extend([Scalar::U64, Scalar::U64, Scalar::U32, Scalar::U32, Scalar::Bool]);
     let [receiver, context, address, zero, ready] = [base, base + 1, base + 2, base + 3, base + 4];
+    let origin = |reason| Arc::new(GeneratedOrigin { reason, trigger: Some(entry_anchor.clone()) });
+    let generated = |kind, reason| Inst::generated(kind, origin(reason));
+    let readiness = origin(GenerationReason::FrameReadiness);
     let mut code = std::mem::take(&mut body.code);
-    code.push(runtime_call(
+    code.push(generated(runtime_call(
         "destroy",
         vec![CallArgument::Value { ty: pointer_type(), values: frame.clone() }],
         None,
         Vec::new(),
-    ));
+    ).kind, GenerationReason::FrameDestroy));
     body.code = vec![
-        Inst::new(InstKind::FunctionAddress(receiver, CallTarget::External(ExternalName {
+        generated(InstKind::FunctionAddress(receiver, CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
             symbol: "blink_application_error".into(),
-        }))),
-        Inst::new(InstKind::Constant(context, Scalar::U64, 0)),
-        runtime_call(
+        })), GenerationReason::FrameErrorReceiver),
+        generated(InstKind::Constant(context, Scalar::U64, 0), GenerationReason::FrameErrorContext),
+        generated(runtime_call(
             "create",
             vec![
                 CallArgument::Value { ty: Ty::scalar(Scalar::U64), values: vec![receiver] },
@@ -345,15 +355,15 @@ fn live_resources(
             ],
             Some(pointer_type()),
             frame.clone(),
-        ),
-        Inst::new(InstKind::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] }),
-        Inst::new(InstKind::Constant(zero, Scalar::U32, 0)),
-        Inst::new(InstKind::Binary { dst: ready, op: BinaryOp::Compare(Comparison::NotEqual), a: address, b: zero }),
-        Inst::new(InstKind::If {
+        ).kind, GenerationReason::FrameCreate),
+        Inst::generated(InstKind::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] }, readiness.clone()),
+        Inst::generated(InstKind::Constant(zero, Scalar::U32, 0), readiness.clone()),
+        Inst::generated(InstKind::Binary { dst: ready, op: BinaryOp::Compare(Comparison::NotEqual), a: address, b: zero }, readiness.clone()),
+        Inst::generated(InstKind::If {
             condition: ready,
             yes: code,
-            no: vec![Inst::new(InstKind::Constant(body.outputs[0], body.registers[body.outputs[0]], 1))],
-        }),
+            no: vec![generated(InstKind::Constant(body.outputs[0], body.registers[body.outputs[0]], 1), GenerationReason::FrameFailureExit)],
+        }, readiness),
     ];
     Some(resources)
 }
