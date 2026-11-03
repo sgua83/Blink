@@ -25,6 +25,28 @@ pwsh -NoProfile -File ./Tools/PublishGit.ps1 -P4Client <本机实际client>
 
 日志为 `Saved/GitPublish/Mirror.git/publish.log`。`PREPARED`只代表候选，`PUBLISHED`才表示本次远端确认；`UNCHANGED`表示本轮远端水位已经等于P4快照。计划任务的LastTaskResult记录本次进程退出码。P4成功、Git发布与消费者采用分别成立。
 
+## 四本书的 Wiki 阅读入口
+
+`PublishBooksWiki.py` 只将 `sample/并行编程的艺术.md`、`sample/Blink和Rust混合编程.md`、`sample/B语言源码分析.md`、`sample/BLEngine源码分析.md` 的完整正文发布到 [GitHub Wiki](https://github.com/sgua83/Blink/wiki)。中文／英文书籍目录与侧栏提供阅读入口；书稿仍为中文。图片引用固定 Git 快照的公开资源，PDF 链接指向同一快照中原有成品，不向 Wiki 复制其他文档、规范、架构或内部双台账。书稿中的其他公开源码／文档链接仍指向原仓库；内部台账链接明确注明不公开，并提供公开 Issues 反馈入口。
+
+同步源是中央 `Mirror.git` 中远端 main 已确认的公开历史，选择最近涉及书稿、图片、PDF 及正文所引资源的提交，标明该快照的 VERSION、P4 编号与固定 Git 来源；无关代码提交不重复生成同一书稿。Wiki 是开发版书稿入口，不等同于正式发行 SDK；目录另外提供正式 Releases 链接，PDF 与 Markdown 分别重建。用户 Home、B语言书籍及侧栏中，只有 `BEGIN Blink books navigation`／`END Blink books navigation` 包围的导航由脚本管理；其他内容保持原样。完整生成页带有来源标记，编辑应回到 P4 书稿；遇到同名用户页时停止，不替换其正文。
+
+GUA 所有者在中央工作区采用已提交脚本后运行一次：
+
+```powershell
+pwsh -NoProfile -File ./Tools/InstallBooksWikiSync.ps1 -P4Client BLanguage_Gua
+```
+
+安装器只为原 `Blink.P4GitMirror`、`Blink.WeeklyRelease` 添加 ID 为 `BlinkBooksWiki` 的第二个动作，保留原动作、触发器、身份和任务设置，不创建新任务或保存新凭据。现有每日北京时间 09:00 和 21:00 任务先完成源码镜像／每周发行步骤，再运行书籍同步；周日晚同步因此可能晚于 21:00 的发行构建。Wiki 故障独立返回失败，不回滚源码镜像或软件发行。后续运行从实际远端状态继续，不循环重试、不维护失败队列。机器、Gua 会话、P4/GitHub 网络及现有 Git 凭据仍是运行条件；动作每次从 P4 client 解析实际工程根。
+
+所有者即时同步使用相同书籍入口（先运行原源码镜像以取得最新公开对象）：
+
+```powershell
+python ./Tools/PublishBooksWiki.py
+```
+
+默认 Wiki 裸仓库为 `Saved/GitPublish/Wiki.git`，可用 `--source-mirror`／`--wiki-mirror` 指定实际目录。脚本读取 Wiki 远端当前分支，以临时索引只更新四本书、两份目录及标记导航，正常快进推送并回读远端确认；并发用户修改导致非快进时如实失败，不强推。相同输入生成相同树，第二次报告 `WIKI_UNCHANGED`，不产生空提交。日志 `Saved/GitPublish/Wiki.git/publish-books.log` 记录 `WIKI_PUBLISHED`、`WIKI_UNCHANGED` 或 `WIKI_FAILED`。任务的 LastTaskResult 对应最后的 Wiki 动作；原源码／发行动作结果仍以其独立日志为准，不以 Wiki 成功证明前一步成功。GitHub 实际页面、计划任务采用和日志分别确认。编辑权限沿仓库 Settings → General → Features → Wikis 的现有设置，本工具不改变权限。
+
 ## 已配置的研发工作区
 
 | 节点 | P4用户／client | 源码路径 | 权限 |
