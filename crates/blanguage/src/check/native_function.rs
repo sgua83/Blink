@@ -383,6 +383,8 @@ impl Builder<'_> {
                     if p.access==Access::InOut {
                         for data in value.resources(){self.require_application_initialized(data,span)?;}
                         self.load_owned_value(&mut value,span)?;
+                        value.value.proof=self.current_address_proof(&value.value.ty,&value.value.proof);
+                        memory_borrow.union(&self.address_contents(&value.value.ty,&value.value.proof));
                         let proof=bounds::Proof::capture(&value.value);
                         for component in 0..ty.components.len(){contents.insert(ValueIdentity::ParameterContent(index,component),proof.project(&[component],ty.components.len()));}
                         residency::owned_argument(&mut locations,index,&mut value);
@@ -471,6 +473,8 @@ impl Builder<'_> {
                     value.resources_mut(&mut |data|data.initialization=None);
                     residency::owned_argument(&mut locations, index, &mut value);
                     for(resource,path)in view::resource_paths(&value.value.ty).into_iter().enumerate(){let borrow=match view::owned_data_at(&value,&path){Some(data)=>self.data_value_borrow(data),None=>view::Borrow::from_sources(BTreeSet::from([view::Source::Inactive]))};resource_inputs.insert(ValueIdentity::ResourceParameter(index,resource),bounds::Proof::default().with_view_borrow(0,borrow));}
+                    value.value.proof=self.current_address_proof(&value.value.ty,&value.value.proof);
+                    memory_borrow.union(&self.address_contents(&value.value.ty,&value.value.proof));
                     append_actual(&mut actual, &value.value);
                     arguments.push(CallArgument::Value {
                         ty: value.value.ty.clone(),
