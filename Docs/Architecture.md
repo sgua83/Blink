@@ -261,7 +261,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-2"></a>
 
-**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。材料在原IR拥有，查询借用，最后消费者后释放；融合后多对多来源仍由.7.3.2交接，不冻结优化。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-2)。
+**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后当前原Stage单个保留字段不代表全部原parallel，多对多／消除来源仍由.7.3.2交接，不冻结优化或为材料保活指令。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-2)。
 
 <a id="tool-7-2-4-3"></a>
 
