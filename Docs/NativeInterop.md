@@ -189,6 +189,10 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 注册到Windows或其他库的函数地址及状态，必须由真实注册方保持至注销及最后一次回调完成。当前直接入口不提供动态代码／上下文保留协议或模块热卸载保证，也不表示BLEngine窗口与消息业务已迁移。平台合同见[WNDPROC](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc)与[RegisterClassW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerclassw)。
 
+## 原SPIR-V的只读结构接口
+
+compiler Rust SDK可用`spirv::module_json(&[u32])`取得原模块全部指令、原字、类型／结果／操作数ID、入口和精确字面量位模式的独立JSON；`bc spirv <module.spv>`查询同一单文件，不读源码、创建Compiler或运行GPU。输出和临时解码归调用者，原代码与资源完成不变；格式错误通过DecodeError及原位置交接。依赖仅用于编译工具的标准数据格式解码，不是Shader编译器，普通运行角色不引入它。SPIR-V仍是中间表示，全映像主／辅助模块聚合、来源与驱动最终ISA分别交付。精确字段和未支持范围见[语言规范](BLanguage.md#原spir-v单模块的完整结构查询)。
+
 ## Windows系统信息的原生布局
 
 标准库`blink.windows.system`直接声明Kernel32的GetNativeSystemInfo及其SystemInfo输出记录。Windows x64真实结构的两个u16、u32、两个address、usize及后续窄／普通整数按原Ty布局交接，大小48、对齐8；接口来源、全部字段偏移与实际B消费者见[标准库](../library/README.md#blinkwindowssystem)及[系统信息应用](../sample/applications/README.md#读取windows系统信息)。纯类型与extern声明模块使用.h，不需要空.b或Rust转发包装。

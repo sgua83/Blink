@@ -7,3 +7,8 @@ mod codegen;
 pub use codegen::*;
 #[cfg(feature = "compiler")]
 pub(crate) use codegen::program;
+
+#[cfg(feature = "compiler")]
+mod decode;
+#[cfg(feature = "compiler")]
+pub use decode::{DecodeError, module_json};

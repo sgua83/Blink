@@ -317,6 +317,20 @@ SDK使用`object::code_facts_with_observations(bytes, selection, material)`。�
 完整优化的执行对象不携带`.blcf`仍可按原编码链接／运行；保存构建输入的对象与原Object.write对象可复用同一材料，因为相同代码的文件位置／私有记录不成为匹配前置。材料由调用者持有和释放，不延长代码、模块、进程或GPU消费者寿命。最终PE／归档及完整静态运行库、源码来源与实际地址分别沿原.9、.7、.13，不把本接口写成完整原生调试已经交付。
 
 
+### 原SPIR-V单模块的完整结构查询
+
+```text
+bc spirv target/module.spv
+```
+
+compiler SDK的`spirv::module_json(words: &[u32]) -> Result<String, spirv::DecodeError>`只借用调用者的原32位words，CLI只读单个小端`.spv`文件。两者不读取B源、不创建Compiler／设备／执行资源，不改写或重新生成模块。查询成功返回独立JSON，临时解析和结果由调用者持有、释放，不延长原GPU消费者寿命；CLI失败返回非零且不输出部分成功JSON。文件尾部不足一个word时给出原字节位置；SDK错误的offset_words是已知头位置或失败指令起点，不能取得时为None，reason交接实际原因，不伪造更细位置。
+
+结果kind为spirv_module、representation为spirv_intermediate、endianness为little，word_count与byte_length是实际长度。header保存全部五个原words及magic／version_word／generator／id_bound／schema；未使用或未验证字段不被默认值替换。instructions按原顺序交接offset_words／offset_bytes／word_count／全部原words、数值opcode和名称、可选result_type_id／result_id；不存在的ID为null，类型指令及其关系继续沿原模块ID解释，不创建另一类型或IR权威。
+
+每个operands条目保存格式kind、原offset_words／word_count／words，以及适用的id、bits、string、value、opcode或symbolic。32／64位字面量用精确十六进制bits保持整数、浮点负零等原位模式，不通过JSON浮点数重算；字符串按原UTF-8解释，原字仍完整保留。entry_points交接原执行模型数值／名称、entry_id、入口名和interface_ids。OpExtInst交接原集合ID、可知集合名、编号及可知扩展名；当前解释GLSL.std.450名称，未取得的名称为null，原编号与操作数仍保留。
+
+实现仅在compiler功能使用optional rspirv的标准格式Parser／Consumer；公开接口不暴露其类型，不调用builder／assembler／optimizer，不替代本项目SPIR-V生成器。运行SDK关闭compiler后不依赖它及其格式库。实际支持由所用语法版本决定，未知opcode／枚举、未支持编码或损坏明确失败，不跳过并拼接成功；结构解码不验证完整shader语义、实际设备能力或执行结果，SPIR-V不等同驱动最终GPU ISA。完整StageCode／ProgramImage的全部主／辅助模块聚合与现有bc build的.spv.json交接尚未实现，沿C-021.7.9.6.2推进；单文件查询不冒充整体能力。
+
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：
 

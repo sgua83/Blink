@@ -20,7 +20,9 @@ path = "src/bin/blink.rs"
 [dependencies]
 iced-x86 = { version = "1.21", optional = true, default-features = false, features = ["std", "decoder", "instr_info"] }
 
+rspirv = { version = "0.13", optional = true, default-features = false }
+
 [features]
 default = ["compiler"]
-compiler = ["dep:iced-x86"]
+compiler = ["dep:iced-x86", "dep:rspirv"]
 installed = []

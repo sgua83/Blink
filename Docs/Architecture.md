@@ -99,7 +99,7 @@ B 的关键字与标识符区分大小写，与 C 一致。`value`、`Value` 和
 
 #### 当前基础与设计范围
 
-当前bc inputs及Rust build::input_facts直接查询实际COFF／BLBI保存的构建输入，bc layout／Ty布局JSON和接口布局查询交接实际类型与字段，bc ir及原编译结果的ir_json按需交接实际程序、普通函数和阶段IR，bc x64及native::instructions_json可解码明确指令字节范围，生成期NativeCode／StageCode／ProgramImage的code_json沿原发射事实区分主／辅助代码、对齐和字面量；bc build已有.x64／.reloc／.spv／.layout导出，bc／blink已有静态CPU栈报告，运行库已有部分分配查询、GPU阶段计时与真实完成入口。这些基础不等于完整来源映射、平台符号、运行控制、可编译观察、明确方案及实验接口已实现。GPU时间戳默认关闭；GpuProgram／GpuTemplate通过with_timestamps显式请求，普通执行不要求队列支持时间戳。计时只复用原查询池及完成生命周期，未采集或无阶段返回None，实际零值保留在Some中。
+当前bc inputs及Rust build::input_facts直接查询实际COFF／BLBI保存的构建输入，bc layout／Ty布局JSON和接口布局查询交接实际类型与字段，bc ir及原编译结果的ir_json按需交接实际程序、普通函数和阶段IR，bc x64及native::instructions_json可解码明确指令字节范围，bc spirv及spirv::module_json可只读查询原单模块SPIR-V全部指令结构，生成期NativeCode／StageCode／ProgramImage的code_json沿原发射事实区分主／辅助代码、对齐和字面量；bc build已有.x64／.reloc／.spv／.layout导出，bc／blink已有静态CPU栈报告，运行库已有部分分配查询、GPU阶段计时与真实完成入口。这些基础不等于完整来源映射、平台符号、运行控制、可编译观察、明确方案及实验接口已实现。GPU时间戳默认关闭；GpuProgram／GpuTemplate通过with_timestamps显式请求，普通执行不要求队列支持时间戳。计时只复用原查询池及完成生命周期，未采集或无阶段返回None，实际零值保留在Some中。
 
 下列逐项职责同时覆盖已交付基础和当前设计目标，实际支持按规范及原生事实区分；未完成范围唯一在Issues，闭合范围及历史只在FixedIssues。基础原生调试、可编程观察、机器方案和真实实验可以按依赖分别推进。CPU／GPU栈耗尽仍归C-021.7.3／.4，静态栈需求归C-024.1.1，数值与精度归C-004／C-024.2，域／节点程序及API归C-021.9／C-022，热更新归C-023；不复制职责。暂未实现的命令、候选语法、硬件和程序不得写成现有能力。
 
@@ -197,7 +197,7 @@ bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_fa
 
 **原SPIR-V模块的完整结构解码**
 
-原words／文件字节由调用者拥有，compiler只读解码标准格式，按原指令顺序输出模块头、全部原指令字、word／字节偏移、opcode、结果／类型ID、原操作数字与其格式角色、字符串和入口；位模式不转JSON浮点，未知状态不猜。使用optional rspirv的Parser／Consumer消费标准语法，公开接口不暴露其私有类型，不经它构造／汇编／修改代码，不替代原发射器或新增图／调度／资源拥有者。依赖仅属compiler观察角色，不进入普通执行角色；许可沿现有LICENSE及发行交接。查询不读取B源、创建Compiler／驱动、运行代码或保活其他消费者，输出独立归调用者。结构解析不证明完整语义有效、实际硬件支持或GPU执行；错误交接真实位置和原因，位置未取得明确未知，不能跳过未知指令拼出成功。当前正在实现，[独立范围](Issues.md#c-021-7-9-6-1)。
+原words／文件字节由调用者拥有，compiler只读解码标准格式，按原指令顺序输出模块头、全部原指令字、word／字节偏移、opcode、结果／类型ID、原操作数字与其格式角色、字符串和入口；位模式不转JSON浮点，未知状态不猜。使用optional rspirv的Parser／Consumer消费标准语法，公开接口不暴露其私有类型，不经它构造／汇编／修改代码，不替代原发射器或新增图／调度／资源拥有者。依赖仅属compiler观察角色，不进入普通执行角色；许可沿现有LICENSE及发行交接。查询不读取B源、创建Compiler／驱动、运行代码或保活其他消费者，输出独立归调用者。结构解析不证明完整语义有效、实际硬件支持或GPU执行；错误交接真实位置和原因，位置未取得明确未知，不能跳过未知指令拼出成功。现有`spirv::module_json(&[u32])`返回独立JSON字符串，DecodeError交接offset_words和reason；`bc spirv <module.spv>`在Compiler初始化前读取单个小端文件，完整成功才输出，失败只交接错误。模块头五个原word全部保留，逐指令及逐操作数的原字、偏移和引用可完整还原；64位字面量保留十六进制位模式，GLSL.std.450扩展名按实际集合／编号解释。位置是已知模块头或失败指令起点，不能当作更细的操作数现场。当前解析支持由实际标准语法版本决定，未知opcode、解析未支持或损坏直接失败；无已知扩展名明确null，不猜硬件语义。规范见[单模块查询](BLanguage.md#原spir-v单模块的完整结构查询)，[已闭合范围](FixedIssues.md#c-021-7-9-6-1)；原全映像及.spv.json交接仍由.2完成。
 
 <a id="tool-6-2"></a>
 
