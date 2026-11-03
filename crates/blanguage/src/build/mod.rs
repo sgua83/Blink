@@ -65,7 +65,7 @@ fn compile_in(
     }
     let path = if inputs.is_some() { path.into() } else { path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
-    let (world, module) = crate::read_world(&path, &root, None, worker, inputs,
+    let (world, module) = crate::read_world(&path, &root, None, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let mut request = Vec::new();
     for value in [

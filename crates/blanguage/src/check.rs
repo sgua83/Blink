@@ -933,7 +933,7 @@ fn expand_stages(
                     .collect();
                 let (caller_origin, caller_context) = d.syntax_context(Some(&instance.name));
                 let instance =
-                    generics::specialize(world, &key, &actuals, explicit, d, statement.span)?;
+                    generics::specialize(world, &key, &actuals, explicit, (&d.source, &d.module, &d.imports), statement.span)?;
                 let callee = &instance.definition;
                 let mut child = BTreeMap::new();
                 for ((p, arg), root) in callee.function.params.iter().zip(args).zip(roots) {

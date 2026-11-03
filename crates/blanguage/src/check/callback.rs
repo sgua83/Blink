@@ -31,7 +31,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
     if !definition.function.c_abi {
         return caller.source.fail(span, "B263", "c_function需要明确的extern C声明或定义，不自动改变普通B函数ABI");
     }
-    let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
+    let instance = generics::specialize(world, &key, &[], explicit, (&caller.source, &caller.module, &caller.imports), reference.span)?;
     let definition = &instance.definition;
     let f = &definition.function;
     let contracts = f.contracts.iter().filter_map(|contract| {

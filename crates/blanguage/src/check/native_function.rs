@@ -1079,6 +1079,7 @@ pub(crate) fn compile_module(
     world: &World,
     entry: &str,
     requests: &[String],
+    imported: Option<&crate::module::Imports>,
 ) -> Result<crate::module::Module> {
     let mut context = application::Context::default();
     let mut functions = Module::default();
@@ -1126,13 +1127,15 @@ pub(crate) fn compile_module(
                 message: format!("没有本模块公开导出 {name}"),
             })?;
         let d = &world.functions[&key];
+        let imports = d.imports.iter().chain(imported.into_iter().flat_map(|input| input.modules.keys()))
+            .cloned().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
         let instance = super::generics::specialize(
             world,
             &key,
             &[],
             arguments.as_deref(),
-            d,
-            d.function.span,
+            (&source, &d.module, &imports),
+            Span { start: 0, end: request.len() },
         )?;
         if d.execution == crate::execution::Requirement::Domain
             && super::kernel_interface(world, &instance.definition)?

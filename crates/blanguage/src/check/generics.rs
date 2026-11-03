@@ -58,7 +58,7 @@ impl Builder<'_> {
                 Argument::Reference(owner) => Actual::value(owner.place.ty()),
             })
             .collect();
-        specialize(self.world, &key, &types, explicit, &self.definition, span)
+        specialize(self.world, &key, &types, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)
     }
     pub(super) fn specialized_call(
         &mut self,
@@ -115,10 +115,10 @@ pub(crate) fn specialize(
     key: &str,
     actuals: &[Actual<'_>],
     explicit: Option<&[GenericArgument]>,
-    caller: &Definition,
+    caller: (&Source, &str, &[String]),
     span: Span,
 ) -> Result<crate::generics::Instance> {
-    let source = &caller.source;
+    let (source, module, imports) = caller;
     let callee = &world.functions[key];
     let f = &callee.function;
     if f.types.is_empty() && f.values.is_empty() && explicit.is_none() {
@@ -152,11 +152,11 @@ pub(crate) fn specialize(
             let mut actual = if *ty == TypeName::named("void") {
                 Ty::unit()
             } else {
-                world.ty(ty, source, span, &caller.module, &caller.imports)?
+                world.ty(ty, source, span, module, imports)?
             };
             if ty.dataset {
                 if actual.owns_resources() || actual.contains_views(){return source.fail(span,"B033","dataset元素需要普通存储");}
-                actual=Ty::owned_dataset(actual,world.shape(&ty.count,source,span,&caller.module,&caller.imports)?);
+                actual=Ty::owned_dataset(actual,world.shape(&ty.count,source,span,module,imports)?);
             }
             if !world.family_accepts(
                 &parameter.family,
@@ -221,7 +221,7 @@ pub(crate) fn specialize(
                 message: "const 实参需要 u32 编译期表达式".into(),
             })?;
             world
-                .shape(&Some(shape), source, span, &caller.module, &caller.imports)?
+                .shape(&Some(shape), source, span, module, imports)?
                 .unwrap()
         } else {
             let mut inferred = None;

@@ -110,7 +110,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             ty: ty.as_ref().map(std::borrow::Cow::Borrowed),
             count: ty.as_ref().and_then(|ty| ty.dataset.as_ref().and(ty.values.first().copied())),
         }).collect::<Vec<_>>();
-        let instance = generics::specialize(self.world, &key, &actuals, explicit, self.definition, span)?;
+        let instance = generics::specialize(self.world, &key, &actuals, explicit, (&self.definition.source, &self.definition.module, &self.definition.imports), span)?;
         if matches!(instance.definition.function.result.name.as_str(), "void" | "never") { return Ok(None); }
         self.declared_type(&instance.definition.function.result, &instance.definition, span).map(Some)
     }

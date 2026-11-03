@@ -84,7 +84,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "9c5b281504d628f915850621c02e6f8c6a53b851f9594586a86c0626c239ba33"
+      "sha256": "52a0603382f69ee706692c546a95a65b6db98379e59fd6d6277b01078c7efb7a"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -100,7 +100,7 @@
     },
     {
       "path": "crates/blanguage/src/check/callback.rs",
-      "sha256": "dde3d304459e30c57eeaad56d0d5a4daaa6b013039cc67507c1ca2b5eb3b0840"
+      "sha256": "1a2f0bf8ba6794ed54ec9cee220cc9a0791bba853d56a2a1109f8c9c32ce86a1"
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
-      "sha256": "afca74e039347ad4c913502f601e05e893a4ae9ed9d697951c82421c15b568bd"
+      "sha256": "04eac64230c98a4936ee973af86cdc21160e1fea0f9f216debb960b16c97af4b"
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
@@ -120,11 +120,11 @@
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
-      "sha256": "18fbb369b995b69a9d1eb846ccb931748b918fb7f8831c3a08852489293ed63e"
+      "sha256": "8066db62d3f1702d36306cc47ed22d685577cd18d2f2aaf2a6fef13856e90c75"
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "22c751b5e379214b8e913c687f436b48b6c3b6063771afe82870d80b4e2ac714"
+      "sha256": "15b794851152fcb47a378804a71794c2f06a9de7fd1492229a1c08b9011d3837"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -180,7 +180,7 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "sha256": "6a68d4a86727c9928a68d0f58d5147252eb26e4420d6b377306169a991b87cdf"
+      "sha256": "342354d7d7abe899fe10c0f822174bfcb33b602fa0c96610d5de9ae8c2aa78f8"
     },
     {
       "path": "crates/blanguage/src/function_types.rs",
@@ -520,8 +520,8 @@
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
-      "start_line": 494,
-      "end_line": 498,
+      "start_line": 512,
+      "end_line": 516,
       "sha256": "4c845d3cd92964253598c59e627bcacceaddda18432951e9e9fe9a495a2cf323"
     },
     {
@@ -912,7 +912,7 @@
       "path": "crates/blanguage/src/check/callback.rs",
       "start_line": 18,
       "end_line": 53,
-      "sha256": "07a9632aba15c09a51acbfb0956dcaed1b2a5b415148962e52c7d7340436b597"
+      "sha256": "f9305ef0356c4412d758aed4bf7166c65ebdc8817e00d2687e9d9fa1639ffbc9"
     },
     {
       "path": "crates/blcompute/src/texture.rs",

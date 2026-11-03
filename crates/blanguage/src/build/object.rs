@@ -49,7 +49,8 @@ pub(super) fn compile<'a>(
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
         })?;
     let imported = (!imports.modules.is_empty()).then_some(&imports);
-    let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs,
+    let requests = match kind { ObjectKind::Module(requests) => requests, _ => &[] };
+    let (world, module) = crate::read_world(source_path, source_root, imported, requests, worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let definitions = &world.declarations;
     let selection = match kind {
@@ -84,7 +85,7 @@ pub(super) fn compile<'a>(
     }
     let object = match kind {
         ObjectKind::Module(instances) => {
-            crate::check::compile_native_module(&world, &module, instances)?.compile_in(worker).map_err(error)?
+            crate::check::compile_native_module(&world, &module, instances, imported)?.compile_in(worker).map_err(error)?
         }
         ObjectKind::Application(entry) => {
             crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)))?

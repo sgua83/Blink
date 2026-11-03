@@ -134,8 +134,8 @@ impl crate::Compiler {
                 span: crate::ast::Span::default(), code: "B270", message: error.to_string(),
             })?;
             let imported = if dependencies.is_empty() { None } else { Some(&imports) };
-            let (world, entry) = crate::read_world(path, module_root, imported, worker, None, None)?;
-            crate::check::compile_native_module(&world, &entry, instances)
+            let (world, entry) = crate::read_world(path, module_root, imported, instances, worker, None, None)?;
+            crate::check::compile_native_module(&world, &entry, instances, imported)
         })
     }
 }

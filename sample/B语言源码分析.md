@@ -915,7 +915,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:494`。
+源码节选：`crates/blanguage/src/frontend.rs:512`。
 
 ```rust
     if let Some(name) = import
@@ -925,7 +925,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
     }
 ```
 
-来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。装入器统一检查常量、类型和外部C声明的签名及普通值ABI，应用、对象模块与源码SDK共用这一职责；未调用的非法声明也在产物复用前拒绝。对象构建按实际值、记录与类型集合名称查询保存输入，参与范围推导的构造探测也属于消费者；重算原绑定后决定是否复用，不能只看最终机器重定位。无关值、记录／变体及类型集合名称不再牵动调用对象，实际类型／变体构造仍消费原记录内容与可见性。原常量、类型内容及外部实例仍向同一本次集合交接声明键，不在运行期维护第二份名称或接口表。
+来源表识别同一模块；接口和实际实现进入原声明集合后，递归导入复用该身份。已提供对象的模块只消费公开接口，不补读库.b。显式实例请求中的外部限定类型及静态释放函数，按所指模块从实际提供的对象／归档装入；无关提供者不进入本次声明闭包。类型实参在请求上下文中检查，再以原名义身份交给泛型实例；函数正文仍使用原定义的词法导入，库不反向导入用户类型。纯类型／常量／外部模块不需要空实现，普通函数仍须有匹配函数体。装入器统一检查常量、类型和外部C声明的签名及普通值ABI，应用、对象模块与源码SDK共用这一职责；未调用的非法声明也在产物复用前拒绝。对象构建按实际值、记录与类型集合名称查询保存输入，参与范围推导的构造探测也属于消费者；重算原绑定后决定是否复用，不能只看最终机器重定位。无关值、记录／变体及类型集合名称不再牵动调用对象，实际类型／变体构造仍消费原记录内容与可见性。原常量、类型内容及外部实例仍向同一本次集合交接声明键，不在运行期维护第二份名称或接口表。
 
 ### 4.3 名字怎样变成唯一对象
 
@@ -3083,7 +3083,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
     if !definition.function.c_abi {
         return caller.source.fail(span, "B263", "c_function需要明确的extern C声明或定义，不自动改变普通B函数ABI");
     }
-    let instance = generics::specialize(world, &key, &[], explicit, caller, reference.span)?;
+    let instance = generics::specialize(world, &key, &[], explicit, (&caller.source, &caller.module, &caller.imports), reference.span)?;
     let definition = &instance.definition;
     let f = &definition.function;
     let contracts = f.contracts.iter().filter_map(|contract| {

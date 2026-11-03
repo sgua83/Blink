@@ -185,7 +185,7 @@ pub(crate) fn compile_module_on(
     requested: Option<(EntryKind, &str)>, imported: Option<&module::Imports>,
 ) -> Result<Compilation> {
     compiler.ast(path, |worker| {
-        let (world, entry) = read_world(path, module_root, imported, worker, None, None)?;
+        let (world, entry) = read_world(path, module_root, imported, &[], worker, None, None)?;
         compile_world(&world, entry, require_program, requested)
     })
 }
@@ -196,7 +196,7 @@ impl Compiler {
             let source = Source { path: "<layout>".into(), text: request.into() };
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
-            let (world, module) = read_world(path, root, None, worker, None, None)?;
+            let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
             let imports = &world.interfaces[&module].imports;
             let value = world.ty(&name, &source, span, &module, imports)?;
             if name.dataset {
@@ -225,7 +225,7 @@ impl Compiler {
                 source: Source { path: path.into(), text: "".into() },
                 span: Span::default(), code: "B270", message: error.to_string(),
             })?;
-            let (world, module) = read_world(path, root, Some(&imports), worker, None, None)?;
+            let (world, module) = read_world(path, root, Some(&imports), &[], worker, None, None)?;
             Ok(compile_world(&world, module, false, Some((EntryKind::Application, entry)))?
                 .applications.remove(0))
         })
@@ -328,7 +328,7 @@ pub(crate) fn compile_world(
             }
             Job::Selected(key, arguments, kind) => {
                 let definition = &world.functions[key];
-                let instance = check::generics::specialize(world, key, &[], arguments.as_deref(), definition, definition.function.span)?;
+                let instance = check::generics::specialize(world, key, &[], arguments.as_deref(), (&definition.source, &definition.module, &definition.imports), definition.function.span)?;
                 if matches!(kind, EntryKind::Application) {
                     return check::compile_application(world, &instance).map(Output::Application);
                 }
@@ -405,6 +405,7 @@ pub(crate) fn read_world(
     path: &Path,
     module_root: &Path,
     imported: Option<&module::Imports>,
+    requests: &[String],
     worker: &compiler::Worker,
     inputs: Option<&build::Inputs>,
     build_declarations: Option<RefCell<BTreeSet<build::Declaration>>>,
@@ -424,6 +425,23 @@ pub(crate) fn read_world(
         None,
         inputs,
     )?;
+    if let Some(imported) = imported {
+        for request in requests {
+            let (_, arguments) = parser::entry(Source { path: "<module-export>".into(), text: request.clone().into() })?;
+            let mut arguments = arguments.unwrap_or_default();
+            while let Some(argument) = arguments.pop() {
+                if let GenericArgument::Type(ty) = argument {
+                    if let Some((owner, _)) = ty.name.split_once("::")
+                        && imported.modules.contains_key(owner)
+                    {
+                        load(&module_root.join(owner.replace('.', "/")).with_extension("b"), module_root,
+                            &mut world, Some(imported), Some(owner), inputs)?;
+                    }
+                    arguments.extend(ty.arguments);
+                }
+            }
+        }
+    }
     execution::infer(&mut world, build_declarations.as_ref());
     for definition in world.functions.values().filter(|definition| definition.compiled.is_some()) {
         generics::validate_declaration(definition)?;
@@ -860,7 +878,7 @@ impl World {
             let owner=ir::Ty::owned(ty,cleanup.clone());let identity=format!("owned contract:{}",owner.name);
             if !stack.insert(identity.clone()){return source.fail(span,"B224","释放函数的载荷合同不能递归要求同一拥有包装");}
             let definition=&self.functions[&cleanup];
-            let instance=check::generics::specialize(self,&cleanup,&[check::generics::Actual::value(&owner.arguments[0])],None,definition,definition.function.span).map_err(|error|Diagnostic{source:source.clone(),span,code:error.code,message:format!("释放函数 {}：{}",cleanup,error.message)})?;
+            let instance=check::generics::specialize(self,&cleanup,&[check::generics::Actual::value(&owner.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),definition.function.span).map_err(|error|Diagnostic{source:source.clone(),span,code:error.code,message:format!("释放函数 {}：{}",cleanup,error.message)})?;
             let parameter=&instance.definition.function.params[0];
             let mut expected=self.ty_inner(&parameter.ty,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports,stack)?;
             if parameter.ty.dataset{expected=ir::Ty::owned_dataset(expected,self.shape(&parameter.ty.count,&instance.definition.source,parameter.span,&instance.definition.module,&instance.definition.imports)?);}
