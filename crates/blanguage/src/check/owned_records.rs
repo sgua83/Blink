@@ -288,7 +288,7 @@ impl Builder<'_> {
         let Returned::Dataset(meta) = metadata_mut(root, &p.path) else {
             unreachable!()
         };
-        meta.handle.proof = data.handle.proof.clone();
+        meta.root.proof = data.root.proof.clone();
         meta.length.proof = data.length.proof.clone();
         Ok(Some(application::DataReference::direct(data)))
     }
@@ -474,7 +474,7 @@ impl Builder<'_> {
         let model=self.owned_place_model(&place);self.prepare_owned_read(&model);self.require_initialized(&place,expr.span)?;
         let Returned::Dataset(mut data)=model else{unreachable!()};self.application_available(&data,expr.span)?;
 
-        let sources=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.handle.identity()}).collect();
+        let sources=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.root.identity()}).collect();
         data=self.refresh_application_data(data,expr.span)?;data.ownership=Ownership::Borrowed;data.place=Some(place);
         Ok(Some(application::DataReference { data, sources, projection:Vec::new() }))
     }

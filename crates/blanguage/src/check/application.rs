@@ -17,7 +17,8 @@ pub(super) enum Ownership {
 pub(super) type Data = Box<DataPayload>;
 #[derive(Clone)]
 pub(super) struct DataPayload {
-    pub handle: Value,
+    // Frame-owned storage has a u32 handle; an Invocation read borrow has its actual u64 storage address.
+    pub root: Value,
     pub place: Option<Place>,
     pub initialization: Option<Position>,
     pub ty: Ty,
@@ -72,7 +73,7 @@ impl std::ops::Deref for DataReference {
 }
 impl DataReference {
     pub(super) fn direct(data: Data) -> Self {
-        let sources = vec![data.handle.identity()];
+        let sources = vec![data.root.identity()];
         Self { data, sources, projection:Vec::new() }
     }
     pub(super) fn element(&self, index: &Value, range: (u32, u32)) -> Place {
@@ -367,8 +368,10 @@ impl Builder<'_> {
         if access == Access::Value {
             self.application_frame(self.definition.function.span)?;
         }
-        let reg = self.reg(Scalar::U32);
-        let handle = self.application_handle(reg);
+        let scalar = if access == Access::Value { Scalar::U32 }
+            else { Self::borrowed_dataset_parameter_type(access, self.definition.execution).components[0].0 };
+        let reg = self.reg(scalar);
+        let handle = self.application_root(reg);
         let length_reg = self.reg(Scalar::U32);
         let count = self.program.buffers[binding].count;
         let mut length = Value {
@@ -393,7 +396,7 @@ impl Builder<'_> {
         let elements=self.unknown_element_model(&element_ty);
         Ok(Box::new(DataPayload {
             elements,
-            handle,
+            root: handle,
             place: None,
             initialization,
             ty: element_ty,
@@ -418,7 +421,7 @@ impl Builder<'_> {
         let domains = limit.proof.domains(0);
         self.env.values().flat_map(Binding::application_resources).chain(selected).filter_map(|data| {
             let scope = data.initialization.as_ref()?;
-            if !(domains.contains(&IndexDomain::ApplicationLength(data.handle.identity()))
+            if !(domains.contains(&IndexDomain::ApplicationLength(data.root.identity()))
                 || limit.identity() == data.length.identity()
                 || limit.minimum() == limit.maximum() && limit.minimum() == data.length.minimum() && limit.maximum() == data.length.maximum()) { return None; }
             let words = data.ty.components.iter().filter_map(|(_, offset)| {
@@ -630,17 +633,17 @@ impl Builder<'_> {
     pub(super) fn application_drop(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         // The existing drop consumer has taken this ownership. Its original
         // named storage stays readable until the actual release completes.
-        let identity=data.handle.identity();
+        let identity=data.root.identity();
         for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,source|{
-            if source.handle.identity()==identity&&source.ownership.may_own(){source.ownership=Ownership::Borrowed;}
+            if source.root.identity()==identity&&source.ownership.may_own(){source.ownership=Ownership::Borrowed;}
         });}
         self.application_movable(data,retained,span)?;
-        let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.handle.regs[0]};
+        let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.root.regs[0]};
         if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
         self.emit(self.application_release(handle).kind);
-        let identity=data.handle.identity();
+        let identity=data.root.identity();
         for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,source|{
-            if source.handle.identity()==identity{source.ownership=Ownership::Moved;}
+            if source.root.identity()==identity{source.ownership=Ownership::Moved;}
         });}
         Ok(())
     }
@@ -667,7 +670,7 @@ impl Builder<'_> {
                 Binding::OwnedValue(v) => v.resources(),
                 _ => Vec::new(),
             })
-            .filter(|d| d.handle.proof.known_identity(0) == Some(identity))
+            .filter(|d| d.root.proof.known_identity(0) == Some(identity))
             .peekable();
         if matching.peek().is_some() && matching.all(|data| !self.resolve_ownership(&data.ownership,None).available()) {
             return self.fail(
@@ -694,7 +697,7 @@ impl Builder<'_> {
         let mut borrow=retained.clone();
         for(name,binding)in &self.env{borrow.union(&self.live_view_borrow(name,binding));}
         self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow,span})?;
-        if self.application_position_borrowed(data.handle.identity()) {
+        if self.application_position_borrowed(data.root.identity()) {
             return self.fail(
                 span,
                 "B227",
@@ -703,11 +706,11 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    fn application_handle(&self, reg: Reg) -> Value {
+    fn application_root(&self, reg: Reg) -> Value {
         let mut value = Value {
             proof: bounds::Proof::default(),
             literal: false,
-            ty: Ty::scalar(Scalar::U32),
+            ty: Ty::scalar(self.registers[reg]),
             regs: vec![reg],
             uniform: false,
             constant: None,
@@ -725,27 +728,27 @@ impl Builder<'_> {
         self.prepare_owned_read(&returns::Returned::Dataset(data.clone()));
         data = self.refresh_application_data(data,span)?;
         if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
-            source.handle.proof = data.handle.proof.clone();
+            source.root.proof = data.root.proof.clone();
             source.length.proof = data.length.proof.clone();
         }
         Ok(Some(data))
     }
     pub(super) fn refresh_application_data(&mut self,mut data:Data,span:Span)->Result<Data> {
         if let Some(place)=&data.place {
-            let value=self.read_storage_value(place,span)?;data.handle.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
-            data.handle.proof=bounds::Proof::capture(&data.handle);
-            data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(data.handle.identity())]));
+            let value=self.read_storage_value(place,span)?;data.root.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
+            data.root.proof=bounds::Proof::capture(&data.root);
+            data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(data.root.identity())]));
             data.length.constant=data.length.proof.known_value(&data.length.ty);
         }
         Ok(data)
     }
     pub(super) fn application_bind(&mut self, mut data: Data, mutable: bool) -> Data {
         data.place = None;
-        data.handle.proof = bounds::Proof::capture(&data.handle);
+        data.root.proof = bounds::Proof::capture(&data.root);
         data.length.proof = bounds::Proof::capture(&data.length);
         if mutable {
             let ty=Ty::owned_dataset(data.ty.clone(),data.count);let(slots,storage)=self.local_slots(&ty);
-            self.emit(InstKind::StoreLocal(slots[0],data.handle.regs[0]));self.emit(InstKind::StoreLocal(slots[1],data.length.regs[0]));
+            self.emit(InstKind::StoreLocal(slots[0],data.root.regs[0]));self.emit(InstKind::StoreLocal(slots[1],data.length.regs[0]));
             let place=Place::Local(ty,slots,storage);self.initialize(&place);data.place=Some(place);
         }
         data
@@ -839,7 +842,7 @@ impl Builder<'_> {
             name.into(),
             Binding::ApplicationData(Box::new(DataPayload {
                 elements,
-                handle: value(handle),
+                root: value(handle),
                 length: value(length),
                 place: Some(Place::Local(Ty::owned_dataset(ty.clone(),count),slots.to_vec(),slots[0]..slots[1]+1)),
                 initialization: None,
@@ -886,7 +889,7 @@ impl Builder<'_> {
         value.count = target.count;
         value.ownership = Ownership::Owned;
         value.access = Access::InOut;
-        value.handle.proof = bounds::Proof::capture(&value.handle);
+        value.root.proof = bounds::Proof::capture(&value.root);
         value.length.proof = bounds::Proof::capture(&value.length);
         self.env
             .insert(name.into(), Binding::ApplicationData(value));
@@ -909,7 +912,7 @@ impl Builder<'_> {
         if data.ownership != Ownership::Owned {
             return self.fail(span, "B227", "借用的 dataset 不能移动或作为拥有资源返回");
         }
-        if self.application_position_borrowed(data.handle.identity()) {
+        if self.application_position_borrowed(data.root.identity()) {
             return self.fail(span, "B227", "dataset的元素仍被游标或位置借用，不能移动拥有值");
         }
         if let Some(Binding::ApplicationData(source)) = self.env.get_mut(name) {
@@ -948,13 +951,13 @@ impl Builder<'_> {
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
         self.emit(runtime_call("resize", vec![
-            argument(frame), argument(data.handle.clone()), argument(length.clone()),
+            argument(frame), argument(data.root.clone()), argument(length.clone()),
             CallArgument::Reference { ty: fill.ty, access: Access::Read, address: CallReference {
                 storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
             } },
         ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind);
         // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
-        let handle = self.application_handle(reg);
+        let handle = self.application_root(reg);
         length.literal = false;
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
@@ -962,7 +965,7 @@ impl Builder<'_> {
         let elements=self.unknown_element_model(&data.ty);
         Ok(Some(Box::new(DataPayload {
             elements,
-            handle, place: None, initialization: None, ty: data.ty, length,
+            root: handle, place: None, initialization: None, ty: data.ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         })))
     }
@@ -1053,14 +1056,14 @@ impl Builder<'_> {
                 span,
             )?
             .unwrap();
-        let handle = self.application_handle(handle.regs[0]);
+        let handle = self.application_root(handle.regs[0]);
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
         let elements=self.unknown_element_model(&ty);
         let mut data=Box::new(DataPayload {
             elements,
-            handle,
+            root: handle,
             place: None,
             initialization: if ty.zero_valid(){None}else{Some(Position::Parameter(self.application_output_scope(),0))},
             ty,
@@ -1110,7 +1113,7 @@ impl Builder<'_> {
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
         let elements=self.capture_element_model(data,returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
-        self.write_application_place(data.handle.regs[0],data.handle.identity(),index_reg,stride,&words,value,span)?;
+        self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span)?;
         let one=self.constant(Scalar::U32,1).regs[0];let next=self.reg(Scalar::U32);self.emit(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one});self.emit(InstKind::StoreLocal(slot,next));
         let body=std::mem::replace(&mut self.code,outer);self.emit(InstKind::Loop{condition,test,body});Ok(elements)
     }
@@ -1139,9 +1142,9 @@ impl Builder<'_> {
     ) -> Place {
         Place::ApplicationElement {
             ty: data.ty.clone(),
-            handle: data.handle.regs[0],
-            identity: data.handle.identity(),
-            sources: vec![data.handle.identity()],
+            handle: data.root.regs[0],
+            identity: data.root.identity(),
+            sources: vec![data.root.identity()],
             initialization: data
                 .initialization.clone()
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
@@ -1172,7 +1175,7 @@ impl Builder<'_> {
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
         if !self.index_in(
             &value,
-            IndexDomain::ApplicationData(data.handle.identity()),
+            IndexDomain::ApplicationData(data.root.identity()),
             data.length.minimum(),
             None,
         ) {
@@ -1186,22 +1189,13 @@ impl Builder<'_> {
             data.element(&value, (value.minimum(), value.maximum())),
         ))
     }
-    pub(super) fn application_address(
-        &mut self,
-        handle: Reg,
-        identity: ValueIdentity,
-        offset: Value,
-        bytes: u32,
-        span: Span,
-    ) -> Result<[Reg; 2]> {
-        self.application_handle_available(identity, span)?;
-        if bytes != 0 { self.require_view_unborrowed(&[identity],span)?; }
+    fn application_cpu_source(&mut self,identity:ValueIdentity,span:Span)->Result<()> {
         if let Some(data) = self
             .env
             .values()
             .find_map(|binding| match binding {
                 Binding::ApplicationData(data)
-                    if data.handle.proof.known_identity(0) == Some(identity)
+                    if data.root.proof.known_identity(0) == Some(identity)
                         && data.ownership != Ownership::Moved =>
                 {
                     Some(data)
@@ -1212,6 +1206,32 @@ impl Builder<'_> {
         {
             self.application_cpu(&data, span)?;
         }
+        Ok(())
+    }
+    fn application_root_address(&mut self,root:Reg,identity:ValueIdentity,span:Span)->Result<[Reg;2]> {
+        if self.registers[root] == Scalar::U64 {
+            self.application_cpu_source(identity,span)?;
+            let shift=self.constant(Scalar::U64,32).regs[0];let high=self.reg(Scalar::U64);
+            self.emit(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:root,b:shift});
+            let address=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
+            self.emit(InstKind::Cast{dst:address[0],src:root});self.emit(InstKind::Cast{dst:address[1],src:high});
+            Ok(address)
+        } else {
+            let zero=self.constant(Scalar::U64,0);
+            self.application_address(root,identity,zero,0,span)
+        }
+    }
+    pub(super) fn application_address(
+        &mut self,
+        handle: Reg,
+        identity: ValueIdentity,
+        offset: Value,
+        bytes: u32,
+        span: Span,
+    ) -> Result<[Reg; 2]> {
+        self.application_handle_available(identity, span)?;
+        if bytes != 0 { self.require_view_unborrowed(&[identity],span)?; }
+        self.application_cpu_source(identity,span)?;
         let handle = Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -1264,16 +1284,36 @@ impl Builder<'_> {
     }
     fn application_domain_argument(&mut self,data:&DataReference)->CallArgument{
         let offset=self.application_reference_offset(data);
-        CallArgument::Value{ty:Self::domain_dataset_parameter_type(),values:vec![data.handle.regs[0],offset.regs[0]]}
+        CallArgument::Value{ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
     }
-    pub(super) fn borrowed_dataset_parameter_type()->Ty{
-        let mut ty=Ty::vector(Scalar::U32,4);ty.name="__blink_borrowed_dataset".into();ty
+    pub(super) fn borrowed_dataset_parameter_type(access: Access, execution: crate::execution::Requirement)->Ty {
+        if access == Access::Read && execution == crate::execution::Requirement::Invocation {
+            let mut ty = Ty::scalar(Scalar::U64);
+            ty.name = "__blink_read_dataset".into();
+            ty.components = vec![(Scalar::U64,0),(Scalar::U32,8),(Scalar::U64,16),(Scalar::U32,24)];
+            ty.size = 32; ty.align = 8;
+            ty
+        } else {
+            let mut ty=Ty::vector(Scalar::U32,4);ty.name="__blink_borrowed_dataset".into();ty
+        }
     }
-    pub(super) fn application_reference_value(&mut self,data:&DataReference)->Value{
-        let(stride,offset)=self.application_reference_layout(data);
+    pub(super) fn application_reference_value(&mut self,data:&DataReference,ty:Ty,span:Span)->Result<Value> {
+        let(mut stride,offset)=self.application_reference_layout(data);
+        let root = if ty.components[0].0 == Scalar::U64 {
+            if data.root.ty.components[0].0 == Scalar::U64 { data.root.clone() }
+            else {
+                let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span)?.unwrap();
+                value.proof=value.proof.with_view_borrow(0,self.data_borrow(&data.sources));
+                value
+            }
+        } else { data.root.clone() };
+        if ty.components[2].0 == Scalar::U64 && stride.ty.components[0].0 != Scalar::U64 {
+            let dst=self.reg(Scalar::U64);self.emit(InstKind::Cast{dst,src:stride.regs[0]});
+            stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![dst],proof:stride.proof,literal:false,uniform:stride.uniform,constant:stride.constant};
+        }
         let mut proof=bounds::Proof::default();
-        for value in [&data.handle,&data.length,&stride,&offset]{proof.append(value);}
-        Value{ty:Self::borrowed_dataset_parameter_type(),regs:vec![data.handle.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None}
+        for value in [&root,&data.length,&stride,&offset]{proof.append(value);}
+        Ok(Value{ty,regs:vec![root.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None})
     }
     pub(super) fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
         let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::new(InstKind::Cast{dst,src}));dst};
@@ -1290,6 +1330,15 @@ impl Builder<'_> {
         self.emit(InstKind::Cast{dst:result[0],src:pointer});self.emit(InstKind::Cast{dst:result[1],src:high});result
     }
     pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:&[(Scalar,u32)],span:Span)->Result<([Reg;2],Reg,u32)>{
+        if self.registers[handle] == Scalar::U64 {
+            let address=self.application_root_address(handle,identity,span)?;
+            let (step,field)=match stride {
+                DataStride::Declared(step)=>(self.constant(Scalar::U64,Bits::from(step)).regs[0],self.constant(Scalar::U32,0).regs[0]),
+                DataStride::Parameter{stride,offset}=>(stride,offset),
+            };
+            let address=self.offset_application_address(address,index,step,field);
+            return Ok((address,self.constant(Scalar::U32,0).regs[0],0));
+        }
         let address = if write {
             let (step, field) = match stride {
                 DataStride::Declared(step) => (self.constant(Scalar::U32, Bits::from(step)).regs[0], self.constant(Scalar::U32, 0).regs[0]),
@@ -1335,8 +1384,7 @@ impl Builder<'_> {
         })
     }
     pub(super) fn application_projection_address(&mut self,data:&DataReference,span:Span)->Result<[Reg;2]>{
-        let zero = self.constant(Scalar::U64, 0);
-        let address=self.application_address(data.handle.regs[0],data.handle.identity(),zero,0,span)?;
+        let address=self.application_root_address(data.root.regs[0],data.root.identity(),span)?;
         let(_,offset)=self.application_reference_layout(data);let zero=self.constant(Scalar::U32,0).regs[0];
         Ok(self.offset_application_address(address,zero,zero,offset.regs[0]))
     }
@@ -1510,7 +1558,7 @@ impl Builder<'_> {
             }
         }
         for value in &data {
-            self.application_handle_available(value.handle.identity(), span)?;
+            self.application_handle_available(value.root.identity(), span)?;
         }
         let interface = self.prepare_domain(&instance, target)?;
         for &(left, right) in &interface.length_requirements {
@@ -1708,11 +1756,11 @@ impl Builder<'_> {
                 "存储位置与传输方向不一致；条件分支须分别完成显式传输",
             );
         }
-        let value = data.handle.clone();
+        let value = data.root.clone();
         self.application_call(name, vec![value], None, span)?;
         let update = &mut |alias: &mut Data| {
             if alias.ownership != Ownership::Moved
-                && alias.handle.proof.known_identity(0) == Some(data.handle.identity())
+                && alias.root.proof.known_identity(0) == Some(data.root.identity())
             {
                 alias.residency = target.clone();
             }
@@ -1884,12 +1932,12 @@ impl crate::module::codec::Decode for Ownership{fn decode(r:&mut crate::module::
 // slots与初始化位置属于当前编译调用；实际原生接口只交接已初始化资源。
 impl crate::module::codec::Encode for DataPayload {
     fn encode(&self,w:&mut crate::module::codec::Writer) {
-        self.handle.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.access.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);self.elements.encode(w);
+        self.root.encode(w);self.ty.encode(w);self.length.encode(w);self.ownership.encode(w);self.access.encode(w);self.count.encode(w);self.residency.encode(w);self.layout.encode(w);self.elements.encode(w);
     }
 }
 impl crate::module::codec::Decode for DataPayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self> {
-        Ok(Self{handle:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,elements:Box::<returns::Returned>::decode(r)?,place:None,initialization:None})
+        Ok(Self{root:Value::decode(r)?,ty:Ty::decode(r)?,length:Value::decode(r)?,ownership:Ownership::decode(r)?,access:Access::decode(r)?,count:Option::decode(r)?,residency:residency::Residency::decode(r)?,layout:DataLayout::decode(r)?,elements:Box::<returns::Returned>::decode(r)?,place:None,initialization:None})
     }
 }
 
@@ -2042,7 +2090,7 @@ impl Builder<'_> {
     }
     fn element_owner_bindings(&self,data:&Data)->ElementBindings {
         let mut out=ElementBindings::new();
-        for value in [&data.handle,&data.length]{
+        for value in [&data.root,&data.length]{
             let proof=bounds::Proof::capture(value);
             for id in value.component_origins(0){out.insert(id,proof.clone());}
         }
@@ -2053,7 +2101,7 @@ impl Builder<'_> {
                 for id in component.component_origins(0){out.entry(id).or_insert_with(||proof.clone());}
             }}
             for(_,source,_)in view::data_paths(binding){
-                for value in [&source.handle,&source.length]{
+                for value in [&source.root,&source.length]{
                     let proof=bounds::Proof::capture(value);
                     for id in value.component_origins(0){out.entry(id).or_insert_with(||proof.clone());}
                 }
@@ -2085,7 +2133,7 @@ impl Builder<'_> {
         for binding in self.env.values(){
             for resource in 0..binding_element_types(binding).len(){
                 if let Some(data)=binding_element_data(binding,resource)
-                    && sources.contains(&data.handle.identity()){
+                    && sources.contains(&data.root.identity()){
                     let components=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()?;
                     let value=self.returned_storage(&data.elements);let mut bindings=self.element_owner_bindings(data);
                     for(component,reg)in components.iter().zip(regs){
@@ -2106,7 +2154,7 @@ impl Builder<'_> {
         for name in names{
             if let Some(mut binding)=self.env.remove(&name){
                 each_binding_data(&mut binding,&mut |_,data|{
-                    if !sources.contains(&data.handle.identity()){return;}
+                    if !sources.contains(&data.root.identity()){return;}
                     let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
                     if components.is_empty(){return;}
                     let old=self.returned_storage(&data.elements);let mut updated=old.clone();updated.constant=None;
@@ -2135,14 +2183,14 @@ impl Builder<'_> {
                         returns::Returned::Value(value)=>**value=updated.clone(),
                         returns::Returned::OwnedValue(value)=>value.value=updated.clone(),
                         returns::Returned::Dataset(inner)=>{
-                            inner.handle=self.value_component(&updated,0);inner.length=self.value_component(&updated,1);
+                            inner.root=self.value_component(&updated,0);inner.length=self.value_component(&updated,1);
                         }
                         returns::Returned::Unit=>{},
                     }
                     for path in view::resource_paths(&updated.ty){
                         if let Some(inner)=model_data_mut(&mut data.elements,&path){
-                            let handle=inner.handle.regs[0];let length=inner.length.regs[0];
-                            inner.handle=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
+                            let handle=inner.root.regs[0];let length=inner.length.regs[0];
+                            inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
                             if components.contains(&handle)||components.contains(&length){inner.elements=self.unknown_element_model(&inner.ty);}
                         }
                     }
@@ -2191,7 +2239,7 @@ impl Builder<'_> {
     fn close_stored_resources(&self,model:&mut returns::Returned){
         let value=self.returned_storage(model);
         for path in view::resource_paths(&value.ty){if let Some(data)=model_data_mut(model,&path){
-            if data.ownership.may_own(){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,view::Borrow::default());}
+            if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::Borrow::default());}
             self.close_stored_resources(&mut data.elements);
         }}
     }

@@ -115,7 +115,7 @@ pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Opti
     returns::Returned::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(index)?.clone();view::owned_data_at_mut(value,&path)},_=>None,
 }}
 pub(super) fn set_resource_borrows(value:&mut returns::Returned,mut borrow:impl FnMut(usize)->Borrow){
-    let count=resource_borrows(value).len();for index in 0..count{if let Some(data)=resource_value_mut(value,index){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,borrow(index));}}
+    let count=resource_borrows(value).len();for index in 0..count{if let Some(data)=resource_value_mut(value,index){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(index));}}
 }
 fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSet<usize>)->bool {
     if !a.calls.is_empty()||!b.calls.is_empty(){return false;}

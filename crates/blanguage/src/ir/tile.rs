@@ -444,6 +444,7 @@ impl Inst {
             | InstKind::FunctionAddress(r, _)
             | InstKind::Index(r)
             | InstKind::Uniform(r, _)
+            | InstKind::BufferStride(r, _)
             | InstKind::LoadLocal(r, _)
             | InstKind::TileLength(r)
             | InstKind::TileLane(r) => std::slice::from_ref(r),

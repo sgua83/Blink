@@ -124,6 +124,7 @@ fn instruction(value: &Inst) -> String {
         Constant(dst, scalar, bits) => node("Constant", &[("dst", number(dst)), ("scalar", name(scalar)), ("bits", text(&format!("0x{bits:016x}")))]),
         FunctionAddress(dst, value) => node("FunctionAddress", &[("dst", number(dst)), ("target", target(value))]),
         PositionAddress { dst, address } => node("PositionAddress", &[("dst", number(dst)), ("address", reference(address))]),
+        BufferStride(dst,binding) => node("BufferStride", &[("dst",number(dst)),("binding",number(binding))]),
         Index(dst) => node("Index", &[("dst", number(dst))]),
         Uniform(dst, offset) => node("Uniform", &[("dst", number(dst)), ("offset", number(offset))]),
         LoadLocal(dst, slot) => node("LoadLocal", &[("dst", number(dst)), ("slot", number(slot))]),

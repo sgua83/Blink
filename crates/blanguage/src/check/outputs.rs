@@ -932,7 +932,7 @@ impl Builder<'_> {
             for binding in self.env.values_mut() {
                 let paths = view::data_paths(binding)
                     .into_iter()
-                    .filter(|(_, owner, _)| owner.handle.identity() == data.handle.identity())
+                    .filter(|(_, owner, _)| owner.root.identity() == data.root.identity())
                     .map(|(path, _, _)| path)
                     .collect::<Vec<_>>();
                 for path in paths {

@@ -261,6 +261,14 @@ impl Frame {
         }
         Ok(address)
     }
+    /// 原存储的位置地址；GPU返回原绑定头的设备地址，不等待或下载。
+    /// 地址不保活存储；CPU解引用仍要求真实CPU位置及原借用权限。
+    pub fn storage_address(&self,handle:u32)->u64 {
+        match self.data.datasets[handle as usize].as_ref().unwrap() {
+            ResidentData::Cpu(data)=>data.words().as_ptr() as usize as u64,
+            ResidentData::Gpu(data)=>data.storage_address(),
+        }
+    }
     /// 同一帧只移动本次实际参数；没有被绑定的存储及其有效域继续由帧持有。
     /// CPU 直接消费原存储，错误与成功均交回原输入及程序；参数拒绝保持原域，
     /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。

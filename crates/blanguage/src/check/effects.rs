@@ -200,7 +200,7 @@ impl Builder<'_> {
         else {
             return None;
         };
-        if *identity != data.handle.identity() {
+        if *identity != data.root.identity() {
             return None;
         }
         let components = data
@@ -235,9 +235,9 @@ impl Builder<'_> {
                 let Binding::ApplicationData(data) = binding else {
                     return None;
                 };
-                (borrowed_data != Some(data.handle.identity())
+                (borrowed_data != Some(data.root.identity())
                     && !data
-                        .handle
+                        .root
                         .proof
                         .known_identity(0)
                         .is_some_and(|id| self.application_borrowed(id))
@@ -248,7 +248,7 @@ impl Builder<'_> {
             .collect();
         for name in resources {
             if let Some(Binding::ApplicationData(data)) = self.env.get_mut(&name) {
-                data.handle.proof = bounds::Proof::default();
+                data.root.proof = bounds::Proof::default();
                 data.length.proof = data
                     .count
                     .map(|count| bounds::Proof::unsigned(count, count))
@@ -518,7 +518,7 @@ pub(super) fn modified_owners(
             Some(Binding::OwnedValue(owner)) => owner.resources(),
             _ => Vec::new(),
         })
-        .map(|data| data.handle.identity())
+        .map(|data| data.root.identity())
         .collect();
     env.iter()
         .filter_map(|(name, binding)| {

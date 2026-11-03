@@ -228,7 +228,7 @@ impl Selection {
         if self.value.ty.dataset.is_some() {
             let identity=self.value.identity();
             value.resources_mut(&mut |data| {
-                if data.handle.identity()==identity {data.length.proof.mark_nonzero(0);}
+                if data.root.identity()==identity {data.length.proof.mark_nonzero(0);}
             });
         }
     }
@@ -348,12 +348,12 @@ fn resource(
 ) -> Result<Resource> {
     match env.get(path) {
         Some(Binding::DataReference(data))=>{
-            return Ok(Resource::Application{root:path.into(),handle:data.handle.identity(),minimum:data.length.minimum()});
+            return Ok(Resource::Application{root:path.into(),handle:data.root.identity(),minimum:data.length.minimum()});
         }
         Some(Binding::ApplicationData(data)) => {
             return Ok(Resource::Application {
                 root: path.into(),
-                handle: data.handle.identity(),
+                handle: data.root.identity(),
                 minimum: data.length.minimum(),
             });
         }

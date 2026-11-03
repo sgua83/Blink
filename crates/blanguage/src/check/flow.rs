@@ -90,7 +90,7 @@ impl Builder<'_> {
             if let InputSlot::Data{name,path,..}=slot {
                 let input=Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()};
                 for environment in [&self.env,&self.loop_contexts[level].entry.env] {
-                    if let Some(data)=environment.get(name).and_then(|b|data_at(b,path)) {resources.entry(data.handle.identity()).or_default().union(&input);}
+                    if let Some(data)=environment.get(name).and_then(|b|data_at(b,path)) {resources.entry(data.root.identity()).or_default().union(&input);}
                 }
             }
         }
@@ -99,11 +99,11 @@ impl Builder<'_> {
                 let data=data_at_mut(self.env.get_mut(name).unwrap(),path).unwrap();
                 let input=LoopInput{level:scope,index};
                 let before=data_at(&self.loop_contexts[level].entry.env[name],path).unwrap();
-                if !data.ty.zero_valid() && (data.handle.proof.known_identity(0)!=before.handle.proof.known_identity(0)
-                    || data.handle.proof.view_borrow(0)!=before.handle.proof.view_borrow(0)) {
+                if !data.ty.zero_valid() && (data.root.proof.known_identity(0)!=before.root.proof.known_identity(0)
+                    || data.root.proof.view_borrow(0)!=before.root.proof.view_borrow(0)) {
                     data.initialization=Some(Position::ApplicationInput(input,None,0));
                 }
-                data.handle.proof=data.handle.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});
+                data.root.proof=data.root.proof.clone().with_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});
             }
         }
         for (index,slot) in slots.iter().enumerate() {
@@ -186,11 +186,11 @@ impl Builder<'_> {
                 }
                 let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data),&unchanged))).collect::<BTreeMap<_,_>>();
                 match binding {
-                    Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}}
+                    Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.root.proof=data.root.proof.clone().with_view_borrow(0,value);}}
                     Binding::OwnedValue(value)=>{
                         fn assign(value:&mut owned_values::OwnedValue,path:&mut Vec<usize>,borrows:&mut BTreeMap<Vec<usize>,Borrow>) {
                             for (index,payload) in value.payloads.iter_mut().enumerate(){let Some(payload)=payload.as_deref_mut()else{continue};path.push(index);
-                                match payload {returns::Returned::Dataset(data)=>{if let Some(value)=borrows.remove(path){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}},returns::Returned::OwnedValue(value)=>assign(value,path,borrows),_=>{}}
+                                match payload {returns::Returned::Dataset(data)=>{if let Some(value)=borrows.remove(path){data.root.proof=data.root.proof.clone().with_view_borrow(0,value);}},returns::Returned::OwnedValue(value)=>assign(value,path,borrows),_=>{}}
                                 path.pop();
                             }
                         }

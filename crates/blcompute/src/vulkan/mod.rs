@@ -1161,6 +1161,7 @@ impl ReadDataset {
     }
 }
 impl GpuDataset {
+    pub(crate) fn storage_address(&self)->u64 { self.allocation.address() }
     /// 借用同一物理存储的原类型；记录步幅和实际绑定分别查询。
     pub fn layout(&self) -> &Ty {
         &self.ty

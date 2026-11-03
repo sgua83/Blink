@@ -7,6 +7,7 @@ fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut BTreeSet<R
             &(inst).kind,
             InstKind::Constant(..)
                 | InstKind::Uniform(..)
+                | InstKind::BufferStride(..)
                 | InstKind::Unary { .. }
                 | InstKind::Binary { .. }
                 | InstKind::Cast { .. }

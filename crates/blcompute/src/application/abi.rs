@@ -118,4 +118,10 @@ mod native {
             None => 0,
         }
     }
+    /// 借用原存储地址；不授予CPU访问权或延长存储寿命。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_storage_address(frame:*const Frame,handle:u32)->u64 {
+        unsafe { (&*frame).storage_address(handle) }
+    }
+
 }

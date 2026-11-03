@@ -468,6 +468,10 @@ impl Emitter<'_> {
                     self.write_scalar_address(*value, memory);
                 }
                 InstKind::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
+                InstKind::BufferStride(dst,binding) => {
+                    self.instruction(None,&[0x8b],true,0,operands::Operand::memory(12,*binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));
+                    self.store(*dst);
+                }
                 InstKind::FunctionAddress(dst, target) => {
                     match target {
                         CallTarget::Defined(name) => { self.native_code_address(NativeSymbol::Function(name.clone())); }

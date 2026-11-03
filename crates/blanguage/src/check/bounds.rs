@@ -3316,7 +3316,10 @@ impl Builder<'_> {
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
         let valid = |value: &Value| {
-            value.proof.domains(0).contains(&domain)
+            value.proof.domains(0).iter().any(|source| {
+                *source == domain || matches!((domain, source),
+                    (IndexDomain::Data(target), IndexDomain::Data(other)) if self.program.same_length(target, *other))
+            })
                 || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
                 || lengths.iter().any(|(proof, component)| value.proof.below_length(&value.component_origins(0), proof, *component, true))
         };

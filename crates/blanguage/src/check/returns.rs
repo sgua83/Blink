@@ -54,7 +54,7 @@ impl Returned {
             }
             Self::Dataset(v) => {
                 v.residency=v.residency.output_bound(bindings).with_aliases(aliases);
-                value(&mut v.handle, registers.map(|r| &r[..1]), bindings, aliases);
+                value(&mut v.root, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
                 v.elements.bind_outputs(None,bindings,aliases);
             }
@@ -65,7 +65,7 @@ impl Returned {
             Self::Unit => Vec::new(),
             Self::OwnedValue(value) => value.value.regs.clone(),
             Self::Value(value) => value.regs.clone(),
-            Self::Dataset(data) => vec![data.handle.regs[0], data.length.regs[0]],
+            Self::Dataset(data) => vec![data.root.regs[0], data.length.regs[0]],
         }
     }
     pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition){
@@ -77,7 +77,7 @@ impl Returned {
         }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition){match(target,a,b){
             (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=a.proof.clone();target.proof.join_condition(&b.proof,target.regs.len(),Some(choice));},
-            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.handle.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));},
+            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));},
             (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=a.value.proof.clone();target.value.proof.join_condition(&b.value.proof,target.value.regs.len(),Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},
             _=>{},
         }}
@@ -98,7 +98,7 @@ impl Returned {
             if data.ownership != other.ownership {
                 data.ownership = application::Ownership::Moved;
             }
-            data.handle.proof = bounds::Proof::common(&data.handle, &other.handle);
+            data.root.proof = bounds::Proof::common(&data.root, &other.root);
             data.elements.join((*other.elements).clone());
         }
         let (other, residency) = match &other {

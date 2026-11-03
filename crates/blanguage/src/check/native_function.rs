@@ -199,7 +199,7 @@ pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
         Returned::Unit => {}
         Returned::Value(value) => value.regs = registers,
         Returned::Dataset(data) => {
-            data.handle.regs = vec![registers[0]];
+            data.root.regs = vec![registers[0]];
             data.length.regs = vec![registers[1]];
             data.place = None;
             data.initialization = None;
@@ -271,10 +271,10 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         for resource in 0..view_contracts::resource_borrows(&model).len(){
             if let(Some(source),Some(target))=(view_contracts::resource_value_mut(&mut original,resource),view_contracts::resource_value_mut(&mut value,resource)){
                 let output=if model_index==0{view_contracts::Output::ReturnedResource(resource)}else{view_contracts::Output::WrittenResource(model_index-1,resource)};
-                builder.view_model.resource_names.insert(output,ValueIdentity::Register(target.handle.regs[0]));
-                let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target.handle.regs[0]));
-                bindings.entry(source.handle.identity()).or_insert_with(||bound.clone());
-                bindings.entry(ValueIdentity::Register(source.handle.regs[0])).or_insert(bound);
+                builder.view_model.resource_names.insert(output,ValueIdentity::Register(target.root.regs[0]));
+                let bound=bounds::Proof::default().with_identity(ValueIdentity::Register(target.root.regs[0]));
+                bindings.entry(source.root.identity()).or_insert_with(||bound.clone());
+                bindings.entry(ValueIdentity::Register(source.root.regs[0])).or_insert(bound);
             }
         }
         next+=value.registers().len();(value,model)
@@ -372,7 +372,7 @@ impl Builder<'_> {
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
                     residency::layout_argument(&mut layouts,index,reference.layout_source());
-                    reference.data.handle.proof=reference.data.handle.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
+                    reference.data.root.proof=reference.data.root.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
                     Argument::BorrowedData(reference)
                 },
                 other=>other,
@@ -442,8 +442,41 @@ impl Builder<'_> {
                     }
                     env.insert(p.name.clone(), Binding::AtomicBorrow(place));
                 }
+                Argument::Dataset(view) if p.ty.dataset && p.access==Access::Read => {
+                    let binding=view.binding;
+                    let access=self.view_access[&binding];
+                    if !matches!(access,Access::Read|Access::InOut) {
+                        return self.fail(span,"B224","CPU范围只能把可读的实际dataset转借给read参数");
+                    }
+                    let (field,element)=self.dataset_layout(&view);let element=element.clone();
+                    self.require_same(&ty,&element,span)?;
+                    self.native_dataset_shape(p,d,self.program.buffers[binding].count,span)?;
+                    let zero=self.constant(Scalar::U32,0);
+                    let place=self.dataset_element(&view,zero.regs[0],false);
+                    let borrow=self.position_origin(&place,span)?.normalize();
+                    memory_borrow.union(&borrow);
+                    let address=self.reg(Scalar::U64);
+                    self.emit(InstKind::PositionAddress{dst:address,address:CallReference{
+                        storage:CallStorage::Indexed(IndexedSource::Data{binding,index:zero.regs[0]}),offset:None,word:0,
+                    }});
+                    let pointer=Value{ty:Ty::scalar(Scalar::U64),regs:vec![address],proof:bounds::Proof::default().with_view_borrow(0,borrow),literal:false,uniform:true,constant:None};
+                    let length=self.data_length(&view);
+                    let step=self.reg(Scalar::U64);self.emit(InstKind::BufferStride(step,binding));
+                    let stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![step],proof:bounds::Proof::default(),literal:false,uniform:true,constant:None};
+                    let offset=self.constant(Scalar::U32,Bits::from(field));
+                    let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
+                    let mut proof=bounds::Proof::default();
+                    for value in [&pointer,&length,&stride,&offset]{proof.append(value);}
+                    let value=Value{ty:descriptor,regs:vec![address,length.regs[0],step,offset.regs[0]],proof,literal:false,uniform:true,constant:None};
+                    append_actual(&mut actual,&value);
+                    arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
+                    residency::argument(&mut locations,index,&residency::Residency::cpu());
+                    residency::layout_argument(&mut layouts,index,residency::LayoutSource::parameter(binding,!view.projection.is_empty()));
+                    self.reads.insert(binding);self.cross_access.insert(binding);
+                    env.insert(p.name.clone(),Binding::Data(view));
+                }
                 Argument::BorrowedData(mut reference) if p.ty.dataset=>{
-                    residency::argument(&mut locations,index,&reference.data);
+                    residency::argument(&mut locations,index,&reference.data.residency);
                     self.require_same(&ty,reference.element_layout().1,span)?;
                     if !matches!(p.access,Access::Read|Access::Write|Access::InOut|Access::Atomic){
                         return self.fail(span,"B224","CPU dataset借用需要read／write／inout／atomic");
@@ -461,14 +494,15 @@ impl Builder<'_> {
                         written_data.push((index,reference.clone()));
                     }
                     if p.access.writes(){self.invalidate_application_contents(&reference);}
-                    let value=self.application_reference_value(&reference);
+                    let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
+                    let value=self.application_reference_value(&reference,descriptor,span)?;
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::DataReference(reference));
                 }
                 Argument::ApplicationData(data) if p.ty.dataset&&p.access==Access::Value=>{
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::Declared{stride:ir::align_up(data.ty.size,data.ty.align),projected:false});
-                    residency::argument(&mut locations,index,&data);
+                    residency::argument(&mut locations,index,&data.residency);
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;
@@ -523,7 +557,19 @@ impl Builder<'_> {
                 source: self.definition.source.clone(),
                 span,
             };
-            self.residency.calls.push(call);
+            if self.application.is_none() {
+                // This range has no application caller whose later closure could consume the call.
+                // Consume the already closed imported contract with its actual CPU inputs now.
+                let contract=&self.functions.units[&instance.name].as_ref().unwrap().contract;
+                let known=BTreeMap::from([(instance.name.clone(),contract.residency.clone())]);
+                let inputs=residency::Inputs{calls:vec![call],..Default::default()};
+                let remaining=residency::infer(&inputs,&known,&Default::default())?;
+                if !remaining.is_empty() {
+                    return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的布局前提");
+                }
+            } else {
+                self.residency.calls.push(call);
+            }
         }
         let result = if d.function.result.name == "void" || d.function.result.is_never() {
             None
@@ -681,7 +727,7 @@ impl Builder<'_> {
         self.view_uses.after(span);
         let borrow=returned.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
         for name in held {
-            let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.handle.identity()).collect::<Vec<_>>();
+            let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.root.identity()).collect::<Vec<_>>();
             for identity in resources {
                 let resource=self.data_borrow(&[identity]);
                 self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:borrow.clone(),span})?;
@@ -720,12 +766,12 @@ pub(super) fn translate_returned(
     match (value, model) {
         (Returned::Value(value), Returned::Value(model)) => translate_value(value, model, bindings),
         (Returned::Dataset(value), Returned::Dataset(model)) => {
-            translate_value(&mut value.handle, &model.handle, bindings);
+            translate_value(&mut value.root, &model.root, bindings);
             translate_value(&mut value.length, &model.length, bindings);
-            value.handle.proof = bounds::Proof::capture(&value.handle);
+            value.root.proof = bounds::Proof::capture(&value.root);
             value.length.proof =
                 bounds::Proof::capture(&value.length).with_domains(Domains::from([
-                    IndexDomain::ApplicationLength(value.handle.identity()),
+                    IndexDomain::ApplicationLength(value.root.identity()),
                 ]));
             value.residency = model.residency.at_call(bindings);
             value.count = model.count;
@@ -785,8 +831,8 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
             match *output {
                 view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
                 view_contracts::Output::Written(parameter,component)=>if let Some(value)=contract.written[parameter].as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},
-                view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_value_mut(value,resource)){value.handle.proof=value.handle.proof.clone().with_view_borrow(0,borrow.clone());},
-                view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[parameter].as_mut().and_then(|value|view_contracts::resource_value_mut(value,resource)){value.handle.proof=value.handle.proof.clone().with_view_borrow(0,borrow.clone());},
+                view_contracts::Output::ReturnedResource(resource)=>if let Some(value)=contract.returned.as_mut().and_then(|value|view_contracts::resource_value_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
+                view_contracts::Output::WrittenResource(parameter,resource)=>if let Some(value)=contract.written[parameter].as_mut().and_then(|value|view_contracts::resource_value_mut(value,resource)){value.root.proof=value.root.proof.clone().with_view_borrow(0,borrow.clone());},
             }
         }
         if let Some(function)=&mut unit.function {

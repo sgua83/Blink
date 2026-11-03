@@ -22,6 +22,7 @@ fn speculatable(
         InstKind::Constant(..)
         | InstKind::Index(_)
         | InstKind::Uniform(..)
+        | InstKind::BufferStride(..)
         | InstKind::IntegerDivide {
             divisor: IntegerDivisor::Constant(_),
             ..

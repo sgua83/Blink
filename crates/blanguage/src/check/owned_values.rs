@@ -60,7 +60,7 @@ impl OwnedValuePayload {
             match item.as_mut() {
                 Returned::Dataset(data)=>{
                     data.ownership=Ownership::Borrowed;data.access=Access::Read;
-                    if data.handle.proof.view_borrow(0).empty(){data.handle.proof=data.handle.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(data.handle.identity())]));}
+                    if data.root.proof.view_borrow(0).empty(){data.root.proof=data.root.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(data.root.identity())]));}
                 }
                 Returned::OwnedValue(value)=>value.borrow(),_=>{},
             }
@@ -103,7 +103,7 @@ impl OwnedValuePayload {
         for item in self.payloads.iter_mut().flatten() {
             match item.as_mut() {
                 Returned::Dataset(data) => {
-                    data.handle.proof = data.handle.proof.borrow_state();
+                    data.root.proof = data.root.proof.borrow_state();
                     data.length.proof = data
                         .count
                         .map(|n| bounds::Proof::unsigned(n, n))
@@ -164,10 +164,10 @@ impl OwnedValuePayload {
                 match item.as_mut() {
                     Returned::OwnedValue(v) => v.invalidate_components(&selected, borrowed),
                     Returned::Dataset(d) => {
-                        if borrowed.is_some_and(|id| d.handle.proof.known_identity(0) == Some(id)) {
+                        if borrowed.is_some_and(|id| d.root.proof.known_identity(0) == Some(id)) {
                             continue;
                         }
-                        d.handle.proof = d.handle.proof.borrow_state();
+                        d.root.proof = d.root.proof.borrow_state();
                         d.length.proof = d
                             .count
                             .map(|n| bounds::Proof::unsigned(n, n))
@@ -202,7 +202,7 @@ impl OwnedValuePayload {
             .iter()
             .flatten()
             .flat_map(|item| match item.as_ref() {
-                Returned::Dataset(d) => vec![d.handle.identity()],
+                Returned::Dataset(d) => vec![d.root.identity()],
                 Returned::OwnedValue(v) => v.handles(),
                 _ => Vec::new(),
             })
@@ -250,13 +250,13 @@ impl Builder<'_> {
             },
             Returned::Dataset(data) => {
                 let mut proof = bounds::Proof::default();
-                proof.append(&data.handle);
+                proof.append(&data.root);
                 proof.append(&data.length);
                 Value {
                     ty: Ty::owned_dataset(data.ty.clone(), data.count),
-                    regs: vec![data.handle.regs[0], data.length.regs[0]],
+                    regs: vec![data.root.regs[0], data.length.regs[0]],
                     proof,
-                    uniform: data.handle.uniform && data.length.uniform,
+                    uniform: data.root.uniform && data.length.uniform,
                     literal: false,
                     constant: None,
                 }
@@ -342,12 +342,12 @@ impl Builder<'_> {
                 result.place = None;
             }
             Returned::Dataset(data) => {
-                data.handle.regs = vec![regs[0]];
-                data.handle.proof = bounds::Proof::capture(&data.handle);
+                data.root.regs = vec![regs[0]];
+                data.root.proof = bounds::Proof::capture(&data.root);
                 data.length.regs = vec![regs[1]];
                 data.length.proof =
                     bounds::Proof::capture(&data.length).with_domains(Domains::from([
-                        IndexDomain::ApplicationLength(data.handle.identity()),
+                        IndexDomain::ApplicationLength(data.root.identity()),
                     ]));
             }
         }
@@ -370,7 +370,7 @@ impl Builder<'_> {
             }
             Returned::Dataset(Box::new(DataPayload {
                 elements:self.unknown_element_model(element),
-                handle,
+                root: handle,
                 length,
                 ty: element.clone(),
                 count,

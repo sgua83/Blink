@@ -81,6 +81,7 @@ pub(crate) fn compile_resources(
                 "blink_upload",
                 "blink_download",
                 "blink_address",
+                "blink_storage_address",
                 "blink_allocate",
                 "blink_resize",
                 "blink_run",

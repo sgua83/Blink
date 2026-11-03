@@ -92,9 +92,9 @@ impl crate::module::codec::Encode for Borrow{fn encode(&self,w:&mut crate::modul
 }}
 impl crate::module::codec::Decode for Borrow{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{sources:crate::module::codec::Decode::decode(r)?,..Self::default()})}}
 pub(super) fn resource_borrow(data:&application::Data)->Borrow{
-    let mut value=data.handle.proof.view_borrow(0);if value.empty(){value.sources.insert(Source::Data(data.handle.identity()));}value
+    let mut value=data.root.proof.view_borrow(0);if value.empty(){value.sources.insert(Source::Data(data.root.identity()));}value
 }
-pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.handle.proof.clone().with_view_borrow(0,resource_borrow(data))}
+pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.clone().with_view_borrow(0,resource_borrow(data))}
 
 pub(super) enum InputSlot {
     Value {name:String,component:usize},
@@ -235,7 +235,7 @@ impl Binding {
     pub(super) fn view_borrow(&self)->Borrow {
         if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
             let mut borrow=value.value.proof.typed_view_borrow(&value.value.ty);
-            for data in value.resources(){borrow.union(&data.handle.proof.view_borrow(0));}return borrow;
+            for data in value.resources(){borrow.union(&data.root.proof.view_borrow(0));}return borrow;
         }
         if let Self::ViewElement{view,..}=self {return view.proof.borrowed_view();}
         let mut borrow=self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default();
@@ -269,7 +269,7 @@ impl Builder<'_> {
             if let Some(borrow)=self.mapped_data_borrow(*identity){result.union(&borrow);continue;}
             let mut value=Borrow::default();
             for binding in self.env.values() {for (_,data,_) in data_paths(binding) {
-                if data.handle.identity()==*identity {value.union(&data.handle.proof.view_borrow(0));}
+                if data.root.identity()==*identity {value.union(&data.root.proof.view_borrow(0));}
             }}
             if value.empty(){value.sources.insert(Source::Data(*identity));}result.union(&value);
         }
@@ -318,8 +318,8 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn require_view_return_proof(&mut self,proof:&bounds::Proof,owned:Borrow,span:Span)->Result<()> {
-        let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.handle.identity()).chain(data.handle.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
-        for param in &self.definition.function.params {if matches!(param.access,Access::Write|Access::InOut) && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for data in value.resources(){if data.ownership!=application::Ownership::Moved{allowed.insert(data.handle.identity());allowed.extend(data.handle.proof.borrowed_views().into_iter().filter_map(|source|match source{Source::Data(id)=>Some(id),_=>None}));}}}}
+        let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.root.identity()).chain(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
+        for param in &self.definition.function.params {if matches!(param.access,Access::Write|Access::InOut) && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for data in value.resources(){if data.ownership!=application::Ownership::Moved{allowed.insert(data.root.identity());allowed.extend(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source{Source::Data(id)=>Some(id),_=>None}));}}}}
         for(index,param)in self.definition.function.params.iter().enumerate(){if param.access==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(&param.name){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
         self.check_view_requirement(Requirement::Return{borrow:proof.borrowed_view(),allowed,owned,span})
     }

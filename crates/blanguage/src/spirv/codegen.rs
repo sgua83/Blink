@@ -461,6 +461,7 @@ impl Emitter<'_> {
                     self.ray(*scene, origin, direction, *minimum, *maximum, result);
                 }
                 InstKind::PositionAddress { .. }
+                | InstKind::BufferStride(..)
                 | InstKind::LoadIndexed { source: IndexedSource::Pointer { .. }, .. }
                 | InstKind::StoreIndexed { source: IndexedSource::Pointer { .. }, .. } =>
                     return Err("CPU原生位置地址不能在GPU内核中使用"),

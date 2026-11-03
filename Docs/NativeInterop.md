@@ -344,7 +344,7 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 
 ## 共同Frame C ABI的错误与所有权
 
-根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI22的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。该ABI身份同时涵盖执行映像中CPU主函数末端与展开字节的编码；共同Frame入口使用下列C签名。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
+根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI23的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。该ABI身份同时涵盖执行映像中CPU主函数末端与展开字节的编码；共同Frame入口使用下列C签名。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
 
 ```c
 typedef struct BlinkFrame Frame;
@@ -362,11 +362,14 @@ uint32_t blink_upload(Frame *frame,uint32_t handle,BlinkErrorReceiver on_error,v
 uint32_t blink_download(Frame *frame,uint32_t handle,BlinkErrorReceiver on_error,void *context);
 uint32_t blink_address(Frame *frame,uint32_t handle,uint64_t byte_offset,uint32_t write_bytes,
                       uint32_t **output,BlinkErrorReceiver on_error,void *context);
+uint64_t blink_storage_address(const Frame *frame,uint32_t handle);
 void blink_release(Frame *frame,uint32_t handle);
 void blink_destroy(Frame *frame);
 ```
 
 六个返回uint32_t的操作成功为1、原Result错误为0，只有成功才写output；调用者不能在错误后读取失败输出。失败在返回前调用本次on_error一次，借出原UTF-8消息及不含NUL的字节数；消息仅到接收函数返回前有效。接收函数和context保持到本次调用返回，运行库不存入Frame或登记到全局状态，保留文本副本由调用者负责，异常不得跨C ABI展开。实际指针、完整参数数组、类型／程序身份及独占访问仍按可信原生边界履行，不以状态返回证明任意无效指针安全。
+
+blink_storage_address是原Frame当前有效槽的纯共享查询，直接返回CPU存储基址或GPU绑定头的设备地址；不执行传输、等待、分配、错误回调或所有权变更。实际句柄与Frame归同一可信调用边界，地址仅在原存储及所有真实借用消费者存活期间有效；GPU地址不能被CPU解引用。该入口为普通B只读借用降低使用，普通外部C函数仍不接收dataset。Invocation只读参数的32字节实际布局见[资源ABI](BLanguage.md#已编译模块的资源abi)，不把它按Host／可写参数的四个u32解释。
 
 共同操作不打印、结束宿主或替宿主释放Frame；失败后的原存储／程序和已发生效果继续按原Rust操作合同交接，不回滚或自动重放，不承诺设备故障后数据可用。宿主选择后续合法调用、继续持有或显式销毁。release释放指定槽位，destroy结束根Frame；创建解码错误仍在同次接收函数交回原文本后返回NULL，没有可销毁的Frame。
 

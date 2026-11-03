@@ -1411,15 +1411,17 @@ fn function_parameters(
                 {
                     let mut data = b.application_parameter(data_index, parameter_index, p.access)?;
                     if p.access!=Access::Value {
-                        let stride=b.reg(Scalar::U32);let offset=b.reg(Scalar::U32);
-                        let value=|reg|Value{ty:Ty::scalar(Scalar::U32),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
-                        parameters.push(CallParameter::Value(Builder::borrowed_dataset_parameter_type()));
-                        inputs.extend([data.handle.regs[0],data.length.regs[0],stride,offset]);
-                        data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride),offset:value(offset)};
+                        let parameter_ty=Builder::borrowed_dataset_parameter_type(p.access,d.execution);
+                        let stride=b.reg(parameter_ty.components[2].0);let offset=b.reg(Scalar::U32);
+                        let value=|reg,scalar|Value{ty:Ty::scalar(scalar),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
+                        let stride_scalar=parameter_ty.components[2].0;
+                        parameters.push(CallParameter::Value(parameter_ty));
+                        inputs.extend([data.root.regs[0],data.length.regs[0],stride,offset]);
+                        data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride,stride_scalar),offset:value(offset,Scalar::U32)};
                         Binding::ApplicationData(data)
                     }else{
                         parameters.push(CallParameter::Value(Ty::owned_dataset(data.ty.clone(),data.count)));
-                        inputs.extend([data.handle.regs[0],data.length.regs[0]]);
+                        inputs.extend([data.root.regs[0],data.length.regs[0]]);
                         let data=b.application_bind(data,application::rebound(d.function.body.as_ref().unwrap(),&p.name));
                         Binding::ApplicationData(data)
                     }
@@ -3270,7 +3272,7 @@ impl<'a> Builder<'a> {
         }
         let nonempty = begin.maximum() < limit.minimum();
         let borrowed = match &data {
-            Some(CursorSource::ApplicationData(data)) => Some(data.handle.identity()),
+            Some(CursorSource::ApplicationData(data)) => Some(data.root.identity()),
             _ => None,
         };
         let initial = self.application_initial_loop(body)?;

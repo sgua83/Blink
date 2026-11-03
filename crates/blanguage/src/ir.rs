@@ -944,6 +944,8 @@ pub enum InstKind {
     Constant(Reg, Scalar, Bits),
     FunctionAddress(Reg, CallTarget),
     PositionAddress { dst: Reg, address: CallReference },
+    /// Actual CPU BufferAddress stride; metadata only, never a payload read.
+    BufferStride(Reg, usize),
     Index(Reg),
     Uniform(Reg, u32),
     LoadLocal(Reg, usize),

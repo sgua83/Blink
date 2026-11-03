@@ -46,8 +46,8 @@ impl Argument {
         }
         let handles = |arg: &Self| match arg {
             Self::BorrowedData(reference) => reference.sources.clone(),
-            Self::ApplicationData(d) => vec![d.handle.identity()],
-            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.handle.identity()],returns::Returned::OwnedValue(value)=>value.handles(),returns::Returned::Value(v)=>v.proof.borrowed_views().into_iter().filter_map(|s|if let view::Source::Data(id)=s{Some(id)}else{None}).collect(),_=>Vec::new()},
+            Self::ApplicationData(d) => vec![d.root.identity()],
+            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.root.identity()],returns::Returned::OwnedValue(value)=>value.handles(),returns::Returned::Value(v)=>v.proof.borrowed_views().into_iter().filter_map(|s|if let view::Source::Data(id)=s{Some(id)}else{None}).collect(),_=>Vec::new()},
             Self::OwnedValue(r) | Self::OwnedReference{value:r,..} => r.handles(),
             Self::Value(v) => v.proof.borrowed_views().into_iter().filter_map(|s| if let view::Source::Data(id)=s {Some(id)}else{None}).collect(),
             Self::Reference(OwnedBinding{place:p,..}) | Self::Atomic(p) => match p.storage() {
@@ -220,7 +220,7 @@ impl<'a> Builder<'a> {
         for (param, argument) in parameters.iter().zip(&arguments) {
             if let Argument::OwnedReference{value,..}=argument {
                 for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),span})?;}
-                if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.handle.identity(),span)?;}}
+                if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
                 if param.access.writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),span})?; }
@@ -239,7 +239,7 @@ impl<'a> Builder<'a> {
                 Argument::ApplicationData(data) | Argument::Scoped { value:returns::Returned::Dataset(data), .. }
                     if param.access != Access::Value =>
                 {
-                    Some(data.handle.identity())
+                    Some(data.root.identity())
                 }
                 Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) => match place.storage() {
                     Place::ApplicationElement { identity, .. } => Some(*identity),
