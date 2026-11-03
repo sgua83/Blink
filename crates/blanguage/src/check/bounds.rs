@@ -138,6 +138,7 @@ fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain 
             IndexDomain::ApplicationLength(output_identity(id, bindings))
         }
         IndexDomain::Upper(limit, distance) => IndexDomain::Upper(output_identity(limit, bindings), distance),
+        IndexDomain::Lower(base, distance) => IndexDomain::Lower(output_identity(base, bindings), distance),
         IndexDomain::Room(base) => IndexDomain::Room(output_identity(base, bindings)),
         IndexDomain::Sum(left, right) => IndexDomain::Sum(output_identity(left, bindings), output_identity(right, bindings)),
         IndexDomain::Offset(base, amount) => IndexDomain::Offset(output_identity(base, bindings), amount),
@@ -147,7 +148,7 @@ fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain 
     }
 }
 fn numeric_domain(domain: &IndexDomain) -> bool {
-    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..))
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..))
 }
 impl Place {
     fn refine_position(
@@ -455,6 +456,7 @@ impl Proof {
                     identity(ids[2], bindings)?,
                 ]),
                 IndexDomain::Upper(limit, distance) => IndexDomain::Upper(identity(limit, bindings)?, distance),
+                IndexDomain::Lower(base, distance) => IndexDomain::Lower(identity(base, bindings)?, distance),
                 IndexDomain::Room(base) => IndexDomain::Room(identity(base, bindings)?),
                 IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left, bindings)?, identity(right, bindings)?),
                 IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base, bindings)?, amount),
@@ -696,6 +698,11 @@ impl Proof {
         if lower {
             self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(0)), Bits::from(u32::MAX));
             if initial.unsigned_minimum(0) != 0 { self.mark_nonzero(component); }
+            for domain in initial.domains(0) {
+                if let IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) = domain {
+                    self.mark_domain(component, IndexDomain::Lower(base, distance));
+                }
+            }
         }
         if upper {
             self.ranges[component] = self.ranges[component].restrict(0, Bits::from(initial.unsigned_maximum(0)));
@@ -1094,8 +1101,13 @@ impl Proof {
         self.nonzero[component] = true;
     }
     pub(super) fn mark_domain(&mut self, component: usize, domain: IndexDomain) {
-        if let IndexDomain::Fixed(count) = domain {
-            // 固定形状的索引事实同时给出数值上界；保留原有区间与空路径。
+        let count = match domain {
+            IndexDomain::Fixed(count) => Some(count),
+            // 这些动态资源的当前长度ABI为u32，索引严格小于长度。
+            IndexDomain::Data(_) | IndexDomain::Tile | IndexDomain::View(_) | IndexDomain::ApplicationData(_) => Some(u32::MAX),
+            _ => None,
+        };
+        if let Some(count) = count {
             self.ranges
                 .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
             self.ranges[component] = self.ranges[component].restrict(0, Bits::from(count)).without(Bits::from(count));
@@ -2620,7 +2632,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                     if matches!(op, "<<" | ">>") {
                         right = right.shift_counts(scalar);
                     }
-                    left.combine(&right, |left, right| {
+                    let range = left.combine(&right, |left, right| {
                         let bitwise = |operation: fn(Bits, Bits) -> Bits| {
                             let (lower, upper) = bitwise_range(left, right, scalar, operation);
                             IntegerRanges::interval(lower, upper)
@@ -2632,7 +2644,15 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                             _ if signed => signed_range(op, left, right, scalar),
                             _ => unsigned_range(op, left, right, scalar),
                         }
-                    })
+                    });
+                    if scalar == Scalar::U32 && op == "-" {
+                        let origins = b.component_origins(bi);
+                        if let Some(minimum) = a.proof.domains(ai).into_iter().filter_map(|domain| match domain {
+                            IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) if origins.contains(&base) => Some(distance),
+                            _ => None,
+                        }).max() { return range.restrict(Bits::from(minimum), Bits::from(u32::MAX)); }
+                    }
+                    range
                 })
                 .collect()
         } else {
