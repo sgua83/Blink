@@ -1151,6 +1151,8 @@ impl Builder<'_> {
                 .initialization.clone()
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
             index: index.regs[0],
+            index_value: bounds::Operand::of(index, 0),
+            element_layout: address::Layout::of(&data.ty),
             index_range,
             stride: match &data.layout {DataLayout::Declared=>DataStride::Declared(ir::align_up(data.ty.size,data.ty.align)),DataLayout::Parameter{stride,offset,..}=>DataStride::Parameter{stride:stride.regs[0],offset:offset.regs[0]}},
             words: data

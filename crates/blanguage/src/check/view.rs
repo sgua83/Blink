@@ -163,14 +163,15 @@ pub(super) enum Requirement {
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
     Address {borrow:Borrow,layout:address::Layout,writes:bool,initialized:bool,span:Span},
     Memory {target:address::MemoryTarget,borrow:Borrow,span:Span},
+    Dataset {borrow:Borrow,index:Option<bounds::Operand>,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
 }
 impl Requirement {
-    pub fn borrow(&self)->&Borrow {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}|Self::Address{borrow,..}|Self::Memory{borrow,..}|Self::Initialized{borrow,..}=>borrow}}
+    pub fn borrow(&self)->&Borrow {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}|Self::Address{borrow,..}|Self::Memory{borrow,..}|Self::Dataset{borrow,..}|Self::Initialized{borrow,..}=>borrow}}
     pub fn pending(&self)->bool {self.borrow().pending()||matches!(self,Self::Unborrowed{resource,..}if resource.pending())||matches!(self,Self::Return{owned,..}if owned.pending())}
     pub fn under_path(&self,path:&bounds::Clause)->Self{match self{
         Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:borrow.restricted(path),allowed:allowed.clone(),owned:owned.clone(),span:*span},
-        Self::Unborrowed{..}|Self::Address{..}|Self::Memory{..}|Self::Initialized{..}=>self.mapped(|borrow|borrow.restricted(path)),
+        Self::Unborrowed{..}|Self::Address{..}|Self::Memory{..}|Self::Dataset{..}|Self::Initialized{..}=>self.mapped(|borrow|borrow.restricted(path)),
     }}
     pub fn mapped(&self,map:impl Fn(&Borrow)->Borrow)->Self {
         match self {
@@ -178,11 +179,12 @@ impl Requirement {
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
             Self::Address{borrow,layout,writes,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),writes:*writes,initialized:*initialized,span:*span},
             Self::Memory{target,borrow,span}=>Self::Memory{target:*target,borrow:map(borrow),span:*span},
+            Self::Dataset{borrow,index,span}=>Self::Dataset{borrow:map(borrow),index:*index,span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
         }
     }
     pub fn check(&self,source:&crate::Source)->Result<()> {
-        if self.borrow().unresolved()||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Initialized{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
+        if self.borrow().unresolved()||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         if let Self::Address{borrow,layout,writes,initialized,span}=self {
             for(origin_source,when)in borrow.sources.entries() {
                 if !when.possible(){continue;}
@@ -318,7 +320,7 @@ impl Builder<'_> {
         let borrow=requirement.borrow();
         if borrow.empty(){return Ok(());}
         requirement.under_path(&self.path).check(&self.definition.source)?;
-        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
+        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, span: Span) -> Result<()> {

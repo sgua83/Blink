@@ -41,6 +41,8 @@ impl Place {
                 resource,
                 initialization,
                 index,
+                index_value,
+                element_layout,
                 index_range,
                 stride,
                 words,
@@ -54,6 +56,8 @@ impl Place {
                 resource,
                 initialization,
                 index,
+                index_value,
+                element_layout,
                 index_range,
                 stride,
                 access,
@@ -434,6 +438,7 @@ impl Builder<'_> {
             _ => {}
         }
         self.data_access(place, Access::Read);
+        self.dataset_read(place, span)?;
         let mut regs = Vec::new();
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);

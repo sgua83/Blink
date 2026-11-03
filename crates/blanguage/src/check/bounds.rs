@@ -38,15 +38,28 @@ pub(super) enum Operand {
     Constant(Scalar, Bits),
 }
 impl Operand {
-    fn of(value: &Value, component: usize) -> Self {
+    pub(super) fn of(value: &Value, component: usize) -> Self {
         match &value.constant {
             Some(bits) => Self::Constant(value.ty.components[component].0, bits[component]),
             None => Self::Value(value.component_identity(component)),
         }
     }
-    fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
+    pub(super) fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
         Some(match self {
             Self::Value(value) => Self::Value(identity(value)?),
+            constant => constant,
+        })
+    }
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+        Some(match self {
+            Self::Value(id) => {
+                let proof = bindings.get(&id)?;
+                match (proof.known_identity(0), proof.range_set(0).0.as_slice()) {
+                    (Some(id), _) => Self::Value(id),
+                    (None, [(a, b)]) if a == b => Self::Constant(Scalar::U32, *a),
+                    _ => return None,
+                }
+            }
             constant => constant,
         })
     }
@@ -1638,7 +1651,7 @@ impl Clause {
         }
         roots.iter().map(|root| clauses[&root.key()].clone()).collect()
     }
-    fn selection(index: ownership::ApplicationIndex, element: usize) -> Self {
+    pub(super) fn selection(index: ownership::ApplicationIndex, element: usize) -> Self {
         match index {
             ownership::ApplicationIndex::Constant(index) => {
                 if index as usize == element {

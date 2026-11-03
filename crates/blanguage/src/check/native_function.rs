@@ -377,7 +377,15 @@ impl Builder<'_> {
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
                     residency::layout_argument(&mut layouts,index,reference.layout_source());
-                    let borrow=self.data_value_borrow(&reference.data);
+                    let source=self.data_value_borrow(&reference.data);
+                    let borrow=if p.access==Access::Read && d.execution==crate::execution::Requirement::Invocation {
+                        let (_,ty)=reference.element_layout();
+                        address::Origin{
+                            root:address::Root::Derived(source),layout:address::Layout::of(ty),
+                            base:address::Layout::of(&reference.data.ty),words:reference.words().into(),positions:Arc::from([]),
+                            writable:false,initialized:vec![true;ty.components.len()].into(),
+                        }.normalize()
+                    }else{source};
                     reference.data.root.proof=reference.data.root.proof.with_view_borrow(0,borrow);
                     Argument::BorrowedData(reference)
                 },
@@ -478,7 +486,6 @@ impl Builder<'_> {
                     arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
                     residency::argument(&mut locations,index,&residency::Residency::cpu());
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::parameter(binding,!view.projection.is_empty()));
-                    self.reads.insert(binding);self.cross_access.insert(binding);
                     env.insert(p.name.clone(),Binding::Data(view));
                 }
                 Argument::BorrowedData(mut reference) if p.ty.dataset=>{
@@ -599,11 +606,15 @@ impl Builder<'_> {
                 memory_borrow.union(&borrow.restricted(&path));
             }
         }
+        let memory=if self.application.is_none(){
+            let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
+            self.native_dataset_reads(&access,&view_arguments)
+        }else{Vec::new()};
         let memory_use=self.call_address_memory(memory_borrow,span)?;
         self.emit(InstKind::Call(Call {
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
-            memory: Vec::new(),
+            memory,
             memory_use:Some(memory_use),
             result: result.clone(),
             values: values.clone(),

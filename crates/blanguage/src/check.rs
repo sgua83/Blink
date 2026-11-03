@@ -262,6 +262,8 @@ enum Place {
         resource: view::Borrow,
         initialization: Option<(Position, ownership::ApplicationIndex)>,
         index: Reg,
+        index_value: bounds::Operand,
+        element_layout: address::Layout,
         index_range: (u32, u32),
         stride: application::DataStride,
         words: Vec<u32>,
@@ -2091,6 +2093,7 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.require_initialized(p, span)?;
+                self.dataset_read(p, span)?;
                 let mut value = self
                     .read_application_place(ty, *handle, *identity, *index, *stride, words, span)?;
                 let (proof, uniform) = self.read_owned_proof(p, &value.regs);

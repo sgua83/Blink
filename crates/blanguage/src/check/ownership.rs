@@ -148,6 +148,10 @@ impl Place {
     pub(super) fn data_positions(&self) -> Vec<Position> {
         match self {
             Self::Element { binding, words, .. } => words.iter().map(|word| Position::Element(*binding, *word)).collect(),
+            Self::ApplicationElement { identity, element_layout, words, .. } => {
+                let borrow = Arc::new(view::Borrow::source(view::Source::Data(*identity)));
+                words.iter().map(|word| Position::Borrowed(borrow.clone(), element_layout.clone(), *word)).collect()
+            }
             Self::ViewElement { source, index, stride, words, .. } => words.iter()
                 .map(|word| Position::ViewElement(*source, *index, *stride, *word)).collect(),
             Self::TileElement { tile, index, words, .. } => words.iter()

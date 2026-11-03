@@ -288,6 +288,7 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
             | InstKind::FunctionAddress(dst, _)
             | InstKind::Index(dst)
             | InstKind::Uniform(dst, _)
+            | InstKind::BufferStride(dst, _)
             | InstKind::TileLength(dst)
             | InstKind::TileLane(dst) => *dst = r(*dst),
             InstKind::LoadLocal(dst, slot) => {
