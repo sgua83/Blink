@@ -2,27 +2,23 @@
 
 <h1>Blink Programming Language</h1>
 
-<p><strong>Native parallelism · Unified CPU/GPU programming · Native domain compilation and execution</strong></p>
+<p><strong>Native parallelism · Shared CPU/GPU source · C/C++/Rust integration</strong></p>
 <p>A native parallel programming language for the AI supercomputing era</p>
 
 <p><a href="README.md">简体中文</a> | <strong>English</strong></p>
-<p><a href="#quick-start">Quick start</a> · <a href="#parallel-programming">Read chapters 1–3</a> · <a href="Docs/BLanguage.md">Language reference</a> · <a href="#learn-and-explore">Learn</a> · <a href="Docs/Architecture.md">Architecture</a></p>
+<p><a href="https://github.com/sgua83/Blink/releases/latest">Download</a> · <a href="#quick-start">Quick start</a> · <a href="#tools-and-native-integration">C++/Rust integration</a> · <a href="#learn-and-explore">Books and docs</a> · <a href="#feedback">Feedback</a></p>
 
 </div>
 
 **Blink is a native parallel programming language, also known as the B language.** Use it to write standalone applications, multicore CPU programs, and GPU compute programs. The same compute source can be compiled to native CPU and GPU code.
 
+For **C/C++/Rust programmers and AI** working with native parallelism: express suitable computation once in B, run it on a CPU or GPU, or compile it into a dynamic library for an existing project.
+
 The B in the name also stands for **Base**. Blink aims to become a foundational programming language for the AI supercomputing era, with parallelism, data relationships, and cooperation built into the language, while developing complete general-purpose and systems programming capabilities.
-
-Compilation, debugging, inspection, and basic measurement tools serve AI as their sole direct user; architects use AI to inspect actual code, data, and execution. The long-term design lets AI write observation and analysis programs, compute near the data, express concrete machine implementations, and combine experiments on real inputs. Optimization, debug information, and runtime collection are independent choices; analysis and implementation selection remain with AI or the user. See the [AI-facing tool principles and individual responsibilities](Docs/Architecture.md#面向ai的基础工具与全流程观察) for current foundations and planned capabilities. Complete debugging and experiment interfaces are not yet delivered; the design adds no automatic bottleneck judgments, scoring, or second authority over runtime state.
-
-B develops self-hosting compiler and debugging/inspection responsibilities alongside the interfaces and libraries required for complete systems programs. System ABI declarations and meaningful B library wrappers are valid capabilities; independent native support may remain in Rust. Completion is based on actual ownership and rebuilding, rather than a source percentage or a B shell around the original implementation. See the [architecture](Docs/Architecture.md#长期系统设计目标与语言边界) for boundaries and current status.
 
 This repository contains the B-language compiler, linker, native execution framework, language reference, and examples. B-language interfaces live in `.h` files and implementations in `.b` files. The compiler generates Windows x64 machine code or SPIR-V for the selected target. The execution framework owns data, devices, transfers, and completion. The current division of compiler and runtime responsibilities between B and Rust is recorded in the architecture; source proportions do not establish self-hosting. Blink uses no third-party compiler, shader compiler, or parallel runtime.
 
-> **In development — software version in [VERSION](VERSION).** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
-
-CPU applications can construct datasets of owning elements with `dataset<T>(length,F)`, using a static factory for each initialized element. Whole-dataset moves, returns and final element cleanup retain the original resource ownership. CPU functions can declare `requires nonzero(rows[*].value)` and `requires nonempty(rows[*].value.values)` for common integer and child-resource facts about initialized elements. The `requires index(rows[*].value.index,rows[*].value.values)` contract also carries each element’s index relation to its actual child resource; see the [value](Docs/BLanguage.md#common-element-nonzero), [resource](Docs/BLanguage.md#common-element-nonempty) and [index](Docs/BLanguage.md#common-element-index) contracts. See the [implemented scope and remaining element borrowing and container operations](Docs/BLanguage.md#cpu-owned-dataset-elements).
+> **In development.** [Formal releases](https://github.com/sgua83/Blink/releases/latest) and the [main software version](VERSION) are tracked separately. Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
 
 ## Three core features
 
@@ -34,39 +30,67 @@ Parallelism is a language capability. Parallel domains, access permissions, coop
 
 **One set of B-language sources, native execution on CPUs and GPUs.** Applicable algorithms share an implementation across both targets. `on` declares target capabilities, `target` chooses an execution location, and `upload` / `download` make data transfers explicit. Hardware differences and transfer costs remain visible.
 
-### 3. Native domain compilation and execution
+### 3. Native domain compilation and execution (in design)
 
 **Use a group of machines as compilation and execution resources.** A compute domain organizes machines for native compilation and execution. Build and execution domains can be selected independently, with explicit semantics for partitioning, communication, dependencies, and completion.
 
 This capability is currently in design. Each build or execution uses resources within its selected domain; applications orchestrate workflows between domains. See the [compute-domain design](Docs/ComputeDomain.md) for responsibilities, deployment, and interfaces.
 
-Formal releases are built every Sunday at 21:00 Beijing time from the latest submitted source snapshot. The Windows x64 asset on [GitHub Releases](https://github.com/sgua83/Blink/releases) is Blink-Setup-windows-x64.exe: a native self-extracting installer supporting double-click and administrator --quiet deployment. It replaces the current installation at %ProgramFiles%/Blink and configures the system PATH. Release versions and platform/architecture assets are separate; only Windows x64 is currently delivered. Development roots and existing target directories remain unchanged. See [release and installation](Tools/README.md) and [versioning](Docs/Versioning.md). The default compiler feature retains the complete Rust compiler APIs and command-line tools; a stable installed Blink seed compiles the B lexer. Generated resource wrappers disable this feature on their SDK dependencies, retaining shared representations and the backends they still consume without rebuilding the source frontend or running the lexer seed. The commands below build the source SDK. 
-
 ## Quick start
 
-AI can inspect an artifact's stored build request and source identities with `bc inputs <compiled.obj|entry.blbi>`. This JSON query neither reads current B sources nor recompiles the artifact. See [build input inspection](Docs/BLanguage.md#实际构建输入查询) for fields and identity scope; this command does not imply that complete debugging tools are available.
+### 1. Install a formal release
 
-Use `bc layout <module.h|module.b> <type> [-I module-root] [--field path]` for a JSON query of a concrete source type or static field. `bc build` also exports `.layout.json`; the SDK can inspect an existing execution interface without source compilation. See [type and field layout inspection](Docs/BLanguage.md#类型与字段布局的结构查询) for descriptor, element-storage, and resource-word boundaries.
+The current formal release is **[v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1)**. Download the [Windows x64 installer, Blink-Setup-windows-x64.exe](https://github.com/sgua83/Blink/releases/download/v0.14.1.1/Blink-Setup-windows-x64.exe) and double-click it to install into `%ProgramFiles%/Blink`. The installer configures the system PATH; open a new terminal afterward. Check [the latest release](https://github.com/sgua83/Blink/releases/latest) for future updates; this walkthrough is pinned to `v0.14.1.1`.
 
-Use `bc ir <module.b>` to query the actual module, selected parallel entry, or application IR as JSON, with function or optimized-stage selection. The SDK can inspect the same compilation result without another compilation. Function/program IR also exposes source_origin with the original definition snapshot, range and owning instance identity; existing IR retains that snapshot after files change. Each IR node can expose its emission-time syntax range through source_site, with null for missing material. Instance/inline chains, optimization provenance and machine-code mappings remain separate. See [operation syntax](Docs/BLanguage.md#ir操作的语法来源). See [definition origins](Docs/BLanguage.md#函数与程序ir的原定义来源). See [IR inspection](Docs/BLanguage.md#实际ir的按需结构查询) for phases, logical references, and artifacts that no longer retain IR.
+Use Windows x64, Git, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. The package includes the tools and source SDK; generating execution-framework code or DLLs still requires these build tools. Open a new **x64 Developer PowerShell**:
 
-Use `bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]` or `native::instructions_json` for structured decoding of an explicitly selected x64 instruction range. Compiler-produced NativeCode, StageCode and ProgramImage values expose `code_json` with the actual main/helper code, alignment and literals; `bc build` also exports `.x64.json`. The SDK can explicitly save separate CPU range material. Query a saved BLBI with `bc code <entry.blbi> --observations <ranges.blcr>` or a BLRI with `bc code --image <deployment.blri> --observations <ranges.blcr>` without source files. Execution bytes exclude the material; Use `bc code --object <compiled.obj> [--section number | --function exact-symbol]` for original physical COFF records and instructions in resolved `.pdata` ranges. The original Object can explicitly save separate `.blcf` material; `--observations <ranges.blcf>` pairs it with actual code and relocations to expose complete generated code, helper, alignment and literal regions. Without material, other bytes remain unclassified. Final PE inspection remains separate. See [native image queries](Docs/BLanguage.md#生成期原生映像的范围与指令查询).
+```powershell
+bc --version
+blink --version
+brun --version
+git clone --branch v0.14.1.1 --depth 1 https://github.com/sgua83/Blink.git Blink
+Set-Location Blink
+```
 
-Use `bc spirv <module.spv>` or the compiler SDK’s `spirv::module_json` to inspect every original instruction, offset, word, type/result/operand ID, entry point and literal bit pattern in one module, without recompilation or GPU execution. ShaderCode, StageCode and ProgramImage expose code_json for every original main/helper module; bc build writes a paired .spv.json for each .spv. Pure GPU artifacts can be queried without sources or CPU range material using `bc code <entry.blbi>` or `bc code --image <deployment.blri>`. SPIR-V remains an intermediate representation. See [single-module queries](Docs/BLanguage.md#原spir-v单模块的完整结构查询).
+All three tools should report `0.14.1.1`. Run the following commands from this pinned Blink root with the installed tools; building main first is unnecessary.
 
-`bc image <entry.blbi> -o <deployment.blri>` exports the original CPU/GPU execution image while retaining the build cache and input record. The Rust runtime SDK can load it with compiler features disabled. See [deployment images](Docs/BLanguage.md#构建记录与可部署执行映像).
+### 2. Run on the CPU first
+
+```powershell
+brun cpu sample/lessons/map.b demo sample Saved/QuickStart/map-cpu :4
+```
+
+The example multiplies each of `[1, 2, 3, 4]` by two and adds one. `Saved/QuickStart/map-cpu/values.bldata` stores four `f32` values, `[3, 5, 7, 9]`. The terminal reports execution information; see [appendix A.3 of the release book](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/并行编程的艺术.md) for reading the data file. No GPU is needed for this step.
+
+### 3. Run the same source on the GPU
+
+```powershell
+brun gpu sample/lessons/map.b demo sample Saved/QuickStart/map-gpu :4
+```
+
+The GPU output directory contains the same `[3, 5, 7, 9]`. A Vulkan driver supporting the program's requirements is needed; a separate Vulkan SDK is unnecessary. This `f32` example requires `DenormPreserve` and `SignedZeroInfNanPreserve`; unsupported devices receive an explicit error. Source: [map.h](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.h) · [map.b](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.b).
+
+### 4. Integrate with an existing C/C++/Rust project
+
+Follow the [release's native integration example](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/interop/README.md) to compile the algorithm into a DLL and call it from C, C++, or Rust. The tools generate a C ABI header, import library, C++ wrapper, and Rust bindings. The [first complete Rust example](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md) starts with `[3, 5, 7, 9]` and then switches to the GPU. Follow the source-build steps and commands in those tagged documents. The [release's ABI and deployment reference](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md) explains supported types and host responsibilities.
+
+### Build development tools from main
+
+`main` is under active development. Its [VERSION](VERSION) can be newer than the formal release. The source SDK instructions below, the three chapters later on this page, and relative documentation links follow main. With installed release tools, use the [matching README](https://github.com/sgua83/Blink/blob/v0.14.1.1/README.en.md) and [tagged books and examples](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample).
+
+Before building the current compiler, install a stable Blink seed supporting its current B frontend sources. The default `compiler` feature retains the complete compiler APIs. The original `build.rs` invokes installed `bc` and `blink` from `%ProgramFiles%/Blink/bin` to statically build the B lexer and generic-lookahead modules; newly built target tools are not their own bootstrap prerequisite. Runtime-only consumers disable `compiler`, avoiding the frontend seed and source frontend.
 
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:
 
 ```powershell
-git clone https://github.com/sgua83/Blink.git
-Set-Location Blink
+git clone https://github.com/sgua83/Blink.git Blink-main
+Set-Location Blink-main
 cargo build --workspace --release
 ```
 
 Run all subsequent commands from the Blink root. CPU examples need no GPU. GPU examples need a Vulkan driver supporting each program's requirements, without a separate Vulkan SDK. The f32 example currently requires `DenormPreserve` and `SignedZeroInfNanPreserve`; unsupported devices receive an explicit error.
 
-Optional CPU stack reports are available through `bc -c ... --stack-report <file>` and `blink --stack-report <compiled-inputs>... -o <file>`. They expose actual frames, closed call-chain bounds, and unknown recursive, external, or indirect ranges. A caller-supplied remaining stack budget is used only for reporting; PE reserve is not assumed to be a thread’s remaining capacity. See the [stack report specification](Docs/BLanguage.md#cpu调用链的静态栈报告).
+Formal release builds and publication are scheduled to **start every Sunday at 21:00 Beijing time (UTC+8)**. Completion depends on building and uploading; [Releases](https://github.com/sgua83/Blink/releases) records what is actually published. New installations replace the current version; development roots and target directories remain unchanged. The same installer supports administrator `--quiet` deployment. See [tooling](Tools/README.md) and [versioning](Docs/Versioning.md) for installation and seed input/output boundaries. `bc --version`, `blink --version`, and `brun --version` report each tool's build-time version.
 
 <a id="parallel-programming"></a>
 
@@ -386,6 +410,26 @@ Write standalone applications in the B language, or compile compute functions wr
 - [Call external DLLs from the B language](sample/extern/README.md): C ABI, parameter access, and resource boundaries.
 - [Native integration and deployment](Docs/NativeInterop.md): artifacts, ABI, deployment, and current limitations.
 
+### AI-facing tools and systems development
+
+Compilation, debugging, inspection, and basic measurement tools serve AI as their sole direct user; architects use AI to inspect actual code, data, and execution. The long-term design lets AI write observation and analysis programs, compute near the data, express concrete machine implementations, and combine experiments on real inputs. Optimization, debug information, and runtime collection are independent choices; analysis and implementation selection remain with AI or the user. See the [AI-facing tool principles and individual responsibilities](Docs/Architecture.md#面向ai的基础工具与全流程观察) for current foundations and planned capabilities. Complete debugging and experiment interfaces are not yet delivered; the design adds no automatic bottleneck judgments, scoring, or second authority over runtime state.
+
+B develops self-hosting compiler and debugging/inspection responsibilities alongside the interfaces and libraries required for complete systems programs. System ABI declarations and meaningful B library wrappers are valid capabilities; independent native support may remain in Rust. Completion is based on actual ownership and rebuilding, rather than a source percentage or a B shell around the original implementation. See the [architecture](Docs/Architecture.md#长期系统设计目标与语言边界) for boundaries and current status.
+
+AI can inspect an artifact's stored build request and source identities with `bc inputs <compiled.obj|entry.blbi>`. This JSON query neither reads current B sources nor recompiles the artifact. See [build input inspection](Docs/BLanguage.md#实际构建输入查询) for fields and identity scope; this command does not imply that complete debugging tools are available.
+
+Use `bc layout <module.h|module.b> <type> [-I module-root] [--field path]` for a JSON query of a concrete source type or static field. `bc build` also exports `.layout.json`; the SDK can inspect an existing execution interface without source compilation. See [type and field layout inspection](Docs/BLanguage.md#类型与字段布局的结构查询) for descriptor, element-storage, and resource-word boundaries.
+
+Use `bc ir <module.b>` to query the actual module, selected parallel entry, or application IR as JSON, with function or optimized-stage selection. The SDK can inspect the same compilation result without another compilation. Function/program IR also exposes source_origin with the original definition snapshot, range and owning instance identity; existing IR retains that snapshot after files change. Each IR node can expose its emission-time syntax range through source_site, with null for missing material. Instance/inline chains, optimization provenance and machine-code mappings remain separate. See [operation syntax](Docs/BLanguage.md#ir操作的语法来源). See [definition origins](Docs/BLanguage.md#函数与程序ir的原定义来源). See [IR inspection](Docs/BLanguage.md#实际ir的按需结构查询) for phases, logical references, and artifacts that no longer retain IR.
+
+Use `bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]` or `native::instructions_json` for structured decoding of an explicitly selected x64 instruction range. Compiler-produced NativeCode, StageCode and ProgramImage values expose `code_json` with the actual main/helper code, alignment and literals; `bc build` also exports `.x64.json`. The SDK can explicitly save separate CPU range material. Query a saved BLBI with `bc code <entry.blbi> --observations <ranges.blcr>` or a BLRI with `bc code --image <deployment.blri> --observations <ranges.blcr>` without source files. Execution bytes exclude the material; Use `bc code --object <compiled.obj> [--section number | --function exact-symbol]` for original physical COFF records and instructions in resolved `.pdata` ranges. The original Object can explicitly save separate `.blcf` material; `--observations <ranges.blcf>` pairs it with actual code and relocations to expose complete generated code, helper, alignment and literal regions. Without material, other bytes remain unclassified. Final PE inspection remains separate. See [native image queries](Docs/BLanguage.md#生成期原生映像的范围与指令查询).
+
+Use `bc spirv <module.spv>` or the compiler SDK’s `spirv::module_json` to inspect every original instruction, offset, word, type/result/operand ID, entry point and literal bit pattern in one module, without recompilation or GPU execution. ShaderCode, StageCode and ProgramImage expose code_json for every original main/helper module; bc build writes a paired .spv.json for each .spv. Pure GPU artifacts can be queried without sources or CPU range material using `bc code <entry.blbi>` or `bc code --image <deployment.blri>`. SPIR-V remains an intermediate representation. See [single-module queries](Docs/BLanguage.md#原spir-v单模块的完整结构查询).
+
+`bc image <entry.blbi> -o <deployment.blri>` exports the original CPU/GPU execution image while retaining the build cache and input record. The Rust runtime SDK can load it with compiler features disabled. See [deployment images](Docs/BLanguage.md#构建记录与可部署执行映像).
+
+Optional CPU stack reports are available through `bc -c ... --stack-report <file>` and `blink --stack-report <compiled-inputs>... -o <file>`. They expose actual frames, closed call-chain bounds, and unknown recursive, external, or indirect ranges. A caller-supplied remaining stack budget is used only for reporting; PE reserve is not assumed to be a thread’s remaining capacity. See the [stack report specification](Docs/BLanguage.md#cpu调用链的静态栈报告).
+
 ## Capabilities and direction
 
 | Area | Current status |
@@ -397,20 +441,30 @@ Write standalone applications in the B language, or compile compute functions wr
 | Compute domains | Domain compilation and execution have a defined architectural scope; not implemented |
 | Stable hot updates | Version binding, state migration, and resource handover are architectural goals; not implemented |
 
+CPU applications can construct datasets of owning elements with `dataset<T>(length,F)`, using a static factory for each initialized element. Whole-dataset moves, returns and final element cleanup retain the original resource ownership. CPU functions can declare `requires nonzero(rows[*].value)` and `requires nonempty(rows[*].value.values)` for common integer and child-resource facts about initialized elements. The `requires index(rows[*].value.index,rows[*].value.values)` contract also carries each element’s index relation to its actual child resource; see the [value](Docs/BLanguage.md#common-element-nonzero), [resource](Docs/BLanguage.md#common-element-nonempty) and [index](Docs/BLanguage.md#common-element-index) contracts. See the [implemented scope and remaining element borrowing and container operations](Docs/BLanguage.md#cpu-owned-dataset-elements).
+
+CPU applications can also move and refill dynamically indexed positions in fixed owning arrays, releasing the resources still owned along actual branches, loops, and returns. Conditional CPU/GPU output locations for returned values and write/inout parameters can cross ordinary functions, compiled objects, and archives; conditional inputs follow the actual use path, including loop early exits. See the [compiled-module resource ABI](Docs/BLanguage.md#已编译模块的资源abi) and [conditional resource outputs](Docs/BLanguage.md#跨函数模块的条件资源输出位置).
+
 The B language **does not adopt object-oriented programming**. Programs are organized around data, functions, modules, and execution domains. The design values top-tier efficiency, direct control over machine execution, checkable interfaces, and use by people, AI code generators, and higher-level compilers. Current rules, native runs, and performance results are recorded separately in the [language reference](Docs/BLanguage.md) and [current architecture](Docs/Architecture.md).
 
 ## Learn and explore
 
 | Start here | What it covers |
 |---|---|
-| [The Art of Parallel Programming](sample/并行编程的艺术.md) | Moving from C/C++ to parallel thinking |
-| [Blink and Rust](sample/Blink和Rust混合编程.md) | Minimal integration through simulation and repeated GPU execution; [examples](sample/hybrid/README.md) |
-| [B Language Source Analysis](sample/B语言源码分析.md) | Compiler, IR, backends, and execution framework; [version and reading notes](sample/compiler/README.md) |
-| [BLEngine Source Analysis](sample/BLEngine源码分析.md) | How the first consumer uses the language, scenes, and lighting; [reading notes](sample/engine/README.md) |
-| [B standard library](library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs, whole-text conversions and owned slices, plus Windows system information, timing, thread error codes, raw command-line snapshots and environment-block lifetimes |
+| [The Art of Parallel Programming](sample/并行编程的艺术.md) | Moving from C/C++ to parallel thinking; [mobile PDF](sample/pdf/并行编程的艺术-B语言-手机阅读版.pdf) · [standard PDF](sample/pdf/并行编程的艺术-B语言.pdf) |
+| [Blink and Rust](sample/Blink和Rust混合编程.md) | Minimal integration through simulation and repeated GPU execution; [examples](sample/hybrid/README.md); [mobile PDF](sample/pdf/Blink和Rust混合编程-手机阅读版.pdf) · [standard PDF](sample/pdf/Blink和Rust混合编程.pdf) |
+| [B Language Source Analysis](sample/B语言源码分析.md) | Compiler, IR, backends, and execution framework; [version and reading notes](sample/compiler/README.md); [mobile PDF](sample/pdf/B语言源码分析-手机阅读版.pdf) · [standard PDF](sample/pdf/B语言源码分析.pdf) |
+| [BLEngine Source Analysis](sample/BLEngine源码分析.md) | How the first consumer uses the language, scenes, and lighting; [reading notes](sample/engine/README.md); [mobile PDF](sample/pdf/BLEngine源码分析-手机阅读版.pdf) · [standard PDF](sample/pdf/BLEngine源码分析.pdf) |
+| [B standard library](library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs, whole-text conversions and owned slices, plus Windows system information, timing, thread error codes, raw command lines, environment access, UTF-8 file input, path existence, absolute and canonical path identities, extension replacement, and path composition |
 | [Language reference](Docs/BLanguage.md) · [Architecture](Docs/Architecture.md) · [Compute domains](Docs/ComputeDomain.md) | Current rules, long-term boundaries, and future design |
 
-Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions.
+Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions. The table follows main; use the [matching release books and PDFs](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample) with installed release tools. BLEngine is an independent consumer and is not yet open source; this repository provides its case-study book and reading notes, rather than the engine source.
+
+<a id="feedback"></a>
+
+## Feedback and technical discussion
+
+Use [GitHub Issues](https://github.com/sgua83/Blink/issues) for questions, defects, and feature requests. When [opening an issue](https://github.com/sgua83/Blink/issues/new), include minimal B source, exact commands, `bc --version` / `blink --version` / `brun --version`, the source tag or commit, Windows and CPU/GPU/driver details, and original errors. For performance comparisons, include input size, build profile, timing scope, and data-transfer costs so others can reproduce the result.
 
 ## Contributing
 

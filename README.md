@@ -2,27 +2,23 @@
 
 <h1>Blink 编程语言</h1>
 
-<p><strong>原生并行 · 统一 CPU／GPU 编程 · 原生域编译与域运行</strong></p>
+<p><strong>原生并行 · 同源 CPU／GPU · 接入 C／C++／Rust</strong></p>
 <p>一门面向 AI 超算时代的原生并行编程语言</p>
 
 <p><strong>简体中文</strong> | <a href="README.en.md">English</a></p>
-<p><a href="#快速开始">快速开始</a> · <a href="#parallel-programming">读前三章</a> · <a href="Docs/BLanguage.md">语言规范</a> · <a href="#学习与文档">学习资料</a> · <a href="Docs/Architecture.md">架构</a></p>
+<p><a href="https://github.com/sgua83/Blink/releases/latest">正式版下载</a> · <a href="#快速开始">快速开始</a> · <a href="#工具与原生集成">C++／Rust 集成</a> · <a href="#学习与文档">书籍与文档</a> · <a href="#feedback">反馈</a></p>
 
 </div>
 
 **Blink 是一门原生并行编程语言，简称 B 语言。** 你可以用 B 语言编写独立应用、CPU 多核计算程序和 GPU 计算程序；同一份计算源码可面向 CPU 与 GPU 生成原生代码。
 
+面向希望使用原生并行的 **C／C++／Rust 程序员与 AI**：把适合的计算写成一份 B 源码，在 CPU 或 GPU 执行，也可编译为动态库接入已有工程。
+
 名字中的 B 也寓意 **Base**。Blink 希望成为 AI 超算时代的基础编程语言，让并行、数据关系与协作成为编程语言的基本能力，并逐步完善通用与系统编程所需的功能。
-
-编译、调试、观察与基础量化工具以AI为唯一直接使用者，架构师通过AI掌握真实代码、数据和执行。长期支持AI编写观察／分析程序、在数据附近计算、表达明确机器方案并组合真实输入实验；优化策略、调试信息和采集独立，AI负责分析与选择。总原则、逐项职责及当前基础见[面向AI的基础工具](Docs/Architecture.md#面向ai的基础工具与全流程观察)；这些方向仍在研发，不代表已有完整调试／实验工具，也不增加自动瓶颈判断、评分或另一运行状态权威。
-
-B按真实职责推进编译器及调试／观察主体的自举与接管，并建设完整系统程序所需的接口与库。正常系统ABI声明和有职责的B库封装应复用，必要独立Rust支持可保留；不以百分之百B、源码比例或B外壳计完成。边界和当前状态见[架构设计](Docs/Architecture.md#长期系统设计目标与语言边界)。
 
 本仓库提供 B 语言的编译器、链接器、原生执行框架、语言规范和示例。B 语言使用 `.h` 声明接口，使用 `.b` 编写实现；编译器根据目标生成 Windows x64 机器码或 SPIR-V，执行框架负责数据、设备、传输和真实完成。编译器与执行框架当前B／Rust职责分工统一见架构中的现行状态，不以源码比例描述自举完成；无第三方编译器、Shader 编译器或并行运行时依赖。
 
-> **项目状态：研发中，软件版本见 [VERSION](VERSION)。** 已有单机 CPU／GPU 原生执行；域编译、域运行和稳定热更新是确定的设计目标，尚未实现。设计目标与当前实现范围见[架构](Docs/Architecture.md)。
-
-普通CPU应用可直接移动、补回固定拥有数组的动态位置，并沿实际分支、for／while和返回释放仍拥有的资源。 动态拥有元素可由`dataset<T>(length,F)`静态逐项构造，完整序列移动／返回与最后元素释放沿同一拥有树；能力及字段借用／追加／取出等剩余范围见[拥有元素序列](Docs/BLanguage.md#cpu-owned-dataset-elements)。普通CPU函数可用`requires nonzero(rows[*].value)`交接共同非零前提，也可用`requires nonempty(rows[*].value.values)`交接已初始化元素的共同子资源非空前提，同一元素的`requires index(rows[*].value.index,rows[*].value.values)`还可交接实际索引与子资源关系；范围见[共同值](Docs/BLanguage.md#common-element-nonzero)、[共同资源](Docs/BLanguage.md#common-element-nonempty)和[索引关系](Docs/BLanguage.md#common-element-index)。returned与write／inout的条件CPU／GPU输出位置可经普通函数、对象和归档交接，条件输入按实际使用路径交接，循环提前退出的跨函数输出位置也沿真实出口关系交接；当前对象与资源ABI见[唯一版本说明](Docs/BLanguage.md#已编译模块的资源abi)，精确范围见[语言规范](Docs/BLanguage.md#跨函数模块的条件资源输出位置)。
+> **项目状态：研发中。** [正式发行](https://github.com/sgua83/Blink/releases/latest)与 [main 软件版本](VERSION)分别记录。 已有单机 CPU／GPU 原生执行；域编译、域运行和稳定热更新是确定的设计目标，尚未实现。设计目标与当前实现范围见[架构](Docs/Architecture.md)。
 
 ## 三大核心特点
 
@@ -34,41 +30,67 @@ B按真实职责推进编译器及调试／观察主体的自举与接管，并�
 
 **同一套 B 语言源码，面向 CPU 与 GPU 原生执行。** 适用的算法无需为两类硬件分别实现；`on` 声明目标能力，`target` 选择本次执行位置，`upload`／`download` 显式交接数据。硬件能力差异与传输成本保持明确。
 
-### 3. 原生域编译与域运行
+### 3. 原生域编译与域运行（设计中）
 
 **把一组机器变成可直接使用的编译与执行资源。** 以计算域组织多台机器，原生完成域内编译与运行；编译域和运行域可以独立选择，分片、通信、依赖和完成具有明确语义。
 
 这一能力目前处于设计阶段。一次构建或执行使用所选域内资源，跨域业务级联由上层应用组织。完整职责、部署与接口设计见[计算域方案](Docs/ComputeDomain.md)。
 
-软件版本规则、自动提交和稳定版自举约定见[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示构建时的同一版本。
-
-正式发行每周日北京时间21:00启动构建和发布，发行包见[GitHub Releases](https://github.com/sgua83/Blink/releases)。当前Windows x64下载Blink-Setup-windows-x64.exe，双击或运维--quiet覆盖安装到%ProgramFiles%/Blink，自动配置系统PATH，只保留当前版；原研发根和target不改。安装与发布操作见[Tools/README.md](Tools/README.md)，版本与自举输入／输出边界见[版本说明](Docs/Versioning.md)。源码SDK构建先安装一份可独立取得、支持当前前端B源码的稳定Blink发行；完整compiler角色的原build.rs从%ProgramFiles%/Blink/bin调用bc与blink，静态生成B词法及泛型前瞻模块，不依赖target中新工具。默认源码SDK保留完整编译接口；仅执行角色关闭compiler功能，不调用前端种子或装入源码前端。以下为源码SDK开发方式。
-
 ## 快速开始
+
+### 1. 安装正式版
+
+当前正式发行是 **[v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1)**。下载 [Windows x64 安装程序 Blink-Setup-windows-x64.exe](https://github.com/sgua83/Blink/releases/download/v0.14.1.1/Blink-Setup-windows-x64.exe)，双击安装到 `%ProgramFiles%/Blink`；安装器自动配置系统 PATH，新开终端后生效。也可从[最新正式发行](https://github.com/sgua83/Blink/releases/latest)查看后续版本；本节命令和示例固定对应 `v0.14.1.1`。
+
+准备 Windows x64、Git、[Rust stable MSVC 工具链](https://rust-lang.org/tools/install)与 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具和 Windows SDK）。安装包包含工具与源码 SDK，生成执行框架或 DLL 时仍需要这些构建工具。在新开的 **x64 Developer PowerShell** 中执行：
+
+```powershell
+bc --version
+blink --version
+brun --version
+git clone --branch v0.14.1.1 --depth 1 https://github.com/sgua83/Blink.git Blink
+Set-Location Blink
+```
+
+三个工具应报告 `0.14.1.1`。后续命令在这个固定版本的 Blink 根目录执行；先用已安装工具运行，无需先构建 main。
+
+### 2. 先在 CPU 上运行
+
+```powershell
+brun cpu sample/lessons/map.b demo sample Saved/QuickStart/map-cpu :4
+```
+
+这个例子把 `[1, 2, 3, 4]` 中每个数乘二再加一。结果保存在 `Saved/QuickStart/map-cpu/values.bldata`，四个 `f32` 值为 `[3, 5, 7, 9]`；命令行显示执行信息，数据文件的读取方法见[正式版书稿附录 A.3](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/并行编程的艺术.md)。CPU 入门无需 GPU。
+
+### 3. 用同一份源码运行 GPU
+
+```powershell
+brun gpu sample/lessons/map.b demo sample Saved/QuickStart/map-gpu :4
+```
+
+结果仍为 `[3, 5, 7, 9]`，保存在 GPU 结果目录。GPU 需要满足程序能力要求的 Vulkan 驱动，无需 Vulkan SDK；这个 `f32` 示例要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`，能力不足会明确报错。源码：[map.h](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.h) · [map.b](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.b)。
+
+### 4. 接入已有 C／C++／Rust 工程
+
+按[正式版原生集成示例](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/interop/README.md)将同一算法编译为 DLL，再从 C、C++ 或 Rust 调用；工具生成 C ABI 头文件、导入库、C++ 包装和 Rust 绑定。也可从[Rust 的第一个完整调用](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md)开始，先得到 `[3, 5, 7, 9]`，再切换 GPU。示例中的源码构建步骤与命令均以该标签文档为准；[正式版 ABI 与部署边界](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)说明支持范围和宿主责任。
+
+### 从 main 构建研发工具
+
+`main` 持续研发，根 [VERSION](VERSION) 是主线软件版本，可能领先正式版。下面保留主线源码 SDK 的构建方式；本页后续三章及相对文档链接随 main 演进，使用正式发行时请配套阅读[固定版本首页](https://github.com/sgua83/Blink/blob/v0.14.1.1/README.md)和[固定版本书籍与示例](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample)。
+
+构建当前编译器前，先安装一份支持当前前端 B 源码的稳定 Blink 种子。默认 `compiler` 功能保留完整编译接口；原 `build.rs` 从 `%ProgramFiles%/Blink/bin` 调用 `bc` 与 `blink`，静态生成 B 词法及泛型前瞻模块，不以 target 中的新工具作为自己的构建前提。仅执行角色关闭 `compiler` 功能，不调用前端种子或装入源码前端。
 
 准备 Windows x64、[Rust stable MSVC 工具链](https://rust-lang.org/tools/install)和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK）。在 x64 Developer PowerShell 中执行：
 
 ```powershell
-git clone https://github.com/sgua83/Blink.git
-Set-Location Blink
+git clone https://github.com/sgua83/Blink.git Blink-main
+Set-Location Blink-main
 cargo build --workspace --release
 ```
 
 后续命令均在 Blink 根目录执行。CPU 入门无需 GPU；GPU 版本需要满足程序能力要求的 Vulkan 驱动，无需 Vulkan SDK。当前 f32 示例还要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`，能力不足会明确报错。
 
-可选CPU栈报告由`bc -c ... --stack-report <文件>`或`blink --stack-report <已编译输入>... -o <文件>`生成，展示实际帧、调用链上界及递归／外部／间接未知范围；可声明真实调用前预算，仅作报告。PE容量与真实线程剩余容量分别说明，工具不限制递归或改写执行。命令与范围见[静态栈报告](Docs/BLanguage.md#cpu调用链的静态栈报告)。
-
-AI可用`bc inputs <compiled.obj|entry.blbi>`直接查询产物保存的实际构建请求与来源记录，输出JSON，不读取当前源码或重新编译。字段、摘要覆盖范围和无记录时的行为见[实际构建输入查询](Docs/BLanguage.md#实际构建输入查询)；该查询不代表完整调试工具已经交付。
-
-AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`查询本次具体类型或字段的JSON布局；`bc build`同时输出.layout.json，已有执行接口也可由SDK直接查询。值描述、元素存储及资源字覆盖的边界见[类型与字段布局查询](Docs/BLanguage.md#类型与字段布局的结构查询)。
-
-AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。函数／程序IR的source_origin保留实际原定义快照、范围与实例对应关系，已取得IR在文件变化后仍可查原事实；每个原IR操作可沿source_site查询发射时的语法范围，缺失材料明确为null；实例／内联链、优化变换与机器映射继续独立交付，见[操作语法来源](Docs/BLanguage.md#ir操作的语法来源)和[原定义来源](Docs/BLanguage.md#函数与程序ir的原定义来源)。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
-
-AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，原Object可显式保存独立`.blcf`，`--observations <ranges.blcf>`匹配后交接普通函数／辅助代码／对齐／字面量完整分区；无材料保持未分类，最终PE另行交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
-
-AI可用`bc spirv <module.spv>`或compiler SDK的`spirv::module_json`只读取得原单模块全部指令、偏移、原字、类型／结果／操作数ID、入口与字面量位模式；不重编或执行GPU。原ShaderCode／StageCode／ProgramImage的code_json保留全部主／辅助模块，bc build为每份.spv导出配对.spv.json；纯GPU可用`bc code <entry.blbi>`或`bc code --image <deployment.blri>`无源码查询，不要求CPU范围材料。SPIR-V仍是中间表示，见[单模块结构查询](Docs/BLanguage.md#原spir-v单模块的完整结构查询)。
-
-`bc image <entry.blbi> -o <deployment.blri>`直接导出原CPU／GPU执行映像，原构建输入记录与缓存保持；关闭compiler功能的Rust运行SDK可独立装入并执行，见[部署映像](Docs/BLanguage.md#构建记录与可部署执行映像)。
+正式发行计划于每周日北京时间 **21:00（UTC+8）启动**构建和发布，完成时间取决于构建与上传，实际已发布版本以 [Releases](https://github.com/sgua83/Blink/releases)为准。新版覆盖安装，只保留当前版，原研发根和 target 不改；同一安装程序支持管理员 `--quiet` 部署。发布、安装与稳定种子的输入／输出边界见[工具说明](Tools/README.md)和[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示各自构建时的版本。
 
 <a id="parallel-programming"></a>
 
@@ -389,6 +411,26 @@ demo_sum 产生 `[3,1,4,2]`，再求和。`total.bldata` 中唯一的 u32 结果
 - [B 语言调用外部 DLL](sample/extern/README.md)：C ABI、参数访问与真实资源边界。
 - [原生集成与部署](Docs/NativeInterop.md)：产物、ABI、部署要求及当前限制。
 
+### 面向 AI 的工具与系统研发
+
+编译、调试、观察与基础量化工具以AI为唯一直接使用者，架构师通过AI掌握真实代码、数据和执行。长期支持AI编写观察／分析程序、在数据附近计算、表达明确机器方案并组合真实输入实验；优化策略、调试信息和采集独立，AI负责分析与选择。总原则、逐项职责及当前基础见[面向AI的基础工具](Docs/Architecture.md#面向ai的基础工具与全流程观察)；这些方向仍在研发，不代表已有完整调试／实验工具，也不增加自动瓶颈判断、评分或另一运行状态权威。
+
+B按真实职责推进编译器及调试／观察主体的自举与接管，并建设完整系统程序所需的接口与库。正常系统ABI声明和有职责的B库封装应复用，必要独立Rust支持可保留；不以百分之百B、源码比例或B外壳计完成。边界和当前状态见[架构设计](Docs/Architecture.md#长期系统设计目标与语言边界)。
+
+可选CPU栈报告由`bc -c ... --stack-report <文件>`或`blink --stack-report <已编译输入>... -o <文件>`生成，展示实际帧、调用链上界及递归／外部／间接未知范围；可声明真实调用前预算，仅作报告。PE容量与真实线程剩余容量分别说明，工具不限制递归或改写执行。命令与范围见[静态栈报告](Docs/BLanguage.md#cpu调用链的静态栈报告)。
+
+AI可用`bc inputs <compiled.obj|entry.blbi>`直接查询产物保存的实际构建请求与来源记录，输出JSON，不读取当前源码或重新编译。字段、摘要覆盖范围和无记录时的行为见[实际构建输入查询](Docs/BLanguage.md#实际构建输入查询)；该查询不代表完整调试工具已经交付。
+
+AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`查询本次具体类型或字段的JSON布局；`bc build`同时输出.layout.json，已有执行接口也可由SDK直接查询。值描述、元素存储及资源字覆盖的边界见[类型与字段布局查询](Docs/BLanguage.md#类型与字段布局的结构查询)。
+
+AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。函数／程序IR的source_origin保留实际原定义快照、范围与实例对应关系，已取得IR在文件变化后仍可查原事实；每个原IR操作可沿source_site查询发射时的语法范围，缺失材料明确为null；实例／内联链、优化变换与机器映射继续独立交付，见[操作语法来源](Docs/BLanguage.md#ir操作的语法来源)和[原定义来源](Docs/BLanguage.md#函数与程序ir的原定义来源)。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
+
+AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，原Object可显式保存独立`.blcf`，`--observations <ranges.blcf>`匹配后交接普通函数／辅助代码／对齐／字面量完整分区；无材料保持未分类，最终PE另行交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
+
+AI可用`bc spirv <module.spv>`或compiler SDK的`spirv::module_json`只读取得原单模块全部指令、偏移、原字、类型／结果／操作数ID、入口与字面量位模式；不重编或执行GPU。原ShaderCode／StageCode／ProgramImage的code_json保留全部主／辅助模块，bc build为每份.spv导出配对.spv.json；纯GPU可用`bc code <entry.blbi>`或`bc code --image <deployment.blri>`无源码查询，不要求CPU范围材料。SPIR-V仍是中间表示，见[单模块结构查询](Docs/BLanguage.md#原spir-v单模块的完整结构查询)。
+
+`bc image <entry.blbi> -o <deployment.blri>`直接导出原CPU／GPU执行映像，原构建输入记录与缓存保持；关闭compiler功能的Rust运行SDK可独立装入并执行，见[部署映像](Docs/BLanguage.md#构建记录与可部署执行映像)。
+
 ## 能力与发展方向
 
 | 范围 | 当前状态 |
@@ -400,20 +442,28 @@ demo_sum 产生 `[3,1,4,2]`，再求和。`total.bldata` 中唯一的 u32 结果
 | 计算域 | 原生域编译与域运行已确定设计边界，尚未实现 |
 | 稳定热更新 | 版本绑定、状态迁移和资源交接已列入架构，尚未实现 |
 
+普通CPU应用可直接移动、补回固定拥有数组的动态位置，并沿实际分支、for／while和返回释放仍拥有的资源。 动态拥有元素可由`dataset<T>(length,F)`静态逐项构造，完整序列移动／返回与最后元素释放沿同一拥有树；能力及字段借用／追加／取出等剩余范围见[拥有元素序列](Docs/BLanguage.md#cpu-owned-dataset-elements)。普通CPU函数可用`requires nonzero(rows[*].value)`交接共同非零前提，也可用`requires nonempty(rows[*].value.values)`交接已初始化元素的共同子资源非空前提，同一元素的`requires index(rows[*].value.index,rows[*].value.values)`还可交接实际索引与子资源关系；范围见[共同值](Docs/BLanguage.md#common-element-nonzero)、[共同资源](Docs/BLanguage.md#common-element-nonempty)和[索引关系](Docs/BLanguage.md#common-element-index)。returned与write／inout的条件CPU／GPU输出位置可经普通函数、对象和归档交接，条件输入按实际使用路径交接，循环提前退出的跨函数输出位置也沿真实出口关系交接；当前对象与资源ABI见[唯一版本说明](Docs/BLanguage.md#已编译模块的资源abi)，精确范围见[语言规范](Docs/BLanguage.md#跨函数模块的条件资源输出位置)。
+
 B 语言 **不采用面向对象**，以数据、函数、模块和执行域组织程序。长期设计同时重视顶级效率与机器控制、可检查的接口，以及人、AI 代码生成工具和上层编译器的共同使用。当前子集、原生运行与性能结果分别记录于[语言规范](Docs/BLanguage.md)和[现行架构](Docs/Architecture.md)。
 
 ## 学习与文档
 
 | 从哪里开始 | 内容 |
 |---|---|
-| [《并行编程的艺术》](sample/并行编程的艺术.md) | 从 C／C++ 走向并行思考 |
-| [《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) | 从最小调用到模拟与连续 GPU 计算；[示例](sample/hybrid/README.md) |
-| [《B 语言源码分析》](sample/B语言源码分析.md) | 阅读编译器、IR、后端及执行框架；[版本与阅读资料](sample/compiler/README.md) |
-| [《BLEngine 源码分析》](sample/BLEngine源码分析.md) | 首个消费者如何使用语言、场景与光照；[阅读资料](sample/engine/README.md) |
+| [《并行编程的艺术》](sample/并行编程的艺术.md) | 从 C／C++ 走向并行思考；[手机 PDF](sample/pdf/并行编程的艺术-B语言-手机阅读版.pdf) · [标准 PDF](sample/pdf/并行编程的艺术-B语言.pdf) |
+| [《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) | 从最小调用到模拟与连续 GPU 计算；[示例](sample/hybrid/README.md)；[手机 PDF](sample/pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准 PDF](sample/pdf/Blink和Rust混合编程.pdf) |
+| [《B 语言源码分析》](sample/B语言源码分析.md) | 阅读编译器、IR、后端及执行框架；[版本与阅读资料](sample/compiler/README.md)；[手机 PDF](sample/pdf/B语言源码分析-手机阅读版.pdf) · [标准 PDF](sample/pdf/B语言源码分析.pdf) |
+| [《BLEngine 源码分析》](sample/BLEngine源码分析.md) | 首个消费者如何使用语言、场景与光照；[阅读资料](sample/engine/README.md)；[手机 PDF](sample/pdf/BLEngine源码分析-手机阅读版.pdf) · [标准 PDF](sample/pdf/BLEngine源码分析.pdf) |
 | [B标准库](library/README.md) | 普通值动态序列、严格UTF-8／UTF-16编解码、整段转换与拥有切片，以及Windows系统信息、计时、线程错误码、原始命令行、环境读写、UTF-8文件输入、路径存在性、绝对路径、规范路径身份、扩展名替换及路径组合 |
 | [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [计算域](Docs/ComputeDomain.md) | 当前规则、长期边界和后续设计 |
 
-技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。
+技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行资料；使用已安装正式版时，阅读[对应版本的书稿与 PDF](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample)。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
+
+<a id="feedback"></a>
+
+## 反馈与技术交流
+
+使用问题、缺陷和功能建议请提交到 [GitHub Issues](https://github.com/sgua83/Blink/issues)；[新建反馈](https://github.com/sgua83/Blink/issues/new)时附上最小 B 源码、完整命令、`bc --version`／`blink --version`／`brun --version`、所用标签或提交、Windows 与 CPU／GPU／驱动信息及原始错误。性能讨论请说明输入规模、构建档位、计时范围与数据传输成本，方便复现和比较。
 
 ## 参与开发
 
