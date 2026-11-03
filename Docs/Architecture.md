@@ -265,7 +265,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-3"></a>
 
-**域展开调用点。** 输入为实际域Call、调用者SourceSite及原特化Instance；原expand_stages／expand_program及DomainCall将原调用点、调用者／目标与展开顺序交给同一阶段／操作／值核。源码展开与已编译域边界分别表达，不能把域调用塞入普通inline数组，也不从阶段根实例反推路径。沿原持有者保存不可变点列表，原Source共享，最后IR消费者后释放，不复制调用／执行图。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-3)。
+**域展开调用点。** 输入为实际域Call、调用者原定义／具体实例与Expr.span及原特化目标；原expand_stages／expand_program与DomainCall各向原IR交接同一编译事实。按下列两条实际生产／消费分别实现，不把域调用放入普通inline数组，不从阶段根实例反推路径；生成Index、Frame、参数和提交步骤仍归各自原叶。保留IR所用域点列表，不记录不存在／已消除IR的完整编译历史，不改变合法程序或冻结优化；完整变换来源归.7.3。当前两叶待实现，见[台账](Issues.md#c-021-7-9-7-2-4-3)。
+
+<a id="tool-7-2-4-3-1"></a>
+
+**源码域展开路径。** 唯一生产者为原源码域展开处，输入含调用者Source快照（可以缺失）、原调用者实例、Expr.span及实际特化目标；输出DomainSite标明expanded，SourceContext按外到内不可变共享domain_path。原parallel Builder、Stage.operation_source与集合project／identity／combine Builder继承路径，普通函数内联只继承同一路径并独立维护inlined_at；内部值核的入口／引用／捕获沿原持有者取得事实，不创建第二个调用图。原Definition／IR拥有这些编译材料，查询只借用，JSON归调用者，最后IR消费者后释放；原源快照不重读磁盘。缺失定义／实例分别为空，已知目标保留；无compiler角色不承载这些字段，不影响执行编码、ABI或资源寿命。SourceSite的domain_path和DomainSite只读接口交接同一事实，当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-3-1)。
+
+<a id="tool-7-2-4-3-2"></a>
+
+**已编译域调用边界。** 输入为原已编译域Call、外层原源码展开路径及实际目标；原DomainCall拥有带调用SourceSite的边界，build_domain原Call节点直接接收，最后域点标明compiled，原调用者语法和目标分别保留。不伪造目标实现源码、内联或进入不在本次编译中的代码；目标机器来源在实际产物侧取得。沿原Call及其IR持有原来源，原分段和真实ABI／资源完成保持，不将运行绑定或原参数常量变成另一图／注册表。其他Frame／参数／分段提交生成来源仍归.4.5／.4.6；不存在的源材料明确缺失。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-3-2)。
 
 <a id="tool-7-2-4-4"></a>
 
