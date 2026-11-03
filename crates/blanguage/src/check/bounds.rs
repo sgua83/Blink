@@ -905,7 +905,7 @@ impl Proof {
             nonzero: (0..value.regs.len())
                 .map(|i| target.size() >= value.ty.components[i].0.size() && value.component_nonzero(i))
                 .collect(),
-            // 索引域约束原 u32 位模式；中间 i32 仍不能直接作为索引。
+            // 索引及无符号数值域约束原位模式；有符号中间值不按无符号顺序消费。
             domains: (0..value.regs.len())
                 .map(|i| if target.size() == value.ty.components[i].0.size() { value.proof.domains(i) } else { Domains::new() })
                 .collect(),
@@ -1021,11 +1021,11 @@ impl Proof {
                     if maximum != scalar.bit_mask() {
                         facts.insert(Fact::Maximum(identity, *scalar, maximum));
                     }
-                    if *scalar == Scalar::U32 {
+                    if !scalar.is_signed() {
                         for domain in self.domains(component) {
                             facts.insert(Fact::Index(identity, domain));
                             if let IndexDomain::Offset(base, amount) = domain {
-                                facts.insert(Fact::Below(base, identity, amount != 0, Scalar::U32));
+                                facts.insert(Fact::Below(base, identity, amount != 0, *scalar));
                             }
                         }
                     }
@@ -1122,15 +1122,16 @@ impl Proof {
             .max(Bits::from(self.nonzero.get(component) == Some(&true))) as u32
     }
     fn refine(&mut self, ty: &Ty, component: usize, fact: Fact) {
+        let component_scalar = ty.components[component].0;
         match fact {
-            Fact::Boolean(_, truth) if ty.components[component].0 == Scalar::Bool => {
+            Fact::Boolean(_, truth) if component_scalar == Scalar::Bool => {
                 self.conditions
                     .resize_with(self.conditions.len().max(component + 1), || None);
                 let condition = self.conditions[component]
                     .get_or_insert_with(|| Box::new(Condition::default()));
                 condition.cases[usize::from(!truth)] = Clause::impossible();
             }
-            Fact::Index(_, domain) if ty.components[component].0 == Scalar::U32 => {
+            Fact::Index(_, domain) if component_scalar == Scalar::U32 || component_scalar.is_integer() && !component_scalar.is_signed() && numeric_domain(&domain) => {
                 self.mark_domain(component, domain);
             }
             Fact::Minimum(_, scalar, lower)
@@ -2584,8 +2585,10 @@ fn constrain_proofs(
             facts.insert(Fact::Maximum(index_id, scalar, upper));
         }
     }
-    if scalar == Scalar::U32 {
+    if !scalar.is_signed() {
         facts.insert(Fact::Index(index_id, IndexDomain::Upper(limit_id, u32::from(strict))));
+    }
+    if scalar == Scalar::U32 {
         facts.extend(
             indices_below(&limit.domains(0), strict)
                 .into_iter()
@@ -2645,7 +2648,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                             _ => unsigned_range(op, left, right, scalar),
                         }
                     });
-                    if scalar == Scalar::U32 && op == "-" {
+                    if !signed && op == "-" {
                         let left_origins = a.component_origins(ai);
                         let right_origins = b.component_origins(bi);
                         if let Some(minimum) = a.proof.domains(ai).into_iter().filter_map(|domain| match domain {
@@ -2654,7 +2657,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                         }).chain(b.proof.domains(bi).into_iter().filter_map(|domain| match domain {
                             IndexDomain::Upper(limit, distance) if left_origins.contains(&limit) => Some(distance),
                             _ => None,
-                        })).max().filter(|&distance| distance != 0) { return range.restrict(Bits::from(minimum), Bits::from(u32::MAX)); }
+                        })).max().filter(|&distance| distance != 0) { return range.restrict(Bits::from(minimum), scalar.bit_mask()); }
                     }
                     range
                 })
