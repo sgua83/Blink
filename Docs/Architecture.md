@@ -257,7 +257,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-1"></a>
 
-**真实源码定义边界。** 输入为原frontend解析／已编译模块接口装入及两个原合成Definition构造，唯一所有者是同一个Definition；其不可变语法来源区别原Source、CompiledInterface及Generated，不把用于ABI的compiled字段当成原源码身份。SourceOrigin只交接真实解析定义与其原实现体，不按内部函数名／路径猜测，不用手造Function.span和body伪造用户函数。原FunctionBody／Program／Inst及值核查询消费同一事实；无真实定义时明确无SourceOrigin，实际实例和后续真实内联定义分别保留，不据此减少合法程序。语法标记随原Definition克隆，原Source文本归原拥有者，最后消费者后释放；没有另一来源表、运行状态或图。派生原语法锚点及具体生成原因仍由以下职责交接，本项不以null冒充完整来源。当前修复范围见[台账](Issues.md#c-021-7-9-7-2-4-1)。
+**真实源码定义边界。** 输入为原frontend解析／已编译模块接口装入及两个原合成Definition构造，唯一所有者是同一个Definition；其不可变语法来源区别原Source、CompiledInterface及Generated，不把用于ABI的compiled字段当成原源码身份。SourceOrigin只交接真实解析定义与其原实现体，不按内部函数名／路径猜测，不用手造Function.span和body伪造用户函数。原FunctionBody／Program／Inst及值核查询消费同一事实；无真实定义时明确无SourceOrigin，实际实例和后续真实内联定义分别保留，不据此减少合法程序。语法标记随原Definition克隆，原Source文本归原拥有者，最后消费者后释放；没有另一来源表、运行状态或图。派生原语法锚点及具体生成原因仍由以下职责交接，本项不以null冒充完整来源。当前DefinitionSyntax已由原装入和合成入口交接，source_origin仅为Source且有原实现体时形成原SourceOrigin；应用parallel提取与整数表达式上下文明示Generated，已编译模块装入明示CompiledInterface，接口常量不因compiled运行绑定为空而获得源码身份。原getter及JSON形状保持，null仅说明没有真实原函数定义材料，原语法锚点和生成分类继续沿.4.2至.4.6。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-1)，精确边界见[规范](BLanguage.md#函数与程序ir的原定义来源)。
 
 <a id="tool-7-2-4-2"></a>
 

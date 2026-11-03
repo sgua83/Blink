@@ -6,9 +6,13 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Clone, Copy)]
+pub(crate) enum DefinitionSyntax { Source, CompiledInterface, Generated }
+
 #[derive(Clone)]
 pub(crate) struct Definition {
     pub(crate) function: Function,
+    pub(crate) syntax_origin: DefinitionSyntax,
     pub(crate) execution: execution::Requirement,
     pub(crate) source: Source,
     pub(crate) module: String,
@@ -18,8 +22,8 @@ pub(crate) struct Definition {
 }
 impl Definition {
     pub(crate) fn source_origin(&self) -> Option<ir::SourceOrigin> {
-        match (&self.compiled, &self.function.body) {
-            (None, Some(_)) => Some(ir::SourceOrigin {
+        match (self.syntax_origin, &self.function.body) {
+            (DefinitionSyntax::Source, Some(_)) => Some(ir::SourceOrigin {
                 source: self.source.clone(), span: self.function.span,
                 module: self.module.clone(), definition: self.function.name.clone(),
             }),
@@ -709,6 +713,7 @@ pub(crate) fn load(
             key,
             Arc::new(Definition {
                 function: f.clone(),
+                syntax_origin: if compiled.is_some() { DefinitionSyntax::CompiledInterface } else { DefinitionSyntax::Source },
                 execution: if let Some(compiled) = compiled {
                     compiled
                         .requirements
