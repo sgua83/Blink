@@ -1354,6 +1354,21 @@ try提前交付Err时，外层赋值或调用已经取消，临时位置与实�
 
 GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。SPIR-V按物理步幅计算整记录分页，再叠加字段及真实分量偏移；归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view仍以原连续元素类型访问页数组，设备指针指到绑定头之后。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定头遵守现行执行映像语义；Frame共同C签名与对象合同分别按其实际编码版本交接，不相容产物须重新编译。
 
+普通函数的实现编译成对象后，调用处同样需要知道它究竟读取了哪里。`Access::Dataset`沿原访问合同保存真实字段、元素下标和路径条件；调用方把原形参来源投影到自己的物理字段，再交给原并行读写区检查。
+
+源码节选：`crates/blanguage/src/check/view_contracts.rs:13`。
+
+```rust
+pub(super) enum Access {
+    Resource {resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition},
+    Position {borrows:Borrow,when:bounds::Condition,position:PositionAccess},
+    Memory {borrows:Borrow,when:bounds::Condition},
+    Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>},
+}
+```
+
+声明`read dataset`说明允许读取，不代表已经读取全部载荷。只查询长度不产生载荷读区；读取当前元素与共享读取其他元素也要保留区别。动态数组的候选分量还带着原下标条件，不能因为存在多个候选就把它们改成无条件读取。下标数值已经确定时仍保留原值身份，单元素的index()仍是当前迭代位置；精确数值不能删除这个位置关系。嵌套模块调用继续使用同一个闭合访问集合。
+
 ### 8.4 跨函数也不能丢掉位置身份
 
 源码节选：`crates/blanguage/src/check/ownership.rs:22`。
@@ -1736,6 +1751,24 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。
 
 **自己走一遍。** “阶段数下降”是否证明整次程序更快？不直接证明。它说明执行结构改变；最终还要看机器码、寄存器压力、访问以及实际测量。
+
+### 11.5 编号变化必须保持同一生产与消费
+
+IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指令的输入、结果和它的后续消费者必须使用同一映射；资源绑定编号仍属于原资源，不跟着寄存器改名。
+
+源码节选：`crates/blanguage/src/optimize.rs:287`。
+
+```rust
+            InstKind::Constant(dst, ..)
+            | InstKind::FunctionAddress(dst, _)
+            | InstKind::Index(dst)
+            | InstKind::Uniform(dst, _)
+            | InstKind::BufferStride(dst, _)
+            | InstKind::TileLength(dst)
+            | InstKind::TileLane(dst) => *dst = r(*dst),
+```
+
+`BufferStride`生产原CPU物理记录步长，结果为u64。它与其他有结果的指令一起经过`optimize::map`的原结果映射，调用实参继续引用同一个结果。后端按原u64位置读写，不增加另一份步长、额外寄存器保留或运行时修补。
 
 ## 第十二章 控制流：条件、循环和返回怎样留下来
 

@@ -591,6 +591,12 @@
       "sha256": "d61138229e93a718c669f893dca0c204c66edf4c8ba9bc0be93e89f1f0a79ce7"
     },
     {
+      "path": "crates/blanguage/src/check/view_contracts.rs",
+      "start_line": 13,
+      "end_line": 18,
+      "sha256": "ecdc583e14847bd940d74d4fed81a3b3d1452291e1d3c663cbb582fe27102511"
+    },
+    {
       "path": "crates/blanguage/src/check/ownership.rs",
       "start_line": 22,
       "end_line": 37,
@@ -655,6 +661,12 @@
       "start_line": 245,
       "end_line": 249,
       "sha256": "c4a95acf4809491c477da541a5fb7dea722a058ac2f7c49680bb948551bcd125"
+    },
+    {
+      "path": "crates/blanguage/src/optimize.rs",
+      "start_line": 287,
+      "end_line": 293,
+      "sha256": "c322ab877fbd21ce82a7fdd4a4ef4f5d905d5dd554cf6e524e0bc790f3b47be8"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
