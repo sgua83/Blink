@@ -69,7 +69,7 @@ void transform(
 
 module numbers 给这组 B 代码起名。transform 是公开的计算入口。dataset<f32> 表示一组 32 位浮点数，参数名为 values。
 
-inout 表示既读又写：算法读取原来的数，再把新值写回。on compute 表示这个计算可以交给 CPU 或 GPU 后端执行。
+inout 表示既读又写：算法读取原来的数，再把新值写回。on compute 表示这个计算可以交给 CPU 或 GPU 后端执行，后端由本书宿主代码明确选择；当前绑定没有 Auto 或隐式设备迁移。
 
 这里的 .h 是 B 的接口文件，由 Blink 编译器读取。
 
@@ -480,7 +480,7 @@ total_energy=1.500003
 
 ### 3.10　同一粒子算法怎样交给 GPU
 
-配套 particles.exe 提供 CPU/GPU 两个选择，并额外打印耗时。它的 GPU 分支仍使用刚才的 B 入口、相同初值和相同 dt、strength。以下从已经准备好的 code、data、values 接着写：
+配套普通入口 `src/bin/particle-gpu.rs` 在 Rust 代码中明确创建设备、准备三条输入、上传、提交和下载，无需命令行设备参数，也不要求时间戳采集。其执行分支仍使用刚才的 B 入口、相同初值和相同 dt、strength。以下从已经准备好的 code、data、values 接着写：
 
 ```rust
 let device = Device::for_program(&code)?;
@@ -496,12 +496,12 @@ let bodies = device.download(
 )?;
 ```
 
-这一段增加了四项操作：选设备、上传数据、提交并等到完成、下载所需结果。Device 来自 blcompute::vulkan，Result 来自 blcompute，完整实现见 src/particles.rs。
+这一段增加了四项操作：选设备、上传数据、提交并等到完成、下载所需结果。Device 来自 blcompute::vulkan，Result 来自 blcompute，普通应用的完整实现见 src/bin/particle-gpu.rs；计时驱动另见 src/particles.rs。
 
 into_iter 依次取出 data 中的两个数据集，map 对每项调用 upload，collect 把上传结果组成新的动态数组。任何一项上传失败，? 就返回错误。新 data 中保存的是 GPU 上的数据对象。
 
 ```powershell
-.\target\release\particles.exe gpu 3
+.\target\release\particle-gpu.exe
 ```
 
 
@@ -859,14 +859,13 @@ Rust 建立输入时应保证父索引有效、父链无环。这样遍历才会
 用第三章的 Cargo 命令构建示例后，执行：
 
 ```powershell
-.\target\release\scene-evaluate.exe cpu
-.\target\release\scene-evaluate.exe gpu
+.\target\release\scene-evaluate.exe
 ```
 
 
 *图 7-2　两个后端都得到 (10,0,0)、(10,2,0)、(10,2,3)。相机和灯光的输出在下一章解释。*
 
-scene-evaluate.exe 的完整入口在 src/bin/scene-evaluate.rs，数据准备与调用在 src/scene.rs。它还在同一 B 程序中计算相机和灯光，不需要另跑一次场景变换。
+scene-evaluate.exe 的完整入口在 src/bin/scene-evaluate.rs，其中 `scene::run("gpu")` 在宿主代码内选择 GPU；需要 CPU 时修改这一源码参数并重新构建，不向用户增加设备参数。数据准备与调用在 src/scene.rs。它还在同一 B 程序中计算相机和灯光，不需要另跑一次场景变换。
 
 ## 8　把世界变换用于相机和灯光
 
@@ -1104,7 +1103,9 @@ let done = program.submit(
 
 本例按采样点直接算材质，不做几何求交，因此 accelerations 为空。&[] 说明没有额外普通参数。准备、执行与结果读取的完整代码位于 src/sheet.rs 的 run 函数。
 
-### 9.8　运行并看一个采样点
+### 9.8　性能对照测试并核对一个采样点
+
+material-samples 是专门的 CPU／GPU 性能对照驱动，设备参数仅用于同一测量程序的两次受控试验。正常材质应用的设备与传输写在 Rust 代码中，第十三章 material-image.exe 直接运行。
 
 ```powershell
 .\target\release\material-samples.exe cpu
@@ -1670,20 +1671,28 @@ cargo build --release `
     --target-dir target
 
 .\target\release\particle-cpu.exe
-.\target\release\particles.exe cpu 3
-.\target\release\particles.exe gpu 3
+.\target\release\particle-gpu.exe
 .\target\release\particle-steps.exe
 .\target\release\particle-flow.exe
-.\target\release\scene-evaluate.exe cpu
-.\target\release\scene-evaluate.exe gpu
-.\target\release\material-samples.exe cpu
-.\target\release\material-samples.exe gpu
+.\target\release\scene-evaluate.exe
 .\target\release\material-image.exe
 ```
 
-particle-cpu 是第三章完整展开的 CPU 小程序。particles 计算同样的物理问题，并提供数量、后端和计时输出。其余 exe 各自完成对应章节的一个例子。
+particle-cpu 是第三章完整展开的 CPU 小程序；particle-gpu 在源码中选 GPU。scene-evaluate 同样由宿主代码选择 GPU。particles 与 material-samples 是单独的性能对照驱动，只有它们为受控测量接受 cpu／gpu 参数；它们不是普通应用设备选择的接口。
 
 GPU 例子需要驱动提供所需 Vulkan 能力。执行失败会返回错误，不会悄悄换成 CPU。CPU 例子不需要创建设备。
+
+
+仅供性能对照的测量命令（与上面的普通应用分开）：
+
+```powershell
+.\target\release\particles.exe cpu 1000000
+.\target\release\particles.exe gpu 1000000
+.\target\release\material-samples.exe cpu
+.\target\release\material-samples.exe gpu
+```
+
+设备参数属于这两个对照驱动的实验控制项，不是 B 语言或普通 Rust 宿主的运行要求。
 
 ### A.4　查看 B 采样程序的编译结果
 

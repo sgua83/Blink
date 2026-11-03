@@ -1,11 +1,11 @@
 module simulation.bodies;
 
-void integrate_body<T: floating, const Power: u32 in {1, 2, 3}>(inout BLBody<T, Power> body, f32 dt, f32 strength) on compute {
+void integrate_body<T: FieldValue, const Power: u32 in {1, 2, 3}>(inout BLBody<T, Power> body, f32 dt, f32 strength) on compute {
     body.velocity += central_acceleration<Power>(body.position, strength) * dt;
     body.position += body.velocity * dt;
 }
 
-void measure_energy<T: floating>(write f32 target, T velocity) on compute {
+void measure_energy<T: FieldValue>(write f32 target, T velocity) on compute {
     target = 0.5 * dot(velocity, velocity);
 }
 

@@ -11,6 +11,10 @@ name = "particles"
 path = "src/bin/particles.rs"
 
 [[bin]]
+name = "particle-gpu"
+path = "src/bin/particle-gpu.rs"
+
+[[bin]]
 name = "particle-steps"
 path = "src/bin/particle-steps.rs"
 

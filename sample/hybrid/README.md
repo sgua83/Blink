@@ -4,6 +4,8 @@
 
 第一、二章完整解释这次调用；第三章再使用 blanguage、blcompute 原生 Rust 接口，逐步准备粒子、执行 B 并读取结果。书稿见 [《Blink 和 Rust 混合编程》](../Blink和Rust混合编程.md)。
 
+普通应用在 Rust 源码中选择设备，不读取命令行设备开关。`particles` 与 `material-samples` 仅为性能对照驱动，后者的一千万点 CPU／GPU 测量命令单独保留。
+
 ## 构建原生 Rust 示例
 
 在 Blink 根目录、x64 Developer PowerShell 中执行：
@@ -14,21 +16,30 @@ cargo build --release `
     --target-dir target
 
 .\target\release\particle-cpu.exe
-.\target\release\particles.exe cpu 3
-.\target\release\particles.exe gpu 3
+.\target\release\particle-gpu.exe
 .\target\release\particle-steps.exe
 .\target\release\particle-flow.exe
-.\target\release\scene-evaluate.exe cpu
-.\target\release\scene-evaluate.exe gpu
-.\target\release\material-samples.exe cpu
-.\target\release\material-samples.exe gpu
+.\target\release\scene-evaluate.exe
 .\target\release\material-image.exe
 ```
+
+
+仅供性能对照的测量命令（与上面的普通应用分开）：
+
+```powershell
+.\target\release\particles.exe cpu 1000000
+.\target\release\particles.exe gpu 1000000
+.\target\release\material-samples.exe cpu
+.\target\release\material-samples.exe gpu
+```
+
+设备参数属于这两个对照驱动的实验控制项，不是 B 语言或普通 Rust 宿主的运行要求。
 
 | 程序 | 完成的事情 | 主要 Rust 源码 |
 |---|---|---|
 | particle-cpu | 完整展开的一次三粒子 CPU 模拟 | src/bin/particle-cpu.rs |
-| particles | 同样的物理问题，选择 CPU/GPU、数量并打印耗时 | src/particles.rs |
+| particle-gpu | 宿主源码选定 GPU 的三粒子完整应用 | src/bin/particle-gpu.rs |
+| particles | 性能对照专用：控制 CPU/GPU、数量并打印耗时 | src/particles.rs |
 | particle-steps | 连续推进三个 0.01 秒的物理时间步 | src/particles.rs |
 | particle-flow | 两组粒子分别求动能，再由 B 相加 | src/particles.rs |
 | scene-evaluate | 三节点世界变换及相机、灯光位置 | src/scene.rs |

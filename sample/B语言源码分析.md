@@ -104,14 +104,24 @@ cargo build --workspace --release
 
 这里的 `build` 输出可供研究的阶段代码与布局，尚不是应用 `.exe`。在这本源码分析书里，我们正要观察这些中间产物，因此会使用这一命令。
 
-若要执行这个计算模块，使用现有模块运行器：
+常规使用先看完整 B 应用 `sample/applications/map_cpu.b`：main 自行分配四条记录，调用 `target(cpu, demo(values))`，然后 println。GPU 版 `map_gpu.b` 在代码中明确 upload、target(gpu, ...)、download。用 bc -c 编译、blink 独立链接后，直接运行 EXE，无设备参数：
+
+```powershell
+bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+.\target\book-apps\map_cpu.exe
+```
+
+设备能力 on compute 与本次目标 target 不同，当前没有 target(auto, ...) 或隐式迁移。上述基础应用已用正式版0.14.1.1实际运行；本书源码分析继续跟随现行main，不把研发源码身份等同于旧发行标签。
+
+下面仅保留一个后端隔离测试：不引入应用 main，分别检查同一编译器模块在 CPU 与 GPU 上的生成／绑定／执行，便于源码分析和逐字节结果对照。它不是常规程序入口：
 
 ```powershell
 .\target\release\brun.exe cpu sample\lessons\map.b demo sample Saved\MapCpu :4
 .\target\release\brun.exe gpu sample\lessons\map.b demo sample Saved\MapGpu :4
 ```
 
-`:4` 申请四个初始为零的元素；`demo` 自己填入初值。结果保存在相应目录的 `values.bldata`。这属于当前执行工具的数据协议，不是 B 独立应用的最终使用方式。附录提供不加命令别名的直接读取方法。
+`:4` 申请四个初始为零的元素；`demo` 自己填入初值。结果保存在相应目录的 `values.bldata`。这只属于后端隔离测试的数据协议；正常 B 应用直接运行 EXE，并由代码选择设备。附录提供不加命令别名的直接读取方法。
 
 正文节选对应当前源码，位置见现行源码索引；修订和原生运行历史只在P4双台账记录。
 

@@ -40,7 +40,7 @@ rustc --edition=2024 -C opt-level=3 `
 
 C 和 C++ 输出 3 5 7 9；Rust 输出 [3.0, 5.0, 7.0, 9.0]。C++ 析构与 Rust Drop 释放 DLL handle，数组仍属于各自的宿主。
 
-## 一百万像素的分形：完整调用计时
+## 性能对照专用：一百万像素分形的完整调用计时
 
 ```powershell
 .\target\release\bc.exe -c `
@@ -77,15 +77,12 @@ rustc --edition=2024 -C opt-level=3 `
 
 CPU 与两个串行实现逐项相同；当前 GPU 分形边界的 f32 迭代计数有差异，程序会如实输出。create 复用时只发生一次；冷启动只调用一次，应将 setup_ms 与 blink_call_ms 相加。C++ 另输出 target/interop/fractal.pgm（1000×1000 灰度图），图像工具可直接读取。
 
+这四条带 cpu／gpu 参数的命令只用于同一驱动的性能对照；普通 DLL 宿主在 C++／Rust 源码的 Backend 中选择设备。
+
 ## Rust 原生 API
 
 ```powershell
-cargo run --release `
-    --manifest-path sample/interop/Cargo.toml `
-    -- cpu
-cargo run --release `
-    --manifest-path sample/interop/Cargo.toml `
-    -- gpu
+cargo run --release --manifest-path sample/interop/Cargo.toml
 ```
 
-两个命令均输出 [3.0, 5.0, 7.0, 9.0]。native.rs 直接消费既有 blanguage、blcompute；Rust 没有被改成只能调用 C ABI。关于数据布局、同步完成、部署、支持类型及 B 反向调用的当前边界，见 [原生集成文档](../../Docs/NativeInterop.md)。
+native.rs 在源码中以 `let use_gpu = false;` 选择 CPU；改为 true 后走显式设备、上传、提交与下载路径。两种选择均应输出 [3.0, 5.0, 7.0, 9.0]。native.rs 直接消费既有 blanguage、blcompute；Rust 没有被改成只能调用 C ABI。关于数据布局、同步完成、部署、支持类型及 B 反向调用的当前边界，见 [原生集成文档](../../Docs/NativeInterop.md)。

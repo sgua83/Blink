@@ -1,6 +1,6 @@
 # 现行教学源码定位
 
-本表对应当前随书教学模块，不保存项目沿革或旧修订号。模块语法与职责以当前源码及语言规范为准；历史来源、执行和交付记录归P4双台账。
+本表对应当前随书教学模块，不保存项目沿革或旧修订号。模块语法与职责以当前源码及语言规范为准；历史来源、执行和交付记录归P4双台账。粒子教学副本以 FieldValue 明确限定四种 f32 维度，匹配其 f32 强度／能量和现有算法；它与引擎源码分别维护，不把这份教学约束写成语言 floating 集合或引擎的能力边界。
 
 | 文件 | 当前内容SHA256 |
 |---|---|
@@ -11,8 +11,8 @@
 | Programs/material/surface.h | 960645b0b47041621fb67d4c92b94b6fdb1e3d1f3ab6e856ae15f64fa315a5de |
 | Programs/material/textured.b | ef10aa45625270a48fc820d4bab4590bdb23be9be52505b7de4f51016a1f6b01 |
 | Programs/material/textured.h | 290d75f89aadf1f60fa610478a9f5faa9a5c092bf879fb920162156cea115e8c |
-| Programs/math/field.b | fc74a15454d685d2badfb5f15b168a8a9c0a7f39fe834b5b3cf4dc3cb7f586f1 |
-| Programs/math/field.h | a0b82319874b7512ae6b72607e5e76c00494628436638b2feb9df4a7a2af62c7 |
+| Programs/math/field.b | 5c3b2ab0f7e35ee8cb3db3e30e30f05ef246fd6828c905d49218d4354d58a1eb |
+| Programs/math/field.h | 13ad1b0ccbceb1e974adb5509fdadcedaf991836afdda455fa334f50e5dcec25 |
 | Programs/math/transform.b | f919f691e84ffa426a656540182f27ee00bd77c5633cc17d55e5afb262ed12b2 |
 | Programs/math/transform.h | f6224686eead1786a89f242de3a3377446b8d79a62db649c0dcd545ecaaba439 |
 | Programs/render/frame.b | 40aa565890083b07ee5abfb4381b9cbf68b98f36c1617f5453089fb5d9c2de01 |
@@ -29,7 +29,7 @@
 | Programs/scene/hierarchy.h | 5ba2c83db5f54cc4cf4c9bcf9e42aa6ffd89ce151d0e21729f2e3f467c366c65 |
 | Programs/scene/transforms.b | 8efa8a6a7de1316fba6101b68985fa7f7d87dd6213860322b15ebef51580afc7 |
 | Programs/scene/transforms.h | e6deab7cec8ba2960720b6a01e3d74ac80b729f44b251fabe56f3f7e29f8c9c8 |
-| Programs/simulation/bodies.b | 61474960f9ff3117095dbbea90090ad0b0b40cf6783b04b7438be5ffa0492787 |
-| Programs/simulation/bodies.h | 94da4d4b8068e4928b65e67be0009d3a885e089cd2d66eb6d8a2de0d27b2c30d |
+| Programs/simulation/bodies.b | da427948f0d0566e65d9d95c3c78f3a5a7d44000e18753ce6bfcc14f7e037d6c |
+| Programs/simulation/bodies.h | d712180247e38c669d34ed452f8750881290b4dc0c28a00452b03244be396be3 |
 | Programs/simulation/statistics.b | 44bdea6071418d49e50e1a731c840acd31cc80fef762042e7b8153b6c02b5ff6 |
 | Programs/simulation/statistics.h | 9b5eae49782b2bf845bd42adc97f1a0b193978d074eb4de74032d3066941a65d |

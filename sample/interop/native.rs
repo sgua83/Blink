@@ -10,7 +10,9 @@ fn main() -> blcompute::Result<()> {
     .programs
     .remove(0);
     let data = Dataset::new(&program, 0, 4)?;
-    let output = if std::env::args().nth(1).as_deref() == Some("gpu") {
+    // Select the backend in host code; this ordinary example runs on the CPU.
+    let use_gpu = false;
+    let output = if use_gpu {
         let device = Device::for_program(&program)?;
         let input = device.upload(data)?;
         let program = device.compile(program)?;

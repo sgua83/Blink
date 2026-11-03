@@ -85,3 +85,15 @@ target/applications/system_info.exe
 ```
 
 应用只需要生成的exe和Windows系统DLL，未创建Blink拥有资源或其他宿主程序。输出成功返回0，标准输出失败返回1；系统API本身返回void，不添加另一份错误状态。处理器数量／掩码属于当前处理器组，记录与原生布局见[标准库接口](../../library/README.md#blinkwindowssystem)。这个模块不提供B自有位置取址、系统回调或通用文本／文件库。
+
+## 由应用代码选择CPU／GPU的并行教材
+
+并行教材的七组算法分别配有 `map`、`reduce`、`scan`、`pipeline`、`tiles`、`publish`、`algebra` 的 `_cpu.b`／`_gpu.b` 与对应 `.h`。每份都是有 main 的独立应用，共享 lessons 中同一份算法，自己分配 dataset、设置参数和打印结果；GPU main 明确 upload、target(gpu, ...)、download，CPU main 使用 target(cpu, ...)。运行 EXE 不接收设备参数。
+
+```powershell
+bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+.\target\book-apps\map_cpu.exe
+```
+
+GPU 版把文件名换成 map_gpu。部署复制 EXE 与链接器生成的 blink_app_*.dll；GPU 仍要求程序所需的 Vulkan 驱动能力。当前 target 只支持明确 cpu／gpu，没有 auto 或隐式迁移。

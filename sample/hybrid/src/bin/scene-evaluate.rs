@@ -1,6 +1,4 @@
 fn main() -> blcompute::Result<()> {
-    let backend = std::env::args()
-        .nth(1)
-        .ok_or("用法: scene-evaluate cpu|gpu")?;
-    blink_rust_examples::scene::run(&backend)
+    // Device policy belongs to this application. Change to "cpu" for CPU execution.
+    blink_rust_examples::scene::run("gpu")
 }

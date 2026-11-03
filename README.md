@@ -38,45 +38,76 @@
 
 ## 快速开始
 
-### 1. 安装正式版
+### 1. 安装工具，取得配套源码
 
-当前正式发行是 **[v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1)**。下载 [Windows x64 安装程序 Blink-Setup-windows-x64.exe](https://github.com/sgua83/Blink/releases/download/v0.14.1.1/Blink-Setup-windows-x64.exe)，双击安装到 `%ProgramFiles%/Blink`；安装器自动配置系统 PATH，新开终端后生效。也可从[最新正式发行](https://github.com/sgua83/Blink/releases/latest)查看后续版本；本节命令和示例固定对应 `v0.14.1.1`。
+下载并双击安装 [Windows x64 正式版 v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1)的 `Blink-Setup-windows-x64.exe`。安装器自动配置 PATH，新开终端后可用 `bc` 与 `blink`；[最新发行](https://github.com/sgua83/Blink/releases/latest)记录后续更新。
 
-准备 Windows x64、Git、[Rust stable MSVC 工具链](https://rust-lang.org/tools/install)与 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具和 Windows SDK）。安装包包含工具与源码 SDK，生成执行框架或 DLL 时仍需要这些构建工具。在新开的 **x64 Developer PowerShell** 中执行：
+准备 Git、[Rust stable MSVC](https://rust-lang.org/tools/install)和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK）。这些构建工具只在编译时生成执行框架。新开 x64 Developer PowerShell：
 
 ```powershell
 bc --version
 blink --version
-brun --version
-git clone --branch v0.14.1.1 --depth 1 https://github.com/sgua83/Blink.git Blink
+git clone https://github.com/sgua83/Blink.git Blink
 Set-Location Blink
 ```
 
-三个工具应报告 `0.14.1.1`。后续命令在这个固定版本的 Blink 根目录执行；先用已安装工具运行，无需先构建 main。
+下面是本次更新后的完整应用，配套源码随 main 发布，已用正式工具 `0.14.1.1` 实际验证；它们不是旧标签 v0.14.1.1 内的旧教程。算法与 main 都是 B，运行生成的应用不需要编译器、Rust 工具链或源码。
 
-### 2. 先在 CPU 上运行
+### 2. 设备选择写进 B 程序
 
-```powershell
-brun cpu sample/lessons/map.b demo sample Saved/QuickStart/map-cpu :4
+CPU 版 [map_cpu.b](sample/applications/map_cpu.b) 的 main：
+
+```c
+module applications.map_cpu;
+import lessons.map;
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    target(cpu, demo(values));
+
+    for (value in values) { if (!println(value)) { return 1; } }
+    return 0;
+}
 ```
 
-这个例子把 `[1, 2, 3, 4]` 中每个数乘二再加一。结果保存在 `Saved/QuickStart/map-cpu/values.bldata`，四个 `f32` 值为 `[3, 5, 7, 9]`；命令行显示执行信息，数据文件的读取方法见[正式版书稿附录 A.3](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/并行编程的艺术.md)。CPU 入门无需 GPU。
-
-### 3. 用同一份源码运行 GPU
+配套 [map_cpu.h](sample/applications/map_cpu.h) 公开 `u32 main() on cpu;`。编译、独立链接后直接运行：
 
 ```powershell
-brun gpu sample/lessons/map.b demo sample Saved/QuickStart/map-gpu :4
+bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+.\target\book-apps\map_cpu.exe
 ```
 
-结果仍为 `[3, 5, 7, 9]`，保存在 GPU 结果目录。GPU 需要满足程序能力要求的 Vulkan 驱动，无需 Vulkan SDK；这个 `f32` 示例要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`，能力不足会明确报错。源码：[map.h](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.h) · [map.b](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.b)。
+程序逐行打印 `3、5、7、9`，CPU 入门无需 GPU。
 
-### 4. 接入已有 C／C++／Rust 工程
+### 3. 同一算法，在代码内选择 GPU
 
-按[正式版原生集成示例](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/interop/README.md)将同一算法编译为 DLL，再从 C、C++ 或 Rust 调用；工具生成 C ABI 头文件、导入库、C++ 包装和 Rust 绑定。也可从[Rust 的第一个完整调用](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md)开始，先得到 `[3, 5, 7, 9]`，再切换 GPU。示例中的源码构建步骤与命令均以该标签文档为准；[正式版 ABI 与部署边界](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)说明支持范围和宿主责任。
+[map_gpu.b](sample/applications/map_gpu.b) 仍调用同一个 `lessons.map::demo`，在 main 中把执行和传输写清楚：
+
+```c
+upload(values);
+target(gpu, demo(values));
+download(values);
+```
+
+```powershell
+bc -c sample/applications/map_gpu.b -o target/book-apps/map_gpu.obj -I sample
+blink target/book-apps/map_gpu.obj -o target/book-apps/map_gpu.exe
+.\target\book-apps\map_gpu.exe
+```
+
+两者均直接运行 EXE，无运行时设备参数。部署时把 EXE 与链接器生成的 `blink_app_*.dll` 放在同一目录。GPU 需要满足示例能力要求的 Vulkan 驱动，无需 Vulkan SDK；这个 f32 例子要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`。
+
+`on compute` 声明算法可在两端编译，`target(cpu, ...)`／`target(gpu, ...)` 才选择本次位置；`upload`／`download` 显式交接存储。当前没有 `target(auto, ...)`、隐式自动选设备或隐式迁移。
+
+### 4. 从已有 C／C++／Rust 工程调用
+
+[DLL 集成示例](sample/interop/README.md)和 [Rust 第一次调用](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md)在宿主代码中用 `Backend::Cpu`／`Backend::Gpu` 选择后端；工具生成 C ABI 头文件、导入库、C++ 包装与 Rust 绑定。普通宿主无需命令行设备参数；仅性能对照驱动保留这种参数。支持类型及责任见[正式版 ABI 文档](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)。
 
 ### 从 main 构建研发工具
 
-`main` 持续研发，根 [VERSION](VERSION) 是主线软件版本，可能领先正式版。下面保留主线源码 SDK 的构建方式；本页后续三章及相对文档链接随 main 演进，使用正式发行时请配套阅读[固定版本首页](https://github.com/sgua83/Blink/blob/v0.14.1.1/README.md)和[固定版本书籍与示例](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample)。
+`main` 持续研发，根 [VERSION](VERSION) 是主线软件版本，可能领先正式版。下面保留主线源码 SDK 的构建方式；本页后续三章及相对文档链接随 main 演进，基础应用已按前述正式工具版本验证；旧标签中的书稿属于对应发行的历史快照，不含本次新增的应用入口。
 
 构建当前编译器前，先安装一份支持当前前端 B 源码的稳定 Blink 种子。默认 `compiler` 功能保留完整编译接口；原 `build.rs` 从 `%ProgramFiles%/Blink/bin` 调用 `bc` 与 `blink`，静态生成 B 词法及泛型前瞻模块，不以 target 中的新工具作为自己的构建前提。仅执行角色关闭 `compiler` 功能，不调用前端种子或装入源码前端。
 
@@ -168,34 +199,45 @@ C/C++ 编译器也可能自动向量化简单循环；B 语言则通过工作域
 
 ### 1.5　运行与结果
 
-在 PowerShell 中执行下面这一条命令：
+这次运行的是完整 B 应用：`.h` 公开 `u32 main() on cpu;`，`.b` 导入已有的 `lessons.map` 算法：
+
+```c
+module applications.map_cpu;
+import lessons.map;
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    target(cpu, demo(values));
+
+    for (value in values) { if (!println(value)) { return 1; } }
+    return 0;
+}
+```
+
+main 分配四条记录，在代码中用 `target(cpu, ...)` 选择本次计算位置，然后逐行输出 `3、5、7、9`。先编译、独立链接一次，以后直接运行 EXE，无需设备参数：
 
 ```powershell
-.\target\release\brun.exe cpu `
-    sample/lessons/map.b demo `
-    sample Saved/Book/map :4
+bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+.\target\book-apps\map_cpu.exe
 ```
 
-这条命令运行 brun.exe，选择 CPU 执行 `sample/lessons/map.b` 中的 demo 入口。后面的 `sample` 是查找模块的根目录，`Saved/Book/map` 是保存结果的目录；`:4` 申请四条全零记录。demo 先填入 `[1,2,3,4]`，再执行乘二加一。
+GPU 版 `sample/applications/map_gpu.b` 在同一算法外明确写出数据上传、GPU 调用与下载：
 
-运行完成后，结果目录中的 `values.bldata` 文件保存四个数：
-
-```text
-[3, 5, 7, 9]
+```c
+upload(values);
+target(gpu, demo(values));
+download(values);
 ```
-
-brun 会在命令行显示程序信息和运行时间，计算结果则写入 BLDATA 文件。图中的数值来自这个文件；想自己读取它，可以参照[原书附录 A.3](sample/并行编程的艺术.md)。
-
-在 GPU 上执行同一份源码，只需选择 gpu，并使用另一个结果目录：
 
 ```powershell
-.\target\release\brun.exe gpu `
-    sample/lessons/map.b demo `
-    sample Saved/Book/map-gpu :4
+bc -c sample/applications/map_gpu.b -o target/book-apps/map_gpu.obj -I sample
+blink target/book-apps/map_gpu.obj -o target/book-apps/map_gpu.exe
+.\target\book-apps\map_gpu.exe
 ```
 
-两端的 `values.bldata` 都是 `[3,5,7,9]`，每条记录为一个 f32。完整实现见 [map.h](sample/lessons/map.h) 与 [map.b](sample/lessons/map.b)。
-
+两份应用输出相同的四个数。CPU 主流程负责分配和输出，不等于计算只能在 CPU 上执行；`on compute` 声明算法两端可用，`target` 决定本次位置。部署时把 EXE 与链接器生成的 `blink_app_*.dll` 一起复制，运行无需 B 源码、编译器或模块运行器；GPU 仍需要前文所述 Vulkan 能力。
 
 ### 1.6　让数据规模把优势展现出来
 
@@ -285,7 +327,7 @@ B 语言的普通 `parallel` 为每个实例分配当前元素的独占写权限
 
 把 write 理解为“我要生产新结果”，把 inout 理解为“我要读取并更新自己已有的值”，把 read 理解为“大家可以共同阅读”。
 
-`write` 声明写入权限，初始化由算法或宿主负责。示例命令中的 `:4` 由执行器申请四条全零记录。
+`write` 声明写入权限，初始化由算法或宿主负责。示例 main 中的 `dataset<f32>(4)` 申请四条全零记录。
 
 当前 CPU 应用函数已有整份 read／write／inout dataset 借用，显式原子资源使用 atomic 模式；修改单个独占位置可用 `inout T` 或 `write T`。计算函数可以在阶段组合中传递所需权限，但这些能力不允许一个并行实例任意读写其他实例正在修改的整份数据。
 
@@ -357,24 +399,21 @@ CPU 与 GPU 的归约分组可能不同，结果也可能存在舍入差异。�
 
 ### 3.5　运行与结果
 
-在 CPU 上运行求和入口 demo_sum：
+应用在代码中创建四条输入和一条总量，调用 `target(cpu, demo_sum(input, total))`，直接打印 `10`。GPU 版把这两份资源上传，在 `target(gpu, ...)` 完成后下载结果；设备和容量都不由命令行传入。
 
 ```powershell
-.\target\release\brun.exe cpu `
-    sample/lessons/scan.b demo_sum `
-    sample Saved/Book/reduce :4 :1
+bc -c sample/applications/reduce_cpu.b -o target/book-apps/reduce_cpu.obj -I sample
+blink target/book-apps/reduce_cpu.obj -o target/book-apps/reduce_cpu.exe
+.\target\book-apps\reduce_cpu.exe
 ```
-
-`:4` 为输入申请四条记录，`:1` 为总量申请一条记录。在 GPU 上执行：
 
 ```powershell
-.\target\release\brun.exe gpu `
-    sample/lessons/scan.b demo_sum `
-    sample Saved/Book/reduce-gpu :4 :1
+bc -c sample/applications/reduce_gpu.b -o target/book-apps/reduce_gpu.obj -I sample
+blink target/book-apps/reduce_gpu.obj -o target/book-apps/reduce_gpu.exe
+.\target\book-apps\reduce_gpu.exe
 ```
 
-demo_sum 产生 `[3,1,4,2]`，再求和。`total.bldata` 中唯一的 u32 结果为 10。这个入口与下一章的扫描共用输入生成程序。
-
+计算函数仍是 `lessons.scan` 的 demo_sum，输入 `[3,1,4,2]`，结果为 10。
 
 ### 3.6　让大量摘要汇成吞吐
 
@@ -398,7 +437,7 @@ demo_sum 产生 `[3,1,4,2]`，再求和。`total.bldata` 中唯一的 u32 结果
 |---|---|
 | `bc` | 检查源码、编译 COFF 目标文件、导出 CPU／GPU 计算代码 |
 | `blink` | 链接已编译对象，生成 Windows x64 exe 或计算库（DLL） |
-| `brun` | 绑定数据并执行 CPU／GPU 计算模块 |
+| `brun` | 后端隔离测试／诊断使用的模块运行器；普通应用直接运行 EXE |
 | `blanguage` | 前端、类型与访问检查、并行 IR、优化和原生后端 |
 | `blcompute` | 数据存储、设备资源、传输、原生执行与完成后的释放 |
 
@@ -457,7 +496,7 @@ B 语言 **不采用面向对象**，以数据、函数、模块和执行域组�
 | [B标准库](library/README.md) | 普通值动态序列、严格UTF-8／UTF-16编解码、整段转换与拥有切片，以及Windows系统信息、计时、线程错误码、原始命令行、环境读写、UTF-8文件输入、路径存在性、绝对路径、规范路径身份、扩展名替换及路径组合 |
 | [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [计算域](Docs/ComputeDomain.md) | 当前规则、长期边界和后续设计 |
 
-技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行资料；使用已安装正式版时，阅读[对应版本的书稿与 PDF](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample)。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
+技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行书稿与配套示例；基础应用已按前述正式工具版本验证，旧标签中的 PDF 是历史快照，不含本次教学更新。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
 
 <a id="feedback"></a>
 

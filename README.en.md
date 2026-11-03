@@ -38,45 +38,76 @@ This capability is currently in design. Each build or execution uses resources w
 
 ## Quick start
 
-### 1. Install a formal release
+### 1. Install the tools and obtain the examples
 
-The current formal release is **[v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1)**. Download the [Windows x64 installer, Blink-Setup-windows-x64.exe](https://github.com/sgua83/Blink/releases/download/v0.14.1.1/Blink-Setup-windows-x64.exe) and double-click it to install into `%ProgramFiles%/Blink`. The installer configures the system PATH; open a new terminal afterward. Check [the latest release](https://github.com/sgua83/Blink/releases/latest) for future updates; this walkthrough is pinned to `v0.14.1.1`.
+Download `Blink-Setup-windows-x64.exe` from the [Windows x64 release v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1) and double-click it. The installer configures PATH; open a new terminal to use `bc` and `blink`. See [latest releases](https://github.com/sgua83/Blink/releases/latest) for updates.
 
-Use Windows x64, Git, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. The package includes the tools and source SDK; generating execution-framework code or DLLs still requires these build tools. Open a new **x64 Developer PowerShell**:
+Install Git, [Rust stable MSVC](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. These build tools generate execution-framework code at compile time. Open a new x64 Developer PowerShell:
 
 ```powershell
 bc --version
 blink --version
-brun --version
-git clone --branch v0.14.1.1 --depth 1 https://github.com/sgua83/Blink.git Blink
+git clone https://github.com/sgua83/Blink.git Blink
 Set-Location Blink
 ```
 
-All three tools should report `0.14.1.1`. Run the following commands from this pinned Blink root with the installed tools; building main first is unnecessary.
+The complete applications below are part of this documentation update on main and have been run with formal tools `0.14.1.1`; they are separate from the older tutorial in that release tag. Both the algorithm and main are B code. Running the resulting application needs neither the compiler, Rust toolchain, nor sources.
 
-### 2. Run on the CPU first
+### 2. Select the device in B code
 
-```powershell
-brun cpu sample/lessons/map.b demo sample Saved/QuickStart/map-cpu :4
+The CPU application [map_cpu.b](sample/applications/map_cpu.b):
+
+```c
+module applications.map_cpu;
+import lessons.map;
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    target(cpu, demo(values));
+
+    for (value in values) { if (!println(value)) { return 1; } }
+    return 0;
+}
 ```
 
-The example multiplies each of `[1, 2, 3, 4]` by two and adds one. `Saved/QuickStart/map-cpu/values.bldata` stores four `f32` values, `[3, 5, 7, 9]`. The terminal reports execution information; see [appendix A.3 of the release book](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/并行编程的艺术.md) for reading the data file. No GPU is needed for this step.
-
-### 3. Run the same source on the GPU
+[map_cpu.h](sample/applications/map_cpu.h) exports `u32 main() on cpu;`. Compile, link independently, and run:
 
 ```powershell
-brun gpu sample/lessons/map.b demo sample Saved/QuickStart/map-gpu :4
+bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+.\target\book-apps\map_cpu.exe
 ```
 
-The GPU output directory contains the same `[3, 5, 7, 9]`. A Vulkan driver supporting the program's requirements is needed; a separate Vulkan SDK is unnecessary. This `f32` example requires `DenormPreserve` and `SignedZeroInfNanPreserve`; unsupported devices receive an explicit error. Source: [map.h](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.h) · [map.b](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/lessons/map.b).
+It prints `3`, `5`, `7`, `9`, one per line. No GPU is needed.
 
-### 4. Integrate with an existing C/C++/Rust project
+### 3. Run the same algorithm on the GPU
 
-Follow the [release's native integration example](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/interop/README.md) to compile the algorithm into a DLL and call it from C, C++, or Rust. The tools generate a C ABI header, import library, C++ wrapper, and Rust bindings. The [first complete Rust example](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md) starts with `[3, 5, 7, 9]` and then switches to the GPU. Follow the source-build steps and commands in those tagged documents. The [release's ABI and deployment reference](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md) explains supported types and host responsibilities.
+[map_gpu.b](sample/applications/map_gpu.b) calls the same `lessons.map::demo`. Its main explicitly selects execution and transfers:
+
+```c
+upload(values);
+target(gpu, demo(values));
+download(values);
+```
+
+```powershell
+bc -c sample/applications/map_gpu.b -o target/book-apps/map_gpu.obj -I sample
+blink target/book-apps/map_gpu.obj -o target/book-apps/map_gpu.exe
+.\target\book-apps\map_gpu.exe
+```
+
+Both EXEs run without a runtime device argument. Deploy the EXE together with the linker-generated `blink_app_*.dll` files. GPU execution needs a Vulkan driver supporting the example, without a separate Vulkan SDK; this f32 example requires `DenormPreserve` and `SignedZeroInfNanPreserve`.
+
+`on compute` declares target capabilities; `target(cpu, ...)` / `target(gpu, ...)` choose this execution. `upload` / `download` explicitly transfer storage. There is currently no `target(auto, ...)`, implicit automatic device selection, or implicit migration.
+
+### 4. Call B from an existing C/C++/Rust project
+
+The [DLL integration example](sample/interop/README.md) and [first Rust integration](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md) select `Backend::Cpu` / `Backend::Gpu` in host code. The tools generate C ABI headers, import libraries, C++ wrappers, and Rust bindings. Ordinary hosts need no device argument; dedicated comparison drivers retain it for measurement. See the [release ABI reference](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md) for supported types and responsibilities.
 
 ### Build development tools from main
 
-`main` is under active development. Its [VERSION](VERSION) can be newer than the formal release. The source SDK instructions below, the three chapters later on this page, and relative documentation links follow main. With installed release tools, use the [matching README](https://github.com/sgua83/Blink/blob/v0.14.1.1/README.en.md) and [tagged books and examples](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample).
+`main` is under active development. Its [VERSION](VERSION) can be newer than the formal release. The source SDK instructions below, the three chapters later on this page, and relative documentation links follow main. The basic applications above have been verified with the stated formal tools; books in older tags are historical release snapshots and do not contain these new application entries.
 
 Before building the current compiler, install a stable Blink seed supporting its current B frontend sources. The default `compiler` feature retains the complete compiler APIs. The original `build.rs` invokes installed `bc` and `blink` from `%ProgramFiles%/Blink/bin` to statically build the B lexer and generic-lookahead modules; newly built target tools are not their own bootstrap prerequisite. Runtime-only consumers disable `compiler`, avoiding the frontend seed and source frontend.
 
@@ -168,36 +199,39 @@ If the answers are shared read-only inputs, exclusive outputs, and no waiting fo
 
 ### 1.5 · Run it and inspect the result
 
-Run this command in PowerShell:
+This is a complete B application. Its `.h` declares `u32 main() on cpu;`; the implementation imports the existing `lessons.map` algorithm:
+
+```c
+module applications.map_cpu;
+import lessons.map;
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    target(cpu, demo(values));
+
+    for (value in values) { if (!println(value)) { return 1; } }
+    return 0;
+}
+```
+
+The application allocates four values, chooses `target(cpu, ...)` in source, and prints `3`, `5`, `7`, `9`, one per line. Build once, then run its EXE without a device argument:
 
 ```powershell
-.\target\release\brun.exe cpu `
-    sample/lessons/map.b demo `
-    sample Saved/Book/map :4
+bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+.\target\book-apps\map_cpu.exe
 ```
 
-This invokes `brun.exe` on the CPU and selects the `demo` entry in `sample/lessons/map.b`. `sample` is the module search root; `Saved/Book/map` is the output directory; `:4` allocates four zero-initialized records. `demo` first fills them with `[1,2,3,4]`, then performs the multiply-and-add transformation.
-
-The resulting `values.bldata` contains four numbers:
-
-```text
-[3, 5, 7, 9]
-```
-
-`brun` prints program information and execution timing; computed values are written to BLDATA files. The numbers in the figure were read from that file. To read it yourself, see [Appendix A.3 of the book](sample/并行编程的艺术.md).
-
-Run the same sources on a GPU by selecting `gpu` and another output directory:
+The [GPU application](sample/applications/map_gpu.b) calls `upload(values)`, `target(gpu, demo(values))`, and `download(values)` in source before printing. Its allocation and algorithm are the same:
 
 ```powershell
-.\target\release\brun.exe gpu `
-    sample/lessons/map.b demo `
-    sample Saved/Book/map-gpu :4
+bc -c sample/applications/map_gpu.b -o target/book-apps/map_gpu.obj -I sample
+blink target/book-apps/map_gpu.obj -o target/book-apps/map_gpu.exe
+.\target\book-apps\map_gpu.exe
 ```
 
-In the book's recorded runs, both `values.bldata` outputs contain `[3,5,7,9]`, with one f32 per record. The complete implementation is in [map.h](sample/lessons/map.h) and [map.b](sample/lessons/map.b).
-
-
-*Execution record: excerpts of the program entry and actual output, with values read from BLDATA.*
+Both programs print the same four numbers. Copy the EXE and the linker-generated `blink_app_*.dll` files together when deploying; running them requires neither B sources nor a compiler or module runner. GPU execution still requires the documented Vulkan capabilities. Device choice is application code, rather than a runtime command-line switch.
 
 ### 1.6 · Let scale expose the benefit
 
@@ -287,7 +321,7 @@ Both workers in the figure read 0, calculate independently, and write back, over
 
 Think of `write` as producing a new result, `inout` as reading and updating an existing value exclusively, and `read` as allowing shared reading.
 
-`write` declares write access; the algorithm or host handles initialization. In the example command, `:4` asks the runner to allocate four zero-initialized records.
+`write` declares write access; the algorithm or host handles initialization. The application uses `dataset<f32>(4)` to allocate four zero-initialized records in main.
 
 CPU application functions now support whole-dataset read/write/inout borrowing. Explicit atomic resources use atomic access. Individual exclusive positions can be borrowed through `inout T` or `write T`. Compute functions pass the required permissions between stages, but none of these capabilities permits one parallel invocation to arbitrarily access the entire dataset being modified by other invocations.
 
@@ -359,26 +393,21 @@ CPU and GPU reductions can group operations differently and therefore have round
 
 ### 3.5 · Run it and inspect the result
 
-Run the `demo_sum` entry on the CPU:
+The B application allocates four input records and one total, chooses the device in its target call, and prints `10`. The GPU source explicitly uploads and downloads the resources. Build and run without runtime device arguments:
 
 ```powershell
-.\target\release\brun.exe cpu `
-    sample/lessons/scan.b demo_sum `
-    sample Saved/Book/reduce :4 :1
+bc -c sample/applications/reduce_cpu.b -o target/book-apps/reduce_cpu.obj -I sample
+blink target/book-apps/reduce_cpu.obj -o target/book-apps/reduce_cpu.exe
+.\target\book-apps\reduce_cpu.exe
 ```
-
-`:4` allocates four input records and `:1` allocates one total record. Run on the GPU with:
 
 ```powershell
-.\target\release\brun.exe gpu `
-    sample/lessons/scan.b demo_sum `
-    sample Saved/Book/reduce-gpu :4 :1
+bc -c sample/applications/reduce_gpu.b -o target/book-apps/reduce_gpu.obj -I sample
+blink target/book-apps/reduce_gpu.obj -o target/book-apps/reduce_gpu.exe
+.\target\book-apps\reduce_gpu.exe
 ```
 
-`demo_sum` produces `[3,1,4,2]` and sums it. The single u32 in `total.bldata` is 10. This entry shares its input generator with the next chapter's scan example.
-
-
-*Execution record: excerpts of the program entry and actual output, with values read from BLDATA.*
+Both variants use the same `lessons.scan::demo_sum` algorithm on `[3, 1, 4, 2]`.
 
 ### 3.6 · Turn many summaries into throughput
 
@@ -399,7 +428,7 @@ Each input contributes one integer addition, and the optimized serial implementa
 |---|---|
 | `bc` | Check sources, compile COFF objects, and export native CPU/GPU compute code |
 | `blink` | Link compiled objects into Windows x64 executables or compute libraries (DLLs) |
-| `brun` | Bind data and execute CPU/GPU compute modules |
+| `brun` | Module runner for backend isolation tests and diagnostics; ordinary applications run their EXEs directly |
 | `blanguage` | Frontend, type/access checking, parallel IR, optimization, and native backends |
 | `blcompute` | Data, device resources, transfers, native execution, and release after completion |
 
@@ -458,7 +487,7 @@ The B language **does not adopt object-oriented programming**. Programs are orga
 | [B standard library](library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs, whole-text conversions and owned slices, plus Windows system information, timing, thread error codes, raw command lines, environment access, UTF-8 file input, path existence, absolute and canonical path identities, extension replacement, and path composition |
 | [Language reference](Docs/BLanguage.md) · [Architecture](Docs/Architecture.md) · [Compute domains](Docs/ComputeDomain.md) | Current rules, long-term boundaries, and future design |
 
-Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions. The table follows main; use the [matching release books and PDFs](https://github.com/sgua83/Blink/tree/v0.14.1.1/sample) with installed release tools. BLEngine is an independent consumer and is not yet open source; this repository provides its case-study book and reading notes, rather than the engine source.
+Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions. The table follows main and its companion examples; basic applications have been verified with the formal tools stated above. PDFs in older tags are historical snapshots without this teaching update. BLEngine is an independent consumer and is not yet open source; this repository provides its case-study book and reading notes, rather than the engine source.
 
 <a id="feedback"></a>
 
