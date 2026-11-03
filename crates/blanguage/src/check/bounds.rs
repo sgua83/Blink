@@ -3071,58 +3071,45 @@ impl Builder<'_> {
         proof: &Proof,
         source: &Ty,
         ty: &Ty,
-        choices: &[Vec<(usize, Clause)>],
+        choices: &[(Vec<usize>, Clause)],
         registers: Option<&[Reg]>,
     ) -> (Proof, Clause) {
         environment.extend(proof.facts(source));
-        // 本次读取的新结果关系在候选求值后交接，不作为自身查询输入。
-        let mut result = Proof::default();
-        for (component, ((scalar, _), candidates)) in ty.components.iter().zip(choices).enumerate()
-        {
-            let mut selected: Option<Proof> = None;
-            for (source_component, condition) in candidates {
-                let path = Clause::both(&path, condition);
-                let Some(context) = path.required_in(&environment) else {
-                    continue;
-                };
-                let mut next = proof.project(&[*source_component], source.components.len());
-                next.extend_equalities(&equality_roots(&context));
-                for fact in context {
-                    if fact.identity().is_some_and(|identity| next.origins.iter().flatten().any(|origin| *origin == identity)) {
-                        next.refine(&Ty::scalar(*scalar), 0, fact);
+        let mut selected: Option<Proof> = None;
+        let mut related = Clause::impossible();
+        for (components, condition) in choices {
+            let mut next = proof.project(components, source.components.len());
+            if let Some(registers) = registers {
+                next.origins.resize_with(ty.components.len(), Vec::new);
+                for (origins, register) in next.origins.iter_mut().zip(registers) {
+                    let identity = ValueIdentity::Register(*register);
+                    origins.retain(|origin| *origin != identity);
+                    origins.insert(0, identity);
+                }
+            }
+            // 一次聚合读取的所有分量属于同一候选；只求解本候选的结果绑定。
+            let binding = Clause::both(condition, &Clause::facts(next.facts(ty)));
+            related = Clause::either(&related, &binding);
+            let candidate_path = Clause::both(path, &binding);
+            let Some(context) = candidate_path.required_in(&environment) else {
+                continue;
+            };
+            next.extend_equalities(&equality_roots(&context));
+            for (component, _) in ty.components.iter().enumerate() {
+                for fact in &context {
+                    if fact.identity().is_some_and(|identity| next.origins.get(component).is_some_and(|origins| origins.contains(&identity))) {
+                        next.refine(ty, component, *fact);
                     }
                 }
-                next.under_path(&Ty::scalar(*scalar), &path);
-                match &mut selected {
-                    Some(selected) => selected.join(&next, 1, None),
-                    None => selected = Some(next),
-                }
             }
-            result.assign(
-                &[component],
-                ty.components.len(),
-                selected.unwrap_or_default(),
-            );
-        }
-        let mut path = path.clone();
-        // 实际装载的候选关系交给原路径；同次聚合的分量共享同一选择。
-        if let Some(registers) = registers {
-            for (register, candidates) in registers.iter().zip(choices) {
-                let mut related = Clause::impossible();
-                for (component, selection) in candidates {
-                    let facts = proof
-                        .project(&[*component], source.components.len())
-                        .with_identity(ValueIdentity::Register(*register))
-                        .facts(&Ty::scalar(source.components[*component].0));
-                    related = Clause::either(
-                        &related,
-                        &Clause::both(selection, &Clause::facts(facts)),
-                    );
-                }
-                path = Clause::both(&path, &related);
+            next.under_path(ty, &candidate_path);
+            match &mut selected {
+                Some(selected) => selected.join(&next, ty.components.len(), None),
+                None => selected = Some(next),
             }
         }
-        (result, path)
+        let path = if registers.is_some() { Clause::both(path, &related) } else { path.clone() };
+        (selected.unwrap_or_default(), path)
     }
     pub(super) fn array_value_proof(
         &mut self,
@@ -3133,12 +3120,8 @@ impl Builder<'_> {
     ) -> Proof {
         let (element, count) = array.indexed_element().unwrap();
         let width = element.components.len();
-        let choices: Vec<Vec<_>> = (0..width)
-            .map(|component| {
-                (0..count as usize)
-                    .map(|i| (i * width + component, Clause::selection(index, i)))
-                    .collect()
-            })
+        let choices: Vec<_> = (0..count as usize)
+            .map(|i| ((i * width..(i + 1) * width).collect(), Clause::selection(index, i)))
             .collect();
         let (result, path) = Self::selected_proof(
             &self.path, environment_facts(&self.env), proof, array, &element, &choices, Some(registers),
@@ -3152,25 +3135,46 @@ impl Builder<'_> {
         registers: Option<&[Reg]>,
     ) -> Option<Proof> {
         fn collect(
-            position: &Position,
+            positions: &[&Position],
             owner: &[Position],
+            selections: &[(ownership::ApplicationIndex, usize)],
             path: Clause,
-            choices: &mut Vec<(usize, Clause)>,
+            choices: &mut Vec<(Vec<usize>, Clause)>,
         ) -> Option<()> {
-            if let Some(component) = owner.iter().position(|candidate| candidate == position) {
-                choices.push((component, path));
-                return Some(());
+            let mut components = Vec::with_capacity(positions.len());
+            let mut unresolved = None;
+            for position in positions {
+                let mut position = *position;
+                loop {
+                    if let Some(component) = owner.iter().position(|candidate| candidate == position) {
+                        components.push(component);
+                        break;
+                    }
+                    let Position::Indexed(elements, index) = position else {
+                        return None;
+                    };
+                    if let Some((_, selected)) = selections.iter().find(|(selected, _)| selected == index) {
+                        // 同一实际下标必须同时存在于本次读取的各分量候选中。
+                        let Some(element) = elements.get(*selected) else { return Some(()); };
+                        position = element;
+                    } else {
+                        unresolved = Some((elements, *index));
+                        break;
+                    }
+                }
+                if unresolved.is_some() { break; }
             }
-            let Position::Indexed(elements, index) = position else {
-                return None;
-            };
-            for (i, element) in elements.iter().enumerate() {
-                collect(
-                    element,
-                    owner,
-                    Clause::both(&path, &Clause::selection(*index, i)),
-                    choices,
-                )?;
+            if let Some((elements, index)) = unresolved {
+                for i in 0..elements.len() {
+                    let mut selections = selections.to_vec();
+                    selections.push((index, i));
+                    collect(
+                        positions, owner, &selections,
+                        Clause::both(&path, &Clause::selection(index, i)), choices,
+                    )?;
+                }
+            } else {
+                choices.push((components, path));
             }
             Some(())
         }
@@ -3184,25 +3188,21 @@ impl Builder<'_> {
                 return None;
             }
             let owner_positions = self.positions(&owner);
-            let choices: Option<Vec<_>> = positions
-                .iter()
-                .map(|position| {
-                    let mut choices = Vec::new();
-                    collect(position, &owner_positions, Clause::default(), &mut choices)?;
-                    Some(choices)
-                })
-                .collect();
-            Some((name.clone(), owner.ty().clone(), choices?))
+            let mut choices = Vec::new();
+            collect(&positions.iter().collect::<Vec<_>>(), &owner_positions, &[], Clause::default(), &mut choices)?;
+            Some((name.clone(), owner.ty().clone(), choices))
         })?;
         let environment = environment_facts(&self.env);
         let (proof, _, _) = self.env.get_mut(&name)?.proof_storage()?;
         if registers.is_some() {
             proof.origins.resize_with(source.components.len(), Vec::new);
-            for (component, _) in choices.iter().flatten() {
-                if proof.origins[*component].is_empty() {
-                    let register = self.registers.len();
-                    self.registers.push(source.components[*component].0);
-                    proof.origins[*component].push(ValueIdentity::Register(register));
+            for (components, _) in &choices {
+                for component in components {
+                    if proof.origins[*component].is_empty() {
+                        let register = self.registers.len();
+                        self.registers.push(source.components[*component].0);
+                        proof.origins[*component].push(ValueIdentity::Register(register));
+                    }
                 }
             }
         }
