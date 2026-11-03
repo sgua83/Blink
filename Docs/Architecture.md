@@ -249,7 +249,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-3-2"></a>
 
-**集合值核的静态引用与入口来源。** 输入为原project／identity／combine表达式、bind静态引用／实际捕获及真实特化Instance，生产者为check/custom_reduce.rs::function原实际调用入口；各原ValueCode分别持有原定义、具体实例及引用／调用事实，内部Inst继续沿原Builder来源。空代码或折叠值核仍能解释其原入口；不从输出寄存器或内部任一Inst反推整个值核，不把三个角色合并。查询借用同一值核，结果归调用者；Source与上下文沿不可变共享事实在最后真实IR消费者后释放，不持有AST／World、增加注册表或运行权威。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3-2)。
+**集合值核的静态引用与入口来源。** 输入为原project／identity／combine表达式、bind静态引用／实际捕获及真实特化Instance，生产者为check/custom_reduce.rs::function原实际调用入口；各原ValueCode分别持有原定义、实际Instance.name及引用／调用事实，引用和按原顺序排列的捕获位置直接复用同一Builder定义／上下文；捕获参数起点取原元素参数数量，按真实B参数的零基下标关联，不由输出寄存器数或扁平分量猜补。实际捕获值和求值效果仍归原IR与运行消费者，入口材料只描述来源，不保存另一份参数值；内部Inst继续沿原Builder来源。空代码或折叠值核仍能解释其原入口；不从输出寄存器或内部任一Inst反推整个值核，不把三个角色合并。查询借用同一值核，结果归调用者；Source与上下文沿不可变共享事实在最后真实IR消费者后释放，不持有AST／World、增加注册表或运行权威。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3-2)。
 
 <a id="tool-7-2-4"></a>
 
