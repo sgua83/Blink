@@ -579,7 +579,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         if *known==next{break;}*known=next;
     }
 }
-pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,Vec<MemoryAccess>>>}
+pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>}
 pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>)->Result<Solved>{
     let loops=used_loops(functions,&closed);
     let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
@@ -625,15 +625,14 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     }
     let mut memory=BTreeMap::new();
     for(name,function)in functions {
-        let mut values:BTreeMap<address::MemoryTarget,Vec<MemoryAccess>>=BTreeMap::new();
+        let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
         for usage in &function.uses {
             if let Requirement::Memory{target,borrow,..}=&usage.requirement {
                 let borrow=evaluate(borrow,function,&known[name],&known,true).restricted(&usage.path);
-                let effects=values.entry(*target).or_default();
-                for(source,when)in borrow.sources.entries(){
-                    if when.possible() && let Origin::Position(origin)=source {
-                        effects.extend(origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if origin.writable{crate::ast::Access::InOut}else{crate::ast::Access::Read}}));
-                    }
+                let effect=address::MemoryEffect::of(&borrow);
+                match values.entry(*target) {
+                    std::collections::btree_map::Entry::Vacant(entry)=>{entry.insert(effect);}
+                    std::collections::btree_map::Entry::Occupied(mut entry)=>entry.get_mut().union(effect),
                 }
             }
         }

@@ -755,7 +755,7 @@ fn resolve_views(module:&mut Module)->Result<()> {
             }
         }
         if let Some(function)=&mut unit.function {
-            if let Some(memory)=outputs.memory.get(name) {address::apply_memory(&mut function.body.code,memory);}
+            if let Some(memory)=outputs.memory.get(name) {address::apply_memory(&mut function.body.code,memory,&function.body.locals);}
         }
     }
     Ok(())

@@ -200,30 +200,65 @@ pub(super) enum Identity {
 
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
-pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,Vec<MemoryAccess>>) {
-    fn source(source:&mut IndexedSource,memory:&BTreeMap<MemoryTarget,Vec<MemoryAccess>>) {
+// External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
+pub(super) enum MemoryEffect { Known(Vec<MemoryAccess>), External }
+pub(super) fn external_memory(borrow:&view::Borrow)->bool {
+    borrow.sources.entries().any(|(source,when)|when.possible()&&match source {
+        view::Source::External=>true,
+        view::Source::Position(origin)=>match &origin.root {
+            Root::External=>true,
+            Root::Derived(borrow)=>external_memory(borrow),
+            _=>false,
+        },
+        _=>false,
+    })
+}
+impl MemoryEffect {
+    pub fn of(borrow:&view::Borrow)->Self {
+        if external_memory(borrow){return Self::External;}
+        Self::Known(borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source {
+            view::Source::Position(origin)=>origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if origin.writable{Access::InOut}else{Access::Read}}).collect::<Vec<_>>(),
+            _=>Vec::new(),
+        }).collect())
+    }
+    pub fn union(&mut self,other:Self) {
+        match (&mut *self,other) {
+            (Self::Known(a),Self::Known(b))=>a.extend(b),
+            (_,Self::External)=>*self=Self::External,
+            (Self::External,Self::Known(_))=>{},
+        }
+    }
+    fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
+        match self {
+            Self::Known(effects)=>effects.clone(),
+            Self::External=>locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access:Access::InOut}).collect(),
+        }
+    }
+}
+pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,MemoryEffect>,locals:&BTreeMap<usize,Ty>) {
+    fn source(source:&mut IndexedSource,memory:&BTreeMap<MemoryTarget,MemoryEffect>,locals:&BTreeMap<usize,Ty>) {
         if let IndexedSource::Pointer {address,aliases,..}=source {
-            *aliases=memory.get(&MemoryTarget::Value(address[0])).into_iter().flatten().map(|effect|effect.alias).collect::<BTreeSet<_>>().into_iter().collect();
+            *aliases=memory.get(&MemoryTarget::Value(address[0])).into_iter().flat_map(|effect|effect.local_effects(locals)).map(|effect|effect.alias).collect::<BTreeSet<_>>().into_iter().collect();
         }
     }
     for instruction in code {
         match instruction {
             Inst::Call(call)=>{
-                call.memory=call.memory_use.take().and_then(|usage|memory.get(&MemoryTarget::Call(usage))).cloned().unwrap_or_default();
+                call.memory=call.memory_use.take().and_then(|usage|memory.get(&MemoryTarget::Call(usage))).map(|effect|effect.local_effects(locals)).unwrap_or_default();
                 for argument in &mut call.arguments {
                     match argument {
                         CallArgument::Value{..}=>{}
-                        CallArgument::Reference{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory),
+                        CallArgument::Reference{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
                         _=>{}
                     }
                 }
             }
-            Inst::LoadIndexed{source:value,..}|Inst::StoreIndexed{source:value,..}=>source(value,memory),
-            Inst::PositionAddress{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory),
-            Inst::Atomic(value)=>source(&mut value.target,memory),
-            Inst::Scope(body)=>apply_memory(body,memory),
-            Inst::If{yes,no,..}=>{apply_memory(yes,memory);apply_memory(no,memory);}
-            Inst::Loop{condition,body,..}=>{apply_memory(condition,memory);apply_memory(body,memory);}
+            Inst::LoadIndexed{source:value,..}|Inst::StoreIndexed{source:value,..}=>source(value,memory,locals),
+            Inst::PositionAddress{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
+            Inst::Atomic(value)=>source(&mut value.target,memory,locals),
+            Inst::Scope(body)=>apply_memory(body,memory,locals),
+            Inst::If{yes,no,..}=>{apply_memory(yes,memory,locals);apply_memory(no,memory,locals);}
+            Inst::Loop{condition,body,..}=>{apply_memory(condition,memory,locals);apply_memory(body,memory,locals);}
             _=>{}
         }
     }
@@ -413,6 +448,7 @@ impl ReferenceAddress {
         let (address,word)=self.component(word);
         let source=match self {
             Self::Borrowed{borrow,..}=>IndexedSource::Pointer{address,index,stride:0,aliases:borrow.aliases()},
+            Self::External{..}=>IndexedSource::Pointer{address,index,stride:0,aliases:Vec::new()},
             _=>IndexedSource::View{address,index,stride:0},
         };
         (source,word)
@@ -455,6 +491,22 @@ impl ReferenceAddress {
     }
 }
 impl Builder<'_> {
+    pub(super) fn external_write_values(&mut self,address:&ReferenceAddress) {
+        let external=match address {
+            ReferenceAddress::External{..}=>true,
+            ReferenceAddress::Borrowed{borrow,..}=>external_memory(borrow),
+            _=>false,
+        };
+        if !external{return;}
+        for binding in self.env.values_mut() {
+            if let Some((proof,uniform,owner))=binding.proof_storage() {
+                proof.forget_value(&(0..owner.ty().components.len()).collect::<Vec<_>>(),owner.ty().components.len());
+                *proof=std::mem::take(proof).with_external_borrows(owner.ty());
+                *uniform=false;
+                if let Binding::OwnedValue(owner)=binding {owner.value.constant=None;}
+            }
+        }
+    }
     pub(super) fn position_origin(&self,place:&Place,span:Span)->Result<Origin> {
         let layout=Layout::of(place.ty());
         let mut base=layout.clone();
@@ -500,7 +552,7 @@ impl Builder<'_> {
         }
         Ok(None)
     }
-    fn current_address_borrow(&self,borrow:&view::Borrow)->view::Borrow {
+    pub(super) fn current_address_borrow(&self,borrow:&view::Borrow)->view::Borrow {
         borrow.map_sources(|source|match source {
             view::Source::Position(origin)=>{
                 let mut origin=origin.map_borrows(|borrow|self.current_address_borrow(borrow));
@@ -605,7 +657,7 @@ impl Builder<'_> {
         let shift = self.constant(Scalar::U64, 32);
         let high = self.binary(">>", value, shift, span)?;
         let high = self.cast(high, Scalar::U32).regs[0];
-        if !external {self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:borrow.clone(),span})?;}
+        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:borrow.clone(),span})?;
         Ok(Some(Place::Reference {
             words: ty.components.iter().map(|(_, offset)| *offset).collect(),
             ty:ty.clone(),

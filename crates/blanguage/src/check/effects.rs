@@ -108,6 +108,28 @@ impl Builder<'_> {
                     .collect();
                 Ok(Some(((**element).clone(), selected)))
             }
+            ExprKind::Specialize(name,explicit,args) if name=="unsafe_position"=>{
+                let ([GenericArgument::Type(syntax)],[arg])=(explicit.as_slice(),args.as_slice()) else{return Ok(None);};
+                let ty=self.world.ty(syntax,&self.definition.source,expr.span,&self.definition.module,&self.definition.imports)?;
+                let known=if let ExprKind::Name(name)=&arg.kind {
+                    self.env.get(name).and_then(Binding::view_parts).and_then(|(address,proof)|{
+                        if !address.is_address(){return None;}
+                        let borrow=address::borrow_in_path(&self.current_address_borrow(&proof.view_borrow(0)),&self.path);
+                        (!borrow.pending()&&!address::external_memory(&borrow)&&borrow.sources.iter().all(|source|matches!(source,view::Source::Position(_)))).then(||{
+                            address::borrowed_positions(&borrow,&address::Layout::of(&ty),&ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>())
+                        })
+                    })
+                }else{None};
+                let components=match known {
+                    Some(positions)=>{
+                        let actual=self.positions(owner);
+                        positions.iter().map(|written|actual.iter().enumerate().filter_map(|(i,position)|
+                            (owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()).collect()
+                    }
+                    None=>vec![(0..owner.ty().components.len()).collect();ty.components.len()],
+                };
+                Ok(Some((ty,components)))
+            }
             _ => Ok(None),
         }
     }
@@ -121,7 +143,7 @@ impl Builder<'_> {
             ExprKind::Name(name)
                 if !writes
                     .iter()
-                    .any(|write| !write.contents && assigned_root(write.place) == Some(name)) =>
+                    .any(|write| !write.contents && (assigned_root(write.place) == Some(name)||address_write(write.place))) =>
             {
                 match self.env.get(name) {
                     Some(Binding::Value(value)) if value.ty == Ty::scalar(Scalar::U32) => {
@@ -247,9 +269,18 @@ impl Builder<'_> {
                 }
             }
         }
+        let raw=writes.iter().any(|write|!write.contents&&address_write(write.place));
         for (name, binding) in &mut self.env {
             if let Some(components) = modified.get(name) {
                 let components: Vec<_> = components.iter().copied().collect();
+                if raw && let Some((proof,_,storage))=binding.proof_storage() {
+                    for(offset,field)in storage.ty().borrow_fields() {
+                        if field.is_address() {
+                            let component=storage.ty().components.iter().position(|(_,at)|*at==offset).unwrap();
+                            if components.contains(&component){*proof=std::mem::take(proof).with_view_sources(component,BTreeSet::from([view::Source::External]));}
+                        }
+                    }
+                }
                 match binding {
                     Binding::Owned(owner) => {
                         owner.uniform = false;
@@ -284,6 +315,13 @@ impl Builder<'_> {
     }
 }
 
+fn address_write(expr:&Expr)->bool {
+    match &expr.kind {
+        ExprKind::Specialize(name,_,_)=>name=="unsafe_position",
+        ExprKind::Member(base,_)|ExprKind::Index(base,_)=>address_write(base),
+        _=>false,
+    }
+}
 fn assigned_root(expr: &Expr) -> Option<&str> {
     match &expr.kind {
         ExprKind::Name(name) => Some(name),
@@ -524,6 +562,8 @@ impl Builder<'_> {
     fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>], absolute: bool) -> Result<NumericEffect> {
         let Some((ty,parts))=self.written_projection(lhs,name,owner,None,writes)? else { return Ok(NumericEffect::shift(0)); };
         if !parts.iter().any(|part|part.contains(&component)) { return Ok(NumericEffect::shift(0)); }
+        // 未知地址可能写此分量；单个候选分量不表示该次写必然选中了它。
+        if address_write(lhs){return Ok(NumericEffect::Unknown);}
         // 动态候选位置不被当作同一实际分量。
         if parts.iter().any(|part|part.contains(&component)&&part.len()!=1) { return Ok(NumericEffect::Unknown); }
         let relative=|base:&Expr|->Result<bool>{Ok(self.written_projection(base,name,owner,None,writes)?.is_some_and(|(source,selected)|source==ty&&selected==parts))};

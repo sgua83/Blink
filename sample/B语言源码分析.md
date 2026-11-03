@@ -237,13 +237,13 @@ B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，�
 
 这样，一个 `float3` 在前端仍有完整类型，在后端却可拆成三个 `f32` 分量。语言向量不保证每一处都会使用一条硬件向量指令；是否批量执行，还取决于计算、访问和后端计划。
 
-address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
+address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。整数地址往返不保留静态借用；同一普通CPU函数直接读写自身局部存储时，External仍可能与原Local相交。原内存结果区分已知来源与External，再沿原局部表的实际区间填写Pointer别名；真实写入及循环写分析使受影响的旧数值／地址来源事实失效，不能继续把它们作为常量。局部表键为逻辑分量区间终点，原Ty仍决定字节布局。该编译期交接不创建运行时地址登记，也不凭未知写入推定初始化；跨B调用者存储与C整数userdata的效果仍有独立缺口。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
 
 `unsafe_position<T>`直接形成原Reference位置，按Ty的真实字节偏移读写，read／write／inout借用原地址。已知B来源保留布局、只读／可写权限和逐分量初始化；外部位置没有B参数初始化scope，不登记为Frame拥有资源，实际范围、对齐、权限、初始化与最后消费者前存活由调用者负责。地址位模式、可能借用与确定初始化分别表达，不能因取址就认为已写入，也不能把条件地址的全部候选都标为完成。
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:580`。
+源码节选：`crates/blanguage/src/check/address.rs:632`。
 
 ```rust
     pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
@@ -274,7 +274,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
         let shift = self.constant(Scalar::U64, 32);
         let high = self.binary(">>", value, shift, span)?;
         let high = self.cast(high, Scalar::U32).regs[0];
-        if !external {self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:borrow.clone(),span})?;}
+        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:borrow.clone(),span})?;
         Ok(Some(Place::Reference {
             words: ty.components.iter().map(|(_, offset)| *offset).collect(),
             ty:ty.clone(),
@@ -288,7 +288,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
 
 已知地址身份与真实标量宽度共同判断借用重叠；同址u64与其第4字节处的u32不能因为逻辑分量不同而被误认为不相交。未知外部别名仍属于unsafe调用者的真实合同，不增加运行时扫描、另一个地址表或全局写效果。
 
-源码节选：`crates/blanguage/src/check/address.rs:437`。
+源码节选：`crates/blanguage/src/check/address.rs:473`。
 
 ```rust
     pub(super) fn overlaps(&self, ty: &Ty, words: &[u32], other: &Self, other_ty: &Ty, other_words: &[u32]) -> bool {
@@ -1151,7 +1151,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3792`。
+源码节选：`crates/blanguage/src/check.rs:3793`。
 
 ```rust
         let binding = view.binding;
