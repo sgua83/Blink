@@ -411,7 +411,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => self.writes_expression(expr, writes)?,
                 StmtKind::If(expr, yes, no) => {
                     self.writes_expression(expr, writes)?;
-                    self.writes_statements(yes, writes)?; self.writes_statements(no, writes)?;
+                    if !matches!(expr.kind, ExprKind::Bool(false)) { self.writes_statements(yes, writes)?; }
+                    if !matches!(expr.kind, ExprKind::Bool(true)) { self.writes_statements(no, writes)?; }
                 }
                 StmtKind::Match(value, arms) => {
                     self.writes_expression(value, writes)?;
@@ -626,8 +627,8 @@ impl Builder<'_> {
                 StmtKind::Let(_,_,expr)|StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?)),
                 StmtKind::If(condition,yes,no)=>{
                     let before=before.then(self.numeric_expression_effect(condition,name,owner,component,writes)?);
-                    let yes=self.numeric_loop_paths(yes,Some(before.clone()),continues,name,owner,component,writes,absolute)?;
-                    let no=self.numeric_loop_paths(no,Some(before),continues,name,owner,component,writes,absolute)?;
+                    let yes=if matches!(condition.kind,ExprKind::Bool(false)){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,owner,component,writes,absolute)?};
+                    let no=if matches!(condition.kind,ExprKind::Bool(true)){None}else{self.numeric_loop_paths(no,Some(before),continues,name,owner,component,writes,absolute)?};
                     join_numeric_paths(yes,no)
                 },
                 StmtKind::Match(value,arms)=>{
