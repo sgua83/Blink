@@ -754,6 +754,21 @@ impl Proof {
             })
             .collect();
         self.views=(0..width).map(|i|if let Some(choice)=branch{view::Borrow::selected(choice,&self.view_borrow(i),&other.view_borrow(i))}else{self.view_borrow(i).joined(other.view_borrow(i))}).collect();
+        self.domains = (0..width).map(|i| {
+            let a=self.domains(i);let b=other.domains(i);
+            let mut common=a.intersection(&b).copied().collect::<Domains>();
+            for domain in a.union(&b) {
+                let IndexDomain::Upper(limit,_) = domain else {continue;};
+                let distances=[(&a,self.origins.get(i)),(&b,other.origins.get(i))].map(|(domains,origins)| {
+                    domains.iter().filter_map(|domain|match domain {
+                        IndexDomain::Upper(other,distance) if other==limit=>Some(*distance),
+                        _=>None,
+                    }).max().or_else(||origins.is_some_and(|items|items.contains(limit)).then_some(0))
+                });
+                if let [Some(a),Some(b)]=distances {common.insert(IndexDomain::Upper(*limit,a.min(b)));}
+            }
+            common
+        }).collect();
         self.origins = (0..width)
             .map(|i| {
                 let a = self.origins.get(i).cloned().unwrap_or_default();
@@ -768,14 +783,6 @@ impl Proof {
             .collect();
         self.ranges = (0..width)
             .map(|i| self.range_set(i).union(&other.range_set(i)))
-            .collect();
-        self.domains = (0..width)
-            .map(|i| {
-                self.domains(i)
-                    .intersection(&other.domains(i))
-                    .copied()
-                    .collect()
-            })
             .collect();
         self.conditions = conditions;
     }
@@ -916,47 +923,9 @@ impl Proof {
         proof
     }
     pub fn common(a: &Value, b: &Value) -> Self {
-        Self {
-            views: (0..a.regs.len()).map(|i| a.proof.view_borrow(i).joined(b.proof.view_borrow(i))).collect(),
-            origins: (0..a.regs.len())
-                .map(|i| {
-                    let other = b.component_origins(i);
-                    a.component_origins(i)
-                        .into_iter()
-                        .filter(|id| other.contains(id))
-                        .collect()
-                })
-                .collect(),
-            conditions: (0..a.regs.len())
-                .map(|i| {
-                    let (a, b) = (Self::value_condition(a, i), Self::value_condition(b, i));
-                    if a.is_none() && b.is_none() {
-                        None
-                    } else {
-                        Some(Box::new(Condition::common(
-                            a.as_deref().cloned().unwrap_or_default(),
-                            b.as_deref().cloned().unwrap_or_default(),
-                        )))
-                    }
-                })
-                .collect(),
-            ranges: (0..a.regs.len())
-                .map(|i| a.component_ranges(i).union(&b.component_ranges(i)))
-                .collect(),
-            nonzero: (0..a.regs.len())
-                .map(|i| a.component_nonzero(i) && b.component_nonzero(i))
-                .collect(),
-            domains: (0..a.regs.len())
-                .map(|i| {
-                    a.proof
-                        .domains(i)
-                        .intersection(&b.proof.domains(i))
-                        .copied()
-                        .collect()
-                })
-                .collect(),
-            ..Self::default()
-        }
+        let mut proof=Self::capture(a);
+        proof.join(&Self::capture(b),a.regs.len(),None);
+        proof
     }
     pub fn selection(c: &Value, a: &Value, b: &Value) -> Self {
         let mut proof = Self::common(a, b);
