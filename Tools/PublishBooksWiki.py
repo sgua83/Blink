@@ -174,10 +174,10 @@ def build_pages(source, sha, files):
         lines += ['', ('PDF links refer to the existing products in this repository snapshot; PDFs are rebuilt separately from Markdown. '
                        'BLEngine is an independent consumer; its book does not claim the engine is open source.' if english else
                        'PDF 链接指向该仓库快照内已有成品，PDF 与 Markdown 分别重建。BLEngine 是独立消费者，书稿不表示引擎已开源。'), '',
-                  ('The central GUA tasks run at 09:00 and 21:00 Beijing time. After the existing mirror/release action, '
+                  ('After the existing central mirror action, '
                    'book sync reads public main and updates only these books and marked navigation. '
                    'User content outside marked blocks is retained. Edit manuscripts in P4; generated reading pages are replaced on sync.' if english else
-                   'GUA 现有中央任务于北京时间 09:00、21:00 启动，在原源码镜像／发行步骤结束后同步书籍。同步只读取已公开 main，管理这四本书及标记导航；标记区块之外的用户内容保留。请在 P4 修改书稿，生成阅读页会在下次同步时重新生成。'), '']
+                   '原中央源码镜像步骤结束后同步书籍。同步只读取已公开 main，管理这四本书及标记导航；标记区块之外的用户内容保留。请在 P4 修改书稿，生成阅读页会在下次同步时重新生成。'), '']
         pages['Blink-Books-English.md' if english else 'Blink-Books.md'] = '\n'.join(lines)
     return pages, coverage
 

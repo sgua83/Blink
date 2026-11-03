@@ -34,10 +34,12 @@ pwsh -NoProfile -File ./Tools/PublishGit.ps1 -P4Client <本机实际client>
 GUA 所有者在中央工作区采用已提交脚本后运行一次：
 
 ```powershell
-pwsh -NoProfile -File ./Tools/InstallBooksWikiSync.ps1 -P4Client BLanguage_Gua
+pwsh -NoProfile -File ./Tools/InstallBooksWikiSync.ps1 -P4Client BLanguage_Gua -TaskName Blink.P4GitMirror
 ```
 
-安装器只为原 `Blink.P4GitMirror`、`Blink.WeeklyRelease` 添加 ID 为 `BlinkBooksWiki` 的第二个动作，保留原动作、触发器、身份和任务设置，不创建新任务或保存新凭据。现有每日北京时间 09:00 和 21:00 任务先完成源码镜像／每周发行步骤，再运行书籍同步；周日晚同步因此可能晚于 21:00 的发行构建。Wiki 故障独立返回失败，不回滚源码镜像或软件发行。后续运行从实际远端状态继续，不循环重试、不维护失败队列。机器、Gua 会话、P4/GitHub 网络及现有 Git 凭据仍是运行条件；动作每次从 P4 client 解析实际工程根。
+安装器只为指定的原任务添加 ID 为 `BlinkBooksWiki` 的第二个动作，保留原动作、触发器、身份和任务设置，不创建新任务或保存新凭据。当前 `Blink.P4GitMirror` 已采用，覆盖每日北京时间 09:00 及周一至周六 21:00；原源码镜像结束后运行书籍同步。`Blink.WeeklyRelease` 的新增动作保存被 Windows 拒绝访问，当前仍只有原发行动作，周日 21:00 尚未接入 Wiki；待有权维护该任务的所有者采用时，用同一入口指定 `-TaskName Blink.WeeklyRelease`，不以更改任务权限或分发凭据解决。接入后书籍同步会在该任务原发行步骤结束后运行。
+
+Wiki 故障独立返回失败，不回滚源码镜像或软件发行。后续运行从实际远端状态继续，不循环重试、不维护失败队列。机器、Gua 会话、P4/GitHub 网络及现有 Git 凭据仍是运行条件；动作每次从 P4 client 解析实际工程根。
 
 所有者即时同步使用相同书籍入口（先运行原源码镜像以取得最新公开对象）：
 
