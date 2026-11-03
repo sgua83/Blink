@@ -79,6 +79,7 @@ impl Emitter<'_> {
     // and any local helpers. Their references move with the same image.
     fn finish(mut self, stack_bytes: u32) -> NativeCode {
         let function_end = self.code.len();
+        let mut tail_regions = Vec::new();
         let unwind = unwind::encode(self.prolog, std::mem::take(&mut self.unwind));
         if let Some(at) = self.probe {
             let start = self.code.len();
@@ -96,11 +97,17 @@ impl Emitter<'_> {
             self.patch(back, begin);
             self.patch(tail, self.code.len());
             self.bytes(&[0x4d, 0x29, 0xda, 0x41, 0x85, 0x02, 0xc3]);
+            tail_regions.push(super::Region { end: self.code.len(), kind: super::RegionKind::StackProbe });
         }
         for ((bits, wide), references) in std::mem::take(&mut self.literals) {
-            self.code.resize(self.code.len().div_ceil(4) * 4, 0);
+            let aligned = self.code.len().div_ceil(4) * 4;
+            if aligned != self.code.len() {
+                self.code.resize(aligned, 0);
+                tail_regions.push(super::Region { end: aligned, kind: super::RegionKind::Alignment });
+            }
             let target = self.code.len();
             if wide { self.bytes(&bits.to_le_bytes()); } else { self.u32(bits as u32); }
+            tail_regions.push(super::Region { end: self.code.len(), kind: super::RegionKind::Literal });
             for at in references {
                 self.patch(at, target);
             }
@@ -112,6 +119,7 @@ impl Emitter<'_> {
             calls: self.calls,
             function_end,
             unwind,
+            tail_regions: Some(tail_regions),
         }
     }
     fn push_registers(&mut self, registers: &[u8]) {

@@ -48,7 +48,7 @@ Use `bc layout <module.h|module.b> <type> [-I module-root] [--field path]` for a
 
 Use `bc ir <module.b>` to query the actual module, selected parallel entry, or application IR as JSON, with function or optimized-stage selection. The SDK can inspect the same compilation result without another compilation. See [IR inspection](Docs/BLanguage.md#实际ir的按需结构查询) for phases, logical references, and artifacts that no longer retain IR.
 
-Use `bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]` or `native::instructions_json` for structured decoding of an explicitly selected x64 instruction range. Code/data boundaries and COFF/PE inspection have separate owners and delivery scopes. See [instruction byte queries](Docs/BLanguage.md#明确x64指令字节范围的结构查询).
+Use `bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]` or `native::instructions_json` for structured decoding of an explicitly selected x64 instruction range. Compiler-produced NativeCode, StageCode and ProgramImage values expose `code_json` with the actual main/helper code, alignment and literals; `bc build` also exports `.x64.json`. These observation facts are excluded from the execution ABI. Persistence/loading and COFF/PE inspection retain their separate delivery scopes. See [native image queries](Docs/BLanguage.md#生成期原生映像的范围与指令查询).
 
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:
 

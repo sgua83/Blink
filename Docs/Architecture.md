@@ -99,7 +99,7 @@ B 的关键字与标识符区分大小写，与 C 一致。`value`、`Value` 和
 
 #### 当前基础与设计范围
 
-当前bc inputs及Rust build::input_facts直接查询实际COFF／BLBI保存的构建输入，bc layout／Ty布局JSON和接口布局查询交接实际类型与字段，bc ir及原编译结果的ir_json按需交接实际程序、普通函数和阶段IR，bc x64及native::instructions_json可解码明确指令字节范围；bc build已有.x64／.reloc／.spv／.layout导出，bc／blink已有静态CPU栈报告，运行库已有部分分配查询、GPU阶段计时与真实完成入口。这些基础不等于完整来源映射、平台符号、运行控制、可编译观察、明确方案及实验接口已实现。GPU时间戳默认关闭；GpuProgram／GpuTemplate通过with_timestamps显式请求，普通执行不要求队列支持时间戳。计时只复用原查询池及完成生命周期，未采集或无阶段返回None，实际零值保留在Some中。
+当前bc inputs及Rust build::input_facts直接查询实际COFF／BLBI保存的构建输入，bc layout／Ty布局JSON和接口布局查询交接实际类型与字段，bc ir及原编译结果的ir_json按需交接实际程序、普通函数和阶段IR，bc x64及native::instructions_json可解码明确指令字节范围，生成期NativeCode／StageCode／ProgramImage的code_json沿原发射事实区分主／辅助代码、对齐和字面量；bc build已有.x64／.reloc／.spv／.layout导出，bc／blink已有静态CPU栈报告，运行库已有部分分配查询、GPU阶段计时与真实完成入口。这些基础不等于完整来源映射、平台符号、运行控制、可编译观察、明确方案及实验接口已实现。GPU时间戳默认关闭；GpuProgram／GpuTemplate通过with_timestamps显式请求，普通执行不要求队列支持时间戳。计时只复用原查询池及完成生命周期，未采集或无阶段返回None，实际零值保留在Some中。
 
 下列逐项职责同时覆盖已交付基础和当前设计目标，实际支持按规范及原生事实区分；未完成范围唯一在Issues，闭合范围及历史只在FixedIssues。基础原生调试、可编程观察、机器方案和真实实验可以按依赖分别推进。CPU／GPU栈耗尽仍归C-021.7.3／.4，静态栈需求归C-024.1.1，数值与精度归C-004／C-024.2，域／节点程序及API归C-021.9／C-022，热更新归C-023；不复制职责。暂未实现的命令、候选语法、硬件和程序不得写成现有能力。
 
@@ -151,7 +151,7 @@ IR结果保留原寄存器Scalar表、局部Ty及结束分量、嵌套控制流�
 
 原Emitter在主函数末端、探栈叶辅助结束、实际对齐与每项字面量写入处交接真实边界；主函数沿原function_end，不另建相同末端权威。查询借用同一NativeCode，交接完整原字节、偏移／长度和调用者声明的IP，主／辅助代码组合.5.1，字面量和对齐仅交接原字节；重定位保留原目标，不把占位值当最终地址。不从模板长度或反汇编结果猜测范围。
 
-StageCode／ContinuationCode／SortCode按实际容器逐层交接，多个独立映像的相对IP不能假称共同装载地址；普通函数同一finish亦生产范围，正式函数／节查询归.5.3。观察事实属于compiler角色，不强制进入正式BLRI执行编码；未保留的事实明确缺失，不重读源码或生成第二份代码补齐。输出独立归调用者，原代码和CPU／GPU消费者寿命不变。本叶尚未实现，[具体范围](Issues.md#c-021-7-9-5-2-1)。
+StageCode／ContinuationCode／SortCode按实际容器逐层交接，多个独立映像的相对IP不能假称共同装载地址；普通函数同一finish亦生产范围，正式函数／节查询归.5.3。观察事实属于compiler角色，不强制进入正式BLRI执行编码；未保留的事实明确缺失，不重读源码或生成第二份代码补齐。输出独立归调用者，原代码和CPU／GPU消费者寿命不变。现有NativeCode::code_json(ip)、StageCode／ProgramImage::code_json只消费这些原事实；bc build显式导出同名.x64.json。tail_regions只在compiler角色存在，原resource编解码仍只交接执行字段，恢复值未保留观察事实时明确报缺失；不修改BLRI22或普通运行角色。规范见[生成期映像查询](BLanguage.md#生成期原生映像的范围与指令查询)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-1)。
 
 <a id="tool-5-2-2"></a>
 

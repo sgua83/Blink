@@ -9,6 +9,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn native_file(path: &Path, stem: &str, code: &NativeCode, relocations: bool) -> Result<()> {
     std::fs::write(path.join(format!("{stem}.x64")), &code.bytes)?;
+    std::fs::write(path.join(format!("{stem}.x64.json")), code.code_json(0)?)?;
     if relocations {
         let text = code
             .relocations

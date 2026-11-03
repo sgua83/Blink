@@ -64,7 +64,7 @@ AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`�
 
 AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
 
-AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。代码／数据范围与COFF／PE查询分别交付，范围和实际状态边界见[指令字节查询](Docs/BLanguage.md#明确x64指令字节范围的结构查询)。
+AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。执行编码不强制带这些观察材料，保存／装入及COFF／PE仍分别交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
 
 <a id="parallel-programming"></a>
 

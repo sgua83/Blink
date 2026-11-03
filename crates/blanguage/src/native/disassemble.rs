@@ -15,20 +15,20 @@ impl Display for DecodeError {
 }
 impl Error for DecodeError {}
 
-fn text(value: &str) -> String {
+pub(super) fn text(value: &str) -> String {
     let mut out = String::new(); crate::json::string(&mut out, value); out
 }
 fn name(value: &impl fmt::Debug) -> String { text(&format!("{value:?}")) }
-fn bits(value: u64) -> String { text(&format!("0x{value:016x}")) }
-fn bytes(value: &[u8]) -> String {
+pub(super) fn bits(value: u64) -> String { text(&format!("0x{value:016x}")) }
+pub(super) fn bytes(value: &[u8]) -> String {
     let mut out = String::from("\"");
     for value in value { write!(&mut out, "{value:02x}").unwrap(); }
     out.push('"'); out
 }
-fn array(values: impl IntoIterator<Item = String>) -> String {
+pub(super) fn array(values: impl IntoIterator<Item = String>) -> String {
     format!("[{}]", values.into_iter().collect::<Vec<_>>().join(","))
 }
-fn object(fields: &[(&str, String)]) -> String {
+pub(super) fn object(fields: &[(&str, String)]) -> String {
     format!("{{{}}}", fields.iter().map(|(key, value)| format!("{}:{value}", text(key))).collect::<Vec<_>>().join(","))
 }
 fn register(value: Register) -> String {

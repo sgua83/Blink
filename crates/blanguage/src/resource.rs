@@ -266,14 +266,31 @@ record!(ExecutionPlan {
 });
 variants!(native::NativeSymbol {0=>Print(scalar),1=>External(name),2=>Function(name)});
 record!(native::Relocation { offset, target });
-record!(native::NativeCode {
-    bytes,
-    relocations,
-    stack_bytes,
-    calls,
-    function_end,
-    unwind
-});
+// Observation ranges belong to the compiler result, not the deployed execution ABI.
+impl Encode for native::NativeCode {
+    fn encode(&self, writer: &mut Writer) {
+        self.bytes.encode(writer);
+        self.relocations.encode(writer);
+        self.stack_bytes.encode(writer);
+        self.calls.encode(writer);
+        self.function_end.encode(writer);
+        self.unwind.encode(writer);
+    }
+}
+impl Decode for native::NativeCode {
+    fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
+        Ok(Self {
+            bytes: Vec::decode(reader)?,
+            relocations: Vec::decode(reader)?,
+            stack_bytes: u32::decode(reader)?,
+            calls: Vec::decode(reader)?,
+            function_end: usize::decode(reader)?,
+            unwind: Vec::decode(reader)?,
+            #[cfg(feature = "compiler")]
+            tail_regions: None,
+        })
+    }
+}
 variants!(native::RangeResult {0=>None,1=>Values(n),2=>UnsignedSum});
 variants!(native::ContinuationCode {0=>ReductionTail(code),1=>ScanAdd(code),2=>CompactScatter(code),3=>SegmentedFinish(code),4=>Scan{prefix,apply,source,target}});
 record!(native::SortCode {

@@ -1633,7 +1633,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:150`。
+源码节选：`crates/blanguage/src/native/codegen.rs:158`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1709,7 +1709,7 @@ pub(super) enum Location {
 
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:164`。
+源码节选：`crates/blanguage/src/native/codegen.rs:172`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1749,12 +1749,17 @@ pub struct NativeCode {
     pub function_end: usize,
     /// 发射器产生的Windows x64展开字节，与本映像一起交接。
     pub unwind: Vec<u8>,
+    /// 仅compiler持有的尾部分区；执行编码不保留，主函数仍沿function_end。
+    #[cfg(feature = "compiler")]
+    pub tail_regions: Option<Vec<Region>>,
 }
 ```
 
 同一 NativeCode 还交付主函数末端 function_end 与 Windows x64 展开字节 unwind。末端不包含映像尾部的无帧探栈叶辅助和常量；展开信息只描述真实主函数序言中的压栈、帧分配和非易失寄存器保存。普通应用、范围和集合辅助入口复用 native/unwind.rs 的同一编码，按实际指令完成位置写入展开操作。
 
-这也解释了为什么单独复制裸指令字节不一定就能运行：其中的调用地址、参数表、平台展开信息与寿命仍有上下文。
+编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
+
+这些观察事实不进入BLRI22执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -1785,7 +1790,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:691`。
+源码节选：`crates/blanguage/src/native/codegen.rs:699`。
 
 ```rust
     let stage = &lowered;

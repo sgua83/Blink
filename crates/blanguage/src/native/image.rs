@@ -42,6 +42,9 @@ pub struct NativeCode {
     pub function_end: usize,
     /// 发射器产生的Windows x64展开字节，与本映像一起交接。
     pub unwind: Vec<u8>,
+    /// 仅compiler持有的尾部分区；执行编码不保留，主函数仍沿function_end。
+    #[cfg(feature = "compiler")]
+    pub tail_regions: Option<Vec<Region>>,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {
@@ -118,4 +121,19 @@ impl<P> ProgramImage<P> {
     pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode>) {
         (self.program, self.stages)
     }
+}
+
+/// 原发射者写入的尾部分区；end是同一bytes中的排他末端。
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    pub end: usize,
+    pub kind: RegionKind,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionKind {
+    StackProbe,
+    Alignment,
+    Literal,
 }

@@ -247,6 +247,18 @@ used_registers／used_memory、访问类别和flags仅是ISA描述的静态使�
 
 SDK `blanguage::native::instructions_json(bytes, ip) -> Result<String, DecodeError>`借用原字节并返回独立字符串；DecodeError含实际失败offset、ip与reason。采用正常有效性检查，非法、截断或当前不支持的编码在实际位置失败，CLI不输出部分成功JSON、不跳字节或以db填充。依赖只在compiler功能启用iced-x86的std／decoder／instr_info，默认encoder、assembler和格式器关闭；公开接口不暴露依赖类型，不改变B代码生成、资源ABI或无compiler的运行库。解码能力随工具实现演进，不成为语言可用指令的永久边界。原代码／数据范围归实际发射和产物所有者，当前独立交付状态见双台账与Architecture的tool-5系列职责。
 
+## 生成期原生映像的范围与指令查询
+
+compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，返回kind=native_code、实际byte_length、function_end、stack_bytes、原calls／relocations／unwind及regions。ip是调用者声明的字节零地址，以完整64位十六进制交接；未装入的编译结果通常使用0，不将它当实际运行地址。重定位分别交接print标量、外部library／symbol或具名function，原占位字节不是最终绑定地址；call_sites的null保持原间接调用事实。
+
+主函数范围直接使用原function_end；compiler角色的tail_regions按原写入顺序保存每个尾部分区的排他end与kind，不另存相同主末端。输出region的kind为main_function、stack_probe、alignment或literal，offset_bytes／length_bytes相对同一bytes；各区间的原bytes十六进制合起来完整重建本次映像。main_function／stack_probe调用原instructions_json，instructions中的偏移相对本region，IP则使用ip加region偏移；字面量和对齐的instructions为null，只保留真实字节。解码失败在实际映像偏移与IP上报错，不跳过或把数据猜成指令。查询借用真实匹配的编译结果，不为调用者手工伪造的NativeCode证明合法性、实际执行或目标支持。
+
+`StageCode::code_json()`按Element主入口、四种单入口延续、Scan的prefix／apply及Sort的全部initialize／histogram／scatter／gather返回原容器关系；`ProgramImage::code_json()`读取同一ExecutionPlan名称与全部原阶段。多个独立代码映像分别使用字节零相对IP，外层address_basis=each_image_relative，不伪造共同装载地址。需要更小范围时调用原stages()及所选NativeCode的查询。普通函数也由同一Emitter::finish生产范围，当前普通对象／函数的完整外部查询仍沿C-021.7.9.5.3交付。
+
+`bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
+
+这些范围是compiler结果中的观察材料，不属于BLRI22执行字段；无compiler的NativeCode不含tail_regions或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有保留该观察材料，code_json明确报告缺失，不从源码、旧模板或可解码性重建。保存／装入可选范围材料仍沿C-021.7.9.5.2.2，正式部署剥离沿原.70，不能把已导出JSON写成这些接口均已完成。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
+
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：
 
