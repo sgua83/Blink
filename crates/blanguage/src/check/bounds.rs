@@ -690,17 +690,17 @@ impl Proof {
             .copied()
     }
     // 数值事实失效不改变仍存在的view所借用的实际存储。
-    // 当前值只继承回边保持的界，不继承入口常量、相等身份或变体选择。
+    // initial为实际标量的共有数值界；当前值不继承入口常量、相等身份或变体选择。
     pub(super) fn retain_loop_bounds(&mut self, initial: &Self, component: usize, lower: bool, upper: bool) {
         self.ranges.resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
         if lower {
-            self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(component)), Bits::from(u32::MAX));
-            if initial.unsigned_minimum(component) != 0 { self.mark_nonzero(component); }
+            self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(0)), Bits::from(u32::MAX));
+            if initial.unsigned_minimum(0) != 0 { self.mark_nonzero(component); }
         }
         if upper {
-            self.ranges[component] = self.ranges[component].restrict(0, Bits::from(initial.unsigned_maximum(component)));
-            for domain in indices_below(&initial.domains(component), false) { self.mark_domain(component, domain); }
-            if let Some(id) = initial.known_identity(component) { self.mark_domain(component, IndexDomain::Upper(id, 0)); }
+            self.ranges[component] = self.ranges[component].restrict(0, Bits::from(initial.unsigned_maximum(0)));
+            for domain in indices_below(&initial.domains(0), false) { self.mark_domain(component, domain); }
+            if let Some(id) = initial.known_identity(0) { self.mark_domain(component, IndexDomain::Upper(id, 0)); }
         }
     }
     pub(super) fn forget_value(&mut self, components: &[usize], width: usize) {
@@ -755,7 +755,10 @@ impl Proof {
             .collect();
         self.views=(0..width).map(|i|if let Some(choice)=branch{view::Borrow::selected(choice,&self.view_borrow(i),&other.view_borrow(i))}else{self.view_borrow(i).joined(other.view_borrow(i))}).collect();
         self.domains = (0..width).map(|i| {
-            let a=self.domains(i);let b=other.domains(i);
+            let mut a=self.domains(i);let mut b=other.domains(i);
+            let ar=self.range_set(i).hull();let br=other.range_set(i).hull();
+            if ar.1<=br.0 {a.extend(indices_below(&b,false));}
+            if br.1<=ar.0 {b.extend(indices_below(&a,false));}
             let mut common=a.intersection(&b).copied().collect::<Domains>();
             for domain in a.union(&b) {
                 let IndexDomain::Upper(limit,_) = domain else {continue;};
