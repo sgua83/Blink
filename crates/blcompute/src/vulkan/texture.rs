@@ -218,6 +218,7 @@ impl Device {
             crate::TextureFormat::Rgba8Unorm => 37,
             crate::TextureFormat::Rgba8Srgb => 43,
             crate::TextureFormat::R8Unorm => 9,
+            crate::TextureFormat::Rg16Unorm => 77,
         };
         if dimensions
             .iter()

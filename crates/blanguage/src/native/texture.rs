@@ -138,18 +138,31 @@ impl Lower {
             level,
             byte: false,
         });
-        for channel in 0..4 {
-            let shift = self.constant(Scalar::U32, (channel * 8) as u32);
-            let shifted = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, raw, shift);
-            let mask = self.constant(Scalar::U32, 255);
-            let byte = self.binary(Scalar::U32, BinaryOp::And, shifted, mask);
-            let value = self.cast(Scalar::F32, byte);
-            let denominator = self.constant(Scalar::F32, 255.0f32.to_bits());
-            let value = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
-            self.code.push(Inst::Cast {
-                dst: result[channel],
-                src: value,
-            });
+        let mut rgba = Vec::new();
+        for (count, bits) in [(4, 8), (2, 16)] {
+            let outer = std::mem::take(&mut self.code);
+            for channel in 0..count {
+                let shift = self.constant(Scalar::U32, (channel * bits) as u32);
+                let shifted = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, raw, shift);
+                let mask = self.constant(Scalar::U32, (1 << bits) - 1);
+                let byte = self.binary(Scalar::U32, BinaryOp::And, shifted, mask);
+                let value = self.cast(Scalar::F32, byte);
+                let denominator = self.constant(Scalar::F32, (((1 << bits) - 1) as f32).to_bits());
+                let value = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
+                self.code.push(Inst::Cast {
+                    dst: result[channel],
+                    src: value,
+                });
+            }
+            for channel in count..4 {
+                self.code.push(Inst::Constant(result[channel], Scalar::F32, Bits::from(if channel == 3 { 1.0f32.to_bits() } else { 0 })));
+            }
+            let unpacked = std::mem::replace(&mut self.code, outer);
+            if count == 4 { rgba = unpacked; } else {
+                let rg_format = self.constant(Scalar::U32, 4);
+                let rg = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), format, rg_format);
+                self.code.push(Inst::If { condition: rg, yes: unpacked, no: std::mem::take(&mut rgba) });
+            }
         }
         let srgb_format = self.constant(Scalar::U32, 2);
         let encoded = self.binary(
@@ -387,7 +400,8 @@ impl Emitter<'_> {
             self.bytes(&[0x4d, 0x01, 0xe7]);
             if let Some(element) = texture.element {
                 self.load(element);
-                self.bytes(&[0x4d, 0x8b, 0x3c, 0xc7]);
+                self.bytes(&[0x48, 0xc1, 0xe0, BUFFER_BYTES.trailing_zeros() as u8]);
+                self.bytes(&[0x4d, 0x8b, 0x3c, 0x07]);
             } else {
                 self.bytes(&[0x4d, 0x8b, 0x3f]);
             }
@@ -395,7 +409,8 @@ impl Emitter<'_> {
         }
         if let Some(element) = texture.element {
             self.load(element);
-            self.bytes(&[0x4d, 0x8b, 0xbc, 0xc4]);
+            self.bytes(&[0x48, 0xc1, 0xe0, BUFFER_BYTES.trailing_zeros() as u8]);
+            self.bytes(&[0x4d, 0x8b, 0xbc, 0x04]);
         } else {
             self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
         }

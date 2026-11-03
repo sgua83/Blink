@@ -8,12 +8,13 @@ pub enum TextureFormat {
     Rgba8Unorm = 1,
     Rgba8Srgb = 2,
     R8Unorm = 3,
+    Rg16Unorm = 4,
 }
 impl TextureFormat {
     pub fn texel_bytes(self) -> usize {
         match self {
             Self::Rgba32Float => 16,
-            Self::Rgba8Unorm | Self::Rgba8Srgb => 4,
+            Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Rg16Unorm => 4,
             Self::R8Unorm => 1,
         }
     }
@@ -23,6 +24,7 @@ impl TextureFormat {
             1 => Ok(Self::Rgba8Unorm),
             2 => Ok(Self::Rgba8Srgb),
             3 => Ok(Self::R8Unorm),
+            4 => Ok(Self::Rg16Unorm),
             _ => Err(error("未知BLTEX texel格式")),
         }
     }
@@ -32,6 +34,7 @@ pub enum TextureTexels {
     Rgba8Unorm(Vec<[u8; 4]>),
     Rgba8Srgb(Vec<[u8; 4]>),
     R8Unorm(Vec<u8>),
+    Rg16Unorm(Vec<[u16; 2]>),
 }
 impl From<Vec<[f32; 4]>> for TextureTexels {
     fn from(value: Vec<[f32; 4]>) -> Self {
@@ -45,6 +48,7 @@ impl TextureTexels {
             Self::Rgba8Unorm(_) => TextureFormat::Rgba8Unorm,
             Self::Rgba8Srgb(_) => TextureFormat::Rgba8Srgb,
             Self::R8Unorm(_) => TextureFormat::R8Unorm,
+            Self::Rg16Unorm(_) => TextureFormat::Rg16Unorm,
         }
     }
     pub fn as_bytes(&self) -> &[u8] {
@@ -56,6 +60,9 @@ impl TextureTexels {
                 std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 4)
             },
             Self::R8Unorm(v) => v,
+            Self::Rg16Unorm(v) => unsafe {
+                std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 4)
+            },
         }
     }
     pub fn from_bytes(format: TextureFormat, bytes: &[u8]) -> Result<Self> {
@@ -81,6 +88,7 @@ impl TextureTexels {
             TextureFormat::Rgba8Unorm => Self::Rgba8Unorm(copy(bytes)),
             TextureFormat::Rgba8Srgb => Self::Rgba8Srgb(copy(bytes)),
             TextureFormat::R8Unorm => Self::R8Unorm(bytes.to_vec()),
+            TextureFormat::Rg16Unorm => Self::Rg16Unorm(copy(bytes)),
         })
     }
 }

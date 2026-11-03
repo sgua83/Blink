@@ -747,7 +747,7 @@ CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配�
 
 ## 已编译模块的资源ABI
 
-当前B对象元数据为 **BLCO36**，模块资源C ABI与执行映像为 **BLRI20**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。CPU映像的NativeCode同时交付主函数末端和Windows x64展开字节；末端不包括尾部无帧探栈叶辅助及字面量，装入器不从指令另猜栈帧。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
+当前B对象元数据为 **BLCO36**，模块资源C ABI与执行映像为 **BLRI21**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。CPU映像的NativeCode同时交付主函数末端和Windows x64展开字节；末端不包括尾部无帧探栈叶辅助及字面量，装入器不从指令另猜栈帧。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。CPU纹理描述的format=4为原生RG16 UNORM，旧采样映像不能将其误按RGBA8解码；描述offset／stride不变，资源ABI按此真实标签语义拒绝混用。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
 
 Rust SDK的Frame操作通过原Result交回错误。CPU／GPU模板装入失败分别沿CpuTemplate::from_image／Device::load_template的Err((error,image))交回原错误和同一未改映像，Frame接回原程序槽；原数据及其他程序继续由Frame持有，调用方可在依赖满足后显式再次调用，没有自动重放。run先借用原程序布局完成同根参数重叠检查，再装入程序并执行；参数重叠拒绝保留原程序槽、输入存储及域关系，后续合法调用仍消费该程序。CPU／GPU驻留拒绝发生在实际执行／提交前；拒绝的当前输入和此前已取出的同类参数由原参数Vec交回Frame原槽，同一Loaded程序接回原程序槽，未取出的后缀与原域关系保持。逻辑只读别名继续沿原selected只移动一份物理存储；调用者显式完成download或upload后可提交下一次合法调用，不自动传输、重放或复制原资源。CPU同步执行借用原参数拥有组，原错误与成功都交回同一存储及程序槽；输入域、冻结权限、实际字段和标量参数的拒绝保持原数据及有效域。参数接收后才沿同一Count关系撤回本次可能写计数字段的许可，指向未绑定数据的关系同样随其实际计数写入失效；只有全部阶段／延续真实完成才发布原prefix输出保证。线程池工作创建失败直接沿Result交回原OS错误；已有CPU写入仍留在原存储，不回滚或自动重放，也不将未完成调用当作新有效域。GPU调用准备借用原InputOwner，准备错误将原GPU存储及同一程序交回Frame原槽，已有域关系保持；错误不产生另一份资源或自动重放。命令录制使用原局部last记录本次阶段关系，物理producer与最后使用点只在成功提交后发布；成功才将原绑定移入Submission。Submission::wait成功交回Completed；完成等待或时间戳读取失败交回(error, submission)，同一Submission继续持有原绑定、加速结构、查询池与真实完成点。错误不承诺设备数据可用，调用者决定继续持有或明确结束原提交；原Execution与最后使用点继续承担实际消费者完成后的释放，不自动重放。已接受GPU提交后，Frame沿原Count关系撤回本次可能写计数字段的旧许可；等待失败从同一Submission取回实际存储并接回原程序槽，不发布本次条件输出保证。未写Count字段及无关原域关系保持，已有GPU写入不回滚；原GPU完成与最后使用点继续持有实际资源。upload借用原CPU输入，CPU暂存读取及GPU提交成功交回GPU存储后才替换原槽；驻留拒绝或上传错误不提前移除原输入，在途暂存区和GPU完成仍由原GpuDataset.last_use持有。address直接借用原位置，驻留或写权限拒绝不移走或释放原存储；成功取得地址后的范围、权限和期限仍由实际调用者遵守。resize在扩容申请失败时保留原存储；download借用Frame中的原GPU输入，仅在完整CPU结果返回后替换原槽，驻留拒绝或下载错误不提前释放输入。保留资源所有权不表示设备故障后的数据已经可用，实际设备失败与部分效果仍由原结果交接。已有Frame的六个共同C入口沿同一Result交回状态、成功输出和原错误；宿主持有原Frame并决定后续调用及显式销毁，错误不结束宿主。完整普通B可失败返回与业务result适配仍沿Issues C-020.5.2.4建设；原操作的部分效果及设备数据可用性按上述各自合同解释。
 
@@ -1962,7 +1962,7 @@ void shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 }
 ```
 
-`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。纹理实际保存 RGBA32F、RGBA8 UNORM、RGBA8 sRGB 或 R8 UNORM，坐标归一化，U／V 越界由资源逐轴选择 Clamp／Repeat；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。RGBA8 sRGB 在过滤前解码 RGB，alpha 仍为 UNORM；其他格式不进行显示传递转换，R8 返回 `(r,0,0,1)`，均不预乘 alpha。
+`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。纹理实际保存 RGBA32F、RGBA8 UNORM、RGBA8 sRGB、R8 UNORM 或 RG16 UNORM，坐标归一化，U／V 越界由资源逐轴选择 Clamp／Repeat；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。RGBA8 sRGB 在过滤前解码 RGB，alpha 仍为 UNORM；其他格式不进行显示传递转换，R8 返回 `(r,0,0,1)`，RG16 的两路 u16 分别除以 65535，返回 `(r,g,0,1)`，均不预乘 alpha。
 
 资源、参数数量、UV／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限 UV／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。硬件过滤精度与 CPU f32 算术可有差异；同一算法和格式不意味着非二进制坐标逐位一致，不能据此承诺天然材质视觉等价。
 
@@ -1974,7 +1974,7 @@ CPU 调用期间持有实际像素及描述；Device::upload_texture 返回完�
 
 Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。独立逻辑设备及本机离散／集成两块物理 GPU 的双向显式交接已有原生记录，不表示直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原上传，采样结果仍沿实际提交观察。
 
-独立资产 `.bltex` 当前写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1 字节，文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
+独立资产 `.bltex` 当前写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4 字节，RG16 为小端 R、G 两个 u16，文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
 
 当前只有只读二维纹理。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
 
@@ -3828,7 +3828,7 @@ CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap �
 
 
 ## 原生 texel 格式与存储所有权
-`TextureMip::pixels` 为 `TextureTexels::{Rgba32Float(Vec<[f32;4]>),Rgba8Unorm(Vec<[u8;4]>),Rgba8Srgb(Vec<[u8;4]>),R8Unorm(Vec<u8>)}`。原 float Vec 可通过 `.into()` 交接；`Texture2D::format` 从实际负载取得格式，整链同格式。`TextureTexels::as_bytes/from_bytes` 只交接真实字节，不维护解码后的 CPU float 镜像。原生 CPU 描述含 mip 数、逐轴地址模式、mip 指针与格式（offset 0／4／8／16，stride24），每级描述仍16字节。采样直接生成相应字节／dword 装载、UNORM 或分段 sRGB 运算，再完成原双线性及 mip 混合；格式来自所选资源，混合格式数组不要求统一转换，也不经宿主 texel 回调。
+`TextureMip::pixels` 为 `TextureTexels::{Rgba32Float(Vec<[f32;4]>),Rgba8Unorm(Vec<[u8;4]>),Rgba8Srgb(Vec<[u8;4]>),R8Unorm(Vec<u8>),Rg16Unorm(Vec<[u16;2]>)}`。原 float Vec 可通过 `.into()` 交接；`Texture2D::format` 从实际负载取得格式，整链同格式。`TextureTexels::as_bytes/from_bytes` 只交接真实字节，不维护解码后的 CPU float 镜像。原生 CPU 描述含 mip 数、逐轴地址模式、mip 指针与格式（offset 0／4／8／16，stride24），每级描述仍16字节。采样直接生成相应字节／dword 装载、UNORM 或分段 sRGB 运算，再完成原双线性及 mip 混合；格式来自所选资源，混合格式数组不要求统一转换，也不经宿主 texel 回调。
 
 Vulkan 按真实格式创建 `R32G32B32A32_SFLOAT`、`R8G8B8A8_UNORM`、`R8G8B8A8_SRGB` 或 `R8_UNORM` 图像／视图；格式不支持时明确报告，不能静默替换。上传／读回按真实 texel 字节数构造复制，每级 staging 起点满足4字节对齐，尤其保留R8奇数尾层；文件不保存这些平台填充。复制区域布局见 [VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)，对齐约束见 [vkCmdCopyBufferToImage](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyBufferToImage.html)。快照保留实际格式与地址模式，逐字节保留原负载，包括 float NaN 载荷、负零和次正规位，不通过浮点算术重建。资源仍沿原上传及最后采样完成点持有，不新增长驻状态、上传副本或全局资源表。
 
