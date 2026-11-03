@@ -151,6 +151,12 @@ pub fn input_facts(path: &Path) -> Result<InputFacts> {
     identity::decode(&identity)?
         .ok_or_else(|| "产物未保存当前结构化构建输入；不能从旧摘要还原".into())
 }
+/// Extracts the original resource-ABI image from a build artifact.
+/// Does not interpret build inputs, recompile, load code, or change the source artifact.
+/// Code trust and execution contracts remain with the resource decoder and runtime.
+pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
+    Ok(decode(&fs::read(path)?)?.image)
+}
 /// 独立执行可只装入产物，不读取B源码或调用编译器后端。
 ///
 /// # Safety

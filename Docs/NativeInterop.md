@@ -91,6 +91,8 @@ bc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检�
 
 公开 ABI 前缀只决定外部接口，不再作为编译暂存静态库的身份。同一 SDK 中两个相同前缀的编译各自消费本编译单元的私有库，目标文件归档后清除该单元的生成源码与 Cargo package 产物，共享框架依赖缓存保留。应用编译同样沿此路径，不再为私有 Cargo 库单独计算源码散列前缀；应用执行 DLL 的既有内容身份继续由链接器使用。编译失败如实返回并结束暂存生命周期，链接和最终 DLL 无需保留这些临时产物。
 
+需要从原生入口构建缓存单独交付计算映像时，可用`bc image <entry.blbi> -o <deployment.blri>`或Rust `build::execution_image`取得原BLRI image字节，原BLBI构建记录与缓存保持。原运行SDK关闭compiler功能后，通过resource::from_compiler_output及原CpuTemplate／GpuTemplate装入，CPU／GPU代码、展开、布局与真实条件合同不变；不把原构建身份作为运行前置，也不把移除身份解释为取消prefix等前提。这是原执行映像交接，区别于COFF链接生成EXE／算法DLL及其C ABI工厂；符号裁剪、观察材料和正式安装分别沿原职责。完整接口与输出所有权见[部署执行映像](BLanguage.md#构建记录与可部署执行映像)。
+
 部署机器需要 Windows x64 与 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。GPU 后端另需支持程序所需 Vulkan 能力的显卡驱动；不要求安装 Vulkan SDK。
 
 ## 三种宿主

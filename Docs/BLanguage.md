@@ -3783,6 +3783,20 @@ CPU使用`Target::Cpu`、`into_cpu()`及原`CpuProgram::from_image`；模板保�
 
 BLEngine算法准备、compute与simulate消费入口复用API，映像位于其target/blink。COFF复用、显式多单元图及实际定义粒度的泛型／嵌入实现失效已提供，消费者按真实准备依赖共享Compiler；本轮新能力的引擎采用另行记录。完整泛型模板分发、选择性内联策略、可替换多模块DLL、域编译／运行与热更新仍待实现。缓存命中不代表首次冷编译或完整引擎启动达标。
 
+## 构建记录与可部署执行映像
+
+BLBI1的原Artifact分别保存identity构建输入记录和image执行映像。`blanguage::build::execution_image(path) -> build::Result<Vec<u8>>`只读取并解码该包络，返回原image字段；不解析构建身份含义，不读取B源码、不创建Compiler或设备、不重新编译／重编码代码，也不修改原BLBI。构建缓存继续保存完整原输入身份并按原规则命中或失效。
+
+```powershell
+bc image target/cache/entry.blbi -o target/deployment.blri
+```
+
+CLI在Compiler初始化之前处理，读取原映像后由OS创建新的输出文件；已有构建、缓存或部署文件保持原所有者，输出已存在、父目录不可用、真实读取／解码／写入错误均直接报告，失败不输出成功JSON。成功结果kind=execution_image_export，source_path／output_path保存本次实际参数，byte_length为原image的完整字节数；成功导出不等于装入、设备支持、实际执行或安装。扩展名只是示例，恢复以原BLRI编码及兼容身份为准，不按文件名猜格式，不接受把原始BLRI再当BLBI导入。
+
+部署文件逐字节等于原image，包含原resource::Module的类型与CPU机器码／GPU SPIR-V、实际执行布局／顺序、必要重定位、原生展开和访问／前缀合同；不包含原identity的源码位置、工作目录和构建输入清单。原映像中运行所需的程序／类型名及系统库引用保持，不能把这些合同当调试材料删除。本入口不做符号裁剪、Shader改写或正式安装，可选观察材料的保存／装入仍沿C-021.7.9.5.2.2，平台符号选择沿原.63／.64。
+
+Rust消费者可关闭blanguage／blcompute默认compiler功能，直接读取部署字节并调用原`unsafe resource::from_compiler_output(&bytes)`，随后把CPU／GPU映像交给原CpuTemplate::from_image／Device::load_template。原Module按TemplateProgram标记恢复，原DomainBindings继续消费真实前提及完成关系，不无条件转换为ExecutableProgram，不因移除构建记录而允许不相关数据取得prefix等合同。字节信任与实际执行权限仍由原装入边界承担；不新增Frame、B解释器、宿主转发、资源拥有表或另一运行库。输出字节／文件归调用者，代码、存储及本机／GPU资源继续由原所有者保持到最后真实消费者结束。
+
 ## 开放普通值类型形参
 记录、普通／cooperative 函数和当前 计算函数 可写不带集合约束的 `<T>`。T 在每次具体使用处绑定普通值类型：支持 bool、数值、矩阵、数组、用户记录及其合法组合，不要求把用户类型加入库的有限清单。例如 `.h`：
 

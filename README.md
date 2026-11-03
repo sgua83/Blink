@@ -66,6 +66,8 @@ AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得
 
 AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。执行编码不强制带这些观察材料，保存／装入及COFF／PE仍分别交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
 
+`bc image <entry.blbi> -o <deployment.blri>`直接导出原CPU／GPU执行映像，原构建输入记录与缓存保持；关闭compiler功能的Rust运行SDK可独立装入并执行，见[部署映像](Docs/BLanguage.md#构建记录与可部署执行映像)。
+
 <a id="parallel-programming"></a>
 
 ## 从《并行编程的艺术》开始
