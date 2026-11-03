@@ -400,10 +400,8 @@ impl Builder<'_> {
                 }
             }
         }
-        if !self.loop_contexts.last().unwrap().view_inputs.is_empty() || self.loop_contexts.last().unwrap().initialization || self.env.values().any(|binding| binding.application_resources().iter().any(|data|data.initialization.is_some())) {
-            let state = self.loop_state();
-            self.loop_contexts.last_mut().unwrap().continues.push(state);
-        }
+        let state = self.loop_state();
+        self.loop_contexts.last_mut().unwrap().continues.push(state);
         Ok(())
     }
     pub(super) fn release_application_loop(&mut self) -> Result<()> {
@@ -532,6 +530,31 @@ impl Builder<'_> {
         nonempty:bool,
     )->Result<bool>{
         let mut context=self.loop_contexts.pop().unwrap();let natural_index=context.exits.len();
+        if !context.initial && let Some(exit)=natural.as_mut() {
+            let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
+            for(name,binding)in &mut exit.env {
+                let Some((proof,uniform,place))=binding.proof_storage() else{continue;};
+                let Some((entry,_,_))=context.entry.env.get_mut(name).and_then(Binding::proof_storage) else{continue;};
+                let width=place.ty().components.len();
+                for component in 0..width {
+                    if !proof.known_identity(component).zip(entry.known_identity(component)).is_some_and(|(a,b)|a==b){continue;}
+                    let mut repeated:Option<bounds::Proof>=None;
+                    for edge in &mut context.continues {
+                        if let Some((next,next_uniform,_))=edge.env.get_mut(name).and_then(Binding::proof_storage) {
+                            let next=next.project(&[component],width);*uniform &= *next_uniform;
+                            if let Some(common)=repeated.as_mut(){common.join(&next,1,None);}else{repeated=Some(next);}
+                        }
+                    }
+                    if let Some(repeated)=repeated {
+                        let mut common=proof.project(&[component],width);let reg=self.reg(place.ty().components[component].0);
+                        let aliases=[common.output_aliases(&[reg],&self.registers,&BTreeMap::new()),repeated.output_aliases(&[reg],&self.registers,&BTreeMap::new())];
+                        exit.path=bounds::Clause::both(&exit.path,&bounds::Clause::either(&empty.assume(&aliases[0],true),&empty.assume(&aliases[1],false)));
+                        common.join_condition(&repeated,1,Some(&empty));common=common.with_identity(ValueIdentity::Register(reg)).with_view_borrow(0,proof.view_borrow(component));
+                        proof.assign(&[component],width,common);
+                    }
+                }
+            }
+        }
         if let Some(state)=natural.take(){context.exits.push(state);}
         let view_natural=(context.exits.len()>natural_index).then_some(natural_index);self.close_view_context(&mut context,view_natural,nonempty)?;
         natural=if context.exits.len()>natural_index{Some(context.exits.pop().unwrap())}else{None};

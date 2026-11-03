@@ -65,7 +65,7 @@ impl LoopControl {
         }
         Self{cursor,test:Some(condition),inputs}
     }
-    fn bindings(&self,producer:&flow::LoopState)->BTreeMap<ValueIdentity,bounds::Proof> {
+    pub(super) fn bindings(&self,producer:&flow::LoopState)->BTreeMap<ValueIdentity,bounds::Proof> {
         let mut values=BTreeMap::new();
         for(id,input)in &self.inputs {
             let proof=match input {
