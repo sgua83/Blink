@@ -3865,7 +3865,7 @@ Rust SDK的`application::Frame::data()`返回`&DomainBindings<Option<application
 
 数据槽容器的len包含None，不是当前活动数据集数量。对非零尺寸D，len／capacity乘size_of::<D>()分别给出已初始化槽跨度／原Vec可用容量字节；这些字节不包含D内部拥有的数据字、代码、类型或设备资源，也不表示分配器额外开销、OS页或全Frame占用。capacity尾部不能读取为已初始化D。零尺寸D的槽字节为零，不能把Rust Vec的usize::MAX容量当实际字节分配；空容器指针也不是分配证明。release可保留原槽容量，实际CPU／GPU载荷及完成仍按原所有者处理。共享借用不允许修改原容器，精确Rust返回签名为&Vec<D>；as_slice或原强制转换可交接已有切片消费者，不增加旧签名入口或跨模块Rust容器ABI。
 
-`DomainBindings<D>::domain_relations()`返回同一原domains的`&[DomainRelation]`，Frame的data同样使用该入口。其字段如下：
+`DomainBindings<D>::domain_relations()`返回同一原domains的`&Vec<DomainRelation>`，Frame的data同样使用该入口。len为当前有效关系数，capacity为原容器可容纳的关系槽数；分别乘`size_of::<DomainRelation>()`表示有效槽跨度和容量字节，不包括数据载荷、分配器或OS开销。Count写入或release可将len归零，同时保留容器容量；预留槽不是有效关系，也不发布许可。共享借用仍可强制转换为切片，精确返回切片的函数指针类型须随公开Rust签名调整。其字段如下：
 
 | 字段 | 来源和单位 |
 |---|---|
@@ -3893,7 +3893,9 @@ let actual_relations = root.domain_relations();
 
 ### 应用Frame程序槽与代码根的借用
 
-Rust SDK的`Frame::programs()`返回同一原programs的`&[Option<ProgramSlot>]`，保留原槽顺序、索引及实际Option状态；索引对应本Frame的程序号，不生成长期代码身份。ProgramSlot::Image持有原ProgramImage::Cpu／Gpu，Loaded持有原Program::Cpu(CpuTemplate)／Gpu(GpuTemplate)。原容器仍私有，查询没有插入、改写或装入入口；公开同形枚举值不授予发布到该Frame的权限。
+Rust SDK的`Frame::programs()`返回同一原programs的`&Vec<Option<ProgramSlot>>`，保留原槽顺序、索引及实际Option状态，并交接原容器的len／capacity；索引对应本Frame的程序号，不生成长期代码身份。ProgramSlot::Image持有原ProgramImage::Cpu／Gpu，Loaded持有原Program::Cpu(CpuTemplate)／Gpu(GpuTemplate)。原容器仍私有，查询没有插入、改写或装入入口；公开同形枚举值不授予发布到该Frame的权限。
+
+程序槽的len／capacity乘实际`size_of::<Option<ProgramSlot>>()`分别表示槽跨度／容量字节，只计该Vec的槽存储，不含Image内部映像、代码VM、GPU分配、嵌套数据、分配器或OS开销；不据容量推断实际装入或运行完成。共享Vec借用可转换为切片，精确返回切片的函数指针类型须随公开Rust签名调整。
 
 `ProgramSlot::layout()`共享借用当前映像或装入程序的同一原ExecutionPlan，阶段、缓冲、类型、访问及条件保持真实来源。只取程序根或布局不分配、装入VM、创建设备、执行、等待或传输。活动借用不可跨Frame的run／分配／驻留变更／释放或销毁；变更之后重新借用，不能据旧地址推断当前代码身份。
 

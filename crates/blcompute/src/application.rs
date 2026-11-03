@@ -90,9 +90,9 @@ impl Frame {
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
         &self.data
     }
-    /// 借用同一原程序槽，索引仍为本Frame的实际程序号。
-    /// 不装入映像、创建设备或保活另一份程序；借用期间不能改变Frame。
-    pub fn programs(&self) -> &[Option<ProgramSlot>] {
+    /// 借用同一原程序槽Vec，索引仍为实际程序号，capacity以Option槽数计。
+    /// 槽容量不含内部映像／代码VM／设备分配；查询不装入或改变Frame。
+    pub fn programs(&self) -> &Vec<Option<ProgramSlot>> {
         &self.programs
     }
     /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。

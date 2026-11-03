@@ -70,8 +70,9 @@ impl<D> DomainBindings<D> {
     pub fn datasets(&self) -> &Vec<D> {
         &self.datasets
     }
-    /// 借用随原数据持有的真实有效域关系，不复制、发布或重建另一份关系。
-    pub fn domain_relations(&self) -> &[DomainRelation] {
+    /// 借用原有效域关系Vec；len是当前关系数，capacity是可用关系槽数。
+    /// 预留容量不产生关系或数据所有权；查询不复制、发布或重建关系。
+    pub fn domain_relations(&self) -> &Vec<DomainRelation> {
         &self.domains
     }
     /// 取出存储后，宿主可任意改写；已有有效域不再随之交付。

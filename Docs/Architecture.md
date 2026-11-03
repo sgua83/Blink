@@ -415,7 +415,7 @@ GPU Rust SDK的`GpuDataset::layout()`／`stride()`借用原GpuStorage布局，`v
 
 `Frame::data()`共享借用原`DomainBindings<Option<ResidentData>>`，不产生另一份根表。datasets保留原槽索引和None空槽，ResidentData直接表示原CpuDataset／GpuDataset；既有布局、来源和绑定保留点从这些原对象继续查询。释放后原槽变为None，后续allocate可复用同一整数；整数只在该Frame当前槽状态下解释，不成为长期资源身份。活动借用期间不能执行会改变Frame的操作，也不复制Arc／Rc或延长另一释放链。
 
-`DomainBindings::domain_relations()`共享借用原domains切片；公开的DomainRelation仍是同一运行元数据，不另建证明或关系快照。domain／count.binding索引当前原datasets，Frame中即原句柄；offset／bytes是记录内字段字节范围，count.word虽名word仍是计数字段字节偏移。关系随原执行产生、撤回和重映射；读取或构造一份同形元数据不能向原私有domains发布关系，也不证明GPU完成或未初始化容量可读。原run、数据传输、resize及释放职责保持。当前公开Frame生产路径没有接入宿主with_views／冻结数据的入口，查询如实交接当前根，不用私有槽注入冒称生产集成。
+`DomainBindings::domain_relations()`共享借用原`Vec<DomainRelation>`；len是当前有效关系数，capacity是原容器可容纳的关系槽数。容量乘`size_of::<DomainRelation>()`只计该容器槽存储，不含数据载荷、分配器或OS开销；Count写入或release撤回关系后，len可为零而预留容量仍在。公开的DomainRelation仍是同一运行元数据，不另建证明或关系快照。domain／count.binding索引当前原datasets，Frame中即原句柄；offset／bytes是记录内字段字节范围，count.word虽名word仍是计数字段字节偏移。关系随原执行产生、撤回和重映射；读取或构造一份同形元数据不能向原私有domains发布关系，也不证明GPU完成或未初始化容量可读。原run、数据传输、resize及释放职责保持。当前公开Frame生产路径没有接入宿主with_views／冻结数据的入口，查询如实交接当前根，不用私有槽注入冒称生产集成。
 
 资源／view及观察消费者沿原来源和最后使用保持；返回字节副本或有效期明确的借用，报告本身不维持第二资源状态或释放链。B／C实际观察仍沿C-021.7.9.22.4推进，Frame原程序槽借用见下文tool-23；B／C代码区段观察仍沿C-021.7.9.23.3.2，数据根不冒称跨语言或完整宿主资源观察已经交付。本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应剩余范围：[C-021.7.9.22](Issues.md#c-021-7-9-22)。
 
@@ -437,7 +437,7 @@ release把Frame槽写为None，实际子载荷结束后，原容器仍可保留�
 
 <a id="tool-23-3-1"></a>
 
-**Frame原程序槽与代码根。** `Frame::programs()`共享借用同一原`Vec<Option<ProgramSlot>>`的切片，索引仍是本Frame的实际程序号；公开原ProgramSlot／Program，区分未装入CPU／GPU映像与已装入CpuTemplate／GpuTemplate，不构造第二目录、快照枚举、版本／地址身份或拥有图。`ProgramSlot::layout()`借用该当前原对象的同一ExecutionPlan；根与布局查询不分配、不装入映像、创建设备、执行、等待或读回。借用期间不能改写或释放Frame，操作结束后重新查询原状态。
+**Frame原程序槽与代码根。** `Frame::programs()`共享借用同一原`Vec<Option<ProgramSlot>>`，len和capacity分别给出当前槽数与可容纳槽数；乘实际`size_of::<Option<ProgramSlot>>()`得到槽跨度与容量字节，不含枚举内部映像、CPU代码VM、设备分配或其他嵌套拥有数据，索引仍是本Frame的实际程序号；公开原ProgramSlot／Program，区分未装入CPU／GPU映像与已装入CpuTemplate／GpuTemplate，不构造第二目录、快照枚举、版本／地址身份或拥有图。`ProgramSlot::layout()`借用该当前原对象的同一ExecutionPlan；根与布局查询不分配、不装入映像、创建设备、执行、等待或读回。借用期间不能改写或释放Frame，操作结束后重新查询原状态。
 
 实际Frame只在原load／run需要时把映像移交原代码拥有者。Loaded只说明已装入，不证明提交、执行或完成，参数／驻留拒绝之后也可以是Loaded；未触及槽继续保留原映像。已装入CPU从原CpuTemplate继续调用code_memory，既有返回Vec与VirtualQuery成本、错误和快照寿命保持，不能把根借用的零分配推给这一步。GPU原程序只交付当前执行合同，不把SPIR-V或Loaded标成最终驱动ISA、CPU VM或实际完成。数据释放不卸载Frame仍持有的程序；程序和代码释放仍由最后真实消费者及原所有者负责。该Rust范围见[C-021.7.9.23.3.1](FixedIssues.md#c-021-7-9-23-3-1)，B／C代码入口仍归.23.3.2，数据／view跨语言仍归.22.4。
 

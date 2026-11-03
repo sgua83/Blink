@@ -771,7 +771,7 @@ Frame已经持有原数据和有效域关系，观察不需要再建一张根表
     }
 ```
 
-datasets还保留这份原容器的len和capacity，不复制槽、生成统计表或改写拥有者。对非零尺寸D，两者乘size_of::<D>()分别得到已初始化槽跨度和原Vec可用槽容量；D内部的dataset载荷另由其原memory查询，不能与槽字节混算。len包含None空槽，容量尾部仍未初始化；零尺寸D的槽字节为零，Vec的usize::MAX容量也不代表实际字节分配。这些值不表示分配器账单、OS页或整个Frame内存。
+datasets还保留这份原容器的len和capacity，不复制槽、生成统计表或改写拥有者。对非零尺寸D，两者乘`size_of::<D>()`分别得到已初始化槽跨度和原Vec可用槽容量；D内部的dataset载荷另由其原memory查询，不能与槽字节混算。len包含None空槽，容量尾部仍未初始化；零尺寸D的槽字节为零，Vec的usize::MAX容量也不代表实际字节分配。这些值不表示分配器账单、OS页或整个Frame内存。
 
 源码节选：`crates/blcompute/src/bindings.rs:70`。
 
@@ -799,21 +799,23 @@ pub struct DomainRelation {
 }
 ```
 
-domain_relations只返回同一原切片。offset／bytes是完整记录内选中字段的字节范围，count.word虽名word，仍是计数字段字节偏移；例如前面有八字节普通字段时，它为八，而不是第八个u32。复制或自行构造这份元数据不能写入原私有关系，也不证明GPU完成或容量尾部初始化。实际CPU／GPU执行产生前缀，计数字段可写访问、resize、release及重排／分区沿原关系撤回或映射。
+domain_relations共享借用同一原Vec，len是当前有效关系数，capacity是可容纳关系槽数。分别乘实际`size_of::<DomainRelation>()`，可读出有效槽跨度与容量字节；这里只计容器槽，不含数据载荷、分配器或OS开销。计数字段写入或release撤回关系时，len可归零而原预留容量仍在；空余槽不产生关系或访问许可。offset／bytes是完整记录内选中字段的字节范围，count.word虽名word，仍是计数字段字节偏移；例如前面有八字节普通字段时，它为八，而不是第八个u32。复制或自行构造这份元数据不能写入原私有关系，也不证明GPU完成或容量尾部初始化。实际CPU／GPU执行产生前缀，计数字段可写访问、resize、release及重排／分区沿原关系撤回或映射。
 
 这些是当前数据根的Rust接口。Frame现有公开生产路径没有直接接收宿主with_views／冻结数据的入口，不能向私有槽注入一个例子就称已集成；程序根见2.7，B／C实际观察仍按各自范围推进，不由数据根查询冒称完成。
 
 ### 2.7 从Frame的程序槽追到原代码
 
-数据根之外，Frame还持有真正使用的程序。programs直接借用原Option槽切片，索引仍为该Frame程序号；不建另一程序目录，也不为观察装入代码或创建设备。原槽保留Image／Loaded与CPU／GPU实际类型。
+数据根之外，Frame还持有真正使用的程序。programs共享借用原`Vec<Option<ProgramSlot>>`，以len／capacity交接当前槽数与可容纳槽数，索引仍为该Frame程序号；不建另一程序目录，也不为观察装入代码或创建设备。原槽保留Image／Loaded与CPU／GPU实际类型。
 
 源码节选：`crates/blcompute/src/application.rs:95`。
 
 ```rust
-    pub fn programs(&self) -> &[Option<ProgramSlot>] {
+    pub fn programs(&self) -> &Vec<Option<ProgramSlot>> {
         &self.programs
     }
 ```
+
+len／capacity乘实际`size_of::<Option<ProgramSlot>>()`分别计槽跨度／容量字节，枚举内部映像、代码VM、GPU分配和嵌套拥有数据仍由各自原对象说明，不能混成整个Frame的内存。共享Vec借用可转成切片，精确返回切片的Rust函数指针类型须按当前签名调整。
 
 这份借用有效时，Frame不能被改写或释放；结束后再查当前原状态。公开原枚举让观察者沿原对象继续查询，不赋予写回原私有程序容器的能力。
 
