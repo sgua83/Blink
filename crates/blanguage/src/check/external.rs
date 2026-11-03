@@ -256,7 +256,7 @@ impl Builder<'_> {
         self.call_reference(place, access, span)
     }
     #[inline(never)]
-    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
+    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         let parameters = d.function.params.iter().map(|param| {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
             Ok(if param.access == Access::Value { CallParameter::Value(ty) }
@@ -265,7 +265,7 @@ impl Builder<'_> {
         let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
             else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
         self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
-            d.function.result.is_never(), Some(d.as_ref().into()), span)
+            d.function.result.is_never(), Some(d.as_ref().into()), span, generated_origin)
     }
     pub(super) fn function_value_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Result<Option<returns::Returned>> {
         if self.program.target != Target::Cpu {
@@ -293,12 +293,12 @@ impl Builder<'_> {
             Some(outputs::Contract::signature(&definition.source, &definition.module,
                 &definition.imports, &source_parameters, &function.contracts, span))
         };
-        self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span)
+        self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span, None)
             .map(|value| value.map(returns::Returned::value))
     }
     #[inline(never)]
     fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
-        never: bool, definition: Option<outputs::Contract<'_>>, span: Span) -> Result<Option<Value>> {
+        never: bool, definition: Option<outputs::Contract<'_>>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         if self.program.target != Target::Cpu { return self.fail(span, "B265", "C ABI调用只能在CPU位置执行"); }
         let mut arguments = Vec::new();
         let mut written = Vec::new();
@@ -336,7 +336,9 @@ impl Builder<'_> {
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
         let memory_use=self.call_address_memory(memory_borrow,span)?;
-        self.emit(InstKind::Call(Call { target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() }));
+        let kind=InstKind::Call(Call { target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
+        if let Some(origin)=generated_origin { self.code.push(Inst::generated(kind,origin)); }
+        else { self.emit(kind); }
         if never { self.flow = Flow::STOP; return Ok(None); }
         let returned = result.clone().map(|ty| Value {
             proof: bounds::Proof::default().with_external_borrows(&ty),

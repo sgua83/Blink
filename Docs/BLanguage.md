@@ -339,12 +339,18 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | FrameFailureExit | frame_failure_exit | 原创建失败分支的退出值 |
 | FrameDestroy | frame_destroy | 原正常路径blink_destroy调用 |
 | DatasetAllocate | dataset_allocate | 原dataset构造的allocate_<type>调用 |
+| DatasetInitializeCursor | dataset_initialize_cursor | 原游标准备零值及起始StoreLocal |
+| DatasetInitializeCondition | dataset_initialize_condition | 原循环LoadLocal和Less比较 |
+| DatasetInitializeCall | dataset_initialize_call | 原普通B、已编译或外部C factory调用 |
+| DatasetInitializeWrite | dataset_initialize_write | 原写入零offset和元素StoreIndexed |
+| DatasetInitializeAdvance | dataset_initialize_advance | 原递增常量、IAdd和StoreLocal |
+| DatasetInitializeLoop | dataset_initialize_loop | 原初始化Loop本身 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
 原clear_prefix调用由append::clear生成原Map、零常量和计数Store；同一Stage和两个Inst共享clear_prefix的GeneratedOrigin，trigger为真实调用Expr范围及当前实际实例／域路径。当前解析器的普通调用范围通常覆盖clear_prefix标识符；原诊断用语句Span保持，不扩大为未取得的完整参数列表。没有额外Index、另一个Stage或输出清空，原计数归零与空prefix关系保持；生成Stage.operation_source及两节点source_site仍为null，不伪造用户直接Map／赋值。
 
-Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame及dataset分配见下文；生成函数初始化、槽位绑定及释放、寻址、参数、传输和发起仍归.2.4.5.2.2／.2.3及.3至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
+Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配及生成函数初始化见下文；槽位绑定及释放、寻址、参数、传输和发起仍归.2.4.5.2.3及.3至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
 
 材料沿原Inst／Stage／ValueCode不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
 
@@ -354,15 +360,27 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 
 live_resources仅在原Frame实际被保留的路径交接错误接收器、上下文、create、就绪检查／分支、失败退出值和正常destroy等真实原因。每个节点仍是原操作，FrameReadiness的多个节点共享同一不可变材料；各理由的Definition锚点共享原入口定义快照及实例。根锚点说明应用拥有的隐式生命周期，不声称某个资源表达式独自导致Frame，也不覆盖其余资源原语的实际源触发。没有活资源、或资源路径已经消除时，不生成Frame接收器、create、就绪分支或destroy；原入口包装仍有自己的生成材料。
 
-Frame失败分支与正常路径保持原代码／原语义，静态生成材料不证明分支已执行。正常资源入口沿原CPU／GPU及Frame资源完成运行，根元数据不拥有或延长运行资源，不新增条件、Builder状态、调用图、拥有表、调度、释放或错误路径。Source、名字与材料随原IR不可变共享，最后IR消费者后释放；查询不重读后续磁盘文件，不持有World／AST，只有显式查询承担摘要、行列和JSON成本。完整优化、重写／消除及机器范围仍由原叶交接，不为材料保活代码。dataset分配沿下一节的真实构造触发交接；生成函数初始化、槽位绑定、扩容、释放、参数接收、传输及计算发起的细分职责仍待实现，不从根锚点猜补。
+Frame失败分支与正常路径保持原代码／原语义，静态生成材料不证明分支已执行。正常资源入口沿原CPU／GPU及Frame资源完成运行，根元数据不拥有或延长运行资源，不新增条件、Builder状态、调用图、拥有表、调度、释放或错误路径。Source、名字与材料随原IR不可变共享，最后IR消费者后释放；查询不重读后续磁盘文件，不持有World／AST，只有显式查询承担摘要、行列和JSON成本。完整优化、重写／消除及机器范围仍由原叶交接，不为材料保活代码。dataset分配沿下一节的真实构造触发交接；生成函数初始化另沿原factory引用交接，槽位绑定、扩容、释放、参数接收、传输及计算发起的细分职责仍待实现，不从根锚点猜补。
 
 #### dataset构造分配的生成来源
 
 原create_application_dataset把本次真实构造表达式形成的Syntax锚点交给同一application_call；原allocate_<type> Call的generated_origin.reason为dataset_allocate，Rust理由为DatasetAllocate。trigger()与anchor().syntax()都借用该原SourceSite，保留真实定义快照、实际泛型实例、从外到内的inlined_at及domain_path。当前解析器构造Expr.span覆盖dataset标识符，JSON如实交接这七个UTF8字节，不扩大为未取得的类型、长度或factory完整参数范围。缺失原来源时trigger明确为null，生成职责仍可存在；不从内部符号名、根定义或已发射最后一条指令猜造来源。
 
-allocate是由B构造生成的运行库包装Call，source_site为null；实际B触发位于generated_origin.trigger。长度表达式、可选factory的已有语法来源和真实普通函数体不因同属构造而改成分配步骤。原类型索引、长度参数、Frame参数、返回句柄与原Data保持；零长度仍沿原构造规则发射其真实allocate，不因观察删除分配，已消除分支与没有原分配的未初始化声明则不补造操作。application_declare只建立原未初始化编译模型，不发射原生初始化；拥有值槽位写入和生成函数初始化仍分别由C-021.7.9.7.2.4.5.2.3／.2.2交付。
+allocate是由B构造生成的运行库包装Call，source_site为null；实际B触发位于generated_origin.trigger。长度表达式、可选factory的已有语法来源和真实普通函数体不因同属构造而改成分配步骤。原类型索引、长度参数、Frame参数、返回句柄与原Data保持；零长度仍沿原构造规则发射其真实allocate，不因观察删除分配，已消除分支与没有原分配的未初始化声明则不补造操作。application_declare只建立原未初始化编译模型，不发射原生初始化；拥有值槽位写入仍由C-021.7.9.7.2.4.5.2.3交付；生成函数初始化沿下一节的原factory触发交接。
 
 材料只由原Inst编译期持有并随最后IR消费者释放，不拥有Frame或延长实际存储寿命。静态Call不表示分配已运行或已经成功，运行失败仍沿原执行边界；没有增加运行时采集、条件、注册表、Builder状态或释放链。address、storage_address、upload／download的原Call只显式不携带本项分配分类，已有source_site保持；各自完整生成来源仍由其原叶交付。优化重写／消除及机器范围继续沿原.7.3／.7.4推进，不为观察保活操作。见[架构职责](Architecture.md#tool-7-2-4-5-2-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-1)。
+
+#### dataset生成函数初始化来源
+
+原initialize_application_elements以实际factory Expr.span取得一次SourceSite；同次展开的六类GeneratedOrigin共享该不可变Syntax锚点。trigger()和anchor().syntax()都借用原引用触发，保留实际调用方定义、具体泛型实例、inlined_at及domain_path；它不是callee定义或用户显式调用。当前Name／FunctionRef的原范围覆盖引用标识符，泛型参数和整个dataset构造不补造到该跨度。原allocate继续使用自己的dataset构造锚点。实例选择、类型／签名和合法输入仍由原检查器完成，不引入运行期反射、通用函数对象或额外调用图。
+
+DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Condition标明原LoadLocal及Less，Call标明真实factory Call，Write标明写入零offset及各原StoreIndexed，Advance标明原一常量／IAdd／StoreLocal，Loop标明原循环本身。只有实际发射的节点有其理由，种类及顺序保持；同一原常量生产接点完成截断、寄存器与Value构造，普通constant仍显式没有本项生成材料，不能根据寄存器或最后一条代码猜补。原StoreIndexed的每个真实分量、宽度与偏移保持；共用application_memory／地址包装的完整来源仍归.5.5，普通用户写入不借用初始化分类。
+
+原invoke_returned沿既有分派交给native_function或external_call／c_call，生成材料在同一实际Call发射处交接，source_site为null，真实factory引用位于generated_origin.trigger。普通B或已编译目标保持原CallTarget，callee函数体／源码仍属于原函数；外部C目标保持实际DLL与符号，没有原B实现时不造函数体。普通用户调用、集合值核、静态释放及原生cfn调用显式不携带初始化材料，原source_site、C ABI、前置／输出合同、实参、返回、副作用和完成保持。生成材料不改变调用执行路径。
+
+零长度类型检查保留原规则；原准备零常量可以先被发射，但原值优化可以删除它，返回IR中不因此留下游标或调用。动态长度在运行时为零仍可有静态Loop／Call／StoreIndexed，不能凭静态材料声称它们运行过。现有值优化还会合并重复零offset或一常量；保留下来的原节点继续携带材料，被删除或新构造节点的完整多来源及消除交接仍归.7.3。当前返回IR的缺失材料不是已交付消除记录，也不为观察保活常量、循环或资源。
+
+原Data／Returned／Place／Frame继续初始化和拥有元素的唯一交接，父投影与完成／释放不变；来源只归编译期原Inst共享且最后IR消费者后释放，不持有World／AST或运行资源，不增加Builder状态、运行期拥有表、记录器、调度或释放链。查询不重读后续磁盘文件，只有显式查询承担摘要、行列和JSON成本。见[架构职责](Architecture.md#tool-7-2-4-5-2-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-2)。
 
 #### 集合值核的入口与捕获来源
 

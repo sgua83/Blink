@@ -1308,7 +1308,10 @@ impl Builder<'_> {
         };
         let key=self.world.resolve(name,&self.definition.module,&self.definition.imports,true)
             .ok_or_else(||Diagnostic{source:self.definition.source.clone(),span:factory.span,code:"B158",message:format!("未知生成函数 {name}")})?;
-        let scalar=Ty::scalar(Scalar::U32);let zero=self.constant(Scalar::U32,0);let index_reg=self.reg(Scalar::U32);
+        let trigger=self.source_at(factory.span,SourceSyntax::Expression);
+        let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone().map(GenerationAnchor::Syntax)});
+        let cursor=origin(GenerationReason::DatasetInitializeCursor);
+        let scalar=Ty::scalar(Scalar::U32);let zero=self.constant_with_origin(Scalar::U32,0,Some(cursor.clone()));let index_reg=self.reg(Scalar::U32);
         let index=Value{ty:scalar.clone(),regs:vec![index_reg],proof:bounds::for_cursor(&zero,&data.length,&[]),uniform:false,literal:false,constant:None};
         let arguments=vec![Argument::Value(index.clone())];
         let instance=self.specialized_arguments(key,&arguments,explicit,factory.span)?;
@@ -1324,17 +1327,19 @@ impl Builder<'_> {
             self.require_same(&data.ty,&output,factory.span)?;
             return Ok(self.unknown_element_model(&data.ty));
         }
-        let slot=self.local_slots(&scalar).0[0];self.emit(InstKind::StoreLocal(slot,zero.regs[0]));
-        let outer=std::mem::take(&mut self.code);self.emit(InstKind::LoadLocal(index_reg,slot));
-        let test=self.reg(Scalar::Bool);self.emit(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Less),a:index_reg,b:data.length.regs[0]});
+        let slot=self.local_slots(&scalar).0[0];self.code.push(Inst::generated(InstKind::StoreLocal(slot,zero.regs[0]),cursor));
+        let condition_origin=origin(GenerationReason::DatasetInitializeCondition);
+        let outer=std::mem::take(&mut self.code);self.code.push(Inst::generated(InstKind::LoadLocal(index_reg,slot),condition_origin.clone()));
+        let test=self.reg(Scalar::Bool);self.code.push(Inst::generated(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Less),a:index_reg,b:data.length.regs[0]},condition_origin));
         let condition=std::mem::take(&mut self.code);
-        let Some(mut returned)=self.invoke_returned(instance,arguments,span)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
+        let Some(mut returned)=self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)))? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
         let elements=self.capture_element_model(data,&[],returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
-        self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span)?;
-        let one=self.constant(Scalar::U32,1).regs[0];let next=self.reg(Scalar::U32);self.emit(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one});self.emit(InstKind::StoreLocal(slot,next));
-        let body=std::mem::replace(&mut self.code,outer);self.emit(InstKind::Loop{condition,test,body});Ok(elements)
+        self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span,Some(origin(GenerationReason::DatasetInitializeWrite)))?;
+        let advance=origin(GenerationReason::DatasetInitializeAdvance);
+        let one=self.constant_with_origin(Scalar::U32,1,Some(advance.clone())).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one},advance.clone()));self.code.push(Inst::generated(InstKind::StoreLocal(slot,next),advance));
+        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));Ok(elements)
     }
     fn drop_application_elements(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         if data.length.maximum()==0 {return Ok(());}
@@ -1651,14 +1656,15 @@ impl Builder<'_> {
         words: &[u32],
         value: Value,
         span: Span,
+        generation: Option<Arc<GeneratedOrigin>>,
     ) -> Result<()> {
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
-        let zero = self.constant(Scalar::U32, 0).regs[0];
+        let zero = self.constant_with_origin(Scalar::U32, 0, generation.clone()).regs[0];
         for ((&(scalar, _), &word), value) in value.ty.components.iter().zip(words).zip(value.regs) {
             let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,None,&[(scalar,word)],span)?;
-            self.emit(InstKind::StoreIndexed {
+            let kind = InstKind::StoreIndexed {
                 source: IndexedSource::View {
                     address,
                     index,
@@ -1667,7 +1673,9 @@ impl Builder<'_> {
                 offset: zero,
                 word,
                 value,
-            });
+            };
+            if let Some(origin) = &generation { self.code.push(Inst::generated(kind, origin.clone())); }
+            else { self.emit(kind); }
         }
         Ok(())
     }

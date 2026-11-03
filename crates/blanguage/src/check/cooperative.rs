@@ -305,7 +305,7 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<Value>> {
-        let result = self.invoke_returned(instance, args, span)?;
+        let result = self.invoke_returned(instance, args, span, None)?;
         self.ordinary_return(result, span)
     }
     pub(super) fn invoke_returned(
@@ -313,10 +313,11 @@ impl<'a> Builder<'a> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
+        generated_origin: Option<Arc<GeneratedOrigin>>,
     ) -> Result<Option<returns::Returned>> {
         if instance.definition.function.external.is_some() {
             return self
-                .external_call(&instance.definition, args, span)
+                .external_call(&instance.definition, args, span, generated_origin)
                 .map(|v| v.map(returns::Returned::value));
         }
         if instance.definition.compiled.is_some()
@@ -325,14 +326,14 @@ impl<'a> Builder<'a> {
             if self.application.is_none() && self.program.target != Target::Cpu {
                 return self.fail(span, "B161", "已编译普通CPU模块调用需要CPU执行目标");
             }
-            return self.native_function(instance, args, span, None);
+            return self.native_function(instance, args, span, generated_origin);
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application.is_some() {
                 if instance.definition.function.target == Target::Cpu
                     && !super::kernel_interface(self.world, &instance.definition)?
                 {
-                    return self.native_function(instance, args, span, None);
+                    return self.native_function(instance, args, span, generated_origin);
                 }
                 return self.application_execute(instance, args, Target::Cpu, span);
             }
@@ -348,7 +349,7 @@ impl<'a> Builder<'a> {
             }
             FunctionKind::Value => {
                 if self.application.is_some() && instance.definition.function.target != Target::Gpu {
-                    self.native_function(instance, args, span, None)
+                    self.native_function(instance, args, span, generated_origin)
                 } else {
                     self.inline_instance(instance, args, span)
                 }

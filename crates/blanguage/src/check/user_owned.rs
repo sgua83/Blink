@@ -58,7 +58,7 @@ impl Builder<'_> {
         let resources=match &payload{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
         for data in resources{self.application_movable(data,retained,span)?;}
         let argument=cooperative::Argument::resource(payload);
-        let instance=self.specialized_function(value.value.ty.cleanup.as_ref().unwrap().clone(),std::slice::from_ref(&argument),span)?;self.invoke_returned(instance,vec![argument],span)?;Ok(())
+        let instance=self.specialized_function(value.value.ty.cleanup.as_ref().unwrap().clone(),std::slice::from_ref(&argument),span)?;self.invoke_returned(instance,vec![argument],span,None)?;Ok(())
     }
 }
 

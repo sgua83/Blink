@@ -1919,9 +1919,14 @@ impl<'a> Builder<'a> {
         r
     }
     fn constant(&mut self, s: Scalar, bits: Bits) -> Value {
+        self.constant_with_origin(s, bits, None)
+    }
+    fn constant_with_origin(&mut self, s: Scalar, bits: Bits, generated_origin: Option<Arc<GeneratedOrigin>>) -> Value {
         let bits = s.truncate(bits);
         let r = self.reg(s);
-        self.emit(InstKind::Constant(r, s, bits));
+        let kind = InstKind::Constant(r, s, bits);
+        if let Some(origin) = generated_origin { self.code.push(Inst::generated(kind, origin)); }
+        else { self.emit(kind); }
         Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -2276,7 +2281,7 @@ impl<'a> Builder<'a> {
                 self.writable_storage(p, span)?;
                 let proof = bounds::Proof::capture(&value);
                 self.write_application_place(
-                    *handle, *identity, *index, *stride, words, value, span,
+                    *handle, *identity, *index, *stride, words, value, span, None,
                 )?;
                 self.initialize(p);
                 self.assign_owned_proof(p, proof, false);

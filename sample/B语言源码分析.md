@@ -368,7 +368,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 源码节选：`crates/blanguage/src/check/external.rs:259`。
 
 ```rust
-    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span) -> Result<Option<Value>> {
+    pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         let parameters = d.function.params.iter().map(|param| {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
             Ok(if param.access == Access::Value { CallParameter::Value(ty) }
@@ -377,7 +377,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
         let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
             else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
         self.c_call(CallTarget::External(d.function.external.clone().unwrap()), &parameters, args, result,
-            d.function.result.is_never(), Some(d.as_ref().into()), span)
+            d.function.result.is_never(), Some(d.as_ref().into()), span, generated_origin)
     }
 ```
 
@@ -1268,7 +1268,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3878`。
+源码节选：`crates/blanguage/src/check.rs:3883`。
 
 ```rust
         let binding = view.binding;

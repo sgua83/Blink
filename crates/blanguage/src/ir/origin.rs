@@ -185,6 +185,8 @@ pub enum GenerationReason {
     ParallelIndex, ClearPrefix, ApplicationEntry, ApplicationEntryCall,
     FrameErrorReceiver, FrameErrorContext, FrameCreate, FrameReadiness, FrameFailureExit, FrameDestroy,
     DatasetAllocate,
+    DatasetInitializeCursor, DatasetInitializeCondition, DatasetInitializeCall,
+    DatasetInitializeWrite, DatasetInitializeAdvance, DatasetInitializeLoop,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -221,6 +223,12 @@ impl GeneratedOrigin {
             GenerationReason::FrameCreate => "frame_create", GenerationReason::FrameReadiness => "frame_readiness",
             GenerationReason::FrameFailureExit => "frame_failure_exit", GenerationReason::FrameDestroy => "frame_destroy",
             GenerationReason::DatasetAllocate => "dataset_allocate",
+            GenerationReason::DatasetInitializeCursor => "dataset_initialize_cursor",
+            GenerationReason::DatasetInitializeCondition => "dataset_initialize_condition",
+            GenerationReason::DatasetInitializeCall => "dataset_initialize_call",
+            GenerationReason::DatasetInitializeWrite => "dataset_initialize_write",
+            GenerationReason::DatasetInitializeAdvance => "dataset_initialize_advance",
+            GenerationReason::DatasetInitializeLoop => "dataset_initialize_loop",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
