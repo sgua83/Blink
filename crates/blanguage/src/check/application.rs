@@ -943,7 +943,9 @@ impl Builder<'_> {
         data.length.proof = bounds::Proof::capture(&data.length);
         if mutable {
             let ty=Ty::owned_dataset(data.ty.clone(),data.count);let(slots,storage)=self.local_slots(&ty);
-            self.emit(InstKind::StoreLocal(slots[0],data.root.regs[0]));self.emit(InstKind::StoreLocal(slots[1],data.length.regs[0]));
+            let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetBindSlots,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
+            self.code.push(Inst::generated(InstKind::StoreLocal(slots[0],data.root.regs[0]),origin.clone()));
+            self.code.push(Inst::generated(InstKind::StoreLocal(slots[1],data.length.regs[0]),origin));
             let place=Place::Local(ty,slots,storage);self.initialize(&place);data.place=Some(place);
         }
         data

@@ -313,7 +313,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-2-3-1"></a>
 
-**dataset新绑定的局部槽位来源。** 输入／输出及生产消费：原bind_returned、实际Data及原rebound结果→application_bind的两个原StoreLocal→原Local Place／绑定。只有原mutable分支需要槽位时，句柄后长度的两个真实写入共享DatasetBindSlots和原发射SourceSite形成的Syntax锚点；源定义、实际实例、inlined_at和domain_path保持。Let、Match等触发按当时已有语法上下文范围交接，不把整个匹配范围伪装为单独的模式变量；缺失材料明确，不能从名字或最终槽号猜补。无槽位写入时不加写入、材料或寄存器；数据根、长度、Proof／initialize、原rebound选择与唯一拥有保持。材料仅由原IR共享及最后消费者后释放，不存第二绑定／资源表。原优化可以删除未使用写入，返回IR的保留材料不冒充完整消除记录，不为观察保活。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-3-1)。
+**dataset新绑定的局部槽位来源。** 输入／输出及生产消费：原bind_returned、实际Data及原rebound结果→application_bind的两个原StoreLocal→原Local Place／绑定。只有原mutable分支需要槽位时，句柄后长度的两个真实写入共享DatasetBindSlots和原发射SourceSite形成的Syntax锚点；源定义、实际实例、inlined_at和domain_path保持。Let、Match等触发按当时已有语法上下文范围交接，不把整个匹配范围伪装为单独的模式变量；缺失材料明确，不能从名字或最终槽号猜补。无槽位写入时不加写入、材料或寄存器；数据根、长度、Proof／initialize、原rebound选择与唯一拥有保持。材料仅由原IR共享及最后消费者后释放，不存第二绑定／资源表。原优化可以删除未使用写入，返回IR的保留材料不冒充完整消除记录，不为观察保活。当前已交接原新绑定槽位的生成理由与原语法锚点，仍缺重新赋值.3.2；见[规范](BLanguage.md#dataset新绑定的局部槽位来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-3-1)。
 
 <a id="tool-7-2-4-5-2-3-2"></a>
 
