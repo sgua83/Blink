@@ -3969,6 +3969,11 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn assign_statement(&mut self, lhs: &Expr, op: &String, rhs: &Expr, span: Span) -> Result<()> {
+        if let ExprKind::Index(base,index)=&lhs.kind
+            && self.read_expression_type(base).is_some_and(|ty|ty.dataset.as_ref().is_some_and(|element|element.owns_resources())) {
+            let Some(data)=self.application_reference(base)?else{return Ok(())};
+            return self.assign_application_element(data,index,op,rhs,span);
+        }
         if self.owned_element_type(lhs).is_some_and(|ty|ty.owns_resources()) {
             let Some(place)=self.place(lhs)?else{return Ok(())};
             return self.assign_owned_storage(place,op,rhs,span);

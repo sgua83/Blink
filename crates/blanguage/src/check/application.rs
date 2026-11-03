@@ -1155,7 +1155,7 @@ impl Builder<'_> {
             if !exact && !offset {
                 return self.fail(args[1].span, "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
             }
-            let incoming = self.capture_element_model(&data, returned);
+            let incoming = self.capture_element_model(&data, &[], returned);
             if data.length.maximum() == 0 { incoming } else {
                 let mut previous = data.elements;
                 previous.join(*incoming);
@@ -1330,7 +1330,7 @@ impl Builder<'_> {
         let condition=std::mem::take(&mut self.code);
         let Some(mut returned)=self.invoke_returned(instance,arguments,span)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
-        let elements=self.capture_element_model(data,returned.clone());let value=self.returned_storage(&returned);
+        let elements=self.capture_element_model(data,&[],returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
         self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span)?;
         let one=self.constant(Scalar::U32,1).regs[0];let next=self.reg(Scalar::U32);self.emit(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one});self.emit(InstKind::StoreLocal(slot,next));
@@ -2333,15 +2333,52 @@ impl Builder<'_> {
         canonical_element_inputs(self,&mut out);
         out
     }
-    fn capture_element_model(&self,data:&Data,mut model:returns::Returned)->Box<returns::Returned>{
+    pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,op:&str,rhs:&Expr,span:Span)->Result<()> {
+        let Some(place)=self.application_index(data.clone(),index)?else{return Ok(())};
+        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span)?;
+        if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
+        let loaded=self.read_storage_value(&place,span)?;let old=self.materialize_element(&data,loaded);
+        let held=self.hold_binding(Binding::AtomicBorrow(place.clone()));
+        let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
+        if !self.flow.continues(){return Ok(());}
+        let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
+        self.check_returned_type(&mut value,place.ty(),span)?;self.view_uses.after(span);
+        let packed=self.returned_storage(&value);
+        let held=match &value{returns::Returned::OwnedValue(value)if value.value.ty.contains_cleanup()&&value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
+        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
+        self.drop_returned(old,&view::Borrow::default(),span)?;
+        if let Some(name)=held{self.env.remove(&name);}
+        self.write_storage_value(&place,&packed,span)?;
+        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
+        let names=self.env.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            let mut binding=self.env.remove(&name).unwrap();
+            each_binding_data(&mut binding,&mut|_,target|{
+                if !data.sources.contains(&target.root.identity()){return;}
+                let mut fresh=self.capture_element_model(target,&data.projection,value.clone());
+                let mut previous=(*target.elements).clone();
+                for field in &data.projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
+                let complete=matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})&&target.length.minimum()==1&&target.length.maximum()==1;
+                if !complete{fresh.join(previous);}
+                let mut stored=target.elements.as_mut();
+                for field in &data.projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
+                *stored=*fresh;
+            });
+            self.env.insert(name,binding);
+        }
+        Ok(())
+    }
+    fn capture_element_model(&self,data:&Data,projection:&[usize],mut model:returns::Returned)->Box<returns::Returned>{
         model.bind_outputs(None,&BTreeMap::new(),&bounds::Clause::default());
         let value=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
-        for component in 0..value.regs.len(){
-            let id=ValueIdentity::ElementComponent(component);let proof=bounds::Proof::default().with_identity(id);
+        let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();let mut ty=&data.ty;
+        for field in projection{let(offset,next)=ty.aggregate_part(*field);components=next.components.iter().map(|(_,at)|components[ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()]).collect();ty=next;}
+        for (component,stored) in components.iter().enumerate(){
+            let id=ValueIdentity::ElementComponent(*stored);let proof=bounds::Proof::default().with_identity(id);
             bindings.insert(id,proof.clone());
             for source in value.component_origins(component){bindings.entry(source).or_insert_with(||proof.clone());}
         }
-        let original=model.clone();native_function::rebind_model(&mut model,(0..value.regs.len()).collect());
+        let original=model.clone();native_function::rebind_model(&mut model,components);
         native_function::translate_returned(&mut model,&original,&bindings,true);
         self.close_stored_resources(&mut model);Box::new(model)
     }
@@ -2388,7 +2425,13 @@ impl Builder<'_> {
         }
         native_function::rebind_model(&mut model,value.regs.clone());
         native_function::translate_returned(&mut model,&original,&bindings,true);
-        loaded_model(self,&mut model,&value);model
+        loaded_model(self,&mut model,&value);
+        let borrow=self.data_value_borrow(&data.data);
+        owned_borrows::each_data(&mut model,&mut Vec::new(),&mut|child,path|{
+            let mut fields=data.projection.clone();fields.extend_from_slice(path);
+            child.root.proof=child.root.proof.clone().with_view_borrow(0,view::Borrow::element(borrow.clone(),fields));
+        });
+        model
     }
     pub(super) fn application_element_proof(&self,place:&Place,regs:&[Reg])->Option<bounds::Proof>{
         let Place::ApplicationElement{sources,words,..}=place else{return None};

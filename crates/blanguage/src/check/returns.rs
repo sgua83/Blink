@@ -400,7 +400,12 @@ impl Builder<'_> {
             self.require_view_return_proof(&proof,owned.clone(),span)?;
             retained.union(&proof.borrowed_view());
         }}
-        // 返回表达式已消费；释放只面对实际输出消费者，不保留刚读完的操作数。
+        // 返回取消外层求值；临时位置已没有后续消费者，拥有临时值仍由原释放点接管。
+        self.env.retain(|name,binding| !name.starts_with('\0') || match binding {
+            Binding::ApplicationData(data)=>data.ownership.may_own(),
+            Binding::OwnedValue(value)=>value.ownership.may_own(),
+            _=>false,
+        });
         self.view_uses.returning();
         self.release_application_data(None,retained)?;
         let initialized=address::initialization_effects(&self.initialized,&self.path);
