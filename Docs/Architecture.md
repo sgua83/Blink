@@ -277,7 +277,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-4"></a>
 
-**阶段索引及空前缀初始化。** 原parallel索引建立和append::clear拥有Index／Constant／Store生成职责；同一Inst记录实际生成原因及原触发锚点。框架生成不是用户直接表达式，无源与已知触发分别说明，不按根函数或相邻语句填造。事实随原节点克隆／移动和最后消费者释放，原优化与运行代码保持。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-4)。
+**阶段索引及空前缀初始化。** 原parallel索引建立及append::clear分别拥有两项真实生成职责，下列两叶独立闭合。编译角色的同一Inst／Stage以GeneratedOrigin记录GenerationReason及可选原SourceSite触发；生成事实与用户直接语法来源分开，未知触发不丢弃真实生成原因。材料随原节点不可变共享、克隆／移动及最后消费者释放，不保留AST／World、增设另一图／状态或运行拥有者；关闭compiler后不进入运行节点或必要执行编码。当前待实现，见[父项](Issues.md#c-021-7-9-7-2-4-4)。
+
+<a id="tool-7-2-4-4-1"></a>
+
+**parallel索引生成。** 输入为原parallel Statement、原定义／特化实例及域路径；expand_stages原InstKind::Index是唯一生产者，将parallel_index及同一Stage原语句锚点交给原Inst。Inst::generated_origin借用同一GeneratedOrigin，reason／trigger及JSON分别交接真实生成原因与可选触发；原source_site不伪装用户直接index()调用。原语句和普通表达式继续按其各自语义形成来源，不增加Index、改变寄存器或为观察保活操作。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-4-1)。
+
+<a id="tool-7-2-4-4-2"></a>
+
+**空前缀阶段与计数初始化。** 输入为真实clear_prefix调用Expr.span、原实际实例及域路径；append::clear是生成原Map和原Constant／Store的唯一所有者。Stage及两Inst共享同一clear_prefix生成材料，触发为原调用SourceSite，不清空输出内容、不额外生成Index或包装Stage；operation_source和source_site不冒充用户直接Map／赋值。Stage::generated_origin借用材料，阶段JSON及各节点JSON交接同一原因和可选触发；其他原构造明确没有本项材料。原prefix事实、计数、访问、顺序和真实完成保持。融合／重写后保留字段不代表全部贡献者，完整多对多及消除来源仍归.7.3，不冻结优化或复制旧IR。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-4-2)。
 
 <a id="tool-7-2-4-5"></a>
 
