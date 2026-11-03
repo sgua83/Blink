@@ -3,7 +3,9 @@ use std::{collections::BTreeMap, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
 #[cfg(feature = "compiler")]
-pub use origin::{SourceOrigin, SourceSite, SourceSyntax};
+pub use origin::{SourceOrigin, SourceSite, SourceSyntax, InlineSite};
+#[cfg(feature = "compiler")]
+pub(crate) use origin::SourceContext;
 mod layout;
 pub use layout::interface_layout_json;
 mod external;

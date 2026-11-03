@@ -53,23 +53,63 @@ impl SourceOrigin {
 /// The actual syntax that drove this operation's emission, before later IR rewrites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceSyntax { Statement, Expression, Place }
+/// One actual compiler inline expansion point, in its caller's source coordinates.
+#[derive(Clone)]
+pub struct InlineSite {
+    pub(crate) origin: Option<std::sync::Arc<SourceOrigin>>,
+    pub(crate) instance: Option<std::sync::Arc<str>>,
+    pub(crate) span: Span,
+}
+impl std::fmt::Debug for InlineSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InlineSite")
+            .field("origin", &self.origin.as_ref().map(|o| (&o.module, &o.definition, &o.source.path)))
+            .field("instance", &self.instance).field("span", &self.span).finish()
+    }
+}
+#[derive(Clone, Debug)]
+pub(crate) struct SourceContext {
+    pub instance: Option<std::sync::Arc<str>>,
+    pub inlined_at: Box<[InlineSite]>,
+}
 #[derive(Clone, Debug)]
 pub struct SourceSite {
     pub(crate) origin: std::sync::Arc<SourceOrigin>,
+    pub(crate) context: std::sync::Arc<SourceContext>,
     pub(crate) span: Span,
     pub(crate) syntax: SourceSyntax,
+}
+fn range_fields(source: Option<&str>, span: Span) -> String {
+    format!("\"span_unit\":\"utf8_byte\",\"span_range\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"column_unit\":\"unicode_scalar\",\"position_base\":1,\"start\":{},\"end\":{}",
+        span.start, span.end, source.map_or_else(|| "null".into(), |s| position(s, span.start)),
+        source.map_or_else(|| "null".into(), |s| position(s, span.end)))
+}
+impl InlineSite {
+    pub fn origin(&self) -> Option<&SourceOrigin> { self.origin.as_deref() }
+    pub fn instance(&self) -> Option<&str> { self.instance.as_deref() }
+    pub fn span(&self) -> Span { self.span }
+    pub fn ir_json(&self) -> String {
+        format!("{{\"kind\":\"inline_site\",\"definition\":{},\"instance\":{},{}}}",
+            self.origin().map_or_else(|| "null".into(), SourceOrigin::ir_json),
+            self.instance().map_or_else(|| "null".into(), text),
+            range_fields(self.origin().map(|o| o.source.text.as_ref()), self.span))
+    }
 }
 impl SourceSite {
     pub fn origin(&self) -> &SourceOrigin { &self.origin }
     pub fn span(&self) -> Span { self.span }
     pub fn syntax(&self) -> SourceSyntax { self.syntax }
+    pub fn instance(&self) -> Option<&str> { self.context.instance.as_deref() }
+    /// Actual compiler inline expansion points, from the outermost to the innermost caller.
+    pub fn inlined_at(&self) -> &[InlineSite] { &self.context.inlined_at }
     pub fn ir_json(&self) -> String {
         let syntax = match self.syntax {
             SourceSyntax::Statement => "statement", SourceSyntax::Expression => "expression",
             SourceSyntax::Place => "place",
         };
-        format!("{{\"kind\":\"source_syntax\",\"syntax\":{},\"definition\":{},\"span_unit\":\"utf8_byte\",\"span_range\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"column_unit\":\"unicode_scalar\",\"position_base\":1,\"start\":{},\"end\":{}}}",
-            text(syntax), self.origin.ir_json(), self.span.start, self.span.end,
-            position(&self.origin.source.text, self.span.start), position(&self.origin.source.text, self.span.end))
+        format!("{{\"kind\":\"source_syntax\",\"syntax\":{},\"definition\":{},\"instance\":{},\"inlined_at_order\":\"outermost_first\",\"inlined_at\":[{}],{}}}",
+            text(syntax), self.origin.ir_json(), self.instance().map_or_else(|| "null".into(), text),
+            self.inlined_at().iter().map(InlineSite::ir_json).collect::<Vec<_>>().join(","),
+            range_fields(Some(&self.origin.source.text), self.span))
     }
 }

@@ -286,7 +286,19 @@ Builder在实际语句、表达式、返回值表达式和位置处理期间交�
 
 `SourceSite::ir_json()`的kind为source_syntax，syntax为statement／expression／place，definition沿原source_definition输出同一原定义及快照；其余start_byte／end_byte、span_unit／span_range、start／end、column_unit和position_base与原定义查询采用相同单位，但范围属于本次语法上下文。现有compiler角色的每个IR操作JSON增加source_site，对没有材料的操作输出null；关闭compiler时不输出该字段。只在显式查询进行摘要、行列和JSON计算，已经取得的IR不重读后续磁盘文件。
 
-本项只交接发射时实际语法范围，不声明已有完整实例／内联链、集合调用或生成阶段分类；相应范围见Issues C-021.7.9.7.2.2至.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
+语法位置和实际实例／内联展开点已交接；集合调用、域展开与生成阶段分类继续见Issues C-021.7.9.7.2.3／.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
+
+#### 实际实例与内联展开点
+
+compiler功能的`SourceSite::instance()`借用实际`generics::Instance.name`，为可选字符串；原模块／原函数名继续在`origin()`，不能用它们代替特化身份。普通函数、并行阶段及集合内部值核的原生产者直接交接当前实际实例；阶段参数的临时表达式也沿同一Instance交接，不从最终Program名或解析某个字符串猜补。模块常量／类型整数式等没有实际普通实例的求值入口为null，其内部真实展开的函数仍按实际特化交接。
+
+`SourceSite::inlined_at()`借用`InlineSite`切片，按最外层调用者到最内层调用者排列。当前操作自己的实例在instance，数组中的每个元素是原inline_instance入口实际消费的调用者定义、实例及Span（当前普通调用通常是调用标识符范围，静态引用按原引用范围，不推测扩大为整条调用表达式）；同一被内联实例在不同调用点分别取得自己的路径，展开结束后恢复调用者。`InlineSite::origin()`返回可选原`SourceOrigin`引用，`instance()`返回可选实际调用者名，`span()`交回该次展开点的原范围；这三个getter只借用／复制原事实，`ir_json()`返回独立JSON。
+
+每个source_syntax对象增加instance、inlined_at_order=outermost_first与inlined_at数组。每个展开点kind为inline_site，definition为调用者原source_definition或null，instance为实际调用者实例或null；start_byte／end_byte、span_unit／span_range及行列单位沿原语法范围规则。缺少调用者源快照时保留原入口交接的字节范围，但start／end位置为null；已知实例与后续已知展开点继续保留，不猜补缺失定义或丢掉整个路径。空数组表示本操作没有普通函数／cooperate的内联展开前缀，不表示运行时没有调用。
+
+实际非内联普通调用不增加内联帧，其被调函数IR以自己的真实实例作为根；inline_site是编译期实际展开点，不是机器CALL、硬件现场或运行期调用栈。阶段展开保存当前阶段所属函数实例；外层域调用点、集合算子驱动／引用与生成分类仍沿.7.2.3／.4分别交接，不把当前inline数组冒称完整域调用图。优化合并／消除与机器地址继续沿.7.3至.6，不从剩余寄存器或新构造操作推测丢失关系。
+
+同一展开体的语法点共享不可变实例名和调用点列表，原Source文本继续共享Arc；每次真正展开时只把现有路径及本次原调用点交给新上下文，不保留Builder、AST、World或另建来源表／调用图。资料归原IR并在最后消费者后释放；显式查询才进行摘要、行列和JSON计算，磁盘源码后续变化不改变已取得的根／调用点快照。普通调用、内联选择、合法程序、优化、C ABI及必要执行编码均不因这些观察事实改变。
 
 ### 保存和恢复可选CPU范围材料
 

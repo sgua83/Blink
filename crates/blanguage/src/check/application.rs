@@ -179,7 +179,7 @@ pub(crate) fn compile_application(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    let mut builder = Builder::new(world, d, &context, 0)?;
+    let mut builder = Builder::new(world, d, &context, 0, Some(&instance.name))?;
     builder.application = Some(Context::default());
     builder.in_function = true;
     let result = builder.native_function(instance.clone(), Vec::new(), d.function.span)?;

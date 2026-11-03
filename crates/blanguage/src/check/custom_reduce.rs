@@ -22,11 +22,12 @@ fn function(
     world: &World,
     program: &mut Program,
     env: &BTreeMap<String, Root>,
-    d: &Arc<Definition>,
+    owner: &crate::generics::Instance,
     expr: &Expr,
     ty: &Ty,
     parameters: &[&Ty],
 ) -> Result<ValueCode> {
+    let d = &owner.definition;
     let (reference, captures) = match &expr.kind {
         ExprKind::Call(name, args) if name == "bind" => {
             let Some(reference) = args.first() else {
@@ -67,7 +68,7 @@ fn function(
             "集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后",
         );
     }
-    let mut builder = Builder::new(world, d, program, 0)?;
+    let mut builder = Builder::new(world, d, program, 0, Some(&owner.name))?;
     builder.roots(env);
     let mut inputs = Vec::new();
     let mut args = Vec::new();
@@ -122,12 +123,13 @@ pub(super) fn compile(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
     args: &[Expr],
-    d: &Arc<Definition>,
+    owner: &crate::generics::Instance,
     span: Span,
     facts: &mut prefix::Facts,
     map: bool,
     kind: Kind,
 ) -> Result<()> {
+    let d = &owner.definition;
     let scan = matches!(kind, Kind::Scan | Kind::SegmentedScan);
     let segmented = matches!(kind, Kind::SegmentedScan | Kind::SegmentedReduce);
     let counted = kind == Kind::SegmentedReduce;
@@ -230,7 +232,7 @@ pub(super) fn compile(
             world,
             program,
             env,
-            d,
+            owner,
             &args[functions],
             &ty,
             &[&source_ty],
@@ -242,7 +244,7 @@ pub(super) fn compile(
         world,
         program,
         env,
-        d,
+        owner,
         &args[functions + usize::from(map)],
         &ty,
         &[],
@@ -251,7 +253,7 @@ pub(super) fn compile(
         world,
         program,
         env,
-        d,
+        owner,
         &args[functions + 1 + usize::from(map)],
         &ty,
         &[&ty, &ty],

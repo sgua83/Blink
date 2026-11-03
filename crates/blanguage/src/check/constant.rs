@@ -36,13 +36,14 @@ pub(crate) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<Bits>)
 /// 阶段派生参数复用已有表达式及常量语义；没有宿主求值器或新增运行阶段。
 pub(super) fn stage_expression(
     world: &World,
-    definition: &Arc<Definition>,
+    instance: &crate::generics::Instance,
     roots: &BTreeMap<String, Root>,
     program: &Program,
     expression: &Expr,
     annotation: Option<&TypeName>,
 ) -> Result<Root> {
-    let mut builder = Builder::new(world, definition, program, 0)?;
+    let definition = &instance.definition;
+    let mut builder = Builder::new(world, definition, program, 0, Some(&instance.name))?;
     builder.in_function = true;
     builder.roots(roots);
     // roots中的无关uniform装载不是当前表达式的计算，不要求它们为常量。
@@ -105,7 +106,7 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
             );
         }
         let context=constant_context(key);
-        let mut builder = Builder::new(world, definition, &context, 0)?;
+        let mut builder = Builder::new(world, definition, &context, 0, None)?;
         builder.in_function = true;
         builder.calls = calls.to_vec();
         let value = builder
@@ -304,7 +305,7 @@ fn integer_expression(world:&World,key:&str,source:&Source,module:&str,imports:&
                 body:Some(vec![Stmt {span:expression.span,kind:StmtKind::Return(Some(expression.clone()))}]),span:expression.span},
         });
         let context=constant_context(&definition.function.name);
-        let mut builder=Builder::new(world,&definition,&context,0)?;builder.in_function=true;
+        let mut builder=Builder::new(world,&definition,&context,0,None)?;builder.in_function=true;
         let result=builder.expr(expression)?;let value=builder.value_result(result,expression.span)?;
         builder.require_same(representation,&value.ty,expression.span)?;
         if value.constant.is_none()||builder.code.iter().any(|instruction|!matches!(&(instruction).kind,InstKind::Constant(..))) {

@@ -156,7 +156,7 @@ blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:280`。
+源码节选：`crates/blanguage/src/ir.rs:282`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -197,7 +197,7 @@ blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:102`。
+源码节选：`crates/blanguage/src/ir.rs:104`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1156,7 +1156,7 @@ C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结�
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:263`。
+源码节选：`crates/blanguage/src/ir.rs:265`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -1254,7 +1254,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3823`。
+源码节选：`crates/blanguage/src/check.rs:3829`。
 
 ```rust
         let binding = view.binding;
@@ -1494,7 +1494,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:944`。
+源码节选：`crates/blanguage/src/ir.rs:946`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1508,7 +1508,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:967`。
+源码节选：`crates/blanguage/src/ir.rs:969`。
 
 ```rust
     Load {
@@ -1540,7 +1540,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1162`。
+源码节选：`crates/blanguage/src/ir.rs:1164`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1578,7 +1578,7 @@ pub struct Stage {
     let mut calls = Vec::new();
     expand_program(
         world,
-        d,
+        instance,
         &mut env,
         &mut program,
         &mut Vec::new(),
@@ -1701,7 +1701,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1010`。
+源码节选：`crates/blanguage/src/ir.rs:1012`。
 
 ```rust
     If {

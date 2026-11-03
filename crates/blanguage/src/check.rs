@@ -452,7 +452,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
     let mut calls = Vec::new();
     expand_program(
         world,
-        d,
+        instance,
         &mut env,
         &mut program,
         &mut Vec::new(),
@@ -465,7 +465,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
 }
 fn expand_program(
     world: &World,
-    d: &Arc<Definition>,
+    instance: &crate::generics::Instance,
     env: &mut BTreeMap<String, Root>,
     program: &mut Program,
     stack: &mut Vec<String>,
@@ -473,6 +473,7 @@ fn expand_program(
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
 ) -> Result<()> {
+    let d = &instance.definition;
     let key = format!("{}::{}", d.module, d.function.name);
     if stack.contains(&key) {
         return d
@@ -482,7 +483,7 @@ fn expand_program(
     stack.push(key);
     expand_stages(
         world,
-        d,
+        instance,
         d.function.body.as_ref().ok_or_else(|| Diagnostic {
             source: d.source.clone(), span: d.function.span, code: "B270",
             message: "已编译整域入口没有可展开的实现体；CPU应用或CPU包装函数沿原生入口调用，域内部的已编译域组合尚未实现".into(),
@@ -514,7 +515,7 @@ fn expand_program(
 }
 fn expand_stages(
     world: &World,
-    d: &Arc<Definition>,
+    instance: &crate::generics::Instance,
     body: &[Stmt],
     env: &mut BTreeMap<String, Root>,
     program: &mut Program,
@@ -523,6 +524,7 @@ fn expand_stages(
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
 ) -> Result<bool> {
+    let d = &instance.definition;
     for statement in body {
         for root in env.values_mut() {
             if let Root::Data(binding, access @ Access::Write) = root
@@ -539,12 +541,12 @@ fn expand_stages(
                     return d.source.fail(statement.span, "B125", format!("重复局部变量或覆盖参数 {name}"));
                 }
                 let value = constant::stage_expression(
-                    world, d, env, program, expression, annotation.as_ref(),
+                    world, instance, env, program, expression, annotation.as_ref(),
                 )?;
                 env.insert(name.clone(), value);
             }
             StmtKind::If(condition, yes, no) => {
-                let Root::Literal(ty, words) = stage_root(world, d, env, program, condition)? else {
+                let Root::Literal(ty, words) = stage_root(world, instance, env, program, condition)? else {
                     return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
                 };
                 if ty != Ty::scalar(Scalar::Bool) {
@@ -552,7 +554,7 @@ fn expand_stages(
                 }
                 let selected = if words[0] == 0 { no } else { yes };
                 let mut child = env.clone();
-                if expand_stages(world, d, selected, &mut child, program, stack, boundary, facts, calls)? {
+                if expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls)? {
                     return Ok(true);
                 }
                 first_stage = program.stages.len();
@@ -566,7 +568,7 @@ fn expand_stages(
                     );
                 }
                 let bound = |expr: &Expr| -> Result<u32> {
-                    match stage_root(world, d, env, program, expr)? {
+                    match stage_root(world, instance, env, program, expr)? {
                         Root::Literal(ty, words) if ty == Ty::scalar(Scalar::U32) => Ok(words[0] as u32),
                         _ => d.source.fail(
                             expr.span,
@@ -584,7 +586,7 @@ fn expand_stages(
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)]),
                     );
                     if expand_stages(
-                        world, d, body, &mut child, program, stack, boundary, facts, calls,
+                        world, instance, body, &mut child, program, stack, boundary, facts, calls,
                     )? {
                         return Ok(true);
                     }
@@ -632,7 +634,7 @@ fn expand_stages(
                         Ok(Selection { binding, word })
                     })
                     .transpose()?;
-                let mut b = Builder::new(world, d, program, *domain)?;
+                let mut b = Builder::new(world, d, program, *domain, Some(&instance.name))?;
                 b.roots(env);
                 let index = b.reg(Scalar::U32);
                 b.code.push(Inst::new(InstKind::Index(index)));
@@ -795,7 +797,7 @@ fn expand_stages(
                             program,
                             env,
                             args,
-                            d,
+                            instance,
                             statement.span,
                             facts,
                             name.ends_with("_map"),
@@ -880,7 +882,7 @@ fn expand_stages(
                 }
                 let roots = args
                     .iter()
-                    .map(|arg| stage_root(world, d, env, program, arg))
+                    .map(|arg| stage_root(world, instance, env, program, arg))
                     .collect::<Result<Vec<_>>>()?;
                 let actuals: Vec<_> = roots
                     .iter()
@@ -1055,7 +1057,7 @@ fn expand_stages(
                 } else {
                     facts.enter(&required);
                     expand_program(
-                        world, callee, &mut child, program, stack, boundary, facts, calls,
+                        world, &instance, &mut child, program, stack, boundary, facts, calls,
                     )?;
                     facts.leave();
                 }
@@ -1126,11 +1128,12 @@ fn expand_stages(
 }
 fn stage_root(
     world: &World,
-    d: &Arc<Definition>,
+    instance: &crate::generics::Instance,
     env: &BTreeMap<String, Root>,
     program: &Program,
     arg: &Expr,
 ) -> Result<Root> {
+    let d = &instance.definition;
     match &arg.kind {
         ExprKind::Name(n) => {
             if let Some(root) = env.get(n) {
@@ -1151,7 +1154,7 @@ fn stage_root(
             let (ty, bits) = number(&d.source, arg.span, n)?;
             Ok(Root::Literal(ty, vec![bits]))
         }
-        _ => constant::stage_expression(world, d, env, program, arg, None),
+        _ => constant::stage_expression(world, instance, env, program, arg, None),
     }
 }
 fn collective_field(
@@ -1305,7 +1308,7 @@ fn checked_function(
     let name = &instance.name;
     let d = &instance.definition;
     let program = function_program(world, instance)?;
-    let mut b = Box::new(Builder::new(world, d, &program, 0)?);
+    let mut b = Box::new(Builder::new(world, d, &program, 0, Some(&instance.name))?);
     b.in_function = true;
     b.application = application;
     b.functions = functions;
@@ -1682,6 +1685,7 @@ struct Builder<'a> {
     locals: BTreeMap<usize, Ty>,
     code: Vec<Inst>,
     source_definition: Option<Arc<SourceOrigin>>,
+    source_context: Arc<SourceContext>,
     source_site: Option<Arc<SourceSite>>,
     global_index: Reg,
     reads: BTreeSet<usize>,
@@ -1714,6 +1718,7 @@ impl<'a> Builder<'a> {
         definition: &Arc<Definition>,
         program: &'a Program,
         domain: usize,
+        source_instance: Option<&str>,
     ) -> Result<Self> {
         let mut mutable_names = BTreeSet::new();
         assigned_names(
@@ -1738,6 +1743,7 @@ impl<'a> Builder<'a> {
             locals: BTreeMap::new(),
             code: Vec::new(),
             source_definition: definition.source_origin().map(Arc::new),
+            source_context: Arc::new(SourceContext { instance: source_instance.map(Arc::from), inlined_at: Box::new([]) }),
             source_site: None,
             global_index: usize::MAX,
             reads: BTreeSet::new(),
@@ -1771,7 +1777,7 @@ impl<'a> Builder<'a> {
     }
     fn at_source<T>(&mut self, span: Span, syntax: SourceSyntax, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let site = self.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
-            origin: origin.clone(), span, syntax,
+            origin: origin.clone(), context: self.source_context.clone(), span, syntax,
         }));
         let previous = std::mem::replace(&mut self.source_site, site);
         let result = work(self);
