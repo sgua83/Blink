@@ -289,7 +289,39 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5"></a>
 
-**应用Frame与资源调用包装。** 原application生产者把进入／接收／完成／释放及真实资源参数设置职责交给自己的Inst／FunctionBody，附实际应用或资源触发锚点；不以main根范围覆盖所有步骤。原Frame、资源及最后真实消费者继续原所有权；材料不增加释放链、执行状态或常驻记录。原IR拥有事实，查询借用，完成后释放观察材料。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5)。
+**应用Frame与资源调用包装。** 原应用入口及各资源生产者向原ValueCode／Inst分别交接真实生成职责和触发锚点，下列八叶独立实现。隐式入口用原Definition及实际Instance作为定义实例锚点，不伪造用户表达式；有实际语法的资源原语保留真实SourceSite。原Frame、Data和最后真实消费者继续原所有权，观察材料不拥有资源、不增加释放链、Builder状态、图或调度。原IR持有不可变材料，查询借用，最后IR消费者后释放，关闭compiler不进入必要执行编码。当前完整范围见[父项](Issues.md#c-021-7-9-7-2-4-5)。
+
+<a id="tool-7-2-4-5-1"></a>
+
+**程序入口及根Frame生命周期。** 输入／输出及生产消费：原选择入口Instance→compile_application／live_resources→原Application.body与根包装Call／前后序Inst。原定义实例锚点与实际表达式锚点分开，完整标明进入、错误接收器／上下文、创建、原就绪分支、失败退出值及正常销毁；没有资源时不伪造Frame。原GeneratedOrigin以GenerationAnchor区分Syntax和Definition；定义实例只含原定义快照（可以缺失）与实际入口名，不保留World／AST。原Application.body可有generated_origin描述整个隐式入口，其内部各Frame步骤仍分别分类，普通源函数体及域包装不借用此入口材料。Frame创建失败分支与正常销毁保留原代码和原语义；没有活资源时不增加Frame、接收器或分支。来源只编译角色，静态生成事实不证明分支已实际执行。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-1)。
+
+<a id="tool-7-2-4-5-2"></a>
+
+**dataset分配与初始化包装。** 输入／输出及生产消费：create_application_dataset／application_declare原类型、长度和初始化表达式→原allocate与填充／槽位写入→原Data。只记录本次真实分配与初始化步骤／锚点，资源仍归Frame／Data原拥有者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2)。
+
+<a id="tool-7-2-4-5-3"></a>
+
+**作用域及返回时资源释放。** 输入／输出及生产消费：原作用域／返回／移动和真实Data→application_drop／application_release及returns原释放接点→原release／析构Inst。隐式释放与显式源操作分开，保留实际触发与资源关系，不改最后消费者和原释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-3)。
+
+<a id="tool-7-2-4-5-4"></a>
+
+**dataset扩容及填充值包装。** 输入／输出及生产消费：原resize表达式／长度／fill→resize_application_dataset原StoreLocal及resize Call→原新Data模型。原存储版本／填充值与原触发分别交接，不复制数据或清理链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4)。
+
+<a id="tool-7-2-4-5-5"></a>
+
+**CPU资源地址访问包装。** 输入／输出及生产消费：原CPU数据位置／字段／索引→application_address及read_application_place等实际address／storage_address／cast接点→原地址与访问Inst。按真实位置和原语触发分类，不以根定义或普通load掩盖生成寻址；实际范围认领时刷新。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
+
+<a id="tool-7-2-4-5-6"></a>
+
+**普通调用资源参数接收与交接。** 输入／输出及生产消费：原函数参数／真实类型布局／借用→check.rs普通参数展开及application_parameter／native_call实际参数接点→原输入槽位与必要包装Inst。参数接收、数据绑定与普通源调用保持区别，未产生Inst的事实不伪造操作；不改唯一资源拥有者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+
+<a id="tool-7-2-4-5-7"></a>
+
+**CPU与GPU资源传输包装。** 输入／输出及生产消费：原upload／download表达式与真实Data→application_transfer／application_call原调用→原传输Inst。方向、原触发与实际句柄／完成关系分别保留，不新增隐式传输或同步。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-7)。
+
+<a id="tool-7-2-4-5-8"></a>
+
+**应用计算发起及资源参数包装。** 输入／输出及生产消费：原target／整域Call／Instance与Data→application_execute实际参数转换、绑定、domain_at及原调用→原发起Inst。真实源调用点与参数／调度生成职责分别交接；域内原生包装仍归.4.6，不复制图或调度器。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-8)。
 
 <a id="tool-7-2-4-6"></a>
 
