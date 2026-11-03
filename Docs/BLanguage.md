@@ -257,7 +257,23 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 `bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
 
-这些范围是compiler结果中的观察材料，不属于BLRI22执行字段；无compiler的NativeCode不含tail_regions或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有保留该观察材料，code_json明确报告缺失，不从源码、旧模板或可解码性重建。保存／装入可选范围材料仍沿C-021.7.9.5.2.2，正式部署剥离沿原.70，不能把已导出JSON写成这些接口均已完成。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
+这些范围是compiler结果中的观察材料，不属于BLRI22执行字段；无compiler的NativeCode不含tail_regions或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有范围材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
+
+### 保存和恢复可选CPU范围材料
+
+原新生成的`build::Compilation`可显式调用`code_observations()`取得独立字节，由调用者保存为`.blcr`；`resource::Module`提供同名方法。只读捕获不修改执行文件、构建键或缓存。当前SDK是捕获入口，`bc build`的`.x64.json`不等同这份材料；未保存材料的缓存结果不能重新导出范围，不为取得材料自动重编。正式执行文件不要求携带`.blcr`，部署映像仍由`build::execution_image`／`bc image`交接。
+
+BLCR1由8字节`BLCR\x01\0\0\0`、u64条目数量及逐条记录组成；整数均为小端，每条记录含32字节SHA-256、u64尾部分区数量及各分区的u64排他末端／u32类别（0探栈辅助、1对齐、2字面量）。摘要消费同一NativeCode的原执行字段编码，覆盖原字节、重定位、帧、调用、主末端和展开，不含tail_regions、源码、SDK版本或工具链身份；材料不复制机器码、执行图或主末端。它配对同一执行编码，不能证明材料来源、指令安全、硬件支持或真实执行，调用者应保留原生产材料。
+
+`restore_code_observations(material)`按原容器顺序消费全部CPU代码：Compilation先programs后templates；Module按原prefix合同将无前置条件映像置前、条件模板置后，各组保持原顺序，与构建结果一致。每个CPU映像沿原阶段，Element先main再实际延续入口，Sort先全部initialize再histogram／scatter／gather；GPU不占CPU条目。恢复先核对完整数量、执行字段摘要、主末端、尾部单调范围与完整覆盖，再整体写入同一tail_regions；错误不部分改写。原字节、执行／资源合同、GPU内容和最后消费者保持；纯GPU集合明确不支持CPU观察。
+
+```text
+bc code target/cache/entry.blbi --observations target/entry.blcr
+bc code --image target/deployment.blri --observations target/entry.blcr
+```
+
+SDK由`build::code_facts(path, material)`或显式BLRI模式的`build::image_code_facts(execution_bytes, material)`交接同一JSON。CLI在Compiler初始化前只读装入原编码并恢复材料，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_cpu_code，programs／templates保留各原索引；BLRI结果kind=execution_image_cpu_code，images保留原索引。CPU项target=cpu，code为原ProgramImage::code_json；混合集合中的GPU项code=null且status=not_supported，不把SPIR-V当x64。所有代码地址仍是各映像相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
+
 
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：

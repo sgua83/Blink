@@ -137,3 +137,10 @@ pub enum RegionKind {
     Alignment,
     Literal,
 }
+
+#[cfg(feature = "compiler")]
+impl<P> ProgramImage<P> {
+    pub(crate) fn stages_mut(&mut self) -> &mut [StageCode] {
+        &mut self.stages
+    }
+}
