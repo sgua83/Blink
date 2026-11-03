@@ -720,7 +720,7 @@ dataset<T> relay<T>(u32 depth, dataset<T> rows) on cpu {
 .\target\modules\app.exe
 ```
 
-输出13。模块产物保存实际.h的公开声明／常量及已编译具体函数的布局、访问、结果／写后事实和原生符号；应用不需要该库的.h或.b文件。依赖模块可通过重复的`--import`提供对象或下节的模块静态库，并与其余源码依赖同时使用；已提供模块不需要分发.h／.b，其他源码依赖仍须有实际输入。最终链接列出本对象及实际对象／库，成员按真实符号需求引入；缺失或不兼容定义直接报错。未提供任何对象时就是原完整源码闭包，全部依赖均提供对象时无需库源码；两者共用同一按模块选择，不在失败后切换模式。上述组合适用于普通应用和独立模块；算法库／入口映像的独立COFF依赖仍按其当前接口能力处理。
+输出13。模块产物保存实际.h的公开声明／常量及已编译具体函数的布局、访问、结果／写后事实和原生符号；应用不需要该库的.h或.b文件。依赖模块可通过重复的`--import`提供对象或下节的模块静态库，并与其余源码依赖同时使用；已提供模块不需要分发.h／.b，其他源码依赖仍须有实际输入。最终链接列出本对象及实际对象／库，成员按真实符号需求引入；缺失或不兼容定义直接报错。未提供任何对象时就是原完整源码闭包，全部依赖均提供对象时无需库源码；两者共用同一按模块选择，不在失败后切换模式。普通应用、独立模块及`--program`算法库共用上述逐模块来源选择。算法库可消费已编译接口中的类型／常量，与其他真实源码依赖组成原CPU／GPU算法；未消费的同名.h／.b变化不失效，所用常量／类型或源码实现变化正常重编。CPU算法范围内调用已编译普通CPU函数仍未实现，现行B270明确调用位置而不转读其.b；完整模块DLL及独立入口映像组合分别按实际能力。
 
 模块导出公开的有限具体实例，开放泛型可以在模块编译时重复指定`--instance 'function<args>'`；尚未导出的开放实例不能靠装入私有源码临时生成。普通CPU函数可包含同步CPU／GPU程序、返回拥有资源，跨对象仍借用同一个Frame；显式upload／download、设备真实完成和最后消费者释放的语义保持。
 
@@ -3643,7 +3643,7 @@ native::compile_program与spirv::compile_program的Rust错误结果现为String�
 
 ## 本次多单元构建图（C-021.5.2b.2）
 
-调用者用build::Unit声明本次编译单元、路径、模块根、依赖和输出，在同一Compiler上调用build_graph(&units)，或使用build::compile_graph。UnitKind::Object(ObjectKind)沿原对象构建；UnitKind::Entry { entry,target }沿原CPU／GPU入口映像构建。普通模块／应用以Dependency::Unit(index)引用本次提供者，或Dependency::Object(&object)借用已有模块，传递模块依赖自动沿这些绑定交接，不复制原机器码和运行库归档。单元引用可以向前，真实循环及越界直接报告；入口映像不能当作COFF模块提供者。
+调用者用build::Unit声明本次编译单元、路径、模块根、依赖和输出，在同一Compiler上调用build_graph(&units)，或使用build::compile_graph。UnitKind::Object(ObjectKind)沿原对象构建；UnitKind::Entry { entry,target }沿原CPU／GPU入口映像构建。普通模块、应用及算法库对象以Dependency::Unit(index)引用本次提供者，或Dependency::Object(&object)借用已有模块，传递模块依赖自动沿这些绑定交接，不复制原机器码和运行库归档。单元引用可以向前，真实循环及越界直接报告；入口映像不能当作COFF模块提供者。
 
 例如已有math与app两份模块，可由实际构建调用组织：
 
@@ -3673,7 +3673,7 @@ let outputs = compiler.build_graph(&units)?;
 blink target/graph/app.obj target/graph/math.obj -o target/graph/app.exe
 ```
 
-返回Vec按请求顺序保存build::Output::Object(Arc<ObjectCompilation>)或Output::Entry(Compilation)。原artifact、reused及程序／模板继续交给真实消费者；链接不读取B源码或调用编译器。每个对象单元使用调用方分配的独立输出，多个不同入口／目标可以共享BLBI输出目录；本接口不自动拆分所有源码导入，也不合并重复输出请求。当前CPU／GPU入口映像及算法库单元不接受COFF导入，普通模块／应用单元可以；完整模块DLL及更广泛的映像组合仍待实现。
+返回Vec按请求顺序保存build::Output::Object(Arc<ObjectCompilation>)或Output::Entry(Compilation)。原artifact、reused及程序／模板继续交给真实消费者；链接不读取B源码或调用编译器。每个对象单元使用调用方分配的独立输出，多个不同入口／目标可以共享BLBI输出目录；本接口不自动拆分所有源码导入，也不合并重复输出请求。普通模块、应用与算法库对象沿同一提供者集合消费COFF接口，算法库的常量／类型接口已用于真实CPU／GPU生成；已编译普通CPU函数在算法逐元素范围的调用仍待实现（C-027.35.4），不能把它当作源码内联或普通应用调用。独立CPU／GPU入口映像仍不接受COFF导入；完整模块DLL及更广泛的映像组合仍待实现。
 
 图在活动Compiler许可内先固定实际.h／.b及解析声明，提供者公开接口和其类型导入也进入同一输入。后续任务不再次读取／解析这些文件，已捕获的可选.b缺失保持为本次事实，后续编辑或创建不混入这次构建。命中与失效仍由原正式COFF／BLBI身份决定，不把整份图或不被装入的私有实现变成调用者输入；固定解析输入只属于本次调用，不是跨次IR缓存。SDK／受管工具链安装的一致性沿原生产者，任意并发改写Rust SDK或外部工具的固定输入与分发仍未交付。
 

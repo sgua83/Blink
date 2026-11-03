@@ -44,12 +44,11 @@ pub(super) fn compile<'a>(
     let path = if inputs.is_some() { header_path } else { header_path.canonicalize()? };
     let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
     let artifact = std::path::absolute(output)?;
-    let imports = if matches!(kind, ObjectKind::Library { .. }) { None }
-        else { Some(crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
+    let imports = crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.into(), text: "".into() },
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
-        })?) };
-    let imported = imports.as_ref().filter(|imports| !imports.modules.is_empty());
+        })?;
+    let imported = (!imports.modules.is_empty()).then_some(&imports);
     let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let definitions = &world.declarations;

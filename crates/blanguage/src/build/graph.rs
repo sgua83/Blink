@@ -47,8 +47,8 @@ fn expand<'a>(
     let unit = units.get(index).ok_or_else(|| std::io::Error::other(format!("构建单元引用越界：{index}")))?;
     if let Some(value) = &expanded[index] { return Ok(value.clone()); }
     if !active.insert(index) { return Err(format!("构建依赖形成循环：单元{index} {}", unit.path.display()).into()); }
-    if !unit.dependencies.is_empty() && !matches!(unit.kind, UnitKind::Object(ObjectKind::Module(_) | ObjectKind::Application(_))) {
-        return Err(format!("单元{index}的入口映像／算法库尚不消费独立COFF模块导入").into());
+    if !unit.dependencies.is_empty() && matches!(unit.kind, UnitKind::Entry { .. }) {
+        return Err(format!("单元{index}的入口映像尚不消费独立COFF模块导入").into());
     }
     let mut providers = Vec::new();
     let mut seen = BTreeSet::new();
