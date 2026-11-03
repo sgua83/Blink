@@ -152,7 +152,7 @@ impl Function {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
-            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)) =>
+            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External) =>
                 canonical(Borrow::source(Origin::Position(origin)),self,None,&BTreeMap::new()),
             Origin::Unresolved|Origin::External=>Borrow::source(source),
             _=>Borrow::default(),
@@ -443,11 +443,7 @@ fn access_at_call(access:&Access,call:&Call,function:&Function,state:&State,know
     let when=bounds::Condition::guard(when);
     match access {
         Access::Resource{resources,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,when},
-        Access::Position{position,..}=>{
-            let mut position=position.clone();
-            if position.initialized&&borrows.sources.iter().all(|source|matches!(source,Origin::Position(origin)if origin.initialized.iter().all(|ready|*ready))) {position.initialized=false;}
-            Access::Position{borrows,when,position}
-        },
+        Access::Position{position,..}=>Access::Position{borrows,when,position:position.clone()},
         Access::Memory{..}=>Access::Memory{borrows,when},
     }
 }
@@ -546,7 +542,8 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                         evaluate(borrow,function,state,known,true),
                         Some(PositionAccess{layout:layout.clone(),writes:*writes,initialized:*initialized}),
                         bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Memory{borrow,..}=>function.address_access(evaluate(borrow,function,state,known,true),None,bounds::Condition::guard(usage.path.clone())),
+                    Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,..} if !function.calls.iter().any(|call|call.memory==*memory)=>
+                        function.address_access(evaluate(borrow,function,state,known,true),None,bounds::Condition::guard(usage.path.clone())),
                     _=>None,
                 };
                 if let Some(value)=value{access.insert(value);}
@@ -651,10 +648,13 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         }
         for call in &function.calls {
             for access in &known[&call.function].interface.access {
-                if let Access::Memory{borrows,when}=access_at_call(access,call,function,&known[name],&known) {
-                    let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
-                    values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::Known(Vec::new())).union(address::MemoryEffect::of(&borrow));
-                }
+                let (borrows,when)=match access_at_call(access,call,function,&known[name],&known) {
+                    Access::Memory{borrows,when}=> (borrows,when),
+                    Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when),
+                    _=>continue,
+                };
+                let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
+                values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::Known(Vec::new())).union(address::MemoryEffect::of(&borrow));
             }
         }
         memory.insert(name.clone(),values);

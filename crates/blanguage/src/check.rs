@@ -1981,7 +1981,9 @@ impl<'a> Builder<'a> {
             Place::Reference {
                 ty, address, words, ..
             } => {
-                self.require_initialized(p, span)?;
+                if let Some(borrow)=self.reference_position_borrow(p,span)? {
+                    self.check_view_requirement(view::Requirement::Address{borrow,layout:address::Layout::of(ty),writes:false,initialized:true,span})?;
+                }else{self.require_initialized(p, span)?;}
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {

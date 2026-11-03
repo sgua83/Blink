@@ -537,6 +537,15 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
+        if d.compiled.is_some() {
+            memory_borrow=view::Borrow::default();
+            for access in &self.functions.units[&instance.name].as_ref().unwrap().contract.view_access {
+                let (view_contracts::Access::Memory{borrows,when}|view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}})=access else{continue;};
+                let path=when.guard_at_call(&view_arguments).assume(&self.path,true);
+                let borrow=self.current_address_borrow(&borrows.at_call(&view_arguments));
+                memory_borrow.union(&borrow.restricted(&path));
+            }
+        }
         let memory_use=self.call_address_memory(memory_borrow,span)?;
         self.code.push(Inst::Call(Call {
             target: CallTarget::Defined(instance.name.clone()),

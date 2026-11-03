@@ -541,7 +541,7 @@ impl Builder<'_> {
         Ok(Origin{root,layout,base,words:words.into(),positions:positions.into(),writable,initialized:initialized.into()})
     }
     pub(super) fn reference_position_borrow(&self,place:&Place,span:Span)->Result<Option<view::Borrow>> {
-        if matches!(place,Place::Reference{address:ReferenceAddress::Borrowed{..},..}){
+        if matches!(place,Place::Reference{address:ReferenceAddress::Borrowed{..}|ReferenceAddress::External{..},..}){
             return Ok(Some(self.position_origin(place,span)?.normalize()));
         }
         Ok(None)
