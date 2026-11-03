@@ -54,6 +54,13 @@ enum ResidentData {
     Gpu(vulkan::GpuDataset),
 }
 
+/// 同一Frame可见CPU数据存储的同步快照；多个句柄只列一次物理Dataset。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameCpuDataMemory {
+    pub handles: Vec<u32>,
+    pub memory: crate::DatasetMemory,
+}
+
 /// 一个实际 B 应用调用帧的唯一数据所有者。句柄只由编译后的资源声明取得，
 /// 源语言不提供从整数构造句柄或复制独占所有权的操作。
 pub struct Frame {
@@ -73,6 +80,26 @@ impl Frame {
             device: None,
             types,
         }
+    }
+    /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。
+    /// 结果只保存本次元数据，不保活资源；释放后的旧结果不代表当前存活状态。
+    /// 不包含代码VM、view来源图、类型／句柄容器或OS堆管理开销。
+    pub fn cpu_data_memory(&self) -> Vec<FrameCpuDataMemory> {
+        let mut result: Vec<FrameCpuDataMemory> = Vec::new();
+        let mut positions = std::collections::BTreeMap::new();
+        for (handle, slot) in self.data.datasets.iter().enumerate() {
+            if let Some(ResidentData::Cpu(data)) = slot {
+                // 仅本次借用内的原对象地址；不把空Vec的悬垂指针当分配身份。
+                let storage = &**data as *const Dataset;
+                let index = *positions.entry(storage).or_insert_with(|| {
+                    let index = result.len();
+                    result.push(FrameCpuDataMemory { handles: Vec::new(), memory: data.memory() });
+                    index
+                });
+                result[index].handles.push(handle as u32);
+            }
+        }
+        result
     }
     fn load(&mut self, index: usize) -> Result<Program> {
         if self.device.is_none()

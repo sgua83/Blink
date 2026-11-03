@@ -3570,6 +3570,29 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 
 Blink文件运行入口为`brun [--gpu-timestamps] <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]`。默认GPU运行不创建／重置时间戳查询池，也不写入／读取时间戳；显式`brun --gpu-timestamps gpu ...`请求采集，此选项不用于CPU。成功执行但没有计时样本时输出`GPU_program_timestamps=not_collected`，不输出伪零；有样本时的`GPU_program_ms`只含设备程序和阶段依赖；CLI 的 `compute_elapsed_ms` 从程序编译结果与输入数据准备好之后开始，包含后端编译、执行和输出写盘，GPU 另含设备创建／上传／读回。两者不是相同口径，也不能与 CPU 原生运算时间直接相减计算加速比。
 
+### CPU数据字存储的按需查询
+
+Rust SDK的`Dataset::memory()`直接读取该对象当前的原始字存储，返回`DatasetMemory`。`ReadDataset`和`cpu::CpuDataset`通过原Deref使用同一查询，冻结／只读绑定不复制数据。
+
+| 字段 | 字节口径 |
+|---|---|
+| `logical_bytes` | `count * stride`，包含类型布局与记录步长的填充，不是逐分量有效值之和 |
+| `stored_bytes` | 原`Vec<u32>`当前长度乘四，包含最后一个u32中的尾填充 |
+| `capacity_bytes` | 原`Vec<u32>`当前可用容量乘四，不含分配器管理开销；不表示OS承诺页、工作集或峰值 |
+
+例如一百万零一条一字节记录的逻辑跨度为1,000,001字节，打包长度为1,000,004字节；生产者交入的Vec可以有更大容量。缩容只改变实际长度，当前Vec保留的容量仍如实报告。零记录也可能持有生产者预留的非零容量，不能据逻辑字节为零推断没有分配。
+
+`application::Frame::cpu_data_memory()`返回当前Frame可见CPU数据字存储的`Vec<FrameCpuDataMemory>`，各项的`handles`为原Frame句柄，`memory`为同一`DatasetMemory`快照。共享槽按同一实际Dataset分组；分组只属于本次查询，不建立新的资源身份。不同的空Dataset仍分别保留原句柄，不能用空Vec的悬垂指针把它们合并。已释放槽不再出现在新结果中；GPU驻留槽不在这份CPU范围中，查询不会等待或隐式download。
+
+```rust
+let current = dataset.memory();
+for storage in frame.cpu_data_memory() {
+    println!("handles={:?} bytes={:?}", storage.handles, storage.memory);
+}
+```
+
+结果仅保存本次同步读取的元数据，不持有Dataset、设备或完成对象；保留旧结果不延长资源寿命，也不保证下一次resize／驻留变化后的状态。该范围不遍历view来源图，不统计代码VM、类型／句柄容器、Vulkan映射内存或其他宿主分配。Rust SDK与B／C入口分别记录：本查询没有新增B语法、C ABI或运行库状态字段。更广观察范围继续见Issues C-021.7.9.23。
+
 ### 原生物理 GPU 枚举与选择
 
 Rust SDK 的 `vulkan::Instance::new()` 创建计算实例；`Instance::with_presentation()` 明确启用 Windows surface。两者的 `physical_devices()` 都返回实际 `Vec<PhysicalDevice>`，包含集成 GPU 等驱动可访问类型。`PhysicalDevice::name()` 供显示、`is_discrete()` 供调用者选择；名称不是资源身份。保留选中的句柄后可释放列表和公开实例，真实实例由该句柄及其派生设备共同持有。

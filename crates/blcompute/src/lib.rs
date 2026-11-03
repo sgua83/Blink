@@ -75,6 +75,17 @@ impl Value {
         }
     }
 }
+/// 同步读取原CPU数据字存储所得的字节快照；不持有存储或OS堆状态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DatasetMemory {
+    /// count * stride，包含声明布局与记录步长中的填充。
+    pub logical_bytes: u64,
+    /// Vec<u32>当前长度，包含最后一个存储字的尾填充。
+    pub stored_bytes: u64,
+    /// Vec<u32>当前可用容量；不包含分配器开销或OS页承诺。
+    pub capacity_bytes: u64,
+}
+
 pub struct Dataset {
     pub(crate) ty: Ty,
     pub(crate) stride: u32,
@@ -199,6 +210,14 @@ impl Dataset {
     pub fn words_mut(&mut self) -> &mut [u32] {
         self.views.clear();
         &mut self.words
+    }
+    /// 按需读取当前唯一字存储；不遍历view来源、不复制记录或维持累计计数。
+    pub fn memory(&self) -> DatasetMemory {
+        DatasetMemory {
+            logical_bytes: u64::from(self.count) * u64::from(self.stride),
+            stored_bytes: self.words.len() as u64 * std::mem::size_of::<u32>() as u64,
+            capacity_bytes: self.words.capacity() as u64 * std::mem::size_of::<u32>() as u64,
+        }
     }
     pub fn count(&self) -> u32 {
         self.count

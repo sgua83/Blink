@@ -688,7 +688,7 @@ fn condition_type(value: &OutputCondition,
 
 ### 2.4 Dataset 是布局的实际承载者
 
-源码节选：`crates/blcompute/src/lib.rs:78`。
+源码节选：`crates/blcompute/src/lib.rs:89`。
 
 ```rust
 pub struct Dataset {
@@ -702,7 +702,23 @@ pub struct Dataset {
 
 `words` 是 CPU 上的存储，`count` 是记录数，`stride` 是相邻记录间隔。这里使用 `Vec<u32>` 保存四字节 word，是保存原始位模式的容器，并不表示其中的所有字段都是 `u32`。
 
+`memory()`按需读取这一个原Vec：逻辑字节是count乘stride，存储字节是当前word长度乘四，容量字节是Vec可用容量乘四。前者含声明布局／记录填充，第二项还含最后一个word的尾填充；缩容后保留的容量继续占用存储，零载荷也可能有非零预留容量。它们都不冒充OS承诺页、工作集、分配器开销或全对象图。
+
+源码节选：`crates/blcompute/src/lib.rs:215`。
+
+```rust
+    pub fn memory(&self) -> DatasetMemory {
+        DatasetMemory {
+            logical_bytes: u64::from(self.count) * u64::from(self.stride),
+            stored_bytes: self.words.len() as u64 * std::mem::size_of::<u32>() as u64,
+            capacity_bytes: self.words.capacity() as u64 * std::mem::size_of::<u32>() as u64,
+        }
+    }
+```
+
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
+
+Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。完整view来源、代码VM及B／C观察入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
