@@ -1120,7 +1120,7 @@ impl Builder<'_> {
     #[inline(never)]
     pub(super) fn resize_application_dataset(&mut self, args: &[Expr], span: Span) -> Result<Option<Data>> {
         if args.len() != 3 {
-            return self.fail(span, "B266", "resize(data,length,fill) 消费拥有的 CPU dataset，并以同类型普通值初始化新增元素");
+            return self.fail(span, "B266", "resize(data,length,fill) 消费拥有的 CPU dataset，以同型值初始化新增位置");
         }
         let Some(returned) = self.evaluate_returned(&args[0], None)? else { return Ok(None); };
         let returns::Returned::Dataset(data) = returned else {
@@ -1134,13 +1134,34 @@ impl Builder<'_> {
         self.application_cpu(&data, span)?;
         let Some(mut length) = self.expr(&args[1])? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[1].span)?;
-        let Some(fill) = self.expr_expected(&args[2], Some(&data.ty))? else { return Ok(None); };
-        self.require_same(&data.ty, &fill.ty, args[2].span)?;
-        if fill.ty.owns_resources() || fill.ty.contains_views() {
-            return self.fail(args[2].span, "B224", "resize 填充值需要可复制的普通存储，拥有资源和 view 图不在本操作范围");
+        let Some(mut returned) = self.evaluate_returned(&args[2], Some(&data.ty))? else { return Ok(None); };
+        self.check_returned_type(&mut returned, &data.ty, args[2].span)?;
+        self.require_returned_initialized(&mut returned, args[2].span)?;
+        let fill = self.returned_storage(&returned);
+        if fill.ty.contains_views() {
+            return self.fail(args[2].span, "B224", "resize 填充值不能复制 view 借用图");
         }
+        let mut retained = fill.proof.typed_view_borrow(&fill.ty);
+        for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
         self.view_uses.invocation(span);
-        self.application_movable(&data, &view::Borrow::default(), span)?;
+        self.application_movable(&data, &retained, span)?;
+        let elements = if fill.ty.owns_resources() {
+            let exact = data.length.minimum() == data.length.maximum()
+                && length.minimum() == length.maximum()
+                && data.length.maximum().checked_add(1) == Some(length.minimum());
+            let sources = data.length.component_origins(0);
+            let offset = length.proof.domains(0).into_iter().any(|domain|
+                matches!(domain, IndexDomain::Offset(base, 1) if sources.contains(&base)));
+            if !exact && !offset {
+                return self.fail(args[1].span, "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
+            }
+            let incoming = self.capture_element_model(&data, returned);
+            if data.length.maximum() == 0 { incoming } else {
+                let mut previous = data.elements;
+                previous.join(*incoming);
+                previous
+            }
+        } else { self.unknown_element_model(&data.ty) };
         let (slots, storage) = self.local_slots(&fill.ty);
         for (slot, reg) in slots.into_iter().zip(fill.regs) { self.emit(InstKind::StoreLocal(slot, reg)); }
         let frame = self.application_frame(span)?;
@@ -1157,7 +1178,6 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
-        let elements=self.unknown_element_model(&data.ty);
         Ok(Some(Box::new(DataPayload {
             elements,
             root: handle, place: None, initialization: None, ty: data.ty, length,
