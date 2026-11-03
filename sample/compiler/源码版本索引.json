@@ -104,7 +104,7 @@
     },
     {
       "path": "crates/blanguage/src/check/flow.rs",
-      "sha256": "9ac3433f5eb0ecc92050039be5d597774352249e069ad62ba18ceef805cf2a53"
+      "sha256": "34611646c0485c45cb30ead9c0b526e37047480f4724e57f967805420edc618d"
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
@@ -140,7 +140,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
-      "sha256": "7ed46d01dc334e78bab85e41d58241b4f54882995fcc42588db10c5fa5bf3098"
+      "sha256": "8b710d8061b15d55f86d251235b337b4b8797b534cf7d14978ce44e7e26ec179"
     },
     {
       "path": "crates/blanguage/src/codec.rs",

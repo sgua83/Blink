@@ -81,7 +81,15 @@ impl Borrow{
         for(source,when)in self.sources.entries(){result.sources.insert_when(source.clone().bind_outputs(bindings),when.output_bound(bindings));}result
     }
 }
-impl crate::module::codec::Encode for Borrow{fn encode(&self,w:&mut crate::module::codec::Writer){crate::module::codec::Encode::encode(&self.sources,w);}}
+impl crate::module::codec::Encode for Borrow{fn encode(&self,w:&mut crate::module::codec::Writer){
+    crate::module::codec::Encode::encode(&self.sources.0.len(),w);
+    for(source,when)in &self.sources.0{
+        crate::module::codec::Encode::encode(source,w);
+        // Inactive只表示此槽已知没有view，不授予任何资源或位置权限。
+        if matches!(source,Source::Inactive){crate::module::codec::Encode::encode(&bounds::Condition::constant(true),w);}
+        else{crate::module::codec::Encode::encode(when,w);}
+    }
+}}
 impl crate::module::codec::Decode for Borrow{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{sources:crate::module::codec::Decode::decode(r)?,..Self::default()})}}
 pub(super) fn resource_borrow(data:&application::Data)->Borrow{
     let mut value=data.handle.proof.view_borrow(0);if value.empty(){value.sources.insert(Source::Data(data.handle.identity()));}value

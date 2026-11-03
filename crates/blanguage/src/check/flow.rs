@@ -150,12 +150,24 @@ impl Builder<'_> {
         }
         // 直接自身边不向循环来源的最小不动点贡献新来源。
         let mut unchanged=vec![false;initial.len()];
+        for (index,definition)in definitions.iter_mut().enumerate(){
+            definition.inputs.remove(&LoopInput{level:scope,index});
+            unchanged[index]=*definition==initial[index];
+        }
+        let resolve=|mut borrow:Borrow,unchanged:&[bool]| {
+            let inputs=std::mem::take(&mut borrow.inputs);
+            for(input,when)in inputs.into_entries(){
+                if input.level==scope&&unchanged[input.index]{borrow.union(&initial[input.index].restricted(&when));}
+                else{borrow.inputs.insert_when(input,when);}
+            }
+            borrow
+        };
         let control=Arc::new(std::mem::take(&mut context.control_source));
         let mut producers=std::mem::take(&mut context.continues);
         producers.insert(0,std::mem::take(&mut context.entry));
         let producers:Arc<[LoopState]>=producers.into();
-        for (index,mut definition)in definitions.into_iter().enumerate(){
-            let input=LoopInput{level:scope,index};definition.inputs.remove(&input);
+        for (index,definition)in definitions.into_iter().enumerate(){
+            let input=LoopInput{level:scope,index};let definition=resolve(definition,&unchanged);
             unchanged[index]=definition==initial[index];
             let resource=match &context.view_inputs[index] {
                 InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone(),states:producers.clone(),control:control.clone()}),
@@ -164,23 +176,15 @@ impl Builder<'_> {
             self.view_model.loops.insert(input,view_contracts::LoopDefinition{borrow:definition,resource});
         }
         // 来源定义未改变的槽交回原入口；实际来源及存储版本变化保留原循环关系。
-        let resolve=|mut borrow:Borrow| {
-            let inputs=std::mem::take(&mut borrow.inputs);
-            for(input,when)in inputs.into_entries(){
-                if input.level==scope&&unchanged[input.index]{borrow.union(&initial[input.index].restricted(&when));}
-                else{borrow.inputs.insert_when(input,when);}
-            }
-            borrow
-        };
         let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
             for binding in environment.values_mut() {
                 if let Some(components)=binding.view_parts().map(|(ty,_)|view_contracts::components(ty)){
                     let proof=binding.view_proof_mut().unwrap();
                     let mut value=std::mem::take(proof);
-                    for component in components{let borrow=resolve(value.view_borrow(component));value=value.with_view_borrow(component,borrow);}
+                    for component in components{let borrow=resolve(value.view_borrow(component),&unchanged);value=value.with_view_borrow(component,borrow);}
                     *proof=value;
                 }
-                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data)))).collect::<BTreeMap<_,_>>();
+                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data),&unchanged))).collect::<BTreeMap<_,_>>();
                 match binding {
                     Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.handle.proof=data.handle.proof.clone().with_view_borrow(0,value);}}
                     Binding::OwnedValue(value)=>{
