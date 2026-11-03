@@ -66,7 +66,7 @@ AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得
 
 AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，原Object可显式保存独立`.blcf`，`--observations <ranges.blcf>`匹配后交接普通函数／辅助代码／对齐／字面量完整分区；无材料保持未分类，最终PE另行交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
 
-AI可用`bc spirv <module.spv>`或compiler SDK的`spirv::module_json`只读取得原单模块全部指令、偏移、原字、类型／结果／操作数ID、入口与字面量位模式；不重编或执行GPU。SPIR-V仍是中间表示，全映像辅助模块聚合尚未接入，见[单模块结构查询](Docs/BLanguage.md#原spir-v单模块的完整结构查询)。
+AI可用`bc spirv <module.spv>`或compiler SDK的`spirv::module_json`只读取得原单模块全部指令、偏移、原字、类型／结果／操作数ID、入口与字面量位模式；不重编或执行GPU。原ShaderCode／StageCode／ProgramImage的code_json保留全部主／辅助模块，bc build为每份.spv导出配对.spv.json；纯GPU可用`bc code <entry.blbi>`或`bc code --image <deployment.blri>`无源码查询，不要求CPU范围材料。SPIR-V仍是中间表示，见[单模块结构查询](Docs/BLanguage.md#原spir-v单模块的完整结构查询)。
 
 `bc image <entry.blbi> -o <deployment.blri>`直接导出原CPU／GPU执行映像，原构建输入记录与缓存保持；关闭compiler功能的Rust运行SDK可独立装入并执行，见[部署映像](Docs/BLanguage.md#构建记录与可部署执行映像)。
 

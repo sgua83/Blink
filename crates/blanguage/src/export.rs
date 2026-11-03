@@ -21,11 +21,13 @@ fn native_file(path: &Path, stem: &str, code: &NativeCode, relocations: bool) ->
     Ok(())
 }
 fn shader_file(path: &Path, stem: &str, words: &[u32]) -> Result<()> {
+    let facts = blanguage::spirv::module_json(words)?;
     let bytes = words
         .iter()
         .flat_map(|w| w.to_le_bytes())
         .collect::<Vec<_>>();
     std::fs::write(path.join(format!("{stem}.spv")), bytes)?;
+    std::fs::write(path.join(format!("{stem}.spv.json")), facts)?;
     Ok(())
 }
 pub fn program(compiler: &blanguage::Compiler, program: &Program, out: &Path, stem: &str) -> Result<()> {

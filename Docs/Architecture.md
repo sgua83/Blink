@@ -99,7 +99,7 @@ B 的关键字与标识符区分大小写，与 C 一致。`value`、`Value` 和
 
 #### 当前基础与设计范围
 
-当前bc inputs及Rust build::input_facts直接查询实际COFF／BLBI保存的构建输入，bc layout／Ty布局JSON和接口布局查询交接实际类型与字段，bc ir及原编译结果的ir_json按需交接实际程序、普通函数和阶段IR，bc x64及native::instructions_json可解码明确指令字节范围，bc spirv及spirv::module_json可只读查询原单模块SPIR-V全部指令结构，生成期NativeCode／StageCode／ProgramImage的code_json沿原发射事实区分主／辅助代码、对齐和字面量；bc build已有.x64／.reloc／.spv／.layout导出，bc／blink已有静态CPU栈报告，运行库已有部分分配查询、GPU阶段计时与真实完成入口。这些基础不等于完整来源映射、平台符号、运行控制、可编译观察、明确方案及实验接口已实现。GPU时间戳默认关闭；GpuProgram／GpuTemplate通过with_timestamps显式请求，普通执行不要求队列支持时间戳。计时只复用原查询池及完成生命周期，未采集或无阶段返回None，实际零值保留在Some中。
+当前bc inputs及Rust build::input_facts直接查询实际COFF／BLBI保存的构建输入，bc layout／Ty布局JSON和接口布局查询交接实际类型与字段，bc ir及原编译结果的ir_json按需交接实际程序、普通函数和阶段IR，bc x64及native::instructions_json可解码明确指令字节范围，bc spirv及spirv::module_json可只读查询原单模块SPIR-V全部指令结构，生成期NativeCode／StageCode／ProgramImage的code_json沿原发射事实区分主／辅助代码、对齐和字面量；bc build已有.x64／.reloc／.spv及其配对.spv.json／.layout导出，bc／blink已有静态CPU栈报告，运行库已有部分分配查询、GPU阶段计时与真实完成入口。这些基础不等于完整来源映射、平台符号、运行控制、可编译观察、明确方案及实验接口已实现。GPU时间戳默认关闭；GpuProgram／GpuTemplate通过with_timestamps显式请求，普通执行不要求队列支持时间戳。计时只复用原查询池及完成生命周期，未采集或无阶段返回None，实际零值保留在Some中。
 
 下列逐项职责同时覆盖已交付基础和当前设计目标，实际支持按规范及原生事实区分；未完成范围唯一在Issues，闭合范围及历史只在FixedIssues。基础原生调试、可编程观察、机器方案和真实实验可以按依赖分别推进。CPU／GPU栈耗尽仍归C-021.7.3／.4，静态栈需求归C-024.1.1，数值与精度归C-004／C-024.2，域／节点程序及API归C-021.9／C-022，热更新归C-023；不复制职责。暂未实现的命令、候选语法、硬件和程序不得写成现有能力。
 
@@ -161,7 +161,7 @@ StageCode／ContinuationCode／SortCode按实际容器逐层交接，多个独�
 
 现有build::Compilation与resource::Module的code_observations／restore_code_observations只交接各原CPU代码的执行字段摘要及原尾部分区；Module按原前置合同分组以对应Compilation的programs／templates，各组及原阶段／延续／Sort容器顺序保持。摘要消费原NativeCode执行编码，不含源码、SDK或工具链身份；匹配只说明同一执行编码，不证明来源、指令安全或硬件运行。数量、匹配及范围完整覆盖在任何写入前核对，成功整体交回原tail_regions，错误不部分改写。材料归调用者，无材料的缓存或部署值明确缺失，不自动重编；BLBI1／BLRI22执行编码与运行角色不消费材料，纯GPU不伪造CPU范围。
 
-bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_facts在Compiler初始化前沿原编解码恢复并调用同一native查询，不读源码、创建驱动／执行内存或运行代码。JSON保留原programs／templates或images索引，CPU交接完整原查询，GPU明确not_supported，各映像仍是相对地址；输出归调用者，不持有执行资源。SDK捕获由生成结果的真实调用方显式请求，现有bc build的JSON不冒称持久材料。规范见[保存／恢复合同](BLanguage.md#保存和恢复可选cpu范围材料)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-2)。
+bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_facts在Compiler初始化前沿原编解码按显式可选CPU材料恢复并调用原CPU／GPU查询，不读源码、创建驱动／执行内存或运行代码。JSON保留原programs／templates或images索引，CPU交接完整原查询，GPU交接同一ProgramImage的完整SPIR-V结构；CPU地址与GPU模块偏移各自相对，不混成装载现场；输出归调用者，不持有执行资源。SDK捕获由生成结果的真实调用方显式请求，现有bc build的JSON不冒称持久材料。规范见[保存／恢复合同](BLanguage.md#保存和恢复可选cpu范围材料)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-2)。
 
 <a id="tool-5-3"></a>
 
@@ -191,27 +191,27 @@ bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_fa
 
 ##### SPIR-V实际指令的完整结构导出
 
-原StageCode实际words及已有.spv交接本项目实际生成的SPIR-V全部指令、字偏移、类型／结果引用及入口，覆盖真实辅助shader，不把中间代码标作最终GPUISA；驱动最终代码仍独立归.26。单模块标准格式解码与原全映像容器交接可分别完成，全部闭合才完成父项，不能用一份文件查询冒称完整GPU映像已接入。查询借用原编译结果或产物，输出／临时内存归调用者，不改变原代码、所有权、生命周期或完成语义；受工具原则1、2、4、6、8约束，[完整范围](Issues.md#c-021-7-9-6)。
+原StageCode实际words及已有.spv交接本项目实际生成的SPIR-V全部指令、字偏移、类型／结果引用及入口，覆盖真实辅助shader，不把中间代码标作最终GPUISA；驱动最终代码仍独立归.26。单模块标准格式解码与原全映像容器交接可分别完成，全部闭合才完成父项，不能用一份文件查询冒称完整GPU映像已接入。查询借用原编译结果或产物，输出／临时内存归调用者，不改变原代码、所有权、生命周期或完成语义；受工具原则1、2、4、6、8约束，[已闭合范围](FixedIssues.md#c-021-7-9-6)。
 
 <a id="tool-6-1"></a>
 
 **原SPIR-V模块的完整结构解码**
 
-原words／文件字节由调用者拥有，compiler只读解码标准格式，按原指令顺序输出模块头、全部原指令字、word／字节偏移、opcode、结果／类型ID、原操作数字与其格式角色、字符串和入口；位模式不转JSON浮点，未知状态不猜。使用optional rspirv的Parser／Consumer消费标准语法，公开接口不暴露其私有类型，不经它构造／汇编／修改代码，不替代原发射器或新增图／调度／资源拥有者。依赖仅属compiler观察角色，不进入普通执行角色；许可沿现有LICENSE及发行交接。查询不读取B源、创建Compiler／驱动、运行代码或保活其他消费者，输出独立归调用者。结构解析不证明完整语义有效、实际硬件支持或GPU执行；错误交接真实位置和原因，位置未取得明确未知，不能跳过未知指令拼出成功。现有`spirv::module_json(&[u32])`返回独立JSON字符串，DecodeError交接offset_words和reason；`bc spirv <module.spv>`在Compiler初始化前读取单个小端文件，完整成功才输出，失败只交接错误。模块头五个原word全部保留，逐指令及逐操作数的原字、偏移和引用可完整还原；64位字面量保留十六进制位模式，GLSL.std.450扩展名按实际集合／编号解释。位置是已知模块头或失败指令起点，不能当作更细的操作数现场。当前解析支持由实际标准语法版本决定，未知opcode、解析未支持或损坏直接失败；无已知扩展名明确null，不猜硬件语义。规范见[单模块查询](BLanguage.md#原spir-v单模块的完整结构查询)，[已闭合范围](FixedIssues.md#c-021-7-9-6-1)；原全映像及.spv.json交接仍由.2完成。
+原words／文件字节由调用者拥有，compiler只读解码标准格式，按原指令顺序输出模块头、全部原指令字、word／字节偏移、opcode、结果／类型ID、原操作数字与其格式角色、字符串和入口；位模式不转JSON浮点，未知状态不猜。使用optional rspirv的Parser／Consumer消费标准语法，公开接口不暴露其私有类型，不经它构造／汇编／修改代码，不替代原发射器或新增图／调度／资源拥有者。依赖仅属compiler观察角色，不进入普通执行角色；许可沿现有LICENSE及发行交接。查询不读取B源、创建Compiler／驱动、运行代码或保活其他消费者，输出独立归调用者。结构解析不证明完整语义有效、实际硬件支持或GPU执行；错误交接真实位置和原因，位置未取得明确未知，不能跳过未知指令拼出成功。现有`spirv::module_json(&[u32])`返回独立JSON字符串，DecodeError交接offset_words和reason；`bc spirv <module.spv>`在Compiler初始化前读取单个小端文件，完整成功才输出，失败只交接错误。模块头五个原word全部保留，逐指令及逐操作数的原字、偏移和引用可完整还原；64位字面量保留十六进制位模式，GLSL.std.450扩展名按实际集合／编号解释。位置是已知模块头或失败指令起点，不能当作更细的操作数现场。当前解析支持由实际标准语法版本决定，未知opcode、解析未支持或损坏直接失败；无已知扩展名明确null，不猜硬件语义。规范见[单模块查询](BLanguage.md#原spir-v单模块的完整结构查询)，[已闭合范围](FixedIssues.md#c-021-7-9-6-1)；原全映像及.spv.json交接见下列.2职责。
 
 <a id="tool-6-2"></a>
 
 **原GPU映像全部实际shader的结构交接**
 
-StageCode／ShaderCode／ProgramImage是本次实际GPU模块集合的唯一容器；借用全部main、tail、scan_add、finish、dispatch、selector及sort原模块，保留阶段／字段／集合次序和各模块独立ID空间，用.1同一解码交接。现有export.rs沿同一.spv输出结构事实，不能另选集合编译路径、重建shader清单、复制IR或把未知模块省略成完整结果。不更改实际字／编译、调度、设备提交或完成资源，结果归调用者，原拥有者仍按最后真实消费者结束。容器查询与逐文件导出是两个独立结果，分别按下列职责实现；全部闭合才完成本父项，[未完成范围](Issues.md#c-021-7-9-6-2)。
+StageCode／ShaderCode／ProgramImage是本次实际GPU模块集合的唯一容器；借用全部main、tail、scan_add、finish、dispatch、selector及sort原模块，保留阶段／字段／集合次序和各模块独立ID空间，用.1同一解码交接。现有export.rs沿同一.spv输出结构事实，不能另选集合编译路径、重建shader清单、复制IR或把未知模块省略成完整结果。不更改实际字／编译、调度、设备提交或完成资源，结果归调用者，原拥有者仍按最后真实消费者结束。容器查询与逐文件导出是两个独立结果，分别按下列职责实现；全部闭合才完成本父项，[已闭合范围](FixedIssues.md#c-021-7-9-6-2)。
 
 <a id="tool-6-2-1"></a>
 
-**原GPU容器的完整结构查询。** 原ShaderCode／StageCode／ProgramImage借用自己的words与原字段／集合，以.1同一解码交接独立JSON；ShaderCode保留ranks，StageCode保留缺失可选字段与finish名称，ProgramImage按原阶段次序交接程序名，各模块拥有独立ID和模块内偏移。已保存BLBI／BLRI的原code查询在原装入及CPU范围材料恢复后消费同一GPU查询，CPU分区及外层接口保持，GPU不占CPU范围条目。出错保留原阶段／字段／sort索引和模块内位置，不创建另一图、模块清单或执行状态；原编码、资源及完成不变，结果与临时解析归调用者。当前待实现，沿.2.1独立交付。
+**原GPU容器的完整结构查询。** 原ShaderCode／StageCode／ProgramImage借用自己的words与原字段／集合，以.1同一解码交接独立JSON；ShaderCode保留ranks，StageCode保留缺失可选字段与finish名称，ProgramImage按原阶段次序交接程序名，各模块拥有独立ID和模块内偏移。已保存BLBI／BLRI的原code查询在原装入后消费同一GPU查询；build::code_facts(path,Option<&[u8]>)及image_code_facts(execution,Option<&[u8]>)只在Some时沿原CPU范围恢复，GPU不依赖或占用CPU范围条目，CPU缺失范围仍明确失败。JSON外层kind为build_code／execution_image_code，各项保留原索引和明确target。出错保留原阶段／字段／sort索引和模块内位置，不创建另一图、模块清单或执行状态；原编码、资源及完成不变，结果与临时解析归调用者。现有三个原容器的code_json均属compiler功能；失败保留模块内offset_words并在reason加原stage／字段／sort索引，不部分输出。纯GPU的bc code及--image模式不需要--observations，CPU仍需真实匹配材料；查询不创建Compiler／驱动。精确字段见[规范](BLanguage.md#原gpu映像全部模块的结构查询)，[闭合记录](FixedIssues.md#c-021-7-9-6-2-1)。
 
 <a id="tool-6-2-2"></a>
 
-**现有SPIR-V文件的配对结构导出。** export.rs::shader_file只借用同一原words，先取得.1完整结构后按现有名字写.spv及.spv.json；主／辅助模块的选择、遍历和次序继续归原program，不另选编译路径。格式失败不写本次模块的部分成功JSON，真实文件I/O失败直接交接；文件归输出调用者，逐文件写入不提供目录事务，也不因此增加发布／恢复状态。当前待实现，沿.2.2独立交付。
+**现有SPIR-V文件的配对结构导出。** export.rs::shader_file只借用同一原words，先取得.1完整结构后按现有名字写.spv及.spv.json；主／辅助模块的选择、遍历和次序继续归原program，不另选编译路径。格式失败不写本次模块的部分成功JSON，真实文件I/O失败直接交接；文件归输出调用者，逐文件写入不提供目录事务，也不因此增加发布／恢复状态。现有bc build沿同一shader_file为全部实际主／辅助模块写配对文件，所有原名字与遍历保持；格式解码在本模块写入前完成，后续I/O失败仍如实交接已发生的逐文件效果。精确交接见[规范](BLanguage.md#原gpu映像全部模块的结构查询)，[闭合记录](FixedIssues.md#c-021-7-9-6-2-2)。
 
 <a id="tool-7"></a>
 

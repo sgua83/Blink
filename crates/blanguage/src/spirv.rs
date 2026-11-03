@@ -12,3 +12,5 @@ pub(crate) use codegen::program;
 mod decode;
 #[cfg(feature = "compiler")]
 pub use decode::{DecodeError, module_json};
+#[cfg(feature = "compiler")]
+mod facts;

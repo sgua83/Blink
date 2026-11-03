@@ -274,7 +274,7 @@ bc code target/cache/entry.blbi --observations target/entry.blcr
 bc code --image target/deployment.blri --observations target/entry.blcr
 ```
 
-SDK由`build::code_facts(path, material)`或显式BLRI模式的`build::image_code_facts(execution_bytes, material)`交接同一JSON。CLI在Compiler初始化前只读装入原编码并恢复材料，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_cpu_code，programs／templates保留各原索引；BLRI结果kind=execution_image_cpu_code，images保留原索引。CPU项target=cpu，code为原ProgramImage::code_json；混合集合中的GPU项code=null且status=not_supported，不把SPIR-V当x64。所有代码地址仍是各映像相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
+SDK由`build::code_facts(path, Some(material))`或显式BLRI模式的`build::image_code_facts(execution_bytes, Some(material))`交接同一JSON；纯GPU不需要CPU范围材料，传None并省略CLI的--observations即可。CLI在Compiler初始化前只读装入原编码，显式提供CPU材料时沿原恢复，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_code，programs／templates保留各原索引；BLRI结果kind=execution_image_code，images保留原索引。CPU项target=cpu，code为原native::ProgramImage::code_json；GPU项target=gpu，code为原spirv::ProgramImage::code_json，各模块独立ID／偏移。材料仍只配对CPU代码，纯GPU误提供CPU材料明确失败；CPU缺失材料不猜范围。所有代码地址／模块偏移均为相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
 
 
 ### 已保存COFF的物理结构与代码查询
@@ -329,7 +329,24 @@ compiler SDK的`spirv::module_json(words: &[u32]) -> Result<String, spirv::Decod
 
 每个operands条目保存格式kind、原offset_words／word_count／words，以及适用的id、bits、string、value、opcode或symbolic。32／64位字面量用精确十六进制bits保持整数、浮点负零等原位模式，不通过JSON浮点数重算；字符串按原UTF-8解释，原字仍完整保留。entry_points交接原执行模型数值／名称、entry_id、入口名和interface_ids。OpExtInst交接原集合ID、可知集合名、编号及可知扩展名；当前解释GLSL.std.450名称，未取得的名称为null，原编号与操作数仍保留。
 
-实现仅在compiler功能使用optional rspirv的标准格式Parser／Consumer；公开接口不暴露其类型，不调用builder／assembler／optimizer，不替代本项目SPIR-V生成器。运行SDK关闭compiler后不依赖它及其格式库。实际支持由所用语法版本决定，未知opcode／枚举、未支持编码或损坏明确失败，不跳过并拼接成功；结构解码不验证完整shader语义、实际设备能力或执行结果，SPIR-V不等同驱动最终GPU ISA。完整StageCode／ProgramImage的全部主／辅助模块聚合与现有bc build的.spv.json交接尚未实现，沿C-021.7.9.6.2推进；单文件查询不冒充整体能力。
+实现仅在compiler功能使用optional rspirv的标准格式Parser／Consumer；公开接口不暴露其类型，不调用builder／assembler／optimizer，不替代本项目SPIR-V生成器。运行SDK关闭compiler后不依赖它及其格式库。实际支持由所用语法版本决定，未知opcode／枚举、未支持编码或损坏明确失败，不跳过并拼接成功；结构解码不验证完整shader语义、实际设备能力或执行结果，SPIR-V不等同驱动最终GPU ISA。原StageCode／ProgramImage的完整模块查询及bc build配对导出见下节；单模块解码不额外重建shader集合。
+
+### 原GPU映像全部模块的结构查询
+
+compiler功能提供原`spirv::ShaderCode::code_json()`、`StageCode::code_json()`及`ProgramImage<P>::code_json()`，均返回`Result<String, spirv::DecodeError>`。它们只借用自己的原words／字段，逐模块复用module_json，不读B源、创建Compiler／设备、改写执行代码或重新生成shader；返回JSON及临时解析由调用者持有和释放，不延长原映像与GPU消费者寿命。
+
+ShaderCode结果kind=spirv_shader，保留原ranks布尔角色及module；ranks不是实测数值。StageCode结果kind=spirv_stage，main是原模块结构；tail／scan_add／dispatch／selector为原可选模块或null，finish为原name及module或null，sort为原ShaderCode次序的全部数组或null。不存在的sort与存在的空数组分别交接，不从固定长度截取辅助模块。ProgramImage结果kind=gpu_program_image，program为原程序名，offset_basis=each_module_relative，stages按原次序保留全部阶段。各模块的ID和偏移始终只属于该模块，不按相同ID数值合并跨模块关系。
+
+嵌套失败返回DecodeError，offset_words仍是失败模块内部的原位置，reason包含原stage[index]、字段或sort[index]；不输出缺项或部分成功JSON。查询原StageCode字段不证明它是实际GPU dispatch历史，结构可解析也不证明完整语义／设备可执行。运行角色关闭compiler后不包含这些查询或解码依赖，原BLRI执行编码不增加观察字段。
+
+```text
+bc code target/cache/gpu-entry.blbi
+bc code --image target/gpu-deployment.blri
+```
+
+保存映像的SDK沿原`build::code_facts(path, None)`／`build::image_code_facts(bytes, None)`查询纯GPU。若映像包含CPU代码，提供Some匹配CPU范围材料和原CLI --observations；未提供或错配均明确失败，不伪造CPU分类或空材料。原程序／模板及映像索引、前缀合同、执行代码和资源完成保持，查询不创建驱动或执行资源；结构查询不是不可信映像的执行授权。
+
+`bc build`的每份原`.spv`都由同一shader_file写同名`.spv.json`，JSON就是该份原words的module_json。原program的main、tail、add、dispatch、selection、finish／scatter／root-add及sort全部histogram／scatter／scan／tail／add／gather／key遍历与原文件名保持；本功能不另造模块目录、编译／调度路径或代码权威。先完整解码本模块，再写其.spv及.spv.json；真实I/O失败直接返回，前面已写的文件保持真实状态，逐文件导出没有目录事务、自动回滚或重放。结构输出可由AI独立保存，正式执行不要求携带它；来源映射及驱动最终ISA仍分别沿原.8和.26。
 
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：

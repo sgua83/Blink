@@ -61,7 +61,7 @@ fn capture<'a>(codes: impl Iterator<Item = &'a NativeCode>) -> Result<Vec<u8>> {
         ranges(code, tails)?;
         Ok(CodeRanges { identity: hash::digest(&code.bytes()), tails: tails.clone() })
     }).collect::<Result<Vec<_>>>()?;
-    if codes.is_empty() { return Err("no CPU code images; GPU range observations are not supported".into()); }
+    if codes.is_empty() { return Err("no CPU code images for CPU range observation material".into()); }
     let mut bytes = MAGIC.to_vec();
     bytes.extend(Observations { codes }.bytes());
     Ok(bytes)
@@ -82,7 +82,7 @@ fn restore<'a>(codes: impl Iterator<Item = &'a mut NativeCode>, bytes: &[u8]) ->
     let bytes = bytes.strip_prefix(MAGIC).ok_or("unsupported CPU range observation material")?;
     let material = Observations::from_bytes(bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut codes = codes.collect::<Vec<_>>();
-    if codes.is_empty() { return Err("no CPU code images; GPU range observations are not supported".into()); }
+    if codes.is_empty() { return Err("no CPU code images for CPU range observation material".into()); }
     if codes.len() != material.codes.len() { return Err("CPU observation code count does not match".into()); }
     for (code, saved) in codes.iter().zip(&material.codes) {
         if hash::digest(&code.bytes()) != saved.identity { return Err("CPU observation material does not match execution code".into()); }
@@ -124,23 +124,24 @@ fn image_json<P>(images: &[resource::Image<P>]) -> Result<String> {
         Ok(match image {
             resource::Image::Cpu(image) => format!("{{\"index\":{index},\"target\":\"cpu\",\"code\":{}}}",
                 image.code_json().map_err(|e| std::io::Error::other(e.to_string()))?),
-            resource::Image::Gpu(_) => format!("{{\"index\":{index},\"target\":\"gpu\",\"code\":null,\"status\":\"not_supported\"}}"),
+            resource::Image::Gpu(image) => format!("{{\"index\":{index},\"target\":\"gpu\",\"code\":{}}}",
+                image.code_json()?),
         })
     }).collect::<Result<Vec<_>>>()?;
     Ok(format!("[{}]", values.join(",")))
 }
-/// Reads saved CPU facts for a BLBI without source, compiler workers, devices or code execution.
+/// Reads saved CPU ranges and original GPU modules without sources, workers or execution.
 /// Pairing checks equality, not authenticity; material must come from the original producer.
-pub fn code_facts(path: &Path, material: &[u8]) -> Result<String> {
+pub fn code_facts(path: &Path, material: Option<&[u8]>) -> Result<String> {
     let mut compilation = unsafe { super::load(path) }?;
-    compilation.restore_code_observations(material)?;
-    Ok(format!("{{\"kind\":\"build_cpu_code\",\"programs\":{},\"templates\":{}}}",
+    if let Some(material) = material { compilation.restore_code_observations(material)?; }
+    Ok(format!("{{\"kind\":\"build_code\",\"programs\":{},\"templates\":{}}}",
         image_json(&compilation.programs)?, image_json(&compilation.templates)?))
 }
 /// Reads an explicitly selected BLRI; no executable memory or runtime resource is created.
-pub fn image_code_facts(execution: &[u8], material: &[u8]) -> Result<String> {
+pub fn image_code_facts(execution: &[u8], material: Option<&[u8]>) -> Result<String> {
     let mut module = unsafe { resource::from_compiler_output(execution) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    module.restore_code_observations(material)?;
-    Ok(format!("{{\"kind\":\"execution_image_cpu_code\",\"images\":{}}}", image_json(&module.images)?))
+    if let Some(material) = material { module.restore_code_observations(material)?; }
+    Ok(format!("{{\"kind\":\"execution_image_code\",\"images\":{}}}", image_json(&module.images)?))
 }
