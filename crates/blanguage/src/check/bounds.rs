@@ -2646,11 +2646,15 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                         }
                     });
                     if scalar == Scalar::U32 && op == "-" {
-                        let origins = b.component_origins(bi);
+                        let left_origins = a.component_origins(ai);
+                        let right_origins = b.component_origins(bi);
                         if let Some(minimum) = a.proof.domains(ai).into_iter().filter_map(|domain| match domain {
-                            IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) if origins.contains(&base) => Some(distance),
+                            IndexDomain::Lower(base, distance) | IndexDomain::Offset(base, distance) if right_origins.contains(&base) => Some(distance),
                             _ => None,
-                        }).max() { return range.restrict(Bits::from(minimum), Bits::from(u32::MAX)); }
+                        }).chain(b.proof.domains(bi).into_iter().filter_map(|domain| match domain {
+                            IndexDomain::Upper(limit, distance) if left_origins.contains(&limit) => Some(distance),
+                            _ => None,
+                        })).max().filter(|&distance| distance != 0) { return range.restrict(Bits::from(minimum), Bits::from(u32::MAX)); }
                     }
                     range
                 })
