@@ -2284,7 +2284,7 @@ pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Defin
     }
 }
 impl Builder<'_> {
-    pub(super) fn unknown_element_model(&mut self,ty:&Ty)->Box<returns::Returned>{
+    pub(super) fn unknown_element_model(&self,ty:&Ty)->Box<returns::Returned>{
         let mut proof=bounds::Proof::default();
         for(component,(scalar,_))in ty.components.iter().enumerate(){
             proof.append(&Value{ty:Ty::scalar(*scalar),regs:vec![component],proof:bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(component)),uniform:false,literal:false,constant:None});

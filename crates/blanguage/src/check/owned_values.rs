@@ -352,7 +352,7 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn template_returned(&mut self, mut value: Value, available: bool) -> Returned {
+    pub(super) fn template_returned(&self, mut value: Value, available: bool) -> Returned {
         if value.ty.dataset.is_none(){value.proof.retain_view_borrows(&value.ty);}
         if let Some(element) = value.ty.dataset.as_deref() {
             let mut handle = self.value_component(&value, 0);
@@ -413,20 +413,25 @@ impl Builder<'_> {
                 }));
             }
             for index in 0..value.ty.variants.len() {
-                let payload = self.variant_payload(&value,index);
-                payloads[index] = Some(Box::new(match payload {
-                    Some(value) => self.template_returned(value, available),
-                    None => Returned::Unit,
-                }));
+                let ty = &value.ty.variants[index].ty;
+                let offset = ir::align_up(4, value.ty.align);
+                let components: Vec<_> = ty.components.iter().map(|(_,at)| {
+                    value.ty.components.iter().position(|(scalar,word)| *word <= offset + at && offset + at < word + scalar.size()).unwrap()
+                }).collect();
+                let mut proof = value.projected_proof(&components);
+                for (component, source) in components.iter().enumerate() {
+                    if ty.components[component] != (value.ty.components[*source].0, value.ty.components[*source].1 - offset) {
+                        proof.forget_value(&[component], components.len());
+                    }
+                }
+                let payload = Value { ty: (**ty).clone(), regs: components.iter().map(|i|value.regs[*i]).collect(),
+                    proof, uniform: value.uniform, literal: false, constant: None };
+                payloads[index] = Some(Box::new(self.template_returned(payload, available)));
             }
             Returned::OwnedValue(Box::new(OwnedValuePayload {
                 value,
                 payloads,
-                ownership: if available {
-                    Ownership::Owned
-                } else {
-                    Ownership::Moved
-                },
+                ownership: Ownership::Owned,
                 place: None, declaration: 0,
             }))
         } else if value.ty.name == "void" {

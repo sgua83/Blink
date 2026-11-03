@@ -245,7 +245,7 @@ pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
                                 .ty
                                 .components
                                 .iter()
-                                .position(|(_, word)| *word == offset + at)
+                                .position(|(scalar, word)| *word <= offset + at && offset + at < word + scalar.size())
                                 .unwrap();
                             value.value.regs[component]
                         })
