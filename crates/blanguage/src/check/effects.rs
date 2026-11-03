@@ -6,11 +6,14 @@ use sources::{Local, Scope};
 type ComponentProjection = (Ty, Vec<Vec<usize>>);
 
 #[derive(Clone, Copy)]
-struct Write<'e> {
-    place: &'e Expr,
-    call: Option<&'e Expr>,
-    contents: bool,
-    iterator: Option<(&'e str, &'e Expr)>,
+enum Write<'e> {
+    Position {
+        place: &'e Expr,
+        call: Option<&'e Expr>,
+        contents: bool,
+        iterator: Option<(&'e str, &'e Expr)>,
+    },
+    External(&'e Expr),
 }
 
 impl Builder<'_> {
@@ -143,7 +146,11 @@ impl Builder<'_> {
             ExprKind::Name(name)
                 if !writes
                     .iter()
-                    .any(|write| !write.contents && (assigned_root(write.place) == Some(name)||address_write(write.place))) =>
+                    .any(|write| match write {
+                        Write::External(_)=>true,
+                        Write::Position{contents:false,place,..}=>assigned_root(place)==Some(name)||address_write(place),
+                        _=>false,
+                    }) =>
             {
                 match self.env.get(name) {
                     Some(Binding::Value(value)) if value.ty == Ty::scalar(Scalar::U32) => {
@@ -234,10 +241,8 @@ impl Builder<'_> {
                         .proof
                         .known_identity(0)
                         .is_some_and(|id| self.application_borrowed(id))
-                    && writes.iter().any(|write| {
-                        !write.contents
-                            && matches!(&write.place.kind, ExprKind::Name(target) if target == name)
-                    }))
+                    && writes.iter().any(|write| matches!(write,
+                        Write::Position{contents:false,place,..} if matches!(&place.kind, ExprKind::Name(target) if target == name))))
                 .then(|| name.clone())
             })
             .collect();
@@ -256,20 +261,25 @@ impl Builder<'_> {
         for (name, binding) in &self.env {
             if let Some(owner) = binding.stored_place() {
                 for write in writes {
-                    let projection = if write.contents {
-                        self.application_write_projection(write.place, &owner)
-                    } else {
-                        self.written_projection(write.place, name, &owner, write.iterator, writes)?
+                    let components = match *write {
+                        Write::External(_)=>vec![(0..owner.ty().components.len()).collect()],
+                        Write::Position{place,contents,iterator,..}=>{
+                            let projection=if contents {self.application_write_projection(place,&owner)}
+                                else {self.written_projection(place,name,&owner,iterator,writes)?};
+                            projection.map(|(_,components)|components).unwrap_or_default()
+                        },
                     };
-                    if let Some((_, components)) = projection {
-                        for component in components.into_iter().flatten() {
-                            modified.entry(name.clone()).or_default().insert(component);
-                        }
+                    for component in components.into_iter().flatten() {
+                        modified.entry(name.clone()).or_default().insert(component);
                     }
                 }
             }
         }
-        let raw=writes.iter().any(|write|!write.contents&&address_write(write.place));
+        let raw=writes.iter().any(|write|match write {
+            Write::External(_)=>true,
+            Write::Position{contents:false,place,..}=>address_write(place),
+            _=>false,
+        });
         for (name, binding) in &mut self.env {
             if let Some(components) = modified.get(name) {
                 let components: Vec<_> = components.iter().copied().collect();
@@ -277,7 +287,10 @@ impl Builder<'_> {
                     for(offset,field)in storage.ty().borrow_fields() {
                         if field.is_address() {
                             let component=storage.ty().components.iter().position(|(_,at)|*at==offset).unwrap();
-                            if components.contains(&component){*proof=std::mem::take(proof).with_view_sources(component,BTreeSet::from([view::Source::External]));}
+                            if components.contains(&component){
+                                let borrow=proof.view_borrow(component).joined(view::Borrow::source(view::Source::External));
+                                *proof=std::mem::take(proof).with_view_borrow(component,borrow);
+                            }
                         }
                     }
                 }
@@ -334,9 +347,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let Some(function) = &ty.function else {
             return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值");
         };
+        writes(Write::External(call));
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
-                writes(Write { place: arg, call: Some(call), contents: false, iterator: None });
+                writes(Write::Position { place: arg, call: Some(call), contents: false, iterator: None });
             }
         }
         Ok(())
@@ -354,7 +368,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             }
             ExprKind::Call(name, args) | ExprKind::Cooperate(name, _, args) | ExprKind::Specialize(name, _, args) => {
                 if name == "address_of" && let [place] = args.as_slice() {
-                    writes(Write { place, call: Some(expr), contents: false, iterator: None });
+                    writes(Write::Position { place, call: Some(expr), contents: false, iterator: None });
                 }
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
                 if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
@@ -362,9 +376,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     let record = matches!(expr.kind, ExprKind::Specialize(..))
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
+                        if self.world.functions[&key].function.c_abi {writes(Write::External(expr));}
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
-                                writes(Write { place: arg, call: Some(expr), contents: param.ty.dataset, iterator: None });
+                                writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset, iterator: None });
                             }
                         }
                     }
@@ -389,7 +404,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     self.bindings.push((name, ty.as_ref().map_or(Local::Inferred(expr), Local::Typed)));
                 }
                 StmtKind::Assign(lhs, _, rhs) => {
-                    writes(Write { place: lhs, call: None, contents: false, iterator: None });
+                    writes(Write::Position { place: lhs, call: None, contents: false, iterator: None });
                     self.writes_expression(lhs, writes)?;
                     self.writes_expression(rhs, writes)?;
                 }
@@ -412,7 +427,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     if let Some(end) = end { self.writes_expression(end, writes)?; }
                     self.bindings.push((name, if end.is_some() { Local::Range } else { Local::Element(start) }));
                     self.writes_statements(body, &mut |mut write| {
-                        if end.is_none() && assigned_root(write.place) == Some(name) { write.iterator = Some((name, start)); }
+                        if let Write::Position{place,iterator,..}=&mut write
+                            && end.is_none() && assigned_root(place)==Some(name) {*iterator=Some((name,start));}
                         writes(write);
                     })?;
                     self.bindings.pop();
@@ -439,18 +455,20 @@ fn statement_writes<'e>(builder: &Builder<'_>, code: &'e [Stmt], writes: &mut dy
 pub(super) fn value_writes<'e>(builder: &Builder<'_>, body: &'e [Stmt]) -> Result<Vec<&'e Expr>> {
     let mut values = Vec::new();
     statement_writes(builder, body, &mut |write| {
-        if !write.contents && write.iterator.is_none() { values.push(write.place); }
+        if let Write::Position{contents:false,iterator:None,place,..}=write {values.push(place);}
     })?;
     Ok(values)
 }
 pub(super) fn expression_assignments(builder: &Builder<'_>, expr: &Expr, names: &mut BTreeSet<String>) -> Result<()> {
     expression_writes(builder, expr, &mut |write| {
-        if !write.contents && let Some(root) = assigned_root(write.place) { names.insert(root.to_owned()); }
+        if let Write::Position{contents:false,place,..}=write
+            && let Some(root)=assigned_root(place) {names.insert(root.to_owned());}
     })
 }
 pub(super) fn assigned_names(world: &World, definition: &Definition, code: &[Stmt], names: &mut BTreeSet<String>) -> Result<()> {
     Scope::declared(world, definition).writes_statements(code, &mut |write| {
-        if !write.contents && let Some(root) = assigned_root(write.place) { names.insert(root.to_owned()); }
+        if let Write::Position{contents:false,place,..}=write
+            && let Some(root)=assigned_root(place) {names.insert(root.to_owned());}
     })
 }
 fn contains_expression(root: &Expr, selected: &Expr) -> bool {
@@ -549,12 +567,16 @@ fn join_numeric_paths(a: Option<NumericEffect>, b: Option<NumericEffect>) -> Opt
 }
 impl Builder<'_> {
     fn numeric_write(&self, write: Write<'_>, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<bool> {
-        let projection = if write.contents { self.application_write_projection(write.place, owner) }
-            else { self.written_projection(write.place, name, owner, write.iterator, writes)? };
+        let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
+        let projection = if contents { self.application_write_projection(place, owner) }
+            else { self.written_projection(place, name, owner, iterator, writes)? };
         Ok(projection.is_some_and(|(_,parts)|parts.iter().any(|part|part.contains(&component))))
     }
     fn numeric_expression_effect(&self, expr: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
-        for write in writes.iter().filter(|write| write.call.is_some_and(|call| contains_expression(expr, call))) {
+        for write in writes.iter().filter(|write|match write {
+            Write::External(call)=>contains_expression(expr,call),
+            Write::Position{call,..}=>call.is_some_and(|call|contains_expression(expr,call)),
+        }) {
             if self.numeric_write(*write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); }
         }
         Ok(NumericEffect::shift(0))
@@ -620,7 +642,10 @@ impl Builder<'_> {
                 StmtKind::Break|StmtKind::Return(_)=>None,
                 StmtKind::While(..)|StmtKind::For(..)|StmtKind::Parallel(..)=>{
                     let mut effect=NumericEffect::shift(0);
-                    for write in writes.iter().filter(|write| contains_statement(statement, write.call.unwrap_or(write.place))) {
+                    for write in writes.iter().filter(|write|contains_statement(statement,match write {
+                        Write::External(call)=>call,
+                        Write::Position{call,place,..}=>call.unwrap_or(place),
+                    })) {
                         if self.numeric_write(*write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}
                     }
                     Some(before.then(effect))

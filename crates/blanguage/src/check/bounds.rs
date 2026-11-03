@@ -316,7 +316,8 @@ impl Proof {
         for (offset,field) in ty.borrow_fields() {
             if field.is_address() {
                 let component=ty.components.iter().position(|(_,at)|*at==offset).unwrap();
-                self=self.with_view_sources(component,BTreeSet::from([view::Source::External]));
+                let borrow=self.view_borrow(component).joined(view::Borrow::source(view::Source::External));
+                self=self.with_view_borrow(component,borrow);
             }
         }
         self

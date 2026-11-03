@@ -491,13 +491,7 @@ impl ReferenceAddress {
     }
 }
 impl Builder<'_> {
-    pub(super) fn external_write_values(&mut self,address:&ReferenceAddress) {
-        let external=match address {
-            ReferenceAddress::External{..}=>true,
-            ReferenceAddress::Borrowed{borrow,..}=>external_memory(borrow),
-            _=>false,
-        };
-        if !external{return;}
+    pub(super) fn external_write_values(&mut self) {
         for binding in self.env.values_mut() {
             if let Some((proof,uniform,owner))=binding.proof_storage() {
                 proof.forget_value(&(0..owner.ty().components.len()).collect::<Vec<_>>(),owner.ty().components.len());
@@ -585,6 +579,7 @@ impl Builder<'_> {
     }
     pub(super) fn call_address_memory(&mut self,borrow:view::Borrow,span:Span)->Result<Option<usize>> {
         if borrow.empty(){return Ok(None);}
+        if external_memory(&borrow) {self.external_write_values();} else {
         let positions=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source {
             view::Source::Position(origin)if origin.writable=>origin.positions.iter().cloned().collect::<Vec<_>>(),
             _=>Vec::new(),
@@ -602,6 +597,7 @@ impl Builder<'_> {
                 Binding::OwnedValue(owner)=>owner.invalidate_components(&components,None),
                 _=>{},
             }
+        }
         }
         let usage=self.view_model.uses.len();
         self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,span})?;

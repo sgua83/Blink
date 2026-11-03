@@ -298,7 +298,7 @@ impl Builder<'_> {
         let mut written = Vec::new();
         let mut held = Vec::new();
         let mut output_inputs = BTreeMap::new();
-        let mut memory_borrow=view::Borrow::default();
+        let mut memory_borrow=view::Borrow::source(view::Source::External);
         for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
             let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
             let arg = match arg {
