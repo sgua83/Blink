@@ -486,7 +486,7 @@ impl Builder<'_> {
                 if !place.ty().owns_resources(){return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),None)));}
                 let packed=self.read_storage_value(&place,expr.span)?;
                 let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed) else{unreachable!()};
-                let borrow=self.data_borrow(&data.sources);
+                let borrow=self.data_value_borrow(&data.data);
                 for path in view::resource_paths(&value.value.ty){
                     let mut fields=data.projection.clone();fields.extend_from_slice(&path);
                     let child=view::owned_data_at_mut(&mut value,&path).unwrap();
@@ -507,7 +507,7 @@ impl Builder<'_> {
                     if !place.ty().owns_resources(){return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),owner)));}
                     let packed=self.read_storage_value(&place,expr.span)?;
                     let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed)else{unreachable!()};
-                    let borrow=self.data_borrow(&data.sources);
+                    let borrow=self.data_value_borrow(&data.data);
                     for path in view::resource_paths(&value.value.ty){
                         let mut fields=data.projection.clone();fields.extend_from_slice(&path);
                         let child=view::owned_data_at_mut(&mut value,&path).unwrap();

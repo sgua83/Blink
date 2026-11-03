@@ -530,7 +530,7 @@ impl Builder<'_> {
                 let ty=cooperative::parameter_type(self.world,&self.definition.function.params[*parameter],&self.definition)?;
                 base=Layout::of(&ty);words=external::reference_words(place,&self.locals).unwrap();Root::Parameter(*parameter)
             }
-            Place::ApplicationElement{sources,..}=>Root::Resource(self.data_borrow(sources)),
+            Place::ApplicationElement{resource,..}=>Root::Resource(resource.clone()),
             Place::Element{binding,..}=>Root::Buffer(*binding),
             Place::ViewElement{source,..}=>{
                 let mut borrow=view::Borrow::default();

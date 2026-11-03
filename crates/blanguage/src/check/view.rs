@@ -255,6 +255,7 @@ impl Binding {
         match self {Self::Value(v) if v.ty.contains_borrows()=>Some(&mut v.proof),Self::Owned(v) | Self::ViewElement { element: v, .. } if v.place.ty().contains_borrows()=>Some(&mut v.proof),Self::OwnedValue(v) if v.value.ty.contains_borrows()=>Some(&mut v.value.proof),_=>None}
     }
     pub(super) fn view_borrow(&self)->Borrow {
+        if let Self::DataReference(data)=self{return resource_borrow(&data.data);}
         if let Self::OwnedValue(value)=self && value.ownership==application::Ownership::Borrowed {
             let mut borrow=value.value.proof.typed_view_borrow(&value.value.ty);
             for data in value.resources(){borrow.union(&data.root.proof.view_borrow(0));}return borrow;
@@ -387,7 +388,7 @@ impl Builder<'_> {
         };
         proof.append(&pointer);
         proof.append(&data.length);
-        proof = proof.with_view_borrow(0, self.data_borrow(&data.sources));
+        proof = proof.with_view_borrow(0, self.data_value_borrow(&data.data));
         Value {
             proof,
             literal: false,

@@ -1146,6 +1146,7 @@ impl Builder<'_> {
             handle: data.root.regs[0],
             identity: data.root.identity(),
             sources: vec![data.root.identity()],
+            resource: view::resource_borrow(data),
             initialization: data
                 .initialization.clone()
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
@@ -1304,7 +1305,7 @@ impl Builder<'_> {
             if data.root.ty.components[0].0 == Scalar::U64 { data.root.clone() }
             else {
                 let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span)?.unwrap();
-                value.proof=value.proof.with_view_borrow(0,self.data_borrow(&data.sources));
+                value.proof=value.proof.with_view_borrow(0,self.data_value_borrow(&data.data));
                 value
             }
         } else { data.root.clone() };

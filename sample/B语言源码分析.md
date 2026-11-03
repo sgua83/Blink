@@ -1266,7 +1266,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3849`。
+源码节选：`crates/blanguage/src/check.rs:3850`。
 
 ```rust
         let binding = view.binding;
@@ -1325,7 +1325,11 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 返回子资源view或地址时，原Borrow源图的Element节点记录父来源及原类型中的资源字段路径。Borrow.resources取得实际子资源；Borrow.owners同时沿父拥有关系取得最后消费者依赖。普通载荷写入与拥有交接／覆盖／传输／释放消费各自对应关系，活动子view因而不会冻结无关的父head字段，也不会让父存储提前释放。原条件、循环、记录／数组和源码缺席模块交接这同一来源，返回的只读地址不能升级写权限。父拥有资源可与其子view一并放入拥有聚合返回；局部父资源若没有一并交付，引用不能逃逸。这些关系只在原编译期图和对象合同中交接，不增加运行时拥有表、资源副本或第二释放链。
 
-直接元素子dataset的长度／索引／view表达式、inout入口、位置移动赋值、含view元素的静态F构造，以及追加移动和尾部取出仍是各自待实现的能力；直接投影缺口见C-020.1.6.3.2.2，完整存储与最后清理不替代通用容器。
+直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。owned_records::indexed_application_reference先区分普通拥有位置与只读表达式；后者沿read_expression_type和read_aggregate读取实际Data.elements，不扩大普通值复制或移动。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
+
+Place::ApplicationElement在原编译期位置上保留实际资源Borrow，array字段投影及position_origin将它交给原地址来源。Argument::overlaps保留实际字段region比较，同时从普通值、临时返回值与read位置的实际类型Proof取得原Borrow::owners。同一调用中，子view／地址与父拥有值交接仍冲突；两个只读别名、独立父及无关head字段继续沿原规则使用。它们复用同一来源图和原调用检查，没有第二别名图、拥有表或释放链；实现源码缺席的对象／归档交接同一合同。
+
+直接语法不等于已经解决任意动态元数据关系。`if(rows[i].values.length>0)`后再次装载`rows[i].values[0]`，当前两个装载的数值身份尚未沿同一实际资源及存储版本保持，仍可能B137，见C-020.1.6.3.2.2.3。共同模型事实不表示不同元素的数值相等，不能用共同ElementComponent名称或新建装载缓存代替实际身份。inout入口、位置移动赋值、含view元素的静态F构造、追加移动和尾部取出也保持各自未完成范围；完整存储与最后清理不替代通用容器。
 
 普通CPU Invocation函数的read dataset借用交接真实地址、长度、u64记录步幅和字段偏移；Host及write／inout／atomic参数交接原Frame句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。对象合同与资源C ABI采用语言规范“已编译模块的资源ABI”中的现行编码版本。
 
@@ -1587,7 +1591,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:449`。
+源码节选：`crates/blanguage/src/check.rs:450`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;

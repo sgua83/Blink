@@ -44,19 +44,32 @@ impl Argument {
         if let(Some((a,words)),Some((b,other)))=(region(self),region(other)){
             return a.iter().any(|source|b.contains(source))&&words.iter().any(|word|other.contains(word));
         }
+        let owners=|borrow:view::Borrow|borrow.owners().sources.into_iter().filter_map(|source|if let view::Source::Data(id)=source{Some(id)}else{None}).collect::<Vec<_>>();
         let handles = |arg: &Self| match arg {
-            Self::BorrowedData(reference) => reference.sources.clone(),
+            Self::BorrowedData(reference) => {
+                let mut handles=reference.sources.clone();
+                handles.extend(owners(view::resource_borrow(&reference.data)));handles
+            },
             Self::ApplicationData(d) => vec![d.root.identity()],
-            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.root.identity()],returns::Returned::OwnedValue(value)=>value.handles(),returns::Returned::Value(v)=>v.proof.borrowed_views().into_iter().filter_map(|s|if let view::Source::Data(id)=s{Some(id)}else{None}).collect(),_=>Vec::new()},
+            Self::Scoped{value,..}=>match value {returns::Returned::Dataset(data)=>vec![data.root.identity()],returns::Returned::OwnedValue(value)=>value.handles(),returns::Returned::Value(v)=>owners(v.proof.typed_view_borrow(&v.ty)),_=>Vec::new()},
             Self::OwnedValue(r) => r.handles(),
             Self::OwnedReference{value,place,..} => {
                 let mut handles=value.handles();
-                if let Place::ApplicationElement{sources,..}=place.storage(){handles.extend(sources);}
+                if let Place::ApplicationElement{sources,resource,..}=place.storage(){
+                    handles.extend(sources);handles.extend(owners(resource.clone()));
+                }
                 handles
             },
-            Self::Value(v) => v.proof.borrowed_views().into_iter().filter_map(|s| if let view::Source::Data(id)=s {Some(id)}else{None}).collect(),
-            Self::Reference(OwnedBinding{place:p,..}) | Self::Atomic(p) => match p.storage() {
-                Place::ApplicationElement { sources, .. } => sources.clone(),
+            Self::Value(v) => owners(v.proof.typed_view_borrow(&v.ty)),
+            Self::Reference(owner) => {
+                let mut handles=owners(owner.proof.typed_view_borrow(owner.place.ty()));
+                if let Place::ApplicationElement{sources,resource,..}=owner.place.storage(){handles.extend(sources);handles.extend(owners(resource.clone()));}
+                handles
+            },
+            Self::Atomic(p) => match p.storage() {
+                Place::ApplicationElement { sources,resource,.. } => {
+                    let mut handles=sources.clone();handles.extend(owners(resource.clone()));handles
+                },
                 _ => Vec::new(),
             },
             _ => Vec::new(),

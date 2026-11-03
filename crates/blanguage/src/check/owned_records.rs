@@ -487,7 +487,11 @@ impl Builder<'_> {
         expr: &Expr,
     ) -> Result<Option<application::DataReference>> {
         if !self.owned_element_type(expr).is_some_and(|ty|ty.dataset.is_some()) {
-            return Ok(None);
+            if !self.read_expression_type(expr).is_some_and(|ty|ty.dataset.is_some()){return Ok(None);}
+            let Some((value,_owner))=self.read_aggregate(expr,None)?else{return Ok(None)};
+            let Returned::Dataset(data)=value else{unreachable!()};
+            self.application_available(&data,expr.span)?;
+            return Ok(Some(application::DataReference::direct(data)));
         };
         let Some(place) = self.place(expr)? else {
             return Ok(None);
@@ -496,7 +500,8 @@ impl Builder<'_> {
         let model=self.owned_place_model(&place);self.prepare_owned_read(&model);self.require_initialized(&place,expr.span)?;
         let Returned::Dataset(mut data)=model else{unreachable!()};self.application_available(&data,expr.span)?;
 
-        let sources=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.root.identity()}).collect();
+        let sources:Vec<_>=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.root.identity()}).collect();
+        data.root.proof=data.root.proof.clone().with_view_borrow(0,self.data_borrow(&sources));
         data=self.refresh_application_data(data,expr.span)?;data.ownership=Ownership::Borrowed;data.place=Some(place);
         Ok(Some(application::DataReference { data, sources, projection:Vec::new() }))
     }

@@ -259,6 +259,7 @@ enum Place {
         handle: Reg,
         identity: ValueIdentity,
         sources: Vec<ValueIdentity>,
+        resource: view::Borrow,
         initialization: Option<(Position, ownership::ApplicationIndex)>,
         index: Reg,
         index_range: (u32, u32),

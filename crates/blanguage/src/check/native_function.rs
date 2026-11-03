@@ -377,7 +377,8 @@ impl Builder<'_> {
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
                     residency::layout_argument(&mut layouts,index,reference.layout_source());
-                    reference.data.root.proof=reference.data.root.proof.with_view_borrow(0,self.data_borrow(&reference.sources));
+                    let borrow=self.data_value_borrow(&reference.data);
+                    reference.data.root.proof=reference.data.root.proof.with_view_borrow(0,borrow);
                     Argument::BorrowedData(reference)
                 },
                 other=>other,
