@@ -2314,11 +2314,34 @@ void shade(inout dataset<Sample> pixels, read texture2d albedo) on compute {
 }
 ```
 
-`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。纹理实际保存 RGBA32F、RGBA8 UNORM、RGBA8 sRGB、R8 UNORM、RG16 UNORM 或 RGB10A2 UNORM，坐标归一化，U／V 越界由资源逐轴选择 Clamp／Repeat；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。RGBA8 sRGB 在过滤前解码 RGB，alpha 仍为 UNORM；其他格式不进行显示传递转换，R8 返回 `(r,0,0,1)`，RG16 的两路 u16 分别除以 65535，返回 `(r,g,0,1)`；RGB10A2 的 RGB 三路各除以 1023，alpha 除以 3，均不预乘 alpha。
+`texture_sample(resource, float2 uv, f32 lod)` 返回 float4。通道格式及精度见下表。坐标归一化，U／V 越界由资源逐轴选择 Clamp／Repeat；texel 中心为 `(x+0.5)/width`、`(y+0.5)/height`。层内线性过滤，相邻 mip 线性混合；显式 LOD 限于 `[0,mip_count-1]`。mip 由资产明确提供，各层尺寸依次为前层除以 2 并至少为 1；允许合法的部分链，不隐式生成 mip。除 sRGB 的 RGB 通道外不进行显示传递转换。
 
-资源、参数数量、UV／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限 UV／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。GPU原生格式解码及过滤精度与 CPU f32 算术可有差异；同一算法和格式不保证跨目标逐位一致，不能据此承诺天然材质视觉等价。
+资源、参数数量、UV／LOD 类型、只读权限与不可存储性在编译期检查，分别使用 B239 或既有类型诊断 B124。当前跨后端数值约定以有限 UV／LOD 为前提，编译器尚无一般有限值证明，不增加逐次采样的运行时修正。采样的目标精度和允许差异见下节；返回 float4 不表示原生过滤的所有中间量都按 CPU f32 求值。
 
 源采样进入同一 TextureSample IR，结果与坐标／LOD 参与原活跃性、死值删除、静态函数内联和 tile 私有值交接。GPU 自研后端直接编码 `OpTypeImage`、`OpTypeSampledImage` 与 `OpImageSampleExplicitLod`，由 Vulkan sampled image／sampler 执行过滤；不经过 HLSL／GLSL 或第三方编译器。CPU 后端把采样降低为 mip 元数据读取、四点 texel 读取与标量插值，直接生成 x64 指令，没有逐 texel 的宿主回调。含采样的 map 当前使用标量范围代码，采样通道裁剪、重复采样复用与更宽 SIMD 仍需后端工作。
+
+### 采样数值与目标精度
+
+采样先解释原通道，再在每个被选 mip 内过滤，最后混合相邻 mip；输出是 float4，不再量化回资产通道位宽。六种格式的通道解释如下，均不预乘 alpha。格式解码和缺失通道遵循 [Vulkan 图像读取](https://docs.vulkan.org/spec/latest/chapters/images.html#images-reads)，sRGB 传递函数见 [Khronos Data Format 的 sRGB EOTF](https://registry.khronos.org/DataFormat/specs/1.3/dataformat.1.3.html)。
+
+| 资产格式 | 进入过滤的通道值 | 精度来源 |
+|---|---|---|
+| RGBA32F | 原四路 f32，不作显示传递转换 | 原浮点值与过滤算术；不引入 UNORM 编码间隔 |
+| RGBA8 UNORM | 四路分别为原 u8 除以 255 | 八位输入编码与归一转换，再叠加过滤算术 |
+| RGBA8 sRGB | RGB 先按 UNORM 解释再转线性，alpha 仍除以 255 | 八位输入、sRGB 解码及过滤算术分别贡献误差 |
+| R8 UNORM | `(r/255,0,0,1)` | 红通道八位输入及归一转换，缺失通道按固定值补齐 |
+| RG16 UNORM | `(r/65535,g/65535,0,1)` | 两路十六位输入及归一转换，不按八位格式精度处理 |
+| RGB10A2 UNORM | RGB 分别除以 1023，alpha 除以 3 | RGB 十位与 alpha 两位分别解释，不共用同一编码间隔 |
+
+CPU 由现有 f32 标量指令完成坐标运算、通道转换及插值，sRGB 幂运算沿原数学函数语义；不为模拟某块 GPU 而把轴分数或结果额外定点量化。GPU 使用同一原始格式的 Vulkan image／view，minFilter、magFilter 与 mipmapMode 均为 LINEAR，归一坐标、零 LOD bias、逐轴 Clamp／Repeat，关闭各向异性与深度比较；原图像、sampler 和最后消费者的所有权保持。
+
+GPU 的坐标与权重按 [Vulkan Sampling](https://docs.vulkan.org/spec/latest/chapters/textures.html) 定义：每个被选 mip 分别用其真实尺寸缩放归一坐标，再按 texel 中心定位相邻采样点。轴内分数保留的精度由所选物理设备的 subTexelPrecisionBits 表达，显式 LOD 及相邻 mip 的混合分数由 mipmapPrecisionBits 表达；两者是不同环节，见 [VkPhysicalDeviceLimits](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceLimits.html)。这些属性不表示所有设备采用同一个位数，也不表示把每个最终多轴／跨 mip 权重积直接舍入到同一网格就一定符合规范。轴与 LOD 分数恰可表示时，后续乘加及格式解码仍有各自精度要求。
+
+格式转换、过滤中间算术与 float4 输出还受 [Vulkan Numeric Representation and Computation](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-numerics) 的要求约束。该规范对着色器外浮点运算规定约十万分之一量级的单次运算精度，并明确源 texel 格式可以隐含限制表示／精度；这不是每次完整采样统一的绝对误差，也不能替代轴／mip 量化及具体格式规则。着色器内 f32 指令的精度和浮点控制不自动成为固定功能过滤器的中间算术保证；原始位的无损资产／传输亦不保证过滤保持 NaN 载荷、负零或次正规位型。
+
+同一算法、格式和输入不承诺 CPU／GPU 或不同设备逐位一致；允许差异仅来自上述实际格式与目标规范，不是任意误差许可。完整结果误差还与所选相邻 texel 的值、局部变化、mip 内容和实际运算有关，不能由某一个编码间隔或精度位数推得通用常数。当前没有跨目标严格一致的采样模式；未解决的原生过滤偏差仍见 [Issues C-003.2.4.1.2](Issues.md)，不能仅以“硬件精度”认定其合法。真实材质效果由消费者核对，不以本数值合同承诺天然材质视觉等价。
+
+### 原生纹理接口与寿命
 
 原生资源 API 是 `Texture2D::new(Vec<TextureMip>)`、`Texture2D::read/write` 和 `Device::upload_texture/download_texture`。CPU 资源通过 Arc 持有不可变 mip；`cpu::Bindings { datasets, textures }` 交给 `CpuProgram::run_owned` 或 `CpuTemplate::run`。GPU 上传返回可共享的 `vulkan::Texture`，使用 `vulkan::Bindings { datasets, accelerations, textures }`，普通程序与条件模板使用同一 submit／submit_after／submit_join 资源接口。资源数组顺序是各类参数在 `.h` 中的声明顺序；Vulkan set 0 依次放 dataset、acceleration、texture、执行器私有辅助项。CPU 集合范围摘要使用原私有槽，不把纹理描述误当摘要。
 
@@ -4331,7 +4354,7 @@ void split<const N:u32>(write dataset<A,N> first,write dataset<B,N> second) on c
 
 CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap 参与双线性及 mip 间过滤。Repeat 保留负坐标、整数周期及接缝两侧的贡献，不能只对 uv 取小数后继续钳制 tap。当前24字节 CPU 纹理描述符的第二个 u32 保存 U／V repeat 位；CPU 专用降低指令直接读取该资源描述符，仍生成原生算术与读取，不调用宿主采样函数。Vulkan 使用同一资源声明设置 VkSampler 的 U／V addressMode，SPIR-V 继续直接发出图像采样指令。
 
-`vulkan::Texture::address` 返回原上传模式，`download_texture` 的独立 CPU 快照保留该模式，后续显式上传另一个逻辑 Device 继续消费它。`.bltex` 只保存实际格式、像素与 mip；采样模式由实际资源／材质声明，不改写图像文件或改变旧资产解释。CPU 与硬件线性过滤的舍入精度不同，不保证逐 bit 相同。当前仅 Clamp／Repeat，镜像、边框色、各向异性、独立 sampler 类型及压缩格式仍未实现。
+`vulkan::Texture::address` 返回原上传模式，`download_texture` 的独立 CPU 快照保留该模式，后续显式上传另一个逻辑 Device 继续消费它。`.bltex` 只保存实际格式、像素与 mip；采样模式由实际资源／材质声明，不改写图像文件或改变旧资产解释。CPU／GPU 的采样精度与允许差异统一见[采样数值与目标精度](#采样数值与目标精度)。当前仅 Clamp／Repeat，镜像、边框色、各向异性、独立 sampler 类型及压缩格式仍未实现。
 
 
 ## 原生 texel 格式与存储所有权

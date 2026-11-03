@@ -1212,6 +1212,8 @@ CPU 存储连续，GPU 逻辑 dataset 沿当前页表及完整记录布局分页
 
 缓冲上传／清零和 AS 构建可以返回带真实完成点的资源，同队列消费者沿原依赖推进；只读纹理上传显式提交异步设备复制，完整图像读回为显式同步。GPU 存储可直接参与 BLAS／TLAS 构建及新版本 refit，更新持有旧 source 到实际完成，旧查询继续使用旧快照。纹理及 AS 的真实格式、布局、unsafe 前提和输入所有权由原生接口表达，见 [DeviceInstances.md](DeviceInstances.md)。
 
+纹理采样的通道解码、坐标／mip 分数量化、过滤算术及返回值精度统一由[语言规范的采样数值合同](BLanguage.md#采样数值与目标精度)定义；CPU 原生 f32 展开与 GPU 原生 sampled-image 过滤消费同一资源，资源保真不代表采样逐位相同。精度说明不改变原图像／sampler／最后消费者的所有权，也不增加软件替代采样或另一份像素权威。
+
 原只读纹理所有者同时提供Rust SDK二维与三维体资源：`Texture2D`／`TextureMip`和`Texture3D`／`TextureMip3D`各自以同一Arc保存不可变mip、原通道位模式及实际维度；体数据x连续、再y、再z，不建立图集或CPU解码镜像。二维资产写BLTEX v2，三维体资产写带dimension=3的BLTEX v3，各层拥有真实宽高深；文件与具体格式分开，定义见语言规范。`Device::upload_texture`与`upload_texture3d`复用同一原图像创建／传输主体，返回默认`vulkan::Texture<2>`与`Texture<3>`；同一Storage／Image／uploaded继续持有原生image、view、sampler及上传完成点。维度由Rust类型交接，当前二维采样绑定不接收三维句柄。创建处分别消费实际格式的过滤／传输位与同一format、imageType、tiling、usage、flags的图像能力，不能用全局二维尺寸或格式位近似三维可用范围；平台错误沿原Result返回。
 
 `download_texture`／`download_texture3d`沿同一原显式读回主体取得完整mip，三维复制使用真实extent.depth、逐轴缩小和原层间staging对齐，恢复原采样布局；没有原CPU像素缓存。上传交接后CPU资产可以结束，staging和图像仍由原Execution及最后真实消费者保持；克隆只延长同一所有者。三维体资产和GPU上传／读回已提供，B的`texture3d`、CPU三线性与SPIR-V三维采样仍沿[C-003.2.3／.4](Issues.md#c-003-2)继续，BLEngine Filmic LUT须由引擎实际采用，不能由体数据传输结果代替。CPU二维采样描述与原模块资源ABI不因Rust体资产接口而改变。
