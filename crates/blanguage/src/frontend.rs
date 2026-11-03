@@ -166,6 +166,21 @@ pub(crate) fn compile_module_on(
     })
 }
 impl Compiler {
+    /// Resolves a concrete value type using the original module/type checker, without codegen.
+    pub fn type_layout(&self, path: &Path, root: &Path, request: &str) -> Result<ir::Ty> {
+        self.ast(path, |worker| {
+            let source = Source { path: "<layout>".into(), text: request.into() };
+            let span = Span { start: 0, end: request.len() };
+            let name = parser::type_query(source.clone())?;
+            let (world, module) = read_world(path, root, None, worker, None, None)?;
+            let imports = &world.interfaces[&module].imports;
+            let value = world.ty(&name, &source, span, &module, imports)?;
+            if name.dataset {
+                let count = world.shape(&name.count, &source, span, &module, imports)?;
+                Ok(ir::Ty::owned_dataset(value, count))
+            } else { Ok(value) }
+        })
+    }
     pub fn compile(&self, path: &Path, root: &Path) -> Result<Compilation> {
         compile_module_on(self, path, root, true, None, None)
     }

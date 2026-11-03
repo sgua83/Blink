@@ -1,22 +1,7 @@
 //! AI query of the artifact's original input record; no Compiler or source loading.
 use blanguage::build::{Declaration, InputFacts, Selection};
 use std::{fmt::Write, path::Path};
-
-fn string(out: &mut String, value: &str) {
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c < ' ' => write!(out, "\\u{:04x}", c as u32).unwrap(),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
+use crate::json::string;
 fn bytes(out: &mut String, value: &[u8]) {
     out.push('"');
     for byte in value { write!(out, "{byte:02x}").unwrap(); }

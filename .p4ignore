@@ -8,6 +8,7 @@ Local/
 *.x64
 *.reloc
 *.layout
+*.layout.json
 *.blegeom
 *.ppm
 *.png

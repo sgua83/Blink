@@ -42,6 +42,8 @@ Formal releases are built every Sunday at 21:00 Beijing time from the latest sub
 
 AI can inspect an artifact's stored build request and source identities with `bc inputs <compiled.obj|entry.blbi>`. This JSON query neither reads current B sources nor recompiles the artifact. See [build input inspection](Docs/BLanguage.md#实际构建输入查询) for fields and identity scope; this command does not imply that complete debugging tools are available.
 
+Use `bc layout <module.h|module.b> <type> [-I module-root] [--field path]` for a JSON query of a concrete source type or static field. `bc build` also exports `.layout.json`; the SDK can inspect an existing execution interface without source compilation. See [type and field layout inspection](Docs/BLanguage.md#类型与字段布局的结构查询) for descriptor, element-storage, and resource-word boundaries.
+
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:
 
 ```powershell

@@ -38,6 +38,13 @@ pub(crate) fn entry(source: Source) -> Result<(String, Option<Vec<GenericArgumen
     parser.expect("")?;
     Ok((name, arguments))
 }
+pub(crate) fn type_query(source: Source) -> Result<TypeName> {
+    let tokens = lexer::lex(&source)?;
+    let mut parser = Parser { source, tokens, at: 0 };
+    let ty = parser.ty()?;
+    parser.expect("")?;
+    Ok(ty)
+}
 struct Parser {
     source: Source,
     tokens: Vec<Token>,

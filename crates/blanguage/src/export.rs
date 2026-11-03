@@ -1,7 +1,7 @@
 //! CLI 只导出编译器已经生成的完整程序映像，不另选集合／调度编译路径。
 use blanguage::{
     ast::Target,
-    ir::{Operation, Program},
+    ir::{Operation, Program, interface_layout_json},
     native::{ContinuationCode, NativeCode, StageCode as NativeStage},
 };
 use std::path::Path;
@@ -120,5 +120,6 @@ pub fn program(compiler: &blanguage::Compiler, program: &Program, out: &Path, st
         }
     }
     std::fs::write(out.join(format!("{stem}.layout")), layout)?;
+    std::fs::write(out.join(format!("{stem}.layout.json")), interface_layout_json(program))?;
     Ok(())
 }

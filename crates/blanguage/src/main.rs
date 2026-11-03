@@ -1,5 +1,7 @@
 mod export;
 mod input_facts;
+mod json;
+mod layout_facts;
 use std::{path::PathBuf, process::ExitCode};
 fn main() -> ExitCode {
     match run() {
@@ -46,7 +48,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if jobs.is_some() && cpus.is_some() { return Err("--jobs与--cpus选择一种编译资源声明".into()); }
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "Blink compiler\nbc --version\nbc inputs <compiled.obj|entry.blbi>\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
+            "Blink compiler\nbc --version\nbc inputs <compiled.obj|entry.blbi>\nbc layout <module.h|module.b> <type> [-I module-root] [--field path]\nGlobal compile options before command: [--jobs N | --cpus group:number,...] [--max-parameter-bytes N]\nbc -c <module.b> -o <output.obj> [-I module-root] [--entry main | --program name | --module] [--import module.obj|library.lib] [--instance function<args>] [--stack-report report.txt [--stack-budget bytes]]\nbc check <module.b> [module-root] [program<args>]\nbc build <module.b> <output-directory> [module-root] [program<args>]\nLink separately: blink <input.obj> -o <output.exe|output.dll>"
         );
         return Ok(());
     }
@@ -59,6 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let compiler = if let Some(bytes) = max_parameter_bytes { compiler.with_max_parameter_bytes(bytes) } else { compiler };
     let command = &args[0];
+    if command == "layout" { return layout_facts::print(&compiler, &args); }
     let path = PathBuf::from(args.get(1).ok_or("缺少 .b 文件")?);
     if command == "-c" {
         let parent = path.parent().unwrap();

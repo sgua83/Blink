@@ -184,6 +184,25 @@ size_of<T>()和align_of<T>()分别返回具体类型已有值表示的字节大�
 
 大小、对齐及数组步长分别使用原布局语义：size_of<float3>()为12、align_of<float3>()为16，size_of<array<float3,2>>()为32；不能把值字节范围自动圆整成另一份布局。记录stride及字段偏移仍由原Ty决定。已编译函数体交接常量和机器代码；公开接口中的查询表达式由支持该语法的消费者解析，原对象／资源编码版本不因本查询改变。
 
+## 类型与字段布局的结构查询
+
+`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`读取本次明确源码模块，沿原Parser、World和Ty取得具体值类型，以单个JSON对象输出。它不生成CPU／GPU代码、不创建运行资源，也不读取目标程序的运行值；源码／接口装入、可见性、泛型／const、布局和合同仍使用原规则。纯类型接口不需要空.b；有真实函数的模块继续遵守原实现装入规则。查询成功只说明本次类型描述可取得，不保证该类型在所有存储、调用或目标上均已能执行。
+
+```powershell
+bc layout src/types.h 'Row' -I src
+bc layout src/types.h 'array<Row,2>' -I src --field '[1].payload.c'
+```
+
+`--field`复用原Ty::field，支持嵌套字段、固定数组下标和显式变体载荷路径，返回相对根值的字节偏移；不存在或越界的路径直接报错。变体路径描述静态重叠布局，不表示该分支正在活动。查询不跨view／dataset解引用动态地址，也不求值用户函数。外层kind为type_layout，phase为checked_type，source_path／module_root是本次绝对来源，request、root_type、field及offset_bytes说明所选范围；源码查询不冒充旧产物的布局恢复。
+
+layout来自原Ty：name／kind、size_bytes、align_bytes、stride_bytes、类型／const实参、components、fields、variants、array、view、dataset与cleanup。字段偏移相对该层记录，变体输出实际discriminant和payload_offset_bytes，数组输出count和element_stride_bytes。view／dataset的值描述布局与element布局分开，dataset固定数量未确定时为null；类型本身不提供实际分配容量、地址、活动变体或资源寿命。
+
+components保留Ty的实际Scalar分量、字节偏移、宽度和覆盖的四字节资源字。resource_word_count是该值从相对字节零起的覆盖字数；first_resource_word／byte_in_word等同样相对当前值，不能把窄字段覆盖的同一字重复计为多份分配。嵌套位置需结合父偏移，实际地址和载荷长度仍由原运行所有者提供。带载荷变体的顶层components可包含判别字和载荷的原存储分量，具体声明类型在各variants中；四字节资源字与逻辑标量、CPU寄存器、SIMD lane和GPU物理寄存器分别理解。float3的size_bytes为12、align_bytes为16、stride_bytes为16，不能把对齐填充当成值字段。
+
+Rust API `Compiler::type_layout(path, root, request)`返回原Ty，`Ty::layout_json()`只序列化该值；`blanguage::ir::interface_layout_json(&program)`直接消费已有ProgramInterface，输出kind=interface_layout、原程序目标、uniform_bytes、buffer实际binding／access／stride／固定数量／元素布局，以及uniform原offset和类型。后者可用于已编译执行映像，既不重读源码也不调用Compiler，运行角色无需启用compiler功能。查询是独立只读函数，不增加ProgramInterface方法或虚表入口，不改变对象／资源编码或运行布局。
+
+`bc build`沿原完整生成路径在既有.layout之外导出.layout.json，其中是本次程序的buffer／uniform接口布局；该JSON不声称包含全部阶段、共享存储、栈或运行状态。已有.x64／.reloc／.spv／.layout继续按原职责输出；新增文件属于调用者指定的生成目录，正常应用执行不因此序列化布局或保留另一份状态。总体工具设计与剩余能力见Architecture对应职责及双台账。
+
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：
 

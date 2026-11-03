@@ -1,5 +1,7 @@
 use crate::ast::{Access, Target};
 use std::{collections::BTreeMap, num::NonZeroU64};
+mod layout;
+pub use layout::interface_layout_json;
 mod external;
 pub use external::{
     Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody, MemoryAccess, MemoryAlias,

@@ -12,5 +12,6 @@ target/
 *.x64
 *.reloc
 *.layout
+*.layout.json
 /Docs/Issues.md
 /Docs/FixedIssues.md
