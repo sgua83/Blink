@@ -92,6 +92,33 @@ result<u32,DecodeError> scalar_length_utf16(read dataset<u16> text) on cpu {
     return Ok(count);
 }
 
+result<view<u8>,SliceError> borrow_utf8(read dataset<u8> text,u32 start,u32 end) on cpu {
+    view<u8> selected=view<u8>(text,text.length,text.length);
+    u32 offset=0;
+    u32 count=0;
+    for(unit in 0..text.length){
+        if(unit<offset){continue;}
+        if(count==start){selected=view<u8>(text,unit,text.length);break;}
+        match(decode_utf8(text,unit)){
+            Ok(decoded){offset=decoded.next;}
+            Err(error){return Err(SliceError::Decode(error));}
+        }
+        count+=1;
+    }
+    u32 begin=offset;
+    for(unit in begin..text.length){
+        if(unit<offset){continue;}
+        if(count==end){selected=view<u8>(text,begin,unit);}
+        match(decode_utf8(text,unit)){
+            Ok(decoded){offset=decoded.next;}
+            Err(error){return Err(SliceError::Decode(error));}
+        }
+        count+=1;
+    }
+    if(start>end||end>count){return Err(SliceError::Range(ScalarRangeError(start,end,count)));}
+    return Ok(selected);
+}
+
 result<dataset<u8>,SliceError> slice_utf8(read dataset<u8> text,u32 start,u32 end) on cpu {
     dataset<u8> output=dataset<u8>(0);
     u32 offset=0;
