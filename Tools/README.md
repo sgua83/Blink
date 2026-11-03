@@ -29,7 +29,9 @@ pwsh -NoProfile -File ./Tools/PublishGit.ps1 -P4Client <本机实际client>
 
 `PublishBooksWiki.py` 只将 `sample/并行编程的艺术.md`、`sample/Blink和Rust混合编程.md`、`sample/B语言源码分析.md`、`sample/BLEngine源码分析.md` 的完整正文发布到 [GitHub Wiki](https://github.com/sgua83/Blink/wiki)。中文／英文书籍目录与侧栏提供阅读入口；书稿仍为中文。图片引用固定 Git 快照的公开资源，PDF 链接指向同一快照中原有成品，不向 Wiki 复制其他文档、规范、架构或内部双台账。书稿中的其他公开源码／文档链接仍指向原仓库；内部台账链接明确注明不公开，并提供公开 Issues 反馈入口。
 
-同步源是中央 `Mirror.git` 中远端 main 已确认的公开历史，选择最近涉及书稿、图片、PDF 及正文所引资源的提交，标明该快照的 VERSION、P4 编号与固定 Git 来源；无关代码提交不重复生成同一书稿。Wiki 是开发版书稿入口，不等同于正式发行 SDK；目录另外提供正式 Releases 链接，MD、配图与源码索引随实现实时维护；PDF只在周日正式发行时从固定的已提交书稿集中生成，不随日常Wiki或源码提交重建。用户 Home、B语言书籍及侧栏中，只有 `BEGIN Blink books navigation`／`END Blink books navigation` 包围的导航由脚本管理；其他内容保持原样。完整生成页带有来源标记，编辑应回到 P4 书稿；遇到同名用户页时停止，不替换其正文。
+同步源是中央 `Mirror.git` 中远端 main 已确认的公开历史，选择最近涉及书稿、导航源、README、图片、PDF 及正文所引资源的提交，标明该快照的 VERSION、P4 编号与固定 Git 来源；无关代码提交不重复生成同一书稿。Wiki 是开发版书稿入口，不等同于正式发行 SDK；目录另外提供正式 Releases 链接，MD、配图与源码索引随实现实时维护；PDF只在周日正式发行时从固定的已提交书稿集中生成，不随日常Wiki或源码提交重建。
+
+Wiki Home 的学习导航权威源为 `sample/wiki/Home.md`，与四本书同样从已公开快照读取，相对链接转为固定源码资源或原 Wiki 书页。修改该源后，下一次现有同步更新 Home 标记块；经用户授权移除初始默认欢迎语。Home、B语言书籍及侧栏只有 `BEGIN Blink books navigation`／`END Blink books navigation` 包围的导航由脚本管理，其他用户内容保留。原 Home／B语言书籍和四本书的地址、Home 原“B语言书籍／Blink books”标题锚点保持可用。完整生成书页带有来源标记，编辑应回到 P4 书稿；遇到同名用户书页时停止，不替换其正文。
 
 GUA 所有者在中央工作区采用已提交脚本后运行一次：
 

@@ -121,16 +121,20 @@ Program::new 准备所选后端，run 才执行算法。这里选择 Backend::Cp
 
 ### 1.6　下载 Blink，准备编译器
 
-安装 Git for Windows、Rust stable 的 MSVC 工具链，以及 Visual Studio 的“使用 C++ 的桌面开发”组件。打开 x64 Developer PowerShell：
+先下载并双击安装 [Windows x64 正式版 v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1) 的 `Blink-Setup-windows-x64.exe`，取得稳定 Blink 工具与源码 SDK。它们安装在 `%ProgramFiles%/Blink`，也是本书源码构建所需的稳定种子；默认编译器构建直接读取该目录的 `VERSION`、`bin/bc.exe` 与 `bin/blink.exe`。
+
+再安装 Git for Windows、Rust stable 的 MSVC 工具链，以及 Visual Studio 的“使用 C++ 的桌面开发”组件（x64 C++ 工具与 Windows SDK）。新开 x64 Developer PowerShell，先核对实际种子，再克隆并构建源码：
 
 ```powershell
+& "$env:ProgramFiles/Blink/bin/bc.exe" --version
+& "$env:ProgramFiles/Blink/bin/blink.exe" --version
 git clone `
     https://github.com/sgua83/Blink.git
 Set-Location Blink
 cargo build --workspace --release
 ```
 
-这条 cargo 命令构建 Blink 工具链。完成后，Blink 编译器位于 target/release/bc.exe。下面一直在这个 Blink 目录中操作。
+这条 cargo 命令使用已安装种子生成 B 引导模块，并构建 Blink 工具链。完成后，Blink 编译器位于 target/release/bc.exe；稳定种子保留在安装目录。下面一直在这个 Blink 目录中操作，后续 Rust 宿主构建也沿用上述前提。
 
 ### 1.7　编译与链接：把 B 做成 DLL
 
@@ -1626,9 +1630,11 @@ B 的普通 CPU 应用已支持通过 extern "C" 声明调用 Windows x64 DLL �
 
 ### A.1　构建 Blink 工具链
 
-先安装第一章所列工具，在 x64 Developer PowerShell 中执行：
+先按第 1.6 节安装稳定 Blink 正式版、Git、Rust MSVC 及 Windows 构建工具。稳定种子须位于 `%ProgramFiles%/Blink`；本附录和 Rust 宿主均沿用这份输入。在 x64 Developer PowerShell 中先检查，再构建：
 
 ```powershell
+& "$env:ProgramFiles/Blink/bin/bc.exe" --version
+& "$env:ProgramFiles/Blink/bin/blink.exe" --version
 git clone `
     https://github.com/sgua83/Blink.git
 Set-Location Blink

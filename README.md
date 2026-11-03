@@ -6,7 +6,7 @@
 <p>一门面向 AI 超算时代的原生并行编程语言</p>
 
 <p><strong>简体中文</strong> | <a href="README.en.md">English</a></p>
-<p><a href="https://github.com/sgua83/Blink/releases/latest">正式版下载</a> · <a href="#快速开始">快速开始</a> · <a href="#工具与原生集成">C++／Rust 集成</a> · <a href="#学习与文档">书籍与文档</a> · <a href="#feedback">反馈</a></p>
+<p><a href="https://github.com/sgua83/Blink/releases/latest">正式版下载</a> · <a href="#快速开始">快速开始</a> · <a href="#工具与原生集成">C++／Rust 集成</a> · <a href="https://github.com/sgua83/Blink/wiki/Blink-Books">学习与书籍（Wiki）</a> · <a href="#学习与文档">书籍与文档</a> · <a href="#feedback">反馈</a></p>
 
 </div>
 
@@ -487,6 +487,8 @@ B 语言 **不采用面向对象**，以数据、函数、模块和执行域组�
 
 ## 学习与文档
 
+**[进入 Wiki 学习与书籍目录](https://github.com/sgua83/Blink/wiki/Blink-Books)** · [按目标选书与安装入门](https://github.com/sgua83/Blink/wiki) · [English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)。Wiki 提供四本书的完整在线正文；书稿跟随开发版 main，正式版使用与发行包匹配的文档和示例。
+
 | 从哪里开始 | 内容 |
 |---|---|
 | [《并行编程的艺术》](sample/并行编程的艺术.md) | 从 C／C++ 走向并行思考；[手机 PDF](sample/pdf/并行编程的艺术-B语言-手机阅读版.pdf) · [标准 PDF](sample/pdf/并行编程的艺术-B语言.pdf) |
@@ -496,7 +498,7 @@ B 语言 **不采用面向对象**，以数据、函数、模块和执行域组�
 | [B标准库](library/README.md) | 普通值动态序列、严格UTF-8／UTF-16编解码、整段转换与拥有切片，以及Windows系统信息、计时、线程错误码、原始命令行、环境读写、UTF-8文件输入、路径存在性、绝对路径、规范路径身份、扩展名替换及路径组合 |
 | [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [计算域](Docs/ComputeDomain.md) | 当前规则、长期边界和后续设计 |
 
-技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行书稿与配套示例；基础应用已按前述正式工具版本验证，旧标签中的 PDF 是历史快照，不含本次教学更新。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
+技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行书稿与配套示例；基础应用已按前述正式工具版本验证。上表及旧标签中的 PDF 为已有快照，最新内容以在线 Markdown 为准；标准版与手机版 PDF 在周日正式发行时从同次固定书稿统一生成，合集见对应 [Release](https://github.com/sgua83/Blink/releases) 的 `Blink-Books.zip` 资产。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
 
 <a id="feedback"></a>
 

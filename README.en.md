@@ -6,7 +6,7 @@
 <p>A native parallel programming language for the AI supercomputing era</p>
 
 <p><a href="README.md">简体中文</a> | <strong>English</strong></p>
-<p><a href="https://github.com/sgua83/Blink/releases/latest">Download</a> · <a href="#quick-start">Quick start</a> · <a href="#tools-and-native-integration">C++/Rust integration</a> · <a href="#learn-and-explore">Books and docs</a> · <a href="#feedback">Feedback</a></p>
+<p><a href="https://github.com/sgua83/Blink/releases/latest">Download</a> · <a href="#quick-start">Quick start</a> · <a href="#tools-and-native-integration">C++/Rust integration</a> · <a href="https://github.com/sgua83/Blink/wiki/Blink-Books-English">Learn and read (Wiki)</a> · <a href="#learn-and-explore">Books and docs</a> · <a href="#feedback">Feedback</a></p>
 
 </div>
 
@@ -478,6 +478,8 @@ The B language **does not adopt object-oriented programming**. Programs are orga
 
 ## Learn and explore
 
+**[Open the Wiki book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)** · [Choose a book and get started](https://github.com/sgua83/Blink/wiki) · [中文书籍目录](https://github.com/sgua83/Blink/wiki/Blink-Books). The Wiki provides all four complete manuscripts. It follows development main; use documentation and examples matching your formal release.
+
 | Start here | What it covers |
 |---|---|
 | [The Art of Parallel Programming](sample/并行编程的艺术.md) | Moving from C/C++ to parallel thinking; [mobile PDF](sample/pdf/并行编程的艺术-B语言-手机阅读版.pdf) · [standard PDF](sample/pdf/并行编程的艺术-B语言.pdf) |
@@ -487,7 +489,7 @@ The B language **does not adopt object-oriented programming**. Programs are orga
 | [B standard library](library/README.md) | Dynamic value sequences, strict UTF-8/UTF-16 codecs, whole-text conversions and owned slices, plus Windows system information, timing, thread error codes, raw command lines, environment access, UTF-8 file input, path existence, absolute and canonical path identities, extension replacement, and path composition |
 | [Language reference](Docs/BLanguage.md) · [Architecture](Docs/Architecture.md) · [Compute domains](Docs/ComputeDomain.md) | Current rules, long-term boundaries, and future design |
 
-Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions. The table follows main and its companion examples; basic applications have been verified with the formal tools stated above. PDFs in older tags are historical snapshots without this teaching update. BLEngine is an independent consumer and is not yet open source; this repository provides its case-study book and reading notes, rather than the engine source.
+Technical documentation and books are currently primarily in Chinese. Both README editions provide the same starting points and capability descriptions. The table follows main and its companion examples; basic applications have been verified with the formal tools stated above. PDFs linked in the table and older tags are existing snapshots; online Markdown contains the latest text. Standard and mobile PDFs are generated from the fixed manuscripts during the Sunday formal release; look for `Blink-Books.zip` in the corresponding [Release assets](https://github.com/sgua83/Blink/releases). BLEngine is an independent consumer and is not yet open source; this repository provides its case-study book and reading notes, rather than the engine source.
 
 <a id="feedback"></a>
 

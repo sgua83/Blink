@@ -85,15 +85,19 @@ void demo(inout dataset<f32> values) on compute {
 
 ### 1.3 下载、构建与观察
 
-当前源码工具链在 Windows x64 上使用 Rust 和 Microsoft C++ 链接工具构建。安装 Rust stable 与 Visual Studio 的 C++ 桌面开发工具后，在 x64 Developer PowerShell 中执行：
+先下载并双击安装 [Windows x64 正式版 v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1) 的 `Blink-Setup-windows-x64.exe`，作为可独立取得的稳定 Blink 种子。默认编译器构建直接读取 `%ProgramFiles%/Blink` 内的 `VERSION`、`bin/bc.exe` 与 `bin/blink.exe`；稳定种子要在执行 Cargo 之前安装好。
+
+当前源码工具链还需要 Git、Rust stable 的 MSVC 工具链，以及 Visual Studio 的 C++ 桌面开发工具（x64 C++ 工具与 Windows SDK）。新开 x64 Developer PowerShell，先核对实际种子，再下载并构建源码：
 
 ```powershell
+& "$env:ProgramFiles/Blink/bin/bc.exe" --version
+& "$env:ProgramFiles/Blink/bin/blink.exe" --version
 git clone https://github.com/sgua83/Blink.git
 cd Blink
 cargo build --workspace --release
 ```
 
-源码构建先安装一份可独立取得的稳定Blink种子。原build.rs用该bc逐模块生成B词法、泛型前瞻、对象元数据、COFF对象写出及归档生成对象，再由同一次blink归档静态链接；Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
+原build.rs用上述种子bc逐模块生成B词法、泛型前瞻、对象元数据、COFF对象写出及归档生成对象，再由同一次blink归档静态链接；种子保留在安装目录，新构建产物进入工程target。Rust编译其余语法构造、AST、检查、IR、后端与执行框架；B算法由Blink自己的后端生成代码。GPU 执行还需要支持相应 Vulkan 能力的显卡与驱动。
 
 先检查，再导出 CPU/GPU 代码：
 
@@ -3244,7 +3248,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 ### A.1 从干净构建得到工具
 
-工程根目录执行 `cargo build --workspace --release`，生成 `target/release/bc.exe`、`blink.exe`和`brun.exe`。实际程序以本次正式构建为准，不需要复制历史研发目录。
+先完成第 1.3 节的稳定 Blink 种子安装及实际路径版本检查，再准备 Git、Rust MSVC 与 Windows 构建工具。默认编译器构建从 `%ProgramFiles%/Blink` 消费种子；在工程根目录执行 `cargo build --workspace --release`，生成 `target/release/bc.exe`、`blink.exe`和`brun.exe`。实际程序以本次正式构建为准，不需要复制历史研发目录。
 
 ### A.2 读取四个浮点结果
 

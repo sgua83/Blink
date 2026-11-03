@@ -1205,11 +1205,15 @@ git clone `
   BLanguage
 ```
 
-BLEngine 当前需从其授权 P4 工程取得。完整目录应是相邻的 `BLanguage` 与 `BLEngine`，因为引擎的 Cargo 依赖指向 `../BLanguage/crates`。当前公开仓库没有完整引擎源码，读者若只持有 Blink，可以阅读本书与案例，但不能执行下面的引擎构建。
+BLEngine 当前需从其授权 P4 工程取得。可把 `BLanguage` 与 `BLEngine` 放在相邻目录便于阅读对照；现行已提交引擎的 Cargo 依赖读取 `C:/Program Files/Blink/crates` 中的已安装 SDK。当前公开仓库没有完整引擎源码，读者若只持有 Blink，可以阅读本书与案例，但不能执行下面的引擎构建。
 
-Windows x64 环境需要 Rust stable 的 MSVC 工具链与 Visual Studio C++ 桌面开发工具。打开 x64 Developer PowerShell，在 BLEngine 根目录直接构建：
+在执行下面的 Cargo 命令前，先从 [GitHub Releases](https://github.com/sgua83/Blink/releases/latest) 下载并双击安装与所取得引擎源码匹配的 Windows x64 Blink 正式版，取得标准目录中的工具和源码 SDK。若还要从 Blink 主线源码构建编译器，其默认构建直接消费 `%ProgramFiles%/Blink` 的稳定 `bc`、`blink` 与 `VERSION`。先核对安装输入；书稿跟随开发主线，所用引擎源码的 SDK 要求以其对应版本为准。
+
+再准备 Rust stable 的 MSVC 工具链与 Visual Studio C++ 桌面开发工具（x64 C++ 工具与 Windows SDK）。新开 x64 Developer PowerShell，在 BLEngine 根目录检查并构建：
 
 ```powershell
+& "$env:ProgramFiles/Blink/bin/bc.exe" --version
+& "$env:ProgramFiles/Blink/bin/blink.exe" --version
 cargo build --release
 .\target\release\blengine.exe device
 ```
