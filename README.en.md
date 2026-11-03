@@ -44,6 +44,8 @@ AI can inspect an artifact's stored build request and source identities with `bc
 
 Use `bc layout <module.h|module.b> <type> [-I module-root] [--field path]` for a JSON query of a concrete source type or static field. `bc build` also exports `.layout.json`; the SDK can inspect an existing execution interface without source compilation. See [type and field layout inspection](Docs/BLanguage.md#类型与字段布局的结构查询) for descriptor, element-storage, and resource-word boundaries.
 
+Use `bc ir <module.b>` to query the actual module, selected parallel entry, or application IR as JSON, with function or optimized-stage selection. The SDK can inspect the same compilation result without another compilation. See [IR inspection](Docs/BLanguage.md#实际ir的按需结构查询) for phases, logical references, and artifacts that no longer retain IR.
+
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:
 
 ```powershell

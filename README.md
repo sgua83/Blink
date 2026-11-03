@@ -60,6 +60,8 @@ AI可用`bc inputs <compiled.obj|entry.blbi>`直接查询产物保存的实际�
 
 AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`查询本次具体类型或字段的JSON布局；`bc build`同时输出.layout.json，已有执行接口也可由SDK直接查询。值描述、元素存储及资源字覆盖的边界见[类型与字段布局查询](Docs/BLanguage.md#类型与字段布局的结构查询)。
 
+AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
+
 <a id="parallel-programming"></a>
 
 ## 从《并行编程的艺术》开始

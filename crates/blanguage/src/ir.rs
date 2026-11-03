@@ -1905,3 +1905,5 @@ impl CFunctionType {
         syntax
     }
 }
+
+mod inspect;

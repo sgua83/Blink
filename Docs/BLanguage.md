@@ -4,7 +4,7 @@ Blink（简称 B）是一门自研原生并行计算语言。`.h` 声明模块�
 
 B也寓意Base。Blink希望像C语言为上一个计算时代所做的那样，成为AI超算时代的基础语言。本文描述当前已实现规则；软件版本见根VERSION，长期目标、实现、原生结果与性能分别记录。
 
-编译、调试、观察和基础量化工具以AI为唯一直接使用者，架构师通过AI分析；长期支持AI用普通B函数编写观察／分析程序、在数据附近处理所选事实、表达明确机器方案并组合真实输入实验。原检查器与资源所有者约束访问、效果、ABI和最后完成，优化策略、调试信息与采集独立。总原则及逐项职责统一见[面向AI的基础工具与全流程观察](Architecture.md#面向ai的基础工具与全流程观察)，未完成工具沿C-021.7.9、机器表达沿C-024.1.2至.8，数值、设备／域与版本仍沿原编号；当前规范未因此新增观察关键字、方案语法或命令。既有导出、栈报告、GPU计时与完成接口不代表这些设计已交付，实际支持以对应现行规则和原生结果为准。
+编译、调试、观察和基础量化工具以AI为唯一直接使用者，架构师通过AI分析；长期支持AI用普通B函数编写观察／分析程序、在数据附近处理所选事实、表达明确机器方案并组合真实输入实验。原检查器与资源所有者约束访问、效果、ABI和最后完成，优化策略、调试信息与采集独立。总原则及逐项职责统一见[面向AI的基础工具与全流程观察](Architecture.md#面向ai的基础工具与全流程观察)，未完成工具沿C-021.7.9、机器表达沿C-024.1.2至.8，数值、设备／域与版本仍沿原编号；这些长期方向尚未形成观察程序或机器方案的正式语法与执行命令；已交付的基础查询见下述对应规则。既有导出、栈报告、GPU计时与完成接口不代表这些设计已交付，实际支持以对应现行规则和原生结果为准。
 
 长期目标与确定的语言边界见 [架构设计](Architecture.md#长期系统设计目标与语言边界)。B 不采用面向对象，不设计类继承、虚函数、对象类型驱动的运行时动态派发、通用类型擦除动态对象或反射驱动调用，以数据、函数、模块和执行域组织程序。普通B通过组合、编译期泛型与特化、模块接口复用，目的是尽量在编译期发现类型、调用、访问、副作用及生命周期问题，减少依赖运行时绑定和调用者约定的关系。必要动态性集中在真实外部ABI、模块装载／执行版本及资源调度边界；动态输入、容器、显式变体和普通任务仍属完整通用能力，不要求全部数值或调度预先固定。编译器可控的原生并行与调度、跨机一致语义和稳定热更新是长期核心目标，本规范不将这些目标描述为当前已实现能力。
 
@@ -202,6 +202,28 @@ components保留Ty的实际Scalar分量、字节偏移、宽度和覆盖的四�
 Rust API `Compiler::type_layout(path, root, request)`返回原Ty，`Ty::layout_json()`只序列化该值；`blanguage::ir::interface_layout_json(&program)`直接消费已有ProgramInterface，输出kind=interface_layout、原程序目标、uniform_bytes、buffer实际binding／access／stride／固定数量／元素布局，以及uniform原offset和类型。后者可用于已编译执行映像，既不重读源码也不调用Compiler，运行角色无需启用compiler功能。查询是独立只读函数，不增加ProgramInterface方法或虚表入口，不改变对象／资源编码或运行布局。
 
 `bc build`沿原完整生成路径在既有.layout之外导出.layout.json，其中是本次程序的buffer／uniform接口布局；该JSON不声称包含全部阶段、共享存储、栈或运行状态。已有.x64／.reloc／.spv／.layout继续按原职责输出；新增文件属于调用者指定的生成目录，正常应用执行不因此序列化布局或保留另一份状态。总体工具设计与剩余能力见Architecture对应职责及双台账。
+
+## 实际IR的按需结构查询
+
+`bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]`通过原Compiler编译本次明确源码请求，随后只读查询同一返回结果。默认--module；--program选择具体并行入口，--entry选择普通CPU应用入口。三种模式互斥，入口的泛型／const实参直接写在名字中；模块开放实例用--instance，可重复请求不同实例。--import沿原已编译模块／归档装入，只用于模块或应用；直接并行入口的原API当前不接受已编译导入，可在模块查询中查看实际资源程序。
+
+```powershell
+bc ir sample/lessons/map.b -I sample --program demo --stage 0
+bc ir src/math.b -I src --module --instance 'mix<7>' --function 'math::mix<7>'
+bc ir src/app.b -I src --entry main --import target/math.obj
+```
+
+--function使用完整、区分大小写的实际函数实例名，只从本次模块／应用保留的functions选择；缺失函数直接失败，不重编另一函数或推测已内联函数体。--stage是本次--program的零起优化后阶段编号，越界直接失败；优化合并后的阶段数可以少于source_stages。未选函数／阶段时返回该编译结果的完整当前IR；未实例化的开放泛型没有伪造函数体。
+
+结果是单个JSON：kind=ir_query，source_path／module_root为本次绝对路径；mode、entry、function、stage、imports和instances说明实际请求。phase分别是optimized_program_ir、finalized_application_ir或finalized_module_ir，表示原入口已经完成的优化／函数及资源整理；不表示已独立提供Debug／Release或优化级别选择。ir来自原返回对象，源码查询不输出COFF、EXE或入口映像、不创建运行资源；source_path不是完整构建输入身份。已有产物的原请求／来源继续用bc inputs；没有输入记录或IR的对象不会被查询器重新解释成历史事实。
+
+Program::ir_json输出program_ir：原interface布局、source_stages、accelerations／textures、prefix及长度条件和实际stages。Stage::ir_json输出stage_ir：domain、prefix／selection、operation、boundary_before、registers、locals、code、reads／writes／cross_access及tiles。ValueCode::ir_json输出value_ir，保留inputs／outputs和同一寄存器／局部值／指令；FunctionBody::ir_json输出function_ir，保留完整名称、参数值／引用类型及访问、返回类型和body。Application／Module的ir_json分别输出application_ir／module_ir，包括实际保留函数、导入名称及原资源类型／程序；应用另有原入口body，模块另有原exports。已编译导入可能只有合同和调用目标，没有提供者IR；缺失函数体不会补造。
+
+每条指令用kind及原字段表达，If、Loop和Scope保留真实嵌套；调用保留明确的defined／external／indirect目标、值／引用实参、位置和memory关系，原子保留实际order及比较交换failure。自定义归约／扫描的project、identity、combine继续是原ValueCode，不另外展开或发射内核。Constant的bits及整数常数除数使用固定16位十六进制字符串，完整保留u64、NaN载荷、无穷和负零的原位；其解释由对应Scalar决定，不通过JSON浮点数丢失精度。
+
+registers数组下标是当前Stage／ValueCode的逻辑寄存器，Scalar说明逻辑位宽；locals的end_component是原声明结束的逻辑分量位置，填充不占分量。字段名及word、slot、stride、binding等关系保留原IR语义，不能当实际机器寄存器或远端地址；大小／对齐／字节偏移以嵌入的原Ty布局及接口为准。指令数组位置只说明当前容器顺序，不是跨编译稳定身份、执行轨迹或机器指令区间。length_requirements中的same_length以left／right保存实际两端的等长要求，没有数据复制方向。
+
+SDK可直接对原编译返回的Program、Application、Module调用ir_json，对应用／模块用function_ir_json(name)选择实际保留函数；这些原编译结果的查询属于compiler功能。Stage、ValueCode和FunctionBody的只读值查询不依赖compiler；它们也可由调用者构造，查询本身不验证其合法性、不证明该值已经优化或执行。所有查询只借用原值并返回独立字符串，不修改IR、保存额外快照或扩展ProgramInterface。正常执行映像的ExecutionPlan并不保留已释放的Stage／ValueCode，查询不能恢复不存在的IR，也不改变代码、优化前提、资源寿命或正常运行采集策略。
 
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：

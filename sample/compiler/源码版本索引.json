@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "c43eba2485fdb47d409eedccd7c0eb26c778b585e47474a0986f01112953cbc3"
+      "sha256": "669756c6fa95b4fe518365103ff5f36b752c95ea6229ed5650463b48267e94ea"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
