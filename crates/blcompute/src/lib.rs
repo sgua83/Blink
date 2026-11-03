@@ -5,7 +5,7 @@ pub mod cpu;
 pub mod ffi;
 mod texture;
 mod views;
-pub use texture::{Texture2D, TextureAddress, TextureFormat, TextureMip, TextureTexels};
+pub use texture::{Texture2D, Texture3D, TextureAddress, TextureFormat, TextureMip, TextureMip3D, TextureTexels};
 pub mod vulkan;
 pub use bindings::{DomainBindings, DomainRelation, DomainStorage};
 use blanguage::ir::{ExecutionPlan, ProgramInterface, Scalar, Ty};

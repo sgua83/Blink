@@ -23,8 +23,8 @@ pub(super) struct BufferImageCopy {
     pub(super) image_offset: [i32; 3],
     pub(super) extent: VkExtent3D,
 }
-fn mip_copies(dimensions: [u32; 2], levels: u32, texel_bytes: u64) -> (Vec<BufferImageCopy>, u64) {
-    let [mut width, mut height] = dimensions;
+fn mip_copies(dimensions: [u32; 3], levels: u32, texel_bytes: u64) -> (Vec<BufferImageCopy>, u64) {
+    let [mut width, mut height, mut depth] = dimensions;
     let mut offset = 0u64;
     let mut copies = Vec::with_capacity(levels as usize);
     for mip in 0..levels {
@@ -43,12 +43,13 @@ fn mip_copies(dimensions: [u32; 2], levels: u32, texel_bytes: u64) -> (Vec<Buffe
             extent: VkExtent3D {
                 width,
                 height,
-                depth: 1,
+                depth,
             },
         });
-        offset += width as u64 * height as u64 * texel_bytes;
+        offset += width as u64 * height as u64 * depth as u64 * texel_bytes;
         width = (width / 2).max(1);
         height = (height / 2).max(1);
+        depth = (depth / 2).max(1);
     }
     (copies, offset)
 }
@@ -131,6 +132,14 @@ struct FormatProperties {
     buffer: u32,
 }
 #[repr(C)]
+struct ImageFormatProperties {
+    extent: VkExtent3D,
+    mips: u32,
+    layers: u32,
+    samples: u32,
+    resource_bytes: u64,
+}
+#[repr(C)]
 pub(super) struct DescriptorImageInfo {
     sampler: u64,
     view: u64,
@@ -143,9 +152,9 @@ struct Storage {
     view: u64,
     sampler: u64,
     allocated_bytes: u64,
-    dimensions: [u32; 2],
+    dimensions: [u32; 3],
     mips: u32,
-    address: [crate::TextureAddress; 2],
+    address: [crate::TextureAddress; 3],
     format: crate::TextureFormat,
 }
 impl Storage {
@@ -170,16 +179,16 @@ impl Drop for Image {
     }
 }
 #[derive(Clone)]
-pub struct Texture(Rc<Image>);
-impl Texture {
+pub struct Texture<const D: usize = 2>(Rc<Image>);
+impl<const D: usize> Texture<D> {
     pub fn format(&self) -> crate::TextureFormat {
         self.0.storage.format
     }
-    pub fn address(&self) -> [crate::TextureAddress; 2] {
-        self.0.storage.address
+    pub fn address(&self) -> [crate::TextureAddress; D] {
+        std::array::from_fn(|i| self.0.storage.address[i])
     }
-    pub fn dimensions(&self) -> [u32; 2] {
-        self.0.storage.dimensions
+    pub fn dimensions(&self) -> [u32; D] {
+        std::array::from_fn(|i| self.0.storage.dimensions[i])
     }
     pub fn mip_count(&self) -> u32 {
         self.0.storage.mips
@@ -210,9 +219,18 @@ impl Texture {
 }
 impl Device {
     pub fn upload_texture(&self, source: &crate::Texture2D) -> Result<Texture> {
+        let [width, height] = source.dimensions();
+        let [u, v] = source.address();
+        self.upload_image([width, height, 1], [u, v, crate::TextureAddress::Clamp], source.format(),
+            source.levels.iter().map(|m| &m.pixels))
+    }
+    pub fn upload_texture3d(&self, source: &crate::Texture3D) -> Result<Texture<3>> {
+        self.upload_image(source.dimensions(), source.address(), source.format(),
+            source.levels.iter().map(|m| &m.pixels))
+    }
+    fn upload_image<'a, const D: usize>(&self, dimensions: [u32; 3], address: [crate::TextureAddress; 3],
+        format: crate::TextureFormat, levels: impl ExactSizeIterator<Item = &'a crate::TextureTexels>) -> Result<Texture<D>> {
         let inner = self.inner.clone();
-        let dimensions = source.dimensions();
-        let format = source.format();
         let native_format = match format {
             crate::TextureFormat::Rgba32Float => 109,
             crate::TextureFormat::Rgba8Unorm => 37,
@@ -221,12 +239,6 @@ impl Device {
             crate::TextureFormat::Rg16Unorm => 77,
             crate::TextureFormat::Rgb10A2Unorm => 64,
         };
-        if dimensions
-            .iter()
-            .any(|n| *n > inner.properties.limits.maxImageDimension2D)
-        {
-            return Err(error("纹理尺寸超出设备 image2D 能力"));
-        }
         unsafe {
             let instance = &inner.owner._instance;
             let properties: unsafe extern "system" fn(
@@ -243,6 +255,18 @@ impl Device {
                     "设备不支持{format:?} sampled image的线性过滤与双向传输"
                 )));
             }
+            let image_properties: unsafe extern "system" fn(
+                VkPhysicalDevice, u32, u32, u32, u32, u32, *mut ImageFormatProperties,
+            ) -> i32 = instance.library.get(instance.instance, c"vkGetPhysicalDeviceImageFormatProperties")?;
+            let mut support: ImageFormatProperties = zero();
+            check(image_properties(inner.physical, native_format, D as u32 - 1, 0, 7, 0, &mut support),
+                "vkGetPhysicalDeviceImageFormatProperties")?;
+            let maximum = [support.extent.width, support.extent.height, support.extent.depth];
+            if dimensions.iter().zip(maximum).any(|(n, max)| *n > max)
+                || levels.len() > support.mips as usize || support.samples & 1 == 0
+            {
+                return Err(error(format!("纹理尺寸、mip或采样数超出设备 image{D}D 格式能力")));
+            }
             let mut texture = Storage {
                 inner: inner.clone(),
                 image: 0,
@@ -251,20 +275,20 @@ impl Device {
                 sampler: 0,
                 allocated_bytes: 0,
                 dimensions,
-                mips: source.mip_count(),
-                address: source.address(),
+                mips: levels.len() as u32,
+                address,
                 format,
             };
             let f = &inner.functions;
             let device = inner.owner.device;
             let mut ci: ImageCreateInfo = zero();
             ci.kind = 14;
-            ci.image_type = 1;
+            ci.image_type = D as u32 - 1;
             ci.format = native_format;
             ci.extent = VkExtent3D {
                 width: dimensions[0],
                 height: dimensions[1],
-                depth: 1,
+                depth: dimensions[2],
             };
             ci.mips = texture.mips;
             ci.layers = 1;
@@ -302,7 +326,7 @@ impl Device {
                 next: null(),
                 flags: 0,
                 image: texture.image,
-                view_type: 1,
+                view_type: D as u32 - 1,
                 format: native_format,
                 components: [0; 4],
                 range: texture.range(),
@@ -318,15 +342,18 @@ impl Device {
                 mag_filter: 1,
                 min_filter: 1,
                 mipmap_mode: 1,
-                address_u: match source.address[0] {
+                address_u: match texture.address[0] {
                     crate::TextureAddress::Clamp => 2,
                     crate::TextureAddress::Repeat => 0,
                 },
-                address_v: match source.address[1] {
+                address_v: match texture.address[1] {
                     crate::TextureAddress::Clamp => 2,
                     crate::TextureAddress::Repeat => 0,
                 },
-                address_w: 2,
+                address_w: match texture.address[2] {
+                    crate::TextureAddress::Clamp => 2,
+                    crate::TextureAddress::Repeat => 0,
+                },
                 mip_bias: 0.0,
                 anisotropy: 0,
                 max_anisotropy: 1.0,
@@ -344,11 +371,11 @@ impl Device {
             let (copies, bytes) = mip_copies(dimensions, texture.mips, format.texel_bytes() as u64);
             let staging = Allocation::new(inner.clone(), bytes, 1, 6, 1)?;
             let mapped = staging.mapping()?;
-            for (mip, copy) in source.levels.iter().zip(&copies) {
+            for (pixels, copy) in levels.zip(&copies) {
                 std::ptr::copy_nonoverlapping(
-                    mip.pixels.as_bytes().as_ptr(),
+                    pixels.as_bytes().as_ptr(),
                     mapped.cast::<u8>().add(copy.offset as usize),
-                    mip.pixels.as_bytes().len(),
+                    pixels.as_bytes().len(),
                 );
             }
             let commands = Commands::new(inner.clone())?;
@@ -417,6 +444,16 @@ impl Device {
     }
     /// 显式同步读回真实图像的全部 mip；返回独立 CPU 存储并恢复采样布局。
     pub fn download_texture(&self, source: &Texture) -> Result<crate::Texture2D> {
+        let levels = self.download_image(source, |[width, height, _], pixels| crate::TextureMip { width, height, pixels })?;
+        Ok(crate::Texture2D { levels: levels.into(), address: source.address() })
+    }
+    /// 显式同步读回同一原生三维图像的全部体mip，恢复原采样布局。
+    pub fn download_texture3d(&self, source: &Texture<3>) -> Result<crate::Texture3D> {
+        let levels = self.download_image(source, |[width, height, depth], pixels| crate::TextureMip3D { width, height, depth, pixels })?;
+        Ok(crate::Texture3D { levels: levels.into(), address: source.address() })
+    }
+    fn download_image<const D: usize, M>(&self, source: &Texture<D>,
+        mut mip: impl FnMut([u32; 3], crate::TextureTexels) -> M) -> Result<Vec<M>> {
         if !source.belongs_to(&self.inner) {
             return Err(error("纹理属于另一设备"));
         }
@@ -491,22 +528,16 @@ impl Device {
             for copy in &copies {
                 let width = copy.extent.width;
                 let height = copy.extent.height;
-                let count = width as usize * height as usize * texture.format.texel_bytes();
+                let depth = copy.extent.depth;
+                let count = width as usize * height as usize * depth as usize * texture.format.texel_bytes();
                 let bytes =
                     unsafe { std::slice::from_raw_parts(mapped.add(copy.offset as usize), count) };
                 let pixels = crate::TextureTexels::from_bytes(texture.format, bytes)?;
-                levels.push(crate::TextureMip {
-                    width,
-                    height,
-                    pixels,
-                });
+                levels.push(mip([width, height, depth], pixels));
             }
             Ok(())
         })??;
-        Ok(crate::Texture2D {
-            levels: levels.into(),
-            address: source.address(),
-        })
+        Ok(levels)
     }
 }
 impl Drop for Storage {

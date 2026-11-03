@@ -3100,9 +3100,46 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
 
 ### 27.1 纹理不只是二维数组下标
 
-纹理读取包括维度、层级、格式、采样与过滤。CPU 和 GPU 使用相应实现，语言端通过明确资源接口表达需求。`texture.rs` 处理数据与层级，Vulkan 纹理模块负责实际图像、视图与上传寿命，后端负责把相关 IR 变成各自的读取。
+纹理的维度、层级、通道编码与采样是分别交接的事实。B当前的只读采样仍为texture2d；Rust SDK另有原生三维体资产与Vulkan上传／读回，不能由体数据往返就宣布三维B采样或Filmic LUT已经完成。
 
-看纹理源码时先辨认：源像素数据属于谁，上传何时完成，采样器与视图何时销毁，B 程序实际请求的是 fetch 还是采样。它们影响结果与成本，不能都概括成“查一张表”。
+`texture.rs`的二维`TextureMip`与三维`TextureMip3D`都把原`TextureTexels`作为载荷。体数据x连续、再y、再z，每个mip有真实深度，三轴逐级减半；不是将z切片拼成二维图集。格式继续区分RGBA32F、UNORM、sRGB和RGB10A2等实际通道编码，复制不通过浮点运算重建颜色。
+
+源码节选：`crates/blcompute/src/texture.rs:282`。
+
+```rust
+pub struct TextureMip3D {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub pixels: TextureTexels,
+}
+```
+
+`Texture3D`的克隆只共享同一Arc层级。三轴寻址配置属于这份资源视图，读取BLTEX v3得到默认Clamp；文件保存维度与通道、每层宽高深和原体数据，没有GPU身份、寻址配置或staging填充。二维BLTEX v1／v2仍由二维入口解释，不靠猜测载荷形状选择另一种资产。
+
+源码节选：`crates/blcompute/src/texture.rs:290`。
+
+```rust
+pub struct Texture3D {
+    pub(crate) levels: Arc<[TextureMip3D]>,
+    pub(crate) address: [TextureAddress; 3],
+}
+```
+
+Vulkan二维／三维资源沿同一原Storage、Image和uploaded完成点持有image、view、sampler；上传使用同一原生主体，三维句柄为`vulkan::Texture<3>`，默认`Texture`仍是二维。图像创建直接消费相同格式与imageType的实际设备能力；不能凭通用格式位或全局二维尺寸推定3D可用。
+
+源码节选：`crates/blcompute/src/vulkan/texture.rs:227`。
+
+```rust
+    pub fn upload_texture3d(&self, source: &crate::Texture3D) -> Result<Texture<3>> {
+        self.upload_image(source.dimensions(), source.address(), source.format(),
+            source.levels.iter().map(|m| &m.pixels))
+    }
+```
+
+真正的三维复制让每个区域的extent.depth进入字节跨度，深度随各层宽高一起减半；原staging对齐只属于设备交接，不进入体资产。上传交接后CPU资产可以结束，原Execution保持传输所需存储，最后共享图像退出时沿原完成点释放。显式download_texture3d从实际图像同步读出完整mip并恢复采样布局，不保留旧CPU像素作为另一份结果权威。
+
+这些接口尚未给B的float3坐标生成CPU／GPU三线性采样，也没有让三维句柄进入现有二维Bindings。继续读后端的TextureSample及原绑定合同，才能判断语言真正支持何种资源；引擎LUT的生成、消费与效果仍要由实际引擎采用。所有当前接口和限制见语言规范，原实现、实际验证与交付历史只在双台账。
 
 ### 27.2 硬件求交是通用能力，材质算法属于引擎
 

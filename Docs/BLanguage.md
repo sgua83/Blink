@@ -2228,11 +2228,25 @@ CPU 调用期间持有实际像素及描述；Device::upload_texture 返回完�
 
 Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。独立逻辑设备及本机离散／集成两块物理 GPU 的双向显式交接已有原生记录，不表示直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原上传，采样结果仍沿实际提交观察。
 
-独立资产 `.bltex` 当前写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
+二维独立资产 `.bltex` 写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 原生采样 ABI 的宽高不超过 2^24，GPU 另受实际 image2D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
 
-当前只有只读二维纹理。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
+当前B的纹理采样只支持只读二维纹理；下述Rust三维体资产与传输还不提供B三维采样。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
 
 BLEngine 的 `Programs/material/textured.h/.b` 使用同一资源语义实现批量 GGX，CPU／GPU 均实际执行。引擎全图入口现已消费 `.blmat` 材质资产、几何分组与原始 UV，具体格式和职责见 [材质资产](../../BLEngine/Docs/Materials.md)；天然纹理、完整光传输和白玉视觉目标仍未完成。
+
+### 三维体资产与原生传输（Rust SDK）
+
+`Texture3D::new(Vec<TextureMip3D>)`持有原不可变体mip，`TextureMip3D`的width／height／depth与`TextureTexels`共同定义每层真实布局。每层x连续、再y、再z；三轴逐级整除二并至少保留一个texel，可交付合法部分mip链，不自动生成。整链同一实际格式，支持上述六种通道编码，负零、次正规、NaN及所有原始位由字节交接保持；没有解码后的float镜像。构造要求非空、正维度及可表示且完全匹配的载荷／mip布局，不把二维CPU采样的当前坐标精度范围当成体资产尺寸限制。
+
+`dimensions()`返回基础`[u32;3]`，`mip_count()`与`mip(index)`只读借用原层级；克隆共享同一Arc。`with_address(u,v,w)`消费该资源视图并设置三轴Clamp／Repeat，默认三轴Clamp。`Texture3D::read/write`为显式同步资产I/O，读回新建Clamp视图；寻址配置归使用方，不写入资产。
+
+BLTEX v3体资产的8字节magic仍为`BLTEX\0\0\0`，接小端u32的version=3、dimension=3、format、mip_count。每层为小端u32 width／height／depth，再接x、y、z顺序紧密排列的原texel位；通道格式编号和字节布局与上文相同，层间没有平台填充。三维读取入口只接受该三维编码，二维入口仍解释其原v1／v2；未知版本、维度、格式、截断、非完整布局或未声明尾部数据直接返回原错误，不将三维解释为二维图集。文件未保存设备图像、采样器或运行期资源身份。
+
+`Device::upload_texture3d(&Texture3D)`返回`vulkan::Texture<3>`，默认`vulkan::Texture`仍为`Texture<2>`。`Texture<3>::dimensions/address`分别返回三分量数组；format、mip_count、allocated_bytes及is_complete／wait继续观察同一原图像／上传完成点，上传完成不代表后续采样完成。二维和三维上传使用同一个原Storage／Image／Execution主体，imageType／viewType分别为实际2D／3D，三维arrayLayers=1；尺寸由extent.depth表达，逐mip深度随宽高一起减半。图像创建处读取[VkImageCreateInfo的格式／维度能力](https://docs.vulkan.org/refpages/latest/refpages/source/VkImageCreateInfo.html)及实际过滤／双向传输位，尺寸、mip或采样数不可用即沿原Result返回，不静默替换图像或格式。
+
+CPU mip交接至原staging并成功提交后可退出，staging及原图像保持到真实消费者结束；克隆不产生第二份image。`Device::download_texture3d(&Texture<3>)`从实际图像完整复制并同步等待，恢复原采样布局，返回独立CPU `Texture3D`且保留格式、每级宽高深与三轴寻址。复制按[VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)的真实三维extent紧密寻址，R8等格式的逐级staging起点保留4字节对齐，文件无此填充。另一逻辑Device的图像仍明确拒绝。二维／三维的传输和元数据接口在Rust类型上区分，当前`vulkan::Bindings::textures`只接收二维句柄。
+
+本节是已实现的Rust体资产和原生图像传输。B `texture3d`／float3采样、CPU三线性、SPIR-V三维图像采样与混合维度绑定仍归[Issues C-003.2.3／.4](Issues.md#c-003-2)；BLEngine实际Filmic LUT及效果／性能由其消费者交付。二维B语法、CPU描述和模块资源ABI保持各自现行规则。
 
 ### 固定纹理资源数组与逐元素选择
 
@@ -4215,7 +4229,7 @@ void split<const N:u32>(write dataset<A,N> first,write dataset<B,N> second) on c
 
 
 ## 原生纹理的逐轴寻址
-只读纹理资源现在显式携带每轴 `TextureAddress::Clamp` 或 `TextureAddress::Repeat`。`Texture2D::new`／`read` 继续创建 Clamp 资源；`image.with_address(u,v)` 消费该资源视图并共享原不可变像素，`address()` 返回当前模式。B 的 `read texture2d`、资源数组和 `texture_sample` 签名不变，资源实际身份随绑定交接，不由材质函数复制图像。相同像素的不同 CPU 视图不等于已经共享 Vulkan 图像存储；当前上传各自创建原物理资源。
+二维采样资源显式携带每轴 `TextureAddress::Clamp` 或 `TextureAddress::Repeat`。`Texture2D::new`／`read` 继续创建 Clamp 资源；`image.with_address(u,v)` 消费该资源视图并共享原不可变像素，`address()` 返回当前模式。B 的 `read texture2d`、资源数组和 `texture_sample` 签名不变，资源实际身份随绑定交接，不由材质函数复制图像。相同像素的不同 CPU 视图不等于已经共享 Vulkan 图像存储；当前上传各自创建原物理资源。
 
 CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap 参与双线性及 mip 间过滤。Repeat 保留负坐标、整数周期及接缝两侧的贡献，不能只对 uv 取小数后继续钳制 tap。当前24字节 CPU 纹理描述符的第二个 u32 保存 U／V repeat 位；CPU 专用降低指令直接读取该资源描述符，仍生成原生算术与读取，不调用宿主采样函数。Vulkan 使用同一资源声明设置 VkSampler 的 U／V addressMode，SPIR-V 继续直接发出图像采样指令。
 
@@ -4223,7 +4237,7 @@ CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap �
 
 
 ## 原生 texel 格式与存储所有权
-`TextureMip::pixels` 为 `TextureTexels::{Rgba32Float(Vec<[f32;4]>),Rgba8Unorm(Vec<[u8;4]>),Rgba8Srgb(Vec<[u8;4]>),R8Unorm(Vec<u8>),Rg16Unorm(Vec<[u16;2]>),Rgb10A2Unorm(Vec<u32>)}`。原 float Vec 可通过 `.into()` 交接；`Texture2D::format` 从实际负载取得格式，整链同格式。`TextureTexels::as_bytes/from_bytes` 只交接真实字节，不维护解码后的 CPU float 镜像。原生 CPU 描述含 mip 数、逐轴地址模式、mip 指针与格式（offset 0／4／8／16，stride24），每级描述仍16字节。采样直接生成相应字节／dword 装载、UNORM 或分段 sRGB 运算，再完成原双线性及 mip 混合；格式来自所选资源，混合格式数组不要求统一转换，也不经宿主 texel 回调。
+`TextureMip::pixels` 为 `TextureTexels::{Rgba32Float(Vec<[f32;4]>),Rgba8Unorm(Vec<[u8;4]>),Rgba8Srgb(Vec<[u8;4]>),R8Unorm(Vec<u8>),Rg16Unorm(Vec<[u16;2]>),Rgb10A2Unorm(Vec<u32>)}`。原 float Vec 可通过 `.into()` 交接；`Texture2D::format`／`Texture3D::format` 从各自实际负载取得格式，整链同格式。`TextureTexels::as_bytes/from_bytes` 只交接真实字节，不维护解码后的 CPU float 镜像。二维采样的原生 CPU 描述含 mip 数、逐轴地址模式、mip 指针与格式（offset 0／4／8／16，stride24），每级描述仍16字节。采样直接生成相应字节／dword 装载、UNORM 或分段 sRGB 运算，再完成原双线性及 mip 混合；格式来自所选资源，混合格式数组不要求统一转换，也不经宿主 texel 回调。
 
 Vulkan 按真实格式创建 `R32G32B32A32_SFLOAT`、`R8G8B8A8_UNORM`、`R8G8B8A8_SRGB`、`R8_UNORM`、`R16G16_UNORM` 或 `A2B10G10R10_UNORM_PACK32` 图像／视图；格式不支持时明确报告，不能静默替换。上传／读回按真实 texel 字节数构造复制，每级 staging 起点满足4字节对齐，尤其保留R8奇数尾层；文件不保存这些平台填充。复制区域布局见 [VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)，对齐约束见 [vkCmdCopyBufferToImage](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyBufferToImage.html)。快照保留实际格式与地址模式，逐字节保留原负载，包括 float NaN 载荷、负零和次正规位，不通过浮点算术重建。资源仍沿原上传及最后采样完成点持有，不新增长驻状态、上传副本或全局资源表。
 

@@ -1128,7 +1128,11 @@ Frame／Dataset／Device 及原代码所有者分别持有实际资源。CPU 句
 
 CPU 存储连续，GPU 逻辑 dataset 沿当前页表及完整记录布局分页；单个 VkBuffer 受实际 maxBufferSize 约束，不能把这一物理边界扩大为整个逻辑域上限。AS 连续输入／scratch／本体按真实原生尺寸处理，不缩小几何或更换 primitive 编号。物理块、绑定区间、buffer 及内存分配各按原消费者释放，不增加计数镜像或后台回收。
 
-缓冲上传／清零和 AS 构建可以返回带真实完成点的资源，同队列消费者沿原依赖推进；纹理上传保持显式同步。GPU 存储可直接参与 BLAS／TLAS 构建及新版本 refit，更新持有旧 source 到实际完成，旧查询继续使用旧快照。纹理及 AS 的真实格式、布局、unsafe 前提和输入所有权由原生接口表达，见 [DeviceInstances.md](DeviceInstances.md)。
+缓冲上传／清零和 AS 构建可以返回带真实完成点的资源，同队列消费者沿原依赖推进；只读纹理上传显式提交异步设备复制，完整图像读回为显式同步。GPU 存储可直接参与 BLAS／TLAS 构建及新版本 refit，更新持有旧 source 到实际完成，旧查询继续使用旧快照。纹理及 AS 的真实格式、布局、unsafe 前提和输入所有权由原生接口表达，见 [DeviceInstances.md](DeviceInstances.md)。
+
+原只读纹理所有者同时提供Rust SDK二维与三维体资源：`Texture2D`／`TextureMip`和`Texture3D`／`TextureMip3D`各自以同一Arc保存不可变mip、原通道位模式及实际维度；体数据x连续、再y、再z，不建立图集或CPU解码镜像。二维资产写BLTEX v2，三维体资产写带dimension=3的BLTEX v3，各层拥有真实宽高深；文件与具体格式分开，定义见语言规范。`Device::upload_texture`与`upload_texture3d`复用同一原图像创建／传输主体，返回默认`vulkan::Texture<2>`与`Texture<3>`；同一Storage／Image／uploaded继续持有原生image、view、sampler及上传完成点。维度由Rust类型交接，当前二维采样绑定不接收三维句柄。创建处分别消费实际格式的过滤／传输位与同一format、imageType、tiling、usage、flags的图像能力，不能用全局二维尺寸或格式位近似三维可用范围；平台错误沿原Result返回。
+
+`download_texture`／`download_texture3d`沿同一原显式读回主体取得完整mip，三维复制使用真实extent.depth、逐轴缩小和原层间staging对齐，恢复原采样布局；没有原CPU像素缓存。上传交接后CPU资产可以结束，staging和图像仍由原Execution及最后真实消费者保持；克隆只延长同一所有者。三维体资产和GPU上传／读回已提供，B的`texture3d`、CPU三线性与SPIR-V三维采样仍沿[C-003.2.3／.4](Issues.md#c-003-2)继续，BLEngine Filmic LUT须由引擎实际采用，不能由体数据传输结果代替。CPU二维采样描述与原模块资源ABI不因Rust体资产接口而改变。
 
 Submission／GpuCompletion 观察同一真实提交，结果可在观察者退出后继续消费。交换链 try_present 的 Pending 只是未取得可用图像／信号量的原生可用性；Ready 表示已排队，不表示上屏或源拷贝已完成。原存储的最后使用点随拷贝更新，详见 [DeviceSubmission.md](DeviceSubmission.md)。驱动预算是当前进程的动态估计，见 [DeviceMemory.md](DeviceMemory.md)，不是逻辑资源总量或硬上限。
 
