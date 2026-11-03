@@ -58,6 +58,8 @@ impl Builder<'_> {
         self.rebind_returned(&mut item, value.regs.clone());
         if let Returned::OwnedValue(child) = &mut item {
             child.value = value;
+        }else if let Returned::Dataset(data)=&mut item {
+            data.length=self.value_component(&value,1);
         }
         if let Some(place)=owner.place(){
             let(offset,ty)=owner.value.ty.aggregate_part(index);
