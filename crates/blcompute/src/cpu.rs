@@ -15,6 +15,7 @@ unsafe extern "system" {
     fn VirtualAlloc(address: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
     fn VirtualProtect(address: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
     fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
+    fn VirtualQuery(address: *const c_void, information: *mut MemoryBasicInformation, size: usize) -> usize;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
     fn RtlAddFunctionTable(table: *mut RuntimeFunction, count: u32, base: u64) -> u8;
@@ -113,6 +114,35 @@ impl Drop for WorkHandle {
 }
 #[repr(C)]
 struct RuntimeFunction { begin: u32, end: u32, unwind: u32 }
+#[repr(C)]
+struct MemoryBasicInformation {
+    base_address: *mut c_void,
+    allocation_base: *mut c_void,
+    allocation_protect: u32,
+    partition_id: u16,
+    region_size: usize,
+    state: u32,
+    protect: u32,
+    kind: u32,
+}
+/// 原CPU代码入口的当前Windows VM区段快照；不持有代码或授予地址访问权。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CpuCodeMemory {
+    /// 同一ExecutionPlan中的阶段索引；一个阶段可以包含多个原生代码入口。
+    pub stage: usize,
+    pub entry_address: usize,
+    /// 原Executable是否持有Allocation；外部已链接模块的代码为false。
+    pub runtime_owned: bool,
+    pub allocation_address: usize,
+    pub region_address: usize,
+    /// VirtualQuery从入口所在页返回的区段跨度，不是单函数机器码长度。
+    pub region_bytes: usize,
+    /// Windows原始AllocationProtect、Protect、State及Type值。
+    pub allocation_protection: u32,
+    pub protection: u32,
+    pub state: u32,
+    pub kind: u32,
+}
 struct Executable {
     address: *mut c_void,
     _allocation: Option<Allocation>,
@@ -216,6 +246,25 @@ extern "C" fn print_float(bits: u64, width: u32) -> u32 {
     write_stdout(&text[..count as usize])
 }
 impl Executable {
+    fn memory(&self, stage: usize) -> Result<CpuCodeMemory> {
+        let mut information = std::mem::MaybeUninit::<MemoryBasicInformation>::zeroed();
+        if unsafe { VirtualQuery(self.address, information.as_mut_ptr(), std::mem::size_of::<MemoryBasicInformation>()) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let information = unsafe { information.assume_init() };
+        Ok(CpuCodeMemory {
+            stage,
+            entry_address: self.address as usize,
+            runtime_owned: self._allocation.is_some(),
+            allocation_address: information.allocation_base as usize,
+            region_address: information.base_address as usize,
+            region_bytes: information.region_size,
+            allocation_protection: information.allocation_protect,
+            protection: information.protect,
+            state: information.state,
+            kind: information.kind,
+        })
+    }
     fn new(code: &blanguage::native::NativeCode) -> Result<Self> {
         let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
         let end = u32::try_from(code.function_end)?;
@@ -414,6 +463,11 @@ impl<D: Into<CpuDataset>> From<Bindings<Vec<D>>> for Bindings<DomainBindings<Cpu
     }
 }
 impl CpuProgram {
+    /// 只读查询原代码入口的当前VM区段和原拥有关系；结果不延长代码寿命。
+    /// 外部模块的多个入口可能共用区段，不能逐入口累加为独占分配。
+    pub fn code_memory(&self) -> Result<Vec<CpuCodeMemory>> {
+        self.code.code_memory()
+    }
     /// 借用实际执行程序的唯一数据布局，供原生消费者创建绑定。
     pub fn program(&self) -> &Program {
         &self.code.program
@@ -454,6 +508,11 @@ impl CpuProgram {
     }
 }
 impl CpuTemplate {
+    /// 只读查询原代码入口的当前VM区段和原拥有关系；结果不延长代码寿命。
+    /// 外部模块的多个入口可能共用区段，不能逐入口累加为独占分配。
+    pub fn code_memory(&self) -> Result<Vec<CpuCodeMemory>> {
+        self.code.code_memory()
+    }
     pub fn program(&self) -> &Program {
         &self.code.program
     }
@@ -527,6 +586,34 @@ impl<'a> CpuBuffer<'a> {
     }
 }
 impl CpuCode {
+    fn code_memory(&self) -> Result<Vec<CpuCodeMemory>> {
+        let mut result = Vec::new();
+        let mut add = |stage, code: &Executable| -> Result<()> {
+            result.push(code.memory(stage)?);
+            Ok(())
+        };
+        for (stage, code) in self.stages.iter().enumerate() {
+            match code {
+                StageCode::Element { main, continuation, .. } => {
+                    add(stage, main)?;
+                    match continuation {
+                        Some(Continuation::Apply(code)) => add(stage, code)?,
+                        Some(Continuation::Scan { prefix, apply, .. }) => {
+                            add(stage, prefix)?;
+                            add(stage, apply)?;
+                        }
+                        None => {}
+                    }
+                }
+                StageCode::Sort(code) => {
+                    for code in code.executables() {
+                        add(stage, code)?;
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
     fn from_image<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         let workers = match std::thread::available_parallelism() {
             Ok(workers) => workers.get(),

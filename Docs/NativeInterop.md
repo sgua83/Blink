@@ -136,6 +136,16 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 - create 的 backend 为 0（CPU）或 1（GPU）；目标限制与设备能力错误直接返回。相同 handle 可反复运行；调用及释放必须在创建线程串行执行。Rust 包装器以独占方法、Drop 和非 Send／Sync 类型表达这一所有权；C/C++ 遵守头文件中的相同约定。不同线程可分别创建自己的实例。
 - view、纹理、加速结构和有外部 prefix 前置条件的程序不在当前 DLL 数据 ABI 中；算法目标文件编译明确拒绝，不改写成其他算法。C++ 可以调用包含内部多阶段、集合、排序及内部有效前缀的完整 计算函数。
 
+## Rust SDK的CPU存储与代码区段观察
+
+`Dataset::memory()`返回同一数据字存储的逻辑记录跨度、当前word长度和可用容量；`Frame::cpu_data_memory()`读取原当前CPU数据槽，并按查询借用中的实际Dataset分组返回原句柄与字节快照。GPU槽不参与，也不发生等待或下载。容量不等同OS承诺、工作集或分配器开销。
+
+`cpu::CpuProgram::code_memory()`和`cpu::CpuTemplate::code_memory()`返回`Result<Vec<cpu::CpuCodeMemory>>`，按原阶段和已有代码入口同步查询。`stage`是原ExecutionPlan阶段索引，`entry_address`是该代码入口；`runtime_owned`直接表示原Executable是否持有Allocation。其余字段对应Windows当前查询：`allocation_address`为AllocationBase，`region_address`／`region_bytes`为从入口所在页开始的BaseAddress／RegionSize，`allocation_protection`／`protection`／`state`／`kind`分别为AllocationProtect／Protect／State／Type原值；失败交回原OS错误。
+
+主代码、集合续段、Scan前缀及排序的各实际代码入口分别返回观察结果；一个阶段可以有多项。SDK自有VM及外部已链接／宿主代码保持各自原所有者，不凭VM类型推定归属。区段含页粒度和其他内容，不能当单函数机器码长度或整个模块大小；多个外部入口可能共享同一分配／区段，不能把每项字节直接相加作为独占分配。查询不保留代码、改变页保护或产生访问许可，结果只是当时元数据，地址在原所有者结束后可能复用。
+
+当前是Rust SDK查询，未因此增加B／C观察ABI、完整资源图或全进程堆统计。详细职责与剩余范围见[CPU内存观察](Architecture.md#tool-23)。
+
 ## 性能的完整口径
 
 sample/interop/fractal.* 是一百万像素的 Mandelbrot 计算，C++ 和 Rust 分别保留开启优化的串行实现，再调用同一个 DLL。每次计时只执行一次完整算法，包含 DLL 调用、本次分配、必要复制、GPU 提交／等待与输出读回。create 单独报告，不混入已复用实例的每次调用；首次只运行一回时应相加比较。重复测量使用两次预热、九次单次计时的中位数。

@@ -710,7 +710,7 @@ pub struct Dataset {
 
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
 
-Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。完整view来源、代码VM及B／C观察入口仍有独立未完成范围。
+Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。完整view来源、其他宿主容器及B／C观察入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
@@ -1635,7 +1635,7 @@ CPU 取得指令，读取寄存器或内存，做运算，再把结果放回相�
 
 本版 Windows x64 范围入口的四个参数依次是数据绑定表、参数 word、结束下标、开始下标。Microsoft x64 ABI 使用 RCX、RDX、R8、R9 传递这四个整数／指针参数。这里的顺序在两边必须完全相同。每个BufferAddress槽为十六字节：偏移零保存原地址，偏移八保存实际记录stride；字段投影从原地址加字段偏移开始，相邻记录仍按父布局跨步。标量与SSE2批次、扫描／排序及范围摘要消费同一布局，工作区替换时同时交接自己的真实步长，不另建逐行指针或列副本。
 
-源码节选：`crates/blcompute/src/cpu.rs:34`。
+源码节选：`crates/blcompute/src/cpu.rs:35`。
 
 ```rust
 type Entry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32);
@@ -1785,7 +1785,7 @@ pub struct NativeCode {
 
 一百万个元素不意味着创建一百万个操作系统线程。运行时把连续元素组成范围，每个工作者领取一段，用本机范围函数处理。
 
-源码节选：`crates/blcompute/src/cpu.rs:65`。
+源码节选：`crates/blcompute/src/cpu.rs:66`。
 
 ```rust
     loop {
@@ -1833,7 +1833,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 算法DLL中的CPU入口由原COFF链接进最终PE。Windows加载器完成代码、依赖和展开节的装入，CpuProgram只借用匹配范围ABI的地址；销毁一个程序不释放整个DLL的代码。宿主须保持DLL及其依赖，直到最后一个真实CPU工作和程序消费者结束，随后才可卸载。
 
-源码节选：`crates/blcompute/src/cpu.rs:430`。
+源码节选：`crates/blcompute/src/cpu.rs:484`。
 
 ```rust
     /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
@@ -1855,7 +1855,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 SDK直接装入CPU映像时，代码尚未属于已链接PE，下面的VM装入仍由原执行框架负责。两种来源共用实际阶段与调度表示，代码各自归其真实所有者。
 
-源码节选：`crates/blcompute/src/cpu.rs:220`。
+源码节选：`crates/blcompute/src/cpu.rs:269`。
 
 ```rust
         let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
@@ -1877,7 +1877,7 @@ SDK直接装入CPU映像时，代码尚未属于已链接PE，下面的VM装入�
 
 SDK的这次VM分配从创建起由Executable中的Allocation持有。指令、四字节对齐的展开字节和RuntimeFunction表放在同一次分配中；表中的起点、末端和展开位置相对这份内存。原映像只被借用，解析后的地址写入本次实际分配；Library持有本次装入的DLL引用。已链接算法入口没有这份Allocation，其代码归所属DLL。
 
-源码节选：`crates/blcompute/src/cpu.rs:266`。
+源码节选：`crates/blcompute/src/cpu.rs:315`。
 
 ```rust
         allocation._libraries = libraries.into_values().collect();
@@ -1914,6 +1914,36 @@ impl Drop for Allocation {
 CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。CPU模板在全部阶段装入成功后才移动原执行布局；失败沿同一Result交回原错误与未改映像，Frame接回原程序槽。这里没有保留第二份代码或自动重放；普通CpuProgram的按值构造仍在失败时结束输入消费。
 
 可写和可执行内存、页面权限与函数签名属于这段代码必须满足的真实平台要求。它们与“变量是否乘二”处在不同层次。
+
+`CpuProgram::code_memory()`与`CpuTemplate::code_memory()`按需查看这些原代码入口。它们遍历同一阶段拥有者中的主代码、集合续段、Scan前缀及排序代码；每个入口只读取当前Windows VM区段，原OS错误直接交还调用者。
+
+源码节选：`crates/blcompute/src/cpu.rs:249`。
+
+```rust
+    fn memory(&self, stage: usize) -> Result<CpuCodeMemory> {
+        let mut information = std::mem::MaybeUninit::<MemoryBasicInformation>::zeroed();
+        if unsafe { VirtualQuery(self.address, information.as_mut_ptr(), std::mem::size_of::<MemoryBasicInformation>()) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let information = unsafe { information.assume_init() };
+        Ok(CpuCodeMemory {
+            stage,
+            entry_address: self.address as usize,
+            runtime_owned: self._allocation.is_some(),
+            allocation_address: information.allocation_base as usize,
+            region_address: information.base_address as usize,
+            region_bytes: information.region_size,
+            allocation_protection: information.allocation_protect,
+            protection: information.protect,
+            state: information.state,
+            kind: information.kind,
+        })
+    }
+```
+
+`stage`对应原ExecutionPlan阶段，`runtime_owned`来自原Executable是否持有Allocation。其余字段是VirtualQuery的当前结果：分配根、入口所在页开始的区段及字节数、初始／当前保护、状态与类型。区段包含页粒度及其他内容，不等于单函数指令字节或整个模块。多个外部入口可以共用同一VM，不能把每个入口的区段字节相加当成独占分配，也不能凭MEM_PRIVATE推断代码归运行库。
+
+返回值只有当时的元数据，不持有VM、DLL或新的地址身份，不授予读取／改写代码的权限。原所有者结束后代码释放，旧地址可能被OS复用；原资源和最后消费者仍决定寿命。其他宿主容器、完整资源来源及B／C观察入口没有因本查询完成。
 
 ### 15.4 如何理解性能
 
