@@ -246,7 +246,6 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         }
         if let Some(Binding::OwnedValue(value))=builder.env.get(&p.name){for resource in 0..view::resource_paths(&value.value.ty).len(){let id=ValueIdentity::ResourceParameter(parameter,resource);bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_sources(0,BTreeSet::from([view::Source::Data(id)])));}}
     }
-    let output_aliases=std::mem::take(&mut builder.view_model.parameters);
     if let Some(value)=returned.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
     for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
     let sources=returned.iter().chain(written.iter().flatten()).filter_map(Returned::view_value).flat_map(|value|value.proof.typed_view_borrow(&value.ty).sources).collect::<BTreeSet<_>>();
@@ -275,8 +274,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         }
         next+=value.registers().len();(value,model)
     })).collect::<Vec<_>>();
-    let mut names=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect::<BTreeMap<_,_>>();
-    for(source,target)in output_aliases{if let Some(target)=names.get(&target).copied(){names.insert(source,target);}}
+    let names=bindings.iter().filter_map(|(source,proof)|proof.known_identity(0).map(|target|(*source,target))).collect::<BTreeMap<_,_>>();
     let initialization=builder.view_model.initialization.iter().map(|effect|match effect {
         address::InitializationEffect::Position(fact)=>if fact.origin.pending(){None}else{Some(fact.clone())},
         address::InitializationEffect::Call{..}|address::InitializationEffect::Iteration{..}=>None,

@@ -271,7 +271,6 @@ impl Builder<'_> {
                 &bounds::Proof::capture(&self.returned_storage(owner)).output_aliases(&written[name],&self.registers,&bindings),
             );
         }
-        self.view_model.parameters.extend(bindings.clone());
         for effect in initialized {*effect=effect.output_bound(&bindings);}
         *path = bounds::Clause::both(&path.output_bound(&bindings), &aliases);
         if let Some(value) = value {

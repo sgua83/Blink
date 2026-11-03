@@ -120,7 +120,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "2dc930dcc1fbcf958b133ce1bb1080dfad76024f535f1d35f9f367ce8d9605a4"
+      "sha256": "cc9b33bef505dc935ce1465b323dcf08d44992cbf51ce4d5e688a8d17aec4d9a"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -144,7 +144,7 @@
     },
     {
       "path": "crates/blanguage/src/check/returns.rs",
-      "sha256": "ff69982753d602535e0e3658a1f030001c468518a023a4bdb2a225e0b0909adc"
+      "sha256": "598d45103b855c8cf249b611c92d4e6a0d242510f7ef7c7f852261c4735b2ca0"
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
