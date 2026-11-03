@@ -241,7 +241,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-3"></a>
 
-**集合算子与内部值核。** 原集合调用、静态引用及实际选择分别向原Operation与投影／identity／combine的ValueCode交接来源；算子自身没有普通Inst时也由原算子持有，内部值核保留各自定义／调用关系。查询借用同一编译结果，结果归调用者，最后原消费者后释放；不以一个值核或机器辅助入口代表整个算子。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3)。
+**集合算子与内部值核。** 原集合调用与静态值核引用形成两个可独立完成的交接，分别由原Stage.operation及各ValueCode持有事实；完整范围见[父项](Issues.md#c-021-7-9-7-2-3)。不以一个值核或机器辅助入口代表整个算子，不复制调用图。
+
+<a id="tool-7-2-3-1"></a>
+
+**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录真实调用表达式、定义及具体实例，不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel／合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3-1)。
+
+<a id="tool-7-2-3-2"></a>
+
+**集合值核的静态引用与入口来源。** 输入为原project／identity／combine表达式、bind静态引用／实际捕获及真实特化Instance，生产者为check/custom_reduce.rs::function原实际调用入口；各原ValueCode分别持有原定义、具体实例及引用／调用事实，内部Inst继续沿原Builder来源。空代码或折叠值核仍能解释其原入口；不从输出寄存器或内部任一Inst反推整个值核，不把三个角色合并。查询借用同一值核，结果归调用者；Source与上下文沿不可变共享事实在最后真实IR消费者后释放，不持有AST／World、增加注册表或运行权威。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3-2)。
 
 <a id="tool-7-2-4"></a>
 
