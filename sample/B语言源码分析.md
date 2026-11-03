@@ -146,7 +146,7 @@ cargo build --workspace --release
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:276`。
+源码节选：`crates/blanguage/src/ir.rs:280`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -187,7 +187,7 @@ cargo build --workspace --release
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:98`。
+源码节选：`crates/blanguage/src/ir.rs:102`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,7 +381,7 @@ pub enum CallTarget {
 }
 ```
 
-源码节选：`crates/blanguage/src/ir/external.rs:114`。
+源码节选：`crates/blanguage/src/ir/external.rs:116`。
 
 ```rust
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
@@ -801,7 +801,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:101`。
+源码节选：`crates/blanguage/src/frontend.rs:112`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -825,7 +825,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:470`。
+源码节选：`crates/blanguage/src/frontend.rs:481`。
 
 ```rust
     if let Some(name) = import
@@ -1080,7 +1080,7 @@ C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结�
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:259`。
+源码节选：`crates/blanguage/src/ir.rs:263`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -1178,7 +1178,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3793`。
+源码节选：`crates/blanguage/src/check.rs:3796`。
 
 ```rust
         let binding = view.binding;
@@ -1415,7 +1415,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:927`。
+源码节选：`crates/blanguage/src/ir.rs:931`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1427,7 +1427,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:948`。
+源码节选：`crates/blanguage/src/ir.rs:952`。
 
 ```rust
     Load {
@@ -1459,7 +1459,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1143`。
+源码节选：`crates/blanguage/src/ir.rs:1147`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1488,7 +1488,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:448`。
+源码节选：`crates/blanguage/src/check.rs:449`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1620,7 +1620,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:991`。
+源码节选：`crates/blanguage/src/ir.rs:995`。
 
 ```rust
     If {

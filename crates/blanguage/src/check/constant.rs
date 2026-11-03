@@ -72,6 +72,7 @@ pub(super) fn stage_expression(
 fn constant_context(name:&str)->Program {
 Program {
             name: name.into(),
+            source_origin: None,
             target: Target::Compute,
             buffers: Vec::new(),
             accelerations: Vec::new(),

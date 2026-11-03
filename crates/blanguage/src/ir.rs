@@ -1,5 +1,9 @@
 use crate::ast::{Access, Target};
 use std::{collections::BTreeMap, num::NonZeroU64};
+#[cfg(feature = "compiler")]
+mod origin;
+#[cfg(feature = "compiler")]
+pub use origin::SourceOrigin;
 mod layout;
 pub use layout::interface_layout_json;
 mod external;
@@ -1649,6 +1653,8 @@ impl SubgroupCapabilities {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub(crate) name: String,
+    #[cfg(feature = "compiler")]
+    pub(crate) source_origin: Option<SourceOrigin>,
     pub(crate) target: Target,
     pub(crate) buffers: Vec<Buffer>,
     pub(crate) accelerations: Vec<String>,
@@ -1663,6 +1669,8 @@ pub struct Program {
     pub(crate) length_requirements: Vec<(usize, usize)>,
 }
 impl Program {
+    #[cfg(feature = "compiler")]
+    pub fn source_origin(&self) -> Option<&SourceOrigin> { self.source_origin.as_ref() }
     pub fn textures(&self) -> &[TextureBinding] {
         &self.textures
     }

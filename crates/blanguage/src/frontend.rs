@@ -16,6 +16,17 @@ pub(crate) struct Definition {
     pub(crate) public: bool,
     pub(crate) compiled: Option<Arc<BTreeMap<String, Vec<u8>>>>,
 }
+impl Definition {
+    pub(crate) fn source_origin(&self) -> Option<ir::SourceOrigin> {
+        match (&self.compiled, &self.function.body) {
+            (None, Some(_)) => Some(ir::SourceOrigin {
+                source: self.source.clone(), span: self.function.span,
+                module: self.module.clone(), definition: self.function.name.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
 /// 仅由已完成模块／阶段证明的无前置条件程序构造；执行器不接受条件模板。
 pub struct Compilation {
     pub programs: Vec<ExecutableProgram>,

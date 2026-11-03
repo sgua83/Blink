@@ -59,6 +59,8 @@ pub enum CallParameter {
 #[derive(Clone, Debug)]
 pub struct FunctionBody {
     pub name: String,
+    #[cfg(feature = "compiler")]
+    pub source_origin: Option<SourceOrigin>,
     pub parameters: Vec<CallParameter>,
     pub result: Option<Ty>,
     pub body: ValueCode,

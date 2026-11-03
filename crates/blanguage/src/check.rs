@@ -433,6 +433,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
     }
     let mut program = Program {
         name: name.clone(),
+        source_origin: d.source_origin(),
         target: d.function.target,
         buffers,
         accelerations,
@@ -1334,6 +1335,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
     }
     let program = Program {
         name: name.clone(),
+        source_origin: d.source_origin(),
         target: d.function.target,
         uniform_bytes: 8 + 4 * buffers.len() as u32,
         buffers,
@@ -1584,6 +1586,7 @@ fn finish_checked_function(
         native_function::canonical(&mut b, returned, &inputs, written);
     let body = FunctionBody {
         name: name.clone(),
+        source_origin: d.source_origin(),
         parameters,
         result,
         body: ValueCode {

@@ -215,13 +215,17 @@ StageCode／ShaderCode／ProgramImage是本次实际GPU模块集合的唯一容�
 
 <a id="tool-7"></a>
 
-##### CPU源码
+##### CPU源码、实例与实际指令的来源交接
 
-优化、内联或特化后AI要反查某段x64→原`ast.rs::Span`／Builder→优化／native发射→Object；`native/image.rs::NativeCode`目前不携带完整来源。 保留实际来源到生成指令区间的可追查关系，允许多对多及优化消除；不冻结展开或复制AST。引用.2／.4／.5，CPU子范围独立完成。 查询借用对应编译结果或实际产物，返回所选值或限定有效期的引用；所需来源随对应产物交接，查询不使无人消费的IR继续存活。 本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应未完成范围：[C-021.7.9.7](Issues.md#c-021-7-9-7)。
+原定义到函数／程序IR的来源已交接，原Source不可变文本、实际函数Span、模块与原函数名随原IR持有，具体实例名仍归对应IR。逐操作与实际内联调用、优化合并／消除、普通函数／并行／集合辅助机器区间及可选保存材料仍须沿下列实际生产者完成，不能用根定义范围冒充每条指令来源。完整关系允许多对多及无代码状态，不冻结优化、展开或变量消除。查询借用对应编译结果或产物，返回独立结构值；所需事实随同一产物与版本交接，不保留无人消费的AST／IR或新增来源注册表、运行状态及调度器。共同源／IR事实供.8的GPU来源复用，CPU／SPIR-V／驱动最终ISA与硬件现场分别记录。完整父项仍未完成，范围见[C-021.7.9.7](Issues.md#c-021-7-9-7)。
 
 <a id="tool-7-1"></a>
 
-**原定义快照到函数／程序IR。** 原Definition.source／function.span及Instance.name→FunctionBody／Program→现有ir_json。模块／原函数名、实际源快照与UTF-8字节范围及IR具体实例身份；只读查询无文件重读，原生指令关系仍由后续叶完成。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前正在实现，范围见[原编号](Issues.md#c-021-7-9-7-1)。
+**原定义快照到函数／程序IR。** 原Definition是源实现及位置的唯一生产者，实际Source／function.span直接交给同一FunctionBody和Program；Instance.name继续表达具体类型／静态值实例，SourceOrigin只保存原模块／函数名及实际定义快照，不重建名称或AST。没有实际源实现的已编译合同／外部声明及内部合成上下文明示None，不从当前文件、声明头或邻近定义猜补。
+
+compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::source_origin()及SourceOrigin::ir_json()／只读getter；现有函数／程序ir_json沿source_origin交接。Source文本共享原Arc，随原IR的最后消费者释放，不保留World／完整AST或增设缓存／索引。只有显式查询才从原快照计算SHA256、实际字节数、UTF-8半开范围和以Unicode标量计列的行／列；不重读可能已变的文件，摘要不证明真实性、机器代码匹配或执行授权。源路径保持原Source.path，JSON可表示路径字符串及实际Windows UTF-16单元，非UTF-8路径不以替换字符冒充原名；其他平台使用各自原路径字节事实，不由这些字段宣称已有平台交付。
+
+观察只是根定义到IR，逐语句／调用及实际指令区间仍由后续叶完成，不为它保活变量或限制优化。运行角色不包含该字段／类型，原ABI及执行编码保持；compiler角色构造FunctionBody的Rust调用方明确提供source_origin，生成IR可选None，不增加旧包装。规范见[原定义查询](BLanguage.md#函数与程序ir的原定义来源)，[已闭合范围](FixedIssues.md#c-021-7-9-7-1)。
 
 <a id="tool-7-2"></a>
 

@@ -197,6 +197,10 @@ extern "C" void scale_values(inout Pair value, u32 amount) on cpu
 
 注册到Windows或其他库的函数地址及状态，必须由真实注册方保持至注销及最后一次回调完成。当前直接入口不提供动态代码／上下文保留协议或模块热卸载保证，也不表示BLEngine窗口与消息业务已迁移。平台合同见[WNDPROC](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc)与[RegisterClassW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerclassw)。
 
+## 编译IR的原定义快照
+
+compiler Rust SDK的FunctionBody与Program保留可选ir::SourceOrigin，现有ir_json及bc ir交接原函数／模块、源快照摘要、实际UTF-8范围和行／列；具体实例身份仍归原IR名字。查询借用原Source不可变文本，不读后来变化的文件或持有AST／World；外部／已编译实现不可取得时不伪造来源。运行角色无此字段，执行ABI、代码与资源完成不变；compiler角色的FunctionBody字面构造显式提供source_origin，可用None表示合成上下文。逐操作、内联、优化与机器映射仍未交付，精确字段和语义见[规范](BLanguage.md#函数与程序ir的原定义来源)。
+
 ## 原SPIR-V的只读结构接口
 
 compiler Rust SDK可用`spirv::module_json(&[u32])`取得原模块全部指令、原字、类型／结果／操作数ID、入口和精确字面量位模式的独立JSON；`bc spirv <module.spv>`查询同一单文件，不读源码、创建Compiler或运行GPU。输出和临时解码归调用者，原代码与资源完成不变；格式错误通过DecodeError及原位置交接。依赖仅用于编译工具的标准数据格式解码，不是Shader编译器，普通运行角色不引入它。SPIR-V仍是中间表示；原ShaderCode／StageCode／ProgramImage的code_json及bc build的.spv.json已交接全部主／辅助模块，原bc code可无源码查询保存GPU映像，不要求CPU范围材料。SDK的可选CPU材料只配对真实CPU代码；来源与驱动最终ISA继续分别交付。精确字段和未支持范围见[语言规范](BLanguage.md#原spir-v单模块的完整结构查询)。

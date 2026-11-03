@@ -1320,6 +1320,7 @@ fn build_domain(
     };
     let function = FunctionBody {
         name: name.clone(),
+        source_origin: d.source_origin(),
         parameters: parameters.clone(),
         result: None,
         body,

@@ -166,6 +166,7 @@ pub(crate) fn compile_application(
     }
     let context = Program {
         name: instance.name.clone(),
+        source_origin: d.source_origin(),
         target: Target::Cpu,
         buffers: Vec::new(),
         accelerations: Vec::new(),

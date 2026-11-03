@@ -33,6 +33,8 @@ fn emit_value(
     };
     let program = Program {
         name: String::new(),
+        #[cfg(feature = "compiler")]
+        source_origin: None,
         target: crate::ast::Target::Cpu,
         buffers: Vec::new(),
         accelerations: Vec::new(),

@@ -229,6 +229,23 @@ registers数组下标是当前Stage／ValueCode的逻辑寄存器，Scalar说明
 
 SDK可直接对原编译返回的Program、Application、Module调用ir_json，对应用／模块用function_ir_json(name)选择实际保留函数；这些原编译结果的查询属于compiler功能。Stage、ValueCode和FunctionBody的只读值查询不依赖compiler；它们也可由调用者构造，查询本身不验证其合法性、不证明该值已经优化或执行。所有查询只借用原值并返回独立字符串，不修改IR、保存额外快照或扩展ProgramInterface。正常执行映像的ExecutionPlan并不保留已释放的Stage／ValueCode，查询不能恢复不存在的IR，也不改变代码、优化前提、资源寿命或正常运行采集策略。
 
+### 函数与程序IR的原定义来源
+
+compiler功能的`ir::SourceOrigin`保存原Definition所交付的实际Source快照、函数Span、模块和原函数名。`FunctionBody.source_origin`为可选值，`Program::source_origin()`返回可选只读引用；SourceOrigin的source／span／module／definition getter借用原事实，ir_json返回独立JSON。现有FunctionBody／Program的ir_json和bc ir的普通模块、应用、具体并行入口及函数选择沿source_origin字段交接同一值，不重编已取得的IR或重新读取源文件。
+
+值的kind为source_definition，module和definition分别保持原模块、原函数名，大小写不折叠；具体泛型类型／静态值实例名继续位于所属function_ir.name或program_ir.interface.program。不同实例可以共享同一原定义，原函数／程序范围不等于每条IR、内联调用或机器指令范围。内部合成上下文或没有实际源实现的已编译／外部边界为null；未返回的const求值或导入合同不伪造函数体和实现来源。源定义和当前已有IR分别说明，不将原声明头当作外部实现。
+
+source_path保留原Source.path的可表示UTF-8字符串，不可表示时为null；Windows的path_utf16保留完整原UTF-16单元，Unix路径以path_bytes保留原字节，不作有损替换。source_sha256是原装入UTF-8文本全部字节的SHA256，source_bytes为实际长度；摘要仅标识本次源快照，不证明当前磁盘内容、机器映像或执行授权。start_byte／end_byte为原函数声明／定义的UTF-8字节半开区间，span_unit=utf8_byte、span_range=half_open；start／end各含line和column，position_base=1，column_unit=unicode_scalar。行按LF划分，CRLF计一次换行，end是排他末端的位置，不是最后一个字符的位置。
+
+文本仍共享原Source的不可变Arc，查询只借用，独立JSON归调用者；原IR最后消费者结束后释放，不保留World／AST、复制全文或增加来源注册表。普通编译不为观察重复计算摘要，只有显式查询承担散列和编码成本；磁盘源已改写或移开时，已取得IR仍查询原快照。运行角色关闭compiler后没有SourceOrigin字段及其输出；compiler角色手工构造FunctionBody时显式提供source_origin，合成IR可用None。B语法、C ABI、必要执行编码及数据／CPU／GPU资源寿命不因来源观察变化。
+
+```text
+bc ir sample/lessons/tiles.b -I sample --program demo<96>
+bc ir sample/applications/start.b -I sample --entry main
+```
+
+当前只交付根定义到IR。逐操作和实际内联调用链、优化后的合并／消除、多对多机器字节区间、COFF及保存映像中的来源材料分别沿C-021.7.9.7剩余叶项；GPU复用共同源／IR事实后，仍须沿.8完成SPIR-V来源，不把本字段当作源级调试或最终GPU ISA映射已完成。
+
 ## 明确x64指令字节范围的结构查询
 
 `bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`读取调用者明确声明为指令的原字节范围，返回单个JSON。它直接解析原字节，不装入B模块、不创建Compiler／编译工作，不生成或执行机器码。文件不是COFF／PE容器接口；Object符号／重定位、原映像主函数／辅助代码／常量范围和最终链接查询仍按各自架构／台账交付，不能把整份容器或带常量的映像直接当成全部指令。
