@@ -1174,6 +1174,7 @@ impl Builder<'_> {
             &value,
             IndexDomain::ApplicationData(data.handle.identity()),
             data.length.minimum(),
+            None,
         ) {
             return self.fail(
                 index.span,

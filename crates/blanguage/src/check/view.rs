@@ -470,6 +470,7 @@ impl Builder<'_> {
             &value,
             IndexDomain::View(view.view_identity()),
             Self::view_length(&view).minimum(),
+            None,
         ) {
             return self.fail(
                 index.span,

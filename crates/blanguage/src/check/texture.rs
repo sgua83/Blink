@@ -72,7 +72,7 @@ impl Builder<'_> {
                 return Ok(None);
             };
             self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
-            if checked && !self.index_in(&value, IndexDomain::Fixed(count), count) {
+            if checked && !self.index_in(&value, IndexDomain::Fixed(count), count, None) {
                 return self.fail(
                     index.span,
                     "B137",

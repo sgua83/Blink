@@ -3310,8 +3310,9 @@ impl Builder<'_> {
                 .saturating_sub(1),
         )
     }
-    pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32) -> bool {
-        let lengths = self.resource_length_proofs(domain);
+    pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32, selected_length: Option<&Proof>) -> bool {
+        let mut lengths = self.resource_length_proofs(domain);
+        lengths.extend(selected_length.map(|proof| (proof, 0)));
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
         let valid = |value: &Value| {

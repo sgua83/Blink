@@ -1226,6 +1226,7 @@ impl Access {
             &i,
             IndexDomain::Data(binding),
             self.program.buffers[binding].count.unwrap_or(0),
+            None,
         ) && !(current && (binding == self.domain || same_shape))
         {
             return self.fail(
@@ -1262,7 +1263,7 @@ CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在
 
 check/application.rs中的DataPayload.elements只描述所有已初始化元素共同成立的Returned／Proof。局部元素及祖先身份在每份模型自身作用域中重绑定，共同合同使用声明DatasetContent输入身份，不表示不同元素的数值相等；实际装载按本次已生成寄存器实例化所选分量的共同数值身份，保留共同范围／非零条件及原资源／view借用来源。不同下标的数值比较与分支消费各自真实值。元素写入、函数返回及独立对象／归档把同一事实交给真实消费者。地址字段的后续显式读取与实际静态F共同约束来源寿命，原位置的初始化和CPU调用内存效果继续沿原合同交接。真正的拥有形参在入口捕获本次机器输入的父值数值来源，整体返回继续交接该快照，不从返回模型旧寄存器重建未知来源。它不是每个运行时元素另建的拥有对象或释放表。
 
-普通CPU函数的`requires nonzero(input[*].value)`与`requires nonempty(input[*].value.values)`分别选择已初始化元素的共同标量事实与子资源非空事实。parser把`[*]`保留在原Nonzero／Nonempty路径中，contracts的Selection沿原拥有树定位Data.elements，调用处消费同一Proof证明、函数入口只在原模型接收前提。非空资源字段的原Value长度元数据与原payload Data.length仍由同一拥有值交接，固定array使用实际类型数量。记录内的dataset、嵌套元素及字段列按真实作用域／projection选择，不从兄弟字段借用事实；合法inout记录整体替换与实际字段写入继续撤回旧事实。已证明外0元素只形成空集合，不生产虚构值或元素[0]访问；共同array保留原Selection的路径与实际作用域，普通array仍只使用原类型数量；零长度array的共同非空前提使其直接外dataset在原Proof中为空，同一拥有树的父值长度与payload长度共同交接，不接触不存在的array元素，没有运行时扫描或另一合同／拥有状态。前提仍按当前可表达参数与元素类型使用，共同元素index关系尚待实现。
+普通CPU函数的`requires nonzero(input[*].value)`、`requires nonempty(input[*].value.values)`与`requires index(input[*].value.index,input[*].value.values)`分别交接共同标量、子资源非空及同一元素的索引关系。parser在原Nonzero／Nonempty／Index路径保存[*]，contracts的Selection沿同一拥有树定位Data.elements，调用处消费实际Proof、入口在原模型接收前提。共同Index两端选择同一dataset与同一嵌套作用域；值分量在原Proof标记原资源IndexDomain，所选子资源的长度Proof直接交给原bounds::index_in，与范围／域／below_length共同判断。长度在一至二变化时，长度减一仍对应同一实际资源，不用最小长度替代关系，也不全局混合不同共同模型的局部身份。拥有字段的原Value元数据与payload Data.length仍归同一OwnedValue；固定array使用真实类型数量，共同array保留原Selection作用域。已证明外0元素只形成全称空集合，零长array的非空／index前提沿同一父值与payload长度Proof表达外dataset为空，不生成array元素或元素0访问。真实字段写入与合法inout记录整体替换撤回旧事实；u32向量与swizzle只交接所选分量，兄弟资源不借用关系。普通函数、泛型及无实现源码的对象／归档沿原合同交接，没有运行时扫描、检查或另一合同／拥有状态。当前不定义跨集合配对、共同值对全局资源或标量对共同资源的量化映射；参数、元素及借用模式仍按现行可表达能力使用。
 
 拥有记录的dataset字段长度从父Value当前分量取得，声明固定形状再沿原Proof合并同一长度事实。这样既保留字段此刻真实来源，也不丢掉类型已经确定的大小；动态长度不会重新借用分支合流前的旧资源叶寄存器。拥有元素字段的只读借用、inout入口、位置移动赋值、含view元素的静态F构造，以及追加移动和尾部取出仍是各自待实现的能力，完整存储与最后清理不替代通用容器。
 

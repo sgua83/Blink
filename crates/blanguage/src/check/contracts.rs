@@ -468,6 +468,12 @@ pub(super) fn resolve(
                     );
                 }
                 let resource = resource(builder, definition, env, path, contract.span)?;
+                let target = match &resource { Resource::Value(value) => Some(value), _ => None };
+                if (!selection.element_paths.is_empty() || target.is_some_and(|value| !value.element_paths.is_empty()))
+                    && !target.is_some_and(|value| selection.root == value.root && selection.element_paths == value.element_paths)
+                {
+                    return definition.source.fail(contract.span, "B225", "共同元素index的值与资源需要同一dataset元素作用域");
+                }
                 (
                     Predicate::Index(selection, resource),
                     format!("index({value},{path})"),
@@ -501,7 +507,12 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
             }
             Predicate::Index(selection, resource) => {
                 let value = &selection.value;
-                (0..value.regs.len()).all(|i| {
+                let length = match resource {
+                    Resource::Value(target) if target.value.ty.dataset.is_some() => Some(target.value.projected_proof(&[1])),
+                    Resource::Value(target) if target.value.ty.view.is_some() => Some(target.value.projected_proof(&[2])),
+                    _ => None,
+                };
+                selection.empty || (0..value.regs.len()).all(|i| {
                     builder.index_in(
                         &Value {
                             proof: value.projected_proof(&[i]),
@@ -513,6 +524,7 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
                         },
                         resource.domain(),
                         resource.minimum(),
+                        length.as_ref(),
                     )
                 })
             }
@@ -543,15 +555,7 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requir
                 }
                 Predicate::Nonempty(resource) => resource.assume_nonempty(name, binding),
                 Predicate::Index(selection, resource) => {
-                    if selection.root == *name {
-                        let value = match binding {
-                            Binding::Value(value) => value,
-                            Binding::OwnedValue(value) => {
-                                value.value.proof = bounds::Proof::capture(&value.value);
-                                &mut value.value
-                            },
-                            _ => continue,
-                        };
+                    if selection.root == *name && let Some(value) = selection.assumed_value(binding) {
                         for component in &selection.components {
                             value.proof.mark_domain(*component, resource.domain());
                         }

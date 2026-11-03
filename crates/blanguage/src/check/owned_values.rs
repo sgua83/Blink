@@ -497,7 +497,7 @@ impl Builder<'_> {
             let Some(index)=self.expr(index)? else{return Ok(None)};
             self.require_same(&Ty::scalar(Scalar::U32),&index.ty,expr.span)?;
             let count=value.value.ty.values[0];
-            if !self.index_in(&index,IndexDomain::Fixed(count),count){return self.fail(expr.span,"B137","拥有数组下标有效性无法静态证明")};
+            if !self.index_in(&index,IndexDomain::Fixed(count),count,None){return self.fail(expr.span,"B137","拥有数组下标有效性无法静态证明")};
             let mut item=if index.minimum()==index.maximum(){self.unpack_record(&value,index.minimum()as usize)}else{
                 let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
                 let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);

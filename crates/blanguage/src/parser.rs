@@ -200,9 +200,9 @@ impl Parser {
                 ContractPredicate::SameLength { left, right }
             }
             "index" => {
-                let value = self.qualified(".")?;
+                let value = self.contract_value_path()?;
                 self.expect(",")?;
-                let resource = self.qualified(".")?;
+                let resource = self.contract_value_path()?;
                 ContractPredicate::Index { value, resource }
             }
             _ => {

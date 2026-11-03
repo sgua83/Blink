@@ -336,7 +336,7 @@ impl Builder<'_> {
             }
             _ => 1,
         };
-        let bounded = self.index_in(&value, IndexDomain::Tile, minimum);
+        let bounded = self.index_in(&value, IndexDomain::Tile, minimum, None);
         if !bounded {
             return self.fail(
                 index.span,

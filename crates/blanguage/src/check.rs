@@ -3804,6 +3804,7 @@ impl<'a> Builder<'a> {
             &i,
             IndexDomain::Data(binding),
             self.program.buffers[binding].count.unwrap_or(0),
+            None,
         ) && !(current && (binding == self.domain || same_shape))
         {
             return self.fail(

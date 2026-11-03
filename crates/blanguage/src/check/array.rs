@@ -195,6 +195,7 @@ impl Builder<'_> {
             &index,
             IndexDomain::Fixed(count),
             count,
+            None,
         ) {
             return self.fail(expr.span, "B137", "固定值下标有效性无法静态证明");
         }
@@ -234,7 +235,7 @@ impl Builder<'_> {
     pub(super) fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
         let (element, count) = place.ty().indexed_element().unwrap();
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;
-        if !self.index_in(&index, IndexDomain::Fixed(count), count) {
+        if !self.index_in(&index, IndexDomain::Fixed(count), count, None) {
             return self.fail(
                 span,
                 "B137",
