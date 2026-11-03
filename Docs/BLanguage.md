@@ -1774,8 +1774,8 @@ void split(inout dataset<Receiver> first,write dataset<Signal> second)
 
 | 约束 | 含义与适用参数 |
 |---|---|
-| `requires nonzero(value)` | 按值整数标量／向量的每个选中分量非零，或cfn函数地址非空；支持记录字段和 swizzle，不表示有符号数一定为正或代码签名／寿命已经证明 |
-| `requires nonempty(resource)` | dataset／tile 或按值不可变 view 的长度至少为 1；view 可以是记录字段 |
+| `requires nonzero(value)` | 按值整数标量／向量的每个选中分量非零，或cfn函数地址非空；支持记录字段和 swizzle；普通CPU按值拥有聚合的字段及owned包装的value沿同一规则，不表示有符号数一定为正或代码签名／寿命已经证明 |
+| `requires nonempty(resource)` | dataset／tile 或按值不可变 view 的长度至少为 1；支持普通CPU按值拥有记录的dataset字段及记录中的view字段 |
 | `requires contiguous(position)` | write／inout普通位置参数或其字段／swizzle按所选类型连续、顺序匹配且对齐；不读取载荷 |
 | `requires index(value,resource)` | 按值 u32 标量或向量的每个选中分量都可索引该实际资源；同时可知该资源非空，不表示索引互异 |
 
@@ -1805,7 +1805,7 @@ void run(inout dataset<Job> jobs) on compute {
 
 独占字段的重复装载现按本次内容关联；只读外部数据／原子内容的重复装载等价仍未完成。示例显式保存本次 divisor 值，条件与实参使用同一快照。不能因另一次 atomic_load 非零就认定后来的读取也非零，也不能对 atomic T 位置本身声明 nonzero。浮点、bool、整个普通记录不属于当前 nonzero 类型，记录中的整数向量字段可以使用 `nonzero(config.divisors.yx)`。
 
-路径只选择形参及其字段，不执行函数调用或数据集元素读取。`index(query.indices,table)` 支持向量各分量，`index(query.pos,query.nodes)` 可以关联按值记录里的不可变 view；`nonempty(query.nodes)` 则给函数内的 view[0]／length-1 提供前提。只读／原子 dataset、tile 的访问模式、目标、字段类型与生命周期仍由原接口负责。index 不授予独占写入、任意散写、原子升级或块内同步，也不把完整容量当作 Count 有效前缀。
+路径只选择形参及其字段，不执行函数调用或数据集元素读取。`index(query.indices,table)` 支持向量各分量，`index(query.pos,query.nodes)` 可以关联按值记录里的不可变 view，或普通CPU按值拥有记录的dataset字段；`nonempty(query.nodes)` 给同一实际资源的[0]／length-1提供前提。所选字段可以嵌套，约束不复制到兄弟字段或另一份资源。只读／原子 dataset、tile 的访问模式、目标、字段类型与生命周期仍由原接口负责。index 不授予独占写入、任意散写、原子升级或块内同步，也不把完整容量当作 Count 有效前缀。
 
 所有要求都必须在调用点已经成立；数值常量、固定形状、当前范围／长度条件、既有索引能力及已声明的上层 requires 可以提供证明。函数独立检查时使用自己的接口，不依赖某个入口实际传来的数值。前提可在多层函数中转交，修改局部副本会按原赋值规则清除相应知识；requires 不会让后续的新值继续满足旧要求。类型检查不扫描输入数据、不会证明所有记录的任意业务属性，也没有新增量化条件或通用关系求解器。
 

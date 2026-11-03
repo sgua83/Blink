@@ -66,7 +66,7 @@ enum Resource {
         root: String,
         minimum: u32,
     },
-    View(Selection),
+    Value(Selection),
 }
 impl Resource {
     fn domain(&self) -> IndexDomain {
@@ -75,7 +75,9 @@ impl Resource {
             Self::Array(count) => IndexDomain::Fixed(*count),
             Self::Data { binding, .. } => IndexDomain::Data(*binding),
             Self::Tile { .. } => IndexDomain::Tile,
-            Self::View(value) => IndexDomain::View(value.value.view_identity()),
+            Self::Value(value) if value.value.ty.dataset.is_some() =>
+                IndexDomain::ApplicationData(value.value.identity()),
+            Self::Value(value) => IndexDomain::View(value.value.view_identity()),
         }
     }
     fn minimum(&self) -> u32 {
@@ -83,7 +85,9 @@ impl Resource {
             Self::Application { minimum, .. } => *minimum,
             Self::Array(count) => *count,
             Self::Data { minimum, .. } | Self::Tile { minimum, .. } => *minimum,
-            Self::View(value) => Builder::view_length(&value.value).minimum(),
+            Self::Value(value) if value.value.ty.dataset.is_some() => value.value.ty.values
+                .first().copied().unwrap_or_else(||bounds::Proof::capture(&value.value).unsigned_minimum(1)),
+            Self::Value(value) => Builder::view_length(&value.value).minimum(),
         }
     }
     fn assume_nonempty(&self, name: &str, binding: &mut Binding) {
@@ -100,8 +104,23 @@ impl Resource {
             (Self::Tile { root, .. }, Binding::Tile(view)) if root == name => {
                 view.length.mark_nonzero(0);
             }
-            (Self::View(selection), Binding::Value(value)) if selection.root == name => {
-                value.proof.mark_nonzero(selection.components[2]);
+            (Self::Value(selection), binding) if selection.root == name => {
+                let dataset = selection.value.ty.dataset.is_some();
+                let component = selection.components[if dataset {1} else {2}];
+                match binding {
+                    Binding::Value(value) => value.proof.mark_nonzero(component),
+                    Binding::OwnedValue(value) => {
+                        value.value.proof = bounds::Proof::capture(&value.value);
+                        value.value.proof.mark_nonzero(component);
+                        if dataset {
+                            let identity = selection.value.identity();
+                            value.resources_mut(&mut |data| {
+                                if data.handle.identity() == identity {data.length.proof.mark_nonzero(0);}
+                            });
+                        }
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -123,8 +142,12 @@ fn select(
     definition: &Definition, env: &BTreeMap<String, Binding>, path: &str, span: Span,
 ) -> Result<Selection> {
     let root = path.split('.').next().unwrap();
-    let Some(Binding::Value(value)) = env.get(root) else {
-        return definition.source.fail(span, "B225", "值约束需要按值参数或其字段；不能读取原子位置或数据集元素");
+    let value = match env.get(root) {
+        Some(Binding::Value(value)) => value,
+        Some(Binding::OwnedValue(value))
+            if definition.function.params.iter().any(|parameter|
+                parameter.name == root && parameter.access == Access::Value) => &value.value,
+        _ => return definition.source.fail(span, "B225", "值约束需要按值参数或其字段；不能读取原子位置或数据集元素"),
     };
     select_value(value, path, &definition.source, span)
 }
@@ -258,14 +281,14 @@ fn resource(
     if selection.value.ty.array.is_some() {
         return Ok(Resource::Array(selection.value.ty.values[0]));
     }
-    if selection.value.ty.view.is_none() {
+    if selection.value.ty.dataset.is_none() && selection.value.ty.view.is_none() {
         return definition.source.fail(
             span,
             "B225",
             "资源约束需要 dataset、tile 或不可变 view 参数／字段",
         );
     }
-    Ok(Resource::View(selection))
+    Ok(Resource::Value(selection))
 }
 
 pub(super) fn resolve(
@@ -393,9 +416,15 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requir
                 }
                 Predicate::Contiguous(_) => {}
                 Predicate::Nonzero(selection) => {
-                    if let Binding::Value(value) = binding
-                        && selection.root == *name
-                    {
+                    if selection.root == *name {
+                        let value = match binding {
+                            Binding::Value(value) => value,
+                            Binding::OwnedValue(value) => {
+                                value.value.proof = bounds::Proof::capture(&value.value);
+                                &mut value.value
+                            },
+                            _ => continue,
+                        };
                         for component in &selection.components {
                             value.proof.mark_nonzero(*component);
                         }
@@ -403,9 +432,15 @@ pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requir
                 }
                 Predicate::Nonempty(resource) => resource.assume_nonempty(name, binding),
                 Predicate::Index(selection, resource) => {
-                    if let Binding::Value(value) = binding
-                        && selection.root == *name
-                    {
+                    if selection.root == *name {
+                        let value = match binding {
+                            Binding::Value(value) => value,
+                            Binding::OwnedValue(value) => {
+                                value.value.proof = bounds::Proof::capture(&value.value);
+                                &mut value.value
+                            },
+                            _ => continue,
+                        };
                         for component in &selection.components {
                             value.proof.mark_domain(*component, resource.domain());
                         }
