@@ -1,6 +1,6 @@
 //! 正式COFF对象的构建输入与最终产物复用；链接端不参与。
-use super::{hash, identity, publish, Result};
-use crate::{module::codec::Encode, object::Object};
+use super::{identity, publish, Result};
+use crate::object::Object;
 use std::{fs, io::{ErrorKind, Error}, path::{Path, PathBuf}};
 /// 与现有三个-c分支相同的产物选择。
 #[derive(Clone, Copy)]
@@ -53,25 +53,15 @@ pub(super) fn compile<'a>(
     let (world, module) = crate::read_world(source_path, source_root, imported, worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let definitions = &world.declarations;
-    let mut bytes = Vec::new();
-    for value in [path.as_os_str().as_encoded_bytes(), root.as_os_str().as_encoded_bytes(),
-        env!("BLINK_COMPILER_ID").as_bytes()] { hash::field(&mut bytes, value); }
-    hash::field(&mut bytes, &worker.compiler().max_parameter_bytes().to_le_bytes());
-    match kind {
-        ObjectKind::Module(instances) => {
-            hash::field(&mut bytes, b"module");
-            hash::field(&mut bytes, &instances.bytes());
-        }
-        ObjectKind::Application(entry) => {
-            hash::field(&mut bytes, b"application"); hash::field(&mut bytes, entry.as_bytes());
-        }
-        ObjectKind::Library { entry, prefix } => {
-            hash::field(&mut bytes, b"library"); hash::field(&mut bytes, entry.as_bytes());
-            hash::field(&mut bytes, prefix.as_bytes());
-        }
-    }
-    identity::sources(&mut bytes, &world, &module, matches!(kind, ObjectKind::Module(_)));
-    let source = hash::digest(&bytes);
+    let selection = match kind {
+        ObjectKind::Module(instances) => identity::Selection::Module(instances.to_vec()),
+        ObjectKind::Application(entry) => identity::Selection::Application(entry.into()),
+        ObjectKind::Library { entry, prefix } => identity::Selection::Library {
+            entry: entry.into(), prefix: prefix.into(),
+        },
+    };
+    let source = identity::sources(&path, &root, selection,
+        worker.compiler().max_parameter_bytes(), &world, &module, matches!(kind, ObjectKind::Module(_)))?;
     let runtime = !matches!(kind, ObjectKind::Module(_));
     match fs::read(&artifact) {
         Ok(bytes) => {

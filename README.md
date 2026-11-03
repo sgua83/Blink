@@ -56,6 +56,8 @@ cargo build --workspace --release
 
 可选CPU栈报告由`bc -c ... --stack-report <文件>`或`blink --stack-report <已编译输入>... -o <文件>`生成，展示实际帧、调用链上界及递归／外部／间接未知范围；可声明真实调用前预算，仅作报告。PE容量与真实线程剩余容量分别说明，工具不限制递归或改写执行。命令与范围见[静态栈报告](Docs/BLanguage.md#cpu调用链的静态栈报告)。
 
+AI可用`bc inputs <compiled.obj|entry.blbi>`直接查询产物保存的实际构建请求与来源记录，输出JSON，不读取当前源码或重新编译。字段、摘要覆盖范围和无记录时的行为见[实际构建输入查询](Docs/BLanguage.md#实际构建输入查询)；该查询不代表完整调试工具已经交付。
+
 <a id="parallel-programming"></a>
 
 ## 从《并行编程的艺术》开始

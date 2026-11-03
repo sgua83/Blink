@@ -2,8 +2,8 @@
 use super::{hash, Result};
 use crate::module::codec::{Decode, Encode, record, variants};
 use std::io::Error;
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Declaration {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Declaration {
     Constant(String),
     Record(String),
     TypeSet(String),
@@ -14,12 +14,44 @@ pub(crate) enum Declaration {
     TypeSetName { name: String, module: String, imports: Vec<String> },
 }
 variants!(Declaration { 0 => Constant(name), 1 => Record(name), 2 => TypeSet(name), 3 => External(name), 4 => ValueName { name, module, imports }, 5 => RecordName { name, module, imports }, 6 => TypeSetName { name, module, imports }, 7 => Implementation(name) });
-const MAGIC: &[u8; 8] = b"BLBO\x0a\0\0\0";
-pub(super) struct Inputs {
-    pub(super) source: [u8; 32],
-    pub(super) imports: [u8; 32],
-    pub(super) native: Option<[u8; 32]>,
-    pub(super) declarations: Vec<Declaration>,
+const MAGIC: &[u8; 8] = b"BLBO\x0c\0\0\0";
+/// The original build request, not a target inferred from a file extension.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Selection {
+    Application(String),
+    Module(Vec<String>),
+    Library { entry: String, prefix: String },
+    Entry { entry: String, target: String },
+}
+variants!(Selection { 0 => Application(entry), 1 => Module(instances), 2 => Library { entry, prefix }, 3 => Entry { entry, target } });
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceInput {
+    pub module: String,
+    /// Native OsStr encoding, preserved without lossy Unicode replacement.
+    pub path: Vec<u8>,
+    pub scope: String,
+    /// Hash of the source portion named by scope, not necessarily the full file.
+    pub fingerprint: [u8; 32],
+}
+record!(SourceInput { module, path, scope, fingerprint });
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceInputs {
+    pub path: Vec<u8>,
+    pub root: Vec<u8>,
+    pub working_directory: Vec<u8>,
+    pub module: String,
+    pub compiler: String,
+    pub max_parameter_bytes: u32,
+    pub selection: Selection,
+    pub sources: Vec<SourceInput>,
+    pub requirements: Vec<(String, String)>,
+}
+record!(SourceInputs { path, root, working_directory, module, compiler, max_parameter_bytes, selection, sources, requirements });
+pub struct Inputs {
+    pub source: SourceInputs,
+    pub imports: [u8; 32],
+    pub native: Option<[u8; 32]>,
+    pub declarations: Vec<Declaration>,
 }
 record!(Inputs { source, imports, native, declarations });
 pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbols: impl IntoIterator<Item = &'a str>, used: &[Declaration]) -> [u8; 32] {
@@ -130,23 +162,44 @@ fn source_identity(bytes: &mut Vec<u8>, declarations: &crate::Declarations, sour
         }
     }
 }
-pub(super) fn sources(bytes: &mut Vec<u8>, world: &crate::World, module: &str,
-    exports: bool,
-) {
-    for (name, source) in world.interfaces.iter().map(|(name, module)| (name, &module.source)).chain(&world.sources) {
-        hash::field(bytes, name.as_bytes());
-        hash::field(bytes, source.path.as_os_str().as_encoded_bytes());
+pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
+    selection: Selection, max_parameter_bytes: u32, world: &crate::World,
+    module: &str, exports: bool,
+) -> Result<SourceInputs> {
+    let mut sources = Vec::new();
+    for (name, source) in world.interfaces.iter().map(|(name, module)| (name, &module.source))
+        .chain(world.sources.iter().filter(|(name, source)| source.path != world.interfaces[*name].source.path))
+    {
         let implementation = source.path != world.interfaces[name].source.path;
-        source_identity(bytes, &world.declarations, source, name != module || implementation, implementation);
+        let partial = name != module || implementation;
+        let mut bytes = Vec::new();
+        source_identity(&mut bytes, &world.declarations, source, partial, implementation);
+        sources.push(SourceInput {
+            module: name.clone(), path: source.path.as_os_str().as_encoded_bytes().to_vec(),
+            scope: if !partial { "full_source" } else if implementation {
+                "preamble_and_function_signatures"
+            } else { "preamble" }.into(),
+            fingerprint: hash::digest(&bytes),
+        });
     }
-    if exports {
+    let requirements = if exports {
         // A module owns the inferred participation contract of every public declaration,
         // including open templates whose concrete machine code is not exported here.
-        for (name, definition) in world.functions.iter().filter(|(_, definition)| definition.module == module && definition.public) {
-            hash::field(bytes, name.as_bytes());
-            hash::field(bytes, &[definition.execution as u8]);
-        }
-    }
+        world.functions.iter().filter(|(_, definition)| definition.module == module && definition.public)
+            .map(|(name, definition)| (name.clone(), match definition.execution {
+                crate::execution::Requirement::Invocation => "invocation",
+                crate::execution::Requirement::Domain => "domain",
+                crate::execution::Requirement::Host => "host",
+            }.into())).collect()
+    } else { Vec::new() };
+    Ok(SourceInputs {
+        path: path.as_os_str().as_encoded_bytes().to_vec(),
+        root: root.as_os_str().as_encoded_bytes().to_vec(),
+        working_directory: std::env::current_dir()?.as_os_str().as_encoded_bytes().to_vec(),
+        module: module.into(),
+        compiler: env!("BLINK_COMPILER_ID").into(), max_parameter_bytes,
+        selection, sources, requirements,
+    })
 }
 pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
     bytes.strip_prefix(MAGIC).map(Inputs::from_bytes).transpose()

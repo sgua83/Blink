@@ -6,7 +6,7 @@ mod inputs;
 mod graph;
 pub use graph::{Dependency, Output, Unit, UnitKind, compile_graph};
 pub(crate) use inputs::Inputs;
-pub(crate) use identity::Declaration;
+pub use identity::{Declaration, Inputs as InputFacts, Selection, SourceInput, SourceInputs};
 pub use object::{ObjectCompilation, ObjectKind, compile_object};
 use crate::module::codec::{Decode, Encode, record};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
@@ -82,11 +82,9 @@ fn compile_in(
         },
     );
     let artifact = output.join(format!("{}.blbi", hash::hex(&hash::digest(&request))));
-    let mut inputs = request;
-    hash::field(&mut inputs, env!("BLINK_COMPILER_ID").as_bytes());
-    hash::field(&mut inputs, &worker.compiler().max_parameter_bytes().to_le_bytes());
-    identity::sources(&mut inputs, &world, &module, false);
-    let source = hash::digest(&inputs);
+    let source = identity::sources(&path, &root,
+        Selection::Entry { entry: entry.into(), target: if target == Target::Cpu { "cpu" } else { "gpu" }.into() },
+        worker.compiler().max_parameter_bytes(), &world, &module, false)?;
     match fs::read(&artifact) {
         Ok(bytes) => {
             let stored = decode(&bytes)?;
@@ -137,6 +135,21 @@ fn compile_in(
 fn decode(bytes: &[u8]) -> Result<Artifact> {
     let bytes = bytes.strip_prefix(MAGIC).ok_or("不支持的入口构建映像")?;
     Artifact::from_bytes(bytes).map_err(|e| std::io::Error::other(e.to_string()).into())
+}
+/// Reads the request and consumed source identities stored in an actual artifact.
+/// No source files, compiler workers, native code or device are opened.
+pub fn input_facts(path: &Path) -> Result<InputFacts> {
+    let bytes = fs::read(path)?;
+    let identity = if bytes.starts_with(MAGIC) {
+        decode(&bytes)?.identity
+    } else {
+        crate::object::ObjectReader::new(&bytes)
+            .and_then(|reader| reader.build_inputs())
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .ok_or("该对象未保存构建输入")?.to_vec()
+    };
+    identity::decode(&identity)?
+        .ok_or_else(|| "产物未保存当前结构化构建输入；不能从旧摘要还原".into())
 }
 /// 独立执行可只装入产物，不读取B源码或调用编译器后端。
 ///

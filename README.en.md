@@ -40,6 +40,8 @@ Formal releases are built every Sunday at 21:00 Beijing time from the latest sub
 
 ## Quick start
 
+AI can inspect an artifact's stored build request and source identities with `bc inputs <compiled.obj|entry.blbi>`. This JSON query neither reads current B sources nor recompiles the artifact. See [build input inspection](Docs/BLanguage.md#实际构建输入查询) for fields and identity scope; this command does not imply that complete debugging tools are available.
+
 Use Windows x64, the [Rust stable MSVC toolchain](https://rust-lang.org/tools/install), and [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with x64 C++ tools and the Windows SDK. Open an x64 Developer PowerShell:
 
 ```powershell
