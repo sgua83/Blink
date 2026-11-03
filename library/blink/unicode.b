@@ -145,6 +145,33 @@ result<dataset<u8>,SliceError> slice_utf8(read dataset<u8> text,u32 start,u32 en
     return Ok(output);
 }
 
+result<view<u16>,SliceError> borrow_utf16(read dataset<u16> text,u32 start,u32 end) on cpu {
+    view<u16> selected=view<u16>(text,text.length,text.length);
+    u32 offset=0;
+    u32 count=0;
+    for(unit in 0..text.length){
+        if(unit<offset){continue;}
+        if(count==start){selected=view<u16>(text,unit,text.length);break;}
+        match(decode_utf16(text,unit)){
+            Ok(decoded){offset=decoded.next;}
+            Err(error){return Err(SliceError::Decode(error));}
+        }
+        count+=1;
+    }
+    u32 begin=offset;
+    for(unit in begin..text.length){
+        if(unit<offset){continue;}
+        if(count==end){selected=view<u16>(text,begin,unit);}
+        match(decode_utf16(text,unit)){
+            Ok(decoded){offset=decoded.next;}
+            Err(error){return Err(SliceError::Decode(error));}
+        }
+        count+=1;
+    }
+    if(start>end||end>count){return Err(SliceError::Range(ScalarRangeError(start,end,count)));}
+    return Ok(selected);
+}
+
 result<dataset<u16>,SliceError> slice_utf16(read dataset<u16> text,u32 start,u32 end) on cpu {
     dataset<u16> output=dataset<u16>(0);
     u32 offset=0;

@@ -35,6 +35,7 @@ enum SliceError : u32 {
     Range(ScalarRangeError) = 2;
 };
 result<view<u8>,SliceError> borrow_utf8(read dataset<u8> text,u32 start,u32 end) on cpu;
+result<view<u16>,SliceError> borrow_utf16(read dataset<u16> text,u32 start,u32 end) on cpu;
 result<dataset<u8>,SliceError> slice_utf8(read dataset<u8> text,u32 start,u32 end) on cpu;
 result<dataset<u16>,SliceError> slice_utf16(read dataset<u16> text,u32 start,u32 end) on cpu;
 

@@ -104,7 +104,7 @@ B 与 C 一致，关键字和标识符区分大小写。`value`、`Value`、`VAL
 
 普通双引号文本是既有固定字节数组 `array<u8,N>`，`N` 为解码后实际 UTF-8 字节数。`"ABC"` 有三个字节，`"中文🌍"` 有十个字节，`""` 是零长数组；不自动追加 NUL。可直接写 Unicode 与实际换行，转义支持 `\\`、`\"`、`\n`、`\r`、`\t`、`\0` 和 `\u{十六进制Unicode标量}`。例如 `"A\u{4E2D}\0"` 包含五个字节，最后一个为显式零字节。非法转义、代理码点和超出 Unicode 范围的值报 B385，未闭合引号报 B003，不替换或截断字符。
 
-字面量直接使用原数组的常量、泛型、记录、按值复制／返回、访问与借用规则，数量和布局沿原数组规则；不会隐式成为地址、view 或堆文本。数组后续允许的逐字节修改不保证仍是合法 UTF-8。C 字符串所需终止符由调用者明确提供，Windows UTF-16 等编码沿标准 Unicode 库显式转换，地址寿命沿实际数组／dataset 及其消费者保持。动态文本容器、UTF-16标量借用切片和完整字符串库仍是独立缺口。
+字面量直接使用原数组的常量、泛型、记录、按值复制／返回、访问与借用规则，数量和布局沿原数组规则；不会隐式成为地址、view 或堆文本。数组后续允许的逐字节修改不保证仍是合法 UTF-8。C 字符串所需终止符由调用者明确提供，Windows UTF-16 等编码沿标准 Unicode 库显式转换，地址寿命沿实际数组／dataset 及其消费者保持。动态文本容器和完整字符串库仍是独立缺口。
 
 ## 统一函数与实际执行位置
 `program` 已从源语言移除，独立的 `program` 单词不能再用作声明关键字或标识符；词法阶段在其真实文件、行列报 B004，并说明应改用返回类型函数定义（无返回值用 `void`），并行域由 `parallel` 表达。该错误不依赖函数是否被调用，也不允许通过声明同名类型使旧写法变成合法函数。导入的 `.h`／`.b` 使用同一词法规则。注释和字符串不受此限制，`Program`、`PROGRAM` 和含有该子串的其他名称继续按区分大小写的名称规则处理。内部 `Program` 及 `--program` 产物入口选项不是源声明语法。
@@ -350,7 +350,7 @@ u32 main() on cpu {
 
 `bool println(value)`接受单个当前整数、f32、f64或bool标量。整数使用十进制，bool 使用 `true／false`；f64使用17位有效数字，f32按C数值区域的 `%.9g` 格式输出，最多 9 位有效十进制数字，小数点为 `.`，按数值使用普通或科学计数法并去除末尾无用零。负零保留符号，无穷和 NaN 使用系统 UCRT 的 `inf／nan` 形式（NaN 可以带符号或分类后缀）；文本不保存 NaN 的负载。末尾附加一个 LF，完整写出返回 true，格式化失败、写入失败或部分写出返回 false，不自动重试。参数只求值一次，不使用返回值也保留这次输出。CPU 普通函数与 CPU 计算函数 均可使用；输出是可观察副作用，不能当作纯数值表达式消除，也不承诺 parallel 参与者的输出顺序。GPU／compute 目标报 B260，参数数量、向量等不支持的类型报 B261。
 
-生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，f32 格式化与超越函数使用系统 UCRT。运行无需 B 源码、编译器、brun 或手写宿主。动态数据与 计算函数 组织见下一节；Windows命令行快照及参数序列已有标准库接口，blink.windows.file::read_binary以Windows x64同步读取交回唯一拥有原始字节，read_utf8复用同一读取／关闭后再严格校验编码；write_bytes消费已有同步句柄的实际写入进展，write_binary创建或截断、create_new_binary排他新建，完整输出后各关闭本次原句柄。rename在唯一编码入口拒绝目标NUL并交回下标，完整UTF-16目标缓冲及原源句柄直接交FileRenameInfoEx，remove_file直接调用FileDispositionInfoEx；本次操作／关闭及最后旧消费者分别交接，原错误不改走另一入口，准确平台支持及错误类型见同一文件库。此前完成前缀、原OS错误、成功零进展与关闭失败的原身份分别交接，不宣称原子发布或失败回滚，见[文件I/O库](../library/README.md#blinkwindowsfile)；blink.windows.path::try_exists已交接实际链接目标的存在性、真实不存在与原OS查询／关闭错误，见[路径存在性](../library/README.md#blinkwindowspath)；同模块absolute已交接不要求目标存在的独立拥有UTF-16绝对路径，普通路径沿本次OS规则、verbatim前缀原样保持，见[绝对路径](../library/README.md#取得绝对路径)；同模块canonicalize沿真实OS目标句柄交回独立拥有UTF-16规范路径，实际链接、扩展命名空间、查询／关闭错误分别交接，见[规范路径身份](../library/README.md#取得规范路径身份)；with_extension按Windows前缀与文件名语义借用UTF-16输入并交回独立拥有的扩展名替换结果，不要求文件存在，见[扩展名词法替换](../library/README.md#替换路径扩展名)；join按Windows前缀、根与相对路径规则交回独立拥有的UTF-16组合结果，支持只读参数别名，见[路径组合](../library/README.md#组合路径)；目录搜索由[blink.windows.directory](../library/README.md#blinkwindowsdirectory)的FindData、搜索handle和FindFirstFileW／FindNextFileW／FindClose直接交接；调用者先初始化缓冲，仅在成功后解释目录项，立即保存结束／失败的原OS错误，并在最后消费者完成后关闭搜索。编译器CLI／装入器采用、通用字符串、UTF-16标量借用切片、其他输入、目录创建、SDK目录枚举采用、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
+生成物是 Windows x64 PE32+ 控制台应用，具有原生启动、系统导入、必要的地址重定位、页探测及 x64 栈展开信息；输出使用进程已有标准输出，f32 格式化与超越函数使用系统 UCRT。运行无需 B 源码、编译器、brun 或手写宿主。动态数据与 计算函数 组织见下一节；Windows命令行快照及参数序列已有标准库接口，blink.windows.file::read_binary以Windows x64同步读取交回唯一拥有原始字节，read_utf8复用同一读取／关闭后再严格校验编码；write_bytes消费已有同步句柄的实际写入进展，write_binary创建或截断、create_new_binary排他新建，完整输出后各关闭本次原句柄。rename在唯一编码入口拒绝目标NUL并交回下标，完整UTF-16目标缓冲及原源句柄直接交FileRenameInfoEx，remove_file直接调用FileDispositionInfoEx；本次操作／关闭及最后旧消费者分别交接，原错误不改走另一入口，准确平台支持及错误类型见同一文件库。此前完成前缀、原OS错误、成功零进展与关闭失败的原身份分别交接，不宣称原子发布或失败回滚，见[文件I/O库](../library/README.md#blinkwindowsfile)；blink.windows.path::try_exists已交接实际链接目标的存在性、真实不存在与原OS查询／关闭错误，见[路径存在性](../library/README.md#blinkwindowspath)；同模块absolute已交接不要求目标存在的独立拥有UTF-16绝对路径，普通路径沿本次OS规则、verbatim前缀原样保持，见[绝对路径](../library/README.md#取得绝对路径)；同模块canonicalize沿真实OS目标句柄交回独立拥有UTF-16规范路径，实际链接、扩展命名空间、查询／关闭错误分别交接，见[规范路径身份](../library/README.md#取得规范路径身份)；with_extension按Windows前缀与文件名语义借用UTF-16输入并交回独立拥有的扩展名替换结果，不要求文件存在，见[扩展名词法替换](../library/README.md#替换路径扩展名)；join按Windows前缀、根与相对路径规则交回独立拥有的UTF-16组合结果，支持只读参数别名，见[路径组合](../library/README.md#组合路径)；目录搜索由[blink.windows.directory](../library/README.md#blinkwindowsdirectory)的FindData、搜索handle和FindFirstFileW／FindNextFileW／FindClose直接交接；调用者先初始化缓冲，仅在成功后解释目录项，立即保存结束／失败的原OS错误，并在最后消费者完成后关闭搜索。编译器CLI／装入器采用、通用字符串、其他输入、目录创建、SDK目录枚举采用、其他平台／架构及源码调试仍待完成。外部 DLL 调用见后节，源码示例见 [独立应用](../sample/applications/README.md)。
 
 ## 应用拥有的动态 dataset 与显式执行
 普通 CPU 应用及其普通 CPU 函数可声明本地独占资源：
@@ -4101,7 +4101,7 @@ read／write／inout dataset借用不取得扩缩容权；inout拥有聚合仍�
 
 资源C入口`blink_resize(frame,handle,count,fill_address,output,on_error,context)->u32`；成功返回1并把原槽位实际句柄写入output，错误返回0且不写output，由本次接收函数取得原错误文本；fill_address仅在本次调用中借用声明布局下的实际普通值分量，Frame只读取这些分量，不能读取未初始化的填充。唯一Frame创建、解释和释放责任保持。变长存储沿原资源C入口交接；普通C／C++／Rust的值接口和view机器表示保持。
 
-本范围是普通值动态存储基础；动态拥有元素、持久view图构造、递归容器、完整字符串、UTF-16标量借用切片、异步／远端和BLEngine实际替换仍按Issues保持开放。当前u32长度不是64位CPU或语言长期索引上限的替代规格，不将已有原生结果当作完整容器库或性能达标。
+本范围是普通值动态存储基础；动态拥有元素、持久view图构造、递归容器、完整字符串、异步／远端和BLEngine实际替换仍按Issues保持开放。当前u32长度不是64位CPU或语言长期索引上限的替代规格，不将已有原生结果当作完整容器库或性能达标。
 
 ```b
 dataset<u32> values=dataset<u32>(0);
@@ -4121,7 +4121,7 @@ println(values[0]);
 
 编译期无符号索引关系现在保留不回绕的和、上界距离及剩余长度：例如`cursor in index..size-1`的`cursor+1`，以及确认`tail.length <= 4294967295-begin`后拼接的`begin+cursor`。数值快照与资源存储版本分开；resize保留真实数值关系，但新存储不能接受旧版本的下标许可。普通函数返回模型中未知的来源继续未知，不能从合流模型残留的某一分支寄存器推断真实返回长度。它不是任意整数证明器，一般while回边不变式仍未交付。
 
-dataset声明、重赋值及拥有字段投影统一消费原Returned求值；移动、部分移动与最终释放仍归原资源树和Frame。数值关系进入原模块合同。库的开放泛型源码可按实例编译；已编译模块只交付实际导出的实例，不提供二进制泛型模板。动态拥有元素、递归容器、完整字符串、UTF-16标量借用切片、异步及BLEngine业务采用继续开放。
+dataset声明、重赋值及拥有字段投影统一消费原Returned求值；移动、部分移动与最终释放仍归原资源树和Frame。数值关系进入原模块合同。库的开放泛型源码可按实例编译；已编译模块只交付实际导出的实例，不提供二进制泛型模板。动态拥有元素、递归容器、完整字符串、异步及BLEngine业务采用继续开放。
 
 ## UTF-8／UTF-16编解码、标量长度、借用／拥有切片与整段转换
 
@@ -4131,13 +4131,13 @@ scalar_length_utf8(read dataset<u8>)和scalar_length_utf16(read dataset<u16>)复
 
 slice_utf8(read dataset<u8>,u32 start,u32 end)和slice_utf16(read dataset<u16>,u32 start,u32 end)返回Result<dataset<原单元类型>,SliceError>，以半开Unicode标量区间[start,end)构造独立拥有序列，保持所选原始代码单元；合法空区间及末尾空区间成功。整个输入严格解码，第一个非法编码优先以SliceError::Decode保留原绝对位置与原因，所选区间之后的非法编码也不忽略。完整文本合法时要求start<=end<=标量长度，否则SliceError::Range的ScalarRangeError保存原start／end和实际标量length。输入只读借用，成功输出可独立修改、移动和释放；错误不交付部分输出，其存储沿原Frame退出释放。实现复用原decoder和resize／Vec容量，输出单元不超过原输入，不重编码、不另建文本状态或边界表。它们不按字素簇切割、不产生输入view或改变原所有者，分配／执行失败继续按原运行库处理。
 
-borrow_utf8(read dataset<u8>,u32 start,u32 end)以同一严格解码及SliceError规则返回Result<view<u8>,SliceError>，按Unicode标量半开区间借用原UTF-8字节；合法空及末尾空区间成功，所选范围外的第一个解码错误仍优先于Range，Range的length仍为实际标量数。它不分配、复制、重编码或保存边界表。原dataset继续唯一拥有存储，返回值及独立模块／归档沿普通view来源与最后消费者交接；活动借用中不能改写、替换、传输或释放原存储。错误结果不保留成功分支的活动借用，UTF-16标量借用仍未实现。
+borrow_utf8(read dataset<u8>,u32 start,u32 end)和borrow_utf16(read dataset<u16>,u32 start,u32 end)以同一严格解码及SliceError规则分别返回Result<view<u8>,SliceError>和Result<view<u16>,SliceError>，按Unicode标量半开区间借用原UTF-8字节／UTF-16代码单元；合法代理对计一个标量且保持两个原单元，合法空及末尾空区间成功。整个输入严格解码，所选范围之外的第一个错误仍优先于Range，Decode保存原绝对单元位置／原因，Range的length仍为实际标量数。不分配、复制、重编码或保存边界表；原dataset继续唯一拥有存储，返回值及独立模块／归档沿普通view来源与最后消费者交接。活动借用中不能改写、替换、传输或释放原存储；错误结果不保留成功分支的活动借用。
 
 整段转换只读借用输入，从零到末尾严格解码，Ok交回新的拥有dataset；空输入返回空序列。TextError的Decode分支保存原DecodeError，Sequence分支保存序列操作原SequenceError；前者按原输入定位第一个错误，后者沿当前u32长度表示交接实际溢出等序列原因。失败的部分输出由原Frame随退出释放，输入与原所有权保持。实现复用已验证的标量解码、同一编码载荷和blink.sequence::push／resize，不增加文本状态、容量管理或释放链；分配／执行失败仍沿原运行库处理。
 
 接受U+0000至U+10FFFF中的非代理标量；NUL、BOM、未分配码点与noncharacter保持原值。非最短UTF-8、代理编码、越界、非法续字节、孤立／错误UTF-16代理及截断保留严格错误，不替换字符、不隐式跳过或追加NUL。具体类型、错误位置及源码／对象／归档用法见[标准库](../library/README.md#blinkunicode)。标量接口可在CPU并行域使用，整段拥有转换在普通CPU流程执行；普通Result／变体、原资源ABI和最后消费者规则继续适用。
 
-普通源码文本字面量以既有固定UTF-8字节数组交接，见“文本字面量”；与dataset之间的逐项构造及编码转换保持显式。完整动态字符串值、UTF-16标量借用切片、一般OS字符串地址／生命周期及BLEngine业务采用仍按C-020.6.2.1保持开放；这些接口不表示完整文本库或GPU转换已经交付。
+普通源码文本字面量以既有固定UTF-8字节数组交接，见“文本字面量”；与dataset之间的逐项构造及编码转换保持显式。完整动态字符串值、一般OS字符串地址／生命周期及BLEngine业务采用仍按C-020.6.2.1保持开放；这些接口不表示完整文本库或GPU转换已经交付。
 
 ## 不回绕加法的输入快照与偏移
 
@@ -4150,7 +4150,7 @@ borrow_utf8(read dataset<u8>,u32 start,u32 end)以同一严格解码及SliceErro
 
 模块资源保留原不透明Frame、同步真实完成及最后消费者释放，改变的是实际宽标量、原生映像和C Value载荷编码。不能把重编成功等同于版本迁移或消费者已经采用。handle保持不透明身份，u64不授予地址或句柄操作；dataset长度／下标、const形状与枚举判别字保持自身32位合同。
 
-address值与usize／isize按原生地址章节交接；外部地址CPU位置读写按原生地址章节使用；自有地址的完整初始化结果与寿命交接、回调、通用字符串、UTF-16标量借用切片、动态拥有元素与递归容器、浮点原子、一般while不变式、异步及热更新仍待实现。GPU64位tile的已实现范围与当前原生缺陷见块内原子章节。f64、窄整数和数值排序按本文对应章节的当前范围使用。
+address值与usize／isize按原生地址章节交接；外部地址CPU位置读写按原生地址章节使用；自有地址的完整初始化结果与寿命交接、回调、通用字符串、动态拥有元素与递归容器、浮点原子、一般while不变式、异步及热更新仍待实现。GPU64位tile的已实现范围与当前原生缺陷见块内原子章节。f64、窄整数和数值排序按本文对应章节的当前范围使用。
 
 ## while单调位移与入口数值界
 
