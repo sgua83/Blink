@@ -201,7 +201,7 @@ pub(super) enum Identity {
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
-pub(super) enum MemoryEffect { Known(Vec<MemoryAccess>), External }
+pub(super) enum MemoryEffect { Known(Vec<MemoryAccess>), External(Access) }
 pub(super) fn external_memory(borrow:&view::Borrow)->bool {
     borrow.sources.entries().any(|(source,when)|when.possible()&&match source {
         view::Source::External=>true,
@@ -214,24 +214,27 @@ pub(super) fn external_memory(borrow:&view::Borrow)->bool {
     })
 }
 impl MemoryEffect {
-    pub fn of(borrow:&view::Borrow)->Self {
-        if external_memory(borrow){return Self::External;}
+    pub fn of(borrow:&view::Borrow,access:Access)->Self {
+        if external_memory(borrow){return Self::External(access);}
         Self::Known(borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source {
-            view::Source::Position(origin)=>origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if origin.writable{Access::InOut}else{Access::Read}}).collect::<Vec<_>>(),
+            view::Source::Position(origin)=>origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if origin.writable{access}else{Access::Read}}).collect::<Vec<_>>(),
             _=>Vec::new(),
         }).collect())
     }
     pub fn union(&mut self,other:Self) {
         match (&mut *self,other) {
             (Self::Known(a),Self::Known(b))=>a.extend(b),
-            (_,Self::External)=>*self=Self::External,
-            (Self::External,Self::Known(_))=>{},
+            (Self::External(access),Self::Known(effects))=>if effects.iter().any(|effect|effect.access!=*access){*access=Access::InOut;},
+            (target,Self::External(mut access))=>{
+                if match target {Self::Known(effects)=>effects.iter().any(|effect|effect.access!=access),Self::External(old)=>*old!=access}{access=Access::InOut;}
+                *target=Self::External(access);
+            },
         }
     }
     fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
         match self {
             Self::Known(effects)=>effects.clone(),
-            Self::External=>locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access:Access::InOut}).collect(),
+            Self::External(access)=>locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access:*access}).collect(),
         }
     }
 }

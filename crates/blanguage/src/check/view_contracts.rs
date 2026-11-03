@@ -637,9 +637,10 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     for(name,function)in functions {
         let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
         for usage in &function.uses {
-            if let Requirement::Memory{target,borrow,..}=&usage.requirement {
+            if let Requirement::Memory{target,borrow,..}=&usage.requirement
+                && !matches!(target,address::MemoryTarget::Call(memory)if function.calls.iter().any(|call|call.memory==*memory)) {
                 let borrow=evaluate(borrow,function,&known[name],&known,true).restricted(&usage.path);
-                let effect=address::MemoryEffect::of(&borrow);
+                let effect=address::MemoryEffect::of(&borrow,super::Access::InOut);
                 match values.entry(*target) {
                     std::collections::btree_map::Entry::Vacant(entry)=>{entry.insert(effect);}
                     std::collections::btree_map::Entry::Occupied(mut entry)=>entry.get_mut().union(effect),
@@ -648,13 +649,13 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         }
         for call in &function.calls {
             for access in &known[&call.function].interface.access {
-                let (borrows,when)=match access_at_call(access,call,function,&known[name],&known) {
-                    Access::Memory{borrows,when}=> (borrows,when),
-                    Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when),
+                let (borrows,when,access)=match access_at_call(access,call,function,&known[name],&known) {
+                    Access::Memory{borrows,when}=> (borrows,when,super::Access::InOut),
+                    Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
                     _=>continue,
                 };
                 let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
-                values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::Known(Vec::new())).union(address::MemoryEffect::of(&borrow));
+                values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::Known(Vec::new())).union(address::MemoryEffect::of(&borrow,access));
             }
         }
         memory.insert(name.clone(),values);

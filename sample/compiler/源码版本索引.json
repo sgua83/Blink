@@ -88,7 +88,7 @@
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
-      "sha256": "5f3851906955aefdc2205866bdead9ce2ec5299aa8759846e01393e9a1bc4504"
+      "sha256": "609e8b3422550017d029159b9e0fbdbf416e701999b5977e86b4d83b0391c0f4"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
@@ -164,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "16e8e93e7664932e8705f4a22888d45a4aff9212a4ca53ccfde8051fd43f6523"
+      "sha256": "58c9dcf82eb53d06ecc29384480c34c33151a2b5e532fa1ce2da77c10fc35ed5"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
@@ -350,14 +350,14 @@
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
-      "start_line": 627,
-      "end_line": 664,
+      "start_line": 630,
+      "end_line": 667,
       "sha256": "dba0660908ebcd468c62eff1b267e7e14df1e48d6d700ad8ed5292c4e6953cac"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
-      "start_line": 473,
-      "end_line": 491,
+      "start_line": 476,
+      "end_line": 494,
       "sha256": "b1fca0684cece908f78f1a236ecedc88c7d192b02563db6fbec609918f30f481"
     },
     {
