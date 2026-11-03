@@ -138,11 +138,13 @@ impl Lower {
             level,
             byte: false,
         });
+        let unpack_outer = std::mem::take(&mut self.code);
         let mut rgba = Vec::new();
-        for (count, bits) in [(4, 8), (2, 16)] {
-            let outer = std::mem::take(&mut self.code);
-            for channel in 0..count {
-                let shift = self.constant(Scalar::U32, (channel * bits) as u32);
+        for (tag, widths) in [(1, &[8,8,8,8][..]), (4, &[16,16][..]), (5, &[10,10,10,2][..])] {
+            let mut offset = 0;
+            for (channel, &bits) in widths.iter().enumerate() {
+                let shift = self.constant(Scalar::U32, offset);
+                offset += bits;
                 let shifted = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, raw, shift);
                 let mask = self.constant(Scalar::U32, (1 << bits) - 1);
                 let byte = self.binary(Scalar::U32, BinaryOp::And, shifted, mask);
@@ -154,16 +156,19 @@ impl Lower {
                     src: value,
                 });
             }
-            for channel in count..4 {
+            for channel in widths.len()..4 {
                 self.code.push(Inst::Constant(result[channel], Scalar::F32, Bits::from(if channel == 3 { 1.0f32.to_bits() } else { 0 })));
             }
-            let unpacked = std::mem::replace(&mut self.code, outer);
-            if count == 4 { rgba = unpacked; } else {
-                let rg_format = self.constant(Scalar::U32, 4);
-                let rg = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), format, rg_format);
-                self.code.push(Inst::If { condition: rg, yes: unpacked, no: std::mem::take(&mut rgba) });
+            let unpacked = std::mem::take(&mut self.code);
+            if tag == 1 { rgba = unpacked; } else {
+                let packed_format = self.constant(Scalar::U32, tag);
+                let packed = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), format, packed_format);
+                self.code.push(Inst::If { condition: packed, yes: unpacked, no: rgba });
+                rgba = std::mem::take(&mut self.code);
             }
         }
+        self.code = unpack_outer;
+        self.code.extend(rgba);
         let srgb_format = self.constant(Scalar::U32, 2);
         let encoded = self.binary(
             Scalar::Bool,

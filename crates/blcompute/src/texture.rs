@@ -9,12 +9,13 @@ pub enum TextureFormat {
     Rgba8Srgb = 2,
     R8Unorm = 3,
     Rg16Unorm = 4,
+    Rgb10A2Unorm = 5,
 }
 impl TextureFormat {
     pub fn texel_bytes(self) -> usize {
         match self {
             Self::Rgba32Float => 16,
-            Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Rg16Unorm => 4,
+            Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Rg16Unorm | Self::Rgb10A2Unorm => 4,
             Self::R8Unorm => 1,
         }
     }
@@ -25,6 +26,7 @@ impl TextureFormat {
             2 => Ok(Self::Rgba8Srgb),
             3 => Ok(Self::R8Unorm),
             4 => Ok(Self::Rg16Unorm),
+            5 => Ok(Self::Rgb10A2Unorm),
             _ => Err(error("未知BLTEX texel格式")),
         }
     }
@@ -35,6 +37,7 @@ pub enum TextureTexels {
     Rgba8Srgb(Vec<[u8; 4]>),
     R8Unorm(Vec<u8>),
     Rg16Unorm(Vec<[u16; 2]>),
+    Rgb10A2Unorm(Vec<u32>),
 }
 impl From<Vec<[f32; 4]>> for TextureTexels {
     fn from(value: Vec<[f32; 4]>) -> Self {
@@ -49,21 +52,18 @@ impl TextureTexels {
             Self::Rgba8Srgb(_) => TextureFormat::Rgba8Srgb,
             Self::R8Unorm(_) => TextureFormat::R8Unorm,
             Self::Rg16Unorm(_) => TextureFormat::Rg16Unorm,
+            Self::Rgb10A2Unorm(_) => TextureFormat::Rgb10A2Unorm,
         }
     }
     pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Rgba32Float(v) => unsafe {
-                std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 16)
-            },
-            Self::Rgba8Unorm(v) | Self::Rgba8Srgb(v) => unsafe {
-                std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 4)
-            },
-            Self::R8Unorm(v) => v,
-            Self::Rg16Unorm(v) => unsafe {
-                std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 4)
-            },
-        }
+        let (pixels, bytes): (*const u8, usize) = match self {
+            Self::Rgba32Float(v) => (v.as_ptr().cast(), v.len() * 16),
+            Self::Rgba8Unorm(v) | Self::Rgba8Srgb(v) => (v.as_ptr().cast(), v.len() * 4),
+            Self::R8Unorm(v) => (v.as_ptr(), v.len()),
+            Self::Rg16Unorm(v) => (v.as_ptr().cast(), v.len() * 4),
+            Self::Rgb10A2Unorm(v) => (v.as_ptr().cast(), v.len() * 4),
+        };
+        unsafe { std::slice::from_raw_parts(pixels, bytes) }
     }
     pub fn from_bytes(format: TextureFormat, bytes: &[u8]) -> Result<Self> {
         if !bytes.len().is_multiple_of(format.texel_bytes()) {
@@ -89,6 +89,7 @@ impl TextureTexels {
             TextureFormat::Rgba8Srgb => Self::Rgba8Srgb(copy(bytes)),
             TextureFormat::R8Unorm => Self::R8Unorm(bytes.to_vec()),
             TextureFormat::Rg16Unorm => Self::Rg16Unorm(copy(bytes)),
+            TextureFormat::Rgb10A2Unorm => Self::Rgb10A2Unorm(copy(bytes)),
         })
     }
 }

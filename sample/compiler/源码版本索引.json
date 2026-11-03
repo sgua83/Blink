@@ -232,7 +232,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "4b72dd308282a9e21baf1709af59532013974a0e6e5811123d95dbc29c358acf"
+      "sha256": "03c6eca30e71c9aa499f5878ce67978076205a3e6bd41e0bcf9574ebc9d86029"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",

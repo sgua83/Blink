@@ -290,7 +290,7 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 
 ## 共同Frame C ABI的错误与所有权
 
-根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI21的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。该ABI身份同时涵盖执行映像中CPU主函数末端与展开字节的编码；共同Frame入口使用下列C签名。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
+根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI22的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。该ABI身份同时涵盖执行映像中CPU主函数末端与展开字节的编码；共同Frame入口使用下列C签名。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
 
 ```c
 typedef struct BlinkFrame Frame;
