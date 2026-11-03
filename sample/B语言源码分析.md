@@ -1268,7 +1268,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3875`。
+源码节选：`crates/blanguage/src/check.rs:3878`。
 
 ```rust
         let binding = view.binding;
@@ -1335,7 +1335,11 @@ Place::ApplicationElement在原编译期位置上保留实际资源Borrow，arra
 
 materialize_element把本次packed分量身份交给原ElementComponent／DatasetContent，并在原rebind_model、translate_returned之后保留已装载Value及Data.root／length的实际数值来源；它不进入Data.elements，不改变原拥有、view或释放。共同模型从不表示不同元素数值相等。同位写、变化下标和未知地址写截断旧内容关系；可区分的兄弟字段、其他元素及只读调用按原字节范围和合同判断。普通inout引用仍有声明的写权限。已捕获的旧值／bool保持快照，不能指代写后的当前内容。rebound只把Name／Member绑定赋值计入外层再绑定，载荷Index写不再无端要求dataset的可变头部；真实整份赋值仍保留该存储职责。
 
-循环体内部重新建立的条件可以沿当前段使用；循环头或循环外的条件跨入正文仍有B152／B137缺口，沿C-005.13.2及C-020.1.6.3.2.2.3推进，不能据单次段内成功关闭。inout拥有元素入口、位置移动赋值、含view元素的静态F构造、追加移动和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
+while_loop检查正文期间保留本轮条件的原code前缀，检查结束后再分别取出条件与正文，仍交给原Loop生产者；没有复制指令或改变运行次序。因此每轮新读的`while(data[i]!=0)`和`while(rows[i].values.length>0)`可以向同轮正文交接除数及子长度事实。
+
+短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
+
+循环体内部重新建立的条件及每轮新读的while条件均可沿当前执行使用；循环外旧条件跨入口／回边仍有B152／B137缺口，沿C-005.13.2.2及C-020.1.6.3.2.2.3推进。可变动态下标经短路前置C调用后的范围事实另归C-005.14，不把该B137算作非零修复。inout拥有元素入口、位置移动赋值、含view元素的静态F构造、追加移动和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
 
 普通CPU Invocation函数的read dataset借用交接真实地址、长度、u64记录步幅和字段偏移；Host及write／inout／atomic参数交接原Frame句柄、长度、记录步幅和字段偏移四个u32；DataPayload与实际Place直接保存Access，不以可写布尔值代替原子权限。atomic参数只允许原子操作及atomic转借，不能变成普通read／write／inout或不可变view；普通可写资源可按已初始化的真实区域借给atomic参数。atomic T沿已有原生位置参数ABI交接，字段、嵌套数组与非连续向量分量保留实际地址。Atomic直接使用IndexedSource的Data／Tile／View位置，不另存目标类别和重复下标；CPU地址上的读改写使用真实LOCK指令，加载／存储保持显式内存序，GPU不解释CPU裸地址。资源仍由原Frame拥有，最后真实消费者完成后释放；普通CPU函数自身不因此创建并行域。对象合同与资源C ABI采用语言规范“已编译模块的资源ABI”中的现行编码版本。
 

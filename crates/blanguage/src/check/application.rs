@@ -153,8 +153,11 @@ impl ApplicationLoads<'_, '_> {
                         (Some(CallArgument::Value{values:a,..}),Some(CallArgument::Value{values:b,..}))=>a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),_=>false,
                     }
             },
-            (InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>self.0.code[ai].results().any(|reg|reg==a)&&self.0.code[bi].results().any(|reg|reg==b)&&self.same_load(a_inst,b_inst)
-                &&!self.0.code[ai.min(bi)+1..ai.max(bi)].iter().any(|inst|self.writes(inst,a_inst)),
+            (InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>{
+                let direct=self.0.code[ai].results().any(|reg|reg==a)&&self.0.code[bi].results().any(|reg|reg==b);
+                let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
+                self.same_load(a_inst,b_inst)&&!self.0.code[range].iter().any(|inst|self.writes(inst,a_inst))
+            },
             _=>false,
         }
     }
@@ -241,18 +244,36 @@ impl ApplicationLoads<'_, '_> {
             _=>false,
         }
     }
-    fn snapshot(&self,reg:Reg)->Reg {
-        let Some((mut at,mut load))=self.definition(reg)else{return reg;};
-        if !matches!(load.kind,InstKind::ViewLoad{..}){return reg;}
-        let mut result=reg;
-        while at>0 {
-            at-=1;let inst=&self.0.code[at];
+    fn prior_snapshot<'a>(&'a self,code:&'a[Inst],mut load:&'a Inst)->Option<Reg> {
+        let mut result=None;
+        for inst in code.iter().rev() {
+            let nested=match &inst.kind {
+                InstKind::If{condition,yes,no}=>{
+                    let mut source=*condition;
+                    while let Some((at,Inst{kind:InstKind::LoadLocal(_,slot),..}))=self.definition(source) {
+                        let Some(Inst{kind:InstKind::StoreLocal(_,value),..})=self.0.code[..at].iter().rev().find(|inst|self.writes_local(inst,*slot))else{break;};
+                        source=*value;
+                    }
+                    let value=Value{ty:Ty::scalar(Scalar::Bool),regs:vec![source],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
+                    self.0.condition_truth(&bounds::Condition::of(&value),None).map(|truth|if truth{yes.as_slice()}else{no.as_slice()})
+                },
+                InstKind::Scope(body)=>Some(body.as_slice()),
+                _=>None,
+            };
+            if let Some(reg)=nested.and_then(|code|self.prior_snapshot(code,load)) {
+                result=Some(reg);load=self.definition(reg).unwrap().1;
+            }
             if self.writes(inst,load){break;}
             if self.same_load(inst,load) {
-                if let InstKind::ViewLoad{dst,..}=inst.kind{result=dst;load=inst;}
+                if let InstKind::ViewLoad{dst,..}=inst.kind{result=Some(dst);load=inst;}
             }
         }
         result
+    }
+    fn snapshot(&self,reg:Reg)->Reg {
+        let Some((at,load))=self.definition(reg)else{return reg;};
+        if !matches!(load.kind,InstKind::ViewLoad{..}){return reg;}
+        self.prior_snapshot(&self.0.code[..at],load).unwrap_or(reg)
     }
 }
 impl Builder<'_> {

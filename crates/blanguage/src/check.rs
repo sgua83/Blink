@@ -3192,6 +3192,8 @@ impl<'a> Builder<'a> {
             self.code.extend(condition_code);
             return Ok(());
         }
+        self.code = condition_code;
+        let condition_prefix = self.code.len();
         let mut condition_env = self.env.clone();
         let condition_path = self.path.clone();
         self.refine_bounds(&partition, true);
@@ -3217,7 +3219,8 @@ impl<'a> Builder<'a> {
         }
         self.iterators.pop();
         self.loop_depth -= 1;
-        let mut code = std::mem::take(&mut self.code);
+        let mut code = self.code.split_off(condition_prefix);
+        let condition_code = std::mem::take(&mut self.code);
         if initial {
             let (expanded, flow) =
                 self.expand_initial_loop(code, body_flow.continues(), |builder, _| {
