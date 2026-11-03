@@ -52,7 +52,7 @@ pub fn run(backend: &str) -> Result<()> {
         "gpu" => {
             let device = Device::for_program(&code)?;
             println!("GPU {}", device.name());
-            let code = device.compile(code)?;
+            let code = device.compile(code)?.with_timestamps(true)?;
             let points = device.upload(points)?;
             let albedo = device.upload_texture(&albedo)?;
             println!("setup_upload_enqueue_ms={:.3}", elapsed(setup));
@@ -68,9 +68,12 @@ pub fn run(backend: &str) -> Result<()> {
                 )?
                 .wait().map_err(|(error, _)| error)?;
             println!(
-                "first_run_wait_ms={:.3} gpu_ms={:.3}",
+                "first_run_wait_ms={:.3} gpu_ms={}",
                 elapsed(start),
-                done.timings.elapsed_ms
+                match &done.timings {
+                    Some(timings) => format!("{:.3}", timings.elapsed_ms),
+                    None => "not_collected".to_owned(),
+                }
             );
             let start = Instant::now();
             let done = code
@@ -84,9 +87,12 @@ pub fn run(backend: &str) -> Result<()> {
                 )?
                 .wait().map_err(|(error, _)| error)?;
             println!(
-                "resident_run_wait_ms={:.3} gpu_ms={:.3}",
+                "resident_run_wait_ms={:.3} gpu_ms={}",
                 elapsed(start),
-                done.timings.elapsed_ms
+                match &done.timings {
+                    Some(timings) => format!("{:.3}", timings.elapsed_ms),
+                    None => "not_collected".to_owned(),
+                }
             );
             let start = Instant::now();
             let output = device.download(&done.datasets()[0])?;

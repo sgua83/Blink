@@ -272,11 +272,11 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/execution.rs",
-      "sha256": "3cf7bb60fdc99fa2209639d1f3f223f4e92872abd3fd9d963dcdc4e3aaa4ce75"
+      "sha256": "be4069d68e6559495c1671275c80263a3a3a6f6b8171955e914904ed856987e8"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "1544d1009983326d848feec9f86acdf64345de15984a124a509a6349403aed0d"
+      "sha256": "51fbfa7f7175450d3b1b22da8f8b8642ff13153dee1fa0221427a3c4fef4a892"
     },
     {
       "path": "sample/lessons/map.b",
@@ -652,8 +652,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1871,
-      "end_line": 1877,
+      "start_line": 1881,
+      "end_line": 1887,
       "sha256": "b56642a96ce73a2b95d466461b6d2457bc87cec51838ffeff6bb36b7ca3dad11"
     },
     {
@@ -665,13 +665,13 @@
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
       "start_line": 1607,
-      "end_line": 1616,
-      "sha256": "85b86a97b7a10259146bc86b042f93fd9b2662c37b3995f9cb73fc7639b1bc4f"
+      "end_line": 1617,
+      "sha256": "c199c946367dc8998d6f96ed0f3b38e20523166061368dfd26652ef732172543"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1901,
-      "end_line": 1910,
+      "start_line": 1911,
+      "end_line": 1920,
       "sha256": "b9d24207f3c4216ba86e6d6f6cc43de5d4bbbc5cd4aead6871ce7b0c3015da3d"
     },
     {
@@ -688,14 +688,14 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/execution.rs",
-      "start_line": 27,
-      "end_line": 33,
+      "start_line": 21,
+      "end_line": 27,
       "sha256": "609e6bf6386d68477b69a99d8a09e5907dcb46fb31d57ad9f7064b75ca65f2a1"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2747,
-      "end_line": 2760,
+      "start_line": 2767,
+      "end_line": 2780,
       "sha256": "fbd171fb65519f0e30386a01494d59684c3de02e6364396b83d6f44504cc574c"
     },
     {
@@ -706,8 +706,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2468,
-      "end_line": 2474,
+      "start_line": 2485,
+      "end_line": 2491,
       "sha256": "7d7b294d818dbc009723ed7be968c7e38e66da930cfd35e57877bcf46e5d2bc5"
     },
     {

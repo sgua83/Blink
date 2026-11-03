@@ -2,7 +2,7 @@
 
 `Submission::detach()`不等待本次GPU执行，返回原 `DomainBindings<GpuDataset>`、原AS绑定和 `GpuCompletion`。没有复制数据、资源或完成事实；结果继续携带原来的真实最后使用点，后续程序、下载和释放沿原执行依赖处理。
 
-`GpuCompletion::is_complete()`查询同一原生执行的实际完成情况；`wait()`等待完成并返回该提交的 `GpuTimings`。时间戳查询池在执行期间由原 `ExecutionResources` 持有，观察者也持有原池，因此后一个提交完成并回收此前命令资源后，前一个观察者仍可读取自己的时间戳。此接口不是引擎帧号、计数镜像、另一个调度器或新的完成服务。
+`GpuCompletion::is_complete()`查询同一原生执行的实际完成情况；`wait()`等待完成并返回`Option<GpuTimings>`。`GpuProgram`及`GpuTemplate`默认不采集，通过`with_timestamps(true)?`显式开启，通过`with_timestamps(false)?`关闭。没有采集或没有执行阶段返回`None`；`Some`中的零值仍是实际查询结果。开启时计算队列必须真实支持时间戳，未开启的计算不以计时能力为前提。已请求的查询池在执行期间由原`ExecutionResources`持有，观察者也持有原池，因此后一个提交完成并回收此前命令资源后，前一个观察者仍可读取自己的时间戳。此接口不是引擎帧号、计数镜像、另一个调度器或新的完成服务。
 
 观察者可以先于结果退出。结果和AS的物理使用期仍由原资源／Execution管理，不以观察者退出或CPU tick结束作为GPU完成。最后真实资源所有者退出时仍履行原有完成后释放职责；异步不等于允许提前销毁设备资源。`Submission::wait()`借用同一完成点与查询池等待，成功交回Completed并清除数据的未决使用标记；失败交回(error, submission)，同一提交继续持有原绑定、AS、查询池与真实最后使用点。调用者决定继续持有或明确结束它，错误不保证设备数据可用；执行器不自动重放。`into_bindings()`及原按绑定交接继续存在。
 

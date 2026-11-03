@@ -1991,7 +1991,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 同一份GPU程序复用管线，临时空间、描述符和命令属于每次执行。装入借用原计划与SPIR-V，由原`Compiled`持有部分设备资源；全部成功才取得计划，失败沿原`Drop`释放资源。`Device::load_template`以`Err((error,image))`交回同一未改输入，`Frame`接回原槽。调用方显式再装入，终端消费者释放输入并传播原错误，不自动重试；借用与拥有只是装入期类型区别，没有第二计划、状态表或新包装。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1871`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1881`。
 
 ```rust
     pub fn submit(
@@ -2062,6 +2062,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 pub struct GpuProgram {
     compiled: Rc<Compiled>,
     partition_elements: NonZeroU32,
+    capture_timestamps: bool,
 }
 #[derive(Clone)]
 pub struct GpuTemplate {
@@ -2100,7 +2101,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1901`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1911`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -2180,7 +2181,7 @@ impl Drop for GpuDataset {
 
 ### 21.3 Completion 记录设备事实
 
-源码节选：`crates/blcompute/src/vulkan/execution.rs:27`。
+源码节选：`crates/blcompute/src/vulkan/execution.rs:21`。
 
 ```rust
 pub(super) struct Completion {
@@ -2196,7 +2197,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2747`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2767`。
 
 ```rust
         let timings = match result {
@@ -2215,7 +2216,9 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 }
 ```
 
-wait先等待真实执行，再读取时间戳。成功交回Completed并清除last_use；失败交回(error,self)，同一Submission仍持有绑定、加速结构、查询池与原完成点。调用者可继续持有或明确结束原提交；错误不承诺数据可用。
+wait先等待真实执行；只有显式开启采集且存在实际阶段时才读取原查询池。GpuProgram和GpuTemplate通过with_timestamps(true)?请求采集，默认关闭。Completed.timings、into_parts第三项及GpuCompletion::wait的计时为Option<GpuTimings>：None表示未采集／没有阶段，Some保留实际查询得到的零值或非零值。普通计算不要求队列具备计时能力，显式开启时才检查；计算命令是否存在仍由实际阶段决定。查询池继续由原ExecutionResources、Submission及独立观察者保持到最后消费者完成。
+
+成功交回Completed并清除last_use；失败交回(error,self)，同一Submission仍持有绑定、加速结构、查询池与原完成点。调用者可继续持有或明确结束原提交；错误不承诺数据可用。
 
 ![提交、消费与释放的寿命线](figures/compiler-lifetime.svg)
 
@@ -2266,7 +2269,7 @@ wait先等待真实执行，再读取时间戳。成功交回Completed并清除l
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2468`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2485`。
 
 ```rust
                                 let mut length = count;

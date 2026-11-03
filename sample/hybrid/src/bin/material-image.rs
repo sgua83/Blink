@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         .into(),
     }])?;
     let albedo = device.upload_texture(&albedo)?;
-    let program = device.compile(code)?;
+    let program = device.compile(code)?.with_timestamps(true)?;
     println!(
         "setup_enqueue_ms={:.3}",
         setup.elapsed().as_secs_f64() * 1000.0
@@ -49,9 +49,12 @@ fn main() -> Result<()> {
         )?
         .wait().map_err(|(error, _)| error)?;
     println!(
-        "image_run_wait_ms={:.3} gpu_ms={:.3}",
+        "image_run_wait_ms={:.3} gpu_ms={}",
         start.elapsed().as_secs_f64() * 1000.0,
-        done.timings.elapsed_ms
+        match &done.timings {
+                    Some(timings) => format!("{:.3}", timings.elapsed_ms),
+                    None => "not_collected".to_owned(),
+                }
     );
 
     let start = Instant::now();

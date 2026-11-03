@@ -3244,7 +3244,7 @@ let results = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 
 这些接口消费原所有者，Rust 不允许分叉后继续使用原 Submission 或重复移动同一分支。多份独立输出各自拥有 Count；它们可独立计算再汇合，但不能把同一可写存储或 Count 复制给两个分支。丢弃一个 pending 分支时，它的存储延迟至最后使用点完成才释放，其他分支不必为此等待。延后使用的分支保留自己的数据，即使生产者的命令和临时页已经释放。
 
-本节示例用map_err显式结束失败提交并返回原错误；需要继续持有输入的调用者应匹配Err((error, submission))。执行资源与时间戳的消费者不同：`is_complete()` 可释放已完成命令、临时页及 Fence；原 Submission 仍保留查询池，之后 `wait()` 可读取正确的 `GpuTimings`，不再次进行原生等待。消费 Submission 做分区或后续提交时，不再保留无人读取的旧时间戳；查询池仍由实际 GPU 命令持有到完成。
+本节示例用map_err显式结束失败提交并返回原错误；需要继续持有输入的调用者应匹配Err((error, submission))。执行资源与时间戳的消费者不同：`is_complete()` 可释放已完成命令、临时页及 Fence；显式采集的原Submission仍保留查询池，之后`wait()`可读取正确的`Some(GpuTimings)`，不再次进行原生等待。`GpuProgram`和`GpuTemplate`默认不采集时间戳；`with_timestamps(true)?`请求后续提交采集，`with_timestamps(false)?`关闭。`Completed.timings`、`Completed::into_parts()`第三项及`GpuCompletion::wait()`结果中的计时为`Option<GpuTimings>`；没有采集或没有执行阶段返回`None`，真实查询得到零仍为`Some`。开启时若当前计算队列不支持时间戳，直接返回错误；普通计算不要求计时能力。消费 Submission 做分区或后续提交时，不再保留无人读取的旧时间戳；查询池仍由实际 GPU 命令持有到完成。
 
 `GpuProgram::submit_join`／`GpuTemplate::submit_join` 消费同队列的多个未等待提交。order 索引按照传入生产者的数据槽依次连接，再接追加数据；接口参数次序可独立于原生提交次序。假设两个 select 的绑定依次为 source／queue／count，消费接口依次为 a／ca／b／cb／total 和两个增量，且声明两份 requires：
 
@@ -3389,7 +3389,7 @@ u32 total = tile_reduce_sum(values);
 
 无消费者的 Map 指令全部消除后，编译器一并删除该阶段，source_stages 仍记录优化前展开数量；源程序为空或只有静态空范围时，两者都可为零。归约等集合阶段继续保留空输入下的单位元／计数产出，不按逐元素指令是否为空删除。
 
-没有执行阶段时，CPU 不生成范围函数，GPU 不创建计算管线、布局、描述符或查询池。GpuTimings 的 stage_ms 为空、elapsed_ms 为零，表示没有程序阶段的计算跨度；前序上传、实际依赖交接、提交及等待仍有真实生命周期与耗时。Submission 继续沿既有原生 Fence 完成后交还数据，into_bindings／partition 继续由数据持有最后使用点，不能据零阶段计时提前释放资源。参数与有效域能力仍按原 ABI、requires／ensures 检查；无来源的 ensures prefix 仍报 B193，不能以空程序创建能力。
+没有执行阶段时，CPU 不生成范围函数，GPU 不创建计算管线、布局、描述符或查询池。计时结果为`None`，表示没有采集到程序阶段跨度；前序上传、实际依赖交接、提交及等待仍有真实生命周期与耗时。Submission 继续沿既有原生 Fence 完成后交还数据，into_bindings／partition 继续由数据持有最后使用点，不能据零阶段计时提前释放资源。参数与有效域能力仍按原 ABI、requires／ensures 检查；无来源的 ensures prefix 仍报 B193，不能以空程序创建能力。
 
 ## 局部值转发与函数封装
 
@@ -3534,7 +3534,7 @@ CPU 标量与四元素 SSE2 共用自研整数倒数参数。二次幂以右移�
 
 `BLDATA v1` 为小端：8 字节 `BLDATA\0\0`，随后 u32 version=1、记录数、记录步长、执行步数，再跟完整记录字节。它保存指定编译布局下的值，类型和字段含义来自 `.h`；文件本身不能证明相同步长的数据具有相同业务类型。当前读取会验证文件边界和编译步长，执行绑定继续检查类型和形状。`simulate` 与通用入口共用 `Dataset::read_data/write_data`，不再各自实现一套写入协议。
 
-`GPU_program_ms` 只含设备程序和阶段依赖；CLI 的 `compute_elapsed_ms` 从程序编译结果与输入数据准备好之后开始，包含后端编译、执行和输出写盘，GPU 另含设备创建／上传／读回。两者不是相同口径，也不能与 CPU 原生运算时间直接相减计算加速比。
+Blink文件运行入口为`brun [--gpu-timestamps] <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]`。默认GPU运行不创建／重置时间戳查询池，也不写入／读取时间戳；显式`brun --gpu-timestamps gpu ...`请求采集，此选项不用于CPU。成功执行但没有计时样本时输出`GPU_program_timestamps=not_collected`，不输出伪零；有样本时的`GPU_program_ms`只含设备程序和阶段依赖；CLI 的 `compute_elapsed_ms` 从程序编译结果与输入数据准备好之后开始，包含后端编译、执行和输出写盘，GPU 另含设备创建／上传／读回。两者不是相同口径，也不能与 CPU 原生运算时间直接相减计算加速比。
 
 ### 原生物理 GPU 枚举与选择
 

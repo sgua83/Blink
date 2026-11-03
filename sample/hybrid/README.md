@@ -37,6 +37,8 @@ cargo build --release `
 
 前述两个完整程序直接写出加载、数据创建、执行和结果处理。其余示例的独立入口也位于 src/bin，各完成一个明确用途。
 
+GpuProgram／GpuTemplate默认不采集时间戳。particles的GPU计时、material-samples及material-image在原程序上显式调用with_timestamps(true)?，因此这些测量示例还要求计算队列支持时间戳；无样本显示not_collected，不把未采集写成零。particle-steps／particle-flow继续使用默认普通执行。
+
 GPU 例子需要驱动提供所需 Vulkan 能力。失败会直接返回；CPU 不创建设备。点记录约 1.12 GB，全量下载与设备计算分别计时。material-image 只下载最后的四字节显示像素，输出 Saved/HybridBook/materials.ppm。
 
 Programs 下是按当前 Blink 语法维护的引擎算法教学模块及所需导入。Programs/book 只准备示例输入和连接步骤；实际粒子、变换、GGX 与显示转换使用引擎实现。[来源清单](BLEngine摘录来源.md) 与 [MIT 许可](BLEngine-LICENSE.txt) 随源码保留。下载 Blink 后可运行这些独立例子，不要求 BLEngine 工作区或 P4。

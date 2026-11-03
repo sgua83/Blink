@@ -321,7 +321,7 @@ fn main() -> Result<()> {
     let prepare = Instant::now();
     let device = Device::for_program(&program)?;
     eprintln!("GPU {}", device.name());
-    let compiled = device.compile(program.clone())?;
+    let compiled = device.compile(program.clone())?.with_timestamps(true)?;
     let textures = if kind == 10 {
         vec![device.upload_texture(&texture)?]
     } else {
@@ -348,7 +348,8 @@ fn main() -> Result<()> {
         let elapsed = ms(start);
         if repeat >= 2 {
             gpu_times.push(elapsed);
-            device_times.push(done.timings.elapsed_ms);
+            device_times.push(done.timings.as_ref()
+                .ok_or_else(|| std::io::Error::other("本次程序没有GPU阶段时间戳，不能报告设备耗时"))?.elapsed_ms);
         }
         gpu = done.into_datasets();
     }

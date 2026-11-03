@@ -11,16 +11,23 @@ fn main() -> Result<()> {
         println!("Blink runner {}", include_str!("../../../VERSION").trim());
         return Ok(());
     }
+    let (capture_timestamps, args) = match args.split_first() {
+        Some((flag, rest)) if flag == "--gpu-timestamps" => (true, rest),
+        _ => (false, args.as_slice()),
+    };
     if args.is_empty() {
-        println!("Blink runner\nbrun --version\nbrun <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]");
+        println!("Blink runner\nbrun --version\nbrun [--gpu-timestamps] <cpu|gpu> <module.b> <program> <module-root> <output-directory> <binding.bldata|:count>... [texture.bltex...] [-- value...]");
         return Ok(());
     }
-    compute(&args)
+    compute(args, capture_timestamps)
 }
 
-fn compute(args: &[String]) -> Result<()> {
+fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
     use blanguage::{ast::Access, ir::Scalar};
     let backend = args.first().ok_or_else(|| error("缺少执行设备"))?;
+    if capture_timestamps && backend != "gpu" {
+        return Err(error("--gpu-timestamps只用于gpu执行"));
+    }
     let module = Path::new(args.get(1).ok_or_else(|| error("缺少 .b 模块"))?);
     let name = args.get(2).ok_or_else(|| error("缺少 program 名称"))?;
     let root = Path::new(args.get(3).ok_or_else(|| error("缺少模块根目录"))?);
@@ -113,7 +120,7 @@ fn compute(args: &[String]) -> Result<()> {
         "gpu" => {
             let device = Device::for_program(&program)?;
             println!("GPU {}", device.name());
-            let compiled = device.compile(program)?;
+            let compiled = device.compile(program)?.with_timestamps(capture_timestamps)?;
             let data = datasets
                 .into_iter()
                 .map(|d| device.upload(d))
@@ -132,7 +139,10 @@ fn compute(args: &[String]) -> Result<()> {
                     &values,
                 )?
                 .wait().map_err(|(error, _)| error)?;
-            println!("GPU_program_ms={:.3}", done.timings.elapsed_ms);
+            match &done.timings {
+                Some(timings) => println!("GPU_program_ms={:.3}", timings.elapsed_ms),
+                None => println!("GPU_program_timestamps=not_collected"),
+            }
             // 只读数据的所有权仍随完成对象释放，文件消费者只读回实际输出。
             std::fs::create_dir_all(out)?;
             for (i, name) in &outputs {

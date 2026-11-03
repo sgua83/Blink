@@ -12,15 +12,9 @@ impl GpuCompletion {
     pub fn is_complete(&self) -> Result<bool> {
         self.execution.is_complete()
     }
-    pub fn wait(self) -> Result<GpuTimings> {
+    pub fn wait(self) -> Result<Option<GpuTimings>> {
         self.execution.wait()?;
-        match &self.queries {
-            Some(queries) => queries.read(),
-            None => Ok(GpuTimings {
-                elapsed_ms: 0.0,
-                stage_ms: Vec::new(),
-            }),
-        }
+        self.queries.as_ref().map(|queries| queries.read()).transpose()
     }
 }
 

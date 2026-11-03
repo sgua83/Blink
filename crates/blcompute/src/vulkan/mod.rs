@@ -712,9 +712,9 @@ impl Device {
                 .iter()
                 .enumerate()
                 .find(|(_, q)| {
-                    q.queueFlags & 2 != 0 && q.queueCount > 0 && q.timestampValidBits > 0
+                    q.queueFlags & 2 != 0 && q.queueCount > 0
                 })
-                .ok_or_else(|| error("缺少支持时间戳的计算队列"))?;
+                .ok_or_else(|| error("缺少计算队列"))?;
             let priority = 1.0;
             let mut q: VkDeviceQueueCreateInfo = zero();
             q.sType = 2;
@@ -1608,6 +1608,7 @@ fn descriptor_set(
 pub struct GpuProgram {
     compiled: Rc<Compiled>,
     partition_elements: NonZeroU32,
+    capture_timestamps: bool,
 }
 #[derive(Clone)]
 pub struct GpuTemplate {
@@ -1861,12 +1862,21 @@ impl GpuProgram {
                 finishes, dispatches, selectors, sorts,
             }),
             partition_elements: NonZeroU32::MAX,
+            capture_timestamps: false,
         })
     }
     /// 静态域分批提交；有效前缀域使用 64 线程对齐的 X 行分区，并在 Y/Z 维扩展。
     pub fn with_partition_elements(mut self, count: NonZeroU32) -> Self {
         self.partition_elements = count;
         self
+    }
+    /// 显式选择后续提交的GPU时间戳采集；默认关闭。
+    pub fn with_timestamps(mut self, enabled: bool) -> Result<Self> {
+        if enabled && self.compiled.inner.timestamp_bits == 0 {
+            return Err(error("当前计算队列不支持GPU时间戳"));
+        }
+        self.capture_timestamps = enabled;
+        Ok(self)
     }
     pub fn submit(
         &self,
@@ -2033,7 +2043,9 @@ impl GpuProgram {
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_indices = Vec::new();
         let mut selected_storage = BTreeMap::new();
-        let query_count = u32::try_from(c.pipelines.len() as u64 * 2 * steps.get() as u64)?;
+        let query_count = if self.capture_timestamps {
+            u32::try_from(c.pipelines.len() as u64 * 2 * steps.get() as u64)?
+        } else { 0 };
         let mut extra_sets = 0u64;
         for stage in c.program.stages() {
             let count = data[stage.domain].count;
@@ -2122,7 +2134,7 @@ impl GpuProgram {
             scratch.push(temporary);
         }
         let mut last: Vec<_> = data.owners.iter().map(|d| d.producer).collect();
-        if query_count != 0 {
+        if !c.pipelines.is_empty() {
             unsafe {
                 let sets = u32::try_from(1 + extra_sets)?;
                 let mut sizes = vec![VkDescriptorPoolSize {
@@ -2187,19 +2199,21 @@ impl GpuProgram {
                     None,
                     None,
                 )?;
-                let queries = QueryPoolCreateInfo {
-                    s_type: 11,
-                    next: null(),
-                    flags: 0,
-                    query_type: 2,
-                    count: query_count,
-                    statistics: 0,
-                };
-                check(
-                    (f.vkCreateQueryPool)(device, &queries, null(), &mut commands.queries),
-                    "vkCreateQueryPool",
-                )?;
-                (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
+                if self.capture_timestamps {
+                    let queries = QueryPoolCreateInfo {
+                        s_type: 11,
+                        next: null(),
+                        flags: 0,
+                        query_type: 2,
+                        count: query_count,
+                        statistics: 0,
+                    };
+                    check(
+                        (f.vkCreateQueryPool)(device, &queries, null(), &mut commands.queries),
+                        "vkCreateQueryPool",
+                    )?;
+                    (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
+                }
                 let mut pending: BTreeSet<_> = (0..data.owners.len()).collect();
                 let mut pending_reads = BTreeSet::new();
                 for step in 0..steps.get() {
@@ -2234,7 +2248,8 @@ impl GpuProgram {
                         }
                         let count = data[stage.domain].count;
                         uniforms[0] = count;
-                        let query = (step as usize * c.pipelines.len() + i) as u32 * 2;
+                        let query = self.capture_timestamps
+                            .then(|| (step as usize * c.pipelines.len() + i) as u32 * 2);
                         (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
                         (f.vkCmdBindDescriptorSets)(
                             commands.command,
@@ -2246,7 +2261,9 @@ impl GpuProgram {
                             0,
                             null(),
                         );
-                        (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
+                        if let Some(query) = query {
+                            (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
+                        }
                         let prefix_set = if let Some(args) = scratch[scratch_indices[i]]
                             .as_mut()
                             .and_then(|s| s.arguments.as_mut())
@@ -2526,12 +2543,14 @@ impl GpuProgram {
                                 uniforms[2 + reduction.target] = data[reduction.target].count;
                             }
                         }
-                        (f.vkCmdWriteTimestamp)(
-                            commands.command,
-                            0x800,
-                            commands.queries,
-                            query + 1,
-                        );
+                        if let Some(query) = query {
+                            (f.vkCmdWriteTimestamp)(
+                                commands.command,
+                                0x800,
+                                commands.queries,
+                                query + 1,
+                            );
+                        }
                         pending_reads.extend(stage.reads.iter().map(|&b| physical(b)));
                         for b in &stage.writes {
                             pending.insert(physical(*b));
@@ -2576,6 +2595,10 @@ impl GpuTemplate {
     pub fn with_partition_elements(mut self, count: NonZeroU32) -> Self {
         self.code.partition_elements = count;
         self
+    }
+    pub fn with_timestamps(mut self, enabled: bool) -> Result<Self> {
+        self.code = self.code.with_timestamps(enabled)?;
+        Ok(self)
     }
     pub fn submit(
         &self,
@@ -2693,7 +2716,7 @@ pub struct Submission {
 pub struct Completed {
     bindings: DomainBindings<GpuDataset>,
     pub accelerations: Vec<Acceleration>,
-    pub timings: GpuTimings,
+    pub timings: Option<GpuTimings>,
 }
 impl Completed {
     pub fn datasets(&self) -> &[GpuDataset] {
@@ -2705,7 +2728,7 @@ impl Completed {
     pub fn into_datasets(self) -> Vec<GpuDataset> {
         self.bindings.into_datasets()
     }
-    pub fn into_parts(self) -> (DomainBindings<GpuDataset>, Vec<Acceleration>, GpuTimings) {
+    pub fn into_parts(self) -> (DomainBindings<GpuDataset>, Vec<Acceleration>, Option<GpuTimings>) {
         (self.bindings, self.accelerations, self.timings)
     }
 }
@@ -2739,10 +2762,7 @@ impl Submission {
     pub fn wait(mut self) -> std::result::Result<Completed, (Box<dyn std::error::Error + Send + Sync>, Self)> {
         let result = (|| {
             self.execution.wait()?;
-            match &self.queries {
-                Some(queries) => queries.read(),
-                None => Ok(GpuTimings { elapsed_ms: 0.0, stage_ms: Vec::new() }),
-            }
+            self.queries.as_ref().map(|queries| queries.read()).transpose()
         })();
         let timings = match result {
             Ok(timings) => timings,

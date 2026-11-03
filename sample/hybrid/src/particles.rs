@@ -43,7 +43,7 @@ pub fn run(backend: &str, count: u32) -> Result<()> {
         "gpu" => {
             let device = Device::for_program(&code)?;
             println!("GPU {}", device.name());
-            let code = device.compile(code)?;
+            let code = device.compile(code)?.with_timestamps(true)?;
             println!("setup_ms={:.3}", elapsed(setup));
             let transfer = Instant::now();
             let data = data
@@ -54,9 +54,12 @@ pub fn run(backend: &str, count: u32) -> Result<()> {
             let start = Instant::now();
             let done = code.submit(data, &values())?.wait().map_err(|(error, _)| error)?;
             println!(
-                "run_wait_ms={:.3} gpu_ms={:.3}",
+                "run_wait_ms={:.3} gpu_ms={}",
                 elapsed(start),
-                done.timings.elapsed_ms
+                match &done.timings {
+                    Some(timings) => format!("{:.3}", timings.elapsed_ms),
+                    None => "not_collected".to_owned(),
+                }
             );
             let start = Instant::now();
             let data = done
