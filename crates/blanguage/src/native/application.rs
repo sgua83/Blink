@@ -19,6 +19,7 @@ fn emit_value(
 ) -> Result<NativeCode, &'static str> {
     let mut stage = Stage {
         operation_source: None,
+        generated_origin: None,
         tiles: Vec::new(),
         domain: 0,
         prefix: None,

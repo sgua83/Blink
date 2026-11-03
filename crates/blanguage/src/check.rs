@@ -650,8 +650,11 @@ fn expand_stages(
                 let mut b = Builder::new(world, d, program, *domain, Some(&instance.name))?;
                 b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
                 b.roots(env);
+                let operation_source = operation_source(instance, statement.span, SourceSyntax::Statement, domain_path);
                 let index = b.reg(Scalar::U32);
-                b.code.push(Inst::new(InstKind::Index(index)));
+                b.code.push(Inst::generated(InstKind::Index(index), Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::ParallelIndex, trigger: operation_source.clone(),
+                })));
                 b.global_index = index;
                 b.refine_parallel_domain();
                 if b.env.contains_key(name) {
@@ -737,7 +740,8 @@ fn expand_stages(
                     prefix,
                     selection,
                     operation: Operation::Map,
-                    operation_source: operation_source(instance, statement.span, SourceSyntax::Statement, domain_path),
+                    operation_source,
+                    generated_origin: None,
                     tiles,
                     boundary_before: std::mem::take(boundary),
                     registers: b.registers,
@@ -756,11 +760,13 @@ fn expand_stages(
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
+                span: call_span,
                 ..
             }) if name == "clear_prefix"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                let output = append::clear(program, env, args, d, statement.span, facts)?;
+                let output = append::clear(program, env, args, d, statement.span, facts,
+                    operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
                 facts.outputs.push(output);
                 *boundary = false;
             }
@@ -1810,7 +1816,7 @@ impl<'a> Builder<'a> {
         })
     }
     fn emit(&mut self, kind: InstKind) {
-        self.code.push(Inst { kind, source_site: self.source_site.clone() });
+        self.code.push(Inst { source_site: self.source_site.clone(), ..Inst::new(kind) });
     }
     fn source_at(&self, span: Span, syntax: SourceSyntax) -> Option<Arc<SourceSite>> {
         self.source_definition.as_ref().map(|origin| Arc::new(SourceSite {

@@ -306,6 +306,7 @@ pub(super) fn compile(
     };
     program.stages.push(Stage {
         operation_source,
+        generated_origin: None,
         domain: source,
         prefix,
         selection: None,

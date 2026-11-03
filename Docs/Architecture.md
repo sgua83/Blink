@@ -261,11 +261,11 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-2"></a>
 
-**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后当前原Stage单个保留字段不代表全部原parallel，多对多／消除来源仍由.7.3.2交接，不冻结优化或为材料保活指令。当前两条原生产路径已实现；原Stmt.span通常覆盖parallel关键字，不扩大为整条语句。生成程序名仍归原Program／FunctionBody，语法来源的实例仍为原真实调用者；生成Index／Frame／参数操作及域调用路径分别沿下列未完成叶项。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-2)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
+**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后当前原Stage单个保留字段不代表全部原parallel，多对多／消除来源仍由.7.3.2交接，不冻结优化或为材料保活指令。当前两条原生产路径已实现；原Stmt.span通常覆盖parallel关键字，不扩大为整条语句。生成程序名仍归原Program／FunctionBody，语法来源的实例仍为原真实调用者；阶段索引生成原因与域调用路径见下述已交接事实，Frame／参数操作及其他生成职责仍沿未完成叶项。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-2)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
 
 <a id="tool-7-2-4-3"></a>
 
-**域展开调用点。** 输入为实际域Call、调用者原定义／具体实例与Expr.span及原特化目标；原expand_stages／expand_program与DomainCall各向原IR交接同一编译事实。按下列两条实际生产／消费分别实现，不把域调用放入普通inline数组，不从阶段根实例反推路径；生成Index、Frame、参数和提交步骤仍归各自原叶。保留IR所用域点列表，不记录不存在／已消除IR的完整编译历史，不改变合法程序或冻结优化；完整变换来源归.7.3。当前两条原生产路径已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-3)；完整机器映射、生成步骤与优化变换仍沿原缺口。
+**域展开调用点。** 输入为实际域Call、调用者原定义／具体实例与Expr.span及原特化目标；原expand_stages／expand_program与DomainCall各向原IR交接同一编译事实。按下列两条实际生产／消费分别实现，不把域调用放入普通inline数组，不从阶段根实例反推路径；生成Index、Frame、参数和提交步骤仍归各自原叶。保留IR所用域点列表，不记录不存在／已消除IR的完整编译历史，不改变合法程序或冻结优化；完整变换来源归.7.3。当前两条原生产路径已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-3)；完整机器映射、其余生成步骤与优化变换仍沿原缺口。
 
 <a id="tool-7-2-4-3-1"></a>
 
@@ -277,15 +277,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-4"></a>
 
-**阶段索引及空前缀初始化。** 原parallel索引建立及append::clear分别拥有两项真实生成职责，下列两叶独立闭合。编译角色的同一Inst／Stage以GeneratedOrigin记录GenerationReason及可选原SourceSite触发；生成事实与用户直接语法来源分开，未知触发不丢弃真实生成原因。材料随原节点不可变共享、克隆／移动及最后消费者释放，不保留AST／World、增设另一图／状态或运行拥有者；关闭compiler后不进入运行节点或必要执行编码。当前待实现，见[父项](Issues.md#c-021-7-9-7-2-4-4)。
+**阶段索引及空前缀初始化。** 原parallel索引建立及append::clear分别拥有两项真实生成职责，下列两叶独立闭合。编译角色的同一Inst／Stage以GeneratedOrigin记录GenerationReason及可选原SourceSite触发；生成事实与用户直接语法来源分开，未知触发不丢弃真实生成原因。材料随原节点不可变共享、克隆／移动及最后消费者释放，不保留AST／World、增设另一图／状态或运行拥有者；关闭compiler后不进入运行节点或必要执行编码。当前原索引与空前缀两条生成职责已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-4)；其他生成职责仍沿原缺口。
 
 <a id="tool-7-2-4-4-1"></a>
 
-**parallel索引生成。** 输入为原parallel Statement、原定义／特化实例及域路径；expand_stages原InstKind::Index是唯一生产者，将parallel_index及同一Stage原语句锚点交给原Inst。Inst::generated_origin借用同一GeneratedOrigin，reason／trigger及JSON分别交接真实生成原因与可选触发；原source_site不伪装用户直接index()调用。原语句和普通表达式继续按其各自语义形成来源，不增加Index、改变寄存器或为观察保活操作。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-4-1)。
+**parallel索引生成。** 输入为原parallel Statement、原定义／特化实例及域路径；expand_stages原InstKind::Index是唯一生产者，将parallel_index及同一Stage原语句锚点交给原Inst。Inst::generated_origin借用同一GeneratedOrigin，reason／trigger及JSON分别交接真实生成原因与可选触发；原source_site不伪装用户直接index()调用。原语句和普通表达式继续按其各自语义形成来源，不增加Index、改变寄存器或为观察保活操作。当前parallel_index已由原生产者交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-4-1)与[规范](BLanguage.md#原ir生成原因与触发语法)。
 
 <a id="tool-7-2-4-4-2"></a>
 
-**空前缀阶段与计数初始化。** 输入为真实clear_prefix调用Expr.span、原实际实例及域路径；append::clear是生成原Map和原Constant／Store的唯一所有者。Stage及两Inst共享同一clear_prefix生成材料，触发为原调用SourceSite，不清空输出内容、不额外生成Index或包装Stage；operation_source和source_site不冒充用户直接Map／赋值。Stage::generated_origin借用材料，阶段JSON及各节点JSON交接同一原因和可选触发；其他原构造明确没有本项材料。原prefix事实、计数、访问、顺序和真实完成保持。融合／重写后保留字段不代表全部贡献者，完整多对多及消除来源仍归.7.3，不冻结优化或复制旧IR。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-4-2)。
+**空前缀阶段与计数初始化。** 输入为真实clear_prefix调用Expr.span、原实际实例及域路径；append::clear是生成原Map和原Constant／Store的唯一所有者。Stage及两Inst共享同一clear_prefix生成材料，触发为原调用SourceSite，不清空输出内容、不额外生成Index或包装Stage；operation_source和source_site不冒充用户直接Map／赋值。Stage::generated_origin借用材料，阶段JSON及各节点JSON交接同一原因和可选触发；其他原构造明确没有本项材料。原prefix事实、计数、访问、顺序和真实完成保持。融合／重写后保留字段不代表全部贡献者，完整多对多及消除来源仍归.7.3，不冻结优化或复制旧IR。当前clear_prefix阶段与两节点已共享原生成材料，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-4-2)与[规范](BLanguage.md#原ir生成原因与触发语法)。
 
 <a id="tool-7-2-4-5"></a>
 

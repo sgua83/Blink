@@ -429,7 +429,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1382`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1395`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -454,7 +454,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2426`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2439`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -474,7 +474,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1372`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1385`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1266,7 +1266,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3870`。
+源码节选：`crates/blanguage/src/check.rs:3879`。
 
 ```rust
         let binding = view.binding;
@@ -1414,7 +1414,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:792`。
+源码节选：`crates/blanguage/src/check/bounds.rs:805`。
 
 ```rust
         self.nonzero = (0..width)
@@ -1427,7 +1427,7 @@ enum Fact {
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:940`。
+源码节选：`crates/blanguage/src/check/bounds.rs:953`。
 
 ```rust
     pub fn common(a: &Value, b: &Value) -> Self {
@@ -1457,7 +1457,7 @@ enum Fact {
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1499`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1512`。
 
 ```rust
 impl Drop for Clause {
@@ -1514,7 +1514,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:946`。
+源码节选：`crates/blanguage/src/ir.rs:954`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1528,7 +1528,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:969`。
+源码节选：`crates/blanguage/src/ir.rs:977`。
 
 ```rust
     Load {
@@ -1560,7 +1560,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1164`。
+源码节选：`crates/blanguage/src/ir.rs:1172`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1571,6 +1571,8 @@ pub struct Stage {
     pub operation: Operation,
     #[cfg(feature = "compiler")]
     pub(crate) operation_source: Option<std::sync::Arc<SourceSite>>,
+    #[cfg(feature = "compiler")]
+    pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,
     pub boundary_before: bool,
     pub registers: Vec<Scalar>,
     // Key is the first logical component after this declaration; padding has no slot.
@@ -1591,7 +1593,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:451`。
+源码节选：`crates/blanguage/src/check.rs:453`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1726,7 +1728,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1012`。
+源码节选：`crates/blanguage/src/ir.rs:1020`。
 
 ```rust
     If {

@@ -178,3 +178,24 @@ impl ValueCodeEntry {
 impl super::ValueCode {
     pub fn entry_origin(&self) -> Option<&ValueCodeEntry> { self.entry_origin.as_deref() }
 }
+
+/// A real compiler generation responsibility, independent of an optional syntax trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenerationReason { ParallelIndex, ClearPrefix }
+#[derive(Clone, Debug)]
+pub struct GeneratedOrigin {
+    pub(crate) reason: GenerationReason,
+    pub(crate) trigger: Option<std::sync::Arc<SourceSite>>,
+}
+impl GeneratedOrigin {
+    pub fn reason(&self) -> GenerationReason { self.reason }
+    pub fn trigger(&self) -> Option<&SourceSite> { self.trigger.as_deref() }
+    pub fn ir_json(&self) -> String {
+        let reason = match self.reason { GenerationReason::ParallelIndex => "parallel_index", GenerationReason::ClearPrefix => "clear_prefix" };
+        format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
+            self.trigger().map_or_else(|| "null".into(), SourceSite::ir_json))
+    }
+}
+impl super::Stage {
+    pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
+}

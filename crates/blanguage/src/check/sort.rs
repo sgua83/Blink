@@ -102,6 +102,7 @@ pub(super) fn compile(
         .collect();
     program.stages.push(Stage {
         operation_source,
+        generated_origin: None,
         tiles: Vec::new(),
         domain: source,
         prefix,

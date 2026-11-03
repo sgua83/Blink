@@ -8,6 +8,7 @@ pub(super) fn clear(
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
+    trigger: Option<Arc<SourceSite>>,
 ) -> Result<crate::module::domain::Output> {
     if args.len() != 2 {
         return d
@@ -35,8 +36,10 @@ pub(super) fn clear(
             word,
         },
     });
+    let generated_origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ClearPrefix, trigger });
     program.stages.push(Stage {
         operation_source: None,
+        generated_origin: Some(generated_origin.clone()),
         domain: count,
         prefix: None,
         selection: None,
@@ -45,13 +48,13 @@ pub(super) fn clear(
         registers: vec![Scalar::U32],
         locals: Default::default(),
         code: vec![
-            Inst::new(InstKind::Constant(0, Scalar::U32, 0)),
-            Inst::new(InstKind::Store {
+            Inst::generated(InstKind::Constant(0, Scalar::U32, 0), generated_origin.clone()),
+            Inst::generated(InstKind::Store {
                 binding: count,
                 index: 0,
                 word,
                 value: 0,
-            }),
+            }, generated_origin),
         ],
         reads: Vec::new(),
         writes: vec![count],

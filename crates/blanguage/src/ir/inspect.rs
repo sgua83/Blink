@@ -153,6 +153,8 @@ fn instruction(value: &Inst) -> String {
         result.pop();
         result.push_str(",\"source_site\":");
         result.push_str(&optional(value.source_site(), SourceSite::ir_json));
+        result.push_str(",\"generated_origin\":");
+        result.push_str(&optional(value.generated_origin(), GeneratedOrigin::ir_json));
         result.push('}');
         result
     }
@@ -211,6 +213,8 @@ impl Stage {
             ("operation", operation(&self.operation)), ("boundary_before", number(self.boundary_before)),
             #[cfg(feature = "compiler")]
             ("operation_source", optional(self.operation_source(), SourceSite::ir_json)),
+            #[cfg(feature = "compiler")]
+            ("generated_origin", optional(self.generated_origin(), GeneratedOrigin::ir_json)),
             ("registers", array(self.registers.iter().map(name))), ("locals", locals(&self.locals)), ("code", code(&self.code)),
             ("reads", numbers(&self.reads)), ("writes", numbers(&self.writes)), ("cross_access", numbers(&self.cross_access)),
             ("tiles", array(self.tiles.iter().map(|value| node("tile", &[("source", match value.source { TileSource::Input { binding, word } => node("input", &[("binding", number(binding)), ("word", number(word))]), TileSource::Published => node("published", &[]) }), ("type", value.ty.layout_json()), ("width", number(value.width))])))),

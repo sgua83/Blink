@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
 #[cfg(feature = "compiler")]
-pub use origin::{SourceOrigin, SourceSite, SourceSyntax, InlineSite, DomainSite, DomainTransition, ValueCodeEntry};
+pub use origin::{SourceOrigin, SourceSite, SourceSyntax, InlineSite, DomainSite, DomainTransition, ValueCodeEntry, GeneratedOrigin, GenerationReason};
 #[cfg(feature = "compiler")]
 pub(crate) use origin::SourceContext;
 mod layout;
@@ -845,13 +845,21 @@ pub struct Inst {
     pub kind: InstKind,
     #[cfg(feature = "compiler")]
     pub(crate) source_site: Option<std::sync::Arc<SourceSite>>,
+    #[cfg(feature = "compiler")]
+    pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,
 }
 impl Inst {
     pub fn new(kind: InstKind) -> Self {
-        Self { kind, #[cfg(feature = "compiler")] source_site: None }
+        Self { kind, #[cfg(feature = "compiler")] source_site: None, #[cfg(feature = "compiler")] generated_origin: None }
     }
     #[cfg(feature = "compiler")]
     pub fn source_site(&self) -> Option<&SourceSite> { self.source_site.as_deref() }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn generated(kind: InstKind, origin: std::sync::Arc<GeneratedOrigin>) -> Self {
+        Self { kind, source_site: None, generated_origin: Some(origin) }
+    }
+    #[cfg(feature = "compiler")]
+    pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
 }
 #[derive(Clone, Debug)]
 pub enum InstKind {
@@ -1169,6 +1177,8 @@ pub struct Stage {
     pub operation: Operation,
     #[cfg(feature = "compiler")]
     pub(crate) operation_source: Option<std::sync::Arc<SourceSite>>,
+    #[cfg(feature = "compiler")]
+    pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,
     pub boundary_before: bool,
     pub registers: Vec<Scalar>,
     // Key is the first logical component after this declaration; padding has no slot.
