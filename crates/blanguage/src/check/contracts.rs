@@ -77,6 +77,7 @@ impl Resource {
             Self::Array(count) => IndexDomain::Fixed(*count),
             Self::Data { binding, .. } => IndexDomain::Data(*binding),
             Self::Tile { .. } => IndexDomain::Tile,
+            Self::Value(value) if value.value.ty.array.is_some() => IndexDomain::Fixed(value.value.ty.values[0]),
             Self::Value(value) if value.value.ty.dataset.is_some() =>
                 IndexDomain::ApplicationData(value.value.identity()),
             Self::Value(value) => IndexDomain::View(value.value.view_identity()),
@@ -87,10 +88,14 @@ impl Resource {
             Self::Application { minimum, .. } => *minimum,
             Self::Array(count) => *count,
             Self::Data { minimum, .. } | Self::Tile { minimum, .. } => *minimum,
+            Self::Value(value) if value.value.ty.array.is_some() => value.value.ty.values[0],
             Self::Value(value) if value.value.ty.dataset.is_some() => value.value.ty.values
                 .first().copied().unwrap_or_else(||bounds::Proof::capture(&value.value).unsigned_minimum(1)),
             Self::Value(value) => Builder::view_length(&value.value).minimum(),
         }
+    }
+    fn empty(&self)->bool {
+        match self {Self::Value(value)=>value.empty,_=>false}
     }
     fn assume_nonempty(&self, name: &str, binding: &mut Binding) {
         match (self, binding) {
@@ -107,22 +112,7 @@ impl Resource {
                 view.length.mark_nonzero(0);
             }
             (Self::Value(selection), binding) if selection.root == name => {
-                let dataset = selection.value.ty.dataset.is_some();
-                let component = selection.components[if dataset {1} else {2}];
-                match binding {
-                    Binding::Value(value) => value.proof.mark_nonzero(component),
-                    Binding::OwnedValue(value) => {
-                        value.value.proof = bounds::Proof::capture(&value.value);
-                        value.value.proof.mark_nonzero(component);
-                        if dataset {
-                            let identity = selection.value.identity();
-                            value.resources_mut(&mut |data| {
-                                if data.handle.identity() == identity {data.length.proof.mark_nonzero(0);}
-                            });
-                        }
-                    }
-                    _ => {}
-                }
+                selection.assume_nonempty(binding);
             }
             _ => {}
         }
@@ -208,6 +198,64 @@ fn selected_data_mut<'a>(binding:&'a mut Binding,paths:&[Vec<usize>])->Option<&'
     Some(data)
 }
 impl Selection {
+
+    fn assume_empty_scope(&self,binding:&mut Binding) {
+        fn empty(data:&mut application::Data)->bounds::Proof {
+            let mut zero=data.length.clone();zero.constant=Some(vec![0]);
+            let proof=bounds::Proof::capture(&zero);
+            data.length.proof.assume_same_length(&proof);proof
+        }
+        fn owned(value:&mut owned_values::OwnedValue,path:&[usize]) {
+            if let Some(data)=view::owned_data_at_mut(value,path) {
+                let proof=empty(data);
+                let mut ty=&value.value.ty;let mut offset=0;
+                for field in path {let(_,at,next)=&ty.fields[*field];offset+=*at;ty=next;}
+                offset+=ty.components[1].1;
+                let component=value.value.ty.components.iter().position(|(_,at)|*at==offset).unwrap();
+                let mut length=value.value.projected_proof(&[component]);length.assume_same_length(&proof);
+                value.value.proof.assign(&[component],value.value.regs.len(),length);
+            }
+        }
+        let Some((last,parents))=self.element_paths.split_last()else{return;};
+        if parents.is_empty() {
+            if let Binding::OwnedValue(value)=binding {owned(value,last);}
+            else if let Some(data)=selected_data_mut(binding,&self.element_paths){empty(data);}
+        }else if let Some(data)=selected_data_mut(binding,parents)
+            && let returns::Returned::OwnedValue(value)=data.elements.as_mut() {owned(value,last);}
+    }
+    fn assume_owned_nonempty(&self,value:&mut owned_values::OwnedValue,component:usize) {
+        value.value.proof.mark_nonzero(component);
+        if self.value.ty.dataset.is_some() {
+            let identity=self.value.identity();
+            value.resources_mut(&mut |data| {
+                if data.handle.identity()==identity {data.length.proof.mark_nonzero(0);}
+            });
+        }
+    }
+    fn assume_nonempty(&self,binding:&mut Binding) {
+        if self.value.ty.array.is_some() {
+            if self.value.ty.values[0]==0 {self.assume_empty_scope(binding);}
+            return;
+        }
+        let component=self.components[if self.value.ty.dataset.is_some(){1}else{2}];
+        if !self.element_paths.is_empty() {
+            if let Some(data)=selected_data_mut(binding,&self.element_paths) {
+                match data.elements.as_mut() {
+                    returns::Returned::OwnedValue(value)=>self.assume_owned_nonempty(value,component),
+                    model=>{if let Some(value)=model.view_value_mut(){value.proof.mark_nonzero(component);}},
+                }
+            }
+            return;
+        }
+        match binding {
+            Binding::Value(value)=>value.proof.mark_nonzero(component),
+            Binding::OwnedValue(value)=>{
+                value.value.proof=bounds::Proof::capture(&value.value);
+                self.assume_owned_nonempty(value,component);
+            },
+            _=>{},
+        }
+    }
     fn assumed_value<'a>(&self,binding:&'a mut Binding)->Option<&'a mut Value> {
         if !self.element_paths.is_empty(){return selected_data_mut(binding,&self.element_paths)?.elements.view_value_mut();}
         match binding {
@@ -230,9 +278,9 @@ fn select_elements(definition:&Definition,env:&BTreeMap<String,Binding>,path:&st
     let(root,fields)=first.split_once('.').unwrap_or((first,""));
     let source=&definition.source;
     if !definition.function.params.iter().any(|p|p.name==root&&matches!(p.access,Access::Value|Access::Read|Access::InOut)) {
-        return source.fail(span,"B225","共同元素nonzero需要读取实际普通CPU dataset输入");
+        return source.fail(span,"B225","共同元素约束需要读取实际普通CPU dataset输入");
     }
-    let Some(binding)=env.get(root)else{return source.fail(span,"B225","共同元素nonzero需要实际dataset参数");};
+    let Some(binding)=env.get(root)else{return source.fail(span,"B225","共同元素约束需要实际dataset参数");};
     let first_path=match binding {
         Binding::OwnedValue(value)=>field_path(&value.value.ty,fields,source,span)?,
         Binding::ApplicationData(_)|Binding::DataReference(_) if fields.is_empty()=>Vec::new(),
@@ -251,7 +299,7 @@ fn select_elements(definition:&Definition,env:&BTreeMap<String,Binding>,path:&st
         let Some(next)=application::model_data(&data.elements,&selected)else{return source.fail(span,"B225","[*]需要所选共同元素中的实际dataset字段");};
         paths.push(selected);data=next;empty|=data.length.maximum()==0;projection.clear();
     }
-    let Some(value)=data.elements.view_value()else{return source.fail(span,"B225","nonzero需要选择共同元素的实际数值载荷");};
+    let Some(value)=data.elements.view_value()else{return source.fail(span,"B225","约束需要选择共同元素的实际值／字段");};
     let mut selection=select_value(value,&(root.to_owned()+&projection+parts.last().unwrap()),source,span)?;
     selection.element_paths=paths;selection.empty=empty;Ok(selection)
 }
@@ -351,10 +399,10 @@ fn resource(
         }
     }
     let selection = select(definition, env, path, span)?;
-    if selection.value.ty.array.is_some() {
+    if selection.value.ty.array.is_some() && selection.element_paths.is_empty() {
         return Ok(Resource::Array(selection.value.ty.values[0]));
     }
-    if selection.value.ty.dataset.is_none() && selection.value.ty.view.is_none() {
+    if selection.value.ty.array.is_none() && selection.value.ty.dataset.is_none() && selection.value.ty.view.is_none() {
         return definition.source.fail(
             span,
             "B225",
@@ -449,7 +497,7 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.empty || selection.value.is_nonzero(),
             Predicate::Nonempty(resource) => {
-                builder.resource_minimum(resource.domain(), resource.minimum()) != 0
+                resource.empty() || builder.resource_minimum(resource.domain(), resource.minimum()) != 0
             }
             Predicate::Index(selection, resource) => {
                 let value = &selection.value;

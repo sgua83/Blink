@@ -104,7 +104,7 @@
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
-      "sha256": "2f6c8e94533c165352b5441ec97d6c2ce346783637626eedb1464671780a70ac"
+      "sha256": "e62186085c6af688fe9ffaf705ebefbfad7771373e84ddf812123595c58db438"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -244,7 +244,7 @@
     },
     {
       "path": "crates/blanguage/src/parser.rs",
-      "sha256": "a4628c58cc57b3c287fbd3f6c46aa5df3ec2273dc21f7d182531af6f643c23d4"
+      "sha256": "d308639a65915461196c11eb074d6c0974dd69f90144ecdb6dde5b44e26b88db"
     },
     {
       "path": "crates/blanguage/src/resource.rs",

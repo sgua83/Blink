@@ -180,7 +180,7 @@ impl Parser {
                 ContractPredicate::Prefix { data, count, field }
             }
             "nonzero" => ContractPredicate::Nonzero(self.contract_value_path()?),
-            "nonempty" => ContractPredicate::Nonempty(self.qualified(".")?),
+            "nonempty" => ContractPredicate::Nonempty(self.contract_value_path()?),
             "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
             "initialized" => {
                 let value = self.qualified(".")?;
