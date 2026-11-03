@@ -1794,14 +1794,15 @@ impl Clause {
     // 同一资源来源的路径按事实合取去重，保留每个来源实际成立的完整条件。
     pub(super) fn canonical(&self)->Self{
         fn insert(terms:&mut BTreeSet<Facts>,facts:Facts)->bool{
-            if terms.iter().any(|old|old.is_subset(&facts)){return false;}
-            terms.retain(|old|!facts.is_subset(old));terms.insert(facts)
+            if terms.iter().any(|old|old.is_subset(&facts)||!Clause::facts(facts.clone()).overlaps(&Clause::facts(old.clone()).negate())){return false;}
+            terms.retain(|old|!facts.is_subset(old)&&Clause::facts(old.clone()).overlaps(&Clause::facts(facts.clone()).negate()));terms.insert(facts)
         }
         fn facts(value:&Facts)->Option<Facts>{
             if contradictory(value){return None;}
-            let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))).copied().collect::<Facts>();
-            next.extend(minimums(value).into_iter().filter(|(_,n)|*n!=0).map(|((id,scalar),n)|Fact::Minimum(id, scalar, n)));
-            next.extend(maximums(value).into_iter().filter(|((_,scalar),n)|*n!=scalar.bit_mask()).map(|((id,scalar),n)|Fact::Maximum(id, scalar, n)));
+            let lower=minimums(value);
+            let mut next=value.iter().filter(|fact|!matches!(fact,Fact::Minimum(..)|Fact::Maximum(..))&&!matches!(fact,Fact::NonZero(id)if lower.iter().any(|((other,scalar),n)|other==id&&*n>1&&scalar.is_integer()&&!scalar.is_signed()))).copied().collect::<Facts>();
+            next.extend(lower.into_iter().filter(|((id,scalar),n)|*n!=0&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|if n==1&&scalar.is_integer()&&!scalar.is_signed(){Fact::NonZero(id)}else{Fact::Minimum(id, scalar, n)}));
+            next.extend(maximums(value).into_iter().filter(|((id,scalar),n)|*n!=scalar.bit_mask()&&!(scalar.is_integer()&&value.contains(&Fact::Zero(*id)))).map(|((id,scalar),n)|if n==0&&scalar.is_integer()&&!scalar.is_signed(){Fact::Zero(id)}else{Fact::Maximum(id, scalar, n)}));
             Some(next)
         }
         let mut values:BTreeMap<usize,BTreeSet<Facts>>=BTreeMap::new();
@@ -2532,7 +2533,7 @@ impl Condition {
             }
             if op == Comparison::NotEqual {
                     for (value, other) in [(a, b), (b, a)] {
-                        if other.constant.as_deref() == Some(&[0]) {
+                        if other.component_range(0)==(scalar.order_bias(),scalar.order_bias()) {
                             facts.insert(if scalar.is_signed() {
                                 Fact::NonZero(value.identity())
                             } else {
@@ -2543,7 +2544,7 @@ impl Condition {
             }
         }
         let mut cases=std::array::from_fn(|i|if possible[i]{Clause::facts(std::mem::take(&mut facts[i]))}else{Clause::impossible()});
-        if op==Comparison::Equal{cases[0]=Clause::both(&cases[0],&Clause::either(&Self::compare(Comparison::Less,a,b).cases[1],&Self::compare(Comparison::Greater,a,b).cases[1]));}
+        if op==Comparison::Equal&&a.component_range(0)!=(scalar.order_bias(),scalar.order_bias())&&b.component_range(0)!=(scalar.order_bias(),scalar.order_bias()){cases[0]=Clause::both(&cases[0],&Clause::either(&Self::compare(Comparison::Less,a,b).cases[1],&Self::compare(Comparison::Greater,a,b).cases[1]));}
         Self{cases}
     }
 }
