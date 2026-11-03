@@ -434,7 +434,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
             }
             required = Clause::both(&required, &either);
         }
-        if matches!(&*required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
+        if matches!(&**required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
         let mut condition = Condition::component(self, 0);
         for case in &mut condition.cases { *case = Clause::both(case, &required); }
         self.proof.conditions.resize_with(self.regs.len(), || None);
@@ -444,7 +444,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2372`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2403`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -1297,6 +1297,44 @@ enum Fact {
 
 一个复杂算式可能数学上安全，却超出当前分析能力。B137 表示检查器无法静态证明所需的索引关系，不等于它已经找到某次真实越界；反过来，编译成功也不保证业务公式正确或程序必然结束。
 
+### 9.5 共享条件图怎样结束寿命
+
+一个条件可能被多个路径和结果共同引用。Clause 用 Arc 持有原条件节点；动态选择关系和后续检查共享同一张 DAG，查询结束后，仍有消费者的节点必须继续保留。这些引用共同持有编译状态，保持同一张条件图的节点身份。
+
+条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
+
+源码节选：`crates/blanguage/src/check/bounds.rs:1481`。
+
+```rust
+impl Drop for Clause {
+    fn drop(&mut self) {
+        // 同一引用只消费一次；ManuallyDrop字段不会在这里再次自动析构。
+        let mut next = Some(unsafe { ManuallyDrop::take(&mut self.0) });
+        let mut pending: Vec<Arc<ClauseNode>> = Vec::new();
+        while let Some(node) = next.take().or_else(|| pending.pop()) {
+            let Some(node) = Arc::into_inner(node) else { continue; };
+            match node {
+                ClauseNode::Both(a, b) | ClauseNode::Either(a, b) => {
+                    pending.push(b.into_node());
+                    next = Some(a.into_node());
+                }
+                ClauseNode::Branch(parent, condition, _) => {
+                    if let Some(Condition { cases }) = Arc::into_inner(condition) {
+                        pending.extend(cases.map(Self::into_node));
+                    }
+                    next = Some(parent.into_node());
+                }
+                ClauseNode::Impossible | ClauseNode::Facts(_) => {}
+            }
+        }
+    }
+}
+```
+
+Arc::into_inner 原子消费本次引用；只有最后一个引用取得实际节点。Both 和 Either 的原有子引用、Branch 的 parent 及 Condition 的两条真实分支移动到本次局部工作栈继续释放；仍被共享的节点继续归剩余消费者。外部单独持有的 Condition 同样保持其分支，直到自己的最后消费者结束。
+
+私有 ManuallyDrop 只阻止同一个 Arc 在交接后再次自动析构；Clause 的布局、引用身份和查询关系保持。释放原图不按图深度增加 Rust 调用帧。这是编译期状态的内存寿命，程序运行时的 CPU／GPU 数据与完成点仍由后文的执行框架负责。
+
 **自己走一遍。** “编译器知道 i 小于 A 的长度”是否自动允许访问 B[i]？只有还能建立 A、B 的相应长度或域关系时才可以。两个数据集都叫数组，不构成证明。
 
 ## 第十章 中间表示：把语言意思和硬件细节分开
@@ -1579,7 +1617,7 @@ CPU 取得指令，读取寄存器或内存，做运算，再把结果放回相�
 
 本版 Windows x64 范围入口的四个参数依次是数据绑定表、参数 word、结束下标、开始下标。Microsoft x64 ABI 使用 RCX、RDX、R8、R9 传递这四个整数／指针参数。这里的顺序在两边必须完全相同。每个BufferAddress槽为十六字节：偏移零保存原地址，偏移八保存实际记录stride；字段投影从原地址加字段偏移开始，相邻记录仍按父布局跨步。标量与SSE2批次、扫描／排序及范围摘要消费同一布局，工作区替换时同时交接自己的真实步长，不另建逐行指针或列副本。
 
-源码节选：`crates/blcompute/src/cpu.rs:32`。
+源码节选：`crates/blcompute/src/cpu.rs:34`。
 
 ```rust
 type Entry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32);
@@ -1593,7 +1631,7 @@ Microsoft 的 [x64 调用约定](https://learn.microsoft.com/en-us/cpp/build/x64
 
 栈是一段按调用组织的内存。生成函数进入时保存需要保持的寄存器，为局部槽与溢出值留出空间；退出时恢复它们，并返回调用者。代码还必须遵守栈对齐和调用其他函数时的约定。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:108`。
+源码节选：`crates/blanguage/src/native/codegen.rs:150`。
 
 ```rust
     fn leave(&mut self, frame: u32) {
@@ -1669,7 +1707,7 @@ pub(super) enum Location {
 
 native.rs 是 CPU 后端的公开入口。native/codegen.rs 及其子模块在 compiler feature 中生成机器码；native/image.rs 持有编译器与执行器共用的代码、重定位和执行计划。关闭 compiler 的 SDK 仍可装入 CPU 映像，执行器无需携带 x64 发射实现。GPU 发射也属于 compiler feature；CPU 与 GPU 的装入入口只消费已编译映像，关闭compiler的执行SDK不编入Compiler、编译预算、优化器及自定义归约lowering；运行摘要与共有布局仍由原定义交接。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:122`。
+源码节选：`crates/blanguage/src/native/codegen.rs:164`。
 
 ```rust
     fn jump(&mut self, condition: Option<u8>) -> usize {
@@ -1705,10 +1743,16 @@ pub struct NativeCode {
     pub relocations: Vec<Relocation>,
     pub stack_bytes: u32,
     pub calls: Vec<Option<usize>>,
+    /// 主函数末端；不包括同映像的无帧探栈叶辅助与常量。
+    pub function_end: usize,
+    /// 发射器产生的Windows x64展开字节，与本映像一起交接。
+    pub unwind: Vec<u8>,
 }
 ```
 
-这也解释了为什么单独复制裸指令字节不一定就能运行：其中的调用地址、参数表与寿命仍有上下文。
+同一 NativeCode 还交付主函数末端 function_end 与 Windows x64 展开字节 unwind。末端不包含映像尾部的无帧探栈叶辅助和常量；展开信息只描述真实主函数序言中的压栈、帧分配和非易失寄存器保存。普通应用、范围和集合辅助入口复用 native/unwind.rs 的同一编码，按实际指令完成位置写入展开操作。
+
+这也解释了为什么单独复制裸指令字节不一定就能运行：其中的调用地址、参数表、平台展开信息与寿命仍有上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -1718,7 +1762,7 @@ pub struct NativeCode {
 
 一百万个元素不意味着创建一百万个操作系统线程。运行时把连续元素组成范围，每个工作者领取一段，用本机范围函数处理。
 
-源码节选：`crates/blcompute/src/cpu.rs:63`。
+源码节选：`crates/blcompute/src/cpu.rs:65`。
 
 ```rust
     loop {
@@ -1739,7 +1783,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:649`。
+源码节选：`crates/blanguage/src/native/codegen.rs:691`。
 
 ```rust
     let stage = &lowered;
@@ -1764,43 +1808,63 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 ### 15.3 机器码怎样变成可调用函数
 
-源码节选：`crates/blcompute/src/cpu.rs:211`。
+源码节选：`crates/blcompute/src/cpu.rs:216`。
 
 ```rust
-        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
+        let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
+        let end = u32::try_from(code.function_end)?;
+        let table_offset = (unwind as usize + code.unwind.len()).div_ceil(4) * 4;
+        let size = table_offset + std::mem::size_of::<RuntimeFunction>();
+        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
         if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let mut out = Self { address, _libraries: Vec::new() };
+        let mut out = Self { address, functions: None, _libraries: Vec::new() };
+        let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
         unsafe {
             std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
+            std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
+            std::ptr::write(table, RuntimeFunction { begin: 0, end, unwind });
         }
 ```
 
-执行内存从创建起由原 Executable 持有；原映像只被借用，解析后的地址写入这份真实内存。DLL 引用在装入期间由原 Library 持有，失败时随本次实际消费结束。
+执行内存从创建起由原 Executable 持有。指令、四字节对齐的展开字节和 RuntimeFunction 表放在同一次 VM 分配中；表中的起点、末端和展开位置是相对这份内存的偏移。原映像只被借用，解析后的地址写入这份真实内存。DLL 引用在装入期间由原 Library 持有，失败时随本次实际消费结束。
 
-源码节选：`crates/blcompute/src/cpu.rs:246`。
+源码节选：`crates/blcompute/src/cpu.rs:262`。
 
 ```rust
-            unsafe {
-                std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), address.cast::<u8>().add(r.offset), 8);
-            }
-        }
         out._libraries = libraries.into_values().collect();
         unsafe {
             let mut old = 0;
-            if VirtualProtect(address, code.bytes.len(), 0x20, &mut old) == 0 {
+            if VirtualProtect(address, size, 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
             if FlushInstructionCache(GetCurrentProcess(), address, code.bytes.len()) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
+        if unsafe { RtlAddFunctionTable(table, 1, address as u64) } == 0 {
+            return Err(error("Windows未接受CPU代码的原生展开信息"));
+        }
+        out.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
         Ok(out)
     }
+}
+impl Drop for Executable {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(table) = self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
+            VirtualFree(self.address, 0, 0x8000);
+        }
+    }
+}
 ```
 
-执行框架分配可写内存，复制指令、处理必要重定位，再把页面改成可执行并刷新指令缓存。CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。 CPU模板在全部阶段装入成功后才移动原执行布局；失败沿同一Result交回原错误与未改映像，Frame接回原程序槽。这里没有保留第二份代码或自动重放；普通CpuProgram的按值构造仍在失败时结束输入消费。
+执行框架先复制指令和展开字节、处理必要重定位，再把页面改成可执行并刷新指令缓存。RtlAddFunctionTable 成功后，入口才交给 CPU 调用；Windows 可以据此从实际 B 指令位置恢复调用者的栈与非易失寄存器。大型帧在一次实际减栈前调用同映像的无帧叶辅助逐页触及，帧分配仍记录在主函数序言中。
+
+最后一个真实消费者结束后，原 Executable 的 Drop 先撤销该函数表，再释放同一 VM；它持有的 DLL 引用随后结束。展开元数据没有另一套代码寿命或全局拥有表。普通 PE 应用及对象由相同发射结果交给 PE／COFF 的展开节，内存范围则交给 Windows 动态表；这不等于已经具有源码行号调试、异常处理语言语义或栈耗尽诊断。
+
+CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。CPU模板在全部阶段装入成功后才移动原执行布局；失败沿同一Result交回原错误与未改映像，Frame接回原程序槽。这里没有保留第二份代码或自动重放；普通CpuProgram的按值构造仍在失败时结束输入消费。
 
 可写和可执行内存、页面权限与函数签名属于这段代码必须满足的真实平台要求。它们与“变量是否乘二”处在不同层次。
 

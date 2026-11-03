@@ -2,6 +2,9 @@
 use super::*;
 fn emitter<'a>(program: &'a Program) -> Emitter<'a> {
     Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -17,7 +20,7 @@ fn emitter<'a>(program: &'a Program) -> Emitter<'a> {
 }
 pub(super) fn emit_count(program: &Program, c: &Compaction) -> NativeCode {
     let mut e = emitter(program);
-    e.bytes(&[0x41, 0x54]);
+    e.push_registers(&[12]);
     e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1,
         c.flags as u32 * BUFFER_BYTES + BUFFER_STRIDE));
     e.bytes(&[0x4c, 0x8b, 0x91]);
@@ -43,7 +46,7 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     let mut e = emitter(program);
     let stride = program.buffers[c.source].stride;
     // 实际源／目标／谓词stride分别归R13–R15；所有非易失寄存器由本范围保存和恢复。
-    e.bytes(&[0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57]);
+    e.push_registers(&[3, 6, 7, 12, 13, 14, 15]);
     for (binding, register) in [(c.source, 13), (c.target, 14), (c.flags, 15)] {
         e.instruction(None, &[0x8b], true, register,
             operands::Operand::memory(1, binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));

@@ -2,6 +2,9 @@
 use super::*;
 fn emitter(program: &Program) -> Emitter<'_> {
     Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -20,7 +23,7 @@ pub fn emit_sort_key(program: &Program, s: &Sorting, key: usize) -> NativeCode {
 }
 pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool) -> NativeCode {
     let mut e = emitter(program);
-    e.bytes(&[0x41, 0x54]);
+    e.push_registers(&[12]);
     e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1, BUFFER_STRIDE));
     e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x30]);
     if first {
@@ -95,8 +98,9 @@ pub fn emit_sort_histogram(program: &Program) -> NativeCode {
 }
 pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     let mut e = emitter(program);
+    e.push_registers(&[3]);
     e.bytes(&[
-        0x53, 0x4c, 0x8b, 0x51, 0x20, 0x4c, 0x8b, 0x59, 0x30, 0x48, 0x8b, 0x51, 0x40, 0x8b, 0x0a,
+        0x4c, 0x8b, 0x51, 0x20, 0x4c, 0x8b, 0x59, 0x30, 0x48, 0x8b, 0x51, 0x40, 0x8b, 0x0a,
     ]);
     let begin = e.code.len();
     e.bytes(&[0x45, 0x39, 0xc1]);
@@ -114,7 +118,7 @@ pub fn emit_sort_scatter(program: &Program) -> NativeCode {
 pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     let mut e = emitter(program);
     let stride = program.buffers[s.source].stride;
-    e.bytes(&[0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55]);
+    e.push_registers(&[3, 6, 7, 12, 13]);
     e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1, BUFFER_STRIDE));
     e.instruction(None, &[0x8b], true, 13, operands::Operand::memory(1, BUFFER_BYTES + BUFFER_STRIDE));
     e.bytes(&[0x4c, 0x8b, 0x11, 0x4c, 0x8b, 0x59, 0x10, 0x48, 0x8b, 0x51, 0x20]);

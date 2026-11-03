@@ -30,12 +30,12 @@ impl Application {
     }
     pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> Result<Object, Box<dyn std::error::Error>> {
         let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
-        let mut stack_bytes = code.code.stack_bytes;
+        let mut stack_bytes = code.stack_bytes;
         let functions = crate::parallel::try_map(worker, self.functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         for (_, function) in &functions {
-            stack_bytes = stack_bytes.max(function.code.stack_bytes);
+            stack_bytes = stack_bytes.max(function.stack_bytes);
         }
         let (sections, mut stack) =
             object::application_code(code, functions, &self.imports, &resource_prefix(&self.name), &self.name)?;

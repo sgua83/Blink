@@ -6,4 +6,4 @@ mod codegen;
 #[cfg(feature="compiler")]
 pub use codegen::*;
 #[cfg(feature="compiler")]
-pub(crate) use codegen::{ApplicationCode,emit_application,emit_function,application_unwind,program};
+pub(crate) use codegen::{emit_application,emit_function,unwind_info,program};

@@ -1,6 +1,6 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
 use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
-use crate::native::{ApplicationCode, NativeSymbol, application_unwind};
+use crate::native::{NativeCode, NativeSymbol, unwind_info};
 use std::collections::{BTreeMap, BTreeSet};
 fn put32(v: &mut [u8], at: usize, n: u32) {
     v[at..at + 4].copy_from_slice(&n.to_le_bytes());
@@ -97,7 +97,7 @@ fn print(scalar: crate::ir::Scalar) -> Result<Helper> {
     v.extend([0x48, 0x83, 0xec, frame]);
     let at = v.len() as u8;
     operations.push((at, vec![at, ((frame / 8 - 1) << 4) | 2]));
-    let unwind = application_unwind(at, operations);
+    let unwind = unwind_info(at, operations);
     if float {
         // Intrinsics receive original bits; only f32 needs promotion for C's %g.
         v.extend([0x66]);
@@ -209,8 +209,8 @@ fn thunk(text: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import)
     patches.push((at, import));
 }
 pub(crate) fn application(
-    native: ApplicationCode,
-    defined: Vec<(String, ApplicationCode)>,
+    native: NativeCode,
+    defined: Vec<(String, NativeCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
     name: &str,
@@ -219,15 +219,15 @@ pub(crate) fn application(
     Ok((sections, frames))
 }
 pub(crate) fn module(
-    defined: Vec<(String, ApplicationCode)>,
+    defined: Vec<(String, NativeCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
 ) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
     functions(None, defined, imports, prefix)
 }
 fn functions(
-    native: Option<(String, ApplicationCode)>,
-    defined: Vec<(String, ApplicationCode)>,
+    native: Option<(String, NativeCode)>,
+    defined: Vec<(String, NativeCode)>,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
 ) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
@@ -241,21 +241,21 @@ fn functions(
         call(&mut bytes, &mut patches, kernel("ExitProcess"));
         let end = u32::try_from(bytes.len())?;
         let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
-        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, application_unwind(4, vec![(4, vec![4, 0x42])]))));
-        let calls = native.code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
-        let main = function(&mut sections, &mut frames, format!("entry {name}"), native.code.stack_bytes, calls, native.code.bytes, Some((native.function_end, native.unwind)));
+        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))));
+        let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)));
         sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
         sections[entry].relocations.extend(patches.into_iter()
             .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
-        images.push((main, native.code.relocations));
+        images.push((main, native.relocations));
     }
     let mut targets = BTreeMap::new();
     for (name, code) in defined {
-        let calls = code.code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
-        let text = function(&mut sections, &mut frames, name.clone(), code.code.stack_bytes, calls, code.code.bytes, Some((code.function_end, code.unwind)));
+        let calls = code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let text = function(&mut sections, &mut frames, name.clone(), code.stack_bytes, calls, code.bytes, Some((code.function_end.try_into()?, code.unwind)));
         symbols.insert(name.clone(), (text, 0));
         targets.insert(NativeSymbol::Function(name), text);
-        images.push((text, code.code.relocations));
+        images.push((text, code.relocations));
     }
     let operations: BTreeSet<_> = images.iter().flat_map(|(_, relocations)| relocations)
         .map(|r| r.target.clone()).collect();

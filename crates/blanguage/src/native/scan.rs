@@ -20,6 +20,9 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         _ => 0x58,
     };
     let mut e = Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -32,8 +35,8 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
-    e.bytes(&[0x41, 0x54]);
-    if !add { e.bytes(&[0x41, 0x55]); }
+    e.push_registers(&[12]);
+    if !add { e.push_registers(&[13]); }
     e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1,
         (if add { r.target } else { r.source }) as u32 * BUFFER_BYTES + BUFFER_STRIDE));
     if !add {
@@ -186,6 +189,9 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         _ => 0x58,
     };
     let mut e = Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -198,7 +204,7 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
-    e.bytes(&[0x41, 0x54, 0x41, 0x55]);
+    e.push_registers(&[12, 13]);
     for (binding, register) in [(r.source, 12), (r.target, 13)] {
         e.instruction(None, &[0x8b], true, register,
             operands::Operand::memory(1, binding as u32 * BUFFER_BYTES + BUFFER_STRIDE));

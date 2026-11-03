@@ -722,6 +722,11 @@ impl Emitter<'_> {
                 r,
                 Operand::memory(4, offset),
             );
+            if !restore {
+                let at = self.code.len() as u8;
+                self.unwind.push((at, unwind::saved(at, r, offset, false)));
+                self.prolog = at;
+            }
         }
         for (r, offset) in self.frame.saved_xmm.clone() {
             self.instruction(
@@ -731,6 +736,11 @@ impl Emitter<'_> {
                 r,
                 Operand::memory(4, offset),
             );
+            if !restore {
+                let at = self.code.len() as u8;
+                self.unwind.push((at, unwind::saved(at, r, offset, true)));
+                self.prolog = at;
+            }
         }
     }
 }

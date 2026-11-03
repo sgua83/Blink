@@ -77,7 +77,7 @@ impl Module {
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
         let stack_bytes = code
             .iter()
-            .map(|(_, code)| code.code.stack_bytes)
+            .map(|(_, code)| code.stack_bytes)
             .max()
             .unwrap_or(0);
         let (sections, positions, mut stack) = object::module_code(

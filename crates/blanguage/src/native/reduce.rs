@@ -6,6 +6,9 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     let float = scalar.is_float();
     let wide = scalar.size() == 8;
     let mut e = Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -19,7 +22,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
         frame: Frame::default(),
     };
     // 同一绑定表持有地址与stride；R12保存源步长直到本范围完成。
-    e.bytes(&[0x41, 0x54]);
+    e.push_registers(&[12]);
     e.instruction(None, &[0x8b], true, 12,
         operands::Operand::memory(1, r.source as u32 * BUFFER_BYTES + BUFFER_STRIDE));
     e.bytes(&[0x4c, 0x8b, 0x91]);

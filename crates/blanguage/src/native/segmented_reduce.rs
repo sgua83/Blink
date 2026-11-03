@@ -74,6 +74,9 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     let r = &values.fields;
     let k = values.ty.size.div_ceil(4) as usize;
     let mut e = Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
@@ -86,7 +89,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         allocation: Allocation::default(),
         frame: Frame::default(),
     };
-    e.bytes(&[0x41, 0x54, 0x41, 0x55]);
+    e.push_registers(&[12, 13]);
     e.instruction(None, &[0x8b], true, 12, operands::Operand::memory(1,
         r.source as u32 * BUFFER_BYTES + BUFFER_STRIDE));
     if finish {

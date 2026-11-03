@@ -38,6 +38,10 @@ pub struct NativeCode {
     pub relocations: Vec<Relocation>,
     pub stack_bytes: u32,
     pub calls: Vec<Option<usize>>,
+    /// 主函数末端；不包括同映像的无帧探栈叶辅助与常量。
+    pub function_end: usize,
+    /// 发射器产生的Windows x64展开字节，与本映像一起交接。
+    pub unwind: Vec<u8>,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

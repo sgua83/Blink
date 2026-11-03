@@ -17,6 +17,8 @@ unsafe extern "system" {
     fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
+    fn RtlAddFunctionTable(table: *mut RuntimeFunction, count: u32, base: u64) -> u8;
+    fn RtlDeleteFunctionTable(table: *mut RuntimeFunction) -> u8;
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const std::ffi::c_char) -> *const c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
@@ -109,8 +111,11 @@ impl Drop for WorkHandle {
         }
     }
 }
+#[repr(C)]
+struct RuntimeFunction { begin: u32, end: u32, unwind: u32 }
 struct Executable {
     address: *mut c_void,
+    functions: Option<std::ptr::NonNull<RuntimeFunction>>,
     _libraries: Vec<Library>,
 }
 struct Library(*mut c_void);
@@ -208,13 +213,20 @@ extern "C" fn print_float(bits: u64, width: u32) -> u32 {
 }
 impl Executable {
     fn new(code: &blanguage::native::NativeCode) -> Result<Self> {
-        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), code.bytes.len(), 0x3000, 0x04) };
+        let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
+        let end = u32::try_from(code.function_end)?;
+        let table_offset = (unwind as usize + code.unwind.len()).div_ceil(4) * 4;
+        let size = table_offset + std::mem::size_of::<RuntimeFunction>();
+        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
         if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let mut out = Self { address, _libraries: Vec::new() };
+        let mut out = Self { address, functions: None, _libraries: Vec::new() };
+        let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
         unsafe {
             std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
+            std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
+            std::ptr::write(table, RuntimeFunction { begin: 0, end, unwind });
         }
         let mut libraries = std::collections::BTreeMap::new();
         for r in &code.relocations {
@@ -250,19 +262,24 @@ impl Executable {
         out._libraries = libraries.into_values().collect();
         unsafe {
             let mut old = 0;
-            if VirtualProtect(address, code.bytes.len(), 0x20, &mut old) == 0 {
+            if VirtualProtect(address, size, 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
             if FlushInstructionCache(GetCurrentProcess(), address, code.bytes.len()) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
+        if unsafe { RtlAddFunctionTable(table, 1, address as u64) } == 0 {
+            return Err(error("Windows未接受CPU代码的原生展开信息"));
+        }
+        out.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
         Ok(out)
     }
 }
 impl Drop for Executable {
     fn drop(&mut self) {
         unsafe {
+            if let Some(table) = self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
             VirtualFree(self.address, 0, 0x8000);
         }
     }

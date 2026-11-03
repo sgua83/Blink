@@ -10,6 +10,9 @@ mod atomic;
 use allocation::{Allocation, Frame, PacketAllocation};
 #[path="application.rs"]
 mod application;
+#[path="unwind.rs"]
+mod unwind;
+pub(crate) use unwind::encode as unwind_info;
 #[path="compact.rs"]
 mod compact;
 #[path="custom_reduce.rs"]
@@ -39,7 +42,7 @@ mod sort;
 #[path="texture.rs"]
 mod texture;
 pub(crate) use application::{
-    ApplicationCode, emit as emit_application, emit_function, unwind as application_unwind,
+    emit as emit_application, emit_function,
 };
 #[path="tile.rs"]
 mod tile;
@@ -57,6 +60,9 @@ const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
 struct Emitter<'a> {
     code: Vec<u8>,
+    unwind: Vec<(u8, Vec<u8>)>,
+    prolog: u8,
+    probe: Option<usize>,
     relocations: Vec<Relocation>,
     calls: Vec<Option<usize>>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
@@ -72,6 +78,25 @@ impl Emitter<'_> {
     // Literal bytes belong to this code image, after all returning instructions
     // and any local helpers. Their references move with the same image.
     fn finish(mut self, stack_bytes: u32) -> NativeCode {
+        let function_end = self.code.len();
+        let unwind = unwind::encode(self.prolog, std::mem::take(&mut self.unwind));
+        if let Some(at) = self.probe {
+            let start = self.code.len();
+            self.patch(at, start);
+            self.bytes(&[0x4c, 0x8b, 0xd4, 0x49, 0x83, 0xc2, 0x08, 0x49, 0x89, 0xc3]);
+            let begin = self.code.len();
+            self.bytes(&[0x49, 0x81, 0xfb]);
+            self.u32(4096);
+            let tail = self.jump(Some(0x82));
+            self.bytes(&[0x49, 0x81, 0xea]);
+            self.u32(4096);
+            self.bytes(&[0x41, 0x85, 0x02, 0x49, 0x81, 0xeb]);
+            self.u32(4096);
+            let back = self.jump(None);
+            self.patch(back, begin);
+            self.patch(tail, self.code.len());
+            self.bytes(&[0x4d, 0x29, 0xda, 0x41, 0x85, 0x02, 0xc3]);
+        }
         for ((bits, wide), references) in std::mem::take(&mut self.literals) {
             self.code.resize(self.code.len().div_ceil(4) * 4, 0);
             let target = self.code.len();
@@ -85,21 +110,38 @@ impl Emitter<'_> {
             relocations: self.relocations,
             stack_bytes,
             calls: self.calls,
+            function_end,
+            unwind,
+        }
+    }
+    fn push_registers(&mut self, registers: &[u8]) {
+        for &register in registers {
+            if register >= 8 { self.bytes(&[0x41]); }
+            self.bytes(&[0x50 + (register & 7)]);
+            let at = self.code.len() as u8;
+            self.unwind.push((at, vec![at, register << 4]));
+        }
+        self.prolog = self.code.len() as u8;
+    }
+    fn allocate_frame(&mut self, frame: u32) {
+        if frame >= 4096 {
+            self.bytes(&[0xb8]);
+            self.u32(frame);
+            self.bytes(&[0xe8]);
+            self.probe = Some(self.code.len());
+            self.u32(0);
+        }
+        if frame != 0 {
+            self.bytes(&[0x48, 0x81, 0xec]);
+            self.u32(frame);
+            let at = self.code.len() as u8;
+            self.unwind.push((at, unwind::allocation(at, frame)));
+            self.prolog = at;
         }
     }
     fn enter(&mut self, frame: u32) {
-        self.bytes(&[0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x53]);
-        let mut remaining = frame;
-        while remaining >= 4096 {
-            self.bytes(&[0x48, 0x81, 0xec]);
-            self.u32(4096);
-            self.bytes(&[0x85, 0x04, 0x24]);
-            remaining -= 4096;
-        }
-        if remaining > 0 {
-            self.bytes(&[0x48, 0x81, 0xec]);
-            self.u32(remaining);
-        }
+        self.push_registers(&[12, 13, 14, 15, 3]);
+        self.allocate_frame(frame);
         self.preserve_registers(false);
         self.bytes(&[
             0x49, 0x89, 0xcc, 0x49, 0x89, 0xd5, 0x45, 0x89, 0xc6, 0x44, 0x89, 0xcb,
@@ -677,6 +719,9 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     let frame = i32::try_from(bytes.div_ceil(16) * 16)
         .map_err(|_| "原生 tile 栈帧超过 x64 范围函数 ABI")? as u32;
     let mut e = Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),

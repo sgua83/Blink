@@ -510,6 +510,9 @@ pub(super) fn emit(
     let frame = i32::try_from(layout.end.div_ceil(16) * 16)
         .map_err(|_| "原生集合栈帧超过 x64 范围函数 ABI")? as u32;
     let mut e = Emitter {
+        unwind: Vec::new(),
+        prolog: 0,
+        probe: None,
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),

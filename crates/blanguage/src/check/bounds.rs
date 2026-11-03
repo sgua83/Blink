@@ -1,6 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
-use std::{borrow::Cow, collections::{HashMap, HashSet}, sync::Arc};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
 
 pub(super) fn seeks(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match &statement.kind {
@@ -615,7 +615,7 @@ impl Proof {
         if !roots.is_empty() {
             let mut clauses = BTreeMap::new();
             for clause in Clause::ordered(&roots) {
-                let mapped = match &*clause.0 {
+                let mapped = match &**clause.0 {
                     ClauseNode::Impossible => Clause::impossible(),
                     ClauseNode::Facts(facts) => facts
                         .iter()
@@ -994,7 +994,7 @@ impl Proof {
                     && let Some(condition) = self.component_condition(component)
                 {
                     for truth in [false, true] {
-                        if matches!(&*condition.cases[usize::from(!truth)].0, ClauseNode::Impossible) {
+                        if matches!(&**condition.cases[usize::from(!truth)].0, ClauseNode::Impossible) {
                             facts.insert(Fact::Boolean(identity, truth));
                         }
                     }
@@ -1373,7 +1373,7 @@ impl Value {
             }
             required = Clause::both(&required, &either);
         }
-        if matches!(&*required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
+        if matches!(&**required.0, ClauseNode::Facts(facts) if facts.is_empty()) { return; }
         let mut condition = Condition::component(self, 0);
         for case in &mut condition.cases { *case = Clause::both(case, &required); }
         self.proof.conditions.resize_with(self.regs.len(), || None);
@@ -1465,7 +1465,7 @@ impl Default for Condition {
     }
 }
 #[derive(Clone)]
-pub(super) struct Clause(Arc<ClauseNode>);
+pub(super) struct Clause(ManuallyDrop<Arc<ClauseNode>>);
 impl Default for Clause {
     fn default() -> Self {
         Self::facts(Facts::new())
@@ -1478,7 +1478,38 @@ enum ClauseNode {
     Either(Clause, Clause),
     Branch(Clause, Arc<Condition>, bool),
 }
+impl Drop for Clause {
+    fn drop(&mut self) {
+        // 同一引用只消费一次；ManuallyDrop字段不会在这里再次自动析构。
+        let mut next = Some(unsafe { ManuallyDrop::take(&mut self.0) });
+        let mut pending: Vec<Arc<ClauseNode>> = Vec::new();
+        while let Some(node) = next.take().or_else(|| pending.pop()) {
+            let Some(node) = Arc::into_inner(node) else { continue; };
+            match node {
+                ClauseNode::Both(a, b) | ClauseNode::Either(a, b) => {
+                    pending.push(b.into_node());
+                    next = Some(a.into_node());
+                }
+                ClauseNode::Branch(parent, condition, _) => {
+                    if let Some(Condition { cases }) = Arc::into_inner(condition) {
+                        pending.extend(cases.map(Self::into_node));
+                    }
+                    next = Some(parent.into_node());
+                }
+                ClauseNode::Impossible | ClauseNode::Facts(_) => {}
+            }
+        }
+    }
+}
 impl Clause {
+    fn node(value: ClauseNode) -> Self {
+        Self(ManuallyDrop::new(Arc::new(value)))
+    }
+    fn into_node(self) -> Arc<ClauseNode> {
+        let mut owned = ManuallyDrop::new(self);
+        // 已消费Clause不再运行Drop，直接转交它原来持有的Arc。
+        unsafe { ManuallyDrop::take(&mut owned.0) }
+    }
     fn negate(&self)->Self{
         fn fact(value:Fact)->Clause{match value{
             Fact::Minimum(_, _, 0)=>Clause::impossible(),
@@ -1498,7 +1529,7 @@ impl Clause {
         }}
         let mut values=BTreeMap::new();
         for clause in Self::ordered(std::slice::from_ref(self)){
-            let next=match &*clause.0{
+            let next=match &**clause.0{
                 ClauseNode::Impossible=>Self::default(),
                 ClauseNode::Facts(facts)=>facts.iter().fold(Self::impossible(),|all,value|Self::either(&all,&fact(*value))),
                 ClauseNode::Both(a,b)=>Self::either(&values[&a.key()],&values[&b.key()]),
@@ -1523,7 +1554,7 @@ impl Clause {
         while let Some((clause,ready))=pending.pop(){
             if clauses.contains_key(&clause.key()){continue;}
             if !ready {
-                match &*clause.0 {
+                match &**clause.0 {
                     ClauseNode::Both(a,b)|ClauseNode::Either(a,b)=>{
                         pending.extend([(clause,true),(b,false),(a,false)]);
                         continue;
@@ -1535,7 +1566,7 @@ impl Clause {
                     _=>{}
                 }
             }
-            let next = match &*clause.0 {
+            let next = match &**clause.0 {
                 ClauseNode::Impossible => clause.clone(),
                 ClauseNode::Facts(facts) => {
                     let renamed: Facts = facts
@@ -1608,17 +1639,17 @@ impl Clause {
         }
     }
     pub(super) fn impossible() -> Self {
-        Self(Arc::new(ClauseNode::Impossible))
+        Self::node(ClauseNode::Impossible)
     }
     fn facts(facts: Facts) -> Self {
         if contradictory(&facts) {
             Self::impossible()
         } else {
-            Self(Arc::new(ClauseNode::Facts(facts)))
+            Self::node(ClauseNode::Facts(facts))
         }
     }
     pub(super) fn both(a: &Self, b: &Self) -> Self {
-        match (&*a.0, &*b.0) {
+        match (&**a.0, &**b.0) {
             (ClauseNode::Impossible, _) | (_, ClauseNode::Impossible) => Self::impossible(),
             (ClauseNode::Facts(facts), _) if facts.is_empty() => b.clone(),
             (_, ClauseNode::Facts(facts)) if facts.is_empty() => a.clone(),
@@ -1626,7 +1657,7 @@ impl Clause {
                 Self::facts(a.union(b).copied().collect())
             }
             _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
-            _ => Self(Arc::new(ClauseNode::Both(a.clone(), b.clone()))),
+            _ => Self::node(ClauseNode::Both(a.clone(), b.clone())),
         }
     }
     fn observed(parent:&Self,facts:Facts)->Self {
@@ -1634,22 +1665,22 @@ impl Clause {
         Self::branch(parent,&known,true)
     }
     fn branch(parent: &Self, condition: &Arc<Condition>, truth: bool) -> Self {
-        if matches!(&*parent.0, ClauseNode::Impossible)
+        if matches!(&**parent.0, ClauseNode::Impossible)
             || matches!(
-                &*condition.cases[usize::from(truth)].0,
+                &**condition.cases[usize::from(truth)].0,
                 ClauseNode::Impossible
             )
         {
             return Self::impossible();
         }
-        Self(Arc::new(ClauseNode::Branch(
+        Self::node(ClauseNode::Branch(
             parent.clone(),
             condition.clone(),
             truth,
-        )))
+        ))
     }
     fn joined_branches(a: &Self, b: &Self) -> Option<Self> {
-        match (&*a.0, &*b.0) {
+        match (&**a.0, &**b.0) {
             (ClauseNode::Branch(ap, ac, at), ClauseNode::Branch(bp, bc, bt))
                 if Arc::ptr_eq(&ap.0, &bp.0) && Arc::ptr_eq(ac, bc) && at != bt =>
             {
@@ -1662,7 +1693,7 @@ impl Clause {
         if let Some(parent) = Self::joined_branches(a, b) {
             return parent;
         }
-        if let ClauseNode::Either(x, y) = &*a.0 {
+        if let ClauseNode::Either(x, y) = &**a.0 {
             if let Some(parent) = Self::joined_branches(y, b) {
                 return Self::either(x, &parent);
             }
@@ -1670,7 +1701,7 @@ impl Clause {
                 return Self::either(&parent, y);
             }
         }
-        if let ClauseNode::Either(x, y) = &*b.0 {
+        if let ClauseNode::Either(x, y) = &**b.0 {
             if let Some(parent) = Self::joined_branches(a, x) {
                 return Self::either(&parent, y);
             }
@@ -1678,7 +1709,7 @@ impl Clause {
                 return Self::either(x, &parent);
             }
         }
-        match (&*a.0, &*b.0) {
+        match (&**a.0, &**b.0) {
             (ClauseNode::Impossible, _) => b.clone(),
             (_, ClauseNode::Impossible) => a.clone(),
             (ClauseNode::Facts(facts), _) if facts.is_empty() => a.clone(),
@@ -1690,11 +1721,11 @@ impl Clause {
                 b.clone()
             }
             _ if Arc::ptr_eq(&a.0, &b.0) => a.clone(),
-            _ => Self(Arc::new(ClauseNode::Either(a.clone(), b.clone()))),
+            _ => Self::node(ClauseNode::Either(a.clone(), b.clone())),
         }
     }
     fn query_inputs(&self) -> Option<(&Self, &Self, bool)> {
-        match &*self.0 {
+        match &**self.0 {
             ClauseNode::Both(a, b) => Some((a, b, false)),
             ClauseNode::Branch(parent, condition, truth) =>
                 Some((parent, &condition.cases[usize::from(*truth)], false)),
@@ -1739,7 +1770,7 @@ impl Clause {
                 continue;
             }
             if !ready {
-                match &*clause.0 {
+                match &**clause.0 {
                     ClauseNode::Both(a, b) | ClauseNode::Either(a, b) => {
                         pending.extend([(clause, true), (b, false), (a, false)]);
                         continue;
@@ -1775,7 +1806,7 @@ impl Clause {
         }
         let mut values:BTreeMap<usize,BTreeSet<Facts>>=BTreeMap::new();
         for clause in Self::ordered(std::slice::from_ref(self)){
-            let next=match &*clause.0{
+            let next=match &**clause.0{
                 ClauseNode::Impossible=>BTreeSet::new(),
                 ClauseNode::Facts(value)=>facts(value).into_iter().collect(),
                 ClauseNode::Either(a,b)=>{
@@ -1799,7 +1830,7 @@ impl Clause {
                 for right in terms.range((std::ops::Bound::Excluded(left),std::ops::Bound::Unbounded)) {
                     for fact in left {
                         let opposite=Self::facts([*fact].into()).negate();
-                        let ClauseNode::Facts(opposite)=&*opposite.0 else{continue};
+                        let ClauseNode::Facts(opposite)=&**opposite.0 else{continue};
                         let Some(other)=opposite.first().filter(|_|opposite.len()==1)else{continue};
                         if !right.contains(other){continue;}
                         let combined=left.iter().filter(|value|*value!=fact)
@@ -1874,7 +1905,7 @@ impl Clause {
                 if facts[index].value.is_some() {
                     continue;
                 }
-                match &*facts[index].clause.0 {
+                match &**facts[index].clause.0 {
                     ClauseNode::Impossible => {
                         facts[index].value = Some(None);
                         continue;
@@ -1916,8 +1947,8 @@ impl Clause {
                     match (a, b) {
                         (Some(a), Some(b)) => {
                             // 叶子与合取已经检查；析取派生事实在本次合取消费处检查。
-                            if (matches!(&*facts[left].clause.0, ClauseNode::Either(..)) && additions_conflict(&environment, &a))
-                                || (matches!(&*facts[right].clause.0, ClauseNode::Either(..)) && additions_conflict(&environment, &b))
+                            if (matches!(&**facts[left].clause.0, ClauseNode::Either(..)) && additions_conflict(&environment, &a))
+                                || (matches!(&**facts[right].clause.0, ClauseNode::Either(..)) && additions_conflict(&environment, &b))
                             {
                                 None
                             } else {
@@ -1940,7 +1971,7 @@ impl Clause {
         }
     }
     pub(super) fn possible(&self) -> bool {
-        match &*self.0 {
+        match &**self.0 {
             ClauseNode::Impossible => false,
             ClauseNode::Facts(_) => true,
             ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..) => {
@@ -1967,7 +1998,7 @@ impl Clause {
                 let (clause,remaining)=goals[index];next=remaining;
                 if !visited.insert(clause.key()){continue;}
                 visits.push(clause.key());
-                match &*clause.0 {
+                match &**clause.0 {
                     ClauseNode::Impossible=>{impossible=true;break;},
                     ClauseNode::Facts(required)=>{
                         let before=additions.len();
@@ -2251,7 +2282,7 @@ impl Condition {
     pub(super) fn execution(path:&Clause)->Self {
         let mut conditions:BTreeMap<usize,Self>=BTreeMap::new();
         for clause in Clause::ordered(std::slice::from_ref(path)){
-            let condition=match &*clause.0 {
+            let condition=match &**clause.0 {
                 ClauseNode::Impossible=>Self::constant(false),
                 ClauseNode::Facts(_)=>Self::guard(clause.clone()),
                 ClauseNode::Both(a,b)=>conditions[&a.key()].clone().logical(conditions[&b.key()].clone(),false),
@@ -2282,7 +2313,7 @@ impl Condition {
     }
     pub(super) fn impossible(&self)->bool{self.cases.iter().all(|case|!case.possible())}
     pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
-    pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&*case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
+    pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,Proof>)->Self{
         Proof::condition(self.clone()).at_call(bindings).component_condition(0).unwrap().clone()
@@ -2295,7 +2326,7 @@ impl Condition {
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }
-    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&*clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Predicate(predicate,_)=>predicate.mentions(identity),Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
+    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&**clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Predicate(predicate,_)=>predicate.mentions(identity),Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
         let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};
@@ -2309,7 +2340,7 @@ impl Condition {
         match self
             .cases
             .each_ref()
-            .map(|case| matches!(&*case.0, ClauseNode::Impossible))
+            .map(|case| matches!(&**case.0, ClauseNode::Impossible))
         {
             [true, false] => Some(true),
             [false, true] => Some(false),
@@ -3674,7 +3705,7 @@ impl crate::module::codec::Encode for Proof {
             let mut unique = BTreeMap::new();
             let mut indices = BTreeMap::new();
             for clause in Clause::ordered(&roots) {
-                let node = match &*clause.0 {
+                let node = match &**clause.0 {
                     ClauseNode::Impossible => EncodedClause::Impossible,
                     ClauseNode::Facts(facts) => EncodedClause::Facts(facts.clone()),
                     ClauseNode::Both(a, b) => {
@@ -3734,9 +3765,9 @@ impl crate::module::codec::Decode for Proof {
                 nodes.push(match encoded {
                     EncodedClause::Impossible => Clause::impossible(),
                     EncodedClause::Facts(facts) => Clause::facts(facts),
-                    EncodedClause::Both(a, b) => Clause(Arc::new(ClauseNode::Both(node(&nodes, a)?, node(&nodes, b)?))),
+                    EncodedClause::Both(a, b) => Clause::node(ClauseNode::Both(node(&nodes, a)?, node(&nodes, b)?)),
                     EncodedClause::Either(a, b) => {
-                        Clause(Arc::new(ClauseNode::Either(node(&nodes, a)?, node(&nodes, b)?)))
+                        Clause::node(ClauseNode::Either(node(&nodes, a)?, node(&nodes, b)?))
                     }
                 });
             }
