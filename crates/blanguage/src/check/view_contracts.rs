@@ -147,7 +147,7 @@ impl Function {
     pub fn capture(&mut self,proof:&bounds::Proof,ty:&Ty,output:impl Fn(usize)->Output) {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}
     }
-    fn input(&self,id:ValueIdentity)->bool {match id{ValueIdentity::Register(n)=>n<self.input_width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)|ValueIdentity::ParameterStorage(..)=>true,_=>false}}
+    fn input(&self,id:ValueIdentity)->bool {match id{ValueIdentity::Register(n)=>n<self.input_width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)|ValueIdentity::ParameterStorage(..)|ValueIdentity::DatasetContent(..)=>true,_=>false}}
     fn position_access(&self,borrow:Borrow,position:PositionAccess,when:bounds::Condition)->Option<Access>{
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))

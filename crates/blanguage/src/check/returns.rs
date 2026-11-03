@@ -56,6 +56,7 @@ impl Returned {
                 v.residency=v.residency.output_bound(bindings).with_aliases(aliases);
                 value(&mut v.handle, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
+                v.elements.bind_outputs(None,bindings,aliases);
             }
         }
     }
@@ -98,6 +99,7 @@ impl Returned {
                 data.ownership = application::Ownership::Moved;
             }
             data.handle.proof = bounds::Proof::common(&data.handle, &other.handle);
+            data.elements.join((*other.elements).clone());
         }
         let (other, residency) = match &other {
             Self::Unit | Self::OwnedValue(_) => unreachable!(),
@@ -392,6 +394,7 @@ impl Builder<'_> {
         let mut owned=view::Borrow::default();let mut retained=view::Borrow::default();
         let outputs=value.iter().chain(borrowed.as_ref().ok().into_iter().flat_map(|written|written.values())).collect::<Vec<_>>();
         for output in &outputs{for borrow in view_contracts::resource_borrows(output){owned.union(&borrow);}}
+        for output in &outputs{self.require_element_return_borrows(output,&owned,span)?;}
         for output in outputs{if let Some(value)=output.view_value(){
             let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
             self.require_view_return_proof(&proof,owned.clone(),span)?;
@@ -453,8 +456,7 @@ impl Builder<'_> {
                 &definition.imports,
             )?;
             if ty.owns_resources()
-                && (name.dataset
-                    || definition.function.kind != FunctionKind::Value
+                && (definition.function.kind != FunctionKind::Value
                     || definition.function.target != Target::Cpu)
             {
                 return self.fail(

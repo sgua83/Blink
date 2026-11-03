@@ -3619,6 +3619,7 @@ impl Builder<'_> {
             }
             return (proof.project(&components, width), *uniform);
         }
+        if let Some(proof)=self.application_element_proof(place,regs){return (proof,false);}
         (
             self.projected_owned_proof(place, Some(regs))
                 .unwrap_or_default(),
@@ -3627,6 +3628,7 @@ impl Builder<'_> {
     }
     pub(super) fn invalidate_application_contents(&mut self, data: &application::DataReference) {
         let changed = data.words();
+        self.update_application_elements(&data.sources,&changed,None,None);
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
@@ -3646,6 +3648,7 @@ impl Builder<'_> {
         }
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
+        if let Place::ApplicationElement{sources,words,index_range,..}=place {self.update_application_elements(sources,words,Some(&fresh),Some(*index_range));}
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};
         let owners:BTreeMap<_,_>=self.env.iter().filter_map(|(name,binding)| {
             let owner=binding.stored_place()?;

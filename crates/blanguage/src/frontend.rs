@@ -831,7 +831,7 @@ impl World {
             let f=&self.functions[&cleanup].function;
             if f.kind!=FunctionKind::Value||f.target!=Target::Cpu||f.params.len()!=1||f.params[0].access!=Access::Value||f.result!=TypeName::named("void"){return source.fail(span,"B224","释放函数必须是接收一个按值载荷并返回void的普通on cpu函数");}
             let mut ty=self.ty_inner(payload,source,span,module,imports,stack)?;
-            if payload.dataset {if ty.owns_resources(){return source.fail(span,"B033","dataset元素不能保存拥有资源");}ty=ir::Ty::owned_dataset(ty,self.shape(&payload.count,source,span,module,imports)?);}
+            if payload.dataset {if ty.contains_views(){return source.fail(span,"B033","dataset元素不能保存view借用");}ty=ir::Ty::owned_dataset(ty,self.shape(&payload.count,source,span,module,imports)?);}
             let owner=ir::Ty::owned(ty,cleanup.clone());let identity=format!("owned contract:{}",owner.name);
             if !stack.insert(identity.clone()){return source.fail(span,"B224","释放函数的载荷合同不能递归要求同一拥有包装");}
             let definition=&self.functions[&cleanup];
@@ -863,8 +863,8 @@ impl World {
                     self.ty_inner(payload, source, span, module, imports, stack)?
                 };
                 if payload.dataset {
-                    if ty.owns_resources() {
-                        return source.fail(span, "B033", "dataset 元素不能保存另一份拥有资源");
+                    if ty.contains_views() {
+                        return source.fail(span, "B033", "dataset 元素不能保存view借用");
                     }
                     let count = self.shape(&payload.count, source, span, module, imports)?;
                     ty = ir::Ty::owned_dataset(ty, count);
@@ -892,8 +892,8 @@ impl World {
             }
             let mut element_ty = self.ty_inner(element, source, span, module, imports, stack)?;
             if element.dataset {
-                if element_ty.owns_resources() {
-                    return source.fail(span, "B033", "dataset 元素不能保存另一份拥有资源");
+                if element_ty.contains_views() {
+                    return source.fail(span, "B033", "dataset 元素不能保存view借用");
                 }
                 let count = self.shape(&element.count, source, span, module, imports)?;
                 element_ty = ir::Ty::owned_dataset(element_ty, count);
@@ -979,7 +979,7 @@ impl World {
                 self.ty_inner(arg, source, span, module, imports, stack)?
             };
             if arg.dataset {
-                if actual.owns_resources() || actual.contains_views() { return source.fail(span, "B033", "dataset元素需要普通存储"); }
+                if actual.contains_views() { return source.fail(span, "B033", "dataset元素不能保存view借用"); }
                 actual = ir::Ty::owned_dataset(actual, self.shape(&arg.count, source, span, module, imports)?);
             }
             if !self.family_accepts(&parameter.family, &actual, s, record.span, m, i, stack)? {
@@ -1065,7 +1065,7 @@ impl World {
                     let mut payload = if syntax == TypeName::named("void") { ir::Ty::unit() }
                         else { self.ty_inner(&syntax, s, variant.span, m, i, stack)? };
                     if syntax.dataset {
-                        if payload.owns_resources() || payload.contains_views() { return s.fail(variant.span, "B033", "dataset元素需要普通存储"); }
+                        if payload.contains_views() { return s.fail(variant.span, "B033", "dataset元素不能保存view借用"); }
                         payload = ir::Ty::owned_dataset(payload, self.shape(&syntax.count, s, variant.span, m, i)?);
                     }
                     alternatives.push(ir::Variant { name: variant.name.clone(), discriminant: tag, ty: Box::new(payload) });
@@ -1104,7 +1104,7 @@ impl World {
             value_parameters::substitute_type(&mut field_type, &value_map,s)?;
             let mut f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
             if field_type.dataset {
-                if f.owns_resources() || f.contains_views() {
+                if f.contains_views() {
                     return s.fail(
                         field.span,
                         "B033",

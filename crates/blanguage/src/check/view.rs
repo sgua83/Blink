@@ -238,7 +238,8 @@ impl Binding {
             for data in value.resources(){borrow.union(&data.handle.proof.view_borrow(0));}return borrow;
         }
         if let Self::ViewElement{view,..}=self {return view.proof.borrowed_view();}
-        self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default()
+        let mut borrow=self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default();
+        borrow.union(&user_owned::cleanup_borrow(self,&BTreeSet::new()));borrow
     }
 
 }

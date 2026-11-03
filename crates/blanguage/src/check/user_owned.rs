@@ -79,6 +79,37 @@ pub(super) fn cleanup_borrow(binding:&Binding,omitted:&BTreeSet<usize>)->view::B
             visit(child,root,offset+at,&path,omitted,into);
         }}
     }
-    let Binding::OwnedValue(value)=binding else{return view::Borrow::default()};
-    let mut result=view::Borrow::default();if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,&mut result);}result
+    fn data_contents(data:&application::Data,into:&mut view::Borrow){
+        if !data.ownership.may_own()||data.length.maximum()==0{return;}
+        let mut borrowed=view::Borrow::default();
+        match data.elements.as_ref(){
+            Returned::OwnedValue(value)=>owned(value,&BTreeSet::new(),&mut borrowed),
+            Returned::Dataset(child)=>data_contents(child,&mut borrowed),
+            Returned::Value(_)|Returned::Unit=>{},
+        }
+        let borrowed=if let Ownership::Conditional(when)=&data.ownership{borrowed.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{borrowed};
+        into.union(&borrowed);
+    }
+    fn owned(value:&OwnedValue,omitted:&BTreeSet<usize>,into:&mut view::Borrow){
+        if !value.ownership.may_own(){return;}
+        if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,into);}
+        fn children(value:&OwnedValue,into:&mut view::Borrow){
+            if !value.ownership.may_own(){return;}
+            for payload in value.payloads.iter().flatten(){match payload.as_ref(){
+                Returned::Dataset(child)=>data_contents(child,into),
+                Returned::OwnedValue(child)=>children(child,into),
+                Returned::Value(_)|Returned::Unit=>{},
+            }}
+        }
+        let mut nested=view::Borrow::default();children(value,&mut nested);
+        let nested=if let Ownership::Conditional(when)=&value.ownership{nested.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{nested};
+        into.union(&nested);
+    }
+    let mut result=view::Borrow::default();
+    match binding{
+        Binding::OwnedValue(value)=>owned(value,omitted,&mut result),
+        Binding::ApplicationData(value)=>data_contents(value,&mut result),
+        _=>{},
+    }
+    result
 }

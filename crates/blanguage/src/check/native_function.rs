@@ -248,8 +248,9 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     }
     if let Some(value)=returned.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,view_contracts::Output::Returned);}
     for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
-    let sources=returned.iter().chain(written.iter().flatten()).filter_map(Returned::view_value).flat_map(|value|value.proof.typed_view_borrow(&value.ty).sources).collect::<BTreeSet<_>>();
-    for source in sources{if let view::Source::Parameter(id)=source && let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));}}
+    application::canonical_element_inputs(builder,&mut bindings);
+    let sources=returned.iter().chain(written.iter().flatten()).flat_map(application::element_parameter_sources).collect::<BTreeSet<_>>();
+    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));}}
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
     let mut next=inputs.len();
@@ -286,7 +287,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         }))
     });
     builder.view_model.parameters=names;
-    let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{translate_returned(&mut value,&model,&bindings);value}));
+    let mut models=models.into_iter().map(|pair|pair.map(|(mut value,model)|{translate_returned(&mut value,&model,&bindings,false);value}));
     (models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization)
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
@@ -491,11 +492,13 @@ impl Builder<'_> {
                 }
             }
         }
+        let (element_inputs,element_memory)=application::element_input_bindings(self,d,&env);
+        memory_borrow.union(&element_memory);
         let requirements = contracts::resolve(self, d, &env)?;
         contracts::prove(self, &requirements, span)?;
         let output_inputs=outputs::inputs(self,d,&env)?;
         let mut view_arguments=actual.iter().enumerate().filter_map(|(index,proof)|proof.clone().map(|proof|(ValueIdentity::Register(index),proof))).collect::<BTreeMap<_,_>>();
-        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());view_arguments.extend(storage_inputs.clone());
+        view_arguments.extend(contents.clone());view_arguments.extend(resource_inputs.clone());view_arguments.extend(storage_inputs.clone());view_arguments.extend(element_inputs.clone());
         if !locations.is_empty() {
             let call = residency::Call {
                 function: instance.name.clone(),
@@ -559,7 +562,7 @@ impl Builder<'_> {
         } else {
             (BTreeMap::new(), None, Vec::new())
         };
-        bindings.extend(contents);bindings.extend(resource_inputs);bindings.extend(storage_inputs);
+        bindings.extend(contents);bindings.extend(resource_inputs);bindings.extend(storage_inputs);bindings.extend(element_inputs);
         if let Some(model) = &model {
             for (source, target) in model.registers().into_iter().zip(&values) {
                 bindings.insert(
@@ -612,7 +615,7 @@ impl Builder<'_> {
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();
                 let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
-                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
+                if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
                 if let Some(call)=view_call{view_contracts::set_resource_borrows(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
                 if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_place(&place,Returned::OwnedValue(value));
@@ -639,7 +642,7 @@ impl Builder<'_> {
         };
         let mut returned = self.template_returned(value, true);
         if let Some(model) = model {
-            translate_returned(&mut returned, &model, &bindings);
+            translate_returned(&mut returned, &model, &bindings,false);
             residency::returned(&mut returned, &locations);
         } else {
             residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations,&view_arguments);
@@ -685,10 +688,11 @@ fn translate_value(
         .or_else(|| value.proof.known_value(&value.ty));
     value.uniform = false;
 }
-fn translate_returned(
+pub(super) fn translate_returned(
     value: &mut Returned,
     model: &Returned,
     bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
+    stored: bool,
 ) {
     match (value, model) {
         (Returned::Value(value), Returned::Value(model)) => translate_value(value, model, bindings),
@@ -702,12 +706,14 @@ fn translate_returned(
                 ]));
             value.residency = model.residency.at_call(bindings);
             value.count = model.count;
+            let element_bindings=application::element_scope_bindings(bindings,model.elements.registers().len(),stored);
+            translate_returned(&mut value.elements,&model.elements,&element_bindings,true);
         }
         (Returned::OwnedValue(value), Returned::OwnedValue(model)) => {
             translate_value(&mut value.value, &model.value, bindings);
             for (value, model) in value.payloads.iter_mut().zip(&model.payloads) {
                 match (value.as_mut(), model.as_ref()) {
-                    (Some(value), Some(model)) => translate_returned(value, model, bindings),
+                    (Some(value), Some(model)) => translate_returned(value, model, bindings,stored),
                     _ => {
                         *value = None;
                     }

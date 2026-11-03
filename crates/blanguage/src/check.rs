@@ -125,6 +125,9 @@ enum ValueIdentity {
     ResourceParameter(usize, usize),
     // Semantic storage input, separate from native pointer bits and parameter contents.
     ParameterStorage(usize),
+    ElementComponent(usize),
+    ElementParent(usize, usize),
+    DatasetContent(usize, usize, usize),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexDomain {
@@ -1549,6 +1552,7 @@ fn function_parameters(
             }),
         );
     }
+    application::bind_parameter_elements(b,d);
     let requirements = contracts::resolve(b, d, &b.env)?;
     contracts::assume(&mut b.env, &requirements);
     b.materialize_array_bindings();
@@ -4321,7 +4325,7 @@ crate::module::codec::record!(Value {
     uniform,
     constant
 });
-crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter)});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter),6=>ElementComponent(component),7=>ElementParent(depth,component),8=>DatasetContent(parameter,resource,component)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression),15=>Lower(base,distance)});
 
 

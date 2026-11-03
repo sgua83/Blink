@@ -236,7 +236,7 @@ impl OwnedValuePayload {
     }
 }
 impl Builder<'_> {
-    pub(super) fn returned_storage(&mut self, value: &Returned) -> Value {
+    pub(super) fn returned_storage(&self, value: &Returned) -> Value {
         match value {
             Returned::Value(value) => (**value).clone(),
             Returned::OwnedValue(value) => value.value.clone(),
@@ -369,6 +369,7 @@ impl Builder<'_> {
                 length.constant = Some(vec![Bits::from(n)]);
             }
             Returned::Dataset(Box::new(DataPayload {
+                elements:self.unknown_element_model(element),
                 handle,
                 length,
                 ty: element.clone(),
@@ -444,7 +445,8 @@ impl Builder<'_> {
             constant: value.constant.as_ref().map(|v| vec![v[index]]),
         }
     }
-    pub(super) fn incoming_owned_value(&mut self, value: Value) -> OwnedValue {
+    pub(super) fn incoming_owned_value(&mut self, mut value: Value) -> OwnedValue {
+        value.proof=bounds::Proof::capture(&value);
         let Returned::OwnedValue(result) = self.template_returned(value, true) else {
             unreachable!()
         };

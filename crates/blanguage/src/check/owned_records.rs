@@ -60,6 +60,7 @@ impl Builder<'_> {
             child.value = value;
         }else if let Returned::Dataset(data)=&mut item {
             data.length=self.value_component(&value,1);
+            if let Some(count)=data.count{data.length.proof.assume_same_length(&bounds::Proof::unsigned(count,count));}
         }
         if let Some(place)=owner.place(){
             let(offset,ty)=owner.value.ty.aggregate_part(index);

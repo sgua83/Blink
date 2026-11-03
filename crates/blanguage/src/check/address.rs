@@ -45,7 +45,7 @@ impl Origin {
     pub fn symbolic_input(&self)->bool {
         match &self.root {
             Root::Derived(borrow)=>borrow.sources.iter().any(|source|match source {
-                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..))=>true,
+                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..))=>true,
                 view::Source::Position(origin)=>origin.symbolic_input(),
                 _=>false,
             }),
