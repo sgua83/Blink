@@ -542,14 +542,10 @@ impl Builder<'_> {
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
             memory: Vec::new(),
-            memory_use,
+            memory_use:Some(memory_use),
             result: result.clone(),
             values: values.clone(),
         }));
-        if d.function.result.is_never() {
-            self.flow = Flow::STOP;
-            return Ok(None);
-        }
         let prototype = self.functions.units[&instance.name]
             .as_ref()
             .map(|unit| {
@@ -596,7 +592,11 @@ impl Builder<'_> {
             semantic+=regs.len();written_registers.insert(*index,regs);
         }
         view_arguments.extend(bindings.clone());
-        let view_call=Some(self.view_model.call(&instance.name,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
+        let view_call=Some(self.view_model.call(&instance.name,memory_use,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
+        if d.function.result.is_never() {
+            self.flow = Flow::STOP;
+            return Ok(None);
+        }
         let initialized=self.functions.units[&instance.name].as_ref().and_then(|unit|unit.contract.initialization.as_ref());
         let effects=match initialized {
             Some(facts)=>facts.iter().map(|fact|address::InitializationEffect::Position(fact.at_call(&bindings))).collect::<Vec<_>>(),

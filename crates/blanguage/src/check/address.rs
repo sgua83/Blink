@@ -577,9 +577,8 @@ impl Builder<'_> {
         }
         borrow
     }
-    pub(super) fn call_address_memory(&mut self,borrow:view::Borrow,span:Span)->Result<Option<usize>> {
-        if borrow.empty(){return Ok(None);}
-        if external_memory(&borrow) {self.external_write_values();} else {
+    pub(super) fn call_address_memory(&mut self,borrow:view::Borrow,span:Span)->Result<usize> {
+        if external_memory(&borrow) {self.external_write_values();} else if !borrow.empty() {
         let positions=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source {
             view::Source::Position(origin)if origin.writable=>origin.positions.iter().cloned().collect::<Vec<_>>(),
             _=>Vec::new(),
@@ -601,7 +600,7 @@ impl Builder<'_> {
         }
         let usage=self.view_model.uses.len();
         self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,span})?;
-        Ok(Some(usage))
+        Ok(usage)
     }
     pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {
         if self.program.target!=Target::Cpu{return self.fail(span,"B265","address_of只取得本进程CPU位置");}
