@@ -203,7 +203,15 @@ bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_fa
 
 **原GPU映像全部实际shader的结构交接**
 
-StageCode／ShaderCode／ProgramImage是本次实际GPU模块集合的唯一容器；借用全部main、tail、scan_add、finish、dispatch、selector及sort原模块，保留阶段／字段／集合次序和各模块独立ID空间，用.1同一解码交接。现有export.rs沿同一.spv输出结构事实，不能另选集合编译路径、重建shader清单、复制IR或把未知模块省略成完整结果。不更改实际字／编译、调度、设备提交或完成资源，结果归调用者，原拥有者仍按最后真实消费者结束。具体接入待实现，[未完成范围](Issues.md#c-021-7-9-6-2)。
+StageCode／ShaderCode／ProgramImage是本次实际GPU模块集合的唯一容器；借用全部main、tail、scan_add、finish、dispatch、selector及sort原模块，保留阶段／字段／集合次序和各模块独立ID空间，用.1同一解码交接。现有export.rs沿同一.spv输出结构事实，不能另选集合编译路径、重建shader清单、复制IR或把未知模块省略成完整结果。不更改实际字／编译、调度、设备提交或完成资源，结果归调用者，原拥有者仍按最后真实消费者结束。容器查询与逐文件导出是两个独立结果，分别按下列职责实现；全部闭合才完成本父项，[未完成范围](Issues.md#c-021-7-9-6-2)。
+
+<a id="tool-6-2-1"></a>
+
+**原GPU容器的完整结构查询。** 原ShaderCode／StageCode／ProgramImage借用自己的words与原字段／集合，以.1同一解码交接独立JSON；ShaderCode保留ranks，StageCode保留缺失可选字段与finish名称，ProgramImage按原阶段次序交接程序名，各模块拥有独立ID和模块内偏移。已保存BLBI／BLRI的原code查询在原装入及CPU范围材料恢复后消费同一GPU查询，CPU分区及外层接口保持，GPU不占CPU范围条目。出错保留原阶段／字段／sort索引和模块内位置，不创建另一图、模块清单或执行状态；原编码、资源及完成不变，结果与临时解析归调用者。当前待实现，沿.2.1独立交付。
+
+<a id="tool-6-2-2"></a>
+
+**现有SPIR-V文件的配对结构导出。** export.rs::shader_file只借用同一原words，先取得.1完整结构后按现有名字写.spv及.spv.json；主／辅助模块的选择、遍历和次序继续归原program，不另选编译路径。格式失败不写本次模块的部分成功JSON，真实文件I/O失败直接交接；文件归输出调用者，逐文件写入不提供目录事务，也不因此增加发布／恢复状态。当前待实现，沿.2.2独立交付。
 
 <a id="tool-7"></a>
 
