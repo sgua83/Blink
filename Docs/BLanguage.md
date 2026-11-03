@@ -8,6 +8,8 @@ B也寓意Base。Blink希望像C语言为上一个计算时代所做的那样，
 
 长期目标与确定的语言边界见 [架构设计](Architecture.md#长期系统设计目标与语言边界)。B 不采用面向对象，不设计类继承、虚函数、对象类型驱动的运行时动态派发、通用类型擦除动态对象或反射驱动调用，以数据、函数、模块和执行域组织程序。普通B通过组合、编译期泛型与特化、模块接口复用，目的是尽量在编译期发现类型、调用、访问、副作用及生命周期问题，减少依赖运行时绑定和调用者约定的关系。必要动态性集中在真实外部ABI、模块装载／执行版本及资源调度边界；动态输入、容器、显式变体和普通任务仍属完整通用能力，不要求全部数值或调度预先固定。编译器可控的原生并行与调度、跨机一致语义和稳定热更新是长期核心目标，本规范不将这些目标描述为当前已实现能力。
 
+B应具备独立编写完整系统程序的能力。正确的系统ABI声明，以及承担类型／编码／错误／资源管理的B系统库属于实际能力；已有Windows接口可以直接沿原生ABI调用系统DLL，后续其他64位平台仍须分别实现。独立且必要的原生支持可以保留Rust，B外壳或相同参数的重复转发不代表B接管。编译器主体自举、调试／观察主体实际接管、保留的Rust支持与完整工具链脱离Rust分别报告，不以百分之百B或源码比例判完成；具体边界统一见Architecture及NativeInterop，当前实现状态保持如实记录。
+
 ## 确定的CPU运行目标：仅64位
 
 BLanguage只面向64位CPU运行，不支持32位CPU，不建设32位CPU后端、运行库或ABI兼容路径。当前已实现的CPU目标是Windows x64；其他64位CPU／平台仍按各自后端、调用约定和运行库的实际实现记录。
@@ -224,6 +226,26 @@ Program::ir_json输出program_ir：原interface布局、source_stages、accelera
 registers数组下标是当前Stage／ValueCode的逻辑寄存器，Scalar说明逻辑位宽；locals的end_component是原声明结束的逻辑分量位置，填充不占分量。字段名及word、slot、stride、binding等关系保留原IR语义，不能当实际机器寄存器或远端地址；大小／对齐／字节偏移以嵌入的原Ty布局及接口为准。指令数组位置只说明当前容器顺序，不是跨编译稳定身份、执行轨迹或机器指令区间。length_requirements中的same_length以left／right保存实际两端的等长要求，没有数据复制方向。
 
 SDK可直接对原编译返回的Program、Application、Module调用ir_json，对应用／模块用function_ir_json(name)选择实际保留函数；这些原编译结果的查询属于compiler功能。Stage、ValueCode和FunctionBody的只读值查询不依赖compiler；它们也可由调用者构造，查询本身不验证其合法性、不证明该值已经优化或执行。所有查询只借用原值并返回独立字符串，不修改IR、保存额外快照或扩展ProgramInterface。正常执行映像的ExecutionPlan并不保留已释放的Stage／ValueCode，查询不能恢复不存在的IR，也不改变代码、优化前提、资源寿命或正常运行采集策略。
+
+## 明确x64指令字节范围的结构查询
+
+`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`读取调用者明确声明为指令的原字节范围，返回单个JSON。它直接解析原字节，不装入B模块、不创建Compiler／编译工作，不生成或执行机器码。文件不是COFF／PE容器接口；Object符号／重定位、原映像主函数／辅助代码／常量范围和最终链接查询仍按各自架构／台账交付，不能把整份容器或带常量的映像直接当成全部指令。
+
+```powershell
+bc x64 target/example.x64 --ip 0x100000000 --offset 0 --length 32
+```
+
+数值参数接受十进制或0x前缀十六进制。file-base-ip是文件字节零的假定IP，默认0；offset默认0，length默认选到文件末端。所选范围的首IP等于file-base-ip加offset，按64位IP语义回绕；instruction的offset_bytes始终相对所选范围。重复、缺失、不可解析参数以及越过文件的范围直接报错，空范围明确返回零条指令。调用者须确定指令起点与完整终点；解码成功不证明输入属于代码或所有指令均可在当前CPU执行。
+
+结果kind=x64_query，交接source_path、file_base_ip、offset_bytes、length_bytes和decode。decode的kind=x64_instructions，bitness为64，origin_ip、byte_length、instruction_count及instructions说明实际所选范围；仅使用64位CPU解码，不提供32位CPU目标。64位模式中的窄操作数、地址大小前缀与向量指令继续按实际编码解释。
+
+每条指令保留offset_bytes、ip、next_ip、length_bytes、原bytes十六进制、code／mnemonic、encoding、flow_control、operands及operand_access。编码常量的位移／第一立即数／第二立即数分别给出相对该条指令的字节位置、长度与原字节；不存在时为null。64位地址与立即数／位移用十六进制字符串交接，不经JSON浮点数。立即数value_bits保持解码器给出的逻辑位模式，符号扩展由具体OpKind说明，encoded_constants仍保存原窄编码。
+
+寄存器交接原名称与实际字节宽度；普通内存操作数保留段、基址、索引、scale、内存类型与大小。位移明确区分displacement的原逻辑位模式与ip_relative_target的已按假定IP解析目标，不能把RIP／EIP相对目标再次当位移相加。隐式字符串内存保留原SI／ESI／RSI或DI／EDI／RDI和真实段关系。内存大小未知时size_bytes为null，不冒充实测零字节；向量op_mask、zeroing、broadcast、rounding与异常抑制按原编码交接。
+
+used_registers／used_memory、访问类别和flags仅是ISA描述的静态使用／影响，不读取寄存器、解引用内存或报告执行次数；REP条件访问与真实运行次数分开。flags使用OF、CF等具名标志，既不输出解码库私有掩码冒充硬件RFLAGS，也不声称已取得当前标志值。内存表达式、分支目标、异常类指令或CPUID相关语义不证明运行权限、目标数据有效、实际分支经过或硬件支持。
+
+SDK `blanguage::native::instructions_json(bytes, ip) -> Result<String, DecodeError>`借用原字节并返回独立字符串；DecodeError含实际失败offset、ip与reason。采用正常有效性检查，非法、截断或当前不支持的编码在实际位置失败，CLI不输出部分成功JSON、不跳字节或以db填充。依赖只在compiler功能启用iced-x86的std／decoder／instr_info，默认encoder、assembler和格式器关闭；公开接口不暴露依赖类型，不改变B代码生成、资源ABI或无compiler的运行库。解码能力随工具实现演进，不成为语言可用指令的永久边界。原代码／数据范围归实际发射和产物所有者，当前独立交付状态见双台账与Architecture的tool-5系列职责。
 
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：

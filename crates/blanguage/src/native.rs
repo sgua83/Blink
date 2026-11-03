@@ -7,3 +7,8 @@ mod codegen;
 pub use codegen::*;
 #[cfg(feature="compiler")]
 pub(crate) use codegen::{emit_application,emit_function,unwind_info,program};
+
+#[cfg(feature = "compiler")]
+mod disassemble;
+#[cfg(feature = "compiler")]
+pub use disassemble::{DecodeError, instructions_json};

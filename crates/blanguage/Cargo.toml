@@ -18,8 +18,9 @@ required-features = ["compiler"]
 path = "src/bin/blink.rs"
 
 [dependencies]
+iced-x86 = { version = "1.21", optional = true, default-features = false, features = ["std", "decoder", "instr_info"] }
 
 [features]
 default = ["compiler"]
-compiler = []
+compiler = ["dep:iced-x86"]
 installed = []
