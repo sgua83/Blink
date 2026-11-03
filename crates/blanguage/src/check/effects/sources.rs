@@ -11,7 +11,7 @@ pub(super) enum Local<'s> {
 pub(super) struct Scope<'b, 'w, 's> {
     pub(super) world: &'b World,
     pub(super) definition: &'b Definition,
-    builder: Option<&'b Builder<'w>>,
+    pub(super) builder: Option<&'b Builder<'w>>,
     pub bindings: Vec<(&'s str, Local<'s>)>,
 }
 impl<'b, 'w, 's> Scope<'b, 'w, 's> {
