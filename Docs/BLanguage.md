@@ -3764,7 +3764,7 @@ for view in data.view_bindings() {
 let source = data.view_source(0, "pair.left");
 ```
 
-以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU对应的来源与绑定完成点见下一节；Frame完整根与B／C入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
+以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU对应的来源与绑定完成点、Frame数据根见后文；B／C实际入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
 
 ### GPU布局、view来源与绑定保留点
 
@@ -3788,7 +3788,39 @@ if let Some(point) = gpu_data.last_use()? {
 }
 ```
 
-本节是原生Rust SDK观察，不新增B语法或C ABI。Frame完整根和B／C实际入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
+本节是原生Rust SDK观察，不新增B语法或C ABI。Frame当前数据根见下一节，B／C实际入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
+
+### 应用Frame数据根与有效域关系的借用
+
+Rust SDK的`application::Frame::data()`返回`&DomainBindings<Option<application::ResidentData>>`，直接借用同一个Frame的原data。`datasets()`保持原槽索引和已释放None空槽，不复制、过滤或生成句柄目录；ResidentData::Cpu和Gpu分别持有原CpuDataset／GpuDataset，借用可继续调用原布局、来源和存储查询。观察不load程序、创建设备、执行、等待或传输，也不改Frame状态。
+
+活动共享借用期间不能run／allocate／resize／upload／download／release或先行释放Frame。每次变更结束后重新借用当前根，实际CPU／GPU驻留由原枚举交付；不得持有旧地址跨越可能移动的操作。句柄整数仅索引这个Frame当前槽，release后为None，后续allocate可复用该整数而持有另一数据／类型，不据旧句柄推断身份或存活。当前Frame公开生产路径没有接入外部with_views／冻结数据的入口，查询没有增加插入器或伪造该集成；已有后端来源能力分别保持。
+
+`DomainBindings<D>::domain_relations()`返回同一原domains的`&[DomainRelation]`，Frame的data同样使用该入口。其字段如下：
+
+| 字段 | 来源和单位 |
+|---|---|
+| domain | 当前原datasets中的实际槽索引；Frame中即原句柄 |
+| offset／bytes | 完整记录内选中字段的字节偏移／声明类型字节数，不是元素范围或容量 |
+| count.binding | 同一原datasets中实际计数存储的槽索引 |
+| count.word | 计数字段在记录内的字节偏移；虽然名为word，也不是u32下标或计数值 |
+
+例如带八字节普通前置字段的记录，其计数字段字节偏移为八，count.word就为8；不能将其当第八个u32。Frame把本次逻辑参数映射到原槽后交接同一关系，字段投影保持原offset／bytes与计数位置。CPU／GPU prefix生产、计数字段真实可写访问、resize／release及DomainBindings的重排／分区沿原关系生产／撤回规则执行；查询不复制或重建另一份有效域权威。
+
+```rust
+use blcompute::application::ResidentData;
+let root = frame.data();
+for (handle, slot) in root.datasets().iter().enumerate() {
+    match slot {
+        Some(ResidentData::Cpu(data)) => { let layout = data.layout(); }
+        Some(ResidentData::Gpu(data)) => { let source_edges = data.view_bindings(); }
+        None => { /* 当前已释放的原空槽 */ }
+    }
+}
+let actual_relations = root.domain_relations();
+```
+
+关系和数据容器仍由原拥有者私有持有；公开DomainRelation的读取／普通值构造不授予向原domains发布关系的权限。旧元数据副本不替代当前require，也不证明GPU实际完成、B初始化或容量尾部可读。GPU异步绑定的完成关系继续由原last_use解释，Frame::run保持原同步调用；这些查询是Rust SDK接口，不新增B语法或跨单元C ABI容器。代码／程序观察根及B／C实际入口保持各自未完成范围。
 
 ### 原生物理 GPU 枚举与选择
 

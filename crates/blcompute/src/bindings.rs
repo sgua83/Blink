@@ -21,11 +21,14 @@ impl DomainStorage for crate::Dataset {
 
 // 运行期引用原物理存储及其中的实际数据字段；IR中的domain仍是逻辑参数索引。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DomainRelation {
-    pub(crate) domain: usize,
-    pub(crate) offset: u32,
-    pub(crate) bytes: u32,
-    pub(crate) count: PrefixCount,
+pub struct DomainRelation {
+    /// 当前原datasets中的实际槽索引；在Frame中就是原句柄。
+    pub domain: usize,
+    /// 完整记录内选中字段的字节偏移和声明类型字节数。
+    pub offset: u32,
+    pub bytes: u32,
+    /// count.binding同样索引原datasets，count.word是记录内字节偏移。
+    pub count: PrefixCount,
 }
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
@@ -64,6 +67,10 @@ impl<D> DomainBindings<D> {
     }
     pub fn datasets(&self) -> &[D] {
         &self.datasets
+    }
+    /// 借用随原数据持有的真实有效域关系，不复制、发布或重建另一份关系。
+    pub fn domain_relations(&self) -> &[DomainRelation] {
+        &self.domains
     }
     /// 取出存储后，宿主可任意改写；已有有效域不再随之交付。
     pub fn into_datasets(self) -> Vec<D> {

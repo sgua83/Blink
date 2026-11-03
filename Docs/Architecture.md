@@ -365,7 +365,11 @@ GPU Rust SDK的`GpuDataset::layout()`／`stride()`借用原GpuStorage布局，`v
 
 `GpuDataset::last_use()`沿原dependency取得本绑定实际保留点，返回`Result<Option<GpuDatasetUse>>`，device／sequence来自原Completion，complete来自同一Execution::is_complete；序号0合法。None只表示本绑定及其原冻结来源没有保留点，不证明初始化、设备空闲或所有别名完成。同源只读绑定可持有不同执行点，源上的旧点完成不代表后续别名工作完成。查询沿原Execution清理已经完成的资源，错误原样交回，不等待／提交／下载、清除绑定点或维护第二状态。快照不保活执行，device／sequence不是跨设备或长期身份。
 
-资源／view及观察消费者沿原来源和最后使用保持；返回字节副本或有效期明确的借用，报告本身不维持第二资源状态或释放链。Frame完整观察根与B／C实际入口仍未交付，分别沿C-021.7.9.22.3／.4推进；CPU／GPU Rust局部交接不冒称完整应用资源根或B观察已交付。本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应剩余范围：[C-021.7.9.22](Issues.md#c-021-7-9-22)。
+`Frame::data()`共享借用原`DomainBindings<Option<ResidentData>>`，不产生另一份根表。datasets保留原槽索引和None空槽，ResidentData直接表示原CpuDataset／GpuDataset；既有布局、来源和绑定保留点从这些原对象继续查询。释放后原槽变为None，后续allocate可复用同一整数；整数只在该Frame当前槽状态下解释，不成为长期资源身份。活动借用期间不能执行会改变Frame的操作，也不复制Arc／Rc或延长另一释放链。
+
+`DomainBindings::domain_relations()`共享借用原domains切片；公开的DomainRelation仍是同一运行元数据，不另建证明或关系快照。domain／count.binding索引当前原datasets，Frame中即原句柄；offset／bytes是记录内字段字节范围，count.word虽名word仍是计数字段字节偏移。关系随原执行产生、撤回和重映射；读取或构造一份同形元数据不能向原私有domains发布关系，也不证明GPU完成或未初始化容量可读。原run、数据传输、resize及释放职责保持。当前公开Frame生产路径没有接入宿主with_views／冻结数据的入口，查询如实交接当前根，不用私有槽注入冒称生产集成。
+
+资源／view及观察消费者沿原来源和最后使用保持；返回字节副本或有效期明确的借用，报告本身不维持第二资源状态或释放链。B／C实际观察仍沿C-021.7.9.22.4推进，代码／程序观察根仍沿C-021.7.9.23.3及相应工具叶项；数据根不冒称这些能力或完整宿主资源观察已经交付。本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应剩余范围：[C-021.7.9.22](Issues.md#c-021-7-9-22)。
 
 <a id="tool-23"></a>
 

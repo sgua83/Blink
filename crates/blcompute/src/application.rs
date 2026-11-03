@@ -49,7 +49,8 @@ impl Program {
         }
     }
 }
-enum ResidentData {
+/// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
+pub enum ResidentData {
     Cpu(CpuDataset),
     Gpu(vulkan::GpuDataset),
 }
@@ -80,6 +81,11 @@ impl Frame {
             device: None,
             types,
         }
+    }
+    /// 借用当前原数据根；槽索引为本Frame实际句柄，None保留已释放空槽。
+    /// 不过滤、复制或保活另一份资源；活动借用期间不能改变Frame。
+    pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
+        &self.data
     }
     /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。
     /// 结果只保存本次元数据，不保活资源；释放后的旧结果不代表当前存活状态。

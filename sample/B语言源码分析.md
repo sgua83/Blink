@@ -710,7 +710,7 @@ pub struct Dataset {
 
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
 
-Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；完整Frame观察根、其他宿主容器及B／C观察入口仍有独立未完成范围。
+Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6；其他宿主容器、代码／程序观察根及B／C实际入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
@@ -747,7 +747,41 @@ pub(crate) struct Views<Source> {
 
 已知字段路径时，`view_source(record, field)`沿原Ty::field_at选择该记录的实际活动载荷，再在原bindings二分查询。例如pair.left、list[1]、Some.left和Ok.right仍保留各自真实层级与大小写。非view字段、非活动变体、错误记录或已撤回绑定都没有来源；真实空来源仍是一个Dataset，其count为零。原始字节不能代替绑定。
 
-这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU对应的来源与保留点见第十九／二十一章；完整Frame根和B／C观察仍有各自未完成范围。
+这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU对应的来源与保留点见第十九／二十一章；Frame当前数据根见下一节；代码／程序根和B／C观察仍有各自未完成范围。
+
+### 2.6 从Frame借用当前数据根
+
+Frame已经持有原数据和有效域关系，观察不需要再建一张根表。data直接交回同一DomainBindings的共享借用；datasets保持原槽索引与None空槽，ResidentData的Cpu／Gpu就是实际原存储。通过这些借用继续读原布局或来源，不load程序、创建设备或隐式传输。
+
+源码节选：`crates/blcompute/src/application.rs:87`。
+
+```rust
+    pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
+        &self.data
+    }
+```
+
+共享借用有效时，Frame不能被执行、改写或释放；操作结束后再取当前根。release把槽交回None，allocate以后可以复用同一整数，不能把它当永久资源身份。查询不复制Arc／Rc或生成另一释放链，CPU字节快照与当前借用分别表达。
+
+有效前缀关系同样从原domains借用，不把观察结果变成新权威。DomainRelation的索引属于当前原datasets，在Frame里就是原槽号；字段位置沿原记录字节布局交接。
+
+源码节选：`crates/blcompute/src/bindings.rs:24`。
+
+```rust
+pub struct DomainRelation {
+    /// 当前原datasets中的实际槽索引；在Frame中就是原句柄。
+    pub domain: usize,
+    /// 完整记录内选中字段的字节偏移和声明类型字节数。
+    pub offset: u32,
+    pub bytes: u32,
+    /// count.binding同样索引原datasets，count.word是记录内字节偏移。
+    pub count: PrefixCount,
+}
+```
+
+domain_relations只返回同一原切片。offset／bytes是完整记录内选中字段的字节范围，count.word虽名word，仍是计数字段字节偏移；例如前面有八字节普通字段时，它为八，而不是第八个u32。复制或自行构造这份元数据不能写入原私有关系，也不证明GPU完成或容量尾部初始化。实际CPU／GPU执行产生前缀，计数字段可写访问、resize、release及重排／分区沿原关系撤回或映射。
+
+这些是当前数据根的Rust接口。Frame现有公开生产路径没有直接接收宿主with_views／冻结数据的入口，不能向私有槽注入一个例子就称已集成；代码／程序观察根及B／C实际观察仍按各自范围推进，不由数据根查询冒称完成。
 
 ## 第三章 只学阅读源码所需的 Rust
 

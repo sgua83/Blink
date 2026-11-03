@@ -7,7 +7,7 @@ mod texture;
 mod views;
 pub use texture::{Texture2D, TextureAddress, TextureFormat, TextureMip, TextureTexels};
 pub mod vulkan;
-pub use bindings::{DomainBindings, DomainStorage};
+pub use bindings::{DomainBindings, DomainRelation, DomainStorage};
 use blanguage::ir::{ExecutionPlan, ProgramInterface, Scalar, Ty};
 pub use views::{DatasetView, ReadDataset, ViewBinding};
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
