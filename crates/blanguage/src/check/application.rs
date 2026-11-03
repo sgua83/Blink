@@ -759,6 +759,7 @@ impl Builder<'_> {
         args: Vec<Value>,
         result: Option<Ty>,
         span: Span,
+        generation: Option<Arc<GeneratedOrigin>>,
     ) -> Result<Option<Value>> {
         let frame = self.application_frame(span)?;
         let values: Vec<_> = result
@@ -767,12 +768,17 @@ impl Builder<'_> {
             .map(|(s, _)| self.reg(*s))
             .collect();
         let arguments = std::iter::once(frame).chain(args).map(argument).collect();
-        self.emit(runtime_call(
+        let kind = runtime_call(
             name,
             arguments,
             result.clone(),
             values.clone(),
-        ).kind);
+        ).kind;
+        if let Some(generation) = generation {
+            self.code.push(Inst::generated(kind, generation));
+        } else {
+            self.emit(kind);
+        }
         Ok(result.map(|ty| Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -1222,6 +1228,10 @@ impl Builder<'_> {
                 vec![length.clone()],
                 Some(Ty::scalar(Scalar::U32)),
                 span,
+                Some(Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::DatasetAllocate,
+                    trigger: self.source_at(expr.span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
+                })),
             )?
             .unwrap();
         let handle = self.application_root(handle.regs[0]);
@@ -1413,7 +1423,7 @@ impl Builder<'_> {
         };
         let bytes = self.constant(Scalar::U32, Bits::from(bytes));
         let value = self
-            .application_call("address", vec![handle, offset, bytes], Some(pointer_type()), span)?
+            .application_call("address", vec![handle, offset, bytes], Some(pointer_type()), span, None)?
             .unwrap();
         Ok([value.regs[0], value.regs[1]])
     }
@@ -1473,7 +1483,7 @@ impl Builder<'_> {
         let root = if ty.components[0].0 == Scalar::U64 {
             if data.root.ty.components[0].0 == Scalar::U64 { data.root.clone() }
             else {
-                let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span)?.unwrap();
+                let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span,None)?.unwrap();
                 value.proof=value.proof.with_view_borrow(0,self.data_value_borrow(&data.data));
                 value
             }
@@ -1929,7 +1939,7 @@ impl Builder<'_> {
             );
         }
         let value = data.root.clone();
-        self.application_call(name, vec![value], None, span)?;
+        self.application_call(name, vec![value], None, span, None)?;
         let update = &mut |alias: &mut Data| {
             if alias.ownership != Ownership::Moved
                 && alias.root.proof.known_identity(0) == Some(data.root.identity())

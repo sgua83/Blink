@@ -184,6 +184,7 @@ impl super::ValueCode {
 pub enum GenerationReason {
     ParallelIndex, ClearPrefix, ApplicationEntry, ApplicationEntryCall,
     FrameErrorReceiver, FrameErrorContext, FrameCreate, FrameReadiness, FrameFailureExit, FrameDestroy,
+    DatasetAllocate,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -219,6 +220,7 @@ impl GeneratedOrigin {
             GenerationReason::FrameErrorReceiver => "frame_error_receiver", GenerationReason::FrameErrorContext => "frame_error_context",
             GenerationReason::FrameCreate => "frame_create", GenerationReason::FrameReadiness => "frame_readiness",
             GenerationReason::FrameFailureExit => "frame_failure_exit", GenerationReason::FrameDestroy => "frame_destroy",
+            GenerationReason::DatasetAllocate => "dataset_allocate",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

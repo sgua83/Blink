@@ -289,7 +289,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5"></a>
 
-**应用Frame与资源调用包装。** 原应用入口及各资源生产者向原ValueCode／Inst分别交接真实生成职责和触发锚点，下列八叶独立实现。隐式入口用原Definition及实际Instance作为定义实例锚点，不伪造用户表达式；有实际语法的资源原语保留真实SourceSite。原Frame、Data和最后真实消费者继续原所有权，观察材料不拥有资源、不增加释放链、Builder状态、图或调度。原IR持有不可变材料，查询借用，最后IR消费者后释放，关闭compiler不进入必要执行编码。当前完整范围见[父项](Issues.md#c-021-7-9-7-2-4-5)。
+**应用Frame与资源调用包装。** 原应用入口及各资源生产者向原ValueCode／Inst分别交接真实生成职责和触发锚点，下列具体职责及其叶项独立实现。隐式入口用原Definition及实际Instance作为定义实例锚点，不伪造用户表达式；有实际语法的资源原语保留真实SourceSite。原Frame、Data和最后真实消费者继续原所有权，观察材料不拥有资源、不增加释放链、Builder状态、图或调度。原IR持有不可变材料，查询借用，最后IR消费者后释放，关闭compiler不进入必要执行编码。当前完整范围见[父项](Issues.md#c-021-7-9-7-2-4-5)。
 
 <a id="tool-7-2-4-5-1"></a>
 
@@ -301,7 +301,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-2-1"></a>
 
-**dataset构造的分配调用来源。** 输入／输出及生产消费：原dataset<T>(length[,factory])的实际表达式、类型和长度→create_application_dataset／application_call→原allocate_<type> Call及返回的原Data。原Call持有DatasetAllocate及以实际构造SourceSite形成的Syntax锚点，实际定义、泛型实例、inline_path与domain_path沿原快照保持。内部allocate调用是生成包装，source_site为空，实际语法触发位于generated_origin；长度表达式与factory不因同属构造而被改成分配步骤。一个实际分配只保留一条原调用，Frame／Data仍拥有同一资源，静态Call不证明运行已经分配或分配成功；没有原来源时明确缺失，不凭名称猜造。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-1)。
+**dataset构造的分配调用来源。** 输入／输出及生产消费：原dataset<T>(length[,factory])的实际表达式、类型和长度→create_application_dataset／application_call→原allocate_<type> Call及返回的原Data。原Call持有DatasetAllocate及以实际构造SourceSite形成的Syntax锚点，实际定义、泛型实例、inlined_at与domain_path沿原快照保持。内部allocate调用是生成包装，source_site为空，实际语法触发位于generated_origin；长度表达式与factory不因同属构造而被改成分配步骤。一个实际分配只保留一条原调用，Frame／Data仍拥有同一资源，静态Call不证明运行已经分配或分配成功；没有原来源时明确缺失，不凭名称猜造。当前已交接原分配Call的生成理由与实际构造触发，语法范围按原解析器的dataset标识符跨度保持，不扩大为完整参数列表；见[规范](BLanguage.md#dataset构造分配的生成来源)与[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-1)。
 
 <a id="tool-7-2-4-5-2-2"></a>
 
