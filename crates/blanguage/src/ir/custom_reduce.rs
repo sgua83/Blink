@@ -2,6 +2,8 @@
 use super::*;
 #[derive(Clone, Debug)]
 pub struct ValueCode {
+    #[cfg(feature = "compiler")]
+    pub(crate) entry_origin: Option<std::sync::Arc<ValueCodeEntry>>,
     pub registers: Vec<Scalar>,
     pub locals: BTreeMap<usize, Ty>,
     pub code: Vec<Inst>,

@@ -103,12 +103,23 @@ fn function(
     }
     builder.in_function = false;
     let instance = builder.specialized_arguments(key, &args, explicit, reference.span)?;
+    let source_site = |span| builder.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
+        origin: origin.clone(), context: builder.source_context.clone(), span, syntax: SourceSyntax::Expression,
+    }));
+    let entry_origin = Arc::new(ValueCodeEntry {
+        definition: instance.definition.source_origin().map(Arc::new),
+        instance: Arc::from(instance.name.as_str()),
+        reference: source_site(reference.span),
+        capture_parameter_start: parameters.len(),
+        captures: captures.iter().map(|capture| source_site(capture.span)).collect(),
+    });
     let result = builder.invoke_returned(instance, args, reference.span)?;
     let result = builder.ordinary_return(result, expr.span)?;
     let result = builder.value_result(result, expr.span)?;
     builder.require_same(ty, &result.ty, expr.span)?;
     let imports = std::mem::take(&mut builder.functions).into_imports();
     let code = ValueCode {
+        entry_origin: Some(entry_origin),
         registers: builder.registers,
         locals: builder.locals,
         code: builder.code,

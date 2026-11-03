@@ -118,3 +118,34 @@ impl super::Stage {
     /// Original collective call, independent of its internal value kernels or generated code.
     pub fn operation_source(&self) -> Option<&SourceSite> { self.operation_source.as_deref() }
 }
+
+/// The actual static value-function selection and its caller-side source facts.
+#[derive(Clone, Debug)]
+pub struct ValueCodeEntry {
+    pub(crate) definition: Option<std::sync::Arc<SourceOrigin>>,
+    pub(crate) instance: std::sync::Arc<str>,
+    pub(crate) reference: Option<std::sync::Arc<SourceSite>>,
+    pub(crate) capture_parameter_start: usize,
+    pub(crate) captures: Box<[Option<std::sync::Arc<SourceSite>>]>,
+}
+impl ValueCodeEntry {
+    pub fn definition(&self) -> Option<&SourceOrigin> { self.definition.as_deref() }
+    pub fn instance(&self) -> &str { &self.instance }
+    pub fn reference(&self) -> Option<&SourceSite> { self.reference.as_deref() }
+    /// Zero-based B parameter index of the first capture, before scalar flattening.
+    pub fn capture_parameter_start(&self) -> usize { self.capture_parameter_start }
+    pub fn captures(&self) -> impl ExactSizeIterator<Item = Option<&SourceSite>> {
+        self.captures.iter().map(|site| site.as_deref())
+    }
+    pub fn ir_json(&self) -> String {
+        format!("{{\"kind\":\"value_entry\",\"definition\":{},\"instance\":{},\"reference\":{},\"parameter_index_base\":0,\"capture_parameter_start\":{},\"captures\":[{}]}}",
+            self.definition().map_or_else(|| "null".into(), SourceOrigin::ir_json), text(self.instance()),
+            self.reference().map_or_else(|| "null".into(), SourceSite::ir_json), self.capture_parameter_start,
+            self.captures().enumerate().map(|(i, site)| format!("{{\"kind\":\"value_capture\",\"parameter\":{},\"source_site\":{}}}",
+                self.capture_parameter_start + i, site.map_or_else(|| "null".into(), SourceSite::ir_json)))
+                .collect::<Vec<_>>().join(","))
+    }
+}
+impl super::ValueCode {
+    pub fn entry_origin(&self) -> Option<&ValueCodeEntry> { self.entry_origin.as_deref() }
+}

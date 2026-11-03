@@ -186,6 +186,7 @@ pub(crate) fn compile_application(
     let result = builder.ordinary_return(result, d.function.span)?.unwrap();
     let mut app = builder.application.take().unwrap();
     let mut body = ValueCode {
+        entry_origin: None,
         registers: builder.registers,
         locals: builder.locals,
         code: builder.code,

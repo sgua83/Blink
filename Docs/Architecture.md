@@ -241,15 +241,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-3"></a>
 
-**集合算子与内部值核。** 原集合调用与静态值核引用形成两个可独立完成的交接，分别由原Stage.operation及各ValueCode持有事实；完整范围见[父项](Issues.md#c-021-7-9-7-2-3)。不以一个值核或机器辅助入口代表整个算子，不复制调用图。
+**集合算子与内部值核。** 原集合调用与静态值核引用形成两个可独立完成的交接，分别由原Stage.operation及各ValueCode持有事实；本组来源能力见[闭合范围](FixedIssues.md#c-021-7-9-7-2-3)。不以一个值核或机器辅助入口代表整个算子，不复制调用图。
 
 <a id="tool-7-2-3-1"></a>
 
-**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录原Expr.span、定义及具体实例，当前普通调用Span通常覆盖调用标识符；不扩大为未取得的完整参数表达式，也不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel／合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。compiler的Stage::operation_source()借用同一可选SourceSite，stage_ir的operation_source交接同一source_syntax或null，关闭compiler时不输出该字段；原JSON和SDK无需另一命令／对象。当前已实现这一原调用交接，值核及其余生成关系仍按各自缺口推进；[闭合范围](FixedIssues.md#c-021-7-9-7-2-3-1)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
+**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录原Expr.span、定义及具体实例，当前普通调用Span通常覆盖调用标识符；不扩大为未取得的完整参数表达式，也不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel／合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。compiler的Stage::operation_source()借用同一可选SourceSite，stage_ir的operation_source交接同一source_syntax或null，关闭compiler时不输出该字段；原JSON和SDK无需另一命令／对象。当前已实现这一原调用交接，值核入口见下项，其余生成关系仍按原缺口推进；[闭合范围](FixedIssues.md#c-021-7-9-7-2-3-1)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
 
 <a id="tool-7-2-3-2"></a>
 
-**集合值核的静态引用与入口来源。** 输入为原project／identity／combine表达式、bind静态引用／实际捕获及真实特化Instance，生产者为check/custom_reduce.rs::function原实际调用入口；各原ValueCode分别持有原定义、实际Instance.name及引用／调用事实，引用和按原顺序排列的捕获位置直接复用同一Builder定义／上下文；捕获参数起点取原元素参数数量，按真实B参数的零基下标关联，不由输出寄存器数或扁平分量猜补。实际捕获值和求值效果仍归原IR与运行消费者，入口材料只描述来源，不保存另一份参数值；内部Inst继续沿原Builder来源。空代码或折叠值核仍能解释其原入口；不从输出寄存器或内部任一Inst反推整个值核，不把三个角色合并。查询借用同一值核，结果归调用者；Source与上下文沿不可变共享事实在最后真实IR消费者后释放，不持有AST／World、增加注册表或运行权威。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3-2)。
+**集合值核的静态引用与入口来源。** 输入为原project／identity／combine表达式、bind静态引用／实际捕获及真实特化Instance，生产者为check/custom_reduce.rs::function原实际调用入口；各原ValueCode分别持有原定义、实际Instance.name及引用／调用事实，引用和按原顺序排列的捕获位置直接复用同一Builder定义／上下文；捕获参数起点取原元素参数数量，按真实B参数的零基下标关联，不由输出寄存器数或扁平分量猜补。实际捕获值和求值效果仍归原IR与运行消费者，入口材料只描述来源，不保存另一份参数值；内部Inst继续沿原Builder来源。空代码或折叠值核仍能解释其原入口；不从输出寄存器或内部任一Inst反推整个值核，不把三个角色合并。查询借用同一值核，结果归调用者；Source与上下文沿不可变共享事实在最后真实IR消费者后释放，不持有AST／World、增加注册表或运行权威。compiler的ValueCode::entry_origin()借用同一可选ValueCodeEntry，分别查询原定义、实际实例、reference、capture_parameter_start与有序captures；value_ir.entry_origin直接输出同一value_entry或null，捕获按B参数零基下标交接source_syntax或null。定义、引用及各捕获位置分别缺失，不丢弃已知实例或改变原求值；普通函数／应用及域包装ValueCode不伪造集合入口。当前原生产者已交接这组事实；无compiler角色及必要执行编码不含入口材料，原调用／优化保持。[闭合范围](FixedIssues.md#c-021-7-9-7-2-3-2)，精确接口见[规范](BLanguage.md#集合值核的入口与捕获来源)。
 
 <a id="tool-7-2-4"></a>
 

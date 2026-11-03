@@ -167,7 +167,10 @@ fn locals(values: &BTreeMap<usize, Ty>) -> String {
 impl ValueCode {
     /// Serializes this value; its construction/optimization phase belongs to the caller.
     pub fn ir_json(&self) -> String {
-        node("value_ir", &[("registers", array(self.registers.iter().map(name))), ("locals", locals(&self.locals)), ("inputs", numbers(&self.inputs)), ("outputs", numbers(&self.outputs)), ("code", code(&self.code))])
+        node("value_ir", &[
+            #[cfg(feature = "compiler")]
+            ("entry_origin", optional(self.entry_origin(), ValueCodeEntry::ir_json)),
+            ("registers", array(self.registers.iter().map(name))), ("locals", locals(&self.locals)), ("inputs", numbers(&self.inputs)), ("outputs", numbers(&self.outputs)), ("code", code(&self.code))])
     }
 }
 impl FunctionBody {

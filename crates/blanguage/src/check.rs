@@ -1614,6 +1614,7 @@ fn finish_checked_function(
         parameters,
         result,
         body: ValueCode {
+            entry_origin: None,
             registers: b.registers,
             locals: b.locals,
             code: b.code,

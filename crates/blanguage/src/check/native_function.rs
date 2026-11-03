@@ -1370,6 +1370,7 @@ fn build_domain(
     interface.outputs.dedup();
     let name = crate::module::domain::symbol(&instance.name, target);
     let body = ValueCode {
+        entry_origin: None,
         registers,
         locals: Default::default(),
         inputs: inputs.clone(),
