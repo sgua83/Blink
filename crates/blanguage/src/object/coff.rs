@@ -644,6 +644,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         if row.mapped != 0 {
             sections.push(Section {
                 associated: Vec::new(),
+                layout: None,
                 name: read_text(row.name)?,
                 bytes: unsafe { row.bytes.borrowed() }.to_vec(),
                 flags: row.flags as u32,

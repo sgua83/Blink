@@ -1,6 +1,7 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
 use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
 use crate::native::{NativeCode, NativeSymbol, unwind_info};
+use super::coff::facts::observations::Layout;
 use std::collections::{BTreeMap, BTreeSet};
 fn put32(v: &mut [u8], at: usize, n: u32) {
     v[at..at + 4].copy_from_slice(&n.to_le_bytes());
@@ -24,12 +25,12 @@ fn ucrt(name: &'static str) -> Import {
         name: name.into(),
     }
 }
-fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, local: u32, calls: Vec<Call>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>) -> usize {
+fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, local: u32, calls: Vec<Call>, bytes: Vec<u8>, unwind: Option<(u32, Vec<u8>)>, layout: Option<Layout>) -> usize {
     let text = sections.len();
     frames.push(Frame { name, coff: Some((text, 0)), local, calls });
     sections.push(Section {
         name: ".text".into(), bytes, flags: 0x60501020,
-        relocations: Vec::new(), associated: Vec::new(),
+        relocations: Vec::new(), associated: Vec::new(), layout,
     });
     if let Some((end, unwind)) = unwind {
         let pdata = text + 1;
@@ -41,11 +42,11 @@ fn function(sections: &mut Vec<Section>, frames: &mut Vec<Frame>, name: String, 
             name: ".pdata".into(), bytes, flags: 0x40301040,
             relocations: [(0, text), (4, text), (8, xdata)].into_iter()
                 .map(|(offset, section)| Relocation { offset, kind: 3, target: Target::Section(section, 0) }).collect(),
-            associated: Vec::new(),
+            associated: Vec::new(), layout: None,
         });
         sections.push(Section {
             name: ".xdata".into(), bytes: unwind, flags: 0x40301040,
-            relocations: Vec::new(), associated: Vec::new(),
+            relocations: Vec::new(), associated: Vec::new(), layout: None,
         });
     }
     text
@@ -241,9 +242,9 @@ fn functions(
         call(&mut bytes, &mut patches, kernel("ExitProcess"));
         let end = u32::try_from(bytes.len())?;
         let calls = std::iter::once(Call::Reference { offset: 5, tail: false }).chain(patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false })).collect();
-        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))));
+        let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))), Some(Layout::Generated));
         let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
-        let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)));
+        let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(Layout::Function));
         sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
         sections[entry].relocations.extend(patches.into_iter()
             .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
@@ -252,7 +253,7 @@ fn functions(
     let mut targets = BTreeMap::new();
     for (name, code) in defined {
         let calls = code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
-        let text = function(&mut sections, &mut frames, name.clone(), code.stack_bytes, calls, code.bytes, Some((code.function_end.try_into()?, code.unwind)));
+        let text = function(&mut sections, &mut frames, name.clone(), code.stack_bytes, calls, code.bytes, Some((code.function_end.try_into()?, code.unwind)), code.tail_regions.map(Layout::Function));
         symbols.insert(name.clone(), (text, 0));
         targets.insert(NativeSymbol::Function(name), text);
         images.push((text, code.relocations));
@@ -279,14 +280,14 @@ fn functions(
                     } else { name.symbol.clone() },
                 });
                 let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: true }).collect();
-                function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None)
+                function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::Generated))
             }
             NativeSymbol::Print(scalar) => {
                 let helper = print(*scalar)?;
                 patches = helper.patches;
                 let end = u32::try_from(helper.bytes.len())?;
                 let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false }).collect();
-                function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)))
+                function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)), Some(Layout::Generated))
             }
         };
         targets.insert(op, text);

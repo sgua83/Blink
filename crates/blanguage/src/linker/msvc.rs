@@ -149,7 +149,7 @@ pub(super) fn library(archives: &[Archive], objects: &[&crate::object::Object], 
             .into_iter().enumerate().map(|(index, name)| Section {
                 name: name.into(), bytes: Vec::new(),
                 flags: 0xc0000040 | match index { 0 | 1 => 0x00300000, 2 | 3 => 0x00400000, _ => 0x00200000 },
-                relocations: Vec::new(), associated: Vec::new(),
+                relocations: Vec::new(), associated: Vec::new(), layout: None,
             }).collect::<Vec<_>>();
         sections[1].bytes.resize(20, 0);
         let mut symbols = Vec::new();

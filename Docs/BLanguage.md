@@ -255,7 +255,7 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 主函数范围直接使用原function_end；compiler角色的tail_regions按原写入顺序保存每个尾部分区的排他end与kind，不另存相同主末端。输出region的kind为main_function、stack_probe、alignment或literal，offset_bytes／length_bytes相对同一bytes；各区间的原bytes十六进制合起来完整重建本次映像。main_function／stack_probe调用原instructions_json，instructions中的偏移相对本region，IP则使用ip加region偏移；字面量和对齐的instructions为null，只保留真实字节。解码失败在实际映像偏移与IP上报错，不跳过或把数据猜成指令。查询借用真实匹配的编译结果，不为调用者手工伪造的NativeCode证明合法性、实际执行或目标支持。
 
-`StageCode::code_json()`按Element主入口、四种单入口延续、Scan的prefix／apply及Sort的全部initialize／histogram／scatter／gather返回原容器关系；`ProgramImage::code_json()`读取同一ExecutionPlan名称与全部原阶段。多个独立代码映像分别使用字节零相对IP，外层address_basis=each_image_relative，不伪造共同装载地址。需要更小范围时调用原stages()及所选NativeCode的查询。普通函数也由同一Emitter::finish生产范围，原COFF物理记录与已声明范围可用下述.5.3.1查询，完整生成类别继续沿C-021.7.9.5.3.2交付。
+`StageCode::code_json()`按Element主入口、四种单入口延续、Scan的prefix／apply及Sort的全部initialize／histogram／scatter／gather返回原容器关系；`ProgramImage::code_json()`读取同一ExecutionPlan名称与全部原阶段。多个独立代码映像分别使用字节零相对IP，外层address_basis=each_image_relative，不伪造共同装载地址。需要更小范围时调用原stages()及所选NativeCode的查询。普通函数也由同一Emitter::finish生产范围，原COFF物理记录与已声明范围可用下述.5.3.1查询，完整生成类别可由下述COFF独立范围材料交接。
 
 `bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
 
@@ -293,7 +293,28 @@ symbols返回全部主记录的原name／name_bytes、带符号section_number、
 
 function_tables保留原.pdata的每条12字节记录、begin／end／unwind原加数与重定位。AMD64 ADDR32NB（3）指向同一文件已定义节时，将符号value与原加数相加，交接真实节内位置；字段无重定位、类型未支持或非节内目标分别标明no_relocation、relocation_type_not_supported、symbol_not_section_relative。begin／end在同一节且范围有效时，regions以runtime_function交接原范围，并调用原native::instructions_json；每条指令IP按该节内偏移解释，不代表最终RVA或装载地址。跨节开始／末端标cross_section_range，待实际链接布局，不据此判定源程序非法；未解析字段的表记录标unresolved，不猜范围。
 
-选中节中已声明范围以外的字节全部原样交接为unclassified，instructions=null。原代码特征位、函数符号或能反汇编不证明整节都是指令；探栈叶辅助、常量和对齐的完整生成分类仍归C-021.7.9.5.3.2。多个已声明范围分别保留原表来源，不据其重叠生成另一代码布局。结构截断、无效字符串／符号／重定位引用、真实范围越界／反向及ISA解码错误直接失败，不输出部分成功；解码错误保留原物理节号、节内字节偏移及相对IP。标准定义见[Microsoft PE／COFF格式](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)。最终PE、归档成员抽取及完整静态运行库观察仍沿C-021.7.9.9，源码来源和运行地址分别沿.7／.13。
+未提供生成材料时，选中节中已声明范围以外的字节全部原样交接为unclassified，instructions=null。原代码特征位、函数符号或能反汇编不证明整节都是指令；完整生成分类由下述独立材料显式交接。多个已声明范围分别保留原表来源，不据其重叠生成另一代码布局。结构截断、无效字符串／符号／重定位引用、真实范围越界／反向及ISA解码错误直接失败，不输出部分成功；解码错误保留原物理节号、节内字节偏移及相对IP。标准定义见[Microsoft PE／COFF格式](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)。最终PE、归档成员抽取及完整静态运行库观察仍沿C-021.7.9.9，源码来源和运行地址分别沿.7／.13。
+
+
+### COFF原生成范围的独立材料
+
+新生成的`Object::code_observations()`显式返回独立BLCF1字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions，主末端仍由原.pdata交接；Generated由原手写生产者声明整节都是代码，适用于启动、输出和无帧导入跳板。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
+
+显式捕获先确认原事实可取得，再复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
+
+BLCF1由8字节`BLCF\x01\0\0\0`、u64记录数量及按原物理代码节顺序排列的记录组成；整数均小端。每条为u64物理节号、32字节SHA-256、u32布局类别；0=Function，随后u64尾部分区数量及各项u64排他末端／u32类别（0探栈、1对齐、2字面量）；1=Generated，无额外范围。Function不另存主末端，查询消费原.pdata中从节内0开始的同一主范围；尾部单调且完整覆盖该节。Generated明确覆盖0至原节字节长度，不能从代码特征位推导。
+
+摘要以原长度前缀字段依次消费代码字节、节特征、重定位数量及各项offset／type／原目标名称／带符号节号／value，再消费本节已解析.pdata范围数量及各项start／end；数量、偏移、特征和数值沿原64位字段表示。物理节号在记录中配对，不散列文件位置、符号表索引、私有BLCO／构建记录、SDK或工具链。材料匹配说明同一范围相关的代码／重定位／原声明范围，不证明来源、执行安全或整个包所有内容相同；函数表、展开及其余COFF事实继续读取本次原文件。已有归档成员不因材料存在而被展开。
+
+```text
+bc code --object target/module.obj --observations target/module.blcf
+bc code --object target/module.obj --observations target/module.blcf --section 1
+bc code --object target/module.obj --function exact-symbol --observations target/module.blcf
+```
+
+SDK使用`object::code_facts_with_observations(bytes, selection, material)`。先完整核对所有原代码特征节的数量、顺序／物理号、摘要及布局覆盖，再生成选定查询；错误直接失败，不输出部分成功，也不转为无材料查询。成功JSON增加code_observations=matched，原物理节、符号／重定位、文件位置和function_tables保持。代码节regions分别为runtime_function、stack_probe、generated_code、alignment、literal；前三类解码完整原指令，对齐和字面量instructions=null。各分区原bytes合起来重建同一节；非代码节仍保留原查询语义，不据材料伪造分类。没有材料时继续明确保留unclassified；符号选择仍只定位原节，不改变原函数／代码布局。
+
+完整优化的执行对象不携带`.blcf`仍可按原编码链接／运行；保存构建输入的对象与原Object.write对象可复用同一材料，因为相同代码的文件位置／私有记录不成为匹配前置。材料由调用者持有和释放，不延长代码、模块、进程或GPU消费者寿命。最终PE／归档及完整静态运行库、源码来源与实际地址分别沿原.9、.7、.13，不把本接口写成完整原生调试已经交付。
 
 
 ## 显式编号枚举

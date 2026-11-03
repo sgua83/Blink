@@ -64,7 +64,7 @@ AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`�
 
 AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
 
-AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，未分类尾部和最终PE仍分别交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
+AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，原Object可显式保存独立`.blcf`，`--observations <ranges.blcf>`匹配后交接普通函数／辅助代码／对齐／字面量完整分区；无材料保持未分类，最终PE另行交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
 
 `bc image <entry.blbi> -o <deployment.blri>`直接导出原CPU／GPU执行映像，原构建输入记录与缓存保持；关闭compiler功能的Rust运行SDK可独立装入并执行，见[部署映像](Docs/BLanguage.md#构建记录与可部署执行映像)。
 

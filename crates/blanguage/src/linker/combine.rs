@@ -32,7 +32,7 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
             let index = *groups.entry(key).or_insert_with(|| {
                 let index = sections.len();
                 sections.push(Section {
-                    associated: Vec::new(),
+                    associated: Vec::new(), layout: None,
                     name: section.name.clone(),
                     bytes: Vec::new(),
                     flags,

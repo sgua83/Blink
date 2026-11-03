@@ -25,6 +25,7 @@ pub(crate) struct Section {
     pub flags: u32,
     pub relocations: Vec<Relocation>,
     pub associated: Vec<usize>,
+    pub layout: Option<coff::facts::observations::Layout>,
 }
 pub(crate) struct Symbol {
     pub name: String,
@@ -98,4 +99,13 @@ impl Object {
     }
 }
 
-pub use coff::facts::{CodeSelection, code_facts};
+pub use coff::facts::{CodeSelection, code_facts, code_facts_with_observations};
+
+impl Object {
+    /// Captures original generated code ranges as independent material, without compiling code.
+    /// This explicit request uses one temporary COFF serialization; execution bytes stay unchanged.
+    /// A restored or cache-only Object without retained producer facts returns an error.
+    pub fn code_observations(&self) -> Result<Vec<u8>> {
+        coff::facts::observations::capture(self)
+    }
+}

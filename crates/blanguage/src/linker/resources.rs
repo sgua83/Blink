@@ -77,7 +77,7 @@ pub(super) fn resources(archives: &[Archive]) -> Result<Option<Object>> {
             stack_bytes: 0,
         },
         sections: vec![Section {
-            associated: Vec::new(),
+            associated: Vec::new(), layout: None,
             name: ".rdata".into(),
             bytes,
             flags: 0x40400040,

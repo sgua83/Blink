@@ -19,14 +19,26 @@ pub fn print(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn object(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    use blanguage::object::{CodeSelection, code_facts};
-    let (source, selection) = match args {
-        [_, _, source] => (source, CodeSelection::CodeSections),
-        [_, _, source, flag, number] if flag == "--section" => (source, CodeSelection::Section(number.parse()?)),
-        [_, _, source, flag, name] if flag == "--function" => (source, CodeSelection::Function(name)),
-        _ => return Err("usage: bc code --object <compiled.obj> [--section number | --function exact-symbol]".into()),
+    use blanguage::object::{CodeSelection, code_facts, code_facts_with_observations};
+    let usage = "usage: bc code --object <compiled.obj> [--observations <ranges.blcf>] [--section number | --function exact-symbol]";
+    let source = args.get(2).ok_or(usage)?;
+    let mut selection = None; let mut material = None; let mut at = 3;
+    while at < args.len() {
+        let value = args.get(at + 1).ok_or(usage)?;
+        match args[at].as_str() {
+            "--observations" if material.is_none() => material = Some(value),
+            "--section" if selection.is_none() => selection = Some(CodeSelection::Section(value.parse()?)),
+            "--function" if selection.is_none() => selection = Some(CodeSelection::Function(value)),
+            _ => return Err(usage.into()),
+        }
+        at += 2;
+    }
+    let selection = selection.unwrap_or(CodeSelection::CodeSections);
+    let bytes = fs::read(source)?;
+    let facts = match material {
+        Some(path) => code_facts_with_observations(&bytes, selection, &fs::read(path)?)?,
+        None => code_facts(&bytes, selection)?,
     };
-    let facts = code_facts(&fs::read(source)?, selection)?;
     println!("{facts}");
     Ok(())
 }

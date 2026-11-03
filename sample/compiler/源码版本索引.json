@@ -228,7 +228,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "bcdf936d163dde1558ff3bc3e7daab03094b25f8d2b17829810c2ccea103316e"
+      "sha256": "46cdade8a684ae347bbadd0bfdf5bea6a6eeb784c4d8c4143e527462ea7334e9"
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",

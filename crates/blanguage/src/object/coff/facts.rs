@@ -165,7 +165,7 @@ impl<'a> Facts<'a> {
             }
         })
     }
-    fn section_json(&self, index: usize, selected: bool, spans: &[Span]) -> Result<String> {
+    fn section_json(&self, index: usize, selected: bool, spans: &[Span], material: Option<&observations::Material>) -> Result<String> {
         let section = &self.sections[index]; let row = section.row;
         let mut values = vec![("section_number", (index + 1).to_string()), ("name", text(&read_text(row.name)?)),
             ("header_file_offset_bytes", (20 + index * 40).to_string()),
@@ -176,6 +176,20 @@ impl<'a> Facts<'a> {
             ("relocation_count", section.relocations.len().to_string()), ("selected", selected.to_string())];
         if selected {
             let bytes = unsafe { row.bytes.borrowed() };
+            let regions = if let Some(material) = material.filter(|_| row.flags & 0x20 != 0) {
+                material.regions(index, bytes.len(), spans)?.into_iter().map(|(kind, start, end)| {
+                    let instructions = if matches!(kind, "literal" | "alignment") { "null".into() }
+                    else {
+                        crate::native::instructions_json(&bytes[start..end], start as u64).map_err(|error| {
+                            format!("COFF section {}: {}", index + 1, crate::native::DecodeError {
+                                offset: start + error.offset, ip: error.ip, reason: error.reason,
+                            })
+                        })?
+                    };
+                    Ok(object(&[("kind", text(kind)), ("offset_bytes", start.to_string()),
+                        ("length_bytes", (end - start).to_string()), ("bytes", hex(&bytes[start..end])), ("instructions", instructions)]))
+                }).collect::<Result<Vec<_>>>()?
+            } else {
             let mut regions = Vec::new(); let mut code = spans.iter().filter(|s| s.section == index).collect::<Vec<_>>();
             code.sort_by_key(|s| (s.start, s.end));
             let mut end = 0;
@@ -193,6 +207,8 @@ impl<'a> Facts<'a> {
                 end = end.max(span.end);
             }
             if end < bytes.len() { regions.push(raw_region(bytes, end, bytes.len())); }
+            regions
+            };
             values.extend([("bytes", hex(bytes)), ("regions", array(regions)),
                 ("relocations", array(section.relocations.iter().map(|r| self.relocation(r)).collect::<Result<Vec<_>>>()?))]);
         }
@@ -207,15 +223,27 @@ fn raw_region(bytes: &[u8], start: usize, end: usize) -> String {
 /// Only resolved x64 `.pdata` ranges are decoded; other bytes remain explicitly unclassified.
 /// A selected symbol identifies its containing section, not an inferred function end.
 pub fn code_facts(bytes: &[u8], selection: CodeSelection<'_>) -> Result<String> {
+    query(bytes, selection, None)
+}
+/// Reads explicitly supplied producer material. A mismatch is an error, not a partial query.
+pub fn code_facts_with_observations(bytes: &[u8], selection: CodeSelection<'_>, material: &[u8]) -> Result<String> {
+    query(bytes, selection, Some(material))
+}
+fn query(bytes: &[u8], selection: CodeSelection<'_>, material: Option<&[u8]>) -> Result<String> {
     let facts = Facts::read(bytes)?;
     let (selected, selection_json) = facts.selected(selection)?;
     let (spans, tables) = facts.ranges()?;
-    Ok(object(&[("kind", text("coff_code")), ("bitness", "64".into()), ("address_basis", text("section_relative")),
+    let material = material.map(|bytes| observations::Material::read(&facts, &spans, bytes)).transpose()?;
+    let mut values = vec![("kind", text("coff_code")), ("bitness", "64".into()), ("address_basis", text("section_relative")),
         ("header_bytes", hex(&bytes[..20])), ("symbol_table_file_offset_bytes", facts.table.offset.to_string()),
         ("string_table_file_offset_bytes", (facts.table.strings.bytes as usize - bytes.as_ptr() as usize).to_string()),
         ("string_table_bytes", hex(unsafe { facts.table.strings.borrowed() })),
         ("selection", selection_json), ("symbol_record_count", facts.table.count.to_string()),
         ("symbols", array(facts.symbols.iter().enumerate().filter_map(|(i, s)| s.as_ref().map(|s| facts.symbol(i, s))).collect::<Result<Vec<_>>>()?)),
         ("function_tables", tables),
-        ("sections", array(facts.sections.iter().enumerate().map(|(i, _)| facts.section_json(i, selected.contains(&i), &spans)).collect::<Result<Vec<_>>>()?))]))
+        ("sections", array(facts.sections.iter().enumerate().map(|(i, _)| facts.section_json(i, selected.contains(&i), &spans, material.as_ref())).collect::<Result<Vec<_>>>()?))];
+    if material.is_some() { values.push(("code_observations", text("matched"))); }
+    Ok(object(&values))
 }
+
+pub(crate) mod observations;
