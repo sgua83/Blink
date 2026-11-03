@@ -5,17 +5,6 @@ const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
 const FORMAT: u32 = 36;
-fn read_import(s: &str) -> Result<Import> {
-    let s = s
-        .strip_prefix("__blink_import$")
-        .ok_or_else(|| format!("目标文件有未解析的符号 {s}"))?;
-    let (n, rest) = s.split_once('$').ok_or("DLL 符号缺少长度")?;
-    let n: usize = n.parse()?;
-    Ok(Import {
-        dll: rest.get(..n).ok_or("DLL 符号长度错误")?.into(),
-        name: rest.get(n..).ok_or("DLL 符号名称错误")?.into(),
-    })
-}
 // Caller-owned views; original names and bodies stay in Object until encoding ends.
 #[repr(C)]
 struct CoffSectionView {
@@ -127,11 +116,6 @@ struct ReadSymbol {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ReadSection {
-    name: ReadBytes, bytes: ReadBytes, flags: u64, relocations: usize, relocation_count: usize, error: ReadError,
-}
-#[repr(C)]
-#[derive(Clone, Copy)]
 struct ReadRelocations { offset: usize, count: usize, error: ReadError }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -145,13 +129,68 @@ unsafe extern "C" {
     fn read_symbols(input: ReadBytes) -> ReadSymbols;
     #[link_name = "bootstrap.coff_read::symbol"]
     fn read_symbol(input: ReadBytes, table: ReadSymbols, index: usize) -> ReadSymbol;
-    #[link_name = "bootstrap.coff_read::section"]
-    fn read_section(input: ReadBytes, headers: ReadBytes, index: usize) -> ReadSection;
     #[link_name = "bootstrap.coff_read::relocations"]
     fn read_relocations(input: ReadBytes, offset: usize, count: usize, flags: u64) -> ReadRelocations;
     #[link_name = "bootstrap.coff_read::relocation"]
     fn read_relocation(input: ReadBytes, offset: usize, index: usize) -> ReadRelocation;
 }
+// B owns logical section identity and COFF target interpretation; rows borrow the original input.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjectSection {
+    name: ReadBytes, bytes: ReadBytes, flags: u64, relocations: usize, relocation_count: usize, mapped: usize,
+}
+#[repr(C)]
+struct ObjectSectionResult { value: ObjectSection, error: ReadError }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjectRows { values: *const ObjectSection, count: usize }
+impl ObjectRows {
+    fn new(rows: &[ObjectSection]) -> Self { Self { values: rows.as_ptr(), count: rows.len() } }
+}
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+enum ObjectReadError {
+    None, OwnerNumber, OwnerUnavailable, OwnerNotComdat, Selection, SectionUnavailable,
+    DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
+}
+impl ObjectReadError {
+    fn check(self) -> Result<()> {
+        match self {
+            Self::None => Ok(()),
+            Self::OwnerNumber => Err("COFF关联节编号错误".into()),
+            Self::OwnerUnavailable => Err("COFF关联节不可装载".into()),
+            Self::OwnerNotComdat => Err("COFF关联所有者不是COMDAT节".into()),
+            Self::Selection => Err("不支持的Blink COFF COMDAT选择".into()),
+            Self::SectionUnavailable => Err("COFF 引用了不可装载的节".into()),
+            Self::DllLengthMissing => Err("DLL 符号缺少长度".into()),
+            Self::DllLengthEmpty => Err("cannot parse integer from empty string".into()),
+            Self::DllLengthDigit => Err("invalid digit found in string".into()),
+            Self::DllLengthOverflow => Err("number too large to fit in target type".into()),
+            Self::DllLength => Err("DLL 符号长度错误".into()),
+        }
+    }
+}
+#[repr(C)]
+struct ObjectAssociation { present: u64, owner: usize, error: ObjectReadError }
+#[repr(u64)]
+enum ObjectTargetKind { Section, Import, Symbol }
+#[repr(C)]
+struct ObjectTarget {
+    kind: ObjectTargetKind, section: usize, value: u64, dll: ReadBytes, name: ReadBytes, error: ObjectReadError,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.object_read::logical_section"]
+    fn object_logical_section(input: ReadBytes, headers: ReadBytes, index: usize, mapped: *mut u64) -> ObjectSectionResult;
+    #[link_name = "bootstrap.object_read::association"]
+    fn object_association(rows: ObjectRows, selection: u64, owner: u64) -> ObjectAssociation;
+    #[link_name = "bootstrap.object_read::resolve_target"]
+    fn object_resolve_target(rows: ObjectRows, name: ReadBytes, section: i64, value: u64) -> ObjectTarget;
+}
+fn object_index(rows: &[ObjectSection], index: usize) -> Option<usize> {
+    rows.get(index)?.mapped.checked_sub(1)
+}
+
 fn read_text(bytes: ReadBytes) -> Result<String> {
     Ok(std::str::from_utf8(unsafe { bytes.borrowed() })?.to_owned())
 }
@@ -519,19 +558,17 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     }
     let headers = ReadBytes::new(reader.headers);
     let mut raw = Vec::new();
+    let mut mapped = 0u64;
     for index in 0..reader.headers.len() / 40 {
-        let row = unsafe { read_section(input, headers, index) };
+        let row = unsafe { object_logical_section(input, headers, index, &mut mapped) };
         row.error.check()?;
-        raw.push((
-            read_text(row.name)?,
-            unsafe { row.bytes.borrowed() },
-            row.flags as u32,
-            row.relocations,
-            row.relocation_count,
-        ));
+        // Preserve the original per-section UTF-8 check before reading the following section.
+        std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
+        raw.push(row.value);
     }
-    let meta = raw.iter().find(|s| s.0 == META)
-        .ok_or("缺少 Blink 目标文件元数据")?.1;
+    let meta = raw.iter().find(|row| unsafe { row.name.borrowed() } == META.as_bytes())
+        .ok_or("缺少 Blink 目标文件元数据")?;
+    let meta = unsafe { meta.bytes.borrowed() };
     let mut c = MetadataReadCursor::new(meta);
     let header = unsafe { metadata_read_header(&mut c, u64::from(FORMAT)) };
     header.error.check()?;
@@ -596,66 +633,52 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
         }
         stack.push(stack::Frame { name, coff, local: value.local as u32, calls });
     }
-    let archive = raw.iter().find(|s| s.0 == ARCHIVE).map(|s| Archive {
-        bytes: s.1.to_vec(),
+    let archive = raw.iter().find(|row| unsafe { row.name.borrowed() } == ARCHIVE.as_bytes()).map(|row| Archive {
+        bytes: unsafe { row.bytes.borrowed() }.to_vec(),
         libraries,
         exports,
         resources,
     });
-    let mut mapping = BTreeMap::new();
     let mut sections = Vec::new();
-    for (i, (name, bytes, flags, _, _)) in raw.iter().enumerate() {
-        if name != META && name != ARCHIVE && name != BUILD {
-            mapping.insert(i, sections.len());
+    for row in &raw {
+        if row.mapped != 0 {
             sections.push(Section {
                 associated: Vec::new(),
-                name: name.clone(),
-                bytes: bytes.to_vec(),
-                flags: *flags,
+                name: read_text(row.name)?,
+                bytes: unsafe { row.bytes.borrowed() }.to_vec(),
+                flags: row.flags as u32,
                 relocations: Vec::new(),
             });
         }
     }
-    for (old, &index) in &mapping {
-        if raw[*old].2 & 0x1000 == 0 { continue; }
-        match definitions.get(old).ok_or("COFF COMDAT节缺少定义辅助记录")? {
-            (1, _) => (),
-            (5, owner) => {
-                let owner = *mapping.get(&(*owner as usize).checked_sub(1).ok_or("COFF关联节编号错误")?)
-                    .ok_or("COFF关联节不可装载")?;
-                if sections[owner].flags & 0x1000 == 0 { return Err("COFF关联所有者不是COMDAT节".into()); }
-                sections[owner].associated.push(index);
-            }
-            _ => return Err("不支持的Blink COFF COMDAT选择".into()),
-        }
+    let rows = ObjectRows::new(&raw);
+    for (old, row) in raw.iter().enumerate() {
+        if row.mapped == 0 || row.flags & 0x1000 == 0 { continue; }
+        let &(selection, owner) = definitions.get(&old).ok_or("COFF COMDAT节缺少定义辅助记录")?;
+        let value = unsafe { object_association(rows, u64::from(selection), u64::from(owner)) };
+        value.error.check()?;
+        if value.present != 0 { sections[value.owner].associated.push(row.mapped - 1); }
     }
-    for (old, index) in &mapping {
-        let (_, _, flags, p, count) = &raw[*old];
-        let table = unsafe { read_relocations(input, *p, *count, u64::from(*flags)) };
+    for row in &raw {
+        if row.mapped == 0 { continue; }
+        let table = unsafe { read_relocations(input, row.relocations, row.relocation_count, row.flags) };
         table.error.check()?;
         for i in 0..table.count {
             let r = unsafe { read_relocation(input, table.offset, i) };
             r.error.check()?;
             let s = symbols.get(r.symbol).and_then(Option::as_ref)
                 .ok_or("COFF 重定位符号越界")?;
-            let target = if s.1 > 0 {
-                Target::Section(
-                    *mapping
-                        .get(&(s.1 as usize - 1))
-                        .ok_or("COFF 引用了不可装载的节")?,
-                    s.2,
-                )
-            } else if s.0.starts_with("__blink_import$") {
-                Target::Import(read_import(&s.0)?)
-            } else {
-                bindings.get(&s.0).ok_or("未定义符号缺少模块接口合同")?;
-                Target::Symbol(s.0.clone())
+            let value = unsafe { object_resolve_target(rows, ReadBytes::new(s.0.as_bytes()), i64::from(s.1), u64::from(s.2)) };
+            value.error.check()?;
+            let target = match value.kind {
+                ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
+                ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),
+                ObjectTargetKind::Symbol => {
+                    bindings.get(&s.0).ok_or("未定义符号缺少模块接口合同")?;
+                    Target::Symbol(s.0.clone())
+                }
             };
-            sections[*index].relocations.push(Relocation {
-                offset: r.offset,
-                kind: r.kind as u16,
-                target,
-            });
+            sections[row.mapped - 1].relocations.push(Relocation { offset: r.offset, kind: r.kind as u16, target });
         }
     }
     let symbols = symbols
@@ -673,15 +696,14 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
                         .remove(&name)
                         .ok_or("导出符号缺少模块接口合同")?,
                     name,
-                    section: *mapping
-                        .get(&(section as usize - 1))
+                    section: object_index(&raw, section as usize - 1)
                         .ok_or("导出符号引用不可装载的节")?,
                     value,
                 })
             })
             .collect::<Result<_>>()?;
     for frame in &mut stack {
-        if let Some((section, _)) = &mut frame.coff { *section = *mapping.get(section).ok_or("栈信息引用不可装载的节")?; }
+        if let Some((section, _)) = &mut frame.coff { *section = object_index(&raw, *section).ok_or("栈信息引用不可装载的节")?; }
     }
     let object = Object {
         stack,

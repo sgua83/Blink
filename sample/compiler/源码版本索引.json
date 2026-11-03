@@ -4,7 +4,7 @@
   "source_files": [
     {
       "path": "crates/blanguage/build.rs",
-      "sha256": "f48e6510930301c27dbd5806ee7fc944930733acd8d8e0939a4daf5e5dc23f12"
+      "sha256": "fa15bab264198d2f00d54ec6b1ab3943bdeccd446ca2dac49abc5f680438f3ca"
     },
     {
       "path": "crates/blanguage/src/ast.rs",
@@ -65,6 +65,14 @@
     {
       "path": "crates/blanguage/src/bootstrap/metadata_read.h",
       "sha256": "a96a3f1cd7b2a883b1b99c7e8cb4f6a2a83f19cca1c4690f247eeb876e8ec2d2"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/object_read.b",
+      "sha256": "4e7490f3d8eccd115ebe9944211105a4711e48ef6eaf470b31372df65f992969"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/object_read.h",
+      "sha256": "7d798786c874c258d8959e83a2830daa2f10769af1743c0fb4f1b1a6264f7be7"
     },
     {
       "path": "crates/blanguage/src/bootstrap/parser.b",
@@ -204,7 +212,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "4a3b3f8e99cbcd1b0b7aa2ca1a825c8101cf14ad67274ec47727415e921770c1"
+      "sha256": "ac33020fb92f4a17bcbc75b96b81418f9f2933cec93fa9c33656e082e865f524"
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",
@@ -733,6 +741,24 @@
       "start_line": 1,
       "end_line": 22,
       "sha256": "c413844e111fd78150101cff86229f1f564ff9ca98774445df536f7378c73857"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/object_read.b",
+      "start_line": 20,
+      "end_line": 31,
+      "sha256": "be22996649fab02ecf8081360f02a165d2e0d68457a4807716676029fcce95b4"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/object_read.b",
+      "start_line": 32,
+      "end_line": 41,
+      "sha256": "f7a2392379ed9821a86d2b2cfa09905e8009231fc9db78c26217e3b08f292b3c"
+    },
+    {
+      "path": "crates/blanguage/src/bootstrap/object_read.b",
+      "start_line": 66,
+      "end_line": 77,
+      "sha256": "5fa03cd7f1b477ded830b4c6a31786fa0cffa79312fe674ddb53996309fcdfb0"
     },
     {
       "path": "crates/blanguage/src/bootstrap/metadata_read.h",

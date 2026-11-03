@@ -891,9 +891,9 @@ Rust入口拥有Vec，按源码n字节最多n个非空token加EOF的数学上界
 
 ### 5.4 稳定种子怎样参与正式构建
 
-原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、对象元数据、COFF对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
+原build.rs调用已安装稳定发行的bc，分别生成B词法、泛型前瞻、对象元数据与栈字段读写、符号绑定、COFF物理／逻辑读取、对象写出与归档生成的无Frame标准COFF对象，再由同一次blink生成静态库并链接进正式编译器。种子输入的VERSION由原共享读句柄保持到全部编译与归档子进程结束，新工具写工程target；编译器运行时直接调用已编入的B代码，构建保持原compiler角色与依赖关系。
 
-词法扫描、泛型尖括号前瞻、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出及静态归档格式生成由B接管；对象语义／合同及栈记录生成、归档输入I/O、语言对象恢复、归档目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
+词法扫描、泛型尖括号前瞻、对象元数据及栈字段读写、对象符号选择与重定位绑定、标准COFF结构读取／字节写出、逻辑节映射／COMDAT关联／重定位Target恢复及静态归档格式生成由B接管；其余对象语义／合同及栈记录生成、归档输入I/O、最终语言对象拥有容器及合同内部恢复、归档目录读取／抽取与其余语法构造、AST、检查、IR、后端及执行框架仍由Rust实现。新工具可重编同一B引导模块；完整编译器两代自举及GPU参与编译继续待完成。
 
 **自己走一遍。** `a<=b`得到三项；`a < = b`保持四项。位置和原文分开保存，仍不能把不同源码自动视作相同运算。
 
@@ -2454,7 +2454,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
 extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu;
 ```
 
-标准COFF对象的文件布局和字节写出由bootstrap/coff.h／.b负责。B借用本轮符号、原节载荷和已绑定重定位，计算文件内偏移、节表和符号／字符串表，再直接填充同一个Rust Vec。辅助记录按实际节及COMDAT关联生成，65535条起的重定位使用标准溢出行；语言对象恢复及对象语义／合同／栈记录生产继续归原Rust所有者。输出完成前输入保持，B不保留地址、不复制载荷。
+标准COFF对象的文件布局和字节写出由bootstrap/coff.h／.b负责。B借用本轮符号、原节载荷和已绑定重定位，计算文件内偏移、节表和符号／字符串表，再直接填充同一个Rust Vec。辅助记录按实际节及COMDAT关联生成，65535条起的重定位使用标准溢出行；最终语言对象拥有容器、合同内部恢复及其余对象语义／合同／栈记录生产继续归原Rust所有者。输出完成前输入保持，B不保留地址、不复制载荷。
 
 源码节选：`crates/blanguage/src/bootstrap/coff.h:1`。
 
@@ -2481,7 +2481,7 @@ extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu;
 
 标准COFF结构读取由bootstrap/coff_read.h／.b负责。原Reader继续持有本次文件快照，B从实际字节读取AMD64头、节载荷范围、短／长符号名、辅助记录、重定位溢出与原始字段；Rust接收借用描述符，完成真实UTF-8字符串及原容器的构造。节载荷沿原快照借用，到最终Section／Archive才形成拥有数据，不建立中间载荷副本。
 
-构建入口先只读取.blbuild，决定输入复用后才读取代码与Blink元数据；不因迁移而提前完整解码。物理范围与标准COFF字段只由B读取入口解释，共享资源／合同编码和语言对象恢复仍由原Rust消费者负责。B不保留地址、不引入Frame、分配回调或额外目录。
+构建入口先只读取.blbuild，决定输入复用后才读取代码与Blink元数据；不因迁移而提前完整解码。物理范围与标准COFF字段只由B读取入口解释，共享资源／合同内部编码与最终语言对象拥有容器仍由原Rust消费者负责；逻辑节映射、COMDAT关联及重定位Target由B对象读取入口交接。B不保留地址、不引入Frame、分配回调或额外目录。
 
 源码节选：`crates/blanguage/src/bootstrap/coff_read.h:1`。
 
@@ -2510,7 +2510,65 @@ extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 
 extern "C" ReadRelocation relocation(ReadBytes input,u64 offset,u64 index) on cpu;
 ```
 
-对象元数据外层读取由bootstrap/metadata_read.h／.b负责。同一份输入和原Cursor位置交给B，B读出BLCO头、三类前缀、参与要求、长度前缀字节、合同包络、帧及四类调用。Rust消费类型化字段，构造原Kind、字符串、Vec和BTreeMap；共享资源codec和函数合同规范化仍在原位置消费原blob，后续COFF映射与栈验证保持原职责。
+原raw节记录直接保存加载索引；特殊元数据节不占加载位置，其他消费者沿同一记录取得原节。
+
+源码节选：`crates/blanguage/src/bootstrap/object_read.b:20`。
+
+```b
+extern "C" ObjectSectionResult logical_section(ReadBytes input,ReadBytes headers,u64 index,inout u64 mapped) on cpu {
+    ReadSection row=section(input,headers,index);
+    ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64);
+    if(row.error!=0){return ObjectSectionResult(value,row.error);}
+    array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
+    if(!matches<7>(row.name,meta,true) &&
+       !matches<5>(row.name,runtime,true) &&
+       !matches<8>(row.name,build,true)){
+        mapped+=1u64;value.mapped=mapped;
+    }
+    return ObjectSectionResult(value,0);
+}
+```
+
+
+原辅助定义给出选择和所有者编号，B消费同一raw记录的加载索引与真实flags，Rust只向原associated交接结果。
+
+源码节选：`crates/blanguage/src/bootstrap/object_read.b:32`。
+
+```b
+extern "C" ObjectAssociation association(ObjectRows rows,u64 selection,u64 owner) on cpu {
+    if(selection==1u64){return ObjectAssociation(0u64,0u64,0);}
+    if(selection!=5u64){return ObjectAssociation(0u64,0u64,4);}
+    if(owner==0u64){return ObjectAssociation(0u64,0u64,1);}
+    if(owner>rows.count){return ObjectAssociation(0u64,0u64,2);}
+    ObjectSection value=row_at(rows,owner-1u64);
+    if(value.mapped==0u64){return ObjectAssociation(0u64,0u64,2);}
+    if((value.flags&4096u64)==0u64){return ObjectAssociation(0u64,0u64,3);}
+    return ObjectAssociation(1u64,value.mapped-1u64,0);
+}
+```
+
+
+B先解释真实节引用，再解释长度编码的DLL目标或模块符号。DLL长度数字、溢出与UTF-8边界在原解析入口处理；模块合同表和最终拥有字符串仍由Rust持有。
+
+源码节选：`crates/blanguage/src/bootstrap/object_read.b:66`。
+
+```b
+extern "C" ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 section,u64 value) on cpu {
+    if(section>i64(0)){
+        u64 index=u64(section)-1u64;
+        if(index>=rows.count){return failure(5);}
+        ObjectSection row=row_at(rows,index);
+        if(row.mapped==0u64){return failure(5);}
+        return ObjectTarget(0u64,row.mapped-1u64,value,empty_bytes(),empty_bytes(),0);
+    }
+    array<u8,15> prefix=array<u8,15>(u8(95),u8(95),u8(98),u8(108),u8(105),u8(110),u8(107),u8(95),u8(105),u8(109),u8(112),u8(111),u8(114),u8(116),u8(36));
+    if(matches<15>(name,prefix,false)){return import_target(name,15u64);}
+    return ObjectTarget(2u64,0u64,0u64,empty_bytes(),name,0);
+}
+```
+
+
+对象元数据外层读取由bootstrap/metadata_read.h／.b负责。同一份输入和原Cursor位置交给B，B读出BLCO头、三类前缀、参与要求、长度前缀字节、合同包络、帧及四类调用。Rust消费类型化字段，构造原Kind、字符串、Vec和BTreeMap；共享资源codec和函数合同规范化仍在原位置消费原blob，后续逻辑节映射及Target由B对象读取入口交接，最终Object拥有容器与栈验证仍归原所有者。
 
 读取器只有输入与位置，没有另一套阶段状态机、事件协议或目录；字符串和二进制字段共用同一个长度前缀读取。原输入保持到最后同步消费者，B不保留地址、不分配Rust容器或创建Frame。当前FORMAT仍由coff.rs传入，软件版本与实际格式身份分别处理。
 
