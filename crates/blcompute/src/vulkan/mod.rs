@@ -1015,6 +1015,37 @@ impl Usage {
         }
     }
 }
+/// 原数据存储中的buffer角色；页的逻辑覆盖不含buffer末尾或分配对齐填充。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuBufferRole {
+    BindingTable,
+    DataPage { index: usize, logical_offset: u64, logical_bytes: u64 },
+    InstancePointers,
+}
+/// 当前buffer与其真实绑定区间、Vulkan内存对象的元数据；不保活资源。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuBufferMemory {
+    pub role: GpuBufferRole,
+    pub buffer: u64,
+    pub buffer_bytes: u64,
+    pub memory: u64,
+    pub memory_offset: u64,
+    /// 原Range大小，即本buffer的VkMemoryRequirements.size。
+    pub range_bytes: u64,
+    /// 同一原VkDeviceMemory的allocationSize；多个buffer可能重复报告同一块。
+    pub allocation_bytes: u64,
+    pub memory_type: u32,
+    pub memory_properties: u32,
+    pub heap_index: u32,
+}
+/// 同一GPU数据存储的同步元数据快照；句柄仅标识当时仍存活的原对象。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuDatasetMemory {
+    /// VkDevice地址限定buffer／memory句柄的作用域，不是持久设备身份。
+    pub device: usize,
+    pub logical_bytes: u64,
+    pub buffers: Vec<GpuBufferMemory>,
+}
 pub struct GpuDataset {
     storage: ManuallyDrop<DatasetStorage>,
     last_use: Option<Rc<Execution>>,
@@ -1080,6 +1111,10 @@ impl DomainBindings<GpuDataset> {
 }
 pub type ViewBinding<'a> = crate::ViewBinding<'a, ReadDataset>;
 impl ReadDataset {
+    /// 查询同一冻结物理存储，不新增GPU页、传输或资源持有。
+    pub fn memory(&self) -> GpuDatasetMemory {
+        self.0.memory()
+    }
     /// 将同一冻结物理存储直接交给原生read dataset绑定；不创建GPU记录、页表或传输。
     pub fn binding(&self) -> GpuDataset {
         GpuDataset {
@@ -1103,6 +1138,27 @@ impl ReadDataset {
     }
 }
 impl GpuDataset {
+    /// 读取原buffer／分页／绑定区间；不等待GPU、读回载荷或改变拥有关系。
+    pub fn memory(&self) -> GpuDatasetMemory {
+        let mut buffers = vec![self.allocation.memory_info(GpuBufferRole::BindingTable)];
+        for (index, page) in self.pages.iter().enumerate() {
+            let page_bytes = u64::from(self.page_records()) * u64::from(self.stride);
+            let logical_offset = index as u64 * page_bytes;
+            buffers.push(page.memory_info(GpuBufferRole::DataPage {
+                index,
+                logical_offset,
+                logical_bytes: (self.bytes() - logical_offset).min(page_bytes),
+            }));
+        }
+        if let Some(instances) = &self.instances {
+            buffers.push(instances.pointers.memory_info(GpuBufferRole::InstancePointers));
+        }
+        GpuDatasetMemory {
+            device: self.allocation.inner.owner.device as usize,
+            logical_bytes: self.bytes(),
+            buffers,
+        }
+    }
     pub fn freeze(self) -> ReadDataset {
         if let DatasetStorage::Read(source) = &*self.storage {
             return source.clone();
@@ -1124,6 +1180,7 @@ impl GpuDataset {
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
+    /// 各实际buffer的Vulkan需求大小之和，不是共享VkDeviceMemory块的去重总额。
     pub fn allocated_bytes(&self) -> u64 {
         self.allocation.allocated_size
             + self.pages.iter().map(|p| p.allocated_size).sum::<u64>()
@@ -1212,6 +1269,23 @@ struct Allocation {
     host_visible: bool,
 }
 impl Allocation {
+    fn memory_info(&self, role: GpuBufferRole) -> GpuBufferMemory {
+        let memory = self.memory.as_ref().unwrap();
+        let memory_type = memory.memory_type();
+        let properties = self.inner.memory.memoryTypes[memory_type as usize];
+        GpuBufferMemory {
+            role,
+            buffer: self.buffer,
+            buffer_bytes: self.size,
+            memory: memory.memory(),
+            memory_offset: memory.offset,
+            range_bytes: memory.bytes(),
+            allocation_bytes: memory.allocation_bytes(),
+            memory_type,
+            memory_properties: properties.propertyFlags,
+            heap_index: properties.heapIndex,
+        }
+    }
     fn descriptor(&self) -> VkDescriptorBufferInfo {
         VkDescriptorBufferInfo { buffer: self.buffer, offset: 0, range: self.size }
     }

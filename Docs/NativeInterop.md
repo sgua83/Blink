@@ -146,6 +146,12 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 
 当前是Rust SDK查询，未因此增加B／C观察ABI、完整资源图或全进程堆统计。详细职责与剩余范围见[CPU内存观察](Architecture.md#tool-23)。
 
+## Rust SDK的GPU分页与分配区间观察
+
+`vulkan::GpuDataset::memory()`及`vulkan::ReadDataset::memory()`返回`GpuDatasetMemory`，从同一原存储交付逻辑字节和各直接buffer的`GpuBufferMemory`。角色区分绑定头／页表、数据页的逻辑覆盖与实际实例指针；buffer请求大小、Range绑定偏移／大小和其所依附的VkDeviceMemory整块大小分别返回，内存类型及堆属性来自原设备。冻结别名不生成新页或分配；原`allocated_bytes()`仍为各buffer需求区间之和，不能当共享块去重总额。
+
+返回的device／buffer／memory仅描述本次存活对象，多个buffer可以共享整块分配，多个只读别名还可以是同一个buffer。报告不保活资源、不授予读写权限，也不创建GPU工作、等待或下载；不把整块大小逐项相加为独占显存或驻留。完整字段、单位、直接buffer范围及其与Device::memory_budget的区别见[设备内存观察](DeviceMemory.md)。当前是Rust SDK接口，完整资源／view根与B／C观察仍未因此交付。
+
 ## 性能的完整口径
 
 sample/interop/fractal.* 是一百万像素的 Mandelbrot 计算，C++ 和 Rust 分别保留开启优化的串行实现，再调用同一个 DLL。每次计时只执行一次完整算法，包含 DLL 调用、本次分配、必要复制、GPU 提交／等待与输出读回。create 单独报告，不混入已复用实例的每次调用；首次只运行一回时应相加比较。重复测量使用两次预热、九次单次计时的中位数。

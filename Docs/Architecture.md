@@ -324,7 +324,13 @@ AI检查内存占用时，数据字存储直接由`Dataset::memory()`交付当�
 
 ##### GPU实际分配字节与分页查询
 
-AI检查显存占用→`vulkan/mod.rs::GpuDataset／GpuStorage`、`bytes／allocated_bytes／page_count`及`Allocation`。 将已有真实查询按资源结构交接给AI，区分逻辑字节、实际页／分配、共享存储与设备预算；不重做分配器或重复计算view。依赖.22的资源定位，原heap预算不冒充本程序实际占用。 资源／view及观察消费者沿原来源和最后使用保持；返回字节副本或有效期明确的借用，报告本身不维持第二资源状态或释放链。 本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应未完成范围：[C-021.7.9.24](Issues.md#c-021-7-9-24)。
+Rust SDK的`vulkan::GpuDataset::memory()`及`vulkan::ReadDataset::memory()`读取同一原GpuStorage，返回`GpuDatasetMemory`。逻辑字节来自原count／stride；绑定头与页表、每个实际数据页和存在的原生实例指针buffer分别交付`GpuBufferMemory`，说明角色、页索引／逻辑覆盖、VkBuffer请求大小及原Range的内存对象、绑定偏移和区间大小。原Block唯一持有成功vkAllocateMemory的allocationSize／memoryTypeIndex，查询直接交接该不可变元数据与原设备memoryType的属性／堆，不由空闲区间、池政策、预算或累计计数重建。
+
+VkBuffer需求区间、VkDeviceMemory分配对象与物理驻留分别表达。原`allocated_bytes()`继续为各直接buffer的VkMemoryRequirements.size之和，含页表及实际实例指针；新`allocation_bytes`描述每项所依附的整块Vulkan内存对象，多个buffer可能重复报告同一块，不能逐项相加当独占显存。冻结别名查询相同buffer；不同数据对象可能只共享内存块中的不同区间。设备地址限定原生句柄作用域，句柄在释放后可能复用，不成为持久资源身份或读写权限。
+
+查询只生成返回的CPU元数据，不创建GPUbuffer／页表、不等待或下载、不复制／保活GpuStorage、Block、Execution或BLAS；最后释放仍沿原实际消费者。只覆盖这份存储直接持有的buffer，不递归汇总view子图、实例引用的AS、纹理、管线、暂存或所有设备分配。原Device::memory_budget仍是驱动对进程堆使用与动态预算的估计，不冒充这些buffer的独占占用或物理驻留。字段语义统一见[设备内存观察](DeviceMemory.md)。
+
+本Rust SDK范围见[GPU数据分页与分配区间](FixedIssues.md#c-021-7-9-24-1)；沿.22资源根的完整逻辑数据／view与AI／B／C交接仍未完成，继续[C-021.7.9.24](Issues.md#c-021-7-9-24)，不由局部查询关闭父项。观察沿原来源、权限和最后使用保持，不新增分配器、拥有表、状态镜像或第二释放链。本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。
 
 <a id="tool-25"></a>
 

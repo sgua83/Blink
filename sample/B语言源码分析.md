@@ -2068,7 +2068,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 同一份GPU程序复用管线，临时空间、描述符和命令属于每次执行。装入借用原计划与SPIR-V，由原`Compiled`持有部分设备资源；全部成功才取得计划，失败沿原`Drop`释放资源。`Device::load_template`以`Err((error,image))`交回同一未改输入，`Frame`接回原槽。调用方显式再装入，终端消费者释放输入并传播原错误，不自动重试；借用与拥有只是装入期类型区别，没有第二计划、状态表或新包装。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1881`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1955`。
 
 ```rust
     pub fn submit(
@@ -2120,6 +2120,58 @@ pub const PAGE_BYTES: u32 = 256 * 1024 * 1024;
 
 *图 19-1：逻辑下标连续，物理页不必连续。页表与数据页由同一实际存储所有者持有，地址计算来自统一类型布局。*
 
+#### 从数据页追到Vulkan分配对象
+
+一页数据的逻辑字节、VkBuffer请求大小、Vulkan需求区间和VkDeviceMemory整块分配是四个不同层次。末word可以填充，驱动可以要求更大的对齐区间，多个小buffer还可在同一个Block中取得互不重叠的Range。原allocated_bytes()返回直接buffer的需求区间之和，不是共享块去重后的显存总额。
+
+Block是原Vulkan内存对象的唯一实际所有者。成功分配后，它保存同一次VkMemoryAllocateInfo中的大小与内存类型；Range引用这一个Block，最后一个Range结束后才释放原内存，不能由当前空闲洞或固定池大小反推完整分配。
+
+源码节选：`crates/blcompute/src/vulkan/buffer_memory.rs:122`。
+
+```rust
+        let mut block = Self {
+            owner: inner.owner.clone(),
+            memory,
+            size: info.allocationSize,
+            memory_type: info.memoryTypeIndex,
+            mapped: null_mut(),
+            free: RefCell::new(vec![(0, size)]),
+            free_memory: inner.functions.vkFreeMemory,
+            unmap: inner.functions.vkUnmapMemory,
+        };
+```
+
+GpuDataset::memory()与ReadDataset::memory()按需返回同一存储的元数据。数据页标出原索引及逻辑覆盖，绑定表与实际实例地址数组分别标明角色；每个buffer继续沿原Allocation／Range取得绑定偏移、需求区间、整块大小与内存类型。
+
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1142`。
+
+```rust
+    pub fn memory(&self) -> GpuDatasetMemory {
+        let mut buffers = vec![self.allocation.memory_info(GpuBufferRole::BindingTable)];
+        for (index, page) in self.pages.iter().enumerate() {
+            let page_bytes = u64::from(self.page_records()) * u64::from(self.stride);
+            let logical_offset = index as u64 * page_bytes;
+            buffers.push(page.memory_info(GpuBufferRole::DataPage {
+                index,
+                logical_offset,
+                logical_bytes: (self.bytes() - logical_offset).min(page_bytes),
+            }));
+        }
+        if let Some(instances) = &self.instances {
+            buffers.push(instances.pointers.memory_info(GpuBufferRole::InstancePointers));
+        }
+        GpuDatasetMemory {
+            device: self.allocation.inner.owner.device as usize,
+            logical_bytes: self.bytes(),
+            buffers,
+        }
+    }
+```
+
+观察结果里的device限定buffer／memory句柄作用域。两个数据对象可能只共享同一Block中的不同区间，两个冻结别名也可能就是同一个buffer；不能把每项的allocation_bytes相加当作独占显存。报告只分配返回的CPU元数据，不创建GPU页或工作，不等待／下载，不持有GpuStorage、Block、Execution或BLAS；原所有者结束后，旧句柄可能被复用。
+
+这只观察该数据存储直接持有的buffer。view子图、实例引用的AS、纹理、管线及暂存仍有各自真实所有者；驱动的进程预算也是另一种估计，均不能用本查询冒充完整资源图或物理驻留。
+
 ### 19.2 上传和下载是实际的数据移动
 
 CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。上传准备数据并通过传输命令写入设备；下载把实际设备结果带回可供 CPU 访问的存储，还要等待相应完成与可见性。
@@ -2132,7 +2184,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1607`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1681`。
 
 ```rust
 #[derive(Clone)]
@@ -2178,7 +2230,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1911`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1985`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -2210,7 +2262,7 @@ GPU：     A 仍在执行 → B 才开始读取
 
 ### 21.2 物理存储和最后使用点一起保存
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1018`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1049`。
 
 ```rust
 pub struct GpuDataset {
@@ -2238,7 +2290,7 @@ pub struct GpuStorage {
 
 `GpuDataset` 保存实际 GpuStorage 和可选 last_use。GpuStorage 持有页表、数据页、类型、容量、只读来源及相关实例资源。它们不是多份数组副本，而是同一物理存储的组成。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1048`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1079`。
 
 ```rust
 impl Drop for GpuDataset {
@@ -2274,7 +2326,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2767`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2841`。
 
 ```rust
         let timings = match result {
@@ -2346,7 +2398,7 @@ wait先等待真实执行；只有显式开启采集且存在实际阶段时才�
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2485`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2559`。
 
 ```rust
                                 let mut length = count;

@@ -283,12 +283,16 @@
       "sha256": "97e4724b6d1f662119296f146e2f22a22e5b90e2f707b1820b70a1a8a4cd9f5c"
     },
     {
+      "path": "crates/blcompute/src/vulkan/buffer_memory.rs",
+      "sha256": "e8081bfee1a603d0b6f597a4ff4961fa1b336e250e2c4ac257f04b9c53eac153"
+    },
+    {
       "path": "crates/blcompute/src/vulkan/execution.rs",
       "sha256": "be4069d68e6559495c1671275c80263a3a3a6f6b8171955e914904ed856987e8"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "sha256": "51fbfa7f7175450d3b1b22da8f8b8642ff13153dee1fa0221427a3c4fef4a892"
+      "sha256": "0ce896e9ab57d37a9b25c07d68b84f8d1142a2e3b1f3531991d6d61d5be7ba90"
     },
     {
       "path": "sample/lessons/map.b",
@@ -682,8 +686,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1881,
-      "end_line": 1887,
+      "start_line": 1955,
+      "end_line": 1961,
       "sha256": "b56642a96ce73a2b95d466461b6d2457bc87cec51838ffeff6bb36b7ca3dad11"
     },
     {
@@ -693,27 +697,39 @@
       "sha256": "0070efcce2ab23cb21741c4f054d9a49e537e71df89aa84f16c4ff040de0c54e"
     },
     {
+      "path": "crates/blcompute/src/vulkan/buffer_memory.rs",
+      "start_line": 122,
+      "end_line": 131,
+      "sha256": "5a362797b00b556ecbf3cc8f716b4ee5e40b1f54bc2eb54424cde8126c8444f4"
+    },
+    {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1607,
-      "end_line": 1617,
+      "start_line": 1142,
+      "end_line": 1161,
+      "sha256": "ff8e3fd8e82a51cb7947ec08e8cc0ec34d4ed36e328cb46a1c121082a26ffbbf"
+    },
+    {
+      "path": "crates/blcompute/src/vulkan/mod.rs",
+      "start_line": 1681,
+      "end_line": 1691,
       "sha256": "c199c946367dc8998d6f96ed0f3b38e20523166061368dfd26652ef732172543"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1911,
-      "end_line": 1920,
+      "start_line": 1985,
+      "end_line": 1994,
       "sha256": "b9d24207f3c4216ba86e6d6f6cc43de5d4bbbc5cd4aead6871ce7b0c3015da3d"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1018,
-      "end_line": 1038,
+      "start_line": 1049,
+      "end_line": 1069,
       "sha256": "47be22fafb7df4f2a1ac4dc88c928435e7341180a46a0ecc86241905c63bdc2a"
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 1048,
-      "end_line": 1058,
+      "start_line": 1079,
+      "end_line": 1089,
       "sha256": "5bb0d040dd4c78d078533bc1f2d59b272b9415974e9d87c180c2f270cfae75be"
     },
     {
@@ -724,8 +740,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2767,
-      "end_line": 2780,
+      "start_line": 2841,
+      "end_line": 2854,
       "sha256": "fbd171fb65519f0e30386a01494d59684c3de02e6364396b83d6f44504cc574c"
     },
     {
@@ -736,8 +752,8 @@
     },
     {
       "path": "crates/blcompute/src/vulkan/mod.rs",
-      "start_line": 2485,
-      "end_line": 2491,
+      "start_line": 2559,
+      "end_line": 2565,
       "sha256": "7d7b294d818dbc009723ed7be968c7e38e66da930cfd35e57877bcf46e5d2bc5"
     },
     {

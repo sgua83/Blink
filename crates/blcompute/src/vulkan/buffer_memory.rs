@@ -67,6 +67,8 @@ pub(super) struct Pool {
 struct Block {
     owner: Rc<DeviceOwner>,
     memory: VkDeviceMemory,
+    size: u64,
+    memory_type: u32,
     mapped: *mut u8,
     free: RefCell<Vec<(u64, u64)>>,
     free_memory: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void),
@@ -120,6 +122,8 @@ impl Block {
         let mut block = Self {
             owner: inner.owner.clone(),
             memory,
+            size: info.allocationSize,
+            memory_type: info.memoryTypeIndex,
             mapped: null_mut(),
             free: RefCell::new(vec![(0, size)]),
             free_memory: inner.functions.vkFreeMemory,
@@ -183,6 +187,15 @@ pub(super) struct Range {
     size: u64,
 }
 impl Range {
+    pub fn bytes(&self) -> u64 {
+        self.size
+    }
+    pub fn allocation_bytes(&self) -> u64 {
+        self.block.size
+    }
+    pub fn memory_type(&self) -> u32 {
+        self.block.memory_type
+    }
     pub fn memory(&self) -> VkDeviceMemory {
         self.block.memory
     }
