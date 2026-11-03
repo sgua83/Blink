@@ -355,8 +355,10 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         }
         Ok(())
     }
-    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
+    fn writes_expression(&self, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<Option<bool>> {
+        let mut truth = None;
         match &expr.kind {
+            ExprKind::Bool(value) => truth = Some(*value),
             ExprKind::Invoke(callee, args) => {
                 let ty = self.expression(callee)?.ok_or_else(|| Diagnostic {
                     source: self.definition.source.clone(), span: callee.span, code: "B263",
@@ -387,16 +389,23 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 for arg in args { self.writes_expression(arg, writes)?; }
             }
             ExprKind::Construct(_, args) => for arg in args { self.writes_expression(arg, writes)?; },
-            ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => self.writes_expression(base, writes)?,
+            ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => { self.writes_expression(base, writes)?; }
             ExprKind::Index(a, b) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; }
             ExprKind::Binary(op, a, b) => {
-                self.writes_expression(a, writes)?;
-                if self.builder.is_none() || !matches!((op.as_str(), &a.kind), ("&&", ExprKind::Bool(false)) | ("||", ExprKind::Bool(true))) { self.writes_expression(b, writes)?; }
+                let left = self.writes_expression(a, writes)?;
+                let skipped = matches!((op.as_str(), left), ("&&", Some(false)) | ("||", Some(true)));
+                let right = if self.builder.is_none() || !skipped { self.writes_expression(b, writes)? } else { None };
+                truth = match (op.as_str(), left, right) {
+                    ("&&", Some(false), _) | ("&&", _, Some(false)) => Some(false),
+                    ("||", Some(true), _) | ("||", _, Some(true)) => Some(true),
+                    ("&&", Some(true), right) | ("||", Some(false), right) => right,
+                    _ => None,
+                };
             }
             ExprKind::Select(a, b, c) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; self.writes_expression(c, writes)?; }
             _ => {}
         }
-        Ok(())
+        Ok(truth)
     }
     fn writes_statements(&mut self, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
         let outer = self.bindings.len();
@@ -412,11 +421,11 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     self.writes_expression(lhs, writes)?;
                     self.writes_expression(rhs, writes)?;
                 }
-                StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => self.writes_expression(expr, writes)?,
+                StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => { self.writes_expression(expr, writes)?; }
                 StmtKind::If(expr, yes, no) => {
-                    self.writes_expression(expr, writes)?;
-                    if !matches!(expr.kind, ExprKind::Bool(false)) { self.writes_statements(yes, writes)?; }
-                    if !matches!(expr.kind, ExprKind::Bool(true)) { self.writes_statements(no, writes)?; }
+                    let truth = self.writes_expression(expr, writes)?;
+                    if truth != Some(false) { self.writes_statements(yes, writes)?; }
+                    if truth != Some(true) { self.writes_statements(no, writes)?; }
                 }
                 StmtKind::Match(value, arms) => {
                     self.writes_expression(value, writes)?;
@@ -452,7 +461,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
     }
 }
 fn expression_writes<'e>(builder: &Builder<'_>, expr: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
-    Scope::current(builder).writes_expression(expr, writes)
+    Scope::current(builder).writes_expression(expr, writes).map(|_| ())
 }
 fn statement_writes<'e>(builder: &Builder<'_>, code: &'e [Stmt], writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
     Scope::current(builder).writes_statements(code, writes)
@@ -620,7 +629,8 @@ impl Builder<'_> {
         };
         Ok(amount.map(|amount|NumericEffect::shift(i128::from(amount)*sign)).unwrap_or(NumericEffect::Unknown))
     }
-    fn numeric_loop_paths(&self, body:&[Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, owner:&Place, component:usize, writes:&[Write<'_>], absolute:bool)->Result<Option<NumericEffect>> {
+    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, owner:&Place, component:usize, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>)->Result<Option<NumericEffect>> {
+        let outer = scope.bindings.len();
         for statement in body {
             let Some(before)=next.take() else { break; };
             next=match &statement.kind {
@@ -628,16 +638,27 @@ impl Builder<'_> {
                     .then(self.numeric_expression_effect(lhs,name,owner,component,writes)?)
                     .then(self.numeric_expression_effect(rhs,name,owner,component,writes)?)
                     .then(self.numeric_assignment_effect(lhs,op,rhs,name,owner,component,writes,absolute)?)),
-                StmtKind::Let(_,_,expr)|StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?)),
+                StmtKind::Let(ty,local,expr)=>{
+                    let next=before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?);
+                    scope.bindings.push((local,ty.as_ref().map_or(Local::Inferred(expr),Local::Typed)));
+                    Some(next)
+                },
+                StmtKind::Declare(ty,local)=>{scope.bindings.push((local,Local::Typed(ty)));Some(before)},
+                StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?)),
                 StmtKind::If(condition,yes,no)=>{
                     let before=before.then(self.numeric_expression_effect(condition,name,owner,component,writes)?);
-                    let yes=if matches!(condition.kind,ExprKind::Bool(false)){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,owner,component,writes,absolute)?};
-                    let no=if matches!(condition.kind,ExprKind::Bool(true)){None}else{self.numeric_loop_paths(no,Some(before),continues,name,owner,component,writes,absolute)?};
+                    let truth=scope.writes_expression(condition,&mut |_|{})?;
+                    let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,owner,component,writes,absolute,scope)?};
+                    let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,owner,component,writes,absolute,scope)?};
                     join_numeric_paths(yes,no)
                 },
                 StmtKind::Match(value,arms)=>{
                     let before=before.then(self.numeric_expression_effect(value,name,owner,component,writes)?);let mut next=None;
-                    for arm in arms { next=join_numeric_paths(next,self.numeric_loop_paths(&arm.body,Some(before.clone()),continues,name,owner,component,writes,absolute)?); }next
+                    for arm in arms {
+                        if let Some(local)=&arm.binding{scope.bindings.push((local,Local::Payload(value,&arm.variant)));}
+                        next=join_numeric_paths(next,self.numeric_loop_paths(&arm.body,Some(before.clone()),continues,name,owner,component,writes,absolute,scope)?);
+                        if arm.binding.is_some(){scope.bindings.pop();}
+                    }next
                 },
                 StmtKind::Seek(_,expr)=>{
                     let before=before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?);
@@ -658,6 +679,7 @@ impl Builder<'_> {
                 _=>Some(before),
             };
         }
+        scope.bindings.truncate(outer);
         Ok(next)
     }
     pub(super) fn retain_loop_bounds(&mut self, condition:Option<&Expr>, body:&[Stmt], initial:&BTreeMap<String,Binding>, header:&mut BTreeMap<String,Binding>)->Result<()> {
@@ -676,7 +698,7 @@ impl Builder<'_> {
                 if let Some(identity)=input.known_identity(0) {
                     let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);
                 }
-                let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,name,&owner,component,&writes,!bounds::seeks(body))?;
+                let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,name,&owner,component,&writes,!bounds::seeks(body),&mut Scope::current(self))?;
                 let (lower,upper,least,most)=match join_numeric_paths(next,continues) {
                     None=>(true,true,0,0),
                     Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
