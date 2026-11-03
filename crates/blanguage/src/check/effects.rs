@@ -388,7 +388,11 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
             }
             ExprKind::Construct(_, args) => for arg in args { self.writes_expression(arg, writes)?; },
             ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => self.writes_expression(base, writes)?,
-            ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; }
+            ExprKind::Index(a, b) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; }
+            ExprKind::Binary(op, a, b) => {
+                self.writes_expression(a, writes)?;
+                if self.builder.is_none() || !matches!((op.as_str(), &a.kind), ("&&", ExprKind::Bool(false)) | ("||", ExprKind::Bool(true))) { self.writes_expression(b, writes)?; }
+            }
             ExprKind::Select(a, b, c) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; self.writes_expression(c, writes)?; }
             _ => {}
         }
