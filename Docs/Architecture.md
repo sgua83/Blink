@@ -305,7 +305,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-2-2"></a>
 
-**dataset生成函数初始化来源。** 输入／输出及生产消费：原factory静态引用与原Data→initialize_application_elements原循环／实际factory调用／元素写入→原元素存储。循环控制、初始化写入和用户factory函数／调用分别记录，引用触发与真实实现来源可以同时存在；零长度未发射循环不能伪造运行或函数调用。共用寻址职责仍归.5.5；初始化规则、逐元素拥有交接及资源寿命由原所有者保持。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-2)。
+**dataset生成函数初始化来源。** 输入／输出及生产消费：原factory静态引用与原Data→initialize_application_elements原循环／实际factory调用／元素写入→原元素存储。原Inst分别持有DatasetInitializeCursor、Condition、Call、Write、Advance、Loop的真实生成职责，同一次展开共享原factory.span形成的Syntax锚点；Caller的定义／实际实例／inlined_at／domain_path与callee真实函数体分别保持。实际factory调用沿原invoke_returned的外部C ABI、已编译函数或普通原生分派交给同一Call，不用观察路径替换调用规则；没有源码实现的外部边界不造函数体。Constant、StoreLocal、LoadLocal、Compare、StoreIndexed、IAdd和Loop仍是原操作，零值／递增值使用同一原常量生产接点，来源不从最终指令或寄存器猜补。零长度原路径可以实际发射准备零常量，保留并如实分类；没有生成的Loop、factory调用及写入不造假事实。原写入零offset及StoreIndexed沿原write_application_place持有初始化写入材料，共用寻址与实际地址包装的完整分类仍归.5.5；普通用户写入不借用初始化理由。原分配有自己的构造锚点，factory引用触发不扩大为未取得的完整构造参数范围。材料只归原IR共享且最后消费者后释放，不拥有数据或保留AST／World；初始化规则、逐元素拥有交接、唯一资源及寿命仍归原Data／Frame。静态生成不表示实际运行或初始化成功，不新增Builder状态、拥有表、调度器或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-2)。
 
 <a id="tool-7-2-4-5-2-3"></a>
 
