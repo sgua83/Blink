@@ -3075,24 +3075,7 @@ impl Builder<'_> {
         registers: Option<&[Reg]>,
     ) -> (Proof, Clause) {
         environment.extend(proof.facts(source));
-        let mut path = path.clone();
-        // 实际装载的候选关系交给原路径；同次聚合的分量共享同一选择。
-        if let Some(registers) = registers {
-            for (register, candidates) in registers.iter().zip(choices) {
-                let mut related = Clause::impossible();
-                for (component, selection) in candidates {
-                    let facts = proof
-                        .project(&[*component], source.components.len())
-                        .with_identity(ValueIdentity::Register(*register))
-                        .facts(&Ty::scalar(source.components[*component].0));
-                    related = Clause::either(
-                        &related,
-                        &Clause::both(selection, &Clause::facts(facts)),
-                    );
-                }
-                path = Clause::both(&path, &related);
-            }
-        }
+        // 本次读取的新结果关系在候选求值后交接，不作为自身查询输入。
         let mut result = Proof::default();
         for (component, ((scalar, _), candidates)) in ty.components.iter().zip(choices).enumerate()
         {
@@ -3120,6 +3103,24 @@ impl Builder<'_> {
                 ty.components.len(),
                 selected.unwrap_or_default(),
             );
+        }
+        let mut path = path.clone();
+        // 实际装载的候选关系交给原路径；同次聚合的分量共享同一选择。
+        if let Some(registers) = registers {
+            for (register, candidates) in registers.iter().zip(choices) {
+                let mut related = Clause::impossible();
+                for (component, selection) in candidates {
+                    let facts = proof
+                        .project(&[*component], source.components.len())
+                        .with_identity(ValueIdentity::Register(*register))
+                        .facts(&Ty::scalar(source.components[*component].0));
+                    related = Clause::either(
+                        &related,
+                        &Clause::both(selection, &Clause::facts(facts)),
+                    );
+                }
+                path = Clause::both(&path, &related);
+            }
         }
         (result, path)
     }
