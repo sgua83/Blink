@@ -2086,7 +2086,13 @@ impl Builder<'_> {
                     && sources.contains(&data.handle.identity()){
                     let components=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()?;
                     let value=self.returned_storage(&data.elements);let mut bindings=self.element_owner_bindings(data);
-                    for(component,reg)in components.iter().zip(regs){bindings.insert(ValueIdentity::ElementComponent(*component),bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}
+                    for(component,reg)in components.iter().zip(regs){
+                        let proof=bounds::Proof::default().with_identity(ValueIdentity::Register(*reg));
+                        bindings.insert(ValueIdentity::ElementComponent(*component),proof.clone());
+                        for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
+                            bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
+                        }
+                    }
                     return Some(bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings));
                 }
             }
