@@ -23,6 +23,7 @@ fn function(
     program: &mut Program,
     env: &BTreeMap<String, Root>,
     owner: &crate::generics::Instance,
+    domain_path: &Arc<[DomainSite]>,
     expr: &Expr,
     ty: &Ty,
     parameters: &[&Ty],
@@ -69,6 +70,7 @@ fn function(
         );
     }
     let mut builder = Builder::new(world, d, program, 0, Some(&owner.name))?;
+    builder.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*builder.source_context).clone() });
     builder.roots(env);
     let mut inputs = Vec::new();
     let mut args = Vec::new();
@@ -139,6 +141,7 @@ pub(super) fn compile(
     facts: &mut prefix::Facts,
     map: bool,
     kind: Kind,
+    domain_path: Arc<[DomainSite]>,
     operation_source: Option<Arc<SourceSite>>,
 ) -> Result<()> {
     let d = &owner.definition;
@@ -245,6 +248,7 @@ pub(super) fn compile(
             program,
             env,
             owner,
+            &domain_path,
             &args[functions],
             &ty,
             &[&source_ty],
@@ -257,6 +261,7 @@ pub(super) fn compile(
         program,
         env,
         owner,
+        &domain_path,
         &args[functions + usize::from(map)],
         &ty,
         &[],
@@ -266,6 +271,7 @@ pub(super) fn compile(
         program,
         env,
         owner,
+        &domain_path,
         &args[functions + 1 + usize::from(map)],
         &ty,
         &[&ty, &ty],

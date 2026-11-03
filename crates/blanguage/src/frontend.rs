@@ -35,7 +35,7 @@ impl Definition {
             DefinitionSyntax::Generated(Some(site)) => (Some(site.origin.clone()), site.context.clone()),
             DefinitionSyntax::Source | DefinitionSyntax::CompiledInterface | DefinitionSyntax::Generated(None) => (
                 self.source_origin().map(Arc::new),
-                Arc::new(ir::SourceContext { instance: instance.map(Arc::from), inlined_at: Box::default() }),
+                Arc::new(ir::SourceContext { instance: instance.map(Arc::from), inlined_at: Box::default(), domain_path: Arc::from([]) }),
             ),
         }
     }

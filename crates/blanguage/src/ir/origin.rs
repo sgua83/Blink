@@ -71,6 +71,32 @@ impl std::fmt::Debug for InlineSite {
 pub(crate) struct SourceContext {
     pub instance: Option<std::sync::Arc<str>>,
     pub inlined_at: Box<[InlineSite]>,
+    pub domain_path: std::sync::Arc<[DomainSite]>,
+}
+/// One actual domain transition, separate from ordinary function inlining.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainTransition { Expanded, Compiled }
+#[derive(Clone, Debug)]
+pub struct DomainSite {
+    pub(crate) origin: Option<std::sync::Arc<SourceOrigin>>,
+    pub(crate) instance: Option<std::sync::Arc<str>>,
+    pub(crate) span: Span,
+    pub(crate) target: std::sync::Arc<str>,
+    pub(crate) transition: DomainTransition,
+}
+impl DomainSite {
+    pub fn origin(&self) -> Option<&SourceOrigin> { self.origin.as_deref() }
+    pub fn instance(&self) -> Option<&str> { self.instance.as_deref() }
+    pub fn span(&self) -> Span { self.span }
+    pub fn target(&self) -> &str { &self.target }
+    pub fn transition(&self) -> DomainTransition { self.transition }
+    pub fn ir_json(&self) -> String {
+        let transition = match self.transition { DomainTransition::Expanded => "expanded", DomainTransition::Compiled => "compiled" };
+        format!("{{\"kind\":\"domain_site\",\"transition\":{},\"definition\":{},\"instance\":{},\"target\":{},{}}}",
+            text(transition), self.origin().map_or_else(|| "null".into(), SourceOrigin::ir_json),
+            self.instance().map_or_else(|| "null".into(), text), text(self.target()),
+            range_fields(self.origin().map(|o| o.source.text.as_ref()), self.span))
+    }
 }
 #[derive(Clone, Debug)]
 pub struct SourceSite {
@@ -102,14 +128,17 @@ impl SourceSite {
     pub fn instance(&self) -> Option<&str> { self.context.instance.as_deref() }
     /// Actual compiler inline expansion points, from the outermost to the innermost caller.
     pub fn inlined_at(&self) -> &[InlineSite] { &self.context.inlined_at }
+    /// Actual source expansion and compiled domain boundaries, outermost first.
+    pub fn domain_path(&self) -> &[DomainSite] { &self.context.domain_path }
     pub fn ir_json(&self) -> String {
         let syntax = match self.syntax {
             SourceSyntax::Statement => "statement", SourceSyntax::Expression => "expression",
             SourceSyntax::Place => "place",
         };
-        format!("{{\"kind\":\"source_syntax\",\"syntax\":{},\"definition\":{},\"instance\":{},\"inlined_at_order\":\"outermost_first\",\"inlined_at\":[{}],{}}}",
+        format!("{{\"kind\":\"source_syntax\",\"syntax\":{},\"definition\":{},\"instance\":{},\"inlined_at_order\":\"outermost_first\",\"inlined_at\":[{}],\"domain_path_order\":\"outermost_first\",\"domain_path\":[{}],{}}}",
             text(syntax), self.origin.ir_json(), self.instance().map_or_else(|| "null".into(), text),
             self.inlined_at().iter().map(InlineSite::ir_json).collect::<Vec<_>>().join(","),
+            self.domain_path().iter().map(DomainSite::ir_json).collect::<Vec<_>>().join(","),
             range_fields(Some(&self.origin.source.text), self.span))
     }
 }

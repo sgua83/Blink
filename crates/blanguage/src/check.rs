@@ -308,6 +308,7 @@ struct DomainCall {
     arguments: Vec<Root>,
     before: Vec<PrefixRelation>,
     after: Vec<PrefixRelation>,
+    source: Option<Arc<SourceSite>>,
 }
 struct ExpandedDomain {
     program: Program,
@@ -460,6 +461,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         &mut false,
         &mut facts,
         &mut calls,
+        instance.definition.syntax_context(Some(&instance.name)).1.domain_path.clone(),
     )?;
     program.source_stages = program.stages.len();
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs })
@@ -473,6 +475,7 @@ fn expand_program(
     boundary: &mut bool,
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
+    domain_path: Arc<[DomainSite]>,
 ) -> Result<()> {
     let d = &instance.definition;
     let key = format!("{}::{}", d.module, d.function.name);
@@ -495,6 +498,7 @@ fn expand_program(
         boundary,
         facts,
         calls,
+        &domain_path,
     )?;
     for contract in d
         .function
@@ -514,8 +518,9 @@ fn expand_program(
     stack.pop();
     Ok(())
 }
-fn operation_source(instance: &crate::generics::Instance, span: Span, syntax: SourceSyntax) -> Option<Arc<SourceSite>> {
+fn operation_source(instance: &crate::generics::Instance, span: Span, syntax: SourceSyntax, domain_path: &Arc<[DomainSite]>) -> Option<Arc<SourceSite>> {
     let (origin, context) = instance.definition.syntax_context(Some(&instance.name));
+    let context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*context).clone() });
     origin.map(|origin| Arc::new(SourceSite { origin, context, span, syntax }))
 }
 fn expand_stages(
@@ -528,6 +533,7 @@ fn expand_stages(
     boundary: &mut bool,
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
+    domain_path: &Arc<[DomainSite]>,
 ) -> Result<bool> {
     let d = &instance.definition;
     for statement in body {
@@ -559,7 +565,7 @@ fn expand_stages(
                 }
                 let selected = if words[0] == 0 { no } else { yes };
                 let mut child = env.clone();
-                if expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls)? {
+                if expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls, domain_path)? {
                     return Ok(true);
                 }
                 first_stage = program.stages.len();
@@ -591,7 +597,7 @@ fn expand_stages(
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)]),
                     );
                     if expand_stages(
-                        world, instance, body, &mut child, program, stack, boundary, facts, calls,
+                        world, instance, body, &mut child, program, stack, boundary, facts, calls, domain_path,
                     )? {
                         return Ok(true);
                     }
@@ -640,6 +646,7 @@ fn expand_stages(
                     })
                     .transpose()?;
                 let mut b = Builder::new(world, d, program, *domain, Some(&instance.name))?;
+                b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
                 b.roots(env);
                 let index = b.reg(Scalar::U32);
                 b.code.push(Inst::new(InstKind::Index(index)));
@@ -728,7 +735,7 @@ fn expand_stages(
                     prefix,
                     selection,
                     operation: Operation::Map,
-                    operation_source: operation_source(instance, statement.span, SourceSyntax::Statement),
+                    operation_source: operation_source(instance, statement.span, SourceSyntax::Statement, domain_path),
                     tiles,
                     boundary_before: std::mem::take(boundary),
                     registers: b.registers,
@@ -762,7 +769,7 @@ fn expand_stages(
             }) if name == "stable_sort_by_key"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                sort::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression))?;
+                sort::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
@@ -772,7 +779,7 @@ fn expand_stages(
             }) if name == "compact"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                compact::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression))?;
+                compact::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
@@ -794,7 +801,7 @@ fn expand_stages(
                     if let Some(operator) = CollectiveOperator::from_reduction_source(name)
                         .filter(|_| explicit.is_none())
                     {
-                        reduce::compile(program, env, operator, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression))?;
+                        reduce::compile(program, env, operator, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression, domain_path))?;
                         *boundary = false;
                         break 'call;
                     }
@@ -811,7 +818,8 @@ fn expand_stages(
                             facts,
                             name.ends_with("_map"),
                             kind,
-                            operation_source(instance, *call_span, SourceSyntax::Expression),
+                            domain_path.clone(),
+                            operation_source(instance, *call_span, SourceSyntax::Expression, domain_path),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -828,7 +836,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
-                            operation_source(instance, *call_span, SourceSyntax::Expression),
+                            operation_source(instance, *call_span, SourceSyntax::Expression, domain_path),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -845,7 +853,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
-                            operation_source(instance, *call_span, SourceSyntax::Expression),
+                            operation_source(instance, *call_span, SourceSyntax::Expression, domain_path),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -862,7 +870,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
-                            operation_source(instance, *call_span, SourceSyntax::Expression),
+                            operation_source(instance, *call_span, SourceSyntax::Expression, domain_path),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -915,6 +923,7 @@ fn expand_stages(
                         },
                     })
                     .collect();
+                let (caller_origin, caller_context) = d.syntax_context(Some(&instance.name));
                 let instance =
                     generics::specialize(world, &key, &actuals, explicit, d, statement.span)?;
                 let callee = &instance.definition;
@@ -1033,6 +1042,13 @@ fn expand_stages(
                     )?;
                 }
                 let compiled = callee.compiled.is_some();
+                let mut child_path = domain_path.to_vec();
+                child_path.push(DomainSite {
+                    origin: caller_origin.clone(), instance: caller_context.instance.clone(),
+                    span: *call_span, target: Arc::from(instance.name.as_str()),
+                    transition: if compiled { DomainTransition::Compiled } else { DomainTransition::Expanded },
+                });
+                let child_path: Arc<[DomainSite]> = child_path.into();
                 if compiled {
                     use crate::module::codec::Decode;
                     let target = if callee.function.target == Target::Gpu { Target::Gpu } else { Target::Cpu };
@@ -1065,12 +1081,16 @@ fn expand_stages(
                             .collect(),
                         before: facts.relations(),
                         after: Vec::new(),
+                        source: caller_origin.map(|origin| Arc::new(SourceSite {
+                            origin, context: Arc::new(SourceContext { domain_path: child_path, ..(*caller_context).clone() }),
+                            span: *call_span, syntax: SourceSyntax::Expression,
+                        })),
                     });
                     *boundary = true;
                 } else {
                     facts.enter(&required);
                     expand_program(
-                        world, &instance, &mut child, program, stack, boundary, facts, calls,
+                        world, &instance, &mut child, program, stack, boundary, facts, calls, child_path,
                     )?;
                     facts.leave();
                 }

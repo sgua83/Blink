@@ -1266,7 +1266,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3850`。
+源码节选：`crates/blanguage/src/check.rs:3870`。
 
 ```rust
         let binding = view.binding;
@@ -1591,7 +1591,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:450`。
+源码节选：`crates/blanguage/src/check.rs:451`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1607,6 +1607,7 @@ pub struct Stage {
         &mut false,
         &mut facts,
         &mut calls,
+        instance.definition.syntax_context(Some(&instance.name)).1.domain_path.clone(),
     )?;
     program.source_stages = program.stages.len();
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs })

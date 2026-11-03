@@ -1340,14 +1340,14 @@ fn build_domain(
                 }
             });
         }
-        code.push(Inst::new(InstKind::Call(Call {
+        code.push(Inst { kind: InstKind::Call(Call {
             target: CallTarget::Defined(crate::module::domain::symbol(&call.instance.name, target)),
             arguments,
             memory: Vec::new(),
             memory_use: None,
             result: None,
             values: Vec::new(),
-        })));
+        }), source_site: call.source });
         start = call.stage;
         required = call.after;
     }

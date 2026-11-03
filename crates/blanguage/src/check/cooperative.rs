@@ -559,7 +559,7 @@ impl<'a> Builder<'a> {
         let old_iterators = std::mem::take(&mut self.iterators);
         let mut inlined_at = self.source_context.inlined_at.to_vec();
         inlined_at.push(InlineSite { origin: self.source_definition.clone(), instance: self.source_context.instance.clone(), span });
-        let source_context = Arc::new(SourceContext { instance: Some(Arc::from(key.as_str())), inlined_at: inlined_at.into_boxed_slice() });
+        let source_context = Arc::new(SourceContext { instance: Some(Arc::from(key.as_str())), inlined_at: inlined_at.into_boxed_slice(), domain_path: self.source_context.domain_path.clone() });
         let old_source_context = std::mem::replace(&mut self.source_context, source_context);
         let old_source_definition = std::mem::replace(&mut self.source_definition, callee.source_origin().map(Arc::new));
         let old_source_site = self.source_site.take();
