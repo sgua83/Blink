@@ -3659,12 +3659,21 @@ impl Builder<'_> {
             }
             return (proof.project(&components, width), *uniform);
         }
-        if let Some(proof)=self.application_element_proof(place,regs){return (proof,false);}
-        (
-            self.projected_owned_proof(place, Some(regs))
-                .unwrap_or_default(),
-            false,
-        )
+        let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
+        let mut proof=match self.application_element_proof(place,&snapshots){
+            Some(proof)=>proof,
+            None=>self.projected_owned_proof(place,Some(regs)).unwrap_or_default(),
+        };
+        if matches!(place,Place::ApplicationElement{..}){
+            proof.origins.resize_with(regs.len(),Vec::new);
+            for(origins,snapshot)in proof.origins.iter_mut().zip(snapshots){
+                let identity=ValueIdentity::Register(snapshot);
+                origins.retain(|origin|*origin!=identity);
+                origins.insert(0,identity);
+            }
+            return (self.path_proof(place.ty(),proof),false);
+        }
+        (proof,false)
     }
     pub(super) fn invalidate_application_contents(&mut self, data: &application::DataReference) {
         let changed = data.words();

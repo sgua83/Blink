@@ -41,7 +41,7 @@ impl Builder<'_> {
         self.require_bool(&c, condition.span)?;
         self.remember_loop_control(&c);
         let partition = Arc::new(bounds::Condition::of(&c));
-        let outer = std::mem::take(&mut self.code);
+        let prefix = self.code.len();
         let outer_regions = std::mem::take(&mut self.memory_regions);
         let environment = self.env.clone();
         let path = self.path.clone();
@@ -79,7 +79,7 @@ impl Builder<'_> {
         );
         let yes_init = std::mem::replace(&mut self.initialized, initialized);
         let yes_init = self.application_empty_initialization(yes_init);
-        let mut yes = std::mem::take(&mut self.code);
+        let mut yes = self.code.split_off(prefix);
         let yes_regions = std::mem::take(&mut self.memory_regions);
         self.restore_expression_environment(environment, &yes_modified);
         self.path = path;
@@ -100,7 +100,7 @@ impl Builder<'_> {
         let yes_initial = yes_init.clone();
         let no_initial = no_init.clone();
         self.join_initialization(&c, yes_init, no_init);
-        let mut no = std::mem::take(&mut self.code);
+        let mut no = self.code.split_off(prefix);
         let no_regions = std::mem::replace(&mut self.memory_regions, outer_regions);
         let selected = c.constant.as_ref().map(|bits| bits[0] != 0);
         for (retain, regions) in [
@@ -160,7 +160,6 @@ impl Builder<'_> {
             self.flow = yes_flow.union(no_flow);
         }
         self.control_uniform = control;
-        self.code = outer;
         if let Some(bits) = &c.constant {
             if bits[0] != 0 {
                 self.code.extend(yes);

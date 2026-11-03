@@ -102,6 +102,163 @@ impl DataReference {
     }
 }
 
+// Numeric snapshots query the original emitted operations. No loaded-value or
+// memory-version state is retained beside the IR and the existing Proof.
+struct ApplicationLoads<'a,'w>(&'a Builder<'w>);
+impl ApplicationLoads<'_, '_> {
+    fn definition(&self,reg:Reg)->Option<(usize,&Inst)> {
+        fn nested(inst:&Inst,reg:Reg)->Option<&Inst>{
+            if inst.results().any(|result|result==reg){return Some(inst);}
+            match &inst.kind{
+                InstKind::If{yes,no,..}=>yes.iter().chain(no).find_map(|inst|nested(inst,reg)),
+                InstKind::Loop{condition,body,..}=>condition.iter().chain(body).find_map(|inst|nested(inst,reg)),
+                InstKind::Scope(body)=>body.iter().find_map(|inst|nested(inst,reg)),
+                _=>None,
+            }
+        }
+        self.0.code.iter().enumerate().rev().find_map(|(at,inst)|nested(inst,reg).map(|inst|(at,inst)))
+    }
+    fn pointer_call(call:&Call)->Option<Reg> {
+        let CallTarget::External(name)=&call.target else{return None;};
+        if name.library!=crate::application::RUNTIME_LIBRARY||!matches!(name.symbol.as_str(),"blink_application_address"|"blink_storage_address"){return None;}
+        match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
+    }
+    fn constant(&self,reg:Reg)->Option<Bits> {
+        match &self.definition(reg)?.1.kind {
+            InstKind::Constant(_,_,bits)=>Some(*bits),
+            InstKind::Cast{src,..}=>constant::cast(self.0.registers[*src],self.0.registers[reg],self.constant(*src)?),
+            _=>None,
+        }
+    }
+    fn same(&self,a:Reg,b:Reg)->bool {
+        if a==b{return true;}
+        if self.0.registers[a]!=self.0.registers[b]{return false;}
+        let(Some((ai,a_inst)),Some((bi,b_inst)))=(self.definition(a),self.definition(b))else{return false;};
+        match (&a_inst.kind,&b_inst.kind) {
+            (InstKind::Constant(_,sa,a),InstKind::Constant(_,sb,b))=>sa==sb&&a==b,
+            (InstKind::Cast{src:a,..},InstKind::Cast{src:b,..})=>self.same(*a,*b),
+            (InstKind::Unary{op:a_op,a,..},InstKind::Unary{op:b_op,a:b,..})=>a_op==b_op&&self.same(*a,*b),
+            (InstKind::Binary{op:a_op,a:aa,b:ab,..},InstKind::Binary{op:b_op,a:ba,b:bb,..})=>a_op==b_op&&self.same(*aa,*ba)&&self.same(*ab,*bb),
+            (InstKind::Math{op:a_op,args:a,..},InstKind::Math{op:b_op,args:b,..})=>a_op==b_op&&a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),
+            (InstKind::LoadLocal(_,a_slot),InstKind::LoadLocal(_,b_slot))=>{
+                let direct=self.0.code[ai].results().any(|reg|reg==a)&&self.0.code[bi].results().any(|reg|reg==b);
+                let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
+                a_slot==b_slot&&!self.0.code[range].iter().any(|inst|self.writes_local(inst,*a_slot))
+            },
+            (InstKind::Call(a_call),InstKind::Call(b_call))=>{
+                let(Some(a_root),Some(b_root))=(Self::pointer_call(a_call),Self::pointer_call(b_call))else{return false;};
+                a_call.values.iter().position(|r|*r==a)==b_call.values.iter().position(|r|*r==b)
+                    &&self.same(a_root,b_root)
+                    &&match(a_call.arguments.first(),b_call.arguments.first()) {
+                        (Some(CallArgument::Value{values:a,..}),Some(CallArgument::Value{values:b,..}))=>a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),_=>false,
+                    }
+            },
+            (InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>self.0.code[ai].results().any(|reg|reg==a)&&self.0.code[bi].results().any(|reg|reg==b)&&self.same_load(a_inst,b_inst)
+                &&!self.0.code[ai.min(bi)+1..ai.max(bi)].iter().any(|inst|self.writes(inst,a_inst)),
+            _=>false,
+        }
+    }
+    fn same_address(&self,a:[Reg;2],b:[Reg;2])->bool {a.into_iter().zip(b).all(|(a,b)|self.same(a,b))}
+    fn same_load(&self,a:&Inst,b:&Inst)->bool {
+        match (&a.kind,&b.kind) {
+            (InstKind::ViewLoad{dst:a_dst,address:a,index:ai,stride:as_,word:aw},InstKind::ViewLoad{dst:b_dst,address:b,index:bi,stride:bs,word:bw})=>
+                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&as_==bs&&aw==bw&&self.same_address(*a,*b)&&self.same(*ai,*bi),
+            _=>false,
+        }
+    }
+    fn frame_root(&self,address:[Reg;2])->Option<Reg> {
+        let(a,first)=self.definition(address[0])?;let(b,_)=self.definition(address[1])?;
+        if a!=b{return None;}
+        let InstKind::Call(call)=&first.kind else{return None;};Self::pointer_call(call)
+    }
+    fn allocated(&self,root:Reg)->bool {
+        matches!(self.definition(root),Some((_,Inst{kind:InstKind::Call(Call{target:CallTarget::External(name),..}),..}))if name.library==crate::application::RUNTIME_LIBRARY&&name.symbol.starts_with("blink_allocate_"))
+    }
+    fn store_overlaps(&self,load:&Inst,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
+        let InstKind::ViewLoad{dst,address,index,stride,word:read_word}=&load.kind else{return false;};
+        let(IndexedSource::View{address:other,index:other_index,stride:other_stride}|IndexedSource::Pointer{address:other,index:other_index,stride:other_stride,..})=source else{return true;};
+        if !self.same_address(*address,*other) {
+            if let(Some(a),Some(b))=(self.frame_root(*address),self.frame_root(*other))
+                &&a!=b&&self.allocated(a)&&self.allocated(b){return false;}
+            return true;
+        }
+        let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
+        let size=u128::from(self.0.registers[*dst].size());let other_size=u128::from(scalar.size());
+        let (a,b)=if let(Some(a),Some(b))=(self.constant(*index),self.constant(*other_index)) {
+            (u128::from(a)*u128::from(*stride)+u128::from(*read_word),u128::from(b)*u128::from(*other_stride)+u128::from(offset)+u128::from(word))
+        }else if stride==other_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
+        a<b+other_size&&b<a+size
+    }
+    fn call_writes(&self,call:&Call)->bool {
+        if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
+        if Self::pointer_call(call).is_some(){return false;}
+        match &call.target {
+            CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY=>return true,
+            CallTarget::Defined(name)=>return !self.0.functions.writes_only_references(name),
+            CallTarget::Indirect(_)=>return true,
+            _=>{},
+        }
+        let Some(usage)=call.memory_use else{return true;};
+        if !call.arguments.iter().any(|argument|matches!(argument,CallArgument::Value{ty,..}if ty.contains_borrows())){return false;}
+        // call_address_memory retains a use only for a nonempty memory effect.
+        // Other requirements may occupy the unconsumed index of an empty effect.
+        match self.0.view_model.uses.get(usage) {
+            Some(view_contracts::Use{requirement:view::Requirement::Memory{target:address::MemoryTarget::Call(id),borrow,..},..})if *id==usage=>!borrow.empty(),
+            _=>false,
+        }
+    }
+    fn writes_local(&self,inst:&Inst,slot:usize)->bool {
+        if inst.local_writes().contains(&slot){return true;}
+        match &inst.kind {
+            InstKind::Call(call)=>self.call_writes(call),
+            InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_local(inst,slot)),
+            InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_local(inst,slot)),
+            InstKind::Scope(body)=>body.iter().any(|inst|self.writes_local(inst,slot)),
+            _=>false,
+        }
+    }
+    fn writes(&self,inst:&Inst,load:&Inst)->bool {
+        match &inst.kind {
+            InstKind::StoreIndexed{source,offset,word,value}=>self.store_overlaps(load,source,Some(*offset),*word,self.0.registers[*value]),
+            InstKind::Call(call)=>{
+                if let CallTarget::Defined(name)=&call.target
+                    && self.0.functions.writes_only_references(name) {
+                    if call.memory.iter().any(|effect|effect.access.writes()){return true;}
+                    return call.arguments.iter().any(|argument|match argument {
+                        CallArgument::Reference{ty,access,address}if access.writes()=>match &address.storage {
+                            ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
+                            ir::CallStorage::Local{..}=>false,
+                        },
+                        _=>false,
+                    });
+                }
+                self.call_writes(call)
+            },
+            InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes(inst,load)),
+            InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes(inst,load)),
+            InstKind::Scope(body)=>body.iter().any(|inst|self.writes(inst,load)),
+            InstKind::Store{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
+            _=>false,
+        }
+    }
+    fn snapshot(&self,reg:Reg)->Reg {
+        let Some((mut at,mut load))=self.definition(reg)else{return reg;};
+        if !matches!(load.kind,InstKind::ViewLoad{..}){return reg;}
+        let mut result=reg;
+        while at>0 {
+            at-=1;let inst=&self.0.code[at];
+            if self.writes(inst,load){break;}
+            if self.same_load(inst,load) {
+                if let InstKind::ViewLoad{dst,..}=inst.kind{result=dst;load=inst;}
+            }
+        }
+        result
+    }
+}
+impl Builder<'_> {
+    pub(super) fn application_read_snapshot(&self,reg:Reg)->Reg {ApplicationLoads(self).snapshot(reg)}
+}
+
 pub(super) fn pointer_type() -> Ty {
     let mut ty = Ty::vector(Scalar::U32, 2);
     ty.name = "__blink_frame".into();
@@ -1828,7 +1985,7 @@ pub(super) fn rebound(body: &[Stmt], name: &str) -> bool {
     fn root(expr: &Expr) -> Option<&str> {
         match &expr.kind {
             ExprKind::Name(name) => Some(name),
-            ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(base),
+            ExprKind::Member(base, _) => root(base),
             _ => None,
         }
     }
@@ -2138,6 +2295,31 @@ impl Builder<'_> {
         self.close_stored_resources(&mut model);Box::new(model)
     }
     pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value)->returns::Returned{
+        fn loaded_value(builder:&Builder<'_>,target:&mut Value,loaded:&Value){
+            let mut proof=bounds::Proof::default();
+            for(component,reg)in target.regs.iter().enumerate(){
+                let index=loaded.regs.iter().position(|source|source==reg).unwrap();
+                let mut part=builder.value_component(target,component);
+                part.proof=builder.path_proof(&part.ty,part.proof.with_identity(loaded.component_origins(index)[0]));
+                proof.append(&part);
+            }
+            target.proof=proof;
+        }
+        fn loaded_model(builder:&Builder<'_>,model:&mut returns::Returned,loaded:&Value){
+            match model{
+                returns::Returned::Value(target)=>loaded_value(builder,target,loaded),
+                returns::Returned::OwnedValue(target)=>{
+                    loaded_value(builder,&mut target.value,loaded);
+                    for payload in target.payloads.iter_mut().flatten(){loaded_model(builder,payload,loaded);}
+                },
+                returns::Returned::Dataset(target)=>{
+                    loaded_value(builder,&mut target.root,loaded);
+                    loaded_value(builder,&mut target.length,loaded);
+                    target.length.proof=std::mem::take(&mut target.length.proof).with_domains(Domains::from([IndexDomain::ApplicationLength(target.root.identity())]));
+                },
+                returns::Returned::Unit=>{},
+            }
+        }
         let mut model=(*data.elements).clone();let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
         for field in &data.projection{
             let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
@@ -2145,10 +2327,17 @@ impl Builder<'_> {
             components=ty.components.iter().map(|(_,at)|components[owner.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()]).collect();
             model=self.unpack_record(&owner,*field);
         }
-        let original=model.clone();let mut bindings=self.element_owner_bindings(data);
-        for(component,reg)in components.into_iter().zip(&value.regs){bindings.insert(ValueIdentity::ElementComponent(component),bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}
-        native_function::rebind_model(&mut model,value.regs);
-        native_function::translate_returned(&mut model,&original,&bindings,true);model
+        let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
+        for(component,index)in components.into_iter().zip(0..value.regs.len()){
+            let proof=self.path_proof(&Ty::scalar(value.ty.components[index].0),bounds::Proof::default().with_identity(value.component_origins(index)[0]));
+            bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
+            for source in storage.component_origins(index).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
+                bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
+            }
+        }
+        native_function::rebind_model(&mut model,value.regs.clone());
+        native_function::translate_returned(&mut model,&original,&bindings,true);
+        loaded_model(self,&mut model,&value);model
     }
     pub(super) fn application_element_proof(&self,place:&Place,regs:&[Reg])->Option<bounds::Proof>{
         let Place::ApplicationElement{sources,words,..}=place else{return None};

@@ -3107,13 +3107,13 @@ impl<'a> Builder<'a> {
         self.remember_loop_control(&c);
         let environment = self.env.clone();
         let path = self.path.clone();
-        let previous = std::mem::take(&mut self.code);
+        let prefix = self.code.len();
         let init = self.application_initialization_state();
         let control = self.control_uniform;
         self.control_uniform &= c.uniform;
         self.refine_bounds(&partition, true);
         yes_body(self)?;
-        let yes = std::mem::take(&mut self.code);
+        let yes = self.code.split_off(prefix);
         let yes_init = self.take_application_initialization_state();
         let yes_env = self.env.clone();
         let yes_path = self.path.clone();
@@ -3125,7 +3125,7 @@ impl<'a> Builder<'a> {
         self.path = path;
         self.refine_bounds(&partition, false);
         no_body(self)?;
-        let no = std::mem::take(&mut self.code);
+        let no = self.code.split_off(prefix);
         let no_init = self.take_application_initialization_state();
         let no_flow = self.flow;
         let no_reachable = no_flow.continues();
@@ -3152,7 +3152,6 @@ impl<'a> Builder<'a> {
         }
         self.flow = yes_flow.union(no_flow);
         self.control_uniform = control && (c.uniform || (yes_reachable && no_reachable));
-        self.code = previous;
         self.emit(InstKind::If {
             condition: c.regs[0],
             yes,

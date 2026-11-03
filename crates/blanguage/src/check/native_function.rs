@@ -28,6 +28,25 @@ pub(super) struct Module {
     units: BTreeMap<String, Option<Unit>>,
 }
 impl Module {
+    pub(super) fn writes_only_references(&self,name:&str)->bool {
+        fn references(borrow:&view::Borrow)->bool {
+            borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
+                view::Source::Parameter(ValueIdentity::ParameterStorage(_))=>true,
+                view::Source::Position(origin)=>match &origin.root {
+                    address::Root::Parameter(_)=>true,
+                    address::Root::Derived(borrow)=>references(borrow),
+                    _=>false,
+                },
+                _=>false,
+            })
+        }
+        self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
+            access.iter().all(|access|match access {
+                view_contracts::Access::Resource{..}|view_contracts::Access::Memory{..}=>false,
+                view_contracts::Access::Dataset{..}=>true,
+                view_contracts::Access::Position{position,borrows,..}=>!position.writes||references(borrows),
+            }))
+    }
     #[inline(never)]
     fn declare(&mut self, name: &str) -> bool {
         if self.units.contains_key(name) {
