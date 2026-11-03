@@ -72,7 +72,7 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
         &definition.imports,
     )?;
     if ty.owns_resources()
-        && (param.ty.dataset && param.access != Access::Value
+        && (param.ty.dataset && !matches!(param.access, Access::Value | Access::Read)
             || param.ty.tile
             || !matches!(param.access, Access::Value | Access::Read | Access::Write | Access::InOut)
             || definition.function.kind != FunctionKind::Value
