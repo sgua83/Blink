@@ -293,11 +293,23 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-1"></a>
 
-**程序入口及根Frame生命周期。** 输入／输出及生产消费：原选择入口Instance→compile_application／live_resources→原Application.body与根包装Call／前后序Inst。原定义实例锚点与实际表达式锚点分开，完整标明进入、错误接收器／上下文、创建、原就绪分支、失败退出值及正常销毁；没有资源时不伪造Frame。原GeneratedOrigin以GenerationAnchor区分Syntax和Definition；定义实例只含原定义快照（可以缺失）与实际入口名，不保留World／AST。原Application.body可有generated_origin描述整个隐式入口，其内部各Frame步骤仍分别分类，普通源函数体及域包装不借用此入口材料。Frame创建失败分支与正常销毁保留原代码和原语义；没有活资源时不增加Frame、接收器或分支。来源只编译角色，静态生成事实不证明分支已实际执行。当前已交接原入口与根Frame生成事实，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-1)与[规范](BLanguage.md#应用入口与根frame的生成来源)；其余七叶仍未实现。
+**程序入口及根Frame生命周期。** 输入／输出及生产消费：原选择入口Instance→compile_application／live_resources→原Application.body与根包装Call／前后序Inst。原定义实例锚点与实际表达式锚点分开，完整标明进入、错误接收器／上下文、创建、原就绪分支、失败退出值及正常销毁；没有资源时不伪造Frame。原GeneratedOrigin以GenerationAnchor区分Syntax和Definition；定义实例只含原定义快照（可以缺失）与实际入口名，不保留World／AST。原Application.body可有generated_origin描述整个隐式入口，其内部各Frame步骤仍分别分类，普通源函数体及域包装不借用此入口材料。Frame创建失败分支与正常销毁保留原代码和原语义；没有活资源时不增加Frame、接收器或分支。来源只编译角色，静态生成事实不证明分支已实际执行。当前已交接原入口与根Frame生成事实，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-1)与[规范](BLanguage.md#应用入口与根frame的生成来源)；其余资源叶仍未实现。
 
 <a id="tool-7-2-4-5-2"></a>
 
-**dataset分配与初始化包装。** 输入／输出及生产消费：create_application_dataset／application_declare原类型、长度和初始化表达式→原allocate与填充／槽位写入→原Data。只记录本次真实分配与初始化步骤／锚点，资源仍归Frame／Data原拥有者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2)。
+**dataset分配与初始化包装。** 父职责只汇总，下列三条原生产消费链独立交付，输入／输出、唯一所有者和语义分别明确；没有资源分配或原生写入时不伪造操作。原application_declare只建未初始化编译模型；原构造、可选factory和绑定写入并非同一阶段。来源材料只由原IR按最后消费者共享，不新增资源拥有表或释放链。见[父台账](Issues.md#c-021-7-9-7-2-4-5-2)。
+
+<a id="tool-7-2-4-5-2-1"></a>
+
+**dataset构造的分配调用来源。** 输入／输出及生产消费：原dataset<T>(length[,factory])的实际表达式、类型和长度→create_application_dataset／application_call→原allocate_<type> Call及返回的原Data。原Call持有DatasetAllocate及以实际构造SourceSite形成的Syntax锚点，实际定义、泛型实例、inline_path与domain_path沿原快照保持。内部allocate调用是生成包装，source_site为空，实际语法触发位于generated_origin；长度表达式与factory不因同属构造而被改成分配步骤。一个实际分配只保留一条原调用，Frame／Data仍拥有同一资源，静态Call不证明运行已经分配或分配成功；没有原来源时明确缺失，不凭名称猜造。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-1)。
+
+<a id="tool-7-2-4-5-2-2"></a>
+
+**dataset生成函数初始化来源。** 输入／输出及生产消费：原factory静态引用与原Data→initialize_application_elements原循环／实际factory调用／元素写入→原元素存储。循环控制、初始化写入和用户factory函数／调用分别记录，引用触发与真实实现来源可以同时存在；零长度未发射循环不能伪造运行或函数调用。共用寻址职责仍归.5.5；初始化规则、逐元素拥有交接及资源寿命由原所有者保持。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-2)。
+
+<a id="tool-7-2-4-5-2-3"></a>
+
+**dataset拥有值槽位绑定来源。** 输入／输出及生产消费：真实声明／赋值及Data→application_bind／application_assign原StoreLocal／存储写入→原Place／绑定。句柄／长度写入与构造分配分别交接，不把移动／绑定当作新资源或复制。application_declare现行只预留编译模型、没有原生初始化；不存在的分配／零写入不补造。覆盖前的原释放继续归.5.3，共用普通存储机制保持；来源仍归原Inst，资源归原Frame／Data。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-2-3)。
 
 <a id="tool-7-2-4-5-3"></a>
 
