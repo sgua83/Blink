@@ -710,7 +710,7 @@ pub struct Dataset {
 
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
 
-Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节直接借用原绑定；GPU来源、完整Frame观察根、其他宿主容器及B／C观察入口仍有独立未完成范围。
+Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；完整Frame观察根、其他宿主容器及B／C观察入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
@@ -747,7 +747,7 @@ pub(crate) struct Views<Source> {
 
 已知字段路径时，`view_source(record, field)`沿原Ty::field_at选择该记录的实际活动载荷，再在原bindings二分查询。例如pair.left、list[1]、Some.left和Ok.right仍保留各自真实层级与大小写。非view字段、非活动变体、错误记录或已撤回绑定都没有来源；真实空来源仍是一个Dataset，其count为零。原始字节不能代替绑定。
 
-这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU最后使用、完整Frame根和B／C观察仍有各自未完成范围。
+这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU对应的来源与保留点见第十九／二十一章；完整Frame根和B／C观察仍有各自未完成范围。
 
 ## 第三章 只学阅读源码所需的 Rust
 
@@ -2103,7 +2103,7 @@ Pass 包含主执行、归约尾部、扫描补加、筛选散布和排序各步
 
 同一份GPU程序复用管线，临时空间、描述符和命令属于每次执行。装入借用原计划与SPIR-V，由原`Compiled`持有部分设备资源；全部成功才取得计划，失败沿原`Drop`释放资源。`Device::load_template`以`Err((error,image))`交回同一未改输入，`Frame`接回原槽。调用方显式再装入，终端消费者释放输入并传播原错误，不自动重试；借用与拥有只是装入期类型区别，没有第二计划、状态表或新包装。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1955`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2012`。
 
 ```rust
     pub fn submit(
@@ -2178,7 +2178,7 @@ Block是原Vulkan内存对象的唯一实际所有者。成功分配后，它保
 
 GpuDataset::memory()与ReadDataset::memory()按需返回同一存储的元数据。数据页标出原索引及逻辑覆盖，绑定表与实际实例地址数组分别标明角色；每个buffer继续沿原Allocation／Range取得绑定偏移、需求区间、整块大小与内存类型。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1142`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1199`。
 
 ```rust
     pub fn memory(&self) -> GpuDatasetMemory {
@@ -2219,7 +2219,7 @@ CPU 内存与 GPU 设备存储不是把同一地址重新命名就能互换。�
 
 前端知道字段类型与访问权限，传输框架遍历真实来源关系，为目标侧构造相应地址信息，并让来源存储继续活着。嵌套 view 的传输因此是闭合资源图的处理，不只是一段裸字节复制。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1681`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1738`。
 
 ```rust
 #[derive(Clone)]
@@ -2238,6 +2238,29 @@ pub struct Bindings<D = Vec<GpuDataset>> {
 `ReadDataset`共享冻结的真实来源；`binding()`把原存储直接交给read dataset参数，不分配另一份记录、页数组或传输。冻结的父记录及其子资源图随最后消费者完成释放，不能再绑定write／inout。
 
 **自己走一遍。** 冻结以后原数据是否从此无人拥有？不是。可写所有权转成只读共享，实际消费者通过引用关系继续持有它；最后一个消费者结束以后才具备释放条件。
+
+### 19.4 不复制资源的来源查询
+
+GpuDataset::layout与stride借用原GpuStorage布局；view_bindings同样沿原Views交回记录号、记录内字节偏移和Rc中原GpuDataset的共享借用。多个字段引用同一来源时得到同一个对象，嵌套来源可以继续遍历。查询不解析设备地址，也不先下载一份记录。
+
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1176`。
+
+```rust
+    pub fn view_bindings(&self) -> impl ExactSizeIterator<Item = GpuDatasetView<'_>> {
+        self.views.bindings.iter().map(|&(word, source)| {
+            let byte = word as u64 * 4;
+            GpuDatasetView {
+                record: (byte / u64::from(self.stride)) as u32,
+                offset: (byte % u64::from(self.stride)) as u32,
+                source: &self.views.sources[source].0,
+            }
+        })
+    }
+```
+
+GPU查询交付真实绑定边与静态类型，不凭Ty中的候选分支生成活动字段路径。实际变体tag在设备上；当前观察没有读取它，就不能声称读到了它。记录内offset与source分别回答字段机器位置和真实来源，语义与CPU字段路径查询的可取范围不同。
+
+same_storage在有效借用中比较原GpuStorage，冻结来源和不同只读绑定仍可以指向同一存储；不同空数据不会合并。共享同一VkDeviceMemory块的不同数据对象也不是同一个存储。ReadDataset沿Deref取得原对象，原有公开入口保持；没有克隆Rc、第二张图或永久资源ID。直接buffer大小仍由memory解释，不能将多个view重复计为多份分配。
 
 ## 第二十章 同步：先后顺序、可见性与完成信号
 
@@ -2265,7 +2288,7 @@ IR 的 reads/writes 是这类关系的重要来源，执行框架再结合传输
 
 若所有中间结果都先读回 CPU 再上传，设备流水会不断断开。`submit_after` 与 `submit_join` 接续实际所有权和前序提交，使后续工作继续消费设备结果。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1985`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2042`。
 
 ```rust
     /// 同队列直接衔接，order 索引前项所有数据以及 additional 中依次追加的数据。
@@ -2297,7 +2320,7 @@ GPU：     A 仍在执行 → B 才开始读取
 
 ### 21.2 物理存储和最后使用点一起保存
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1049`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1066`。
 
 ```rust
 pub struct GpuDataset {
@@ -2325,7 +2348,7 @@ pub struct GpuStorage {
 
 `GpuDataset` 保存实际 GpuStorage 和可选 last_use。GpuStorage 持有页表、数据页、类型、容量、只读来源及相关实例资源。它们不是多份数组副本，而是同一物理存储的组成。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:1079`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1096`。
 
 ```rust
 impl Drop for GpuDataset {
@@ -2359,9 +2382,27 @@ pub(super) struct Completion {
 
 Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留真实结果，Execution 在完成后释放该次命令资源和不再使用的存储。共享多个引用不会制造多个设备完成事实，它们指向同一个完成点。
 
+GpuDataset::last_use把这个原点直接交给观察者：device限定原逻辑设备，sequence是原队列从零开始的序号，complete沿原Execution查询。它只复制本次元数据，不持有另一个Execution，也不清除last_use或制造新的完成状态。
+
+源码节选：`crates/blcompute/src/vulkan/mod.rs:1189`。
+
+```rust
+    pub fn last_use(&self) -> Result<Option<GpuDatasetUse>> {
+        let Some(execution) = self.dependency() else { return Ok(None); };
+        let complete = execution.is_complete()?;
+        Ok(Some(GpuDatasetUse {
+            device: execution.point.inner.owner.device as usize,
+            sequence: execution.point.sequence.get(),
+            complete,
+        }))
+    }
+```
+
+同一冻结存储的不同read绑定可以有不同执行点。源保留的生产点已经完成，不能据此推断后来某个别名的读取已完成；same_storage也不合并这些点。没有保留点时返回None，不将其解释为已初始化或所有消费者完成。原Execution观察到完成时仍按原职责释放命令资源，查询不等待、提交或下载，真实错误直接交回。
+
 ### 21.4 wait 以后交还什么
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2841`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2898`。
 
 ```rust
         let timings = match result {
@@ -2382,7 +2423,7 @@ Completion 持有 fence 与提交状态。`wait` 调用 Vulkan 等待并保留�
 
 wait先等待真实执行；只有显式开启采集且存在实际阶段时才读取原查询池。GpuProgram和GpuTemplate通过with_timestamps(true)?请求采集，默认关闭。Completed.timings、into_parts第三项及GpuCompletion::wait的计时为Option<GpuTimings>：None表示未采集／没有阶段，Some保留实际查询得到的零值或非零值。普通计算不要求队列具备计时能力，显式开启时才检查；计算命令是否存在仍由实际阶段决定。查询池继续由原ExecutionResources、Submission及独立观察者保持到最后消费者完成。
 
-成功交回Completed并清除last_use；失败交回(error,self)，同一Submission仍持有绑定、加速结构、查询池与原完成点。调用者可继续持有或明确结束原提交；错误不承诺数据可用。
+成功交回Completed并清除本次绑定的last_use；Owned可能不再保留点，Read仍可沿原冻结来源观察旧生产点，不是保留刚清除工作的第二记录。失败交回(error,self)，同一Submission仍持有绑定、加速结构、查询池与原完成点。调用者可继续持有或明确结束原提交；错误不承诺数据可用。
 
 ![提交、消费与释放的寿命线](figures/compiler-lifetime.svg)
 
@@ -2433,7 +2474,7 @@ wait先等待真实执行；只有显式开启采集且存在实际阶段时才�
 
 执行框架把各组摘要继续交给下一轮归约，而非读回 CPU 自己累加。
 
-源码节选：`crates/blcompute/src/vulkan/mod.rs:2559`。
+源码节选：`crates/blcompute/src/vulkan/mod.rs:2616`。
 
 ```rust
                                 let mut length = count;

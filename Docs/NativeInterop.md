@@ -140,7 +140,7 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 
 `Dataset::layout()`借用原Ty；`view_bindings()`从同一原Views枚举`DatasetView { record, offset, source }`，`offset`是记录内字节，`source`是原Dataset共享借用。`view_source(record, field)`按原活动字段路径查询实际来源，支持记录／固定数组及活动变体；未知、非view、非活动字段或原绑定撤回均为None。空来源与无来源分别表达；同源多引用返回同一个Dataset，来源可以继续查询。不从header地址推导拥有关系、不克隆Arc或建立第二图；原count／stride／words／memory继续描述布局与直接存储。
 
-返回值服从原父数据借用，不能保留到父存储释放后，不能在活动观察时改写父存储，也不授予来源写权限。CPU执行沿原同步生命周期；本接口不等待／下载GPU。完整语义见[CPU来源借用](BLanguage.md#cpu数据的布局与view来源借用)。当前只交付CPU Rust SDK，GPU来源／最后使用、Frame完整观察根与B／C实际入口仍沿[资源查询台账](Issues.md#c-021-7-9-22)。
+返回值服从原父数据借用，不能保留到父存储释放后，不能在活动观察时改写父存储，也不授予来源写权限。CPU执行沿原同步生命周期；本接口不等待／下载GPU。完整语义见[CPU来源借用](BLanguage.md#cpu数据的布局与view来源借用)。当前CPU与GPU Rust SDK来源查询分别按原存储交付；Frame完整观察根与B／C实际入口仍沿[资源查询台账](Issues.md#c-021-7-9-22)。
 
 ## Rust SDK的CPU存储与代码区段观察
 
@@ -156,7 +156,9 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 
 `vulkan::GpuDataset::memory()`及`vulkan::ReadDataset::memory()`返回`GpuDatasetMemory`，从同一原存储交付逻辑字节和各直接buffer的`GpuBufferMemory`。角色区分绑定头／页表、数据页的逻辑覆盖与实际实例指针；buffer请求大小、Range绑定偏移／大小和其所依附的VkDeviceMemory整块大小分别返回，内存类型及堆属性来自原设备。冻结别名不生成新页或分配；原`allocated_bytes()`仍为各buffer需求区间之和，不能当共享块去重总额。
 
-返回的device／buffer／memory仅描述本次存活对象，多个buffer可以共享整块分配，多个只读别名还可以是同一个buffer。报告不保活资源、不授予读写权限，也不创建GPU工作、等待或下载；不把整块大小逐项相加为独占显存或驻留。完整字段、单位、直接buffer范围及其与Device::memory_budget的区别见[设备内存观察](DeviceMemory.md)。当前是Rust SDK接口，完整资源／view根与B／C观察仍未因此交付。
+返回的device／buffer／memory仅描述本次存活对象，多个buffer可以共享整块分配，多个只读别名还可以是同一个buffer。报告不保活资源、不授予读写权限，也不创建GPU工作、等待或下载；不把整块大小逐项相加为独占显存或驻留。完整字段、单位、直接buffer范围及其与Device::memory_budget的区别见[设备内存观察](DeviceMemory.md)。GPU来源由`GpuDataset::layout()`／`stride()`／`view_bindings()`直接借用，GpuDatasetView交付原record、记录内字节offset和原来源GpuDataset；same_storage比较当前同一原GpuStorage，ReadDataset沿原Deref使用这些查询。只交付实际绑定边，不读回活动tag或从静态字段路径猜活动来源。
+
+`GpuDataset::last_use()`返回`Result<Option<GpuDatasetUse>>`，device／sequence来自本绑定原dependency的Completion，complete来自原Execution::is_complete。序号0合法；None仅无保留点，旧源点完成不能证明后续只读别名工作完成。同存储不同绑定可以持有不同点；显式wait清除本次点后仍可能看到冻结来源点。查询不等待／提交／下载；原Execution清理已完成资源、原生错误和原生命周期保持，快照不保活资源。字段和完整语义见[GPU来源与绑定保留点](BLanguage.md#gpu布局view来源与绑定保留点)。Frame完整观察根与B／C实际入口仍未交付。
 
 ## 性能的完整口径
 

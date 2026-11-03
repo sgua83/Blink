@@ -29,6 +29,12 @@
 
 标准字段分别依据[VkMemoryAllocateInfo](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryAllocateInfo.html)与[VkMemoryRequirements](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryRequirements.html)，原分配对象大小与资源需求不可互换。
 
+## 原view来源与存储身份
+
+GpuDataset的layout／stride借用原GpuStorage布局；view_bindings从原Views枚举record、记录内字节offset和原来源GpuDataset。来源可继续查询memory及其实际子边；查询不下载载荷、猜活动变体或建立另一份图。same_storage仅在当前借用内比较同一原GpuStorage，冻结别名仍是同一存储，不同对象即使共享VkDeviceMemory块也不会因此相同。多个边指向同一来源时，不能将其直接buffer重复当作多份分配；对象／buffer／Range／Block仍按真实层次分别解释。
+
+ReadDataset沿原对象Deref使用来源接口；原memory快照及内存口径不变。绑定完成关系由last_use另行查询，只报告该绑定实际保留的原点，不表示全存储所有别名已经完成。它沿原Execution观察并清理已完成资源，不等待或维护内存／完成镜像，详细语义见[GPU来源与绑定保留点](BLanguage.md#gpu布局view来源与绑定保留点)。
+
 ## 进程堆使用估计与动态预算
 
 `blcompute::vulkan::Device::memory_budget()` 返回 `Option<MemoryBudget>`。各 `MemoryHeapBudget` 包含 `device_local`、物理堆 `size`、当前 `budget` 和 `usage`，单位均为字节。设备所有者枚举并启用驱动实际支持的 `VK_EXT_memory_budget`，查询使用同一物理设备的 `vkGetPhysicalDeviceMemoryProperties2`；设备与 Vulkan 实例保持原有生命周期。

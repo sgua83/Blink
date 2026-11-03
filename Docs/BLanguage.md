@@ -3721,7 +3721,31 @@ for view in data.view_bindings() {
 let source = data.view_source(0, "pair.left");
 ```
 
-以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU来源、Frame完整根与B／C入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
+以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU对应的来源与绑定完成点见下一节；Frame完整根与B／C入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
+
+### GPU布局、view来源与绑定保留点
+
+Rust SDK的`vulkan::GpuDataset::layout() -> &Ty`和`stride() -> u32`交付原物理GpuStorage的类型布局与记录步幅。`view_bindings()`返回精确长度迭代器，元素为`vulkan::GpuDatasetView { record: u32, offset: u32, source: &GpuDataset }`，直接借用原Views的实际边和原Rc中的来源；offset是相对本条记录起点的字节偏移。嵌套来源可继续查询，不解析设备地址、不保留CPU记录镜像或克隆Rc。GPU不提供CPU式的活动字段路径查源：静态Ty和实际绑定偏移分别交付，不读回活动变体tag，也不把两个共用偏移的候选字段同时当成活动字段。
+
+`same_storage(&other)`只比较当前有效借用中的同一原GpuStorage；它不比较外层GpuDataset句柄、类型、页或共享VkDeviceMemory块。冻结别名为true，不同空数据仍为false。存储移动或原所有者结束后不能把旧对象地址作为永久身份。`vulkan::ReadDataset`通过原对象Deref使用这些查询，现有memory／count／bytes／allocated_bytes／page_count和binding入口保持。
+
+`last_use() -> Result<Option<vulkan::GpuDatasetUse>>`查询本绑定的原dependency：先取本次已记录last_use，无本次点时沿同一冻结来源。Some包含device、sequence和complete；device是原VkDevice的当时作用域，sequence是该原队列从0开始的提交序号，complete由同一原Execution::is_complete观察。不同逻辑设备序号各自从0开始，不跨设备排序；值也不作为持久执行ID。完成状态是查询当时的事实，GPU仍可继续执行，标准状态语义见[Vulkan vkGetFenceStatus](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetFenceStatus.html)。None仅表示没有保留点，可能是尚未提交或显式wait已清除本次点，不证明数据初始化、设备空闲或别名全部完成。
+
+同源只读绑定可以记录不同的真实执行点：源保留生产点，后续每个绑定保留自己的读取点。`same_storage`成立不合并这些点；源上的旧点完成不代表另一个绑定的新工作完成。成功Submission::wait清除本次绑定点，Owned可变为None，Read仍可能沿原冻结来源观察较早的点；它不是已被清除工作的第二记录。
+
+查询不提交、等待、下载或改变producer／绑定点，也不增加完成表／状态镜像。原Execution可以按其已有职责清理实际已经完成的命令资源；原生错误直接返回Err，不写成None或complete。GpuDatasetUse只复制本次元数据，不持有Execution／数据／设备；保留旧快照不会保活资源、阻止后续提交或改变释放时机。
+
+```rust
+for edge in gpu_data.view_bindings() {
+    let position = (edge.record, edge.offset);
+    let original_source = edge.source;
+}
+if let Some(point) = gpu_data.last_use()? {
+    // point只描述这个绑定实际保留的device／sequence及当时完成状态。
+}
+```
+
+本节是原生Rust SDK观察，不新增B语法或C ABI。Frame完整根和B／C实际入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
 
 ### 原生物理 GPU 枚举与选择
 

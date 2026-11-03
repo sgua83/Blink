@@ -357,7 +357,11 @@ AI从dataset／view／字段追到存储、位置和最后消费者→`applicati
 
 CPU Rust SDK的`Dataset::layout()`借用原Ty，`view_bindings()`沿原Views的实际bindings／sources枚举`DatasetView { record, offset, source }`，`view_source(record, field)`沿原活动字段路径查到同一原Dataset。偏移是记录内字节，原count／stride／words／memory分别交付记录布局和直接存储；来源可继续查询。共享来源通过本次有效借用的同一对象辨认，不克隆Arc、解析原始地址重建来源或另造资源身份。不存在的记录／字段、未活动变体和已撤回绑定返回无来源；空来源仍是实际来源。CPU执行保持原同步生命周期，查询不新增执行提交或写许可。
 
-资源／view及观察消费者沿原来源和最后使用保持；返回字节副本或有效期明确的借用，报告本身不维持第二资源状态或释放链。GPU来源及其最后使用关系、Frame完整观察根、B／C实际观察入口仍未交付，分别沿C-021.7.9.22.2／.3／.4推进；CPU局部交接不冒称完整跨后端资源图。本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应剩余范围：[C-021.7.9.22](Issues.md#c-021-7-9-22)。
+GPU Rust SDK的`GpuDataset::layout()`／`stride()`借用原GpuStorage布局，`view_bindings()`从原Views交付`GpuDatasetView { record, offset, source }`；source为原Rc中同一个GpuDataset。`same_storage`只比较本次有效借用中的原GpuStorage，冻结别名不变成另一份分配；ReadDataset沿原对象Deref查询，原公开入口保持。offset是记录内字节，GPU查询不下载活动tag、构造字段路径或据静态变体猜来源。原来源可继续遍历并调用memory，完整GPU值读取仍须取得实际权限与完成范围。
+
+`GpuDataset::last_use()`沿原dependency取得本绑定实际保留点，返回`Result<Option<GpuDatasetUse>>`，device／sequence来自原Completion，complete来自同一Execution::is_complete；序号0合法。None只表示本绑定及其原冻结来源没有保留点，不证明初始化、设备空闲或所有别名完成。同源只读绑定可持有不同执行点，源上的旧点完成不代表后续别名工作完成。查询沿原Execution清理已经完成的资源，错误原样交回，不等待／提交／下载、清除绑定点或维护第二状态。快照不保活执行，device／sequence不是跨设备或长期身份。
+
+资源／view及观察消费者沿原来源和最后使用保持；返回字节副本或有效期明确的借用，报告本身不维持第二资源状态或释放链。Frame完整观察根与B／C实际入口仍未交付，分别沿C-021.7.9.22.3／.4推进；CPU／GPU Rust局部交接不冒称完整应用资源根或B观察已交付。本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应剩余范围：[C-021.7.9.22](Issues.md#c-021-7-9-22)。
 
 <a id="tool-23"></a>
 

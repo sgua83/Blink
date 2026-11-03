@@ -1046,6 +1046,23 @@ pub struct GpuDatasetMemory {
     pub logical_bytes: u64,
     pub buffers: Vec<GpuBufferMemory>,
 }
+/// 原GPU记录的一条真实view绑定；只借用原来源，不复制或保活资源。
+#[derive(Clone, Copy)]
+pub struct GpuDatasetView<'a> {
+    pub record: u32,
+    /// 相对本条记录起点的字节偏移；不隐式读回活动载荷或生成字段路径。
+    pub offset: u32,
+    pub source: &'a GpuDataset,
+}
+/// 本绑定实际保留完成点的一次观察；不表示同存储所有别名的最后消费者。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuDatasetUse {
+    /// 原VkDevice的当时作用域；不是持久设备身份。
+    pub device: usize,
+    /// 原队列提交序号，从0开始，仅在同一存活逻辑设备内比较。
+    pub sequence: u64,
+    pub complete: bool,
+}
 pub struct GpuDataset {
     storage: ManuallyDrop<DatasetStorage>,
     last_use: Option<Rc<Execution>>,
@@ -1089,6 +1106,12 @@ impl Drop for GpuDataset {
 }
 #[derive(Clone)]
 pub struct ReadDataset(Rc<GpuDataset>);
+impl std::ops::Deref for ReadDataset {
+    type Target = GpuDataset;
+    fn deref(&self) -> &GpuDataset {
+        &self.0
+    }
+}
 impl crate::DomainStorage for GpuDataset {
     fn read_identity(&self) -> Option<usize> {
         match &*self.storage {
@@ -1138,6 +1161,40 @@ impl ReadDataset {
     }
 }
 impl GpuDataset {
+    /// 借用同一物理存储的原类型；记录步幅和实际绑定分别查询。
+    pub fn layout(&self) -> &Ty {
+        &self.ty
+    }
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+    /// 仅比较当前借用中同一个原GpuStorage，不按页／内存块或外层绑定去重。
+    pub fn same_storage(&self, other: &Self) -> bool {
+        std::ptr::eq(&**self, &**other)
+    }
+    /// 枚举原Views的真实边；不下载记录、不解析设备地址或克隆Rc。
+    pub fn view_bindings(&self) -> impl ExactSizeIterator<Item = GpuDatasetView<'_>> {
+        self.views.bindings.iter().map(|&(word, source)| {
+            let byte = word as u64 * 4;
+            GpuDatasetView {
+                record: (byte / u64::from(self.stride)) as u32,
+                offset: (byte % u64::from(self.stride)) as u32,
+                source: &self.views.sources[source].0,
+            }
+        })
+    }
+    /// 观察本绑定保留的原点；无本地使用时沿原冻结来源。
+    /// None仅表示无保留点；不证明初始化、设备空闲或其他只读别名已完成。
+    /// 原Execution可清理已完成资源，本查询不等待、提交或清除最后使用点。
+    pub fn last_use(&self) -> Result<Option<GpuDatasetUse>> {
+        let Some(execution) = self.dependency() else { return Ok(None); };
+        let complete = execution.is_complete()?;
+        Ok(Some(GpuDatasetUse {
+            device: execution.point.inner.owner.device as usize,
+            sequence: execution.point.sequence.get(),
+            complete,
+        }))
+    }
     /// 读取原buffer／分页／绑定区间；不等待GPU、读回载荷或改变拥有关系。
     pub fn memory(&self) -> GpuDatasetMemory {
         let mut buffers = vec![self.allocation.memory_info(GpuBufferRole::BindingTable)];
