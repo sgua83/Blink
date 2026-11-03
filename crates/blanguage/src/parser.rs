@@ -152,6 +152,14 @@ impl Parser {
         };
         (result.present != 0).then_some(result.end)
     }
+    fn contract_value_path(&mut self) -> Result<String> {
+        let mut path=self.qualified(".")?;
+        while self.take("[") {
+            self.expect("*")?;self.expect("]")?;path.push_str("[*]");
+            if self.take("."){path.push('.');path.push_str(&self.qualified(".")?);}
+        }
+        Ok(path)
+    }
     fn contract(&mut self) -> Result<FunctionContract> {
         let span = self.span();
         let kind = if self.take("requires") {
@@ -171,7 +179,7 @@ impl Parser {
                 let field = self.qualified(".")?;
                 ContractPredicate::Prefix { data, count, field }
             }
-            "nonzero" => ContractPredicate::Nonzero(self.qualified(".")?),
+            "nonzero" => ContractPredicate::Nonzero(self.contract_value_path()?),
             "nonempty" => ContractPredicate::Nonempty(self.qualified(".")?),
             "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
             "initialized" => {

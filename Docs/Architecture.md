@@ -926,6 +926,8 @@ CPU 应用的 dataset、拥有记录、固定拥有数组及活动变体／Resul
 
 共同元素模型用局部ElementComponent／ElementParent及声明DatasetContent输入身份交接原数值、资源和地址事实。每次存储模型保持自身作用域，元素源身份不合并为函数全局资源拥有者；生成、实际字段写入、返回与模块调用沿同一模型投影和合流。最后显式索引读取及实际静态F参与原view_liveness／cleanup_borrow；drop接管保留本次存储可读性，实际release后原绑定退出消费。原位置初始化与调用MemoryAccess继续归其唯一所有者，符号输入不成为已初始化的证明。
 
+普通CPU函数的nonzero(input[*].field)由原合同所有者选择原Data.elements及其真实字段／嵌套作用域；调用点沿原共同Proof证明，入口在同一模型假设该前提，实际写入继续撤回旧事实。字段列沿真实projection选择，已证明零元素只形成空集合语义，不伪造元素值或读取。Selection仅保存本次选择路径及实际空范围；原Nonzero路径随接口／模块交接，没有新的运行时状态、扫描或合同权威。完整范围见[共同元素nonzero](BLanguage.md#common-element-nonzero)；共同资源nonempty和index关系仍待实现。
+
 CPU 控制位置与资源存储位置分开。实际载荷访问、所选计算目标、upload／download 产生 CPU／GPU 条件；句柄、length 或单纯移动不强制 CPU 存储。输入快照、returned／written 值及实际下标把条件位置传入模块合同，递归、循环提前退出和真实返回共同闭合来源。没有来源与未知来源分别保持，未知不猜成 CPU。
 
 ensures initialized 按输入快照和 returned 状态声明实际输出初始化范围；调用撤回该范围的旧知识，再沿同一条件授予读取／移动权限。未交付分支不能残留未声明拥有内容。外部 C 声明是可信边界，编译器不检查 DLL 实现；更完整的失败资源阶段和异步错误尚未实现。

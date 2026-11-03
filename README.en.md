@@ -22,7 +22,7 @@ This repository contains the B-language compiler, linker, native execution frame
 
 > **In development — software version in [VERSION](VERSION).** Native execution on a single machine's CPU and GPU is available. Domain compilation, domain execution, and stable hot updates are established design goals and are not implemented yet. See the [architecture and current implementation scope](Docs/Architecture.md).
 
-CPU applications can construct datasets of owning elements with `dataset<T>(length,F)`, using a static factory for each initialized element. Whole-dataset moves, returns and final element cleanup retain the original resource ownership. See the [implemented scope and remaining element borrowing and container operations](Docs/BLanguage.md#cpu-owned-dataset-elements).
+CPU applications can construct datasets of owning elements with `dataset<T>(length,F)`, using a static factory for each initialized element. Whole-dataset moves, returns and final element cleanup retain the original resource ownership. CPU functions can declare `requires nonzero(rows[*].value)` for common facts about initialized elements; see the [contract scope](Docs/BLanguage.md#common-element-nonzero). See the [implemented scope and remaining element borrowing and container operations](Docs/BLanguage.md#cpu-owned-dataset-elements).
 
 ## Three core features
 

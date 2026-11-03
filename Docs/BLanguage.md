@@ -1739,7 +1739,7 @@ write dataset 的字段必须在借出前已初始化；可以先初始化一部
 
 if、for、while、短路与三元式中的函数写入进入原有控制流效果。函数返回的 bool 可以约束调用方当前内容；旧快照的条件不会约束改写后的内容。普通 if、短路与三元式按实际静态字段／分量合并身份、数值区间、索引域和非零事实，不因只改写一个字段就清空整个记录；循环入口只撤回可能被条件或正文改写的分量，未写字段保留原事实。函数位置读写沿原 IR 进入值转发、活跃性、阶段依赖与 Count 关系失效；cooperative 中的 inout 仍是各 invocation 的私有位置，不增加屏障或共享存储。
 
-局部记录中的不可变 view 句柄可以整体交换或替换，再按新句柄读取；实际子资源继续由原闭合图持有，不能修改 view 的地址分量或子元素，也不能把含 view 的记录写入可写全局数据集。nonzero／index 值约束目前仍只接受按值参数，不能对可变位置声明这些输入条件。
+局部记录中的不可变 view 句柄可以整体交换或替换，再按新句柄读取；实际子资源继续由原闭合图持有，不能修改 view 的地址分量或子元素，也不能把含 view 的记录写入可写全局数据集。普通值／字段的nonzero／index约束仍只接受按值参数，不能对可变位置声明这些输入条件；普通CPU dataset的显式共同元素nonzero按[共同元素规则](#common-element-nonzero)交接。
 
 借用冲突、重复分量或不具备独占权限报 B227；未初始化沿用 B142、类型 B124、索引 B137、非当前元素的可写访问 B166，目标 B161、递归 B160、签名 B028 保持。重复参数名由声明解析统一报 B100，不能在静态内联时覆盖位置。`write T` 输出借用与 void 函数见下一节。整份独占可写 dataset 借用、第一类引用、动态任务与资源泛型仍需继续实现。现有 `simulation.bodies` 已以两个互不重叠的 float3 位置封装无返回值积分，以 write f32 位置输出能量；独立 integrate／energy 入口保留。
 
@@ -1889,6 +1889,7 @@ void split(inout dataset<Receiver> first,write dataset<Signal> second)
 | 约束 | 含义与适用参数 |
 |---|---|
 | `requires nonzero(value)` | 按值整数标量／向量的每个选中分量非零，或cfn函数地址非空；支持记录字段和 swizzle；普通CPU按值拥有聚合的字段及owned包装的value沿同一规则，不表示有符号数一定为正或代码签名／寿命已经证明 |
+| `requires nonzero(input[*].field)` | 普通CPU dataset每个已初始化元素的所选整数分量非零；元素、记录中的dataset及嵌套元素显式按[*]选择，调用点消费同一实际共同Proof，见下节 |
 | `requires nonempty(resource)` | dataset／tile 或按值不可变 view 的长度至少为 1；支持普通CPU按值拥有记录的dataset字段及记录中的view字段 |
 | `requires contiguous(position)` | write／inout普通位置参数或其字段／swizzle按所选类型连续、顺序匹配且对齐；不读取载荷 |
 | `requires index(value,resource)` | 按值 u32 标量或向量的每个选中分量都可索引该实际资源；同时可知该资源非空，不表示索引互异 |
@@ -1919,15 +1920,33 @@ void run(inout dataset<Job> jobs) on compute {
 
 独占字段的重复装载现按本次内容关联；只读外部数据／原子内容的重复装载等价仍未完成。示例显式保存本次 divisor 值，条件与实参使用同一快照。不能因另一次 atomic_load 非零就认定后来的读取也非零，也不能对 atomic T 位置本身声明 nonzero。浮点、bool、整个普通记录不属于当前 nonzero 类型，记录中的整数向量字段可以使用 `nonzero(config.divisors.yx)`。
 
-路径只选择形参及其字段，不执行函数调用或数据集元素读取。`index(query.indices,table)` 支持向量各分量，`index(query.pos,query.nodes)` 可以关联按值记录里的不可变 view，或普通CPU按值拥有记录的dataset字段；`nonempty(query.nodes)` 给同一实际资源的[0]／length-1提供前提。所选字段可以嵌套，约束不复制到兄弟字段或另一份资源。只读／原子 dataset、tile 的访问模式、目标、字段类型与生命周期仍由原接口负责。index 不授予独占写入、任意散写、原子升级或块内同步，也不把完整容量当作 Count 有效前缀。
+普通字段路径选择形参及其字段；nonzero中的`[*]`选择普通CPU dataset已有的共同元素模型，不执行函数调用或运行时元素读取。`index(query.indices,table)` 支持向量各分量，`index(query.pos,query.nodes)` 可以关联按值记录里的不可变 view，或普通CPU按值拥有记录的dataset字段；`nonempty(query.nodes)` 给同一实际资源的[0]／length-1提供前提。所选字段可以嵌套，约束不复制到兄弟字段或另一份资源。只读／原子 dataset、tile 的访问模式、目标、字段类型与生命周期仍由原接口负责。index 不授予独占写入、任意散写、原子升级或块内同步，也不把完整容量当作 Count 有效前缀。
 
-所有要求都必须在调用点已经成立；数值常量、固定形状、当前范围／长度条件、既有索引能力及已声明的上层 requires 可以提供证明。函数独立检查时使用自己的接口，不依赖某个入口实际传来的数值。前提可在多层函数中转交，修改局部副本会按原赋值规则清除相应知识；requires 不会让后续的新值继续满足旧要求。类型检查不扫描输入数据、不会证明所有记录的任意业务属性，也没有新增量化条件或通用关系求解器。
+所有要求都必须在调用点已经成立；数值常量、固定形状、当前范围／长度条件、既有索引能力及已声明的上层 requires 可以提供证明。函数独立检查时使用自己的接口，不依赖某个入口实际传来的数值。前提可在多层函数中转交，修改局部副本会按原赋值规则清除相应知识；requires 不会让后续的新值继续满足旧要求。类型检查不扫描输入数据；共同元素nonzero只消费已有共同事实，任意业务属性、其他量化条件与通用关系求解器仍未实现。
 
 多个 requires 的顺序与重复项不影响签名匹配，`.h/.b` 的谓词、参数路径必须一致；语义相似但书写不同的谓词不自动视为同一签名。声明不能引用局部变量或任意表达式。普通／cooperative 函数当前不接受 ensures，prefix 约束继续只用于 计算函数；计算函数 当前也不接受这三种值约束，宿主原始输入不能被隐式假定为满足前提。
 
 普通值集合回调可以声明这些要求，但仍须在实际集合调用处证明。例如投影的 divisor 通过 `bind(project,7)` 传入时可以满足 nonzero；未知输入元素不会因为实际数据恰好非零就取得该能力。原纯值类型、统一捕获与禁止隐藏资源副作用的规则保持，requires 不绕开集合接口。
 
 非法声明／不支持的约束报 B225，调用点缺少证明报 B226；签名不一致继续报 B028，函数中使用 prefix 继续报 B192。body 内改写后失去普通索引／非零证明时，仍按原 B137／B201／B152 报错。本节实现上述明确输入约束；同长资源前提按其独立章节交接，不代表已有第一类 NonZero 类型、任意精化类型、函数后置条件、计算函数 值条件或完整语言。
+
+<a id="common-element-nonzero"></a>
+### CPU dataset共同元素的nonzero
+
+普通CPU函数可用`requires nonzero(input[*].field)`声明每个已初始化元素的所选整数分量非零。`[*]`明确选择该dataset的共同元素模型；元素本身为整数时可写`nonzero(input[*])`，记录字段／owned载荷／swizzle沿原字段规则选择。dataset在记录字段中时可写`nonzero(input.rows[*].value)`；嵌套dataset可逐层选择，如`nonzero(input[*].rows[*].value)`。每一层保留自己的元素及资源来源，不将兄弟字段或另一份dataset的事实混用。
+
+```b
+void dispose(u32 value) on cpu requires nonzero(value) {
+    if(!println(value)) { return; }
+}
+owned<u32,dispose> make(u32 index) on cpu { return own(11,dispose); }
+void consume(dataset<owned<u32,dispose>> input) on cpu
+    requires nonzero(input[*].value) {}
+```
+
+调用`consume(dataset<owned<u32,dispose>>(2,make))`时，调用方从真实生成结果的共同Proof证明前提，函数入口在原Data.elements中接收同一条件，最后静态F仍检查自己的nonzero要求。真实零值或写入后无法继续保证所有元素非零时，在实际调用处B226；没有该前提的普通consume不能隐式取得F的要求。已证明实际元素数为零时，空集合满足共同元素前提，却不提供`input[0]`访问；读取仍需独立的nonempty或index事实。只有运行时恰好为空、编译时范围没有证明时，不能借空集合跳过未成立的前提。
+
+该选择用于普通CPU dataset的按值、read或inout输入，以及相应记录字段；字段列借用按原projection和真实布局选择，函数内写入与调用写入效果照原规则撤回旧事实。write旧内容及atomic内容不成为这项稳定数值输入。普通值／字段不含`[*]`时保持原按值规则；C ABI、cfn和GPU program没有新增共同元素元数据入口。接口中的相同路径沿.h／.b及已编译对象／归档保存；选择不产生运行时扫描、判空、另一元素对象或新的合同权威。资源nonempty及值—资源index的共同元素表达仍待实现，见Issues C-021.1.6.2／.3。
 
 ## 有界并行接纳与输出前缀
 
@@ -4272,7 +4291,7 @@ F按实际下标从零递增，每个位置只接收一次真实移动结果。�
 
 显式后续元素读取与静态F都是实际借用消费者。提前改写、resize、迁移或释放其来源仍拒绝；调用F接管后，不再把同一F当作另一个未来拥有者。返回的元素地址必须来自随返回拥有树交付的资源或仍由调用方保持的真实来源；局部栈／将释放资源的地址不能逃逸。这些合同随无实现源码的对象与归档保持，不改变Frame唯一物理所有权或资源C ABI。
 
-当前整份拥有元素序列可以交接；元素仍不能按值复制。拥有元素字段借用、追加移动、尾部取出及对应通用容器操作分别归C-020.1.6.3／.4／.5；普通函数共同元素nonzero／nonempty／index输入前提的公开表达归C-021.1.6，尚未实现。静态F所需事实仍须真实成立，不以类型名称、一次局部写入或源码／链接成功代替证明；递归容器、持久view图及完整资源阶段保持各自未完成范围。
+当前整份拥有元素序列可以交接；元素仍不能按值复制。拥有元素字段借用、追加移动、尾部取出及对应通用容器操作分别归C-020.1.6.3／.4／.5；普通CPU函数的共同元素nonzero已按[显式[*]选择](#common-element-nonzero)交接；共同元素nonempty／index的公开表达仍归C-021.1.6.2／.3，尚未实现。静态F所需事实仍须真实成立，不以类型名称、一次局部写入或源码／链接成功代替证明；递归容器、持久view图及完整资源阶段保持各自未完成范围。
 
 ## CPU拥有dataset的显式变长
 

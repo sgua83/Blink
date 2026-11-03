@@ -22,7 +22,7 @@ B按真实职责推进编译器及调试／观察主体的自举与接管，并�
 
 > **项目状态：研发中，软件版本见 [VERSION](VERSION)。** 已有单机 CPU／GPU 原生执行；域编译、域运行和稳定热更新是确定的设计目标，尚未实现。设计目标与当前实现范围见[架构](Docs/Architecture.md)。
 
-普通CPU应用可直接移动、补回固定拥有数组的动态位置，并沿实际分支、for／while和返回释放仍拥有的资源。 动态拥有元素可由`dataset<T>(length,F)`静态逐项构造，完整序列移动／返回与最后元素释放沿同一拥有树；能力及字段借用／追加／取出等剩余范围见[拥有元素序列](Docs/BLanguage.md#cpu-owned-dataset-elements)。returned与write／inout的条件CPU／GPU输出位置可经普通函数、对象和归档交接，条件输入按实际使用路径交接，循环提前退出的跨函数输出位置也沿真实出口关系交接；当前对象与资源ABI见[唯一版本说明](Docs/BLanguage.md#已编译模块的资源abi)，精确范围见[语言规范](Docs/BLanguage.md#跨函数模块的条件资源输出位置)。
+普通CPU应用可直接移动、补回固定拥有数组的动态位置，并沿实际分支、for／while和返回释放仍拥有的资源。 动态拥有元素可由`dataset<T>(length,F)`静态逐项构造，完整序列移动／返回与最后元素释放沿同一拥有树；能力及字段借用／追加／取出等剩余范围见[拥有元素序列](Docs/BLanguage.md#cpu-owned-dataset-elements)。普通CPU函数可用`requires nonzero(rows[*].value)`交接已初始化元素的共同非零前提，范围见[语言规范](Docs/BLanguage.md#common-element-nonzero)。returned与write／inout的条件CPU／GPU输出位置可经普通函数、对象和归档交接，条件输入按实际使用路径交接，循环提前退出的跨函数输出位置也沿真实出口关系交接；当前对象与资源ABI见[唯一版本说明](Docs/BLanguage.md#已编译模块的资源abi)，精确范围见[语言规范](Docs/BLanguage.md#跨函数模块的条件资源输出位置)。
 
 ## 三大核心特点
 

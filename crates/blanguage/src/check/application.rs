@@ -1904,14 +1904,14 @@ fn element_types(ty:&Ty)->Vec<&Ty> {
 fn element_width(ty:&Ty)->usize {
     ty.components.len()+element_types(ty).into_iter().map(element_width).sum::<usize>()
 }
-fn model_data<'a>(model:&'a returns::Returned,path:&[usize])->Option<&'a Data> {
+pub(super) fn model_data<'a>(model:&'a returns::Returned,path:&[usize])->Option<&'a Data> {
     match model {
         returns::Returned::Dataset(data) if path.is_empty()=>Some(data),
         returns::Returned::OwnedValue(value)=>view::owned_data_at(value,path),
         _=>None,
     }
 }
-fn model_data_mut<'a>(model:&'a mut returns::Returned,path:&[usize])->Option<&'a mut Data> {
+pub(super) fn model_data_mut<'a>(model:&'a mut returns::Returned,path:&[usize])->Option<&'a mut Data> {
     match model {
         returns::Returned::Dataset(data) if path.is_empty()=>Some(data),
         returns::Returned::OwnedValue(value)=>view::owned_data_at_mut(value,path),
