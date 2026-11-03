@@ -454,7 +454,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2422`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2426`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -1266,7 +1266,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3847`。
+源码节选：`crates/blanguage/src/check.rs:3850`。
 
 ```rust
         let binding = view.binding;
@@ -1720,6 +1720,8 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 ### 12.1 顺序指令之外还需要道路
 
 对直线算式，可以从头逐项执行。对 if，需要根据条件走不同道路；对循环，需要回到先前位置；对函数 return，需要离开当前函数的展开范围。字面true／false决定的if只让实际执行分支参与原Scope写扫描与NumericEffect，不把未执行一侧的写入、break或continue带入循环数值事实。条件本身仍按原顺序求值，动态分支保留各自真实可能路径；声明扫描也不以未执行的if写需求额外迫使入口值落入可写Local。对字面false&&／true||，当前写集合排除不执行的右侧，左侧与动态右侧按原顺序交接。短路表达式两侧仍接受类型／访问检查，所以声明扫描保留其所需的位置存储；它与已有Builder的实际写分析消费同一Scope阶段身份。
+
+原比较关系与数值界也进入同一非零判断。例如while正常结束留下count<=i，再结合count>0，就能知道当前i不是零；if中先比较a>=b、再判断b>0也交接同一关系。原contradictory按真实Scalar及零／非零、上下界判断Below能否成立，整数除余按声明布局逐分量复用Value::nonzero_bytes和原Clause。只使用当前可执行路径，写入后的新值、可能回绕或缩窄、break与旧快照不能借用失效关系；未选侧的常量零除仍拒绝。不增加运行时分支或另一套求解图。
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 

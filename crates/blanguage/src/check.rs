@@ -2532,7 +2532,10 @@ impl<'a> Builder<'a> {
                         .map(IntegerDivisor::Constant)
                         .collect::<Vec<_>>(),
                 ),
-                None if b.is_nonzero() => {
+                None if b.is_nonzero() || b.constant.is_none() && {
+                    let path=self.residency_path();
+                    path.possible() && b.ty.components.iter().all(|(scalar,offset)|b.nonzero_bytes(*offset,scalar.size(),&path))
+                } => {
                     Some(b.regs.iter().copied().map(IntegerDivisor::Value).collect())
                 }
                 None => {

@@ -2080,7 +2080,7 @@ fn contradictory(facts: &Facts) -> bool {
     };
     let contains = |fact| select(fact, false) == Some(fact);
     let bounds = |id, scalar: Scalar| {
-        let lower = match select(Fact::Minimum(id, scalar, scalar.bit_mask()), true) {
+        let mut lower = match select(Fact::Minimum(id, scalar, scalar.bit_mask()), true) {
             Some(Fact::Minimum(other, actual, bound)) if (other, actual) == (id, scalar) => bound,
             _ => 0,
         };
@@ -2088,7 +2088,8 @@ fn contradictory(facts: &Facts) -> bool {
             Some(Fact::Maximum(other, actual, bound)) if (other, actual) == (id, scalar) => bound,
             _ => scalar.bit_mask(),
         };
-        (lower, upper)
+        if scalar.is_integer() && !scalar.is_signed() && contains(Fact::NonZero(id)) { lower=lower.max(1); }
+        if contains(Fact::Zero(id)) { (lower.max(scalar.order_bias()),upper.min(scalar.order_bias())) } else { (lower,upper) }
     };
     let conflict = |fact| match fact {
         Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
@@ -2122,7 +2123,10 @@ fn contradictory(facts: &Facts) -> bool {
                 })
         }
         Fact::Below(a, b, strict, scalar) => (a == b && strict)
-            || contains(Fact::Below(b, a, !strict, scalar)),
+            || contains(Fact::Below(b, a, !strict, scalar)) || {
+                let (lower,_)=bounds(a,scalar);let (_,upper)=bounds(b,scalar);
+                lower>upper || strict && lower==upper
+            },
         Fact::Equal(..) => false,
     };
     if roots.is_empty() { facts.iter().copied().any(conflict) }
