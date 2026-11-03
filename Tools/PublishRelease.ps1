@@ -159,8 +159,9 @@ try {
         Write-Output "WORKING TREE $source VERSION $version (not a formal release)"
     }
     $package = Join-Path $dist 'package'
+    $books = Join-Path $dist 'books'
     $staging = @($package)
-    if (-not $BuildOnly) { $staging += $source }
+    if (-not $BuildOnly) { $staging += @($source, $books) }
     foreach ($directory in $staging) {
         if (Test-Path -LiteralPath $directory) {
             $resolved = [IO.Path]::GetFullPath($directory)
@@ -172,7 +173,8 @@ try {
         [IO.Directory]::CreateDirectory($directory) | Out-Null
     }
     if (-not $BuildOnly) {
-    $inputs = @('Cargo.toml', 'Cargo.lock', 'VERSION', 'LICENSE', 'crates', 'library')
+    $inputs = @('Cargo.toml', 'Cargo.lock', 'VERSION', 'LICENSE', 'crates', 'library',
+        'Tools/BuildBooks.ps1', 'Tools/Books.css', 'sample/*.md', 'sample/figures')
     $configuration = Native git @('--git-dir', $mirror, 'ls-tree', '--name-only', $commit, '.cargo', 'rust-toolchain', 'rust-toolchain.toml')
     $inputs += @($configuration -split "`n" | Where-Object { $_ })
     Native git (@('--git-dir', $mirror, 'archive', '--format=zip', '-o', $sourceZip, $commit) + $inputs) | Out-Null
@@ -214,25 +216,32 @@ try {
     Write-Output "BUILT $archive P4 $change VERSION $version"
     if ($BuildOnly) { return }
 
+    $bookPdfs = @(& (Join-Path $source 'Tools/BuildBooks.ps1') -SourceRoot $source -GitCommit $commit -OutputDirectory $books)
+    $bookArchive = Join-Path $dist 'Blink-Books.zip'
+    if (Test-Path -LiteralPath $bookArchive) { Remove-Item -LiteralPath $bookArchive }
+    Compress-Archive -LiteralPath @($bookPdfs.FullName) -DestinationPath $bookArchive -CompressionLevel Optimal
+    Write-Output "BOOKS $bookArchive P4 $change VERSION $version"
+
     $existing = @($releases | Where-Object { $_.tag_name -eq $tag })
     if ($existing.Count -gt 0) {
         if (-not $existing[0].draft) { throw "Release $tag already exists." }
         Invoke-RestMethod -Method Delete -Uri "$api/releases/$($existing[0].id)" -Headers $headers | Out-Null
     }
-    $body = "P4-Change: $change`nGit-Commit: $commit`n`nWindows x64原生自解压安装EXE，双击安装或由管理员入口执行--quiet。自动配置系统PATH，安装到%ProgramFiles%/Blink，只保留当前版。包内为Release工具与源码SDK；运行框架编译仍需要Rust MSVC及Windows构建工具，GPU使用系统Vulkan驱动。当前能力与限制见本提交的Docs/BLanguage.md。"
+    $body = "P4-Change: $change`nGit-Commit: $commit`n`nWindows x64原生自解压安装EXE，双击安装或由管理员入口执行--quiet。自动配置系统PATH，安装到%ProgramFiles%/Blink，只保留当前版。包内为Release工具与源码SDK；运行框架编译仍需要Rust MSVC及Windows构建工具，GPU使用系统Vulkan驱动。当前能力与限制见本提交的Docs/BLanguage.md。另附Blink-Books.zip，包含同次已提交书稿生成的四本中文书籍标准版与手机版PDF。"
     $draft = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body (
         @{tag_name=$tag;target_commitish=$commit;name="Blink $version";body=$body;draft=$true;prerelease=$false} | ConvertTo-Json)
     $upload = ($draft.upload_url -split '\{')[0]
-    foreach ($asset in @($archive)) {
+    foreach ($asset in @($archive, $bookArchive)) {
         $name = [Uri]::EscapeDataString([IO.Path]::GetFileName($asset))
         Invoke-RestMethod -Method Post -Uri "${upload}?name=$name" -Headers $headers -ContentType 'application/octet-stream' -InFile $asset | Out-Null
     }
     $release = Invoke-RestMethod -Method Patch -Uri "$api/releases/$($draft.id)" -Headers $headers -ContentType 'application/json' -Body '{"draft":false,"make_latest":"true"}'
     Write-Output "PUBLISHED $($release.html_url) P4 $change VERSION $version"
     $headers.Clear()
-    foreach ($directory in @($source, $package)) { Remove-Item -LiteralPath $directory -Recurse }
+    foreach ($directory in @($source, $package, $books)) { Remove-Item -LiteralPath $directory -Recurse }
     Remove-Item -LiteralPath $sourceZip
     Remove-Item -LiteralPath $archive
+    Remove-Item -LiteralPath $bookArchive
     InstallNodes $version $dist
 } finally {
     if ($transcript) { Stop-Transcript | Out-Null }

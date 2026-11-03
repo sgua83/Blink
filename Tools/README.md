@@ -70,7 +70,7 @@ python ./Tools/PublishBooksWiki.py
 pwsh -NoProfile -File ./Tools/PublishRelease.ps1 -P4Client <本机实际client>
 ```
 
-脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存；GitHub写凭据只使用中央用户原有凭据管理器。当前Windows x64资产为target/dist/Blink-Setup-windows-x64.exe，是包含正式工具与源码SDK的原生自解压安装程序。上传完整资产后公开发行，版本不二次递增。失败日志为target/dist/release.log；成功清理打包临时源码、package目录及本机分发EXE，不清理可复用target。
+脚本从P4 client Root和Cargo metadata读取实际源码根／target，复用既有target缓存；GitHub写凭据只使用中央用户原有凭据管理器。当前Windows x64软件资产为target/dist/Blink-Setup-windows-x64.exe。周发行另由同一固定Git快照的四本MD、sample/figures、Tools/BuildBooks.ps1及Books.css生成标准版和手机版PDF，八份PDF压为target/dist/Blink-Books.zip；书籍不装入运行SDK。生成使用原PowerShell 7的Markdown转换、Windows中文／代码字体及Edge无窗口原生打印，不依赖临时开发脚本、Python包或已有PDF。版式／浏览器临时文件归本轮target/dist/books，由原发行所有者在最后消费者结束后清理；ZIP只收八份实际PDF。两个资产全部上传后才公开同一发行，VERSION不再次递增。生成或上传失败如实结束并保留定位材料，不拿旧PDF替代。成功清理临时源码、package、books、源码ZIP与本机发行资产，不清理可复用target。日志仍为target/dist/release.log。
 
 普通研发打包用-BuildOnly：构建当前工作区，release.json的P4／Git身份为空，不上传。版本与平台资产分开，同一版本可以有多个架构／平台包；当前只交付Windows x64，不能把资产命名写成其他平台已支持。
 
