@@ -1691,7 +1691,7 @@ impl Builder<'_> {
         };
         let definition = Arc::new(Definition {
             function,
-            syntax_origin: crate::frontend::DefinitionSyntax::Generated,
+            syntax_origin: crate::frontend::DefinitionSyntax::Generated(self.source_at(statement.span, SourceSyntax::Statement)),
             execution: crate::execution::Requirement::Domain,
             source: self.definition.source.clone(),
             module: self.definition.module.clone(),

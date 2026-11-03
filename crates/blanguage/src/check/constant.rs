@@ -297,7 +297,7 @@ fn integer_expression(world:&World,key:&str,source:&Source,module:&str,imports:&
     }
     let result=(|| {
         let definition=Arc::new(Definition {
-            syntax_origin:crate::frontend::DefinitionSyntax::Generated,
+            syntax_origin:crate::frontend::DefinitionSyntax::Generated(None),
             source:source.clone(),module:module.into(),imports:imports.to_vec(),public:false,compiled:None,
             execution:crate::execution::Requirement::Invocation,
             function:Function {name:"<integer-expression>".into(),types:Vec::new(),values:Vec::new(),params:Vec::new(),

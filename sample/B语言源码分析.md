@@ -889,7 +889,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:116`。
+源码节选：`crates/blanguage/src/frontend.rs:125`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -913,7 +913,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:485`。
+源码节选：`crates/blanguage/src/frontend.rs:494`。
 
 ```rust
     if let Some(name) = import
@@ -1266,7 +1266,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3850`。
+源码节选：`crates/blanguage/src/check.rs:3847`。
 
 ```rust
         let binding = view.binding;

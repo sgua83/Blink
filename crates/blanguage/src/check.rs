@@ -514,16 +514,9 @@ fn expand_program(
     stack.pop();
     Ok(())
 }
-fn collection_source(instance: &crate::generics::Instance, span: Span) -> Option<Arc<SourceSite>> {
-    Some(Arc::new(SourceSite {
-        origin: Arc::new(instance.definition.source_origin()?),
-        context: Arc::new(SourceContext {
-            instance: Some(Arc::from(instance.name.as_str())),
-            inlined_at: Box::default(),
-        }),
-        span,
-        syntax: SourceSyntax::Expression,
-    }))
+fn operation_source(instance: &crate::generics::Instance, span: Span, syntax: SourceSyntax) -> Option<Arc<SourceSite>> {
+    let (origin, context) = instance.definition.syntax_context(Some(&instance.name));
+    origin.map(|origin| Arc::new(SourceSite { origin, context, span, syntax }))
 }
 fn expand_stages(
     world: &World,
@@ -735,7 +728,7 @@ fn expand_stages(
                     prefix,
                     selection,
                     operation: Operation::Map,
-                    operation_source: None,
+                    operation_source: operation_source(instance, statement.span, SourceSyntax::Statement),
                     tiles,
                     boundary_before: std::mem::take(boundary),
                     registers: b.registers,
@@ -769,7 +762,7 @@ fn expand_stages(
             }) if name == "stable_sort_by_key"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                sort::compile(program, env, args, d, statement.span, facts, collection_source(instance, *call_span))?;
+                sort::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression))?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
@@ -779,7 +772,7 @@ fn expand_stages(
             }) if name == "compact"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                compact::compile(program, env, args, d, statement.span, facts, collection_source(instance, *call_span))?;
+                compact::compile(program, env, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression))?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
@@ -801,7 +794,7 @@ fn expand_stages(
                     if let Some(operator) = CollectiveOperator::from_reduction_source(name)
                         .filter(|_| explicit.is_none())
                     {
-                        reduce::compile(program, env, operator, args, d, statement.span, facts, collection_source(instance, *call_span))?;
+                        reduce::compile(program, env, operator, args, d, statement.span, facts, operation_source(instance, *call_span, SourceSyntax::Expression))?;
                         *boundary = false;
                         break 'call;
                     }
@@ -818,7 +811,7 @@ fn expand_stages(
                             facts,
                             name.ends_with("_map"),
                             kind,
-                            collection_source(instance, *call_span),
+                            operation_source(instance, *call_span, SourceSyntax::Expression),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -835,7 +828,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
-                            collection_source(instance, *call_span),
+                            operation_source(instance, *call_span, SourceSyntax::Expression),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -852,7 +845,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
-                            collection_source(instance, *call_span),
+                            operation_source(instance, *call_span, SourceSyntax::Expression),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -869,7 +862,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
-                            collection_source(instance, *call_span),
+                            operation_source(instance, *call_span, SourceSyntax::Expression),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -1748,6 +1741,7 @@ impl<'a> Builder<'a> {
             definition.function.body.as_ref().unwrap(),
             &mut mutable_names,
         )?;
+        let (source_definition, source_context) = definition.syntax_context(source_instance);
         Ok(Self {
             residency: residency::Inputs::default(),
             view_model: view_contracts::Function::default(),
@@ -1763,8 +1757,8 @@ impl<'a> Builder<'a> {
             registers: Vec::new(),
             locals: BTreeMap::new(),
             code: Vec::new(),
-            source_definition: definition.source_origin().map(Arc::new),
-            source_context: Arc::new(SourceContext { instance: source_instance.map(Arc::from), inlined_at: Box::new([]) }),
+            source_definition,
+            source_context,
             source_site: None,
             global_index: usize::MAX,
             reads: BTreeSet::new(),
@@ -1796,10 +1790,13 @@ impl<'a> Builder<'a> {
     fn emit(&mut self, kind: InstKind) {
         self.code.push(Inst { kind, source_site: self.source_site.clone() });
     }
-    fn at_source<T>(&mut self, span: Span, syntax: SourceSyntax, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        let site = self.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
+    fn source_at(&self, span: Span, syntax: SourceSyntax) -> Option<Arc<SourceSite>> {
+        self.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
             origin: origin.clone(), context: self.source_context.clone(), span, syntax,
-        }));
+        }))
+    }
+    fn at_source<T>(&mut self, span: Span, syntax: SourceSyntax, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let site = self.source_at(span, syntax);
         let previous = std::mem::replace(&mut self.source_site, site);
         let result = work(self);
         self.source_site = previous;

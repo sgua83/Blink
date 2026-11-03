@@ -245,7 +245,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-3-1"></a>
 
-**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录原Expr.span、定义及具体实例，当前普通调用Span通常覆盖调用标识符；不扩大为未取得的完整参数表达式，也不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel／合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。compiler的Stage::operation_source()借用同一可选SourceSite，stage_ir的operation_source交接同一source_syntax或null，关闭compiler时不输出该字段；原JSON和SDK无需另一命令／对象。当前已实现这一原调用交接，值核入口见下项，其余生成关系仍按原缺口推进；[闭合范围](FixedIssues.md#c-021-7-9-7-2-3-1)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
+**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录原Expr.span、定义及具体实例，当前普通调用Span通常覆盖调用标识符；不扩大为未取得的完整参数表达式，也不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel沿下述原语句取得来源，其余合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。compiler的Stage::operation_source()借用同一可选SourceSite，stage_ir的operation_source交接同一source_syntax或null，关闭compiler时不输出该字段；原JSON和SDK无需另一命令／对象。当前已实现这一原调用交接，值核入口见下项，其余生成关系仍按原缺口推进；[闭合范围](FixedIssues.md#c-021-7-9-7-2-3-1)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
 
 <a id="tool-7-2-3-2"></a>
 
@@ -257,11 +257,11 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-1"></a>
 
-**真实源码定义边界。** 输入为原frontend解析／已编译模块接口装入及两个原合成Definition构造，唯一所有者是同一个Definition；其不可变语法来源区别原Source、CompiledInterface及Generated，不把用于ABI的compiled字段当成原源码身份。SourceOrigin只交接真实解析定义与其原实现体，不按内部函数名／路径猜测，不用手造Function.span和body伪造用户函数。原FunctionBody／Program／Inst及值核查询消费同一事实；无真实定义时明确无SourceOrigin，实际实例和后续真实内联定义分别保留，不据此减少合法程序。语法标记随原Definition克隆，原Source文本归原拥有者，最后消费者后释放；没有另一来源表、运行状态或图。派生原语法锚点及具体生成原因仍由以下职责交接，本项不以null冒充完整来源。当前DefinitionSyntax已由原装入和合成入口交接，source_origin仅为Source且有原实现体时形成原SourceOrigin；应用parallel提取与整数表达式上下文明示Generated，已编译模块装入明示CompiledInterface，接口常量不因compiled运行绑定为空而获得源码身份。原getter及JSON形状保持，null仅说明没有真实原函数定义材料，原语法锚点和生成分类继续沿.4.2至.4.6。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-1)，精确边界见[规范](BLanguage.md#函数与程序ir的原定义来源)。
+**真实源码定义边界。** 输入为原frontend解析／已编译模块接口装入及两个原合成Definition构造，唯一所有者是同一个Definition；其不可变语法来源区别原Source、CompiledInterface及Generated，不把用于ABI的compiled字段当成原源码身份。SourceOrigin只交接真实解析定义与其原实现体，不按内部函数名／路径猜测，不用手造Function.span和body伪造用户函数。原FunctionBody／Program／Inst及值核查询消费同一事实；无真实定义时明确无SourceOrigin，实际实例和后续真实内联定义分别保留，不据此减少合法程序。语法标记随原Definition克隆，原Source文本归原拥有者，最后消费者后释放；没有另一来源表、运行状态或图。派生原语法锚点及具体生成原因仍由以下职责交接，本项不以null冒充完整来源。当前DefinitionSyntax已由原装入和合成入口交接，source_origin仅为Source且有原实现体时形成原SourceOrigin；应用parallel提取与整数表达式上下文明示Generated，已编译模块装入明示CompiledInterface，接口常量不因compiled运行绑定为空而获得源码身份。原getter及JSON形状保持，null仅说明没有真实原函数定义材料，parallel原语法锚点见下项，域展开和生成分类继续沿.4.3至.4.6。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-1)，精确边界见[规范](BLanguage.md#函数与程序ir的原定义来源)。
 
 <a id="tool-7-2-4-2"></a>
 
-**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后当前原Stage单个保留字段不代表全部原parallel，多对多／消除来源仍由.7.3.2交接，不冻结优化或为材料保活指令。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-2)。
+**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。原DefinitionSyntax::Generated可持有提取前的不可变SourceSite；生成定义自己的source_origin仍为空，真实语句的Builder消费同一原定义／实例上下文。Stage复用operation_source，parallel为Statement，原集合调用仍为Expression；没有另一来源表。材料在原IR拥有，查询借用，最后消费者后释放；融合后当前原Stage单个保留字段不代表全部原parallel，多对多／消除来源仍由.7.3.2交接，不冻结优化或为材料保活指令。当前两条原生产路径已实现；原Stmt.span通常覆盖parallel关键字，不扩大为整条语句。生成程序名仍归原Program／FunctionBody，语法来源的实例仍为原真实调用者；生成Index／Frame／参数操作及域调用路径分别沿下列未完成叶项。[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-2)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
 
 <a id="tool-7-2-4-3"></a>
 

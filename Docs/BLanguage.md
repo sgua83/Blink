@@ -233,7 +233,7 @@ SDK可直接对原编译返回的Program、Application、Module调用ir_json，�
 
 compiler功能的`ir::SourceOrigin`保存原Definition所交付的实际Source快照、函数Span、模块和原函数名。`FunctionBody.source_origin`为可选值，`Program::source_origin()`返回可选只读引用；SourceOrigin的source／span／module／definition getter借用原事实，ir_json返回独立JSON。现有FunctionBody／Program的ir_json和bc ir的普通模块、应用、具体并行入口及函数选择沿source_origin字段交接同一值，不重编已取得的IR或重新读取源文件。
 
-值的kind为source_definition，module和definition分别保持原模块、原函数名，大小写不折叠；具体泛型类型／静态值实例名继续位于所属function_ir.name或program_ir.interface.program。不同实例可以共享同一原定义，原函数／程序范围不等于每条IR、内联调用或机器指令范围。原Definition按实际生产者区分Source、CompiledInterface和Generated；仅真实源码定义且持有原实现体时形成SourceOrigin。应用parallel提取函数与类型整数式的合成上下文、已编译接口及没有原实现的外部边界为null，不凭body存在、ABI用compiled字段为空或内部名字猜成源码函数；接口常量和手造Return／Function同样不能伪造原定义。未返回的const求值或导入合同不伪造函数体和实现来源。源定义和当前已有IR分别说明，不将原声明头当作外部实现。合成上下文中的实际实例及后续真实内联目标分别保留；缺少调用者定义时原inline_site保留已知实例和字节范围，无法解释的行列为null，不丢弃后续真实定义。空source_origin不表示没有原语法或已完成派生锚点／生成原因，完整交接继续见Issues C-021.7.9.7.2.4.2至.6。
+值的kind为source_definition，module和definition分别保持原模块、原函数名，大小写不折叠；具体泛型类型／静态值实例名继续位于所属function_ir.name或program_ir.interface.program。不同实例可以共享同一原定义，原函数／程序范围不等于每条IR、内联调用或机器指令范围。原Definition按实际生产者区分Source、CompiledInterface和Generated；仅真实源码定义且持有原实现体时形成SourceOrigin。应用parallel提取函数与类型整数式的合成上下文、已编译接口及没有原实现的外部边界为null，不凭body存在、ABI用compiled字段为空或内部名字猜成源码函数；接口常量和手造Return／Function同样不能伪造原定义。未返回的const求值或导入合同不伪造函数体和实现来源。源定义和当前已有IR分别说明，不将原声明头当作外部实现。合成上下文中的实际实例及后续真实内联目标分别保留；缺少调用者定义时原inline_site保留已知实例和字节范围，无法解释的行列为null，不丢弃后续真实定义。空source_origin不表示没有原语法；parallel提取可沿不可变SourceSite锚点交接原语句定义与实际实例，生成函数自身仍不成为原源码函数。域展开与具体生成原因继续见Issues C-021.7.9.7.2.4.3至.6。
 
 source_path保留原Source.path的可表示UTF-8字符串，不可表示时为null；Windows的path_utf16保留完整原UTF-16单元，Unix路径以path_bytes保留原字节，不作有损替换。source_sha256是原装入UTF-8文本全部字节的SHA256，source_bytes为实际长度；摘要仅标识本次源快照，不证明当前磁盘内容、机器映像或执行授权。start_byte／end_byte为原函数声明／定义的UTF-8字节半开区间，span_unit=utf8_byte、span_range=half_open；start／end各含line和column，position_base=1，column_unit=unicode_scalar。行按LF划分，CRLF计一次换行，end是排他末端的位置，不是最后一个字符的位置。
 
@@ -286,7 +286,7 @@ Builder在实际语句、表达式、返回值表达式和位置处理期间交�
 
 `SourceSite::ir_json()`的kind为source_syntax，syntax为statement／expression／place，definition沿原source_definition输出同一原定义及快照；其余start_byte／end_byte、span_unit／span_range、start／end、column_unit和position_base与原定义查询采用相同单位，但范围属于本次语法上下文。现有compiler角色的每个IR操作JSON增加source_site，对没有材料的操作输出null；关闭compiler时不输出该字段。只在显式查询进行摘要、行列和JSON计算，已经取得的IR不重读后续磁盘文件。
 
-语法位置、实际实例／内联展开点、集合调用及内部值核入口已交接；域展开与生成阶段分类继续见Issues C-021.7.9.7.2.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
+语法位置、实际实例／内联展开点、parallel阶段、集合调用及内部值核入口已交接；域展开与生成阶段分类继续见Issues C-021.7.9.7.2.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
 
 #### 实际实例与内联展开点
 
@@ -304,7 +304,7 @@ compiler功能的`SourceSite::instance()`借用实际`generics::Instance.name`�
 
 compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归同一个Stage所持`Operation`所有；`stage_ir`增加operation_source，按原source_syntax编码原定义快照、具体实例、语法类别及范围，材料缺失为null。内置／自定义归约、普通／分段扫描、分段归约、compact和stable_sort_by_key的原生产者交接真实调用Expr.span和当前实际Instance，类别为expression。当前解析器的调用Span通常为调用标识符；字节半开范围及Unicode标量行列据此输出，不推测扩大为完整参数列表，不改原诊断所消费的语句范围。两个相同目标的调用仍有各自原位置，根Program名不代替实际集合所属实例。
 
-集合即使没有普通Inst，也能取得自身来源；project／identity／combine的ValueCode入口、bind静态引用及捕获关系另沿下述entry_origin交接，不能用此集合调用或内部一条指令冒充这些入口。当前不把域函数展开伪装成普通内联点；inlined_at为空仅表示没有已交接的普通函数内联前缀，域调用链继续归.2.4。parallel及clear_prefix／普通CPU发射所用合成Map当前没有本项集合来源，为null，不从相邻集合或原函数根补造。
+集合即使没有普通Inst，也能取得自身来源；project／identity／combine的ValueCode入口、bind静态引用及捕获关系另沿下述entry_origin交接，不能用此集合调用或内部一条指令冒充这些入口。当前不把域函数展开伪装成普通内联点；inlined_at为空仅表示没有已交接的普通函数内联前缀，域调用链继续归.2.4。parallel的原生产者也沿同一operation_source交接原Stmt.span及实际Instance，类别为statement；当前Stmt.span通常覆盖parallel关键字，不扩大为完整语句。原整域源码与CPU应用提取路径均保留原位置；提取前的原Builder将不可变SourceSite交给同一Generated定义，后续阶段及真实克隆语句沿锚点共享原定义、原调用方实例和SourceContext。生成Program／FunctionBody的source_origin仍为null，原生成执行名称不写进语法来源实例，不伪造源码函数；其中真实内联仍记录真实调用者及目标。原clear_prefix及普通CPU发射所用合成Map没有本项语句／集合材料时仍为null，生成Index／Frame／参数操作及域展开路径仍由.2.4.3至.6交接。融合后当前Stage的单个operation_source只表示原保留阶段的来源，不是所有被融合parallel的完整来源；多对多、重写和消除继续归.7.3.2，不改变融合或保活指令。
 
 原Stage克隆共享同一不可变来源，Source文本随原快照共享，原IR消费者结束后释放；查询返回借用或独立字符串，不保留AST／World、注册表、运行图或额外状态。后续磁盘源码改变或移走不改变已取得材料。compiler专用Stage有内部来源字段，Rust消费者沿编译返回值及原Stage克隆取得，不依赖旧结构字面量／布局。关闭compiler时该字段及operation_source JSON均不存在；原ExecutionStage、BLRI必要执行编码、C ABI、访问、数值、调度和优化不因本项改变。优化多对多关系及CPU／GPU机器映射继续沿原叶实施。
 

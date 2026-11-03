@@ -115,7 +115,7 @@ impl SourceSite {
 }
 
 impl super::Stage {
-    /// Original collective call, independent of its internal value kernels or generated code.
+    /// Original collective call or parallel statement, independent of generated code or later fusion.
     pub fn operation_source(&self) -> Option<&SourceSite> { self.operation_source.as_deref() }
 }
 

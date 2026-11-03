@@ -6,8 +6,8 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Copy)]
-pub(crate) enum DefinitionSyntax { Source, CompiledInterface, Generated }
+#[derive(Clone)]
+pub(crate) enum DefinitionSyntax { Source, CompiledInterface, Generated(Option<Arc<ir::SourceSite>>) }
 
 #[derive(Clone)]
 pub(crate) struct Definition {
@@ -22,12 +22,21 @@ pub(crate) struct Definition {
 }
 impl Definition {
     pub(crate) fn source_origin(&self) -> Option<ir::SourceOrigin> {
-        match (self.syntax_origin, &self.function.body) {
+        match (&self.syntax_origin, &self.function.body) {
             (DefinitionSyntax::Source, Some(_)) => Some(ir::SourceOrigin {
                 source: self.source.clone(), span: self.function.span,
                 module: self.module.clone(), definition: self.function.name.clone(),
             }),
             _ => None,
+        }
+    }
+    pub(crate) fn syntax_context(&self, instance: Option<&str>) -> (Option<Arc<ir::SourceOrigin>>, Arc<ir::SourceContext>) {
+        match &self.syntax_origin {
+            DefinitionSyntax::Generated(Some(site)) => (Some(site.origin.clone()), site.context.clone()),
+            DefinitionSyntax::Source | DefinitionSyntax::CompiledInterface | DefinitionSyntax::Generated(None) => (
+                self.source_origin().map(Arc::new),
+                Arc::new(ir::SourceContext { instance: instance.map(Arc::from), inlined_at: Box::default() }),
+            ),
         }
     }
 }
