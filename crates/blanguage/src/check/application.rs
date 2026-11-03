@@ -101,7 +101,7 @@ impl DataReference {
     }
 }
 
-fn pointer_type() -> Ty {
+pub(super) fn pointer_type() -> Ty {
     let mut ty = Ty::vector(Scalar::U32, 2);
     ty.name = "__blink_frame".into();
     ty
@@ -175,7 +175,7 @@ pub(crate) fn compile_application(
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     let mut builder = Builder::new(world, d, &context, 0)?;
     builder.application = Some(Context::default());

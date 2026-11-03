@@ -1657,6 +1657,7 @@ pub struct Program {
     pub(crate) uniform_bytes: u32,
     pub(crate) source_stages: usize,
     pub(crate) stages: Vec<Stage>,
+    pub(crate) imports: BTreeMap<String, Vec<u8>>,
     pub(crate) prefix_requirements: Vec<PrefixRelation>,
     pub(crate) prefix_guarantees: Vec<PrefixRelation>,
     pub(crate) length_requirements: Vec<(usize, usize)>,

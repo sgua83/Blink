@@ -1143,7 +1143,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3789`。
+源码节选：`crates/blanguage/src/check.rs:3791`。
 
 ```rust
         let binding = view.binding;
@@ -2588,7 +2588,7 @@ CPU 使用容量比较与原子比较交换等原生操作；GPU 将实际活动
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
     let (header, binding, source, functions) = generate(program, &prefix, worker)?;
-    let imports = std::collections::BTreeMap::new();
+    let imports = program.imports.clone();
     let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
     let symbols = positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
         name, section, value, contract: Vec::new(), function: true,
@@ -2613,7 +2613,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
 }
 ```
 
-编译阶段一次生成CPU机器码、SPIR-V和执行布局。CPU主范围及集合入口经原module_code形成COFF代码、符号、重定位及展开节，框架和C ABI包装编成附属静态库；包装使用已链接CPU入口与原执行布局，GPU仍装入原SPIR-V映像。链接器消费两者，把原DLL／函数身份绑定到PE导入表；不调用Cargo／rustc，不重读B实现，也不在创建算法程序时再复制CPU机器码。普通CPU已编译模块函数进入算法范围IR仍是后续缺口，本节代码归属调整不代表该调用能力已完成。
+编译阶段一次生成CPU机器码、SPIR-V和执行布局。CPU主范围及集合入口经原module_code形成COFF代码、符号、重定位及展开节，框架和C ABI包装编成附属静态库；包装使用已链接CPU入口与原执行布局，GPU仍装入原SPIR-V映像。链接器消费两者，把原DLL／函数身份绑定到PE导入表；不调用Cargo／rustc，不重读B实现，也不在创建算法程序时再复制CPU机器码。CPU范围和自定义归约／扫描已可调用无需Frame的普通已编译CPU函数。编译器直接消费原闭合合同，值、聚合返回和位置参数使用真实ABI，范围与集合的导入交给同一Program和算法COFF；链接器按真实符号及合同选择对象／归档成员，把原COFF直接交给原生DLL链接。需要Frame或dataset句柄的普通调用仍是独立缺口，GPU不能调用这些普通CPU符号。
 
 对象的符号选择与重定位绑定由bootstrap/bindings.h／.b负责。Rust借用原Object的名字、节、定义与引用，并提供按真实条目上界分配的存储；B在同一个节点区维护名字和DLL／名字两棵有序树，产生唯一的本轮符号目录及重定位索引。定义保留原顺序，重复名字引用最后定义；未解析名字按首次出现加入，DLL导入按UTF-8字节确定排序。COMDAT关联和辅助行参与真实行号，原始名字不复制。
 
@@ -2911,7 +2911,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
 }
 ```
 
-函数地址不执行代码，也不持有模块／状态的所有权。普通B函数通过原内部参数使用同一Frame，finalize从真实操作数及普通调用传播Frame需求，删除无需的内部首参。C入口必须在整个实际调用闭包中无需Frame，直接或间接分配B资源、发起CPU／GPU程序仍报B263；普通参数不能自动成为活动Frame。源语言不公开Frame身份值，也没有取得当前Frame的内建入口，根运行库资源C ABI和内部调用则保持原职责。代码、外部状态和真实资源继续由其所有者保持至注销及最后一次回调，签名和非零检查不证明这些寿命。资源型可保留回调及动态热卸载仍有独立缺口，不能由无Frame的静态C入口推出全部能力，也不为此增加第二个Frame、运行时登记或宿主转发。
+函数地址不执行代码，也不持有模块／状态的所有权。本地源码普通B函数暂存内部Frame参数，finalize从真实操作数及普通调用传播需求并删除无需的首参；已编译导入直接采用原Contract.frame的闭合ABI，不制造Frame或误删第一个真实参数。C入口必须在整个实际调用闭包中无需Frame，直接或间接分配B资源、发起CPU／GPU程序仍报B263；普通参数不能自动成为活动Frame。源语言不公开Frame身份值，也没有取得当前Frame的内建入口，根运行库资源C ABI和内部调用则保持原职责。代码、外部状态和真实资源继续由其所有者保持至注销及最后一次回调，签名和非零检查不证明这些寿命。资源型可保留回调及动态热卸载仍有独立缺口，不能由无Frame的静态C入口推出全部能力，也不为此增加第二个Frame、运行时登记或宿主转发。
 
 **自己走一遍。** 为什么生成头文件比手写一个“看起来一样”的结构更可靠？它取自同一编译布局，避免 bool 宽度、向量对齐和字段偏移在两个工程里各自猜测。
 

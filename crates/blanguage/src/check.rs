@@ -442,7 +442,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     program.length_requirements = contracts::root_lengths(&env, d)?;
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -714,6 +714,7 @@ fn expand_stages(
                     b.reads.insert(selection.binding);
                     b.cross_access.insert(selection.binding);
                 }
+                let imports = std::mem::take(&mut b.functions).into_imports();
                 let stage = Stage {
                     domain: *domain,
                     prefix,
@@ -732,6 +733,7 @@ fn expand_stages(
                 for relation in appended {
                     facts.grant(relation);
                 }
+                program.imports.extend(imports);
                 program.stages.push(stage);
             }
             StmtKind::Expr(Expr {
@@ -1358,7 +1360,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     Ok(Box::new(program))
 }

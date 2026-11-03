@@ -268,7 +268,7 @@ impl crate::Compiler {
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
     let (header, binding, source, functions) = generate(program, &prefix, worker)?;
-    let imports = std::collections::BTreeMap::new();
+    let imports = program.imports.clone();
     let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
     let symbols = positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
         name, section, value, contract: Vec::new(), function: true,

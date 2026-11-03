@@ -81,7 +81,7 @@ Program {
             source_stages: 0,
             stages: Vec::new(),
             prefix_requirements: Vec::new(),
-            prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
+            prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
         }
 }
 fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>)> {

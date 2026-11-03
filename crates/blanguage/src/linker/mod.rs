@@ -32,8 +32,8 @@ fn read_inputs(inputs: &[impl AsRef<Path>]) -> Result<(Vec<Object>, Vec<crate::o
 }
 // 符号与节的存活只属于本次原生链接；展开节沿编译产物的真实关联跟随代码。
 fn define(object: &Object, index: usize, defined: &mut BTreeMap<String, (usize, usize)>) -> Result<()> {
-    for symbol in &object.symbols {
-        if defined.insert(symbol.name.clone(), (index, symbol.section)).is_some() {
+    for (symbol_index, symbol) in object.symbols.iter().enumerate() {
+        if defined.insert(symbol.name.clone(), (index, symbol_index)).is_some() {
             return Err(format!("重复定义模块符号 {}", symbol.name).into());
         }
     }
@@ -59,10 +59,18 @@ fn include(objects: &[Object], selected: &mut [Option<Vec<bool>>], pending: &mut
 fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) -> Result<Vec<Object>> {
     let mut defined = BTreeMap::new();
     for (index, object) in objects.iter().enumerate() { define(object, index, &mut defined)?; }
-    if matches!(objects[0].kind, Kind::Library { .. }) { return Ok(objects); }
+    let library = matches!(objects[0].kind, Kind::Library { .. });
     let mut selected = objects.iter().map(|_| None).collect::<Vec<_>>();
     let mut pending = VecDeque::new();
-    include(&objects, &mut selected, &mut pending, 0, 0);
+    if library {
+        // The original Rust wrapper references all of this algorithm object's native entries.
+        // GPU-only libraries have no CPU entries; their actual archive remains the root.
+        let count = objects[0].sections.len();
+        selected[0] = Some(vec![true; count]);
+        pending.extend((0..count).map(|section| (0, section)));
+    } else {
+        include(&objects, &mut selected, &mut pending, 0, 0);
+    }
     while let Some((object, section)) = pending.pop_front() {
         for index in 0..objects[object].sections[section].associated.len() {
             let associated = objects[object].sections[section].associated[index];
@@ -73,19 +81,25 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
                 Target::Section(section, _) => (object, *section),
                 Target::Import(_) => continue,
                 Target::Symbol(name) => {
-                    if let Some(&target) = defined.get(name) { target } else {
+                    let name = name.clone();
+                    let target = if let Some(&target) = defined.get(&name) { target } else {
                         let mut provider = None;
                         for library in &mut libraries {
-                            if let Some(object) = library.extract(name)? { provider = Some(object); break; }
+                            if let Some(object) = library.extract(&name)? { provider = Some(object); break; }
                         }
-                        let Some(provider) = provider else { continue; };
+                        let provider = provider.ok_or_else(|| format!("未定义模块符号 {name}"))?;
                         let next = objects.len();
                         define(&provider, next, &mut defined)?;
-                        let target = defined[name];
+                        let target = defined[&name];
                         objects.push(provider);
                         selected.push(None);
                         target
+                    };
+                    let actual = &objects[target.0].symbols[target.1];
+                    if &actual.contract != &objects[object].imports[&name] {
+                        return Err(format!("模块接口不匹配 {name}；调用方与定义须使用相同的类型、布局、访问及函数事实").into());
                     }
+                    (target.0, actual.section)
                 }
             };
             include(&objects, &mut selected, &mut pending, target.0, target.1);
@@ -132,43 +146,33 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(vec![object], Vec::new(), path)
 }
-fn prepare(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>) -> Result<(Object, Vec<crate::object::Archive>)> {
-    let root = if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
-        0
-    } else {
-        let entries = objects.iter().enumerate()
-            .filter(|(_, object)| matches!(object.kind, Kind::Application { .. }))
-            .map(|(index, _)| index).collect::<Vec<_>>();
-        if entries.len() != 1 {
-            return Err("应用链接需要且只能有一个实际入口对象".into());
-        }
-        for object in &objects {
-            if !matches!(object.kind, Kind::Application { .. } | Kind::Module { .. }) {
-                return Err(format!("{} 不是普通模块或应用对象", object.name).into());
-            }
-        }
-        entries[0]
-    };
-    objects.swap(0, root);
+fn prepare(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
+    let entries = objects.iter().enumerate()
+        .filter(|(_, object)| matches!(object.kind, Kind::Application { .. } | Kind::Library { .. }))
+        .map(|(index, _)| index).collect::<Vec<_>>();
+    if entries.len() != 1 {
+        return Err("原生链接需要且只能有一个实际应用或算法库入口对象".into());
+    }
+    objects.swap(0, entries[0]);
     let mut objects = select(objects, libraries)?;
-    let (object, archives) =
-        if objects.len() == 1 && matches!(objects[0].kind, Kind::Library { .. }) {
-            let mut object = objects.remove(0);
-            let archives = object.archive.take().into_iter().collect::<Vec<_>>();
-            (object, archives)
-        } else {
-            combine::objects(objects)?
-        };
-    Ok((object, archives))
+    if matches!(objects[0].kind, Kind::Library { .. }) {
+        let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
+        Ok((objects, archives))
+    } else {
+        let (object, archives) = combine::objects(objects)?;
+        Ok((vec![object], archives))
+    }
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
     let (objects, libraries) = read_inputs(inputs)?;
-    let (object, _) = prepare(objects, libraries)?;
-    let reserve = match object.kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
+    let (mut objects, _) = prepare(objects, libraries)?;
+    let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
+    let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects)?.0 };
     Ok(crate::object::stack::report(&object, budget, reserve))
 }
 fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, path: &Path) -> Result<()> {
-    let (object, archives) = prepare(objects, libraries)?;
+    let (objects, archives) = prepare(objects, libraries)?;
+    let object = &objects[0];
     if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         return Err("本机链接当前输出 Windows x64".into());
     }
@@ -200,7 +204,7 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
             if archives.is_empty() {
                 return Err("DLL 目标文件没有静态目标库".into());
             }
-            msvc::library(&archives, &[&object], &output, true)?;
+            msvc::library(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
             let mut header_path = output.clone();
             header_path.set_extension("abi.h");
             std::fs::write(header_path, header)?;

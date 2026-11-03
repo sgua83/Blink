@@ -84,7 +84,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "6dcfaabad634b6420b0e2f9bd939f83eb537da792c0164f8ed416b38b51345e4"
+      "sha256": "ba45fcd9a56cd2febaa4ec667e110ebc6baec3864c8e1f3c5e11e424bc2d6e5f"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "4eb76d40c549731222222ef591434245b1ee19bd5db7ec66f4af2d945565f437"
+      "sha256": "5686bc04895b9185ddfeac847560aa6b58dab9c1f782aa114282421e44426bf8"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -124,7 +124,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "6c1c3580a4986b54e711614088cbf2c346071df0e444a00c7ccc558c2a20aed1"
+      "sha256": "8171a877b4bd8825d91688a39e1e554f1257d8b1835d7b37fb0ef1ddcdda6ff0"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -168,7 +168,7 @@
     },
     {
       "path": "crates/blanguage/src/dll/mod.rs",
-      "sha256": "581aa2375f3bcf4ee0d4fe262120a8510cbb6ee15782d49cd2e6c2172df7698a"
+      "sha256": "88d6eb0e94a00367f456c0b2e5bff64ab08835efbf083e246adecfdcd086c631"
     },
     {
       "path": "crates/blanguage/src/dll/source.rs",
@@ -188,7 +188,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "669756c6fa95b4fe518365103ff5f36b752c95ea6229ed5650463b48267e94ea"
+      "sha256": "5b13deeba19ddefbaeee5f52e9a19714e820c12404e722a628f40a2ecff98d32"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
@@ -524,8 +524,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3789,
-      "end_line": 3825,
+      "start_line": 3791,
+      "end_line": 3827,
       "sha256": "a255899f5d70f31d9ca0b07e0a11a4de0c7a7cab4cc8a6269633fc7a7f7d378a"
     },
     {
@@ -778,7 +778,7 @@
       "path": "crates/blanguage/src/dll/mod.rs",
       "start_line": 268,
       "end_line": 293,
-      "sha256": "ed07743ceac93b266f6648801413c45ec0779e99182387b4bffeaed1977cb822"
+      "sha256": "70d098f00d51bfa3b469383fab8bd0c968d3a1888c3990a9366563d055532995"
     },
     {
       "path": "crates/blanguage/src/bootstrap/bindings.h",

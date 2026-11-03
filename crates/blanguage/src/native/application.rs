@@ -42,7 +42,7 @@ fn emit_value(
         source_stages: 0,
         stages: Vec::new(),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(),
+        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: Default::default(),
     };
     reads::place(&mut stage.code, &stage.writes);
     let mut graph = allocation::Graph::with_live(

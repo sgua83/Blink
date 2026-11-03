@@ -20,7 +20,7 @@ impl Kind {
 }
 fn function(
     world: &World,
-    program: &Program,
+    program: &mut Program,
     env: &BTreeMap<String, Root>,
     d: &Arc<Definition>,
     expr: &Expr,
@@ -102,17 +102,20 @@ fn function(
     }
     builder.in_function = false;
     let instance = builder.specialized_arguments(key, &args, explicit, reference.span)?;
-    let result = builder.inline_instance(instance, args, reference.span)?;
+    let result = builder.invoke_returned(instance, args, reference.span)?;
     let result = builder.ordinary_return(result, expr.span)?;
     let result = builder.value_result(result, expr.span)?;
     builder.require_same(ty, &result.ty, expr.span)?;
-    Ok(ValueCode {
+    let imports = std::mem::take(&mut builder.functions).into_imports();
+    let code = ValueCode {
         registers: builder.registers,
         locals: builder.locals,
         code: builder.code,
         inputs,
         outputs: result.regs,
-    })
+    };
+    program.imports.extend(imports);
+    Ok(code)
 }
 pub(super) fn compile(
     world: &World,

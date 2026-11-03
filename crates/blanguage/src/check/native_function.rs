@@ -36,6 +36,10 @@ impl Module {
         self.units.insert(name.to_owned(), None);
         true
     }
+    pub(super) fn into_imports(self) -> BTreeMap<String, Vec<u8>> {
+        use crate::module::codec::Encode;
+        self.units.into_iter().map(|(name, unit)| (name, unit.unwrap().contract.bytes())).collect()
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Contract {
@@ -100,7 +104,7 @@ fn declaration(
         return Ok((context, functions));
     }
     if let Some(definitions) = &instance.definition.compiled {
-        return compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), context, functions);
+        return Ok((context, compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), functions)?));
     }
     let frame = context.frame.take();
     let mut instance = instance.clone();
@@ -115,9 +119,8 @@ fn declaration(
 fn compiled_declaration(
     instance: &crate::generics::Instance,
     bytes: Option<&[u8]>,
-    context: application::Context,
     mut functions: Module,
-) -> Result<(application::Context, Module)> {
+) -> Result<Module> {
     use crate::module::codec::Decode;
     let bytes = bytes.ok_or_else(|| Diagnostic {
         source: instance.definition.source.clone(),
@@ -145,7 +148,7 @@ fn compiled_declaration(
             view_model: view_contracts::Function::default(),
         }),
     );
-    Ok((context, functions))
+    Ok(functions)
 }
 
 #[inline(never)]
@@ -296,6 +299,13 @@ pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Resu
 }
 impl Builder<'_> {
     pub(super) fn native_declaration(&mut self, instance: &crate::generics::Instance) -> Result<()> {
+        if let Some(definitions) = &instance.definition.compiled {
+            if self.functions.declare(&instance.name) {
+                self.functions = compiled_declaration(instance,
+                    definitions.get(&instance.name).map(Vec::as_slice), std::mem::take(&mut self.functions))?;
+            }
+            return Ok(());
+        }
         let context = self.application.take().unwrap();
         let (context, functions) = declaration(self.world, instance, context, std::mem::take(&mut self.functions))?;
         self.application = Some(context);
@@ -328,16 +338,19 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<Option<Returned>> {
         let d = &instance.definition;
-        let frame = self.application_frame(span)?;
-        let mut arguments = vec![CallArgument::Value {
-            ty: frame.ty.clone(),
-            values: frame.regs.clone(),
-        }];
-        let mut actual = frame
-            .regs
-            .iter()
-            .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
-            .collect::<Vec<_>>();
+        let implicit = self.functions.units[&instance.name].as_ref()
+            .is_none_or(|unit| unit.function.is_some() || unit.contract.frame);
+        let mut arguments = Vec::new();
+        // The interface retains its canonical Frame input slots even when its actual ABI omits Frame.
+        // These absent compile-time facts do not create registers or machine arguments.
+        let mut actual = vec![None; application::pointer_type().components.len()];
+        if implicit {
+            let frame = self.application_frame(span)?;
+            actual = frame.regs.iter()
+                .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
+                .collect();
+            arguments.push(CallArgument::Value { ty: frame.ty, values: frame.regs });
+        }
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
         let mut layouts = residency::Layouts::new();
@@ -828,23 +841,22 @@ pub(super) struct Finalized {
     pub imports: BTreeMap<String, Vec<u8>>,
     pub exports: BTreeMap<String, Vec<u8>>,
 }
-fn uses_frame(code: &[Inst], registers: &[Reg]) -> bool {
+fn uses_frame(code: &[Inst], registers: &[Reg], imported: &BTreeSet<String>) -> bool {
     code.iter().any(|inst| {
         let mut other = |reg| !registers.contains(&reg);
         let operands = match inst {
-            // The first argument is the provisional implicit Frame. Its need is
-            // propagated from the actual callee below; source arguments are real uses.
-            Inst::Call(call) if matches!(call.target, CallTarget::Defined(_)) =>
-                call.arguments.iter().skip(1).all(|argument| match argument {
+            // Imported no-Frame ABIs already contain only their real arguments.
+            Inst::Call(Call { target: CallTarget::Defined(name), arguments, .. }) =>
+                arguments.iter().skip(usize::from(!imported.contains(name))).all(|argument| match argument {
                     CallArgument::Value { values, .. } => values.iter().all(|reg| other(*reg)),
                     CallArgument::Reference { address, .. } => address.all_operands(&mut other),
                 }),
             _ => inst.all_operands(&mut other),
         };
         !operands || match inst {
-            Inst::Scope(code) => uses_frame(code, registers),
-            Inst::If { yes, no, .. } => uses_frame(yes, registers) || uses_frame(no, registers),
-            Inst::Loop { condition, body, .. } => uses_frame(condition, registers) || uses_frame(body, registers),
+            Inst::Scope(code) => uses_frame(code, registers, imported),
+            Inst::If { yes, no, .. } => uses_frame(yes, registers, imported) || uses_frame(no, registers, imported),
+            Inst::Loop { condition, body, .. } => uses_frame(condition, registers, imported) || uses_frame(body, registers, imported),
             _ => false,
         }
     })
@@ -878,6 +890,9 @@ fn finalize(
         }
         reachable = next;
     }
+    let imported_without_frame = units.iter()
+        .filter(|(_, unit)| unit.function.is_none() && !unit.contract.frame)
+        .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
     let mut frame = BTreeSet::new();
     for (name, unit) in &mut units {
         if unit.contract.frame {
@@ -885,7 +900,7 @@ fn finalize(
         }
         if let Some(function) = &unit.function {
             let registers = &function.body.inputs[..2];
-            if uses_frame(&function.body.code, registers)
+            if uses_frame(&function.body.code, registers, &imported_without_frame)
                 || function.body.outputs.iter().any(|reg| registers.contains(reg)) {
                 frame.insert(name.clone());
             }
@@ -918,15 +933,18 @@ fn finalize(
         }
     }
     units.retain(|name, _| reachable.contains(name));
-    fn prune(body: &mut ValueCode, frame: &BTreeSet<String>) {
+    let unframed = units.iter()
+        .filter(|(name, unit)| unit.function.is_some() && !frame.contains(*name))
+        .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
+    fn prune(body: &mut ValueCode, unframed: &BTreeSet<String>) {
         calls(&mut body.code, &mut |call| {
-            if matches!(&call.target,CallTarget::Defined(name) if !frame.contains(name)) {
+            if matches!(&call.target,CallTarget::Defined(name) if unframed.contains(name)) {
                 call.arguments.remove(0);
             }
         });
     }
     if let Some(body) = &mut root {
-        prune(body, &frame);
+        prune(body, &unframed);
     }
     let mut result = Finalized {
         functions: Vec::new(),
@@ -937,7 +955,7 @@ fn finalize(
         let local = unit.function.is_some() && owner.is_none_or(|owner| unit.module == owner);
         if local {
             let mut function = unit.function.take().unwrap();
-            prune(&mut function.body, &frame);
+            prune(&mut function.body, &unframed);
             if !frame.contains(&name) {
                 function.parameters.remove(0);
                 function.body.inputs.drain(..2);

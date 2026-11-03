@@ -304,8 +304,8 @@ impl<'a> Builder<'a> {
         if instance.definition.compiled.is_some()
             && instance.definition.execution != crate::execution::Requirement::Domain
         {
-            if self.application.is_none() {
-                return self.fail(span, "B270", "该已编译普通原生模块入口需要CPU应用调用位置");
+            if self.application.is_none() && self.program.target != Target::Cpu {
+                return self.fail(span, "B161", "已编译普通CPU模块调用需要CPU执行目标");
             }
             return self.native_function(instance, args, span);
         }
