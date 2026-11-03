@@ -115,6 +115,10 @@ impl Drop for WorkHandle {
 struct RuntimeFunction { begin: u32, end: u32, unwind: u32 }
 struct Executable {
     address: *mut c_void,
+    _allocation: Option<Allocation>,
+}
+struct Allocation {
+    address: *mut c_void,
     functions: Option<std::ptr::NonNull<RuntimeFunction>>,
     _libraries: Vec<Library>,
 }
@@ -221,7 +225,7 @@ impl Executable {
         if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let mut out = Self { address, functions: None, _libraries: Vec::new() };
+        let mut allocation = Allocation { address, functions: None, _libraries: Vec::new() };
         let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
         unsafe {
             std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
@@ -259,7 +263,7 @@ impl Executable {
                 std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), address.cast::<u8>().add(r.offset), 8);
             }
         }
-        out._libraries = libraries.into_values().collect();
+        allocation._libraries = libraries.into_values().collect();
         unsafe {
             let mut old = 0;
             if VirtualProtect(address, size, 0x20, &mut old) == 0 {
@@ -272,11 +276,11 @@ impl Executable {
         if unsafe { RtlAddFunctionTable(table, 1, address as u64) } == 0 {
             return Err(error("Windows未接受CPU代码的原生展开信息"));
         }
-        out.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
-        Ok(out)
+        allocation.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
+        Ok(Self { address, _allocation: Some(allocation) })
     }
 }
-impl Drop for Executable {
+impl Drop for Allocation {
     fn drop(&mut self) {
         unsafe {
             if let Some(table) = self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
@@ -423,6 +427,21 @@ impl CpuProgram {
             code: CpuCode::from_image(image).map_err(|(error, _)| error)?,
         })
     }
+    /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
+    ///
+    /// # Safety
+    /// 映像必须来自同一无前置条件入口的编译产物。每个地址都必须具有对应范围ABI；
+    /// 所属模块及其依赖须保持到最后真实CPU工作和本程序消费者结束。
+    #[doc(hidden)]
+    pub unsafe fn from_linked(image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>) -> Result<Self> {
+        let workers = std::thread::available_parallelism()?.get();
+        let stages = CpuCode::load_stages(image.stages(), &|address| Ok(Executable {
+            address: address.cast_mut().cast(),
+            _allocation: None,
+        }))?;
+        let (program, _) = image.into_parts();
+        Ok(Self { code: CpuCode { program, stages, workers } })
+    }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
         self.code.run(datasets, &[], values)
     }
@@ -509,22 +528,37 @@ impl<'a> CpuBuffer<'a> {
 }
 impl CpuCode {
     fn from_image<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
-        use blanguage::native::{ContinuationCode, StageCode as ImageStage};
         let workers = match std::thread::available_parallelism() {
             Ok(workers) => workers.get(),
             Err(error) => return Err((error.into(), image)),
         };
-        let stages = match image.stages()
+        let stages = match Self::load_stages(image.stages(), &Executable::new) {
+            Ok(stages) => stages,
+            Err(error) => return Err((error, image)),
+        };
+        let (program, _) = image.into_parts();
+        Ok(Self {
+            program,
+            stages,
+            workers,
+        })
+    }
+    fn load_stages<C>(
+        stages: &[blanguage::native::StageCode<C>],
+        load: &impl Fn(&C) -> Result<Executable>,
+    ) -> Result<Vec<StageCode>> {
+        use blanguage::native::{ContinuationCode, StageCode as ImageStage};
+        stages
             .iter()
             .map(|image| {
                 Ok(match image {
-                    ImageStage::Sort(code) => StageCode::Sort(sort::Code::load(code)?),
+                    ImageStage::Sort(code) => StageCode::Sort(sort::Code::load(code, load)?),
                     ImageStage::Element {
                         main,
                         continuation,
                         result,
                     } => StageCode::Element {
-                        main: Executable::new(main)?,
+                        main: load(main)?,
                         continuation: continuation.as_ref()
                             .map(|continuation| -> Result<Continuation> {
                                 Ok(match continuation {
@@ -532,7 +566,7 @@ impl CpuCode {
                                     | ContinuationCode::ScanAdd(code)
                                     | ContinuationCode::CompactScatter(code)
                                     | ContinuationCode::SegmentedFinish(code) => {
-                                        Continuation::Apply(Executable::new(code)?)
+                                        Continuation::Apply(load(code)?)
                                     }
                                     ContinuationCode::Scan {
                                         prefix,
@@ -540,8 +574,8 @@ impl CpuCode {
                                         source,
                                         target,
                                     } => Continuation::Scan {
-                                        prefix: Executable::new(prefix)?,
-                                        apply: Executable::new(apply)?,
+                                        prefix: load(prefix)?,
+                                        apply: load(apply)?,
                                         source: *source,
                                         target: *target,
                                     },
@@ -552,16 +586,7 @@ impl CpuCode {
                     },
                 })
             })
-            .collect::<Result<Vec<_>>>() {
-                Ok(stages) => stages,
-                Err(error) => return Err((error, image)),
-            };
-        let (program, _) = image.into_parts();
-        Ok(Self {
-            program,
-            stages,
-            workers,
-        })
+            .collect::<Result<Vec<_>>>()
     }
     fn run_owned(
         &self,

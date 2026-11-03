@@ -505,7 +505,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
     }
 ```
 
-算法DLL与普通应用包装消费同一resource映像编码。类型、执行计划与CPU／GPU代码在编译时已形成，生成Rust包装只嵌入这些字节；构造实际程序时保持本次`ProgramImage<P>`的原入口身份，解码错误交回原FFI错误结果，不重建一份Rust类型／阶段字面量，也不将条件模板改成已验证入口。 CPU主入口的局部帧直接取自同一次编译的映像并交给对象报告；它没有静态COFF地址，未报告的调用图仍为未知，不把已知局部字节当作完整线程栈上界。
+算法DLL的CPU机器码直接交给原COFF对象：每个主范围、集合延续和排序入口拥有实际符号、重定位与展开节。生成Rust包装只保存同次编译的ExecutionPlan字节和这些已链接入口的地址，原CpuCode继续承担阶段与线程调度。GPU及普通应用资源包装仍消费原resource映像编码；SDK动态CPU映像也保留自己的装入职责。执行布局、代码和入口类别必须来自同一编译产物，原FFI负责交回实际错误；不将条件模板冒充已验证入口，也不把局部帧大小当作完整线程栈上界。
 
 源码节选：`crates/blanguage/src/resource.rs:112`。
 
@@ -524,31 +524,23 @@ fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
 源码节选：`crates/blanguage/src/dll/source.rs:4`。
 
 ```rust
-pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<(String, Vec<crate::object::stack::Frame>), Box<dyn std::error::Error>> {
-    let mut stack = Vec::new();
+pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, Vec<(String, crate::native::NativeCode)>), Box<dyn std::error::Error>> {
+    use crate::native::{ContinuationCode, RangeResult, StageCode};
+    let mut functions = Vec::new();
+    let mut declarations = String::new();
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
         let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
-        stack = crate::object::stack::compute(p.name(), image.stages());
-        format!(
-            "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?)?)",
-            image.compiler_output_bytes()
-        )
-    };
-    let gpu = if p.target() == Target::Cpu {
-        "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()
-    } else {
-        let image = crate::spirv::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
-        format!(
-            "{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}",
-            image.compiler_output_bytes()
-        )
-    };
-    Ok((format!(
-        "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
-    ), stack))
-}
+        let layout = image.program().compiler_output_bytes();
+        let (_, stages) = image.into_parts();
+        let mut entry = |code: crate::native::NativeCode| {
+            let index = functions.len();
+            let name = format!("__blink_range_{prefix}_{index}");
+            declarations.push_str(&format!("#[link_name={name:?}] static range_{index}: u8;\n"));
+            functions.push((name, code));
+            format!("std::ptr::addr_of!(range_{index})")
+        };
 ```
 
 声明检查读取真实类型、字面量许可和源位置，不借用一次执行的寄存器或Proof。原数值转换、向量维度、矩阵形状及地址身份规则由同一纯函数选择；原二元IR运算码也在此选择，执行端不再重复解析／检查，只按选择执行原转换和降低；原除数非零与控制路径证明仍在实际Builder。这样未调用合同也不能留下错误的运算类型，且不复制一套运算符检查器。
@@ -1837,7 +1829,31 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 ### 15.3 机器码怎样变成可调用函数
 
-源码节选：`crates/blcompute/src/cpu.rs:216`。
+算法DLL中的CPU入口由原COFF链接进最终PE。Windows加载器完成代码、依赖和展开节的装入，CpuProgram只借用匹配范围ABI的地址；销毁一个程序不释放整个DLL的代码。宿主须保持DLL及其依赖，直到最后一个真实CPU工作和程序消费者结束，随后才可卸载。
+
+源码节选：`crates/blcompute/src/cpu.rs:430`。
+
+```rust
+    /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
+    ///
+    /// # Safety
+    /// 映像必须来自同一无前置条件入口的编译产物。每个地址都必须具有对应范围ABI；
+    /// 所属模块及其依赖须保持到最后真实CPU工作和本程序消费者结束。
+    #[doc(hidden)]
+    pub unsafe fn from_linked(image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>) -> Result<Self> {
+        let workers = std::thread::available_parallelism()?.get();
+        let stages = CpuCode::load_stages(image.stages(), &|address| Ok(Executable {
+            address: address.cast_mut().cast(),
+            _allocation: None,
+        }))?;
+        let (program, _) = image.into_parts();
+        Ok(Self { code: CpuCode { program, stages, workers } })
+    }
+```
+
+SDK直接装入CPU映像时，代码尚未属于已链接PE，下面的VM装入仍由原执行框架负责。两种来源共用实际阶段与调度表示，代码各自归其真实所有者。
+
+源码节选：`crates/blcompute/src/cpu.rs:220`。
 
 ```rust
         let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
@@ -1848,7 +1864,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
         if address.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let mut out = Self { address, functions: None, _libraries: Vec::new() };
+        let mut allocation = Allocation { address, functions: None, _libraries: Vec::new() };
         let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
         unsafe {
             std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
@@ -1857,12 +1873,12 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
         }
 ```
 
-执行内存从创建起由原 Executable 持有。指令、四字节对齐的展开字节和 RuntimeFunction 表放在同一次 VM 分配中；表中的起点、末端和展开位置是相对这份内存的偏移。原映像只被借用，解析后的地址写入这份真实内存。DLL 引用在装入期间由原 Library 持有，失败时随本次实际消费结束。
+SDK的这次VM分配从创建起由Executable中的Allocation持有。指令、四字节对齐的展开字节和RuntimeFunction表放在同一次分配中；表中的起点、末端和展开位置相对这份内存。原映像只被借用，解析后的地址写入本次实际分配；Library持有本次装入的DLL引用。已链接算法入口没有这份Allocation，其代码归所属DLL。
 
-源码节选：`crates/blcompute/src/cpu.rs:262`。
+源码节选：`crates/blcompute/src/cpu.rs:266`。
 
 ```rust
-        out._libraries = libraries.into_values().collect();
+        allocation._libraries = libraries.into_values().collect();
         unsafe {
             let mut old = 0;
             if VirtualProtect(address, size, 0x20, &mut old) == 0 {
@@ -1875,11 +1891,11 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
         if unsafe { RtlAddFunctionTable(table, 1, address as u64) } == 0 {
             return Err(error("Windows未接受CPU代码的原生展开信息"));
         }
-        out.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
-        Ok(out)
+        allocation.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
+        Ok(Self { address, _allocation: Some(allocation) })
     }
 }
-impl Drop for Executable {
+impl Drop for Allocation {
     fn drop(&mut self) {
         unsafe {
             if let Some(table) = self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
@@ -1891,7 +1907,7 @@ impl Drop for Executable {
 
 执行框架先复制指令和展开字节、处理必要重定位，再把页面改成可执行并刷新指令缓存。RtlAddFunctionTable 成功后，入口才交给 CPU 调用；Windows 可以据此从实际 B 指令位置恢复调用者的栈与非易失寄存器。大型帧在一次实际减栈前调用同映像的无帧叶辅助逐页触及，帧分配仍记录在主函数序言中。
 
-最后一个真实消费者结束后，原 Executable 的 Drop 先撤销该函数表，再释放同一 VM；它持有的 DLL 引用随后结束。展开元数据没有另一套代码寿命或全局拥有表。普通 PE 应用及对象由相同发射结果交给 PE／COFF 的展开节，内存范围则交给 Windows 动态表；这不等于已经具有源码行号调试、异常处理语言语义或栈耗尽诊断。
+最后一个真实消费者结束后，SDK的Allocation先撤销本次动态函数表，再释放同一VM及其DLL引用。已链接算法DLL、普通PE应用和对象将同一次发射结果交给PE／COFF展开节，由所属模块的装入和卸载决定代码寿命。没有独立的展开元数据所有权或全局拥有表；展开支持仍不等于源码行号调试、异常处理语言语义或栈耗尽诊断。
 
 CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对每一条 B 指令逐项解释。CPU模板在全部阶段装入成功后才移动原执行布局；失败沿同一Result交回原错误与未改映像，Frame接回原程序槽。这里没有保留第二份代码或自动重放；普通CpuProgram的按值构造仍在失败时结束输入消费。
 
@@ -2480,22 +2496,17 @@ CPU 使用容量比较与原子比较交换等原生操作；GPU 将实际活动
 
 ### 26.2 DLL 内究竟装了什么
 
-源码节选：`crates/blanguage/src/dll/mod.rs:258`。
+源码节选：`crates/blanguage/src/dll/mod.rs:268`。
 
 ```rust
-/// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
-pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
-    crate::Compiler::available()?.compile_dll(program, prefix)
-}
-impl crate::Compiler {
-    pub fn compile_dll(&self, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
-        self.execute(|worker| compile_in(worker, program, prefix).map_err(|error| error.to_string()))
-            .map_err(|error| std::io::Error::other(error.to_string()).into())
-    }
-}
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source, stack) = generate(program, &prefix, worker)?;
+    let (header, binding, source, functions) = generate(program, &prefix, worker)?;
+    let imports = std::collections::BTreeMap::new();
+    let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
+    let symbols = positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
+        name, section, value, contract: Vec::new(), function: true,
+    }).collect();
     let exports = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
@@ -2508,15 +2519,15 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections: Vec::new(), stack,
-        symbols: Vec::new(),
-        imports: std::collections::BTreeMap::new(),
+        sections, stack,
+        symbols,
+        imports,
         archive: Some(archive),
     })
 }
 ```
 
-编译阶段已经生成 CPU 机器码、SPIR-V 与 ProgramImage；执行布局只交付绑定、访问、集合和实际设备需求。编译算法对象时，既有执行框架和 C ABI 被编成静态目标库。目标文件不携带等待运行时生成代码的值 IR；链接器只消费目标文件与静态代码，不调用 Cargo／rustc，也不重读 B 实现。
+编译阶段一次生成CPU机器码、SPIR-V和执行布局。CPU主范围及集合入口经原module_code形成COFF代码、符号、重定位及展开节，框架和C ABI包装编成附属静态库；包装使用已链接CPU入口与原执行布局，GPU仍装入原SPIR-V映像。链接器消费两者，把原DLL／函数身份绑定到PE导入表；不调用Cargo／rustc，不重读B实现，也不在创建算法程序时再复制CPU机器码。普通CPU已编译模块函数进入算法范围IR仍是后续缺口，本节代码归属调整不代表该调用能力已完成。
 
 对象的符号选择与重定位绑定由bootstrap/bindings.h／.b负责。Rust借用原Object的名字、节、定义与引用，并提供按真实条目上界分配的存储；B在同一个节点区维护名字和DLL／名字两棵有序树，产生唯一的本轮符号目录及重定位索引。定义保留原顺序，重复名字引用最后定义；未解析名字按首次出现加入，DLL导入按UTF-8字节确定排序。COMDAT关联和辅助行参与真实行号，原始名字不复制。
 

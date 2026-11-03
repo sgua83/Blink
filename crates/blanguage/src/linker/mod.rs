@@ -185,7 +185,7 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
                     archive.bytes.hash(&mut hash);
                 }
                 let name = format!("blink_app_{:016x}.dll", hash.finish());
-                msvc::library(&archives, &output.with_file_name(&name), false)?;
+                msvc::library(&archives, &[], &output.with_file_name(&name), false)?;
                 Some(name)
             } else {
                 None
@@ -200,7 +200,7 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
             if archives.is_empty() {
                 return Err("DLL 目标文件没有静态目标库".into());
             }
-            msvc::library(&archives, &output, true)?;
+            msvc::library(&archives, &[&object], &output, true)?;
             let mut header_path = output.clone();
             header_path.set_extension("abi.h");
             std::fs::write(header_path, header)?;

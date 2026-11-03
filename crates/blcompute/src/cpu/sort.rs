@@ -9,18 +9,18 @@ pub(super) struct Code {
     gather: Executable,
 }
 impl Code {
-    pub fn load(code: &blanguage::native::SortCode) -> Result<Self> {
+    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &impl Fn(&C) -> Result<Executable>) -> Result<Self> {
         Ok(Self {
             source: code.source,
             target: code.target,
             initialize: code
                 .initialize
                 .iter()
-                .map(Executable::new)
+                .map(load)
                 .collect::<Result<_>>()?,
-            histogram: Executable::new(&code.histogram)?,
-            scatter: Executable::new(&code.scatter)?,
-            gather: Executable::new(&code.gather)?,
+            histogram: load(&code.histogram)?,
+            scatter: load(&code.scatter)?,
+            gather: load(&code.gather)?,
         })
     }
 }

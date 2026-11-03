@@ -118,6 +118,18 @@ fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
     let bytes = bytes.strip_prefix(ABI).ok_or("不支持的模块资源 ABI")?;
     T::from_bytes(bytes)
 }
+impl ExecutionPlan {
+    pub(crate) fn compiler_output_bytes(&self) -> Vec<u8> { compiler_output(self) }
+    /// 恢复同一编译产物的执行布局；代码由所属原生对象交接。
+    ///
+    /// # Safety
+    /// bytes必须是本资源ABI的实际布局，与所绑定代码的类型、访问、阶段及入口类别完全一致。
+    #[doc(hidden)]
+    pub unsafe fn from_compiler_output_bytes(bytes: &[u8]) -> std::io::Result<Self> {
+        decode_compiler_output(bytes).map_err(|error|
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+    }
+}
 /// # Safety
 /// bytes 必须是此资源 ABI 的实际编译产物，原机器码、布局、访问与前缀合同未被伪造。
 /// 资源 ABI 不使用生成它的 Rust 容器布局或编译器源码身份。

@@ -154,7 +154,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String, Vec<crate::object::stack::Frame>)> {
+fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String, Vec<(String, crate::native::NativeCode)>)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -228,7 +228,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let c_run = cp.join(", ");
     let r_run = rp.join(", ");
     let comma = if cp.is_empty() { "" } else { ", " };
-    let (constructor, stack) = source::constructor(p, worker)?;
+    let (constructor, functions) = source::constructor(p, prefix, worker)?;
     let replacements = [
         ("@PREFIX@", prefix.to_owned()),
         ("@COMMA@", comma.to_owned()),
@@ -252,10 +252,10 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     c.push_str(&render(include_str!("header.h.in")));
     let r = render(include_str!("binding.rs.in"));
     let dll = render(include_str!("library.rs.in"));
-    Ok((c, r, dll, stack))
+    Ok((c, r, dll, functions))
 }
 
-/// 编译算法 DLL 的机器码、CPU/GPU 映像、执行框架静态库与 C/Rust 接口。
+/// 编译算法DLL的CPU代码节、GPU映像、执行框架静态库及C/Rust接口。
 pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     crate::Compiler::available()?.compile_dll(program, prefix)
 }
@@ -267,7 +267,12 @@ impl crate::Compiler {
 }
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source, stack) = generate(program, &prefix, worker)?;
+    let (header, binding, source, functions) = generate(program, &prefix, worker)?;
+    let imports = std::collections::BTreeMap::new();
+    let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
+    let symbols = positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
+        name, section, value, contract: Vec::new(), function: true,
+    }).collect();
     let exports = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
@@ -280,9 +285,9 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections: Vec::new(), stack,
-        symbols: Vec::new(),
-        imports: std::collections::BTreeMap::new(),
+        sections, stack,
+        symbols,
+        imports,
         archive: Some(archive),
     })
 }

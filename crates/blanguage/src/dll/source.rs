@@ -1,30 +1,61 @@
-//! 原生包装交接同一次真实编译的映像字节，不重建类型或阶段对象源码。
+//! 算法包装交接同次编译的执行布局及已链接CPU入口；GPU交接原完整映像。
 use crate::{ExecutableProgram, ast::Target, ir::Scalar};
 
-pub(super) fn constructor(p: &ExecutableProgram, worker: &crate::compiler::Worker) -> Result<(String, Vec<crate::object::stack::Frame>), Box<dyn std::error::Error>> {
-    let mut stack = Vec::new();
+pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, Vec<(String, crate::native::NativeCode)>), Box<dyn std::error::Error>> {
+    use crate::native::{ContinuationCode, RangeResult, StageCode};
+    let mut functions = Vec::new();
+    let mut declarations = String::new();
     let cpu = if p.target() == Target::Gpu {
         "return Err(std::io::Error::other(\"GPU 专属程序不能提交给 CPU\").into())".into()
     } else {
         let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
-        stack = crate::object::stack::compute(p.name(), image.stages());
-        format!(
-            "LibraryProgram::Cpu(CpuProgram::from_image(unsafe {{ NativeProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?)?)",
-            image.compiler_output_bytes()
-        )
+        let layout = image.program().compiler_output_bytes();
+        let (_, stages) = image.into_parts();
+        let mut entry = |code: crate::native::NativeCode| {
+            let index = functions.len();
+            let name = format!("__blink_range_{prefix}_{index}");
+            declarations.push_str(&format!("#[link_name={name:?}] static range_{index}: u8;\n"));
+            functions.push((name, code));
+            format!("std::ptr::addr_of!(range_{index})")
+        };
+        let result = |result| match result {
+            RangeResult::None => "RangeResult::None".to_owned(),
+            RangeResult::UnsignedSum => "RangeResult::UnsignedSum".to_owned(),
+            RangeResult::Values(words) => format!("RangeResult::Values({words})"),
+        };
+        let stages = stages.into_iter().map(|stage| match stage {
+            StageCode::Element { main, continuation, result: returns } => {
+                let main = entry(main);
+                let continuation = match continuation {
+                    None => "None".to_owned(),
+                    Some(continuation) => {
+                        let value = match continuation {
+                            ContinuationCode::ReductionTail(code) => format!("ContinuationCode::ReductionTail({})", entry(code)),
+                            ContinuationCode::ScanAdd(code) => format!("ContinuationCode::ScanAdd({})", entry(code)),
+                            ContinuationCode::CompactScatter(code) => format!("ContinuationCode::CompactScatter({})", entry(code)),
+                            ContinuationCode::SegmentedFinish(code) => format!("ContinuationCode::SegmentedFinish({})", entry(code)),
+                            ContinuationCode::Scan { prefix, apply, source, target } => format!("ContinuationCode::Scan{{prefix:{},apply:{},source:{source},target:{target}}}", entry(prefix), entry(apply)),
+                        };
+                        format!("Some({value})")
+                    }
+                };
+                format!("StageCode::Element{{main:{main},continuation:{continuation},result:{}}}", result(returns))
+            }
+            StageCode::Sort(code) => {
+                let initialize = code.initialize.into_iter().map(&mut entry).collect::<Vec<_>>().join(",");
+                format!("StageCode::Sort(SortCode{{source:{},target:{},initialize:vec![{initialize}],histogram:{},scatter:{},gather:{}}})", code.source, code.target, entry(code.histogram), entry(code.scatter), entry(code.gather))
+            }
+        }).collect::<Vec<_>>().join(",");
+        format!("{{ use blanguage::native::{{StageCode,ContinuationCode,SortCode,RangeResult}}; LibraryProgram::Cpu(unsafe {{ CpuProgram::from_linked(NativeProgramImage::<ExecutableProgram,*const u8>::from_compiler_output(blanguage::ir::ExecutionPlan::from_compiler_output_bytes(&{layout:?})?,vec![{stages}])) }}?) }}")
     };
     let gpu = if p.target() == Target::Cpu {
         "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()
     } else {
         let image = crate::spirv::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
-        format!(
-            "{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}",
-            image.compiler_output_bytes()
-        )
+        format!("{{ let image = unsafe {{ ShaderProgramImage::<ExecutableProgram>::from_compiler_output_bytes(&{:?}) }}?; let device = Device::for_program(image.program())?; let program = device.load(image)?; LibraryProgram::Gpu {{ device, program }} }}", image.compiler_output_bytes())
     };
-    Ok((format!(
-        "match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}}"
-    ), stack))
+    let declarations = format!("unsafe extern \"C\" {{\n{declarations}}}\n");
+    Ok((format!("{{ {declarations} match backend {{0 => {{ {cpu} }}, 1 => {{ {gpu} }}, _ => return Err(std::io::Error::other(\"backend 必须为 CPU(0) 或 GPU(1)\").into()),}} }}"), functions))
 }
 
 pub(crate) fn application_source(

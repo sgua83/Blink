@@ -62,50 +62,50 @@ impl RangeResult {
     }
 }
 #[derive(Clone, Debug)]
-pub enum ContinuationCode {
-    ReductionTail(NativeCode),
-    ScanAdd(NativeCode),
-    CompactScatter(NativeCode),
-    SegmentedFinish(NativeCode),
+pub enum ContinuationCode<C = NativeCode> {
+    ReductionTail(C),
+    ScanAdd(C),
+    CompactScatter(C),
+    SegmentedFinish(C),
     Scan {
-        prefix: NativeCode,
-        apply: NativeCode,
+        prefix: C,
+        apply: C,
         source: usize,
         target: usize,
     },
 }
 #[derive(Clone, Debug)]
-pub struct SortCode {
+pub struct SortCode<C = NativeCode> {
     pub source: usize,
     pub target: usize,
-    pub initialize: Vec<NativeCode>,
-    pub histogram: NativeCode,
-    pub scatter: NativeCode,
-    pub gather: NativeCode,
+    pub initialize: Vec<C>,
+    pub histogram: C,
+    pub scatter: C,
+    pub gather: C,
 }
 #[derive(Clone, Debug)]
-pub enum StageCode {
+pub enum StageCode<C = NativeCode> {
     Element {
-        main: NativeCode,
-        continuation: Option<ContinuationCode>,
+        main: C,
+        continuation: Option<ContinuationCode<C>>,
         result: RangeResult,
     },
-    Sort(SortCode),
+    Sort(SortCode<C>),
 }
 #[derive(Clone, Debug)]
-pub struct ProgramImage<P> {
+pub struct ProgramImage<P, C = NativeCode> {
     program: ExecutionPlan,
     marker: std::marker::PhantomData<fn() -> P>,
-    stages: Vec<StageCode>,
+    stages: Vec<StageCode<C>>,
 }
-impl<P> ProgramImage<P> {
+impl<P, C> ProgramImage<P, C> {
     /// 恢复本版本编译器输出的原生代码与执行布局。
     ///
     /// # Safety
-    /// 必须来自本版本编译器的同一个 P 入口，包含完整未修改的机器码、重定位、
+    /// 必须来自本版本编译器的同一个P入口，携带完整机器码／重定位或同源原生代码绑定、
     /// 入口 ABI、调度及前缀关系；不得由宿主输入构造或伪造条件模板的证明。
     #[doc(hidden)]
-    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode>) -> Self {
+    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode<C>>) -> Self {
         Self {
             program,
             stages,
@@ -115,10 +115,10 @@ impl<P> ProgramImage<P> {
     pub fn program(&self) -> &ExecutionPlan {
         &self.program
     }
-    pub fn stages(&self) -> &[StageCode] {
+    pub fn stages(&self) -> &[StageCode<C>] {
         &self.stages
     }
-    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode>) {
+    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>) {
         (self.program, self.stages)
     }
 }
