@@ -3686,6 +3686,26 @@ for storage in frame.cpu_data_memory() {
 
 结果仅保存本次同步读取的元数据，不持有Dataset、设备或完成对象；保留旧结果不延长资源寿命，也不保证下一次resize／驻留变化后的状态。该范围不遍历view来源图，不统计代码VM、类型／句柄容器、Vulkan映射内存或其他宿主分配。Rust SDK与B／C入口分别记录：本查询没有新增B语法、C ABI或运行库状态字段。更广观察范围继续见Issues C-021.7.9.23。
 
+### CPU数据的布局与view来源借用
+
+Rust SDK的`Dataset::layout() -> &Ty`借用同一存储的原类型；原`count()`、`stride()`、`words()`和`memory()`分别交付记录数、物理记录步幅、原字存储与直接字节口径。`ReadDataset`／`cpu::CpuDataset`沿原Deref使用同一接口，不复制布局或载荷。
+
+`view_bindings()`返回精确长度迭代器，每项`DatasetView { record: u32, offset: u32, source: &Dataset }`直接借用原Views的一条绑定及其真实来源。`offset`以字节计，相对本条记录起点；不是整个数组偏移，也不是来源内偏移。按原绑定顺序枚举，来源可继续调用这些接口，沿实际闭合图观察。多个字段／记录引用同源时，`source`是同一个Dataset；不同空Dataset不能按其空Vec指针合并。对象引用只在本次原借用有效期内比较，不作为持久资源ID或跨驻留身份。
+
+`view_source(record, field) -> Option<&Dataset>`使用原Ty活动字段路径和真实bindings二分查源，例如`pair.left`、`list[1]`、`Some.left`、`Ok.right`；字段名保留大小写。它只返回实际绑定的view来源，记录越界、未知／非view字段、非活动载荷及已撤回绑定均为None。原始header即使保存非零地址，也不被当作来源；原`words_mut`／`set_scalar`使绑定失效后，查询如实无来源。空view来源仍为Some，其count可以为零。
+
+```rust
+let ty = data.layout();
+for view in data.view_bindings() {
+    let byte = u64::from(view.record) * u64::from(data.stride()) + u64::from(view.offset);
+    let source_memory = view.source.memory();
+    // byte对应本数据集的实际引用字段；source_memory只描述来源自己的字存储。
+}
+let source = data.view_source(0, "pair.left");
+```
+
+以上接口不分配观察图、不克隆Arc、不读回／等待GPU、不修改记录或保活另一份所有权。返回借用由Rust约束原父存储与来源寿命；不能据查询取得可写来源、跨越父存储释放或在活动观察时改写父存储。CPU执行本身沿原同步入口完成，查询不伪造GPU最后使用状态、初始化许可或静态别名事实。GPU来源、Frame完整根与B／C入口仍见[资源观察剩余范围](Issues.md#c-021-7-9-22)。
+
 ### 原生物理 GPU 枚举与选择
 
 Rust SDK 的 `vulkan::Instance::new()` 创建计算实例；`Instance::with_presentation()` 明确启用 Windows surface。两者的 `physical_devices()` 都返回实际 `Vec<PhysicalDevice>`，包含集成 GPU 等驱动可访问类型。`PhysicalDevice::name()` 供显示、`is_discrete()` 供调用者选择；名称不是资源身份。保留选中的句柄后可释放列表和公开实例，真实实例由该句柄及其派生设备共同持有。

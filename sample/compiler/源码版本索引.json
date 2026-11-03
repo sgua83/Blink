@@ -280,7 +280,11 @@
     },
     {
       "path": "crates/blcompute/src/lib.rs",
-      "sha256": "97e4724b6d1f662119296f146e2f22a22e5b90e2f707b1820b70a1a8a4cd9f5c"
+      "sha256": "6f272cdf077580026fe14663a33e9568b1b4711120ca5352620f9cd466b33824"
+    },
+    {
+      "path": "crates/blcompute/src/views.rs",
+      "sha256": "1e590f96edd35b89c445736a18fe3de05f900427ad22c55e3b19754ffea910ba"
     },
     {
       "path": "crates/blcompute/src/vulkan/buffer_memory.rs",
@@ -443,6 +447,18 @@
       "start_line": 215,
       "end_line": 221,
       "sha256": "a75f34c8487a01473c826920fc47d0adb9dcef95a381b80010cfcb7602d66d53"
+    },
+    {
+      "path": "crates/blcompute/src/views.rs",
+      "start_line": 19,
+      "end_line": 23,
+      "sha256": "8c547b728a0a62030e04df6bfaae00d6057f5335706995366500cd4f1c8dcf5c"
+    },
+    {
+      "path": "crates/blcompute/src/views.rs",
+      "start_line": 72,
+      "end_line": 81,
+      "sha256": "b3c3730d443d7237c6c588243d34f00fdce6d6ff596069b857c305e2b3007f1c"
     },
     {
       "path": "crates/blanguage/src/parser.rs",

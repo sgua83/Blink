@@ -710,9 +710,44 @@ pub struct Dataset {
 
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
 
-Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。完整view来源、其他宿主容器及B／C观察入口仍有独立未完成范围。
+Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节直接借用原绑定；GPU来源、完整Frame观察根、其他宿主容器及B／C观察入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
+
+### 2.5 从一个view字段追到原存储
+
+记录中的view header是机器寻址表示，真实所有权在原Views中。bindings保存原数据集的实际存储字偏移与source索引；sources持有冻结来源。不能读取header里的数字，再另建一张拥有图。
+
+源码节选：`crates/blcompute/src/views.rs:19`。
+
+```rust
+pub(crate) struct Views<Source> {
+    pub sources: Vec<Source>,
+    // 按实际存储字偏移排序；仍由同一引用图持有原source索引。
+    pub bindings: Vec<(usize,usize)>,
+}
+```
+
+`Dataset::layout()`交回原Ty的共享借用。`view_bindings()`同样只遍历现有边，把整个数据集的字偏移换算为记录号和记录内字节偏移，然后借用原source。没有新的存储、Arc或资源身份；同源多字段的source仍是同一Dataset，嵌套来源可以继续沿这些接口读取。
+
+源码节选：`crates/blcompute/src/views.rs:72`。
+
+```rust
+    pub fn view_bindings(&self) -> impl ExactSizeIterator<Item = DatasetView<'_>> {
+        self.views.bindings.iter().map(|&(word, source)| {
+            let byte = word as u64 * 4;
+            DatasetView {
+                record: (byte / u64::from(self.stride)) as u32,
+                offset: (byte % u64::from(self.stride)) as u32,
+                source: &self.views.sources[source],
+            }
+        })
+    }
+```
+
+已知字段路径时，`view_source(record, field)`沿原Ty::field_at选择该记录的实际活动载荷，再在原bindings二分查询。例如pair.left、list[1]、Some.left和Ok.right仍保留各自真实层级与大小写。非view字段、非活动变体、错误记录或已撤回绑定都没有来源；真实空来源仍是一个Dataset，其count为零。原始字节不能代替绑定。
+
+这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU最后使用、完整Frame根和B／C观察仍有各自未完成范围。
 
 ## 第三章 只学阅读源码所需的 Rust
 

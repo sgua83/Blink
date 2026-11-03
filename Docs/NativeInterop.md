@@ -136,6 +136,12 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 - create 的 backend 为 0（CPU）或 1（GPU）；目标限制与设备能力错误直接返回。相同 handle 可反复运行；调用及释放必须在创建线程串行执行。Rust 包装器以独占方法、Drop 和非 Send／Sync 类型表达这一所有权；C/C++ 遵守头文件中的相同约定。不同线程可分别创建自己的实例。
 - view、纹理、加速结构和有外部 prefix 前置条件的程序不在当前 DLL 数据 ABI 中；算法目标文件编译明确拒绝，不改写成其他算法。C++ 可以调用包含内部多阶段、集合、排序及内部有效前缀的完整 计算函数。
 
+## Rust SDK的CPU布局与view来源
+
+`Dataset::layout()`借用原Ty；`view_bindings()`从同一原Views枚举`DatasetView { record, offset, source }`，`offset`是记录内字节，`source`是原Dataset共享借用。`view_source(record, field)`按原活动字段路径查询实际来源，支持记录／固定数组及活动变体；未知、非view、非活动字段或原绑定撤回均为None。空来源与无来源分别表达；同源多引用返回同一个Dataset，来源可以继续查询。不从header地址推导拥有关系、不克隆Arc或建立第二图；原count／stride／words／memory继续描述布局与直接存储。
+
+返回值服从原父数据借用，不能保留到父存储释放后，不能在活动观察时改写父存储，也不授予来源写权限。CPU执行沿原同步生命周期；本接口不等待／下载GPU。完整语义见[CPU来源借用](BLanguage.md#cpu数据的布局与view来源借用)。当前只交付CPU Rust SDK，GPU来源／最后使用、Frame完整观察根与B／C实际入口仍沿[资源查询台账](Issues.md#c-021-7-9-22)。
+
 ## Rust SDK的CPU存储与代码区段观察
 
 `Dataset::memory()`返回同一数据字存储的逻辑记录跨度、当前word长度和可用容量；`Frame::cpu_data_memory()`读取原当前CPU数据槽，并按查询借用中的实际Dataset分组返回原句柄与字节快照。GPU槽不参与，也不发生等待或下载。容量不等同OS承诺、工作集或分配器开销。

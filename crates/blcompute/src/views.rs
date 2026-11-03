@@ -57,7 +57,41 @@ pub struct ViewBinding<'a, Source = ReadDataset> {
     pub source: Source,
 }
 
+/// 原CPU记录中一个实际view绑定的只读借用；不复制或保活来源。
+#[derive(Clone, Copy)]
+pub struct DatasetView<'a> {
+    pub record: u32,
+    /// 相对本条记录起点的字节偏移，沿原layout解释。
+    pub offset: u32,
+    pub source: &'a Dataset,
+}
+
 impl Dataset {
+    /// 枚举原绑定图的实际边；同源多字段返回同一个Dataset借用。
+    /// 没有绑定的原始字节不成为来源，不解析其中的地址来恢复拥有关系。
+    pub fn view_bindings(&self) -> impl ExactSizeIterator<Item = DatasetView<'_>> {
+        self.views.bindings.iter().map(|&(word, source)| {
+            let byte = word as u64 * 4;
+            DatasetView {
+                record: (byte / u64::from(self.stride)) as u32,
+                offset: (byte % u64::from(self.stride)) as u32,
+                source: &self.views.sources[source],
+            }
+        })
+    }
+
+    /// 按原字段路径和本条记录的实际活动载荷取得来源；无真实绑定时返回None。
+    pub fn view_source(&self, record: u32, field: &str) -> Option<&Dataset> {
+        if record >= self.count { return None; }
+        let begin = record as usize * self.stride as usize;
+        let words = &self.words[begin / 4..(begin + self.stride as usize).div_ceil(4)];
+        let (offset, ty) = self.ty.field_at(field, words)?;
+        ty.view.as_ref()?;
+        let word = (begin + offset as usize) / 4;
+        let binding = self.views.bindings.binary_search_by_key(&word, |&(word, _)| word).ok()?;
+        Some(&self.views.sources[self.views.bindings[binding].1])
+    }
+
     /// 交还不可变共享所有权；子资源随真实引用持续存活。
     pub fn freeze(self) -> Result<ReadDataset> {
         self.require_views()?;

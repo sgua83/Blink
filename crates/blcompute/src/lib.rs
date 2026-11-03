@@ -9,7 +9,7 @@ pub use texture::{Texture2D, TextureAddress, TextureFormat, TextureMip, TextureT
 pub mod vulkan;
 pub use bindings::{DomainBindings, DomainStorage};
 use blanguage::ir::{ExecutionPlan, ProgramInterface, Scalar, Ty};
-pub use views::{ReadDataset, ViewBinding};
+pub use views::{DatasetView, ReadDataset, ViewBinding};
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub(crate) fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     std::io::Error::other(message.into()).into()
@@ -218,6 +218,10 @@ impl Dataset {
             stored_bytes: self.words.len() as u64 * std::mem::size_of::<u32>() as u64,
             capacity_bytes: self.words.capacity() as u64 * std::mem::size_of::<u32>() as u64,
         }
+    }
+    /// 借用同一数据存储的原类型布局；记录步幅仍由stride交付。
+    pub fn layout(&self) -> &Ty {
+        &self.ty
     }
     pub fn count(&self) -> u32 {
         self.count
