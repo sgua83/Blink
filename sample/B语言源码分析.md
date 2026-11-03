@@ -710,7 +710,7 @@ pub struct Dataset {
 
 Frame在`crates/blcompute/src/application.rs`中唯一持有CPU／GPU存储。准备失败保留输入、程序与域；提交接受后才交接producer与最后使用点，撤回Count写入的旧许可。等待失败交回原Submission及同一存储和程序；实际写入不回滚，不发布新保证。
 
-Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6；其他宿主容器、代码／程序观察根及B／C实际入口仍有独立未完成范围。
+Frame的`cpu_data_memory()`从当前CPU数据槽按同一实际Dataset分组，返回原句柄与这些字节数；冻结的共享存储不按句柄重复计算。GPU槽不在CPU数据范围中，查询不会隐式下载或等待。释放后的槽从下一次查询消失；保留下来的旧报告只有当时元数据，不保活任何Dataset或设备，也不证明其他宿主分配已经释放。代码VM由CpuProgram／CpuTemplate的code_memory()查询，见第十五章；它与数据字存储分别由原所有者解释。CPU view来源按下一节、GPU来源按第十九章直接借用原绑定；Frame当前数据根见2.6，程序根见2.7；其他宿主容器及B／C实际入口仍有独立未完成范围。
 
 **自己走一遍。** `stride=32`、字段偏移十二、下标三，字段距数组起点多远？`3×32+12=108` 字节。若把 stride 错当作字段大小四，读到的就会是另一条记录或另一个字段。
 
@@ -747,13 +747,13 @@ pub(crate) struct Views<Source> {
 
 已知字段路径时，`view_source(record, field)`沿原Ty::field_at选择该记录的实际活动载荷，再在原bindings二分查询。例如pair.left、list[1]、Some.left和Ok.right仍保留各自真实层级与大小写。非view字段、非活动变体、错误记录或已撤回绑定都没有来源；真实空来源仍是一个Dataset，其count为零。原始字节不能代替绑定。
 
-这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU对应的来源与保留点见第十九／二十一章；Frame当前数据根见下一节；代码／程序根和B／C观察仍有各自未完成范围。
+这些都是原借用，不是可长期保存的资源快照。父存储不能在活动观察期间改写或释放，来源不能因此取得可写权限；只读／冻结绑定沿原Deref查询同一对象。count、stride、words和memory分别回答记录数、实际布局、原位模式与直接字存储大小，不能将多个view当成多份分配。CPU实际执行沿原同步入口完成；GPU对应的来源与保留点见第十九／二十一章；Frame当前数据根见下一节，程序根见2.7；B／C观察仍有各自未完成范围。
 
 ### 2.6 从Frame借用当前数据根
 
 Frame已经持有原数据和有效域关系，观察不需要再建一张根表。data直接交回同一DomainBindings的共享借用；datasets保持原槽索引与None空槽，ResidentData的Cpu／Gpu就是实际原存储。通过这些借用继续读原布局或来源，不load程序、创建设备或隐式传输。
 
-源码节选：`crates/blcompute/src/application.rs:87`。
+源码节选：`crates/blcompute/src/application.rs:90`。
 
 ```rust
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
@@ -781,7 +781,39 @@ pub struct DomainRelation {
 
 domain_relations只返回同一原切片。offset／bytes是完整记录内选中字段的字节范围，count.word虽名word，仍是计数字段字节偏移；例如前面有八字节普通字段时，它为八，而不是第八个u32。复制或自行构造这份元数据不能写入原私有关系，也不证明GPU完成或容量尾部初始化。实际CPU／GPU执行产生前缀，计数字段可写访问、resize、release及重排／分区沿原关系撤回或映射。
 
-这些是当前数据根的Rust接口。Frame现有公开生产路径没有直接接收宿主with_views／冻结数据的入口，不能向私有槽注入一个例子就称已集成；代码／程序观察根及B／C实际观察仍按各自范围推进，不由数据根查询冒称完成。
+这些是当前数据根的Rust接口。Frame现有公开生产路径没有直接接收宿主with_views／冻结数据的入口，不能向私有槽注入一个例子就称已集成；程序根见2.7，B／C实际观察仍按各自范围推进，不由数据根查询冒称完成。
+
+### 2.7 从Frame的程序槽追到原代码
+
+数据根之外，Frame还持有真正使用的程序。programs直接借用原Option槽切片，索引仍为该Frame程序号；不建另一程序目录，也不为观察装入代码或创建设备。原槽保留Image／Loaded与CPU／GPU实际类型。
+
+源码节选：`crates/blcompute/src/application.rs:95`。
+
+```rust
+    pub fn programs(&self) -> &[Option<ProgramSlot>] {
+        &self.programs
+    }
+```
+
+这份借用有效时，Frame不能被改写或释放；结束后再查当前原状态。公开原枚举让观察者沿原对象继续查询，不赋予写回原私有程序容器的能力。
+
+源码节选：`crates/blcompute/src/application.rs:21`。
+
+```rust
+pub enum Program {
+    Cpu(CpuTemplate),
+    Gpu(vulkan::GpuTemplate),
+}
+/// 同一原程序槽的实际映像或已装入程序；不是执行／完成状态。
+pub enum ProgramSlot {
+    Image(ProgramImage),
+    Loaded(Program),
+}
+```
+
+layout直接借用当前原ExecutionPlan，阶段、缓冲、访问与条件没有另一份解释。Loaded只说明装入；原运行在执行前因参数或驻留拒绝，也可以留下Loaded，不能把它当已提交、执行或完成。未触及槽仍是原映像，未装入CPU映像没有可报告的运行库VM；GPU程序也不因此交付最终驱动ISA。
+
+装入后的CpuTemplate可沿原code_memory查询实际代码区段，见第十五章。这一步返回Vec并调用VirtualQuery，成本和原OS错误保持，不能把根／布局借用的零分配推广到报告生成。数据release不会卸载仍由Frame拥有的程序；最后代码消费者结束后由原所有者释放VM，旧元数据不保活代码，地址可以复用。B／C代码与数据观察仍有各自未完成范围，Rust根借用不冒称这些入口或热更新已经交付。
 
 ## 第三章 只学阅读源码所需的 Rust
 
@@ -1987,7 +2019,7 @@ CPU 随后通过匹配 ABI 的入口调用这些指令，而不是由 Rust 对�
 
 可写和可执行内存、页面权限与函数签名属于这段代码必须满足的真实平台要求。它们与“变量是否乘二”处在不同层次。
 
-`CpuProgram::code_memory()`与`CpuTemplate::code_memory()`按需查看这些原代码入口。它们遍历同一阶段拥有者中的主代码、集合续段、Scan前缀及排序代码；每个入口只读取当前Windows VM区段，原OS错误直接交还调用者。
+从实际Frame可经programs原槽、Loaded(Program::Cpu)取得同一CpuTemplate；2.7的根与layout借用不触发装入，原Image没有运行库VM。`CpuProgram::code_memory()`与`CpuTemplate::code_memory()`按需查看这些原代码入口。它们遍历同一阶段拥有者中的主代码、集合续段、Scan前缀及排序代码；每个入口只读取当前Windows VM区段，原OS错误直接交还调用者。
 
 源码节选：`crates/blcompute/src/cpu.rs:249`。
 

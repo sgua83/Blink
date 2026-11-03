@@ -146,7 +146,15 @@ Rust 原生入口继续使用 compile_entry、Dataset、CpuProgram、Device、Gp
 
 Frame::data共享借用同一原DomainBindings<Option<ResidentData>>，datasets保持原槽与None空槽，Cpu／Gpu是实际原驻留存储，布局／来源从原对象继续查询；没有新根表、过滤目录、资源副本或另一释放链。活动借用期间不能改写／执行／释放Frame；结束后重新借用当前根。释放后槽可复用，整数句柄不成为持久身份。查询不load程序、创建设备、等待或传输；现有cpu_data_memory仍只返回CPU字节快照。
 
-DomainBindings::domain_relations返回原domains共享切片，公开原DomainRelation及其字段：domain／count.binding是当前datasets槽索引，offset／bytes是记录内字段字节范围，count.word也是记录内计数字段的字节偏移。原生产、计数改写撤回、重排／分区与资源拥有者保持；复制同形元数据不能发布有效域或绕过当前require，也不证明完成／初始化。容器字段仍私有，没有新关系写入口。当前公开Frame没有宿主冻结／with_views输入入口，不以私有注入冒称集成；代码／程序根与B／C观察仍按原剩余范围推进。详细语义见[Frame根与原关系](BLanguage.md#应用frame数据根与有效域关系的借用)。
+DomainBindings::domain_relations返回原domains共享切片，公开原DomainRelation及其字段：domain／count.binding是当前datasets槽索引，offset／bytes是记录内字段字节范围，count.word也是记录内计数字段的字节偏移。原生产、计数改写撤回、重排／分区与资源拥有者保持；复制同形元数据不能发布有效域或绕过当前require，也不证明完成／初始化。容器字段仍私有，没有新关系写入口。当前公开Frame没有宿主冻结／with_views输入入口，不以私有注入冒称集成；Frame程序根按下节借用原对象，B／C观察仍按原剩余范围推进。详细语义见[Frame根与原关系](BLanguage.md#应用frame数据根与有效域关系的借用)。
+
+## Rust SDK的Frame程序槽与代码根
+
+`Frame::programs()`只共享借用原Option程序槽切片，原索引是本Frame程序号。原ProgramSlot的Image／Loaded分别持有CPU／GPU原映像或Program中的CpuTemplate／GpuTemplate；ProgramSlot::layout借用同一原ExecutionPlan，不构造观察副本或拥有表。根与布局查询不分配、装入、创建设备、执行、等待或传输，活动借用不能跨Frame改写或释放。
+
+Loaded只说明装入，原参数／驻留拒绝也可能留下已装入程序，不代表工作执行或完成。CPU继续从该原CpuTemplate调用code_memory，保持既有Vec返回成本、原VirtualQuery错误和快照语义；GPU程序借用只说明实际合同，不成为最终ISA或完成查询。未触及槽保持原映像，数据释放不卸载仍由Frame拥有的代码；最后真实程序消费者结束后按原拥有者释放，旧报告不保活代码或赋予地址访问权。
+
+这是同一Rust运行库的共享借用，不跨单元传Rust容器、不修改资源ABI或增加B／C入口。跨语言代码观察仍沿C-021.7.9.23.3.2，数据观察仍归.22.4，其他宿主容器仍归.23.2.2。完整语义见[Frame程序根](BLanguage.md#应用frame程序槽与代码根的借用)。
 
 ## Rust SDK的CPU存储与代码区段观察
 

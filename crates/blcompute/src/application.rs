@@ -17,16 +17,19 @@ pub enum ProgramImage {
     Cpu(blanguage::native::ProgramImage<TemplateProgram>),
     Gpu(blanguage::spirv::ProgramImage<TemplateProgram>),
 }
-enum Program {
+/// 当前已装入的原CPU／GPU程序；观察只借用，不复制代码拥有关系。
+pub enum Program {
     Cpu(CpuTemplate),
     Gpu(vulkan::GpuTemplate),
 }
-enum ProgramSlot {
+/// 同一原程序槽的实际映像或已装入程序；不是执行／完成状态。
+pub enum ProgramSlot {
     Image(ProgramImage),
     Loaded(Program),
 }
 impl ProgramSlot {
-    fn layout(&self) -> &ExecutionPlan {
+    /// 借用当前映像或已装入程序的原执行合同，不触发装入。
+    pub fn layout(&self) -> &ExecutionPlan {
         match self {
             Self::Image(ProgramImage::Cpu(image)) => image.program(),
             Self::Image(ProgramImage::Gpu(image)) => image.program(),
@@ -86,6 +89,11 @@ impl Frame {
     /// 不过滤、复制或保活另一份资源；活动借用期间不能改变Frame。
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
         &self.data
+    }
+    /// 借用同一原程序槽，索引仍为本Frame的实际程序号。
+    /// 不装入映像、创建设备或保活另一份程序；借用期间不能改变Frame。
+    pub fn programs(&self) -> &[Option<ProgramSlot>] {
+        &self.programs
     }
     /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。
     /// 结果只保存本次元数据，不保活资源；释放后的旧结果不代表当前存活状态。

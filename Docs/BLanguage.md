@@ -3845,7 +3845,29 @@ for (handle, slot) in root.datasets().iter().enumerate() {
 let actual_relations = root.domain_relations();
 ```
 
-关系和数据容器仍由原拥有者私有持有；公开DomainRelation的读取／普通值构造不授予向原domains发布关系的权限。旧元数据副本不替代当前require，也不证明GPU实际完成、B初始化或容量尾部可读。GPU异步绑定的完成关系继续由原last_use解释，Frame::run保持原同步调用；这些查询是Rust SDK接口，不新增B语法或跨单元C ABI容器。代码／程序观察根及B／C实际入口保持各自未完成范围。
+关系和数据容器仍由原拥有者私有持有；公开DomainRelation的读取／普通值构造不授予向原domains发布关系的权限。旧元数据副本不替代当前require，也不证明GPU实际完成、B初始化或容量尾部可读。GPU异步绑定的完成关系继续由原last_use解释，Frame::run保持原同步调用；这些查询是Rust SDK接口，不新增B语法或跨单元C ABI容器。Frame程序根见下一节；B／C数据与代码观察仍沿各自原未完成范围。
+
+### 应用Frame程序槽与代码根的借用
+
+Rust SDK的`Frame::programs()`返回同一原programs的`&[Option<ProgramSlot>]`，保留原槽顺序、索引及实际Option状态；索引对应本Frame的程序号，不生成长期代码身份。ProgramSlot::Image持有原ProgramImage::Cpu／Gpu，Loaded持有原Program::Cpu(CpuTemplate)／Gpu(GpuTemplate)。原容器仍私有，查询没有插入、改写或装入入口；公开同形枚举值不授予发布到该Frame的权限。
+
+`ProgramSlot::layout()`共享借用当前映像或装入程序的同一原ExecutionPlan，阶段、缓冲、类型、访问及条件保持真实来源。只取程序根或布局不分配、装入VM、创建设备、执行、等待或传输。活动借用不可跨Frame的run／分配／驻留变更／释放或销毁；变更之后重新借用，不能据旧地址推断当前代码身份。
+
+```rust
+use blcompute::application::{Program, ProgramSlot};
+for (program_index, slot) in frame.programs().iter().enumerate() {
+    if let Some(slot) = slot {
+        let actual_plan = slot.layout();
+        if let ProgramSlot::Loaded(Program::Cpu(code)) = slot {
+            let current_vm = code.code_memory()?;
+        }
+    }
+}
+```
+
+Loaded只表达原代码已装入，不是工作接收／执行／完成状态；原run在真正执行前因参数或驻留拒绝，程序仍可能已经装入，数据继续由原所有者持有。未装入映像没有运行库VM，不能为查询提前装入；GPU Loaded不证明最终驱动机器码或设备完成。CPU code_memory仍是原按需Result<Vec<CpuCodeMemory>>，返回Vec会分配，VirtualQuery及错误沿原平台入口交接；报告不保活代码或产生读写许可，不能把多入口共享区段累加成独占字节。
+
+数据release不释放仍由Frame拥有的原程序，Frame／原代码最后消费者结束后才释放代码VM与相应平台资源；仅保存旧元数据不延长寿命，地址可以复用。原枚举和后端类型的显式拥有操作继续沿其原职责，不增加另一回收链、Frame身份、程序目录或版本状态。该节为Rust SDK接口，不改模块资源编码或C ABI；B／C代码区段观察仍沿C-021.7.9.23.3.2，数据／view跨语言归C-021.7.9.22.4，其他宿主容器归.23.2.2。
 
 ### 原生物理 GPU 枚举与选择
 

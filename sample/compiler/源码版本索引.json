@@ -276,7 +276,7 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "sha256": "b9513747f9e3473d5ef2328a558b6602d03d5b8f1d1cf0541649f7ce8cb0e729"
+      "sha256": "7c8b5a228df1fd95873b910dc190f42d65ec0551ec7f66cd85da157c222a773f"
     },
     {
       "path": "crates/blcompute/src/bindings.rs",
@@ -470,8 +470,8 @@
     },
     {
       "path": "crates/blcompute/src/application.rs",
-      "start_line": 87,
-      "end_line": 89,
+      "start_line": 90,
+      "end_line": 92,
       "sha256": "b54d186cd9a5877aa71e8275035bbdd3c17e214c186ebc3996d4beb3d8af6415"
     },
     {
@@ -479,6 +479,18 @@
       "start_line": 24,
       "end_line": 32,
       "sha256": "c8651070750924dc27ce0c536dc89ed51a7b73241502d7d6651bdfd26f1be323"
+    },
+    {
+      "path": "crates/blcompute/src/application.rs",
+      "start_line": 95,
+      "end_line": 97,
+      "sha256": "515e1184bdde60631b4f3b1b6a3eec4ad4eff239fd5dd344824f7ebaa9d3de51"
+    },
+    {
+      "path": "crates/blcompute/src/application.rs",
+      "start_line": 21,
+      "end_line": 29,
+      "sha256": "328119150f7c7dbe0a2062c93862a4666b8c7c50fef65f270e33e62d6085f95b"
     },
     {
       "path": "crates/blanguage/src/parser.rs",
