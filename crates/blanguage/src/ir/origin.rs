@@ -113,3 +113,8 @@ impl SourceSite {
             range_fields(Some(&self.origin.source.text), self.span))
     }
 }
+
+impl super::Stage {
+    /// Original collective call, independent of its internal value kernels or generated code.
+    pub fn operation_source(&self) -> Option<&SourceSite> { self.operation_source.as_deref() }
+}

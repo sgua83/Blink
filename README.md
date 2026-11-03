@@ -462,7 +462,7 @@ AI可用`bc inputs <compiled.obj|entry.blbi>`直接查询产物保存的实际�
 
 AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`查询本次具体类型或字段的JSON布局；`bc build`同时输出.layout.json，已有执行接口也可由SDK直接查询。值描述、元素存储及资源字覆盖的边界见[类型与字段布局查询](Docs/BLanguage.md#类型与字段布局的结构查询)。
 
-AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。函数／程序IR的source_origin保留实际原定义快照、范围与实例对应关系，已取得IR在文件变化后仍可查原事实；每个原IR操作可沿source_site查询发射时的语法范围，缺失材料明确为null；同一来源还保留实际特化实例和从外到内的真实内联展开点；优化变换与机器映射继续独立交付，见[操作语法来源](Docs/BLanguage.md#ir操作的语法来源)和[原定义来源](Docs/BLanguage.md#函数与程序ir的原定义来源)。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
+AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。函数／程序IR的source_origin保留实际原定义快照、范围与实例对应关系，已取得IR在文件变化后仍可查原事实；每个原IR操作可沿source_site查询发射时的语法范围，缺失材料明确为null；同一来源还保留实际特化实例和从外到内的真实内联展开点；无普通Inst的集合调用可沿Stage::operation_source()及阶段JSON的operation_source查询原调用标识符范围和实际实例，内部值核入口仍待交接；优化变换与机器映射继续独立交付，见[操作语法来源](Docs/BLanguage.md#ir操作的语法来源)和[原定义来源](Docs/BLanguage.md#函数与程序ir的原定义来源)。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
 
 AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，原Object可显式保存独立`.blcf`，`--observations <ranges.blcf>`匹配后交接普通函数／辅助代码／对齐／字面量完整分区；无材料保持未分类，最终PE另行交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
 

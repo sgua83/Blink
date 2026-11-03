@@ -36,6 +36,7 @@ pub(super) fn clear(
         },
     });
     program.stages.push(Stage {
+        operation_source: None,
         domain: count,
         prefix: None,
         selection: None,

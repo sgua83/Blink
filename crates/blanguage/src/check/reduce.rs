@@ -8,6 +8,7 @@ pub(super) fn compile(
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
+    operation_source: Option<Arc<SourceSite>>,
 ) -> Result<()> {
     if args.len() != 2 {
         return d.source.fail(span, "B169", "归约需要源数值字段和输出字段");
@@ -44,6 +45,7 @@ pub(super) fn compile(
         .into_iter()
         .collect();
     program.stages.push(Stage {
+        operation_source,
         domain: source,
         prefix,
         selection: None,

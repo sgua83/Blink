@@ -513,6 +513,17 @@ fn expand_program(
     stack.pop();
     Ok(())
 }
+fn collection_source(instance: &crate::generics::Instance, span: Span) -> Option<Arc<SourceSite>> {
+    Some(Arc::new(SourceSite {
+        origin: Arc::new(instance.definition.source_origin()?),
+        context: Arc::new(SourceContext {
+            instance: Some(Arc::from(instance.name.as_str())),
+            inlined_at: Box::default(),
+        }),
+        span,
+        syntax: SourceSyntax::Expression,
+    }))
+}
 fn expand_stages(
     world: &World,
     instance: &crate::generics::Instance,
@@ -723,6 +734,7 @@ fn expand_stages(
                     prefix,
                     selection,
                     operation: Operation::Map,
+                    operation_source: None,
                     tiles,
                     boundary_before: std::mem::take(boundary),
                     registers: b.registers,
@@ -751,24 +763,27 @@ fn expand_stages(
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
+                span: call_span,
                 ..
             }) if name == "stable_sort_by_key"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                sort::compile(program, env, args, d, statement.span, facts)?;
+                sort::compile(program, env, args, d, statement.span, facts, collection_source(instance, *call_span))?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args),
+                span: call_span,
                 ..
             }) if name == "compact"
                 && world.resolve(name, &d.module, &d.imports, true).is_none() =>
             {
-                compact::compile(program, env, args, d, statement.span, facts)?;
+                compact::compile(program, env, args, d, statement.span, facts, collection_source(instance, *call_span))?;
                 *boundary = false;
             }
             StmtKind::Expr(Expr {
                 kind: ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args),
+                span: call_span,
                 ..
             }) => 'call: {
                 let explicit = if let StmtKind::Expr(Expr {
@@ -785,7 +800,7 @@ fn expand_stages(
                     if let Some(operator) = CollectiveOperator::from_reduction_source(name)
                         .filter(|_| explicit.is_none())
                     {
-                        reduce::compile(program, env, operator, args, d, statement.span, facts)?;
+                        reduce::compile(program, env, operator, args, d, statement.span, facts, collection_source(instance, *call_span))?;
                         *boundary = false;
                         break 'call;
                     }
@@ -802,6 +817,7 @@ fn expand_stages(
                             facts,
                             name.ends_with("_map"),
                             kind,
+                            collection_source(instance, *call_span),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -818,6 +834,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
+                            collection_source(instance, *call_span),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -834,6 +851,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
+                            collection_source(instance, *call_span),
                         )?;
                         *boundary = false;
                         break 'call;
@@ -850,6 +868,7 @@ fn expand_stages(
                             d,
                             statement.span,
                             facts,
+                            collection_source(instance, *call_span),
                         )?;
                         *boundary = false;
                         break 'call;

@@ -8,6 +8,7 @@ pub(super) fn compile(
     d: &Definition,
     span: Span,
     facts: &mut prefix::Facts,
+    operation_source: Option<Arc<SourceSite>>,
 ) -> Result<()> {
     if args.len() != 4 {
         return d.source.fail(
@@ -87,6 +88,7 @@ pub(super) fn compile(
         .into_iter()
         .collect();
     program.stages.push(Stage {
+        operation_source,
         domain: source,
         prefix,
         selection: None,

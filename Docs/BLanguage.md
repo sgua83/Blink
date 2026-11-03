@@ -286,7 +286,7 @@ Builder在实际语句、表达式、返回值表达式和位置处理期间交�
 
 `SourceSite::ir_json()`的kind为source_syntax，syntax为statement／expression／place，definition沿原source_definition输出同一原定义及快照；其余start_byte／end_byte、span_unit／span_range、start／end、column_unit和position_base与原定义查询采用相同单位，但范围属于本次语法上下文。现有compiler角色的每个IR操作JSON增加source_site，对没有材料的操作输出null；关闭compiler时不输出该字段。只在显式查询进行摘要、行列和JSON计算，已经取得的IR不重读后续磁盘文件。
 
-语法位置和实际实例／内联展开点已交接；集合调用、域展开与生成阶段分类继续见Issues C-021.7.9.7.2.3／.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
+语法位置、实际实例／内联展开点和集合调用来源已交接；集合值核入口、域展开与生成阶段分类继续见Issues C-021.7.9.7.2.3.2／.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
 
 #### 实际实例与内联展开点
 
@@ -296,9 +296,17 @@ compiler功能的`SourceSite::instance()`借用实际`generics::Instance.name`�
 
 每个source_syntax对象增加instance、inlined_at_order=outermost_first与inlined_at数组。每个展开点kind为inline_site，definition为调用者原source_definition或null，instance为实际调用者实例或null；start_byte／end_byte、span_unit／span_range及行列单位沿原语法范围规则。缺少调用者源快照时保留原入口交接的字节范围，但start／end位置为null；已知实例与后续已知展开点继续保留，不猜补缺失定义或丢掉整个路径。空数组表示本操作没有普通函数／cooperate的内联展开前缀，不表示运行时没有调用。
 
-实际非内联普通调用不增加内联帧，其被调函数IR以自己的真实实例作为根；inline_site是编译期实际展开点，不是机器CALL、硬件现场或运行期调用栈。阶段展开保存当前阶段所属函数实例；外层域调用点、集合算子驱动／引用与生成分类仍沿.7.2.3／.4分别交接，不把当前inline数组冒称完整域调用图。优化合并／消除与机器地址继续沿.7.3至.6，不从剩余寄存器或新构造操作推测丢失关系。
+实际非内联普通调用不增加内联帧，其被调函数IR以自己的真实实例作为根；inline_site是编译期实际展开点，不是机器CALL、硬件现场或运行期调用栈。阶段展开保存当前阶段所属函数实例；集合调用自身另沿下述operation_source交接；外层域调用点、集合值核入口／引用与生成分类仍沿.7.2.3.2／.4分别交接，不把当前inline数组冒称完整域调用图。优化合并／消除与机器地址继续沿.7.3至.6，不从剩余寄存器或新构造操作推测丢失关系。
 
 同一展开体的语法点共享不可变实例名和调用点列表，原Source文本继续共享Arc；每次真正展开时只把现有路径及本次原调用点交给新上下文，不保留Builder、AST、World或另建来源表／调用图。资料归原IR并在最后消费者后释放；显式查询才进行摘要、行列和JSON计算，磁盘源码后续变化不改变已取得的根／调用点快照。普通调用、内联选择、合法程序、优化、C ABI及必要执行编码均不因这些观察事实改变。
+
+#### 集合调用的原算子来源
+
+compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归同一个Stage所持`Operation`所有；`stage_ir`增加operation_source，按原source_syntax编码原定义快照、具体实例、语法类别及范围，材料缺失为null。内置／自定义归约、普通／分段扫描、分段归约、compact和stable_sort_by_key的原生产者交接真实调用Expr.span和当前实际Instance，类别为expression。当前解析器的调用Span通常为调用标识符；字节半开范围及Unicode标量行列据此输出，不推测扩大为完整参数列表，不改原诊断所消费的语句范围。两个相同目标的调用仍有各自原位置，根Program名不代替实际集合所属实例。
+
+集合即使没有普通Inst，也能取得自身来源；project／identity／combine的ValueCode入口、bind静态引用及捕获关系仍归C-021.7.9.7.2.3.2，不能用此集合调用或内部一条指令冒充这些入口。当前不把域函数展开伪装成普通内联点；inlined_at为空仅表示没有已交接的普通函数内联前缀，域调用链继续归.2.4。parallel及clear_prefix／普通CPU发射所用合成Map当前没有本项集合来源，为null，不从相邻集合或原函数根补造。
+
+原Stage克隆共享同一不可变来源，Source文本随原快照共享，原IR消费者结束后释放；查询返回借用或独立字符串，不保留AST／World、注册表、运行图或额外状态。后续磁盘源码改变或移走不改变已取得材料。compiler专用Stage有内部来源字段，Rust消费者沿编译返回值及原Stage克隆取得，不依赖旧结构字面量／布局。关闭compiler时该字段及operation_source JSON均不存在；原ExecutionStage、BLRI必要执行编码、C ABI、访问、数值、调度和优化不因本项改变。优化多对多关系及CPU／GPU机器映射继续沿原叶实施。
 
 ### 保存和恢复可选CPU范围材料
 

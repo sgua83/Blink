@@ -128,6 +128,7 @@ pub(super) fn compile(
     facts: &mut prefix::Facts,
     map: bool,
     kind: Kind,
+    operation_source: Option<Arc<SourceSite>>,
 ) -> Result<()> {
     let d = &owner.definition;
     let scan = matches!(kind, Kind::Scan | Kind::SegmentedScan);
@@ -287,6 +288,7 @@ pub(super) fn compile(
         combine,
     };
     program.stages.push(Stage {
+        operation_source,
         domain: source,
         prefix,
         selection: None,

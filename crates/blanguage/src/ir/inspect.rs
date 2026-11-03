@@ -206,6 +206,8 @@ impl Stage {
             ("domain", number(self.domain)), ("prefix", optional(self.prefix.as_ref(), prefix)),
             ("selection", optional(self.selection.as_ref(), |value| node("selection", &[("binding", number(value.binding)), ("word", number(value.word))]))),
             ("operation", operation(&self.operation)), ("boundary_before", number(self.boundary_before)),
+            #[cfg(feature = "compiler")]
+            ("operation_source", optional(self.operation_source(), SourceSite::ir_json)),
             ("registers", array(self.registers.iter().map(name))), ("locals", locals(&self.locals)), ("code", code(&self.code)),
             ("reads", numbers(&self.reads)), ("writes", numbers(&self.writes)), ("cross_access", numbers(&self.cross_access)),
             ("tiles", array(self.tiles.iter().map(|value| node("tile", &[("source", match value.source { TileSource::Input { binding, word } => node("input", &[("binding", number(binding)), ("word", number(word))]), TileSource::Published => node("published", &[]) }), ("type", value.ty.layout_json()), ("width", number(value.width))])))),

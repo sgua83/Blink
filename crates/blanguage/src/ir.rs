@@ -1167,6 +1167,8 @@ pub struct Stage {
     pub prefix: Option<PrefixCount>,
     pub selection: Option<Selection>,
     pub operation: Operation,
+    #[cfg(feature = "compiler")]
+    pub(crate) operation_source: Option<std::sync::Arc<SourceSite>>,
     pub boundary_before: bool,
     pub registers: Vec<Scalar>,
     // Key is the first logical component after this declaration; padding has no slot.

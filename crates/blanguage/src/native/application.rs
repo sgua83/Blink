@@ -18,6 +18,7 @@ fn emit_value(
     result: Option<&Ty>,
 ) -> Result<NativeCode, &'static str> {
     let mut stage = Stage {
+        operation_source: None,
         tiles: Vec::new(),
         domain: 0,
         prefix: None,

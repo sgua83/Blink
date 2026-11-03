@@ -245,7 +245,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-3-1"></a>
 
-**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录真实调用表达式、定义及具体实例，不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel／合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-3-1)。
+**集合调用到原算子的来源。** 输入为原集合Expr.span、实际generics::Instance及其原Definition，生产者是原expand_stages中的内置／自定义归约、普通／分段扫描、分段归约、压缩及稳定排序选择；输出是由原Stage与Operation一同拥有的compiler专用可选SourceSite。记录原Expr.span、定义及具体实例，当前普通调用Span通常覆盖调用标识符；不扩大为未取得的完整参数表达式，也不把原诊断用语句范围替换成推测位置。原定义的Source快照不可变共享，Stage克隆共享同一来源；查询只借用同一编译结果，JSON结果归调用者，最后真实IR消费者后释放。缺少原定义时明确无材料；parallel／合成Map不借用附近集合调用填补。该事实不进入ExecutionStage、必要资源编码或无compiler运行角色，不修改原数值、访问、调度及优化；域调用链、生成分类、值核入口及机器映射沿其他原叶，不能用此来源冒称这些能力。compiler的Stage::operation_source()借用同一可选SourceSite，stage_ir的operation_source交接同一source_syntax或null，关闭compiler时不输出该字段；原JSON和SDK无需另一命令／对象。当前已实现这一原调用交接，值核及其余生成关系仍按各自缺口推进；[闭合范围](FixedIssues.md#c-021-7-9-7-2-3-1)，精确接口见[规范](BLanguage.md#集合调用的原算子来源)。
 
 <a id="tool-7-2-3-2"></a>
 
