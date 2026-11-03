@@ -53,7 +53,7 @@ pub(crate) struct Contract {
     frame: bool,
     pub(super) domain: Option<crate::module::domain::Interface>,
     residency: residency::Requirements,
-    view_access:BTreeSet<view_contracts::Access>,
+    view_access:Option<BTreeSet<view_contracts::Access>>,
     initialization:Option<Vec<address::Initialization>>,
 }
 // The wire still stores a vector of guards. Its meaning is one requirement
@@ -68,7 +68,7 @@ impl crate::module::codec::Encode for Contract {
             key.encode(w);1usize.encode(w);
             guards.iter().cloned().fold(bounds::Condition::constant(false),|a,b|a.logical(b,true)).encode(w);
         }
-        self.view_access.encode(w);self.initialization.as_ref().unwrap().encode(w);
+        self.view_access.as_ref().unwrap().encode(w);self.initialization.as_ref().unwrap().encode(w);
     }
 }
 impl crate::module::codec::Decode for Contract {
@@ -78,7 +78,7 @@ impl crate::module::codec::Decode for Contract {
             parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,
             returned:Decode::decode(r)?,written:Decode::decode(r)?,requires:Decode::decode(r)?,
             target:Decode::decode(r)?,frame:Decode::decode(r)?,domain:Decode::decode(r)?,
-            residency:Decode::decode(r)?,view_access:Decode::decode(r)?,initialization:Some(Decode::decode(r)?),
+            residency:Decode::decode(r)?,view_access:Some(Decode::decode(r)?),initialization:Some(Decode::decode(r)?),
         })
     }
 }
@@ -112,7 +112,7 @@ fn declaration(
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
     let checked = checked_function(world, &instance, Some(context), functions)?;
-    Ok(finish_declaration(&instance, frame, checked))
+    finish_declaration(&instance, frame, checked)
 }
 
 #[inline(never)]
@@ -156,7 +156,7 @@ fn finish_declaration(
     instance: &crate::generics::Instance,
     frame: Option<Vec<Reg>>,
     checked: Box<CheckedFunction>,
-) -> (application::Context, Module) {
+) -> Result<(application::Context, Module)> {
     let residency=checked.residency;
     let mut functions = checked.functions;
     let mut context = checked.application.unwrap();
@@ -173,7 +173,7 @@ fn finish_declaration(
         frame: false,
         domain: None,
         residency: BTreeMap::new(),
-        view_access:BTreeSet::new(),
+        view_access:None,
         initialization:checked.initialization,
     };
     functions.units.insert(
@@ -190,7 +190,8 @@ fn finish_declaration(
             view_model: checked.view_model,
         }),
     );
-    (context, functions)
+    resolve_views(&mut functions,Some(&instance.name))?;
+    Ok((context, functions))
 }
 // 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
 pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
@@ -537,9 +538,9 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
-        if d.compiled.is_some() {
+        if let Some(access)=self.functions.units[&instance.name].as_ref().and_then(|unit|unit.contract.view_access.as_ref()) {
             memory_borrow=view::Borrow::default();
-            for access in &self.functions.units[&instance.name].as_ref().unwrap().contract.view_access {
+            for access in access {
                 let (view_contracts::Access::Memory{borrows,when}|view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}})=access else{continue;};
                 let path=when.guard_at_call(&view_arguments).assume(&self.path,true);
                 let borrow=self.current_address_borrow(&borrows.at_call(&view_arguments));
@@ -756,23 +757,29 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     }
     if let Some(value)=&contract.returned{for(resource,borrow)in view_contracts::resource_borrows(value).into_iter().enumerate(){outputs.insert(view_contracts::Output::ReturnedResource(resource),borrow);}}
     for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_borrows(value).into_iter().enumerate(){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
-    view_contracts::Interface{outputs,access:contract.view_access.clone(),initialization:contract.initialization.clone().unwrap()}
+    view_contracts::Interface{outputs,access:contract.view_access.as_ref().unwrap().clone(),initialization:contract.initialization.clone().unwrap()}
 }
-fn resolve_views(module:&mut Module)->Result<()> {
+fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
     let mut functions=BTreeMap::new();let mut closed=BTreeMap::new();
-    for (name,unit)in &module.units {
-        let unit=unit.as_ref().unwrap();
-        if unit.function.is_some(){functions.insert(name.clone(),&unit.view_model);}else{closed.insert(name.clone(),view_outputs(&unit.contract));}
+    let mut pending=root.map(|name|vec![name.to_owned()]).unwrap_or_else(||module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.view_access.is_none().then(||name.clone())).collect());
+    while let Some(name)=pending.pop() {
+        if functions.contains_key(&name)||closed.contains_key(&name){continue;}
+        let Some(unit)=module.units[&name].as_ref() else{return Ok(());};
+        if unit.contract.view_access.is_some(){closed.insert(name,view_outputs(&unit.contract));}
+        else{
+            pending.extend(unit.view_model.calls.iter().map(|call|call.function.clone()));
+            functions.insert(name,&unit.view_model);
+        }
     }
     let outputs=view_contracts::solve(&functions,closed)?;
-    for (name,unit)in &mut module.units {
-        let unit=unit.as_mut().unwrap();
+    for (name,memory)in &outputs.memory {
+        let unit=module.units.get_mut(name).unwrap().as_mut().unwrap();
         let contract=&mut unit.contract;
         let interface=&outputs.interfaces[name];
         if interface.outputs.values().any(view::Borrow::has_local) {
             return unit.source.fail(unit.span,"B227","地址不能返回或输出当前函数的局部存储");
         }
-        contract.view_access=interface.access.clone();
+        contract.view_access=Some(interface.access.clone());
         contract.initialization=Some(interface.initialization.clone());
         for (output,borrow)in &interface.outputs {
             match *output {
@@ -783,14 +790,14 @@ fn resolve_views(module:&mut Module)->Result<()> {
             }
         }
         if let Some(function)=&mut unit.function {
-            if let Some(memory)=outputs.memory.get(name) {address::apply_memory(&mut function.body.code,memory,&function.body.locals);}
+            address::apply_memory(&mut function.body.code,memory,&function.body.locals);
         }
     }
     Ok(())
 }
 // 函数合同沿真实资源调用关系收敛，递归参数置换也消费同一输入条件。
 fn resolve_residencies(module: &mut Module) -> Result<()> {
-    resolve_views(module)?;
+    resolve_views(module,None)?;
     let outputs = residency::solve_outputs(module.units.iter().map(|(name, unit)| {
         (
             name.as_str(),
@@ -1339,7 +1346,7 @@ fn build_domain(
         frame: false,
         domain: Some(interface),
         residency: BTreeMap::new(),
-        view_access:BTreeSet::new(),
+        view_access:Some(BTreeSet::new()),
         initialization:Some(Vec::new()),
     };
     functions.units.insert(

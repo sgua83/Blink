@@ -18,8 +18,8 @@ pub(super) enum Access {
 crate::module::codec::variants!(Access {0=>Resource{resources,borrows,when},1=>Position{borrows,when,position},2=>Memory{borrows,when}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
-struct Call {
-    function:String,
+pub(super) struct Call {
+    pub(super) function:String,
     memory:usize,
     arguments:BTreeMap<ValueIdentity,bounds::Proof>,
     initialization:Vec<address::InitializationEffect>,
@@ -89,7 +89,7 @@ pub(super) struct LoopDefinition {pub borrow:Borrow,pub resource:Option<LoopReso
 #[derive(Default)]
 pub(super) struct Function {
     next_scope:usize,
-    calls:Vec<Call>,
+    pub(super) calls:Vec<Call>,
     pub loops:BTreeMap<LoopInput,LoopDefinition>,
     pub independent:BTreeSet<LoopInput>,
     pub outputs:Outputs,

@@ -124,7 +124,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "a1758f3becdd33a127e8761bbfb68c6e26d3fef9ae25adad57cba9d821f7f036"
+      "sha256": "39d4411a24a5f7d33e40eb719e9a4cf95895dec66fb4e61f529234242b468f34"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -164,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "a85a2e13eea71e459d0f4d438f8a684a6937769594a3418647d2998ab717490c"
+      "sha256": "16e8e93e7664932e8705f4a22888d45a4aff9212a4ca53ccfde8051fd43f6523"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
