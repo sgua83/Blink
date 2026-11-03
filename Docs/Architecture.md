@@ -325,7 +325,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3-1"></a>
 
-**dataset最终存储释放Call来源。** 输入／输出及生产消费：原Data、Frame、实际句柄及原发射SourceSite→application_drop最终发射／application_release原ABI参数→原release Call。只在原实际Call分类DatasetRelease，源定义、实例、inlined_at、domain_path及原语法范围保持；没有原上下文时trigger缺失，外围已有语法不伪装为完整作用域结束或退出原因。源显式操作、RHS及拥有元素清理保持各自来源，Frame销毁仍自己的职责。原访问、所有权状态与最后CPU／GPU消费者保持；材料仅原编译IR共享，不改变代码、资源寿命或释放顺序。静态Call不证明运行已经释放。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-3-1)。
+**dataset最终存储释放Call来源。** 输入／输出及生产消费：原Data、Frame、实际句柄及原发射SourceSite→application_drop最终发射／application_release原ABI参数→原release Call。只在原实际Call分类DatasetRelease，源定义、实例、inlined_at、domain_path及原语法范围保持；没有原上下文时trigger缺失，外围已有语法不伪装为完整作用域结束或退出原因。源显式操作、RHS及拥有元素清理保持各自来源，Frame销毁仍自己的职责。原访问、所有权状态与最后CPU／GPU消费者保持；材料仅原编译IR共享，不改变代码、资源寿命或释放顺序。静态Call不证明运行已经释放。当前已交接原最终release Call的生成理由与既有可选语法上下文；其余四类清理来源仍未完成。见[规范](BLanguage.md#dataset最终存储释放的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-1)。
 
 <a id="tool-7-2-4-5-3-2"></a>
 

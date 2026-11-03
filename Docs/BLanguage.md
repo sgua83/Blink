@@ -347,12 +347,13 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetInitializeLoop | dataset_initialize_loop | 原初始化Loop本身 |
 | DatasetBindSlots | dataset_bind_slots | 原dataset新绑定的句柄／长度局部StoreLocal |
 | DatasetAssignSlots | dataset_assign_slots | 原dataset重新赋值的句柄／长度局部StoreLocal |
+| DatasetRelease | dataset_release | 原dataset最终存储释放Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
 原clear_prefix调用由append::clear生成原Map、零常量和计数Store；同一Stage和两个Inst共享clear_prefix的GeneratedOrigin，trigger为真实调用Expr范围及当前实际实例／域路径。当前解析器的普通调用范围通常覆盖clear_prefix标识符；原诊断用语句Span保持，不扩大为未取得的完整参数列表。没有额外Index、另一个Stage或输出清空，原计数归零与空prefix关系保持；生成Stage.operation_source及两节点source_site仍为null，不伪造用户直接Map／赋值。
 
-Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化及新绑定／重新赋值槽位见下文；释放、扩容、寻址、参数、传输和发起仍归.2.4.5.3至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
+Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化、新绑定／重新赋值槽位及最终存储释放见下文；其余清理、扩容、寻址、参数、传输和发起仍归.2.4.5.3至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
 
 材料沿原Inst／Stage／ValueCode不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
 
@@ -362,7 +363,7 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 
 live_resources仅在原Frame实际被保留的路径交接错误接收器、上下文、create、就绪检查／分支、失败退出值和正常destroy等真实原因。每个节点仍是原操作，FrameReadiness的多个节点共享同一不可变材料；各理由的Definition锚点共享原入口定义快照及实例。根锚点说明应用拥有的隐式生命周期，不声称某个资源表达式独自导致Frame，也不覆盖其余资源原语的实际源触发。没有活资源、或资源路径已经消除时，不生成Frame接收器、create、就绪分支或destroy；原入口包装仍有自己的生成材料。
 
-Frame失败分支与正常路径保持原代码／原语义，静态生成材料不证明分支已执行。正常资源入口沿原CPU／GPU及Frame资源完成运行，根元数据不拥有或延长运行资源，不新增条件、Builder状态、调用图、拥有表、调度、释放或错误路径。Source、名字与材料随原IR不可变共享，最后IR消费者后释放；查询不重读后续磁盘文件，不持有World／AST，只有显式查询承担摘要、行列和JSON成本。完整优化、重写／消除及机器范围仍由原叶交接，不为材料保活代码。dataset分配沿下一节的真实构造触发交接；生成函数初始化另沿原factory引用交接，新绑定及重新赋值槽位另沿原发射上下文交接，扩容、释放、寻址、参数接收、传输及计算发起的细分职责仍待实现，不从根锚点猜补。
+Frame失败分支与正常路径保持原代码／原语义，静态生成材料不证明分支已执行。正常资源入口沿原CPU／GPU及Frame资源完成运行，根元数据不拥有或延长运行资源，不新增条件、Builder状态、调用图、拥有表、调度、释放或错误路径。Source、名字与材料随原IR不可变共享，最后IR消费者后释放；查询不重读后续磁盘文件，不持有World／AST，只有显式查询承担摘要、行列和JSON成本。完整优化、重写／消除及机器范围仍由原叶交接，不为材料保活代码。dataset分配沿下一节的真实构造触发交接；生成函数初始化另沿原factory引用交接，新绑定及重新赋值槽位、dataset最终存储释放另沿原发射上下文交接；其余清理、扩容、寻址、参数接收、传输及计算发起的细分职责仍待实现，不从根锚点猜补。
 
 #### dataset构造分配的生成来源
 
@@ -401,6 +402,16 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 未初始化声明后的首次赋值、移动后补回、自赋值、拥有形参及资源返回的赋值仍沿原语义；是否实际保留Local写入由原优化决定。application_declare本身不造初始化，新绑定另用DatasetBindSlots，RHS分配／初始化和旧资源释放不借用重新赋值理由。普通值、拥有聚合与元素替换没有该可选材料，其他Place保持原发射职责；不复制访问检查或建立另一份资源赋值实现。
 
 这些槽位描述原局部数据表示，不是运行时栈地址、底层存储复制或另一份拥有。材料只归compiler功能下的原Inst共享并在最后IR消费者后结束，不增加Builder状态、拥有表、采集、隐式同步或释放链。原优化可消除被传播、覆盖或未使用的写入；静态来源不证明赋值已经实际执行，返回IR不冒充完整重写／消除历史或机器位置，完整能力仍归.7.3／.7.4及.11。见[架构职责](Architecture.md#tool-7-2-4-5-2-3-2)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-3-2)。
+
+#### dataset最终存储释放的生成来源
+
+原application_drop完成已有访问／所有权检查、取得实际句柄并清理拥有元素后，在最终application_release产生的同一原Call上附DatasetRelease，JSON reason为dataset_release。Frame与句柄参数、外部目标、寄存器和先后顺序保持；source_site为null，原发射SourceSite直接共享为generated_origin.trigger的Syntax锚点，原定义、实际实例、inlined_at、domain_path、字节范围与语法类别不变。
+
+这是既有发射上下文，不等于完整清理原因或精确的右花括号位置。显式return、break、continue、覆盖及被忽略结果可能保留原关键字或调用标识符；隐式函数结束及合流等没有原SourceSite时，trigger明确为null。外围if／while的范围不能当作独立退出语法，不从函数名、槽号、句柄或邻近操作猜补来源。即使触发缺失，真实生成理由仍可说明这是最终dataset存储释放Call。
+
+原移动、返回保留资源、覆盖旧资源、CPU／GPU位置、拥有元素逆序清理及前后Ownership状态不改。原Data／Frame继续负责唯一存储和最后真实消费者，分类不增加release，不把运行库Call当作已经完成的运行事件。普通B或外部库中同名release函数不按名字分类；FrameDestroy、分配／初始化、新绑定及重新赋值仍是不同生成职责。拥有元素清理循环、用户静态F调用、条件拥有及活动变体清理选择的完整生成来源仍归.2.4.5.3.2至.5，原地址访问包装归.5.5，不能以本节代表完整清理来源。
+
+材料只由compiler功能下的原Inst不可变共享，并在最后IR消费者后结束，不持有运行资源、AST／World或新增Builder状态、拥有表、清理图、调度和释放链；关闭compiler时不进入运行期字段或必要执行编码。原优化仍按实际行为保留／改写IR，完整优化与机器映射另归原叶，不为来源保活代码。见[架构职责](Architecture.md#tool-7-2-4-5-3-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-1)。
 
 #### 集合值核的入口与捕获来源
 

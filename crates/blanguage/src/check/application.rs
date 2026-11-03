@@ -835,7 +835,8 @@ impl Builder<'_> {
         self.application_movable(data,retained,span)?;
         let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.root.regs[0]};
         if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
-        self.emit(self.application_release(handle).kind);
+        let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetRelease,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
+        self.code.push(Inst::generated(self.application_release(handle).kind,origin));
         let identity=data.root.identity();
         for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,_,source|{
             if source.root.identity()==identity{source.ownership=Ownership::Moved;}
