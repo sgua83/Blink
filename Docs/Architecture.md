@@ -253,7 +253,31 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4"></a>
 
-**并行、域调用及生成上下文。** 原Parallel／DomainCall和参数／Frame生产者向同一Stage／Inst交接实际展开点与生成职责；源语法、派生步骤及无源分别表示，不把手造Expr的范围或根函数范围当成原语法。来源不拥有运行资源，不改原访问／完成与代码寿命；后端字节关系继续归机器发射者。当前待实现，范围见[台账](Issues.md#c-021-7-9-7-2-4)。
+**并行、域调用及生成上下文。** 原Parallel／DomainCall和参数／Frame生产者向同一Stage／Inst交接实际展开点与生成职责；源语法、派生步骤及无源分别表示，原函数定义与合成AST必须在真实生产者处区分。下列六项可独立完成，完整范围见[父项](Issues.md#c-021-7-9-7-2-4)；来源不拥有运行资源，不改访问／完成与代码寿命，后端字节关系仍归机器发射者。
+
+<a id="tool-7-2-4-1"></a>
+
+**真实源码定义边界。** 输入为原frontend解析／已编译模块接口装入及两个原合成Definition构造，唯一所有者是同一个Definition；其不可变语法来源区别原Source、CompiledInterface及Generated，不把用于ABI的compiled字段当成原源码身份。SourceOrigin只交接真实解析定义与其原实现体，不按内部函数名／路径猜测，不用手造Function.span和body伪造用户函数。原FunctionBody／Program／Inst及值核查询消费同一事实；无真实定义时明确无SourceOrigin，实际实例和后续真实内联定义分别保留，不据此减少合法程序。语法标记随原Definition克隆，原Source文本归原拥有者，最后消费者后释放；没有另一来源表、运行状态或图。派生原语法锚点及具体生成原因仍由以下职责交接，本项不以null冒充完整来源。当前修复范围见[台账](Issues.md#c-021-7-9-7-2-4-1)。
+
+<a id="tool-7-2-4-2"></a>
+
+**parallel语句到阶段。** 输入为真实parallel Stmt、原定义及实际Instance，CPU应用提取还输入原Builder在提取前已有的SourceSite；原expand_stages及application_parallel将其交给同一Stage与Map。覆盖原整域源码与应用提取两种路径，不把合成函数名当原定义。材料在原IR拥有，查询借用，最后消费者后释放；融合后多对多来源仍由.7.3.2交接，不冻结优化。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-2)。
+
+<a id="tool-7-2-4-3"></a>
+
+**域展开调用点。** 输入为实际域Call、调用者SourceSite及原特化Instance；原expand_stages／expand_program及DomainCall将原调用点、调用者／目标与展开顺序交给同一阶段／操作／值核。源码展开与已编译域边界分别表达，不能把域调用塞入普通inline数组，也不从阶段根实例反推路径。沿原持有者保存不可变点列表，原Source共享，最后IR消费者后释放，不复制调用／执行图。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-3)。
+
+<a id="tool-7-2-4-4"></a>
+
+**阶段索引及空前缀初始化。** 原parallel索引建立和append::clear拥有Index／Constant／Store生成职责；同一Inst记录实际生成原因及原触发锚点。框架生成不是用户直接表达式，无源与已知触发分别说明，不按根函数或相邻语句填造。事实随原节点克隆／移动和最后消费者释放，原优化与运行代码保持。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-4)。
+
+<a id="tool-7-2-4-5"></a>
+
+**应用Frame与资源调用包装。** 原application生产者把进入／接收／完成／释放及真实资源参数设置职责交给自己的Inst／FunctionBody，附实际应用或资源触发锚点；不以main根范围覆盖所有步骤。原Frame、资源及最后真实消费者继续原所有权；材料不增加释放链、执行状态或常驻记录。原IR拥有事实，查询借用，完成后释放观察材料。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5)。
+
+<a id="tool-7-2-4-6"></a>
+
+**原生域包装与分段提交。** 原build_domain／emit_domain_part把参数常量、资源绑定、分段提交和实际已编译域调用分别交给原包装Inst／FunctionBody；真实域调用点与生成职责不能混为一段根定义范围。代码、接口、合同、Frame及分段执行仍由原所有者持有，材料沿同一IR及最后消费者交接，不新增包装入口、调度器或执行图。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
 
 <a id="tool-7-3-1"></a>
 
