@@ -889,28 +889,32 @@ impl Proof {
     fn range_set(&self, component: usize) -> IntegerRanges {
         self.ranges.get(component).cloned().unwrap_or_default()
     }
-    pub fn integer_cast(value: &Value, target: Scalar) -> Self {
-        Self {
-            ranges: (0..value.regs.len())
-                .map(|i| {
-                    let source = value.ty.components[i].0;
-                    value.component_ranges(i).map(|(lower,upper)| {
-                        let decode = |bits| if source.is_signed() {
-                            i128::from(source.signed(bits ^ source.order_bias()))
-                        } else { i128::from(bits) };
-                        integer_result_range((decode(lower),decode(upper)),target.order_bias(),target.bit_width())
-                    })
+    pub fn cast(value: &Value, target: Scalar) -> Self {
+        let mut proof = Self::capture(value);
+        for (i, &(source, _)) in value.ty.components.iter().enumerate() {
+            if source == target { continue; }
+            let integers = source.is_integer() && target.is_integer();
+            let same_value = integers && !source.is_signed() && !target.is_signed() && target.size() > source.size();
+            proof.ranges[i] = if integers {
+                proof.ranges[i].map(|(lower, upper)| {
+                    let decode = |bits| if source.is_signed() {
+                        i128::from(source.signed(bits ^ source.order_bias()))
+                    } else { i128::from(bits) };
+                    integer_result_range((decode(lower), decode(upper)), target.order_bias(), target.bit_width())
                 })
-                .collect(),
-            nonzero: (0..value.regs.len())
-                .map(|i| target.size() >= value.ty.components[i].0.size() && value.component_nonzero(i))
-                .collect(),
-            // 索引及无符号数值域约束原位模式；有符号中间值不按无符号顺序消费。
-            domains: (0..value.regs.len())
-                .map(|i| if target.size() == value.ty.components[i].0.size() { value.proof.domains(i) } else { Domains::new() })
-                .collect(),
-            ..Self::default()
+            } else if source == Scalar::Bool && target.is_integer() {
+                IntegerRanges::interval(target.order_bias(), target.order_bias() + 1)
+            } else { IntegerRanges::default() };
+            proof.nonzero[i] &= integers && target.size() >= source.size();
+            if !same_value { proof.origins[i].clear(); }
+            proof.conditions[i] = None;
+            // 同宽整数保持位模式；无损零扩展还保持原数值身份与关系。
+            if (!integers || target.size() != source.size() && !same_value)
+                && let Some(domains) = proof.domains.get_mut(i) {
+                domains.clear();
+            }
         }
+        proof
     }
     pub fn capture(value: &Value) -> Self {
         let mut proof = value.proof.clone();

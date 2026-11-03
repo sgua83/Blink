@@ -2387,28 +2387,16 @@ impl<'a> Builder<'a> {
         })
     }
     fn cast(&mut self, v: Value, s: Scalar) -> Value {
-        let source = v.ty.components[0].0;
         let constant = v.constant.as_ref().and_then(|values| {
-            values.iter().map(|bits| constant::cast(source, s, *bits)).collect::<Option<Vec<_>>>()
+            values.iter().enumerate().map(|(i, bits)| constant::cast(v.ty.components[i].0, s, *bits)).collect::<Option<Vec<_>>>()
         });
-        let proof = if source == s {
-            bounds::Proof::capture(&v)
-        } else if source.is_integer() && s.is_integer()
-        {
-            bounds::Proof::integer_cast(&v, s)
-        } else if source == Scalar::Bool && s == Scalar::U32 {
-            bounds::Proof::unsigned(0, 1)
-        } else {
-            bounds::Proof::default()
-        };
+        let proof = bounds::Proof::cast(&v, s);
         let mut regs = Vec::new();
         let n = v.regs.len();
-        if source != s {
-            if let Some(bits) = constant {
-                let mut value = self.constant_value(Ty::vector(s, n), bits);
-                value.proof = proof;
-                return value;
-            }
+        if v.ty.components.iter().any(|(source, _)| *source != s) && let Some(bits) = constant {
+            let mut value = self.constant_value(Ty::vector(s, n), bits);
+            value.proof = proof;
+            return value;
         }
         for src in v.regs {
             if self.registers[src] == s {
