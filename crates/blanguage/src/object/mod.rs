@@ -97,3 +97,5 @@ impl Object {
         &self.name
     }
 }
+
+pub use coff::facts::{CodeSelection, code_facts};

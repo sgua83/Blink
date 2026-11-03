@@ -253,7 +253,7 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 主函数范围直接使用原function_end；compiler角色的tail_regions按原写入顺序保存每个尾部分区的排他end与kind，不另存相同主末端。输出region的kind为main_function、stack_probe、alignment或literal，offset_bytes／length_bytes相对同一bytes；各区间的原bytes十六进制合起来完整重建本次映像。main_function／stack_probe调用原instructions_json，instructions中的偏移相对本region，IP则使用ip加region偏移；字面量和对齐的instructions为null，只保留真实字节。解码失败在实际映像偏移与IP上报错，不跳过或把数据猜成指令。查询借用真实匹配的编译结果，不为调用者手工伪造的NativeCode证明合法性、实际执行或目标支持。
 
-`StageCode::code_json()`按Element主入口、四种单入口延续、Scan的prefix／apply及Sort的全部initialize／histogram／scatter／gather返回原容器关系；`ProgramImage::code_json()`读取同一ExecutionPlan名称与全部原阶段。多个独立代码映像分别使用字节零相对IP，外层address_basis=each_image_relative，不伪造共同装载地址。需要更小范围时调用原stages()及所选NativeCode的查询。普通函数也由同一Emitter::finish生产范围，当前普通对象／函数的完整外部查询仍沿C-021.7.9.5.3交付。
+`StageCode::code_json()`按Element主入口、四种单入口延续、Scan的prefix／apply及Sort的全部initialize／histogram／scatter／gather返回原容器关系；`ProgramImage::code_json()`读取同一ExecutionPlan名称与全部原阶段。多个独立代码映像分别使用字节零相对IP，外层address_basis=each_image_relative，不伪造共同装载地址。需要更小范围时调用原stages()及所选NativeCode的查询。普通函数也由同一Emitter::finish生产范围，原COFF物理记录与已声明范围可用下述.5.3.1查询，完整生成类别继续沿C-021.7.9.5.3.2交付。
 
 `bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
 
@@ -273,6 +273,25 @@ bc code --image target/deployment.blri --observations target/entry.blcr
 ```
 
 SDK由`build::code_facts(path, material)`或显式BLRI模式的`build::image_code_facts(execution_bytes, material)`交接同一JSON。CLI在Compiler初始化前只读装入原编码并恢复材料，不读取B源码、不调用编译器／驱动、不分配可执行内存或运行代码；读取、编码、错配及范围错误直接失败，不输出部分成功。BLBI结果kind=build_cpu_code，programs／templates保留各原索引；BLRI结果kind=execution_image_cpu_code，images保留原索引。CPU项target=cpu，code为原ProgramImage::code_json；混合集合中的GPU项code=null且status=not_supported，不把SPIR-V当x64。所有代码地址仍是各映像相对值，不代表装载现场。普通COFF／最终PE、源码来源及实际装载地址分别沿C-021.7.9.5.3／.9、.7、.13交付。
+
+
+### 已保存COFF的物理结构与代码查询
+
+```text
+bc code --object target/module.obj
+bc code --object target/module.obj --section 1
+bc code --object target/module.obj --function exact-qualified-symbol
+```
+
+Rust SDK使用`object::code_facts(bytes, object::CodeSelection::CodeSections)`，或Section(number)／Function(name)。直接消费调用者拥有的原COFF字节，复用原B `bootstrap.coff_read`的headers／section／symbol／relocation，不经过Object逻辑节映射或符号归一化，不要求Blink私有元数据／合同，不读取B源码、构建输入含义、内嵌归档成员或重编、链接、装载／执行代码。CLI沿现有code入口在Compiler初始化前分派；原读取器、Object／BLCO编码、资源ABI和正常运行路径不变。输出是独立字符串，查询结束不保活原产物或执行资源。
+
+结果kind=coff_code、bitness=64、address_basis=section_relative；header_bytes为原20字节COFF头。section_number是从1开始的原物理节号，symbol_index是从0开始、包含辅助记录占位的原符号表索引，均区别于Object内部逻辑节索引；原符号／字符串表文件位置及完整string_table_bytes保留。sections始终列出全部原节的header_bytes、特征、实际长度及文件位置；默认只为原代码特征位选择的节展开bytes／regions／relocations，--section可明确选择任意物理节。--function只按精确、唯一且有定义的原函数符号选择其所在节，保留原symbol_index／value，不推测该符号的新函数末端或截掉同节其他字节。
+
+symbols返回全部主记录的原name／name_bytes、带符号section_number、value、storage_class、原读取器的function标记、18字节record_bytes及全部auxiliary_bytes／数量；符号文件位置与原表索引保持。节与符号名称沿现有UTF-8读取，原节名沿头内拼写，当前未展开长节名索引，不宣称支持全部COFF扩展或BigObj。relocations交接原节内offset_bytes、type、symbol_index及原目标name／section_number／value，不先规范化成另一个符号或把占位操作数当最终调用地址。原记录字节保留读取器当前未解释的字段；这些实现范围不成为语言和未来目标的永久边界。
+
+function_tables保留原.pdata的每条12字节记录、begin／end／unwind原加数与重定位。AMD64 ADDR32NB（3）指向同一文件已定义节时，将符号value与原加数相加，交接真实节内位置；字段无重定位、类型未支持或非节内目标分别标明no_relocation、relocation_type_not_supported、symbol_not_section_relative。begin／end在同一节且范围有效时，regions以runtime_function交接原范围，并调用原native::instructions_json；每条指令IP按该节内偏移解释，不代表最终RVA或装载地址。跨节开始／末端标cross_section_range，待实际链接布局，不据此判定源程序非法；未解析字段的表记录标unresolved，不猜范围。
+
+选中节中已声明范围以外的字节全部原样交接为unclassified，instructions=null。原代码特征位、函数符号或能反汇编不证明整节都是指令；探栈叶辅助、常量和对齐的完整生成分类仍归C-021.7.9.5.3.2。多个已声明范围分别保留原表来源，不据其重叠生成另一代码布局。结构截断、无效字符串／符号／重定位引用、真实范围越界／反向及ISA解码错误直接失败，不输出部分成功；解码错误保留原物理节号、节内字节偏移及相对IP。标准定义见[Microsoft PE／COFF格式](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)。最终PE、归档成员抽取及完整静态运行库观察仍沿C-021.7.9.9，源码来源和运行地址分别沿.7／.13。
 
 
 ## 显式编号枚举

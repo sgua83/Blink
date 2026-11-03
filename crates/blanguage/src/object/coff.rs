@@ -717,3 +717,5 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     stack::validate(&object)?;
     Ok(object)
 }
+
+pub(super) mod facts;
