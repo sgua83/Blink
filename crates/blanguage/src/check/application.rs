@@ -829,7 +829,7 @@ impl Builder<'_> {
         // The existing drop consumer has taken this ownership. Its original
         // named storage stays readable until the actual release completes.
         let identity=data.root.identity();
-        for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,source|{
+        for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,_,source|{
             if source.root.identity()==identity&&source.ownership.may_own(){source.ownership=Ownership::Borrowed;}
         });}
         self.application_movable(data,retained,span)?;
@@ -837,7 +837,7 @@ impl Builder<'_> {
         if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
         self.emit(self.application_release(handle).kind);
         let identity=data.root.identity();
-        for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,source|{
+        for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,_,source|{
             if source.root.identity()==identity{source.ownership=Ownership::Moved;}
         });}
         Ok(())
@@ -2216,13 +2216,13 @@ fn binding_element_data<'a>(binding:&'a Binding,resource:usize)->Option<&'a Data
         _=>None,
     }
 }
-fn each_binding_data(binding:&mut Binding,visit:&mut impl FnMut(usize,&mut Data)) {
+fn each_binding_data(binding:&mut Binding,visit:&mut impl FnMut(usize,&[usize],&mut Data)) {
     match binding {
-        Binding::ApplicationData(data)=>visit(0,data),
-        Binding::DataReference(data)=>visit(0,&mut data.data),
+        Binding::ApplicationData(data)=>visit(0,&[],data),
+        Binding::DataReference(data)=>visit(0,&[],&mut data.data),
         Binding::OwnedValue(value)=>{
             for(resource,path)in view::resource_paths(&value.value.ty).into_iter().enumerate(){
-                if let Some(data)=view::owned_data_at_mut(value,&path){visit(resource,data);}
+                if let Some(data)=view::owned_data_at_mut(value,&path){visit(resource,&path,data);}
             }
         }
         _=>{},
@@ -2301,11 +2301,15 @@ pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Defin
     }
     for(parameter,p)in definition.function.params.iter().enumerate(){
         if let Some(mut binding)=builder.env.remove(&p.name){
-            each_binding_data(&mut binding,&mut |resource,data|{
+            each_binding_data(&mut binding,&mut |resource,path,data|{
                 let inputs=(0..element_width(&data.ty)).map(|component|{
                     let id=ValueIdentity::DatasetContent(parameter,resource,component);(id,bounds::Proof::default().with_identity(id))
                 }).collect();
                 bind(builder,&mut data.elements,parameter,resource,&mut 0,&inputs);
+                if p.access!=Access::Write && data.length.maximum()!=0 {
+                    let mut input=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
+                    residency::visit(&mut data.elements,&mut input,&mut |data,input|data.residency=residency::Residency::input(input.clone()));
+                }
             });
             builder.env.insert(p.name.clone(),binding);
         }
@@ -2361,7 +2365,7 @@ impl Builder<'_> {
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let mut binding=self.env.remove(&name).unwrap();
-            each_binding_data(&mut binding,&mut|_,target|{
+            each_binding_data(&mut binding,&mut|_,_,target|{
                 if !data.sources.contains(&target.root.identity()){return;}
                 let mut fresh=self.capture_element_model(target,&data.projection,value.clone());
                 let mut previous=(*target.elements).clone();
@@ -2466,7 +2470,7 @@ impl Builder<'_> {
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names{
             if let Some(mut binding)=self.env.remove(&name){
-                each_binding_data(&mut binding,&mut |_,data|{
+                each_binding_data(&mut binding,&mut |_,_,data|{
                     if !sources.contains(&data.root.identity()){return;}
                     let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
                     if components.is_empty(){return;}

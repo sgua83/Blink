@@ -505,12 +505,12 @@ impl Builder<'_> {
                     let value=Value{ty:descriptor,regs:vec![address,length.regs[0],step,offset.regs[0]],proof,literal:false,uniform:true,constant:None};
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
-                    residency::argument(&mut locations,index,&residency::Residency::cpu());
+                    locations.insert(residency::Input::new(index),residency::Residency::cpu());
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::parameter(binding,!view.projection.is_empty()));
                     env.insert(p.name.clone(),Binding::Data(view));
                 }
                 Argument::BorrowedData(mut reference) if p.ty.dataset=>{
-                    residency::argument(&mut locations,index,&reference.data.residency);
+                    residency::argument(&mut locations,index,&mut reference.data);
                     self.require_same(&ty,reference.element_layout().1,span)?;
                     if !matches!(p.access,Access::Read|Access::Write|Access::InOut|Access::Atomic){
                         return self.fail(span,"B224","CPU dataset借用需要read／write／inout／atomic");
@@ -534,9 +534,9 @@ impl Builder<'_> {
                     arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::DataReference(reference));
                 }
-                Argument::ApplicationData(data) if p.ty.dataset&&p.access==Access::Value=>{
+                Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::Declared{stride:ir::align_up(data.ty.size,data.ty.align),projected:false});
-                    residency::argument(&mut locations,index,&data.residency);
+                    residency::argument(&mut locations,index,&mut data);
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
                     self.native_dataset_shape(p,d,data.count,span)?;

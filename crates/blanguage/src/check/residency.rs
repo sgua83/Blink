@@ -2,13 +2,15 @@
 use super::*;
 use returns::Returned;
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Part { Field(usize), Elements }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Input {
-    parameter: usize,
-    fields: Vec<usize>,
+    pub parameter: usize,
+    pub fields: Vec<Part>,
 }
 impl Input {
-    fn new(parameter: usize) -> Self {
+    pub fn new(parameter: usize) -> Self {
         Self {
             parameter,
             fields: Vec::new(),
@@ -34,7 +36,7 @@ impl Residency {
     pub fn cpu()->Self{Self::Origins(BTreeSet::from([Origin::Cpu]))}
     pub fn gpu()->Self{Self::Origins(BTreeSet::from([Origin::Gpu]))}
     pub fn parameter(parameter:usize)->Self{Self::input(Input::new(parameter))}
-    fn input(input:Input)->Self{Self::Origins(BTreeSet::from([Origin::Input(input)]))}
+    pub(super) fn input(input:Input)->Self{Self::Origins(BTreeSet::from([Origin::Input(input)]))}
     fn absent(&self)->bool{matches!(self,Self::Absent)}
     fn arm(&self,condition:&bounds::Condition,truth:bool)->Self{match self{Self::Selected(known,a,b)if condition.exclusive() && known.as_ref()==condition=>if truth{a.as_ref().clone()}else{b.as_ref().clone()},_=>self.clone()}}
     pub(super) fn selected(when:owned_presence::Presence,a:Self,b:Self)->Self{Self::conditional(when.condition(),a,b)}
@@ -244,7 +246,7 @@ pub(super) fn infer(inputs:&Inputs,known:&BTreeMap<String,Requirements>,outputs:
                     Need::Storage(target)=>{
                         let Some(value)=call.arguments.get(input)else{continue};let value=evaluate(value,outputs);
                         if value.absent(){continue;}
-                        if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（字段路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
+                        if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
                     },
                     Need::Layout(need)=>{
                         if !consume_layout(&mut required,&call.layouts[input],*need,&path){return call.source.fail(call.span,"B270",format!("函数 {} 的第 {} 个资源参数不满足已编译接口要求的{}布局",call.function,input.parameter+1,if *need==LayoutNeed::Whole{"完整资源"}else{"连续元素"}));}
@@ -281,13 +283,20 @@ pub(super) fn check_loops(inputs:&Inputs,required:&Requirements,parameters:&BTre
         if !equal_under(&refine(&before,&required),&refine(&after,&required),path){return source.fail(*span,"B266","循环真实回边没有在该路径归还入口相同的CPU／GPU存储位置");}
     }}Ok(())
 }
-fn visit(
+pub(super) fn visit(
     value: &mut Returned,
     input: &mut Input,
     apply: &mut impl FnMut(&mut application::Data, &Input),
 ) {
     match value {
-        Returned::Dataset(data) => apply(data, input),
+        Returned::Dataset(data) => {
+            apply(data, input);
+            if data.length.maximum() != 0 {
+                input.fields.push(Part::Elements);
+                visit(&mut data.elements, input, apply);
+                input.fields.pop();
+            }
+        },
         Returned::OwnedValue(value) => visit_owned(value, input, apply),
         _ => {}
     }
@@ -299,21 +308,27 @@ fn visit_owned(
 ) {
     for (field, payload) in value.payloads.iter_mut().enumerate() {
         if let Some(payload) = payload {
-            input.fields.push(field);
+            input.fields.push(Part::Field(field));
             visit(payload, input, apply);
             input.fields.pop();
         }
     }
 }
 pub(super) fn parameter(value: &mut owned_values::OwnedValue, parameter: usize) {
-    let resources=view::resource_paths(&value.value.ty).into_iter().enumerate().map(|(index,path)|(path,index)).collect::<BTreeMap<_,_>>();
-    visit_owned(value, &mut Input::new(parameter), &mut |data, input| {
-        data.root.proof=data.root.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,resources[&input.fields]))]));
-        data.residency = Residency::input(input.clone());
-    });
+    for (resource,path) in view::resource_paths(&value.value.ty).into_iter().enumerate() {
+        if let Some(data)=view::owned_data_at_mut(value,&path) {
+            data.root.proof=data.root.proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Data(ValueIdentity::ResourceParameter(parameter,resource))]));
+            data.residency=Residency::input(Input{parameter,fields:path.into_iter().map(Part::Field).collect()});
+        }
+    }
 }
-pub(super) fn argument(arguments: &mut Arguments, parameter: usize, value: &Residency) {
-    arguments.insert(Input::new(parameter), value.clone());
+pub(super) fn argument(arguments: &mut Arguments, parameter: usize, value: &mut application::Data) {
+    arguments.insert(Input::new(parameter), value.residency.clone());
+    if value.length.maximum()!=0 {
+        visit(&mut value.elements,&mut Input{parameter,fields:vec![Part::Elements]},&mut |data,input| {
+            arguments.insert(input.clone(),data.residency.clone());
+        });
+    }
 }
 pub(super) fn owned_argument(
     arguments: &mut Arguments,
@@ -330,6 +345,7 @@ fn bind_returned(value: &mut Returned, arguments: &Arguments) -> bool {
         Returned::Dataset(data) => match data.residency.bind(arguments) {
             Some(bound) => {
                 data.residency = bound;
+                if data.length.maximum()!=0 { bind_returned(&mut data.elements,arguments); }
                 true
             }
             None => {
@@ -358,6 +374,7 @@ fn bind_returned(value: &mut Returned, arguments: &Arguments) -> bool {
 pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
     bind_returned(value, arguments);
 }
+crate::module::codec::variants!(Part { 0 => Field(field), 1 => Elements });
 crate::module::codec::record!(Input { parameter, fields });
 crate::module::codec::variants!(Origin { 0 => Cpu, 1 => Gpu, 2 => Input(input), 3 => Output(output) });
 crate::module::codec::variants!(Residency{0=>Absent,1=>Origins(origins),2=>Selected(when,a,b)});
@@ -369,7 +386,7 @@ pub(super) enum OutputKind {Returned,Written(usize)}
 pub(super) struct Output {
     function: String,
     kind: OutputKind,
-    fields: Vec<usize>,
+    fields: Vec<Part>,
     arguments: Arguments,
     bindings: BTreeMap<ValueIdentity,bounds::Proof>,
 }
@@ -396,7 +413,7 @@ pub(super) enum Use {
     },
 }
 
-pub(super) type Outputs=BTreeMap<String,BTreeMap<(OutputKind,Vec<usize>),Residency>>;
+pub(super) type Outputs=BTreeMap<String,BTreeMap<(OutputKind,Vec<Part>),Residency>>;
 fn evaluate(value:&Residency,outputs:&Outputs)->Residency{match value{
     Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),evaluate(a,outputs),evaluate(b,outputs)),
     Residency::Absent=>Residency::Absent,
@@ -432,17 +449,22 @@ pub(super) fn solve_outputs<'a>(
 ) -> Outputs {
     fn collect<'a>(
         value: &'a Returned,
-        fields: &mut Vec<usize>,
-        values: &mut BTreeMap<Vec<usize>, &'a Residency>,
+        fields: &mut Vec<Part>,
+        values: &mut BTreeMap<Vec<Part>, &'a Residency>,
     ) {
         match value {
             Returned::Dataset(data) => {
                 values.insert(fields.clone(), &data.residency);
+                if data.length.maximum()!=0 {
+                    fields.push(Part::Elements);
+                    collect(&data.elements,fields,values);
+                    fields.pop();
+                }
             }
             Returned::OwnedValue(value) => {
                 for (field, payload) in value.payloads.iter().enumerate() {
                     if let Some(payload) = payload {
-                        fields.push(field);
+                        fields.push(Part::Field(field));
                         collect(payload, fields, values);
                         fields.pop();
                     }
@@ -501,6 +523,7 @@ pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool 
                 let value = evaluate(&data.residency, outputs);
                 let present=!value.absent();
                 data.residency=value;
+                if present && data.length.maximum()!=0 { resolve(&mut data.elements,outputs); }
                 present
             }
             Returned::OwnedValue(value) => {
