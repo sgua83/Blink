@@ -84,6 +84,11 @@ pub(crate) fn compile_resources(
                 "blink_allocate",
                 "blink_resize",
                 "blink_run",
+                "blink_application_resize",
+                "blink_application_upload",
+                "blink_application_download",
+                "blink_application_address",
+                "blink_application_failed",
             ]
             .into_iter()
             .map(str::to_owned)

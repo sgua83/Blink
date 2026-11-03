@@ -288,9 +288,39 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 拥有包装仍不进入普通C ABI；C函数可按其真实合同消费已合法取得的普通载荷／字段。复制身份或函数返回不是外部关闭成功证明。独立B对象／归档需在.h声明其静态释放函数，调用者不读取库.b即可在正确出口调用；Frame及物理存储继续由根运行库唯一解释、持有和释放。
 
 
+## 共同Frame C ABI的错误与所有权
+
+根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI19的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
+
+```c
+typedef struct BlinkFrame Frame;
+typedef void (*BlinkErrorReceiver)(void *context,const uint8_t *data,size_t bytes);
+typedef struct {uint32_t handle;uint32_t offset;} BlinkDatasetBinding;
+typedef struct {uint32_t kind;uint64_t bits;} BlinkValue;
+Frame *blink_create(BlinkErrorReceiver on_error,void *context);
+uint32_t blink_allocate(Frame *frame,uint32_t ty,uint32_t count,
+                       uint32_t *output,BlinkErrorReceiver on_error,void *context);
+uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill,
+                     uint32_t *output,BlinkErrorReceiver on_error,void *context);
+uint32_t blink_run(Frame *frame,uint32_t program,const BlinkDatasetBinding *data,
+                  const BlinkValue *values,BlinkErrorReceiver on_error,void *context);
+uint32_t blink_upload(Frame *frame,uint32_t handle,BlinkErrorReceiver on_error,void *context);
+uint32_t blink_download(Frame *frame,uint32_t handle,BlinkErrorReceiver on_error,void *context);
+uint32_t blink_address(Frame *frame,uint32_t handle,uint64_t byte_offset,uint32_t write_bytes,
+                      uint32_t **output,BlinkErrorReceiver on_error,void *context);
+void blink_release(Frame *frame,uint32_t handle);
+void blink_destroy(Frame *frame);
+```
+
+六个返回uint32_t的操作成功为1、原Result错误为0，只有成功才写output；调用者不能在错误后读取失败输出。失败在返回前调用本次on_error一次，借出原UTF-8消息及不含NUL的字节数；消息仅到接收函数返回前有效。接收函数和context保持到本次调用返回，运行库不存入Frame或登记到全局状态，保留文本副本由调用者负责，异常不得跨C ABI展开。实际指针、完整参数数组、类型／程序身份及独占访问仍按可信原生边界履行，不以状态返回证明任意无效指针安全。
+
+共同操作不打印、结束宿主或替宿主释放Frame；失败后的原存储／程序和已发生效果继续按原Rust操作合同交接，不回滚或自动重放，不承诺设备故障后数据可用。宿主选择后续合法调用、继续持有或显式销毁。release释放指定槽位，destroy结束根Frame；创建解码错误仍在同次接收函数交回原文本后返回NULL，没有可销毁的Frame。
+
+生成B应用的私有适配消费上述状态，成功才读取输出；错误由应用接收者报告，应用根显式销毁同一Frame并退出1。非根模块调用同一根政策，只借用opaque Frame，不建立第二释放链。此终端政策属于该B应用，完整普通B可失败返回／业务result适配仍沿Issues C-020.5.2.4建设。算法DLL及原Rust宿主API继续遵守各自现行错误与生命周期接口，不能混用这些入口。
+
 ## CPU拥有dataset的显式变长
 
-源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源运行库新增Windows x64 C入口`uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill)`，返回同一Frame槽位的实际句柄；Frame保持不透明，只由根运行库创建、解释和最终释放。fill在本次同步调用内按存储Ty的实际声明布局借用完整普通值，必须不含拥有资源或view；运行库只读取声明分量，不读取未初始化填充。调用者必须拥有可调整的CPU存储，先结束真实地址／view／位置消费者；该原生可信入口不替调用者验证任意外部指针。
+源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源运行库的Windows x64 C入口为`uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill,uint32_t *output,BlinkErrorReceiver on_error,void *context)`，成功返回1并把同一Frame槽位的实际句柄写入output；错误返回0、不写output，并在本次调用借出原错误文本，完整合同见[共同Frame C ABI](#共同frame-c-abi的错误与所有权)；Frame保持不透明，只由根运行库创建、解释和最终释放。fill在本次同步调用内按存储Ty的实际声明布局借用完整普通值，必须不含拥有资源或view；运行库只读取声明分量，不读取未初始化填充。调用者必须拥有可调整的CPU存储，先结束真实地址／view／位置消费者；该原生可信入口不替调用者验证任意外部指针。
 
 非根模块通过同一不透明Frame调用共同入口，不移动Rust私有容器或解释Frame。普通C值接口不因此接收B拥有dataset；address值不代替指向位置访问；动态拥有元素、异步和完整版本迁移仍待实现。
 

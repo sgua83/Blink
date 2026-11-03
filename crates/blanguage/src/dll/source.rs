@@ -35,6 +35,26 @@ pub(crate) fn application_source(
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::fmt::Write;
     let mut functions = String::new();
+    functions.push_str(r#"
+type ErrorReceiver = unsafe extern "C" fn(*mut c_void, *const u8, usize);
+unsafe extern "C" {
+    fn blink_allocate(frame:*mut c_void,ty:u32,count:u32,output:*mut u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_resize(frame:*mut c_void,handle:u32,count:u32,fill:*const u32,output:*mut u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_upload(frame:*mut c_void,handle:u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_download(frame:*mut c_void,handle:u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32,output:*mut *mut u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_destroy(frame:*mut c_void);
+}
+"#);
+    if !root {
+        functions.push_str(r#"
+unsafe extern "C" {
+    fn blink_application_error(context:*mut c_void,data:*const u8,bytes:usize);
+    fn blink_application_failed(frame:*mut c_void)->!;
+}
+"#);
+    }
     if root {
         functions.push_str(r#"
 use blcompute::application::{Frame, ProgramImage};
@@ -44,6 +64,39 @@ unsafe extern "C" { static __blink_module_count: usize; static __blink_module_fa
 pub unsafe extern "C" fn blink_application_error(_context: *mut c_void, data: *const u8, bytes: usize) {
     let message = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, bytes)) };
     eprintln!("{message}");
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_application_failed(frame: *mut c_void) -> ! {
+    unsafe { blink_destroy(frame) };
+    std::process::exit(1)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_application_resize(frame:*mut c_void,handle:u32,count:u32,fill:*const u32)->u32 {
+    let mut output=0;
+    if unsafe { blink_resize(frame,handle,count,fill,&mut output,blink_application_error,std::ptr::null_mut()) } == 0 {
+        unsafe { blink_application_failed(frame) }
+    }
+    output
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_application_upload(frame:*mut c_void,handle:u32) {
+    if unsafe { blink_upload(frame,handle,blink_application_error,std::ptr::null_mut()) } == 0 {
+        unsafe { blink_application_failed(frame) }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_application_download(frame:*mut c_void,handle:u32) {
+    if unsafe { blink_download(frame,handle,blink_application_error,std::ptr::null_mut()) } == 0 {
+        unsafe { blink_application_failed(frame) }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blink_application_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32)->*mut u32 {
+    let mut output=std::ptr::null_mut();
+    if unsafe { blink_address(frame,handle,offset,bytes,&mut output,blink_application_error,std::ptr::null_mut()) } == 0 {
+        unsafe { blink_application_failed(frame) }
+    }
+    output
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void) -> *mut c_void {
@@ -74,19 +127,19 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
     if !resources.types.is_empty() {
         writeln!(
             functions,
-            "unsafe extern \"C\" {{ static {prefix}_type_base:u32; fn blink_allocate(frame:*mut c_void,ty:u32,count:u32)->u32; }}"
+            "unsafe extern \"C\" {{ static {prefix}_type_base:u32; }}"
         )?;
     }
     if !resources.programs.is_empty() {
         writeln!(
             functions,
-            "unsafe extern \"C\" {{ static {prefix}_program_base:u32; fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue); }}"
+            "unsafe extern \"C\" {{ static {prefix}_program_base:u32; }}"
         )?;
     }
     for index in 0..resources.types.len() {
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(frame:*mut c_void,count:u32)->u32 {{ unsafe {{ blink_allocate(frame,{prefix}_type_base+{index},count) }} }}"
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(frame:*mut c_void,count:u32)->u32 {{ let mut output=0; if unsafe {{ blink_allocate(frame,{prefix}_type_base+{index},count,&mut output,blink_application_error,std::ptr::null_mut()) }} == 0 {{ unsafe {{ blink_application_failed(frame) }} }} output }}"
         )?;
     }
     for (index, (_, program)) in resources.programs.iter().enumerate() {
@@ -124,7 +177,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
         }
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({}) {{ let data=[{}];let words=[{}];unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr()) }} }}",
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({}) {{ let data=[{}];let words=[{}];if unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr(),blink_application_error,std::ptr::null_mut()) }} == 0 {{ unsafe {{ blink_application_failed(frame) }} }} }}",
             params.join(","),
             handles.join(","),
             words.join(",")

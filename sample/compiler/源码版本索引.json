@@ -84,7 +84,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "92e1066be1b685f8b65947bcdb11d357811efcde18da4945baa410c285248c05"
+      "sha256": "59bc8342482e9e241e46bb6d453dfb3ae723e2a2fcfd3c075f7088ca105ef5ba"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -152,7 +152,7 @@
     },
     {
       "path": "crates/blanguage/src/dll/source.rs",
-      "sha256": "88b856c662047702eaf5fb25fc7b18ec201fabd23f980609765e552916049de4"
+      "sha256": "5a2a7dd290b50e6136239611028c2f472d22030ee0c361f784f3748cacd11f96"
     },
     {
       "path": "crates/blanguage/src/frontend.rs",
@@ -220,7 +220,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "695f19fb3bbca3b636ed926333b14ee754c90c56fd7fab1ebb9e84f4ea9cd8ed"
+      "sha256": "827ed9dd741617cebf892f210149e088ad27e76c0f65b063da5a4cad358cbb10"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",

@@ -120,7 +120,10 @@ pub(super) fn runtime_call(
     Inst::Call(Call {
         target: CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
-            symbol: format!("blink_{name}"),
+            symbol: match name {
+                "resize" | "upload" | "download" | "address" => format!("blink_application_{name}"),
+                _ => format!("blink_{name}"),
+            },
         }),
         arguments,
         memory: Vec::new(),
