@@ -128,12 +128,12 @@ impl Compiler {
                 }
             }
             let mut visited = BTreeSet::new();
-            inputs.capture(&unit.path, &unit.root, &names, false, &mut visited)?;
+            inputs.capture(&unit.path, &unit.root, &names, &mut visited)?;
             for interface in interfaces {
                 for import in &interface.imports {
                     if !names.contains(import) {
                         inputs.capture(&unit.root.join(import.replace('.', "/")).with_extension("b"),
-                            &unit.root, &names, true, &mut visited)?;
+                            &unit.root, &names, &mut visited)?;
                     }
                 }
             }

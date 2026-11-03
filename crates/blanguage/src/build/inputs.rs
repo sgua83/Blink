@@ -26,23 +26,20 @@ impl Inputs {
     }
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeSet<String>,
-        imported: bool, visited: &mut BTreeSet<String>,
+        visited: &mut BTreeSet<String>,
     ) -> ast::Result<()> {
         let interface = self.header(path)?;
         if !visited.insert(interface.name.clone()) { return Ok(()); }
-        let implementation = if imported && !providers.is_empty() { None }
-            else {
-                let mut implementation_path = path.to_path_buf();
-                implementation_path.set_extension("b");
-                self.file(&implementation_path, true)?
-            };
+        let mut implementation_path = path.to_path_buf();
+        implementation_path.set_extension("b");
+        let implementation = self.file(&implementation_path, true)?;
         let imports = interface.imports.iter()
             .chain(implementation.iter().flat_map(|module| &module.imports))
             .collect::<BTreeSet<_>>();
         for name in imports {
             if !providers.contains(name) {
                 self.capture(&root.join(name.replace('.', "/")).with_extension("b"),
-                    root, providers, true, visited)?;
+                    root, providers, visited)?;
             }
         }
         Ok(())

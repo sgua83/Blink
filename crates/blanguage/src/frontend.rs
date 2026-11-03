@@ -471,7 +471,7 @@ pub(crate) fn load(
     };
     let mut implementation_path = path.to_path_buf();
     implementation_path.set_extension("b");
-    let present = if imported.is_some() && import.is_some() {
+    let present = if compiled.is_some() {
         false
     } else if let Some(inputs) = inputs {
         inputs.present(&implementation_path)
