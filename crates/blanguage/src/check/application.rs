@@ -118,7 +118,7 @@ pub(super) fn runtime_call(
     result: Option<Ty>,
     values: Vec<Reg>,
 ) -> Inst {
-    Inst::Call(Call {
+    Inst::new(InstKind::Call(Call {
         target: CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
             symbol: match name {
@@ -131,7 +131,7 @@ pub(super) fn runtime_call(
         memory_use: None,
         result,
         values,
-    })
+    }))
 }
 pub(crate) fn compile_application(
     world: &World,
@@ -215,20 +215,20 @@ pub(crate) fn compile_application(
 
 fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName)) {
     for instruction in code {
-        match instruction {
-            Inst::Call(call) => {
+        match &mut (instruction).kind {
+            InstKind::Call(call) => {
                 if let CallTarget::External(name) = &mut call.target
                     && name.library == crate::application::RUNTIME_LIBRARY
                 {
                     visitor(name)
                 }
             }
-            Inst::Scope(body) => runtime_calls(body, visitor),
-            Inst::If { yes, no, .. } => {
+            InstKind::Scope(body) => runtime_calls(body, visitor),
+            InstKind::If { yes, no, .. } => {
                 runtime_calls(yes, visitor);
                 runtime_calls(no, visitor);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 runtime_calls(condition, visitor);
@@ -302,10 +302,10 @@ fn live_resources(
     fn uses(code: &[Inst], registers: &[Reg]) -> bool {
         code.iter().any(|inst| {
             !inst.all_operands(&mut |reg| !registers.contains(&reg))
-                || match inst {
-                    Inst::Scope(code) => uses(code, registers),
-                    Inst::If { yes, no, .. } => uses(yes, registers) || uses(no, registers),
-                    Inst::Loop {
+                || match &(inst).kind {
+                    InstKind::Scope(code) => uses(code, registers),
+                    InstKind::If { yes, no, .. } => uses(yes, registers) || uses(no, registers),
+                    InstKind::Loop {
                         condition, body, ..
                     } => uses(condition, registers) || uses(body, registers),
                     _ => false,
@@ -330,11 +330,11 @@ fn live_resources(
         Vec::new(),
     ));
     body.code = vec![
-        Inst::FunctionAddress(receiver, CallTarget::External(ExternalName {
+        Inst::new(InstKind::FunctionAddress(receiver, CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
             symbol: "blink_application_error".into(),
-        })),
-        Inst::Constant(context, Scalar::U64, 0),
+        }))),
+        Inst::new(InstKind::Constant(context, Scalar::U64, 0)),
         runtime_call(
             "create",
             vec![
@@ -344,14 +344,14 @@ fn live_resources(
             Some(pointer_type()),
             frame.clone(),
         ),
-        Inst::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] },
-        Inst::Constant(zero, Scalar::U32, 0),
-        Inst::Binary { dst: ready, op: BinaryOp::Compare(Comparison::NotEqual), a: address, b: zero },
-        Inst::If {
+        Inst::new(InstKind::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] }),
+        Inst::new(InstKind::Constant(zero, Scalar::U32, 0)),
+        Inst::new(InstKind::Binary { dst: ready, op: BinaryOp::Compare(Comparison::NotEqual), a: address, b: zero }),
+        Inst::new(InstKind::If {
             condition: ready,
             yes: code,
-            no: vec![Inst::Constant(body.outputs[0], body.registers[body.outputs[0]], 1)],
-        },
+            no: vec![Inst::new(InstKind::Constant(body.outputs[0], body.registers[body.outputs[0]], 1))],
+        }),
     ];
     Some(resources)
 }
@@ -596,12 +596,12 @@ impl Builder<'_> {
             .map(|(s, _)| self.reg(*s))
             .collect();
         let arguments = std::iter::once(frame).chain(args).map(argument).collect();
-        self.code.push(runtime_call(
+        self.emit(runtime_call(
             name,
             arguments,
             result.clone(),
             values.clone(),
-        ));
+        ).kind);
         Ok(result.map(|ty| Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -637,7 +637,7 @@ impl Builder<'_> {
         self.application_movable(data,retained,span)?;
         let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.handle.regs[0]};
         if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
-        self.code.push(self.application_release(handle));
+        self.emit(self.application_release(handle).kind);
         let identity=data.handle.identity();
         for binding in self.env.values_mut(){each_binding_data(binding,&mut |_,source|{
             if source.handle.identity()==identity{source.ownership=Ownership::Moved;}
@@ -745,7 +745,7 @@ impl Builder<'_> {
         data.length.proof = bounds::Proof::capture(&data.length);
         if mutable {
             let ty=Ty::owned_dataset(data.ty.clone(),data.count);let(slots,storage)=self.local_slots(&ty);
-            self.code.push(Inst::StoreLocal(slots[0],data.handle.regs[0]));self.code.push(Inst::StoreLocal(slots[1],data.length.regs[0]));
+            self.emit(InstKind::StoreLocal(slots[0],data.handle.regs[0]));self.emit(InstKind::StoreLocal(slots[1],data.length.regs[0]));
             let place=Place::Local(ty,slots,storage);self.initialize(&place);data.place=Some(place);
         }
         data
@@ -944,15 +944,15 @@ impl Builder<'_> {
         self.view_uses.invocation(span);
         self.application_movable(&data, &view::Borrow::default(), span)?;
         let (slots, storage) = self.local_slots(&fill.ty);
-        for (slot, reg) in slots.into_iter().zip(fill.regs) { self.code.push(Inst::StoreLocal(slot, reg)); }
+        for (slot, reg) in slots.into_iter().zip(fill.regs) { self.emit(InstKind::StoreLocal(slot, reg)); }
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
-        self.code.push(runtime_call("resize", vec![
+        self.emit(runtime_call("resize", vec![
             argument(frame), argument(data.handle.clone()), argument(length.clone()),
             CallArgument::Reference { ty: fill.ty, access: Access::Read, address: CallReference {
                 storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
             } },
-        ], Some(Ty::scalar(Scalar::U32)), vec![reg]));
+        ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind);
         // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
         let handle = self.application_handle(reg);
         length.literal = false;
@@ -1102,35 +1102,35 @@ impl Builder<'_> {
             self.require_same(&data.ty,&output,factory.span)?;
             return Ok(self.unknown_element_model(&data.ty));
         }
-        let slot=self.local_slots(&scalar).0[0];self.code.push(Inst::StoreLocal(slot,zero.regs[0]));
-        let outer=std::mem::take(&mut self.code);self.code.push(Inst::LoadLocal(index_reg,slot));
-        let test=self.reg(Scalar::Bool);self.code.push(Inst::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Less),a:index_reg,b:data.length.regs[0]});
+        let slot=self.local_slots(&scalar).0[0];self.emit(InstKind::StoreLocal(slot,zero.regs[0]));
+        let outer=std::mem::take(&mut self.code);self.emit(InstKind::LoadLocal(index_reg,slot));
+        let test=self.reg(Scalar::Bool);self.emit(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Less),a:index_reg,b:data.length.regs[0]});
         let condition=std::mem::take(&mut self.code);
         let Some(mut returned)=self.invoke_returned(instance,arguments,span)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
         let elements=self.capture_element_model(data,returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
         self.write_application_place(data.handle.regs[0],data.handle.identity(),index_reg,stride,&words,value,span)?;
-        let one=self.constant(Scalar::U32,1).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one});self.code.push(Inst::StoreLocal(slot,next));
-        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::Loop{condition,test,body});Ok(elements)
+        let one=self.constant(Scalar::U32,1).regs[0];let next=self.reg(Scalar::U32);self.emit(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one});self.emit(InstKind::StoreLocal(slot,next));
+        let body=std::mem::replace(&mut self.code,outer);self.emit(InstKind::Loop{condition,test,body});Ok(elements)
     }
     fn drop_application_elements(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         if data.length.maximum()==0 {return Ok(());}
         let data=self.refresh_application_data(data.clone(),span)?;
         self.application_cpu(&data,span)?;
-        let scalar=Ty::scalar(Scalar::U32);let slot=self.local_slots(&scalar).0[0];self.code.push(Inst::StoreLocal(slot,data.length.regs[0]));
+        let scalar=Ty::scalar(Scalar::U32);let slot=self.local_slots(&scalar).0[0];self.emit(InstKind::StoreLocal(slot,data.length.regs[0]));
         let outer=std::mem::take(&mut self.code);
-        let cursor=self.reg(Scalar::U32);self.code.push(Inst::LoadLocal(cursor,slot));
+        let cursor=self.reg(Scalar::U32);self.emit(InstKind::LoadLocal(cursor,slot));
         let zero=self.constant(Scalar::U32,0).regs[0];let test=self.reg(Scalar::Bool);
-        self.code.push(Inst::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Greater),a:cursor,b:zero});
+        self.emit(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Greater),a:cursor,b:zero});
         let condition=std::mem::take(&mut self.code);
         let one=self.constant(Scalar::U32,1).regs[0];let index=self.reg(Scalar::U32);
-        self.code.push(Inst::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one});
+        self.emit(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one});
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,u32::MAX-1),uniform:false,literal:false,constant:None};
         let place=Self::application_element(&data,&value_index,(0,u32::MAX-1));let value=self.read_storage_value(&place,span)?;
         let element=self.materialize_element(&data,value);self.drop_returned(element,retained,span)?;
-        self.code.push(Inst::StoreLocal(slot,index));
-        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::Loop{condition,test,body});Ok(())
+        self.emit(InstKind::StoreLocal(slot,index));
+        let body=std::mem::replace(&mut self.code,outer);self.emit(InstKind::Loop{condition,test,body});Ok(())
     }
     pub(super) fn application_element(
         data: &Data,
@@ -1249,7 +1249,7 @@ impl Builder<'_> {
         };
         if field==0{return offset;}
         let number=self.constant(Scalar::U32,Bits::from(field));let dst=self.reg(Scalar::U32);
-        self.code.push(Inst::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]});
+        self.emit(InstKind::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]});
         Value{ty:Ty::scalar(Scalar::U32),regs:vec![dst],proof:bounds::Proof::default(),literal:false,uniform:offset.uniform,constant:None}
     }
     pub(super) fn application_reference_layout(&mut self,data:&DataReference)->(Value,Value) {
@@ -1276,18 +1276,18 @@ impl Builder<'_> {
         Value{ty:Self::borrowed_dataset_parameter_type(),regs:vec![data.handle.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None}
     }
     pub(super) fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
-        let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::Cast{dst,src});dst};
+        let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::new(InstKind::Cast{dst,src}));dst};
         let low=cast(self,address[0]);let high=cast(self,address[1]);
         let width=self.constant(Scalar::U64,32).regs[0];
-        let shifted=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:shifted,op:BinaryOp::ShiftLeft,a:high,b:width});
-        let base=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:base,op:BinaryOp::Or,a:low,b:shifted});
+        let shifted=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:shifted,op:BinaryOp::ShiftLeft,a:high,b:width});
+        let base=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:base,op:BinaryOp::Or,a:low,b:shifted});
         let index=cast(self,index);let stride=cast(self,stride);let offset=cast(self,offset);
-        let scaled=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:scaled,op:BinaryOp::IMul,a:index,b:stride});
-        let at=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:at,op:BinaryOp::IAdd,a:scaled,b:offset});
-        let pointer=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:pointer,op:BinaryOp::IAdd,a:base,b:at});
-        let high=self.reg(Scalar::U64);self.code.push(Inst::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:pointer,b:width});
+        let scaled=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:scaled,op:BinaryOp::IMul,a:index,b:stride});
+        let at=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:at,op:BinaryOp::IAdd,a:scaled,b:offset});
+        let pointer=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:pointer,op:BinaryOp::IAdd,a:base,b:at});
+        let high=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:pointer,b:width});
         let result=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
-        self.code.push(Inst::Cast{dst:result[0],src:pointer});self.code.push(Inst::Cast{dst:result[1],src:high});result
+        self.emit(InstKind::Cast{dst:result[0],src:pointer});self.emit(InstKind::Cast{dst:result[1],src:high});result
     }
     pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:&[(Scalar,u32)],span:Span)->Result<([Reg;2],Reg,u32)>{
         let address = if write {
@@ -1297,27 +1297,27 @@ impl Builder<'_> {
             };
             let widen = |builder: &mut Self, src| {
                 let dst = builder.reg(Scalar::U64);
-                builder.code.push(Inst::Cast { dst, src });
+                builder.code.push(Inst::new(InstKind::Cast { dst, src }));
                 dst
             };
             let row = widen(self, index);
             let step = widen(self, step);
             let field = widen(self, field);
             let scaled = self.reg(Scalar::U64);
-            self.code.push(Inst::Binary { dst: scaled, op: BinaryOp::IMul, a: row, b: step });
+            self.emit(InstKind::Binary { dst: scaled, op: BinaryOp::IMul, a: row, b: step });
             let mut start = self.reg(Scalar::U64);
-            self.code.push(Inst::Binary { dst: start, op: BinaryOp::IAdd, a: scaled, b: field });
+            self.emit(InstKind::Binary { dst: start, op: BinaryOp::IAdd, a: scaled, b: field });
             if let Some(relative) = relative {
                 let relative = widen(self, relative);
                 let dst = self.reg(Scalar::U64);
-                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: start, b: relative });
+                self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: relative });
                 start = dst;
             }
             let mut address = None;
             for &(scalar, word) in components {
                 let word = self.constant(Scalar::U64, Bits::from(word)).regs[0];
                 let dst = self.reg(Scalar::U64);
-                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: start, b: word });
+                self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: word });
                 let offset = Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
                 address = Some(self.application_address(handle, identity, offset, scalar.size(), span)?);
             }
@@ -1354,7 +1354,7 @@ impl Builder<'_> {
         let mut regs = Vec::new();
         for (&(scalar, _), &word) in ty.components.iter().zip(words) {
             let dst = self.reg(scalar);
-            self.code.push(Inst::ViewLoad {
+            self.emit(InstKind::ViewLoad {
                 dst,
                 address,
                 index,
@@ -1388,7 +1388,7 @@ impl Builder<'_> {
         let zero = self.constant(Scalar::U32, 0).regs[0];
         for ((&(scalar, _), &word), value) in value.ty.components.iter().zip(words).zip(value.regs) {
             let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,None,&[(scalar,word)],span)?;
-            self.code.push(Inst::StoreIndexed {
+            self.emit(InstKind::StoreIndexed {
                 source: IndexedSource::View {
                     address,
                     index,
@@ -1745,7 +1745,7 @@ impl Builder<'_> {
             );
         }
         let dst = self.reg(Scalar::Bool);
-        self.code.push(Inst::Print {
+        self.emit(InstKind::Print {
             dst,
             value: value.regs[0],
         });

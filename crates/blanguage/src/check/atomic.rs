@@ -101,7 +101,7 @@ impl Builder<'_> {
             }
             self.cross_access.insert(binding);
         }
-        self.code.push(Inst::Atomic(atomic));
+        self.emit(InstKind::Atomic(atomic));
     }
     pub(super) fn atomic_store(&mut self, args: &[Expr], span: Span) -> Result<()> {
         if args.len() != 3 {

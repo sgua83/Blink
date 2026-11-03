@@ -364,23 +364,23 @@ impl Emitter<'_> {
         loop_targets: Option<(u32, u32)>,
     ) -> Result<bool, &'static str> {
         for inst in code {
-            match inst {
-                Inst::Print { .. } => return Err("GPU 后端不能执行 CPU 标准输出"),
-                Inst::Call(_) => return Err("GPU 后端不能调用 CPU C ABI 外部函数"),
-                Inst::TextureSample {
+            match &(inst).kind {
+                InstKind::Print { .. } => return Err("GPU 后端不能执行 CPU 标准输出"),
+                InstKind::Call(_) => return Err("GPU 后端不能调用 CPU C ABI 外部函数"),
+                InstKind::TextureSample {
                     result,
                     texture,
                     coordinate,
                     lod,
                 } => self.texture_sample(*result, *texture, *coordinate, *lod),
-                Inst::TextureLevels { dst, texture } => {
+                InstKind::TextureLevels { dst, texture } => {
                     let image = self.texture_image(*texture);
                     self.emit(106, &[self.types[&Scalar::U32], self.value(*dst), image]);
                 }
-                Inst::TextureAddress { .. }
-                | Inst::TextureFormat { .. }
-                | Inst::TextureRead { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
-                Inst::TextureSize {
+                InstKind::TextureAddress { .. }
+                | InstKind::TextureFormat { .. }
+                | InstKind::TextureRead { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
+                InstKind::TextureSize {
                     result,
                     texture,
                     level,
@@ -392,7 +392,7 @@ impl Emitter<'_> {
                         self.emit(81, &[self.ty(*r), self.value(*r), size, i as u32]);
                     }
                 }
-                Inst::TextureFetch {
+                InstKind::TextureFetch {
                     result,
                     texture,
                     coordinate,
@@ -418,23 +418,23 @@ impl Emitter<'_> {
                         self.emit(81, &[self.ty(*r), self.value(*r), value, i as u32]);
                     }
                 }
-                Inst::Scope(body) => self.function_scope(body)?,
-                Inst::Exit => {
+                InstKind::Scope(body) => self.function_scope(body)?,
+                InstKind::Exit => {
                     self.function_exit();
                     return Ok(false);
                 }
-                Inst::Append(append) => self.append(append),
-                Inst::Atomic(atomic) => self.atomic(atomic)?,
-                Inst::TileBarrier => self.tile_barrier(),
-                Inst::TilePublish(publication) => self.publish_values(publication),
-                Inst::TileCollective(collective) => self.tile_collective(collective),
-                Inst::TileLength(dst) => {
+                InstKind::Append(append) => self.append(append),
+                InstKind::Atomic(atomic) => self.atomic(atomic)?,
+                InstKind::TileBarrier => self.tile_barrier(),
+                InstKind::TilePublish(publication) => self.publish_values(publication),
+                InstKind::TileCollective(collective) => self.tile_collective(collective),
+                InstKind::TileLength(dst) => {
                     self.emit(83, &[self.ty(*dst), self.value(*dst), self.tile_length])
                 }
-                Inst::TileLane(dst) => {
+                InstKind::TileLane(dst) => {
                     self.emit(83, &[self.ty(*dst), self.value(*dst), self.tile_lane])
                 }
-                Inst::TileLoad {
+                InstKind::TileLoad {
                     dst,
                     tile,
                     index,
@@ -444,27 +444,27 @@ impl Emitter<'_> {
                     let raw = self.tile_read(scalar, *tile, self.value(*index), *word, None);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::Subgroup {
+                InstKind::Subgroup {
                     dst,
                     op,
                     value,
                     argument,
                 } => self.subgroup(*dst, *op, *value, *argument),
-                Inst::ViewLoad { dst, address, index, stride, word } => {
+                InstKind::ViewLoad { dst, address, index, stride, word } => {
                     let scalar = self.stage.registers[*dst];
                     let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
                     let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.view_address(unit, address, *index, *stride, *word + part * 4)).collect();
                     let raw = self.load_raw(scalar, unit, &pointers, true);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::RayQuery { scene, origin, direction, minimum, maximum, result } => {
+                InstKind::RayQuery { scene, origin, direction, minimum, maximum, result } => {
                     self.ray(*scene, origin, direction, *minimum, *maximum, result);
                 }
-                Inst::PositionAddress { .. }
-                | Inst::LoadIndexed { source: IndexedSource::Pointer { .. }, .. }
-                | Inst::StoreIndexed { source: IndexedSource::Pointer { .. }, .. } =>
+                InstKind::PositionAddress { .. }
+                | InstKind::LoadIndexed { source: IndexedSource::Pointer { .. }, .. }
+                | InstKind::StoreIndexed { source: IndexedSource::Pointer { .. }, .. } =>
                     return Err("CPU原生位置地址不能在GPU内核中使用"),
-                Inst::LoadIndexed { dst, source, offset, word } => {
+                InstKind::LoadIndexed { dst, source, offset, word } => {
                     let scalar = self.stage.registers[*dst];
                     let raw = if let IndexedSource::Tile { tile, index } = source {
                         self.tile_read(scalar, *tile, self.value(*index), *word, Some(self.value(*offset)))
@@ -475,25 +475,25 @@ impl Emitter<'_> {
                     };
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::StoreIndexed { source, offset, word, value } => {
+                InstKind::StoreIndexed { source, offset, word, value } => {
                     let scalar = self.stage.registers[*value];
                     let unit = Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 });
                     let pointers: Vec<_> = (0..scalar.size().div_ceil(4)).map(|part| self.indexed_address(unit, source, *offset, *word + part * 4)).collect();
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
                     self.store_raw(scalar, unit, &pointers, raw, true);
                 }
-                Inst::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
-                Inst::Constant(dst, s, bits) if s.is_float() => {
+                InstKind::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
+                InstKind::Constant(dst, s, bits) if s.is_float() => {
                     let mut words = vec![self.constant(Scalar::U32, *bits as u32)];
                     if s.size() == 8 { words.push(self.constant(Scalar::U32, (*bits >> 32) as u32)); }
                     self.from_words(*dst, &words, Scalar::U32);
                 }
-                Inst::Constant(dst, s, bits) => {
+                InstKind::Constant(dst, s, bits) => {
                     let constant = self.constant_bits(*s, *bits);
                     self.emit(83, &[self.ty(*dst), self.value(*dst), constant]);
                 }
-                Inst::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
-                Inst::Uniform(dst, offset) => {
+                InstKind::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
+                InstKind::Uniform(dst, offset) => {
                     let zero = self.constant(Scalar::U32, 0);
                     let mut words = Vec::new();
                     for part in 0..self.stage.registers[*dst].size().div_ceil(4) {
@@ -512,7 +512,7 @@ impl Emitter<'_> {
                     }
                     self.from_words(*dst, &words, Scalar::U32);
                 }
-                Inst::LoadLocal(dst, slot) => {
+                InstKind::LoadLocal(dst, slot) => {
                     if self.private_words.contains(slot) {
                         let scalar = self.stage.registers[*dst];
                         let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
@@ -522,7 +522,7 @@ impl Emitter<'_> {
                         self.emit(61, &[self.ty(*dst), self.value(*dst), self.locals[*slot]]);
                     }
                 }
-                Inst::StoreLocal(slot, src) => {
+                InstKind::StoreLocal(slot, src) => {
                     if self.private_words.contains(slot) {
                         let scalar = self.stage.registers[*src];
                         let (unit, pointers) = self.private_address(*slot, None, 0, scalar);
@@ -532,29 +532,29 @@ impl Emitter<'_> {
                         self.emit(62, &[self.locals[*slot], self.value(*src)]);
                     }
                 }
-                Inst::LoadLocalIndexed { dst, base, index, word, .. } => {
+                InstKind::LoadLocalIndexed { dst, base, index, word, .. } => {
                     let scalar = self.stage.registers[*dst];
                     let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
                     let raw = self.load_raw(scalar, unit, &pointers, false);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::StoreLocalIndexed { base, index, word, value, .. } => {
+                InstKind::StoreLocalIndexed { base, index, word, value, .. } => {
                     let scalar = self.stage.registers[*value];
                     let (unit, pointers) = self.private_address(*base, Some(*index), *word, scalar);
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
                     self.store_raw(scalar, unit, &pointers, raw, false);
                 }
-                Inst::Load { dst, binding, index, word } => {
+                InstKind::Load { dst, binding, index, word } => {
                     let scalar = self.stage.registers[*dst];
                     let raw = self.load_raw_buffer(scalar, *binding, self.value(*index), *word);
                     self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                 }
-                Inst::Store { binding, index, word, value } => {
+                InstKind::Store { binding, index, word, value } => {
                     let scalar = self.stage.registers[*value];
                     let raw = self.to_words(*value, Self::raw_scalar(scalar))[0];
                     self.store_raw_buffer(scalar, *binding, self.value(*index), *word, raw);
                 }
-                Inst::Unary {
+                InstKind::Unary {
                     dst,
                     op: operation,
                     a,
@@ -579,7 +579,7 @@ impl Emitter<'_> {
                     };
                     self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*a)]);
                 }
-                Inst::IntegerDivide {
+                InstKind::IntegerDivide {
                     result,
                     src,
                     divisor,
@@ -606,7 +606,7 @@ impl Emitter<'_> {
                         );
                     }
                 }
-                Inst::Binary {
+                InstKind::Binary {
                     dst,
                     op: operation,
                     a,
@@ -711,7 +711,7 @@ impl Emitter<'_> {
                         op(&mut self.decorations, 71, &[id, 42]);
                     }
                 }
-                Inst::Cast { dst, src } => {
+                InstKind::Cast { dst, src } => {
                     let a = self.stage.registers[*src];
                     let b = self.stage.registers[*dst];
                     if a == Scalar::Bool {
@@ -742,7 +742,7 @@ impl Emitter<'_> {
                         self.emit(opcode, &[self.ty(*dst), self.value(*dst), self.value(*src)]);
                     }
                 }
-                Inst::Math {
+                InstKind::Math {
                     dst,
                     op: operation,
                     args,
@@ -772,7 +772,7 @@ impl Emitter<'_> {
                     operands.extend(args.iter().map(|r| self.value(*r)));
                     self.emit(12, &operands);
                 }
-                Inst::Select {
+                InstKind::Select {
                     dst,
                     condition,
                     a,
@@ -787,7 +787,7 @@ impl Emitter<'_> {
                         self.value(*b),
                     ],
                 ),
-                Inst::If { condition, yes, no } => {
+                InstKind::If { condition, yes, no } => {
                     let y = self.id();
                     let n = self.id();
                     let merge = self.id();
@@ -809,7 +809,7 @@ impl Emitter<'_> {
                         return Ok(false);
                     }
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition,
                     test,
                     body,
@@ -839,12 +839,12 @@ impl Emitter<'_> {
                         self.finish_return_loop();
                     }
                 }
-                Inst::Break => {
+                InstKind::Break => {
                     self.loop_exit_edge(loop_targets.unwrap().0, self.current_label);
                     self.emit(249, &[loop_targets.unwrap().0]);
                     return Ok(false);
                 }
-                Inst::Continue => {
+                InstKind::Continue => {
                     self.emit(249, &[loop_targets.unwrap().1]);
                     return Ok(false);
                 }
@@ -1159,14 +1159,14 @@ pub fn emit(program: &Program, stage_index: usize) -> Result<Vec<u32>, &'static 
 }
 fn ray_results(code: &[Inst], out: &mut Vec<Reg>) {
     for i in code {
-        match i {
-            Inst::RayQuery { result, .. } => out.push(result.registers()[0]),
-            Inst::Scope(body) => ray_results(body, out),
-            Inst::If { yes, no, .. } => {
+        match &(i).kind {
+            InstKind::RayQuery { result, .. } => out.push(result.registers()[0]),
+            InstKind::Scope(body) => ray_results(body, out),
+            InstKind::If { yes, no, .. } => {
                 ray_results(yes, out);
                 ray_results(no, out);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 ray_results(condition, out);

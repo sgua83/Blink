@@ -47,8 +47,8 @@ impl Stage {
     pub(crate) fn has_tile_steps(&self) -> bool {
         self.code.iter().any(|i| {
             matches!(
-                i,
-                Inst::TilePublish(_) | Inst::TileCollective(_) | Inst::TileBarrier
+                &(i).kind,
+                InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier
             )
         })
     }
@@ -86,10 +86,10 @@ impl Stage {
         let mut phases = Vec::new();
         let mut begin = 0;
         for (i, inst) in self.code.iter().enumerate() {
-            let step = match inst {
-                Inst::TilePublish(p) => Some(TileStep::Publish(p)),
-                Inst::TileCollective(c) => Some(TileStep::Collective(c)),
-                Inst::TileBarrier => Some(TileStep::Barrier),
+            let step = match &(inst).kind {
+                InstKind::TilePublish(p) => Some(TileStep::Publish(p)),
+                InstKind::TileCollective(c) => Some(TileStep::Collective(c)),
+                InstKind::TileBarrier => Some(TileStep::Barrier),
                 _ => None,
             };
             if step.is_some() {
@@ -155,8 +155,8 @@ impl Stage {
     pub(crate) fn tile_layout(&self, wide: bool) -> BTreeMap<SharedWord, (Scalar, usize, u32)> {
         fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>, groups: &mut Vec<Vec<SharedWord>>) {
             for inst in code {
-                match inst {
-                    Inst::Atomic(Atomic {
+                match &(inst).kind {
+                    InstKind::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
                         word, scalar,
                         offset: None,
@@ -166,11 +166,11 @@ impl Stage {
                             last.insert(stage.shared_word(*tile, *word + part * 4).aligned(), phase);
                         }
                     }
-                    Inst::LoadIndexed {
+                    InstKind::LoadIndexed {
                         source: IndexedSource::Tile { tile, .. },
                         ..
                     }
-                    | Inst::Atomic(Atomic {
+                    | InstKind::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
                         offset: Some(_),
                         ..
@@ -192,17 +192,17 @@ impl Stage {
                         group.dedup();
                         groups.push(group);
                     }
-                    Inst::TileLoad { dst, tile, word, .. } => {
+                    InstKind::TileLoad { dst, tile, word, .. } => {
                         for part in 0..stage.registers[*dst].size().div_ceil(4) {
                             last.insert(stage.shared_word(*tile, *word + part * 4).aligned(), phase);
                         }
                     }
-                    Inst::Scope(body) => loads(stage, body, phase, last, groups),
-                    Inst::If { yes, no, .. } => {
+                    InstKind::Scope(body) => loads(stage, body, phase, last, groups),
+                    InstKind::If { yes, no, .. } => {
                         loads(stage, yes, phase, last, groups);
                         loads(stage, no, phase, last, groups);
                     }
-                    Inst::Loop {
+                    InstKind::Loop {
                         condition, body, ..
                     } => {
                         loads(stage, condition, phase, last, groups);
@@ -217,12 +217,12 @@ impl Stage {
         let mut groups = Vec::new();
         let mut phase = 0usize;
         for inst in &self.code {
-            match inst {
-                Inst::TilePublish(publication) => {
+            match &(inst).kind {
+                InstKind::TilePublish(publication) => {
                     births.insert(publication.tile, phase as i64);
                     phase += 1;
                 }
-                Inst::TileCollective(c) => {
+                InstKind::TileCollective(c) => {
                     for (word, result) in &c.results {
                         for part in 0..self.registers[*result].size().div_ceil(4) {
                             last.insert(self.shared_word(c.tile, *word + part * 4).aligned(), phase as i64);
@@ -230,7 +230,7 @@ impl Stage {
                     }
                     phase += 1;
                 }
-                Inst::TileBarrier => phase += 1,
+                InstKind::TileBarrier => phase += 1,
                 _ => loads(self, std::slice::from_ref(inst), phase as i64, &mut last, &mut groups),
             }
         }
@@ -332,8 +332,8 @@ impl Stage {
         let bytes_per_lane = self
             .code
             .iter()
-            .filter_map(|i| match i {
-                Inst::TileCollective(c) if !c.results.is_empty() => {
+            .filter_map(|i| match &(i).kind {
+                InstKind::TileCollective(c) if !c.results.is_empty() => {
                     Some(if c.op.operator() == CollectiveOperator::Sum {
                         c.results.iter().map(|(_,result)|self.registers[*result].size().div_ceil(4) * 4).max().unwrap_or(0)
                     } else {
@@ -376,14 +376,14 @@ pub(crate) fn live_before(
 ) -> BTreeSet<PrivateSlot> {
     use PrivateSlot::{Local, Register};
     for inst in code.iter().rev() {
-        match inst {
-            Inst::If { condition, yes, no } => {
+        match &(inst).kind {
+            InstKind::If { condition, yes, no } => {
                 let a = live_before(yes, live.clone(), break_live, continue_live, exit_live);
                 live = live_before(no, live, break_live, continue_live, exit_live);
                 live.extend(a);
                 live.insert(Register(*condition));
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition,
                 test,
                 body,
@@ -398,17 +398,17 @@ pub(crate) fn live_before(
                     exit_live,
                 );
             }
-            Inst::Scope(body) => {
+            InstKind::Scope(body) => {
                 live = live_before(body, live.clone(), break_live, continue_live, &live)
             }
-            Inst::Exit => live = exit_live.clone(),
-            Inst::Break => live = break_live.clone(),
-            Inst::Continue => live = continue_live.clone(),
-            Inst::LoadLocal(dst, slot) => {
+            InstKind::Exit => live = exit_live.clone(),
+            InstKind::Break => live = break_live.clone(),
+            InstKind::Continue => live = continue_live.clone(),
+            InstKind::LoadLocal(dst, slot) => {
                 live.remove(&Register(*dst));
                 live.insert(Local(*slot));
             }
-            Inst::StoreLocal(slot, src) => {
+            InstKind::StoreLocal(slot, src) => {
                 live.remove(&Local(*slot));
                 live.insert(Register(*src));
             }
@@ -428,44 +428,44 @@ impl Inst {
     pub(crate) fn results(&self) -> impl Iterator<Item = Reg> {
         let mut division = [None, None];
         let mut collective = &[][..];
-        let values: &[Reg] = match self {
-            Self::Call(call) => &call.values,
-            Self::TextureSample { result, .. } | Self::TextureFetch { result, .. } => {
+        let values: &[Reg] = match &self.kind {
+            InstKind::Call(call) => &call.values,
+            InstKind::TextureSample { result, .. } | InstKind::TextureFetch { result, .. } => {
                 result
             }
-            Self::TextureSize { result, .. } => result,
-            Self::TextureLevels { dst, .. }
-            | Self::TextureAddress { dst, .. }
-            | Self::TextureFormat { dst, .. }
-            | Self::TextureRead { dst, .. } => std::slice::from_ref(dst),
-            Self::Append(a) => std::slice::from_ref(&a.accepted),
-            Self::Atomic(a) => a.result.as_slice(),
-            Self::Constant(r, ..)
-            | Self::FunctionAddress(r, _)
-            | Self::Index(r)
-            | Self::Uniform(r, _)
-            | Self::LoadLocal(r, _)
-            | Self::TileLength(r)
-            | Self::TileLane(r) => std::slice::from_ref(r),
-            Self::PositionAddress { dst, .. }
-            | Self::LoadIndexed { dst, .. }
-            | Self::Load { dst, .. }
-            | Self::LoadLocalIndexed { dst, .. }
-            | Self::Subgroup { dst, .. }
-            | Self::Print { dst, .. }
-            | Self::TileLoad { dst, .. }
-            | Self::ViewLoad { dst, .. }
-            | Self::Unary { dst, .. }
-            | Self::Binary { dst, .. }
-            | Self::Cast { dst, .. }
-            | Self::Math { dst, .. }
-            | Self::Select { dst, .. } => std::slice::from_ref(dst),
-            Self::RayQuery { result, .. } => result.registers(),
-            Self::IntegerDivide { result, .. } => {
+            InstKind::TextureSize { result, .. } => result,
+            InstKind::TextureLevels { dst, .. }
+            | InstKind::TextureAddress { dst, .. }
+            | InstKind::TextureFormat { dst, .. }
+            | InstKind::TextureRead { dst, .. } => std::slice::from_ref(dst),
+            InstKind::Append(a) => std::slice::from_ref(&a.accepted),
+            InstKind::Atomic(a) => a.result.as_slice(),
+            InstKind::Constant(r, ..)
+            | InstKind::FunctionAddress(r, _)
+            | InstKind::Index(r)
+            | InstKind::Uniform(r, _)
+            | InstKind::LoadLocal(r, _)
+            | InstKind::TileLength(r)
+            | InstKind::TileLane(r) => std::slice::from_ref(r),
+            InstKind::PositionAddress { dst, .. }
+            | InstKind::LoadIndexed { dst, .. }
+            | InstKind::Load { dst, .. }
+            | InstKind::LoadLocalIndexed { dst, .. }
+            | InstKind::Subgroup { dst, .. }
+            | InstKind::Print { dst, .. }
+            | InstKind::TileLoad { dst, .. }
+            | InstKind::ViewLoad { dst, .. }
+            | InstKind::Unary { dst, .. }
+            | InstKind::Binary { dst, .. }
+            | InstKind::Cast { dst, .. }
+            | InstKind::Math { dst, .. }
+            | InstKind::Select { dst, .. } => std::slice::from_ref(dst),
+            InstKind::RayQuery { result, .. } => result.registers(),
+            InstKind::IntegerDivide { result, .. } => {
                 division = [result.quotient(), result.remainder()];
                 &[]
             },
-            Self::TileCollective(c) => {
+            InstKind::TileCollective(c) => {
                 collective = &c.results;
                 &[]
             },
@@ -476,18 +476,18 @@ impl Inst {
             .chain(collective.iter().map(|(_, reg)| *reg))
     }
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
-        let values = match self {
-            Self::Call(call) => call.all_operands(f),
-            Self::FunctionAddress(_, CallTarget::Indirect(reg)) => f(*reg),
-            Self::PositionAddress { address, .. } => address.all_operands(f),
-            Self::TextureSample { coordinate, lod, .. } =>
+        let values = match &self.kind {
+            InstKind::Call(call) => call.all_operands(f),
+            InstKind::FunctionAddress(_, CallTarget::Indirect(reg)) => f(*reg),
+            InstKind::PositionAddress { address, .. } => address.all_operands(f),
+            InstKind::TextureSample { coordinate, lod, .. } =>
                 coordinate.iter().all(|reg| f(*reg)) && f(*lod),
-            Self::TextureFetch { coordinate, level, .. }
-            | Self::TextureRead { coordinate, level, .. } =>
+            InstKind::TextureFetch { coordinate, level, .. }
+            | InstKind::TextureRead { coordinate, level, .. } =>
                 coordinate.iter().all(|reg| f(*reg)) && f(*level),
-            Self::TextureSize { level, .. } => f(*level),
-            Self::Append(value) => value.values.iter().all(|(_, reg)| f(*reg)),
-            Self::Atomic(value) => {
+            InstKind::TextureSize { level, .. } => f(*level),
+            InstKind::Append(value) => value.values.iter().all(|(_, reg)| f(*reg)),
+            InstKind::Atomic(value) => {
                 let operands = match &value.op {
                     AtomicOp::Load => true,
                     AtomicOp::Store(reg) | AtomicOp::Add(reg) | AtomicOp::Sub(reg)
@@ -498,57 +498,57 @@ impl Inst {
                 };
                 operands && value.target.all_operands(f) && value.offset.iter().all(|reg| f(*reg))
             }
-            Self::TilePublish(value) => value.values.iter().all(|(_, reg)| f(*reg)),
-            Self::RayQuery { origin, direction, minimum, maximum, .. } =>
+            InstKind::TilePublish(value) => value.values.iter().all(|(_, reg)| f(*reg)),
+            InstKind::RayQuery { origin, direction, minimum, maximum, .. } =>
                 origin.iter().chain(direction).all(|reg| f(*reg)) && f(*minimum) && f(*maximum),
-            Self::LoadIndexed { source, offset, .. } => source.all_operands(f) && f(*offset),
-            Self::StoreIndexed { source, offset, value, .. } =>
+            InstKind::LoadIndexed { source, offset, .. } => source.all_operands(f) && f(*offset),
+            InstKind::StoreIndexed { source, offset, value, .. } =>
                 source.all_operands(f) && f(*offset) && f(*value),
-            Self::StoreLocal(_, value) | Self::Print { value, .. } => f(*value),
-            Self::LoadLocalIndexed { index, .. } | Self::Load { index, .. }
-            | Self::TileLoad { index, .. } => f(*index),
-            Self::StoreLocalIndexed { index, value, .. } | Self::Store { index, value, .. } =>
+            InstKind::StoreLocal(_, value) | InstKind::Print { value, .. } => f(*value),
+            InstKind::LoadLocalIndexed { index, .. } | InstKind::Load { index, .. }
+            | InstKind::TileLoad { index, .. } => f(*index),
+            InstKind::StoreLocalIndexed { index, value, .. } | InstKind::Store { index, value, .. } =>
                 f(*index) && f(*value),
-            Self::Subgroup { value, argument, .. } =>
+            InstKind::Subgroup { value, argument, .. } =>
                 value.iter().chain(argument).all(|reg| f(*reg)),
-            Self::ViewLoad { address, index, .. } => address.iter().all(|reg| f(*reg)) && f(*index),
-            Self::Unary { a, .. } | Self::Cast { src: a, .. } => f(*a),
-            Self::IntegerDivide { src, divisor, .. } => f(*src) && match divisor {
+            InstKind::ViewLoad { address, index, .. } => address.iter().all(|reg| f(*reg)) && f(*index),
+            InstKind::Unary { a, .. } | InstKind::Cast { src: a, .. } => f(*a),
+            InstKind::IntegerDivide { src, divisor, .. } => f(*src) && match divisor {
                 IntegerDivisor::Constant(_) => true,
                 IntegerDivisor::Value(reg) => f(*reg),
             },
-            Self::Binary { a, b, .. } => f(*a) && f(*b),
-            Self::Math { args, .. } => args.iter().all(|reg| f(*reg)),
-            Self::Select { condition, a, b, .. } => f(*condition) && f(*a) && f(*b),
-            Self::If { condition, .. } => f(*condition),
-            Self::Loop { test, .. } => f(*test),
+            InstKind::Binary { a, b, .. } => f(*a) && f(*b),
+            InstKind::Math { args, .. } => args.iter().all(|reg| f(*reg)),
+            InstKind::Select { condition, a, b, .. } => f(*condition) && f(*a) && f(*b),
+            InstKind::If { condition, .. } => f(*condition),
+            InstKind::Loop { test, .. } => f(*test),
             _ => true,
         };
-        values && match self {
-            Self::TextureSample { texture, .. } | Self::TextureFetch { texture, .. }
-            | Self::TextureSize { texture, .. } | Self::TextureLevels { texture, .. }
-            | Self::TextureAddress { texture, .. } | Self::TextureFormat { texture, .. }
-            | Self::TextureRead { texture, .. } => texture.element.iter().all(|reg| f(*reg)),
+        values && match &self.kind {
+            InstKind::TextureSample { texture, .. } | InstKind::TextureFetch { texture, .. }
+            | InstKind::TextureSize { texture, .. } | InstKind::TextureLevels { texture, .. }
+            | InstKind::TextureAddress { texture, .. } | InstKind::TextureFormat { texture, .. }
+            | InstKind::TextureRead { texture, .. } => texture.element.iter().all(|reg| f(*reg)),
             _ => true,
         }
     }
     pub(crate) fn local_reads(&self) -> Vec<usize> {
-        match self {
-            Self::Call(call) => call.locals(false),
-            Self::LoadLocal(_, slot) => vec![*slot],
-            Self::LoadLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
-            Self::LoadIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
-            Self::Atomic(a) if a.op.reads() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
+        match &self.kind {
+            InstKind::Call(call) => call.locals(false),
+            InstKind::LoadLocal(_, slot) => vec![*slot],
+            InstKind::LoadLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
+            InstKind::LoadIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
+            InstKind::Atomic(a) if a.op.reads() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
             _ => Vec::new(),
         }
     }
     pub(crate) fn local_writes(&self) -> Vec<usize> {
-        match self {
-            Self::Call(call) => call.locals(true),
-            Self::StoreLocal(slot, _) => vec![*slot],
-            Self::StoreLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
-            Self::StoreIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
-            Self::Atomic(a) if a.op.writes() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
+        match &self.kind {
+            InstKind::Call(call) => call.locals(true),
+            InstKind::StoreLocal(slot, _) => vec![*slot],
+            InstKind::StoreLocalIndexed { base, len, .. } => (*base..*base + *len).collect(),
+            InstKind::StoreIndexed { source, .. } => source.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
+            InstKind::Atomic(a) if a.op.writes() => a.target.aliases().filter_map(MemoryAlias::local_range).flatten().collect(),
             _ => Vec::new(),
         }
     }
@@ -556,10 +556,10 @@ impl Inst {
 pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {
     fn collect(code: &[Inst], out: &mut BTreeSet<(usize, usize)>) {
         for inst in code {
-            match inst {
-                Inst::LoadLocalIndexed { base, len, .. }
-                | Inst::StoreLocalIndexed { base, len, .. } => { out.insert((*base, *base + *len)); }
-                Inst::Call(call) => {
+            match &(inst).kind {
+                InstKind::LoadLocalIndexed { base, len, .. }
+                | InstKind::StoreLocalIndexed { base, len, .. } => { out.insert((*base, *base + *len)); }
+                InstKind::Call(call) => {
                     for arg in &call.arguments {
                         if let CallArgument::Reference { address, .. } = arg {
                             out.extend(address.local_ranges().map(|r| (r.start, r.end)));
@@ -569,21 +569,21 @@ pub(crate) fn private_spans(code: &[Inst]) -> Vec<std::ops::Range<usize>> {
                         if let Some(range) = effect.alias.local_range() { out.insert((range.start, range.end)); }
                     }
                 }
-                Inst::PositionAddress { address, .. } => {
+                InstKind::PositionAddress { address, .. } => {
                     out.extend(address.local_ranges().map(|r| (r.start, r.end)));
                 }
-                Inst::LoadIndexed { source, .. } | Inst::StoreIndexed { source, .. } => {
+                InstKind::LoadIndexed { source, .. } | InstKind::StoreIndexed { source, .. } => {
                     out.extend(source.aliases().filter_map(MemoryAlias::local_range).map(|r| (r.start, r.end)));
                 }
-                Inst::Atomic(a) => {
+                InstKind::Atomic(a) => {
                     out.extend(a.target.aliases().filter_map(MemoryAlias::local_range).map(|r| (r.start, r.end)));
                 }
-                Inst::Scope(body) => collect(body, out),
-                Inst::If { yes, no, .. } => {
+                InstKind::Scope(body) => collect(body, out),
+                InstKind::If { yes, no, .. } => {
                     collect(yes, out);
                     collect(no, out);
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition, body, ..
                 } => {
                     collect(condition, out);

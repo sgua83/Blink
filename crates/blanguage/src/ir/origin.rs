@@ -49,3 +49,27 @@ impl SourceOrigin {
         format!("{{{}}}", fields.iter().map(|(key, value)| format!("{}:{value}", text(key))).collect::<Vec<_>>().join(","))
     }
 }
+
+/// The actual syntax that drove this operation's emission, before later IR rewrites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceSyntax { Statement, Expression, Place }
+#[derive(Clone, Debug)]
+pub struct SourceSite {
+    pub(crate) origin: std::sync::Arc<SourceOrigin>,
+    pub(crate) span: Span,
+    pub(crate) syntax: SourceSyntax,
+}
+impl SourceSite {
+    pub fn origin(&self) -> &SourceOrigin { &self.origin }
+    pub fn span(&self) -> Span { self.span }
+    pub fn syntax(&self) -> SourceSyntax { self.syntax }
+    pub fn ir_json(&self) -> String {
+        let syntax = match self.syntax {
+            SourceSyntax::Statement => "statement", SourceSyntax::Expression => "expression",
+            SourceSyntax::Place => "place",
+        };
+        format!("{{\"kind\":\"source_syntax\",\"syntax\":{},\"definition\":{},\"span_unit\":\"utf8_byte\",\"span_range\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"column_unit\":\"unicode_scalar\",\"position_base\":1,\"start\":{},\"end\":{}}}",
+            text(syntax), self.origin.ir_json(), self.span.start, self.span.end,
+            position(&self.origin.source.text, self.span.start), position(&self.origin.source.text, self.span.end))
+    }
+}

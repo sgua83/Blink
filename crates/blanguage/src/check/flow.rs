@@ -548,13 +548,13 @@ impl Builder<'_> {
 // 每个出口条件来自原Loop/If；不写运行时出口标记，也不丢弃其他路径的拥有内容。
 fn loop_exit_paths(code:&[Inst],controls:&BTreeMap<Reg,Value>,test:&owned_presence::Presence)->Vec<owned_presence::Presence>{
     use owned_presence::Presence;
-    fn escapes(code:&[Inst],exit:bool)->bool{code.iter().any(|instruction|match instruction{Inst::Break|Inst::Continue=>true,Inst::Exit=>exit,Inst::If{yes,no,..}=>escapes(yes,exit)||escapes(no,exit),Inst::Scope(code)=>escapes(code,false),_=>false})}
+    fn escapes(code:&[Inst],exit:bool)->bool{code.iter().any(|instruction|match &(instruction).kind{InstKind::Break|InstKind::Continue=>true,InstKind::Exit=>exit,InstKind::If{yes,no,..}=>escapes(yes,exit)||escapes(no,exit),InstKind::Scope(code)=>escapes(code,false),_=>false})}
     fn walk(code:&[Inst],mut when:Presence,controls:&BTreeMap<Reg,Value>,breaks:&mut Vec<Presence>)->(Presence,Presence){
         let mut exited=Presence::None;
-        for instruction in code{match instruction{
-            Inst::Break=>{breaks.push(when.clone());when=Presence::None;},Inst::Continue=>when=Presence::None,Inst::Exit=>{exited=exited.or(when);when=Presence::None;},
-            Inst::If{condition,yes,no}if escapes(yes,true)||escapes(no,true)=>{let selected=Presence::input(&controls[condition]);let(a,x)=walk(yes,when.clone().and(selected.clone()),controls,breaks);let(b,y)=walk(no,when.and(selected.not()),controls,breaks);when=a.or(b);exited=exited.or(x).or(y);},
-            Inst::Scope(code)if escapes(code,false)=>{let(a,b)=walk(code,when,controls,breaks);when=a.or(b);},_=>{}
+        for instruction in code{match &(instruction).kind{
+            InstKind::Break=>{breaks.push(when.clone());when=Presence::None;},InstKind::Continue=>when=Presence::None,InstKind::Exit=>{exited=exited.or(when);when=Presence::None;},
+            InstKind::If{condition,yes,no}if escapes(yes,true)||escapes(no,true)=>{let selected=Presence::input(&controls[condition]);let(a,x)=walk(yes,when.clone().and(selected.clone()),controls,breaks);let(b,y)=walk(no,when.and(selected.not()),controls,breaks);when=a.or(b);exited=exited.or(x).or(y);},
+            InstKind::Scope(code)if escapes(code,false)=>{let(a,b)=walk(code,when,controls,breaks);when=a.or(b);},_=>{}
         }}(when,exited)
     }
     let mut breaks=Vec::new();walk(code,Presence::All,controls,&mut breaks);breaks.into_iter().map(|when|test.clone().and(when)).collect()
@@ -579,7 +579,7 @@ where
     let mut code = std::mem::take(&mut builder.code);
     if builder.flow.continues() {
         exits.push(builder.loop_state());
-        code.push(Inst::Break);
+        code.push(Inst::new(InstKind::Break));
     }
     Ok(code)
 }
@@ -597,9 +597,9 @@ where
 {
     let mut result = Vec::new();
     for mut instruction in code {
-        match &mut instruction {
-            Inst::Break => exits.push(breaks.next().unwrap()),
-            Inst::Continue => {
+        match &mut (instruction).kind {
+            InstKind::Break => exits.push(breaks.next().unwrap()),
+            InstKind::Continue => {
                 result.extend(compile_initial_continuation(
                     builder,
                     continues.next().unwrap(),
@@ -609,7 +609,7 @@ where
                 )?);
                 continue;
             }
-            Inst::If { yes, no, .. } => {
+            InstKind::If { yes, no, .. } => {
                 *yes = expand_initial_code(
                     builder,
                     std::mem::take(yes),
@@ -629,7 +629,7 @@ where
                     continuation,
                 )?;
             }
-            Inst::Scope(body) => {
+            InstKind::Scope(body) => {
                 *body = expand_initial_code(
                     builder,
                     std::mem::take(body),

@@ -58,20 +58,20 @@ fn emit_value(
     let allocation = Allocation::new(&stage, &graph);
     let layout = Frame::new(&allocation, None);
     fn scratch(code: &[Inst]) -> bool {
-        code.iter().any(|i| match i {
-            Inst::LoadLocalIndexed { .. }
-            | Inst::StoreLocalIndexed { .. }
-            | Inst::ViewLoad { .. }
-            | Inst::LoadIndexed { .. }
-            | Inst::StoreIndexed { .. }
-            | Inst::Atomic(_) => true,
-            Inst::Scope(b) => scratch(b),
-            Inst::If { yes, no, .. } => scratch(yes) || scratch(no),
-            Inst::Loop {
+        code.iter().any(|i| match &(i).kind {
+            InstKind::LoadLocalIndexed { .. }
+            | InstKind::StoreLocalIndexed { .. }
+            | InstKind::ViewLoad { .. }
+            | InstKind::LoadIndexed { .. }
+            | InstKind::StoreIndexed { .. }
+            | InstKind::Atomic(_) => true,
+            InstKind::Scope(b) => scratch(b),
+            InstKind::If { yes, no, .. } => scratch(yes) || scratch(no),
+            InstKind::Loop {
                 condition, body, ..
             } => scratch(condition) || scratch(body),
-            Inst::PositionAddress { address, .. } => matches!(address.storage, CallStorage::Indexed(_)),
-            Inst::Call(call) => call.arguments.iter().any(|a| {
+            InstKind::PositionAddress { address, .. } => matches!(address.storage, CallStorage::Indexed(_)),
+            InstKind::Call(call) => call.arguments.iter().any(|a| {
                 matches!(
                     a,
                     CallArgument::Reference {

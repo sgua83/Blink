@@ -635,7 +635,7 @@ fn expand_stages(
                 let mut b = Builder::new(world, d, program, *domain)?;
                 b.roots(env);
                 let index = b.reg(Scalar::U32);
-                b.code.push(Inst::Index(index));
+                b.code.push(Inst::new(InstKind::Index(index)));
                 b.global_index = index;
                 b.refine_parallel_domain();
                 if b.env.contains_key(name) {
@@ -1679,6 +1679,8 @@ struct Builder<'a> {
     registers: Vec<Scalar>,
     locals: BTreeMap<usize, Ty>,
     code: Vec<Inst>,
+    source_definition: Option<Arc<SourceOrigin>>,
+    source_site: Option<Arc<SourceSite>>,
     global_index: Reg,
     reads: BTreeSet<usize>,
     writes: BTreeSet<usize>,
@@ -1733,6 +1735,8 @@ impl<'a> Builder<'a> {
             registers: Vec::new(),
             locals: BTreeMap::new(),
             code: Vec::new(),
+            source_definition: definition.source_origin().map(Arc::new),
+            source_site: None,
             global_index: usize::MAX,
             reads: BTreeSet::new(),
             writes: BTreeSet::new(),
@@ -1759,6 +1763,18 @@ impl<'a> Builder<'a> {
             appends: BTreeMap::new(),
             prefix: None,
         })
+    }
+    fn emit(&mut self, kind: InstKind) {
+        self.code.push(Inst { kind, source_site: self.source_site.clone() });
+    }
+    fn at_source<T>(&mut self, span: Span, syntax: SourceSyntax, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let site = self.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
+            origin: origin.clone(), span, syntax,
+        }));
+        let previous = std::mem::replace(&mut self.source_site, site);
+        let result = work(self);
+        self.source_site = previous;
+        result
     }
     fn data_access(&mut self, place: &Place, access: Access) {
         let Place::Element { index, .. } = place.storage() else { return; };
@@ -1817,7 +1833,7 @@ impl<'a> Builder<'a> {
                     let mut regs = Vec::new();
                     for (s, o) in &ty.components {
                         let r = self.reg(*s);
-                        self.code.push(Inst::Uniform(r, offset + o));
+                        self.emit(InstKind::Uniform(r, offset + o));
                         regs.push(r);
                     }
                     self.env.insert(
@@ -1850,7 +1866,7 @@ impl<'a> Builder<'a> {
     fn constant(&mut self, s: Scalar, bits: Bits) -> Value {
         let bits = s.truncate(bits);
         let r = self.reg(s);
-        self.code.push(Inst::Constant(r, s, bits));
+        self.emit(InstKind::Constant(r, s, bits));
         Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -1888,6 +1904,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn statement(&mut self, s: &Stmt) -> Result<()> {
+        self.at_source(s.span, SourceSyntax::Statement, |b| b.statement_syntax(s))
+    }
+    fn statement_syntax(&mut self, s: &Stmt) -> Result<()> {
         self.view_uses.before(s.span);
         match &s.kind {
             StmtKind::Declare(annotation, name) => {
@@ -1933,17 +1952,17 @@ impl<'a> Builder<'a> {
         }
         self.release_application_loop()?;
         if breaking {
-            self.code.push(Inst::Break);
+            self.emit(InstKind::Break);
             self.capture_break();
             self.flow = Flow::BREAK;
         } else {
             if let Some(Some((_, slot))) = self.iterators.last().cloned() {
                 let index = self.reg(Scalar::U32);
-                self.code.push(Inst::LoadLocal(index, slot));
+                self.emit(InstKind::LoadLocal(index, slot));
                 self.advance_iterator(index, slot)?;
             }
             self.check_application_loop(s.span)?;
-            self.code.push(Inst::Continue);
+            self.emit(InstKind::Continue);
             self.flow = Flow::CONTINUE;
         }
         Ok(())
@@ -1955,6 +1974,9 @@ impl<'a> Builder<'a> {
         }
     }
     fn place(&mut self, e: &Expr) -> Result<Option<Place>> {
+        self.at_source(e.span, SourceSyntax::Place, |b| b.place_syntax(e))
+    }
+    fn place_syntax(&mut self, e: &Expr) -> Result<Option<Place>> {
         self.require_user_projection(e)?;
         self.view_uses.before(e.span);
         match &e.kind {
@@ -1992,7 +2014,7 @@ impl<'a> Builder<'a> {
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
                     let (source, word) = address.source_at(*word, zero);
                     let dst = self.reg(*scalar);
-                    self.code.push(Inst::LoadIndexed {
+                    self.emit(InstKind::LoadIndexed {
                         dst,
                         source,
                         offset: zero,
@@ -2043,7 +2065,7 @@ impl<'a> Builder<'a> {
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
                     let dst = self.reg(*scalar);
-                    self.code.push(Inst::ViewLoad {
+                    self.emit(InstKind::ViewLoad {
                         dst,
                         address: *address,
                         index: *index,
@@ -2080,7 +2102,7 @@ impl<'a> Builder<'a> {
                 let mut regs = Vec::new();
                 for ((scalar, _), word) in ty.components.iter().zip(words) {
                     let dst = self.reg(*scalar);
-                    self.code.push(Inst::TileLoad {
+                    self.emit(InstKind::TileLoad {
                         dst,
                         tile: *tile,
                         index: *index,
@@ -2105,7 +2127,7 @@ impl<'a> Builder<'a> {
                 let mut regs = Vec::new();
                 for (s, slot) in ty.components.iter().zip(slots) {
                     let r = self.reg(s.0);
-                    self.code.push(Inst::LoadLocal(r, *slot));
+                    self.emit(InstKind::LoadLocal(r, *slot));
                     regs.push(r);
                 }
                 let (proof, uniform) = self.read_owned_proof(p, &regs);
@@ -2140,7 +2162,7 @@ impl<'a> Builder<'a> {
                 let mut regs = Vec::new();
                 for ((s, _), word) in ty.components.iter().zip(words) {
                     let dst = self.reg(*s);
-                    self.code.push(Inst::Load {
+                    self.emit(InstKind::Load {
                         dst,
                         binding: *binding,
                         index: *index,
@@ -2183,7 +2205,7 @@ impl<'a> Builder<'a> {
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 for (word, value) in words.iter().zip(value.regs) {
                     let (source, word) = address.source_at(*word, zero);
-                    self.code.push(Inst::StoreIndexed {
+                    self.emit(InstKind::StoreIndexed {
                         source,
                         offset: zero,
                         word,
@@ -2226,7 +2248,7 @@ impl<'a> Builder<'a> {
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 self.initialize(p);
                 for (slot, value) in slots.iter().zip(value.regs) {
-                    self.code.push(Inst::StoreLocal(*slot, value));
+                    self.emit(InstKind::StoreLocal(*slot, value));
                 }
             }
             Place::Element {
@@ -2254,7 +2276,7 @@ impl<'a> Builder<'a> {
                 self.writes.insert(*binding);
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 for (word, value) in words.iter().zip(value.regs) {
-                    self.code.push(Inst::Store {
+                    self.emit(InstKind::Store {
                         binding: *binding,
                         index: *index,
                         word: *word,
@@ -2267,6 +2289,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn expr(&mut self, e: &Expr) -> Result<Option<Value>> {
+        self.at_source(e.span, SourceSyntax::Expression, |b| b.expr_syntax(e))
+    }
+    fn expr_syntax(&mut self, e: &Expr) -> Result<Option<Value>> {
         self.view_uses.before(e.span);
         match &e.kind {
             ExprKind::FunctionRef(..) => self.fail(
@@ -2381,7 +2406,7 @@ impl<'a> Builder<'a> {
         let mut regs = Vec::with_capacity(n);
         for a in value.regs {
             let dst = self.reg(target);
-            self.code.push(Inst::Unary {
+            self.emit(InstKind::Unary {
                 dst,
                 op: UnaryOp::Bitcast,
                 a,
@@ -2414,7 +2439,7 @@ impl<'a> Builder<'a> {
                 regs.push(src);
             } else {
                 let dst = self.reg(s);
-                self.code.push(Inst::Cast { dst, src });
+                self.emit(InstKind::Cast { dst, src });
                 regs.push(dst);
             }
         }
@@ -2546,16 +2571,16 @@ impl<'a> Builder<'a> {
                     && matches!(divisor, IntegerDivisor::Constant(d) if d.get() == scalar.truncate(Bits::MAX))
                 {
                     if op == "/" {
-                        self.code.push(Inst::Unary {
+                        self.emit(InstKind::Unary {
                             dst,
                             op: UnaryOp::SignedNegate,
                             a: ar,
                         });
                     } else {
-                        self.code.push(Inst::Constant(dst, scalar, 0));
+                        self.emit(InstKind::Constant(dst, scalar, 0));
                     }
                 } else {
-                    self.code.push(Inst::IntegerDivide {
+                    self.emit(InstKind::IntegerDivide {
                         result: if op == "/" {
                             IntegerDivisionResult::Quotient(dst)
                         } else {
@@ -2566,7 +2591,7 @@ impl<'a> Builder<'a> {
                     });
                 }
             } else {
-                self.code.push(Inst::Binary {
+                self.emit(InstKind::Binary {
                     dst,
                     op: operation.unwrap(),
                     a: ar,
@@ -2622,7 +2647,7 @@ impl<'a> Builder<'a> {
             let mut regs = Vec::with_capacity(n);
             for i in 0..n {
                 let dst = self.reg(scalar);
-                self.code.push(Inst::Select {
+                self.emit(InstKind::Select {
                     dst,
                     condition: comparison.regs[i],
                     a: a.regs[i % a.regs.len()],
@@ -2666,7 +2691,7 @@ impl<'a> Builder<'a> {
         let mut regs = Vec::new();
         for i in 0..n {
             let dst = self.reg(scalar);
-            self.code.push(Inst::Math {
+            self.emit(InstKind::Math {
                 dst,
                 op: operation,
                 args: args.iter().map(|a| a.regs[i % a.regs.len()]).collect(),
@@ -2950,7 +2975,7 @@ impl<'a> Builder<'a> {
         let mut regs = Vec::new();
         for x in a.regs {
             let dst = self.reg(self.registers[x]);
-            self.code.push(Inst::Unary {
+            self.emit(InstKind::Unary {
                 dst,
                 op: operation,
                 a: x,
@@ -3073,7 +3098,7 @@ impl<'a> Builder<'a> {
         self.flow = yes_flow.union(no_flow);
         self.control_uniform = control && (c.uniform || (yes_reachable && no_reachable));
         self.code = previous;
-        self.code.push(Inst::If {
+        self.emit(InstKind::If {
             condition: c.regs[0],
             yes,
             no,
@@ -3153,7 +3178,7 @@ impl<'a> Builder<'a> {
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
-        self.code.push(Inst::Loop {
+        self.emit(InstKind::Loop {
             condition: condition_code,
             test: c.regs[0],
             body,
@@ -3250,7 +3275,7 @@ impl<'a> Builder<'a> {
         };
         let initial = self.application_initial_loop(body)?;
         let slot = self.local_slots(&Ty::scalar(Scalar::U32)).0[0];
-        self.code.push(Inst::StoreLocal(slot, begin.regs[0]));
+        self.emit(InstKind::StoreLocal(slot, begin.regs[0]));
         let initialization = self.application_iteration_outputs(&begin, &limit, match &data {Some(CursorSource::ApplicationData(data))=>Some(&data.data),_=>None});
         self.for_loop(
             ForLoop {
@@ -3306,7 +3331,7 @@ impl<'a> Builder<'a> {
         self.prepare_view_loop();
         let outer = std::mem::take(&mut self.code);
         let index = self.reg(Scalar::U32);
-        self.code.push(Inst::LoadLocal(index, slot));
+        self.emit(InstKind::LoadLocal(index, slot));
         let cursor = Value {
             proof: if initial {
                 bounds::Proof::capture(&begin)
@@ -3449,7 +3474,7 @@ impl<'a> Builder<'a> {
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
-        self.code.push(Inst::Loop {
+        self.emit(InstKind::Loop {
             condition,
             test: test.regs[0],
             body,
@@ -3531,7 +3556,7 @@ impl<'a> Builder<'a> {
         }
         let (slots, storage) = self.local_slots(&value.ty);
         for (slot, r) in slots.iter().zip(&value.regs) {
-            self.code.push(Inst::StoreLocal(*slot, *r));
+            self.emit(InstKind::StoreLocal(*slot, *r));
         }
         let proof = bounds::Proof::capture(&value);
         let place = Place::Local(value.ty, slots, storage);
@@ -3948,7 +3973,7 @@ impl<'a> Builder<'a> {
         source.regs = vec![index];
         let one = self.constant(Scalar::U32, 1);
         let value = self.binary("+", source, one, self.definition.function.span)?;
-        self.code.push(Inst::StoreLocal(slot, value.regs[0]));
+        self.emit(InstKind::StoreLocal(slot, value.regs[0]));
         self.capture_loop_cursor(value);
         Ok(())
     }
@@ -3965,10 +3990,10 @@ impl<'a> Builder<'a> {
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;
         self.release_application_loop()?;
-        self.code.push(Inst::StoreLocal(slot, value.regs[0]));
+        self.emit(InstKind::StoreLocal(slot, value.regs[0]));
         self.capture_loop_cursor(value);
         self.check_application_loop(span)?;
-        self.code.push(Inst::Continue);
+        self.emit(InstKind::Continue);
         self.flow = Flow::CONTINUE;
 
         Ok(())
@@ -4014,7 +4039,7 @@ impl<'a> Builder<'a> {
         } else {
             RayResult::Closest(regs.as_slice().try_into().unwrap())
         };
-        self.code.push(Inst::RayQuery {
+        self.emit(InstKind::RayQuery {
             scene,
             origin: origin.regs.as_slice().try_into().unwrap(),
             direction: direction.regs.as_slice().try_into().unwrap(),

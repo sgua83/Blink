@@ -330,7 +330,7 @@ impl Builder<'_> {
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
         let memory_use=self.call_address_memory(memory_borrow,span)?;
-        self.code.push(Inst::Call(Call { target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() }));
+        self.emit(InstKind::Call(Call { target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() }));
         if never { self.flow = Flow::STOP; return Ok(None); }
         let returned = result.clone().map(|ty| Value {
             proof: bounds::Proof::default().with_external_borrows(&ty),

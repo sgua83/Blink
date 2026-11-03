@@ -213,10 +213,10 @@ fn propagates(body: &[Stmt]) -> bool {
     })
 }
 fn owns_exit(code: &[Inst]) -> bool {
-    code.iter().any(|i| match i {
-        Inst::Exit => true,
-        Inst::If { yes, no, .. } => owns_exit(yes) || owns_exit(no),
-        Inst::Loop {
+    code.iter().any(|i| match &(i).kind {
+        InstKind::Exit => true,
+        InstKind::If { yes, no, .. } => owns_exit(yes) || owns_exit(no),
+        InstKind::Loop {
             condition, body, ..
         } => owns_exit(condition) || owns_exit(body),
         _ => false,
@@ -408,10 +408,10 @@ impl Builder<'_> {
         if context.scoped {
             if let Some(value) = &value {
                 for (slot, reg) in context.slots.iter().zip(value.registers()) {
-                    self.code.push(Inst::StoreLocal(*slot, reg));
+                    self.code.push(Inst { source_site: self.source_site.clone(), ..Inst::new(InstKind::StoreLocal(*slot, reg)) });
                 }
             }
-            self.code.push(Inst::Exit);
+            self.code.push(Inst { source_site: self.source_site.clone(), ..Inst::new(InstKind::Exit) });
         }
         context.exits.push(ReturnExit {
             path: self.path.clone(),
@@ -540,13 +540,13 @@ impl Builder<'_> {
         self.control_uniform = uniform;
         let mut code = std::mem::replace(&mut self.code, outer);
         let single_exit = scoped
-            && matches!(code.last(), Some(Inst::Exit))
+            && matches!(code.last().map(|inst| &inst.kind), Some(InstKind::Exit))
             && !owns_exit(&code[..code.len() - 1]);
         if single_exit {
             code.pop();
         }
         if scoped && !single_exit {
-            self.code.push(Inst::Scope(code));
+            self.emit(InstKind::Scope(code));
         } else {
             self.code.extend(code);
         }
@@ -568,7 +568,7 @@ impl Builder<'_> {
                 .zip(context.expected.iter().flat_map(|expected| expected.scalars()))
                 .map(|(slot, scalar)| {
                     let reg = self.reg(scalar);
-                    self.code.push(Inst::LoadLocal(reg, *slot));
+                    self.emit(InstKind::LoadLocal(reg, *slot));
                     reg
                 })
                 .collect()

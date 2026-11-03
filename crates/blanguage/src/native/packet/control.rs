@@ -3,18 +3,18 @@ use super::*;
 pub(super) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
     for inst in code {
         f(inst);
-        match inst {
-            Inst::If { yes, no, .. } => {
+        match &(inst).kind {
+            InstKind::If { yes, no, .. } => {
                 visit(yes, f);
                 visit(no, f);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 visit(condition, f);
                 visit(body, f);
             }
-            Inst::Scope(body) => visit(body, f),
+            InstKind::Scope(body) => visit(body, f),
             _ => {}
         }
     }
@@ -85,39 +85,39 @@ impl Uniformity<'_> {
             let Some(mut state) = flow.next.take() else {
                 break;
             };
-            let step = match inst {
-                Inst::If { yes, no, .. } => {
+            let step = match &(inst).kind {
+                InstKind::If { yes, no, .. } => {
                     let mut yes = self.block(yes, state.clone(), record);
                     yes.join(self.block(no, state, record));
                     yes
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition, body, ..
                 } => self.loop_flow(condition, body, state, record),
-                Inst::Scope(body) => {
+                InstKind::Scope(body) => {
                     let mut scope = self.block(body, state, record);
                     merge(&mut scope.next, scope.exits.take());
                     scope
                 }
-                Inst::Break => Flow {
+                InstKind::Break => Flow {
                     breaks: Some(state),
                     ..Flow::default()
                 },
-                Inst::Continue => Flow {
+                InstKind::Continue => Flow {
                     continues: Some(state),
                     ..Flow::default()
                 },
-                Inst::Exit => Flow {
+                InstKind::Exit => Flow {
                     exits: Some(state),
                     ..Flow::default()
                 },
                 _ => {
-                    let uniform = match inst {
-                        Inst::Index(_) => false,
-                        Inst::Load { binding, index, .. } => {
+                    let uniform = match &(inst).kind {
+                        InstKind::Index(_) => false,
+                        InstKind::Load { binding, index, .. } => {
                             !self.stage.writes.contains(binding) && state.0[*index]
                         }
-                        Inst::LoadLocal(_, slot) => state.0[self.stage.registers.len() + slot],
+                        InstKind::LoadLocal(_, slot) => state.0[self.stage.registers.len() + slot],
                         _ => inst.all_operands(&mut |reg| state.0[reg]),
                     };
                     for dst in inst.results() {
@@ -128,7 +128,7 @@ impl Uniformity<'_> {
                             );
                         }
                     }
-                    if let Inst::StoreLocal(slot, src) = inst {
+                    if let InstKind::StoreLocal(slot, src) = &(inst).kind {
                         state.0[self.stage.registers.len() + slot] = state.0[*src];
                     }
                     Flow {

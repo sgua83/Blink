@@ -3278,7 +3278,7 @@ impl Builder<'_> {
     pub(super) fn data_length(&mut self, view: &DatasetView) -> Value {
         let r = self.reg(Scalar::U32);
         self.code
-            .push(Inst::Uniform(r, 4 * (2 + view.binding as u32)));
+            .push(Inst::new(InstKind::Uniform(r, 4 * (2 + view.binding as u32))));
         Value {
             proof: view.length.clone(),
             literal: false,

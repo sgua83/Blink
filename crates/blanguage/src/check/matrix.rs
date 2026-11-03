@@ -269,7 +269,7 @@ impl Builder<'_> {
                         cofactor = self.constant(Scalar::F32, bits[0] ^ 0x80000000);
                     } else {
                         let dst = self.reg(Scalar::F32);
-                        self.code.push(Inst::Unary {
+                        self.emit(InstKind::Unary {
                             dst,
                             op: UnaryOp::FloatNegate,
                             a: cofactor.regs[0],

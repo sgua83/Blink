@@ -142,7 +142,7 @@ impl Builder<'_> {
             },
         });
         self.code
-            .push(Inst::TilePublish(Publication { tile, values }));
+            .push(Inst::new(InstKind::TilePublish(Publication { tile, values })));
         self.bind_tile(name, tile);
         Ok(())
     }
@@ -203,7 +203,7 @@ impl Builder<'_> {
             );
         }
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
-        self.code.push(Inst::TileCollective(TileCollective {
+        self.emit(InstKind::TileCollective(TileCollective {
             op,
             tile,
             results: words.into_iter().zip(regs.iter().copied()).collect(),
@@ -267,7 +267,7 @@ impl Builder<'_> {
                 "tile_barrier() 需要既有 tile 范围，只能位于 parallel／cooperative 根块",
             );
         }
-        self.code.push(Inst::TileBarrier);
+        self.emit(InstKind::TileBarrier);
         Ok(())
     }
     pub(super) fn lower_tiles(&mut self, span: Span) -> Result<Vec<Tile>> {
@@ -289,7 +289,7 @@ impl Builder<'_> {
     }
     pub(super) fn tile_length(&mut self, view: &TileView) -> Value {
         let r = self.reg(Scalar::U32);
-        self.code.push(Inst::TileLength(r));
+        self.emit(InstKind::TileLength(r));
         Value {
             proof: view.length.clone(),
             literal: false,
@@ -301,7 +301,7 @@ impl Builder<'_> {
     }
     pub(super) fn tile_lane(&mut self) -> Value {
         let r = self.reg(Scalar::U32);
-        self.code.push(Inst::TileLane(r));
+        self.emit(InstKind::TileLane(r));
         Value {
             proof: self
                 .tile_index_proof()

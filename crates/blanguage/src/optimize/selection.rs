@@ -3,7 +3,7 @@ use super::*;
 fn branch_values(code: &[Inst]) -> BTreeMap<usize, Reg> {
     code.iter()
         .filter_map(|i| {
-            if let Inst::StoreLocal(slot, value) = i {
+            if let InstKind::StoreLocal(slot, value) = &(i).kind {
                 Some((*slot, *value))
             } else {
                 None
@@ -18,25 +18,25 @@ fn speculatable(
     domain: usize,
     indices: &BTreeSet<Reg>,
 ) -> bool {
-    match inst {
-        Inst::Constant(..)
-        | Inst::Index(_)
-        | Inst::Uniform(..)
-        | Inst::IntegerDivide {
+    match &(inst).kind {
+        InstKind::Constant(..)
+        | InstKind::Index(_)
+        | InstKind::Uniform(..)
+        | InstKind::IntegerDivide {
             divisor: IntegerDivisor::Constant(_),
             ..
         }
-        | Inst::Select { .. }
-        | Inst::StoreLocal(..) => true,
-        Inst::LoadLocal(_, slot) => !written.contains(slot),
-        Inst::Load { binding, index, .. } => *binding == domain && indices.contains(index),
+        | InstKind::Select { .. }
+        | InstKind::StoreLocal(..) => true,
+        InstKind::LoadLocal(_, slot) => !written.contains(slot),
+        InstKind::Load { binding, index, .. } => *binding == domain && indices.contains(index),
         // f32 取负／abs 只改变符号位，不触发浮点算术的异常状态。
-        Inst::Unary { .. }
-        | Inst::Math {
+        InstKind::Unary { .. }
+        | InstKind::Math {
             op: MathOp::Abs, ..
         } => true,
-        Inst::Binary { a, .. } => !registers[*a].is_float(),
-        Inst::Cast { dst, src } => !registers[*dst].is_float() && !registers[*src].is_float(),
+        InstKind::Binary { a, .. } => !registers[*a].is_float(),
+        InstKind::Cast { dst, src } => !registers[*dst].is_float() && !registers[*src].is_float(),
         _ => false,
     }
 }
@@ -47,7 +47,7 @@ fn merge(
     domain: usize,
     indices: &BTreeSet<Reg>,
 ) -> Option<(Vec<Inst>, usize)> {
-    let Inst::If { condition, yes, no } = inst else {
+    let InstKind::If { condition, yes, no } = &(inst).kind else {
         return None;
     };
     let a = branch_values(yes);
@@ -66,7 +66,7 @@ fn merge(
     let mut loaded = BTreeSet::new();
     let mut results = Vec::new();
     for i in following.get(..a.len())? {
-        let Inst::LoadLocal(dst, slot) = i else {
+        let InstKind::LoadLocal(dst, slot) = &(i).kind else {
             return None;
         };
         if !a.contains_key(slot) || !loaded.insert(*slot) {
@@ -77,25 +77,25 @@ fn merge(
     let mut code: Vec<_> = yes
         .iter()
         .chain(no)
-        .filter(|i| !matches!(i, Inst::StoreLocal(..)))
+        .filter(|i| !matches!(&(i).kind, InstKind::StoreLocal(..)))
         .cloned()
         .collect();
     for (dst, slot) in results {
-        code.push(Inst::Select {
+        code.push(Inst::new(InstKind::Select {
             dst,
             condition: *condition,
             a: a[&slot],
             b: b[&slot],
-        });
+        }));
         // 后续循环仍可能消费这个可变槽；值转发与 DCE 决定是否需要真实存储。
-        code.push(Inst::StoreLocal(slot, dst));
+        code.push(Inst::new(InstKind::StoreLocal(slot, dst)));
     }
     Some((code, a.len()))
 }
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar], domain: usize) -> bool {
     let mut indices = BTreeSet::new();
     visit(code, &mut |i| {
-        if let Inst::Index(r) = i {
+        if let InstKind::Index(r) = &(i).kind {
             indices.insert(*r);
         }
     });
@@ -110,13 +110,13 @@ fn block(
     let mut changed = false;
     let mut source = std::mem::take(code).into_iter();
     while let Some(mut inst) = source.next() {
-        match &mut inst {
-            Inst::Scope(body) => changed |= block(body, registers, domain, indices),
-            Inst::If { yes, no, .. } => {
+        match &mut (inst).kind {
+            InstKind::Scope(body) => changed |= block(body, registers, domain, indices),
+            InstKind::If { yes, no, .. } => {
                 changed |= block(yes, registers, domain, indices);
                 changed |= block(no, registers, domain, indices);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 changed |= block(condition, registers, domain, indices);

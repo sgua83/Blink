@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
 #[cfg(feature = "compiler")]
-pub use origin::SourceOrigin;
+pub use origin::{SourceOrigin, SourceSite, SourceSyntax};
 mod layout;
 pub use layout::interface_layout_json;
 mod external;
@@ -839,7 +839,20 @@ impl TextureBinding {
     }
 }
 #[derive(Clone, Debug)]
-pub enum Inst {
+pub struct Inst {
+    pub kind: InstKind,
+    #[cfg(feature = "compiler")]
+    pub(crate) source_site: Option<std::sync::Arc<SourceSite>>,
+}
+impl Inst {
+    pub fn new(kind: InstKind) -> Self {
+        Self { kind, #[cfg(feature = "compiler")] source_site: None }
+    }
+    #[cfg(feature = "compiler")]
+    pub fn source_site(&self) -> Option<&SourceSite> { self.source_site.as_deref() }
+}
+#[derive(Clone, Debug)]
+pub enum InstKind {
     TextureSample {
         result: [Reg; 4],
         texture: TextureSource,
@@ -1353,11 +1366,11 @@ pub struct SubgroupCapabilities {
 impl Stage {
     pub(crate) fn has_external_effects(&self) -> bool {
         fn contains(code: &[Inst]) -> bool {
-            code.iter().any(|inst| match inst {
-                Inst::Print { .. } | Inst::Call(_) => true,
-                Inst::Scope(body) => contains(body),
-                Inst::If { yes, no, .. } => contains(yes) || contains(no),
-                Inst::Loop {
+            code.iter().any(|inst| match &(inst).kind {
+                InstKind::Print { .. } | InstKind::Call(_) => true,
+                InstKind::Scope(body) => contains(body),
+                InstKind::If { yes, no, .. } => contains(yes) || contains(no),
+                InstKind::Loop {
                     condition, body, ..
                 } => contains(condition) || contains(body),
                 _ => false,
@@ -1377,17 +1390,17 @@ impl Stage {
         ) {
             for inst in code {
                 inst.all_operands(&mut |reg| { used.insert(reg); true });
-                match inst {
-                    Inst::RayQuery {
+                match &(inst).kind {
+                    InstKind::RayQuery {
                         result: RayResult::Closest(regs),
                         ..
                     } => queries.push(*regs),
-                    Inst::Scope(body) => visit(body, used, queries),
-                    Inst::If { yes, no, .. } => {
+                    InstKind::Scope(body) => visit(body, used, queries),
+                    InstKind::If { yes, no, .. } => {
                         visit(yes, used, queries);
                         visit(no, used, queries);
                     }
-                    Inst::Loop {
+                    InstKind::Loop {
                         condition, body, ..
                     } => {
                         visit(condition, used, queries);
@@ -1408,11 +1421,11 @@ impl Stage {
     }
     pub fn requires_maximal_reconvergence(&self) -> bool {
         fn uses(code: &[Inst]) -> bool {
-            code.iter().any(|i| match i {
-                Inst::Append(_) => true,
-                Inst::Scope(body) => uses(body),
-                Inst::If { yes, no, .. } => uses(yes) || uses(no),
-                Inst::Loop {
+            code.iter().any(|i| match &(i).kind {
+                InstKind::Append(_) => true,
+                InstKind::Scope(body) => uses(body),
+                InstKind::If { yes, no, .. } => uses(yes) || uses(no),
+                InstKind::Loop {
                     condition, body, ..
                 } => uses(condition) || uses(body),
                 _ => false,
@@ -1422,16 +1435,16 @@ impl Stage {
     }
     pub fn requires_float_preserve(&self, scalar: Scalar) -> bool {
         fn arithmetic(code: &[Inst], registers: &[Scalar], scalar: Scalar) -> bool {
-            code.iter().any(|inst| match inst {
-                Inst::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
-                Inst::Binary { a, .. } => registers[*a] == scalar,
-                Inst::Cast { dst, src } => {
+            code.iter().any(|inst| match &(inst).kind {
+                InstKind::Math { dst, op, .. } => registers[*dst] == scalar && *op != MathOp::Abs,
+                InstKind::Binary { a, .. } => registers[*a] == scalar,
+                InstKind::Cast { dst, src } => {
                     registers[*src].is_float() && !registers[*dst].is_integer() && ((registers[*dst] == scalar) != (registers[*src] == scalar))
                 }
-                Inst::TileCollective(c) => {
+                InstKind::TileCollective(c) => {
                     c.results.iter().any(|(_, r)| registers[*r] == scalar)
                 }
-                Inst::Subgroup { dst, op, .. } => {
+                InstKind::Subgroup { dst, op, .. } => {
                     registers[*dst] == scalar
                         && matches!(
                             op,
@@ -1441,9 +1454,9 @@ impl Stage {
                                 | SubgroupOp::Max
                         )
                 }
-                Inst::Scope(body) => arithmetic(body, registers, scalar),
-                Inst::If { yes, no, .. } => arithmetic(yes, registers, scalar) || arithmetic(no, registers, scalar),
-                Inst::Loop {
+                InstKind::Scope(body) => arithmetic(body, registers, scalar),
+                InstKind::If { yes, no, .. } => arithmetic(yes, registers, scalar) || arithmetic(no, registers, scalar),
+                InstKind::Loop {
                     condition, body, ..
                 } => arithmetic(condition, registers, scalar) || arithmetic(body, registers, scalar),
                 _ => false,
@@ -1458,38 +1471,38 @@ impl Stage {
     fn tile_usage(&self) -> (bool, std::collections::BTreeSet<usize>) {
         fn visit(code: &[Inst], scope: &mut bool, sources: &mut std::collections::BTreeSet<usize>) {
             for inst in code {
-                match inst {
-                    Inst::TileLength(_)
-                    | Inst::TileLane(_)
-                    | Inst::TilePublish(_)
-                    | Inst::TileBarrier => *scope = true,
-                    Inst::Atomic(Atomic {
+                match &(inst).kind {
+                    InstKind::TileLength(_)
+                    | InstKind::TileLane(_)
+                    | InstKind::TilePublish(_)
+                    | InstKind::TileBarrier => *scope = true,
+                    InstKind::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
                         ..
                     }) => {
                         *scope = true;
                         sources.insert(*tile);
                     }
-                    Inst::TileCollective(c) => {
+                    InstKind::TileCollective(c) => {
                         *scope = true;
                         if !c.results.is_empty() {
                             sources.insert(c.tile);
                         }
                     }
-                    Inst::LoadIndexed {
+                    InstKind::LoadIndexed {
                         source: IndexedSource::Tile { tile, .. },
                         ..
                     }
-                    | Inst::TileLoad { tile, .. } => {
+                    | InstKind::TileLoad { tile, .. } => {
                         *scope = true;
                         sources.insert(*tile);
                     }
-                    Inst::Scope(body) => visit(body, scope, sources),
-                    Inst::If { yes, no, .. } => {
+                    InstKind::Scope(body) => visit(body, scope, sources),
+                    InstKind::If { yes, no, .. } => {
                         visit(yes, scope, sources);
                         visit(no, scope, sources);
                     }
-                    Inst::Loop {
+                    InstKind::Loop {
                         condition, body, ..
                     } => {
                         visit(condition, scope, sources);
@@ -1520,8 +1533,8 @@ impl Stage {
     pub fn storage_words(&self) -> std::collections::BTreeSet<SharedWord> {
         fn visit(stage: &Stage, code: &[Inst], words: &mut std::collections::BTreeSet<SharedWord>) {
             for inst in code {
-                match inst {
-                    Inst::Atomic(Atomic {
+                match &(inst).kind {
+                    InstKind::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
                         word, scalar,
                         offset: None,
@@ -1529,11 +1542,11 @@ impl Stage {
                     }) => {
                         words.extend((0..scalar.size().div_ceil(4)).map(|part| stage.shared_word(*tile, *word + part * 4)));
                     }
-                    Inst::LoadIndexed {
+                    InstKind::LoadIndexed {
                         source: IndexedSource::Tile { tile, .. },
                         ..
                     }
-                    | Inst::Atomic(Atomic {
+                    | InstKind::Atomic(Atomic {
                         target: IndexedSource::Tile { tile, .. },
                         offset: Some(_),
                         ..
@@ -1544,11 +1557,11 @@ impl Stage {
                                     stage.shared_word(*tile, *byte + part * 4))),
                         );
                     }
-                    Inst::TileLoad { dst, tile, word, .. } => {
+                    InstKind::TileLoad { dst, tile, word, .. } => {
                         words.extend((0..stage.registers[*dst].size().div_ceil(4))
                             .map(|part| stage.shared_word(*tile, *word + part * 4)));
                     }
-                    Inst::TileCollective(c) => {
+                    InstKind::TileCollective(c) => {
                         words.extend(
                             c.results
                                 .iter()
@@ -1556,12 +1569,12 @@ impl Stage {
                                     .map(move |part| stage.shared_word(c.tile, *word + part * 4))),
                         );
                     }
-                    Inst::Scope(body) => visit(stage, body, words),
-                    Inst::If { yes, no, .. } => {
+                    InstKind::Scope(body) => visit(stage, body, words),
+                    InstKind::If { yes, no, .. } => {
                         visit(stage, yes, words);
                         visit(stage, no, words);
                     }
-                    Inst::Loop {
+                    InstKind::Loop {
                         condition, body, ..
                     } => {
                         visit(stage, condition, words);
@@ -1577,11 +1590,11 @@ impl Stage {
     }
     fn requires_subgroup_extended_types(&self) -> bool {
         fn visit(code: &[Inst], registers: &[Scalar]) -> bool {
-            code.iter().any(|inst| match inst {
-                Inst::Subgroup { dst, .. } => registers[*dst].size() != 4,
-                Inst::Scope(body) => visit(body, registers),
-                Inst::If { yes, no, .. } => visit(yes, registers) || visit(no, registers),
-                Inst::Loop { condition, body, .. } => visit(condition, registers) || visit(body, registers),
+            code.iter().any(|inst| match &(inst).kind {
+                InstKind::Subgroup { dst, .. } => registers[*dst].size() != 4,
+                InstKind::Scope(body) => visit(body, registers),
+                InstKind::If { yes, no, .. } => visit(yes, registers) || visit(no, registers),
+                InstKind::Loop { condition, body, .. } => visit(condition, registers) || visit(body, registers),
                 _ => false,
             })
         }
@@ -1590,8 +1603,8 @@ impl Stage {
     pub fn subgroup_operations(&self) -> std::collections::BTreeSet<SubgroupOp> {
         fn visit(code: &[Inst], ops: &mut std::collections::BTreeSet<SubgroupOp>) {
             for inst in code {
-                match inst {
-                    Inst::Append(_) => {
+                match &(inst).kind {
+                    InstKind::Append(_) => {
                         ops.extend([
                             SubgroupOp::Count,
                             SubgroupOp::PrefixCount,
@@ -1599,15 +1612,15 @@ impl Stage {
                             SubgroupOp::BroadcastFirst,
                         ]);
                     }
-                    Inst::Subgroup { op, .. } => {
+                    InstKind::Subgroup { op, .. } => {
                         ops.insert(*op);
                     }
-                    Inst::Scope(body) => visit(body, ops),
-                    Inst::If { yes, no, .. } => {
+                    InstKind::Scope(body) => visit(body, ops),
+                    InstKind::If { yes, no, .. } => {
                         visit(yes, ops);
                         visit(no, ops);
                     }
-                    Inst::Loop {
+                    InstKind::Loop {
                         condition, body, ..
                     } => {
                         visit(condition, ops);
@@ -1854,7 +1867,7 @@ impl Program {
                     "    tile_width={}, shared_values={}, phases={}, tile_word_bytes={}, collective_scratch_bytes={}\n",
                     s.workgroup_width(),
                     s.storage_tiles().len(),
-                    s.code.iter().filter(|inst| matches!(inst, Inst::TilePublish(_) | Inst::TileCollective(_) | Inst::TileBarrier)).count() + 1,
+                    s.code.iter().filter(|inst| matches!(&inst.kind, InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier)).count() + 1,
                     s.tile_bytes(),
                     s.tile_scratch_bytes()
                 );

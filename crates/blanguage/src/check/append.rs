@@ -44,13 +44,13 @@ pub(super) fn clear(
         registers: vec![Scalar::U32],
         locals: Default::default(),
         code: vec![
-            Inst::Constant(0, Scalar::U32, 0),
-            Inst::Store {
+            Inst::new(InstKind::Constant(0, Scalar::U32, 0)),
+            Inst::new(InstKind::Store {
                 binding: count,
                 index: 0,
                 word,
                 value: 0,
-            },
+            }),
         ],
         reads: Vec::new(),
         writes: vec![count],
@@ -120,7 +120,7 @@ impl Builder<'_> {
         self.writes.extend([target, binding]);
         self.cross_access.extend([target, binding]);
         let accepted = self.reg(Scalar::Bool);
-        self.code.push(Inst::Append(Append {
+        self.emit(InstKind::Append(Append {
             accepted,
             target,
             count,

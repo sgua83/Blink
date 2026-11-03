@@ -332,9 +332,9 @@ impl Emitter<'_> {
     }
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
-            match inst {
-                Inst::Call(call) => self.native_call(call)?,
-                Inst::Print { dst, value } => {
+            match &(inst).kind {
+                InstKind::Call(call) => self.native_call(call)?,
+                InstKind::Print { dst, value } => {
                     let scalar = self.stage.registers[*value];
                     self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);
                     if scalar.is_float() { self.bytes(&[0xba]); self.u32(scalar.bit_width()); }
@@ -342,8 +342,8 @@ impl Emitter<'_> {
                     self.invoke(Some(reference));
                     self.store(*dst);
                 }
-                Inst::TextureSample { .. } => return Err("原生采样尚未降低到纹理读取 IR"),
-                Inst::TextureSize {
+                InstKind::TextureSample { .. } => return Err("原生采样尚未降低到纹理读取 IR"),
+                InstKind::TextureSize {
                     result,
                     texture,
                     level,
@@ -352,19 +352,19 @@ impl Emitter<'_> {
                     self.read_scalar(result[0], 15, 0);
                     self.read_scalar(result[1], 15, 4);
                 }
-                Inst::TextureLevels { dst, texture } => {
+                InstKind::TextureLevels { dst, texture } => {
                     self.texture_pointer(*texture);
                     self.read_scalar(*dst, 15, 0);
                 }
-                Inst::TextureAddress { dst, texture } => {
+                InstKind::TextureAddress { dst, texture } => {
                     self.texture_pointer(*texture);
                     self.read_scalar(*dst, 15, 4);
                 }
-                Inst::TextureFormat { dst, texture } => {
+                InstKind::TextureFormat { dst, texture } => {
                     self.texture_pointer(*texture);
                     self.read_scalar(*dst, 15, 16);
                 }
-                Inst::TextureRead {
+                InstKind::TextureRead {
                     dst,
                     texture,
                     level,
@@ -387,7 +387,7 @@ impl Emitter<'_> {
                         self.read_scalar(*dst, 15, 0);
                     }
                 }
-                Inst::TextureFetch {
+                InstKind::TextureFetch {
                     result,
                     texture,
                     level,
@@ -403,7 +403,7 @@ impl Emitter<'_> {
                         self.read_scalar(*dst, 15, i as u32 * 4);
                     }
                 }
-                Inst::Scope(body) => {
+                InstKind::Scope(body) => {
                     self.exits.push(Vec::new());
                     self.block(body)?;
                     let target = self.code.len();
@@ -411,27 +411,27 @@ impl Emitter<'_> {
                         self.patch(at, target);
                     }
                 }
-                Inst::Exit => {
+                InstKind::Exit => {
                     let at = self.jump(None);
                     self.exits.last_mut().unwrap().push(at);
                 }
-                Inst::Append(append) => self.append(append),
-                Inst::Atomic(atomic) => self.atomic(atomic),
+                InstKind::Append(append) => self.append(append),
+                InstKind::Atomic(atomic) => self.atomic(atomic),
                 // tile_phases 先完成全部有效 lane，再进入下一块内阶段。
-                Inst::TileBarrier => {}
-                Inst::TilePublish(publication) => self.publish_values(publication),
-                Inst::TileCollective(collective) => self.tile_collective(collective),
-                Inst::TileLength(dst) => self.tile_length(*dst),
-                Inst::TileLane(dst) => self.tile_lane(*dst),
-                Inst::TileLoad {
+                InstKind::TileBarrier => {}
+                InstKind::TilePublish(publication) => self.publish_values(publication),
+                InstKind::TileCollective(collective) => self.tile_collective(collective),
+                InstKind::TileLength(dst) => self.tile_length(*dst),
+                InstKind::TileLane(dst) => self.tile_lane(*dst),
+                InstKind::TileLoad {
                     dst,
                     tile,
                     index,
                     word,
                 } => self.tile_load(*dst, *tile, *index, *word, None),
-                Inst::Subgroup { .. } => return Err("CPU 后端不能执行 GPU subgroup 协作"),
-                Inst::RayQuery { .. } => return Err("CPU 后端不能执行硬件光线查询"),
-                Inst::ViewLoad {
+                InstKind::Subgroup { .. } => return Err("CPU 后端不能执行 GPU subgroup 协作"),
+                InstKind::RayQuery { .. } => return Err("CPU 后端不能执行硬件光线查询"),
+                InstKind::ViewLoad {
                     dst,
                     address,
                     index,
@@ -445,7 +445,7 @@ impl Emitter<'_> {
                     let memory = self.value_memory(15, self.location(*index), *stride, *word);
                     self.read_scalar_address(*dst, memory);
                 }
-                Inst::LoadIndexed {
+                InstKind::LoadIndexed {
                     dst,
                     source,
                     offset,
@@ -458,7 +458,7 @@ impl Emitter<'_> {
                         self.read_scalar_address(*dst, memory);
                     }
                 }
-                Inst::StoreIndexed {
+                InstKind::StoreIndexed {
                     source,
                     offset,
                     word,
@@ -467,8 +467,8 @@ impl Emitter<'_> {
                     let memory = self.indexed_memory(source, *offset, *word);
                     self.write_scalar_address(*value, memory);
                 }
-                Inst::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
-                Inst::FunctionAddress(dst, target) => {
+                InstKind::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
+                InstKind::FunctionAddress(dst, target) => {
                     match target {
                         CallTarget::Defined(name) => { self.native_code_address(NativeSymbol::Function(name.clone())); }
                         CallTarget::External(name) => { self.native_code_address(NativeSymbol::External(name.clone())); }
@@ -476,14 +476,14 @@ impl Emitter<'_> {
                     }
                     self.store(*dst);
                 }
-                Inst::Constant(dst, _, bits) => self.constant(*dst, *bits),
-                Inst::Index(dst) => {
+                InstKind::Constant(dst, _, bits) => self.constant(*dst, *bits),
+                InstKind::Index(dst) => {
                     self.copy(self.location(*dst), allocation::Location::Gpr(3));
                 }
-                Inst::Uniform(dst, off) => {
+                InstKind::Uniform(dst, off) => {
                     self.read_scalar(*dst, 13, *off);
                 }
-                Inst::LoadLocal(dst, slot) => {
+                InstKind::LoadLocal(dst, slot) => {
                     let source = self.allocation.location(PrivateSlot::Local(*slot));
                     if self.stage.registers[*dst] == Scalar::Bool
                         && let allocation::Location::Stack(offset) = source
@@ -493,14 +493,14 @@ impl Emitter<'_> {
                         self.copy_scalar(self.location(*dst), source, self.stage.registers[*dst]);
                     }
                 }
-                Inst::StoreLocal(slot, src) => {
+                InstKind::StoreLocal(slot, src) => {
                     self.copy_scalar(
                         self.allocation.location(PrivateSlot::Local(*slot)),
                         self.location(*src),
                         self.stage.registers[*src],
                     );
                 }
-                Inst::LoadLocalIndexed {
+                InstKind::LoadLocalIndexed {
                     dst,
                     base,
                     index,
@@ -510,7 +510,7 @@ impl Emitter<'_> {
                     let memory = self.private_memory(*base, *index, *word)?;
                     self.read_scalar_address(*dst, memory);
                 }
-                Inst::StoreLocalIndexed {
+                InstKind::StoreLocalIndexed {
                     base,
                     index,
                     word,
@@ -520,7 +520,7 @@ impl Emitter<'_> {
                     let memory = self.private_memory(*base, *index, *word)?;
                     self.write_scalar_address(*value, memory);
                 }
-                Inst::Load {
+                InstKind::Load {
                     dst,
                     binding,
                     index,
@@ -529,7 +529,7 @@ impl Emitter<'_> {
                     let memory = self.data_memory(*binding, *index, *word);
                     self.read_scalar_address(*dst, memory);
                 }
-                Inst::Store {
+                InstKind::Store {
                     binding,
                     index,
                     word,
@@ -538,7 +538,7 @@ impl Emitter<'_> {
                     let memory = self.data_memory(*binding, *index, *word);
                     self.write_scalar_address(*value, memory);
                 }
-                Inst::Unary { dst, op, a } => {
+                InstKind::Unary { dst, op, a } => {
                     match op {
                         UnaryOp::FloatNegate => {
                             self.float_sign(*dst, *a, true);
@@ -554,7 +554,7 @@ impl Emitter<'_> {
                         UnaryOp::Bitcast => self.copy_scalar(self.location(*dst), self.location(*a), self.stage.registers[*dst]),
                     };
                 }
-                Inst::Binary { dst, op, a, b } => match op {
+                InstKind::Binary { dst, op, a, b } => match op {
                     BinaryOp::FAdd => self.float_binary(*dst, *a, *b, 0x58),
                     BinaryOp::FSub => self.float_binary(*dst, *a, *b, 0x5c),
                     BinaryOp::FMul => self.float_binary(*dst, *a, *b, 0x59),
@@ -570,7 +570,7 @@ impl Emitter<'_> {
                     BinaryOp::ShiftRightLogical => self.shift(*dst, *a, *b, 5),
                     BinaryOp::ShiftRightArithmetic => self.shift(*dst, *a, *b, 7),
                 },
-                Inst::IntegerDivide {
+                InstKind::IntegerDivide {
                     result,
                     src,
                     divisor,
@@ -582,8 +582,8 @@ impl Emitter<'_> {
                         self.integer_divide_value(*result, *src, *divisor)
                     }
                 },
-                Inst::Cast { dst, src } => self.cast(*dst, *src),
-                Inst::Math { dst, op, args } => {
+                InstKind::Cast { dst, src } => self.cast(*dst, *src),
+                InstKind::Math { dst, op, args } => {
                     let name = match op {
                         MathOp::Sqrt => { self.float_sqrt(*dst, args[0]); continue; }
                         MathOp::Min => { self.float_binary(*dst, args[0], args[1], 0x5d); continue; }
@@ -602,7 +602,7 @@ impl Emitter<'_> {
                     self.invoke(Some(reference));
                     self.store_float(*dst);
                 },
-                Inst::Select {
+                InstKind::Select {
                     dst,
                     condition,
                     a,
@@ -610,7 +610,7 @@ impl Emitter<'_> {
                 } => {
                     self.select(*dst, *condition, *a, *b);
                 }
-                Inst::If { condition, yes, no } => {
+                InstKind::If { condition, yes, no } => {
                     self.load(*condition);
                     self.bytes(&[0x85, 0xc0]);
                     let other = self.jump(Some(0x84));
@@ -620,7 +620,7 @@ impl Emitter<'_> {
                     self.block(no)?;
                     self.patch(end, self.code.len());
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition,
                     test,
                     body,
@@ -642,11 +642,11 @@ impl Emitter<'_> {
                         self.patch(b, target);
                     }
                 }
-                Inst::Break => {
+                InstKind::Break => {
                     let at = self.jump(None);
                     self.breaks.last_mut().unwrap().push(at);
                 }
-                Inst::Continue => {
+                InstKind::Continue => {
                     let at = self.jump(None);
                     self.patch(at, *self.continues.last().unwrap());
                 }

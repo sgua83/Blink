@@ -83,7 +83,7 @@ fn optimize_stage(stage: &mut Stage) {
         let words = stage.storage_words();
         let mut changed = false;
         stage.code.retain_mut(|inst| {
-            if let Inst::TilePublish(publication) = inst {
+            if let InstKind::TilePublish(publication) = &mut (inst).kind {
                 let before = publication.values.len();
                 publication.values.retain(|(word, value)| {
                     (0..stage.registers[*value].size().div_ceil(4)).any(|part| words.contains(&SharedWord::Published {
@@ -97,7 +97,7 @@ fn optimize_stage(stage: &mut Stage) {
                     return false;
                 }
             }
-            if matches!(inst, Inst::TileCollective(c) if c.results.is_empty())
+            if matches!(&(inst).kind, InstKind::TileCollective(c) if c.results.is_empty())
                 && !preserve_scope
             {
                 changed = true;
@@ -116,8 +116,8 @@ fn optimize_stage(stage: &mut Stage) {
     if matches!(stage.operation, Operation::Map) {
         let mut reads = BTreeSet::new();
         let mut writes = BTreeSet::new();
-        visit(&stage.code, &mut |i| match i {
-            Inst::Call(call) => {
+        visit(&stage.code, &mut |i| match &(i).kind {
+            InstKind::Call(call) => {
                 for arg in &call.arguments {
                     if let CallArgument::Reference { access, address, .. } = arg {
                         for alias in address.aliases() {
@@ -135,11 +135,11 @@ fn optimize_stage(stage: &mut Stage) {
                     }
                 }
             }
-            Inst::Append(a) => {
+            InstKind::Append(a) => {
                 reads.insert(a.count.binding);
                 writes.extend([a.target, a.count.binding]);
             }
-            Inst::Atomic(a) => {
+            InstKind::Atomic(a) => {
                 for alias in a.target.aliases() {
                     if let MemoryAlias::Data(binding) = alias {
                         if a.op.reads() { reads.insert(binding); }
@@ -147,14 +147,14 @@ fn optimize_stage(stage: &mut Stage) {
                     }
                 }
             }
-            Inst::LoadIndexed { source, .. } => {
+            InstKind::LoadIndexed { source, .. } => {
                 reads.extend(source.aliases().filter_map(|a| match a { MemoryAlias::Data(b) => Some(b), _ => None }));
             }
-            Inst::Load { binding, .. } => { reads.insert(*binding); }
-            Inst::StoreIndexed { source, .. } => {
+            InstKind::Load { binding, .. } => { reads.insert(*binding); }
+            InstKind::StoreIndexed { source, .. } => {
                 writes.extend(source.aliases().filter_map(|a| match a { MemoryAlias::Data(b) => Some(b), _ => None }));
             }
-            Inst::Store { binding, .. } => { writes.insert(*binding); }
+            InstKind::Store { binding, .. } => { writes.insert(*binding); }
             _ => {}
         });
         reads.extend(stage.input_words().keys().map(|(source, _)| *source));
@@ -251,13 +251,13 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
     for i in code {
         f(i);
-        match i {
-            Inst::Scope(body) => visit(body, f),
-            Inst::If { yes, no, .. } => {
+        match &(i).kind {
+            InstKind::Scope(body) => visit(body, f),
+            InstKind::If { yes, no, .. } => {
                 visit(yes, f);
                 visit(no, f);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 visit(condition, f);
@@ -270,59 +270,59 @@ pub(crate) fn visit(code: &[Inst], f: &mut impl FnMut(&Inst)) {
 pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize) -> usize) {
     for i in code {
         map_operands(i, r);
-        match i {
-            Inst::TextureSample { result, .. } | Inst::TextureFetch { result, .. } => {
+        match &mut (i).kind {
+            InstKind::TextureSample { result, .. } | InstKind::TextureFetch { result, .. } => {
                 result.iter_mut().for_each(|v| *v = r(*v))
             }
-            Inst::TextureSize { result, .. } => result.iter_mut().for_each(|v| *v = r(*v)),
-            Inst::TextureLevels { dst, .. }
-            | Inst::TextureAddress { dst, .. }
-            | Inst::TextureFormat { dst, .. }
-            | Inst::TextureRead { dst, .. } => *dst = r(*dst),
-            Inst::Append(a) => a.accepted = r(a.accepted),
-            Inst::Atomic(a) => { a.result = a.result.map(r); a.target.map_locals(s); }
-            Inst::RayQuery { result, .. } => result.map(r),
-            Inst::IntegerDivide { result, .. } => result.map(r),
-            Inst::TileCollective(c) => c.results.iter_mut().for_each(|(_, dst)| *dst = r(*dst)),
-            Inst::Constant(dst, ..)
-            | Inst::FunctionAddress(dst, _)
-            | Inst::Index(dst)
-            | Inst::Uniform(dst, _)
-            | Inst::TileLength(dst)
-            | Inst::TileLane(dst) => *dst = r(*dst),
-            Inst::LoadLocal(dst, slot) => {
+            InstKind::TextureSize { result, .. } => result.iter_mut().for_each(|v| *v = r(*v)),
+            InstKind::TextureLevels { dst, .. }
+            | InstKind::TextureAddress { dst, .. }
+            | InstKind::TextureFormat { dst, .. }
+            | InstKind::TextureRead { dst, .. } => *dst = r(*dst),
+            InstKind::Append(a) => a.accepted = r(a.accepted),
+            InstKind::Atomic(a) => { a.result = a.result.map(r); a.target.map_locals(s); }
+            InstKind::RayQuery { result, .. } => result.map(r),
+            InstKind::IntegerDivide { result, .. } => result.map(r),
+            InstKind::TileCollective(c) => c.results.iter_mut().for_each(|(_, dst)| *dst = r(*dst)),
+            InstKind::Constant(dst, ..)
+            | InstKind::FunctionAddress(dst, _)
+            | InstKind::Index(dst)
+            | InstKind::Uniform(dst, _)
+            | InstKind::TileLength(dst)
+            | InstKind::TileLane(dst) => *dst = r(*dst),
+            InstKind::LoadLocal(dst, slot) => {
                 *dst = r(*dst);
                 *slot = s(*slot);
             }
-            Inst::StoreLocal(slot, _) => *slot = s(*slot),
-            Inst::LoadLocalIndexed { dst, base, .. } => {
+            InstKind::StoreLocal(slot, _) => *slot = s(*slot),
+            InstKind::LoadLocalIndexed { dst, base, .. } => {
                 *dst = r(*dst);
                 *base = s(*base);
             }
-            Inst::StoreLocalIndexed { base, .. } => *base = s(*base),
-            Inst::Call(call) => {
+            InstKind::StoreLocalIndexed { base, .. } => *base = s(*base),
+            InstKind::Call(call) => {
                 for value in &mut call.values { *value = r(*value); }
                 call.map_locals(s);
             }
-            Inst::PositionAddress { dst, address } => { *dst = r(*dst); address.map_locals(s); }
-            Inst::LoadIndexed { dst, source, .. } => { *dst = r(*dst); source.map_locals(s); }
-            Inst::StoreIndexed { source, .. } => source.map_locals(s),
-            Inst::Load { dst, .. }
-            | Inst::Subgroup { dst, .. }
-            | Inst::Print { dst, .. }
-            | Inst::TileLoad { dst, .. }
-            | Inst::ViewLoad { dst, .. }
-            | Inst::Unary { dst, .. }
-            | Inst::Binary { dst, .. }
-            | Inst::Cast { dst, .. }
-            | Inst::Math { dst, .. }
-            | Inst::Select { dst, .. } => *dst = r(*dst),
-            Inst::Scope(body) => map(body, r, s),
-            Inst::If { yes, no, .. } => {
+            InstKind::PositionAddress { dst, address } => { *dst = r(*dst); address.map_locals(s); }
+            InstKind::LoadIndexed { dst, source, .. } => { *dst = r(*dst); source.map_locals(s); }
+            InstKind::StoreIndexed { source, .. } => source.map_locals(s),
+            InstKind::Load { dst, .. }
+            | InstKind::Subgroup { dst, .. }
+            | InstKind::Print { dst, .. }
+            | InstKind::TileLoad { dst, .. }
+            | InstKind::ViewLoad { dst, .. }
+            | InstKind::Unary { dst, .. }
+            | InstKind::Binary { dst, .. }
+            | InstKind::Cast { dst, .. }
+            | InstKind::Math { dst, .. }
+            | InstKind::Select { dst, .. } => *dst = r(*dst),
+            InstKind::Scope(body) => map(body, r, s),
+            InstKind::If { yes, no, .. } => {
                 map(yes, r, s);
                 map(no, r, s);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 map(condition, r, s);
@@ -333,49 +333,49 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
     }
 }
 fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
-    if let Inst::TextureSample { texture, .. }
-    | Inst::TextureFetch { texture, .. }
-    | Inst::TextureSize { texture, .. }
-    | Inst::TextureLevels { texture, .. }
-    | Inst::TextureAddress { texture, .. }
-    | Inst::TextureFormat { texture, .. }
-    | Inst::TextureRead { texture, .. } = i
+    if let InstKind::TextureSample { texture, .. }
+    | InstKind::TextureFetch { texture, .. }
+    | InstKind::TextureSize { texture, .. }
+    | InstKind::TextureLevels { texture, .. }
+    | InstKind::TextureAddress { texture, .. }
+    | InstKind::TextureFormat { texture, .. }
+    | InstKind::TextureRead { texture, .. } = &mut (i).kind
     {
         texture.element = texture.element.map(r);
     }
-    match i {
-        Inst::PositionAddress { address, .. } => address.map_operands(r),
-        Inst::FunctionAddress(_, CallTarget::Indirect(reg)) => *reg = r(*reg),
-        Inst::TextureSample {
+    match &mut (i).kind {
+        InstKind::PositionAddress { address, .. } => address.map_operands(r),
+        InstKind::FunctionAddress(_, CallTarget::Indirect(reg)) => *reg = r(*reg),
+        InstKind::TextureSample {
             coordinate, lod, ..
         } => {
             coordinate.iter_mut().for_each(|v| *v = r(*v));
             *lod = r(*lod);
         }
-        Inst::TextureFetch {
+        InstKind::TextureFetch {
             coordinate, level, ..
         }
-        | Inst::TextureRead {
+        | InstKind::TextureRead {
             coordinate, level, ..
         } => {
             coordinate.iter_mut().for_each(|v| *v = r(*v));
             *level = r(*level);
         }
-        Inst::TextureSize { level, .. } => *level = r(*level),
-        Inst::Append(a) => a
+        InstKind::TextureSize { level, .. } => *level = r(*level),
+        InstKind::Append(a) => a
             .values
             .iter_mut()
             .for_each(|(_, value)| *value = r(*value)),
-        Inst::Atomic(a) => {
+        InstKind::Atomic(a) => {
             a.target.map(r);
             a.offset = a.offset.map(r);
             a.op.map(r);
         }
-        Inst::TilePublish(p) => p
+        InstKind::TilePublish(p) => p
             .values
             .iter_mut()
             .for_each(|(_, value)| *value = r(*value)),
-        Inst::RayQuery {
+        InstKind::RayQuery {
             origin,
             direction,
             minimum,
@@ -389,11 +389,11 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *minimum = r(*minimum);
             *maximum = r(*maximum);
         }
-        Inst::LoadIndexed { source, offset, .. } => {
+        InstKind::LoadIndexed { source, offset, .. } => {
             source.map(r);
             *offset = r(*offset);
         }
-        Inst::StoreIndexed {
+        InstKind::StoreIndexed {
             source,
             offset,
             value,
@@ -403,56 +403,56 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
             *offset = r(*offset);
             *value = r(*value);
         }
-        Inst::StoreLocal(_, src) => *src = r(*src),
-        Inst::LoadLocalIndexed { index, .. } => *index = r(*index),
-        Inst::StoreLocalIndexed { index, value, .. } => {
+        InstKind::StoreLocal(_, src) => *src = r(*src),
+        InstKind::LoadLocalIndexed { index, .. } => *index = r(*index),
+        InstKind::StoreLocalIndexed { index, value, .. } => {
             *index = r(*index);
             *value = r(*value);
         }
-        Inst::Print { value, .. } => *value = r(*value),
-        Inst::Call(call) => call.map_operands(r),
-        Inst::Subgroup {
+        InstKind::Print { value, .. } => *value = r(*value),
+        InstKind::Call(call) => call.map_operands(r),
+        InstKind::Subgroup {
             value, argument, ..
         } => {
             for v in value.iter_mut().chain(argument) {
                 *v = r(*v);
             }
         }
-        Inst::ViewLoad { address, index, .. } => {
+        InstKind::ViewLoad { address, index, .. } => {
             address.iter_mut().for_each(|v| *v = r(*v));
             *index = r(*index);
         }
-        Inst::Load { index, .. } | Inst::TileLoad { index, .. } => *index = r(*index),
-        Inst::Store { index, value, .. } => {
+        InstKind::Load { index, .. } | InstKind::TileLoad { index, .. } => *index = r(*index),
+        InstKind::Store { index, value, .. } => {
             *index = r(*index);
             *value = r(*value);
         }
-        Inst::Unary { a, .. } => *a = r(*a),
-        Inst::Binary { a, b, .. } => {
+        InstKind::Unary { a, .. } => *a = r(*a),
+        InstKind::Binary { a, b, .. } => {
             *a = r(*a);
             *b = r(*b);
         }
-        Inst::Cast { src, .. } => *src = r(*src),
-        Inst::IntegerDivide { src, divisor, .. } => {
+        InstKind::Cast { src, .. } => *src = r(*src),
+        InstKind::IntegerDivide { src, divisor, .. } => {
             *src = r(*src);
             if let IntegerDivisor::Value(value) = divisor {
                 *value = r(*value);
             }
         }
-        Inst::Math { args, .. } => {
+        InstKind::Math { args, .. } => {
             for a in args {
                 *a = r(*a);
             }
         }
-        Inst::Select {
+        InstKind::Select {
             condition, a, b, ..
         } => {
             *condition = r(*condition);
             *a = r(*a);
             *b = r(*b);
         }
-        Inst::If { condition, .. } => *condition = r(*condition),
-        Inst::Loop { test, .. } => *test = r(*test),
+        InstKind::If { condition, .. } => *condition = r(*condition),
+        InstKind::Loop { test, .. } => *test = r(*test),
         _ => {}
     }
 }
@@ -466,10 +466,10 @@ fn dce(
     use PrivateSlot::{Local, Register};
     let mut out = Vec::new();
     for mut i in std::mem::take(code).into_iter().rev() {
-        if let Inst::TileCollective(c) = &mut i {
+        if let InstKind::TileCollective(c) = &mut (i).kind {
             c.results.retain(|(_, r)| needed.contains(&Register(*r)));
         }
-        if let Inst::IntegerDivide { result, .. } = &mut i {
+        if let InstKind::IntegerDivide { result, .. } = &mut (i).kind {
             let q = result.quotient().filter(|r| needed.contains(&Register(*r)));
             let r = result
                 .remainder()
@@ -480,8 +480,8 @@ fn dce(
             *result = retained;
         }
         if !matches!(
-            i,
-            Inst::Atomic(_) | Inst::Append(_) | Inst::Print { .. } | Inst::Call(_)
+            &(i).kind,
+            InstKind::Atomic(_) | InstKind::Append(_) | InstKind::Print { .. } | InstKind::Call(_)
         ) {
             let mut results = i.results().peekable();
             if results.peek().is_some()
@@ -490,15 +490,15 @@ fn dce(
                 continue;
             }
         }
-        if matches!(&i, Inst::StoreLocal(slot, _) if !needed.contains(&Local(*slot))) {
+        if matches!(&(i).kind, InstKind::StoreLocal(slot, _) if !needed.contains(&Local(*slot))) {
             continue;
         }
-        if matches!(&i, Inst::StoreLocalIndexed{base,len,..} if !(*base..*base+*len).any(|s|needed.contains(&Local(s))))
+        if matches!(&(i).kind, InstKind::StoreLocalIndexed{base,len,..} if !(*base..*base+*len).any(|s|needed.contains(&Local(s))))
         {
             continue;
         }
-        match &mut i {
-            Inst::Scope(body) => {
+        match &mut (i).kind {
+            InstKind::Scope(body) => {
                 let after = needed.clone();
                 dce(body, needed, break_live, continue_live, &after);
                 if !scope_observable(body, &after) {
@@ -506,7 +506,7 @@ fn dce(
                     continue;
                 }
             }
-            Inst::If { condition, yes, no } => {
+            InstKind::If { condition, yes, no } => {
                 let mut a = needed.clone();
                 dce(yes, &mut a, break_live, continue_live, exit_live);
                 dce(no, needed, break_live, continue_live, exit_live);
@@ -516,7 +516,7 @@ fn dce(
                 needed.extend(a);
                 needed.insert(Register(*condition));
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition,
                 test,
                 body,
@@ -559,23 +559,23 @@ fn dce(
     *code = out;
 }
 fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
-    code.iter().any(|inst| match inst {
-        Inst::StoreLocal(slot, _) => after.contains(&PrivateSlot::Local(*slot)),
-        Inst::StoreLocalIndexed { base, len, .. } => {
+    code.iter().any(|inst| match &(inst).kind {
+        InstKind::StoreLocal(slot, _) => after.contains(&PrivateSlot::Local(*slot)),
+        InstKind::StoreLocalIndexed { base, len, .. } => {
             (*base..*base + *len).any(|s| after.contains(&PrivateSlot::Local(s)))
         }
-        Inst::Scope(body) => scope_observable(body, after),
-        Inst::If { yes, no, .. } => scope_observable(yes, after) || scope_observable(no, after),
-        Inst::Loop { .. }
-        | Inst::StoreIndexed { .. }
-        | Inst::Store { .. }
-        | Inst::Atomic(_)
-        | Inst::Append(_)
-        | Inst::Print { .. }
-        | Inst::Call(_)
-        | Inst::TilePublish(_)
-        | Inst::TileCollective(_)
-        | Inst::TileBarrier => true,
+        InstKind::Scope(body) => scope_observable(body, after),
+        InstKind::If { yes, no, .. } => scope_observable(yes, after) || scope_observable(no, after),
+        InstKind::Loop { .. }
+        | InstKind::StoreIndexed { .. }
+        | InstKind::Store { .. }
+        | InstKind::Atomic(_)
+        | InstKind::Append(_)
+        | InstKind::Print { .. }
+        | InstKind::Call(_)
+        | InstKind::TilePublish(_)
+        | InstKind::TileCollective(_)
+        | InstKind::TileBarrier => true,
         _ => inst
             .results()
             .any(|r| after.contains(&PrivateSlot::Register(r))),

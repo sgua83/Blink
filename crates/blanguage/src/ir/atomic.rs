@@ -95,15 +95,15 @@ pub struct Atomic {
 impl Stage {
     pub(crate) fn atomic64_requirements(&self) -> (bool, bool) {
         fn uses(code: &[Inst]) -> (bool, bool) {
-            code.iter().map(|inst| match inst {
-                Inst::Atomic(a) if a.scalar.size() == 8 => match a.target {
+            code.iter().map(|inst| match &(inst).kind {
+                InstKind::Atomic(a) if a.scalar.size() == 8 => match a.target {
                     IndexedSource::Tile { .. } => (false, true),
                     IndexedSource::Data { .. } => (true, false),
                     IndexedSource::View { .. } | IndexedSource::Pointer { .. } => (false, false),
                 },
-                Inst::Scope(body) => uses(body),
-                Inst::If { yes, no, .. } => merge(uses(yes), uses(no)),
-                Inst::Loop { condition, body, .. } => merge(uses(condition), uses(body)),
+                InstKind::Scope(body) => uses(body),
+                InstKind::If { yes, no, .. } => merge(uses(yes), uses(no)),
+                InstKind::Loop { condition, body, .. } => merge(uses(condition), uses(body)),
                 _ => (false, false),
             }).fold((false, false), merge)
         }

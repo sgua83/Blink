@@ -78,8 +78,8 @@ impl Graph {
     ) -> BTreeSet<PrivateSlot> {
         use PrivateSlot::{Local, Register};
         for inst in code.iter().rev() {
-            match inst {
-                Inst::If { condition, yes, no } => {
+            match &(inst).kind {
+                InstKind::If { condition, yes, no } => {
                     let a = self.block(
                         yes,
                         registers,
@@ -102,7 +102,7 @@ impl Graph {
                     live.insert(Register(*condition));
                     self.weights[*condition] = self.weights[*condition].saturating_add(weight);
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition,
                     test,
                     body,
@@ -139,7 +139,7 @@ impl Graph {
                         nested,
                     );
                 }
-                Inst::Scope(body) => {
+                InstKind::Scope(body) => {
                     live = self.block(
                         body,
                         registers,
@@ -150,14 +150,14 @@ impl Graph {
                         weight,
                     )
                 }
-                Inst::Exit => live = exit_live.clone(),
-                Inst::Break => live = break_live.clone(),
-                Inst::Continue => live = continue_live.clone(),
+                InstKind::Exit => live = exit_live.clone(),
+                InstKind::Break => live = break_live.clone(),
+                InstKind::Continue => live = continue_live.clone(),
                 _ => {
-                    let transfer = match inst {
-                        Inst::LoadLocal(dst, slot) => Some((Register(*dst), Local(*slot))),
-                        Inst::StoreLocal(slot, src) => Some((Local(*slot), Register(*src))),
-                        Inst::Cast { dst, src }
+                    let transfer = match &(inst).kind {
+                        InstKind::LoadLocal(dst, slot) => Some((Register(*dst), Local(*slot))),
+                        InstKind::StoreLocal(slot, src) => Some((Local(*slot), Register(*src))),
+                        InstKind::Cast { dst, src }
                             if operands::bit_copy(registers[*src], registers[*dst]) =>
                         {
                             Some((Register(*dst), Register(*src)))
@@ -168,9 +168,9 @@ impl Graph {
                         !self.addressable.contains(&self.id(*dst))
                             && !self.addressable.contains(&self.id(*src))
                     });
-                    let preferred = transfer.or_else(|| match inst {
-                        Inst::Unary { dst, a, .. } => Some((Register(*dst), Register(*a))),
-                        Inst::Binary { dst, op, a, b } => {
+                    let preferred = transfer.or_else(|| match &(inst).kind {
+                        InstKind::Unary { dst, a, .. } => Some((Register(*dst), Register(*a))),
+                        InstKind::Binary { dst, op, a, b } => {
                             let source = if let BinaryOp::Compare(comparison) = op {
                                 let reverse = if registers[*a].is_float() {
                                     matches!(
@@ -189,8 +189,8 @@ impl Graph {
                             };
                             Some((Register(*dst), Register(source)))
                         }
-                        Inst::Select { dst, b, .. } => Some((Register(*dst), Register(*b))),
-                        Inst::Math { dst, op, args }
+                        InstKind::Select { dst, b, .. } => Some((Register(*dst), Register(*b))),
+                        InstKind::Math { dst, op, args }
                             if matches!(
                                 op,
                                 MathOp::Abs | MathOp::Min | MathOp::Max | MathOp::Sqrt
@@ -207,7 +207,7 @@ impl Graph {
                     }
                     let mut definitions: Vec<_> =
                         inst.results().into_iter().map(Register).collect();
-                    if let Inst::StoreLocal(slot, _) = inst {
+                    if let InstKind::StoreLocal(slot, _) = &(inst).kind {
                         definitions.push(Local(*slot));
                     }
                     for dst in &definitions {
@@ -226,10 +226,10 @@ impl Graph {
                         live.remove(dst);
                     }
                     if matches!(
-                        inst,
-                        Inst::Print { .. }
-                            | Inst::Call(_)
-                            | Inst::Math {
+                        &(inst).kind,
+                        InstKind::Print { .. }
+                            | InstKind::Call(_)
+                            | InstKind::Math {
                                 op: MathOp::Sin
                                     | MathOp::Cos
                                     | MathOp::Floor
@@ -243,7 +243,7 @@ impl Graph {
                     ) {
                         self.outgoing_bytes =
                             self.outgoing_bytes
-                                .max(if let Inst::Call(call) = inst {
+                                .max(if let InstKind::Call(call) = &(inst).kind {
                                     super::external::Layout::new(call).bytes
                                 } else {
                                     32
@@ -359,8 +359,8 @@ impl Allocation {
         // literal definitions have no mutable storage; locals remain real slots.
         fn literals(code: &[Inst], values: &mut [Option<Option<Bits>>]) {
             for inst in code {
-                let literal = match inst {
-                    Inst::Constant(_, _, bits) => Some(*bits),
+                let literal = match &(inst).kind {
+                    InstKind::Constant(_, _, bits) => Some(*bits),
                     _ => None,
                 };
                 for dst in inst.results() {
@@ -369,18 +369,18 @@ impl Allocation {
                         Some(previous) => previous.filter(|bits| Some(*bits) == literal),
                     });
                 }
-                match inst {
-                    Inst::If { yes, no, .. } => {
+                match &(inst).kind {
+                    InstKind::If { yes, no, .. } => {
                         literals(yes, values);
                         literals(no, values);
                     }
-                    Inst::Loop {
+                    InstKind::Loop {
                         condition, body, ..
                     } => {
                         literals(condition, values);
                         literals(body, values);
                     }
-                    Inst::Scope(body) => literals(body, values),
+                    InstKind::Scope(body) => literals(body, values),
                     _ => {}
                 }
             }

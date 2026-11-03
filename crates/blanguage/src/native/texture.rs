@@ -12,37 +12,37 @@ impl Lower {
     }
     fn constant(&mut self, s: Scalar, bits: u32) -> Reg {
         let r = self.reg(s);
-        self.code.push(Inst::Constant(r, s, Bits::from(bits)));
+        self.code.push(Inst::new(InstKind::Constant(r, s, Bits::from(bits))));
         r
     }
     fn binary(&mut self, s: Scalar, op: BinaryOp, a: Reg, b: Reg) -> Reg {
         let dst = self.reg(s);
-        self.code.push(Inst::Binary { dst, op, a, b });
+        self.code.push(Inst::new(InstKind::Binary { dst, op, a, b }));
         dst
     }
     fn cast(&mut self, s: Scalar, src: Reg) -> Reg {
         let dst = self.reg(s);
-        self.code.push(Inst::Cast { dst, src });
+        self.code.push(Inst::new(InstKind::Cast { dst, src }));
         dst
     }
     fn math(&mut self, op: MathOp, a: Reg, b: Reg) -> Reg {
         let dst = self.reg(Scalar::F32);
-        self.code.push(Inst::Math {
+        self.code.push(Inst::new(InstKind::Math {
             dst,
             op,
             args: vec![a, b],
-        });
+        }));
         dst
     }
     fn min_u(&mut self, a: Reg, b: Reg) -> Reg {
         let condition = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Less), a, b);
         let dst = self.reg(Scalar::U32);
-        self.code.push(Inst::Select {
+        self.code.push(Inst::new(InstKind::Select {
             dst,
             condition,
             a,
             b,
-        });
+        }));
         dst
     }
     fn lerp(&mut self, a: Reg, b: Reg, t: Reg) -> Reg {
@@ -52,12 +52,12 @@ impl Lower {
     }
     fn select(&mut self, s: Scalar, condition: Reg, a: Reg, b: Reg) -> Reg {
         let dst = self.reg(s);
-        self.code.push(Inst::Select {
+        self.code.push(Inst::new(InstKind::Select {
             dst,
             condition,
             a,
             b,
-        });
+        }));
         dst
     }
     fn srgb(&mut self, value: Reg) -> Reg {
@@ -94,12 +94,12 @@ impl Lower {
             zero_format,
         );
         let outer = std::mem::take(&mut self.code);
-        self.code.push(Inst::TextureFetch {
+        self.code.push(Inst::new(InstKind::TextureFetch {
             result,
             texture,
             coordinate,
             level,
-        });
+        }));
         let floats = std::mem::take(&mut self.code);
         let byte_format = self.constant(Scalar::U32, 3);
         let single = self.binary(
@@ -110,34 +110,34 @@ impl Lower {
         );
         let packed_outer = std::mem::take(&mut self.code);
         let raw = self.reg(Scalar::U32);
-        self.code.push(Inst::TextureRead {
+        self.code.push(Inst::new(InstKind::TextureRead {
             dst: raw,
             texture,
             coordinate,
             level,
             byte: true,
-        });
+        }));
         let value = self.cast(Scalar::F32, raw);
         let denominator = self.constant(Scalar::F32, 255.0f32.to_bits());
         let red = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
-        self.code.push(Inst::Cast {
+        self.code.push(Inst::new(InstKind::Cast {
             dst: result[0],
             src: red,
-        });
+        }));
         for channel in 1..4 {
             let bits = if channel == 3 { 1.0f32.to_bits() } else { 0 };
             self.code
-                .push(Inst::Constant(result[channel], Scalar::F32, Bits::from(bits)));
+                .push(Inst::new(InstKind::Constant(result[channel], Scalar::F32, Bits::from(bits))));
         }
         let singles = std::mem::take(&mut self.code);
         let raw = self.reg(Scalar::U32);
-        self.code.push(Inst::TextureRead {
+        self.code.push(Inst::new(InstKind::TextureRead {
             dst: raw,
             texture,
             coordinate,
             level,
             byte: false,
-        });
+        }));
         let unpack_outer = std::mem::take(&mut self.code);
         let mut rgba = Vec::new();
         for (tag, widths) in [(1, &[8,8,8,8][..]), (4, &[16,16][..]), (5, &[10,10,10,2][..])] {
@@ -151,19 +151,19 @@ impl Lower {
                 let value = self.cast(Scalar::F32, byte);
                 let denominator = self.constant(Scalar::F32, (((1 << bits) - 1) as f32).to_bits());
                 let value = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
-                self.code.push(Inst::Cast {
+                self.code.push(Inst::new(InstKind::Cast {
                     dst: result[channel],
                     src: value,
-                });
+                }));
             }
             for channel in widths.len()..4 {
-                self.code.push(Inst::Constant(result[channel], Scalar::F32, Bits::from(if channel == 3 { 1.0f32.to_bits() } else { 0 })));
+                self.code.push(Inst::new(InstKind::Constant(result[channel], Scalar::F32, Bits::from(if channel == 3 { 1.0f32.to_bits() } else { 0 }))));
             }
             let unpacked = std::mem::take(&mut self.code);
             if tag == 1 { rgba = unpacked; } else {
                 let packed_format = self.constant(Scalar::U32, tag);
                 let packed = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), format, packed_format);
-                self.code.push(Inst::If { condition: packed, yes: unpacked, no: rgba });
+                self.code.push(Inst::new(InstKind::If { condition: packed, yes: unpacked, no: rgba }));
                 rgba = std::mem::take(&mut self.code);
             }
         }
@@ -179,29 +179,29 @@ impl Lower {
         let rgba = std::mem::take(&mut self.code);
         for channel in 0..3 {
             let value = self.srgb(result[channel]);
-            self.code.push(Inst::Cast {
+            self.code.push(Inst::new(InstKind::Cast {
                 dst: result[channel],
                 src: value,
-            });
+            }));
         }
         let decode = std::mem::replace(&mut self.code, rgba);
-        self.code.push(Inst::If {
+        self.code.push(Inst::new(InstKind::If {
             condition: encoded,
             yes: decode,
             no: Vec::new(),
-        });
+        }));
         let rgba = std::mem::replace(&mut self.code, packed_outer);
-        self.code.push(Inst::If {
+        self.code.push(Inst::new(InstKind::If {
             condition: single,
             yes: singles,
             no: rgba,
-        });
+        }));
         let packed = std::mem::replace(&mut self.code, outer);
-        self.code.push(Inst::If {
+        self.code.push(Inst::new(InstKind::If {
             condition: floating,
             yes: floats,
             no: packed,
-        });
+        }));
         result
     }
     fn level_sample(
@@ -213,11 +213,11 @@ impl Lower {
         format: Reg,
     ) -> [Reg; 4] {
         let dimensions = std::array::from_fn(|_| self.reg(Scalar::U32));
-        self.code.push(Inst::TextureSize {
+        self.code.push(Inst::new(InstKind::TextureSize {
             result: dimensions,
             texture,
             level,
-        });
+        }));
         let one = self.constant(Scalar::U32, 1);
         let zero = self.constant(Scalar::F32, 0);
         let half = self.constant(Scalar::F32, 0.5f32.to_bits());
@@ -301,18 +301,18 @@ impl Lower {
         let levels = self.reg(Scalar::U32);
         let address = self.reg(Scalar::U32);
         let format = self.reg(Scalar::U32);
-        self.code.push(Inst::TextureFormat {
+        self.code.push(Inst::new(InstKind::TextureFormat {
             dst: format,
             texture,
-        });
-        self.code.push(Inst::TextureAddress {
+        }));
+        self.code.push(Inst::new(InstKind::TextureAddress {
             dst: address,
             texture,
-        });
-        self.code.push(Inst::TextureLevels {
+        }));
+        self.code.push(Inst::new(InstKind::TextureLevels {
             dst: levels,
             texture,
-        });
+        }));
         let last = self.binary(Scalar::U32, BinaryOp::ISub, levels, one);
         let last_float = self.cast(Scalar::F32, last);
         let positive = self.math(MathOp::Max, lod, zero);
@@ -326,45 +326,45 @@ impl Lower {
         let b = self.level_sample(texture, coordinate, next, address, format);
         for i in 0..4 {
             let value = self.lerp(a[i], b[i], fraction);
-            self.code.push(Inst::Cast {
+            self.code.push(Inst::new(InstKind::Cast {
                 dst: result[i],
                 src: value,
-            });
+            }));
         }
     }
     fn block(&mut self, code: Vec<Inst>) -> Vec<Inst> {
         let outer = std::mem::take(&mut self.code);
         for inst in code {
-            match inst {
-                Inst::TextureSample {
+            match inst.kind {
+                InstKind::TextureSample {
                     result,
                     texture,
                     coordinate,
                     lod,
                 } => self.sample(result, texture, coordinate, lod),
-                Inst::Scope(body) => {
+                InstKind::Scope(body) => {
                     let body = self.block(body);
-                    self.code.push(Inst::Scope(body));
+                    self.code.push(Inst { kind: InstKind::Scope(body), ..inst });
                 }
-                Inst::If { condition, yes, no } => {
+                InstKind::If { condition, yes, no } => {
                     let yes = self.block(yes);
                     let no = self.block(no);
-                    self.code.push(Inst::If { condition, yes, no });
+                    self.code.push(Inst { kind: InstKind::If { condition, yes, no }, ..inst });
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition,
                     test,
                     body,
                 } => {
                     let condition = self.block(condition);
                     let body = self.block(body);
-                    self.code.push(Inst::Loop {
+                    self.code.push(Inst { kind: InstKind::Loop {
                         condition,
                         test,
                         body,
-                    });
+                    }, ..inst });
                 }
-                other => self.code.push(other),
+                other => self.code.push(Inst { kind: other, ..inst }),
             }
         }
         std::mem::replace(&mut self.code, outer)
@@ -372,11 +372,11 @@ impl Lower {
 }
 pub(super) fn lower(stage: &Stage) -> std::borrow::Cow<'_, Stage> {
     fn samples(code: &[Inst]) -> bool {
-        code.iter().any(|i| match i {
-            Inst::TextureSample { .. } => true,
-            Inst::Scope(body) => samples(body),
-            Inst::If { yes, no, .. } => samples(yes) || samples(no),
-            Inst::Loop {
+        code.iter().any(|i| match &(i).kind {
+            InstKind::TextureSample { .. } => true,
+            InstKind::Scope(body) => samples(body),
+            InstKind::If { yes, no, .. } => samples(yes) || samples(no),
+            InstKind::Loop {
                 condition, body, ..
             } => samples(condition) || samples(body),
             _ => false,

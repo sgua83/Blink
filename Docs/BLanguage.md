@@ -278,6 +278,16 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 这些范围是compiler结果中的观察材料，不属于BLRI22执行字段；无compiler的NativeCode不含tail_regions或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有范围材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
 
+### IR操作的语法来源
+
+原`Inst`为持有`InstKind`的操作节点；原枚举变体移到`InstKind`，`Inst::new(kind)`构造没有语法来源的节点。compiler功能提供`Inst::source_site()`，可选只读引用指向`SourceSite`；`origin()`借用原`SourceOrigin`，`span()`返回该次语法处理的范围，`syntax()`为`SourceSyntax::Statement／Expression／Place`。普通运行角色不包含这些来源字段、类型或查询输出；B语法、C ABI、必要执行格式和原优化选择保持。Rust调用方构造／匹配IR时使用原节点的kind，不能继续将Inst当操作枚举。
+
+Builder在实际语句、表达式、返回值表达式和位置处理期间交接所消费的Span；子表达式结束后回到原父上下文，实际内联期间使用原被调定义快照，返回后恢复调用者。原code的每个操作持有自己的可选语法来源，原嵌套块、克隆和移动沿同一节点交接；同一Builder定义和原Source文本共享不可变Arc，不建立按操作序号对齐的来源表或保留AST／World。语法范围表示驱动本次发射的上下文；参数设置、运行框架和后端新合成操作未取得语法来源时为null，不能从根范围补造。
+
+`SourceSite::ir_json()`的kind为source_syntax，syntax为statement／expression／place，definition沿原source_definition输出同一原定义及快照；其余start_byte／end_byte、span_unit／span_range、start／end、column_unit和position_base与原定义查询采用相同单位，但范围属于本次语法上下文。现有compiler角色的每个IR操作JSON增加source_site，对没有材料的操作输出null；关闭compiler时不输出该字段。只在显式查询进行摘要、行列和JSON计算，已经取得的IR不重读后续磁盘文件。
+
+本项只交接发射时实际语法范围，不声明已有完整实例／内联链、集合调用或生成阶段分类；相应范围见Issues C-021.7.9.7.2.2至.4。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
+
 ### 保存和恢复可选CPU范围材料
 
 原新生成的`build::Compilation`可显式调用`code_observations()`取得独立字节，由调用者保存为`.blcr`；`resource::Module`提供同名方法。只读捕获不修改执行文件、构建键或缓存。当前SDK是捕获入口，`bc build`的`.x64.json`不等同这份材料；未保存材料的缓存结果不能重新导出范围，不为取得材料自动重编。正式执行文件不要求携带`.blcr`，部署映像仍由`build::execution_image`／`bc image`交接。

@@ -548,7 +548,7 @@ impl Builder<'_> {
             }
         }
         let memory_use=self.call_address_memory(memory_borrow,span)?;
-        self.code.push(Inst::Call(Call {
+        self.emit(InstKind::Call(Call {
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
             memory: Vec::new(),
@@ -825,14 +825,14 @@ fn resolve_residencies(module: &mut Module) -> Result<()> {
 }
 fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
-        match inst {
-            Inst::Call(call) => visit(call),
-            Inst::Scope(body) => calls(body, visit),
-            Inst::If { yes, no, .. } => {
+        match &mut (inst).kind {
+            InstKind::Call(call) => visit(call),
+            InstKind::Scope(body) => calls(body, visit),
+            InstKind::If { yes, no, .. } => {
                 calls(yes, visit);
                 calls(no, visit);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 calls(condition, visit);
@@ -845,7 +845,7 @@ fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
 fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     crate::optimize::visit(&body.code, &mut |inst| {
-        if let Inst::Call(Call { target: CallTarget::Defined(name), .. }) | Inst::FunctionAddress(_, CallTarget::Defined(name)) = inst {
+        if let InstKind::Call(Call { target: CallTarget::Defined(name), .. }) | InstKind::FunctionAddress(_, CallTarget::Defined(name)) = &(inst).kind {
             names.insert(name.clone());
         }
     });
@@ -860,19 +860,19 @@ pub(super) struct Finalized {
 fn uses_frame(code: &[Inst], registers: &[Reg], imported: &BTreeSet<String>) -> bool {
     code.iter().any(|inst| {
         let mut other = |reg| !registers.contains(&reg);
-        let operands = match inst {
+        let operands = match &(inst).kind {
             // Imported no-Frame ABIs already contain only their real arguments.
-            Inst::Call(Call { target: CallTarget::Defined(name), arguments, .. }) =>
+            InstKind::Call(Call { target: CallTarget::Defined(name), arguments, .. }) =>
                 arguments.iter().skip(usize::from(!imported.contains(name))).all(|argument| match argument {
                     CallArgument::Value { values, .. } => values.iter().all(|reg| other(*reg)),
                     CallArgument::Reference { address, .. } => address.all_operands(&mut other),
                 }),
             _ => inst.all_operands(&mut other),
         };
-        !operands || match inst {
-            Inst::Scope(code) => uses_frame(code, registers, imported),
-            Inst::If { yes, no, .. } => uses_frame(yes, registers, imported) || uses_frame(no, registers, imported),
-            Inst::Loop { condition, body, .. } => uses_frame(condition, registers, imported) || uses_frame(body, registers, imported),
+        !operands || match &(inst).kind {
+            InstKind::Scope(code) => uses_frame(code, registers, imported),
+            InstKind::If { yes, no, .. } => uses_frame(yes, registers, imported) || uses_frame(no, registers, imported),
+            InstKind::Loop { condition, body, .. } => uses_frame(condition, registers, imported) || uses_frame(body, registers, imported),
             _ => false,
         }
     })
@@ -1135,7 +1135,7 @@ impl Builder<'_> {
         target: Target,
         arguments: Vec<CallArgument>,
     ) {
-        self.code.push(Inst::Call(Call {
+        self.emit(InstKind::Call(Call {
             target: CallTarget::Defined(crate::module::domain::symbol(&instance.name, target)),
             arguments,
             memory: Vec::new(),
@@ -1272,7 +1272,7 @@ fn build_domain(
                         .map(|((scalar, _), word)| {
                             let reg = registers.len();
                             registers.push(*scalar);
-                            code.push(Inst::Constant(reg, *scalar, *word));
+                            code.push(Inst::new(InstKind::Constant(reg, *scalar, *word)));
                             reg
                         })
                         .collect();
@@ -1288,14 +1288,14 @@ fn build_domain(
                 }
             });
         }
-        code.push(Inst::Call(Call {
+        code.push(Inst::new(InstKind::Call(Call {
             target: CallTarget::Defined(crate::module::domain::symbol(&call.instance.name, target)),
             arguments,
             memory: Vec::new(),
             memory_use: None,
             result: None,
             values: Vec::new(),
-        }));
+        })));
         start = call.stage;
         required = call.after;
     }

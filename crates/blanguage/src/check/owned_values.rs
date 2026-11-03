@@ -575,7 +575,7 @@ impl Builder<'_> {
     ) -> OwnedValue {
         if result.place.is_none() && (mutable || result.value.ty.contains_arrays()) {
             let(slots,storage)=self.local_slots(&result.value.ty);
-            for(slot,reg)in slots.iter().zip(&result.value.regs){self.code.push(Inst::StoreLocal(*slot,*reg));}
+            for(slot,reg)in slots.iter().zip(&result.value.regs){self.emit(InstKind::StoreLocal(*slot,*reg));}
             result.place=Some(Place::Local(result.value.ty.clone(),slots,storage));
         }
         if let Some(place) = result.place() {
@@ -703,6 +703,9 @@ impl Builder<'_> {
         expr: &Expr,
         expected: Option<&Ty>,
     ) -> Result<Option<Returned>> {
+        self.at_source(expr.span, SourceSyntax::Expression, |b| b.evaluate_returned_syntax(expr, expected))
+    }
+    fn evaluate_returned_syntax(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
         self.view_uses.before(expr.span);
         self.require_returned_projection(expr)?;
         match &expr.kind {
@@ -1044,7 +1047,7 @@ impl Builder<'_> {
             let yes=std::mem::take(&mut self.code);
             self.drop_variant(value,index+1,retained,span)?;
             let no=std::mem::replace(&mut self.code,outer);
-            self.code.push(Inst::If{condition:condition.regs[0],yes,no});Ok(())
+            self.emit(InstKind::If{condition:condition.regs[0],yes,no});Ok(())
         }
     }
     pub(super) fn drop_binding(&mut self,binding:Binding,retained:&view::Borrow,span:Span) -> Result<()> {

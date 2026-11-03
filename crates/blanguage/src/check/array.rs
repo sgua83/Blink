@@ -164,7 +164,7 @@ impl Builder<'_> {
         let uniform = value.uniform;
         let (slots, storage) = self.local_slots(&value.ty);
         for (slot, r) in slots.iter().zip(&value.regs) {
-            self.code.push(Inst::StoreLocal(*slot, *r));
+            self.emit(InstKind::StoreLocal(*slot, *r));
         }
         let place = Place::ReadOnlyLocal(value.ty, slots, storage);
         self.initialize(&place);
@@ -264,7 +264,7 @@ impl Builder<'_> {
                 ..
             } => {
                 let dst = self.reg(Scalar::U32);
-                self.code.push(Inst::Binary {
+                self.emit(InstKind::Binary {
                     dst,
                     op: BinaryOp::IAdd,
                     a: offset,
@@ -303,11 +303,11 @@ impl Builder<'_> {
         for (component, value) in &choices[1..] {
             let number = self.constant(Scalar::U32, Bits::from(*component)).regs[0];
             let condition = self.reg(Scalar::Bool);
-            self.code.push(Inst::Binary {
+            self.emit(InstKind::Binary {
                 dst: condition, op: BinaryOp::Compare(ir::Comparison::Equal), a: index, b: number,
             });
             let dst = self.reg(scalar);
-            self.code.push(Inst::Select { dst, condition, a: *value, b: selected });
+            self.emit(InstKind::Select { dst, condition, a: *value, b: selected });
             selected = dst;
         }
         selected
@@ -334,7 +334,7 @@ impl Builder<'_> {
         let (base, offset) = match place {
             Place::Indexed { base, offset, .. } => {
                 let dst = self.reg(Scalar::U32);
-                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: offset, b: relative });
+                self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: offset, b: relative });
                 (base, dst)
             }
             base => (Box::new(base), relative),
@@ -346,7 +346,7 @@ impl Builder<'_> {
             let selected = if word == 0 { offset } else {
                 let number = self.constant(Scalar::U32, Bits::from(word)).regs[0];
                 let dst = self.reg(Scalar::U32);
-                self.code.push(Inst::Binary { dst, op: BinaryOp::IAdd, a: offset, b: number });
+                self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: offset, b: number });
                 dst
             };
             let mut address = [0; 2];
@@ -437,20 +437,20 @@ impl Builder<'_> {
             let dst = self.reg(*scalar);
             let instruction = match &**base {
                 Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
-                    Inst::LoadLocalIndexed {
+                    Inst::new(InstKind::LoadLocalIndexed {
                         dst,
                         base: storage.start,
                         len: storage.len(),
                         index: *offset,
                         word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
-                    }
+                    })
                 }
                 _ => {
                     let (source, offset, word) = self.array_memory(base, *offset, *word, *scalar, false, span)?;
-                    Inst::LoadIndexed { dst, source, offset, word }
+                    Inst::new(InstKind::LoadIndexed { dst, source, offset, word })
                 },
             };
-            self.code.push(instruction);
+            self.emit(instruction.kind);
             regs.push(dst);
         }
         let (proof, uniform) = self.read_owned_proof(place, &regs);
@@ -490,13 +490,13 @@ impl Builder<'_> {
         self.initialize(place);
         for ((word, &(scalar, _)), value) in words.iter().zip(&value.ty.components).zip(value.regs) {
             let instruction = match &**base {
-                Place::Local(_, slots, storage) => Inst::StoreLocalIndexed {
+                Place::Local(_, slots, storage) => Inst::new(InstKind::StoreLocalIndexed {
                     base: storage.start,
                     len: storage.len(),
                     index: *offset,
                     word: self.locals[&storage.end].components[slots[0] - storage.start].1 + word,
                     value,
-                },
+                }),
                 Place::Reference { .. }
                 | Place::Element { .. }
                 | Place::ApplicationElement { .. } => {
@@ -504,11 +504,11 @@ impl Builder<'_> {
                         self.writes.insert(*binding);
                     }
                     let (source, offset, word) = self.array_memory(base, *offset, *word, scalar, true, span)?;
-                    Inst::StoreIndexed { source, offset, word, value }
+                    Inst::new(InstKind::StoreIndexed { source, offset, word, value })
                 }
                 _ => unreachable!(),
             };
-            self.code.push(instruction);
+            self.emit(instruction.kind);
         }
         Ok(())
     }

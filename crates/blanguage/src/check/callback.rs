@@ -64,7 +64,7 @@ impl Builder<'_> {
             CallTarget::Defined(instance.name)
         };
         let reg = self.reg(Scalar::U64);
-        self.code.push(Inst::FunctionAddress(reg, target));
+        self.emit(InstKind::FunctionAddress(reg, target));
         let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
         Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
     }

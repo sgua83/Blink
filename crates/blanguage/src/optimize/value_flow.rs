@@ -90,24 +90,24 @@ impl Values {
         for mut inst in std::mem::take(code) {
             map_operands(&mut inst, &|r| self.root(r));
             if matches!(
-                inst,
-                Inst::If { .. }
-                    | Inst::Loop { .. }
-                    | Inst::Scope(_)
-                    | Inst::Exit
-                    | Inst::TilePublish(_)
-                    | Inst::TileCollective(_)
-                    | Inst::TileBarrier
-                    | Inst::Break
-                    | Inst::Continue
+                &(inst).kind,
+                InstKind::If { .. }
+                    | InstKind::Loop { .. }
+                    | InstKind::Scope(_)
+                    | InstKind::Exit
+                    | InstKind::TilePublish(_)
+                    | InstKind::TileCollective(_)
+                    | InstKind::TileBarrier
+                    | InstKind::Break
+                    | InstKind::Continue
             ) {
                 divisions.clear();
             }
-            if let Inst::IntegerDivide {
+            if let InstKind::IntegerDivide {
                 result,
                 src,
                 divisor,
-            } = &mut inst
+            } = &mut (inst).kind
             {
                 let mut quotient = None;
                 let mut remainder = None;
@@ -138,14 +138,14 @@ impl Values {
                         IntegerDivisionResult::Quotient(q),
                     ) = (previous, retained)
                     {
-                        out[position] = Inst::IntegerDivide {
+                        out[position] = Inst::new(InstKind::IntegerDivide {
                             result: IntegerDivisionResult::Both {
                                 quotient: q,
                                 remainder: r,
                             },
                             src: *src,
                             divisor: *divisor,
-                        };
+                        });
                         continue;
                     }
                 }
@@ -153,15 +153,15 @@ impl Values {
                     divisions.insert(key, (out.len(), retained));
                 }
             }
-            let key = match &inst {
-                Inst::Constant(dst, scalar, bits) => Some((ExpressionKey::Constant(*scalar, *bits), *dst)),
-                Inst::Index(dst) => Some((ExpressionKey::Index, *dst)),
-                Inst::Uniform(dst, offset) => Some((ExpressionKey::Uniform(*offset), *dst)),
-                Inst::Unary { dst, op, a } => Some((ExpressionKey::Unary(*op, registers[*dst], *a), *dst)),
-                Inst::Binary { dst, op, a, b } => Some((ExpressionKey::Binary(*op, *a, *b), *dst)),
-                Inst::Cast { dst, src } => Some((ExpressionKey::Cast(registers[*dst], *src), *dst)),
-                Inst::Math { dst, op, args } => Some((ExpressionKey::Math(*op, args.clone()), *dst)),
-                Inst::Select {
+            let key = match &(inst).kind {
+                InstKind::Constant(dst, scalar, bits) => Some((ExpressionKey::Constant(*scalar, *bits), *dst)),
+                InstKind::Index(dst) => Some((ExpressionKey::Index, *dst)),
+                InstKind::Uniform(dst, offset) => Some((ExpressionKey::Uniform(*offset), *dst)),
+                InstKind::Unary { dst, op, a } => Some((ExpressionKey::Unary(*op, registers[*dst], *a), *dst)),
+                InstKind::Binary { dst, op, a, b } => Some((ExpressionKey::Binary(*op, *a, *b), *dst)),
+                InstKind::Cast { dst, src } => Some((ExpressionKey::Cast(registers[*dst], *src), *dst)),
+                InstKind::Math { dst, op, args } => Some((ExpressionKey::Math(*op, args.clone()), *dst)),
+                InstKind::Select {
                     dst, condition, a, b,
                 } => Some((ExpressionKey::Select(*condition, *a, *b), *dst)),
                 _ => None,
@@ -173,31 +173,31 @@ impl Values {
                 }
                 self.expressions.insert(key, dst);
             }
-            match &mut inst {
-                Inst::Scope(body) => {
+            match &mut (inst).kind {
+                InstKind::Scope(body) => {
                     let mut scoped = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
                     let mut scope = scoped.block(body, registers);
                     merge(&mut scope.next, scope.exits.take());
                     continuing = self.resume(&mut flow, scope);
                 }
-                Inst::Exit => {
+                InstKind::Exit => {
                     merge(&mut flow.exits, Some(self.local_values()));
                     continuing = false;
                 }
-                Inst::Break => {
+                InstKind::Break => {
                     merge(&mut flow.breaks, Some(self.local_values()));
                     continuing = false;
                 }
-                Inst::Continue => {
+                InstKind::Continue => {
                     merge(&mut flow.continues, Some(self.local_values()));
                     continuing = false;
                 }
-                Inst::Atomic(a) => {
+                InstKind::Atomic(a) => {
                     if a.op.writes() { self.invalidate(a.target.aliases()); }
                     self.memory.clear();
                 }
-                Inst::Append(_) | Inst::TileBarrier => self.memory.clear(),
-                Inst::LoadLocal(dst, slot) => {
+                InstKind::Append(_) | InstKind::TileBarrier => self.memory.clear(),
+                InstKind::LoadLocal(dst, slot) => {
                     if let Some(value) = self.locals.get(slot).copied() {
                         self.aliases.insert(*dst, self.root(value));
                         continue;
@@ -205,15 +205,15 @@ impl Values {
                     // 后续读取同一版本可直接复用；真实写入会更新其值。
                     self.locals.insert(*slot, *dst);
                 }
-                Inst::StoreLocal(slot, value) => {
+                InstKind::StoreLocal(slot, value) => {
                     self.locals.insert(*slot, *value);
                 }
-                Inst::StoreLocalIndexed { base, len, .. } => {
+                InstKind::StoreLocalIndexed { base, len, .. } => {
                     self.locals
                         .retain(|slot, _| !(*base..*base + *len).contains(slot));
                 }
-                Inst::StoreIndexed { source, .. } => self.invalidate(source.aliases()),
-                Inst::Load {
+                InstKind::StoreIndexed { source, .. } => self.invalidate(source.aliases()),
+                InstKind::Load {
                     dst,
                     binding,
                     index,
@@ -226,7 +226,7 @@ impl Values {
                     }
                     self.memory.insert(key, *dst);
                 }
-                Inst::Store {
+                InstKind::Store {
                     binding,
                     index,
                     word,
@@ -236,7 +236,7 @@ impl Values {
                         .retain(|(b, i, w), _| b != binding || (*i == *index && *w != *word));
                     self.memory.insert((*binding, *index, *word), *value);
                 }
-                Inst::If { yes, no, .. } => {
+                InstKind::If { yes, no, .. } => {
                     let mut y = self.clone();
                     let mut n = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
                     let mut branches = y.block(yes, registers);
@@ -244,7 +244,7 @@ impl Values {
                     // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
                     continuing = self.resume(&mut flow, branches);
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition,
                     test,
                     body,
@@ -276,7 +276,7 @@ impl Values {
                     }
                     continuing = self.resume(&mut flow, loop_flow);
                 }
-                Inst::Call(call) => {
+                InstKind::Call(call) => {
                     for slot in call.locals(true) {
                         self.locals.remove(&slot);
                     }

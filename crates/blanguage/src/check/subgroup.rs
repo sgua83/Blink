@@ -134,7 +134,7 @@ impl Builder<'_> {
         let mut regs = Vec::new();
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
             let dst = self.reg(*scalar);
-            self.code.push(Inst::Subgroup {
+            self.emit(InstKind::Subgroup {
                 dst,
                 op,
                 value: value.as_ref().map(|v| v.regs[component]),

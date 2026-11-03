@@ -72,68 +72,68 @@ fn segment_tail(
     let next = reg(stage, Scalar::U32);
     let length = reg(stage, Scalar::U32);
     let last = reg(stage, Scalar::Bool);
-    stage.code.push(Inst::Constant(one, Scalar::U32, 1));
-    stage.code.push(Inst::Binary {
+    stage.code.push(Inst::new(InstKind::Constant(one, Scalar::U32, 1)));
+    stage.code.push(Inst::new(InstKind::Binary {
         dst: next,
         op: BinaryOp::IAdd,
         a: index,
         b: one,
-    });
-    stage.code.push(Inst::LoadLocal(length, length_slot));
-    stage.code.push(Inst::Binary {
+    }));
+    stage.code.push(Inst::new(InstKind::LoadLocal(length, length_slot)));
+    stage.code.push(Inst::new(InstKind::Binary {
         dst: last,
         op: BinaryOp::Compare(Comparison::Equal),
         a: next,
         b: length,
-    });
+    }));
     let tail_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
     stage.locals.insert(tail_slot + 1, Ty::scalar(Scalar::Bool));
     let is_last = reg(stage, Scalar::Bool);
     let next_head = reg(stage, Scalar::Bool);
-    stage.code.push(Inst::If {
+    stage.code.push(Inst::new(InstKind::If {
         condition: last,
         yes: vec![
-            Inst::Constant(is_last, Scalar::Bool, 1),
-            Inst::StoreLocal(tail_slot, is_last),
+            Inst::new(InstKind::Constant(is_last, Scalar::Bool, 1)),
+            Inst::new(InstKind::StoreLocal(tail_slot, is_last)),
         ],
         no: vec![
-            Inst::Load {
+            Inst::new(InstKind::Load {
                 dst: next_head,
                 binding: r.fields.source,
                 index: next,
                 word: head,
-            },
-            Inst::StoreLocal(tail_slot, next_head),
+            }),
+            Inst::new(InstKind::StoreLocal(tail_slot, next_head)),
         ],
-    });
+    }));
     let tail = reg(stage, Scalar::Bool);
-    stage.code.push(Inst::LoadLocal(tail, tail_slot));
+    stage.code.push(Inst::new(InstKind::LoadLocal(tail, tail_slot)));
     let segments = reg(stage, Scalar::U32);
     let target = reg(stage, Scalar::U32);
     let mut write = vec![
-        Inst::LoadLocal(segments, carry + fields + 1),
-        Inst::Binary {
+        Inst::new(InstKind::LoadLocal(segments, carry + fields + 1)),
+        Inst::new(InstKind::Binary {
             dst: target,
             op: BinaryOp::ISub,
             a: segments,
             b: one,
-        },
+        }),
     ];
     for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
         let value = reg(stage, *scalar);
-        write.push(Inst::LoadLocal(value, carry + field));
-        write.push(Inst::Store {
+        write.push(Inst::new(InstKind::LoadLocal(value, carry + field)));
+        write.push(Inst::new(InstKind::Store {
             binding: r.fields.target,
             index: target,
             word: r.fields.target_word + *offset,
             value,
-        });
+        }));
     }
-    stage.code.push(Inst::If {
+    stage.code.push(Inst::new(InstKind::If {
         condition: tail,
         yes: write,
         no: Vec::new(),
-    });
+    }));
 }
 pub(super) fn emit(
     program: &Program,
@@ -203,135 +203,135 @@ pub(super) fn emit(
     if apply || finish {
         stage
             .code
-            .push(Inst::Constant(private_index, Scalar::U32, 0));
+            .push(Inst::new(InstKind::Constant(private_index, Scalar::U32, 0)));
     }
     let length_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
     if finish {
         stage.locals.insert(length_slot + 1, Ty::scalar(Scalar::U32));
         let length = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::Load {
+        stage.code.push(Inst::new(InstKind::Load {
             dst: length,
             binding: private,
             index: private_index,
             word: k as u32 * 4,
-        });
-        stage.code.push(Inst::StoreLocal(length_slot, length));
+        }));
+        stage.code.push(Inst::new(InstKind::StoreLocal(length_slot, length)));
     }
     if apply || finish {
         for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
             let reg = stage.registers.len();
             stage.registers.push(*scalar);
-            stage.code.push(Inst::Load {
+            stage.code.push(Inst::new(InstKind::Load {
                 dst: reg,
                 binding: private,
                 index: private_index,
                 word: *offset,
-            });
-            stage.code.push(Inst::StoreLocal(carry + field, reg));
+            }));
+            stage.code.push(Inst::new(InstKind::StoreLocal(carry + field, reg)));
         }
     } else {
         for (i, reg) in kernel.initial.iter().enumerate() {
-            stage.code.push(Inst::StoreLocal(carry + i, *reg));
+            stage.code.push(Inst::new(InstKind::StoreLocal(carry + i, *reg)));
         }
         if history {
             let zero = stage.registers.len();
             stage.registers.push(Scalar::Bool);
-            stage.code.push(Inst::Constant(zero, Scalar::Bool, 0));
-            stage.code.push(Inst::StoreLocal(carry + fields, zero));
+            stage.code.push(Inst::new(InstKind::Constant(zero, Scalar::Bool, 0)));
+            stage.code.push(Inst::new(InstKind::StoreLocal(carry + fields, zero)));
         }
     }
     if counted {
         let value = reg(&mut stage, Scalar::U32);
         stage.code.push(if finish {
-            Inst::Load {
+            Inst::new(InstKind::Load {
                 dst: value,
                 binding: private,
                 index: private_index,
                 word: (k as u32 + 1) * 4,
-            }
+            })
         } else {
-            Inst::Constant(value, Scalar::U32, 0)
+            Inst::new(InstKind::Constant(value, Scalar::U32, 0))
         });
-        stage.code.push(Inst::StoreLocal(count_slot, value));
+        stage.code.push(Inst::new(InstKind::StoreLocal(count_slot, value)));
     }
     let initialize_end = stage.code.len();
     let index = stage.registers.len();
     stage.registers.push(Scalar::U32);
-    stage.code.push(Inst::Index(index));
+    stage.code.push(Inst::new(InstKind::Index(index)));
     let head = head_word.map(|word| {
         let raw = reg(&mut stage, Scalar::Bool);
-        stage.code.push(Inst::Load {
+        stage.code.push(Inst::new(InstKind::Load {
             dst: raw,
             binding: r.fields.source,
             index,
             word: if packed { k as u32 * 4 } else { word },
-        });
+        }));
         let head = if counted && !packed {
             let zero = reg(&mut stage, Scalar::U32);
             let first = reg(&mut stage, Scalar::Bool);
             let head = reg(&mut stage, Scalar::Bool);
-            stage.code.push(Inst::Constant(zero, Scalar::U32, 0));
-            stage.code.push(Inst::Binary {
+            stage.code.push(Inst::new(InstKind::Constant(zero, Scalar::U32, 0)));
+            stage.code.push(Inst::new(InstKind::Binary {
                 dst: first,
                 op: BinaryOp::Compare(Comparison::Equal),
                 a: index,
                 b: zero,
-            });
-            stage.code.push(Inst::Binary {
+            }));
+            stage.code.push(Inst::new(InstKind::Binary {
                 dst: head,
                 op: BinaryOp::Or,
                 a: raw,
                 b: first,
-            });
+            }));
             head
         } else {
             raw
         };
         if apply {
-            stage.code.push(Inst::If {
+            stage.code.push(Inst::new(InstKind::If {
                 condition: head,
-                yes: vec![Inst::Break],
+                yes: vec![Inst::new(InstKind::Break)],
                 no: Vec::new(),
-            });
+            }));
         } else if matches!(pass, Pass::Scan | Pass::SegmentReduce | Pass::SegmentFinish) {
             let mut reset: Vec<_> = kernel
                 .initial
                 .iter()
                 .enumerate()
-                .map(|(i, reg)| Inst::StoreLocal(carry + i, *reg))
+                .map(|(i, reg)| Inst::new(InstKind::StoreLocal(carry + i, *reg)))
                 .collect();
             if history {
                 let flag = reg(&mut stage, Scalar::Bool);
-                reset.push(Inst::Constant(flag, Scalar::Bool, 1));
-                reset.push(Inst::StoreLocal(carry + fields, flag));
+                reset.push(Inst::new(InstKind::Constant(flag, Scalar::Bool, 1)));
+                reset.push(Inst::new(InstKind::StoreLocal(carry + fields, flag)));
             }
             if counted {
                 let before = reg(&mut stage, Scalar::U32);
                 let one = reg(&mut stage, Scalar::U32);
                 let after = reg(&mut stage, Scalar::U32);
-                reset.push(Inst::LoadLocal(before, count_slot));
-                reset.push(Inst::Constant(one, Scalar::U32, 1));
-                reset.push(Inst::Binary {
+                reset.push(Inst::new(InstKind::LoadLocal(before, count_slot)));
+                reset.push(Inst::new(InstKind::Constant(one, Scalar::U32, 1)));
+                reset.push(Inst::new(InstKind::Binary {
                     dst: after,
                     op: BinaryOp::IAdd,
                     a: before,
                     b: one,
-                });
-                reset.push(Inst::StoreLocal(count_slot, after));
+                }));
+                reset.push(Inst::new(InstKind::StoreLocal(count_slot, after)));
             }
-            stage.code.push(Inst::If {
+            stage.code.push(Inst::new(InstKind::If {
                 condition: head,
                 yes: reset,
                 no: Vec::new(),
-            });
+            }));
         }
         head
     });
     for (i, reg) in kernel.left.iter().enumerate() {
-        stage.code.push(Inst::LoadLocal(*reg, carry + i));
+        stage.code.push(Inst::new(InstKind::LoadLocal(*reg, carry + i)));
     }
     for (i, reg) in kernel.source.iter().enumerate() {
-        stage.code.push(Inst::Load {
+        stage.code.push(Inst::new(InstKind::Load {
             dst: *reg,
             binding: if apply {
                 r.fields.target
@@ -346,16 +346,16 @@ pub(super) fn emit(
             } else {
                 r.fields.source_word + r.source_ty.components[i].1
             },
-        });
+        }));
     }
     let right_count = if counted && packed {
         let right = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::Load {
+        stage.code.push(Inst::new(InstKind::Load {
             dst: right,
             binding: r.fields.source,
             index,
             word: (k as u32 + 1) * 4,
-        });
+        }));
         Some(right)
     } else {
         None
@@ -363,7 +363,7 @@ pub(super) fn emit(
     stage.code.extend(project);
     if pass == Pass::Scan || prefix {
         for (i, reg) in kernel.left.iter().enumerate() {
-            stage.code.push(Inst::Store {
+            stage.code.push(Inst::new(InstKind::Store {
                 binding: r.fields.target,
                 index,
                 word: if packed {
@@ -372,36 +372,36 @@ pub(super) fn emit(
                     r.fields.target_word + r.ty.components[i].1
                 },
                 value: *reg,
-            });
+            }));
         }
         if pass == Pass::ScanPrefix && head.is_some() {
             let flag = stage.registers.len();
             stage.registers.push(Scalar::Bool);
-            stage.code.push(Inst::LoadLocal(flag, carry + fields));
-            stage.code.push(Inst::Store {
+            stage.code.push(Inst::new(InstKind::LoadLocal(flag, carry + fields)));
+            stage.code.push(Inst::new(InstKind::Store {
                 binding: r.fields.target,
                 index,
                 word: k as u32 * 4,
                 value: flag,
-            });
+            }));
         }
         if pass == Pass::SegmentPrefix {
             let length = reg(&mut stage, Scalar::U32);
             let segments = reg(&mut stage, Scalar::U32);
-            stage.code.push(Inst::Uniform(length, 0));
-            stage.code.push(Inst::LoadLocal(segments, count_slot));
-            stage.code.push(Inst::Store {
+            stage.code.push(Inst::new(InstKind::Uniform(length, 0)));
+            stage.code.push(Inst::new(InstKind::LoadLocal(segments, count_slot)));
+            stage.code.push(Inst::new(InstKind::Store {
                 binding: r.fields.target,
                 index,
                 word: k as u32 * 4,
                 value: length,
-            });
-            stage.code.push(Inst::Store {
+            }));
+            stage.code.push(Inst::new(InstKind::Store {
                 binding: r.fields.target,
                 index,
                 word: (k as u32 + 1) * 4,
                 value: segments,
-            });
+            }));
         }
     }
     let arguments: std::collections::BTreeMap<_, _> = kernel
@@ -414,14 +414,14 @@ pub(super) fn emit(
     crate::optimize::map(&mut combine, &bind, &|s| s);
     for (i, reg) in kernel.result.iter().enumerate() {
         if apply {
-            combine.push(Inst::Store {
+            combine.push(Inst::new(InstKind::Store {
                 binding: r.fields.target,
                 index,
                 word: r.fields.target_word + r.ty.components[i].1,
                 value: bind(*reg),
-            });
+            }));
         } else {
-            combine.push(Inst::StoreLocal(carry + i, bind(*reg)));
+            combine.push(Inst::new(InstKind::StoreLocal(carry + i, bind(*reg))));
         }
     }
     if let Some(head) = head.filter(|_| prefix) {
@@ -429,32 +429,32 @@ pub(super) fn emit(
             .projected
             .iter()
             .enumerate()
-            .map(|(i, reg)| Inst::StoreLocal(carry + i, *reg))
+            .map(|(i, reg)| Inst::new(InstKind::StoreLocal(carry + i, *reg)))
             .collect();
         if history {
             let flag = reg(&mut stage, Scalar::Bool);
-            reset.push(Inst::Constant(flag, Scalar::Bool, 1));
-            reset.push(Inst::StoreLocal(carry + fields, flag));
+            reset.push(Inst::new(InstKind::Constant(flag, Scalar::Bool, 1)));
+            reset.push(Inst::new(InstKind::StoreLocal(carry + fields, flag)));
         }
-        stage.code.push(Inst::If {
+        stage.code.push(Inst::new(InstKind::If {
             condition: head,
             yes: reset,
             no: combine,
-        });
+        }));
     } else {
         stage.code.extend(combine);
     }
     if let Some(right) = right_count {
         let before = reg(&mut stage, Scalar::U32);
         let after = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::LoadLocal(before, count_slot));
-        stage.code.push(Inst::Binary {
+        stage.code.push(Inst::new(InstKind::LoadLocal(before, count_slot)));
+        stage.code.push(Inst::new(InstKind::Binary {
             dst: after,
             op: BinaryOp::IAdd,
             a: before,
             b: right,
-        });
-        stage.code.push(Inst::StoreLocal(count_slot, after));
+        }));
+        stage.code.push(Inst::new(InstKind::StoreLocal(count_slot, after)));
     }
     if finish {
         segment_tail(&mut stage, r, head_word.unwrap(), carry, index, length_slot);
@@ -464,14 +464,14 @@ pub(super) fn emit(
         let count = count.unwrap();
         let zero = reg(&mut stage, Scalar::U32);
         let total = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::Constant(zero, Scalar::U32, 0));
-        stage.code.push(Inst::LoadLocal(total, count_slot));
-        stage.code.push(Inst::Store {
+        stage.code.push(Inst::new(InstKind::Constant(zero, Scalar::U32, 0)));
+        stage.code.push(Inst::new(InstKind::LoadLocal(total, count_slot)));
+        stage.code.push(Inst::new(InstKind::Store {
             binding: count.binding,
             index: zero,
             word: count.word,
             value: total,
-        });
+        }));
     }
     // Each actual range phase owns its own producers; no value crosses these cuts.
     let mut after_code = stage.code.split_off(loop_end);

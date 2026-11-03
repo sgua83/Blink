@@ -85,63 +85,63 @@ pub(super) fn place(code: &mut Vec<Inst>, writes: &[usize]) {
     let mut out = Vec::new();
     let mut pending = Pending::default();
     for mut inst in std::mem::take(code) {
-        let read = matches!(&inst, Inst::Load { binding, .. } if !writes.contains(binding))
-            || matches!(inst, Inst::ViewLoad { .. });
+        let read = matches!(&(inst).kind, InstKind::Load { binding, .. } if !writes.contains(binding))
+            || matches!(&(inst).kind, InstKind::ViewLoad { .. });
         let value = matches!(
-            inst,
-            Inst::Constant(..)
-                | Inst::Index(_)
-                | Inst::Unary { .. }
-                | Inst::Binary { .. }
-                | Inst::IntegerDivide { .. }
-                | Inst::Cast { .. }
-                | Inst::Select { .. }
-                | Inst::Math {
+            &(inst).kind,
+            InstKind::Constant(..)
+                | InstKind::Index(_)
+                | InstKind::Unary { .. }
+                | InstKind::Binary { .. }
+                | InstKind::IntegerDivide { .. }
+                | InstKind::Cast { .. }
+                | InstKind::Select { .. }
+                | InstKind::Math {
                     op: MathOp::Sqrt | MathOp::Abs | MathOp::Min | MathOp::Max,
                     ..
                 }
         );
-        let private = match &inst {
-            Inst::LoadLocal(_, slot) => Some(*slot..*slot + 1),
-            Inst::LoadLocalIndexed { base, len, .. } => Some(*base..*base + *len),
+        let private = match &(inst).kind {
+            InstKind::LoadLocal(_, slot) => Some(*slot..*slot + 1),
+            InstKind::LoadLocalIndexed { base, len, .. } => Some(*base..*base + *len),
             _ => None,
         };
         if read || value || private.is_some() {
             pending.push(inst, read, private);
             continue;
         }
-        match &mut inst {
-            Inst::Uniform(..) => {}
+        match &mut (inst).kind {
+            InstKind::Uniform(..) => {}
             // Private slots have their own storage owner. Preserve every earlier
             // snapshot of the actual written slot or indexed span before its write.
-            Inst::StoreLocal(slot, _) => {
+            InstKind::StoreLocal(slot, _) => {
                 pending.flush_reads(&mut out);
                 pending.flush_private(*slot..*slot + 1, &mut out);
             }
-            Inst::StoreLocalIndexed { base, len, .. } => {
+            InstKind::StoreLocalIndexed { base, len, .. } => {
                 pending.flush_reads(&mut out);
                 pending.flush_private(*base..*base + *len, &mut out);
             }
             // A different dataset binding name is not an alias proof.
-            Inst::Store { .. }
-            | Inst::StoreIndexed { .. }
-            | Inst::LoadIndexed { .. }
-            | Inst::Load { .. } => pending.flush_reads(&mut out),
+            InstKind::Store { .. }
+            | InstKind::StoreIndexed { .. }
+            | InstKind::LoadIndexed { .. }
+            | InstKind::Load { .. } => pending.flush_reads(&mut out),
             // Calls, control and synchronization still close the whole region.
             _ => pending.flush(&mut out),
         }
-        match &mut inst {
-            Inst::If { yes, no, .. } => {
+        match &mut (inst).kind {
+            InstKind::If { yes, no, .. } => {
                 place(yes, writes);
                 place(no, writes);
             }
-            Inst::Loop {
+            InstKind::Loop {
                 condition, body, ..
             } => {
                 place(condition, writes);
                 place(body, writes);
             }
-            Inst::Scope(body) => place(body, writes),
+            InstKind::Scope(body) => place(body, writes),
             _ => {}
         }
         inst.all_operands(&mut |reg| {

@@ -245,8 +245,8 @@ pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,Memory
         }
     }
     for instruction in code {
-        match instruction {
-            Inst::Call(call)=>{
+        match &mut (instruction).kind {
+            InstKind::Call(call)=>{
                 call.memory=call.memory_use.take().and_then(|usage|memory.get(&MemoryTarget::Call(usage))).map(|effect|effect.local_effects(locals)).unwrap_or_default();
                 for argument in &mut call.arguments {
                     match argument {
@@ -256,12 +256,12 @@ pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,Memory
                     }
                 }
             }
-            Inst::LoadIndexed{source:value,..}|Inst::StoreIndexed{source:value,..}=>source(value,memory,locals),
-            Inst::PositionAddress{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
-            Inst::Atomic(value)=>source(&mut value.target,memory,locals),
-            Inst::Scope(body)=>apply_memory(body,memory,locals),
-            Inst::If{yes,no,..}=>{apply_memory(yes,memory,locals);apply_memory(no,memory,locals);}
-            Inst::Loop{condition,body,..}=>{apply_memory(condition,memory,locals);apply_memory(body,memory,locals);}
+            InstKind::LoadIndexed{source:value,..}|InstKind::StoreIndexed{source:value,..}=>source(value,memory,locals),
+            InstKind::PositionAddress{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
+            InstKind::Atomic(value)=>source(&mut value.target,memory,locals),
+            InstKind::Scope(body)=>apply_memory(body,memory,locals),
+            InstKind::If{yes,no,..}=>{apply_memory(yes,memory,locals);apply_memory(no,memory,locals);}
+            InstKind::Loop{condition,body,..}=>{apply_memory(condition,memory,locals);apply_memory(body,memory,locals);}
             _=>{}
         }
     }
@@ -621,7 +621,7 @@ impl Builder<'_> {
         let access=if origin.writable{Access::InOut}else{Access::Read};
         let address=self.external_reference(&place,access,span)?;
         let dst=self.reg(Scalar::U64);
-        self.code.push(Inst::PositionAddress{dst,address});
+        self.emit(InstKind::PositionAddress{dst,address});
         let ty=Ty::builtin("address").unwrap();
         let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));
         Ok(Some(Value{ty,regs:vec![dst],proof:bounds::Proof::default().with_view_borrow(0,borrow),literal:false,uniform:false,constant:None}))

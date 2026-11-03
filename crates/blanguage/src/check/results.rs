@@ -87,7 +87,7 @@ impl Builder<'_> {
             if source.is_float() {
                 let raw = if source.size() == 8 { Scalar::U64 } else { Scalar::U32 };
                 let reg = self.reg(raw);
-                self.code.push(Inst::Unary {
+                self.emit(InstKind::Unary {
                     dst: reg,
                     op: UnaryOp::Bitcast,
                     a: word.regs[0],
@@ -102,7 +102,7 @@ impl Builder<'_> {
             word = self.cast(word, raw);
             if scalar.is_float() {
                 let reg = self.reg(scalar);
-                self.code.push(Inst::Unary { dst: reg, op: UnaryOp::Bitcast, a: word.regs[0] });
+                self.emit(InstKind::Unary { dst: reg, op: UnaryOp::Bitcast, a: word.regs[0] });
                 word.ty = Ty::scalar(scalar);
                 word.regs = vec![reg];
                 word.proof = bounds::Proof::default();
@@ -152,7 +152,7 @@ impl Builder<'_> {
                     .and_then(|(a,b)| constant::binary(op, target, a[0], b[0]).map(|bits| vec![bits]));
                 let proof = bounds::arithmetic(name, &word, &rhs);
                 let dst = self.reg(target);
-                self.code.push(Inst::Binary { dst, op, a: word.regs[0], b: rhs.regs[0] });
+                self.emit(InstKind::Binary { dst, op, a: word.regs[0], b: rhs.regs[0] });
                 word = Value { ty: Ty::scalar(target), regs: vec![dst], proof, uniform: word.uniform && rhs.uniform,
                     literal: false, constant };
             }

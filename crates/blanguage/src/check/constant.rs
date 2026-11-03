@@ -59,7 +59,7 @@ pub(super) fn stage_expression(
         || value.constant.is_none()
         || builder.code[first..]
             .iter()
-            .any(|inst| !matches!(inst, Inst::Constant(..)))
+            .any(|inst| !matches!(&(inst).kind, InstKind::Constant(..)))
     {
         return definition.source.fail(
             expression.span,
@@ -116,7 +116,7 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
             || builder
                 .code
                 .iter()
-                .any(|inst| !matches!(inst, Inst::Constant(..)))
+                .any(|inst| !matches!(&(inst).kind, InstKind::Constant(..)))
         {
             return definition.source.fail(
                 definition.function.span,
@@ -307,7 +307,7 @@ fn integer_expression(world:&World,key:&str,source:&Source,module:&str,imports:&
         let mut builder=Builder::new(world,&definition,&context,0)?;builder.in_function=true;
         let result=builder.expr(expression)?;let value=builder.value_result(result,expression.span)?;
         builder.require_same(representation,&value.ty,expression.span)?;
-        if value.constant.is_none()||builder.code.iter().any(|instruction|!matches!(instruction,Inst::Constant(..))) {
+        if value.constant.is_none()||builder.code.iter().any(|instruction|!matches!(&(instruction).kind,InstKind::Constant(..))) {
             return source.fail(expression.span,diagnostic.0,diagnostic.1);
         }
         Ok(value.constant.unwrap()[0]as u32)

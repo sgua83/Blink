@@ -1244,7 +1244,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3796`。
+源码节选：`crates/blanguage/src/check.rs:3821`。
 
 ```rust
         let binding = view.binding;
@@ -1405,7 +1405,7 @@ enum Fact {
     }
 ```
 
-数值构造可能接收普通记录，其多个分量不一定同型。Builder::cast沿原Ty逐分量选择常量转换，Proof::cast在同一原入口逐分量保持同型事实或按真实转换更新范围、非零、来源及条件；运行期原Inst::Cast继续消费实际寄存器类型。只有实际类型改变才折叠整份常量，不为记录另建值包装或转换状态。浮点存储位不是整数数值范围，截断到零的宽整数也不能继续作为非零除数。
+数值构造可能接收普通记录，其多个分量不一定同型。Builder::cast沿原Ty逐分量选择常量转换，Proof::cast在同一原入口逐分量保持同型事实或按真实转换更新范围、非零、来源及条件；运行期原InstKind::Cast继续消费实际寄存器类型。只有实际类型改变才折叠整份常量，不为记录另建值包装或转换状态。浮点存储位不是整数数值范围，截断到零的宽整数也不能继续作为非零除数。
 
 普通值与数值回边复用原合流。u32游标的无回绕单调递增把入口精确Offset放宽为Lower，仅保留相对下界。同宽无符号值的end>begin产生Upper，end-begin至少为一；减法按实际分量与来源快照消费正距离，并以该标量bit_mask限制结果，不受u32资源索引ABI限制，正差可作为非零除数。无符号零扩展到更宽无符号类型仍沿原Proof保留输入数值来源与关系，两个扩宽端点因此继续消费同一Upper。目标改为有符号时，原模块范围使用不同顺序编码，转换仍交接正确范围，但不把旧来源直接当作同编码输入。 同位宽符号往返保留原位模式关系，缩窄或实际改写不沿用旧域，有符号运算不套用无符号正差结论。固定形状与当前u32长度ABI的动态资源索引前提也交接数值上界，供初次加一的无回绕推导；这不规定永久长度上限。循环只继承入口与实际继续边共同的数值界，不恢复旧身份；seek结束当前路径并沿原继续边交接。返回出口的选支已知时，`check/returns.rs::Returned::join_locations`把原条件交给`Proof::join_condition`，只合流一次普通Value的来源。uniform取两侧共有值，constant只保留相同常量；dataset与拥有载荷仍沿各自原模型交接。
 
@@ -1482,7 +1482,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:931`。
+源码节选：`crates/blanguage/src/ir.rs:944`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1494,7 +1494,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:952`。
+源码节选：`crates/blanguage/src/ir.rs:965`。
 
 ```rust
     Load {
@@ -1526,7 +1526,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1147`。
+源码节选：`crates/blanguage/src/ir.rs:1160`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1687,7 +1687,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:995`。
+源码节选：`crates/blanguage/src/ir.rs:1008`。
 
 ```rust
     If {
@@ -3005,7 +3005,7 @@ c_function接受显式C ABI的声明或定义：不带from的B函数沿原具体
             CallTarget::Defined(instance.name)
         };
         let reg = self.reg(Scalar::U64);
-        self.code.push(Inst::FunctionAddress(reg, target));
+        self.emit(InstKind::FunctionAddress(reg, target));
         let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
         Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
     }

@@ -539,6 +539,8 @@ impl<'a> Builder<'a> {
         let old_block = self.block_depth;
         let old_loop = self.loop_depth;
         let old_iterators = std::mem::take(&mut self.iterators);
+        let old_source_definition = std::mem::replace(&mut self.source_definition, callee.source_origin().map(Arc::new));
+        let old_source_site = self.source_site.take();
         self.definition = callee.clone();
         self.in_function = true;
         self.block_depth = 0;
@@ -619,6 +621,8 @@ impl<'a> Builder<'a> {
         }
         self.mutable_names = old_mutable_names;
         self.definition = old_definition;
+        self.source_definition = old_source_definition;
+        self.source_site = old_source_site;
         self.in_function = old_in_function;
         self.cooperative_root = old_cooperative;
         self.block_depth = old_block;

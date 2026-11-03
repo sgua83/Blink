@@ -172,7 +172,7 @@ impl Builder<'_> {
         let a = a_result.as_ref().map(|v| self.returned_storage(v));
         let b = b_result.as_ref().map(|v| self.returned_storage(v));
         let Some(storage) = a.as_ref().or(b.as_ref()) else {
-            self.code.push(Inst::If {
+            self.emit(InstKind::If {
                 condition: c.regs[0],
                 yes,
                 no,
@@ -183,15 +183,15 @@ impl Builder<'_> {
         let slots = self.local_slots(&ty).0;
         if let Some(a) = &a {
             for (slot, reg) in slots.iter().zip(&a.regs) {
-                yes.push(Inst::StoreLocal(*slot, *reg));
+                yes.push(Inst::new(InstKind::StoreLocal(*slot, *reg)));
             }
         }
         if let Some(b) = &b {
             for (slot, reg) in slots.iter().zip(&b.regs) {
-                no.push(Inst::StoreLocal(*slot, *reg));
+                no.push(Inst::new(InstKind::StoreLocal(*slot, *reg)));
             }
         }
-        self.code.push(Inst::If {
+        self.emit(InstKind::If {
             condition: c.regs[0],
             yes,
             no,
@@ -201,7 +201,7 @@ impl Builder<'_> {
             .zip(&ty.components)
             .map(|(slot, (scalar, _))| {
                 let reg = self.reg(*scalar);
-                self.code.push(Inst::LoadLocal(reg, *slot));
+                self.emit(InstKind::LoadLocal(reg, *slot));
                 reg
             })
             .collect();

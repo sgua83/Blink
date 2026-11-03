@@ -4,15 +4,15 @@ use super::*;
 fn extract(code: &mut Vec<Inst>, entry: &mut Vec<Inst>, uniform: &mut BTreeSet<Reg>) {
     code.retain(|inst| {
         let pure = matches!(
-            inst,
-            Inst::Constant(..)
-                | Inst::Uniform(..)
-                | Inst::Unary { .. }
-                | Inst::Binary { .. }
-                | Inst::Cast { .. }
-                | Inst::Math { .. }
-                | Inst::Select { .. }
-                | Inst::IntegerDivide {
+            &(inst).kind,
+            InstKind::Constant(..)
+                | InstKind::Uniform(..)
+                | InstKind::Unary { .. }
+                | InstKind::Binary { .. }
+                | InstKind::Cast { .. }
+                | InstKind::Math { .. }
+                | InstKind::Select { .. }
+                | InstKind::IntegerDivide {
                     divisor: IntegerDivisor::Constant(_),
                     ..
                 }

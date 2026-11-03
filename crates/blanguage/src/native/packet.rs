@@ -123,15 +123,15 @@ impl Plan {
         let uniform = control::uniform_registers(stage);
         let mut indices = BTreeSet::new();
         control::visit(&stage.code, &mut |inst| {
-            if let Inst::Index(dst) = inst {
+            if let InstKind::Index(dst) = &(inst).kind {
                 indices.insert(*dst);
             }
         });
         let mut code = Self::block(program, stage, &stage.code, &uniform, &indices)?;
         let mut values = BTreeSet::new();
-        control::visit(&stage.code, &mut |inst| match inst {
-            Inst::Load { .. } => {}
-            Inst::Store { value, .. } => {
+        control::visit(&stage.code, &mut |inst| match &(inst).kind {
+            InstKind::Load { .. } => {}
+            InstKind::Store { value, .. } => {
                 values.insert(*value);
             }
             _ => { inst.all_operands(&mut |reg| { values.insert(reg); true }); }
@@ -150,17 +150,17 @@ impl Plan {
     ) -> Option<Vec<Step>> {
         let mut code = Vec::new();
         for inst in instructions {
-            let step = match inst {
-                Inst::Constant(dst, _, bits) => Step::Constant(*dst, *bits as u32),
-                Inst::Index(dst) => Step::Index(*dst),
-                Inst::Uniform(dst, offset) => Step::Uniform(*dst, *offset),
-                Inst::LoadLocal(dst, slot) => {
+            let step = match &(inst).kind {
+                InstKind::Constant(dst, _, bits) => Step::Constant(*dst, *bits as u32),
+                InstKind::Index(dst) => Step::Index(*dst),
+                InstKind::Uniform(dst, offset) => Step::Uniform(*dst, *offset),
+                InstKind::LoadLocal(dst, slot) => {
                     Step::Copy(PrivateSlot::Register(*dst), PrivateSlot::Local(*slot))
                 }
-                Inst::StoreLocal(slot, src) => {
+                InstKind::StoreLocal(slot, src) => {
                     Step::Copy(PrivateSlot::Local(*slot), PrivateSlot::Register(*src))
                 }
-                Inst::Load {
+                InstKind::Load {
                     dst,
                     binding,
                     index,
@@ -198,7 +198,7 @@ impl Plan {
                         }
                     }
                 }
-                Inst::ViewLoad {
+                InstKind::ViewLoad {
                     dst,
                     address,
                     index,
@@ -222,7 +222,7 @@ impl Plan {
                         broadcast,
                     }
                 }
-                Inst::Store {
+                InstKind::Store {
                     binding,
                     index,
                     word,
@@ -243,12 +243,12 @@ impl Plan {
                         value: *value,
                     }
                 }
-                Inst::Unary { dst, op, a } => Step::Unary {
+                InstKind::Unary { dst, op, a } => Step::Unary {
                     dst: *dst,
                     op: *op,
                     a: *a,
                 },
-                Inst::Binary { dst, op, a, b } => {
+                InstKind::Binary { dst, op, a, b } => {
                     let op = match op {
                         BinaryOp::FAdd => Binary::Float(0x58),
                         BinaryOp::FSub => Binary::Float(0x5c),
@@ -275,7 +275,7 @@ impl Plan {
                         b: *b,
                     }
                 }
-                Inst::IntegerDivide {
+                InstKind::IntegerDivide {
                     result,
                     src,
                     divisor,
@@ -284,7 +284,7 @@ impl Plan {
                     src: *src,
                     divisor: *divisor,
                 },
-                Inst::Cast { dst, src } => {
+                InstKind::Cast { dst, src } => {
                     let from = stage.registers[*src];
                     let into = stage.registers[*dst];
                     if operands::bit_copy(from, into) {
@@ -298,7 +298,7 @@ impl Plan {
                         }
                     }
                 }
-                Inst::Math { dst, op, args } => {
+                InstKind::Math { dst, op, args } => {
                     let op = match op {
                         MathOp::Sqrt => Math::Sqrt,
                         MathOp::Abs => Math::Abs,
@@ -312,7 +312,7 @@ impl Plan {
                         args: args.clone(),
                     }
                 }
-                Inst::Select {
+                InstKind::Select {
                     dst,
                     condition,
                     a,
@@ -323,7 +323,7 @@ impl Plan {
                     a: *a,
                     b: *b,
                 },
-                Inst::If { condition, yes, no } => {
+                InstKind::If { condition, yes, no } => {
                     if !uniform[*condition] {
                         return None;
                     }
@@ -333,7 +333,7 @@ impl Plan {
                         no: Self::block(program, stage, no, uniform, indices)?,
                     }
                 }
-                Inst::Loop {
+                InstKind::Loop {
                     condition,
                     test,
                     body,
@@ -347,12 +347,12 @@ impl Plan {
                         body: Self::block(program, stage, body, uniform, indices)?,
                     }
                 }
-                Inst::Scope(body) => {
+                InstKind::Scope(body) => {
                     Step::Scope(Self::block(program, stage, body, uniform, indices)?)
                 }
-                Inst::Exit => Step::Exit,
-                Inst::Break => Step::Break,
-                Inst::Continue => Step::Continue,
+                InstKind::Exit => Step::Exit,
+                InstKind::Break => Step::Break,
+                InstKind::Continue => Step::Continue,
                 _ => return None,
             };
             code.push(step);

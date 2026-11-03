@@ -113,7 +113,7 @@ impl Builder<'_> {
         self.require_same(&Ty::vector(Scalar::F32, 2), &coordinate.ty, args[1].span)?;
         self.require_same(&Ty::scalar(Scalar::F32), &lod.ty, args[2].span)?;
         let result = std::array::from_fn(|_| self.reg(Scalar::F32));
-        self.code.push(Inst::TextureSample {
+        self.emit(InstKind::TextureSample {
             result,
             texture: texture.source,
             coordinate: [coordinate.regs[0], coordinate.regs[1]],

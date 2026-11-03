@@ -10,10 +10,10 @@ pub(super) struct ReturnLoop {
     pub edges: Vec<(u32, bool)>,
 }
 fn contains_exit(code: &[Inst]) -> bool {
-    code.iter().any(|i| match i {
-        Inst::Exit => true,
-        Inst::If { yes, no, .. } => contains_exit(yes) || contains_exit(no),
-        Inst::Loop {
+    code.iter().any(|i| match &(i).kind {
+        InstKind::Exit => true,
+        InstKind::If { yes, no, .. } => contains_exit(yes) || contains_exit(no),
+        InstKind::Loop {
             condition, body, ..
         } => contains_exit(condition) || contains_exit(body),
         _ => false, // 嵌套 Scope 的 Exit 属于另一个函数。

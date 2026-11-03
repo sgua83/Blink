@@ -97,8 +97,8 @@ fn atomic_op(value: &AtomicOp) -> String {
 }
 fn code(values: &[Inst]) -> String { array(values.iter().map(instruction)) }
 fn instruction(value: &Inst) -> String {
-    use Inst::*;
-    match value {
+    use InstKind::*;
+    let result = match &value.kind {
         TextureSample { result, texture: source, coordinate, lod } => node("TextureSample", &[("result", numbers(result)), ("texture", texture(source)), ("coordinate", numbers(coordinate)), ("lod", number(lod))]),
         TextureSize { result, texture: source, level } => node("TextureSize", &[("result", numbers(result)), ("texture", texture(source)), ("level", number(level))]),
         TextureLevels { dst, texture: source } => node("TextureLevels", &[("dst", number(dst)), ("texture", texture(source))]),
@@ -146,7 +146,16 @@ fn instruction(value: &Inst) -> String {
         Loop { condition, test, body } => node("Loop", &[("condition", code(condition)), ("test", number(test)), ("body", code(body))]),
         Break => node("Break", &[]), Continue => node("Continue", &[]),
         Scope(body) => node("Scope", &[("body", code(body))]), Exit => node("Exit", &[]),
+    };
+    #[cfg(feature = "compiler")] {
+        let mut result = result;
+        result.pop();
+        result.push_str(",\"source_site\":");
+        result.push_str(&optional(value.source_site(), SourceSite::ir_json));
+        result.push('}');
+        result
     }
+    #[cfg(not(feature = "compiler"))] { result }
 }
 fn word_values(values: &[(u32, Reg)]) -> String {
     array(values.iter().map(|(word, value)| node("component", &[("word", number(word)), ("register", number(value))])))
