@@ -3830,7 +3830,7 @@ CPU 对归一化坐标执行对应的逐 texel 寻址，边界两侧四个 tap �
 ## 原生 texel 格式与存储所有权
 `TextureMip::pixels` 为 `TextureTexels::{Rgba32Float(Vec<[f32;4]>),Rgba8Unorm(Vec<[u8;4]>),Rgba8Srgb(Vec<[u8;4]>),R8Unorm(Vec<u8>),Rg16Unorm(Vec<[u16;2]>),Rgb10A2Unorm(Vec<u32>)}`。原 float Vec 可通过 `.into()` 交接；`Texture2D::format` 从实际负载取得格式，整链同格式。`TextureTexels::as_bytes/from_bytes` 只交接真实字节，不维护解码后的 CPU float 镜像。原生 CPU 描述含 mip 数、逐轴地址模式、mip 指针与格式（offset 0／4／8／16，stride24），每级描述仍16字节。采样直接生成相应字节／dword 装载、UNORM 或分段 sRGB 运算，再完成原双线性及 mip 混合；格式来自所选资源，混合格式数组不要求统一转换，也不经宿主 texel 回调。
 
-Vulkan 按真实格式创建 `R32G32B32A32_SFLOAT`、`R8G8B8A8_UNORM`、`R8G8B8A8_SRGB` 或 `R8_UNORM` 图像／视图；格式不支持时明确报告，不能静默替换。上传／读回按真实 texel 字节数构造复制，每级 staging 起点满足4字节对齐，尤其保留R8奇数尾层；文件不保存这些平台填充。复制区域布局见 [VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)，对齐约束见 [vkCmdCopyBufferToImage](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyBufferToImage.html)。快照保留实际格式与地址模式，逐字节保留原负载，包括 float NaN 载荷、负零和次正规位，不通过浮点算术重建。资源仍沿原上传及最后采样完成点持有，不新增长驻状态、上传副本或全局资源表。
+Vulkan 按真实格式创建 `R32G32B32A32_SFLOAT`、`R8G8B8A8_UNORM`、`R8G8B8A8_SRGB`、`R8_UNORM`、`R16G16_UNORM` 或 `A2B10G10R10_UNORM_PACK32` 图像／视图；格式不支持时明确报告，不能静默替换。上传／读回按真实 texel 字节数构造复制，每级 staging 起点满足4字节对齐，尤其保留R8奇数尾层；文件不保存这些平台填充。复制区域布局见 [VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)，对齐约束见 [vkCmdCopyBufferToImage](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyBufferToImage.html)。快照保留实际格式与地址模式，逐字节保留原负载，包括 float NaN 载荷、负零和次正规位，不通过浮点算术重建。资源仍沿原上传及最后采样完成点持有，不新增长驻状态、上传副本或全局资源表。
 
 实际格式往返、采样误差、图像分配及消费者验证结果只在双台账记录。CPU软件采样与硬件过滤的舍入精度不同，不承诺逐位一致或天然材质视觉等价；压缩格式、流送与完整产品性能仍按真实缺口推进。
 
