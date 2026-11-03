@@ -122,6 +122,12 @@ impl Origin {
             _ => view::Borrow::default(),
         }
     }
+    pub fn owners(&self) -> view::Borrow {
+        match &self.root {
+            Root::Resource(borrow) | Root::Derived(borrow) => borrow.owners(),
+            _ => view::Borrow::default(),
+        }
+    }
     pub fn has_local(&self) -> bool {
         match &self.root {
             Root::Local { .. } | Root::Buffer(_) => true,

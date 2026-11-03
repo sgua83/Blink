@@ -11,11 +11,11 @@ pub(super) struct PositionAccess {pub layout:address::Layout,pub writes:bool,pub
 crate::module::codec::record!(PositionAccess {layout,writes,initialized});
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum Access {
-    Resource {resources:Borrow,borrows:Borrow,when:bounds::Condition},
+    Resource {resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition},
     Position {borrows:Borrow,when:bounds::Condition,position:PositionAccess},
     Memory {borrows:Borrow,when:bounds::Condition},
 }
-crate::module::codec::variants!(Access {0=>Resource{resources,borrows,when},1=>Position{borrows,when,position},2=>Memory{borrows,when}});
+crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
 pub(super) struct Call {
@@ -164,19 +164,23 @@ impl Function {
         let borrows=selected.guards_at_call(&bindings);
         when.active().then_some(match position{Some(position)=>Access::Position{borrows,when,position},None=>Access::Memory{borrows,when}})
     }
-    fn access(&self,resources:Borrow,borrows:Borrow,when:bounds::Condition)->Option<Access>{
+    fn access(&self,resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition)->Option<Access>{
         let parameters=residency::input_parameters(&self.parameters,self.input_width);
-        let external=|borrow:Borrow|borrow.map_sources(|source|match source{
-            Origin::Data(id)=>self.parameters.get(&id).copied().filter(|id|self.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
-            Origin::Parameter(id)=>Borrow::source(self.parameters.get(&id).copied().filter(|id|self.input(*id)).map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
-            Origin::Position(origin)=>origin.resources(),
-            Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
-        }).guards_at_call(&parameters);
-        let resources=external(resources.resources());let borrows=external(borrows.resources());
+        fn external(function:&Function,borrow:Borrow)->Borrow{
+            let parameters=residency::input_parameters(&function.parameters,function.input_width);
+            borrow.map_sources(|source|match source{
+                Origin::Data(id)=>function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
+                Origin::Parameter(id)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
+                Origin::Element{parent,fields}=>Borrow::element(external(function,*parent),fields),
+                Origin::Position(origin)=>origin.resources(),
+                Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
+            }).guards_at_call(&parameters)
+        }
+        let resources=external(self,resources.resources());let borrows=external(self,if ownership{borrows.owners()}else{borrows.resources()});
         if !resources.active()||!borrows.active(){return None;}
         let when=when.guard_at_call(&parameters);
         let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
-        when.active().then_some(Access::Resource{resources,borrows,when})
+        when.active().then_some(Access::Resource{resources,borrows,ownership,when})
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
@@ -230,6 +234,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
         let mut loops=BTreeSet::new();let mut calls=BTreeSet::new();
         while let Some(borrow)=roots.pop() {
             for source in &borrow.sources {
+                if let Origin::Element{parent,..}=source{roots.push(parent.as_ref().clone());}
                 if let Origin::Position(origin)=source {
                     match &origin.root {address::Root::Resource(borrow)|address::Root::Derived(borrow)=>roots.push(borrow.clone()),_=>{}}
                 }
@@ -245,6 +250,7 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
     let mut value=Borrow{..Borrow::default()};
     for(source,when)in borrow.sources.entries() {
         let resolved=match source {
+            Origin::Element{parent,fields}=>Borrow::element(evaluate(parent,function,state,known,expand_loops),fields.clone()),
             Origin::Position(origin)=>origin.map_borrows(|root|evaluate(root,function,state,known,expand_loops)).normalize(),
             source=>Borrow::source(source.clone()),
         };
@@ -269,6 +275,7 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<ValueIdentity>,exp
             else{Borrow::source(Origin::Unresolved)}
         }
         Origin::Parameter(id)=>Borrow::source(function.parameters.get(&id).copied().map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
+        Origin::Element{parent,fields}=>Borrow::element(canonical(*parent,function,None,exposed),fields),
         Origin::Position(origin)=>{
             let mut value=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,exposed));
             if !matches!(value.root,address::Root::Local { .. }) {value.positions=Arc::from([]);}
@@ -442,7 +449,7 @@ fn access_at_call(access:&Access,call:&Call,function:&Function,state:&State,know
     let borrows=refreshed_at_call(&borrows,call,function,state,known);
     let when=bounds::Condition::guard(when);
     match access {
-        Access::Resource{resources,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,when},
+        Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,ownership:*ownership,when},
         Access::Position{position,..}=>Access::Position{borrows,when,position:position.clone()},
         Access::Memory{..}=>Access::Memory{borrows,when},
     }
@@ -535,9 +542,9 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                     continue;
                 }
                 let value=match &usage.requirement {
-                    Requirement::Unborrowed{resource,borrow,..}=>function.access(
+                    Requirement::Unborrowed{resource,borrow,ownership,..}=>function.access(
                         evaluate(resource,function,state,known,true),evaluate(borrow,function,state,known,true),
-                        bounds::Condition::guard(usage.path.clone())),
+                        *ownership,bounds::Condition::guard(usage.path.clone())),
                     Requirement::Address{borrow,layout,writes,initialized,..}=>function.address_access(
                         evaluate(borrow,function,state,known,true),
                         Some(PositionAccess{layout:layout.clone(),writes:*writes,initialized:*initialized}),
@@ -556,7 +563,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                         function.address_access(borrows,Some(position),when)
                     },
                     Access::Memory{borrows,when}=>function.address_access(borrows,None,when),
-                    Access::Resource{resources,borrows,when}=>function.access(resources,borrows,when),
+                    Access::Resource{resources,borrows,ownership,when}=>function.access(resources,borrows,ownership,when),
                 };
                 if let Some(value)=value{access.insert(value);}
             }}
@@ -619,7 +626,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                     let path=when.assume(&bounds::Clause::default(),true);
                     let requirement=match value {
                         Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,writes:position.writes,initialized:position.initialized,span:call.span},
-                        Access::Resource{resources,borrows,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),span:call.span},
+                        Access::Resource{resources,borrows,ownership,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),ownership,span:call.span},
                         Access::Memory{..}=>continue,
                     };
                     requirement.check(&call.source)?;

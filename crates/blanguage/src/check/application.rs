@@ -696,7 +696,7 @@ impl Builder<'_> {
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         let mut borrow=retained.clone();
         for(name,binding)in &self.env{borrow.union(&self.live_view_borrow(name,binding));}
-        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow,span})?;
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow,ownership:true,span})?;
         if self.application_position_borrowed(data.root.identity()) {
             return self.fail(
                 span,
@@ -1131,7 +1131,7 @@ impl Builder<'_> {
         self.emit(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one});
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,u32::MAX-1),uniform:false,literal:false,constant:None};
         let place=Self::application_element(&data,&value_index,(0,u32::MAX-1));let value=self.read_storage_value(&place,span)?;
-        let element=self.materialize_element(&data,value);self.drop_returned(element,retained,span)?;
+        let element=self.materialize_element(&DataReference::direct(data.clone()),value);self.drop_returned(element,retained,span)?;
         self.emit(InstKind::StoreLocal(slot,index));
         let body=std::mem::replace(&mut self.code,outer);self.emit(InstKind::Loop{condition,test,body});Ok(())
     }
@@ -2122,11 +2122,18 @@ impl Builder<'_> {
         native_function::translate_returned(&mut model,&original,&bindings,true);
         self.close_stored_resources(&mut model);Box::new(model)
     }
-    fn materialize_element(&self,data:&Data,value:Value)->returns::Returned{
-        let mut model=(*data.elements).clone();let mut bindings=self.element_owner_bindings(data);
-        for component in 0..value.regs.len(){bindings.insert(ValueIdentity::ElementComponent(component),bounds::Proof::capture(&self.value_component(&value,component)));}
+    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value)->returns::Returned{
+        let mut model=(*data.elements).clone();let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();
+        for field in &data.projection{
+            let returns::Returned::OwnedValue(owner)=model else{unreachable!()};
+            let(offset,ty)=owner.value.ty.aggregate_part(*field);
+            components=ty.components.iter().map(|(_,at)|components[owner.value.ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()]).collect();
+            model=self.unpack_record(&owner,*field);
+        }
+        let original=model.clone();let mut bindings=self.element_owner_bindings(data);
+        for(component,reg)in components.into_iter().zip(&value.regs){bindings.insert(ValueIdentity::ElementComponent(component),bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}
         native_function::rebind_model(&mut model,value.regs);
-        native_function::translate_returned(&mut model,&data.elements,&bindings,true);model
+        native_function::translate_returned(&mut model,&original,&bindings,true);model
     }
     pub(super) fn application_element_proof(&self,place:&Place,regs:&[Reg])->Option<bounds::Proof>{
         let Place::ApplicationElement{sources,words,..}=place else{return None};
@@ -2246,7 +2253,7 @@ impl Builder<'_> {
 }
 pub(super) fn element_parameter_sources(model:&returns::Returned)->BTreeSet<ValueIdentity>{
     fn visit(model:&returns::Returned,out:&mut BTreeSet<ValueIdentity>){
-        if let Some(value)=model.view_value(){for source in value.proof.typed_view_borrow(&value.ty).resources().sources{
+        if let Some(value)=model.view_value(){for source in value.proof.typed_view_borrow(&value.ty).owners().sources{
             if let view::Source::Parameter(id)=source{out.insert(id);}
         }}
         match model{

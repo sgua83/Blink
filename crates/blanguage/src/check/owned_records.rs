@@ -406,6 +406,28 @@ impl Builder<'_> {
             _ => None,
         }
     }
+    pub(super) fn read_expression_type(&self, expr: &Expr) -> Option<Ty> {
+        match &expr.kind {
+            ExprKind::Name(name) => match self.env.get(name)? {
+                Binding::OwnedValue(value) => Some(value.value.ty.clone()),
+                Binding::ApplicationData(data) => Some(Ty::owned_dataset(data.ty.clone(),data.count)),
+                Binding::DataReference(data) => Some(Ty::owned_dataset(data.element_layout().1.clone(),data.count)),
+                _ => None,
+            },
+            ExprKind::Member(base,field) => {
+                let ty=self.read_expression_type(base)?;
+                if let Some(element)=&ty.dataset {
+                    let(_,field)=element.field(field)?;
+                    Some(Ty::owned_dataset(field.clone(),ty.values.first().copied()))
+                }else{ty.field(field).map(|(_,ty)|ty.clone())}
+            },
+            ExprKind::Index(base,_) => {
+                let ty=self.read_expression_type(base)?;
+                if let Some(element)=ty.dataset {Some(*element)}else{ty.array.map(|element|*element)}
+            },
+            _ => None,
+        }
+    }
     pub(super) fn owned_element_type(&self, expr: &Expr) -> Option<Ty> {
         self.owned_expression_type(expr)
     }

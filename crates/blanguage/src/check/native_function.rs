@@ -366,6 +366,11 @@ impl Builder<'_> {
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
             let arg=match arg {
+                Argument::OwnedReference{value,owner,..} if p.access==Access::Read=>{
+                    if let Some(owner)=owner{held.push(owner);}Argument::OwnedValue(value)
+                },other=>other,
+            };
+            let arg=match arg {
                 Argument::ApplicationData(data) if p.ty.dataset&&p.access!=Access::Value=>Argument::BorrowedData(application::DataReference::direct(data)),
                 other=>other,
             };
@@ -730,7 +735,7 @@ impl Builder<'_> {
             let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.root.identity()).collect::<Vec<_>>();
             for identity in resources {
                 let resource=self.data_borrow(&[identity]);
-                self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:borrow.clone(),span})?;
+                self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:borrow.clone(),ownership:true,span})?;
             }
             self.finish_scoped_argument(&name, span)?;
         }

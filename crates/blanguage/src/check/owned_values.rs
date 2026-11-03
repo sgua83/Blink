@@ -481,6 +481,19 @@ impl Builder<'_> {
             return Ok(Some((item,owner)));
         }
         if let ExprKind::Index(base,index) = &expr.kind {
+            if let Some(data)=self.application_reference(base)? {
+                let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
+                if !place.ty().owns_resources(){return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),None)));}
+                let packed=self.read_storage_value(&place,expr.span)?;
+                let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed) else{unreachable!()};
+                let borrow=self.data_borrow(&data.sources);
+                for path in view::resource_paths(&value.value.ty){
+                    let mut fields=data.projection.clone();fields.extend_from_slice(&path);
+                    let child=view::owned_data_at_mut(&mut value,&path).unwrap();
+                    child.root.proof=child.root.proof.clone().with_view_borrow(0,view::Borrow::element(borrow.clone(),fields));
+                }
+                value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),None)));
+            }
             let Some((value,mut owner))=self.read_aggregate(base,None)? else{return Ok(None)};
             let value=match value {
                 Returned::Value(value)=>{
@@ -488,12 +501,25 @@ impl Builder<'_> {
                         else {let Some(place)=self.view_value_place(*value,index)?else{return Ok(None)};self.read_place(&place,expr.span)?};
                     return Ok(Some((Returned::value(value),owner)));
                 }
-                Returned::Dataset(data)=>{let Some(place)=self.application_index(application::DataReference::direct(data),index)?else{return Ok(None)};return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),owner)));}
+                Returned::Dataset(data)=>{
+                    let data=application::DataReference::direct(data);
+                    let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
+                    if !place.ty().owns_resources(){return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),owner)));}
+                    let packed=self.read_storage_value(&place,expr.span)?;
+                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed)else{unreachable!()};
+                    let borrow=self.data_borrow(&data.sources);
+                    for path in view::resource_paths(&value.value.ty){
+                        let mut fields=data.projection.clone();fields.extend_from_slice(&path);
+                        let child=view::owned_data_at_mut(&mut value,&path).unwrap();
+                        child.root.proof=child.root.proof.clone().with_view_borrow(0,view::Borrow::element(borrow.clone(),fields));
+                    }
+                    value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),owner)));
+                }
                 Returned::OwnedValue(value)=>value,
                 Returned::Unit=>return self.fail(expr.span,"B224","read下标需要实际数组或存储"),
             };
             let Some(element)=value.value.ty.array.as_deref().cloned()else{return self.fail(expr.span,"B224","聚合只读下标需要固定拥有数组")};
-            if owner.is_none(){owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));}
+            if owner.is_none()&&value.place.is_none(){owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));}
             let Some(index)=self.expr(index)? else{return Ok(None)};
             self.require_same(&Ty::scalar(Scalar::U32),&index.ty,expr.span)?;
             let count=value.value.ty.values[0];
@@ -502,10 +528,11 @@ impl Builder<'_> {
                 let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
                 let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);
                 for i in selected{model.join(self.unpack_record(&value,i as usize));}
-                let place=self.materialize_array(value.value.clone()).place;let place=self.array_index(place,index,expr.span)?;
+                let place=match value.place(){Some(place)=>place,None=>self.materialize_array(value.value.clone()).place};let place=self.array_index(place,index,expr.span)?;
                 let mut regs=Vec::new();
                 for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span)?.regs[0]);}
-                self.rebind_returned(&mut model,regs);model
+                self.rebind_returned(&mut model,regs);
+                if let Returned::OwnedValue(value)=&mut model{value.place=Some(place);}model
             };
             if let Returned::OwnedValue(value)=&mut item {value.borrow();}
             return Ok(Some((item,owner)));
@@ -1083,6 +1110,7 @@ impl Builder<'_> {
             }
             cooperative::Argument::Value(value) if value.ty.contains_borrows() => Binding::Value(value.clone()),
             cooperative::Argument::OwnedValue(value) => Binding::OwnedValue(value.clone()),
+            cooperative::Argument::OwnedReference{place,..} if access==Access::Read => Binding::Owned(self.borrow_owned(place.clone())),
             cooperative::Argument::OwnedReference{value,owner,..}=>{if let Some(owner)=owner{return Some(owner.clone());}let mut value=value.clone();value.borrow();Binding::OwnedValue(value)},
             cooperative::Argument::ApplicationData(data) if access == Access::Value => {
                 Binding::ApplicationData(data.clone())

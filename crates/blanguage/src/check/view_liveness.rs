@@ -530,6 +530,13 @@ impl Builder<'_> {
 // Reuse the original AST locations and stored Proof; only real indexed element
 // consumers expose content borrows, while metadata-only use stays metadata.
 fn stored_element_borrow(binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>)->view::Borrow {
+    fn external(borrow:view::Borrow)->view::Borrow{
+        borrow.resources().map_sources(|source|match source{
+            view::Source::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>view::Borrow::default(),
+            view::Source::Element{parent,fields}=>view::Borrow::element(external(*parent),fields),
+            source=>view::Borrow::source(source),
+        })
+    }
     fn without(excluded:&BTreeSet<Path>,step:&Step)->BTreeSet<Path>{
         excluded.iter().filter(|path|path.first()==Some(step)).map(|path|path[1..].to_vec()).collect()
     }
@@ -547,10 +554,7 @@ fn stored_element_borrow(binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>)
         let out=if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{out};
         // Local element/ancestor handles belong to this same owning container.
         // They do not name another resource in the function's global scope.
-        out.resources().map_sources(|source|match source{
-            view::Source::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>view::Borrow::default(),
-            source=>view::Borrow::source(source),
-        })
+        external(out)
     }
     fn owned(value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool)->view::Borrow{
         let mut out=if stored{projected(&value.value,path,excluded)}else{view::Borrow::default()};

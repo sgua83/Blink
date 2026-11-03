@@ -66,7 +66,7 @@ impl Builder<'_> {
         }
         if (root(expr).is_some_and(|name| self.env.contains_key(name))
             || self.is_place(expr) && !self.temporary_projection(expr))
-            && !self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) {
+            && !self.read_expression_type(expr).is_some_and(|ty|ty.owns_resources()) {
             if let Some(name) = root(expr)
                 && let Some(Binding::Value(value)) = self.env.get(name).cloned() {
                 let owner = self.materialize_array(value);
@@ -87,7 +87,13 @@ impl Builder<'_> {
             Ok(Some(Argument::Reference(self.borrow_owned(place))))
         } else {
             let Some((value,owner))=self.read_aggregate(expr,expected)?else{return Ok(None)};
-            Ok(Some(match owner {Some(owner)=>Argument::Scoped{value,owner},None=>Argument::resource(value)}))
+            Ok(Some(match (value,owner) {
+                (returns::Returned::OwnedValue(value),None)
+                    if value.place.as_ref().is_some_and(|place|matches!(place.storage(),Place::ApplicationElement{..})) =>
+                    Argument::OwnedReference{place:value.place().unwrap(),value,owner:None},
+                (value,Some(owner)) => Argument::Scoped{value,owner},
+                (value,None) => Argument::resource(value),
+            }))
         }
     }
     pub(super) fn call_reference(
