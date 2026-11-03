@@ -761,13 +761,23 @@ pub(crate) struct Views<Source> {
 
 ### 2.6 从Frame借用当前数据根
 
-Frame已经持有原数据和有效域关系，观察不需要再建一张根表。data直接交回同一DomainBindings的共享借用；datasets保持原槽索引与None空槽，ResidentData的Cpu／Gpu就是实际原存储。通过这些借用继续读原布局或来源，不load程序、创建设备或隐式传输。
+Frame已经持有原数据和有效域关系，观察不需要再建一张根表。data直接交回同一DomainBindings的共享借用；datasets交回同一原Vec，保持原槽索引与None空槽，ResidentData的Cpu／Gpu就是实际原存储。通过这些借用继续读原布局或来源，不load程序、创建设备或隐式传输。
 
 源码节选：`crates/blcompute/src/application.rs:90`。
 
 ```rust
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
         &self.data
+    }
+```
+
+datasets还保留这份原容器的len和capacity，不复制槽、生成统计表或改写拥有者。对非零尺寸D，两者乘size_of::<D>()分别得到已初始化槽跨度和原Vec可用槽容量；D内部的dataset载荷另由其原memory查询，不能与槽字节混算。len包含None空槽，容量尾部仍未初始化；零尺寸D的槽字节为零，Vec的usize::MAX容量也不代表实际字节分配。这些值不表示分配器账单、OS页或整个Frame内存。
+
+源码节选：`crates/blcompute/src/bindings.rs:70`。
+
+```rust
+    pub fn datasets(&self) -> &Vec<D> {
+        &self.datasets
     }
 ```
 

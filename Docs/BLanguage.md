@@ -3402,7 +3402,7 @@ void run(read dataset<Item> input, inout dataset<Item> output,
 
 ### 跨执行与跨提交的域所有权
 
-`DomainBindings<Dataset>`／`DomainBindings<GpuDataset>` 移动实际存储及其已生产的关系。关系由成功执行的编译程序交付，不能从任意计数、原始文件或相同数值重新构造；没有全局计数注册表、哈希或版本票据。`datasets()` 只提供不可变借用，`into_datasets()` 取出存储并放弃关系，宿主随后可自行修改。
+`DomainBindings<Dataset>`／`DomainBindings<GpuDataset>` 移动实际存储及其已生产的关系。关系由成功执行的编译程序交付，不能从任意计数、原始文件或相同数值重新构造；没有全局计数注册表、哈希或版本票据。`datasets()` 共享借用同一原`Vec<D>`，可读取原槽及其len／capacity；`into_datasets()` 取出存储并放弃关系，宿主随后可自行修改。
 
 - CPU 闭合入口使用 `CpuProgram::run_owned` 在成功时返回带关系的绑定；`CpuTemplate::run` 只接收这类绑定，失败输入交接见下述拥有型接口。既有 `CpuProgram::run(&mut [Dataset], ...)` 继续执行普通程序，它不交付可持续持有的域关系。
 - `rebind(order, additional)` 按旧绑定和追加绑定的联合顺序选取并重排所有权，同时重排关系中的数据／计数索引。未一起保留的数据与计数不再构成关系，同一存储不能重复绑定为两个可写所有者。追加的普通数据没有域关系。
@@ -3841,9 +3841,11 @@ if let Some(point) = gpu_data.last_use()? {
 
 ### 应用Frame数据根与有效域关系的借用
 
-Rust SDK的`application::Frame::data()`返回`&DomainBindings<Option<application::ResidentData>>`，直接借用同一个Frame的原data。`datasets()`保持原槽索引和已释放None空槽，不复制、过滤或生成句柄目录；ResidentData::Cpu和Gpu分别持有原CpuDataset／GpuDataset，借用可继续调用原布局、来源和存储查询。观察不load程序、创建设备、执行、等待或传输，也不改Frame状态。
+Rust SDK的`application::Frame::data()`返回`&DomainBindings<Option<application::ResidentData>>`，直接借用同一个Frame的原data。`datasets()`返回原`&Vec<Option<ResidentData>>`，保持原槽索引和已释放None空槽，并提供原容器的len／capacity；不复制、过滤或生成句柄目录；ResidentData::Cpu和Gpu分别持有原CpuDataset／GpuDataset，借用可继续调用原布局、来源和存储查询。观察不load程序、创建设备、执行、等待或传输，也不改Frame状态。
 
 活动共享借用期间不能run／allocate／resize／upload／download／release或先行释放Frame。每次变更结束后重新借用当前根，实际CPU／GPU驻留由原枚举交付；不得持有旧地址跨越可能移动的操作。句柄整数仅索引这个Frame当前槽，release后为None，后续allocate可复用该整数而持有另一数据／类型，不据旧句柄推断身份或存活。当前Frame公开生产路径没有接入外部with_views／冻结数据的入口，查询没有增加插入器或伪造该集成；已有后端来源能力分别保持。
+
+数据槽容器的len包含None，不是当前活动数据集数量。对非零尺寸D，len／capacity乘size_of::<D>()分别给出已初始化槽跨度／原Vec可用容量字节；这些字节不包含D内部拥有的数据字、代码、类型或设备资源，也不表示分配器额外开销、OS页或全Frame占用。capacity尾部不能读取为已初始化D。零尺寸D的槽字节为零，不能把Rust Vec的usize::MAX容量当实际字节分配；空容器指针也不是分配证明。release可保留原槽容量，实际CPU／GPU载荷及完成仍按原所有者处理。共享借用不允许修改原容器，精确Rust返回签名为&Vec<D>；as_slice或原强制转换可交接已有切片消费者，不增加旧签名入口或跨模块Rust容器ABI。
 
 `DomainBindings<D>::domain_relations()`返回同一原domains的`&[DomainRelation]`，Frame的data同样使用该入口。其字段如下：
 

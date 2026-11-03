@@ -65,7 +65,9 @@ impl<D> DomainBindings<D> {
                 },
             }));
     }
-    pub fn datasets(&self) -> &[D] {
+    /// 共享借用原数据槽Vec，len包含已初始化空槽，capacity以D槽数计。
+    /// 槽容量不包含元素内部拥有的载荷、分配器开销或OS页；零尺寸D不占槽字节。
+    pub fn datasets(&self) -> &Vec<D> {
         &self.datasets
     }
     /// 借用随原数据持有的真实有效域关系，不复制、发布或重建另一份关系。
