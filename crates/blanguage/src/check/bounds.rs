@@ -151,6 +151,33 @@ impl IntegerExpression {
         };
         constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
     }
+    fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<IntegerRanges> {
+        let Self::Binary(op, scalar, a, b) = self;
+        let range = |operand| Some(match operand {
+            Operand::Value(id) => bindings.get(&id)?.range_set(0).restrict(0, scalar.bit_mask()),
+            Operand::Constant(_, bits) => IntegerRanges::interval(bits ^ scalar.order_bias(), bits ^ scalar.order_bias()),
+        });
+        let left = range(a)?;
+        let right = range(b)?;
+        if let ([(al, ah)], [(bl, bh)]) = (left.0.as_slice(), right.0.as_slice())
+            && al == ah && bl == bh
+        {
+            let exact = Self::Binary(op, scalar,
+                Operand::Constant(scalar, *al ^ scalar.order_bias()),
+                Operand::Constant(scalar, *bl ^ scalar.order_bias()));
+            let (_, bits) = exact.constant()?;
+            let ordered = bits ^ scalar.order_bias();
+            return Some(IntegerRanges::interval(ordered, ordered));
+        }
+        let operation = match op {
+            IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
+            IntegerOperation::Multiply => "*", IntegerOperation::Divide => "/",
+            IntegerOperation::Remainder => "%", IntegerOperation::And => "&",
+            IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
+            IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
+        };
+        Some(arithmetic_ranges(operation, scalar, left, right))
+    }
 }
 crate::module::codec::variants!(Operand{0=>Value(identity),1=>Constant(scalar,bits)});
 crate::module::codec::variants!(IntegerOperation{0=>Add,1=>Subtract,2=>Multiply,3=>Divide,4=>Remainder,5=>And,6=>Or,7=>Xor,8=>ShiftLeft,9=>ShiftRight});
@@ -669,16 +696,14 @@ impl Proof {
                 .filter_map(|d| domain(d, bindings))
                 .collect();
         }
-        for (component, domains) in translated.domains.iter().enumerate() {
+        for (component, domains) in self.domains.iter().enumerate() {
             for domain in domains {
                 if let IndexDomain::Computed(expression) = domain
-                    && let Some((scalar, bits)) = expression.constant()
+                    && let Some(range) = expression.ranges_at_call(bindings)
                 {
-                    let ordered = bits ^ scalar.order_bias();
                     translated.ranges.resize_with(translated.ranges.len().max(component + 1), IntegerRanges::default);
-                    translated.ranges[component] = translated.ranges[component].restrict(ordered, ordered);
-                    translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
-                    translated.nonzero[component] |= bits != 0;
+                    translated.ranges[component] = translated.ranges[component].combine(&range,
+                        |(al, ah), (bl, bh)| IntegerRanges::interval(al.max(bl), ah.min(bh)));
                 }
             }
         }
@@ -2720,7 +2745,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                     let ai = i % a.regs.len();
                     let bi = i % b.regs.len();
                     let left = a.component_ranges(ai);
-                    let mut right = b.component_ranges(bi);
+                    let right = b.component_ranges(bi);
                     let signed = scalar.is_signed();
                     let bias = scalar.order_bias();
                     if matches!(op, "-" | "^" | "&" | "|" | "/" | "%" | "min" | "max")
@@ -2739,22 +2764,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                             }
                         };
                     }
-                    if matches!(op, "<<" | ">>") {
-                        right = right.shift_counts(scalar);
-                    }
-                    let range = left.combine(&right, |left, right| {
-                        let bitwise = |operation: fn(Bits, Bits) -> Bits| {
-                            let (lower, upper) = bitwise_range(left, right, scalar, operation);
-                            IntegerRanges::interval(lower, upper)
-                        };
-                        match op {
-                            "&" => bitwise(|a, b| a & b),
-                            "|" => bitwise(|a, b| a | b),
-                            "^" => bitwise(|a, b| a ^ b),
-                            _ if signed => signed_range(op, left, right, scalar),
-                            _ => unsigned_range(op, left, right, scalar),
-                        }
-                    });
+                    let range = arithmetic_ranges(op, scalar, left, right);
                     if !signed && op == "-" {
                         let left_origins = a.component_origins(ai);
                         let right_origins = b.component_origins(bi);
@@ -2806,6 +2816,26 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
         }
     }
     proof
+}
+fn arithmetic_ranges(op: &str, scalar: Scalar, left: IntegerRanges, mut right: IntegerRanges) -> IntegerRanges {
+    let signed = scalar.is_signed();
+    if matches!(op, "<<" | ">>") {
+        right = right.shift_counts(scalar);
+    }
+    let range = left.combine(&right, |left, right| {
+        let bitwise = |operation: fn(Bits, Bits) -> Bits| {
+            let (lower, upper) = bitwise_range(left, right, scalar, operation);
+            IntegerRanges::interval(lower, upper)
+        };
+        match op {
+            "&" => bitwise(|a, b| a & b),
+            "|" => bitwise(|a, b| a | b),
+            "^" => bitwise(|a, b| a ^ b),
+            _ if signed => signed_range(op, left, right, scalar),
+            _ => unsigned_range(op, left, right, scalar),
+        }
+    });
+    range
 }
 fn arithmetic_source<'a>(
     op: &str,

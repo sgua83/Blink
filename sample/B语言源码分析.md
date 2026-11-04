@@ -462,7 +462,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1477`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1502`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -487,7 +487,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2524`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2549`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -507,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1467`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1492`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1467,7 +1467,7 @@ enum Fact {
 }
 ```
 
-确定整数二元运算把实际类型、运算和已求值输入快照的Computed关系保存在结果Proof，原Clause消费同一事实。关系随值进入普通返回及write／inout合同；调用代入已知输入时，复用既有常量运算语义，保持真实位宽、符号与回绕。例如从零开始的两次index(inout count)分别返回旧值零和一，写后值依次为一和二；索引检查消费这些结果，不把输入固定为常量，也不把未知结果猜成有界。没有进入合同的私有中间计算不会靠重读提供者实现补出。常量按类型与位模式表示；同一次事实查询沿相等输入推导相等结果，嵌套运算沿已有关系收敛。因此未改写数组上的`value.indices[ordinal(item)&1]`重复选择可以消费前次条件，直接重复算式下标也消费同一条路径，不要求手工保存所选标量。调用、原子读取与已改变内容分别保留真实快照；求值顺序、范围检查与资源所有者保持，不添加运行时缓存或逐元素判断。
+确定整数二元运算把实际类型、运算和已求值输入快照的Computed关系保存在结果Proof，原Clause消费同一事实。关系随值进入普通返回及write／inout合同；调用代入真实输入时，精确点复用原常量语义，有界非单点输入复用原arithmetic区间运算，再与已有输出范围相交；同一位宽、符号与回绕规则由该唯一范围实现维护。长度二的静态生成器把真实下标零至一交给i+1，输出一至二，原共同nonzero直接消费；输入可能回绕到零时仍不能取得非零许可。例如从零开始的两次index(inout count)分别返回旧值零和一，写后值依次为一和二；索引检查消费这些结果，不把输入固定为常量，也不把未知结果猜成有界。没有进入合同的私有中间计算不会靠重读提供者实现补出。常量按类型与位模式表示；同一次事实查询沿相等输入推导相等结果，嵌套运算沿已有关系收敛。因此未改写数组上的`value.indices[ordinal(item)&1]`重复选择可以消费前次条件，直接重复算式下标也消费同一条路径，不要求手工保存所选标量。调用、原子读取与已改变内容分别保留真实快照；求值顺序、范围检查与资源所有者保持，不添加运行时缓存或逐元素判断。
 
 动态数据集的长度关系由原参数Proof和Clause表达。`requires same_length(a,b)`只约束两个dataset形参的实际长度，不合并存储、布局或权限；固定相同形状、同一长度值和当前路径上的相等事实可以证明调用。普通CPU调用消费原合同，整域接口及ProgramLayout把根参数关系交给已编译模块和执行映像。CPU应用提取parallel时只传递已成立的同长关系，并以一棵关系树避免为每对资源重复编码。真实入口复用blcompute::arguments已有的长度参数字，在执行前比较声明的关系；CPU、GPU与Frame共用这一入口，不逐元素判断，也不按运行期N生成代码。零长保持合法，借用、初始化和最后消费者仍由原所有者负责。
 
@@ -1483,7 +1483,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:871`。
+源码节选：`crates/blanguage/src/check/bounds.rs:896`。
 
 ```rust
         self.nonzero = (0..width)
@@ -1496,7 +1496,7 @@ enum Fact {
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1021`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1046`。
 
 ```rust
     pub fn common(a: &Value, b: &Value) -> Self {
@@ -1539,7 +1539,7 @@ enum Fact {
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1595`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1620`。
 
 ```rust
 impl Drop for Clause {
