@@ -1162,6 +1162,10 @@ impl Builder<'_> {
             let incoming = self.capture_element_model(&data, &[], returned);
             if data.length.maximum() == 0 { incoming } else {
                 let mut previous = data.elements;
+                if let Some(value)=previous.view_value_mut(){
+                    let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
+                    value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
+                }
                 previous.join(*incoming);
                 previous
             }
@@ -2425,6 +2429,13 @@ impl Builder<'_> {
         }
         let original=model.clone();native_function::rebind_model(&mut model,components);
         native_function::translate_returned(&mut model,&original,&bindings,true);
+        if let Some(value)=model.view_value_mut(){
+            value.proof.origins.resize_with(value.regs.len(),Vec::new);
+            for(component,origins)in value.proof.origins.iter_mut().enumerate(){
+                let id=ValueIdentity::ElementComponent(value.regs[component]);
+                if !origins.contains(&id){origins.push(id);}
+            }
+        }
         self.close_stored_resources(&mut model);Box::new(model)
     }
     pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value)->returns::Returned{

@@ -532,9 +532,20 @@ impl Proof {
                     );
                     return Clause::facts(facts);
                 }
-                Fact::Equal(a, b) => identity(a, bindings)
-                    .zip(identity(b, bindings))
-                    .map(|(a, b)| Fact::equal(a, b)),
+                Fact::Equal(a, b) => {
+                    let Some((left,right))=identity(a,bindings).zip(identity(b,bindings)) else{return Clause::default();};
+                    let mut facts=Facts::from([Fact::equal(left,right)]);
+                    for(source,target)in [(a,right),(b,left)] {
+                        facts.extend(bindings[&source].domains(0).into_iter().map(|domain|Fact::Index(target,domain)));
+                    }
+                    let mut clause=Clause::facts(facts);
+                    for source in [a,b] {
+                        if let Some(condition)=bindings[&source].component_condition(0){
+                            clause=Clause::both(&clause,&Clause::either(&condition.cases[0],&condition.cases[1]));
+                        }
+                    }
+                    return clause;
+                },
                 Fact::NotEqual(a, b) => {
                     if let Some((left, right)) = bindings.get(&a).zip(bindings.get(&b)) {
                         let same = left.known_identity(0).zip(right.known_identity(0))
@@ -965,10 +976,14 @@ impl Proof {
     }
     pub fn common(a: &Value, b: &Value) -> Self {
         let mut proof=Self::capture(a);let mut other=Self::capture(b);
+        let aliases=[Clause::facts(proof.facts(&a.ty)),Clause::facts(other.facts(&b.ty))];
         for(component,(scalar,_))in a.ty.components.iter().enumerate(){
             if scalar.is_integer(){
-                proof.conditions[component]=Some(Box::new(Condition::component(a,component)));
-                other.conditions[component]=Some(Box::new(Condition::component(b,component)));
+                for((source,target),aliases)in [(a,&mut proof),(b,&mut other)].into_iter().zip(&aliases){
+                    let mut condition=Condition::component(source,component);
+                    for case in &mut condition.cases{*case=Clause::both(case,aliases);}
+                    target.conditions[component]=Some(Box::new(condition));
+                }
             }
         }
         proof.join(&other,a.regs.len(),None);
@@ -1096,11 +1111,12 @@ impl Proof {
         self.conditions
             .resize_with(self.conditions.len().max(ty.components.len()), || None);
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
-            if *scalar == Scalar::Bool && self.conditions[component].is_none() {
+            if (*scalar == Scalar::Bool || scalar.is_integer()) && self.conditions[component].is_none() {
                 let mut condition = Condition::default();
                 if let Some(identity) = self.known_identity(component) {
                     for (truth, case) in condition.cases.iter_mut().enumerate() {
-                        *case = Clause::facts([Fact::Boolean(identity, truth != 0)].into());
+                        let fact=if *scalar==Scalar::Bool{Fact::Boolean(identity,truth!=0)}else if truth!=0{Fact::NonZero(identity)}else{Fact::Zero(identity)};
+                        *case = Clause::facts([fact].into());
                     }
                 }
                 self.conditions[component] = Some(Box::new(condition));
@@ -2089,6 +2105,8 @@ fn contradictory(facts: &Facts) -> bool {
         }
         Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
         Fact::Predicate(predicate, truth) => Fact::Predicate(predicate.map(|id|Some(root(id))).unwrap(), truth),
+        Fact::Index(id, domain) => Fact::Index(root(id), output_domain(domain, &roots)),
+        Fact::Outside(id, domain) => Fact::Outside(root(id), output_domain(domain, &roots)),
         value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
     };
     // 原查询只生产一次别名规范视图；排序、查找及判定不重复投影。
@@ -3369,15 +3387,19 @@ impl Builder<'_> {
         value.proof = Proof::capture(&value);
         let mut environment = environment_facts(&self.env);
         environment.extend(value.proof.facts(&value.ty));
-        if let Some(facts) = self.path.required_in(&environment) {
-            value.proof.extend_equalities(&equality_roots(&facts));
-            for fact in facts {
-                if fact.identity().is_some_and(|identity| value.proof.origins[0].contains(&identity)) {
-                    value.proof.refine(&value.ty, 0, fact);
-                }
+        let mut known=Clause::both(&self.path,&Clause::facts(environment));
+        for(proof,component)in std::iter::once((&value.proof,0)).chain(lengths.iter().map(|(proof,component)|(*proof,*component))){
+            if let Some(condition)=proof.component_condition(component){known=Clause::both(&known,&Clause::either(&condition.cases[0],&condition.cases[1]));}
+        }
+        let id=value.identity();
+        let mut outside=Clause::facts([Fact::Outside(id,domain),Fact::Minimum(id,Scalar::U32,Bits::from(limit))].into());
+        for(proof,component)in lengths {
+            known=Clause::both(&known,&Clause::facts(proof.project(&[component],proof.width()).facts(&Ty::scalar(Scalar::U32))));
+            for target in proof.origins.get(component).into_iter().flatten(){
+                outside=Clause::both(&outside,&Clause::facts([Fact::Below(*target,id,false,Scalar::U32)].into()));
             }
         }
-        valid(&value)
+        !known.overlaps(&outside)
     }
     fn resource_length_proofs(&self, domain: IndexDomain) -> Vec<(&Proof, usize)> {
         let length = match domain {
