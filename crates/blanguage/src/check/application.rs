@@ -2510,7 +2510,8 @@ impl Builder<'_> {
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
         let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
-        self.check_returned_type(&mut value,place.ty(),span)?;self.view_uses.after(span);
+        // RHS结束后的原消费者仍指向旧内容；被覆盖位置的后续读取属于新内容。
+        self.check_returned_type(&mut value,place.ty(),span)?;self.view_uses.after(rhs.span);
         let packed=self.returned_storage(&value);
         let held=match &value{returns::Returned::OwnedValue(value)if value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
