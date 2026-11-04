@@ -543,17 +543,18 @@ impl Proof {
         }
         fn fact(value: Fact, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
             let translated = match value {
-                Fact::Boolean(id, truth) => {
-                    let Some(value) = bindings.get(&id) else {
+                Fact::Boolean(id, _) | Fact::Zero(id) | Fact::NonZero(id) => {
+                    let truth=match value {Fact::Boolean(_,truth)=>truth,Fact::NonZero(_)=>true,_=>false};
+                    let Some(input) = bindings.get(&id) else {
                         return Clause::facts(Facts::new());
                     };
-                    let condition = value.component_condition(0).cloned().unwrap_or_default();
+                    if !truth && input.nonzero.first()==Some(&true) {
+                        return Clause::impossible();
+                    }
+                    let condition = input.component_condition(0).cloned().unwrap_or_default();
                     let mut clause = condition.cases[usize::from(truth)].clone();
-                    if let Some(id) = value.known_identity(0) {
-                        clause = Clause::both(
-                            &clause,
-                            &Clause::facts([Fact::Boolean(id, truth)].into()),
-                        );
+                    if let Some(id) = input.known_identity(0) {
+                        clause = Clause::both(&clause,&Clause::facts([value.at(id)].into()));
                     }
                     return clause;
                 }
@@ -634,14 +635,6 @@ impl Proof {
                 Fact::Maximum(id, scalar, n)=>{
                     if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return Clause::default();}if range.0>n{return Clause::impossible();}}
                     identity(id,bindings).map(|id|Fact::Maximum(id, scalar, n))
-                },
-                Fact::NonZero(id)=>{
-                    if bindings.get(&id).is_some_and(|value|value.nonzero.first()==Some(&true)){return Clause::default();}
-                    identity(id,bindings).map(Fact::NonZero)
-                },
-                Fact::Zero(id)=>{
-                    if bindings.get(&id).is_some_and(|value|value.nonzero.first()==Some(&true)){return Clause::impossible();}
-                    identity(id,bindings).map(Fact::Zero)
                 },
                 Fact::Outside(id,d)=>identity(id,bindings).zip(domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
                 Fact::Predicate(predicate,truth)=>predicate.at_call(bindings).map(|predicate|Fact::Predicate(predicate,truth)),
@@ -797,6 +790,7 @@ impl Proof {
                 let bias = scalar.order_bias();
                 match self.range_set(component).restrict(0, scalar.bit_mask()).0.as_slice() {
                     [(lower, upper)] if lower == upper => Some(lower ^ bias),
+                    _ if self.component_condition(component).is_some_and(|condition|!condition.cases[1].possible()&&condition.cases[0].possible()) => Some(0),
                     _ => None,
                 }
             })
@@ -998,7 +992,7 @@ impl Proof {
         self.conditions.get(component)?.as_deref()
     }
     fn value_condition(value: &Value, component: usize) -> Option<Box<Condition>> {
-        if value.ty.components[component].0 == Scalar::Bool {
+        if value.ty.components[component].0 == Scalar::Bool || value.ty.components[component].0.is_integer() {
             Some(Box::new(Condition::component(value, component)))
         } else {
             value.proof.conditions.get(component).cloned().flatten()
@@ -1063,10 +1057,10 @@ impl Proof {
         let aliases=[Clause::facts(proof.facts(&a.ty)),Clause::facts(other.facts(&b.ty))];
         for(component,(scalar,_))in a.ty.components.iter().enumerate(){
             if scalar.is_integer(){
-                for((source,target),aliases)in [(a,&mut proof),(b,&mut other)].into_iter().zip(&aliases){
-                    let mut condition=Condition::component(source,component);
-                    for case in &mut condition.cases{*case=Clause::both(case,aliases);}
-                    target.conditions[component]=Some(Box::new(condition));
+                for(target,aliases)in [&mut proof,&mut other].into_iter().zip(&aliases){
+                    for condition in target.conditions[component].iter_mut(){
+                        for case in &mut condition.cases{*case=Clause::both(case,aliases);}
+                    }
                 }
             }
         }
