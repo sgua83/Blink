@@ -2295,9 +2295,13 @@ pub(super) fn element_input_bindings(builder:&Builder<'_>,definition:&Definition
             bindings.insert(id,bounds::Proof::default().with_identity(id));
         }
         builder.bind_element_resource_borrows(data,&parent,&mut bindings);
-        let proof=bounds::Proof::capture(&value).at_call(&bindings);
+        let mut proof=bounds::Proof::capture(&value);
+        for component in 0..width{
+            let borrow=proof.view_borrow(component).at_call(&bindings);
+            proof=proof.with_view_borrow(component,borrow);
+            out.insert(ValueIdentity::DatasetContent(parameter,resource,*next+component),proof.project(&[component],width));
+        }
         if reads{memory.union(&builder.address_contents(&value.ty,&proof));}
-        for component in 0..width{out.insert(ValueIdentity::DatasetContent(parameter,resource,*next+component),proof.project(&[component],width));}
         *next+=width;
         for(path,ty)in view::resource_paths(&value.ty).into_iter().zip(element_types(&value.ty)){
             if let Some(child)=model_data(model,&path){
