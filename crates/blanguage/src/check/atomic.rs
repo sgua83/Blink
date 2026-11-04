@@ -28,7 +28,7 @@ impl Builder<'_> {
     fn atomic_location(
         &mut self,
         target: &Expr,
-        write: bool,
+        access: Access,
     ) -> Result<Option<(Option<(IndexedSource, Option<Reg>, u32)>, Scalar)>> {
         let Some(place) = self.atomic_place(target)? else {
             return Ok(None);
@@ -38,6 +38,8 @@ impl Builder<'_> {
             return self.fail(target.span, "B215", "原子目标只支持 u32/i32/u64/i64 标量字段");
         }
         let scalar = ty.components[0].0;
+        let write=access.writes();
+        self.dataset_effect(&place,access,true,target.span)?;
         let (base, offset, word) = match &place {
             Place::Indexed { base, offset, words, .. } => (&**base, Some(*offset), words[0]),
             Place::Element { words, .. } | Place::TileElement { words, .. }
@@ -107,7 +109,7 @@ impl Builder<'_> {
         if args.len() != 3 {
             return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
         }
-        let Some((location, scalar)) = self.atomic_location(&args[0], true)? else {
+        let Some((location, scalar)) = self.atomic_location(&args[0], Access::Write)? else {
             return Ok(());
         };
         let Some(value) = self.atomic_operand(&args[1], scalar)? else {
@@ -154,7 +156,7 @@ impl Builder<'_> {
                 ),
             );
         }
-        let Some((location, scalar)) = self.atomic_location(&args[0], name != "atomic_load")? else {
+        let Some((location, scalar)) = self.atomic_location(&args[0], if name=="atomic_load"{Access::Read}else{Access::InOut})? else {
             return Ok(None);
         };
         let order_at = if name == "atomic_compare_exchange" {

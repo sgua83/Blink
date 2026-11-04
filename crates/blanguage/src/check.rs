@@ -2105,7 +2105,7 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.require_initialized(p, span)?;
-                self.dataset_read(p, span)?;
+                self.dataset_effect(p,Access::Read,false,span)?;
                 let mut value = self
                     .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
                 let (proof, uniform) = self.read_owned_proof(p, &value.regs);
@@ -2279,6 +2279,7 @@ impl<'a> Builder<'a> {
                 ..
             } => {
                 self.writable_storage(p, span)?;
+                self.dataset_effect(p,Access::Write,false,span)?;
                 let proof = bounds::Proof::capture(&value);
                 self.write_application_place(
                     *handle, *identity, *index, *stride, words, value, span, None,

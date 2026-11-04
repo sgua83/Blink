@@ -438,7 +438,7 @@ impl Builder<'_> {
             _ => {}
         }
         self.data_access(place, Access::Read);
-        self.dataset_read(place, span)?;
+        self.dataset_effect(place,Access::Read,false,span)?;
         let mut regs = Vec::new();
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
@@ -493,6 +493,7 @@ impl Builder<'_> {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }
         self.data_access(place, Access::Write);
+        self.dataset_effect(place,Access::Write,false,span)?;
         self.assign_owned_proof(place, bounds::Proof::capture(&value), false);
         self.initialize(place);
         for ((word, &(scalar, _)), value) in words.iter().zip(&value.ty.components).zip(value.regs) {

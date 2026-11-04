@@ -163,7 +163,7 @@ pub(super) enum Requirement {
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
     Address {borrow:Borrow,layout:address::Layout,writes:bool,initialized:bool,span:Span},
     Memory {target:address::MemoryTarget,borrow:Borrow,span:Span},
-    Dataset {borrow:Borrow,index:Option<bounds::Operand>,span:Span},
+    Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
 }
 impl Requirement {
@@ -179,7 +179,7 @@ impl Requirement {
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
             Self::Address{borrow,layout,writes,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),writes:*writes,initialized:*initialized,span:*span},
             Self::Memory{target,borrow,span}=>Self::Memory{target:*target,borrow:map(borrow),span:*span},
-            Self::Dataset{borrow,index,span}=>Self::Dataset{borrow:map(borrow),index:*index,span:*span},
+            Self::Dataset{borrow,index,access,atomic,span}=>Self::Dataset{borrow:map(borrow),index:*index,access:*access,atomic:*atomic,span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
         }
     }

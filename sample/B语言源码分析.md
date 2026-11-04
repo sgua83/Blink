@@ -1244,7 +1244,7 @@ Scalar明确描述各数值类型的实际大小与对齐：窄整数为一／�
 源码节选：`crates/blanguage/src/ast.rs:55`。
 
 ```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Access {
     Value,
     Read,
@@ -1272,7 +1272,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3885`。
+源码节选：`crates/blanguage/src/check.rs:3886`。
 
 ```rust
         let binding = view.binding;
@@ -1360,7 +1360,7 @@ try提前交付Err时，外层赋值或调用已经取消，临时位置与实�
 
 GPU数据集绑定以同一个16字节头交接：原页数组的64位设备地址、u32物理记录步幅、u32逻辑字段偏移。原根在既有页表分配的开头持有其零偏移头，页数组紧随其后；非零字段偏移只由本次提交参数持有另一个同格式头，指向原页数组，不复制页地址或字段载荷。SPIR-V按物理步幅计算整记录分页，再叠加字段及真实分量偏移；归约、扫描、排序和临时摘要同样消费实际绑定布局，不再转传未被消费的固定stride。不可变view仍以原连续元素类型访问页数组，设备指针指到绑定头之后。集合首遍与根写回交接原逻辑描述符，实际中间层只替换自己的临时引用，不从根分配重建零偏移引用。输入根只交接一次，字段类型、初始化、read／write／inout／atomic与真实区域关系保持，DomainBindings在原require／completed处消费实际slot与offset，参数和资源由原Execution持有至真实GPU完成。Frame同步GPU调用保持等待本次完成并返回同一根，结果不隐式下载。GPU绑定头遵守现行执行映像语义；Frame共同C签名与对象合同分别按其实际编码版本交接，不相容产物须重新编译。
 
-普通函数的实现编译成对象后，调用处同样需要知道它究竟读取了哪里。`Access::Dataset`沿原访问合同保存真实字段、元素下标和路径条件；调用方把原形参来源投影到自己的物理字段，再交给原并行读写区检查。
+普通函数的实现编译成对象后，调用处仍须知道它实际读写了哪里。`Access::Dataset`沿原访问合同保存真实字段、元素下标、路径条件、Read／Write／InOut方向及atomic操作属性；普通赋值、动态数组与嵌套调用沿同一Place来源闭合交接。调用方把形参来源投影到自己的物理字段，再交给原地址副作用及并行读写区消费者，没有另一份读写表。
 
 源码节选：`crates/blanguage/src/check/view_contracts.rs:13`。
 
@@ -1369,11 +1369,11 @@ pub(super) enum Access {
     Resource {resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition},
     Position {borrows:Borrow,when:bounds::Condition,position:PositionAccess},
     Memory {borrows:Borrow,when:bounds::Condition},
-    Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>},
+    Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>,access:super::Access,atomic:bool},
 }
 ```
 
-声明`read dataset`说明允许读取，不代表已经读取全部载荷。只查询长度不产生载荷读区；读取当前元素与共享读取其他元素也要保留区别。动态数组的候选分量还带着原下标条件，不能因为存在多个候选就把它们改成无条件读取。下标数值已经确定时仍保留原值身份，单元素的index()仍是当前迭代位置；精确数值不能删除这个位置关系。嵌套模块调用继续使用同一个闭合访问集合。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。此处尚未开放CPU范围的可写dataset物理参数，Frame／CpuProgram按完整实际写区撤回Count及普通独占位置仍见原Issues；对象编码为现行BLCO46，Frame资源C ABI仍为BLRI23。
 
 ### 8.4 跨函数也不能丢掉位置身份
 

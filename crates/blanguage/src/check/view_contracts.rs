@@ -14,9 +14,9 @@ pub(super) enum Access {
     Resource {resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition},
     Position {borrows:Borrow,when:bounds::Condition,position:PositionAccess},
     Memory {borrows:Borrow,when:bounds::Condition},
-    Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>},
+    Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>,access:super::Access,atomic:bool},
 }
-crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when},3=>Dataset{borrows,when,index}});
+crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when},3=>Dataset{borrows,when,index,access,atomic}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
 pub(super) struct Call {
@@ -194,7 +194,7 @@ impl Function {
         let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
         when.active().then_some(Access::Resource{resources,borrows,ownership,when})
     }
-    fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,when:bounds::Condition)->Option<Access> {
+    fn dataset_access(&self,borrow:Borrow,index:Option<bounds::Operand>,access:super::Access,atomic:bool,when:bounds::Condition)->Option<Access> {
         fn inputs(borrow:&Borrow,function:&Function)->Borrow {
             borrow.map_sources(|source|match source {
                 Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))=>Borrow::default(),
@@ -205,7 +205,7 @@ impl Function {
         }
         let(borrows,when)=self.address_borrows(inputs(&borrow,self),when)?;
         let index=index.and_then(|index|index.map(|id|self.parameters.get(&id).copied().filter(|id|self.input(*id))));
-        Some(Access::Dataset{borrows,when,index})
+        Some(Access::Dataset{borrows,when,index,access,atomic})
     }
 }
 #[derive(Clone,Default,PartialEq,Eq)]
@@ -480,7 +480,7 @@ fn access_at_call(access:&Access,call:&Call,function:&Function,state:&State,know
         Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,ownership:*ownership,when},
         Access::Position{position,..}=>Access::Position{borrows,when,position:position.clone()},
         Access::Memory{..}=>Access::Memory{borrows,when},
-        Access::Dataset{index,..}=>Access::Dataset{borrows,when,index:index.and_then(|index|index.at_call(&call.arguments))},
+        Access::Dataset{index,access,atomic,..}=>Access::Dataset{borrows,when,index:index.and_then(|index|index.at_call(&call.arguments)),access:*access,atomic:*atomic},
     }
 }
 
@@ -580,7 +580,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                         bounds::Condition::guard(usage.path.clone())),
                     Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,..} if !function.calls.iter().any(|call|call.memory==*memory)=>
                         function.address_access(evaluate(borrow,function,state,known,true),None,bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Dataset{borrow,index,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,bounds::Condition::guard(usage.path.clone())),
+                    Requirement::Dataset{borrow,index,access,atomic,..}=>function.dataset_access(evaluate(borrow,function,state,known,true),*index,*access,*atomic,bounds::Condition::guard(usage.path.clone())),
                     _=>None,
                 };
                 if let Some(value)=value{access.insert(value);}
@@ -594,7 +594,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                     },
                     Access::Memory{borrows,when}=>function.address_access(borrows,None,when),
                     Access::Resource{resources,borrows,ownership,when}=>function.access(resources,borrows,ownership,when),
-                    Access::Dataset{borrows,index,when}=>function.dataset_access(borrows,index,when),
+                    Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when),
                 };
                 if let Some(value)=value{access.insert(value);}
             }}
@@ -689,7 +689,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             for access in &known[&call.function].interface.access {
                 let (borrows,when,access)=match access_at_call(access,call,function,&known[name],&known) {
                     Access::Memory{borrows,when}=> (borrows,when,super::Access::InOut),
-                    Access::Dataset{borrows,when,..}=> (borrows,when,super::Access::Read),
+                    Access::Dataset{borrows,when,access,..}=> (borrows,when,access),
                     Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
                     _=>continue,
                 };
@@ -703,7 +703,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
 }
 
 impl Builder<'_> {
-    pub(super) fn dataset_read(&mut self,place:&Place,span:Span)->Result<()> {
+    pub(super) fn dataset_effect(&mut self,place:&Place,access:super::Access,atomic:bool,span:Span)->Result<()> {
         let Place::ApplicationElement{sources,element_layout,index_value,..}=place.storage() else {return Ok(())};
         let borrow=self.data_borrow(sources);
         for ((scalar,_),position) in place.ty().components.iter().zip(place.data_positions()) {
@@ -714,9 +714,9 @@ impl Builder<'_> {
                         let origin=address::Origin{
                             root:address::Root::Derived(borrow.clone()),layout:address::Layout::of(&Ty::scalar(*scalar)),
                             base:element_layout.clone(),words:Arc::from([word]),positions:Arc::from([]),
-                            writable:false,initialized:Arc::from([true]),
+                            writable:access.writes(),initialized:Arc::from([access.reads()]),
                         };
-                        self.check_view_requirement(Requirement::Dataset{borrow:Borrow::source(Origin::Position(Arc::new(origin))).restricted(&path),index:Some(*index_value),span})?;
+                        self.check_view_requirement(Requirement::Dataset{borrow:Borrow::source(Origin::Position(Arc::new(origin))).restricted(&path),index:Some(*index_value),access,atomic,span})?;
                     }
                     Position::Indexed(choices,index)=>pending.extend(choices.iter().enumerate().map(|(i,position)|(position.clone(),bounds::Clause::both(&path,&bounds::Clause::selection(index,i))))),
                     _=>{},
@@ -726,10 +726,10 @@ impl Builder<'_> {
         Ok(())
     }
 
-    pub(super) fn native_dataset_reads(&mut self,access:&BTreeSet<Access>,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Vec<MemoryAccess> {
+    pub(super) fn native_dataset_access(&mut self,access:&BTreeSet<Access>,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Vec<MemoryAccess> {
         let mut memory=Vec::new();
         for access in access {
-            let Access::Dataset{borrows,when,index}=access else {continue};
+            let Access::Dataset{borrows,when,index,access,atomic}=access else {continue};
             let path=when.guard_at_call(arguments).assume(&self.path,true);
             if !path.possible(){continue;}
             let cross=!matches!(index.and_then(|index|index.at_call(arguments)),Some(bounds::Operand::Value(ValueIdentity::Register(index))) if index==self.global_index);
@@ -737,15 +737,21 @@ impl Builder<'_> {
             for (source,when) in borrow.sources.entries() {
                 if !when.possible(){continue;}
                 let Origin::Position(origin)=source else {continue};
-                memory.extend(origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:super::Access::Read}));
+                memory.extend(origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if *atomic{super::Access::Atomic}else{*access}}));
                 for ((scalar,_),position) in origin.layout.parts.iter().zip(origin.positions.iter()) {
                     let mut pending=vec![position];
                     while let Some(position)=pending.pop() {
                         match position {
                             Position::Element(binding,word)=>{
-                                self.memory_regions.entry(*binding).or_default().0.insert((cross,*word,*word+scalar.size()));
-                                self.reads.insert(*binding);
-                                if cross{self.cross_access.insert(*binding);}
+                                if access.reads(){
+                                    self.reads.insert(*binding);
+                                    if !atomic{self.memory_regions.entry(*binding).or_default().0.insert((cross,*word,*word+scalar.size()));}
+                                }
+                                if access.writes(){
+                                    self.writes.insert(*binding);
+                                    self.memory_regions.entry(*binding).or_default().1.insert((*word,*word+scalar.size()));
+                                }
+                                if cross||*atomic{self.cross_access.insert(*binding);}
                             }
                             Position::Indexed(choices,_)=>pending.extend(choices.iter()),
                             _=>{},
