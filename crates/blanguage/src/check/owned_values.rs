@@ -1027,8 +1027,20 @@ impl Builder<'_> {
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
         self.prepare_owned_read(&value);
         match value {
-            Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_returned(Returned::Dataset(data),retained,span)})}
-            Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;return self.owned_when(&when,span,|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_returned(Returned::OwnedValue(value),retained,span)})}
+            Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{
+                let Ownership::Conditional(when)=data.ownership.clone()else{unreachable!()};data.ownership=Ownership::Owned;
+                let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
+                let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
+                let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
+                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_returned(Returned::Dataset(data),retained,span)})
+            }
+            Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{
+                let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;
+                let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
+                let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
+                let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
+                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_returned(Returned::OwnedValue(value),retained,span)})
+            }
             Returned::Dataset(data) if data.ownership == Ownership::Owned => {
                 self.application_frame(span)?;
                 self.application_drop(&data,retained,span)?;

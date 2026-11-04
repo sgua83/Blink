@@ -347,7 +347,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3-4"></a>
 
-**条件拥有清理分支来源。** 原Ownership::Conditional及Presence→drop_returned两条真实条件拥有分支与owned_when原条件消费→原清理If及实际条件准备。来源在原清理生产者交接，不把通用owned_when的其他用途标成释放；原证明、分支条件与内层清理保持唯一原所有者。静态已选路径不补造未发射分支，材料随原IR结束，不引入运行期拥有标记或另一份条件状态。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-3-4)。
+**条件拥有清理分支来源。** 原Ownership::Conditional及Presence→drop_returned两条真实Dataset／OwnedValue清理接点→owned_when的原清理If与presence_register的条件准备。唯一原清理入口将当前可选SourceSite共享给ConditionalDropBranch及ConditionalDropCondition，通用owned_when以显式可选材料消费，不按函数名称或普通If猜清理用途。前者只交给实际外层清理If；后者沿原All／None常量、Selected比较、Not以及Both／Either短路的Constant、Unary、Binary、If、StoreLocal及LoadLocal交接，复用constant_with_origin和原寄存器／槽位。Input直接复用已有值，不造读取；确定条件不补造If。生成节点的source_site为null，真实触发位于generated_origin.trigger，原固定短路StoreLocal没有普通source_site的事实与可选清理触发分别表达。触发可能是return／覆盖或缺失，不猜精确作用域出口。原condition_truth、path／initialized临时上下文、短路顺序、Proof和借用保持；body中的静态F、release及变体选择各沿原职责，准备短路If不冒充实际清理If。材料只归compiler原Inst，最后IR消费者后结束，不保活变量、进入执行编码或新增Builder状态、拥有标记、图、调度及释放链；静态条件材料不是实际释放完成或内存完全安全的证明。当前已实现本项两类来源，见[规范](BLanguage.md#条件拥有清理分支与条件准备的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-4)。
 
 <a id="tool-7-2-4-5-3-5"></a>
 

@@ -140,7 +140,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "sha256": "d2104a461f3736453930926bede8a1f39b4c51affc983e6061b3a681b3ea791b"
+      "sha256": "b2f6063a0bb4c0a9c295067f1469f57a126ed875b6767a90bbd6144071851807"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",

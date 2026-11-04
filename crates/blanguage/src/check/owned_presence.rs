@@ -72,14 +72,48 @@ impl Builder<'_>{
         fn intersects(position:&Position,changed:&BTreeSet<Position>)->bool{changed.contains(position)||matches!(position,Position::Indexed(choices,_)if choices.iter().any(|choice|intersects(choice,changed)))}
         match value{Returned::Dataset(data)=>{if let Some(place)=&data.place{let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}},Returned::OwnedValue(value)=>{if value.value.ty.has_variants()||value.value.ty.cleanup.is_some(){if let Some(place)=value.place(){let changed=place.owned_positions().unwrap().into_iter().collect();self.initialized.retain(|position|!intersects(position,&changed));}}else{for i in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(i).1.owns_resources(){let child=self.unpack_record(value,i);self.forget_owned_metadata(&child);}}}},_=>{}}
     }
-    fn presence_register(&mut self,value:&Presence,span:Span)->Result<Reg>{
-        match value{Presence::All=>Ok(self.constant(Scalar::Bool,1).regs[0]),Presence::None=>Ok(self.constant(Scalar::Bool,0).regs[0]),Presence::Input(value)=>Ok(value.regs[0]),Presence::Selected(index,element)=>{
-            let actual=match index{ownership::ApplicationIndex::Constant(n)=>return Ok(self.constant(Scalar::Bool,Bits::from(*n as usize==*element)).regs[0]),ownership::ApplicationIndex::Value(_,reg)=>*reg};let rhs=self.constant(Scalar::U32,Bits::from(*element as u32)).regs[0];let dst=self.reg(Scalar::Bool);self.emit(InstKind::Binary{dst,op:BinaryOp::Compare(Comparison::Equal),a:actual,b:rhs});Ok(dst)
-        },Presence::Not(value)=>{let input=self.presence_register(value,span)?;let dst=self.reg(Scalar::Bool);self.emit(InstKind::Unary{dst,op:UnaryOp::LogicalNot,a:input});Ok(dst)},Presence::Both(a,b)|Presence::Either(a,b)=>{
-            let any=matches!(value,Presence::Either(..));let condition=self.presence_register(a,span)?;let(slots,_)=self.local_slots(&Ty::scalar(Scalar::Bool));let outer=std::mem::take(&mut self.code);let rhs=self.presence_register(b,span)?;self.emit(InstKind::StoreLocal(slots[0],rhs));let right=std::mem::replace(&mut self.code,outer);let bit=self.constant(Scalar::Bool,Bits::from(any)).regs[0];let fixed=vec![Inst::new(InstKind::StoreLocal(slots[0],bit))];let(yes,no)=if any{(fixed,right)}else{(right,fixed)};self.emit(InstKind::If{condition,yes,no});let dst=self.reg(Scalar::Bool);self.emit(InstKind::LoadLocal(dst,slots[0]));Ok(dst)
-        }}
+    fn presence_register(&mut self,value:&Presence,span:Span,origin:Option<&Arc<GeneratedOrigin>>)->Result<Reg>{
+        match value{
+            Presence::All=>Ok(self.constant_with_origin(Scalar::Bool,1,origin.cloned()).regs[0]),
+            Presence::None=>Ok(self.constant_with_origin(Scalar::Bool,0,origin.cloned()).regs[0]),
+            Presence::Input(value)=>Ok(value.regs[0]),
+            Presence::Selected(index,element)=>{
+                let actual=match index{ownership::ApplicationIndex::Constant(n)=>return Ok(self.constant_with_origin(Scalar::Bool,Bits::from(*n as usize==*element),origin.cloned()).regs[0]),ownership::ApplicationIndex::Value(_,reg)=>*reg};
+                let rhs=self.constant_with_origin(Scalar::U32,Bits::from(*element as u32),origin.cloned()).regs[0];let dst=self.reg(Scalar::Bool);
+                let kind=InstKind::Binary{dst,op:BinaryOp::Compare(Comparison::Equal),a:actual,b:rhs};
+                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
+                Ok(dst)
+            },
+            Presence::Not(value)=>{
+                let input=self.presence_register(value,span,origin)?;let dst=self.reg(Scalar::Bool);let kind=InstKind::Unary{dst,op:UnaryOp::LogicalNot,a:input};
+                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
+                Ok(dst)
+            },
+            Presence::Both(a,b)|Presence::Either(a,b)=>{
+                let any=matches!(value,Presence::Either(..));let condition=self.presence_register(a,span,origin)?;let(slots,_)=self.local_slots(&Ty::scalar(Scalar::Bool));
+                let outer=std::mem::take(&mut self.code);let rhs=self.presence_register(b,span,origin)?;let kind=InstKind::StoreLocal(slots[0],rhs);
+                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
+                let right=std::mem::replace(&mut self.code,outer);let bit=self.constant_with_origin(Scalar::Bool,Bits::from(any),origin.cloned()).regs[0];let kind=InstKind::StoreLocal(slots[0],bit);
+                let fixed=vec![match origin{Some(origin)=>Inst::generated(kind,origin.clone()),None=>Inst::new(kind)}];let(yes,no)=if any{(fixed,right)}else{(right,fixed)};
+                let kind=InstKind::If{condition,yes,no};
+                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
+                let dst=self.reg(Scalar::Bool);let kind=InstKind::LoadLocal(dst,slots[0]);
+                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
+                Ok(dst)
+            }
+        }
     }
-    pub(super) fn owned_when(&mut self,value:&Presence,span:Span,body:impl FnOnce(&mut Self)->Result<()>)->Result<()>{
-        match self.condition_truth(&value.condition(),None){Some(false)=>Ok(()),Some(true)=>{let initialized=self.initialized.clone();body(self)?;self.initialized=initialized;Ok(())},None=>{let condition=self.presence_register(value,span)?;let outer=std::mem::take(&mut self.code);let initialized=self.initialized.clone();let path=self.path.clone();self.path=value.condition().assume(&path,true);body(self)?;self.path=path;self.initialized=initialized;let yes=std::mem::replace(&mut self.code,outer);self.emit(InstKind::If{condition,yes,no:Vec::new()});Ok(())}}
+    pub(super) fn owned_when(&mut self,value:&Presence,span:Span,branch_origin:Option<Arc<GeneratedOrigin>>,condition_origin:Option<Arc<GeneratedOrigin>>,body:impl FnOnce(&mut Self)->Result<()>)->Result<()>{
+        match self.condition_truth(&value.condition(),None){
+            Some(false)=>Ok(()),
+            Some(true)=>{let initialized=self.initialized.clone();body(self)?;self.initialized=initialized;Ok(())},
+            None=>{
+                let condition=self.presence_register(value,span,condition_origin.as_ref())?;let outer=std::mem::take(&mut self.code);let initialized=self.initialized.clone();let path=self.path.clone();
+                self.path=value.condition().assume(&path,true);body(self)?;self.path=path;self.initialized=initialized;
+                let yes=std::mem::replace(&mut self.code,outer);let kind=InstKind::If{condition,yes,no:Vec::new()};
+                if let Some(origin)=branch_origin{self.code.push(Inst::generated(kind,origin));}else{self.emit(kind);}
+                Ok(())
+            }
+        }
     }
 }
