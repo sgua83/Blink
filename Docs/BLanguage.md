@@ -367,6 +367,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetStorageAddress | dataset_storage_address | 原资源句柄进入地址型借用ABI的storage_address Call |
 | DatasetRootAddress | dataset_root_address | 原U64根拆分或句柄地址请求的表示准备指令 |
 | DatasetOffsetAddress | dataset_offset_address | 原双字地址与索引／步长／字段偏移的寻址准备指令 |
+| DatasetWriteAddress | dataset_write_address | 原CPU句柄写分支的写区偏移及请求准备指令 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -509,6 +510,14 @@ offset_application_address仍消费原双U32地址、index、stride及offset，�
 原拓宽闭包曾直接Inst::new而未保存source_site，这不表示实际Builder上下文未知；当前已知触发沿同一生产者交接，缺失仍明确缺失。原宽度、地址位型、算术顺序、寄存器与返回保持，index／stride／offset的数值及单位仍由原调用者交付；不重算布局、不扩大权限、不增加算术、索引检查、地址表或运行链。根地址准备、Frame地址请求、存储地址查询及真实ViewLoad／StoreIndexed各保持自己的生成或源码职责，不能把整个访问流程统一改标寻址。
 
 原常量折叠、去重和消除继续按实际语义；没有保留的节点不补造，不为观察保活变量或冻结优化，完整变换来源与机器映射继续归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储，不增加Frame、采集或释放链。静态地址算术不证明实际访问、地址有效或设备完成。见[架构](Architecture.md#tool-7-2-4-5-5-4)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-4)。
+
+#### CPU写区地址准备的生成来源
+
+application_memory的原句柄写分支仍以index、DataStride、可选relative及实际components计算原写区offset，再交给原Frame地址请求。仅该生产者的步长／字段常量、拓宽Cast、索引乘加、relative、分量偏移及请求常量共享DatasetWriteAddress，JSON reason为dataset_write_address。节点source_site为空，可选Syntax直接借用准备发射时的原当前SourceSite，语法种类、范围、定义／特化实例及inlined_at／domain_path保持，未知为null；旧拓宽节点未存source_site不等于当前Builder语法未知，不从根定义或邻近行猜补。
+
+普通写、数组相对位置和实际外部C ABI位置借用沿同一原准备交接；初始化Store仍保留DatasetInitializeWrite及其原factory触发，本准备不替换它。每个分量的实际字节宽度及Frame请求按原语义保持，不能因返回同一根地址删除必要逐分量请求。原数值宽度、单位、求值顺序、布局、权限和最后消费者保持，不增加写区、复制、同步、检查、Frame、状态表或运行链。已是U64根的路径及公共返回／读区准备归原其他叶，不整体改标本项；原StoreIndexed、Frame地址Call及根／索引准备各保留自己的职责。
+
+没有实际分量或未进入该分支时不虚构准备，原常量折叠、去重和消除继续生效，不为观察保活指令或冻结优化；完整变换来源与机器映射仍归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储或运行地址。静态写区计算不证明实际写入、地址有效或设备完成。见[架构](Architecture.md#tool-7-2-4-5-5-5)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-5)。
 
 #### 集合值核的入口与捕获来源
 

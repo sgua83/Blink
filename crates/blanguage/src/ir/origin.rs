@@ -198,6 +198,7 @@ pub enum GenerationReason {
     DatasetStorageAddress,
     DatasetRootAddress,
     DatasetOffsetAddress,
+    DatasetWriteAddress,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -260,6 +261,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetStorageAddress => "dataset_storage_address",
             GenerationReason::DatasetRootAddress => "dataset_root_address",
             GenerationReason::DatasetOffsetAddress => "dataset_offset_address",
+            GenerationReason::DatasetWriteAddress => "dataset_write_address",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

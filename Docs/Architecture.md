@@ -367,7 +367,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5"></a>
 
-**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1、原存储地址查询.2、根地址表示准备.3及索引与步长寻址.4已交接，其余四叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
+**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1、原存储地址查询.2、根地址表示准备.3、索引与步长寻址.4及CPU写区准备.5已交接，其余三叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
 
 <a id="tool-7-2-4-5-5-1"></a>
 
@@ -387,7 +387,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5-5"></a>
 
-**CPU写区地址准备来源。** 输入为application_memory真实句柄写分支的索引、布局、relative及实际分量；既有步长／字段常量、拓宽、乘加、分量偏移和请求常量生成原写区offset，交给.1实际Frame地址Call。保持各分量字节宽度、原检查和访问顺序，不改StoreIndexed或既有DatasetInitializeWrite职责，不增加写区、副本或同步。根地址分支及公共返回准备归.6，实际寻址辅助函数归.4，不重复覆盖。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5-5)。
+**CPU写区地址准备来源。** 输入为application_memory真实句柄写分支的索引、布局、relative及实际分量；既有步长／字段常量、拓宽、乘加、分量偏移和请求常量生成原写区offset，交给.1实际Frame地址Call。原Builder仅为这些原实际Constant／Cast／Binary共享DatasetWriteAddress，JSON reason为dataset_write_address；可选Syntax直接借用原准备发射时的当前SourceSite，语法、范围、实例及内联／域路径保持，节点source_site为空，未知触发为null。初始化Store仍保留自己的factory触发，不能用本准备替换DatasetInitializeWrite来源。保持各分量字节宽度、原检查和访问顺序，不改StoreIndexed或既有DatasetInitializeWrite职责，不增加写区、副本或同步。根地址分支及公共返回准备归.6，实际寻址辅助函数归.4，不重复覆盖。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前已交接该句柄写分支的原准备来源，实际Frame逐分量请求保持；原优化可继续合并／消除节点，不为观察保活。见[规范](BLanguage.md#cpu写区地址准备的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-5)。
 
 <a id="tool-7-2-4-5-5-6"></a>
 

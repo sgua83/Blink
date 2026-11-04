@@ -1604,35 +1604,39 @@ impl Builder<'_> {
             return Ok((address,self.constant(Scalar::U32,0).regs[0],0));
         }
         let address = if write {
+            let origin = Arc::new(GeneratedOrigin {
+                reason: GenerationReason::DatasetWriteAddress,
+                trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+            });
             let (step, field) = match stride {
-                DataStride::Declared(step) => (self.constant(Scalar::U32, Bits::from(step)).regs[0], self.constant(Scalar::U32, 0).regs[0]),
+                DataStride::Declared(step) => (self.constant_with_origin(Scalar::U32, Bits::from(step), Some(origin.clone())).regs[0], self.constant_with_origin(Scalar::U32, 0, Some(origin.clone())).regs[0]),
                 DataStride::Parameter { stride, offset } => (stride, offset),
             };
             let widen = |builder: &mut Self, src| {
                 let dst = builder.reg(Scalar::U64);
-                builder.code.push(Inst::new(InstKind::Cast { dst, src }));
+                builder.code.push(Inst::generated(InstKind::Cast { dst, src }, origin.clone()));
                 dst
             };
             let row = widen(self, index);
             let step = widen(self, step);
             let field = widen(self, field);
             let scaled = self.reg(Scalar::U64);
-            self.emit(InstKind::Binary { dst: scaled, op: BinaryOp::IMul, a: row, b: step });
+            self.code.push(Inst::generated(InstKind::Binary { dst: scaled, op: BinaryOp::IMul, a: row, b: step }, origin.clone()));
             let mut start = self.reg(Scalar::U64);
-            self.emit(InstKind::Binary { dst: start, op: BinaryOp::IAdd, a: scaled, b: field });
+            self.code.push(Inst::generated(InstKind::Binary { dst: start, op: BinaryOp::IAdd, a: scaled, b: field }, origin.clone()));
             if let Some(relative) = relative {
                 let relative = widen(self, relative);
                 let dst = self.reg(Scalar::U64);
-                self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: relative });
+                self.code.push(Inst::generated(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: relative }, origin.clone()));
                 start = dst;
             }
             let mut address = None;
             for &(scalar, word) in components {
-                let word = self.constant(Scalar::U64, Bits::from(word)).regs[0];
+                let word = self.constant_with_origin(Scalar::U64, Bits::from(word), Some(origin.clone())).regs[0];
                 let dst = self.reg(Scalar::U64);
-                self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: word });
+                self.code.push(Inst::generated(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: word }, origin.clone()));
                 let offset = Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
-                let stride=self.constant(Scalar::U64,0);let count=self.constant(Scalar::U32,1);
+                let stride=self.constant_with_origin(Scalar::U64,0,Some(origin.clone()));let count=self.constant_with_origin(Scalar::U32,1,Some(origin.clone()));
                 address = Some(self.application_address(handle, identity, offset, scalar.size(), stride, count, span)?);
             }
             address.unwrap()
