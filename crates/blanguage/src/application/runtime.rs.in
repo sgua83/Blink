@@ -3,14 +3,18 @@ use std::ffi::c_void;
 pub struct ModuleImage {
     pub data: *const u8,
     pub bytes: usize,
+    pub code: *const *const u8,
+    pub codes: usize,
 }
 #[repr(C)]
 pub struct UniformValue { pub kind: u32, pub bits: u64 }
 #[repr(C)]
 pub struct DatasetBinding { pub handle: u32, pub offset: u32 }
 static IMAGE: &[u8] = &@IMAGE@;
+unsafe extern "C" { @CODE_DECLARATIONS@ }
+static CODE: [unsafe extern "C" fn(); @CODE_COUNT@] = [@CODE_ENTRIES@];
 #[unsafe(no_mangle)]
 pub extern "C" fn @PREFIX@_resources() -> ModuleImage {
-    ModuleImage { data: IMAGE.as_ptr(), bytes: IMAGE.len() }
+    ModuleImage { data: IMAGE.as_ptr(), bytes: IMAGE.len(), code: CODE.as_ptr().cast(), codes: CODE.len() }
 }
 @FUNCTIONS@

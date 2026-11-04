@@ -79,7 +79,22 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
         for index in 0..objects[object].sections[section].relocations.len() {
             let target = match &objects[object].sections[section].relocations[index].target {
                 Target::Section(section, _) => (object, *section),
-                Target::Import(_) => continue,
+                Target::Import(import) => {
+                    if import.dll == RUNTIME_LIBRARY {
+                        if let Some(archive) = &objects[object].archive {
+                            if archive.exports.contains(&import.name) {
+                                if let Some(resource) = &archive.resources {
+                                    for name in &resource.code {
+                                        let symbol = objects[object].symbols.iter().find(|symbol| &symbol.name == name)
+                                            .ok_or_else(|| format!("模块资源缺少所属CPU入口 {name}"))?;
+                                        include(&objects, &mut selected, &mut pending, object, symbol.section);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 Target::Symbol(name) => {
                     let name = name.clone();
                     let target = if let Some(&target) = defined.get(&name) { target } else {
@@ -155,13 +170,8 @@ fn prepare(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>) -> 
     }
     objects.swap(0, entries[0]);
     let mut objects = select(objects, libraries)?;
-    if matches!(objects[0].kind, Kind::Library { .. }) {
-        let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
-        Ok((objects, archives))
-    } else {
-        let (object, archives) = combine::objects(objects)?;
-        Ok((vec![object], archives))
-    }
+    let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
+    Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
     let (objects, libraries) = read_inputs(inputs)?;
@@ -181,20 +191,12 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
     match &object.kind {
         Kind::Module { .. } => unreachable!(),
         Kind::Application { .. } => {
-            let library = if !archives.is_empty() {
-                use std::hash::{Hash, Hasher};
-                let mut hash = std::collections::hash_map::DefaultHasher::new();
-                output.file_name().hash(&mut hash);
-                for archive in &archives {
-                    archive.bytes.hash(&mut hash);
-                }
-                let name = format!("blink_app_{:016x}.dll", hash.finish());
-                msvc::library(&archives, &[], &output.with_file_name(&name), false)?;
-                Some(name)
+            if archives.is_empty() {
+                let (object, _) = combine::objects(objects)?;
+                std::fs::write(&output, pe::link(&object)?)?;
             } else {
-                None
-            };
-            std::fs::write(&output, pe::link(&object, library.as_deref())?)?;
+                msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, false)?;
+            }
         }
         Kind::Library {
             header,
@@ -204,7 +206,7 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
             if archives.is_empty() {
                 return Err("DLL 目标文件没有静态目标库".into());
             }
-            msvc::library(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
+            msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
             let mut header_path = output.clone();
             header_path.set_extension("abi.h");
             std::fs::write(header_path, header)?;

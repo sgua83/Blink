@@ -16,7 +16,7 @@ struct BindingSection {
 struct BindingDefinition {BindingBytes name;u64 section;u64 value;u64 function;};
 struct BindingRelocation {u64 offset;u64 kind;u64 target;u64 section;BindingBytes name;BindingBytes dll;};
 struct BoundRelocation {u64 offset;u64 symbol;u64 kind;};
-struct BindingInput {BindingBytes name;u64 application;address sections;u64 section_count;address definitions;u64 definition_count;};
+struct BindingInput {BindingBytes name;address sections;u64 section_count;address definitions;u64 definition_count;};
 struct BindingWork {address symbols;address nodes;address relocations;};
 struct BindingPlan {u64 symbols;u64 names;u64 relocations;u32 error;};
 extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;

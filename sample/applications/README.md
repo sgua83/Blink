@@ -51,7 +51,7 @@ $LASTEXITCODE
 
 `dataset<T>(length)` 创建全零、由当前 CPU 应用拥有的存储，`let rows = dataset<T>(length)` 可推导资源类型；固定形状可写 `dataset<T,N>` 或 `dataset<T,N>(N)`。CPU 下标与有界遍历沿用原类型和范围规则，普通函数可以 `read dataset<T>` 借用。`upload(rows)`、`download(rows)` 明确转移这份资源的物理存储；`target(cpu, program(args))`、`target(gpu, program(args))` 只接受对应存储，CPU 读取 GPU 数据前也须下载。资源可由普通 CPU 函数以 dataset<T[,N]> 返回并由调用方接收；返回资源交接所有权，其余本地资源在作用域结束、函数返回、break、continue 或 seek 时释放，GPU 物理内存继续由实际最后使用点持有。借用参数不能当作拥有资源返回；局部初始化和 CPU 拥有形参可以移动资源，原绑定随移动失效。
 
-这个应用部署为 exe 加链接器生成的 `blink_app_*.dll`，应一起复制同目录。源码 SDK 构建时，Rust 工具链只在编译阶段生成执行框架与平台 ABI 的静态目标代码，链接阶段不调用源码编译器；main 和 计算函数 均为 B 的原生编译结果。部署无需 SDK、Rust 工具链、B 源码或 brun；GPU 部分需要系统 Vulkan 驱动。仅使用普通值的 `start` 仍只产生 exe。
+这个应用将B原生代码、资源包装和已编译运行库链接到同一个exe，部署复制该exe及用户声明的外部DLL。源码SDK只在编译阶段使用Rust工具链生成执行框架与平台ABI的静态目标代码，链接阶段不调用源码编译器；main和计算函数均为B原生编译结果。部署无需SDK、Rust工具链、B源码或brun；GPU部分需要系统Vulkan驱动。仅使用普通值的start继续使用原自研PE输出。
 ## 整份数据借用给普通 CPU 函数
 
 ```powershell
@@ -96,6 +96,6 @@ target/applications/system_info.exe
 .\target\book-apps\map_cpu.exe
 ```
 
-GPU 版把文件名换成 map_gpu。部署复制 EXE 与链接器生成的 blink_app_*.dll；GPU 仍要求程序所需的 Vulkan 驱动能力。当前 target 只支持明确 cpu／gpu，没有 auto 或隐式迁移。
+GPU 版把文件名换成 map_gpu。部署复制单个EXE及实际声明的外部DLL；GPU 仍要求程序所需的 Vulkan 驱动能力。当前 target 只支持明确 cpu／gpu，没有 auto 或隐式迁移。
 
 这七组应用已用正式工具0.14.1.1编译链接并分别运行CPU／GPU，数值与各章手算结果对应。tile 集合运算的结果须先绑定到 parallel 根块局部变量，再写入字段；cooperative center、identity／compose 等本身承担教学含义的函数保留并完整展示。

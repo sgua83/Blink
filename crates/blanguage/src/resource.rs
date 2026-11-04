@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x19\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x1a\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -39,34 +39,35 @@ pub(crate) const fn scalar_tag(scalar: Scalar) -> u32 {
     }
 }
 #[derive(Clone, Debug)]
-pub enum Image<P = TemplateProgram> {
-    Cpu(native::ProgramImage<P>),
+pub enum Image<P = TemplateProgram, C = native::NativeCode> {
+    Cpu(native::ProgramImage<P, C>),
     Gpu(spirv::ProgramImage<P>),
 }
-impl<P> std::ops::Deref for Image<P> {
+impl<P, C> std::ops::Deref for Image<P, C> {
     type Target = ExecutionPlan;
     fn deref(&self) -> &ExecutionPlan {
         match self { Self::Cpu(image) => image.program(), Self::Gpu(image) => image.program() }
     }
 }
-impl<P> Image<P> {
-    pub fn into_cpu(self) -> Result<native::ProgramImage<P>, &'static str> {
+impl<P, C> Image<P, C> {
+    pub fn into_cpu(self) -> Result<native::ProgramImage<P, C>, &'static str> {
         match self { Self::Cpu(image) => Ok(image), Self::Gpu(_) => Err("GPU映像不能作为CPU机器码装入") }
     }
     pub fn into_gpu(self) -> Result<spirv::ProgramImage<P>, &'static str> {
         match self { Self::Gpu(image) => Ok(image), Self::Cpu(_) => Err("CPU映像不能作为SPIR-V装入") }
     }
 }
-pub struct Module {
+pub struct Module<C = native::NativeCode> {
     pub types: Vec<Ty>,
-    pub images: Vec<Image>,
+    pub images: Vec<Image<TemplateProgram, C>>,
 }
 record!(Module { types, images });
+record!(Module<usize> { types, images });
 variants!(Image { 0=>Cpu(image), 1=>Gpu(image) });
+variants!(Image<TemplateProgram, usize> { 2=>Cpu(image), 1=>Gpu(image) });
 
 #[cfg(feature = "compiler")]
-pub(crate) fn compile(name: &str, resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, u32, Vec<crate::object::stack::Frame>)> {
-    use native::{ContinuationCode, StageCode};
+pub(crate) fn compile( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<(Vec<u8>, Vec<native::NativeCode>, std::collections::BTreeMap<String, Vec<u8>>)> {
     let jobs = |cpu| resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
         .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
@@ -77,26 +78,15 @@ pub(crate) fn compile(name: &str, resources: &crate::application::Resources, wor
     let gpu = crate::parallel::try_map(worker, jobs(false), |_| (), |_, (program, stage)| {
         spirv::program::compile_stage(&resources.programs[program].1, stage)
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let stack_bytes = cpu.iter().map(|stage| match stage {
-        StageCode::Element { main, continuation, .. } => main.stack_bytes.max(match continuation {
-            None => 0,
-            Some(ContinuationCode::ReductionTail(code) | ContinuationCode::ScanAdd(code)
-                | ContinuationCode::CompactScatter(code) | ContinuationCode::SegmentedFinish(code)) => code.stack_bytes,
-            Some(ContinuationCode::Scan { prefix, apply, .. }) => prefix.stack_bytes.max(apply.stack_bytes),
-        }),
-        StageCode::Sort(code) => code.initialize.iter()
-            .chain([&code.histogram, &code.scatter, &code.gather])
-            .map(|code| code.stack_bytes).max().unwrap_or(0),
-    }).max().unwrap_or(0);
     let mut cpu = cpu.into_iter();
     let mut gpu = gpu.into_iter();
-    let mut stack = Vec::new();
-    let images = resources.programs.iter().enumerate().map(|(index, (target, program))| {
+    let mut code = Vec::new();
+    let images = resources.programs.iter().map(|(target, program)| {
         let mut plan = ExecutionPlan::from_program(program);
         if *target == Target::Cpu {
             let stages: Vec<_> = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
-            stack.extend(crate::object::stack::compute(&format!("{name} resource {index} ({})", program.name()), &stages));
-            Image::Cpu(unsafe { native::ProgramImage::from_compiler_output(plan, stages) })
+            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages) };
+            Image::Cpu(image.map_code(|entry| { let index = code.len(); code.push(entry); index }))
         } else {
             let stages = plan.stages.iter_mut().map(|stage| {
                 let (code, bytes) = gpu.next().unwrap();
@@ -107,7 +97,8 @@ pub(crate) fn compile(name: &str, resources: &crate::application::Resources, wor
         }
     }).collect();
     let bytes = compiler_output(&Module { types: resources.types.clone(), images });
-    Ok((bytes, stack_bytes, stack))
+    let imports = resources.programs.iter().flat_map(|(_, program)| program.imports.clone()).collect();
+    Ok((bytes, code, imports))
 }
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
     let mut bytes = ABI.to_vec();
@@ -136,6 +127,22 @@ impl ExecutionPlan {
 pub unsafe fn from_compiler_output(bytes: &[u8]) -> codec::Result<Module> {
     decode_compiler_output(bytes)
 }
+
+/// 恢复所属原生模块的静态布局并绑定同次链接的CPU入口；不分配代码VM。
+///
+/// # Safety
+/// bytes与code必须来自同一可信模块工厂，索引对应原范围ABI；所属模块及依赖
+/// 必须保持到最后CPU工作和程序消费者结束。地址表不转移代码所有权。
+#[doc(hidden)]
+pub unsafe fn from_linked_compiler_output(bytes: &[u8], code: &[*const u8]) -> codec::Result<Module<*const u8>> {
+    let module: Module<usize> = decode_compiler_output(bytes)?;
+    let images = module.images.into_iter().map(|image| match image {
+        Image::Cpu(image) => Image::Cpu(image.map_code(|index| code[index])),
+        Image::Gpu(image) => Image::Gpu(image),
+    }).collect();
+    Ok(Module { types: module.types, images })
+}
+
 macro_rules! image_output {
     ($backend:ident) => {
         impl<P> $backend::ProgramImage<P> {
@@ -155,16 +162,16 @@ macro_rules! image_output {
 }
 image_output!(native);
 image_output!(spirv);
-impl<P> Encode for native::ProgramImage<P> {
+impl<P, C: Encode> Encode for native::ProgramImage<P, C> {
     fn encode(&self, writer: &mut Writer) {
         self.program().encode(writer);
         self.stages().encode(writer);
     }
 }
-impl<P> Decode for native::ProgramImage<P> {
+impl<P, C: Decode> Decode for native::ProgramImage<P, C> {
     fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
         let program = ExecutionPlan::decode(reader)?;
-        let stages = Vec::<native::StageCode>::decode(reader)?;
+        let stages = Vec::<native::StageCode<C>>::decode(reader)?;
         Ok(unsafe { Self::from_compiler_output(program, stages) })
     }
 }
@@ -305,8 +312,8 @@ impl Decode for native::NativeCode {
     }
 }
 variants!(native::RangeResult {0=>None,1=>Values(n),2=>UnsignedSum});
-variants!(native::ContinuationCode {0=>ReductionTail(code),1=>ScanAdd(code),2=>CompactScatter(code),3=>SegmentedFinish(code),4=>Scan{prefix,apply,source,target}});
-record!(native::SortCode {
+variants!(@<C> native::ContinuationCode<C> {0=>ReductionTail(code),1=>ScanAdd(code),2=>CompactScatter(code),3=>SegmentedFinish(code),4=>Scan{prefix,apply,source,target}});
+record!(@<C> native::SortCode<C> {
     source,
     target,
     initialize,
@@ -314,7 +321,7 @@ record!(native::SortCode {
     scatter,
     gather
 });
-variants!(native::StageCode {0=>Element{main,continuation,result},1=>Sort(code)});
+variants!(@<C> native::StageCode<C> {0=>Element{main,continuation,result},1=>Sort(code)});
 record!(spirv::ShaderCode { words, ranks });
 record!(spirv::StageCode {
     main,

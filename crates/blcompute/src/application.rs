@@ -15,6 +15,7 @@ pub use blanguage::resource::DatasetBinding;
 
 pub enum ProgramImage {
     Cpu(blanguage::native::ProgramImage<TemplateProgram>),
+    CpuLinked(blanguage::native::ProgramImage<TemplateProgram, *const u8>),
     Gpu(blanguage::spirv::ProgramImage<TemplateProgram>),
 }
 /// 当前已装入的原CPU／GPU程序；观察只借用，不复制代码拥有关系。
@@ -32,6 +33,7 @@ impl ProgramSlot {
     pub fn layout(&self) -> &ExecutionPlan {
         match self {
             Self::Image(ProgramImage::Cpu(image)) => image.program(),
+            Self::Image(ProgramImage::CpuLinked(image)) => image.program(),
             Self::Image(ProgramImage::Gpu(image)) => image.program(),
             Self::Loaded(program) => program.layout(),
         }
@@ -131,6 +133,15 @@ impl Frame {
                     Ok(program) => Ok(Program::Cpu(program)),
                     Err((error, image)) => {
                         self.programs[index] = Some(ProgramSlot::Image(ProgramImage::Cpu(image)));
+                        Err(error)
+                    }
+                }
+            }
+            ProgramSlot::Image(ProgramImage::CpuLinked(image)) => {
+                match unsafe { CpuTemplate::from_linked(image) } {
+                    Ok(program) => Ok(Program::Cpu(program)),
+                    Err((error, image)) => {
+                        self.programs[index] = Some(ProgramSlot::Image(ProgramImage::CpuLinked(image)));
                         Err(error)
                     }
                 }

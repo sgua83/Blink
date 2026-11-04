@@ -49,6 +49,7 @@ pub(crate) struct ResourceBinding {
     pub types: u32,
     pub programs: u32,
     pub abi: Vec<u8>,
+    pub code: Vec<String>,
 }
 pub(crate) struct Archive {
     pub bytes: Vec<u8>,

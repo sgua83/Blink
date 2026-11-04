@@ -63,6 +63,7 @@ pub(crate) fn application_source(
     prefix: &str,
     root: bool,
     image: &[u8],
+    code: &[(String, crate::native::NativeCode)],
 ) -> Result<String, Box<dyn std::error::Error>> {
     use std::fmt::Write;
     let mut functions = String::new();
@@ -137,7 +138,8 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
     for factory in factories {
         let image = unsafe { factory() };
         let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
-        let module = match unsafe { blanguage::resource::from_compiler_output(bytes) } {
+        let code = unsafe { std::slice::from_raw_parts(image.code, image.codes) };
+        let module = match unsafe { blanguage::resource::from_linked_compiler_output(bytes, code) } {
             Ok(module) => module,
             Err(error) => {
                 let message = error.to_string();
@@ -147,7 +149,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
         };
         types.extend(module.types);
         programs.extend(module.images.into_iter().map(|image| match image {
-            blanguage::resource::Image::Cpu(image) => ProgramImage::Cpu(image),
+            blanguage::resource::Image::Cpu(image) => ProgramImage::CpuLinked(image),
             blanguage::resource::Image::Gpu(image) => ProgramImage::Gpu(image),
         }));
     }
@@ -217,5 +219,9 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
     Ok(include_str!("../application/runtime.rs.in")
         .replace("@PREFIX@", prefix)
         .replace("@IMAGE@", &format!("{image:?}"))
+        .replace("@CODE_COUNT@", &code.len().to_string())
+        .replace("@CODE_DECLARATIONS@", &code.iter().enumerate().map(|(index, (name, _))|
+            format!("#[link_name={name:?}] fn range_{index}();")).collect::<Vec<_>>().join("\n"))
+        .replace("@CODE_ENTRIES@", &(0..code.len()).map(|index| format!("range_{index}")).collect::<Vec<_>>().join(","))
         .replace("@FUNCTIONS@", &functions))
 }

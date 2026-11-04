@@ -478,7 +478,7 @@ impl CpuProgram {
     }
     pub fn from_image(image: blanguage::native::ProgramImage<ExecutableProgram>) -> Result<Self> {
         Ok(Self {
-            code: CpuCode::from_image(image).map_err(|(error, _)| error)?,
+            code: CpuCode::from_image(image, &Executable::new).map_err(|(error, _)| error)?,
         })
     }
     /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
@@ -488,13 +488,7 @@ impl CpuProgram {
     /// 所属模块及其依赖须保持到最后真实CPU工作和本程序消费者结束。
     #[doc(hidden)]
     pub unsafe fn from_linked(image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>) -> Result<Self> {
-        let workers = std::thread::available_parallelism()?.get();
-        let stages = CpuCode::load_stages(image.stages(), &|address| Ok(Executable {
-            address: address.cast_mut().cast(),
-            _allocation: None,
-        }))?;
-        let (program, _) = image.into_parts();
-        Ok(Self { code: CpuCode { program, stages, workers } })
+        Ok(Self { code: CpuCode::linked(image).map_err(|(error, _)| error)? })
     }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
         self.code.run(datasets, &[], values)
@@ -521,9 +515,18 @@ impl CpuTemplate {
         Self::from_image(blanguage::native::compile_program(program).map_err(error)?)
             .map_err(|(error, _)| error)
     }
+    /// 借用所属原生模块的已链接条件范围，失败交回同一未改映像。
+    ///
+    /// # Safety
+    /// 映像及地址必须来自同一TemplateProgram编译产物并满足原范围ABI；
+    /// 所属模块与依赖保持到最后CPU工作和程序消费者结束，原前缀前提由实际调用交接。
+    #[doc(hidden)]
+    pub unsafe fn from_linked(image: blanguage::native::ProgramImage<TemplateProgram, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram, *const u8>)> {
+        CpuCode::linked(image).map(|code| Self { code })
+    }
     /// 装入失败交回原错误和同一未改映像；本调用没有执行数据。
     pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram>)> {
-        CpuCode::from_image(image).map(|code| Self { code })
+        CpuCode::from_image(image, &Executable::new).map(|code| Self { code })
     }
     pub fn run(
         &self,
@@ -614,12 +617,17 @@ impl CpuCode {
         }
         Ok(result)
     }
-    fn from_image<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
+    fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
+        Self::from_image(image, &|address| Ok(Executable {
+            address: address.cast_mut().cast(), _allocation: None,
+        }))
+    }
+    fn from_image<P, C>(image: blanguage::native::ProgramImage<P, C>, load: &impl Fn(&C) -> Result<Executable>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, C>)> {
         let workers = match std::thread::available_parallelism() {
             Ok(workers) => workers.get(),
             Err(error) => return Err((error.into(), image)),
         };
-        let stages = match Self::load_stages(image.stages(), &Executable::new) {
+        let stages = match Self::load_stages(image.stages(), load) {
             Ok(stages) => stages,
             Err(error) => return Err((error, image)),
         };

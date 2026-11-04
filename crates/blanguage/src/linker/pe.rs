@@ -1,5 +1,5 @@
 //! 组合已编译 COFF 节、解析符号与重定位，写出 PE；不生成函数机器码。
-use super::{RUNTIME_LIBRARY, Result};
+use super::Result;
 use crate::object::{Import, Kind, Object, Target};
 use std::collections::{BTreeMap, BTreeSet};
 const BASE: u64 = 0x140000000;
@@ -100,26 +100,16 @@ struct Section {
     flags: u32,
 }
 pub(super) fn stack_reserve(stack_bytes: u32) -> u64 { align(stack_bytes as usize + 1024 * 1024, 65536) as u64 }
-pub(super) fn link(object: &Object, runtime: Option<&str>) -> Result<Vec<u8>> {
+pub(super) fn link(object: &Object) -> Result<Vec<u8>> {
     let stack_bytes = match object.kind {
         Kind::Application { stack_bytes } => stack_bytes,
         _ => return Err("需要应用目标文件".into()),
-    };
-    let physical = |i: &Import| -> Result<Import> {
-        Ok(Import {
-            dll: if i.dll == RUNTIME_LIBRARY {
-                runtime.ok_or("应用缺少已链接执行库")?.into()
-            } else {
-                i.dll.clone()
-            },
-            name: i.name.clone(),
-        })
     };
     let mut values = BTreeSet::new();
     for section in &object.sections {
         for r in &section.relocations {
             if let Target::Import(i) = &r.target {
-                values.insert(physical(i)?);
+                values.insert(i.clone());
             }
         }
     }
@@ -143,7 +133,7 @@ pub(super) fn link(object: &Object, runtime: Option<&str>) -> Result<Vec<u8>> {
                 Target::Section(i, value) => {
                     sections.get(*i).ok_or("重定位引用未知节")?.rva as u64 + *value as u64
                 }
-                Target::Import(i) => table.targets[&physical(i)?] as u64,
+                Target::Import(i) => table.targets[i] as u64,
                 Target::Symbol(name) => return Err(format!("未定义模块符号 {name}").into()),
             };
             let at = relocation.offset;

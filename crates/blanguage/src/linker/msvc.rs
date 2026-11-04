@@ -110,7 +110,7 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         vec![vc.join("lib/x64"), sdk.join("um/x64"), sdk.join("ucrt/x64")],
     ))
 }
-pub(super) fn library(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
+pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
     let binding = super::resources::resources(archives)?;
     let (linker, libraries) = tools()?;
     let id = format!(
@@ -145,15 +145,29 @@ pub(super) fn library(archives: &[Archive], objects: &[&crate::object::Object], 
     }
     if !imports.is_empty() {
         use crate::object::{Kind, Object, Relocation, Section, Symbol, Target};
-        let mut sections = [".idata$2", ".idata$3", ".idata$4", ".idata$5", ".idata$6"]
+        let mut sections = [".idata$2", ".idata$3", ".idata$4", ".idata$5", ".idata$6", ".rdata"]
             .into_iter().enumerate().map(|(index, name)| Section {
                 name: name.into(), bytes: Vec::new(),
-                flags: 0xc0000040 | match index { 0 | 1 => 0x00300000, 2 | 3 => 0x00400000, _ => 0x00200000 },
+                flags: (if index == 5 { 0x40000040 } else { 0xc0000040 }) | match index { 0 | 1 => 0x00300000, 2 | 3 | 5 => 0x00400000, _ => 0x00200000 },
                 relocations: Vec::new(), associated: Vec::new(), layout: None,
             }).collect::<Vec<_>>();
         sections[1].bytes.resize(20, 0);
         let mut symbols = Vec::new();
         for (dll, names) in imports {
+            if dll == crate::application::RUNTIME_LIBRARY {
+                for name in names {
+                    let value = u32::try_from(sections[5].bytes.len())?;
+                    sections[5].bytes.extend([0; 8]);
+                    symbols.push(Symbol {
+                        name: format!("__blink_import${}${dll}{name}", dll.len()),
+                        section: 5, value, contract: Vec::new(), function: false,
+                    });
+                    sections[5].relocations.push(Relocation {
+                        offset: value as usize, kind: 1, target: Target::Symbol(name.into()),
+                    });
+                }
+                continue;
+            }
             let descriptor = sections[0].bytes.len();
             sections[0].bytes.resize(descriptor + 20, 0);
             let dll_name = sections[4].bytes.len();
@@ -214,7 +228,6 @@ pub(super) fn library(archives: &[Archive], objects: &[&crate::object::Object], 
         let mut command = Command::new(linker);
         command
             .args([
-                "/DLL",
                 "/NOLOGO",
                 "/MACHINE:X64",
                 "/OPT:REF",
@@ -223,6 +236,11 @@ pub(super) fn library(archives: &[Archive], objects: &[&crate::object::Object], 
             ])
             .arg(format!("/OUT:{}", path.display()))
             .args(&temporary);
+        if let Some(crate::object::Object { kind: crate::object::Kind::Application { stack_bytes }, .. }) = objects.first().copied() {
+            command.arg("/SUBSYSTEM:CONSOLE").arg(format!("/STACK:{}", super::pe::stack_reserve(*stack_bytes)));
+        } else {
+            command.arg("/DLL");
+        }
         if import_library {
             let mut import_path = path.to_path_buf();
             import_path.set_extension("lib");

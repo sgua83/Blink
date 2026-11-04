@@ -71,18 +71,24 @@ impl Module {
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
     pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> codec::Result<Object> {
-        let code = crate::parallel::try_map(
+        let mut code = crate::parallel::try_map(
             worker, self.functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
+        let (archive, resource_code, resource_imports) =
+            crate::application::compile_resources(&self.name, self.resources.as_ref(), false, worker)?;
+        let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
+        code.extend(resource_code);
+        let mut imports = self.imports.clone();
+        imports.extend(resource_imports);
         let stack_bytes = code
             .iter()
             .map(|(_, code)| code.stack_bytes)
             .max()
             .unwrap_or(0);
-        let (sections, positions, mut stack) = object::module_code(
+        let (sections, positions, stack) = object::module_code(
             code,
-            &self.imports,
+            &imports,
             &crate::application::resource_prefix(&self.name),
         )?;
         let symbols = self
@@ -95,21 +101,22 @@ impl Module {
                 contract: contract.clone(),
                 function: true,
             })
+            .chain(resource_names.into_iter().map(|name| Symbol {
+                section: positions[&name].0, value: positions[&name].1,
+                name, contract: Vec::new(), function: true,
+            }))
             .collect();
-        let (archive, resource_stack, compute) =
-            crate::application::compile_resources(&self.name, self.resources.as_ref(), false, worker)?;
-        stack.extend(compute);
         Ok(Object {
             name: self.name.clone(),
             kind: Kind::Module {
                 interface: self.header.clone(),
                 requirements: self.requirements.clone(),
-                stack_bytes: stack_bytes.max(resource_stack),
+                stack_bytes,
             },
             sections,
             stack,
             symbols,
-            imports: self.imports.clone(),
+            imports,
             archive,
         })
     }

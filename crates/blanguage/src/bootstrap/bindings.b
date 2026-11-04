@@ -177,10 +177,6 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         }
         i+=1u64;
     }
-    if(input.application!=0u64){
-        symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),14u64),1u64,0u64,1u64,1u64,0u64,0u64,2u64,0u64));
-        count+=1u64;row+=1u64;names+=14u64;
-    }
     i=0u64;
     while(i<input.definition_count){
         BindingDefinition value=definition_at(input,i);
@@ -257,9 +253,6 @@ extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan
                 literal(names,at,6875710655180201823u64,8u64);literal(names,at+8u64,2625158131518498163u64,8u64);
                 copy(names,at+16u64,input.name);literal(names,at+16u64+input.name.length,36u64,1u64);
                 decimal(names,at+17u64+input.name.length,value.source);
-            }else if(value.generated==2u64){
-                // "mainCRTStartup"
-                literal(names,at,6004514652760400237u64,8u64);literal(names,at+8u64,123649767137652u64,6u64);
             }else{
                 BindingKey key=node_at(forest,value.source).key;
                 // "__blink_import$<dll byte length>$<dll><name>"

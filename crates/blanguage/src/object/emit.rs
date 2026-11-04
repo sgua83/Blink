@@ -215,9 +215,8 @@ pub(crate) fn application(
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
     name: &str,
-) -> Result<(Vec<Section>, Vec<Frame>)> {
-    let (sections, _, frames) = functions(Some((name.into(), native)), defined, imports, prefix)?;
-    Ok((sections, frames))
+) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
+    functions(Some((name.into(), native)), defined, imports, prefix)
 }
 pub(crate) fn module(
     defined: Vec<(String, NativeCode)>,
@@ -245,6 +244,7 @@ fn functions(
         let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), 40, calls, bytes, Some((end, unwind_info(4, vec![(4, vec![4, 0x42])]))), Some(Layout::Generated));
         let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(Layout::Function));
+        symbols.insert("main".into(), (main, 0));
         sections[entry].relocations.push(Relocation { offset: 5, kind: 4, target: Target::Section(main, 0) });
         sections[entry].relocations.extend(patches.into_iter()
             .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));

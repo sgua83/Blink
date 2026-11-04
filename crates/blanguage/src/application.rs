@@ -31,23 +31,30 @@ impl Application {
     pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> Result<Object, Box<dyn std::error::Error>> {
         let code = native::emit_application(&self.body).map_err(std::io::Error::other)?;
         let mut stack_bytes = code.stack_bytes;
-        let functions = crate::parallel::try_map(worker, self.functions.iter().collect(), |_| (),
+        let mut functions = crate::parallel::try_map(worker, self.functions.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let (archive, resource_code, resource_imports) = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
+        let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
+        functions.extend(resource_code);
+        let mut imports = self.imports.clone();
+        imports.extend(resource_imports);
         for (_, function) in &functions {
             stack_bytes = stack_bytes.max(function.stack_bytes);
         }
-        let (sections, mut stack) =
-            object::application_code(code, functions, &self.imports, &resource_prefix(&self.name), &self.name)?;
-        let (archive, resource_stack, compute) = compile_resources(&self.name, self.resources.as_ref(), true, worker)?;
-        stack.extend(compute);
+        let (sections, positions, stack) =
+            object::application_code(code, functions, &imports, &resource_prefix(&self.name), &self.name)?;
+        let symbols = std::iter::once("main".to_owned()).chain(resource_names).map(|name| object::Symbol {
+            section: positions[&name].0, value: positions[&name].1,
+            name, contract: Vec::new(), function: true,
+        }).collect();
         Ok(Object {
             name: self.name.clone(),
-            kind: Kind::Application { stack_bytes: stack_bytes.max(resource_stack) },
+            kind: Kind::Application { stack_bytes },
             sections,
             stack,
-            symbols: Vec::new(),
-            imports: self.imports.clone(),
+            symbols,
+            imports,
             archive,
         })
     }
@@ -69,11 +76,13 @@ pub(crate) fn compile_resources(
     resources: Option<&Resources>,
     root: bool,
     worker: &crate::compiler::Worker,
-) -> Result<(Option<object::Archive>, u32, Vec<object::stack::Frame>), Box<dyn std::error::Error>> {
+) -> Result<(Option<object::Archive>, Vec<(String, native::NativeCode)>, std::collections::BTreeMap<String, Vec<u8>>), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
-        let (image, stack_bytes, stack) = crate::resource::compile(name, resources, worker)?;
-        let source = crate::dll::application_source(resources, &prefix, root, &image)?;
+        let (image, code, imports) = crate::resource::compile(resources, worker)?;
+        let code: Vec<_> = code.into_iter().enumerate()
+            .map(|(index, code)| (format!("__blink_range_{prefix}_{index}"), code)).collect();
+        let source = crate::dll::application_source(resources, &prefix, root, &image, &code)?;
         let mut exports = if root {
             [
                 "blink_destroy",
@@ -114,9 +123,10 @@ pub(crate) fn compile_resources(
             types: u32::try_from(resources.types.len())?,
             programs: u32::try_from(resources.programs.len())?,
             abi: crate::resource::ABI.to_vec(),
+            code: code.iter().map(|(name, _)| name.clone()).collect(),
         });
-        (Some(archive), stack_bytes, stack)
+        (Some(archive), code, imports)
     } else {
-        (None, 0, Vec::new())
+        (None, Vec::new(), std::collections::BTreeMap::new())
     })
 }

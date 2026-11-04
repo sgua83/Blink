@@ -551,7 +551,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 算法DLL的CPU机器码直接交给原COFF对象：每个主范围、集合延续和排序入口拥有实际符号、重定位与展开节。生成Rust包装只保存同次编译的ExecutionPlan字节和这些已链接入口的地址，原CpuCode继续承担阶段与线程调度。GPU及普通应用资源包装仍消费原resource映像编码；SDK动态CPU映像也保留自己的装入职责。执行布局、代码和入口类别必须来自同一编译产物，原FFI负责交回实际错误；不将条件模板冒充已验证入口，也不把局部帧大小当作完整线程栈上界。
 
-源码节选：`crates/blanguage/src/resource.rs:112`。
+源码节选：`crates/blanguage/src/resource.rs:103`。
 
 ```rust
 fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
@@ -797,7 +797,7 @@ pub(crate) struct Views<Source> {
 
 Frame已经持有原数据和有效域关系，观察不需要再建一张根表。data直接交回同一DomainBindings的共享借用；datasets交回同一原Vec，保持原槽索引与None空槽，ResidentData的Cpu／Gpu就是实际原存储。通过这些借用继续读原布局或来源，不load程序、创建设备或隐式传输。
 
-源码节选：`crates/blcompute/src/application.rs:90`。
+源码节选：`crates/blcompute/src/application.rs:92`。
 
 ```rust
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
@@ -841,7 +841,7 @@ domain_relations共享借用同一原Vec，len是当前有效关系数，capacit
 
 数据根之外，Frame还持有真正使用的程序。programs共享借用原`Vec<Option<ProgramSlot>>`，以len／capacity交接当前槽数与可容纳槽数，索引仍为该Frame程序号；不建另一程序目录，也不为观察装入代码或创建设备。原槽保留Image／Loaded与CPU／GPU实际类型。
 
-源码节选：`crates/blcompute/src/application.rs:95`。
+源码节选：`crates/blcompute/src/application.rs:97`。
 
 ```rust
     pub fn programs(&self) -> &Vec<Option<ProgramSlot>> {
@@ -853,7 +853,7 @@ len／capacity乘实际`size_of::<Option<ProgramSlot>>()`分别计槽跨度／�
 
 这份借用有效时，Frame不能被改写或释放；结束后再查当前原状态。公开原枚举让观察者沿原对象继续查询，不赋予写回原私有程序容器的能力。
 
-源码节选：`crates/blcompute/src/application.rs:21`。
+源码节选：`crates/blcompute/src/application.rs:22`。
 
 ```rust
 pub enum Program {
@@ -1411,7 +1411,7 @@ pub(super) enum Access {
 }
 ```
 
-参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，普通write／inout实例独占位置继续见原Issues。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用Frame范围映像尚未交接已编译普通模块函数代码，真实消费缺口见Issues C-027.35.4.2.2.5；算法DLL和普通Host调用的能力不冒称该消费链已交付。对象编码为现行BLCO48，执行资源编码为BLRI25。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，普通write／inout实例独占位置继续见原Issues。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame在原程序槽绑定入口并执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。源码CPU范围当前仍展开本地普通函数，递归调用会报B160，未实现范围见Issues C-027.35.4.2.2.6；无提供者源码的对象／归档递归普通函数调用已原生验证。这是源码调用降低的缺口，不作为CPU通用能力的永久边界。对象编码为现行BLCO50，执行资源编码为BLRI26。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -2033,7 +2033,7 @@ pub struct NativeCode {
 
 编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
 
-这些观察事实不进入BLRI25执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入BLRI26执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -2101,13 +2101,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
     /// 所属模块及其依赖须保持到最后真实CPU工作和本程序消费者结束。
     #[doc(hidden)]
     pub unsafe fn from_linked(image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>) -> Result<Self> {
-        let workers = std::thread::available_parallelism()?.get();
-        let stages = CpuCode::load_stages(image.stages(), &|address| Ok(Executable {
-            address: address.cast_mut().cast(),
-            _allocation: None,
-        }))?;
-        let (program, _) = image.into_parts();
-        Ok(Self { code: CpuCode { program, stages, workers } })
+        Ok(Self { code: CpuCode::linked(image).map_err(|(error, _)| error)? })
     }
 ```
 
@@ -2937,7 +2931,7 @@ struct BindingSection {
 struct BindingDefinition {BindingBytes name;u64 section;u64 value;u64 function;};
 struct BindingRelocation {u64 offset;u64 kind;u64 target;u64 section;BindingBytes name;BindingBytes dll;};
 struct BoundRelocation {u64 offset;u64 symbol;u64 kind;};
-struct BindingInput {BindingBytes name;u64 application;address sections;u64 section_count;address definitions;u64 definition_count;};
+struct BindingInput {BindingBytes name;address sections;u64 section_count;address definitions;u64 definition_count;};
 struct BindingWork {address symbols;address nodes;address relocations;};
 struct BindingPlan {u64 symbols;u64 names;u64 relocations;u32 error;};
 extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;

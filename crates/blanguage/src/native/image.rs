@@ -121,6 +121,31 @@ impl<P, C> ProgramImage<P, C> {
     pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>) {
         (self.program, self.stages)
     }
+
+    /// 同一编译映像只改变代码引用的表示；执行布局及入口类别保持。
+    pub(crate) fn map_code<D>(self, mut code: impl FnMut(C) -> D) -> ProgramImage<P, D> {
+        let stages = self.stages.into_iter().map(|stage| match stage {
+            StageCode::Element { main, continuation, result } => {
+                let main = code(main);
+                let continuation = continuation.map(|continuation| match continuation {
+                    ContinuationCode::ReductionTail(c) => ContinuationCode::ReductionTail(code(c)),
+                    ContinuationCode::ScanAdd(c) => ContinuationCode::ScanAdd(code(c)),
+                    ContinuationCode::CompactScatter(c) => ContinuationCode::CompactScatter(code(c)),
+                    ContinuationCode::SegmentedFinish(c) => ContinuationCode::SegmentedFinish(code(c)),
+                    ContinuationCode::Scan { prefix, apply, source, target } =>
+                        ContinuationCode::Scan { prefix: code(prefix), apply: code(apply), source, target },
+                });
+                StageCode::Element { main, continuation, result }
+            }
+            StageCode::Sort(c) => StageCode::Sort(SortCode {
+                source: c.source, target: c.target,
+                initialize: c.initialize.into_iter().map(&mut code).collect(),
+                histogram: code(c.histogram), scatter: code(c.scatter), gather: code(c.gather),
+            }),
+        }).collect();
+        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages }
+    }
+
 }
 
 /// 原发射者写入的尾部分区；end是同一bytes中的排他末端。

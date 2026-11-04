@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
-const FORMAT: u32 = 49;
+const FORMAT: u32 = 50;
 // Caller-owned views; original names and bodies stay in Object until encoding ends.
 #[repr(C)]
 struct CoffSectionView {
@@ -58,7 +58,7 @@ struct BindingRelocation { offset: u64, kind: u64, target: u64, section: u64, na
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct BindingInput {
-    name: BindingBytes, application: u64, sections: *mut BindingSection, section_count: usize,
+    name: BindingBytes, sections: *mut BindingSection, section_count: usize,
     definitions: *const BindingDefinition, definition_count: usize,
 }
 #[repr(C)]
@@ -325,6 +325,7 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         binding.types.encode(&mut resource);
         binding.programs.encode(&mut resource);
         binding.abi.encode(&mut resource);
+        binding.code.encode(&mut resource);
     } else {
         false.encode(&mut resource);
     }
@@ -455,15 +456,14 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
-    let application = matches!(o.kind, Kind::Application { .. });
     let relocation_count: usize = input_relocations.iter().map(Vec::len).sum();
-    // At most two symbols per section, one per definition/reference, and the entry.
+    // At most two symbols per section and one per definition/reference.
     // Each definition/reference contributes at most one shared tree node.
-    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * o.sections.len() + o.symbols.len() + relocation_count + usize::from(application));
+    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * o.sections.len() + o.symbols.len() + relocation_count);
     let mut nodes = Vec::<[u64; 9]>::with_capacity(o.symbols.len() + relocation_count);
     let mut relocations = Vec::<CoffRelocationView>::with_capacity(relocation_count);
     let binding_input = BindingInput {
-        name: BindingBytes::new(o.name.as_bytes()), application: u64::from(application),
+        name: BindingBytes::new(o.name.as_bytes()),
         sections: binding_sections.as_mut_ptr(), section_count: binding_sections.len(),
         definitions: definitions.as_ptr(), definition_count: definitions.len(),
     };
@@ -604,6 +604,7 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
             types: u32::decode(&mut resource)?,
             programs: u32::decode(&mut resource)?,
             abi: Vec::<u8>::decode(&mut resource)?,
+            code: Vec::<String>::decode(&mut resource)?,
         })
     } else {
         None
@@ -685,10 +686,9 @@ fn decode_object(reader: &Reader<'_>) -> Result<Object> {
     let symbols = symbols
             .into_iter()
             .flatten()
-            .filter(|(name, section, _, class, _)| {
+            .filter(|(_, section, _, class, _)| {
                 *class == 2
                     && *section > 0
-                    && !(name == "mainCRTStartup" && matches!(kind, Kind::Application { .. }))
             })
             .map(|(name, section, value, _, function)| {
                 Ok(super::Symbol {
