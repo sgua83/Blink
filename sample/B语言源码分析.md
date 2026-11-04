@@ -435,7 +435,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1408`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1417`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -460,7 +460,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2453`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2462`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -480,7 +480,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1398`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1407`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1349,7 +1349,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 字段路径使同一materialize_element只取得所选旧字段／子树，原drop_returned只接管这一字段。父静态F与未改兄弟字段继续保持，完整数组字段按数组逆序清理，变体字段只处理实际活动载荷。新字段仍沿capture_element_model映射回真实父ElementComponent分量，原Data.elements保存所有仍存在元素的共同事实；普通父id的共同nonzero不因另一个dataset字段被替换而撤回，新字段不满足共同nonempty时也不会沿用旧前提。原源码缺席对象／归档交接相同模型，调用方和库内替换均只持有原Frame的实际存储。固定数组各候选投影沿实际Ty::aggregate_part映射，物化使用同一已装载的实际旧值，不产生多次读取或清理；动态选位仍合流可能未改的旧字段，唯一外层元素与唯一实际投影完整覆盖时才接收新模型。跨子dataset的整元素／资源字段写位置继续分别见C-020.1.6.2.6.3.1／C-020.1.6.2.6.3.2。
 
-element_owner_bindings在此之前保留实际按值及read／inout参数已有Proof的全部分量和相等别名，非参数局部值继续只交接原view及资源元数据。Value只捕获一次原Proof，引用直接消费OwnedBinding持有的原Proof，再沿原project选择分量；不制造Value、SSA或第二输入模型。唯一新增元素因此仍能向原调用者交接参数的数值、子资源长度与索引关系，实际改写后的快照按原规则失效。capture_element_model的projection沿实际父Ty记录字段及固定数组单元映射原ElementComponent编号，旧初始化和唯一增长传空投影；同一个原Data.elements合流仍存在的旧新共同事实，已知唯一实际元素完整覆盖时接收新模型。不按元素维护表，不把不同元素数值视为相等。跨子dataset的动态元素写入、按值取出元素及含view元素构造仍沿各自Issues开放；静态F算术返回的共同nonzero缺口归C-005.15。
+Returned::bind_outputs在Data.elements的绑定边界为无来源分量保留原ElementComponent，缺失向量分量同样按真实模型宽度补齐；实际参数身份、已有相等别名和范围保持。逻辑regs不是函数机器寄存器，不能用同号的句柄、长度或工厂参数证明另一个字段。Proof::common把整数的零／非零交给原Condition::common，实际调用替换后再从已闭合结果标记原nonzero；bool输出别名仍只解释真实bool。NotEqual不以两个非零条件都成立推出数值相等，真正的bool相等仍由原Boolean事实及矛盾查询处理。element_owner_bindings在此之前保留实际按值及read／inout参数已有Proof的全部分量和相等别名，非参数局部值继续只交接原view及资源元数据。Value只捕获一次原Proof，引用直接消费OwnedBinding持有的原Proof，再沿原project选择分量；不制造Value、SSA或第二输入模型。唯一新增元素因此仍能向原调用者交接参数的数值、子资源长度与索引关系，实际改写后的快照按原规则失效。capture_element_model的projection沿实际父Ty记录字段及固定数组单元映射原ElementComponent编号，旧初始化和唯一增长传空投影；同一个原Data.elements合流仍存在的旧新共同事实，已知唯一实际元素完整覆盖时接收新模型。不按元素维护表，不把不同元素数值视为相等。跨子dataset的动态元素写入、按值取出元素及含view元素构造仍沿各自Issues开放；静态F算术返回的共同nonzero缺口归C-005.15。
 
 assign_owned_proof同时消费直接ApplicationElement和动态Indexed.locations，按真实分量交回同一update_application_elements；动态可能未改位置保留旧新共同事实，未写兄弟的来源继续保持。模型交回Data.elements前，Proof::retain_view_borrows沿完整updated.ty仅保留真实view／address边，普通句柄数值不会把某个函数局部生产调用带到另一函数。application_element_proof查询原拥有available后才选择相同root的模型，已移动旧绑定退出内容事实权威；变量名排序不改变实际新读取的值、资源或前提。两处沿原所有者修正，没有新增资源版本、运行时表、读取副本或第二释放链。
 
@@ -1454,7 +1454,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:813`。
+源码节选：`crates/blanguage/src/check/bounds.rs:816`。
 
 ```rust
         self.nonzero = (0..width)
@@ -1467,12 +1467,18 @@ enum Fact {
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:963`。
+源码节选：`crates/blanguage/src/check/bounds.rs:966`。
 
 ```rust
     pub fn common(a: &Value, b: &Value) -> Self {
-        let mut proof=Self::capture(a);
-        proof.join(&Self::capture(b),a.regs.len(),None);
+        let mut proof=Self::capture(a);let mut other=Self::capture(b);
+        for(component,(scalar,_))in a.ty.components.iter().enumerate(){
+            if scalar.is_integer(){
+                proof.conditions[component]=Some(Box::new(Condition::component(a,component)));
+                other.conditions[component]=Some(Box::new(Condition::component(b,component)));
+            }
+        }
+        proof.join(&other,a.regs.len(),None);
         proof
     }
 ```
@@ -1497,7 +1503,7 @@ enum Fact {
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1526`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1535`。
 
 ```rust
 impl Drop for Clause {

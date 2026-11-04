@@ -393,7 +393,7 @@ impl Proof {
                 })
                 .collect(),
         ));
-        for(component,reg)in registers.iter().enumerate(){if let Some(condition)=outputs.component_condition(component){
+        for(component,reg)in registers.iter().enumerate(){if types[*reg]==Scalar::Bool && let Some(condition)=outputs.component_condition(component){
             let cases=std::array::from_fn::<_,2,_>(|truth|Clause::both(&condition.cases[truth],&Clause::facts([Fact::Boolean(ValueIdentity::Register(*reg),truth!=0)].into())));
             aliases=Clause::both(&aliases,&Clause::either(&cases[0],&cases[1]));
         }}aliases
@@ -539,15 +539,15 @@ impl Proof {
                     if let Some((left, right)) = bindings.get(&a).zip(bindings.get(&b)) {
                         let same = left.known_identity(0).zip(right.known_identity(0))
                             .is_some_and(|(a, b)| a == b);
-                        let booleans = left.component_condition(0).and_then(Condition::boolean_constant)
+                        let conditions = left.component_condition(0).and_then(Condition::boolean_constant)
                             .zip(right.component_condition(0).and_then(Condition::boolean_constant));
                         let (al, ah) = left.range(0);
                         let (bl, bh) = right.range(0);
-                        if same || booleans.is_some_and(|(a,b)| a == b)
+                        if same || conditions == Some((false,false))
                             || (al == ah && bl == bh && al == bl) {
                             return Clause::impossible();
                         }
-                        if booleans.is_some_and(|(a,b)| a != b) || ah < bl || bh < al {
+                        if conditions.is_some_and(|(a,b)| a != b) || ah < bl || bh < al {
                             return Clause::default();
                         }
                     }
@@ -675,6 +675,9 @@ impl Proof {
                     }
                 }
             }
+        }
+        for component in 0..translated.conditions.len(){
+            if translated.component_condition(component).and_then(Condition::boolean_constant)==Some(true){translated.mark_nonzero(component);}
         }
         translated
     }
@@ -961,8 +964,14 @@ impl Proof {
         proof
     }
     pub fn common(a: &Value, b: &Value) -> Self {
-        let mut proof=Self::capture(a);
-        proof.join(&Self::capture(b),a.regs.len(),None);
+        let mut proof=Self::capture(a);let mut other=Self::capture(b);
+        for(component,(scalar,_))in a.ty.components.iter().enumerate(){
+            if scalar.is_integer(){
+                proof.conditions[component]=Some(Box::new(Condition::component(a,component)));
+                other.conditions[component]=Some(Box::new(Condition::component(b,component)));
+            }
+        }
+        proof.join(&other,a.regs.len(),None);
         proof
     }
     pub fn selection(c: &Value, a: &Value, b: &Value) -> Self {

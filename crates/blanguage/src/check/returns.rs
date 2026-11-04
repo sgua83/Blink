@@ -56,6 +56,12 @@ impl Returned {
                 v.residency=v.residency.output_bound(bindings).with_aliases(aliases);
                 value(&mut v.root, registers.map(|r| &r[..1]), bindings, aliases);
                 value(&mut v.length, registers.map(|r| &r[1..]), bindings, aliases);
+                if let Some(value)=v.elements.view_value_mut(){
+                    value.proof.origins.resize_with(value.regs.len(),Vec::new);
+                    for(component,origins)in value.proof.origins.iter_mut().enumerate(){
+                        if origins.is_empty(){origins.push(ValueIdentity::ElementComponent(component));}
+                    }
+                }
                 v.elements.bind_outputs(None,bindings,aliases);
             }
         }
