@@ -2047,7 +2047,12 @@ impl Builder<'_> {
             );
         }
         let value = data.root.clone();
-        self.application_call(name, vec![value], None, span, None)?;
+        let origin = Arc::new(GeneratedOrigin {
+            reason: if source == Target::Cpu { GenerationReason::DatasetUpload }
+                else { GenerationReason::DatasetDownload },
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
+        self.application_call(name, vec![value], None, span, Some(origin))?;
         let update = &mut |alias: &mut Data| {
             if alias.ownership != Ownership::Moved
                 && alias.root.proof.known_identity(0) == Some(data.root.identity())

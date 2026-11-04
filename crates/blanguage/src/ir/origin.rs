@@ -202,6 +202,7 @@ pub enum GenerationReason {
     DatasetAccessLayout,
     DatasetFieldLayout,
     DatasetProjectionAddress,
+    DatasetUpload, DatasetDownload,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -268,6 +269,8 @@ impl GeneratedOrigin {
             GenerationReason::DatasetAccessLayout => "dataset_access_layout",
             GenerationReason::DatasetFieldLayout => "dataset_field_layout",
             GenerationReason::DatasetProjectionAddress => "dataset_projection_address",
+            GenerationReason::DatasetUpload => "dataset_upload",
+            GenerationReason::DatasetDownload => "dataset_download",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

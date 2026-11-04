@@ -407,7 +407,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-7"></a>
 
-**CPU与GPU资源传输包装。** 原upload／download表达式、拥有Data及实际方向，经application_transfer既有所有权／借用／源位置检查，由原application_call生成唯一实际Frame传输Call，输出原运行请求；编译期随后沿原Data拥有树更新合法别名的residency，不把这些无Inst关系伪造成操作。仅为该实际Call交接方向及原可用语法／定义／实例／内联与域路径，已有检查、参数、求值顺序及更新保持。来源唯一生产者是原Builder，材料由原Inst及FunctionBody／模块和SDK／CLI快照持有，在最后真实IR消费者结束后释放，不进入必要执行编码、不为观察保活。实际CPU／GPU存储、传输、依赖及完成仍由原Frame／blcompute和最后实际消费者持有，静态Call不证明已经传输或设备完成；不增加隐式传输、读回、同步、状态表或释放链，不改变资源所有权。普通同名函数不按符号字符串改标，失败沿原检查及运行错误交接。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-7)。
+**CPU与GPU资源传输包装。** 原upload／download表达式、拥有Data及实际方向，经application_transfer既有所有权／借用／源位置检查，由原application_call生成唯一实际Frame传输Call，输出原运行请求；编译期随后沿原Data拥有树更新合法别名的residency，不把这些无Inst关系伪造成操作。仅为该实际Call交接DatasetUpload／DatasetDownload，JSON reason为dataset_upload／dataset_download，方向直接来自原source分支；节点source_site为空，可选Syntax直接借用该原接点的SourceSite，原语法范围、定义／实例／内联与域路径保持，未知为null。已有检查、参数、求值顺序及更新保持。来源唯一生产者是原Builder，材料由原Inst及FunctionBody／模块和SDK／CLI快照持有，在最后真实IR消费者结束后释放，不进入必要执行编码、不为观察保活。实际CPU／GPU存储、传输、依赖及完成仍由原Frame／blcompute和最后实际消费者持有，静态Call不证明已经传输或设备完成；不增加隐式传输、读回、同步、状态表或释放链，不改变资源所有权。普通同名函数不按符号字符串改标，失败沿原检查及运行错误交接。当前已交接原实际传输Call的生成来源，原优化照常保留／消除，不为观察保活；完整变换与机器映射继续沿原编号。见[规范](BLanguage.md#cpu与gpu资源传输的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-7)。
 
 <a id="tool-7-2-4-5-8"></a>
 

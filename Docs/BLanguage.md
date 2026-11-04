@@ -371,6 +371,8 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetAccessLayout | dataset_access_layout | 原CPU访问的声明布局、读区请求及公共返回零索引准备常量 |
 | DatasetFieldLayout | dataset_field_layout | 原资源引用的字段偏移、声明步长常量及实际字段偏移加法 |
 | DatasetProjectionAddress | dataset_projection_address | 原CPU dataset构造view时投影地址准备的零索引常量 |
+| DatasetUpload | dataset_upload | 原upload经所有权／借用／源位置检查后生成的Frame上传Call |
+| DatasetDownload | dataset_download | 原download经所有权／借用／源位置检查后生成的Frame下载Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -547,6 +549,14 @@ application_projection_address只为自身原实际U32零常量交接DatasetProj
 节点source_site为空，可选Syntax直接借用原零常量发射时的当前SourceSite，语法种类、实际范围、定义／特化实例及inlined_at／domain_path保持；未知为null，不从资源根、字段名或邻近位置猜补。原优化照常合并／消除零常量，只有实际保留的节点才在最终IR出现，不为观察保活；多条被合并来源及被消除关系继续沿原优化来源叶项交付，不能用一个剩余节点补猜全部历史。
 
 材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码，不拥有运行存储、地址或view，不增加地址图、状态、查询、调用层、读回、同步或释放链。静态准备不证明运行读取、地址有效或GPU完成。见[架构](Architecture.md#tool-7-2-4-5-5-8)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-8)。
+
+#### CPU与GPU资源传输的生成来源
+
+application_transfer在原upload／download分支、所有权／活动借用／源位置检查之后，仅为既有application_call发射的实际Call交接DatasetUpload或DatasetDownload，JSON reason分别为dataset_upload及dataset_download。方向直接来自原source分支，原Frame、根句柄、参数、求值顺序和调用目标保持；普通同名函数不按符号字符串标记。编译期随后沿原Data拥有树更新residency的关系不产生Inst，不虚构别名更新指令。
+
+节点source_site为空，可选Syntax直接借用原传输Call发射时的当前SourceSite，语法范围、定义／特化实例及inlined_at／domain_path保持；未知触发为null，不按资源名或邻近指令猜补。原编译拒绝及运行错误仍由原检查和Frame交接，不因来源放宽访问、改变借用或增加传输、读回、同步。
+
+材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；不进入必要执行编码，不延长运行存储寿命，不强制节点保留。真实存储、传输、依赖、最后消费者和释放继续归原Frame／blcompute；静态来源不证明已经上传、下载或GPU完成。完整优化来源与机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-7)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-7)。
 
 #### 集合值核的入口与捕获来源
 
