@@ -403,7 +403,27 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6"></a>
 
-**普通调用资源参数接收与交接。** 输入／输出及生产消费：原函数参数／真实类型布局／借用→check.rs普通参数展开及application_parameter／native_call实际参数接点→原输入槽位与必要包装Inst。参数接收、数据绑定与普通源调用保持区别，未产生Inst的事实不伪造操作；不改唯一资源拥有者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。五叶当前均未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+
+<a id="tool-7-2-4-5-6-1"></a>
+
+**原函数形参与实际ABI输入的来源关系。** 输入／生产消费：原B形参／实际Ty／Access与隐式Frame→check.rs#152::function_parameters1428至1623及application.rs#124::application_parameter552至608→原CallParameter／ValueCode.inputs与绑定。只交接原形参到实际输入槽及已有类型／位置关系；无Inst不造操作。Source／实际Instance／内联上下文直接沿原定义，隐式Frame与用户参数分开。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-1)。
+
+<a id="tool-7-2-4-5-6-2"></a>
+
+**原数组形参物化StoreLocal的生成来源。** 输入／生产消费：原值形参数组／聚合及其真实regs→array.rs#29::materialize_array_bindings148至167／materialize_array168至178→原局部槽位及StoreLocal；原接点check.rs1620和cooperative.rs#60::inline_instance608。只分类原参数物化StoreLocal，保持原槽位、readonly、求值与初始化；普通表达式或调用实参数组的共用物化不冒称形参入口。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-2)。
+
+<a id="tool-7-2-4-5-6-3"></a>
+
+**Stage Dataset调用实参地址与布局准备的生成来源。** 输入／生产消费：原Argument::Dataset、DatasetView、实际布局与Access→native_function.rs#83::native_call原481至510中的490零索引、495至497 PositionAddress、500 BufferStride及502字段偏移常量→原descriptor／CallArgument。只交接原四类实际准备指令的生成来源；长度、根Proof、布局、参数次序和原Call保持，已有寄存器直传不造节点。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-3)。
+
+<a id="tool-7-2-4-5-6-4"></a>
+
+**CPU Dataset借用描述符步长拓宽的生成来源。** 输入／生产消费：实际DataReference／原descriptor Ty与步长Scalar→application.rs#124::application_reference_value1580至1582原条件Cast→原descriptor stride寄存器。只交接真实U32到U64步长Cast，不重标原storage_address或字段布局准备，不触碰PA4投影根Proof；已是U64时不补造转换。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-4)。
+
+<a id="tool-7-2-4-5-6-5"></a>
+
+**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs#83::native_call各原arguments.push及645至653原Call→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-5)。
 
 <a id="tool-7-2-4-5-7"></a>
 
