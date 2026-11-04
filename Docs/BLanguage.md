@@ -369,6 +369,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetOffsetAddress | dataset_offset_address | 原双字地址与索引／步长／字段偏移的寻址准备指令 |
 | DatasetWriteAddress | dataset_write_address | 原CPU句柄写分支的写区偏移及请求准备指令 |
 | DatasetAccessLayout | dataset_access_layout | 原CPU访问的声明布局、读区请求及公共返回零索引准备常量 |
+| DatasetFieldLayout | dataset_field_layout | 原资源引用的字段偏移、声明步长常量及实际字段偏移加法 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -527,6 +528,14 @@ application_memory只为原地址型U64根分支的声明步长／零字段、�
 节点source_site为空，可选Syntax直接借用原发射时的当前SourceSite，语法种类、范围、定义／特化实例和inlined_at／domain_path保持；未知为null，不从资源根或邻近语句猜补。原Frame地址Call、根地址表示、索引／步长寻址和句柄写区准备仍保留各自来源；真实ViewLoad及已有DatasetDropElementRead、StoreIndexed及初始化写不改标。仅取length、没有实际载荷读取或无分量值时不为观察生成读区请求。
 
 材料只由compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照持有，最后实际IR／来源消费者结束后释放；不进入必要执行编码、不保活变量或阻止原优化合并／删除常量。真实地址、布局、权限、运行存储及完成继续由原Ty／Data、Frame和最后实际消费者持有，不新增读回、访问、检查、状态表、同步或释放链。静态准备事实不证明已读取、地址仍有效或GPU完成；完整优化来源及机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-5-6)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-6)。
+
+#### 字段布局寻址准备的生成来源
+
+application_reference_offset在原DataReference／DataLayout上准备的声明零偏移、非零字段常量及原IAdd，共享DatasetFieldLayout；application_reference_layout的原声明步长常量持有同类来源，JSON reason为dataset_field_layout。原Ty及真实字段路径仍是布局权威；参数布局中的stride／offset直接使用原寄存器，不为来源材料增加Constant或改写原值。字段偏移为零时不伪造字段加法，声明步长仍沿原size／align计算。
+
+节点source_site为空，可选Syntax直接借用各原发射接点的当前SourceSite，语法种类、实际范围、定义／特化实例及inlined_at／domain_path保持；缺失触发为null，不从字段名、类型声明、资源根或邻近位置猜补。原字段字节单位、宽度、对齐、uniform及Proof保持。根／寻址／Frame地址调用、读写准备、资源参数接收／打包以及投影零索引各保留自身职责，真实ViewLoad／StoreIndexed不改标；本材料不解释为运行布局、地址有效性或设备完成证明。
+
+生成材料只归compiler角色的原Builder／Inst与FunctionBody／模块及SDK／CLI来源快照，在最后实际IR消费者后结束；不进入必要执行编码，不拥有存储或创建第二布局表、地址图、状态、读回、同步、释放链。原常量合并／消除和指令优化照常进行，不保活变量或固定保留节点数；完整变换及机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-5-7)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-7)。
 
 #### 集合值核的入口与捕获来源
 

@@ -1519,18 +1519,26 @@ impl Builder<'_> {
     }
     fn application_reference_offset(&mut self,data:&DataReference)->Value {
         let(field,_)=data.element_layout();
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetFieldLayout,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
         let offset=match &data.data.layout {
-            DataLayout::Declared=>self.constant(Scalar::U32,0),
+            DataLayout::Declared=>self.constant_with_origin(Scalar::U32,0,Some(origin.clone())),
             DataLayout::Parameter{offset,..}=>offset.clone(),
         };
         if field==0{return offset;}
-        let number=self.constant(Scalar::U32,Bits::from(field));let dst=self.reg(Scalar::U32);
-        self.emit(InstKind::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]});
+        let number=self.constant_with_origin(Scalar::U32,Bits::from(field),Some(origin.clone()));let dst=self.reg(Scalar::U32);
+        self.code.push(Inst::generated(InstKind::Binary{dst,op:BinaryOp::IAdd,a:offset.regs[0],b:number.regs[0]},origin));
         Value{ty:Ty::scalar(Scalar::U32),regs:vec![dst],proof:bounds::Proof::default(),literal:false,uniform:offset.uniform,constant:None}
     }
     pub(super) fn application_reference_layout(&mut self,data:&DataReference)->(Value,Value) {
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetFieldLayout,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
         let stride=match &data.data.layout {
-            DataLayout::Declared=>self.constant(Scalar::U32,Bits::from(ir::align_up(data.data.ty.size,data.data.ty.align))),
+            DataLayout::Declared=>self.constant_with_origin(Scalar::U32,Bits::from(ir::align_up(data.data.ty.size,data.data.ty.align)),Some(origin)),
             DataLayout::Parameter{stride,..}=>stride.clone(),
         };
         (stride,self.application_reference_offset(data))

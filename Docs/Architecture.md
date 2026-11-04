@@ -367,7 +367,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5"></a>
 
-**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1、原存储地址查询.2、根地址表示准备.3、索引与步长寻址.4、CPU写区准备.5及访问布局／读区准备.6已交接，其余两叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
+**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1、原存储地址查询.2、根地址表示准备.3、索引与步长寻址.4、CPU写区准备.5、访问布局／读区准备.6及字段布局准备.7已交接，仅投影地址选择.8仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
 
 <a id="tool-7-2-4-5-5-1"></a>
 
@@ -395,7 +395,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5-7"></a>
 
-**字段布局寻址准备来源。** 原DataReference及已有声明／参数布局，经application_reference_layout／application_reference_offset中实际步长、零偏移、字段常量及加法，输出原stride／offset供寻址和ABI包装消费。布局事实仍只来自原Ty／DataLayout；仅给真实准备Inst交接原触发，已有参数值直接交接不造指令。不建立第二布局模型、不改字段对齐或借用。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5-7)。
+**字段布局寻址准备来源。** 原DataReference及已有声明／参数布局，经application_reference_layout／application_reference_offset中实际步长、零偏移、字段常量及加法，输出原stride／offset供寻址和ABI包装消费。原偏移准备的实际零／字段Constant及IAdd共享DatasetFieldLayout，原步长Constant持有同类来源，JSON reason为dataset_field_layout；可选Syntax借用各原发射接点的当前SourceSite，语法、范围、实例及内联／域路径保持，节点source_site为空，未知触发为null。布局事实仍只来自原Ty／DataLayout；仅给真实准备Inst交接原触发，已有参数值直接交接不造指令。不建立第二布局模型、不改字段对齐或借用。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前已交接原实际字段／步长准备来源；原优化仍可合并／消除节点，不为观察保活。见[规范](BLanguage.md#字段布局寻址准备的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-7)。
 
 <a id="tool-7-2-4-5-5-8"></a>
 
