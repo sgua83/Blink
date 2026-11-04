@@ -415,7 +415,19 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6"></a>
 
-**原生域包装与分段提交。** 原build_domain／emit_domain_part把参数常量、资源绑定、分段提交和实际已编译域调用分别交给原包装Inst／FunctionBody；真实域调用点与生成职责不能混为一段根定义范围。代码、接口、合同、Frame及分段执行仍由原所有者持有，材料沿同一IR及最后消费者交接，不新增包装入口、调度器或执行图。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
+**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。三项均待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
+
+<a id="tool-7-2-4-6-1"></a>
+
+**整域包装入口的生成来源。** 实际DefinitionSyntax、Instance与目标经原build_domain形成ValueCode／FunctionBody，由原body.generated_origin交接包装入口的生成职责。真实源码定义采用原定义快照与实际Instance形成Definition锚点；应用parallel等Generated入口若已有原SourceSite则借用Syntax，未知原触发为空，不将生成函数名当作原源码实例。FunctionBody.source_origin仍只表达真实源码定义，原CallTarget、参数布局及运行合同保持；根入口材料不代替内部Inst。唯一生产者为原build_domain，材料由原ValueCode／FunctionBody／模块与SDK／CLI快照持有，最后实际IR消费者后释放，不保留World／AST，不进入必要运行编码或拥有执行资源；原代码与优化照常，不为观察保活。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-1)。
+
+<a id="tool-7-2-4-6-2"></a>
+
+**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅为这些真实准备常量交接生成职责，可选Syntax直接借用原call.source及其定义／实例／内联与域路径；该触发仅说明已取得的原调用范围，不伪造字面量表达式或额外寄存器。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-2)。
+
+<a id="tool-7-2-4-6-3"></a>
+
+**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与Context.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。来源只为该实际Call说明分段提交职责及真实生成上下文；所选Stage和实际程序仍由原Program／资源引用表达，入口生成上下文与阶段自身原来源分别保持，不凭part编号或run_index猜补源码。空Stage区间原本不发射Call，不能为材料增加空提交；真实CPU／GPU目标、原分段、顺序、错误、依赖与完成保持。原函数为唯一生产者，材料只随原Inst／FunctionBody／模块及快照持有并在最后IR消费者后释放，不进入必要编码、不增加程序副本、图、调度器、同步或释放链，不把静态提交等同执行完成。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-3)。
 
 <a id="tool-7-3-1"></a>
 
