@@ -716,6 +716,17 @@ impl Builder<'_> {
         let output_value=result.as_ref().map(|ty|Value{ty:ty.clone(),regs:values.clone(),
             proof:model.as_ref().map(|model|bounds::Proof::capture(&self.returned_storage(model)).at_call(&bindings)).unwrap_or_default(),
             uniform:false,literal:false,constant:None});
+        for(index,p)in d.function.params.iter().enumerate(){
+            if p.ty.dataset && p.access==Access::InOut && let Some(Binding::DataReference(reference))=env.get(&p.name)
+                && reference.element_layout().1.owns_resources(){
+                let mut data=reference.data.clone();data.ty=reference.element_layout().1.clone();data.elements=self.unknown_element_model(&data.ty);
+                let mut updated=Returned::Dataset(data);
+                if let Some(Some(model))=writes.get(index){translate_returned(&mut updated,model,&bindings,false);}
+                residency::output(&mut updated,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);
+                let Returned::Dataset(updated)=updated else{unreachable!()};
+                self.apply_application_dataset_model(reference,*updated.elements);
+            }
+        }
         for (index, place) in written {
             let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())?;
             if outputs::declared(d,index) {self.forget_output_initialization(&place,span)?;}

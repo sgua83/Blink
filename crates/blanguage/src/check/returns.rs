@@ -384,6 +384,7 @@ impl Builder<'_> {
                         && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B229",span)? {
                         return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name));
                     }
+                    if data.ty.owns_resources(){borrowed.insert(param.name.clone(),Returned::Dataset(data));}
                 }
                 if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && !param.ty.tile {
                     let mut model=if outputs::declared(&definition,index) {
@@ -637,15 +638,20 @@ impl Builder<'_> {
         for(name,model)in &mut borrowed{native_function::rebind_model(model,written[name].clone());}
         let output_models=definition.function.params.iter().map(|parameter|borrowed.get(&parameter.name).cloned()).collect();
         let returned=result.as_ref().map(|value|{let mut value=self.returned_storage(value);value.regs=registers.clone();value});
-        for(name,mut model)in borrowed {
-            let index=definition.function.params.iter().position(|parameter|parameter.name==name).unwrap();
-            let place=self.env[&name].stored_place().unwrap();
-            let guards=outputs::guards(self,&definition,index,place.ty(),&context.inputs,returned.as_ref())?;
-            if outputs::declared(&definition,index) && place.ty().owns_resources(){outputs::apply_ownership(&mut model,place.ty(),0,&guards);}
+        for(name,model)in borrowed {
             let binding=match model {
-                Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize_output(&owner.place,&guards);Binding::Owned(owner)}
-                Returned::OwnedValue(mut value)=>{self.initialize_output(&place,&guards);value.place=Some(place);Binding::OwnedValue(value)}
-                _=>unreachable!(),
+                Returned::Dataset(data)=>Binding::ApplicationData(data),
+                mut model=>{
+                    let index=definition.function.params.iter().position(|parameter|parameter.name==name).unwrap();
+                    let place=self.env[&name].stored_place().unwrap();
+                    let guards=outputs::guards(self,&definition,index,place.ty(),&context.inputs,returned.as_ref())?;
+                    if outputs::declared(&definition,index) && place.ty().owns_resources(){outputs::apply_ownership(&mut model,place.ty(),0,&guards);}
+                    match model {
+                        Returned::Value(value)=>{let Some(Binding::Owned(mut owner))=self.env.get(&name).cloned()else{unreachable!()};owner.proof=value.proof;owner.uniform=value.uniform;self.initialize_output(&owner.place,&guards);Binding::Owned(owner)}
+                        Returned::OwnedValue(mut value)=>{self.initialize_output(&place,&guards);value.place=Some(place);Binding::OwnedValue(value)}
+                        _=>unreachable!(),
+                    }
+                },
             };
             self.env.insert(name,binding);
         }

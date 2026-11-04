@@ -92,7 +92,7 @@ impl State {
             outputs: Live::default(),
         };
         for param in &definition.function.params {
-            if !param.ty.dataset && matches!(param.access, Access::Write | Access::InOut) {
+            if matches!(param.access, Access::Write | Access::InOut) {
                 analysis.outputs.read(Location {
                     name: param.name.clone(),
                     path: Vec::new(),
@@ -142,7 +142,7 @@ impl State {
         let mut omitted=BTreeSet::new();
         if let Some(root)=binding.stored_place(){for place in transferred{if let Some(components)=place.components_in(&root){omitted.extend(components);}}}
         let mut result = user_owned::cleanup_borrow(binding,&omitted);
-        for(location,excluded)in &uses{result.union(&stored_element_borrow(binding,&location.path,excluded));}
+        for(location,excluded)in &uses{result.union(&stored_element_borrow(binding,&location.path,excluded,&omitted));}
         if uses.is_empty(){return result;}
         let (ty, proof) = match binding {
             Binding::Value(v) => (&v.ty, &v.proof),
@@ -529,7 +529,7 @@ impl Builder<'_> {
 
 // Reuse the original AST locations and stored Proof; only real indexed element
 // consumers expose content borrows, while metadata-only use stays metadata.
-fn stored_element_borrow(binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>)->view::Borrow {
+fn stored_element_borrow(binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>,omitted:&BTreeSet<usize>)->view::Borrow {
     fn external(borrow:view::Borrow)->view::Borrow{
         borrow.resources().map_sources(|source|match source{
             view::Source::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>view::Borrow::default(),
@@ -549,15 +549,23 @@ fn stored_element_borrow(binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>)
     }
     fn data(data:&application::Data,path:&[Step],excluded:&BTreeSet<Path>)->view::Borrow{
         if data.ownership==application::Ownership::Moved||data.length.maximum()==0{return view::Borrow::default();}
-        let Some(step@Step::Index(_))=path.first()else{return view::Borrow::default();};
-        let out=model(&data.elements,&path[1..],&without(excluded,step),true);
+        let out=if path.is_empty(){model(&data.elements,path,excluded,true,&BTreeSet::new())}
+            else if let Some(step@Step::Index(_))=path.first(){model(&data.elements,&path[1..],&without(excluded,step),true,&BTreeSet::new())}
+            else{return view::Borrow::default();};
         let out=if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().assume(&bounds::Clause::default(),true))}else{out};
         // Local element/ancestor handles belong to this same owning container.
         // They do not name another resource in the function's global scope.
         external(out)
     }
-    fn owned(value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool)->view::Borrow{
+    fn owned(value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeSet<usize>)->view::Borrow{
         let mut out=if stored{projected(&value.value,path,excluded)}else{view::Borrow::default()};
+        let payload_omitted=|index:usize|{
+            let(offset,ty)=if value.value.ty.has_variants(){(ir::align_up(4,value.value.ty.align),value.value.ty.variants[index].ty.as_ref())}else{value.value.ty.aggregate_part(index)};
+            ty.components.iter().enumerate().filter_map(|(index,(_,word))|{
+                let component=value.value.ty.components.iter().position(|(_,at)|*at==offset+word).unwrap();
+                omitted.contains(&component).then_some(index)
+            }).collect::<BTreeSet<_>>()
+        };
         if let Some(step)=path.first(){
             let indices=match step{
                 Step::Field(name)=>value.value.ty.fields.iter().position(|(field,_,_)|field==name).into_iter().collect::<Vec<_>>(),
@@ -565,19 +573,26 @@ fn stored_element_borrow(binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>)
                 _=>Vec::new(),
             };
             let excluded=without(excluded,step);
-            for index in indices{if let Some(payload)=value.payloads.get(index).and_then(Option::as_deref){out.union(&model(payload,&path[1..],&excluded,false));}}
+            for index in indices{if let Some(payload)=value.payloads.get(index).and_then(Option::as_deref){out.union(&model(payload,&path[1..],&excluded,false,&payload_omitted(index)));}}
+        }else{
+            for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{
+                let excluded=if value.value.ty.has_variants(){excluded.clone()}
+                    else if value.value.ty.array.is_some(){without(excluded,&Step::Index(Some(index as u32)))}
+                    else{without(excluded,&Step::Field(value.value.ty.fields[index].0.clone()))};
+                out.union(&model(payload,path,&excluded,false,&payload_omitted(index)));
+            }}
         }
         out
     }
-    fn model(model:&returns::Returned,path:&[Step],excluded:&BTreeSet<Path>,stored:bool)->view::Borrow{match model{
-        returns::Returned::Dataset(value)=>data(value,path,excluded),
-        returns::Returned::OwnedValue(value)=>owned(value,path,excluded,stored),
+    fn model(model:&returns::Returned,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeSet<usize>)->view::Borrow{match model{
+        returns::Returned::Dataset(value)if !omitted.contains(&0)=>data(value,path,excluded),
+        returns::Returned::OwnedValue(value)=>owned(value,path,excluded,stored,omitted),
         returns::Returned::Value(v)if stored=>projected(v,path,excluded),
         _=>view::Borrow::default(),
     }}
     match binding{
         Binding::ApplicationData(value)=>data(value,path,excluded),
-        Binding::OwnedValue(value)=>owned(value,path,excluded,false),
+        Binding::OwnedValue(value)=>owned(value,path,excluded,false,omitted),
         _=>view::Borrow::default(),
     }
 }

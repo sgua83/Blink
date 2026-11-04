@@ -90,7 +90,7 @@ pub(super) fn parameter_type(world: &World, param: &Param, definition: &Definiti
         &definition.imports,
     )?;
     if ty.owns_resources()
-        && (param.ty.dataset && !matches!(param.access, Access::Value | Access::Read)
+        && (param.ty.dataset && !matches!(param.access, Access::Value | Access::Read | Access::InOut)
             || param.ty.tile
             || !matches!(param.access, Access::Value | Access::Read | Access::Write | Access::InOut)
             || definition.function.kind != FunctionKind::Value
@@ -241,7 +241,14 @@ impl<'a> Builder<'a> {
                 if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
-                if param.access.writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),ownership:false,span})?; }
+                if param.access.writes() {
+                    self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),ownership:false,span})?;
+                    for path in view::resource_paths(reference.element_layout().1){
+                        let mut fields=reference.projection.clone();fields.extend(path);
+                        let resource=view::Borrow::element(self.data_value_borrow(&reference.data),fields);
+                        self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:retained.clone(),ownership:true,span})?;
+                    }
+                }
                 for source in &reference.sources {
                     self.application_handle_available(*source, span)?;
                 }

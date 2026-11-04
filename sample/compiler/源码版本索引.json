@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "5323b45f755f5a8293a4f8ac3b4a63ec64a2139e27875e40520c263dd1ccedaa"
+      "sha256": "1f9aca9e4bdf7b308eaf1b0a1e7eeeddec5346762c2d050ddd84b482e5de1bd5"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -124,7 +124,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "9b134614b33f1aab6fc7bf020da00872f8327235bbe67fdd5f61f1ee7d7ddb50"
+      "sha256": "b6375d458f2cc1ea65c81c7185621a87aec6b36a708acfcf25e6722467cfdb39"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -133,6 +133,10 @@
     {
       "path": "crates/blanguage/src/check/outputs.rs",
       "sha256": "7545e1eebd8732529f8f644a1e4a1bd2400aa47b4d9f1d171b319e36468a85af"
+    },
+    {
+      "path": "crates/blanguage/src/check/owned_borrows.rs",
+      "sha256": "165b6592f40b3f9d7f5520509dcb90ecdb2d3aecf1e11310b0f91e7f530fecbd"
     },
     {
       "path": "crates/blanguage/src/check/owned_records.rs",
@@ -156,7 +160,11 @@
     },
     {
       "path": "crates/blanguage/src/check/returns.rs",
-      "sha256": "6f1f75a48ac64fd792a4f756285902c0fedcdcbc2aa9b3eaa162a6bd07fad974"
+      "sha256": "1e3a59e51460b63ea7a5dc1e9769c92c08e02ebe16483bb718b407eb52093418"
+    },
+    {
+      "path": "crates/blanguage/src/check/selection.rs",
+      "sha256": "49d189fcec3507421b947072acbaed31ca97dbb80b681a5f9aeb72514f551539"
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
@@ -165,6 +173,10 @@
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
       "sha256": "dea642e2dc0e9eb044629b2e9cd26b542e9bd48a6bd894ad0b7b12c40ebf07f2"
+    },
+    {
+      "path": "crates/blanguage/src/check/view_liveness.rs",
+      "sha256": "cd0c88d7c5c19f92332804f71843b29585b758335bcb96b6ab3b8403aa245ba1"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
@@ -321,10 +333,6 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
-    },
-    {
-      "path": "crates/blanguage/src/check/selection.rs",
-      "sha256": "49d189fcec3507421b947072acbaed31ca97dbb80b681a5f9aeb72514f551539"
     }
   ],
   "excerpts": [

@@ -77,8 +77,9 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         if place.ty().contains_cleanup(){let mut inactive=old.clone();inactive.restrict_owned(&Presence::None);self.assign_owned_place(&place,inactive);}
         // 覆盖结束旧元数据的生命周期；后续消费者读取实际右值的view关系。
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
+        self.assign_owned_place(&place,value);
         self.drop_returned(old,&view::Borrow::default(),span)?;
         if let Some(name)=held{self.env.remove(&name);}
-        self.write_storage_value(&place,&packed,span,None)?;self.assign_owned_place(&place,value);self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
+        self.write_storage_value(&place,&packed,span,None)?;self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
     }
 }
