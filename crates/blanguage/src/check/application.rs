@@ -1238,19 +1238,12 @@ impl Builder<'_> {
         } else {
             None
         };
-        if ty.contains_views() {
-            return self.fail(
-                span,
-                "B266",
-                "动态 dataset 的元素需要普通值；view 资源借用不能由零初始化存储创建",
-            );
-        }
         let Some(mut length) = self.expr(&args[0])? else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[0].span)?;
-        if ty.owns_resources() && length.maximum() != 0 && args.len() != 2 {
-            return self.fail(span, "B224", "拥有dataset的非空构造需要静态生成函数逐个产生，不能零构造或复制句柄");
+        if (ty.owns_resources() || ty.contains_views()) && length.maximum() != 0 && args.len() != 2 {
+            return self.fail(span, "B224", "资源或view元素的非空dataset构造需要静态生成函数逐个交付实际值");
         }
         length.literal = false;
         if count.is_some_and(|count| length.minimum() != count || length.maximum() != count) {
@@ -2277,21 +2270,29 @@ pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut Elemen
     }
 }
 pub(super) fn element_input_bindings(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>)->(ElementBindings,view::Borrow) {
-    fn collect(builder:&Builder<'_>,model:&returns::Returned,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool){
-        let value=builder.returned_storage(model);let width=value.regs.len();let proof=bounds::Proof::capture(&value);
+    fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool){
+        let model=&data.elements;let value=builder.returned_storage(model);let width=value.regs.len();
+        for component in 0..width{
+            let id=ValueIdentity::ElementComponent(component);
+            bindings.insert(id,bounds::Proof::default().with_identity(id));
+        }
+        builder.bind_element_resource_borrows(data,&parent,&mut bindings);
+        let proof=bounds::Proof::capture(&value).at_call(&bindings);
         if reads{memory.union(&builder.address_contents(&value.ty,&proof));}
         for component in 0..width{out.insert(ValueIdentity::DatasetContent(parameter,resource,*next+component),proof.project(&[component],width));}
         *next+=width;
         for(path,ty)in view::resource_paths(&value.ty).into_iter().zip(element_types(&value.ty)){
-            if let Some(data)=model_data(model,&path){collect(builder,&data.elements,parameter,resource,next,out,memory,reads&&data.length.maximum()!=0);}
-            else{*next+=element_width(ty);}
+            if let Some(child)=model_data(model,&path){
+                let nested=element_scope_bindings(&bindings,child.elements.registers().len(),true);
+                collect(builder,child,view::Borrow::element(parent.clone(),path),nested,parameter,resource,next,out,memory,reads&&child.length.maximum()!=0);
+            }else{*next+=element_width(ty);}
         }
     }
     let mut out=ElementBindings::new();let mut memory=view::Borrow::default();
     for(parameter,p)in definition.function.params.iter().enumerate(){
         if let Some(binding)=env.get(&p.name){
             for resource in 0..binding_element_types(binding).len(){
-                if let Some(data)=binding_element_data(binding,resource){collect(builder,&data.elements,parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0);}
+                if let Some(data)=binding_element_data(binding,resource){collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0);}
             }
         }
     }
@@ -2366,6 +2367,17 @@ impl Builder<'_> {
         }
         canonical_element_inputs(self,&mut out);
         out
+    }
+    fn bind_element_resource_borrows(&self,data:&Data,parent:&view::Borrow,bindings:&mut ElementBindings) {
+        for fields in view::resource_paths(&data.ty) {
+            if let Some(resource)=model_data(&data.elements,&fields) {
+                let id=ValueIdentity::ElementComponent(resource.root.regs[0]);
+                let proof=bindings.entry(id).or_default();
+                let mut borrow=proof.view_borrow(0);
+                borrow.union(&view::Borrow::element(parent.clone(),fields));
+                *proof=std::mem::take(proof).with_view_borrow(0,borrow);
+            }
+        }
     }
     fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data)->Vec<(Vec<Vec<usize>>,bool)> {
         fn collect(borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause)->Vec<(Vec<Vec<usize>>,bool)> {
@@ -2508,6 +2520,7 @@ impl Builder<'_> {
                 bindings.insert(source,proof.clone().with_view_borrow(0,storage.proof.view_borrow(index)));
             }
         }
+        self.bind_element_resource_borrows(data,&self.data_value_borrow(data),&mut bindings);
         native_function::rebind_model(&mut model,value.regs.clone());
         native_function::translate_returned(&mut model,&original,&bindings,true);
         loaded_model(self,&mut model,&value);
@@ -2525,7 +2538,7 @@ impl Builder<'_> {
                 if let Some(data)=binding_element_data(binding,resource)
                     && self.resolve_ownership(&data.ownership,None).available(){
                     for(scope,_)in self.application_element_scopes(sources,borrow,data){
-                    let mut data=data;for fields in scope{data=model_data(&data.elements,&fields)?;}
+                    let mut data=data;let mut parent=self.data_value_borrow(data);for fields in scope{parent=view::Borrow::element(parent,fields.clone());data=model_data(&data.elements,&fields)?;}
                     let components=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()?;
                     let value=self.returned_storage(&data.elements);let mut bindings=self.element_owner_bindings(data);
                     for(component,reg)in components.iter().zip(regs){
@@ -2535,6 +2548,7 @@ impl Builder<'_> {
                             bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
                         }
                     }
+                    self.bind_element_resource_borrows(data,&parent,&mut bindings);
                     let proof=bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings);
                     if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
                     }

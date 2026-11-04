@@ -1147,13 +1147,6 @@ impl World {
             value_parameters::substitute_type(&mut field_type, &value_map,s)?;
             let mut f = self.ty_inner(&field_type, s, field.span, m, i, stack)?;
             if field_type.dataset {
-                if f.contains_views() {
-                    return s.fail(
-                        field.span,
-                        "B033",
-                        "dataset 元素需要普通存储；拥有聚合与view资源图不能按普通值复制",
-                    );
-                }
                 f = ir::Ty::owned_dataset(f, self.shape(&field_type.count, s, field.span, m, i)?);
             }
             let offset = (ty.size as u64).div_ceil(f.align as u64) * f.align as u64;
