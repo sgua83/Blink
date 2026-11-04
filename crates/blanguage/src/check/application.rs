@@ -2554,7 +2554,7 @@ impl Builder<'_> {
         }
         for fields in view::resource_paths(&value.ty){if let Some(resource)=model_data(&model,&fields){
             let(mut offset,mut ty)=(0,&value.ty);
-            for field in fields{let(at,next)=ty.aggregate_part(field);offset+=at;ty=next;}
+            for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
             let component=value.ty.components.iter().position(|(_,word)|*word==offset).unwrap();
             let proof=bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(components[component]));
             for source in resource.root.component_origins(0){bindings.insert(source,proof.clone());}
