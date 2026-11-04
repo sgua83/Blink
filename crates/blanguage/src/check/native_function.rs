@@ -1577,7 +1577,16 @@ fn build_domain(
     let name = crate::module::domain::symbol(&instance.name, target);
     let body = ValueCode {
         entry_origin: None,
-        generated_origin: None,
+        generated_origin: Some(Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DomainEntry,
+            trigger: match &d.syntax_origin {
+                crate::frontend::DefinitionSyntax::Source => Some(GenerationAnchor::Definition {
+                    origin: d.source_origin().map(Arc::new), instance: instance.name.clone().into(),
+                }),
+                crate::frontend::DefinitionSyntax::Generated(site) => site.clone().map(GenerationAnchor::Syntax),
+                crate::frontend::DefinitionSyntax::CompiledInterface => None,
+            },
+        })),
         registers,
         locals: Default::default(),
         inputs: inputs.clone(),

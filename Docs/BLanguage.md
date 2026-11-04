@@ -374,6 +374,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetUpload | dataset_upload | 原upload经所有权／借用／源位置检查后生成的Frame上传Call |
 | DatasetDownload | dataset_download | 原download经所有权／借用／源位置检查后生成的Frame下载Call |
 | ApplicationDomainCall | application_domain_call | 原应用将Frame与实际参数交给已编译整域入口的Defined Call |
+| DomainEntry | domain_entry | 原build_domain形成的整域包装ValueCode入口 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -566,6 +567,14 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 节点source_site为空，可选Syntax直接借用原Call发射时的当前SourceSite，原语法范围、定义／特化实例及inlined_at／domain_path保持；未知为null，不扩大为没有取得的target参数列表或整条parallel。参数组装、初始化模型及已有寄存器直传没有独立Inst时不虚构节点；已有字段偏移准备保留DatasetFieldLayout，不随本Call重标。原domain_at／build_domain及分段提交的内部来源另归对应叶项，本项不把根调用材料扩成整个被调包装的来源。
 
 材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码、不保活变量，不持有World／AST或运行资源。真实计算、提交、依赖、存储及最后消费者仍归原Frame／blcompute，静态Call不证明已经执行或GPU完成；不增加调用、调度、同步、状态或释放链。完整优化／机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-8)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-8)。
+
+#### 整域包装入口的生成来源
+
+原build_domain只在同一包装body.generated_origin交接DomainEntry，JSON reason为domain_entry；其ValueCode及FunctionBody名称、参数／结果、寄存器、内部Inst、真实源定义和运行合同保持。该入口说明整域包装的生成职责，不把它扩成每条内部操作的来源，也不将包装执行名称当作原B函数或原调用实例。这些body是主机CPU包装，原符号的CPU／GPU域目标说明所发起的计算位置，不表示该body已经是GPU中间表示或最终ISA。
+
+锚点直接消费原DefinitionSyntax与实际Instance。Source采用Definition锚点，definition为原d.source_origin快照，instance为原Instance.name，不从最终domain符号拆解；Generated已有SourceSite时直接共享Syntax，保留原语法、定义／实例、内联／域路径及实际范围，未知为null；CompiledInterface不补造锚点。实际已编译实现仍沿原domain_at装入，不重读其实现或因缺少源码生成另一份包装IR。FunctionBody.source_origin继续只记录真实原定义，Generated入口不因此获得虚假源码身份。
+
+材料只归compiler角色的原ValueCode／FunctionBody／模块及SDK／CLI快照，在最后实际IR消费者后释放；原body克隆共享不可变来源，不持有World／AST、执行资源或第二登记表。关闭compiler角色不包含该类型／字段，必要执行编码、B语法、C ABI与资源完成保持。空指令body仍可以具有真实生成入口；原优化照常，不保活变量或节点。内部原Call／字面量准备／分段提交来源各归原职责，真实CPU／GPU计算及最后完成仍归Frame／blcompute，静态入口不证明已运行。见[架构](Architecture.md#tool-7-2-4-6-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
 
 #### 集合值核的入口与捕获来源
 

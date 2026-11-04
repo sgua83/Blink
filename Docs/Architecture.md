@@ -415,11 +415,11 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6"></a>
 
-**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。三项均待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
+**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。入口来源.1已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)，字面量准备.2与分段运行Call.3仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
 
 <a id="tool-7-2-4-6-1"></a>
 
-**整域包装入口的生成来源。** 实际DefinitionSyntax、Instance与目标经原build_domain形成ValueCode／FunctionBody，由原body.generated_origin交接包装入口的生成职责。真实源码定义采用原定义快照与实际Instance形成Definition锚点；应用parallel等Generated入口若已有原SourceSite则借用Syntax，未知原触发为空，不将生成函数名当作原源码实例。FunctionBody.source_origin仍只表达真实源码定义，原CallTarget、参数布局及运行合同保持；根入口材料不代替内部Inst。唯一生产者为原build_domain，材料由原ValueCode／FunctionBody／模块与SDK／CLI快照持有，最后实际IR消费者后释放，不保留World／AST，不进入必要运行编码或拥有执行资源；原代码与优化照常，不为观察保活。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-1)。
+**整域包装入口的生成来源。** 实际DefinitionSyntax、Instance与目标经原build_domain形成ValueCode／FunctionBody，由原body.generated_origin交接DomainEntry，JSON reason为domain_entry，表示该包装入口的生成职责。真实源码定义采用原定义快照与实际Instance形成Definition锚点；应用parallel等Generated入口若已有原SourceSite则借用Syntax，未知原触发与CompiledInterface不补锚点，不将生成函数名当作原源码实例；实际已编译实现沿原domain_at装入，不为材料重读其实现或重建包装IR。FunctionBody.source_origin仍只表达真实源码定义，原CallTarget、参数布局及运行合同保持；根入口材料不代替内部Inst。唯一生产者为原build_domain，材料由原ValueCode／FunctionBody／模块与SDK／CLI快照持有，最后实际IR消费者后释放，不保留World／AST，不进入必要运行编码或拥有执行资源；原代码与优化照常，不为观察保活。当前已交接原包装body的生成入口，空body也保留已有入口事实，内部Inst分别沿原职责交接。见[规范](BLanguage.md#整域包装入口的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
 
 <a id="tool-7-2-4-6-2"></a>
 
