@@ -376,6 +376,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | ApplicationDomainCall | application_domain_call | 原应用将Frame与实际参数交给已编译整域入口的Defined Call |
 | DomainEntry | domain_entry | 原build_domain形成的整域包装ValueCode入口 |
 | DomainCallLiteral | domain_call_literal | 原build_domain将Root::Literal实参分量准备为Constant |
+| DomainPartCall | domain_part_call | 原emit_domain_part交接实际Stage子区间的运行Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -584,6 +585,14 @@ build_domain只在原Root::Literal分支为逐分量准备的Constant共享Domai
 节点source_site为空，可选Syntax直接借用原call.source，语法、原定义／实际实例及内联／域路径保持，缺失为null。触发仅为已经取得的原调用范围，不扩大为没有取得的字面量表达式。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call分别保持自身职责；此处不改调用、求值顺序、精度、布局或参数ABI。
 
 材料只归compiler角色的原Inst／FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；原优化照常，不保活常量，不进入必要执行编码，不持有World／AST或运行资源。真实计算、Frame存储、依赖及最后完成沿原所有者，不把静态常量准备当作实际执行；不增加值表、图、调度器、同步或释放链。见[架构](Architecture.md#tool-7-2-4-6-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
+
+#### 域分段运行Call的生成来源
+
+原emit_domain_part仅在原实际runtime_call发射点交接DomainPartCall，JSON reason为domain_part_call；原Call种类、目标、Frame／Data根与字节偏移、uniform、顺序及结果保持。build_domain共享原DomainEntry材料，两个原helper交接点只借用其anchor，原包装body仍持有同一入口材料。节点source_site为空，Source采用同一原Definition快照与实际Instance，Generated直接共享已有Syntax；未知保持null，不从part／run_index或最终执行名称重建源码身份。
+
+来源描述主机CPU包装的分段发起职责，CPU／GPU域目标、实际Stage子区间及前缀要求／保证仍归原Program与Context程序引用；各Stage原来源保持，入口上下文不代替逐Stage／指令映射，也不表示GPU最终ISA。空Stage区间仍直接返回，不为观察制造Call或程序；真实已编译域Call仍保留自身call.source及域路径。
+
+材料只归compiler角色的原Inst／FunctionBody／模块与SDK／CLI快照，最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。Frame／blcompute继续承担原存储、依赖、执行与最后完成；静态Call不证明计算已运行。原优化、资源所有权及错误保持，不增加调度、图、同步、第二状态或释放链。见[架构](Architecture.md#tool-7-2-4-6-3)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)。
 
 #### 集合值核的入口与捕获来源
 

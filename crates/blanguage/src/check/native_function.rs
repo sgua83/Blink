@@ -1474,6 +1474,16 @@ fn build_domain(
     }
     let inputs: Vec<_> = (0..registers.len()).collect();
     let mut code = Vec::new();
+    let entry_origin = Arc::new(GeneratedOrigin {
+        reason: GenerationReason::DomainEntry,
+        trigger: match &d.syntax_origin {
+            crate::frontend::DefinitionSyntax::Source => Some(GenerationAnchor::Definition {
+                origin: d.source_origin().map(Arc::new), instance: instance.name.clone().into(),
+            }),
+            crate::frontend::DefinitionSyntax::Generated(site) => site.clone().map(GenerationAnchor::Syntax),
+            crate::frontend::DefinitionSyntax::CompiledInterface => None,
+        },
+    });
     let mut interface = crate::module::domain::Interface {
         instance: signature.name.clone(), target,
         buffers: signature.buffers.clone(), uniforms: signature.uniforms.clone(),
@@ -1492,6 +1502,7 @@ fn build_domain(
         emit_domain_part(
             &world.worker,
             &d.source.path,
+            entry_origin.anchor(),
             &signature,
             &stages[start..call.stage],
             &required,
@@ -1563,6 +1574,7 @@ fn build_domain(
     emit_domain_part(
         &world.worker,
         &d.source.path,
+        entry_origin.anchor(),
         &signature,
         &stages[start..],
         &required,
@@ -1581,16 +1593,7 @@ fn build_domain(
     let name = crate::module::domain::symbol(&instance.name, target);
     let body = ValueCode {
         entry_origin: None,
-        generated_origin: Some(Arc::new(GeneratedOrigin {
-            reason: GenerationReason::DomainEntry,
-            trigger: match &d.syntax_origin {
-                crate::frontend::DefinitionSyntax::Source => Some(GenerationAnchor::Definition {
-                    origin: d.source_origin().map(Arc::new), instance: instance.name.clone().into(),
-                }),
-                crate::frontend::DefinitionSyntax::Generated(site) => site.clone().map(GenerationAnchor::Syntax),
-                crate::frontend::DefinitionSyntax::CompiledInterface => None,
-            },
-        })),
+        generated_origin: Some(entry_origin),
         registers,
         locals: Default::default(),
         inputs: inputs.clone(),
@@ -1640,6 +1643,7 @@ fn build_domain(
 fn emit_domain_part(
     worker: &crate::compiler::Worker,
     source: &std::path::Path,
+    generation: Option<&GenerationAnchor>,
     signature: &Program,
     stages: &[Stage],
     required: &[PrefixRelation],
@@ -1674,11 +1678,17 @@ fn emit_domain_part(
         values: vec![reg],
     }));
     arguments.extend_from_slice(uniforms);
-    code.push(application::runtime_call(
-        &format!("run_{index}"),
-        arguments,
-        None,
-        Vec::new(),
-    ));
+    code.push(Inst {
+        generated_origin: Some(Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DomainPartCall,
+            trigger: generation.cloned(),
+        })),
+        ..application::runtime_call(
+            &format!("run_{index}"),
+            arguments,
+            None,
+            Vec::new(),
+        )
+    });
     Ok(())
 }

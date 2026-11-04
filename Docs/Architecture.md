@@ -415,7 +415,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6"></a>
 
-**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。入口来源.1已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)，字面量准备.2已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)，分段运行Call.3仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
+**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。入口来源.1已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)，字面量准备.2已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)，分段运行Call.3已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)；本父职责三叶均已闭合，见[汇总](FixedIssues.md#c-021-7-9-7-2-4-6)。
 
 <a id="tool-7-2-4-6-1"></a>
 
@@ -427,7 +427,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-3"></a>
 
-**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与Context.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。来源只为该实际Call说明分段提交职责，生成上下文直接沿build_domain的原DefinitionSyntax／实际Instance或已有Generated语句取得，Definition与Syntax锚点沿入口的同一事实交接，未知保持空，不从Program执行名／part／run_index重建源码身份；所选Stage和实际程序仍由原Program／资源引用表达，入口生成上下文与阶段自身原来源分别保持，不凭part编号或run_index猜补源码。空Stage区间原本不发射Call，不能为材料增加空提交；真实CPU／GPU目标、原分段、顺序、错误、依赖与完成保持。原函数为唯一生产者，材料只随原Inst／FunctionBody／模块及快照持有并在最后IR消费者后释放，不进入必要编码、不增加程序副本、图、调度器、同步或释放链，不把静态提交等同执行完成。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-3)。
+**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与Context.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。仅为该原实际Call交接DomainPartCall，JSON reason为domain_part_call，节点source_site为空；build_domain前移并共享原DomainEntry材料，两处原helper借用同一anchor，原入口body仍持有该材料。Source直接沿原Definition快照与实际Instance，Generated借用原Syntax，未知保持空；不从Program执行名／part／run_index重建源码身份。此处是主机CPU包装Call，CPU／GPU域目标仍由原Program表达，不把它当GPU最终ISA；所选Stage及其自身来源仍归原Program／资源引用，不将入口上下文冒称逐Stage或逐指令映射。空Stage区间仍不发射Call。原目标、分段、顺序、错误、依赖与完成保持，实际资源归原Frame／blcompute及最后消费者；静态提交不证明已执行或完成。唯一生产者是原emit_domain_part，材料只随原Inst／FunctionBody／模块及SDK／CLI快照持有，最后IR消费者后释放，不进入必要执行编码、不保活节点，不增加程序副本、图、调度器、同步或释放链。当前已交接原实际分段Call的生成来源，原优化照常。见[规范](BLanguage.md#域分段运行call的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)。
 
 <a id="tool-7-3-1"></a>
 
