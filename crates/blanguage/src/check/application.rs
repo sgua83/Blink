@@ -1453,16 +1453,21 @@ impl Builder<'_> {
         Ok(())
     }
     fn application_root_address(&mut self,root:Reg,identity:ValueIdentity,span:Span)->Result<[Reg;2]> {
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetRootAddress,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
         if self.registers[root] == Scalar::U64 {
             self.application_cpu_source(identity,span)?;
-            let shift=self.constant(Scalar::U64,32).regs[0];let high=self.reg(Scalar::U64);
-            self.emit(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:root,b:shift});
+            let shift=self.constant_with_origin(Scalar::U64,32,Some(origin.clone())).regs[0];let high=self.reg(Scalar::U64);
+            self.code.push(Inst::generated(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:root,b:shift},origin.clone()));
             let address=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
-            self.emit(InstKind::Cast{dst:address[0],src:root});self.emit(InstKind::Cast{dst:address[1],src:high});
+            self.code.push(Inst::generated(InstKind::Cast{dst:address[0],src:root},origin.clone()));
+            self.code.push(Inst::generated(InstKind::Cast{dst:address[1],src:high},origin));
             Ok(address)
         } else {
-            let zero=self.constant(Scalar::U64,0);
-            let stride=self.constant(Scalar::U64,0);let count=self.constant(Scalar::U32,1);
+            let zero=self.constant_with_origin(Scalar::U64,0,Some(origin.clone()));
+            let stride=self.constant_with_origin(Scalar::U64,0,Some(origin.clone()));let count=self.constant_with_origin(Scalar::U32,1,Some(origin));
             self.application_address(root,identity,zero,0,stride,count,span)
         }
     }

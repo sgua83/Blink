@@ -367,7 +367,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5"></a>
 
-**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1及原存储地址查询.2已交接，其余六叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
+**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1、原存储地址查询.2及根地址表示准备.3已交接，其余五叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
 
 <a id="tool-7-2-4-5-5-1"></a>
 
@@ -379,7 +379,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5-3"></a>
 
-**根地址表示准备来源。** 输入是原根寄存器及其真实表示；application_root_address的U64分支以原移位常量、逻辑右移及两个Cast拆成双U32地址，句柄分支以原零偏移、步长及数量常量准备既有Frame请求。输出交给原寻址或.1的地址Call；原表示选择、CPU位置规则和数值位型保持，没有实际指令就不补节点。实际Frame Call由.1单独标记，不复制根或地址权威。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5-3)。
+**根地址表示准备来源。** 输入是原根寄存器及其真实表示；application_root_address的U64分支以原移位常量、逻辑右移及两个Cast拆成双U32地址，句柄分支以原零偏移、步长及数量常量准备既有Frame请求。原Builder只为这些实际Constant／Binary／Cast共享DatasetRootAddress，JSON reason为dataset_root_address；可选Syntax触发借用原当前SourceSite，保留原语法种类、范围、定义／实例及内联／域路径，未知为null，生成节点source_site为空。输出交给原寻址或.1的地址Call；原表示选择、CPU位置规则和数值位型保持，没有实际指令就不补节点。实际Frame Call由.1单独标记，不复制根或地址权威。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前已交接两种原表示准备的生成来源；原优化可继续合并／消除常量，不为观察保活或补造指令，完整变换来源仍归.7.3；见[规范](BLanguage.md#根地址表示准备的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-3)。
 
 <a id="tool-7-2-4-5-5-4"></a>
 

@@ -365,6 +365,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetResizeCall | dataset_resize_call | 原Frame扩容及存储版本交接的resize Call |
 | DatasetAddress | dataset_address | 原Frame地址请求的bytes常量及实际address Call |
 | DatasetStorageAddress | dataset_storage_address | 原资源句柄进入地址型借用ABI的storage_address Call |
+| DatasetRootAddress | dataset_root_address | 原U64根拆分或句柄地址请求的表示准备指令 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -491,6 +492,14 @@ application_reference_value在原资源句柄必须进入地址型借用ABI时�
 原Frame／根输入、U64结果、错误、view借用Proof及资源最后消费者保持；已经是U64根时直接复用，不产生或虚构查询。原字段布局准备、stride拓宽和参数槽位打包各沿其原叶交付，Frame地址请求的DatasetAddress也保持独立职责；本项不增加取址、权限、布局或范围检查，不改原真实读写和运行生命周期。静态查询不证明调用已运行、地址此刻有效或设备已完成。
 
 材料仅由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束；不进入必要执行编码、不保活变量、不拥有内存，不新增Frame、地址表、运行采集、释放链或包装函数。完整优化来源与机器映射继续归原编号。见[架构](Architecture.md#tool-7-2-4-5-5-2)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-2)。
+
+#### 根地址表示准备的生成来源
+
+application_root_address为同一原根地址保留两条真实路径：U64根经既有移位常量、逻辑右移和两个Cast拆为双U32；句柄经原零偏移、步长及数量常量交给既有Frame地址请求。只有该生产者实际发射的Constant／Binary／Cast取得DatasetRootAddress，JSON reason为dataset_root_address，共享本次不可变GeneratedOrigin。source_site为空，可选Syntax触发直接借用原当前SourceSite，语法种类、范围、定义／特化实例及inlined_at／domain_path保持，未知为null，不把错误诊断Span或根定义猜作访问位置。
+
+原CPU位置检查、根表示选择、64位位型、寄存器和返回地址保持；不新增寻址、转换、检查或运行调用。寄存器分配、模型和证明没有发射指令时不伪造节点。Frame地址Call及其bytes常量仍是DatasetAddress，storage_address仍是DatasetStorageAddress；后续索引乘加、字段布局、读写区及投影准备各归原叶，不能把整个地址流程统一改标根准备。常量折叠、去重及消除继续按原语义，消失的节点不补造，不为观察保活变量或冻结优化；完整变换来源及机器映射继续归原编号。
+
+材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者；本项不取得内存所有权，不增加地址权威、运行状态表、采集、Frame或释放链。静态表示转换不是实际访问成功、地址此刻有效或设备已完成的证据。见[架构](Architecture.md#tool-7-2-4-5-5-3)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-3)。
 
 #### 集合值核的入口与捕获来源
 
