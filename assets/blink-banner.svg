@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="188" viewBox="0 0 1040 188" role="img" aria-labelledby="title description">
+  <title id="title">Blink — native parallel programming</title>
+  <desc id="description">One compute algorithm, native CPU and GPU targets.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#101c32"/><stop offset="1" stop-color="#102e3a"/></linearGradient>
+    <linearGradient id="accent" x1="0" x2="1"><stop stop-color="#57d9ff"/><stop offset="1" stop-color="#6bf3bd"/></linearGradient>
+  </defs>
+  <rect width="1040" height="188" rx="18" fill="url(#background)"/>
+  <path d="M42 42h40c31 0 37 34 15 44 30 12 22 56-13 56H42z" fill="none" stroke="url(#accent)" stroke-width="9" stroke-linejoin="round"/>
+  <path d="M43 87h38" stroke="#57d9ff" stroke-width="8"/>
+  <text x="140" y="103" fill="#f5faff" font-family="Segoe UI,Arial,sans-serif" font-size="66" font-weight="700" letter-spacing="-2">Blink</text>
+  <text x="143" y="137" fill="#b8cadb" font-family="Segoe UI,Arial,sans-serif" font-size="19" letter-spacing="2">NATIVE PARALLEL PROGRAMMING</text>
+  <path d="M750 72v21m-112 0h224m-224 0v20m224-20v20" stroke="#6592a5" stroke-width="2" fill="none"/>
+  <rect x="671" y="30" width="158" height="42" rx="9" fill="#1d3c4c" stroke="#4c788a"/>
+  <text x="750" y="57" text-anchor="middle" fill="#e4f7ff" font-family="Segoe UI,Arial,sans-serif" font-size="15" font-weight="600" letter-spacing="1">ONE ALGORITHM</text>
+  <rect x="582" y="113" width="112" height="43" rx="9" fill="#163c4c" stroke="#57d9ff"/>
+  <text x="638" y="141" text-anchor="middle" fill="#79e2ff" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="700">CPU</text>
+  <rect x="806" y="113" width="112" height="43" rx="9" fill="#163d3b" stroke="#6bf3bd"/>
+  <text x="862" y="141" text-anchor="middle" fill="#90f5ce" font-family="Segoe UI,Arial,sans-serif" font-size="21" font-weight="700">GPU</text>
+</svg>

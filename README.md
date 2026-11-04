@@ -1,516 +1,209 @@
 <div align="center">
 
-<h1>Blink 编程语言</h1>
+<img src="assets/blink-banner.svg" alt="Blink：同一份计算源码，面向原生 CPU 与 GPU" width="1040" />
 
-<p><strong>原生并行 · 同源 CPU／GPU · 接入 C／C++／Rust</strong></p>
-<p>一门面向 AI 超算时代的原生并行编程语言</p>
+# Blink 编程语言
 
-<p><strong>简体中文</strong> | <a href="README.en.md">English</a></p>
-<p><a href="https://github.com/sgua83/Blink/releases/latest">正式版下载</a> · <a href="#快速开始">快速开始</a> · <a href="#工具与原生集成">C++／Rust 集成</a> · <a href="https://github.com/sgua83/Blink/wiki/Blink-Books">学习与书籍（Wiki）</a> · <a href="#学习与文档">书籍与文档</a> · <a href="#feedback">反馈</a></p>
+**把并行计算写进程序，把 B 接入你已有的工程。**
+
+面向 C／C++／Rust 程序员与 AI 的原生并行语言，简称 **B**。
+
+[下载正式版](https://github.com/sgua83/Blink/releases/latest) · [运行第一个程序](#快速开始) · [接入现有项目](#工具与原生集成) · [文档与四本书](#学习与文档) · [Discussions](https://github.com/sgua83/Blink/discussions)
+
+[简体中文](README.md) | [English](README.en.md)
 
 </div>
 
-**Blink 是一门原生并行编程语言，简称 B 语言。** 你可以用 B 语言编写独立应用、CPU 多核计算程序和 GPU 计算程序；同一份计算源码可面向 CPU 与 GPU 生成原生代码。
+**当前可用：Windows x64 CPU 与 Vulkan GPU。** 已有独立 B 应用、原生并行计算和 C／C++／Rust DLL 集成。正式发行与持续研发的 [main](VERSION) 分别记录；跨机器域编译、域运行和稳定热更新仍在设计中。
 
-面向希望使用原生并行的 **C／C++／Rust 程序员与 AI**：把适合的计算写成一份 B 源码，在 CPU 或 GPU 执行，也可编译为动态库接入已有工程。
+## 从一个完整程序开始
 
-名字中的 B 也寓意 **Base**。Blink 希望成为 AI 超算时代的基础编程语言，让并行、数据关系与协作成为编程语言的基本能力，并逐步完善通用与系统编程所需的功能。
+第一个程序输出 `3`。下面两份文件就是全部源码：`.h` 声明入口，`.b` 给出实现；`module hello` 声明本模块的名字。
 
-本仓库提供 B 语言的编译器、链接器、原生执行框架、语言规范和示例。B 语言使用 `.h` 声明接口，使用 `.b` 编写实现；编译器根据目标生成 Windows x64 机器码或 SPIR-V，执行框架负责数据、设备、传输和真实完成。编译器与执行框架当前B／Rust职责分工统一见架构中的现行状态，不以源码比例描述自举完成；无第三方编译器、Shader 编译器或并行运行时依赖。
-
-> **项目状态：研发中。** [正式发行](https://github.com/sgua83/Blink/releases/latest)与 [main 软件版本](VERSION)分别记录。 已有单机 CPU／GPU 原生执行；域编译、域运行和稳定热更新是确定的设计目标，尚未实现。设计目标与当前实现范围见[架构](Docs/Architecture.md)。
-
-## 三大核心特点
-
-### 1. 原生并行
-
-将并行作为语言的基本能力。并行域、数据访问权限、块内协作与阶段依赖直接进入编译器分析，再落实为原生执行。算法可以表达独占写入、共享只读、显式原子操作和集合计算。
-
-### 2. 统一 CPU／GPU 编程
-
-**同一套 B 语言源码，面向 CPU 与 GPU 原生执行。** 适用的算法无需为两类硬件分别实现；`on` 声明目标能力，`target` 选择本次执行位置，`upload`／`download` 显式交接数据。硬件能力差异与传输成本保持明确。
-
-### 3. 原生域编译与域运行（设计中）
-
-**把一组机器变成可直接使用的编译与执行资源。** 以计算域组织多台机器，原生完成域内编译与运行；编译域和运行域可以独立选择，分片、通信、依赖和完成具有明确语义。
-
-这一能力目前处于设计阶段。一次构建或执行使用所选域内资源，跨域业务级联由上层应用组织。完整职责、部署与接口设计见[计算域方案](Docs/ComputeDomain.md)。
-
-## 快速开始
-
-### 1. 安装工具，取得配套源码
-
-下载并双击安装 [Windows x64 正式版 v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1)的 `Blink-Setup-windows-x64.exe`。安装器自动配置 PATH，新开终端后可用 `bc` 与 `blink`；[最新发行](https://github.com/sgua83/Blink/releases/latest)记录后续更新。
-
-准备 Git、[Rust stable MSVC](https://rust-lang.org/tools/install)和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK）。这些构建工具只在编译时生成执行框架。新开 x64 Developer PowerShell：
-
-```powershell
-bc --version
-blink --version
-git clone https://github.com/sgua83/Blink.git Blink
-Set-Location Blink
-```
-
-下面是本次更新后的完整应用，配套源码随 main 发布，已用正式工具 `0.14.1.1` 实际验证；它们不是旧标签 v0.14.1.1 内的旧教程。算法与 main 都是 B，运行生成的应用不需要编译器、Rust 工具链或源码。
-
-### 2. 设备选择写进 B 程序
-
-CPU 版 [map_cpu.b](sample/applications/map_cpu.b) 的 main：
+**hello.h**
 
 ```c
-module applications.map_cpu;
-import lessons.map;
+module hello;
+
+u32 main() on cpu;
+```
+
+**hello.b**
+
+```c
+module hello;
 
 u32 main() on cpu {
-    dataset<f32> values = dataset<f32>(4);
-
-    target(cpu, demo(values));
-
-    for (value in values) { if (!println(value)) { return 1; } }
+    println(1 + 2);
     return 0;
 }
 ```
 
-配套 [map_cpu.h](sample/applications/map_cpu.h) 公开 `u32 main() on cpu;`。编译、独立链接后直接运行：
+### CPU 并行直接写在 main 中
 
-```powershell
-bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
-blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
-.\target\book-apps\map_cpu.exe
-```
+逐元素计算可以直接在 CPU 主流程写 `parallel`。下面完整例子在同一个可见循环中初始化并计算每个数，然后输出 `3、5、7、9`。
 
-程序逐行打印 `3、5、7、9`，CPU 入门无需 GPU。
+<details>
+<summary>展开完整 CPU 并行程序</summary>
 
-### 3. 同一算法，在代码内选择 GPU
-
-[map_gpu.b](sample/applications/map_gpu.b) 仍调用同一个 `lessons.map::demo`，在 main 中把执行和传输写清楚：
+**parallel.h**
 
 ```c
-upload(values);
-target(gpu, demo(values));
-download(values);
+module parallel;
+
+u32 main() on cpu;
 ```
 
-```powershell
-bc -c sample/applications/map_gpu.b -o target/book-apps/map_gpu.obj -I sample
-blink target/book-apps/map_gpu.obj -o target/book-apps/map_gpu.exe
-.\target\book-apps\map_gpu.exe
-```
-
-两者均直接运行 EXE，无运行时设备参数。部署时把 EXE 与链接器生成的 `blink_app_*.dll` 放在同一目录。GPU 需要满足示例能力要求的 Vulkan 驱动，无需 Vulkan SDK；这个 f32 例子要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`。
-
-`on compute` 声明算法可在两端编译，`target(cpu, ...)`／`target(gpu, ...)` 才选择本次位置；`upload`／`download` 显式交接存储。当前没有 `target(auto, ...)`、隐式自动选设备或隐式迁移。
-
-### 4. 从已有 C／C++／Rust 工程调用
-
-[DLL 集成示例](sample/interop/README.md)和 [Rust 第一次调用](https://github.com/sgua83/Blink/blob/v0.14.1.1/sample/hybrid/first/README.md)在宿主代码中用 `Backend::Cpu`／`Backend::Gpu` 选择后端；工具生成 C ABI 头文件、导入库、C++ 包装与 Rust 绑定。普通宿主无需命令行设备参数；仅性能对照驱动保留这种参数。支持类型及责任见[正式版 ABI 文档](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)。
-
-### 从 main 构建研发工具
-
-`main` 持续研发，根 [VERSION](VERSION) 是主线软件版本，可能领先正式版。下面保留主线源码 SDK 的构建方式；本页后续三章及相对文档链接随 main 演进，基础应用已按前述正式工具版本验证；旧标签中的书稿属于对应发行的历史快照，不含本次新增的应用入口。
-
-构建当前编译器前，先安装一份支持当前前端 B 源码的稳定 Blink 种子。默认 `compiler` 功能保留完整编译接口；原 `build.rs` 从 `%ProgramFiles%/Blink/bin` 调用 `bc` 与 `blink`，静态生成 B 词法及泛型前瞻模块，不以 target 中的新工具作为自己的构建前提。仅执行角色关闭 `compiler` 功能，不调用前端种子或装入源码前端。
-
-准备 Windows x64、[Rust stable MSVC 工具链](https://rust-lang.org/tools/install)和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK）。在 x64 Developer PowerShell 中执行：
-
-```powershell
-git clone https://github.com/sgua83/Blink.git Blink-main
-Set-Location Blink-main
-cargo build --workspace --release
-```
-
-后续命令均在 Blink 根目录执行。CPU 入门无需 GPU；GPU 版本需要满足程序能力要求的 Vulkan 驱动，无需 Vulkan SDK。当前 f32 示例还要求 `DenormPreserve` 与 `SignedZeroInfNanPreserve`，能力不足会明确报错。
-
-正式发行计划于每周日北京时间 **21:00（UTC+8）启动**构建和发布，完成时间取决于构建与上传，实际已发布版本以 [Releases](https://github.com/sgua83/Blink/releases)为准。新版覆盖安装，只保留当前版，原研发根和 target 不改；同一安装程序支持管理员 `--quiet` 部署。发布、安装与稳定种子的输入／输出边界见[工具说明](Tools/README.md)和[版本说明](Docs/Versioning.md)。`bc --version`、`blink --version`、`brun --version`显示各自构建时的版本。
-
-<a id="parallel-programming"></a>
-
-## 从《并行编程的艺术》开始
-
-下面完整收录[《并行编程的艺术》](sample/并行编程的艺术.md)前三章：正文、C 语言与 B 语言对照、图示、运行命令和原书实测均保留；仅校订链接及已变化的函数、借用范围说明。
-
-[第一章：逐元素并行](#map) · [第二章：读写归属](#ownership) · [第三章：求和归约](#reduction)
-
-示例按当前语言规则和正式工具入口编写；源码、构建、实际执行与交付历史只在P4双台账记录。
-
-如需复测，先按[原书附录 A.5](sample/并行编程的艺术.md)构建额外的性能对照工具；普通工作区构建不生成 `bperf.exe`：
-
-```powershell
-cargo build --release --manifest-path sample/performance/Cargo.toml --target-dir target
-```
-
-<a id="map"></a>
-
-## 1　第一种美：许多事情原本就能一起做
-
-### 1.1　从一段你已经会写的循环开始
-
-数组 `values` 里有四个数 `[1,2,3,4]`。把每个数乘二再加一，C 的写法很短：
-
-```cpp
-for (size_t i = 0; i < n; ++i) {
-    values[i] = values[i] * 2.0f + 1.0f;
-}
-```
-
-B 语言的计算正文同样简短：
+**parallel.b**
 
 ```c
-parallel (value in values) {
-    value = value * 2.0 + 1.0;
-}
-```
-
-`values` 是全部数字，`value` 表示当前元素的独占位置，相当于 C 的 `values[i]`，赋值会直接更新它。`parallel` 描述每个元素要做什么，允许各个实例独立推进。
-
-两种写法的结果都是 `[3,5,7,9]`。每个数的更新只依赖自己的旧值，因此可以分别计算。串行循环中的先后顺序来自写法，问题本身并不需要它。
-
-### 1.2　先看顺序，再看硬件
-
-![图 1-1　同一公式的串行顺序与并行元素域。步骤表示逻辑依赖，不是实测耗时。](sample/figures/map-order.svg)
-
-*图 1-1　同一公式的串行顺序与并行元素域。步骤表示逻辑依赖，不是实测耗时。*
-
-按串行过程理解，处理器读取一个数，完成乘法、加法和写回，再推进到下一项。并行过程把四次互不依赖的读改写展开；每个实例内部仍先读值，再计算，最后写回。
-
-这种一条输入对应一条输出的模式叫 map，即逐元素变换。
-
-![图 1-2　逻辑元素、CPU 工作范围和 GPU 工作组属于不同层次。](sample/figures/map-hardware.svg)
-
-*图 1-2　逻辑元素、CPU 工作范围和 GPU 工作组属于不同层次。*
-
-在当前 CPU 执行框架中，连续下标范围交给工作线程，一个线程处理许多元素。适合的直线计算还可以一次使用四个 SSE2 lane；这与多个 CPU 核心分工是两层并行。
-
-在 GPU 上，元素实例映射到计算调用，再组成工作组。工作组分批调度到硬件；四个逻辑元素不保证在物理上恰好同一时刻执行，一百万个元素也不等于一百万个操作系统线程。
-
-C/C++ 编译器也可能自动向量化简单循环；B 语言则通过工作域直接表达元素之间的独立性。
-
-### 1.3　并发和并行，不必混为一谈
-
-并发关注多件工作如何同时处于进行中，例如等待文件读取时处理另一个请求。并行关注多份计算是否能在多个执行资源上同时推进。
-
-并发的多个任务可以在一个核心上轮流推进；并行的数组计算则利用多个执行资源分担工作。B 语言主要围绕数据并行展开，并用生产消费关系连接计算阶段。
-
-### 1.4　先问三个问题
-
-面对一个循环，先问：每次迭代读什么？写什么？是否需要另一次迭代刚写出的结果？
-
-如果答案是“共享只读输入，修改自己的输出，不等待其他元素”，你已经找到了最适合并行的形状。先找到这个形状，再讨论核心数和线程数，会轻松得多。
-
-### 1.5　运行与结果
-
-这次运行的是完整 B 应用：`.h` 公开 `u32 main() on cpu;`，`.b` 导入已有的 `lessons.map` 算法：
-
-```c
-module applications.map_cpu;
-import lessons.map;
+module parallel;
 
 u32 main() on cpu {
     dataset<f32> values = dataset<f32>(4);
 
-    target(cpu, demo(values));
-
-    for (value in values) { if (!println(value)) { return 1; } }
-    return 0;
-}
-```
-
-main 分配四条记录，在代码中用 `target(cpu, ...)` 选择本次计算位置，然后逐行输出 `3、5、7、9`。先编译、独立链接一次，以后直接运行 EXE，无需设备参数：
-
-```powershell
-bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
-blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
-.\target\book-apps\map_cpu.exe
-```
-
-GPU 版 `sample/applications/map_gpu.b` 在同一算法外明确写出数据上传、GPU 调用与下载：
-
-```c
-upload(values);
-target(gpu, demo(values));
-download(values);
-```
-
-```powershell
-bc -c sample/applications/map_gpu.b -o target/book-apps/map_gpu.obj -I sample
-blink target/book-apps/map_gpu.obj -o target/book-apps/map_gpu.exe
-.\target\book-apps\map_gpu.exe
-```
-
-两份应用输出相同的四个数。CPU 主流程负责分配和输出，不等于计算只能在 CPU 上执行；`on compute` 声明算法两端可用，`target` 决定本次位置。部署时把 EXE 与链接器生成的 `blink_app_*.dll` 一起复制，运行无需 B 源码、编译器或模块运行器；GPU 仍需要前文所述 Vulkan 能力。
-
-### 1.6　让数据规模把优势展现出来
-
-四个数适合手算。要比较效率，把同一个乘二加一扩展到一亿个数。串行与并行都只完成一次数组变换，公式、数据类型与工作量保持相同；足够大的数据规模让并行资源有了发挥的空间。
-
-本书的性能对照统一使用 Release 正式构建。Blink 编译器、CPU/GPU 执行框架和测量程序都开启 Rust 发布优化；第十四章用 B 语言编写的计算库（DLL） 也由 Release 构建生成。调试版只用于排查问题，其耗时不进入本书的效率对照。
-
-性能对照使用三个真实执行版本：开启 `/O2 /arch:AVX2` 优化的单线程 C++、B 原生 CPU 范围并行、B 原生 GPU。C++ 保留编译器自动向量化；B 语言 CPU 版本 使用本机可用的工作线程。
-
-为减小偶然波动，程序先预热，再重复测量并取中位数；每次测量只执行一次算法。C++ 与 B 语言 CPU 版本 从算法调用前计时到计算完成；B 语言 GPU 版本 从提交前计时到设备实际完成，包含命令组织、提交与等待。加速比为“C++ 串行时间 ÷ B 语言程序的并行执行时间”。
-
-代码生成、初始分配与数据准备放在计算计时之外。GPU 主对照中，代码和数据已经驻留设备；一次提交完成一次算法。重新上传、执行与读回的完整费用另行测量，便于根据数据所在位置选择执行方式。
-
-先按[原书附录 A.5](sample/并行编程的艺术.md) 编译配套测量程序，再在 Blink 根目录执行：
-
-```powershell
-.\target\release\bperf.exe `
-    map 100000000
-```
-
-
-### 1.7　把计算放到合适的位置
-
-
-*图 1-3　先比较同样的计算，再把真实的数据交付成本加回来。*
-
-
-<a id="ownership"></a>
-
-## 2　第二种美：让读写各有归属
-
-### 2.1　C/C++ 读者的语法桥梁
-
-| 你熟悉的概念 | B 语言中的表达 | 需要注意的区别 |
-|---|---|---|
-| `float`、32 位整数 | `f32`、`u32`、`i32` | 不把 C 的 `int` 大小假设带进来 |
-| 三个浮点分量 | `float3` | 原生向量值，不是系统线程组三个线程 |
-| 结构体 | `struct Cell { f32 value; };` | 同样用于组织普通值 |
-| 数组加长度 | `dataset<T>` | 还具有资源身份、访问模式与执行域 |
-| 参数只读 | `read dataset<T>` | 语言显式限制共享修改 |
-| 输出参数 | `write T` | 必须先写再读，不表示自动清零 |
-| 修改已有值 | `inout T` | 借用独占位置，不是任意裸指针 |
-| 普通函数 | `f32 f(f32 x)` | CPU 应用已有普通原生调用／递归；计算目标的调用范围仍受当前实现限制 |
-| 一组计算阶段的入口 | `void f(...)` 等普通函数定义 | 可以包含并行域和集合操作，无需独立的 program 类别 |
-| 同一算法的 CPU/GPU 版本 | `on compute` | 表示两端可执行，设备由调用者明确选择 |
-
-`.h` 描述模块的类型、签名、访问权限与执行目标，`.b` 提供实现。编译器通过模块声明定位二者，无需 C 式的 `#include` 预处理。
-
-### 2.2　把计算放进一个入口
-
-第一章的计算入口位于 [map.b](sample/lessons/map.b)：
-
-```c
-void scale(inout dataset<f32> values) on compute {
     parallel (value in values) {
-        value = value * 2.0 + 1.0;
+        value = f32(index() + 1) * 2.0 + 1.0;
+    }
+
+    for (value in values) {
+        println(value);
+    }
+    return 0;
+}
+```
+
+</details>
+
+### 同一段循环也能用于 GPU
+
+`on compute` 声明函数能面向 CPU／GPU 编译，不会自动选择设备；CPU 中的普通调用沿 CPU 位置执行。当前 GPU 边界要求一次函数调用，因此下面在同一文件完整展示清楚命名的 `fill_numbers`，没有隐藏计算。
+
+<details>
+<summary>展开完整 GPU 例子：计算与传输逐项可见</summary>
+
+**gpu.h**
+
+```c
+module gpu;
+
+u32 main() on cpu;
+```
+
+**gpu.b**
+
+```c
+module gpu;
+
+void fill_numbers(write dataset<f32> values) on compute {
+    parallel (value in values) {
+        value = f32(index() + 1) * 2.0 + 1.0;
     }
 }
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    upload(values);
+    target(gpu, fill_numbers(values));
+    download(values);
+
+    for (value in values) {
+        println(value);
+    }
+    return 0;
+}
 ```
 
-`dataset<f32>` 是一组 32 位浮点数；`inout` 允许读取并更新；这里使用普通 `void` 函数定义计算入口。`on compute` 表示这份实现可生成 CPU 与 GPU 代码，执行时由调用者明确选择设备。
+`upload` 建立 GPU 数据位置，`target(gpu, ...)` 执行上面已展示的函数，`download` 将结果交回 CPU。同一函数要在 CPU 使用时，把这三行换成普通调用 `fill_numbers(values);` 即可，无需 CPU target 包装。自动选设备与内联 GPU 块语法尚未实现。
 
-`demo` 先产生 `[1,2,3,4]`，再调用 `scale`。初始化与算法分开，便于直接观察第一次运行。模块声明和接口文件的作用见[原书附录 A](sample/并行编程的艺术.md)。
+</details>
 
-### 2.3　独占写为什么重要
+[逐行上手指南](Docs/GettingStarted.md#快速开始)解释文件、输出与 GPU 要求。这些例子使用内建操作，全部计算逻辑均在这里可见。
 
-下面是一个 C/C++ 并行化时常见的错误思路。`total` 是只有一条记录的结果数组；若让许多执行者同时运行这条语句，就会争写同一个 `total[0].value`：
+<a id="快速开始"></a>
 
-```cpp
-// Conceptual parallel body: this is a data race.
-total[0].value += input[i].value;
+## 下载并运行
+
+1. 下载并双击安装 [Windows x64 正式版 v0.14.1.1](https://github.com/sgua83/Blink/releases/tag/v0.14.1.1) 的 `Blink-Setup-windows-x64.exe`，新终端即可使用 `bc` 与 `blink`。
+2. 准备 [Rust stable MSVC](https://rust-lang.org/tools/install) 和 [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（x64 C++ 工具与 Windows SDK），打开 x64 Developer PowerShell。这些工具用于构建，运行成品不需要 Rust 或源码。
+3. 在空目录把上面的完整代码保存为 `hello.h` 与 `hello.b`，使用安装目录中的正式工具编译、链接并运行：
+
+```powershell
+& "$env:ProgramFiles/Blink/bin/bc.exe" -c hello.b -o target/hello.obj
+& "$env:ProgramFiles/Blink/bin/blink.exe" target/hello.obj -o target/hello.exe
+.\target\hello.exe
 ```
 
-许多执行者同时读取旧的 `total[0].value`，各自加上自己的数，最后互相覆盖。即使每次加法都很简单，整个“读取、计算、写回”也不是一个不可分割的动作。
+程序输出 `3`。这些独立例子使用正式工具 **0.14.1.1** 核验，不需要克隆仓库或导入自定义教学模块。后续并行例子保存对应的两份文件，同样编译 `parallel.b` 或 `gpu.b` 即可；CPU 入门无需 GPU。[完整指南](Docs/GettingStarted.md#快速开始)说明 GPU 能力要求与生成 DLL 的交付方式。
 
-B 语言的普通 `parallel` 为每个实例分配当前元素的独占写权限。共享位置的修改使用显式原子操作；集合求和则用归约表达。这样，独立更新与共享修改在源码中就有了清楚的区别。
+<a id="工具与原生集成"></a>
 
-访问权限约束读写冲突；公式、数值精度和业务规则仍由算法决定。
+## 接入现有 C／C++／Rust 项目
 
-![图 2-1　争写会丢失更新；独占输出把写入责任分开。](sample/figures/ownership.svg)
+让 B 负责一段计算，保留已有应用和工程组织。`bc` 编译计算模块，`blink` 输出 DLL、导入库及调用接口。
 
-*图 2-1　争写会丢失更新；独占输出把写入责任分开。*
+| 你的工程 | 接入方式 | 从这里开始 |
+|---|---|---|
+| C | 生成的 C ABI 头文件与 DLL | [四个数的完整调用](Docs/GettingStarted.md#first-dll) |
+| C++ | 生成的包装、RAII 和代码内 `Backend` 选择 | [C++ 宿主源码](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.cpp) |
+| Rust | 生成的绑定，或直接使用原生 Rust API | [DLL 宿主源码](https://github.com/sgua83/Blink/blob/cde16596f1532894a77490799783cdcf471ef172/sample/interop/map.rs) · [原生 API](sample/interop/README.md#rust-原生-api) |
 
-图中两个执行者都读到 0，各自计算后写回，导致一次更新被覆盖。归约会先形成独立摘要，再合并这些摘要，解决集合求和中的共享累加问题。
+普通宿主在代码中选择 CPU／GPU。支持类型、同步完成、资源寿命与部署要求见[正式版 ABI 文档](https://github.com/sgua83/Blink/blob/v0.14.1.1/Docs/NativeInterop.md)；主线的新能力见[现行集成文档](Docs/NativeInterop.md)。B 也支持[通过 C ABI 调用外部 DLL](sample/extern/README.md)。
 
-### 2.4　write、inout 和 read 的实际含义
+<a id="三大核心特点"></a>
+<a id="能力与发展方向"></a>
 
-把 write 理解为“我要生产新结果”，把 inout 理解为“我要读取并更新自己已有的值”，把 read 理解为“大家可以共同阅读”。
+## 三大设计，清楚区分实现与方向
 
-`write` 声明写入权限，初始化由算法或宿主负责。示例 main 中的 `dataset<f32>(4)` 申请四条全零记录。
+| 设计 | 带来的价值 | 当前状态 |
+|---|---|---|
+| **原生并行** | 用数据域、访问权限和集合运算表达独立工作与必要协作 | 已有单机多核 CPU 与 GPU 执行；并行域、归约、扫描、显式原子与块内协作 |
+| **同源 CPU／GPU** | 适用的计算共享一份算法，显式选择目标和数据传输 | 自研原生 x64／SPIR-V 后端；具体 GPU 能力由程序与驱动决定 |
+| **原生域编译与域运行** | 将一组机器组织成编译与执行资源，编译域和运行域可独立选择 | **设计中，尚未实现**；[计算域方案](Docs/ComputeDomain.md) |
 
-当前 CPU 应用函数已有整份 read／write／inout dataset 借用，显式原子资源使用 atomic 模式；修改单个独占位置可用 `inout T` 或 `write T`。计算函数可以在阶段组合中传递所需权限，但这些能力不允许一个并行实例任意读写其他实例正在修改的整份数据。
+<a id="面向-ai-的工具与系统研发"></a>
 
-### 2.5　parallel 和 for，各自负责什么
+B 以数据、函数、模块和执行域组织程序，不采用面向对象。B 也寓意 **Base**：长期希望成为 AI 超算时代的基础语言。面向 AI 的编译与观察接口持续完善，已有工具及未完成边界见[工具指南](Docs/GettingStarted.md#面向-ai-的工具与系统研发)与[架构](Docs/Architecture.md)。
 
-`parallel (value in values)` 建立一群元素实例；`for (item in data)` 则是当前实例内部的有界顺序遍历。后者不会再创建一层并行任务。
+当前平台为 Windows x64；其他平台、完整模块能力和稳定热更新仍有未完成范围。GPU 需要匹配程序能力的 Vulkan 驱动，无需 Vulkan SDK。[语言规范](Docs/BLanguage.md)记录精确支持范围，[能力与发展方向](Docs/GettingStarted.md#能力与发展方向)提供详细说明。
 
-若 N 个输出各自遍历 N 项材料，就会产生 O(N²) 的工作。并行不会消除重复计算，应先消除无用工作。
-
+<a id="parallel-programming"></a>
+<a id="map"></a>
+<a id="ownership"></a>
 <a id="reduction"></a>
-
-## 3　第三种美：许多结果可以汇成一个
-
-### 3.1　把累加链变成一棵树
-
-计算 `[3,1,4,2]` 的总和。为了让结果供后续阶段使用，`total` 用一条 `Count` 记录保存数值；输入也使用 `Count { u32 value; }`。
-
-C 串行核心：
-
-```cpp
-total[0].value = 0;
-for (size_t i = 0; i < n; ++i) {
-    total[0].value += input[i].value;
-}
-```
-
-用 B 语言编写的并行核心：
-
-```c
-reduce_sum(input.value, total.value);
-```
-
-`input.value` 表示全部输入记录的 value 字段；`total.value` 是长度为一的结果字段。这里写的是集合意图，编译器负责展开集合算法。
-
-![图 3-1　线性累加链与分层归约。上行中的同层摘要可以独立计算。](sample/figures/reduce-tree.svg)
-
-*图 3-1　线性累加链与分层归约。上行中的同层摘要可以独立计算。*
-
-串行累加每一步都使用上一步的结果。树形组织先算 `3+1=4` 与 `4+2=6`，再算 `4+6=10`；三个必要的二元合并被放到两层依赖中。n 个输入的平衡树有 O(log n) 层，但仍要完成 O(n) 工作。
-
-### 3.2　源码是一句，执行有层次
-
-配套源码 [scan.b](sample/lessons/scan.b) 提供完整入口：
-
-```c
-void sum(read dataset<Count> input,
-            write dataset<Count, 1> total) on compute {
-    reduce_sum(input.value, total.value);
-}
-```
-
-CPU 先让各个范围独立求部分和，再合并范围摘要。GPU 先在工作组内用共享存储形成部分和；输入较大时，继续归约工作组摘要，直到得到一个结果。组内同步只协调本组，跨组的阶段由执行框架组织。
-
-从这一句归约，编译器就能组织局部求和与逐层合并。归约意图、资源权限和阶段依赖共同决定 CPU 与 GPU 的执行结构。
-
-### 3.3　先理解结合律
-
-对理想整数加法，`(a+b)+c` 与 `a+(b+c)` 相同，因此可以改括号组成树。减法不满足这个性质，不能因为接口看起来像“合并两个数”就拿来任意树形归约。
-
-结合律允许改变括号；交换律允许交换左右顺序。它们是两件事。后面会看到，即使不能交换顺序，也能构造优美的并行归约和扫描。
-
-B 语言的 u32 加法按 32 位保留低位，溢出具有确定的模运算语义。但如果你要的是业务上不能溢出的计数，仍要选择合理规模，不能把取低位结果当作完整大整数。
-
-### 3.4　浮点不是纸上的实数
-
-f32 只有有限精度。不同分组可能改变舍入，例如很大的数和很小的数相加，小数可能消失；先让大数抵消再加小数，又可能保留它。
-
-CPU 与 GPU 的归约分组可能不同，结果也可能存在舍入差异。评价浮点计算时，需要结合数据尺度、允许误差、特殊值和算法稳定性。
-
-### 3.5　运行与结果
-
-应用在代码中创建四条输入和一条总量，调用 `target(cpu, demo_sum(input, total))`，直接打印 `10`。GPU 版把这两份资源上传，在 `target(gpu, ...)` 完成后下载结果；设备和容量都不由命令行传入。
-
-```powershell
-bc -c sample/applications/reduce_cpu.b -o target/book-apps/reduce_cpu.obj -I sample
-blink target/book-apps/reduce_cpu.obj -o target/book-apps/reduce_cpu.exe
-.\target\book-apps\reduce_cpu.exe
-```
-
-```powershell
-bc -c sample/applications/reduce_gpu.b -o target/book-apps/reduce_gpu.obj -I sample
-blink target/book-apps/reduce_gpu.obj -o target/book-apps/reduce_gpu.exe
-.\target\book-apps\reduce_gpu.exe
-```
-
-计算函数仍是 `lessons.scan` 的 demo_sum，输入 `[3,1,4,2]`，结果为 10。
-
-### 3.6　让大量摘要汇成吞吐
-
-性能输入为一千万个元素。下面比较完成一次算法的用时，计时范围与第 1.6 节相同。
-
-```powershell
-.\target\release\bperf.exe `
-    reduce 10000000
-```
-
-
-每个输入只做一次整数累加，优化后的串行版本已经很紧凑。B 语言 CPU 版本 将一千万项分成范围并行求和，再合并摘要；GPU 的提交与等待开销在这种轻计算中占比更大。初始数据循环为 [3,1,4,2]，总和为两千五百万；三种版本的整数结果相同。
-
-
-![求和归约同条件性能实测](sample/figures/performance-reduce.svg)
-
-
-## 工具与原生集成
-
-| 工具／库 | 用途 |
-|---|---|
-| `bc` | 检查源码、编译 COFF 目标文件、导出 CPU／GPU 计算代码 |
-| `blink` | 链接已编译对象，生成 Windows x64 exe 或计算库（DLL） |
-| `brun` | 后端隔离测试／诊断使用的模块运行器；普通应用直接运行 EXE |
-| `blanguage` | 前端、类型与访问检查、并行 IR、优化和原生后端 |
-| `blcompute` | 数据存储、设备资源、传输、原生执行与完成后的释放 |
-
-编译参数容量使用`bc --max-parameter-bytes N -c ...`显式选择，Rust调用方使用`Compiler::with_max_parameter_bytes`；默认128字节。实际布局要求随产物交给设备加载，配置、缓存及目标选择见[语言规范](Docs/BLanguage.md#abi-与代码生成)。
-
-你可以用 B 语言构建独立应用，也可以把用 B 语言编写的计算函数编译成 DLL，供 **C、C++ 与 Rust** 程序调用。工具链同时生成 C ABI 头文件、导入库、C++ 包装和 Rust 绑定；原生 Rust API 支持驻留资源和异步提交。
-
-- [独立应用](sample/applications/README.md)：CPU 入口、动态数据与显式 CPU／GPU 计算。
-- [C／C++／Rust 调用 B 语言程序](sample/interop/README.md)：从四个数开始，构建并调用同一份计算库（DLL）。
-- [B 语言调用外部 DLL](sample/extern/README.md)：C ABI、参数访问与真实资源边界。
-- [原生集成与部署](Docs/NativeInterop.md)：产物、ABI、部署要求及当前限制。
-
-### 面向 AI 的工具与系统研发
-
-编译、调试、观察与基础量化工具以AI为唯一直接使用者，架构师通过AI掌握真实代码、数据和执行。长期支持AI编写观察／分析程序、在数据附近计算、表达明确机器方案并组合真实输入实验；优化策略、调试信息和采集独立，AI负责分析与选择。总原则、逐项职责及当前基础见[面向AI的基础工具](Docs/Architecture.md#面向ai的基础工具与全流程观察)；这些方向仍在研发，不代表已有完整调试／实验工具，也不增加自动瓶颈判断、评分或另一运行状态权威。
-
-B按真实职责推进编译器及调试／观察主体的自举与接管，并建设完整系统程序所需的接口与库。正常系统ABI声明和有职责的B库封装应复用，必要独立Rust支持可保留；不以百分之百B、源码比例或B外壳计完成。边界和当前状态见[架构设计](Docs/Architecture.md#长期系统设计目标与语言边界)。
-
-可选CPU栈报告由`bc -c ... --stack-report <文件>`或`blink --stack-report <已编译输入>... -o <文件>`生成，展示实际帧、调用链上界及递归／外部／间接未知范围；可声明真实调用前预算，仅作报告。PE容量与真实线程剩余容量分别说明，工具不限制递归或改写执行。命令与范围见[静态栈报告](Docs/BLanguage.md#cpu调用链的静态栈报告)。
-
-AI可用`bc inputs <compiled.obj|entry.blbi>`直接查询产物保存的实际构建请求与来源记录，输出JSON，不读取当前源码或重新编译。字段、摘要覆盖范围和无记录时的行为见[实际构建输入查询](Docs/BLanguage.md#实际构建输入查询)；该查询不代表完整调试工具已经交付。
-
-AI可用`bc layout <module.h|module.b> <type> [-I module-root] [--field path]`查询本次具体类型或字段的JSON布局；`bc build`同时输出.layout.json，已有执行接口也可由SDK直接查询。值描述、元素存储及资源字覆盖的边界见[类型与字段布局查询](Docs/BLanguage.md#类型与字段布局的结构查询)。
-
-AI可用`bc ir <module.b>`按原模块、具体并行入口或普通应用取得实际IR的JSON，并选择完整函数名或优化后阶段；SDK可直接查询同一编译返回值。函数／程序IR的source_origin仅保留真实源码定义的快照、范围与实例对应关系；合成函数及产物接口不伪造原定义，已知实例／后续真实内联来源分别保持；已取得IR在文件变化后仍可查原事实；每个原IR操作可沿source_site查询发射时的语法范围，缺失材料明确为null；同一来源还保留实际特化实例和从外到内的真实内联展开点；SourceSite::domain_path()及domain_path数组独立交接源码域展开和已编译域边界，真实调用者／目标与原范围随原IR保持，不把域路径当普通内联或运行期调用栈；Inst／Stage／ValueCode的generated_origin交接真实生成原因，语法与定义实例锚点按kind区分；程序入口／根Frame、dataset原分配Call、生成函数初始化、新绑定／重新赋值槽位、最终存储释放Call、拥有元素逆序清理循环及用户拥有值静态析构Call已有独立生成来源，原并行索引／空前缀语法触发保持；其余资源包装仍待实现；parallel及无普通Inst的集合调用可沿Stage::operation_source()及阶段JSON的operation_source查询原语句／调用标识符范围和实际实例；CPU应用提取保留原语句定义与原特化实例，生成执行名称不冒充源码函数；融合后的完整多来源仍待实现，各project／identity／combine可沿ValueCode::entry_origin()查询真实目标实例、静态引用及有序捕获参数来源，空代码值核也保留入口；优化变换与机器映射继续独立交付，见[操作语法来源](Docs/BLanguage.md#ir操作的语法来源)和[原定义来源](Docs/BLanguage.md#函数与程序ir的原定义来源)。实际阶段、逻辑引用和无IR产物的边界见[实际IR查询](Docs/BLanguage.md#实际ir的按需结构查询)。
-
-AI可用`bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]`查询明确指令范围的原字节、操作数、寻址和静态控制流；SDK使用`native::instructions_json`。生成期映像可用NativeCode／StageCode／ProgramImage的`code_json`查询真实主／辅助代码、对齐和字面量；`bc build`同时导出`.x64.json`。原SDK可显式保存独立CPU范围材料，`bc code <entry.blbi> --observations <ranges.blcr>`及`bc code --image <deployment.blri> --observations <ranges.blcr>`可无源码恢复查询；执行编码不带材料，`bc code --object <compiled.obj> [--section number | --function exact-symbol]`查询原COFF物理节／符号／重定位及.pdata已声明指令范围，原Object可显式保存独立`.blcf`，`--observations <ranges.blcf>`匹配后交接普通函数／辅助代码／对齐／字面量完整分区；无材料保持未分类，最终PE另行交付，见[映像范围查询](Docs/BLanguage.md#生成期原生映像的范围与指令查询)。
-
-AI可用`bc spirv <module.spv>`或compiler SDK的`spirv::module_json`只读取得原单模块全部指令、偏移、原字、类型／结果／操作数ID、入口与字面量位模式；不重编或执行GPU。原ShaderCode／StageCode／ProgramImage的code_json保留全部主／辅助模块，bc build为每份.spv导出配对.spv.json；纯GPU可用`bc code <entry.blbi>`或`bc code --image <deployment.blri>`无源码查询，不要求CPU范围材料。SPIR-V仍是中间表示，见[单模块结构查询](Docs/BLanguage.md#原spir-v单模块的完整结构查询)。
-
-`bc image <entry.blbi> -o <deployment.blri>`直接导出原CPU／GPU执行映像，原构建输入记录与缓存保持；关闭compiler功能的Rust运行SDK可独立装入并执行，见[部署映像](Docs/BLanguage.md#构建记录与可部署执行映像)。
-
-## 能力与发展方向
-
-| 范围 | 当前状态 |
-|---|---|
-| CPU／GPU 计算 | 已有自研 x64／SPIR-V、并行域、集合运算、显式原子、tile／subgroup 协作 |
-| 数据与静态抽象 | 已有记录、数组、向量／矩阵、泛型、开放 `u32 const`、访问契约和有效前缀 |
-| 应用与模块 | 已有独立 CPU 应用、普通原生调用／递归及有限的独立模块、多对象链接能力 |
-| 平台 | 当前为 Windows x64 CPU 与 Vulkan GPU；其他平台和 CPU 架构待实现 |
-| 计算域 | 原生域编译与域运行已确定设计边界，尚未实现 |
-| 稳定热更新 | 版本绑定、状态迁移和资源交接已列入架构，尚未实现 |
-
-普通CPU应用可直接移动、补回固定拥有数组的动态位置，并沿实际分支、for／while和返回释放仍拥有的资源。 动态拥有元素可由`dataset<T>(length,F)`静态逐项构造，完整序列移动／返回与最后元素释放沿同一拥有树；能力及字段借用／追加／取出等剩余范围见[拥有元素序列](Docs/BLanguage.md#cpu-owned-dataset-elements)。普通CPU函数可用`requires nonzero(rows[*].value)`交接共同非零前提，也可用`requires nonempty(rows[*].value.values)`交接已初始化元素的共同子资源非空前提，同一元素的`requires index(rows[*].value.index,rows[*].value.values)`还可交接实际索引与子资源关系；范围见[共同值](Docs/BLanguage.md#common-element-nonzero)、[共同资源](Docs/BLanguage.md#common-element-nonempty)和[索引关系](Docs/BLanguage.md#common-element-index)。returned与write／inout的条件CPU／GPU输出位置可经普通函数、对象和归档交接，条件输入按实际使用路径交接，循环提前退出的跨函数输出位置也沿真实出口关系交接；当前对象与资源ABI见[唯一版本说明](Docs/BLanguage.md#已编译模块的资源abi)，精确范围见[语言规范](Docs/BLanguage.md#跨函数模块的条件资源输出位置)。
-
-B 语言 **不采用面向对象**，以数据、函数、模块和执行域组织程序。长期设计同时重视顶级效率与机器控制、可检查的接口，以及人、AI 代码生成工具和上层编译器的共同使用。当前子集、原生运行与性能结果分别记录于[语言规范](Docs/BLanguage.md)和[现行架构](Docs/Architecture.md)。
+<a id="从并行编程的艺术开始"></a>
 
 ## 学习与文档
 
-**[进入 Wiki 学习与书籍目录](https://github.com/sgua83/Blink/wiki/Blink-Books)** · [按目标选书与安装入门](https://github.com/sgua83/Blink/wiki) · [English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)。Wiki 提供四本书的完整在线正文；书稿跟随开发版 main，正式版使用与发行包匹配的文档和示例。
+**[Wiki 学习导航](https://github.com/sgua83/Blink/wiki)** 帮你选书；**[中文书籍目录](https://github.com/sgua83/Blink/wiki/Blink-Books)** 提供完整在线正文与 PDF 入口。
 
-| 从哪里开始 | 内容 |
+| 目标 | 在线阅读 |
 |---|---|
-| [《并行编程的艺术》](sample/并行编程的艺术.md) | 从 C／C++ 走向并行思考；[手机 PDF](sample/pdf/并行编程的艺术-B语言-手机阅读版.pdf) · [标准 PDF](sample/pdf/并行编程的艺术-B语言.pdf) |
-| [《Blink 和 Rust 混合编程》](sample/Blink和Rust混合编程.md) | 从最小调用到模拟与连续 GPU 计算；[示例](sample/hybrid/README.md)；[手机 PDF](sample/pdf/Blink和Rust混合编程-手机阅读版.pdf) · [标准 PDF](sample/pdf/Blink和Rust混合编程.pdf) |
-| [《B 语言源码分析》](sample/B语言源码分析.md) | 阅读编译器、IR、后端及执行框架；[版本与阅读资料](sample/compiler/README.md)；[手机 PDF](sample/pdf/B语言源码分析-手机阅读版.pdf) · [标准 PDF](sample/pdf/B语言源码分析.pdf) |
-| [《BLEngine 源码分析》](sample/BLEngine源码分析.md) | 首个消费者如何使用语言、场景与光照；[阅读资料](sample/engine/README.md)；[手机 PDF](sample/pdf/BLEngine源码分析-手机阅读版.pdf) · [标准 PDF](sample/pdf/BLEngine源码分析.pdf) |
-| [B标准库](library/README.md) | 普通值动态序列、严格UTF-8／UTF-16编解码、整段转换与拥有切片，以及Windows系统信息、计时、线程错误码、原始命令行、环境读写、UTF-8文件输入、路径存在性、绝对路径、规范路径身份、扩展名替换及路径组合 |
-| [语言规范](Docs/BLanguage.md) · [架构](Docs/Architecture.md) · [计算域](Docs/ComputeDomain.md) | 当前规则、长期边界和后续设计 |
+| 从 C／C++ 进入并行思考：map、读写归属、归约、扫描与协作 | [《并行编程的艺术》](https://github.com/sgua83/Blink/wiki/Book-Parallel-Programming) |
+| 将 B 接入 Rust，理解布局、调用与连续计算 | [《Blink 和 Rust 混合编程》](https://github.com/sgua83/Blink/wiki/Book-Blink-and-Rust) |
+| 深入编译器、IR、CPU／GPU 后端和执行框架 | [《B 语言源码分析》](https://github.com/sgua83/Blink/wiki/Book-B-Source-Analysis) |
+| 从实际引擎案例理解场景、光照和资源交接 | [《BLEngine 源码分析》](https://github.com/sgua83/Blink/wiki/Book-BLEngine-Source-Analysis) |
 
-技术文档与书籍目前以中文为主；英文首页提供相同的入门路径和能力说明。上表为 main 的现行书稿与配套示例；基础应用已按前述正式工具版本验证。上表及旧标签中的 PDF 为已有快照，最新内容以在线 Markdown 为准；标准版与手机版 PDF 在周日正式发行时从同次固定书稿统一生成，合集见对应 [Release](https://github.com/sgua83/Blink/releases) 的 `Blink-Books.zip` 资产。BLEngine 是独立消费者，尚未开源；本仓库提供其案例书稿与阅读资料，不提供引擎源码。
+[前三章导读](Docs/ParallelPrimer.md)完整保留入门正文、图示和既有性能测量记录，并可继续阅读完整书稿；[上手与工具指南](Docs/GettingStarted.md)承接安装、源码构建、集成和 AI 查询说明。另有[独立应用示例](sample/applications/README.md)、[B 标准库](library/README.md)与[语言规范](Docs/BLanguage.md)。
+
+书籍正文目前以中文为主。[English book index](https://github.com/sgua83/Blink/wiki/Blink-Books-English)与[英文入门三章](Docs/ParallelPrimer.en.md)也可直接阅读。Wiki 跟随 main；现有 PDF 是快照，新 PDF 在周日正式发行时从固定书稿统一生成。**BLEngine 尚未开源**，此处提供其案例书稿与阅读资料。
+
+<a id="从-main-构建研发工具"></a>
+
+### 想研究编译器或从源码构建？
+
+先安装稳定 Blink 种子，再按[主线构建指南](Docs/GettingStarted.md#从-main-构建研发工具)构建研发工具。默认构建直接消费 `%ProgramFiles%/Blink` 中的稳定输入；发行版本、主线版本与产物兼容边界分别记录于[版本说明](Docs/Versioning.md)。
 
 <a id="feedback"></a>
+<a id="反馈与技术交流"></a>
+<a id="参与开发"></a>
 
-## 反馈与技术交流
+## 社区与参与
 
-使用问题、缺陷和功能建议请提交到 [GitHub Issues](https://github.com/sgua83/Blink/issues)；[新建反馈](https://github.com/sgua83/Blink/issues/new)时附上最小 B 源码、完整命令、`bc --version`／`blink --version`／`brun --version`、所用标签或提交、Windows 与 CPU／GPU／驱动信息及原始错误。性能讨论请说明输入规模、构建档位、计时范围与数据传输成本，方便复现和比较。
-
-## 参与开发
-
-P4 是研发源码权威。所有节点使用本人账号和独立工作区提交；GitHub 镜像由 GUA／192.168.10.5 每天 09:00、21:00 集中发布。发布从远端已确认的 P4 水位继续，失败后下一次会覆盖全部未发布变更。开发节点无需登录 GitHub。详见 [中央镜像发布](Tools/README.md)。
-
-修改前请阅读[工程约定](AGENTS.md)和[架构中的实现范围](Docs/Architecture.md)。反馈问题时提供 B 语言源码、实际命令、工具链与设备信息及原始错误；能力目标、实现、原生运行和性能结果分别说明。维护者的提交与发布流程见工程约定。
+- **使用问题、经验和技术讨论：** [GitHub Discussions](https://github.com/sgua83/Blink/discussions)。
+- **可复现缺陷与功能建议：** [GitHub Issues](https://github.com/sgua83/Blink/issues) · [新建反馈](https://github.com/sgua83/Blink/issues/new)。请附最小源码、工具版本、所用源码提交、完整命令、CPU／GPU／驱动信息与原始错误；性能问题同时说明输入规模、构建档位和计时／传输范围。
+- **贡献代码或文档：** 先在 Issue／Discussion 协作，阅读[工程约定](AGENTS.md)及[贡献与发布流程](Tools/README.md)。P4 是研发权威，GitHub 是单向镜像，维护者从主线集成交付。
 
 ## 许可证
 
