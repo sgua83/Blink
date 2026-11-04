@@ -1084,7 +1084,7 @@ compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退
 
 普通值参数／返回采用原 Ty 布局、GPR／XMM、栈槽及隐藏结果缓冲。普通 B 位置借用传真实地址：记录／数组保留声明布局，合法重排向量按逻辑分量交接原地址。同一类型／const 具体函数不按调用者物理映射或 CPU／GPU 驻留复制原生实现。外部 C 连续指针需求通过 requires contiguous 沿既有合同表达，不创建连续副本或末尾写回。
 
-需要动态存储或 CPU／GPU 域时，编译阶段通过正式 Rust SDK 产物生成必要静态本机库，随 COFF 的 `.blrt` 保存；`.blmeta` 保存接口、合同和资源绑定。根包装的Cargo清单声明原SDK中实际需要的blanguage／blcompute路径依赖，关闭默认compiler功能；installed来源保持原选择。一次Cargo依赖图共同生产运行库与包装，复用原target/dll，不另起SDK --lib构建或用顶层同名rlib手工交接。暂存源码和私有Cargo package归本编译单元，归档后只清除该单元，共享运行库依赖缓存继续保留。
+需要动态存储或 CPU／GPU 域时，编译阶段通过正式 Rust SDK 产物生成必要静态本机库，随 COFF 的 `.blrt` 保存；`.blmeta` 保存接口、合同和资源绑定。根包装的Cargo清单声明原SDK中实际需要的blanguage／blcompute路径依赖，关闭默认compiler功能；installed来源保持原选择。一次Cargo依赖图共同生产运行库与包装，复用原target/dll，不另起SDK --lib构建或用顶层同名rlib手工交接。暂存源码和私有Cargo package归本编译单元，名称由本次生成时刻、进程号及进程内序号区分；这些值只隔离暂存实例，不作为实现或缓存身份。归档后只清除该单元，共享运行库依赖缓存继续保留。
 
 最终链接只消费这些静态代码和标准重定位，必要时调用 MSVC 链接器生成应用配套执行 DLL 或算法 DLL。运行产物不嵌入待编译 B 源码／值 IR，不依赖原暂存目录。println 和 extern C 是可观察效果，不因返回值未使用而消除；标准输出借用进程句柄，外部库持有到最后代码消费者结束。具体 ABI 见 [NativeInterop.md](NativeInterop.md)。
 

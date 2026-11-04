@@ -31,7 +31,8 @@ pub(crate) fn compile(
     let sdk = sdk_root()?;
     let sdk_target = build_root(&sdk)?;
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let id = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let id = format!("{}-{created}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let unit = format!("blink_object_{}", id.replace('-', "_"));
     let workspaces = sdk_target.join("blc-object");
     std::fs::create_dir_all(&workspaces)?;
