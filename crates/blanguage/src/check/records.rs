@@ -34,7 +34,7 @@ impl Builder<'_> {
         Place::Element {
             ty: ty.clone(), binding: view.binding, index,
             words: ty.components.iter().map(|(_, word)| offset + word).collect(),
-            writable,
+            writable: writable && view.access.writes(),
         }
     }
     pub(super) fn dataset_field(&self, expr: &Expr) -> Result<(usize, u32, Ty)> {

@@ -189,6 +189,7 @@ struct OwnedBinding {
 #[derive(Clone)]
 struct DatasetView {
     binding: usize,
+    access: Access,
     projection: Vec<usize>,
     length: bounds::Proof,
 }
@@ -1483,7 +1484,7 @@ fn function_parameters(
                 }
             } else {
                 b.view_access.insert(data_index, p.access);
-                Binding::Data(b.dataset_view(data_index))
+                Binding::Data(b.dataset_view(data_index,p.access))
             };
             b.env.insert(p.name.clone(), binding);
             data_index += 1;
@@ -1891,7 +1892,7 @@ impl<'a> Builder<'a> {
                     self.env.insert(name.clone(), Binding::Acceleration(*i));
                 }
                 Root::Data(i, access) => {
-                    let view = self.dataset_view(*i);
+                    let view = self.dataset_view(*i,*access);
                     self.env.insert(name.clone(), Binding::Data(view));
                     self.view_access.insert(*i, *access);
                 }
@@ -3301,8 +3302,7 @@ impl<'a> Builder<'a> {
                     Some(CursorSource::Tile(view)),
                 ),
                 Some(Binding::Data(view)) => {
-                    let binding = view.binding;
-                    if !matches!(self.view_access[&binding], Access::Read | Access::InOut | Access::Atomic) {
+                    if !matches!(view.access, Access::Read | Access::InOut | Access::Atomic) {
                         return self.fail(
                             start.span,
                             "B128",
@@ -3911,7 +3911,7 @@ impl<'a> Builder<'a> {
                 "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
             );
         }
-        if matches!(self.view_access[&binding], Access::Write | Access::InOut) {
+        if matches!(view.access, Access::Write | Access::InOut) {
             if self
                 .appends
                 .iter()
@@ -3926,7 +3926,7 @@ impl<'a> Builder<'a> {
             self.element_domains.insert(binding);
         }
         Ok(Some(self.dataset_element(
-            &view, i.regs[0], self.view_access[&binding].writes() && current,
+            &view, i.regs[0], view.access.writes() && current,
         )))
     }
     fn name_place(&mut self, name: &String, e: &Expr) -> Result<Place> {
@@ -4168,7 +4168,7 @@ impl<'a> Builder<'a> {
             }
         }
         if let Some(view) = self.dataset_reference(&args[0])? {
-            if !matches!(self.view_access[&view.binding], Access::Read | Access::InOut) {
+            if !matches!(view.access, Access::Read | Access::InOut) {
                 return self.fail(span, "B181", "unsafe_read 需要 read 或本阶段共享只读的 inout 数据集");
             }
             let Some(index) = self.expr(&args[1])? else { return Ok(None); };

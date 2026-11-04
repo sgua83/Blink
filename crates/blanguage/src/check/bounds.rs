@@ -3387,9 +3387,10 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn dataset_view(&self, binding: usize) -> DatasetView {
+    pub(super) fn dataset_view(&self, binding: usize, access: Access) -> DatasetView {
         DatasetView {
             binding,
+            access,
             projection: Vec::new(),
             length: {
                 let mut proof = Proof::default().with_identity(ValueIdentity::DataLength(binding));

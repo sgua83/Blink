@@ -478,11 +478,11 @@ impl Builder<'_> {
                     }
                     env.insert(p.name.clone(), Binding::AtomicBorrow(place));
                 }
-                Argument::Dataset(view) if p.ty.dataset && matches!(p.access,Access::Read|Access::Atomic) => {
+                Argument::Dataset(view) if p.ty.dataset && matches!(p.access,Access::Read|Access::Atomic|Access::InOut) => {
                     let binding=view.binding;
-                    let access=self.view_access[&binding];
-                    if !matches!((p.access,access),(Access::Read,Access::Read|Access::InOut)|(Access::Atomic,Access::Atomic)) {
-                        return self.fail(span,"B224","CPU范围的read／atomic借用需要对应的实际来源权限");
+                    let access=view.access;
+                    if !matches!((p.access,access),(Access::Read,Access::Read|Access::InOut)|(Access::Atomic,Access::Atomic)|(Access::InOut,Access::InOut)) {
+                        return self.fail(span,"B224","CPU范围的dataset借用需要对应的实际来源权限");
                     }
                     let (field,element)=self.dataset_layout(&view);let element=element.clone();
                     self.require_same(&ty,&element,span)?;
@@ -638,7 +638,7 @@ impl Builder<'_> {
         }
         let memory=if self.application.is_none(){
             let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
-            self.native_dataset_access(&access,&view_arguments)
+            self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
         let memory_use=self.call_address_memory(memory_borrow,span)?;
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };

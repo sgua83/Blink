@@ -18,7 +18,23 @@ impl Argument {
     pub(super) fn resource(value:returns::Returned)->Self {
         match value {returns::Returned::Dataset(data)=>Self::ApplicationData(data),returns::Returned::OwnedValue(value)=>Self::OwnedValue(value),returns::Returned::Value(value)=>Self::Value(*value),returns::Returned::Unit=>unreachable!()}
     }
-    fn overlaps(&self, other: &Self,env:&BTreeMap<String,Binding>) -> bool {
+    fn overlaps(&self, other: &Self,builder:&Builder<'_>) -> bool {
+        let env=&builder.env;
+        let stage_region=|argument:&Self|match argument {
+            Self::Dataset(view)=>{
+                let (field,ty)=builder.dataset_layout(view);
+                Some((view.binding,ty.components.iter().map(|(scalar,word)|(field+word,field+word+scalar.size())).collect::<Vec<_>>()))
+            },
+            Self::Reference(OwnedBinding{place,..})|Self::Atomic(place)|Self::OwnedReference{place,..}=>match place.storage(){
+                Place::Element{binding,ty,words,..}=>Some((*binding,ty.components.iter().zip(words).map(|((scalar,_),word)|(*word,*word+scalar.size())).collect())),
+                _=>None,
+            },
+            _=>None,
+        };
+        if (matches!(self,Self::Dataset(_))||matches!(other,Self::Dataset(_)))
+            && let(Some((a,words)),Some((b,other)))=(stage_region(self),stage_region(other)){
+            return a==b&&words.iter().any(|(start,end)|other.iter().any(|(other_start,other_end)|start<other_end&&other_start<end));
+        }
         let place=|argument:&Self|match argument {
             Self::Reference(owner)=>Some(owner.place.clone()),Self::Atomic(place)=>Some(place.clone()),
             Self::OwnedValue(value)=>value.place(),
@@ -296,7 +312,7 @@ impl<'a> Builder<'a> {
                             || (other.access == Access::Atomic && param.access != Access::Atomic)))
                     || (param.access==Access::Value && matches!(argument, Argument::OwnedValue(_)))
                     || (other.access==Access::Value && matches!(before, Argument::OwnedValue(_))))
-                    && argument.overlaps(before,&self.env)
+                    && argument.overlaps(before,self)
                 {
                     return self.fail(
                         span(index),
@@ -442,7 +458,6 @@ impl<'a> Builder<'a> {
         let callee = &instance.definition;
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
-        let mut data_access = Vec::new();
         let mut held = Vec::new();
         for (parameter,(param, arg)) in callee.function.params.iter().zip(args).enumerate() {
             let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
@@ -474,19 +489,12 @@ impl<'a> Builder<'a> {
                 (true, false, Argument::Dataset(view)) => {
                     let binding = view.binding;
                     self.require_same(&ty, self.dataset_layout(&view).1, span)?;
-                    let access = self.view_access[&binding];
-                    if param.access == Access::Read && access == Access::InOut {
-                        data_access.push((binding, access));
-                        self.view_access.insert(binding, Access::Read);
-                    } else if !matches!(param.access, Access::Read | Access::Atomic)
-                        || param.access != access
-                    {
-                        return self.fail(
-                            span,
-                            "B224",
-                            "并行实例只能转借 read／atomic dataset；read 可以借自本阶段的 inout，不能取得整份独占修改权",
-                        );
+                    if !matches!((param.access,view.access),
+                        (Access::Read,Access::Read|Access::InOut)|(Access::Atomic,Access::Atomic)|(Access::InOut,Access::InOut)) {
+                        return self.fail(span,"B224","并行实例的dataset借用需要对应的实际来源权限");
                     }
+                    let mut view=view;
+                    view.access=param.access;
                     if param.ty.count.is_some()
                         && self.world.shape(
                             &param.ty.count,
@@ -666,7 +674,6 @@ impl<'a> Builder<'a> {
         self.block_depth = old_block;
         self.loop_depth = old_loop;
         self.iterators = old_iterators;
-        for (binding, access) in data_access { self.view_access.insert(binding, access); }
         for owner in held { self.finish_scoped_argument(&owner,span)?; }
         Ok(result)
     }

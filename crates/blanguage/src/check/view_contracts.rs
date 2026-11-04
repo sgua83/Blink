@@ -763,7 +763,7 @@ impl Builder<'_> {
         Ok(())
     }
 
-    pub(super) fn native_dataset_access(&mut self,access:&BTreeSet<Access>,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Vec<MemoryAccess> {
+    pub(super) fn native_dataset_access(&mut self,access:&BTreeSet<Access>,arguments:&BTreeMap<ValueIdentity,bounds::Proof>,span:Span)->Result<Vec<MemoryAccess>> {
         let mut memory=Vec::new();
         for access in access {
             let Access::Dataset{borrows,when,index,access,atomic}=access else {continue};
@@ -780,6 +780,12 @@ impl Builder<'_> {
                     while let Some(position)=pending.pop() {
                         match position {
                             Position::Element(binding,word)=>{
+                                if access.writes()&&!atomic {
+                                    if cross || !matches!(self.view_access[binding],super::Access::Write|super::Access::InOut) {
+                                        return self.fail(span,"B144",format!("没有 {} 当前元素的独占修改权",self.program.buffers[*binding].name));
+                                    }
+                                    self.element_domains.insert(*binding);
+                                }
                                 if access.reads(){
                                     self.reads.insert(*binding);
                                     if !atomic{self.memory_regions.entry(*binding).or_default().0.insert((cross,*word,*word+scalar.size()));}
@@ -797,6 +803,6 @@ impl Builder<'_> {
                 }
             }
         }
-        memory
+        Ok(memory)
     }
 }

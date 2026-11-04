@@ -1553,7 +1553,7 @@ impl Builder<'_> {
         CallArgument::Value{dataset_borrow:None, ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
     }
     pub(super) fn borrowed_dataset_parameter_type(access: Access, execution: crate::execution::Requirement)->Ty {
-        if matches!(access,Access::Read|Access::Atomic) && execution == crate::execution::Requirement::Invocation {
+        if matches!(access,Access::Read|Access::Atomic|Access::InOut) && execution == crate::execution::Requirement::Invocation {
             let mut ty = Ty::scalar(Scalar::U64);
             ty.name = "__blink_address_dataset".into();
             ty.components = vec![(Scalar::U64,0),(Scalar::U32,8),(Scalar::U64,16),(Scalar::U32,24)];
@@ -2646,7 +2646,8 @@ impl Builder<'_> {
                         }
                     }
                     self.bind_element_resource_borrows(data,&parent,&mut bindings);
-                    let mut proof=bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings);
+                    // Stored model slots are not registers in the caller function.
+                    let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings);
                     for (target,component) in components.iter().enumerate() {
                         if data.ty.components[*component].0.is_integer() {
                             for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))) {
