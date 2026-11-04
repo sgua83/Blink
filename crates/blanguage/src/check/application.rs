@@ -1669,7 +1669,12 @@ impl Builder<'_> {
     }
     pub(super) fn application_projection_address(&mut self,data:&DataReference,span:Span)->Result<[Reg;2]>{
         let address=self.application_root_address(data.root.regs[0],data.root.identity(),span)?;
-        let(_,offset)=self.application_reference_layout(data);let zero=self.constant(Scalar::U32,0).regs[0];
+        let(_,offset)=self.application_reference_layout(data);
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetProjectionAddress,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
+        let zero=self.constant_with_origin(Scalar::U32,0,Some(origin)).regs[0];
         Ok(self.offset_application_address(address,zero,zero,offset.regs[0]))
     }
     pub(super) fn read_application_place(

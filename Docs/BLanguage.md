@@ -370,6 +370,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetWriteAddress | dataset_write_address | 原CPU句柄写分支的写区偏移及请求准备指令 |
 | DatasetAccessLayout | dataset_access_layout | 原CPU访问的声明布局、读区请求及公共返回零索引准备常量 |
 | DatasetFieldLayout | dataset_field_layout | 原资源引用的字段偏移、声明步长常量及实际字段偏移加法 |
+| DatasetProjectionAddress | dataset_projection_address | 原CPU dataset构造view时投影地址准备的零索引常量 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -536,6 +537,16 @@ application_reference_offset在原DataReference／DataLayout上准备的声明�
 节点source_site为空，可选Syntax直接借用各原发射接点的当前SourceSite，语法种类、实际范围、定义／特化实例及inlined_at／domain_path保持；缺失触发为null，不从字段名、类型声明、资源根或邻近位置猜补。原字段字节单位、宽度、对齐、uniform及Proof保持。根／寻址／Frame地址调用、读写准备、资源参数接收／打包以及投影零索引各保留自身职责，真实ViewLoad／StoreIndexed不改标；本材料不解释为运行布局、地址有效性或设备完成证明。
 
 生成材料只归compiler角色的原Builder／Inst与FunctionBody／模块及SDK／CLI来源快照，在最后实际IR消费者后结束；不进入必要执行编码，不拥有存储或创建第二布局表、地址图、状态、读回、同步、释放链。原常量合并／消除和指令优化照常进行，不保活变量或固定保留节点数；完整变换及机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-5-7)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-7)。
+
+#### 投影地址选择准备的生成来源
+
+application_projection_address只为自身原实际U32零常量交接DatasetProjectionAddress，JSON reason为dataset_projection_address。原寄存器仍作为索引与步长交给offset_application_address，实际根、字段offset、类型、位模式、字节单位和地址结果保持；根／字段布局／偏移指令各保留自身生成职责，不按组合名称重复改标或新增准备。
+
+现有唯一消费者是create_application_view以CPU dataset的DataReference构造只读view的分支。原完整初始化、读取许可、连续布局、CPU驻留、借用及最后消费者保持；复制既有view不调用本准备，区间截取的自身偏移也不整体改标。C ABI仍不直接接收view，不将普通外部位置引用当成本函数消费者。
+
+节点source_site为空，可选Syntax直接借用原零常量发射时的当前SourceSite，语法种类、实际范围、定义／特化实例及inlined_at／domain_path保持；未知为null，不从资源根、字段名或邻近位置猜补。原优化照常合并／消除零常量，只有实际保留的节点才在最终IR出现，不为观察保活；多条被合并来源及被消除关系继续沿原优化来源叶项交付，不能用一个剩余节点补猜全部历史。
+
+材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码，不拥有运行存储、地址或view，不增加地址图、状态、查询、调用层、读回、同步或释放链。静态准备不证明运行读取、地址有效或GPU完成。见[架构](Architecture.md#tool-7-2-4-5-5-8)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-8)。
 
 #### 集合值核的入口与捕获来源
 
