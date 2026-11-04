@@ -1487,9 +1487,13 @@ impl Builder<'_> {
             uniform: false,
             constant: None,
         };
-        let bytes = self.constant(Scalar::U32, Bits::from(bytes));
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetAddress,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
+        let bytes = self.constant_with_origin(Scalar::U32, Bits::from(bytes), Some(origin.clone()));
         let value = self
-            .application_call("address", vec![handle, offset, bytes, stride, count], Some(pointer_type()), span, None)?
+            .application_call("address", vec![handle, offset, bytes, stride, count], Some(pointer_type()), span, Some(origin))?
             .unwrap();
         Ok([value.regs[0], value.regs[1]])
     }

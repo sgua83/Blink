@@ -367,11 +367,11 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5"></a>
 
-**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。当前八叶均未实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
+**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1已交接，其余七叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
 
 <a id="tool-7-2-4-5-5-1"></a>
 
-**Frame地址调用来源。** 输入为原handle、offset、bytes、stride、count及原访问触发；application_address在既有可用性／借用／CPU位置检查后生成的bytes常量和原application_call("address")，输出原双U32地址供实际访问消费。只给这两个实际生产结果交接生成职责，保持请求范围、参数／返回、错误和借用；调用方准备的偏移、步长等归对应叶，本叶不改普通读写。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5-1)。
+**Frame地址调用来源。** 输入为原handle、offset、bytes、stride、count及原访问触发；application_address在既有可用性／借用／CPU位置检查后生成的bytes常量和原application_call("address")，输出原双U32地址供实际访问消费。原Builder把这两个实际生产结果标为DatasetAddress，JSON reason为dataset_address，共享原当前SourceSite作为可选Syntax触发；原语法种类、范围、实际实例及内联／域路径保持，未知为null，节点source_site为空。仅交接真实生成职责，保持请求范围、参数／返回、错误和借用；调用方准备的偏移、步长等归对应叶，本叶不改普通读写。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前已交接原bytes常量与Call来源，优化可照常消除或合并常量，不为观察保活；见[规范](BLanguage.md#frame地址请求的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-1)。
 
 <a id="tool-7-2-4-5-5-2"></a>
 

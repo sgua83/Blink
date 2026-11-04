@@ -363,6 +363,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | VariantDropCondition | variant_drop_condition | 原清理选择的判别常量及比较 |
 | DatasetResizeFill | dataset_resize_fill | 原resize填充值进入调用暂存的StoreLocal |
 | DatasetResizeCall | dataset_resize_call | 原Frame扩容及存储版本交接的resize Call |
+| DatasetAddress | dataset_address | 原Frame地址请求的bytes常量及实际address Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -386,7 +387,7 @@ Frame失败分支与正常路径保持原代码／原语义，静态生成材料
 
 allocate是由B构造生成的运行库包装Call，source_site为null；实际B触发位于generated_origin.trigger。长度表达式、可选factory的已有语法来源和真实普通函数体不因同属构造而改成分配步骤。原类型索引、长度参数、Frame参数、返回句柄与原Data保持；零长度仍沿原构造规则发射其真实allocate，不因观察删除分配，已消除分支与没有原分配的未初始化声明则不补造操作。application_declare只建立原未初始化编译模型，不发射原生初始化；新绑定与重新赋值槽位沿相应节分别交接；生成函数初始化沿下一节的原factory触发交接。
 
-材料只由原Inst编译期持有并随最后IR消费者释放，不拥有Frame或延长实际存储寿命。静态Call不表示分配已运行或已经成功，运行失败仍沿原执行边界；没有增加运行时采集、条件、注册表、Builder状态或释放链。address、storage_address、upload／download的原Call只显式不携带本项分配分类，已有source_site保持；各自完整生成来源仍由其原叶交付。优化重写／消除及机器范围继续沿原.7.3／.7.4推进，不为观察保活操作。见[架构职责](Architecture.md#tool-7-2-4-5-2-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-1)。
+材料只由原Inst编译期持有并随最后IR消费者释放，不拥有Frame或延长实际存储寿命。静态Call不表示分配已运行或已经成功，运行失败仍沿原执行边界；没有增加运行时采集、条件、注册表、Builder状态或释放链。address的原请求常量及Call按下文Frame地址来源交接，不携带分配分类；storage_address、upload／download仍保持原source_site，各自完整生成来源由原叶交付。优化重写／消除及机器范围继续沿原.7.3／.7.4推进，不为观察保活操作。见[架构职责](Architecture.md#tool-7-2-4-5-2-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-2-1)。
 
 #### dataset生成函数初始化来源
 
@@ -473,6 +474,14 @@ resize_application_dataset在原第三实参已经求值、检查并取得return
 resize_application_dataset仍沿原参数、返回和SSA身份发射同一blink_application_resize调用；仅该实际Call取得DatasetResizeCall，JSON reason为dataset_resize_call。节点source_site为null，可选Syntax触发取原resize表达式Span及当前定义／实际实例，inlined_at与domain_path沿同一快照保持。当前Span是原resize标识符，不扩大成未取得的完整参数列表；没有源定义时保持无触发，不从填充值或根函数猜调用位置。普通用户函数即使名字包含resize也不据此改标。
 
 原Frame／根句柄、请求长度及只读fill暂存引用继续交接，静态模型、返回及新存储版本没有额外指令时不伪造步骤。填充值计算及DatasetResizeFill、数据绑定和清理仍保留自己的来源；零宽值也只标记实际Call，不补造StoreLocal，静态未执行路径没有本项材料。生成材料只归compiler下的原Inst及FunctionBody／模块，最后IR消费者后释放，不进入必要ABI／执行编码，不增加Frame、存储或释放链，不证明运行已扩容成功或设备已完成。完整变换及机器映射继续独立交付；见[架构](Architecture.md#tool-7-2-4-5-4-2)与[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4-2)。
+
+#### Frame地址请求的生成来源
+
+application_address在既有可用性、借用及CPU位置检查后，沿原constant_with_origin与application_call的既有generation参数，把原bytes常量及同一blink_application_address Call标为DatasetAddress，JSON reason为dataset_address。两者共享不可变GeneratedOrigin；source_site为空，可选Syntax触发直接借用原当前SourceSite，语法种类、实际范围、定义／特化实例、inlined_at和domain_path保持，不把错误诊断Span重解释成另一语法，也不用资源根定义猜位置。缺少当前语法时trigger为null，生成职责仍明确。
+
+Frame、handle、offset、bytes、stride、count、双U32地址结果、错误、读写权限、布局、检查及最后消费者按原合同保持。标记只属于该实际生产者，不按符号字符串给普通用户函数分类；storage_address、根地址表示、索引乘加、读／写区及投影准备仍归各自叶项，原ViewLoad／StoreIndexed与既有初始化／清理职责保持。后续优化照常合并／消除常量，没有保留下来的指令不补造材料，不因此保活变量或冻结优化。完整来源变换与机器指令映射仍按原编号推进。
+
+材料仅在compiler角色的原Inst及FunctionBody／模块中持有，原SDK／CLI来源快照消费者结束后释放；不进入必要执行编码、不拥有运行地址或资源、不增加调用、Frame、状态表、采集或释放链。静态地址Call不证明已经运行、地址此刻有效或GPU已完成。见[架构](Architecture.md#tool-7-2-4-5-5-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-1)。
 
 #### 集合值核的入口与捕获来源
 
