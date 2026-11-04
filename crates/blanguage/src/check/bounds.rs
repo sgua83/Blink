@@ -3698,6 +3698,13 @@ impl Builder<'_> {
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
         if let Place::ApplicationElement{sources,words,index_range,..}=place {self.update_application_elements(sources,words,Some(&fresh),Some(*index_range));}
+        if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,..}=place.storage() {
+            for(component,position)in locations.iter().enumerate(){
+                let mut selected=BTreeSet::new();owned_borrows::positions(position,&mut selected);
+                let proof=fresh.project(&[component],place.ty().components.len());
+                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,&[word],Some(&proof),None);}
+            }
+        }
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};
         let owners:BTreeMap<_,_>=self.env.iter().filter_map(|(name,binding)| {
             let owner=binding.stored_place()?;

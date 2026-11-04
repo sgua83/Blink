@@ -3,7 +3,7 @@ use super::*;
 use returns::Returned;
 use application::Ownership;
 use owned_presence::Presence;
-fn positions(position:&Position,into:&mut BTreeSet<Position>){match position{Position::Indexed(choices,_)=>for choice in choices.iter(){positions(choice,into);},position=>{into.insert(position.clone());}}}
+pub(super) fn positions(position:&Position,into:&mut BTreeSet<Position>){match position{Position::Indexed(choices,_)=>for choice in choices.iter(){positions(choice,into);},position=>{into.insert(position.clone());}}}
 fn storage(model:&Returned)->Option<Place>{match model{Returned::Dataset(data)=>data.place.clone(),Returned::OwnedValue(value)=>value.place(),_=>None}}
 fn at<'a>(model:&'a Returned,path:&[usize])->Option<&'a application::Data>{match model{Returned::Dataset(data)if path.is_empty()=>Some(data),Returned::OwnedValue(value)=>view::owned_data_at(value,path),_=>None}}
 pub(super) fn each_data(model:&mut Returned,path:&mut Vec<usize>,apply:&mut impl FnMut(&mut application::Data,&[usize])){match model{Returned::Dataset(data)=>apply(data,path),Returned::OwnedValue(value)=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{path.push(index);each_data(payload,path,apply);path.pop();}},_=>{}}}

@@ -88,7 +88,7 @@ impl DataReference {
     }
     pub(super) fn element_layout(&self)->(u32,&Ty){
         let mut ty=&self.data.ty;let mut offset=0;
-        for field in &self.projection{let(_,at,next)=&ty.fields[*field];offset+=at;ty=next;}
+        for field in &self.projection{let(at,next)=ty.aggregate_part(*field);offset+=at;ty=next;}
         (offset,ty)
     }
     pub(super) fn words(&self)->Vec<u32>{
@@ -2355,11 +2355,29 @@ impl Builder<'_> {
         canonical_element_inputs(self,&mut out);
         out
     }
-    pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,op:&str,rhs:&Expr,span:Span)->Result<()> {
-        let Some(place)=self.application_index(data.clone(),index)?else{return Ok(())};
+    pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[&Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
+        let Some(mut place)=self.application_index(data.clone(),index)?else{return Ok(())};
+        let mut paths=vec![data.projection.clone()];
+        for part in projection {match &part.kind {
+            ExprKind::Member(_,field)=>{
+                let component=place.ty().fields.iter().position(|(name,..)|name==field).unwrap();
+                let(ty,components)=member_type(place.ty(),field,&self.definition.source,part.span)?;
+                place=place.project(ty,&components);for path in &mut paths{path.push(component);}
+            },
+            ExprKind::Index(_,index)=>{
+                let held=self.hold_binding(Binding::DataReference(data.clone()));let value=self.expr(index)?;self.env.remove(&held);
+                let Some(value)=value else{return Ok(())};
+                let(minimum,maximum,count)=(value.minimum(),value.maximum(),place.ty().values[0]);
+                place=self.array_index(place,value,index.span)?;
+                paths=paths.into_iter().flat_map(|path|(0..count).filter(move|i|*i>=minimum&&*i<=maximum).map(move|i|{let mut path=path.clone();path.push(i as usize);path})).collect();
+            },
+            _=>unreachable!(),
+        }}
         self.require_owned_writable(&place,span)?;self.writable_storage(&place,span)?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
-        let loaded=self.read_storage_value(&place,span)?;let old=self.materialize_element(&data,loaded);
+        let loaded=self.read_storage_value(&place,span)?;
+        let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone());
+        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone()));}
         let held=self.hold_binding(Binding::AtomicBorrow(place.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
@@ -2377,14 +2395,16 @@ impl Builder<'_> {
             let mut binding=self.env.remove(&name).unwrap();
             each_binding_data(&mut binding,&mut|_,_,target|{
                 if !data.sources.contains(&target.root.identity()){return;}
-                let mut fresh=self.capture_element_model(target,&data.projection,value.clone());
-                let mut previous=(*target.elements).clone();
-                for field in &data.projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
-                let complete=matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})&&target.length.minimum()==1&&target.length.maximum()==1;
-                if !complete{fresh.join(previous);}
-                let mut stored=target.elements.as_mut();
-                for field in &data.projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
-                *stored=*fresh;
+                for projection in &paths {
+                    let mut fresh=self.capture_element_model(target,projection,value.clone());
+                    let mut previous=(*target.elements).clone();
+                    for field in projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
+                    let complete=paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})&&target.length.minimum()==1&&target.length.maximum()==1;
+                    if !complete{fresh.join(previous);}
+                    let mut stored=target.elements.as_mut();
+                    for field in projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
+                    *stored=*fresh;
+                }
             });
             self.env.insert(name,binding);
         }
@@ -2460,6 +2480,7 @@ impl Builder<'_> {
         for binding in self.env.values(){
             for resource in 0..binding_element_types(binding).len(){
                 if let Some(data)=binding_element_data(binding,resource)
+                    && self.resolve_ownership(&data.ownership,None).available()
                     && sources.contains(&data.root.identity()){
                     let components=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()?;
                     let value=self.returned_storage(&data.elements);let mut bindings=self.element_owner_bindings(data);
@@ -2506,6 +2527,7 @@ impl Builder<'_> {
                     updated.proof.assign(&components,old.regs.len(),written);
                     let complete=index_range==Some((0,0))&&data.length.minimum()==1&&data.length.maximum()==1;
                     if !complete{updated.proof.join(&bounds::Proof::capture(&old),old.regs.len(),None);}
+                    updated.proof.retain_view_borrows(&updated.ty);
                     match data.elements.as_mut(){
                         returns::Returned::Value(value)=>**value=updated.clone(),
                         returns::Returned::OwnedValue(value)=>value.value=updated.clone(),
