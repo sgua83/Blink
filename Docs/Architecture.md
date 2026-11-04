@@ -407,7 +407,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-7"></a>
 
-**CPU与GPU资源传输包装。** 输入／输出及生产消费：原upload／download表达式与真实Data→application_transfer／application_call原调用→原传输Inst。方向、原触发与实际句柄／完成关系分别保留，不新增隐式传输或同步。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-7)。
+**CPU与GPU资源传输包装。** 原upload／download表达式、拥有Data及实际方向，经application_transfer既有所有权／借用／源位置检查，由原application_call生成唯一实际Frame传输Call，输出原运行请求；编译期随后沿原Data拥有树更新合法别名的residency，不把这些无Inst关系伪造成操作。仅为该实际Call交接方向及原可用语法／定义／实例／内联与域路径，已有检查、参数、求值顺序及更新保持。来源唯一生产者是原Builder，材料由原Inst及FunctionBody／模块和SDK／CLI快照持有，在最后真实IR消费者结束后释放，不进入必要执行编码、不为观察保活。实际CPU／GPU存储、传输、依赖及完成仍由原Frame／blcompute和最后实际消费者持有，静态Call不证明已经传输或设备完成；不增加隐式传输、读回、同步、状态表或释放链，不改变资源所有权。普通同名函数不按符号字符串改标，失败沿原检查及运行错误交接。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-7)。
 
 <a id="tool-7-2-4-5-8"></a>
 
