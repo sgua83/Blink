@@ -2,7 +2,7 @@ module beginner.shape;
 
 u32 main() on cpu {
     dataset<u32, 4> numbers = dataset<u32>(4);
-    target(cpu, run<4>(numbers));
+    run<4>(numbers);
     for (i in 0..numbers.length) {
         println(numbers[i]);
     }

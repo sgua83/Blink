@@ -9,7 +9,7 @@ void prepare(write dataset<Entry> rows) on cpu {
         row.tag = ordinal(row) ^ 305419896;
     }
 }
-void advance(inout dataset<Entry> rows) on cpu { target(cpu, increment(rows)); }
+void advance(inout dataset<Entry> rows) on cpu { increment(rows); }
 u32 total(read dataset<Entry> rows) on cpu {
     u32 result = 0;
     for (row in rows) { result += row.value; }

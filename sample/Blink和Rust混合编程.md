@@ -435,27 +435,30 @@ CpuProgram::new 把 code 准备成 CPU 上可以执行的程序。run 执行这�
 
 ### 3.8　B 中的一步怎样算
 
-simulation/bodies.b 先更新每个粒子，再计算动能。其积分部分为：
+simulation/bodies.b 通过 integrate_body 复用积分逻辑。这里按本例 float3、Power=3 将核心公式直接展开，包含中心加速度、速度、位置和动能，不把关键计算藏在函数名后：
 
 ```c
 parallel (body in bodies) {
-    integrate_body(body,dt,strength);
+    f32 radius_squared = dot(body.position, body.position) + 0.25;
+    float3 acceleration = -body.position *
+        (strength / (radius_squared * sqrt(radius_squared)));
+    body.velocity += acceleration * dt;
+    body.position += body.velocity * dt;
+    body.energy = 0.5 * dot(body.velocity, body.velocity);
 }
 ```
 
-integrate_body 对当前粒子执行：
+`0.25` 是此有限半径中心势的软化长度平方，属于算法参数。先改速度，再用新速度更新位置，不能任意交换。total_energy 使用 reduce_sum 对所有 body.energy 求和；同一次 step 内的各个阶段仍按依赖顺序执行。
+
+通用模块的实际函数也完整列在这里，Power=1、2、3分别使用不同的分母；FieldValue 在教材中限定为 f32／float2／float3／float4。这种模块拆分用于复用维度与幂次，不改变上述公式：
 
 ```c
-body.velocity +=
-    central_acceleration<Power>(
-        body.position,strength
-    )*dt;
-body.position += body.velocity*dt;
+T central_acceleration<T: FieldValue, const Power: u32 in {1, 2, 3}>(T position, f32 strength) {
+    // 有限半径中心势：0.25 是力场的软化长度平方，属于算法参数。
+    f32 radius_squared = dot(position, position) + 0.25;
+    return -position * (strength / (Power == 1 ? sqrt(radius_squared) : Power == 2 ? radius_squared : radius_squared * sqrt(radius_squared)));
+}
 ```
-
-本例 Power=3，来自前面的具体粒子类型。central_acceleration 根据位置求指向中心的加速度。先改速度，再用新速度更新位置，所以不能任意交换这两行。
-
-之后每粒子的动能为 0.5*dot(velocity,velocity)，total_energy 用 reduce_sum 将它们相加。
 
 ![图 3-2　一次 Rust run 包含 B 的更新、能量计算和求和。](figures/hybrid-stages.svg)
 
@@ -1012,55 +1015,53 @@ index() 是当前采样点的编号。除余把一维编号换成二维位置，
 
 完整 prepare 同时设置 view、light、uv、lod、tint、ior 和 radiance。全部字段都有初值，然后再交给材质计算。
 
-### 9.4　使用引擎已有的材质公式
+### 9.4　看清采样与材质计算
 
-接下来调用 material/textured.b 的 shade：
+material/textured.b 的 textured_ggx 只连接纹理采样与表面公式。将这一层直接展开，parallel 中的关键逻辑是：
 
 ```c
 parallel (point in points) {
-    point.radiance = textured_ggx(
-        albedo, point.uv, point.lod,
-        point.normal, point.view,
-        point.light, point.tint,
-        point.roughness, point.ior
+    float4 sampled = texture_sample(albedo, point.uv, point.lod);
+    point.radiance = ggx_surface(
+        point.normal, point.view, point.light,
+        sampled.xyz * point.tint, point.roughness, point.ior
     );
 }
 ```
 
-albedo 是前面的纹理。textured_ggx 先按 uv 采样，再乘 tint，最后调用引擎的 ggx_surface 求表面反射。Rust 没有再实现一份材质公式。
+albedo 是前面的共享纹理；采样颜色乘 tint 后进入下面完整展示的 GGX 函数。Rust 负责提供纹理和记录，公式仍在 B 中。
 
 ![图 9-1　Rust 创建共享纹理，B 分别计算每个点。](figures/hybrid-material.svg)
 
 *图 9-1　各个采样点读取同一张纹理，只写自己的 radiance。*
 
-串行版本会依次对 point 做同样的事；B 用 parallel 表示这些点可以独立计算。变量和公式保持相同，区别放在如何执行这些工作上。
+### 9.5　完整 GGX 公式
 
-### 9.5　先理解 GGX 里最直观的两步
-
-GGX 是一种表面高光模型。粗糙度低时，高光更集中；粗糙度高时，高光更散。读本章不必先推导整个模型，但可以看懂它怎样使用输入。
+下列是 Programs/material/surface.b 的完整 ggx_surface 实现。nl／nv 判断表面方向，half_vector 是观察与光方向之间的单位方向；distribution、gv／gl、fresnel 分别参与法线分布、可见性与菲涅耳项，最后合成漫反射和镜面反射。
 
 ```c
-f32 nl = dot(normal,light);
-f32 nv = dot(normal,view);
-if (nl<=0.0 || nv<=0.0) {
-    return float3(0.0);
+float3 ggx_surface(float3 normal, float3 view, float3 light, float3 base, f32 roughness, f32 ior) {
+    f32 nl=dot(normal,light);
+    f32 nv=dot(normal,view);
+    if (nl<=0.0 || nv<=0.0) { return float3(0.0); }
+    float3 half_vector=normalize(view+light);
+    f32 nh=max(dot(normal,half_vector),0.0);
+    f32 vh=max(dot(view,half_vector),0.0);
+    f32 alpha=roughness*roughness;
+    f32 a2=alpha*alpha;
+    float3 tangent=cross(normal,half_vector);
+    f32 denominator=dot(tangent,tangent)+a2*nh*nh;
+    f32 distribution=a2/(3.14159265359*denominator*denominator);
+    f32 gv=nl*sqrt(nv*nv*(1.0-a2)+a2);
+    f32 gl=nv*sqrt(nl*nl*(1.0-a2)+a2);
+    f32 f0=(ior-1.0)/(ior+1.0);
+    f32 fresnel=f0*f0+(1.0-f0*f0)*pow(1.0-vh,5.0);
+    f32 specular=distribution*fresnel*nl/(2.0*(gv+gl));
+    return base*((1.0-fresnel)*nl/3.14159265359)+float3(specular);
 }
-float3 half_vector =
-    normalize(view+light);
 ```
 
-nl 和 nv 分别看表面是否朝向光和观察者。背向时不产生这里的反射贡献，返回零。half_vector 是光与观察方向之间的单位方向，用于后面的高光计算。
-
-函数最后将漫反射和镜面反射相加：
-
-```c
-return base*(
-    (1.0-fresnel)*nl/3.14159265359
-)
-    + float3(specular);
-```
-
-这些计算集中在 B 文件中。CPU 和 GPU 都使用这份公式，Rust 只需提供它要求的纹理和数据。
+粗糙度低时高光更集中，粗糙度高时高光更散。这些项共同决定最终的表面反射。CPU和GPU使用同一份计算；原模块边界用于复用材质函数，完整实现及输入均在本章可见。
 
 ### 9.6　Rust 怎样选中整个采样程序
 

@@ -11,5 +11,3 @@ u32 final_score(u32 score, u32 bonus) on compute;
 void fill(write dataset<Result> results, u32 bonus) on compute;
 void sum(read dataset<Result> results,
             write dataset<Number, 1> total) on compute;
-void run(inout dataset<Result> results,
-            write dataset<Number, 1> total, u32 bonus) on compute;

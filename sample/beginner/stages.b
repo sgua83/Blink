@@ -2,7 +2,8 @@ module beginner.stages;
 
 u32 main() on cpu {
     dataset<u32> numbers = dataset<u32>(4);
-    target(cpu, run(numbers));
+    seed(numbers);
+    scale(numbers);
     for (i in 0..numbers.length) {
         println(numbers[i]);
     }
@@ -19,9 +20,4 @@ void scale(inout dataset<u32> numbers) on compute {
     parallel (number in numbers) {
         number = number * 2 + 1;
     }
-}
-
-void run(inout dataset<u32> numbers) on compute {
-    seed(numbers);
-    scale(numbers);
 }

@@ -3,7 +3,8 @@ module beginner.scores;
 u32 main() on cpu {
     dataset<Result> results = dataset<Result>(4);
     dataset<Number, 1> total = dataset<Number>(1);
-    target(cpu, run(results, total, 5));
+    fill(results, 5);
+    sum(results, total);
     for (i in 0..results.length) {
         println(results[i].original);
         println(results[i].adjusted);
@@ -32,10 +33,4 @@ void fill(write dataset<Result> results, u32 bonus) on compute {
 void sum(read dataset<Result> results,
             write dataset<Number, 1> total) on compute {
     reduce_sum(results.adjusted, total.value);
-}
-
-void run(inout dataset<Result> results,
-            write dataset<Number, 1> total, u32 bonus) on compute {
-    fill(results, bonus);
-    sum(results, total);
 }

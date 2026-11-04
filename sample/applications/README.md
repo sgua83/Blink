@@ -1,6 +1,6 @@
 # 独立应用
 
-在仓库根目录使用 Release 编译器构建，然后直接运行生成的 Windows x64 应用：
+先按[安装指南](../../Docs/GettingStarted.md)安装正式 Blink 工具、Rust MSVC 和 Windows C++ 构建工具；直接运行的最小程序见 [sample/hello](../hello/README.md)。若从源码构建，稳定种子必须先安装在 `%ProgramFiles%/Blink`。以下命令在仓库根目录使用 Release 编译器构建，然后直接运行生成的 Windows x64 应用：
 
 ```powershell
 cargo build --workspace --release
@@ -47,7 +47,7 @@ $LASTEXITCODE
 .\target\applications\datasets.exe
 ```
 
-`datasets.b` 先声明尚无资源的 input，再把零长度拥有存储交给 CPU 函数 `create_input`；函数按请求长度保留或重赋值 storage，调用 `seed` 初始化一百万条记录，再返回实际 dataset 给 main；main 随后显式上传输入、筛选输出、排序输出和计数，再调用 GPU `select／order`。GPU 两次同步调用之间保留原 GPU 数据与有效域，没有读回 Count；随后显式下载排序结果及计数，调用 CPU `summarize`。正常输出 `500000` 和 `891896832`，退出码为 `0`；第二个数是 B 的 u32 回绕结果。
+`datasets.b` 先声明尚无资源的 input，再把零长度拥有存储交给 CPU 函数 `create_input`；函数按请求长度保留或重赋值 storage，直接在 create_input 的 parallel 中初始化一百万条记录，再返回实际 dataset 给 main；main 随后显式上传输入、筛选输出、排序输出和计数，再调用 GPU `select／order`。GPU 两次同步调用之间保留原 GPU 数据与有效域，没有读回 Count；随后显式下载排序结果及计数，普通调用 CPU `summarize`。类型、初始化、筛选、排序、扫描与归约函数均在同一源码完整展示，不导入 lessons 包装。正常输出 `500000` 和 `891896832`，退出码为 `0`；第二个数是 B 的 u32 回绕结果。
 
 `dataset<T>(length)` 创建全零、由当前 CPU 应用拥有的存储，`let rows = dataset<T>(length)` 可推导资源类型；固定形状可写 `dataset<T,N>` 或 `dataset<T,N>(N)`。CPU 下标与有界遍历沿用原类型和范围规则，普通函数可以 `read dataset<T>` 借用。`upload(rows)`、`download(rows)` 明确转移这份资源的物理存储；`target(cpu, program(args))`、`target(gpu, program(args))` 只接受对应存储，CPU 读取 GPU 数据前也须下载。资源可由普通 CPU 函数以 dataset<T[,N]> 返回并由调用方接收；返回资源交接所有权，其余本地资源在作用域结束、函数返回、break、continue 或 seek 时释放，GPU 物理内存继续由实际最后使用点持有。借用参数不能当作拥有资源返回；局部初始化和 CPU 拥有形参可以移动资源，原绑定随移动失效。
 
@@ -88,12 +88,14 @@ target/applications/system_info.exe
 
 ## 由应用代码选择CPU／GPU的并行教材
 
-并行教材的七组算法分别配有 `map`、`reduce`、`scan`、`pipeline`、`tiles`、`publish`、`algebra` 的 `_cpu.b`／`_gpu.b` 与对应 `.h`。每份都是有 main 的独立应用，共享 lessons 中同一份算法，自己分配 dataset、设置参数和打印结果；GPU main 明确 upload、target(gpu, ...)、download，CPU main 使用 target(cpu, ...)。运行 EXE 不接收设备参数。
+并行教材的七组算法分别配有 `map`、`reduce`、`scan`、`pipeline`、`tiles`、`publish`、`algebra` 的 `_cpu.b`／`_gpu.b` 与对应 `.h`。每份都是有 main 的完整独立应用：类型、输入初始化、核心公式和输出全部可见，不导入 lessons 的 demo／run。CPU 可直接写 parallel；归约、扫描等需要计算入口时，在同文件定义完整 on compute 函数并普通调用。GPU 同文件完整展示计算函数，main 明确 upload、target(gpu, ...)、download。运行 EXE 不接收设备参数。
 
 ```powershell
-bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
-blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+& "$env:ProgramFiles/Blink/bin/bc.exe" -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+& "$env:ProgramFiles/Blink/bin/blink.exe" target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
 .\target\book-apps\map_cpu.exe
 ```
 
 GPU 版把文件名换成 map_gpu。部署复制 EXE 与链接器生成的 blink_app_*.dll；GPU 仍要求程序所需的 Vulkan 驱动能力。当前 target 只支持明确 cpu／gpu，没有 auto 或隐式迁移。
+
+这七组应用已用正式工具0.14.1.1编译链接并分别运行CPU／GPU，数值与各章手算结果对应。tile 集合运算的结果须先绑定到 parallel 根块局部变量，再写入字段；cooperative center、identity／compose 等本身承担教学含义的函数保留并完整展示。

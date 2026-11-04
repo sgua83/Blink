@@ -108,11 +108,38 @@ cargo build --workspace --release
 
 这里的 `build` 输出可供研究的阶段代码与布局，尚不是应用 `.exe`。在这本源码分析书里，我们正要观察这些中间产物，因此会使用这一命令。
 
-常规使用先看完整 B 应用 `sample/applications/map_cpu.b`：main 自行分配四条记录，调用 `target(cpu, demo(values))`，然后 println。GPU 版 `map_gpu.b` 在代码中明确 upload、target(gpu, ...)、download。用 bc -c 编译、blink 独立链接后，直接运行 EXE，无设备参数：
+常规使用先看完整 B 应用 `sample/applications/map_cpu.b`：main 自行分配四条记录，直接写出输入初始化、parallel 变换和输出；没有导入 lessons 或调用 demo。完整 `.h` 与 `.b` 如下；模块名、入口和计算均可见：
+
+`sample/applications/map_cpu.h`：
+
+```c
+module applications.map_cpu;
+
+u32 main() on cpu;
+```
+
+`sample/applications/map_cpu.b`：
+
+```c
+module applications.map_cpu;
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    parallel (value in values) { value = f32(index() + 1); }
+
+    parallel (value in values) { value = value * 2.0 + 1.0; }
+
+    for (value in values) { if (!println(value)) { return 1; } }
+    return 0;
+}
+```
+
+GPU 版 `map_gpu.b` 在同一文件完整定义 scale_values，并在 main 明确 upload、target(gpu, ...)、download；CPU 无需 target 包装。两份源码以正式工具0.14.1.1运行均输出3、5、7、9。用 bc -c 编译、blink 独立链接后，直接运行 EXE，无设备参数：
 
 ```powershell
-bc -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
-blink target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
+& "$env:ProgramFiles/Blink/bin/bc.exe" -c sample/applications/map_cpu.b -o target/book-apps/map_cpu.obj -I sample
+& "$env:ProgramFiles/Blink/bin/blink.exe" target/book-apps/map_cpu.obj -o target/book-apps/map_cpu.exe
 .\target\book-apps\map_cpu.exe
 ```
 

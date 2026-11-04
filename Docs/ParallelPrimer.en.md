@@ -8,7 +8,7 @@ Before running examples, install the formal Blink tools, Rust MSVC, and Windows 
 
 ## Begin with The Art of Parallel Programming
 
-The first three chapters of [The Art of Parallel Programming](../sample/并行编程的艺术.md) are reproduced in full below, including explanations, C and B-language comparisons, figures, commands, and the book's measurements. Links and outdated function/borrowing descriptions are aligned with the current implementation. Figures are retained from the Chinese edition, with translated captions here.
+This primer follows the first three chapters of [The Art of Parallel Programming](../sample/并行编程的艺术.md), retaining the theory, C/B comparisons, figures and existing measurements. Run sections now show complete standalone programs; links and capability descriptions follow the current implementation. Figures retain translated captions from the Chinese edition.
 
 [Chapter 1: element-wise parallelism](#map) · [Chapter 2: ownership of reads and writes](#ownership) · [Chapter 3: sum reduction](#reduction)
 

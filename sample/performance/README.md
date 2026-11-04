@@ -4,7 +4,7 @@
 
 ## 编译与执行
 
-使用 Windows x64 的 Visual Studio 开发者 PowerShell，确认 `cl`、`lib`、`cargo` 可用。在 Blink 项目根目录运行：
+先安装[稳定 Blink 种子与构建前提](../../Docs/GettingStarted.md#从-main-构建研发工具)。使用 Windows x64 的 Visual Studio 开发者 PowerShell，确认 `cl`、`lib`、`cargo` 可用。在 Blink 项目根目录运行：
 
 ```powershell
 cargo build --release `
@@ -34,6 +34,12 @@ cargo build --release `
 | resolve | 内部采样转换为显示像素 | 一百万 |
 
 `resolve` 使用引擎的通用 GPU 入口，固定为 1000×1000 输出、2×2 内部采样，命令为 `.\target\release\bperf.exe resolve`；其规模由这组尺寸确定。其他案例可用第二个参数改变规模。
+
+## 哪些案例可用公开仓库独立复现
+
+`map`、`reduce`、`scan`、`compact`、`pipeline`、`tiles`、`publish`、`algebra` 只依赖本仓库源码。`bodies`、`body_total`、`transforms`、`shade`、`resolve` 则编译相邻 BLEngine/Programs 的正式引擎模块；**BLEngine 当前未开源，仅下载 Blink 不能运行这五项对照**。这些测量供具备授权引擎工作区的开发者复测，书中既有记录不代表公开复现包已经交付。
+
+希望直接运行公开的粒子、变换、GGX 教学案例，请用 [sample/hybrid](../hybrid/README.md) 中随 Blink 发布的教学模块和完整宿主。它们不要求 BLEngine，但与上述引擎性能入口的工作量、类型及接口分别记录，不能据此替换或冒充原性能数字。性能宿主负责数据准备、绑定、设备对照与实际计时，B核心源码负责计算；这种分工保留。
 
 ## 计时范围
 
