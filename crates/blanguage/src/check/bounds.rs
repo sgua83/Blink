@@ -3753,7 +3753,7 @@ impl Builder<'_> {
     }
     pub(super) fn invalidate_application_contents(&mut self, data: &application::DataReference) {
         let changed = data.words();
-        self.update_application_elements(&data.sources,&changed,None,None);
+        self.update_application_elements(&data.sources,&view::resource_borrow(&data.data),&changed,None,None);
         for binding in self.env.values_mut() {
             let Some((proof, uniform, owner)) = binding.proof_storage() else {
                 continue;
@@ -3773,12 +3773,12 @@ impl Builder<'_> {
         }
     }
     pub(super) fn assign_owned_proof(&mut self, place: &Place, fresh: Proof, uniform: bool) {
-        if let Place::ApplicationElement{sources,words,index_range,..}=place {self.update_application_elements(sources,words,Some(&fresh),Some(*index_range));}
-        if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,..}=place.storage() {
+        if let Place::ApplicationElement{sources,resource,words,index_range,..}=place {self.update_application_elements(sources,resource,words,Some(&fresh),Some(*index_range));}
+        if let Place::Indexed{locations,..}=place && let Place::ApplicationElement{sources,resource,..}=place.storage() {
             for(component,position)in locations.iter().enumerate(){
                 let mut selected=BTreeSet::new();owned_borrows::positions(position,&mut selected);
                 let proof=fresh.project(&[component],place.ty().components.len());
-                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,&[word],Some(&proof),None);}
+                for position in selected{let Position::Borrowed(_,_,word)=position else{unreachable!()};self.update_application_elements(sources,resource,&[word],Some(&proof),None);}
             }
         }
         let positions=if place.ty().contains_borrows(){self.positions(place)}else{Vec::new()};

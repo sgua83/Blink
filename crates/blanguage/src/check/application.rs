@@ -2362,6 +2362,25 @@ impl Builder<'_> {
         canonical_element_inputs(self,&mut out);
         out
     }
+    fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data)->Vec<(Vec<Vec<usize>>,bool)> {
+        fn collect(borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause)->Vec<(Vec<Vec<usize>>,bool)> {
+            let mut paths=Vec::new();let selected=borrow.restricted(path);let root=owner.restricted(path);
+            let shared=selected.sources.entries().any(|(source,when)|matches!(source,view::Source::Data(_)|view::Source::Parameter(_)|view::Source::Element{..})&&when.overlaps(&root.sources.when(source)))
+                ||selected.calls.entries().any(|(call,when)|when.overlaps(&root.calls.when(call)))
+                ||selected.inputs.entries().any(|(input,when)|when.overlaps(&root.inputs.when(input)));
+            if shared{paths.push((Vec::new(),selected==root));}
+            for(source,when)in borrow.sources.entries(){
+                let truth=bounds::Condition::guard(when).truth_in(path);
+                if truth==Some(false){continue;}
+                if let view::Source::Element{parent,fields}=source{for(mut nested,complete)in collect(parent,owner,path){nested.push(fields.clone());paths.push((nested,complete&&truth==Some(true)));}}
+            }
+            paths
+        }
+        let mut paths=BTreeMap::new();
+        if sources.contains(&data.root.identity()){paths.insert(Vec::new(),true);}
+        for(path,complete)in collect(resource,&view::resource_borrow(data),&self.path){paths.entry(path).and_modify(|old|*old|=complete).or_insert(complete);}
+        paths.into_iter().collect()
+    }
     pub(super) fn assign_application_element(&mut self,data:DataReference,index:&Expr,projection:&[&Expr],op:&str,rhs:&Expr,span:Span)->Result<()> {
         let Some(mut place)=self.application_index(data.clone(),index)?else{return Ok(())};
         let mut paths=vec![data.projection.clone()];
@@ -2385,7 +2404,7 @@ impl Builder<'_> {
         let loaded=self.read_storage_value(&place,span, None)?;
         let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone());
         for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone()));}
-        let held=self.hold_binding(Binding::AtomicBorrow(place.clone()));
+        let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
         let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
@@ -2397,20 +2416,25 @@ impl Builder<'_> {
         if let Some(name)=held{self.env.remove(&name);}
         self.write_storage_value(&place,&packed,span,None)?;
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
+        let resource=view::resource_borrow(&data.data);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let mut binding=self.env.remove(&name).unwrap();
             each_binding_data(&mut binding,&mut|_,_,target|{
-                if !data.sources.contains(&target.root.identity()){return;}
+                let scopes=self.application_element_scopes(&data.sources,&resource,target);let unique=scopes.len()==1;
+                for(scope,mut complete_scope)in scopes {
+                let mut target=&mut *target;
+                for fields in scope{complete_scope&=target.length.minimum()==1&&target.length.maximum()==1;target=model_data_mut(&mut target.elements,&fields).unwrap();}
                 for projection in &paths {
                     let mut fresh=self.capture_element_model(target,projection,value.clone());
                     let mut previous=(*target.elements).clone();
                     for field in projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
-                    let complete=paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})&&target.length.minimum()==1&&target.length.maximum()==1;
+                    let complete=unique&&complete_scope&&paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})&&target.length.minimum()==1&&target.length.maximum()==1;
                     if !complete{fresh.join(previous);}
                     let mut stored=target.elements.as_mut();
                     for field in projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
                     *stored=*fresh;
+                }
                 }
             });
             self.env.insert(name,binding);
@@ -2490,12 +2514,13 @@ impl Builder<'_> {
         model
     }
     pub(super) fn application_element_proof(&self,place:&Place,regs:&[Reg])->Option<bounds::Proof>{
-        let Place::ApplicationElement{sources,words,..}=place else{return None};
+        let Place::ApplicationElement{sources,resource:borrow,words,..}=place else{return None};let mut result=None;
         for binding in self.env.values(){
             for resource in 0..binding_element_types(binding).len(){
                 if let Some(data)=binding_element_data(binding,resource)
-                    && self.resolve_ownership(&data.ownership,None).available()
-                    && sources.contains(&data.root.identity()){
+                    && self.resolve_ownership(&data.ownership,None).available(){
+                    for(scope,_)in self.application_element_scopes(sources,borrow,data){
+                    let mut data=data;for fields in scope{data=model_data(&data.elements,&fields)?;}
                     let components=words.iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Option<Vec<_>>>()?;
                     let value=self.returned_storage(&data.elements);let mut bindings=self.element_owner_bindings(data);
                     for(component,reg)in components.iter().zip(regs){
@@ -2505,20 +2530,25 @@ impl Builder<'_> {
                             bindings.insert(source,proof.clone().with_view_borrow(0,value.proof.view_borrow(*component)));
                         }
                     }
-                    return Some(bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings));
+                    let proof=bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings);
+                    if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
+                    }
                 }
             }
         }
-        None
+        result
     }
-    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],words:&[u32],fresh:Option<&bounds::Proof>,index_range:Option<(u32,u32)>){
+    pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],fresh:Option<&bounds::Proof>,index_range:Option<(u32,u32)>){
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names{
             if let Some(mut binding)=self.env.remove(&name){
                 each_binding_data(&mut binding,&mut |_,_,data|{
-                    if !sources.contains(&data.root.identity()){return;}
+                    let scopes=self.application_element_scopes(sources,resource,data);let unique=scopes.len()==1;
+                    for(scope,mut complete_scope)in scopes {
+                    let mut data=&mut *data;
+                    for fields in scope{complete_scope&=data.length.minimum()==1&&data.length.maximum()==1;data=model_data_mut(&mut data.elements,&fields).unwrap();}
                     let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
-                    if components.is_empty(){return;}
+                    if components.is_empty(){continue;}
                     let old=self.returned_storage(&data.elements);let mut updated=old.clone();updated.constant=None;
                     let mut bindings=self.element_owner_bindings(data);
                     for component in 0..old.regs.len(){if !components.contains(&component){for id in old.component_origins(component){
@@ -2539,7 +2569,7 @@ impl Builder<'_> {
                         fresh.at_call(&bindings)
                     }else{bounds::Proof::default()};
                     updated.proof.assign(&components,old.regs.len(),written);
-                    let complete=index_range==Some((0,0))&&data.length.minimum()==1&&data.length.maximum()==1;
+                    let complete=unique&&complete_scope&&index_range==Some((0,0))&&data.length.minimum()==1&&data.length.maximum()==1;
                     if !complete{updated.proof.join(&bounds::Proof::capture(&old),old.regs.len(),None);}
                     updated.proof.retain_view_borrows(&updated.ty);
                     match data.elements.as_mut(){
@@ -2556,6 +2586,7 @@ impl Builder<'_> {
                             inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
                             if components.contains(&handle)||components.contains(&length){inner.elements=self.unknown_element_model(&inner.ty);}
                         }
+                    }
                     }
                 });
                 self.env.insert(name,binding);

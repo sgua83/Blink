@@ -489,7 +489,8 @@ impl Builder<'_> {
         if !self.owned_element_type(expr).is_some_and(|ty|ty.dataset.is_some()) {
             if !self.read_expression_type(expr).is_some_and(|ty|ty.dataset.is_some()){return Ok(None);}
             let Some((value,_owner))=self.read_aggregate(expr,None)?else{return Ok(None)};
-            let Returned::Dataset(data)=value else{unreachable!()};
+            let Returned::Dataset(mut data)=value else{unreachable!()};
+            if let Some(place)=&data.place && let Place::ApplicationElement{access,..}=place.storage(){data.access=*access;}
             self.application_available(&data,expr.span)?;
             return Ok(Some(application::DataReference::direct(data)));
         };
