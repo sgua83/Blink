@@ -423,7 +423,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-2"></a>
 
-**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅为这些真实准备常量交接生成职责，可选Syntax直接借用原call.source及其定义／实例／内联与域路径；该触发仅说明已取得的原调用范围，不伪造字面量表达式或额外寄存器。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-2)。
+**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量交接生成职责，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；可选Syntax直接借用原call.source及其定义／实例／内联与域路径；该触发仅说明已取得的原调用范围，不伪造字面量表达式或额外寄存器。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-2)。
 
 <a id="tool-7-2-4-6-3"></a>
 
