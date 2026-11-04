@@ -2414,7 +2414,7 @@ impl Builder<'_> {
     pub(super) fn element_owner_bindings(&self,data:&Data)->ElementBindings {
         fn aliases(borrow:&view::Borrow,out:&mut ElementBindings){
             for source in &borrow.sources{match source{
-                view::Source::Data(id@ValueIdentity::Register(_))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id));},
+                view::Source::Data(id@(ValueIdentity::Register(_)|ValueIdentity::ResourceParameter(..)))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id));},
                 view::Source::Parameter(id@ValueIdentity::DatasetContent(..))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(*id))));},
                 view::Source::Element{parent,..}=>aliases(parent,out),
                 view::Source::Position(origin)=>aliases(&origin.resources(),out),_=>{},
