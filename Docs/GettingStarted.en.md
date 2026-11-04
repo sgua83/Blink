@@ -31,9 +31,9 @@ u32 main() on cpu {
 }
 ```
 
-### CPU parallelism goes directly in main
+### The same compute function on the CPU
 
-For element-wise work, put `parallel` in the CPU main. The complete example below initializes and computes each number in the visible loop, then prints `3, 5, 7, 9`.
+Both versions below define the complete, identical `fill_numbers` function in their own file. It computes the same four values and prints `3, 5, 7, 9`. The CPU main calls it normally; `on compute` makes the function available to either backend, without choosing a device automatically.
 
 <details>
 <summary>Complete CPU parallel program</summary>
@@ -51,12 +51,16 @@ u32 main() on cpu;
 ```c
 module parallel;
 
-u32 main() on cpu {
-    dataset<f32> values = dataset<f32>(4);
-
+void fill_numbers(write dataset<f32> values) on compute {
     parallel (value in values) {
         value = f32(index() + 1) * 2.0 + 1.0;
     }
+}
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    fill_numbers(values);
 
     for (value in values) {
         println(value);
@@ -69,7 +73,11 @@ u32 main() on cpu {
 
 ### The same loop can run on the GPU
 
-`on compute` declares CPU/GPU capability; it does not automatically choose a device. A normal call from the CPU stays on the CPU. The current GPU boundary accepts a function call, so the GPU version shows the entire, clearly named `fill_numbers` function in the same file.
+The GPU version keeps exactly the same function, four-element allocation, formula and output. Only the execution statements differ:
+
+| CPU | GPU |
+|---|---|
+| `fill_numbers(values);` | `upload(values);`<br>`target(gpu, fill_numbers(values));`<br>`download(values);` |
 
 <details>
 <summary>Complete GPU example, with every computation and transfer visible</summary>
@@ -107,7 +115,7 @@ u32 main() on cpu {
 }
 ```
 
-`upload` establishes the GPU data location, `target(gpu, ...)` executes the function shown above, and `download` returns the result to the CPU. To use that same function on the CPU, replace those three statements with the ordinary call `fill_numbers(values);`. No CPU target wrapper is needed. Automatic device selection and inline GPU blocks are not implemented.
+`upload` establishes the GPU data location, `target(gpu, ...)` executes the same `fill_numbers` function, and `download` returns the result to the CPU before printing. The CPU version already shows the ordinary call, with no CPU target wrapper. Automatic device selection and inline GPU blocks are not implemented.
 
 </details>
 

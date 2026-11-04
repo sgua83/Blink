@@ -80,7 +80,7 @@ If the answers are shared read-only inputs, exclusive outputs, and no waiting fo
 
 ### 1.5 Run the complete program
 
-The CPU program below contains all allocation, initialization, arithmetic and output. It uses only built-in operations. Each index produces its input `index() + 1`, then multiplies it by two and adds one. No teaching module or CPU target wrapper is needed.
+For a direct CPU/GPU comparison, both versions use the identical, fully shown `fill_numbers` function in their own file. Each index produces its input `index() + 1`, then multiplies it by two and adds one. The CPU main allocates four elements, calls the function normally and prints the results; the GPU counterpart uses the same allocation and computation with explicit transfers and a GPU call.
 
 **parallel.h**
 
@@ -95,12 +95,16 @@ u32 main() on cpu;
 ```c
 module parallel;
 
-u32 main() on cpu {
-    dataset<f32> values = dataset<f32>(4);
-
+void fill_numbers(write dataset<f32> values) on compute {
     parallel (value in values) {
         value = f32(index() + 1) * 2.0 + 1.0;
     }
+}
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    fill_numbers(values);
 
     for (value in values) {
         println(value);

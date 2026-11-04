@@ -80,7 +80,7 @@ C/C++ 编译器也可能自动向量化简单循环；B 语言则通过工作域
 
 ### 1.5　运行与结果
 
-下面的 CPU 程序把分配、初始化、计算和输出完整展示出来，仅使用内建操作。每个下标先产生输入 `index() + 1`，再乘二加一；无需导入教学模块或套一层 CPU target。
+为便于直接对比 CPU／GPU，两版都在各自文件中完整展示逐字相同的 `fill_numbers`。每个下标先产生输入 `index() + 1`，再乘二加一。CPU 主流程分配四条数据、普通调用函数并打印结果；GPU 对照保持相同分配与计算，仅显式增加传输和 GPU 调用。
 
 **parallel.h**
 
@@ -95,12 +95,16 @@ u32 main() on cpu;
 ```c
 module parallel;
 
-u32 main() on cpu {
-    dataset<f32> values = dataset<f32>(4);
-
+void fill_numbers(write dataset<f32> values) on compute {
     parallel (value in values) {
         value = f32(index() + 1) * 2.0 + 1.0;
     }
+}
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    fill_numbers(values);
 
     for (value in values) {
         println(value);

@@ -31,9 +31,9 @@ u32 main() on cpu {
 }
 ```
 
-### CPU 并行直接写在 main 中
+### 同一个计算函数，先在 CPU 运行
 
-逐元素计算可以直接在 CPU 主流程写 `parallel`。下面完整例子在同一个可见循环中初始化并计算每个数，然后输出 `3、5、7、9`。
+下面两版都在各自文件中完整定义逐字相同的 `fill_numbers`，计算相同的四个值并输出 `3、5、7、9`。CPU 主流程直接调用这个函数；`on compute` 表示函数能面向两端编译，不会自动选择设备。
 
 <details>
 <summary>展开完整 CPU 并行程序</summary>
@@ -51,12 +51,16 @@ u32 main() on cpu;
 ```c
 module parallel;
 
-u32 main() on cpu {
-    dataset<f32> values = dataset<f32>(4);
-
+void fill_numbers(write dataset<f32> values) on compute {
     parallel (value in values) {
         value = f32(index() + 1) * 2.0 + 1.0;
     }
+}
+
+u32 main() on cpu {
+    dataset<f32> values = dataset<f32>(4);
+
+    fill_numbers(values);
 
     for (value in values) {
         println(value);
@@ -69,7 +73,11 @@ u32 main() on cpu {
 
 ### 同一段循环也能用于 GPU
 
-`on compute` 声明函数能面向 CPU／GPU 编译，不会自动选择设备；CPU 中的普通调用沿 CPU 位置执行。当前 GPU 边界要求一次函数调用，因此下面在同一文件完整展示清楚命名的 `fill_numbers`，没有隐藏计算。
+GPU 版保留完全相同的函数、四条数据分配、公式和输出；主流程只在下面几行体现执行位置与传输的差异：
+
+| CPU | GPU |
+|---|---|
+| `fill_numbers(values);` | `upload(values);`<br>`target(gpu, fill_numbers(values));`<br>`download(values);` |
 
 <details>
 <summary>展开完整 GPU 例子：计算与传输逐项可见</summary>
@@ -107,7 +115,7 @@ u32 main() on cpu {
 }
 ```
 
-`upload` 建立 GPU 数据位置，`target(gpu, ...)` 执行上面已展示的函数，`download` 将结果交回 CPU。同一函数要在 CPU 使用时，把这三行换成普通调用 `fill_numbers(values);` 即可，无需 CPU target 包装。自动选设备与内联 GPU 块语法尚未实现。
+`upload` 建立 GPU 数据位置，`target(gpu, ...)` 执行同一个 `fill_numbers`，`download` 将结果交回 CPU 后再输出。CPU 版已经直接展示普通调用，无需 CPU target 包装。自动选设备与内联 GPU 块语法尚未实现。
 
 </details>
 
