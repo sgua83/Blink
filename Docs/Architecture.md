@@ -403,7 +403,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6"></a>
 
-**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。Stage Dataset实参准备.3已实现，其余四叶仍未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。Stage Dataset实参准备.3与CPU借用步长拓宽.4已实现，其余三叶仍未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
 
 <a id="tool-7-2-4-5-6-1"></a>
 
@@ -419,7 +419,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-4"></a>
 
-**CPU Dataset借用描述符步长拓宽的生成来源。** 输入／生产消费：实际DataReference／原descriptor Ty与步长Scalar→application.rs#125::application_reference_value1580至1582原条件Cast→原descriptor stride寄存器。只交接真实U32到U64步长Cast，不重标原storage_address或字段布局准备，不触碰PA4投影根Proof；已是U64时沿原寄存器直传，不补造转换；原Cast若被后续折叠／消除则沿原优化消费，不为来源保活，完整变换关系另归原编号。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-4)。
+**CPU Dataset借用描述符步长拓宽的生成来源。** 原DataReference布局步长与实际descriptor Ty经application_reference_value原条件进入同一个U64 Cast，结果交给原descriptor stride寄存器。仅在该实际发射接点交接DatasetBorrowStrideCast，JSON reason为dataset_borrow_stride_cast；节点source_site为空，Syntax直接共享原发射时SourceSite及原定义／实际实例／内联与域路径，未知保持空，不扩大为未取得的参数范围。当前原U32步长进入需要U64的描述符，数值、Scalar转换、寄存器及原Proof／constant／uniform保持；已经U64时继续直传，不补造转换。原storage_address、Projection根Proof、字段布局及其他寻址Cast各保持自身职责，不因语法触发相同而重标；原Call、参数顺序、Access、借用及ABI保持。唯一生产者为原application_reference_value分支，材料只由原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照持有，在最后IR消费者后释放，不进入必要执行编码，不持有World／AST或运行资源。真实Frame、布局、绑定及完成仍归原所有者，不增加参数／状态表、图、调度、同步或释放链。原优化照常折叠／消除，不为观察保活Cast，完整变换关系另归原编号。当前已交接原步长Cast的生成来源，见[规范](BLanguage.md#cpu借用描述符步长cast的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-4)。
 
 <a id="tool-7-2-4-5-6-5"></a>
 

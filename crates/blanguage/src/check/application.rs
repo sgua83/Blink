@@ -1580,7 +1580,11 @@ impl Builder<'_> {
             }
         } else { data.root.clone() };
         if ty.components[2].0 == Scalar::U64 && stride.ty.components[0].0 != Scalar::U64 {
-            let dst=self.reg(Scalar::U64);self.emit(InstKind::Cast{dst,src:stride.regs[0]});
+            let origin = Arc::new(GeneratedOrigin {
+                reason: GenerationReason::DatasetBorrowStrideCast,
+                trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+            });
+            let dst=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Cast{dst,src:stride.regs[0]},origin));
             stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![dst],proof:stride.proof,literal:false,uniform:stride.uniform,constant:stride.constant};
         }
         let mut root=root;

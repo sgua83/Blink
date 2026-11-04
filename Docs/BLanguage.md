@@ -378,6 +378,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DomainCallLiteral | domain_call_literal | 原build_domain将Root::Literal实参分量准备为Constant |
 | DomainPartCall | domain_part_call | 原emit_domain_part交接实际Stage子区间的运行Call |
 | DatasetCallArgument | dataset_call_argument | 原native_call将Stage Dataset准备为实际借用实参的四类指令 |
+| DatasetBorrowStrideCast | dataset_borrow_stride_cast | 原application_reference_value将步长拓宽为CPU借用描述符要求的U64 Cast |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -602,6 +603,14 @@ native_call只在原Argument::Dataset分支的零索引Constant、PositionAddres
 原Scalar／Bits、零索引、真实DatasetView绑定、字段字节偏移、声明步长、位置与根Proof、Access、形状、参数顺序及ABI保持。该生产者对应CPU阶段对已编译函数的实际调用；源码函数内联及GPU路径各自沿原生产者，不按函数名或表示名称改标。read／atomic／inout原许可及真实检查保持，不以来源分类放宽CPU／GPU目标或写入权限。
 
 材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。真实存储、借用、依赖和最后完成仍沿Frame／blcompute及实际消费者；静态准备不证明调用已运行。原优化、错误与合法动态输入保持，不增加参数／状态表、图、调度、同步或释放链。见[架构](Architecture.md#tool-7-2-4-5-6-3)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-3)。
+
+#### CPU借用描述符步长Cast的生成来源
+
+application_reference_value只在原descriptor需要U64步长而实际布局步长尚不是U64时，为原实际Cast交接DatasetBorrowStrideCast，JSON reason为dataset_borrow_stride_cast。当前U32步长拓宽为U64，原dst／src寄存器、数值转换、stride的Proof／constant／uniform及descriptor组装保持；已有U64仍直接交接，不补造Cast。
+
+节点source_site为空，Syntax直接借用原发射时SourceSite，原语法、定义／实际实例及内联／域路径保持；未知为null，触发仅为已取得的原范围。storage_address、Projection根Proof、原字段布局、普通数值或其他寻址Cast不因共享语法触发而改标。原Call、根／长度／字段偏移、参数顺序、访问许可、借用、ABI与错误保持；步长表示拓宽不改变实际字节步长或复制数据。
+
+材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块及SDK／CLI快照，最后真实IR消费者后释放，不进入必要执行编码、不持有World／AST或运行资源。Frame及真实最后消费者继续负责存储、依赖和完成；不建立参数／状态表、图、调度、同步或释放链。原优化继续折叠／消除，不为来源强制保活变量或Cast，完整变换与机器映射仍归原编号。见[架构](Architecture.md#tool-7-2-4-5-6-4)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-4)。
 
 #### 集合值核的入口与捕获来源
 
