@@ -138,7 +138,7 @@ impl Emitter<'_> {
                     self.reference_address(address)?;
                     self.instruction(None, &[0x89], true, 0, Operand::memory(4, slot));
                 }
-                CallArgument::Value { ty, values } => {
+                CallArgument::Value { ty, values, .. } => {
                     let base = layout.copies[i].map_or(slot, |at| at as u32);
                     for ((_, offset), value) in ty.components.iter().zip(values) {
                         self.write_scalar(*value, 4, base + *offset);

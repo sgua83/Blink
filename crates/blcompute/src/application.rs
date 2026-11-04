@@ -235,9 +235,9 @@ impl Frame {
     ///
     /// # Safety
     /// 指针只在下一次可能移动该存储的执行／释放前有效。调用者必须遵守 B 的
-    /// 类型、索引域与独占访问语义；非零bytes交接从offset开始的实际可写字节范围，
-    /// 只撤回与其重叠的计数字段关系。返回原根地址，消费不得写出本次交接范围。
-    pub unsafe fn address(&mut self, handle: u32, offset: u64, bytes: u32) -> Result<*mut u32> {
+    /// 类型、索引域与独占访问语义；写区为offset+i*stride开始的bytes字节，
+    /// i<count；bytes或count为零无写入。只撤回真实相交Count，返回原根地址。
+    pub unsafe fn address(&mut self, handle: u32, offset: u64, bytes: u32, stride: u64, count: u32) -> Result<*mut u32> {
         let index = handle as usize;
         let data = match self.data.datasets[index].as_mut().unwrap() {
             ResidentData::Cpu(data) => data,
@@ -246,17 +246,20 @@ impl Frame {
         let address = match data {
             CpuDataset::Owned(data) => data.words.as_mut_ptr(),
             CpuDataset::Read(data) => {
-                if bytes != 0 {
+                if bytes != 0 && count != 0 {
                     return Err(error("冻结的 CPU 存储不能取得写借用"));
                 }
                 data.words().as_ptr().cast_mut()
             }
         };
-        if bytes != 0 {
+        if bytes != 0 && count != 0 {
             self.data.domains.retain(|r| {
-                r.count.binding != index
-                    || u64::from(r.count.word) + 4 <= offset
-                    || offset + u64::from(bytes) <= u64::from(r.count.word)
+                let end = u64::from(r.count.word) + 4;
+                if r.count.binding != index || offset >= end { return true; }
+                let row = if stride == 0 { 0 } else {
+                    ((end - 1 - offset) / stride).min(u64::from(count - 1))
+                };
+                u64::from(r.count.word) >= offset + row * stride + u64::from(bytes)
             });
         }
         Ok(address)

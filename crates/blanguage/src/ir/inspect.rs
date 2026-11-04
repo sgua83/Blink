@@ -65,7 +65,7 @@ fn parameter(value: &CallParameter) -> String {
 }
 fn argument(value: &CallArgument) -> String {
     match value {
-        CallArgument::Value { ty, values } => node("value", &[("type", ty.layout_json()), ("values", numbers(values))]),
+        CallArgument::Value { ty, values, .. } => node("value", &[("type", ty.layout_json()), ("values", numbers(values))]),
         CallArgument::Reference { ty, access, address } => node("reference", &[("type", ty.layout_json()), ("access", name(access)), ("address", reference(address))]),
     }
 }

@@ -17,7 +17,7 @@ pub(super) enum Ownership {
 pub(super) type Data = Box<DataPayload>;
 #[derive(Clone)]
 pub(super) struct DataPayload {
-    // Frame-owned storage has a u32 handle; an Invocation read borrow has its actual u64 storage address.
+    // Frame-owned storage has a u32 handle; an Invocation read/atomic borrow has its actual u64 storage address.
     pub root: Value,
     pub place: Option<Place>,
     pub initialization: Option<Position>,
@@ -287,7 +287,7 @@ pub(super) fn pointer_type() -> Ty {
 }
 fn argument(value: Value) -> CallArgument {
     CallArgument::Value {
-        ty: value.ty,
+        dataset_borrow:None, ty: value.ty,
         values: value.regs,
     }
 }
@@ -385,7 +385,7 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         *frame = std::mem::take(&mut body.inputs);
     }
-    let finalized = native_function::finish(builder.functions, &mut body)?;
+    let finalized = native_function::finish(builder.functions, &mut body, &builder.view_model)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app, &entry_anchor);
@@ -515,7 +515,7 @@ fn live_resources(
     let mut code = std::mem::take(&mut body.code);
     code.push(generated(runtime_call(
         "destroy",
-        vec![CallArgument::Value { ty: pointer_type(), values: frame.clone() }],
+        vec![CallArgument::Value { dataset_borrow:None, ty: pointer_type(), values: frame.clone() }],
         None,
         Vec::new(),
     ).kind, GenerationReason::FrameDestroy));
@@ -528,8 +528,8 @@ fn live_resources(
         generated(runtime_call(
             "create",
             vec![
-                CallArgument::Value { ty: Ty::scalar(Scalar::U64), values: vec![receiver] },
-                CallArgument::Value { ty: Ty::scalar(Scalar::U64), values: vec![context] },
+                CallArgument::Value { dataset_borrow:None, ty: Ty::scalar(Scalar::U64), values: vec![receiver] },
+                CallArgument::Value { dataset_borrow:None, ty: Ty::scalar(Scalar::U64), values: vec![context] },
             ],
             Some(pointer_type()),
             frame.clone(),
@@ -547,7 +547,7 @@ fn live_resources(
 }
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
-    // 原生借用交接原Frame句柄、长度与实际布局，拥有值仍交接句柄／长度。
+    // Invocation read/atomic交接原实际地址及布局，其他借用与拥有值沿原Frame句柄。
     pub(super) fn application_parameter(
         &mut self,
         binding: usize,
@@ -814,9 +814,9 @@ impl Builder<'_> {
         runtime_call(
             "release",
             vec![
-                CallArgument::Value { ty: pointer_type(), values: frame },
+                CallArgument::Value { dataset_borrow:None, ty: pointer_type(), values: frame },
                 CallArgument::Value {
-                    ty: Ty::scalar(Scalar::U32),
+                    dataset_borrow:None, ty: Ty::scalar(Scalar::U32),
                     values: vec![handle],
                 },
             ],
@@ -1459,7 +1459,8 @@ impl Builder<'_> {
             Ok(address)
         } else {
             let zero=self.constant(Scalar::U64,0);
-            self.application_address(root,identity,zero,0,span)
+            let stride=self.constant(Scalar::U64,0);let count=self.constant(Scalar::U32,1);
+            self.application_address(root,identity,zero,0,stride,count,span)
         }
     }
     pub(super) fn application_address(
@@ -1468,6 +1469,8 @@ impl Builder<'_> {
         identity: ValueIdentity,
         offset: Value,
         bytes: u32,
+        stride: Value,
+        count: Value,
         span: Span,
     ) -> Result<[Reg; 2]> {
         self.application_handle_available(identity, span)?;
@@ -1483,7 +1486,7 @@ impl Builder<'_> {
         };
         let bytes = self.constant(Scalar::U32, Bits::from(bytes));
         let value = self
-            .application_call("address", vec![handle, offset, bytes], Some(pointer_type()), span, None)?
+            .application_call("address", vec![handle, offset, bytes, stride, count], Some(pointer_type()), span, None)?
             .unwrap();
         Ok([value.regs[0], value.regs[1]])
     }
@@ -1525,12 +1528,12 @@ impl Builder<'_> {
     }
     fn application_domain_argument(&mut self,data:&DataReference)->CallArgument{
         let offset=self.application_reference_offset(data);
-        CallArgument::Value{ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
+        CallArgument::Value{dataset_borrow:None, ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
     }
     pub(super) fn borrowed_dataset_parameter_type(access: Access, execution: crate::execution::Requirement)->Ty {
-        if access == Access::Read && execution == crate::execution::Requirement::Invocation {
+        if matches!(access,Access::Read|Access::Atomic) && execution == crate::execution::Requirement::Invocation {
             let mut ty = Ty::scalar(Scalar::U64);
-            ty.name = "__blink_read_dataset".into();
+            ty.name = "__blink_address_dataset".into();
             ty.components = vec![(Scalar::U64,0),(Scalar::U32,8),(Scalar::U64,16),(Scalar::U32,24)];
             ty.size = 32; ty.align = 8;
             ty
@@ -1609,12 +1612,14 @@ impl Builder<'_> {
                 let dst = self.reg(Scalar::U64);
                 self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: word });
                 let offset = Value { ty: Ty::scalar(Scalar::U64), regs: vec![dst], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
-                address = Some(self.application_address(handle, identity, offset, scalar.size(), span)?);
+                let stride=self.constant(Scalar::U64,0);let count=self.constant(Scalar::U32,1);
+                address = Some(self.application_address(handle, identity, offset, scalar.size(), stride, count, span)?);
             }
             address.unwrap()
         } else {
             let zero = self.constant(Scalar::U64, 0);
-            self.application_address(handle, identity, zero, 0, span)?
+            let stride=self.constant(Scalar::U64,0);let count=self.constant(Scalar::U32,1);
+            self.application_address(handle, identity, zero, 0, stride, count, span)?
         };
         Ok(match stride {
             DataStride::Declared(stride)=>(address,index,stride),

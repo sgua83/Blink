@@ -74,7 +74,7 @@ unsafe extern "C" {
     fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,on_error:ErrorReceiver,context:*mut c_void)->u32;
     fn blink_upload(frame:*mut c_void,handle:u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
     fn blink_download(frame:*mut c_void,handle:u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
-    fn blink_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32,output:*mut *mut u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
+    fn blink_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32,stride:u64,count:u32,output:*mut *mut u32,on_error:ErrorReceiver,context:*mut c_void)->u32;
     fn blink_destroy(frame:*mut c_void);
 }
 "#);
@@ -122,9 +122,9 @@ pub unsafe extern "C" fn blink_application_download(frame:*mut c_void,handle:u32
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32)->*mut u32 {
+pub unsafe extern "C" fn blink_application_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32,stride:u64,count:u32)->*mut u32 {
     let mut output=std::ptr::null_mut();
-    if unsafe { blink_address(frame,handle,offset,bytes,&mut output,blink_application_error,std::ptr::null_mut()) } == 0 {
+    if unsafe { blink_address(frame,handle,offset,bytes,stride,count,&mut output,blink_application_error,std::ptr::null_mut()) } == 0 {
         unsafe { blink_application_failed(frame) }
     }
     output

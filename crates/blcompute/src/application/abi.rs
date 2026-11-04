@@ -109,10 +109,10 @@ mod native {
     /// 接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_address(
-        frame: *mut Frame, handle: u32, offset: u64, bytes: u32, output: *mut *mut u32,
+        frame: *mut Frame, handle: u32, offset: u64, bytes: u32, stride: u64, count: u32, output: *mut *mut u32,
         on_error: ErrorReceiver, context: *mut c_void,
     ) -> u32 {
-        let result = unsafe { (&mut *frame).address(handle, offset, bytes) };
+        let result = unsafe { (&mut *frame).address(handle, offset, bytes, stride, count) };
         match unsafe { finish(result, on_error, context) } {
             Some(value) => { unsafe { output.write(value) }; 1 }
             None => 0,

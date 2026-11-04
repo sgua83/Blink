@@ -371,7 +371,7 @@ impl Builder<'_> {
             actual = frame.regs.iter()
                 .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
                 .collect();
-            arguments.push(CallArgument::Value { ty: frame.ty, values: frame.regs });
+            arguments.push(CallArgument::Value { dataset_borrow:None, ty: frame.ty, values: frame.regs });
         }
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
@@ -399,12 +399,12 @@ impl Builder<'_> {
                 Argument::BorrowedData(mut reference)=>{
                     residency::layout_argument(&mut layouts,index,reference.layout_source());
                     let source=self.data_value_borrow(&reference.data);
-                    let borrow=if p.access==Access::Read && d.execution==crate::execution::Requirement::Invocation {
+                    let borrow=if matches!(p.access,Access::Read|Access::Atomic) && d.execution==crate::execution::Requirement::Invocation {
                         let (_,ty)=reference.element_layout();
                         address::Origin{
                             root:address::Root::Derived(source),layout:address::Layout::of(ty),
                             base:address::Layout::of(&reference.data.ty),words:reference.words().into(),positions:Arc::from([]),
-                            writable:false,initialized:vec![true;ty.components.len()].into(),
+                            writable:p.access.writes(),initialized:vec![true;ty.components.len()].into(),
                         }.normalize()
                     }else{source};
                     reference.data.root.proof=reference.data.root.proof.with_view_borrow(0,borrow);
@@ -421,7 +421,7 @@ impl Builder<'_> {
                     memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     append_actual(&mut actual, &value);
                     arguments.push(CallArgument::Value {
-                        ty: value.ty.clone(),
+                        dataset_borrow:None, ty: value.ty.clone(),
                         values: value.regs.clone(),
                     });
                     env.insert(p.name.clone(), Binding::Value(value));
@@ -477,11 +477,11 @@ impl Builder<'_> {
                     }
                     env.insert(p.name.clone(), Binding::AtomicBorrow(place));
                 }
-                Argument::Dataset(view) if p.ty.dataset && p.access==Access::Read => {
+                Argument::Dataset(view) if p.ty.dataset && matches!(p.access,Access::Read|Access::Atomic) => {
                     let binding=view.binding;
                     let access=self.view_access[&binding];
-                    if !matches!(access,Access::Read|Access::InOut) {
-                        return self.fail(span,"B224","CPU范围只能把可读的实际dataset转借给read参数");
+                    if !matches!((p.access,access),(Access::Read,Access::Read|Access::InOut)|(Access::Atomic,Access::Atomic)) {
+                        return self.fail(span,"B224","CPU范围的read／atomic借用需要对应的实际来源权限");
                     }
                     let (field,element)=self.dataset_layout(&view);let element=element.clone();
                     self.require_same(&ty,&element,span)?;
@@ -504,7 +504,7 @@ impl Builder<'_> {
                     for value in [&pointer,&length,&stride,&offset]{proof.append(value);}
                     let value=Value{ty:descriptor,regs:vec![address,length.regs[0],step,offset.regs[0]],proof,literal:false,uniform:true,constant:None};
                     append_actual(&mut actual,&value);
-                    arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
+                    arguments.push(CallArgument::Value{dataset_borrow:None, ty:value.ty,values:value.regs});
                     locations.insert(residency::Input::new(index),residency::Residency::cpu());
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::parameter(binding,!view.projection.is_empty()));
                     env.insert(p.name.clone(),Binding::Data(view));
@@ -529,9 +529,13 @@ impl Builder<'_> {
                     }
                     if p.access.writes(){self.invalidate_application_contents(&reference);}
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
+                    let dataset_borrow=if descriptor.components[0].0==Scalar::U64 && reference.root.ty.components[0].0==Scalar::U32 {
+                        let frame=self.application_frame(span)?;
+                        Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
+                    }else{None};
                     let value=self.application_reference_value(&reference,descriptor,span)?;
                     append_actual(&mut actual,&value);
-                    arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
+                    arguments.push(CallArgument::Value{dataset_borrow,ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::DataReference(reference));
                 }
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
@@ -542,7 +546,7 @@ impl Builder<'_> {
                     self.native_dataset_shape(p,d,data.count,span)?;
                     let value=self.returned_storage(&Returned::Dataset(data.clone()));
                     append_actual(&mut actual,&value);
-                    arguments.push(CallArgument::Value{ty:value.ty,values:value.regs});
+                    arguments.push(CallArgument::Value{dataset_borrow:None, ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::ApplicationData(data));
                 }
                 Argument::OwnedValue(mut value)
@@ -560,7 +564,7 @@ impl Builder<'_> {
                     memory_borrow.union(&self.address_contents(&value.value.ty,&value.value.proof));
                     append_actual(&mut actual, &value.value);
                     arguments.push(CallArgument::Value {
-                        ty: value.value.ty.clone(),
+                        dataset_borrow:None, ty: value.value.ty.clone(),
                         values: value.value.regs.clone(),
                     });
                     env.insert(p.name.clone(), Binding::OwnedValue(value));
@@ -637,6 +641,9 @@ impl Builder<'_> {
         }else{Vec::new()};
         let memory_use=self.call_address_memory(memory_borrow,span)?;
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
+        for argument in &mut arguments {
+            if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}
+        }
         self.code.push(Inst { kind: InstKind::Call(Call {
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
@@ -966,17 +973,96 @@ fn uses_frame(code: &[Inst], registers: &[Reg], imported: &BTreeSet<String>) -> 
         }
     })
 }
+
+// The original call keeps its actual Frame binding only until the same module's
+// Dataset contract closes. No function body or resource graph is reconstructed.
+fn lower_dataset_borrows<'a>(
+    body:&mut ValueCode,
+    model:&view_contracts::Function,
+    contract:&impl Fn(&str)->&'a Contract,
+) {
+    fn register(registers:&mut Vec<Scalar>,scalar:Scalar)->Reg {
+        let reg=registers.len();registers.push(scalar);reg
+    }
+    fn constant(code:&mut Vec<InstKind>,registers:&mut Vec<Scalar>,scalar:Scalar,bits:Bits)->Reg {
+        let reg=register(registers,scalar);code.push(InstKind::Constant(reg,scalar,bits));reg
+    }
+    fn value(ty:Ty,values:Vec<Reg>)->CallArgument {CallArgument::Value{ty,values,dataset_borrow:None}}
+    fn block<'a>(code:&mut [Inst],registers:&mut Vec<Scalar>,model:&view_contracts::Function,contract:&impl Fn(&str)->&'a Contract) {
+        for instruction in code {
+            let mut before=Vec::new();
+            match &mut instruction.kind {
+                InstKind::Scope(code)=>block(code,registers,model,contract),
+                InstKind::If{yes,no,..}=>{block(yes,registers,model,contract);block(no,registers,model,contract);}
+                InstKind::Loop{condition,body,..}=>{block(condition,registers,model,contract);block(body,registers,model,contract);}
+                InstKind::Call(call)=>{
+                    for argument in &mut call.arguments {
+                        let CallArgument::Value{values,dataset_borrow,..}=argument else{continue};
+                        let Some(borrow)=dataset_borrow.take() else{continue};
+                        let context=&model.calls[borrow.call];
+                        let mut regions=BTreeSet::new();
+                        for effect in contract(&context.function).view_access.as_ref().unwrap() {
+                            let view_contracts::Access::Dataset{borrows,when,access,..}=effect else{continue};
+                            if !access.writes(){continue;}
+                            let path=when.guard_at_call(&context.arguments).assume(&context.path,true);
+                            if !path.possible(){continue;}
+                            for(source,when)in borrows.sources.entries() {
+                                let path=bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true);
+                                if !path.possible(){continue;}
+                                let view::Source::Position(origin)=source else{continue};
+                                for(source,when)in origin.resources().sources.entries() {
+                                    if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input))if *input==borrow.input){continue;}
+                                    if !bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true).possible(){continue;}
+                                    regions.extend(origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*word,scalar.size())));
+                                }
+                            }
+                        }
+                        for(word,bytes)in regions {
+                            let field=register(registers,Scalar::U64);
+                            before.push(InstKind::Cast{dst:field,src:values[3]});
+                            let word=constant(&mut before,registers,Scalar::U64,Bits::from(word));
+                            let offset=register(registers,Scalar::U64);
+                            before.push(InstKind::Binary{dst:offset,op:BinaryOp::IAdd,a:field,b:word});
+                            let bytes=constant(&mut before,registers,Scalar::U32,Bits::from(bytes));
+                            let result=application::pointer_type();
+                            let outputs=result.components.iter().map(|(scalar,_)|register(registers,*scalar)).collect();
+                            before.push(InstKind::Call(Call{
+                                target:CallTarget::External(ExternalName{library:crate::application::RUNTIME_LIBRARY.into(),symbol:"blink_application_address".into()}),
+                                arguments:vec![
+                                    value(application::pointer_type(),borrow.frame.to_vec()),
+                                    value(Ty::scalar(Scalar::U32),vec![borrow.handle]),
+                                    value(Ty::scalar(Scalar::U64),vec![offset]),
+                                    value(Ty::scalar(Scalar::U32),vec![bytes]),
+                                    value(Ty::scalar(Scalar::U64),vec![values[2]]),
+                                    value(Ty::scalar(Scalar::U32),vec![values[1]]),
+                                ],
+                                memory:Vec::new(),memory_use:None,result:Some(result),values:outputs,
+                            }));
+                        }
+                    }
+                }
+                _=>{}
+            }
+            if !before.is_empty() {
+                let original=std::mem::replace(&mut instruction.kind,InstKind::Scope(Vec::new()));
+                before.push(original);
+                instruction.kind=InstKind::Scope(before.into_iter().map(|kind|Inst{
+                    kind,source_site:instruction.source_site.clone(),generated_origin:instruction.generated_origin.clone(),
+                }).collect());
+            }
+        }
+    }
+    block(&mut body.code,&mut body.registers,model,contract);
+}
+
 fn finalize(
     mut module: Module,
     mut reachable: BTreeSet<String>,
-    mut root: Option<&mut ValueCode>,
+    mut root: Option<(&mut ValueCode,&view_contracts::Function)>,
     owner: Option<&str>,
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     resolve_residencies(&mut module)?;
-    for unit in module.units.values_mut().flatten() {
-        if let Some(function)=&mut unit.function {crate::optimize::value_code(&mut function.body);}
-    }
     let mut units = module
         .units
         .into_iter()
@@ -999,17 +1085,27 @@ fn finalize(
         .filter(|(_, unit)| unit.function.is_none() && !unit.contract.frame)
         .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
     let mut frame = BTreeSet::new();
-    for (name, unit) in &mut units {
-        if unit.contract.frame {
-            frame.insert(name.clone());
+    let names=units.keys().cloned().collect::<Vec<_>>();
+    for name in names {
+        let mut unit=units.remove(&name).unwrap();
+        if let Some(function)=&mut unit.function {
+            let own=&unit.contract;
+            lower_dataset_borrows(&mut function.body,&unit.view_model,&|callee|
+                if callee==name{own}else{&units[callee].contract});
+            crate::optimize::value_code(&mut function.body);
         }
-        if let Some(function) = &unit.function {
-            let registers = &function.body.inputs[..2];
-            if uses_frame(&function.body.code, registers, &imported_without_frame)
-                || function.body.outputs.iter().any(|reg| registers.contains(reg)) {
+        if unit.contract.frame {frame.insert(name.clone());}
+        if let Some(function)=&unit.function {
+            let registers=&function.body.inputs[..2];
+            if uses_frame(&function.body.code,registers,&imported_without_frame)
+                || function.body.outputs.iter().any(|reg|registers.contains(reg)) {
                 frame.insert(name.clone());
             }
         }
+        units.insert(name,unit);
+    }
+    if let Some((body,model))=&mut root {
+        lower_dataset_borrows(body,model,&|callee|&units[callee].contract);
     }
     loop {
         let mut next = frame.clone();
@@ -1048,7 +1144,7 @@ fn finalize(
             }
         });
     }
-    if let Some(body) = &mut root {
+    if let Some((body,_)) = &mut root {
         prune(body, &unframed);
     }
     let mut result = Finalized {
@@ -1074,9 +1170,9 @@ fn finalize(
     }
     Ok(result)
 }
-pub(super) fn finish(module: Module, root: &mut ValueCode) -> Result<Finalized> {
+pub(super) fn finish(module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
     let roots = dependencies(root);
-    finalize(module, roots, Some(root), None)
+    finalize(module, roots, Some((root,model)), None)
 }
 
 pub(crate) fn compile_module(
@@ -1285,7 +1381,7 @@ fn build_domain(
     let mut registers = vec![Scalar::U32, Scalar::U32];
     let mut parameters = vec![CallParameter::Value(frame.clone())];
     let frame = CallArgument::Value {
-        ty: frame,
+        dataset_borrow:None, ty: frame,
         values: vec![0, 1],
     };
     let mut data = Vec::new();
@@ -1305,7 +1401,7 @@ fn build_domain(
             for (i, (scalar, offset)) in ty.components.iter().enumerate() {
                 uniform_regs.insert(signature.uniforms[ui].offset + offset, first + i);
                 uniform_values.push(CallArgument::Value {
-                    ty: Ty::scalar(*scalar),
+                    dataset_borrow:None, ty: Ty::scalar(*scalar),
                     values: vec![first + i],
                 });
             }
@@ -1350,11 +1446,11 @@ fn build_domain(
         for root in &call.arguments {
             arguments.push(match root {
                 Root::Data(i, _) => CallArgument::Value {
-                    ty: Builder::domain_dataset_parameter_type(),
+                    dataset_borrow:None, ty: Builder::domain_dataset_parameter_type(),
                     values: data[*i].to_vec(),
                 },
                 Root::Uniform(ty, offset) => CallArgument::Value {
-                    ty: ty.clone(),
+                    dataset_borrow:None, ty: ty.clone(),
                     values: ty
                         .components
                         .iter()
@@ -1374,7 +1470,7 @@ fn build_domain(
                         })
                         .collect();
                     CallArgument::Value {
-                        ty: ty.clone(),
+                        dataset_borrow:None, ty: ty.clone(),
                         values,
                     }
                 }
@@ -1497,7 +1593,7 @@ fn emit_domain_part(
     context.resources.programs.push((target, program));
     let mut arguments = vec![frame.clone()];
     arguments.extend(data.iter().flat_map(|regs| *regs).map(|reg| CallArgument::Value {
-        ty: Ty::scalar(Scalar::U32),
+        dataset_borrow:None, ty: Ty::scalar(Scalar::U32),
         values: vec![reg],
     }));
     arguments.extend_from_slice(uniforms);

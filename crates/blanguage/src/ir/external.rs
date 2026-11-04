@@ -34,10 +34,18 @@ pub struct CallReference {
     pub word: u32,
 }
 #[derive(Clone, Debug)]
+pub struct DatasetBorrow {
+    pub frame: [Reg; 2],
+    pub handle: Reg,
+    pub input: usize,
+    pub call: usize,
+}
+#[derive(Clone, Debug)]
 pub enum CallArgument {
     Value {
         ty: Ty,
         values: Vec<Reg>,
+        dataset_borrow: Option<Box<DatasetBorrow>>,
     },
     Reference {
         ty: Ty,
@@ -116,7 +124,8 @@ impl Call {
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         if let CallTarget::Indirect(reg) = &self.target && !f(*reg) { return false; }
         self.arguments.iter().all(|argument| match argument {
-            CallArgument::Value { values, .. } => values.iter().all(|reg| f(*reg)),
+            CallArgument::Value { values, dataset_borrow, .. } => values.iter().all(|reg| f(*reg))
+                && dataset_borrow.iter().all(|borrow| borrow.frame.iter().chain([&borrow.handle]).all(|reg| f(*reg))),
             CallArgument::Reference { address, .. } => address.all_operands(f),
         })
     }
@@ -124,7 +133,8 @@ impl Call {
         if let CallTarget::Indirect(reg) = &mut self.target { *reg = r(*reg); }
         for argument in &mut self.arguments {
             match argument {
-                CallArgument::Value { values, .. } => {
+                CallArgument::Value { values, dataset_borrow, .. } => {
+                    if let Some(borrow)=dataset_borrow {borrow.frame=borrow.frame.map(r);borrow.handle=r(borrow.handle);}
                     for v in values {
                         *v = r(*v)
                     }

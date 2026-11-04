@@ -187,7 +187,7 @@ GPU 版 `map_gpu.b` 在同一文件完整定义 scale_values，并在 main 明�
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:282`。
+源码节选：`crates/blanguage/src/ir.rs:283`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -228,7 +228,7 @@ GPU 版 `map_gpu.b` 在同一文件完整定义 scale_values，并在 main 明�
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:104`。
+源码节选：`crates/blanguage/src/ir.rs:105`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -414,7 +414,7 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
 
 目标是原Call的一份真正操作数，存活分析和寄存器重写必须保留它；否则参数正确也可能调用到被覆盖的地址。
 
-源码节选：`crates/blanguage/src/ir/external.rs:49`。
+源码节选：`crates/blanguage/src/ir/external.rs:57`。
 
 ```rust
 pub enum CallTarget {
@@ -424,13 +424,14 @@ pub enum CallTarget {
 }
 ```
 
-源码节选：`crates/blanguage/src/ir/external.rs:116`。
+源码节选：`crates/blanguage/src/ir/external.rs:124`。
 
 ```rust
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         if let CallTarget::Indirect(reg) = &self.target && !f(*reg) { return false; }
         self.arguments.iter().all(|argument| match argument {
-            CallArgument::Value { values, .. } => values.iter().all(|reg| f(*reg)),
+            CallArgument::Value { values, dataset_borrow, .. } => values.iter().all(|reg| f(*reg))
+                && dataset_borrow.iter().all(|borrow| borrow.frame.iter().chain([&borrow.handle]).all(|reg| f(*reg))),
             CallArgument::Reference { address, .. } => address.all_operands(f),
         })
     }
@@ -1201,7 +1202,7 @@ C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结�
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:265`。
+源码节选：`crates/blanguage/src/ir.rs:266`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -1402,7 +1403,7 @@ pub(super) enum Access {
 }
 ```
 
-参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。此处仍未开放CPU范围的atomic物理参数及普通write／inout实例独占位置，继续见原Issues；对象编码为现行BLCO47，执行资源编码为BLRI24。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，普通write／inout实例独占位置继续见原Issues。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用Frame范围映像尚未交接已编译普通模块函数代码，真实消费缺口见Issues C-027.35.4.2.2.5；算法DLL和普通Host调用的能力不冒称该消费链已交付。对象编码为现行BLCO48，执行资源编码为BLRI25。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -1596,7 +1597,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:954`。
+源码节选：`crates/blanguage/src/ir.rs:955`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1610,7 +1611,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:977`。
+源码节选：`crates/blanguage/src/ir.rs:978`。
 
 ```rust
     Load {
@@ -1642,7 +1643,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1172`。
+源码节选：`crates/blanguage/src/ir.rs:1173`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1832,7 +1833,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1020`。
+源码节选：`crates/blanguage/src/ir.rs:1021`。
 
 ```rust
     If {
@@ -2024,7 +2025,7 @@ pub struct NativeCode {
 
 编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
 
-这些观察事实不进入BLRI24执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入BLRI25执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 

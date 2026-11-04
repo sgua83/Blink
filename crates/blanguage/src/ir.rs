@@ -9,6 +9,7 @@ pub(crate) use origin::SourceContext;
 mod layout;
 pub use layout::interface_layout_json;
 mod external;
+pub(crate) use external::DatasetBorrow;
 pub use external::{
     Call, CallArgument, CallParameter, CallReference, CallStorage, CallTarget, FunctionBody, MemoryAccess, MemoryAlias,
 };

@@ -22,10 +22,10 @@ pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub
 pub(super) struct Call {
     pub(super) function:String,
     memory:usize,
-    arguments:BTreeMap<ValueIdentity,bounds::Proof>,
+    pub(super) arguments:BTreeMap<ValueIdentity,bounds::Proof>,
     initialization:Vec<address::InitializationEffect>,
     outputs:BTreeSet<Output>,
-    path:bounds::Clause,
+    pub(super) path:bounds::Clause,
     source:crate::Source,
     span:Span,
 }

@@ -317,7 +317,7 @@ impl Builder<'_> {
                     self.require_same(ty, &value.ty, span)?;
                     memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
-                    CallArgument::Value { ty: ty.clone(), values: value.regs }
+                    CallArgument::Value { dataset_borrow:None, ty: ty.clone(), values: value.regs }
                 }
                 (CallParameter::Reference { ty, access }, Argument::Reference(owner)) => {
                     if access.reads(){memory_borrow.union(&self.address_contents(ty,&owner.proof));}
