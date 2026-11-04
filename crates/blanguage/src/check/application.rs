@@ -1581,6 +1581,8 @@ impl Builder<'_> {
             let dst=self.reg(Scalar::U64);self.emit(InstKind::Cast{dst,src:stride.regs[0]});
             stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![dst],proof:stride.proof,literal:false,uniform:stride.uniform,constant:stride.constant};
         }
+        let mut root=root;
+        root.proof=root.proof.with_view_borrow(0,view::Borrow::projection(self.data_value_borrow(&data.data),data.projection.clone()));
         let mut proof=bounds::Proof::default();
         for value in [&root,&data.length,&stride,&offset]{proof.append(value);}
         Ok(Value{ty,regs:vec![root.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None})
@@ -2324,7 +2326,7 @@ pub(super) fn canonical_element_inputs(builder:&Builder<'_>,bindings:&mut Elemen
         }
     }
 }
-pub(super) fn element_input_bindings(builder:&Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>)->(ElementBindings,view::Borrow) {
+pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>)->(ElementBindings,view::Borrow) {
     fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,parameter:usize,resource:usize,next:&mut usize,out:&mut ElementBindings,memory:&mut view::Borrow,reads:bool){
         let model=&data.elements;let value=builder.returned_storage(model);let width=value.regs.len();
         for component in 0..width{
@@ -2351,7 +2353,19 @@ pub(super) fn element_input_bindings(builder:&Builder<'_>,definition:&Definition
     for(parameter,p)in definition.function.params.iter().enumerate(){
         if let Some(binding)=env.get(&p.name){
             for resource in 0..binding_element_types(binding).len(){
-                if let Some(data)=binding_element_data(binding,resource){collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0);}
+                if let Some(data)=binding_element_data(binding,resource){
+                    let mut projected;
+                    let data=if let Binding::DataReference(reference)=binding {
+                        projected=data.clone();
+                        projected.root.proof=projected.root.proof.clone().with_view_borrow(0,view::Borrow::projection(builder.data_value_borrow(data),reference.projection.clone()));
+                        projected.ty=reference.element_layout().1.clone();
+                        let mut model=*projected.elements;
+                        for field in &reference.projection{model=match model{returns::Returned::OwnedValue(parent)=>builder.unpack_record(&parent,*field),returns::Returned::Value(value)=>returns::Returned::value(builder.record_component(&value,*field)),_=>unreachable!()};}
+                        projected.elements=Box::new(model);
+                        &projected
+                    }else{data};
+                    collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access!=Access::Write&&data.length.maximum()!=0);
+                }
             }
         }
     }
@@ -2416,7 +2430,7 @@ impl Builder<'_> {
             for source in &borrow.sources{match source{
                 view::Source::Data(id@(ValueIdentity::Register(_)|ValueIdentity::ResourceParameter(..)))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id));},
                 view::Source::Parameter(id@ValueIdentity::DatasetContent(..))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(*id))));},
-                view::Source::Element{parent,..}=>aliases(parent,out),
+                view::Source::Element{parent,..}|view::Source::Projection{parent,..}=>aliases(parent,out),
                 view::Source::Position(origin)=>aliases(&origin.resources(),out),_=>{},
             }}
         }
@@ -2474,7 +2488,11 @@ impl Builder<'_> {
             for(source,when)in borrow.sources.entries(){
                 let truth=bounds::Condition::guard(when).truth_in(path);
                 if truth==Some(false){continue;}
-                if let view::Source::Element{parent,fields}=source{for(mut nested,complete)in collect(parent,owner,path){nested.push(fields.clone());paths.push((nested,complete&&truth==Some(true)));}}
+                match source {
+                    view::Source::Element{parent,fields}=>for(mut nested,complete)in collect(parent,owner,path){nested.push(fields.clone());paths.push((nested,complete&&truth==Some(true)));},
+                    view::Source::Projection{parent,..}=>for(nested,complete)in collect(parent,owner,path){paths.push((nested,complete&&truth==Some(true)));},
+                    _=>{},
+                }
             }
             paths
         }
@@ -2576,7 +2594,7 @@ impl Builder<'_> {
                 if !origins.contains(&id){origins.push(id);}
             }
         }
-        self.close_stored_resources(&mut model,&original);Box::new(model)
+        self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
     pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value)->returns::Returned{
         fn loaded_value(builder:&Builder<'_>,target:&mut Value,loaded:&Value){
@@ -2782,11 +2800,16 @@ impl Builder<'_> {
 impl Builder<'_> {
     // The stored root keeps the same resource's physical aliases in its Proof.
     // Element scope names describe that owner; they do not create another one.
-    fn close_stored_resources(&self,model:&mut returns::Returned,original:&returns::Returned){
+    fn close_stored_resources(&self,model:&mut returns::Returned,original:&returns::Returned,bindings:&ElementBindings){
+        let names=bindings.iter().filter_map(|(source,proof)|{
+            matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))
+                .then(||proof.known_identity(0).map(|target|(*source,target))).flatten()
+        }).collect::<BTreeMap<_,_>>();
         let value=self.returned_storage(model);
         for path in view::resource_paths(&value.ty){if let(Some(data),Some(source))=(model_data_mut(model,&path),model_data(original,&path)){
-            if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::resource_borrow(source));}
-            self.close_stored_resources(&mut data.elements,&source.elements);
+            if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::resource_borrow(source).output_bound(&names));}
+            let nested=element_scope_bindings(bindings,source.elements.registers().len(),true);
+            self.close_stored_resources(&mut data.elements,&source.elements,&nested);
         }}
     }
 }

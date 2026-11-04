@@ -48,17 +48,36 @@ impl Borrow{
     pub fn element(parent:Self,fields:Vec<usize>)->Self {
         let mut result=Self::default();
         for(source,when)in parent.sources.entries(){
-            result.sources.insert_when(Source::Element{parent:Box::new(Self::source(source.clone())),fields:fields.clone()},when);
+            let value=match source {
+                Source::Projection{parent,fields:prefix}=>Self::element((**parent).clone(),prefix.iter().chain(&fields).copied().collect()),
+                _=>Self::source(Source::Element{parent:Box::new(Self::source(source.clone())),fields:fields.clone()}),
+            };
+            result.union(&value.restricted(&when));
         }
         if !parent.inputs.is_empty()||!parent.calls.is_empty(){
             result.sources.insert(Source::Element{parent:Box::new(Self{inputs:parent.inputs,calls:parent.calls,..Self::default()}),fields});
         }
         result
     }
+    pub fn projection(parent:Self,fields:Vec<usize>)->Self {
+        if fields.is_empty(){return parent;}
+        let mut result=Self::default();
+        for(source,when)in parent.sources.entries(){
+            let projected=match source {
+                Source::Projection{parent,fields:prefix}=>Source::Projection{parent:parent.clone(),fields:prefix.iter().chain(&fields).copied().collect()},
+                _=>Source::Projection{parent:Box::new(Self::source(source.clone())),fields:fields.clone()},
+            };
+            result.sources.insert_when(projected,when);
+        }
+        if !parent.inputs.is_empty()||!parent.calls.is_empty(){
+            result.sources.insert(Source::Projection{parent:Box::new(Self{inputs:parent.inputs,calls:parent.calls,..Self::default()}),fields});
+        }
+        result
+    }
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()}
     pub fn union(&mut self,other:&Self){self.sources.union(&other.sources);self.inputs.union(&other.inputs);self.calls.union(&other.calls);}
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
-    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.pending(),Source::Element{parent,..}=>parent.pending(),_=>false})}
+    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),_=>false})}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())}
     pub fn restricted(&self,path:&bounds::Clause)->Self{Self{sources:self.sources.restricted(path),inputs:self.inputs.restricted(path),calls:self.calls.restricted(path)}}
     pub fn selected(choice:&bounds::Condition,a:&Self,b:&Self)->Self{
@@ -70,15 +89,16 @@ impl Borrow{
     pub fn map_sources(&self,map:impl Fn(Source)->Self)->Self{let mut result=Self{inputs:self.inputs.clone(),calls:self.calls.clone(),..Self::default()};for(source,when)in self.sources.entries(){result.union(&map(source.clone()).restricted(&when));}result}
     pub fn unresolved(&self)->bool {self.sources.iter().any(|source|match source {
         Source::Unresolved=>true,
-        Source::Element{parent,..}=>parent.unresolved(),
+        Source::Element{parent,..}|Source::Projection{parent,..}=>parent.unresolved(),
         Source::Position(origin)=>matches!(&origin.root,address::Root::Resource(borrow)|address::Root::Derived(borrow)if borrow.unresolved()),
         _=>false,
     })}
-    pub fn has_local(&self)->bool {self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.has_local(),Source::Element{parent,..}=>parent.has_local(),_=>false})}
+    pub fn has_local(&self)->bool {self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.has_local(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.has_local(),_=>false})}
     pub fn resources(&self)->Self {
         self.map_sources(|source|match source {
             Source::Position(origin)=>origin.resources(),
             Source::Element{parent,fields}=>Self::element(parent.resources(),fields),
+            Source::Projection{parent,..}=>parent.resources(),
             source=>Self::source(source),
         })
     }
@@ -86,6 +106,7 @@ impl Borrow{
         self.map_sources(|source|match source{
             Source::Position(origin)=>origin.owners(),
             Source::Element{parent,fields}=>Self::element(parent.resources(),fields).joined(parent.owners()),
+            Source::Projection{parent,..}=>parent.owners(),
             source=>Self::source(source),
         })
     }
@@ -123,7 +144,7 @@ pub(super) fn resource_aliases(data:&application::Data)->Borrow {
     value
 }
 pub(super) fn resource_borrow(data:&application::Data)->Borrow{
-    let mut value=data.root.proof.view_borrow(0);value.union(&resource_aliases(data));if value.empty()||matches!(data.root.identity(),ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){value.sources.insert(Source::Data(data.root.identity()));}value
+    let mut value=data.root.proof.view_borrow(0);if value.empty()||matches!(data.root.identity(),ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){value.sources.insert(Source::Data(data.root.identity()));}value
 }
 pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.clone().with_view_borrow(0,resource_borrow(data))}
 
@@ -223,6 +244,7 @@ impl Requirement {
 pub(super) enum Source {
     Data(ValueIdentity),
     Element { parent:Box<Borrow>, fields:Vec<usize> },
+    Projection { parent:Box<Borrow>, fields:Vec<usize> },
     Parameter(ValueIdentity),
     Unresolved,
     // 实际变体分支在此槽没有view；区别于尚未知的来源。
@@ -238,6 +260,7 @@ impl Source {
             Self::Parameter(id) => Self::Parameter(bindings.get(&id).copied().unwrap_or(id)),
             Self::Position(origin) => Self::Position(Arc::new(origin.bind_outputs(bindings))),
             Self::Element{parent,fields}=>Self::Element{parent:Box::new(parent.output_bound(bindings)),fields},
+            Self::Projection{parent,fields}=>Self::Projection{parent:Box::new(parent.output_bound(bindings)),fields},
             Self::Unresolved | Self::Inactive | Self::External => self,
         }
     }
@@ -251,11 +274,12 @@ impl Source {
             }
             Self::Position(origin)=>origin.at_call(bindings),
             Self::Element{parent,fields}=>Borrow::element(parent.at_call(bindings),fields),
+            Self::Projection{parent,fields}=>Borrow::projection(parent.at_call(bindings),fields),
             Self::Unresolved|Self::Inactive|Self::External=>Borrow::from_sources(BTreeSet::from([self])),
         }
     }
 }
-crate::module::codec::variants!(Source{0=>Data(id),1=>Parameter(id),2=>Unresolved,3=>Inactive,4=>External,5=>Position(origin),6=>Element{parent,fields}});
+crate::module::codec::variants!(Source{0=>Data(id),1=>Parameter(id),2=>Unresolved,3=>Inactive,4=>External,5=>Position(origin),6=>Element{parent,fields},7=>Projection{parent,fields}});
 impl Binding {
     pub(super) fn view_parts(&self)->Option<(&Ty,&bounds::Proof)> {
         match self {
@@ -348,7 +372,7 @@ impl Builder<'_> {
                         if when.possible() && let Source::Data(id)=source { self.application_handle_available(*id,span)?; }
                     }
                 }
-                Source::Parameter(_) | Source::Inactive | Source::External | Source::Element{..} => {}
+                Source::Parameter(_) | Source::Inactive | Source::External | Source::Element{..} | Source::Projection{..} => {}
             }
         }
         Ok(())

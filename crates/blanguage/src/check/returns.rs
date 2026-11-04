@@ -400,7 +400,10 @@ impl Builder<'_> {
         })();
         let mut owned=view::Borrow::default();let mut retained=view::Borrow::default();
         let outputs=value.iter().chain(borrowed.as_ref().ok().into_iter().flat_map(|written|written.values())).collect::<Vec<_>>();
-        for output in &outputs{for borrow in view_contracts::resource_borrows(output){owned.union(&borrow);}}
+        for output in &outputs{
+            let resources=match *output{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
+            for data in resources{owned.union(&self.owned_resource_borrow(data));}
+        }
         for output in &outputs{self.require_element_return_borrows(output,&owned,span)?;}
         for output in outputs{if let Some(value)=output.view_value(){
             let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);

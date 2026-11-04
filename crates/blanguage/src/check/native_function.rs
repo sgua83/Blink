@@ -284,9 +284,18 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
         // 拥有叶的存储身份与其输出分量共同命名；不把私有位置身份丢成未知。
         let mut original=model.clone();
         let paths=view_contracts::resource_output_paths(&model);
-        for(resource,(_,scope))in paths.iter().enumerate(){
+        for(resource,(root,scope))in paths.iter().enumerate(){
             let output=if model_index==0{view_contracts::Output::ReturnedResource(resource)}else{view_contracts::Output::WrittenResource(model_index-1,resource)};
-            if let Some(name)=view_contracts::resource_output_name(&value,resource){builder.view_model.resource_names.insert(output,name);}
+            if let(Some(source),Some(target))=(view_contracts::resource_output_mut(&mut original,*root),view_contracts::resource_output_mut(&mut value,*root)){
+                let name=if source.ownership==application::Ownership::Borrowed{
+                    let identity=source.root.identity();
+                    let bound=bindings[&identity].clone();
+                    bindings.insert(ValueIdentity::Register(source.root.regs[0]),bound);
+                    view::Borrow::source(view::Source::Data(identity)).at_call(&bindings)
+                }else{view::Borrow::source(view::Source::Data(ValueIdentity::Register(target.root.regs[0])))};
+                let name=scope.iter().fold(name,|parent,fields|view::Borrow::element(parent,fields.clone()));
+                builder.view_model.resource_names.insert(output,name);
+            }
             if !scope.is_empty(){if let Some(source)=view_contracts::resource_output_mut(&mut original,resource){
                 let name=builder.view_model.resource_names[&output].clone();
                 for origin in &source.root.proof.view_borrow(0).sources{if let view::Source::Data(id@ValueIdentity::Register(_))=origin{bindings.entry(*id).or_insert_with(||bounds::Proof::default().with_view_borrow(0,name.clone()));}}

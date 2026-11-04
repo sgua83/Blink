@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "5c4a6c7c4c99c62e67569b70fb18c2802ae7f98bbb86e883258034a04ac46b03"
+      "sha256": "30396da84449a0397626e5faae5388c24cc835873a782352849faa956ea89a8c"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -128,7 +128,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "0892fb7dbbad35d874af0b6d9e5644f8161d6215227a869cd2715abe87b6ec4d"
+      "sha256": "e10b8c3caf055b1dd4e930c1554dc75c3d3b222e246a3dcf752818276be49972"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -164,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/returns.rs",
-      "sha256": "e25cda4a99efb49ad1778d5660213736870cf9c123eaeda7f4236b128ec04f85"
+      "sha256": "a7249000638a3981e4d53d9c6cc474ae9728bb8bf64631e9b9f16e37f7734524"
     },
     {
       "path": "crates/blanguage/src/check/selection.rs",
@@ -172,15 +172,15 @@
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
-      "sha256": "940b176430ba5205f2aedc650de9ef6278684bf40cff1c744ee82f2668a64fb0"
+      "sha256": "8574ba3c0d84d5027aabe8fe75b8aea1fafe4b3960a20f656ad81fe974a91d73"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
-      "sha256": "35e636936fbef3854b23caf5e6a90c1c2473d508527a7c882d815a43a91e095c"
+      "sha256": "a60494bc7b9045f146b9b5b1652de330f82454406b410fe06111b562ecd55354"
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
-      "sha256": "6f9cb71eb082df8603dc0035ab6e8cb12d96459ee1a57b4868e518fcc6b70025"
+      "sha256": "f2c10fad96282c4cee2792c38b20dc78defed8b4a07193a18bcb241a4aa5f267"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
@@ -252,7 +252,7 @@
     },
     {
       "path": "crates/blanguage/src/object/coff.rs",
-      "sha256": "2c7d305bcb47a200cc134786c98fe06ca9fb294c83ebcf8d2da79609c6e7fd85"
+      "sha256": "0c2aab10dac4bcfb7001ee9f6c6f27f90d03b4c152224ea5af36323199003f28"
     },
     {
       "path": "crates/blanguage/src/object/static_library.rs",

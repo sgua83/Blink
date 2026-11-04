@@ -221,6 +221,7 @@ impl Function {
                 Origin::Data(id)=>function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
                 Origin::Parameter(id)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
                 Origin::Element{parent,fields}=>Borrow::element(external(function,*parent),fields),
+                Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent),fields),
                 Origin::Position(origin)=>origin.resources(),
                 Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
             }).guards_at_call(&parameters)
@@ -236,6 +237,7 @@ impl Function {
             borrow.map_sources(|source|match source {
                 Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))=>Borrow::default(),
                 Origin::Element{parent,fields}=>Borrow::element(inputs(&parent,function),fields),
+                Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function),fields),
                 Origin::Position(origin)=>origin.map_borrows(|borrow|inputs(borrow,function)).normalize(),
                 source=>Borrow::source(source),
             })
@@ -296,7 +298,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
         let mut loops=BTreeSet::new();let mut calls=BTreeSet::new();
         while let Some(borrow)=roots.pop() {
             for source in &borrow.sources {
-                if let Origin::Element{parent,..}=source{roots.push(parent.as_ref().clone());}
+                if let Origin::Element{parent,..}|Origin::Projection{parent,..}=source{roots.push(parent.as_ref().clone());}
                 if let Origin::Position(origin)=source {
                     match &origin.root {address::Root::Resource(borrow)|address::Root::Derived(borrow)=>roots.push(borrow.clone()),_=>{}}
                 }
@@ -313,6 +315,7 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
     for(source,when)in borrow.sources.entries() {
         let resolved=match source {
             Origin::Element{parent,fields}=>Borrow::element(evaluate(parent,function,state,known,expand_loops),fields.clone()),
+            Origin::Projection{parent,fields}=>Borrow::projection(evaluate(parent,function,state,known,expand_loops),fields.clone()),
             Origin::Position(origin)=>origin.map_borrows(|root|evaluate(root,function,state,known,expand_loops)).normalize(),
             source=>Borrow::source(source.clone()),
         };
@@ -338,6 +341,7 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
         }
         Origin::Parameter(id)=>Borrow::source(function.parameters.get(&id).copied().map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
         Origin::Element{parent,fields}=>Borrow::element(canonical(*parent,function,None,exposed),fields),
+        Origin::Projection{parent,fields}=>Borrow::projection(canonical(*parent,function,None,exposed),fields),
         Origin::Position(origin)=>{
             let mut value=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,exposed));
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {

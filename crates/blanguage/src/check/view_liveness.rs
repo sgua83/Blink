@@ -535,6 +535,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
             view::Source::Data(ValueIdentity::ElementComponent(_)) if depth.is_some()=>view::Borrow::default(),
             view::Source::Data(ValueIdentity::ElementParent(parent,_)) if depth.is_some_and(|depth|parent<depth)=>view::Borrow::default(),
             view::Source::Element{parent,fields}=>view::Borrow::element(external(*parent,depth),fields),
+            view::Source::Projection{parent,fields}=>view::Borrow::projection(external(*parent,depth),fields),
             source=>view::Borrow::source(source),
         })
     }
