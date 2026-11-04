@@ -1576,18 +1576,22 @@ impl Builder<'_> {
         Ok(Value{ty,regs:vec![root.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None})
     }
     pub(super) fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
-        let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::new(InstKind::Cast{dst,src}));dst};
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetOffsetAddress,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
+        let cast=|builder:&mut Self,src|{let dst=builder.reg(Scalar::U64);builder.code.push(Inst::generated(InstKind::Cast{dst,src},origin.clone()));dst};
         let low=cast(self,address[0]);let high=cast(self,address[1]);
-        let width=self.constant(Scalar::U64,32).regs[0];
-        let shifted=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:shifted,op:BinaryOp::ShiftLeft,a:high,b:width});
-        let base=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:base,op:BinaryOp::Or,a:low,b:shifted});
+        let width=self.constant_with_origin(Scalar::U64,32,Some(origin.clone())).regs[0];
+        let shifted=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:shifted,op:BinaryOp::ShiftLeft,a:high,b:width},origin.clone()));
+        let base=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:base,op:BinaryOp::Or,a:low,b:shifted},origin.clone()));
         let index=cast(self,index);let stride=cast(self,stride);let offset=cast(self,offset);
-        let scaled=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:scaled,op:BinaryOp::IMul,a:index,b:stride});
-        let at=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:at,op:BinaryOp::IAdd,a:scaled,b:offset});
-        let pointer=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:pointer,op:BinaryOp::IAdd,a:base,b:at});
-        let high=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:pointer,b:width});
+        let scaled=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:scaled,op:BinaryOp::IMul,a:index,b:stride},origin.clone()));
+        let at=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:at,op:BinaryOp::IAdd,a:scaled,b:offset},origin.clone()));
+        let pointer=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:pointer,op:BinaryOp::IAdd,a:base,b:at},origin.clone()));
+        let high=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:pointer,b:width},origin.clone()));
         let result=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
-        self.emit(InstKind::Cast{dst:result[0],src:pointer});self.emit(InstKind::Cast{dst:result[1],src:high});result
+        self.code.push(Inst::generated(InstKind::Cast{dst:result[0],src:pointer},origin.clone()));self.code.push(Inst::generated(InstKind::Cast{dst:result[1],src:high},origin));result
     }
     pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:&[(Scalar,u32)],span:Span)->Result<([Reg;2],Reg,u32)>{
         if self.registers[handle] == Scalar::U64 {

@@ -366,6 +366,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetAddress | dataset_address | 原Frame地址请求的bytes常量及实际address Call |
 | DatasetStorageAddress | dataset_storage_address | 原资源句柄进入地址型借用ABI的storage_address Call |
 | DatasetRootAddress | dataset_root_address | 原U64根拆分或句柄地址请求的表示准备指令 |
+| DatasetOffsetAddress | dataset_offset_address | 原双字地址与索引／步长／字段偏移的寻址准备指令 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -500,6 +501,14 @@ application_root_address为同一原根地址保留两条真实路径：U64根�
 原CPU位置检查、根表示选择、64位位型、寄存器和返回地址保持；不新增寻址、转换、检查或运行调用。寄存器分配、模型和证明没有发射指令时不伪造节点。Frame地址Call及其bytes常量仍是DatasetAddress，storage_address仍是DatasetStorageAddress；后续索引乘加、字段布局、读写区及投影准备各归原叶，不能把整个地址流程统一改标根准备。常量折叠、去重及消除继续按原语义，消失的节点不补造，不为观察保活变量或冻结优化；完整变换来源及机器映射继续归原编号。
 
 材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者；本项不取得内存所有权，不增加地址权威、运行状态表、采集、Frame或释放链。静态表示转换不是实际访问成功、地址此刻有效或设备已完成的证据。见[架构](Architecture.md#tool-7-2-4-5-5-3)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-3)。
+
+#### 索引与步长寻址的生成来源
+
+offset_application_address仍消费原双U32地址、index、stride及offset，经原拓宽、拼接、乘加和再拆分交回同一双U32有效地址；仅该实际生产者的Constant／Cast／Binary共享DatasetOffsetAddress，JSON reason为dataset_offset_address。source_site为空，可选Syntax触发直接借用原当前SourceSite，真实语法种类、范围、定义／特化实例及inlined_at／domain_path保持，未知为null；不从根定义或邻近行猜位置。
+
+原拓宽闭包曾直接Inst::new而未保存source_site，这不表示实际Builder上下文未知；当前已知触发沿同一生产者交接，缺失仍明确缺失。原宽度、地址位型、算术顺序、寄存器与返回保持，index／stride／offset的数值及单位仍由原调用者交付；不重算布局、不扩大权限、不增加算术、索引检查、地址表或运行链。根地址准备、Frame地址请求、存储地址查询及真实ViewLoad／StoreIndexed各保持自己的生成或源码职责，不能把整个访问流程统一改标寻址。
+
+原常量折叠、去重和消除继续按实际语义；没有保留的节点不补造，不为观察保活变量或冻结优化，完整变换来源与机器映射继续归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储，不增加Frame、采集或释放链。静态地址算术不证明实际访问、地址有效或设备完成。见[架构](Architecture.md#tool-7-2-4-5-5-4)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-4)。
 
 #### 集合值核的入口与捕获来源
 
