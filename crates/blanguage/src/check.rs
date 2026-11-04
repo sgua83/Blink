@@ -324,7 +324,8 @@ pub(crate) fn compile_program(
     world: &World,
     instance: &crate::generics::Instance,
 ) -> Result<Program> {
-    let expanded = expand_domain(world, instance)?;
+    let mut functions = native_function::Module::default();
+    let expanded = expand_domain(world, instance, &mut functions)?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
             instance.definition.function.span,
@@ -332,9 +333,9 @@ pub(crate) fn compile_program(
             "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
         );
     }
-    Ok(expanded.program)
+    native_function::finish_program(functions, expanded.program)
 }
-fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<ExpandedDomain> {
+fn expand_domain(world: &World, instance: &crate::generics::Instance, functions: &mut native_function::Module) -> Result<ExpandedDomain> {
     let name = &instance.name;
     let d = &instance.definition;
     if !kernel_interface(world, d)? {
@@ -449,6 +450,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         uniform_bytes: offset,
         source_stages: 0,
         stages: Vec::new(),
+        functions: Arc::from([]),
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
@@ -467,6 +469,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance) -> Result<
         &mut facts,
         &mut calls,
         instance.definition.syntax_context(Some(&instance.name)).1.domain_path.clone(),
+        functions,
     )?;
     program.source_stages = program.stages.len();
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs })
@@ -481,6 +484,7 @@ fn expand_program(
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
     domain_path: Arc<[DomainSite]>,
+    functions: &mut native_function::Module,
 ) -> Result<()> {
     let d = &instance.definition;
     let key = format!("{}::{}", d.module, d.function.name);
@@ -504,6 +508,7 @@ fn expand_program(
         facts,
         calls,
         &domain_path,
+        functions,
     )?;
     for contract in d
         .function
@@ -539,6 +544,7 @@ fn expand_stages(
     facts: &mut prefix::Facts,
     calls: &mut Vec<DomainCall>,
     domain_path: &Arc<[DomainSite]>,
+    functions: &mut native_function::Module,
 ) -> Result<bool> {
     let d = &instance.definition;
     for statement in body {
@@ -570,7 +576,7 @@ fn expand_stages(
                 }
                 let selected = if words[0] == 0 { no } else { yes };
                 let mut child = env.clone();
-                if expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls, domain_path)? {
+                if expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls, domain_path, functions)? {
                     return Ok(true);
                 }
                 first_stage = program.stages.len();
@@ -602,7 +608,7 @@ fn expand_stages(
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)]),
                     );
                     if expand_stages(
-                        world, instance, body, &mut child, program, stack, boundary, facts, calls, domain_path,
+                        world, instance, body, &mut child, program, stack, boundary, facts, calls, domain_path, functions,
                     )? {
                         return Ok(true);
                     }
@@ -652,6 +658,7 @@ fn expand_stages(
                     .transpose()?;
                 let mut b = Builder::new(world, d, program, *domain, Some(&instance.name))?;
                 b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
+                b.functions = std::mem::take(functions);
                 b.roots(env);
                 let operation_source = operation_source(instance, statement.span, SourceSyntax::Statement, domain_path);
                 let index = b.reg(Scalar::U32);
@@ -739,7 +746,7 @@ fn expand_stages(
                 }
                 let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
                     .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
-                let imports = std::mem::take(&mut b.functions).into_imports();
+                *functions = std::mem::take(&mut b.functions);
                 let stage = Stage {
                     domain: *domain,
                     prefix,
@@ -763,7 +770,6 @@ fn expand_stages(
                 for relation in appended {
                     facts.grant(relation);
                 }
-                program.imports.extend(imports);
                 program.stages.push(stage);
             }
             StmtKind::Expr(Expr {
@@ -835,6 +841,7 @@ fn expand_stages(
                             name.ends_with("_map"),
                             kind,
                             domain_path.clone(),
+                            functions,
                             operation_source(instance, *call_span, SourceSyntax::Expression, domain_path),
                         )?;
                         *boundary = false;
@@ -1115,7 +1122,7 @@ fn expand_stages(
                 } else {
                     facts.enter(&required);
                     expand_program(
-                        world, &instance, &mut child, program, stack, boundary, facts, calls, child_path,
+                        world, &instance, &mut child, program, stack, boundary, facts, calls, child_path, functions,
                     )?;
                     facts.leave();
                 }
@@ -1408,6 +1415,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
         uniforms: Vec::new(),
         source_stages: 0,
         stages: Vec::new(),
+        functions: Arc::from([]),
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };

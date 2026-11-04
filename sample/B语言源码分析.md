@@ -577,7 +577,7 @@ pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::c
     } else {
         let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
         let layout = image.program().compiler_output_bytes();
-        let (_, stages) = image.into_parts();
+        let (_, stages, callees) = image.into_parts();
         let mut entry = |code: crate::native::NativeCode| {
             let index = functions.len();
             let name = format!("__blink_range_{prefix}_{index}");
@@ -1300,7 +1300,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3886`。
+源码节选：`crates/blanguage/src/check.rs:3894`。
 
 ```rust
         let binding = view.binding;
@@ -1417,7 +1417,7 @@ pub(super) enum Access {
 }
 ```
 
-参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，普通write／inout实例独占位置继续见原Issues。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame在原程序槽绑定入口并执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。源码CPU范围当前仍展开本地普通函数，递归调用会报B160，未实现范围见Issues C-027.35.4.2.2.6；无提供者源码的对象／归档递归普通函数调用已原生验证。这是源码调用降低的缺口，不作为CPU通用能力的永久边界。对象编码为现行BLCO51，执行资源编码为BLRI26。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，普通write／inout实例独占位置继续见原Issues。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame在原程序槽绑定入口并执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。CPU范围的源码非递归调用继续按原语义内联，自递归／互递归回边沿原普通CPU声明和实际参数生成原生Call；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。无Frame范围只调用实际无需Frame的闭包；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录。对象编码为现行BLCO51，执行资源编码为BLRI27。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -1691,7 +1691,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:456`。
+源码节选：`crates/blanguage/src/check.rs:458`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1708,6 +1708,7 @@ pub struct Stage {
         &mut facts,
         &mut calls,
         instance.definition.syntax_context(Some(&instance.name)).1.domain_path.clone(),
+        functions,
     )?;
     program.source_stages = program.stages.len();
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs })
@@ -2039,7 +2040,7 @@ pub struct NativeCode {
 
 编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
 
-这些观察事实不进入BLRI26执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入BLRI27执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 
@@ -2097,7 +2098,7 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 算法DLL中的CPU入口由原COFF链接进最终PE。Windows加载器完成代码、依赖和展开节的装入，CpuProgram只借用匹配范围ABI的地址；销毁一个程序不释放整个DLL的代码。宿主须保持DLL及其依赖，直到最后一个真实CPU工作和程序消费者结束，随后才可卸载。
 
-源码节选：`crates/blcompute/src/cpu.rs:484`。
+源码节选：`crates/blcompute/src/cpu.rs:498`。
 
 ```rust
     /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
@@ -2113,29 +2114,41 @@ native/packet.rs为能够表达的直线计算及批次内统一的结构化分�
 
 SDK直接装入CPU映像时，代码尚未属于已链接PE，下面的VM装入仍由原执行框架负责。两种来源共用实际阶段与调度表示，代码各自归其真实所有者。
 
-源码节选：`crates/blcompute/src/cpu.rs:269`。
+源码节选：`crates/blcompute/src/cpu.rs:271`。
 
 ```rust
-        let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
-        let end = u32::try_from(code.function_end)?;
-        let table_offset = (unwind as usize + code.unwind.len()).div_ceil(4) * 4;
-        let size = table_offset + std::mem::size_of::<RuntimeFunction>();
-        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
-        if address.is_null() {
-            return Err(std::io::Error::last_os_error().into());
+        let codes = image.code().collect::<Vec<_>>();
+        if codes.is_empty() { return Ok((None, std::collections::BTreeMap::new())); }
+        let mut size = 0usize;
+        let mut layout = Vec::with_capacity(codes.len());
+        for code in &codes {
+            let begin = u32::try_from(size.div_ceil(16) * 16)?;
+            let unwind = u32::try_from((begin as usize + code.bytes.len()).div_ceil(4) * 4)?;
+            size = unwind as usize + code.unwind.len();
+            layout.push((begin, unwind));
         }
-        let mut allocation = Allocation { address, functions: None, _libraries: Vec::new() };
+        let table_offset = size.div_ceil(4) * 4;
+        let count = u32::try_from(codes.len())?;
+        size = table_offset + codes.len() * std::mem::size_of::<RuntimeFunction>();
+        let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
+        if address.is_null() { return Err(std::io::Error::last_os_error().into()); }
+        let mut allocation = Self { address, functions: None, _libraries: Vec::new() };
         let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
-        unsafe {
-            std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
-            std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
-            std::ptr::write(table, RuntimeFunction { begin: 0, end, unwind });
+        let mut addresses = std::collections::BTreeMap::new();
+        for (index, (code, &(begin, unwind))) in codes.iter().zip(&layout).enumerate() {
+            let entry = unsafe { address.cast::<u8>().add(begin as usize) };
+            addresses.insert(*code as *const _ as usize, entry.cast::<c_void>());
+            unsafe {
+                std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), entry, code.bytes.len());
+                std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
+                std::ptr::write(table.add(index), RuntimeFunction { begin, end: begin + u32::try_from(code.function_end)?, unwind });
+            }
         }
 ```
 
 SDK的这次VM分配从创建起由Executable中的Allocation持有。指令、四字节对齐的展开字节和RuntimeFunction表放在同一次分配中；表中的起点、末端和展开位置相对这份内存。原映像只被借用，解析后的地址写入本次实际分配；Library持有本次装入的DLL引用。已链接算法入口没有这份Allocation，其代码归所属DLL。
 
-源码节选：`crates/blcompute/src/cpu.rs:315`。
+源码节选：`crates/blcompute/src/cpu.rs:329`。
 
 ```rust
         allocation._libraries = libraries.into_values().collect();
@@ -2144,15 +2157,15 @@ SDK的这次VM分配从创建起由Executable中的Allocation持有。指令、�
             if VirtualProtect(address, size, 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            if FlushInstructionCache(GetCurrentProcess(), address, code.bytes.len()) == 0 {
+            if FlushInstructionCache(GetCurrentProcess(), address, size) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        if unsafe { RtlAddFunctionTable(table, 1, address as u64) } == 0 {
+        if unsafe { RtlAddFunctionTable(table, count, address as u64) } == 0 {
             return Err(error("Windows未接受CPU代码的原生展开信息"));
         }
         allocation.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
-        Ok(Self { address, _allocation: Some(allocation) })
+        Ok((Some(std::sync::Arc::new(allocation)), addresses))
     }
 }
 impl Drop for Allocation {

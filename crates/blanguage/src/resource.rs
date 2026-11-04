@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x1a\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x1b\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -85,7 +85,7 @@ pub(crate) fn compile( resources: &crate::application::Resources, worker: &crate
         let mut plan = ExecutionPlan::from_program(program);
         if *target == Target::Cpu {
             let stages: Vec<_> = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
-            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages) };
+            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new()) };
             Image::Cpu(image.map_code(|entry| { let index = code.len(); code.push(entry); index }))
         } else {
             let stages = plan.stages.iter_mut().map(|stage| {
@@ -166,13 +166,15 @@ impl<P, C: Encode> Encode for native::ProgramImage<P, C> {
     fn encode(&self, writer: &mut Writer) {
         self.program().encode(writer);
         self.stages().encode(writer);
+        self.functions().encode(writer);
     }
 }
 impl<P, C: Decode> Decode for native::ProgramImage<P, C> {
     fn decode(reader: &mut Reader<'_>) -> codec::Result<Self> {
         let program = ExecutionPlan::decode(reader)?;
         let stages = Vec::<native::StageCode<C>>::decode(reader)?;
-        Ok(unsafe { Self::from_compiler_output(program, stages) })
+        let functions = Vec::<(String, C)>::decode(reader)?;
+        Ok(unsafe { Self::from_compiler_output(program, stages, functions) })
     }
 }
 impl<P> Encode for spirv::ProgramImage<P> {

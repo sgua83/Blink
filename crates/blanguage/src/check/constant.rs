@@ -82,6 +82,7 @@ Program {
             uniform_bytes: 0,
             source_stages: 0,
             stages: Vec::new(),
+        functions: std::sync::Arc::from([]),
             prefix_requirements: Vec::new(),
             prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
         }

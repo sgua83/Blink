@@ -83,11 +83,14 @@ fn single(kind: &str, code: &NativeCode) -> Result<String> {
     Ok(object(&[("kind", text(kind)), ("code", code.code_json(0)?)]))
 }
 impl<P> ProgramImage<P> {
-    /// Observes all existing stage images without recompiling or loading executable memory.
+    /// Observes all existing stage and named function images without recompiling or loading executable memory.
     pub fn code_json(&self) -> Result<String> {
         use crate::ir::ProgramInterface;
         Ok(object(&[("kind", text("native_program_image")), ("program", text(self.program().name())),
             ("address_basis", text("each_image_relative")),
-            ("stages", array(self.stages().iter().map(StageCode::code_json).collect::<Result<Vec<_>>>()?))]))
+            ("stages", array(self.stages().iter().map(StageCode::code_json).collect::<Result<Vec<_>>>()?)),
+            ("functions", array(self.functions().iter().map(|(name, code)| {
+                Ok(object(&[("name", text(name)), ("code", code.code_json(0)?)]))
+            }).collect::<Result<Vec<_>>>()?))]))
     }
 }

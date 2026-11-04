@@ -184,9 +184,9 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
             // 同一编译映像的空前置合同；不构造IR或重新生成机器码。
             programs.push(match image {
                 resource::Image::Cpu(image) => {
-                    let (plan, code) = image.into_parts();
+                    let (plan, code, functions) = image.into_parts();
                     resource::Image::Cpu(unsafe {
-                        crate::native::ProgramImage::from_compiler_output(plan, code)
+                        crate::native::ProgramImage::from_compiler_output(plan, code, functions)
                     })
                 }
                 resource::Image::Gpu(image) => {

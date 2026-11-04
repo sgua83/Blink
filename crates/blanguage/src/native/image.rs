@@ -97,6 +97,7 @@ pub struct ProgramImage<P, C = NativeCode> {
     program: ExecutionPlan,
     marker: std::marker::PhantomData<fn() -> P>,
     stages: Vec<StageCode<C>>,
+    functions: Vec<(String, C)>,
 }
 impl<P, C> ProgramImage<P, C> {
     /// 恢复本版本编译器输出的原生代码与执行布局。
@@ -105,10 +106,11 @@ impl<P, C> ProgramImage<P, C> {
     /// 必须来自本版本编译器的同一个P入口，携带完整机器码／重定位或同源原生代码绑定、
     /// 入口 ABI、调度及前缀关系；不得由宿主输入构造或伪造条件模板的证明。
     #[doc(hidden)]
-    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode<C>>) -> Self {
+    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode<C>>, functions: Vec<(String, C)>) -> Self {
         Self {
             program,
             stages,
+            functions,
             marker: std::marker::PhantomData,
         }
     }
@@ -118,8 +120,26 @@ impl<P, C> ProgramImage<P, C> {
     pub fn stages(&self) -> &[StageCode<C>] {
         &self.stages
     }
-    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>) {
-        (self.program, self.stages)
+    pub fn functions(&self) -> &[(String, C)] { &self.functions }
+    pub fn code(&self) -> impl Iterator<Item = &C> {
+        self.stages.iter().flat_map(|stage| {
+            let (initialize, entries): (&[C], [Option<&C>; 3]) = match stage {
+                StageCode::Sort(code) => (&code.initialize, [Some(&code.histogram), Some(&code.scatter), Some(&code.gather)]),
+                StageCode::Element { main, continuation, .. } => {
+                    let (first, second) = match continuation {
+                        None => (None, None),
+                        Some(ContinuationCode::ReductionTail(code) | ContinuationCode::ScanAdd(code)
+                            | ContinuationCode::CompactScatter(code) | ContinuationCode::SegmentedFinish(code)) => (Some(code), None),
+                        Some(ContinuationCode::Scan { prefix, apply, .. }) => (Some(prefix), Some(apply)),
+                    };
+                    (&[], [Some(main), first, second])
+                }
+            };
+            initialize.iter().chain(entries.into_iter().flatten())
+        }).chain(self.functions.iter().map(|(_, code)| code))
+    }
+    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode<C>>, Vec<(String, C)>) {
+        (self.program, self.stages, self.functions)
     }
 
     /// 同一编译映像只改变代码引用的表示；执行布局及入口类别保持。
@@ -143,7 +163,8 @@ impl<P, C> ProgramImage<P, C> {
                 histogram: code(c.histogram), scatter: code(c.scatter), gather: code(c.gather),
             }),
         }).collect();
-        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages }
+        let functions = self.functions.into_iter().map(|(name, function)| (name, code(function))).collect();
+        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages, functions }
     }
 
 }
@@ -165,7 +186,21 @@ pub enum RegionKind {
 
 #[cfg(feature = "compiler")]
 impl<P> ProgramImage<P> {
-    pub(crate) fn stages_mut(&mut self) -> &mut [StageCode] {
-        &mut self.stages
+    pub(crate) fn code_mut(&mut self) -> impl Iterator<Item = &mut NativeCode> {
+        self.stages.iter_mut().flat_map(|stage| {
+            let (initialize, entries): (&mut [NativeCode], [Option<&mut NativeCode>; 3]) = match stage {
+                StageCode::Sort(code) => (&mut code.initialize, [Some(&mut code.histogram), Some(&mut code.scatter), Some(&mut code.gather)]),
+                StageCode::Element { main, continuation, .. } => {
+                    let (first, second) = match continuation {
+                        None => (None, None),
+                        Some(ContinuationCode::ReductionTail(code) | ContinuationCode::ScanAdd(code)
+                            | ContinuationCode::CompactScatter(code) | ContinuationCode::SegmentedFinish(code)) => (Some(code), None),
+                        Some(ContinuationCode::Scan { prefix, apply, .. }) => (Some(prefix), Some(apply)),
+                    };
+                    (std::slice::from_mut(main), [first, second, None])
+                }
+            };
+            initialize.iter_mut().chain(entries.into_iter().flatten())
+        }).chain(self.functions.iter_mut().map(|(_, code)| code))
     }
 }

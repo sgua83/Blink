@@ -12,20 +12,27 @@ fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result
     crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
         |_, index| compile_stage(program, index)).map_err(|error| error.to_string())
 }
+fn compile_functions(worker: &crate::compiler::Worker, program: &Program) -> Result<Vec<(String, NativeCode)>, String> {
+    crate::parallel::try_map(worker, program.functions.iter().collect(), |_| (), |_, function| {
+        super::emit_function(function).map(|code| (function.name.clone(), code))
+    }).map_err(|error| error.to_string())
+}
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
 ) -> Result<ProgramImage<P>, String> {
     let stages = compile_stages(worker, &program)?;
-    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages) })
+    let functions = compile_functions(worker, &program)?;
+    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages, functions) })
 }
 impl crate::Compiler {
     pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
         let source = &*program;
-        let (plan, stages) = self.execute(|worker| {
+        let (plan, stages, functions) = self.execute(|worker| {
             let stages = compile_stages(worker, source)?;
-            Ok::<_, String>((ExecutionPlan::from_program(source), stages))
+            let functions = compile_functions(worker, source)?;
+            Ok::<_, String>((ExecutionPlan::from_program(source), stages, functions))
         }).map_err(|error| error.to_string())?;
-        Ok(unsafe { ProgramImage::from_compiler_output(plan, stages) })
+        Ok(unsafe { ProgramImage::from_compiler_output(plan, stages, functions) })
     }
 }
 

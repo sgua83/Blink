@@ -423,16 +423,21 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
-        let key = instance.name;
-        let callee = &instance.definition;
-        if self.calls.contains(&key) {
-            return self.fail(span, "B160", "当前设备函数不允许递归调用");
-        }
-        if callee.function.target != Target::Compute
-            && callee.function.target != self.program.target
+        if instance.definition.function.target != Target::Compute
+            && instance.definition.function.target != self.program.target
         {
             return self.fail(span, "B161", "函数设备能力与当前程序不相容");
         }
+        if self.calls.contains(&instance.name) {
+            if self.program.target != Target::Gpu
+                && instance.definition.function.kind == FunctionKind::Value
+            {
+                return self.native_function(instance, args, span, None);
+            }
+            return self.fail(span, "B160", "当前设备函数不允许递归调用");
+        }
+        let key = instance.name;
+        let callee = &instance.definition;
         let mut env = BTreeMap::new();
         let mut borrowed = Vec::new();
         let mut data_access = Vec::new();

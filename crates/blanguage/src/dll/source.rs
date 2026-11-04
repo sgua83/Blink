@@ -10,7 +10,7 @@ pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::c
     } else {
         let image = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
         let layout = image.program().compiler_output_bytes();
-        let (_, stages) = image.into_parts();
+        let (_, stages, callees) = image.into_parts();
         let mut entry = |code: crate::native::NativeCode| {
             let index = functions.len();
             let name = format!("__blink_range_{prefix}_{index}");
@@ -46,7 +46,8 @@ pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::c
                 format!("StageCode::Sort(SortCode{{source:{},target:{},initialize:vec![{initialize}],histogram:{},scatter:{},gather:{}}})", code.source, code.target, entry(code.histogram), entry(code.scatter), entry(code.gather))
             }
         }).collect::<Vec<_>>().join(",");
-        format!("{{ use blanguage::native::{{StageCode,ContinuationCode,SortCode,RangeResult}}; LibraryProgram::Cpu(unsafe {{ CpuProgram::from_linked(NativeProgramImage::<ExecutableProgram,*const u8>::from_compiler_output(blanguage::ir::ExecutionPlan::from_compiler_output_bytes(&{layout:?})?,vec![{stages}])) }}?) }}")
+        functions.extend(callees);
+        format!("{{ use blanguage::native::{{StageCode,ContinuationCode,SortCode,RangeResult}}; LibraryProgram::Cpu(unsafe {{ CpuProgram::from_linked(NativeProgramImage::<ExecutableProgram,*const u8>::from_compiler_output(blanguage::ir::ExecutionPlan::from_compiler_output_bytes(&{layout:?})?,vec![{stages}],Vec::new())) }}?) }}")
     };
     let gpu = if p.target() == Target::Cpu {
         "return Err(std::io::Error::other(\"CPU 专属程序不能提交给 GPU\").into())".into()

@@ -145,7 +145,7 @@ pub struct CpuCodeMemory {
 }
 struct Executable {
     address: *mut c_void,
-    _allocation: Option<Allocation>,
+    _allocation: Option<std::sync::Arc<Allocation>>,
 }
 struct Allocation {
     address: *mut c_void,
@@ -265,51 +265,65 @@ impl Executable {
             kind: information.kind,
         })
     }
-    fn new(code: &blanguage::native::NativeCode) -> Result<Self> {
-        let unwind = u32::try_from(code.bytes.len().div_ceil(4) * 4)?;
-        let end = u32::try_from(code.function_end)?;
-        let table_offset = (unwind as usize + code.unwind.len()).div_ceil(4) * 4;
-        let size = table_offset + std::mem::size_of::<RuntimeFunction>();
+}
+impl Allocation {
+    fn new<P>(image: &blanguage::native::ProgramImage<P>) -> Result<(Option<std::sync::Arc<Self>>, std::collections::BTreeMap<usize, *mut c_void>)> {
+        let codes = image.code().collect::<Vec<_>>();
+        if codes.is_empty() { return Ok((None, std::collections::BTreeMap::new())); }
+        let mut size = 0usize;
+        let mut layout = Vec::with_capacity(codes.len());
+        for code in &codes {
+            let begin = u32::try_from(size.div_ceil(16) * 16)?;
+            let unwind = u32::try_from((begin as usize + code.bytes.len()).div_ceil(4) * 4)?;
+            size = unwind as usize + code.unwind.len();
+            layout.push((begin, unwind));
+        }
+        let table_offset = size.div_ceil(4) * 4;
+        let count = u32::try_from(codes.len())?;
+        size = table_offset + codes.len() * std::mem::size_of::<RuntimeFunction>();
         let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
-        if address.is_null() {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let mut allocation = Allocation { address, functions: None, _libraries: Vec::new() };
+        if address.is_null() { return Err(std::io::Error::last_os_error().into()); }
+        let mut allocation = Self { address, functions: None, _libraries: Vec::new() };
         let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
-        unsafe {
-            std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast(), code.bytes.len());
-            std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
-            std::ptr::write(table, RuntimeFunction { begin: 0, end, unwind });
-        }
-        let mut libraries = std::collections::BTreeMap::new();
-        for r in &code.relocations {
-            let ptr = match &r.target {
-                NativeSymbol::Function(name) => {
-                    return Err(error(format!("范围映像缺少所属模块函数 {name}")));
-                }
-                NativeSymbol::External(name) => {
-                    if !libraries.contains_key(&name.library) {
-                        libraries.insert(
-                            name.library.clone(),
-                            Library::load(&name.library)
-                                .map_err(|e| error(format!("加载 {} 失败：{e}", name.library)))?,
-                        );
-                    }
-                    libraries[&name.library].symbol(&name.symbol).map_err(|e| {
-                        error(format!("解析 {}!{} 失败：{e}", name.library, name.symbol))
-                    })?
-                }
-                NativeSymbol::Print(scalar) => match scalar {
-                    Scalar::U8 | Scalar::U16 | Scalar::U32 => print_u32 as *const (),
-                    Scalar::I8 | Scalar::I16 | Scalar::I32 => print_i32 as *const (),
-                    Scalar::U64 => print_u64 as *const (),
-                    Scalar::I64 => print_i64 as *const (),
-                    Scalar::Bool => print_bool as *const (),
-                    Scalar::F32 | Scalar::F64 => print_float as *const (),
-                },
-            };
+        let mut addresses = std::collections::BTreeMap::new();
+        for (index, (code, &(begin, unwind))) in codes.iter().zip(&layout).enumerate() {
+            let entry = unsafe { address.cast::<u8>().add(begin as usize) };
+            addresses.insert(*code as *const _ as usize, entry.cast::<c_void>());
             unsafe {
-                std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), address.cast::<u8>().add(r.offset), 8);
+                std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), entry, code.bytes.len());
+                std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
+                std::ptr::write(table.add(index), RuntimeFunction { begin, end: begin + u32::try_from(code.function_end)?, unwind });
+            }
+        }
+        let functions = image.functions().iter().map(|(name, code)|
+            (name.as_str(), addresses[&(code as *const _ as usize)])).collect::<std::collections::BTreeMap<_, _>>();
+        let mut libraries = std::collections::BTreeMap::new();
+        for code in codes {
+            let entry = addresses[&(code as *const _ as usize)];
+            for relocation in &code.relocations {
+                let ptr = match &relocation.target {
+                    NativeSymbol::Function(name) => *functions.get(name.as_str())
+                        .ok_or_else(|| error(format!("范围映像缺少所属模块函数 {name}")))? as *const (),
+                    NativeSymbol::External(name) => {
+                        if !libraries.contains_key(&name.library) {
+                            libraries.insert(name.library.clone(), Library::load(&name.library)
+                                .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?);
+                        }
+                        libraries[&name.library].symbol(&name.symbol).map_err(|error|
+                            crate::error(format!("解析 {}!{} 失败：{error}", name.library, name.symbol)))?
+                    }
+                    NativeSymbol::Print(scalar) => match scalar {
+                        Scalar::U8 | Scalar::U16 | Scalar::U32 => print_u32 as *const (),
+                        Scalar::I8 | Scalar::I16 | Scalar::I32 => print_i32 as *const (),
+                        Scalar::U64 => print_u64 as *const (),
+                        Scalar::I64 => print_i64 as *const (),
+                        Scalar::Bool => print_bool as *const (),
+                        Scalar::F32 | Scalar::F64 => print_float as *const (),
+                    },
+                };
+                unsafe {
+                    std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), entry.cast::<u8>().add(relocation.offset), 8);
+                }
             }
         }
         allocation._libraries = libraries.into_values().collect();
@@ -318,15 +332,15 @@ impl Executable {
             if VirtualProtect(address, size, 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            if FlushInstructionCache(GetCurrentProcess(), address, code.bytes.len()) == 0 {
+            if FlushInstructionCache(GetCurrentProcess(), address, size) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        if unsafe { RtlAddFunctionTable(table, 1, address as u64) } == 0 {
+        if unsafe { RtlAddFunctionTable(table, count, address as u64) } == 0 {
             return Err(error("Windows未接受CPU代码的原生展开信息"));
         }
         allocation.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
-        Ok(Self { address, _allocation: Some(allocation) })
+        Ok((Some(std::sync::Arc::new(allocation)), addresses))
     }
 }
 impl Drop for Allocation {
@@ -478,7 +492,7 @@ impl CpuProgram {
     }
     pub fn from_image(image: blanguage::native::ProgramImage<ExecutableProgram>) -> Result<Self> {
         Ok(Self {
-            code: CpuCode::from_image(image, &Executable::new).map_err(|(error, _)| error)?,
+            code: CpuCode::raw(image).map_err(|(error, _)| error)?,
         })
     }
     /// 借用所属原生模块的已链接代码；执行布局仍由同一编译产物交接。
@@ -526,7 +540,7 @@ impl CpuTemplate {
     }
     /// 装入失败交回原错误和同一未改映像；本调用没有执行数据。
     pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram>)> {
-        CpuCode::from_image(image, &Executable::new).map(|code| Self { code })
+        CpuCode::raw(image).map(|code| Self { code })
     }
     pub fn run(
         &self,
@@ -617,6 +631,15 @@ impl CpuCode {
         }
         Ok(result)
     }
+    fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
+        let (allocation, addresses) = match Allocation::new(&image) {
+            Ok(code) => code,
+            Err(error) => return Err((error, image)),
+        };
+        Self::from_image(image, &|code| Ok(Executable {
+            address: addresses[&(code as *const _ as usize)], _allocation: allocation.clone(),
+        }))
+    }
     fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
         Self::from_image(image, &|address| Ok(Executable {
             address: address.cast_mut().cast(), _allocation: None,
@@ -631,7 +654,7 @@ impl CpuCode {
             Ok(stages) => stages,
             Err(error) => return Err((error, image)),
         };
-        let (program, _) = image.into_parts();
+        let (program, _, _) = image.into_parts();
         Ok(Self {
             program,
             stages,

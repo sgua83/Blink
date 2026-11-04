@@ -161,7 +161,7 @@ IR结果保留原寄存器Scalar表、局部Ty及结束分量、嵌套控制流�
 
 原Emitter在主函数末端、探栈叶辅助结束、实际对齐与每项字面量写入处交接真实边界；主函数沿原function_end，不另建相同末端权威。查询借用同一NativeCode，交接完整原字节、偏移／长度和调用者声明的IP，主／辅助代码组合.5.1，字面量和对齐仅交接原字节；重定位保留原目标，不把占位值当最终地址。不从模板长度或反汇编结果猜测范围。
 
-StageCode／ContinuationCode／SortCode按实际容器逐层交接，多个独立映像的相对IP不能假称共同装载地址；普通函数同一finish亦生产范围，正式函数／节查询归.5.3。观察事实属于compiler角色，不强制进入正式BLRI执行编码；未保留的事实明确缺失，不重读源码或生成第二份代码补齐。输出独立归调用者，原代码和CPU／GPU消费者寿命不变。现有NativeCode::code_json(ip)、StageCode／ProgramImage::code_json只消费这些原事实；bc build显式导出同名.x64.json。tail_regions只在compiler角色存在，原resource编解码仍只交接执行字段，恢复值未保留观察事实时明确报缺失；不修改BLRI26或普通运行角色。规范见[生成期映像查询](BLanguage.md#生成期原生映像的范围与指令查询)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-1)。
+StageCode／ContinuationCode／SortCode按实际容器逐层交接，ProgramImage的functions另按原名称与代码交接本映像实际消费的普通callee，多个独立映像的相对IP不能假称共同装载地址；普通函数同一finish亦生产范围，正式函数／节查询归.5.3。观察事实属于compiler角色，不强制进入正式BLRI执行编码；未保留的事实明确缺失，不重读源码或生成第二份代码补齐。输出独立归调用者，原代码和CPU／GPU消费者寿命不变。现有NativeCode::code_json(ip)、StageCode／ProgramImage::code_json只消费这些原事实；bc build显式导出同名.x64.json。tail_regions只在compiler角色存在，原resource编解码仍只交接执行字段，恢复值未保留观察事实时明确报缺失；不修改BLRI27或普通运行角色。规范见[生成期映像查询](BLanguage.md#生成期原生映像的范围与指令查询)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-1)。
 
 <a id="tool-5-2-2"></a>
 
@@ -169,7 +169,7 @@ StageCode／ContinuationCode／SortCode按实际容器逐层交接，多个独�
 
 原生成结果显式保存与同一CPU代码匹配的必要范围事实，交接独立BLCR1材料；无源码装入后消费原材料，不重编或猜历史。代码、身份及材料各有原所有者与结束条件，不复制代码、图、索引或装入器。正式包不带材料仍保持原执行字节、必要ABI、重定位及原生展开；未保存或剥离后如实报告不可取得。接续.5.2.1，部署材料分离复用.70，普通COFF仍沿.5.3。
 
-现有build::Compilation与resource::Module的code_observations／restore_code_observations只交接各原CPU代码的执行字段摘要及原尾部分区；Module按原前置合同分组以对应Compilation的programs／templates，各组及原阶段／延续／Sort容器顺序保持。摘要消费原NativeCode执行编码，不含源码、SDK或工具链身份；匹配只说明同一执行编码，不证明来源、指令安全或硬件运行。数量、匹配及范围完整覆盖在任何写入前核对，成功整体交回原tail_regions，错误不部分改写。材料归调用者，无材料的缓存或部署值明确缺失，不自动重编；BLBI1／BLRI26执行编码与运行角色不消费材料，纯GPU不伪造CPU范围。
+现有build::Compilation与resource::Module的code_observations／restore_code_observations只交接各原CPU代码的执行字段摘要及原尾部分区；Module按原前置合同分组以对应Compilation的programs／templates，各组及原阶段／延续／Sort容器顺序保持，每个CPU映像随后交接functions原顺序的命名callee；捕获和恢复共用同一代码迭代。摘要消费原NativeCode执行编码，不含源码、SDK或工具链身份；匹配只说明同一执行编码，不证明来源、指令安全或硬件运行。数量、匹配及范围完整覆盖在任何写入前核对，成功整体交回原tail_regions，错误不部分改写。材料归调用者，无材料的缓存或部署值明确缺失，不自动重编；BLBI1／BLRI27执行编码与运行角色不消费材料，纯GPU不伪造CPU范围。
 
 bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_facts在Compiler初始化前沿原编解码按显式可选CPU材料恢复并调用原CPU／GPU查询，不读源码、创建驱动／执行内存或运行代码。JSON保留原programs／templates或images索引，CPU交接完整原查询，GPU交接同一ProgramImage的完整SPIR-V结构；CPU地址与GPU模块偏移各自相对，不混成装载现场；输出归调用者，不持有执行资源。SDK捕获由生成结果的真实调用方显式请求，现有bc build的JSON不冒称持久材料。规范见[保存／恢复合同](BLanguage.md#保存和恢复可选cpu范围材料)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-2)。
 
@@ -481,13 +481,13 @@ AI要在暂停现场读取参数／局部值→原Ty／IR与`native/allocation.r
 
 ##### 内存中CPU计算代码的原生栈展开
 
-Windows x64的普通函数、CPU内存范围及集合辅助入口由实际序言生产原生展开信息，NativeCode交接主函数末端与展开字节，PE／COFF和内存装入消费同一输出。原Executable在自己的VM内保存代码、展开信息及函数表，入口交付前成功登记OS表；最后真实代码消费者结束后，由同一所有者撤销登记再释放VM及DLL引用。无帧探栈叶辅助和字面量排除在主函数展开范围外。原生展开属于必要平台执行职责，剥离源码调试描述时仍须保留；静态预算、耗尽诊断、源码符号与调试控制分别沿原C-024.1.1、C-021.7.4及.10等范围建设。能力沿工具设计总原则1、2、4和原所有权／完成边界交接，实际实现与原生记录见[C-021.7.9.12](FixedIssues.md#c-021-7-9-12)。
+Windows x64的普通函数、CPU内存范围及集合辅助入口由实际序言生产原生展开信息，NativeCode交接主函数末端与展开字节，PE／COFF和内存装入消费同一输出。独立CPU映像的各范围／集合入口和命名callee共享同一Allocation，在一块VM中保存原代码、各函数展开信息及同一有序函数表；入口交付前成功登记OS表，各Executable共同持有该Allocation，最后真实代码消费者结束后撤销登记再释放VM及DLL引用。静态PE／DLL代码继续借用所属模块，不创建代码VM。无帧探栈叶辅助和字面量排除在主函数展开范围外。原生展开属于必要平台执行职责，剥离源码调试描述时仍须保留；静态预算、耗尽诊断、源码符号与调试控制分别沿原C-024.1.1、C-021.7.4及.10等范围建设。能力沿工具设计总原则1、2、4和原所有权／完成边界交接，实际实现与原生记录见[C-021.7.9.12](FixedIssues.md#c-021-7-9-12)。
 
 <a id="tool-13"></a>
 
 ##### CPU实际装载地址与对应产物查询
 
-AI在运行地址处需要确定实际代码→`cpu.rs::Executable／Library／Executable::new`的真实VM及重定位→查询。 交接原代码对象的实际范围、符号／重定位绑定及对应产物；不把最新源码或软件VERSION代替正在执行代码。依赖.5／.9，不宣称C-023热更新已实现。 操作限定实际装载目标及停止／读取范围，代码、线程和存储继续归原所有者；结果或断点有效期结束不延长目标执行寿命，不隐式暂停其他消费者。 本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应未完成范围：[C-021.7.9.13](Issues.md#c-021-7-9-13)。
+AI在运行地址处需要确定实际代码→`cpu.rs::Executable／Library／Allocation::new／CpuCode::raw`的真实VM及重定位→查询。 交接原代码对象的实际范围、符号／重定位绑定及对应产物；不把最新源码或软件VERSION代替正在执行代码。依赖.5／.9，不宣称C-023热更新已实现。 操作限定实际装载目标及停止／读取范围，代码、线程和存储继续归原所有者；结果或断点有效期结束不延长目标执行寿命，不隐式暂停其他消费者。 本能力沿工具设计总原则1、2、4及所涉及的效果／发布边界交付，不能改变原所有权、实际代码或完成语义。对应未完成范围：[C-021.7.9.13](Issues.md#c-021-7-9-13)。
 
 <a id="tool-14"></a>
 
@@ -1094,7 +1094,7 @@ build::Unit、UnitKind、Dependency 和 Compiler::build_graph／build::compile_g
 
 算法DLL与B应用模块的CPU范围及集合入口均编入所属对象的COFF代码节、符号和Windows展开信息；原链接器完成普通模块、外部C接口及输出入口的重定位，原CpuCode只借用已链接地址执行同一阶段／线程调度。B应用模块工厂以C布局交接静态资源字节与已链接代码地址表；应用不再另拆blink_app支持DLL，原标准CRT入口调用同一B正文main并初始化必要平台设施；字节只保存类型、执行布局、CPU入口索引和SPIR-V，不再保存本路径CPU机器码或执行运行时复制／重定位。CPU索引编码使用标签2，独立SDK原NativeCode映像使用标签0，GPU为标签1；不能把索引映像当可独立装入的机器码。Frame只在原程序槽消费同一映像，所属PE／DLL及其代码依赖保持到最后CPU工作和程序消费者结束。独立SDK动态映像仍由原VM所有者装入。
 
-普通模块、应用和算法库对象共用已有对象／归档的模块接口来源。算法库可消费所选模块的类型与常量；CPU范围及自定义归约／扫描可按已编译合同调用无需Frame的普通CPU函数，交接实际值、聚合结果及read／write／inout／atomic位置。已闭合的导入合同直接决定真实参数，不建立应用上下文或暂存Frame参数；本地源码函数仍沿原需求闭包裁剪暂存参数。范围与集合产生的导入合并到所属Program并写入同一算法COFF，链接器在原符号选择处核对一次合同，按实际依赖抽取对象／归档成员；算法DLL将所选原COFF及附属静态库直接交给原MSVC链接，不重组其展开节、不重读同名B实现。GPU-only库无需伪造CPU入口。CPU范围可将真实read／inout来源借给普通Invocation read参数，将atomic来源借给Invocation atomic参数；字段投影保留原BufferAddress和usize stride。同根atomic别名沿原真实原子合同共享，范围inout只含当前位置权限，不能转为全dataset共享atomic；需Frame的资源操作及普通write／inout dataset实例独占借用仍待实现，GPU算法不能调用这些普通CPU符号；独立CPU／GPU入口映像仍不接受COFF导入。机器码和已编译公开接口不复制成第二权威。SDK 和受管工具链由安装所有者保持一致；任意并发改写 Rust SDK／外部工具的固定输入与域内分发尚未实现。普通dataset函数的实际载荷访问沿原Dataset闭合合同交接字段、元素下标、成立条件、真实Read／Write／InOut及atomic操作属性；atomic_load、atomic_store和读改写分别保留实际读写方向。普通赋值、动态数组和嵌套已编译调用沿原Place／Origin及同一合同投影，数组候选保留真实下标选择条件。参数的read／write／inout／atomic许可、CPU驻留和只取length不代替载荷效果。已编译调用的真实写区进入原地址副作用消费者；CPU范围的原memory_regions按实际普通共享读取与写区比较，B166、分离字段和当前位置规则保持，atomic别名仍表达共享操作。原Frame地址入口同时交接每元素写字节、实际stride与count；普通write／inout范围位置仍按未完成能力记录；实际写字节归原Stage.write_regions，由原Map位置／调用效果、atomic实际Place和各collective的目标字段／标量直接交接；原writes绑定列表仍只承担阶段依赖。所属ExecutionPlan只组合本次实际编译单元的阶段范围到原ProgramLayout.write_regions，拆分子域单元时不带入其他单元的写入；不回扫IR、不复制图或新建运行状态。Frame／CpuProgram及GPU提交沿原bindings::invalidate撤回与Count四字节真正重叠的关系，投影叠加实际offset；未写兄弟字段和纯length保持。编译期原prefix::Facts消费本次实际操作范围；源码展开不再按声明重复撤回，已编译子域沿同一导出合同和原DomainCall交接实际参数范围，再按原保证更新事实。原模块合同只持此函数的闭合效果，资源、scope与完成仍各归原所有者。Invocation atomic的真实地址参数由原范围或Frame资源借出，原Frame调用的实际可能写字段沿已闭合Dataset合同交接到原地址入口；普通write／inout实例独占位置仍沿Issues独占子项实现。上述编译引用在finalize消费后删除，不进入普通函数机器参数或执行映像。CPU范围的已编译普通函数代码由所属算法或B应用模块COFF交接，原静态链接统一选择真实提供者；有资源的B应用将原代码、运行库和资源绑定一次链接到同一EXE，Frame不重新查找普通函数。源码CPU范围当前仍展开本地普通函数，递归调用会报B160，未实现范围见Issues C-027.35.4.2.2.6；无提供者源码的对象／归档递归普通函数调用已原生验证。这是源码调用降低的缺口，不作为CPU通用能力的永久边界。
+普通模块、应用和算法库对象共用已有对象／归档的模块接口来源。算法库可消费所选模块的类型与常量；CPU范围及自定义归约／扫描可按已编译合同调用无需Frame的普通CPU函数，交接实际值、聚合结果及read／write／inout／atomic位置。已闭合的导入合同直接决定真实参数，不建立应用上下文或暂存Frame参数；本地源码函数仍沿原需求闭包裁剪暂存参数。范围与集合产生的导入合并到所属Program并写入同一算法COFF，链接器在原符号选择处核对一次合同，按实际依赖抽取对象／归档成员；算法DLL将所选原COFF及附属静态库直接交给原MSVC链接，不重组其展开节、不重读同名B实现。GPU-only库无需伪造CPU入口。CPU范围可将真实read／inout来源借给普通Invocation read参数，将atomic来源借给Invocation atomic参数；字段投影保留原BufferAddress和usize stride。同根atomic别名沿原真实原子合同共享，范围inout只含当前位置权限，不能转为全dataset共享atomic；需Frame的资源操作及普通write／inout dataset实例独占借用仍待实现，GPU算法不能调用这些普通CPU符号；独立CPU／GPU入口映像仍不接受COFF导入。机器码和已编译公开接口不复制成第二权威。SDK 和受管工具链由安装所有者保持一致；任意并发改写 Rust SDK／外部工具的固定输入与域内分发尚未实现。普通dataset函数的实际载荷访问沿原Dataset闭合合同交接字段、元素下标、成立条件、真实Read／Write／InOut及atomic操作属性；atomic_load、atomic_store和读改写分别保留实际读写方向。普通赋值、动态数组和嵌套已编译调用沿原Place／Origin及同一合同投影，数组候选保留真实下标选择条件。参数的read／write／inout／atomic许可、CPU驻留和只取length不代替载荷效果。已编译调用的真实写区进入原地址副作用消费者；CPU范围的原memory_regions按实际普通共享读取与写区比较，B166、分离字段和当前位置规则保持，atomic别名仍表达共享操作。原Frame地址入口同时交接每元素写字节、实际stride与count；普通write／inout范围位置仍按未完成能力记录；实际写字节归原Stage.write_regions，由原Map位置／调用效果、atomic实际Place和各collective的目标字段／标量直接交接；原writes绑定列表仍只承担阶段依赖。所属ExecutionPlan只组合本次实际编译单元的阶段范围到原ProgramLayout.write_regions，拆分子域单元时不带入其他单元的写入；不回扫IR、不复制图或新建运行状态。Frame／CpuProgram及GPU提交沿原bindings::invalidate撤回与Count四字节真正重叠的关系，投影叠加实际offset；未写兄弟字段和纯length保持。编译期原prefix::Facts消费本次实际操作范围；源码展开不再按声明重复撤回，已编译子域沿同一导出合同和原DomainCall交接实际参数范围，再按原保证更新事实。原模块合同只持此函数的闭合效果，资源、scope与完成仍各归原所有者。Invocation atomic的真实地址参数由原范围或Frame资源借出，原Frame调用的实际可能写字段沿已闭合Dataset合同交接到原地址入口；普通write／inout实例独占位置仍沿Issues独占子项实现。上述编译引用在finalize消费后删除，不进入普通函数机器参数或执行映像。CPU范围的已编译普通函数代码由所属算法或B应用模块COFF交接，原静态链接统一选择真实提供者；有资源的B应用将原代码、运行库和资源绑定一次链接到同一EXE，Frame不重新查找普通函数。CPU范围的源码非递归调用继续按原语义内联，自递归／互递归回边沿原普通CPU声明和实际参数生成原生Call；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。无Frame范围只调用实际无需Frame的闭包；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录。
 
 BLEngine 的 viewer、editor、资产和执行准备在实际可独立的工作之间共享 Compiler。编译 worker 只返回编译数据；设备、Rc 资源、窗口及最终输出归原线程和产品所有者。最终产物不携带编译会话；真实资源初始化依赖不能因追求并行而拆开。
 

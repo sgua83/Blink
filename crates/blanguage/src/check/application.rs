@@ -354,6 +354,7 @@ pub(crate) fn compile_application(
         uniform_bytes: 0,
         source_stages: 0,
         stages: Vec::new(),
+        functions: std::sync::Arc::from([]),
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
@@ -385,7 +386,7 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         *frame = std::mem::take(&mut body.inputs);
     }
-    let finalized = native_function::finish(builder.functions, &mut body, &builder.view_model)?;
+    let finalized = native_function::finish(builder.functions, &mut body, &builder.view_model, &mut app.resources)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app, &entry_anchor);

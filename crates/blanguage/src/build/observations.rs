@@ -1,6 +1,6 @@
 //! Optional CPU range material. Execution codecs and runtime owners do not consume it.
 use super::{Compilation, Result, hash};
-use crate::{native::{ContinuationCode, NativeCode, Region, RegionKind, StageCode}, resource};
+use crate::{native::{NativeCode, Region, RegionKind}, resource};
 use crate::codec::{Decode, Encode, record, variants};
 use std::path::Path;
 
@@ -17,43 +17,13 @@ record!(Observations { codes });
 variants!(RegionKind { 0=>StackProbe, 1=>Alignment, 2=>Literal });
 record!(Region { end, kind });
 
-fn codes(stage: &StageCode) -> impl Iterator<Item = &NativeCode> {
-    let (first, rest): (&[NativeCode], [Option<&NativeCode>; 3]) = match stage {
-        StageCode::Element { main, continuation, .. } => {
-            let rest = match continuation {
-                None => [None, None, None],
-                Some(ContinuationCode::ReductionTail(code) | ContinuationCode::ScanAdd(code)
-                    | ContinuationCode::CompactScatter(code) | ContinuationCode::SegmentedFinish(code)) => [Some(code), None, None],
-                Some(ContinuationCode::Scan { prefix, apply, .. }) => [Some(prefix), Some(apply), None],
-            };
-            (std::slice::from_ref(main), rest)
-        }
-        StageCode::Sort(code) => (&code.initialize, [Some(&code.histogram), Some(&code.scatter), Some(&code.gather)]),
-    };
-    first.iter().chain(rest.into_iter().flatten())
-}
-fn codes_mut(stage: &mut StageCode) -> impl Iterator<Item = &mut NativeCode> {
-    let (first, rest): (&mut [NativeCode], [Option<&mut NativeCode>; 3]) = match stage {
-        StageCode::Element { main, continuation, .. } => {
-            let rest = match continuation {
-                None => [None, None, None],
-                Some(ContinuationCode::ReductionTail(code) | ContinuationCode::ScanAdd(code)
-                    | ContinuationCode::CompactScatter(code) | ContinuationCode::SegmentedFinish(code)) => [Some(code), None, None],
-                Some(ContinuationCode::Scan { prefix, apply, .. }) => [Some(prefix), Some(apply), None],
-            };
-            (std::slice::from_mut(main), rest)
-        }
-        StageCode::Sort(code) => (&mut code.initialize, [Some(&mut code.histogram), Some(&mut code.scatter), Some(&mut code.gather)]),
-    };
-    first.iter_mut().chain(rest.into_iter().flatten())
-}
 fn image_codes<P>(image: &resource::Image<P>) -> impl Iterator<Item = &NativeCode> {
-    let stages = match image { resource::Image::Cpu(image) => image.stages(), resource::Image::Gpu(_) => &[] };
-    stages.iter().flat_map(codes)
+    let cpu = match image { resource::Image::Cpu(image) => Some(image), resource::Image::Gpu(_) => None };
+    cpu.into_iter().flat_map(crate::native::ProgramImage::code)
 }
 fn image_codes_mut<P>(image: &mut resource::Image<P>) -> impl Iterator<Item = &mut NativeCode> {
-    let stages = match image { resource::Image::Cpu(image) => image.stages_mut(), resource::Image::Gpu(_) => &mut [] };
-    stages.iter_mut().flat_map(codes_mut)
+    let cpu = match image { resource::Image::Cpu(image) => Some(image), resource::Image::Gpu(_) => None };
+    cpu.into_iter().flat_map(crate::native::ProgramImage::code_mut)
 }
 fn capture<'a>(codes: impl Iterator<Item = &'a NativeCode>) -> Result<Vec<u8>> {
     let codes = codes.map(|code| {

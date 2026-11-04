@@ -55,10 +55,6 @@ impl Module {
         self.units.insert(name.to_owned(), None);
         true
     }
-    pub(super) fn into_imports(self) -> BTreeMap<String, Vec<u8>> {
-        use crate::module::codec::Encode;
-        self.units.into_iter().map(|(name, unit)| (name, unit.unwrap().contract.bytes())).collect()
-    }
 }
 #[derive(Clone)]
 pub(crate) struct Contract {
@@ -330,9 +326,10 @@ impl Builder<'_> {
             }
             return Ok(());
         }
-        let context = self.application.take().unwrap();
-        let (context, functions) = declaration(self.world, instance, context, std::mem::take(&mut self.functions))?;
-        self.application = Some(context);
+        let application = self.application.take();
+        let has_application = application.is_some();
+        let (context, functions) = declaration(self.world, instance, application.unwrap_or_default(), std::mem::take(&mut self.functions))?;
+        if has_application { self.application = Some(context); }
         self.functions = functions;
         Ok(())
     }
@@ -370,7 +367,7 @@ impl Builder<'_> {
         // The interface retains its canonical Frame input slots even when its actual ABI omits Frame.
         // These absent compile-time facts do not create registers or machine arguments.
         let mut actual = vec![None; application::pointer_type().components.len()];
-        if implicit {
+        if implicit && self.application.is_some() {
             let frame = self.application_frame(span)?;
             actual = frame.regs.iter()
                 .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
@@ -963,6 +960,32 @@ fn dependencies(body: &mut ValueCode) -> BTreeSet<String> {
     names
 }
 
+fn program_dependencies(program: &Program) -> BTreeSet<String> {
+    fn collect(code: &[Inst], names: &mut BTreeSet<String>) {
+        crate::optimize::visit(code, &mut |inst| {
+            if let InstKind::Call(Call { target: CallTarget::Defined(name), .. })
+                | InstKind::FunctionAddress(_, CallTarget::Defined(name)) = &inst.kind
+            { names.insert(name.clone()); }
+        });
+    }
+    let mut names = BTreeSet::new();
+    for stage in &program.stages {
+        collect(&stage.code, &mut names);
+        let reduction = match &stage.operation {
+            Operation::CustomReduce(value) => Some(value),
+            Operation::CustomScan(value) => Some(&value.values),
+            Operation::CustomSegmentedReduce(value) => Some(&value.values),
+            _ => None,
+        };
+        if let Some(reduction) = reduction {
+            for body in reduction.project.iter().chain([&reduction.identity, &reduction.combine]) {
+                collect(&body.code, &mut names);
+            }
+        }
+    }
+    names
+}
+
 pub(super) struct Finalized {
     pub functions: Vec<FunctionBody>,
     pub imports: BTreeMap<String, Vec<u8>>,
@@ -1075,9 +1098,11 @@ fn finalize(
     mut reachable: BTreeSet<String>,
     mut root: Option<(&mut ValueCode,&view_contracts::Function)>,
     owner: Option<&str>,
+    programs: &mut [&mut Program],
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     resolve_residencies(&mut module)?;
+    for program in programs.iter() { reachable.extend(program_dependencies(program)); }
     let mut units = module
         .units
         .into_iter()
@@ -1148,6 +1173,17 @@ fn finalize(
             imports.insert(name.clone(), unit.contract.bytes());
         }
     }
+    for program in programs {
+        let names = program_dependencies(program);
+        for name in &names {
+            if frame.contains(name) {
+                let unit = &units[name];
+                return unit.source.fail(unit.span, "B263", "CPU范围没有Frame；被调函数的实际调用闭包需要Frame");
+            }
+        }
+        program.imports = names.into_iter().filter_map(|name|
+            imports.get(&name).map(|contract| (name, contract.clone()))).collect();
+    }
     units.retain(|name, _| reachable.contains(name));
     let unframed = units.iter()
         .filter(|(name, unit)| unit.function.is_some() && !frame.contains(*name))
@@ -1185,9 +1221,15 @@ fn finalize(
     }
     Ok(result)
 }
-pub(super) fn finish(module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
+pub(super) fn finish(module: Module, root: &mut ValueCode, model:&view_contracts::Function, resources: &mut crate::application::Resources) -> Result<Finalized> {
     let roots = dependencies(root);
-    finalize(module, roots, Some((root,model)), None)
+    let mut programs = resources.programs.iter_mut().map(|(_, program)| program).collect::<Vec<_>>();
+    finalize(module, roots, Some((root,model)), None, &mut programs)
+}
+pub(super) fn finish_program(module: Module, mut program: Program) -> Result<Program> {
+    let finalized = finalize(module, BTreeSet::new(), None, None, &mut [&mut program])?;
+    program.functions = finalized.functions.into();
+    Ok(program)
 }
 
 pub(crate) fn compile_module(
@@ -1271,7 +1313,8 @@ pub(crate) fn compile_module(
         roots.insert(instance.name.clone());
         (context, functions) = declaration(world, &instance, context, functions)?;
     }
-    let finalized = finalize(functions, roots, None, Some(entry))?;
+    let mut programs = context.resources.programs.iter_mut().map(|(_, program)| program).collect::<Vec<_>>();
+    let finalized = finalize(functions, roots, None, Some(entry), &mut programs)?;
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, context.resources);
     Ok(crate::module::Module {
@@ -1380,7 +1423,7 @@ fn build_domain(
     target: Target,
 ) -> Result<()> {
     let d = &instance.definition;
-    let expanded = expand_domain(world, instance)?;
+    let expanded = expand_domain(world, instance, functions)?;
     let mut signature = expanded.program;
     if !signature.accelerations.is_empty() || !signature.textures.is_empty() {
         return d.source.fail(

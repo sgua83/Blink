@@ -27,6 +27,7 @@ fn function(
     expr: &Expr,
     ty: &Ty,
     parameters: &[&Ty],
+    functions: &mut native_function::Module,
 ) -> Result<ValueCode> {
     let d = &owner.definition;
     let (reference, captures) = match &expr.kind {
@@ -71,6 +72,7 @@ fn function(
     }
     let mut builder = Builder::new(world, d, program, 0, Some(&owner.name))?;
     builder.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*builder.source_context).clone() });
+    builder.functions = std::mem::take(functions);
     builder.roots(env);
     let mut inputs = Vec::new();
     let mut args = Vec::new();
@@ -119,7 +121,7 @@ fn function(
     let result = builder.ordinary_return(result, expr.span)?;
     let result = builder.value_result(result, expr.span)?;
     builder.require_same(ty, &result.ty, expr.span)?;
-    let imports = std::mem::take(&mut builder.functions).into_imports();
+    *functions = std::mem::take(&mut builder.functions);
     let code = ValueCode {
         entry_origin: Some(entry_origin),
         generated_origin: None,
@@ -129,7 +131,6 @@ fn function(
         inputs,
         outputs: result.regs,
     };
-    program.imports.extend(imports);
     Ok(code)
 }
 pub(super) fn compile(
@@ -143,6 +144,7 @@ pub(super) fn compile(
     map: bool,
     kind: Kind,
     domain_path: Arc<[DomainSite]>,
+    native_functions: &mut native_function::Module,
     operation_source: Option<Arc<SourceSite>>,
 ) -> Result<()> {
     let d = &owner.definition;
@@ -253,6 +255,7 @@ pub(super) fn compile(
             &args[functions],
             &ty,
             &[&source_ty],
+            native_functions,
         )?)
     } else {
         None
@@ -266,6 +269,7 @@ pub(super) fn compile(
         &args[functions + usize::from(map)],
         &ty,
         &[],
+        native_functions,
     )?;
     let combine = function(
         world,
@@ -276,6 +280,7 @@ pub(super) fn compile(
         &args[functions + 1 + usize::from(map)],
         &ty,
         &[&ty, &ty],
+        native_functions,
     )?;
     let writes: Vec<_> = std::iter::once(target)
         .chain(count.map(|c| c.binding))

@@ -1695,6 +1695,8 @@ pub struct Program {
     pub(crate) source_stages: usize,
     pub(crate) stages: Vec<Stage>,
     pub(crate) imports: BTreeMap<String, Vec<u8>>,
+    #[cfg(feature = "compiler")]
+    pub(crate) functions: std::sync::Arc<[FunctionBody]>,
     pub(crate) prefix_requirements: Vec<PrefixRelation>,
     pub(crate) prefix_guarantees: Vec<PrefixRelation>,
     pub(crate) length_requirements: Vec<(usize, usize)>,
