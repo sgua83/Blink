@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "b7a2d66499d3b9bb8844eba4d4fb5661e1f3ebf6a242bdf3ca3aa557f728a4cf"
+      "sha256": "fd4be6ff164bdc4daf0ee52014a6eb0f66d4077efee706f1112908bbd0d59abb"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
-      "sha256": "cd0c88d7c5c19f92332804f71843b29585b758335bcb96b6ab3b8403aa245ba1"
+      "sha256": "6f9cb71eb082df8603dc0035ab6e8cb12d96459ee1a57b4868e518fcc6b70025"
     },
     {
       "path": "crates/blanguage/src/codec.rs",

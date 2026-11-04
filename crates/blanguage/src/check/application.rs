@@ -2411,7 +2411,7 @@ impl Builder<'_> {
         }
         let mut out=view::Borrow::default();collect(self,data,view::resource_borrow(data),self.element_owner_bindings(data),&mut out);out
     }
-    fn element_owner_bindings(&self,data:&Data)->ElementBindings {
+    pub(super) fn element_owner_bindings(&self,data:&Data)->ElementBindings {
         fn aliases(borrow:&view::Borrow,out:&mut ElementBindings){
             for source in &borrow.sources{match source{
                 view::Source::Data(id@ValueIdentity::Register(_))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id));},
@@ -2452,7 +2452,7 @@ impl Builder<'_> {
         canonical_element_inputs(self,&mut out);
         out
     }
-    fn bind_element_resource_borrows(&self,data:&Data,parent:&view::Borrow,bindings:&mut ElementBindings) {
+    pub(super) fn bind_element_resource_borrows(&self,data:&Data,parent:&view::Borrow,bindings:&mut ElementBindings) {
         for fields in view::resource_paths(&data.ty) {
             if let Some(resource)=model_data(&data.elements,&fields) {
                 let id=ValueIdentity::ElementComponent(resource.root.regs[0]);
@@ -2464,7 +2464,7 @@ impl Builder<'_> {
             }
         }
     }
-    fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data)->Vec<(Vec<Vec<usize>>,bool)> {
+    pub(super) fn application_element_scopes(&self,sources:&[ValueIdentity],resource:&view::Borrow,data:&Data)->Vec<(Vec<Vec<usize>>,bool)> {
         fn collect(borrow:&view::Borrow,owner:&view::Borrow,path:&bounds::Clause)->Vec<(Vec<Vec<usize>>,bool)> {
             let mut paths=Vec::new();let selected=borrow.restricted(path);let root=owner.restricted(path);
             let shared=selected.sources.entries().any(|(source,when)|matches!(source,view::Source::Data(_)|view::Source::Parameter(_)|view::Source::Element{..})&&when.overlaps(&root.sources.when(source)))

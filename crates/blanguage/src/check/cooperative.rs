@@ -226,9 +226,11 @@ impl<'a> Builder<'a> {
         // 拥有参数交给callee前，调用者仍将继续使用的外部view不能留指向这些资源。
         self.view_uses.after(span);
         let scoped=arguments.iter().filter_map(|argument|match argument{Argument::Scoped{owner,..}|Argument::OwnedReference{owner:Some(owner),..}=>Some(owner.as_str()),_=>None}).collect::<BTreeSet<_>>();
-        let transferred=parameters.iter().zip(&arguments).filter_map(|(parameter,argument)|if let Argument::OwnedReference{place,..}=argument && parameter.access.writes(){Some(place.clone())}else{None}).collect::<Vec<_>>();
+        let transferred=parameters.iter().zip(&arguments).filter_map(|(parameter,argument)|{
+            (parameter.access.writes()&&matches!(argument,Argument::OwnedReference{..}|Argument::BorrowedData(_))).then_some(argument)
+        }).collect::<Vec<_>>();
         let mut retained=view::Borrow::default();
-        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(name,binding,&transferred));}}
+        for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(self,name,binding,&transferred));}}
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
         for(param,argument)in parameters.iter().zip(&arguments){if param.access==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
