@@ -1180,12 +1180,16 @@ impl Builder<'_> {
         }
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
-        self.emit(runtime_call("resize", vec![
+        let call_origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetResizeCall,
+            trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
+        });
+        self.code.push(Inst::generated(runtime_call("resize", vec![
             argument(frame), argument(data.root.clone()), argument(length.clone()),
             CallArgument::Reference { ty: fill.ty, access: Access::Read, address: CallReference {
                 storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
             } },
-        ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind);
+        ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind, call_origin));
         // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
         let handle = self.application_root(reg);
         length.literal = false;

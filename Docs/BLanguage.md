@@ -362,12 +362,13 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | VariantDropBranch | variant_drop_branch | 原活动enum／Result清理的选择If |
 | VariantDropCondition | variant_drop_condition | 原清理选择的判别常量及比较 |
 | DatasetResizeFill | dataset_resize_fill | 原resize填充值进入调用暂存的StoreLocal |
+| DatasetResizeCall | dataset_resize_call | 原Frame扩容及存储版本交接的resize Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
 原clear_prefix调用由append::clear生成原Map、零常量和计数Store；同一Stage和两个Inst共享clear_prefix的GeneratedOrigin，trigger为真实调用Expr范围及当前实际实例／域路径。当前解析器的普通调用范围通常覆盖clear_prefix标识符；原诊断用语句Span保持，不扩大为未取得的完整参数列表。没有额外Index、另一个Stage或输出清空，原计数归零与空prefix关系保持；生成Stage.operation_source及两节点source_site仍为null，不伪造用户直接Map／赋值。
 
-Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化、新绑定／重新赋值槽位、最终存储释放、拥有元素逆序清理、静态F、条件及活动变体清理和resize填充值暂存见下文；实际扩容Call、寻址、参数、传输和发起仍归.2.4.5.4.2至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
+Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化、新绑定／重新赋值槽位、最终存储释放、拥有元素逆序清理、静态F、条件及活动变体清理和resize填充值暂存见下文；实际扩容Call来源见下文；寻址、参数、传输和发起仍归.2.4.5.5至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
 
 材料沿原Inst／Stage／ValueCode不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
 
@@ -465,7 +466,13 @@ condition_truth确定条件时沿原路径跳过或执行body，没有实际If�
 
 resize_application_dataset在原第三实参已经求值、检查并取得returned_storage后，只为原local_slots及实际StoreLocal交接DatasetResizeFill，JSON reason为dataset_resize_fill。各逻辑分量保留原槽位及寄存器，共享一份不可变GeneratedOrigin；source_site为null，可选Syntax触发由原第三实参Expr.span及当前定义／实际实例／内联与域路径构成。普通调用或构造的Span可能只覆盖原标识符，按取得的范围交接，不猜补完整参数列表；触发缺失为null，不用resize根定义替代填充值来源。
 
-填充值自身的用户计算保持原语法来源；实际resize Call、dataset句柄／长度绑定及清理各保留自己的职责。原宽标量、向量、记录、拥有载荷及字段布局、求值次数和顺序、静态模型、借用与Frame的实际存储版本继续交接。零分量填充值没有StoreLocal，不为观察增加伪操作；零字节引用按原本地范围与x64调用帧处理。材料只由compiler功能下的原Inst及FunctionBody／模块持有，最后IR消费者后结束，不进入必要ABI／执行编码或保持运行资源。它不证明实际扩容、分配成功或GPU完成；扩容Call来源、优化消除及机器关系沿原编号独立交付。见[架构](Architecture.md#tool-7-2-4-5-4-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4-1)。
+填充值自身的用户计算保持原语法来源；实际resize Call、dataset句柄／长度绑定及清理各保留自己的职责。原宽标量、向量、记录、拥有载荷及字段布局、求值次数和顺序、静态模型、借用与Frame的实际存储版本继续交接。零分量填充值没有StoreLocal，不为观察增加伪操作；零字节引用按原本地范围与x64调用帧处理。材料只由compiler功能下的原Inst及FunctionBody／模块持有，最后IR消费者后结束，不进入必要ABI／执行编码或保持运行资源。它不证明实际扩容、分配成功或GPU完成；扩容Call由下文独立交接来源，优化消除及机器关系沿原编号继续。见[架构](Architecture.md#tool-7-2-4-5-4-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4-1)。
+
+#### 原生resize调用的生成来源
+
+resize_application_dataset仍沿原参数、返回和SSA身份发射同一blink_application_resize调用；仅该实际Call取得DatasetResizeCall，JSON reason为dataset_resize_call。节点source_site为null，可选Syntax触发取原resize表达式Span及当前定义／实际实例，inlined_at与domain_path沿同一快照保持。当前Span是原resize标识符，不扩大成未取得的完整参数列表；没有源定义时保持无触发，不从填充值或根函数猜调用位置。普通用户函数即使名字包含resize也不据此改标。
+
+原Frame／根句柄、请求长度及只读fill暂存引用继续交接，静态模型、返回及新存储版本没有额外指令时不伪造步骤。填充值计算及DatasetResizeFill、数据绑定和清理仍保留自己的来源；零宽值也只标记实际Call，不补造StoreLocal，静态未执行路径没有本项材料。生成材料只归compiler下的原Inst及FunctionBody／模块，最后IR消费者后释放，不进入必要ABI／执行编码，不增加Frame、存储或释放链，不证明运行已扩容成功或设备已完成。完整变换及机器映射继续独立交付；见[架构](Architecture.md#tool-7-2-4-5-4-2)与[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4-2)。
 
 #### 集合值核的入口与捕获来源
 

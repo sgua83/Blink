@@ -355,7 +355,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-4"></a>
 
-**dataset扩容及填充值包装。** 原resize先将填充值写入既有调用暂存，再把原Frame、dataset根、请求长度及暂存引用交给真实扩容调用；两类IR来源分别交付，父项只汇总。编译材料由原Builder及FunctionBody／模块持有，运行存储和资源仍由原Frame及实际消费者持有；来源不增加资源、拥有表、调用或清理链。新Data模型沿原根／长度与SSA版本交接，不因观察材料建立第二状态。填充值暂存来源已交接，实际扩容Call来源仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4)。
+**dataset扩容及填充值包装。** 原resize先将填充值写入既有调用暂存，再把原Frame、dataset根、请求长度及暂存引用交给真实扩容调用；两类IR来源分别交付，父项只汇总。编译材料由原Builder及FunctionBody／模块持有，运行存储和资源仍由原Frame及实际消费者持有；来源不增加资源、拥有表、调用或清理链。新Data模型沿原根／长度与SSA版本交接，不因观察材料建立第二状态。填充值暂存及实际扩容Call来源均已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4)。
 
 <a id="tool-7-2-4-5-4-1"></a>
 
@@ -363,7 +363,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-4-2"></a>
 
-**原生resize调用来源。** 输入为原Frame／根句柄、请求长度与既有fill暂存引用，生产者是同一resize_application_dataset发射的真实runtime_call("resize")，输出仍为原新Data模型及后续消费者。该Call沿原Inst交接resize表达式的触发和生成职责，参数、结果、错误、静态模型和新SSA身份按原语义保持；证明及模型更新没有发射指令时不伪造机器步骤。编译材料由原FunctionBody／模块持有；运行时扩容、存储和最后消费者的寿命只由原Frame落实，不新增装载器、Frame、资源副本或释放链。原填充值暂存按既有ABI消费，上一叶的来源材料不成为正常执行前置。本叶待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4-2)。
+**原生resize调用来源。** 输入为原Frame／根句柄、请求长度与既有fill暂存引用，生产者是同一resize_application_dataset发射的真实runtime_call("resize")，输出仍为原新Data模型及后续消费者。该实际Call由原Builder／Inst持有DatasetResizeCall，JSON reason为dataset_resize_call；source_site为空，可选Syntax锚点从原resize表达式Span及当前定义／实际实例取得，语法、内联／域路径沿原快照保持。当前普通调用Span只覆盖resize标识符，按实际范围交接，不猜补参数列表。参数、结果、错误、静态模型和新SSA身份按原语义保持；证明及模型更新没有发射指令时不伪造机器步骤。编译材料由原FunctionBody／模块持有；运行时扩容、存储和最后消费者的寿命只由原Frame落实，不新增装载器、Frame、资源副本或释放链。原填充值暂存按既有ABI消费，上一叶的来源材料不成为正常执行前置。当前已交接原扩容Call的生成来源，见[规范](BLanguage.md#原生resize调用的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4-2)。
 
 <a id="tool-7-2-4-5-5"></a>
 
