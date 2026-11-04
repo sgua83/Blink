@@ -126,10 +126,10 @@ impl Builder<'_> {
         Ok(Self::matrix_result(ty, components))
     }
     fn matrix_dot(&mut self, a: &[Value], b: &[Value], span: Span) -> Result<Value> {
-        let mut result = self.binary("*", a[0].clone(), b[0].clone(), span)?;
+        let mut result = self.binary("*", a[0].clone(), b[0].clone(), span,None)?;
         for (a, b) in a.iter().zip(b).skip(1) {
-            let product = self.binary("*", a.clone(), b.clone(), span)?;
-            result = self.binary("+", result, product, span)?;
+            let product = self.binary("*", a.clone(), b.clone(), span,None)?;
+            result = self.binary("+", result, product, span,None)?;
         }
         Ok(result)
     }
@@ -141,7 +141,7 @@ impl Builder<'_> {
                 let mut values = Vec::new();
                 for i in 0..count {
                     values.push(self.binary(op, Self::matrix_component(&a, i),
-                        Self::matrix_component(&b, i), span)?);
+                        Self::matrix_component(&b, i), span,None)?);
                 }
                 Ok(Self::matrix_result(a.ty, values))
             }
@@ -162,7 +162,7 @@ impl Builder<'_> {
                 let b = if cast { self.cast(b, Scalar::F32) } else { b };
                 let mut values = Vec::new();
                 for i in 0..count {
-                    values.push(self.binary(op, Self::matrix_component(&a, i), b.clone(), span)?);
+                    values.push(self.binary(op, Self::matrix_component(&a, i), b.clone(), span,None)?);
                 }
                 Ok(Self::matrix_result(a.ty, values))
             }
@@ -170,7 +170,7 @@ impl Builder<'_> {
                 let a = if cast { self.cast(a, Scalar::F32) } else { a };
                 let mut values = Vec::new();
                 for i in 0..count {
-                    values.push(self.binary(op, a.clone(), Self::matrix_component(&b, i), span)?);
+                    values.push(self.binary(op, a.clone(), Self::matrix_component(&b, i), span,None)?);
                 }
                 Ok(Self::matrix_result(b.ty, values))
             }
@@ -210,11 +210,11 @@ impl Builder<'_> {
                 })
                 .collect();
             let determinant = self.matrix_determinant(&minor, size - 1, span)?;
-            terms.push(self.binary("*", values[c].clone(), determinant, span)?);
+            terms.push(self.binary("*", values[c].clone(), determinant, span,None)?);
         }
         let mut result = terms[0].clone();
         for (c, term) in terms.into_iter().enumerate().skip(1) {
-            result = self.binary(if c % 2 == 0 { "+" } else { "-" }, result, term, span)?;
+            result = self.binary(if c % 2 == 0 { "+" } else { "-" }, result, term, span,None)?;
         }
         Ok(result)
     }
@@ -290,6 +290,7 @@ impl Builder<'_> {
                     cofactors[c * columns + r].clone(),
                     determinant.clone(),
                     span,
+                    None,
                 )?);
             }
         }

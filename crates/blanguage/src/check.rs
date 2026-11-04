@@ -1904,7 +1904,7 @@ impl<'a> Builder<'a> {
                     );
                 }
                 Root::Literal(ty, bits) => {
-                    let value = self.constant_value(ty.clone(), bits.clone());
+                    let value = self.constant_value(ty.clone(), bits.clone(),None);
                     self.env.insert(name.clone(), Binding::Value(value));
                 }
             }
@@ -2459,7 +2459,7 @@ impl<'a> Builder<'a> {
         }
         let ty = Ty::vector(target, n);
         if let Some(bits) = value.constant {
-            let mut result = self.constant_value(ty, bits);
+            let mut result = self.constant_value(ty, bits,None);
             result.literal = false;
             return Ok(result);
         }
@@ -2490,7 +2490,7 @@ impl<'a> Builder<'a> {
         let mut regs = Vec::new();
         let n = v.regs.len();
         if v.ty.components.iter().any(|(source, _)| *source != s) && let Some(bits) = constant {
-            let mut value = self.constant_value(Ty::vector(s, n), bits);
+            let mut value = self.constant_value(Ty::vector(s, n), bits,None);
             value.proof = proof;
             return value;
         }
@@ -2520,20 +2520,20 @@ impl<'a> Builder<'a> {
         Ok((a, b))
     }
     #[inline(never)]
-    fn binary(&mut self, op: &str, a: Value, b: Value, span: Span) -> Result<Value> {
+    fn binary(&mut self, op: &str, a: Value, b: Value, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
         let (ty, kind) = operators::binary(op, &a.ty, a.literal, &b.ty, b.literal,
             &self.definition.source, span)?;
         let operands = match kind {
             operators::Binary::Identity => {
                 let mut a = a; let mut b = b;
                 a.ty = Ty::scalar(Scalar::U64); b.ty = Ty::scalar(Scalar::U64);
-                return self.binary(op, a, b, span);
+                return self.binary(op, a, b, span,generated_origin.clone());
             }
             operators::Binary::Handle => {
                 let mut a = a; let mut b = b;
                 a.ty = Ty::vector(Scalar::U32, 2);
                 b.ty = Ty::vector(Scalar::U32, 2);
-                let bits = self.binary("^", a, b, span)?;
+                let bits = self.binary("^", a, b, span,generated_origin.clone())?;
                 let word = |component| Value {
                     ty: Ty::scalar(Scalar::U32),
                     regs: vec![bits.regs[component]],
@@ -2541,9 +2541,9 @@ impl<'a> Builder<'a> {
                     literal: false, uniform: bits.uniform,
                     constant: bits.constant.as_ref().map(|values| vec![values[component]]),
                 };
-                let difference = self.binary("|", word(0), word(1), span)?;
+                let difference = self.binary("|", word(0), word(1), span,generated_origin.clone())?;
                 let zero = self.constant(Scalar::U32, 0);
-                return self.binary(op, difference, zero, span);
+                return self.binary(op, difference, zero, span,generated_origin.clone());
             }
             operators::Binary::Matrix(kind) => return self.matrix_binary(op, a, b, kind, span),
             operators::Binary::Numeric { operands, comparison, operation } => (operands, comparison, operation),
@@ -2618,7 +2618,7 @@ impl<'a> Builder<'a> {
             }
         });
         if let Some(bits) = constant {
-            let mut value = self.constant_value(ty, bits);
+            let mut value = self.constant_value(ty, bits,generated_origin);
             value.literal = literal;
             value.proof = proof;
             return Ok(value);
@@ -2628,39 +2628,28 @@ impl<'a> Builder<'a> {
             let dst = self.reg(if comparison { Scalar::Bool } else { scalar });
             let ar = a.regs[i % a.regs.len()];
             let br = b.regs[i % b.regs.len()];
-            if let Some(divisors) = &divisors {
+            let kind = if let Some(divisors) = &divisors {
                 let divisor = divisors[i % divisors.len()];
                 if scalar.is_signed()
                     && matches!(divisor, IntegerDivisor::Constant(d) if d.get() == scalar.truncate(Bits::MAX))
                 {
                     if op == "/" {
-                        self.emit(InstKind::Unary {
-                            dst,
-                            op: UnaryOp::SignedNegate,
-                            a: ar,
-                        });
+                        InstKind::Unary { dst, op: UnaryOp::SignedNegate, a: ar }
                     } else {
-                        self.emit(InstKind::Constant(dst, scalar, 0));
+                        InstKind::Constant(dst, scalar, 0)
                     }
                 } else {
-                    self.emit(InstKind::IntegerDivide {
-                        result: if op == "/" {
-                            IntegerDivisionResult::Quotient(dst)
-                        } else {
-                            IntegerDivisionResult::Remainder(dst)
-                        },
-                        src: ar,
-                        divisor,
-                    });
+                    InstKind::IntegerDivide {
+                        result: if op == "/" { IntegerDivisionResult::Quotient(dst) }
+                            else { IntegerDivisionResult::Remainder(dst) },
+                        src: ar, divisor,
+                    }
                 }
             } else {
-                self.emit(InstKind::Binary {
-                    dst,
-                    op: operation.unwrap(),
-                    a: ar,
-                    b: br,
-                });
-            }
+                InstKind::Binary { dst, op: operation.unwrap(), a: ar, b: br }
+            };
+            if let Some(origin) = &generated_origin { self.code.push(Inst::generated(kind, origin.clone())); }
+            else { self.emit(kind); }
             regs.push(dst);
         }
         let mut value = Value {
@@ -2696,7 +2685,7 @@ impl<'a> Builder<'a> {
             let proof = bounds::arithmetic(op, &a, &b);
             let literal = a.literal && b.literal;
             if let Some(bits) = proof.known_value(&ty) {
-                let mut value = self.constant_value(ty, bits);
+                let mut value = self.constant_value(ty, bits,None);
                 value.proof = proof;
                 value.literal = literal;
                 return Ok(value);
@@ -2706,6 +2695,7 @@ impl<'a> Builder<'a> {
                 a.clone(),
                 b.clone(),
                 span,
+                None,
             )?;
             let mut regs = Vec::with_capacity(n);
             for i in 0..n {
@@ -2915,7 +2905,7 @@ impl<'a> Builder<'a> {
             self.require_same(&Ty::scalar(Scalar::U64), &value.ty, span)?;
             let low = self.cast(value.clone(), Scalar::U32);
             let shift = self.constant(Scalar::U64, 32);
-            let high = self.binary(">>", value, shift, span)?;
+            let high = self.binary(">>", value, shift, span,None)?;
             let high = self.cast(high, Scalar::U32);
             let constant = low.constant.as_ref().zip(high.constant.as_ref())
                 .map(|(low, high)| vec![low[0], high[0]]);
@@ -3013,7 +3003,7 @@ impl<'a> Builder<'a> {
         if op == "-" && let ExprKind::Number(literal) = &a.kind {
             let (ty, bits) = operators::negative_number(&self.definition.source, span, literal)?;
             let scalar = ty.components[0].0;
-            let mut value = self.constant_value(ty, vec![bits]);
+            let mut value = self.constant_value(ty, vec![bits],None);
             value.literal = scalar.size() == 4;
             return Ok(Some(value));
         }
@@ -3030,7 +3020,7 @@ impl<'a> Builder<'a> {
         });
         let proof = bounds::unary(operation, &a);
         if let Some(bits) = constant {
-            let mut value = self.constant_value(a.ty, bits);
+            let mut value = self.constant_value(a.ty, bits,None);
             value.literal = a.literal;
             value.proof = proof;
             return Ok(Some(value));
@@ -3084,7 +3074,7 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn binary_operands(&mut self, op: &str, a: Box<Value>, b: Value, span: Span) -> Result<Option<Value>> {
-        self.binary(op,*a,b,span).map(Some)
+        self.binary(op,*a,b,span,None).map(Some)
     }
     #[inline(never)]
     fn if_statement(
@@ -3413,7 +3403,7 @@ impl<'a> Builder<'a> {
                 None
             },
         };
-        let test = self.binary("<", cursor.clone(), limit.clone(), span)?;
+        let test = self.binary("<", cursor.clone(), limit.clone(), span,None)?;
         let condition = std::mem::take(&mut self.code);
         let body_cursor=Value {
             proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,&limit,body)},
@@ -3640,7 +3630,7 @@ impl<'a> Builder<'a> {
     }
     fn value_constructor(&mut self, ty: Ty, mut values: Vec<Value>, span: Span) -> Result<Value> {
         if ty.is_c_function() {
-            if values.is_empty() { return Ok(self.constant_value(ty, vec![0])); }
+            if values.is_empty() { return Ok(self.constant_value(ty, vec![0],None)); }
             if values.len() == 1 && values[0].ty == ty {
                 let mut value = values.pop().unwrap(); value.literal = false; return Ok(value);
             }
@@ -3651,7 +3641,7 @@ impl<'a> Builder<'a> {
         }
         if ty.is_address() {
             if values.is_empty() {
-                return Ok(self.constant_value(ty, vec![0]));
+                return Ok(self.constant_value(ty, vec![0],None));
             }
             if values.len() == 1 && values[0].ty == ty {
                 let mut value = values.pop().unwrap();
@@ -3665,7 +3655,7 @@ impl<'a> Builder<'a> {
         }
         if ty.is_handle() {
             if values.is_empty() {
-                return Ok(self.constant_value(ty, vec![0, 0]));
+                return Ok(self.constant_value(ty, vec![0, 0],None));
             }
             if values.len() == 1 && values[0].ty == ty {
                 let mut value = values.pop().unwrap();
@@ -3749,7 +3739,7 @@ impl<'a> Builder<'a> {
         if values[0].ty.components[0].0 != Scalar::F32 || !values[0].ty.is_numeric() {
             return self.fail(span, "B154", "dot 需要 float 向量");
         }
-        let p = self.binary("*", values[0].clone(), values[1].clone(), span)?;
+        let p = self.binary("*", values[0].clone(), values[1].clone(), span,None)?;
         let mut r = Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -3771,6 +3761,7 @@ impl<'a> Builder<'a> {
                     constant: None,
                 },
                 span,
+                None,
             )?;
         }
         return Ok(r);
@@ -3788,7 +3779,7 @@ impl<'a> Builder<'a> {
         if v.ty.components[0].0 != Scalar::F32 || !v.ty.fields.is_empty() || v.ty.array.is_some() {
             return self.fail(span, "B154", "需要 float 向量");
         }
-        let p = self.binary("*", v.clone(), v.clone(), span)?;
+        let p = self.binary("*", v.clone(), v.clone(), span,None)?;
         let mut r = Value {
             proof: bounds::Proof::default(),
             literal: false,
@@ -3810,13 +3801,14 @@ impl<'a> Builder<'a> {
                     constant: None,
                 },
                 span,
+                None,
             )?;
         }
         let length = self.math("sqrt", vec![r], span)?;
         if !normalize {
             Ok(length)
         } else {
-            self.binary("/", v, length, span)
+            self.binary("/", v, length, span,None)
         }
     }
     fn cross_value(&mut self, values: Vec<Value>, span: Span) -> Result<Value> {
@@ -3843,14 +3835,16 @@ impl<'a> Builder<'a> {
                 value(a.regs[i], a.uniform),
                 value(b.regs[j], b.uniform),
                 span,
+                None,
             )?;
             let y = self.binary(
                 "*",
                 value(a.regs[j], a.uniform),
                 value(b.regs[i], b.uniform),
                 span,
+                None,
             )?;
-            regs.push(self.binary("-", x, y, span)?.regs[0]);
+            regs.push(self.binary("-", x, y, span,None)?.regs[0]);
         }
         return Ok(Value {
             proof: bounds::Proof::default(),
@@ -4010,7 +4004,7 @@ impl<'a> Builder<'a> {
         }
         if op != "=" {
             let current = self.read_place(&place, lhs.span, None)?;
-            value = self.binary(&op[..op.len() - 1], current, value, span)?;
+            value = self.binary(&op[..op.len() - 1], current, value, span,None)?;
         }
         self.view_uses.after(span);
         self.write_place(&place, value, span, None)?;
@@ -4048,7 +4042,7 @@ impl<'a> Builder<'a> {
         });
         source.regs = vec![index];
         let one = self.constant(Scalar::U32, 1);
-        let value = self.binary("+", source, one, self.definition.function.span)?;
+        let value = self.binary("+", source, one, self.definition.function.span,None)?;
         self.emit(InstKind::StoreLocal(slot, value.regs[0]));
         self.capture_loop_cursor(value);
         Ok(())

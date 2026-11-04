@@ -729,7 +729,7 @@ impl Builder<'_> {
         value.ty = Ty::scalar(Scalar::U64);
         let low = self.cast(value.clone(), Scalar::U32).regs[0];
         let shift = self.constant(Scalar::U64, 32);
-        let high = self.binary(">>", value, shift, span)?;
+        let high = self.binary(">>", value, shift, span,None)?;
         let high = self.cast(high, Scalar::U32).regs[0];
         let place=Place::Reference {
             words: ty.components.iter().map(|(_, offset)| *offset).collect(),

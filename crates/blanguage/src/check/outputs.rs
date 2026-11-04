@@ -263,7 +263,7 @@ fn expression(
                     );
                 }
                 let (ty, bits) = constant_value(builder.world, &key)?;
-                Ok(builder.constant_value(ty, bits))
+                Ok(builder.constant_value(ty, bits,None))
             }
             OutputCondition::Member(base, field) => {
                 let value = path(builder, definition, base, inputs, returned, span)?;
@@ -324,7 +324,7 @@ fn expression(
             OutputCondition::Constant(value) => {
                 return Ok(atom(
                     values,
-                    builder.constant_value(value.ty.clone(), value.bits.clone()),
+                    builder.constant_value(value.ty.clone(), value.bits.clone(),None),
                     span,
                 ));
             }
@@ -824,7 +824,7 @@ impl Builder<'_> {
                 (Position::Indexed(left, i), Position::Indexed(right, j)) if left == right => {
                     let left = index(builder, *i);
                     let right = index(builder, *j);
-                    Presence::input(&builder.binary("==", left, right, span)?)
+                    Presence::input(&builder.binary("==", left, right, span,None)?)
                 }
                 (Position::Indexed(choices, index), other)
                 | (other, Position::Indexed(choices, index)) => {

@@ -313,7 +313,7 @@ address与handle、u64保留不同类型身份；其8字节大小、8字节对�
         value.ty = Ty::scalar(Scalar::U64);
         let low = self.cast(value.clone(), Scalar::U32).regs[0];
         let shift = self.constant(Scalar::U64, 32);
-        let high = self.binary(">>", value, shift, span)?;
+        let high = self.binary(">>", value, shift, span,None)?;
         let high = self.cast(high, Scalar::U32).regs[0];
         let place=Place::Reference {
             words: ty.components.iter().map(|(_, offset)| *offset).collect(),
@@ -1299,7 +1299,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3886`。
+源码节选：`crates/blanguage/src/check.rs:3880`。
 
 ```rust
         let binding = view.binding;

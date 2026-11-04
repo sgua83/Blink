@@ -418,7 +418,7 @@ impl Builder<'_> {
                 }
             }
             let borrow = value.proof.view_borrow(0);
-            let length = self.binary("-", end, start.clone(), span)?;
+            let length = self.binary("-", end, start.clone(), span,None)?;
             let element = value.ty.view.as_deref().unwrap();
             let stride = self.constant(Scalar::U32, Bits::from(ir::align_up(element.size, element.align))).regs[0];
             let zero = self.constant(Scalar::U32, 0).regs[0];

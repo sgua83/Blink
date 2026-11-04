@@ -331,7 +331,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3"></a>
 
-**作用域及返回时资源释放。** 父职责只汇总，下列五条真实生产消费分别交接来源，不占源码。原作用域／返回／覆盖、Data、拥有条件与活动载荷沿原所有者清理；最终release、逆序元素清理、静态析构、条件拥有和变体选择不是同一生成职责。各原Inst按最后IR消费者共享材料，不拥有运行资源或建立清理图、状态权威及第二释放链。当前未完成范围见[父台账](Issues.md#c-021-7-9-7-2-4-5-3)。
+**作用域及返回时资源释放。** 父职责只汇总，下列五条真实生产消费分别交接来源，不占源码。原作用域／返回／覆盖、Data、拥有条件与活动载荷沿原所有者清理；最终release、逆序元素清理、静态析构、条件拥有和变体选择不是同一生成职责。各原Inst按最后IR消费者共享材料，不拥有运行资源或建立清理图、状态权威及第二释放链。当前五类原生成职责均已实现，具体边界见下列各项及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3)；实际运行观察、完整优化与机器来源仍分别建设。
 
 <a id="tool-7-2-4-5-3-1"></a>
 
@@ -351,7 +351,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3-5"></a>
 
-**活动变体清理选择来源。** 原拥有enum／Result及其实际活动载荷→owned_values::drop_variant原判别／分支／递归清理→原If与选择准备。只分类清理用途，原普通变体读取及内层最终释放／静态F各有原职责；常量路径没有原If时不补造选择。保留判别、载荷及唯一清理消费者，材料归原IR并按最后消费者结束，不新增变体登记、拥有状态或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-3-5)。
+**活动变体清理选择来源。** 原拥有enum／Result及其活动载荷→drop_variant→owned_variant_condition／variant_condition→原判别常量、比较及选择If。唯一原清理入口把当前可选SourceSite共享给VariantDropBranch和VariantDropCondition，前者只交原实际选择If，后者沿原constant_with_origin、constant_value与binary数值发射交给实际Constant／Binary；原普通match、try、常量及算术调用明确不带清理材料。判别分量复用已有result_word，没有原读取就不造读取；原常量折叠、Proof与数值语义保持，末尾载荷直接交接且不造选择，已确定路径不补If。普通载荷装入／解码、条件拥有、静态F及最终release各归原职责。生成节点source_site为null，触发位于generated_origin.trigger，原定义、实例、内联／域路径及范围保持，缺失不猜补。材料只compiler原Inst共享，最后IR消费者后结束，不拥有载荷、不保活变量、不进入必要执行编码，不新增Builder状态、判别算法、变体登记、图或释放链。原活动载荷、静态F顺序、布局、借用和最后真实消费者保持；静态材料不证明已释放、设备完成或完整内存安全。当前已实现两类原来源，见[规范](BLanguage.md#活动变体清理选择的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-5)。
 
 <a id="tool-7-2-4-5-4"></a>
 

@@ -261,7 +261,7 @@ impl Builder<'_> {
         let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), element.components.len());
         let stride = ir::align_up(element.size, element.align);
         let factor = self.constant(Scalar::U32, Bits::from(stride));
-        let relative = self.binary("*", index, factor, span)?.regs[0];
+        let relative = self.binary("*", index, factor, span,None)?.regs[0];
         let (base, offset, first) = match place {
             Place::Indexed {
                 base,

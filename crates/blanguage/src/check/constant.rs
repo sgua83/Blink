@@ -5,19 +5,19 @@ use std::num::NonZeroU64;
 impl Builder<'_> {
     pub(super) fn module_constant(&mut self, key: String) -> Result<Value> {
         let (ty, words) = evaluate(self.world, &key, &self.calls)?;
-        Ok(self.constant_value(ty, words))
+        Ok(self.constant_value(ty, words,None))
     }
     pub(super) fn literal(&mut self, scalar: Scalar, bits: Bits) -> Value {
         let mut value = self.constant(scalar, bits);
         value.literal = true;
         value
     }
-    pub(crate) fn constant_value(&mut self, ty: Ty, bits: Vec<Bits>) -> Value {
+    pub(crate) fn constant_value(&mut self, ty: Ty, bits: Vec<Bits>, generated_origin: Option<Arc<GeneratedOrigin>>) -> Value {
         let regs = ty
             .components
             .iter()
             .zip(&bits)
-            .map(|((s, _), b)| self.constant(*s, *b).regs[0])
+            .map(|((s, _), b)| self.constant_with_origin(*s, *b, generated_origin.clone()).regs[0])
             .collect();
         Value {
             proof: bounds::Proof::default().with_external_borrows(&ty),

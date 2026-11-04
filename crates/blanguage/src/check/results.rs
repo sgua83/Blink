@@ -169,7 +169,7 @@ impl Builder<'_> {
         self.variant_value(ty,usize::from(!success),payload)
     }
     pub(super) fn variant_value(&mut self, ty: Ty, index: usize, payload: Option<Value>) -> Value {
-        let mut value = self.constant_value(ty.clone(), vec![0; ty.components.len()]);
+        let mut value = self.constant_value(ty.clone(), vec![0; ty.components.len()],None);
         let tag = self.constant(ty.components[0].0,Bits::from(ty.variants[index].discriminant));
         value.regs[0] = tag.regs[0];
         value
@@ -238,13 +238,13 @@ impl Builder<'_> {
         })
     }
     pub(super) fn result_condition(&mut self, value: &Value, span: Span) -> Result<Value> {
-        self.variant_condition(value,0,span)
+        self.variant_condition(value,0,span,None)
     }
-    pub(super) fn variant_condition(&mut self,value:&Value,index:usize,span:Span)->Result<Value> {
+    pub(super) fn variant_condition(&mut self,value:&Value,index:usize,span:Span,origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
         let scalar=value.ty.components[0].0;
         let tag=self.result_word(value,0,scalar);
-        let expected=self.constant(scalar,Bits::from(value.ty.variants[index].discriminant));
-        self.binary("==",tag,expected,span)
+        let expected=self.constant_with_origin(scalar,Bits::from(value.ty.variants[index].discriminant),origin.clone());
+        self.binary("==",tag,expected,span,origin)
     }
     pub(super) fn check_variant_patterns<'b>(
         &self, ty: &Ty, arms: &'b [MatchArm], span: Span,

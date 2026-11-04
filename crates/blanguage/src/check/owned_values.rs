@@ -703,12 +703,12 @@ impl Builder<'_> {
         })))
     }
     fn owned_condition(&mut self, value: &OwnedValue, span: Span) -> Result<Value> {
-        self.owned_variant_condition(value,0,span)
+        self.owned_variant_condition(value,0,span,None)
     }
-    fn owned_variant_condition(&mut self,value:&OwnedValue,index:usize,span:Span)->Result<Value> {
-        if value.payloads[index].is_none(){return Ok(self.constant(Scalar::Bool,0));}
-        if value.payloads.iter().enumerate().all(|(i,p)|i==index||p.is_none()){return Ok(self.constant(Scalar::Bool,1));}
-        self.variant_condition(&value.value,index,span)
+    fn owned_variant_condition(&mut self,value:&OwnedValue,index:usize,span:Span,origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
+        if value.payloads[index].is_none(){return Ok(self.constant_with_origin(Scalar::Bool,0,origin));}
+        if value.payloads.iter().enumerate().all(|(i,p)|i==index||p.is_none()){return Ok(self.constant_with_origin(Scalar::Bool,1,origin));}
+        self.variant_condition(&value.value,index,span,origin)
     }
     fn unpack_owned(&mut self,value:&OwnedValue,success:bool)->Returned {self.unpack_variant(value,usize::from(!success))}
     fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Returned {
@@ -979,8 +979,8 @@ impl Builder<'_> {
     fn match_variant_arms(&mut self, value: &Returned, arms: &[&MatchArm], index: usize, span: Span) -> Result<()> {
         if index+1==arms.len() { return self.match_variant_arm(value,index,arms[index]); }
         let condition = match value {
-            Returned::Value(value) => self.variant_condition(value,index,span)?,
-            Returned::OwnedValue(value) => self.owned_variant_condition(value,index,span)?,
+            Returned::Value(value) => self.variant_condition(value,index,span,None)?,
+            Returned::OwnedValue(value) => self.owned_variant_condition(value,index,span,None)?,
             _=>unreachable!(),
         };
         self.conditional_blocks(condition, |b|b.match_variant_arm(value,index,arms[index]), |b|b.match_variant_arms(value,arms,index+1,span),span)
@@ -1069,7 +1069,10 @@ impl Builder<'_> {
         if index+1==value.payloads.len() {
             let item=self.unpack_variant(value,index);return self.drop_returned(item,retained,span);
         }
-        let condition=self.owned_variant_condition(value,index,span)?;
+        let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
+        let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropBranch,trigger:trigger.clone()});
+        let selection=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropCondition,trigger});
+        let condition=self.owned_variant_condition(value,index,span,Some(selection))?;
         if let Some(bits)=&condition.constant {
             if bits[0]!=0 {let item=self.unpack_variant(value,index);self.drop_returned(item,retained,span)}
             else {self.drop_variant(value,index+1,retained,span)}
@@ -1079,7 +1082,7 @@ impl Builder<'_> {
             let yes=std::mem::take(&mut self.code);
             self.drop_variant(value,index+1,retained,span)?;
             let no=std::mem::replace(&mut self.code,outer);
-            self.emit(InstKind::If{condition:condition.regs[0],yes,no});Ok(())
+            self.code.push(Inst::generated(InstKind::If{condition:condition.regs[0],yes,no},branch));Ok(())
         }
     }
     pub(super) fn drop_binding(&mut self,binding:Binding,retained:&view::Borrow,span:Span) -> Result<()> {
