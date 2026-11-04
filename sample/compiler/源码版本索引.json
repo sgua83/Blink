@@ -337,6 +337,10 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
+    },
+    {
+      "path": "crates/blanguage/src/check/owned_presence.rs",
+      "sha256": "6dc766ff4352837d6a95a6c0ad17303c50a2c1dbce18e1e50b8e81f388aa3922"
     }
   ],
   "excerpts": [
@@ -609,6 +613,12 @@
       "start_line": 3899,
       "end_line": 3936,
       "sha256": "68ff4672d959f3a1694298ed6bb416071943d7b732d6312782c0fe07ae377984"
+    },
+    {
+      "path": "crates/blanguage/src/check/owned_presence.rs",
+      "start_line": 46,
+      "end_line": 54,
+      "sha256": "b01f20ff816063a65508edf22c7d714eb33b19a8933dddef3245f460633ab518"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
