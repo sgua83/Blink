@@ -419,7 +419,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-4"></a>
 
-**CPU Dataset借用描述符步长拓宽的生成来源。** 输入／生产消费：实际DataReference／原descriptor Ty与步长Scalar→application.rs#124::application_reference_value1580至1582原条件Cast→原descriptor stride寄存器。只交接真实U32到U64步长Cast，不重标原storage_address或字段布局准备，不触碰PA4投影根Proof；已是U64时不补造转换。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-4)。
+**CPU Dataset借用描述符步长拓宽的生成来源。** 输入／生产消费：实际DataReference／原descriptor Ty与步长Scalar→application.rs#125::application_reference_value1580至1582原条件Cast→原descriptor stride寄存器。只交接真实U32到U64步长Cast，不重标原storage_address或字段布局准备，不触碰PA4投影根Proof；已是U64时沿原寄存器直传，不补造转换；原Cast若被后续折叠／消除则沿原优化消费，不为来源保活，完整变换关系另归原编号。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-4)。
 
 <a id="tool-7-2-4-5-6-5"></a>
 
