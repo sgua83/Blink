@@ -1383,14 +1383,18 @@ impl Builder<'_> {
         target: Target,
         arguments: Vec<CallArgument>,
     ) {
-        self.emit(InstKind::Call(Call {
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::ApplicationDomainCall,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
+        self.code.push(Inst::generated(InstKind::Call(Call {
             target: CallTarget::Defined(crate::module::domain::symbol(&instance.name, target)),
             arguments,
             memory: Vec::new(),
             memory_use: None,
             result: None,
             values: Vec::new(),
-        }));
+        }), origin));
     }
 }
 pub(crate) fn check_domain(world: &World, instance: &crate::generics::Instance) -> Result<()> {

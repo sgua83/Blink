@@ -411,7 +411,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-8"></a>
 
-**应用计算发起及资源参数包装。** 原target／CPU整域调用或提取的parallel、实际Instance／目标及合法Data／uniform，经application_execute原能力／借用／驻留／初始化／长度／布局检查与prepare_domain取得原合同，依原形参顺序交接Frame、根与字节偏移及统一值；唯一实际发起Inst由call_domain消费这组原CallArgument生成Defined整域Call。该Call须沿原Builder交接原触发、定义／实例及内联／域路径和生成职责，原被调实例与CPU／GPU目标仍由原CallTarget确定，不另存第二绑定表。参数组装、初始化模型及已有寄存器直传没有Inst时不伪造参数／初始化操作；已有字段偏移准备保持自身来源，不在调用处重标。材料只由原Inst／FunctionBody／模块及SDK／CLI快照持有，在最后IR消费者后释放，不进入必要执行编码，不保活变量、不持有World／AST／运行资源。真实资源、依赖、提交及最后完成继续归原Frame／blcompute与实际消费者；静态Call不证明计算已运行或GPU完成。原权限检查、参数、顺序、别名、CPU／GPU选择、临时实参完成与错误保持，不增加调用、调度、同步或释放链。domain_at／build_domain生成的被调包装与分段提交仍归.4.6，不以本Call来源代替其内部来源或复制图／调度器。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-8)。
+**应用计算发起及资源参数包装。** 原target／CPU整域调用或提取的parallel、实际Instance／目标及合法Data／uniform，经application_execute原能力／借用／驻留／初始化／长度／布局检查与prepare_domain取得原合同，依原形参顺序交接Frame、根与字节偏移及统一值；唯一实际发起Inst由call_domain消费这组原CallArgument生成Defined整域Call。该Call由原Builder交接ApplicationDomainCall，JSON reason为application_domain_call，节点source_site为空，可选Syntax直接借用原发射点的SourceSite；原触发、定义／实例及内联／域路径保持，未知为null，原被调实例与CPU／GPU目标仍由原CallTarget确定，不另存第二绑定表。参数组装、初始化模型及已有寄存器直传没有Inst时不伪造参数／初始化操作；已有字段偏移准备保持自身来源，不在调用处重标。材料只由原Inst／FunctionBody／模块及SDK／CLI快照持有，在最后IR消费者后释放，不进入必要执行编码，不保活变量、不持有World／AST／运行资源。真实资源、依赖、提交及最后完成继续归原Frame／blcompute与实际消费者；静态Call不证明计算已运行或GPU完成。原权限检查、参数、顺序、别名、CPU／GPU选择、临时实参完成与错误保持，不增加调用、调度、同步或释放链。domain_at／build_domain生成的被调包装与分段提交仍归.4.6，不以本Call来源代替其内部来源或复制图／调度器。当前已交接原实际发起Call的生成来源，原优化照常保留／消除，不为观察保活。见[规范](BLanguage.md#应用发起整域计算的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-8)。
 
 <a id="tool-7-2-4-6"></a>
 

@@ -373,6 +373,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetProjectionAddress | dataset_projection_address | 原CPU dataset构造view时投影地址准备的零索引常量 |
 | DatasetUpload | dataset_upload | 原upload经所有权／借用／源位置检查后生成的Frame上传Call |
 | DatasetDownload | dataset_download | 原download经所有权／借用／源位置检查后生成的Frame下载Call |
+| ApplicationDomainCall | application_domain_call | 原应用将Frame与实际参数交给已编译整域入口的Defined Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -557,6 +558,14 @@ application_transfer在原upload／download分支、所有权／活动借用／�
 节点source_site为空，可选Syntax直接借用原传输Call发射时的当前SourceSite，语法范围、定义／特化实例及inlined_at／domain_path保持；未知触发为null，不按资源名或邻近指令猜补。原编译拒绝及运行错误仍由原检查和Frame交接，不因来源放宽访问、改变借用或增加传输、读回、同步。
 
 材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；不进入必要执行编码，不延长运行存储寿命，不强制节点保留。真实存储、传输、依赖、最后消费者和释放继续归原Frame／blcompute；静态来源不证明已经上传、下载或GPU完成。完整优化来源与机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-7)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-7)。
+
+#### 应用发起整域计算的生成来源
+
+call_domain只为原application_execute交付Frame及实际参数后发射的Defined Call交接ApplicationDomainCall，JSON reason为application_domain_call。真实CPU／GPU目标和被调实例继续来自原CallTarget，参数与原寄存器／布局继续来自CallArgument；普通CPU调用及被调域包装内部的Call不按名称字符串改标。显式target、CPU普通整域调用及应用内提取parallel都沿原实际发起点交接，原权限、驻留、初始化、长度、形状、参数顺序及临时实参结束规则保持。
+
+节点source_site为空，可选Syntax直接借用原Call发射时的当前SourceSite，原语法范围、定义／特化实例及inlined_at／domain_path保持；未知为null，不扩大为没有取得的target参数列表或整条parallel。参数组装、初始化模型及已有寄存器直传没有独立Inst时不虚构节点；已有字段偏移准备保留DatasetFieldLayout，不随本Call重标。原domain_at／build_domain及分段提交的内部来源另归对应叶项，本项不把根调用材料扩成整个被调包装的来源。
+
+材料只归compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI来源快照，最后实际IR消费者后释放；不进入必要执行编码、不保活变量，不持有World／AST或运行资源。真实计算、提交、依赖、存储及最后消费者仍归原Frame／blcompute，静态Call不证明已经执行或GPU完成；不增加调用、调度、同步、状态或释放链。完整优化／机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-8)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-8)。
 
 #### 集合值核的入口与捕获来源
 

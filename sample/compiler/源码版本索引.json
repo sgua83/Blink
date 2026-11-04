@@ -124,7 +124,7 @@
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "61fb9e6ef308aaeef61293a6bb477ff7d6e728466e36716860186d5175852d9f"
+      "sha256": "24b230a04949ef76475d34cad2967f78b3f04929996b5a24d07e2f15853a2328"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
