@@ -2247,6 +2247,9 @@ impl<'a> Builder<'a> {
         }
     }
     fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
+        if p.ty().contains_views() && matches!(p.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
+            return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
+        }
         self.require_owned_writable(p,span)?;
         self.require_view_available(&value, span)?;
         let ty = p.ty();

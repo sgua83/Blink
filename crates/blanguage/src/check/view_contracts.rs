@@ -96,7 +96,7 @@ pub(super) struct Function {
     pub outputs:Outputs,
     pub initialization:Vec<address::InitializationEffect>,
     pub normal_returns:Option<bounds::Condition>,
-    pub resource_names:BTreeMap<Output,ValueIdentity>,
+    pub resource_names:BTreeMap<Output,Borrow>,
     pub parameters:BTreeMap<ValueIdentity,ValueIdentity>,
     pub input_width:usize,
     pub uses:Vec<Use>,
@@ -115,8 +115,45 @@ pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Opti
     returns::Returned::Dataset(value)if index==0=>Some(value),
     returns::Returned::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(index)?.clone();view::owned_data_at_mut(value,&path)},_=>None,
 }}
-pub(super) fn set_resource_borrows(value:&mut returns::Returned,mut borrow:impl FnMut(usize)->Borrow){
-    let count=resource_borrows(value).len();for index in 0..count{if let Some(data)=resource_value_mut(value,index){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(index));}}
+pub(super) fn resource_output_paths(value:&returns::Returned)->Vec<(usize,Vec<Vec<usize>>)> {
+    fn visit(ty:&Ty,root:usize,parents:&[Vec<usize>],out:&mut Vec<(usize,Vec<Vec<usize>>)>) {
+        for(fields,element)in view::resource_paths(ty).into_iter().zip(application::element_types(ty)){
+            let mut path=parents.to_vec();path.push(fields);out.push((root,path.clone()));visit(element,root,&path,out);
+        }
+    }
+    let types=match value{returns::Returned::Dataset(data)=>vec![&data.ty],returns::Returned::OwnedValue(value)=>application::element_types(&value.value.ty),_=>Vec::new()};
+    let mut out=(0..types.len()).map(|root|(root,Vec::new())).collect::<Vec<_>>();
+    for(root,ty)in types.into_iter().enumerate(){visit(ty,root,&[],&mut out);}out
+}
+fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Data>{match value{
+    returns::Returned::Dataset(data)if index==0=>Some(data),
+    returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(index).and_then(|path|view::owned_data_at(value,path)),_=>None,
+}}
+pub(super) fn resource_outputs(value:&returns::Returned)->Vec<Borrow>{
+    resource_output_paths(value).into_iter().enumerate().map(|(index,(root,path))|{
+        let Some(mut data)=root_resource(value,root)else{return Borrow::source(Origin::Inactive);};
+        for fields in path{
+            if data.length.maximum()==0{return Borrow::source(Origin::Inactive);}
+            let Some(child)=application::model_data(&data.elements,&fields)else{return Borrow::source(Origin::Inactive);};data=child;
+        }
+        let name=resource_output_name(value,index).unwrap();
+        view::resource_borrow(data).map_sources(|source|match source{
+            Origin::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>name.clone(),
+            source=>Borrow::source(source),
+        })
+    }).collect()
+}
+pub(super) fn resource_output_mut(value:&mut returns::Returned,index:usize)->Option<&mut application::Data>{
+    let(root,path)=resource_output_paths(value).get(index)?.clone();let mut data=resource_value_mut(value,root)?;
+    for fields in path{data=application::model_data_mut(&mut data.elements,&fields)?;}Some(data)
+}
+pub(super) fn resource_output_name(value:&returns::Returned,index:usize)->Option<Borrow>{
+    let(root,path)=resource_output_paths(value).get(index)?.clone();let data=root_resource(value,root)?;
+    let mut name=Borrow::source(Origin::Data(ValueIdentity::Register(data.root.regs[0])));
+    for fields in path{name=Borrow::element(name,fields);}Some(name)
+}
+pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(usize)->Borrow){
+    let count=resource_output_paths(value).len();for index in 0..count{if let Some(data)=resource_output_mut(value,index){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(index));}}
 }
 fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSet<usize>)->bool {
     if !a.calls.is_empty()||!b.calls.is_empty(){return false;}
@@ -143,7 +180,7 @@ impl Function {
         Borrow{calls:view::Edges::from([CallResult{call,output}]),..Borrow::default()}
     }
     pub fn capture_resources(&mut self,value:&returns::Returned,output:impl Fn(usize)->Output){
-        for(index,borrow)in resource_borrows(value).into_iter().enumerate(){self.outputs.insert(output(index),borrow);}
+        for(index,borrow)in resource_outputs(value).into_iter().enumerate(){self.outputs.insert(output(index),borrow);}
     }
     pub fn capture(&mut self,proof:&bounds::Proof,ty:&Ty,output:impl Fn(usize)->Output) {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}
@@ -289,13 +326,13 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
         value.union(&evaluate(&actual,function,state,known,expand_loops).restricted(&when));
     }value
 }
-fn canonical(borrow:Borrow,function:&Function,resource:Option<ValueIdentity>,exposed:&BTreeMap<ValueIdentity,Borrow>)->Borrow {
+fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<ValueIdentity,Borrow>)->Borrow {
     let parameters=function.parameters.iter().map(|(a,b)|(*a,bounds::Proof::default().with_identity(*b))).collect();
     let renamed=|source|match source {
         Origin::Data(id)=>{
             let input=function.parameters.get(&id).copied().filter(|id|function.input(*id));
             if let Some(input)=input{Borrow::source(Origin::Data(input))}
-            else if let Some(resource)=resource{Borrow::source(Origin::Data(resource))}
+            else if let Some(resource)=resource{resource.clone()}
             else if let Some(outputs)=exposed.get(&id){outputs.clone()}
             else{Borrow::source(Origin::Unresolved)}
         }
@@ -492,7 +529,7 @@ fn exposed_resources(function:&Function,state:&State,known:&States)->BTreeMap<Va
     let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
     for(output,name)in &function.resource_names {
         let physical=evaluate(&function.outputs[output],function,state,known,true);
-        for(source,when)in physical.sources.entries(){if let Origin::Data(id)=source{exposed.entry(*id).or_default().union(&Borrow::source(Origin::Data(*name)).restricted(&when));}}
+        for(source,when)in physical.sources.entries(){if let Origin::Data(id)=source{if !matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){exposed.entry(*id).or_default().union(&name.restricted(&when));}}}
     }
     exposed
 }
@@ -613,9 +650,9 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
             let physical=function.outputs.iter().map(|(output,definition)|(*output,evaluate(definition,function,state,known,true))).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let mut exposed:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
-            for(output,name)in &function.resource_names{for(source,when)in physical[output].sources.entries(){if let Origin::Data(id)=source{exposed.entry(*id).or_default().union(&Borrow::source(Origin::Data(*name)).restricted(&when));}}}
+            for(output,name)in &function.resource_names{for(source,when)in physical[output].sources.entries(){if let Origin::Data(id)=source{if !matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){exposed.entry(*id).or_default().union(&name.restricted(&when));}}}}
             for(output,definition)in &physical{
-                let mut value=canonical(definition.clone(),function,function.resource_names.get(output).copied(),&exposed);
+                let mut value=canonical(definition.clone(),function,function.resource_names.get(output),&exposed);
                 if unknown.contains(&(name.clone(),*output)){value.sources.insert(Origin::Unresolved);}
                 result.interface.outputs.insert(*output,value);
             }

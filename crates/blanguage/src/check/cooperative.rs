@@ -232,7 +232,7 @@ impl<'a> Builder<'a> {
         for argument in &arguments{if let Argument::Reference(owner)=argument{retained.union(&owner.proof.typed_view_borrow(owner.place.ty()));}}
         for(param,argument)in parameters.iter().zip(&arguments){if param.access==Access::Value{
             let resources=match argument{Argument::ApplicationData(data)=>vec![data],Argument::OwnedValue(value)=>value.resources(),_=>Vec::new()};
-            for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
+            for data in resources{self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
         }}
         self.view_uses.invocation(span);
         for (param, argument) in parameters.iter().zip(&arguments) {

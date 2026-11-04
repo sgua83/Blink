@@ -892,7 +892,7 @@ impl Builder<'_> {
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         let mut borrow=retained.clone();
         for(name,binding)in &self.env{borrow.union(&self.live_view_borrow(name,binding));}
-        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow,ownership:true,span})?;
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow,ownership:true,span})?;
         if self.application_position_borrowed(data.root.identity()) {
             return self.fail(
                 span,
@@ -2214,7 +2214,7 @@ impl crate::module::codec::Decode for DataPayload {
 
 // Common element metadata belongs to the original logical Data.
 type ElementBindings = BTreeMap<ValueIdentity,bounds::Proof>;
-fn element_types(ty:&Ty)->Vec<&Ty> {
+pub(super) fn element_types(ty:&Ty)->Vec<&Ty> {
     fn visit<'a>(ty:&'a Ty, out:&mut Vec<&'a Ty>) {
         if let Some(element)=ty.dataset.as_deref(){out.push(element);return;}
         if ty.has_variants(){for variant in &ty.variants{visit(&variant.ty,out);}}
@@ -2375,8 +2375,33 @@ impl Builder<'_> {
         }
         Box::new(self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true))
     }
+    pub(super) fn owned_resource_borrow(&self,data:&Data)->view::Borrow {
+        fn collect(builder:&Builder<'_>,data:&Data,parent:view::Borrow,mut bindings:ElementBindings,out:&mut view::Borrow){
+            out.union(&parent);if data.length.maximum()==0{return;}
+            builder.bind_element_resource_borrows(data,&parent,&mut bindings);
+            for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(&data.elements,&fields){
+                let borrow=view::resource_borrow(child).at_call(&bindings);
+                let nested=element_scope_bindings(&bindings,child.elements.registers().len(),true);
+                collect(builder,child,borrow,nested,out);
+            }}
+        }
+        let mut out=view::Borrow::default();collect(self,data,view::resource_borrow(data),self.element_owner_bindings(data),&mut out);out
+    }
     fn element_owner_bindings(&self,data:&Data)->ElementBindings {
-        let mut out=ElementBindings::new();
+        fn aliases(borrow:&view::Borrow,out:&mut ElementBindings){
+            for source in &borrow.sources{match source{
+                view::Source::Data(id@ValueIdentity::Register(_))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id));},
+                view::Source::Parameter(id@ValueIdentity::DatasetContent(..))=>{out.entry(*id).or_insert_with(||bounds::Proof::default().with_identity(*id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(*id))));},
+                view::Source::Element{parent,..}=>aliases(parent,out),
+                view::Source::Position(origin)=>aliases(&origin.resources(),out),_=>{},
+            }}
+        }
+        fn owned(data:&Data,out:&mut ElementBindings){
+            aliases(&data.root.proof.view_borrow(0),out);
+            if let Some(value)=data.elements.view_value(){aliases(&value.proof.typed_view_borrow(&value.ty),out);}
+            for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(&data.elements,&fields){owned(child,out);}}
+        }
+        let mut out=ElementBindings::new();owned(data,&mut out);
         for value in [&data.root,&data.length]{
             let proof=bounds::Proof::capture(value);
             for id in value.component_origins(0){out.insert(id,proof.clone());}
@@ -2410,6 +2435,7 @@ impl Builder<'_> {
                 let proof=bindings.entry(id).or_default();
                 let mut borrow=proof.view_borrow(0);
                 borrow.union(&view::Borrow::element(parent.clone(),fields));
+                borrow.union(&view::resource_aliases(resource));
                 *proof=std::mem::take(proof).with_view_borrow(0,borrow);
             }
         }
@@ -2462,10 +2488,9 @@ impl Builder<'_> {
         let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
         self.check_returned_type(&mut value,place.ty(),span)?;self.view_uses.after(span);
         let packed=self.returned_storage(&value);
-        let held=match &value{returns::Returned::OwnedValue(value)if value.value.ty.contains_cleanup()&&value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
+        let held=match &value{returns::Returned::OwnedValue(value)if value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
         self.drop_returned(old,&view::Borrow::default(),span)?;
-        if let Some(name)=held{self.env.remove(&name);}
         self.write_storage_value(&place,&packed,span,None)?;
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
@@ -2495,6 +2520,7 @@ impl Builder<'_> {
             });
             self.env.insert(name,binding);
         }
+        if let Some(name)=held{self.env.remove(&name);}
         Ok(())
     }
     fn capture_element_model(&self,data:&Data,projection:&[usize],mut model:returns::Returned)->Box<returns::Returned>{
@@ -2507,6 +2533,13 @@ impl Builder<'_> {
             bindings.insert(id,proof.clone());
             for source in value.component_origins(component){bindings.entry(source).or_insert_with(||proof.clone());}
         }
+        for fields in view::resource_paths(&value.ty){if let Some(resource)=model_data(&model,&fields){
+            let(mut offset,mut ty)=(0,&value.ty);
+            for field in fields{let(at,next)=ty.aggregate_part(field);offset+=at;ty=next;}
+            let component=value.ty.components.iter().position(|(_,word)|*word==offset).unwrap();
+            let proof=bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(components[component]));
+            for source in resource.root.component_origins(0){bindings.insert(source,proof.clone());}
+        }}
         let original=model.clone();native_function::rebind_model(&mut model,components);
         native_function::translate_returned(&mut model,&original,&bindings,true);
         if let Some(value)=model.view_value_mut(){
@@ -2516,7 +2549,7 @@ impl Builder<'_> {
                 if !origins.contains(&id){origins.push(id);}
             }
         }
-        self.close_stored_resources(&mut model);Box::new(model)
+        self.close_stored_resources(&mut model,&original);Box::new(model)
     }
     pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value)->returns::Returned{
         fn loaded_value(builder:&Builder<'_>,target:&mut Value,loaded:&Value){
@@ -2566,7 +2599,7 @@ impl Builder<'_> {
         let borrow=self.data_value_borrow(&data.data);
         owned_borrows::each_data(&mut model,&mut Vec::new(),&mut|child,path|{
             let mut fields=data.projection.clone();fields.extend_from_slice(path);
-            child.root.proof=child.root.proof.clone().with_view_borrow(0,view::Borrow::element(borrow.clone(),fields));
+            child.root.proof=child.root.proof.clone().with_view_borrow(0,child.root.proof.view_borrow(0).joined(view::Borrow::element(borrow.clone(),fields)));
         });
         model
     }
@@ -2604,18 +2637,18 @@ impl Builder<'_> {
         result
     }
     pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],fresh:Option<&bounds::Proof>,index_range:Option<(u32,u32)>){
-        let names=self.env.keys().cloned().collect::<Vec<_>>();
+        let names=self.env.keys().cloned().collect::<Vec<_>>();let one=self.constant(Scalar::U32,1);
         for name in names{
             let mut binding=self.env[&name].clone();
             each_binding_data(&mut binding,&mut |_,_,data|{
                 let scopes=self.application_element_scopes(sources,resource,data);let unique=scopes.len()==1;
-                for(scope,mut complete_scope)in scopes {
-                let mut data=&mut *data;
-                for fields in scope{complete_scope&=data.length.minimum()==1&&data.length.maximum()==1;data=model_data_mut(&mut data.elements,&fields).unwrap();}
+                for(scope,complete_scope)in scopes {
+                let mut complete_scope=bounds::Condition::constant(complete_scope);let mut data=&mut *data;
+                for fields in scope{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,&one),false);data=model_data_mut(&mut data.elements,&fields).unwrap();}
                 let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
                 if components.is_empty(){continue;}
                 let old=self.returned_storage(&data.elements);let mut updated=old.clone();updated.constant=None;
-                let mut bindings=self.element_owner_bindings(data);
+                let mut bindings=element_scope_bindings(&self.element_owner_bindings(data),old.regs.len(),false);
                 for component in 0..old.regs.len(){if !components.contains(&component){for id in old.component_origins(component){
                     if !matches!(id,ValueIdentity::ElementComponent(at) if components.contains(&at)){
                         bindings.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));
@@ -2634,26 +2667,29 @@ impl Builder<'_> {
                     fresh.at_call(&bindings)
                 }else{bounds::Proof::default()};
                 updated.proof.assign(&components,old.regs.len(),written);
-                let complete=unique&&complete_scope&&index_range==Some((0,0))&&data.length.minimum()==1&&data.length.maximum()==1;
-                if !complete{
+                let complete=bounds::Condition::constant(unique&&index_range==Some((0,0))).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,&one),false);
+                let truth=complete.truth_in(&self.path);
+                if truth!=Some(true){
+                    let mut common=updated.clone();
                     for component in &components{
                         let proof=bounds::Proof::common(&self.value_component(&updated,*component),&self.value_component(&old,*component),None);
-                        updated.proof.assign(&[*component],old.regs.len(),proof);
+                        common.proof.assign(&[*component],old.regs.len(),proof);
                     }
+                    if truth==Some(false){updated=common;}else{updated.proof.join_condition(&common.proof,old.regs.len(),Some(&complete));}
                 }
                 updated.proof.retain_view_borrows(&updated.ty);
                 match data.elements.as_mut(){
                     returns::Returned::Value(value)=>**value=updated.clone(),
                     returns::Returned::OwnedValue(value)=>value.value=updated.clone(),
-                    returns::Returned::Dataset(inner)=>{
-                        inner.root=self.value_component(&updated,0);inner.length=self.value_component(&updated,1);
-                    }
+                    returns::Returned::Dataset(_)=>{},
                     returns::Returned::Unit=>{},
                 }
                 for path in view::resource_paths(&updated.ty){
                     if let Some(inner)=model_data_mut(&mut data.elements,&path){
                         let handle=inner.root.regs[0];let length=inner.length.regs[0];
+                        let borrow=inner.root.proof.view_borrow(0);
                         inner.root=self.value_component(&updated,handle);inner.length=self.value_component(&updated,length);
+                        inner.root.proof=std::mem::take(&mut inner.root.proof).with_identity(ValueIdentity::ElementComponent(handle)).with_view_borrow(0,borrow);
                         if components.contains(&handle)||components.contains(&length){inner.elements=self.unknown_element_model(&inner.ty);}
                     }
                 }
@@ -2716,13 +2752,13 @@ impl Builder<'_> {
 }
 
 impl Builder<'_> {
-    // The moved resource is now represented by its stored handle. The old
-    // producer-call edge is not another owner of that element's resource.
-    fn close_stored_resources(&self,model:&mut returns::Returned){
+    // The stored root keeps the same resource's physical aliases in its Proof.
+    // Element scope names describe that owner; they do not create another one.
+    fn close_stored_resources(&self,model:&mut returns::Returned,original:&returns::Returned){
         let value=self.returned_storage(model);
-        for path in view::resource_paths(&value.ty){if let Some(data)=model_data_mut(model,&path){
-            if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::Borrow::default());}
-            self.close_stored_resources(&mut data.elements);
+        for path in view::resource_paths(&value.ty){if let(Some(data),Some(source))=(model_data_mut(model,&path),model_data(original,&path)){
+            if data.ownership.may_own(){data.root.proof=data.root.proof.clone().with_view_borrow(0,view::resource_borrow(source));}
+            self.close_stored_resources(&mut data.elements,&source.elements);
         }}
     }
 }

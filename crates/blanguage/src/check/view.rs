@@ -110,8 +110,20 @@ impl crate::module::codec::Encode for Borrow{fn encode(&self,w:&mut crate::modul
     }
 }}
 impl crate::module::codec::Decode for Borrow{fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{sources:crate::module::codec::Decode::decode(r)?,..Self::default()})}}
+pub(super) fn resource_aliases(data:&application::Data)->Borrow {
+    let mut value=Borrow::default();
+    for id in data.root.proof.origins.first().into_iter().flatten(){
+        let source=match id {
+            ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)=>continue,
+            ValueIdentity::DatasetContent(..)=>Source::Parameter(*id),
+            id=>Source::Data(*id),
+        };
+        value.sources.insert(source);
+    }
+    value
+}
 pub(super) fn resource_borrow(data:&application::Data)->Borrow{
-    let mut value=data.root.proof.view_borrow(0);if value.empty(){value.sources.insert(Source::Data(data.root.identity()));}value
+    let mut value=data.root.proof.view_borrow(0);value.union(&resource_aliases(data));if value.empty()||matches!(data.root.identity(),ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){value.sources.insert(Source::Data(data.root.identity()));}value
 }
 pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{data.root.proof.clone().with_view_borrow(0,resource_borrow(data))}
 
