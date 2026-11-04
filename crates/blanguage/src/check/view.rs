@@ -318,11 +318,10 @@ impl Builder<'_> {
             .iter()
             .any(|(name,b)| self.live_view_borrow(name,b).owners().sources.contains(&Source::Data(identity)))
     }
-    pub(super) fn require_view_unborrowed(&mut self,sources:&[ValueIdentity],span:Span)->Result<()> {
+    pub(super) fn require_view_unborrowed(&mut self,resource:&Borrow,span:Span)->Result<()> {
         let mut borrow=Borrow::default();
         for (name,binding) in &self.env {borrow.union(&self.live_view_borrow(name,binding));}
-        for identity in sources {self.check_view_requirement(Requirement::Unborrowed{resource:self.data_borrow(&[*identity]),borrow:borrow.clone(),ownership:false,span})?;}
-        Ok(())
+        self.check_view_requirement(Requirement::Unborrowed{resource:resource.clone(),borrow,ownership:false,span})
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
         if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}) {

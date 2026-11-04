@@ -390,8 +390,8 @@ impl Builder<'_> {
         }
         match place {
             Place::Reference { words, access: Access::Write | Access::InOut, .. } => Ok(words.iter().map(|word| *word as usize).collect()),
-            Place::ApplicationElement { words, sources, access: Access::Write | Access::InOut, .. } => {
-                self.require_view_unborrowed(sources,span)?;
+            Place::ApplicationElement { words, resource, access: Access::Write | Access::InOut, .. } => {
+                self.require_view_unborrowed(resource,span)?;
                 Ok(words.iter().map(|word| *word as usize).collect())
             },
             Place::Local(_, slots, ..) => Ok(slots.clone()),

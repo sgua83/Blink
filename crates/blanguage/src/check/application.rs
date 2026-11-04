@@ -1482,7 +1482,7 @@ impl Builder<'_> {
         span: Span,
     ) -> Result<[Reg; 2]> {
         self.application_handle_available(identity, span)?;
-        if bytes != 0 { self.require_view_unborrowed(&[identity],span)?; }
+        if bytes != 0 { self.require_view_unborrowed(&self.data_borrow(&[identity]),span)?; }
         self.application_cpu_source(identity,span)?;
         let handle = Value {
             proof: bounds::Proof::default(),
