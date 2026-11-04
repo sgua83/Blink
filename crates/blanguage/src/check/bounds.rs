@@ -1058,7 +1058,7 @@ impl Proof {
             .collect();
         proof
     }
-    pub fn common(a: &Value, b: &Value) -> Self {
+    pub fn common(a: &Value, b: &Value, choice: Option<&Condition>) -> Self {
         let mut proof=Self::capture(a);let mut other=Self::capture(b);
         let aliases=[Clause::facts(proof.facts(&a.ty)),Clause::facts(other.facts(&b.ty))];
         for(component,(scalar,_))in a.ty.components.iter().enumerate(){
@@ -1070,21 +1070,7 @@ impl Proof {
                 }
             }
         }
-        proof.join(&other,a.regs.len(),None);
-        proof
-    }
-    pub fn selection(c: &Value, a: &Value, b: &Value) -> Self {
-        let mut proof = Self::common(a, b);
-        if !proof.addresses.is_empty(){let choice=Condition::of(c);proof.addresses=(0..a.regs.len()).map(|i|address::Identity::selected(Some(&choice),a.proof.addresses.get(i).and_then(Option::as_ref),b.proof.addresses.get(i).and_then(Option::as_ref))).collect();}
-        for (i, condition) in proof.conditions.iter_mut().enumerate() {
-            if condition.is_some() {
-                *condition = Some(Box::new(Condition::branch(
-                    Condition::of(c),
-                    Condition::component(a, i),
-                    Condition::component(b, i),
-                )));
-            }
-        }
+        proof.join_condition(&other,a.regs.len(),choice);
         proof
     }
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -1310,18 +1296,7 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
             Binding::ApplicationData(data) => data.length.proof.facts(&data.length.ty),
             Binding::Value(value) if Proof::fact_components(&value.ty).next().is_some() => Proof::capture(value).facts(&value.ty),
             Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => owner.proof.facts(owner.place.ty()),
-            Binding::OwnedValue(owner) => owner
-                .value
-                .proof
-                .facts(&owner.value.ty)
-                .into_iter()
-                .chain(
-                    owner
-                        .resources()
-                        .into_iter()
-                        .flat_map(|d| d.length.proof.facts(&d.length.ty)),
-                )
-                .collect(),
+            Binding::OwnedValue(owner) => owner.value.proof.facts(&owner.value.ty),
             Binding::Data(view) => view
                 .length
                 .clone()

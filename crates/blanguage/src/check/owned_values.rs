@@ -19,7 +19,7 @@ impl OwnedValuePayload {
         if self.ownership != other.ownership {
             self.ownership = Ownership::Moved;
         }
-        self.value.proof = bounds::Proof::common(&self.value, &other.value);
+        self.value.proof = bounds::Proof::common(&self.value, &other.value,None);
         self.value.uniform &= other.value.uniform;
         if self.value.constant != other.value.constant {
             self.value.constant = None;

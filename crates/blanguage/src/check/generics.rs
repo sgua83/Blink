@@ -155,7 +155,7 @@ pub(crate) fn specialize(
                 world.ty(ty, source, span, module, imports)?
             };
             if ty.dataset {
-                if actual.owns_resources() || actual.contains_views(){return source.fail(span,"B033","dataset元素需要普通存储");}
+                if actual.contains_views(){return source.fail(span,"B033","含view元素的dataset显式泛型类型实参尚未实现");}
                 actual=Ty::owned_dataset(actual,world.shape(&ty.count,source,span,module,imports)?);
             }
             if !world.family_accepts(

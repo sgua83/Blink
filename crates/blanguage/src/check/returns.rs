@@ -76,15 +76,15 @@ impl Returned {
     }
     pub(super) fn join_locations(&mut self,other:Self,choice:&bounds::Condition){
         if let (Self::Value(value),Self::Value(other))=(&mut *self,&other){
-            value.proof.join_condition(&other.proof,value.regs.len(),Some(choice));
+            value.proof=bounds::Proof::common(value,other,Some(choice));
             value.uniform &= other.uniform;
             if value.constant != other.constant { value.constant=None; }
             return;
         }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&bounds::Condition){match(target,a,b){
-            (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=a.proof.clone();target.proof.join_condition(&b.proof,target.regs.len(),Some(choice));},
-            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));},
-            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=a.value.proof.clone();target.value.proof.join_condition(&b.value.proof,target.value.regs.len(),Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},
+            (Returned::Value(target),Returned::Value(a),Returned::Value(b))=>{target.proof=bounds::Proof::common(a,b,Some(choice));},
+            (Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.residency=residency::Residency::conditional(choice.clone(),a.residency.clone(),b.residency.clone());target.root.proof.join_view_borrows(&view::resource_proof(a),&view::resource_proof(b),Some(choice));restore(&mut target.elements,&a.elements,&b.elements,choice);},
+            (Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.value.proof=bounds::Proof::common(&a.value,&b.value,Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},
             _=>{},
         }}
         let before=self.clone();self.join(other.clone());restore(self,&before,&other,choice);
@@ -104,7 +104,7 @@ impl Returned {
             if data.ownership != other.ownership {
                 data.ownership = application::Ownership::Moved;
             }
-            data.root.proof = bounds::Proof::common(&data.root, &other.root);
+            data.root.proof = bounds::Proof::common(&data.root, &other.root,None);
             data.elements.join((*other.elements).clone());
         }
         let (other, residency) = match &other {
@@ -117,7 +117,7 @@ impl Returned {
             Self::Value(value) => value.as_mut(),
             Self::Dataset(data) => &mut data.length,
         };
-        value.proof = bounds::Proof::common(value, other);
+        value.proof = bounds::Proof::common(value, other,None);
         value.uniform &= other.uniform;
         if value.constant != other.constant {
             value.constant = None;

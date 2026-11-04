@@ -205,12 +205,12 @@ impl Builder<'_> {
             })
             .collect();
         let proof = match (&a, &b) {
-            (Some(a), Some(b)) => bounds::Proof::selection(&c, a, b),
+            (Some(a), Some(b)) => bounds::Proof::common(a,b,Some(&bounds::Condition::of(&c))),
             _ => bounds::Proof::capture(storage),
         };
         let mut result = match (a_result.take(), b_result) {
             (Some(mut a), Some(b)) => {
-                a.join(b);
+                a.join_locations(b,&bounds::Condition::of(&c));
                 a
             }
             (Some(a), None) | (None, Some(a)) => a,
