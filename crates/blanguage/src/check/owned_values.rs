@@ -488,8 +488,8 @@ impl Builder<'_> {
         if let ExprKind::Index(base,index) = &expr.kind {
             if let Some(data)=self.application_reference(base)? {
                 let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
-                if !place.ty().owns_resources(){return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),None)));}
-                let packed=self.read_storage_value(&place,expr.span)?;
+                if !place.ty().owns_resources(){return self.read_place(&place,expr.span, None).map(|value|Some((Returned::value(value),None)));}
+                let packed=self.read_storage_value(&place,expr.span, None)?;
                 let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed) else{unreachable!()};
                 value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),None)));
             }
@@ -497,14 +497,14 @@ impl Builder<'_> {
             let value=match value {
                 Returned::Value(value)=>{
                     let value=if value.ty.indexed_element().is_some(){let Some(value)=self.array_value_index(*value,index)?else{return Ok(None)};value}
-                        else {let Some(place)=self.view_value_place(*value,index)?else{return Ok(None)};self.read_place(&place,expr.span)?};
+                        else {let Some(place)=self.view_value_place(*value,index)?else{return Ok(None)};self.read_place(&place,expr.span, None)?};
                     return Ok(Some((Returned::value(value),owner)));
                 }
                 Returned::Dataset(data)=>{
                     let data=application::DataReference::direct(data);
                     let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
-                    if !place.ty().owns_resources(){return self.read_place(&place,expr.span).map(|value|Some((Returned::value(value),owner)));}
-                    let packed=self.read_storage_value(&place,expr.span)?;
+                    if !place.ty().owns_resources(){return self.read_place(&place,expr.span, None).map(|value|Some((Returned::value(value),owner)));}
+                    let packed=self.read_storage_value(&place,expr.span, None)?;
                     let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed)else{unreachable!()};
                     value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),owner)));
                 }
@@ -523,7 +523,7 @@ impl Builder<'_> {
                 for i in selected{model.join(self.unpack_record(&value,i as usize));}
                 let place=match value.place(){Some(place)=>place,None=>self.materialize_array(value.value.clone()).place};let place=self.array_index(place,index,expr.span)?;
                 let mut regs=Vec::new();
-                for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span)?.regs[0]);}
+                for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span, None)?.regs[0]);}
                 self.rebind_returned(&mut model,regs);
                 if let Returned::OwnedValue(value)=&mut model{value.place=Some(place);}model
             };
@@ -543,9 +543,9 @@ impl Builder<'_> {
         }
     }
     // 资源只读取实际位置中的元数据；载荷仍由原Frame持有。
-    pub(super) fn read_storage_value(&mut self,place:&Place,span:Span)->Result<Value> {
+    pub(super) fn read_storage_value(&mut self,place:&Place,span:Span,element_read_origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
         let ty=place.ty().clone();let mut regs=Vec::new();
-        for(index,(scalar,_))in ty.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[index]),span)?.regs[0]);}
+        for(index,(scalar,_))in ty.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[index]),span,element_read_origin.clone())?.regs[0]);}
         let(proof,uniform)=self.read_owned_proof(place,&regs);
         Ok(Value{ty,regs,proof,uniform,literal:false,constant:None})
     }
@@ -554,7 +554,7 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn load_owned_value(&mut self,result:&mut OwnedValue,span:Span)->Result<()> {
-        if let Some(place)=result.place(){let value=self.read_storage_value(&place,span)?;result.value.regs=value.regs;result.value.proof=bounds::Proof::capture(&result.value);}
+        if let Some(place)=result.place(){let value=self.read_storage_value(&place,span, None)?;result.value.regs=value.regs;result.value.proof=bounds::Proof::capture(&result.value);}
         Ok(())
     }
     #[inline(never)]

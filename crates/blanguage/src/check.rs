@@ -2049,7 +2049,7 @@ impl<'a> Builder<'a> {
             _ => self.fail(e.span, "B138", "表达式不是可赋值位置"),
         }
     }
-    fn read_place(&mut self, p: &Place, span: Span) -> Result<Value> {
+    fn read_place(&mut self, p: &Place, span: Span, element_read_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
         if p.ty().owns_resources() {
             return self.fail(
                 span,
@@ -2107,7 +2107,7 @@ impl<'a> Builder<'a> {
                 self.require_initialized(p, span)?;
                 self.dataset_read(p, span)?;
                 let mut value = self
-                    .read_application_place(ty, *handle, *identity, *index, *stride, words, span)?;
+                    .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
                 let (proof, uniform) = self.read_owned_proof(p, &value.regs);
                 value.constant = proof.known_value(ty);
                 value.proof = proof;
@@ -2421,7 +2421,7 @@ impl<'a> Builder<'a> {
         }
         if name == "unsafe_position" {
             let Some(place) = self.external_position(explicit, args, e.span)? else { return Ok(None); };
-            return self.read_place(&place, e.span).map(Some);
+            return self.read_place(&place, e.span, None).map(Some);
         }
         if name == "view" { return self.create_application_view(explicit, args, e.span); }
         if self.variant_constructor_type(name,Some(explicit),None,e.span)?.is_some() {
@@ -4008,7 +4008,7 @@ impl<'a> Builder<'a> {
             self.env.remove(&name);
         }
         if op != "=" {
-            let current = self.read_place(&place, lhs.span)?;
+            let current = self.read_place(&place, lhs.span, None)?;
             value = self.binary(&op[..op.len() - 1], current, value, span)?;
         }
         self.view_uses.after(span);
@@ -4153,7 +4153,7 @@ impl<'a> Builder<'a> {
                             &index,
                             (index.minimum(), index.maximum()),
                         ),
-                        span,
+                        span, None
                     )
                     .map(Some);
             }
@@ -4164,7 +4164,7 @@ impl<'a> Builder<'a> {
             }
             let Some(index) = self.expr(&args[1])? else { return Ok(None); };
             self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
-            return self.read_place(&self.dataset_element(&view, index.regs[0], false), span).map(Some);
+            return self.read_place(&self.dataset_element(&view, index.regs[0], false), span, None).map(Some);
         }
         let Some(view) = self.expr(&args[0])? else {
             return Ok(None);
@@ -4178,7 +4178,7 @@ impl<'a> Builder<'a> {
         let Some(index) = evaluated? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args[1].span)?;
         return self
-            .read_place(&Self::view_element(&view, index.regs[0]), span)
+            .read_place(&Self::view_element(&view, index.regs[0]), span, None)
             .map(Some);
     }
     fn ordinal_call(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
@@ -4273,14 +4273,14 @@ impl<'a> Builder<'a> {
             }
             if p.ty().view.is_some() {
                 if field == "length" {
-                    let view = self.read_place(&p, e.span)?;
+                    let view = self.read_place(&p, e.span, None)?;
                     return Ok(Some(Self::view_length(&view)));
                 }
                 return self.fail(e.span, "B185", "view 只公开只读 length，不公开设备地址分量");
             }
             let (sub, components) = member_type(p.ty(), field, &self.definition.source, e.span)?;
             return self
-                .read_place(&p.project(sub, &components), e.span)
+                .read_place(&p.project(sub, &components), e.span, None)
                 .map(Some);
         }
         let Some(v) = self.expr(base)? else {
@@ -4318,24 +4318,24 @@ impl<'a> Builder<'a> {
             let Some(place) = self.view_value_place(value, index)? else {
                 return Ok(None);
             };
-            return self.read_place(&place, e.span).map(Some);
+            return self.read_place(&place, e.span, None).map(Some);
         }
         let Some(p) = self.place(e)? else {
             return Ok(None);
         };
-        self.read_place(&p, e.span).map(Some)
+        self.read_place(&p, e.span, None).map(Some)
     }
     #[inline(never)]
     fn name_expr(&mut self, name: &String, e: &Expr) -> Result<Value> {
         match self.env.get(name).cloned() {
             Some(Binding::Value(v)) => Ok(v),
-            Some(Binding::Owned(owner)) => self.read_place(&owner.place, e.span),
+            Some(Binding::Owned(owner)) => self.read_place(&owner.place, e.span, None),
             Some(
                 Binding::AtomicBorrow(_)
                 | Binding::ViewElement { .. },
             ) => {
                 let p = self.name_place(name, e)?;
-                self.read_place(&p, e.span)
+                self.read_place(&p, e.span, None)
             }
             None => {
                 let key = self

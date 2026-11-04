@@ -241,7 +241,7 @@ impl Builder<'_> {
         match item {
             Returned::Value(value) => {
                 if let Some(place) = self.projection_place(p) {
-                    self.read_place(&place, span).map(Returned::value)
+                    self.read_place(&place, span, None).map(Returned::value)
                 } else {
                     Ok(Returned::Value(value))
                 }
@@ -455,7 +455,7 @@ impl Builder<'_> {
                 else {
                     return Ok(None);
                 };
-                let value = self.read_place(&place, expr.span)?;
+                let value = self.read_place(&place, expr.span, None)?;
                 self.finish_scoped_argument(&held, expr.span)?;
                 return Ok(Some(Returned::value(value)));
             }
@@ -469,7 +469,7 @@ impl Builder<'_> {
                     return Ok(None);
                 };
                 return self
-                    .read_place(&place, expr.span)
+                    .read_place(&place, expr.span, None)
                     .map(|v| Some(Returned::value(v)));
             }
             _ => return self.fail(expr.span, "B224", "拥有数组元素需要实际拥有数组值"),

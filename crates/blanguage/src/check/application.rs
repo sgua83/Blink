@@ -833,7 +833,7 @@ impl Builder<'_> {
             if source.root.identity()==identity&&source.ownership.may_own(){source.ownership=Ownership::Borrowed;}
         });}
         self.application_movable(data,retained,span)?;
-        let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span)?.regs[0]}else{data.root.regs[0]};
+        let handle=if let Some(place)=&data.place{self.read_place(&place.clone().project(Ty::scalar(Scalar::U32),&[0]),span, None)?.regs[0]}else{data.root.regs[0]};
         if data.ty.owns_resources(){self.drop_application_elements(data,retained,span)?;}
         let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetRelease,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
         self.code.push(Inst::generated(self.application_release(handle).kind,origin));
@@ -931,7 +931,7 @@ impl Builder<'_> {
     }
     pub(super) fn refresh_application_data(&mut self,mut data:Data,span:Span)->Result<Data> {
         if let Some(place)=&data.place {
-            let value=self.read_storage_value(place,span)?;data.root.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
+            let value=self.read_storage_value(place,span, None)?;data.root.regs=vec![value.regs[0]];data.length.regs=vec![value.regs[1]];
             data.root.proof=bounds::Proof::capture(&data.root);
             data.length.proof=bounds::Proof::capture(&data.length).with_domains(Domains::from([IndexDomain::ApplicationLength(data.root.identity())]));
             data.length.constant=data.length.proof.known_value(&data.length.ty);
@@ -1349,19 +1349,25 @@ impl Builder<'_> {
         if data.length.maximum()==0 {return Ok(());}
         let data=self.refresh_application_data(data.clone(),span)?;
         self.application_cpu(&data,span)?;
-        let scalar=Ty::scalar(Scalar::U32);let slot=self.local_slots(&scalar).0[0];self.emit(InstKind::StoreLocal(slot,data.length.regs[0]));
+        let trigger=self.source_site.clone().map(GenerationAnchor::Syntax);
+        let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone()});
+        let scalar=Ty::scalar(Scalar::U32);let slot=self.local_slots(&scalar).0[0];
+        self.code.push(Inst::generated(InstKind::StoreLocal(slot,data.length.regs[0]),origin(GenerationReason::DatasetDropCursor)));
+        let condition_origin=origin(GenerationReason::DatasetDropCondition);
         let outer=std::mem::take(&mut self.code);
-        let cursor=self.reg(Scalar::U32);self.emit(InstKind::LoadLocal(cursor,slot));
-        let zero=self.constant(Scalar::U32,0).regs[0];let test=self.reg(Scalar::Bool);
-        self.emit(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Greater),a:cursor,b:zero});
+        let cursor=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::LoadLocal(cursor,slot),condition_origin.clone()));
+        let zero=self.constant_with_origin(Scalar::U32,0,Some(condition_origin.clone())).regs[0];let test=self.reg(Scalar::Bool);
+        self.code.push(Inst::generated(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Greater),a:cursor,b:zero},condition_origin));
         let condition=std::mem::take(&mut self.code);
-        let one=self.constant(Scalar::U32,1).regs[0];let index=self.reg(Scalar::U32);
-        self.emit(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one});
+        let index_origin=origin(GenerationReason::DatasetDropIndex);
+        let one=self.constant_with_origin(Scalar::U32,1,Some(index_origin.clone())).regs[0];let index=self.reg(Scalar::U32);
+        self.code.push(Inst::generated(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one},index_origin));
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,u32::MAX-1),uniform:false,literal:false,constant:None};
-        let place=Self::application_element(&data,&value_index,(0,u32::MAX-1));let value=self.read_storage_value(&place,span)?;
+        let place=Self::application_element(&data,&value_index,(0,u32::MAX-1));
+        let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
         let element=self.materialize_element(&DataReference::direct(data.clone()),value);self.drop_returned(element,retained,span)?;
-        self.emit(InstKind::StoreLocal(slot,index));
-        let body=std::mem::replace(&mut self.code,outer);self.emit(InstKind::Loop{condition,test,body});Ok(())
+        self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
+        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
     pub(super) fn application_element(
         data: &Data,
@@ -1628,18 +1634,15 @@ impl Builder<'_> {
         stride: DataStride,
         words: &[u32],
         span: Span,
+        element_read_origin: Option<Arc<GeneratedOrigin>>,
     ) -> Result<Value> {
         let (address,index,stride) = self.application_memory(handle,identity,index,stride,false,None,&[],span)?;
         let mut regs = Vec::new();
         for (&(scalar, _), &word) in ty.components.iter().zip(words) {
             let dst = self.reg(scalar);
-            self.emit(InstKind::ViewLoad {
-                dst,
-                address,
-                index,
-                stride,
-                word,
-            });
+            let kind=InstKind::ViewLoad{dst,address,index,stride,word};
+            if let Some(origin)=&element_read_origin {self.code.push(Inst::generated(kind,origin.clone()));}
+            else {self.emit(kind);}
             regs.push(dst);
         }
         Ok(Value {
@@ -2375,7 +2378,7 @@ impl Builder<'_> {
         }}
         self.require_owned_writable(&place,span)?;self.writable_storage(&place,span)?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
-        let loaded=self.read_storage_value(&place,span)?;
+        let loaded=self.read_storage_value(&place,span, None)?;
         let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone());
         for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone()));}
         let held=self.hold_binding(Binding::AtomicBorrow(place.clone()));

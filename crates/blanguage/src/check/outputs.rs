@@ -158,7 +158,7 @@ fn collect_inputs(
             Binding::Value(value) if parameter.access == Access::Value => value.clone(),
             Binding::OwnedValue(value) if parameter.access == Access::Value => value.value.clone(),
             Binding::Owned(owner) if parameter.access == Access::Value => {
-                builder.read_place(&owner.place, parameter.span)?
+                builder.read_place(&owner.place, parameter.span, None)?
             }
             Binding::ApplicationData(data) => {
                 builder.returned_storage(&Returned::Dataset(data.clone()))

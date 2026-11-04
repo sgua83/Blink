@@ -232,7 +232,7 @@ impl Builder<'_> {
         }
         let place = self.materialize_array(value).place;
         let place = self.array_index(place, index, expr.span)?;
-        let mut result = self.read_place(&place, expr.span)?;
+        let mut result = self.read_place(&place, expr.span, None)?;
         result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
         result.uniform = uniform;
         result.constant = result.proof.known_value(&result.ty);

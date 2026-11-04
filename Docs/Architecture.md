@@ -325,11 +325,11 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3-1"></a>
 
-**dataset最终存储释放Call来源。** 输入／输出及生产消费：原Data、Frame、实际句柄及原发射SourceSite→application_drop最终发射／application_release原ABI参数→原release Call。只在原实际Call分类DatasetRelease，源定义、实例、inlined_at、domain_path及原语法范围保持；没有原上下文时trigger缺失，外围已有语法不伪装为完整作用域结束或退出原因。源显式操作、RHS及拥有元素清理保持各自来源，Frame销毁仍自己的职责。原访问、所有权状态与最后CPU／GPU消费者保持；材料仅原编译IR共享，不改变代码、资源寿命或释放顺序。静态Call不证明运行已经释放。当前已交接原最终release Call的生成理由与既有可选语法上下文；其余四类清理来源仍未完成。见[规范](BLanguage.md#dataset最终存储释放的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-1)。
+**dataset最终存储释放Call来源。** 输入／输出及生产消费：原Data、Frame、实际句柄及原发射SourceSite→application_drop最终发射／application_release原ABI参数→原release Call。只在原实际Call分类DatasetRelease，源定义、实例、inlined_at、domain_path及原语法范围保持；没有原上下文时trigger缺失，外围已有语法不伪装为完整作用域结束或退出原因。源显式操作、RHS及拥有元素清理保持各自来源，Frame销毁仍自己的职责。原访问、所有权状态与最后CPU／GPU消费者保持；材料仅原编译IR共享，不改变代码、资源寿命或释放顺序。静态Call不证明运行已经释放。当前已交接原最终release Call的生成理由与既有可选语法上下文；拥有元素逆序循环沿下一职责交接，其余三类清理来源仍未完成。见[规范](BLanguage.md#dataset最终存储释放的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-1)。
 
 <a id="tool-7-2-4-5-3-2"></a>
 
-**dataset拥有元素逆序清理循环来源。** 原拥有元素Data及实际长度→drop_application_elements原游标初始化／条件／逆序元素读取／回边→原Loop和准备Inst；输入与输出仍由原元素清理循环持有。原drop_returned消费真实元素，静态F与最终release另沿下列／前条职责，地址包装沿原.5.5，不复制寻址。保留原零长度行为、逆序和实际资源寿命，不补造循环或保活被优化删除的节点。材料随原IR结束，不拥有元素、不新增状态或清理链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-3-2)。
+**dataset拥有元素逆序清理循环来源。** 原拥有元素Data及实际长度→drop_application_elements原游标初始化／条件／逆序选位／元素读取／回边→原Loop和准备Inst。原游标StoreLocal、条件LoadLocal／零常量／Greater、减一常量／ISub、实际元素ViewLoad、回边StoreLocal及Loop分别持有DatasetDropCursor、Condition、Index、ElementRead、Advance、Loop；同次展开共享当时原发射SourceSite形成的可选Syntax锚点，原实例／内联／域路径和范围保持，缺失不猜补。元素读取沿原read_storage_value→read_place→read_application_place交给唯一原ViewLoad，复用访问／初始化／Proof与寻址；只有清理读取传材料，其他调用及其他Place没有本项材料。原refresh与地址包装保持自身来源，地址完整分类沿.5.5；原drop_returned消费真实元素，静态F、最终release、条件拥有与变体选择各归自己的职责。原零长度不建循环、实际逆序、寄存器／槽位和资源寿命保持；原优化可删除常量和未使用分量，不保活节点或把保留材料当完整消除历史。材料随原IR共享及最后消费者结束，不拥有元素，不新增Builder状态、拥有表、读取算法或清理链。当前已交接六类原始生成职责，见[规范](BLanguage.md#dataset拥有元素逆序清理循环的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-2)。
 
 <a id="tool-7-2-4-5-3-3"></a>
 
