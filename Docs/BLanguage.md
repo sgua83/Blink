@@ -368,6 +368,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetRootAddress | dataset_root_address | 原U64根拆分或句柄地址请求的表示准备指令 |
 | DatasetOffsetAddress | dataset_offset_address | 原双字地址与索引／步长／字段偏移的寻址准备指令 |
 | DatasetWriteAddress | dataset_write_address | 原CPU句柄写分支的写区偏移及请求准备指令 |
+| DatasetAccessLayout | dataset_access_layout | 原CPU访问的声明布局、读区请求及公共返回零索引准备常量 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -518,6 +519,14 @@ application_memory的原句柄写分支仍以index、DataStride、可选relative
 普通写、数组相对位置和实际外部C ABI位置借用沿同一原准备交接；初始化Store仍保留DatasetInitializeWrite及其原factory触发，本准备不替换它。每个分量的实际字节宽度及Frame请求按原语义保持，不能因返回同一根地址删除必要逐分量请求。原数值宽度、单位、求值顺序、布局、权限和最后消费者保持，不增加写区、复制、同步、检查、Frame、状态表或运行链。已是U64根的路径及公共返回／读区准备归原其他叶，不整体改标本项；原StoreIndexed、Frame地址Call及根／索引准备各保留自己的职责。
 
 没有实际分量或未进入该分支时不虚构准备，原常量折叠、去重和消除继续生效，不为观察保活指令或冻结优化；完整变换来源与机器映射仍归原编号。材料只由compiler角色的原Inst及FunctionBody／模块持有，沿原SDK／CLI来源快照消费，在最后IR消费者后结束，不进入必要执行编码、不拥有存储或运行地址。静态写区计算不证明实际写入、地址有效或设备完成。见[架构](Architecture.md#tool-7-2-4-5-5-5)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-5)。
+
+#### CPU访问布局与读区准备的生成来源
+
+application_memory只为原地址型U64根分支的声明步长／零字段、返回零索引，原读句柄的零offset／stride和count请求常量，以及参数布局公共返回的零索引，共享DatasetAccessLayout，JSON reason为dataset_access_layout。这些均是原实际Constant；已有DataStride::Parameter寄存器不产生额外操作，公共返回准备也不因请求为写而归入DatasetWriteAddress。常量的原Scalar、位模式、单位、求值顺序及地址／索引／步长三元组保持，未产生的布局步骤不补造来源。
+
+节点source_site为空，可选Syntax直接借用原发射时的当前SourceSite，语法种类、范围、定义／特化实例和inlined_at／domain_path保持；未知为null，不从资源根或邻近语句猜补。原Frame地址Call、根地址表示、索引／步长寻址和句柄写区准备仍保留各自来源；真实ViewLoad及已有DatasetDropElementRead、StoreIndexed及初始化写不改标。仅取length、没有实际载荷读取或无分量值时不为观察生成读区请求。
+
+材料只由compiler角色的原Builder／Inst、FunctionBody／模块及SDK／CLI快照持有，最后实际IR／来源消费者结束后释放；不进入必要执行编码、不保活变量或阻止原优化合并／删除常量。真实地址、布局、权限、运行存储及完成继续由原Ty／Data、Frame和最后实际消费者持有，不新增读回、访问、检查、状态表、同步或释放链。静态准备事实不证明已读取、地址仍有效或GPU完成；完整优化来源及机器映射继续沿原编号。见[架构](Architecture.md#tool-7-2-4-5-5-6)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-6)。
 
 #### 集合值核的入口与捕获来源
 

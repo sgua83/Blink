@@ -1594,14 +1594,18 @@ impl Builder<'_> {
         self.code.push(Inst::generated(InstKind::Cast{dst:result[0],src:pointer},origin.clone()));self.code.push(Inst::generated(InstKind::Cast{dst:result[1],src:high},origin));result
     }
     pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:&[(Scalar,u32)],span:Span)->Result<([Reg;2],Reg,u32)>{
+        let layout_origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetAccessLayout,
+            trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+        });
         if self.registers[handle] == Scalar::U64 {
             let address=self.application_root_address(handle,identity,span)?;
             let (step,field)=match stride {
-                DataStride::Declared(step)=>(self.constant(Scalar::U64,Bits::from(step)).regs[0],self.constant(Scalar::U32,0).regs[0]),
+                DataStride::Declared(step)=>(self.constant_with_origin(Scalar::U64,Bits::from(step),Some(layout_origin.clone())).regs[0],self.constant_with_origin(Scalar::U32,0,Some(layout_origin.clone())).regs[0]),
                 DataStride::Parameter{stride,offset}=>(stride,offset),
             };
             let address=self.offset_application_address(address,index,step,field);
-            return Ok((address,self.constant(Scalar::U32,0).regs[0],0));
+            return Ok((address,self.constant_with_origin(Scalar::U32,0,Some(layout_origin)).regs[0],0));
         }
         let address = if write {
             let origin = Arc::new(GeneratedOrigin {
@@ -1641,15 +1645,15 @@ impl Builder<'_> {
             }
             address.unwrap()
         } else {
-            let zero = self.constant(Scalar::U64, 0);
-            let stride=self.constant(Scalar::U64,0);let count=self.constant(Scalar::U32,1);
+            let zero = self.constant_with_origin(Scalar::U64, 0, Some(layout_origin.clone()));
+            let stride=self.constant_with_origin(Scalar::U64,0,Some(layout_origin.clone()));let count=self.constant_with_origin(Scalar::U32,1,Some(layout_origin.clone()));
             self.application_address(handle, identity, zero, 0, stride, count, span)?
         };
         Ok(match stride {
             DataStride::Declared(stride)=>(address,index,stride),
             DataStride::Parameter{stride,offset}=>{
                 let address=self.offset_application_address(address,index,stride,offset);
-                (address,self.constant(Scalar::U32,0).regs[0],0)
+                (address,self.constant_with_origin(Scalar::U32,0,Some(layout_origin)).regs[0],0)
             }
         })
     }
