@@ -625,9 +625,19 @@ impl Proof {
                     identity(a, bindings).zip(identity(b, bindings))
                         .map(|(a,b)| Fact::NotEqual(a.min(b), a.max(b)))
                 },
+                Fact::Index(id, IndexDomain::CommonRange(source)) => {
+                    let mut facts=Facts::new();
+                    if let Some(id)=identity(id,bindings) && let Some(input)=bindings.get(&source){
+                        if input.nonzero.first()==Some(&true){facts.insert(Fact::NonZero(id));}
+                        facts.extend(input.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))).map(|domain|Fact::Index(id,domain)));
+                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))).map(|source|Fact::Index(id,IndexDomain::CommonRange(*source))));
+                    }
+                    return Clause::facts(facts);
+                },
                 Fact::Index(id, d) => identity(id, bindings)
                     .zip(domain(d, bindings))
                     .map(|(id, d)| Fact::Index(id, d)),
+
                 Fact::Minimum(id, scalar, n)=>{
                     if let Some(value)=bindings.get(&id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return Clause::default();}if range.1<n{return Clause::impossible();}}
                     identity(id,bindings).map(|id|Fact::Minimum(id, scalar, n))
@@ -1052,14 +1062,17 @@ impl Proof {
             .collect();
         proof
     }
-    pub fn common(a: &Value, b: &Value, choice: Option<&Condition>) -> Self {
+    pub fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
         let mut proof=Self::capture(a);let mut other=Self::capture(b);
         let aliases=[Clause::facts(proof.facts(&a.ty)),Clause::facts(other.facts(&b.ty))];
         for(component,(scalar,_))in a.ty.components.iter().enumerate(){
             if scalar.is_integer(){
-                for(target,aliases)in [&mut proof,&mut other].into_iter().zip(&aliases){
+                for((target,aliases),source)in [&mut proof,&mut other].into_iter().zip(&aliases).zip([a,b]){
                     for condition in target.conditions[component].iter_mut(){
                         for case in &mut condition.cases{*case=Clause::both(case,aliases);}
+                        if let Some(regs)=outputs{
+                            **condition=condition.output_bound(&BTreeMap::from([(source.component_identity(component),ValueIdentity::Register(regs[component]))]));
+                        }
                     }
                 }
             }

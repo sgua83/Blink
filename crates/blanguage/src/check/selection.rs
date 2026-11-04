@@ -195,7 +195,7 @@ impl Builder<'_> {
             yes,
             no,
         });
-        let regs = slots
+        let regs:Vec<Reg> = slots
             .iter()
             .zip(&ty.components)
             .map(|(slot, (scalar, _))| {
@@ -205,7 +205,7 @@ impl Builder<'_> {
             })
             .collect();
         let proof = match (&a, &b) {
-            (Some(a), Some(b)) => bounds::Proof::common(a,b,Some(&bounds::Condition::of(&c))),
+            (Some(a), Some(b)) => bounds::Proof::common(a,b,Some(&bounds::Condition::of(&c)),Some(&regs)),
             _ => bounds::Proof::capture(storage),
         };
         let mut result = match (a_result.take(), b_result) {

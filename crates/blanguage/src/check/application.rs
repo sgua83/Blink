@@ -2697,7 +2697,7 @@ impl Builder<'_> {
                 if truth!=Some(true){
                     let mut common=updated.clone();
                     for component in &components{
-                        let proof=bounds::Proof::common(&self.value_component(&updated,*component),&self.value_component(&old,*component),None);
+                        let proof=bounds::Proof::common(&self.value_component(&updated,*component),&self.value_component(&old,*component),None,None);
                         common.proof.assign(&[*component],old.regs.len(),proof);
                     }
                     if truth==Some(false){updated=common;}else{updated.proof.join_condition(&common.proof,old.regs.len(),Some(&complete));}
