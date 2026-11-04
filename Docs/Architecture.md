@@ -427,7 +427,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-3"></a>
 
-**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与Context.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。来源只为该实际Call说明分段提交职责及真实生成上下文；所选Stage和实际程序仍由原Program／资源引用表达，入口生成上下文与阶段自身原来源分别保持，不凭part编号或run_index猜补源码。空Stage区间原本不发射Call，不能为材料增加空提交；真实CPU／GPU目标、原分段、顺序、错误、依赖与完成保持。原函数为唯一生产者，材料只随原Inst／FunctionBody／模块及快照持有并在最后IR消费者后释放，不进入必要编码、不增加程序副本、图、调度器、同步或释放链，不把静态提交等同执行完成。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-3)。
+**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与Context.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。来源只为该实际Call说明分段提交职责，生成上下文直接沿build_domain的原DefinitionSyntax／实际Instance或已有Generated语句取得，Definition与Syntax锚点沿入口的同一事实交接，未知保持空，不从Program执行名／part／run_index重建源码身份；所选Stage和实际程序仍由原Program／资源引用表达，入口生成上下文与阶段自身原来源分别保持，不凭part编号或run_index猜补源码。空Stage区间原本不发射Call，不能为材料增加空提交；真实CPU／GPU目标、原分段、顺序、错误、依赖与完成保持。原函数为唯一生产者，材料只随原Inst／FunctionBody／模块及快照持有并在最后IR消费者后释放，不进入必要编码、不增加程序副本、图、调度器、同步或释放链，不把静态提交等同执行完成。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-3)。
 
 <a id="tool-7-3-1"></a>
 
