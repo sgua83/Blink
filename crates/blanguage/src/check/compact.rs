@@ -79,7 +79,14 @@ pub(super) fn compile(
                 .fail(span, "B188", "compact 输出容量必须容纳全部输入");
         }
     }
-    facts.written(&[target, count]);
+    let mut write_regions = BTreeMap::new();
+    for &(scalar, word) in &program.buffers[target].ty.components {
+        let end = word + scalar.size();
+        write_regions.entry(target).or_insert_with(BTreeSet::new).insert((word, end));
+        facts.written(target, word, end);
+    }
+    write_regions.entry(count).or_insert_with(BTreeSet::new).insert((count_word, count_word + 4));
+    facts.written(count, count_word, count_word + 4);
     facts.grant(PrefixRelation {
         domain: target,
         count: PrefixCount {
@@ -114,6 +121,7 @@ pub(super) fn compile(
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target, count],
+        write_regions,
         cross_access: reads,
     });
     Ok(())

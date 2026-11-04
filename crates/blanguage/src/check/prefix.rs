@@ -11,9 +11,11 @@ impl Facts {
             outputs: Vec::new(),
         }
     }
-    pub fn written(&mut self, bindings: &[usize]) {
+    pub fn written(&mut self, binding: usize, start: u32, end: u32) {
         for (scope, _) in &mut self.scopes {
-            scope.retain(|r| !bindings.contains(&r.count.binding));
+            scope.retain(|r| r.count.binding != binding
+                || u64::from(r.count.word) >= u64::from(end)
+                || u64::from(start) >= u64::from(r.count.word) + 4);
         }
     }
     pub fn holds(&self, relation: PrefixRelation) -> bool {

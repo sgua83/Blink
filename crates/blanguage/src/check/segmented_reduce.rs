@@ -77,7 +77,14 @@ pub(super) fn compile(
         binding: count,
         word: count_word,
     };
-    facts.written(&[target, count.binding]);
+    let mut write_regions = BTreeMap::new();
+    for &(scalar, word) in &ty.components {
+        let start = target_word + word; let end = start + scalar.size();
+        write_regions.entry(target).or_insert_with(BTreeSet::new).insert((start, end));
+        facts.written(target, start, end);
+    }
+    write_regions.entry(count.binding).or_insert_with(BTreeSet::new).insert((count.word, count.word + 4));
+    facts.written(count.binding, count.word, count.word + 4);
     facts.grant(PrefixRelation {
         domain: target,
         count,
@@ -113,6 +120,7 @@ pub(super) fn compile(
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target, count.binding],
+        write_regions,
         cross_access: reads,
         tiles: Vec::new(),
     });

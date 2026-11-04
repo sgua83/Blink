@@ -31,6 +31,7 @@ fn emit_value(
         code: body.code.clone(),
         reads: Vec::new(),
         writes: Vec::new(),
+        write_regions: Default::default(),
         cross_access: Vec::new(),
     };
     let program = Program {

@@ -12,6 +12,7 @@ pub(crate) struct Interface {
     pub instance: String,
     pub target: Target,
     pub buffers: Vec<Buffer>,
+    pub write_regions: std::collections::BTreeMap<usize, std::collections::BTreeSet<(u32, u32)>>,
     pub uniforms: Vec<Uniform>,
     pub length_requirements: Vec<(usize, usize)>,
     pub outputs: Vec<Output>,
@@ -31,6 +32,7 @@ super::codec::record!(Interface {
     instance,
     target,
     buffers,
+    write_regions,
     uniforms,
     length_requirements,
     outputs

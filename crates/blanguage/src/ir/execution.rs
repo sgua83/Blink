@@ -126,6 +126,7 @@ where
 }
 #[derive(Clone, Debug)]
 pub struct ProgramLayout {
+    pub write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     pub name: String,
     pub target: crate::ast::Target,
     pub buffers: Vec<Buffer>,
@@ -300,6 +301,7 @@ impl ExecutionPlan {
             .collect();
         Self {
             interface: ProgramLayout {
+                write_regions: program.write_regions(),
                 name: program.name.clone(),
                 target: program.target,
                 buffers: program.buffers.clone(),

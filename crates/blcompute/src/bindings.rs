@@ -1,6 +1,6 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
-use blanguage::ir::{PrefixCount, ProgramInterface};
+use blanguage::ir::{ExecutionPlan, PrefixCount, ProgramInterface};
 use std::collections::BTreeMap;
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
@@ -245,7 +245,7 @@ impl<D> DomainBindings<D> {
     }
     pub(crate) fn completed(
         &mut self,
-        program: &dyn ProgramInterface,
+        program: &ExecutionPlan,
         binding: impl Fn(usize) -> (usize, u32),
     ) {
         invalidate(&mut self.domains, program, &binding);
@@ -273,19 +273,13 @@ impl<D> DomainBindings<D> {
 
 pub(crate) fn invalidate(
     domains: &mut Vec<DomainRelation>,
-    program: &dyn ProgramInterface,
+    program: &ExecutionPlan,
     binding: impl Fn(usize) -> (usize, u32),
 ) {
-    domains.retain(|r| {
-        !program
-            .buffers()
-            .iter()
-            .enumerate()
-            .any(|(i, b)| {
-                let (physical, offset) = binding(i);
-                physical == r.count.binding && b.access.writes()
-                    && u64::from(r.count.word) >= u64::from(offset)
-                    && u64::from(r.count.word) < u64::from(offset) + u64::from(b.ty.size)
-            })
-    });
+    domains.retain(|r| !program.write_regions.iter().any(|(&logical, written)| {
+        let (physical, offset) = binding(logical);
+        physical == r.count.binding && written.iter().any(|&(start, end)|
+            u64::from(r.count.word) < u64::from(offset) + u64::from(end)
+                && u64::from(offset) + u64::from(start) < u64::from(r.count.word) + 4)
+    }));
 }

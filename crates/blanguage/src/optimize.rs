@@ -33,6 +33,9 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
                 previous.code.extend(stage.code);
                 previous.reads.extend(stage.reads);
                 previous.writes.extend(stage.writes);
+                for (binding, written) in stage.write_regions {
+                    previous.write_regions.entry(binding).or_default().extend(written);
+                }
                 previous.cross_access.extend(stage.cross_access);
                 previous.reads.sort_unstable();
                 previous.reads.dedup();
@@ -162,6 +165,7 @@ fn optimize_stage(stage: &mut Stage) {
         reads.extend(stage.selection.map(|s| s.binding));
         stage.reads = reads.into_iter().collect();
         stage.writes = writes.into_iter().collect();
+        stage.write_regions.retain(|binding, _| stage.writes.contains(binding));
         stage
             .cross_access
             .retain(|r| stage.reads.contains(r) || stage.writes.contains(r));

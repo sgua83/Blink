@@ -38,7 +38,12 @@ pub(super) fn compile(
     if program.buffers[target].count != Some(1) {
         return d.source.fail(span, "B171", "归约输出形状必须为 1");
     }
-    facts.written(&[target]);
+    let mut write_regions = BTreeMap::new();
+    for &(scalar, word) in &ty.components {
+        let start = target_word + word; let end = start + scalar.size();
+        write_regions.entry(target).or_insert_with(BTreeSet::new).insert((start, end));
+        facts.written(target, start, end);
+    }
     let reads: Vec<_> = std::iter::once(source)
         .chain(prefix.map(|p| p.binding))
         .collect::<BTreeSet<_>>()
@@ -66,6 +71,7 @@ pub(super) fn compile(
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target],
+        write_regions,
         cross_access: reads,
         tiles: Vec::new(),
     });

@@ -1,5 +1,5 @@
 use crate::ast::{Access, Target};
-use std::{collections::BTreeMap, num::NonZeroU64};
+use std::{collections::{BTreeMap, BTreeSet}, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
 #[cfg(feature = "compiler")]
@@ -1186,6 +1186,7 @@ pub struct Stage {
     pub code: Vec<Inst>,
     pub reads: Vec<usize>,
     pub writes: Vec<usize>,
+    pub write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     pub cross_access: Vec<usize>,
     pub tiles: Vec<Tile>,
 }
@@ -1698,6 +1699,15 @@ pub struct Program {
     pub(crate) length_requirements: Vec<(usize, usize)>,
 }
 impl Program {
+    pub(crate) fn write_regions(&self) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
+        let mut regions = BTreeMap::new();
+        for stage in &self.stages {
+            for (&binding, written) in &stage.write_regions {
+                regions.entry(binding).or_insert_with(BTreeSet::new).extend(written.iter().copied());
+            }
+        }
+        regions
+    }
     #[cfg(feature = "compiler")]
     pub fn source_origin(&self) -> Option<&SourceOrigin> { self.source_origin.as_ref() }
     pub fn textures(&self) -> &[TextureBinding] {

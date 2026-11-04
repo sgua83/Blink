@@ -40,6 +40,7 @@ impl Builder<'_> {
         let scalar = ty.components[0].0;
         let write=access.writes();
         self.dataset_effect(&place,access,true,target.span)?;
+        if write { self.data_access(&place, Access::Write); }
         let (base, offset, word) = match &place {
             Place::Indexed { base, offset, words, .. } => (&**base, Some(*offset), words[0]),
             Place::Element { words, .. } | Place::TileElement { words, .. }
@@ -94,12 +95,6 @@ impl Builder<'_> {
             }
             if atomic.op.writes() {
                 self.writes.insert(binding);
-                let range = if atomic.offset.is_some() {
-                    (0, self.program.buffers[binding].ty.size)
-                } else {
-                    (atomic.word, atomic.word + atomic.scalar.size())
-                };
-                self.memory_regions.entry(binding).or_default().1.insert(range);
             }
             self.cross_access.insert(binding);
         }

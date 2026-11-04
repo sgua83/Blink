@@ -308,6 +308,7 @@ struct DomainCall {
     stage: usize,
     instance: crate::generics::Instance,
     arguments: Vec<Root>,
+    write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     before: Vec<PrefixRelation>,
     after: Vec<PrefixRelation>,
     source: Option<Arc<SourceSite>>,
@@ -734,6 +735,8 @@ fn expand_stages(
                     b.reads.insert(selection.binding);
                     b.cross_access.insert(selection.binding);
                 }
+                let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
+                    .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
                 let imports = std::mem::take(&mut b.functions).into_imports();
                 let stage = Stage {
                     domain: *domain,
@@ -749,9 +752,12 @@ fn expand_stages(
                     code: b.code,
                     reads: b.reads.into_iter().collect(),
                     writes: b.writes.into_iter().collect(),
+                    write_regions,
                     cross_access: b.cross_access.into_iter().collect(),
                 };
-                facts.written(&stage.writes);
+                for (&binding, written) in &stage.write_regions {
+                    for &(start, end) in written { facts.written(binding, start, end); }
+                }
                 for relation in appended {
                     facts.grant(relation);
                 }
@@ -1073,6 +1079,14 @@ fn expand_stages(
                     let bindings: Vec<_> = callee.function.params.iter().filter_map(|p| match child[&p.name] {
                         Root::Data(binding, _) => Some(binding), _ => None,
                     }).collect();
+                    let before = facts.relations();
+                    let mut write_regions = BTreeMap::new();
+                    for (logical, written) in contract.write_regions {
+                        write_regions.entry(bindings[logical]).or_insert_with(BTreeSet::new).extend(written);
+                    }
+                    for (&binding, written) in &write_regions {
+                        for &(start, end) in written { facts.written(binding, start, end); }
+                    }
                     facts.outputs.extend(contract.outputs.into_iter().map(|mut output| {
                         output.binding = bindings[output.binding];
                         output.domain = output.domain.map(|binding| bindings[binding]);
@@ -1087,7 +1101,8 @@ fn expand_stages(
                             .iter()
                             .map(|p| child[&p.name].clone())
                             .collect(),
-                        before: facts.relations(),
+                        write_regions,
+                        before,
                         after: Vec::new(),
                         source: caller_origin.map(|origin| Arc::new(SourceSite {
                             origin, context: Arc::new(SourceContext { domain_path: child_path, ..(*caller_context).clone() }),
@@ -1103,20 +1118,6 @@ fn expand_stages(
                     facts.leave();
                 }
                 first_stage = program.stages.len();
-                let writable: Vec<_> = callee
-                    .function
-                    .params
-                    .iter()
-                    .filter(|p| p.access.writes())
-                    .filter_map(|p| {
-                        if let Some(Root::Data(binding, _)) = child.get(&p.name) {
-                            Some(*binding)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                facts.written(&writable);
                 for relation in prefix::relations(program, &child, callee, ContractKind::Ensures)? {
                     facts.grant(relation);
                 }

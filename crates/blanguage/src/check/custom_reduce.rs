@@ -280,7 +280,16 @@ pub(super) fn compile(
     let writes: Vec<_> = std::iter::once(target)
         .chain(count.map(|c| c.binding))
         .collect();
-    facts.written(&writes);
+    let mut write_regions = BTreeMap::new();
+    for &(scalar, word) in &ty.components {
+        let start = target_word + word; let end = start + scalar.size();
+        write_regions.entry(target).or_insert_with(BTreeSet::new).insert((start, end));
+        facts.written(target, start, end);
+    }
+    if let Some(count) = count {
+        write_regions.entry(count.binding).or_insert_with(BTreeSet::new).insert((count.word, count.word + 4));
+        facts.written(count.binding, count.word, count.word + 4);
+    }
     if let Some(count) = count.or(prefix.filter(|_| scan)) {
         facts.grant(PrefixRelation {
             domain: target,
@@ -328,6 +337,7 @@ pub(super) fn compile(
         code: Vec::new(),
         reads: reads.clone(),
         writes,
+        write_regions,
         cross_access: reads,
         tiles: Vec::new(),
     });

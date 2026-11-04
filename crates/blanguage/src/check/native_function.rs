@@ -1278,6 +1278,7 @@ fn build_domain(
             "B应用的独立整域入口尚未交接纹理或加速结构；原生宿主算法接口继续使用已有产物",
         );
     }
+    let write_regions = signature.write_regions();
     let stages = std::mem::take(&mut signature.stages);
     let mut frame = Ty::vector(Scalar::U32, 2);
     frame.name = "__blink_frame".into();
@@ -1316,6 +1317,7 @@ fn build_domain(
     let mut interface = crate::module::domain::Interface {
         instance: signature.name.clone(), target,
         buffers: signature.buffers.clone(), uniforms: signature.uniforms.clone(),
+        write_regions,
         length_requirements: signature.length_requirements.clone(),
         outputs: expanded.outputs,
     };
@@ -1324,6 +1326,9 @@ fn build_domain(
     let split = !expanded.calls.is_empty();
     let mut part = 0;
     for call in expanded.calls {
+        for (&binding, written) in &call.write_regions {
+            interface.write_regions.entry(binding).or_default().extend(written.iter().copied());
+        }
         emit_domain_part(
             &world.worker,
             &d.source.path,

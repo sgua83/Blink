@@ -37,11 +37,6 @@ impl Body<'_> {
         }
         if let Some(key) = world.resolve(name, &d.module, &d.imports, true) {
             self.calls.insert(key.clone());
-            // A CPU wrapper invokes an already compiled domain through its actual
-            // host entry; its body is not part of the caller's stage expansion.
-            self.host |= d.function.target == Target::Cpu
-                && world.functions[&key].compiled.is_some()
-                && world.functions[&key].execution == Requirement::Domain;
             if statement {
                 self.statements.insert(key);
             }

@@ -28,7 +28,7 @@ pub(super) fn clear(
             "clear_prefix 需要独立的普通可写输出和形状 1 的 u32 计数字段",
         );
     }
-    facts.written(&[count]);
+    facts.written(count, word, word + 4);
     facts.grant(PrefixRelation {
         domain: target,
         count: PrefixCount {
@@ -58,6 +58,7 @@ pub(super) fn clear(
         ],
         reads: Vec::new(),
         writes: vec![count],
+        write_regions: BTreeMap::from([(count, BTreeSet::from([(word, word + 4)]))]),
         cross_access: Vec::new(),
         tiles: Vec::new(),
     });
@@ -122,6 +123,10 @@ impl Builder<'_> {
         self.appends.insert(target, count);
         self.reads.insert(binding);
         self.writes.extend([target, binding]);
+        self.memory_regions.entry(binding).or_default().1.insert((count.word, count.word + 4));
+        for &(scalar, word) in &self.program.buffers[target].ty.components {
+            self.memory_regions.entry(target).or_default().1.insert((word, word + scalar.size()));
+        }
         self.cross_access.extend([target, binding]);
         let accepted = self.reg(Scalar::Bool);
         self.emit(InstKind::Append(Append {

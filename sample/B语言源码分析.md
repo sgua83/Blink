@@ -832,7 +832,7 @@ pub struct DomainRelation {
 }
 ```
 
-domain_relations共享借用同一原Vec，len是当前有效关系数，capacity是可容纳关系槽数。分别乘实际`size_of::<DomainRelation>()`，可读出有效槽跨度与容量字节；这里只计容器槽，不含数据载荷、分配器或OS开销。计数字段写入或release撤回关系时，len可归零而原预留容量仍在；空余槽不产生关系或访问许可。offset／bytes是完整记录内选中字段的字节范围，count.word虽名word，仍是计数字段字节偏移；例如前面有八字节普通字段时，它为八，而不是第八个u32。复制或自行构造这份元数据不能写入原私有关系，也不证明GPU完成或容量尾部初始化。实际CPU／GPU执行产生前缀，计数字段可写访问、resize、release及重排／分区沿原关系撤回或映射。
+domain_relations共享借用同一原Vec，len是当前有效关系数，capacity是可容纳关系槽数。分别乘实际`size_of::<DomainRelation>()`，可读出有效槽跨度与容量字节；这里只计容器槽，不含数据载荷、分配器或OS开销。计数字段写入或release撤回关系时，len可归零而原预留容量仍在；空余槽不产生关系或访问许可。offset／bytes是完整记录内选中字段的字节范围，count.word虽名word，仍是计数字段字节偏移；例如前面有八字节普通字段时，它为八，而不是第八个u32。复制或自行构造这份元数据不能写入原私有关系，也不证明GPU完成或容量尾部初始化。实际CPU／GPU执行产生前缀；整域调用按所属执行布局中的实际可能写字节撤回相交Count，未写兄弟字段及纯元数据保持。显式取得可写原生地址、resize、release及重排／分区继续沿各自原关系撤回或映射，不能把函数参数的可写声明当作真实整域写入。
 
 这些是当前数据根的Rust接口。Frame现有公开生产路径没有直接接收宿主with_views／冻结数据的入口，不能向私有槽注入一个例子就称已集成；程序根见2.7，B／C实际观察仍按各自范围推进，不由数据根查询冒称完成。
 
@@ -1299,7 +1299,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3880`。
+源码节选：`crates/blanguage/src/check.rs:3881`。
 
 ```rust
         let binding = view.binding;
@@ -1400,7 +1400,7 @@ pub(super) enum Access {
 }
 ```
 
-参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。此处尚未开放CPU范围的可写dataset物理参数，Frame／CpuProgram按完整实际写区撤回Count及普通独占位置仍见原Issues；对象编码为现行BLCO46，Frame资源C ABI仍为BLRI23。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。此处仍未开放CPU范围的atomic物理参数及普通write／inout实例独占位置，继续见原Issues；对象编码为现行BLCO47，执行资源编码为BLRI24。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -1660,6 +1660,7 @@ pub struct Stage {
     pub code: Vec<Inst>,
     pub reads: Vec<usize>,
     pub writes: Vec<usize>,
+    pub write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     pub cross_access: Vec<usize>,
     pub tiles: Vec<Tile>,
 }
@@ -1673,7 +1674,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:453`。
+源码节选：`crates/blanguage/src/check.rs:454`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
@@ -1750,6 +1751,9 @@ pub struct Stage {
                 previous.code.extend(stage.code);
                 previous.reads.extend(stage.reads);
                 previous.writes.extend(stage.writes);
+                for (binding, written) in stage.write_regions {
+                    previous.write_regions.entry(binding).or_default().extend(written);
+                }
                 previous.cross_access.extend(stage.cross_access);
                 previous.reads.sort_unstable();
                 previous.reads.dedup();
@@ -1772,7 +1776,7 @@ pub struct Stage {
 
 假设第二阶段读 `values[i-1]`。如果实例 i 的后半步先执行，而实例 i-1 的前半步还没完成，就会读到旧内容。阶段融合必须关心读取来自哪里，不只关心数组名字是否相同。
 
-源码节选：`crates/blanguage/src/optimize.rs:245`。
+源码节选：`crates/blanguage/src/optimize.rs:249`。
 
 ```rust
 fn cross_dependency(a: &Stage, b: &Stage) -> bool {
@@ -1802,7 +1806,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指令的输入、结果和它的后续消费者必须使用同一映射；资源绑定编号仍属于原资源，不跟着寄存器改名。
 
-源码节选：`crates/blanguage/src/optimize.rs:287`。
+源码节选：`crates/blanguage/src/optimize.rs:291`。
 
 ```rust
             InstKind::Constant(dst, ..)
@@ -2018,7 +2022,7 @@ pub struct NativeCode {
 
 编译器角色还在同一NativeCode的tail_regions记录探栈辅助、对齐与每个字面量的实际末端，主函数继续复用function_end。code_json(ip)只解码主／辅助代码，数据和对齐保留原字节；StageCode及ProgramImage按原容器返回全部入口，bc build同时导出.x64.json。
 
-这些观察事实不进入BLRI23执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
+这些观察事实不进入BLRI24执行编码；无compiler的运行库不含tail_regions。从执行映像恢复后若未保留观察材料，查询明确报告缺失，不能按旧模板猜补。这也解释了为什么单独复制裸指令字节不一定就能运行：调用地址、参数表、平台展开和寿命仍有原上下文。
 
 **自己走一遍。** 更多融合是否总能降低寄存器占用？不一定。融合可能延长值的同时活跃区间，导致溢出。减少阶段与减少寄存器压力有时需要权衡。
 

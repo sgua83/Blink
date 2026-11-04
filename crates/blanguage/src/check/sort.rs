@@ -88,7 +88,12 @@ pub(super) fn compile(
                 .fail(span, "B188", "排序输出容量必须容纳完整输入域");
         }
     }
-    facts.written(&[target]);
+    let mut write_regions = BTreeMap::new();
+    for &(scalar, word) in &program.buffers[target].ty.components {
+        let end = word + scalar.size();
+        write_regions.entry(target).or_insert_with(BTreeSet::new).insert((word, end));
+        facts.written(target, word, end);
+    }
     if let Some(count) = prefix {
         facts.grant(PrefixRelation {
             domain: target,
@@ -118,6 +123,7 @@ pub(super) fn compile(
         code: Vec::new(),
         reads: reads.clone(),
         writes: vec![target],
+        write_regions,
         cross_access: reads,
     });
     Ok(())
