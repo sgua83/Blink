@@ -367,7 +367,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5"></a>
 
-**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1已交接，其余七叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
+**CPU资源地址访问包装。** 原CPU位置、实际布局、索引及读写触发，经既有Builder发射地址取得、表示转换和偏移准备，再交给原ViewLoad／StoreIndexed／原生ABI消费者。按下列八个实际生产职责分别建设来源，父项只汇总，不占整个application.rs。每叶的可选触发沿原实际访问／资源原语及已有调用、实例、内联／域路径交接；未知位置保持未知，不以资源根定义或普通load冒充生成寻址。各叶可独立取得／验证来源，不互相增加运行前置；原数据和调用依赖保持。Frame地址调用来源.1及原存储地址查询.2已交接，其余六叶仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5)。
 
 <a id="tool-7-2-4-5-5-1"></a>
 
@@ -375,7 +375,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-5-2"></a>
 
-**原存储地址查询来源。** 原资源引用必须进入地址型借用ABI时，application_reference_value以真实句柄发射原application_call("storage_address")，输出原U64根地址交给原借用值。仅给这条实际Call交接原访问／调用触发及职责，已经是U64地址时不虚构查询；不新增取址或提升权限。布局常量归.7，后续stride拓宽和参数槽位包装仍归普通调用资源交接.5.6。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-5-2)。
+**原存储地址查询来源。** 原资源引用必须进入地址型借用ABI时，application_reference_value以真实句柄发射原application_call("storage_address")，输出原U64根地址交给原借用值。仅该实际Call持有DatasetStorageAddress，JSON reason为dataset_storage_address；可选Syntax触发直接借用原当前SourceSite，语法、范围、实例及内联／域路径保持，节点source_site为空，未知触发为null。已经是U64地址时不虚构查询；不新增取址或提升权限。布局常量归.7，后续stride拓宽和参数槽位包装仍归普通调用资源交接.5.6。该叶来源唯一生产者为原Builder，材料由原Inst及FunctionBody／模块持有，随最后IR／来源快照消费者结束；不保活变量、不进入必要运行编码。运行地址、权限、存储及最后消费者仍归原Frame和真实资源所有者，来源不拥有内存。当前已交接该Call来源，原view借用Proof、后续布局／参数交接保持；见[规范](BLanguage.md#存储地址查询的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-5-2)。
 
 <a id="tool-7-2-4-5-5-3"></a>
 

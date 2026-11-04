@@ -1553,7 +1553,11 @@ impl Builder<'_> {
         let root = if ty.components[0].0 == Scalar::U64 {
             if data.root.ty.components[0].0 == Scalar::U64 { data.root.clone() }
             else {
-                let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span,None)?.unwrap();
+                let origin = Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::DatasetStorageAddress,
+                    trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+                });
+                let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span,Some(origin))?.unwrap();
                 value.proof=value.proof.with_view_borrow(0,self.data_value_borrow(&data.data));
                 value
             }

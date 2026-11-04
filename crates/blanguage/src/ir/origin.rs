@@ -195,6 +195,7 @@ pub enum GenerationReason {
     DatasetResizeFill,
     DatasetResizeCall,
     DatasetAddress,
+    DatasetStorageAddress,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -254,6 +255,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetResizeFill => "dataset_resize_fill",
             GenerationReason::DatasetResizeCall => "dataset_resize_call",
             GenerationReason::DatasetAddress => "dataset_address",
+            GenerationReason::DatasetStorageAddress => "dataset_storage_address",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
