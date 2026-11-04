@@ -190,6 +190,7 @@ pub enum GenerationReason {
     DatasetBindSlots, DatasetAssignSlots, DatasetRelease,
     DatasetDropCursor, DatasetDropCondition, DatasetDropIndex,
     DatasetDropElementRead, DatasetDropAdvance, DatasetDropLoop,
+    UserOwnedDrop,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -241,6 +242,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetDropElementRead => "dataset_drop_element_read",
             GenerationReason::DatasetDropAdvance => "dataset_drop_advance",
             GenerationReason::DatasetDropLoop => "dataset_drop_loop",
+            GenerationReason::UserOwnedDrop => "user_owned_drop",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

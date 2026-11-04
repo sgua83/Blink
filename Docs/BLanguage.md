@@ -356,6 +356,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetDropElementRead | dataset_drop_element_read | 原逆序清理实际元素分量ViewLoad |
 | DatasetDropAdvance | dataset_drop_advance | 原逆序清理回边StoreLocal |
 | DatasetDropLoop | dataset_drop_loop | 原拥有元素逆序清理Loop |
+| UserOwnedDrop | user_owned_drop | 原owned<T,F>实际静态析构Call |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -429,7 +430,15 @@ DatasetInitializeCursor标明原准备零值与实际起始StoreLocal，Conditio
 
 原循环仍从实际length逆序处理元素，先按原drop_returned完成当前元素清理，再更新原游标。嵌套拥有元素产生自己的原循环及材料；静态F函数体和调用、条件拥有及活动变体选择不整体改标清理循环。原长度确定为零时不创建游标、循环或读取；原优化可合并重复零／一常量或删除未消费字段，返回IR只保留实际节点，不伪造所有声明分量都已经读取，不为观察保活。生成来源不是循环已执行、析构已调用或最后设备消费者已完成的运行证据。
 
-Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI及最后消费者保持；材料只归compiler原Inst不可变共享，最后IR消费者后结束，不新增Builder状态、拥有表、资源副本、调度或第二清理链。完整消除／多来源与机器位置仍沿.7.3／.7.4，用户静态F、条件拥有及变体选择仍沿.2.4.5.3.3至.5。见[架构职责](Architecture.md#tool-7-2-4-5-3-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-2)。
+Data／Frame仍是唯一实际资源所有者，原CPU／GPU位置、资源ABI及最后消费者保持；材料只归compiler原Inst不可变共享，最后IR消费者后结束，不新增Builder状态、拥有表、资源副本、调度或第二清理链。完整消除／多来源与机器位置仍沿.7.3／.7.4，用户静态F调用来源见下节，条件拥有及变体选择仍沿.2.4.5.3.4／.5。见[架构职责](Architecture.md#tool-7-2-4-5-3-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-2)。
+
+#### 用户拥有值静态析构调用的生成来源
+
+原drop_user_owned装入实际载荷、完成原资源可移动／保留借用检查并选择静态F实例后，将UserOwnedDrop交给已有invoke_returned的generated_origin参数。普通B函数、真实extern C及已编译函数沿各自原生Call生产者消费同一材料；参数、调用目标、静态特化、返回及副作用保持，不增加转发器、登记或另一调用／释放链。实际生成Call的source_site为null，generated_origin.reason为user_owned_drop；trigger为当时原SourceSite形成的可选Syntax锚点，原定义、实例、inlined_at、domain_path及字节范围保持，缺失为null。
+
+触发可能是return、覆盖位置、外围语法，也可能没有材料，不将其解释为F声明或精确作用域出口。F函数体保留实际源码来源，外部或已编译接口不伪造函数体；普通用户直接调用同一函数不按函数名标成析构。移动、into_inner及其他没有原析构Call的路径不补造节点，原优化继续按真实语义进行，完整消除和多来源仍归.7.3。
+
+材料仅在compiler功能下由原Inst不可变共享，最后IR消费者后结束，关闭compiler没有这些字段或运行期登记。载荷、CPU／GPU资源及代码寿命仍沿原唯一所有者和最后真实消费者；不为观察延长变量／资源寿命，不修改必要ABI和执行编码。静态调用来源不证明析构已执行、外部API关闭成功或完整内存安全。见[架构职责](Architecture.md#tool-7-2-4-5-3-3)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-3)。
 
 #### 集合值核的入口与捕获来源
 

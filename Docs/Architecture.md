@@ -343,7 +343,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-3-3"></a>
 
-**用户拥有值静态析构调用来源。** 原owned<T,F>载荷、静态F和保留借用→user_owned::drop_user_owned原specialized_function／invoke_returned→实际析构Call。调用生成职责和F实际函数体分别交接，原参数／借用／实例及静态分派保持，不把F源码整体标成生成清理。材料归原Call并在最后IR消费者后结束；真实载荷与资源仍由原拥有者交接，不增对象动态派发、登记或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-3-3)。
+**用户拥有值静态析构调用来源。** 原owned<T,F>载荷、静态F和保留借用→user_owned::drop_user_owned原specialized_function／invoke_returned→实际析构Call。唯一原清理生产者在载荷装入、资源可移动检查及实例选择后，将UserOwnedDrop和当时可选SourceSite交入现有调用链；普通B、真实外部C ABI及已编译函数沿各自原Call生产者共享材料，不增加包装或另一分派。生成Call的source_site为null，原语法触发位于generated_origin.trigger；原定义、实例、内联／域路径及范围保持，缺失不猜补。触发可能是返回、覆盖或外围语法，不等同F定义或精确作用域出口；F函数体仍交接自己的真实来源，外部／已编译边界不伪造源码。普通直接调用同一F不按名称分类，移动／into_inner没有原析构Call时不补造。原参数、借用、静态分派与最后真实消费者保持；材料只归compiler原Inst并在最后IR消费者后结束，不进入必要执行编码、不保活代码，不拥有载荷或增加运行时登记、状态及释放链。生成材料不是析构已经执行、外部关闭成功或内存完全安全的证明。当前已实现本项原Call来源，见[规范](BLanguage.md#用户拥有值静态析构调用的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-3)。
 
 <a id="tool-7-2-4-5-3-4"></a>
 
