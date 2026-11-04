@@ -381,7 +381,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         if self.world.functions[&key].function.c_abi {writes(Write::External(expr));}
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
-                                writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset, iterator: None });
+                                writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some()), iterator: None });
                             }
                         }
                     }

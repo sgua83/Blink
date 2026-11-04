@@ -107,6 +107,10 @@
       "sha256": "e0ff18d4cba722579fc547fe9ce703b08c7a60da80538abd896cc8012e8d4939"
     },
     {
+      "path": "crates/blanguage/src/check/effects.rs",
+      "sha256": "9ba1b08a4b47abb280310753bec157a539d8bc49585248f4a491b9b456f95ca7"
+    },
+    {
       "path": "crates/blanguage/src/check/effects/sources.rs",
       "sha256": "04eac64230c98a4936ee973af86cdc21160e1fea0f9f216debb960b16c97af4b"
     },
@@ -136,7 +140,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_borrows.rs",
-      "sha256": "165b6592f40b3f9d7f5520509dcb90ecdb2d3aecf1e11310b0f91e7f530fecbd"
+      "sha256": "2d09ecd57762fcc07841d89c9ef19c45d588ec78ddde18942757fb65f7dd3e3a"
     },
     {
       "path": "crates/blanguage/src/check/owned_records.rs",

@@ -29,10 +29,21 @@ impl Builder<'_>{
 each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,&candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
     }
     pub(super) fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {
+        if let Some(data)=self.application_reference(expr)?{
+            return Ok(Some(cooperative::Argument::BorrowedData(data)));
+        }
         fn location(expr:&Expr)->bool{match &expr.kind{ExprKind::Name(_)=>true,ExprKind::Member(base,_)|ExprKind::Index(base,_)=>location(base),ExprKind::Specialize(name,_,_)if name=="unsafe_position"=>true,_=>false}}
         let(place,owner)=if location(expr){let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}(place,None)}else{
             let result=self.evaluate_returned(expr,None)?;if !self.flow.continues(){return Ok(None);}
-            let Some(Returned::OwnedValue(value))=result else{return self.fail(expr.span,"B224","独占临时参数需要实际拥有聚合");};
+            let value=match result{
+                Some(Returned::Dataset(mut data))=>{
+                    let owner=self.hold_binding(Binding::ApplicationData(data.clone()));
+                    data.ownership=Ownership::Borrowed;
+                    return Ok(Some(cooperative::Argument::Scoped{value:Returned::Dataset(data),owner}));
+                },
+                Some(Returned::OwnedValue(value))=>value,
+                _=>return self.fail(expr.span,"B224","独占临时参数需要实际拥有值或dataset"),
+            };
             let value=self.owned_value_binding(value,true);let place=value.place().unwrap();let owner=self.hold_binding(Binding::OwnedValue(value));(place,Some(owner))
         };
         let Returned::OwnedValue(mut value)=self.owned_place_model(&place)else{unreachable!()};
