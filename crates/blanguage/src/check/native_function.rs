@@ -496,19 +496,23 @@ impl Builder<'_> {
                     let (field,element)=self.dataset_layout(&view);let element=element.clone();
                     self.require_same(&ty,&element,span)?;
                     self.native_dataset_shape(p,d,self.program.buffers[binding].count,span)?;
-                    let zero=self.constant(Scalar::U32,0);
+                    let origin = Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::DatasetCallArgument,
+                        trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
+                    });
+                    let zero=self.constant_with_origin(Scalar::U32,0,Some(origin.clone()));
                     let place=self.dataset_element(&view,zero.regs[0],false);
                     let borrow=self.position_origin(&place,span)?.normalize();
                     memory_borrow.union(&borrow);
                     let address=self.reg(Scalar::U64);
-                    self.emit(InstKind::PositionAddress{dst:address,address:CallReference{
+                    self.code.push(Inst::generated(InstKind::PositionAddress{dst:address,address:CallReference{
                         storage:CallStorage::Indexed(IndexedSource::Data{binding,index:zero.regs[0]}),offset:None,word:0,
-                    }});
+                    }},origin.clone()));
                     let pointer=Value{ty:Ty::scalar(Scalar::U64),regs:vec![address],proof:bounds::Proof::default().with_view_borrow(0,borrow),literal:false,uniform:true,constant:None};
                     let length=self.data_length(&view);
-                    let step=self.reg(Scalar::U64);self.emit(InstKind::BufferStride(step,binding));
+                    let step=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::BufferStride(step,binding),origin.clone()));
                     let stride=Value{ty:Ty::scalar(Scalar::U64),regs:vec![step],proof:bounds::Proof::default(),literal:false,uniform:true,constant:None};
-                    let offset=self.constant(Scalar::U32,Bits::from(field));
+                    let offset=self.constant_with_origin(Scalar::U32,Bits::from(field),Some(origin));
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
                     let mut proof=bounds::Proof::default();
                     for value in [&pointer,&length,&stride,&offset]{proof.append(value);}

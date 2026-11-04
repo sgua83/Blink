@@ -377,6 +377,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DomainEntry | domain_entry | 原build_domain形成的整域包装ValueCode入口 |
 | DomainCallLiteral | domain_call_literal | 原build_domain将Root::Literal实参分量准备为Constant |
 | DomainPartCall | domain_part_call | 原emit_domain_part交接实际Stage子区间的运行Call |
+| DatasetCallArgument | dataset_call_argument | 原native_call将Stage Dataset准备为实际借用实参的四类指令 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -593,6 +594,14 @@ build_domain只在原Root::Literal分支为逐分量准备的Constant共享Domai
 来源描述主机CPU包装的分段发起职责，CPU／GPU域目标、实际Stage子区间及前缀要求／保证仍归原Program与Context程序引用；各Stage原来源保持，入口上下文不代替逐Stage／指令映射，也不表示GPU最终ISA。空Stage区间仍直接返回，不为观察制造Call或程序；真实已编译域Call仍保留自身call.source及域路径。
 
 材料只归compiler角色的原Inst／FunctionBody／模块与SDK／CLI快照，最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。Frame／blcompute继续承担原存储、依赖、执行与最后完成；静态Call不证明计算已运行。原优化、资源所有权及错误保持，不增加调度、图、同步、第二状态或释放链。见[架构](Architecture.md#tool-7-2-4-6-3)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)。
+
+#### Stage Dataset调用实参准备的生成来源
+
+native_call只在原Argument::Dataset分支的零索引Constant、PositionAddress、BufferStride及字段偏移Constant四类真实发射接点共享DatasetCallArgument，JSON reason为dataset_call_argument。节点source_site为空，Syntax直接借用原发射时self.source_site，保留原语法、定义／实际实例及内联／域路径，未知为null；触发只是已取得的调用范围，不扩大为完整参数列表。原实际Call的source_site保持，已有根／长度寄存器和descriptor／CallArgument组装不因观察补造Inst。
+
+原Scalar／Bits、零索引、真实DatasetView绑定、字段字节偏移、声明步长、位置与根Proof、Access、形状、参数顺序及ABI保持。该生产者对应CPU阶段对已编译函数的实际调用；源码函数内联及GPU路径各自沿原生产者，不按函数名或表示名称改标。read／atomic／inout原许可及真实检查保持，不以来源分类放宽CPU／GPU目标或写入权限。
+
+材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不进入必要执行编码、不保活变量或节点，不持有World／AST或运行资源。真实存储、借用、依赖和最后完成仍沿Frame／blcompute及实际消费者；静态准备不证明调用已运行。原优化、错误与合法动态输入保持，不增加参数／状态表、图、调度、同步或释放链。见[架构](Architecture.md#tool-7-2-4-5-6-3)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-3)。
 
 #### 集合值核的入口与捕获来源
 

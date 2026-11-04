@@ -403,7 +403,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6"></a>
 
-**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。五叶当前均未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。Stage Dataset实参准备.3已实现，其余四叶仍未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
 
 <a id="tool-7-2-4-5-6-1"></a>
 
@@ -415,7 +415,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-3"></a>
 
-**Stage Dataset调用实参地址与布局准备的生成来源。** 输入／生产消费：原Argument::Dataset、DatasetView、实际布局与Access→native_function.rs#83::native_call原481至510中的490零索引、495至497 PositionAddress、500 BufferStride及502字段偏移常量→原descriptor／CallArgument。只交接原四类实际准备指令的生成来源；长度、根Proof、布局、参数次序和原Call保持，已有寄存器直传不造节点。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-3)。
+**Stage Dataset调用实参地址与布局准备的生成来源。** 原Argument::Dataset、实际DatasetView／Access、布局与已证明形状，经native_call原分支把零索引Constant、PositionAddress、BufferStride及字段偏移Constant交给同一原descriptor／CallArgument。仅在这四类实际发射接点共享DatasetCallArgument，JSON reason为dataset_call_argument；节点source_site为空，可选Syntax直接借用原发射时self.source_site，保留真实语法、定义／实例及内联／域路径，未知保持空。原Call仍保留自身source_site；原Scalar／Bits、寄存器、根Proof、长度、字段／声明步长、权限、顺序及参数ABI保持。CPU阶段对已编译函数的真实调用是本接点；源码内联与GPU路径沿各自原生产者，不按函数名、descriptor名或寄存器数改标，也不伪造不存在的准备指令。唯一生产者为原native_call分支，材料只归原Inst／ValueCode／FunctionBody、模块及按需SDK／CLI快照，最后真实IR消费者后释放，不进入必要执行编码、不保留World／AST或运行资源，不为观察保活节点。实际资源、执行、借用及完成仍沿Frame／blcompute和最后消费者，不增加参数表、拥有权威、图、调度、同步或释放链。原优化照常，融合／消除与机器映射继续沿原编号。当前已交接原四类准备的生成来源，见[规范](BLanguage.md#stage-dataset调用实参准备的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-3)。
 
 <a id="tool-7-2-4-5-6-4"></a>
 
