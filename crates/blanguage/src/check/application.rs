@@ -2562,8 +2562,10 @@ impl Builder<'_> {
             let(mut offset,mut ty)=(0,&value.ty);
             for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
             let component=value.ty.components.iter().position(|(_,word)|*word==offset).unwrap();
-            let proof=bounds::Proof::default().with_identity(ValueIdentity::ElementComponent(components[component]));
-            for source in resource.root.component_origins(0){bindings.insert(source,proof.clone());}
+            for source in resource.root.component_origins(0){
+                let proof=bindings.entry(source).or_default();
+                *proof=std::mem::take(proof).with_identity(ValueIdentity::ElementComponent(components[component]));
+            }
         }}
         let original=model.clone();native_function::rebind_model(&mut model,components);
         native_function::translate_returned(&mut model,&original,&bindings,true);
