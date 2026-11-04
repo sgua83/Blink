@@ -2663,7 +2663,7 @@ impl<'a> Builder<'a> {
             }
             regs.push(dst);
         }
-        let value = Value {
+        let mut value = Value {
             proof,
             literal,
             ty,
@@ -2671,7 +2671,7 @@ impl<'a> Builder<'a> {
             uniform: a.uniform && b.uniform,
             constant: None,
         };
-        self.observe_integer_binary(op, &a, &b, &value);
+        self.observe_integer_binary(op, &a, &b, &mut value);
         Ok(value)
     }
     fn math(&mut self, op: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {

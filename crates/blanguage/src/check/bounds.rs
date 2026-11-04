@@ -120,6 +120,37 @@ impl IntegerExpression {
             Self::Binary(op, scalar, a, b) => Self::Binary(op, scalar, a.map(&identity)?, b.map(&identity)?),
         })
     }
+    fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+        let Self::Binary(op, scalar, a, b) = self;
+        let operand = |value| Some(match value {
+            Operand::Value(id) => {
+                let proof = bindings.get(&id)?;
+                match proof.range_set(0).restrict(0, scalar.bit_mask()).0.as_slice() {
+                    [(a, b)] if a == b => Operand::Constant(scalar, *a ^ scalar.order_bias()),
+                    _ => Operand::Value(proof.known_identity(0)?),
+                }
+            }
+            constant => constant,
+        });
+        Some(Self::Binary(op, scalar, operand(a)?, operand(b)?))
+    }
+    fn constant(self) -> Option<(Scalar, Bits)> {
+        let Self::Binary(op, scalar, Operand::Constant(_, a), Operand::Constant(_, b)) = self else { return None; };
+        let operation = match op {
+            IntegerOperation::Add => BinaryOp::IAdd,
+            IntegerOperation::Subtract => BinaryOp::ISub,
+            IntegerOperation::Multiply => BinaryOp::IMul,
+            IntegerOperation::And => BinaryOp::And,
+            IntegerOperation::Or => BinaryOp::Or,
+            IntegerOperation::Xor => BinaryOp::Xor,
+            IntegerOperation::ShiftLeft => BinaryOp::ShiftLeft,
+            IntegerOperation::ShiftRight if scalar.is_signed() => BinaryOp::ShiftRightArithmetic,
+            IntegerOperation::ShiftRight => BinaryOp::ShiftRightLogical,
+            IntegerOperation::Divide | IntegerOperation::Remainder => return std::num::NonZeroU64::new(b)
+                .map(|divisor| (scalar, constant::divide(scalar, a, divisor, op == IntegerOperation::Remainder))),
+        };
+        constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
+    }
 }
 crate::module::codec::variants!(Operand{0=>Value(identity),1=>Constant(scalar,bits)});
 crate::module::codec::variants!(IntegerOperation{0=>Add,1=>Subtract,2=>Multiply,3=>Divide,4=>Remainder,5=>And,6=>Or,7=>Xor,8=>ShiftLeft,9=>ShiftRight});
@@ -478,7 +509,7 @@ impl Proof {
                 IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left, bindings)?, identity(right, bindings)?),
                 IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base, bindings)?, amount),
                 IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base, bindings)?, identity(limit, bindings)?, distance),
-                IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| identity(id, bindings))?),
+                IndexDomain::Computed(expression) => IndexDomain::Computed(expression.at_call(bindings)?),
                 _ => return None,
             })
         }
@@ -637,6 +668,19 @@ impl Proof {
                 .into_iter()
                 .filter_map(|d| domain(d, bindings))
                 .collect();
+        }
+        for (component, domains) in translated.domains.iter().enumerate() {
+            for domain in domains {
+                if let IndexDomain::Computed(expression) = domain
+                    && let Some((scalar, bits)) = expression.constant()
+                {
+                    let ordered = bits ^ scalar.order_bias();
+                    translated.ranges.resize_with(translated.ranges.len().max(component + 1), IntegerRanges::default);
+                    translated.ranges[component] = translated.ranges[component].restrict(ordered, ordered);
+                    translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
+                    translated.nonzero[component] |= bits != 0;
+                }
+            }
         }
         let roots: Vec<_> = self
             .conditions
@@ -3133,7 +3177,7 @@ impl Builder<'_> {
     pub(super) fn lengths_equal(&self, a: &Value, b: &Value) -> bool {
         self.length_proofs_equal(&Proof::capture(a), &Proof::capture(b))
     }
-    pub(super) fn observe_integer_binary(&mut self, op: &str, a: &Value, b: &Value, result: &Value) {
+    pub(super) fn observe_integer_binary(&mut self, op: &str, a: &Value, b: &Value, result: &mut Value) {
         let scalar = a.ty.components[0].0;
         if !scalar.is_integer() || result.ty.components[0].0 == Scalar::Bool { return; }
         let operation = match op {
@@ -3144,11 +3188,12 @@ impl Builder<'_> {
             "<<" => IntegerOperation::ShiftLeft, ">>" => IntegerOperation::ShiftRight,
             _ => return,
         };
-        let facts = result.regs.iter().enumerate().map(|(component, _)| {
+        let facts = (0..result.regs.len()).map(|component| {
             let left = Operand::of(a, component % a.regs.len());
             let right = Operand::of(b, component % b.regs.len());
-            let expression = IntegerExpression::Binary(operation, scalar, left, right);
-            Fact::Index(result.component_identity(component), IndexDomain::Computed(expression))
+            let domain = IndexDomain::Computed(IntegerExpression::Binary(operation, scalar, left, right));
+            result.proof.mark_domain(component, domain);
+            Fact::Index(result.component_identity(component), domain)
         }).collect();
         self.path = Clause::observed(&self.path,facts);
     }
