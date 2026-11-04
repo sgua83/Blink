@@ -64,10 +64,11 @@ impl Emitter<'_> {
     }
     pub(super) fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
         match &address.storage {
-            CallStorage::Local { base, .. } => {
-                let Location::Stack(offset) = self.allocation.location(PrivateSlot::Local(*base))
-                else {
-                    return Err("C ABI 局部借用没有实际栈地址");
+            CallStorage::Local { base, len } => {
+                let offset = if *len == 0 { 0 } else {
+                    let Location::Stack(offset) = self.allocation.location(PrivateSlot::Local(*base))
+                    else { return Err("C ABI 局部借用没有实际栈地址"); };
+                    offset
                 };
                 self.stack_address(offset + address.word);
                 if let Some(index) = address.offset {

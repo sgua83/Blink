@@ -8,11 +8,11 @@ pub enum MemoryAlias {
 }
 impl MemoryAlias {
     pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
-        if let Self::Local { base, .. } = self { *base = s(*base); }
+        if let Self::Local { base, len } = self && *len != 0 { *base = s(*base); }
     }
     pub(crate) fn local_range(self) -> Option<std::ops::Range<usize>> {
         match self {
-            Self::Local { base, len } => Some(base..base + len),
+            Self::Local { base, len } => (len != 0).then_some(base..base + len),
             Self::Data(_) => None,
         }
     }
@@ -99,7 +99,7 @@ impl CallReference {
     }
     pub(crate) fn map_locals(&mut self, s: &impl Fn(usize) -> usize) {
         match &mut self.storage {
-            CallStorage::Local { base, .. } => *base = s(*base),
+            CallStorage::Local { base, len } => { if *len != 0 { *base = s(*base); } }
             CallStorage::Indexed(source) => source.map_locals(s),
         }
     }

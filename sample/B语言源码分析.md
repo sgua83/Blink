@@ -439,7 +439,7 @@ pub enum CallTarget {
 
 Windows x64在原调用区为间接目标留一个独立槽，准备实参前保存该地址；参数寄存器设置完成后再取出并执行call。槽位属于本次调用栈，不产生额外代码所有者或运行时登记。
 
-源码节选：`crates/blanguage/src/native/external.rs:126`。
+源码节选：`crates/blanguage/src/native/external.rs:127`。
 
 ```rust
         if let CallTarget::Indirect(reg) = call.target {
@@ -448,7 +448,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
         }
 ```
 
-源码节选：`crates/blanguage/src/native/external.rs:168`。
+源码节选：`crates/blanguage/src/native/external.rs:169`。
 
 ```rust
         let reference = match &call.target {

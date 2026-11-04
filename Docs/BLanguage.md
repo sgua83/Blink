@@ -361,12 +361,13 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | ConditionalDropCondition | conditional_drop_condition | 原Presence条件准备及其内部短路操作 |
 | VariantDropBranch | variant_drop_branch | 原活动enum／Result清理的选择If |
 | VariantDropCondition | variant_drop_condition | 原清理选择的判别常量及比较 |
+| DatasetResizeFill | dataset_resize_fill | 原resize填充值进入调用暂存的StoreLocal |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
 原clear_prefix调用由append::clear生成原Map、零常量和计数Store；同一Stage和两个Inst共享clear_prefix的GeneratedOrigin，trigger为真实调用Expr范围及当前实际实例／域路径。当前解析器的普通调用范围通常覆盖clear_prefix标识符；原诊断用语句Span保持，不扩大为未取得的完整参数列表。没有额外Index、另一个Stage或输出清空，原计数归零与空prefix关系保持；生成Stage.operation_source及两节点source_site仍为null，不伪造用户直接Map／赋值。
 
-Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化、新绑定／重新赋值槽位、最终存储释放及拥有元素逆序清理循环见下文；其余清理、扩容、寻址、参数、传输和发起仍归.2.4.5.3至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
+Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化、新绑定／重新赋值槽位、最终存储释放、拥有元素逆序清理、静态F、条件及活动变体清理和resize填充值暂存见下文；实际扩容Call、寻址、参数、传输和发起仍归.2.4.5.4.2至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
 
 材料沿原Inst／Stage／ValueCode不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
 
@@ -459,6 +460,12 @@ condition_truth确定条件时沿原路径跳过或执行body，没有实际If�
 原判别分量通过result_word复用已有值，没有原读取操作时不新增读取。已知载荷存在性沿原布尔常量规则，动态判别沿声明编号常量及原binary比较；常量折叠复用constant_value及constant_with_origin，原数值类型、运算选择、Proof和已知值规则保持。原通用调用只适配显式无生成材料，其他数值程序不因此改标。最后一个载荷沿原unpack_variant直接交接，原已确定条件沿原分支执行，没有原If时不补造选择；原优化仍可复用常量或删除未消费材料，不保活节点。
 
 原payload装载／解码、条件拥有、静态F和最终release各保留自己的来源，普通match及try判别不整体标成清理。生成节点的source_site为null，trigger为原触发或null，定义、实际实例、内联／域路径及字节范围保持，不将return／覆盖位置或缺失材料猜成变体声明或精确作用域出口。材料仅compiler原Inst不可变共享，最后IR消费者后结束；关闭compiler没有这些字段，不进入必要ABI或执行编码。原活动载荷、布局、参数、借用、静态F顺序及最后真实CPU／GPU消费者保持，不增加Builder状态、拥有表、变体登记、另一个判别算法或释放链。静态来源不是释放已执行、设备完成或完整内存安全证明；完整消除及机器映射仍沿原编号。见[架构职责](Architecture.md#tool-7-2-4-5-3-5)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-3-5)。
+
+#### resize填充值暂存的生成来源
+
+resize_application_dataset在原第三实参已经求值、检查并取得returned_storage后，只为原local_slots及实际StoreLocal交接DatasetResizeFill，JSON reason为dataset_resize_fill。各逻辑分量保留原槽位及寄存器，共享一份不可变GeneratedOrigin；source_site为null，可选Syntax触发由原第三实参Expr.span及当前定义／实际实例／内联与域路径构成。普通调用或构造的Span可能只覆盖原标识符，按取得的范围交接，不猜补完整参数列表；触发缺失为null，不用resize根定义替代填充值来源。
+
+填充值自身的用户计算保持原语法来源；实际resize Call、dataset句柄／长度绑定及清理各保留自己的职责。原宽标量、向量、记录、拥有载荷及字段布局、求值次数和顺序、静态模型、借用与Frame的实际存储版本继续交接。零分量填充值没有StoreLocal，不为观察增加伪操作；零字节引用按原本地范围与x64调用帧处理。材料只由compiler功能下的原Inst及FunctionBody／模块持有，最后IR消费者后结束，不进入必要ABI／执行编码或保持运行资源。它不证明实际扩容、分配成功或GPU完成；扩容Call来源、优化消除及机器关系沿原编号独立交付。见[架构](Architecture.md#tool-7-2-4-5-4-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-4-1)。
 
 #### 集合值核的入口与捕获来源
 
@@ -3849,6 +3856,8 @@ u32 total = tile_reduce_sum(values);
 数值转换的公共表达式以目标标量类型和来源区分；相同来源转为 i32、u32、f32 或 bool 不能相互替代。此优化不重排浮点运算、不跨协作指令合并参与者，也不等于完整 SSA 局部提升、物理寄存器分配或跨元素 SIMD。某个封装是否完全消失，仍取决于实际源程序及控制流。
 
 ## ABI 与代码生成
+
+零宽B值的本地调用范围没有标量成员或物理载荷。MemoryAlias::local_range只交接非空实际槽范围，空范围不参与槽重映射、干涉和物理栈组分配；原CallReference仍表达其类型、word／offset及访问关系。Windows x64原生调用需要零字节引用时，由当前函数／调用栈帧提供地址锚点，后续实际偏移仍沿同一入口解释，不要求不存在的PrivateSlot。原声明大小、对齐及借用继续有效；该地址只表示零字节范围，不产生一份载荷或资源。
 
 | 项目 | 当前规则 |
 |---|---|

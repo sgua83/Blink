@@ -1171,7 +1171,13 @@ impl Builder<'_> {
             }
         } else { self.unknown_element_model(&data.ty) };
         let (slots, storage) = self.local_slots(&fill.ty);
-        for (slot, reg) in slots.into_iter().zip(fill.regs) { self.emit(InstKind::StoreLocal(slot, reg)); }
+        let origin = Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DatasetResizeFill,
+            trigger: self.source_at(args[2].span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
+        });
+        for (slot, reg) in slots.into_iter().zip(fill.regs) {
+            self.code.push(Inst::generated(InstKind::StoreLocal(slot, reg), origin.clone()));
+        }
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
         self.emit(runtime_call("resize", vec![

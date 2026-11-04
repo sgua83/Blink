@@ -192,6 +192,7 @@ pub enum GenerationReason {
     DatasetDropElementRead, DatasetDropAdvance, DatasetDropLoop,
     UserOwnedDrop, ConditionalDropBranch, ConditionalDropCondition,
     VariantDropBranch, VariantDropCondition,
+    DatasetResizeFill,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -248,6 +249,7 @@ impl GeneratedOrigin {
             GenerationReason::ConditionalDropCondition => "conditional_drop_condition",
             GenerationReason::VariantDropBranch => "variant_drop_branch",
             GenerationReason::VariantDropCondition => "variant_drop_condition",
+            GenerationReason::DatasetResizeFill => "dataset_resize_fill",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
