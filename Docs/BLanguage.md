@@ -375,6 +375,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetDownload | dataset_download | 原download经所有权／借用／源位置检查后生成的Frame下载Call |
 | ApplicationDomainCall | application_domain_call | 原应用将Frame与实际参数交给已编译整域入口的Defined Call |
 | DomainEntry | domain_entry | 原build_domain形成的整域包装ValueCode入口 |
+| DomainCallLiteral | domain_call_literal | 原build_domain将Root::Literal实参分量准备为Constant |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -575,6 +576,14 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 锚点直接消费原DefinitionSyntax与实际Instance。Source采用Definition锚点，definition为原d.source_origin快照，instance为原Instance.name，不从最终domain符号拆解；Generated已有SourceSite时直接共享Syntax，保留原语法、定义／实例、内联／域路径及实际范围，未知为null；CompiledInterface不补造锚点。实际已编译实现仍沿原domain_at装入，不重读其实现或因缺少源码生成另一份包装IR。FunctionBody.source_origin继续只记录真实原定义，Generated入口不因此获得虚假源码身份。
 
 材料只归compiler角色的原ValueCode／FunctionBody／模块及SDK／CLI快照，在最后实际IR消费者后释放；原body克隆共享不可变来源，不持有World／AST、执行资源或第二登记表。关闭compiler角色不包含该类型／字段，必要执行编码、B语法、C ABI与资源完成保持。空指令body仍可以具有真实生成入口；原优化照常，不保活变量或节点。内部原Call／字面量准备／分段提交来源各归原职责，真实CPU／GPU计算及最后完成仍归Frame／blcompute，静态入口不证明已运行。见[架构](Architecture.md#tool-7-2-4-6-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
+
+#### 整域调用字面量实参的生成来源
+
+build_domain只在原Root::Literal分支为逐分量准备的Constant共享DomainCallLiteral，JSON reason为domain_call_literal；原Ty.components与words顺序、Scalar、Bits、寄存器和CallArgument保持。该材料区分编译器为已编译域Call准备的实参，不按数值或符号把普通常量改标，也不为Root::Data／Root::Uniform的寄存器直传补造指令。
+
+节点source_site为空，可选Syntax直接借用原call.source，语法、原定义／实际实例及内联／域路径保持，缺失为null。触发仅为已经取得的原调用范围，不扩大为没有取得的字面量表达式。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call分别保持自身职责；此处不改调用、求值顺序、精度、布局或参数ABI。
+
+材料只归compiler角色的原Inst／FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；原优化照常，不保活常量，不进入必要执行编码，不持有World／AST或运行资源。真实计算、Frame存储、依赖及最后完成沿原所有者，不把静态常量准备当作实际执行；不增加值表、图、调度器、同步或释放链。见[架构](Architecture.md#tool-7-2-4-6-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
 
 #### 集合值核的入口与捕获来源
 

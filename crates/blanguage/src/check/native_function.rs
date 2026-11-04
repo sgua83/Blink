@@ -1522,6 +1522,10 @@ fn build_domain(
                         .collect(),
                 },
                 Root::Literal(ty, words) => {
+                    let origin = Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::DomainCallLiteral,
+                        trigger: call.source.clone().map(GenerationAnchor::Syntax),
+                    });
                     let values = ty
                         .components
                         .iter()
@@ -1529,7 +1533,7 @@ fn build_domain(
                         .map(|((scalar, _), word)| {
                             let reg = registers.len();
                             registers.push(*scalar);
-                            code.push(Inst::new(InstKind::Constant(reg, *scalar, *word)));
+                            code.push(Inst::generated(InstKind::Constant(reg, *scalar, *word), origin.clone()));
                             reg
                         })
                         .collect();

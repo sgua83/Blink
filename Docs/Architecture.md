@@ -415,7 +415,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6"></a>
 
-**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。入口来源.1已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)，字面量准备.2与分段运行Call.3仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
+**原生域包装与分段提交。** 父职责只汇总，下列入口、字面量准备与分段运行Call按各自实际生产消费独立交付。build_domain中的真实已编译域Call继续沿原call.source交接直接源码语法，已有域展开／边界沿.4.3，不用生成入口范围覆盖其真实调用点；原参数／资源组装无Inst时不补造操作。代码、接口、合同、Frame、Program及实际分段完成仍由各原所有者持有；来源只沿同一IR及最后消费者交接，不新增包装程序、调度器或执行图。入口来源.1已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)，字面量准备.2已实现并归[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)，分段运行Call.3仍待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6)。
 
 <a id="tool-7-2-4-6-1"></a>
 
@@ -423,7 +423,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-2"></a>
 
-**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量交接生成职责，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；可选Syntax直接借用原call.source及其定义／实例／内联与域路径；该触发仅说明已取得的原调用范围，不伪造字面量表达式或额外寄存器。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-6-2)。
+**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量共享DomainCallLiteral，JSON reason为domain_call_literal，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；节点source_site为空，可选Syntax直接借用原call.source及其定义／实例／内联与域路径；该触发仅说明已取得的原调用范围，不伪造字面量表达式或额外寄存器。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前已交接原实际Constant的生成来源，原优化照常，不为观察保活。见[规范](BLanguage.md#整域调用字面量实参的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
 
 <a id="tool-7-2-4-6-3"></a>
 

@@ -205,6 +205,7 @@ pub enum GenerationReason {
     DatasetUpload, DatasetDownload,
     ApplicationDomainCall,
     DomainEntry,
+    DomainCallLiteral,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -275,6 +276,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetDownload => "dataset_download",
             GenerationReason::ApplicationDomainCall => "application_domain_call",
             GenerationReason::DomainEntry => "domain_entry",
+            GenerationReason::DomainCallLiteral => "domain_call_literal",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
