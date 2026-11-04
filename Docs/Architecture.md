@@ -355,7 +355,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-4"></a>
 
-**dataset扩容及填充值包装。** 输入／输出及生产消费：原resize表达式／长度／fill→resize_application_dataset原StoreLocal及resize Call→原新Data模型。原存储版本／填充值与原触发分别交接，不复制数据或清理链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4)。
+**dataset扩容及填充值包装。** 原resize先将填充值写入既有调用暂存，再把原Frame、dataset根、请求长度及暂存引用交给真实扩容调用；两类IR来源分别交付，父项只汇总。编译材料由原Builder及FunctionBody／模块持有，运行存储和资源仍由原Frame及实际消费者持有；来源不增加资源、拥有表、调用或清理链。新Data模型沿原根／长度与SSA版本交接，不因观察材料建立第二状态。当前两叶均未实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4)。
+
+<a id="tool-7-2-4-5-4-1"></a>
+
+**resize填充值暂存来源。** 输入是原第三实参表达式及其已求值的returned_storage；resize_application_dataset在现有local_slots上发射的StoreLocal，是把该值交给原只读CallReference消费的生成暂存。原Builder为这些实际操作交接填充值表达式的SourceSite／实例及生成职责；多分量各自保留实际寄存器和槽位，原字段布局、求值顺序、调用范围与借用不变。原Inst及其FunctionBody／模块唯一持有这些可选编译材料，按原来源快照生命周期交给SDK／CLI；不会取得或延长运行时资源寿命。没有实际StoreLocal时不虚构节点，无法取得触发时明确无来源，不用resize根定义冒充填充值。填充值自身的用户计算仍是原源码操作，不改写成生成暂存；实际扩容调用来源归下一叶。本叶待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4-1)。
+
+<a id="tool-7-2-4-5-4-2"></a>
+
+**原生resize调用来源。** 输入为原Frame／根句柄、请求长度与既有fill暂存引用，生产者是同一resize_application_dataset发射的真实runtime_call("resize")，输出仍为原新Data模型及后续消费者。该Call沿原Inst交接resize表达式的触发和生成职责，参数、结果、错误、静态模型和新SSA身份按原语义保持；证明及模型更新没有发射指令时不伪造机器步骤。编译材料由原FunctionBody／模块持有；运行时扩容、存储和最后消费者的寿命只由原Frame落实，不新增装载器、Frame、资源副本或释放链。原填充值暂存按既有ABI消费，上一叶的来源材料不成为正常执行前置。本叶待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-4-2)。
 
 <a id="tool-7-2-4-5-5"></a>
 
