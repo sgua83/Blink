@@ -57,6 +57,9 @@ pub(crate) fn check_declaration(world: &World, d: &Definition) -> Result<()> {
 impl Builder<'_> {
     pub(super) fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
         use cooperative::Argument;
+        if let Some(data)=self.application_reference(expr)?{
+            return Ok(Some(Argument::BorrowedData(data)));
+        }
         fn root(expr: &Expr) -> Option<&String> {
             match &expr.kind {
                 ExprKind::Name(name) => Some(name),
