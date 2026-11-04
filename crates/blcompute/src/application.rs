@@ -97,6 +97,11 @@ impl Frame {
     pub fn programs(&self) -> &Vec<Option<ProgramSlot>> {
         &self.programs
     }
+    /// 借用原类型Vec，索引为本Frame的类型号，capacity以Ty槽数计。
+    /// 槽容量不含Ty内部拥有分配或B数据载荷；查询不复制或改变Frame。
+    pub fn types(&self) -> &Vec<Ty> {
+        &self.types
+    }
     /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。
     /// 结果只保存本次元数据，不保活资源；释放后的旧结果不代表当前存活状态。
     /// 不包含代码VM、view来源图、类型／句柄容器或OS堆管理开销。

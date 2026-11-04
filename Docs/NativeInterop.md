@@ -150,6 +150,12 @@ Frame::data共享借用同一原DomainBindings<Option<ResidentData>>，datasets�
 
 DomainBindings::domain_relations返回原domains共享切片，公开原DomainRelation及其字段：domain／count.binding是当前datasets槽索引，offset／bytes是记录内字段字节范围，count.word也是记录内计数字段的字节偏移。原生产、计数改写撤回、重排／分区与资源拥有者保持；复制同形元数据不能发布有效域或绕过当前require，也不证明完成／初始化。容器字段仍私有，没有新关系写入口。当前公开Frame没有宿主冻结／with_views输入入口，不以私有注入冒称集成；Frame程序根按下节借用原对象，B／C观察仍按原剩余范围推进。详细语义见[Frame根与原关系](BLanguage.md#应用frame数据根与有效域关系的借用)。
 
+## Rust SDK的Frame类型容器
+
+`Frame::types()`共享借用同一原`&Vec<Ty>`，交接原类型号／槽顺序、当前len／capacity及实际Ty。槽字节按本次Rust的`size_of::<Ty>()`计算，不把Ty.size／align表示的B载荷布局当宿主槽大小；外层容量不含类型内部堆、数据、代码、设备或分配器／OS开销。预留槽不是有效类型，空但预留容量仍有槽存储。
+
+原类型表随Frame持有，查询不复制、装入、创建设备、运行或等待；活动共享借用不能跨Frame修改／销毁，数据操作结束后重新借用。这是同一Rust运行库的SDK接口，不跨单元传Rust容器，也不新增B／C观察入口；其余宿主分配和跨语言能力保持原未完成范围。完整语义见[Frame类型容器](BLanguage.md#应用frame类型声明容器的借用)。
+
 ## Rust SDK的Frame程序槽与代码根
 
 `Frame::programs()`只共享借用原Option程序槽切片，原索引是本Frame程序号。原ProgramSlot的Image／Loaded分别持有CPU／GPU原映像或Program中的CpuTemplate／GpuTemplate；ProgramSlot::layout借用同一原ExecutionPlan，不构造观察副本或拥有表。根与布局查询不分配、装入、创建设备、执行、等待或传输，活动借用不能跨Frame改写或释放。

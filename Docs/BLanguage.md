@@ -4213,6 +4213,12 @@ let actual_relations = root.domain_relations();
 
 关系和数据容器仍由原拥有者私有持有；公开DomainRelation的读取／普通值构造不授予向原domains发布关系的权限。旧元数据副本不替代当前require，也不证明GPU实际完成、B初始化或容量尾部可读。GPU异步绑定的完成关系继续由原last_use解释，Frame::run保持原同步调用；这些查询是Rust SDK接口，不新增B语法或跨单元C ABI容器。Frame程序根见下一节；B／C数据与代码观察仍沿各自原未完成范围。
 
+### 应用Frame类型声明容器的借用
+
+Rust SDK的`Frame::types()`返回构造时移入的原`&Vec<Ty>`，索引对应本Frame的类型号；len为有效类型数，capacity是原容器可容纳的Ty槽数。原Ty的size／align／components继续描述B数据布局，不是Rust Ty对象的槽大小。len与capacity分别乘实际`size_of::<Ty>()`得到已初始化槽跨度与容量字节，只计外层Vec，不含Ty内部String／Vec／Box、数据字、代码、设备、分配器或OS开销。capacity尾部不能作为有效Ty读取，空Vec指针不证明已分配，空但预留容量仍可持有槽存储。
+
+查询共享借用原表，不复制、过滤、修改类型或创建另一目录；原表保持到Frame结束。活动借用不能跨Frame修改或销毁，数据分配／resize／驻留替换／release结束后再借用同一表；这些数据操作本身不重建类型表。查询不装入、执行、等待或传输，也不赋予写权限。返回值可按原Rust规则借用为切片，不跨单元传递Rust容器，不增加B／C观察ABI。完整职责见[CPU类型容器](Architecture.md#tool-23-2-2-4)，其余宿主分配与跨语言观察继续按Issues原编号推进。
+
 ### 应用Frame程序槽与代码根的借用
 
 Rust SDK的`Frame::programs()`返回同一原programs的`&Vec<Option<ProgramSlot>>`，保留原槽顺序、索引及实际Option状态，并交接原容器的len／capacity；索引对应本Frame的程序号，不生成长期代码身份。ProgramSlot::Image持有原ProgramImage::Cpu／Gpu，Loaded持有原Program::Cpu(CpuTemplate)／Gpu(GpuTemplate)。原容器仍私有，查询没有插入、改写或装入入口；公开同形枚举值不授予发布到该Frame的权限。

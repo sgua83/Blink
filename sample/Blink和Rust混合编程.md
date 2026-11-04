@@ -1627,6 +1627,25 @@ B 的普通 CPU 应用已支持通过 extern "C" 声明调用 Windows x64 DLL �
 
 从程序入口顺着读：输入在哪里创建，加载哪个 B 入口，数据和普通参数怎样对应，何时执行，结果从哪里取回。先用小输入核对这些步骤，再增加数据规模和计算步骤；这与第一章的四个数是同一种调用过程。
 
+### 14.7　读取应用帧持有的类型表
+
+需要观察应用帧的类型元数据时，用Rust SDK直接借用原表。下面的类型容器移入Frame，查询取得的仍是同一份容器：
+
+```rust
+use blcompute::application::Frame;
+use blanguage::ir::{Scalar, Ty};
+let mut declared = Vec::with_capacity(8);
+declared.push(Ty::scalar(Scalar::U32));
+let frame = Frame::new(declared, Vec::new());
+let types = frame.types();
+let slot_bytes = types.capacity() * std::mem::size_of::<Ty>();
+println!("types={} slots={} slot_bytes={}", types.len(), types.capacity(), slot_bytes);
+```
+
+len是一项已声明类型，capacity是实际保留的Ty槽数。这里的slot_bytes只计算外层类型槽；Ty.size的四字节是B数据的u32布局，两者不是同一种大小。类型名称、分量和嵌套类型还有各自原拥有的分配，数据集、程序代码、设备与系统开销也不包含在内。
+
+查询不克隆或修改Frame。数据释放后，类型表仍由Frame持有；观察借用结束后才能改变或销毁Frame，改变之后重新借用。这个Rust SDK入口不新增B语法或跨语言C容器ABI，不能把外层容量当作全进程内存。完整界面见NativeInterop的Frame类型容器。
+
 ## 附录 A　可直接执行的命令
 
 ### A.1　构建 Blink 工具链

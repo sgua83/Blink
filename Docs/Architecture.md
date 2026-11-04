@@ -581,6 +581,12 @@ AI检查内存占用时，数据字存储直接由`Dataset::memory()`交付当�
 
 release把Frame槽写为None，实际子载荷结束后，原容器仍可保留槽与预留容量供allocate复用；CPU／GPU驻留替换和数据resize不自动等于槽容器重分配。上述字节只表示该容器的可用存储，不是分配器账单、OS页承诺／工作集或整个Frame占用。Rust SDK的精确返回类型为&Vec<D>，原切片消费者仍可借用其as_slice或使用Rust原强制转换；精确函数类型与方法选择按该当前签名，不保留另一旧入口。资源C ABI不传递这份Rust容器。
 
+<a id="tool-23-2-2-4"></a>
+
+**Frame原类型容器。** 输入是当前Frame共享借用，唯一所有者仍为原Frame。`Frame::types()`返回构造时移入的同一`&Vec<Ty>`，交接原类型号／槽顺序、len、capacity及原Ty布局；观察只读，不复制、过滤或建立另一类型／分配目录。len和capacity分别乘本次Rust布局`size_of::<Ty>()`得到已初始化类型槽跨度与原Vec可用槽容量字节，Ty.size／align描述的B数据布局与这些宿主槽字节分开；不计Ty内部String／Vec／Box、数据字、代码VM、设备、分配器或OS开销。空但预留容量不等于无槽分配，capacity尾部不能读成有效Ty；类型元数据不因数据release而释放，仍由Frame持有到原拥有者结束。
+
+返回借用跟随同一Frame，活动期间不能修改或销毁它。数据allocate／resize／驻留变更／release本身不改原类型表，但须在这些操作结束后重新借用；查询不装入程序、创建设备、运行、等待或传输，也不授予表写权限。该范围是同一Rust运行库SDK，不跨单元传Rust容器，不增加B语法或C入口；其他宿主分配、B／C观察与完整资源图仍沿各原未完成叶项。本叶沿tool-23及工具总原则的原所有者／生命周期交付，不添加累计统计、钩子或第二释放链。
+
 代码VM由`cpu::CpuProgram::code_memory()`及`cpu::CpuTemplate::code_memory()`从同一原CpuCode.stages／Executable查询。每个实际代码入口返回`CpuCodeMemory`：原阶段索引、入口地址、是否持有原Allocation，以及Windows VirtualQuery返回的AllocationBase、入口所在页开始的BaseAddress／RegionSize、初始与当前保护、State和Type。Element主代码、实际续段／Scan前缀与Sort全部已有代码都沿原所有者遍历，没有代码副本或常驻地址表；查询失败交回原OS错误。
 
 区段字节包含页粒度及该区段内的其他内容，不是单函数指令长度、完整模块大小或工作集。SDK自装入映像的原Allocation仍持有VM、展开表及DLL引用；已链接／外部代码的`runtime_owned`为false，代码继续归实际宿主或模块。外部多个入口可共享同一分配与区段，不能逐入口累加为独占内存；归属取原拥有关系，不凭MEM_PRIVATE／MEM_IMAGE猜测。查询不改变权限、代码或完成顺序，结果只有当时元数据，不保活代码、授予读写权限或建立长期地址身份；旧地址在原所有者结束后可能被OS复用。
