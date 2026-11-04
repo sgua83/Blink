@@ -867,7 +867,8 @@ impl Builder<'_> {
                 Binding::OwnedValue(v) => v.resources(),
                 _ => Vec::new(),
             })
-            .filter(|d| d.root.proof.known_identity(0) == Some(identity))
+            .filter(|d| d.root.proof.known_identity(0) == Some(identity)
+                || self.owned_resource_borrow(d).restricted(&self.path).sources.contains(&view::Source::Data(identity)))
             .peekable();
         if matching.peek().is_some() && matching.all(|data| !self.resolve_ownership(&data.ownership,None).available()) {
             return self.fail(

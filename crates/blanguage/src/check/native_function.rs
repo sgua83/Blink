@@ -653,6 +653,8 @@ impl Builder<'_> {
             result: result.clone(),
             values: values.clone(),
         }), source_site, generated_origin });
+        // 已闭合合同按本次实参交接来源；未闭合函数才借原调用图等待结果。
+        let views_closed=self.functions.units[&instance.name].as_ref().is_some_and(|unit|unit.contract.view_access.is_some());
         let prototype = self.functions.units[&instance.name]
             .as_ref()
             .map(|unit| {
@@ -747,7 +749,7 @@ impl Builder<'_> {
                 let regs=written_registers[&index].clone();
                 let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
-                if let Some(call)=view_call{view_contracts::set_resource_outputs(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
+                if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
                 if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_place(&place,Returned::OwnedValue(value));
             }
@@ -778,7 +780,7 @@ impl Builder<'_> {
         } else {
             residency::output(&mut returned, &instance.name,residency::OutputKind::Returned, &locations,&view_arguments);
         }
-        if let Some(call)=view_call{view_contracts::set_resource_outputs(&mut returned,|resource|self.view_model.result(call,view_contracts::Output::ReturnedResource(resource)));}
+        if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut returned,|resource|self.view_model.result(call,view_contracts::Output::ReturnedResource(resource)));}
         if let (Some(call),Some(value))=(view_call,returned.view_value_mut()) {
             for component in view_contracts::components(&value.ty){
                 let actual=value.proof.view_borrow(component);
