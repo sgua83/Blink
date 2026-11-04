@@ -2555,7 +2555,14 @@ impl Builder<'_> {
                         }
                     }
                     self.bind_element_resource_borrows(data,&parent,&mut bindings);
-                    let proof=bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings);
+                    let mut proof=bounds::Proof::capture(&value).project(&components,value.regs.len()).at_call(&bindings);
+                    for (target,component) in components.iter().enumerate() {
+                        if data.ty.components[*component].0.is_integer() {
+                            for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))) {
+                                proof.mark_domain(target,IndexDomain::CommonRange(source));
+                            }
+                        }
+                    }
                     if let Some(previous)=&mut result{bounds::Proof::join(previous,&proof,regs.len(),None);}else{result=Some(proof);}
                     }
                 }

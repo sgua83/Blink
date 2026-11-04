@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1502`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1517`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2549`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2564`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -508,7 +508,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1492`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1507`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1300,7 +1300,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3881`。
+源码节选：`crates/blanguage/src/check.rs:3883`。
 
 ```rust
         let binding = view.binding;
@@ -1381,7 +1381,11 @@ Returned::bind_outputs在Data.elements的绑定边界为无来源分量保留原
 
 含view元素由静态F交付真实值，非空集合不能把零地址当作view来源；空集合没有元素消费者。F可以返回同时拥有dataset及引用它的view记录，记录内还可嵌套这样的dataset。bind_element_resource_borrows沿原resource_paths把ElementComponent资源根交接为实际父Borrow及字段路径；materialize_element、application_element_proof和element_input_bindings::collect共同消费这份绑定。深层元素保留完整父作用域，read调用的共同输入及地址内容先实例化真实来源，再交给原Proof合同；不因只读取view字段就丢失未装载的拥有子资源关系。
 
-因此，view的原父存储与子资源必须活到最后消费者，提前覆盖、消费父资源和返回局部悬垂view会被原借用检查拒绝；最后使用之后可继续替换合法拥有字段。Frame、实际字存储与逆序释放仍是原有一条拥有链。不同元素的借用区分、read返回共同view长度及完整含view元素赋值尚未完整实现，分别见Issues C-020.1.6.2.7.4／.5／.7，不能把入口拒绝或可编译当作完整内存安全。
+因此，view的原父存储与子资源必须活到最后消费者，提前覆盖、消费父资源和返回局部悬垂view会被原借用检查拒绝；最后使用之后可继续替换合法拥有字段。Frame、实际字存储与逆序释放仍是原有一条拥有链。不同元素的借用区分及完整含view元素赋值尚未完整实现，分别见Issues C-020.1.6.2.7.4／.7，不能把入口拒绝或可编译当作完整内存安全。
+
+返回某个元素的数字或view长度，不能把它命名为“所有元素的同一个值”。application_element_proof先建立这次装载的实际寄存器快照，再在同一Proof的域中放入CommonRange，引用原DatasetContent的共同数值范围。canonical及模块codec保存这条范围关系；Proof::at_call在真实调用点用当前共同输入的整数区间与非零性质收窄输出。不同读取保留不同数值身份，可以实际得到长度一和二而比较不等，同时各自都满足大于零。多层转发、嵌套集合和read拥有元素沿相同输入交接，不从范围推出元素相等或复制私有元素身份。
+
+实际写入仍更新原共同模型，旧共同非零失效后，新读取不能继续充当除数；已经返回并捕获的普通数字仍是原快照。范围关系直接属于现有Proof与独立模块合同，不增加运行期检查、扫描或第二推导状态；对象格式只随真实编码变化更新，Frame与最后消费者的释放职责保持。
 
 application_element_scopes把实际physical sources与原view::resource_borrow的Data／Parameter／Element、CallResult及LoopInput关联到同一既有父模型；Element.fields逐层复用model_data(_mut)，不把子模型局部身份变成函数资源拥有者。函数按值返回的实际CallResult也沿此原来源定位，不能只比较父root的机器寄存器。只有完整来源、唯一作用域和全部祖先／当前dataset都明确唯一，才替换共同模型；其余仍保留未改元素。
 
@@ -1488,7 +1492,7 @@ enum Fact {
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:896`。
+源码节选：`crates/blanguage/src/check/bounds.rs:911`。
 
 ```rust
         self.nonzero = (0..width)
@@ -1501,7 +1505,7 @@ enum Fact {
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1046`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1061`。
 
 ```rust
     pub fn common(a: &Value, b: &Value) -> Self {
@@ -1544,7 +1548,7 @@ enum Fact {
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1620`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1635`。
 
 ```rust
 impl Drop for Clause {
@@ -1681,7 +1685,7 @@ pub struct Stage {
 
 `check::compile_program` 先把参数分类为数据集、纹理、加速结构或统一值，求出布局，建立名字到资源的对应。随后展开程序调用，建立阶段，记录源阶段数，最后运行优化。
 
-源码节选：`crates/blanguage/src/check.rs:454`。
+源码节选：`crates/blanguage/src/check.rs:456`。
 
 ```rust
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;

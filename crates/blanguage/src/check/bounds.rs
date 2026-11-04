@@ -215,11 +215,12 @@ fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain 
         IndexDomain::Offset(base, amount) => IndexDomain::Offset(output_identity(base, bindings), amount),
         IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(output_identity(base, bindings), output_identity(limit, bindings), distance),
         IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(output_identity(id, bindings))).unwrap()),
+        IndexDomain::CommonRange(source) => IndexDomain::CommonRange(output_identity(source, bindings)),
         other => other,
     }
 }
 fn numeric_domain(domain: &IndexDomain) -> bool {
-    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..))
+    matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..))
 }
 impl Place {
     fn refine_position(
@@ -698,6 +699,20 @@ impl Proof {
         }
         for (component, domains) in self.domains.iter().enumerate() {
             for domain in domains {
+                if let IndexDomain::CommonRange(source) = domain {
+                    if let Some(incoming) = bindings.get(source) {
+                        translated.ranges.resize_with(translated.ranges.len().max(component + 1), IntegerRanges::default);
+                        translated.ranges[component] = translated.ranges[component].combine(&incoming.range_set(0),
+                            |(al, ah), (bl, bh)| IntegerRanges::interval(al.max(bl), ah.min(bh)));
+                        translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
+                        translated.nonzero[component] |= incoming.nonzero.first() == Some(&true);
+                        translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
+                        translated.domains[component].extend(incoming.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))));
+                        translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
+                            .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)))
+                            .map(|id|IndexDomain::CommonRange(*id)));
+                    }
+                }
                 if let IndexDomain::Computed(expression) = domain
                     && let Some(range) = expression.ranges_at_call(bindings)
                 {
