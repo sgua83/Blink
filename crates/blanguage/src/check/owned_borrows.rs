@@ -25,7 +25,7 @@ impl Builder<'_>{
             position=>{let model=&candidates.iter().find(|(_,_,model)|storage(model).unwrap().owned_positions().unwrap()[0]==*position).unwrap().2;at(model,path).and_then(|data|data.initialization.clone()).unwrap_or(Position::Initialized)}
         }}
         let candidates=self.owned_place_candidates(place);let root=place.owned_positions().unwrap()[0].clone();
-        let selected=candidates.iter().map(|(_,_,value)|{let when=Presence::selected(&root,&storage(value).unwrap().owned_positions().unwrap()[0]);let mut value=value.clone();self.resolve_owned_model(&mut value,Some(&when));(when,value)}).filter(|(when,_)|self.owned_possible(when)).collect::<Vec<_>>();let mut values=selected.iter().map(|(_,value)|value.clone());let mut model=values.next().unwrap();for other in values{model.join(other);}model.select_presence(&selected);self.resolve_owned_model(&mut model,None);
+        let selected=candidates.iter().map(|(_,_,value)|{let when=Presence::selected(&root,&storage(value).unwrap().owned_positions().unwrap()[0]);let mut value=value.clone();self.resolve_owned_model(&mut value,Some(&when));(when,value)}).filter(|(when,_)|self.owned_possible(when)).collect::<Vec<_>>();let mut values=selected.iter().map(|(_,value)|value.clone());let mut model=values.next().unwrap();for other in values{model.join(other,false);}model.select_presence(&selected);self.resolve_owned_model(&mut model,None);
 each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,&candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
     }
     pub(super) fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {

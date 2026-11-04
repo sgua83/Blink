@@ -1170,7 +1170,7 @@ impl Builder<'_> {
                     let present=bounds::Condition::selected(ownership::ApplicationIndex::of(&data.length),0).negate();
                     value.proof.under_path(&value.ty,&present.assume(&bounds::Clause::default(),true));
                 }
-                previous.join(*incoming);
+                previous.join(*incoming,true);
                 previous
             }
         } else { self.unknown_element_model(&data.ty) };
@@ -2525,7 +2525,7 @@ impl Builder<'_> {
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let loaded=self.read_storage_value(&place,span, None)?;
         let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone());
-        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone()));}
+        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone()),false);}
         let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
@@ -2554,8 +2554,8 @@ impl Builder<'_> {
                     for field in projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
                     let complete=bounds::Condition::constant(unique&&paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})).logical(complete_scope.clone(),false).logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);
                     match complete.truth_in(&self.path){
-                        Some(true)=>{},Some(false)=>fresh.join(previous),
-                        None=>{let mut common=fresh.clone();common.join(previous);fresh.join_locations(*common,&complete);},
+                        Some(true)=>{},Some(false)=>fresh.join(previous,true),
+                        None=>{let mut common=fresh.clone();common.join(previous,true);fresh.join_locations(*common,&complete,true);},
                     }
                     let mut stored=target.elements.as_mut();
                     for field in projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
@@ -2758,7 +2758,7 @@ impl Builder<'_> {
                     let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
                     let mut stored=data.elements.as_mut();
                     for field in &reference.projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
-                    if !unique||!complete{fresh.join(stored.clone());}
+                    if !unique||!complete{fresh.join(stored.clone(),true);}
                     *stored=*fresh;
                 }
             });

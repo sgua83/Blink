@@ -190,6 +190,7 @@ struct OwnedBinding {
 struct DatasetView {
     binding: usize,
     access: Access,
+    whole: bool,
     projection: Vec<usize>,
     length: bounds::Proof,
 }
@@ -1301,13 +1302,14 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
         if p.ty.dataset
             && !matches!(p.access, Access::Read | Access::Atomic)
             && !(d.function.kind == FunctionKind::Value
-                && d.function.target == Target::Cpu
-                && matches!(p.access, Access::Value | Access::InOut | Access::Write))
+                && (p.access == Access::InOut
+                    || d.function.target == Target::Cpu
+                        && matches!(p.access, Access::Value | Access::Write)))
         {
             return d.source.fail(
                 p.span,
                 "B120",
-                "函数 dataset 参数支持 read／atomic，CPU 应用函数另可按值取得所有权或按 write／inout 借用",
+                "普通函数dataset参数支持read／inout／atomic；CPU应用函数另可按值取得所有权或按write借用",
             );
         }
         if p.ty.is_texture_resource() && p.access != Access::Read {
@@ -1484,7 +1486,10 @@ fn function_parameters(
                 }
             } else {
                 b.view_access.insert(data_index, p.access);
-                Binding::Data(b.dataset_view(data_index,p.access))
+                if p.access == Access::InOut {
+                    b.initialized.extend(b.program.buffers[data_index].ty.components.iter().map(|(_,word)|Position::Element(data_index,*word)));
+                }
+                Binding::Data(b.dataset_view(data_index,p.access,true))
             };
             b.env.insert(p.name.clone(), binding);
             data_index += 1;
@@ -1892,7 +1897,7 @@ impl<'a> Builder<'a> {
                     self.env.insert(name.clone(), Binding::Acceleration(*i));
                 }
                 Root::Data(i, access) => {
-                    let view = self.dataset_view(*i,*access);
+                    let view = self.dataset_view(*i,*access,false);
                     self.env.insert(name.clone(), Binding::Data(view));
                     self.view_access.insert(*i, *access);
                 }
@@ -3926,7 +3931,7 @@ impl<'a> Builder<'a> {
             self.element_domains.insert(binding);
         }
         Ok(Some(self.dataset_element(
-            &view, i.regs[0], view.access.writes() && current,
+            &view, i.regs[0], view.access.writes() && (view.whole || current),
         )))
     }
     fn name_place(&mut self, name: &String, e: &Expr) -> Result<Place> {
