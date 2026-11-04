@@ -411,7 +411,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-2"></a>
 
-**原数组形参物化StoreLocal的生成来源。** 输入／生产消费：原值形参数组／聚合及其真实regs→array.rs#29::materialize_array_bindings148至167／materialize_array168至178→原局部槽位及StoreLocal；原接点check.rs1620和cooperative.rs#60::inline_instance608。只分类原参数物化StoreLocal，保持原槽位、readonly、求值与初始化；普通表达式或调用实参数组的共用物化不冒称形参入口。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-2)。
+**原数组形参物化StoreLocal的生成来源。** 原CPU函数或静态内联的值形参数组／含数组聚合、实际寄存器及原定义／实例／已知内联上下文，经materialize_array_bindings原参数环境与materialize_array的逐分量StoreLocal，交给同一原local slots／storage及ReadOnlyLocal绑定。原接点为check.rs#154::function_parameters1625及cooperative.rs#61::inline_instance608，实际物化生产者为array.rs#29的148至178。只分类形参物化的实际StoreLocal；来源在原发起接点交接，不能按类型／机器名字或事后扫描，把共用helper的表达式与调用实参暂存改标为形参，也不复制物化算法或增加执行链。原参数的已知源与生成上下文沿原事实，合成参数不伪造源声明；未知材料保持空。原槽位、storage、输入寄存器、readonly、求值、Proof与初始化保持，无StoreLocal不补造节点。唯一事实归原生产者及原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，最后真实IR消费者后释放，不保留World／AST、不进入必要执行编码、不保活变量或节点、不拥有运行资源。真实资源与最后完成仍归原所有者，不增加参数表、状态权威、图、调度、同步或释放链；完整优化／机器映射继续沿原编号。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-2)。
 
 <a id="tool-7-2-4-5-6-3"></a>
 
