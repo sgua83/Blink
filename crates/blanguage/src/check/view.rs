@@ -358,18 +358,18 @@ impl Builder<'_> {
         if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())
     }
-    pub(super) fn require_view_available(&self, value: &Value, span: Span) -> Result<()> {
+    pub(super) fn require_view_available(&self, value: &Value, resources: &[&application::Data], span: Span) -> Result<()> {
         let borrow=value.proof.typed_view_borrow(&value.ty).restricted(&self.path).owners();
         for(source,when)in borrow.sources.entries(){
             if !when.possible(){continue;}
             match source {
-                Source::Data(id) => self.application_handle_available(*id, span)?,
+                Source::Data(id) => self.application_handle_available(*id, span, resources)?,
                 Source::Unresolved => {
                     return self.fail(span, "B271", "view返回的实际借用来源尚未形成合同");
                 }
                 Source::Position(origin) => {
                     for(source,when)in origin.resources().sources.entries() {
-                        if when.possible() && let Source::Data(id)=source { self.application_handle_available(*id,span)?; }
+                        if when.possible() && let Source::Data(id)=source { self.application_handle_available(*id,span,resources)?; }
                     }
                 }
                 Source::Parameter(_) | Source::Inactive | Source::External | Source::Element{..} | Source::Projection{..} => {}

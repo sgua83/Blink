@@ -858,6 +858,7 @@ impl Builder<'_> {
         &self,
         identity: ValueIdentity,
         span: Span,
+        resources: &[&Data],
     ) -> Result<()> {
         let mut matching = self
             .env
@@ -867,6 +868,7 @@ impl Builder<'_> {
                 Binding::OwnedValue(v) => v.resources(),
                 _ => Vec::new(),
             })
+            .chain(resources.iter().copied())
             .filter(|d| d.root.proof.known_identity(0) == Some(identity)
                 || self.owned_resource_borrow(d).restricted(&self.path).sources.contains(&view::Source::Data(identity)))
             .peekable();
@@ -1483,7 +1485,7 @@ impl Builder<'_> {
         count: Value,
         span: Span,
     ) -> Result<[Reg; 2]> {
-        self.application_handle_available(identity, span)?;
+        self.application_handle_available(identity, span, &[])?;
         if bytes != 0 { self.require_view_unborrowed(&self.data_borrow(&[identity]),span)?; }
         self.application_cpu_source(identity,span)?;
         let handle = Value {
@@ -1849,7 +1851,7 @@ impl Builder<'_> {
             }
         }
         for value in &data {
-            self.application_handle_available(value.root.identity(), span)?;
+            self.application_handle_available(value.root.identity(), span, &[])?;
         }
         let interface = self.prepare_domain(&instance, target)?;
         for &(left, right) in &interface.length_requirements {

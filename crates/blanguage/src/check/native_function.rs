@@ -811,7 +811,10 @@ impl Builder<'_> {
             }
             self.finish_scoped_argument(&name, span)?;
         }
-        if let Some(value)=returned.view_value() { self.require_view_available(value,span)?; }
+        if let Some(value)=returned.view_value() {
+            let resources=match &returned{Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
+            self.require_view_available(value,&resources,span)?;
+        }
         Ok(Some(returned))
     }
 }

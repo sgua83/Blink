@@ -2260,7 +2260,7 @@ impl<'a> Builder<'a> {
             return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
         }
         self.require_owned_writable(p,span)?;
-        self.require_view_available(&value, span)?;
+        self.require_view_available(&value, &[], span)?;
         let ty = p.ty();
         self.require_same(ty, &value.ty, span)?;
         if let Some(borrow)=self.reference_position_borrow(p,span)? {self.write_address_values(&borrow);}
@@ -3606,7 +3606,7 @@ impl<'a> Builder<'a> {
         self.bind_returned(name, value, span)
     }
     fn bind_local_value(&mut self, name: &String, value: Value, span: Span) -> Result<()> {
-        self.require_view_available(&value, span)?;
+        self.require_view_available(&value, &[], span)?;
         if self.env.contains_key(name) {
             return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
         }
