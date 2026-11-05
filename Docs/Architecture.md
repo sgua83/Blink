@@ -537,7 +537,7 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-4"></a>
 
-**索引存储读取复用的来源。** 原Values.memory仍是本次值流分析的唯一临时工作表，沿原Load／Store的binding、index、word及原写／别名／控制事实决定是否可复用。读取定义复用与写入值转交是不同来源关系，分别沿下列两叶推进；本父项只汇总。写效果和别名继续查询原Inst／Call／IndexedSource，不保存每轮缓存增删历史，不复制内存状态权威。来源材料属于原Stage／ValueCode的已保留结果，沿原Source不可变共享，最后IR消费者后释放，不拥有运行资源、保留AST／World或旧IR；必要执行编码不带材料，实际求值、数值、借用和完成保持原义。
+**索引存储读取复用的来源。** 原Values.memory仍是本次值流分析的唯一临时工作表，沿原Load／Store的binding、index、word及原写／别名／控制事实决定是否可复用。读取定义复用与写入值转交是不同来源关系，分别由下列两项交接；当前正式生产路径的这两类来源已实现，范围见[汇总](FixedIssues.md#c-021-7-9-7-3-1-4)。写效果和别名继续查询原Inst／Call／IndexedSource，不保存每轮缓存增删历史，不复制内存状态权威。来源材料属于原Stage／ValueCode的已保留结果，沿原Source不可变共享，最后IR消费者后释放，不拥有运行资源、保留AST／World或旧IR；必要执行编码不带材料，实际求值、数值、借用和完成保持原义。普通函数地址访问与归约后端输出的阶段关系见后文，不因名称中都有读取／写入就预设另一输入交接；新增真实生产事件仍须沿原拥有者交接来源，不以当前路径限制合法程序或优化。
 
 <a id="tool-7-3-1-4-1"></a>
 
@@ -545,23 +545,23 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 接收Inst的GeneratedOrigin采用GenerationReason::IndexedReadReuse及GenerationAnchor::IndexedReadReuse，锚点保留原OperationOrigin及reused各被替代读取；原source_site仍是保留Load自己的直接语法，当前Load的binding／index／word和所属寄存器表解释实际逻辑分量。SDK及IR查询只借用这些原事实，JSON给出indexed_read_reuse的retained／reused，不永久保存优化前Reg，不把静态逻辑位置当实际运行地址。原读定义、调用／域展开和已有生成来源不可变共享，多轮优化沿已有来源交接，不自引用、不复制旧IR／AST／World；删除整个保留Load仍由原DCE负责，不为观察保活。
 
-材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无相关类型／代码或必要执行编码；数值、存储、调度和完成保持原规则。此链的值由真实Load定义，不能和Store值到参数输入两支混为一项。当前该原Load定义范围已实现，simulation.bodies的真实标量／float3复用、SDK／JSON、两档查询和实际CPU／GPU已验证，认领及原始证据归[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-1)。Store值到两类输入仍沿各原叶推进，不由本叶代替。
+材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无相关类型／代码或必要执行编码；数值、存储、调度和完成保持原规则。此链的值由真实Load定义，写入值转交另按下一项表达。当前该原Load定义范围已实现，现行查询见规范，认领及原始证据归[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-1)。
 
 <a id="tool-7-3-1-4-2"></a>
 
-**索引Store值替代后续Load。** 输入是原Store、其实际写入值与被替代读取；同一Values.memory拥有分析期间的值关系，实际来源按原值的真实定义由下列三叶交接。写入操作、写入值生产者与被替代读取分别说明，不把Store写成Load定义。原memory条目可按本次分析生命周期借用／共享实际Store的不可变来源，无第二张写效果表或失效历史；材料只随最终真实接收者保留，分析结束后释放工作表。父项只汇总，普通Inst范围、ValueCode输入和归约输入分别实现验证，见[台账](Issues.md#c-021-7-9-7-3-1-4-2)。
+**索引Store值替代后续Load。** 输入是原Store、其实际写入值与被替代读取；同一Values.memory拥有分析期间的值关系，实际来源按原值的真实定义交接。写入操作、写入值生产者与被替代读取分别说明，不把Store写成Load定义。原memory条目可按本次分析生命周期借用／共享实际Store的不可变来源，无第二张写效果表或失效历史；材料只随最终真实接收者保留，分析结束后释放工作表。当前正式生产路径由保留Inst接收；普通ValueCode输入、归约值输入及后端输出分别遵守下列实际阶段关系，不预设额外输入材料或伪造定义。当前范围见[汇总](FixedIssues.md#c-021-7-9-7-3-1-4-2)。
 
 <a id="tool-7-3-1-4-2-1"></a>
 
-**Store值到原保留Inst。** 原Values.memory在Store时保留同一Reg及实际Store的OperationOrigin，普通Load条目不伪造Store来源；真实Load被该值替换时，把原Store与被替代读取的OperationOrigin交给本次原Reuses，随后按原保留Inst的结果顺序归入其GeneratedOrigin。SDK／JSON交接原保留来源、结果序号／数量／语义结果及每对Store／读取来源；保留值生产者不等于Store。原Source、调用／域展开和既有GeneratedOrigin不可变共享，不复制IR、固定SSA键、地址／内存版本或完整优化历史。binding／index／word及写／别名范围仍沿原实际IR解释，来源关系不充当运行地址或访问许可。材料随原Inst及最后IR消费者释放，不进入必要执行编码、不改变数值、调度或完成；真实多轮优化只嵌入已有来源，不自引用。当前仅此原保留Inst范围已实现；实际SDK／JSON字段见BLanguage“索引Store写入值到保留指令的读取来源”，认领、原始调查与验证归[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)。先前Load及两类无Inst输入仍按各原叶实施，不由本叶代替。
+**Store值到原保留Inst。** 原Values.memory在Store时保留同一Reg及实际Store的OperationOrigin，普通Load条目不伪造Store来源；真实Load被该值替换时，把原Store与被替代读取的OperationOrigin交给本次原Reuses，随后按原保留Inst的结果顺序归入其GeneratedOrigin。SDK／JSON交接原保留来源、结果序号／数量／语义结果及每对Store／读取来源；保留值生产者不等于Store。原Source、调用／域展开和既有GeneratedOrigin不可变共享，不复制IR、固定SSA键、地址／内存版本或完整优化历史。binding／index／word及写／别名范围仍沿原实际IR解释，来源关系不充当运行地址或访问许可。材料随原Inst及最后IR消费者释放，不进入必要执行编码、不改变数值、调度或完成；真实多轮优化只嵌入已有来源，不自引用。此原保留Inst范围已实现；实际SDK／JSON字段见BLanguage“索引Store写入值到保留指令的读取来源”，认领、原始调查与验证归[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)。
 
 <a id="tool-7-3-1-4-2-2"></a>
 
-**Store值到原ValueCode输入。** 当写入值由原inputs生产且无Inst定义时，接收者是同一ValueCode的实际输入序号；SDK／JSON需交接该输入及Store／读取来源，保留原入口来源。不得伪造定义或把SSA键存为永久输入身份。该支需独立调查真实事件和实现验证，尚未交付，不由普通保留Inst的材料覆盖；仍沿原输入与IR消费者生命周期，不另设参数表。见[台账](Issues.md#c-021-7-9-7-3-1-4-2-2)。
+**普通函数输入与索引地址访问。** 原function_parameters／finish_checked_function、应用入口及域包装分别生产其ValueCode和实际ABI输入，普通CPU函数的资源参数沿ApplicationData或引用地址访问，载荷使用LoadIndexed／StoreIndexed。native/application::emit_value消费这些值代码时不建立并行Program的全局dataset绑定空间；不能把地址写入当作Values.memory处理的Load／Store。已有局部读取到ValueCode.inputs的来源继续沿.3.2交接，没有定义Inst的真实输入仍用原输入身份。当前正式构造／消费路径没有已确认的Store值转交此类输入事件，不建立另一输入锚点或参数表；这不禁止合法动态数据、系统调用或未来机器表达。范围依据与结束调查见[台账](FixedIssues.md#c-021-7-9-7-3-1-4-2-2)。
 
 <a id="tool-7-3-1-4-2-3"></a>
 
-**Store值到原归约输入。** lowered归约的Source／Left／Right输入及实际分量是唯一接收身份，原with_prelude和ReductionKernel交接Store／读取来源，投影／合并函数定义与该输入角色分别说明。无Inst定义时不转为普通Inst来源；需独立确认真实生产事件、映射及查询，当前待实现。材料沿原Kernel与Stage保留并释放，不增输入镜像、运行期拥有表或同步／释放链。见[台账](Issues.md#c-021-7-9-7-3-1-4-2-3)。
+**归约值输入与后端输出写入的阶段。** 原custom_reduce::function生产project／identity／combine的值函数，CustomReduction::kernel映射实际分量、划分分区，再由prepare_reduction／with_prelude处理值流；Source／Left／Right属于同一ReductionKernel。真实局部读取转交这些输入的来源继续沿.3.3交接。native/custom_reduce::emit在kernel完成之后生成输出和范围Store，再交给原reads::place及原生发射，不重新进入这次值流；这些写入的机器来源归.7.4.3，不能当作此前发生的Store值到输入读取替代。当前正式路径没有已确认的该输入事件，不预设输入镜像或额外传播材料，不据此限制外部ABI、地址操作或未来归约实现。范围依据与结束调查见[台账](FixedIssues.md#c-021-7-9-7-3-1-4-2-3)。
 
 <a id="tool-7-3-1-5"></a>
 

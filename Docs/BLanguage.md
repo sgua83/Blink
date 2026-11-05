@@ -437,7 +437,7 @@ CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Fram
 
 JSON根reason和锚点kind均为indexed_store_read_forward，锚点含result_index_base=0、retained和reads；各项kind为indexed_store_read_forward_input，字段为result_index、result_count、result、store和read。多源锚点的单源trigger()／syntax()／origin()／instance()为空，各路从对应成员读取；未知来源仍为null。Source及既有生成链不可变共享，后续优化可以沿原材料继续交接，不保活DCE操作，不保存旧IR、AST／World、运行状态或第二张内存表。
 
-此项当前覆盖写入值由保留Inst定义的范围；先前Load定义的复用按后节交接，直接ValueCode输入及lowered归约输入仍保留独立未完成台账。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。见[架构](Architecture.md#tool-7-3-1-4-2-1)、[本项记录](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)及[剩余范围](Issues.md#c-021-7-9-7-3-1-4)。
+此项覆盖写入值由保留Inst定义的范围；先前Load定义的复用按后节交接。普通CPU函数的资源参数使用LoadIndexed／StoreIndexed地址访问，不能据此推定发生原Values.memory中Load／Store的输入转交。归约输出Store由native/custom_reduce在kernel值流之后生成，不重新进入此前的输入读取归集；当前正式路径没有已确认的两类Store值到输入事件。已有LocalInputForward及ReductionInputForward继续表达各自真实局部读取；不新增预设输入锚点，也不把当前构造方式写成语言限制。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。见[架构](Architecture.md#tool-7-3-1-4-2)、[本项记录](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)及[当前范围汇总](FixedIssues.md#c-021-7-9-7-3-1-4)。
 
 #### 先前索引Load的读取复用来源
 
