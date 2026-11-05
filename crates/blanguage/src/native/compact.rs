@@ -1,4 +1,4 @@
-//! 范围计数返回 u32；稳定散写使用执行框架提供的范围前缀，保持全部记录字节。
+//! 范围计数写出u32结果；稳定散写使用执行框架提供的范围前缀，保持全部记录字节。
 use super::*;
 fn emitter<'a>(program: &'a Program) -> Emitter<'a> {
     Emitter {
@@ -39,7 +39,9 @@ pub(super) fn emit_count(program: &Program, c: &Compaction) -> NativeCode {
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0x41, 0x5c, 0xc3]);
+    // 第五参数是本范围的算法输出，返回寄存器仅交接执行状态。
+    e.bytes(&[0x4c, 0x8b, 0x54, 0x24, 0x30, 0x41, 0x89, 0x02]);
+    e.bytes(&[0xb8, 1, 0, 0, 0, 0x41, 0x5c, 0xc3]);
     e.finish(8)
 }
 pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
@@ -112,6 +114,6 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
     let back = e.jump(None);
     e.patch(back, begin);
     e.patch(end, e.code.len());
-    e.bytes(&[0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
+    e.bytes(&[0xb8, 1, 0, 0, 0, 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, 0xc3]);
     e.finish(56)
 }

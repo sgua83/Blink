@@ -66,7 +66,6 @@ impl StageCode {
                 let result = match result {
                     RangeResult::None => object(&[("kind", text("none"))]),
                     RangeResult::Values(words) => object(&[("kind", text("values")), ("words", words.to_string())]),
-                    RangeResult::UnsignedSum => object(&[("kind", text("unsigned_sum"))]),
                 };
                 object(&[("kind", text("element")), ("main", main.code_json(0)?),
                     ("continuation", continuation), ("result", result)])

@@ -5,7 +5,7 @@ use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
     ir::{Bits, CollectiveOperator, ExecutionPlan as Program, Scalar, Ty},
-    native::{BufferAddress, NativeSymbol, RangeResult},
+    native::{BufferAddress, NativeSymbol, RangeEntry, RangeResult},
 };
 pub use dataset::CpuDataset;
 use std::ffi::c_void;
@@ -33,9 +33,6 @@ unsafe extern "system" {
     fn WaitForThreadpoolWorkCallbacks(work: *mut c_void, cancel: i32);
     fn CloseThreadpoolWork(work: *mut c_void);
 }
-type Entry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32);
-type UnsignedEntry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32) -> u32;
-type ValuesEntry = unsafe extern "C" fn(*const BufferAddress, *const u32, u32, u32, *mut u32);
 struct RangeWork {
     entry: *mut c_void,
     buffers: *const BufferAddress,
@@ -47,6 +44,7 @@ struct RangeWork {
     next: AtomicUsize,
     result: RangeResult,
     partials: *mut u32,
+    statuses: *mut u32,
     range_parameters: *const u32,
     range_parameter_words: usize,
 }
@@ -80,27 +78,15 @@ unsafe extern "system" fn execute_ranges(
                     .cast_mut();
                 private_buffers.as_ptr()
             };
-            match work.result {
-                RangeResult::Values(words) => {
-                    let entry: ValuesEntry = std::mem::transmute(work.entry);
-                    entry(
-                        buffers,
-                        work.uniforms,
-                        end as u32,
-                        begin as u32,
-                        work.partials.add(begin / work.grain * words),
-                    );
-                }
-                RangeResult::UnsignedSum => {
-                    let entry: UnsignedEntry = std::mem::transmute(work.entry);
-                    *work.partials.add(begin / work.grain) =
-                        entry(buffers, work.uniforms, end as u32, begin as u32);
-                }
-                RangeResult::None => {
-                    let entry: Entry = std::mem::transmute(work.entry);
-                    entry(buffers, work.uniforms, end as u32, begin as u32);
-                }
-            }
+            let entry: RangeEntry = std::mem::transmute(work.entry);
+            let words = work.result.words();
+            let output = if words == 0 {
+                std::ptr::null_mut()
+            } else {
+                work.partials.add(begin / work.grain * words)
+            };
+            *work.statuses.add(begin / work.grain) =
+                entry(buffers, work.uniforms, end as u32, begin as u32, output);
         }
     }
 }
@@ -842,6 +828,7 @@ impl CpuCode {
                 next: AtomicUsize::new(0),
                 result,
                 partials: partials.as_mut_ptr(),
+                statuses: std::ptr::null_mut(),
                 range_parameters: std::ptr::null(),
                 range_parameter_words: result.words().max(1),
             };
@@ -872,14 +859,18 @@ impl CpuCode {
                         let mut inputs = pointers.clone();
                         inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
                         inputs[*target] = inputs[*source];
-                        let entry: Entry = unsafe { std::mem::transmute(prefix.address) };
-                        unsafe {
+                        let entry: RangeEntry = unsafe { std::mem::transmute(prefix.address) };
+                        let status = unsafe {
                             entry(
                                 inputs.as_ptr(),
                                 uniforms.as_ptr(),
                                 (partials.len() / result.words()) as u32,
                                 0,
-                            );
+                                std::ptr::null_mut(),
+                            )
+                        };
+                        if status == 0 {
+                            return Err(error("CPU原生范围执行失败"));
                         }
                         apply
                     }
@@ -889,15 +880,18 @@ impl CpuCode {
                             let mut inputs = pointers.clone();
                             inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
                             let mut output = vec![0; k];
-                            let entry: ValuesEntry = unsafe { std::mem::transmute(next.address) };
-                            unsafe {
+                            let entry: RangeEntry = unsafe { std::mem::transmute(next.address) };
+                            let status = unsafe {
                                 entry(
                                     inputs.as_ptr(),
                                     uniforms.as_ptr(),
                                     (partials.len() / k) as u32,
                                     0,
                                     output.as_mut_ptr(),
-                                );
+                                )
+                            };
+                            if status == 0 {
+                                return Err(error("CPU原生范围执行失败"));
                             }
                             for (scalar, offset) in &r.ty.components {
                                 unsafe {
@@ -988,6 +982,8 @@ impl CpuCode {
         Ok(())
     }
     fn execute(&self, ranges: &mut RangeWork) -> Result<()> {
+        let mut statuses = vec![0u32; ranges.count.div_ceil(ranges.grain)];
+        ranges.statuses = statuses.as_mut_ptr();
         let work = unsafe {
             CreateThreadpoolWork(
                 execute_ranges,
@@ -1005,6 +1001,9 @@ impl CpuCode {
             }
         }
         drop(handle);
+        if statuses.into_iter().any(|status| status == 0) {
+            return Err(error("CPU原生范围执行失败"));
+        }
         Ok(())
     }
 }

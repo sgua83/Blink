@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x1d\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x1e\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -314,7 +314,7 @@ impl Decode for native::NativeCode {
         })
     }
 }
-variants!(native::RangeResult {0=>None,1=>Values(n),2=>UnsignedSum});
+variants!(native::RangeResult {0=>None,1=>Values(n)});
 variants!(@<C> native::ContinuationCode<C> {0=>ReductionTail(code),1=>ScanAdd(code),2=>CompactScatter(code),3=>SegmentedFinish(code),4=>Scan{prefix,apply,source,target}});
 record!(@<C> native::SortCode<C> {
     source,

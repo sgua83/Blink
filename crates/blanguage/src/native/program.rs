@@ -98,7 +98,7 @@ pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'
             Some(ContinuationCode::CompactScatter(emit_compact_scatter(
                 program, compaction,
             ))),
-            RangeResult::UnsignedSum,
+            RangeResult::Values(1),
         ),
         Operation::Reduce(reduction) => (
             None,

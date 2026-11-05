@@ -20,7 +20,6 @@ pub(super) fn constructor(p: &ExecutableProgram, prefix: &str, worker: &crate::c
         };
         let result = |result| match result {
             RangeResult::None => "RangeResult::None".to_owned(),
-            RangeResult::UnsignedSum => "RangeResult::UnsignedSum".to_owned(),
             RangeResult::Values(words) => format!("RangeResult::Values({words})"),
         };
         let stages = stages.into_iter().map(|stage| match stage {

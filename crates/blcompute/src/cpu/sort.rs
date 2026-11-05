@@ -49,6 +49,7 @@ pub(super) fn run(host: &CpuCode, code: &Code, pointers: &[BufferAddress], count
         next: AtomicUsize::new(0),
         result: RangeResult::None,
         partials: std::ptr::null_mut(),
+        statuses: std::ptr::null_mut(),
         range_parameters: std::ptr::null(),
         range_parameter_words: 17,
     };

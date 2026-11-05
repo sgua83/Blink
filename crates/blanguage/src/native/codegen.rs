@@ -157,6 +157,7 @@ impl Emitter<'_> {
     }
     fn leave(&mut self, frame: u32) {
         self.preserve_registers(true);
+        self.bytes(&[0xb8, 1, 0, 0, 0]);
         if frame > 0 {
             self.bytes(&[0x48, 0x81, 0xc4]);
             self.u32(frame);
@@ -658,8 +659,8 @@ impl Emitter<'_> {
         Ok(())
     }
 }
-/// ABI: (buffer pointers, push-constant words, end index, begin index)。
-/// 全域归约另以第五个参数接收本范围的结果地址。
+/// 所有范围共用RangeEntry：buffers、uniforms、end、begin、output，返回执行状态。
+/// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
 pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
     if let Operation::CustomSegmentedReduce(r) = &program.stages[index].operation {
         return custom_reduce::emit(
