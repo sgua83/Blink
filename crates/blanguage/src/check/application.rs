@@ -878,6 +878,7 @@ impl Builder<'_> {
         identity: ValueIdentity,
         span: Span,
         resources: &[&Data],
+        path:&bounds::Clause,
     ) -> Result<()> {
         let mut matching = self
             .env
@@ -889,9 +890,9 @@ impl Builder<'_> {
             })
             .chain(resources.iter().copied())
             .filter(|d| d.root.proof.known_identity(0) == Some(identity)
-                || self.owned_resource_borrow(d).restricted(&self.path).sources.contains(&view::Source::Data(identity)))
+                || self.owned_resource_borrow(d).restricted(path).sources.contains(&view::Source::Data(identity)))
             .peekable();
-        if matching.peek().is_some() && matching.all(|data| !self.resolve_ownership(&data.ownership,None).available()) {
+        if matching.peek().is_some() && matching.all(|data|match &data.ownership {Ownership::Conditional(when)=>self.condition_truth(&when.condition(),Some(&bounds::Condition::guard(path.clone())))!=Some(true),ownership=>!ownership.available()}) {
             return self.fail(
                 span,
                 "B227",
@@ -1502,7 +1503,7 @@ impl Builder<'_> {
         count: Value,
         span: Span,
     ) -> Result<[Reg; 2]> {
-        self.application_handle_available(identity, span, &[])?;
+        self.application_handle_available(identity, span, &[],&self.path)?;
         if bytes != 0 { self.require_view_unborrowed(&self.data_borrow(&[identity]),span)?; }
         self.application_cpu_source(identity,span)?;
         let handle = Value {
@@ -1872,7 +1873,7 @@ impl Builder<'_> {
             }
         }
         for value in &data {
-            self.application_handle_available(value.root.identity(), span, &[])?;
+            self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
         let interface = self.prepare_domain(&instance, target)?;
         for &(left, right) in &interface.length_requirements {

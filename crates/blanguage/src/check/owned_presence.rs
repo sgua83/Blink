@@ -42,7 +42,7 @@ impl Returned{
             Returned::OwnedValue(target)=>{let values=values.iter().filter_map(|(when,value)|if let Returned::OwnedValue(value)=value{Some((when.clone(),value))}else{None}).collect::<Vec<_>>();target.ownership=mode(&values.iter().map(|(when,value)|(when.clone(),&value.ownership)).collect::<Vec<_>>());target.value.proof.select_view_borrows(&values.iter().map(|(when,value)|(when.condition(),value.value.proof.borrow_state())).collect::<Vec<_>>());for(index,payload)in target.payloads.iter_mut().enumerate(){if let Some(payload)=payload{let children=values.iter().filter_map(|(when,value)|value.payloads[index].as_deref().map(|child|(when.clone(),child))).collect::<Vec<_>>();restore(payload,&children);}}},_=>{}}}
         restore(self,&candidates.iter().map(|(when,value)|(when.clone(),value)).collect::<Vec<_>>());
     }
-    pub(super) fn restrict_owned(&mut self,when:&Presence){match self{Self::Dataset(data)=>data.ownership=data.ownership.restricted(when),Self::OwnedValue(value)=>{if value.value.ty.has_variants()||value.value.ty.cleanup.is_some(){value.ownership=value.ownership.restricted(when);}else{for payload in value.payloads.iter_mut().flatten(){payload.restrict_owned(when);}}},_=>{}}}
+    pub(super) fn restrict_owned(&mut self,when:&Presence){match self{Self::Dataset(data)=>data.ownership=data.ownership.restricted(when),Self::OwnedValue(value)=>value.restrict_owned(when),_=>{}}}
     pub(super) fn join_presence(&mut self,other:Self,choice:Option<&Presence>){
         match choice {
             Some(Presence::All) => return,
@@ -115,5 +115,12 @@ impl Builder<'_>{
                 Ok(())
             }
         }
+    }
+}
+
+impl owned_values::OwnedValuePayload {
+    pub(super) fn restrict_owned(&mut self,when:&Presence){
+        if self.value.ty.has_variants()||self.value.ty.cleanup.is_some(){self.ownership=self.ownership.restricted(when);}
+        else{for payload in self.payloads.iter_mut().flatten(){payload.restrict_owned(when);}}
     }
 }

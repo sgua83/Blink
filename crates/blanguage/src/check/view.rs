@@ -363,13 +363,13 @@ impl Builder<'_> {
         for(source,when)in borrow.sources.entries(){
             if !when.possible(){continue;}
             match source {
-                Source::Data(id) => self.application_handle_available(*id, span, resources)?,
+                Source::Data(id) => self.application_handle_available(*id, span, resources,&when)?,
                 Source::Unresolved => {
                     return self.fail(span, "B271", "view返回的实际借用来源尚未形成合同");
                 }
                 Source::Position(origin) => {
-                    for(source,when)in origin.resources().sources.entries() {
-                        if when.possible() && let Source::Data(id)=source { self.application_handle_available(*id,span,resources)?; }
+                    for(source,when)in origin.resources().restricted(&when).sources.entries() {
+                        if when.possible() && let Source::Data(id)=source { self.application_handle_available(*id,span,resources,&when)?; }
                     }
                 }
                 Source::Parameter(_) | Source::Inactive | Source::External | Source::Element{..} | Source::Projection{..} => {}

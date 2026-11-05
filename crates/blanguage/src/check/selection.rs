@@ -44,6 +44,7 @@ impl Builder<'_> {
         let prefix = self.code.len();
         let outer_regions = std::mem::take(&mut self.memory_regions);
         let environment = self.env.clone();
+        let original=environment.keys().cloned().collect::<BTreeSet<_>>();
         let path = self.path.clone();
         let initialized = self.application_initialization_state();
         let effects = (
@@ -61,11 +62,7 @@ impl Builder<'_> {
             .return_context
             .as_ref()
             .map_or(0, |context| context.exit_count());
-        let mut a_result = self.temporary_scope(yes.span, |builder| {
-                    let value=builder.evaluate_returned(yes,expected)?;
-                    let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-                    Ok((value,retained))
-                })?;
+        let (mut a_result,yes_owners)=self.selection_arm(yes,expected,&original)?;
         let yes_exit = self
             .return_context
             .as_ref()
@@ -89,11 +86,7 @@ impl Builder<'_> {
         self.path = path;
         self.refine_bounds(&partition, false);
         self.flow = Flow::NEXT;
-        let b_result = self.temporary_scope(no.span, |builder| {
-                    let value=builder.evaluate_returned(no,expected)?;
-                    let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-                    Ok((value,retained))
-                })?;
+        let (b_result,no_owners)=self.selection_arm(no,expected,&original)?;
         if self.flow.continues() && b_result.is_none() {
             return self.fail(span, "B228", "选择式需要值");
         }
@@ -168,6 +161,17 @@ impl Builder<'_> {
             self.flow = yes_flow.union(no_flow);
         }
         self.control_uniform = control;
+        for (owners,present) in [(yes_owners,owned_presence::Presence::input(&c)),(no_owners,owned_presence::Presence::input(&c).not())] {
+            if !self.owned_possible(&present){continue;}
+            for mut binding in owners {
+                match &mut binding {
+                    Binding::OwnedValue(value)=>value.restrict_owned(&present),
+                    Binding::ApplicationData(data)=>data.ownership=data.ownership.restricted(&present),
+                    _=>{},
+                }
+                self.hold_binding(binding);
+            }
+        }
         if let Some(bits) = &c.constant {
             if bits[0] != 0 {
                 self.code.extend(yes);
@@ -232,5 +236,26 @@ impl Builder<'_> {
             value.constant = None;
         }
         Ok(Some(result))
+    }
+}
+
+impl Builder<'_> {
+    fn selection_arm(&mut self,expr:&Expr,expected:Option<&Ty>,original:&BTreeSet<String>)->Result<(Option<returns::Returned>,Vec<Binding>)> {
+        self.temporary_scope(expr.span,|builder|{
+            let value=builder.evaluate_returned(expr,expected)?;
+            let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
+            let borrow=retained.owners().restricted(&builder.path);
+            let mut names=builder.env.iter().filter(|(name,_)|name.starts_with("\0argument:")&&!original.contains(*name))
+                .filter(|(_,binding)|matches!(binding,Binding::OwnedValue(value)if value.ownership.may_own()&&!matches!(value.place(),Some(Place::Reference{..})))||matches!(binding,Binding::ApplicationData(data)if data.ownership.may_own()))
+                .filter(|(_,binding)|{
+                    let mut references=binding.view_borrow().owners();
+                    for data in binding.application_resources(){references.union(&builder.owned_resource_borrow(data).owners());}
+                    references=references.restricted(&builder.path);
+                    borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|when.overlaps(&references.sources.when(source)))
+                }).map(|(name,_)|name.clone()).collect::<Vec<_>>();
+            names.sort_by_key(|name|name.strip_prefix("\0argument:").unwrap().parse::<usize>().unwrap());
+            let owners=names.into_iter().map(|name|builder.env.remove(&name).unwrap()).collect();
+            Ok(((value,owners),retained))
+        })
     }
 }

@@ -256,7 +256,7 @@ impl<'a> Builder<'a> {
         for (param, argument) in parameters.iter().zip(&arguments) {
             if let Argument::OwnedReference{value,..}=argument && param.access.writes() {
                 for data in value.resources(){self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_value_borrow(data),borrow:retained.clone(),ownership:true,span})?;}
-                if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span,&[])?;}}
+                if param.access==Access::InOut{for data in value.resources(){self.application_handle_available(data.root.identity(),span,&[],&self.path)?;}}
             }
             if let Argument::BorrowedData(reference) = argument {
                 if param.access.writes() {
@@ -268,14 +268,14 @@ impl<'a> Builder<'a> {
                     }
                 }
                 for source in &reference.sources {
-                    self.application_handle_available(*source, span, &[])?;
+                    self.application_handle_available(*source, span, &[],&self.path)?;
                 }
             }
             if let Argument::Reference(OwnedBinding{place,..}) | Argument::Atomic(place) = argument
                 && let Place::ApplicationElement { sources, .. } = place.storage()
             {
                 for source in sources {
-                    self.application_handle_available(*source, span, &[])?;
+                    self.application_handle_available(*source, span, &[],&self.path)?;
                 }
             }
             let handle = match argument {
@@ -292,7 +292,7 @@ impl<'a> Builder<'a> {
             };
             if let Some(handle) = handle {
                 if param.access.writes() { self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&[handle]),borrow:retained.clone(),ownership:false,span})?; }
-                self.application_handle_available(handle, span, &[])?;
+                self.application_handle_available(handle, span, &[],&self.path)?;
             }
         }
         self.check_argument_aliases(&parameters, &arguments, |index| args[index].span)?;
