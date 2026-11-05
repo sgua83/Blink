@@ -440,7 +440,7 @@ compiler SDK的ReductionInputReadForward::role()返回ReductionInputRole::Source
 
 #### 局部索引写的现有IR事实与单位
 
-原Inst::ir_json()已直接编码StoreLocalIndexed；ValueCode／Stage及模块／函数IR查询消费同一原指令和布局，没有单独的缓存失效记录接口。字段含义如下：
+Inst通过公开kind字段及来源查询交接原指令；所属ValueCode::ir_json()、Stage::ir_json()、FunctionBody::ir_json()及模块／应用IR查询编码同一StoreLocalIndexed和布局，指令JSON编码由内部辅助完成。字段含义如下：
 
 | 字段 | 真实含义 |
 |---|---|
@@ -455,6 +455,14 @@ compiler SDK的ReductionInputReadForward::role()返回ReductionInputRole::Source
 LoadLocalIndexed共享这些地址含义，dst为读取目标寄存器，其Scalar决定读取宽度。Native及SPIR-V按原声明位置、动态index字节偏移和word选择实际标量地址；逻辑存储范围、可能别名范围和实际写宽度分别表达。例如u64字段的word可为8，u64本身仍只占一个逻辑分量。静态IR不证明该操作已执行，也不交付未采集的实际地址或内存值。
 
 当前原值流保守地在动态写点停止沿用相应底层范围内的先前局部值关系；该临时分析处理不等于写入全部分量，不等于初始化失效，不成为永久优化许可或语言限制。不同分析算法可演进，工具不要求把每轮缓存增删保存到来源链。确实消失、合并或替换的程序操作仍按实际生产者保留来源；临时状态的按需观察沿原所有者和真实存活期，未实现观察能力继续按原台账推进。见[架构](Architecture.md#tool-7-3-1-3-4)。
+
+#### 指针与原子访问的既有别名事实
+
+IndexedSource::Pointer的aliases与address、index、stride由原IR直接持有，现有指令JSON以kind=pointer及同名字段交接。MemoryAlias::Local { base, len }编码为kind=local、base、len，表示可能受影响局部存储的逻辑分量范围；MemoryAlias::Data(binding)编码为kind=data、binding，表示原数据绑定。别名不是实际地址、执行次数或一次写入的字节范围，address／index字段中的Reg也不是已采集的运行数值；实际布局沿原locals与Ty查询。
+
+普通函数的原地址合同收敛后，check/address.rs::apply_memory将同一分析结果交回原Pointer.aliases，并递归处理原控制结构。未知外部影响按原分析保守覆盖局部声明，不据此推定所有局部已写；查询者须区分已交接的编译结果与构造中的中间IR，不能拿早期空列表作为无别名证明。这里说明当前生产／消费接点，不固定临时分析算法或建立另一份别名权威。
+
+StoreIndexed直接交接source、offset、word、value。Atomic直接交接target、scalar、offset、word、operation、order及可选result；CompareExchange另在operation中保留expected、desired和failure内存序。AtomicOp::Load不写，Store不读，其余读改写可能写，比较交换是否成功须由实际运行判断。原值流按这些访问语义消费别名：原子Load不会触发局部写失效，数据读取缓存另行清除也不能解释成局部写。已有字段和所属ValueCode／Stage／FunctionBody查询足以表达本叶静态访问事实，不增加逐轮缓存维护来源；原IR、共享来源及返回查询值各按真实消费者释放。实际运行地址／值和可编程观察仍属后续运行工具能力，未实现不冒称已交付。见[架构](Architecture.md#tool-7-3-1-3-5)。
 
 #### 应用入口与根Frame的生成来源
 

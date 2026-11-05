@@ -513,7 +513,9 @@ Stage.operation中的原ValueCode及其来源保持原阶段，只有本次降�
 
 <a id="tool-7-3-1-3-5"></a>
 
-**MemoryAlias局部写失效的来源。** 输入／接点：原Atomic／StoreIndexed及真实指针写别名→Values::invalidate56起的MemoryAlias::Local范围→原写指令／Stage。输出：沿原唯一别名消费者交接局部知识失效；Data绑定读取失效仍归.4，不制造实际地址或外部实现已可信的结论。 唯一事实与生命周期沿本父项的原拥有者，不改变原算法、权限及完成，不存旧IR或另建状态权威；只读SDK／JSON消费同一原编译结果，未交接材料如实为空。该独立范围待实现，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-5)。
+**指针及原子访问的既有局部别名事实。** 必要输入／输出是原StoreIndexed.source或Atomic.target中的IndexedSource及其MemoryAlias，而非Values缓存增删历史。普通函数的地址合同收敛后，原check/address.rs::apply_memory将同一分析结果交回Pointer.aliases；已知来源沿原借用传递，外部影响按该阶段原分析保守覆盖局部声明。原IndexedSource::aliases交给Values::invalidate的Local { base, len }与现有指令JSON中的aliases来自同一字段，Data(binding)仍按原数据绑定处理。base／len是可能受影响存储的逻辑分量范围，不是一次写宽度或运行时地址；原寄存器、Ty布局、访问操作和来源共同解释静态事实，不能用尚未完成合同交接的中间空列表推定无别名。
+
+StoreIndexed是写操作；Atomic保留明确operation、scalar、order、target及偏移，Load不写，Store不读，其余读改写可能写，CompareExchange仍可能比较失败。当前值流只在AtomicOp::writes时清除相应局部知识，另行清除数据读取缓存不证明局部内存被写。原Inst.kind字段及所属ValueCode／Stage／FunctionBody的SDK／JSON已交接这些必要静态事实，不为每轮invalidate新增公共来源锚点。材料归原IR及本次编译结果，最后真实IR消费者后释放；临时分析工作表沿原分析存活期观察，不复制别名表、保活写入或改变权限、DCE、数值、完成与资源所有权。未采集的实际地址／值、外部实现信任及完整运行观察仍按原边界负责；本范围以既有事实覆盖和调查结束收口，见[记录](FixedIssues.md#c-021-7-9-7-3-1-3-5)。
 
 <a id="tool-7-3-1-3-6"></a>
 
