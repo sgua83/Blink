@@ -4329,16 +4329,8 @@ impl<'a> Builder<'a> {
     fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
         let resource = self.dataset_reference(base)?.is_some() || matches!(&base.kind, ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
-            let Some(value) = self.expr(base)? else {
-                return Ok(None);
-            };
-            if value.ty.indexed_element().is_some() {
-                return self.array_value_index(value, index);
-            }
-            let Some(place) = self.view_value_place(value, index)? else {
-                return Ok(None);
-            };
-            return self.read_place(&place, e.span, None).map(Some);
+            let returned = self.owned_array_index(e, base, index)?;
+            return self.ordinary_return(returned, e.span);
         }
         let Some(p) = self.place(e)? else {
             return Ok(None);

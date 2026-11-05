@@ -504,10 +504,22 @@ impl Builder<'_> {
             }
             self.read_place(&place, base.span, None)?
         } else {
-            let Some(value) = self.expr(base)? else {
+            let returned = self.evaluate_returned(base, None)?;
+            if !self.flow.continues() {
                 return Ok(None);
-            };
-            value
+            }
+            match returned {
+                Some(returns::Returned::Dataset(data)) => {
+                    self.hold_binding(Binding::ApplicationData(data.clone()));
+                    return self.application_index(application::DataReference::direct(data), index);
+                }
+                returned => {
+                    let Some(value) = self.returned_expression(returned, base.span)? else {
+                        return Ok(None);
+                    };
+                    value
+                }
+            }
         };
         if view.ty.array.is_some() {
             let place = self.materialize_array(view,None).place;
