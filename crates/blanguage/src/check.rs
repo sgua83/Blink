@@ -3037,7 +3037,19 @@ impl<'a> Builder<'a> {
         });
         let proof = bounds::unary(operation, &a);
         if let Some(bits) = constant {
+            let first = self.code.len();
             let mut value = self.constant_value(a.ty, bits,None);
+            for (component_index, (inst, (input_bits, result_bits))) in self.code[first..].iter_mut()
+                .zip(a.constant.iter().flatten().zip(value.constant.iter().flatten())).enumerate() {
+                inst.generated_origin = Some(Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::UnaryConstantFold,
+                    trigger: Some(GenerationAnchor::UnaryConstantFold {
+                        expression: inst.source_site.clone(), operation, scalar,
+                        input_bits: *input_bits, result_bits: *result_bits,
+                        component_index, component_count: value.regs.len(),
+                    }),
+                }));
+            }
             value.literal = a.literal;
             value.proof = proof;
             return Ok(Some(value));

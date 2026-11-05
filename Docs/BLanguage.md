@@ -327,9 +327,9 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 #### 原IR生成原因与触发语法
 
-compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`、`ValueCode::generated_origin()`及`Program::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir、value_ir和program_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
+compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`、`ValueCode::generated_origin()`及`Program::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，返回Syntax锚点或UnaryConstantFold的真实表达式SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir、value_ir和program_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
-GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition锚点的origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
+GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition及UnaryConstantFold实际表达式的origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
 当前真实生成原因及其消费如下；GenerationReason公开枚举增加变体时，Rust SDK的穷尽匹配需要相应适配，按版本规则处理兼容性。B语法、资源ABI和必要执行编码不因此改变。
 
@@ -390,6 +390,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | LocalReadForward | local_read_forward | 原LoadLocal实际被已知局部值替代 |
 | IndexedStoreReadForward | indexed_store_read_forward | 原索引Load实际被先前Store写入的值替代，材料交给原保留Inst |
 | IndexedReadReuse | indexed_read_reuse | 后续索引Load实际复用先前Load结果，材料交给原保留Load |
+| UnaryConstantFold | unary_constant_fold | 原普通已知值一元计算逐分量成为Constant |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -507,6 +508,18 @@ JSON reason及锚点kind为reduction_uniform_extract，字段为retained、parti
 原extract不递归穿过Scope／If／Loop，不将非统一数据或资源载荷访问提到入口。未选的identity、未选／不存在的project没有本分区事件；原operation中的值函数仍可能保留，不能从存在推定本次参与。后续with_prelude沿原复用／合并来源保持已经发生的提取，分区角色不根据最终保留节点反推；多源单一trigger()／syntax()／origin()／instance()为空，已取得事实从明确成员读取，缺失来源仍为null。
 
 SDK／ReductionKernel::ir_json查询同一本次实际内核，分区末尾、invariants与六角色向量继续由原字段交接，不为查询重新生成内核或调用编译／后端。提取后的入口位置与提取前的分区分别解释，逻辑Reg不等于物理寄存器；入口执行次数由原CPU／GPU调用与提交决定，不宣称整个集合全局只执行一次。材料只compiler，随原Inst／内核及最后真实IR消费者释放，不持有运行资源、不保活指令、不进入必要执行编码。公共枚举演化按原major软件版本规则，完整机器映射与运行测量另沿原职责。见[架构](Architecture.md#tool-7-3-1-8)及[台账](FixedIssues.md#c-021-7-9-7-3-1-8)。
+
+
+#### 普通一元常量计算的来源
+
+原unary_expr在operators::unary选出实际运算且输入Value.constant已知时，使用原constant::unary计算各逻辑分量。原constant_value产生的每个Constant保留原source_site，另持有GenerationReason::UnaryConstantFold及GenerationAnchor::UnaryConstantFold { expression, operation, scalar, input_bits, result_bits, component_index, component_count }；expression共享该Constant原语法点；当前一元SourceSite的字节范围是运算符token，不扩大为整个表达式，完整定义源码快照仍为原Source。材料不改变原常量、Proof、literal或分量顺序。
+
+JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼写，scalar按原Scalar拼写；input_bits／result_bits是0x加十六位十六进制数字的字符串，Scalar决定实际有效位宽。component_index_base为0，component_index／component_count描述本次平坦逻辑分量，不能当作SSA寄存器或机器位置。原单源trigger()及锚点syntax()／origin()／instance()借用expression的已有事实；没有语法材料时仍返回空，不猜补来源。
+
+实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
+
+后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。临时模块const、阶段Root::Literal、形状及变体编号只返回原类型／整数时，最终结果仍未交接这份来源，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
+
 
 #### 空Map阶段移除的来源
 

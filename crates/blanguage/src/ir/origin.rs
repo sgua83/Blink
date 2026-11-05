@@ -220,6 +220,7 @@ pub enum GenerationReason {
     EmptyMapRemoval,
     IntegerDivisionResultPrune,
     ReductionUniformExtract,
+    UnaryConstantFold,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -400,14 +401,20 @@ pub enum GenerationAnchor {
     EmptyMapRemoval { retained: Option<std::sync::Arc<GeneratedOrigin>>, stages: Vec<OperationOrigin> },
     IntegerDivisionResultPrune { retained: OperationOrigin, input_results: Vec<super::IntegerDivisionOp>, output_results: Vec<super::IntegerDivisionOp> },
     ReductionUniformExtract { retained: OperationOrigin, partition: ReductionPartition, operation: ReductionUniformOperation, uniform_operand_count: usize },
+    UnaryConstantFold {
+        expression: Option<std::sync::Arc<SourceSite>>, operation: super::UnaryOp, scalar: super::Scalar,
+        input_bits: super::Bits, result_bits: super::Bits, component_index: usize, component_count: usize,
+    },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
+            Self::UnaryConstantFold { expression, operation, scalar, input_bits, result_bits, component_index, component_count } => format!("{{\"kind\":\"unary_constant_fold\",\"expression\":{},\"operation\":{},\"scalar\":{},\"input_bits\":\"0x{:016x}\",\"result_bits\":\"0x{:016x}\",\"component_index_base\":0,\"component_index\":{},\"component_count\":{}}}",
+                expression.as_deref().map_or_else(|| "null".into(), SourceSite::ir_json), text(&format!("{operation:?}")), text(&format!("{scalar:?}")), input_bits, result_bits, component_index, component_count),
             Self::Definition { origin, instance } => format!("{{\"kind\":\"definition_instance\",\"definition\":{},\"instance\":{}}}",
                 origin.as_deref().map_or_else(|| "null".into(), SourceOrigin::ir_json), text(instance)),
             Self::IntegerDivisionPair { quotient, remainder } => format!("{{\"kind\":\"integer_division_inputs\",\"quotient\":{},\"remainder\":{}}}",
@@ -526,6 +533,7 @@ impl GeneratedOrigin {
             GenerationReason::EmptyMapRemoval => "empty_map_removal",
             GenerationReason::IntegerDivisionResultPrune => "integer_division_result_prune",
             GenerationReason::ReductionUniformExtract => "reduction_uniform_extract",
+            GenerationReason::UnaryConstantFold => "unary_constant_fold",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

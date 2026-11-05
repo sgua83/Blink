@@ -1300,7 +1300,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3899`。
+源码节选：`crates/blanguage/src/check.rs:3911`。
 
 ```rust
         let binding = view.binding;
@@ -2398,6 +2398,11 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 归约在后端降层时还会组合单位元、投影和合并函数。内核保留原Stage.operation中的值函数及其来源，Stage.code则已经是本次降层代码；原六角色向量和分区末尾描述它们实际如何接在一起。ReductionKernel::ir_json直接编码这些已有事实，AI无需从Stage JSON缺失的字段猜映射，也不增加一份拥有表。末尾是code的零基排他指令下标，向量是内核逻辑Reg；原输入来源的序号仍指向原ValueCode.inputs，不能把两套编号混成物理寄存器。调用者选择的project／identity、实际空分区和未采集的新传播事件分别理解，不把原函数仍有材料写成它又执行了一次。
 
 统一纯值提取还保留这次移动本身的事实。原extract在同一纯操作匹配及all_operands统一性判断成功时，把Inst移到本内核入口，用ReductionUniformExtract交接retained原来源、提取前的Identity／Project／Combine分区、实际准许类别及uniform_operand_count。这个数量是当时操作数访问次数，种子可以为零，同一Reg重复访问也分别计；它不是性能收益或运行次数。原source_site独立保持，后续公共入口CSE沿原来源复用，可以从保留操作反查多个真实分区的提取，不从最终位置猜原角色。分支／循环内及非统一运算仍按原控制留在原处，查询不重跑编译或内核生成，不新增另一SSA图或uniform表。
+
+检查期的一元常量计算也在原生产点交接来源。unary_expr按原operators::unary、constant::unary完成计算后，只给这次constant_value新建的各Constant加UnaryConstantFold：真实运算与Scalar、输入／结果位模式、从零计的逻辑分量序号及总数。直接source_site保持，锚点expression共享同一原语法；后续原CSE／DCE及空Map删除继续携带这份事实，不为解释而保活操作或保存旧IR。环绕、窄位截断、浮点负零和NaN符号位均沿原规则。
+
+负数字面量由原negative_number直接定型，i32／i64最小值不能伪装成同型正数取负；单目加号没有实际运算，不制造折叠事件。模块const、阶段Root::Literal及形状／编号临时求值的最终结果尚未持有计算来源，不能因临时Builder有材料就宣称完成。材料仅compiler，查询沿原IR所有者与最后消费者，不进入运行编码；详细接口与真实缺口见语言规范及Architecture对应职责。
+
 
 源码节选：`crates/blanguage/src/ir/inspect.rs:274`。
 

@@ -639,7 +639,39 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1"></a>
 
-**一元常量折叠的来源。** 输入：原一元表达式、真实标量宽度／常量位模式及实际unary或负字面量规则。唯一生产／消费接点：check.rs#158::unary_expr3027至3057，事实归原Builder交给其ValueCode／Stage的事实与实际常量产物；输出为本项真实变换的来源关系或明确缺失。交接真正折叠的运算／输入位模式和原输出类型／位模式，保留溢出／符号语义，不重新求值源码。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前折叠已实现，解释事实待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1)。
+**一元常量折叠的来源。** 普通已知值一元运算、负字面量定型与临时编译期结果交接分别由下列职责承担；父项只汇总。事实由原求值／结果所有者交接，不新增求值器、寄存器登记表或保留旧IR。完整目标仍见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1)。
+
+<a id="tool-7-3-1-9-1-1"></a>
+
+**普通一元常量求值到实际IR。** 输入为check.rs::unary_expr中operators::unary实际选中的UnaryOp、Scalar及Value.constant逐逻辑分量位模式；constant::unary按原宽度生成结果，原constant_value仍建立同样的Constant与直接source_site。唯一生产者在这一分支给本次新建的各Constant附加UnaryConstantFold，逐项交接expression、operation、scalar、input_bits、result_bits、component_index及component_count，不改变求值、Proof、literal、布局或输出顺序。component_index从零计数，解释本次平坦逻辑分量，不是寄存器身份；位模式以十六进制字符串交接，Scalar决定实际位宽。唯一拥有者是原Inst，后续克隆、复用及删除沿已有OperationOrigin与ValueCode／Stage／Program根交接同一事实，不保活操作。原Source不可变共享到最后IR消费者；材料仅compiler，不进入必要对象／执行编码，不保留AST／World、旧Inst或运行资源。静态折叠不代表运行次数、机器指令数或实测收益；未发生实际运算的单目加号不产生事件，运行期一元操作保持原Unary。临时Builder被丢弃后的最终结果交接仍属于下列未完成职责，不以本节Constant附加材料代替。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-1)。
+
+<a id="tool-7-3-1-9-1-2"></a>
+
+**负字面量定型。** Unary(-,Number)直接由operators::negative_number选择最终类型及位模式，原Constant的source_site保存原语法位置与不可变Source；当前该一元语法范围为运算符token，不扩大为整个表达式。i32／i64最小值没有同型合法正输入，不能制造普通SignedNegate事件；这一入口的事实是原源码、定型和最终位模式。调查已确认这是定型入口，不另造普通取负事件或扩大恒定求值；原Constant仍在时可读实际类型／位模式，消除后仅保留原删除合同已有的类型与来源，不宣称保存了所有被删字面量的位模式。单源材料与最后消费者沿原Inst，状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-2)。
+
+<a id="tool-7-3-1-9-1-3"></a>
+
+**临时编译期求值结果交接。** 临时Builder产生的IR与最终结果不是同一所有者；原求值结束只返回Ty／Bits或整数时，临时Inst上的材料不构成最终可查询来源。以下结果按实际接收者分别设计，原算术共用，不保留临时IR、AST／World，不增加追踪表或另一常量权威。父项仅汇总，见[台账](Issues.md#c-021-7-9-7-3-1-9-1-3)。
+
+<a id="tool-7-3-1-9-1-3-1"></a>
+
+**模块const结果。** constant.rs::evaluate交给module_constant和模块／接口常量消费者的Ty／Bits须能携带本次真实一元求值事实，原常量结果所有者持有并共享到最后编译／查询消费者。当前结果只含类型与位模式，材料缺失；不能把后续常量引用的语法点冒充原求值过程。沿原结果与实际接口职责设计，不复制缓存或另存完整IR，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1)。
+
+<a id="tool-7-3-1-9-1-3-2"></a>
+
+**阶段表达式结果。** constant.rs::stage_expression把临时Builder的常量结果交给Root::Literal及实际阶段实参／控制展开；现有Root仅保留Ty／Bits，原运算事实未随结果交接。唯一事实所有者应沿原Root与真实展开消费者持有至最后IR查询，不让临时Builder常驻、不重新解释源码，不形成新控制／执行图，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
+
+<a id="tool-7-3-1-9-1-3-3"></a>
+
+**形状与编号整数结果。** integer_expression共用原常量求值；形状与变体编号的最终消费者各自独立，不伪造源码函数或把生成上下文当真实定义。两类结果分别在下列叶中设计，父项不占源码。
+
+<a id="tool-7-3-1-9-1-3-3-1"></a>
+
+**形状整数结果。** integer_expression→shape→原类型／布局构造只交接本次真实整数及对应一元来源；原Ty／形状结果为唯一持有者，最后类型／查询消费者后释放。当前只返回整数，来源缺失；不保留临时IR或另建形状登记，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-3-1)。
+
+<a id="tool-7-3-1-9-1-3-3-2"></a>
+
+**变体编号整数结果。** integer_expression→variant_discriminant→原变体布局持有实际编号及其一元来源，真实位宽、合法性与布局仍归原类型所有者。当前只返回整数，来源缺失；生命周期沿原变体类型与最后查询消费者，不借此扩大编号规则或新增编号权威，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-3-2)。
 
 <a id="tool-7-3-1-9-2"></a>
 
