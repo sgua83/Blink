@@ -1389,7 +1389,39 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
     }
 ```
 
-原loop_writes收集正文和条件的既有写输入，把局部槽位、实际写存储根及未知内存效果交给同一LoopContext，并继续原局部失效。显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一只完成该实例的native_declaration声明／导入，再查询同一Module闭合view_access。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值；其余调用直接沿原External完整失效，不独立跳过局部常量、非零及循环数值路径。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。原Module只读查询消费既有访问合同，不维护第二份副作用状态。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。
+原loop_writes收集正文和条件的既有写输入，把局部槽位、实际写存储根及未知内存效果交给同一LoopContext，并继续原局部失效。显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一只完成该实例的native_declaration声明／导入，再查询同一Module闭合view_access。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。其余未知、隐藏地址写、Memory或拥有消费沿原External完整失效，不独立跳过局部常量、非零及循环数值路径。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。原Module只读查询消费既有访问合同，不维护第二份副作用状态。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_only_dataset_references只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type的真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
+
+源码节选：`crates/blanguage/src/check/native_function.rs:41`。
+
+```rust
+    pub(super) fn writes_only_dataset_references(&self,name:&str,descriptor:&Ty)->bool {
+        fn covered(borrow:&view::Borrow,roots:&BTreeSet<Reg>)->bool {
+            borrow.inputs.is_empty()&&borrow.calls.is_empty()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|match source {
+                view::Source::Data(ValueIdentity::Register(root))=>roots.contains(root),
+                view::Source::Position(origin)=>match &origin.root {address::Root::Derived(borrow)=>covered(borrow,roots),_=>false},
+                _=>false,
+            })
+        }
+        let Some(unit)=self.units.get(name).and_then(Option::as_ref) else{return false;};
+        let Some(access)=unit.contract.view_access.as_ref() else{return false;};
+        let mut offset=0;let mut roots=BTreeSet::new();
+        for parameter in &unit.contract.parameters {
+            let(width,dataset)=match &parameter.kind {
+                CallParameterKind::Value(ty)=>(ty.components.len(),ty==descriptor),
+                CallParameterKind::Reference{..}=>(2,false),
+            };
+            if dataset{roots.insert(unit.contract.inputs[offset]);}
+            offset+=width;
+        }
+        access.iter().all(|access|match access {
+            view_contracts::Access::Resource{ownership,..}=>!*ownership,
+            view_contracts::Access::Memory{..}=>false,
+            view_contracts::Access::Position{position,..}=>!position.writes,
+            view_contracts::Access::Dataset{borrows,access,..}=>!access.writes()||covered(borrows,&roots),
+            view_contracts::Access::Initialized{..}=>true,
+        })
+    }
+```
 
 源码节选：`crates/blanguage/src/check/native_function.rs:31`。
 
@@ -2077,7 +2109,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1277`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1304`。
 
 ```rust
             if !frame.contains(&name) {

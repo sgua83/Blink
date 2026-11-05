@@ -38,6 +38,33 @@ impl Module {
                 view_contracts::Access::Initialized{..}=>true,
             }))
     }
+    pub(super) fn writes_only_dataset_references(&self,name:&str,descriptor:&Ty)->bool {
+        fn covered(borrow:&view::Borrow,roots:&BTreeSet<Reg>)->bool {
+            borrow.inputs.is_empty()&&borrow.calls.is_empty()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|match source {
+                view::Source::Data(ValueIdentity::Register(root))=>roots.contains(root),
+                view::Source::Position(origin)=>match &origin.root {address::Root::Derived(borrow)=>covered(borrow,roots),_=>false},
+                _=>false,
+            })
+        }
+        let Some(unit)=self.units.get(name).and_then(Option::as_ref) else{return false;};
+        let Some(access)=unit.contract.view_access.as_ref() else{return false;};
+        let mut offset=0;let mut roots=BTreeSet::new();
+        for parameter in &unit.contract.parameters {
+            let(width,dataset)=match &parameter.kind {
+                CallParameterKind::Value(ty)=>(ty.components.len(),ty==descriptor),
+                CallParameterKind::Reference{..}=>(2,false),
+            };
+            if dataset{roots.insert(unit.contract.inputs[offset]);}
+            offset+=width;
+        }
+        access.iter().all(|access|match access {
+            view_contracts::Access::Resource{ownership,..}=>!*ownership,
+            view_contracts::Access::Memory{..}=>false,
+            view_contracts::Access::Position{position,..}=>!position.writes,
+            view_contracts::Access::Dataset{borrows,access,..}=>!access.writes()||covered(borrows,&roots),
+            view_contracts::Access::Initialized{..}=>true,
+        })
+    }
     pub(super) fn writes_only_references(&self,name:&str)->bool {
         fn references(borrow:&view::Borrow)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {

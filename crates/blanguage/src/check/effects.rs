@@ -372,7 +372,7 @@ impl Builder<'_> {
                 },
                 Write::External{call,instance:Some(instance)}=>{
                     self.native_declaration(&instance)?;
-                    if Scope::current(self).read_only_instance(&instance)?{continue;}
+                    if Scope::current(self).writes_covered(&instance)?{continue;}
                     Write::External{call,instance:None}
                 },
                 write=>write,
@@ -460,12 +460,14 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         generics::specialize(self.world,&key,&actuals,explicit,
             (&self.definition.source,&self.definition.module,&self.definition.imports),call.span).map(Some)
     }
-    fn read_only_instance(&self,instance:&crate::generics::Instance)->Result<bool> {
+    fn writes_covered(&self,instance:&crate::generics::Instance)->Result<bool> {
         let Some(builder)=self.builder else{return Ok(false);};
         let definition=&instance.definition;
         let owns=if matches!(definition.function.result.name.as_str(),"void"|"never"){false}
             else{self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?.owns_resources()};
-        Ok(!owns&&builder.functions.read_only(&instance.name))
+        let dataset_positions= !definition.function.params.iter().any(|p|p.access==Access::Atomic)
+            &&builder.functions.writes_only_dataset_references(&instance.name,&Builder::borrowed_dataset_parameter_type(Access::InOut,definition.execution));
+        Ok(!owns&&(builder.functions.read_only(&instance.name)||dataset_positions))
     }
     fn factory_instance(&self,factory:&Expr)->Result<Option<crate::generics::Instance>> {
         let(name,explicit)=match &factory.kind {
@@ -514,7 +516,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
                         let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
-                        let read_only=match instance.as_ref(){Some(instance)=>self.read_only_instance(instance)?,None=>false};
+                        let read_only=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false};
                         if !read_only {writes(Write::External{call:expr,instance});}
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
