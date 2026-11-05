@@ -1351,7 +1351,17 @@ CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在
 
 普通函数接收dataset时，元素的子资源位置必须来自实际输入，不能沿用类型模板的CPU初值。原位置合同用Field与Elements区分字段和共同元素，沿同一Data.elements遍历参数、实参和返回闭包；Elements不是元素零。记录、固定数组和活动变体中的子资源分别交接，空集合及非活动载荷不产生虚构来源，未知也不能当作CPU。原静态F、显式传输及真正的内容读取消费相应位置，Frame仍是唯一物理资源所有者；对象／归档保存的是同一编译合同，没有新增机器参数或运行时拥有表。普通只读借用的内部机器参数为32字节、对齐8：root:u64在偏移0、length:u32在8、stride:u64在16、offset:u32在24。原DataPayload.root的Scalar区分真实地址和Frame句柄；元数据与真实载荷消费相同来源。应用通过Frame::storage_address纯查询当前地址，CPU范围直接消费原绑定；GPU驻留数据只取length不等待或下载，读取载荷仍需原CPU位置合同。GPU设备地址不能被CPU解引用，借用和派生view仍保持到最后真实消费者。CPU范围立即消费已闭合被调函数的位置／布局合同；完整域接口布局前提交接尚未实现时准确B270，不把声明类型步长当成实际连续性。
 
-原B实参到ABI实参的关系直接归同一CallArgument。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
+原B实参到ABI实参的关系直接归同一CallArgument。原native_call的源码调用完成点只属于传入真实实参AST的原调用：实际IR调用与写回输出完成后，先推进该源码点，再结束参数临时拥有者。生成的静态F、dataset初始化及归约调用没有原调用AST，不因共用诊断span推进外层源码状态；各自实际调用、来源及资源释放继续原职责。该规则不增加保存／恢复状态或生成原因白名单，也不补足write旧拥有树交接的剩余缺口。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
+
+源码节选：`crates/blanguage/src/check/native_function.rs:853`。
+
+```rust
+        if syntax.is_some(){self.view_uses.after(span);}
+        let Some(ty) = result else {
+            for name in held { self.finish_scoped_argument(&name, span)?; }
+            return Ok(Some(Returned::Unit));
+        };
+```
 
 普通函数的CallParameter沿同一原记录携带compiler专用参数来源，实际种类由CallParameterKind表达；隐式Frame与真实形参分开，Source形参保留声明序号、名称、实际实例与原Parameter起点，合成形参只借用原生成触发。FunctionBody::parameter_inputs按真实种类只读分段原inputs，向量引用展开共享来源，零分量为空输入；Frame省略直接移除同一参数和输入。参数JSON增加origin及input_registers，原codec只编码种类与类型／访问，运行编码和代码不承载来源。这里只说明逻辑IR输入，最终机器寄存器／栈仍归后端映射。详见[形参与IR输入](../Docs/BLanguage.md#普通函数形参与ir输入的来源)。
 
@@ -2208,7 +2218,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1306`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1305`。
 
 ```rust
             if !frame.contains(&name) {

@@ -850,8 +850,8 @@ impl Builder<'_> {
             let guards=outputs::guards(self,d,index,data.element_layout().1,&output_inputs,output_value.as_ref())?;
             self.initialize_data_output(&data,&guards);
         }
+        if syntax.is_some(){self.view_uses.after(span);}
         let Some(ty) = result else {
-            self.view_uses.after(span);
             for name in held { self.finish_scoped_argument(&name, span)?; }
             return Ok(Some(Returned::Unit));
         };
@@ -878,7 +878,6 @@ impl Builder<'_> {
                 if actual.empty()||actual.pending()||actual.unresolved(){value.proof=value.proof.clone().with_view_borrow(component,resolved);}
             }
         }
-        self.view_uses.after(span);
         let borrow=returned.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
         for name in held {
             let resources=self.env.get(&name).into_iter().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Owned).map(|data|data.root.identity()).collect::<Vec<_>>();
