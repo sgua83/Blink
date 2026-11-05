@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "851762cbe64f9ee1bcf4c6fa612ad6dcade10876d98e12552aa62afca481e6c1"
+      "sha256": "6a9a6c57d796fe4333b0950e1b007070fffe6c5c4561d61b396b9cde2e99c499"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -200,7 +200,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
-      "sha256": "bf3d15b21783b954cf645e6943102c8f01f803a1c5a50fea4307c12ec8f54cce"
+      "sha256": "81f9c24544d904bc385a668c564ff027c167aa7be7c17c4b49a3a0ad8f2efd02"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
@@ -651,6 +651,24 @@
       "sha256": "68ff4672d959f3a1694298ed6bb416071943d7b732d6312782c0fe07ae377984"
     },
     {
+      "path": "crates/blanguage/src/check/view_liveness.rs",
+      "start_line": 143,
+      "end_line": 153,
+      "sha256": "0e3efcb10aeac4685899ea8c438acc46eea286fa6b8ddab99fb206ed64a518bb"
+    },
+    {
+      "path": "crates/blanguage/src/check/view_liveness.rs",
+      "start_line": 554,
+      "end_line": 556,
+      "sha256": "4c6f3a11dd0d218b0b708d4aacf9ed89231be0a1ea06efb4276605a803818ce7"
+    },
+    {
+      "path": "crates/blanguage/src/check/application.rs",
+      "start_line": 862,
+      "end_line": 869,
+      "sha256": "8a7b8f27fb419ada395676d976de4acf83da085494b2022a32b38c04798b1b60"
+    },
+    {
       "path": "crates/blanguage/src/check/owned_values.rs",
       "start_line": 1040,
       "end_line": 1048,
@@ -658,8 +676,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 930,
-      "end_line": 940,
+      "start_line": 920,
+      "end_line": 930,
       "sha256": "3cb75a1c70eb9812440ff1227b1b16e06857306422336a546f8119a04d12289f"
     },
     {
@@ -694,8 +712,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1240,
-      "end_line": 1273,
+      "start_line": 1230,
+      "end_line": 1263,
       "sha256": "c97c1a253937200545c15cc55eeba2a833b571b6860ee7370b04ed9e315a7345"
     },
     {
