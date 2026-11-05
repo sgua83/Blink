@@ -120,7 +120,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "sha256": "2e30fb8f1be151c5c1a7bb68dbf212eeb3cac161352591990a114ed7f250d786"
+      "sha256": "199deab457035de48965befeffae25f7aa3e2daff672254bdbdba6bc24bf8d31"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -702,7 +702,7 @@
       "path": "crates/blanguage/src/check/effects.rs",
       "start_line": 395,
       "end_line": 397,
-      "sha256": "2db418ba08d3a0358e1b9c46e9aabf38e9ac5e6623c1207dfefc3b0c5656b3f7"
+      "sha256": "14d91626ede34f7ced526dc05caeb767a29341ee1f61c7b3b4e3feef484e634d"
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",

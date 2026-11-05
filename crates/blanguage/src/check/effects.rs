@@ -393,7 +393,7 @@ impl Builder<'_> {
                 Write::External{call,instance:Some(instance),arguments,syntax}=>{
                     self.native_declaration(&instance)?;
                     if self.functions.read_only(&instance.name) {
-                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
+                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),contents:true,..} if std::ptr::eq(*origin,call)));
                     }
                     if Scope::current(self).writes_covered(&instance)?{continue;}
                     // Resource ownership is still consumed by its existing place projection.
@@ -401,7 +401,7 @@ impl Builder<'_> {
                     for(parameter,arg)in instance.definition.function.params.iter().zip(syntax){
                         if cooperative::parameter_type(self.world,parameter,&instance.definition)?.owns_resources(){owned.push(arg);}
                     }
-                    normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
+                    normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,contents:true,..}
                         if std::ptr::eq(*origin,call)&&!owned.iter().any(|arg|std::ptr::eq(*arg,*place))));
                     let borrow=match self.native_call_memory(&instance.name,&arguments){Some(borrow)=>borrow,None=>view::Borrow::source(view::Source::Unresolved)};
                     if !borrow.active(){continue;}
@@ -645,7 +645,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
-                                if !read_only {writes(Write::Position { place: arg, call: Some(expr), contents, iterator: None });}
+                                if !contents||!read_only {writes(Write::Position { place: arg, call: Some(expr), contents, iterator: None });}
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args});}
