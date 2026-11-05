@@ -969,7 +969,7 @@ A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布�
 
 源码捕获、编译上下文与产物各自有唯一所有者。Compiler及其clone共享活动CPU预算，独立实例／函数／阶段按真实依赖并行；build_graph固定本次B源码输入。入口映像与COFF按声明及实现依赖复用；无关实现变化保持产物，实际依赖变化重新编译。缓存命中不证明冷编译成本降低。
 
-native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，application::Context只持有编译期Frame寄存器及映像描述。真实Frame、设备与完成仍归blcompute；函数模块不是CPU应用上下文的附属状态。
+native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，唯一持有同一编译的类型／program目录；原finalize同时处理这些program，经Finalized把目录移交应用／模块产物。application::Context只缓存本函数Frame参数寄存器；普通函数独立形成Context，调用者留在原Builder，declaration、domain与CheckedFunction返回不再搬运它。真实Frame、设备与完成仍归blcompute；该目录整理不构造CPU范围实例Frame，局部分配和最后释放仍沿C-027.35.4.2.2.3.2.2。
 
 默认Cargo功能compiler保留完整源码编译与工具入口；B资源包装对原blanguage／blcompute路径依赖关闭该功能，仅消费共同表示、原已编译映像／资源编码和仍需的后端助手。共同codec.rs持有唯一字节编码，Frame与CPU／GPU资源仍归原执行框架。包装与运行库由一次Cargo依赖图生产，沿原target/dll复用实际依赖；仅运行角色不生产源码编译器身份，也不调用B前端种子。运行库仍有原生／SPIR-V生成消费者，这不代表后端预编译或运行库B迁移已经完成。
 
@@ -1300,7 +1300,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3911`。
+源码节选：`crates/blanguage/src/check.rs:3909`。
 
 ```rust
         let binding = view.binding;
@@ -1422,7 +1422,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:867`。
+源码节选：`crates/blanguage/src/check/native_function.rs:859`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1456,7 +1456,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 调用者证明输入条件蕴含实际F前提；独立函数入口把同一关系交给原Condition／Proof，具体F调用仍消费原contracts::prove。function_parameters暂借原env形成合同，随后归还同一环境并沿原path假定已声明前提，不增加另一份合同状态。实际写入及移动继续改变原身份，旧快照不成为当前值的新许可；未证明的contiguous仍为未知。
 
-源码节选：`crates/blanguage/src/check.rs:1634`。
+源码节选：`crates/blanguage/src/check.rs:1633`。
 
 ```rust
     let environment=std::mem::take(&mut b.env);
@@ -1501,7 +1501,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
-源码节选：`crates/blanguage/src/check/application.rs:104`。
+源码节选：`crates/blanguage/src/check/application.rs:103`。
 
 ```rust
     fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
@@ -1596,7 +1596,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原Module只读查询消费既有资源／内存Access，不维护第二份副作用状态，也不把这部分无写等同于整个调用无写。Scope只省略覆盖范围内的dataset内容写；首次声明／导入仍使用原已选实例，完成后只删除该call自己的contents Position。显式Scalar Reference位置写继续由原typed Reference ABI与Position交接，资源拥有仍留在原Position消费者；实参表达式的独立写与write初始化责任保持，没有另一调用记录、状态或词法实例推导。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_covered_by_dataset_inputs只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type或元素无拥有资源的按值dataset真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:41`。
+源码节选：`crates/blanguage/src/check/native_function.rs:42`。
 
 ```rust
     pub(super) fn writes_covered_by_dataset_inputs(&self,name:&str,descriptor:&Ty)->bool {
@@ -1628,7 +1628,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:31`。
+源码节选：`crates/blanguage/src/check/native_function.rs:32`。
 
 ```rust
     pub(super) fn read_only(&self,name:&str)->bool {
@@ -2429,7 +2429,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1342`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1340`。
 
 ```rust
             if !frame.contains(&name) {

@@ -26,6 +26,7 @@ pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
 #[derive(Default)]
 pub(super) struct Module {
     units: BTreeMap<String, Option<Unit>>,
+    pub(super) resources: crate::application::Resources,
 }
 impl Module {
     pub(super) fn read_only(&self,name:&str)->bool {
@@ -150,22 +151,20 @@ struct Unit {
 fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
-    mut context: application::Context,
     mut functions: Module,
-) -> Result<(application::Context, Module)> {
+) -> Result<Module> {
     if !functions.declare(&instance.name) {
-        return Ok((context, functions));
+        return Ok(functions);
     }
     if let Some(definitions) = &instance.definition.compiled {
-        return Ok((context, compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), functions)?));
+        return compiled_declaration(instance, definitions.get(&instance.name).map(Vec::as_slice), functions);
     }
-    let frame = context.frame.take();
     let mut instance = instance.clone();
     if instance.definition.function.target == Target::Compute {
         Arc::make_mut(&mut instance.definition).function.target = Target::Cpu;
     }
-    let checked = checked_function(world, &instance, Some(context), functions)?;
-    finish_declaration(&instance, frame, checked)
+    let checked = checked_function(world, &instance, Some(application::Context::default()), functions)?;
+    finish_declaration(&instance, checked)
 }
 
 #[inline(never)]
@@ -207,13 +206,10 @@ fn compiled_declaration(
 #[inline(never)]
 fn finish_declaration(
     instance: &crate::generics::Instance,
-    frame: Option<Vec<Reg>>,
     checked: Box<CheckedFunction>,
-) -> Result<(application::Context, Module)> {
+) -> Result<Module> {
     let residency=checked.residency;
     let mut functions = checked.functions;
-    let mut context = checked.application.unwrap();
-    context.frame = frame;
     let function = checked.body;
     let contract = Contract {
         parameters: function.parameters.clone(),
@@ -244,7 +240,7 @@ fn finish_declaration(
         }),
     );
     resolve_views(&mut functions,Some(&instance.name))?;
-    Ok((context, functions))
+    Ok(functions)
 }
 // 合同中的值编号属于接口，不进入实际IR寄存器表或产生转换指令。
 pub(super) fn rebind_model(value: &mut Returned, registers: Vec<Reg>) {
@@ -367,7 +363,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     (models.next().unwrap(),(0..inputs.len()).collect(),models.collect(),initialization)
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let (_, mut functions) = declaration(world, instance, application::Context::default(), Module::default())?;
+    let mut functions = declaration(world, instance, Module::default())?;
     resolve_residencies(&mut functions)
 }
 impl Builder<'_> {
@@ -379,11 +375,7 @@ impl Builder<'_> {
             }
             return Ok(());
         }
-        let application = self.application.take();
-        let has_application = application.is_some();
-        let (context, functions) = declaration(self.world, instance, application.unwrap_or_default(), std::mem::take(&mut self.functions))?;
-        if has_application { self.application = Some(context); }
-        self.functions = functions;
+        self.functions = declaration(self.world, instance, std::mem::take(&mut self.functions))?;
         Ok(())
     }
     pub(super) fn native_function(
@@ -1121,6 +1113,7 @@ pub(super) struct Finalized {
     pub functions: Vec<FunctionBody>,
     pub imports: BTreeMap<String, Vec<u8>>,
     pub exports: BTreeMap<String, Vec<u8>>,
+    pub resources: crate::application::Resources,
 }
 fn uses_frame(code: &[Inst], registers: &[Reg], imported: &BTreeSet<String>) -> bool {
     code.iter().any(|inst| {
@@ -1233,6 +1226,9 @@ fn finalize(
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     resolve_residencies(&mut module)?;
+    let mut resources = std::mem::take(&mut module.resources);
+    let mut programs = programs.iter_mut().map(|program| &mut **program)
+        .chain(resources.programs.iter_mut().map(|(_, program)| program)).collect::<Vec<_>>();
     for program in programs.iter() { reachable.extend(program_dependencies(program)); }
     let mut units = module
         .units
@@ -1304,7 +1300,7 @@ fn finalize(
             imports.insert(name.clone(), unit.contract.bytes());
         }
     }
-    for program in programs {
+    for program in &mut programs {
         let names = program_dependencies(program);
         for name in &names {
             if frame.contains(name) {
@@ -1315,6 +1311,7 @@ fn finalize(
         program.imports = names.into_iter().filter_map(|name|
             imports.get(&name).map(|contract| (name, contract.clone()))).collect();
     }
+    drop(programs);
     units.retain(|name, _| reachable.contains(name));
     let unframed = units.iter()
         .filter(|(name, unit)| unit.function.is_some() && !frame.contains(*name))
@@ -1333,6 +1330,7 @@ fn finalize(
         functions: Vec::new(),
         imports,
         exports: BTreeMap::new(),
+        resources,
     };
     for (name, mut unit) in units {
         let local = unit.function.is_some() && owner.is_none_or(|owner| unit.module == owner);
@@ -1353,10 +1351,9 @@ fn finalize(
     }
     Ok(result)
 }
-pub(super) fn finish(module: Module, root: &mut ValueCode, model:&view_contracts::Function, resources: &mut crate::application::Resources) -> Result<Finalized> {
+pub(super) fn finish(module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
     let roots = dependencies(root);
-    let mut programs = resources.programs.iter_mut().map(|(_, program)| program).collect::<Vec<_>>();
-    finalize(module, roots, Some((root,model)), None, &mut programs)
+    finalize(module, roots, Some((root,model)), None, &mut [])
 }
 pub(super) fn finish_program(module: Module, mut program: Program) -> Result<Program> {
     let finalized = finalize(module, BTreeSet::new(), None, None, &mut [&mut program])?;
@@ -1370,7 +1367,6 @@ pub(crate) fn compile_module(
     requests: &[String],
     imported: Option<&crate::module::Imports>,
 ) -> Result<crate::module::Module> {
-    let mut context = application::Context::default();
     let mut functions = Module::default();
     let mut roots = BTreeSet::new();
     for (key, d) in &world.functions {
@@ -1384,7 +1380,7 @@ pub(crate) fn compile_module(
             if d.execution == crate::execution::Requirement::Domain
                 && super::kernel_interface(world, &instance.definition)?
             {
-                roots.extend(domain_declaration(world, &instance, &mut context, &mut functions)?);
+                roots.extend(domain_declaration(world, &instance, &mut functions)?);
             } else if d.function.external.is_none()
                 && d.function.kind == FunctionKind::Value
                 && d.function.target != Target::Gpu
@@ -1392,7 +1388,7 @@ pub(crate) fn compile_module(
                 if d.public {
                     roots.insert(instance.name.clone());
                 }
-                (context, functions) = declaration(world, &instance, context, functions)?;
+                functions = declaration(world, &instance, functions)?;
             } else if d.execution == crate::execution::Requirement::Domain {
                 compile_program(world, &instance)?;
             } else {
@@ -1429,7 +1425,7 @@ pub(crate) fn compile_module(
         if d.execution == crate::execution::Requirement::Domain
             && super::kernel_interface(world, &instance.definition)?
         {
-            roots.extend(domain_declaration(world, &instance, &mut context, &mut functions)?);
+            roots.extend(domain_declaration(world, &instance, &mut functions)?);
             continue;
         }
         if d.function.external.is_some()
@@ -1443,12 +1439,11 @@ pub(crate) fn compile_module(
             );
         }
         roots.insert(instance.name.clone());
-        (context, functions) = declaration(world, &instance, context, functions)?;
+        functions = declaration(world, &instance, functions)?;
     }
-    let mut programs = context.resources.programs.iter_mut().map(|(_, program)| program).collect::<Vec<_>>();
-    let finalized = finalize(functions, roots, None, Some(entry), &mut programs)?;
+    let finalized = finalize(functions, roots, None, Some(entry), &mut [])?;
     let mut functions = finalized.functions;
-    let resources = application::module_resources(&mut functions, context.resources);
+    let resources = application::module_resources(&mut functions, finalized.resources);
     Ok(crate::module::Module {
         compiler: world.worker.compiler().clone(),
         name: entry.into(),
@@ -1469,7 +1464,6 @@ pub(crate) fn compile_module(
 fn domain_at(
     world: &World,
     instance: &crate::generics::Instance,
-    context: &mut application::Context,
     functions: &mut Module,
     target: Target,
 ) -> Result<crate::module::domain::Interface> {
@@ -1478,9 +1472,9 @@ fn domain_at(
         if instance.definition.compiled.is_some() {
             let mut reference = instance.clone();
             reference.name = name.clone();
-            (*context, *functions) = declaration(world, &reference, std::mem::take(context), std::mem::take(functions))?;
+            *functions = declaration(world, &reference, std::mem::take(functions))?;
         } else {
-            build_domain(world, instance, context, functions, target)?;
+            build_domain(world, instance, functions, target)?;
         }
     }
     functions.units[&name]
@@ -1502,10 +1496,7 @@ impl Builder<'_> {
         instance: &crate::generics::Instance,
         target: Target,
     ) -> Result<crate::module::domain::Interface> {
-        let mut context = self.application.take().unwrap();
-        let interface = domain_at(self.world, instance, &mut context, &mut self.functions, target)?;
-        self.application = Some(context);
-        Ok(interface)
+        domain_at(self.world, instance, &mut self.functions, target)
     }
     pub(super) fn call_domain(
         &mut self,
@@ -1528,13 +1519,12 @@ impl Builder<'_> {
     }
 }
 pub(crate) fn check_domain(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    domain_declaration(world, instance, &mut application::Context::default(), &mut Module::default())?;
+    domain_declaration(world, instance, &mut Module::default())?;
     Ok(())
 }
 fn domain_declaration(
     world: &World,
     instance: &crate::generics::Instance,
-    context: &mut application::Context,
     functions: &mut Module,
 ) -> Result<BTreeSet<String>> {
     let targets: &[Target] = match instance.definition.function.target {
@@ -1544,7 +1534,7 @@ fn domain_declaration(
     };
     let mut roots = BTreeSet::new();
     for &target in targets {
-        domain_at(world, instance, context, functions, target)?;
+        domain_at(world, instance, functions, target)?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
@@ -1554,7 +1544,6 @@ fn domain_declaration(
 fn build_domain(
     world: &World,
     instance: &crate::generics::Instance,
-    context: &mut application::Context,
     functions: &mut Module,
     target: Target,
 ) -> Result<()> {
@@ -1639,14 +1628,14 @@ fn build_domain(
             &call.before,
             split,
             &mut part,
-            context,
+            functions,
             target,
             &frame,
             &data,
             &uniform_values,
             &mut code,
         )?;
-        domain_at(world, &call.instance, context, functions, target)?;
+        domain_at(world, &call.instance, functions, target)?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {
@@ -1711,7 +1700,7 @@ fn build_domain(
         &signature.prefix_guarantees,
         split,
         &mut part,
-        context,
+        functions,
         target,
         &frame,
         &data,
@@ -1780,7 +1769,7 @@ fn emit_domain_part(
     guaranteed: &[PrefixRelation],
     split: bool,
     part: &mut usize,
-    context: &mut application::Context,
+    functions: &mut Module,
     target: Target,
     frame: &CallArgument,
     data: &[[Reg; 2]],
@@ -1800,8 +1789,8 @@ fn emit_domain_part(
     program.prefix_requirements = required.to_vec();
     program.prefix_guarantees = guaranteed.to_vec();
     crate::optimize::optimize(&mut program, worker).map_err(|error| crate::compiler::diagnostic(source, error))?;
-    let index = context.resources.programs.len();
-    context.resources.programs.push((target, program));
+    let index = functions.resources.programs.len();
+    functions.resources.programs.push((target, program));
     let mut arguments = vec![frame.clone()];
     arguments.extend(data.iter().flat_map(|regs| *regs).map(|reg| CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
         dataset_borrow:None, ty: Ty::scalar(Scalar::U32),

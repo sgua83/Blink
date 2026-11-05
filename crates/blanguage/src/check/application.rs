@@ -4,7 +4,6 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Context {
     pub frame: Option<Vec<Reg>>,
-    pub resources: crate::application::Resources,
 }
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Ownership {
@@ -459,10 +458,10 @@ pub(crate) fn compile_application(
     if let Some(frame) = &mut app.frame {
         *frame = std::mem::take(&mut body.inputs);
     }
-    let finalized = native_function::finish(builder.functions, &mut body, &builder.view_model, &mut app.resources)?;
+    let finalized = native_function::finish(builder.functions, &mut body, &builder.view_model)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
-    let resources = live_resources(&mut body, &mut functions, app, &entry_anchor);
+    let resources = live_resources(&mut body, &mut functions, app.frame, finalized.resources, &entry_anchor);
     Ok(crate::application::Application {
         compiler: world.worker.compiler().clone(),
         name: instance.name.clone(),
@@ -556,10 +555,11 @@ pub(super) fn module_resources(
 fn live_resources(
     body: &mut ValueCode,
     functions: &mut [FunctionBody],
-    app: Context,
+    frame: Option<Vec<Reg>>,
+    resources: crate::application::Resources,
     entry_anchor: &GenerationAnchor,
 ) -> Option<crate::application::Resources> {
-    let frame = app.frame?;
+    let frame = frame?;
     fn uses(code: &[Inst], registers: &[Reg]) -> bool {
         code.iter().any(|inst| {
             !inst.all_operands(&mut |reg| !registers.contains(&reg))
@@ -579,7 +579,7 @@ fn live_resources(
     let mut codes = std::iter::once(&mut body.code)
         .chain(functions.iter_mut().map(|function| &mut function.body.code))
         .collect::<Vec<_>>();
-    let resources = declarations(&mut codes, app.resources);
+    let resources = declarations(&mut codes, resources);
     let base = body.registers.len();
     body.registers.extend([Scalar::U64, Scalar::U64, Scalar::U32, Scalar::U32, Scalar::Bool]);
     let [receiver, context, address, zero, ready] = [base, base + 1, base + 2, base + 3, base + 4];
@@ -1380,17 +1380,12 @@ impl Builder<'_> {
                 "固定形状 dataset 的创建长度必须与声明的 const 形状相同",
             );
         }
-        let app = self.application.as_mut().unwrap();
-        let index = app
-            .resources
-            .types
-            .iter()
-            .position(|item| *item == ty)
-            .unwrap_or_else(|| {
-                let index = app.resources.types.len();
-                app.resources.types.push(ty.clone());
-                index
-            });
+        let resources = &mut self.functions.resources;
+        let index = resources.types.iter().position(|item| *item == ty).unwrap_or_else(|| {
+            let index = resources.types.len();
+            resources.types.push(ty.clone());
+            index
+        });
         let handle = self
             .application_call(
                 &format!("allocate_{index}"),

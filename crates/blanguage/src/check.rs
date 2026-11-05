@@ -1355,7 +1355,6 @@ struct CheckedFunction {
     residency: residency::Inputs,
     view_model: view_contracts::Function,
     initialization:Option<Vec<address::Initialization>>,
-    application: Option<application::Context>,
     functions: native_function::Module,
 }
 fn checked_function(
@@ -1684,7 +1683,6 @@ fn finish_checked_function(
         residency: b.residency,
         view_model: b.view_model,
         initialization,
-        application: b.application,
         functions: b.functions,
     }))
 }

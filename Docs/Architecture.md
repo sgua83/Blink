@@ -469,7 +469,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-3"></a>
 
-**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与Context.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。仅为该原实际Call交接DomainPartCall，JSON reason为domain_part_call，节点source_site为空；build_domain前移并共享原DomainEntry材料，两处原helper借用同一anchor，原入口body仍持有该材料。Source直接沿原Definition快照与实际Instance，Generated借用原Syntax，未知保持空；不从Program执行名／part／run_index重建源码身份。此处是主机CPU包装Call，CPU／GPU域目标仍由原Program表达，不把它当GPU最终ISA；所选Stage及其自身来源仍归原Program／资源引用，不将入口上下文冒称逐Stage或逐指令映射。空Stage区间仍不发射Call。原目标、分段、顺序、错误、依赖与完成保持，实际资源归原Frame／blcompute及最后消费者；静态提交不证明已执行或完成。唯一生产者是原emit_domain_part，材料只随原Inst／FunctionBody／模块及SDK／CLI快照持有，最后IR消费者后释放，不进入必要执行编码、不保活节点，不增加程序副本、图、调度器、同步或释放链。当前已交接原实际分段Call的生成来源，原优化照常。见[规范](BLanguage.md#域分段运行call的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)。
+**域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与native_function::Module.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。仅为该原实际Call交接DomainPartCall，JSON reason为domain_part_call，节点source_site为空；build_domain前移并共享原DomainEntry材料，两处原helper借用同一anchor，原入口body仍持有该材料。Source直接沿原Definition快照与实际Instance，Generated借用原Syntax，未知保持空；不从Program执行名／part／run_index重建源码身份。此处是主机CPU包装Call，CPU／GPU域目标仍由原Program表达，不把它当GPU最终ISA；所选Stage及其自身来源仍归原Program／资源引用，不将入口上下文冒称逐Stage或逐指令映射。空Stage区间仍不发射Call。原目标、分段、顺序、错误、依赖与完成保持，实际资源归原Frame／blcompute及最后消费者；静态提交不证明已执行或完成。唯一生产者是原emit_domain_part，材料只随原Inst／FunctionBody／模块及SDK／CLI快照持有，最后IR消费者后释放，不进入必要执行编码、不保活节点，不增加程序副本、图、调度器、同步或释放链。当前已交接原实际分段Call的生成来源，原优化照常。见[规范](BLanguage.md#域分段运行call的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)。
 
 <a id="tool-7-3-1"></a>
 
@@ -1456,7 +1456,7 @@ bc inputs与原Rust构建输入查询直接读取实际COFF／BLBI记录，在�
 
 compile_application 将无参数 u32／i32 main 编译为普通 x64 入口，退出码交给 ExitProcess。object::emit 在编译阶段生成启动、输出辅助函数、导入跳板及展开信息，object::coff交接已生成的对象语义及原始字段，B的bootstrap.bindings选择符号并绑定COFF重定位，bootstrap.metadata写出元数据，bootstrap.coff写出标准AMD64 COFF字节。`bc -c` 到对象为止，独立 blink 排列已编译节、解析符号／导入／重定位并产生 Windows x64 PE32+。
 
-普通 CPU 函数拥有独立 FunctionBody 和原生符号，自递归／互递归通过真实调用帧衔接。native_function::Module 由 Builder、CheckedFunction 和模块编译入口按值交接；application::Context 只持有编译期 Frame 寄存器及资源映像描述，不持有函数模块。真实运行期 Frame、设备、存储及完成不进入编译上下文。
+普通 CPU 函数拥有独立 FunctionBody 和原生符号，自递归／互递归通过真实调用帧衔接。native_function::Module由Builder、CheckedFunction和模块编译入口按值交接，同时唯一持有本次编译的类型／program资源目录；原finalize统一处理函数与目录中的program，再经Finalized把同一目录移交应用／模块产物。application::Context只持有本函数的Frame参数寄存器，每个普通函数独立形成，调用者Context始终归原Builder；声明、整域构建和CheckedFunction返回不再搬运Context。真实运行期Frame、设备、存储及完成不进入编译目录。目录保留不等于CPU范围已有真实Frame输入，实例分配与释放继续沿C-027.35.4.2.2.3.2.2。
 
 普通值参数／返回采用原 Ty 布局、GPR／XMM、栈槽及隐藏结果缓冲。普通 B 位置借用传真实地址：记录／数组保留声明布局，合法重排向量按逻辑分量交接原地址。同一类型／const 具体函数不按调用者物理映射或 CPU／GPU 驻留复制原生实现。外部 C 连续指针需求通过 requires contiguous 沿既有合同表达，不创建连续副本或末尾写回。整型运算关系由其实际结果Value／Proof持有，原path消费同一Computed事实，函数返回及位置输出沿既有Contract编码交接。调用仅绑定已求值输入，精确点由原常量语义、已知区间由同一arithmetic区间所有者按实际Scalar形成输出事实，并与原输出范围相交；不增加数值图、第二求值器、运行时索引保护或提供者源码消费。
 
