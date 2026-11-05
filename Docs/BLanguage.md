@@ -631,7 +631,7 @@ compiler角色的原CallArgument值／引用变体直接持有可选共享Argume
 
 没有原实参语法的根入口、生成的dataset初始化／释放及自定义值核参数明确不提供Expr列表；如果形成B原生调用，已知参数序号／名称仍可交接，site为null，不将null推断成某个源码表达式或特定生成原因，原Inst.generated_origin继续说明已知生成职责。C调用、运行库及域包装等其余原构造默认origin为null，不按类型名、符号名或最终寄存器猜补。提供者源码／头文件缺席的已编译调用仍从原公开接口确定参数次序／名称，已取得的site归调用者自身源码，不伪造提供者实现；实际形参声明／输入关系仍见上节。
 
-材料只由原CallArgument／Call／Inst、FunctionBody／ValueCode、模块及SDK／CLI快照持有；克隆与原寄存器／局部重映射保留同一不可变事实，最后真实IR消费者后释放，不保留Expr／AST／World、不拥有运行值或资源。关闭compiler不包含该字段／类型／接口／JSON字段，必要对象／执行编码不增加材料，原BLCO54／BLRI27保持。原求值顺序、类型、布局、借用、Scoped资源结束、Frame、数值效果与最后消费者不因观察改变，不增加参数表、状态、图、调度、同步或释放链，不为来源保活指令。见[架构](Architecture.md#tool-7-2-4-5-6-5)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-5)。
+材料只由原CallArgument／Call／Inst、FunctionBody／ValueCode、模块及SDK／CLI快照持有；克隆与原寄存器／局部重映射保留同一不可变事实，最后真实IR消费者后释放，不保留Expr／AST／World、不拥有运行值或资源。关闭compiler不包含该字段／类型／接口／JSON字段，必要对象／执行编码不增加观察材料；对象及资源映像版本由各自真实编码合同决定，观察字段不独立升级或冻结格式。原求值顺序、类型、布局、借用、Scoped资源结束、Frame、数值效果与最后消费者不因观察改变，不增加参数表、状态、图、调度、同步或释放链，不为来源保活指令。见[架构](Architecture.md#tool-7-2-4-5-6-5)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-5)。
 
 #### 数组形参物化StoreLocal的生成来源
 
