@@ -2147,7 +2147,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                     continue;
 ```
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:241`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:242`。
 
 ```rust
                         continue;
@@ -2170,11 +2170,17 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                     word,
                 } => {
                     let key = (*binding, *index, *word);
-                    if let Some(old) = self.memory.get(&key) {
+                    if let Some((old, store)) = self.memory.get(&key) {
                         self.aliases.insert(*dst, *old);
+                        if let Some(store) = store {
+                            reuses.entry(*old).or_default().push(RetainedUse::IndexedStoreRead {
+                                store: store.clone(),
+                                read: OperationOrigin { source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone() },
+                            });
+                        }
                         continue;
                     }
-                    self.memory.insert(key, *dst);
+                    self.memory.insert(key, (*dst, None));
                 }
                 InstKind::Store {
                     binding,
@@ -2184,7 +2190,9 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                 } => {
                     self.memory
                         .retain(|(b, i, w), _| b != binding || (*i == *index && *w != *word));
-                    self.memory.insert((*binding, *index, *word), *value);
+                    self.memory.insert((*binding, *index, *word), (*value, Some(OperationOrigin {
+                        source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone(),
+                    })));
                 }
                 InstKind::If { yes, no, .. } => {
                     let mut y = self.clone();
@@ -2262,6 +2270,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
     for inst in code {
         let mut reused = Vec::new();
         let mut reads = Vec::new();
+        let mut indexed = Vec::new();
         let result_count = inst.results().count();
         for (result_index, reg) in inst.results().enumerate() {
             let result = match &inst.kind {
@@ -2277,6 +2286,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                 match source {
                     RetainedUse::Expression(source) => reused.push(source),
                     RetainedUse::LocalRead(origin) => reads.push(LocalReadForward { result_index, result_count, result, origin }),
+                    RetainedUse::IndexedStoreRead { store, read } => indexed.push(IndexedStoreReadForward { result_index, result_count, result, store, read }),
                 }
             }
         }
@@ -2294,9 +2304,18 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                 trigger: Some(GenerationAnchor::LocalReadForward { retained, reads }),
             }));
         }
+        if !indexed.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::IndexedStoreReadForward,
+                trigger: Some(GenerationAnchor::IndexedStoreReadForward { retained, reads: indexed }),
+            }));
+        }
 ```
 
 本次值流仅暂存待交接来源，沿原完整IR及归约公共入口／各函数体把材料交回真实保留Inst，临时寄存器号随后释放。原source_site仍是保留操作自己的语法，完整复用点从GeneratedOrigin::ExpressionReuse的retained／reused读取；已有来源共享，不保存被删除的旧IR或运行状态。后续DCE照常裁剪／删除，完整删除历史和机器映射仍按原职责推进，不为观察保活操作。这些编译工具当前仍由Rust实现，B接管与自举按原职责分别记录。
+
+索引读取还可能直接取得先前Store写入的值。原memory条目只在本次分析中附带实际Store来源，真正消除Load时将Store和读取的来源交回保留值的Inst；indexed_store_read_forward中的retained仍是值生产者，store与read分别描述另外两个接点。map教程中，seed的f32转换生产值、seed赋值写入它、scale随后读取它，这三处可直接从同一IR查询。tiles的demo_publish<4>也保留实际tile值生产、cell写回和后续cell读取。材料没有永久SSA键、缓存增删历史或运行地址；直接ValueCode和归约输入仍按独立台账推进。
 
 局部读取也可能直接被已有值替代。命中原locals后，原别名算法继续消除LoadLocal，来源分别交给真实指令定义或ValueCode实际输入。普通定义可能是多结果Call或Both，因此材料包含本次交接时的结果序号／数量及商／余数角色，不能只保存一组没有目标分量的读取。
 

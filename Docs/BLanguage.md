@@ -219,6 +219,8 @@ bc ir src/math.b -I src --module --instance 'mix<7>' --function 'math::mix<7>'
 bc ir src/app.b -I src --entry main --import target/math.obj
 ```
 
+上述map并行入口的阶段查询可直接取得indexed_store_read_forward材料：retained为seed中保留的值生产者，reads各项分别交接实际Store与scale被替代读取的来源。查询本次实际编译模式；普通模块／CPU应用的不同IR路径不能冒称已经观测到该并行入口的替换。来源字段及未完成输入范围见后节“索引Store写入值到保留指令的读取来源”。
+
 --function使用完整、区分大小写的实际函数实例名，只从本次模块／应用保留的functions选择；缺失函数直接失败，不重编另一函数或推测已内联函数体。--stage是本次--program的零起优化后阶段编号，越界直接失败；优化合并后的阶段数可以少于source_stages。未选函数／阶段时返回该编译结果的完整当前IR；未实例化的开放泛型没有伪造函数体。
 
 结果是单个JSON：kind=ir_query，source_path／module_root为本次绝对路径；mode、entry、function、stage、imports和instances说明实际请求。phase分别是optimized_program_ir、finalized_application_ir或finalized_module_ir，表示原入口已经完成的优化／函数及资源整理；不表示已独立提供Debug／Release或优化级别选择。ir来自原返回对象，源码查询不输出COFF、EXE或入口映像、不创建运行资源；source_path不是完整构建输入身份。已有产物的原请求／来源继续用bc inputs；没有输入记录或IR的对象不会被查询器重新解释成历史事实。
@@ -383,6 +385,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | IntegerDivisionPair | integer_division_pair | 原同一直线块整数商／余数实际配对合并 |
 | ExpressionReuse | expression_reuse | 原ExpressionKey命中后实际复用已有结果 |
 | LocalReadForward | local_read_forward | 原LoadLocal实际被已知局部值替代 |
+| IndexedStoreReadForward | indexed_store_read_forward | 原索引Load实际被先前Store写入的值替代，材料交给原保留Inst |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -421,6 +424,16 @@ ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value�
 CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Frame参数及inputs前缀时，同步调整本输入引用并移除已不存在输入的材料；使用原不可变共享语义保持旧快照，不以来源保留无消费Frame。普通无Frame标量的实际输入索引可以为0，保留Frame时普通值可位于实际前缀之后；以真实列表为准，不从参数名字或旧编号猜测。根generated_origin出现本理由仅说明发生了输入读取替代，不把普通源函数说成合成函数或应用入口。
 
 两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。归约降层新增输入读取来源按后节交接，写失效及控制合流的完整事实仍沿.3.4至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。见[完整架构](Architecture.md#tool-7-3-1-3)、[普通定义范围](FixedIssues.md#c-021-7-9-7-3-1-3-1)和[实际输入范围](FixedIssues.md#c-021-7-9-7-3-1-3-2)。
+
+#### 索引Store写入值到保留指令的读取来源
+
+原Values.memory在Store时临时保留同一Reg及该Store的OperationOrigin；Load建立的条目不伪造Store来源。后续同binding／index／word的Load真实被原值替代时，原Reuses将Store及被替代读取的不可变来源交回实际定义该值的Inst。原写效果／别名／控制范围不改变，不记录失效历史、物理地址或永久SSA键；写入值的生产者、Store与后续读取是三个不同接点。
+
+原Inst.generated_origin使用GenerationReason::IndexedStoreReadForward及GenerationAnchor::IndexedStoreReadForward { retained, reads }。retained保留该值生产者原有的OperationOrigin，原source_site仍是它的直接语法。reads中的IndexedStoreReadForward提供result_index()／result_count()／result()、store()和read()；前者引用本次交接时Inst::results的零基顺序和ReuseResult语义角色，后两者分别为实际Store和被替代读取的OperationOrigin，不把Store说成值定义或先前Load。
+
+JSON根reason和锚点kind均为indexed_store_read_forward，锚点含result_index_base=0、retained和reads；各项kind为indexed_store_read_forward_input，字段为result_index、result_count、result、store和read。多源锚点的单源trigger()／syntax()／origin()／instance()为空，各路从对应成员读取；未知来源仍为null。Source及既有生成链不可变共享，后续优化可以沿原材料继续交接，不保活DCE操作，不保存旧IR、AST／World、运行状态或第二张内存表。
+
+此项当前覆盖写入值由保留Inst定义的范围；先前Load定义的复用、直接ValueCode输入及lowered归约输入各保留独立未完成台账。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。见[架构](Architecture.md#tool-7-3-1-4-2-1)、[本项记录](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)及[剩余范围](Issues.md#c-021-7-9-7-3-1-4)。
 
 #### 降层归约内核的角色与分区查询
 

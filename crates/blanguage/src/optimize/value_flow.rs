@@ -7,6 +7,7 @@ type Reuses = BTreeMap<Reg, Vec<RetainedUse>>;
 enum RetainedUse {
     Expression(ExpressionReuse),
     LocalRead(OperationOrigin),
+    IndexedStoreRead { store: OperationOrigin, read: OperationOrigin },
 }
 
 fn merge(target: &mut Option<LocalValues>, other: Option<LocalValues>) {
@@ -53,7 +54,7 @@ enum ExpressionKey {
 struct Values {
     aliases: BTreeMap<Reg, Reg>,
     expressions: BTreeMap<ExpressionKey, Reg>,
-    memory: BTreeMap<(usize, Reg, u32), Reg>,
+    memory: BTreeMap<(usize, Reg, u32), (Reg, Option<OperationOrigin>)>,
     locals: BTreeMap<usize, Reg>,
 }
 impl Values {
@@ -258,11 +259,17 @@ impl Values {
                     word,
                 } => {
                     let key = (*binding, *index, *word);
-                    if let Some(old) = self.memory.get(&key) {
+                    if let Some((old, store)) = self.memory.get(&key) {
                         self.aliases.insert(*dst, *old);
+                        if let Some(store) = store {
+                            reuses.entry(*old).or_default().push(RetainedUse::IndexedStoreRead {
+                                store: store.clone(),
+                                read: OperationOrigin { source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone() },
+                            });
+                        }
                         continue;
                     }
-                    self.memory.insert(key, *dst);
+                    self.memory.insert(key, (*dst, None));
                 }
                 InstKind::Store {
                     binding,
@@ -272,7 +279,9 @@ impl Values {
                 } => {
                     self.memory
                         .retain(|(b, i, w), _| b != binding || (*i == *index && *w != *word));
-                    self.memory.insert((*binding, *index, *word), *value);
+                    self.memory.insert((*binding, *index, *word), (*value, Some(OperationOrigin {
+                        source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone(),
+                    })));
                 }
                 InstKind::If { yes, no, .. } => {
                     let mut y = self.clone();
@@ -350,6 +359,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
     for inst in code {
         let mut reused = Vec::new();
         let mut reads = Vec::new();
+        let mut indexed = Vec::new();
         let result_count = inst.results().count();
         for (result_index, reg) in inst.results().enumerate() {
             let result = match &inst.kind {
@@ -365,6 +375,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                 match source {
                     RetainedUse::Expression(source) => reused.push(source),
                     RetainedUse::LocalRead(origin) => reads.push(LocalReadForward { result_index, result_count, result, origin }),
+                    RetainedUse::IndexedStoreRead { store, read } => indexed.push(IndexedStoreReadForward { result_index, result_count, result, store, read }),
                 }
             }
         }
@@ -380,6 +391,13 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
             inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
                 reason: GenerationReason::LocalReadForward,
                 trigger: Some(GenerationAnchor::LocalReadForward { retained, reads }),
+            }));
+        }
+        if !indexed.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::IndexedStoreReadForward,
+                trigger: Some(GenerationAnchor::IndexedStoreReadForward { retained, reads: indexed }),
             }));
         }
         match &mut inst.kind {
@@ -432,7 +450,7 @@ pub(super) fn with_prelude(
 fn input_reads(reg: Reg, reuses: &mut Reuses) -> Vec<OperationOrigin> {
     reuses.remove(&reg).into_iter().flatten().filter_map(|source| match source {
         RetainedUse::LocalRead(origin) => Some(origin),
-        RetainedUse::Expression(_) => None,
+        RetainedUse::Expression(_) | RetainedUse::IndexedStoreRead { .. } => None,
     }).collect()
 }
 fn run_code(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) -> Reuses {
