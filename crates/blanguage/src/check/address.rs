@@ -641,7 +641,8 @@ impl Builder<'_> {
             owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
     }
     pub(super) fn write_address_values(&mut self,borrow:&view::Borrow) {
-        if external_memory(borrow) {
+        let borrow=self.current_address_borrow(borrow);
+        if external_memory(&borrow) {
         let data=self.env.values().flat_map(Binding::application_resources)
             .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
         for data in data {self.invalidate_application_contents(&data);}
@@ -654,7 +655,16 @@ impl Builder<'_> {
             }
         }
         } else if !borrow.empty() {
-        let positions=self.address_write_positions(borrow);
+        let data=borrow.sources.entries().filter(|(_,when)|when.possible()).filter_map(|(source,when)|{
+            let view::Source::Position(origin)=source else{return None;};
+            if !origin.writable{return None;}
+            match &origin.root {
+                Root::Resource(resource)|Root::Dataset{borrow:resource,..}=>Some((resource.restricted(&when),origin.words.to_vec())),
+                _=>None,
+            }
+        }).collect::<Vec<_>>();
+        for(resource,words)in data {self.update_application_elements(&[],&resource,&words,None,None);}
+        let positions=self.address_write_positions(&borrow);
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
             let components=self.address_write_components(&positions,&place);
@@ -689,7 +699,10 @@ impl Builder<'_> {
                 let ty=cooperative::parameter_type(self.world,&self.definition.function.params[*parameter],&self.definition)?;
                 base=Layout::of(&ty);words=external::reference_words(place,&self.locals).unwrap();Root::Parameter(*parameter)
             }
-            Place::ApplicationElement{resource,..}=>Root::Resource(resource.clone()),
+            Place::ApplicationElement{resource,element_layout,words:actual,..}=>{
+                base=element_layout.clone();words=actual.clone();
+                Root::Resource(resource.clone())
+            },
             Place::Element{binding,..}=>Root::Buffer(*binding),
             Place::ViewElement{source,..}=>{
                 let mut borrow=view::Borrow::default();
