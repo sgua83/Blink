@@ -2160,7 +2160,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                         }));
 ```
 
-这里只共享原source_site／generated_origin，不保存旧输入IR或运行状态。后续死代码消除可能把Both裁为单结果；保留的材料仍说明此前真实发生的配对，不表示两个结果都在运行时被消费。该局部关系不代替所有值复用、删除历史或最终机器指令映射；其他缺口按原台账推进，不为观察保活操作。编译器和本查询当前仍由Rust实现，B接管与自举另按原职责记录。
+这里只共享原source_site／generated_origin，不保存旧输入IR或运行状态。后续死代码消除可能把Both裁为单结果；IntegerDivisionResultPrune在同一保留Inst上交接裁剪前来源及input_results／output_results商余角色。此前的配对事实保持，不表示两个结果都在运行时被消费；整条除法删除时，来源交给原EliminatedValue及其真实根。该局部关系不代替所有值复用、删除历史或最终机器指令映射；其他缺口按原台账推进，不为观察保活操作。编译器和本查询当前仍由Rust实现，B接管与自举另按原职责记录。
 
 同一个表达式的结果还可以被其他位置复用。整数商／余数和普通纯表达式分别在原键真正命中时交接删除来源；value、quotient和remainder标明被复用哪个结果，input_results说明该输入当时实际产生哪些结果。它不从旧配对来源或最终Both形态倒推过程：部分复用后仍可能重新配对。
 
@@ -2443,7 +2443,7 @@ impl ReductionKernel {
 
 控制合流要区分“没有继续路径”和“路径继续但没有共同已知值”。原Flow将普通继续、break、continue和Scope退出分开，当前merge只保留各类路径共同的同一SSA；实际If／Scope／Loop与读写仍在原IR，真正读取替代仍沿LocalReadForward及原输入锚点。两条分支写不同定义后保留LoadLocal是正常结果，不能强选一条来源。临时合流表不另存历史；结束迭代也须与实际删除剩余操作区分，原代码有break并不证明发生删除。当前真实消费没有该事件，不增加空来源；真正程序删改仍按实际生产者交接。字段及边界见[规范](../Docs/BLanguage.md#控制合流与实际读取替代)。
 
-有些普通值操作最终没有任何消费者。原dce沿同一needed集合删除它们，原ValueCode或Stage用UnusedValueResults／EliminatedValues保留这次删除来源；EliminatedValue只交接原OperationOrigin和当时结果的Scalar列表，不保存旧指令、操作数、常量位模式或Reg。单条IR操作可以有多个结果，一条源语句也可能产生多条操作；不能将这份材料的数量当作运行次数或性能收益。原生成根与入口保持，下一轮只记录新删除，原Frame前缀移除继续沿保留根调整输入来源引用。没有材料时仍须区分未采集与未发生，不从优化后的代码反推完整历史。
+有些普通值操作最终没有任何消费者。原dce沿同一needed集合删除它们，原ValueCode或Stage用UnusedValueResults／EliminatedValues保留这次删除来源；EliminatedValue交接原OperationOrigin和当时结果的Scalar列表，整数除法另用可选integer_division_results交接被删除的商／余数角色，普通值为null。不保存旧指令、操作数、常量位模式或Reg。Both全部删除有两个角色，单商或单余数只有实际角色；只删一个结果时仍归保留Inst上的IntegerDivisionResultPrune，不重复记成整条操作删除。单条IR操作可以有多个结果，一条源语句也可能产生多条操作；不能将这份材料的数量当作运行次数或性能收益。原生成根与入口保持，下一轮只记录新删除，原Frame前缀移除继续沿保留根调整输入来源引用。没有材料时仍须区分未采集与未发生，不从优化后的代码反推完整历史。
 
 这些事实直接从原bc ir普通函数、应用及程序查询取得，SDK和JSON消费同一根。普通指令的无代码事实、被删除的私有写、整数结果裁剪与整个Stage消失分别属于各自生产点；整个空Map阶段被原optimize移除时，Program.generated_origin以EmptyMapRemoval接收其原语句来源及已有生成材料；全部阶段消失仍能从原Program查询这次删除，不为保存来源保活空阶段。code为空与运行时集合为空分别理解，source_stages继续记录原展开数量。查询与生命周期见[规范](../Docs/BLanguage.md#未消费普通值结果的删除来源)和[架构](../Docs/Architecture.md#tool-7-3-1-5)。
 ### 11.4 选择表达式不是总能两边都先算

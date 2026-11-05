@@ -499,14 +499,31 @@ fn dce(
             c.results.retain(|(_, r)| needed.contains(&Register(*r)));
         }
         if let InstKind::IntegerDivide { result, .. } = &mut (i).kind {
+            let original = *result;
             let q = result.quotient().filter(|r| needed.contains(&Register(*r)));
             let r = result
                 .remainder()
                 .filter(|r| needed.contains(&Register(*r)));
             let Some(retained) = IntegerDivisionResult::from_parts(q, r) else {
+                removed.push(EliminatedValue {
+                    result_types: original.outputs().map(|(_, reg)| registers[reg]).collect(),
+                    integer_division_results: Some(original.outputs().map(|(result, _)| result).collect()),
+                    origin: OperationOrigin::from_instruction(&i),
+                });
                 continue;
             };
             *result = retained;
+            if original != retained {
+                let origin = OperationOrigin::from_instruction(&i);
+                i.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::IntegerDivisionResultPrune,
+                    trigger: Some(GenerationAnchor::IntegerDivisionResultPrune {
+                        retained: origin,
+                        input_results: original.outputs().map(|(result, _)| result).collect(),
+                        output_results: retained.outputs().map(|(result, _)| result).collect(),
+                    }),
+                }));
+            }
         }
         if !matches!(
             &(i).kind,
@@ -518,6 +535,7 @@ fn dce(
             {
                 removed.push(EliminatedValue {
                     result_types: i.results().map(|reg| registers[reg]).collect(),
+                    integer_division_results: None,
                     origin: OperationOrigin::from_instruction(&i),
                 });
                 continue;

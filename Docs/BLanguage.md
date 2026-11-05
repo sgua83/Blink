@@ -405,7 +405,7 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 
 合并节点没有唯一直接语法来源，其source_site()为空；该多输入锚点的syntax()／origin()／instance()及外层trigger()均为空，不任取一路代表完整变换。两路SourceSite保留自己的真实定义快照、实际实例、inlined_at及domain_path。当前解析器对二元除法／余数Expr.span通常只覆盖左操作数起始token，例如value，不扩大为整段value/divisor或value%divisor；查询使用真实UTF8字节范围及原快照，不重读之后改写或移走的磁盘源码。
 
-材料归原Inst并随原IR／Stage克隆、模块和SDK编译结果在最后消费者后释放，只共享来源，不保留旧输入Inst／IR、AST／World、运行状态或额外图。后续DCE把Both裁为单结果时，材料仍表示先前发生的真实配对，不声称仍有两个输出；整个节点删除则按原生命周期释放。配对条件、寄存器／结果、数值和控制边界不变，compiler之外没有本类型／材料，必要对象与运行编码不变。其他复用、重写／消除及机器范围仍按原叶推进，不把本项当作完整优化历史。见[架构职责](Architecture.md#tool-7-3-1-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-1)。
+材料归原Inst并随原IR／Stage克隆、模块和SDK编译结果在最后消费者后释放，只共享来源，不保留旧输入Inst／IR、AST／World、运行状态或额外图。后续DCE把Both裁为单结果时，IntegerDivisionResultPrune.retained保持此前的配对来源；整条删除时，原EliminatedValue将来源交给ValueCode／Stage及空Map后的Program。保留来源不保活旧指令，也不声称仍有两个输出。配对条件、寄存器／结果、数值和控制边界不变，compiler之外没有本类型／材料，必要对象与运行编码不变。其他复用、重写／消除及机器范围仍按原叶推进，不把本项当作完整优化历史。见[架构职责](Architecture.md#tool-7-3-1-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-1)。
 
 #### 相同表达式结果复用的来源
 
@@ -455,7 +455,7 @@ JSON根reason及锚点kind均为indexed_read_reuse，锚点含retained和reused�
 
 values中每个EliminatedValue代表本次dce真正删除的一条IR操作；result_types()按当时Inst::results的顺序交回实际Scalar列表，origin()借用同一操作的OperationOrigin。它不保存旧Inst、操作数、常量值、旧Reg或物理位置，不将一条IR操作扩大为整个源表达式、实际运行次数、最终设备指令数或性能收益；一次源操作可能降成多个逻辑分量，多个来源也可能已合在一个被删除操作的已有来源里。递归沿原Scope／If／Loop实际调用归回同一根，列表顺序是本次删除遍历收集顺序，不是运行时间线或稳定身份。
 
-GeneratedOrigin的JSON reason为unused_value_results，锚点kind为eliminated_values，字段为retained及values；各值kind为eliminated_value，字段为result_types及origin，类型拼写与本次IR寄存器类型相同。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
+GeneratedOrigin的JSON reason为unused_value_results，锚点kind为eliminated_values，字段为retained及values；各值kind为eliminated_value，字段为result_types、integer_division_results及origin，类型拼写与本次IR寄存器类型相同。普通值的integer_division_results为null，整数除法删除时为原商／余数角色数组，见下节。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
 
 材料仅compiler，沿原ValueCode／Stage及编译／模块／SDK快照在最后IR消费者后释放，不保活操作、槽位或阶段，不持有AST／World、运行资源或另一活跃性表，不进入必要对象／执行编码。整个空Map阶段移除后的来源由原Program沿C-021.7.9.7.3.2.2继续交接；没有材料不证明操作未发生删除。SDK新增公开枚举／类型属于compiler源码接口演化，软件版本与执行ABI分别表达。实际入口继续使用bc ir的普通函数、应用和程序查询，不增另一调试命令。见[架构](Architecture.md#tool-7-3-1-5)及[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-5)。
 
@@ -467,6 +467,16 @@ bc ir sample/applications/datasets.b -I sample --entry main
 ```
 
 这些查询返回当前编译结果中的删除材料；外模块本体、已经结束的临时检查根与所请求模块分别归其真实拥有者，不把同一源码范围的多次检查计成该结果的多次删除。
+#### 整数商余结果裁剪的来源
+
+原dce只按实际needed筛选IntegerDivisionResult的quotient／remainder。Both真正改成单商或单余数时，同一保留Inst.generated_origin使用GenerationReason::IntegerDivisionResultPrune及GenerationAnchor::IntegerDivisionResultPrune { retained, input_results, output_results }。retained是本次裁剪前的OperationOrigin，原source_site不变；两个角色列表直接来自本次原结果及保留结果的IntegerDivisionResult::outputs，成员为IntegerDivisionOp::Quotient／Remainder，顺序为商后余数。原src、divisor、结果Reg、数值和控制保持，结果未改变时不生成材料。
+
+JSON根reason与锚点kind均为integer_division_result_prune，字段为retained、input_results、output_results；角色拼写为quotient／remainder。原IntegerDivisionPair及其他生成材料保留在retained中，只说明此前发生的变换，不据此推定当前仍有两个结果或又执行过一次配对。多源单一trigger()／syntax()／origin()／instance()为空，来源从明确成员读取；未知成员仍为null。材料不保存旧Inst、输入值／Reg、常量、物理位置或另一结果表，SDK／JSON借用同一保留节点。
+
+商余结果全部不再需要时，原操作照常删除，来源沿原EliminatedValue进入同一ValueCode／Stage.generated_origin的UnusedValueResults／EliminatedValues；整个空Map随后沿EmptyMapRemoval交给Program。EliminatedValue::integer_division_results()返回可选的原IntegerDivisionOp切片，JSON同名字段为quotient／remainder角色数组；Both有两个成员，单结果只有实际角色。result_types与该角色列表都按删除前原Inst::results／outputs顺序解释逻辑分量。普通值删除的该字段为null，来源未知与角色种类分别表达，不伪造定义或增加另一删除材料链。实际查询沿原bc ir的--module、--program及--entry选择原根，SDK直接借用原Inst、ValueCode、Stage或Program，不增加专用命令。
+
+上述来源仅compiler，沿原IR／模块／SDK快照在最后实际消费者后释放；必要执行编码、资源ABI、借用、调度和完成不变，不为材料保活结果。输入／输出角色是本次变换的静态事实，不是运行次数、设备指令数或性能收益；已有范围继续开放，不按本批输入限定整数宽度或合法表达。新增公开枚举分支属于compiler SDK源码接口演化，按原软件版本规则处理。见[架构](Architecture.md#tool-7-3-1-6)及[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-6)。
+
 #### 空Map阶段移除的来源
 
 原optimize末尾仅沿原Operation::Map且code为空的条件移除Stage。实际移除前，将同一Stage.operation_source及generated_origin作为OperationOrigin共享给原Program.generated_origin，使用GenerationReason::EmptyMapRemoval及GenerationAnchor::EmptyMapRemoval { retained, stages }；retained保留可选旧Program根，source_origin独立保持。Program::generated_origin()、anchor()及现有bc ir程序／应用资源查询消费同一真实结果，不新增另一程序或查询命令。

@@ -457,7 +457,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 **整数商余配对合并的来源。** 原Values::block在同一直线块对相同src／IntegerDivisor的Quotient与Remainder实际配对时，沿原输出位置构造IntegerDivide，并复用Inst.generated_origin交接IntegerDivisionPair。GenerationAnchor::IntegerDivisionPair的quotient／remainder各持OperationOrigin，只不可变共享该输入原source_site／generated_origin；逆序输入仍按商／余数语义角色交接，不按先后顺序选一个来源。源文本、实例、内联及域路径沿原SourceSite保持，缺失为null；新节点source_site为空，单源trigger／syntax／origin／instance不任取一路，多输入从anchor分别读取。SDK借用及IR JSON消费同一事实，JSON锚点kind为integer_division_inputs，两路kind为operation_origin。
 
-唯一所有者是原合并后的Inst，材料随原IR／模块／SDK快照共享及最后消费者释放；只保留不可变来源，不保留输入Inst、旧IR、AST／World或另一图／注册表，不拥有运行资源。原src／divisor、结果寄存器、配对键、位置和控制边界不变；关闭compiler没有这些类型及代码，必要对象／执行编码不带材料。后续DCE裁剪为单结果时，已有材料仍描述之前实际发生的配对，删除节点则随原生命周期释放；它不证明当前仍有两个结果、两次运行操作或完整消除历史。重复表达式复用、结果裁剪的完整关系、机器映射仍归原独立叶，不为观察保活或冻结优化。现行接口见[语言规范](BLanguage.md#整数商余配对合并的来源)，实现与实际验证范围见[闭合台账](FixedIssues.md#c-021-7-9-7-3-1-1)。
+唯一所有者是原合并后的Inst，材料随原IR／模块／SDK快照共享及最后消费者释放；只保留不可变来源，不保留输入Inst、旧IR、AST／World或另一图／注册表，不拥有运行资源。原src／divisor、结果寄存器、配对键、位置和控制边界不变；关闭compiler没有这些类型及代码，必要对象／执行编码不带材料。后续DCE裁剪为单结果时，原配对来源由IntegerDivisionResultPrune的retained保持；整条删除时，由原EliminatedValue交给ValueCode／Stage及空Map后的Program，最后IR消费者结束后释放。配对事实不证明当前仍有两个结果、两次运行操作或完整消除历史；结果裁剪与机器映射各归原独立叶，不为观察保活或冻结优化。现行接口见[语言规范](BLanguage.md#整数商余配对合并的来源)，实现与实际验证范围见[闭合台账](FixedIssues.md#c-021-7-9-7-3-1-1)。
 
 <a id="tool-7-3-1-2"></a>
 
@@ -565,7 +565,7 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-5"></a>
 
-**未消费普通值结果删除的来源。** 原dce对非Atomic／Append／Print／Call的有结果Inst，沿原needed判定全部结果均未消费时删除；此分支支持普通单／多结果，不与整数除法专门裁剪或私有写删除混为一项。删除点交接同一操作的OperationOrigin及当时各结果的Scalar类型，原Inst及其操作数照常释放，不保存旧IR、常量位模式、永久Reg或另一活跃性表。结果类型列表按原Inst::results顺序表达本次逻辑分量；一次记录是一条被删除IR操作，不是运行次数、设备指令数或整个源表达式已无代码的证明。递归只沿真实删除归回原拥有根，不重新求解needed或增加删除许可；缺失来源保持空。下列ValueCode和Stage各为独立接收者，空Stage后续移除由原Program沿.3.2.2继续交接；当前原删除及其持有范围已闭合，见[台账](FixedIssues.md#c-021-7-9-7-3-1-5)。其他结构变换、整数裁剪与私有写删除仍各归原未完成职责。
+**未消费普通值结果删除的来源。** 原dce对非Atomic／Append／Print／Call的有结果Inst，沿原needed判定全部结果均未消费时删除；此分支支持普通单／多结果，不与整数除法专门裁剪或私有写删除混为一项。删除点交接同一操作的OperationOrigin及当时各结果的Scalar类型，原Inst及其操作数照常释放，不保存旧IR、常量位模式、永久Reg或另一活跃性表。结果类型列表按原Inst::results顺序表达本次逻辑分量；一次记录是一条被删除IR操作，不是运行次数、设备指令数或整个源表达式已无代码的证明。递归只沿真实删除归回原拥有根，不重新求解needed或增加删除许可；缺失来源保持空。下列ValueCode和Stage各为独立接收者，空Stage后续移除由原Program沿.3.2.2继续交接；当前原删除及其持有范围已闭合，见[台账](FixedIssues.md#c-021-7-9-7-3-1-5)。整数裁剪另沿.6的独立职责交接；其他结构变换与私有写删除仍归原未完成职责。
 
 <a id="tool-7-3-1-5-1"></a>
 
@@ -577,7 +577,15 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-6"></a>
 
-**整数除法结果裁剪的来源。** 输入：原IntegerDivisionResult及quotient／remainder实际needed关系。唯一生产／消费接点：optimize.rs#24::dce原478至484，事实归原整数除法Inst及删除时的原ValueCode／Stage；输出为本项真实变换的来源关系或明确缺失。区分Both变单结果与全部无用而删除，保留语义角色与已取得来源，不把裁剪说成又执行一次合并。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：原result改写／continue已实现，裁剪来源待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-6)。
+**整数除法结果裁剪的来源。** 原IntegerDivisionResult的商／余数及原needed在同一dce分支决定保留集合；部分保留与整条删除沿下列两个真实接收者交接，父项只汇总。原IntegerDivisionResult::outputs是语义角色及临时Reg的原拥有者，来源只保留商／余数角色、实际Scalar及不可变OperationOrigin；不永久保存Reg、旧Inst／IR、AST／World或另一活跃性表。原配对、数值、效果、控制、调度和完成不因材料改变，先前Pair材料仍描述先前实际配对，不推定当前仍有两个结果。状态见[父项](FixedIssues.md#c-021-7-9-7-3-1-6)。
+
+<a id="tool-7-3-1-6-1"></a>
+
+**商余裁剪到保留指令。** 原dce在同一IntegerDivide真正从Both保留为单商／单余数时，用IntegerDivisionResultPrune原因及同名锚点交给原Inst.generated_origin。retained保留该指令此前的OperationOrigin，input_results／output_results按当时原outputs顺序交接IntegerDivisionOp角色；当前结果仍由原Inst持有，不从旧Pair或最终结果反推这一轮变化。原source_site及已有生成材料分别保持，无改写不制造事件；来源在最后IR消费者后释放，仅compiler，SDK／JSON借用原节点，不为来源保活、不另建结果／阶段映射。见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-6-1)。
+
+<a id="tool-7-3-1-6-2"></a>
+
+**无消费商余整条删除。** 原from_parts返回None时不保留Inst；原dce用同一EliminatedValue和已有递归交接，把删除前的Scalar列表、OperationOrigin及integer_division_results交给原ValueCode／Stage.generated_origin，空Map再沿.3.2.2交给Program。该角色列表直接来自原IntegerDivisionResult::outputs，单商、单余数、Both分别表达；普通值删除的该字段为None，不把未知来源、普通值和商／余数混同。复用原UnusedValueResults／EliminatedValues，不增加另一删除表或根接收链。新材料仅compiler，沿原拥有者／编译／SDK快照及最后实际消费者结束；不保留旧IR／Reg、拥有运行资源或改变原删除／执行。见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-6-2)。
 
 <a id="tool-7-3-1-7"></a>
 
