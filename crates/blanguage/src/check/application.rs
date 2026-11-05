@@ -102,10 +102,25 @@ impl DataReference {
     }
 }
 
-// Numeric snapshots query the original emitted operations. No loaded-value or
-// memory-version state is retained beside the IR and the existing Proof.
+// Numeric snapshots query the original emitted operations, including the outer
+// IR owned by active loop contexts. Loop write inputs describe future backedges;
+// no loaded-value or memory-version state is retained beside IR and Proof.
 struct ApplicationLoads<'a,'w>(&'a Builder<'w>);
 impl ApplicationLoads<'_, '_> {
+    fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
+        self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
+    }
+    fn len(&self)->usize {self.0.loop_contexts.iter().map(|context|context.outer.len()).sum::<usize>()+self.0.code.len()}
+    fn loop_writes(&self,a:usize,b:usize,slot:Option<usize>)->bool {
+        let mut boundary=0;
+        self.0.loop_contexts.iter().any(|context|{
+            boundary+=context.outer.len();
+            a.min(b)<boundary && a.max(b)>=boundary && match slot {
+                Some(slot)=>context.writes.external||context.writes.locals.contains(&slot),
+                None=>context.writes.storage,
+            }
+        })
+    }
     fn definition(&self,reg:Reg)->Option<(usize,&Inst)> {
         fn nested(inst:&Inst,reg:Reg)->Option<&Inst>{
             if inst.results().any(|result|result==reg){return Some(inst);}
@@ -116,7 +131,8 @@ impl ApplicationLoads<'_, '_> {
                 _=>None,
             }
         }
-        self.0.code.iter().enumerate().rev().find_map(|(at,inst)|nested(inst,reg).map(|inst|(at,inst)))
+        let mut at=self.len();
+        self.code().rev().find_map(|inst|{at-=1;nested(inst,reg).map(|inst|(at,inst))})
     }
     fn pointer_call(call:&Call)->Option<Reg> {
         let CallTarget::External(name)=&call.target else{return None;};
@@ -141,9 +157,10 @@ impl ApplicationLoads<'_, '_> {
             (InstKind::Binary{op:a_op,a:aa,b:ab,..},InstKind::Binary{op:b_op,a:ba,b:bb,..})=>a_op==b_op&&self.same(*aa,*ba)&&self.same(*ab,*bb),
             (InstKind::Math{op:a_op,args:a,..},InstKind::Math{op:b_op,args:b,..})=>a_op==b_op&&a.len()==b.len()&&a.iter().zip(b).all(|(a,b)|self.same(*a,*b)),
             (InstKind::LoadLocal(_,a_slot),InstKind::LoadLocal(_,b_slot))=>{
-                let direct=self.0.code[ai].results().any(|reg|reg==a)&&self.0.code[bi].results().any(|reg|reg==b);
+                let direct=self.code().nth(ai).unwrap().results().any(|reg|reg==a)&&self.code().nth(bi).unwrap().results().any(|reg|reg==b);
                 let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
-                a_slot==b_slot&&!self.0.code[range].iter().any(|inst|self.writes_local(inst,*a_slot))
+                a_slot==b_slot&&!self.loop_writes(ai,bi,Some(*a_slot))
+                    &&!self.code().skip(range.start).take(range.len()).any(|inst|self.writes_local(inst,*a_slot))
             },
             (InstKind::Call(a_call),InstKind::Call(b_call))=>{
                 let(Some(a_root),Some(b_root))=(Self::pointer_call(a_call),Self::pointer_call(b_call))else{return false;};
@@ -154,9 +171,9 @@ impl ApplicationLoads<'_, '_> {
                     }
             },
             (InstKind::ViewLoad{..},InstKind::ViewLoad{..})=>{
-                let direct=self.0.code[ai].results().any(|reg|reg==a)&&self.0.code[bi].results().any(|reg|reg==b);
+                let direct=self.code().nth(ai).unwrap().results().any(|reg|reg==a)&&self.code().nth(bi).unwrap().results().any(|reg|reg==b);
                 let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
-                self.same_load(a_inst,b_inst)&&!self.0.code[range].iter().any(|inst|self.writes(inst,a_inst))
+                self.same_load(a_inst,b_inst)&&!self.code().skip(range.start).take(range.len()).any(|inst|self.writes(inst,a_inst))
             },
             _=>false,
         }
@@ -165,7 +182,9 @@ impl ApplicationLoads<'_, '_> {
     fn same_load(&self,a:&Inst,b:&Inst)->bool {
         match (&a.kind,&b.kind) {
             (InstKind::ViewLoad{dst:a_dst,address:a,index:ai,stride:as_,word:aw},InstKind::ViewLoad{dst:b_dst,address:b,index:bi,stride:bs,word:bw})=>
-                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&as_==bs&&aw==bw&&self.same_address(*a,*b)&&self.same(*ai,*bi),
+                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&as_==bs&&aw==bw
+                    &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,None)
+                    &&self.same_address(*a,*b)&&self.same(*ai,*bi),
             _=>false,
         }
     }
@@ -244,14 +263,14 @@ impl ApplicationLoads<'_, '_> {
             _=>false,
         }
     }
-    fn prior_snapshot<'a>(&'a self,code:&'a[Inst],mut load:&'a Inst)->Option<Reg> {
+    fn prior_snapshot<'a>(&'a self,code:impl Iterator<Item=&'a Inst>,mut load:&'a Inst)->Option<Reg> {
         let mut result=None;
-        for inst in code.iter().rev() {
+        for inst in code {
             let nested=match &inst.kind {
                 InstKind::If{condition,yes,no}=>{
                     let mut source=*condition;
                     while let Some((at,Inst{kind:InstKind::LoadLocal(_,slot),..}))=self.definition(source) {
-                        let Some(Inst{kind:InstKind::StoreLocal(_,value),..})=self.0.code[..at].iter().rev().find(|inst|self.writes_local(inst,*slot))else{break;};
+                        let Some(Inst{kind:InstKind::StoreLocal(_,value),..})=self.code().rev().skip(self.len()-at).find(|inst|self.writes_local(inst,*slot))else{break;};
                         source=*value;
                     }
                     let value=Value{ty:Ty::scalar(Scalar::Bool),regs:vec![source],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
@@ -260,7 +279,7 @@ impl ApplicationLoads<'_, '_> {
                 InstKind::Scope(body)=>Some(body.as_slice()),
                 _=>None,
             };
-            if let Some(reg)=nested.and_then(|code|self.prior_snapshot(code,load)) {
+            if let Some(reg)=nested.and_then(|code|self.prior_snapshot(code.iter().rev(),load)) {
                 result=Some(reg);load=self.definition(reg).unwrap().1;
             }
             if self.writes(inst,load){break;}
@@ -273,7 +292,7 @@ impl ApplicationLoads<'_, '_> {
     fn snapshot(&self,reg:Reg)->Reg {
         let Some((at,load))=self.definition(reg)else{return reg;};
         if !matches!(load.kind,InstKind::ViewLoad{..}){return reg;}
-        self.prior_snapshot(&self.0.code[..at],load).unwrap_or(reg)
+        self.prior_snapshot(self.code().rev().skip(self.len()-at),load).unwrap_or(reg)
     }
 }
 impl Builder<'_> {

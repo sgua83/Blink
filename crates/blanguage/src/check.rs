@@ -3190,15 +3190,14 @@ impl<'a> Builder<'a> {
     fn while_loop(&mut self, condition: &Expr, body: &[Stmt], initial: bool, span: Span) -> Result<()> {
         self.flow = Flow::NEXT;
         let environment = self.env.clone();
-        if !initial {
-            self.invalidate_assigned(body, None)?;
-            self.invalidate_expression(condition)?;
-        }
+        let writes=self.loop_writes(Some(condition),body,None,initial)?;
         self.enter_loop(&environment);
+        self.loop_contexts.last_mut().unwrap().writes=writes;
         self.configure_initial_loop(initial,None,None);
         self.prepare_view_loop();
-        let outer = std::mem::take(&mut self.code);
+        self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
         let Some(c) = self.expr(condition)? else {
+            let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
             self.finish_view_condition()?;
             let code = std::mem::replace(&mut self.code, outer);
             self.code.extend(code);
@@ -3209,6 +3208,7 @@ impl<'a> Builder<'a> {
         let partition = Arc::new(bounds::Condition::of(&c));
         let condition_code = std::mem::take(&mut self.code);
         if c.constant.as_ref().is_some_and(|bits| bits[0] == 0) {
+            let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
             self.finish_view_condition()?;
             self.refine_bounds(&partition, false);
             self.code = outer;
@@ -3254,6 +3254,7 @@ impl<'a> Builder<'a> {
             body_flow = body_flow.union(flow);
         }
         let body = code;
+        let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
         let next = self.leave_loop(natural, &c, &body, span, false)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
@@ -3402,13 +3403,13 @@ impl<'a> Builder<'a> {
             initialization.clear();
         }
         let environment = self.env.clone();
-        if !initial {
-            self.invalidate_assigned(body, borrowed)?;
-        }
+        let mut writes=self.loop_writes(None,body,borrowed,initial)?;
+        writes.locals.insert(slot);
         self.enter_loop(&environment);
+        self.loop_contexts.last_mut().unwrap().writes=writes;
         self.configure_initial_loop(initial, Some(name.clone()), Some(begin.clone()));
         self.prepare_view_loop();
-        let outer = std::mem::take(&mut self.code);
+        self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
         let index = self.reg(Scalar::U32);
         self.emit(InstKind::LoadLocal(index, slot));
         let cursor = Value {
@@ -3549,6 +3550,7 @@ impl<'a> Builder<'a> {
             body_flow = body_flow.union(flow);
         }
         let body = code;
+        let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
         let next = self.leave_loop(natural, &test, &body, span, nonempty)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;

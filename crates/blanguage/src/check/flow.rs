@@ -56,6 +56,8 @@ pub(super) struct LoopState {
     pub(super) cursor: Option<Value>,
 }
 pub(super) struct LoopContext {
+    pub outer: Vec<Inst>,
+    pub writes: effects::LoopWrites,
     names: BTreeSet<String>,
     entry: LoopState,
     exits: Vec<LoopState>,
@@ -434,6 +436,7 @@ impl Builder<'_> {
             data_at_mut(self.env.get_mut(&name).unwrap(),&path).unwrap().initialization=None;
         }
         self.loop_contexts.push(LoopContext {
+            outer: Vec::new(),writes: effects::LoopWrites::default(),
             names: environment.keys().cloned().collect(),
             entry:LoopState{env:resources,path:self.path.clone(),initialized:self.application_initialization_state(),control:self.control_uniform,cursor:None},
             exits: Vec::new(),

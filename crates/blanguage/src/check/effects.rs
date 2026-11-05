@@ -14,6 +14,15 @@ enum Write<'e> {
         iterator: Option<(&'e str, &'e Expr)>,
     },
     External(&'e Expr),
+    Call(&'e Expr),
+}
+
+// Immutable output of the existing loop write preanalysis, not memory state.
+#[derive(Default)]
+pub(super) struct LoopWrites {
+    pub locals: BTreeSet<usize>,
+    pub storage: bool,
+    pub external: bool,
 }
 
 impl Builder<'_> {
@@ -262,6 +271,7 @@ impl Builder<'_> {
             if let Some(owner) = binding.stored_place() {
                 for write in writes {
                     let components = match *write {
+                        Write::Call(_)=>Vec::new(),
                         Write::External(_)=>vec![(0..owner.ty().components.len()).collect()],
                         Write::Position{place,contents,iterator,..}=>{
                             let projection=if contents {self.application_write_projection(place,&owner)}
@@ -308,23 +318,43 @@ impl Builder<'_> {
         }
         Ok(())
     }
-    pub(super) fn invalidate_expression(&mut self, expr: &Expr) -> Result<()> {
-        let mut writes = Vec::new();
-        expression_writes(self, expr, &mut |place| {
-            writes.push(place)
-        })?;
-        self.invalidate_writes(&writes, None)
-    }
-    pub(super) fn invalidate_assigned(
+    pub(super) fn loop_writes(
         &mut self,
+        condition: Option<&Expr>,
         body: &[Stmt],
         borrowed_data: Option<ValueIdentity>,
-    ) -> Result<()> {
+        initial: bool,
+    ) -> Result<LoopWrites> {
         let mut writes = Vec::new();
-        statement_writes(self, body, &mut |place| {
-            writes.push(place)
-        })?;
-        self.invalidate_writes(&writes, borrowed_data)
+        statement_writes(self, body, &mut |place| writes.push(place))?;
+        if let Some(condition)=condition {
+            expression_writes(self, condition, &mut |place| writes.push(place))?;
+        }
+        let mut effect=LoopWrites::default();
+        for write in &writes {
+            match *write {
+                Write::External(_)|Write::Call(_)=>{effect.storage=true;effect.external=true;},
+                Write::Position{place,contents,iterator,..}=>{
+                    if address_write(place) {effect.storage=true;effect.external=true;continue;}
+                    if contents||iterator.is_some() {effect.storage=true;continue;}
+                    let Some(name)=assigned_root(place) else {effect.storage=true;continue;};
+                    let Some(binding)=self.env.get(name) else {
+                        if !matches!(place.kind,ExprKind::Name(_)){effect.storage=true;}
+                        continue;
+                    };
+                    if let Some(owner)=binding.stored_place()
+                        && let Place::Local(_,slots,..)=&owner
+                        && let Some((_,components))=self.written_projection(place,name,&owner,None,&writes)? {
+                        effect.locals.extend(components.into_iter().flatten().map(|component|slots[component]));
+                    }else{
+                        effect.storage=true;
+                        if matches!(binding.stored_place(),Some(Place::Reference{..})){effect.external=true;}
+                    }
+                },
+            }
+        }
+        if !initial {self.invalidate_writes(&writes,borrowed_data)?;}
+        Ok(effect)
     }
 }
 
@@ -379,6 +409,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
                         if self.world.functions[&key].function.c_abi {writes(Write::External(expr));}
+                        else {writes(Write::Call(expr));}
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some()), iterator: None });
@@ -581,6 +612,7 @@ fn join_numeric_paths(a: Option<NumericEffect>, b: Option<NumericEffect>) -> Opt
 }
 impl Builder<'_> {
     fn numeric_write(&self, write: Write<'_>, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<bool> {
+        if matches!(write,Write::Call(_)){return Ok(false);}
         let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
         let projection = if contents { self.application_write_projection(place, owner) }
             else { self.written_projection(place, name, owner, iterator, writes)? };
@@ -588,6 +620,7 @@ impl Builder<'_> {
     }
     fn numeric_expression_effect(&self, expr: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
         for write in writes.iter().filter(|write|match write {
+            Write::Call(_)=>false,
             Write::External(call)=>contains_expression(expr,call),
             Write::Position{call,..}=>call.is_some_and(|call|contains_expression(expr,call)),
         }) {
@@ -669,7 +702,7 @@ impl Builder<'_> {
                 StmtKind::While(..)|StmtKind::For(..)|StmtKind::Parallel(..)=>{
                     let mut effect=NumericEffect::shift(0);
                     for write in writes.iter().filter(|write|contains_statement(statement,match write {
-                        Write::External(call)=>call,
+                        Write::External(call)|Write::Call(call)=>call,
                         Write::Position{call,place,..}=>call.unwrap_or(place),
                     })) {
                         if self.numeric_write(*write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}

@@ -187,7 +187,7 @@ GPU 版 `map_gpu.b` 在同一文件完整定义 scale_values，并在 main 明�
 
 处理器和接口通常要求某些数据从适当的地址开始。对齐为十六意味着起点是十六的整数倍。一个 `float3` 有三个四字节分量，内容共十二字节；在此版本的 B 布局中，它的对齐是十六。单独作为数组元素时，记录间隔因而是十六，而非十二。
 
-源码节选：`crates/blanguage/src/ir.rs:283`。
+源码节选：`crates/blanguage/src/ir.rs:285`。
 
 ```rust
     pub fn vector(s: Scalar, n: usize) -> Self {
@@ -228,7 +228,7 @@ GPU 版 `map_gpu.b` 在同一文件完整定义 scale_values，并在 main 明�
 
 ### 2.3 源码中的 Ty 保存了什么
 
-源码节选：`crates/blanguage/src/ir.rs:105`。
+源码节选：`crates/blanguage/src/ir.rs:107`。
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -424,7 +424,7 @@ pub enum CallTarget {
 }
 ```
 
-源码节选：`crates/blanguage/src/ir/external.rs:124`。
+源码节选：`crates/blanguage/src/ir/external.rs:172`。
 
 ```rust
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
@@ -1202,7 +1202,7 @@ C ABI结果AngleEnd用end及present表达原Option，Rust同步入口只把结�
 
 ### 7.2 标量与记录怎样统一
 
-源码节选：`crates/blanguage/src/ir.rs:266`。
+源码节选：`crates/blanguage/src/ir.rs:268`。
 
 ```rust
     pub fn scalar(s: Scalar) -> Self {
@@ -1300,7 +1300,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3899`。
+源码节选：`crates/blanguage/src/check.rs:3906`。
 
 ```rust
         let binding = view.binding;
@@ -1377,7 +1377,29 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
 
-循环体内部重新建立的条件及每轮新读的while条件均可沿当前执行使用；循环外旧条件跨入口／回边仍有B152／B137缺口，沿C-005.13.2.2及C-020.1.6.3.2.2.3推进。可变动态下标经短路前置C调用后的范围事实另归C-005.14，不把该B137算作非零修复。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset复用原Returned求值、初始化与资源树，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长、批量增长和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
+循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在没有存储／未知调用写效果且实际地址与下标稳定的while／for中也可传入正文。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
+
+源码节选：`crates/blanguage/src/check/application.rs:110`。
+
+```rust
+    fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
+        self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
+    }
+```
+
+原loop_writes收集正文和条件的既有写输入，在原局部失效之后，把局部槽位与存储／调用可能写效果交给同一LoopContext。普通B调用边也参与此交接，不能因address按值形参没有inout标记就当作无写。跨入口读取必须满足原写效果；每轮新条件和已经捕获的旧数值／bool仍由各自原来源决定。此输入是尚未发射的循环工作，不是另一个内存版本、装载缓存或运行期状态。
+
+源码节选：`crates/blanguage/src/check/effects.rs:22`。
+
+```rust
+pub(super) struct LoopWrites {
+    pub locals: BTreeSet<usize>,
+    pub storage: bool,
+    pub external: bool,
+}
+```
+
+不相交存储写和已闭合调用效果的精确循环保留仍沿C-005.13.2.2推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset复用原Returned求值、初始化与资源树，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长、批量增长和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
 
 整元素及其记录／固定数组混合字段路径移动替换通过assign_statement的实际dataset拥有元素入口进入assign_application_element。入口沿原AST保留Member和固定数组Index的源码顺序，原member_type／array_index取得实际字段与数组单元位置；每个下标只求值一次，求值期间保持父DataReference借用，实际左侧类型仍须拥有资源；独立拥有位置和普通值继续由原入口处理，不扩大owned_expression_type或把动态元素伪装成独立env拥有者。左侧Place和副作用下标只取得一次，旧元素先按本次packed元数据物化；原临时位置借用保持父资源直到右值完成，随后drop_returned运行旧静态F并结束旧拥有树，再写入唯一新值。新值的原拥有者被消费，旧新内容没有第二释放链。活动子view、只读入口及右值提前消费父资源仍不合法，最后真实view消费者结束后才可替换。
 
@@ -1634,7 +1656,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:955`。
+源码节选：`crates/blanguage/src/ir.rs:957`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -1648,7 +1670,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:978`。
+源码节选：`crates/blanguage/src/ir.rs:980`。
 
 ```rust
     Load {
@@ -1680,7 +1702,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1173`。
+源码节选：`crates/blanguage/src/ir.rs:1175`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -1871,7 +1893,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1021`。
+源码节选：`crates/blanguage/src/ir.rs:1023`。
 
 ```rust
     If {

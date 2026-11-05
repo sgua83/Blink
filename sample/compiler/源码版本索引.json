@@ -84,7 +84,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "6da947d2ac355bf3f7c0410ee20f6146371c0cb3a5d5325052b90d2e8760e947"
+      "sha256": "eac1c8fe7976c53f2750c23ec3cd9b565d1e9a58c33862140f364d1bedd87e92"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "56c7be6c3d3cb0ae4a5f6ff8ea82a82bef35bd29f3d2b86013460f2c7ebe0ab8"
+      "sha256": "9b174651676b0f648464818fd6093e0a4891f307835e28b4ff38b3de7d36524d"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -116,7 +116,7 @@
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
-      "sha256": "9ba1b08a4b47abb280310753bec157a539d8bc49585248f4a491b9b456f95ca7"
+      "sha256": "c72896d544e06fe8c3116e53c5dcd6d1825762f4c765b4043f96a226453518e9"
     },
     {
       "path": "crates/blanguage/src/check/effects/sources.rs",
@@ -128,7 +128,7 @@
     },
     {
       "path": "crates/blanguage/src/check/flow.rs",
-      "sha256": "0c8ffc13ff098603331e5ebcaf15256dedcb37ffef9080173f5e2fa1ee5791ed"
+      "sha256": "15f5e53cb635d72404e25d181f835241930adf20aaf23b190fcfd8efd5092e17"
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
@@ -634,9 +634,21 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3904,
-      "end_line": 3941,
+      "start_line": 3906,
+      "end_line": 3943,
       "sha256": "68ff4672d959f3a1694298ed6bb416071943d7b732d6312782c0fe07ae377984"
+    },
+    {
+      "path": "crates/blanguage/src/check/application.rs",
+      "start_line": 110,
+      "end_line": 112,
+      "sha256": "3086442727a4985b5702204bd585443816609b14fe837340bab8a3b72e8fa6a8"
+    },
+    {
+      "path": "crates/blanguage/src/check/effects.rs",
+      "start_line": 22,
+      "end_line": 26,
+      "sha256": "3033e2ae2ca10db20eb5b84caefafabd6702248a989e6b16fa0296197e33aca2"
     },
     {
       "path": "crates/blanguage/src/check/owned_presence.rs",
