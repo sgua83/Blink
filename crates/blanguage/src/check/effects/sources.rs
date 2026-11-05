@@ -85,6 +85,10 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
             return Builder::dataset_constructor_type(self.world,self.definition,explicit,args.len(),span).map(|(ty,count)|Some(Ty::owned_dataset(ty,count)));
         }
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
+        if explicit.is_none() && let ("own",[value,function])=(name,args) {
+            let function=Builder::user_owned_function(self.definition,function)?;
+            return self.ty(value,limit)?.map(|ty|Builder::user_owned_type(self.world,self.definition,&ty,function,span)).transpose();
+        }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
         if explicit.is_none() && let ("resize",[data,_,_])|("take_last",[data,_])=(name,args) {
             return Ok(self.ty(data,limit)?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));

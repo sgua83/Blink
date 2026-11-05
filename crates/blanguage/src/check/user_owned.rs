@@ -4,6 +4,13 @@ use returns::Returned;
 use owned_values::{OwnedValue,OwnedValuePayload};
 use application::Ownership;
 impl Builder<'_> {
+    pub(super) fn user_owned_function<'a>(definition:&Definition,function:&'a Expr)->Result<&'a str>{
+        match &function.kind{ExprKind::Name(name)=>Ok(name),ExprKind::FunctionRef(name,explicit)if explicit.is_empty()=>Ok(name),_=>definition.source.fail(function.span,"B224","释放函数使用静态函数名称，其类型从载荷推导")}
+    }
+    pub(super) fn user_owned_type(world:&World,definition:&Definition,payload:&Ty,function:&str,span:Span)->Result<Ty>{
+        let mut syntax=TypeName::named("owned");syntax.arguments=vec![GenericArgument::Type(payload.syntax()),GenericArgument::Type(TypeName::named(function))];
+        world.ty(&syntax,&definition.source,span,&definition.module,&definition.imports)
+    }
     pub(super) fn inside_user_owner(&self,expr:&Expr)->bool {
         match &expr.kind {
             ExprKind::Member(base,_)=>self.owned_element_type(base).is_some_and(|ty|ty.cleanup.is_some())||self.inside_user_owner(base),
@@ -37,10 +44,10 @@ impl Builder<'_> {
     pub(super) fn make_user_owned(&mut self,args:&[Expr],span:Span)->Result<Option<Returned>>{
         if args.len()!=2{return self.fail(span,"B157","own(value,F)需要实际载荷和静态释放函数");}
         if self.application.is_none()||self.program.target!=Target::Cpu{return self.fail(span,"B224","用户拥有值由普通CPU应用组织");}
-        let function=match &args[1].kind{ExprKind::Name(name)=>name,ExprKind::FunctionRef(name,explicit)if explicit.is_empty()=>name,_=>return self.fail(args[1].span,"B224","释放函数使用静态函数名称，其类型从载荷推导")};
+        let function=Self::user_owned_function(&self.definition,&args[1])?;
         let Some(payload)=self.evaluate_returned(&args[0],None)?else{return Ok(None)};
-        let value=self.returned_storage(&payload);let mut syntax=TypeName::named("owned");syntax.arguments=vec![GenericArgument::Type(value.ty.syntax()),GenericArgument::Type(TypeName::named(function))];
-        let ty=self.expected_storage(&syntax,span)?;
+        let value=self.returned_storage(&payload);
+        let ty=Self::user_owned_type(self.world,&self.definition,&value.ty,function,span)?;
         let value=self.pack_record(ty,vec![value],span)?;
         let payloads=vec![value.ty.arguments[0].owns_resources().then(||Box::new(payload))];
         Ok(Some(Returned::OwnedValue(Box::new(OwnedValuePayload{value,payloads,ownership:Ownership::Owned,place:None,declaration:0}))))
