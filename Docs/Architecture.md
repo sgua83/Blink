@@ -407,7 +407,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-1"></a>
 
-**原函数形参与实际ABI输入的来源关系。** 输入／生产消费：原B形参／实际Ty／Access与隐式Frame→check.rs#152::function_parameters1428至1623及application.rs#124::application_parameter552至608→原CallParameter／ValueCode.inputs与绑定。只交接原形参到实际输入槽及已有类型／位置关系；无Inst不造操作。Source／实际Instance／内联上下文直接沿原定义，隐式Frame与用户参数分开。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-1)。
+**原函数形参与实际ABI输入的来源关系。** 原B形参身份、真实Ty／Access、定义与实际Instance，经function_parameters的原Frame／dataset／拥有值／引用／普通值参数及inputs接点，交给同一原CallParameter、FunctionBody与ValueCode.inputs；查询消费这组原IR ABI输入事实。一个形参可展开多个真实引用参数，零分量与没有Inst的接收／绑定不伪造操作，隐式Frame和真实B参数分开；原1230至1231 Frame删除后不能留下假输入或漂移来源。源参数起点与上下文沿原事实，已编译接口不伪造实现源码，不从寄存器编号、类型名或机器符号猜B身份。唯一参数／类型／输入权威归原拥有者，材料仅为同一记录的不可变来源，不建第二参数表、绑定图或运行权威；随原IR／模块和SDK／CLI快照在最后IR消费者后结束，不保留AST／World、不进入必要执行编码、不保活变量，不改变ABI／借用／初始化／优化、Frame或最后完成。输出明确是现有IR CallParameter／inputs关系，最终机器寄存器／栈槽、隐藏机器输入及指令映射仍沿.7.4，不以该前提冒称机器ABI完整；原纹理等实际输入能力缺口另按原编号，不把env登记当真实ABI输入。当前待实现，实际接点与认领见[台账](Issues.md#c-021-7-9-7-2-4-5-6-1)。
 
 <a id="tool-7-2-4-5-6-2"></a>
 
