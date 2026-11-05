@@ -452,6 +452,21 @@ impl Builder<'_> {
                 index, name: p.name.clone(),
                 site: syntax.and_then(|args| self.source_at(args[index].span, SourceSyntax::Expression)),
             });
+            if p.ty.is_texture_resource() {
+                let Argument::Texture(resource) = arg else {
+                    return self.fail(span, "B239", "只读纹理参数需要相同维度的纹理资源");
+                };
+                self.texture_parameter(p, &resource, d, span)?;
+                let address = self.reg(Scalar::U64);
+                self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
+                arguments.push(CallArgument::Value {
+                    origin: Some(argument_origin.clone()), dataset_borrow: None,
+                    ty: Ty::scalar(Scalar::U64), values: vec![address],
+                });
+                actual.push(None);
+                env.insert(p.name.clone(), Binding::Texture(resource));
+                continue;
+            }
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
             let arg=match arg {

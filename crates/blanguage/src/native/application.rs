@@ -52,6 +52,7 @@ fn emit_value(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: Default::default(),
     };
+    texture::lower(&mut stage);
     reads::place(&mut stage.code, &stage.writes);
     let mut graph = allocation::Graph::with_live(
         &stage,
@@ -65,7 +66,11 @@ fn emit_value(
     let layout = Frame::new(&allocation, None);
     fn scratch(code: &[Inst]) -> bool {
         code.iter().any(|i| match &(i).kind {
-            InstKind::LoadLocalIndexed { .. }
+            InstKind::TextureBindingAddress { .. }
+            | InstKind::TextureSize { .. } | InstKind::TextureLevels { .. }
+            | InstKind::TextureAddress { .. } | InstKind::TextureFormat { .. }
+            | InstKind::TextureRead { .. } | InstKind::TextureFetch { .. }
+            | InstKind::LoadLocalIndexed { .. }
             | InstKind::StoreLocalIndexed { .. }
             | InstKind::ViewLoad { .. }
             | InstKind::LoadIndexed { .. }

@@ -1488,10 +1488,12 @@ fn function_parameters(
             continue;
         }
         if p.ty.is_texture_resource() {
-            b.env.insert(
-                p.name.clone(),
-                Binding::Texture(texture::TextureReference::binding(texture_index)),
-            );
+            let address = b.reg(Scalar::U64);
+            parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)).with_origin(origin.clone()));
+            inputs.push(address);
+            let mut resource = texture::TextureReference::binding(texture_index);
+            resource.source.parameter = Some(address);
+            b.env.insert(p.name.clone(), Binding::Texture(resource));
             texture_index += 1;
             continue;
         }

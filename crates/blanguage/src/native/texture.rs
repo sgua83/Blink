@@ -349,7 +349,7 @@ impl Lower {
         std::mem::replace(&mut self.code, outer)
     }
 }
-pub(super) fn lower(stage: &Stage) -> std::borrow::Cow<'_, Stage> {
+pub(super) fn lower(stage: &mut Stage) {
     fn samples(code: &[Inst]) -> bool {
         code.iter().any(|i| match &(i).kind {
             InstKind::TextureSample { .. } => true,
@@ -362,43 +362,40 @@ pub(super) fn lower(stage: &Stage) -> std::borrow::Cow<'_, Stage> {
         })
     }
     if !samples(&stage.code) {
-        return std::borrow::Cow::Borrowed(stage);
+        return;
     }
-    let mut stage = stage.clone();
     let mut lower = Lower {
-        registers: stage.registers.clone(),
+        registers: std::mem::take(&mut stage.registers),
         code: Vec::new(),
     };
-    stage.code = lower.block(stage.code);
+    stage.code = lower.block(std::mem::take(&mut stage.code));
     stage.registers = lower.registers;
-    std::borrow::Cow::Owned(stage)
 }
 impl Emitter<'_> {
-    pub(super) fn texture_pointer(&mut self, texture: TextureSource) {
-        let offset =
-            (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * u64::from(BUFFER_BYTES);
-        // x64 位移为有符号 32 位，较远的绑定先用完整原生地址构造基址。
-        if offset > i32::MAX as u64 {
-            self.bytes(&[0x49, 0xbf]);
-            self.bytes(&offset.to_le_bytes());
-            self.bytes(&[0x4d, 0x01, 0xe7]);
-            if let Some(element) = texture.element {
-                self.load(element);
-                self.bytes(&[0x48, 0xc1, 0xe0, BUFFER_BYTES.trailing_zeros() as u8]);
-                self.bytes(&[0x4d, 0x8b, 0x3c, 0x07]);
+    pub(super) fn texture_binding_address(&mut self, texture: TextureSource) {
+        if let Some(parameter) = texture.parameter {
+            self.load(parameter);
+            self.bytes(&[0x49, 0x89, 0xc7]);
+        } else {
+            let offset = (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * u64::from(BUFFER_BYTES);
+            if offset > i32::MAX as u64 {
+                self.bytes(&[0x49, 0xbf]);
+                self.bytes(&offset.to_le_bytes());
+                self.bytes(&[0x4d, 0x01, 0xe7]);
             } else {
-                self.bytes(&[0x4d, 0x8b, 0x3f]);
+                self.bytes(&[0x4d, 0x8d, 0xbc, 0x24]);
+                self.u32(offset as u32);
             }
-            return;
         }
         if let Some(element) = texture.element {
             self.load(element);
             self.bytes(&[0x48, 0xc1, 0xe0, BUFFER_BYTES.trailing_zeros() as u8]);
-            self.bytes(&[0x4d, 0x8b, 0xbc, 0x04]);
-        } else {
-            self.bytes(&[0x4d, 0x8b, 0xbc, 0x24]);
+            self.bytes(&[0x49, 0x01, 0xc7]);
         }
-        self.u32(offset as u32);
+    }
+    pub(super) fn texture_pointer(&mut self, texture: TextureSource) {
+        self.texture_binding_address(texture);
+        self.bytes(&[0x4d, 0x8b, 0x3f]);
     }
     pub(super) fn texture_level(&mut self, texture: TextureSource, level: Reg) {
         self.texture_pointer(texture);

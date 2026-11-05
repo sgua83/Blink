@@ -11,6 +11,7 @@ impl TextureReference {
             source: TextureSource {
                 binding,
                 element: None,
+                parameter: None,
             },
             uniform: true,
         }
@@ -41,6 +42,16 @@ pub(super) fn shape(
     Ok(Some(count))
 }
 impl Builder<'_> {
+    pub(super) fn texture_parameter(&self, param: &Param, resource: &TextureReference, definition: &Definition, span: Span) -> Result<()> {
+        if param.access != Access::Read {
+            return self.fail(span, "B239", "纹理只能只读借用");
+        }
+        if param.ty.texture_dimension() != Some(self.program.textures[resource.source.binding].dimension)
+            || resource.shape(self.program) != shape(self.world, &param.ty, definition, param.span)? {
+            return self.fail(span, "B239", "纹理维度或资源数组形状与借用参数不一致");
+        }
+        Ok(())
+    }
     pub(super) fn texture_argument(&mut self, expr: &Expr) -> Result<Option<TextureReference>> {
         if let ExprKind::Name(name) = &expr.kind
             && let Some(Binding::Texture(resource)) = self.env.get(name)

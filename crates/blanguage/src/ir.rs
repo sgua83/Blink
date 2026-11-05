@@ -852,6 +852,8 @@ impl IndexedSource {
 pub struct TextureSource {
     pub binding: usize,
     pub element: Option<Reg>,
+    /// 普通CPU形参借用的原BufferAddress列表；绑定入口由原范围参数表提供。
+    pub parameter: Option<Reg>,
 }
 #[derive(Clone, Debug)]
 pub struct TextureBinding {
@@ -887,6 +889,8 @@ impl Inst {
 }
 #[derive(Clone, Debug)]
 pub enum InstKind {
+    /// 普通CPU调用借用原纹理绑定项或固定数组首项，不交接所有权。
+    TextureBindingAddress { dst: Reg, texture: TextureSource },
     TextureSample {
         result: [Reg; 4],
         texture: TextureSource,

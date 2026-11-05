@@ -348,6 +348,11 @@ impl Emitter<'_> {
                     self.invoke(Some(reference));
                     self.store(*dst);
                 }
+                InstKind::TextureBindingAddress { dst, texture } => {
+                    self.texture_binding_address(*texture);
+                    self.bytes(&[0x4c, 0x89, 0xf8]);
+                    self.store(*dst);
+                }
                 InstKind::TextureSample { .. } => return Err("原生采样尚未降低到纹理读取 IR"),
                 InstKind::TextureSize {
                     result,
@@ -692,7 +697,8 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     if let Operation::Reduce(r) = &program.stages[index].operation {
         return Ok(reduce::emit(program, r));
     }
-    let mut lowered = texture::lower(&program.stages[index]).into_owned();
+    let mut lowered = program.stages[index].clone();
+    texture::lower(&mut lowered);
     reads::place(&mut lowered.code, &lowered.writes);
     let stage = &lowered;
     let mut graph = allocation::Graph::new(stage);

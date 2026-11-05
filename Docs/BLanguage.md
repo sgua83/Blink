@@ -1557,7 +1557,7 @@ CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配�
 
 ## 已编译模块的资源ABI
 
-当前B对象元数据为 **BLCO59**，模块资源C ABI与执行映像为 **BLRI29**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。dataset输出位置及其逻辑下标、借用Element的实际选择与Parameter共同输入族投影、调用处消费的本次实际初始化事实和CPU Invocation write实际地址参数由同一BLCO合同编码；它们不改变BLRI29的Frame／资源C ABI，不增加运行时初始化表。CPU ProgramImage在执行布局及阶段代码之后交接本映像实际消费的命名普通函数代码；同一具体实例只交出一次，不保存AST、IR或另一资源所有者。静态PE资源仍交接已链接入口索引，普通callee由所属对象持有；独立SDK映像交接原机器码、函数名及重定位。NativeCode同时交付主函数末端和Windows x64展开字节；末端不包括尾部无帧探栈叶辅助及字面量，装入器不从指令另猜栈帧。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。CPU纹理描述的format=4／5分别为原生RG16／RGB10A2 UNORM，旧采样映像不能将新增标签误按RGBA8解码；纹理绑定同时编码实际维度，CPU 每级描述交接宽高深和 64 位像素指针，stride24、像素 offset16；资源 ABI 按这些真实字段及标签语义拒绝混用，旧采样映像须重编。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
+当前B对象元数据为 **BLCO60**，模块资源C ABI与执行映像为 **BLRI29**，分别由`object/coff.rs`和`resource::ABI`编码并拒绝真实不匹配。这里只标识实际对象合同、C签名、标量和映像字段／标签及语义；无关源码、SDK整体或Rust工具链不成为兼容身份。 本节集中说明现行版本，历史交付与原生证据见双台账。dataset输出位置及其逻辑下标、借用Element的实际选择与Parameter共同输入族投影、调用处消费的本次实际初始化事实和CPU Invocation write实际地址参数由同一BLCO合同编码；普通只读纹理参数还按实际次序占据一个U64描述借用输入，未使用的纹理形参也保留该ABI位置，旧对象须重编。它们不改变BLRI29的Frame／资源C ABI，不增加运行时初始化表。CPU ProgramImage在执行布局及阶段代码之后交接本映像实际消费的命名普通函数代码；同一具体实例只交出一次，不保存AST、IR或另一资源所有者。静态PE资源仍交接已链接入口索引，普通callee由所属对象持有；独立SDK映像交接原机器码、函数名及重定位。NativeCode同时交付主函数末端和Windows x64展开字节；末端不包括尾部无帧探栈叶辅助及字面量，装入器不从指令另猜栈帧。 函数代码及内部字面量以独立COMDAT节交付，展开pdata／xdata通过标准COFF节定义辅助记录关联到代码；符号索引按包含aux的真实表位置交接。函数签名以已绑定TypeName名义引用编码，实际记录布局与签名引用分别交接；资源映像使用同一Ty编码。CPU纹理描述的format=4／5分别为原生RG16／RGB10A2 UNORM，旧采样映像不能将新增标签误按RGBA8解码；纹理绑定同时编码实际维度，CPU 每级描述交接宽高深和 64 位像素指针，stride24、像素 offset16；资源 ABI 按这些真实字段及标签语义拒绝混用，旧采样映像须重编。只因这些真实字段／语义变化更新对应格式身份，不因无关SDK源码或版本号变化递增。
 
 view值为24字节、对齐8，五个U32逻辑分量依次为地址低32位（偏移0）、地址高32位（4）、长度（8）、实际元素步长低32位（12）及高32位（16）；20至23为尾部填充。CPU原生寻址与切片组合完整64位步长；GPU view由实际GpuDataset步长编码，地址仍指向原16字节dataset绑定头后的页数组。源B、独立对象／归档及宿主view图使用同一表示，明确on cpu的同源普通函数在CPU范围沿原native_declaration／native_call编译和调用，Compute共享函数保持原内联选择；CPU范围中的已有view可按原长度关系复制或切片，非零起点使用真实64位步长；不要求额外application上下文，存储与最后消费者仍由原拥有者持有。原来源和最后消费者继续持有真实存储。地址与长度的三分量身份供原范围关系使用，实际寻址同时消费步长，不把三分量身份当成整个机器值。真实布局与位置合同使用现行格式交接，旧布局产物须重编。
 
@@ -2833,7 +2833,7 @@ GPU 几何的原生入口为 `bottom_level_device(vertices,triangles)`、`bottom
 光线查询不要求窗口：`Device::for_program` 不启用 surface／swapchain。需要原生窗口呈现的程序明确使用 `Device::with_presentation`，计算资源和执行语义保持相同。`Device::swapchain(instance,window,width,height)` 接收实际输出尺寸；呈现消费同设备、等像素数和 4 字节 stride 的 BGRA8 dataset，并逐实际物理页复制，页边界可位于像素行中间。真实表面尺寸和设备能力属于原平台入口，框架不写入某个应用的最低分辨率。
 
 ## 原生只读二维与三维纹理
-`texture2d`／`texture3d` 是不可变资源参数，分别匹配二维／三维坐标，供 CPU／compute／GPU 计算入口与源内展开的普通函数只读借用；它们不属于普通值类型，不能放进普通记录、内联 array、dataset、view、tile、统一值或函数返回值。接口分别写 `read texture2d`／`read texture3d`，组合时传递实际资源身份，不复制像素、不暴露地址，也不能将普通值冒充纹理。多个只读参数可以引用同一资源；固定资源数组见下一节。独立编译的普通纹理函数尚未把实际纹理参数交给原生调用 ABI，仍见 [Issues C-003.2.3.1](Issues.md)；源内展开成功不表示独立 obj／lib 已可用。
+`texture2d`／`texture3d` 是不可变资源参数，分别匹配二维／三维坐标，供 CPU／compute／GPU 计算入口、源内展开与普通CPU原生函数只读借用；它们不属于普通值类型，不能放进普通记录、内联 array、dataset、view、tile、统一值或函数返回值。接口分别写 `read texture2d`／`read texture3d`，组合时传递实际资源身份，不复制像素、不暴露地址，也不能将普通值冒充纹理。多个只读参数可以引用同一资源；固定资源数组见下一节。Windows x64普通CPU函数在源码、独立obj及标准lib中交接同一只读纹理借用，支持单张、固定资源数组、选中元素转传与递归。公开声明继续保留维度、形状与索引前提；机器输入和寿命见[普通纹理参数ABI](NativeInterop.md#普通b纹理只读参数的机器交接)。当前编译模块的普通调用为CPU调用，调用方须具有合法CPU执行目标；GPU独立普通调用仍见C-021.3.1，含纹理整域Frame入口仍见C-003.2.3.1.2，不能把普通函数与完整计算模块交付混为一项。
 
 ```c
 // example/texture.h
@@ -2889,7 +2889,7 @@ Device::download_texture(&texture) 显式等待真实 image→buffer 复制和�
 
 二维独立资产 `.bltex` 写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 资源按真实 u32 维度、可表示的总字节数、完整负载与 mip 布局接收，二维／三维共用原字节大小计算；原生寻址使用 64 位整数，不以 f32 坐标精度设置资源尺寸上限。坐标运算仍遵循实际 f32 精度。GPU 受实际 image2D／image3D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
 
-当前计算入口及源内展开支持只读二维／三维采样；独立普通纹理函数原生 ABI 仍见 C-003.2.3.1，未解决的 NVIDIA 三维过滤偏差仍见 C-003.2.4.1.2，不宣称全部目标已通过。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
+当前计算入口、源内展开及普通CPU原生调用支持只读二维／三维采样；含纹理整域Frame入口仍见C-003.2.3.1.2，GPU独立普通调用仍见C-021.3.1，未解决的 NVIDIA 三维过滤偏差仍见 C-003.2.4.1.2，不宣称全部目标已通过。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
 
 BLEngine 的 `Programs/material/textured.h/.b` 使用同一资源语义实现批量 GGX，CPU／GPU 均实际执行。引擎全图入口现已消费 `.blmat` 材质资产、几何分组与原始 UV，具体格式和职责见 [材质资产](../../BLEngine/Docs/Materials.md)；天然纹理、完整光传输和白玉视觉目标仍未完成。
 
@@ -2905,11 +2905,11 @@ BLTEX v3体资产的8字节magic仍为`BLTEX\0\0\0`，接小端u32的version=3�
 
 CPU mip交接至原staging并成功提交后可退出，staging及原图像保持到真实消费者结束；克隆不产生第二份image。`Device::download_texture3d(&Texture<3>)`从实际图像完整复制并同步等待，恢复原采样布局，返回独立CPU `Texture3D`且保留格式、每级宽高深与三轴寻址。复制按[VkBufferImageCopy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)的真实三维extent紧密寻址，R8等格式的逐级staging起点保留4字节对齐，文件无此填充。另一逻辑Device的图像仍明确拒绝。二维／三维的传输和元数据接口在Rust类型上区分，原 `vulkan::Bindings::textures` 通过 TextureInput 接收混合维度列表，沿同一上传依赖和最后消费者持有图像。
 
-体资产、原生传输、计算入口的 `texture3d`／float3 采样、CPU 三线性与 SPIR-V 三维图像绑定沿上述同一资源交接。完整交付仍受 [Issues C-003.2.3.1／C-003.2.4.1.2](Issues.md) 的独立普通函数 ABI 与 NVIDIA 过滤偏差限制；BLEngine 实际 Filmic LUT、效果与性能由引擎消费者交付。实现、限定原生结果与完整能力分别记录，不由传输成功推断采样或引擎采用。
+体资产、原生传输、计算入口的 texture3d／float3 采样、CPU三线性与SPIR-V三维图像绑定沿上述同一资源交接。普通CPU纹理函数与obj／lib消费原只读描述借用；含纹理整域Frame入口、GPU独立普通调用和NVIDIA原生过滤偏差分别见 [Issues C-003.2.3.1.2／C-021.3.1／C-003.2.4.1.2](Issues.md)。BLEngine实际Filmic LUT、效果与性能由引擎消费者交付，不由普通函数、传输或单设备成功推断全部能力完成。
 
 ### 固定纹理资源数组与逐元素选择
 
-`read array<texture2d,N>`／`read array<texture3d,N>` 在计算入口、源内普通函数及 cooperative 参数中声明固定长度、维度一致的只读纹理集合，N 是正 u32 编译期形状，可用模块 const 或已实例化的有限／开放 const 参数。它是资源接口，不具有普通内联 array 的值布局，不能嵌套或放入记录、dataset、view、tile、局部普通值、返回值；普通数值数组的原规则保持。集合中的每张纹理可以有不同宽高和 mip 链；该接口表达独立图像的描述符集合。
+`read array<texture2d,N>`／`read array<texture3d,N>` 在计算入口、普通函数及 cooperative 参数中声明固定长度、维度一致的只读纹理集合，N 是正 u32 编译期形状，可用模块 const 或已实例化的有限／开放 const 参数。它是资源接口，不具有普通内联 array 的值布局，不能嵌套或放入记录、dataset、view、tile、局部普通值、返回值；普通数值数组的原规则保持。集合中的每张纹理可以有不同宽高和 mip 链；该接口表达独立图像的描述符集合。
 
 `maps.length` 是静态 u32 常量，`maps[index]` 选择资源，可直接采样或传给匹配维度的只读纹理形参；整组可借用给相同维度与长度的资源数组形参。下标必须为 u32，常量范围、数值范围、length 条件和函数 `requires index(index,maps)` 沿用原证明。越界或无证明报 B137，错误形状／资源权限报 B239；源程序没有隐式下标修正，运行时直接执行已证明的访问。带写效果的下标只求值一次，CPU 后续 mip 与 texel 读取也使用同一索引结果。
 
@@ -5216,7 +5216,7 @@ F是实际后续消费者。载荷含view时，其真实来源保持到F调用�
 
 具体F从实际类型及原泛型实例取得；所需事实仍来自F原公开requires。普通分量不增加义务，空集合和非活动变体按原实际模型处理。声明不调用F或授予移动、写入、初始化及释放权限，也不把F前提变成owned类型不变量；合法中间修改／补回仍按实际消费者检查。调用点证明条件蕴含原F前提，入口沿同一Condition／Proof交接这些有条件事实，实际静态F调用仍执行原合同检查。原h／b、显式实例及无实现源码的对象／归档保存相同表述，不隐藏推导或放宽F要求。
 
-序列push声明requires cleanup(value, data.length == 4294967295)，交接溢出路径对未采用value的真实释放义务，原参数、结果及错误分支正文保持。正常移交不因本合同取得第二拥有者或被要求提前释放；没有声明合同的普通函数不自动继承F前提。当前展开现有Condition可表达的数值、长度、下标与路径关系，未证明的contiguous仍为未知，不能凭cleanup取得连续性许可；复杂模型与证明精度缺口继续按Issues记录。公开合同及接口AST由现行BLCO59保存，执行映像与资源ABI使用BLRI29；旧对象沿原格式入口拒绝，须重编。
+序列push声明requires cleanup(value, data.length == 4294967295)，交接溢出路径对未采用value的真实释放义务，原参数、结果及错误分支正文保持。正常移交不因本合同取得第二拥有者或被要求提前释放；没有声明合同的普通函数不自动继承F前提。当前展开现有Condition可表达的数值、长度、下标与路径关系，未证明的contiguous仍为未知，不能凭cleanup取得连续性许可；复杂模型与证明精度缺口继续按Issues记录。公开合同及接口AST由现行BLCO60保存，执行映像与资源ABI使用BLRI29；旧对象沿原格式入口拒绝，须重编。
 
 ## CPU拥有元素的dataset
 

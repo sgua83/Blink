@@ -1301,7 +1301,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3912`。
+源码节选：`crates/blanguage/src/check.rs:3930`。
 
 ```rust
         let binding = view.binding;
@@ -1423,7 +1423,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:859`。
+源码节选：`crates/blanguage/src/check/native_function.rs:874`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1457,7 +1457,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 调用者证明输入条件蕴含实际F前提；独立函数入口把同一关系交给原Condition／Proof，具体F调用仍消费原contracts::prove。function_parameters暂借原env形成合同，随后归还同一环境并沿原path假定已声明前提，不增加另一份合同状态。实际写入及移动继续改变原身份，旧快照不成为当前值的新许可；未证明的contiguous仍为未知。
 
-源码节选：`crates/blanguage/src/check.rs:1636`。
+源码节选：`crates/blanguage/src/check.rs:1654`。
 
 ```rust
     let environment=std::mem::take(&mut b.env);
@@ -1466,7 +1466,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
     contracts::assume(&mut b.env, &mut b.path, &requirements);
 ```
 
-sequence::push仅在原h／b声明cleanup(value, data.length == 4294967295)，使真实溢出路径清理未采用value时取得该条件下的F前提；原参数、结果、正文及错误返回责任保持，正常移交不要求提前释放。ContractPredicate沿现行BLCO59交接同源与模块声明，资源映像与ABI使用BLRI29。独立obj／lib消费相同实际合同，旧对象在原格式入口拒绝。
+sequence::push仅在原h／b声明cleanup(value, data.length == 4294967295)，使真实溢出路径清理未采用value时取得该条件下的F前提；原参数、结果、正文及错误返回责任保持，正常移交不要求提前释放。ContractPredicate沿现行BLCO60交接同源与模块声明，资源映像与ABI使用BLRI29。独立obj／lib消费相同实际合同，旧对象在原格式入口拒绝。
 
 拥有记录的dataset字段长度从父Value当前分量取得，声明固定形状再沿原Proof合并同一长度事实。这样既保留字段此刻真实来源，也不丢掉类型已经确定的大小；动态长度不会重新借用分支合流前的旧资源叶寄存器。普通CPU的逻辑只读入口允许`read dataset<T>`中的T拥有资源或静态释放身份，length及合法下标的普通标量字段沿原BorrowedData／Access读取；同根只读别名、转发和非连续字段保持原真实布局。callee不释放父存储或元素静态F，原caller在最后消费者后逆序结束元素，再释放外层；read不取得写入、替换、移动或拥有返回权限。合法动态元素、记录字段、非连续列投影及固定拥有数组选择可以进入read拥有聚合形参。read_argument保留实际Place，read_aggregate沿DataReference投影实例化原Data.elements；native_call按原Value形参约定交接已读取的真实元数据。调用者在全部实参求值和原别名检查结束前保持真实位置，被调方只借用原子资源，不能把位置地址当作拥有载荷或取得第二拥有权。
 
@@ -1798,7 +1798,7 @@ pub(super) enum Access {
 }
 ```
 
-参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／write／inout／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，inout借用仅授予实际当前元素的修改权，CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame创建时在原目录绑定CPU入口，run只借用同一代码执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。CPU范围中明确on cpu的普通源函数沿原native_declaration／native_call和实际参数生成原生Call；Compute共享函数保留原源码内联选择，其CPU递归回边沿同一普通函数编译器交接；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。当前CPU范围尚未携带真实Frame资源执行上下文，只能调用实际无需Frame的闭包。缺失范围同时包括原产物中类型／program与代码的对应交接、范围入口的实际资源输入、实例独占存储及失败返回；编译目录保留不等于已经交付这些输入，不能并发可变借用已取出参数的父Frame。原共同C ABI已经返回状态及错误并保持宿主存活；生成B应用包装的销毁／退出属于应用终端，不能代替CPU范围向原SDK执行Result交回失败。局部分配、拥有结果和内部计算继续沿Issues C-027.35.4.2.2.3各独立叶，实际执行失败适配沿C-020.5.2.4.2；这些能力仍未实现，不作为永久语言限制；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录；on compute／on gpu普通write／inout dataset函数沿原源码展开直接使用GPU或CPU元素存储；write入口不提供旧内容，每条正常退出按原初始化合同完成本次真正借出的当前位置及字段，inout入口保留已初始化的借用。独立检查、源码展开与Stage直接消费同一位置／输出条件；返回点在实际条件成立的路径上复用原初始化位置查询，不以原始集合判定丢失条件关系。实际并行调用只授予本实例当前位置与真实字段的写权限，不支持任意非原子散写；完整设备普通调用与递归仍按各自未完成能力记录。对象编码为现行BLCO59，执行资源编码为BLRI29。
+参数的read／write／inout／atomic声明表示访问许可，不能代替实现中的实际效果。只查询length不产生载荷效果；普通载荷读取和赋值分别记录Read及Write，atomic_load记录Read＋atomic，atomic_store记录Write＋atomic，原子读改写记录InOut＋atomic。读取当前元素与共享读取其他元素保留区别；动态数组候选分量还带着原下标条件，不能合成无条件访问。数值已确定的下标仍保留原值身份，单元素的index()仍是当前迭代位置。普通跨元素读取与实际写区继续由原范围规则比较，atomic共享操作保持自己的别名语义。真实写区改变时，对象／归档合同随之改变，旧调用方须重新检查；只改私有实现而合同不变时沿原构建规则复用调用方。纯域组合的参与要求由原execution.rs::Body及调用闭包推导；被调方已编译不把纯域组合变成Host，真正分配及普通CPU控制仍是Host。源码、无实现对象和归档沿同一闭合合同组合。真实写区由原操作直接交给所属Stage.write_regions，按binding保留记录内半开字节区间；Stage.writes仍只做原依赖调度。原ProgramLayout只组合本实际编译单元的阶段范围，源码展开与已编译子域合同分别沿原交接消费，不把其他编译单元的写入提前带入。Frame／CpuProgram和GPU提交在原关系所有者处，只撤回与Count四字节重叠的关系，未写兄弟字段和纯length保持；原prefix::Facts同样消费每次实际操作范围，不按可写声明再次清除。Invocation read／write／inout／atomic通过同一32字节实际地址、长度、物理步长和字段偏移交接；CPU算法DLL范围的atomic实参必须来自原atomic来源，同根原子别名保持共享，inout借用仅授予实际当前元素的修改权，CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同。普通B应用的实际Frame借用输入只附带在原CallArgument::Value，原Module合同闭合后在同一finalize消费实际可能写字段和条件，沿原Frame地址入口交接逐元素字节、stride和count；编译引用消费后清除，不进入普通函数的机器参数。Frame只撤回与这些写区重叠的Count四字节，字段之间的记录间隙保持。B应用和普通模块的CPU范围直接交给所属COFF对象，实际Program.imports与同一普通Object合并，原静态链接完成普通函数及外部入口的重定位。模块工厂只交接类型、执行布局、CPU代码表索引及SPIR-V，另借用同次静态链接的入口地址表；原ResourceBinding的代码根只引用同一对象的实际入口符号，真实资源包装被消费时进入原节选择。Frame创建时在原目录绑定CPU入口，run只借用同一代码执行原阶段，不再复制本路径CPU机器码或运行时查找普通函数。带运行库的应用把同次B代码、原静态运行库和资源绑定一次链接到同一EXE，标准CRT入口调用原B正文main并初始化平台设施；不再拆支持DLL。没有运行库依赖的独立应用继续原自研PE输出，算法DLL保持原静态链接。所属PE／DLL和依赖保持到最后真实CPU消费者结束。CPU索引标签2与独立SDK机器码标签0分开，GPU标签1保持；静态路径不创建运行库代码VM。CPU范围中明确on cpu的普通源函数沿原native_declaration／native_call和实际参数生成原生Call；Compute共享函数保留原源码内联选择，其CPU递归回边沿同一普通函数编译器交接；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。当前CPU范围尚未携带真实Frame资源执行上下文，只能调用实际无需Frame的闭包。缺失范围同时包括原产物中类型／program与代码的对应交接、范围入口的实际资源输入、实例独占存储及失败返回；编译目录保留不等于已经交付这些输入，不能并发可变借用已取出参数的父Frame。原共同C ABI已经返回状态及错误并保持宿主存活；生成B应用包装的销毁／退出属于应用终端，不能代替CPU范围向原SDK执行Result交回失败。局部分配、拥有结果和内部计算继续沿Issues C-027.35.4.2.2.3各独立叶，实际执行失败适配沿C-020.5.2.4.2；这些能力仍未实现，不作为永久语言限制；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录；on compute／on gpu普通write／inout dataset函数沿原源码展开直接使用GPU或CPU元素存储；write入口不提供旧内容，每条正常退出按原初始化合同完成本次真正借出的当前位置及字段，inout入口保留已初始化的借用。独立检查、源码展开与Stage直接消费同一位置／输出条件；返回点在实际条件成立的路径上复用原初始化位置查询，不以原始集合判定丢失条件关系。实际并行调用只授予本实例当前位置与真实字段的写权限，不支持任意非原子散写；完整设备普通调用与递归仍按各自未完成能力记录。对象编码为现行BLCO60，执行资源编码为BLRI29。
 
 ### 8.4 跨函数也不能丢掉位置身份
 
@@ -1995,7 +1995,7 @@ r4 = r2 + r3
 
 这是解释用的简化 IR，不是导出文件的逐字内容。r0 等编号让每个结果有明确来源，却还没有决定占用 RAX、XMM0 或栈上的哪一处。把虚拟编号当成物理寄存器，后面就会觉得“怎么会有几百个寄存器”。
 
-源码节选：`crates/blanguage/src/ir.rs:978`。
+源码节选：`crates/blanguage/src/ir.rs:982`。
 
 ```rust
     Constant(Reg, Scalar, Bits),
@@ -2009,7 +2009,7 @@ r4 = r2 + r3
     StoreLocal(usize, Reg),
 ```
 
-源码节选：`crates/blanguage/src/ir.rs:1001`。
+源码节选：`crates/blanguage/src/ir.rs:1005`。
 
 ```rust
     Load {
@@ -2041,7 +2041,7 @@ r4 = r2 + r3
 
 ### 10.3 Stage 保存执行关系
 
-源码节选：`crates/blanguage/src/ir.rs:1196`。
+源码节选：`crates/blanguage/src/ir.rs:1200`。
 
 ```rust
 #[derive(Clone, Debug)]
@@ -2431,7 +2431,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1340`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1355`。
 
 ```rust
             if !frame.contains(&name) {
@@ -2461,7 +2461,7 @@ SourceDeclaration只保存真实声明的原Source、函数范围、模块、名
 
 
 
-源码节选：`crates/blanguage/src/ir/inspect.rs:274`。
+源码节选：`crates/blanguage/src/ir/inspect.rs:275`。
 
 ```rust
 impl ReductionKernel {
@@ -2532,7 +2532,7 @@ impl ReductionKernel {
 
 IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指令的输入、结果和它的后续消费者必须使用同一映射；资源绑定编号仍属于原资源，不跟着寄存器改名。
 
-源码节选：`crates/blanguage/src/optimize.rs:312`。
+源码节选：`crates/blanguage/src/optimize.rs:313`。
 
 ```rust
             InstKind::Constant(dst, ..)
@@ -2556,7 +2556,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 IR 用结构化的 If 和 Loop 保存这些关系：
 
-源码节选：`crates/blanguage/src/ir.rs:1044`。
+源码节选：`crates/blanguage/src/ir.rs:1048`。
 
 ```rust
     If {
@@ -2779,7 +2779,7 @@ pub struct NativeCode {
 
 native/packet.rs为能够表达的直线计算及批次内统一的结构化分支／循环建立四元素计划，逐元素分歧和tile协作仍使用原生标量范围。主循环先处理完整批次，余下元素由同一程序语义的标量部分完成。一个长度为十的范围，可以先做两批四，再处理剩下二。
 
-源码节选：`crates/blanguage/src/native/codegen.rs:697`。
+源码节选：`crates/blanguage/src/native/codegen.rs:703`。
 
 ```rust
     let stage = &lowered;
@@ -3959,7 +3959,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
 
 ### 27.1 纹理不只是二维数组下标
 
-纹理的维度、层级、通道编码与采样是分别交接的事实。B 的 texture2d／texture3d 在计算入口及源内展开分别使用 float2／float3；Rust SDK 持有原不可变资源，Vulkan 使用真实二维／三维图像。独立普通函数的 obj／lib 纹理参数 ABI 仍缺失，NVIDIA 三维小数 LOD 偏差也尚未闭合，不能由源内采样、资产往返或单设备结果宣布完整三维能力及 Filmic LUT 已完成。
+纹理的维度、层级、通道编码与采样是分别交接的事实。B的texture2d／texture3d在计算入口及源内展开分别使用float2／float3；普通CPU函数在源码、obj和lib中也可只读借用相应原纹理。GPU独立普通调用、含纹理整域Frame入口和NVIDIA三维小数LOD偏差仍未闭合，不能由普通函数、资产往返或单设备结果宣布完整三维能力及Filmic LUT完成。
 
 `texture.rs`的二维`TextureMip`与三维`TextureMip3D`都把原`TextureTexels`作为载荷。体数据x连续、再y、再z，每个mip有真实深度，三轴逐级减半；不是将z切片拼成二维图集。格式继续区分RGBA32F、UNORM、sRGB和RGB10A2等实际通道编码，复制不通过浮点运算重建颜色。
 
@@ -3998,7 +3998,7 @@ Vulkan二维／三维资源沿同一原Storage、Image和uploaded完成点持有
 
 真正的三维复制让每个区域的extent.depth进入字节跨度，深度随各层宽高一起减半；原staging对齐只属于设备交接，不进入体资产。上传交接后CPU资产可以结束，原Execution保持传输所需存储，最后共享图像退出时沿原完成点释放。显式download_texture3d从实际图像同步读出完整mip并恢复采样布局，不保留旧CPU像素作为另一份结果权威。
 
-沿原 TextureBinding 的维度，CPU 在同一降低器产生二维四点或三维八点读取，再逐轴插值并混合 mip；texel 地址为 64 位，原 mip 描述统一交接宽、高、深与像素指针。原 TextureInput::{D2,D3} 只包住相应已有资源，CPU／GPU Bindings、上传依赖和最后消费者仍是唯一拥有链。二维／三维共用真实字节大小计算，不以 f32 坐标精度设定资源尺寸门槛。SPIR-V 同时消费这一静态维度。继续读普通调用的实际输入 ABI 和真实设备输出，才能确定完整支持范围；引擎 LUT 的生成、消费与效果仍由实际引擎采用。所有当前接口和限制见语言规范，原实施与交付历史只在双台账。
+沿原TextureBinding的维度，CPU在同一降低器产生二维四点或三维八点读取，再逐轴插值并混合mip；texel地址为64位，原mip描述统一交接宽、高、深与像素指针。原TextureInput::{D2,D3}只持有对应已有资源，CPU／GPU Bindings、上传依赖和最后消费者仍是唯一拥有链。普通CPU纹理形参取得原BufferAddress列表的实际借用地址，未使用形参也保留参数位置；独立对象和归档的调用者只消费公开维度、形状及索引合同，不重读提供者实现。TextureSource的parameter寄存器沿原活跃性和重编号交接，根绑定入口沿原范围表交接；CPU后端共用同一寻址与采样降低，不复制描述、像素或Frame。降低直接消费发射者已经拥有的Stage与寄存器／指令容器，范围入口仅为其原读取放置建立所需独立阶段，普通函数继续使用已有阶段。BLCO60表达实际参数ABI，BLRI29的执行描述字段保持。
 
 ### 27.2 硬件求交是通用能力，材质算法属于引擎
 
@@ -4016,7 +4016,60 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 ## 第二十八章 把完整路径重新连起来
 
-### 28.1 再看最初的一行代码
+#
+
+普通函数的实际输入在原声明入口形成：
+
+源码节选：`crates/blanguage/src/check.rs:1490`。
+
+```rust
+        if p.ty.is_texture_resource() {
+            let address = b.reg(Scalar::U64);
+            parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)).with_origin(origin.clone()));
+            inputs.push(address);
+            let mut resource = texture::TextureReference::binding(texture_index);
+            resource.source.parameter = Some(address);
+            b.env.insert(p.name.clone(), Binding::Texture(resource));
+            texture_index += 1;
+            continue;
+        }
+```
+
+后端从调用方已交付的参数或原范围绑定表取得同一描述项；这两者是不同执行入口的真实输入，数组选择之后仍指向原存储：
+
+源码节选：`crates/blanguage/src/native/texture.rs:375`。
+
+```rust
+    pub(super) fn texture_binding_address(&mut self, texture: TextureSource) {
+        if let Some(parameter) = texture.parameter {
+            self.load(parameter);
+            self.bytes(&[0x49, 0x89, 0xc7]);
+        } else {
+            let offset = (self.program.buffers.len() + self.program.texture_offset(texture.binding)) as u64 * u64::from(BUFFER_BYTES);
+            if offset > i32::MAX as u64 {
+                self.bytes(&[0x49, 0xbf]);
+                self.bytes(&offset.to_le_bytes());
+                self.bytes(&[0x4d, 0x01, 0xe7]);
+            } else {
+                self.bytes(&[0x4d, 0x8d, 0xbc, 0x24]);
+                self.u32(offset as u32);
+            }
+        }
+        if let Some(element) = texture.element {
+            self.load(element);
+            self.bytes(&[0x48, 0xc1, 0xe0, BUFFER_BYTES.trailing_zeros() as u8]);
+            self.bytes(&[0x49, 0x01, 0xc7]);
+        }
+    }
+    pub(super) fn texture_pointer(&mut self, texture: TextureSource) {
+        self.texture_binding_address(texture);
+        self.bytes(&[0x4d, 0x8b, 0x3f]);
+    }
+```
+
+这里的地址形成不增加资源拥有或运行时登记。普通函数ABI可用不表示含纹理的整域模块Frame输入、GPU独立普通调用或引擎LUT采用已经完成；这些剩余边界仍由原问题台账分别记录。
+
+## 28.1 再看最初的一行代码
 
 `value = value * 2.0 + 1.0` 进入 lexer 后成为 token；parser 按优先级组成树；World 提供 value 的来源与类型；检查器把当前位置落实为独占元素，并建立对应指令与阶段。
 

@@ -1091,7 +1091,7 @@ let output = program.run_owned(
 ).map_err(|(error, _)| error)?;
 ```
 
-Bindings 持有数据集和纹理。CPU 的 TextureInput::{D2,D3} 接收 Texture2D／Texture3D，GPU 的同名输入接收原 Texture<2>／Texture<3>；这里的 `.into()` 移交原句柄，不复制像素或图像，也不建立第二条释放链。入口逐项匹配原静态维度，资源数组内部仍为同一维度。成功交回数据与域关系；失败交回 (error, bindings)。本例结束失败输入并返回原错误。独立普通纹理函数的 obj／lib 输入 ABI 与未解决设备偏差仍以语言问题台账为准，不能从本例推断全部能力完成。
+Bindings 持有数据集和纹理。CPU 的 TextureInput::{D2,D3} 接收 Texture2D／Texture3D，GPU 的同名输入接收原 Texture<2>／Texture<3>；这里的 `.into()` 移交原句柄，不复制像素或图像，也不建立第二条释放链。入口逐项匹配原静态维度，资源数组内部仍为同一维度。成功交回数据与域关系；失败交回 (error, bindings)。本例结束失败输入并返回原错误。普通CPU纹理函数的obj／lib参数借用使用同一原描述和像素，函数返回后由原调用方继续持有；它不经过Frame资源注册或宿主逐点采样。含纹理整域Frame入口、GPU独立普通调用和未解决设备偏差仍见语言问题台账，不能从这个资源绑定例子推断完整计算模块与全部目标完成。
 
 GPU 则先把 points 和 albedo 上传。下面的 points 和 albedo 已是设备上的对象：
 

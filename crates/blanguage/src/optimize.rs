@@ -300,7 +300,8 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
                 result.iter_mut().for_each(|v| *v = r(*v))
             }
             InstKind::TextureSize { result, .. } => result.iter_mut().for_each(|v| *v = r(*v)),
-            InstKind::TextureLevels { dst, .. }
+            InstKind::TextureBindingAddress { dst, .. }
+            | InstKind::TextureLevels { dst, .. }
             | InstKind::TextureAddress { dst, .. }
             | InstKind::TextureFormat { dst, .. }
             | InstKind::TextureRead { dst, .. } => *dst = r(*dst),
@@ -359,7 +360,8 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
     }
 }
 fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
-    if let InstKind::TextureSample { texture, .. }
+    if let InstKind::TextureBindingAddress { texture, .. }
+    | InstKind::TextureSample { texture, .. }
     | InstKind::TextureFetch { texture, .. }
     | InstKind::TextureSize { texture, .. }
     | InstKind::TextureLevels { texture, .. }
@@ -368,6 +370,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
     | InstKind::TextureRead { texture, .. } = &mut (i).kind
     {
         texture.element = texture.element.map(r);
+        texture.parameter = texture.parameter.map(r);
     }
     match &mut (i).kind {
         InstKind::PositionAddress { address, .. } => address.map_operands(r),

@@ -120,7 +120,7 @@ fn call(value: &Call) -> String {
     ])
 }
 fn texture(value: &TextureSource) -> String {
-    node("texture", &[("binding", number(value.binding)), ("element", optional(value.element.as_ref(), |v| number(v)))])
+    node("texture", &[("binding", number(value.binding)), ("element", optional(value.element.as_ref(), |v| number(v))), ("parameter", optional(value.parameter.as_ref(), |v| number(v)))])
 }
 fn atomic_op(value: &AtomicOp) -> String {
     match value {
@@ -143,6 +143,7 @@ fn instruction(value: &Inst) -> String {
     let result = match &value.kind {
         TextureSample { result, texture: source, coordinate, lod } => node("TextureSample", &[("result", numbers(result)), ("texture", texture(source)), ("coordinate", numbers(coordinate)), ("lod", number(lod))]),
         TextureSize { result, texture: source, level } => node("TextureSize", &[("result", numbers(result)), ("texture", texture(source)), ("level", number(level))]),
+        TextureBindingAddress { dst, texture: source } => node("TextureBindingAddress", &[("dst", number(dst)), ("texture", texture(source))]),
         TextureLevels { dst, texture: source } => node("TextureLevels", &[("dst", number(dst)), ("texture", texture(source))]),
         TextureAddress { dst, texture: source } => node("TextureAddress", &[("dst", number(dst)), ("texture", texture(source))]),
         TextureFormat { dst, texture: source } => node("TextureFormat", &[("dst", number(dst)), ("texture", texture(source))]),

@@ -434,7 +434,8 @@ impl Inst {
                 result
             }
             InstKind::TextureSize { result, .. } => result,
-            InstKind::TextureLevels { dst, .. }
+            InstKind::TextureBindingAddress { dst, .. }
+            | InstKind::TextureLevels { dst, .. }
             | InstKind::TextureAddress { dst, .. }
             | InstKind::TextureFormat { dst, .. }
             | InstKind::TextureRead { dst, .. } => std::slice::from_ref(dst),
@@ -526,10 +527,11 @@ impl Inst {
             _ => true,
         };
         values && match &self.kind {
-            InstKind::TextureSample { texture, .. } | InstKind::TextureFetch { texture, .. }
+            InstKind::TextureBindingAddress { texture, .. }
+            | InstKind::TextureSample { texture, .. } | InstKind::TextureFetch { texture, .. }
             | InstKind::TextureSize { texture, .. } | InstKind::TextureLevels { texture, .. }
             | InstKind::TextureAddress { texture, .. } | InstKind::TextureFormat { texture, .. }
-            | InstKind::TextureRead { texture, .. } => texture.element.iter().all(|reg| f(*reg)),
+            | InstKind::TextureRead { texture, .. } => texture.parameter.iter().chain(&texture.element).all(|reg| f(*reg)),
             _ => true,
         }
     }
