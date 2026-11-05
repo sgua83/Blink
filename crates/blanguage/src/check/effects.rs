@@ -22,7 +22,7 @@ enum Write<'e> {
 #[derive(Default)]
 pub(super) struct LoopWrites {
     pub locals: BTreeSet<usize>,
-    pub storage: BTreeSet<Reg>,
+    pub storage: Vec<(Reg,Option<std::ops::Range<u128>>)>,
     pub unknown_storage: bool,
     pub external: bool,
 }
@@ -320,6 +320,31 @@ impl Builder<'_> {
         }
         Ok(())
     }
+    fn loop_write_projection<'a>(
+        &'a self,expr:&Expr,writes:&[Write<'_>],
+    )->Result<Option<(&'a application::Data,Option<u32>,ComponentProjection)>> {
+        match &expr.kind {
+            ExprKind::Index(base,index)=>{
+                if let Some(data)=self.written_application_data(base) {
+                    if data.ty.owns_resources(){return Ok(None);}
+                    let components=(0..data.ty.components.len()).map(|i|vec![i]).collect();
+                    return Ok(Some((data,self.constant_index(index,writes)?,(data.ty.clone(),components))));
+                }
+                let Some((data,at,(ty,components)))=self.loop_write_projection(base,writes)? else{return Ok(None);};
+                let Some(element)=&ty.array else{return Ok(None);};
+                let constant=self.constant_index(index,writes)?;let width=element.components.len();
+                let elements=(0..ty.values[0] as usize).filter(|i|constant.is_none_or(|value|*i==value as usize)).collect::<Vec<_>>();
+                let selected=(0..width).map(|component|elements.iter().flat_map(|i|components[*i*width+component].iter().copied()).collect()).collect();
+                Ok(Some((data,at,((**element).clone(),selected))))
+            },
+            ExprKind::Member(base,field)=>{
+                let Some((data,at,(ty,components)))=self.loop_write_projection(base,writes)? else{return Ok(None);};
+                let(ty,selected)=member_type(&ty,field,&self.definition.source,expr.span)?;
+                Ok(Some((data,at,(ty,selected.iter().map(|i|components[*i].clone()).collect()))))
+            },
+            _=>Ok(None),
+        }
+    }
     pub(super) fn loop_writes(
         &mut self,
         condition: Option<&Expr>,
@@ -357,12 +382,15 @@ impl Builder<'_> {
                 Write::Position{place,contents,iterator,..}=>{
                     if address_write(place) {effect.unknown_storage=true;effect.external=true;continue;}
                     if contents||iterator.is_some() {effect.unknown_storage=true;continue;}
-                    let mut target=place;
-                    while let ExprKind::Member(base,_)=&target.kind {target=base;}
-                    if let ExprKind::Index(base,_)=&target.kind
-                        && let Some(data)=self.written_application_data(base)
-                        && !data.ty.owns_resources() {
-                        effect.storage.insert(data.root.regs[0]);
+                    if let Some((data,index,(_,components)))=self.loop_write_projection(place,&writes)? {
+                        let root=data.root.regs[0];
+                        if let (Some(index),application::DataLayout::Declared)=(index,&data.layout) {
+                            let base=u128::from(index)*u128::from(ir::align_up(data.ty.size,data.ty.align));
+                            for component in components.into_iter().flatten() {
+                                let(scalar,word)=data.ty.components[component];let start=base+u128::from(word);
+                                effect.storage.push((root,Some(start..start+u128::from(scalar.size()))));
+                            }
+                        }else{effect.storage.push((root,None));}
                         continue;
                     }
                     let Some(name)=assigned_root(place) else {effect.unknown_storage=true;continue;};

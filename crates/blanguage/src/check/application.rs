@@ -117,8 +117,15 @@ impl ApplicationLoads<'_, '_> {
             boundary+=context.outer.len();
             a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
                 InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
-                InstKind::ViewLoad{address,..}=>context.writes.unknown_storage||context.writes.storage.iter().any(|written|
-                    !self.frame_root(*address).is_some_and(|root|self.disjoint_roots(root,*written))),
+                InstKind::ViewLoad{dst,address,index,stride,word}=>context.writes.unknown_storage||context.writes.storage.iter().any(|(written,range)|
+                    match (self.frame_root(*address),range,self.constant(*index)) {
+                        (Some(root),_,_)if self.disjoint_roots(root,*written)=>false,
+                        (Some(root),Some(range),Some(index))if root==*written=>{
+                            let start=u128::from(index)*u128::from(*stride)+u128::from(*word);
+                            Self::byte_overlap(&(start..start+u128::from(self.0.registers[*dst].size())),range)
+                        },
+                        _=>true,
+                    }),
                 _=>false,
             }
         })
@@ -202,6 +209,7 @@ impl ApplicationLoads<'_, '_> {
         matches!(self.definition(root),Some((_,Inst{kind:InstKind::Call(call),..}))if Self::allocation(call))
     }
     fn disjoint_roots(&self,a:Reg,b:Reg)->bool {a!=b&&self.allocated(a)&&self.allocated(b)}
+    fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,load:&Inst,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
         let InstKind::ViewLoad{dst,address,index,stride,word:read_word}=&load.kind else{return false;};
         let(IndexedSource::View{address:other,index:other_index,stride:other_stride}|IndexedSource::Pointer{address:other,index:other_index,stride:other_stride,..})=source else{return true;};
@@ -215,7 +223,7 @@ impl ApplicationLoads<'_, '_> {
         let (a,b)=if let(Some(a),Some(b))=(self.constant(*index),self.constant(*other_index)) {
             (u128::from(a)*u128::from(*stride)+u128::from(*read_word),u128::from(b)*u128::from(*other_stride)+u128::from(offset)+u128::from(word))
         }else if stride==other_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
-        a<b+other_size&&b<a+size
+        Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
     fn call_writes(&self,call:&Call)->bool {
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
