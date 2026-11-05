@@ -88,25 +88,30 @@ fn data_contents(data:&application::Data,into:&mut view::Borrow){
 }
 
 impl OwnedValuePayload {
-    pub(super) fn cleanup_borrow(&self,omitted:&BTreeSet<usize>,into:&mut view::Borrow){
-        fn visit(value:&OwnedValuePayload,root:&Value,offset:u32,path:&bounds::Clause,omitted:&BTreeSet<usize>,into:&mut view::Borrow){
+    pub(super) fn cleanup_views(&self,omitted:&BTreeSet<usize>,into:&mut view::Borrow,map:&impl Fn(usize,view::Borrow)->view::Borrow){
+        fn visit(value:&OwnedValuePayload,root:&Value,offset:u32,path:&bounds::Clause,omitted:&BTreeSet<usize>,into:&mut view::Borrow,map:&impl Fn(usize,view::Borrow)->view::Borrow){
             if !value.ownership.may_own()||!value.value.ty.contains_cleanup(){return;}
             let path=if let Ownership::Conditional(when)=&value.ownership{when.condition().assume(path,true)}else{path.clone()};
             if value.value.ty.cleanup.is_some(){
                 for component in view_contracts::components(&value.value.ty){
                     let at=offset+value.value.ty.components[component].1;let index=root.ty.components.iter().position(|(_,word)|*word==at).unwrap();
-                    if !omitted.contains(&index){into.union(&root.proof.view_borrow(index).restricted(&path));}
+                    if !omitted.contains(&index){into.union(&map(index,root.proof.view_borrow(index).restricted(&path)));}
                 }
                 return;
             }
             for(index,payload)in value.payloads.iter().enumerate(){if let Some(Returned::OwnedValue(child))=payload.as_deref(){
                 let at=if value.value.ty.has_variants(){ir::align_up(4,value.value.ty.align)}else{value.value.ty.aggregate_part(index).0};
-                visit(child,root,offset+at,&path,omitted,into);
+                visit(child,root,offset+at,&path,omitted,into,map);
             }}
         }
         let value=self;
         if !value.ownership.may_own(){return;}
-        if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,into);}
+        if value.value.ty.contains_borrows(){visit(value,&value.value,0,&bounds::Clause::default(),omitted,into,map);}
+    }
+    pub(super) fn cleanup_borrow(&self,omitted:&BTreeSet<usize>,into:&mut view::Borrow){
+        let value=self;
+        if !value.ownership.may_own(){return;}
+        value.cleanup_views(omitted,into,&|_,borrow|borrow);
         fn children(value:&OwnedValuePayload,into:&mut view::Borrow){
             if !value.ownership.may_own(){return;}
             for payload in value.payloads.iter().flatten(){match payload.as_ref(){
