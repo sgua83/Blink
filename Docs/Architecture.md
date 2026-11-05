@@ -655,7 +655,31 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-1"></a>
 
-**模块const结果。** constant.rs::evaluate交给module_constant和模块／接口常量消费者的Ty／Bits须能携带本次真实一元求值事实，原常量结果所有者持有并共享到最后编译／查询消费者。当前结果只含类型与位模式，材料缺失；不能把后续常量引用的语法点冒充原求值过程。沿原结果与实际接口职责设计，不复制缓存或另存完整IR，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1)。
+**模块const结果。** 原evaluate按原常量规则得到结果，普通引用、类型化输出契约和阶段／形状／编号为独立接收者。原临时IR不在求值结束后保留；下列叶交接已经生产的事实，阶段及整数接收仍归原.3.2／.3.3。本父项不占源码，状态见[台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1)。
+
+<a id="tool-7-3-1-9-1-3-1-1"></a>
+
+**模块const普通读取到实际Constant。** 原name_expr→module_constant→evaluate→constant_value形成普通常量IR；原evaluate继续决定类型／位模式、合法常量性及递归／依赖。必要产出是这次临时求值已经生成的变换事实：在临时Builder结束前，从实际Constant指令取出已有generated_origin及其原OperationOrigin，随原Ty／Bits结果返回可选ModuleConstantEvaluation。相邻结果分量若共享完全相同的SourceSite和GeneratedOrigin材料，只交接一份相同事实；比较只消费本次Arc引用，不把指针保存为身份或增加登记表。其锚点保存实际常量全名、可用原定义与operations，不保留Inst、Reg、AST、World或另建常量缓存。没有已有变换材料则没有该锚点；不是全量求值历史、逐结果分量依赖图或运行轨迹。
+
+唯一结果接收者module_constant仍以原constant_value(...,None)生成同样Constant及调用者source_site，再让本次全部真实结果分量共享同一求值事实。锚点operations描述整个这次求值中持有材料的常量操作，不声称每个成员都影响每个结果分量；实际数值／布局仍在原当前Constant与Ty。嵌套常量引用按实际已生成材料继续共享，重复查询或多个结果分量中的出现数不是唯一求值次数。真实源码定义可沿原SourceOrigin解释；已编译接口只保存实际常量名与已取得运算事实，缺失提供者源码定义为null，不把接口常量重新求值冒充提供者IR／实现源码。
+
+原Builder、实例、数值、Proof、literal、访问及运行编码不变。材料仅compiler，由原结果及新Constant／已有CSE、DCE、空Map根持有，最后IR消费者结束释放；查询只借用，不重求值或重读源码，不新增追踪表、调度或释放链。只做合法性检查的调用以及没有实际Constant分量的结果不会伪造函数体或结果节点；此处不承诺保存未消费结果的全部编译历史。输出契约及Root／整数结果当前仍走仅Ty／Bits返回，来源缺口不因该普通读取闭合而完成，见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-1-1)。
+
+<a id="tool-7-3-1-9-1-3-1-2"></a>
+
+**输出契约的模块const结果。** 原outputs::path物化常量IR、bind_constants形成OutputConstant、成员投影及合同身份／对象编码分别消费原常量结果；当前只持有Ty／Bits，实际求值事实未交接。须按真实合同与物化接收者细化，在原条件／签名所有者中持有来源至最后编译或查询消费者，不把来源加入数值等价、ABI、必要编码或普通Proof身份，不另建常量权威、不保留临时IR。该职责尚未实现；普通name_expr读取已有材料不替代这里的合同结果，父项只汇总，实际接收由下列三叶推进。
+
+<a id="tool-7-3-1-9-1-3-1-2-1"></a>
+
+**未绑定条件中的模块常量物化。** outputs::path沿原常量解析／公开性检查取得真实evaluate结果，再在同一Builder物化Constant；当前仅取Ty／Bits。应交接该次已有变换材料及当前语法，不改变原调用上下文、求值、Proof或输出条件选择；唯一结果所有者为原IR，最后消费者后释放，不另建求值或合同状态，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-1)。
+
+<a id="tool-7-3-1-9-1-3-1-2-2"></a>
+
+**绑定契约的类型化常量结果。** bind_constants交给OutputConstant及其原字段投影、数值规范化和合同消费者的Ty／Bits须能携带本次已求值事实；来源由同一类型化结果与真实签名拥有，最后编译／查询消费者后释放，不加入数值相等、普通Proof身份或必要对象编码。来源缺失时保持缺失，不保留AST／World或临时IR，具体材料与编码交接待设计，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-2)。
+
+<a id="tool-7-3-1-9-1-3-1-2-3"></a>
+
+**已绑定常量到条件IR。** outputs::path消费OutputCondition::Constant的真实类型化结果，经原constant_value形成条件IR；在.2.2具备材料后，原结果与当前Builder／Inst交接同一来源，不重求值或从位模式猜来源。原值、Proof、合同判断与必要执行保持，材料仅compiler并在最后IR消费者后释放，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-3)。
 
 <a id="tool-7-3-1-9-1-3-2"></a>
 

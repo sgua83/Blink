@@ -4,8 +4,11 @@ use std::num::NonZeroU64;
 
 impl Builder<'_> {
     pub(super) fn module_constant(&mut self, key: String) -> Result<Value> {
-        let (ty, words) = evaluate(self.world, &key, &self.calls)?;
-        Ok(self.constant_value(ty, words,None))
+        let (ty, words, origin) = evaluate(self.world, &key, &self.calls)?;
+        let first = self.code.len();
+        let value = self.constant_value(ty, words,None);
+        for instruction in &mut self.code[first..] { instruction.generated_origin = origin.clone(); }
+        Ok(value)
     }
     pub(super) fn literal(&mut self, scalar: Scalar, bits: Bits) -> Value {
         let mut value = self.constant(scalar, bits);
@@ -31,7 +34,8 @@ impl Builder<'_> {
 }
 /// 使用现有表达式、调用与常量分析；不编译或运行宿主／设备初始化函数。
 pub(crate) fn constant_value(world: &World, key: &str) -> Result<(Ty, Vec<Bits>)> {
-    evaluate(world, key, &[])
+    let (ty, words, _) = evaluate(world, key, &[])?;
+    Ok((ty, words))
 }
 /// 阶段派生参数复用已有表达式及常量语义；没有宿主求值器或新增运行阶段。
 pub(super) fn stage_expression(
@@ -88,7 +92,7 @@ Program {
             prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
         }
 }
-fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>)> {
+fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>)> {
     let definition = &world.functions[key];
     if !world.evaluating_constants.borrow_mut().insert(key.into()) {
         return definition.source.fail(
@@ -127,7 +131,18 @@ fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>
                 "const 初始化尚不能完全在编译期求值；不允许资源、运行期运算或控制流",
             );
         }
-        Ok((value.ty, value.constant.unwrap()))
+        let mut operations: Vec<_> = builder.code.iter().filter(|inst| inst.generated_origin.is_some())
+            .map(OperationOrigin::from_instruction).collect();
+        operations.dedup_by_key(|origin| (
+            origin.source_site.as_ref().map(Arc::as_ptr), origin.generated_origin.as_ref().map(Arc::as_ptr),
+        ));
+        let origin = (!operations.is_empty()).then(|| Arc::new(GeneratedOrigin {
+            reason: GenerationReason::ModuleConstantEvaluation,
+            trigger: Some(GenerationAnchor::ModuleConstantEvaluation {
+                definition: definition.source_origin().map(Arc::new), constant: Arc::from(key), operations,
+            }),
+        }));
+        Ok((value.ty, value.constant.unwrap(), origin))
     })();
     world.evaluating_constants.borrow_mut().remove(key);
     if result.is_ok() && let Some(inputs) = &world.build_declarations {

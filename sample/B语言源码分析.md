@@ -2401,7 +2401,10 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 检查期的一元常量计算也在原生产点交接来源。unary_expr按原operators::unary、constant::unary完成计算后，只给这次constant_value新建的各Constant加UnaryConstantFold：真实运算与Scalar、输入／结果位模式、从零计的逻辑分量序号及总数。直接source_site保持，锚点expression共享同一原语法；后续原CSE／DCE及空Map删除继续携带这份事实，不为解释而保活操作或保存旧IR。环绕、窄位截断、浮点负零和NaN符号位均沿原规则。
 
-负数字面量由原negative_number直接定型，i32／i64最小值不能伪装成同型正数取负；单目加号没有实际运算，不制造折叠事件。模块const、阶段Root::Literal及形状／编号临时求值的最终结果尚未持有计算来源，不能因临时Builder有材料就宣称完成。材料仅compiler，查询沿原IR所有者与最后消费者，不进入运行编码；详细接口与真实缺口见语言规范及Architecture对应职责。
+负数字面量由原negative_number直接定型，i32／i64最小值不能伪装成同型正数取负；单目加号没有实际运算，不制造折叠事件。模块const普通读取按下述实际结果交接；阶段Root::Literal、输出契约及形状／编号临时求值的最终结果仍有独立来源缺口，不能因临时Builder有材料就宣称完成。材料仅compiler，查询沿原IR所有者与最后消费者，不进入运行编码；详细接口与真实缺口见语言规范及Architecture对应职责。
+
+模块const普通读取由原evaluate在临时Builder结束前取得已有变换的OperationOrigin，随原Ty／Bits返回ModuleConstantEvaluation；module_constant仍以原构造器建立相同结果及直接source_site，让各真实分量共享该材料。其constant保持实际常量全名，definition只在已有真实源码定义时存在，operations描述整个该次求值，不是每个结果的完整因果图。相邻分量若共享同一语法和变换材料，只交接一份，避免记录／向量常量的嵌套别名反复复制同一事实；没有另一追踪表或保存旧IR。嵌套常量、原DCE及空Map根继续交接既有事实，必要对象编码和运行资源不带这些材料。输出契约的类型化常量与物化、Root及整数结果仍各自待推进，普通读取不能代替这些实际消费者。
+
 
 
 源码节选：`crates/blanguage/src/ir/inspect.rs:274`。

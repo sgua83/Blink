@@ -329,7 +329,7 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`、`ValueCode::generated_origin()`及`Program::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，返回Syntax锚点或UnaryConstantFold的真实表达式SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir、value_ir和program_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
-GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition及UnaryConstantFold实际表达式的origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
+GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition、UnaryConstantFold及ModuleConstantEvaluation按各自锚点的明示语法／定义和实际名称提供origin()／instance()；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
 当前真实生成原因及其消费如下；GenerationReason公开枚举增加变体时，Rust SDK的穷尽匹配需要相应适配，按版本规则处理兼容性。B语法、资源ABI和必要执行编码不因此改变。
 
@@ -391,6 +391,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | IndexedStoreReadForward | indexed_store_read_forward | 原索引Load实际被先前Store写入的值替代，材料交给原保留Inst |
 | IndexedReadReuse | indexed_read_reuse | 后续索引Load实际复用先前Load结果，材料交给原保留Load |
 | UnaryConstantFold | unary_constant_fold | 原普通已知值一元计算逐分量成为Constant |
+| ModuleConstantEvaluation | module_constant_evaluation | 原模块const求值中的已有变换事实随普通常量读取进入实际Constant |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -518,7 +519,19 @@ JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼�
 
 实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
 
-后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。临时模块const、阶段Root::Literal、形状及变体编号只返回原类型／整数时，最终结果仍未交接这份来源，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
+后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；输出契约、阶段Root::Literal、形状及变体编号只返回原类型／整数时，最终结果仍未交接这份来源，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
+
+
+
+#### 模块const普通读取的求值来源
+
+原name_expr读取模块常量时，module_constant继续调用同一evaluate。临时Builder的原Constant指令若已有generated_origin，evaluate取得这些操作的OperationOrigin，在原类型／位模式结果中交接可选GenerationReason::ModuleConstantEvaluation与GenerationAnchor::ModuleConstantEvaluation { definition, constant, operations }。没有已有变换材料则不增加该锚点；不收集全部字面量、复制临时IR、保存Reg或再求值源码。直接负字面量定型与尚未交接材料的其他变换不会由这里猜补。
+
+module_constant仍用原constant_value(...,None)生成实际结果分量及当前读取点的source_site，再让这些Constant共享同一个求值材料。operations是该次求值已取得的变换事实，不是逐结果分量的数据依赖：相邻操作若共享同一SourceSite与GeneratedOrigin，只交接一份相同材料；比较只用当次Arc引用，不把指针当作永久身份。嵌套常量仍沿已有材料继续交接；序列按本次原code顺序，出现数量不是唯一求值／运算／运行次数，不能据此推定每个操作影响每个结果分量。
+
+JSON reason及锚点kind均为module_constant_evaluation，definition为真实原source_definition或null，constant为实际完整常量名，operations是已有operation_origin数组，成员保留原语法及generated_origin。anchor().origin()借用可用原定义，instance()返回实际常量全名；单源syntax()／trigger()为空，不能用常量定义冒充一条用户表达式。源码常量保存原不可变来源；已编译接口缺失提供者定义时仍为null，保留实际常量名和实际取得的运算事实，不把接口求值当作提供者实现源码或IR。
+
+材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。输出条件的直接物化、类型化OutputConstant及其物化仍未交接求值来源，阶段Root::Literal、形状和变体编号也各有原缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
 
 
 #### 空Map阶段移除的来源
