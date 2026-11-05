@@ -160,7 +160,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_records.rs",
-      "sha256": "06d8f4355399420ce640f53a2ee130cc86ec41fd06ab0f441c8a08cd8db5b68a"
+      "sha256": "a3c0f8f15775ed5881657b39ff02fbf37c6efc0ae2b95398b760139b32973f72"
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
@@ -737,6 +737,12 @@
       "sha256": "c4a95acf4809491c477da541a5fb7dea722a058ac2f7c49680bb948551bcd125"
     },
     {
+      "path": "crates/blanguage/src/optimize/value_flow.rs",
+      "start_line": 150,
+      "end_line": 160,
+      "sha256": "38a3980a72465770fc1166ea42b25141c80b0156b60e4750f0e12651e8f74497"
+    },
+    {
       "path": "crates/blanguage/src/optimize.rs",
       "start_line": 291,
       "end_line": 297,
@@ -1023,12 +1029,6 @@
       "start_line": 227,
       "end_line": 230,
       "sha256": "4cefe8a58a75b7125dda5957166b03265403b847195b0331a61168b3e161edb3"
-    },
-    {
-      "path": "crates/blanguage/src/optimize/value_flow.rs",
-      "start_line": 150,
-      "end_line": 160,
-      "sha256": "38a3980a72465770fc1166ea42b25141c80b0156b60e4750f0e12651e8f74497"
     }
   ]
 }

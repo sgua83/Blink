@@ -460,7 +460,9 @@ impl Builder<'_> {
                     return Ok(None);
                 };
                 let value = self.read_place(&place, expr.span, None)?;
-                self.finish_scoped_argument(&held, expr.span)?;
+                if value.proof.typed_view_borrow(&value.ty).empty() {
+                    self.finish_scoped_argument(&held, expr.span)?;
+                }
                 return Ok(Some(Returned::value(value)));
             }
             Some(Returned::Value(value)) if value.ty.indexed_element().is_some() => {
