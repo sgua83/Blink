@@ -334,7 +334,7 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`、`ValueCode::generated_origin()`及`Program::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，返回Syntax锚点或UnaryConstantFold的真实表达式SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir、value_ir和program_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
-GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition、UnaryConstantFold、ModuleConstantEvaluation及StageConstantEvaluation按各自锚点的明示语法／定义和实际名称提供origin()／instance()；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
+GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition、UnaryConstantFold、ModuleConstantEvaluation及StageConstantEvaluation按各自锚点的明示语法／定义和实际名称提供origin()／instance()；DomainCallLiteral的单源查询仅借用明确call成员，evaluation独立读取；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
 当前真实生成原因及其消费如下；GenerationReason公开枚举增加变体时，Rust SDK的穷尽匹配需要相应适配，按版本规则处理兼容性。B语法、资源ABI和必要执行编码不因此改变。
 
@@ -573,7 +573,7 @@ JSON reason和锚点kind为stage_constant_evaluation；expression是实际临时
 
 Builder::roots共用evaluated_constant，把同一材料交给实际Constant及已有source_site，原Value数值、Proof、literal、初始化、位置、布局和阶段选择保持。原CSE／DCE及空Map移除根按原OperationOrigin继续持有，不为查询保活操作或阶段；材料由原Root及实际IR／Stage／Program拥有，到最后编译／查询消费者后释放，不保留临时Inst、AST／World或运行资源。
 
-本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral仍只有原调用语法，阶段if／for仍只按真实值选择或展开；这三个消费者的求值／控制材料交接尚未实现，不能以Root已持有材料代替。具名阶段常量Name读取的直接source_site仍有独立缺口：无折叠不造求值事件，不等于原始读取语法已经完整；该范围沿原始语法来源C-021.7.9.7.2.5推进。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)与[剩余范围](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
+本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if／for仍只按真实值选择或展开，其控制材料交接尚未实现，不能以Root已持有材料代替。具名阶段常量Name读取的直接source_site仍有独立缺口：无折叠不造求值事件，不等于原始读取语法已经完整；该范围沿原始语法来源C-021.7.9.7.2.5推进。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)与[剩余范围](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
 
 #### 具名声明、调用及条件IR的来源
 
@@ -857,7 +857,9 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 
 build_domain只在原Root::Literal分支为逐分量准备的Constant共享DomainCallLiteral，JSON reason为domain_call_literal；原Ty.components与words顺序、Scalar、Bits、寄存器和CallArgument保持。该材料区分编译器为已编译域Call准备的实参，不按数值或符号把普通常量改标，也不为Root::Data／Root::Uniform的寄存器直传补造指令。
 
-节点source_site为空，可选Syntax直接借用原call.source，语法、原定义／实际实例及内联／域路径保持，缺失为null。触发仅为已经取得的原调用范围，不扩大为没有取得的字面量表达式。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call分别保持自身职责；此处不改调用、求值顺序、精度、布局或参数ABI。
+节点source_site为空。GenerationAnchor::DomainCallLiteral { call, evaluation }分别共享原call.source与同一Root可选的已有GeneratedOrigin；每个成员独立以null说明该事实缺失，所有本角色准备常量使用同一表示。原GenerationReason::DomainCallLiteral保持，JSON reason仍为domain_call_literal，新锚点kind也为domain_call_literal，成员为call（原source_syntax或null）及evaluation（已有generated_origin或null）。
+
+原GeneratedOrigin::trigger()及锚点syntax()／origin()／instance()仍只借用call；调用语法、原定义／实际实例及内联／域路径保持。evaluation明确表示本次实参已取得的ModuleConstantEvaluation或StageConstantEvaluation等事实，不替代调用触发，也不从调用范围猜补求值表达式；没有调用语法时相关单源查询为空，求值事实仍从evaluation取得。每个实际Root的准备Constant继续共享一个原生成材料，Scalar／Bits／分量／寄存器及CallArgument顺序不变。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call保持自身职责；不改调用、求值顺序、精度、布局或参数ABI，不为Data／Uniform直传造值准备。
 
 材料只归compiler角色的原Inst／FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；原优化照常，不保活常量，不进入必要执行编码，不持有World／AST或运行资源。真实计算、Frame存储、依赖及最后完成沿原所有者，不把静态常量准备当作实际执行；不增加值表、图、调度器、同步或释放链。见[架构](Architecture.md#tool-7-2-4-6-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
 

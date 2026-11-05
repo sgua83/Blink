@@ -465,7 +465,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-2"></a>
 
-**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量共享DomainCallLiteral，JSON reason为domain_call_literal，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；节点source_site为空，可选Syntax直接借用原call.source及其定义／实例／内联与域路径；该触发仅说明已取得的原调用范围，不伪造字面量表达式或额外寄存器。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前已交接原实际Constant的生成来源，原优化照常，不为观察保活。见[规范](BLanguage.md#整域调用字面量实参的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
+**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量共享DomainCallLiteral，JSON reason为domain_call_literal，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；节点source_site为空，调用语法直接借用原call.source及其定义／实例／内联与域路径；DomainCallLiteral锚点分别交接call与可选evaluation；没有该项材料时对应成员为null。单源trigger及语法查询仍只解释原调用范围，不伪造字面量表达式或额外寄存器；求值事实独立从evaluation取得，具体交接见下文阶段Literal职责。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前已交接原实际Constant的生成来源，原优化照常，不为观察保活。见[规范](BLanguage.md#整域调用字面量实参的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
 
 <a id="tool-7-2-4-6-3"></a>
 
@@ -727,7 +727,7 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-2-4"></a>
 
-**阶段Literal到整域调用实参。** domain生成的原Constant已经持有DomainCallLiteral语法材料，后续须同时交接该Root实际求值材料，由同一Inst及其删除根持有到最后IR消费者；调用语法不能替代值的求值来源，也不能覆盖原语法。此消费者尚未实现，当前新增Root字段仅机械适配匹配，不据此宣称域包装已取得材料。不得重编提供者、重求值或增加运行参数／状态，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2-4)。
+**阶段Literal到整域调用实参。** build_domain在原Root::Literal分支消费同一类型／位模式与可选求值材料，原生成原因仍为DomainCallLiteral。以同名GenerationAnchor分别共享call（原call.source，可为空）和evaluation（该Root已有GeneratedOrigin，可为空）；对应成员的null明确表示本项事实缺失，不另选表示。原trigger()及锚点syntax()／origin()／instance()仍只解释原调用语法，求值事实从明确evaluation成员读取，不能把一个来源替代另一个。两者随同一Inst／原删除根到最后IR消费者；不重求值、重编提供者或保留旧Root／AST／World，不增运行参数、指令、状态或必要编码。原Scalar／Bits／分量顺序及CallArgument保持，source_site仍为空，见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-4)。
 
 <a id="tool-7-3-1-9-1-3-2-5"></a>
 

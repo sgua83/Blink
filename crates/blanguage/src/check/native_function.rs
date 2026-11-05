@@ -1651,10 +1651,12 @@ fn build_domain(
                         .map(|(_, at)| uniform_regs[&(offset + at)])
                         .collect(),
                 },
-                Root::Literal(ty, words, _) => {
+                Root::Literal(ty, words, evaluation) => {
                     let origin = Arc::new(GeneratedOrigin {
                         reason: GenerationReason::DomainCallLiteral,
-                        trigger: call.source.clone().map(GenerationAnchor::Syntax),
+                        trigger: Some(GenerationAnchor::DomainCallLiteral {
+                            call: call.source.clone(), evaluation: evaluation.clone(),
+                        }),
                     });
                     let values = ty
                         .components
