@@ -642,6 +642,9 @@ impl Builder<'_> {
     }
     pub(super) fn write_address_values(&mut self,borrow:&view::Borrow) {
         if external_memory(borrow) {
+        let data=self.env.values().flat_map(Binding::application_resources)
+            .map(|data|application::DataReference::direct(data.clone())).collect::<Vec<_>>();
+        for data in data {self.invalidate_application_contents(&data);}
         for binding in self.env.values_mut() {
             if let Some((proof,uniform,owner))=binding.proof_storage() {
                 proof.forget_value(&(0..owner.ty().components.len()).collect::<Vec<_>>(),owner.ty().components.len());

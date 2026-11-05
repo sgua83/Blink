@@ -143,9 +143,18 @@ impl ApplicationLoads<'_, '_> {
         match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
     }
     fn constant(&self,reg:Reg)->Option<Bits> {
-        match &self.definition(reg)?.1.kind {
+        let(at,inst)=self.definition(reg)?;
+        match &inst.kind {
             InstKind::Constant(_,_,bits)=>Some(*bits),
             InstKind::Cast{src,..}=>constant::cast(self.0.registers[*src],self.0.registers[reg],self.constant(*src)?),
+            InstKind::LoadLocal(_,slot)if self.code().nth(at)?.results().any(|result|result==reg)=>{
+                let(distance,write)=self.code().rev().skip(self.len()-at).enumerate().find(|(_,inst)|self.writes_local(inst,*slot))?;
+                if self.loop_writes(at-distance-1,at,inst){return None;}
+                match &write.kind {
+                    InstKind::StoreLocal(_,value)=>self.constant(*value),
+                    _=>None,
+                }
+            },
             _=>None,
         }
     }
@@ -227,7 +236,7 @@ impl ApplicationLoads<'_, '_> {
         }else if same_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
         Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
-    fn call_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
+    fn call_memory_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
         if let Some(usage)=call.memory_use {
             return self.0.view_model.uses[usage..].iter()
                 .take_while(|item|matches!(&item.requirement,view::Requirement::Memory{target:address::MemoryTarget::Call(id),..}if *id==usage))
@@ -245,10 +254,10 @@ impl ApplicationLoads<'_, '_> {
         }
     }
     fn writes_local(&self,inst:&Inst,slot:usize)->bool {
-        if let InstKind::Call(call)=&inst.kind {
-            return self.call_writes(call,|borrow|borrow.pending()||address::MemoryEffect::of(borrow,Access::InOut).writes_position(&Position::Local(slot)));
-        }
         if inst.local_writes().contains(&slot){return true;}
+        if let InstKind::Call(call)=&inst.kind {
+            return self.call_memory_writes(call,|borrow|borrow.pending()||address::MemoryEffect::of(borrow,Access::InOut).writes_position(&Position::Local(slot)));
+        }
         match &inst.kind {
             InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_local(inst,slot)),
             InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_local(inst,slot)),
@@ -260,19 +269,19 @@ impl ApplicationLoads<'_, '_> {
         match &inst.kind {
             InstKind::StoreIndexed{source,offset,word,value}=>self.store_overlaps(load,source,Some(*offset),*word,self.0.registers[*value]),
             InstKind::Call(call)=>{
+                if call.arguments.iter().any(|argument|match argument {
+                    CallArgument::Reference{ty,access,address,..}if access.writes()=>match &address.storage {
+                        ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
+                        ir::CallStorage::Local{..}=>false,
+                    },
+                    _=>false,
+                }){return true;}
                 let allocated=matches!(&load.kind,InstKind::ViewLoad{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
-                self.call_writes(call,|borrow|{
+                self.call_memory_writes(call,|borrow|{
                     if borrow.pending()||address::external_memory(borrow){return true;}
                     if let CallTarget::Defined(name)=&call.target
                         && self.0.functions.writes_only_references(name) {
-                        if call.memory.iter().any(|effect|effect.access.writes()){return true;}
-                        return call.arguments.iter().any(|argument|match argument {
-                            CallArgument::Reference{ty,access,address,..}if access.writes()=>match &address.storage {
-                                ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
-                                ir::CallStorage::Local{..}=>false,
-                            },
-                            _=>false,
-                        });
+                        return call.memory.iter().any(|effect|effect.access.writes());
                     }
                     borrow.sources.entries().any(|(source,when)|when.possible()&&match source{
                         view::Source::Position(origin)if allocated&&matches!(origin.root,address::Root::Local{..})=>false,
