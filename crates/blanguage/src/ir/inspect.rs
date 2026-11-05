@@ -293,6 +293,7 @@ impl Program {
         node("program_ir", &[
             ("interface", interface_layout_json(self)), ("source_stages", number(self.source_stages)),
             ("source_origin", optional(self.source_origin.as_ref(), SourceOrigin::ir_json)),
+            ("generated_origin", optional(self.generated_origin(), GeneratedOrigin::ir_json)),
             ("accelerations", array(self.accelerations.iter().map(|v| text(v)))),
             ("textures", array(self.textures.iter().map(|v| node("texture_binding", &[("name", text(&v.name)), ("count", optional(v.count.as_ref(), |v| number(v)))])))),
             ("prefix_requirements", array(self.prefix_requirements.iter().map(relation))),

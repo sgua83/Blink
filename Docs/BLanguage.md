@@ -228,7 +228,7 @@ bc ir src/app.b -I src --entry main --import target/math.obj
 
 结果是单个JSON：kind=ir_query，source_path／module_root为本次绝对路径；mode、entry、function、stage、imports和instances说明实际请求。phase分别是optimized_program_ir、finalized_application_ir或finalized_module_ir，表示原入口已经完成的优化／函数及资源整理；不表示已独立提供Debug／Release或优化级别选择。ir来自原返回对象，源码查询不输出COFF、EXE或入口映像、不创建运行资源；source_path不是完整构建输入身份。已有产物的原请求／来源继续用bc inputs；没有输入记录或IR的对象不会被查询器重新解释成历史事实。
 
-Program::ir_json输出program_ir：原interface布局、source_stages、accelerations／textures、prefix及长度条件和实际stages。Stage::ir_json输出stage_ir：domain、prefix／selection、operation、boundary_before、registers、locals、code、reads／writes／cross_access及tiles。ValueCode::ir_json输出value_ir，保留inputs／outputs和同一寄存器／局部值／指令；FunctionBody::ir_json输出function_ir，保留完整名称、参数值／引用类型及访问、返回类型和body。Application／Module的ir_json分别输出application_ir／module_ir，包括实际保留函数、导入名称及原资源类型／程序；应用另有原入口body，模块另有原exports。已编译导入可能只有合同和调用目标，没有提供者IR；缺失函数体不会补造。
+Program::ir_json输出program_ir：原interface布局、source_origin／generated_origin、source_stages、accelerations／textures、prefix及长度条件和实际stages。Stage::ir_json输出stage_ir：domain、prefix／selection、operation、boundary_before、registers、locals、code、reads／writes／cross_access及tiles。ValueCode::ir_json输出value_ir，保留inputs／outputs和同一寄存器／局部值／指令；FunctionBody::ir_json输出function_ir，保留完整名称、参数值／引用类型及访问、返回类型和body。Application／Module的ir_json分别输出application_ir／module_ir，包括实际保留函数、导入名称及原资源类型／程序；应用另有原入口body，模块另有原exports。已编译导入可能只有合同和调用目标，没有提供者IR；缺失函数体不会补造。
 
 每条指令用kind及原字段表达，If、Loop和Scope保留真实嵌套；调用保留明确的defined／external／indirect目标、值／引用实参、位置和memory关系，原子保留实际order及比较交换failure。自定义归约／扫描的project、identity、combine继续是原ValueCode，不另外展开或发射内核。Constant的bits及整数常数除数使用固定16位十六进制字符串，完整保留u64、NaN载荷、无穷和负零的原位；其解释由对应Scalar决定，不通过JSON浮点数丢失精度。
 
@@ -327,7 +327,7 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 #### 原IR生成原因与触发语法
 
-compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`及`ValueCode::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir和value_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
+compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`、`ValueCode::generated_origin()`及`Program::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir、value_ir和program_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
 GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition锚点的origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
@@ -457,7 +457,7 @@ values中每个EliminatedValue代表本次dce真正删除的一条IR操作；res
 
 GeneratedOrigin的JSON reason为unused_value_results，锚点kind为eliminated_values，字段为retained及values；各值kind为eliminated_value，字段为result_types及origin，类型拼写与本次IR寄存器类型相同。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
 
-材料仅compiler，沿原ValueCode／Stage及编译／模块／SDK快照在最后IR消费者后释放，不保活操作、槽位或阶段，不持有AST／World、运行资源或另一活跃性表，不进入必要对象／执行编码。整个空Map阶段移除后的来源交给Program仍是独立未完成范围C-021.7.9.7.3.2.2；没有材料不证明操作未发生删除。SDK新增公开枚举／类型属于compiler源码接口演化，软件版本与执行ABI分别表达。实际入口继续使用bc ir的普通函数、应用和程序查询，不增另一调试命令。见[架构](Architecture.md#tool-7-3-1-5)及[当前范围](Issues.md#c-021-7-9-7-3-1-5)。
+材料仅compiler，沿原ValueCode／Stage及编译／模块／SDK快照在最后IR消费者后释放，不保活操作、槽位或阶段，不持有AST／World、运行资源或另一活跃性表，不进入必要对象／执行编码。整个空Map阶段移除后的来源由原Program沿C-021.7.9.7.3.2.2继续交接；没有材料不证明操作未发生删除。SDK新增公开枚举／类型属于compiler源码接口演化，软件版本与执行ABI分别表达。实际入口继续使用bc ir的普通函数、应用和程序查询，不增另一调试命令。见[架构](Architecture.md#tool-7-3-1-5)及[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-5)。
 
 已有实际查询入口：
 
@@ -467,6 +467,13 @@ bc ir sample/applications/datasets.b -I sample --entry main
 ```
 
 这些查询返回当前编译结果中的删除材料；外模块本体、已经结束的临时检查根与所请求模块分别归其真实拥有者，不把同一源码范围的多次检查计成该结果的多次删除。
+#### 空Map阶段移除的来源
+
+原optimize末尾仅沿原Operation::Map且code为空的条件移除Stage。实际移除前，将同一Stage.operation_source及generated_origin作为OperationOrigin共享给原Program.generated_origin，使用GenerationReason::EmptyMapRemoval及GenerationAnchor::EmptyMapRemoval { retained, stages }；retained保留可选旧Program根，source_origin独立保持。Program::generated_origin()、anchor()及现有bc ir程序／应用资源查询消费同一真实结果，不新增另一程序或查询命令。
+
+JSON根reason及锚点kind均为empty_map_removal，锚点有retained和stages；每项是原operation_origin，其中source_site对应被移除Map的原语句，generated_origin保留该阶段此前已形成的删除等材料。列表按本次真实移除顺序，不保存旧Stage、指令、Reg、阶段序号、运行地址或另一映射表，不是运行时间线。source_stages保持原优化前展开数量，stages列表只含实际保留阶段；全部阶段被移除时，Program仍可持有真实删除材料。代码为空、运行时数据集为空及空输入下仍须产出单位元的集合分别理解；原语义、阶段边界、数值、调度和完成不改变，不为观察保活空阶段。
+
+多源单一trigger()／syntax()／origin()／instance()为空，各接点从明确成员读取，未知来源字段保持null。新一轮没有移除不制造事件，旧根及Source快照不可变共享；查询不重新编译、不读取后续改写的源文件，不持有AST／World或运行资源。材料随原Program／模块／SDK快照及最后IR消费者释放，compiler以外没有该字段／类型／getter，必要执行编码及资源ABI保持。新增公开枚举分支按原compiler SDK版本规则演化；当前范围见[架构](Architecture.md#tool-7-3-2-2)及[闭合台账](FixedIssues.md#c-021-7-9-7-3-2-2)。
 #### 降层归约内核的角色与分区查询
 
 compiler SDK的CustomReduction::kernel(stage,project,identity)按本次选择产生原ReductionKernel；ReductionKernel::ir_json()只序列化这个实际结果，kind为reduction_kernel_ir。stage为原Stage::ir_json()，invariant_end、initialize_end和project_end为stage.code中的零基排他指令下标；依次划分公共入口、单位元、投影和合并四段，空段允许相邻末尾相等。invariants直接列出原prepare_reduction提取的逻辑Reg，不推定执行次数或最终机器存储。

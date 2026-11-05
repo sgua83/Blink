@@ -1707,6 +1707,8 @@ pub struct Program {
     pub(crate) name: String,
     #[cfg(feature = "compiler")]
     pub(crate) source_origin: Option<SourceOrigin>,
+    #[cfg(feature = "compiler")]
+    pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,
     pub(crate) target: Target,
     pub(crate) buffers: Vec<Buffer>,
     pub(crate) accelerations: Vec<String>,

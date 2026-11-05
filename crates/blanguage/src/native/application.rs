@@ -38,6 +38,8 @@ fn emit_value(
         name: String::new(),
         #[cfg(feature = "compiler")]
         source_origin: None,
+        #[cfg(feature = "compiler")]
+        generated_origin: None,
         target: crate::ast::Target::Cpu,
         buffers: Vec::new(),
         accelerations: Vec::new(),

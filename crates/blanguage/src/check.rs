@@ -449,6 +449,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
     let mut program = Program {
         name: name.clone(),
         source_origin: d.source_origin(),
+        generated_origin: None,
         target: d.function.target,
         buffers,
         accelerations,
@@ -1397,6 +1398,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
     let program = Program {
         name: name.clone(),
         source_origin: d.source_origin(),
+        generated_origin: None,
         target: d.function.target,
         uniform_bytes: 8 + 4 * buffers.len() as u32,
         buffers,

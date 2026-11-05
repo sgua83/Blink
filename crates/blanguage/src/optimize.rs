@@ -55,7 +55,24 @@ pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std:
         crate::parallel::Error::Resource(error) => error,
         crate::parallel::Error::Work(error) => match error {},
     })?;
-    stages.retain(|stage| !matches!(stage.operation, Operation::Map) || !stage.code.is_empty());
+    let mut removed = Vec::new();
+    stages.retain(|stage| {
+        let keep = !matches!(stage.operation, Operation::Map) || !stage.code.is_empty();
+        if !keep {
+            removed.push(OperationOrigin {
+                source_site: stage.operation_source.clone(),
+                generated_origin: stage.generated_origin.clone(),
+            });
+        }
+        keep
+    });
+    if !removed.is_empty() {
+        let retained = program.generated_origin.take();
+        program.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+            reason: GenerationReason::EmptyMapRemoval,
+            trigger: Some(GenerationAnchor::EmptyMapRemoval { retained, stages: removed }),
+        }));
+    }
     program.stages = stages;
     Ok(())
 }
