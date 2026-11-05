@@ -26,7 +26,7 @@ pub struct StageCode {
 }
 #[derive(Clone, Debug)]
 pub struct ProgramImage<P> {
-    program: ExecutionPlan,
+    program: std::sync::Arc<ExecutionPlan>,
     marker: std::marker::PhantomData<fn() -> P>,
     stages: Vec<StageCode>,
 }
@@ -37,9 +37,9 @@ impl<P> ProgramImage<P> {
     /// 必须来自本版本编译器的同一个 P 入口，包含完整未修改的 Shader、
     /// 调度、设备需求及前缀关系；不得由宿主输入构造或伪造条件模板的证明。
     #[doc(hidden)]
-    pub unsafe fn from_compiler_output(program: ExecutionPlan, stages: Vec<StageCode>) -> Self {
+    pub unsafe fn from_compiler_output(program: impl Into<std::sync::Arc<ExecutionPlan>>, stages: Vec<StageCode>) -> Self {
         Self {
-            program,
+            program: program.into(),
             stages,
             marker: std::marker::PhantomData,
         }
@@ -47,10 +47,13 @@ impl<P> ProgramImage<P> {
     pub fn program(&self) -> &ExecutionPlan {
         &self.program
     }
+    pub fn shared_program(&self) -> std::sync::Arc<ExecutionPlan> {
+        self.program.clone()
+    }
     pub fn stages(&self) -> &[StageCode] {
         &self.stages
     }
-    pub fn into_parts(self) -> (ExecutionPlan, Vec<StageCode>) {
+    pub fn into_parts(self) -> (std::sync::Arc<ExecutionPlan>, Vec<StageCode>) {
         (self.program, self.stages)
     }
 }

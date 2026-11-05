@@ -154,7 +154,14 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
             blanguage::resource::Image::Gpu(image) => ProgramImage::Gpu(image),
         }));
     }
-    Box::into_raw(Box::new(Frame::new(types, programs))).cast()
+    match Frame::new(types, programs) {
+        Ok(frame) => Box::into_raw(Box::new(frame)).cast(),
+        Err(error) => {
+            let message = error.to_string();
+            unsafe { on_error(context, message.as_ptr(), message.len()) };
+            std::ptr::null_mut()
+        }
+    }
 }
 "#);
     }

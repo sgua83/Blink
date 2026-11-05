@@ -958,6 +958,12 @@ impl Device {
     ) -> std::result::Result<GpuTemplate, (Box<dyn std::error::Error + Send + Sync>, blanguage::spirv::ProgramImage<TemplateProgram>)> {
         GpuProgram::from_image(self.inner.clone(), image).map(|code| GpuTemplate { code })
     }
+    pub(crate) fn load_template_ref(
+        &self,
+        image: &blanguage::spirv::ProgramImage<TemplateProgram>,
+    ) -> Result<GpuTemplate> {
+        GpuProgram::load_image(self.inner.clone(), image).map(|code| GpuTemplate { code })
+    }
     /// 真实传输同时移动存储及其域关系；任意宿主转换不能签发有效域。
     pub fn upload_domains(
         &self,
@@ -1548,7 +1554,7 @@ impl Drop for Commands {
         }
     }
 }
-struct Compiled<P = Program> {
+struct Compiled<P = std::sync::Arc<Program>> {
     inner: Rc<Inner>,
     program: P,
     set_layout: VkDescriptorSetLayout,
@@ -1792,6 +1798,9 @@ impl GpuProgram {
         &self.compiled.program
     }
     fn from_image<P>(inner: Rc<Inner>, image: blanguage::spirv::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::spirv::ProgramImage<P>)> {
+        Self::load_image(inner, &image).map_err(|error| (error, image))
+    }
+    fn load_image<P>(inner: Rc<Inner>, image: &blanguage::spirv::ProgramImage<P>) -> Result<Self> {
         let loaded: Result<_> = (|| {
             let program = image.program();
             if program.requires_sort() && !inner.sorting {
@@ -1983,11 +1992,8 @@ impl GpuProgram {
             Ok(owned)
         })();
         let (set_layout, layout, pipelines, tails, scan_adds, finishes, dispatches, selectors, sorts) =
-            match loaded {
-                Ok(owned) => owned,
-                Err(error) => return Err((error, image)),
-            };
-        let (program, _) = image.into_parts();
+            loaded?;
+        let program = image.shared_program();
         Ok(Self {
             compiled: Rc::new(Compiled {
                 inner, program, set_layout, layout, pipelines, tails, scan_adds,

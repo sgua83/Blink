@@ -58,10 +58,7 @@ mod native {
         on_error: ErrorReceiver,
         context: *mut c_void,
     ) -> u32 {
-        let plan = unsafe { &*frame }.programs[program as usize]
-            .as_ref()
-            .unwrap()
-            .layout();
+        let plan = unsafe { &*frame }.definitions.programs[program as usize].layout();
         let data = unsafe { std::slice::from_raw_parts(data, plan.buffers().len()) };
         let count = plan
             .uniforms()

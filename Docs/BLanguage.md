@@ -1514,7 +1514,7 @@ dataset<T> relay<T>(u32 depth, dataset<T> rows) on cpu {
 
 输出13。模块产物保存实际.h的公开声明／常量及已编译具体函数的布局、访问、结果／写后事实和原生符号；应用不需要该库的.h或.b文件。依赖模块可通过重复的`--import`提供对象或下节的模块静态库，并与其余源码依赖同时使用；已提供模块不需要分发.h／.b，其他源码依赖仍须有实际输入。最终链接列出本对象及实际对象／库，成员按真实符号需求引入；缺失或不兼容定义直接报错。未提供任何对象时就是原完整源码闭包，全部依赖均提供对象时无需库源码；两者共用同一按模块选择，不在失败后切换模式。普通应用、独立模块及`--program`算法库共用上述逐模块来源选择。算法库可消费已编译接口中的类型／常量，与其他真实源码依赖组成原CPU／GPU算法；未消费的同名.h／.b变化不失效，所用常量／类型或源码实现变化正常重编。CPU算法范围及自定义归约／扫描可调用已编译、无需Frame的普通CPU函数，沿真实合同交接值、记录／数组／Result返回和read／write／inout／atomic位置；递归、已编译具体泛型及传递依赖继续使用原模块符号。编译产生同一算法对象的导入，链接消费所选原COFF或静态库成员及真实外部DLL导入；缺失符号或不匹配合同直接报错，不读取同名.b。CPU范围可按本实例的真实权限，将dataset或字段投影借给无需Frame的普通read／write／inout／atomic参数，沿原物理来源、步长、requires、实际写入与借用寿命交接；write按本次实际元素与字段交出初始化，Count关系按真实可能写区间撤回。局部分配、拥有结果及内部计算所需的真实Frame资源交接仍待实现；GPU位置调用普通CPU符号报B161，独立入口映像不接受COFF导入。
 
-算法DLL与B应用模块的CPU范围及集合入口均编入所属对象的COFF代码节、符号和Windows展开信息；原链接器完成普通模块、外部C接口及输出入口的重定位，原CpuCode只借用已链接地址执行同一阶段／线程调度。B应用模块工厂以C布局交接静态资源字节与已链接代码地址表；应用不再另拆blink_app支持DLL，原标准CRT入口调用同一B正文main并初始化必要平台设施；字节只保存类型、执行布局、CPU入口索引和SPIR-V，不再保存本路径CPU机器码或执行运行时复制／重定位。CPU索引编码使用标签2，独立SDK原NativeCode映像使用标签0，GPU为标签1；不能把索引映像当可独立装入的机器码。Frame只在原程序槽消费同一映像，所属PE／DLL及其代码依赖保持到最后CPU工作和程序消费者结束。独立SDK动态映像仍由原VM所有者装入。
+算法DLL与B应用模块的CPU范围及集合入口均编入所属对象的COFF代码节、符号和Windows展开信息；原链接器完成普通模块、外部C接口及输出入口的重定位，原CpuCode只借用已链接地址执行同一阶段／线程调度。B应用模块工厂以C布局交接静态资源字节与已链接代码地址表；应用不再另拆blink_app支持DLL，原标准CRT入口调用同一B正文main并初始化必要平台设施；字节只保存类型、执行布局、CPU入口索引和SPIR-V，不再保存本路径CPU机器码或执行运行时复制／重定位。CPU索引编码使用标签2，独立SDK原NativeCode映像使用标签0，GPU为标签1；不能把索引映像当可独立装入的机器码。Frame借用原目录中已绑定的CPU代码，GPU从同一只读映像在本Frame设备装入，所属PE／DLL及其代码依赖保持到最后CPU工作和程序消费者结束。独立SDK动态映像仍由原VM所有者装入。
 
 模块导出公开的有限具体实例，开放泛型可以在模块编译时重复指定`--instance 'function<args>'`；尚未导出的开放实例不能靠装入私有源码临时生成。普通CPU函数可包含同步CPU／GPU程序、返回拥有资源，跨对象仍借用同一个Frame；显式upload／download、设备真实完成和最后消费者释放的语义保持。
 
@@ -1555,7 +1555,7 @@ CPU入口的局部帧数值统一由原NativeCode.stack_bytes交接实际分配�
 
 view值为24字节、对齐8，五个U32逻辑分量依次为地址低32位（偏移0）、地址高32位（4）、长度（8）、实际元素步长低32位（12）及高32位（16）；20至23为尾部填充。CPU原生寻址与切片组合完整64位步长；GPU view由实际GpuDataset步长编码，地址仍指向原16字节dataset绑定头后的页数组。源B、独立对象／归档及宿主view图使用同一表示，明确on cpu的同源普通函数在CPU范围沿原native_declaration／native_call编译和调用，Compute共享函数保持原内联选择；CPU范围中的已有view可按原长度关系复制或切片，非零起点使用真实64位步长；不要求额外application上下文，存储与最后消费者仍由原拥有者持有。原来源和最后消费者继续持有真实存储。地址与长度的三分量身份供原范围关系使用，实际寻址同时消费步长，不把三分量身份当成整个机器值。真实布局与位置合同使用现行格式交接，旧布局产物须重编。
 
-Rust SDK的Frame操作通过原Result交回错误。CPU动态／已链接模板及GPU模板装入失败分别沿CpuTemplate::from_image／CpuTemplate::from_linked／Device::load_template的Err((error,image))交回原错误和同一未改映像，Frame接回原程序槽；原数据及其他程序继续由Frame持有，调用方可在依赖满足后显式再次调用，没有自动重放。run先借用原程序布局完成同根参数重叠检查，再装入程序并执行；参数重叠拒绝保留原程序槽、输入存储及域关系，后续合法调用仍消费该程序。CPU／GPU驻留拒绝发生在实际执行／提交前；拒绝的当前输入和此前已取出的同类参数由原参数Vec交回Frame原槽，同一Loaded程序接回原程序槽，未取出的后缀与原域关系保持。逻辑只读别名继续沿原selected只移动一份物理存储；调用者显式完成download或upload后可提交下一次合法调用，不自动传输、重放或复制原资源。CPU同步执行借用原参数拥有组，原错误与成功都交回同一存储及程序槽；输入域、冻结权限、实际字段和标量参数的拒绝保持原数据及有效域。参数接收后才沿同一Count关系撤回本次可能写计数字段的许可，指向未绑定数据的关系同样随其实际计数写入失效；只有全部阶段／延续真实完成才发布原prefix输出保证。线程池工作创建失败直接沿Result交回原OS错误；已有CPU写入仍留在原存储，不回滚或自动重放，也不将未完成调用当作新有效域。GPU调用准备借用原InputOwner，准备错误将原GPU存储及同一程序交回Frame原槽，已有域关系保持；错误不产生另一份资源或自动重放。命令录制使用原局部last记录本次阶段关系，物理producer与最后使用点只在成功提交后发布；成功才将原绑定移入Submission。Submission::wait成功交回Completed；完成等待或时间戳读取失败交回(error, submission)，同一Submission继续持有原绑定、加速结构、查询池与真实完成点。错误不承诺设备数据可用，调用者决定继续持有或明确结束原提交；原Execution与最后使用点继续承担实际消费者完成后的释放，不自动重放。已接受GPU提交后，Frame沿原Count关系撤回本次可能写计数字段的旧许可；等待失败从同一Submission取回实际存储并接回原程序槽，不发布本次条件输出保证。未写Count字段及无关原域关系保持，已有GPU写入不回滚；原GPU完成与最后使用点继续持有实际资源。upload借用原CPU输入，CPU暂存读取及GPU提交成功交回GPU存储后才替换原槽；驻留拒绝或上传错误不提前移除原输入，在途暂存区和GPU完成仍由原GpuDataset.last_use持有。address直接借用原位置，驻留或写权限拒绝不移走或释放原存储；成功取得地址后的范围、权限和期限仍由实际调用者遵守。resize在扩容申请失败时保留原存储；download借用Frame中的原GPU输入，仅在完整CPU结果返回后替换原槽，驻留拒绝或下载错误不提前释放输入。保留资源所有权不表示设备故障后的数据已经可用，实际设备失败与部分效果仍由原结果交接。已有Frame的六个共同C入口沿同一Result交回状态、成功输出和原错误；宿主持有原Frame并决定后续调用及显式销毁，错误不结束宿主。完整普通B可失败返回与业务result适配仍沿Issues C-020.5.2.4建设；原操作的部分效果及设备数据可用性按上述各自合同解释。
+Rust SDK的Frame操作通过原Result交回错误。直接CpuTemplate::from_image／from_linked与Device::load_template的装入失败仍沿Err((error,image))交回原错误和同一未改映像。Frame::new消费原类型／program定义，在原模块装入阶段一次绑定CPU代码；构造返回Result，失败时未形成Frame，局部拥有资源正常释放。GPU定义只读保持，每个Frame按自身Device装入实际pipeline，失败不改变原定义；调用方显式选择后续动作，没有自动重放。run先借用同一原程序布局完成同根参数重叠检查；CPU代码已经绑定，GPU仅在本Frame首次需要时装入实际设备程序，再执行原阶段。参数重叠拒绝保持原定义、GPU实例、输入存储及域关系，后续合法调用仍借用同一程序。CPU／GPU驻留拒绝发生在实际执行／提交前；拒绝的当前输入和此前已取出的同类参数由原参数Vec交回Frame原槽，原定义与本Frame实际GPU实例均保持，未取出的后缀与原域关系保持。逻辑只读别名继续沿原selected只移动一份物理存储；调用者显式完成download或upload后可提交下一次合法调用，不自动传输、重放或复制原资源。CPU同步执行借用原参数拥有组，原错误与成功都交回同一存储，CPU代码始终归原目录；输入域、冻结权限、实际字段和标量参数的拒绝保持原数据及有效域。参数接收后才沿同一Count关系撤回本次可能写计数字段的许可，指向未绑定数据的关系同样随其实际计数写入失效；只有全部阶段／延续真实完成才发布原prefix输出保证。线程池工作创建失败直接沿Result交回原OS错误；已有CPU写入仍留在原存储，不回滚或自动重放，也不将未完成调用当作新有效域。GPU调用准备借用原InputOwner，准备错误将原GPU存储及同一程序交回Frame原槽，已有域关系保持；错误不产生另一份资源或自动重放。命令录制使用原局部last记录本次阶段关系，物理producer与最后使用点只在成功提交后发布；成功才将原绑定移入Submission。Submission::wait成功交回Completed；完成等待或时间戳读取失败交回(error, submission)，同一Submission继续持有原绑定、加速结构、查询池与真实完成点。错误不承诺设备数据可用，调用者决定继续持有或明确结束原提交；原Execution与最后使用点继续承担实际消费者完成后的释放，不自动重放。已接受GPU提交后，Frame沿原Count关系撤回本次可能写计数字段的旧许可；等待失败从同一Submission取回实际存储，原程序定义及本Frame GPU实例保持，不发布本次条件输出保证。未写Count字段及无关原域关系保持，已有GPU写入不回滚；原GPU完成与最后使用点继续持有实际资源。upload借用原CPU输入，CPU暂存读取及GPU提交成功交回GPU存储后才替换原槽；驻留拒绝或上传错误不提前移除原输入，在途暂存区和GPU完成仍由原GpuDataset.last_use持有。address直接借用原位置，驻留或写权限拒绝不移走或释放原存储；成功取得地址后的范围、权限和期限仍由实际调用者遵守。resize在扩容申请失败时保留原存储；download借用Frame中的原GPU输入，仅在完整CPU结果返回后替换原槽，驻留拒绝或下载错误不提前释放输入。保留资源所有权不表示设备故障后的数据已经可用，实际设备失败与部分效果仍由原结果交接。已有Frame的六个共同C入口沿同一Result交回状态、成功输出和原错误；宿主持有原Frame并决定后续调用及显式销毁，错误不结束宿主。完整普通B可失败返回与业务result适配仍沿Issues C-020.5.2.4建设；原操作的部分效果及设备数据可用性按上述各自合同解释。
 
 编译期类型／program资源目录由原编译模块唯一持有，统一收敛后交给原应用／模块产物；函数的Frame参数寄存器只属于该函数，不携带或搬运目录。目录存在不能替代CPU范围的真实执行输入，实例局部分配／释放仍沿C-027.35.4.2.2.3.2.2。独立模块工厂返回C布局的静态资源描述ModuleImage{data:*const u8,bytes:usize,code:*const *const u8,codes:usize}，当前Windows x64为32字节、对齐8；代码表由原静态链接写入所属范围入口地址。非根包装只调用共同分配／执行入口，Frame是不透明指针，仅由根运行库解释和释放。工厂字节保存编译后的类型、执行布局、CPU代码表索引及SPIR-V，create由同一编译产物绑定到原Frame，CPU不重新复制／重定位，不重读B源码、运行值IR或重新编译。调用者不释放静态工厂字节或地址表，不跨模块传递Rust Vec／Box的私有表示。根创建入口为Frame* blink_create(on_error, context)，on_error的C签名为void(void* context, const uint8_t* data, size_t bytes)。接收函数和上下文由调用者保持到创建调用返回；错误UTF8字节只借用到本次接收函数返回，保留文本由调用者复制，不形成运行库错误状态或额外释放入口。首个模块解码失败后不再调用后续工厂，不建立Frame，原局部资源正常释放并返回空指针；运行库不结束宿主进程。B应用入口直接交付生成根中的blink_application_error符号，输出错误后将空指针结果映射为退出码1，跳过未取得Frame的正文和destroy；创建成功仍执行原正文并由原根释放Frame。
 
@@ -4570,27 +4570,24 @@ Rust SDK的`Frame::types()`返回构造时移入的原`&Vec<Ty>`，索引对应�
 
 ### 应用Frame程序槽与代码根的借用
 
-Rust SDK的`Frame::programs()`返回同一原programs的`&Vec<Option<ProgramSlot>>`，保留原槽顺序、索引及实际Option状态，并交接原容器的len／capacity；索引对应本Frame的程序号，不生成长期代码身份。ProgramSlot::Image持有原ProgramImage::Cpu／Gpu，Loaded持有原Program::Cpu(CpuTemplate)／Gpu(GpuTemplate)。原容器仍私有，查询没有插入、改写或装入入口；公开同形枚举值不授予发布到该Frame的权限。
+Rust SDK的Frame::programs()返回原模块目录的&Vec<ProgramSlot>，索引保持真实程序号，len／capacity乘size_of::<ProgramSlot>()只计这个原容器。ProgramSlot::Cpu持已经绑定的CpuTemplate，Gpu持原只读映像；类型和代码目录由原模块持有，Frame不在run中取出／归还CPU程序。Frame::new(types,images)消费这些定义并返回Result<Frame>，CPU装入错误在构造阶段交回，未形成Frame的局部资源正常释放。
 
-程序槽的len／capacity乘实际`size_of::<Option<ProgramSlot>>()`分别表示槽跨度／容量字节，只计该Vec的槽存储，不含Image内部映像、代码VM、GPU分配、嵌套数据、分配器或OS开销；不据容量推断实际装入或运行完成。共享Vec借用可转换为切片，精确返回切片的函数指针类型须随公开Rust签名调整。
+Frame::gpu_programs()返回本Frame实际&Vec<Option<GpuTemplate>>，同一程序号对应本设备实例，CPU位置没有GPU实例；len／capacity乘size_of::<Option<GpuTemplate>>()只计该容器，不能把None计作已创建的GPU程序。GPU在真实需要时从共享定义装入pipeline，原SPIR-V和同一ExecutionPlan不复制成另一权威；设备、pipeline及完成仍归实际GPU消费者。
 
-`ProgramSlot::layout()`共享借用当前映像或装入程序的同一原ExecutionPlan，阶段、缓冲、类型、访问及条件保持真实来源。只取程序根或布局不分配、装入VM、创建设备、执行、等待或传输。活动借用不可跨Frame的run／分配／驻留变更／释放或销毁；变更之后重新借用，不能据旧地址推断当前代码身份。
+ProgramSlot::layout()共享借用原ExecutionPlan。查询原定义、GPU槽和类型不分配、装入、创建设备、执行、等待或传输，也不授予改写私有容器的权限。活动借用不跨Frame修改或销毁；CPU已装入和GPU槽Some均不表示工作接收、执行或完成。
 
 ```rust
-use blcompute::application::{Program, ProgramSlot};
+use blcompute::application::ProgramSlot;
 for (program_index, slot) in frame.programs().iter().enumerate() {
-    if let Some(slot) = slot {
-        let actual_plan = slot.layout();
-        if let ProgramSlot::Loaded(Program::Cpu(code)) = slot {
-            let current_vm = code.code_memory()?;
-        }
+    let actual_plan = slot.layout();
+    if let ProgramSlot::Cpu(code) = slot {
+        let current_vm = code.code_memory()?;
     }
+    let current_gpu = &frame.gpu_programs()[program_index];
 }
 ```
 
-Loaded只表达原代码已装入，不是工作接收／执行／完成状态；原run在真正执行前因参数或驻留拒绝，程序仍可能已经装入，数据继续由原所有者持有。未装入映像没有运行库VM，不能为查询提前装入；GPU Loaded不证明最终驱动机器码或设备完成。CPU code_memory仍是原按需Result<Vec<CpuCodeMemory>>，返回Vec会分配，VirtualQuery及错误沿原平台入口交接；报告不保活代码或产生读写许可，不能把多入口共享区段累加成独占字节。
-
-数据release不释放仍由Frame拥有的原程序，Frame／原代码最后消费者结束后才释放代码VM与相应平台资源；仅保存旧元数据不延长寿命，地址可以复用。原枚举和后端类型的显式拥有操作继续沿其原职责，不增加另一回收链、Frame身份、程序目录或版本状态。该节为Rust SDK接口，不改模块资源编码或C ABI；B／C代码区段观察仍沿C-021.7.9.23.3.2，数据／view跨语言归C-021.7.9.22.4，其他宿主容器归.23.2.2。
+CPU code_memory仍是原按需Result<Vec<CpuCodeMemory>>，返回Vec会分配并调用VirtualQuery，真实成本和原OS错误保持；报告不保活代码或授予写权限，多个入口共用区段不能重复计成独占内存。数据release不释放仍有真实消费者的定义／代码，GPU最后使用点仍保持相应设备资源。此节为Rust SDK接口，原资源字节编码和共同C ABI没有因内部Arc或容器移动而变化；完整CPU实例输入和执行失败返回仍按C-027.35.4.2.2.3.2.2及C-020.5.2.4.2推进。
 
 ### 原生物理 GPU 枚举与选择
 

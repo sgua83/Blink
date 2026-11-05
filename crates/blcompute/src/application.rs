@@ -5,6 +5,7 @@ use crate::{
     error, vulkan,
 };
 use crate::bindings::DomainRelation;
+use std::sync::Arc;
 use blanguage::{
     TemplateProgram,
     ir::{ExecutionPlan, PrefixCount, Ty},
@@ -18,41 +19,35 @@ pub enum ProgramImage {
     CpuLinked(blanguage::native::ProgramImage<TemplateProgram, *const u8>),
     Gpu(blanguage::spirv::ProgramImage<TemplateProgram>),
 }
-/// 当前已装入的原CPU／GPU程序；观察只借用，不复制代码拥有关系。
-pub enum Program {
-    Cpu(CpuTemplate),
-    Gpu(vulkan::GpuTemplate),
+/// 已装入程序的只读借用；不转移代码或设备的拥有关系。
+enum Program<'a> {
+    Cpu(&'a CpuTemplate),
+    Gpu(&'a vulkan::GpuTemplate),
 }
-/// 同一原程序槽的实际映像或已装入程序；不是执行／完成状态。
-pub enum ProgramSlot {
-    Image(ProgramImage),
-    Loaded(Program),
-}
-impl ProgramSlot {
-    /// 借用当前映像或已装入程序的原执行合同，不触发装入。
-    pub fn layout(&self) -> &ExecutionPlan {
-        match self {
-            Self::Image(ProgramImage::Cpu(image)) => image.program(),
-            Self::Image(ProgramImage::CpuLinked(image)) => image.program(),
-            Self::Image(ProgramImage::Gpu(image)) => image.program(),
-            Self::Loaded(program) => program.layout(),
-        }
-    }
-    fn gpu_layout(&self) -> Option<&ExecutionPlan> {
-        match self {
-            Self::Image(ProgramImage::Gpu(image)) => Some(image.program()),
-            Self::Loaded(Program::Gpu(program)) => Some(program.program()),
-            _ => None,
-        }
-    }
-}
-impl Program {
+impl Program<'_> {
     fn layout(&self) -> &ExecutionPlan {
         match self {
             Self::Cpu(p) => p.program(),
             Self::Gpu(p) => p.program(),
         }
     }
+}
+/// 原模块持有的不可变程序定义；CPU代码已绑定，GPU映像供实际设备装入。
+pub enum ProgramSlot {
+    Cpu(CpuTemplate),
+    Gpu(Arc<blanguage::spirv::ProgramImage<TemplateProgram>>),
+}
+impl ProgramSlot {
+    pub fn layout(&self) -> &ExecutionPlan {
+        match self {
+            Self::Cpu(program) => program.program(),
+            Self::Gpu(image) => image.program(),
+        }
+    }
+}
+struct Definitions {
+    types: Vec<Ty>,
+    programs: Vec<ProgramSlot>,
 }
 /// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
 pub enum ResidentData {
@@ -71,36 +66,42 @@ pub struct FrameCpuDataMemory {
 /// 源语言不提供从整数构造句柄或复制独占所有权的操作。
 pub struct Frame {
     data: DomainBindings<Option<ResidentData>>,
-    programs: Vec<Option<ProgramSlot>>,
+    definitions: Arc<Definitions>,
+    gpu_programs: Vec<Option<vulkan::GpuTemplate>>,
     device: Option<vulkan::Device>,
-    types: Vec<Ty>,
 }
 impl Frame {
-    pub fn new(types: Vec<Ty>, images: Vec<ProgramImage>) -> Self {
-        Self {
+    /// 消费本模块定义并绑定CPU代码；失败时未创建Frame，局部资源按原所有者释放。
+    pub fn new(types: Vec<Ty>, images: Vec<ProgramImage>) -> Result<Self> {
+        let programs = images.into_iter().map(|image| match image {
+            ProgramImage::Cpu(image) => CpuTemplate::from_image(image)
+                .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
+            ProgramImage::CpuLinked(image) => unsafe { CpuTemplate::from_linked(image) }
+                .map(ProgramSlot::Cpu).map_err(|(error, _)| error),
+            ProgramImage::Gpu(image) => Ok(ProgramSlot::Gpu(Arc::new(image))),
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(Self {
             data: Vec::new().into(),
-            programs: images
-                .into_iter()
-                .map(|image| Some(ProgramSlot::Image(image)))
-                .collect(),
+            gpu_programs: (0..programs.len()).map(|_| None).collect(),
+            definitions: Arc::new(Definitions { types, programs }),
             device: None,
-            types,
-        }
+        })
     }
     /// 借用当前原数据根；槽索引为本Frame实际句柄，None保留已释放空槽。
-    /// 不过滤、复制或保活另一份资源；活动借用期间不能改变Frame。
     pub fn data(&self) -> &DomainBindings<Option<ResidentData>> {
         &self.data
     }
-    /// 借用同一原程序槽Vec，索引仍为实际程序号，capacity以Option槽数计。
-    /// 槽容量不含内部映像／代码VM／设备分配；查询不装入或改变Frame。
-    pub fn programs(&self) -> &Vec<Option<ProgramSlot>> {
-        &self.programs
+    /// 借用原模块的同一程序目录Vec；索引、len及capacity均属于这个真实容器。
+    pub fn programs(&self) -> &Vec<ProgramSlot> {
+        &self.definitions.programs
     }
-    /// 借用原类型Vec，索引为本Frame的类型号，capacity以Ty槽数计。
-    /// 槽容量不含Ty内部拥有分配或B数据载荷；查询不复制或改变Frame。
+    /// 借用本Frame实际GPU程序槽；CPU位置没有本地GPU实例。
+    pub fn gpu_programs(&self) -> &Vec<Option<vulkan::GpuTemplate>> {
+        &self.gpu_programs
+    }
+    /// 借用原目录类型Vec，索引仍为本模块实际类型号。
     pub fn types(&self) -> &Vec<Ty> {
-        &self.types
+        &self.definitions.types
     }
     /// 查询本Frame当前可见的CPU数据字存储；不等待或下载GPU数据。
     /// 结果只保存本次元数据，不保活资源；释放后的旧结果不代表当前存活状态。
@@ -122,51 +123,20 @@ impl Frame {
         }
         result
     }
-    fn load(&mut self, index: usize) -> Result<Program> {
-        if self.device.is_none()
-            && matches!(
-                self.programs[index],
-                Some(ProgramSlot::Image(ProgramImage::Gpu(_)))
-            )
-        {
-            self.create_device()?;
+    fn load_gpu(&mut self, index: usize, image: &blanguage::spirv::ProgramImage<TemplateProgram>) -> Result<()> {
+        if self.gpu_programs[index].is_none() {
+            if self.device.is_none() {
+                self.create_device()?;
+            }
+            self.gpu_programs[index] = Some(self.device.as_ref().unwrap().load_template_ref(image)?);
         }
-        match self.programs[index].take().unwrap() {
-            ProgramSlot::Loaded(program) => Ok(program),
-            ProgramSlot::Image(ProgramImage::Cpu(image)) => {
-                match CpuTemplate::from_image(image) {
-                    Ok(program) => Ok(Program::Cpu(program)),
-                    Err((error, image)) => {
-                        self.programs[index] = Some(ProgramSlot::Image(ProgramImage::Cpu(image)));
-                        Err(error)
-                    }
-                }
-            }
-            ProgramSlot::Image(ProgramImage::CpuLinked(image)) => {
-                match unsafe { CpuTemplate::from_linked(image) } {
-                    Ok(program) => Ok(Program::Cpu(program)),
-                    Err((error, image)) => {
-                        self.programs[index] = Some(ProgramSlot::Image(ProgramImage::CpuLinked(image)));
-                        Err(error)
-                    }
-                }
-            }
-            ProgramSlot::Image(ProgramImage::Gpu(image)) => {
-                match self.device.as_ref().unwrap().load_template(image) {
-                    Ok(program) => Ok(Program::Gpu(program)),
-                    Err((error, image)) => {
-                        self.programs[index] = Some(ProgramSlot::Image(ProgramImage::Gpu(image)));
-                        Err(error)
-                    }
-                }
-            }
-        }
+        Ok(())
     }
     fn create_device(&mut self) -> Result<()> {
-        let programs = self
-            .programs
-            .iter()
-            .filter_map(|slot| slot.as_ref().and_then(ProgramSlot::gpu_layout));
+        let programs = self.definitions.programs.iter().filter_map(|definition| match definition {
+            ProgramSlot::Gpu(image) => Some(image.program()),
+            ProgramSlot::Cpu(_) => None,
+        });
         self.device = Some(vulkan::Device::for_programs(programs)?);
         Ok(())
     }
@@ -195,7 +165,7 @@ impl Frame {
     }
     pub fn allocate(&mut self, ty: u32, count: u32) -> Result<u32> {
         let data = Some(ResidentData::Cpu(
-            Dataset::with_type(self.types[ty as usize].clone(), count)?.into(),
+            Dataset::with_type(self.definitions.types[ty as usize].clone(), count)?.into(),
         ));
         if let Some(index) = self.data.datasets.iter().position(Option::is_none) {
             self.data.datasets[index] = data;
@@ -294,7 +264,9 @@ impl Frame {
     /// GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value]) -> Result<()> {
         let index = program as usize;
-        let layout = self.programs[index].as_ref().unwrap().layout();
+        let definitions = self.definitions.clone();
+        let definition = &definitions.programs[index];
+        let layout = definition.layout();
         // 参数是存储的引用；同一物理存储只移动一次。
         let mut selected = Vec::new();
         let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
@@ -337,7 +309,13 @@ impl Frame {
                 })
             })
             .collect();
-        let loaded = self.load(index)?;
+        let loaded = match definition {
+            ProgramSlot::Cpu(program) => Program::Cpu(program),
+            ProgramSlot::Gpu(image) => {
+                self.load_gpu(index, image)?;
+                Program::Gpu(self.gpu_programs[index].as_ref().unwrap())
+            }
+        };
         let layout = loaded.layout();
         let (datasets, domains, result) = match &loaded {
             Program::Cpu(program) => {
@@ -350,7 +328,6 @@ impl Frame {
                             for (&handle, data) in selected.iter().zip(datasets) {
                                 self.data.datasets[handle as usize] = Some(ResidentData::Cpu(data));
                             }
-                            self.programs[index] = Some(ProgramSlot::Loaded(loaded));
                             return Err(error("CPU 访问需要先显式 download 数据"));
                         }
                     }
@@ -380,7 +357,6 @@ impl Frame {
                             for (&handle, data) in selected.iter().zip(datasets) {
                                 self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
                             }
-                            self.programs[index] = Some(ProgramSlot::Loaded(loaded));
                             return Err(error("GPU 执行需要先显式 upload 数据"));
                         }
                     }
@@ -393,7 +369,6 @@ impl Frame {
                         for (&handle, data) in selected.iter().zip(bindings.datasets) {
                             self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
                         }
-                        self.programs[index] = Some(ProgramSlot::Loaded(loaded));
                         return Err(error);
                     }
                 };
@@ -434,7 +409,6 @@ impl Frame {
             }));
         self.data.domains.sort();
         self.data.domains.dedup();
-        self.programs[index] = Some(ProgramSlot::Loaded(loaded));
         result
     }
 }

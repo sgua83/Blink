@@ -158,7 +158,7 @@ DomainBindings::domain_relations返回原domains共享切片，公开原DomainRe
 
 ## Rust SDK的Frame程序槽与代码根
 
-`Frame::programs()`只共享借用原Option程序槽切片，原索引是本Frame程序号。原ProgramSlot的Image／Loaded分别持有CPU／GPU原映像或Program中的CpuTemplate／GpuTemplate；ProgramSlot::layout借用同一原ExecutionPlan，不构造观察副本或拥有表。根与布局查询不分配、装入、创建设备、执行、等待或传输，活动借用不能跨Frame改写或释放。
+Frame::programs()共享借用原模块Vec<ProgramSlot>，Cpu持已绑定代码，Gpu持原只读映像；Frame::gpu_programs()另借用本Frame实际GPU实例槽，索引均为同一原程序号。ProgramSlot::layout借用同一原ExecutionPlan，CPU代码不在run中取出／归还；GPU按本设备真实需要装入，设备布局共享原计划。原容器的len／capacity分别只计自己的实际槽存储，不包含嵌套代码VM或GPU分配。查询不分配、装入、创建设备、执行、等待或传输，活动借用不跨Frame改写／释放。Rust Frame::new返回Result，原根C创建签名和错误接收器仍保持。
 
 Loaded只说明装入，原参数／驻留拒绝也可能留下已装入程序，不代表工作执行或完成。CPU继续从该原CpuTemplate调用code_memory，保持既有Vec返回成本、原VirtualQuery错误和快照语义；GPU程序借用只说明实际合同，不成为最终ISA或完成查询。未触及槽保持原映像，数据释放不卸载仍由Frame拥有的代码；最后真实程序消费者结束后按原拥有者释放，旧报告不保活代码或赋予地址访问权。
 
