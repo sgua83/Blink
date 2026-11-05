@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "a737d92821536302712e4b2b41f38523455a9a3c472ef98de919d2eb25ab790a"
+      "sha256": "d66133d3f9b7c4d1243a2eec4d8a062401899d3159b54960676e191f161961cf"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -112,7 +112,11 @@
     },
     {
       "path": "crates/blanguage/src/check/cooperative.rs",
-      "sha256": "fd702f1bd9ef01f2df1215774d9e001366f1298a3f9d2a34ec33c6bff4934850"
+      "sha256": "470c034984e39b7682a72089349daea93850413c39c0bbe5e61ae54a1725b26f"
+    },
+    {
+      "path": "crates/blanguage/src/check/custom_reduce.rs",
+      "sha256": "820ee281cf132d5cf60bf86b33c09c5a5a42efa11329802d3192fcf83b3362a2"
     },
     {
       "path": "crates/blanguage/src/check/effects.rs",
@@ -124,7 +128,7 @@
     },
     {
       "path": "crates/blanguage/src/check/external.rs",
-      "sha256": "b7bada41e9be773642c936f363116dc8d4d278365c2379c55df80343e65b2609"
+      "sha256": "ee9c49c316e31b8eb4b022468a5ccc9db263a7bc8b5d8edf2b7b1ed89437a4bc"
     },
     {
       "path": "crates/blanguage/src/check/flow.rs",
@@ -132,11 +136,11 @@
     },
     {
       "path": "crates/blanguage/src/check/generics.rs",
-      "sha256": "b9e8723c5d7b2253bac566f6033b8468b38f5af7f9c18e1116cb51dd7e8e46dd"
+      "sha256": "96c297d19e650ab884a648e88ee189876292fab6463cdac4d9914ce81e44a8e3"
     },
     {
       "path": "crates/blanguage/src/check/native_function.rs",
-      "sha256": "b46b929933f7d86902de9e2d6aa203636f0e06e688b1b0cbaaf7c9a8c3bca212"
+      "sha256": "0a7685486ae3c6804e9850953bcaa463ebabf1edf49642f9815c7d227a21aebc"
     },
     {
       "path": "crates/blanguage/src/check/operators.rs",
@@ -160,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "sha256": "36a421e4a3eb902ab0ed7087d84fd55d4dd94c1d9b00b8ebf8315128cb117ee5"
+      "sha256": "680ccab53ab771fae8874cc74ecd36ad41949eb90c28641852bfbfe516060bb8"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
@@ -181,6 +185,10 @@
     {
       "path": "crates/blanguage/src/check/selection.rs",
       "sha256": "87ce1092a038bbd23293ad59619d14086bc42f36ab73be5dd8cf6504104d72a4"
+    },
+    {
+      "path": "crates/blanguage/src/check/user_owned.rs",
+      "sha256": "b292ea383609f319f5f098b21cc6c12bc86f139cd1b894dfc933a47789bdd1f2"
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
@@ -224,15 +232,15 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "ee88ccebd454f52d987e20d8816c7e8709c9ecc750caead85aa4798b6c7a476a"
+      "sha256": "226d1520f6e41d8cd9d8722fb328274393eb446f1eb62adc992dca68fd69df85"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
-      "sha256": "17a2ed2d341d3a4ec5e4c18007baea4b7b8ad8d08c68ad77d5da99acdff3d5fb"
+      "sha256": "03710a7006e1bcddb78bc06678366b57a958cc53f1209a1022d37bc53c0353bf"
     },
     {
       "path": "crates/blanguage/src/ir/inspect.rs",
-      "sha256": "dd42b833b8e1c9edc9032f7e8878c45f6ae64c136f388c82edd1a20aa9905123"
+      "sha256": "4e5aea873fbb4309690fda2aa2238080c815969800264401cf19f8bc914891b2"
     },
     {
       "path": "crates/blanguage/src/ir/origin.rs",
@@ -361,10 +369,6 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
-    },
-    {
-      "path": "crates/blanguage/src/check/user_owned.rs",
-      "sha256": "10c2a36fc3dbc53429e65d530d5c84ebdfa432b70278f4dad57b29fe33933655"
     }
   ],
   "excerpts": [
@@ -430,14 +434,14 @@
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
-      "start_line": 57,
-      "end_line": 61,
+      "start_line": 77,
+      "end_line": 81,
       "sha256": "d466e0e11a6ee1a9688cfa3af2578cdde7b5fea8ffee569af21775bc61a30fa4"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
-      "start_line": 172,
-      "end_line": 179,
+      "start_line": 192,
+      "end_line": 199,
       "sha256": "82d9a8c24af05ce55ab86042eedd8b18fd842af6ee24798c4402fbc7253a2d11"
     },
     {

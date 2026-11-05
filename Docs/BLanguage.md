@@ -623,6 +623,16 @@ CallParameter::origin()只借用同一不可变材料，ParameterOrigin::ir_json
 
 这里是逻辑IR ABI关系，最终Windows寄存器、栈、隐藏机器输入与指令映射仍由原后端来源任务交付。必要运行编码不带这些材料，参数、类型、实际值、借用、Frame及最后消费者的原权威保持；材料沿原FunctionBody／模块、SDK／CLI快照共享，在最后IR消费者后释放，不保留AST／World、不拥有运行资源、不保活变量或指令，不建立状态、图、调度或释放链。完整优化的Release仍按原规则执行。见[架构](Architecture.md#tool-7-2-4-5-6-1)与[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-1)。
 
+#### 普通调用B实参与实际CallArgument的来源
+
+compiler角色的原CallArgument值／引用变体直接持有可选共享ArgumentOrigin，CallArgument::origin()借用同一材料，ArgumentOrigin::ir_json()交接结构事实。原Call JSON的arguments每项增加origin：隐式Frame为implicit_frame_argument；普通B参数关系为parameter_argument，包含被调B形参零基index、name及可选site。实际被调实例继续只归原Call.target，不另存目标绑定；这些是逻辑IR实参，最终机器寄存器／栈、隐藏输入及指令映射仍由后端任务交付。
+
+普通／泛型调用与CPU内联中的递归调用沿原调用链临时借用同一次原Expr列表，在native_call实际准备ABI实参时按原形参次序取得Expr.span，site沿原Builder产生expression语法及调用者定义、实际实例、内联／域上下文；不重新求值，也不把Call本身的source_site借作实参位置。Expr.span只表示解析器实际取得的范围，例如嵌套调用通常是其调用标识符，不扩大为整个表达式。多个引用分量共享同一B实参材料；零分量值仍保留原参数关系，values为空。Frame裁剪直接删除同一原实参及其材料，不造成后续参数序号漂移。
+
+没有原实参语法的根入口、生成的dataset初始化／释放及自定义值核参数明确不提供Expr列表；如果形成B原生调用，已知参数序号／名称仍可交接，site为null，不将null推断成某个源码表达式或特定生成原因，原Inst.generated_origin继续说明已知生成职责。C调用、运行库及域包装等其余原构造默认origin为null，不按类型名、符号名或最终寄存器猜补。提供者源码／头文件缺席的已编译调用仍从原公开接口确定参数次序／名称，已取得的site归调用者自身源码，不伪造提供者实现；实际形参声明／输入关系仍见上节。
+
+材料只由原CallArgument／Call／Inst、FunctionBody／ValueCode、模块及SDK／CLI快照持有；克隆与原寄存器／局部重映射保留同一不可变事实，最后真实IR消费者后释放，不保留Expr／AST／World、不拥有运行值或资源。关闭compiler不包含该字段／类型／接口／JSON字段，必要对象／执行编码不增加材料，原BLCO53／BLRI27保持。原求值顺序、类型、布局、借用、Scoped资源结束、Frame、数值效果与最后消费者不因观察改变，不增加参数表、状态、图、调度、同步或释放链，不为来源保活指令。见[架构](Architecture.md#tool-7-2-4-5-6-5)和[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-5)。
+
 #### 数组形参物化StoreLocal的生成来源
 
 materialize_array_bindings只为原含数组Binding::Value的实际物化交接ArrayParameterStore，JSON reason为array_parameter_store。同一原materialize_array逐分量StoreLocal共享该材料，原槽位／storage、源寄存器、readonly、求值顺序、Proof及初始化保持；无实际StoreLocal的零长值不补节点，原优化可以消除常量索引或未使用存储，不为观察保活。

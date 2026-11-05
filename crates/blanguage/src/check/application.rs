@@ -247,7 +247,7 @@ impl ApplicationLoads<'_, '_> {
                     && self.0.functions.writes_only_references(name) {
                     if call.memory.iter().any(|effect|effect.access.writes()){return true;}
                     return call.arguments.iter().any(|argument|match argument {
-                        CallArgument::Reference{ty,access,address}if access.writes()=>match &address.storage {
+                        CallArgument::Reference{ty,access,address, ..}if access.writes()=>match &address.storage {
                             ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
                             ir::CallStorage::Local{..}=>false,
                         },
@@ -305,7 +305,7 @@ pub(super) fn pointer_type() -> Ty {
     ty
 }
 fn argument(value: Value) -> CallArgument {
-    CallArgument::Value {
+    CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
         dataset_borrow:None, ty: value.ty,
         values: value.regs,
     }
@@ -385,7 +385,7 @@ pub(crate) fn compile_application(
     builder.in_function = true;
     let result = builder.native_function(instance.clone(), Vec::new(), d.function.span, Some(Arc::new(GeneratedOrigin {
         reason: GenerationReason::ApplicationEntryCall, trigger: Some(entry_anchor.clone()),
-    })))?;
+    })), None)?;
     let result = builder.ordinary_return(result, d.function.span)?.unwrap();
     let mut app = builder.application.take().unwrap();
     let mut body = ValueCode {
@@ -535,7 +535,7 @@ fn live_resources(
     let mut code = std::mem::take(&mut body.code);
     code.push(generated(runtime_call(
         "destroy",
-        vec![CallArgument::Value { dataset_borrow:None, ty: pointer_type(), values: frame.clone() }],
+        vec![CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: pointer_type(), values: frame.clone() }],
         None,
         Vec::new(),
     ).kind, GenerationReason::FrameDestroy));
@@ -548,8 +548,8 @@ fn live_resources(
         generated(runtime_call(
             "create",
             vec![
-                CallArgument::Value { dataset_borrow:None, ty: Ty::scalar(Scalar::U64), values: vec![receiver] },
-                CallArgument::Value { dataset_borrow:None, ty: Ty::scalar(Scalar::U64), values: vec![context] },
+                CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: Ty::scalar(Scalar::U64), values: vec![receiver] },
+                CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: Ty::scalar(Scalar::U64), values: vec![context] },
             ],
             Some(pointer_type()),
             frame.clone(),
@@ -834,8 +834,8 @@ impl Builder<'_> {
         runtime_call(
             "release",
             vec![
-                CallArgument::Value { dataset_borrow:None, ty: pointer_type(), values: frame },
-                CallArgument::Value {
+                CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: pointer_type(), values: frame },
+                CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
                     dataset_borrow:None, ty: Ty::scalar(Scalar::U32),
                     values: vec![handle],
                 },
@@ -1207,7 +1207,7 @@ impl Builder<'_> {
         });
         self.code.push(Inst::generated(runtime_call("resize", vec![
             argument(frame), argument(data.root.clone()), argument(length.clone()),
-            CallArgument::Reference { ty: fill.ty, access: Access::Read, address: CallReference {
+            CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: fill.ty, access: Access::Read, address: CallReference {
                 storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
             } },
         ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind, call_origin));
@@ -1364,7 +1364,7 @@ impl Builder<'_> {
         let outer=std::mem::take(&mut self.code);self.code.push(Inst::generated(InstKind::LoadLocal(index_reg,slot),condition_origin.clone()));
         let test=self.reg(Scalar::Bool);self.code.push(Inst::generated(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Less),a:index_reg,b:data.length.regs[0]},condition_origin));
         let condition=std::mem::take(&mut self.code);
-        let Some(mut returned)=self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)))? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
+        let Some(mut returned)=self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)),None)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
         let elements=self.capture_element_model(data,&[],returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
@@ -1569,7 +1569,7 @@ impl Builder<'_> {
     }
     fn application_domain_argument(&mut self,data:&DataReference)->CallArgument{
         let offset=self.application_reference_offset(data);
-        CallArgument::Value{dataset_borrow:None, ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
+        CallArgument::Value{ #[cfg(feature = "compiler")] origin: None,dataset_borrow:None, ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
     }
     pub(super) fn borrowed_dataset_parameter_type(access: Access, execution: crate::execution::Requirement)->Ty {
         if matches!(access,Access::Read|Access::Atomic|Access::InOut) && execution == crate::execution::Requirement::Invocation {

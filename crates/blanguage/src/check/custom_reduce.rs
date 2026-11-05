@@ -117,7 +117,7 @@ fn function(
         capture_parameter_start: parameters.len(),
         captures: captures.iter().map(|capture| source_site(capture.span)).collect(),
     });
-    let result = builder.invoke_returned(instance, args, reference.span, None)?;
+    let result = builder.invoke_returned(instance, args, reference.span, None, None)?;
     let result = builder.ordinary_return(result, expr.span)?;
     let result = builder.value_result(result, expr.span)?;
     builder.require_same(ty, &result.ty, expr.span)?;

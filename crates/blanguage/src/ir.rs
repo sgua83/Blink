@@ -11,7 +11,7 @@ pub use layout::interface_layout_json;
 mod external;
 pub(crate) use external::DatasetBorrow;
 #[cfg(feature = "compiler")]
-pub use external::ParameterOrigin;
+pub use external::{ParameterOrigin, ArgumentOrigin};
 pub use external::{
     Call, CallArgument, CallParameter, CallParameterKind, CallReference, CallStorage, CallTarget, FunctionBody, MemoryAccess, MemoryAlias,
 };

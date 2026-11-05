@@ -320,7 +320,7 @@ impl Builder<'_> {
                     self.require_same(ty, &value.ty, span)?;
                     memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
-                    CallArgument::Value { dataset_borrow:None, ty: ty.clone(), values: value.regs }
+                    CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: ty.clone(), values: value.regs }
                 }
                 (CallParameterKind::Reference { ty, access }, Argument::Reference(owner)) => {
                     if access.reads(){memory_borrow.union(&self.address_contents(ty,&owner.proof));}
@@ -328,7 +328,7 @@ impl Builder<'_> {
                     self.require_same(ty, place.ty(), span)?;
                     let address = self.external_reference(&place, *access, span)?;
                     if access.writes() { written.push((index, place)); }
-                    CallArgument::Reference { ty: ty.clone(), access: *access, address }
+                    CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: ty.clone(), access: *access, address }
                 }
                 _ => return self.fail(span, "B263", "C ABI实参只接收普通值及实际位置"),
             });

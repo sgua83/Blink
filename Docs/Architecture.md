@@ -403,7 +403,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6"></a>
 
-**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。原形参与IR输入.1、数组形参物化.2、Stage Dataset实参准备.3与CPU借用步长拓宽.4已实现，实际B实参与ABI实参关系.5仍未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。原五项职责均已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6)；其他C调用材料、完整优化变换及最终机器映射仍沿其原任务，不以本父项闭合代表完整来源工具。
 
 <a id="tool-7-2-4-5-6-1"></a>
 
@@ -423,7 +423,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-5"></a>
 
-**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs#88::native_call365起各原arguments.push及661至669原Call→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；原prune裁剪Frame时同一实参的材料随之删除，普通Call的source_site不代替每个B实参的位置；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-5)。
+**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs#88::native_call365起各原arguments.push及661至669原Call→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；原prune裁剪Frame时同一实参的材料随之删除，普通Call的source_site不代替每个B实参的位置；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前原CallArgument两变体直接持有compiler专用可选共享ArgumentOrigin；Frame单列，B实参关系保留被调形参零基index／name及可选site，实际目标仍只归Call.target。原普通／泛型／CPU内联递归路由临时借用同一次Expr切片，native_call按原顺序取实际Expr.span形成Expression来源，不重求值或保存AST；Expr.span只覆盖原解析范围，不扩大嵌套调用标识符。每个向量引用展开共享同一来源，零分量保留身份而无值分量。生成根入口／dataset初始化／释放／自定义值核无原Expr时site明确空，原生成原因仍归Inst；C／运行库／域包装默认无本叶材料。CallArgument::origin及ArgumentOrigin::ir_json借用／序列化同一事实，原arguments JSON输出origin；原克隆及寄存器／局部映射保持材料，关闭compiler不含材料及查询字段，必要对象／执行编码保持。提供者源码缺席不影响原接口参数关系，实参site只归实际调用者，不伪造提供者实现或最终机器位置。见[规范](BLanguage.md#普通调用b实参与实际callargument的来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-5)。
 
 <a id="tool-7-2-4-5-7"></a>
 

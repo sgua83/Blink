@@ -810,7 +810,7 @@ impl Builder<'_> {
                     };
                     let instance =
                         self.specialized_arguments(key, &arguments, explicit, expr.span)?;
-                    return self.invoke_returned(instance, arguments, expr.span, None);
+                    return self.invoke_returned(instance, arguments, expr.span, None, Some(args));
                 }
             }
             _ => {}

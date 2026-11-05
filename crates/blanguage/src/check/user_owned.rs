@@ -60,7 +60,7 @@ impl Builder<'_> {
         let argument=cooperative::Argument::resource(payload);
         let instance=self.specialized_function(value.value.ty.cleanup.as_ref().unwrap().clone(),std::slice::from_ref(&argument),span)?;
         let origin=std::sync::Arc::new(ir::GeneratedOrigin{reason:ir::GenerationReason::UserOwnedDrop,trigger:self.source_site.clone().map(ir::GenerationAnchor::Syntax)});
-        self.invoke_returned(instance,vec![argument],span,Some(origin))?;Ok(())
+        self.invoke_returned(instance,vec![argument],span,Some(origin),None)?;Ok(())
     }
 }
 

@@ -106,7 +106,7 @@ impl Builder<'_> {
             return Ok(None);
         };
         let instance = self.specialized_arguments(key, &arguments, Some(explicit), span)?;
-        self.invoke_instance(instance, arguments, span)
+        self.invoke_instance(instance, arguments, span, Some(args))
     }
 }
 /// 类型与静态 u32 值共用原名义实例；显式调用可给全部实参或只给 const 后缀。

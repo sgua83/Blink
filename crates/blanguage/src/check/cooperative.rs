@@ -329,8 +329,9 @@ impl<'a> Builder<'a> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
+        syntax: Option<&[Expr]>,
     ) -> Result<Option<Value>> {
-        let result = self.invoke_returned(instance, args, span, None)?;
+        let result = self.invoke_returned(instance, args, span, None, syntax)?;
         self.ordinary_return(result, span)
     }
     pub(super) fn invoke_returned(
@@ -339,6 +340,7 @@ impl<'a> Builder<'a> {
         args: Vec<Argument>,
         span: Span,
         generated_origin: Option<Arc<GeneratedOrigin>>,
+        syntax: Option<&[Expr]>,
     ) -> Result<Option<returns::Returned>> {
         if instance.definition.function.external.is_some() {
             return self
@@ -351,14 +353,14 @@ impl<'a> Builder<'a> {
             if self.application.is_none() && self.program.target != Target::Cpu {
                 return self.fail(span, "B161", "已编译普通CPU模块调用需要CPU执行目标");
             }
-            return self.native_function(instance, args, span, generated_origin);
+            return self.native_function(instance, args, span, generated_origin, syntax);
         }
         if instance.definition.execution == crate::execution::Requirement::Domain {
             if self.application.is_some() {
                 if instance.definition.function.target == Target::Cpu
                     && !super::kernel_interface(self.world, &instance.definition)?
                 {
-                    return self.native_function(instance, args, span, generated_origin);
+                    return self.native_function(instance, args, span, generated_origin, syntax);
                 }
                 return self.application_execute(instance, args, Target::Cpu, span);
             }
@@ -374,9 +376,9 @@ impl<'a> Builder<'a> {
             }
             FunctionKind::Value => {
                 if self.application.is_some() && instance.definition.function.target != Target::Gpu {
-                    self.native_function(instance, args, span, generated_origin)
+                    self.native_function(instance, args, span, generated_origin, syntax)
                 } else {
-                    self.inline_instance(instance, args, span)
+                    self.inline_instance(instance, args, span, syntax)
                 }
             }
             FunctionKind::Constant => {
@@ -419,7 +421,7 @@ impl<'a> Builder<'a> {
             return Ok(None);
         };
         let instance = self.specialized_arguments(key, &arguments, explicit, span)?;
-        let result = self.inline_instance(instance, arguments, span)?;
+        let result = self.inline_instance(instance, arguments, span, Some(args))?;
         self.ordinary_return(result, span)
     }
     pub(super) fn inline_function(
@@ -432,7 +434,7 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B162", "函数参数数量不匹配");
         }
         let instance = self.specialized_function(key, &args, span)?;
-        let result = self.inline_instance(instance, args, span)?;
+        let result = self.inline_instance(instance, args, span, None)?;
         self.ordinary_return(result, span)
     }
     pub(super) fn inline_instance(
@@ -440,6 +442,7 @@ impl<'a> Builder<'a> {
         instance: crate::generics::Instance,
         args: Vec<Argument>,
         span: Span,
+        syntax: Option<&[Expr]>,
     ) -> Result<Option<returns::Returned>> {
         if instance.definition.function.target != Target::Compute
             && instance.definition.function.target != self.program.target
@@ -450,7 +453,7 @@ impl<'a> Builder<'a> {
             if self.program.target != Target::Gpu
                 && instance.definition.function.kind == FunctionKind::Value
             {
-                return self.native_function(instance, args, span, None);
+                return self.native_function(instance, args, span, None, syntax);
             }
             return self.fail(span, "B160", "当前设备函数不允许递归调用");
         }

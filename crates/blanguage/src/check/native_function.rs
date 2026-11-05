@@ -348,12 +348,13 @@ impl Builder<'_> {
         args: Vec<Argument>,
         span: Span,
         generated_origin: Option<Arc<GeneratedOrigin>>,
+        syntax: Option<&[Expr]>,
     ) -> Result<Option<Returned>> {
         if instance.definition.function.target == Target::Gpu {
             return self.fail(span, "B161", "普通 CPU 调用不能改变函数声明的实际目标");
         }
         self.native_declaration(&instance)?;
-        self.native_call(instance, args, span, generated_origin)
+        self.native_call(instance, args, span, generated_origin, syntax)
     }
     fn native_dataset_shape(&self,param:&Param,definition:&Definition,count:Option<u32>,span:Span)->Result<()>{
         if param.ty.count.is_some()&&self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)?!=count{
@@ -368,6 +369,7 @@ impl Builder<'_> {
         args: Vec<Argument>,
         span: Span,
         generated_origin: Option<Arc<GeneratedOrigin>>,
+        syntax: Option<&[Expr]>,
     ) -> Result<Option<Returned>> {
         let d = &instance.definition;
         let implicit = self.functions.units[&instance.name].as_ref()
@@ -381,7 +383,7 @@ impl Builder<'_> {
             actual = frame.regs.iter()
                 .map(|reg| Some(bounds::Proof::default().with_identity(ValueIdentity::Register(*reg))))
                 .collect();
-            arguments.push(CallArgument::Value { dataset_borrow:None, ty: frame.ty, values: frame.regs });
+            arguments.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: Some(Arc::new(ArgumentOrigin::Frame)), dataset_borrow:None, ty: frame.ty, values: frame.regs });
         }
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
@@ -394,6 +396,10 @@ impl Builder<'_> {
         let mut storage_inputs=BTreeMap::new();
         let mut memory_borrow=view::Borrow::default();
         for (index, (p, arg)) in d.function.params.iter().zip(args).enumerate() {
+            let argument_origin = Arc::new(ArgumentOrigin::Parameter {
+                index, name: p.name.clone(),
+                site: syntax.and_then(|args| self.source_at(args[index].span, SourceSyntax::Expression)),
+            });
             let ty = cooperative::parameter_type(self.world, p, d)?;
             let arg=match arg {Argument::Scoped{value,owner}=>{held.push(owner);Argument::resource(value)},other=>other};
             let arg=match arg {
@@ -430,7 +436,7 @@ impl Builder<'_> {
                     value.proof=self.current_address_proof(&value.ty,&value.proof);
                     memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     append_actual(&mut actual, &value);
-                    arguments.push(CallArgument::Value {
+                    arguments.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),
                         dataset_borrow:None, ty: value.ty.clone(),
                         values: value.regs.clone(),
                     });
@@ -439,7 +445,7 @@ impl Builder<'_> {
                 Argument::OwnedReference{mut value,place,owner} if matches!(p.access,Access::Write|Access::InOut)=>{
                     self.require_same(&ty,&value.value.ty,span)?;
                     if let Some(owner)=owner{held.push(owner);}
-                    for(part,address)in self.native_references(&place,p.access,span,d.function.c_abi)?{arguments.push(CallArgument::Reference{ty:part,access:p.access,address});actual.extend([None,None]);}
+                    for(part,address)in self.native_references(&place,p.access,span,d.function.c_abi)?{arguments.push(CallArgument::Reference{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),ty:part,access:p.access,address});actual.extend([None,None]);}
                     if p.access==Access::InOut {
                         for data in value.resources(){self.require_application_initialized(data,span)?;}
                         self.load_owned_value(&mut value,span)?;
@@ -459,7 +465,7 @@ impl Builder<'_> {
                     let origin=self.position_origin(&place,span)?;
                     storage_inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Position(Arc::new(origin)))));
                     for (part, address) in self.native_references(&place, p.access, span, d.function.c_abi)? {
-                        arguments.push(CallArgument::Reference {
+                        arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),
                             ty: part,
                             access: p.access,
                             address,
@@ -482,7 +488,7 @@ impl Builder<'_> {
                 Argument::Atomic(place) if p.access == Access::Atomic => {
                     self.require_same(&ty, place.ty(), span)?;
                     for (part, address) in self.native_references(&place, Access::Atomic, span, d.function.c_abi)? {
-                        arguments.push(CallArgument::Reference { ty: part, access: Access::Atomic, address });
+                        arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()), ty: part, access: Access::Atomic, address });
                         actual.extend([None, None]);
                     }
                     env.insert(p.name.clone(), Binding::AtomicBorrow(place));
@@ -518,7 +524,7 @@ impl Builder<'_> {
                     for value in [&pointer,&length,&stride,&offset]{proof.append(value);}
                     let value=Value{ty:descriptor,regs:vec![address,length.regs[0],step,offset.regs[0]],proof,literal:false,uniform:true,constant:None};
                     append_actual(&mut actual,&value);
-                    arguments.push(CallArgument::Value{dataset_borrow:None, ty:value.ty,values:value.regs});
+                    arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
                     locations.insert(residency::Input::new(index),residency::Residency::cpu());
                     residency::layout_argument(&mut layouts,index,residency::LayoutSource::parameter(binding,!view.projection.is_empty()));
                     env.insert(p.name.clone(),Binding::Data(view));
@@ -549,7 +555,7 @@ impl Builder<'_> {
                     }else{None};
                     let value=self.application_reference_value(&reference,descriptor,span)?;
                     append_actual(&mut actual,&value);
-                    arguments.push(CallArgument::Value{dataset_borrow,ty:value.ty,values:value.regs});
+                    arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow,ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::DataReference(reference));
                 }
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
@@ -560,7 +566,7 @@ impl Builder<'_> {
                     self.native_dataset_shape(p,d,data.count,span)?;
                     let value=self.returned_storage(&Returned::Dataset(data.clone()));
                     append_actual(&mut actual,&value);
-                    arguments.push(CallArgument::Value{dataset_borrow:None, ty:value.ty,values:value.regs});
+                    arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::ApplicationData(data));
                 }
                 Argument::OwnedValue(mut value)
@@ -577,7 +583,7 @@ impl Builder<'_> {
                     value.value.proof=self.current_address_proof(&value.value.ty,&value.value.proof);
                     memory_borrow.union(&self.address_contents(&value.value.ty,&value.value.proof));
                     append_actual(&mut actual, &value.value);
-                    arguments.push(CallArgument::Value {
+                    arguments.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),
                         dataset_borrow:None, ty: value.value.ty.clone(),
                         values: value.value.regs.clone(),
                     });
@@ -1043,7 +1049,7 @@ fn lower_dataset_borrows<'a>(
     fn constant(code:&mut Vec<InstKind>,registers:&mut Vec<Scalar>,scalar:Scalar,bits:Bits)->Reg {
         let reg=register(registers,scalar);code.push(InstKind::Constant(reg,scalar,bits));reg
     }
-    fn value(ty:Ty,values:Vec<Reg>)->CallArgument {CallArgument::Value{ty,values,dataset_borrow:None}}
+    fn value(ty:Ty,values:Vec<Reg>)->CallArgument {CallArgument::Value{ #[cfg(feature = "compiler")] origin: None,ty,values,dataset_borrow:None}}
     fn block<'a>(code:&mut [Inst],registers:&mut Vec<Scalar>,model:&view_contracts::Function,contract:&impl Fn(&str)->&'a Contract) {
         for instruction in code {
             let mut before=Vec::new();
@@ -1460,7 +1466,7 @@ fn build_domain(
     frame.name = "__blink_frame".into();
     let mut registers = vec![Scalar::U32, Scalar::U32];
     let mut parameters = vec![CallParameter::value(frame.clone())];
-    let frame = CallArgument::Value {
+    let frame = CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
         dataset_borrow:None, ty: frame,
         values: vec![0, 1],
     };
@@ -1480,7 +1486,7 @@ fn build_domain(
             parameters.push(CallParameter::value(ty.clone()));
             for (i, (scalar, offset)) in ty.components.iter().enumerate() {
                 uniform_regs.insert(signature.uniforms[ui].offset + offset, first + i);
-                uniform_values.push(CallArgument::Value {
+                uniform_values.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
                     dataset_borrow:None, ty: Ty::scalar(*scalar),
                     values: vec![first + i],
                 });
@@ -1536,11 +1542,11 @@ fn build_domain(
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {
-                Root::Data(i, _) => CallArgument::Value {
+                Root::Data(i, _) => CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
                     dataset_borrow:None, ty: Builder::domain_dataset_parameter_type(),
                     values: data[*i].to_vec(),
                 },
-                Root::Uniform(ty, offset) => CallArgument::Value {
+                Root::Uniform(ty, offset) => CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
                     dataset_borrow:None, ty: ty.clone(),
                     values: ty
                         .components
@@ -1564,7 +1570,7 @@ fn build_domain(
                             reg
                         })
                         .collect();
-                    CallArgument::Value {
+                    CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
                         dataset_borrow:None, ty: ty.clone(),
                         values,
                     }
@@ -1689,7 +1695,7 @@ fn emit_domain_part(
     let index = context.resources.programs.len();
     context.resources.programs.push((target, program));
     let mut arguments = vec![frame.clone()];
-    arguments.extend(data.iter().flat_map(|regs| *regs).map(|reg| CallArgument::Value {
+    arguments.extend(data.iter().flat_map(|regs| *regs).map(|reg| CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
         dataset_borrow:None, ty: Ty::scalar(Scalar::U32),
         values: vec![reg],
     }));

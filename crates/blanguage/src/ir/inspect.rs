@@ -84,11 +84,29 @@ fn parameter_inputs(value: &CallParameter, inputs: &[Reg]) -> String {
     result.push_str(",\"input_registers\":"); result.push_str(&numbers(inputs)); result.push('}');
     result
 }
-fn argument(value: &CallArgument) -> String {
-    match value {
-        CallArgument::Value { ty, values, .. } => node("value", &[("type", ty.layout_json()), ("values", numbers(values))]),
-        CallArgument::Reference { ty, access, address } => node("reference", &[("type", ty.layout_json()), ("access", name(access)), ("address", reference(address))]),
+#[cfg(feature = "compiler")]
+impl ArgumentOrigin {
+    pub fn ir_json(&self) -> String {
+        match self {
+            Self::Frame => node("implicit_frame_argument", &[]),
+            Self::Parameter { index, name, site } => node("parameter_argument", &[
+                ("index", number(index)), ("name", text(name)),
+                ("site", optional(site.as_deref(), SourceSite::ir_json)),
+            ]),
+        }
     }
+}
+fn argument(value: &CallArgument) -> String {
+    let result = match value {
+        CallArgument::Value { ty, values, .. } => node("value", &[("type", ty.layout_json()), ("values", numbers(values))]),
+        CallArgument::Reference { ty, access, address , ..} => node("reference", &[("type", ty.layout_json()), ("access", name(access)), ("address", reference(address))]),
+    };
+    #[cfg(feature = "compiler")] {
+        let mut result = result; result.pop();
+        result.push_str(",\"origin\":"); result.push_str(&optional(value.origin(), ArgumentOrigin::ir_json));
+        result.push('}'); result
+    }
+    #[cfg(not(feature = "compiler"))] { result }
 }
 fn call(value: &Call) -> String {
     node("Call", &[

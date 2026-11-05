@@ -46,12 +46,32 @@ pub enum CallArgument {
         ty: Ty,
         values: Vec<Reg>,
         dataset_borrow: Option<Box<DatasetBorrow>>,
+        #[cfg(feature = "compiler")]
+        origin: Option<std::sync::Arc<ArgumentOrigin>>,
     },
     Reference {
         ty: Ty,
         access: Access,
         address: CallReference,
+        #[cfg(feature = "compiler")]
+        origin: Option<std::sync::Arc<ArgumentOrigin>>,
     },
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub enum ArgumentOrigin {
+    Frame,
+    Parameter {
+        index: usize,
+        name: String,
+        site: Option<std::sync::Arc<SourceSite>>,
+    },
+}
+#[cfg(feature = "compiler")]
+impl CallArgument {
+    pub fn origin(&self) -> Option<&ArgumentOrigin> {
+        match self { Self::Value { origin, .. } | Self::Reference { origin, .. } => origin.as_deref() }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CallTarget {
