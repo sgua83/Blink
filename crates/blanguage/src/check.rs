@@ -1624,8 +1624,10 @@ fn function_parameters(
         );
     }
     application::bind_parameter_elements(b,d);
-    let requirements = contracts::resolve(b, d, &b.env)?;
-    contracts::assume(&mut b.env, &requirements);
+    let environment=std::mem::take(&mut b.env);
+    let requirements=contracts::resolve(b,d,&environment);b.env=environment;
+    let requirements=requirements?;
+    contracts::assume(&mut b.env, &mut b.path, &requirements);
     b.materialize_array_bindings();
     let output_contracts=outputs::contract_predicates(b,d)?;
     Ok((parameters, inputs, output_contracts))

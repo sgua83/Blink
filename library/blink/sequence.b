@@ -10,7 +10,7 @@ result<void,SequenceIndexError> set<T>(inout dataset<T> data,u32 index,T value) 
     return Err(SequenceIndexError(index,data.length));
 }
 
-result<dataset<T>,SequenceFailure<T>> push<T>(dataset<T> data,T value) on cpu {
+result<dataset<T>,SequenceFailure<T>> push<T>(dataset<T> data,T value) on cpu requires cleanup(value, data.length == 4294967295) {
     u32 size=data.length;
     if (size == 4294967295) {
         return Err(SequenceFailure<T>(data,SequenceError::LengthOverflow));

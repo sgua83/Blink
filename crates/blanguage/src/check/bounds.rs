@@ -2421,6 +2421,20 @@ impl crate::module::codec::Decode for Condition {
     }
 }
 impl Condition {
+    pub(super) fn nonzero_value(value:&Value)->Self {
+        if value.is_nonzero(){return Self::constant(true);}
+        if (0..value.regs.len()).any(|i|value.component_ranges(i).0.as_slice()==[(value.ty.components[i].0.order_bias(),value.ty.components[i].0.order_bias())]){return Self::constant(false);}
+        Self::guard(Clause::facts((0..value.regs.len()).map(|i|Fact::NonZero(value.component_identity(i))).collect()))
+    }
+    pub(super) fn nonzero_proof(proof:&Proof,component:usize)->Self {
+        match proof.known_identity(component){Some(id)=>Self::guard(Clause::facts([Fact::NonZero(id)].into())),None=>Self::default()}
+    }
+    pub(super) fn index_value(value:&Value,domain:IndexDomain)->Self {
+        Self::guard(Clause::facts((0..value.regs.len()).map(|i|Fact::Index(value.component_identity(i),domain)).collect()))
+    }
+    pub(super) fn same_length_proofs(a:&Proof,b:&Proof)->Self {
+        match(a.known_identity(0),b.known_identity(0)){(Some(a),Some(b))=>Self::guard(Clause::facts([Fact::Equal(a,b)].into())),_=>Self::default()}
+    }
     pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
     pub(super) fn execution(path:&Clause)->Self {
         let mut conditions:BTreeMap<usize,Self>=BTreeMap::new();

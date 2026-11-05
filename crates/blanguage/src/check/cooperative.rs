@@ -578,7 +578,7 @@ impl<'a> Builder<'a> {
         }
         let requirements = contracts::resolve(self, callee, &env)?;
         contracts::prove(self, &requirements, span)?;
-        contracts::assume(&mut env, &requirements);
+        contracts::assume(&mut env, &mut self.path, &requirements);
         let old_env = std::mem::replace(&mut self.env, env);
         let old_mutable_names = std::mem::take(&mut self.mutable_names);
         assigned_names(

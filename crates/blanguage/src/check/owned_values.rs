@@ -724,7 +724,7 @@ impl Builder<'_> {
         self.variant_condition(&value.value,index,span,origin)
     }
     fn unpack_owned(&mut self,value:&OwnedValue,success:bool)->Returned {self.unpack_variant(value,usize::from(!success))}
-    fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Returned {
+    pub(super) fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Returned {
         let payload=self.variant_payload(&value.value,index);
         let Some(meta)=&value.payloads[index] else {return match payload {Some(value)=>self.template_returned(value,false),None=>Returned::Unit};};
         let mut item=(**meta).clone();if let Some(value)=payload {

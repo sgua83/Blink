@@ -179,6 +179,14 @@ impl Parser {
                 let field = self.qualified(".")?;
                 ContractPredicate::Prefix { data, count, field }
             }
+            "cleanup" => {
+                let value=self.contract_value_path()?;
+                let condition=if self.take(",") {
+                    let expression=self.expr(0,false)?;
+                    OutputCondition::from_expr(&expression).ok_or_else(||Diagnostic{source:self.source.clone(),span:expression.span,code:"B225",message:"cleanup条件使用纯输入快照与资源长度".into()})?
+                }else{OutputCondition::Bool(true)};
+                ContractPredicate::Cleanup{value,condition}
+            },
             "nonzero" => ContractPredicate::Nonzero(self.contract_value_path()?),
             "nonempty" => ContractPredicate::Nonempty(self.contract_value_path()?),
             "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
@@ -209,7 +217,7 @@ impl Parser {
                 return self.source.fail(
                     span,
                     "B225",
-                    "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length 或 initialized",
+                    "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length、cleanup 或 initialized",
                 );
             }
         };

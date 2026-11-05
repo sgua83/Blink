@@ -133,7 +133,7 @@ fn input_names(definition: &Definition) -> BTreeSet<String> {
     }
     let mut names = BTreeSet::new();
     for contract in &definition.function.contracts {
-        if let ContractPredicate::Initialized { condition, .. } = &contract.predicate {
+        if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &contract.predicate {
             visit(condition, &mut names);
         }
     }
@@ -204,7 +204,7 @@ pub(super) fn entry_inputs(
     collect_inputs(builder, definition, &env, &names)
 }
 
-fn expression(
+pub(super) fn expression(
     builder: &mut Builder<'_>,
     definition: Contract<'_>,
     condition: &OutputCondition,
@@ -433,7 +433,7 @@ pub(super) fn contract_predicates(
     let mut predicates = BTreeSet::new();
     for contract in &definition.function.contracts {
         let mut predicate = contract.predicate.clone();
-        if let ContractPredicate::Initialized { condition, .. } = &mut predicate {
+        if let ContractPredicate::Initialized { condition, .. }|ContractPredicate::Cleanup { condition, .. } = &mut predicate {
             *condition = normalize(builder.world, definition.into(), &definition.function.result, condition, contract.span)?;
         }
         predicates.insert((contract.kind, predicate));

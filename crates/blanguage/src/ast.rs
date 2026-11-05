@@ -215,6 +215,7 @@ pub enum ContractPredicate {
         value: String,
         condition: OutputCondition,
     },
+    Cleanup { value: String, condition: OutputCondition },
 }
 // A source interface expression has no calls, storage access or effects. Names
 // denote immutable input values; `returned` denotes this call's actual result.

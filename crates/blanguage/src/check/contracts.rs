@@ -124,6 +124,7 @@ enum Predicate {
     Nonzero(Selection),
     Nonempty(Resource),
     Index(Selection, Resource),
+    Cleanup { when: bounds::Condition, required: bounds::Condition },
 }
 pub(super) struct Requirement {
     predicate: Predicate,
@@ -413,7 +414,7 @@ fn resource(
 }
 
 pub(super) fn resolve(
-    builder: &Builder<'_>,
+    builder: &mut Builder<'_>,
     definition: &Definition,
     env: &BTreeMap<String, Binding>,
 ) -> Result<Vec<Requirement>> {
@@ -441,6 +442,13 @@ pub(super) fn resolve(
                 Predicate::Contiguous(reference(builder, definition, env, path, contract.span)?),
                 format!("contiguous({path})"),
             ),
+            ContractPredicate::Cleanup { value, condition } => {
+                let inputs=outputs::inputs(builder,definition,env)?;
+                let when=outputs::expression(builder,definition.into(),condition,&inputs,None,contract.span)?;
+                let(model,active)=cleanup_selection(builder,definition,env,value,contract.span)?;
+                let required=cleanup_condition(builder,model,active,contract.span)?;
+                (Predicate::Cleanup{when:bounds::Condition::of(&when),required},format!("cleanup({value})"))
+            },
             ContractPredicate::Nonzero(path) => {
                 let selection = select(definition, env, path, contract.span)?;
                 validate_nonzero_type(&selection.value.ty, &definition.source, contract.span)?;
@@ -496,9 +504,9 @@ pub(super) fn resolve(
     Ok(result)
 }
 
-pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: Span) -> Result<()> {
-    for requirement in requirements {
-        let holds = match &requirement.predicate {
+fn holds(builder:&Builder<'_>,requirement:&Requirement,span:Span)->Result<bool>{
+    Ok(match &requirement.predicate {
+            Predicate::Cleanup{when,required}=>builder.condition_truth(&when.clone().negate().logical(required.clone(),true),None)==Some(true),
             Predicate::SameLength(left, right) => builder.length_proofs_equal(&left.proof, &right.proof),
             Predicate::Contiguous(place) => builder.reference_is_contiguous(place, span)?,
             Predicate::Nonzero(selection) => selection.empty || selection.value.is_nonzero(),
@@ -528,8 +536,13 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
                     )
                 })
             }
-        };
-        if !holds {
+        })
+}
+
+pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: Span) -> Result<()> {
+    for requirement in requirements {
+
+        if !holds(builder,requirement,span)? {
             return builder.fail(
                 span,
                 "B226",
@@ -539,15 +552,16 @@ pub(super) fn prove(builder: &Builder<'_>, requirements: &[Requirement], span: S
     }
     Ok(())
 }
-pub(super) fn assume(env: &mut BTreeMap<String, Binding>, requirements: &[Requirement]) {
+pub(super) fn assume(env: &mut BTreeMap<String, Binding>, path:&mut bounds::Clause, requirements: &[Requirement]) {
     for requirement in requirements {
+        if let Predicate::Cleanup{when,required}=&requirement.predicate{*path=when.clone().negate().logical(required.clone(),true).assume(path,true);continue;}
         for (name, binding) in env.iter_mut() {
             match &requirement.predicate {
                 Predicate::SameLength(left, right) => {
                     assume_length(name, binding, left, right);
                     assume_length(name, binding, right, left);
                 }
-                Predicate::Contiguous(_) => {}
+                Predicate::Contiguous(_)|Predicate::Cleanup{..} => {}
                 Predicate::Nonzero(selection) => {
                     if selection.root == *name && let Some(value)=selection.assumed_value(binding) {
                         for component in &selection.components {value.proof.mark_nonzero(*component);}
@@ -654,4 +668,98 @@ pub(super) fn contiguous_assumed(
         }
     }
     Ok(false)
+}
+
+// The selected values are the original input snapshots and owned metadata.
+// Expanding a contract neither calls F nor moves or releases its argument.
+fn cleanup_selection(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,path:&str,span:Span)->Result<(returns::Returned,bounds::Condition)> {
+    use returns::Returned;
+    let end=path.find(['.','[']).unwrap_or(path.len());let root=&path[..end];
+    if !definition.function.params.iter().any(|p|p.name==root&&matches!(p.access,Access::Value|Access::Read|Access::InOut)){return definition.source.fail(span,"B225","cleanup需要读取实际普通CPU输入");}
+    let mut value=match env.get(root) {
+        Some(Binding::OwnedValue(value))=>Returned::OwnedValue(value.clone()),
+        Some(Binding::ApplicationData(data))=>Returned::Dataset(data.clone()),
+        Some(Binding::DataReference(reference))=>{
+            let mut data=reference.data.clone();let mut model=(*data.elements).clone();
+            for field in &reference.projection {let Returned::OwnedValue(owner)=model else{return definition.source.fail(span,"B225","cleanup字段投影需要实际记录模型")};model=builder.unpack_record(&owner,*field);}
+            data.ty=reference.element_layout().1.clone();data.elements=Box::new(model);Returned::Dataset(data)
+        },
+        Some(Binding::Value(value))=>Returned::value(value.clone()),
+        _=>return definition.source.fail(span,"B225","cleanup需要实际按值输入或dataset共同元素"),
+    };
+    let mut active=bounds::Condition::constant(true);let mut rest=&path[end..];
+    while !rest.is_empty(){
+        if let Some(next)=rest.strip_prefix("[*]") {
+            let Returned::Dataset(data)=value else{return definition.source.fail(span,"B225","cleanup的[*]选择实际dataset共同元素")};
+            active=active.logical(if data.length.is_nonzero(){bounds::Condition::constant(true)}else{bounds::Condition::nonzero_value(&data.length)},false);value=*data.elements;rest=next;
+        }else{
+            let Some(next)=rest.strip_prefix('.')else{return definition.source.fail(span,"B225","cleanup需要实际字段或[*]路径")};
+            let end=next.find(['.','[']).unwrap_or(next.len());let field=&next[..end];
+            value=match value {
+                Returned::OwnedValue(owner)=>{let Some(index)=owner.value.ty.fields.iter().position(|(name,..)|name==field)else{return definition.source.fail(span,"B225","cleanup需要实际拥有字段")};builder.unpack_record(&owner,index)},
+                Returned::Value(value)=>Returned::value(builder.member_value(*value,&field.to_owned(),span)?),
+                Returned::Dataset(data)if field=="length"=>Returned::value(data.length),
+                _=>return definition.source.fail(span,"B225","cleanup字段需要实际输入布局"),
+            };rest=&next[end..];
+        }
+    }
+    Ok((value,active))
+}
+
+fn nonempty_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,resource:&Resource,span:Span)->Result<bounds::Condition>{
+    let proof=match resource {
+        Resource::Array(count)=>return Ok(bounds::Condition::constant(*count!=0)),
+        Resource::Value(selection)=>{
+            let component=if selection.value.ty.dataset.is_some(){1}else{2};
+            let value=builder.value_component(&selection.value,component);
+            return Ok(if value.is_nonzero(){bounds::Condition::constant(true)}else{bounds::Condition::nonzero_value(&value)});
+        },
+        Resource::Application{root,..}|Resource::Data{root,..}|Resource::Tile{root,..}=>length(definition,env,root,span)?.proof,
+    };
+    Ok(bounds::Condition::nonzero_proof(&proof,0))
+}
+
+fn requirement_condition(builder:&mut Builder<'_>,definition:&Definition,env:&BTreeMap<String,Binding>,requirement:&Requirement,span:Span)->Result<bounds::Condition>{
+    if holds(builder,requirement,span)?{return Ok(bounds::Condition::constant(true));}
+    Ok(match &requirement.predicate {
+        Predicate::Nonzero(selection)=>bounds::Condition::nonzero_value(&selection.value),
+        Predicate::Nonempty(resource)=>nonempty_condition(builder,definition,env,resource,span)?,
+        Predicate::Index(selection,resource)=>bounds::Condition::index_value(&selection.value,resource.domain()).logical(nonempty_condition(builder,definition,env,resource,span)?,false),
+        Predicate::SameLength(left,right)=>bounds::Condition::same_length_proofs(&left.proof,&right.proof),
+        Predicate::Contiguous(_)=>bounds::Condition::default(),
+        Predicate::Cleanup{when,required}=>when.clone().negate().logical(required.clone(),true),
+    })
+}
+
+fn cleanup_condition(builder:&mut Builder<'_>,value:returns::Returned,active:bounds::Condition,span:Span)->Result<bounds::Condition>{
+    use returns::Returned;
+    let mut result=bounds::Condition::constant(true);
+    match value {
+        Returned::OwnedValue(owner)if owner.value.ty.cleanup.is_some()=>{
+            let key=owner.value.ty.cleanup.as_ref().unwrap();let definition=&builder.world.functions[key];
+            let instance=generics::specialize(builder.world,key,&[generics::Actual::value(&owner.value.ty.arguments[0])],None,(&definition.source,&definition.module,&definition.imports),span)?;
+            let payload=builder.unpack_record(&owner,0);let binding=match payload{Returned::Dataset(data)=>Binding::ApplicationData(data),Returned::OwnedValue(value)=>Binding::OwnedValue(value),Returned::Value(value)=>Binding::Value(*value),Returned::Unit=>Binding::Value(builder.returned_storage(&Returned::Unit))};
+            let env=BTreeMap::from([(instance.definition.function.params[0].name.clone(),binding)]);
+            for requirement in resolve(builder,&instance.definition,&env)? {
+                result=result.logical(requirement_condition(builder,&instance.definition,&env,&requirement,span)?,false);
+            }
+            result=active.negate().logical(result,true);
+        },
+        Returned::OwnedValue(owner)=>{
+            for index in 0..owner.payloads.len(){
+                if owner.payloads[index].is_none(){continue;}
+                let(value,when)=if owner.value.ty.has_variants(){
+                    let tag=builder.value_component(&owner.value,0);let when=bounds::Condition::selected(ownership::ApplicationIndex::of(&tag),owner.value.ty.variants[index].discriminant as usize);
+                    (builder.unpack_variant(&owner,index),active.clone().logical(when,false))
+                }else{(builder.unpack_record(&owner,index),active.clone())};
+                result=result.logical(cleanup_condition(builder,value,when,span)?,false);
+            }
+        },
+        Returned::Dataset(data)=>{
+            let when=if data.length.is_nonzero(){bounds::Condition::constant(true)}else{bounds::Condition::nonzero_value(&data.length)};
+            result=cleanup_condition(builder,*data.elements,active.logical(when,false),span)?;
+        },
+        Returned::Value(_)|Returned::Unit=>{},
+    }
+    Ok(result)
 }

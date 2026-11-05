@@ -45,6 +45,8 @@ target/release/blink.exe target/main.obj -o target/main.exe
 target/main.exe
 ```
 
+序列push的公开合同为requires cleanup(value, data.length == 4294967295)：只有真实溢出分支清理未采用value时，调用者才须交接其实际静态F前提；正常移交不要求提前释放，也不隐式假定所有owned载荷始终满足F前提。普通无F分量没有额外义务。
+
 也可用`blink.sequence::push`等限定名。开放泛型按装入的B源码实例化；独立对象／归档只导出明确请求的实例，例如：
 
 ```powershell

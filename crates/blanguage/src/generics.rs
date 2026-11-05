@@ -84,7 +84,7 @@ pub(crate) fn instantiate(
             continue;
         }
         let mut contract=contract.clone();
-        if let ContractPredicate::Initialized{condition,..}=&mut contract.predicate{
+        if let ContractPredicate::Initialized{condition,..}|ContractPredicate::Cleanup{condition,..}=&mut contract.predicate{
             crate::value_parameters::substitute_output_condition(condition,&value_map);
         }
         contracts.push(contract);
