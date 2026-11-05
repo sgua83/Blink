@@ -1438,7 +1438,7 @@ fn function_parameters(
     let mut parameters = Vec::new();
     if b.application.is_some() {
         let frame = b.application_frame(d.function.span)?;
-        parameters.push(CallParameter::Value(frame.ty));
+        parameters.push(CallParameter::value(frame.ty).with_origin(Some(Arc::new(ParameterOrigin::Frame))));
         inputs.extend(frame.regs);
     }
     b.calls.push(name.into());
@@ -1449,6 +1449,14 @@ fn function_parameters(
     let mut texture_index = 0;
     let mut acceleration_index = 0;
     for (parameter_index, p) in d.function.params.iter().enumerate() {
+        let (generated, site) = match &d.syntax_origin {
+            crate::frontend::DefinitionSyntax::Source => (false, b.source_at(p.span, SourceSyntax::Parameter)),
+            crate::frontend::DefinitionSyntax::Generated(site) => (true, site.clone()),
+            crate::frontend::DefinitionSyntax::CompiledInterface => (false, None),
+        };
+        let origin = (!matches!(d.syntax_origin, crate::frontend::DefinitionSyntax::CompiledInterface)).then(|| Arc::new(ParameterOrigin::Parameter {
+            index: parameter_index, name: p.name.clone(), instance: Arc::from(name), generated, site,
+        }));
         if p.ty.is_acceleration() {
             b.env
                 .insert(p.name.clone(), Binding::Acceleration(acceleration_index));
@@ -1473,12 +1481,12 @@ fn function_parameters(
                         let stride=b.reg(parameter_ty.components[2].0);let offset=b.reg(Scalar::U32);
                         let value=|reg,scalar|Value{ty:Ty::scalar(scalar),regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
                         let stride_scalar=parameter_ty.components[2].0;
-                        parameters.push(CallParameter::Value(parameter_ty));
+                        parameters.push(CallParameter::value(parameter_ty).with_origin(origin.clone()));
                         inputs.extend([data.root.regs[0],data.length.regs[0],stride,offset]);
                         data.layout=application::DataLayout::Parameter{parameter:parameter_index,stride:value(stride,stride_scalar),offset:value(offset,Scalar::U32)};
                         Binding::ApplicationData(data)
                     }else{
-                        parameters.push(CallParameter::Value(Ty::owned_dataset(data.ty.clone(),data.count)));
+                        parameters.push(CallParameter::value(Ty::owned_dataset(data.ty.clone(),data.count)).with_origin(origin.clone()));
                         inputs.extend([data.root.regs[0],data.length.regs[0]]);
                         let data=b.application_bind(data,application::rebound(d.function.body.as_ref().unwrap(),&p.name));
                         Binding::ApplicationData(data)
@@ -1511,7 +1519,7 @@ fn function_parameters(
         if p.access==Access::Read {
             if ty.owns_resources() {
                 let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
-                inputs.extend(&regs);parameters.push(CallParameter::Value(ty.clone()));
+                inputs.extend(&regs);parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
                 let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));
                 let mut value=b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None});
                 value.borrow();residency::parameter(&mut value,parameter_index);
@@ -1533,10 +1541,7 @@ fn function_parameters(
                     let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
                     inputs.extend(address);
                     addresses.push(address);
-                    parameters.push(CallParameter::Reference {
-                        ty: part.clone(),
-                        access: p.access,
-                    });
+                    parameters.push(CallParameter::reference(part.clone(), p.access).with_origin(origin.clone()));
                 }
                 let address = if addresses.len() == 1 {
                     ReferenceAddress::Contiguous(addresses[0])
@@ -1591,7 +1596,7 @@ fn function_parameters(
         let regs: Vec<_> = ty.components.iter().map(|(s, _)| b.reg(*s)).collect();
         if b.application.is_some() {
             inputs.extend(&regs);
-            parameters.push(CallParameter::Value(ty.clone()));
+            parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
         }
         if ty.owns_resources() {
             let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));

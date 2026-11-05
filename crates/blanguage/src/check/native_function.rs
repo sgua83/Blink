@@ -1459,7 +1459,7 @@ fn build_domain(
     let mut frame = Ty::vector(Scalar::U32, 2);
     frame.name = "__blink_frame".into();
     let mut registers = vec![Scalar::U32, Scalar::U32];
-    let mut parameters = vec![CallParameter::Value(frame.clone())];
+    let mut parameters = vec![CallParameter::value(frame.clone())];
     let frame = CallArgument::Value {
         dataset_borrow:None, ty: frame,
         values: vec![0, 1],
@@ -1472,12 +1472,12 @@ fn build_domain(
         let first = registers.len();
         if param.ty.dataset {
             registers.extend([Scalar::U32; 2]);
-            parameters.push(CallParameter::Value(Builder::domain_dataset_parameter_type()));
+            parameters.push(CallParameter::value(Builder::domain_dataset_parameter_type()));
             data.push([first, first + 1]);
         } else {
             let ty = cooperative::parameter_type(world, param, d)?;
             registers.extend(ty.components.iter().map(|(s, _)| *s));
-            parameters.push(CallParameter::Value(ty.clone()));
+            parameters.push(CallParameter::value(ty.clone()));
             for (i, (scalar, offset)) in ty.components.iter().enumerate() {
                 uniform_regs.insert(signature.uniforms[ui].offset + offset, first + i);
                 uniform_values.push(CallArgument::Value {

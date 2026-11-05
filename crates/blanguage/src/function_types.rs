@@ -1,5 +1,5 @@
 //! C函数签名只持有原TypeName名义引用；对象布局与实际C调用仍由World产生。
-use crate::{ast::*, ir::{CFunctionType, CallParameter, Scalar, Ty}, Source, World};
+use crate::{ast::*, ir::{CFunctionType, CallParameter, CallParameterKind, Scalar, Ty}, Source, World};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn ordinary(ty: &Ty, syntax: &TypeName, source: &Source, span: Span) -> crate::Result<()> {
@@ -277,8 +277,8 @@ impl World {
         for (access, syntax) in &function.parameters {
             let ty = self.ty_inner(syntax, source, span, module, imports, &mut BTreeSet::new())?;
             ordinary(&ty, syntax, source, span)?;
-            parameters.push(if *access == Access::Value { CallParameter::Value(ty) }
-                else { CallParameter::Reference { ty, access: *access } });
+            parameters.push(if *access == Access::Value { CallParameter::value(ty) }
+                else { CallParameter::reference(ty, *access) });
         }
         let never = function.result.is_never();
         let result = if never || function.result == TypeName::named("void") { None } else {
@@ -294,7 +294,7 @@ impl World {
             crate::check::outputs::validate_function_contracts(
                 &parameters, result.as_ref(), &function.contracts, source, span)?;
             for parameter in parameters {
-                let ty = match parameter { CallParameter::Value(ty) | CallParameter::Reference { ty, .. } => ty };
+                let ty = match parameter.kind { CallParameterKind::Value(ty) | CallParameterKind::Reference { ty, .. } => ty };
                 self.validate_c_functions(&ty, source, span, module, imports, consumed)?;
             }
             if let Some(result) = result { self.validate_c_functions(&result, source, span, module, imports, consumed)?; }

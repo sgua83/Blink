@@ -262,8 +262,8 @@ impl Builder<'_> {
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         let parameters = d.function.params.iter().map(|param| {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
-            Ok(if param.access == Access::Value { CallParameter::Value(ty) }
-                else { CallParameter::Reference { ty, access: param.access } })
+            Ok(if param.access == Access::Value { CallParameter::value(ty) }
+                else { CallParameter::reference(ty, param.access) })
         }).collect::<Result<Vec<_>>>()?;
         let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
             else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
@@ -284,9 +284,9 @@ impl Builder<'_> {
         let (parameters, result, never) = self.world.c_function_signature(
             function, &self.definition.source, span, &self.definition.module, &self.definition.imports)?;
         let source_parameters = parameters.iter().enumerate().map(|(index, parameter)| {
-            let (ty, access) = match parameter {
-                CallParameter::Value(ty) => (ty, Access::Value),
-                CallParameter::Reference { ty, access } => (ty, *access),
+            let (ty, access) = match &parameter.kind {
+                CallParameterKind::Value(ty) => (ty, Access::Value),
+                CallParameterKind::Reference { ty, access } => (ty, *access),
             };
             Param { name: format!("argument{index}"), ty: ty.syntax(), access, span }
         }).collect::<Vec<_>>();
@@ -311,18 +311,18 @@ impl Builder<'_> {
         for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
             let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
             let arg = match arg {
-                Argument::Value(value) if matches!(parameter, CallParameter::Reference { access: Access::Read, .. }) =>
+                Argument::Value(value) if matches!(&parameter.kind, CallParameterKind::Reference { access: Access::Read, .. }) =>
                     Argument::Reference(self.materialize_array(value,None)),
                 other => other,
             };
-            arguments.push(match (parameter, arg) {
-                (CallParameter::Value(ty), Argument::Value(value)) => {
+            arguments.push(match (&parameter.kind, arg) {
+                (CallParameterKind::Value(ty), Argument::Value(value)) => {
                     self.require_same(ty, &value.ty, span)?;
                     memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
                     if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
                     CallArgument::Value { dataset_borrow:None, ty: ty.clone(), values: value.regs }
                 }
-                (CallParameter::Reference { ty, access }, Argument::Reference(owner)) => {
+                (CallParameterKind::Reference { ty, access }, Argument::Reference(owner)) => {
                     if access.reads(){memory_borrow.union(&self.address_contents(ty,&owner.proof));}
                     let place = owner.place;
                     self.require_same(ty, place.ty(), span)?;

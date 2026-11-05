@@ -743,9 +743,9 @@ pub(crate) fn validate_function_contracts(
 ) -> Result<()> {
     let input = |name: &str| parameters.iter().enumerate()
         .find(|(index, _)| name == format!("argument{index}"))
-        .map(|(_, parameter)| match parameter {
-            CallParameter::Value(ty) => (Access::Value, ty.clone()),
-            CallParameter::Reference { ty, access } => (*access, ty.clone()),
+        .map(|(_, parameter)| match &parameter.kind {
+            CallParameterKind::Value(ty) => (Access::Value, ty.clone()),
+            CallParameterKind::Reference { ty, access } => (*access, ty.clone()),
         });
     for output in outputs {
         match output {

@@ -60,9 +60,41 @@ pub enum CallTarget {
     Indirect(Reg),
 }
 #[derive(Clone, Debug)]
-pub enum CallParameter {
+pub enum CallParameterKind {
     Value(Ty),
     Reference { ty: Ty, access: Access },
+}
+/// The same logical ABI parameter owns its optional compiler observation facts.
+#[derive(Clone, Debug)]
+pub struct CallParameter {
+    pub kind: CallParameterKind,
+    #[cfg(feature = "compiler")]
+    pub(crate) origin: Option<std::sync::Arc<ParameterOrigin>>,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub enum ParameterOrigin {
+    Frame,
+    Parameter {
+        index: usize,
+        name: String,
+        instance: std::sync::Arc<str>,
+        generated: bool,
+        site: Option<std::sync::Arc<SourceSite>>,
+    },
+}
+impl CallParameter {
+    pub fn new(kind: CallParameterKind) -> Self {
+        Self { kind, #[cfg(feature = "compiler")] origin: None }
+    }
+    pub fn value(ty: Ty) -> Self { Self::new(CallParameterKind::Value(ty)) }
+    pub fn reference(ty: Ty, access: Access) -> Self { Self::new(CallParameterKind::Reference { ty, access }) }
+    #[cfg(feature = "compiler")]
+    pub fn origin(&self) -> Option<&ParameterOrigin> { self.origin.as_deref() }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn with_origin(mut self, origin: Option<std::sync::Arc<ParameterOrigin>>) -> Self {
+        self.origin = origin; self
+    }
 }
 #[derive(Clone, Debug)]
 pub struct FunctionBody {
@@ -72,6 +104,22 @@ pub struct FunctionBody {
     pub parameters: Vec<CallParameter>,
     pub result: Option<Ty>,
     pub body: ValueCode,
+}
+impl FunctionBody {
+    /// Logical IR inputs only; final machine register and stack locations belong to the backend.
+    #[cfg(feature = "compiler")]
+    pub fn parameter_inputs(&self) -> impl ExactSizeIterator<Item = (&CallParameter, &[Reg])> {
+        let mut offset = 0;
+        self.parameters.iter().map(move |parameter| {
+            let width = match &parameter.kind {
+                CallParameterKind::Value(ty) => ty.components.len(),
+                CallParameterKind::Reference { .. } => 2,
+            };
+            let inputs = &self.body.inputs[offset..offset + width];
+            offset += width;
+            (parameter, inputs)
+        })
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Call {

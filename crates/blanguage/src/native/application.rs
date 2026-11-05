@@ -121,7 +121,7 @@ fn emit_value(
             parameters.get(slot - usize::from(hidden))
         };
         let memory = Operand::memory(4, 8 + slot as u32 * 8);
-        if let Some(CallParameter::Value(ty)) = value && floating(ty) {
+        if let Some(CallParameterKind::Value(ty)) = value.map(|parameter| &parameter.kind) && floating(ty) {
             e.instruction(Some(if ty == &Ty::scalar(Scalar::F64) { 0xf2 } else { 0xf3 }), &[0x0f, 0x11], false, slot as u8, memory);
         } else {
             e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
@@ -138,8 +138,8 @@ fn emit_value(
     let mut inputs = body.inputs.iter();
     for (i, parameter) in parameters.iter().enumerate() {
         let slot = home + (i + usize::from(hidden)) as u32 * 8;
-        match parameter {
-            CallParameter::Value(ty) => {
+        match &parameter.kind {
+            CallParameterKind::Value(ty) => {
                 let base = if indirect(ty) {
                     e.instruction(None, &[0x8b], true, 1, Operand::memory(4, slot));
                     1
@@ -151,7 +151,7 @@ fn emit_value(
                     e.read_scalar(dst, base, if base == 4 { slot + offset } else { *offset });
                 }
             }
-            CallParameter::Reference { .. } => {
+            CallParameterKind::Reference { .. } => {
                 for offset in [0, 4] {
                     let dst = *inputs.next().unwrap();
                     e.read_scalar(dst, 4, slot + offset);

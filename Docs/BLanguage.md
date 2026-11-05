@@ -613,6 +613,16 @@ application_reference_value只在原descriptor需要U64步长而实际布局步�
 
 材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块及SDK／CLI快照，最后真实IR消费者后释放，不进入必要执行编码、不持有World／AST或运行资源。Frame及真实最后消费者继续负责存储、依赖和完成；不建立参数／状态表、图、调度、同步或释放链。原优化继续折叠／消除，不为来源强制保活变量或Cast，完整变换与机器映射仍归原编号。见[架构](Architecture.md#tool-7-2-4-5-6-4)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-4)。
 
+#### 普通函数形参与IR输入的来源
+
+compiler角色的原CallParameter将实际值／引用种类保留为CallParameterKind，并在同一记录持有可选共享ParameterOrigin。CallParameter::value／reference或new默认没有来源；原模块合同仅编码种类、Ty与Access，解码不恢复或伪造提供者实现来源，原0／1标签与字节格式保持。关闭compiler不编入来源字段与接口。
+
+function_parameters从原Definition、形参声明顺序及当前实际函数实例生产材料。ParameterOrigin::Frame在JSON为implicit_frame，与普通B形参分开；Parameter保存原零基index、name、实际instance、generated及可选site。真实Source形参在JSON为source_parameter，site沿原Param.span交接parameter语法、定义及既有内联／域上下文；Param.span只覆盖起始令牌，不扩大为整个声明。合成定义为generated_parameter，site借用原生成触发而非伪造参数声明；CompiledInterface不取得实现来源。没有原ABI输入的纹理／阶段绑定不制造CallParameter，原域包装未交接本叶参数材料时origin保持null，不从同名参数猜补。
+
+CallParameter::origin()只借用同一不可变材料，ParameterOrigin::ir_json()序列化该事实。FunctionBody::parameter_inputs()按原参数顺序返回借用的(CallParameter, inputs切片)，值的宽度取真实Ty.components，引用为原两个U32地址分量；函数IR的每个parameters条目同样输出origin及input_registers。一个B向量引用可以对应多个实际参数并共享来源，零分量值保留原参数身份且输入为空；Frame省略时材料和输入随原记录一起移除，不保留假槽位。切片直接取原ValueCode.inputs，不另存参数槽位表或改变输入编号。
+
+这里是逻辑IR ABI关系，最终Windows寄存器、栈、隐藏机器输入与指令映射仍由原后端来源任务交付。必要运行编码不带这些材料，参数、类型、实际值、借用、Frame及最后消费者的原权威保持；材料沿原FunctionBody／模块、SDK／CLI快照共享，在最后IR消费者后释放，不保留AST／World、不拥有运行资源、不保活变量或指令，不建立状态、图、调度或释放链。完整优化的Release仍按原规则执行。见[架构](Architecture.md#tool-7-2-4-5-6-1)与[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-1)。
+
 #### 数组形参物化StoreLocal的生成来源
 
 materialize_array_bindings只为原含数组Binding::Value的实际物化交接ArrayParameterStore，JSON reason为array_parameter_store。同一原materialize_array逐分量StoreLocal共享该材料，原槽位／storage、源寄存器、readonly、求值顺序、Proof及初始化保持；无实际StoreLocal的零长值不补节点，原优化可以消除常量索引或未使用存储，不为观察保活。

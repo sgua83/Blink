@@ -402,8 +402,8 @@ CPU的unsafe_function显式把外部address解释为cfn签名，function_address
     pub(super) fn external_call(&mut self, d: &Arc<Definition>, args: Vec<Argument>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
         let parameters = d.function.params.iter().map(|param| {
             let ty = value_type(self.world, d, &param.ty, param.span)?;
-            Ok(if param.access == Access::Value { CallParameter::Value(ty) }
-                else { CallParameter::Reference { ty, access: param.access } })
+            Ok(if param.access == Access::Value { CallParameter::value(ty) }
+                else { CallParameter::reference(ty, param.access) })
         }).collect::<Result<Vec<_>>>()?;
         let result = if d.function.result.name == "void" || d.function.result.is_never() { None }
             else { Some(value_type(self.world, d, &d.function.result, d.function.span)?) };
@@ -535,7 +535,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
             crate::check::outputs::validate_function_contracts(
                 &parameters, result.as_ref(), &function.contracts, source, span)?;
             for parameter in parameters {
-                let ty = match parameter { CallParameter::Value(ty) | CallParameter::Reference { ty, .. } => ty };
+                let ty = match parameter.kind { CallParameterKind::Value(ty) | CallParameterKind::Reference { ty, .. } => ty };
                 self.validate_c_functions(&ty, source, span, module, imports, consumed)?;
             }
             if let Some(result) = result { self.validate_c_functions(&result, source, span, module, imports, consumed)?; }
@@ -1350,6 +1350,8 @@ impl Access {
 CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在每个实际下标产生一份完整元素，元素的子dataset仍由原Frame持有；生成只保存元素载荷和子资源元数据，子资源实际位于CPU或GPU与此分别处理。长度已证明为零时没有元素消费者，`dataset<T>(0)`无需生成器；显式提供生成器仍检查真实签名但不调用，正长度或未知长度仍要求逐项产生拥有值。空序列沿原初始化与Frame关系交接，不建立假元素或第二拥有状态。退出时，检查器沿逆序元素读取调用原静态释放F，再释放外层存储，整份移动或返回不会复制拥有者。
 
 普通函数接收dataset时，元素的子资源位置必须来自实际输入，不能沿用类型模板的CPU初值。原位置合同用Field与Elements区分字段和共同元素，沿同一Data.elements遍历参数、实参和返回闭包；Elements不是元素零。记录、固定数组和活动变体中的子资源分别交接，空集合及非活动载荷不产生虚构来源，未知也不能当作CPU。原静态F、显式传输及真正的内容读取消费相应位置，Frame仍是唯一物理资源所有者；对象／归档保存的是同一编译合同，没有新增机器参数或运行时拥有表。普通只读借用的内部机器参数为32字节、对齐8：root:u64在偏移0、length:u32在8、stride:u64在16、offset:u32在24。原DataPayload.root的Scalar区分真实地址和Frame句柄；元数据与真实载荷消费相同来源。应用通过Frame::storage_address纯查询当前地址，CPU范围直接消费原绑定；GPU驻留数据只取length不等待或下载，读取载荷仍需原CPU位置合同。GPU设备地址不能被CPU解引用，借用和派生view仍保持到最后真实消费者。CPU范围立即消费已闭合被调函数的位置／布局合同；完整域接口布局前提交接尚未实现时准确B270，不把声明类型步长当成实际连续性。
+
+普通函数的CallParameter沿同一原记录携带compiler专用参数来源，实际种类由CallParameterKind表达；隐式Frame与真实形参分开，Source形参保留声明序号、名称、实际实例与原Parameter起点，合成形参只借用原生成触发。FunctionBody::parameter_inputs按真实种类只读分段原inputs，向量引用展开共享来源，零分量为空输入；Frame省略直接移除同一参数和输入。参数JSON增加origin及input_registers，原codec只编码种类与类型／访问，运行编码和代码不承载来源。这里只说明逻辑IR输入，最终机器寄存器／栈仍归后端映射。详见[形参与IR输入](../Docs/BLanguage.md#普通函数形参与ir输入的来源)。
 
 值形参中的固定数组和含数组聚合在原array.rs::materialize_array_bindings接收物化职责，再由共用materialize_array逐分量写入原local slots并形成ReadOnlyLocal。ArrayParameterStore只分类这些原StoreLocal；表达式、局部绑定、取址、普通／外部实参与拥有／view暂存仍用同一算法并保持原来源。真实参数的Param.span通过Parameter语法锚点保留原定义、特化及内联上下文，当前范围只是起始令牌；合成参数只借用已有生成触发。零长值及被优化消除的存储不因观察补回，必要运行编码、ABI和最后资源消费者保持。详见[数组形参物化来源](../Docs/BLanguage.md#数组形参物化storelocal的生成来源)。
 

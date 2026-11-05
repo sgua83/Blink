@@ -58,10 +58,31 @@ fn target(value: &CallTarget) -> String {
     }
 }
 fn parameter(value: &CallParameter) -> String {
-    match value {
-        CallParameter::Value(ty) => node("value", &[("type", ty.layout_json())]),
-        CallParameter::Reference { ty, access } => node("reference", &[("type", ty.layout_json()), ("access", name(access))]),
+    match &value.kind {
+        CallParameterKind::Value(ty) => node("value", &[("type", ty.layout_json())]),
+        CallParameterKind::Reference { ty, access } => node("reference", &[("type", ty.layout_json()), ("access", name(access))]),
     }
+}
+#[cfg(feature = "compiler")]
+impl ParameterOrigin {
+    pub fn ir_json(&self) -> String {
+        match self {
+            Self::Frame => node("implicit_frame", &[]),
+            Self::Parameter { index, name, instance, generated, site } => node(
+                if *generated { "generated_parameter" } else { "source_parameter" },
+                &[("index", number(index)), ("name", text(name)), ("instance", text(instance)),
+                  ("site", optional(site.as_deref(), SourceSite::ir_json))]),
+        }
+    }
+}
+#[cfg(feature = "compiler")]
+fn parameter_inputs(value: &CallParameter, inputs: &[Reg]) -> String {
+    let mut result = parameter(value);
+    result.pop();
+    result.push_str(",\"origin\":");
+    result.push_str(&optional(value.origin(), ParameterOrigin::ir_json));
+    result.push_str(",\"input_registers\":"); result.push_str(&numbers(inputs)); result.push('}');
+    result
 }
 fn argument(value: &CallArgument) -> String {
     match value {
@@ -182,7 +203,12 @@ impl FunctionBody {
         node("function_ir", &[("name", text(&self.name)),
             #[cfg(feature = "compiler")]
             ("source_origin", optional(self.source_origin.as_ref(), SourceOrigin::ir_json)),
-            ("parameters", array(self.parameters.iter().map(parameter))), ("result", optional(self.result.as_ref(), Ty::layout_json)), ("body", self.body.ir_json())])
+            ("parameters", {
+                #[cfg(feature = "compiler")]
+                { array(self.parameter_inputs().map(|(parameter, inputs)| parameter_inputs(parameter, inputs))) }
+                #[cfg(not(feature = "compiler"))]
+                { array(self.parameters.iter().map(parameter)) }
+            }), ("result", optional(self.result.as_ref(), Ty::layout_json)), ("body", self.body.ir_json())])
     }
 }
 fn reduction(value: &Reduction) -> String {
