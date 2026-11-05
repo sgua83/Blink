@@ -5,7 +5,6 @@ use sources::{Local, Scope};
 
 type ComponentProjection = (Ty, Vec<Vec<usize>>);
 
-#[derive(Clone, Copy)]
 enum Write<'e> {
     Position {
         place: &'e Expr,
@@ -13,7 +12,7 @@ enum Write<'e> {
         contents: bool,
         iterator: Option<(&'e str, &'e Expr)>,
     },
-    External(&'e Expr),
+    External { call:&'e Expr, instance:Option<crate::generics::Instance> },
     Generator(&'e Expr),
 }
 
@@ -157,7 +156,7 @@ impl Builder<'_> {
                 if !writes
                     .iter()
                     .any(|write| match write {
-                        Write::External(_)|Write::Generator(_)=>true,
+                        Write::External{..}|Write::Generator(_)=>true,
                         Write::Position{contents:false,place,..}=>assigned_root(place)==Some(name)||address_write(place),
                         _=>false,
                     }) =>
@@ -271,11 +270,11 @@ impl Builder<'_> {
         for (name, binding) in &self.env {
             if let Some(owner) = binding.stored_place() {
                 for write in writes {
-                    let components = match *write {
-                        Write::External(_)|Write::Generator(_)=>vec![(0..owner.ty().components.len()).collect()],
+                    let components = match write {
+                        Write::External{..}|Write::Generator(_)=>vec![(0..owner.ty().components.len()).collect()],
                         Write::Position{place,contents,iterator,..}=>{
-                            let projection=if contents {self.application_write_projection(place,&owner)}
-                                else {self.written_projection(place,name,&owner,iterator,writes)?};
+                            let projection=if *contents {self.application_write_projection(place,&owner)}
+                                else {self.written_projection(place,name,&owner,*iterator,writes)?};
                             projection.map(|(_,components)|components).unwrap_or_default()
                         },
                     };
@@ -286,7 +285,7 @@ impl Builder<'_> {
             }
         }
         let raw=writes.iter().any(|write|match write {
-            Write::External(_)|Write::Generator(_)=>true,
+            Write::External{..}|Write::Generator(_)=>true,
             Write::Position{contents:false,place,..}=>address_write(place),
             _=>false,
         });
@@ -357,35 +356,37 @@ impl Builder<'_> {
         }
         let mut normalized=Vec::new();
         for write in writes {
-            let write=if let Write::Generator(factory)=write {
-                if let Some(instance)=Scope::current(self).factory_instance(factory)? {
-                    let function=&instance.definition.function;
-                    if !function.c_abi&&function.kind==FunctionKind::Value&&function.target==Target::Cpu
-                        &&function.params.len()==1&&function.params[0].access==Access::Value {
-                        self.native_declaration(&instance)?;
-                        let definition=&instance.definition;
-                        let result=self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?;
-                        if !result.owns_resources()&&self.functions.writes_only_references(&instance.name){continue;}
+            let write=match write {
+                Write::Generator(factory)=>{
+                    if let Some(instance)=Scope::current(self).factory_instance(factory)? {
+                        let function=&instance.definition.function;
+                        if !function.c_abi&&function.kind==FunctionKind::Value&&function.target==Target::Cpu
+                            &&function.params.len()==1&&function.params[0].access==Access::Value {
+                            self.native_declaration(&instance)?;
+                            let definition=&instance.definition;
+                            let result=self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?;
+                            if !result.owns_resources()&&self.functions.writes_only_references(&instance.name){continue;}
+                        }
                     }
-                }
-                Write::External(factory)
-            }else if let Write::External(call)=write {
-                if let Some(instance)=Scope::current(self).call_instance(call)? {
+                    Write::External{call:factory,instance:None}
+                },
+                Write::External{call,instance:Some(instance)}=>{
                     self.native_declaration(&instance)?;
-                    if Scope::current(self).read_only_call(call)?{continue;}
-                }
-                write
-            }else{write};
+                    if Scope::current(self).read_only_instance(&instance)?{continue;}
+                    Write::External{call,instance:None}
+                },
+                write=>write,
+            };
             normalized.push(write);
         }
         let writes=normalized;
         let mut effect=LoopWrites::default();
         for write in &writes {
-            match *write {
-                Write::External(_)|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
+            match write {
+                Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Position{place,contents,iterator,..}=>{
                     if address_write(place) {effect.unknown_storage=true;effect.external=true;continue;}
-                    if contents||iterator.is_some() {effect.unknown_storage=true;continue;}
+                    if *contents||iterator.is_some() {effect.unknown_storage=true;continue;}
                     if let Some((data,index,(_,components)))=self.loop_write_projection(place,&writes)? {
                         let root=data.root.regs[0];
                         if let (Some(index),application::DataLayout::Declared)=(index,&data.layout) {
@@ -453,9 +454,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         generics::specialize(self.world,&key,&actuals,explicit,
             (&self.definition.source,&self.definition.module,&self.definition.imports),call.span).map(Some)
     }
-    fn read_only_call(&self,call:&Expr)->Result<bool> {
+    fn read_only_instance(&self,instance:&crate::generics::Instance)->Result<bool> {
         let Some(builder)=self.builder else{return Ok(false);};
-        let Some(instance)=self.call_instance(call)? else{return Ok(false);};
         let definition=&instance.definition;
         let owns=if matches!(definition.function.result.name.as_str(),"void"|"never"){false}
             else{self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?.owns_resources()};
@@ -476,7 +476,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let Some(function) = &ty.function else {
             return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值");
         };
-        writes(Write::External(call));
+        writes(Write::External{call,instance:None});
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
                 writes(Write::Position { place: arg, call: Some(call), contents: false, iterator: None });
@@ -507,7 +507,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     let record = matches!(expr.kind, ExprKind::Specialize(..))
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
-                        if !self.read_only_call(expr)? {writes(Write::External(expr));}
+                        let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
+                        let read_only=match instance.as_ref(){Some(instance)=>self.read_only_instance(instance)?,None=>false};
+                        if !read_only {writes(Write::External{call:expr,instance});}
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some()), iterator: None });
@@ -735,18 +737,18 @@ fn join_numeric_paths(a: Option<NumericEffect>, b: Option<NumericEffect>) -> Opt
     match (a,b) { (Some(a),Some(b))=>Some(a.join(b)), (a,None)|(None,a)=>a }
 }
 impl Builder<'_> {
-    fn numeric_write(&self, write: Write<'_>, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<bool> {
+    fn numeric_write(&self, write: &Write<'_>, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<bool> {
         let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
-        let projection = if contents { self.application_write_projection(place, owner) }
-            else { self.written_projection(place, name, owner, iterator, writes)? };
+        let projection = if *contents { self.application_write_projection(place, owner) }
+            else { self.written_projection(place, name, owner, *iterator, writes)? };
         Ok(projection.is_some_and(|(_,parts)|parts.iter().any(|part|part.contains(&component))))
     }
     fn numeric_expression_effect(&self, expr: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
         for write in writes.iter().filter(|write|match write {
-            Write::External(call)|Write::Generator(call)=>contains_expression(expr,call),
+            Write::External{call,..}|Write::Generator(call)=>contains_expression(expr,call),
             Write::Position{call,..}=>call.is_some_and(|call|contains_expression(expr,call)),
         }) {
-            if self.numeric_write(*write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); }
+            if self.numeric_write(write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); }
         }
         Ok(NumericEffect::shift(0))
     }
@@ -771,7 +773,7 @@ impl Builder<'_> {
                         match self.env.get(source) {
                             Some(Binding::Value(value)) if value.ty==Ty::scalar(Scalar::U32)=>bounds::Proof::capture(value),
                             Some(Binding::Owned(value)) if value.place.ty()==&Ty::scalar(Scalar::U32)=>{
-                                for write in writes {if self.numeric_write(*write,source,&value.place,0,writes)? {return Ok(NumericEffect::Unknown);}}
+                                for write in writes {if self.numeric_write(write,source,&value.place,0,writes)? {return Ok(NumericEffect::Unknown);}}
                                 value.proof.clone()
                             },
                             _=>return Ok(NumericEffect::Unknown),
@@ -824,10 +826,10 @@ impl Builder<'_> {
                 StmtKind::While(..)|StmtKind::For(..)|StmtKind::Parallel(..)=>{
                     let mut effect=NumericEffect::shift(0);
                     for write in writes.iter().filter(|write|contains_statement(statement,match write {
-                        Write::External(call)|Write::Generator(call)=>call,
+                        Write::External{call,..}|Write::Generator(call)=>call,
                         Write::Position{call,place,..}=>call.unwrap_or(place),
                     })) {
-                        if self.numeric_write(*write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}
+                        if self.numeric_write(write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}
                     }
                     Some(before.then(effect))
                 },
@@ -846,7 +848,7 @@ impl Builder<'_> {
             if !matches!(owner.storage(),Place::Local(..)|Place::Reference{..}) {continue;}
             for (component,(scalar,_)) in owner.ty().components.iter().enumerate() {
                 if *scalar!=Scalar::U32 {continue;}
-                let mut written=false;for write in &writes {if self.numeric_write(*write,name,&owner,component,&writes)? {written=true;break;}}
+                let mut written=false;for write in &writes {if self.numeric_write(write,name,&owner,component,&writes)? {written=true;break;}}
                 if !written {continue;}
                 if let Some(condition)=condition && matches!(self.numeric_expression_effect(condition,name,&owner,component,&writes)?,NumericEffect::Unknown) {continue;}
                 let mut input=proof.project(&[component],owner.ty().components.len());
