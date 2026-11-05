@@ -204,7 +204,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
-      "sha256": "81f9c24544d904bc385a668c564ff027c167aa7be7c17c4b49a3a0ad8f2efd02"
+      "sha256": "d7688de0d9e0a14c972e330c86d364bd5bb095faac97019485fecb1988d5356c"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
