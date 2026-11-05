@@ -156,7 +156,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_borrows.rs",
-      "sha256": "83310a1ce9736158ada22eb4c1fe419c106633e5e05cb52dcf6c03950eb422c4"
+      "sha256": "1bf62e318780ba77ecdb8a6e596818fd35f22912b7edeaff5be43d6c730edb3a"
     },
     {
       "path": "crates/blanguage/src/check/owned_presence.rs",
@@ -759,8 +759,8 @@
     {
       "path": "crates/blanguage/src/check/owned_borrows.rs",
       "start_line": 31,
-      "end_line": 54,
-      "sha256": "40995f530f3aba1dee168803572b62c404d1c36bed70f123594efcbb9bd95e52"
+      "end_line": 62,
+      "sha256": "d866dd6086e9adc06e16f8cf9a97131cf61d067d07729d4d98802186eff72a3f"
     },
     {
       "path": "crates/blanguage/src/check/owned_presence.rs",

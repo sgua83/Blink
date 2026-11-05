@@ -32,7 +32,15 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         if let Some(data)=self.application_reference(expr)?{
             return Ok(Some(cooperative::Argument::BorrowedData(data)));
         }
-        let(place,owner)=if self.is_place(expr){let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}(place,None)}else{
+        let(place,owner)=if self.is_place(expr){
+            let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};
+            if place.ty().dataset.is_some(){
+                let data=self.application_place_reference(place,expr.span)?;
+                return Ok(Some(cooperative::Argument::BorrowedData(data)));
+            }
+            if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}
+            (place,None)
+        }else{
             let result=self.evaluate_returned(expr,None)?;if !self.flow.continues(){return Ok(None);}
             let value=match result{
                 Some(Returned::Dataset(mut data))=>{
