@@ -83,10 +83,10 @@ pub(super) fn compile(
     for &(scalar, word) in &program.buffers[target].ty.components {
         let end = word + scalar.size();
         write_regions.entry(target).or_insert_with(BTreeSet::new).insert((word, end));
-        facts.written(target, word, end);
+        facts.written(program, target, word, end);
     }
     write_regions.entry(count).or_insert_with(BTreeSet::new).insert((count_word, count_word + 4));
-    facts.written(count, count_word, count_word + 4);
+    facts.written(program, count, count_word, count_word + 4);
     facts.grant(PrefixRelation {
         domain: target,
         count: PrefixCount {

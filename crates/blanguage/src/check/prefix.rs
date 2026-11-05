@@ -3,15 +3,25 @@ use super::*;
 pub(super) struct Facts {
     scopes: Vec<(BTreeSet<PrefixRelation>, usize)>,
     pub outputs: Vec<crate::module::domain::Output>,
+    pub elements: BTreeMap<usize, bounds::Proof>,
 }
 impl Facts {
     pub fn new(relations: &[PrefixRelation]) -> Self {
         Self {
             scopes: vec![(relations.iter().copied().collect(), 0)],
             outputs: Vec::new(),
+            elements: BTreeMap::new(),
         }
     }
-    pub fn written(&mut self, binding: usize, start: u32, end: u32) {
+    pub fn written(&mut self, program: &Program, binding: usize, start: u32, end: u32) {
+        if let Some(proof) = self.elements.get_mut(&binding) {
+            let ty = &program.buffers[binding].ty;
+            let components = ty.components.iter().enumerate()
+                .filter_map(|(i, (scalar, offset))| (u64::from(*offset) < u64::from(end)
+                    && u64::from(start) < u64::from(*offset) + u64::from(scalar.size())).then_some(i))
+                .collect::<Vec<_>>();
+            proof.forget_value(&components, ty.components.len());
+        }
         for (scope, _) in &mut self.scopes {
             scope.retain(|r| r.count.binding != binding
                 || u64::from(r.count.word) >= u64::from(end)

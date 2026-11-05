@@ -92,7 +92,7 @@ pub(super) fn compile(
     for &(scalar, word) in &program.buffers[target].ty.components {
         let end = word + scalar.size();
         write_regions.entry(target).or_insert_with(BTreeSet::new).insert((word, end));
-        facts.written(target, word, end);
+        facts.written(program, target, word, end);
     }
     if let Some(count) = prefix {
         facts.grant(PrefixRelation {

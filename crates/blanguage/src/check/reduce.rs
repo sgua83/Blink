@@ -42,7 +42,7 @@ pub(super) fn compile(
     for &(scalar, word) in &ty.components {
         let start = target_word + word; let end = start + scalar.size();
         write_regions.entry(target).or_insert_with(BTreeSet::new).insert((start, end));
-        facts.written(target, start, end);
+        facts.written(program, target, start, end);
     }
     let reads: Vec<_> = std::iter::once(source)
         .chain(prefix.map(|p| p.binding))

@@ -289,11 +289,11 @@ pub(super) fn compile(
     for &(scalar, word) in &ty.components {
         let start = target_word + word; let end = start + scalar.size();
         write_regions.entry(target).or_insert_with(BTreeSet::new).insert((start, end));
-        facts.written(target, start, end);
+        facts.written(program, target, start, end);
     }
     if let Some(count) = count {
         write_regions.entry(count.binding).or_insert_with(BTreeSet::new).insert((count.word, count.word + 4));
-        facts.written(count.binding, count.word, count.word + 4);
+        facts.written(program, count.binding, count.word, count.word + 4);
     }
     if let Some(count) = count.or(prefix.filter(|_| scan)) {
         facts.grant(PrefixRelation {

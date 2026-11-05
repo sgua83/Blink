@@ -745,7 +745,8 @@ fn expand_stages(
                             words,
                             writable: matches!(domain_access, Access::InOut | Access::Write),
                         },
-                        proof: bounds::Proof::default(),
+                        proof: if *domain_access == Access::Atomic { bounds::Proof::default() }
+                            else { facts.elements.get(domain).cloned().unwrap_or_default() },
                         uniform: false,
                         initialization: None,
                     });
@@ -807,6 +808,13 @@ fn expand_stages(
                     b.reads.insert(selection.binding);
                     b.cross_access.insert(selection.binding);
                 }
+                let element_ranges = if prefix.is_none() && selection.is_none()
+                    && b.view_access[domain] != Access::Atomic
+                    && !b.appends.iter().any(|(output, count)| output == domain || count.binding == *domain)
+                {
+                    b.env.get_mut(name).and_then(Binding::proof_storage)
+                        .map(|(proof, _, _)| proof.scalar_ranges())
+                } else { None };
                 let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
                     .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
                 *functions = std::mem::take(&mut b.functions);
@@ -828,7 +836,10 @@ fn expand_stages(
                     cross_access: b.cross_access.into_iter().collect(),
                 };
                 for (&binding, written) in &stage.write_regions {
-                    for &(start, end) in written { facts.written(binding, start, end); }
+                    for &(start, end) in written { facts.written(program, binding, start, end); }
+                }
+                if let Some(proof) = element_ranges {
+                    facts.elements.insert(*domain, proof);
                 }
                 for relation in appended {
                     facts.grant(relation);
@@ -1158,7 +1169,7 @@ fn expand_stages(
                         write_regions.entry(bindings[logical]).or_insert_with(BTreeSet::new).extend(written);
                     }
                     for (&binding, written) in &write_regions {
-                        for &(start, end) in written { facts.written(binding, start, end); }
+                        for &(start, end) in written { facts.written(program, binding, start, end); }
                     }
                     facts.outputs.extend(contract.outputs.into_iter().map(|mut output| {
                         output.binding = bindings[output.binding];

@@ -361,6 +361,10 @@ pub(super) struct Proof {
     pub(super) addresses: Vec<Option<address::Identity>>,
 }
 impl Proof {
+    // 阶段完成只交接所有元素共有的数值范围，旧寄存器、路径及借用不跨阶段。
+    pub(super) fn scalar_ranges(&self) -> Self {
+        Self { ranges: self.ranges.clone(), ..Self::default() }
+    }
     pub(super) fn assume_same_length(&mut self, other: &Self) {
         self.origins.resize_with(self.origins.len().max(1), Vec::new);
         for &identity in other.origins.first().into_iter().flatten() {

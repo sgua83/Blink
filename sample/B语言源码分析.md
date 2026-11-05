@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1556`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1560`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2644`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2648`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -508,7 +508,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1546`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1550`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1301,7 +1301,7 @@ impl Access {
 
 ### 8.3 检查器同时问两个问题
 
-源码节选：`crates/blanguage/src/check.rs:3991`。
+源码节选：`crates/blanguage/src/check.rs:4002`。
 
 ```rust
         let binding = view.binding;
@@ -1457,7 +1457,7 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 调用者证明输入条件蕴含实际F前提；独立函数入口把同一关系交给原Condition／Proof，具体F调用仍消费原contracts::prove。function_parameters暂借原env形成合同，随后归还同一环境并沿原path假定已声明前提，不增加另一份合同状态。实际写入及移动继续改变原身份，旧快照不成为当前值的新许可；未证明的contiguous仍为未知。
 
-源码节选：`crates/blanguage/src/check.rs:1693`。
+源码节选：`crates/blanguage/src/check.rs:1704`。
 
 ```rust
     let environment=std::mem::take(&mut b.env);
@@ -1875,11 +1875,24 @@ enum Fact {
 
 本版使用值身份和来源快照，并在写入、投影和路径合流时更新事实。index() 和当前游标的 ordinal 重复求值仍指向同一个实际索引寄存器，生成值时直接消费当前路径已知的范围、相等和非零事实；不必另写局部变量才能连接条件与访问。当前路径退出或游标进入另一次迭代时，仍按原作用域撤回相应事实。这个细节比“给变量加一个安全标签”复杂，却是理解真实编译器分析的关键。
 
+完整parallel的输出属于原资源，而不是前一游标的寄存器身份。prefix::Facts沿原阶段效果保存每个元素共同成立的数值范围；下一Builder的同域游标消费该范围。抽取只保留原ranges：
+
+源码节选：`crates/blanguage/src/check/bounds.rs:364`。
+
+```rust
+    // 阶段完成只交接所有元素共有的数值范围，旧寄存器、路径及借用不跨阶段。
+    pub(super) fn scalar_ranges(&self) -> Self {
+        Self { ranges: self.ranges.clone(), ..Self::default() }
+    }
+```
+
+真实写入继续由Facts::written消费原字段字节区间，失效被改写分量；完整map的最终游标再交回新的共同范围，其他字段不因同一个buffer有写入而丢失。prefix／where的部分覆盖、原子并发改写与无源码域调用不能凭旧事实提供全容量的新范围。该元数据只存在于本次编译，资源、初始化和CPU／GPU完成沿原所有者；外部持久输入合同与已编译整域输出仍是Issues C-021.1.4.5.2／.5.3的具体缺口。
+
 ### 9.3 两条路径汇合，什么知识还能保留
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:940`。
+源码节选：`crates/blanguage/src/check/bounds.rs:944`。
 
 ```rust
         self.nonzero = (0..width)
@@ -1892,7 +1905,7 @@ enum Fact {
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1096`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1100`。
 
 ```rust
     pub fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -1975,7 +1988,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1673`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1677`。
 
 ```rust
 impl Drop for Clause {
@@ -4062,7 +4075,7 @@ BLAS 描述底层几何加速结构，TLAS 组织实例。Vulkan ray 模块创�
 
 普通函数的实际输入在原声明入口形成：
 
-源码节选：`crates/blanguage/src/check.rs:1529`。
+源码节选：`crates/blanguage/src/check.rs:1540`。
 
 ```rust
         if p.ty.is_texture_resource() {

@@ -28,7 +28,7 @@ pub(super) fn clear(
             "clear_prefix 需要独立的普通可写输出和形状 1 的 u32 计数字段",
         );
     }
-    facts.written(count, word, word + 4);
+    facts.written(program, count, word, word + 4);
     facts.grant(PrefixRelation {
         domain: target,
         count: PrefixCount {
