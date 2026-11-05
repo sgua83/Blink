@@ -480,7 +480,11 @@ impl Builder<'_> {
                 _=>return self.fail(expr.span,"B141","read字段需要实际记录或普通值"),
             };
             if let Returned::Value(value)=&item {
-                if let Some(owner)=owner {let binding=self.env.remove(&owner).unwrap();self.drop_binding(binding,&value.proof.typed_view_borrow(&value.ty),expr.span)?;}
+                let retained=value.proof.typed_view_borrow(&value.ty);
+                if retained.empty() && let Some(owner)=owner {
+                    let binding=self.env.remove(&owner).unwrap();
+                    self.drop_binding(binding,&retained,expr.span)?;
+                }
                 return Ok(Some((item,None)));
             }
             return Ok(Some((item,owner)));
