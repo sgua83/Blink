@@ -8,7 +8,7 @@ use returns::Returned;
 
 #[derive(Clone, Copy)]
 enum Clauses<'a> {
-    Declaration(&'a [FunctionContract]),
+    Declaration(&'a Definition),
     Signature(&'a [ContractPredicate], Span),
 }
 /// A borrowed view of the original declaration or bound function-value contract.
@@ -26,7 +26,7 @@ impl<'a> From<&'a Definition> for Contract<'a> {
         Self { source: &definition.source, module: &definition.module,
             imports: &definition.imports, public: definition.public,
             parameters: &definition.function.params,
-            clauses: Clauses::Declaration(&definition.function.contracts) }
+            clauses: Clauses::Declaration(definition) }
     }
 }
 impl<'a> From<&'a Arc<Definition>> for Contract<'a> {
@@ -51,13 +51,13 @@ impl<'a> Contract<'a> {
         })
     }
     fn len(self) -> usize {
-        match self.clauses { Clauses::Declaration(clauses) => clauses.len(),
+        match self.clauses { Clauses::Declaration(definition) => definition.function.contracts.len(),
             Clauses::Signature(clauses, _) => clauses.len() }
     }
     fn at(self, index: usize) -> (ContractKind, &'a ContractPredicate, Span) {
         match self.clauses {
-            Clauses::Declaration(clauses) => {
-                let clause = &clauses[index]; (clause.kind, &clause.predicate, clause.span)
+            Clauses::Declaration(definition) => {
+                let clause = &definition.function.contracts[index]; (clause.kind, &clause.predicate, clause.span)
             }
             Clauses::Signature(clauses, span) => {
                 let kind = if matches!(clauses[index], ContractPredicate::Nonzero(_)) {
@@ -280,8 +280,8 @@ pub(super) fn expression(
                         "公开输出条件的模块常量必须在接口中可见",
                     );
                 }
-                let (ty, bits) = constant_value(builder.world, &key)?;
-                Ok(builder.constant_value(ty, bits,None))
+                let (ty, bits, origin) = constant::evaluate(builder.world, &key, &[])?;
+                Ok(builder.evaluated_constant(ty, bits, origin))
             }
             OutputCondition::Member(base, field) => {
                 if field=="length"&&let OutputCondition::Name(name)=base.as_ref()
@@ -369,27 +369,45 @@ pub(super) fn expression(
         };
         Ok(Expr { kind, span })
     }
-    let mut values = BTreeMap::new();
-    let expression = convert(
-        builder,
-        definition,
-        condition,
-        inputs,
-        returned,
-        &mut values,
-        span,
-    )?;
-    let outer = std::mem::replace(&mut builder.env, values);
-    let result = builder.expr(&expression);
-    builder.env = outer;
-    let value = result?.ok_or_else(|| Diagnostic {
-        source: builder.definition.source.clone(),
-        span,
-        code: "B225",
-        message: "输出条件必须产生bool值".into(),
-    })?;
-    builder.require_bool(&value, span)?;
-    Ok(value)
+    let previous_definition = builder.source_definition.take();
+    let previous_context = builder.source_context.clone();
+    let previous_site = builder.source_site.take();
+    match definition.clauses {
+        Clauses::Declaration(declaration) if !std::ptr::eq(declaration, builder.definition.as_ref()) => {
+            (builder.source_definition, builder.source_context) = declaration.syntax_context(None);
+        }
+        Clauses::Declaration(_) | Clauses::Signature(..) => {
+            builder.source_definition = previous_definition.clone();
+        }
+    }
+    builder.source_site = builder.source_at(span, SourceSyntax::Expression);
+    let result = (|| {
+        let mut values = BTreeMap::new();
+        let expression = convert(
+            builder,
+            definition,
+            condition,
+            inputs,
+            returned,
+            &mut values,
+            span,
+        )?;
+        let outer = std::mem::replace(&mut builder.env, values);
+        let result = builder.expr(&expression);
+        builder.env = outer;
+        let value = result?.ok_or_else(|| Diagnostic {
+            source: builder.definition.source.clone(),
+            span,
+            code: "B225",
+            message: "输出条件必须产生bool值".into(),
+        })?;
+        builder.require_bool(&value, span)?;
+        Ok(value)
+    })();
+    builder.source_definition = previous_definition;
+    builder.source_context = previous_context;
+    builder.source_site = previous_site;
+    result
 }
 
 pub(super) fn guards<'a>(

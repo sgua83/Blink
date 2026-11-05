@@ -647,7 +647,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 
 原OutputCondition只负责纯表达式组织；路径来自真实按值快照、资源长度与返回值，字段消费原member_type。dataset的存储类型使用原Ty::owned_dataset及真实count，initialized位置仍选择实际元素。根结果必须是bool；泛型类型及const沿原实例化闭合，不生成假函数或声明用执行IR。
 
-源码节选：`crates/blanguage/src/check/outputs.rs:675`。
+源码节选：`crates/blanguage/src/check/outputs.rs:693`。
 
 ```rust
 fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
@@ -2403,7 +2403,10 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 负数字面量由原negative_number直接定型，i32／i64最小值不能伪装成同型正数取负；单目加号没有实际运算，不制造折叠事件。模块const普通读取按下述实际结果交接；阶段Root::Literal、输出契约及形状／编号临时求值的最终结果仍有独立来源缺口，不能因临时Builder有材料就宣称完成。材料仅compiler，查询沿原IR所有者与最后消费者，不进入运行编码；详细接口与真实缺口见语言规范及Architecture对应职责。
 
-模块const普通读取由原evaluate在临时Builder结束前取得已有变换的OperationOrigin，随原Ty／Bits返回ModuleConstantEvaluation；module_constant仍以原构造器建立相同结果及直接source_site，让各真实分量共享该材料。其constant保持实际常量全名，definition只在已有真实源码定义时存在，operations描述整个该次求值，不是每个结果的完整因果图。相邻分量若共享同一语法和变换材料，只交接一份，避免记录／向量常量的嵌套别名反复复制同一事实；没有另一追踪表或保存旧IR。嵌套常量、原DCE及空Map根继续交接既有事实，必要对象编码和运行资源不带这些材料。输出契约的类型化常量与物化、Root及整数结果仍各自待推进，普通读取不能代替这些实际消费者。
+模块const普通读取由原evaluate在临时Builder结束前取得已有变换的OperationOrigin，随原Ty／Bits返回ModuleConstantEvaluation；module_constant及具名输出条件的常量读取共用evaluated_constant，以原构造器建立相同结果及直接source_site，让各真实分量共享该材料。其constant保持实际常量全名，definition只在已有真实源码定义时存在，operations描述整个该次求值，不是每个结果的完整因果图。相邻分量若共享同一语法和变换材料，只交接一份，避免记录／向量常量的嵌套别名反复复制同一事实；没有另一追踪表或保存旧IR。嵌套常量、原DCE及空Map根继续交接既有事实，必要对象编码和运行资源不带这些材料。具名B／外部C条件的直接常量读取保留原空calls，普通读取保留原self.calls，求值上下文没有交换；签名绑定的类型化常量及其物化、Root与整数结果仍各自待推进，普通读取不能代替这些实际消费者。
+
+条件IR还须区分原合同与当前调用者的源码。Contract::Declaration借用原Definition而不是另持合同切片，expression在实际convert／expr区间进入合同来源；相同定义及原Signature调用点保留已知上下文，跨定义只使用能确定的被调来源。离开及错误出口恢复调用者来源。外部声明没有实现body时不能伪造source_definition，也不能把声明span套到调用者源码；声明自身的独立来源仍待交接。这是修正来源生产者的归属，不在位置查询加截断、保护或替代路径。
+
 
 
 

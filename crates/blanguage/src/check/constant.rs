@@ -5,10 +5,13 @@ use std::num::NonZeroU64;
 impl Builder<'_> {
     pub(super) fn module_constant(&mut self, key: String) -> Result<Value> {
         let (ty, words, origin) = evaluate(self.world, &key, &self.calls)?;
+        Ok(self.evaluated_constant(ty, words, origin))
+    }
+    pub(super) fn evaluated_constant(&mut self, ty: Ty, words: Vec<Bits>, origin: Option<Arc<GeneratedOrigin>>) -> Value {
         let first = self.code.len();
         let value = self.constant_value(ty, words,None);
         for instruction in &mut self.code[first..] { instruction.generated_origin = origin.clone(); }
-        Ok(value)
+        value
     }
     pub(super) fn literal(&mut self, scalar: Scalar, bits: Bits) -> Value {
         let mut value = self.constant(scalar, bits);
@@ -92,7 +95,7 @@ Program {
             prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
         }
 }
-fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>)> {
+pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>)> {
     let definition = &world.functions[key];
     if !world.evaluating_constants.borrow_mut().insert(key.into()) {
         return definition.source.fail(

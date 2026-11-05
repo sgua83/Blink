@@ -295,6 +295,11 @@ Builder在实际语句、表达式、返回值表达式和位置处理期间交�
 
 语法位置、实际实例／内联展开点、parallel阶段、集合调用及内部值核入口已交接；域展开与已编译域调用点沿下述domain_path交接；阶段索引／空前缀生成原因沿generated_origin交接；Frame／域包装分类继续见Issues C-021.7.9.7.2.4.5／.6。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
 
+条件输出的字节范围属于原合同定义。原Contract::Declaration借用Definition，直接取得同一原合同列表及语法上下文；outputs::expression在convert及builder.expr期间成对使用合同span与其来源。相同Definition保留已有实例／内联／域上下文，跨定义采用原定义能提供的上下文，未传具体Instance不猜补；已绑定Signature沿原真实调用处span／source保留调用位置上下文。求值完成或返回错误后，原Builder的来源定义、上下文、语法点和原env恢复，其他调用／值／Proof保持。
+
+外部声明或已编译提供者缺少真实实现来源时保持null，不能把声明的索引解释成调用者源码，亦不在位置查询截断或改写越界范围。真实普通B定义的条件仍保留其SourceSite，不通过清空全部来源消除错配。外部具名声明自身的来源表示仍待[独立叶项](Issues.md#c-021-7-9-7-2-1-2)，不把声明当作提供者实现，详见[来源归属](Architecture.md#tool-7-2-1-1)。
+
+
 #### 实际实例与内联展开点
 
 compiler功能的`SourceSite::instance()`借用实际`generics::Instance.name`，为可选字符串；原模块／原函数名继续在`origin()`，不能用它们代替特化身份。普通函数、并行阶段及集合内部值核的原生产者直接交接当前实际实例；阶段参数的临时表达式也沿同一Instance交接，不从最终Program名或解析某个字符串猜补。模块常量／类型整数式等没有实际普通实例的求值入口为null，其内部真实展开的函数仍按实际特化交接。
@@ -527,11 +532,21 @@ JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼�
 
 原name_expr读取模块常量时，module_constant继续调用同一evaluate。临时Builder的原Constant指令若已有generated_origin，evaluate取得这些操作的OperationOrigin，在原类型／位模式结果中交接可选GenerationReason::ModuleConstantEvaluation与GenerationAnchor::ModuleConstantEvaluation { definition, constant, operations }。没有已有变换材料则不增加该锚点；不收集全部字面量、复制临时IR、保存Reg或再求值源码。直接负字面量定型与尚未交接材料的其他变换不会由这里猜补。
 
-module_constant仍用原constant_value(...,None)生成实际结果分量及当前读取点的source_site，再让这些Constant共享同一个求值材料。operations是该次求值已取得的变换事实，不是逐结果分量的数据依赖：相邻操作若共享同一SourceSite与GeneratedOrigin，只交接一份相同材料；比较只用当次Arc引用，不把指针当作永久身份。嵌套常量仍沿已有材料继续交接；序列按本次原code顺序，出现数量不是唯一求值／运算／运行次数，不能据此推定每个操作影响每个结果分量。
+module_constant与具名条件输出的常量读取共用evaluated_constant，仍用原constant_value(...,None)生成实际结果分量及当前读取点的source_site，再让这些Constant共享同一个求值材料。operations是该次求值已取得的变换事实，不是逐结果分量的数据依赖：相邻操作若共享同一SourceSite与GeneratedOrigin，只交接一份相同材料；比较只用当次Arc引用，不把指针当作永久身份。嵌套常量仍沿已有材料继续交接；序列按本次原code顺序，出现数量不是唯一求值／运算／运行次数，不能据此推定每个操作影响每个结果分量。
 
 JSON reason及锚点kind均为module_constant_evaluation，definition为真实原source_definition或null，constant为实际完整常量名，operations是已有operation_origin数组，成员保留原语法及generated_origin。anchor().origin()借用可用原定义，instance()返回实际常量全名；单源syntax()／trigger()为空，不能用常量定义冒充一条用户表达式。源码常量保存原不可变来源；已编译接口缺失提供者定义时仍为null，保留实际常量名和实际取得的运算事实，不把接口求值当作提供者实现源码或IR。
 
-材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。输出条件的直接物化、类型化OutputConstant及其物化仍未交接求值来源，阶段Root::Literal、形状和变体编号也各有原缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
+材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出沿下节交接；类型化OutputConstant及其物化仍未交接求值来源，阶段Root::Literal、形状和变体编号也各有原缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
+
+
+
+#### 具名条件输出的模块常量物化来源
+
+具名B函数及外部C声明的输出条件仍由原outputs::expression/path取得输入快照、returned与模块常量。常量名称分支经过原解析和公开性检查后，直接消费原evaluate返回的Ty／Bits及可选ModuleConstantEvaluation，再由与普通常量读取共用的Builder::evaluated_constant形成相同Constant与当前source_site。该路径保持原空calls，普通name_expr读取保留原self.calls，不把两条路径的调用上下文互换。
+
+新事实沿已有module_constant_evaluation编码；它解释实际常量求值，不冒充条件自身全部运算、运行执行或逐结果因果图。原公开条件引用常量的可见性、数值／Proof、条件输出许可与初始化判断保持。真实源码与已编译接口的未知范围沿原定义合同，不从当前读取点猜补提供者来源；后续CSE／DCE及空Map根沿同一OperationOrigin持有材料，不保活操作或建立第二合同状态。
+
+此路径仅compiler，最后IR消费者后释放，不进入必要对象／执行编码或拥有运行资源。函数指针签名先绑定为OutputConstant，绑定与已绑定常量的物化仍各自待实现来源交接，不能用本直接Name分支宣称完成，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-2-1)及[剩余接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-2)。
 
 
 #### 空Map阶段移除的来源

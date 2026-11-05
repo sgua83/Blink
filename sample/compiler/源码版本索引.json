@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/constant.rs",
-      "sha256": "21862835127e895e368bdcf83910cf7130a1233d8f5669652f9dc5ef36e03c67"
+      "sha256": "f4b822d58a2f0719310d87a58c8377b4e4ab81bf1d723cd1e6bc4a8683053e04"
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
@@ -152,7 +152,7 @@
     },
     {
       "path": "crates/blanguage/src/check/outputs.rs",
-      "sha256": "df531ef3ecd3739fd311aaa4086b94e4d5721fed1128b9c1a3ced612f389e01e"
+      "sha256": "f9268e3bd48d246198737a2fbd549dd09b932d0dbcbf90f256193c668e8a783a"
     },
     {
       "path": "crates/blanguage/src/check/owned_borrows.rs",
@@ -512,8 +512,8 @@
     },
     {
       "path": "crates/blanguage/src/check/outputs.rs",
-      "start_line": 675,
-      "end_line": 744,
+      "start_line": 693,
+      "end_line": 762,
       "sha256": "78407ac2c45d26ba047811d64754f902220da388d380345b4cc93661a9a62fdd"
     },
     {

@@ -245,6 +245,16 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 **语法位置到原IR操作。** 原Builder在处理语句、表达式、返回值表达式及位置表达式时取得原定义快照和所消费的UTF-8字节半开范围，交给同一Inst节点；InstKind只描述原操作，compiler专用可选SourceSite归Inst，ValueCode／Stage继续拥有原code。原发射入口直接接收操作种类，在同一节点附加当前来源；嵌套语法退出后恢复父上下文，实际内联切换原定义快照后恢复调用者。语法范围是驱动发射的上下文，不宣称每条生成步骤均是直接源语句或一条源码对应一条机器指令；参数／框架或后端新操作未交接来源时为None，不从根函数补造。SourceSite的origin／span／syntax只读查询及原IR的source_site JSON沿同一事实交接，精确接口见[规范](BLanguage.md#ir操作的语法来源)。原Source文本与每次Builder的定义快照共享不可变Arc，范围随节点克隆／移动，最后原IR消费者结束后释放；仅显式查询计算摘要及行列，不重读源码。原后端、优化、访存分析及运行角色只适配同一操作种类，关闭compiler时不含来源字段及输出；机器语义、C ABI、必要执行编码、调度及优化选择保持。完整实例链、集合／生成分类与优化后的多对多关系分别继续由后续职责交接，不能把None解释成已消除或没有源语义。[本叶闭合范围](FixedIssues.md#c-021-7-9-7-2-1)。
 
+<a id="tool-7-2-1-1"></a>
+
+**条件输出跨定义的来源归属。** 原合同持有的字节范围只属于其真实Source，不能套用到调用者快照。outputs::Contract的Declaration沿原Definition借用实际合同列表及来源；Signature继续借用原已绑定谓词及真实调用处的span／source，保留原调用位置上下文，不把它当作提供者实现；不形成第二合同拥有者。唯一条件IR生产点outputs::expression在convert及原builder.expr期间以原合同Definition取得语法来源；与当前Builder相同Definition时保持已有实例／内联／域上下文，跨定义只交接实际可取得来源，未传入具体Instance不猜补，外部声明／已编译提供者缺失实现来源时为null，不冒充调用者或提供者实现。
+
+原合同span和原定义Source成对消费，不改范围、不在位置查询增加截断、守卫或替代索引。求值后及错误退出均恢复原Builder的来源定义、上下文和语法点；原env、数值、输入快照、Proof、初始化、调用与必要编码保持。材料由原SourceSite／IR拥有并随最后消费者释放，不增加Source登记、运行状态或常驻诊断。此处修正生成条件的来源，不以未知为理由删除真实普通函数源码材料；实际外部声明自身的独立声明来源表示仍不得冒充实现来源。状态见[独立台账](FixedIssues.md#c-021-7-9-7-2-1-1)。
+
+<a id="tool-7-2-1-2"></a>
+
+**外部具名条件的声明来源。** 外部声明的原Source及合同span是实际语法事实，但不是提供者实现；现有SourceOrigin以真实实现定义为合同，不能把无body外部声明套成source_definition。应沿原声明／Contract与IR所有者交接明确的声明来源，最后查询消费者后释放，不另建源码登记、AST／World快照或运行资源。当前外部条件没有实现来源时为空；跨定义错配修复不冒称声明来源已交付。表示及具体接口仍待设计，见[独立台账](Issues.md#c-021-7-9-7-2-1-2)。
+
 <a id="tool-7-2-2"></a>
 
 **实际实例与内联调用链。** 实际generics::Instance.name是具体实例身份的唯一生产者，原函数／阶段及参数临时表达式展开把同一Instance交到Builder，内联展开入口在原定义切换处交接真实调用Span及调用者实例。原SourceSite共享当前实例上下文，平坦展开点按最外层到最内层保存；每个点只持有原定义快照、实际实例名和所消费范围，不保留AST／World、复制调用图或维持另一注册表。不同特化共享原定义而保留各自真实名字；每次展开有自己的调用点，退出后恢复原调用者。缺少源定义、实例或可解释位置的事实分别显式缺失，已知后续展开仍保留；原始非内联调用没有内联帧。这里记录编译期实际展开点，不冒充机器CALL、运行期栈或已经取得域调用／集合生成分类；这些继续由各原所有者交接。不从最终Program名、原函数裸名、寄存器或字符串解析猜补实例，不因材料缺失改变合法程序、优化、ABI或资源完成。Source文本与名字／路径沿不可变共享数据由原IR持有，最后真实IR消费者后释放，查询只借用并交回独立JSON。compiler角色的SourceSite::instance()／inlined_at()及InlineSite只读getter／ir_json交接同一原事实，切片外层优先，缺失定义或实例单独为null；当前普通调用沿原标识符范围，静态引用沿原引用范围，不扩大成未取得的整调用表达式。精确字段与语义见[规范](BLanguage.md#实际实例与内联展开点)，[本叶闭合记录](FixedIssues.md#c-021-7-9-7-2-2)。
@@ -661,17 +671,19 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 **模块const普通读取到实际Constant。** 原name_expr→module_constant→evaluate→constant_value形成普通常量IR；原evaluate继续决定类型／位模式、合法常量性及递归／依赖。必要产出是这次临时求值已经生成的变换事实：在临时Builder结束前，从实际Constant指令取出已有generated_origin及其原OperationOrigin，随原Ty／Bits结果返回可选ModuleConstantEvaluation。相邻结果分量若共享完全相同的SourceSite和GeneratedOrigin材料，只交接一份相同事实；比较只消费本次Arc引用，不把指针保存为身份或增加登记表。其锚点保存实际常量全名、可用原定义与operations，不保留Inst、Reg、AST、World或另建常量缓存。没有已有变换材料则没有该锚点；不是全量求值历史、逐结果分量依赖图或运行轨迹。
 
-唯一结果接收者module_constant仍以原constant_value(...,None)生成同样Constant及调用者source_site，再让本次全部真实结果分量共享同一求值事实。锚点operations描述整个这次求值中持有材料的常量操作，不声称每个成员都影响每个结果分量；实际数值／布局仍在原当前Constant与Ty。嵌套常量引用按实际已生成材料继续共享，重复查询或多个结果分量中的出现数不是唯一求值次数。真实源码定义可沿原SourceOrigin解释；已编译接口只保存实际常量名与已取得运算事实，缺失提供者源码定义为null，不把接口常量重新求值冒充提供者IR／实现源码。
+普通读取的module_constant经共用evaluated_constant，仍以原constant_value(...,None)生成同样Constant及调用者source_site，再让本次全部真实结果分量共享同一求值事实。锚点operations描述整个这次求值中持有材料的常量操作，不声称每个成员都影响每个结果分量；实际数值／布局仍在原当前Constant与Ty。嵌套常量引用按实际已生成材料继续共享，重复查询或多个结果分量中的出现数不是唯一求值次数。真实源码定义可沿原SourceOrigin解释；已编译接口只保存实际常量名与已取得运算事实，缺失提供者源码定义为null，不把接口常量重新求值冒充提供者IR／实现源码。
 
-原Builder、实例、数值、Proof、literal、访问及运行编码不变。材料仅compiler，由原结果及新Constant／已有CSE、DCE、空Map根持有，最后IR消费者结束释放；查询只借用，不重求值或重读源码，不新增追踪表、调度或释放链。只做合法性检查的调用以及没有实际Constant分量的结果不会伪造函数体或结果节点；此处不承诺保存未消费结果的全部编译历史。输出契约及Root／整数结果当前仍走仅Ty／Bits返回，来源缺口不因该普通读取闭合而完成，见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-1-1)。
+原Builder、实例、数值、Proof、literal、访问及运行编码不变。材料仅compiler，由原结果及新Constant／已有CSE、DCE、空Map根持有，最后IR消费者结束释放；查询只借用，不重求值或重读源码，不新增追踪表、调度或释放链。只做合法性检查的调用以及没有实际Constant分量的结果不会伪造函数体或结果节点；此处不承诺保存未消费结果的全部编译历史。类型化输出契约及Root／整数结果当前仍走仅Ty／Bits返回，来源缺口不因该普通读取闭合而完成，见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-1-1)。
 
 <a id="tool-7-3-1-9-1-3-1-2"></a>
 
-**输出契约的模块const结果。** 原outputs::path物化常量IR、bind_constants形成OutputConstant、成员投影及合同身份／对象编码分别消费原常量结果；当前只持有Ty／Bits，实际求值事实未交接。须按真实合同与物化接收者细化，在原条件／签名所有者中持有来源至最后编译或查询消费者，不把来源加入数值等价、ABI、必要编码或普通Proof身份，不另建常量权威、不保留临时IR。该职责尚未实现；普通name_expr读取已有材料不替代这里的合同结果，父项只汇总，实际接收由下列三叶推进。
+**输出契约的模块const结果。** 具名条件直接物化、绑定OutputConstant及已绑定常量物化分别由下列叶交接。具名直接物化沿原求值事实进入IR；绑定签名及其物化仍仅持有Ty／Bits，来源缺失。来源由各实际结果与签名／IR所有者持有至最后消费者，不加入数值相等、ABI、必要编码或普通Proof身份，不另建常量权威或保留临时IR。父项只汇总，不以普通name_expr或具名条件已有材料替代签名绑定职责。
 
 <a id="tool-7-3-1-9-1-3-1-2-1"></a>
 
-**未绑定条件中的模块常量物化。** outputs::path沿原常量解析／公开性检查取得真实evaluate结果，再在同一Builder物化Constant；当前仅取Ty／Bits。应交接该次已有变换材料及当前语法，不改变原调用上下文、求值、Proof或输出条件选择；唯一结果所有者为原IR，最后消费者后释放，不另建求值或合同状态，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-1)。
+**未绑定条件中的模块常量物化。** 具名B函数及外部C声明的原输出条件通过outputs::expression/path读取模块常量，原解析、公开性和输入快照检查继续决定合法性。此路径以原空calls求evaluate，普通name_expr读取仍交接原self.calls；二者不互换调用上下文。evaluate已有Ty／Bits／ModuleConstantEvaluation交给同一Builder::evaluated_constant，由原constant_value(...,None)建立相同实际Constant与当前source_site，再把原求值材料交给本次结果指令；共用原普通常量结果物化，不复制这段职责、不增加另一求值或合同状态。
+
+材料仍描述实际模块常量求值，并不冒充条件自身全部运算或每个结果分量的因果图。真实SourceOrigin、已编译接口未知范围及相邻共享事实沿原ModuleConstantEvaluation合同，原CSE／DCE及空Map根继续持有，最后IR消费者后释放；仅compiler、不保活操作、保存临时IR或拥有运行资源。原数值、Proof、初始化／输出许可、调用与编码保持；未改变公开条件所引用常量的原可见性要求。签名绑定的OutputConstant及其物化仍是下列独立职责，不以本直接Name路径替代，状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-1-2-1)。
 
 <a id="tool-7-3-1-9-1-3-1-2-2"></a>
 
