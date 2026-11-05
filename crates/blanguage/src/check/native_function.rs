@@ -422,7 +422,7 @@ impl Builder<'_> {
                 },
                 other=>other,
             };
-            let arg=match arg {Argument::Value(value) if p.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
+            let arg=match arg {Argument::Value(value) if p.access==Access::Read=>Argument::Reference(self.materialize_array(value,None)),other=>other};
             match arg {
                 Argument::Value(mut value) if p.access == Access::Value && !p.ty.dataset => {
                     self.require_same(&ty, &value.ty, span)?;

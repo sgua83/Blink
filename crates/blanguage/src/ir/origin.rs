@@ -52,7 +52,7 @@ impl SourceOrigin {
 
 /// The actual syntax that drove this operation's emission, before later IR rewrites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceSyntax { Statement, Expression, Place }
+pub enum SourceSyntax { Statement, Expression, Place, Parameter }
 /// One actual compiler inline expansion point, in its caller's source coordinates.
 #[derive(Clone)]
 pub struct InlineSite {
@@ -134,6 +134,7 @@ impl SourceSite {
         let syntax = match self.syntax {
             SourceSyntax::Statement => "statement", SourceSyntax::Expression => "expression",
             SourceSyntax::Place => "place",
+            SourceSyntax::Parameter => "parameter",
         };
         format!("{{\"kind\":\"source_syntax\",\"syntax\":{},\"definition\":{},\"instance\":{},\"inlined_at_order\":\"outermost_first\",\"inlined_at\":[{}],\"domain_path_order\":\"outermost_first\",\"domain_path\":[{}],{}}}",
             text(syntax), self.origin.ir_json(), self.instance().map_or_else(|| "null".into(), text),
@@ -209,6 +210,7 @@ pub enum GenerationReason {
     DomainPartCall,
     DatasetCallArgument,
     DatasetBorrowStrideCast,
+    ArrayParameterStore,
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
@@ -283,6 +285,7 @@ impl GeneratedOrigin {
             GenerationReason::DomainPartCall => "domain_part_call",
             GenerationReason::DatasetCallArgument => "dataset_call_argument",
             GenerationReason::DatasetBorrowStrideCast => "dataset_borrow_stride_cast",
+            GenerationReason::ArrayParameterStore => "array_parameter_store",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

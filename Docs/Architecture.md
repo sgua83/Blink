@@ -403,7 +403,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6"></a>
 
-**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。Stage Dataset实参准备.3与CPU借用步长拓宽.4已实现，其余三叶仍未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
+**普通调用资源参数接收与交接。** 父职责只汇总；真实ABI输入、数组形参物化、Stage Dataset实参准备、CPU借用步长拓宽及原B实参与实际ABI实参关系分别由以下五叶交接。原形参接收、编译期绑定和真实准备Inst保持区别，无Inst不补造操作，普通调用仍沿原source_site。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。数组形参物化.2、Stage Dataset实参准备.3与CPU借用步长拓宽.4已实现，其余两叶仍未实现，见[父台账](Issues.md#c-021-7-9-7-2-4-5-6)。
 
 <a id="tool-7-2-4-5-6-1"></a>
 
@@ -411,7 +411,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-2"></a>
 
-**原数组形参物化StoreLocal的生成来源。** 原CPU函数或静态内联的值形参数组／含数组聚合、实际寄存器及原定义／实例／已知内联上下文，经materialize_array_bindings原参数环境与materialize_array的逐分量StoreLocal，交给同一原local slots／storage及ReadOnlyLocal绑定。原接点为check.rs#154::function_parameters1625及cooperative.rs#61::inline_instance608，实际物化生产者为array.rs#29的148至178。只分类形参物化的实际StoreLocal；来源在原发起接点交接，不能按类型／机器名字或事后扫描，把共用helper的表达式与调用实参暂存改标为形参，也不复制物化算法或增加执行链。原参数的已知源与生成上下文沿原事实，合成参数不伪造源声明；未知材料保持空。原槽位、storage、输入寄存器、readonly、求值、Proof与初始化保持，无StoreLocal不补造节点。唯一事实归原生产者及原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，最后真实IR消费者后释放，不保留World／AST、不进入必要执行编码、不保活变量或节点、不拥有运行资源。真实资源与最后完成仍归原所有者，不增加参数表、状态权威、图、调度、同步或释放链；完整优化／机器映射继续沿原编号。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-2)。
+**原数组形参物化StoreLocal的生成来源。** 原CPU函数／静态内联参数环境的含数组Binding::Value、真实寄存器与原定义／实例／内联上下文，经materialize_array_bindings发起同一materialize_array，逐分量StoreLocal交给原local slots／storage及ReadOnlyLocal。仅该发起点交接共享ArrayParameterStore，JSON reason为array_parameter_store；Source按原B参数身份从同一Definition.params取得原Param.span，经原Builder形成Parameter／parameter语法锚点，保留实际实例、内联与域路径。当前Param.span为起始令牌，不扩大为整个声明；Generated直接借用已有生成Syntax，未知与CompiledInterface不伪造声明。Inst.source_site为空，触发在generated_origin中，来源不代替实际B参数到ABI输入关系。共用helper显式接收可选材料，原表达式、局部绑定、取址、外部／普通实参、拥有／view暂存十处继续原直接来源，不按类型、机器名字或事后扫描改标，不复制物化算法或增加执行链。原槽位、storage、寄存器、readonly、求值、Proof与初始化保持；零长、无实际Store或优化消除不补节点、不保活。唯一事实归原生产者及原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，最后真实IR消费者后释放，不保留World／AST、不进入必要执行编码、不拥有运行资源；真实Frame、借用与完成仍归原所有者，不增加参数／状态表、图、调度、同步或释放链。完整优化／机器映射仍沿原编号。当前已交接原参数物化StoreLocal的生成来源，见[规范](BLanguage.md#数组形参物化storelocal的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-2)。
 
 <a id="tool-7-2-4-5-6-3"></a>
 

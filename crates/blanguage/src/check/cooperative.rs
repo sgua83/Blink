@@ -461,7 +461,7 @@ impl<'a> Builder<'a> {
         let mut held = Vec::new();
         for (parameter,(param, arg)) in callee.function.params.iter().zip(args).enumerate() {
             let arg=if let Argument::Scoped{value,owner}=arg {held.push(owner);Argument::resource(value)}else{arg};
-            let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value)),other=>other};
+            let arg=match arg {Argument::Value(value) if param.access==Access::Read=>Argument::Reference(self.materialize_array(value,None)),other=>other};
             if param.ty.is_acceleration() {
                 let Argument::Acceleration(index) = arg else {
                     return self.fail(span, "B183", "read acceleration 参数需要加速结构资源");

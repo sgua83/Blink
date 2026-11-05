@@ -282,11 +282,11 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 ### IR操作的语法来源
 
-原`Inst`为持有`InstKind`的操作节点；原枚举变体移到`InstKind`，`Inst::new(kind)`构造没有语法来源的节点。compiler功能提供`Inst::source_site()`，可选只读引用指向`SourceSite`；`origin()`借用原`SourceOrigin`，`span()`返回该次语法处理的范围，`syntax()`为`SourceSyntax::Statement／Expression／Place`。普通运行角色不包含这些来源字段、类型或查询输出；B语法、C ABI、必要执行格式和原优化选择保持。Rust调用方构造／匹配IR时使用原节点的kind，不能继续将Inst当操作枚举。
+原`Inst`为持有`InstKind`的操作节点；原枚举变体移到`InstKind`，`Inst::new(kind)`构造没有语法来源的节点。compiler功能提供`Inst::source_site()`，可选只读引用指向`SourceSite`；`origin()`借用原`SourceOrigin`，`span()`返回该次语法处理的范围，`SourceSite::syntax()`的枚举为`Statement／Expression／Place／Parameter`；原直接发射的source_site使用前三类，形参生成触发可用Parameter。普通运行角色不包含这些来源字段、类型或查询输出；B语法、C ABI、必要执行格式和原优化选择保持。Rust调用方构造／匹配IR时使用原节点的kind，不能继续将Inst当操作枚举。
 
 Builder在实际语句、表达式、返回值表达式和位置处理期间交接所消费的Span；子表达式结束后回到原父上下文，实际内联期间使用原被调定义快照，返回后恢复调用者。原code的每个操作持有自己的可选语法来源，原嵌套块、克隆和移动沿同一节点交接；同一Builder定义和原Source文本共享不可变Arc，不建立按操作序号对齐的来源表或保留AST／World。语法范围表示驱动本次发射的上下文；参数设置、运行框架和后端新合成操作未取得语法来源时为null，不能从根范围补造。
 
-`SourceSite::ir_json()`的kind为source_syntax，syntax为statement／expression／place，definition沿原source_definition输出同一原定义及快照；其余start_byte／end_byte、span_unit／span_range、start／end、column_unit和position_base与原定义查询采用相同单位，但范围属于本次语法上下文。现有compiler角色的每个IR操作JSON增加source_site，对没有材料的操作输出null；关闭compiler时不输出该字段。只在显式查询进行摘要、行列和JSON计算，已经取得的IR不重读后续磁盘文件。
+`SourceSite::ir_json()`的kind为source_syntax，syntax为statement／expression／place／parameter；parameter只说明原参数起始令牌，不是新的B语法，definition沿原source_definition输出同一原定义及快照；其余start_byte／end_byte、span_unit／span_range、start／end、column_unit和position_base与原定义查询采用相同单位，但范围属于本次语法上下文。现有compiler角色的每个IR操作JSON增加source_site，对没有材料的操作输出null；关闭compiler时不输出该字段。只在显式查询进行摘要、行列和JSON计算，已经取得的IR不重读后续磁盘文件。
 
 语法位置、实际实例／内联展开点、parallel阶段、集合调用及内部值核入口已交接；域展开与已编译域调用点沿下述domain_path交接；阶段索引／空前缀生成原因沿generated_origin交接；Frame／域包装分类继续见Issues C-021.7.9.7.2.4.5／.6。优化器原克隆、移动和就地修改保留节点；新构造操作没有自动继承来源，完整合并、折叠、消除和结构重写仍沿.7.3实施。source_site为null只说明此操作没有已交接的语法材料，不等于没有源语义、已消除或机器代码无来源；不得据此冻结优化或保活操作。机器指令来源与可选产物保存继续沿.7.4至.7.6，当前IR语法来源不能代替这些关系。
 
@@ -379,6 +379,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DomainPartCall | domain_part_call | 原emit_domain_part交接实际Stage子区间的运行Call |
 | DatasetCallArgument | dataset_call_argument | 原native_call将Stage Dataset准备为实际借用实参的四类指令 |
 | DatasetBorrowStrideCast | dataset_borrow_stride_cast | 原application_reference_value将步长拓宽为CPU借用描述符要求的U64 Cast |
+| ArrayParameterStore | array_parameter_store | 原值形参数组／含数组聚合物化到局部存储的StoreLocal |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -611,6 +612,16 @@ application_reference_value只在原descriptor需要U64步长而实际布局步�
 节点source_site为空，Syntax直接借用原发射时SourceSite，原语法、定义／实际实例及内联／域路径保持；未知为null，触发仅为已取得的原范围。storage_address、Projection根Proof、原字段布局、普通数值或其他寻址Cast不因共享语法触发而改标。原Call、根／长度／字段偏移、参数顺序、访问许可、借用、ABI与错误保持；步长表示拓宽不改变实际字节步长或复制数据。
 
 材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块及SDK／CLI快照，最后真实IR消费者后释放，不进入必要执行编码、不持有World／AST或运行资源。Frame及真实最后消费者继续负责存储、依赖和完成；不建立参数／状态表、图、调度、同步或释放链。原优化继续折叠／消除，不为来源强制保活变量或Cast，完整变换与机器映射仍归原编号。见[架构](Architecture.md#tool-7-2-4-5-6-4)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-4)。
+
+#### 数组形参物化StoreLocal的生成来源
+
+materialize_array_bindings只为原含数组Binding::Value的实际物化交接ArrayParameterStore，JSON reason为array_parameter_store。同一原materialize_array逐分量StoreLocal共享该材料，原槽位／storage、源寄存器、readonly、求值顺序、Proof及初始化保持；无实际StoreLocal的零长值不补节点，原优化可以消除常量索引或未使用存储，不为观察保活。
+
+Source定义按同一原B参数身份取得Param.span，由原Builder.source_at生成SourceSyntax::Parameter，JSON syntax为parameter；当前解析器只保存该参数起始令牌，不能扩大为整条声明。SourceSite保留原SourceOrigin、真实特化实例及inlined_at／domain_path；环境遍历顺序与原形参声明顺序不同，也须按原参数身份交接范围。Generated只借用已有生成Syntax；未知与CompiledInterface不伪造参数声明。节点source_site为空，触发只归generated_origin，不把这些生成Store当成用户直接赋值。
+
+materialize_array共用算法只接收可选来源，表达式、局部绑定、取址、外部／普通实参、拥有／view暂存继续原来源；不能因包含数组就全改标为形参，也不能按最终寄存器号猜原参数。来源不改变参数ABI，不代替B参数到实际输入槽的关系。已编译消费者未保留提供者原IR时不重建或伪造实现；原提供者编译结果及消费者自己的真实IR分别查询。
+
+材料只归compiler角色的原Inst／ValueCode／FunctionBody、模块与SDK／CLI快照，在最后真实IR消费者后释放；不保留AST／World、不进入必要执行编码、不持有运行资源，不建立参数／状态表、图、调度、同步或释放链。Frame及真实消费者继续负责原资源、借用与最后完成，完整变换及机器来源另归原编号。见[架构](Architecture.md#tool-7-2-4-5-6-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-2)。
 
 #### 集合值核的入口与捕获来源
 

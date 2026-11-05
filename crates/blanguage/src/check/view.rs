@@ -510,7 +510,7 @@ impl Builder<'_> {
             value
         };
         if view.ty.array.is_some() {
-            let place = self.materialize_array(view).place;
+            let place = self.materialize_array(view,None).place;
             return self.array_place(place, index);
         }
         self.view_value_place(view, index)

@@ -160,17 +160,27 @@ impl Builder<'_> {
             })
             .collect();
         for (name, value) in values {
-            let owner = self.materialize_array(value);
+            let trigger = match &self.definition.syntax_origin {
+                crate::frontend::DefinitionSyntax::Source => self.definition.function.params.iter()
+                    .find(|parameter| parameter.name == name)
+                    .and_then(|parameter| self.source_at(parameter.span, SourceSyntax::Parameter))
+                    .map(GenerationAnchor::Syntax),
+                crate::frontend::DefinitionSyntax::Generated(site) => site.clone().map(GenerationAnchor::Syntax),
+                crate::frontend::DefinitionSyntax::CompiledInterface => None,
+            };
+            let origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ArrayParameterStore, trigger });
+            let owner = self.materialize_array(value, Some(origin));
             self.env.insert(name, Binding::Owned(owner));
         }
     }
 
-    pub(super) fn materialize_array(&mut self, value: Value) -> OwnedBinding {
+    pub(super) fn materialize_array(&mut self, value: Value, generated_origin: Option<Arc<GeneratedOrigin>>) -> OwnedBinding {
         let proof = bounds::Proof::capture(&value);
         let uniform = value.uniform;
         let (slots, storage) = self.local_slots(&value.ty);
+        let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for (slot, r) in slots.iter().zip(&value.regs) {
-            self.emit(InstKind::StoreLocal(*slot, *r));
+            self.code.push(Inst { kind: InstKind::StoreLocal(*slot, *r), source_site: source_site.clone(), generated_origin: generated_origin.clone() });
         }
         let place = Place::ReadOnlyLocal(value.ty, slots, storage);
         self.initialize(&place);
@@ -230,7 +240,7 @@ impl Builder<'_> {
             let constant = proof.known_value(&ty);
             return Ok(Some(Value { ty, regs: vec![reg], proof, uniform, constant, literal: false }));
         }
-        let place = self.materialize_array(value).place;
+        let place = self.materialize_array(value, None).place;
         let place = self.array_index(place, index, expr.span)?;
         let mut result = self.read_place(&place, expr.span, None)?;
         result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);

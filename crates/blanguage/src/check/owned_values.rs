@@ -521,7 +521,7 @@ impl Builder<'_> {
                 let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
                 let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);
                 for i in selected{model.join(self.unpack_record(&value,i as usize),false);}
-                let place=match value.place(){Some(place)=>place,None=>self.materialize_array(value.value.clone()).place};let place=self.array_index(place,index,expr.span)?;
+                let place=match value.place(){Some(place)=>place,None=>self.materialize_array(value.value.clone(),None).place};let place=self.array_index(place,index,expr.span)?;
                 let mut regs=Vec::new();
                 for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span, None)?.regs[0]);}
                 self.rebind_returned(&mut model,regs);

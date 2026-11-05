@@ -675,7 +675,7 @@ impl Builder<'_> {
         fn root_name(expr:&Expr)->Option<&String>{match &expr.kind{ExprKind::Name(name)=>Some(name),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root_name(base),_=>None}}
         if let Some(name)=root_name(arg)
             && let Some(Binding::Value(value))=self.env.get(name).cloned() {
-            let owner=self.materialize_array(value);self.env.insert(name.clone(),Binding::Owned(owner));
+            let owner=self.materialize_array(value,None);self.env.insert(name.clone(),Binding::Owned(owner));
         }
         let Some(place)=self.place(arg)?else{return Ok(None);};
         if place.ty().owns_resources()||place.ty().contains_views()||place.ty().components.is_empty(){
