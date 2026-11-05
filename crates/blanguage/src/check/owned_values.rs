@@ -751,6 +751,7 @@ impl Builder<'_> {
         }
         if let ExprKind::Call(name,args)=&expr.kind {
             if name=="resize" {return self.resize_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
+            if name=="take_last" {return self.take_last_application_dataset(args,expr.span).map(|value|value.map(Returned::Dataset));}
             if name=="own" {return self.make_user_owned(args,expr.span);}
             if name=="into_inner" {return self.into_user_inner(args,expr.span);}
         }

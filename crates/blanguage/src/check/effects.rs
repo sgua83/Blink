@@ -635,6 +635,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                 if self.builder.is_none() && name == "address_of" && let [place] = args.as_slice() {
                     writes(Write::Position { place, call: Some(expr), contents: false, iterator: None });
                 }
+                if name=="take_last" && self.named(name,expr.span)?.is_none() && let [_,place]=args.as_slice() {
+                    writes(Write::Position{place,call:Some(expr),contents:false,iterator:None});
+                }
                 let local = if matches!(expr.kind, ExprKind::Call(..)) { self.named(name, expr.span)? } else { None };
                 if let Some(ty) = local { self.function_writes(ty, args, expr, writes)?; }
                 else {

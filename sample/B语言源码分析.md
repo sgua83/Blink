@@ -1392,7 +1392,7 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
 
 命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
 
-源码节选：`crates/blanguage/src/check/owned_values.rs:1040`。
+源码节选：`crates/blanguage/src/check/owned_values.rs:1041`。
 
 ```rust
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
@@ -1511,7 +1511,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset构造的元素与显式静态形状由同一dataset_constructor_type生产。Scope仅将其包装为Ty::owned_dataset交给原generics，动态length不成为const N，不求值length／factory、不创建Frame或发射IR。真实create_application_dataset也消费该纯类型结果，然后原入口只求值一次长度并继续原分配、初始化与拥有释放；World的类型／形状错误直接交还，大小写敏感和资源边界保持。
 
-源码节选：`crates/blanguage/src/check/application.rs:1274`。
+源码节选：`crates/blanguage/src/check/application.rs:1315`。
 
 ```rust
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
@@ -1654,7 +1654,51 @@ pub(super) struct LoopWrites {
 }
 ```
 
-有写普通调用实际参数位置的循环精度仍沿C-005.13.2.2.5.2推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset复用原Returned求值、初始化与资源树，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长、批量增长和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
+有写普通调用实际参数位置的循环精度仍沿C-005.13.2.2.5.2推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset复用原Returned求值、初始化与资源树，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长及批量增长保持各自未完成范围；完整存储与最后清理不替代通用容器。
+
+take_last_application_dataset直接物化原Data.elements中的最后一个实际元素，交给原可写Place，再共用resize_application_storage缩短同一Frame槽位。输出覆盖复用store_owned_returned：普通局部位置在清理旧值前交出原拥有模型，Frame元素保持先清理旧值、写入实际存储、再交回元素合同的次序。它不把已交出的尾值再次作为fill，也不为尾部取出增加运行时元素状态或释放路径。输入临时绑定在输出求值中仍持有原资源；release_application_data让临时拥有者保持到自身真实清理完成再移除，旧具名来源Moved不能代替这个仍存活的拥有者。
+
+源码节选：`crates/blanguage/src/check/application.rs:1278`。
+
+```rust
+    pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
+        let [source,output]=args else{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");};
+        let Some(returns::Returned::Dataset(data))=self.evaluate_returned(source,None)? else {
+            if !self.flow.continues(){return Ok(None);}
+            return self.fail(source.span,"B224","take_last需要一份拥有的dataset");
+        };
+        let data=self.refresh_application_data(data,span)?;
+        if data.ownership!=Ownership::Owned{return self.fail(source.span,"B227","dataset借用不能交出尾元素或缩短存储");}
+        self.require_application_initialized(&data,span)?;self.application_cpu(&data,span)?;
+        let one=self.constant(Scalar::U32,1);let last=self.binary("-",data.length.clone(),one,span,None)?;
+        if !self.index_in(&last,IndexDomain::ApplicationData(data.root.identity()),data.length.minimum(),None) {
+            return self.fail(source.span,"B137","take_last需要由原长度条件证明输入非空");
+        }
+        let held=self.hold_binding(Binding::ApplicationData(data.clone()));
+        let destination=self.mutable_place(output,Access::Write)?;
+        if !self.flow.continues(){return Ok(None);}
+        let Some(destination)=destination else{return self.fail(output.span,"B227","take_last输出需要同元素类型的可写位置");};
+        self.require_same(&data.ty,destination.ty(),output.span)?;
+        let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
+        let packed=self.read_storage_value(&place,span,None)?;
+        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)}else{returns::Returned::value(packed)};
+        self.require_returned_initialized(&mut value,span)?;
+        self.env.remove(&held);
+        self.view_uses.invocation(span);let retained=self.view_uses.all(self,&[]);
+        self.application_movable(&data,&retained,span)?;
+        if data.ty.owns_resources(){
+            let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination,span)?}else{self.owned_place_model(&destination)};
+            self.store_owned_returned(destination,old,value,span)?;
+        }
+        else {
+            let packed=self.returned_storage(&value);self.write_storage_value(&destination,&packed,span,None)?;
+            self.assign_owned_proof(&destination,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&destination);
+        }
+        // A shrinking Frame never reads fill; the moved tail has no second owner there.
+        let fill=argument(self.constant(Scalar::U64,0));
+        self.resize_application_storage(data.root,data.ty,last,data.elements,fill,span).map(Some)
+    }
+```
 
 整元素及其记录／固定数组混合字段路径移动替换通过assign_statement的实际dataset拥有元素入口进入assign_application_element。入口沿原AST保留Member和固定数组Index的源码顺序，原member_type／array_index取得实际字段与数组单元位置；每个下标只求值一次，求值期间保持父DataReference借用，实际左侧类型仍须拥有资源；独立拥有位置和普通值继续由原入口处理，不扩大owned_expression_type或把动态元素伪装成独立env拥有者。左侧Place和副作用下标只取得一次，旧元素先按本次packed元数据物化；原临时位置借用保持父资源直到右值完成，随后drop_returned运行旧静态F并结束旧拥有树，再写入唯一新值。新值的原拥有者被消费，旧新内容没有第二释放链。活动子view、只读入口及右值提前消费父资源仍不合法，最后真实view消费者结束后才可替换。
 

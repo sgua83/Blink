@@ -86,6 +86,9 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
         }
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
+        if name=="take_last" && explicit.is_none() && let [data,_]=args {
+            return Ok(self.ty(data,limit)?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));
+        }
         if name == "c_function" && explicit.is_none() {
             return callback::signature(self.world, self.definition, args, span).map(|(_, ty)| Some(ty));
         }

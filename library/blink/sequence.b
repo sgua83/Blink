@@ -21,9 +21,9 @@ result<dataset<T>,SequenceFailure<T>> push<T>(dataset<T> data,T value) on cpu re
 result<SequenceRemoved<T>,SequenceFailure<T>> pop<T>(dataset<T> data) on cpu {
     u32 size=data.length;
     if (size == 0) { return Err(SequenceFailure<T>(data,SequenceError::Empty)); }
-    u32 last=size-1;
-    T value=data[last];
-    return Ok(SequenceRemoved<T>(resize(data,last,value),value));
+    T value;
+    let remaining=take_last(data,value);
+    return Ok(SequenceRemoved<T>(remaining,value));
 }
 
 result<dataset<T>,SequenceFailure<T>> insert<T>(dataset<T> data,u32 index,T value) on cpu {

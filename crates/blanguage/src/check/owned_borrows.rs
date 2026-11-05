@@ -91,15 +91,24 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
     pub(super) fn assign_owned_storage(&mut self,place:Place,op:&str,rhs:&Expr,span:Span)->Result<()> {
         self.require_owned_writable(&place,span)?;if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;if !self.flow.continues(){return Ok(());}
-        let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;self.check_returned_type(&mut value,place.ty(),span)?;
-        self.view_uses.after(span);let old=self.owned_place_model(&place);let packed=self.returned_storage(&value);
-        let held=match &value{Returned::OwnedValue(value)if value.value.ty.contains_cleanup()&&value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
-        if place.ty().contains_cleanup(){let mut inactive=old.clone();inactive.restrict_owned(&Presence::None);self.assign_owned_place(&place,inactive);}
-        // 覆盖结束旧元数据的生命周期；后续消费者读取实际右值的view关系。
+        let value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
+        let old=self.owned_place_model(&place);
+        self.store_owned_returned(place,old,value,span)
+    }
+    pub(super) fn store_owned_returned(&mut self,place:Place,old:Returned,mut value:Returned,span:Span)->Result<()> {
+        self.check_returned_type(&mut value,place.ty(),span)?;
+        self.view_uses.after(span);
+        let element=matches!(place.storage(),Place::ApplicationElement{..});
+        let packed=self.returned_storage(&value);
+        let held=match &value{Returned::OwnedValue(value)if (element||value.value.ty.contains_cleanup())&&value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
+        if !element&&place.ty().contains_cleanup(){let mut inactive=old.clone();inactive.restrict_owned(&Presence::None);self.assign_owned_place(&place,inactive);}
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
-        self.assign_owned_place(&place,value);
+        if !element{self.assign_owned_place(&place,value.clone());}
         self.drop_returned(old,&view::Borrow::default(),span)?;
+        self.write_storage_value(&place,&packed,span,None)?;
+        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
+        if element{self.assign_owned_place(&place,value);}
         if let Some(name)=held{self.env.remove(&name);}
-        self.write_storage_value(&place,&packed,span,None)?;self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);Ok(())
+        Ok(())
     }
 }

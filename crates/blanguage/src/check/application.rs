@@ -1031,7 +1031,7 @@ impl Builder<'_> {
             (temporary.is_some(),temporary.unwrap_or(declaration))
         });
         let mut bindings=names.into_iter().map(|name|{
-            let binding=if name.starts_with('\0'){self.env.remove(&name).unwrap()}else{self.env[&name].clone()};
+            let binding=self.env[&name].clone();
             (name,binding)
         }).collect::<Vec<_>>();
         while let Some((name,binding))=bindings.pop(){
@@ -1043,7 +1043,7 @@ impl Builder<'_> {
                 if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
             }
             self.drop_binding(binding,&remaining,self.definition.function.span)?;
-            if !name.starts_with('\0'){
+            if name.starts_with('\0'){self.env.remove(&name);}else{
                 match self.env.get_mut(&name){
                     Some(Binding::OwnedValue(value))=>value.mark_moved(),
                     Some(Binding::ApplicationData(data))=>data.ownership=Ownership::Moved,
@@ -1204,7 +1204,7 @@ impl Builder<'_> {
         }
         self.require_application_initialized(&data, span)?;
         self.application_cpu(&data, span)?;
-        let Some(mut length) = self.expr(&args[1])? else { return Ok(None); };
+        let Some(length) = self.expr(&args[1])? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[1].span)?;
         let Some(mut returned) = self.evaluate_returned(&args[2], Some(&data.ty))? else { return Ok(None); };
         self.check_returned_type(&mut returned, &data.ty, args[2].span)?;
@@ -1247,6 +1247,12 @@ impl Builder<'_> {
         for (slot, reg) in slots.into_iter().zip(fill.regs) {
             self.code.push(Inst::generated(InstKind::StoreLocal(slot, reg), origin.clone()));
         }
+        let fill = CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: fill.ty, access: Access::Read, address: CallReference {
+            storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
+        } };
+        self.resize_application_storage(data.root,data.ty,length,elements,fill,span).map(Some)
+    }
+    fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:Box<returns::Returned>,fill:CallArgument,span:Span)->Result<Data> {
         let frame = self.application_frame(span)?;
         let reg = self.reg(Scalar::U32);
         let call_origin = Arc::new(GeneratedOrigin {
@@ -1254,10 +1260,8 @@ impl Builder<'_> {
             trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         });
         self.code.push(Inst::generated(runtime_call("resize", vec![
-            argument(frame), argument(data.root.clone()), argument(length.clone()),
-            CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: fill.ty, access: Access::Read, address: CallReference {
-                storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
-            } },
+            argument(frame), argument(root), argument(length.clone()),
+            fill,
         ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind, call_origin));
         // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
         let handle = self.application_root(reg);
@@ -1265,11 +1269,48 @@ impl Builder<'_> {
         length.proof = bounds::Proof::capture(&length).with_domains(Domains::from([
             IndexDomain::ApplicationLength(handle.identity()),
         ]));
-        Ok(Some(Box::new(DataPayload {
+        Ok(Box::new(DataPayload {
             elements,
-            root: handle, place: None, initialization: None, ty: data.ty, length,
+            root: handle, place: None, initialization: None, ty, length,
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
-        })))
+        }))
+    }
+    pub(super) fn take_last_application_dataset(&mut self,args:&[Expr],span:Span)->Result<Option<Data>> {
+        let [source,output]=args else{return self.fail(span,"B266","take_last(data,output)消费非空CPU dataset并交出唯一尾值");};
+        let Some(returns::Returned::Dataset(data))=self.evaluate_returned(source,None)? else {
+            if !self.flow.continues(){return Ok(None);}
+            return self.fail(source.span,"B224","take_last需要一份拥有的dataset");
+        };
+        let data=self.refresh_application_data(data,span)?;
+        if data.ownership!=Ownership::Owned{return self.fail(source.span,"B227","dataset借用不能交出尾元素或缩短存储");}
+        self.require_application_initialized(&data,span)?;self.application_cpu(&data,span)?;
+        let one=self.constant(Scalar::U32,1);let last=self.binary("-",data.length.clone(),one,span,None)?;
+        if !self.index_in(&last,IndexDomain::ApplicationData(data.root.identity()),data.length.minimum(),None) {
+            return self.fail(source.span,"B137","take_last需要由原长度条件证明输入非空");
+        }
+        let held=self.hold_binding(Binding::ApplicationData(data.clone()));
+        let destination=self.mutable_place(output,Access::Write)?;
+        if !self.flow.continues(){return Ok(None);}
+        let Some(destination)=destination else{return self.fail(output.span,"B227","take_last输出需要同元素类型的可写位置");};
+        self.require_same(&data.ty,destination.ty(),output.span)?;
+        let place=Self::application_element(&data,&last,(last.minimum(),last.maximum()));
+        let packed=self.read_storage_value(&place,span,None)?;
+        let mut value=if data.ty.owns_resources(){self.materialize_element(&DataReference::direct(data.clone()),packed,&place)}else{returns::Returned::value(packed)};
+        self.require_returned_initialized(&mut value,span)?;
+        self.env.remove(&held);
+        self.view_uses.invocation(span);let retained=self.view_uses.all(self,&[]);
+        self.application_movable(&data,&retained,span)?;
+        if data.ty.owns_resources(){
+            let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination,span)?}else{self.owned_place_model(&destination)};
+            self.store_owned_returned(destination,old,value,span)?;
+        }
+        else {
+            let packed=self.returned_storage(&value);self.write_storage_value(&destination,&packed,span,None)?;
+            self.assign_owned_proof(&destination,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&destination);
+        }
+        // A shrinking Frame never reads fill; the moved tail has no second owner there.
+        let fill=argument(self.constant(Scalar::U64,0));
+        self.resize_application_storage(data.root,data.ty,last,data.elements,fill,span).map(Some)
     }
     pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
         if !(1..=2).contains(&explicit.len())||!(1..=2).contains(&arguments) {
@@ -2636,18 +2677,10 @@ impl Builder<'_> {
         let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
-        let mut value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
+        let value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
         // RHS结束后的原消费者仍指向旧内容；被覆盖位置的后续读取属于新内容。
-        self.check_returned_type(&mut value,place.ty(),span)?;self.view_uses.after(rhs.span);
-        let packed=self.returned_storage(&value);
-        let held=match &value{returns::Returned::OwnedValue(value)if value.value.ty.contains_borrows()=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),_=>None};
-        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);
-        self.drop_returned(old,&view::Borrow::default(),span)?;
-        self.write_storage_value(&place,&packed,span,None)?;
-        self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
-        self.assign_application_element_model(&data,&place,&paths,&value);
-        if let Some(name)=held{self.env.remove(&name);}
-        Ok(())
+        self.view_uses.after(rhs.span);
+        self.store_owned_returned(place,old,value,span)
     }
     // These are the original already-evaluated metadata positions, not a second element table.
     fn element_selection(place:Option<&Place>,first:usize,count:usize)->bounds::Condition {
