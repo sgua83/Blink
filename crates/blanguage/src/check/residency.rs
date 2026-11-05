@@ -3,19 +3,53 @@ use super::*;
 use returns::Returned;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Part { Field(usize), Elements }
+pub(super) enum Part { Field(usize), Elements, Selected(Option<bounds::Operand>) }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Input {
     pub parameter: usize,
     pub fields: Vec<Part>,
 }
 impl Input {
+    fn depth(&self)->usize{self.fields.iter().filter(|part|!matches!(part,Part::Field(_))).count()}
+    fn family(&self)->Self{Self{parameter:self.parameter,fields:self.fields.iter().map(|part|match part{Part::Selected(_)=>Part::Elements,other=>other.clone()}).collect()}}
+    pub(super) fn model(&self)->Self{
+        let mut depth=self.depth();Self{parameter:self.parameter,fields:self.fields.iter().map(|part|match part{
+            Part::Elements=>{depth-=1;Part::Selected(Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth))))},
+            other=>other.clone(),
+        }).collect()}
+    }
+    fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
+        Self{parameter:self.parameter,fields:self.fields.iter().map(|part|match part{Part::Selected(index)=>Part::Selected(index.and_then(|index|index.at_call(bindings))),other=>other.clone()}).collect()}
+    }
+    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{
+        Self{parameter:self.parameter,fields:self.fields.iter().map(|part|match part{Part::Selected(index)=>Part::Selected(index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))),other=>other.clone()}).collect()}
+    }
+    fn element_indices(&self,indices:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
+        Self{parameter:self.parameter,fields:self.fields.iter().map(|part|match part{
+            Part::Selected(Some(bounds::Operand::Value(id)))if indices.contains_key(id)=>Part::Selected(bounds::Operand::Value(*id).at_call(indices)),
+            other=>other.clone(),
+        }).collect()}
+    }
+    fn selection(&self)->BTreeMap<ValueIdentity,bounds::Proof>{
+        let mut depth=self.depth();self.fields.iter().filter_map(|part|match part{
+            Part::Field(_)=>None,
+            part=>{depth-=1;let proof=match part{Part::Selected(Some(index))=>bounds::Proof::element_operand(*index,(0,u32::MAX)),_=>bounds::Proof::default()};Some((ValueIdentity::ElementIndex(depth),proof))},
+        }).collect()
+    }
     pub fn new(parameter: usize) -> Self {
         Self {
             parameter,
             fields: Vec::new(),
         }
     }
+}
+fn scoped_indices(bindings:&BTreeMap<ValueIdentity,bounds::Proof>,depth:usize)->BTreeMap<ValueIdentity,bounds::Proof>{
+    let mut out=bindings.iter().map(|(id,value)|(match id{ValueIdentity::ElementIndex(index)=>ValueIdentity::ElementIndex(index+depth),other=>*other},value.scope_element_indices(depth))).collect::<BTreeMap<_,_>>();
+    for index in 0..depth{let id=ValueIdentity::ElementIndex(index);out.insert(id,bounds::Proof::default().with_identity(id));}out
+}
+fn scoped_names(bindings:&BTreeMap<ValueIdentity,ValueIdentity>,depth:usize)->BTreeMap<ValueIdentity,ValueIdentity>{
+    let shift=|id|match id{ValueIdentity::ElementIndex(index)=>ValueIdentity::ElementIndex(index+depth),other=>other};
+    bindings.iter().map(|(a,b)|(shift(*a),shift(*b))).collect()
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Origin {
@@ -81,7 +115,7 @@ impl Residency {
     }
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.at_call(bindings),a.at_call(bindings),b.at_call(bindings)),
-        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(bindings))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
+        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.at_call(bindings)),Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.at_call(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
     // 合并重复来源而保留其成立域；Absent 不被提升为真实资源来源。
@@ -102,16 +136,33 @@ impl Residency {
     }}
     pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{match self{
         Self::Selected(when,a,b)=>Self::conditional(when.output_bound(bindings),a.output_bound(bindings),b.output_bound(bindings)),
-        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(bindings))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
+        Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect();output.bindings=output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect();Origin::Output(output)},_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
+    fn element_indices(&self,indices:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
+        if indices.is_empty(){return self.clone();}
+        match self{
+            Self::Absent=>Self::Absent,
+            Self::Selected(when,a,b)=>Self::conditional(when.substitute_values(indices),a.element_indices(indices),b.element_indices(indices)),
+            Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{
+                Origin::Input(input)=>Origin::Input(input.element_indices(indices)),
+                Origin::Output(output)=>{
+                    let mut output=output.clone();
+                    output.arguments=output.arguments.iter().map(|(input,value)|(input.clone(),value.element_indices(&scoped_indices(indices,input.depth())))).collect();
+                    output.bindings=output.bindings.iter().map(|(id,proof)|(*id,proof.substitute_values(indices))).collect();
+                    Origin::Output(output)
+                },
+                other=>other.clone(),
+            }).collect()),
+        }
+    }
     fn bind(&self,arguments:&Arguments)->Option<Self>{
         if let Self::Selected(when,a,b)=self{return Some(Self::conditional(when.as_ref().clone(),a.bind(arguments).unwrap_or(Self::Absent),b.bind(arguments).unwrap_or(Self::Absent))).filter(|value|!value.absent());}
         let Self::Origins(origins)=self else{return None};
         if origins.is_empty(){return Some(Self::default());}
         let mut result=Self::Absent;
         for origin in origins{match origin{
-            Origin::Input(input)=>{if let Some(value)=arguments.get(input){result.join(value);}},
+            Origin::Input(input)=>{if let Some(value)=argument_value(arguments,input){result.join(&value);}},
             Origin::Output(output)=>{let mut output=output.clone();output.arguments=output.arguments.iter().filter_map(|(input,value)|value.bind(arguments).map(|value|(input.clone(),value))).collect();result.join(&Self::Origins(BTreeSet::from([Origin::Output(output)])));},
             origin=>result.join(&Self::Origins(BTreeSet::from([origin.clone()]))),
         }}
@@ -137,6 +188,8 @@ crate::module::codec::variants!(LayoutNeed{0=>Whole,1=>Contiguous(stride)});
 crate::module::codec::variants!(Need{0=>Storage(target),1=>Layout(need)});
 
 pub(super) type Arguments=BTreeMap<Input,Residency>;
+fn argument_value(arguments:&Arguments,input:&Input)->Option<Residency>{arguments.get(&input.family()).map(|value|value.element_indices(&input.selection()))}
+
 pub(super) struct Call{
     pub function:String,
     pub arguments:Arguments,
@@ -214,7 +267,7 @@ pub(super) fn input_parameters(parameters:&BTreeMap<ValueIdentity,ValueIdentity>
 pub(super) fn canonical(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,source:&Source,span:Span)->Result<Requirements>{
     let mut result=Requirements::new();
     for((input,target),guards)in required{for guard in guards{
-        if !insert_need(&mut result,input.clone(),*target,guard.guard_at_call(parameters)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
+        if !insert_need(&mut result,input.at_call(parameters),*target,guard.guard_at_call(parameters)){return source.fail(span,"B266","输入资源在同一接口条件下同时要求CPU和GPU存储");}
     }}Ok(result)
 }
 fn local(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof>)->Requirements{
@@ -224,7 +277,7 @@ fn local(required:&Requirements,parameters:&BTreeMap<ValueIdentity,bounds::Proof
         let entry=inverse.entry(target).or_insert_with(||bounds::Proof::default().with_identity(*source));
         if !matches!(target,ValueIdentity::Register(_))&&*source==target{*entry=bounds::Proof::default().with_identity(*source);}
     }
-    required.iter().map(|(key,guards)|(key.clone(),guards.iter().map(|guard|guard.guard_at_call(&inverse)).collect())).collect()
+    required.iter().fold(Requirements::new(),|mut result,((input,need),guards)|{result.entry((input.at_call(&inverse),*need)).or_default().extend(guards.iter().map(|guard|guard.guard_at_call(&inverse)));result})
 }
 pub(super) fn infer(inputs:&Inputs,known:&BTreeMap<String,Requirements>,outputs:&Outputs)->Result<Requirements>{
     let mut required=Requirements::new();
@@ -244,7 +297,7 @@ pub(super) fn infer(inputs:&Inputs,known:&BTreeMap<String,Requirements>,outputs:
                 let path=guard.guard_at_call(&call.bindings).assume(&call.path,true);
                 match need {
                     Need::Storage(target)=>{
-                        let Some(value)=call.arguments.get(input)else{continue};let value=evaluate(value,outputs);
+                        let Some(value)=argument_value(&call.arguments,&input.at_call(&call.bindings))else{continue};let value=evaluate(&value,outputs);
                         if value.absent(){continue;}
                         if !consume(&mut required,&value,*target,&path){return call.source.fail(call.span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
                     },
@@ -314,6 +367,28 @@ fn visit_owned(
         }
     }
 }
+// Only location facts are selected here; ordinary value and borrow joins remain owned by Returned.
+fn model_location<'a>(mut model:&'a Returned,path:&[Part])->Option<&'a application::Data>{
+    for part in path{model=match(part,model){
+        (Part::Field(field),Returned::OwnedValue(value))=>value.payloads[*field].as_deref()?,
+        (Part::Elements,Returned::Dataset(data))=>&data.elements,
+        _=>return None,
+    };}
+    if let Returned::Dataset(data)=model{Some(data)}else{None}
+}
+pub(super) fn select_elements(target:&mut Returned,incoming:&Returned,previous:&Returned,choice:&bounds::Condition,indices:usize){
+    visit(target,&mut Input::new(0),&mut|data,input|{
+        let depth=input.fields.iter().filter(|part|matches!(part,Part::Elements)).count();
+        let shifts=(0..indices).map(|i|(ValueIdentity::ElementIndex(i),ValueIdentity::ElementIndex(i+depth))).collect();
+        let choice=choice.output_bound(&shifts);
+        data.residency=match(model_location(incoming,&input.fields),model_location(previous,&input.fields)){
+            (Some(a),Some(b))=>Residency::conditional(choice,a.residency.clone(),b.residency.clone()),
+            (Some(a),None)=>Residency::conditional(choice,a.residency.clone(),Residency::Absent),
+            (None,Some(b))=>Residency::conditional(choice,Residency::Absent,b.residency.clone()),
+            (None,None)=>Residency::Absent,
+        };
+    });
+}
 pub(super) fn parameter(value: &mut owned_values::OwnedValue, parameter: usize) {
     for (resource,path) in view::resource_paths(&value.value.ty).into_iter().enumerate() {
         if let Some(data)=view::owned_data_at_mut(value,&path) {
@@ -374,7 +449,7 @@ fn bind_returned(value: &mut Returned, arguments: &Arguments) -> bool {
 pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
     bind_returned(value, arguments);
 }
-crate::module::codec::variants!(Part { 0 => Field(field), 1 => Elements });
+crate::module::codec::variants!(Part { 0 => Field(field), 1 => Elements, 2 => Selected(index) });
 crate::module::codec::record!(Input { parameter, fields });
 crate::module::codec::variants!(Origin { 0 => Cpu, 1 => Gpu, 2 => Input(input), 3 => Output(output) });
 crate::module::codec::variants!(Residency{0=>Absent,1=>Origins(origins),2=>Selected(when,a,b)});
@@ -434,6 +509,8 @@ fn evaluate(value:&Residency,outputs:&Outputs)->Residency{match value{
 
 pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, arguments: &Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>) {
     visit(value, &mut Input::new(0), &mut |data, path| {
+        let mut bindings=bindings.clone();
+        for index in 0..path.depth(){let id=ValueIdentity::ElementIndex(index);bindings.insert(id,bounds::Proof::default().with_identity(id));}
         data.residency = Residency::Origins(BTreeSet::from([Origin::Output(Output {
                 function: function.into(),
                 kind:kind.clone(),

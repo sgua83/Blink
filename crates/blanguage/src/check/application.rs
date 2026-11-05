@@ -1381,6 +1381,11 @@ impl Builder<'_> {
         let condition=std::mem::take(&mut self.code);
         let Some(mut returned)=self.invoke_returned(instance,arguments,span,Some(origin(GenerationReason::DatasetInitializeCall)),None)? else{return self.fail(span,"B224","dataset生成函数必须交付一个实际元素");};
         self.check_returned_type(&mut returned,&data.ty,span)?;self.require_returned_initialized(&mut returned,span)?;
+        let ordinal=index.identity();
+        residency::visit(&mut returned,&mut residency::Input::new(0),&mut|resource,input|{
+            let depth=input.fields.iter().filter(|part|matches!(part,residency::Part::Elements)).count();
+            resource.residency=resource.residency.output_bound(&BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]));
+        });
         let elements=self.capture_element_model(data,&[],returned.clone());let value=self.returned_storage(&returned);
         let stride=DataStride::Declared(ir::align_up(data.ty.size,data.ty.align));let words=data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>();
         self.write_application_place(data.root.regs[0],data.root.identity(),index_reg,stride,&words,value,span,Some(origin(GenerationReason::DatasetInitializeWrite)))?;
@@ -1405,10 +1410,10 @@ impl Builder<'_> {
         let index_origin=origin(GenerationReason::DatasetDropIndex);
         let one=self.constant_with_origin(Scalar::U32,1,Some(index_origin.clone())).regs[0];let index=self.reg(Scalar::U32);
         self.code.push(Inst::generated(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one},index_origin));
-        let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,u32::MAX-1),uniform:false,literal:false,constant:None};
-        let place=Self::application_element(&data,&value_index,(0,u32::MAX-1));
+        let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,data.length.maximum().saturating_sub(1)),uniform:false,literal:false,constant:None};
+        let place=Self::application_element(&data,&value_index,(value_index.minimum(),value_index.maximum()));
         let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
-        let element=self.materialize_element(&DataReference::direct(data.clone()),value);self.drop_owned_tree(element,retained,span)?;
+        let element=self.materialize_element(&DataReference::direct(data.clone()),value,&place);self.drop_owned_tree(element,retained,span)?;
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
@@ -1427,7 +1432,11 @@ impl Builder<'_> {
                 .initialization.clone()
                 .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
             index: index.regs[0],
-            index_value: bounds::Operand::of(index, 0),
+            index_value: match ownership::ApplicationIndex::of(index) {
+                ownership::ApplicationIndex::Constant(at)=>bounds::Operand::Constant(Scalar::U32,Bits::from(at)),
+                ownership::ApplicationIndex::Value(id,_)=>bounds::Operand::Value(id),
+            },
+            parent: data.place.clone().map(Box::new),
             element_layout: address::Layout::of(&data.ty),
             index_range,
             stride: match &data.layout {DataLayout::Declared=>DataStride::Declared(ir::align_up(data.ty.size,data.ty.align)),DataLayout::Parameter{stride,offset,..}=>DataStride::Parameter{stride:stride.regs[0],offset:offset.regs[0]}},
@@ -2337,15 +2346,17 @@ pub(super) fn element_scope_bindings(bindings:&ElementBindings,width:usize,paren
         match id {
             ValueIdentity::ElementComponent(component)=>ValueIdentity::ElementParent(0,component),
             ValueIdentity::ElementParent(depth,component)=>ValueIdentity::ElementParent(depth+1,component),
+            ValueIdentity::ElementIndex(depth)=>ValueIdentity::ElementIndex(depth+1),
             other=>other,
         }
     }
-    let shifts=bindings.keys().copied().filter(|id|matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)))
+    let shifts=bindings.keys().copied().filter(|id|matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
         .map(|id|(id,parent(id))).collect::<BTreeMap<_,_>>();
     let mut out=bindings.iter().map(|(id,proof)|{
         if parent_stored&&!matches!(id,ValueIdentity::DatasetContent(..)){(parent(*id),proof.output_bound(&shifts))}
         else{(*id,proof.clone())}
     }).collect::<ElementBindings>();
+    let ordinal=ValueIdentity::ElementIndex(0);out.insert(ordinal,bounds::Proof::default().with_identity(ordinal));
     for component in 0..width {
         let id=ValueIdentity::ElementComponent(component);
         out.insert(id,bounds::Proof::default().with_identity(id));
@@ -2436,7 +2447,7 @@ pub(super) fn bind_parameter_elements(builder:&mut Builder<'_>,definition:&Defin
                 bind(builder,&mut data.elements,parameter,resource,&mut 0,&inputs);
                 if p.access!=Access::Write && data.length.maximum()!=0 {
                     let mut input=residency::Input{parameter,fields:path.iter().copied().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
-                    residency::visit(&mut data.elements,&mut input,&mut |data,input|data.residency=residency::Residency::input(input.clone()));
+                    residency::visit(&mut data.elements,&mut input,&mut |data,input|data.residency=residency::Residency::input(input.model()));
                 }
             });
             builder.env.insert(p.name.clone(),binding);
@@ -2478,6 +2489,7 @@ impl Builder<'_> {
             for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(&data.elements,&fields){owned(child,out);}}
         }
         let mut out=ElementBindings::new();owned(data,&mut out);
+        let ordinal=ValueIdentity::ElementIndex(0);out.insert(ordinal,bounds::Proof::default().with_identity(ordinal));
         for value in [&data.root,&data.length]{
             let proof=bounds::Proof::capture(value);
             for id in value.component_origins(0){out.insert(id,proof.clone());}
@@ -2560,8 +2572,8 @@ impl Builder<'_> {
         self.require_owned_writable(&place,span)?;self.writable_storage(&place,span)?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let loaded=self.read_storage_value(&place,span, None)?;
-        let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone());
-        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone()),false);}
+        let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place);
+        for path in &paths[1..]{selected.projection=path.clone();old.join(self.materialize_element(&selected,loaded.clone(),&place),false);}
         let held=self.hold_binding(Binding::DataReference(data.clone()));
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;self.env.remove(&held);
         if !self.flow.continues(){return Ok(());}
@@ -2578,6 +2590,15 @@ impl Builder<'_> {
         if let Some(name)=held{self.env.remove(&name);}
         Ok(())
     }
+    // These are the original already-evaluated metadata positions, not a second element table.
+    fn element_selection(place:Option<&Place>,first:usize,count:usize)->bounds::Condition {
+        let mut current=place;let mut selected=bounds::Condition::constant(true);
+        for depth in first..first+count{
+            let Some(Place::ApplicationElement{index_value,parent,..})=current.map(Place::storage)else{return bounds::Condition::default()};
+            selected=selected.logical(bounds::Condition::element_index(depth,*index_value),false);current=parent.as_deref();
+        }
+        selected
+    }
     fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:&returns::Returned){
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
@@ -2586,6 +2607,9 @@ impl Builder<'_> {
             each_binding_data(&mut binding,&mut|_,_,target|{
                 let scopes=self.application_element_scopes(&data.sources,&resource,target);let unique=scopes.len()==1;
                 for(scope,complete_scope)in scopes {
+                let count=scope.len()+1;
+                let qualifier=if unique&&complete_scope&&paths.len()==1{bounds::Condition::constant(true)}else{bounds::Condition::default()};
+                let selected=qualifier.logical(Self::element_selection(Some(place),0,count),false);
                 let mut complete_scope=bounds::Condition::constant(complete_scope);
                 let mut target=&mut *target;
                 for fields in scope{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);target=model_data_mut(&mut target.elements,&fields).unwrap();}
@@ -2594,10 +2618,13 @@ impl Builder<'_> {
                     let mut previous=(*target.elements).clone();
                     for field in projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
                     let complete=bounds::Condition::constant(unique&&paths.len()==1&&matches!(place.storage(),Place::ApplicationElement{index_range:(0,0),..})).logical(complete_scope.clone(),false).logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);
-                    match complete.truth_in(&self.path){
+                    let truth=complete.truth_in(&self.path);
+                    let locations=(truth!=Some(true)).then(||(fresh.clone(),previous.clone()));
+                    match truth{
                         Some(true)=>{},Some(false)=>fresh.join(previous,true),
                         None=>{let mut common=fresh.clone();common.join(previous,true);fresh.join_locations(*common,&complete,true);},
                     }
+                    if let Some((incoming,old))=locations{residency::select_elements(&mut fresh,&incoming,&old,&selected,count);}
                     let mut stored=target.elements.as_mut();
                     for field in projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
                     *stored=*fresh;
@@ -2629,7 +2656,7 @@ impl Builder<'_> {
     pub(super) fn application_owned_argument(&mut self,place:&Place,span:Span)->Result<returns::Returned>{
         let loaded=self.read_storage_value(place,span,None)?;
         let references=self.application_owned_references(place);let mut values=Vec::new();
-        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone()));}}
+        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone(),place));}}
         let mut models=values.into_iter();
         let mut model=models.next().unwrap();for other in models{model.join(other,false);}
         if let returns::Returned::OwnedValue(value)=&mut model{value.place=Some(place.clone());}
@@ -2668,7 +2695,7 @@ impl Builder<'_> {
         }
         self.close_stored_resources(&mut model,&original,&bindings);Box::new(model)
     }
-    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value)->returns::Returned{
+    pub(super) fn materialize_element(&mut self,data:&DataReference,value:Value,place:&Place)->returns::Returned{
         fn loaded_value(builder:&Builder<'_>,target:&mut Value,loaded:&Value){
             let mut proof=bounds::Proof::default();
             for(component,reg)in target.regs.iter().enumerate(){
@@ -2702,6 +2729,10 @@ impl Builder<'_> {
             model=self.unpack_record(&owner,*field);
         }
         let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
+        if let Place::ApplicationElement{index_value,index_range,..}=place.storage(){
+            let proof=bounds::Proof::element_operand(*index_value,*index_range);
+            bindings.insert(ValueIdentity::ElementIndex(0),proof);
+        }
         for(component,index)in components.into_iter().zip(0..value.regs.len()){
             let proof=self.path_proof(&Ty::scalar(value.ty.components[index].0),bounds::Proof::default().with_identity(value.component_origins(index)[0]));
             bindings.insert(ValueIdentity::ElementComponent(component),proof.clone());
@@ -2823,12 +2854,19 @@ impl Builder<'_> {
             each_binding_data(&mut binding,&mut |_,_,data|{
                 let scopes=self.application_element_scopes(&reference.sources,&resource,data);let unique=scopes.len()==1;
                 for(scope,mut complete)in scopes{
+                    let count=scope.len()+1;
+                    let qualifier=if unique&&complete{bounds::Condition::constant(true)}else{bounds::Condition::default()};
+                    let selected=qualifier.logical(Self::element_selection(reference.data.place.as_ref(),1,scope.len()),false);
                     let mut data=&mut *data;
                     for fields in scope{complete&=data.length.minimum()==1&&data.length.maximum()==1;data=model_data_mut(&mut data.elements,&fields).unwrap();}
                     let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
                     let mut stored=data.elements.as_mut();
                     for field in &reference.projection{let returns::Returned::OwnedValue(parent)=stored else{unreachable!()};stored=parent.payloads[*field].as_deref_mut().unwrap();}
-                    if !unique||!complete{fresh.join(stored.clone(),true);}
+                    if !unique||!complete{
+                        let incoming=fresh.clone();let previous=stored.clone();
+                        fresh.join(stored.clone(),true);
+                        residency::select_elements(&mut fresh,&incoming,&previous,&selected,count);
+                    }
                     *stored=*fresh;
                 }
             });

@@ -503,7 +503,7 @@ impl Builder<'_> {
                 let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
                 if !place.ty().owns_resources(){return self.read_place(&place,expr.span, None).map(|value|Some((Returned::value(value),None)));}
                 let packed=self.read_storage_value(&place,expr.span, None)?;
-                let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed) else{unreachable!()};
+                let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place) else{unreachable!()};
                 value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),None)));
             }
             let Some((value,mut owner))=self.read_aggregate(base,None)? else{return Ok(None)};
@@ -518,7 +518,7 @@ impl Builder<'_> {
                     let Some(place)=self.application_index(data.clone(),index)?else{return Ok(None)};
                     if !place.ty().owns_resources(){return self.read_place(&place,expr.span, None).map(|value|Some((Returned::value(value),owner)));}
                     let packed=self.read_storage_value(&place,expr.span, None)?;
-                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed)else{unreachable!()};
+                    let Returned::OwnedValue(mut value)=self.materialize_element(&data,packed,&place)else{unreachable!()};
                     value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),owner)));
                 }
                 Returned::OwnedValue(value)=>value,

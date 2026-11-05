@@ -32,7 +32,7 @@ enum Fact {
     Predicate(FloatPredicate, bool),
 }
 // 运算关系只引用已求值的快照；常量使用实际类型与位模式。
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Operand {
     Value(ValueIdentity),
     Constant(Scalar, Bits),
@@ -654,7 +654,7 @@ impl Proof {
                     if let Some(id)=identity(id,bindings) && let Some(input)=bindings.get(&source){
                         if input.nonzero.first()==Some(&true){facts.insert(Fact::NonZero(id));}
                         facts.extend(input.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))).map(|domain|Fact::Index(id,domain)));
-                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))).map(|source|Fact::Index(id,IndexDomain::CommonRange(*source))));
+                        facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(id,IndexDomain::CommonRange(*source))));
                     }
                     return Clause::facts(facts);
                 },
@@ -736,7 +736,7 @@ impl Proof {
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
                         translated.domains[component].extend(incoming.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(_))));
                         translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
-                            .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)))
+                            .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
                             .map(|id|IndexDomain::CommonRange(*id)));
                     }
                 }
@@ -2465,6 +2465,23 @@ impl crate::module::codec::Decode for Condition {
         proof.conditions.into_iter().next().flatten().map(|value|*value).ok_or_else(||"模块资源位置缺少条件合同".into())
     }
 }
+impl Proof{
+    pub(super) fn element_operand(index:Operand,range:(u32,u32))->Self{
+        let mut proof=match index{
+            Operand::Value(id)=>Self::unsigned(range.0,range.1).with_identity(id),
+            Operand::Constant(_,bits)=>Self::unsigned(bits as u32,bits as u32),
+        };
+        let condition=match index{
+            Operand::Value(id)=>Condition::guard(Clause::facts([Fact::NonZero(id)].into())),
+            Operand::Constant(_,bits)=>Condition::constant(bits!=0),
+        };
+        proof.conditions=vec![Some(Box::new(condition))];proof
+    }
+    pub(super) fn scope_element_indices(&self,depth:usize)->Self{
+        let shifts=self.scalar_identities().iter().filter_map(|id|if let ValueIdentity::ElementIndex(index)=id{Some((*id,ValueIdentity::ElementIndex(index+depth)))}else{None}).collect();
+        self.output_bound(&shifts)
+    }
+}
 impl Condition {
     pub(super) fn nonzero_value(value:&Value)->Self {
         if value.is_nonzero(){return Self::constant(true);}
@@ -2489,6 +2506,14 @@ impl Condition {
         proof.conditions.into_iter().next().flatten().map(|value|*value).unwrap()
     }
 
+    pub(super) fn element_index(depth:usize,index:Operand)->Self {
+        let selected=ValueIdentity::ElementIndex(depth);
+        let facts=match index{
+            Operand::Value(actual)=>[Fact::equal(selected,actual)].into(),
+            Operand::Constant(_,bits)=>[Fact::Minimum(selected,Scalar::U32,bits),Fact::Maximum(selected,Scalar::U32,bits)].into(),
+        };
+        Self::guard(Clause::facts(facts))
+    }
     pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
     pub(super) fn execution(path:&Clause)->Self {
         let mut conditions:BTreeMap<usize,Self>=BTreeMap::new();
