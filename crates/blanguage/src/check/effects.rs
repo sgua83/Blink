@@ -372,6 +372,9 @@ impl Builder<'_> {
                 },
                 Write::External{call,instance:Some(instance)}=>{
                     self.native_declaration(&instance)?;
+                    if self.functions.read_only(&instance.name) {
+                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),contents:true,..} if std::ptr::eq(*origin,call)));
+                    }
                     if Scope::current(self).writes_covered(&instance)?{continue;}
                     Write::External{call,instance:None}
                 },
@@ -517,12 +520,14 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
                         let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
                         let covered=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false};
-                        if !covered {writes(Write::External{call:expr,instance});}
+                        let read_only=instance.as_ref().is_some_and(|instance|self.builder.is_some_and(|builder|builder.functions.read_only(&instance.name)));
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
-                                writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some()), iterator: None });
+                                let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
+                                if !contents||!read_only {writes(Write::Position { place: arg, call: Some(expr), contents, iterator: None });}
                             }
                         }
+                        if !covered {writes(Write::External{call:expr,instance});}
                     }
                 }
                 if name=="dataset" && matches!(&expr.kind,ExprKind::Specialize(..))
