@@ -32,8 +32,7 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         if let Some(data)=self.application_reference(expr)?{
             return Ok(Some(cooperative::Argument::BorrowedData(data)));
         }
-        fn location(expr:&Expr)->bool{match &expr.kind{ExprKind::Name(_)=>true,ExprKind::Member(base,_)|ExprKind::Index(base,_)=>location(base),ExprKind::Specialize(name,_,_)if name=="unsafe_position"=>true,_=>false}}
-        let(place,owner)=if location(expr){let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}(place,None)}else{
+        let(place,owner)=if self.is_place(expr){let Some(place)=self.mutable_place(expr,access)?else{return Ok(None)};if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}(place,None)}else{
             let result=self.evaluate_returned(expr,None)?;if !self.flow.continues(){return Ok(None);}
             let value=match result{
                 Some(Returned::Dataset(mut data))=>{
