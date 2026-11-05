@@ -166,7 +166,7 @@ pub(super) fn resource_output_mut(value:&mut returns::Returned,index:usize)->Opt
 }
 pub(super) fn resource_output_name(value:&returns::Returned,index:usize)->Option<Borrow>{
     let(root,path)=resource_output_paths(value).get(index)?.clone();let data=root_resource(value,root)?;
-    let mut name=Borrow::source(Origin::Data(ValueIdentity::Register(data.root.regs[0])));
+    let mut name=view::resource_borrow(data);
     for fields in path{name=Borrow::element(name,fields);}Some(name)
 }
 pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(usize)->Borrow){
