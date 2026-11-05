@@ -414,21 +414,9 @@ impl Builder<'_> {
         }
         Ok(normalized)
     }
-    pub(super) fn loop_writes(
-        &mut self,
-        condition: Option<&Expr>,
-        body: &[Stmt],
-        borrowed_data: Option<ValueIdentity>,
-        initial: bool,
-    ) -> Result<LoopWrites> {
-        let mut writes = Vec::new();
-        statement_writes(self, body, &mut |place| writes.push(place))?;
-        if let Some(condition)=condition {
-            expression_writes(self, condition, &mut |place| writes.push(place))?;
-        }
-        let writes=self.normalize_writes(writes)?;
+    fn project_loop_writes(&self,writes:&[Write<'_>])->Result<LoopWrites>{
         let mut effect=LoopWrites::default();
-        for write in &writes {
+        for write in writes {
             match write {
                 Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Memory{positions,resources,..}=>{
@@ -454,7 +442,7 @@ impl Builder<'_> {
                         }else{effect.unknown_storage=true;}
                         continue;
                     }
-                    if let Some((data,index,(_,components)))=self.loop_write_projection(place,&writes)? {
+                    if let Some((data,index,(_,components)))=self.loop_write_projection(place,writes)? {
                         let root=data.root.regs[0];
                         if let (Some(index),application::DataLayout::Declared)=(index,&data.layout) {
                             let base=u128::from(index)*u128::from(ir::align_up(data.ty.size,data.ty.align));
@@ -472,7 +460,7 @@ impl Builder<'_> {
                     };
                     if let Some(owner)=binding.stored_place()
                         && let Place::Local(_,slots,..)=&owner
-                        && let Some((_,components))=self.written_projection(place,name,&owner,None,&writes)? {
+                        && let Some((_,components))=self.written_projection(place,name,&owner,None,writes)? {
                         effect.locals.extend(components.into_iter().flatten().map(|component|slots[component]));
                     }else{
                         effect.unknown_storage=true;
@@ -481,6 +469,33 @@ impl Builder<'_> {
                 },
             }
         }
+        Ok(effect)
+    }
+    pub(super) fn loop_writes(
+        &mut self,
+        condition: Option<&Expr>,
+        body: &[Stmt],
+        borrowed_data: Option<ValueIdentity>,
+        initial: bool,
+    ) -> Result<LoopWrites> {
+        let mut writes = Vec::new();
+        statement_writes(self, body, &mut |place| writes.push(place))?;
+        if let Some(condition)=condition {
+            expression_writes(self, condition, &mut |place| writes.push(place))?;
+        }
+        let writes=self.normalize_writes(writes)?;
+        let mut effect=self.project_loop_writes(&writes)?;
+        let writes=if !effect.external && self.env.values().any(|binding|matches!(binding,Binding::Owned(owner) if *owner.place.ty()==Ty::scalar(Scalar::Bool))) {
+            let mut selected=Vec::new();
+            {
+                let mut scope=Scope::current(self);scope.writes=Some(&effect);
+                scope.writes_statements(body,&mut|write|selected.push(write))?;
+                if let Some(condition)=condition {scope.writes_expression(condition,&mut|write|selected.push(write))?;}
+            }
+            let writes=self.normalize_writes(selected)?;
+            effect=self.project_loop_writes(&writes)?;
+            writes
+        }else{writes};
         if !initial {self.invalidate_writes(&writes,borrowed_data,&effect)?;}
         Ok(effect)
     }
@@ -516,7 +531,14 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let Some(binding)=builder.env.get(name)else{return Ok(None);};
         let (ty,proof,owner)=match binding {
             Binding::Value(value)=>(value.ty.clone(),bounds::Proof::capture(value),None),
-            Binding::Owned(owner)=>(owner.place.ty().clone(),bounds::Proof::default().with_external_borrows(owner.place.ty()),Some(owner.place.clone())),
+            Binding::Owned(owner)=>{
+                let mut proof=bounds::Proof::default().with_external_borrows(owner.place.ty());
+                if let Some(writes)=self.writes && !writes.external
+                    && *owner.place.ty()==Ty::scalar(Scalar::Bool)
+                    && let Place::Local(_,slots,..)=owner.place.storage()
+                    && slots.iter().all(|slot|!writes.locals.contains(slot)) {proof=owner.proof.clone();}
+                (owner.place.ty().clone(),proof,Some(owner.place.clone()))
+            },
             Binding::OwnedValue(owner)=>(owner.value.ty.clone(),bounds::Proof::default().with_external_borrows(&owner.value.ty),owner.place()),
             _=>return Ok(None),
         };
@@ -622,7 +644,7 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let mut truth = None;
         match &expr.kind {
             ExprKind::Bool(value) => truth = Some(*value),
-            ExprKind::Name(name) if self.builder.is_some_and(|builder|!builder.mutable_names.contains(name)) => {
+            ExprKind::Name(name) if self.builder.is_some_and(|builder|!builder.mutable_names.contains(name)) || self.writes.is_some() => {
                 if let Some((ty,proof,_))=self.input_snapshot(expr,self.bindings.len())?
                     && ty==Ty::scalar(Scalar::Bool) {
                     truth=proof.known_value(&ty).map(|bits|bits[0]!=0);

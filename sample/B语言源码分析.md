@@ -1551,7 +1551,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects/sources.rs:84`。
+源码节选：`crates/blanguage/src/check/effects/sources.rs:85`。
 
 ```rust
         if name=="dataset" && let Some(explicit)=explicit {
@@ -2550,7 +2550,7 @@ IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指
 
 ### 12.1 顺序指令之外还需要道路
 
-对直线算式，可以从头逐项执行。对 if，需要根据条件走不同道路；对循环，需要回到先前位置；对函数 return，需要离开当前函数的展开范围。原Scope写扫描把字面布尔值、已形成的不可变bool快照的原Proof已知值及&&／||组合的确定结果交给循环写集合与NumericEffect。快照沿原函数写入标记保持不可变，不把可变位置的入口值当作整个循环常量。false?zero(value):1和true?1:zero(value)都不执行zero，未选臂不进入写集合；未执行if正文的写入、break或continue也不进入循环数值事实。条件结果确定并不代表条件没有副作用：例如tick(count)&&false仍执行左侧调用，只是不进入if正文；false&&zero(value)才真正跳过右侧。原扫描先保留可能执行的条件效果，再交接已确定的布尔结果，数值归纳沿同一Scope保留局部声明、函数值与match载荷的词法来源。完整AST及选择表达式的两侧类型／访问检查保持，声明扫描继续分配所需的位置存储；动态分支和实际资源沿原消费者交接，不另设求值器或运行时分支。
+对直线算式，可以从头逐项执行。对 if，需要根据条件走不同道路；对循环，需要回到先前位置；对函数 return，需要离开当前函数的展开范围。原Scope写扫描把字面布尔值、原不可变快照及完整循环写摘要已证明稳定的本地bool的原Proof已知值，以及&&／||组合的确定结果交给循环写集合与NumericEffect。函数不可变值仍沿原写入标记；本地bool只有在原完整LoopWrites排除实际及未知本地写后，才向同一Scope的条件与实参消费者交接原Proof。Scope借用本次摘要，筛选后的写由同一原投影主体重新形成完整摘要，数值、资源和装载快照共用；会改写或未知的位置不沿用入口事实，不另建效果图。false?zero(value):1和true?1:zero(value)都不执行zero，未选臂不进入写集合；未执行if正文的写入、break或continue也不进入循环数值事实。条件结果确定并不代表条件没有副作用：例如tick(count)&&false仍执行左侧调用，只是不进入if正文；false&&zero(value)才真正跳过右侧。原扫描先保留可能执行的条件效果，再交接已确定的布尔结果，数值归纳沿同一Scope保留局部声明、函数值与match载荷的词法来源。完整AST及选择表达式的两侧类型／访问检查保持，声明扫描继续分配所需的位置存储；动态分支和实际资源沿原消费者交接，不另设求值器或运行时分支。
 
 原比较关系与数值界也进入同一非零判断。例如while正常结束留下count<=i，再结合count>0，就能知道当前i不是零；if中先比较a>=b、再判断b>0也交接同一关系。原contradictory按真实Scalar及零／非零、上下界判断Below能否成立，整数除余按声明布局逐分量复用Value::nonzero_bytes和原Clause。只使用当前可执行路径，写入后的新值、可能回绕或缩窄、break与旧快照不能借用失效关系；未选侧的常量零除仍拒绝。不增加运行时分支或另一套求解图。
 

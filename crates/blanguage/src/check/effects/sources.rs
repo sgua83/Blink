@@ -13,13 +13,14 @@ pub(super) struct Scope<'b, 'w, 's> {
     pub(super) definition: &'b Definition,
     pub(super) builder: Option<&'b Builder<'w>>,
     pub bindings: Vec<(&'s str, Local<'s>)>,
+    pub(super) writes: Option<&'b LoopWrites>,
 }
 impl<'b, 'w, 's> Scope<'b, 'w, 's> {
     pub fn declared(world: &'b World, definition: &'b Definition) -> Self {
-        Self { world, definition, builder: None, bindings: Vec::new() }
+        Self { world, definition, builder: None, bindings: Vec::new(), writes: None }
     }
     pub fn current(builder: &'b Builder<'w>) -> Self {
-        Self { world: builder.world, definition: &builder.definition, builder: Some(builder), bindings: Vec::new() }
+        Self { world: builder.world, definition: &builder.definition, builder: Some(builder), bindings: Vec::new(), writes: None }
     }
     fn declared_type(&self, syntax: &TypeName, definition: &Definition, span: Span) -> Result<Ty> {
         let ty = self.world.ty(syntax, &definition.source, span, &definition.module, &definition.imports)?;
