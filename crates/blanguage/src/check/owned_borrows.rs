@@ -46,13 +46,15 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
             };
             let value=self.owned_value_binding(value,true);let place=value.place().unwrap();let owner=self.hold_binding(Binding::OwnedValue(value));(place,Some(owner))
         };
-        let Returned::OwnedValue(mut value)=self.owned_place_model(&place)else{unreachable!()};
+        let model=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,expr.span)?}else{self.owned_place_model(&place)};
+        let Returned::OwnedValue(mut value)=model else{unreachable!()};
         if value.ownership==Ownership::Borrowed{return self.fail(expr.span,"B227","read聚合不能提升为独占借用");}
         self.prepare_owned_read(&Returned::OwnedValue(value.clone()));
         if access==Access::InOut{if !value.all_available(){return self.fail(expr.span,"B227","inout聚合需要全部活动拥有资源");}self.load_owned_value(&mut value,expr.span)?;}
         Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
     }
     pub(super) fn assign_owned_place(&mut self,place:&Place,value:Returned){
+        if matches!(place.storage(),Place::ApplicationElement{..}){self.assign_application_owned_argument(place,&value);return;}
         for(name,path,old)in self.owned_place_candidates(place){
             let mut value=value.clone();
             if let(Returned::OwnedValue(value),Returned::OwnedValue(old))=(&mut value,&old){value.declaration=old.declaration;}

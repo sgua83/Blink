@@ -2574,6 +2574,11 @@ impl Builder<'_> {
         self.drop_returned(old,&view::Borrow::default(),span)?;
         self.write_storage_value(&place,&packed,span,None)?;
         self.assign_owned_proof(&place,bounds::Proof::capture(&packed),packed.uniform);self.initialize(&place);
+        self.assign_application_element_model(&data,&place,&paths,&value);
+        if let Some(name)=held{self.env.remove(&name);}
+        Ok(())
+    }
+    fn assign_application_element_model(&mut self,data:&DataReference,place:&Place,paths:&[Vec<usize>],value:&returns::Returned){
         let resource=view::resource_borrow(&data.data);let one=self.constant(Scalar::U32,1);
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
@@ -2584,7 +2589,7 @@ impl Builder<'_> {
                 let mut complete_scope=bounds::Condition::constant(complete_scope);
                 let mut target=&mut *target;
                 for fields in scope{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&target.length,&one),false);target=model_data_mut(&mut target.elements,&fields).unwrap();}
-                for projection in &paths {
+                for projection in paths {
                     let mut fresh=self.capture_element_model(target,projection,value.clone());
                     let mut previous=(*target.elements).clone();
                     for field in projection{let returns::Returned::OwnedValue(parent)=previous else{unreachable!()};previous=self.unpack_record(&parent,*field);}
@@ -2601,8 +2606,37 @@ impl Builder<'_> {
             });
             self.env.insert(name,binding);
         }
-        if let Some(name)=held{self.env.remove(&name);}
-        Ok(())
+    }
+    fn application_owned_references(&self,place:&Place)->Vec<(DataReference,Vec<Vec<usize>>)>{
+        fn projections(ty:&Ty,wanted:&Ty,words:&[u32],indexed:bool,offset:u32,path:&mut Vec<usize>,into:&mut Vec<Vec<usize>>){
+            let actual=ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>();
+            if ty==wanted && (if indexed{actual.iter().all(|word|words.contains(word))}else{actual==words}){into.push(path.clone());return;}
+            if !ty.owns_resources() || ty.has_variants(){return;}
+            for field in 0..ty.aggregate_len(){let(at,child)=ty.aggregate_part(field);if child.owns_resources(){path.push(field);projections(child,wanted,words,indexed,offset+at,path,into);path.pop();}}
+        }
+        let Place::ApplicationElement{sources,resource,words,..}=place.storage()else{unreachable!()};
+        let mut references=Vec::new();
+        for binding in self.env.values(){for index in 0..binding_element_types(binding).len(){if let Some(data)=binding_element_data(binding,index){
+            for(scope,_)in self.application_element_scopes(sources,resource,data){
+                let mut parent=self.data_value_borrow(data);let mut data=data;
+                for fields in scope{parent=view::Borrow::element(parent,fields.clone());data=model_data(&data.elements,&fields).unwrap();}
+                let mut paths=Vec::new();projections(&data.ty,place.ty(),words,matches!(place,Place::Indexed{..}),0,&mut Vec::new(),&mut paths);
+                if !paths.is_empty(){let mut data=data.clone();data.root.proof=std::mem::take(&mut data.root.proof).with_view_borrow(0,parent);references.push((DataReference::direct(data),paths));}
+            }
+        }}}
+        references
+    }
+    pub(super) fn application_owned_argument(&mut self,place:&Place,span:Span)->Result<returns::Returned>{
+        let loaded=self.read_storage_value(place,span,None)?;
+        let references=self.application_owned_references(place);let mut values=Vec::new();
+        for(mut data,paths)in references{for path in paths{data.projection=path;values.push(self.materialize_element(&data,loaded.clone()));}}
+        let mut models=values.into_iter();
+        let mut model=models.next().unwrap();for other in models{model.join(other,false);}
+        if let returns::Returned::OwnedValue(value)=&mut model{value.place=Some(place.clone());}
+        Ok(model)
+    }
+    pub(super) fn assign_application_owned_argument(&mut self,place:&Place,value:&returns::Returned){
+        for(data,paths)in self.application_owned_references(place){self.assign_application_element_model(&data,place,&paths,value);}
     }
     fn capture_element_model(&self,data:&Data,projection:&[usize],mut model:returns::Returned)->Box<returns::Returned>{
         model.bind_outputs(None,&BTreeMap::new(),&bounds::Clause::default());

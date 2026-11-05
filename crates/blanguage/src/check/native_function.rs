@@ -829,15 +829,17 @@ impl Builder<'_> {
                     proof=proof.with_view_borrow(component,self.view_model.result(call,view_contracts::Output::Written(index,component)));
                 }
             }}
+            let mut owned_output=None;
             if place.ty().owns_resources(){
                 let regs=written_registers[&index].clone();
                 let mut result=self.template_returned(Value{ty:place.ty().clone(),regs,proof:proof.clone(),uniform:false,literal:false,constant:None},true);
                 if let Some(Some(model))=writes.get(index){translate_returned(&mut result,model,&bindings,false);residency::returned(&mut result,&locations);}else{residency::output(&mut result,&instance.name,residency::OutputKind::Written(index),&locations,&view_arguments);}
                 if !views_closed && let Some(call)=view_call{view_contracts::set_resource_outputs(&mut result,|resource|self.view_model.result(call,view_contracts::Output::WrittenResource(index,resource)));}
                 if outputs::declared(d,index){outputs::apply_ownership(&mut result,place.ty(),0,&guards);}
-                let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_place(&place,Returned::OwnedValue(value));
+                let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();owned_output=Some(Returned::OwnedValue(value));
             }
             self.assign_owned_proof(&place, proof, false);
+            if let Some(value)=owned_output{self.assign_owned_place(&place,value);}
             self.initialize_output(&place,&guards);
         }
         for (index,place) in written_stage {
