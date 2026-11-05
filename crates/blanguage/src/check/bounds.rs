@@ -386,8 +386,10 @@ impl Proof {
         self.views=(0..width).map(|component|{let mut value=view::Borrow::default();for(when,proof)in values{value.union(&proof.view_borrow(component).restricted(&when.assume(&Clause::default(),true)));}value}).collect();
     }
     pub(super) fn join_view_borrows(&mut self,a:&Self,b:&Self,choice:Option<&Condition>){
-        let a_when=choice.cloned().unwrap_or_else(||Condition::constant(true));let b_when=choice.cloned().map(Condition::negate).unwrap_or_else(||Condition::constant(true));
-        self.select_view_borrows(&[(a_when,a.borrow_state()),(b_when,b.borrow_state())]);
+        self.views=(0..a.views.len().max(b.views.len())).map(|component|{
+            let a=a.view_borrow(component);let b=b.view_borrow(component);
+            match choice{Some(choice)=>view::Borrow::selected(choice,&a,&b),None=>a.joined(b)}
+        }).collect();
     }
     pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
