@@ -465,9 +465,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let definition=&instance.definition;
         let owns=if matches!(definition.function.result.name.as_str(),"void"|"never"){false}
             else{self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?.owns_resources()};
-        let dataset_positions= !definition.function.params.iter().any(|p|p.access==Access::Atomic)
-            &&builder.functions.writes_only_dataset_references(&instance.name,&Builder::borrowed_dataset_parameter_type(Access::InOut,definition.execution));
-        Ok(!owns&&(builder.functions.read_only(&instance.name)||dataset_positions))
+        let dataset_inputs= !definition.function.params.iter().any(|p|p.access==Access::Atomic)
+            &&builder.functions.writes_covered_by_dataset_inputs(&instance.name,&Builder::borrowed_dataset_parameter_type(Access::InOut,definition.execution));
+        Ok(!owns&&(builder.functions.read_only(&instance.name)||dataset_inputs))
     }
     fn factory_instance(&self,factory:&Expr)->Result<Option<crate::generics::Instance>> {
         let(name,explicit)=match &factory.kind {
@@ -516,8 +516,8 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
                         let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
-                        let read_only=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false};
-                        if !read_only {writes(Write::External{call:expr,instance});}
+                        let covered=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false};
+                        if !covered {writes(Write::External{call:expr,instance});}
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some()), iterator: None });

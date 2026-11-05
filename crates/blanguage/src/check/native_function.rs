@@ -38,7 +38,7 @@ impl Module {
                 view_contracts::Access::Initialized{..}=>true,
             }))
     }
-    pub(super) fn writes_only_dataset_references(&self,name:&str,descriptor:&Ty)->bool {
+    pub(super) fn writes_covered_by_dataset_inputs(&self,name:&str,descriptor:&Ty)->bool {
         fn covered(borrow:&view::Borrow,roots:&BTreeSet<Reg>)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|match source {
                 view::Source::Data(ValueIdentity::Register(root))=>roots.contains(root),
@@ -51,7 +51,7 @@ impl Module {
         let mut offset=0;let mut roots=BTreeSet::new();
         for parameter in &unit.contract.parameters {
             let(width,dataset)=match &parameter.kind {
-                CallParameterKind::Value(ty)=>(ty.components.len(),ty==descriptor),
+                CallParameterKind::Value(ty)=>(ty.components.len(),ty==descriptor||ty.dataset.as_ref().is_some_and(|element|!element.owns_resources())),
                 CallParameterKind::Reference{..}=>(2,false),
             };
             if dataset{roots.insert(unit.contract.inputs[offset]);}

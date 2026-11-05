@@ -1238,6 +1238,40 @@ impl Builder<'_> {
             ownership: Ownership::Owned, access: Access::InOut, count: None, residency: residency::Residency::cpu(), layout:DataLayout::Declared,
         })))
     }
+    pub(super) fn dataset_constructor_type(world:&World,definition:&Definition,explicit:&[GenericArgument],arguments:usize,span:Span)->Result<(Ty,Option<u32>)> {
+        if !(1..=2).contains(&explicit.len())||!(1..=2).contains(&arguments) {
+            return definition.source.fail(span,"B266","dataset<T>(length) 需要元素类型和一个 u32 长度");
+        }
+        let GenericArgument::Type(element) = &explicit[0] else {
+            return definition.source.fail(span, "B266", "dataset<T> 需要元素类型");
+        };
+        if element.dataset {
+            return definition.source.fail(span,"B232","资源包装不能直接嵌套；子资源通过记录字段表达");
+        }
+        if element.tile {
+            return definition.source.fail(
+                span,
+                "B266",
+                "dataset 的元素是普通值，不是另一份 dataset 或 tile 所有权",
+            );
+        }
+        let ty = world.ty(element,&definition.source,span,&definition.module,&definition.imports)?;
+        let count = if let Some(argument) = explicit.get(1) {
+            let Some(shape) = argument.shape() else {
+                return definition.source.fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
+            };
+            world.shape(
+                &Some(shape),
+                &definition.source,
+                span,
+                &definition.module,
+                &definition.imports,
+            )?
+        } else {
+            None
+        };
+        Ok((ty,count))
+    }
     #[inline(never)]
     pub(super) fn create_application_dataset(&mut self, expr: &Expr, span: Span) -> Result<Option<Data>> {
         self.application_frame(span)?;
@@ -1248,42 +1282,15 @@ impl Builder<'_> {
                 "动态 dataset 使用 dataset<T>(length) 创建独占存储",
             );
         };
-        if constructor != "dataset" || !(1..=2).contains(&explicit.len()) || !(1..=2).contains(&args.len()) {
+        if constructor != "dataset" {
             return self.fail(
                 span,
                 "B266",
                 "dataset<T>(length) 需要元素类型和一个 u32 长度",
             );
         }
-        let GenericArgument::Type(element) = &explicit[0] else {
-            return self.fail(span, "B266", "dataset<T> 需要元素类型");
-        };
-        if element.dataset {
-            return self.fail(span,"B232","资源包装不能直接嵌套；子资源通过记录字段表达");
-        }
-        if element.tile {
-            return self.fail(
-                span,
-                "B266",
-                "dataset 的元素是普通值，不是另一份 dataset 或 tile 所有权",
-            );
-        }
-        let definition = self.definition.clone();
-        let ty = self.expected_storage(element, span)?;
-        let count = if let Some(argument) = explicit.get(1) {
-            let Some(shape) = argument.shape() else {
-                return self.fail(span, "B266", "dataset<T,N> 的 N 需要静态 u32 形状");
-            };
-            self.world.shape(
-                &Some(shape),
-                &definition.source,
-                span,
-                &definition.module,
-                &definition.imports,
-            )?
-        } else {
-            None
-        };
+        let definition=self.definition.clone();
+        let(ty,count)=Self::dataset_constructor_type(self.world,&definition,explicit,args.len(),span)?;
         let Some(mut length) = self.expr(&args[0])? else {
             return Ok(None);
         };
