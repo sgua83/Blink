@@ -2759,9 +2759,11 @@ impl Builder<'_> {
             model=self.unpack_record(&owner,*field);
         }
         let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
-        if let Place::ApplicationElement{index_value,index_range,..}=place.storage(){
+        let mut selected=Some(place);let mut depth=0;
+        while let Some(Place::ApplicationElement{index_value,index_range,parent,..})=selected.map(Place::storage){
             let proof=bounds::Proof::element_operand(*index_value,*index_range);
-            bindings.insert(ValueIdentity::ElementIndex(0),proof);
+            bindings.insert(ValueIdentity::ElementIndex(depth),proof);
+            selected=parent.as_deref();depth+=1;
         }
         for(component,index)in components.into_iter().zip(0..value.regs.len()){
             let proof=self.path_proof(&Ty::scalar(value.ty.components[index].0),bounds::Proof::default().with_identity(value.component_origins(index)[0]));
