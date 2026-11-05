@@ -541,7 +541,11 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-4-1"></a>
 
-**先前索引Load替代后续Load。** 输入是原分析真实选定的先前Load结果及被替代Load的原操作来源；生产接点为value_flow.rs::Values::block的Load替换分支，消费者为原保留定义及其SDK／IR查询。输出应明确读取复用关系和原保留结果，而非依赖优化前SSA编号或重新解释源码。先确认真实消费者和实际替换，再确定必要来源表示；未观察到事件不能补造。后续映射与优化只沿原已保留结果交接，内存／原子／调用／控制事实由原IR解释，不创建地址历史或运行观测。当前尚待真实触发调查与实现，见[独立台账](Issues.md#c-021-7-9-7-3-1-4-1)。
+**先前索引Load替代后续Load。** 原Values.memory的无Store来源条目由真实Load的dst建立；后续Load命中该条目而消除时，输入为这个原保留Load结果及被替代读取的OperationOrigin。原Reuses只在本次分析中以SSA键暂存材料，retain_reuses交回实际定义该结果的Load，不另存地址／内存状态、绑定映射或失效历史。原memory键、写入、别名及控制关系继续决定合法复用；材料不增加优化许可，也不把另一字段写入误说成此读取位置被写。
+
+接收Inst的GeneratedOrigin采用GenerationReason::IndexedReadReuse及GenerationAnchor::IndexedReadReuse，锚点保留原OperationOrigin及reused各被替代读取；原source_site仍是保留Load自己的直接语法，当前Load的binding／index／word和所属寄存器表解释实际逻辑分量。SDK及IR查询只借用这些原事实，JSON给出indexed_read_reuse的retained／reused，不永久保存优化前Reg，不把静态逻辑位置当实际运行地址。原读定义、调用／域展开和已有生成来源不可变共享，多轮优化沿已有来源交接，不自引用、不复制旧IR／AST／World；删除整个保留Load仍由原DCE负责，不为观察保活。
+
+材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无相关类型／代码或必要执行编码；数值、存储、调度和完成保持原规则。此链的值由真实Load定义，不能和Store值到参数输入两支混为一项。当前该原Load定义范围已实现，simulation.bodies的真实标量／float3复用、SDK／JSON、两档查询和实际CPU／GPU已验证，认领及原始证据归[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-1)。Store值到两类输入仍沿各原叶推进，不由本叶代替。
 
 <a id="tool-7-3-1-4-2"></a>
 

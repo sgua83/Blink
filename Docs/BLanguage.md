@@ -215,11 +215,14 @@ Rust API `Compiler::type_layout(path, root, request)`返回原Ty，`Ty::layout_j
 
 ```powershell
 bc ir sample/lessons/map.b -I sample --program demo --stage 0
+bc ir sample/hybrid/Programs/simulation/bodies.b -I sample/hybrid/Programs --program 'integrate<BLBody<float3,1>>'
 bc ir src/math.b -I src --module --instance 'mix<7>' --function 'math::mix<7>'
 bc ir src/app.b -I src --entry main --import target/math.obj
 ```
 
 上述map并行入口的阶段查询可直接取得indexed_store_read_forward材料：retained为seed中保留的值生产者，reads各项分别交接实际Store与scale被替代读取的来源。查询本次实际编译模式；普通模块／CPU应用的不同IR路径不能冒称已经观测到该并行入口的替换。来源字段及未完成输入范围见后节“索引Store写入值到保留指令的读取来源”。
+
+物理模拟integrate入口可从原Load的generated_origin查询indexed_read_reuse：retained保留position首次读取，reused给出更新位置时被替代读取。当前Load的word与所属Scalar分别解释实际分量；这些静态位置不是某次运行地址。该来源与map入口的indexed_store_read_forward分别表示不同生产者。
 
 --function使用完整、区分大小写的实际函数实例名，只从本次模块／应用保留的functions选择；缺失函数直接失败，不重编另一函数或推测已内联函数体。--stage是本次--program的零起优化后阶段编号，越界直接失败；优化合并后的阶段数可以少于source_stages。未选函数／阶段时返回该编译结果的完整当前IR；未实例化的开放泛型没有伪造函数体。
 
@@ -386,6 +389,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | ExpressionReuse | expression_reuse | 原ExpressionKey命中后实际复用已有结果 |
 | LocalReadForward | local_read_forward | 原LoadLocal实际被已知局部值替代 |
 | IndexedStoreReadForward | indexed_store_read_forward | 原索引Load实际被先前Store写入的值替代，材料交给原保留Inst |
+| IndexedReadReuse | indexed_read_reuse | 后续索引Load实际复用先前Load结果，材料交给原保留Load |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -433,7 +437,17 @@ CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Fram
 
 JSON根reason和锚点kind均为indexed_store_read_forward，锚点含result_index_base=0、retained和reads；各项kind为indexed_store_read_forward_input，字段为result_index、result_count、result、store和read。多源锚点的单源trigger()／syntax()／origin()／instance()为空，各路从对应成员读取；未知来源仍为null。Source及既有生成链不可变共享，后续优化可以沿原材料继续交接，不保活DCE操作，不保存旧IR、AST／World、运行状态或第二张内存表。
 
-此项当前覆盖写入值由保留Inst定义的范围；先前Load定义的复用、直接ValueCode输入及lowered归约输入各保留独立未完成台账。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。见[架构](Architecture.md#tool-7-3-1-4-2-1)、[本项记录](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)及[剩余范围](Issues.md#c-021-7-9-7-3-1-4)。
+此项当前覆盖写入值由保留Inst定义的范围；先前Load定义的复用按后节交接，直接ValueCode输入及lowered归约输入仍保留独立未完成台账。没有此材料不证明不存在读取替代，更不证明运行时地址、数值、次数或完成。材料随原Inst／Stage／ValueCode及最后IR消费者释放，compiler以外无这些类型／代码，必要对象／运行编码及ABI保持。新增公共枚举分支属于compiler SDK源码接口演化，软件版本与执行ABI分别表达。见[架构](Architecture.md#tool-7-3-1-4-2-1)、[本项记录](FixedIssues.md#c-021-7-9-7-3-1-4-2-1)及[剩余范围](Issues.md#c-021-7-9-7-3-1-4)。
+
+#### 先前索引Load的读取复用来源
+
+原Values.memory由真实Load建立的无Store来源条目仍指向该Load的dst；后续Load命中并消除时，原Reuses将被替代读取的OperationOrigin交回实际保留Load。原memory键及写／别名／控制处理不变，不新增装载、复用许可、失效历史或地址表；Store值转交另用前节的独立原因，不混为先前Load定义。
+
+原Inst.generated_origin使用GenerationReason::IndexedReadReuse和GenerationAnchor::IndexedReadReuse { retained, reused }。retained是原保留Load的OperationOrigin，reused是各实际被替代读取的OperationOrigin；原source_site仍是该Load自己的语法。原Load的dst、binding、index、word及所属寄存器表解释本次保留逻辑分量，材料不保存优化前SSA编号或运行地址。一个float3由原三条标量Load分别交接，不把三个分量混成单个读取，也不将本例宽度作为语言限制。
+
+JSON根reason及锚点kind均为indexed_read_reuse，锚点含retained和reused；每个成员沿原operation_origin编码SourceSite及已有GeneratedOrigin，缺失材料仍为null。SDK通过anchor()取得多源成员，单源trigger()／syntax()／origin()／instance()为空。来源及实际实例、内联／域路径和字节范围不可变共享；查询只消费既有材料，不重读磁盘或保存旧IR／AST／World。这里记录本次交接时的保留Load，后续变换仍可把它作为既有来源交接，不能因材料仍在而断言最终仍有该Load或已经运行；DCE不为来源保活操作。
+
+当前simulation.bodies的integrate／step入口可查询到position读取的复用；能量函数内同一数值的复用不自动等于再次读取dataset，本次energy入口没有该材料。compiler以外无这些类型／代码，必要执行编码及资源ABI不变；公共枚举增加变体按原版本规则处理。材料沿原Inst／Stage／ValueCode及最后IR消费者释放，不拥有运行资源或新增调度／完成／释放链。见[架构](Architecture.md#tool-7-3-1-4-1)及[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-1)。
 
 #### 降层归约内核的角色与分区查询
 

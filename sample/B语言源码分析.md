@@ -2147,7 +2147,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                     continue;
 ```
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:242`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:243`。
 
 ```rust
                         continue;
@@ -2177,6 +2177,10 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                                 store: store.clone(),
                                 read: OperationOrigin { source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone() },
                             });
+                        } else {
+                            reuses.entry(*old).or_default().push(RetainedUse::IndexedRead(OperationOrigin {
+                                source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone(),
+                            }));
                         }
                         continue;
                     }
@@ -2271,6 +2275,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
         let mut reused = Vec::new();
         let mut reads = Vec::new();
         let mut indexed = Vec::new();
+        let mut indexed_reads = Vec::new();
         let result_count = inst.results().count();
         for (result_index, reg) in inst.results().enumerate() {
             let result = match &inst.kind {
@@ -2286,6 +2291,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                 match source {
                     RetainedUse::Expression(source) => reused.push(source),
                     RetainedUse::LocalRead(origin) => reads.push(LocalReadForward { result_index, result_count, result, origin }),
+                    RetainedUse::IndexedRead(origin) => indexed_reads.push(origin),
                     RetainedUse::IndexedStoreRead { store, read } => indexed.push(IndexedStoreReadForward { result_index, result_count, result, store, read }),
                 }
             }
@@ -2311,11 +2317,20 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                 trigger: Some(GenerationAnchor::IndexedStoreReadForward { retained, reads: indexed }),
             }));
         }
+        if !indexed_reads.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::IndexedReadReuse,
+                trigger: Some(GenerationAnchor::IndexedReadReuse { retained, reused: indexed_reads }),
+            }));
+        }
 ```
 
 本次值流仅暂存待交接来源，沿原完整IR及归约公共入口／各函数体把材料交回真实保留Inst，临时寄存器号随后释放。原source_site仍是保留操作自己的语法，完整复用点从GeneratedOrigin::ExpressionReuse的retained／reused读取；已有来源共享，不保存被删除的旧IR或运行状态。后续DCE照常裁剪／删除，完整删除历史和机器映射仍按原职责推进，不为观察保活操作。这些编译工具当前仍由Rust实现，B接管与自举按原职责分别记录。
 
 索引读取还可能直接取得先前Store写入的值。原memory条目只在本次分析中附带实际Store来源，真正消除Load时将Store和读取的来源交回保留值的Inst；indexed_store_read_forward中的retained仍是值生产者，store与read分别描述另外两个接点。map教程中，seed的f32转换生产值、seed赋值写入它、scale随后读取它，这三处可直接从同一IR查询。tiles的demo_publish<4>也保留实际tile值生产、cell写回和后续cell读取。材料没有永久SSA键、缓存增删历史或运行地址；直接ValueCode和归约输入仍按独立台账推进。
+
+先前Load本身也可能提供后续读取。simulation.bodies::integrate_body先读body.position计算加速度，写入velocity后再读position更新位置；原memory仍保留同下标未被写的position分量。实际第二次读取被替代时，IndexedReadReuse把该来源交给原保留Load，retained与reused分别保留首次与后续读取的OperationOrigin。float3的word为0、4、8，各条Load分别记录；它们是原逻辑分量位置，不是运行地址。四份真实入口查询显示标量integrate有1次，float3的integrate和step各3次，energy为0。去掉新增包装后，原IR和此前全部来源材料保持；不为观察保活读取或保存旧SSA表。
 
 局部读取也可能直接被已有值替代。命中原locals后，原别名算法继续消除LoadLocal，来源分别交给真实指令定义或ValueCode实际输入。普通定义可能是多结果Call或Both，因此材料包含本次交接时的结果序号／数量及商／余数角色，不能只保存一组没有目标分量的读取。
 
