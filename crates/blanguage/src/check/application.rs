@@ -567,7 +567,7 @@ fn live_resources(
 }
 impl Builder<'_> {
     // 独立检查 CPU 函数时，参数提供符号身份和真实接口形状；不创建物理存储。
-    // Invocation read/atomic交接原实际地址及布局，其他借用与拥有值沿原Frame句柄。
+    // Invocation read/write/inout/atomic交接原实际地址及布局，Host借用与拥有值沿原Frame句柄。
     pub(super) fn application_parameter(
         &mut self,
         binding: usize,
@@ -1572,7 +1572,7 @@ impl Builder<'_> {
         CallArgument::Value{ #[cfg(feature = "compiler")] origin: None,dataset_borrow:None, ty:Self::domain_dataset_parameter_type(),values:vec![data.root.regs[0],offset.regs[0]]}
     }
     pub(super) fn borrowed_dataset_parameter_type(access: Access, execution: crate::execution::Requirement)->Ty {
-        if matches!(access,Access::Read|Access::Atomic|Access::InOut) && execution == crate::execution::Requirement::Invocation {
+        if matches!(access,Access::Read|Access::Write|Access::Atomic|Access::InOut) && execution == crate::execution::Requirement::Invocation {
             let mut ty = Ty::scalar(Scalar::U64);
             ty.name = "__blink_address_dataset".into();
             ty.components = vec![(Scalar::U64,0),(Scalar::U32,8),(Scalar::U64,16),(Scalar::U32,24)];

@@ -160,6 +160,10 @@ fn collect_inputs(
             Binding::Owned(owner) if parameter.access == Access::Value => {
                 builder.read_place(&owner.place, parameter.span, None)?
             }
+            Binding::Data(data)=>{
+                inputs.insert(format!("{}.length",parameter.name),builder.data_length(data));
+                continue;
+            }
             Binding::ApplicationData(data) => {
                 builder.returned_storage(&Returned::Dataset(data.clone()))
             }
@@ -266,6 +270,8 @@ fn expression(
                 Ok(builder.constant_value(ty, bits,None))
             }
             OutputCondition::Member(base, field) => {
+                if field=="length"&&let OutputCondition::Name(name)=base.as_ref()
+                    &&let Some(value)=inputs.get(&format!("{name}.length")) {return Ok(value.clone());}
                 let value = path(builder, definition, base, inputs, returned, span)?;
                 if value.ty.dataset.is_some() && field == "length" {
                     return Ok(builder.value_component(&value, 1));
@@ -297,6 +303,8 @@ fn expression(
                 ));
             }
             OutputCondition::Member(base, field) => {
+                if field=="length"&&let OutputCondition::Name(name)=base.as_ref()
+                    &&let Some(value)=inputs.get(&format!("{name}.length")) {return Ok(atom(values,value.clone(),span));}
                 let value = path(builder, definition, base, inputs, returned, span)?;
                 if value.ty.has_variants() {
                     let Some(variant) = value.ty.variants.iter().find(|v| v.name == *field) else {
@@ -965,7 +973,7 @@ impl Builder<'_> {
         for ((_, offset), when) in data.ty.components.iter().zip(guards) {
             self.path = when.condition().assume(&path, true);
             if self.path.possible() && !self.application_field_initialized(data, *offset)
-                && !self.defer_position_initialization(vec![data.initialization.as_ref().unwrap().application_word(None,*offset)],"B229",span)? {
+                && !self.defer_dataset_output(data,vec![data.initialization.as_ref().unwrap().application_word(None,*offset)],span)? {
                 return self.fail(span, "B229", "返回分支没有满足dataset字段的条件初始化合同");
             }
         }

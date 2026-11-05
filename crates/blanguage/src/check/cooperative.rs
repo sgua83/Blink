@@ -493,10 +493,15 @@ impl<'a> Builder<'a> {
                     let binding = view.binding;
                     self.require_same(&ty, self.dataset_layout(&view).1, span)?;
                     if !matches!((param.access,view.access),
-                        (Access::Read,Access::Read|Access::InOut)|(Access::Atomic,Access::Atomic)|(Access::InOut,Access::InOut)) {
+                        (Access::Read,Access::Read|Access::InOut)|(Access::Write,Access::Write|Access::InOut)|(Access::Atomic,Access::Atomic)|(Access::InOut,Access::InOut)) {
                         return self.fail(span,"B224","并行实例的dataset借用需要对应的实际来源权限");
                     }
                     let mut view=view;
+                    if param.access==Access::Write {
+                        let place=self.dataset_element(&view,self.global_index,false);
+                        self.forget_output_initialization(&place,span)?;
+                        borrowed.push((parameter,param.access,place));
+                    }
                     view.access=param.access;
                     if param.ty.count.is_some()
                         && self.world.shape(

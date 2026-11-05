@@ -28,8 +28,9 @@ pub(super) enum Root {
     Buffer(usize),
     Derived(view::Borrow),
     External(Identity),
+    Dataset { borrow: view::Borrow, index: Option<bounds::Operand> },
 }
-crate::module::codec::variants!(Root { 0=>Local{base,len}, 1=>Parameter(index), 2=>Resource(borrow), 3=>Buffer(binding), 4=>Derived(borrow), 5=>External(identity) });
+crate::module::codec::variants!(Root { 0=>Local{base,len}, 1=>Parameter(index), 2=>Resource(borrow), 3=>Buffer(binding), 4=>Derived(borrow), 5=>External(identity), 6=>Dataset{borrow,index} });
 /// A projection of original storage; positions stay in the checking function.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Origin {
@@ -44,7 +45,7 @@ pub(super) struct Origin {
 impl Origin {
     pub fn symbolic_input(&self)->bool {
         match &self.root {
-            Root::Derived(borrow)=>borrow.sources.iter().any(|source|match source {
+            Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().any(|source|match source {
                 view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..))=>true,
                 view::Source::Position(origin)=>origin.symbolic_input(),
                 _=>false,
@@ -54,7 +55,7 @@ impl Origin {
     }
     pub fn layout_valid(&self)->bool {
         match &self.root {
-            Root::Derived(borrow)=>borrow.sources.iter().all(|source|match source {
+            Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().all(|source|match source {
                 view::Source::Position(origin)=>origin.layout==self.base&&origin.layout_valid(),
                 view::Source::External|view::Source::Parameter(_)|view::Source::Inactive=>true,
                 _=>false,
@@ -65,6 +66,9 @@ impl Origin {
     pub fn position_at(&self,word:u32)->Option<Position> {
         let component=self.layout.parts.iter().position(|(_,at)|*at==word)?;
         if !self.positions.is_empty(){return Some(self.positions[component].clone());}
+        if let Root::Dataset{borrow,index}=&self.root {
+            return dataset_positions(borrow,*index,&self.base,&[self.words[component]]).map(|positions|positions[0].clone());
+        }
         if self.initialized[component]{return Some(Position::Initialized);}
         if let Root::Derived(borrow)=&self.root {
             let parent_word=self.words[component];
@@ -118,31 +122,31 @@ impl Origin {
     }
     pub fn resources(&self) -> view::Borrow {
         match &self.root {
-            Root::Resource(borrow) | Root::Derived(borrow) => borrow.resources(),
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => borrow.resources(),
             _ => view::Borrow::default(),
         }
     }
     pub fn owners(&self) -> view::Borrow {
         match &self.root {
-            Root::Resource(borrow) | Root::Derived(borrow) => borrow.owners(),
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => borrow.owners(),
             _ => view::Borrow::default(),
         }
     }
     pub fn has_local(&self) -> bool {
         match &self.root {
             Root::Local { .. } | Root::Buffer(_) => true,
-            Root::Derived(borrow) => borrow.has_local(),
+            Root::Derived(borrow)|Root::Dataset{borrow,..} => borrow.has_local(),
             _ => false,
         }
     }
     pub fn pending(&self) -> bool {
-        matches!(&self.root, Root::Resource(borrow) | Root::Derived(borrow) if borrow.pending())
+        matches!(&self.root, Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} if borrow.pending())
     }
     pub fn aliases(&self) -> Vec<MemoryAlias> {
         match &self.root {
             Root::Local { base, len } => vec![MemoryAlias::Local { base: *base, len: *len }],
             Root::Buffer(binding) => vec![MemoryAlias::Data(*binding)],
-            Root::Derived(borrow) => borrow.aliases(),
+            Root::Derived(borrow)|Root::Dataset{borrow,..} => borrow.aliases(),
             Root::External(Identity::Storage(borrow))=>borrow.aliases(),
             _ => Vec::new(),
         }
@@ -166,7 +170,7 @@ impl Origin {
     pub fn map_borrows(&self, map: impl Fn(&view::Borrow)->view::Borrow) -> Self {
         let mut value=self.clone();
         match &mut value.root {
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::External(Identity::Storage(borrow)) => *borrow=map(borrow),
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => *borrow=map(borrow),
             _=>{}
         }
         value
@@ -174,9 +178,12 @@ impl Origin {
     pub fn bind_outputs(&self, bindings: &BTreeMap<ValueIdentity,ValueIdentity>) -> Self {
         let mut value=self.clone();
         match &mut value.root {
-            Root::Resource(borrow) | Root::Derived(borrow) => *borrow=borrow.output_bound(bindings),
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.output_bound(bindings),
             Root::External(identity)=>*identity=identity.output_bound(bindings),
             _ => {}
+        }
+        if let Root::Dataset{index:Some(index),..}=&mut value.root {
+            if let bounds::Operand::Value(id)=index {if let Some(bound)=bindings.get(id){*id=*bound;}}
         }
         value
     }
@@ -190,9 +197,12 @@ impl Origin {
                     .unwrap_or_else(||view::Borrow::source(view::Source::Unresolved));
                 value.root=Root::Derived(borrow);
             }
-            Root::Resource(borrow) | Root::Derived(borrow) => *borrow=borrow.at_call(bindings),
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => *borrow=borrow.at_call(bindings),
             Root::External(identity)=>*identity=identity.at_call(bindings),
             _ => {}
+        }
+        if let Root::Dataset{borrow,index:Some(index)}=&mut value.root {
+            match index.at_call(bindings) {Some(bound)=>*index=bound,None=>*borrow=view::Borrow::source(view::Source::Unresolved)}
         }
         value
     }
@@ -427,6 +437,7 @@ impl Initialization {
     }
     pub fn positions(&self,path:&bounds::Clause)->Vec<Position> {
         match &self.origin.root {
+            Root::Dataset{..}=>borrowed_positions(&self.origin.normalize(),&self.origin.layout,&self.origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()),
             Root::Derived(borrow)=>{
                 let borrow=borrow_in_path(borrow,path);
                 borrowed_positions(&borrow,&self.origin.base,&self.origin.words)
@@ -492,6 +503,38 @@ pub(super) fn initialized_by_effects(position:&Position,initialized:&BTreeSet<Po
     position.initialized_by(&known)
 }
 
+fn dataset_positions(borrow:&view::Borrow,index:Option<bounds::Operand>,layout:&Layout,words:&[u32])->Option<Vec<Position>> {
+    fn select(position:Position,index:bounds::Operand)->Option<Position> {
+        if matches!(position,Position::Initialized|Position::Element(..)|Position::ApplicationElement(..)){return Some(position);}
+        let selected=match index {
+            bounds::Operand::Constant(Scalar::U32,value)=>ownership::ApplicationIndex::Constant(value as u32),
+            bounds::Operand::Value(id@ValueIdentity::Register(reg))=>ownership::ApplicationIndex::Value(id,reg),
+            _=>return None,
+        };
+        Some(match position {
+            Position::Parameter(scope,word)=>Position::ApplicationElement(scope,selected,word as u32),
+            Position::ApplicationInput(input,_,word)=>Position::ApplicationInput(input,Some(selected),word),
+            Position::Both(a,b)=>Position::both(select(a.as_ref().clone(),index)?,select(b.as_ref().clone(),index)?),
+            Position::Conditional(when,a,b)=>Position::selected(when.as_ref().clone(),select(a.as_ref().clone(),index)?,select(b.as_ref().clone(),index)?),
+            Position::Indexed(choices,at)=>Position::Indexed(choices.iter().map(|position|select(position.clone(),index)).collect::<Option<_>>()?,at),
+            _=>return None,
+        })
+    }
+    let mut result=None;
+    for(source,when)in borrow.sources.entries() {
+        if !when.possible(){continue;}
+        let view::Source::Position(parent)=source else{return None;};
+        if parent.layout!=*layout{return None;}
+        let positions=words.iter().map(|word|{
+            let position=parent.position_at(*word)?;
+            match index{Some(index)=>select(position,index),None=>Some(position)}
+        }).collect::<Option<Vec<_>>>()?;
+        if result.as_ref().is_some_and(|known|*known!=positions){return None;}
+        result=Some(positions);
+    }
+    if !borrow.inputs.is_empty()||!borrow.calls.is_empty(){return None;}
+    result
+}
 pub(super) fn borrowed_positions(borrow:&view::Borrow,layout:&Layout,words:&[u32])->Vec<Position> {
     words.iter().map(|word| {
             let mut known=None;

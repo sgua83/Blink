@@ -371,6 +371,41 @@ impl Builder<'_> {
             _ => None,
         }
     }
+    fn dataset_output_position(position:&Position,data:&application::Data)->Position {
+        fn projected(data:&application::Data,index:Option<bounds::Operand>,word:u32)->Position {
+            let layout=address::Layout::of(&data.ty);
+            let origin=address::Origin{
+                root:address::Root::Dataset{borrow:view::Borrow::source(view::Source::Parameter(data.root.identity())),index},
+                base:layout.clone(),layout:layout.clone(),words:layout.parts.iter().map(|(_,word)|*word).collect(),
+                positions:Arc::from([]),writable:true,initialized:vec![false;layout.parts.len()].into(),
+            };
+            Position::Borrowed(Arc::new(view::Borrow::source(view::Source::Position(Arc::new(origin)))),layout,word)
+        }
+        let Some(Position::Parameter(scope,_))=&data.initialization else{return position.clone();};
+        match position {
+            Position::Parameter(owner,word)if owner==scope=>projected(data,None,*word as u32),
+            Position::ApplicationElement(owner,index,word)if owner==scope=>{
+                let index=match index {ownership::ApplicationIndex::Constant(value)=>bounds::Operand::Constant(Scalar::U32,Bits::from(*value)),ownership::ApplicationIndex::Value(id,_)=>bounds::Operand::Value(*id)};
+                projected(data,Some(index),*word)
+            }
+            Position::Both(a,b)=>Position::both(Self::dataset_output_position(a,data),Self::dataset_output_position(b,data)),
+            Position::Conditional(when,a,b)=>Position::selected(when.as_ref().clone(),Self::dataset_output_position(a,data),Self::dataset_output_position(b,data)),
+            Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|position|Self::dataset_output_position(position,data)).collect(),*index),
+            _=>position.clone(),
+        }
+    }
+    pub(super) fn defer_dataset_output(&mut self,data:&application::Data,positions:Vec<Position>,span:Span)->Result<bool> {
+        if data.access!=Access::Write||self.definition.execution!=crate::execution::Requirement::Invocation {
+            return self.defer_position_initialization(positions,"B229",span);
+        }
+        // The callee retains its own writes until the caller supplies the actual loan.
+        let read=address::InitializationRead{
+            positions:positions.iter().map(|position|Self::dataset_output_position(position,data)).collect(),
+            initialized:self.initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect(),
+        };
+        self.check_view_requirement(view::Requirement::Initialized{borrow:read.borrow(),read,code:"B229",span})?;
+        Ok(true)
+    }
     pub(super) fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
         if let Some(value)=&mut value {self.require_returned_initialized(value,span)?;}
         if let Some(Returned::Value(value)) = &mut value {
@@ -390,10 +425,23 @@ impl Builder<'_> {
                         let guards=outputs::guards(self,&definition,index,&data.ty,&inputs,returned.as_ref())?;
                         self.check_data_output(&data,&guards,span)?;
                     }else if !self.application_initialized(&data)
-                        && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B229",span)? {
+                        && !self.defer_dataset_output(&data,data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),span)? {
                         return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name));
                     }
                     if data.ty.owns_resources(){borrowed.insert(param.name.clone(),Returned::Dataset(data));}
+                }
+                if param.ty.dataset&&param.access==Access::Write&&let Some(Binding::Data(view))=self.env.get(&param.name).cloned() {
+                    let place=self.dataset_element(&view,self.global_index,false);
+                    let guards=outputs::guards(self,&definition,index,place.ty(),&inputs,returned.as_ref())?;
+                    let path=self.path.clone();
+                    for(position,when)in self.positions(&place).into_iter().zip(guards) {
+                        self.path=when.condition().assume(&path,true);
+                        if self.path.possible()&&!self.position_initialized_in(&position,&self.initialized,&self.env)
+                            &&!self.defer_position_initialization(vec![position],"B229",span)? {
+                            return self.fail(span,"B229","返回前没有初始化本次dataset借用的输出分量");
+                        }
+                    }
+                    self.path=path;
                 }
                 if matches!(param.access,Access::Write|Access::InOut) && !param.ty.dataset && !param.ty.tile {
                     let mut model=if outputs::declared(&definition,index) {
@@ -427,7 +475,15 @@ impl Builder<'_> {
         });
         self.view_uses.returning();
         self.release_application_data(None,retained)?;
-        let initialized=address::initialization_effects(&self.initialized,&self.path);
+        let mut initialized=self.initialized.clone();
+        if self.definition.execution==crate::execution::Requirement::Invocation {
+            for parameter in &self.definition.function.params {
+                if parameter.ty.dataset&&parameter.access==Access::Write&&let Some(Binding::ApplicationData(data))=self.env.get(&parameter.name) {
+                    initialized=initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect();
+                }
+            }
+        }
+        let initialized=address::initialization_effects(&initialized,&self.path);
         let context = self.return_context.as_mut().unwrap();
         if context.scoped {
             if let Some(value) = &value {

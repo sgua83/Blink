@@ -90,7 +90,7 @@ impl Borrow{
     pub fn unresolved(&self)->bool {self.sources.iter().any(|source|match source {
         Source::Unresolved=>true,
         Source::Element{parent,..}|Source::Projection{parent,..}=>parent.unresolved(),
-        Source::Position(origin)=>matches!(&origin.root,address::Root::Resource(borrow)|address::Root::Derived(borrow)if borrow.unresolved()),
+        Source::Position(origin)=>matches!(&origin.root,address::Root::Resource(borrow)|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if borrow.unresolved()),
         _=>false,
     })}
     pub fn has_local(&self)->bool {self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.has_local(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.has_local(),_=>false})}

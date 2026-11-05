@@ -15,8 +15,9 @@ pub(super) enum Access {
     Position {borrows:Borrow,when:bounds::Condition,position:PositionAccess},
     Memory {borrows:Borrow,when:bounds::Condition},
     Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>,access:super::Access,atomic:bool},
+    Initialized {borrows:Borrow,initialized:Vec<address::Initialization>,when:bounds::Condition},
 }
-crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when},3=>Dataset{borrows,when,index,access,atomic}});
+crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when},3=>Dataset{borrows,when,index,access,atomic},4=>Initialized{borrows,initialized,when}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
 pub(super) struct Call {
@@ -190,7 +191,7 @@ impl Function {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
                 .map(|id|Borrow::source(Origin::Parameter(id))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
-            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)) =>
+            Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}) =>
                 {
                     let mut origin=(*origin).clone();
                     if let address::Root::External(address::Identity::Storage(borrow))=&mut origin.root {
@@ -208,6 +209,22 @@ impl Function {
         let when=bounds::Condition::guard(when.assume(&bounds::Clause::default(),true).canonical());
         let borrows=selected.guards_at_call(&bindings);
         when.active().then_some((borrows,when))
+    }
+    fn initialization_access(&self,read:&address::InitializationRead,when:bounds::Condition)->Option<Access>{
+        if read.missing().is_empty(){return None;}
+        let(borrows,when)=self.address_borrows(read.borrow(),when)?;
+        let parameters=residency::input_parameters(&self.parameters,self.input_width);
+        let initialized:Vec<_>=address::initialization_effects(&read.initialized,&bounds::Clause::default()).into_iter().filter_map(|effect|{
+            let address::InitializationEffect::Position(mut fact)=effect else{return None;};
+            if fact.origin.has_local(){return None;}
+            let value=canonical(Borrow::source(Origin::Position(Arc::new(fact.origin))),self,None,&BTreeMap::new());
+            if value.unresolved(){return None;}
+            let Origin::Position(origin)=value.sources.iter().next()? else{return None;};
+            fact.origin=origin.as_ref().clone();
+            fact.when=fact.when.guaranteed_at_call(&parameters);
+            Some(fact)
+        }).collect();
+        Some(Access::Initialized{borrows,initialized:address::merge_initializations(initialized),when})
     }
     fn address_access(&self,borrow:Borrow,position:Option<PositionAccess>,when:bounds::Condition)->Option<Access>{
         let(borrows,when)=self.address_borrows(borrow,when)?;
@@ -346,6 +363,12 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
             let mut value=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,exposed));
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
                 *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
+            }
+            if let address::Root::Dataset{borrow,index:Some(index)}=&mut value.root {
+                match index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id))) {
+                    Some(bound)=>*index=bound,
+                    None=>*borrow=Borrow::source(Origin::Unresolved),
+                }
             }
             if !matches!(value.root,address::Root::Local { .. }) {value.positions=Arc::from([]);}
             Borrow::source(Origin::Position(Arc::new(value)))
@@ -512,20 +535,32 @@ fn refreshed_at_call(borrow:&Borrow,call:&Call,function:&Function,state:&State,k
 }
 
 fn access_at_call(access:&Access,call:&Call,function:&Function,state:&State,known:&States)->Access{
-    let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when}|Access::Dataset{borrows,when,..})=access;
+    let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..})=access;
     let borrows=borrows.at_call(&call.arguments);
     let when=when.guard_at_call(&call.arguments).assume(&call.path,true);
-    let borrows=refreshed_at_call(&borrows,call,function,state,known);
+    let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,function,state,known)};
     let when=bounds::Condition::guard(when);
     match access {
         Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,ownership:*ownership,when},
         Access::Position{position,..}=>Access::Position{borrows,when,position:position.clone()},
         Access::Memory{..}=>Access::Memory{borrows,when},
+        Access::Initialized{initialized,..}=>Access::Initialized{borrows,when,initialized:initialized.iter().map(|fact|fact.at_call(&call.arguments)).collect()},
         Access::Dataset{index,access,atomic,..}=>Access::Dataset{borrows,when,index:index.and_then(|index|index.at_call(&call.arguments)),access:*access,atomic:*atomic},
     }
 }
 
 
+fn output_initialization_read(borrows:&Borrow,initialized:&[address::Initialization],path:&bounds::Clause)->address::InitializationRead {
+    let mut positions=Vec::new();
+    for(source,when)in borrows.sources.entries(){
+        if !bounds::Condition::guard(when).assume(path,true).possible(){continue;}
+        if let Origin::Position(origin)=source {
+            positions.extend(address::borrowed_positions(&Borrow::source(source.clone()),&origin.layout,&origin.layout.parts.iter().map(|(_,word)|*word).collect::<Vec<_>>()));
+        }
+    }
+    let initialized=initialized.iter().filter(|fact|fact.when.truth_in(path)==Some(true)).flat_map(|fact|fact.positions(path)).collect();
+    address::InitializationRead{positions,initialized}
+}
 fn normalized_condition(when:bounds::Condition)->bounds::Condition {
     bounds::Condition::paths(when.assume(&bounds::Clause::default(),true).canonical(),when.assume(&bounds::Clause::default(),false).canonical())
 }
@@ -555,6 +590,9 @@ fn initializations(function:&Function,state:&State,known:&States,candidates:bool
         }
         if fact.origin.has_local(){return None;}
         fact.origin=fact.origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,&exposed));
+        if let address::Root::Dataset{index:Some(index),..}=&mut fact.origin.root {
+            *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
+        }
         fact.origin.positions=Arc::from([]);
         if candidates{fact.when=bounds::Condition::constant(true);}
         Some(fact)
@@ -601,8 +639,12 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
             let state=&known[name];
             let mut access=BTreeSet::new();
             for usage in &function.uses {
-                if let Requirement::Initialized{read,..}=&usage.requirement {
+                if let Requirement::Initialized{read,code,..}=&usage.requirement {
                     let read=resolved_read(read,&usage.path,function,state,known);
+                    if *code=="B229" {
+                        if let Some(value)=function.initialization_access(&read,bounds::Condition::guard(usage.path.clone())){access.insert(value);}
+                        continue;
+                    }
                     for(source,when)in read.borrow().sources.entries() {
                         if let Origin::Position(origin)=source {
                             if let Some(value)=function.address_access(Borrow::source(source.clone()),Some(PositionAccess{layout:origin.layout.clone(),writes:false,initialized:true}),
@@ -634,6 +676,10 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                         function.address_access(borrows,Some(position),when)
                     },
                     Access::Memory{borrows,when}=>function.address_access(borrows,None,when),
+                    Access::Initialized{borrows,initialized,when}=>{
+                        let path=when.assume(&bounds::Clause::default(),true);
+                        function.initialization_access(&output_initialization_read(&borrows,&initialized,&path),when)
+                    },
                     Access::Resource{resources,borrows,ownership,when}=>function.access(resources,borrows,ownership,when),
                     Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(borrows,index,access,atomic,when),
                 };
@@ -693,13 +739,17 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
         for call in &function.calls{
             for requirement in &known[&call.function].interface.access{
                 let value=access_at_call(requirement,call,function,state,&known);
-                let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..})=&value;
+                let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..})=&value;
                 if when.active(){
                     let path=when.assume(&bounds::Clause::default(),true);
                     let requirement=match value {
                         Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,writes:position.writes,initialized:position.initialized,span:call.span},
                         Access::Resource{resources,borrows,ownership,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),ownership,span:call.span},
                         Access::Memory{..}|Access::Dataset{..}=>continue,
+                        Access::Initialized{borrows,initialized,..}=>{
+                            let read=output_initialization_read(&borrows,&initialized,&path);
+                            Requirement::Initialized{borrow:borrows,read,code:"B229",span:call.span}
+                        },
                     };
                     requirement.check(&call.source)?;
                 }
@@ -770,6 +820,16 @@ impl Builder<'_> {
     pub(super) fn native_dataset_access(&mut self,access:&BTreeSet<Access>,arguments:&BTreeMap<ValueIdentity,bounds::Proof>,span:Span)->Result<Vec<MemoryAccess>> {
         let mut memory=Vec::new();
         for access in access {
+            if let Access::Initialized{borrows,initialized,when}=access {
+                let path=when.guard_at_call(arguments).assume(&self.path,true);
+                if path.possible(){
+                    let borrows=borrows.at_call(arguments);
+                    let initialized=initialized.iter().map(|fact|fact.at_call(arguments)).collect::<Vec<_>>();
+                    let read=output_initialization_read(&borrows,&initialized,&path);
+                    Requirement::Initialized{borrow:borrows,read,code:"B229",span}.check(&self.definition.source)?;
+                }
+                continue;
+            }
             let Access::Dataset{borrows,when,index,access,atomic}=access else {continue};
             let path=when.guard_at_call(arguments).assume(&self.path,true);
             if !path.possible(){continue;}

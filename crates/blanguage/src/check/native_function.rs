@@ -43,7 +43,7 @@ impl Module {
         self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
             access.iter().all(|access|match access {
                 view_contracts::Access::Resource{..}|view_contracts::Access::Memory{..}=>false,
-                view_contracts::Access::Dataset{..}=>true,
+                view_contracts::Access::Dataset{..}|view_contracts::Access::Initialized{..}=>true,
                 view_contracts::Access::Position{position,borrows,..}=>!position.writes||references(borrows),
             }))
     }
@@ -390,6 +390,7 @@ impl Builder<'_> {
         let mut layouts = residency::Layouts::new();
         let mut written = Vec::new();
         let mut written_data = Vec::new();
+        let mut written_stage = Vec::new();
         let mut held = Vec::new();
         let mut contents = BTreeMap::new();
         let mut resource_inputs=BTreeMap::new();
@@ -493,10 +494,10 @@ impl Builder<'_> {
                     }
                     env.insert(p.name.clone(), Binding::AtomicBorrow(place));
                 }
-                Argument::Dataset(view) if p.ty.dataset && matches!(p.access,Access::Read|Access::Atomic|Access::InOut) => {
+                Argument::Dataset(view) if p.ty.dataset && matches!(p.access,Access::Read|Access::Write|Access::Atomic|Access::InOut) => {
                     let binding=view.binding;
                     let access=view.access;
-                    if !matches!((p.access,access),(Access::Read,Access::Read|Access::InOut)|(Access::Atomic,Access::Atomic)|(Access::InOut,Access::InOut)) {
+                    if !matches!((p.access,access),(Access::Read,Access::Read|Access::InOut)|(Access::Write,Access::Write|Access::InOut)|(Access::Atomic,Access::Atomic)|(Access::InOut,Access::InOut)) {
                         return self.fail(span,"B224","CPU范围的dataset借用需要对应的实际来源权限");
                     }
                     let (field,element)=self.dataset_layout(&view);let element=element.clone();
@@ -508,6 +509,10 @@ impl Builder<'_> {
                     });
                     let zero=self.constant_with_origin(Scalar::U32,0,Some(origin.clone()));
                     let place=self.dataset_element(&view,zero.regs[0],false);
+                    if p.access==Access::Write {
+                        self.forget_output_initialization(&place,span)?;
+                        written_stage.push((index,place.clone()));
+                    }
                     let borrow=self.position_origin(&place,span)?.normalize();
                     memory_borrow.union(&borrow);
                     let address=self.reg(Scalar::U64);
@@ -540,7 +545,7 @@ impl Builder<'_> {
                     }
                     if p.access!=Access::Write{self.require_application_reference_initialized(&reference,span)?;}
                     self.native_dataset_shape(p,d,reference.count,span)?;
-                    if p.access.writes()&&outputs::declared(d,index){
+                    if p.access==Access::Write||p.access.writes()&&outputs::declared(d,index){
                         self.prepare_data_output(&mut reference.data,span)?;
                         self.forget_data_output(&reference,span)?;
                     }
@@ -553,7 +558,30 @@ impl Builder<'_> {
                         let frame=self.application_frame(span)?;
                         Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
                     }else{None};
-                    let value=self.application_reference_value(&reference,descriptor,span)?;
+                    let mut value=self.application_reference_value(&reference,descriptor,span)?;
+                    if p.access==Access::Write&&d.execution==crate::execution::Requirement::Invocation {
+                        let borrow=if reference.root.ty.components[0].0==Scalar::U64&&reference.projection.is_empty() {
+                            view::Borrow::source(view::Source::Parameter(reference.root.identity()))
+                        }else{
+                            let layout=address::Layout::of(reference.element_layout().1);
+                            let base=address::Layout::of(&reference.data.ty);
+                            let words=reference.words();
+                            let raw=reference.root.ty.components[0].0==Scalar::U64;
+                            let root=if raw {address::Root::Derived(view::Borrow::source(view::Source::Parameter(reference.root.identity())))}
+                                else{address::Root::Resource(view::resource_borrow(&reference.data))};
+                            let positions=if raw{Arc::from([])}else{
+                                let scope=reference.initialization.as_ref().unwrap();
+                                words.iter().map(|word|match(reference.length.minimum(),reference.length.maximum()){
+                                    (0,0)=>Position::Initialized,
+                                    (1,1)=>scope.application_word(Some(ownership::ApplicationIndex::Constant(0)),*word),
+                                    _=>scope.application_word(None,*word),
+                                }).collect()
+                            };
+                            address::Origin{root,base,words:words.into(),positions,writable:true,
+                                initialized:vec![false;layout.parts.len()].into(),layout}.normalize()
+                        };
+                        value.proof=value.proof.with_view_borrow(0,borrow);
+                    }
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow,ty:value.ty,values:value.regs});
                     env.insert(p.name.clone(),Binding::DataReference(reference));
@@ -773,6 +801,10 @@ impl Builder<'_> {
                 let Returned::OwnedValue(mut value)=result else{unreachable!()};proof=bounds::Proof::capture(&value.value);value.value.proof=proof.clone();self.assign_owned_place(&place,Returned::OwnedValue(value));
             }
             self.assign_owned_proof(&place, proof, false);
+            self.initialize_output(&place,&guards);
+        }
+        for (index,place) in written_stage {
+            let guards=outputs::guards(self,d,index,place.ty(),&output_inputs,output_value.as_ref())?;
             self.initialize_output(&place,&guards);
         }
         for (index,data) in written_data {
