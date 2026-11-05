@@ -513,6 +513,12 @@ impl Builder<'_> {
                     self.hold_binding(Binding::ApplicationData(data.clone()));
                     return self.application_index(application::DataReference::direct(data), index);
                 }
+                Some(returns::Returned::OwnedValue(value)) if value.value.ty.array.is_some() => {
+                    let owner = self.owned_value_binding(value, true);
+                    let place = owner.place().unwrap();
+                    self.hold_binding(Binding::OwnedValue(owner));
+                    return self.array_place(place, index);
+                }
                 returned => {
                     let Some(value) = self.returned_expression(returned, base.span)? else {
                         return Ok(None);
