@@ -472,6 +472,14 @@ Call.memory独立交接各MemoryAccess的alias与access，JSON为memory数组内
 
 内部Call::locals(true)收集两类可写Local范围：Reference的真实访问与地址别名，以及memory中的真实可写效果。值流据此停止沿用旧局部值；Read效果本身不撤销局部知识，Data绑定另按原数据存储规则处理。保守范围不证明运行覆盖全部分量、初始化失效或外部代码可信。当前SDK公开字段及所属ValueCode／Stage／FunctionBody的JSON已提供这些原事实，不保存逐轮locals.remove历史；原IR及查询结果按最后实际消费者释放，不接管代码或运行资源。调用合同生产的独立缺口、运行时地址／值、实际完成及B可编程观察入口仍分别负责，见[架构](Architecture.md#tool-7-3-1-3-6)。
 
+#### 循环的既有控制与可能局部写事实
+
+原InstKind::Loop { condition, test, body }及其所属IR查询直接交接循环结构，JSON为kind=Loop和同名字段。condition是代码序列，test是逻辑寄存器编号，body是循环体序列；不能把condition读成一个运行时bool，也不能把test编号当作已采集的判断结果。每次检查先执行condition并使用test，选中时进入body，再按回边继续；循环体为零次仍不等于条件代码未求值或没有副作用。
+
+Break离开最近的Loop，Continue转到该Loop的下一次检查；Exit只离开最近的Scope，不是通用的循环退出或整个并行实例终止。现有JSON以Break／Continue／Scope／Exit及实际嵌套结构表达，作用范围由原结构解释，不另建目标图。写事实沿同一原操作查询：StoreLocal给出逻辑槽，StoreLocalIndexed给出底层逻辑范围及字节寻址，StoreIndexed与可能写的Atomic给出原别名，Call同时给出引用访问和memory效果。类型／布局、可能范围、实际一次写宽度及运行命中分别理解；原子Load和只读调用效果不能当作局部写。
+
+当前Values::block对同一Loop的condition与body沿原visit／Inst::local_writes汇总可能写，并停止沿用对应入口旧值。该保守分析不证明循环必运行，也不固定为语言的永久优化范围；written及locals是原分析存活期内的临时状态，不保存为逐轮来源历史。SDK公开字段及原ValueCode／Stage／FunctionBody的JSON提供同一原IR，查询结果随实际消费者释放，不持有运行资源或复制控制权威。真实删除／替换来源、合流、按需分析现场观察、B可编程入口及运行时状态继续按各原任务交接，不由本节静态查询代替；最终IR也不冒称保存了此前全部内部分析过程。见[架构](Architecture.md#tool-7-3-1-3-7)。
+
 #### 应用入口与根Frame的生成来源
 
 原compile_application从本次真实选择的Instance构造Definition锚点，Application.body的generated_origin为application_entry；其原生Call以application_entry_call交接同一实际入口。它们属于原隐式包装，不额外创建FunctionBody或把根定义Span伪装成一次用户调用。普通源函数、集合值核及其他域包装的ValueCode.generated_origin不借用此入口，原source_origin／entry_origin保持各自语义。用完整应用IR查询观察body；函数选择仍返回实际B函数，不能把它当根包装。

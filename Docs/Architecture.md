@@ -525,7 +525,9 @@ StoreIndexed是写操作；Atomic保留明确operation、scalar、order、target
 
 <a id="tool-7-3-1-3-7"></a>
 
-**循环入口未来局部写失效的来源。** 输入／接点：原Loop condition／body.local_writes→Values::block288附近的原written与locals.retain→同一Loop及读取。输出：交接原循环入口为何不能沿用进入前局部值；零次、回边与退出沿原Flow，不把某次迭代定义交给循环后，不另做一次写扫描。 唯一事实与生命周期沿本父项的原拥有者，不改变原算法、权限及完成，不存旧IR或另建状态权威；只读SDK／JSON消费同一原编译结果，未交接材料如实为空。该独立范围待实现，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-7)。
+**循环的既有控制与可能局部写事实。** 必要输入／输出直接来自原Loop.condition／test／body和其中的实际操作；condition是每次检查的代码，test是逻辑结果寄存器，body是选中后执行的代码，循环体可为零次但条件代码仍按真实控制求值。Break、Continue及Scope／Exit保持各自结构，不把退出一层当作退出全部循环。原Inst／ValueCode／Stage／FunctionBody及现有JSON已经交接这些结构、源材料、写操作、参数访问与别名，不从静态存在推定实际执行次数、命中路径或写入字节。
+
+当前值流沿原visit递归读取condition与body内的Scope／If／Loop，Inst::local_writes消费StoreLocal、StoreLocalIndexed、StoreIndexed别名、可能写的Atomic及Call::locals(true)，在原分析入口停止沿用相应局部旧值。该written集合与locals维护是本次临时分析，不是另一份程序状态或必须持久保留的来源；查询直接消费原IR，不新增写扫描、循环版本表、控制图或逐轮缓存历史，内部分析算法可演进。原Flow保持零次、回边、break／continue及Scope退出规则，不把单次迭代值交给循环后；具体合流仍归.3.8，真实删除／替换操作仍沿各变换叶交接，不拿最终IR反造此前全部分析过程。事实归原IR及本次编译结果，临时分析归原活跃所有者，最后实际消费者后分别释放，不拥有运行资源或改变优化、DCE、访问、完成。B可编程入口、原分析现场按需观察及运行状态仍按原工具任务推进；本叶以既有静态事实覆盖结束调查，见[记录](FixedIssues.md#c-021-7-9-7-3-1-3-7)。
 
 <a id="tool-7-3-1-3-8"></a>
 
