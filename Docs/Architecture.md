@@ -493,7 +493,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-3-1-3-3"></a>
 
-**归约降层后外部输入读取替代的来源。** 输入／接点：原with_prelude的公共入口／三个函数体→invariant::prepare_reduction及ReductionKernel.source／projected／initial／left／right／result→原Kernel Stage。输出：交接新降层值流中直接指向实际内核输入的读取，保留角色与真实拥有者；不得把无定义Reg挂在假Inst或兄弟函数体，不用本叶代替.8统一值提取来源。 唯一事实与生命周期沿本父项的原拥有者，不改变原算法、权限及完成，不存旧IR或另建状态权威；只读SDK／JSON消费同一原编译结果，未交接材料如实为空。该独立范围待实现，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+**归约降层输入与读取来源。** 原CustomReduction::kernel克隆Stage，并保留Operation所持的原project／identity／combine ValueCode；各值函数的既有输入来源沿原ValueCode持有，不另存一份Reg关联。原内核角色／分区查询与降层二次传播新事件分为下列两个独立范围，原统一纯值提取仍归.8，不把原函数材料称为新发生的消除。父项不占源码，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+
+<a id="tool-7-3-1-3-3-1"></a>
+
+**原归约内核角色与输入来源查询。** 输入是原CustomReduction::kernel返回的ReductionKernel，输出直接借用同一值的stage、invariants、invariant_end／initialize_end／project_end与source／projected／initial／left／right／result，面向只读SDK与JSON。Stage.operation仍表达源算法及其原值函数材料，Stage.code是本次降层后的代码；分区末尾是该code的零基排他指令下标，invariants是原提取结果，六向量含该stage.registers的逻辑Reg，均不冒称物理寄存器、机器地址、执行次数或最终ISA。调用者选择的project／identity来自本次kernel调用，未选的原函数仍可在operation中出现，不能仅凭存在推定执行。输入读取来源沿原ValueCode.generated_origin的InputReadForward.input_index查询，再消费本次实际角色向量；source对应被选择project的输入，无project时沿right，combine输入按left／right分量排列，projected／initial／result是输出关系。查询不运行编译、优化、后端或目标程序，不复制IR权威或新增映射、调度、资源和运行材料。内核及其共享来源在最后实际IR消费者后释放，脱离源文件仍保持已取得快照；字段未知或原函数未参与不补造事实。ReductionKernel::ir_json已直接交接这些原字段，尚待确切构建及SDK实际消费，见[台账](Issues.md#c-021-7-9-7-3-1-3-3-1)。
+
+<a id="tool-7-3-1-3-3-2"></a>
+
+**降层二次传播新增外部输入读取来源。** 原with_prelude在公共入口／各值函数体内运行原值流；若本次确实又消除了直接指向真实内核输入的读取，来源须由该真实输入所属原ValueCode／内核交接，不挂到假Inst或兄弟函数，也不拿值函数已有来源替代该事件。先依据真实生产及消费者调查新事件，未采集、没有发生和未支持分别表达；当前没有交接其临时剩余事实，不据此宣称已有新事件、已支持或永久不会发生。唯一事实与生命周期沿原拥有者，不存旧IR、不改变原算法、权限或完成，不新增状态权威；该独立范围待调查，见[台账](Issues.md#c-021-7-9-7-3-1-3-3-2)。
 
 <a id="tool-7-3-1-3-4"></a>
 

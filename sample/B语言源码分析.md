@@ -2121,6 +2121,28 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 有些源函数最终是“输入即输出、没有指令”。这时LocalInputForward只引用原ValueCode.inputs的零基位置及被删除读取，不伪造定义Inst；原entry_origin和根生成材料分别保持。Frame前缀在原finalize真正移除时，来源引用也随同调整，旧共享快照保持，零分量参数不制造输入。语法、数值、原控制与失效不改变，必要运行编码不携带这些compiler材料；六类降层输入、失效及合流事实仍按原独立职责推进，不把读取替代当作完整内存历史或运行观察。这些编译工具当前仍由Rust实现，B接管与自举分别记录。
 
+归约在后端降层时还会组合单位元、投影和合并函数。内核保留原Stage.operation中的值函数及其来源，Stage.code则已经是本次降层代码；原六角色向量和分区末尾描述它们实际如何接在一起。ReductionKernel::ir_json直接编码这些已有事实，AI无需从Stage JSON缺失的字段猜映射，也不增加一份拥有表。末尾是code的零基排他指令下标，向量是内核逻辑Reg；原输入来源的序号仍指向原ValueCode.inputs，不能把两套编号混成物理寄存器。调用者选择的project／identity、实际空分区和未采集的新传播事件分别理解，不把原函数仍有材料写成它又执行了一次。
+
+源码节选：`crates/blanguage/src/ir/inspect.rs:271`。
+
+```rust
+impl ReductionKernel {
+    /// Serializes this lowered kernel; operation retains the original value functions.
+    pub fn ir_json(&self) -> String {
+        node("reduction_kernel_ir", &[
+            ("stage", self.stage.ir_json()),
+            ("invariant_end", number(self.invariant_end)),
+            ("initialize_end", number(self.initialize_end)),
+            ("project_end", number(self.project_end)),
+            ("invariants", array(self.invariants.iter().map(number))),
+            ("source", numbers(&self.source)), ("projected", numbers(&self.projected)),
+            ("initial", numbers(&self.initial)), ("left", numbers(&self.left)),
+            ("right", numbers(&self.right)), ("result", numbers(&self.result)),
+        ])
+    }
+}
+```
+
 ### 11.4 选择表达式不是总能两边都先算
 
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。

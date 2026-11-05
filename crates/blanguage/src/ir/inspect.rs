@@ -268,6 +268,22 @@ impl Stage {
     }
 }
 #[cfg(feature = "compiler")]
+impl ReductionKernel {
+    /// Serializes this lowered kernel; operation retains the original value functions.
+    pub fn ir_json(&self) -> String {
+        node("reduction_kernel_ir", &[
+            ("stage", self.stage.ir_json()),
+            ("invariant_end", number(self.invariant_end)),
+            ("initialize_end", number(self.initialize_end)),
+            ("project_end", number(self.project_end)),
+            ("invariants", array(self.invariants.iter().map(number))),
+            ("source", numbers(&self.source)), ("projected", numbers(&self.projected)),
+            ("initial", numbers(&self.initial)), ("left", numbers(&self.left)),
+            ("right", numbers(&self.right)), ("result", numbers(&self.result)),
+        ])
+    }
+}
+#[cfg(feature = "compiler")]
 impl Program {
     /// Borrows the actual compiler result. No optimization, lowering or codegen is performed.
     pub fn ir_json(&self) -> String {

@@ -422,6 +422,14 @@ CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Fram
 
 两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。新降层归约外部输入、写失效及控制合流的完整事实仍沿.3.3至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。见[完整架构](Architecture.md#tool-7-3-1-3)、[普通定义范围](FixedIssues.md#c-021-7-9-7-3-1-3-1)和[实际输入范围](FixedIssues.md#c-021-7-9-7-3-1-3-2)。
 
+#### 降层归约内核的角色与分区查询
+
+compiler SDK的CustomReduction::kernel(stage,project,identity)按本次选择产生原ReductionKernel；ReductionKernel::ir_json()只序列化这个实际结果，kind为reduction_kernel_ir。stage为原Stage::ir_json()，invariant_end、initialize_end和project_end为stage.code中的零基排他指令下标；依次划分公共入口、单位元、投影和合并四段，空段允许相邻末尾相等。invariants直接列出原prepare_reduction提取的逻辑Reg，不推定执行次数或最终机器存储。
+
+source、projected、initial、left、right和result直接消费同一内核的六角色列表，元素引用本次stage.registers。它们已经过原值流binding；projected／initial／result是相应输出，不是另一份外部输入表。stage.operation仍含原源算法及project／identity／combine ValueCode，stage.code则是本次降层的代码，两者阶段不同。已选project的实际输入与source逐分量对应；未选project时source沿right，combine输入按left后right分量对应。原InputReadForward.input_index继续引用原ValueCode.inputs，来源沿该ValueCode.generated_origin取得；不把原函数Reg直接当内核Reg。调用者保留本次project／identity选择，operation中出现某个原函数不证明它参与本次执行，关闭identity时initial为空，关闭project时不补造投影调用。
+
+查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。未采集的二次传播新读取事件不由已有输入来源代替，统一提取变换原因也不由invariants列表代替。见[架构](Architecture.md#tool-7-3-1-3-3)及[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+
 #### 应用入口与根Frame的生成来源
 
 原compile_application从本次真实选择的Instance构造Definition锚点，Application.body的generated_origin为application_entry；其原生Call以application_entry_call交接同一实际入口。它们属于原隐式包装，不额外创建FunctionBody或把根定义Span伪装成一次用户调用。普通源函数、集合值核及其他域包装的ValueCode.generated_origin不借用此入口，原source_origin／entry_origin保持各自语义。用完整应用IR查询观察body；函数选择仍返回实际B函数，不能把它当根包装。
