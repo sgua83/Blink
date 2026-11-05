@@ -622,6 +622,12 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let mut truth = None;
         match &expr.kind {
             ExprKind::Bool(value) => truth = Some(*value),
+            ExprKind::Name(name) if self.builder.is_some_and(|builder|!builder.mutable_names.contains(name)) => {
+                if let Some((ty,proof,_))=self.input_snapshot(expr,self.bindings.len())?
+                    && ty==Ty::scalar(Scalar::Bool) {
+                    truth=proof.known_value(&ty).map(|bits|bits[0]!=0);
+                }
+            }
             ExprKind::Invoke(callee, args) => {
                 let ty = self.expression(callee)?.ok_or_else(|| Diagnostic {
                     source: self.definition.source.clone(), span: callee.span, code: "B263",
