@@ -211,21 +211,43 @@ pub enum GenerationReason {
     DatasetCallArgument,
     DatasetBorrowStrideCast,
     ArrayParameterStore,
+    IntegerDivisionPair,
+}
+/// Only the immutable origin facts of a consumed operation, never its IR or values.
+#[derive(Clone, Debug)]
+pub struct OperationOrigin {
+    pub(crate) source_site: Option<std::sync::Arc<SourceSite>>,
+    pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,
+}
+impl OperationOrigin {
+    pub(crate) fn from_instruction(value: &super::Inst) -> Self {
+        Self { source_site: value.source_site.clone(), generated_origin: value.generated_origin.clone() }
+    }
+    pub fn source_site(&self) -> Option<&SourceSite> { self.source_site.as_deref() }
+    pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
+    pub fn ir_json(&self) -> String {
+        format!("{{\"kind\":\"operation_origin\",\"source_site\":{},\"generated_origin\":{}}}",
+            self.source_site().map_or_else(|| "null".into(), SourceSite::ir_json),
+            self.generated_origin().map_or_else(|| "null".into(), GeneratedOrigin::ir_json))
+    }
 }
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
     Syntax(std::sync::Arc<SourceSite>),
     Definition { origin: Option<std::sync::Arc<SourceOrigin>>, instance: std::sync::Arc<str> },
+    IntegerDivisionPair { quotient: OperationOrigin, remainder: OperationOrigin },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref() } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance) } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
             Self::Definition { origin, instance } => format!("{{\"kind\":\"definition_instance\",\"definition\":{},\"instance\":{}}}",
                 origin.as_deref().map_or_else(|| "null".into(), SourceOrigin::ir_json), text(instance)),
+            Self::IntegerDivisionPair { quotient, remainder } => format!("{{\"kind\":\"integer_division_inputs\",\"quotient\":{},\"remainder\":{}}}",
+                quotient.ir_json(), remainder.ir_json()),
         }
     }
 }
@@ -236,7 +258,7 @@ pub struct GeneratedOrigin {
 }
 impl GeneratedOrigin {
     pub fn reason(&self) -> GenerationReason { self.reason }
-    /// Returns only an actual syntax trigger; implicit entry points use a definition anchor.
+    /// Returns a single syntax trigger; definitions and multi-input rewrites use their anchor.
     pub fn trigger(&self) -> Option<&SourceSite> { self.trigger.as_ref().and_then(GenerationAnchor::syntax) }
     pub fn anchor(&self) -> Option<&GenerationAnchor> { self.trigger.as_ref() }
     pub fn ir_json(&self) -> String {
@@ -286,6 +308,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetCallArgument => "dataset_call_argument",
             GenerationReason::DatasetBorrowStrideCast => "dataset_borrow_stride_cast",
             GenerationReason::ArrayParameterStore => "array_parameter_store",
+            GenerationReason::IntegerDivisionPair => "integer_division_pair",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

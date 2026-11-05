@@ -455,9 +455,9 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-3-1-1"></a>
 
-**整数商余配对合并的来源。** 输入：原相同src／IntegerDivisor、同一直线块的Quotient与Remainder及各自来源。唯一生产／消费接点：value_flow.rs#14::Values::block107至153，原142至149的Inst::new覆盖，事实归原合并后的IntegerDivide Inst；输出为本项真实变换的来源关系或明确缺失。两路按quotient／remainder语义角色交接实际输入来源，不按先后顺序挑一条；逆序配对及已有生成材料同样保持。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前两个真实输入函数最终Both的source_site／generated_origin均为空，单独商／余数对照有来源；基线54已复现，算法输出仍正确。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-1)。
+**整数商余配对合并的来源。** 原Values::block在同一直线块对相同src／IntegerDivisor的Quotient与Remainder实际配对时，沿原输出位置构造IntegerDivide，并复用Inst.generated_origin交接IntegerDivisionPair。GenerationAnchor::IntegerDivisionPair的quotient／remainder各持OperationOrigin，只不可变共享该输入原source_site／generated_origin；逆序输入仍按商／余数语义角色交接，不按先后顺序选一个来源。源文本、实例、内联及域路径沿原SourceSite保持，缺失为null；新节点source_site为空，单源trigger／syntax／origin／instance不任取一路，多输入从anchor分别读取。SDK借用及IR JSON消费同一事实，JSON锚点kind为integer_division_inputs，两路kind为operation_origin。
 
-原商余配对拟直接复用Inst.generated_origin：IntegerDivisionPair的原实际配对条件与输出仍归InstKind，GenerationAnchor的同名两输入按quotient／remainder角色保存OperationOrigin；OperationOrigin只共享输入原source_site／generated_origin，已有材料可继续引用，不保存输入IR或另一图。新节点source_site为空，多输入不由单一syntax／origin／instance getter任取其一；查询分别取得两路已知材料，未知保持空，后续DCE删除该节点时按原生命周期释放。本材料表示这一真实合并，不代替重复表达式消除、结果裁剪、编译全过程历史或最终机器映射。该方案待本叶实施及实际验证，不写成已交付。
+唯一所有者是原合并后的Inst，材料随原IR／模块／SDK快照共享及最后消费者释放；只保留不可变来源，不保留输入Inst、旧IR、AST／World或另一图／注册表，不拥有运行资源。原src／divisor、结果寄存器、配对键、位置和控制边界不变；关闭compiler没有这些类型及代码，必要对象／执行编码不带材料。后续DCE裁剪为单结果时，已有材料仍描述之前实际发生的配对，删除节点则随原生命周期释放；它不证明当前仍有两个结果、两次运行操作或完整消除历史。重复表达式复用、结果裁剪的完整关系、机器映射仍归原独立叶，不为观察保活或冻结优化。现行接口见[语言规范](BLanguage.md#整数商余配对合并的来源)，实现与实际验证范围见[闭合台账](FixedIssues.md#c-021-7-9-7-3-1-1)。
 
 <a id="tool-7-3-1-2"></a>
 

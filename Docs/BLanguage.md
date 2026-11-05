@@ -322,7 +322,7 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 #### 原IR生成原因与触发语法
 
-compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`及`ValueCode::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir和value_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
+compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`及`ValueCode::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir和value_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
 GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
@@ -380,6 +380,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetCallArgument | dataset_call_argument | 原native_call将Stage Dataset准备为实际借用实参的四类指令 |
 | DatasetBorrowStrideCast | dataset_borrow_stride_cast | 原application_reference_value将步长拓宽为CPU借用描述符要求的U64 Cast |
 | ArrayParameterStore | array_parameter_store | 原值形参数组／含数组聚合物化到局部存储的StoreLocal |
+| IntegerDivisionPair | integer_division_pair | 原同一直线块整数商／余数实际配对合并 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -388,6 +389,14 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 Inst::new继续构造没有来源材料的普通节点；原直接发射、原生域Call及其他Stage构造按其真实职责保留已有source_site／operation_source，尚未交接的生成原因不猜补。generated_origin为null只说明没有这份分类材料，不证明不是生成代码、已经消除或机器范围无来源。程序入口／根Frame、dataset分配、生成函数初始化、新绑定／重新赋值槽位、最终存储释放、拥有元素逆序清理、静态F、条件及活动变体清理和resize填充值暂存见下文；实际扩容Call来源见下文；寻址、参数、传输和发起仍归.2.4.5.5至.8，原生域包装归.2.4.6，不以已交接分类冒称全部框架生成。
 
 材料沿原Inst／Stage／ValueCode不可变共享、克隆／移动及最后IR消费者释放，不保留AST／World、注册表、拥有表、执行状态或第二调用图；原Source文本及上下文共享，查询不重读后续磁盘文件，只有显式查询承担摘要／行列／JSON成本。不改变IR操作、寄存器、访问、计数、数值、调度、ABI或完成，不进入必要执行编码。优化器原节点保留／克隆继续携带材料；新构造、融合、重写及消除的完整关系仍归.7.3，不为来源保活操作、冻结优化或把单一保留材料当作完整多来源。
+
+#### 整数商余配对合并的来源
+
+原Values::block把同src／IntegerDivisor的Quotient与Remainder配对后，合并Inst的generated_origin.reason为integer_division_pair，Rust枚举为GenerationReason::IntegerDivisionPair。anchor()取得GenerationAnchor::IntegerDivisionPair { quotient, remainder }；每一路OperationOrigin提供source_site()、generated_origin()及ir_json()，只借用或序列化原输入已取得的来源。JSON锚点kind为integer_division_inputs，两个成员各为kind=operation_origin、source_site及generated_origin，未知材料为null。输入先余数后商时，成员仍按商／余数角色排列；原生成来源若存在也按原不可变材料共享，不丢弃或猜补。
+
+合并节点没有唯一直接语法来源，其source_site()为空；该多输入锚点的syntax()／origin()／instance()及外层trigger()均为空，不任取一路代表完整变换。两路SourceSite保留自己的真实定义快照、实际实例、inlined_at及domain_path。当前解析器对二元除法／余数Expr.span通常只覆盖左操作数起始token，例如value，不扩大为整段value/divisor或value%divisor；查询使用真实UTF8字节范围及原快照，不重读之后改写或移走的磁盘源码。
+
+材料归原Inst并随原IR／Stage克隆、模块和SDK编译结果在最后消费者后释放，只共享来源，不保留旧输入Inst／IR、AST／World、运行状态或额外图。后续DCE把Both裁为单结果时，材料仍表示先前发生的真实配对，不声称仍有两个输出；整个节点删除则按原生命周期释放。配对条件、寄存器／结果、数值和控制边界不变，compiler之外没有本类型／材料，必要对象与运行编码不变。其他复用、重写／消除及机器范围仍按原叶推进，不把本项当作完整优化历史。见[架构职责](Architecture.md#tool-7-3-1-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-1)。
 
 #### 应用入口与根Frame的生成来源
 

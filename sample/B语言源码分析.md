@@ -1863,6 +1863,26 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 `value_flow.rs` 处理局部值传播，`selection.rs` 在可安全表达时简化选择，`invariant.rs` 处理集合计算中可外提的统一部分。这里没有“只要更短就合法”的规则，必须保持源语言的求值与可见效果。
 
+商与余数也可以共享一次除法。`Values::block`在原src和除数相同、原直线块允许配对时，按quotient／remainder角色保留两个输入的来源；先写余数再写商也不会颠倒身份。合并指令的generated_origin说明integer_division_pair，单一source_site为空，AI从多输入锚点分别读取两条真实来源。
+
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:150`。
+
+```rust
+                        let old = OperationOrigin::from_instruction(&out[position]);
+                        let current = OperationOrigin::from_instruction(&inst);
+                        let (quotient, remainder) = if matches!(previous, IntegerDivisionResult::Quotient(_)) {
+                            (old, current)
+                        } else {
+                            (current, old)
+                        };
+                        out[position] = Inst::generated(kind, std::sync::Arc::new(GeneratedOrigin {
+                            reason: GenerationReason::IntegerDivisionPair,
+                            trigger: Some(GenerationAnchor::IntegerDivisionPair { quotient, remainder }),
+                        }));
+```
+
+这里只共享原source_site／generated_origin，不保存旧输入IR或运行状态。后续死代码消除可能把Both裁为单结果；保留的材料仍说明此前真实发生的配对，不表示两个结果都在运行时被消费。该局部关系不代替所有值复用、删除历史或最终机器指令映射；其他缺口按原台账推进，不为观察保活操作。编译器和本查询当前仍由Rust实现，B接管与自举另按原职责记录。
+
 ### 11.4 选择表达式不是总能两边都先算
 
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。

@@ -139,14 +139,25 @@ impl Values {
                         IntegerDivisionResult::Quotient(q),
                     ) = (previous, retained)
                     {
-                        out[position] = Inst::new(InstKind::IntegerDivide {
+                        let kind = InstKind::IntegerDivide {
                             result: IntegerDivisionResult::Both {
                                 quotient: q,
                                 remainder: r,
                             },
                             src: *src,
                             divisor: *divisor,
-                        });
+                        };
+                        let old = OperationOrigin::from_instruction(&out[position]);
+                        let current = OperationOrigin::from_instruction(&inst);
+                        let (quotient, remainder) = if matches!(previous, IntegerDivisionResult::Quotient(_)) {
+                            (old, current)
+                        } else {
+                            (current, old)
+                        };
+                        out[position] = Inst::generated(kind, std::sync::Arc::new(GeneratedOrigin {
+                            reason: GenerationReason::IntegerDivisionPair,
+                            trigger: Some(GenerationAnchor::IntegerDivisionPair { quotient, remainder }),
+                        }));
                         continue;
                     }
                 }
