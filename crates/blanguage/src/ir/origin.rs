@@ -216,7 +216,7 @@ pub enum GenerationReason {
     LocalReadForward,
     IndexedStoreReadForward,
     IndexedReadReuse,
-    UnusedValueResults,
+    UnusedOperations,
     EmptyMapRemoval,
     IntegerDivisionResultPrune,
 }
@@ -329,19 +329,32 @@ impl ReductionInputReadForward {
     }
 }
 #[derive(Clone, Debug)]
-pub struct EliminatedValue {
-    pub(crate) result_types: Vec<super::Scalar>,
-    pub(crate) integer_division_results: Option<Vec<super::IntegerDivisionOp>>,
-    pub(crate) origin: OperationOrigin,
+pub enum EliminatedOperation {
+    ValueResults {
+        result_types: Vec<super::Scalar>,
+        integer_division_results: Option<Vec<super::IntegerDivisionOp>>,
+        origin: OperationOrigin,
+    },
+    DirectPrivateWrite { scalar: super::Scalar, origin: OperationOrigin },
 }
-impl EliminatedValue {
-    pub fn result_types(&self) -> &[super::Scalar] { &self.result_types }
-    pub fn integer_division_results(&self) -> Option<&[super::IntegerDivisionOp]> { self.integer_division_results.as_deref() }
-    pub fn origin(&self) -> &OperationOrigin { &self.origin }
+impl EliminatedOperation {
+    pub fn result_types(&self) -> Option<&[super::Scalar]> {
+        match self { Self::ValueResults { result_types, .. } => Some(result_types), Self::DirectPrivateWrite { .. } => None }
+    }
+    pub fn integer_division_results(&self) -> Option<&[super::IntegerDivisionOp]> {
+        match self { Self::ValueResults { integer_division_results, .. } => integer_division_results.as_deref(), Self::DirectPrivateWrite { .. } => None }
+    }
+    pub fn origin(&self) -> &OperationOrigin {
+        match self { Self::ValueResults { origin, .. } | Self::DirectPrivateWrite { origin, .. } => origin }
+    }
     pub fn ir_json(&self) -> String {
-        format!("{{\"kind\":\"eliminated_value\",\"result_types\":[{}],\"integer_division_results\":{},\"origin\":{}}}",
-            self.result_types.iter().map(|value| text(&format!("{value:?}"))).collect::<Vec<_>>().join(","),
-            self.integer_division_results().map_or_else(|| "null".into(), division_results_json), self.origin.ir_json())
+        match self {
+            Self::ValueResults { result_types, integer_division_results, origin } => format!("{{\"kind\":\"eliminated_value\",\"result_types\":[{}],\"integer_division_results\":{},\"origin\":{}}}",
+                result_types.iter().map(|value| text(&format!("{value:?}"))).collect::<Vec<_>>().join(","),
+                integer_division_results.as_deref().map_or_else(|| "null".into(), division_results_json), origin.ir_json()),
+            Self::DirectPrivateWrite { scalar, origin } => format!("{{\"kind\":\"eliminated_private_write\",\"target\":\"direct\",\"scalar\":{},\"origin\":{}}}",
+                text(&format!("{scalar:?}")), origin.ir_json()),
+        }
     }
 }
 fn division_results_json(results: &[super::IntegerDivisionOp]) -> String {
@@ -360,14 +373,14 @@ pub enum GenerationAnchor {
     IndexedReadReuse { retained: OperationOrigin, reused: Vec<OperationOrigin> },
     LocalInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<InputReadForward> },
     ReductionInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<ReductionInputReadForward> },
-    EliminatedValues { retained: Option<std::sync::Arc<GeneratedOrigin>>, values: Vec<EliminatedValue> },
+    EliminatedOperations { retained: Option<std::sync::Arc<GeneratedOrigin>>, operations: Vec<EliminatedOperation> },
     EmptyMapRemoval { retained: Option<std::sync::Arc<GeneratedOrigin>>, stages: Vec<OperationOrigin> },
     IntegerDivisionResultPrune { retained: OperationOrigin, input_results: Vec<super::IntegerDivisionOp>, output_results: Vec<super::IntegerDivisionOp> },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedValues { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedValues { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedValues { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
@@ -387,8 +400,8 @@ impl GenerationAnchor {
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(InputReadForward::ir_json).collect::<Vec<_>>().join(",")),
             Self::ReductionInputForward { retained, inputs } => format!("{{\"kind\":\"reduction_input_forward\",\"component_index_base\":0,\"retained\":{},\"inputs\":[{}]}}",
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(ReductionInputReadForward::ir_json).collect::<Vec<_>>().join(",")),
-            Self::EliminatedValues { retained, values } => format!("{{\"kind\":\"eliminated_values\",\"retained\":{},\"values\":[{}]}}",
-                retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), values.iter().map(EliminatedValue::ir_json).collect::<Vec<_>>().join(",")),
+            Self::EliminatedOperations { retained, operations } => format!("{{\"kind\":\"eliminated_operations\",\"retained\":{},\"operations\":[{}]}}",
+                retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), operations.iter().map(EliminatedOperation::ir_json).collect::<Vec<_>>().join(",")),
             Self::EmptyMapRemoval { retained, stages } => format!("{{\"kind\":\"empty_map_removal\",\"retained\":{},\"stages\":[{}]}}",
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), stages.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(",")),
             Self::IntegerDivisionResultPrune { retained, input_results, output_results } => format!("{{\"kind\":\"integer_division_result_prune\",\"retained\":{},\"input_results\":{},\"output_results\":{}}}",
@@ -402,12 +415,12 @@ pub struct GeneratedOrigin {
     pub(crate) trigger: Option<GenerationAnchor>,
 }
 impl GeneratedOrigin {
-    pub(crate) fn eliminated_values(origin: &mut Option<std::sync::Arc<Self>>, values: Vec<EliminatedValue>) {
-        if !values.is_empty() {
+    pub(crate) fn eliminated_operations(origin: &mut Option<std::sync::Arc<Self>>, operations: Vec<EliminatedOperation>) {
+        if !operations.is_empty() {
             let retained = origin.take();
             *origin = Some(std::sync::Arc::new(Self {
-                reason: GenerationReason::UnusedValueResults,
-                trigger: Some(GenerationAnchor::EliminatedValues { retained, values }),
+                reason: GenerationReason::UnusedOperations,
+                trigger: Some(GenerationAnchor::EliminatedOperations { retained, operations }),
             }));
         }
     }
@@ -422,7 +435,7 @@ impl GeneratedOrigin {
                 });
                 if inputs.is_empty() { *origin = retained.take(); return; }
             }
-            Some(GenerationAnchor::EliminatedValues { retained, .. }) => Self::remove_input_prefix(retained, count),
+            Some(GenerationAnchor::EliminatedOperations { retained, .. }) => Self::remove_input_prefix(retained, count),
             _ => {}
         }
         *origin = Some(shared);
@@ -483,7 +496,7 @@ impl GeneratedOrigin {
             GenerationReason::LocalReadForward => "local_read_forward",
             GenerationReason::IndexedStoreReadForward => "indexed_store_read_forward",
             GenerationReason::IndexedReadReuse => "indexed_read_reuse",
-            GenerationReason::UnusedValueResults => "unused_value_results",
+            GenerationReason::UnusedOperations => "unused_operations",
             GenerationReason::EmptyMapRemoval => "empty_map_removal",
             GenerationReason::IntegerDivisionResultPrune => "integer_division_result_prune",
         };

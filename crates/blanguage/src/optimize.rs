@@ -100,7 +100,7 @@ fn optimize_stage(stage: &mut Stage) {
             &BTreeSet::new(),
             &stage.registers,
         );
-        GeneratedOrigin::eliminated_values(&mut stage.generated_origin, removed);
+        GeneratedOrigin::eliminated_operations(&mut stage.generated_origin, removed);
         let preserve_scope = !stage.subgroup_operations().is_empty();
         let words = stage.storage_words();
         let mut changed = false;
@@ -234,7 +234,7 @@ pub(crate) fn value_code(value: &mut ValueCode) {
         &BTreeSet::new(),
         &value.registers,
     );
-    GeneratedOrigin::eliminated_values(&mut value.generated_origin, removed);
+    GeneratedOrigin::eliminated_operations(&mut value.generated_origin, removed);
     let mut used: BTreeSet<_> = value.inputs.iter().chain(&value.outputs).copied().collect();
     let mut slots = BTreeSet::new();
     visit(&value.code, &mut |i| {
@@ -490,7 +490,7 @@ fn dce(
     continue_live: &BTreeSet<PrivateSlot>,
     exit_live: &BTreeSet<PrivateSlot>,
     registers: &[Scalar],
-) -> Vec<EliminatedValue> {
+) -> Vec<EliminatedOperation> {
     use PrivateSlot::{Local, Register};
     let mut out = Vec::new();
     let mut removed = Vec::new();
@@ -505,7 +505,7 @@ fn dce(
                 .remainder()
                 .filter(|r| needed.contains(&Register(*r)));
             let Some(retained) = IntegerDivisionResult::from_parts(q, r) else {
-                removed.push(EliminatedValue {
+                removed.push(EliminatedOperation::ValueResults {
                     result_types: original.outputs().map(|(_, reg)| registers[reg]).collect(),
                     integer_division_results: Some(original.outputs().map(|(result, _)| result).collect()),
                     origin: OperationOrigin::from_instruction(&i),
@@ -533,7 +533,7 @@ fn dce(
             if results.peek().is_some()
                 && !results.any(|r| needed.contains(&Register(r)))
             {
-                removed.push(EliminatedValue {
+                removed.push(EliminatedOperation::ValueResults {
                     result_types: i.results().map(|reg| registers[reg]).collect(),
                     integer_division_results: None,
                     origin: OperationOrigin::from_instruction(&i),
@@ -541,8 +541,15 @@ fn dce(
                 continue;
             }
         }
-        if matches!(&(i).kind, InstKind::StoreLocal(slot, _) if !needed.contains(&Local(*slot))) {
-            continue;
+        match &i.kind {
+            InstKind::StoreLocal(slot, value) if !needed.contains(&Local(*slot)) => {
+                removed.push(EliminatedOperation::DirectPrivateWrite {
+                    scalar: registers[*value],
+                    origin: OperationOrigin::from_instruction(&i),
+                });
+                continue;
+            }
+            _ => {}
         }
         if matches!(&(i).kind, InstKind::StoreLocalIndexed{base,len,..} if !(*base..*base+*len).any(|s|needed.contains(&Local(s))))
         {
