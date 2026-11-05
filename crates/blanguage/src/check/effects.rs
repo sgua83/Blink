@@ -15,13 +15,15 @@ enum Write<'e> {
     },
     External(&'e Expr),
     Call(&'e Expr),
+    Generator(&'e Expr),
 }
 
 // Immutable output of the existing loop write preanalysis, not memory state.
 #[derive(Default)]
 pub(super) struct LoopWrites {
     pub locals: BTreeSet<usize>,
-    pub storage: bool,
+    pub storage: BTreeSet<Reg>,
+    pub unknown_storage: bool,
     pub external: bool,
 }
 
@@ -156,7 +158,7 @@ impl Builder<'_> {
                 if !writes
                     .iter()
                     .any(|write| match write {
-                        Write::External(_)=>true,
+                        Write::External(_)|Write::Generator(_)=>true,
                         Write::Position{contents:false,place,..}=>assigned_root(place)==Some(name)||address_write(place),
                         _=>false,
                     }) =>
@@ -272,7 +274,7 @@ impl Builder<'_> {
                 for write in writes {
                     let components = match *write {
                         Write::Call(_)=>Vec::new(),
-                        Write::External(_)=>vec![(0..owner.ty().components.len()).collect()],
+                        Write::External(_)|Write::Generator(_)=>vec![(0..owner.ty().components.len()).collect()],
                         Write::Position{place,contents,iterator,..}=>{
                             let projection=if contents {self.application_write_projection(place,&owner)}
                                 else {self.written_projection(place,name,&owner,iterator,writes)?};
@@ -286,7 +288,7 @@ impl Builder<'_> {
             }
         }
         let raw=writes.iter().any(|write|match write {
-            Write::External(_)=>true,
+            Write::External(_)|Write::Generator(_)=>true,
             Write::Position{contents:false,place,..}=>address_write(place),
             _=>false,
         });
@@ -330,16 +332,42 @@ impl Builder<'_> {
         if let Some(condition)=condition {
             expression_writes(self, condition, &mut |place| writes.push(place))?;
         }
+        let mut normalized=Vec::new();
+        for write in writes {
+            let write=if let Write::Generator(factory)=write {
+                if let Some(instance)=Scope::current(self).factory_instance(factory)? {
+                    let function=&instance.definition.function;
+                    if !function.c_abi&&function.kind==FunctionKind::Value&&function.target==Target::Cpu
+                        &&function.params.len()==1&&function.params[0].access==Access::Value {
+                        self.native_declaration(&instance)?;
+                        let definition=&instance.definition;
+                        let result=self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?;
+                        if !result.owns_resources()&&self.functions.writes_only_references(&instance.name){continue;}
+                    }
+                }
+                Write::External(factory)
+            }else{write};
+            normalized.push(write);
+        }
+        let writes=normalized;
         let mut effect=LoopWrites::default();
         for write in &writes {
             match *write {
-                Write::External(_)|Write::Call(_)=>{effect.storage=true;effect.external=true;},
+                Write::External(_)|Write::Call(_)|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Position{place,contents,iterator,..}=>{
-                    if address_write(place) {effect.storage=true;effect.external=true;continue;}
-                    if contents||iterator.is_some() {effect.storage=true;continue;}
-                    let Some(name)=assigned_root(place) else {effect.storage=true;continue;};
+                    if address_write(place) {effect.unknown_storage=true;effect.external=true;continue;}
+                    if contents||iterator.is_some() {effect.unknown_storage=true;continue;}
+                    let mut target=place;
+                    while let ExprKind::Member(base,_)=&target.kind {target=base;}
+                    if let ExprKind::Index(base,_)=&target.kind
+                        && let Some(data)=self.written_application_data(base)
+                        && !data.ty.owns_resources() {
+                        effect.storage.insert(data.root.regs[0]);
+                        continue;
+                    }
+                    let Some(name)=assigned_root(place) else {effect.unknown_storage=true;continue;};
                     let Some(binding)=self.env.get(name) else {
-                        if !matches!(place.kind,ExprKind::Name(_)){effect.storage=true;}
+                        if !matches!(place.kind,ExprKind::Name(_)){effect.unknown_storage=true;}
                         continue;
                     };
                     if let Some(owner)=binding.stored_place()
@@ -347,7 +375,7 @@ impl Builder<'_> {
                         && let Some((_,components))=self.written_projection(place,name,&owner,None,&writes)? {
                         effect.locals.extend(components.into_iter().flatten().map(|component|slots[component]));
                     }else{
-                        effect.storage=true;
+                        effect.unknown_storage=true;
                         if matches!(binding.stored_place(),Some(Place::Reference{..})){effect.external=true;}
                     }
                 },
@@ -373,6 +401,17 @@ fn assigned_root(expr: &Expr) -> Option<&str> {
     }
 }
 impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
+    fn factory_instance(&self,factory:&Expr)->Result<Option<crate::generics::Instance>> {
+        let(name,explicit)=match &factory.kind {
+            ExprKind::Name(name)=>(name.as_str(),None),
+            ExprKind::FunctionRef(name,types)=>(name.as_str(),Some(types.as_slice())),
+            _=>return Ok(None),
+        };
+        let Some(key)=self.world.resolve(name,&self.definition.module,&self.definition.imports,true)else{return Ok(None);};
+        let actual=generics::Actual{ty:Some(std::borrow::Cow::Owned(Ty::scalar(Scalar::U32))),count:None};
+        generics::specialize(self.world,&key,&[actual],explicit,
+            (&self.definition.source,&self.definition.module,&self.definition.imports),factory.span).map(Some)
+    }
     fn function_writes(&self, ty: Ty, args: &'e [Expr], call: &'e Expr, writes: &mut dyn FnMut(Write<'e>)) -> Result<()> {
         let Some(function) = &ty.function else {
             return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值");
@@ -415,6 +454,32 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                                 writes(Write::Position { place: arg, call: Some(expr), contents: param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some()), iterator: None });
                             }
                         }
+                    }
+                }
+                if name=="dataset" && matches!(&expr.kind,ExprKind::Specialize(..))
+                    && let [length,factory]=args.as_slice() {
+                    let zero=|value:&Expr|->Result<bool>{Ok(match &value.kind {
+                        ExprKind::StaticU32(count)=>*count==0,
+                        ExprKind::Number(text)=>number(&self.definition.source,value.span,text)?.1==0,
+                        _=>false,
+                    })};
+                    let empty=if zero(length)? {true}
+                    else if let ExprKind::Name(name)=&length.kind {
+                        match self.bindings.iter().rev().find(|(local,_)|*local==name.as_str()) {
+                            Some((_,Local::Inferred(value)))if self.builder.is_some_and(|builder|!builder.mutable_names.contains(name))=>zero(value)?,
+                            Some(_)=>false,
+                            None=>self.builder.is_some_and(|builder|matches!(builder.env.get(name),Some(Binding::Value(value))
+                                if value.ty==Ty::scalar(Scalar::U32)&&value.constant.as_ref().is_some_and(|bits|bits.first()==Some(&0)))),
+                        }
+                    }else{false};
+                    if !empty {
+                        let read_only=if let Some(builder)=self.builder
+                            && let Some(instance)=self.factory_instance(factory)? {
+                            let definition=&instance.definition;
+                            let result=self.world.ty(&definition.function.result,&definition.source,definition.function.span,&definition.module,&definition.imports)?;
+                            !result.owns_resources()&&builder.functions.writes_only_references(&instance.name)
+                        }else{false};
+                        if !read_only {writes(Write::Generator(factory));}
                     }
                 }
                 for arg in args { self.writes_expression(arg, writes)?; }
@@ -621,7 +686,7 @@ impl Builder<'_> {
     fn numeric_expression_effect(&self, expr: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
         for write in writes.iter().filter(|write|match write {
             Write::Call(_)=>false,
-            Write::External(call)=>contains_expression(expr,call),
+            Write::External(call)|Write::Generator(call)=>contains_expression(expr,call),
             Write::Position{call,..}=>call.is_some_and(|call|contains_expression(expr,call)),
         }) {
             if self.numeric_write(*write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); }
@@ -702,7 +767,7 @@ impl Builder<'_> {
                 StmtKind::While(..)|StmtKind::For(..)|StmtKind::Parallel(..)=>{
                     let mut effect=NumericEffect::shift(0);
                     for write in writes.iter().filter(|write|contains_statement(statement,match write {
-                        Write::External(call)|Write::Call(call)=>call,
+                        Write::External(call)|Write::Call(call)|Write::Generator(call)=>call,
                         Write::Position{call,place,..}=>call.unwrap_or(place),
                     })) {
                         if self.numeric_write(*write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}

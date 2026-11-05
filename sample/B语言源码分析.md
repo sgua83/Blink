@@ -1379,7 +1379,7 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
 
 短路或选择表达式可把读取放在已完成If内部。ApplicationLoads::prior_snapshot只有在当前原Condition／Clause能确定实际执行分支时才进入该分支，并按整个嵌套指令区间核对真实可能写入。若If条件来自LoadLocal，只沿该次读取之前的指令查找实际StoreLocal值；未知写终止查询，后续环境或bool赋值不替代原条件来源。此处交接的是原数值身份，不复用机器寄存器或移动装载，也不从未执行分支取事实。原整数非零检查继续拒绝从矛盾路径取得许可。
 
-循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在没有存储／未知调用写效果且实际地址与下标稳定的while／for中也可传入正文。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
+循环体内部条件与每轮新读的while条件按当前执行交接。循环外已证明的标量非零及子dataset长度，在实际地址、下标稳定且可能写效果不覆盖读取的while／for中也可传入正文。原LoopContext暂持原outer指令向量，ApplicationLoads查询原向量及当前code；装配仍交回原Loop，不复制指令或改变运行次序。
 
 源码节选：`crates/blanguage/src/check/application.rs:110`。
 
@@ -1389,19 +1389,20 @@ while_loop检查正文期间保留本轮条件的原code前缀，检查结束后
     }
 ```
 
-原loop_writes收集正文和条件的既有写输入，在原局部失效之后，把局部槽位与存储／调用可能写效果交给同一LoopContext。普通B调用边也参与此交接，不能因address按值形参没有inout标记就当作无写。跨入口读取必须满足原写效果；每轮新条件和已经捕获的旧数值／bool仍由各自原来源决定。此输入是尚未发射的循环工作，不是另一个内存版本、装载缓存或运行期状态。
+原loop_writes收集正文和条件的既有写输入，把局部槽位、实际写存储根及未知内存效果交给同一LoopContext，并继续原局部失效。无拥有资源的直接元素／字段写沿written_application_data取得根，再复用ApplicationLoads原allocate结果的不相交判断；未知子dataset位置不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通B调用和dataset的实际静态factory调用均参与交接，address按值形参没有inout标记不能证明无写。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
-源码节选：`crates/blanguage/src/check/effects.rs:22`。
+源码节选：`crates/blanguage/src/check/effects.rs:23`。
 
 ```rust
 pub(super) struct LoopWrites {
     pub locals: BTreeSet<usize>,
-    pub storage: bool,
+    pub storage: BTreeSet<Reg>,
+    pub unknown_storage: bool,
     pub external: bool,
 }
 ```
 
-不相交存储写和已闭合调用效果的精确循环保留仍沿C-005.13.2.2推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset复用原Returned求值、初始化与资源树，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长、批量增长和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
+同存储不同下标及普通调用实际写位置的循环精度仍沿C-005.13.2.2.4／.5推进；可变动态下标经短路前置C调用后的范围事实另归C-005.14，静态不可达正文仍按C-005.12处理。这些当前分析缺口不构成永久语言限制。拥有填充值只交给已证明不回绕的唯一新增位置。resize_application_dataset复用原Returned求值、初始化与资源树，填充值只求值并交接一次；capture_element_model把新值投影到原共同元素身份，非空旧序列沿原join保留旧新共同事实，已知空序列直接接收新模型。它不会把最后一项的nonzero或index当作全部旧项的保证。填充值及其静态释放函数持有的真实地址／借用在原Frame调整前交接，外部来源保持到最后实际释放函数完成；Frame仍只复制声明分量和保留共同前缀，不另建包装、拥有表或第二释放链。普通填充仍可广播，未增长时也求值一次。动态集合混合CPU与GPU元素的位置区分、含view元素的resize增长、批量增长和尾部取出保持各自未完成范围；完整存储与最后清理不替代通用容器。
 
 整元素及其记录／固定数组混合字段路径移动替换通过assign_statement的实际dataset拥有元素入口进入assign_application_element。入口沿原AST保留Member和固定数组Index的源码顺序，原member_type／array_index取得实际字段与数组单元位置；每个下标只求值一次，求值期间保持父DataReference借用，实际左侧类型仍须拥有资源；独立拥有位置和普通值继续由原入口处理，不扩大owned_expression_type或把动态元素伪装成独立env拥有者。左侧Place和副作用下标只取得一次，旧元素先按本次packed元数据物化；原临时位置借用保持父资源直到右值完成，随后drop_returned运行旧静态F并结束旧拥有树，再写入唯一新值。新值的原拥有者被消费，旧新内容没有第二释放链。活动子view、只读入口及右值提前消费父资源仍不合法，最后真实view消费者结束后才可替换。
 

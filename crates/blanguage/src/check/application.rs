@@ -111,13 +111,15 @@ impl ApplicationLoads<'_, '_> {
         self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
     }
     fn len(&self)->usize {self.0.loop_contexts.iter().map(|context|context.outer.len()).sum::<usize>()+self.0.code.len()}
-    fn loop_writes(&self,a:usize,b:usize,slot:Option<usize>)->bool {
+    fn loop_writes(&self,a:usize,b:usize,read:&Inst)->bool {
         let mut boundary=0;
         self.0.loop_contexts.iter().any(|context|{
             boundary+=context.outer.len();
-            a.min(b)<boundary && a.max(b)>=boundary && match slot {
-                Some(slot)=>context.writes.external||context.writes.locals.contains(&slot),
-                None=>context.writes.storage,
+            a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
+                InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
+                InstKind::ViewLoad{address,..}=>context.writes.unknown_storage||context.writes.storage.iter().any(|written|
+                    !self.frame_root(*address).is_some_and(|root|self.disjoint_roots(root,*written))),
+                _=>false,
             }
         })
     }
@@ -159,7 +161,7 @@ impl ApplicationLoads<'_, '_> {
             (InstKind::LoadLocal(_,a_slot),InstKind::LoadLocal(_,b_slot))=>{
                 let direct=self.code().nth(ai).unwrap().results().any(|reg|reg==a)&&self.code().nth(bi).unwrap().results().any(|reg|reg==b);
                 let range=if direct{ai.min(bi)+1..ai.max(bi)}else{ai.min(bi)..ai.max(bi)+1};
-                a_slot==b_slot&&!self.loop_writes(ai,bi,Some(*a_slot))
+                a_slot==b_slot&&!self.loop_writes(ai,bi,a_inst)
                     &&!self.code().skip(range.start).take(range.len()).any(|inst|self.writes_local(inst,*a_slot))
             },
             (InstKind::Call(a_call),InstKind::Call(b_call))=>{
@@ -179,11 +181,11 @@ impl ApplicationLoads<'_, '_> {
         }
     }
     fn same_address(&self,a:[Reg;2],b:[Reg;2])->bool {a.into_iter().zip(b).all(|(a,b)|self.same(a,b))}
-    fn same_load(&self,a:&Inst,b:&Inst)->bool {
-        match (&a.kind,&b.kind) {
+    fn same_load(&self,a_inst:&Inst,b_inst:&Inst)->bool {
+        match (&a_inst.kind,&b_inst.kind) {
             (InstKind::ViewLoad{dst:a_dst,address:a,index:ai,stride:as_,word:aw},InstKind::ViewLoad{dst:b_dst,address:b,index:bi,stride:bs,word:bw})=>
                 self.0.registers[*a_dst]==self.0.registers[*b_dst]&&as_==bs&&aw==bw
-                    &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,None)
+                    &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,a_inst)
                     &&self.same_address(*a,*b)&&self.same(*ai,*bi),
             _=>false,
         }
@@ -193,15 +195,19 @@ impl ApplicationLoads<'_, '_> {
         if a!=b{return None;}
         let InstKind::Call(call)=&first.kind else{return None;};Self::pointer_call(call)
     }
-    fn allocated(&self,root:Reg)->bool {
-        matches!(self.definition(root),Some((_,Inst{kind:InstKind::Call(Call{target:CallTarget::External(name),..}),..}))if name.library==crate::application::RUNTIME_LIBRARY&&name.symbol.starts_with("blink_allocate_"))
+    fn allocation(call:&Call)->bool {
+        matches!(&call.target,CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY&&name.symbol.starts_with("blink_allocate_"))
     }
+    fn allocated(&self,root:Reg)->bool {
+        matches!(self.definition(root),Some((_,Inst{kind:InstKind::Call(call),..}))if Self::allocation(call))
+    }
+    fn disjoint_roots(&self,a:Reg,b:Reg)->bool {a!=b&&self.allocated(a)&&self.allocated(b)}
     fn store_overlaps(&self,load:&Inst,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
         let InstKind::ViewLoad{dst,address,index,stride,word:read_word}=&load.kind else{return false;};
         let(IndexedSource::View{address:other,index:other_index,stride:other_stride}|IndexedSource::Pointer{address:other,index:other_index,stride:other_stride,..})=source else{return true;};
         if !self.same_address(*address,*other) {
             if let(Some(a),Some(b))=(self.frame_root(*address),self.frame_root(*other))
-                &&a!=b&&self.allocated(a)&&self.allocated(b){return false;}
+                &&self.disjoint_roots(a,b){return false;}
             return true;
         }
         let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
@@ -213,7 +219,7 @@ impl ApplicationLoads<'_, '_> {
     }
     fn call_writes(&self,call:&Call)->bool {
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
-        if Self::pointer_call(call).is_some(){return false;}
+        if Self::pointer_call(call).is_some()||Self::allocation(call){return false;}
         match &call.target {
             CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY=>return true,
             CallTarget::Defined(name)=>return !self.0.functions.writes_only_references(name),
