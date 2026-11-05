@@ -94,6 +94,8 @@ pub(crate) fn compile_resources(
                 "blink_allocate",
                 "blink_resize",
                 "blink_run",
+                "blink_error_message",
+                "blink_error_destroy",
                 "blink_application_resize",
                 "blink_application_upload",
                 "blink_application_download",

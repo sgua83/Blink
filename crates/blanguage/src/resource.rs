@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x1e\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x1f\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

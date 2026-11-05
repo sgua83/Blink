@@ -5,120 +5,109 @@ mod native {
     use super::*;
     use crate::Value;
     use std::ffi::c_void;
-    type ErrorReceiver = unsafe extern "C" fn(*mut c_void, *const u8, usize);
-    unsafe fn finish<T>(result: crate::Result<T>, on_error: ErrorReceiver, context: *mut c_void) -> Option<T> {
+
+    // 表示只由本运行库解释；跨模块交接不透明指针，不交接Rust容器。
+    struct NativeError { message: String }
+    fn finish<T>(result: crate::Result<T>, output: impl FnOnce(T)) -> *mut c_void {
         match result {
-            Ok(value) => Some(value),
-            Err(error) => {
-                let message = error.to_string();
-                unsafe { on_error(context, message.as_ptr(), message.len()) };
-                None
-            }
+            Ok(value) => { output(value); std::ptr::null_mut() }
+            Err(error) => Box::into_raw(Box::new(NativeError { message: error.to_string() })).cast(),
         }
     }
     /// # Safety
-    /// frame 属于本运行库，ty 是已绑定模块的实际类型索引；调用遵守独占所有权。
-    /// output 可写一个 u32；接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
+    /// error是本运行库交回且仍由调用者唯一持有的非空错误；bytes可写一个usize。
+    /// 返回文本只借用到该错误销毁；不会借用Frame。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_error_message(error: *const c_void, bytes: *mut usize) -> *const u8 {
+        let error = unsafe { &*error.cast::<NativeError>() };
+        unsafe { bytes.write(error.message.len()) };
+        error.message.as_ptr()
+    }
+    /// # Safety
+    /// error是本运行库交回且仍由调用者唯一持有的非空错误；结束所有文本借用后恰好消费一次。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_error_destroy(error: *mut c_void) {
+        drop(unsafe { Box::from_raw(error.cast::<NativeError>()) });
+    }
+    /// # Safety
+    /// frame属于本运行库，ty是已绑定模块的实际类型索引；调用遵守独占所有权。
+    /// output可写一个u32，仅成功时初始化。返回空指针表示成功，非空错误交由调用者消费。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_allocate(
-        frame: *mut Frame, ty: u32, count: u32, output: *mut u32,
-        on_error: ErrorReceiver, context: *mut c_void,
-    ) -> u32 {
+        output: *mut u32, frame: *mut Frame, ty: u32, count: u32,
+    ) -> *mut c_void {
         let result = unsafe { &mut *frame }.allocate(ty, count);
-        match unsafe { finish(result, on_error, context) } {
-            Some(value) => { unsafe { output.write(value) }; 1 }
-            None => 0,
-        }
+        finish(result, |value| unsafe { output.write(value) })
     }
     /// # Safety
-    /// frame／handle 是唯一存储所有者；fill 提供该 Ty 的有效普通值分量，
+    /// frame／handle是唯一存储所有者；fill提供该Ty的有效普通值分量，
     /// 原地址与借用消费者已经结束，调用期间填充值存储保持有效。
-    /// output 可写一个 u32；接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
+    /// output只在成功时初始化；非空返回错误由调用者消费。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_resize(
-        frame: *mut Frame, handle: u32, count: u32, fill: *const u32, output: *mut u32,
-        on_error: ErrorReceiver, context: *mut c_void,
-    ) -> u32 {
+        output: *mut u32, frame: *mut Frame, handle: u32, count: u32, fill: *const u32,
+    ) -> *mut c_void {
         let result = unsafe { (&mut *frame).resize(handle, count, fill) };
-        match unsafe { finish(result, on_error, context) } {
-            Some(value) => { unsafe { output.write(value) }; 1 }
-            None => 0,
-        }
+        finish(result, |value| unsafe { output.write(value) })
     }
     /// # Safety
-    /// frame／program 来自本次已绑定资源映像；data和values按该程序接口交付有效的
+    /// frame／program来自本次已绑定资源映像；data和values按该程序接口交付有效的
     /// 句柄和C布局标量数组。空数组同样具有有效对齐地址，借用保持到同步真实完成。
-    /// 接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
+    /// 返回空指针表示成功；非空错误由调用者消费。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_run(
-        frame: *mut Frame,
-        program: u32,
-        data: *const blanguage::resource::DatasetBinding,
-        values: *const Value,
-        on_error: ErrorReceiver,
-        context: *mut c_void,
-    ) -> u32 {
+        frame: *mut Frame, program: u32,
+        data: *const blanguage::resource::DatasetBinding, values: *const Value,
+    ) -> *mut c_void {
         let plan = unsafe { &*frame }.definitions.programs[program as usize].layout();
         let data = unsafe { std::slice::from_raw_parts(data, plan.buffers().len()) };
-        let count = plan
-            .uniforms()
-            .iter()
-            .map(|value| value.ty.components.len())
-            .sum();
+        let count = plan.uniforms().iter().map(|value| value.ty.components.len()).sum();
         let values = unsafe { std::slice::from_raw_parts(values, count) };
         let result = unsafe { &mut *frame }.run(program, data, values);
-        u32::from(unsafe { finish(result, on_error, context) }.is_some())
+        finish(result, |()| {})
     }
     /// # Safety
-    /// frame 是本 ABI 创建且仍由调用者独占持有的实际 Frame。
+    /// frame是本ABI创建且仍由调用者独占持有的实际Frame。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_destroy(frame: *mut Frame) {
         drop(unsafe { Box::from_raw(frame) });
     }
     /// # Safety
-    /// frame／handle 来自当前仍持有该存储的 Frame，释放遵守最后消费者。
+    /// frame／handle来自当前仍持有该存储的Frame，释放遵守最后消费者。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_release(frame: *mut Frame, handle: u32) {
         unsafe { &mut *frame }.release(handle);
     }
     /// # Safety
-    /// frame／handle 仍有效且调用遵守独占所有权；原操作按实际驻留状态交回结果。
-    /// 接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
+    /// frame／handle仍有效且调用遵守独占所有权；原操作按实际驻留状态交回结果。
+    /// 返回空指针表示成功；非空错误由调用者消费。
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn blink_upload(
-        frame: *mut Frame, handle: u32, on_error: ErrorReceiver, context: *mut c_void,
-    ) -> u32 {
+    pub unsafe extern "C" fn blink_upload(frame: *mut Frame, handle: u32) -> *mut c_void {
         let result = unsafe { &mut *frame }.upload(handle);
-        u32::from(unsafe { finish(result, on_error, context) }.is_some())
+        finish(result, |()| {})
     }
     /// # Safety
-    /// frame／handle 仍有效且调用遵守独占所有权；原操作按实际驻留状态交回结果。
-    /// 接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
+    /// frame／handle仍有效且调用遵守独占所有权；原操作按实际驻留状态交回结果。
+    /// 返回空指针表示成功；非空错误由调用者消费。
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn blink_download(
-        frame: *mut Frame, handle: u32, on_error: ErrorReceiver, context: *mut c_void,
-    ) -> u32 {
+    pub unsafe extern "C" fn blink_download(frame: *mut Frame, handle: u32) -> *mut c_void {
         let result = unsafe { &mut *frame }.download(handle);
-        u32::from(unsafe { finish(result, on_error, context) }.is_some())
+        finish(result, |()| {})
     }
     /// # Safety
-    /// 对应存储、访问、范围与指针期限由真实调用者遵守。output 可写一个原生指针；
-    /// 接收函数及 context 保持到调用返回，消息只借用到接收函数返回。
+    /// 对应存储、访问、范围与指针期限由真实调用者遵守；output可写一个原生指针，
+    /// 只在成功时初始化。返回空指针表示成功；非空错误由调用者消费。
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn blink_address(
-        frame: *mut Frame, handle: u32, offset: u64, bytes: u32, stride: u64, count: u32, output: *mut *mut u32,
-        on_error: ErrorReceiver, context: *mut c_void,
-    ) -> u32 {
+        output: *mut *mut u32, frame: *mut Frame, handle: u32,
+        offset: u64, bytes: u32, stride: u64, count: u32,
+    ) -> *mut c_void {
         let result = unsafe { (&mut *frame).address(handle, offset, bytes, stride, count) };
-        match unsafe { finish(result, on_error, context) } {
-            Some(value) => { unsafe { output.write(value) }; 1 }
-            None => 0,
-        }
+        finish(result, |value| unsafe { output.write(value) })
     }
     /// 借用原存储地址；不授予CPU访问权或延长存储寿命。
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn blink_storage_address(frame:*const Frame,handle:u32)->u64 {
+    pub unsafe extern "C" fn blink_storage_address(frame: *const Frame, handle: u32) -> u64 {
         unsafe { (&*frame).storage_address(handle) }
     }
-
 }

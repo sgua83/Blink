@@ -60,7 +60,7 @@ CPU并行范围、延续及集合内核的已知局部帧尚未进入本报告�
 
 ## 普通B有限浮点范围与外部输入
 
-普通B函数的数值输出合同保存已推导的有限浮点范围，独立obj／标准lib在实现源码缺席时继续交接；调用方转换为整数后由原索引检查消费。范围属于原Proof区间集合，浮点常量用于谓词代入时恢复原存储位，不增加C参数、运行时范围对象或Frame状态。BLCO62标识该有序位解释，旧对象需重编；BLRI30及原资源拥有／完成链保持。
+普通B函数的数值输出合同保存已推导的有限浮点范围，独立obj／标准lib在实现源码缺席时继续交接；调用方转换为整数后由原索引检查消费。范围属于原Proof区间集合，浮点常量用于谓词代入时恢复原存储位，不增加C参数、运行时范围对象或Frame状态。BLCO62标识该有序位解释，旧对象需重编；BLRI31及原资源拥有／完成链保持。
 
 普通C签名中的f32／f64和宿主传入的普通字节仍可能包含NaN或无穷，不能凭签名获得B内整数生产链的有限事实。原外部声明、实际数据前提及资源格式合同分别按既有边界处理；本能力不补造外部事实或替代完整宿主／纹理合同。设备实际支持的浮点保留模式与数值精度仍由原设备入口消费。
 
@@ -68,9 +68,9 @@ CPU并行范围、延续及集合内核的已知局部帧尚未进入本报告�
 
 ## 普通B纹理只读参数的机器交接
 
-普通B函数的read texture2d／texture3d及固定资源数组在Windows x64按一个64位只读借用地址交接，指向原BufferAddress连续列表的首项；每项16字节，偏移0为原TextureDescriptor地址，偏移8为原stride槽，纹理项不消费该stride。单张为一项，数组数量及维度由原B公开声明确定；选择数组元素再转交单张时，只交接原选中项地址，不复制描述或像素。原24字节TextureDescriptor及每级宽高深／像素指针布局沿BLRI30合同；B源码不能从普通整数构造纹理资源，机器参数表示不改变语言资源类型。
+普通B函数的read texture2d／texture3d及固定资源数组在Windows x64按一个64位只读借用地址交接，指向原BufferAddress连续列表的首项；每项16字节，偏移0为原TextureDescriptor地址，偏移8为原stride槽，纹理项不消费该stride。单张为一项，数组数量及维度由原B公开声明确定；选择数组元素再转交单张时，只交接原选中项地址，不复制描述或像素。原24字节TextureDescriptor及每级宽高深／像素指针布局沿BLRI31合同；B源码不能从普通整数构造纹理资源，机器参数表示不改变语言资源类型。
 
-该地址只借用到本次同步普通调用及其派生普通调用结束。原CPU绑定或真实调用方持有原描述及像素，callee不释放、不保留或返回纹理借用；代码及依赖仍由原模块所有者保持。原根绑定入口和普通参数来源都是实际输入，参数转传不重新查询全局资源或创建Frame。BLCO62标识纹理形参在原函数参数次序中的实际机器输入，包括正文未使用的纹理形参；旧模块须重编。BLRI30的Frame／资源映像字段与描述布局保持，不因私有IR新增输入来源而递增。完整含纹理计算模块／Frame入口仍按C-003.2.3.1.2独立验证，普通函数输入ABI不代替算法DLL的数据ABI。
+该地址只借用到本次同步普通调用及其派生普通调用结束。原CPU绑定或真实调用方持有原描述及像素，callee不释放、不保留或返回纹理借用；代码及依赖仍由原模块所有者保持。原根绑定入口和普通参数来源都是实际输入，参数转传不重新查询全局资源或创建Frame。BLCO62标识纹理形参在原函数参数次序中的实际机器输入，包括正文未使用的纹理形参；旧模块须重编。BLRI31的Frame／资源映像字段与描述布局保持，不因私有IR新增输入来源而递增。完整含纹理计算模块／Frame入口仍按C-003.2.3.1.2独立验证，普通函数输入ABI不代替算法DLL的数据ABI。
 
 ## 编译算法，再链接为 DLL
 
@@ -366,40 +366,40 @@ CPU的`owned<T,F>`把载荷T与静态释放函数F作为B类型关系交给原�
 
 ## 共同Frame C ABI的错误与所有权
 
-根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI30的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。该ABI身份同时涵盖执行映像中CPU主函数末端与展开字节的编码；共同Frame入口使用下列C签名。CPU算法范围另沿原RangeEntry统一交接五参数及独立执行状态，算法输出（包括计数）写第五参数；完整签名和完成语义见语言规范同节。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
+根运行库唯一创建、解释和销毁Frame；外部C／C++／Rust及非根模块只交接不透明指针。以下是BLRI31的实际Windows x64资源入口，区别于生成算法DLL自身的create／run／destroy接口。该ABI身份同时涵盖执行映像中CPU主函数末端与展开字节的编码；共同Frame入口使用下列C签名。CPU算法范围另沿原RangeEntry统一交接五参数及独立执行状态，算法输出（包括计数）写第五参数；完整签名和完成语义见语言规范同节。类型与程序编号来自本次已编译模块工厂及实际绑定，不能按另一映像猜测；Binding和Value完整标签／布局见[已编译模块的资源ABI](BLanguage.md#已编译模块的资源abi)。
 
 ```c
 typedef struct BlinkFrame Frame;
+typedef struct BlinkError BlinkError;
 typedef void (*BlinkErrorReceiver)(void *context,const uint8_t *data,size_t bytes);
 typedef struct {uint32_t handle;uint32_t offset;} BlinkDatasetBinding;
 typedef struct {uint32_t kind;uint64_t bits;} BlinkValue;
 Frame *blink_create(BlinkErrorReceiver on_error,void *context);
-uint32_t blink_allocate(Frame *frame,uint32_t ty,uint32_t count,
-                       uint32_t *output,BlinkErrorReceiver on_error,void *context);
-uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill,
-                     uint32_t *output,BlinkErrorReceiver on_error,void *context);
-uint32_t blink_run(Frame *frame,uint32_t program,const BlinkDatasetBinding *data,
-                  const BlinkValue *values,BlinkErrorReceiver on_error,void *context);
-uint32_t blink_upload(Frame *frame,uint32_t handle,BlinkErrorReceiver on_error,void *context);
-uint32_t blink_download(Frame *frame,uint32_t handle,BlinkErrorReceiver on_error,void *context);
-uint32_t blink_address(Frame *frame,uint32_t handle,uint64_t byte_offset,uint32_t write_bytes,uint64_t stride,uint32_t count,
-                      uint32_t **output,BlinkErrorReceiver on_error,void *context);
+BlinkError *blink_allocate(uint32_t *output,Frame *frame,uint32_t ty,uint32_t count);
+BlinkError *blink_resize(uint32_t *output,Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill);
+BlinkError *blink_run(Frame *frame,uint32_t program,const BlinkDatasetBinding *data,const BlinkValue *values);
+BlinkError *blink_upload(Frame *frame,uint32_t handle);
+BlinkError *blink_download(Frame *frame,uint32_t handle);
+BlinkError *blink_address(uint32_t **output,Frame *frame,uint32_t handle,uint64_t byte_offset,
+                         uint32_t write_bytes,uint64_t stride,uint32_t count);
+const uint8_t *blink_error_message(const BlinkError *error,size_t *bytes);
+void blink_error_destroy(BlinkError *error);
 uint64_t blink_storage_address(const Frame *frame,uint32_t handle);
 void blink_release(Frame *frame,uint32_t handle);
 void blink_destroy(Frame *frame);
 ```
 
-六个返回uint32_t的操作成功为1、原Result错误为0，只有成功才写output；调用者不能在错误后读取失败输出。失败在返回前调用本次on_error一次，借出原UTF-8消息及不含NUL的字节数；消息仅到接收函数返回前有效。接收函数和context保持到本次调用返回，运行库不存入Frame或登记到全局状态，保留文本副本由调用者负责，异常不得跨C ABI展开。实际指针、完整参数数组、类型／程序身份及独占访问仍按可信原生边界履行，不以状态返回证明任意无效指针安全。
+六个可失败操作的空指针返回表示成功，非空返回交付唯一拥有的错误；只有成功才初始化output，失败不读取或伪造输出。blink_error_message接收有效非空错误和可写长度位置，交回不含NUL的UTF8文本借用；借用保持到同一错误销毁，调用者在全部文本消费者结束后恰好调用一次blink_error_destroy。错误由原运行库创建、解释和释放，不借用Frame，允许先结束Frame再消费错误；跨单元只交接不透明指针与文本，不传Rust容器。原指针、数组、类型／程序身份及独占访问仍按可信原生边界履行，异常不跨C ABI展开，错误返回不证明任意无效指针安全。
 
-blink_storage_address是原Frame当前有效槽的纯共享查询，直接返回CPU存储基址或GPU绑定头的设备地址；不执行传输、等待、分配、错误回调或所有权变更。实际句柄与Frame归同一可信调用边界，地址仅在原存储及所有真实借用消费者存活期间有效；GPU地址不能被CPU解引用。该入口用于Invocation read／write／inout／atomic的实际地址形成，写许可仍沿原地址入口及真实来源交接，普通外部C函数仍不接收dataset。Invocation的read／write／inout／atomic参数的32字节实际布局见[资源ABI](BLanguage.md#已编译模块的资源abi)，不把它按Host参数的四个u32解释。普通dataset函数的实际载荷访问沿原Dataset闭合合同交接字段、元素下标、成立条件、真实Read／Write／InOut及atomic操作属性；atomic_load、atomic_store和读改写分别保留实际读写方向。普通赋值、动态数组和嵌套已编译调用沿原Place／Origin及同一合同投影，数组候选保留真实下标选择条件。参数的read／write／inout／atomic许可、CPU驻留和只取length不代替载荷效果。已编译调用的真实写区进入原地址副作用消费者；CPU范围的原memory_regions按实际普通共享读取与写区比较，B166、分离字段和当前位置规则保持，atomic别名仍表达共享操作。原Frame地址入口同时交接每元素写字节、实际stride与count；普通write／inout范围调用的非原子写须代入本次实际下标并对应当前元素，跨元素写由B144拒绝；CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同；实际写字节归原Stage.write_regions，由原Map位置／调用效果、atomic实际Place和各collective的目标字段／标量直接交接；原writes绑定列表仍只承担阶段依赖。所属ExecutionPlan只组合本次实际编译单元的阶段范围到原ProgramLayout.write_regions，拆分子域单元时不带入其他单元的写入；不回扫IR、不复制图或新建运行状态。Frame／CpuProgram及GPU提交沿原bindings::invalidate撤回与Count四字节真正重叠的关系，投影叠加实际offset；未写兄弟字段和纯length保持。编译期原prefix::Facts消费本次实际操作范围；源码展开不再按声明重复撤回，已编译子域沿同一导出合同和原DomainCall交接实际参数范围，再按原保证更新事实。原模块合同只持此函数的闭合效果，资源、scope与完成仍各归原所有者。Invocation atomic的真实地址参数由原范围或Frame资源借出，原Frame调用的实际可能写字段沿已闭合Dataset合同交接到原地址入口；inout实例借用沿当前元素与真实字段范围判定，CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同。上述编译引用在finalize消费后删除，不进入普通函数机器参数或执行映像。CPU范围的已编译普通函数代码由所属算法或B应用模块COFF交接，原静态链接统一选择真实提供者；有资源的B应用将原代码、运行库和资源绑定一次链接到同一EXE，Frame不重新查找普通函数。CPU范围中明确on cpu的普通源函数沿原native_declaration／native_call和实际参数生成原生Call；Compute共享函数保留原源码内联选择，其CPU递归回边沿同一普通函数编译器交接；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。当前CPU范围尚未携带真实Frame资源执行上下文，只能调用实际无需Frame的闭包。缺失范围同时包括原产物中类型／program与代码的对应交接、范围入口的实际资源输入、实例独占存储及失败返回；编译目录保留不等于已经交付这些输入，不能并发可变借用已取出参数的父Frame。原共同C ABI已经返回状态及错误并保持宿主存活；生成B应用包装的销毁／退出属于应用终端，不能代替CPU范围向原SDK执行Result交回失败。局部分配、拥有结果和内部计算继续沿Issues C-027.35.4.2.2.3各独立叶，实际执行失败适配沿C-020.5.2.4.2；这些能力仍未实现，不作为永久语言限制；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录。
+blink_storage_address是原Frame当前有效槽的纯共享查询，直接返回CPU存储基址或GPU绑定头的设备地址；不执行传输、等待、分配、错误回调或所有权变更。实际句柄与Frame归同一可信调用边界，地址仅在原存储及所有真实借用消费者存活期间有效；GPU地址不能被CPU解引用。该入口用于Invocation read／write／inout／atomic的实际地址形成，写许可仍沿原地址入口及真实来源交接，普通外部C函数仍不接收dataset。Invocation的read／write／inout／atomic参数的32字节实际布局见[资源ABI](BLanguage.md#已编译模块的资源abi)，不把它按Host参数的四个u32解释。普通dataset函数的实际载荷访问沿原Dataset闭合合同交接字段、元素下标、成立条件、真实Read／Write／InOut及atomic操作属性；atomic_load、atomic_store和读改写分别保留实际读写方向。普通赋值、动态数组和嵌套已编译调用沿原Place／Origin及同一合同投影，数组候选保留真实下标选择条件。参数的read／write／inout／atomic许可、CPU驻留和只取length不代替载荷效果。已编译调用的真实写区进入原地址副作用消费者；CPU范围的原memory_regions按实际普通共享读取与写区比较，B166、分离字段和当前位置规则保持，atomic别名仍表达共享操作。原Frame地址入口同时交接每元素写字节、实际stride与count；普通write／inout范围调用的非原子写须代入本次实际下标并对应当前元素，跨元素写由B144拒绝；CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同；实际写字节归原Stage.write_regions，由原Map位置／调用效果、atomic实际Place和各collective的目标字段／标量直接交接；原writes绑定列表仍只承担阶段依赖。所属ExecutionPlan只组合本次实际编译单元的阶段范围到原ProgramLayout.write_regions，拆分子域单元时不带入其他单元的写入；不回扫IR、不复制图或新建运行状态。Frame／CpuProgram及GPU提交沿原bindings::invalidate撤回与Count四字节真正重叠的关系，投影叠加实际offset；未写兄弟字段和纯length保持。编译期原prefix::Facts消费本次实际操作范围；源码展开不再按声明重复撤回，已编译子域沿同一导出合同和原DomainCall交接实际参数范围，再按原保证更新事实。原模块合同只持此函数的闭合效果，资源、scope与完成仍各归原所有者。Invocation atomic的真实地址参数由原范围或Frame资源借出，原Frame调用的实际可能写字段沿已闭合Dataset合同交接到原地址入口；inout实例借用沿当前元素与真实字段范围判定，CPU write dataset的完成义务按本次真实借用位置交接：独立函数保留写前读限制，正常返回把必需输出位置、实际写入及成立条件交给原初始化合同；CPU范围只要求当前实例获准的元素与字段，普通Host调用仍须完成实际借出的整份范围，空集合没有元素义务。调用处不以旧初始化值补足本次write输出，源码与无提供者实现的对象／归档消费同一合同。上述编译引用在finalize消费后删除，不进入普通函数机器参数或执行映像。CPU范围的已编译普通函数代码由所属算法或B应用模块COFF交接，原静态链接统一选择真实提供者；有资源的B应用将原代码、运行库和资源绑定一次链接到同一EXE，Frame不重新查找普通函数。CPU范围中明确on cpu的普通源函数沿原native_declaration／native_call和实际参数生成原生Call；Compute共享函数保留原源码内联选择，其CPU递归回边沿同一普通函数编译器交接；同一具体实例由本次原Module持有，不按调用点或阶段复制函数闭包。应用／模块的范围代码和普通callee由所属COFF统一交出，私有实现不成为资源映像的另一权威。独立CPU入口映像持有自己实际消费的命名callee，与范围／集合入口共同装入同一VM，重定位在本映像内绑定；原展开表和外部库在最后真实CPU消费者结束后共同释放。当前CPU范围尚未携带真实Frame资源执行上下文，只能调用实际无需Frame的闭包。缺失范围同时包括原产物中类型／program与代码的对应交接、范围入口的实际资源输入、实例独占存储及失败返回；编译目录保留不等于已经交付这些输入，不能并发可变借用已取出参数的父Frame。原共同C ABI已经交回拥有错误并保持宿主存活；生成B应用包装的销毁／退出属于应用终端，不能代替CPU范围向原SDK执行Result交回失败。局部分配、拥有结果和内部计算继续沿Issues C-027.35.4.2.2.3各独立叶，实际执行失败适配沿C-020.5.2.4.2；这些能力仍未实现，不作为永久语言限制；GPU递归、完整设备普通调用与选择性内联仍按各自未完成能力记录。
 
 共同操作不打印、结束宿主或替宿主释放Frame；失败后的原存储／程序和已发生效果继续按原Rust操作合同交接，不回滚或自动重放，不承诺设备故障后数据可用。宿主选择后续合法调用、继续持有或显式销毁。release释放指定槽位，destroy结束根Frame；创建解码错误仍在同次接收函数交回原文本后返回NULL，没有可销毁的Frame。
 
-生成B应用的私有适配消费上述状态，成功才读取输出；错误由应用接收者报告，应用根显式销毁同一Frame并退出1。非根模块调用同一根政策，只借用opaque Frame，不建立第二释放链。此终端政策属于该B应用，完整普通B可失败返回／业务result适配仍沿Issues C-020.5.2.4建设。算法DLL及原Rust宿主API继续遵守各自现行错误与生命周期接口，不能混用这些入口。
+生成B应用的私有适配已经消费上述拥有错误，成功才读取输出，失败仍直接报告、销毁根Frame并退出1。这会跳过普通B静态F，是已证实、尚未修复的C-020.5.2.4.2.2.1.2；不能把进程结束当作B原拥有退出。非根仅借用同一opaque Frame并使用根入口。算法DLL及原Rust宿主API各自遵守真实错误与生命周期接口，不混用这些入口。
 
 ## CPU拥有dataset的显式变长
 
-源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源运行库的Windows x64 C入口为`uint32_t blink_resize(Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill,uint32_t *output,BlinkErrorReceiver on_error,void *context)`，成功返回1并把同一Frame槽位的实际句柄写入output；错误返回0、不写output，并在本次调用借出原错误文本，完整合同见[共同Frame C ABI](#共同frame-c-abi的错误与所有权)；Frame保持不透明，只由根运行库创建、解释和最终释放。fill在本次同步调用内按存储Ty的实际声明布局借用完整普通值，必须不含拥有资源或view；运行库只读取声明分量，不读取未初始化填充。调用者必须拥有可调整的CPU存储，先结束真实地址／view／位置消费者；该原生可信入口不替调用者验证任意外部指针。
+源语言语义以[语言规范同名章节](BLanguage.md#cpu拥有dataset的显式变长)为准。资源C入口为`BlinkError *blink_resize(uint32_t *output,Frame *frame,uint32_t handle,uint32_t count,const uint32_t *fill)`；成功返回NULL并写入同一Frame的实际句柄，错误返回唯一拥有错误且不写output。文本借用与销毁见[共同Frame C ABI](#共同frame-c-abi的错误与所有权)。fill在本次同步调用内按Ty实际声明布局借用完整普通值，不含拥有资源或view；运行库只读取声明分量，不读取填充。调用者拥有可调整的CPU存储，先结束真实地址／view／位置消费者；原生可信入口不替调用者验证任意外部指针。
 
 非根模块通过同一不透明Frame调用共同入口，不移动Rust私有容器或解释Frame。普通C值接口不因此接收B拥有dataset；address值不代替指向位置访问；动态拥有元素、异步和完整版本迁移仍待实现。
 
