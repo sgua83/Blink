@@ -86,7 +86,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
         }
         if explicit.is_none() && self.bound(name, limit) && let Some(ty) = self.name(name, span, limit)? { return self.returned(ty, span); }
         if name == "address_of" && explicit.is_none() { return Ok(Ty::builtin("address")); }
-        if name=="take_last" && explicit.is_none() && let [data,_]=args {
+        if explicit.is_none() && let ("resize",[data,_,_])|("take_last",[data,_])=(name,args) {
             return Ok(self.ty(data,limit)?.and_then(|ty|ty.dataset.map(|element|Ty::owned_dataset(*element,None))));
         }
         if name == "c_function" && explicit.is_none() {
@@ -104,7 +104,7 @@ impl<'b, 'w, 's> Scope<'b, 'w, 's> {
         if name == "try" && let [value] = args {
             return Ok(self.ty(value, limit)?.and_then(|ty| ty.variants.first().map(|variant| *variant.ty.clone())));
         }
-        if Ty::builtin(name).is_some() || name == "cfn"
+        if Ty::builtin(name).is_some() || matches!(name, "array" | "cfn")
             || self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some() {
             let mut syntax = TypeName::named(name);
             syntax.arguments = explicit.unwrap_or_default().to_vec();
