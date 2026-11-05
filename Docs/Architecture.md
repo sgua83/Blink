@@ -619,7 +619,23 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-8"></a>
 
-**归约统一纯值提取的来源。** 输入：原identity／project／combine分区、实际uniform输入及原纯操作许可。唯一生产／消费接点：optimize/invariant.rs#4::extract4至28／prepare_reduction31至末尾，事实归原ReductionKernel及同一stage／入口分区；输出为本项真实变换的来源关系或明确缺失。交接实际从分区移到一次入口的操作与所消费的统一性／纯值条件；不跨未允许控制或资源访问，不复制执行图。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：原克隆提取及with_prelude已实现，变换来源待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-8)。
+**归约统一纯值提取的来源。** 原prepare_reduction沿identity、project、combine三个实际分区，把原extract准许的顶层统一纯值交给本次ReductionKernel公共入口；各角色沿下列独立叶推进，父项不占源码。原许可集合及all_operands的uniform关系是唯一判定，不递归跨出Scope／If／Loop，不移动资源载荷访问或非统一运算。只在真实移入entry的同一Inst上用ReductionUniformExtract交接，不另建提取表、SSA图、快照权威或调度器。
+
+GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、ReductionPartition、ReductionUniformOperation及uniform_operand_count；同一原匹配选择准许类别，同一次all_operands检查只在成功时交接实际检查数量。类别包括Constant、Uniform、BufferStride、Unary、Binary、Cast、Math、Select及ConstantIntegerDivide；后者明确原常量除数前提，数量按原操作数访问次数而非唯一Reg计。材料表达本次原条件成立，不保存旧Inst、Reg、输入值、AST／World或另一uniform集合，不用元数据再审批优化。原source_site独立保持，未知来源不猜补，后续原with_prelude复用／合并沿原OperationOrigin继续保持已经发生的提取来源。
+
+事实唯一归原入口Inst及其实际ReductionKernel／Stage；SDK及ReductionKernel::ir_json借用同一结果，不额外调用一次kernel、编译或发射。最后实际IR消费者结束后释放，只compiler，不拥有运行资源、不进入必要执行编码、不保活计算。分区是提取前的角色，提取后的当前位置沿原invariant_end及代码解释；不将公共入口理解为整个CPU／GPU／域内只执行一次，也不将原操作数数量当运行次数或性能收益。接口见语言规范同名节，状态见[父项](FixedIssues.md#c-021-7-9-7-3-1-8)。
+
+<a id="tool-7-3-1-8-1"></a>
+
+**单位元分区到公共入口。** 原identity实际参与的顶层纯值经同一extract成为入口Inst，保留原单位元函数／实例来源及真实条件；identity未选时分区为空，不制造事件。输入／输出及初始结果仍沿原kernel.initial与分区末尾，不新增角色映射；材料随本次实际内核及最后IR消费者释放，原数值和执行保持。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-8-1)。
+
+<a id="tool-7-3-1-8-2"></a>
+
+**投影分区到公共入口。** 原project存在且参与的顶层统一纯值经同一extract交给入口Inst；未选或不存在则无提取。投影元素输入与统一捕获分别按原Source及Uniform规则解释，原用户控制内／非统一运算不跨出；原source／projected向量与布局保持，不用提取事实代替实际输入值。生命周期沿原入口、内核及最后IR消费者，状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-8-2)。
+
+<a id="tool-7-3-1-8-3"></a>
+
+**合并分区到公共入口。** 原combine顶层统一纯值经同一extract交给入口Inst，Left／Right实际数据仍非统一；已有uniform结果沿原集合传递，后续with_prelude只继承原入口表达式，不向未执行兄弟函数体借用局部值。来源保留本轮提取前角色及条件，后续CSE可正常复用／消除，不保活原操作；原left／right／result和完成保持，材料最后IR消费者后释放。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-8-3)。
 
 <a id="tool-7-3-1-9-1"></a>
 

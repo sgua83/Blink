@@ -498,6 +498,16 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 仅发生删除时记录，原needed判断、RHS可观察求值、数值、控制、访问及完成不变；有实际读取而保留的写不产生本删除事件。材料仅compiler，随原IR／模块／SDK快照及最后真实消费者释放，不保活指令、私有存储、阶段或运行资源，不进入必要执行编码；没有材料不证明未发生，未知原来源仍为null。现有bc ir --module／--program／--entry与SDK查询消费同一真实根，公共枚举分支按原软件major规则演化。职责及状态见[架构](Architecture.md#tool-7-3-1-7-2)和[台账](FixedIssues.md#c-021-7-9-7-3-1-7-2)。
 
+#### 归约统一纯值提取的来源
+
+原CustomReduction::kernel按本次project／identity选择形成原ReductionKernel，prepare_reduction沿identity／project／combine的原顺序提取顶层统一纯值。实际移入原entry的Inst.generated_origin交接GenerationReason::ReductionUniformExtract及同名锚点；retained为提取前OperationOrigin，partition为ReductionPartition的Identity／Project／Combine，operation为ReductionUniformOperation，uniform_operand_count是同一次all_operands成功检查的实际逻辑Reg操作数访问次数。原直接source_site及既有生成来源分别保持，不保存旧Inst、Reg、输入值或另一uniform集合。
+
+JSON reason及锚点kind为reduction_uniform_extract，字段为retained、partition、operation、uniform_operand_count；partition拼写identity／project／combine，operation拼写Constant、Uniform、BufferStride、Unary、Binary、Cast、Math、Select、ConstantIntegerDivide。类别来自本次提取器的实际纯操作匹配，不限制合法B程序或后续优化；ConstantIntegerDivide表示原IntegerDivide具有常量除数；全部所访问操作数已在原uniform集合，零Reg操作数类别可作为种子，访问次数不等于不同输入数；Uniform／BufferStride仍有原统一参数或布局来源，计数为零不表示没有运行输入，这些关系继续由原指令／接口字段表达。材料只描述当时实际消费的优化条件，不再运行一套证明或改变许可集合。
+
+原extract不递归穿过Scope／If／Loop，不将非统一数据或资源载荷访问提到入口。未选的identity、未选／不存在的project没有本分区事件；原operation中的值函数仍可能保留，不能从存在推定本次参与。后续with_prelude沿原复用／合并来源保持已经发生的提取，分区角色不根据最终保留节点反推；多源单一trigger()／syntax()／origin()／instance()为空，已取得事实从明确成员读取，缺失来源仍为null。
+
+SDK／ReductionKernel::ir_json查询同一本次实际内核，分区末尾、invariants与六角色向量继续由原字段交接，不为查询重新生成内核或调用编译／后端。提取后的入口位置与提取前的分区分别解释，逻辑Reg不等于物理寄存器；入口执行次数由原CPU／GPU调用与提交决定，不宣称整个集合全局只执行一次。材料只compiler，随原Inst／内核及最后真实IR消费者释放，不持有运行资源、不保活指令、不进入必要执行编码。公共枚举演化按原major软件版本规则，完整机器映射与运行测量另沿原职责。见[架构](Architecture.md#tool-7-3-1-8)及[台账](FixedIssues.md#c-021-7-9-7-3-1-8)。
+
 #### 空Map阶段移除的来源
 
 原optimize末尾仅沿原Operation::Map且code为空的条件移除Stage。实际移除前，将同一Stage.operation_source及generated_origin作为OperationOrigin共享给原Program.generated_origin，使用GenerationReason::EmptyMapRemoval及GenerationAnchor::EmptyMapRemoval { retained, stages }；retained保留可选旧Program根，source_origin独立保持。Program::generated_origin()、anchor()及现有bc ir程序／应用资源查询消费同一真实结果，不新增另一程序或查询命令。
