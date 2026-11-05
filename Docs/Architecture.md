@@ -779,7 +779,17 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-2"></a>
 
-**已知操作数二元常量折叠的来源。** 输入：原二元运算、两侧实际constant位模式及operators／constant::binary许可。唯一生产／消费接点：check.rs#158::binary2548至2632及2645至2649，事实归原Builder／ValueCode／Stage及实际结果；输出为本项真实变换的来源关系或明确缺失。只交接本次真实常量计算，不将Proof推断混为两个操作数常量；无节点状态仍随原拥有者，不伪造Inst。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前常量计算已实现，解释事实待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-9-2)。
+**已知操作数二元常量折叠的来源。** 原binary拥有两个已定型Value.constant、有效Scalar及实际计算；普通运算与整数商余按下两叶交给原Constant，比较命题known_value另归原.9.6。两类计算共用BinaryConstantFold材料，不建立求值器、证明、来源表或第二值流；必要对象／执行编码与原优化保持。
+
+<a id="tool-7-3-1-9-2-1"></a>
+
+**普通二元常量计算到实际Constant。** operators及原类型转换决定合法运算，constant::binary按原逻辑分量及广播规则实际成功计算后，同一结果物化为原Constant。只有这次纯常量计算已成功才给本次真实结果附加BinaryConstantFold；后续比较命题推断不因此获得该原因。锚点expression只借用该Constant原source_site，operation保存本次binary实际接收的运算拼写，scalar为转换后的共同输入Scalar，result_scalar为实际输出Scalar；left_bits／right_bits／result_bits记录该次真实位模式，left_component_index／right_component_index及各自component_count描述原输入广播，component_index／component_count描述输出平坦逻辑分量，各index从零计数、count为实际分量数，不是寄存器或运行身份。retained共享该结果原有生成材料；生成步骤没有直接source_site时仍为空，不从op或span补造源码。单源查询只沿expression，retained单独读取；该运算可能来自原实现分解，不强称为用户逐字书写的机器操作。
+
+<a id="tool-7-3-1-9-2-2"></a>
+
+**整数常量商余到实际Constant。** 原integer_divisors仍决定合法性，原IntegerDivisor::Constant及两侧Value.constant经constant::divide完成实际商余计算，复用上节同一结果交接。operation为实际/或%，有效Scalar解释符号／宽度，原除零检查、最小负值／负一及截断语义保持，不生成额外除法或求解条件。只在右侧证明非零但没有两侧常量、或仍生成原IntegerDivide时不形成本项折叠材料。
+
+两叶的唯一生产者仍为原binary，事实只归原Inst、ValueCode／Stage／Program及模块／快照，到最后IR消费者后释放；CSE／DCE／空Map及原模块／阶段常量结果沿原OperationOrigin继续交接，不保活操作，不保存旧IR、AST／World或完整输入谱系，不拥有运行资源。实际求值、literal、Proof、布局、寄存器及参数保持，不增运行指令、采集、调度、同步或释放链，静态折叠不等于机器指令数、执行次数或实测收益。 两叶已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-9-2)。
 
 <a id="tool-7-3-1-9-3"></a>
 

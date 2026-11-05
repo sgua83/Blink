@@ -2680,6 +2680,7 @@ impl<'a> Builder<'a> {
                     })
                     .collect::<Option<Vec<_>>>()
             });
+        let constant_fold = constant.is_some();
         let proof = if let Some(BinaryOp::Compare(op)) = operation {
             bounds::Proof::comparison(op, &a, &b)
         } else {
@@ -2693,7 +2694,28 @@ impl<'a> Builder<'a> {
             }
         });
         if let Some(bits) = constant {
+            let first = self.code.len();
             let mut value = self.constant_value(ty, bits,generated_origin);
+            if constant_fold {
+                let left = a.constant.as_deref().unwrap();
+                let right = b.constant.as_deref().unwrap();
+                let operation: Arc<str> = op.into();
+                for (component_index, (inst, result_bits)) in self.code[first..].iter_mut()
+                    .zip(value.constant.iter().flatten()).enumerate() {
+                    inst.generated_origin = Some(Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::BinaryConstantFold,
+                        trigger: Some(GenerationAnchor::BinaryConstantFold {
+                            expression: inst.source_site.clone(), operation: operation.clone(), scalar,
+                            result_scalar: value.ty.components[component_index].0,
+                            left_bits: left[component_index % left.len()], right_bits: right[component_index % right.len()],
+                            result_bits: *result_bits,
+                            left_component_index: component_index % left.len(), left_component_count: left.len(),
+                            right_component_index: component_index % right.len(), right_component_count: right.len(),
+                            component_index, component_count: value.regs.len(), retained: inst.generated_origin.clone(),
+                        }),
+                    }));
+                }
+            }
             value.literal = literal;
             value.proof = proof;
             return Ok(value);

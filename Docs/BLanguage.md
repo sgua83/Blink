@@ -563,6 +563,14 @@ OutputConstant的PartialEq／Eq、PartialOrd／Ord及原合同去重仍只消费
 
 
 
+#### 二元常量折叠的来源
+
+原Builder::binary先按operators及原类型转换取得有效Value，再按原广播规则调用constant::binary或整数constant::divide。只有两侧Value.constant存在且这条原计算实际成功，才在同一次结果物化的真实Constant上附加GenerationReason::BinaryConstantFold；比较命题known_value、动态运算和仍存在的IntegerDivide保持原职责，不因也得到Constant就冒充两侧常量折叠。原literal、Proof、Scalar／Bits、寄存器、直接source_site、除数合法性及浮点／溢出语义保持。
+
+GenerationAnchor::BinaryConstantFold与JSON kind binary_constant_fold提供：expression（借用该Constant原SourceSite，可为null）、operation（该次binary实际接收的运算拼写）、scalar（原转换后的共同输入标量）、result_scalar（实际输出标量）、left_bits／right_bits／result_bits（十六进制原始位模式字符串）、left_component_index／left_component_count、right_component_index／right_component_count、component_index／component_count，以及retained（原结果已有GeneratedOrigin或null）。component_index_base为0；输入下标记录实际标量广播或逐分量选择，输出下标描述本次平坦逻辑分量，不是寄存器身份。比较输出为Bool，整数/或%按有效Scalar解释商余、符号及位宽，不增加另一运算编码。expression只是该次原计算点已有语法触发，运算可能来自原实现分解；不据范围反推操作、不扩大源码范围，也不为已有生成步骤补造直接源语法。
+
+单源trigger()、syntax()／origin()／instance()只解释expression，原生成职责从retained读取；材料仅compiler，随原Inst、CSE／DCE／空Map根、模块及查询快照到最后IR消费者。模块／阶段常量的实际结果及其原接收者共用同一事实，不重新求值或保留旧IR、AST／World，不增加状态表、必要编码、运行指令或保活。材料描述这次实际常量计算，不声称完整输入谱系、运行次数、最终ISA或实测收益。形状／编号整数结果和Proof比较来源仍沿各自独立编号推进。见[架构两叶职责](Architecture.md#tool-7-3-1-9-2)。
+
 #### 阶段常量结果到实际值IR的来源
 
 原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls接收evaluate已有材料；env中已有Root仍克隆同一原值和材料，实际Literal的Name读取再由下述StageConstantReference交接本次绑定。直接Number／StaticU32及计数器初始值不伪造读取或折叠；无折叠Name的retained可以为空，本次真实reference仍保留。
