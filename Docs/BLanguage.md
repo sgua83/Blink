@@ -420,7 +420,7 @@ ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value�
 
 CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Frame参数及inputs前缀时，同步调整本输入引用并移除已不存在输入的材料；使用原不可变共享语义保持旧快照，不以来源保留无消费Frame。普通无Frame标量的实际输入索引可以为0，保留Frame时普通值可位于实际前缀之后；以真实列表为准，不从参数名字或旧编号猜测。根generated_origin出现本理由仅说明发生了输入读取替代，不把普通源函数说成合成函数或应用入口。
 
-两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。新降层归约外部输入、写失效及控制合流的完整事实仍沿.3.3至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。见[完整架构](Architecture.md#tool-7-3-1-3)、[普通定义范围](FixedIssues.md#c-021-7-9-7-3-1-3-1)和[实际输入范围](FixedIssues.md#c-021-7-9-7-3-1-3-2)。
+两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。归约降层新增输入读取来源按后节交接，写失效及控制合流的完整事实仍沿.3.4至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。见[完整架构](Architecture.md#tool-7-3-1-3)、[普通定义范围](FixedIssues.md#c-021-7-9-7-3-1-3-1)和[实际输入范围](FixedIssues.md#c-021-7-9-7-3-1-3-2)。
 
 #### 降层归约内核的角色与分区查询
 
@@ -428,7 +428,15 @@ compiler SDK的CustomReduction::kernel(stage,project,identity)按本次选择产
 
 source、projected、initial、left、right和result直接消费同一内核的六角色列表，元素引用本次stage.registers。它们已经过原值流binding；projected／initial／result是相应输出，不是另一份外部输入表。stage.operation仍含原源算法及project／identity／combine ValueCode，stage.code则是本次降层的代码，两者阶段不同。已选project的实际输入与source逐分量对应；未选project时source沿right，combine输入按left后right分量对应。原InputReadForward.input_index继续引用原ValueCode.inputs，来源沿该ValueCode.generated_origin取得；不把原函数Reg直接当内核Reg。调用者保留本次project／identity选择，operation中出现某个原函数不证明它参与本次执行，关闭identity时initial为空，关闭project时不补造投影调用。
 
-查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。未采集的二次传播新读取事件不由已有输入来源代替，统一提取变换原因也不由invariants列表代替。见[架构](Architecture.md#tool-7-3-1-3-3)及[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。二次传播新读取事件由降层后的Stage另行交接，原值函数材料保持原阶段，统一提取变换原因也不由invariants列表代替。见[架构](Architecture.md#tool-7-3-1-3-3)及[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+
+#### 归约二次值传播的真实输入读取来源
+
+原with_prelude在DCE后的值函数体再次传播局部值时，可能新增指向真实内核输入的读取替代。本次kernel.stage.generated_origin采用GenerationReason::LocalReadForward及GenerationAnchor::ReductionInputForward { retained, inputs }，retained保留可选旧Stage根；原stage.operation中ValueCode的代码与来源不改，不将其原阶段仍存在的读取描述成已经删除。
+
+compiler SDK的ReductionInputReadForward::role()返回ReductionInputRole::Source／Left／Right，component_index()返回同一ReductionKernel.source／left／right列表中的零基逻辑分量序号，reads()借用原OperationOrigin列表，ir_json()输出kind=reduction_input_read_forward、role（source／left／right）、component_index及reads。锚点JSON为kind=reduction_input_forward、component_index_base=0、retained和inputs；根GeneratedOrigin.reason为local_read_forward。u64仍是一项逻辑分量，不拆成物理字编号。原合并输入先沿left／right消费；未选project时source与right相同，不重复来源或标成投影读取。无新事件不创建根，initial／projected／result不变成伪造外部输入。
+
+新来源在原Inst结果交接后由同一次值流剩余事实直接形成，不重新优化、求值或扫描源码，也不新增保存的Reg映射、输入拥有表、IR副本或运行材料。单源trigger()及锚点syntax()／origin()／instance()为空，各实际读取从明确成员取得；编译器生成读取没有SourceSite时原样为空，不能删除该真实事件或补造语法。根与原来源共享不可变快照，随原Kernel／Stage在最后实际IR消费者后释放，普通原Inst／ValueCode及Frame前缀来源保持各自合同。见[架构](Architecture.md#tool-7-3-1-3-3-2)及[台账](Issues.md#c-021-7-9-7-3-1-3-3-2)。
 
 #### 应用入口与根Frame的生成来源
 

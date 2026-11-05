@@ -403,7 +403,8 @@ pub(super) fn with_prelude(
     prelude: &mut Vec<Inst>,
     bodies: &mut [&mut Vec<Inst>],
     registers: &[Scalar],
-) -> impl Fn(Reg) -> Reg + use<> {
+    inputs: &[(ReductionInputRole, &[Reg])],
+) -> (impl Fn(Reg) -> Reg + use<>, Vec<ReductionInputReadForward>) {
     let mut entry = Values::default();
     let mut reuses = Reuses::new();
     entry.block(prelude, registers, &mut reuses);
@@ -417,7 +418,22 @@ pub(super) fn with_prelude(
     for body in bodies {
         retain_reuses(body, &mut reuses);
     }
-    move |r| aliases.root(r)
+    let mut forwarded = Vec::new();
+    for (role, registers) in inputs {
+        for (component_index, reg) in registers.iter().enumerate() {
+            let reads = input_reads(*reg, &mut reuses);
+            if !reads.is_empty() {
+                forwarded.push(ReductionInputReadForward { role: *role, component_index, reads });
+            }
+        }
+    }
+    (move |r| aliases.root(r), forwarded)
+}
+fn input_reads(reg: Reg, reuses: &mut Reuses) -> Vec<OperationOrigin> {
+    reuses.remove(&reg).into_iter().flatten().filter_map(|source| match source {
+        RetainedUse::LocalRead(origin) => Some(origin),
+        RetainedUse::Expression(_) => None,
+    }).collect()
 }
 fn run_code(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) -> Reuses {
     let mut values = Values::default();
@@ -433,10 +449,7 @@ pub(super) fn run_value(value: &mut ValueCode) {
     let mut reuses = run_code(&mut value.code, &value.registers, &mut value.outputs);
     let mut inputs = Vec::new();
     for (input_index, reg) in value.inputs.iter().enumerate() {
-        let reads: Vec<_> = reuses.remove(reg).into_iter().flatten().filter_map(|source| match source {
-            RetainedUse::LocalRead(origin) => Some(origin),
-            RetainedUse::Expression(_) => None,
-        }).collect();
+        let reads = input_reads(*reg, &mut reuses);
         if !reads.is_empty() { inputs.push(InputReadForward { input_index, reads }); }
     }
     if !inputs.is_empty() {

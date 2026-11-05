@@ -285,6 +285,24 @@ impl InputReadForward {
             self.reads.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(","))
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReductionInputRole { Source, Left, Right }
+#[derive(Clone, Debug)]
+pub struct ReductionInputReadForward {
+    pub(crate) role: ReductionInputRole,
+    pub(crate) component_index: usize,
+    pub(crate) reads: Vec<OperationOrigin>,
+}
+impl ReductionInputReadForward {
+    pub fn role(&self) -> ReductionInputRole { self.role }
+    pub fn component_index(&self) -> usize { self.component_index }
+    pub fn reads(&self) -> &[OperationOrigin] { &self.reads }
+    pub fn ir_json(&self) -> String {
+        let role = match self.role { ReductionInputRole::Source => "source", ReductionInputRole::Left => "left", ReductionInputRole::Right => "right" };
+        format!("{{\"kind\":\"reduction_input_read_forward\",\"role\":{},\"component_index\":{},\"reads\":[{}]}}",
+            text(role), self.component_index, self.reads.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(","))
+    }
+}
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
     Syntax(std::sync::Arc<SourceSite>),
@@ -293,11 +311,12 @@ pub enum GenerationAnchor {
     ExpressionReuse { retained: OperationOrigin, reused: Vec<ExpressionReuse> },
     LocalReadForward { retained: OperationOrigin, reads: Vec<LocalReadForward> },
     LocalInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<InputReadForward> },
+    ReductionInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<ReductionInputReadForward> },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
@@ -311,6 +330,8 @@ impl GenerationAnchor {
                 retained.ir_json(), reads.iter().map(LocalReadForward::ir_json).collect::<Vec<_>>().join(",")),
             Self::LocalInputForward { retained, inputs } => format!("{{\"kind\":\"local_input_forward\",\"input_index_base\":0,\"retained\":{},\"inputs\":[{}]}}",
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(InputReadForward::ir_json).collect::<Vec<_>>().join(",")),
+            Self::ReductionInputForward { retained, inputs } => format!("{{\"kind\":\"reduction_input_forward\",\"component_index_base\":0,\"retained\":{},\"inputs\":[{}]}}",
+                retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(ReductionInputReadForward::ir_json).collect::<Vec<_>>().join(",")),
         }
     }
 }

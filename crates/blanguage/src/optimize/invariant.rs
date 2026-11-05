@@ -38,11 +38,23 @@ pub(crate) fn prepare_reduction(kernel: &mut ReductionKernel) {
         extract(code, &mut entry, &mut uniform);
     }
     // 每个函数体只继承入口表达式，不能从未执行的另一个函数体取得局部值。
-    let binding = value_flow::with_prelude(
+    let (binding, inputs) = value_flow::with_prelude(
         &mut entry,
         &mut [&mut identity, &mut project, &mut combine],
         &kernel.stage.registers,
+        &[
+            (ReductionInputRole::Left, &kernel.left),
+            (ReductionInputRole::Right, &kernel.right),
+            (ReductionInputRole::Source, &kernel.source),
+        ],
     );
+    if !inputs.is_empty() {
+        let retained = kernel.stage.generated_origin.take();
+        kernel.stage.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+            reason: GenerationReason::LocalReadForward,
+            trigger: Some(GenerationAnchor::ReductionInputForward { retained, inputs }),
+        }));
+    }
     for values in [
         &mut kernel.source,
         &mut kernel.projected,
