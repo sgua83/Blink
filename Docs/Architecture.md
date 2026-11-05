@@ -423,7 +423,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-5"></a>
 
-**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs#83::native_call各原arguments.push及645至653原Call→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-5)。
+**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs#88::native_call365起各原arguments.push及661至669原Call→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；原prune裁剪Frame时同一实参的材料随之删除，普通Call的source_site不代替每个B实参的位置；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前待实现，见[台账](Issues.md#c-021-7-9-7-2-4-5-6-5)。
 
 <a id="tool-7-2-4-5-7"></a>
 
