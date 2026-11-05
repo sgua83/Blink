@@ -33,7 +33,7 @@ use std::{
     ptr::{null, null_mut},
     rc::Rc,
 };
-pub use texture::Texture;
+pub use texture::{Texture, TextureInput};
 use texture::{BufferImageCopy, ImageBarrier, Subresource, SubresourceRange};
 
 #[link(name = "kernel32")]
@@ -1437,7 +1437,7 @@ struct Commands {
     completion: Rc<Completion>,
     descriptors: VkDescriptorPool,
     queries: u64,
-    textures: Vec<Texture>,
+    textures: Vec<TextureInput>,
 }
 impl Commands {
     fn new(inner: Rc<Inner>) -> Result<Self> {
@@ -1699,7 +1699,7 @@ fn descriptor_set(
             w.descriptorType = 1000150000;
             writes.push(w);
         }
-        let images: Vec<_> = commands.textures.iter().map(Texture::descriptor).collect();
+        let images: Vec<_> = commands.textures.iter().map(TextureInput::descriptor).collect();
         let mut offset = 0;
         for (i, texture) in compiled.program.textures().iter().enumerate() {
             let mut w: VkWriteDescriptorSet = zero();
@@ -1749,7 +1749,7 @@ pub struct GpuTemplate {
 pub struct Bindings<D = Vec<GpuDataset>> {
     pub datasets: D,
     pub accelerations: Vec<Acceleration>,
-    pub textures: Vec<Texture>,
+    pub textures: Vec<TextureInput>,
 }
 impl From<Vec<GpuDataset>> for Bindings {
     fn from(datasets: Vec<GpuDataset>) -> Self {
@@ -2099,8 +2099,11 @@ impl GpuProgram {
         let physical = |i| location(i).0;
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
+            || owner.textures.iter().zip(c.program.textures().iter().flat_map(|binding|
+                std::iter::repeat_n(binding.dimension, binding.elements() as usize)))
+                .any(|(texture, dimension)| texture.dimension() != dimension)
         {
-            return Err(error("纹理数量或设备归属与程序不一致"));
+            return Err(error("纹理数量、维度或设备归属与程序不一致"));
         }
         for texture in &owner.textures {
             owner.dependencies.push(texture.produced());
@@ -2808,13 +2811,13 @@ struct InputOwner {
     dependencies: Vec<Rc<Execution>>,
     bindings: DomainBindings<GpuDataset>,
     accelerations: Vec<Acceleration>,
-    textures: Vec<Texture>,
+    textures: Vec<TextureInput>,
 }
 impl InputOwner {
     fn after(
         previous: impl IntoIterator<Item = Submission>,
         accelerations: Vec<Acceleration>,
-        textures: Vec<Texture>,
+        textures: Vec<TextureInput>,
         inner: &Rc<Inner>,
     ) -> Result<Self> {
         let mut owner = Self {

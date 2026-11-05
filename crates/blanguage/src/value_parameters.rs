@@ -26,7 +26,7 @@ pub(crate) fn validate(
             || parameter.name == owner
             || matches!(
                 parameter.name.as_str(),
-                "void" | "dataset" | "tile" | "view" | "array" | "acceleration" | "texture2d"
+                "void" | "dataset" | "tile" | "view" | "array" | "acceleration" | "texture2d" | "texture3d"
             )
             || params.iter().any(|p| p.name == parameter.name)
         {

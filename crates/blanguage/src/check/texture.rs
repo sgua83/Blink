@@ -83,14 +83,14 @@ impl Builder<'_> {
             resource.uniform = value.uniform;
             return Ok(Some(resource));
         }
-        self.fail(expr.span, "B239", "需要已有的 read texture2d 资源名称")
+        self.fail(expr.span, "B239", "需要已有的 read texture2d／texture3d 资源名称")
     }
     pub(super) fn texture_sample(&mut self, args: &[Expr], span: Span) -> Result<Option<Value>> {
         if args.len() != 3 {
             return self.fail(
                 span,
                 "B239",
-                "texture_sample(texture, float2 坐标, f32 lod) 需要三个参数",
+                "texture_sample(texture, float2／float3 坐标, f32 lod) 需要三个参数",
             );
         }
         let Some(texture) = self.texture_argument(&args[0])? else {
@@ -110,13 +110,14 @@ impl Builder<'_> {
         let Some(lod) = self.expr(&args[2])? else {
             return Ok(None);
         };
-        self.require_same(&Ty::vector(Scalar::F32, 2), &coordinate.ty, args[1].span)?;
+        let dimension = self.program.textures[texture.source.binding].dimension;
+        self.require_same(&Ty::vector(Scalar::F32, dimension.components()), &coordinate.ty, args[1].span)?;
         self.require_same(&Ty::scalar(Scalar::F32), &lod.ty, args[2].span)?;
         let result = std::array::from_fn(|_| self.reg(Scalar::F32));
         self.emit(InstKind::TextureSample {
             result,
             texture: texture.source,
-            coordinate: [coordinate.regs[0], coordinate.regs[1]],
+            coordinate: coordinate.regs.clone(),
             lod: lod.regs[0],
         });
         Ok(Some(Value {

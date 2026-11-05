@@ -161,7 +161,7 @@ IR结果保留原寄存器Scalar表、局部Ty及结束分量、嵌套控制流�
 
 原Emitter在主函数末端、探栈叶辅助结束、实际对齐与每项字面量写入处交接真实边界；主函数沿原function_end，不另建相同末端权威。查询借用同一NativeCode，交接完整原字节、偏移／长度和调用者声明的IP，主／辅助代码组合.5.1，字面量和对齐仅交接原字节；重定位保留原目标，不把占位值当最终地址。不从模板长度或反汇编结果猜测范围。
 
-StageCode／ContinuationCode／SortCode按实际容器逐层交接，ProgramImage的functions另按原名称与代码交接本映像实际消费的普通callee，多个独立映像的相对IP不能假称共同装载地址；普通函数同一finish亦生产范围，正式函数／节查询归.5.3。观察事实属于compiler角色，不强制进入正式BLRI执行编码；未保留的事实明确缺失，不重读源码或生成第二份代码补齐。输出独立归调用者，原代码和CPU／GPU消费者寿命不变。现有NativeCode::code_json(ip)、StageCode／ProgramImage::code_json只消费这些原事实；bc build显式导出同名.x64.json。tail_regions只在compiler角色存在，原resource编解码仍只交接执行字段，恢复值未保留观察事实时明确报缺失；不修改BLRI28或普通运行角色。规范见[生成期映像查询](BLanguage.md#生成期原生映像的范围与指令查询)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-1)。
+StageCode／ContinuationCode／SortCode按实际容器逐层交接，ProgramImage的functions另按原名称与代码交接本映像实际消费的普通callee，多个独立映像的相对IP不能假称共同装载地址；普通函数同一finish亦生产范围，正式函数／节查询归.5.3。观察事实属于compiler角色，不强制进入正式BLRI执行编码；未保留的事实明确缺失，不重读源码或生成第二份代码补齐。输出独立归调用者，原代码和CPU／GPU消费者寿命不变。现有NativeCode::code_json(ip)、StageCode／ProgramImage::code_json只消费这些原事实；bc build显式导出同名.x64.json。tail_regions只在compiler角色存在，原resource编解码仍只交接执行字段，恢复值未保留观察事实时明确报缺失；不修改BLRI29或普通运行角色。规范见[生成期映像查询](BLanguage.md#生成期原生映像的范围与指令查询)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-1)。
 
 <a id="tool-5-2-2"></a>
 
@@ -169,7 +169,7 @@ StageCode／ContinuationCode／SortCode按实际容器逐层交接，ProgramImag
 
 原生成结果显式保存与同一CPU代码匹配的必要范围事实，交接独立BLCR1材料；无源码装入后消费原材料，不重编或猜历史。代码、身份及材料各有原所有者与结束条件，不复制代码、图、索引或装入器。正式包不带材料仍保持原执行字节、必要ABI、重定位及原生展开；未保存或剥离后如实报告不可取得。接续.5.2.1，部署材料分离复用.70，普通COFF仍沿.5.3。
 
-现有build::Compilation与resource::Module的code_observations／restore_code_observations只交接各原CPU代码的执行字段摘要及原尾部分区；Module按原前置合同分组以对应Compilation的programs／templates，各组及原阶段／延续／Sort容器顺序保持，每个CPU映像随后交接functions原顺序的命名callee；捕获和恢复共用同一代码迭代。摘要消费原NativeCode执行编码，不含源码、SDK或工具链身份；匹配只说明同一执行编码，不证明来源、指令安全或硬件运行。数量、匹配及范围完整覆盖在任何写入前核对，成功整体交回原tail_regions，错误不部分改写。材料归调用者，无材料的缓存或部署值明确缺失，不自动重编；BLBI1／BLRI28执行编码与运行角色不消费材料，纯GPU不伪造CPU范围。
+现有build::Compilation与resource::Module的code_observations／restore_code_observations只交接各原CPU代码的执行字段摘要及原尾部分区；Module按原前置合同分组以对应Compilation的programs／templates，各组及原阶段／延续／Sort容器顺序保持，每个CPU映像随后交接functions原顺序的命名callee；捕获和恢复共用同一代码迭代。摘要消费原NativeCode执行编码，不含源码、SDK或工具链身份；匹配只说明同一执行编码，不证明来源、指令安全或硬件运行。数量、匹配及范围完整覆盖在任何写入前核对，成功整体交回原tail_regions，错误不部分改写。材料归调用者，无材料的缓存或部署值明确缺失，不自动重编；BLBI1／BLRI29执行编码与运行角色不消费材料，纯GPU不伪造CPU范围。
 
 bc code的BLBI／显式--image BLRI模式，及build::code_facts／image_code_facts在Compiler初始化前沿原编解码按显式可选CPU材料恢复并调用原CPU／GPU查询，不读源码、创建驱动／执行内存或运行代码。JSON保留原programs／templates或images索引，CPU交接完整原查询，GPU交接同一ProgramImage的完整SPIR-V结构；CPU地址与GPU模块偏移各自相对，不混成装载现场；输出归调用者，不持有执行资源。SDK捕获由生成结果的真实调用方显式请求，现有bc build的JSON不冒称持久材料。规范见[保存／恢复合同](BLanguage.md#保存和恢复可选cpu范围材料)，[闭合记录](FixedIssues.md#c-021-7-9-5-2-2)。
 
@@ -1655,9 +1655,9 @@ CPU 存储连续，GPU 逻辑 dataset 沿当前页表及完整记录布局分页
 
 纹理采样的通道解码、坐标／mip 分数量化、过滤算术及返回值精度统一由[语言规范的采样数值合同](BLanguage.md#采样数值与目标精度)定义；CPU 原生 f32 展开与 GPU 原生 sampled-image 过滤消费同一资源，资源保真不代表采样逐位相同。精度说明不改变原图像／sampler／最后消费者的所有权，也不增加软件替代采样或另一份像素权威。
 
-原只读纹理所有者同时提供Rust SDK二维与三维体资源：`Texture2D`／`TextureMip`和`Texture3D`／`TextureMip3D`各自以同一Arc保存不可变mip、原通道位模式及实际维度；体数据x连续、再y、再z，不建立图集或CPU解码镜像。二维资产写BLTEX v2，三维体资产写带dimension=3的BLTEX v3，各层拥有真实宽高深；文件与具体格式分开，定义见语言规范。`Device::upload_texture`与`upload_texture3d`复用同一原图像创建／传输主体，返回默认`vulkan::Texture<2>`与`Texture<3>`；同一Storage／Image／uploaded继续持有原生image、view、sampler及上传完成点。维度由Rust类型交接，当前二维采样绑定不接收三维句柄。创建处分别消费实际格式的过滤／传输位与同一format、imageType、tiling、usage、flags的图像能力，不能用全局二维尺寸或格式位近似三维可用范围；平台错误沿原Result返回。
+原只读纹理所有者同时提供Rust SDK二维与三维体资源：`Texture2D`／`TextureMip`和`Texture3D`／`TextureMip3D`各自以同一Arc保存不可变mip、原通道位模式及实际维度；体数据x连续、再y、再z，不建立图集或CPU解码镜像。二维资产写BLTEX v2，三维体资产写带dimension=3的BLTEX v3，各层拥有真实宽高深；文件与具体格式分开，定义见语言规范。`Device::upload_texture`与`upload_texture3d`复用同一原图像创建／传输主体，返回默认`vulkan::Texture<2>`与`Texture<3>`；同一Storage／Image／uploaded继续持有原生image、view、sampler及上传完成点。维度由原 TextureBinding 交接，CPU 与 Vulkan 原 Bindings 的 textures 分别通过 TextureInput::{D2,D3} 持有相应原资源，可在同一入口交付混合维度列表；数组内部仍维度一致。输入数量、静态维度与实际设备归属在原资源入口交接，不创建另一份拥有关系。创建处分别消费实际格式的过滤／传输位与同一format、imageType、tiling、usage、flags的图像能力，不能用全局二维尺寸或格式位近似三维可用范围；平台错误沿原Result返回。
 
-`download_texture`／`download_texture3d`沿同一原显式读回主体取得完整mip，三维复制使用真实extent.depth、逐轴缩小和原层间staging对齐，恢复原采样布局；没有原CPU像素缓存。上传交接后CPU资产可以结束，staging和图像仍由原Execution及最后真实消费者保持；克隆只延长同一所有者。三维体资产和GPU上传／读回已提供，B的`texture3d`、CPU三线性与SPIR-V三维采样仍沿[C-003.2.3／.4](Issues.md#c-003-2)继续，BLEngine Filmic LUT须由引擎实际采用，不能由体数据传输结果代替。CPU二维采样描述与原模块资源ABI不因Rust体资产接口而改变。
+`download_texture`／`download_texture3d`沿同一原显式读回主体取得完整mip，三维复制使用真实extent.depth、逐轴缩小和原层间staging对齐，恢复原采样布局；没有原CPU像素缓存。上传交接后CPU资产可以结束，staging和图像仍由原Execution及最后真实消费者保持；克隆只延长同一所有者。B 的 texture2d／texture3d 在计算入口及源内普通函数展开中分别消费 float2／float3 坐标，沿同一 TextureSample IR。CPU 降低器按维度取四／八点并逐轴插值、混合 mip；原生地址使用 64 位整数，CPU mip 描述统一交接宽高深与原像素指针。二维／三维构造和资产读取复用原检查字节大小的函数，按真实载荷和布局接收，不以 2^24 经验值限制尺寸。SPIR-V 直接交接真实图像维度和原生采样指令，资源继续沿原上传及最后消费者释放。执行映像编码中的 TextureBinding 维度及实际 CPU 描述布局由 BLRI29 标识，旧映像须沿原构建流程重编。独立普通纹理函数输入 ABI 仍缺失，见 C-003.2.3.1；NVIDIA 三维小数 LOD 偏差仍见 C-003.2.4.1.2，不能以局部通过宣称全部 GPU 数值正确。BLEngine Filmic LUT 须由引擎实际采用，不能由语言实现或体数据传输结果代替。
 
 Submission／GpuCompletion 观察同一真实提交，结果可在观察者退出后继续消费。交换链 try_present 的 Pending 只是未取得可用图像／信号量的原生可用性；Ready 表示已排队，不表示上屏或源拷贝已完成。原存储的最后使用点随拷贝更新，详见 [DeviceSubmission.md](DeviceSubmission.md)。驱动预算是当前进程的动态估计，见 [DeviceMemory.md](DeviceMemory.md)，不是逻辑资源总量或硬上限。
 

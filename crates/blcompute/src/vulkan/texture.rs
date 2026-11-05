@@ -217,6 +217,25 @@ impl<const D: usize> Texture<D> {
         }
     }
 }
+/// 提交输入保留原图像所有者；不同维度不会改变同一图像的身份。
+#[derive(Clone)]
+pub enum TextureInput { D2(Texture), D3(Texture<3>) }
+impl From<Texture> for TextureInput { fn from(value: Texture) -> Self { Self::D2(value) } }
+impl From<Texture<3>> for TextureInput { fn from(value: Texture<3>) -> Self { Self::D3(value) } }
+impl TextureInput {
+    pub fn dimension(&self) -> blanguage::ast::TextureDimension {
+        match self { Self::D2(_) => blanguage::ast::TextureDimension::D2, Self::D3(_) => blanguage::ast::TextureDimension::D3 }
+    }
+    pub(super) fn produced(&self) -> Rc<Execution> {
+        match self { Self::D2(t) => t.produced(), Self::D3(t) => t.produced() }
+    }
+    pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
+        match self { Self::D2(t) => t.belongs_to(inner), Self::D3(t) => t.belongs_to(inner) }
+    }
+    pub(super) fn descriptor(&self) -> DescriptorImageInfo {
+        match self { Self::D2(t) => t.descriptor(), Self::D3(t) => t.descriptor() }
+    }
+}
 impl Device {
     pub fn upload_texture(&self, source: &crate::Texture2D) -> Result<Texture> {
         let [width, height] = source.dimensions();

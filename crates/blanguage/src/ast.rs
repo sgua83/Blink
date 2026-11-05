@@ -74,6 +74,19 @@ pub enum Target {
     Cpu,
     Gpu,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TextureDimension {
+    D2,
+    D3,
+}
+impl TextureDimension {
+    pub fn components(self) -> usize {
+        match self { Self::D2 => 2, Self::D3 => 3 }
+    }
+    pub fn name(self) -> &'static str {
+        match self { Self::D2 => "texture2d", Self::D3 => "texture3d" }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName {
     pub name: String,
@@ -132,8 +145,19 @@ impl TypeName {
     pub fn is_texture_resource(&self) -> bool {
         self.is_texture() || self.texture_array_shape().is_some()
     }
+    pub fn texture_dimension(&self) -> Option<TextureDimension> {
+        match self.name.as_str() {
+            "texture2d" if self.is_texture() => Some(TextureDimension::D2),
+            "texture3d" if self.is_texture() => Some(TextureDimension::D3),
+            "array" if self.texture_array_shape().is_some() => match &self.arguments[0] {
+                GenericArgument::Type(element) => element.texture_dimension(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
     pub fn is_texture(&self) -> bool {
-        self.name == "texture2d"
+        matches!(self.name.as_str(), "texture2d" | "texture3d")
             && self.arguments.is_empty()
             && !self.dataset
             && !self.view

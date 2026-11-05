@@ -56,7 +56,7 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
     let end = data_end + program.texture_count();
     if args.len() < end {
         return Err(error(
-            "每个 dataset 需要 .bldata／:元素数，每个 texture2d 需要 .bltex 文件",
+            "每个 dataset 需要 .bldata／:元素数，每个 texture2d／texture3d 需要匹配维度的 .bltex 文件",
         ));
     }
     let mut datasets = Vec::new();
@@ -69,7 +69,12 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
     }
     let textures = args[data_end..end]
         .iter()
-        .map(|p| blcompute::Texture2D::read(Path::new(p)))
+        .zip(program.textures().iter().flat_map(|binding|
+            std::iter::repeat_n(binding.dimension, binding.elements() as usize)))
+        .map(|(p, dimension)| match dimension {
+            blanguage::ast::TextureDimension::D2 => blcompute::Texture2D::read(Path::new(p)).map(Into::into),
+            blanguage::ast::TextureDimension::D3 => blcompute::Texture3D::read(Path::new(p)).map(Into::into),
+        })
         .collect::<Result<Vec<_>>>()?;
     let tail = &args[end..];
     let mut arguments = if let Some(first) = tail.first() {
@@ -127,7 +132,10 @@ fn compute(args: &[String], capture_timestamps: bool) -> Result<()> {
                 .collect::<Result<Vec<_>>>()?;
             let textures = textures
                 .iter()
-                .map(|t| device.upload_texture(t))
+                .map(|t| match t {
+                    blcompute::cpu::TextureInput::D2(t) => device.upload_texture(t).map(Into::into),
+                    blcompute::cpu::TextureInput::D3(t) => device.upload_texture3d(t).map(Into::into),
+                })
                 .collect::<Result<Vec<_>>>()?;
             let done = compiled
                 .submit(

@@ -1,4 +1,4 @@
-use crate::ast::{Access, Target};
+use crate::ast::{Access, Target, TextureDimension};
 use std::{collections::{BTreeMap, BTreeSet}, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
@@ -857,6 +857,7 @@ pub struct TextureSource {
 pub struct TextureBinding {
     pub name: String,
     pub count: Option<u32>,
+    pub dimension: TextureDimension,
 }
 impl TextureBinding {
     pub fn elements(&self) -> u32 {
@@ -889,11 +890,11 @@ pub enum InstKind {
     TextureSample {
         result: [Reg; 4],
         texture: TextureSource,
-        coordinate: [Reg; 2],
+        coordinate: Vec<Reg>,
         lod: Reg,
     },
     TextureSize {
-        result: [Reg; 2],
+        result: Vec<Reg>,
         texture: TextureSource,
         level: Reg,
     },
@@ -913,14 +914,14 @@ pub enum InstKind {
     TextureRead {
         dst: Reg,
         texture: TextureSource,
-        coordinate: [Reg; 2],
+        coordinate: Vec<Reg>,
         level: Reg,
         byte: bool,
     },
     TextureFetch {
         result: [Reg; 4],
         texture: TextureSource,
-        coordinate: [Reg; 2],
+        coordinate: Vec<Reg>,
         level: Reg,
     },
     LoadIndexed {
@@ -1879,8 +1880,8 @@ impl Program {
         for (i, texture) in self.textures.iter().enumerate() {
             let name = &texture.name;
             out += &format!(
-                "  texture {}: Read {name} : texture2d\n",
-                self.buffers.len() + self.accelerations.len() + i
+                "  texture {}: Read {name} : {}\n",
+                self.buffers.len() + self.accelerations.len() + i, texture.dimension.name()
             );
             if let Some(count) = texture.count {
                 out += &format!("    array elements={count}\n");

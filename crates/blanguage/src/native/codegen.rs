@@ -355,8 +355,9 @@ impl Emitter<'_> {
                     level,
                 } => {
                     self.texture_level(*texture, *level);
-                    self.read_scalar(result[0], 15, 0);
-                    self.read_scalar(result[1], 15, 4);
+                    for (axis, dst) in result.iter().enumerate() {
+                        self.read_scalar(*dst, 15, axis as u32 * 4);
+                    }
                 }
                 InstKind::TextureLevels { dst, texture } => {
                     self.texture_pointer(*texture);
@@ -377,15 +378,7 @@ impl Emitter<'_> {
                     coordinate,
                     byte,
                 } => {
-                    self.texture_level(*texture, *level);
-                    self.load(coordinate[1]);
-                    self.bytes(&[0x41, 0x8b, 0x0f, 0x48, 0x0f, 0xaf, 0xc1, 0x48, 0x89, 0xc2]);
-                    self.load(coordinate[0]);
-                    self.bytes(&[0x48, 0x01, 0xd0]);
-                    if !byte {
-                        self.bytes(&[0x48, 0xc1, 0xe0, 2]);
-                    }
-                    self.bytes(&[0x4d, 0x8b, 0x7f, 8, 0x49, 0x01, 0xc7]);
+                    self.texture_texel(*texture, *level, coordinate, if *byte { 0 } else { 2 });
                     if *byte {
                         self.bytes(&[0x41, 0x0f, 0xb6, 0x07]);
                         self.store(*dst);
@@ -399,12 +392,7 @@ impl Emitter<'_> {
                     level,
                     coordinate,
                 } => {
-                    self.texture_level(*texture, *level);
-                    self.load(coordinate[1]);
-                    self.bytes(&[0x41, 0x8b, 0x0f, 0x48, 0x0f, 0xaf, 0xc1, 0x48, 0x89, 0xc2]);
-                    self.load(coordinate[0]);
-                    self.bytes(&[0x48, 0x01, 0xd0, 0x48, 0xc1, 0xe0, 4]);
-                    self.bytes(&[0x4d, 0x8b, 0x7f, 8, 0x49, 0x01, 0xc7]);
+                    self.texture_texel(*texture, *level, coordinate, 4);
                     for (i, dst) in result.iter().enumerate() {
                         self.read_scalar(*dst, 15, i as u32 * 4);
                     }

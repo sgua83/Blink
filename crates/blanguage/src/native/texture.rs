@@ -36,7 +36,7 @@ impl Lower {
     }
     fn min_u(&mut self, a: Reg, b: Reg) -> Reg {
         let condition = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Less), a, b);
-        let dst = self.reg(Scalar::U32);
+        let dst = self.reg(self.registers[a]);
         self.code.push(Inst::new(InstKind::Select {
             dst,
             condition,
@@ -81,7 +81,7 @@ impl Lower {
     fn texel(
         &mut self,
         texture: TextureSource,
-        coordinate: [Reg; 2],
+        coordinate: &[Reg],
         level: Reg,
         format: Reg,
     ) -> [Reg; 4] {
@@ -97,7 +97,7 @@ impl Lower {
         self.code.push(Inst::new(InstKind::TextureFetch {
             result,
             texture,
-            coordinate,
+            coordinate: coordinate.to_vec(),
             level,
         }));
         let floats = std::mem::take(&mut self.code);
@@ -113,7 +113,7 @@ impl Lower {
         self.code.push(Inst::new(InstKind::TextureRead {
             dst: raw,
             texture,
-            coordinate,
+            coordinate: coordinate.to_vec(),
             level,
             byte: true,
         }));
@@ -134,7 +134,7 @@ impl Lower {
         self.code.push(Inst::new(InstKind::TextureRead {
             dst: raw,
             texture,
-            coordinate,
+            coordinate: coordinate.to_vec(),
             level,
             byte: false,
         }));
@@ -207,95 +207,74 @@ impl Lower {
     fn level_sample(
         &mut self,
         texture: TextureSource,
-        coordinate: [Reg; 2],
+        coordinate: &[Reg],
         level: Reg,
         address: Reg,
         format: Reg,
     ) -> [Reg; 4] {
-        let dimensions = std::array::from_fn(|_| self.reg(Scalar::U32));
+        let dimensions: Vec<_> = coordinate.iter().map(|_| self.reg(Scalar::U32)).collect();
         self.code.push(Inst::new(InstKind::TextureSize {
-            result: dimensions,
-            texture,
-            level,
+            result: dimensions.clone(), texture, level,
         }));
-        let one = self.constant(Scalar::U32, 1);
+        let one = self.constant(Scalar::I64, 1);
+        let zero_i = self.constant(Scalar::I64, 0);
+        let zero_u = self.constant(Scalar::U32, 0);
         let zero = self.constant(Scalar::F32, 0);
         let half = self.constant(Scalar::F32, 0.5f32.to_bits());
-        let mut first = [0; 2];
-        let mut next = [0; 2];
-        let mut fraction = [0; 2];
-        for axis in 0..2 {
-            let last = self.binary(Scalar::U32, BinaryOp::ISub, dimensions[axis], one);
-            let last_float = self.cast(Scalar::F32, last);
+        let mut first = Vec::new();
+        let mut next = Vec::new();
+        let mut fraction = Vec::new();
+        for axis in 0..coordinate.len() {
+            // u32资源尺寸在64位地址域中运算；f32舍入不能制造越界texel。
+            let size = self.cast(Scalar::I64, dimensions[axis]);
+            let last = self.binary(Scalar::I64, BinaryOp::ISub, size, one);
             let size_float = self.cast(Scalar::F32, dimensions[axis]);
             let scaled = self.binary(Scalar::F32, BinaryOp::FMul, coordinate[axis], size_float);
             let centered = self.binary(Scalar::F32, BinaryOp::FSub, scaled, half);
             let positive = self.math(MathOp::Max, centered, zero);
-            let at = self.math(MathOp::Min, positive, last_float);
-            first[axis] = self.cast(Scalar::U32, at);
-            let base = self.cast(Scalar::F32, first[axis]);
-            fraction[axis] = self.binary(Scalar::F32, BinaryOp::FSub, at, base);
-            let adjacent = self.binary(Scalar::U32, BinaryOp::IAdd, first[axis], one);
-            next[axis] = self.min_u(adjacent, last);
-            // 先周期化归一坐标，再对四个真实tap分别寻址；边界两侧共同参与过滤。
+            let at = self.math(MathOp::Min, positive, size_float);
+            let raw = self.cast(Scalar::I64, at);
+            let clamped = self.min_u(raw, last);
+            let base = self.cast(Scalar::F32, raw);
+            let weight_clamped = self.binary(Scalar::F32, BinaryOp::FSub, at, base);
+            let adjacent = self.binary(Scalar::I64, BinaryOp::IAdd, raw, one);
+            let clamped_next = self.min_u(adjacent, last);
+            // 归一坐标先周期化，各真实tap分别寻址，跨边界共同参与过滤。
             let floor = self.math(MathOp::Floor, coordinate[axis], coordinate[axis]);
             let unit = self.binary(Scalar::F32, BinaryOp::FSub, coordinate[axis], floor);
             let scaled = self.binary(Scalar::F32, BinaryOp::FMul, unit, size_float);
             let centered = self.binary(Scalar::F32, BinaryOp::FSub, scaled, half);
             let base = self.math(MathOp::Floor, centered, centered);
-            let negative = self.binary(
-                Scalar::Bool,
-                BinaryOp::Compare(Comparison::Less),
-                base,
-                zero,
-            );
-            let index = self.cast(Scalar::U32, base);
-            let zero_u = self.constant(Scalar::U32, 0);
-            let at_limit = self.binary(
-                Scalar::Bool,
-                BinaryOp::Compare(Comparison::Equal),
-                index,
-                dimensions[axis],
-            );
-            let index = self.select(Scalar::U32, at_limit, zero_u, index);
-            let wrapped = self.select(Scalar::U32, negative, last, index);
-            let next_index = self.binary(Scalar::U32, BinaryOp::IAdd, wrapped, one);
-            let at_end = self.binary(
-                Scalar::Bool,
-                BinaryOp::Compare(Comparison::Equal),
-                wrapped,
-                last,
-            );
-            let wrapped_next = self.select(Scalar::U32, at_end, zero_u, next_index);
+            let index = self.cast(Scalar::I64, base);
+            let negative = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Less), index, zero_i);
+            let at_limit = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::GreaterEqual), index, size);
+            let reduced = self.binary(Scalar::I64, BinaryOp::ISub, index, size);
+            let wrapped = self.select(Scalar::I64, at_limit, reduced, index);
+            let wrapped = self.select(Scalar::I64, negative, last, wrapped);
+            let next_index = self.binary(Scalar::I64, BinaryOp::IAdd, wrapped, one);
+            let at_end = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), wrapped, last);
+            let wrapped_next = self.select(Scalar::I64, at_end, zero_i, next_index);
             let weight = self.binary(Scalar::F32, BinaryOp::FSub, centered, base);
             let bit = self.constant(Scalar::U32, 1 << axis);
             let flag = self.binary(Scalar::U32, BinaryOp::And, address, bit);
-            let repeat = self.binary(
-                Scalar::Bool,
-                BinaryOp::Compare(Comparison::NotEqual),
-                flag,
-                zero_u,
-            );
-            first[axis] = self.select(Scalar::U32, repeat, wrapped, first[axis]);
-            next[axis] = self.select(Scalar::U32, repeat, wrapped_next, next[axis]);
-            fraction[axis] = self.select(Scalar::F32, repeat, weight, fraction[axis]);
+            let repeat = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::NotEqual), flag, zero_u);
+            first.push(self.select(Scalar::I64, repeat, wrapped, clamped));
+            next.push(self.select(Scalar::I64, repeat, wrapped_next, clamped_next));
+            fraction.push(self.select(Scalar::F32, repeat, weight, weight_clamped));
         }
         let mut taps = Vec::new();
-        for coordinate in [
-            [first[0], first[1]],
-            [next[0], first[1]],
-            [first[0], next[1]],
-            [next[0], next[1]],
-        ] {
-            taps.push(self.texel(texture, coordinate, level, format));
+        for mask in 0..1 << coordinate.len() {
+            let at: Vec<_> = (0..coordinate.len()).map(|axis|
+                if mask & (1 << axis) == 0 { first[axis] } else { next[axis] }).collect();
+            taps.push(self.texel(texture, &at, level, format));
         }
-        std::array::from_fn(|i| {
-            let top = self.lerp(taps[0][i], taps[1][i], fraction[0]);
-            let bottom = self.lerp(taps[2][i], taps[3][i], fraction[0]);
-            self.lerp(top, bottom, fraction[1])
-        })
+        for weight in fraction {
+            taps = taps.chunks_exact(2).map(|pair|
+                std::array::from_fn(|i| self.lerp(pair[0][i], pair[1][i], weight))).collect();
+        }
+        taps[0]
     }
-    fn sample(&mut self, result: [Reg; 4], texture: TextureSource, coordinate: [Reg; 2], lod: Reg) {
+    fn sample(&mut self, result: [Reg; 4], texture: TextureSource, coordinate: &[Reg], lod: Reg) {
         let zero = self.constant(Scalar::F32, 0);
         let one = self.constant(Scalar::U32, 1);
         let levels = self.reg(Scalar::U32);
@@ -341,7 +320,7 @@ impl Lower {
                     texture,
                     coordinate,
                     lod,
-                } => self.sample(result, texture, coordinate, lod),
+                } => self.sample(result, texture, &coordinate, lod),
                 InstKind::Scope(body) => {
                     let body = self.block(body);
                     self.code.push(Inst { kind: InstKind::Scope(body), ..inst });
@@ -425,6 +404,18 @@ impl Emitter<'_> {
         self.texture_pointer(texture);
         self.bytes(&[0x4d, 0x8b, 0x7f, 8]);
         self.load(level);
-        self.bytes(&[0x48, 0xc1, 0xe0, 4, 0x49, 0x01, 0xc7]);
+        self.bytes(&[0x48, 0x6b, 0xc0, 24, 0x49, 0x01, 0xc7]);
+    }
+    pub(super) fn texture_texel(&mut self, texture: TextureSource, level: Reg, coordinate: &[Reg], shift: u8) {
+        self.texture_level(texture, level);
+        self.load(coordinate[coordinate.len() - 1]);
+        for axis in (0..coordinate.len() - 1).rev() {
+            self.bytes(&[0x41, 0x8b, 0x4f, axis as u8 * 4]);
+            self.bytes(&[0x48, 0x0f, 0xaf, 0xc1, 0x48, 0x89, 0xc2]);
+            self.load(coordinate[axis]);
+            self.bytes(&[0x48, 0x01, 0xd0]);
+        }
+        if shift != 0 { self.bytes(&[0x48, 0xc1, 0xe0, shift]); }
+        self.bytes(&[0x4d, 0x8b, 0x7f, 16, 0x49, 0x01, 0xc7]);
     }
 }

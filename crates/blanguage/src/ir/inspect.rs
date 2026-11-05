@@ -295,7 +295,7 @@ impl Program {
             ("source_origin", optional(self.source_origin.as_ref(), SourceOrigin::ir_json)),
             ("generated_origin", optional(self.generated_origin(), GeneratedOrigin::ir_json)),
             ("accelerations", array(self.accelerations.iter().map(|v| text(v)))),
-            ("textures", array(self.textures.iter().map(|v| node("texture_binding", &[("name", text(&v.name)), ("count", optional(v.count.as_ref(), |v| number(v)))])))),
+            ("textures", array(self.textures.iter().map(|v| node("texture_binding", &[("name", text(&v.name)), ("dimension", number(v.dimension.components())), ("count", optional(v.count.as_ref(), |v| number(v)))])))),
             ("prefix_requirements", array(self.prefix_requirements.iter().map(relation))),
             ("prefix_guarantees", array(self.prefix_guarantees.iter().map(relation))),
             ("length_requirements", array(self.length_requirements.iter().map(|(left, right)| node("same_length", &[("left", number(left)), ("right", number(right))])))),

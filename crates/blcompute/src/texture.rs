@@ -109,10 +109,31 @@ pub enum TextureAddress {
     Clamp,
     Repeat,
 }
+/// 原CPU资源的拥有输入；变体保留原不可变像素所有者。
+#[derive(Clone)]
+pub enum TextureInput {
+    D2(Texture2D),
+    D3(Texture3D),
+}
+impl From<Texture2D> for TextureInput { fn from(value: Texture2D) -> Self { Self::D2(value) } }
+impl From<Texture3D> for TextureInput { fn from(value: Texture3D) -> Self { Self::D3(value) } }
+impl TextureInput {
+    pub fn dimension(&self) -> blanguage::ast::TextureDimension {
+        match self { Self::D2(_) => blanguage::ast::TextureDimension::D2, Self::D3(_) => blanguage::ast::TextureDimension::D3 }
+    }
+    fn format(&self) -> TextureFormat {
+        match self { Self::D2(t) => t.format(), Self::D3(t) => t.format() }
+    }
+    fn address_bits(&self) -> u32 {
+        let address = match self { Self::D2(t) => &t.address[..], Self::D3(t) => &t.address[..] };
+        address.iter().enumerate().fold(0, |bits, (axis, mode)| bits | (u32::from(*mode == TextureAddress::Repeat) << axis))
+    }
+}
 #[repr(C)]
 pub(crate) struct LevelDescriptor {
     width: u32,
     height: u32,
+    depth: u32,
     pixels: *const u8,
 }
 #[repr(C)]
@@ -127,40 +148,22 @@ pub(crate) struct CpuTextures {
     descriptors: Vec<TextureDescriptor>,
 }
 impl CpuTextures {
-    pub fn new(textures: &[Texture2D]) -> Self {
-        let levels: Vec<Box<[LevelDescriptor]>> = textures
-            .iter()
-            .map(|t| {
-                t.levels
-                    .iter()
-                    .map(|m| LevelDescriptor {
-                        width: m.width,
-                        height: m.height,
-                        pixels: m.pixels.as_bytes().as_ptr(),
-                    })
-                    .collect()
-            })
-            .collect();
-        let descriptors = levels
-            .iter()
-            .zip(textures)
-            .map(|(m, t)| TextureDescriptor {
-                levels: m.len() as u32,
-                address: u32::from(t.address[0] == TextureAddress::Repeat)
-                    | (u32::from(t.address[1] == TextureAddress::Repeat) << 1),
-                mips: m.as_ptr(),
-                format: t.format() as u32,
-            })
-            .collect();
-        Self {
-            _levels: levels,
-            descriptors,
-        }
+    pub fn new(textures: &[TextureInput]) -> Self {
+        let levels: Vec<Box<[LevelDescriptor]>> = textures.iter().map(|t| match t {
+            TextureInput::D2(t) => t.levels.iter().map(|m| LevelDescriptor {
+                width: m.width, height: m.height, depth: 1, pixels: m.pixels.as_bytes().as_ptr(),
+            }).collect(),
+            TextureInput::D3(t) => t.levels.iter().map(|m| LevelDescriptor {
+                width: m.width, height: m.height, depth: m.depth, pixels: m.pixels.as_bytes().as_ptr(),
+            }).collect(),
+        }).collect();
+        let descriptors = levels.iter().zip(textures).map(|(m, t)| TextureDescriptor {
+            levels: m.len() as u32, address: t.address_bits(), mips: m.as_ptr(), format: t.format() as u32,
+        }).collect();
+        Self { _levels: levels, descriptors }
     }
     pub fn pointers(&self) -> impl Iterator<Item = *mut u32> {
-        self.descriptors
-            .iter()
-            .map(|d| (d as *const TextureDescriptor).cast_mut().cast())
+        self.descriptors.iter().map(|d| (d as *const TextureDescriptor).cast_mut().cast())
     }
 }
 impl Texture2D {
@@ -173,11 +176,9 @@ impl Texture2D {
         for level in &levels {
             if level.width == 0
                 || level.height == 0
-                || level.width > 1 << 24
-                || level.height > 1 << 24
                 || level.pixels.format() != format
-                || level.pixels.as_bytes().len() as u64
-                    != level.width as u64 * level.height as u64 * format.texel_bytes() as u64
+                || level.pixels.as_bytes().len()
+                    != texture_bytes([level.width, level.height, 1], format)?
             {
                 return Err(error("纹理尺寸、格式或负载不满足原生采样ABI"));
             }
@@ -246,11 +247,8 @@ impl Texture2D {
         for _ in 0..count {
             let width = word(&bytes, &mut at)?;
             let height = word(&bytes, &mut at)?;
-            let size = (width as u64)
-                .checked_mul(height as u64)
-                .and_then(|n| n.checked_mul(format.texel_bytes() as u64))
-                .ok_or_else(|| error("纹理层大小溢出"))?;
-            let data = take(&bytes, &mut at, usize::try_from(size)?)?;
+            let size = texture_bytes([width, height, 1], format)?;
+            let data = take(&bytes, &mut at, size)?;
             levels.push(TextureMip {
                 width,
                 height,
@@ -274,9 +272,9 @@ fn take<'a>(bytes: &'a [u8], at: &mut usize, n: usize) -> Result<&'a [u8]> {
 fn word(bytes: &[u8], at: &mut usize) -> Result<u32> {
     Ok(u32::from_le_bytes(take(bytes, at, 4)?.try_into()?))
 }
-fn volume_bytes(dimensions: [u32; 3], format: TextureFormat) -> Result<usize> {
+fn texture_bytes(dimensions: [u32; 3], format: TextureFormat) -> Result<usize> {
     dimensions.into_iter().try_fold(format.texel_bytes(), |bytes, extent|
-        bytes.checked_mul(extent as usize).ok_or_else(|| error("三维纹理层大小溢出")))
+        bytes.checked_mul(extent as usize).ok_or_else(|| error("纹理层大小溢出")))
 }
 /// x连续、其次y、最后z；pixels持有原格式的实际体数据。
 pub struct TextureMip3D {
@@ -301,7 +299,7 @@ impl Texture3D {
         for level in &levels {
             let dimensions = [level.width, level.height, level.depth];
             if dimensions.contains(&0) || level.pixels.format() != format
-                || level.pixels.as_bytes().len() != volume_bytes(dimensions, format)?
+                || level.pixels.as_bytes().len() != texture_bytes(dimensions, format)?
             {
                 return Err(error("三维纹理尺寸、格式或负载不满足原生图像布局"));
             }
@@ -363,7 +361,7 @@ impl Texture3D {
         let mut levels = Vec::new();
         for _ in 0..count {
             let dimensions = [word(&bytes, &mut at)?, word(&bytes, &mut at)?, word(&bytes, &mut at)?];
-            let data = take(&bytes, &mut at, volume_bytes(dimensions, format)?)?;
+            let data = take(&bytes, &mut at, texture_bytes(dimensions, format)?)?;
             levels.push(TextureMip3D { width: dimensions[0], height: dimensions[1], depth: dimensions[2],
                 pixels: TextureTexels::from_bytes(format, data)? });
         }

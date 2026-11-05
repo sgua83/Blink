@@ -620,7 +620,7 @@ pub(crate) fn load(
                 | "tile"
                 | "array"
                 | "result"
-                | "texture2d"
+                | "texture2d" | "texture3d"
                 | "void"
                 | "never"
         ) || ir::Ty::builtin(&record.name).is_some()
@@ -666,7 +666,7 @@ pub(crate) fn load(
                     | "array"
                     | "result"
                     | "acceleration"
-                    | "texture2d"
+                    | "texture2d" | "texture3d"
             )
             || matches!(
                 set.name.as_str(),
@@ -828,11 +828,11 @@ impl World {
         if name.name == "cfn" && !name.dataset && !name.view && !name.tile {
             return self.c_function_type(name, source, span, module, imports);
         }
-        if name.name == "texture2d" {
+        if matches!(name.name.as_str(), "texture2d" | "texture3d") {
             return source.fail(
                 span,
                 "B239",
-                "texture2d 只能作为 read 资源参数，不能作为普通值存储或返回",
+                "texture2d／texture3d 只能作为 read 资源参数，不能作为普通值存储或返回",
             );
         }
         if name.name == "void" {

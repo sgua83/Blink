@@ -481,15 +481,16 @@ impl<'a> Builder<'a> {
             }
             if param.ty.is_texture_resource() {
                 let Argument::Texture(index) = arg else {
-                    return self.fail(span, "B239", "read texture2d 参数需要纹理资源");
+                    return self.fail(span, "B239", "只读纹理参数需要相同维度的纹理资源");
                 };
                 if param.access != Access::Read {
                     return self.fail(span, "B239", "纹理只能只读借用");
                 }
-                if index.shape(self.program)
+                if param.ty.texture_dimension() != Some(self.program.textures[index.source.binding].dimension)
+                    || index.shape(self.program)
                     != texture::shape(self.world, &param.ty, callee, param.span)?
                 {
-                    return self.fail(span, "B239", "纹理资源数组形状与借用参数不一致");
+                    return self.fail(span, "B239", "纹理维度或资源数组形状与借用参数不一致");
                 }
                 env.insert(param.name.clone(), Binding::Texture(index));
                 continue;

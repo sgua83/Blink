@@ -1,3 +1,4 @@
+pub use crate::texture::TextureInput;
 mod dataset;
 mod sort;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
@@ -420,7 +421,7 @@ struct CpuCode {
 }
 pub struct Bindings<D = Vec<Dataset>> {
     pub datasets: D,
-    pub textures: Vec<crate::Texture2D>,
+    pub textures: Vec<TextureInput>,
 }
 /// 错误连同本次实际拥有组交回；数据及纹理只移动，已发生的CPU写入保持。
 pub type OwnedRunResult = std::result::Result<
@@ -720,7 +721,7 @@ impl CpuCode {
     fn run_mapped(
         &self,
         bindings: &mut DomainBindings<CpuDataset>,
-        textures: &[crate::Texture2D],
+        textures: &[TextureInput],
         values: &[Value],
         count: usize,
         physical: impl Fn(usize) -> (usize, u32) + Copy,
@@ -761,7 +762,7 @@ impl CpuCode {
     fn run(
         &self,
         datasets: &mut [Dataset],
-        textures: &[crate::Texture2D],
+        textures: &[TextureInput],
         values: &[Value],
     ) -> Result<()> {
         let buffers = datasets
@@ -773,12 +774,15 @@ impl CpuCode {
     fn run_buffers(
         &self,
         buffers: &[CpuBuffer<'_>],
-        textures: &[crate::Texture2D],
+        textures: &[TextureInput],
         values: &[Value],
         writing: impl FnOnce(),
     ) -> Result<()> {
-        if textures.len() != self.program.texture_count() {
-            return Err(error("纹理绑定数量与程序接口不一致"));
+        if textures.len() != self.program.texture_count()
+            || textures.iter().zip(self.program.textures().iter().flat_map(|binding|
+                std::iter::repeat_n(binding.dimension, binding.elements() as usize)))
+                .any(|(texture, dimension)| texture.dimension() != dimension) {
+            return Err(error("纹理绑定数量或维度与程序接口不一致"));
         }
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
         let mut uniforms = arguments(

@@ -33,7 +33,7 @@ pub fn run(backend: &str) -> Result<()> {
             let output = code.run_owned(
                 cpu::Bindings {
                     datasets: vec![points],
-                    textures: vec![albedo.clone()],
+                    textures: vec![albedo.clone().into()],
                 },
                 &[],
             ).map_err(|(error, _)| error)?;
@@ -42,7 +42,7 @@ pub fn run(backend: &str) -> Result<()> {
             let output = code.run_owned(
                 cpu::Bindings {
                     datasets: output,
-                    textures: vec![albedo],
+                    textures: vec![albedo.into()],
                 },
                 &[],
             ).map_err(|(error, _)| error)?;
@@ -62,7 +62,7 @@ pub fn run(backend: &str) -> Result<()> {
                     vulkan::Bindings {
                         datasets: vec![points],
                         accelerations: vec![],
-                        textures: vec![albedo.clone()],
+                        textures: vec![albedo.clone().into()],
                     },
                     &[],
                 )?
@@ -81,7 +81,7 @@ pub fn run(backend: &str) -> Result<()> {
                     vulkan::Bindings {
                         datasets: done.into_bindings(),
                         accelerations: vec![],
-                        textures: vec![albedo],
+                        textures: vec![albedo.into()],
                     },
                     &[],
                 )?

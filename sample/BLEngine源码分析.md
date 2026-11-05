@@ -1005,7 +1005,7 @@ frame 中 integrate 写 pixels，resolve 读 pixels。B 编译结果保存这些
         let (bindings, _, completion) = submitted.detach();
 ```
 
-`Bindings` 汇合本次真正使用的数据集、加速结构和纹理。submit 交给设备；detach 交出绑定与独立完成观察，实际存储仍由最后使用关系持有。BLRenderSubmission 可以稍后等待，原场景来源无需被搬出再归还。显示或 CPU 读取须消费相应依赖，提交返回不能代替 GPU 完成。
+`Bindings` 汇合本次真正使用的数据集、加速结构和纹理。语言 SDK 的 TextureInput::{D2,D3} 可以交接相应原纹理，维度由计算入口合同消费；这是语言资源接口，不能据此认定本书引擎代码已经采用新接口、接入 Filmic LUT 或完成效果验证。submit 交给设备；detach 交出绑定与独立完成观察，实际存储仍由最后使用关系持有。BLRenderSubmission 可以稍后等待，原场景来源无需被搬出再归还。显示或 CPU 读取须消费相应依赖，提交返回不能代替 GPU 完成。
 
 ### 18.4 布局由编译结果给出
 

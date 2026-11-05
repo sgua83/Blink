@@ -166,7 +166,7 @@ pub(crate) fn validate_parameters(
                     | "array"
                     | "result"
                     | "acceleration"
-                    | "texture2d"
+                    | "texture2d" | "texture3d"
             )
             || parameter.name == owner
         {

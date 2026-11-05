@@ -79,11 +79,10 @@ struct Emitter<'a> {
     buffers: Vec<u32>,
     accelerations: Vec<u32>,
     textures: Vec<u32>,
-    image_type: u32,
-    sampled_type: u32,
-    sampled_pointer: u32,
+    texture_types: BTreeMap<crate::ast::TextureDimension, (u32, u32, u32)>,
     vec4_type: u32,
     uint2_type: u32,
+    uint3_type: u32,
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, u32>,
     position_queries: std::collections::BTreeSet<Reg>,
@@ -372,7 +371,7 @@ impl Emitter<'_> {
                     texture,
                     coordinate,
                     lod,
-                } => self.texture_sample(*result, *texture, *coordinate, *lod),
+                } => self.texture_sample(*result, *texture, coordinate, *lod),
                 InstKind::TextureLevels { dst, texture } => {
                     let image = self.texture_image(*texture);
                     self.emit(106, &[self.types[&Scalar::U32], self.value(*dst), image]);
@@ -387,7 +386,8 @@ impl Emitter<'_> {
                 } => {
                     let image = self.texture_image(*texture);
                     let size = self.id();
-                    self.emit(103, &[self.uint2_type, size, image, self.value(*level)]);
+                    let ty = self.texture_coordinate_type(*texture, false);
+                    self.emit(103, &[ty, size, image, self.value(*level)]);
                     for (i, r) in result.iter().enumerate() {
                         self.emit(81, &[self.ty(*r), self.value(*r), size, i as u32]);
                     }
@@ -400,15 +400,9 @@ impl Emitter<'_> {
                 } => {
                     let image = self.texture_image(*texture);
                     let coord = self.id();
-                    self.emit(
-                        80,
-                        &[
-                            self.uint2_type,
-                            coord,
-                            self.value(coordinate[0]),
-                            self.value(coordinate[1]),
-                        ],
-                    );
+                    let mut operands = vec![self.texture_coordinate_type(*texture, false), coord];
+                    operands.extend(coordinate.iter().map(|r| self.value(*r)));
+                    self.emit(80, &operands);
                     let value = self.id();
                     self.emit(
                         95,
@@ -1227,11 +1221,10 @@ fn emit_shader(
         buffers: Vec::new(),
         accelerations: Vec::new(),
         textures: Vec::new(),
-        image_type: 0,
-        sampled_type: 0,
-        sampled_pointer: 0,
+        texture_types: BTreeMap::new(),
         vec4_type: 0,
         uint2_type: 0,
+        uint3_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
         position_queries: stage.ray_result_queries(6..15),
@@ -1385,28 +1378,26 @@ fn emit_shader(
         op(&mut e.defs, 23, &[e.vec4_type, e.types[&Scalar::F32], 4]);
         e.uint2_type = e.id();
         op(&mut e.defs, 23, &[e.uint2_type, u, 2]);
-        e.image_type = e.id();
-        op(
-            &mut e.defs,
-            25,
-            &[e.image_type, e.types[&Scalar::F32], 1, 0, 0, 0, 1, 0],
-        );
-        e.sampled_type = e.id();
-        op(&mut e.defs, 27, &[e.sampled_type, e.image_type]);
-        let pointer = e.id();
-        op(&mut e.defs, 32, &[pointer, 0, e.sampled_type]);
-        e.sampled_pointer = pointer;
         for i in 0..program.textures.len() {
+            let dimension = program.textures[i].dimension;
+            if !e.texture_types.contains_key(&dimension) {
+                let image = e.id();
+                op(&mut e.defs, 25, &[image, e.types[&Scalar::F32], dimension.components() as u32 - 1, 0, 0, 0, 1, 0]);
+                let sampled = e.id();
+                op(&mut e.defs, 27, &[sampled, image]);
+                let pointer = e.id();
+                op(&mut e.defs, 32, &[pointer, 0, sampled]);
+                e.texture_types.insert(dimension, (image, sampled, pointer));
+            }
+            let (_, sampled, pointer) = e.texture_types[&dimension];
             let pointer = if let Some(count) = program.textures[i].count {
                 let length = e.constant(Scalar::U32, count);
                 let array = e.id();
-                op(&mut e.defs, 28, &[array, e.sampled_type, length]);
+                op(&mut e.defs, 28, &[array, sampled, length]);
                 let pointer = e.id();
                 op(&mut e.defs, 32, &[pointer, 0, array]);
                 pointer
-            } else {
-                pointer
-            };
+            } else { pointer };
             let id = e.id();
             op(&mut e.defs, 59, &[pointer, id, 0]);
             op(&mut e.decorations, 71, &[id, 34, 0]);
@@ -1446,6 +1437,7 @@ fn emit_shader(
     }
     e.u64_type = e.types[&Scalar::U64];
     let v3 = e.id();
+    e.uint3_type = v3;
     op(&mut e.defs, 23, &[v3, u, 3]);
     let ptr_input = e.id();
     op(&mut e.defs, 32, &[ptr_input, 1, v3]);

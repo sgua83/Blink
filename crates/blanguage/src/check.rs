@@ -363,12 +363,13 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
             if p.access != Access::Read {
                 return d
                     .source
-                    .fail(p.span, "B239", "texture2d 必须声明 read 资源权限");
+                    .fail(p.span, "B239", "texture2d／texture3d 必须声明 read 资源权限");
             }
             env.insert(p.name.clone(), Root::Texture(textures.len()));
             textures.push(TextureBinding {
                 name: p.name.clone(),
                 count: texture::shape(world, &p.ty, d, p.span)?,
+                dimension: p.ty.texture_dimension().unwrap(),
             });
             continue;
         }
@@ -973,13 +974,14 @@ fn expand_stages(
                         Root::Texture(i) => {
                             if !p.ty.is_texture_resource()
                                 || p.access != Access::Read
+                                || p.ty.texture_dimension() != Some(program.textures[*i].dimension)
                                 || texture::shape(world, &p.ty, callee, p.span)?
                                     != program.textures[*i].count
                             {
                                 return d.source.fail(
                                     arg.span,
                                     "B239",
-                                    "纹理资源与 read texture2d 参数不匹配",
+                                    "纹理资源与只读纹理参数的维度／形状不匹配",
                                 );
                             }
                         }
@@ -1320,7 +1322,7 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
         if p.ty.is_texture_resource() && p.access != Access::Read {
             return d
                 .source
-                .fail(p.span, "B239", "texture2d 必须是 read 借用参数");
+                .fail(p.span, "B239", "texture2d／texture3d 必须是 read 借用参数");
         }
         if p.ty.tile
             && (d.function.kind != FunctionKind::Cooperative
@@ -1417,6 +1419,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
                 Ok(TextureBinding {
                     name: p.name.clone(),
                     count: texture::shape(world, &p.ty, d, p.span)?,
+                dimension: p.ty.texture_dimension().unwrap(),
                 })
             })
             .collect::<Result<Vec<_>>>()?,

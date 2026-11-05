@@ -302,7 +302,7 @@ fn main() -> Result<()> {
                     blcompute::cpu::Bindings {
                         datasets: cpu,
                         textures: if kind == 10 {
-                            vec![texture.clone()]
+                            vec![texture.clone().into()]
                         } else {
                             vec![]
                         },
@@ -323,7 +323,7 @@ fn main() -> Result<()> {
     eprintln!("GPU {}", device.name());
     let compiled = device.compile(program.clone())?.with_timestamps(true)?;
     let textures = if kind == 10 {
-        vec![device.upload_texture(&texture)?]
+        vec![device.upload_texture(&texture)?.into()]
     } else {
         vec![]
     };

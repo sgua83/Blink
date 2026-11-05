@@ -43,7 +43,7 @@ fn main() -> Result<()> {
             Bindings {
                 datasets: vec![points, pixels, display],
                 accelerations: vec![],
-                textures: vec![albedo],
+                textures: vec![albedo.into()],
             },
             &[],
         )?
