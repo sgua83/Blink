@@ -1009,8 +1009,8 @@ impl Builder<'_> {
         let item=self.unpack_variant(value,index);
         if let Some(name)=name.as_ref().filter(|n|n.as_str()!="_") {
             self.bind_returned(name,item,span)?;self.block(body)?;
-            if self.flow.continues() { if let Some(binding)=self.env.remove(name) {self.drop_binding(binding,&view::Borrow::default(),span)?;} }
-            else {self.env.remove(name);}
+            if self.flow.continues() { if let Some(binding)=self.env.get(name).cloned() {self.drop_binding(binding,&view::Borrow::default(),span)?;} }
+            self.env.remove(name);
             Ok(())
         } else {self.drop_returned(item,&view::Borrow::default(),span)?;self.block(body)}
     }

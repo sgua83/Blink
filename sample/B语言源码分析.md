@@ -1390,6 +1390,8 @@ fn retained_component(borrow:view::Borrow,component:usize,omitted:&BTreeMap<usiz
     }
 ```
 
+命名的match拥有载荷由owned_arm保留在原env绑定中，正常分支退出先调用既有drop_binding，待静态F、元素元数据读取和资源释放完成后才移出绑定。清理消费原拥有树及已求值位置，不让调用前已移动的旧来源代替正在清理的实际拥有者；实际已移出的字段与提前返回继续沿原出口处理，没有第二拥有表或释放路径。
+
 源码节选：`crates/blanguage/src/check/owned_values.rs:1040`。
 
 ```rust
