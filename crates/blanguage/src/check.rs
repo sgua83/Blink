@@ -1302,14 +1302,13 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
         if p.ty.dataset
             && !matches!(p.access, Access::Read | Access::Atomic)
             && !(d.function.kind == FunctionKind::Value
-                && (p.access == Access::InOut
-                    || d.function.target == Target::Cpu
-                        && matches!(p.access, Access::Value | Access::Write)))
+                && (matches!(p.access, Access::Write | Access::InOut)
+                    || d.function.target == Target::Cpu && p.access == Access::Value))
         {
             return d.source.fail(
                 p.span,
                 "B120",
-                "普通函数dataset参数支持read／inout／atomic；CPU应用函数另可按值取得所有权或按write借用",
+                "普通函数dataset参数支持read／write／inout／atomic；仅CPU应用函数可按值取得所有权",
             );
         }
         if p.ty.is_texture_resource() && p.access != Access::Read {

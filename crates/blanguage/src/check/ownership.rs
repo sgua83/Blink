@@ -449,7 +449,9 @@ impl Builder<'_> {
         }
     }
     pub(super) fn is_initialized(&self, place: &Place) -> bool {
-        let positions = self.positions(place);
+        self.positions_initialized(&self.positions(place))
+    }
+    pub(super) fn positions_initialized(&self, positions: &[Position]) -> bool {
         if positions.iter().all(|position| self.position_initialized_in(position, &self.initialized, &self.env)) {
             return true;
         }

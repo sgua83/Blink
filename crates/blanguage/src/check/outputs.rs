@@ -99,9 +99,8 @@ pub(super) fn validate_named(world: &World, definition: &Definition,
             continue;
         }
         let ContractPredicate::Initialized { value, condition } = &contract.predicate else { continue; };
-        if contract.kind != ContractKind::Ensures || definition.function.kind != FunctionKind::Value
-            || definition.function.target != Target::Cpu {
-            return definition.source.fail(contract.span, "B225", "initialized 是普通CPU函数的 ensures 输出合同");
+        if contract.kind != ContractKind::Ensures || definition.function.kind != FunctionKind::Value {
+            return definition.source.fail(contract.span, "B225", "initialized 是普通函数的 ensures 输出合同");
         }
         let condition = normalize(world, definition.into(), &definition.function.result, condition, contract.span)?;
         validate_output(value, &condition, &input, returned, &definition.source, contract.span)?;

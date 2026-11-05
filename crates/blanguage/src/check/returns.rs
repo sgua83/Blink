@@ -436,7 +436,7 @@ impl Builder<'_> {
                     let path=self.path.clone();
                     for(position,when)in self.positions(&place).into_iter().zip(guards) {
                         self.path=when.condition().assume(&path,true);
-                        if self.path.possible()&&!self.position_initialized_in(&position,&self.initialized,&self.env)
+                        if self.path.possible()&&!self.positions_initialized(std::slice::from_ref(&position))
                             &&!self.defer_position_initialization(vec![position],"B229",span)? {
                             return self.fail(span,"B229","返回前没有初始化本次dataset借用的输出分量");
                         }
