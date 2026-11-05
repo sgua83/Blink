@@ -585,6 +585,14 @@ GenerationAnchor::CastConstantFold及JSON kind cast_constant_fold分别提供exp
 
 动态输入仍发射原UnaryOp::Bitcast；原位宽、向量许可、数量／类型诊断、literal、Proof、source_site与布局保持。单源查询只借用已有expression，不补造未知来源。材料仅compiler，随原Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值、状态表、必要编码、运行指令或保活。数值转换与最终机器映射各沿原职责，见[位重解释架构](Architecture.md#tool-7-3-1-9-4)。
 
+#### 整数min／max已知结果的来源
+
+整数min／max由原numeric_operands确定实际共同Scalar与广播关系，再由原bounds::arithmetic及整数已知值求值决定是否物化完整Constant。整数求值在同一次返回结果时交接IntegerKnownValueBasis：SingletonRange对应有效结果区间单值，ZeroCondition对应原非零条件真分支不可能且假分支可能；普通known_value共用该原求值，不另算一次。只有原成功物化接点产生GenerationReason::MinmaxKnownValue，浮点或未取得完整已知结果的原比较／Select不误标。
+
+GenerationAnchor::MinmaxKnownValue及JSON kind minmax_known_value提供expression（原Constant的SourceSite或null）、operation、scalar、left_ranges／right_ranges、left_constant_present／right_constant_present、same_value、result_bits及basis（singleton_range／zero_condition）。区间为包含端点的原始标量位模式，按Scalar实际数值次序排列，不使用内部符号偏置编码。constant_present只报告整个原Value.constant存在与否，不冒充逐元素输入谱系。两侧component_index／component_count及结果component_index／component_count描述真实广播，component_index_base为0。
+
+这些材料只解释本次实际结果和有效局部前提，不保留Proof／条件图或完整输入谱系。单源查询只借用已有expression，未知为null；原literal、Proof、类型／精度、source_site、布局及运行语义保持。材料沿原compiler Inst、CSE／DCE／空Map根、模块／阶段实际结果及查询快照到最后IR消费者，不保留旧IR、AST／World或运行资源，不增加求值器、状态表、必要执行编码、运行指令或保活。见[整数已知结果架构](Architecture.md#tool-7-3-1-9-5)。
+
 #### 阶段常量结果到实际值IR的来源
 
 原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls接收evaluate已有材料；env中已有Root仍克隆同一原值和材料，实际Literal的Name读取再由下述StageConstantReference交接本次绑定。直接Number／StaticU32及计数器初始值不伪造读取或折叠；无折叠Name的retained可以为空，本次真实reference仍保留。

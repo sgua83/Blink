@@ -2818,8 +2818,25 @@ impl<'a> Builder<'a> {
             let ty = Ty::vector(scalar, n);
             let proof = bounds::arithmetic(op, &a, &b);
             let literal = a.literal && b.literal;
-            if let Some(bits) = proof.known_value(&ty) {
-                let mut value = self.constant_value(ty, bits,None);
+            if let Some(known) = proof.known_integer_value(&ty) {
+                let first = self.code.len();
+                let mut value = self.constant_value(ty, known.iter().map(|(bits, _)| *bits).collect(),None);
+                for (component_index, (inst, (result_bits, basis))) in self.code[first..].iter_mut().zip(known).enumerate() {
+                    let ai = component_index % a.regs.len();
+                    let bi = component_index % b.regs.len();
+                    inst.generated_origin = Some(Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::MinmaxKnownValue,
+                        trigger: Some(GenerationAnchor::MinmaxKnownValue {
+                            expression: inst.source_site.clone(), operation: op.into(), scalar,
+                            left_ranges: a.component_range_intervals(ai), right_ranges: b.component_range_intervals(bi),
+                            left_constant_present: a.constant.is_some(), right_constant_present: b.constant.is_some(),
+                            same_value: a.same_component(ai, &b, bi), result_bits, basis,
+                            left_component_index: ai, left_component_count: a.regs.len(),
+                            right_component_index: bi, right_component_count: b.regs.len(),
+                            component_index, component_count: n,
+                        }),
+                    }));
+                }
                 value.proof = proof;
                 value.literal = literal;
                 return Ok(value);

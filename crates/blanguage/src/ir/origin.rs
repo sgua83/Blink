@@ -253,6 +253,7 @@ pub enum GenerationReason {
     BinaryConstantFold,
     CastConstantFold,
     BitcastConstantFold,
+    MinmaxKnownValue,
     ModuleConstantEvaluation,
     StageConstantEvaluation,
     StageIfSelection,
@@ -462,6 +463,11 @@ impl ReductionUniformOperation {
         Self::Binary => "Binary", Self::Cast => "Cast", Self::Math => "Math", Self::Select => "Select", Self::ConstantIntegerDivide => "ConstantIntegerDivide",
     } }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegerKnownValueBasis { SingletonRange, ZeroCondition }
+impl IntegerKnownValueBasis {
+    fn ir_name(self) -> &'static str { match self { Self::SingletonRange => "singleton_range", Self::ZeroCondition => "zero_condition" } }
+}
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
     Syntax(std::sync::Arc<SourceSite>),
@@ -496,6 +502,15 @@ pub enum GenerationAnchor {
         expression: Option<std::sync::Arc<SourceSite>>, source_scalar: super::Scalar, target_scalar: super::Scalar,
         bits: super::Bits, component_index: usize, component_count: usize,
     },
+    MinmaxKnownValue {
+        expression: Option<std::sync::Arc<SourceSite>>, operation: std::sync::Arc<str>, scalar: super::Scalar,
+        left_ranges: Vec<(super::Bits, super::Bits)>, right_ranges: Vec<(super::Bits, super::Bits)>,
+        left_constant_present: bool, right_constant_present: bool, same_value: bool,
+        result_bits: super::Bits, basis: IntegerKnownValueBasis,
+        left_component_index: usize, left_component_count: usize,
+        right_component_index: usize, right_component_count: usize,
+        component_index: usize, component_count: usize,
+    },
     ModuleConstantEvaluation {
         definition: Option<std::sync::Arc<SourceOrigin>>, constant: std::sync::Arc<str>, operations: Vec<OperationOrigin>,
     },
@@ -518,12 +533,23 @@ pub enum GenerationAnchor {
     ContractCondition { declaration: std::sync::Arc<SourceDeclaration>, span: Span, retained: OperationOrigin },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::StageConstantReference { reference, .. } => reference.as_deref(), Self::StageForExpansion { statement, .. } => statement.as_deref(), Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::syntax), Self::StageIfSelection { condition, .. } => condition.as_deref(), Self::DomainCallLiteral { call, .. } => call.as_deref(), Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } | Self::BinaryConstantFold { expression, .. } | Self::CastConstantFold { expression, .. } | Self::BitcastConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::StageConstantReference { reference, .. } => reference.as_deref().map(SourceSite::origin), Self::StageForExpansion { statement, .. } => statement.as_deref().map(SourceSite::origin), Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::origin), Self::StageIfSelection { condition, .. } => condition.as_deref().map(SourceSite::origin), Self::DomainCallLiteral { call, .. } => call.as_deref().map(SourceSite::origin), Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } | Self::BinaryConstantFold { expression, .. } | Self::CastConstantFold { expression, .. } | Self::BitcastConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::StageConstantReference { reference, .. } => reference.as_deref().and_then(SourceSite::instance), Self::StageForExpansion { statement, .. } => statement.as_deref().and_then(SourceSite::instance), Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::instance), Self::StageIfSelection { condition, .. } => condition.as_deref().and_then(SourceSite::instance), Self::DomainCallLiteral { call, .. } => call.as_deref().and_then(SourceSite::instance), Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } | Self::BinaryConstantFold { expression, .. } | Self::CastConstantFold { expression, .. } | Self::BitcastConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::StageConstantReference { reference, .. } => reference.as_deref(), Self::StageForExpansion { statement, .. } => statement.as_deref(), Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::syntax), Self::StageIfSelection { condition, .. } => condition.as_deref(), Self::DomainCallLiteral { call, .. } => call.as_deref(), Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } | Self::BinaryConstantFold { expression, .. } | Self::CastConstantFold { expression, .. } | Self::BitcastConstantFold { expression, .. } | Self::MinmaxKnownValue { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::StageConstantReference { reference, .. } => reference.as_deref().map(SourceSite::origin), Self::StageForExpansion { statement, .. } => statement.as_deref().map(SourceSite::origin), Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::origin), Self::StageIfSelection { condition, .. } => condition.as_deref().map(SourceSite::origin), Self::DomainCallLiteral { call, .. } => call.as_deref().map(SourceSite::origin), Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } | Self::BinaryConstantFold { expression, .. } | Self::CastConstantFold { expression, .. } | Self::BitcastConstantFold { expression, .. } | Self::MinmaxKnownValue { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::StageConstantReference { reference, .. } => reference.as_deref().and_then(SourceSite::instance), Self::StageForExpansion { statement, .. } => statement.as_deref().and_then(SourceSite::instance), Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::instance), Self::StageIfSelection { condition, .. } => condition.as_deref().and_then(SourceSite::instance), Self::DomainCallLiteral { call, .. } => call.as_deref().and_then(SourceSite::instance), Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } | Self::BinaryConstantFold { expression, .. } | Self::CastConstantFold { expression, .. } | Self::BitcastConstantFold { expression, .. } | Self::MinmaxKnownValue { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
+            Self::MinmaxKnownValue { expression, operation, scalar, left_ranges, right_ranges,
+                left_constant_present, right_constant_present, same_value, result_bits, basis,
+                left_component_index, left_component_count, right_component_index, right_component_count,
+                component_index, component_count } => {
+                let ranges = |ranges: &[(super::Bits, super::Bits)]| format!("[{}]", ranges.iter().map(|(lower, upper)|
+                    format!("{{\"lower_bits\":\"0x{lower:016x}\",\"upper_bits\":\"0x{upper:016x}\"}}")).collect::<Vec<_>>().join(","));
+                format!("{{\"kind\":\"minmax_known_value\",\"expression\":{},\"operation\":{},\"scalar\":{},\"interval_order\":\"scalar_numeric\",\"interval_bounds\":\"inclusive\",\"left_ranges\":{},\"right_ranges\":{},\"left_constant_present\":{},\"right_constant_present\":{},\"same_value\":{},\"result_bits\":\"0x{:016x}\",\"basis\":{},\"component_index_base\":0,\"left_component_index\":{},\"left_component_count\":{},\"right_component_index\":{},\"right_component_count\":{},\"component_index\":{},\"component_count\":{}}}",
+                    expression.as_deref().map_or_else(|| "null".into(), SourceSite::ir_json), text(operation), text(&format!("{scalar:?}")),
+                    ranges(left_ranges), ranges(right_ranges), left_constant_present, right_constant_present, same_value, result_bits,
+                    text(basis.ir_name()), left_component_index, left_component_count, right_component_index, right_component_count, component_index, component_count)
+            },
             Self::BitcastConstantFold { expression, source_scalar, target_scalar, bits, component_index, component_count } => format!("{{\"kind\":\"bitcast_constant_fold\",\"expression\":{},\"source_scalar\":{},\"target_scalar\":{},\"bits\":\"0x{:016x}\",\"component_index_base\":0,\"component_index\":{},\"component_count\":{}}}",
                 expression.as_deref().map_or_else(|| "null".into(), SourceSite::ir_json),
                 text(&format!("{source_scalar:?}")), text(&format!("{target_scalar:?}")), bits, component_index, component_count),
@@ -687,6 +713,7 @@ impl GeneratedOrigin {
             GenerationReason::BinaryConstantFold => "binary_constant_fold",
             GenerationReason::CastConstantFold => "cast_constant_fold",
             GenerationReason::BitcastConstantFold => "bitcast_constant_fold",
+            GenerationReason::MinmaxKnownValue => "minmax_known_value",
             GenerationReason::ModuleConstantEvaluation => "module_constant_evaluation",
             GenerationReason::StageConstantEvaluation => "stage_constant_evaluation",
             GenerationReason::StageIfSelection => "stage_if_selection",

@@ -827,15 +827,21 @@ impl Proof {
                         _ => None,
                     };
                 }
-                if !scalar.is_integer() { return None; }
-                let bias = scalar.order_bias();
-                match self.range_set(component).restrict(0, scalar.bit_mask()).0.as_slice() {
-                    [(lower, upper)] if lower == upper => Some(lower ^ bias),
-                    _ if self.component_condition(component).is_some_and(|condition|!condition.cases[1].possible()&&condition.cases[0].possible()) => Some(0),
-                    _ => None,
-                }
+                self.known_integer_component(*scalar, component).map(|(bits, _)| bits)
             })
             .collect()
+    }
+    fn known_integer_component(&self, scalar: Scalar, component: usize) -> Option<(Bits, IntegerKnownValueBasis)> {
+        if !scalar.is_integer() { return None; }
+        let bias = scalar.order_bias();
+        match self.range_set(component).restrict(0, scalar.bit_mask()).0.as_slice() {
+            [(lower, upper)] if lower == upper => Some((lower ^ bias, IntegerKnownValueBasis::SingletonRange)),
+            _ if self.component_condition(component).is_some_and(|condition|!condition.cases[1].possible()&&condition.cases[0].possible()) => Some((0, IntegerKnownValueBasis::ZeroCondition)),
+            _ => None,
+        }
+    }
+    pub(super) fn known_integer_value(&self, ty: &Ty) -> Option<Vec<(Bits, IntegerKnownValueBasis)>> {
+        ty.components.iter().enumerate().map(|(component, (scalar, _))| self.known_integer_component(*scalar, component)).collect()
     }
     pub(super) fn known_identity(&self, component: usize) -> Option<ValueIdentity> {
         self.origins
@@ -1592,6 +1598,10 @@ impl Value {
     fn component_range(&self, component: usize) -> (Bits, Bits) {
         self.component_ranges(component).hull()
     }
+    pub(super) fn component_range_intervals(&self, component: usize) -> Vec<(Bits, Bits)> {
+        let bias = self.ty.components[component].0.order_bias();
+        self.component_ranges(component).0.into_iter().map(|(lower, upper)| (lower ^ bias, upper ^ bias)).collect()
+    }
     fn component_ranges(&self, component: usize) -> ScalarRanges {
         let scalar = self.ty.components[component].0;
         if scalar.is_float() { return floating::ranges(self, component); }
@@ -1626,7 +1636,7 @@ impl Value {
             .cloned()
             .unwrap_or_else(|| vec![ValueIdentity::Register(self.regs[index])])
     }
-    fn same_component(&self, index: usize, other: &Self, other_index: usize) -> bool {
+    pub(super) fn same_component(&self, index: usize, other: &Self, other_index: usize) -> bool {
         let other = other.component_origins(other_index);
         self.component_origins(index)
             .iter()

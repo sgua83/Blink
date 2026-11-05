@@ -809,7 +809,11 @@ GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_sit
 
 <a id="tool-7-3-1-9-5"></a>
 
-**整数minmax已知结果折叠的来源。** 输入：原整数min／max输入、原Proof及本次known_value结果。唯一生产／消费接点：check.rs#158::math2691至2721，事实归原Builder／ValueCode／Stage及真实结果；输出为本项真实变换的来源关系或明确缺失。保留实际边界条件及类型／精度，说明是已知结果而非实测或任意近似；不改变原选择许可。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前Proof已知结果分支已实现，解释事实待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-9-5)。
+**整数minmax已知结果折叠的来源。** 原math在numeric_operands之后，按实际共同整数Scalar与广播分量交给bounds::arithmetic。原整数已知值求值在同一次取得结果时交接IntegerKnownValueBasis：SingletonRange表示有效结果区间为单值，ZeroCondition表示原非零条件的真分支不可能且假分支可能。普通known_value与本接点共用原整数求值，不复制算法、不追加求解或放宽许可；Bool、非整数及未取得完整结果的原路径保持。
+
+仅在原完整结果物化Constant时附加MinmaxKnownValue。其expression借用原source_site；operation、scalar、result_bits及basis说明实际min／max与同次已知依据。left_ranges／right_ranges保存该次操作数有效区间的端点位模式，按Scalar数值次序排列、端点包含；有符号端点按实际Scalar解释，不把符号偏置后的内部序号当原位模式。left_constant_present／right_constant_present只报告原整个Value.constant是否存在；same_value是原对应分量是否被证明同值。两侧分量下标／数量与结果下标／数量说明真实广播，均从零开始。
+
+材料是该次实际已知结果的局部前提快照，不是完整输入谱系、条件证明图、运行次数或实测收益。原类型、宽度、符号、literal、Proof、source_site、布局、寄存器及未折叠的比较／Select保持；浮点min／max不套本整数原因。材料仅compiler，随原Inst、CSE／DCE／空Map根、模块／阶段实际结果及查询快照到最后IR消费者，不保留旧IR、AST／World、Proof／条件图或运行资源，不增加来源表、必要编码、运行指令或保活。已交接的具体范围与验证见[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-9-5)。
 
 <a id="tool-7-3-1-9-6"></a>
 
