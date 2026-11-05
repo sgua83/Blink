@@ -480,6 +480,14 @@ Break离开最近的Loop，Continue转到该Loop的下一次检查；Exit只离�
 
 当前Values::block对同一Loop的condition与body沿原visit／Inst::local_writes汇总可能写，并停止沿用对应入口旧值。该保守分析不证明循环必运行，也不固定为语言的永久优化范围；written及locals是原分析存活期内的临时状态，不保存为逐轮来源历史。SDK公开字段及原ValueCode／Stage／FunctionBody的JSON提供同一原IR，查询结果随实际消费者释放，不持有运行资源或复制控制权威。真实删除／替换来源、合流、按需分析现场观察、B可编程入口及运行时状态继续按各原任务交接，不由本节静态查询代替；最终IR也不冒称保存了此前全部内部分析过程。见[架构](Architecture.md#tool-7-3-1-3-7)。
 
+#### 控制合流与实际读取替代
+
+原IR的If直接给出condition、yes、no，Scope／Loop与Break／Continue／Exit保留真实嵌套，局部读写、调用效果及别名继续沿原字段查询。读取真实被替代时，原LocalReadForward／LocalInputForward／ReductionInputForward交接删除读取及实际保留结果／输入；仍保留的LoadLocal不能仅因没有替代锚点而被解释成读取无效。各Reg只在其原IR寄存器表及版本内有身份，不跨函数／阶段按相同编号推定同一定义，也不把两条路径的可能数值相等当作同一SSA。
+
+当前内部Flow区分next、breaks、continues、exits四类出口，各类只合入仍到达该出口的路径。merge沿原别名root保留共同的同一局部值；None表示没有该类路径，Some空映射表示有路径而没有共同已知值。Scope将自身Exit接回继续点，Loop消费自身回边与break并保留外层Scope退出；退出分支不参与普通继续，单次迭代定义也不成为循环后值。这是当前分析语义说明，不导出另一份Flow对象、稳定槽值表或历史查询格式；现有SDK／JSON直接交接原控制和真实读写／替代材料，分析算法可以演进。
+
+最终IR不保存此前每轮临时知识，也不代替真实删除／重排来源。原block在无继续路径后停止消费后缀是结构变换，其真实触发及来源交接尚待沿原.3.2.1调查；不会因为合流临时状态无需持久化而把实际变换视作完成。原IR和查询值由实际消费者持有至结束，不拥有代码或运行资源；按需分析现场、B可编程入口及运行状态仍按原工具范围推进。见[合流架构](Architecture.md#tool-7-3-1-3-8)及[截断调查](Architecture.md#tool-7-3-2-1)。
+
 #### 应用入口与根Frame的生成来源
 
 原compile_application从本次真实选择的Instance构造Definition锚点，Application.body的generated_origin为application_entry；其原生Call以application_entry_call交接同一实际入口。它们属于原隐式包装，不额外创建FunctionBody或把根定义Span伪装成一次用户调用。普通源函数、集合值核及其他域包装的ValueCode.generated_origin不借用此入口，原source_origin／entry_origin保持各自语义。用完整应用IR查询观察body；函数选择仍返回实际B函数，不能把它当根包装。
