@@ -1986,7 +1986,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn statement(&mut self, s: &Stmt) -> Result<()> {
-        self.at_source(s.span, SourceSyntax::Statement, |b| b.statement_syntax(s))
+        self.at_source(s.span, SourceSyntax::Statement, |b| b.temporary_scope(s.span, |b| {b.statement_syntax(s)?;Ok(((),view::Borrow::default()))}))
     }
     fn statement_syntax(&mut self, s: &Stmt) -> Result<()> {
         self.view_uses.before(s.span);
@@ -3109,7 +3109,7 @@ impl<'a> Builder<'a> {
         no_body: &[Stmt],
         span: Span,
     ) -> Result<()> {
-        let Some(c) = self.expr(condition)? else {
+        let Some(c) = self.temporary_scope(condition.span, |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
             return Ok(());
         };
         self.require_bool(&c, condition.span)?;
@@ -3196,7 +3196,7 @@ impl<'a> Builder<'a> {
         self.configure_initial_loop(initial,None,None);
         self.prepare_view_loop();
         self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
-        let Some(c) = self.expr(condition)? else {
+        let Some(c) = self.temporary_scope(condition.span, |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
             let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
             self.finish_view_condition()?;
             let code = std::mem::replace(&mut self.code, outer);
@@ -3280,10 +3280,10 @@ impl<'a> Builder<'a> {
             return self.fail(span, "B125", "循环变量不能覆盖已有绑定");
         }
         let (begin, limit, data) = if let Some(end) = end {
-            let Some(a) = self.expr(start)? else {
+            let Some(a) = self.temporary_scope(start.span, |builder| Ok((builder.expr(start)?, view::Borrow::default())))? else {
                 return Ok(());
             };
-            let Some(b) = self.expr(end)? else {
+            let Some(b) = self.temporary_scope(end.span, |builder| Ok((builder.expr(end)?, view::Borrow::default())))? else {
                 return Ok(());
             };
             self.require_same(&Ty::scalar(Scalar::U32), &a.ty, start.span)?;
@@ -4081,7 +4081,7 @@ impl<'a> Builder<'a> {
         if iterator != *name {
             return self.fail(span, "B165", "seek 只能推进当前最内层游标");
         }
-        let Some(value) = self.expr(position)? else {
+        let Some(value) = self.temporary_scope(position.span, |builder| Ok((builder.expr(position)?, view::Borrow::default())))? else {
             return Ok(());
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span)?;

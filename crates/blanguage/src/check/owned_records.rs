@@ -350,7 +350,11 @@ impl Builder<'_> {
                     }
                 }
                 let retained=item.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-                self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span)?;
+                if retained.empty() {
+                    self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span)?;
+                } else {
+                    self.hold_binding(Binding::OwnedValue(owner));
+                }
                 Ok(Some(item))
             }
             Some(Returned::Dataset(data)) => {

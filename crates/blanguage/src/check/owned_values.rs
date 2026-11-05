@@ -1132,7 +1132,9 @@ impl Builder<'_> {
         Some(self.hold_binding(binding))
     }
     pub(super) fn hold_binding(&mut self, binding: Binding) -> String {
-        let name = format!("\0argument:{}", self.env.len());
+        let index=self.env.keys().filter_map(|name|name.strip_prefix("\0argument:"))
+            .fold(0,|next,index|next.max(index.parse::<usize>().unwrap()+1));
+        let name=format!("\0argument:{index}");
         self.env.insert(name.clone(), binding);
         name
     }
@@ -1175,11 +1177,9 @@ impl Builder<'_> {
                 "dataset借用需要实际资源或拥有数据的临时值",
             );
         };
-        let name = format!("\0argument:{}", self.env.len());
         let mut reference = data.clone();
         reference.ownership = Ownership::Borrowed;
-        self.env
-            .insert(name.clone(), Binding::ApplicationData(data));
+        let name=self.hold_binding(Binding::ApplicationData(data));
         Ok(Some(cooperative::Argument::Scoped {
             value: Returned::Dataset(reference),
             owner: name,
@@ -1196,4 +1196,18 @@ impl crate::module::codec::Encode for OwnedValuePayload {
 }
 impl crate::module::codec::Decode for OwnedValuePayload {
     fn decode(r:&mut crate::module::codec::Reader<'_>)->crate::module::codec::Result<Self>{Ok(Self{value:Value::decode(r)?,payloads:Vec::decode(r)?,ownership:Ownership::decode(r)?,place:None,declaration:0})}
+}
+
+impl Builder<'_> {
+    // 临时拥有者仍只在原env中；完整消费结束后沿原资源作用域出口释放。
+    pub(super) fn temporary_scope<T>(&mut self, span: Span, work: impl FnOnce(&mut Self)->Result<(T,view::Borrow)>)->Result<T> {
+        let original=self.env.keys().filter(|name|name.starts_with("\0argument:")).cloned().collect::<BTreeSet<_>>();
+        let (value,retained)=work(self)?;
+        if self.flow.continues() {
+            self.view_uses.after(span);
+            let keep=self.env.keys().filter(|name|!name.starts_with("\0argument:")||original.contains(*name)).cloned().collect::<BTreeSet<_>>();
+            self.release_application_data(Some(&keep),retained)?;
+        }
+        Ok(value)
+    }
 }

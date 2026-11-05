@@ -35,7 +35,7 @@ impl Builder<'_> {
         span: Span,
         expected: Option<&Ty>,
     ) -> Result<Option<returns::Returned>> {
-        let Some(c) = self.expr(condition)? else {
+        let Some(c) = self.temporary_scope(condition.span, |builder| Ok((builder.expr(condition)?, view::Borrow::default())))? else {
             return Ok(None);
         };
         self.require_bool(&c, condition.span)?;
@@ -61,7 +61,11 @@ impl Builder<'_> {
             .return_context
             .as_ref()
             .map_or(0, |context| context.exit_count());
-        let mut a_result = self.evaluate_returned(yes, expected)?;
+        let mut a_result = self.temporary_scope(yes.span, |builder| {
+                    let value=builder.evaluate_returned(yes,expected)?;
+                    let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
+                    Ok((value,retained))
+                })?;
         let yes_exit = self
             .return_context
             .as_ref()
@@ -85,7 +89,11 @@ impl Builder<'_> {
         self.path = path;
         self.refine_bounds(&partition, false);
         self.flow = Flow::NEXT;
-        let b_result = self.evaluate_returned(no, expected)?;
+        let b_result = self.temporary_scope(no.span, |builder| {
+                    let value=builder.evaluate_returned(no,expected)?;
+                    let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
+                    Ok((value,retained))
+                })?;
         if self.flow.continues() && b_result.is_none() {
             return self.fail(span, "B228", "选择式需要值");
         }

@@ -975,36 +975,34 @@ impl Builder<'_> {
         data
     }
     pub(super) fn release_application_data(&mut self,keep:Option<&BTreeSet<String>>,retained:view::Borrow)->Result<()> {
-        let mut bindings: Vec<_> = self
-            .env
-            .iter()
-            .filter(|(name, _)| !keep.is_some_and(|names| names.contains(*name)))
-            .filter_map(|(name, binding)| match binding {
-                Binding::ApplicationData(data) if data.ownership.may_own() => {
-                    Some((name.clone(),binding.clone()))
-                }
-                Binding::OwnedValue(result) if result.ownership.may_own() && !matches!(result.place(),Some(Place::Reference{..})) => {
-                    Some((name.clone(),binding.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-        bindings.sort_by_key(|(name,binding)|{
+        let mut names=self.env.iter()
+            .filter(|(name,_)|!keep.is_some_and(|names|names.contains(*name)))
+            .filter_map(|(name,binding)|match binding {
+                Binding::ApplicationData(data) if data.ownership.may_own()=>Some(name.clone()),
+                Binding::OwnedValue(value) if value.ownership.may_own()&&!matches!(value.place(),Some(Place::Reference{..}))=>Some(name.clone()),
+                _=>None,
+            }).collect::<Vec<_>>();
+        names.sort_by_key(|name|{
             let temporary=name.strip_prefix("\0argument:").map(|index|index.parse::<usize>().unwrap());
-            let declaration=match binding{Binding::OwnedValue(value)=>value.declaration,_=>0};
+            let declaration=match &self.env[name]{Binding::OwnedValue(value)=>value.declaration,_=>0};
             (temporary.is_some(),temporary.unwrap_or(declaration))
         });
-        for (name,binding) in bindings.into_iter().rev() {
-            if matches!(&binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()) {
-                if name.starts_with('\0'){self.env.remove(&name);}
-                else if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
+        let mut bindings=names.into_iter().map(|name|{
+            let binding=if name.starts_with('\0'){self.env.remove(&name).unwrap()}else{self.env[&name].clone()};
+            (name,binding)
+        }).collect::<Vec<_>>();
+        while let Some((name,binding))=bindings.pop(){
+            let mut remaining=retained.clone();
+            for(future,value)in &bindings{
+                if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(value,&BTreeSet::new()));}
             }
-            self.drop_binding(binding,&retained,self.definition.function.span)?;
-            if name.starts_with('\0'){self.env.remove(&name);}
-            else{match self.env.get_mut(&name){
-                Some(Binding::OwnedValue(value))=>value.mark_moved(),
-                _=>{},
-            }}
+            if !name.starts_with('\0')&&matches!(&binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()) {
+                if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
+            }
+            self.drop_binding(binding,&remaining,self.definition.function.span)?;
+            if !name.starts_with('\0'){
+                if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
+            }
         }
         Ok(())
     }
