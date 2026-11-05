@@ -1651,7 +1651,7 @@ fn build_domain(
                         .map(|(_, at)| uniform_regs[&(offset + at)])
                         .collect(),
                 },
-                Root::Literal(ty, words) => {
+                Root::Literal(ty, words, _) => {
                     let origin = Arc::new(GeneratedOrigin {
                         reason: GenerationReason::DomainCallLiteral,
                         trigger: call.source.clone().map(GenerationAnchor::Syntax),

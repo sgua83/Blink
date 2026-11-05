@@ -251,6 +251,7 @@ pub enum GenerationReason {
     ReductionUniformExtract,
     UnaryConstantFold,
     ModuleConstantEvaluation,
+    StageConstantEvaluation,
     DeclarationReference,
     ContractCondition,
 }
@@ -440,16 +441,19 @@ pub enum GenerationAnchor {
     ModuleConstantEvaluation {
         definition: Option<std::sync::Arc<SourceOrigin>>, constant: std::sync::Arc<str>, operations: Vec<OperationOrigin>,
     },
+    StageConstantEvaluation { expression: Option<std::sync::Arc<SourceSite>>, operations: Vec<OperationOrigin> },
     DeclarationReference { declaration: std::sync::Arc<SourceDeclaration>, retained: OperationOrigin },
     ContractCondition { declaration: std::sync::Arc<SourceDeclaration>, span: Span, retained: OperationOrigin },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
+            Self::StageConstantEvaluation { expression, operations } => format!("{{\"kind\":\"stage_constant_evaluation\",\"expression\":{},\"operations\":[{}]}}",
+                expression.as_deref().map(SourceSite::ir_json).unwrap_or_else(|| "null".into()), operations.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(",")),
             Self::DeclarationReference { declaration, retained } => format!("{{\"kind\":\"declaration_reference\",\"declaration\":{},\"retained\":{}}}",
                 declaration.ir_json(), retained.ir_json()),
             Self::ContractCondition { declaration, span, retained } => format!("{{\"kind\":\"contract_condition\",\"declaration\":{},\"retained\":{},{}}}",
@@ -578,6 +582,7 @@ impl GeneratedOrigin {
             GenerationReason::ReductionUniformExtract => "reduction_uniform_extract",
             GenerationReason::UnaryConstantFold => "unary_constant_fold",
             GenerationReason::ModuleConstantEvaluation => "module_constant_evaluation",
+            GenerationReason::StageConstantEvaluation => "stage_constant_evaluation",
             GenerationReason::DeclarationReference => "declaration_reference",
             GenerationReason::ContractCondition => "contract_condition",
         };

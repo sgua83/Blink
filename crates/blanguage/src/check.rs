@@ -111,7 +111,7 @@ enum Root {
     Acceleration(usize),
     Texture(usize),
     Uniform(Ty, u32),
-    Literal(Ty, Vec<Bits>),
+    Literal(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ValueIdentity {
@@ -576,7 +576,7 @@ fn expand_stages(
                 env.insert(name.clone(), value);
             }
             StmtKind::If(condition, yes, no) => {
-                let Root::Literal(ty, words) = stage_root(world, instance, env, program, condition)? else {
+                let Root::Literal(ty, words, _) = stage_root(world, instance, env, program, condition)? else {
                     return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
                 };
                 if ty != Ty::scalar(Scalar::Bool) {
@@ -599,7 +599,7 @@ fn expand_stages(
                 }
                 let bound = |expr: &Expr| -> Result<u32> {
                     match stage_root(world, instance, env, program, expr)? {
-                        Root::Literal(ty, words) if ty == Ty::scalar(Scalar::U32) => Ok(words[0] as u32),
+                        Root::Literal(ty, words, _) if ty == Ty::scalar(Scalar::U32) => Ok(words[0] as u32),
                         _ => d.source.fail(
                             expr.span,
                             "B251",
@@ -613,7 +613,7 @@ fn expand_stages(
                     let mut child = env.clone();
                     child.insert(
                         name.clone(),
-                        Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)]),
+                        Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)], None),
                     );
                     if expand_stages(
                         world, instance, body, &mut child, program, stack, boundary, facts, calls, domain_path, functions,
@@ -943,7 +943,7 @@ fn expand_stages(
                             ty: Some(std::borrow::Cow::Borrowed(&program.buffers[*i].ty)),
                             count: program.buffers[*i].count,
                         },
-                        Root::Uniform(ty, _) | Root::Literal(ty, _) => generics::Actual::value(ty),
+                        Root::Uniform(ty, _) | Root::Literal(ty, ..) => generics::Actual::value(ty),
                         Root::Acceleration(_) => generics::Actual {
                             ty: None,
                             count: None,
@@ -1025,7 +1025,7 @@ fn expand_stages(
                                 );
                             }
                         }
-                        Root::Uniform(t, _) | Root::Literal(t, _) => {
+                        Root::Uniform(t, _) | Root::Literal(t, ..) => {
                             let ty = expected()?;
                             if p.ty.dataset || *t != ty {
                                 return d.source.fail(arg.span, "B117", "标量参数类型不匹配");
@@ -1201,17 +1201,17 @@ fn stage_root(
                 .resolve(n, &d.module, &d.imports, true)
                 .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
             {
-                let (ty, words) = constant_value(world, &key)?;
-                Ok(Root::Literal(ty, words))
+                let (ty, words, origin) = constant::evaluate(world, &key, &[])?;
+                Ok(Root::Literal(ty, words, origin))
             } else {
                 d.source
                     .fail(arg.span, "B113", format!("未知参数或 const {n}"))
             }
         }
-        ExprKind::StaticU32(bits) => Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*bits)])),
+        ExprKind::StaticU32(bits) => Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*bits)], None)),
         ExprKind::Number(n) => {
             let (ty, bits) = number(&d.source, arg.span, n)?;
-            Ok(Root::Literal(ty, vec![bits]))
+            Ok(Root::Literal(ty, vec![bits], None))
         }
         _ => constant::stage_expression(world, instance, env, program, arg, None),
     }
@@ -1931,8 +1931,8 @@ impl<'a> Builder<'a> {
                         }),
                     );
                 }
-                Root::Literal(ty, bits) => {
-                    let value = self.constant_value(ty.clone(), bits.clone(),None);
+                Root::Literal(ty, bits, origin) => {
+                    let value = self.evaluated_constant(ty.clone(), bits.clone(), origin.clone());
                     self.env.insert(name.clone(), Binding::Value(value));
                 }
             }

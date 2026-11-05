@@ -334,7 +334,7 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`、`ValueCode::generated_origin()`及`Program::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，返回Syntax锚点或UnaryConstantFold的真实表达式SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir、value_ir和program_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
-GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition、UnaryConstantFold及ModuleConstantEvaluation按各自锚点的明示语法／定义和实际名称提供origin()／instance()；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
+GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition、UnaryConstantFold、ModuleConstantEvaluation及StageConstantEvaluation按各自锚点的明示语法／定义和实际名称提供origin()／instance()；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
 当前真实生成原因及其消费如下；GenerationReason公开枚举增加变体时，Rust SDK的穷尽匹配需要相应适配，按版本规则处理兼容性。B语法、资源ABI和必要执行编码不因此改变。
 
@@ -397,6 +397,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | IndexedReadReuse | indexed_read_reuse | 后续索引Load实际复用先前Load结果，材料交给原保留Load |
 | UnaryConstantFold | unary_constant_fold | 原普通已知值一元计算逐分量成为Constant |
 | ModuleConstantEvaluation | module_constant_evaluation | 原模块const求值中的已有变换事实随普通常量读取进入实际Constant |
+| StageConstantEvaluation | stage_constant_evaluation | 临时阶段表达式已有求值事实随原Root及实际值IR交接 |
 | DeclarationReference | declaration_reference | 真实具名声明与实际Call／FunctionAddress的绑定关系 |
 | ContractCondition | contract_condition | 原具名声明的真实条款生成条件IR的关系 |
 
@@ -526,7 +527,7 @@ JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼�
 
 实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
 
-后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Root::Literal、形状及变体编号只返回原类型／整数时，最终结果仍未交接这份来源，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
+后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Literal的值IR接收沿后文交接，整域调用／控制展开及形状／变体编号仍各有来源缺口，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
 
 
 
@@ -538,7 +539,7 @@ module_constant与具名条件输出的常量读取共用evaluated_constant，�
 
 JSON reason及锚点kind均为module_constant_evaluation，definition为真实原source_definition或null，constant为实际完整常量名，operations是已有operation_origin数组，成员保留原语法及generated_origin。anchor().origin()借用可用原定义，instance()返回实际常量全名；单源syntax()／trigger()为空，不能用常量定义冒充一条用户表达式。源码常量保存原不可变来源；已编译接口缺失提供者定义时仍为null，保留实际常量名和实际取得的运算事实，不把接口求值当作提供者实现源码或IR。
 
-材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Root::Literal、形状和变体编号仍有原缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
+材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Literal的值IR接收沿后文交接，整域调用／控制展开及形状／变体编号仍有各自缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
 
 
 
@@ -561,6 +562,18 @@ OutputConstant的PartialEq／Eq、PartialOrd／Ord及原合同去重仍只消费
 实际输出条件的convert消费已绑定Constant时，共用Builder::evaluated_constant，把同一材料交给原Constant指令；直接source_site保持实际条件位置。已有ContractCondition或原复用／删除来源通过retained继续持有它，不为观察保活操作，也不增加运行指令。材料沿原签名／类型化结果及IR所有者，在最后编译／查询消费者结束后释放，不保留AST／World、临时IR或运行资源。见[绑定职责](Architecture.md#tool-7-3-1-9-1-3-1-2-2)及[物化职责](Architecture.md#tool-7-3-1-9-1-3-1-2-3)。
 
 
+
+#### 阶段常量结果到实际值IR的来源
+
+原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls直接接收evaluate的ModuleConstantEvaluation；env中已有Root仍克隆原值和同一材料。Number／StaticU32及没有变换材料的常量保持空来源，不从数值或名称猜补。
+
+stage_expression复用原Builder、表达式和合法常量检查。在结束临时Builder前，取得该次表达式新增Constant上已有的generated_origin，以及结果实际引用的入口Constant材料；无关env预装载、uniform或其他局部结果不进入本次来源。与模块const共用原OperationOrigin收集及相邻共享事实去重，仅按该次SourceSite／GeneratedOrigin的Arc引用比较，不建立Reg／来源表。没有材料不创建锚点；有材料形成GenerationReason::StageConstantEvaluation和GenerationAnchor::StageConstantEvaluation { expression, operations }，再与原Ty／Bits共同交给Root。
+
+JSON reason和锚点kind为stage_constant_evaluation；expression是实际临时求值上下文的source_syntax或null，operations是该次已取得的operation_origin数组。范围沿原Expr，当前可为一元运算符、名称或构造名token，不扩大成完整表达式；原不可变定义快照仍可读取。anchor().syntax()和trigger()借用已有expression，origin()／instance()由同一语法点取得；没有语法时保持null，不能按最终阶段名补造定义、实例或域路径。材料不是每个结果分量的完整因果图、全部输入谱系或所有临时求值历史，尚未产生来源的转换等变换仍沿各自原编号建设。
+
+Builder::roots共用evaluated_constant，把同一材料交给实际Constant及已有source_site，原Value数值、Proof、literal、初始化、位置、布局和阶段选择保持。原CSE／DCE及空Map移除根按原OperationOrigin继续持有，不为查询保活操作或阶段；材料由原Root及实际IR／Stage／Program拥有，到最后编译／查询消费者后释放，不保留临时Inst、AST／World或运行资源。
+
+本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral仍只有原调用语法，阶段if／for仍只按真实值选择或展开；这三个消费者的求值／控制材料交接尚未实现，不能以Root已持有材料代替。具名阶段常量Name读取的直接source_site仍有独立缺口：无折叠不造求值事件，不等于原始读取语法已经完整；该范围沿原始语法来源C-021.7.9.7.2.5推进。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)与[剩余范围](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
 
 #### 具名声明、调用及条件IR的来源
 

@@ -471,6 +471,10 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 **域分段计算提交Call的生成来源。** 原签名、实际Stage子区间与前缀要求／保证，沿emit_domain_part原优化与native_function::Module.resources.programs交接真实Program，再把原Frame、Data根／偏移及uniform交给既有run_index运行Call。仅为该原实际Call交接DomainPartCall，JSON reason为domain_part_call，节点source_site为空；build_domain前移并共享原DomainEntry材料，两处原helper借用同一anchor，原入口body仍持有该材料。Source直接沿原Definition快照与实际Instance，Generated借用原Syntax，未知保持空；不从Program执行名／part／run_index重建源码身份。此处是主机CPU包装Call，CPU／GPU域目标仍由原Program表达，不把它当GPU最终ISA；所选Stage及其自身来源仍归原Program／资源引用，不将入口上下文冒称逐Stage或逐指令映射。空Stage区间仍不发射Call。原目标、分段、顺序、错误、依赖与完成保持，实际资源归原Frame／blcompute及最后消费者；静态提交不证明已执行或完成。唯一生产者是原emit_domain_part，材料只随原Inst／FunctionBody／模块及SDK／CLI快照持有，最后IR消费者后释放，不进入必要执行编码、不保活节点，不增加程序副本、图、调度器、同步或释放链。当前已交接原实际分段Call的生成来源，原优化照常。见[规范](BLanguage.md#域分段运行call的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-3)。
 
+<a id="tool-7-2-5"></a>
+
+**具名阶段常量的原始读取语法。** stage_root的Name有原Expr／Source及实际实例，Root到值IR还须独立交接这次读取语法；已有ModuleConstantEvaluation解释常量求值，不能替代调用者Name读取。没有折叠的Plain当前可得到真实Constant／数值，但直接source_site仍为空；这项能力尚未实现。以独立语法／绑定材料交接，不要求把生成Constant改标源码直接指令；不为普通读取伪造优化事件，不以常量定义或parallel范围冒充读取位置，未知外部定义仍保持未知；材料由原Root及Inst所有者共享到最后IR消费者，不保留AST、重读源码或设来源表，见[独立台账](Issues.md#c-021-7-9-7-2-5)。
+
 <a id="tool-7-3-1"></a>
 
 **值变换与消除的来源交接。** 原完整目标覆盖常量折叠、值复用／传播、结果裁剪、删除及真实位置变换，以下独立职责沿实际生产点交接。原值流、DCE及检查求值算法已经存在，变换来源仍按各叶状态区分；本父项只汇总，不占生产源码。每项输入包括原Source／Inst及生成材料和真实已消费的类型／数值／访问条件，输出是实际保留、替换、合并或无代码状态的关系；查询借用对应原编译结果，返回归调用者。唯一事实由下列原Builder／ValueCode／Stage／Program／ReductionKernel及其实际变换生产者持有，随原IR及编译／模块／SDK快照在最后真实消费者后释放，不保留旧IR、AST／World或建另一来源注册表、执行图、索引服务、调度器。材料仅compiler角色，不进入必要执行编码，不保活被优化节点，不改变数值、精度、访问、资源／代码完成；缺失如实说明，不估算为已取得事实。结构控制、Stage融合、寄存器／局部槽重映射及Tile发布／结果裁剪仍沿[原结构职责](#tool-7-3-2)，不得在两处重复建设。检查期折叠尚未形成IR时由其原生产者交接，不创造前置IR或为文档另建fold／propagate／remove_dead优化链。状态统一见[原父项](Issues.md#c-021-7-9-7-3-1)。
@@ -707,7 +711,31 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-2"></a>
 
-**阶段表达式结果。** constant.rs::stage_expression把临时Builder的常量结果交给Root::Literal及实际阶段实参／控制展开；现有Root仅保留Ty／Bits，原运算事实未随结果交接。唯一事实所有者应沿原Root与真实展开消费者持有至最后IR查询，不让临时Builder常驻、不重新解释源码，不形成新控制／执行图，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
+**阶段常量结果及实际消费者。** 原stage_root／stage_expression把模块const或临时表达式的结果交给Root::Literal；Ty、Bits与可选求值来源由同一Root持有，数值／合法性仍由原求值规则决定。以下生产和消费接点独立交接，不以临时Builder或Root已持有材料代替最终IR／控制展开可查询。材料仅compiler，沿原Root、IR及Program所有者在最后消费者后释放，不保留临时IR、AST／World，不新增常量表或控制／执行图。状态见[父项](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
+
+<a id="tool-7-3-1-9-1-3-2-1"></a>
+
+**具名模块const到阶段Literal。** stage_root的Name解析取得实际模块const，以原空calls消费同一evaluate返回的Ty／Bits与可选ModuleConstantEvaluation，交给原Root::Literal。env中的既有Root仍直接克隆，普通数字与StaticU32没有材料时为空；不重求值、以相同值猜补或改变原公开性／类型。实际接收沿下列消费者，状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-1)。
+
+<a id="tool-7-3-1-9-1-3-2-2"></a>
+
+**临时阶段表达式到Literal。** stage_expression在原求值与合法性检查后，从表达式本次新增的Constant及结果确实引用的入口Constant取得已有generated_origin／OperationOrigin；无关env预装载不进入该次结果材料。与模块const共用相邻共享事实的收集，仍只按本次Arc引用去重，不保存地址身份或Reg表。非空材料形成StageConstantEvaluation，保存原表达式SourceSite与operations；原结果Ty／Bits和该材料共同交给Root。它描述该次取得的求值事实，不是每个结果分量的完整因果图或所有输入的谱系，缺失变换事实仍沿其原编号建设；无材料不造事件。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-2)。
+
+<a id="tool-7-3-1-9-1-3-2-3"></a>
+
+**阶段Literal到实际值IR。** Builder::roots经原evaluated_constant把同一Ty／Bits及求值材料交给实际Constant与现有source_site，原env仍绑定同一Value。后续CSE／DCE及Stage／Program根按原规则持有来源，不保活值或改变执行。Root及IR是前后实际结果所有者，签名、ABI及必要对象编码不增加材料。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-3)。
+
+<a id="tool-7-3-1-9-1-3-2-4"></a>
+
+**阶段Literal到整域调用实参。** domain生成的原Constant已经持有DomainCallLiteral语法材料，后续须同时交接该Root实际求值材料，由同一Inst及其删除根持有到最后IR消费者；调用语法不能替代值的求值来源，也不能覆盖原语法。此消费者尚未实现，当前新增Root字段仅机械适配匹配，不据此宣称域包装已取得材料。不得重编提供者、重求值或增加运行参数／状态，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2-4)。
+
+<a id="tool-7-3-1-9-1-3-2-5"></a>
+
+**阶段if条件到实际展开。** 原bool Root的值决定唯一实际选中body；后续须把该次条件值及已有求值事实交给实际产生的Stage／原Program根，未选分支不伪装成执行，早退或没有新Stage也不制造指令。展开与完成规则保持，材料随原结果所有者到最后查询消费者；该消费者尚未实现，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2-5)。
+
+<a id="tool-7-3-1-9-1-3-2-6"></a>
+
+**阶段for边界到实际展开。** 原first／last Root决定真实u32迭代范围与展开结果；后续须交接本次边界值、已有求值材料及实际迭代关系到所产生Stage／原Program根，空范围不伪造Stage。原Root与展开所有者交接，不记录另一份循环／调度图，不以编译期迭代冒充运行次数；该消费者尚未实现，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2-6)。
 
 <a id="tool-7-3-1-9-1-3-3"></a>
 

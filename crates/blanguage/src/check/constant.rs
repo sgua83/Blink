@@ -59,7 +59,7 @@ pub(super) fn stage_expression(
         .map(|ty| builder.expected_storage(ty, expression.span))
         .transpose()?;
     let result = builder.expr_expected(expression, expected.as_ref())?;
-    let value = builder.value_result(result, expression.span)?;
+    let mut value = builder.value_result(result, expression.span)?;
     if let Some(expected) = expected {
         builder.require_same(&expected, &value.ty, expression.span)?;
     }
@@ -75,7 +75,25 @@ pub(super) fn stage_expression(
             "阶段派生参数必须可完全编译期求值；运行期或逐元素表达式放在 parallel 中",
         );
     }
-    Ok(Root::Literal(value.ty, value.constant.unwrap()))
+    value.regs.sort_unstable();
+    let operations = evaluation_operations(builder.code[..first].iter().filter(|inst|
+        matches!(&inst.kind, InstKind::Constant(reg, ..) if value.regs.binary_search(reg).is_ok()))
+        .chain(builder.code[first..].iter()));
+    let origin = (!operations.is_empty()).then(|| Arc::new(GeneratedOrigin {
+        reason: GenerationReason::StageConstantEvaluation,
+        trigger: Some(GenerationAnchor::StageConstantEvaluation {
+            expression: builder.source_at(expression.span, SourceSyntax::Expression), operations,
+        }),
+    }));
+    Ok(Root::Literal(value.ty, value.constant.unwrap(), origin))
+}
+fn evaluation_operations<'a>(code: impl Iterator<Item = &'a Inst>) -> Vec<OperationOrigin> {
+    let mut operations: Vec<_> = code.filter(|inst| inst.generated_origin.is_some())
+        .map(OperationOrigin::from_instruction).collect();
+    operations.dedup_by_key(|origin| (
+        origin.source_site.as_ref().map(Arc::as_ptr), origin.generated_origin.as_ref().map(Arc::as_ptr),
+    ));
+    operations
 }
 fn constant_context(name:&str)->Program {
 Program {
@@ -134,11 +152,7 @@ pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty
                 "const 初始化尚不能完全在编译期求值；不允许资源、运行期运算或控制流",
             );
         }
-        let mut operations: Vec<_> = builder.code.iter().filter(|inst| inst.generated_origin.is_some())
-            .map(OperationOrigin::from_instruction).collect();
-        operations.dedup_by_key(|origin| (
-            origin.source_site.as_ref().map(Arc::as_ptr), origin.generated_origin.as_ref().map(Arc::as_ptr),
-        ));
+        let operations = evaluation_operations(builder.code.iter());
         let origin = (!operations.is_empty()).then(|| Arc::new(GeneratedOrigin {
             reason: GenerationReason::ModuleConstantEvaluation,
             trigger: Some(GenerationAnchor::ModuleConstantEvaluation {
