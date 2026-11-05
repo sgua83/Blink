@@ -252,6 +252,7 @@ pub enum GenerationReason {
     UnaryConstantFold,
     ModuleConstantEvaluation,
     StageConstantEvaluation,
+    StageIfSelection,
     DeclarationReference,
     ContractCondition,
 }
@@ -442,17 +443,33 @@ pub enum GenerationAnchor {
         definition: Option<std::sync::Arc<SourceOrigin>>, constant: std::sync::Arc<str>, operations: Vec<OperationOrigin>,
     },
     StageConstantEvaluation { expression: Option<std::sync::Arc<SourceSite>>, operations: Vec<OperationOrigin> },
+    StageIfSelection {
+        condition: Option<std::sync::Arc<SourceSite>>, value: bool,
+        evaluation: Option<std::sync::Arc<GeneratedOrigin>>, returned: bool,
+        stages: Vec<OperationOrigin>, calls: Vec<OperationOrigin>,
+        retained: Option<std::sync::Arc<GeneratedOrigin>>,
+    },
+    DomainEntry { context: Option<Box<GenerationAnchor>>, expansion: Option<std::sync::Arc<GeneratedOrigin>> },
     DomainCallLiteral { call: Option<std::sync::Arc<SourceSite>>, evaluation: Option<std::sync::Arc<GeneratedOrigin>> },
     DeclarationReference { declaration: std::sync::Arc<SourceDeclaration>, retained: OperationOrigin },
     ContractCondition { declaration: std::sync::Arc<SourceDeclaration>, span: Span, retained: OperationOrigin },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::DomainCallLiteral { call, .. } => call.as_deref(), Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::DomainCallLiteral { call, .. } => call.as_deref().map(SourceSite::origin), Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::DomainCallLiteral { call, .. } => call.as_deref().and_then(SourceSite::instance), Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::syntax), Self::StageIfSelection { condition, .. } => condition.as_deref(), Self::DomainCallLiteral { call, .. } => call.as_deref(), Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::origin), Self::StageIfSelection { condition, .. } => condition.as_deref().map(SourceSite::origin), Self::DomainCallLiteral { call, .. } => call.as_deref().map(SourceSite::origin), Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::DomainEntry { context, .. } => context.as_deref().and_then(GenerationAnchor::instance), Self::StageIfSelection { condition, .. } => condition.as_deref().and_then(SourceSite::instance), Self::DomainCallLiteral { call, .. } => call.as_deref().and_then(SourceSite::instance), Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } | Self::StageConstantEvaluation { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
+            Self::StageIfSelection { condition, value, evaluation, returned, stages, calls, retained } => format!("{{\"kind\":\"stage_if_selection\",\"condition\":{},\"value\":{},\"evaluation\":{},\"returned\":{},\"stages\":[{}],\"calls\":[{}],\"retained\":{}}}",
+                condition.as_deref().map_or_else(|| "null".into(), SourceSite::ir_json), value,
+                evaluation.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), returned,
+                stages.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(","),
+                calls.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(","),
+                retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json)),
+            Self::DomainEntry { context, expansion } => format!("{{\"kind\":\"domain_entry\",\"context\":{},\"expansion\":{}}}",
+                context.as_deref().map_or_else(|| "null".into(), GenerationAnchor::ir_json),
+                expansion.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json)),
             Self::DomainCallLiteral { call, evaluation } => format!("{{\"kind\":\"domain_call_literal\",\"call\":{},\"evaluation\":{}}}",
                 call.as_deref().map_or_else(|| "null".into(), SourceSite::ir_json), evaluation.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json)),
             Self::StageConstantEvaluation { expression, operations } => format!("{{\"kind\":\"stage_constant_evaluation\",\"expression\":{},\"operations\":[{}]}}",
@@ -586,6 +603,7 @@ impl GeneratedOrigin {
             GenerationReason::UnaryConstantFold => "unary_constant_fold",
             GenerationReason::ModuleConstantEvaluation => "module_constant_evaluation",
             GenerationReason::StageConstantEvaluation => "stage_constant_evaluation",
+            GenerationReason::StageIfSelection => "stage_if_selection",
             GenerationReason::DeclarationReference => "declaration_reference",
             GenerationReason::ContractCondition => "contract_condition",
         };

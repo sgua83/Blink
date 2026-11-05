@@ -527,7 +527,7 @@ JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼�
 
 实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
 
-后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Literal的值IR接收沿后文交接，整域调用／控制展开及形状／变体编号仍各有来源缺口，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
+后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Literal的值IR接收沿后文交接，阶段for展开及形状／变体编号仍各有来源缺口，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
 
 
 
@@ -539,7 +539,7 @@ module_constant与具名条件输出的常量读取共用evaluated_constant，�
 
 JSON reason及锚点kind均为module_constant_evaluation，definition为真实原source_definition或null，constant为实际完整常量名，operations是已有operation_origin数组，成员保留原语法及generated_origin。anchor().origin()借用可用原定义，instance()返回实际常量全名；单源syntax()／trigger()为空，不能用常量定义冒充一条用户表达式。源码常量保存原不可变来源；已编译接口缺失提供者定义时仍为null，保留实际常量名和实际取得的运算事实，不把接口求值当作提供者实现源码或IR。
 
-材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Literal的值IR接收沿后文交接，整域调用／控制展开及形状／变体编号仍有各自缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
+材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Literal的值IR接收沿后文交接，阶段for展开及形状／变体编号仍有各自缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
 
 
 
@@ -573,7 +573,7 @@ JSON reason和锚点kind为stage_constant_evaluation；expression是实际临时
 
 Builder::roots共用evaluated_constant，把同一材料交给实际Constant及已有source_site，原Value数值、Proof、literal、初始化、位置、布局和阶段选择保持。原CSE／DCE及空Map移除根按原OperationOrigin继续持有，不为查询保活操作或阶段；材料由原Root及实际IR／Stage／Program拥有，到最后编译／查询消费者后释放，不保留临时Inst、AST／World或运行资源。
 
-本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if／for仍只按真实值选择或展开，其控制材料交接尚未实现，不能以Root已持有材料代替。具名阶段常量Name读取的直接source_site仍有独立缺口：无折叠不造求值事件，不等于原始读取语法已经完整；该范围沿原始语法来源C-021.7.9.7.2.5推进。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)与[剩余范围](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
+本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if的实际条件选择已按下节交给原Program及整域入口，阶段for的边界／迭代材料交接仍待实现，不能以Root已持有材料代替。具名阶段常量Name读取的直接source_site仍有独立缺口：无折叠不造求值事件，不等于原始读取语法已经完整；该范围沿原始语法来源C-021.7.9.7.2.5推进。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)与[剩余范围](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
 
 #### 具名声明、调用及条件IR的来源
 
@@ -849,9 +849,15 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 
 原build_domain只在同一包装body.generated_origin交接DomainEntry，JSON reason为domain_entry；其ValueCode及FunctionBody名称、参数／结果、寄存器、内部Inst、真实源定义和运行合同保持。该入口说明整域包装的生成职责，不把它扩成每条内部操作的来源，也不将包装执行名称当作原B函数或原调用实例。这些body是主机CPU包装，原符号的CPU／GPU域目标说明所发起的计算位置，不表示该body已经是GPU中间表示或最终ISA。
 
-锚点直接消费原DefinitionSyntax与实际Instance。Source采用Definition锚点，definition为原d.source_origin快照，instance为原Instance.name，不从最终domain符号拆解；Generated已有SourceSite时直接共享Syntax，保留原语法、定义／实例、内联／域路径及实际范围，未知为null；CompiledInterface不补造锚点。实际已编译实现仍沿原domain_at装入，不重读其实现或因缺少源码生成另一份包装IR。FunctionBody.source_origin继续只记录真实原定义，Generated入口不因此获得虚假源码身份。
+锚点统一为GenerationAnchor::DomainEntry { context, expansion }，JSON kind为domain_entry。context消费原DefinitionSyntax与实际Instance：Source采用Definition锚点，definition为原d.source_origin快照，instance为原Instance.name，不从最终domain符号拆解；Generated已有SourceSite时共享Syntax，保留原语法、定义／实例、内联／域路径及实际范围；CompiledInterface或未知上下文为null。expansion共享原完整Program.generated_origin，缺少展开材料时为null。trigger()及syntax()／origin()／instance()只沿context，不能用展开中的某个条件替代入口语法。实际已编译实现仍沿原domain_at装入，不重读其实现或因缺少源码生成另一份包装IR。FunctionBody.source_origin继续只记录真实原定义，Generated入口不因此获得虚假源码身份。
 
 材料只归compiler角色的原ValueCode／FunctionBody／模块及SDK／CLI快照，在最后实际IR消费者后释放；原body克隆共享不可变来源，不持有World／AST、执行资源或第二登记表。关闭compiler角色不包含该类型／字段，必要执行编码、B语法、C ABI与资源完成保持。空指令body仍可以具有真实生成入口；原优化照常，不保活变量或节点。内部原Call／字面量准备／分段提交来源各归原职责，真实CPU／GPU计算及最后完成仍归Frame／blcompute，静态入口不证明已运行。见[架构](Architecture.md#tool-7-2-4-6-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
+
+#### 阶段if选择的生成来源
+
+expand_stages在原bool检查和唯一所选body成功展开后，把StageIfSelection交给同一Program.generated_origin。GenerationAnchor::StageIfSelection及JSON kind stage_if_selection分别提供condition（原Expression SourceSite）、value（本次bool）、evaluation（原Root可选求值GeneratedOrigin）、returned（该次阶段展开是否早退）、stages／calls（本次实际新增Stage及DomainCall的OperationOrigin）与retained（此前Program根，含递归内层选择）。stages按实际展开顺序共享原operation_source及generated_origin，calls按实际生成顺序共享原call.source而不造求值事件；二者不是最终融合阶段编号或运行次数，未选分支没有产生这些结果。单源查询只解释condition，evaluation和retained独立读取。空分支、无新阶段或阶段return仍有选择事实；失败不形成成功记录，不制造指令、复制IR、保活阶段或改变原初始化／返回语义。
+
+原Program查询持有完整选择材料；原生整域FunctionBody通过DomainEntry.expansion共享同一根，空body及仅调用已编译域也能查询。物理片段Program不继承完整展开根，其自身优化只记录实际片段；DomainPartCall继续仅使用入口context，不能把全域选择写到每段。材料为compiler数据，随原IR及快照到最后消费者，不进入必要对象／执行编码、拥有运行资源或增加状态表。最终融合来源及机器映射仍沿原任务推进，完整展开须查询原Program或整域FunctionBody，单片段查询不代表全域。见[架构职责](Architecture.md#tool-7-3-1-9-1-3-2-5)。
 
 #### 整域调用字面量实参的生成来源
 

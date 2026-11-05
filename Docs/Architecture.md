@@ -461,7 +461,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-1"></a>
 
-**整域包装入口的生成来源。** 实际DefinitionSyntax、Instance与目标经原build_domain形成ValueCode／FunctionBody，由原body.generated_origin交接DomainEntry，JSON reason为domain_entry，表示该包装入口的生成职责。真实源码定义采用原定义快照与实际Instance形成Definition锚点；应用parallel等Generated入口若已有原SourceSite则借用Syntax，未知原触发与CompiledInterface不补锚点，不将生成函数名当作原源码实例；实际已编译实现沿原domain_at装入，不为材料重读其实现或重建包装IR。FunctionBody.source_origin仍只表达真实源码定义，原CallTarget、参数布局及运行合同保持；根入口材料不代替内部Inst。唯一生产者为原build_domain，材料由原ValueCode／FunctionBody／模块与SDK／CLI快照持有，最后实际IR消费者后释放，不保留World／AST，不进入必要运行编码或拥有执行资源；原代码与优化照常，不为观察保活。当前已交接原包装body的生成入口，空body也保留已有入口事实，内部Inst分别沿原职责交接。见[规范](BLanguage.md#整域包装入口的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
+**整域包装入口的生成来源。** 实际DefinitionSyntax、Instance与目标经原build_domain形成ValueCode／FunctionBody，由原body.generated_origin交接DomainEntry，JSON reason为domain_entry，表示该包装入口的生成职责。DomainEntry锚点的context以真实源码定义快照与实际Instance形成Definition；应用parallel等Generated入口若已有原SourceSite则借用Syntax，未知原触发与CompiledInterface的context为空；expansion独立共享原完整Program根，单源查询只沿context，不将生成函数名当作原源码实例；实际已编译实现沿原domain_at装入，不为材料重读其实现或重建包装IR。FunctionBody.source_origin仍只表达真实源码定义，原CallTarget、参数布局及运行合同保持；根入口材料不代替内部Inst。唯一生产者为原build_domain，材料由原ValueCode／FunctionBody／模块与SDK／CLI快照持有，最后实际IR消费者后释放，不保留World／AST，不进入必要运行编码或拥有执行资源；原代码与优化照常，不为观察保活。当前已交接原包装body的生成入口，空body也保留已有入口事实，内部Inst分别沿原职责交接。见[规范](BLanguage.md#整域包装入口的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
 
 <a id="tool-7-2-4-6-2"></a>
 
@@ -731,7 +731,15 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-2-5"></a>
 
-**阶段if条件到实际展开。** 原bool Root的值决定唯一实际选中body；后续须把该次条件值及已有求值事实交给实际产生的Stage／原Program根，未选分支不伪装成执行，早退或没有新Stage也不制造指令。展开与完成规则保持，材料随原结果所有者到最后查询消费者；该消费者尚未实现，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2-5)。
+**阶段if条件到实际展开。** 原bool Root决定唯一所选body，实际选择事实沿原Program根交接；整域包装由原入口接收完整展开材料，物理分段只持有自身事实。两处职责如下，不保存旧IR、另建控制图或制造运行分支；最终融合后的多来源／机器范围仍归原.7.3.2／.7.4，不把展开时来源当最终阶段身份。
+
+<a id="tool-7-3-1-9-1-3-2-5-1"></a>
+
+**阶段if实际选择到Program根。** expand_stages消费原条件表达式、Root的bool值及可选求值GeneratedOrigin，在所选body成功展开后，将StageIfSelection交给同一Program.generated_origin。锚点condition是原operation_source的Expression，value为实际bool，evaluation共享原Root材料，returned为该次阶段展开的真实早退结果；stages／calls仅包含本次新增Stage的operation_source／generated_origin及DomainCall的source所形成OperationOrigin，按各自实际生成顺序交接，不保存Stage、调用IR、寄存器或未选body。retained接收此前根，包含递归展开的内层选择，空分支及没有阶段的早退也有真实选择事实；展开失败仍沿原错误退出，不交接成功记录。单源查询只解释condition；这是编译期选择，不能解释为运行次数或已经执行。原Program与查询快照共享不可变材料，最后IR消费者后释放，不保活Stage、改变原初始化／完成分析或增加必要编码。
+
+<a id="tool-7-3-1-9-1-3-2-5-2"></a>
+
+**完整展开根到整域入口。** build_domain将原完整Program.generated_origin共享给同一FunctionBody的DomainEntry锚点expansion，context独立保留原Definition／Syntax或null；单源查询仅沿context，完整选择从expansion查询。空body、仅调用已编译域及阶段早退仍由原入口持有其完整展开事实，不补造指令或提供者源码。emit_domain_part从signature克隆物理片段时不继承完整展开根，片段优化按自身真实结果形成材料；DomainPartCall继续仅接收原入口context，不能把全域选择归给每段。材料沿原ValueCode／FunctionBody／模块和快照到最后IR消费者，不增参数、状态、IR副本、运行链或资源寿命。查询完整展开须取得原Program或整域FunctionBody根，单片段查询不代表完整域。 两处交接已实现，见[本批闭合范围](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-5)。
 
 <a id="tool-7-3-1-9-1-3-2-6"></a>
 

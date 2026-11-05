@@ -577,7 +577,7 @@ fn expand_stages(
                 env.insert(name.clone(), value);
             }
             StmtKind::If(condition, yes, no) => {
-                let Root::Literal(ty, words, _) = stage_root(world, instance, env, program, condition)? else {
+                let Root::Literal(ty, words, evaluation) = stage_root(world, instance, env, program, condition)? else {
                     return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
                 };
                 if ty != Ty::scalar(Scalar::Bool) {
@@ -585,7 +585,23 @@ fn expand_stages(
                 }
                 let selected = if words[0] == 0 { no } else { yes };
                 let mut child = env.clone();
-                if expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls, domain_path, functions)? {
+                let first_call = calls.len();
+                let returned = expand_stages(world, instance, selected, &mut child, program, stack, boundary, facts, calls, domain_path, functions)?;
+                program.generated_origin = Some(Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::StageIfSelection,
+                    trigger: Some(GenerationAnchor::StageIfSelection {
+                        condition: operation_source(instance, condition.span, SourceSyntax::Expression, domain_path),
+                        value: words[0] != 0, evaluation, returned,
+                        stages: program.stages[first_stage..].iter().map(|stage| OperationOrigin {
+                            source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.clone(),
+                        }).collect(),
+                        calls: calls[first_call..].iter().map(|call| OperationOrigin {
+                            source_site: call.source.clone(), generated_origin: None,
+                        }).collect(),
+                        retained: program.generated_origin.clone(),
+                    }),
+                }));
+                if returned {
                     return Ok(true);
                 }
                 first_stage = program.stages.len();
