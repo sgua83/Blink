@@ -2592,7 +2592,22 @@ impl<'a> Builder<'a> {
         let mut regs = Vec::new();
         let n = v.regs.len();
         if v.ty.components.iter().any(|(source, _)| *source != s) && let Some(bits) = constant {
+            let first = self.code.len();
             let mut value = self.constant_value(Ty::vector(s, n), bits,None);
+            for (component_index, (inst, (input_bits, result_bits))) in self.code[first..].iter_mut()
+                .zip(v.constant.iter().flatten().zip(value.constant.iter().flatten())).enumerate() {
+                let source_scalar = v.ty.components[component_index].0;
+                if source_scalar != s {
+                    inst.generated_origin = Some(Arc::new(GeneratedOrigin {
+                        reason: GenerationReason::CastConstantFold,
+                        trigger: Some(GenerationAnchor::CastConstantFold {
+                            expression: inst.source_site.clone(), source_scalar, target_scalar: s,
+                            input_bits: *input_bits, result_bits: *result_bits,
+                            component_index, component_count: n,
+                        }),
+                    }));
+                }
+            }
             value.proof = proof;
             return value;
         }

@@ -571,6 +571,14 @@ GenerationAnchor::BinaryConstantFold与JSON kind binary_constant_fold提供：ex
 
 单源trigger()、syntax()／origin()／instance()只解释expression，原生成职责从retained读取；材料仅compiler，随原Inst、CSE／DCE／空Map根、模块及查询快照到最后IR消费者。模块／阶段常量的实际结果及其原接收者共用同一事实，不重新求值或保留旧IR、AST／World，不增加状态表、必要编码、运行指令或保活。材料描述这次实际常量计算，不声称完整输入谱系、运行次数、最终ISA或实测收益。形状／编号整数结果和Proof比较来源仍沿各自独立编号推进。见[架构两叶职责](Architecture.md#tool-7-3-1-9-2)。
 
+#### 数值转换常量折叠的来源
+
+原Builder::cast沿constant::cast取得逐分量结果，保持原类型、宽度、符号、截断和浮点许可。只有原成功路径物化Constant，且该分量source Scalar与target Scalar不同，才在该原Constant附加GenerationReason::CastConstantFold；同类型复用不产生转换，混合记录中Scalar已经相同的物化分量也不产生转换。位模式相同可以有真实类型转换，不能按bits是否变化判定；未能完全常量求值时保留原Cast，bitcast沿原独立职责。
+
+GenerationAnchor::CastConstantFold及JSON kind cast_constant_fold分别提供expression（原Constant的SourceSite或null）、source_scalar、target_scalar、input_bits／result_bits（十六进制字符串）、component_index／component_count。component_index_base为0，index是原结果平坦逻辑分量下标，count是整个结果分量数；它们不是寄存器身份、转换次数或存储字数量。源类型按该分量实际Scalar读取，混合记录不能以首字段类型解释所有分量。单源trigger()与syntax()／origin()／instance()只借用原expression，不补造／扩大范围。
+
+原literal、Proof、source_site、Scalar／Bits、寄存器、布局与运行期转换语义保持。材料只归compiler的原Inst、CSE／DCE／空Map根、模块／阶段常量实际结果及查询快照，到最后IR消费者后释放；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值器、来源表、状态、必要编码、运行指令或保活。静态转换记录不等于运行次数、最终ISA或实测收益。见[架构职责](Architecture.md#tool-7-3-1-9-3)。
+
 #### 阶段常量结果到实际值IR的来源
 
 原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls接收evaluate已有材料；env中已有Root仍克隆同一原值和材料，实际Literal的Name读取再由下述StageConstantReference交接本次绑定。直接Number／StaticU32及计数器初始值不伪造读取或折叠；无折叠Name的retained可以为空，本次真实reference仍保留。

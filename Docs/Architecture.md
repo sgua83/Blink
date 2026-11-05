@@ -793,7 +793,11 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-3"></a>
 
-**数值转换常量折叠的来源。** 输入：原各分量标量类型、实际常量位模式和constant::cast返回。唯一生产／消费接点：check.rs#158::cast2510至2523，事实归原Builder／ValueCode／Stage及真实转换结果；输出为本项真实变换的来源关系或明确缺失。区分恒等类型与真正转换，保留宽度、符号、截断及浮点规则；不与位重解释混同。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前转换折叠已实现，来源交接待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-9-3)。
+**数值转换常量折叠的来源。** 原cast拥有实际Value.constant、各输入Scalar与目标Scalar，constant::cast仍按原宽度、符号、截断和浮点规则逐分量求值。只有原转换路径成功物化Constant时，且该分量源／目标Scalar确实不同，才在同一原Constant交接CastConstantFold；同类型原寄存器复用、混合记录中同Scalar的物化分量都不标为转换，未成功常量化的原Cast及位重解释保持各自职责。数值位模式没有变化也可能有真实符号或类型转换，不按bits是否相等判定。
+
+GenerationAnchor::CastConstantFold的expression借用该Constant原source_site，source_scalar／target_scalar、input_bits／result_bits及component_index／component_count记录实际类型、位模式与平坦逻辑分量；index从零开始，count为整个原结果分量数，不是寄存器身份或转换次数。查询只借用同一结果，单源查询只解释已有expression，未知为null，不补造或扩大语法范围。原SourceSite、数值、literal、Proof、布局和寄存器保持；材料仅compiler，沿原Inst、CSE／DCE／空Map根、模块／阶段常量实际接收及查询快照，到最后IR消费者后释放，不保留旧IR、AST／World或完整输入谱系，不拥有运行资源。
+
+不重算、不增加来源表、状态、运行指令、必要编码、调度、同步或释放链，不为查询保活操作；静态转换不等于运行次数、最终ISA或实测收益。位重解释仍沿.9.4，整数形状／编号与未实现转换语义继续各自原编号；本项已交接的具体范围与验证见[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-9-3)。
 
 <a id="tool-7-3-1-9-4"></a>
 
