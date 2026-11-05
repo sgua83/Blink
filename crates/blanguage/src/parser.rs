@@ -190,6 +190,14 @@ impl Parser {
             "nonzero" => ContractPredicate::Nonzero(self.contract_value_path()?),
             "nonempty" => ContractPredicate::Nonempty(self.contract_value_path()?),
             "contiguous" => ContractPredicate::Contiguous(self.qualified(".")?),
+            "memory" => {
+                let access=if self.take("none"){None}
+                    else if self.take("read"){Some(Access::Read)}
+                    else if self.take("write"){Some(Access::Write)}
+                    else if self.take("inout"){Some(Access::InOut)}
+                    else{return self.source.fail(span,"B225","memory使用none、read、write或inout");};
+                ContractPredicate::Memory(access)
+            },
             "initialized" => {
                 let value = self.qualified(".")?;
                 self.expect(",")?;
@@ -217,7 +225,7 @@ impl Parser {
                 return self.source.fail(
                     span,
                     "B225",
-                    "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length、cleanup 或 initialized",
+                    "未知接口约束；使用 prefix、nonzero、nonempty、index、contiguous、same_length、cleanup、memory 或 initialized",
                 );
             }
         };
@@ -247,8 +255,8 @@ impl Parser {
             let contract = self.contract()?;
             if !matches!((&contract.kind, &contract.predicate),
                 (ContractKind::Requires, ContractPredicate::Nonzero(_))
-                | (ContractKind::Ensures, ContractPredicate::Initialized { .. })) {
-                return self.source.fail(contract.span, "B225", "cfn合同使用requires nonzero输入前提及ensures initialized输出条件");
+                | (ContractKind::Ensures, ContractPredicate::Initialized { .. } | ContractPredicate::Memory(_))) {
+                return self.source.fail(contract.span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory");
             }
             contracts.push(contract.predicate);
         }

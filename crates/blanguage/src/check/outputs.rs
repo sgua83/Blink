@@ -38,6 +38,12 @@ impl<'a> Contract<'a> {
         Self { source, module, imports, public: false, parameters,
             clauses: Clauses::Signature(outputs, span) }
     }
+    pub(super) fn external_memory(self)->Option<Access> {
+        external_memory((0..self.len()).filter_map(|index|match self.at(index) {
+            (ContractKind::Ensures,predicate,_)=>Some(predicate),
+            _=>None,
+        }))
+    }
     pub(super) fn nonzero_inputs(self) -> impl Iterator<Item = (&'a str, Span)> {
         (0..self.len()).filter_map(move |index| match self.at(index) {
             (ContractKind::Requires, ContractPredicate::Nonzero(path), span) => Some((path.as_str(), span)),
@@ -61,6 +67,15 @@ impl<'a> Contract<'a> {
             },
         }
     }
+}
+
+pub(super) fn external_memory<'a>(predicates:impl IntoIterator<Item=&'a ContractPredicate>)->Option<Access> {
+    let(mut reads,mut writes)=(true,true);
+    for predicate in predicates {if let ContractPredicate::Memory(access)=predicate {
+        reads&=access.is_some_and(|access|access.reads());
+        writes&=access.is_some_and(|access|access.writes());
+    }}
+    match(reads,writes){(true,true)=>Some(Access::InOut),(true,false)=>Some(Access::Read),(false,true)=>Some(Access::Write),(false,false)=>None}
 }
 
 pub(super) fn validate(world: &World, definition: &Definition) -> Result<()> {
@@ -647,11 +662,12 @@ pub(crate) fn bind_function_contracts(
     for predicate in outputs {
         match predicate {
             ContractPredicate::Nonzero(path) => { bound.insert(ContractPredicate::Nonzero(path.clone())); }
+            ContractPredicate::Memory(access) => { bound.insert(ContractPredicate::Memory(*access)); }
             ContractPredicate::Initialized { value, condition } => {
                 bound.insert(ContractPredicate::Initialized { value: value.clone(),
                     condition: normalize(world, contract, result, condition, span)? });
             }
-            _ => return source.fail(span, "B225", "cfn合同使用requires nonzero及ensures initialized"),
+            _ => return source.fail(span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory"),
         }
     }
     Ok(bound.into_iter().collect())
@@ -758,7 +774,8 @@ pub(crate) fn validate_function_contracts(
         match output {
             ContractPredicate::Nonzero(path) => contracts::validate_nonzero_input(path, &input, source, span)?,
             ContractPredicate::Initialized { value, condition } => validate_output(value, condition, &input, result, source, span)?,
-            _ => return source.fail(span, "B225", "cfn合同使用requires nonzero及ensures initialized"),
+            ContractPredicate::Memory(_) => {},
+            _ => return source.fail(span, "B225", "cfn合同使用requires nonzero、ensures initialized及ensures memory"),
         }
     }
     Ok(())

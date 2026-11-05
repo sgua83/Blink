@@ -10,6 +10,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.contracts.iter().any(|contract| !match &contract.predicate {
             ContractPredicate::Initialized { .. } => contract.kind == ContractKind::Ensures,
             ContractPredicate::Nonzero(_) => contract.kind == ContractKind::Requires,
+            ContractPredicate::Memory(_) => contract.kind == ContractKind::Ensures && f.external.is_some(),
             _ => false,
         })
         || f.params.iter().any(|p| {
@@ -22,7 +23,7 @@ pub(super) fn validate_signature(d: &Definition) -> Result<()> {
         || f.result.dataset
         || f.result.tile
     {
-        return d.source.fail(f.span,"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized");
+        return d.source.fail(f.span,"B263","extern C 需要 on cpu 普通C签名，只接收普通值及 read／write／inout 位置；from导入是无正文的固定符号，B定义可实例化，输入可声明 requires nonzero，输出可声明 ensures initialized，不透明内存效果可声明 ensures memory");
     }
     Ok(())
 }
@@ -308,7 +309,8 @@ impl Builder<'_> {
         let mut written = Vec::new();
         let mut held = Vec::new();
         let mut output_inputs = BTreeMap::new();
-        let mut memory_borrow=view::Borrow::source(view::Source::External);
+        let opaque=definition.map(|contract|contract.external_memory()).unwrap_or(Some(Access::InOut));
+        let mut memory=vec![(view::Borrow::source(view::Source::External),opaque)];
         for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
             let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
             let arg = match arg {
@@ -319,14 +321,16 @@ impl Builder<'_> {
             arguments.push(match (&parameter.kind, arg) {
                 (CallParameterKind::Value(ty), Argument::Value(value)) => {
                     self.require_same(ty, &value.ty, span)?;
-                    memory_borrow.union(&self.address_contents(&value.ty,&value.proof));
+                    memory[0].0.union(&self.address_contents(&value.ty,&value.proof));
                     if let Some(d) = definition { output_inputs.insert(d.parameters[index].name.clone(), value.clone()); }
                     CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: ty.clone(), values: value.regs }
                 }
                 (CallParameterKind::Reference { ty, access }, Argument::Reference(owner)) => {
-                    if access.reads(){memory_borrow.union(&self.address_contents(ty,&owner.proof));}
+                    if access.reads(){memory[0].0.union(&self.address_contents(ty,&owner.proof));}
                     let place = owner.place;
                     self.require_same(ty, place.ty(), span)?;
+                    let origin=self.position_origin(&place,span)?;
+                    memory.push((view::Borrow::source(view::Source::Position(Arc::new(origin))),Some(*access)));
                     let address = self.external_reference(&place, *access, span)?;
                     if access.writes() { written.push((index, place)); }
                     CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: ty.clone(), access: *access, address }
@@ -339,7 +343,7 @@ impl Builder<'_> {
         }
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
-        let memory_use=self.call_address_memory(memory_borrow,span)?;
+        let memory_use=self.call_address_memory(memory,span)?;
         let kind=InstKind::Call(Call { target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
         if let Some(origin)=generated_origin { self.code.push(Inst::generated(kind,origin)); }
         else { self.emit(kind); }

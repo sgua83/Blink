@@ -32,6 +32,9 @@ fn type_name(ty: &TypeName) -> String {
         for output in outputs.iter() {
             if let ContractPredicate::Nonzero(value) = output {
                 name.push_str(&format!(" requires nonzero({value})"));
+            } else if let ContractPredicate::Memory(access)=output {
+                let mode=match access{None=>"none",Some(Access::Read)=>"read",Some(Access::Write)=>"write",Some(Access::InOut)=>"inout",Some(Access::Value)=>"value",Some(Access::Atomic)=>"atomic"};
+                name.push_str(&format!(" ensures memory({mode})"));
             } else if let ContractPredicate::Initialized { value, condition } = output {
                 name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
             }

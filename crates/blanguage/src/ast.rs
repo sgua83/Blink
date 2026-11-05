@@ -206,6 +206,7 @@ pub enum ContractPredicate {
     Nonzero(String),
     Nonempty(String),
     Contiguous(String),
+    Memory(Option<Access>),
     Index {
         value: String,
         resource: String,

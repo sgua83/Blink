@@ -438,6 +438,7 @@ pub(super) fn resolve(
                 Predicate::SameLength(length(definition, env, left, contract.span)?, length(definition, env, right, contract.span)?),
                 format!("same_length({left},{right})"),
             ),
+            ContractPredicate::Memory(_)=>return definition.source.fail(contract.span,"B225","memory只用于外部C声明或cfn，普通B正文沿实际访问推导"),
             ContractPredicate::Contiguous(path) => (
                 Predicate::Contiguous(reference(builder, definition, env, path, contract.span)?),
                 format!("contiguous({path})"),

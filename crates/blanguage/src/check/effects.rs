@@ -393,7 +393,7 @@ impl Builder<'_> {
                 Write::External{call,instance:Some(instance),arguments,syntax}=>{
                     self.native_declaration(&instance)?;
                     if self.functions.read_only(&instance.name) {
-                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),contents:true,..} if std::ptr::eq(*origin,call)));
+                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
                     if Scope::current(self).writes_covered(&instance)?{continue;}
                     // Resource ownership is still consumed by its existing place projection.
@@ -608,7 +608,9 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
         let Some(function) = &ty.function else {
             return self.definition.source.fail(call.span, "B263", "间接调用目标需要cfn原生C签名值");
         };
-        writes(Write::External{call,instance:None,arguments:BTreeMap::new(),syntax:args});
+        if outputs::external_memory(function.contracts.iter()).is_some_and(|access|access.writes()){
+            writes(Write::External{call,instance:None,arguments:BTreeMap::new(),syntax:args});
+        }
         for ((access, _), arg) in function.parameters.iter().zip(args) {
             if matches!(access, Access::Write | Access::InOut) {
                 writes(Write::Position { place: arg, call: Some(call), contents: false, iterator: None });
@@ -640,12 +642,14 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                         && self.world.resolve(name, &self.definition.module, &self.definition.imports, false).is_some();
                     if !record && let Some(key) = self.world.resolve(name, &self.definition.module, &self.definition.imports, true) {
                         let instance=if self.builder.is_some(){self.call_instance(expr)?}else{None};
-                        let covered=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false};
+                        let covered=match instance.as_ref(){Some(instance)=>self.writes_covered(instance)?,None=>false}
+                            || (self.world.functions[&key].function.external.is_some()
+                                && !outputs::Contract::from(self.world.functions[&key].as_ref()).external_memory().is_some_and(|access|access.writes()));
                         let read_only=instance.as_ref().is_some_and(|instance|self.builder.is_some_and(|builder|builder.functions.read_only(&instance.name)));
                         for (param, arg) in self.world.functions[&key].function.params.iter().zip(args) {
                             if matches!(param.access, Access::InOut | Access::Write) && !param.ty.tile {
                                 let contents=param.ty.dataset || self.expression(arg)?.is_some_and(|ty|ty.dataset.is_some());
-                                if !contents||!read_only {writes(Write::Position { place: arg, call: Some(expr), contents, iterator: None });}
+                                if !read_only {writes(Write::Position { place: arg, call: Some(expr), contents, iterator: None });}
                             }
                         }
                         if !covered {let arguments=match &instance{Some(instance)=>self.call_inputs(&instance.definition,args)?,None=>BTreeMap::new()};writes(Write::External{call:expr,instance,arguments,syntax:args});}

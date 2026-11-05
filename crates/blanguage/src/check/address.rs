@@ -294,7 +294,8 @@ impl crate::module::codec::Decode for Identity {
 #[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
-pub(super) enum MemoryEffect { Known(Vec<MemoryAccess>), External(Access) }
+#[derive(Default)]
+pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<MemoryAccess>}
 pub(super) fn external_memory(borrow:&view::Borrow)->bool {
     borrow.sources.entries().any(|(source,when)|when.possible()&&match source {
         view::Source::External=>true,
@@ -308,40 +309,32 @@ pub(super) fn external_memory(borrow:&view::Borrow)->bool {
 }
 impl MemoryEffect {
     pub fn of(borrow:&view::Borrow,access:Access)->Self {
-        if external_memory(borrow){return Self::External(access);}
-        Self::Known(borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source {
+        let external=external_memory(borrow).then_some(access);
+        let known=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source{
             view::Source::Position(origin)=>origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if origin.writable{access}else{Access::Read}}).collect::<Vec<_>>(),
             _=>Vec::new(),
-        }).collect())
+        }).collect();
+        Self{external,known}
     }
     pub fn union(&mut self,other:Self) {
-        match (&mut *self,other) {
-            (Self::Known(a),Self::Known(b))=>a.extend(b),
-            (Self::External(access),Self::Known(effects))=>if effects.iter().any(|effect|effect.access!=*access){*access=Access::InOut;},
-            (target,Self::External(mut access))=>{
-                if match target {Self::Known(effects)=>effects.iter().any(|effect|effect.access!=access),Self::External(old)=>*old!=access}{access=Access::InOut;}
-                *target=Self::External(access);
-            },
-        }
+        self.known.extend(other.known);
+        if let Some(access)=other.external{self.external=Some(match self.external{Some(old)if old!=access=>Access::InOut,_=>access});}
     }
     pub(super) fn writes_position(&self,position:&Position)->bool {
-        match self {
-            Self::External(access)=>access.writes(),
-            Self::Known(effects)=>match position {
-                Position::Initialized=>false,
-                Position::Local(slot)=>effects.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Local{base,len}if (base..base+len).contains(slot))),
-                Position::Element(binding,_)=>effects.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Data(actual)if actual==*binding)),
-                Position::Both(a,b)|Position::Conditional(_,a,b)=>self.writes_position(a)||self.writes_position(b),
-                Position::Indexed(positions,_)=>positions.iter().any(|position|self.writes_position(position)),
-                _=>effects.iter().any(|effect|effect.access.writes()),
-            },
+        if self.external.is_some_and(|access|access.writes()){return true;}
+        match position{
+            Position::Initialized=>false,
+            Position::Local(slot)=>self.known.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Local{base,len}if(base..base+len).contains(slot))),
+            Position::Element(binding,_)=>self.known.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Data(actual)if actual==*binding)),
+            Position::Both(a,b)|Position::Conditional(_,a,b)=>self.writes_position(a)||self.writes_position(b),
+            Position::Indexed(positions,_)=>positions.iter().any(|position|self.writes_position(position)),
+            _=>self.known.iter().any(|effect|effect.access.writes()),
         }
     }
     fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
-        match self {
-            Self::Known(effects)=>effects.clone(),
-            Self::External(access)=>locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access:*access}).collect(),
-        }
+        let mut effects=self.known.clone();
+        if let Some(access)=self.external{effects.extend(locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access}));}
+        effects
     }
 }
 pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,MemoryEffect>,locals:&BTreeMap<usize,Ty>) {
@@ -767,10 +760,12 @@ impl Builder<'_> {
         }
         snapshots
     }
-    pub(super) fn call_address_memory(&mut self,borrow:view::Borrow,span:Span)->Result<usize> {
-        self.write_address_values(&borrow);
+    pub(super) fn call_address_memory(&mut self,memory:impl IntoIterator<Item=(view::Borrow,Option<Access>)>,span:Span)->Result<usize> {
         let usage=self.view_model.uses.len();
-        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,span})?;
+        for(borrow,access)in memory{
+            if access.is_some_and(|access|access.writes()){self.write_address_values(&borrow);}
+            self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Call(usage),borrow,access,span})?;
+        }
         Ok(usage)
     }
     pub(super) fn position_address(&mut self,args:&[Expr],span:Span)->Result<Option<Value>> {
@@ -844,7 +839,7 @@ impl Builder<'_> {
             access: Access::InOut,
         };
         let memory=if external{self.position_origin(&place,span)?.normalize()}else{borrow};
-        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:memory,span})?;
+        self.check_view_requirement(view::Requirement::Memory{target:MemoryTarget::Value(low),borrow:memory,access:Some(Access::InOut),span})?;
         Ok(Some(place))
     }
 }

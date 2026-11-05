@@ -227,28 +227,29 @@ impl ApplicationLoads<'_, '_> {
         }else if same_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
         Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
-    fn call_writes(&self,call:&Call)->bool {
+    fn call_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
+        if let Some(usage)=call.memory_use {
+            return self.0.view_model.uses[usage..].iter()
+                .take_while(|item|matches!(&item.requirement,view::Requirement::Memory{target:address::MemoryTarget::Call(id),..}if *id==usage))
+                .any(|item|match &item.requirement {
+                    view::Requirement::Memory{borrow,access,..}if access.is_some_and(|access|access.writes())=>
+                        writes(&self.0.current_address_borrow(borrow)),
+                    _=>false,
+                });
+        }
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
         if Self::pointer_call(call).is_some()||Self::allocation(call){return false;}
         match &call.target {
-            CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY=>return true,
-            CallTarget::Defined(name)=>return !self.0.functions.writes_only_references(name),
-            CallTarget::Indirect(_)=>return true,
-            _=>{},
-        }
-        let Some(usage)=call.memory_use else{return true;};
-        if !call.arguments.iter().any(|argument|matches!(argument,CallArgument::Value{ty,..}if ty.contains_borrows())){return false;}
-        // call_address_memory retains a use only for a nonempty memory effect.
-        // Other requirements may occupy the unconsumed index of an empty effect.
-        match self.0.view_model.uses.get(usage) {
-            Some(view_contracts::Use{requirement:view::Requirement::Memory{target:address::MemoryTarget::Call(id),borrow,..},..})if *id==usage=>!borrow.empty(),
-            _=>false,
+            CallTarget::Defined(name)=>!self.0.functions.writes_only_references(name),
+            _=>true,
         }
     }
     fn writes_local(&self,inst:&Inst,slot:usize)->bool {
+        if let InstKind::Call(call)=&inst.kind {
+            return self.call_writes(call,|borrow|borrow.pending()||address::MemoryEffect::of(borrow,Access::InOut).writes_position(&Position::Local(slot)));
+        }
         if inst.local_writes().contains(&slot){return true;}
         match &inst.kind {
-            InstKind::Call(call)=>self.call_writes(call),
             InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes_local(inst,slot)),
             InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes_local(inst,slot)),
             InstKind::Scope(body)=>body.iter().any(|inst|self.writes_local(inst,slot)),
@@ -259,18 +260,25 @@ impl ApplicationLoads<'_, '_> {
         match &inst.kind {
             InstKind::StoreIndexed{source,offset,word,value}=>self.store_overlaps(load,source,Some(*offset),*word,self.0.registers[*value]),
             InstKind::Call(call)=>{
-                if let CallTarget::Defined(name)=&call.target
-                    && self.0.functions.writes_only_references(name) {
-                    if call.memory.iter().any(|effect|effect.access.writes()){return true;}
-                    return call.arguments.iter().any(|argument|match argument {
-                        CallArgument::Reference{ty,access,address, ..}if access.writes()=>match &address.storage {
-                            ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
-                            ir::CallStorage::Local{..}=>false,
-                        },
-                        _=>false,
-                    });
-                }
-                self.call_writes(call)
+                let allocated=matches!(&load.kind,InstKind::ViewLoad{address,..}if self.frame_root(*address).is_some_and(|root|self.allocated(root)));
+                self.call_writes(call,|borrow|{
+                    if borrow.pending()||address::external_memory(borrow){return true;}
+                    if let CallTarget::Defined(name)=&call.target
+                        && self.0.functions.writes_only_references(name) {
+                        if call.memory.iter().any(|effect|effect.access.writes()){return true;}
+                        return call.arguments.iter().any(|argument|match argument {
+                            CallArgument::Reference{ty,access,address,..}if access.writes()=>match &address.storage {
+                                ir::CallStorage::Indexed(source)=>ty.components.iter().any(|(scalar,word)|self.store_overlaps(load,source,address.offset,address.word+word,*scalar)),
+                                ir::CallStorage::Local{..}=>false,
+                            },
+                            _=>false,
+                        });
+                    }
+                    borrow.sources.entries().any(|(source,when)|when.possible()&&match source{
+                        view::Source::Position(origin)if allocated&&matches!(origin.root,address::Root::Local{..})=>false,
+                        _=>true,
+                    })
+                })
             },
             InstKind::If{yes,no,..}=>yes.iter().chain(no).any(|inst|self.writes(inst,load)),
             InstKind::Loop{condition,body,..}=>condition.iter().chain(body).any(|inst|self.writes(inst,load)),

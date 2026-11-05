@@ -38,6 +38,7 @@ pub(super) fn signature(world: &World, caller: &Definition, args: &[Expr], span:
         match &contract.predicate {
             ContractPredicate::Nonzero(value) if contract.kind == ContractKind::Requires =>
                 Some(ContractPredicate::Nonzero(parameter_name(value, &f.params))),
+            ContractPredicate::Memory(access) if contract.kind==ContractKind::Ensures=>Some(ContractPredicate::Memory(*access)),
             ContractPredicate::Initialized { value, condition: when } =>
                 Some(ContractPredicate::Initialized { value: parameter_name(value, &f.params), condition: condition(when, &f.params) }),
             _ => None,

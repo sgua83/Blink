@@ -32,7 +32,7 @@ impl Module {
         self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
             access.iter().all(|access|match access {
                 view_contracts::Access::Resource{ownership,..}=>!*ownership,
-                view_contracts::Access::Memory{..}=>false,
+                view_contracts::Access::Memory{access,..}=>!access.writes(),
                 view_contracts::Access::Position{position,..}=>!position.writes,
                 view_contracts::Access::Dataset{access,..}=>!access.writes(),
                 view_contracts::Access::Initialized{..}=>true,
@@ -59,7 +59,7 @@ impl Module {
         }
         access.iter().all(|access|match access {
             view_contracts::Access::Resource{ownership,..}=>!*ownership,
-            view_contracts::Access::Memory{..}=>false,
+            view_contracts::Access::Memory{access,..}=>!access.writes(),
             view_contracts::Access::Position{position,..}=>!position.writes,
             view_contracts::Access::Dataset{borrows,access,..}=>!access.writes()||covered(borrows,&roots),
             view_contracts::Access::Initialized{..}=>true,
@@ -79,7 +79,8 @@ impl Module {
         }
         self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
             access.iter().all(|access|match access {
-                view_contracts::Access::Resource{..}|view_contracts::Access::Memory{..}=>false,
+                view_contracts::Access::Resource{..}=>false,
+                view_contracts::Access::Memory{access,borrows,..}=>!access.writes()||references(borrows),
                 view_contracts::Access::Dataset{..}|view_contracts::Access::Initialized{..}=>true,
                 view_contracts::Access::Position{position,borrows,..}=>!position.writes||references(borrows),
             }))
@@ -411,7 +412,8 @@ impl Builder<'_> {
         let mut written=view::Borrow::default();
         for access in access {
             let(borrows,when)=match access {
-                view_contracts::Access::Memory{borrows,when}|view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}}=>(borrows,when),
+                view_contracts::Access::Memory{borrows,when,access}if access.writes()=>(borrows,when),
+                view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}}=>(borrows,when),
                 view_contracts::Access::Dataset{borrows,when,access,..}if access.writes()=>(borrows,when),
                 _=>continue,
             };
@@ -732,10 +734,10 @@ impl Builder<'_> {
             self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
         let (memory_use,memory_values)=if views_closed {
-            (self.call_address_memory(memory_borrow,span)?,Vec::new())
+            (self.call_address_memory([(memory_borrow,Some(Access::InOut))],span)?,Vec::new())
         }else{
             let usage=self.view_model.uses.len();
-            self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(usage),borrow:memory_borrow,span})?;
+            self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(usage),borrow:memory_borrow,access:Some(Access::InOut),span})?;
             (usage,self.defer_address_values(usage))
         };
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
