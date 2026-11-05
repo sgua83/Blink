@@ -579,6 +579,12 @@ GenerationAnchor::CastConstantFold及JSON kind cast_constant_fold分别提供exp
 
 原literal、Proof、source_site、Scalar／Bits、寄存器、布局与运行期转换语义保持。材料只归compiler的原Inst、CSE／DCE／空Map根、模块／阶段常量实际结果及查询快照，到最后IR消费者后释放；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值器、来源表、状态、必要编码、运行指令或保活。静态转换记录不等于运行次数、最终ISA或实测收益。见[架构职责](Architecture.md#tool-7-3-1-9-3)。
 
+#### 位重解释常量折叠的来源
+
+原Builder::bitcast只在已检查输入持有完整Value.constant时，以同一位模式物化目标Scalar的Constant。各结果附加GenerationReason::BitcastConstantFold；GenerationAnchor::BitcastConstantFold及JSON kind bitcast_constant_fold交接expression（原Constant的SourceSite或null）、source_scalar／target_scalar、bits（十六进制字符串）及component_index／component_count，component_index_base为0。bits是源与目标共同的原始位模式，不是宿主浮点读数；分量是平坦逻辑位置与总数，不是寄存器身份或运行次数。源／目标方向来自原实际bitcast，不按bits相等把它误写成恒等数值转换。
+
+动态输入仍发射原UnaryOp::Bitcast；原位宽、向量许可、数量／类型诊断、literal、Proof、source_site与布局保持。单源查询只借用已有expression，不补造未知来源。材料仅compiler，随原Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照到最后IR消费者；不保留旧IR、AST／World、完整输入谱系或运行资源，不增加求值、状态表、必要编码、运行指令或保活。数值转换与最终机器映射各沿原职责，见[位重解释架构](Architecture.md#tool-7-3-1-9-4)。
+
 #### 阶段常量结果到实际值IR的来源
 
 原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls接收evaluate已有材料；env中已有Root仍克隆同一原值和材料，实际Literal的Name读取再由下述StageConstantReference交接本次绑定。直接Number／StaticU32及计数器初始值不伪造读取或折叠；无折叠Name的retained可以为空，本次真实reference仍保留。

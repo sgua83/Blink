@@ -2561,7 +2561,18 @@ impl<'a> Builder<'a> {
         }
         let ty = Ty::vector(target, n);
         if let Some(bits) = value.constant {
+            let first = self.code.len();
             let mut result = self.constant_value(ty, bits,None);
+            for (component_index, (inst, bits)) in self.code[first..].iter_mut()
+                .zip(result.constant.iter().flatten()).enumerate() {
+                inst.generated_origin = Some(Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::BitcastConstantFold,
+                    trigger: Some(GenerationAnchor::BitcastConstantFold {
+                        expression: inst.source_site.clone(), source_scalar: source, target_scalar: target,
+                        bits: *bits, component_index, component_count: n,
+                    }),
+                }));
+            }
             result.literal = false;
             return Ok(result);
         }

@@ -801,7 +801,11 @@ GenerationAnchor::CastConstantFold的expression借用该Constant原source_site�
 
 <a id="tool-7-3-1-9-4"></a>
 
-**位重解释常量折叠的来源。** 输入：原bitcast源／目标标量和真实常量位模式。唯一生产／消费接点：check.rs#158::bitcast2470至2491，事实归原Builder／ValueCode／Stage及真实重解释结果；输出为本项真实变换的来源关系或明确缺失。交接同一位模式与真实类型变换，不把数值转换或机器运行读数当bitcast。 原Source及生成材料沿原拥有者不可变共享，查询只借用原结果，最后IR消费者后释放，不拥有运行资源，不保留AST／World或复制旧IR；compiler之外及必要运行编码不带材料，实际求值、数值、借用与完成不变，不加参数／状态表、图、调度、同步或释放链。当前证据：当前常量bitcast已实现，来源交接待实现。 详细状态见[独立台账](Issues.md#c-021-7-9-7-3-1-9-4)。
+**位重解释常量折叠的来源。** 原Builder::bitcast拥有已检查的源／目标Scalar、分量数及Value.constant；原constant_value直接以同一组位模式生成目标类型Constant，不执行数值转换。仅在该原成功物化接点，把BitcastConstantFold交给同一Constant；动态输入继续生成原UnaryOp::Bitcast，不因查询而物化或求值。
+
+GenerationAnchor::BitcastConstantFold的expression借用该Constant原source_site；source_scalar／target_scalar说明真实重解释方向，bits记录两者共用的同一位模式，component_index／component_count是从零开始的结果平坦逻辑分量位置与总数。它不记录浮点解释后的宿主数值，不复制输入／结果两份相同bits，不代表寄存器身份、运行次数或完整输入谱系。单源查询只解释已有expression，未知为null，不补造或扩大范围。
+
+原位宽、向量许可、数量／类型诊断、literal、Proof、布局、寄存器及动态指令保持。材料仅归compiler原Inst、CSE／DCE／空Map根、模块／阶段实际结果与查询快照，到最后IR消费者后释放；不持有旧IR、AST／World或运行资源，不新增求值器、来源表、必要编码、运行指令或保活。数值转换沿.9.3，最终机器来源沿原独立编号；已交接的具体范围与验证见[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-9-4)。
 
 <a id="tool-7-3-1-9-5"></a>
 

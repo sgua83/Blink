@@ -2507,6 +2507,8 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 数值常量转换仍由原cast和constant::cast处理。成功物化的各Constant仅在该分量源／目标Scalar不同的时候附加CastConstantFold，保留原expression、逐分量源／目标类型、输入／结果位模式与逻辑分量下标／数量；混合记录不能复用首字段类型。相同Scalar的寄存器复用或混合结果中的同型物化不制造事件，不能常量求值的原Cast与位重解释保留独立职责。原literal、Proof、布局、source_site及数值行为保持，材料沿原IR与CSE／DCE／空Map、模块／阶段结果到最后查询消费者，不重算、保活或增加来源／执行状态；静态记录不是实际转换次数或机器成本。
 
+位重解释与数值转换分别表达。原bitcast在完整常量输入时，以同一组位模式生成目标Scalar的原Constant，并在同一接点交接BitcastConstantFold；expression沿该Constant的source_site，源／目标Scalar说明方向，bits只保存一份共同位模式，逻辑分量下标／总数说明向量位置。它不把NaN、负零或其他位模式解释为宿主数值，不另存相同的输入／结果bits。动态输入保持原UnaryOp::Bitcast，原类型／数量诊断、literal、Proof、布局及运行行为不改。材料沿原IR、CSE／DCE／空Map根、模块／阶段实际结果及查询快照，到最后IR消费者后释放，不增加求值、来源表、必要执行编码或保活；它不代表运行次数、完整输入谱系或最终机器映射。
+
 条件IR还须区分原合同与当前调用者的源码。Contract::Declaration借用原Definition而不是另持合同切片，expression在实际convert／expr区间进入合同来源；相同定义及原Signature调用点保留已知上下文，跨定义只使用能确定的被调来源。离开及错误出口恢复调用者来源。外部声明没有实现body时不能伪造source_definition，也不能把声明span套到调用者源码；声明自身的来源由下述SourceDeclaration独立交接。这是修正来源生产者的归属，不在位置查询加截断、保护或替代路径。
 
 SourceDeclaration只保存真实声明的原Source、函数范围、模块、名称及Source／CompiledInterface取得方式，SourceOrigin仍表示实现；两者共用原路径、摘要及位置序列化，范围不被扩大。真实具名C调用及静态FunctionAddress用DeclarationReference把声明交给同一指令，保留原调用者source_site及retained旧材料。输出条件实际新生成的指令用ContractCondition保存相应声明、条款span及原材料；直接复用bool输入／返回值而无新指令时不伪造节点，原Call仍持有完整声明来源。间接函数地址不反推命名声明，真实B实现不套成声明；这些compiler材料与原IR同寿命，不进入运行编码或增加源码／条件状态表。
