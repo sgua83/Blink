@@ -1302,6 +1302,7 @@ impl Builder<'_> {
         self.application_movable(&data,&retained,span)?;
         if data.ty.owns_resources(){
             let old=if matches!(destination.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&destination,span)?}else{self.owned_place_model(&destination)};
+            self.view_uses.after(span);
             self.store_owned_returned(destination,old,value,span)?;
         }
         else {
