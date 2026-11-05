@@ -39,6 +39,17 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_bool(&c, condition.span)?;
+        // 条件求值完成后才进入两臂合并，条件递归不保留合并阶段的局部状态。
+        self.selection_after_condition(c, yes, no, span, expected)
+    }
+    fn selection_after_condition(
+        &mut self,
+        c: Value,
+        yes: &Expr,
+        no: &Expr,
+        span: Span,
+        expected: Option<&Ty>,
+    ) -> Result<Option<returns::Returned>> {
         self.remember_loop_control(&c);
         let partition = Arc::new(bounds::Condition::of(&c));
         let prefix = self.code.len();

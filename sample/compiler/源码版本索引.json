@@ -184,7 +184,7 @@
     },
     {
       "path": "crates/blanguage/src/check/selection.rs",
-      "sha256": "7ae038ff1424b12a7946889adb63e6245b7c9cc808a3ba19acb32c7d736ca751"
+      "sha256": "d8bcd82e8dcec6e642e4a2e7a832d4a2c22515f4af61e1533ee8828f0e8899bb"
     },
     {
       "path": "crates/blanguage/src/check/user_owned.rs",
