@@ -216,6 +216,7 @@ pub enum GenerationReason {
     LocalReadForward,
     IndexedStoreReadForward,
     IndexedReadReuse,
+    UnusedValueResults,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -326,6 +327,19 @@ impl ReductionInputReadForward {
     }
 }
 #[derive(Clone, Debug)]
+pub struct EliminatedValue {
+    pub(crate) result_types: Vec<super::Scalar>,
+    pub(crate) origin: OperationOrigin,
+}
+impl EliminatedValue {
+    pub fn result_types(&self) -> &[super::Scalar] { &self.result_types }
+    pub fn origin(&self) -> &OperationOrigin { &self.origin }
+    pub fn ir_json(&self) -> String {
+        format!("{{\"kind\":\"eliminated_value\",\"result_types\":[{}],\"origin\":{}}}",
+            self.result_types.iter().map(|value| text(&format!("{value:?}"))).collect::<Vec<_>>().join(","), self.origin.ir_json())
+    }
+}
+#[derive(Clone, Debug)]
 pub enum GenerationAnchor {
     Syntax(std::sync::Arc<SourceSite>),
     Definition { origin: Option<std::sync::Arc<SourceOrigin>>, instance: std::sync::Arc<str> },
@@ -336,11 +350,12 @@ pub enum GenerationAnchor {
     IndexedReadReuse { retained: OperationOrigin, reused: Vec<OperationOrigin> },
     LocalInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<InputReadForward> },
     ReductionInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<ReductionInputReadForward> },
+    EliminatedValues { retained: Option<std::sync::Arc<GeneratedOrigin>>, values: Vec<EliminatedValue> },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedValues { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedValues { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedValues { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
@@ -360,6 +375,8 @@ impl GenerationAnchor {
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(InputReadForward::ir_json).collect::<Vec<_>>().join(",")),
             Self::ReductionInputForward { retained, inputs } => format!("{{\"kind\":\"reduction_input_forward\",\"component_index_base\":0,\"retained\":{},\"inputs\":[{}]}}",
                 retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(ReductionInputReadForward::ir_json).collect::<Vec<_>>().join(",")),
+            Self::EliminatedValues { retained, values } => format!("{{\"kind\":\"eliminated_values\",\"retained\":{},\"values\":[{}]}}",
+                retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), values.iter().map(EliminatedValue::ir_json).collect::<Vec<_>>().join(",")),
         }
     }
 }
@@ -369,15 +386,28 @@ pub struct GeneratedOrigin {
     pub(crate) trigger: Option<GenerationAnchor>,
 }
 impl GeneratedOrigin {
+    pub(crate) fn eliminated_values(origin: &mut Option<std::sync::Arc<Self>>, values: Vec<EliminatedValue>) {
+        if !values.is_empty() {
+            let retained = origin.take();
+            *origin = Some(std::sync::Arc::new(Self {
+                reason: GenerationReason::UnusedValueResults,
+                trigger: Some(GenerationAnchor::EliminatedValues { retained, values }),
+            }));
+        }
+    }
     pub(crate) fn remove_input_prefix(origin: &mut Option<std::sync::Arc<Self>>, count: usize) {
         let Some(mut shared) = origin.take() else { return; };
-        if let Some(GenerationAnchor::LocalInputForward { retained, inputs }) = &mut std::sync::Arc::make_mut(&mut shared).trigger {
-            Self::remove_input_prefix(retained, count);
-            inputs.retain_mut(|input| {
-                if input.input_index < count { false }
-                else { input.input_index -= count; true }
-            });
-            if inputs.is_empty() { *origin = retained.take(); return; }
+        match &mut std::sync::Arc::make_mut(&mut shared).trigger {
+            Some(GenerationAnchor::LocalInputForward { retained, inputs }) => {
+                Self::remove_input_prefix(retained, count);
+                inputs.retain_mut(|input| {
+                    if input.input_index < count { false }
+                    else { input.input_index -= count; true }
+                });
+                if inputs.is_empty() { *origin = retained.take(); return; }
+            }
+            Some(GenerationAnchor::EliminatedValues { retained, .. }) => Self::remove_input_prefix(retained, count),
+            _ => {}
         }
         *origin = Some(shared);
     }
@@ -437,6 +467,7 @@ impl GeneratedOrigin {
             GenerationReason::LocalReadForward => "local_read_forward",
             GenerationReason::IndexedStoreReadForward => "indexed_store_read_forward",
             GenerationReason::IndexedReadReuse => "indexed_read_reuse",
+            GenerationReason::UnusedValueResults => "unused_value_results",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

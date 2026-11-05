@@ -75,13 +75,15 @@ fn optimize_stage(stage: &mut Stage) {
     }
     value_flow::run(&mut stage.code, &stage.registers);
     loop {
-        dce(
+        let removed = dce(
             &mut stage.code,
             &mut BTreeSet::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
+            &stage.registers,
         );
+        GeneratedOrigin::eliminated_values(&mut stage.generated_origin, removed);
         let preserve_scope = !stage.subgroup_operations().is_empty();
         let words = stage.storage_words();
         let mut changed = false;
@@ -207,13 +209,15 @@ pub(crate) fn value_code(value: &mut ValueCode) {
         .copied()
         .map(PrivateSlot::Register)
         .collect();
-    dce(
+    let removed = dce(
         &mut value.code,
         &mut needed,
         &BTreeSet::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &value.registers,
     );
+    GeneratedOrigin::eliminated_values(&mut value.generated_origin, removed);
     let mut used: BTreeSet<_> = value.inputs.iter().chain(&value.outputs).copied().collect();
     let mut slots = BTreeSet::new();
     visit(&value.code, &mut |i| {
@@ -467,9 +471,11 @@ fn dce(
     break_live: &BTreeSet<PrivateSlot>,
     continue_live: &BTreeSet<PrivateSlot>,
     exit_live: &BTreeSet<PrivateSlot>,
-) {
+    registers: &[Scalar],
+) -> Vec<EliminatedValue> {
     use PrivateSlot::{Local, Register};
     let mut out = Vec::new();
+    let mut removed = Vec::new();
     for mut i in std::mem::take(code).into_iter().rev() {
         if let InstKind::TileCollective(c) = &mut (i).kind {
             c.results.retain(|(_, r)| needed.contains(&Register(*r)));
@@ -492,6 +498,10 @@ fn dce(
             if results.peek().is_some()
                 && !results.any(|r| needed.contains(&Register(r)))
             {
+                removed.push(EliminatedValue {
+                    result_types: i.results().map(|reg| registers[reg]).collect(),
+                    origin: OperationOrigin::from_instruction(&i),
+                });
                 continue;
             }
         }
@@ -505,7 +515,7 @@ fn dce(
         match &mut (i).kind {
             InstKind::Scope(body) => {
                 let after = needed.clone();
-                dce(body, needed, break_live, continue_live, &after);
+                removed.extend(dce(body, needed, break_live, continue_live, &after, registers));
                 if !scope_observable(body, &after) {
                     *needed = after;
                     continue;
@@ -513,8 +523,8 @@ fn dce(
             }
             InstKind::If { condition, yes, no } => {
                 let mut a = needed.clone();
-                dce(yes, &mut a, break_live, continue_live, exit_live);
-                dce(no, needed, break_live, continue_live, exit_live);
+                removed.extend(dce(yes, &mut a, break_live, continue_live, exit_live, registers));
+                removed.extend(dce(no, needed, break_live, continue_live, exit_live, registers));
                 if yes.is_empty() && no.is_empty() {
                     continue;
                 }
@@ -536,16 +546,17 @@ fn dce(
                     exit_live,
                 );
                 let mut before_body = header.clone();
-                dce(body, &mut before_body, needed, &header, exit_live);
+                removed.extend(dce(body, &mut before_body, needed, &header, exit_live, registers));
                 before_body.extend(needed.iter().copied());
                 before_body.insert(Register(*test));
-                dce(
+                removed.extend(dce(
                     condition,
                     &mut before_body,
                     break_live,
                     continue_live,
                     exit_live,
-                );
+                    registers,
+                ));
                 *needed = before_body;
             }
             _ => {
@@ -562,6 +573,7 @@ fn dce(
     }
     out.reverse();
     *code = out;
+    removed
 }
 fn scope_observable(code: &[Inst], after: &BTreeSet<PrivateSlot>) -> bool {
     code.iter().any(|inst| match &(inst).kind {

@@ -2122,7 +2122,7 @@ pub struct Stage {
 
 假设第二阶段读 `values[i-1]`。如果实例 i 的后半步先执行，而实例 i-1 的前半步还没完成，就会读到旧内容。阶段融合必须关心读取来自哪里，不只关心数组名字是否相同。
 
-源码节选：`crates/blanguage/src/optimize.rs:249`。
+源码节选：`crates/blanguage/src/optimize.rs:253`。
 
 ```rust
 fn cross_dependency(a: &Stage, b: &Stage) -> bool {
@@ -2443,6 +2443,9 @@ impl ReductionKernel {
 
 控制合流要区分“没有继续路径”和“路径继续但没有共同已知值”。原Flow将普通继续、break、continue和Scope退出分开，当前merge只保留各类路径共同的同一SSA；实际If／Scope／Loop与读写仍在原IR，真正读取替代仍沿LocalReadForward及原输入锚点。两条分支写不同定义后保留LoadLocal是正常结果，不能强选一条来源。临时合流表不另存历史；结束迭代也须与实际删除剩余操作区分，原代码有break并不证明发生删除。当前真实消费没有该事件，不增加空来源；真正程序删改仍按实际生产者交接。字段及边界见[规范](../Docs/BLanguage.md#控制合流与实际读取替代)。
 
+有些普通值操作最终没有任何消费者。原dce沿同一needed集合删除它们，原ValueCode或Stage用UnusedValueResults／EliminatedValues保留这次删除来源；EliminatedValue只交接原OperationOrigin和当时结果的Scalar列表，不保存旧指令、操作数、常量位模式或Reg。单条IR操作可以有多个结果，一条源语句也可能产生多条操作；不能将这份材料的数量当作运行次数或性能收益。原生成根与入口保持，下一轮只记录新删除，原Frame前缀移除继续沿保留根调整输入来源引用。没有材料时仍须区分未采集与未发生，不从优化后的代码反推完整历史。
+
+这些事实直接从原bc ir普通函数、应用及程序查询取得，SDK和JSON消费同一根。普通指令的无代码事实、被删除的私有写、整数结果裁剪与整个Stage消失分别属于各自生产点；整个空Map阶段消失后的Program交接仍待实现，不为保存来源保活空阶段。查询与生命周期见[规范](../Docs/BLanguage.md#未消费普通值结果的删除来源)和[架构](../Docs/Architecture.md#tool-7-3-1-5)。
 ### 11.4 选择表达式不是总能两边都先算
 
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。
@@ -2455,7 +2458,7 @@ impl ReductionKernel {
 
 IR寄存器编号是编译期的值身份。压缩或重排编号时，一条指令的输入、结果和它的后续消费者必须使用同一映射；资源绑定编号仍属于原资源，不跟着寄存器改名。
 
-源码节选：`crates/blanguage/src/optimize.rs:291`。
+源码节选：`crates/blanguage/src/optimize.rs:295`。
 
 ```rust
             InstKind::Constant(dst, ..)

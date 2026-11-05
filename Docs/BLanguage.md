@@ -449,6 +449,24 @@ JSON根reason及锚点kind均为indexed_read_reuse，锚点含retained和reused�
 
 当前simulation.bodies的integrate／step入口可查询到position读取的复用；能量函数内同一数值的复用不自动等于再次读取dataset，本次energy入口没有该材料。compiler以外无这些类型／代码，必要执行编码及资源ABI不变；公共枚举增加变体按原版本规则处理。材料沿原Inst／Stage／ValueCode及最后IR消费者释放，不拥有运行资源或新增调度／完成／释放链。见[架构](Architecture.md#tool-7-3-1-4-1)及[已修复台账](FixedIssues.md#c-021-7-9-7-3-1-4-1)。
 
+#### 未消费普通值结果的删除来源
+
+原dce在非Atomic／Append／Print／Call的指令确有结果、且所有结果均不在原needed集合时删除整条普通值操作；单／多结果均沿原规则，整数除法的专门裁剪、私有写及结构删除分别归原职责。原ValueCode／Stage的generated_origin交接GenerationReason::UnusedValueResults及GenerationAnchor::EliminatedValues { retained, values }，retained保留可选原根GeneratedOrigin，ValueCode.entry_origin及Stage.operation_source独立保持。原优化、活跃性、副作用、数值及完成不因材料改变，没有删除时不增加包装。
+
+values中每个EliminatedValue代表本次dce真正删除的一条IR操作；result_types()按当时Inst::results的顺序交回实际Scalar列表，origin()借用同一操作的OperationOrigin。它不保存旧Inst、操作数、常量值、旧Reg或物理位置，不将一条IR操作扩大为整个源表达式、实际运行次数、最终设备指令数或性能收益；一次源操作可能降成多个逻辑分量，多个来源也可能已合在一个被删除操作的已有来源里。递归沿原Scope／If／Loop实际调用归回同一根，列表顺序是本次删除遍历收集顺序，不是运行时间线或稳定身份。
+
+GeneratedOrigin的JSON reason为unused_value_results，锚点kind为eliminated_values，字段为retained及values；各值kind为eliminated_value，字段为result_types及origin，类型拼写与本次IR寄存器类型相同。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
+
+材料仅compiler，沿原ValueCode／Stage及编译／模块／SDK快照在最后IR消费者后释放，不保活操作、槽位或阶段，不持有AST／World、运行资源或另一活跃性表，不进入必要对象／执行编码。整个空Map阶段移除后的来源交给Program仍是独立未完成范围C-021.7.9.7.3.2.2；没有材料不证明操作未发生删除。SDK新增公开枚举／类型属于compiler源码接口演化，软件版本与执行ABI分别表达。实际入口继续使用bc ir的普通函数、应用和程序查询，不增另一调试命令。见[架构](Architecture.md#tool-7-3-1-5)及[当前范围](Issues.md#c-021-7-9-7-3-1-5)。
+
+已有实际查询入口：
+
+```text
+bc ir crates/blanguage/src/bootstrap/parser.b -I crates/blanguage/src --module
+bc ir sample/applications/datasets.b -I sample --entry main
+```
+
+这些查询返回当前编译结果中的删除材料；外模块本体、已经结束的临时检查根与所请求模块分别归其真实拥有者，不把同一源码范围的多次检查计成该结果的多次删除。
 #### 降层归约内核的角色与分区查询
 
 compiler SDK的CustomReduction::kernel(stage,project,identity)按本次选择产生原ReductionKernel；ReductionKernel::ir_json()只序列化这个实际结果，kind为reduction_kernel_ir。stage为原Stage::ir_json()，invariant_end、initialize_end和project_end为stage.code中的零基排他指令下标；依次划分公共入口、单位元、投影和合并四段，空段允许相邻末尾相等。invariants直接列出原prepare_reduction提取的逻辑Reg，不推定执行次数或最终机器存储。
