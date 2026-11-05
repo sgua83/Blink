@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "6a9a6c57d796fe4333b0950e1b007070fffe6c5c4561d61b396b9cde2e99c499"
+      "sha256": "f1d51651aba3c2c6bb87e964cb2e171969d4f0094c35adc2b1be1c9f3b211737"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -712,8 +712,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1230,
-      "end_line": 1263,
+      "start_line": 1234,
+      "end_line": 1267,
       "sha256": "c97c1a253937200545c15cc55eeba2a833b571b6860ee7370b04ed9e315a7345"
     },
     {

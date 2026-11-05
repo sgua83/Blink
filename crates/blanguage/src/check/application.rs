@@ -1004,7 +1004,11 @@ impl Builder<'_> {
             }
             self.drop_binding(binding,&remaining,self.definition.function.span)?;
             if !name.starts_with('\0'){
-                if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
+                match self.env.get_mut(&name){
+                    Some(Binding::OwnedValue(value))=>value.mark_moved(),
+                    Some(Binding::ApplicationData(data))=>data.ownership=Ownership::Moved,
+                    _=>{},
+                }
             }
         }
         Ok(())
