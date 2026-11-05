@@ -2827,7 +2827,7 @@ impl<'a> Builder<'a> {
             regs.push(dst);
         }
         Ok(Value {
-            proof: bounds::Proof::default(),
+            proof: bounds::math(operation, &args),
             literal: false,
             ty: Ty::vector(scalar, n),
             regs,

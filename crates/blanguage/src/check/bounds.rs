@@ -1,5 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 use super::*;
+mod floating;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
 
 pub(super) fn seeks(body: &[Stmt]) -> bool {
@@ -97,7 +98,7 @@ impl FloatPredicate {
                 // This is identity substitution, never floating range inference.
                 let bits = proof.range_set(0);
                 match bits.0.as_slice() {
-                    [(a, b)] if a == b => Operand::Constant(self.scalar, *a),
+                    [(a, b)] if a == b => Operand::Constant(self.scalar, floating::bits(self.scalar, *a)),
                     _ => Operand::Value(proof.known_identity(0)?),
                 }
             }
@@ -151,11 +152,11 @@ impl IntegerExpression {
         };
         constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
     }
-    fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<IntegerRanges> {
+    fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<ScalarRanges> {
         let Self::Binary(op, scalar, a, b) = self;
         let range = |operand| Some(match operand {
             Operand::Value(id) => bindings.get(&id)?.range_set(0).restrict(0, scalar.bit_mask()),
-            Operand::Constant(_, bits) => IntegerRanges::interval(bits ^ scalar.order_bias(), bits ^ scalar.order_bias()),
+            Operand::Constant(_, bits) => ScalarRanges::interval(bits ^ scalar.order_bias(), bits ^ scalar.order_bias()),
         });
         let left = range(a)?;
         let right = range(b)?;
@@ -167,7 +168,7 @@ impl IntegerExpression {
                 Operand::Constant(scalar, *bl ^ scalar.order_bias()));
             let (_, bits) = exact.constant()?;
             let ordered = bits ^ scalar.order_bias();
-            return Some(IntegerRanges::interval(ordered, ordered));
+            return Some(ScalarRanges::interval(ordered, ordered));
         }
         let operation = match op {
             IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
@@ -254,13 +255,13 @@ impl Place {
     }
 }
 #[derive(Clone)]
-struct IntegerRanges(Vec<(Bits, Bits)>);
-impl Default for IntegerRanges {
+struct ScalarRanges(Vec<(Bits, Bits)>);
+impl Default for ScalarRanges {
     fn default() -> Self {
         Self(vec![(0, Bits::MAX)])
     }
 }
-impl IntegerRanges {
+impl ScalarRanges {
     fn from_intervals(intervals: impl IntoIterator<Item = (Bits, Bits)>) -> Self {
         let mut intervals: Vec<_> = intervals.into_iter().filter(|(a, b)| a <= b).collect();
         intervals.sort_unstable();
@@ -350,8 +351,8 @@ pub(super) struct Proof {
     // 首项是实际来源，其余是当前路径已经证明相等的快照。
     pub(super) origins: Vec<Vec<ValueIdentity>>,
     conditions: Vec<Option<Box<Condition>>>,
-    // 整数按数值顺序编码；i32 翻转符号位，复用相同的区间与路径合流。
-    ranges: Vec<IntegerRanges>,
+    // 标量按数值次序编码；整数符号偏置和可逆浮点有序位复用同一区间集合。
+    ranges: Vec<ScalarRanges>,
     nonzero: Vec<bool>,
     domains: Vec<Domains>,
     // view分量的实际借用来源，与数值事实分别合流；只存在于编译期。
@@ -366,8 +367,8 @@ impl Proof {
             if !self.origins[0].contains(&identity) { self.origins[0].push(identity); }
         }
         let range = self.range_set(0).combine(&other.range_set(0),
-            |(a,b),(c,d)| IntegerRanges::interval(a.max(c),b.min(d)));
-        self.ranges.resize_with(self.ranges.len().max(1), IntegerRanges::default);
+            |(a,b),(c,d)| ScalarRanges::interval(a.max(c),b.min(d)));
+        self.ranges.resize_with(self.ranges.len().max(1), ScalarRanges::default);
         self.ranges[0] = range;
         self.nonzero.resize(self.nonzero.len().max(1), false);
         self.nonzero[0] |= other.nonzero.first() == Some(&true);
@@ -689,7 +690,7 @@ impl Proof {
                 .collect();
             translated
                 .ranges
-                .resize_with(translated.ranges.len().max(i + 1), IntegerRanges::default);
+                .resize_with(translated.ranges.len().max(i + 1), ScalarRanges::default);
             translated
                 .nonzero
                 .resize(translated.nonzero.len().max(i + 1), false);
@@ -704,7 +705,7 @@ impl Proof {
             for value in values {
                 if let Some(address)=value.addresses.first().cloned().flatten(){translated.addresses.resize_with(translated.addresses.len().max(i+1),||None);translated.addresses[i]=Some(address);}
                 let incoming = value.range_set(0);
-                translated.ranges[i] = IntegerRanges::from_intervals(
+                translated.ranges[i] = ScalarRanges::from_intervals(
                     translated.ranges[i].0.iter().flat_map(|(a, b)| {
                         incoming
                             .0
@@ -728,9 +729,9 @@ impl Proof {
             for domain in domains {
                 if let IndexDomain::CommonRange(source) = domain {
                     if let Some(incoming) = bindings.get(source) {
-                        translated.ranges.resize_with(translated.ranges.len().max(component + 1), IntegerRanges::default);
+                        translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
                         translated.ranges[component] = translated.ranges[component].combine(&incoming.range_set(0),
-                            |(al, ah), (bl, bh)| IntegerRanges::interval(al.max(bl), ah.min(bh)));
+                            |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
                         translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
                         translated.nonzero[component] |= incoming.nonzero.first() == Some(&true);
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
@@ -743,9 +744,9 @@ impl Proof {
                 if let IndexDomain::Computed(expression) = domain
                     && let Some(range) = expression.ranges_at_call(bindings)
                 {
-                    translated.ranges.resize_with(translated.ranges.len().max(component + 1), IntegerRanges::default);
+                    translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
                     translated.ranges[component] = translated.ranges[component].combine(&range,
-                        |(al, ah), (bl, bh)| IntegerRanges::interval(al.max(bl), ah.min(bh)));
+                        |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
                 }
             }
         }
@@ -839,7 +840,7 @@ impl Proof {
     // 数值事实失效不改变仍存在的view所借用的实际存储。
     // initial为实际标量的共有数值界；当前值不继承入口常量、相等身份或变体选择。
     pub(super) fn retain_loop_bounds(&mut self, initial: &Self, component: usize, lower: bool, upper: bool) {
-        self.ranges.resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+        self.ranges.resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
         if lower {
             self.ranges[component] = self.ranges[component].restrict(Bits::from(initial.unsigned_minimum(0)), Bits::from(u32::MAX));
             if initial.unsigned_minimum(0) != 0 { self.mark_nonzero(component); }
@@ -877,7 +878,7 @@ impl Proof {
             self.origins.resize_with(width, Vec::new);
             self.conditions.resize_with(width, || None);
             self.nonzero.resize(width, false);
-            self.ranges.resize_with(width, IntegerRanges::default);
+            self.ranges.resize_with(width, ScalarRanges::default);
             self.domains.resize(width, Domains::new());
             if !self.addresses.is_empty()||!fresh.addresses.is_empty(){self.addresses.resize_with(width,||None);}
             for (j, &i) in components.iter().enumerate() {
@@ -975,7 +976,7 @@ impl Proof {
     }
     pub fn unsigned(minimum: u32, maximum: u32) -> Self {
         Self {
-            ranges: vec![IntegerRanges::interval(Bits::from(minimum), Bits::from(maximum))],
+            ranges: vec![ScalarRanges::interval(Bits::from(minimum), Bits::from(maximum))],
             ..Self::default()
         }
     }
@@ -1045,7 +1046,7 @@ impl Proof {
     fn range(&self, component: usize) -> (Bits, Bits) {
         self.range_set(component).hull()
     }
-    fn range_set(&self, component: usize) -> IntegerRanges {
+    fn range_set(&self, component: usize) -> ScalarRanges {
         self.ranges.get(component).cloned().unwrap_or_default()
     }
     pub fn cast(value: &Value, target: Scalar) -> Self {
@@ -1063,8 +1064,8 @@ impl Proof {
                     integer_result_range((decode(lower), decode(upper)), target.order_bias(), target.bit_width())
                 })
             } else if source == Scalar::Bool && target.is_integer() {
-                IntegerRanges::interval(target.order_bias(), target.order_bias() + 1)
-            } else { IntegerRanges::default() };
+                ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
+            } else { floating::cast(value, i, target) };
             proof.nonzero[i] &= integers && target.size() >= source.size();
             if !same_value { proof.origins[i].clear(); }
             proof.conditions[i] = None;
@@ -1079,11 +1080,7 @@ impl Proof {
     pub fn capture(value: &Value) -> Self {
         let mut proof = value.proof.clone();
         proof.ranges = (0..value.regs.len()).map(|i| {
-            if value.ty.components[i].0.is_float() && let Some(bits) = &value.constant {
-                // Only an exact floating constant's storage bits cross the
-                // call contract. component_ranges still excludes float order.
-                IntegerRanges::interval(bits[i], bits[i])
-            } else { value.component_ranges(i) }
+            value.component_ranges(i)
         }).collect();
         proof.nonzero = (0..value.regs.len())
             .map(|i| value.component_nonzero(i))
@@ -1276,7 +1273,7 @@ impl Proof {
         };
         if let Some(count) = count {
             self.ranges
-                .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+                .resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
             self.ranges[component] = self.ranges[component].restrict(0, Bits::from(count)).without(Bits::from(count));
         }
         self.domains
@@ -1305,7 +1302,7 @@ impl Proof {
                 if ty.components[component].0 == scalar =>
             {
                 self.ranges
-                    .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+                    .resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
                 self.ranges[component] = self.ranges[component].restrict(lower, scalar.bit_mask());
                 if !scalar.is_signed() && lower != 0 {
                     self.mark_nonzero(component);
@@ -1315,12 +1312,12 @@ impl Proof {
                 if ty.components[component].0 == scalar =>
             {
                 self.ranges
-                    .resize_with(self.ranges.len().max(component + 1), IntegerRanges::default);
+                    .resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
                 self.ranges[component] = self.ranges[component].restrict(0, upper);
             }
             Fact::Zero(_) if ty.components[component].0.is_integer()=>{
                 let zero=ty.components[component].0.order_bias();
-                self.ranges.resize_with(self.ranges.len().max(component+1),IntegerRanges::default);
+                self.ranges.resize_with(self.ranges.len().max(component+1),ScalarRanges::default);
                 self.ranges[component]=self.ranges[component].restrict(zero,zero);
             },
             Fact::NonZero(_) if ty.components[component].0.is_integer() => {
@@ -1589,11 +1586,10 @@ impl Value {
     fn component_range(&self, component: usize) -> (Bits, Bits) {
         self.component_ranges(component).hull()
     }
-    fn component_ranges(&self, component: usize) -> IntegerRanges {
+    fn component_ranges(&self, component: usize) -> ScalarRanges {
         let scalar = self.ty.components[component].0;
-        if !scalar.is_integer() {
-            return IntegerRanges::default();
-        }
+        if scalar.is_float() { return floating::ranges(self, component); }
+        if !scalar.is_integer() { return ScalarRanges::default(); }
         let bias = scalar.order_bias();
         let mut ranges = self.proof.range_set(component).restrict(0, scalar.bit_mask());
         if self.proof.nonzero.get(component) == Some(&true) {
@@ -2834,6 +2830,13 @@ fn constrain_proofs(
     }
 }
 /// 数值区间逐分量计算；资源索引域只沿已证明的无符号关系传递。
+pub(super) fn math(op: MathOp, args: &[Value]) -> Proof {
+    let width = args.iter().map(|value| value.regs.len()).max().unwrap();
+    Proof {
+        ranges: (0..width).map(|i| floating::math(op, args, i)).collect(),
+        ..Proof::default()
+    }
+}
 pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
     let count = a.regs.len().max(b.regs.len());
     let scalar = a.ty.components[0].0;
@@ -2852,14 +2855,14 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                     {
                         // 同值快照只取共同可达片段；空路径仍为空。
                         let shared = left.combine(&right, |(al, ah), (bl, bh)| {
-                            IntegerRanges::interval(al.max(bl), ah.min(bh))
+                            ScalarRanges::interval(al.max(bl), ah.min(bh))
                         });
                         return match op {
                             "&" | "|" | "min" | "max" => shared,
                             _ => {
                                 // 整数除余在进入范围计算前已由 binary 证明除数非零。
                                 let value = if op == "/" { bias ^ 1 } else { bias };
-                                shared.map(|_| IntegerRanges::interval(value, value))
+                                shared.map(|_| ScalarRanges::interval(value, value))
                             }
                         };
                     }
@@ -2878,9 +2881,9 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                     range
                 })
                 .collect()
-        } else {
-            Vec::new()
-        },
+        } else if scalar.is_float() {
+            (0..count).map(|i| floating::arithmetic(op, a, b, i)).collect()
+        } else { Vec::new() },
         nonzero: if scalar.is_integer() && op == "|" {
             (0..count)
                 .map(|i| {
@@ -2907,7 +2910,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
                 exact.ranges[0] = exact
                     .range_set(0)
                     .combine(&proof.range_set(component), |(al, ah), (bl, bh)| {
-                        IntegerRanges::interval(al.max(bl), ah.min(bh))
+                        ScalarRanges::interval(al.max(bl), ah.min(bh))
                     });
                 exact.domains[0].extend(proof.domains(component));
                 proof.assign(&[component], count, exact);
@@ -2916,7 +2919,7 @@ pub(super) fn arithmetic(op: &str, a: &Value, b: &Value) -> Proof {
     }
     proof
 }
-fn arithmetic_ranges(op: &str, scalar: Scalar, left: IntegerRanges, mut right: IntegerRanges) -> IntegerRanges {
+fn arithmetic_ranges(op: &str, scalar: Scalar, left: ScalarRanges, mut right: ScalarRanges) -> ScalarRanges {
     let signed = scalar.is_signed();
     if matches!(op, "<<" | ">>") {
         right = right.shift_counts(scalar);
@@ -2924,7 +2927,7 @@ fn arithmetic_ranges(op: &str, scalar: Scalar, left: IntegerRanges, mut right: I
     let range = left.combine(&right, |left, right| {
         let bitwise = |operation: fn(Bits, Bits) -> Bits| {
             let (lower, upper) = bitwise_range(left, right, scalar, operation);
-            IntegerRanges::interval(lower, upper)
+            ScalarRanges::interval(lower, upper)
         };
         match op {
             "&" => bitwise(|a, b| a & b),
@@ -3094,15 +3097,17 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     }
     let mut proof = Proof::default();
     let scalar = value.ty.components[0].0;
-    if scalar.is_integer() && !scalar.is_signed() {
+    if op == UnaryOp::FloatNegate {
+        proof.ranges = (0..value.regs.len()).map(|i| floating::negate(value, i)).collect();
+    } else if scalar.is_integer() && !scalar.is_signed() {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
                 value.component_ranges(i).map(|(lower, upper)| match op {
-                    UnaryOp::BitNot => IntegerRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
+                    UnaryOp::BitNot => ScalarRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
                     UnaryOp::UnsignedNegate => {
                         integer_result_range((-i128::from(upper), -i128::from(lower)), 0, scalar.bit_width())
                     }
-                    _ => IntegerRanges::default(),
+                    _ => ScalarRanges::default(),
                 })
             })
             .collect();
@@ -3110,7 +3115,7 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
         proof.ranges = (0..value.regs.len())
             .map(|i| {
                 value.component_ranges(i).map(|(lower, upper)| match op {
-                    UnaryOp::BitNot => IntegerRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
+                    UnaryOp::BitNot => ScalarRanges::interval(!upper & scalar.bit_mask(), !lower & scalar.bit_mask()),
                     UnaryOp::SignedNegate => integer_result_range(
                         (
                             -i128::from(scalar.signed(upper ^ scalar.order_bias())),
@@ -3118,7 +3123,7 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
                         ),
                         scalar.order_bias(), scalar.bit_width(),
                     ),
-                    _ => IntegerRanges::default(),
+                    _ => ScalarRanges::default(),
                 })
             })
             .collect();
@@ -3183,7 +3188,7 @@ fn bitwise_range(
             (lower.min(a), upper.max(b))
         })
 }
-fn signed_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> IntegerRanges {
+fn signed_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> ScalarRanges {
     let decode = |value| i128::from(scalar.signed(value ^ scalar.order_bias()));
     let (al, ah, bl, bh) = (decode(al), decode(ah), decode(bl), decode(bh));
     let corners = |f: fn(i128, i128) -> i128| {
@@ -3203,26 +3208,26 @@ fn signed_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar
         }
         ">>" => corners(|a, b| a >> b),
         "<<" => corners(|a, b| a * (1i128 << b)),
-        _ => return IntegerRanges::interval(0, scalar.bit_mask()),
+        _ => return ScalarRanges::interval(0, scalar.bit_mask()),
     };
     integer_result_range(range, scalar.order_bias(), scalar.bit_width())
 }
-fn integer_result_range((lower, upper): (i128, i128), bias: Bits, width: u32) -> IntegerRanges {
+fn integer_result_range((lower, upper): (i128, i128), bias: Bits, width: u32) -> ScalarRanges {
     // 按有序周期投影；不足一个完整周期的跨断点结果保留两侧区间。
     let period = 1i128 << width;
     let mask = (period - 1) as Bits;
     let offset = i128::from(bias);
     if upper - lower >= period - 1 {
-        return IntegerRanges::interval(0, mask);
+        return ScalarRanges::interval(0, mask);
     }
     let (a, b) = ((lower as Bits & mask) ^ bias, (upper as Bits & mask) ^ bias);
     if (lower + offset).div_euclid(period) == (upper + offset).div_euclid(period) {
-        IntegerRanges::interval(a, b)
+        ScalarRanges::interval(a, b)
     } else {
-        IntegerRanges::from_intervals([(0, b), (a, mask)])
+        ScalarRanges::from_intervals([(0, b), (a, mask)])
     }
 }
-fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> IntegerRanges {
+fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scalar: Scalar) -> ScalarRanges {
     if op == "-" {
         return integer_result_range((i128::from(al)-i128::from(bh), i128::from(ah)-i128::from(bl)), 0, scalar.bit_width());
     }
@@ -3241,18 +3246,18 @@ fn unsigned_range(op: &str, (al, ah): (Bits, Bits), (bl, bh): (Bits, Bits), scal
         "%" if bl > 0 => (0, ah.min(bh - 1)),
         ">>" => (al >> bh, ah >> bl),
         "<<" => (al << bl, ah << bh),
-        _ => return IntegerRanges::interval(0, scalar.bit_mask()),
+        _ => return ScalarRanges::interval(0, scalar.bit_mask()),
     };
     // u64乘法的完整区间可能超过i128；按无符号数学值投影，避免先截断符号。
     let period = 1u128 << scalar.bit_width();
     if range.1 - range.0 >= period - 1 {
-        return IntegerRanges::interval(0, scalar.bit_mask());
+        return ScalarRanges::interval(0, scalar.bit_mask());
     }
     let (lower, upper) = (range.0 as Bits & scalar.bit_mask(), range.1 as Bits & scalar.bit_mask());
     if range.0 / period == range.1 / period {
-        IntegerRanges::interval(lower, upper)
+        ScalarRanges::interval(lower, upper)
     } else {
-        IntegerRanges::from_intervals([(0, upper), (lower, scalar.bit_mask())])
+        ScalarRanges::from_intervals([(0, upper), (lower, scalar.bit_mask())])
     }
 }
 pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
@@ -3960,12 +3965,12 @@ impl Builder<'_> {
     }
 }
 
-impl crate::module::codec::Encode for IntegerRanges {
+impl crate::module::codec::Encode for ScalarRanges {
     fn encode(&self, w: &mut crate::module::codec::Writer) {
         crate::module::codec::Encode::encode(&self.0, w);
     }
 }
-impl crate::module::codec::Decode for IntegerRanges {
+impl crate::module::codec::Decode for ScalarRanges {
     fn decode(r: &mut crate::module::codec::Reader<'_>) -> crate::module::codec::Result<Self> {
         Ok(Self(crate::module::codec::Decode::decode(r)?))
     }
