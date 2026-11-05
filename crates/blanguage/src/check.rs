@@ -3611,6 +3611,7 @@ impl<'a> Builder<'a> {
         }
         if !self.mutable_names.contains(name) && value.ty.contains_arrays() {
             let mut owner = self.materialize_array(value,None);
+            owner.place = owner.place.read_only();
             owner.uniform &= self.control_uniform;
             self.env.insert(name.clone(), Binding::Owned(owner));
             return Ok(());
@@ -3937,7 +3938,8 @@ impl<'a> Builder<'a> {
                 let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();self.env.insert(name.clone(),Binding::OwnedValue(owner));Ok(place)
             },
             Some(Binding::Value(value)) if value.ty.contains_arrays() => {
-                let owner = self.materialize_array(value,None);
+                let mut owner = self.materialize_array(value,None);
+                owner.place = owner.place.read_only();
                 let place = owner.place.clone();
                 self.env.insert(name.clone(), Binding::Owned(owner));
                 Ok(place)

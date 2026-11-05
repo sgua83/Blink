@@ -169,7 +169,8 @@ impl Builder<'_> {
                 crate::frontend::DefinitionSyntax::CompiledInterface => None,
             };
             let origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ArrayParameterStore, trigger });
-            let owner = self.materialize_array(value, Some(origin));
+            let mut owner = self.materialize_array(value, Some(origin));
+            owner.place = owner.place.read_only();
             self.env.insert(name, Binding::Owned(owner));
         }
     }
@@ -182,7 +183,7 @@ impl Builder<'_> {
         for (slot, r) in slots.iter().zip(&value.regs) {
             self.code.push(Inst { kind: InstKind::StoreLocal(*slot, *r), source_site: source_site.clone(), generated_origin: generated_origin.clone() });
         }
-        let place = Place::ReadOnlyLocal(value.ty, slots, storage);
+        let place = Place::Local(value.ty, slots, storage);
         self.initialize(&place);
         OwnedBinding { place, proof, uniform, initialization: None }
     }

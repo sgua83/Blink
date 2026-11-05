@@ -72,7 +72,8 @@ impl Builder<'_> {
             && !self.read_expression_type(expr).is_some_and(|ty|ty.owns_resources()) {
             if let Some(name) = root(expr)
                 && let Some(Binding::Value(value)) = self.env.get(name).cloned() {
-                let owner = self.materialize_array(value,None);
+                let mut owner = self.materialize_array(value,None);
+                owner.place = owner.place.read_only();
                 self.env.insert(name.clone(), Binding::Owned(owner));
             }
             let Some(place) = self.place(expr)? else {
