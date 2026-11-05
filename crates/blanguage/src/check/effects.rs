@@ -386,7 +386,13 @@ impl Builder<'_> {
                 Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
                 Write::Position{place,contents,iterator,..}=>{
                     if address_write(place) {effect.unknown_storage=true;effect.external=true;continue;}
-                    if *contents||iterator.is_some() {effect.unknown_storage=true;continue;}
+                    if iterator.is_some() {effect.unknown_storage=true;continue;}
+                    if *contents {
+                        if let Some(data)=self.written_application_data(place) && !data.ty.owns_resources() {
+                            effect.storage.push((data.root.regs[0],None));
+                        }else{effect.unknown_storage=true;}
+                        continue;
+                    }
                     if let Some((data,index,(_,components)))=self.loop_write_projection(place,&writes)? {
                         let root=data.root.regs[0];
                         if let (Some(index),application::DataLayout::Declared)=(index,&data.layout) {
