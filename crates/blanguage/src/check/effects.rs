@@ -700,7 +700,11 @@ impl<'b, 'w, 'e> Scope<'b, 'w, 'e> {
                     _ => None,
                 };
             }
-            ExprKind::Select(a, b, c) => { self.writes_expression(a, writes)?; self.writes_expression(b, writes)?; self.writes_expression(c, writes)?; }
+            ExprKind::Select(a, b, c) => {
+                let selected=self.writes_expression(a,writes)?;
+                if self.builder.is_none() || selected!=Some(false){self.writes_expression(b,writes)?;}
+                if self.builder.is_none() || selected!=Some(true){self.writes_expression(c,writes)?;}
+            }
             _ => {}
         }
         Ok(truth)
