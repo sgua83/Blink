@@ -464,6 +464,14 @@ IndexedSource::Pointer的aliases与address、index、stride由原IR直接持有�
 
 StoreIndexed直接交接source、offset、word、value。Atomic直接交接target、scalar、offset、word、operation、order及可选result；CompareExchange另在operation中保留expected、desired和failure内存序。AtomicOp::Load不写，Store不读，其余读改写可能写，比较交换是否成功须由实际运行判断。原值流按这些访问语义消费别名：原子Load不会触发局部写失效，数据读取缓存另行清除也不能解释成局部写。已有字段和所属ValueCode／Stage／FunctionBody查询足以表达本叶静态访问事实，不增加逐轮缓存维护来源；原IR、共享来源及返回查询值各按真实消费者释放。实际运行地址／值和可编程观察仍属后续运行工具能力，未实现不冒称已交付。见[架构](Architecture.md#tool-7-3-1-3-5)。
 
+#### 原生调用的既有局部访问事实
+
+Call.arguments中的Reference直接保留ty、access及address；CallReference.storage为Local { base, len }或Indexed(IndexedSource)，另有可选offset寄存器和word字节偏移。Local按本次IR给出的底层逻辑分量范围理解，被借字段不一定占满该范围；实际投影由原偏移及ty布局解释，分析与表示可以演进。现有JSON以kind=reference、type、access、address交接实参，地址继续编码storage、offset、word；来源沿原origin查询，未知不补造。Read、Write、InOut、Atomic的访问含义沿原Access，不把参数权限或静态布局当作一次实际内存写入。
+
+Call.memory独立交接各MemoryAccess的alias与access，JSON为memory数组内的kind=memory_access、alias、access。不能只看Reference实参而漏掉按值地址背后的影响；普通函数合同收敛后，原apply_memory消费临时memory_use并把实际分析结果交给同一Call.memory。memory_use仅是原构造／分析阶段的关联编号，完成交接后可为空，不作为稳定调用身份或另一份运行状态。查询须以本次实际阶段为准，未交接的中间空结果不证明无影响。
+
+内部Call::locals(true)收集两类可写Local范围：Reference的真实访问与地址别名，以及memory中的真实可写效果。值流据此停止沿用旧局部值；Read效果本身不撤销局部知识，Data绑定另按原数据存储规则处理。保守范围不证明运行覆盖全部分量、初始化失效或外部代码可信。当前SDK公开字段及所属ValueCode／Stage／FunctionBody的JSON已提供这些原事实，不保存逐轮locals.remove历史；原IR及查询结果按最后实际消费者释放，不接管代码或运行资源。调用合同生产的独立缺口、运行时地址／值、实际完成及B可编程观察入口仍分别负责，见[架构](Architecture.md#tool-7-3-1-3-6)。
+
 #### 应用入口与根Frame的生成来源
 
 原compile_application从本次真实选择的Instance构造Definition锚点，Application.body的generated_origin为application_entry；其原生Call以application_entry_call交接同一实际入口。它们属于原隐式包装，不额外创建FunctionBody或把根定义Span伪装成一次用户调用。普通源函数、集合值核及其他域包装的ValueCode.generated_origin不借用此入口，原source_origin／entry_origin保持各自语义。用完整应用IR查询观察body；函数选择仍返回实际B函数，不能把它当根包装。

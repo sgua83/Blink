@@ -519,7 +519,9 @@ StoreIndexed是写操作；Atomic保留明确operation、scalar、order、target
 
 <a id="tool-7-3-1-3-6"></a>
 
-**原生调用局部写失效的来源。** 输入／接点：原Call.locals(true)→Values::block309起的locals.remove→原Call及后继读取。输出：交接真实声明写投影使原局部知识失效的事实，保持值／引用／拥有与外部ABI边界，不凭签名推定外部实现或寿命。 唯一事实与生命周期沿本父项的原拥有者，不改变原算法、权限及完成，不存旧IR或另建状态权威；只读SDK／JSON消费同一原编译结果，未交接材料如实为空。该独立范围待实现，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-6)。
+**原生调用的既有局部访问事实。** 必要输入／输出来自同一原Call的Reference实参及memory效果：前者保留实际ty、access、CallReference.storage／offset／word，后者保留MemoryAccess.alias及access。原CallReference::aliases沿Local逻辑范围或IndexedSource别名交接；内部Call::locals(true)同时消费可写引用和可写memory中的Local范围，Values::block停止沿用对应局部知识。只读效果不因此成为局部写；按值地址背后的实际影响仍由原memory合同交接，不从按值形式推定无副作用。Local底层可能影响范围、投影字节位置及参数类型的访问宽度分别说明，不把保守分析范围写成实际覆盖字节。
+
+当前SDK直接读取原Call公开字段，所属ValueCode／Stage／FunctionBody的JSON同步编码参数、地址、访问和memory，不新增一份失效列表或来源锚点。普通函数地址合同收敛后，原apply_memory消费临时memory_use并回填同一Call.memory；分析中的索引不是稳定调用身份、运行地址或完成事实，查询不能把未交接中间结果当最终合同。原Call及编译结果是唯一事实所有者，最后IR消费者后释放；引用及分析材料不拥有调用代码或运行资源，外部实现、资源寿命和真实完成继续沿原ABI与所有者负责。调用合同生产的独立缺陷、真实消失／替换操作来源、B可编程入口和运行观察仍按各原编号推进，不由本叶调查结束代替。原访问、优化、DCE、布局及完成保持；本叶以既有静态查询覆盖收口，见[调查记录](FixedIssues.md#c-021-7-9-7-3-1-3-6)。
 
 <a id="tool-7-3-1-3-7"></a>
 

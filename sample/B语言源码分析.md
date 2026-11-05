@@ -2280,6 +2280,8 @@ impl ReductionKernel {
 
 指针写与原子操作同样沿原IR查询。普通函数的地址合同收敛后，原apply_memory回填Pointer.aliases，现有JSON直接编码Local的逻辑base／len或Data绑定；优化器使用的正是这些别名，不另保存一份失效历史。原Atomic还保留操作、标量类型与内存序：Load不写，比较交换可能失败，清除分析缓存不能冒充已写内存。公开指令内容在Inst.kind及来源查询中，JSON由所属ValueCode／Stage／FunctionBody等容器提供；构造中尚未回填的空别名、静态Reg编号与未采集的运行地址／值分别理解。完整接口与边界见[语言规范](../Docs/BLanguage.md#指针与原子访问的既有别名事实)。
 
+原生调用要同时查看Reference参数和Call.memory。前者给出原类型、访问及底层存储／字节投影，后者给出按值地址等额外内存影响；原Call::locals(true)消费两类可写Local范围，Read本身不成为局部写。普通函数合同收敛后，apply_memory消费临时memory_use并回填同一Call.memory，原SDK及JSON直接交接，不再保存一份缓存删除清单。静态范围、实际内存写入、外部实现信任及运行完成分别理解；完整字段及生命周期见[规范](../Docs/BLanguage.md#原生调用的既有局部访问事实)。
+
 ### 11.4 选择表达式不是总能两边都先算
 
 `condition ? a/b : 0` 只有选中除法时才应求除法，未选分支可能包含无效访问或不允许提前执行的计算。编译器保留必要控制流，再只对确实安全的操作简化为选择；这与第九章的路径事实相连。
