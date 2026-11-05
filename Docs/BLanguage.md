@@ -438,6 +438,24 @@ compiler SDK的ReductionInputReadForward::role()返回ReductionInputRole::Source
 
 新来源在原Inst结果交接后由同一次值流剩余事实直接形成，不重新优化、求值或扫描源码，也不新增保存的Reg映射、输入拥有表、IR副本或运行材料。单源trigger()及锚点syntax()／origin()／instance()为空，各实际读取从明确成员取得；编译器生成读取没有SourceSite时原样为空，不能删除该真实事件或补造语法。根与原来源共享不可变快照，随原Kernel／Stage在最后实际IR消费者后释放，普通原Inst／ValueCode及Frame前缀来源保持各自合同。见[架构](Architecture.md#tool-7-3-1-3-3-2)及[台账](FixedIssues.md#c-021-7-9-7-3-1-3-3-2)。
 
+#### 局部索引写的现有IR事实与单位
+
+原Inst::ir_json()已直接编码StoreLocalIndexed；ValueCode／Stage及模块／函数IR查询消费同一原指令和布局，没有单独的缓存失效记录接口。字段含义如下：
+
+| 字段 | 真实含义 |
+|---|---|
+| base | 底层局部存储起点的逻辑分量编号，不是地址或字节偏移。 |
+| len | 同一底层局部存储的逻辑分量数，可覆盖包含该数组的完整声明；不是一次写入字节数。 |
+| index | 寄存器编号，该寄存器提供动态字节偏移；字段本身不是已观察的运行时数值。 |
+| word | 附加的静态字节偏移，不能仅按名称理解成四字节索引。 |
+| value | 被写寄存器编号，其Scalar类型决定实际写宽度。 |
+| locals | end_component及原Ty布局给出真实逻辑声明和物理字节位置；填充不形成逻辑槽。 |
+| source_site | 原写已取得的语法位置，可能只指向目标表达式，缺失为空，不补造成完整赋值语句。 |
+
+LoadLocalIndexed共享这些地址含义，dst为读取目标寄存器，其Scalar决定读取宽度。Native及SPIR-V按原声明位置、动态index字节偏移和word选择实际标量地址；逻辑存储范围、可能别名范围和实际写宽度分别表达。例如u64字段的word可为8，u64本身仍只占一个逻辑分量。静态IR不证明该操作已执行，也不交付未采集的实际地址或内存值。
+
+当前原值流保守地在动态写点停止沿用相应底层范围内的先前局部值关系；该临时分析处理不等于写入全部分量，不等于初始化失效，不成为永久优化许可或语言限制。不同分析算法可演进，工具不要求把每轮缓存增删保存到来源链。确实消失、合并或替换的程序操作仍按实际生产者保留来源；临时状态的按需观察沿原所有者和真实存活期，未实现观察能力继续按原台账推进。见[架构](Architecture.md#tool-7-3-1-3-4)。
+
 #### 应用入口与根Frame的生成来源
 
 原compile_application从本次真实选择的Instance构造Definition锚点，Application.body的generated_origin为application_entry；其原生Call以application_entry_call交接同一实际入口。它们属于原隐式包装，不额外创建FunctionBody或把根定义Span伪装成一次用户调用。普通源函数、集合值核及其他域包装的ValueCode.generated_origin不借用此入口，原source_origin／entry_origin保持各自语义。用完整应用IR查询观察body；函数选择仍返回实际B函数，不能把它当根包装。
