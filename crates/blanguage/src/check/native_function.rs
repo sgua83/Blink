@@ -309,6 +309,12 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));}}
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
+    for call in &builder.view_model.calls {
+        for component in 0..call.snapshots.len(){
+            let id=ValueIdentity::MemoryValue(call.memory,component);
+            bindings.insert(id,bounds::Proof::default().with_identity(id));
+        }
+    }
     let mut next=inputs.len();
     let models=std::iter::once(returned).chain(written).enumerate().map(|(model_index,model)|model.map(|model|{
         let proof=bounds::Proof::capture(&builder.returned_storage(&model));let regs=model.registers();
@@ -722,6 +728,7 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
+        let views_closed=self.functions.units[&instance.name].as_ref().is_some_and(|unit|unit.contract.view_access.is_some());
         if let Some(written)=self.native_call_memory(&instance.name,&view_arguments) {
             memory_borrow=written;
         }
@@ -729,7 +736,13 @@ impl Builder<'_> {
             let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();
             self.native_dataset_access(&access,&view_arguments,span)?
         }else{Vec::new()};
-        let memory_use=self.call_address_memory(memory_borrow,span)?;
+        let (memory_use,memory_values)=if views_closed {
+            (self.call_address_memory(memory_borrow,span)?,Vec::new())
+        }else{
+            let usage=self.view_model.uses.len();
+            self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(usage),borrow:memory_borrow,span})?;
+            (usage,self.defer_address_values(usage))
+        };
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
         for argument in &mut arguments {
             if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}
@@ -743,7 +756,6 @@ impl Builder<'_> {
             values: values.clone(),
         }), source_site, generated_origin });
         // 已闭合合同按本次实参交接来源；未闭合函数才借原调用图等待结果。
-        let views_closed=self.functions.units[&instance.name].as_ref().is_some_and(|unit|unit.contract.view_access.is_some());
         let prototype = self.functions.units[&instance.name]
             .as_ref()
             .map(|unit| {
@@ -790,7 +802,7 @@ impl Builder<'_> {
             semantic+=regs.len();written_registers.insert(*index,regs);
         }
         view_arguments.extend(bindings.clone());
-        let view_call=Some(self.view_model.call(&instance.name,memory_use,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
+        let view_call=Some(self.view_model.call(&instance.name,memory_use,memory_values,view_arguments.clone(),address::initialization_effects(&self.initialized,&bounds::Clause::default()),self.path.clone(),self.definition.source.clone(),span));
         if d.function.result.is_never() {
             self.flow = Flow::STOP;
             return Ok(None);
@@ -967,6 +979,25 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     view_contracts::Interface{outputs,access:contract.view_access.as_ref().unwrap().clone(),initialization:contract.initialization.clone().unwrap()}
 }
 fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
+    fn scalar_values(value:&mut Value,bindings:&BTreeMap<ValueIdentity,bounds::Proof>){
+        value.proof=value.proof.substitute_values(bindings);
+        value.constant=value.constant.take().or_else(||value.proof.known_value(&value.ty));
+    }
+    fn returned_values(value:&mut Returned,bindings:&BTreeMap<ValueIdentity,bounds::Proof>){
+        match value {
+            Returned::Unit=>{},
+            Returned::Value(value)=>scalar_values(value,bindings),
+            Returned::Dataset(value)=>{
+                scalar_values(&mut value.root,bindings);scalar_values(&mut value.length,bindings);
+                returned_values(&mut value.elements,bindings);
+            },
+            Returned::OwnedValue(value)=>{
+                scalar_values(&mut value.value,bindings);
+                for payload in value.payloads.iter_mut().flatten(){returned_values(payload,bindings);}
+            },
+        }
+    }
+
     let mut functions=BTreeMap::new();let mut closed=BTreeMap::new();
     let mut pending=root.map(|name|vec![name.to_owned()]).unwrap_or_else(||module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.view_access.is_none().then(||name.clone())).collect());
     while let Some(name)=pending.pop() {
@@ -988,6 +1019,10 @@ fn resolve_views(module:&mut Module,root:Option<&str>)->Result<()> {
         }
         contract.view_access=Some(interface.access.clone());
         contract.initialization=Some(interface.initialization.clone());
+        if let Some(values)=outputs.values.get(name){
+            for model in contract.returned.iter_mut().chain(contract.written.iter_mut().flatten()){returned_values(model,values);}
+        }
+
         for (output,borrow)in &interface.outputs {
             match *output {
                 view_contracts::Output::Returned(component)=>if let Some(value)=contract.returned.as_mut().and_then(Returned::view_value_mut) {value.proof=value.proof.clone().with_view_borrow(component,borrow.clone());},

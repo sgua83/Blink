@@ -196,26 +196,29 @@ type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
 fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
     bindings.get(&identity).copied().unwrap_or(identity)
 }
-fn output_domain(domain: IndexDomain, bindings: &OutputBindings) -> IndexDomain {
+fn output_domain(domain:IndexDomain,bindings:&OutputBindings)->IndexDomain {
+    map_domain(domain,&|id|output_identity(id,bindings))
+}
+fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentity)->IndexDomain {
     match domain {
-        IndexDomain::View(ids) => IndexDomain::View(ids.map(|id| output_identity(id, bindings))),
+        IndexDomain::View(ids) => IndexDomain::View(ids.map(|id| identity(id))),
         IndexDomain::ViewLength(ids) => {
-            IndexDomain::ViewLength(ids.map(|id| output_identity(id, bindings)))
+            IndexDomain::ViewLength(ids.map(|id| identity(id)))
         }
         IndexDomain::ApplicationData(id) => {
-            IndexDomain::ApplicationData(output_identity(id, bindings))
+            IndexDomain::ApplicationData(identity(id))
         }
         IndexDomain::ApplicationLength(id) => {
-            IndexDomain::ApplicationLength(output_identity(id, bindings))
+            IndexDomain::ApplicationLength(identity(id))
         }
-        IndexDomain::Upper(limit, distance) => IndexDomain::Upper(output_identity(limit, bindings), distance),
-        IndexDomain::Lower(base, distance) => IndexDomain::Lower(output_identity(base, bindings), distance),
-        IndexDomain::Room(base) => IndexDomain::Room(output_identity(base, bindings)),
-        IndexDomain::Sum(left, right) => IndexDomain::Sum(output_identity(left, bindings), output_identity(right, bindings)),
-        IndexDomain::Offset(base, amount) => IndexDomain::Offset(output_identity(base, bindings), amount),
-        IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(output_identity(base, bindings), output_identity(limit, bindings), distance),
-        IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(output_identity(id, bindings))).unwrap()),
-        IndexDomain::CommonRange(source) => IndexDomain::CommonRange(output_identity(source, bindings)),
+        IndexDomain::Upper(limit, distance) => IndexDomain::Upper(identity(limit), distance),
+        IndexDomain::Lower(base, distance) => IndexDomain::Lower(identity(base), distance),
+        IndexDomain::Room(base) => IndexDomain::Room(identity(base)),
+        IndexDomain::Sum(left, right) => IndexDomain::Sum(identity(left), identity(right)),
+        IndexDomain::Offset(base, amount) => IndexDomain::Offset(identity(base), amount),
+        IndexDomain::Shifted(base, limit, distance) => IndexDomain::Shifted(identity(base), identity(limit), distance),
+        IndexDomain::Computed(expression) => IndexDomain::Computed(expression.map(|id| Some(identity(id))).unwrap()),
+        IndexDomain::CommonRange(source) => IndexDomain::CommonRange(identity(source)),
         other => other,
     }
 }
@@ -502,6 +505,27 @@ impl Proof {
         self.under_path(ty, aliases);
     }
     // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
+    fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
+        let ids=std::cell::RefCell::new(self.origins.iter().flatten().copied().collect::<BTreeSet<_>>());
+        let identity=|id|{ids.borrow_mut().insert(id);id};
+        for domain in self.domains.iter().flatten(){map_domain(*domain,&identity);}
+        for condition in self.conditions.iter().flatten(){condition.identities(&identity);}
+        for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
+        ids.into_inner()
+    }
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
+        let mut bindings=self.scalar_identities().into_iter().map(|id|(id,Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id))))).collect::<BTreeMap<_,_>>();
+        bindings.extend(values.iter().map(|(id,proof)|(*id,proof.clone())));
+        let mut proof=self.at_call(&bindings);
+        proof.views=self.views.iter().map(|borrow|borrow.substitute_values(values)).collect();
+        for(component,address)in self.addresses.iter().enumerate(){
+            if let Some(address)=address{
+                proof.addresses.resize_with(proof.addresses.len().max(component+1),||None);
+                proof.addresses[component]=Some(address.substitute_values(values));
+            }
+        }
+        proof
+    }
     pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
         fn identity(
             id: ValueIdentity,
@@ -980,6 +1004,10 @@ impl Proof {
             _ => false,
         })
     }
+    pub(super) fn with_component_identity(mut self,component:usize,identity:ValueIdentity)->Self {
+        self.origins.resize_with(self.origins.len().max(component+1),Vec::new);
+        self.origins[component]=vec![identity];self
+    }
     pub fn with_identity(mut self, identity: ValueIdentity) -> Self {
         let mut origins = self.origins.first().cloned().unwrap_or_default();
         origins.retain(|origin| *origin != identity);
@@ -1319,6 +1347,22 @@ fn environment_facts(environment: &BTreeMap<String, Binding>) -> Facts {
         .collect()
 }
 impl Fact {
+    fn map(self,identity:&impl Fn(ValueIdentity)->ValueIdentity)->Self {
+        match self {
+            Self::Equal(a,b)=>Self::equal(identity(a),identity(b)),
+            Self::NotEqual(a,b)=>{let(a,b)=(identity(a),identity(b));Self::NotEqual(a.min(b),a.max(b))},
+            Self::Index(id,domain)=>Self::Index(identity(id),map_domain(domain,identity)),
+            Self::Outside(id,domain)=>Self::Outside(identity(id),map_domain(domain,identity)),
+            Self::Minimum(id,scalar,n)=>Self::Minimum(identity(id),scalar,n),
+            Self::Maximum(id,scalar,n)=>Self::Maximum(identity(id),scalar,n),
+            Self::NonZero(id)=>Self::NonZero(identity(id)),
+            Self::Zero(id)=>Self::Zero(identity(id)),
+            Self::Boolean(id,truth)=>Self::Boolean(identity(id),truth),
+            Self::Predicate(predicate,truth)=>Self::Predicate(predicate.map(|id|Some(identity(id))).unwrap(),truth),
+            Self::Below(a,b,strict,scalar)=>Self::Below(identity(a),identity(b),strict,scalar),
+        }
+    }
+
     fn equal(a: ValueIdentity, b: ValueIdentity) -> Self {
         Self::Equal(a.min(b), a.max(b))
     }
@@ -1470,6 +1514,16 @@ impl Proof {
             }
         }
     }
+}
+pub(super) const INTEGER_DIVISOR_MESSAGE:&str="整数除数的每个分量都必须是非零常量或在当前作用域已证明非零的值";
+pub(super) fn integer_divisors(value:&Value,path:&Clause)->Option<Vec<IntegerDivisor>> {
+    if let Some(constants)=value.constant.as_ref().and_then(|values|values.iter().copied().map(std::num::NonZeroU64::new).collect::<Option<Vec<_>>>()){
+        return Some(constants.into_iter().map(IntegerDivisor::Constant).collect());
+    }
+    if value.is_nonzero()||value.constant.is_none()&&path.possible()&&value.ty.components.iter().all(|(scalar,offset)|value.nonzero_bytes(*offset,scalar.size(),path)){
+        return Some(value.regs.iter().copied().map(IntegerDivisor::Value).collect());
+    }
+    None
 }
 impl Value {
     pub(super) fn is_nonzero(&self) -> bool {
@@ -1638,6 +1692,13 @@ impl Drop for Clause {
     }
 }
 impl Clause {
+    pub(super) fn values<'a>(values:impl IntoIterator<Item=(Scalar,ValueIdentity,&'a Proof)>)->Self {
+        Self::facts(values.into_iter().flat_map(|(scalar,id,proof)|proof.clone().with_identity(id).facts(&Ty::scalar(scalar))).collect())
+    }
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
+        Condition::guard(self.clone()).substitute_values(values).assume(&Clause::default(),true)
+    }
+
     fn node(value: ClauseNode) -> Self {
         Self(ManuallyDrop::new(Arc::new(value)))
     }
@@ -1707,23 +1768,7 @@ impl Clause {
                 ClauseNode::Facts(facts) => {
                     let renamed: Facts = facts
                         .iter()
-                        .map(|fact| match *fact {
-                            Fact::Equal(a, b) => Fact::equal(identity(a), identity(b)),
-                            Fact::NotEqual(a, b) => {let (a,b)=(identity(a),identity(b));Fact::NotEqual(a.min(b),a.max(b))},
-                            Fact::Index(id, domain) => {
-                                Fact::Index(identity(id), output_domain(domain, bindings))
-                            }
-                            Fact::Minimum(id, scalar, n) => Fact::Minimum(identity(id), scalar, n),
-                            Fact::Maximum(id, scalar, n) => Fact::Maximum(identity(id), scalar, n),
-                            Fact::NonZero(id) => Fact::NonZero(identity(id)),
-                            Fact::Zero(id)=>Fact::Zero(identity(id)),
-                            Fact::Outside(id,d)=>Fact::Outside(identity(id),output_domain(d,bindings)),
-                            Fact::Boolean(id, truth) => Fact::Boolean(identity(id), truth),
-                            Fact::Predicate(predicate, truth) => Fact::Predicate(predicate.map(|id|Some(identity(id))).unwrap(), truth),
-                            Fact::Below(a, b, strict, signed) => {
-                                Fact::Below(identity(a), identity(b), strict, signed)
-                            }
-                        })
+                        .map(|fact|fact.map(&identity))
                         .collect();
                     if renamed == *facts {
                         clause.clone()
@@ -2435,6 +2480,15 @@ impl Condition {
     pub(super) fn same_length_proofs(a:&Proof,b:&Proof)->Self {
         match(a.known_identity(0),b.known_identity(0)){(Some(a),Some(b))=>Self::guard(Clause::facts([Fact::Equal(a,b)].into())),_=>Self::default()}
     }
+
+    fn identities(&self,identity:&impl Fn(ValueIdentity)->ValueIdentity) {
+        for clause in Clause::ordered(&self.cases){if let ClauseNode::Facts(facts)=&**clause.0{for fact in facts{fact.map(identity);}}}
+    }
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
+        let proof=Proof::condition(self.clone()).substitute_values(values);
+        proof.conditions.into_iter().next().flatten().map(|value|*value).unwrap()
+    }
+
     pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
     pub(super) fn execution(path:&Clause)->Self {
         let mut conditions:BTreeMap<usize,Self>=BTreeMap::new();

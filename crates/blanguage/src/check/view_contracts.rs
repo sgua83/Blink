@@ -17,12 +17,28 @@ pub(super) enum Access {
     Dataset {borrows:Borrow,when:bounds::Condition,index:Option<bounds::Operand>,access:super::Access,atomic:bool},
     Initialized {borrows:Borrow,initialized:Vec<address::Initialization>,when:bounds::Condition},
 }
+impl Access {
+    fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        match self {
+            Self::Resource{resources,borrows,ownership,when}=>Self::Resource{resources:resources.substitute_values(values),borrows:borrows.substitute_values(values),ownership:*ownership,when:when.substitute_values(values)},
+            Self::Position{borrows,when,position}=>Self::Position{borrows:borrows.substitute_values(values),when:when.substitute_values(values),position:position.clone()},
+            Self::Memory{borrows,when}=>Self::Memory{borrows:borrows.substitute_values(values),when:when.substitute_values(values)},
+            Self::Dataset{borrows,when,index,access,atomic}=>{
+                let index=index.and_then(|index|match index{bounds::Operand::Value(id)if values.contains_key(&id)=>index.at_call(values),index=>Some(index)});
+                Self::Dataset{borrows:borrows.substitute_values(values),when:when.substitute_values(values),index,access:*access,atomic:*atomic}
+            },
+            Self::Initialized{borrows,initialized,when}=>Self::Initialized{borrows:borrows.substitute_values(values),initialized:initialized.iter().map(|value|value.substitute_values(values)).collect(),when:when.substitute_values(values)},
+        }
+    }
+}
 crate::module::codec::variants!(Access {0=>Resource{resources,borrows,ownership,when},1=>Position{borrows,when,position},2=>Memory{borrows,when},3=>Dataset{borrows,when,index,access,atomic},4=>Initialized{borrows,initialized,when}});
 #[derive(Clone,Default,PartialEq,Eq)]
 pub(super) struct Interface {pub outputs:Outputs,pub access:BTreeSet<Access>,pub initialization:Vec<address::Initialization>}
+pub(super) struct ValueSnapshot { pub position:Position, pub scalar:Scalar, pub proof:bounds::Proof }
 pub(super) struct Call {
     pub(super) function:String,
-    memory:usize,
+    pub(super) memory:usize,
+    pub(super) snapshots:Vec<ValueSnapshot>,
     pub(super) arguments:BTreeMap<ValueIdentity,bounds::Proof>,
     initialization:Vec<address::InitializationEffect>,
     outputs:BTreeSet<Output>,
@@ -168,13 +184,34 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
     fresh(a,b)||fresh(b,a)
 }
 impl Function {
+    pub fn pending_values(&self)->bool {self.calls.iter().any(|call|!call.snapshots.is_empty())}
+    pub fn value_bindings(&self,memory:&BTreeMap<address::MemoryTarget,address::MemoryEffect>)->BTreeMap<ValueIdentity,bounds::Proof> {
+        let mut values=BTreeMap::new();
+        for call in &self.calls {
+            for(component,snapshot)in call.snapshots.iter().enumerate(){
+                let changed=memory.get(&address::MemoryTarget::Call(call.memory)).is_some_and(|effect|effect.writes_position(&snapshot.position));
+                let proof=if changed{bounds::Proof::default()}else{snapshot.proof.substitute_values(&values)};
+                values.insert(ValueIdentity::MemoryValue(call.memory,component),proof);
+            }
+        }
+        values
+    }
+
+    fn value_context(&self,values:Option<&BTreeMap<ValueIdentity,bounds::Proof>>)->bounds::Clause {
+        match values {
+            Some(values)=>bounds::Clause::values(self.calls.iter().flat_map(|call|call.snapshots.iter().enumerate().map(move |(component,snapshot)|{
+                let id=ValueIdentity::MemoryValue(call.memory,component);(snapshot.scalar,id,&values[&id])
+            }))),
+            None=>bounds::Clause::default(),
+        }
+    }
     pub fn initialization_when(&self,when:bounds::Condition)->bounds::Condition {
         let normal=match &self.normal_returns {Some(normal)=>normal.clone(),None=>bounds::Condition::constant(false)};
         normal.negate().logical(when,true)
     }
     pub fn scope(&mut self)->usize {let scope=self.next_scope;self.next_scope+=1;scope}
-    pub fn call(&mut self,function:&str,memory:usize,arguments:BTreeMap<ValueIdentity,bounds::Proof>,initialization:Vec<address::InitializationEffect>,path:bounds::Clause,source:crate::Source,span:Span)->usize {
-        let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,arguments,initialization,outputs:BTreeSet::new(),path,source,span});call
+    pub fn call(&mut self,function:&str,memory:usize,snapshots:Vec<ValueSnapshot>,arguments:BTreeMap<ValueIdentity,bounds::Proof>,initialization:Vec<address::InitializationEffect>,path:bounds::Clause,source:crate::Source,span:Span)->usize {
+        let call=self.calls.len();self.calls.push(Call{function:function.into(),memory,snapshots,arguments,initialization,outputs:BTreeSet::new(),path,source,span});call
     }
     pub fn result(&mut self,call:usize,output:Output)->Borrow {
         self.calls[call].outputs.insert(output);
@@ -300,7 +337,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
         let mut roots=function.outputs.values().cloned().collect::<Vec<_>>();
         for effect in &function.initialization{initialization_roots(effect,&mut roots);}
         for usage in &function.uses {
-            roots.push(usage.requirement.borrow().clone());
+            if let Some(borrow)=usage.requirement.borrow(){roots.push(borrow.clone());}
             match &usage.requirement {
                 Requirement::Unborrowed{resource,..}=>roots.push(resource.clone()),
                 Requirement::Return{owned,..}=>roots.push(owned.clone()),
@@ -308,7 +345,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
                     for position in &read.positions{position_roots(position,&mut roots);}
                     for position in &read.initialized{position_roots(position,&mut roots);}
                 }
-                Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}=>{},
+                Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}|Requirement::Nonzero{..}=>{},
             }
         }
         for call in &function.calls{if contracts.contains(&call.function){roots.extend(call.arguments.values().map(bounds::Proof::borrowed_view));}}
@@ -520,12 +557,12 @@ fn resolved_read(read:&address::InitializationRead,path:&bounds::Clause,function
     address::InitializationRead{positions,initialized}
 }
 
-fn refreshed_at_call(borrow:&Borrow,call:&Call,function:&Function,state:&State,known:&States)->Borrow {
-    let initialized=initialization_effects(&call.initialization,function,state,known).positions(&call.path);
+fn refreshed_at_call(borrow:&Borrow,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States)->Borrow {
+    let initialized=initialization_effects(&call.initialization,function,state,known).positions(path);
     evaluate(borrow,function,state,known,true).map_sources(|source|match source {
         Origin::Position(origin)=>{
             let fact=address::Initialization{origin:origin.as_ref().clone(),when:bounds::Condition::constant(true)};
-            let positions=fact.positions(&call.path);
+            let positions=fact.positions(path);
             let mut origin=origin.as_ref().clone();
             origin.initialized=origin.initialized.iter().enumerate().map(|(i,ready)|*ready||positions.get(i).is_some_and(|position|position.initialized_by(&initialized))).collect();
             Borrow::source(Origin::Position(Arc::new(origin)))
@@ -534,11 +571,11 @@ fn refreshed_at_call(borrow:&Borrow,call:&Call,function:&Function,state:&State,k
     })
 }
 
-fn access_at_call(access:&Access,call:&Call,function:&Function,state:&State,known:&States)->Access{
+fn access_at_call(access:&Access,call:&Call,path:&bounds::Clause,function:&Function,state:&State,known:&States)->Access{
     let(Access::Resource{borrows,when,..}|Access::Position{borrows,when,..}|Access::Memory{borrows,when}|Access::Dataset{borrows,when,..}|Access::Initialized{borrows,when,..})=access;
     let borrows=borrows.at_call(&call.arguments);
-    let when=when.guard_at_call(&call.arguments).assume(&call.path,true);
-    let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,function,state,known)};
+    let when=when.guard_at_call(&call.arguments).assume(path,true);
+    let borrows=if matches!(access,Access::Initialized{..}){evaluate(&borrows,function,state,known,true)}else{refreshed_at_call(&borrows,call,path,function,state,known)};
     let when=bounds::Condition::guard(when);
     match access {
         Access::Resource{resources,ownership,..}=>Access::Resource{resources:evaluate(&resources.at_call(&call.arguments),function,state,known,true),borrows,ownership:*ownership,when},
@@ -669,7 +706,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                 if let Some(value)=value{access.insert(value);}
             }
             for call in &function.calls {for requirement in &known[&call.function].interface.access {
-                let value=access_at_call(requirement,call,function,state,known);
+                let value=access_at_call(requirement,call,&call.path,function,state,known);
                 let value=match value {
                     Access::Position{position,borrows,when}=>{
                         if !position.writes&&!position.initialized{continue;}
@@ -711,7 +748,7 @@ fn converge(functions:&BTreeMap<String,&Function>,known:&mut States,unknown:&BTr
         if *known==next{break;}*known=next;
     }
 }
-pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>}
+pub(super) struct Solved {pub interfaces:BTreeMap<String,Interface>,pub memory:BTreeMap<String,BTreeMap<address::MemoryTarget,address::MemoryEffect>>,pub values:BTreeMap<String,BTreeMap<ValueIdentity,bounds::Proof>>}
 pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String,Interface>)->Result<Solved>{
     let loops=used_loops(functions,&closed);
     let mut known=closed.into_iter().map(|(name,interface)|(name,State{interface,..State::default()})).collect::<States>();
@@ -724,21 +761,61 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     if !unknown.is_empty(){converge(functions,&mut known,&unknown);}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known);
+    let mut memory=BTreeMap::new();
+    for(name,function)in functions {
+        let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
+        for usage in &function.uses {
+            if let Requirement::Memory{target,borrow,..}=&usage.requirement
+                && !matches!(target,address::MemoryTarget::Call(memory)if function.calls.iter().any(|call|call.memory==*memory)) {
+                let borrow=evaluate(borrow,function,&known[name],&known,true).restricted(&usage.path);
+                let effect=address::MemoryEffect::of(&borrow,super::Access::InOut);
+                match values.entry(*target) {
+                    std::collections::btree_map::Entry::Vacant(entry)=>{entry.insert(effect);}
+                    std::collections::btree_map::Entry::Occupied(mut entry)=>entry.get_mut().union(effect),
+                }
+            }
+        }
+        for call in &function.calls {
+            for access in &known[&call.function].interface.access {
+                let (borrows,when,access)=match access_at_call(access,call,&call.path,function,&known[name],&known) {
+                    Access::Memory{borrows,when}=> (borrows,when,super::Access::InOut),
+                    Access::Dataset{borrows,when,access,..}=> (borrows,when,access),
+                    Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
+                    _=>continue,
+                };
+                let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
+                values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::Known(Vec::new())).union(address::MemoryEffect::of(&borrow,access));
+            }
+        }
+        memory.insert(name.clone(),values);
+    }
+    let mut scalar_values=functions.iter().filter(|(_,function)|function.pending_values()).map(|(name,function)|(name.clone(),function.value_bindings(&memory[name]))).collect::<BTreeMap<_,_>>();
     for(name,function)in functions{
         let state=&known[name];
+        let context=function.value_context(scalar_values.get(name));
         for usage in &function.uses{
+            let path=bounds::Clause::both(&usage.path,&context);
+            if let Requirement::Nonzero{value,path,span}=&usage.requirement {
+                let values=&scalar_values[name];
+                let mut value=(**value).clone();
+                value.proof=value.proof.substitute_values(values);
+                value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
+                Requirement::Nonzero{value:Box::new(value),path:path.substitute_values(values),span:*span}.check(&usage.source)?;
+                continue;
+            }
             if let Requirement::Initialized{read,code,span,..}=&usage.requirement {
-                let read=resolved_read(read,&usage.path,function,state,&known);
+                let read=resolved_read(read,&path,function,state,&known);
                 Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source)?;
                 continue;
             }
             let symbolic=usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,false));
             if matches!(&symbolic,Requirement::Unborrowed{resource,borrow,..}if disjoint(resource,borrow,&function.independent,&usage.active_loops)){continue;}
-            usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&usage.path).check(&usage.source)?;
+            usage.requirement.mapped(|borrow|evaluate(borrow,function,state,&known,true)).under_path(&path).check(&usage.source)?;
         }
         for call in &function.calls{
+            let path=bounds::Clause::both(&call.path,&context);
             for requirement in &known[&call.function].interface.access{
-                let value=access_at_call(requirement,call,function,state,&known);
+                let value=access_at_call(requirement,call,&path,function,state,&known);
                 let(Access::Resource{when,..}|Access::Position{when,..}|Access::Memory{when,..}|Access::Dataset{when,..}|Access::Initialized{when,..})=&value;
                 if when.active(){
                     let path=when.assume(&bounds::Clause::default(),true);
@@ -762,35 +839,18 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
             }
         }
     }
-    let mut memory=BTreeMap::new();
-    for(name,function)in functions {
-        let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
-        for usage in &function.uses {
-            if let Requirement::Memory{target,borrow,..}=&usage.requirement
-                && !matches!(target,address::MemoryTarget::Call(memory)if function.calls.iter().any(|call|call.memory==*memory)) {
-                let borrow=evaluate(borrow,function,&known[name],&known,true).restricted(&usage.path);
-                let effect=address::MemoryEffect::of(&borrow,super::Access::InOut);
-                match values.entry(*target) {
-                    std::collections::btree_map::Entry::Vacant(entry)=>{entry.insert(effect);}
-                    std::collections::btree_map::Entry::Occupied(mut entry)=>entry.get_mut().union(effect),
-                }
-            }
+    let interfaces=known.into_iter().map(|(name,state)|{
+        let mut interface=state.interface;
+        if let Some(values)=scalar_values.get_mut(&name){
+            let function=functions[&name];
+            *values=std::mem::take(values).into_iter().map(|(id,proof)|(id,proof.output_bound(&function.parameters))).collect();
+            interface.outputs=interface.outputs.into_iter().map(|(output,borrow)|(output,borrow.substitute_values(values))).collect();
+            interface.access=interface.access.iter().map(|access|access.substitute_values(values)).collect();
+            interface.initialization=interface.initialization.iter().map(|value|value.substitute_values(values)).collect();
         }
-        for call in &function.calls {
-            for access in &known[&call.function].interface.access {
-                let (borrows,when,access)=match access_at_call(access,call,function,&known[name],&known) {
-                    Access::Memory{borrows,when}=> (borrows,when,super::Access::InOut),
-                    Access::Dataset{borrows,when,access,..}=> (borrows,when,access),
-                    Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
-                    _=>continue,
-                };
-                let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
-                values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::Known(Vec::new())).union(address::MemoryEffect::of(&borrow,access));
-            }
-        }
-        memory.insert(name.clone(),values);
-    }
-    Ok(Solved{interfaces:known.into_iter().map(|(name,state)|(name,state.interface)).collect(),memory})
+        (name,interface)
+    }).collect();
+    Ok(Solved{interfaces,memory,values:scalar_values})
 }
 
 impl Builder<'_> {

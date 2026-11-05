@@ -8,6 +8,12 @@ pub(super) struct LoopInput { pub level: usize, pub index: usize }
 pub(super) struct Edges<K:Ord>(BTreeMap<K,bounds::Condition>);
 impl<K:Ord> Default for Edges<K>{fn default()->Self{Self(BTreeMap::new())}}
 impl<K:Ord+Clone> Edges<K>{
+    fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        let mut result=Self::default();
+        for(key,when)in &self.0{result.insert_when(key.clone(),when.substitute_values(values).assume(&bounds::Clause::default(),true));}
+        result
+    }
+
     pub fn insert(&mut self,key:K){self.insert_when(key,bounds::Clause::default());}
     pub fn insert_when(&mut self,key:K,when:bounds::Clause){
         // 不可能边仍表明来源已知；空图表示尚无来源关系，两者不能混为一谈。
@@ -43,6 +49,21 @@ pub(super) struct Borrow{
     pub calls:Edges<view_contracts::CallResult>,
 }
 impl Borrow{
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        let mut result=Self{inputs:self.inputs.substitute_values(values),calls:self.calls.substitute_values(values),..Self::default()};
+        for(source,when)in self.sources.entries(){
+            let next=match source {
+                Source::Position(origin)=>origin.substitute_values(values).normalize(),
+                Source::Element{parent,fields}=>Self::element(parent.substitute_values(values),fields.clone()),
+                Source::Projection{parent,fields}=>Self::projection(parent.substitute_values(values),fields.clone()),
+                Source::Data(id)|Source::Parameter(id)if values.contains_key(id)=>source.clone().at_call(values),
+                source=>Self::source(source.clone()),
+            };
+            result.union(&next.restricted(&when.substitute_values(values)));
+        }
+        result
+    }
+
     pub fn from_sources(sources:impl IntoIterator<Item=Source>)->Self{Self{sources:sources.into_iter().collect(),..Self::default()}}
     pub fn source(source:Source)->Self{Self::from_sources([source])}
     pub fn element(parent:Self,fields:Vec<usize>)->Self {
@@ -198,12 +219,14 @@ pub(super) enum Requirement {
     Memory {target:address::MemoryTarget,borrow:Borrow,span:Span},
     Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
+    Nonzero {value:Box<Value>,path:bounds::Clause,span:Span},
 }
 impl Requirement {
-    pub fn borrow(&self)->&Borrow {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}|Self::Address{borrow,..}|Self::Memory{borrow,..}|Self::Dataset{borrow,..}|Self::Initialized{borrow,..}=>borrow}}
-    pub fn pending(&self)->bool {self.borrow().pending()||matches!(self,Self::Unborrowed{resource,..}if resource.pending())||matches!(self,Self::Return{owned,..}if owned.pending())}
+    pub fn borrow(&self)->Option<&Borrow> {match self {Self::Unborrowed{borrow,..}|Self::Return{borrow,..}|Self::Address{borrow,..}|Self::Memory{borrow,..}|Self::Dataset{borrow,..}|Self::Initialized{borrow,..}=>Some(borrow),Self::Nonzero{..}=>None}}
+    pub fn pending(&self)->bool {self.borrow().is_some_and(Borrow::pending)||matches!(self,Self::Nonzero{..})||matches!(self,Self::Unborrowed{resource,..}if resource.pending())||matches!(self,Self::Return{owned,..}if owned.pending())}
     pub fn under_path(&self,path:&bounds::Clause)->Self{match self{
         Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:borrow.restricted(path),allowed:allowed.clone(),owned:owned.clone(),span:*span},
+        Self::Nonzero{..}=>self.clone(),
         Self::Unborrowed{..}|Self::Address{..}|Self::Memory{..}|Self::Dataset{..}|Self::Initialized{..}=>self.mapped(|borrow|borrow.restricted(path)),
     }}
     pub fn mapped(&self,map:impl Fn(&Borrow)->Borrow)->Self {
@@ -214,10 +237,14 @@ impl Requirement {
             Self::Memory{target,borrow,span}=>Self::Memory{target:*target,borrow:map(borrow),span:*span},
             Self::Dataset{borrow,index,access,atomic,span}=>Self::Dataset{borrow:map(borrow),index:*index,access:*access,atomic:*atomic,span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
+            Self::Nonzero{..}=>self.clone(),
         }
     }
     pub fn check(&self,source:&crate::Source)->Result<()> {
-        if self.borrow().unresolved()||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
+        if let Self::Nonzero{value,path,span}=self {
+            return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
+        }
+        if self.borrow().is_some_and(Borrow::unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
         if let Self::Address{borrow,layout,writes,initialized,span}=self {
             for(origin_source,when)in borrow.sources.entries() {
                 if !when.possible(){continue;}
@@ -348,12 +375,11 @@ impl Builder<'_> {
         self.check_view_requirement(Requirement::Unborrowed{resource:resource.clone(),borrow,ownership:false,span})
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
-        if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}) {
+        if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}|Requirement::Memory{..}) {
             self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});
             return Ok(());
         }
-        let borrow=requirement.borrow();
-        if borrow.empty(){return Ok(());}
+        if requirement.borrow().is_some_and(Borrow::empty){return Ok(());}
         requirement.under_path(&self.path).check(&self.definition.source)?;
         if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.definition.source.clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
         Ok(())

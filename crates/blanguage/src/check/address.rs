@@ -43,6 +43,16 @@ pub(super) struct Origin {
     pub initialized: Arc<[bool]>,
 }
 impl Origin {
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        let mut origin=self.clone();
+        origin.root=match &self.root {
+            Root::External(identity)=>Root::External(identity.substitute_values(values)),
+            Root::Derived(borrow)=>Root::Derived(borrow.substitute_values(values)),
+            root=>root.clone(),
+        };
+        origin
+    }
+
     pub fn symbolic_input(&self)->bool {
         match &self.root {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().any(|source|match source {
@@ -235,6 +245,17 @@ pub(super) enum Identity {
 }
 
 impl Identity {
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        match self {
+            Self::Constant(_)=>self.clone(),
+            Self::Storage(borrow)=>Self::Storage(borrow.substitute_values(values)),
+            Self::Value(ids)=>{
+                for id in ids {if let Some(value)=values.get(id).and_then(|proof|proof.addresses.first()).cloned().flatten(){return value;}}
+                Self::Value(ids.iter().flat_map(|id|match values.get(id){Some(proof)=>proof.origins.first().cloned().unwrap_or_default(),None=>vec![*id]}).collect())
+            },
+        }
+    }
+
     pub(super) fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
         match self {Self::Value(ids)=>Self::Value(ids.iter().map(|id|bindings.get(id).copied().unwrap_or(*id)).collect()),Self::Storage(borrow)=>Self::Storage(borrow.output_bound(bindings)),constant=>constant.clone()}
     }
@@ -300,6 +321,19 @@ impl MemoryEffect {
             (target,Self::External(mut access))=>{
                 if match target {Self::Known(effects)=>effects.iter().any(|effect|effect.access!=access),Self::External(old)=>*old!=access}{access=Access::InOut;}
                 *target=Self::External(access);
+            },
+        }
+    }
+    pub(super) fn writes_position(&self,position:&Position)->bool {
+        match self {
+            Self::External(access)=>access.writes(),
+            Self::Known(effects)=>match position {
+                Position::Initialized=>false,
+                Position::Local(slot)=>effects.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Local{base,len}if (base..base+len).contains(slot))),
+                Position::Element(binding,_)=>effects.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Data(actual)if actual==*binding)),
+                Position::Both(a,b)|Position::Conditional(_,a,b)=>self.writes_position(a)||self.writes_position(b),
+                Position::Indexed(positions,_)=>positions.iter().any(|position|self.writes_position(position)),
+                _=>effects.iter().any(|effect|effect.access.writes()),
             },
         }
     }
@@ -429,6 +463,10 @@ impl InitializationEffect {
     }
 }
 impl Initialization {
+    pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
+        Self{origin:self.origin.substitute_values(values),when:self.when.substitute_values(values)}
+    }
+
     pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         Self{origin:self.origin.bound_at_call(bindings),when:self.when.guaranteed_at_call(bindings)}
     }
@@ -710,6 +748,24 @@ impl Builder<'_> {
             borrow.union(&self.current_address_borrow(&proof.view_borrow(component)));
         }
         borrow
+    }
+    pub(super) fn defer_address_values(&mut self,memory:usize)->Vec<view_contracts::ValueSnapshot> {
+        let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|(name.clone(),self.positions(&place)))).collect::<Vec<_>>();
+        let mut snapshots=Vec::new();
+        for(name,positions)in owners {
+            let binding=self.env.get_mut(&name).unwrap();
+            let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
+            let width=owner.ty().components.len();let previous=std::mem::take(proof);
+            *proof=previous.borrow_state();
+            for(component,position)in positions.into_iter().enumerate() {
+                let identity=ValueIdentity::MemoryValue(memory,snapshots.len());
+                snapshots.push(view_contracts::ValueSnapshot{position,scalar:owner.ty().components[component].0,proof:previous.project(&[component],width)});
+                *proof=std::mem::take(proof).with_component_identity(component,identity);
+            }
+            *uniform=false;
+            if let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
+        }
+        snapshots
     }
     pub(super) fn call_address_memory(&mut self,borrow:view::Borrow,span:Span)->Result<usize> {
         self.write_address_values(&borrow);

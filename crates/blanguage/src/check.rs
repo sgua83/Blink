@@ -128,6 +128,8 @@ enum ValueIdentity {
     ElementComponent(usize),
     ElementParent(usize, usize),
     DatasetContent(usize, usize, usize),
+    // The numeric storage snapshot produced by this actual call, not a machine argument.
+    MemoryValue(usize, usize),
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexDomain {
@@ -2581,30 +2583,14 @@ impl<'a> Builder<'a> {
         let n = ty.components.len();
         let scalar = operands.scalar;
         let divisors = if matches!(op, "/" | "%") && !scalar.is_float() {
-            match b.constant.as_ref().and_then(|v| {
-                v.iter()
-                    .copied()
-                    .map(std::num::NonZeroU64::new)
-                    .collect::<Option<Vec<_>>>()
-            }) {
-                Some(v) => Some(
-                    v.into_iter()
-                        .map(IntegerDivisor::Constant)
-                        .collect::<Vec<_>>(),
-                ),
-                None if b.is_nonzero() || b.constant.is_none() && {
-                    let path=self.residency_path();
-                    path.possible() && b.ty.components.iter().all(|(scalar,offset)|b.nonzero_bytes(*offset,scalar.size(),&path))
-                } => {
+            let path=self.residency_path();
+            match bounds::integer_divisors(&b,&path) {
+                Some(divisors)=>Some(divisors),
+                None if self.view_model.pending_values()=>{
+                    self.check_view_requirement(view::Requirement::Nonzero{value:Box::new(b.clone()),path,span})?;
                     Some(b.regs.iter().copied().map(IntegerDivisor::Value).collect())
-                }
-                None => {
-                    return self.fail(
-                        span,
-                        "B152",
-                        "整数除数的每个分量都必须是非零常量或在当前作用域已证明非零的值",
-                    );
-                }
+                },
+                None=>return self.fail(span,"B152",bounds::INTEGER_DIVISOR_MESSAGE),
             }
         } else {
             None
@@ -4439,7 +4425,7 @@ crate::module::codec::record!(Value {
     uniform,
     constant
 });
-crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter),6=>ElementComponent(component),7=>ElementParent(depth,component),8=>DatasetContent(parameter,resource,component)});
+crate::module::codec::variants!(ValueIdentity{0=>Register(reg),1=>DataLength(binding),2=>TileLength,3=>ParameterContent(parameter,component),4=>ResourceParameter(parameter,resource),5=>ParameterStorage(parameter),6=>ElementComponent(component),7=>ElementParent(depth,component),8=>DatasetContent(parameter,resource,component),9=>MemoryValue(call,component)});
 crate::module::codec::variants!(IndexDomain{0=>Data(binding),1=>Fixed(count),2=>Tile,3=>DataLength(binding),4=>TileLength,5=>View(ids),6=>ViewLength(ids),7=>ApplicationData(id),8=>ApplicationLength(id),9=>Upper(limit,distance),10=>Room(base),11=>Sum(left,right),12=>Shifted(base,limit,distance),13=>Offset(base,amount),14=>Computed(expression),15=>Lower(base,distance),16=>CommonRange(source)});
 
 
