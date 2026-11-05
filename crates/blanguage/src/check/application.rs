@@ -928,9 +928,7 @@ impl Builder<'_> {
         })
     }
     pub(super) fn application_movable(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
-        let mut borrow=retained.clone();
-        for(name,binding)in &self.env{borrow.union(&self.live_view_borrow(name,binding));}
-        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow,ownership:true,span})?;
+        self.check_view_requirement(view::Requirement::Unborrowed{resource:self.owned_resource_borrow(data),borrow:retained.clone(),ownership:true,span})?;
         if self.application_position_borrowed(data.root.identity()) {
             return self.fail(
                 span,
@@ -1116,7 +1114,7 @@ impl Builder<'_> {
         if matches!(&self.env[name], Binding::ApplicationData(data) if data.ownership == Ownership::Owned)
         {
             let old = self.application_value(name, span)?.unwrap();
-            self.application_drop(&old,&view::Borrow::default(),span)?;
+            self.drop_returned(returns::Returned::Dataset(old),&view::Borrow::default(),span)?;
         }
         let place=target.place.unwrap();let packed=self.returned_storage(&returns::Returned::Dataset(value.clone()));
         let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetAssignSlots,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
@@ -1184,6 +1182,7 @@ impl Builder<'_> {
         let mut retained = fill.proof.typed_view_borrow(&fill.ty);
         for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
         self.view_uses.invocation(span);
+        retained.union(&self.view_uses.all(self,&[]));
         self.application_movable(&data, &retained, span)?;
         let elements = if fill.ty.owns_resources() {
             let exact = data.length.minimum() == data.length.maximum()
@@ -1415,7 +1414,7 @@ impl Builder<'_> {
         let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,u32::MAX-1),uniform:false,literal:false,constant:None};
         let place=Self::application_element(&data,&value_index,(0,u32::MAX-1));
         let value=self.read_storage_value(&place,span,Some(origin(GenerationReason::DatasetDropElementRead)))?;
-        let element=self.materialize_element(&DataReference::direct(data.clone()),value);self.drop_returned(element,retained,span)?;
+        let element=self.materialize_element(&DataReference::direct(data.clone()),value);self.drop_owned_tree(element,retained,span)?;
         self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
     }
@@ -2076,7 +2075,7 @@ impl Builder<'_> {
             );
         }
         self.view_uses.invocation(span);
-        self.application_movable(&data,&view::Borrow::default(),span)?;
+        let borrow=self.view_uses.all(self,&[]);self.application_movable(&data,&borrow,span)?;
         let (source, target) = if name == "upload" {
             (Target::Cpu, residency::Residency::gpu())
         } else {

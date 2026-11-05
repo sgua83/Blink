@@ -92,7 +92,7 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "sha256": "fedd264c0ee15cfa3b69d17a7d44e893f815ee57500cdf498a1356bd77904692"
+      "sha256": "851762cbe64f9ee1bcf4c6fa612ad6dcade10876d98e12552aa62afca481e6c1"
     },
     {
       "path": "crates/blanguage/src/check/array.rs",
@@ -112,7 +112,7 @@
     },
     {
       "path": "crates/blanguage/src/check/cooperative.rs",
-      "sha256": "5949cba28f8fde41dc63e039bb42131f9b793f424f5ece4ec96fd18b3577486f"
+      "sha256": "4a5a6392917b1aeececc81643a524692c564ad5863178283c07cc70628b12e3e"
     },
     {
       "path": "crates/blanguage/src/check/custom_reduce.rs",
@@ -164,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "sha256": "eb0696dc25a6fab266c5475992efc3acd7bc6be9d2d218df41c8213b3b86713b"
+      "sha256": "e8a07a4be5530cb5fe833236f97f686fdfdce9ef288601f2fc11d4d125a12b0f"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
@@ -200,7 +200,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view_liveness.rs",
-      "sha256": "1fef4cd6cbb8491daef6e6557182454301a9c4fe54fe3c332c264c2f96399baa"
+      "sha256": "bf3d15b21783b954cf645e6943102c8f01f803a1c5a50fea4307c12ec8f54cce"
     },
     {
       "path": "crates/blanguage/src/codec.rs",
@@ -651,6 +651,18 @@
       "sha256": "68ff4672d959f3a1694298ed6bb416071943d7b732d6312782c0fe07ae377984"
     },
     {
+      "path": "crates/blanguage/src/check/owned_values.rs",
+      "start_line": 1040,
+      "end_line": 1048,
+      "sha256": "d2cc75d57d32b9847465c1b4d74434ecd7bcb6ae5ffb553d4ff0bf9df304eb79"
+    },
+    {
+      "path": "crates/blanguage/src/check/application.rs",
+      "start_line": 930,
+      "end_line": 940,
+      "sha256": "3cb75a1c70eb9812440ff1227b1b16e06857306422336a546f8119a04d12289f"
+    },
+    {
       "path": "crates/blanguage/src/check/native_function.rs",
       "start_line": 858,
       "end_line": 862,
@@ -670,8 +682,8 @@
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
-      "start_line": 1241,
-      "end_line": 1274,
+      "start_line": 1240,
+      "end_line": 1273,
       "sha256": "c97c1a253937200545c15cc55eeba2a833b571b6860ee7370b04ed9e315a7345"
     },
     {

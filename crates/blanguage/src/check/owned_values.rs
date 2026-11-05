@@ -1038,6 +1038,15 @@ impl Builder<'_> {
         }
     }
     pub(super) fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
+        let transferred=match &value{
+            Returned::OwnedValue(value)if value.ownership.may_own()=>view_liveness::Transfer::Owned{value,place:value.place.as_ref()},
+            Returned::Dataset(data)if data.ownership.may_own()=>view_liveness::Transfer::OwnedData(data),
+            _=>return Ok(()),
+        };
+        let mut borrow=self.view_uses.all(self,std::slice::from_ref(&transferred));borrow.union(retained);
+        self.drop_owned_tree(value,&borrow,span)
+    }
+    pub(super) fn drop_owned_tree(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
         self.prepare_owned_read(&value);
         match value {
             Returned::Dataset(mut data) if matches!(data.ownership,Ownership::Conditional(_))=>{
@@ -1045,14 +1054,14 @@ impl Builder<'_> {
                 let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
                 let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
                 let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_returned(Returned::Dataset(data),retained,span)})
+                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::Dataset(data.clone()));builder.drop_owned_tree(Returned::Dataset(data),retained,span)})
             }
             Returned::OwnedValue(mut value) if matches!(value.ownership,Ownership::Conditional(_))=>{
                 let Ownership::Conditional(when)=value.ownership.clone()else{unreachable!()};value.ownership=Ownership::Owned;
                 let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
                 let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
                 let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_returned(Returned::OwnedValue(value),retained,span)})
+                return self.owned_when(&when,span,Some(branch),Some(condition),|builder|{builder.prepare_owned_read(&Returned::OwnedValue(value.clone()));builder.drop_owned_tree(Returned::OwnedValue(value),retained,span)})
             }
             Returned::Dataset(data) if data.ownership == Ownership::Owned => {
                 self.application_frame(span)?;
@@ -1068,7 +1077,7 @@ impl Builder<'_> {
                             result.payloads[i].as_deref_mut().unwrap().restrict_owned(&owned_presence::Presence::None);
                             let mut remaining=retained.clone();
                             result.cleanup_borrow(&BTreeSet::new(),&mut remaining);
-                            self.drop_returned(field,&remaining,span)?;
+                            self.drop_owned_tree(field,&remaining,span)?;
                         }
                     }
                     return Ok(());
@@ -1083,18 +1092,18 @@ impl Builder<'_> {
     }
     fn drop_variant(&mut self,value:&OwnedValue,index:usize,retained:&view::Borrow,span:Span)->Result<()> {
         if index+1==value.payloads.len() {
-            let item=self.unpack_variant(value,index);return self.drop_returned(item,retained,span);
+            let item=self.unpack_variant(value,index);return self.drop_owned_tree(item,retained,span);
         }
         let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
         let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropBranch,trigger:trigger.clone()});
         let selection=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::VariantDropCondition,trigger});
         let condition=self.owned_variant_condition(value,index,span,Some(selection))?;
         if let Some(bits)=&condition.constant {
-            if bits[0]!=0 {let item=self.unpack_variant(value,index);self.drop_returned(item,retained,span)}
+            if bits[0]!=0 {let item=self.unpack_variant(value,index);self.drop_owned_tree(item,retained,span)}
             else {self.drop_variant(value,index+1,retained,span)}
         } else {
             let outer=std::mem::take(&mut self.code);
-            let item=self.unpack_variant(value,index);self.drop_returned(item,retained,span)?;
+            let item=self.unpack_variant(value,index);self.drop_owned_tree(item,retained,span)?;
             let yes=std::mem::take(&mut self.code);
             self.drop_variant(value,index+1,retained,span)?;
             let no=std::mem::replace(&mut self.code,outer);

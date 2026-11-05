@@ -243,7 +243,12 @@ impl<'a> Builder<'a> {
         self.view_uses.after(span);
         let scoped=arguments.iter().filter_map(|argument|match argument{Argument::Scoped{owner,..}|Argument::OwnedReference{owner:Some(owner),..}=>Some(owner.as_str()),_=>None}).collect::<BTreeSet<_>>();
         let transferred=parameters.iter().zip(&arguments).filter_map(|(parameter,argument)|{
-            (parameter.access.writes()&&matches!(argument,Argument::OwnedReference{..}|Argument::BorrowedData(_))).then_some(argument)
+            if !parameter.access.writes(){return None;}
+            match argument{
+                Argument::OwnedReference{value,place,..}=>Some(view_liveness::Transfer::Owned{value,place:Some(place)}),
+                Argument::BorrowedData(reference)=>Some(view_liveness::Transfer::BorrowedData(reference)),
+                _=>None,
+            }
         }).collect::<Vec<_>>();
         let mut retained=view::Borrow::default();
         for(name,binding)in &self.env{if !scoped.contains(name.as_str()){retained.union(&self.view_uses.borrow(self,name,binding,&transferred));}}

@@ -76,6 +76,11 @@ type Key = (usize, usize);
 fn key(span: Span) -> Key {
     (span.start, span.end)
 }
+pub(super) enum Transfer<'a> {
+    Owned { value:&'a owned_values::OwnedValue, place:Option<&'a Place> },
+    BorrowedData(&'a application::DataReference),
+    OwnedData(&'a application::Data),
+}
 #[derive(Default)]
 pub(super) struct State {
     points: BTreeMap<Key, Point>,
@@ -129,11 +134,20 @@ impl State {
             }
         }
     }
-    pub(super) fn borrow(&self,builder:&Builder<'_>,name:&str,binding:&Binding,transferred:&[&cooperative::Argument])->view::Borrow {
+    pub(super) fn all(&self,builder:&Builder<'_>,transferred:&[Transfer<'_>])->view::Borrow {
+        let mut borrow=view::Borrow::default();
+        for(name,binding)in &builder.env{borrow.union(&self.borrow(builder,name,binding,transferred));}
+        borrow
+    }
+    pub(super) fn borrow(&self,builder:&Builder<'_>,name:&str,binding:&Binding,transferred:&[Transfer<'_>])->view::Borrow {
+        let mut omitted=BTreeSet::new();
+        if let Some(root)=binding.stored_place(){for transfer in transferred{if let Transfer::Owned{place:Some(place),..}=transfer{if let Some(components)=place.components_in(&root){omitted.extend(components);}}}}
+
         if name.starts_with('\0') {
             if matches!(binding,Binding::DataReference(_)|Binding::ViewElement{..})||matches!(binding,Binding::OwnedValue(value)if value.ownership==application::Ownership::Borrowed){return binding.view_borrow();}
-            let mut result=binding.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default();
-            result.union(&stored_element_borrow(builder,binding,&[],&BTreeSet::new(),&BTreeSet::new(),transferred,true));return result;
+            let mut result=stored_element_borrow(builder,binding,&[],&BTreeSet::new(),&omitted,transferred,true);
+            if let Some((ty,proof))=binding.view_parts(){for component in view_contracts::components(ty).difference(&omitted){result.union(&proof.view_borrow(*component));}}
+            return result;
         }
         let uses = self
             .current
@@ -141,8 +155,6 @@ impl State {
             .iter()
             .filter(|(location, _)| location.name == name)
             .collect::<Vec<_>>();
-        let mut omitted=BTreeSet::new();
-        if let Some(root)=binding.stored_place(){for argument in transferred{if let cooperative::Argument::OwnedReference{place,..}=argument{if let Some(components)=place.components_in(&root){omitted.extend(components);}}}}
         let mut result=stored_element_borrow(builder,binding,&[],&BTreeSet::new(),&omitted,transferred,true);
         for(location,excluded)in &uses{result.union(&stored_element_borrow(builder,binding,&location.path,excluded,&omitted,transferred,false));}
         if uses.is_empty(){return result;}
@@ -531,7 +543,7 @@ impl Builder<'_> {
 
 // Reuse the original AST locations and stored Proof; only real indexed element
 // consumers expose content borrows, while metadata-only use stays metadata.
-fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>,omitted:&BTreeSet<usize>,transferred:&[&cooperative::Argument],cleanup:bool)->view::Borrow {
+fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excluded:&BTreeSet<Path>,omitted:&BTreeSet<usize>,transferred:&[Transfer<'_>],cleanup:bool)->view::Borrow {
     fn external(borrow:view::Borrow,depth:Option<usize>)->view::Borrow{
         borrow.resources().map_sources(|source|match source{
             view::Source::Data(ValueIdentity::ElementComponent(_)) if depth.is_some()=>view::Borrow::default(),
@@ -554,30 +566,33 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
         }
         out
     }
-    fn data(builder:&Builder<'_>,data:&application::Data,path:&[Step],excluded:&BTreeSet<Path>,parent:view::Borrow,mut bindings:BTreeMap<ValueIdentity,bounds::Proof>,transferred:&[&cooperative::Argument],cleanup:bool)->view::Borrow{
+    fn data(builder:&Builder<'_>,data:&application::Data,path:&[Step],excluded:&BTreeSet<Path>,parent:view::Borrow,mut bindings:BTreeMap<ValueIdentity,bounds::Proof>,transferred:&[Transfer<'_>],cleanup:bool)->view::Borrow{
         if data.ownership==application::Ownership::Moved||data.length.maximum()==0||cleanup&&!data.ownership.may_own(){return view::Borrow::default();}
-        builder.bind_element_resource_borrows(data,&parent,&mut bindings);
+
         let mut passed=Vec::new();
-        for argument in transferred{match argument{
-            cooperative::Argument::BorrowedData(reference)=>{
+        for transfer in transferred{match transfer{
+            Transfer::BorrowedData(reference)=>{
                 for(scope,_)in builder.application_element_scopes(&[],&parent,&reference.data){
                     if scope.first().is_none_or(|fields|fields.starts_with(&reference.projection)){passed.push((scope.len(),reference.words()));}
                 }
             },
-            cooperative::Argument::OwnedReference{value,place,..}=>{
-                if let Place::ApplicationElement{sources,resource,words,..}=place{
+            Transfer::Owned{value,place}=>{
+                if let Some(Place::ApplicationElement{sources,resource,words,..})=place{
                     if builder.application_element_scopes(sources,resource,data).iter().any(|(scope,_)|scope.is_empty()){passed.push((0,words.clone()));}
                 }
                 for resource in value.resources(){for(scope,_)in builder.application_element_scopes(&[],&parent,resource){passed.push((scope.len()+1,Vec::new()));}}
             },
-            _=>{},
+            Transfer::OwnedData(owner)=>{
+                if data.ownership.may_own()&&builder.application_element_scopes(&[],&parent,owner).iter().any(|(scope,complete)|scope.is_empty()&&*complete){return view::Borrow::default();}
+            },
         }}
+        builder.bind_element_resource_borrows(data,&parent,&mut bindings);
         let out=if path.is_empty(){model(builder,&data.elements,path,excluded,true,&BTreeSet::new(),Some(&bindings),&passed,transferred,cleanup)}
             else if let Some(step@Step::Index(_))=path.first(){model(builder,&data.elements,&path[1..],&without(excluded,step),true,&BTreeSet::new(),Some(&bindings),&passed,transferred,cleanup)}
             else{return view::Borrow::default();};
         if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().at_call(&bindings).assume(&bounds::Clause::default(),true))}else{out}
     }
-    fn owned(builder:&Builder<'_>,value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeSet<usize>,bindings:Option<&BTreeMap<ValueIdentity,bounds::Proof>>,passed:&[(usize,Vec<u32>)],transferred:&[&cooperative::Argument],cleanup:bool,root:bool)->view::Borrow{
+    fn owned(builder:&Builder<'_>,value:&owned_values::OwnedValue,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeSet<usize>,bindings:Option<&BTreeMap<ValueIdentity,bounds::Proof>>,passed:&[(usize,Vec<u32>)],transferred:&[Transfer<'_>],cleanup:bool,root:bool)->view::Borrow{
         let mut out=if cleanup{
             if root{
                 let mut borrow=view::Borrow::default();value.cleanup_views(omitted,&mut borrow,&|component,borrow|{
@@ -610,7 +625,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
         }
         out
     }
-    fn model(builder:&Builder<'_>,model:&returns::Returned,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeSet<usize>,bindings:Option<&BTreeMap<ValueIdentity,bounds::Proof>>,passed:&[(usize,Vec<u32>)],transferred:&[&cooperative::Argument],cleanup:bool)->view::Borrow{match model{
+    fn model(builder:&Builder<'_>,model:&returns::Returned,path:&[Step],excluded:&BTreeSet<Path>,stored:bool,omitted:&BTreeSet<usize>,bindings:Option<&BTreeMap<ValueIdentity,bounds::Proof>>,passed:&[(usize,Vec<u32>)],transferred:&[Transfer<'_>],cleanup:bool)->view::Borrow{match model{
         returns::Returned::Dataset(value)if !omitted.contains(&0)=>{
             let(parent,bindings)=if let Some(bindings)=bindings{
                 (view::resource_borrow(value).at_call(bindings),application::element_scope_bindings(bindings,0,true))
