@@ -238,13 +238,14 @@ impl ApplicationLoads<'_, '_> {
     }
     fn call_memory_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
         if let Some(usage)=call.memory_use {
-            return self.0.view_model.uses[usage..].iter()
-                .take_while(|item|matches!(&item.requirement,view::Requirement::Memory{target:address::MemoryTarget::Call(id),..}if *id==usage))
-                .any(|item|match &item.requirement {
-                    view::Requirement::Memory{borrow,access,..}if access.is_some_and(|access|access.writes())=>
-                        writes(&self.0.current_address_borrow(borrow)),
-                    _=>false,
-                });
+            // The first use owns additional memory effects. C typed positions
+            // remain in the original use group; Reference ABI writes separately
+            // describe their actual local slots and indexed bytes.
+            return match &self.0.view_model.uses[usage].requirement {
+                view::Requirement::Memory{borrow,access,..}if access.is_some_and(|access|access.writes())=>
+                    writes(&self.0.current_address_borrow(borrow)),
+                _=>false,
+            };
         }
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
         if Self::pointer_call(call).is_some()||Self::allocation(call){return false;}
