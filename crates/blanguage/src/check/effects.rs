@@ -236,7 +236,27 @@ impl Builder<'_> {
         &mut self,
         writes: &[Write<'_>],
         borrowed_data: Option<ValueIdentity>,
+        effect: &LoopWrites,
     ) -> Result<()> {
+        if effect.unknown_storage {
+            let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
+                data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
+            )).collect::<Vec<_>>();
+            for(source,resource,words)in contents{self.update_application_elements(&[source],&resource,&words,None,None);}
+        }else{
+            for write in writes {
+                let changed=match write {
+                    Write::Position{place,contents:true,..}=>self.written_application_data(place).map(|data|(
+                        data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
+                    )),
+                    Write::Position{place,contents:false,..}=>self.loop_write_projection(place,writes)?.map(|(data,_,(_,components))|(
+                        data.root.identity(),view::resource_borrow(data),components.into_iter().flatten().map(|i|data.ty.components[i].1).collect::<Vec<_>>()
+                    )),
+                    _=>None,
+                };
+                if let Some((source,resource,words))=changed{self.update_application_elements(&[source],&resource,&words,None,None);}
+            }
+        }
         let resources: Vec<_> = self
             .env
             .iter()
@@ -423,7 +443,7 @@ impl Builder<'_> {
                 },
             }
         }
-        if !initial {self.invalidate_writes(&writes,borrowed_data)?;}
+        if !initial {self.invalidate_writes(&writes,borrowed_data,&effect)?;}
         Ok(effect)
     }
 }

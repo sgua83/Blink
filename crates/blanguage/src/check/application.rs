@@ -2762,14 +2762,14 @@ impl Builder<'_> {
         result
     }
     pub(super) fn update_application_elements(&mut self,sources:&[ValueIdentity],resource:&view::Borrow,words:&[u32],fresh:Option<&bounds::Proof>,index_range:Option<(u32,u32)>){
-        let names=self.env.keys().cloned().collect::<Vec<_>>();let one=self.constant(Scalar::U32,1);
+        let names=self.env.keys().cloned().collect::<Vec<_>>();let one=(index_range==Some((0,0))).then(||self.constant(Scalar::U32,1));
         for name in names{
             let mut binding=self.env[&name].clone();
             each_binding_data(&mut binding,&mut |_,_,data|{
                 let scopes=self.application_element_scopes(sources,resource,data);let unique=scopes.len()==1;
                 for(scope,complete_scope)in scopes {
                 let mut complete_scope=bounds::Condition::constant(complete_scope);let mut data=&mut *data;
-                for fields in scope{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,&one),false);data=model_data_mut(&mut data.elements,&fields).unwrap();}
+                for fields in scope{if let Some(one)=&one{complete_scope=complete_scope.logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false);}data=model_data_mut(&mut data.elements,&fields).unwrap();}
                 let components=words.iter().filter_map(|word|data.ty.components.iter().position(|(_,at)|at==word)).collect::<Vec<_>>();
                 if components.is_empty(){continue;}
                 let old=self.returned_storage(&data.elements);let mut updated=old.clone();updated.constant=None;
@@ -2792,7 +2792,7 @@ impl Builder<'_> {
                     fresh.at_call(&bindings)
                 }else{bounds::Proof::default()};
                 updated.proof.assign(&components,old.regs.len(),written);
-                let complete=bounds::Condition::constant(unique&&index_range==Some((0,0))).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,&one),false);
+                let complete=match &one{Some(one)=>bounds::Condition::constant(unique).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false),None=>bounds::Condition::constant(false)};
                 let truth=complete.truth_in(&self.path);
                 if truth!=Some(true){
                     let mut common=updated.clone();
