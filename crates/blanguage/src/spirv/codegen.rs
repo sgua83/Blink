@@ -316,7 +316,7 @@ impl Emitter<'_> {
         self.emit(120, &[self.physical_pointers[&unit], ptr, address]);
         ptr
     }
-    fn view_address(&mut self, unit: Scalar, table: &[Reg; 2], index: Reg, stride: u32, word: u32) -> u32 {
+    fn view_address(&mut self, unit: Scalar, table: &[Reg; 2], index: Reg, stride: ElementStride, word: u32) -> u32 {
         let low = self.id();
         let high = self.id();
         self.emit(113, &[self.u64_type, low, self.value(table[0])]);
@@ -326,7 +326,7 @@ impl Emitter<'_> {
         self.emit(196, &[self.u64_type, shifted, high, width]);
         let address = self.id();
         self.emit(197, &[self.u64_type, address, low, shifted]);
-        let stride = self.constant(Scalar::U32, stride);
+        let stride = match stride {ElementStride::Constant(bytes)=>self.constant(Scalar::U32,bytes as u32),ElementStride::Value(parts)=>self.value(parts[0])};
         let (page, offset) = self.record_location(self.value(index), stride, word);
         let page64 = self.id();
         self.emit(113, &[self.u64_type, page64, page]);

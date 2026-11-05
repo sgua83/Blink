@@ -374,7 +374,7 @@ impl Builder<'_> {
                 *reg = self.select_component(selected, Scalar::U32, &choices);
             }
             let zero = self.constant(Scalar::U32, 0).regs[0];
-            return Ok((IndexedSource::View { address, index: zero, stride: 0 }, zero, 0));
+            return Ok((IndexedSource::View { address, index: zero, stride: ElementStride::Constant(0) }, zero, 0));
         }
         let source = match base {
             Place::Reference { address, .. } => {
@@ -389,7 +389,7 @@ impl Builder<'_> {
                 ..
             } => {
                 let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,write,Some(offset),&[(scalar,word)],span)?;
-                IndexedSource::View{address,index,stride}
+                IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}
             },
             Place::Element { binding, index, .. } => IndexedSource::Data {
                 binding: *binding,

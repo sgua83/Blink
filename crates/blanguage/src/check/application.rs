@@ -94,12 +94,6 @@ impl DataReference {
     pub(super) fn words(&self)->Vec<u32>{
         let(offset,ty)=self.element_layout();ty.components.iter().map(|(_,word)|offset+word).collect()
     }
-    pub(super) fn layout_source(&self)->residency::LayoutSource{
-        match &self.data.layout {
-            DataLayout::Declared=>residency::LayoutSource::Declared{stride:ir::align_up(self.data.ty.size,self.data.ty.align),projected:!self.projection.is_empty()},
-            DataLayout::Parameter{parameter,..}=>residency::LayoutSource::parameter(*parameter,!self.projection.is_empty()),
-        }
-    }
 }
 
 // Numeric snapshots query the original emitted operations, including the outer
@@ -118,10 +112,10 @@ impl ApplicationLoads<'_, '_> {
             a.min(b)<boundary && a.max(b)>=boundary && match &read.kind {
                 InstKind::LoadLocal(_,slot)=>context.writes.external||context.writes.locals.contains(slot),
                 InstKind::ViewLoad{dst,address,index,stride,word}=>context.writes.unknown_storage||context.writes.storage.iter().any(|(written,range)|
-                    match (self.frame_root(*address),range,self.constant(*index)) {
-                        (Some(root),_,_)if self.disjoint_roots(root,*written)=>false,
-                        (Some(root),Some(range),Some(index))if root==*written=>{
-                            let start=u128::from(index)*u128::from(*stride)+u128::from(*word);
+                    match (self.frame_root(*address),range,self.constant(*index),self.stride(*stride)) {
+                        (Some(root),_,_,_)if self.disjoint_roots(root,*written)=>false,
+                        (Some(root),Some(range),Some(index),Some(stride))if root==*written=>{
+                            let start=u128::from(index)*u128::from(stride)+u128::from(*word);
                             Self::byte_overlap(&(start..start+u128::from(self.0.registers[*dst].size())),range)
                         },
                         _=>true,
@@ -187,11 +181,15 @@ impl ApplicationLoads<'_, '_> {
             _=>false,
         }
     }
+    fn stride(&self,value:ElementStride)->Option<u64>{match value{ElementStride::Constant(bytes)=>Some(bytes),ElementStride::Value(parts)=>Some(self.constant(parts[0])?|(self.constant(parts[1])?<<32))}}
+    fn same_stride(&self,a:ElementStride,b:ElementStride)->bool{
+        match (a,b){(ElementStride::Value(a),ElementStride::Value(b))=>self.same_address(a,b),_=>matches!((self.stride(a),self.stride(b)),(Some(a),Some(b))if a==b)}
+    }
     fn same_address(&self,a:[Reg;2],b:[Reg;2])->bool {a.into_iter().zip(b).all(|(a,b)|self.same(a,b))}
     fn same_load(&self,a_inst:&Inst,b_inst:&Inst)->bool {
         match (&a_inst.kind,&b_inst.kind) {
             (InstKind::ViewLoad{dst:a_dst,address:a,index:ai,stride:as_,word:aw},InstKind::ViewLoad{dst:b_dst,address:b,index:bi,stride:bs,word:bw})=>
-                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&as_==bs&&aw==bw
+                self.0.registers[*a_dst]==self.0.registers[*b_dst]&&self.same_stride(*as_,*bs)&&aw==bw
                     &&!self.loop_writes(self.definition(*a_dst).unwrap().0,self.definition(*b_dst).unwrap().0,a_inst)
                     &&self.same_address(*a,*b)&&self.same(*ai,*bi),
             _=>false,
@@ -212,7 +210,11 @@ impl ApplicationLoads<'_, '_> {
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,load:&Inst,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
         let InstKind::ViewLoad{dst,address,index,stride,word:read_word}=&load.kind else{return false;};
-        let(IndexedSource::View{address:other,index:other_index,stride:other_stride}|IndexedSource::Pointer{address:other,index:other_index,stride:other_stride,..})=source else{return true;};
+        let(other,other_index,other_stride,same_stride)=match source{
+            IndexedSource::View{address,index,stride:other} => (address,index,self.stride(*other),self.same_stride(*stride,*other)),
+            IndexedSource::Pointer{address,index,stride:other,..} => (address,index,Some(u64::from(*other)),self.stride(*stride)==Some(u64::from(*other))),
+            _=>return true,
+        };
         if !self.same_address(*address,*other) {
             if let(Some(a),Some(b))=(self.frame_root(*address),self.frame_root(*other))
                 &&self.disjoint_roots(a,b){return false;}
@@ -220,9 +222,9 @@ impl ApplicationLoads<'_, '_> {
         }
         let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
         let size=u128::from(self.0.registers[*dst].size());let other_size=u128::from(scalar.size());
-        let (a,b)=if let(Some(a),Some(b))=(self.constant(*index),self.constant(*other_index)) {
-            (u128::from(a)*u128::from(*stride)+u128::from(*read_word),u128::from(b)*u128::from(*other_stride)+u128::from(offset)+u128::from(word))
-        }else if stride==other_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
+        let (a,b)=if let(Some(a),Some(b),Some(stride),Some(other_stride))=(self.constant(*index),self.constant(*other_index),self.stride(*stride),other_stride) {
+            (u128::from(a)*u128::from(stride)+u128::from(*read_word),u128::from(b)*u128::from(other_stride)+u128::from(offset)+u128::from(word))
+        }else if same_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
         Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
     fn call_writes(&self,call:&Call)->bool {
@@ -1547,13 +1549,6 @@ impl Builder<'_> {
             .unwrap();
         Ok([value.regs[0], value.regs[1]])
     }
-    pub(super) fn application_layout_requirement(&mut self,data:&DataReference,need:residency::LayoutNeed,span:Span)->Result<()> {
-        let path=self.residency_path();
-        if !self.residency.require_layout(data.layout_source(),need,&self.definition.source,span,&path){
-            return self.fail(span,"B270","该原生接口要求完整资源或连续元素布局，当前字段借用不满足");
-        }
-        Ok(())
-    }
     pub(super) fn require_application_reference_initialized(&mut self,data:&DataReference,span:Span)->Result<()>{
         let(offset,ty)=data.element_layout();
         if !ty.components.iter().all(|(_,word)|self.application_field_initialized(&data.data,offset+word))
@@ -1633,6 +1628,15 @@ impl Builder<'_> {
         let mut proof=bounds::Proof::default();
         for value in [&root,&data.length,&stride,&offset]{proof.append(value);}
         Ok(Value{ty,regs:vec![root.regs[0],data.length.regs[0],stride.regs[0],offset.regs[0]],proof,literal:false,uniform:false,constant:None})
+    }
+    pub(super) fn application_stride_parts(&mut self,stride:&Value)->[Reg;2]{
+        let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetBorrowStrideCast,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
+        let wide=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Cast{dst:wide,src:stride.regs[0]},origin.clone()));
+        let width=self.constant_with_origin(Scalar::U64,32,Some(origin.clone())).regs[0];
+        let high=self.reg(Scalar::U64);self.code.push(Inst::generated(InstKind::Binary{dst:high,op:BinaryOp::ShiftRightLogical,a:wide,b:width},origin.clone()));
+        let parts=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
+        self.code.push(Inst::generated(InstKind::Cast{dst:parts[0],src:wide},origin.clone()));
+        self.code.push(Inst::generated(InstKind::Cast{dst:parts[1],src:high},origin));parts
     }
     pub(super) fn offset_application_address(&mut self,address:[Reg;2],index:Reg,stride:Reg,offset:Reg)->[Reg;2]{
         let origin = Arc::new(GeneratedOrigin {
@@ -1741,7 +1745,7 @@ impl Builder<'_> {
         let mut regs = Vec::new();
         for (&(scalar, _), &word) in ty.components.iter().zip(words) {
             let dst = self.reg(scalar);
-            let kind=InstKind::ViewLoad{dst,address,index,stride,word};
+            let kind=InstKind::ViewLoad{dst,address,index,stride:ElementStride::Constant(u64::from(stride)),word};
             if let Some(origin)=&element_read_origin {self.code.push(Inst::generated(kind,origin.clone()));}
             else {self.emit(kind);}
             regs.push(dst);
@@ -1776,7 +1780,7 @@ impl Builder<'_> {
                 source: IndexedSource::View {
                     address,
                     index,
-                    stride,
+                    stride:ElementStride::Constant(u64::from(stride)),
                 },
                 offset: zero,
                 word,

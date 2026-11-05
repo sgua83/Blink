@@ -770,6 +770,19 @@ impl MathOp {
         })
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ElementStride {
+    Constant(u64),
+    Value([Reg; 2]),
+}
+impl ElementStride {
+    pub(crate) fn all_operands(&self,f:&mut impl FnMut(Reg)->bool)->bool{
+        match self {Self::Constant(_)=>true,Self::Value(words)=>words.iter().all(|reg|f(*reg))}
+    }
+    pub(crate) fn map(&mut self,f:&impl Fn(Reg)->Reg){
+        if let Self::Value(words)=self{words.iter_mut().for_each(|reg|*reg=f(*reg));}
+    }
+}
 #[derive(Clone, Debug)]
 pub enum IndexedSource {
     Data {
@@ -779,7 +792,7 @@ pub enum IndexedSource {
     View {
         address: [Reg; 2],
         index: Reg,
-        stride: u32,
+        stride: ElementStride,
     },
     Pointer {
         address: [Reg; 2],
@@ -796,14 +809,20 @@ impl IndexedSource {
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         match self {
             Self::Data { index, .. } | Self::Tile { index, .. } => f(*index),
-            Self::View { address, index, .. } | Self::Pointer { address, index, .. } =>
-                f(address[0]) && f(address[1]) && f(*index),
+            Self::View { address, index, stride } =>
+                address.iter().all(|reg| f(*reg)) && stride.all_operands(f) && f(*index),
+            Self::Pointer { address, index, .. } => f(address[0]) && f(address[1]) && f(*index),
         }
     }
     pub(crate) fn map(&mut self, r: &impl Fn(Reg) -> Reg) {
         match self {
             Self::Data { index, .. } | Self::Tile { index, .. } => *index = r(*index),
-            Self::View { address, index, .. } | Self::Pointer { address, index, .. } => {
+            Self::View { address, index, stride } => {
+                address.iter_mut().for_each(|v| *v = r(*v));
+                stride.map(r);
+                *index = r(*index);
+            }
+            Self::Pointer { address, index, .. } => {
                 address.iter_mut().for_each(|v| *v = r(*v));
                 *index = r(*index);
             }
@@ -943,7 +962,7 @@ pub enum InstKind {
         dst: Reg,
         address: [Reg; 2],
         index: Reg,
-        stride: u32,
+        stride: ElementStride,
         word: u32,
     },
     RayQuery {

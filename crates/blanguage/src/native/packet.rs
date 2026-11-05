@@ -33,7 +33,7 @@ enum ReadSource {
     Dataset(usize),
     View {
         address: [Reg; 2],
-        stride: u32,
+        stride: ElementStride,
         uniform: bool,
     },
 }
@@ -205,11 +205,11 @@ impl Plan {
                     stride,
                     word,
                 } => {
-                    if *stride > i32::MAX as u32 || *word as u64 * 4 > i32::MAX as u64 {
+                    if *word as u64 * 4 > i32::MAX as u64 {
                         return None;
                     }
                     let same_address = uniform[address[0]] && uniform[address[1]];
-                    let broadcast = same_address && uniform[*index];
+                    let broadcast = same_address && uniform[*index] && stride.all_operands(&mut |reg| uniform[reg]);
                     Step::Gather {
                         dst: *dst,
                         source: ReadSource::View {

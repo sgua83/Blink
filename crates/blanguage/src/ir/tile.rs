@@ -512,7 +512,7 @@ impl Inst {
                 f(*index) && f(*value),
             InstKind::Subgroup { value, argument, .. } =>
                 value.iter().chain(argument).all(|reg| f(*reg)),
-            InstKind::ViewLoad { address, index, .. } => address.iter().all(|reg| f(*reg)) && f(*index),
+            InstKind::ViewLoad { address, index, stride, .. } => address.iter().all(|reg| f(*reg)) && stride.all_operands(f) && f(*index),
             InstKind::Unary { a, .. } | InstKind::Cast { src: a, .. } => f(*a),
             InstKind::IntegerDivide { src, divisor, .. } => f(*src) && match divisor {
                 IntegerDivisor::Constant(_) => true,

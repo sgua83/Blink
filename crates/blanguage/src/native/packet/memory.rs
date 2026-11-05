@@ -56,10 +56,24 @@ impl Emitter<'_> {
             if !shared {
                 self.packet_read_base(allocation, source, lane);
             }
-            self.packet_lane(allocation, index, lane, 0);
             let memory = match source {
-                ReadSource::Dataset(binding) => self.buffer_memory(*binding, 0, word),
-                ReadSource::View { stride, .. } => self.scaled_memory(15, 0, *stride, word),
+                ReadSource::Dataset(binding) => {
+                    self.packet_lane(allocation,index,lane,0);self.buffer_memory(*binding,0,word)
+                },
+                ReadSource::View { stride:ElementStride::Constant(bytes),.. } if *bytes<=u64::from(u32::MAX)=>{
+                    self.packet_lane(allocation,index,lane,0);self.scaled_memory(15,0,*bytes as u32,word)
+                },
+                ReadSource::View { stride,.. }=>{
+                    match stride {
+                        ElementStride::Constant(bytes)=>self.literal_width(allocation::Location::Gpr(1),*bytes,true),
+                        ElementStride::Value(parts)=>{
+                            self.packet_lane(allocation,parts[1],lane,1);self.bytes(&[0x48,0xc1,0xe1,32]);
+                            self.packet_lane(allocation,parts[0],lane,0);self.bytes(&[0x48,0x09,0xc1]);
+                        },
+                    }
+                    self.packet_lane(allocation,index,lane,0);self.bytes(&[0x48,0x0f,0xaf,0xc1]);
+                    Memory::indexed(15,0,0,word)
+                },
             };
             // XMM3 只在取 lane 时暂用，第四个读取在地址完成后才写入它。
             // 目标分配位置在四个源 lane 全部读取后写回，允许实际的寄存器复用。

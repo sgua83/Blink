@@ -445,7 +445,6 @@ impl Builder<'_> {
         }
         let mut env = BTreeMap::new();
         let mut locations = residency::Arguments::new();
-        let mut layouts = residency::Layouts::new();
         let mut written = Vec::new();
         let mut written_data = Vec::new();
         let mut written_stage = Vec::new();
@@ -472,7 +471,6 @@ impl Builder<'_> {
             };
             let arg=match arg {
                 Argument::BorrowedData(mut reference)=>{
-                    residency::layout_argument(&mut layouts,index,reference.layout_source());
                     let source=self.data_value_borrow(&reference.data);
                     let borrow=if matches!(p.access,Access::Read|Access::Atomic) && d.execution==crate::execution::Requirement::Invocation {
                         let (_,ty)=reference.element_layout();
@@ -589,7 +587,6 @@ impl Builder<'_> {
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow:None, ty:value.ty,values:value.regs});
                     locations.insert(residency::Input::new(index),residency::Residency::cpu());
-                    residency::layout_argument(&mut layouts,index,residency::LayoutSource::parameter(binding,!view.projection.is_empty()));
                     env.insert(p.name.clone(),Binding::Data(view));
                 }
                 Argument::BorrowedData(mut reference) if p.ty.dataset=>{
@@ -645,7 +642,6 @@ impl Builder<'_> {
                     env.insert(p.name.clone(),Binding::DataReference(reference));
                 }
                 Argument::ApplicationData(mut data) if p.ty.dataset&&p.access==Access::Value=>{
-                    residency::layout_argument(&mut layouts,index,residency::LayoutSource::Declared{stride:ir::align_up(data.ty.size,data.ty.align),projected:false});
                     residency::argument(&mut locations,index,&mut data);
                     self.require_same(&ty,&data.ty,span)?;
                     self.require_application_initialized(&data,span)?;
@@ -695,7 +691,6 @@ impl Builder<'_> {
             let call = residency::Call {
                 function: instance.name.clone(),
                 arguments: locations.clone(),
-                layouts,
                 bindings: view_arguments.clone(),
                 path: self.residency_path(),
                 source: self.definition.source.clone(),
@@ -709,7 +704,7 @@ impl Builder<'_> {
                 let inputs=residency::Inputs{calls:vec![call],..Default::default()};
                 let remaining=residency::infer(&inputs,&known,&Default::default())?;
                 if !remaining.is_empty() {
-                    return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的布局前提");
+                    return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的条件存储位置");
                 }
             } else {
                 self.residency.calls.push(call);

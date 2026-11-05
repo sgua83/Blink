@@ -415,7 +415,9 @@ impl Builder<'_> {
         args: &[Expr],
         span: Span,
     ) -> Result<Option<Value>> {
-        if self.application.is_none() || explicit.len() != 1 || !matches!(args.len(), 1 | 3) {
+        if self.application.is_none() && self.program.target != Target::Cpu
+            || explicit.len() != 1 || !matches!(args.len(), 1 | 3)
+        {
             return self.fail(span, "B271", "CPU应用以view<T>(dataset或view[,start,end])借用现有存储");
         }
         let GenericArgument::Type(element) = &explicit[0] else {
@@ -436,8 +438,8 @@ impl Builder<'_> {
         }
         self.require_same(ty.view.as_deref().unwrap(), data.element_layout().1, span)?;
         self.require_application_reference_initialized(&data, span)?;
-        let element=data.element_layout().1;
-        self.application_layout_requirement(&data,residency::LayoutNeed::Contiguous(ir::align_up(element.size,element.align)),span)?;
+        let(stride,_)=self.application_reference_layout(&data);
+        let stride_parts=self.application_stride_parts(&stride);
         self.application_cpu(&data, span)?;
         let address = self.application_projection_address(&data,span)?;
         let mut proof = bounds::Proof::default();
@@ -451,12 +453,14 @@ impl Builder<'_> {
         };
         proof.append(&pointer);
         proof.append(&data.length);
+        let stride=Value{ty:Ty::vector(Scalar::U32,2),regs:stride_parts.to_vec(),proof:bounds::Proof::default(),literal:false,uniform:stride.uniform,constant:None};
+        proof.append(&stride);
         proof = proof.with_view_borrow(0, self.data_value_borrow(&data.data));
         Value {
             proof,
             literal: false,
             ty,
-            regs: vec![address[0], address[1], data.length.regs[0]],
+            regs: vec![address[0], address[1], data.length.regs[0],stride_parts[0],stride_parts[1]],
             uniform: false,
             constant: None,
         }
@@ -480,16 +484,21 @@ impl Builder<'_> {
             }
             let borrow = value.proof.view_borrow(0);
             let length = self.binary("-", end, start.clone(), span,None)?;
-            let element = value.ty.view.as_deref().unwrap();
-            let stride = self.constant(Scalar::U32, Bits::from(ir::align_up(element.size, element.align))).regs[0];
+            let parts=[value.regs[3],value.regs[4]];
+            let stride_value=Value{ty:Ty::vector(Scalar::U32,2),regs:parts.to_vec(),proof:value.projected_proof(&[3,4]),literal:false,uniform:value.uniform,constant:None};
+            let low=self.reg(Scalar::U64);self.emit(InstKind::Cast{dst:low,src:parts[0]});
+            let high=self.reg(Scalar::U64);self.emit(InstKind::Cast{dst:high,src:parts[1]});
+            let width=self.constant(Scalar::U64,32).regs[0];
+            let shifted=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:shifted,op:BinaryOp::ShiftLeft,a:high,b:width});
+            let stride=self.reg(Scalar::U64);self.emit(InstKind::Binary{dst:stride,op:BinaryOp::Or,a:low,b:shifted});
             let zero = self.constant(Scalar::U32, 0).regs[0];
             let address = self.offset_application_address([value.regs[0], value.regs[1]], start.regs[0], stride, zero);
             let pointer = Value { proof: bounds::Proof::default(), ty: Ty::vector(Scalar::U32, 2),
                 regs: address.to_vec(), literal: false, uniform: false, constant: None };
             value.proof = bounds::Proof::default();
-            value.proof.append(&pointer); value.proof.append(&length);
+            value.proof.append(&pointer); value.proof.append(&length); value.proof.append(&stride_value);
             value.proof = value.proof.with_view_borrow(0, borrow);
-            value.regs = vec![address[0], address[1], length.regs[0]];
+            value.regs = vec![address[0], address[1], length.regs[0],parts[0],parts[1]];
         }
         Ok(Some(value))
     }
@@ -509,7 +518,7 @@ impl Builder<'_> {
     }
     pub(super) fn view_element(view: &Value, index: Reg) -> Place {
         let ty = view.ty.view.as_deref().unwrap().clone();
-        let stride = ir::align_up(ty.size, ty.align);
+        let stride = ElementStride::Value([view.regs[3],view.regs[4]]);
         let words = ty.components.iter().map(|(_, offset)| *offset).collect();
         Place::ViewElement {
             ty,
@@ -570,11 +579,12 @@ impl Builder<'_> {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span)?;
+        let length=Self::view_length(&view);
         if !self.index_in(
             &value,
             IndexDomain::View(view.view_identity()),
-            Self::view_length(&view).minimum(),
-            None,
+            length.minimum(),
+            Some(&length.proof),
         ) {
             return self.fail(
                 index.span,

@@ -35,10 +35,13 @@ fn alias(value: &MemoryAlias) -> String {
         MemoryAlias::Data(binding) => node("data", &[("binding", number(binding))]),
     }
 }
+fn element_stride(value:&ElementStride)->String{
+    match value{ElementStride::Constant(bytes)=>node("constant",&[("bytes",number(bytes))]),ElementStride::Value(words)=>node("value",&[("words",numbers(words))])}
+}
 fn indexed(value: &IndexedSource) -> String {
     match value {
         IndexedSource::Data { binding, index } => node("data", &[("binding", number(binding)), ("index", number(index))]),
-        IndexedSource::View { address, index, stride } => node("view", &[("address", numbers(address)), ("index", number(index)), ("stride", number(stride))]),
+        IndexedSource::View { address, index, stride } => node("view", &[("address", numbers(address)), ("index", number(index)), ("stride", element_stride(stride))]),
         IndexedSource::Pointer { address, index, stride, aliases } => node("pointer", &[("address", numbers(address)), ("index", number(index)), ("stride", number(stride)), ("aliases", array(aliases.iter().map(alias)))]),
         IndexedSource::Tile { tile, index } => node("tile", &[("tile", number(tile)), ("index", number(index))]),
     }
@@ -158,7 +161,7 @@ fn instruction(value: &Inst) -> String {
         Subgroup { dst, op, value, argument } => node("Subgroup", &[("dst", number(dst)), ("operator", name(op)), ("value", optional(value.as_ref(), |v| number(v))), ("argument", optional(argument.as_ref(), |v| number(v)))]),
         Print { dst, value } => node("Print", &[("dst", number(dst)), ("value", number(value))]),
         Call(value) => call(value),
-        ViewLoad { dst, address, index, stride, word } => node("ViewLoad", &[("dst", number(dst)), ("address", numbers(address)), ("index", number(index)), ("stride", number(stride)), ("word", number(word))]),
+        ViewLoad { dst, address, index, stride, word } => node("ViewLoad", &[("dst", number(dst)), ("address", numbers(address)), ("index", number(index)), ("stride", element_stride(stride)), ("word", number(word))]),
         RayQuery { scene, origin, direction, minimum, maximum, result } => node("RayQuery", &[("scene", number(scene)), ("origin", numbers(origin)), ("direction", numbers(direction)), ("minimum", number(minimum)), ("maximum", number(maximum)), ("result", match result { RayResult::Any(r) => node("Any", &[("register", number(r))]), RayResult::Closest(r) => node("Closest", &[("registers", numbers(r))]) })]),
         Constant(dst, scalar, bits) => node("Constant", &[("dst", number(dst)), ("scalar", name(scalar)), ("bits", text(&format!("0x{bits:016x}")))]),
         FunctionAddress(dst, value) => node("FunctionAddress", &[("dst", number(dst)), ("target", target(value))]),

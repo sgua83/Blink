@@ -96,6 +96,18 @@ impl Emitter<'_> {
             self.scaled_memory(base, 0, stride, offset)
         }
     }
+    pub(super) fn view_memory(&mut self,base:u8,index:Location,stride:ElementStride,offset:u32)->Memory{
+        match stride {
+            ElementStride::Constant(bytes) if bytes<=u64::from(u32::MAX)=>return self.value_memory(base,index,bytes as u32,offset),
+            ElementStride::Constant(bytes)=>self.literal_width(Location::Gpr(1),bytes,true),
+            ElementStride::Value(words)=>{
+                self.load(words[1]);self.bytes(&[0x48,0xc1,0xe0,32,0x48,0x89,0xc1]);
+                self.load(words[0]);self.bytes(&[0x48,0x09,0xc1]);
+            },
+        }
+        self.load_location(index);self.bytes(&[0x48,0x0f,0xaf,0xc1]);
+        Memory{base,index:Some((0,0)),offset}
+    }
     pub(super) fn scaled_memory(
         &mut self,
         base: u8,

@@ -595,7 +595,7 @@ impl ReferenceAddress {
         let source=match self {
             Self::Borrowed{borrow,..}=>IndexedSource::Pointer{address,index,stride:0,aliases:borrow.aliases()},
             Self::External{..}=>IndexedSource::Pointer{address,index,stride:0,aliases:Vec::new()},
-            _=>IndexedSource::View{address,index,stride:0},
+            _=>IndexedSource::View{address,index,stride:ElementStride::Constant(0)},
         };
         (source,word)
     }

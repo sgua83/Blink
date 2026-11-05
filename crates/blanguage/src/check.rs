@@ -285,7 +285,7 @@ enum Place {
         source: [ValueIdentity; 3],
         address: [Reg; 2],
         index: Reg,
-        stride: u32,
+        stride: ElementStride,
         words: Vec<u32>,
     },
     TileElement {

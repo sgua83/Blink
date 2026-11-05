@@ -26,7 +26,7 @@ pub(super) enum Position {
     Borrowed(Arc<view::Borrow>,address::Layout,u32),
     Initialization(Arc<address::InitializationEffect>),
     Element(usize, u32),
-    ViewElement([ValueIdentity; 3], Reg, u32, u32),
+    ViewElement([ValueIdentity; 3], Reg, ElementStride, u32),
     TileElement(usize, Reg, u32),
     Parameter(usize, usize),
     ApplicationElement(usize, ApplicationIndex, u32),

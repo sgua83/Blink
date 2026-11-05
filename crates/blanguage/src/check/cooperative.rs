@@ -380,7 +380,9 @@ impl<'a> Builder<'a> {
                 self.fail(span, "B208", "cooperative 函数需要显式 cooperate 根块调用")
             }
             FunctionKind::Value => {
-                if self.application.is_some() && instance.definition.function.target != Target::Gpu {
+                if instance.definition.function.target == Target::Cpu && self.program.target == Target::Cpu
+                    || self.application.is_some() && instance.definition.function.target != Target::Gpu
+                {
                     self.native_function(instance, args, span, generated_origin, syntax)
                 } else {
                     self.inline_instance(instance, args, span, syntax)

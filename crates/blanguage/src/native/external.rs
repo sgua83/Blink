@@ -90,14 +90,9 @@ impl Emitter<'_> {
                                 self.u32(address.word);
                             }
                         }
-                        IndexedSource::View { address: parts, index, stride }
-                        | IndexedSource::Pointer { address: parts, index, stride, .. } => {
-                            self.load(parts[1]);
-                            self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
-                            self.load(parts[0]);
-                            self.bytes(&[0x49, 0x09, 0xc7]);
-                            self.load(*index);
-                            self.offset_address(*stride);
+                        IndexedSource::View { .. }
+                        | IndexedSource::Pointer { .. } => {
+                            self.indexed_base(source);
                             if address.word != 0 {
                                 self.bytes(&[0x49, 0x81, 0xc7]);
                                 self.u32(address.word);

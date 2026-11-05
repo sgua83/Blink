@@ -101,7 +101,7 @@ impl Device {
             .iter()
             .map(|source| {
                 let address = source.0.allocation.address() + u64::from(blanguage::spirv::BINDING_BYTES);
-                [address as u32, (address >> 32) as u32, source.0.count]
+                [address as u32, (address >> 32) as u32, source.0.count,source.0.stride,0,0]
             })
             .collect();
         for (index, page) in target.pages.iter().enumerate() {

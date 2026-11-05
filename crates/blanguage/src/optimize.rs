@@ -427,8 +427,9 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
                 *v = r(*v);
             }
         }
-        InstKind::ViewLoad { address, index, .. } => {
+        InstKind::ViewLoad { address, index, stride, .. } => {
             address.iter_mut().for_each(|v| *v = r(*v));
+            stride.map(r);
             *index = r(*index);
         }
         InstKind::Load { index, .. } | InstKind::TileLoad { index, .. } => *index = r(*index),

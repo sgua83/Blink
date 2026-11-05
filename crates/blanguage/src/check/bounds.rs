@@ -988,6 +988,12 @@ impl Proof {
     pub(super) fn below_length(&self, identities: &[ValueIdentity], length: &Self, component: usize, strict: bool) -> bool {
         let bounds = self.domains(0);
         let origins = length.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+        if bounds.iter().any(|bound|match *bound{
+            IndexDomain::Data(binding)=>origins.contains(&ValueIdentity::DataLength(binding)),
+            IndexDomain::Tile=>origins.contains(&ValueIdentity::TileLength),
+            IndexDomain::View(value)=>origins.contains(&value[2]),
+            _=>false,
+        }){return true;}
         if length.domains(component).iter().any(|domain| {
             let IndexDomain::Offset(base, amount) = *domain else { return false; };
             amount >= u32::from(strict) && identities.contains(&base) || bounds.iter().any(|bound| match *bound {

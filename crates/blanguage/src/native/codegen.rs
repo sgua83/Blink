@@ -234,8 +234,14 @@ impl Emitter<'_> {
     fn indexed_base(&mut self, source: &IndexedSource) -> u32 {
         match source {
             IndexedSource::Data { binding, index } => self.address(*binding, *index),
-            IndexedSource::View { address, index, stride }
-            | IndexedSource::Pointer { address, index, stride, .. } => {
+            IndexedSource::View { address, index, stride }=>{
+                self.load(address[1]);
+                self.bytes(&[0x41,0x89,0xc7,0x49,0xc1,0xe7,32]);
+                self.load(address[0]);self.bytes(&[0x49,0x09,0xc7]);
+                let memory=self.view_memory(15,self.location(*index),*stride,0);
+                self.instruction(None,&[0x8d],true,15,memory.into());
+            },
+            IndexedSource::Pointer { address, index, stride, .. } => {
                 self.load(address[1]);
                 self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
                 self.load(address[0]);
@@ -442,7 +448,7 @@ impl Emitter<'_> {
                     self.bytes(&[0x41, 0x89, 0xc7, 0x49, 0xc1, 0xe7, 32]);
                     self.load(address[0]);
                     self.bytes(&[0x49, 0x09, 0xc7]);
-                    let memory = self.value_memory(15, self.location(*index), *stride, *word);
+                    let memory = self.view_memory(15, self.location(*index), *stride, *word);
                     self.read_scalar_address(*dst, memory);
                 }
                 InstKind::LoadIndexed {

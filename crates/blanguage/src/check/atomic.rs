@@ -59,11 +59,11 @@ impl Builder<'_> {
             Place::Reference { address, .. } => {
                 let (address, word) = address.component(word);
                 let index = self.constant(Scalar::U32, 0).regs[0];
-                Some((IndexedSource::View { address, index, stride: 0 }, None, word))
+                Some((IndexedSource::View { address, index, stride: ElementStride::Constant(0) }, None, word))
             }
             Place::ApplicationElement { handle, identity, index, stride, .. } => {
                 let (address, index, stride) = self.application_memory(*handle, *identity, *index, *stride, write, None, &[(scalar, word)], target.span)?;
-                Some((IndexedSource::View { address, index, stride }, None, word))
+                Some((IndexedSource::View { address, index, stride: ElementStride::Constant(u64::from(stride)) }, None, word))
             }
             _ => unreachable!(),
         };
