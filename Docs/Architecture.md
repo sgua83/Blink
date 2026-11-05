@@ -423,7 +423,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-5-6-5"></a>
 
-**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs#88::native_call365起各原arguments.push及661至669原Call→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；原prune裁剪Frame时同一实参的材料随之删除，普通Call的source_site不代替每个B实参的位置；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前原CallArgument两变体直接持有compiler专用可选共享ArgumentOrigin；Frame单列，B实参关系保留被调形参零基index／name及可选site，实际目标仍只归Call.target。原普通／泛型／CPU内联递归路由临时借用同一次Expr切片，native_call按原顺序取实际Expr.span形成Expression来源，不重求值或保存AST；Expr.span只覆盖原解析范围，不扩大嵌套调用标识符。每个向量引用展开共享同一来源，零分量保留身份而无值分量。生成根入口／dataset初始化／释放／自定义值核无原Expr时site明确空，原生成原因仍归Inst；C／运行库／域包装默认无本叶材料。CallArgument::origin及ArgumentOrigin::ir_json借用／序列化同一事实，原arguments JSON输出origin；原克隆及寄存器／局部映射保持材料，关闭compiler不含材料及查询字段，必要对象／执行编码保持。提供者源码缺席不影响原接口参数关系，实参site只归实际调用者，不伪造提供者实现或最终机器位置。见[规范](BLanguage.md#普通调用b实参与实际callargument的来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-5)。
+**原普通调用B实参与实际CallArgument的来源关系。** 输入／生产消费：原实际Instance／签名、B参数次序与已检查Argument→native_function.rs::native_call实际Frame／参数接点及原Call交接→同一Call.arguments。交接原B参数与真实ABI实参范围的关系，隐式Frame、按值／借用与展开分量分开；原prune裁剪Frame时同一实参的材料随之删除，普通Call的source_site不代替每个B实参的位置；不按最终寄存器号猜B下标，不重求值实参或把关系伪造成Inst。原生产者为唯一事实来源，材料只由原FunctionBody／Inst／ValueCode及模块与按需SDK／CLI快照持有，随最后真实IR消费者结束；真实值、布局、绑定和运行资源仍归原所有者，不设第二参数表或状态权威。来源只描述原已知Source／实际Instance及内联上下文，未知保持空，不保留World／AST、不进入必要执行编码、不保活节点、不改变ABI／借用／初始化／优化／Frame或最后完成，不增加图、调度、同步或释放链。当前原CallArgument两变体直接持有compiler专用可选共享ArgumentOrigin；Frame单列，B实参关系保留被调形参零基index／name及可选site，实际目标仍只归Call.target。原普通／泛型／CPU内联递归路由临时借用同一次Expr切片，native_call按原顺序取实际Expr.span形成Expression来源，不重求值或保存AST；Expr.span只覆盖原解析范围，不扩大嵌套调用标识符。每个向量引用展开共享同一来源，零分量保留身份而无值分量。生成根入口／dataset初始化／释放／自定义值核无原Expr时site明确空，原生成原因仍归Inst；C／运行库／域包装默认无本叶材料。CallArgument::origin及ArgumentOrigin::ir_json借用／序列化同一事实，原arguments JSON输出origin；原克隆及寄存器／局部映射保持材料，关闭compiler不含材料及查询字段，必要对象／执行编码保持。提供者源码缺席不影响原接口参数关系，实参site只归实际调用者，不伪造提供者实现或最终机器位置。见[规范](BLanguage.md#普通调用b实参与实际callargument的来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-5-6-5)。
 
 <a id="tool-7-2-4-5-7"></a>
 
@@ -451,7 +451,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-3-1"></a>
 
-**值变换与消除的来源交接。** 带来源原IR→常量折叠／复制传播／DCE→原优化结果。合并、保留、消除及无代码状态沿真实变换交接；不保活已消除操作或复制旧IR，不凭剩余寄存器猜丢失关系。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。当前待设计／实现，范围见[原编号](Issues.md#c-021-7-9-7-3-1)。
+**值变换与消除的来源交接。** 带来源原IR→常量折叠／复制传播／DCE→原优化结果。合并、保留、消除及无代码状态沿真实变换交接；不保活已消除操作或复制旧IR，不凭剩余寄存器猜丢失关系。唯一事实归其原Source／IR／变换／代码／Section拥有者，结果归实际调用者；随同一版本和最后真实消费者交接，不维持另一来源注册表、反射对象、执行图、索引服务或调度器。不得为来源材料改写机器语义、强制变量保活、改变资源完成，或把未取得的关系估算成真实来源。实际入口为原optimize_stage／value_code复用的value_flow::Values::block与dce，以及原invariant等变换；不存在独立fold／propagate／remove_dead入口，不为文档另建优化链。单节点仍有来源不证明合并／消除关系；商余配对等Inst::new重写点须先以真实输入核对，再按原触发与消费者细分。常量折叠仍从真实检查／求值生产点核查，不由此删除原目标。当前待设计／实现，范围见[原编号](Issues.md#c-021-7-9-7-3-1)。
 
 <a id="tool-7-3-2"></a>
 
