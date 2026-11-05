@@ -278,13 +278,13 @@ B源语言通过size_of<T>()与align_of<T>()读取同一Ty的大小和对齐，�
 
 这样，一个 `float3` 在前端仍有完整类型，在后端却可拆成三个 `f32` 分量。语言向量不保证每一处都会使用一条硬件向量指令；是否批量执行，还取决于计算、访问和后端计划。
 
-address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。原Scope的声明扫描保留取址所需的Local存储；当前值分析消费真实写入，取址本身不使循环中的原数值事实失效。沿已有builder是否存在区分这两个阶段，不增加存储表、值流或效果图。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。整数地址往返不保留静态借用。编译期在原Proof中按实际值分量交接可证明的地址位模式与原存储／字节区间关系；它与静态借用分开，不授予权限、初始化或寿命。复制、记录／固定数组、条件选择及普通B参数／返回／输出保留同一数值来源；同宽64位整数转换保持位模式，缩窄或改变位模式的运算撤去该关系。真实写入按原布局投影到相交位置，仅撤回这些位置的旧数值事实；未知地址及无法闭合的字节范围继续按真实External处理，不用类型或是否取址排除可能写入。公开对象合同只用原输入重绑定，不导出被调私有Local／slot，整数结果不延长原存储寿命。原Proof.addresses只保存稀疏的编译期数值关系，原Proof.views继续交接借用；原Identity／Origin保存真实布局与条件，原写范围消费者复用同一位置失效。External仍可能与原Local相交。原内存结果区分已知来源与External，再沿原局部表的实际区间填写Pointer别名；真实写入及循环写分析使受影响的旧数值事实失效，不能继续把它们作为常量；未知写入仍保留可能有效的原地址借用，并加入External来源，不把可能覆盖当作确定覆盖。局部表键为逻辑分量区间终点，原Ty仍决定字节布局。不透明C调用通过原MemoryTarget交接External内存效果，原MemoryEffect在本函数局部表上填写实际InOut别名；同步回调经整数userdata读写显式取址的局部存储后，原位置读取和字段／固定数组仍消费真实内存。原Scope::Write同时表达具体位置及整次不透明C效果，循环预分析与数值出口沿同一结果失效，不增加第二张效果图。已取出的普通SSA快照保持。该编译期交接不创建运行时地址登记，也不凭未知写入推定初始化；普通B调用沿原Access合同交接资源互斥、类型位置及实际Memory效果；原Function.calls连接自身MemoryTarget，实际内存效果沿原函数图闭合后填入Call.memory，独立对象／归档保留同一合同。调用IR只消费原闭合Access的实际读写方向，不重复叠加实参地址能力；Position的writes与initialized交接Write、Read或InOut，后者是实际读取，不能因来源已初始化而清掉。原MemoryEffect的External与Known保持同一Access方向，在原局部表展开真实可能相交的范围；读写合流保留双方操作，不以位置可写能力添加写入。指针形成仍只交接原别名，不透明C仍交接原Memory效果。类型位置仍持有真实布局，Memory不伪造类型；never调用也保留真实读取。形成地址及B实参暴露不冒充实际访问，原IR别名继续消费这些地址；Position交接真正读写，Memory交接不透明C效果。External位置沿原读写接点交接，原Origin的初始化事实不清掉实际读取。已有闭合访问合同的B调用按实际条件使真正写入与不透明C可能影响的数值事实失效，纯地址值、只读及原SSA快照保持。源函数完成时沿原Function.calls闭合尚未完成的分量，已闭合直接依赖消费原接口；未闭合与合法空访问合同分别表示，公开编码仍为原闭合集合。同源和obj／lib调用使用同一访问合同，构造中递归边的数值事实、循环预分析、其他存储范围及异步保留回调仍有独立缺口。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
+address与handle、u64保留不同类型身份；其8字节大小、8字节对齐及单个U64逻辑分量仍由原Ty表示，模块和Windows x64调用ABI消费同一布局。usize／isize只是u64／i64的同义类型，不复制数值实现或建立32位CPU分支。address()是空值，普通复制与相等比较保留全部64位；CPU的unsafe_address与address_bits显式交接整数位模式。它们不访问或拥有指向存储，也不因一个值非零就取得可读写位置。address_of取得原连续CPU位置或资源元素的真实地址，复用CallReference／Position及原布局，不先读取或复制载荷。原Scope的声明扫描保留取址所需的Local存储；当前值分析消费真实写入，取址本身不使循环中的原数值事实失效。沿已有builder是否存在区分这两个阶段，不增加存储表、值流或效果图。普通值、记录／数组、函数返回与独立obj／lib沿Proof.views／Borrow交接同一来源；真实写入使原Local／Data别名对应的旧数值事实失效，不另建运行时地址表。整数地址往返不保留静态借用。编译期在原Proof中按实际值分量交接可证明的地址位模式与原存储／字节区间关系；它与静态借用分开，不授予权限、初始化或寿命。复制、记录／固定数组、条件选择及普通B参数／返回／输出保留同一数值来源；同宽64位整数转换保持位模式，缩窄或改变位模式的运算撤去该关系。真实写入按原布局投影到相交位置，仅撤回这些位置的旧数值事实；未知地址及无法闭合的字节范围继续按真实External处理，不用类型或是否取址排除可能写入。公开对象合同只用原输入重绑定，不导出被调私有Local／slot，整数结果不延长原存储寿命。原Proof.addresses只保存稀疏的编译期数值关系，原Proof.views继续交接借用；原Identity／Origin保存真实布局与条件，原写范围消费者复用同一位置失效。External仍可能与原Local相交。原内存结果区分已知来源与External，再沿原局部表的实际区间填写Pointer别名；真实写入及循环写分析使受影响的旧数值事实失效，不能继续把它们作为常量；未知写入仍保留可能有效的原地址借用，并加入External来源，不把可能覆盖当作确定覆盖。局部表键为逻辑分量区间终点，原Ty仍决定字节布局。不透明C调用通过原MemoryTarget交接External内存效果，原MemoryEffect在本函数局部表上填写实际InOut别名；同步回调经整数userdata读写显式取址的局部存储后，原位置读取和字段／固定数组仍消费真实内存。原Scope::Write交接显式位置、不透明外部写及闭合B调用的实际写位置；循环预分析与数值出口复用原Access、输入Proof和位置分量查询，不增加第二张效果图。已取出的普通SSA快照保持。该编译期交接不创建运行时地址登记，也不凭未知写入推定初始化；普通B调用沿原Access合同交接资源互斥、类型位置及实际Memory效果；原Function.calls连接自身MemoryTarget，实际内存效果沿原函数图闭合后填入Call.memory，独立对象／归档保留同一合同。调用IR只消费原闭合Access的实际读写方向，不重复叠加实参地址能力；Position的writes与initialized交接Write、Read或InOut，后者是实际读取，不能因来源已初始化而清掉。原MemoryEffect的External与Known保持同一Access方向，在原局部表展开真实可能相交的范围；读写合流保留双方操作，不以位置可写能力添加写入。指针形成仍只交接原别名，不透明C仍交接原Memory效果。类型位置仍持有真实布局，Memory不伪造类型；never调用也保留真实读取。形成地址及B实参暴露不冒充实际访问，原IR别名继续消费这些地址；Position交接真正读写，Memory交接不透明C效果。External位置沿原读写接点交接，原Origin的初始化事实不清掉实际读取。已有闭合访问合同的B调用按实际条件使真正写入与不透明C可能影响的数值事实失效，纯地址值、只读及原SSA快照保持。源函数完成时沿原Function.calls闭合尚未完成的分量，已闭合直接依赖消费原接口；未闭合与合法空访问合同分别表示，公开编码仍为原闭合集合。同源和obj／lib调用使用同一访问合同，构造中递归边的数值事实、循环预分析、其他存储范围及异步保留回调仍有独立缺口。完整系统ABI消费者与外部回调仍按各自具体缺口建设。
 
 `unsafe_position<T>`直接形成原Reference位置，按Ty的真实字节偏移读写，read／write／inout借用原地址。已知B来源保留布局、只读／可写权限和逐分量初始化；外部位置没有B参数初始化scope，不登记为Frame拥有资源，实际范围、对齐、权限、初始化与最后消费者前存活由调用者负责。地址位模式、可能借用与确定初始化分别表达，不能因取址就认为已写入，也不能把条件地址的全部候选都标为完成。
 
 实际写入位置及条件沿原函数正常出口交接。递归和完整for的待闭合事实保存在原Position／Function.uses中，来源与确定结果沿原调用关系统一收敛；读取、条件输出与转借都保留实际时点，不由后续写入补足。公开合同只含闭合位置与完整条件，不携带被调私有槽或循环表达。资源及指向该资源的地址可以共同返回；拥有字段或值移动仍使用原存储，缺少拥有者的地址不能逃逸。own静态F的真实后续读取参与原view_liveness，最后消费前不允许存储resize／迁移／释放，Frame／blcompute仍是唯一物理资源所有者。
 
-源码节选：`crates/blanguage/src/check/address.rs:749`。
+源码节选：`crates/blanguage/src/check/address.rs:754`。
 
 ```rust
     pub(super) fn external_position(&mut self, explicit: &[GenericArgument], args: &[Expr], span: Span) -> Result<Option<Place>> {
@@ -1353,7 +1353,7 @@ CPU应用还可以用`dataset<T>(length,F)`逐项接收拥有元素。静态F在
 
 原B实参到ABI实参的关系直接归同一CallArgument。原native_call的源码调用完成点只属于传入真实实参AST的原调用：实际IR调用与写回输出完成后，先推进该源码点，再结束参数临时拥有者。生成的静态F、dataset初始化及归约调用没有原调用AST，不因共用诊断span推进外层源码状态；各自实际调用、来源及资源释放继续原职责。该规则不增加保存／恢复状态或生成原因白名单，也不补足write旧拥有树交接的剩余缺口。ArgumentOrigin区分隐式Frame和被调B参数的零基序号／名称；原调用的Expr切片仅沿现有路由临时借用，在原native_call生产处取得真实Expression位置及上下文，向量引用分量共享材料，零分量保留参数关系。生成调用没有原实参语法时位置为空，其他C／运行库／域包装默认没有本叶材料，不从调用位置或寄存器猜补。Frame裁剪、克隆和原重映射处理同一记录；不重求值、不保留AST、不改变必要编码或实际资源完成。详见[实参与CallArgument](../Docs/BLanguage.md#普通调用b实参与实际callargument的来源)。
 
-源码节选：`crates/blanguage/src/check/native_function.rs:853`。
+源码节选：`crates/blanguage/src/check/native_function.rs:858`。
 
 ```rust
         if syntax.is_some(){self.view_uses.after(span);}
@@ -1464,7 +1464,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 原loop_writes收集正文和条件的既有写输入，把局部槽位、实际写存储根及未知内存效果交给同一LoopContext。原invalidate_writes同时结束可能被写的Data.elements旧共同数值：contents或原loop_write_projection给出实际words，沿原资源／借用来源交给既有update_application_elements(None,None)；未知存储效果处理原真实资源范围。原更新职责继续保留借用／拥有关系，已知写只撤回实际分量，未写字段不因共享同一dataset而失去数值。没有第二模型、运行状态或除法特例，本轮条件与已捕获旧值仍沿各自原事实。update_application_elements只在index_range=(0,0)可能完整覆盖时形成原长度一比较，其余更新移除恒假覆盖路径的无用constant IR，不为循环失效发射代码。
 
-源码节选：`crates/blanguage/src/check/effects.rs:241`。
+源码节选：`crates/blanguage/src/check/effects.rs:251`。
 
 ```rust
         if effect.unknown_storage {
@@ -1488,17 +1488,17 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
         }
 ```
 
-显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一只完成该实例的native_declaration声明／导入，再查询同一Module闭合view_access。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。其余未知、隐藏地址写、Memory或拥有消费沿原External完整失效，不独立跳过局部常量、非零及循环数值路径。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
+显式可写dataset实参的contents输入沿原written_application_data取得无拥有资源的真实根，给原LoopWrites.storage交接该根未知字节区间；不再将这份已知存储写扩大为全部存储未知。iterator来源、未知位置及拥有内容仍按实际未知范围处理，原Call整体效果独立保留，不凭签名取消实际写。无拥有资源的元素／字段写由loop_write_projection沿written_application_data、member_type及固定数组分量映射取得实际根与Scalar投影。constant_index只使用未被全部可能写输入改变的原下标事实；声明布局给出步长和分量word／宽度，LoopWrites交接真实字节区间。ApplicationLoads既复用原allocate结果区分不同实际分配，也把同根已知读取与未来区间交给和StoreIndexed共用的byte_overlap；多个写区间分别保留，不把中间未写字节也当作覆盖。未知下标／布局仍是未知范围，未解析子dataset或拥有内容结束不能误归父存储。内部allocate只产生新Dataset，已发射分配不会改写原有读取；显式引用／内存写仍先消费原合同。普通静态CPU值调用在原Scope仍持有正文let等词法实参Ty／count时，以原generics选定实例；Write::External携带这个实际实例，循环归一只完成该实例的native_declaration声明／导入，再查询同一Module闭合view_access。原写输入按所有权传入、消费者按借用读取，不复制实例或离开作用域后用入口环境重新推导正文局部；没有另一实例表、调用图、IR求值或数值失效跳过路径。无拥有结果且合同实际只读时保留元素读取与局部数值。闭合写仅指向原ABI借用dataset输入、且原显式contents Position已经交接这些实参时，也不重复添加全局External；真实写仍由原Position和LoopWrites处理。元素无拥有内容／清理F的按值dataset输入也由同一typed根覆盖：原arguments先检查调用者保留view／地址与别名，原move_application_dataset交付唯一拥有并使旧绑定Moved，callee沿原最后消费者完成与释放链结束该存储。这份已转移存储的闭合写不再扩大为所有旧存储未知；没有正文未来AST根表、资源复制或第二释放链。普通已闭合B调用复用native_call_memory的Access、实际输入Proof和when，向同一LoopWrites交接真正写位置，不因存在隐藏地址或Memory条款而扩大为整次外部写。component_projection同时投影已有类型和实际位置，Scope只读取已形成的值快照，不重新解释或求值实参、下标，也不复制IR或再造调用图。未生成的动态来源保留原未知，不能据不完整输入推定无写；资源拥有继续由原Position和唯一拥有者消费。原address_write_components由普通写入与循环共同查询，只撤回真实相交的局部、记录及数组分量；源码与已编译对象／归档消费相同合同。address按值形参没有inout标记不能证明无写；真正只读address函数和普通记录结果按实际合同保持组合能力。dataset的实际静态factory调用也参与同一交接。factory沿原World／generics以实际U32参数取实例，原native_declaration完成声明／导入后才查询同一Module闭合访问；无拥有结果且实际只读可保留事实，其余调用交给原完整未知内存效果，元素装载与局部槽数值同时失效。零长度不调用factory，扫描使用字面／静态长度及已有不可变U32零值，可变旧零不能跳过实际调用。每轮新条件和已捕获旧数值／bool保持各自来源；LoopWrites只是原循环工作的不可变分析输入。
 
 源码节选：`crates/blanguage/src/check/effects.rs:395`。
 
 ```rust
                     if self.functions.read_only(&instance.name) {
-                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),contents:true,..} if std::ptr::eq(*origin,call)));
+                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
 ```
 
-原Module只读查询消费既有访问合同，不维护第二份副作用状态。闭合无写时Scope不再生产dataset contents未来写；首次声明／导入仍使用原已选实例，原显式Position先进入同一写向量，loop_writes完成该实例后只删除该call自己的contents=true输入。Scalar Reference实际Position不删除，实参表达式的独立写继续递归交接，write初始化责任保持；没有新的调用记录、状态或词法实例推导。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_covered_by_dataset_inputs只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type或元素无拥有资源的按值dataset真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
+原Module只读查询消费既有访问合同，不维护第二份副作用状态。闭合无写时Scope不再由该调用的write／inout权限推测参数写；首次声明／导入仍使用原已选实例，完成后只删除该call自己的声明写。实际Scalar Reference写由同一Access和真实位置交接，资源拥有仍留在原Position消费者；实参表达式的独立写与write初始化责任保持，没有另一调用记录、状态或词法实例推导。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_covered_by_dataset_inputs只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type或元素无拥有资源的按值dataset真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
 
 源码节选：`crates/blanguage/src/check/native_function.rs:41`。
 
@@ -1547,7 +1547,7 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
     }
 ```
 
-源码节选：`crates/blanguage/src/check/effects.rs:21`。
+源码节选：`crates/blanguage/src/check/effects.rs:22`。
 
 ```rust
 pub(super) struct LoopWrites {
@@ -2218,7 +2218,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
                         continue;
 ```
 
-源码节选：`crates/blanguage/src/check/native_function.rs:1305`。
+源码节选：`crates/blanguage/src/check/native_function.rs:1310`。
 
 ```rust
             if !frame.contains(&name) {

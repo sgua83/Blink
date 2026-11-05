@@ -400,6 +400,21 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
+    pub(super) fn native_call_memory(&self,name:&str,arguments:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<view::Borrow> {
+        let access=self.functions.units.get(name)?.as_ref()?.contract.view_access.as_ref()?;
+        let mut written=view::Borrow::default();
+        for access in access {
+            let(borrows,when)=match access {
+                view_contracts::Access::Memory{borrows,when}|view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}}=>(borrows,when),
+                view_contracts::Access::Dataset{borrows,when,access,..}if access.writes()=>(borrows,when),
+                _=>continue,
+            };
+            let path=when.guard_at_call(arguments).assume(&self.path,true);
+            let borrow=self.current_address_borrow(&borrows.at_call(arguments));
+            written.union(&borrow.restricted(&path));
+        }
+        Some(written)
+    }
     fn native_call(
         &mut self,
         instance: crate::generics::Instance,
@@ -707,18 +722,8 @@ impl Builder<'_> {
             .flat_map(|ty| &ty.components)
             .map(|(scalar, _)| self.reg(*scalar))
             .collect::<Vec<_>>();
-        if let Some(access)=self.functions.units[&instance.name].as_ref().and_then(|unit|unit.contract.view_access.as_ref()) {
-            memory_borrow=view::Borrow::default();
-            for access in access {
-                let (borrows,when)=match access{
-                    view_contracts::Access::Memory{borrows,when}|view_contracts::Access::Position{borrows,when,position:view_contracts::PositionAccess{writes:true,..}}=>(borrows,when),
-                    view_contracts::Access::Dataset{borrows,when,access,..}if access.writes()=>(borrows,when),
-                    _=>continue,
-                };
-                let path=when.guard_at_call(&view_arguments).assume(&self.path,true);
-                let borrow=self.current_address_borrow(&borrows.at_call(&view_arguments));
-                memory_borrow.union(&borrow.restricted(&path));
-            }
+        if let Some(written)=self.native_call_memory(&instance.name,&view_arguments) {
+            memory_borrow=written;
         }
         let memory=if self.application.is_none(){
             let access=self.functions.units[&instance.name].as_ref().unwrap().contract.view_access.as_ref().unwrap().clone();

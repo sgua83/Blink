@@ -599,6 +599,16 @@ impl ReferenceAddress {
     }
 }
 impl Builder<'_> {
+    pub(super) fn address_write_positions(&self,borrow:&view::Borrow)->Vec<Position> {
+        borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,when)|match source {
+            view::Source::Position(origin)if origin.writable=>origin.memory_positions(&when).unwrap_or_default(),
+            _=>Vec::new(),
+        }).collect()
+    }
+    pub(super) fn address_write_components(&self,positions:&[Position],place:&Place)->Vec<usize> {
+        self.positions(place).iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
+            owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect()
+    }
     pub(super) fn write_address_values(&mut self,borrow:&view::Borrow) {
         if external_memory(borrow) {
         for binding in self.env.values_mut() {
@@ -610,15 +620,10 @@ impl Builder<'_> {
             }
         }
         } else if !borrow.empty() {
-        let positions=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,when)|match source {
-            view::Source::Position(origin)if origin.writable=>origin.memory_positions(&when).unwrap_or_default(),
-            _=>Vec::new(),
-        }).collect::<Vec<_>>();
+        let positions=self.address_write_positions(borrow);
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
-            let owner=self.positions(&place);
-            let components=owner.iter().enumerate().filter_map(|(i,position)|positions.iter().any(|written|
-                owned_presence::Presence::selected(written,position)!=owned_presence::Presence::None).then_some(i)).collect::<Vec<_>>();
+            let components=self.address_write_components(&positions,&place);
             (!components.is_empty()).then(||(name.clone(),components))
         }).collect::<BTreeMap<_,_>>();
         for(name,components)in selected {
