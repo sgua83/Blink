@@ -493,7 +493,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-3-1-3-3"></a>
 
-**归约降层输入与读取来源。** 原CustomReduction::kernel克隆Stage，并保留Operation所持的原project／identity／combine ValueCode；各值函数的既有输入来源沿原ValueCode持有，不另存一份Reg关联。原内核角色／分区查询与降层二次传播新事件分为下列两个独立范围，原统一纯值提取仍归.8，不把原函数材料称为新发生的消除。父项不占源码，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+**归约降层输入与读取来源。** 原CustomReduction::kernel克隆Stage，并保留Operation所持的原project／identity／combine ValueCode；各值函数的既有输入来源沿原ValueCode持有，不另存一份Reg关联。原内核角色／分区查询与降层二次传播新事件分为下列两个独立范围，原统一纯值提取仍归.8，不把原函数材料称为新发生的消除。父项不占源码，状态见[台账](FixedIssues.md#c-021-7-9-7-3-1-3-3)。
 
 <a id="tool-7-3-1-3-3-1"></a>
 
@@ -503,7 +503,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 **降层二次传播新增外部输入读取来源。** 原ValueCode的DCE可能删除只在退出路径上的无消费写，原with_prelude再次运行值流时因实际写集合已改变而将残留局部读取替换为真实内核输入；该新事件不由原值函数的既有材料代替。唯一生产者仍为with_prelude的原值流及同一临时Reuses，真实Inst结果先按原路径保留来源，其余实际输入读取在原prepare_reduction交给kernel.stage.generated_origin，以LocalReadForward理由及ReductionInputForward锚点保留可选旧根和ReductionInputReadForward列表。每项只持有Source／Left／Right角色、component_index及原OperationOrigin读取来源，借用同一ReductionKernel的source／left／right零基逻辑分量；不存另一份Reg或输入表。原合并输入先沿left／right消费，未选投影时source与right相同也不重复或错标为Source；被选投影的独立输入沿source交接。initial／projected／result是原输出，不凭别名生成另一份事件。
 
-Stage.operation中的原ValueCode及其来源保持原阶段，只有本次降层后的Stage根携带新消除；没有真实事件就不包根，不把原函数仍存在的LoadLocal说成已在原函数删除。材料由原Stage／Kernel及其SDK编译结果持有，最后实际IR消费者后释放；来源及旧根共享原不可变快照，不存旧IR／AST／World或拥有运行资源。只读getter／JSON消费同一结果，单源getter不任取一条；来源缺失仍为空，静态消除不冒称运行读取。原算法、DCE、别名与控制、布局、访问、执行和完成保持，不增加优化轮次、字段、调度、资源或运行编码。该交接已实现并通过编译检查，确切Release与实际消费待完成，见[台账](Issues.md#c-021-7-9-7-3-1-3-3-2)；统一纯值提取原因仍归.8。
+Stage.operation中的原ValueCode及其来源保持原阶段，只有本次降层后的Stage根携带新消除；没有真实事件就不包根，不把原函数仍存在的LoadLocal说成已在原函数删除。材料由原Stage／Kernel及其SDK编译结果持有，最后实际IR消费者后释放；来源及旧根共享原不可变快照，不存旧IR／AST／World或拥有运行资源。只读getter／JSON消费同一结果，单源getter不任取一条；来源缺失仍为空，静态消除不冒称运行读取。原算法、DCE、别名与控制、布局、访问、执行和完成保持，不增加优化轮次、字段、调度、资源或运行编码。该交接已实现，见[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-3-3-2)；统一纯值提取原因仍归.8。
 
 <a id="tool-7-3-1-3-4"></a>
 

@@ -428,7 +428,7 @@ compiler SDK的CustomReduction::kernel(stage,project,identity)按本次选择产
 
 source、projected、initial、left、right和result直接消费同一内核的六角色列表，元素引用本次stage.registers。它们已经过原值流binding；projected／initial／result是相应输出，不是另一份外部输入表。stage.operation仍含原源算法及project／identity／combine ValueCode，stage.code则是本次降层的代码，两者阶段不同。已选project的实际输入与source逐分量对应；未选project时source沿right，combine输入按left后right分量对应。原InputReadForward.input_index继续引用原ValueCode.inputs，来源沿该ValueCode.generated_origin取得；不把原函数Reg直接当内核Reg。调用者保留本次project／identity选择，operation中出现某个原函数不证明它参与本次执行，关闭identity时initial为空，关闭project时不补造投影调用。
 
-查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。二次传播新读取事件由降层后的Stage另行交接，原值函数材料保持原阶段，统一提取变换原因也不由invariants列表代替。见[架构](Architecture.md#tool-7-3-1-3-3)及[台账](Issues.md#c-021-7-9-7-3-1-3-3)。
+查询不重新编译、优化、发射或运行，不重读源文件、不新增保存的Reg映射、拥有表或运行材料；生命周期沿原内核及共享来源到最后实际IR消费者。二次传播新读取事件由降层后的Stage另行交接，原值函数材料保持原阶段，统一提取变换原因也不由invariants列表代替。见[架构](Architecture.md#tool-7-3-1-3-3)及[台账](FixedIssues.md#c-021-7-9-7-3-1-3-3)。
 
 #### 归约二次值传播的真实输入读取来源
 
@@ -436,7 +436,7 @@ source、projected、initial、left、right和result直接消费同一内核的�
 
 compiler SDK的ReductionInputReadForward::role()返回ReductionInputRole::Source／Left／Right，component_index()返回同一ReductionKernel.source／left／right列表中的零基逻辑分量序号，reads()借用原OperationOrigin列表，ir_json()输出kind=reduction_input_read_forward、role（source／left／right）、component_index及reads。锚点JSON为kind=reduction_input_forward、component_index_base=0、retained和inputs；根GeneratedOrigin.reason为local_read_forward。u64仍是一项逻辑分量，不拆成物理字编号。原合并输入先沿left／right消费；未选project时source与right相同，不重复来源或标成投影读取。无新事件不创建根，initial／projected／result不变成伪造外部输入。
 
-新来源在原Inst结果交接后由同一次值流剩余事实直接形成，不重新优化、求值或扫描源码，也不新增保存的Reg映射、输入拥有表、IR副本或运行材料。单源trigger()及锚点syntax()／origin()／instance()为空，各实际读取从明确成员取得；编译器生成读取没有SourceSite时原样为空，不能删除该真实事件或补造语法。根与原来源共享不可变快照，随原Kernel／Stage在最后实际IR消费者后释放，普通原Inst／ValueCode及Frame前缀来源保持各自合同。见[架构](Architecture.md#tool-7-3-1-3-3-2)及[台账](Issues.md#c-021-7-9-7-3-1-3-3-2)。
+新来源在原Inst结果交接后由同一次值流剩余事实直接形成，不重新优化、求值或扫描源码，也不新增保存的Reg映射、输入拥有表、IR副本或运行材料。单源trigger()及锚点syntax()／origin()／instance()为空，各实际读取从明确成员取得；编译器生成读取没有SourceSite时原样为空，不能删除该真实事件或补造语法。根与原来源共享不可变快照，随原Kernel／Stage在最后实际IR消费者后释放，普通原Inst／ValueCode及Frame前缀来源保持各自合同。见[架构](Architecture.md#tool-7-3-1-3-3-2)及[台账](FixedIssues.md#c-021-7-9-7-3-1-3-3-2)。
 
 #### 应用入口与根Frame的生成来源
 
