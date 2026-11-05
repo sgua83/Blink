@@ -565,7 +565,7 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-5"></a>
 
-**未消费普通值结果删除的来源。** 原dce对非Atomic／Append／Print／Call的有结果Inst，沿原needed判定全部结果均未消费时删除；此分支支持普通单／多结果，不与整数除法专门裁剪或私有写删除混为一项。删除点交接同一操作的OperationOrigin及当时各结果的Scalar类型，原Inst及其操作数照常释放，不保存旧IR、常量位模式、永久Reg或另一活跃性表。结果类型列表按原Inst::results顺序表达本次逻辑分量；一次记录是一条被删除IR操作，不是运行次数、设备指令数或整个源表达式已无代码的证明。递归只沿真实删除归回原拥有根，不重新求解needed或增加删除许可；缺失来源保持空。下列ValueCode和Stage各为独立接收者，空Stage后续移除由原Program沿.3.2.2继续交接；当前原删除及其持有范围已闭合，见[台账](FixedIssues.md#c-021-7-9-7-3-1-5)。整数裁剪另沿.6的独立职责交接；其他结构变换与私有写删除仍归原未完成职责。
+**未消费普通值结果删除的来源。** 原dce对非Atomic／Append／Print／Call的有结果Inst，沿原needed判定全部结果均未消费时删除；此分支支持普通单／多结果，不与整数除法专门裁剪或私有写删除混为一项。删除点交接同一操作的OperationOrigin及当时各结果的Scalar类型，原Inst及其操作数照常释放，不保存旧IR、常量位模式、永久Reg或另一活跃性表。结果类型列表按原Inst::results顺序表达本次逻辑分量；一次记录是一条被删除IR操作，不是运行次数、设备指令数或整个源表达式已无代码的证明。递归只沿真实删除归回原拥有根，不重新求解needed或增加删除许可；缺失来源保持空。下列ValueCode和Stage各为独立接收者，空Stage后续移除由原Program沿.3.2.2继续交接；当前原删除及其持有范围已闭合，见[台账](FixedIssues.md#c-021-7-9-7-3-1-5)。整数裁剪与私有写删除分别沿.6／.7的独立职责交接；其他结构变换仍归原未完成职责。
 
 <a id="tool-7-3-1-5-1"></a>
 
@@ -589,11 +589,11 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-7"></a>
 
-**未消费私有槽位写删除的来源。** 原StoreLocal与StoreLocalIndexed分别按原needed判断写目标是否不再消费，直接槽与索引范围沿下列独立职责推进；父项只汇总，不占源码。没有结果的写与有结果的值是不同操作，沿原dce同一删除结果、原ValueCode／Stage及空Map后的Program持有；以明确变体表达，不能用空结果冒充普通值或另建删除根。来源仅compiler，沿最后实际IR消费者释放，不保活旧指令、槽位、值或运行资源；原RHS可观察求值、数值、效果、访问、控制和完成不变。见[当前范围](Issues.md#c-021-7-9-7-3-1-7)。
+**未消费私有槽位写删除的来源。** 原StoreLocal与StoreLocalIndexed分别按原needed判断写目标是否不再消费，直接槽与索引范围沿下列独立职责推进；父项只汇总，不占源码。没有结果的写与有结果的值是不同操作，沿原dce同一删除结果、原ValueCode／Stage及空Map后的Program持有；以明确变体表达，不能用空结果冒充普通值或另建删除根。来源仅compiler，沿最后实际IR消费者释放，不保活旧指令、槽位、值或运行资源；原RHS可观察求值、数值、效果、访问、控制和完成不变。见[当前范围](FixedIssues.md#c-021-7-9-7-3-1-7)。
 
 <a id="tool-7-3-1-7-1"></a>
 
-**未消费直接私有槽写。** 原dce确认Local(slot)不在needed时，保留本次写的OperationOrigin及实际输入Scalar，交给同一删除记录的直接写变体；根原因与容器统一表述为未消费操作删除，值结果变体保持原结果类型／整数角色事实。原slot是本轮IR临时位置，后续压缩／重映射可能移除它，不作为永久存储身份；单槽写表达一个实际Scalar逻辑分量，不能据此声称固定四字节、实际运行地址／值或运行次数。SDK／JSON从原编译根借用同一事实，原直接语法与既有生成来源保持；原ValueCode.entry_origin、Stage.operation_source及Program.source_origin独立保持。无删除不制造记录，不复制声明布局、槽映射或活跃性表。实现与实际范围见[独立台账](Issues.md#c-021-7-9-7-3-1-7-1)。
+**未消费直接私有槽写。** 原dce确认Local(slot)不在needed时，保留本次写的OperationOrigin及实际输入Scalar，交给同一删除记录的直接写变体；根原因与容器统一表述为未消费操作删除，值结果变体保持原结果类型／整数角色事实。原slot是本轮IR临时位置，后续压缩／重映射可能移除它，不作为永久存储身份；单槽写表达一个实际Scalar逻辑分量，不能据此声称固定四字节、实际运行地址／值或运行次数。SDK／JSON从原编译根借用同一事实，原直接语法与既有生成来源保持；原ValueCode.entry_origin、Stage.operation_source及Program.source_origin独立保持。无删除不制造记录，不复制声明布局、槽映射或活跃性表。实现与实际范围见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-7-1)。
 
 <a id="tool-7-3-1-7-1-1"></a>
 
@@ -601,11 +601,21 @@ merge／resume本身汇合临时分析知识，不产生另一条程序指令，
 
 <a id="tool-7-3-1-7-1-2"></a>
 
-**直接私有写到原Stage。** 同一dce及原optimize_stage已经使用共同删除记录，材料随Stage.generated_origin持有；空Map再由原Program接收，不复制ValueCode或新建阶段表。原operation_source、generated_origin和source_origin分别保持，最后真实IR消费者后释放。该通用交接已实现，当前尚无该类Stage写删除的实际输入验证，不能以普通值函数或其他删除变体替代；详见[独立台账](Issues.md#c-021-7-9-7-3-1-7-1-2)。
+**直接私有写到原Stage。** 同一dce及原optimize_stage已经使用共同删除记录，材料随Stage.generated_origin持有；空Map再由原Program接收，不复制ValueCode或新建阶段表。原operation_source、generated_origin和source_origin分别保持，最后真实IR消费者后释放。保留Stage与空Map后的Program沿各自真实最终根交接本类直接写来源，不能以普通值函数或其他删除变体替代；实际范围详见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-7-1-2)。
 
 <a id="tool-7-3-1-7-2"></a>
 
-**未消费索引私有范围写。** 原dce在base..base+len没有needed Local时删除原StoreLocalIndexed；目标是交接真实写来源、原逻辑范围与实际写Scalar，以及动态索引／静态字节偏移的语义区别。原逻辑分量范围不等于一次写宽度，运行地址／索引值没有采集时仍未知；不能将已经移除或重映射的Local／Reg当永久身份。来源随原拥有根交接，不保留旧IR、复制槽映射或另外扫描活跃性。当前交接尚未实现，未命中现有输入不能证明此类合法程序不存在，也不据此禁止动态私有数组或缩小本目标；详细输入与实现继续沿[独立台账](Issues.md#c-021-7-9-7-3-1-7-2)。
+**未消费索引私有范围写。** 原dce在base..base+len没有needed Local时删除StoreLocalIndexed，同一EliminatedOperation::IndexedPrivateWrite持有component_count、index_type、byte_offset、scalar及OperationOrigin。component_count直接来自原len，表示本次判定的完整局部存储逻辑分量数；index_type来自原index寄存器Scalar，该项按原IR为字节偏移，byte_offset来自原word的静态字节偏移，scalar来自原写入value。两者与声明布局共同解释寻址，不把范围长度当一次写宽度或固定数组元素数。原临时base／Local／Reg不永久保存，不将材料接到压缩后的同号位置，不声称已取得实际索引值、地址、原存储身份或完整旧IR。
+
+无删除时不制造事件；原条件、RHS可观察效果、数值、控制、存储及完成保持。IndexedPrivateWrite与ValueResults／DirectPrivateWrite共用原Vec、递归和EliminatedOperations根，不另建索引写表、声明布局副本、拥有状态或来源图。仅compiler，来源不可变共享，最后真实IR消费者后释放，不保活写、值、槽位或运行资源。下列ValueCode与Stage接收分别推进，父项只汇总；现行接口见语言规范“索引私有写删除的来源”，范围见[父项](FixedIssues.md#c-021-7-9-7-3-1-7-2)。
+
+<a id="tool-7-3-1-7-2-1"></a>
+
+**索引私有写到原ValueCode。** 原value_code接收同一次dce返回的IndexedPrivateWrite，保留原entry_origin及已有generated_origin，由原普通函数、应用函数和模块SDK／IR查询消费。输入为本次真实被删写及类型／寻址语义，输出只含已采集静态事实；原输入前缀及旧快照继续沿共同规则处理，最后真实ValueCode／模块消费者后释放，不重做槽映射或活跃性求解。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-7-2-1)。
+
+<a id="tool-7-3-1-7-2-2"></a>
+
+**索引私有写到原Stage。** 原optimize_stage接收同一dce结果，材料归同一Stage.generated_origin；空Map消失后由原EmptyMapRemoval交给Program。原operation_source、generated_origin与source_origin分别保持，保留／消失阶段各沿真实最终根查询。材料只随原Stage／Program及最后真实IR消费者释放，不保活空阶段、写或另一布局映射；原CPU／GPU执行及完成不增加观察步骤。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-7-2-2)。
 
 <a id="tool-7-3-1-8"></a>
 

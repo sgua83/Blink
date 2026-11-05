@@ -336,16 +336,23 @@ pub enum EliminatedOperation {
         origin: OperationOrigin,
     },
     DirectPrivateWrite { scalar: super::Scalar, origin: OperationOrigin },
+    IndexedPrivateWrite {
+        component_count: usize,
+        index_type: super::Scalar,
+        byte_offset: u32,
+        scalar: super::Scalar,
+        origin: OperationOrigin,
+    },
 }
 impl EliminatedOperation {
     pub fn result_types(&self) -> Option<&[super::Scalar]> {
-        match self { Self::ValueResults { result_types, .. } => Some(result_types), Self::DirectPrivateWrite { .. } => None }
+        match self { Self::ValueResults { result_types, .. } => Some(result_types), Self::DirectPrivateWrite { .. } | Self::IndexedPrivateWrite { .. } => None }
     }
     pub fn integer_division_results(&self) -> Option<&[super::IntegerDivisionOp]> {
-        match self { Self::ValueResults { integer_division_results, .. } => integer_division_results.as_deref(), Self::DirectPrivateWrite { .. } => None }
+        match self { Self::ValueResults { integer_division_results, .. } => integer_division_results.as_deref(), Self::DirectPrivateWrite { .. } | Self::IndexedPrivateWrite { .. } => None }
     }
     pub fn origin(&self) -> &OperationOrigin {
-        match self { Self::ValueResults { origin, .. } | Self::DirectPrivateWrite { origin, .. } => origin }
+        match self { Self::ValueResults { origin, .. } | Self::DirectPrivateWrite { origin, .. } | Self::IndexedPrivateWrite { origin, .. } => origin }
     }
     pub fn ir_json(&self) -> String {
         match self {
@@ -354,6 +361,8 @@ impl EliminatedOperation {
                 integer_division_results.as_deref().map_or_else(|| "null".into(), division_results_json), origin.ir_json()),
             Self::DirectPrivateWrite { scalar, origin } => format!("{{\"kind\":\"eliminated_private_write\",\"target\":\"direct\",\"scalar\":{},\"origin\":{}}}",
                 text(&format!("{scalar:?}")), origin.ir_json()),
+            Self::IndexedPrivateWrite { component_count, index_type, byte_offset, scalar, origin } => format!("{{\"kind\":\"eliminated_private_write\",\"target\":\"indexed\",\"component_count\":{},\"index_type\":{},\"byte_offset\":{},\"scalar\":{},\"origin\":{}}}",
+                component_count, text(&format!("{index_type:?}")), byte_offset, text(&format!("{scalar:?}")), origin.ir_json()),
         }
     }
 }

@@ -549,11 +549,18 @@ fn dce(
                 });
                 continue;
             }
+            InstKind::StoreLocalIndexed { base, len, index, word, value }
+                if !(*base..*base + *len).any(|s| needed.contains(&Local(s))) => {
+                removed.push(EliminatedOperation::IndexedPrivateWrite {
+                    component_count: *len,
+                    index_type: registers[*index],
+                    byte_offset: *word,
+                    scalar: registers[*value],
+                    origin: OperationOrigin::from_instruction(&i),
+                });
+                continue;
+            }
             _ => {}
-        }
-        if matches!(&(i).kind, InstKind::StoreLocalIndexed{base,len,..} if !(*base..*base+*len).any(|s|needed.contains(&Local(s))))
-        {
-            continue;
         }
         match &mut (i).kind {
             InstKind::Scope(body) => {

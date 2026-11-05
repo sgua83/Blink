@@ -453,7 +453,7 @@ JSON根reason及锚点kind均为indexed_read_reuse，锚点含retained和reused�
 
 原dce在非Atomic／Append／Print／Call的指令确有结果、且所有结果均不在原needed集合时删除整条普通值操作；单／多结果均沿原规则，整数除法的专门裁剪、私有写及结构删除分别归原职责。原ValueCode／Stage的generated_origin交接GenerationReason::UnusedOperations及GenerationAnchor::EliminatedOperations { retained, operations }，retained保留可选原根GeneratedOrigin，ValueCode.entry_origin及Stage.operation_source独立保持。原优化、活跃性、副作用、数值及完成不因材料改变，没有删除时不增加包装。
 
-operations中每个EliminatedOperation代表本次dce真正删除的一条IR操作。ValueResults变体保存有结果操作的result_types及可选integer_division_results，result_types()返回Some，按当时Inst::results顺序交回实际Scalar列表；DirectPrivateWrite变体没有结果值，该getter返回None，直接写不伪造结果列表。origin()借用各自同一操作的OperationOrigin。它不保存旧Inst、操作数、常量值、旧Reg或物理位置，不将一条IR操作扩大为整个源表达式、实际运行次数、最终设备指令数或性能收益；一次源操作可能降成多个逻辑分量，多个来源也可能已合在一个被删除操作的已有来源里。递归沿原Scope／If／Loop实际调用归回同一根，列表顺序是本次删除遍历收集顺序，不是运行时间线或稳定身份。
+operations中每个EliminatedOperation代表本次dce真正删除的一条IR操作。ValueResults变体保存有结果操作的result_types及可选integer_division_results，result_types()返回Some，按当时Inst::results顺序交回实际Scalar列表；DirectPrivateWrite／IndexedPrivateWrite变体没有结果值，该getter返回None，私有写不伪造结果列表。origin()借用各自同一操作的OperationOrigin。它不保存旧Inst、操作数、常量值、旧Reg或物理位置，不将一条IR操作扩大为整个源表达式、实际运行次数、最终设备指令数或性能收益；一次源操作可能降成多个逻辑分量，多个来源也可能已合在一个被删除操作的已有来源里。递归沿原Scope／If／Loop实际调用归回同一根，列表顺序是本次删除遍历收集顺序，不是运行时间线或稳定身份。
 
 GeneratedOrigin的JSON reason为unused_operations，锚点kind为eliminated_operations，字段为retained及operations；ValueResults的kind为eliminated_value，字段为result_types、integer_division_results及origin，类型拼写与本次IR寄存器类型相同。普通值的integer_division_results为null，整数除法删除时为原商／余数角色数组，见下节。多源单一trigger()／syntax()／origin()／instance()为空，各来源从明确成员读取；未知来源仍为null。Frame输入前缀真正移除时，原remove_input_prefix沿保留根继续调整LocalInputForward输入引用，旧共享快照和已取得删除来源保持；不改原Frame判断或ABI。
 
@@ -486,7 +486,17 @@ JSON根reason与锚点kind均为integer_division_result_prune，字段为retaine
 
 一条直接槽写是一个实际Scalar逻辑分量，其字节宽度由Scalar决定，不固定为四字节。原Local／Reg只服务当次IR，压缩重映射后可能不存在；材料不保存这些临时编号，不据此声称仍有物理位置、原存储身份、运行地址／值、执行次数或性能收益。静态来源不等同于运行采集，未知来源仍为null。此类型仅compiler，最后真实IR消费者后释放，不保留旧Inst／IR、值、声明布局、槽映射、活跃性表或运行资源，不改变原许可、数值和完成。
 
-现有bc ir --module／--entry／--program查询与只读SDK消费同一事实；例如bootstrap/archive.b的layout、bootstrap/bindings.b各普通值函数以及applications/datasets.b应用入口。公共类型、枚举分支和JSON根字段的调整属于compiler接口演化，按原软件major规则处理；执行ABI独立。索引私有范围写仍未交付，沿原C-021.7.9.7.3.1.7.2推进，不能从直接写材料推定它已被覆盖。当前正式63条材料均在普通值函数体，Stage／空Map的同一通用代码交接已经实现，尚待本类实际输入验证，状态沿.7.1.2保留。职责及实际验证范围见[架构](Architecture.md#tool-7-3-1-7-1)及[台账](Issues.md#c-021-7-9-7-3-1-7-1)。
+现有bc ir --module／--entry／--program查询与只读SDK消费同一事实；例如bootstrap/archive.b的layout、bootstrap/bindings.b各普通值函数以及applications/datasets.b应用入口。公共类型、枚举分支和JSON根字段的调整属于compiler接口演化，按原软件major规则处理；执行ABI独立。索引私有范围写由IndexedPrivateWrite明确区分，字段及语义见同名节，不能从直接写材料推定索引范围。直接写沿同一通用接收支持ValueCode、保留Stage及空Map后的Program；具体已验证范围与未知事实沿各自原台账记录。职责及实际验证范围见[架构](Architecture.md#tool-7-3-1-7-1)及[台账](FixedIssues.md#c-021-7-9-7-3-1-7-1)。
+
+#### 索引私有写删除的来源
+
+原dce确认StoreLocalIndexed的base..base+len没有needed Local时，在原删除点交接EliminatedOperation::IndexedPrivateWrite { component_count, index_type, byte_offset, scalar, origin }。component_count是原len的逻辑分量数，index_type是原index寄存器的Scalar，byte_offset是原word的静态字节偏移，scalar是原value寄存器的写入Scalar；origin持有同一写的原source_site／generated_origin。index项沿原IR表达字节偏移，不自动当作源数组元素下标；其实际值与运行地址没有采集，不能由类型或偏移推算为已取得。
+
+该变体沿同一删除Vec、递归及UnusedOperations／EliminatedOperations根交给ValueCode／Stage；空Map继续由Program接收。JSON成员kind为eliminated_private_write，target为indexed，字段为component_count、index_type、byte_offset、scalar、origin。直接写成员仍以target=direct区分，值删除仍为eliminated_value；SDK匹配同一公开枚举，result_types()及integer_division_results()对本变体为None，origin()借用原材料，不增加另一删除列表。
+
+逻辑范围、实际写宽度与字段字节位置分开。例如array<u32,4>可对应component_count=4、byte_offset=0、scalar=U32；含u32 tag和u64 amount的Pair按现行布局组成array<Pair,3>时，写amount可对应component_count=6、byte_offset=8、scalar=U64，一次写八字节不等于六个数组元素或六个四字节字。材料记录删除时原局部范围的长度，不保留临时起点base／Local／Reg、不与压缩后的同号槽重新绑定，不能将已删除范围冒充当前存储身份。原声明布局及运行地址观察仍由各自原所有者负责，不复制旧IR、值、布局、槽表或活跃性图。
+
+仅发生删除时记录，原needed判断、RHS可观察求值、数值、控制、访问及完成不变；有实际读取而保留的写不产生本删除事件。材料仅compiler，随原IR／模块／SDK快照及最后真实消费者释放，不保活指令、私有存储、阶段或运行资源，不进入必要执行编码；没有材料不证明未发生，未知原来源仍为null。现有bc ir --module／--program／--entry与SDK查询消费同一真实根，公共枚举分支按原软件major规则演化。职责及状态见[架构](Architecture.md#tool-7-3-1-7-2)和[台账](FixedIssues.md#c-021-7-9-7-3-1-7-2)。
 
 #### 空Map阶段移除的来源
 
