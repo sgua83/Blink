@@ -559,7 +559,7 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
         borrow.resources().map_sources(|source|match source{
             view::Source::Data(ValueIdentity::ElementComponent(_)) if depth.is_some()=>view::Borrow::default(),
             view::Source::Data(ValueIdentity::ElementParent(parent,_)) if depth.is_some_and(|depth|parent<depth)=>view::Borrow::default(),
-            view::Source::Element{parent,fields}=>view::Borrow::element(external(*parent,depth),fields),
+            view::Source::Element{parent,fields,index}=>view::Borrow::element(external(*parent,depth),fields,index),
             view::Source::Projection{parent,fields}=>view::Borrow::projection(external(*parent,depth),fields),
             source=>view::Borrow::source(source),
         })
@@ -606,6 +606,10 @@ fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step],excl
                 if data.ownership.may_own()&&builder.application_element_scopes(&[],&parent,owner).iter().any(|(scope,complete)|scope.is_empty()&&*complete){return view::Borrow::default();}
             },
         }}
+        if let Some(Step::Index(Some(index)))=path.first(){
+            let selected=bounds::Operand::Constant(Scalar::U32,Bits::from(*index));
+            bindings.insert(ValueIdentity::ElementIndex(0),bounds::Proof::element_operand(selected,(*index,*index)));
+        }
         builder.bind_element_resource_borrows(data,&parent,&mut bindings);
         let out=if path.is_empty(){model(builder,&data.elements,path,excluded,true,&omitted,Some(&bindings),&passed,transferred,cleanup)}
             else if let Some(step@Step::Index(_))=path.first(){model(builder,&data.elements,&path[1..],&without(excluded,step),true,&omitted,Some(&bindings),&passed,transferred,cleanup)}

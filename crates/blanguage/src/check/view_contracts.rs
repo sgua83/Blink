@@ -167,7 +167,7 @@ pub(super) fn resource_output_mut(value:&mut returns::Returned,index:usize)->Opt
 pub(super) fn resource_output_name(value:&returns::Returned,index:usize)->Option<Borrow>{
     let(root,path)=resource_output_paths(value).get(index)?.clone();let data=root_resource(value,root)?;
     let mut name=view::resource_borrow(data);
-    for fields in path{name=Borrow::element(name,fields);}Some(name)
+    let depth=path.len();for(at,fields)in path.into_iter().enumerate(){name=Borrow::element(name,fields,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth-1-at))));}Some(name)
 }
 pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(usize)->Borrow){
     let count=resource_output_paths(value).len();for index in 0..count{if let Some(data)=resource_output_mut(value,index){data.root.proof=data.root.proof.clone().with_view_borrow(0,borrow(index));}}
@@ -226,8 +226,8 @@ impl Function {
     fn input(&self,id:ValueIdentity)->bool {match id{ValueIdentity::Register(n)=>n<self.input_width,ValueIdentity::ParameterContent(..)|ValueIdentity::ResourceParameter(..)|ValueIdentity::ParameterStorage(..)|ValueIdentity::DatasetContent(..)=>true,_=>false}}
     fn address_borrows(&self,borrow:Borrow,when:bounds::Condition)->Option<(Borrow,bounds::Condition)>{
         let selected=borrow.map_sources(|source|match source {
-            Origin::Parameter(id)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
-                .map(|id|Borrow::source(Origin::Parameter(id))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
+            Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
+                .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,self)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
             Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}) =>
                 {
                     let mut origin=(*origin).clone();
@@ -273,8 +273,8 @@ impl Function {
             let parameters=residency::input_parameters(&function.parameters,function.input_width);
             borrow.map_sources(|source|match source{
                 Origin::Data(id)=>function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
-                Origin::Parameter(id)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
-                Origin::Element{parent,fields}=>Borrow::element(external(function,*parent),fields),
+                Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
+                Origin::Element{parent,fields,index}=>Borrow::element(external(function,*parent),fields,input_index(index,function)),
                 Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent),fields),
                 Origin::Position(origin)=>origin.resources(),
                 Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
@@ -290,7 +290,7 @@ impl Function {
         fn inputs(borrow:&Borrow,function:&Function)->Borrow {
             borrow.map_sources(|source|match source {
                 Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))=>Borrow::default(),
-                Origin::Element{parent,fields}=>Borrow::element(inputs(&parent,function),fields),
+                Origin::Element{parent,fields,index}=>Borrow::element(inputs(&parent,function),fields,index),
                 Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function),fields),
                 Origin::Position(origin)=>origin.map_borrows(|borrow|inputs(borrow,function)).normalize(),
                 source=>Borrow::source(source),
@@ -368,7 +368,7 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
     let mut value=Borrow{..Borrow::default()};
     for(source,when)in borrow.sources.entries() {
         let resolved=match source {
-            Origin::Element{parent,fields}=>Borrow::element(evaluate(parent,function,state,known,expand_loops),fields.clone()),
+            Origin::Element{parent,fields,index}=>Borrow::element(evaluate(parent,function,state,known,expand_loops),fields.clone(),*index),
             Origin::Projection{parent,fields}=>Borrow::projection(evaluate(parent,function,state,known,expand_loops),fields.clone()),
             Origin::Position(origin)=>origin.map_borrows(|root|evaluate(root,function,state,known,expand_loops)).normalize(),
             source=>Borrow::source(source.clone()),
@@ -383,6 +383,9 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
         value.union(&evaluate(&actual,function,state,known,expand_loops).restricted(&when));
     }value
 }
+fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
+    index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
+}
 fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<ValueIdentity,Borrow>)->Borrow {
     let parameters=function.parameters.iter().map(|(a,b)|(*a,bounds::Proof::default().with_identity(*b))).collect();
     let renamed=|source|match source {
@@ -393,8 +396,8 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
             else if let Some(outputs)=exposed.get(&id){outputs.clone()}
             else{Borrow::source(Origin::Unresolved)}
         }
-        Origin::Parameter(id)=>Borrow::source(function.parameters.get(&id).copied().map(Origin::Parameter).unwrap_or(Origin::Unresolved)),
-        Origin::Element{parent,fields}=>Borrow::element(canonical(*parent,function,None,exposed),fields),
+        Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
+        Origin::Element{parent,fields,index}=>Borrow::element(canonical(*parent,function,None,exposed),fields,input_index(index,function)),
         Origin::Projection{parent,fields}=>Borrow::projection(canonical(*parent,function,None,exposed),fields),
         Origin::Position(origin)=>{
             let mut value=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,exposed));

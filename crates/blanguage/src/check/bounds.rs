@@ -402,9 +402,9 @@ impl Proof {
     pub(super) fn with_view_borrow(mut self,component:usize,borrow:view::Borrow)->Self {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;self
     }
-    pub(super) fn view_parameters(mut self, ty: &Ty, identity: impl Fn(usize) -> ValueIdentity) -> Self {
+    pub(super) fn view_parameters(mut self, ty: &Ty, indices:&[Option<Operand>], identity: impl Fn(usize) -> ValueIdentity) -> Self {
         for at in view_contracts::components(ty) {
-            self = self.with_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at))]));
+            self = self.with_view_sources(at, BTreeSet::from([view::Source::Parameter(identity(at),indices.to_vec())]));
         }
         self
     }
@@ -514,7 +514,7 @@ impl Proof {
         ids.into_inner()
     }
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,Proof>)->Self {
-        let mut bindings=self.scalar_identities().into_iter().map(|id|(id,Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id))))).collect::<BTreeMap<_,_>>();
+        let mut bindings=self.scalar_identities().into_iter().map(|id|(id,Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new()))))).collect::<BTreeMap<_,_>>();
         bindings.extend(values.iter().map(|(id,proof)|(*id,proof.clone())));
         let mut proof=self.at_call(&bindings);
         proof.views=self.views.iter().map(|borrow|borrow.substitute_values(values)).collect();
@@ -2513,10 +2513,13 @@ impl Condition {
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
-        let selected=ValueIdentity::ElementIndex(depth);
-        let facts=match index{
-            Operand::Value(actual)=>[Fact::equal(selected,actual)].into(),
-            Operand::Constant(_,bits)=>[Fact::Minimum(selected,Scalar::U32,bits),Fact::Maximum(selected,Scalar::U32,bits)].into(),
+        Self::index_equal(Operand::Value(ValueIdentity::ElementIndex(depth)),index)
+    }
+    pub(super) fn index_equal(a:Operand,b:Operand)->Self {
+        let facts=match(a,b){
+            (Operand::Constant(_,a),Operand::Constant(_,b))=>return Self::constant(a==b),
+            (Operand::Value(a),Operand::Value(b))=>[Fact::equal(a,b)].into(),
+            (Operand::Value(id),Operand::Constant(_,bits))|(Operand::Constant(_,bits),Operand::Value(id))=>[Fact::Minimum(id,Scalar::U32,bits),Fact::Maximum(id,Scalar::U32,bits)].into(),
         };
         Self::guard(Clause::facts(facts))
     }

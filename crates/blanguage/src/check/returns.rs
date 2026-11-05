@@ -375,7 +375,7 @@ impl Builder<'_> {
         fn projected(data:&application::Data,index:Option<bounds::Operand>,word:u32)->Position {
             let layout=address::Layout::of(&data.ty);
             let origin=address::Origin{
-                root:address::Root::Dataset{borrow:view::Borrow::source(view::Source::Parameter(data.root.identity())),index},
+                root:address::Root::Dataset{borrow:view::Borrow::source(view::Source::Parameter(data.root.identity(),Vec::new())),index},
                 base:layout.clone(),layout:layout.clone(),words:layout.parts.iter().map(|(_,word)|*word).collect(),
                 positions:Arc::from([]),writable:true,initialized:vec![false;layout.parts.len()].into(),
             };

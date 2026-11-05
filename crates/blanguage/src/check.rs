@@ -1526,7 +1526,7 @@ fn function_parameters(
             if ty.owns_resources() {
                 let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
                 inputs.extend(&regs);parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
-                let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));
+                let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
                 let mut value=b.incoming_owned_value(Value{ty,regs,proof,literal:false,uniform:false,constant:None});
                 value.borrow();residency::parameter(&mut value,parameter_index);
                 b.bind_owned_value(&p.name,value,p.span)?;continue;
@@ -1575,7 +1575,7 @@ fn function_parameters(
             }
             if place.ty().owns_resources(){
                 let ty=place.ty().clone();let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect();
-                let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
+                let proof=if p.access==Access::InOut{bounds::Proof::parameter_content(parameter_index,ty.components.len()).view_parameters(&ty,&[],|i|ValueIdentity::ParameterContent(parameter_index,i))}else{bounds::Proof::default()};
                 let value=Value{ty,regs,proof,uniform:false,literal:false,constant:None};
                 let returns::Returned::OwnedValue(mut value)=b.template_returned(value,p.access==Access::InOut)else{unreachable!()};
                 if p.access==Access::InOut{residency::parameter(&mut value,parameter_index);}
@@ -1588,7 +1588,7 @@ fn function_parameters(
                         bounds::Proof::parameter_content(
                             parameter_index,
                             place.ty().components.len(),
-                        ).view_parameters(place.ty(), |i| ValueIdentity::ParameterContent(parameter_index,i))
+                        ).view_parameters(place.ty(),&[], |i| ValueIdentity::ParameterContent(parameter_index,i))
                     } else {
                         bounds::Proof::default()
                     },
@@ -1605,7 +1605,7 @@ fn function_parameters(
             parameters.push(CallParameter::value(ty.clone()).with_origin(origin.clone()));
         }
         if ty.owns_resources() {
-            let proof=bounds::Proof::default().view_parameters(&ty,|i|ValueIdentity::Register(regs[i]));
+            let proof=bounds::Proof::default().view_parameters(&ty,&[],|i|ValueIdentity::Register(regs[i]));
             let mut result = b.incoming_owned_value(Value {
                 ty,
                 regs,
@@ -1621,7 +1621,7 @@ fn function_parameters(
         b.env.insert(
             p.name.clone(),
             Binding::Value(Value {
-                proof: bounds::Proof::default().view_parameters(&ty, |i| ValueIdentity::Register(regs[i])),
+                proof: bounds::Proof::default().view_parameters(&ty,&[], |i| ValueIdentity::Register(regs[i])),
                 literal: false,
                 ty,
                 regs,

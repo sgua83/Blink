@@ -262,7 +262,7 @@ impl Builder<'_> {
                     let mut references=binding.view_borrow().owners();
                     for data in binding.application_resources(){references.union(&builder.owned_resource_borrow(data).owners());}
                     references=references.restricted(&builder.path);
-                    borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|when.overlaps(&references.sources.when(source)))
+                    borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|references.overlaps_source(source,&when))
                 }).map(|(name,_)|name.clone()).collect::<Vec<_>>();
             names.sort_by_key(|name|name.strip_prefix("\0argument:").unwrap().parse::<usize>().unwrap());
             let owners=names.into_iter().map(|name|builder.env.remove(&name).unwrap()).collect();

@@ -56,7 +56,7 @@ impl Origin {
     pub fn symbolic_input(&self)->bool {
         match &self.root {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().any(|source|match source {
-                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..))=>true,
+                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..)|ValueIdentity::DatasetContent(..),_)=>true,
                 view::Source::Position(origin)=>origin.symbolic_input(),
                 _=>false,
             }),
@@ -67,7 +67,7 @@ impl Origin {
         match &self.root {
             Root::Derived(borrow)|Root::Dataset{borrow,..}=>borrow.sources.iter().all(|source|match source {
                 view::Source::Position(origin)=>origin.layout==self.base&&origin.layout_valid(),
-                view::Source::External|view::Source::Parameter(_)|view::Source::Inactive=>true,
+                view::Source::External|view::Source::Parameter(..)|view::Source::Inactive=>true,
                 _=>false,
             }),
             _=>true,
@@ -379,7 +379,7 @@ impl InitializationRead {
     pub fn complete(&self)->bool {
         fn input(position:&Position)->bool {match position {
             Position::Borrowed(borrow,..)=>!borrow.empty()&&borrow.sources.iter().all(|source|match source {
-                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..))=>true,
+                view::Source::Parameter(ValueIdentity::Register(_)|ValueIdentity::ParameterContent(..),_)=>true,
                 view::Source::Position(origin)=>origin.symbolic_input()&&!origin.has_local(),
                 _=>false,
             })&&borrow.inputs.is_empty()&&borrow.calls.is_empty(),

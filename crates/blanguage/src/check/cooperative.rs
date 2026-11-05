@@ -268,7 +268,7 @@ impl<'a> Builder<'a> {
                     self.check_view_requirement(view::Requirement::Unborrowed{resource:self.data_borrow(&reference.sources),borrow:retained.clone(),ownership:false,span})?;
                     for path in view::resource_paths(reference.element_layout().1){
                         let mut fields=reference.projection.clone();fields.extend(path);
-                        let resource=view::Borrow::element(self.data_value_borrow(&reference.data),fields);
+                        let resource=view::Borrow::element(self.data_value_borrow(&reference.data),fields,None);
                         self.check_view_requirement(view::Requirement::Unborrowed{resource,borrow:retained.clone(),ownership:true,span})?;
                     }
                 }

@@ -68,7 +68,7 @@ impl Module {
     pub(super) fn writes_only_references(&self,name:&str)->bool {
         fn references(borrow:&view::Borrow)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
-                view::Source::Parameter(ValueIdentity::ParameterStorage(_))=>true,
+                view::Source::Parameter(ValueIdentity::ParameterStorage(_),_)=>true,
                 view::Source::Position(origin)=>match &origin.root {
                     address::Root::Parameter(_)=>true,
                     address::Root::Derived(borrow)=>references(borrow),
@@ -296,7 +296,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     for(parameter,p)in builder.definition.function.params.iter().enumerate(){
         if p.access!=Access::Value && !p.ty.dataset && !p.ty.tile {
             let id=ValueIdentity::ParameterStorage(parameter);
-            bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id))));
+            bindings.insert(id,bounds::Proof::default().with_identity(id).with_view_borrow(0,view::Borrow::source(view::Source::Parameter(id,Vec::new()))));
         }
         if matches!(p.access,Access::Read|Access::InOut) && let Some(place)=builder.env.get(&p.name).and_then(Binding::stored_place){
             for component in 0..place.ty().components.len(){let id=ValueIdentity::ParameterContent(parameter,component);bindings.insert(id,bounds::Proof::default().with_identity(id));}
@@ -307,7 +307,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
     for(index,model)in written.iter().enumerate(){if let Some(value)=model.as_ref().and_then(Returned::view_value){builder.view_model.capture(&value.proof,&value.ty,|component|view_contracts::Output::Written(index,component));}}
     application::canonical_element_inputs(builder,&mut bindings);
     let sources=returned.iter().chain(written.iter().flatten()).flat_map(application::element_parameter_sources).collect::<BTreeSet<_>>();
-    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target)]));}}
+    for id in sources{if let Some(proof)=bindings.get_mut(&id) && let Some(target)=proof.known_identity(0){*proof=proof.clone().with_view_sources(0,BTreeSet::from([view::Source::Parameter(target,Vec::new())]));}}
     if let Some(value)=&returned{builder.view_model.capture_resources(value,view_contracts::Output::ReturnedResource);}
     for(parameter,value)in written.iter().enumerate(){if let Some(value)=value{builder.view_model.capture_resources(value,|resource|view_contracts::Output::WrittenResource(parameter,resource));}}
     for call in &builder.view_model.calls {
@@ -337,7 +337,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
                     bindings.insert(ValueIdentity::Register(source.root.regs[0]),bound);
                     view::Borrow::source(view::Source::Data(identity)).at_call(&bindings)
                 }else{view::Borrow::source(view::Source::Data(ValueIdentity::Register(target.root.regs[0])))};
-                let name=scope.iter().fold(name,|parent,fields|view::Borrow::element(parent,fields.clone()));
+                let name=scope.iter().enumerate().fold(name,|parent,(at,fields)|view::Borrow::element(parent,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(scope.len()-1-at)))));
                 builder.view_model.resource_names.insert(output,name);
             }
             if !scope.is_empty(){if let Some(source)=view_contracts::resource_output_mut(&mut original,resource){
@@ -618,13 +618,13 @@ impl Builder<'_> {
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
                     if p.access==Access::Write&&d.execution==crate::execution::Requirement::Invocation {
                         let borrow=if reference.root.ty.components[0].0==Scalar::U64&&reference.projection.is_empty() {
-                            view::Borrow::source(view::Source::Parameter(reference.root.identity()))
+                            view::Borrow::source(view::Source::Parameter(reference.root.identity(),Vec::new()))
                         }else{
                             let layout=address::Layout::of(reference.element_layout().1);
                             let base=address::Layout::of(&reference.data.ty);
                             let words=reference.words();
                             let raw=reference.root.ty.components[0].0==Scalar::U64;
-                            let root=if raw {address::Root::Derived(view::Borrow::source(view::Source::Parameter(reference.root.identity())))}
+                            let root=if raw {address::Root::Derived(view::Borrow::source(view::Source::Parameter(reference.root.identity(),Vec::new())))}
                                 else{address::Root::Resource(view::resource_borrow(&reference.data))};
                             let positions=if raw{Arc::from([])}else{
                                 let scope=reference.initialization.as_ref().unwrap();
@@ -1180,7 +1180,7 @@ fn lower_dataset_borrows<'a>(
                                 if !path.possible(){continue;}
                                 let view::Source::Position(origin)=source else{continue};
                                 for(source,when)in origin.resources().sources.entries() {
-                                    if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input))if *input==borrow.input){continue;}
+                                    if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input),_)if *input==borrow.input){continue;}
                                     if !bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true).possible(){continue;}
                                     regions.extend(origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*word,scalar.size())));
                                 }
