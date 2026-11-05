@@ -1051,8 +1051,11 @@ impl Builder<'_> {
                 if !result.value.ty.has_variants() {
                     for i in (0..result.value.ty.aggregate_len()).rev() {
                         if result.value.ty.aggregate_part(i).1.owns_resources() {
-                            let field = self.unpack_record(&result, i);
-                            self.drop_returned(field,retained,span)?;
+                            let field=self.unpack_record(&result,i);
+                            result.payloads[i].as_deref_mut().unwrap().restrict_owned(&owned_presence::Presence::None);
+                            let mut remaining=retained.clone();
+                            result.cleanup_borrow(&BTreeSet::new(),&mut remaining);
+                            self.drop_returned(field,&remaining,span)?;
                         }
                     }
                     return Ok(());

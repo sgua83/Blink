@@ -160,7 +160,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
-      "sha256": "f8b75599cc12fa9c6079b3fbeb20aa845b7a68df23166ec3df00ceafee58cc68"
+      "sha256": "3b7692f573173ae8e6532a55a0715ff9be5feb50dc26e66a1a453194d704f81a"
     },
     {
       "path": "crates/blanguage/src/check/ownership.rs",
@@ -353,6 +353,10 @@
     {
       "path": "sample/lessons/map.b",
       "sha256": "82e03d5236d4a884cc9c4cd3c1145738d9dd79b43a577373f12e50d2fab949d9"
+    },
+    {
+      "path": "crates/blanguage/src/check/user_owned.rs",
+      "sha256": "10c2a36fc3dbc53429e65d530d5c84ebdfa432b70278f4dad57b29fe33933655"
     }
   ],
   "excerpts": [
