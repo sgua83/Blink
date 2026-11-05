@@ -350,7 +350,7 @@ pub(super) fn expression(
             OutputCondition::Constant(value) => {
                 return Ok(atom(
                     values,
-                    builder.constant_value(value.ty.clone(), value.bits.clone(),None),
+                    builder.evaluated_constant(value.ty.clone(), value.bits.clone(), value.generated_origin.clone()),
                     span,
                 ));
             }
@@ -508,12 +508,12 @@ fn bind_constants(
             if definition.public && !world.functions[&key].public {
                 return definition.source.fail(span, "B225", "公开输出条件的模块常量必须在接口中可见");
             }
-            let (ty, bits) = constant_value(world, &key)?;
-            OutputCondition::Constant(OutputConstant { ty, bits })
+            let (ty, bits, generated_origin) = constant::evaluate(world, &key, &[])?;
+            OutputCondition::Constant(OutputConstant { ty, bits, generated_origin })
         }
-        OutputCondition::StaticU32(value) => OutputCondition::Constant(OutputConstant {
-            ty: Ty::scalar(Scalar::U32), bits: vec![Bits::from(*value)],
-        }),
+        OutputCondition::StaticU32(value) => OutputCondition::Constant(OutputConstant::new(
+            Ty::scalar(Scalar::U32), vec![Bits::from(*value)],
+        )),
         OutputCondition::Member(base, field) => {
             let base = bind_constants(world, definition, base, span)?;
             if let OutputCondition::Constant(value) = base {
@@ -522,13 +522,15 @@ fn bind_constants(
                         return definition.source.fail(span, "B225", "输出条件使用声明的变体名称");
                     };
                     OutputConstant { ty: Ty::scalar(Scalar::Bool),
-                        bits: vec![Bits::from(value.bits[0] == Bits::from(variant.discriminant))] }
+                        bits: vec![Bits::from(value.bits[0] == Bits::from(variant.discriminant))],
+                        generated_origin: value.generated_origin }
                 } else if value.ty.array.is_some() && field == "length" {
                     OutputConstant { ty: Ty::scalar(Scalar::U32),
-                        bits: vec![Bits::from(value.ty.values[0])] }
+                        bits: vec![Bits::from(value.ty.values[0])], generated_origin: value.generated_origin }
                 } else {
                     let (ty, components) = member_type(&value.ty, field, definition.source, span)?;
-                    OutputConstant { ty, bits: components.iter().map(|i| value.bits[*i]).collect() }
+                    OutputConstant { ty, bits: components.iter().map(|i| value.bits[*i]).collect(),
+                        generated_origin: value.generated_origin }
                 };
                 OutputCondition::Constant(selected)
             } else {
@@ -567,7 +569,8 @@ impl IdentityTerm<'_> {
             // A conversion without a compile-time value remains the original
             // expression and uses its existing lowering; no invented bits.
             self.value = match bits {
-                Some(bits) => OutputCondition::Constant(OutputConstant { ty, bits }),
+                Some(bits) => OutputCondition::Constant(OutputConstant { ty, bits,
+                    generated_origin: value.generated_origin.clone() }),
                 None => self.original.clone(),
             };
         }
@@ -577,7 +580,7 @@ fn identity<'a>(value: &'a OutputCondition,
     path: &impl Fn(&OutputCondition) -> Result<Ty>, source: &Source, span: Span,
 ) -> Result<IdentityTerm<'a>> {
     let constant = |ty: Ty, bits: Vec<Bits>, literal| IdentityTerm {
-        value: OutputCondition::Constant(OutputConstant { ty: ty.clone(), bits }),
+        value: OutputCondition::Constant(OutputConstant::new(ty.clone(), bits)),
         original: value, ty: Some(ty), literal,
     };
     Ok(match value {
@@ -588,7 +591,9 @@ fn identity<'a>(value: &'a OutputCondition,
         }
         OutputCondition::Bool(value) => constant(Ty::scalar(Scalar::Bool), vec![Bits::from(*value)], false),
         OutputCondition::StaticU32(value) => constant(Ty::scalar(Scalar::U32), vec![Bits::from(*value)], false),
-        OutputCondition::Constant(value) => constant(value.ty.clone(), value.bits.clone(), false),
+        OutputCondition::Constant(constant) => IdentityTerm {
+            value: value.clone(), original: value, ty: Some(constant.ty.clone()), literal: false,
+        },
         OutputCondition::Name(_) | OutputCondition::Member(..) => IdentityTerm {
             value: value.clone(), original: value, ty: None, literal: false,
         },

@@ -526,7 +526,7 @@ JSON的reason与锚点kind均为unary_constant_fold；operation按原UnaryOp拼�
 
 实际运算包括FloatNegate、SignedNegate、UnsignedNegate、LogicalNot与BitNot，仍消费原位宽截断、环绕和浮点符号位规则，不重新解释源码或另作求值。单目加号只交回已验证原值，没有新运算事件。Unary(-,Number)由negative_number完成负字面量定型，特别是i32／i64最小值，不虚构同型正输入或普通SignedNegate；其原Constant及SourceSite、源码快照保留最终类型、位模式与原表达式。
 
-后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；输出契约、阶段Root::Literal、形状及变体编号只返回原类型／整数时，最终结果仍未交接这份来源，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
+后续复用／删除沿已有OperationOrigin及原ValueCode／Stage／Program根交接该事实，DCE不保活操作；运行期Unary不会得到常量折叠材料。材料仅compiler，随原IR及最后查询消费者释放，不留旧IR、AST／World或运行资源，不进入必要执行编码。模块const普通读取沿下节交接；阶段Root::Literal、形状及变体编号只返回原类型／整数时，最终结果仍未交接这份来源，见[未完成范围](Issues.md#c-021-7-9-7-3-1-9-1-3)；不能把临时Builder中的材料当作最终能力。见[架构](Architecture.md#tool-7-3-1-9-1-1)。
 
 
 
@@ -538,7 +538,7 @@ module_constant与具名条件输出的常量读取共用evaluated_constant，�
 
 JSON reason及锚点kind均为module_constant_evaluation，definition为真实原source_definition或null，constant为实际完整常量名，operations是已有operation_origin数组，成员保留原语法及generated_origin。anchor().origin()借用可用原定义，instance()返回实际常量全名；单源syntax()／trigger()为空，不能用常量定义冒充一条用户表达式。源码常量保存原不可变来源；已编译接口缺失提供者定义时仍为null，保留实际常量名和实际取得的运算事实，不把接口求值当作提供者实现源码或IR。
 
-材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出沿下节交接；类型化OutputConstant及其物化仍未交接求值来源，阶段Root::Literal、形状和变体编号也各有原缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
+材料仅compiler，在原求值结果、新Constant及原CSE／DCE／空Map根间共享，最后IR消费者后释放，不进入必要对象／执行编码、不拥有运行资源或增加常量缓存／追踪表。原类型、数值、Proof、literal和执行保持。只验证合法性的求值没有结果IR，不伪造函数体；没有实际结果分量时不造Constant。具名B函数与外部C声明的直接条件输出，以及签名绑定的类型化OutputConstant及其物化，沿下两节交接；阶段Root::Literal、形状和变体编号仍有原缺口，见[未完成接收者](Issues.md#c-021-7-9-7-3-1-9-1-3)。本节不承诺保存所有未消费临时求值的完整编译历史，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-1)。
 
 
 
@@ -548,7 +548,17 @@ JSON reason及锚点kind均为module_constant_evaluation，definition为真实�
 
 新事实沿已有module_constant_evaluation编码；它解释实际常量求值，不冒充条件自身全部运算、运行执行或逐结果因果图。原公开条件引用常量的可见性、数值／Proof、条件输出许可与初始化判断保持。真实源码与已编译接口的未知范围沿原定义合同，不从当前读取点猜补提供者来源；后续CSE／DCE及空Map根沿同一OperationOrigin持有材料，不保活操作或建立第二合同状态。
 
-此路径仅compiler，最后IR消费者后释放，不进入必要对象／执行编码或拥有运行资源。函数指针签名先绑定为OutputConstant，绑定与已绑定常量的物化仍各自待实现来源交接，不能用本直接Name分支宣称完成，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-2-1)及[剩余接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-2)。
+此路径仅compiler，最后IR消费者后释放，不进入必要对象／执行编码或拥有运行资源。函数指针签名先绑定为OutputConstant，其独立交接见下节；不能用直接Name分支替代该结果所有者，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-2-1)。
+
+#### 绑定输出契约的类型化常量来源
+
+OutputConstant继续用ty与bits表示原合同数值；在compiler配置另有可选generated_origin，类型为Option<Arc<GeneratedOrigin>>。OutputConstant::new(ty,bits)只建立数值，来源为空。原bind_constants消费同一constant::evaluate的类型、位模式及可选ModuleConstantEvaluation，随原OutputCondition::Constant与实际cfn签名持有，不重求值或另建常量表。
+
+字段投影、数组length、变体选择以及原数值规范化中的转换保留输入常量的共享材料；已有Constant经过identity时直接克隆。材料仍表示输入常量的实际求值，不单独声称保存投影／转换本身或逐分量的完整因果图。普通字面值没有已取得材料时保持为空，不能按类型或位模式查找、猜补来源。
+
+OutputConstant的PartialEq／Eq、PartialOrd／Ord及原合同去重仍只消费ty与bits；来源不同不产生新函数签名或改变数值／Proof身份。必要对象编码仍只写原ty与bits，解码恢复同一数值并使generated_origin为空；runtime-only配置没有该字段。对象／缓存材料不因本字段增加版本或调试数据，不能把未编码来源写成跨对象保留能力。
+
+实际输出条件的convert消费已绑定Constant时，共用Builder::evaluated_constant，把同一材料交给原Constant指令；直接source_site保持实际条件位置。已有ContractCondition或原复用／删除来源通过retained继续持有它，不为观察保活操作，也不增加运行指令。材料沿原签名／类型化结果及IR所有者，在最后编译／查询消费者结束后释放，不保留AST／World、临时IR或运行资源。见[绑定职责](Architecture.md#tool-7-3-1-9-1-3-1-2-2)及[物化职责](Architecture.md#tool-7-3-1-9-1-3-1-2-3)。
 
 
 

@@ -231,11 +231,22 @@ pub enum OutputCondition {
     StaticU32(u32),
     Constant(OutputConstant),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct OutputConstant {
     pub ty: crate::ir::Ty,
     pub bits: Vec<crate::ir::Bits>,
+    #[cfg(feature = "compiler")]
+    pub generated_origin: Option<std::sync::Arc<crate::ir::GeneratedOrigin>>,
 }
+impl OutputConstant {
+    pub fn new(ty: crate::ir::Ty, bits: Vec<crate::ir::Bits>) -> Self {
+        Self { ty, bits, #[cfg(feature = "compiler")] generated_origin: None }
+    }
+}
+impl PartialEq for OutputConstant {
+    fn eq(&self, other: &Self) -> bool { self.ty == other.ty && self.bits == other.bits }
+}
+impl Eq for OutputConstant {}
 impl PartialOrd for OutputConstant {
     fn partial_cmp(&self, other:&Self)->Option<std::cmp::Ordering>{Some(self.cmp(other))}
 }
