@@ -219,7 +219,26 @@ impl ApplicationLoads<'_, '_> {
     fn byte_overlap(a:&std::ops::Range<u128>,b:&std::ops::Range<u128>)->bool {a.start<b.end&&b.start<a.end}
     fn store_overlaps(&self,load:&Inst,source:&IndexedSource,offset:Option<Reg>,word:u32,scalar:Scalar)->bool {
         let InstKind::ViewLoad{dst,address,index,stride,word:read_word}=&load.kind else{return false;};
-        let(other,other_index,other_stride,same_stride)=match source{
+        let position = |parts:[Reg;2]| -> Option<&ir::CallReference> {
+            let InstKind::Cast{src:low,..}=&self.definition(parts[0])?.1.kind else{return None;};
+            let InstKind::Cast{src:high,..}=&self.definition(parts[1])?.1.kind else{return None;};
+            let InstKind::Binary{op:ir::BinaryOp::ShiftRightLogical,a,b,..}=&self.definition(*high)?.1.kind else{return None;};
+            if self.constant(*b)!=Some(32)||!self.same(*low,*a){return None;}
+            let InstKind::PositionAddress{address,..}=&self.definition(*low)?.1.kind else{return None;};
+            Some(address)
+        };
+        let mut selected=source;let mut written_word=u128::from(word);
+        while let IndexedSource::Pointer{address,index,stride,..}=selected {
+            let Some(reference)=position(*address)else{break;};
+            let ir::CallStorage::Indexed(storage)=&reference.storage else{break;};
+            let pointer_offset=if *stride==0{0}else{
+                let Some(index)=self.constant(*index)else{return true;};u128::from(index)*u128::from(*stride)
+            };
+            let offset=match reference.offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>u128::from(value),None=>return true}};
+            written_word+=pointer_offset+offset+u128::from(reference.word);
+            selected=storage;
+        }
+        let(other,other_index,other_stride,same_stride)=match selected{
             IndexedSource::View{address,index,stride:other} => (address,index,self.stride(*other),self.same_stride(*stride,*other)),
             IndexedSource::Pointer{address,index,stride:other,..} => (address,index,Some(u64::from(*other)),self.stride(*stride)==Some(u64::from(*other))),
             _=>return true,
@@ -232,8 +251,8 @@ impl ApplicationLoads<'_, '_> {
         let offset=match offset {None=>0,Some(reg)=>match self.constant(reg){Some(value)=>value,None=>return true}};
         let size=u128::from(self.0.registers[*dst].size());let other_size=u128::from(scalar.size());
         let (a,b)=if let(Some(a),Some(b),Some(stride),Some(other_stride))=(self.constant(*index),self.constant(*other_index),self.stride(*stride),other_stride) {
-            (u128::from(a)*u128::from(stride)+u128::from(*read_word),u128::from(b)*u128::from(other_stride)+u128::from(offset)+u128::from(word))
-        }else if same_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+u128::from(word))}else{return true;};
+            (u128::from(a)*u128::from(stride)+u128::from(*read_word),u128::from(b)*u128::from(other_stride)+u128::from(offset)+written_word)
+        }else if same_stride&&self.same(*index,*other_index){(u128::from(*read_word),u128::from(offset)+written_word)}else{return true;};
         Self::byte_overlap(&(a..a+size),&(b..b+other_size))
     }
     fn call_memory_writes(&self,call:&Call,mut writes:impl FnMut(&view::Borrow)->bool)->bool {
