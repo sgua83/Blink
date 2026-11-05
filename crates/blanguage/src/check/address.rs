@@ -163,16 +163,22 @@ impl Origin {
     }
 
     pub fn memory_positions(&self,path:&bounds::Clause)->Option<Vec<Position>> {
-        let Root::External(Identity::Storage(borrow))=&self.root else{return if matches!(&self.root,Root::External(_)){None}else{Some(self.positions.to_vec())};};
+        let borrow=match &self.root {
+            Root::External(Identity::Storage(borrow))|Root::Derived(borrow)=>borrow,
+            Root::Resource(borrow)|Root::Dataset{borrow,..}=>return Some(self.words.iter().map(|word|Position::Borrowed(Arc::new(borrow.clone()),self.base.clone(),*word)).collect()),
+            Root::External(_)=>return None,
+            _=>return Some(self.positions.to_vec()),
+        };
         if borrow.empty()||borrow.pending(){return None;}
         let mut positions=Vec::new();
         for(source,when)in borrow.sources.entries(){
-            if !bounds::Condition::guard(when).assume(path,true).possible(){continue;}
+            let when=bounds::Condition::guard(when).assume(path,true);if !when.possible(){continue;}
             let view::Source::Position(parent)=source else{return None;};
-            if parent.positions.len()!=parent.layout.parts.len()&&!matches!(parent.root,Root::Resource(_)){return None;}
+            let positions_at_parent=parent.memory_positions(&when)?;
+            if positions_at_parent.len()!=parent.layout.parts.len(){return None;}
             for((scalar,_),word)in self.layout.parts.iter().zip(self.words.iter()) {
                 let end=u64::from(*word)+u64::from(scalar.size());if end>u64::from(parent.layout.size){return None;}
-                for(index,(actual,offset))in parent.layout.parts.iter().enumerate(){if u64::from(*offset)<end&&u64::from(*word)<u64::from(*offset)+u64::from(actual.size()){positions.extend(parent.positions.get(index).cloned());}}
+                for(index,(actual,offset))in parent.layout.parts.iter().enumerate(){if u64::from(*offset)<end&&u64::from(*word)<u64::from(*offset)+u64::from(actual.size()){positions.push(positions_at_parent[index].clone());}}
             }
         }
         Some(positions)
@@ -295,7 +301,7 @@ impl crate::module::codec::Decode for Identity {
 pub(super) enum MemoryTarget { Value(Reg), Call(usize) }
 // External仅表示没有静态来源；不能把它当作与本函数实际存储不相交。
 #[derive(Default)]
-pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<MemoryAccess>}
+pub(super) struct MemoryEffect {external:Option<Access>,known:Vec<(Arc<Origin>,bounds::Clause,Access)>}
 pub(super) fn external_memory(borrow:&view::Borrow)->bool {
     borrow.sources.entries().any(|(source,when)|when.possible()&&match source {
         view::Source::External=>true,
@@ -310,8 +316,8 @@ pub(super) fn external_memory(borrow:&view::Borrow)->bool {
 impl MemoryEffect {
     pub fn of(borrow:&view::Borrow,access:Access)->Self {
         let external=external_memory(borrow).then_some(access);
-        let known=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,_)|match source{
-            view::Source::Position(origin)=>origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:if origin.writable{access}else{Access::Read}}).collect::<Vec<_>>(),
+        let known=borrow.sources.entries().filter(|(_,when)|when.possible()).flat_map(|(source,when)|match source{
+            view::Source::Position(origin)=>vec![(origin.clone(),when,if origin.writable{access}else{Access::Read})],
             _=>Vec::new(),
         }).collect();
         Self{external,known}
@@ -324,15 +330,19 @@ impl MemoryEffect {
         if self.external.is_some_and(|access|access.writes()){return true;}
         match position{
             Position::Initialized=>false,
-            Position::Local(slot)=>self.known.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Local{base,len}if(base..base+len).contains(slot))),
-            Position::Element(binding,_)=>self.known.iter().any(|effect|effect.access.writes()&&matches!(effect.alias,MemoryAlias::Data(actual)if actual==*binding)),
+            Position::Local(slot)=>self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Local{base,len}if(*base..*base+*len).contains(slot)))),
+            Position::Element(binding,_)=>self.known.iter().any(|(origin,_,access)|access.writes()&&origin.aliases().iter().any(|alias|matches!(alias,MemoryAlias::Data(actual)if actual==binding))),
+            Position::Borrowed(borrow,_,word) if !borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>self.known.iter().any(|(origin,when,access)|access.writes()&&origin.memory_positions(when).is_none_or(|positions|positions.iter().any(|position|match position {
+                Position::Borrowed(other,_,actual) if actual==word=>borrow.sources.entries().any(|(source,when)|other.overlaps_source(source,&when)),
+                _=>false,
+            }))),
             Position::Both(a,b)|Position::Conditional(_,a,b)=>self.writes_position(a)||self.writes_position(b),
             Position::Indexed(positions,_)=>positions.iter().any(|position|self.writes_position(position)),
-            _=>self.known.iter().any(|effect|effect.access.writes()),
+            _=>self.known.iter().any(|(_,_,access)|access.writes()),
         }
     }
     fn local_effects(&self,locals:&BTreeMap<usize,Ty>)->Vec<MemoryAccess> {
-        let mut effects=self.known.clone();
+        let mut effects=self.known.iter().flat_map(|(origin,_,access)|origin.aliases().into_iter().map(|alias|MemoryAccess{alias,access:*access})).collect::<Vec<_>>();
         if let Some(access)=self.external{effects.extend(locals.iter().map(|(end,ty)|MemoryAccess{alias:MemoryAlias::Local{base:*end-ty.components.len(),len:ty.components.len()},access}));}
         effects
     }
@@ -762,19 +772,47 @@ impl Builder<'_> {
     pub(super) fn defer_address_values(&mut self,memory:usize)->Vec<view_contracts::ValueSnapshot> {
         let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|(name.clone(),self.positions(&place)))).collect::<Vec<_>>();
         let mut snapshots=Vec::new();
-        for(name,positions)in owners {
-            let binding=self.env.get_mut(&name).unwrap();
-            let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
-            let width=owner.ty().components.len();let previous=std::mem::take(proof);
-            *proof=previous.borrow_state();
-            for(component,position)in positions.into_iter().enumerate() {
+        let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,positions:Vec<(usize,Position)>|{
+            let width=ty.components.len();let previous=proof.clone();proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);
+            for(component,position)in positions {
                 let identity=ValueIdentity::MemoryValue(memory,snapshots.len());
-                snapshots.push(view_contracts::ValueSnapshot{position,scalar:owner.ty().components[component].0,proof:previous.project(&[component],width)});
+                snapshots.push(view_contracts::ValueSnapshot{position,scalar:ty.components[component].0,proof:previous.project(&[component],width)});
                 *proof=std::mem::take(proof).with_component_identity(component,identity);
             }
             *uniform=false;
+        };
+        for(name,positions)in owners {
+            let binding=self.env.get_mut(&name).unwrap();
+            let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
+            capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect());
             if let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
         }
+        for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
+            let source=view::resource_borrow(data);let fields=view::resource_paths(&data.ty);
+            let paths=std::iter::once(None).chain(view_contracts::resource_output_paths(&data.elements).into_iter().enumerate().map(Some)).collect::<Vec<_>>();
+            for path in paths {
+                let(borrow,selected)=match path {
+                    None=>(source.clone(),&mut *data),
+                    Some((index,(root,path)))=>{
+                        let mut borrow=view::Borrow::element(source.clone(),fields[root].clone(),None);
+                        for fields in path{borrow=view::Borrow::element(borrow,fields,None);}
+                        let Some(selected)=view_contracts::resource_output_mut(&mut data.elements,index)else{continue;};(borrow,selected)
+                    },
+                };
+                if selected.ownership==application::Ownership::Moved{continue;}
+                let layout=Layout::of(&selected.ty);let borrow=Arc::new(borrow);
+                let metadata=view::resource_paths(&selected.ty).into_iter().filter_map(|fields|{
+                    application::model_data(&selected.elements,&fields)?;
+                    let(mut offset,mut ty)=(0,&selected.ty);
+                    for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+                    Some(offset..offset+ty.size)
+                }).collect::<Vec<_>>();
+                if let Some(value)=selected.elements.view_value_mut(){
+                    let positions=value.ty.components.iter().enumerate().filter(|(_,(_,word))|!metadata.iter().any(|range|range.contains(word))).map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
+                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions);value.constant=None;value.proof=bounds::Proof::capture(value);
+                }
+            }
+        });}
         snapshots
     }
     pub(super) fn call_address_memory(&mut self,memory:impl IntoIterator<Item=(view::Borrow,Option<Access>)>,span:Span)->Result<usize> {

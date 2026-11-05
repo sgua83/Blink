@@ -512,7 +512,7 @@ impl Proof {
         self.under_path(ty, aliases);
     }
     // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
-    fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
+    pub(super) fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
         let ids=std::cell::RefCell::new(self.origins.iter().flatten().copied().collect::<BTreeSet<_>>());
         let identity=|id|{ids.borrow_mut().insert(id);id};
         for domain in self.domains.iter().flatten(){map_domain(*domain,&identity);}

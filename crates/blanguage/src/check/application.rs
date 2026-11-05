@@ -2419,7 +2419,7 @@ fn binding_element_data<'a>(binding:&'a Binding,resource:usize)->Option<&'a Data
         _=>None,
     }
 }
-fn each_binding_data(binding:&mut Binding,visit:&mut impl FnMut(usize,&[usize],&mut Data)) {
+pub(super) fn each_binding_data(binding:&mut Binding,visit:&mut impl FnMut(usize,&[usize],&mut Data)) {
     match binding {
         Binding::ApplicationData(data)=>visit(0,&[],data),
         Binding::DataReference(data)=>visit(0,&[],&mut data.data),
@@ -2578,7 +2578,7 @@ impl Builder<'_> {
         }
         fn owned(data:&Data,out:&mut ElementBindings){
             aliases(&data.root.proof.view_borrow(0),out);
-            if let Some(value)=data.elements.view_value(){aliases(&value.proof.typed_view_borrow(&value.ty),out);}
+            if let Some(value)=data.elements.view_value(){aliases(&value.proof.typed_view_borrow(&value.ty),out);for id in value.proof.scalar_identities(){if matches!(id,ValueIdentity::MemoryValue(..)){out.entry(id).or_insert_with(||bounds::Proof::default().with_identity(id));}}}
             for fields in view::resource_paths(&data.ty){if let Some(child)=model_data(&data.elements,&fields){owned(child,out);}}
         }
         let mut out=ElementBindings::new();owned(data,&mut out);

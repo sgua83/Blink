@@ -337,6 +337,7 @@ fn used_loops(functions:&BTreeMap<String,&Function>,closed:&BTreeMap<String,Inte
             }
         }
         for call in &function.calls{if contracts.contains(&call.function){roots.extend(call.arguments.values().map(bounds::Proof::borrowed_view));}}
+        for call in &function.calls{for snapshot in &call.snapshots{position_roots(&snapshot.position,&mut roots);}}
         let mut loops=BTreeSet::new();let mut calls=BTreeSet::new();
         while let Some(borrow)=roots.pop() {
             for source in &borrow.sources {
@@ -779,7 +780,8 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::default()).union(address::MemoryEffect::of(&borrow,access));
             }
             for(component,snapshot)in call.snapshots.iter().enumerate(){
-                let changed=values.get(&address::MemoryTarget::Call(call.memory)).is_some_and(|effect|effect.writes_position(&snapshot.position));
+                let position=match &snapshot.position{Position::Borrowed(borrow,layout,word)=>Position::Borrowed(Arc::new(evaluate(borrow,function,&known[name],&known,true)),layout.clone(),*word),position=>position.clone()};
+                let changed=values.get(&address::MemoryTarget::Call(call.memory)).is_some_and(|effect|effect.writes_position(&position));
                 let proof=if changed{bounds::Proof::default()}else{snapshot.proof.substitute_values(&resolved)};
                 resolved.insert(ValueIdentity::MemoryValue(call.memory,component),proof);
             }
