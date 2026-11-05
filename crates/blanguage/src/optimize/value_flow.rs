@@ -2,6 +2,8 @@
 use super::*;
 
 type LocalValues = BTreeMap<usize, Reg>;
+// Only pending origin facts for this invocation; SSA keys never enter retained metadata.
+type Reuses = BTreeMap<Reg, Vec<ExpressionReuse>>;
 
 fn merge(target: &mut Option<LocalValues>, other: Option<LocalValues>) {
     if let Some(other) = other {
@@ -81,7 +83,7 @@ impl Values {
         self.memory.clear();
         continuing
     }
-    fn block(&mut self, code: &mut Vec<Inst>, registers: &[Scalar]) -> Flow {
+    fn block(&mut self, code: &mut Vec<Inst>, registers: &[Scalar], reuses: &mut Reuses) -> Flow {
         let mut out = Vec::new();
         let mut flow = Flow::default();
         let mut continuing = true;
@@ -112,10 +114,19 @@ impl Values {
             {
                 let mut quotient = None;
                 let mut remainder = None;
+                let paired_input = matches!(*result, IntegerDivisionResult::Both { .. });
                 for (op, dst) in result.outputs() {
                     let key = ExpressionKey::Divide(op, *divisor, *src);
                     if let Some(old) = self.expressions.get(&key) {
                         self.aliases.insert(dst, *old);
+                        reuses.entry(*old).or_default().push(ExpressionReuse {
+                            result: match op {
+                                IntegerDivisionOp::Quotient => ReuseResult::Quotient,
+                                IntegerDivisionOp::Remainder => ReuseResult::Remainder,
+                            },
+                            paired_input,
+                            origin: OperationOrigin { source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone() },
+                        });
                     } else {
                         self.expressions.insert(key, dst);
                         match op {
@@ -182,6 +193,11 @@ impl Values {
             if let Some((key, dst)) = key {
                 if let Some(old) = self.expressions.get(&key) {
                     self.aliases.insert(dst, *old);
+                    reuses.entry(*old).or_default().push(ExpressionReuse {
+                        result: ReuseResult::Value,
+                        paired_input: false,
+                        origin: OperationOrigin::from_instruction(&inst),
+                    });
                     continue;
                 }
                 self.expressions.insert(key, dst);
@@ -189,7 +205,7 @@ impl Values {
             match &mut (inst).kind {
                 InstKind::Scope(body) => {
                     let mut scoped = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
-                    let mut scope = scoped.block(body, registers);
+                    let mut scope = scoped.block(body, registers, reuses);
                     merge(&mut scope.next, scope.exits.take());
                     continuing = self.resume(&mut flow, scope);
                 }
@@ -252,8 +268,8 @@ impl Values {
                 InstKind::If { yes, no, .. } => {
                     let mut y = self.clone();
                     let mut n = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
-                    let mut branches = y.block(yes, registers);
-                    branches.join(n.block(no, registers));
+                    let mut branches = y.block(yes, registers, reuses);
+                    branches.join(n.block(no, registers, reuses));
                     // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
                     continuing = self.resume(&mut flow, branches);
                 }
@@ -273,7 +289,7 @@ impl Values {
                     let after = self.local_values();
                     self.memory.clear();
                     let mut cycle = Self { locals: std::mem::take(&mut self.locals), ..self.clone() };
-                    let condition_flow = cycle.block(condition, registers);
+                    let condition_flow = cycle.block(condition, registers, reuses);
                     *test = cycle.root(*test);
                     let mut loop_flow = Flow {
                         next: condition_flow.next.as_ref().map(|_| after),
@@ -282,7 +298,7 @@ impl Values {
                         exits: condition_flow.exits,
                     };
                     if condition_flow.next.is_some() {
-                        let body_flow = cycle.block(body, registers);
+                        let body_flow = cycle.block(body, registers, reuses);
                         // 普通／continue 回边和 break 由本循环接收；Scope 退出仍向外传递。
                         // 已写槽仍保留在原循环携带状态，不把某次迭代的定义交给循环后。
                         merge(&mut loop_flow.exits, body_flow.exits);
@@ -321,6 +337,30 @@ impl Values {
         flow
     }
 }
+fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
+    for inst in code {
+        let reused: Vec<_> = inst.results().filter_map(|reg| reuses.remove(&reg)).flatten().collect();
+        if !reused.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::ExpressionReuse,
+                trigger: Some(GenerationAnchor::ExpressionReuse { retained, reused }),
+            }));
+        }
+        match &mut inst.kind {
+            InstKind::Scope(body) => retain_reuses(body, reuses),
+            InstKind::If { yes, no, .. } => {
+                retain_reuses(yes, reuses);
+                retain_reuses(no, reuses);
+            }
+            InstKind::Loop { condition, body, .. } => {
+                retain_reuses(condition, reuses);
+                retain_reuses(body, reuses);
+            }
+            _ => {}
+        }
+    }
+}
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_value(code, registers, &mut []);
 }
@@ -330,18 +370,25 @@ pub(super) fn with_prelude(
     registers: &[Scalar],
 ) -> impl Fn(Reg) -> Reg + use<> {
     let mut entry = Values::default();
-    entry.block(prelude, registers);
+    let mut reuses = Reuses::new();
+    entry.block(prelude, registers, &mut reuses);
     let mut aliases = entry.clone();
-    for body in bodies {
+    for body in bodies.iter_mut() {
         let mut values = entry.clone();
-        values.block(body, registers);
+        values.block(body, registers, &mut reuses);
         aliases.aliases.extend(values.aliases);
+    }
+    retain_reuses(prelude, &mut reuses);
+    for body in bodies {
+        retain_reuses(body, &mut reuses);
     }
     move |r| aliases.root(r)
 }
 pub(super) fn run_value(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) {
     let mut values = Values::default();
-    values.block(code, registers);
+    let mut reuses = Reuses::new();
+    values.block(code, registers, &mut reuses);
+    retain_reuses(code, &mut reuses);
     for r in outputs {
         *r = values.root(*r);
     }

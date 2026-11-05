@@ -212,6 +212,7 @@ pub enum GenerationReason {
     DatasetBorrowStrideCast,
     ArrayParameterStore,
     IntegerDivisionPair,
+    ExpressionReuse,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -231,16 +232,38 @@ impl OperationOrigin {
             self.generated_origin().map_or_else(|| "null".into(), GeneratedOrigin::ir_json))
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReuseResult { Value, Quotient, Remainder }
+#[derive(Clone, Debug)]
+pub struct ExpressionReuse {
+    pub(crate) result: ReuseResult,
+    pub(crate) paired_input: bool,
+    pub(crate) origin: OperationOrigin,
+}
+impl ExpressionReuse {
+    pub fn result(&self) -> ReuseResult { self.result }
+    pub fn input_results(&self) -> &[ReuseResult] {
+        if self.paired_input { &[ReuseResult::Quotient, ReuseResult::Remainder] }
+        else { std::slice::from_ref(&self.result) }
+    }
+    pub fn origin(&self) -> &OperationOrigin { &self.origin }
+    pub fn ir_json(&self) -> String {
+        let name = |result| match result { ReuseResult::Value => "value", ReuseResult::Quotient => "quotient", ReuseResult::Remainder => "remainder" };
+        format!("{{\"kind\":\"expression_reuse_input\",\"result\":{},\"input_results\":[{}],\"origin\":{}}}",
+            text(name(self.result)), self.input_results().iter().map(|r|text(name(*r))).collect::<Vec<_>>().join(","), self.origin.ir_json())
+    }
+}
 #[derive(Clone, Debug)]
 pub enum GenerationAnchor {
     Syntax(std::sync::Arc<SourceSite>),
     Definition { origin: Option<std::sync::Arc<SourceOrigin>>, instance: std::sync::Arc<str> },
     IntegerDivisionPair { quotient: OperationOrigin, remainder: OperationOrigin },
+    ExpressionReuse { retained: OperationOrigin, reused: Vec<ExpressionReuse> },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
@@ -248,6 +271,8 @@ impl GenerationAnchor {
                 origin.as_deref().map_or_else(|| "null".into(), SourceOrigin::ir_json), text(instance)),
             Self::IntegerDivisionPair { quotient, remainder } => format!("{{\"kind\":\"integer_division_inputs\",\"quotient\":{},\"remainder\":{}}}",
                 quotient.ir_json(), remainder.ir_json()),
+            Self::ExpressionReuse { retained, reused } => format!("{{\"kind\":\"expression_reuse\",\"retained\":{},\"reused\":[{}]}}",
+                retained.ir_json(), reused.iter().map(ExpressionReuse::ir_json).collect::<Vec<_>>().join(",")),
         }
     }
 }
@@ -309,6 +334,7 @@ impl GeneratedOrigin {
             GenerationReason::DatasetBorrowStrideCast => "dataset_borrow_stride_cast",
             GenerationReason::ArrayParameterStore => "array_parameter_store",
             GenerationReason::IntegerDivisionPair => "integer_division_pair",
+            GenerationReason::ExpressionReuse => "expression_reuse",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

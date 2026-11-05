@@ -461,19 +461,21 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-3-1-2"></a>
 
-**相同表达式结果复用的来源。** 原完整目标由以下两叶独立承担，本父项只汇总，不占生产源码。输入是原实际ExpressionKey、同一SSA值及其原来源；输出交接保留定义与原被删除操作的真实关系。仅沿原复用算法的可见性和控制条件，不把键相同扩大为任意数值重排；局部槽位／索引存储传播仍归.3／.4，DCE及结构变换仍归各原叶。状态见[父项](Issues.md#c-021-7-9-7-3-1-2)。
+**相同表达式结果复用的来源。** 原完整目标由以下两叶独立承担，本父项只汇总，不占生产源码。输入是原实际ExpressionKey、同一SSA值及其原来源；输出交接保留定义与原被删除操作的真实关系。仅沿原复用算法的可见性和控制条件，不把键相同扩大为任意数值重排；局部槽位／索引存储传播仍归.3／.4，DCE及结构变换仍归各原叶。状态见[父项](FixedIssues.md#c-021-7-9-7-3-1-2)。
 
-原Values在分支／循环／Scope和归约公共入口间交接已经可见的表达式，来源必须回到真实保留定义；不得只覆盖同一直线块、跨兄弟函数体借用未执行定义或添加新的复用。事实唯一归原保留Inst及ValueCode／Stage，材料仅不可变来源，不保存旧IR／AST／World，不另建来源权威、图、运行拥有表或调度器；compiler以外及必要运行编码不带材料，原数值、访问、别名、代码及资源完成保持。具体表示和查询仍待两叶实现，材料缺失如实说明，不把本设计写成已交付。
+原Values在分支／循环／Scope和归约公共入口间交接已经可见的表达式，来源必须回到真实保留定义；不得只覆盖同一直线块、跨兄弟函数体借用未执行定义或添加新的复用。事实唯一归原保留Inst及ValueCode／Stage，材料仅不可变来源，不保存旧IR／AST／World，不另建来源权威、图、运行拥有表或调度器；compiler以外及必要运行编码不带材料，原数值、访问、别名、代码及资源完成保持。材料缺失如实说明，能力与实际验证范围分别见下列叶项，不把当前关系当作全部优化历史。
 
-两叶的来源方案复用原Inst.generated_origin，ExpressionReuse锚点保留原保留操作的OperationOrigin，以及按value／quotient／remainder角色记录的各实际删除来源；原source_site仍仅表示保留操作自己的直接语法，不代表全部复用点，多输入的单源getter为空。原值流只在实际别名处产生材料；本次值流调用用原SSA号暂存待交接材料，沿原代码及归约公共入口／函数体归到真实保留Inst后释放，临时结果号不进入永久材料，不克隆另一表达式权威。既有来源不可变共享，后续寄存器重映射无须重新解释来源身份；后续DCE可正常裁剪／删除，材料不保活操作，也不伪称最终机器结果仍存在或已执行。该方案待实际实现和验证，不能据此声称已有完整复用查询。
+两叶复用原Inst.generated_origin交接ExpressionReuse锚点：retained保留原操作的OperationOrigin，reused逐项记录实际删除来源、被复用的value／quotient／remainder角色及该输入操作当时实际产生的结果集合。普通纯值、单商、单余数与Both分别交接，不从先前生成来源或最终Both／单结果反推输入形态；部分复用后重新配对、后续裁剪都不改写已经发生的事实。原source_site仍仅表示保留操作自己的直接语法，不代表全部复用点，多输入的单源getter为空，实际各路由只读SDK和JSON消费。
+
+原值流只在真实别名处产生材料；本次调用用原SSA号暂存待交接材料，沿原完整代码及归约公共入口／函数体归到真实保留Inst后释放，临时结果号不进入永久材料，不随Values克隆另一表达式权威。原source_site／generated_origin不可变共享，后续寄存器重映射不重新解释来源身份；后续DCE可正常裁剪／删除，材料不保活操作，不保存旧IR／AST／World或运行资源，不伪称最终机器结果仍存在或已执行。compiler之外及必要对象／运行编码不带材料，原键、别名、控制可见性、数值和完成保持。现行接口见[规范](BLanguage.md#相同表达式结果复用的来源)，实际完成范围见[闭合台账](FixedIssues.md#c-021-7-9-7-3-1-2)。
 
 <a id="tool-7-3-1-2-1"></a>
 
-**整数商／余数结果复用来源。** 输入为原IntegerDivide.outputs实际Divide键、对应商／余数结果及原来源。生产／消费接点为value_flow.rs::Values::block的整数outputs别名及裁剪接点，结果仍归实际保留Inst；分别交接quotient或remainder被复用的关系，Both部分复用、全部消除以及原配对材料按真实语义保持。不改原src／除数／结果、配对条件或DCE，不以本项代替原.1配对／.6裁剪事实。只读SDK／JSON查询沿原编译结果消费，原快照在最后IR消费者后释放，原运行资源由原所有者持有。状态见[独立台账](Issues.md#c-021-7-9-7-3-1-2-1)。
+**整数商／余数结果复用来源。** 输入为原IntegerDivide.outputs实际Divide键、对应商／余数结果及原来源。生产／消费接点为value_flow.rs::Values::block的整数outputs别名及裁剪接点，结果仍归实际保留Inst；分别交接quotient或remainder被复用的关系，Both部分复用、全部消除以及原配对材料按真实语义保持。不改原src／除数／结果、配对条件或DCE，不以本项代替原.1配对／.6裁剪事实。只读SDK／JSON查询沿原编译结果消费，原快照在最后IR消费者后释放，原运行资源由原所有者持有。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-2-1)。
 
 <a id="tool-7-3-1-2-2"></a>
 
-**普通纯表达式结果复用来源。** 输入为原Constant／Index／Uniform／BufferStride／Unary／Binary／Cast／Math／Select键与真实保留结果及来源。生产／消费接点为同一Values::block普通ExpressionKey的别名／删除分支，事实归该结果Inst及原ValueCode／Stage；交接每个实际删除点与原定义，已有生成材料共享，未知不猜补。表达原键相同，保持原类型、数值和控制条件，不把LoadLocal／Load等另一生产点并入。只读查询、原快照、最后消费者及compiler／必要编码边界与父项一致。状态见[独立台账](Issues.md#c-021-7-9-7-3-1-2-2)。
+**普通纯表达式结果复用来源。** 输入为原Constant／Index／Uniform／BufferStride／Unary／Binary／Cast／Math／Select键与真实保留结果及来源。生产／消费接点为同一Values::block普通ExpressionKey的别名／删除分支，事实归该结果Inst及原ValueCode／Stage；交接每个实际删除点与原定义，已有生成材料共享，未知不猜补。表达原键相同，保持原类型、数值和控制条件，不把LoadLocal／Load等另一生产点并入。只读查询、原快照、最后消费者及compiler／必要编码边界与父项一致。状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-2-2)。
 
 <a id="tool-7-3-1-3"></a>
 

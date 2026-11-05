@@ -1880,7 +1880,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 商与余数也可以共享一次除法。`Values::block`在原src和除数相同、原直线块允许配对时，按quotient／remainder角色保留两个输入的来源；先写余数再写商也不会颠倒身份。合并指令的generated_origin说明integer_division_pair，单一source_site为空，AI从多输入锚点分别读取两条真实来源。
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:150`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:161`。
 
 ```rust
                         let old = OperationOrigin::from_instruction(&out[position]);
@@ -1897,6 +1897,35 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 ```
 
 这里只共享原source_site／generated_origin，不保存旧输入IR或运行状态。后续死代码消除可能把Both裁为单结果；保留的材料仍说明此前真实发生的配对，不表示两个结果都在运行时被消费。该局部关系不代替所有值复用、删除历史或最终机器指令映射；其他缺口按原台账推进，不为观察保活操作。编译器和本查询当前仍由Rust实现，B接管与自举另按原职责记录。
+
+同一个表达式的结果还可以被其他位置复用。整数商／余数和普通纯表达式分别在原键真正命中时交接删除来源；value、quotient和remainder标明被复用哪个结果，input_results说明该输入当时实际产生哪些结果。它不从旧配对来源或最终Both形态倒推过程：部分复用后仍可能重新配对。
+
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:195`。
+
+```rust
+                    self.aliases.insert(dst, *old);
+                    reuses.entry(*old).or_default().push(ExpressionReuse {
+                        result: ReuseResult::Value,
+                        paired_input: false,
+                        origin: OperationOrigin::from_instruction(&inst),
+                    });
+                    continue;
+```
+
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:342`。
+
+```rust
+        let reused: Vec<_> = inst.results().filter_map(|reg| reuses.remove(&reg)).flatten().collect();
+        if !reused.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::ExpressionReuse,
+                trigger: Some(GenerationAnchor::ExpressionReuse { retained, reused }),
+            }));
+        }
+```
+
+本次值流仅暂存待交接来源，沿原完整IR及归约公共入口／各函数体把材料交回真实保留Inst，临时寄存器号随后释放。原source_site仍是保留操作自己的语法，完整复用点从GeneratedOrigin::ExpressionReuse的retained／reused读取；已有来源共享，不保存被删除的旧IR或运行状态。后续DCE照常裁剪／删除，完整删除历史和机器映射仍按原职责推进，不为观察保活操作。这些编译工具当前仍由Rust实现，B接管与自举按原职责分别记录。
 
 ### 11.4 选择表达式不是总能两边都先算
 

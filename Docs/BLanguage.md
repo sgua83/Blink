@@ -324,7 +324,7 @@ compiler功能的`Stage::operation_source()`返回可选只读`SourceSite`，归
 
 compiler功能的`Inst::generated_origin()`、`Stage::generated_origin()`及`ValueCode::generated_origin()`借用同一节点持有的可选`GeneratedOrigin`；reason()交回GenerationReason，anchor()借用可选GenerationAnchor。trigger()保持原语法查询语义，只返回Syntax锚点的SourceSite；隐式定义实例及多输入变换锚点由anchor()取得，不能把trigger()为空解释为没有生成材料。ir_json输出kind=generated_origin、reason及trigger，trigger按自己的kind交接实际锚点，没有材料时为null。每个compiler指令、stage_ir和value_ir交接generated_origin，没有本项材料为null；关闭compiler时这些类型、字段、getter及JSON均不存在。
 
-GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
+GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字节范围、定义快照、具体实例及域路径；Definition持有可选原SourceOrigin和实际Instance.name，JSON为kind=definition_instance，definition为原source_definition或null，instance保持实际入口名。GenerationAnchor::syntax()只借用实际语法点，Syntax／Definition锚点的origin()／instance()分别借用原定义和实例；ir_json()交接同一事实。定义实例只描述真实生成上下文，不伪造用户表达式、逐指令源范围或运行时刻；缺少原定义时仍保留已知实际实例，不根据最终程序名猜补。当前parallel_index及clear_prefix继续使用Syntax，原trigger()借用关系和JSON保持。
 
 当前真实生成原因及其消费如下；GenerationReason公开枚举增加变体时，Rust SDK的穷尽匹配需要相应适配，按版本规则处理兼容性。B语法、资源ABI和必要执行编码不因此改变。
 
@@ -381,6 +381,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | DatasetBorrowStrideCast | dataset_borrow_stride_cast | 原application_reference_value将步长拓宽为CPU借用描述符要求的U64 Cast |
 | ArrayParameterStore | array_parameter_store | 原值形参数组／含数组聚合物化到局部存储的StoreLocal |
 | IntegerDivisionPair | integer_division_pair | 原同一直线块整数商／余数实际配对合并 |
+| ExpressionReuse | expression_reuse | 原ExpressionKey命中后实际复用已有结果 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -397,6 +398,16 @@ Inst::new继续构造没有来源材料的普通节点；原直接发射、原�
 合并节点没有唯一直接语法来源，其source_site()为空；该多输入锚点的syntax()／origin()／instance()及外层trigger()均为空，不任取一路代表完整变换。两路SourceSite保留自己的真实定义快照、实际实例、inlined_at及domain_path。当前解析器对二元除法／余数Expr.span通常只覆盖左操作数起始token，例如value，不扩大为整段value/divisor或value%divisor；查询使用真实UTF8字节范围及原快照，不重读之后改写或移走的磁盘源码。
 
 材料归原Inst并随原IR／Stage克隆、模块和SDK编译结果在最后消费者后释放，只共享来源，不保留旧输入Inst／IR、AST／World、运行状态或额外图。后续DCE把Both裁为单结果时，材料仍表示先前发生的真实配对，不声称仍有两个输出；整个节点删除则按原生命周期释放。配对条件、寄存器／结果、数值和控制边界不变，compiler之外没有本类型／材料，必要对象与运行编码不变。其他复用、重写／消除及机器范围仍按原叶推进，不把本项当作完整优化历史。见[架构职责](Architecture.md#tool-7-3-1-1)和[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-1)。
+
+#### 相同表达式结果复用的来源
+
+原Values::block在整数Divide键或普通Constant／Index／Uniform／BufferStride／Unary／Binary／Cast／Math／Select键真实命中并产生别名时，沿原保留结果Inst交接GenerationReason::ExpressionReuse，JSON reason为expression_reuse。GenerationAnchor::ExpressionReuse { retained, reused }的retained为保留操作原有的OperationOrigin，reused为各实际复用输入的ExpressionReuse；已有source_site及generated_origin不可变共享，未知材料为null，不根据函数名、最终形态或当前磁盘文件猜补。
+
+ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value／Quotient／Remainder；input_results()借用该输入操作在本次复用发生前实际产生的结果集合：普通纯值为[value]，单商／余数为[quotient]／[remainder]，Both为[quotient,remainder]。origin()借用该被删除操作的OperationOrigin，ir_json()输出kind=expression_reuse_input、result、input_results及origin。锚点JSON为kind=expression_reuse、retained和reused数组；它记录实际键相等及结果替代，不允许据此推定任意数值重排。输入结果集合不从先前integer_division_pair来源或最终Both／单结果反推；部分复用后可能再次配对，后续DCE也可能裁剪，保留事实不声称那些结果仍存在或已在运行中被消费。
+
+原source_site仍表示保留操作自己的直接来源，不是全部复用点。多输入的trigger()及锚点syntax()／origin()／instance()为空，各路从retained和reused取得；这里锚点origin()和ExpressionReuse::origin()各有其上述明确语义。原实例、内联、域路径及源字节范围随各自SourceSite保持，多个删除点可归到同一保留结果，不强制一一映射。getter和JSON均沿已持有的快照查询，不重读后续改写或移走的文件。
+
+本次值流调用只以原SSA号暂存尚待交接的材料，沿原完整IR以及归约公共入口／各原函数体归到真实保留Inst后释放；不会随Values克隆另一表达式权威，不让兄弟函数体复用未执行的定义。永久材料没有寄存器号、旧输入Inst／IR、AST／World、运行状态或另一图。来源随原Inst／Stage／ValueCode及模块／SDK编译结果共享，最后IR消费者后释放，不拥有运行资源。compiler以外没有这些类型、代码或材料，必要对象／运行编码和ABI保持；原别名键、配对／裁剪、控制、数值及完成不变。后续DCE照常删除，删除历史、结构及机器映射仍按原独立职责推进，不为观察保活或把本项当作完整优化时间线。见[架构](Architecture.md#tool-7-3-1-2)及[两类闭合范围](FixedIssues.md#c-021-7-9-7-3-1-2)。
 
 #### 应用入口与根Frame的生成来源
 

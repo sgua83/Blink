@@ -3,7 +3,7 @@ use std::{collections::{BTreeMap, BTreeSet}, num::NonZeroU64};
 #[cfg(feature = "compiler")]
 mod origin;
 #[cfg(feature = "compiler")]
-pub use origin::{SourceOrigin, SourceSite, SourceSyntax, InlineSite, DomainSite, DomainTransition, ValueCodeEntry, GeneratedOrigin, GenerationReason, GenerationAnchor, OperationOrigin};
+pub use origin::{SourceOrigin, SourceSite, SourceSyntax, InlineSite, DomainSite, DomainTransition, ValueCodeEntry, GeneratedOrigin, GenerationReason, GenerationAnchor, OperationOrigin, ExpressionReuse, ReuseResult};
 #[cfg(feature = "compiler")]
 pub(crate) use origin::SourceContext;
 mod layout;
