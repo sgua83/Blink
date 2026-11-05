@@ -345,8 +345,13 @@ impl Builder<'_> {
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
         let memory_use=self.call_address_memory(memory,span)?;
         let kind=InstKind::Call(Call { target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
+        let first = self.code.len();
         if let Some(origin)=generated_origin { self.code.push(Inst::generated(kind,origin)); }
         else { self.emit(kind); }
+        if let Some(declaration) = definition.and_then(outputs::Contract::declaration_origin) {
+            let declaration = Arc::new(declaration);
+            for instruction in &mut self.code[first..] { instruction.reference_declaration(declaration.clone()); }
+        }
         if never { self.flow = Flow::STOP; return Ok(None); }
         let returned = result.clone().map(|ty| Value {
             proof: bounds::Proof::default().with_external_borrows(&ty),

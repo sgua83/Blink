@@ -38,6 +38,10 @@ impl<'a> Contract<'a> {
         Self { source, module, imports, public: false, parameters,
             clauses: Clauses::Signature(outputs, span) }
     }
+    pub(super) fn declaration_origin(self) -> Option<SourceDeclaration> {
+        match self.clauses { Clauses::Declaration(definition) => definition.declaration_origin(),
+            Clauses::Signature(..) => None }
+    }
     pub(super) fn external_memory(self)->Option<Access> {
         external_memory((0..self.len()).filter_map(|index|match self.at(index) {
             (ContractKind::Ensures,predicate,_)=>Some(predicate),
@@ -369,6 +373,8 @@ pub(super) fn expression(
         };
         Ok(Expr { kind, span })
     }
+    let declaration = definition.declaration_origin().map(Arc::new);
+    let first = builder.code.len();
     let previous_definition = builder.source_definition.take();
     let previous_context = builder.source_context.clone();
     let previous_site = builder.source_site.take();
@@ -404,6 +410,15 @@ pub(super) fn expression(
         builder.require_bool(&value, span)?;
         Ok(value)
     })();
+    if let Some(declaration) = declaration {
+        for instruction in &mut builder.code[first..] {
+            let retained = OperationOrigin::from_instruction(instruction);
+            instruction.generated_origin = Some(Arc::new(GeneratedOrigin {
+                reason: GenerationReason::ContractCondition,
+                trigger: Some(GenerationAnchor::ContractCondition { declaration: declaration.clone(), span, retained }),
+            }));
+        }
+    }
     builder.source_definition = previous_definition;
     builder.source_context = previous_context;
     builder.source_site = previous_site;

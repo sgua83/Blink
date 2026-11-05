@@ -297,7 +297,7 @@ Builder在实际语句、表达式、返回值表达式和位置处理期间交�
 
 条件输出的字节范围属于原合同定义。原Contract::Declaration借用Definition，直接取得同一原合同列表及语法上下文；outputs::expression在convert及builder.expr期间成对使用合同span与其来源。相同Definition保留已有实例／内联／域上下文，跨定义采用原定义能提供的上下文，未传具体Instance不猜补；已绑定Signature沿原真实调用处span／source保留调用位置上下文。求值完成或返回错误后，原Builder的来源定义、上下文、语法点和原env恢复，其他调用／值／Proof保持。
 
-外部声明或已编译提供者缺少真实实现来源时保持null，不能把声明的索引解释成调用者源码，亦不在位置查询截断或改写越界范围。真实普通B定义的条件仍保留其SourceSite，不通过清空全部来源消除错配。外部具名声明自身的来源表示仍待[独立叶项](Issues.md#c-021-7-9-7-2-1-2)，不把声明当作提供者实现，详见[来源归属](Architecture.md#tool-7-2-1-1)。
+外部声明或已编译提供者缺少真实实现来源时保持null，不能把声明的索引解释成调用者源码，亦不在位置查询截断或改写越界范围。真实普通B定义的条件仍保留其SourceSite，不通过清空全部来源消除错配。外部具名声明自身沿下述SourceDeclaration交接，声明与提供者实现分开，详见[来源归属](Architecture.md#tool-7-2-1-1)。
 
 
 #### 实际实例与内联展开点
@@ -397,6 +397,8 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | IndexedReadReuse | indexed_read_reuse | 后续索引Load实际复用先前Load结果，材料交给原保留Load |
 | UnaryConstantFold | unary_constant_fold | 原普通已知值一元计算逐分量成为Constant |
 | ModuleConstantEvaluation | module_constant_evaluation | 原模块const求值中的已有变换事实随普通常量读取进入实际Constant |
+| DeclarationReference | declaration_reference | 真实具名声明与实际Call／FunctionAddress的绑定关系 |
+| ContractCondition | contract_condition | 原具名声明的真实条款生成条件IR的关系 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -547,6 +549,20 @@ JSON reason及锚点kind均为module_constant_evaluation，definition为真实�
 新事实沿已有module_constant_evaluation编码；它解释实际常量求值，不冒充条件自身全部运算、运行执行或逐结果因果图。原公开条件引用常量的可见性、数值／Proof、条件输出许可与初始化判断保持。真实源码与已编译接口的未知范围沿原定义合同，不从当前读取点猜补提供者来源；后续CSE／DCE及空Map根沿同一OperationOrigin持有材料，不保活操作或建立第二合同状态。
 
 此路径仅compiler，最后IR消费者后释放，不进入必要对象／执行编码或拥有运行资源。函数指针签名先绑定为OutputConstant，绑定与已绑定常量的物化仍各自待实现来源交接，不能用本直接Name分支宣称完成，见[架构](Architecture.md#tool-7-3-1-9-1-3-1-2-1)及[剩余接收者](Issues.md#c-021-7-9-7-3-1-9-1-3-1-2-2)。
+
+
+
+#### 具名声明、调用及条件IR的来源
+
+compiler的SourceDeclaration表示真实声明快照，SourceOrigin继续表示原实现定义。source()／span()／module()／declaration()分别借用原Source、原函数span、模块及声明名；representation()返回DeclarationRepresentation::Source或CompiledInterface，明确该声明从原源码或已编译接口取得。只有Definition的真实Source／CompiledInterface且无body时生产材料，Generated上下文不猜补。声明名与DLL／符号／实际签名分别表达，不能把声明当作提供者实现或真实签名／代码寿命的证明。
+
+SourceDeclaration::ir_json为kind=source_declaration，module／declaration及representation=source或compiled_interface；其余source_path、source_sha256、source_bytes、UTF-8字节半开范围、行列及原始路径编码与SourceOrigin共用同一序列化职责。原Function.span原样交接，不扩大成完整声明或实现；完整Source快照从source()借用，查询不重读已改写／移走的文件。实现定义的原source_definition字段及查询保持。
+
+实际具名C调用及c_function取得的静态函数地址使用GenerationReason::DeclarationReference及GenerationAnchor::DeclarationReference { declaration, retained }。原Call／FunctionAddress的source_site仍是实际调用者，retained是该指令原OperationOrigin，已有生成材料不丢失。JSON reason／锚点kind均为declaration_reference，字段为source_declaration形式的declaration和原operation_origin形式的retained。真实B实现没有这份声明材料时仍由原定义来源解释，不伪造成声明；运行期cfn间接目标不从签名或地址猜补命名声明。
+
+outputs::expression只给本次convert／expr真实新发射的Inst附加GenerationReason::ContractCondition及GenerationAnchor::ContractCondition { declaration, span, retained }。JSON reason／锚点kind均为contract_condition，含declaration、retained及原条款span的同单位范围／行列，范围只用相应声明Source解释。真实常量求值沿retained保留；这是派生关系，不伪造成原用户表达式。若条件只复用bool输入／返回值而没有新Inst，不造假节点，实际Call的声明引用仍保存原合同来源。
+
+上述多角色锚点的单源trigger()／syntax()／origin()／instance()均为空，各声明从anchor()的明确成员读取；空单源查询不代表没有来源。材料仅compiler，沿原Inst及已有CSE／DCE／根保存到最后IR消费者，不保活操作、旧IR、AST／World或运行资源，不增加源码登记、条件图或状态表，不进入必要对象／执行编码。调用、非零、访问、初始化、签名、值及资源完成仍消费原合同。公开枚举新增变体按现行版本规则处理，源ABI和资源ABI分别记录，见[架构](Architecture.md#tool-7-2-1-2)。
 
 
 #### 空Map阶段移除的来源

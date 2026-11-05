@@ -253,7 +253,19 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-1-2"></a>
 
-**外部具名条件的声明来源。** 外部声明的原Source及合同span是实际语法事实，但不是提供者实现；现有SourceOrigin以真实实现定义为合同，不能把无body外部声明套成source_definition。应沿原声明／Contract与IR所有者交接明确的声明来源，最后查询消费者后释放，不另建源码登记、AST／World快照或运行资源。当前外部条件没有实现来源时为空；跨定义错配修复不冒称声明来源已交付。表示及具体接口仍待设计，见[独立台账](Issues.md#c-021-7-9-7-2-1-2)。
+**外部具名声明来源。** 原Source／声明函数范围及合同span属于真实声明，不是提供者实现。SourceOrigin继续只表达原实现定义；SourceDeclaration独立表达原声明的Source快照、模块、名称、范围与Source／CompiledInterface取得方式。唯一生产者是原Definition：只有真实Source或CompiledInterface、且没有实现body时形成声明材料；Generated上下文不猜补。两类来源共用原路径／摘要／范围序列化，不复制Source文本、保留AST／World或新建登记表。声明材料仅compiler，不进入必要对象／执行编码或拥有运行资源，最后IR消费者后释放。父项只汇总以下真实生产点，见[台账](FixedIssues.md#c-021-7-9-7-2-1-2)。
+
+<a id="tool-7-2-1-2-1"></a>
+
+**具名C调用的声明引用。** external::c_call在原Call发射后让同一Inst持有DeclarationReference；锚点包含声明与retained原OperationOrigin，原source_site仍是实际调用者，原generated_origin完整保留。真实DLL／符号及参数／返回ABI仍在原Call，声明名属于原B模块，不拿它充当提供者实现；未实际调用的声明不制造Call。该引用可说明直接复用bool输入／返回值而没有新条件Inst的合同，不能据此推定条款已执行、输出已初始化或调用次数。原C ABI、Proof、内存访问及完成保持，材料沿原CSE／DCE根交接并在最后消费者后释放，见[独立台账](FixedIssues.md#c-021-7-9-7-2-1-2-1)。
+
+<a id="tool-7-2-1-2-2"></a>
+
+**派生条件IR的声明与条款。** outputs::expression消费原具名合同并在原convert／expr新发射Inst时，给这些实际指令交接ContractCondition：同一声明、原条款span及retained原OperationOrigin。范围与声明Source成对，真实常量求值材料继续沿retained保留；这是生成关系，不伪造成原用户表达式或实现。没有新Inst时不创建假节点，原Call的声明引用仍持有原合同；不改Scope恢复、env、值、Proof、初始化或执行，不保留另一条件图／状态。材料与原IR同寿命，来源查询只消费已有事实，见[独立台账](FixedIssues.md#c-021-7-9-7-2-1-2-2)。
+
+<a id="tool-7-2-1-2-3"></a>
+
+**静态函数地址的声明引用。** callback::c_function_value在原FunctionAddress发射后复用DeclarationReference，目标仍是原CallTarget及实际具体签名，原source_site和已有材料保持。只为实际已知命名声明交接SourceDeclaration，真实B实现不伪造为声明；运行期cfn间接目标不能由签名或地址猜补同名声明。非零、代码与资源寿命仍归原Proof和实际外部所有者，不增地址登记、动态反射或调用中转，材料最后IR消费者后释放，见[独立台账](FixedIssues.md#c-021-7-9-7-2-1-2-3)。
 
 <a id="tool-7-2-2"></a>
 

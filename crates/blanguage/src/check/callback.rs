@@ -65,7 +65,12 @@ impl Builder<'_> {
             CallTarget::Defined(instance.name)
         };
         let reg = self.reg(Scalar::U64);
+        let first = self.code.len();
         self.emit(InstKind::FunctionAddress(reg, target));
+        if let Some(declaration) = instance.definition.declaration_origin() {
+            let declaration = Arc::new(declaration);
+            for instruction in &mut self.code[first..] { instruction.reference_declaration(declaration.clone()); }
+        }
         let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
         Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
     }

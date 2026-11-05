@@ -647,7 +647,7 @@ pub(super) fn binary(op: &str, a: &Ty, a_literal: bool, b: &Ty, b_literal: bool,
 
 原OutputCondition只负责纯表达式组织；路径来自真实按值快照、资源长度与返回值，字段消费原member_type。dataset的存储类型使用原Ty::owned_dataset及真实count，initialized位置仍选择实际元素。根结果必须是bool；泛型类型及const沿原实例化闭合，不生成假函数或声明用执行IR。
 
-源码节选：`crates/blanguage/src/check/outputs.rs:693`。
+源码节选：`crates/blanguage/src/check/outputs.rs:708`。
 
 ```rust
 fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
@@ -923,7 +923,7 @@ pub fn parse(source: Source) -> Result<Module> {
 
 公开入口由 `crates/blanguage/src/lib.rs` 导出，源码装入实现位于 `crates/blanguage/src/frontend.rs`。公开接口 `compile` 编译入口模块，`compile_entry` 选择具体入口，`check` 允许只检查函数库，不要求伪造一个算法入口。
 
-源码节选：`crates/blanguage/src/frontend.rs:125`。
+源码节选：`crates/blanguage/src/frontend.rs:135`。
 
 ```rust
 pub fn compile(path: &Path, module_root: &Path) -> Result<Compilation> {
@@ -947,7 +947,7 @@ pub fn compile_entry(path: &Path, module_root: &Path, entry: &str) -> Result<Com
 
 A导入B、B又导入A可以形成合法函数闭包。模块装入与按值布局递归、常量求值环不是同一种关系，不能仅因import成环就拒绝整个模块。
 
-源码节选：`crates/blanguage/src/frontend.rs:512`。
+源码节选：`crates/blanguage/src/frontend.rs:522`。
 
 ```rust
     if let Some(name) = import
@@ -2407,7 +2407,10 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
 
 模块const普通读取由原evaluate在临时Builder结束前取得已有变换的OperationOrigin，随原Ty／Bits返回ModuleConstantEvaluation；module_constant及具名输出条件的常量读取共用evaluated_constant，以原构造器建立相同结果及直接source_site，让各真实分量共享该材料。其constant保持实际常量全名，definition只在已有真实源码定义时存在，operations描述整个该次求值，不是每个结果的完整因果图。相邻分量若共享同一语法和变换材料，只交接一份，避免记录／向量常量的嵌套别名反复复制同一事实；没有另一追踪表或保存旧IR。嵌套常量、原DCE及空Map根继续交接既有事实，必要对象编码和运行资源不带这些材料。具名B／外部C条件的直接常量读取保留原空calls，普通读取保留原self.calls，求值上下文没有交换；签名绑定的类型化常量及其物化、Root与整数结果仍各自待推进，普通读取不能代替这些实际消费者。
 
-条件IR还须区分原合同与当前调用者的源码。Contract::Declaration借用原Definition而不是另持合同切片，expression在实际convert／expr区间进入合同来源；相同定义及原Signature调用点保留已知上下文，跨定义只使用能确定的被调来源。离开及错误出口恢复调用者来源。外部声明没有实现body时不能伪造source_definition，也不能把声明span套到调用者源码；声明自身的独立来源仍待交接。这是修正来源生产者的归属，不在位置查询加截断、保护或替代路径。
+条件IR还须区分原合同与当前调用者的源码。Contract::Declaration借用原Definition而不是另持合同切片，expression在实际convert／expr区间进入合同来源；相同定义及原Signature调用点保留已知上下文，跨定义只使用能确定的被调来源。离开及错误出口恢复调用者来源。外部声明没有实现body时不能伪造source_definition，也不能把声明span套到调用者源码；声明自身的来源由下述SourceDeclaration独立交接。这是修正来源生产者的归属，不在位置查询加截断、保护或替代路径。
+
+SourceDeclaration只保存真实声明的原Source、函数范围、模块、名称及Source／CompiledInterface取得方式，SourceOrigin仍表示实现；两者共用原路径、摘要及位置序列化，范围不被扩大。真实具名C调用及静态FunctionAddress用DeclarationReference把声明交给同一指令，保留原调用者source_site及retained旧材料。输出条件实际新生成的指令用ContractCondition保存相应声明、条款span及原材料；直接复用bool输入／返回值而无新指令时不伪造节点，原Call仍持有完整声明来源。间接函数地址不反推命名声明，真实B实现不套成声明；这些compiler材料与原IR同寿命，不进入运行编码或增加源码／条件状态表。
+
 
 
 
@@ -3847,7 +3850,12 @@ c_function接受显式C ABI的声明或定义：不带from的B函数沿原具体
             CallTarget::Defined(instance.name)
         };
         let reg = self.reg(Scalar::U64);
+        let first = self.code.len();
         self.emit(InstKind::FunctionAddress(reg, target));
+        if let Some(declaration) = instance.definition.declaration_origin() {
+            let declaration = Arc::new(declaration);
+            for instruction in &mut self.code[first..] { instruction.reference_declaration(declaration.clone()); }
+        }
         let mut proof = bounds::Proof::default(); proof.mark_nonzero(0);
         Ok(Value { proof, literal: false, ty, regs: vec![reg], uniform: true, constant: None })
     }

@@ -24,30 +24,59 @@ impl SourceOrigin {
     /// Queries this definition snapshot; the owning IR retains its concrete instance name.
     /// This is not an instruction, inlining, optimization or machine-address mapping.
     pub fn ir_json(&self) -> String {
-        let mut fields = vec![
-            ("kind", text("source_definition")), ("module", text(&self.module)),
-            ("definition", text(&self.definition)),
-            ("source_path", self.source.path.to_str().map_or_else(|| "null".into(), text)),
-            ("source_sha256", text(&crate::build::hash::hex(&crate::build::hash::digest(self.source.text.as_bytes())))),
-            ("source_bytes", self.source.text.len().to_string()),
-            ("span_unit", text("utf8_byte")), ("span_range", text("half_open")),
-            ("start_byte", self.span.start.to_string()), ("end_byte", self.span.end.to_string()),
-            ("column_unit", text("unicode_scalar")), ("position_base", "1".into()),
-            ("start", position(&self.source.text, self.span.start)),
-            ("end", position(&self.source.text, self.span.end)),
-        ];
-        #[cfg(windows)] {
-            use std::os::windows::ffi::OsStrExt;
-            let units = self.source.path.as_os_str().encode_wide().map(|v| v.to_string()).collect::<Vec<_>>();
-            fields.push(("path_utf16", format!("[{}]", units.join(","))));
-        }
-        #[cfg(unix)] {
-            use std::os::unix::ffi::OsStrExt;
-            let bytes = self.source.path.as_os_str().as_bytes().iter().map(u8::to_string).collect::<Vec<_>>();
-            fields.push(("path_bytes", format!("[{}]", bytes.join(","))));
-        }
-        format!("{{{}}}", fields.iter().map(|(key, value)| format!("{}:{value}", text(key))).collect::<Vec<_>>().join(","))
+        source_json("source_definition", "definition", &self.definition, &self.module, &self.source, self.span, None)
     }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationRepresentation { Source, CompiledInterface }
+/// A real declaration snapshot, distinct from a provider implementation.
+#[derive(Clone, Debug)]
+pub struct SourceDeclaration {
+    pub(crate) source: Source,
+    pub(crate) span: Span,
+    pub(crate) module: String,
+    pub(crate) declaration: String,
+    pub(crate) representation: DeclarationRepresentation,
+}
+impl SourceDeclaration {
+    pub fn source(&self) -> &Source { &self.source }
+    pub fn span(&self) -> Span { self.span }
+    pub fn module(&self) -> &str { &self.module }
+    pub fn declaration(&self) -> &str { &self.declaration }
+    pub fn representation(&self) -> DeclarationRepresentation { self.representation }
+    pub fn ir_json(&self) -> String {
+        source_json("source_declaration", "declaration", &self.declaration, &self.module,
+            &self.source, self.span, Some(self.representation))
+    }
+}
+fn source_json(kind: &str, name_field: &str, name: &str, module: &str,
+    source: &Source, span: Span, representation: Option<DeclarationRepresentation>) -> String {
+    let mut fields = vec![("kind", text(kind)), ("module", text(module)), (name_field, text(name))];
+    if let Some(representation) = representation {
+        fields.push(("representation", text(match representation {
+            DeclarationRepresentation::Source => "source", DeclarationRepresentation::CompiledInterface => "compiled_interface",
+        })));
+    }
+    fields.extend([
+        ("source_path", source.path.to_str().map_or_else(|| "null".into(), text)),
+        ("source_sha256", text(&crate::build::hash::hex(&crate::build::hash::digest(source.text.as_bytes())))),
+        ("source_bytes", source.text.len().to_string()),
+        ("span_unit", text("utf8_byte")), ("span_range", text("half_open")),
+        ("start_byte", span.start.to_string()), ("end_byte", span.end.to_string()),
+        ("column_unit", text("unicode_scalar")), ("position_base", "1".into()),
+        ("start", position(&source.text, span.start)), ("end", position(&source.text, span.end)),
+    ]);
+    #[cfg(windows)] {
+        use std::os::windows::ffi::OsStrExt;
+        let units = source.path.as_os_str().encode_wide().map(|v| v.to_string()).collect::<Vec<_>>();
+        fields.push(("path_utf16", format!("[{}]", units.join(","))));
+    }
+    #[cfg(unix)] {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = source.path.as_os_str().as_bytes().iter().map(u8::to_string).collect::<Vec<_>>();
+        fields.push(("path_bytes", format!("[{}]", bytes.join(","))));
+    }
+    format!("{{{}}}", fields.iter().map(|(key, value)| format!("{}:{value}", text(key))).collect::<Vec<_>>().join(","))
 }
 
 /// The actual syntax that drove this operation's emission, before later IR rewrites.
@@ -222,6 +251,8 @@ pub enum GenerationReason {
     ReductionUniformExtract,
     UnaryConstantFold,
     ModuleConstantEvaluation,
+    DeclarationReference,
+    ContractCondition,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -409,14 +440,20 @@ pub enum GenerationAnchor {
     ModuleConstantEvaluation {
         definition: Option<std::sync::Arc<SourceOrigin>>, constant: std::sync::Arc<str>, operations: Vec<OperationOrigin>,
     },
+    DeclarationReference { declaration: std::sync::Arc<SourceDeclaration>, retained: OperationOrigin },
+    ContractCondition { declaration: std::sync::Arc<SourceDeclaration>, span: Span, retained: OperationOrigin },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::UnaryConstantFold { expression, .. } => expression.as_deref(), Self::Definition { .. } | Self::ModuleConstantEvaluation { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::UnaryConstantFold { expression, .. } => expression.as_deref().map(SourceSite::origin), Self::Definition { origin, .. } => origin.as_deref(), Self::ModuleConstantEvaluation { definition, .. } => definition.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::UnaryConstantFold { expression, .. } => expression.as_deref().and_then(SourceSite::instance), Self::Definition { instance, .. } => Some(instance), Self::ModuleConstantEvaluation { constant, .. } => Some(constant), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::IndexedStoreReadForward { .. } | Self::IndexedReadReuse { .. } | Self::LocalInputForward { .. } | Self::ReductionInputForward { .. } | Self::EliminatedOperations { .. } | Self::EmptyMapRemoval { .. } | Self::IntegerDivisionResultPrune { .. } | Self::ReductionUniformExtract { .. } | Self::DeclarationReference { .. } | Self::ContractCondition { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
+            Self::DeclarationReference { declaration, retained } => format!("{{\"kind\":\"declaration_reference\",\"declaration\":{},\"retained\":{}}}",
+                declaration.ir_json(), retained.ir_json()),
+            Self::ContractCondition { declaration, span, retained } => format!("{{\"kind\":\"contract_condition\",\"declaration\":{},\"retained\":{},{}}}",
+                declaration.ir_json(), retained.ir_json(), range_fields(Some(&declaration.source.text), *span)),
             Self::UnaryConstantFold { expression, operation, scalar, input_bits, result_bits, component_index, component_count } => format!("{{\"kind\":\"unary_constant_fold\",\"expression\":{},\"operation\":{},\"scalar\":{},\"input_bits\":\"0x{:016x}\",\"result_bits\":\"0x{:016x}\",\"component_index_base\":0,\"component_index\":{},\"component_count\":{}}}",
                 expression.as_deref().map_or_else(|| "null".into(), SourceSite::ir_json), text(&format!("{operation:?}")), text(&format!("{scalar:?}")), input_bits, result_bits, component_index, component_count),
             Self::ModuleConstantEvaluation { definition, constant, operations } => format!("{{\"kind\":\"module_constant_evaluation\",\"definition\":{},\"constant\":{},\"operations\":[{}]}}",
@@ -541,6 +578,8 @@ impl GeneratedOrigin {
             GenerationReason::ReductionUniformExtract => "reduction_uniform_extract",
             GenerationReason::UnaryConstantFold => "unary_constant_fold",
             GenerationReason::ModuleConstantEvaluation => "module_constant_evaluation",
+            GenerationReason::DeclarationReference => "declaration_reference",
+            GenerationReason::ContractCondition => "contract_condition",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))
@@ -554,4 +593,14 @@ impl super::ValueCode {
 }
 impl super::Program {
     pub fn generated_origin(&self) -> Option<&GeneratedOrigin> { self.generated_origin.as_deref() }
+}
+
+impl super::Inst {
+    pub(crate) fn reference_declaration(&mut self, declaration: std::sync::Arc<SourceDeclaration>) {
+        let retained = OperationOrigin::from_instruction(self);
+        self.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+            reason: GenerationReason::DeclarationReference,
+            trigger: Some(GenerationAnchor::DeclarationReference { declaration, retained }),
+        }));
+    }
 }

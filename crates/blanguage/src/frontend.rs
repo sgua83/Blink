@@ -30,6 +30,16 @@ impl Definition {
             _ => None,
         }
     }
+    pub(crate) fn declaration_origin(&self) -> Option<ir::SourceDeclaration> {
+        if self.function.body.is_some() { return None; }
+        let representation = match &self.syntax_origin {
+            DefinitionSyntax::Source => ir::DeclarationRepresentation::Source,
+            DefinitionSyntax::CompiledInterface => ir::DeclarationRepresentation::CompiledInterface,
+            DefinitionSyntax::Generated(_) => return None,
+        };
+        Some(ir::SourceDeclaration { source: self.source.clone(), span: self.function.span,
+            module: self.module.clone(), declaration: self.function.name.clone(), representation })
+    }
     pub(crate) fn syntax_context(&self, instance: Option<&str>) -> (Option<Arc<ir::SourceOrigin>>, Arc<ir::SourceContext>) {
         match &self.syntax_origin {
             DefinitionSyntax::Generated(Some(site)) => (Some(site.origin.clone()), site.context.clone()),
