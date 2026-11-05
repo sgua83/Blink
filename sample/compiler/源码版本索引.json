@@ -236,7 +236,7 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "sha256": "2a273361d21330c950cc6b142fa3a766bc9caa96e48f6b78fca7e849f759743a"
+      "sha256": "61ab3279c48b2f92ce5359b97380e3a2ae3ead36747913b1a42b39555f6935e7"
     },
     {
       "path": "crates/blanguage/src/ir/external.rs",
@@ -404,8 +404,8 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 285,
-      "end_line": 310,
+      "start_line": 286,
+      "end_line": 311,
       "sha256": "3970e48d07e5e1dc425194252877e3ef39590aa778beae5857cfda2e8df3b59d"
     },
     {
@@ -632,8 +632,8 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 268,
-      "end_line": 284,
+      "start_line": 269,
+      "end_line": 285,
       "sha256": "18db75b2fd9471176643c9453e5226b1ac3764b8907351acf7e118c8ca6183d0"
     },
     {
@@ -806,20 +806,20 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 976,
-      "end_line": 984,
+      "start_line": 977,
+      "end_line": 985,
       "sha256": "ac8da81b905f6d8d4c1a5588469fc369a437820b1b46dc6babb4d33f24508180"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 999,
-      "end_line": 1021,
+      "start_line": 1000,
+      "end_line": 1022,
       "sha256": "034f2891c337549a65dfc4a17905e4033d097286e0b4d195ddc28a37a4558bd6"
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 1194,
-      "end_line": 1214,
+      "start_line": 1195,
+      "end_line": 1215,
       "sha256": "b157ed4f5f24e72ed982b704739b3ec104eac868c2ffa8493fb7065da47d5db9"
     },
     {
@@ -890,8 +890,8 @@
     },
     {
       "path": "crates/blanguage/src/ir.rs",
-      "start_line": 1042,
-      "end_line": 1056,
+      "start_line": 1043,
+      "end_line": 1057,
       "sha256": "8fcc5254b775ea61118cbb63b6bb075527fc412187d995860ed9e3de2829c986"
     },
     {

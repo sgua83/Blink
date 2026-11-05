@@ -129,6 +129,7 @@ pub struct Ty {
     pub function: Option<Box<CFunctionType>>,
 }
 impl Ty {
+    #[cfg(feature = "compiler")]
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
         if let Some(function) = &self.function { return function.syntax(); }
         if let Some(cleanup) = &self.cleanup {
@@ -1959,6 +1960,7 @@ impl Ty {
 }
 
 impl CFunctionType {
+    #[cfg(feature = "compiler")]
     pub(crate) fn syntax(&self) -> crate::ast::TypeName {
         use crate::ast::{TypeName, GenericArgument};
         let mut syntax = TypeName::named("cfn");
