@@ -1880,7 +1880,7 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 商与余数也可以共享一次除法。`Values::block`在原src和除数相同、原直线块允许配对时，按quotient／remainder角色保留两个输入的来源；先写余数再写商也不会颠倒身份。合并指令的generated_origin说明integer_division_pair，单一source_site为空，AI从多输入锚点分别读取两条真实来源。
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:161`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:165`。
 
 ```rust
                         let old = OperationOrigin::from_instruction(&out[position]);
@@ -1900,22 +1900,151 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
 
 同一个表达式的结果还可以被其他位置复用。整数商／余数和普通纯表达式分别在原键真正命中时交接删除来源；value、quotient和remainder标明被复用哪个结果，input_results说明该输入当时实际产生哪些结果。它不从旧配对来源或最终Both形态倒推过程：部分复用后仍可能重新配对。
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:195`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:199`。
 
 ```rust
                     self.aliases.insert(dst, *old);
-                    reuses.entry(*old).or_default().push(ExpressionReuse {
+                    reuses.entry(*old).or_default().push(RetainedUse::Expression(ExpressionReuse {
                         result: ReuseResult::Value,
                         paired_input: false,
                         origin: OperationOrigin::from_instruction(&inst),
-                    });
+                    }));
                     continue;
 ```
 
-源码节选：`crates/blanguage/src/optimize/value_flow.rs:342`。
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:241`。
 
 ```rust
-        let reused: Vec<_> = inst.results().filter_map(|reg| reuses.remove(&reg)).flatten().collect();
+                        continue;
+                    }
+                    // 后续读取同一版本可直接复用；真实写入会更新其值。
+                    self.locals.insert(*slot, *dst);
+                }
+                InstKind::StoreLocal(slot, value) => {
+                    self.locals.insert(*slot, *value);
+                }
+                InstKind::StoreLocalIndexed { base, len, .. } => {
+                    self.locals
+                        .retain(|slot, _| !(*base..*base + *len).contains(slot));
+                }
+                InstKind::StoreIndexed { source, .. } => self.invalidate(source.aliases()),
+                InstKind::Load {
+                    dst,
+                    binding,
+                    index,
+                    word,
+                } => {
+                    let key = (*binding, *index, *word);
+                    if let Some(old) = self.memory.get(&key) {
+                        self.aliases.insert(*dst, *old);
+                        continue;
+                    }
+                    self.memory.insert(key, *dst);
+                }
+                InstKind::Store {
+                    binding,
+                    index,
+                    word,
+                    value,
+                } => {
+                    self.memory
+                        .retain(|(b, i, w), _| b != binding || (*i == *index && *w != *word));
+                    self.memory.insert((*binding, *index, *word), *value);
+                }
+                InstKind::If { yes, no, .. } => {
+                    let mut y = self.clone();
+                    let mut n = Self { locals: std::mem::take(&mut self.locals), memory: std::mem::take(&mut self.memory), ..self.clone() };
+                    let mut branches = y.block(yes, registers, reuses);
+                    branches.join(n.block(no, registers, reuses));
+                    // 已退出的分支不流入普通继续点；各出口只交付共同的同一 SSA 值。
+                    continuing = self.resume(&mut flow, branches);
+                }
+                InstKind::Loop {
+                    condition,
+                    test,
+                    body,
+                } => {
+                    let mut written = BTreeSet::new();
+                    for block in [&*condition, &*body] {
+                        visit(block, &mut |i| {
+                            written.extend(i.local_writes());
+                        });
+                    }
+                    // 循环下一次进入时可能已改变；不把进入前的局部值当作循环不变量。
+                    self.locals.retain(|slot, _| !written.contains(slot));
+                    let after = self.local_values();
+                    self.memory.clear();
+                    let mut cycle = Self { locals: std::mem::take(&mut self.locals), ..self.clone() };
+                    let condition_flow = cycle.block(condition, registers, reuses);
+                    *test = cycle.root(*test);
+                    let mut loop_flow = Flow {
+                        next: condition_flow.next.as_ref().map(|_| after),
+                        breaks: condition_flow.breaks,
+                        continues: condition_flow.continues,
+                        exits: condition_flow.exits,
+                    };
+                    if condition_flow.next.is_some() {
+                        let body_flow = cycle.block(body, registers, reuses);
+                        // 普通／continue 回边和 break 由本循环接收；Scope 退出仍向外传递。
+                        // 已写槽仍保留在原循环携带状态，不把某次迭代的定义交给循环后。
+                        merge(&mut loop_flow.exits, body_flow.exits);
+                    }
+                    continuing = self.resume(&mut flow, loop_flow);
+                }
+                InstKind::Call(call) => {
+                    for slot in call.locals(true) {
+                        self.locals.remove(&slot);
+                    }
+                    for effect in &call.memory {
+                        if effect.access.writes() && let MemoryAlias::Data(binding) = effect.alias {
+                            self.memory.retain(|(b, _, _), _| *b != binding);
+                        }
+                    }
+                    for arg in &call.arguments {
+                        if let CallArgument::Reference { access, address: CallReference { storage: CallStorage::Indexed(source), .. }, .. } = arg
+                            && access.writes()
+                        {
+                            if matches!(source, IndexedSource::Pointer { .. }) { self.invalidate(source.aliases()); }
+                            else { self.memory.clear(); }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            out.push(inst);
+            if !continuing {
+                break;
+            }
+        }
+        *code = out;
+        if continuing {
+            flow.next = Some(self.local_values());
+        }
+        flow
+    }
+}
+fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
+    for inst in code {
+        let mut reused = Vec::new();
+        let mut reads = Vec::new();
+        let result_count = inst.results().count();
+        for (result_index, reg) in inst.results().enumerate() {
+            let result = match &inst.kind {
+                InstKind::IntegerDivide { result, .. } => match result {
+                    IntegerDivisionResult::Quotient(_) => ReuseResult::Quotient,
+                    IntegerDivisionResult::Remainder(_) => ReuseResult::Remainder,
+                    IntegerDivisionResult::Both { quotient, .. } if *quotient == reg => ReuseResult::Quotient,
+                    IntegerDivisionResult::Both { .. } => ReuseResult::Remainder,
+                },
+                _ => ReuseResult::Value,
+            };
+            for source in reuses.remove(&reg).into_iter().flatten() {
+                match source {
+                    RetainedUse::Expression(source) => reused.push(source),
+                    RetainedUse::LocalRead(origin) => reads.push(LocalReadForward { result_index, result_count, result, origin }),
+                }
+            }
+        }
         if !reused.is_empty() {
             let retained = OperationOrigin::from_instruction(inst);
             inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
@@ -1923,9 +2052,42 @@ fn cross_dependency(a: &Stage, b: &Stage) -> bool {
                 trigger: Some(GenerationAnchor::ExpressionReuse { retained, reused }),
             }));
         }
+        if !reads.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::LocalReadForward,
+                trigger: Some(GenerationAnchor::LocalReadForward { retained, reads }),
+            }));
+        }
 ```
 
 本次值流仅暂存待交接来源，沿原完整IR及归约公共入口／各函数体把材料交回真实保留Inst，临时寄存器号随后释放。原source_site仍是保留操作自己的语法，完整复用点从GeneratedOrigin::ExpressionReuse的retained／reused读取；已有来源共享，不保存被删除的旧IR或运行状态。后续DCE照常裁剪／删除，完整删除历史和机器映射仍按原职责推进，不为观察保活操作。这些编译工具当前仍由Rust实现，B接管与自举按原职责分别记录。
+
+局部读取也可能直接被已有值替代。命中原locals后，原别名算法继续消除LoadLocal，来源分别交给真实指令定义或ValueCode实际输入。普通定义可能是多结果Call或Both，因此材料包含本次交接时的结果序号／数量及商／余数角色，不能只保存一组没有目标分量的读取。
+
+源码节选：`crates/blanguage/src/optimize/value_flow.rs:235`。
+
+```rust
+                        let value = self.root(value);
+                        self.aliases.insert(*dst, value);
+                        reuses.entry(value).or_default().push(RetainedUse::LocalRead(OperationOrigin {
+                            source_site: inst.source_site.clone(),
+                            generated_origin: inst.generated_origin.clone(),
+                        }));
+                        continue;
+```
+
+源码节选：`crates/blanguage/src/check/native_function.rs:1277`。
+
+```rust
+            if !frame.contains(&name) {
+                function.parameters.remove(0);
+                function.body.inputs.drain(..2);
+                GeneratedOrigin::remove_input_prefix(&mut function.body.generated_origin, 2);
+            }
+```
+
+有些源函数最终是“输入即输出、没有指令”。这时LocalInputForward只引用原ValueCode.inputs的零基位置及被删除读取，不伪造定义Inst；原entry_origin和根生成材料分别保持。Frame前缀在原finalize真正移除时，来源引用也随同调整，旧共享快照保持，零分量参数不制造输入。语法、数值、原控制与失效不改变，必要运行编码不携带这些compiler材料；六类降层输入、失效及合流事实仍按原独立职责推进，不把读取替代当作完整内存历史或运行观察。这些编译工具当前仍由Rust实现，B接管与自举分别记录。
 
 ### 11.4 选择表达式不是总能两边都先算
 

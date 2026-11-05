@@ -481,17 +481,15 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 **局部槽位存储读取传播的来源。** 原完整目标同时覆盖读取到实际替代值的关系，以及真实写失效／控制合流边界，以下八叶分别交接，本父项只汇总，不占源码。输入是原LoadLocal、实际locals知识、SSA值、写投影及原Flow；输出必须区分已发生替代、未替代读取及相应真实失效／合流事实，不把一个保留来源冒充全部条件。原优化、别名、数值、访问、控制和完成规则保持，不建设内存版本表、来源注册表、第二状态／控制图、运行拥有表或调度器。材料仅compiler角色，沿原Inst／ValueCode／Stage／Kernel及原编译结果共享，最后IR消费者后释放，不保留旧IR／AST／World或拥有运行资源，不进入必要运行编码，缺失如实说明，不保活操作。
 
-普通指令定义和直接IR输入是不同的真实来源所有者：前者可沿原Inst交接，后者没有定义Inst，必须引用原ValueCode.inputs或降层Kernel实际输入；不得伪造节点或复制输入槽位映射。前两叶候选方案复用原generated_origin，原根生成材料、entry_origin与直接语法来源分别保持；输入记录只引用实际零基索引，Frame前缀移除由原输入所有者同步调整，旧快照保持，最终机器位置仍归原后端任务。本方案尚待实际实现及验证，不能写成已有查询；其余边界叶分别表达各自的实际生产／消费，不增加新的失效扫描或控制求解。状态见[父项](Issues.md#c-021-7-9-7-3-1-3)。
-
-前两叶拟以LocalReadForward原因交接两类锚点：普通Inst的LocalReadForward保留原OperationOrigin及删除读取，并记录交接时真实结果序号／数量和必要商／余数角色；ValueCode的LocalInputForward保留原根生成材料，按原inputs零基索引记录读取，entry_origin独立保持。永久材料不含Reg、不保存被删除指令或另一输入表；同一临时来源集合在原值流结束时归到真正定义或实际输入，原CSE来源不改变原算法。Frame前缀在原finalize移除时，同一输入拥有者同步调整这些引用并去掉不再存在的输入材料；不可变旧快照保持，不把根材料当作合成函数或运行事实。该接口方案尚待实现及实际验证，降层外部输入及全部失效／合流材料仍按后六叶交接。
+普通指令定义和直接IR输入是不同的真实来源所有者：前者沿原Inst交接，后者没有定义Inst，引用原ValueCode.inputs；降层Kernel实际输入另沿.3.3交接，不伪造节点或复制输入槽位映射。前两叶复用原generated_origin交接LocalReadForward理由，原根生成材料、entry_origin与直接语法来源分别保持；输入引用由原finalize随真实Frame前缀移除而调整，不改变原Frame判定或输入，旧快照保持。它们描述实际发生的替代，不是完整写失效／控制合流或最终机器位置；其余六叶继续按各自真实生产／消费交接，不增加扫描或控制求解。现行接口见[规范](BLanguage.md#局部读取到实际定义与输入的来源)，状态见[父项](Issues.md#c-021-7-9-7-3-1-3)。
 
 <a id="tool-7-3-1-3-1"></a>
 
-**局部读取替代到普通IR定义的来源。** 输入／接点：原LoadLocal命中locals→value_flow.rs#16::Values::block229起的aliases及真实root→原保留Inst。输出：交接被消除读取与实际指令定义；原source_site及生成材料保持，值来自StoreLocal或先前LoadLocal均沿同一真实替代接点，不新增复用。 唯一事实与生命周期沿本父项的原拥有者，不改变原算法、权限及完成，不存旧IR或另建状态权威；只读SDK／JSON消费同一原编译结果，未交接材料如实为空。该独立范围待实现，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-1)。
+**局部读取替代到普通IR定义的来源。** 原LoadLocal命中locals并写入实际别名时，只将原读取的OperationOrigin交回实际保留Inst。该Inst的LocalReadForward锚点保留原定义材料，各LocalReadForward读取记录本次交接时实际结果序号／数量及普通分量或商／余数角色；多结果Call及Both不混成一组无角色读取。原source_site仍仅描述保留操作自己，删除读取从明确成员取得；单源getter不任取一条。原同次值流只暂存SSA交接键，原Inst最终拥有材料并在最后IR消费者后释放，不存永久Reg、旧IR／AST／World，不进入必要运行编码或持有资源。后续DCE／重写照常，不把序号当最终机器位置。见[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-3-1)。
 
 <a id="tool-7-3-1-3-2"></a>
 
-**局部读取替代到ValueCode实际输入的来源。** 输入／接点：原LoadLocal替代结果直接为ValueCode.inputs→原value_code／run_value及FunctionBody实际输入列表→原ValueCode编译结果。输出：没有定义Inst时以实际IR输入零基索引交接读取来源，不伪造指令；Frame前缀移除时来源随同一真实输入列表调整，不复制参数槽位或寄存器映射。 唯一事实与生命周期沿本父项的原拥有者，不改变原算法、权限及完成，不存旧IR或另建状态权威；只读SDK／JSON消费同一原编译结果，未交接材料如实为空。该独立范围待实现，状态见[台账](Issues.md#c-021-7-9-7-3-1-3-2)。
+**局部读取替代到ValueCode实际输入的来源。** 原读取的替代值直接为ValueCode.inputs时，由同一ValueCode.generated_origin的LocalInputForward锚点持有各InputReadForward；每项只引用原inputs零基索引及删除读取，保留可选原根GeneratedOrigin，entry_origin独立保持。它不是合成函数或新增输入，不复制参数槽位／Reg映射；原FunctionBody.parameter_inputs沿同一列表交接。原finalize真正移除Frame输入前缀时同步调整这些引用，去掉已不存在输入的材料并保持旧共享快照；Frame检测、ABI、参数与数值不变。唯一拥有者仍为原ValueCode及其编译结果，最后IR消费者后释放，材料仅compiler、不持有AST／World或运行资源。原源文本／实例／路径共享，未知为空，单源getter不猜选一条；新降层外部输入的交接仍沿下一叶。见[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-3-2)。
 
 <a id="tool-7-3-1-3-3"></a>
 

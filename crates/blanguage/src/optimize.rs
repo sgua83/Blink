@@ -200,7 +200,7 @@ fn optimize_stage(stage: &mut Stage) {
     stage.locals = locals;
 }
 pub(crate) fn value_code(value: &mut ValueCode) {
-    value_flow::run_value(&mut value.code, &value.registers, &mut value.outputs);
+    value_flow::run_value(value);
     let mut needed = value
         .outputs
         .iter()

@@ -213,6 +213,7 @@ pub enum GenerationReason {
     ArrayParameterStore,
     IntegerDivisionPair,
     ExpressionReuse,
+    LocalReadForward,
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
 #[derive(Clone, Debug)]
@@ -254,16 +255,49 @@ impl ExpressionReuse {
     }
 }
 #[derive(Clone, Debug)]
+pub struct LocalReadForward {
+    pub(crate) result_index: usize,
+    pub(crate) result_count: usize,
+    pub(crate) result: ReuseResult,
+    pub(crate) origin: OperationOrigin,
+}
+impl LocalReadForward {
+    pub fn result_index(&self) -> usize { self.result_index }
+    pub fn result_count(&self) -> usize { self.result_count }
+    pub fn result(&self) -> ReuseResult { self.result }
+    pub fn origin(&self) -> &OperationOrigin { &self.origin }
+    pub fn ir_json(&self) -> String {
+        let result = match self.result { ReuseResult::Value => "value", ReuseResult::Quotient => "quotient", ReuseResult::Remainder => "remainder" };
+        format!("{{\"kind\":\"local_read_forward_input\",\"result_index\":{},\"result_count\":{},\"result\":{},\"origin\":{}}}",
+            self.result_index, self.result_count, text(result), self.origin.ir_json())
+    }
+}
+#[derive(Clone, Debug)]
+pub struct InputReadForward {
+    pub(crate) input_index: usize,
+    pub(crate) reads: Vec<OperationOrigin>,
+}
+impl InputReadForward {
+    pub fn input_index(&self) -> usize { self.input_index }
+    pub fn reads(&self) -> &[OperationOrigin] { &self.reads }
+    pub fn ir_json(&self) -> String {
+        format!("{{\"kind\":\"input_read_forward\",\"input_index\":{},\"reads\":[{}]}}", self.input_index,
+            self.reads.iter().map(OperationOrigin::ir_json).collect::<Vec<_>>().join(","))
+    }
+}
+#[derive(Clone, Debug)]
 pub enum GenerationAnchor {
     Syntax(std::sync::Arc<SourceSite>),
     Definition { origin: Option<std::sync::Arc<SourceOrigin>>, instance: std::sync::Arc<str> },
     IntegerDivisionPair { quotient: OperationOrigin, remainder: OperationOrigin },
     ExpressionReuse { retained: OperationOrigin, reused: Vec<ExpressionReuse> },
+    LocalReadForward { retained: OperationOrigin, reads: Vec<LocalReadForward> },
+    LocalInputForward { retained: Option<std::sync::Arc<GeneratedOrigin>>, inputs: Vec<InputReadForward> },
 }
 impl GenerationAnchor {
-    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } => None } }
-    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } => None } }
-    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } => None } }
+    pub fn syntax(&self) -> Option<&SourceSite> { match self { Self::Syntax(site) => Some(site), Self::Definition { .. } | Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } => None } }
+    pub fn origin(&self) -> Option<&SourceOrigin> { match self { Self::Syntax(site) => Some(site.origin()), Self::Definition { origin, .. } => origin.as_deref(), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } => None } }
+    pub fn instance(&self) -> Option<&str> { match self { Self::Syntax(site) => site.instance(), Self::Definition { instance, .. } => Some(instance), Self::IntegerDivisionPair { .. } | Self::ExpressionReuse { .. } | Self::LocalReadForward { .. } | Self::LocalInputForward { .. } => None } }
     pub fn ir_json(&self) -> String {
         match self {
             Self::Syntax(site) => site.ir_json(),
@@ -273,6 +307,10 @@ impl GenerationAnchor {
                 quotient.ir_json(), remainder.ir_json()),
             Self::ExpressionReuse { retained, reused } => format!("{{\"kind\":\"expression_reuse\",\"retained\":{},\"reused\":[{}]}}",
                 retained.ir_json(), reused.iter().map(ExpressionReuse::ir_json).collect::<Vec<_>>().join(",")),
+            Self::LocalReadForward { retained, reads } => format!("{{\"kind\":\"local_read_forward\",\"result_index_base\":0,\"retained\":{},\"reads\":[{}]}}",
+                retained.ir_json(), reads.iter().map(LocalReadForward::ir_json).collect::<Vec<_>>().join(",")),
+            Self::LocalInputForward { retained, inputs } => format!("{{\"kind\":\"local_input_forward\",\"input_index_base\":0,\"retained\":{},\"inputs\":[{}]}}",
+                retained.as_deref().map_or_else(|| "null".into(), GeneratedOrigin::ir_json), inputs.iter().map(InputReadForward::ir_json).collect::<Vec<_>>().join(",")),
         }
     }
 }
@@ -282,6 +320,18 @@ pub struct GeneratedOrigin {
     pub(crate) trigger: Option<GenerationAnchor>,
 }
 impl GeneratedOrigin {
+    pub(crate) fn remove_input_prefix(origin: &mut Option<std::sync::Arc<Self>>, count: usize) {
+        let Some(mut shared) = origin.take() else { return; };
+        if let Some(GenerationAnchor::LocalInputForward { retained, inputs }) = &mut std::sync::Arc::make_mut(&mut shared).trigger {
+            Self::remove_input_prefix(retained, count);
+            inputs.retain_mut(|input| {
+                if input.input_index < count { false }
+                else { input.input_index -= count; true }
+            });
+            if inputs.is_empty() { *origin = retained.take(); return; }
+        }
+        *origin = Some(shared);
+    }
     pub fn reason(&self) -> GenerationReason { self.reason }
     /// Returns a single syntax trigger; definitions and multi-input rewrites use their anchor.
     pub fn trigger(&self) -> Option<&SourceSite> { self.trigger.as_ref().and_then(GenerationAnchor::syntax) }
@@ -335,6 +385,7 @@ impl GeneratedOrigin {
             GenerationReason::ArrayParameterStore => "array_parameter_store",
             GenerationReason::IntegerDivisionPair => "integer_division_pair",
             GenerationReason::ExpressionReuse => "expression_reuse",
+            GenerationReason::LocalReadForward => "local_read_forward",
         };
         format!("{{\"kind\":\"generated_origin\",\"reason\":{},\"trigger\":{}}}", text(reason),
             self.anchor().map_or_else(|| "null".into(), GenerationAnchor::ir_json))

@@ -382,6 +382,7 @@ GenerationAnchor::Syntax持有原SourceSite，JSON沿原source_syntax保持字�
 | ArrayParameterStore | array_parameter_store | 原值形参数组／含数组聚合物化到局部存储的StoreLocal |
 | IntegerDivisionPair | integer_division_pair | 原同一直线块整数商／余数实际配对合并 |
 | ExpressionReuse | expression_reuse | 原ExpressionKey命中后实际复用已有结果 |
+| LocalReadForward | local_read_forward | 原LoadLocal实际被已知局部值替代 |
 
 原parallel的Index由expand_stages交接parallel_index，触发与同一Stage.operation_source共享原Statement SourceSite；普通源域与CPU应用提取均沿原定义／实例，生成执行名称不成为原源码函数。这是并行索引建立的生成事实，不把它当作某次用户index()表达式。该Index的source_site仍为null，普通语句、表达式及位置的直接来源继续沿原source_site交接；Stage自身仍是原parallel语句，其generated_origin为null。
 
@@ -408,6 +409,18 @@ ExpressionReuse::result()取得实际被复用的结果角色ReuseResult::Value�
 原source_site仍表示保留操作自己的直接来源，不是全部复用点。多输入的trigger()及锚点syntax()／origin()／instance()为空，各路从retained和reused取得；这里锚点origin()和ExpressionReuse::origin()各有其上述明确语义。原实例、内联、域路径及源字节范围随各自SourceSite保持，多个删除点可归到同一保留结果，不强制一一映射。getter和JSON均沿已持有的快照查询，不重读后续改写或移走的文件。
 
 本次值流调用只以原SSA号暂存尚待交接的材料，沿原完整IR以及归约公共入口／各原函数体归到真实保留Inst后释放；不会随Values克隆另一表达式权威，不让兄弟函数体复用未执行的定义。永久材料没有寄存器号、旧输入Inst／IR、AST／World、运行状态或另一图。来源随原Inst／Stage／ValueCode及模块／SDK编译结果共享，最后IR消费者后释放，不拥有运行资源。compiler以外没有这些类型、代码或材料，必要对象／运行编码和ABI保持；原别名键、配对／裁剪、控制、数值及完成不变。后续DCE照常删除，删除历史、结构及机器映射仍按原独立职责推进，不为观察保活或把本项当作完整优化时间线。见[架构](Architecture.md#tool-7-3-1-2)及[两类闭合范围](FixedIssues.md#c-021-7-9-7-3-1-2)。
+
+#### 局部读取到实际定义与输入的来源
+
+原Values::block仅在LoadLocal命中原locals、实际写aliases并消除该读取时交接GenerationReason::LocalReadForward，JSON reason为local_read_forward。写入／失效、分支／循环及继续关系沿原算法，材料不增加复用、保活操作或重排许可。普通指令定义与直接ValueCode输入按各自真实拥有者表达，不为没有定义Inst的输入伪造指令。
+
+替代值由普通Inst定义时，原Inst.generated_origin采用GenerationAnchor::LocalReadForward { retained, reads }。retained为原OperationOrigin，reads的LocalReadForward逐项提供result_index()、result_count()、result()和origin()：序号及数量取本次值流交接时该定义实际Inst::results顺序，序号零基；ReuseResult::Value表示普通分量，Quotient／Remainder另区分整数结果。多结果Call可以各有自己的序号；后续配对、裁剪及删除不由这些字段反推，它们不是最终机器寄存器或运行次数。JSON锚点kind为local_read_forward、result_index_base为0；各读取kind为local_read_forward_input，含result_index、result_count、result及原origin。原Inst.source_site仍描述保留操作自己的直接语法，读取来源分别沿origin取得。
+
+替代值直接为原ValueCode.inputs时，原ValueCode.generated_origin采用GenerationAnchor::LocalInputForward { retained, inputs }，retained保留可选原根GeneratedOrigin，原entry_origin独立保持。InputReadForward::input_index()引用该ValueCode实际inputs的零基位置，reads()借用各被消除读取的OperationOrigin，ir_json()输出kind=input_read_forward、input_index及reads。锚点JSON为kind=local_input_forward、input_index_base=0、retained与inputs；输入没有伪造定义Inst、永久Reg副本或另一参数槽位映射。FunctionBody::parameter_inputs仍直接借用同一输入列表；空分量B形参不制造输入，B形参序号和IR输入序号分别表达。
+
+CPU函数在原Frame判定前后可以再次优化。原finalize实际移除Frame参数及inputs前缀时，同步调整本输入引用并移除已不存在输入的材料；使用原不可变共享语义保持旧快照，不以来源保留无消费Frame。普通无Frame标量的实际输入索引可以为0，保留Frame时普通值可位于实际前缀之后；以真实列表为准，不从参数名字或旧编号猜测。根generated_origin出现本理由仅说明发生了输入读取替代，不把普通源函数说成合成函数或应用入口。
+
+两类锚点的单源trigger()、syntax()／origin()／instance()均为空，各路从明确成员取得；原读SourceSite及GeneratedOrigin共享已有定义、实例、内联／域路径及真实字节范围，缺失为null。查询不重读后续改写或移走的文件，不保存旧Inst／IR、AST／World、运行拥有表或第二状态图；同一次值流仅用原SSA键暂存待交接材料，交回原拥有者后释放。材料随原Inst／ValueCode／Stage、模块及SDK编译结果在最后IR消费者后释放，compiler以外没有这些类型／代码，必要对象／运行编码及ABI保持。新降层归约外部输入、写失效及控制合流的完整事实仍沿.3.3至.3.8实施；无材料不证明没有发生传播，静态替代不证明已运行，不把前两叶当作全部局部值历史。见[完整架构](Architecture.md#tool-7-3-1-3)、[普通定义范围](FixedIssues.md#c-021-7-9-7-3-1-3-1)和[实际输入范围](FixedIssues.md#c-021-7-9-7-3-1-3-2)。
 
 #### 应用入口与根Frame的生成来源
 

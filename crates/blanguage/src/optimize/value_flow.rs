@@ -3,7 +3,11 @@ use super::*;
 
 type LocalValues = BTreeMap<usize, Reg>;
 // Only pending origin facts for this invocation; SSA keys never enter retained metadata.
-type Reuses = BTreeMap<Reg, Vec<ExpressionReuse>>;
+type Reuses = BTreeMap<Reg, Vec<RetainedUse>>;
+enum RetainedUse {
+    Expression(ExpressionReuse),
+    LocalRead(OperationOrigin),
+}
 
 fn merge(target: &mut Option<LocalValues>, other: Option<LocalValues>) {
     if let Some(other) = other {
@@ -119,14 +123,14 @@ impl Values {
                     let key = ExpressionKey::Divide(op, *divisor, *src);
                     if let Some(old) = self.expressions.get(&key) {
                         self.aliases.insert(dst, *old);
-                        reuses.entry(*old).or_default().push(ExpressionReuse {
+                        reuses.entry(*old).or_default().push(RetainedUse::Expression(ExpressionReuse {
                             result: match op {
                                 IntegerDivisionOp::Quotient => ReuseResult::Quotient,
                                 IntegerDivisionOp::Remainder => ReuseResult::Remainder,
                             },
                             paired_input,
                             origin: OperationOrigin { source_site: inst.source_site.clone(), generated_origin: inst.generated_origin.clone() },
-                        });
+                        }));
                     } else {
                         self.expressions.insert(key, dst);
                         match op {
@@ -193,11 +197,11 @@ impl Values {
             if let Some((key, dst)) = key {
                 if let Some(old) = self.expressions.get(&key) {
                     self.aliases.insert(dst, *old);
-                    reuses.entry(*old).or_default().push(ExpressionReuse {
+                    reuses.entry(*old).or_default().push(RetainedUse::Expression(ExpressionReuse {
                         result: ReuseResult::Value,
                         paired_input: false,
                         origin: OperationOrigin::from_instruction(&inst),
-                    });
+                    }));
                     continue;
                 }
                 self.expressions.insert(key, dst);
@@ -228,7 +232,12 @@ impl Values {
                 InstKind::Append(_) | InstKind::TileBarrier => self.memory.clear(),
                 InstKind::LoadLocal(dst, slot) => {
                     if let Some(value) = self.locals.get(slot).copied() {
-                        self.aliases.insert(*dst, self.root(value));
+                        let value = self.root(value);
+                        self.aliases.insert(*dst, value);
+                        reuses.entry(value).or_default().push(RetainedUse::LocalRead(OperationOrigin {
+                            source_site: inst.source_site.clone(),
+                            generated_origin: inst.generated_origin.clone(),
+                        }));
                         continue;
                     }
                     // 后续读取同一版本可直接复用；真实写入会更新其值。
@@ -339,12 +348,38 @@ impl Values {
 }
 fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
     for inst in code {
-        let reused: Vec<_> = inst.results().filter_map(|reg| reuses.remove(&reg)).flatten().collect();
+        let mut reused = Vec::new();
+        let mut reads = Vec::new();
+        let result_count = inst.results().count();
+        for (result_index, reg) in inst.results().enumerate() {
+            let result = match &inst.kind {
+                InstKind::IntegerDivide { result, .. } => match result {
+                    IntegerDivisionResult::Quotient(_) => ReuseResult::Quotient,
+                    IntegerDivisionResult::Remainder(_) => ReuseResult::Remainder,
+                    IntegerDivisionResult::Both { quotient, .. } if *quotient == reg => ReuseResult::Quotient,
+                    IntegerDivisionResult::Both { .. } => ReuseResult::Remainder,
+                },
+                _ => ReuseResult::Value,
+            };
+            for source in reuses.remove(&reg).into_iter().flatten() {
+                match source {
+                    RetainedUse::Expression(source) => reused.push(source),
+                    RetainedUse::LocalRead(origin) => reads.push(LocalReadForward { result_index, result_count, result, origin }),
+                }
+            }
+        }
         if !reused.is_empty() {
             let retained = OperationOrigin::from_instruction(inst);
             inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
                 reason: GenerationReason::ExpressionReuse,
                 trigger: Some(GenerationAnchor::ExpressionReuse { retained, reused }),
+            }));
+        }
+        if !reads.is_empty() {
+            let retained = OperationOrigin::from_instruction(inst);
+            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+                reason: GenerationReason::LocalReadForward,
+                trigger: Some(GenerationAnchor::LocalReadForward { retained, reads }),
             }));
         }
         match &mut inst.kind {
@@ -362,7 +397,7 @@ fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
     }
 }
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
-    run_value(code, registers, &mut []);
+    run_code(code, registers, &mut []);
 }
 pub(super) fn with_prelude(
     prelude: &mut Vec<Inst>,
@@ -384,12 +419,31 @@ pub(super) fn with_prelude(
     }
     move |r| aliases.root(r)
 }
-pub(super) fn run_value(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) {
+fn run_code(code: &mut Vec<Inst>, registers: &[Scalar], outputs: &mut [Reg]) -> Reuses {
     let mut values = Values::default();
     let mut reuses = Reuses::new();
     values.block(code, registers, &mut reuses);
     retain_reuses(code, &mut reuses);
     for r in outputs {
         *r = values.root(*r);
+    }
+    reuses
+}
+pub(super) fn run_value(value: &mut ValueCode) {
+    let mut reuses = run_code(&mut value.code, &value.registers, &mut value.outputs);
+    let mut inputs = Vec::new();
+    for (input_index, reg) in value.inputs.iter().enumerate() {
+        let reads: Vec<_> = reuses.remove(reg).into_iter().flatten().filter_map(|source| match source {
+            RetainedUse::LocalRead(origin) => Some(origin),
+            RetainedUse::Expression(_) => None,
+        }).collect();
+        if !reads.is_empty() { inputs.push(InputReadForward { input_index, reads }); }
+    }
+    if !inputs.is_empty() {
+        let retained = value.generated_origin.take();
+        value.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
+            reason: GenerationReason::LocalReadForward,
+            trigger: Some(GenerationAnchor::LocalInputForward { retained, inputs }),
+        }));
     }
 }

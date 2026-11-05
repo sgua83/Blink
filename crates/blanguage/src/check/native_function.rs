@@ -1277,6 +1277,7 @@ fn finalize(
             if !frame.contains(&name) {
                 function.parameters.remove(0);
                 function.body.inputs.drain(..2);
+                GeneratedOrigin::remove_input_prefix(&mut function.body.generated_origin, 2);
             }
             crate::optimize::value_code(&mut function.body);
             result.functions.push(function);
