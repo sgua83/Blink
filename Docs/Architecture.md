@@ -711,7 +711,7 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-2"></a>
 
-**阶段常量结果及实际消费者。** 原stage_root／stage_expression把模块const或临时表达式的结果交给Root::Literal；Ty、Bits与可选求值来源由同一Root持有，数值／合法性仍由原求值规则决定。以下生产和消费接点独立交接，不以临时Builder或Root已持有材料代替最终IR／控制展开可查询。材料仅compiler，沿原Root、IR及Program所有者在最后消费者后释放，不保留临时IR、AST／World，不新增常量表或控制／执行图。状态见[父项](Issues.md#c-021-7-9-7-3-1-9-1-3-2)。
+**阶段常量结果及实际消费者。** 原stage_root／stage_expression把模块const或临时表达式的结果交给Root::Literal；Ty、Bits与可选求值来源由同一Root持有，数值／合法性仍由原求值规则决定。以下生产和消费接点独立交接，不以临时Builder或Root已持有材料代替最终IR／控制展开可查询。材料仅compiler，沿原Root、IR及Program所有者在最后消费者后释放，不保留临时IR、AST／World，不新增常量表或控制／执行图。六类生产／消费接点已交接，见[闭合父项](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2)；原始Name读取语法仍归原独立任务。
 
 <a id="tool-7-3-1-9-1-3-2-1"></a>
 
@@ -743,7 +743,15 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-2-6"></a>
 
-**阶段for边界到实际展开。** 原first／last Root决定真实u32迭代范围与展开结果；后续须交接本次边界值、已有求值材料及实际迭代关系到所产生Stage／原Program根，空范围不伪造Stage。原Root与展开所有者交接，不记录另一份循环／调度图，不以编译期迭代冒充运行次数；该消费者尚未实现，见[独立台账](Issues.md#c-021-7-9-7-3-1-9-1-3-2-6)。
+**阶段for边界到实际展开。** 原first／last Root决定实际u32半开范围；范围结果与每次真实迭代按下两叶交给原Program根。整域入口复用原DomainEntry.expansion，物理分段不继承完整展开事实。材料仅解释实际编译展开，不是第二控制／调度图或运行次数；最终融合与机器范围仍归原.7.3.2／.7.4。
+
+<a id="tool-7-3-1-9-1-3-2-6-1"></a>
+
+**阶段范围Root到完整展开根。** 原bound闭包仍按原类型检查各求值一次，在取得u32时把原Expression SourceSite、实际value及Root已有evaluation交给StageForBound；不把来源材料作为数值／合法性权威。成功展开后，同一Program.generated_origin以StageForExpansion共享statement（原Statement SourceSite）、counter（原局部名称）、first／last及下节iterations，retained持有循环前原根。空范围也有真实边界，但iterations为空，不伪造阶段；反向范围保持原空范围语义。单源查询只解释statement，各边界表达式与求值独立查询，不拼出更大源码范围。材料从Root交到原Program／整域FunctionBody／快照，最后IR消费者后释放，不保留临时IR、World／AST、另建常量表、增加必要编码或运行参数；错误沿原B251及原求值检查返回。
+
+<a id="tool-7-3-1-9-1-3-2-6-2"></a>
+
+**实际迭代到自身展开来源。** 原for每次仍以实际index构造同一局部Root，原body成功递归后形成StageForIteration：index、returned、新增Stage的operation_source／generated_origin、新增DomainCall的source及该次body的expansion根。原Program根在原展开所有者内部按循环／迭代作用域交接：循环前材料归StageForExpansion.retained，各次body根直接移入对应iteration.expansion，不把此前迭代的根重复挂入每次结果；不复制Stage、调用IR或寄存器。空body可以有真实迭代而没有Stage，阶段return保留实际早退那次，之后不制造迭代，失败不交接成功结果。迭代内的if／内层for及域路径沿原不可变材料保留明确归属；各结果顺序就是实际编译展开顺序，不声称最终Stage身份或运行次数。唯一原Program／整域入口及快照持有全部材料到最后IR消费者，不增运行状态、控制图、日志系统、保活、调度或释放链。 两叶已实现，见[闭合范围](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-6)。
 
 <a id="tool-7-3-1-9-1-3-3"></a>
 

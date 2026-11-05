@@ -614,9 +614,12 @@ fn expand_stages(
                         format!("重复阶段 for 计数器或覆盖参数 {name}"),
                     );
                 }
-                let bound = |expr: &Expr| -> Result<u32> {
+                let bound = |expr: &Expr| -> Result<StageForBound> {
                     match stage_root(world, instance, env, program, expr)? {
-                        Root::Literal(ty, words, _) if ty == Ty::scalar(Scalar::U32) => Ok(words[0] as u32),
+                        Root::Literal(ty, words, evaluation) if ty == Ty::scalar(Scalar::U32) => Ok(StageForBound {
+                            expression: operation_source(instance, expr.span, SourceSyntax::Expression, domain_path),
+                            value: words[0] as u32, evaluation,
+                        }),
                         _ => d.source.fail(
                             expr.span,
                             "B251",
@@ -626,17 +629,41 @@ fn expand_stages(
                 };
                 let first = bound(first)?;
                 let last = bound(last)?;
-                for index in first..last {
+                let retained = program.generated_origin.take();
+                let mut iterations = Vec::new();
+                let mut returned = false;
+                for index in first.value..last.value {
+                    let first_stage = program.stages.len();
+                    let first_call = calls.len();
                     let mut child = env.clone();
                     child.insert(
                         name.clone(),
                         Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)], None),
                     );
-                    if expand_stages(
+                    returned = expand_stages(
                         world, instance, body, &mut child, program, stack, boundary, facts, calls, domain_path, functions,
-                    )? {
-                        return Ok(true);
-                    }
+                    )?;
+                    iterations.push(StageForIteration {
+                        index, returned,
+                        stages: program.stages[first_stage..].iter().map(|stage| OperationOrigin {
+                            source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.clone(),
+                        }).collect(),
+                        calls: calls[first_call..].iter().map(|call| OperationOrigin {
+                            source_site: call.source.clone(), generated_origin: None,
+                        }).collect(),
+                        expansion: program.generated_origin.take(),
+                    });
+                    if returned { break; }
+                }
+                program.generated_origin = Some(Arc::new(GeneratedOrigin {
+                    reason: GenerationReason::StageForExpansion,
+                    trigger: Some(GenerationAnchor::StageForExpansion {
+                        statement: operation_source(instance, statement.span, SourceSyntax::Statement, domain_path),
+                        counter: name.as_str().into(), first, last, iterations, retained,
+                    }),
+                }));
+                if returned {
+                    return Ok(true);
                 }
                 first_stage = program.stages.len();
             }
