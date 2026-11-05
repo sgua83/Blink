@@ -391,7 +391,7 @@ blink_storage_address是原Frame当前有效槽的纯共享查询，直接返回
 
 ## 普通值序列库与独立实例
 
-`blink.sequence`用普通B接口交接拥有dataset及Result，源码使用与实例范围见[库说明](../library/README.md)。通过`bc -c --module --instance NAME<T>`导出实际实例，`blink --archive`生成标准COFF静态库；消费方用`--import`装入真实合同。没有导出的类型实例明确拒绝，不在对象消费或链接阶段读取库.b、重新生成模板或调用Rust编译器。
+`blink.sequence`用普通B接口交接拥有dataset及Result，源码使用与实例范围见[库说明](../library/README.md)。通过`bc -c --module --instance NAME<T>`导出实际实例，`blink --archive`将独立模块对象及已有模块库生成标准COFF静态库；消费方用`--import`装入真实合同。标准COFF描述物理容器；Blink模块合同、嵌入执行归档、导入绑定及根工厂数据由原Blink链接阶段解释并形成最终原生输入。无Frame引导对象的C ABI静态消费与含资源模块的完整交接分别核对；普通C入口的实际调用闭包需要Frame时仍按现行B263交回，资源ABI的根Frame输入和寿命另由真实消费者持有。没有导出的类型实例明确拒绝，不在对象消费或链接阶段读取库.b、重新生成模板或调用Rust编译器。
 
 模块合同传递无符号上界距离、不回绕和及拼接偏移关系；数值事实与资源版本分开。普通C不接收拥有容器，库不建立第二Frame或独立运行时容器。
 
