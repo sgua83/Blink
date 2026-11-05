@@ -185,18 +185,6 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
 }
 impl Function {
     pub fn pending_values(&self)->bool {self.calls.iter().any(|call|!call.snapshots.is_empty())}
-    pub fn value_bindings(&self,memory:&BTreeMap<address::MemoryTarget,address::MemoryEffect>)->BTreeMap<ValueIdentity,bounds::Proof> {
-        let mut values=BTreeMap::new();
-        for call in &self.calls {
-            for(component,snapshot)in call.snapshots.iter().enumerate(){
-                let changed=memory.get(&address::MemoryTarget::Call(call.memory)).is_some_and(|effect|effect.writes_position(&snapshot.position));
-                let proof=if changed{bounds::Proof::default()}else{snapshot.proof.substitute_values(&values)};
-                values.insert(ValueIdentity::MemoryValue(call.memory,component),proof);
-            }
-        }
-        values
-    }
-
     fn value_context(&self,values:Option<&BTreeMap<ValueIdentity,bounds::Proof>>)->bounds::Clause {
         match values {
             Some(values)=>bounds::Clause::values(self.calls.iter().flat_map(|call|call.snapshots.iter().enumerate().map(move |(component,snapshot)|{
@@ -764,7 +752,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
     if !unknown.is_empty(){converge(functions,&mut known,&unknown);}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known);
-    let mut memory=BTreeMap::new();
+    let mut memory=BTreeMap::new();let mut scalar_values=BTreeMap::new();
     for(name,function)in functions {
         let mut values:BTreeMap<address::MemoryTarget,address::MemoryEffect>=BTreeMap::new();
         for usage in &function.uses {
@@ -778,9 +766,10 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 }
             }
         }
+        let mut resolved=BTreeMap::new();
         for call in &function.calls {
             for access in &known[&call.function].interface.access {
-                let (borrows,when,access)=match access_at_call(access,call,&call.path,function,&known[name],&known) {
+                let (borrows,when,access)=match access_at_call(access,call,&call.path,function,&known[name],&known).substitute_values(&resolved) {
                     Access::Memory{borrows,when,access}=> (borrows,when,access),
                     Access::Dataset{borrows,when,access,..}=> (borrows,when,access),
                     Access::Position{borrows,when,position} if position.writes||position.initialized=> (borrows,when,match(position.writes,position.initialized){(true,true)=>super::Access::InOut,(true,false)=>super::Access::Write,_=>super::Access::Read}),
@@ -789,10 +778,15 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 let borrow=borrows.restricted(&when.assume(&bounds::Clause::default(),true));
                 values.entry(address::MemoryTarget::Call(call.memory)).or_insert_with(||address::MemoryEffect::default()).union(address::MemoryEffect::of(&borrow,access));
             }
+            for(component,snapshot)in call.snapshots.iter().enumerate(){
+                let changed=values.get(&address::MemoryTarget::Call(call.memory)).is_some_and(|effect|effect.writes_position(&snapshot.position));
+                let proof=if changed{bounds::Proof::default()}else{snapshot.proof.substitute_values(&resolved)};
+                resolved.insert(ValueIdentity::MemoryValue(call.memory,component),proof);
+            }
         }
         memory.insert(name.clone(),values);
+        if function.pending_values(){scalar_values.insert(name.clone(),resolved);}
     }
-    let mut scalar_values=functions.iter().filter(|(_,function)|function.pending_values()).map(|(name,function)|(name.clone(),function.value_bindings(&memory[name]))).collect::<BTreeMap<_,_>>();
     for(name,function)in functions{
         let state=&known[name];
         let context=function.value_context(scalar_values.get(name));
