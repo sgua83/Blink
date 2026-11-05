@@ -132,7 +132,7 @@ impl Origin {
     }
     pub fn resources(&self) -> view::Borrow {
         match &self.root {
-            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} => borrow.resources(),
+            Root::Resource(borrow) | Root::Derived(borrow) | Root::Dataset{borrow,..} | Root::External(Identity::Storage(borrow)) => borrow.resources(),
             _ => view::Borrow::default(),
         }
     }
@@ -169,10 +169,10 @@ impl Origin {
         for(source,when)in borrow.sources.entries(){
             if !bounds::Condition::guard(when).assume(path,true).possible(){continue;}
             let view::Source::Position(parent)=source else{return None;};
-            if parent.positions.len()!=parent.layout.parts.len(){return None;}
+            if parent.positions.len()!=parent.layout.parts.len()&&!matches!(parent.root,Root::Resource(_)){return None;}
             for((scalar,_),word)in self.layout.parts.iter().zip(self.words.iter()) {
                 let end=u64::from(*word)+u64::from(scalar.size());if end>u64::from(parent.layout.size){return None;}
-                for(index,(actual,offset))in parent.layout.parts.iter().enumerate(){if u64::from(*offset)<end&&u64::from(*word)<u64::from(*offset)+u64::from(actual.size()){positions.push(parent.positions[index].clone());}}
+                for(index,(actual,offset))in parent.layout.parts.iter().enumerate(){if u64::from(*offset)<end&&u64::from(*word)<u64::from(*offset)+u64::from(actual.size()){positions.extend(parent.positions.get(index).cloned());}}
             }
         }
         Some(positions)
@@ -660,6 +660,7 @@ impl Builder<'_> {
             if !origin.writable{return None;}
             match &origin.root {
                 Root::Resource(resource)|Root::Dataset{borrow:resource,..}=>Some((resource.restricted(&when),origin.words.to_vec())),
+                Root::External(Identity::Storage(resource))=>Some((resource.resources().restricted(&when),resource.sources.iter().filter_map(|source|match source{view::Source::Position(parent)=>Some(parent.words.iter().copied()),_=>None}).flatten().collect())),
                 _=>None,
             }
         }).collect::<Vec<_>>();
