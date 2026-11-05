@@ -534,6 +534,10 @@ impl Builder<'_> {
             let Some(place) = self.place(base)? else {
                 return Ok(None);
             };
+            if place.ty().dataset.is_some() {
+                let data = self.application_place_reference(place, base.span)?;
+                return self.application_index(data, index);
+            }
             if place.ty().indexed_element().is_some() {
                 return self.array_place(place, index);
             }

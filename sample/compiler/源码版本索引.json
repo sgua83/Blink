@@ -164,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_records.rs",
-      "sha256": "c7fdf66a5dd73d269c4ed89a21aa1408c6001a69223b68a142e1539822506714"
+      "sha256": "0d3719284227df5e468accaf98b336e13c2ae4f10b9b12f86b82b8f2491cc6c3"
     },
     {
       "path": "crates/blanguage/src/check/owned_values.rs",
@@ -196,7 +196,7 @@
     },
     {
       "path": "crates/blanguage/src/check/view.rs",
-      "sha256": "5443b47d8e7e0f67025a3f4fc242131d54f1eb1699ee19a8186ef8c2dde47db1"
+      "sha256": "5c14cbb8838e1174d8ecaffcc1b4972ad9f7aaeda7beb8da8fd08b7364696d9e"
     },
     {
       "path": "crates/blanguage/src/check/view_contracts.rs",
