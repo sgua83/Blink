@@ -1367,7 +1367,21 @@ check/application.rs中的DataPayload.elements只描述所有已初始化元素�
 
 CPU借用描述符的原步长表示也由application_reference_value交接：布局步长为U32而参数需要U64时，原Cast只拓宽数值表示，不改变实际字节步长。该指令用DatasetBorrowStrideCast交接生成来源，触发复用原SourceSite；已经U64的跨函数转交继续直传。Projection根Proof、storage_address、字段偏移与stride的Proof／constant／uniform各保持原职责，来源材料只归原IR及按需快照，不进入必要运行编码，也不为观察保活转换。接口细节见[CPU借用描述符步长来源](../Docs/BLanguage.md#cpu借用描述符步长cast的生成来源)。
 
-直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。owned_records::indexed_application_reference先区分普通拥有位置与只读表达式；后者沿read_expression_type和read_aggregate读取实际Data.elements，不扩大普通值复制或移动。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
+直接写`rows[i].values.length`、在原范围成立时索引、构造view或取得只读地址，同样进入原只读模型。owned_records::indexed_application_reference先区分普通拥有位置与只读表达式；后者沿read_expression_type和read_aggregate读取实际Data.elements，不扩大普通值复制或移动。for的拥有记录元素游标由Binding::Owned持有原ApplicationElement位置。read_expression_type直接查询这个位置的Ty，read_aggregate的Name分派复用application_owned_argument，按实际资源来源与布局经materialize_element装载一次元数据；原OwnedValue::borrow／unpack_record交接共享子资源，直接子遍历与read dataset形参消费同一来源。它不建立新拥有绑定，不改变普通复制、移动和释放。原下标只求值一次。子元数据是实际位置的一次装载，不是env中的独立拥有资源；view、原生调用与地址转换直接消费原Data.root.proof的借用来源。
+
+源码节选：`crates/blanguage/src/check/owned_values.rs:461`。
+
+```rust
+        if let ExprKind::Name(name)=&expr.kind
+            && let Some(Binding::Owned(owner))=self.env.get(name).cloned()
+            && matches!(owner.place.storage(),Place::ApplicationElement{..})
+            && owner.place.ty().owns_resources() && owner.place.ty().dataset.is_none() {
+            let Returned::OwnedValue(mut value)=self.application_owned_argument(&owner.place,expr.span)? else{return self.fail(expr.span,"B224","read聚合需要拥有记录、数组或变体")};
+            if !value.available(){return self.fail(expr.span,"B227","只读借用需要已初始化且未移动的全部活动资源");}
+            self.prepare_owned_read(&Returned::OwnedValue(value.clone()));value.borrow();
+            return Ok(Some((Returned::OwnedValue(value),None)));
+        }
+```
 
 Place::ApplicationElement在原编译期位置上保留实际资源Borrow，array字段投影及position_origin将它交给原地址来源。Argument::overlaps保留实际字段region比较，同时从普通值、临时返回值与read位置的实际类型Proof取得原Borrow::owners。同一调用中，子view／地址与父拥有值交接仍冲突；两个只读别名、独立父及无关head字段继续沿原规则使用。它们复用同一来源图和原调用检查，没有第二别名图、拥有表或释放链；实现源码缺席的对象／归档交接同一合同。
 

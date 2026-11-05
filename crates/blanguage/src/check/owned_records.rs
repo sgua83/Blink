@@ -414,6 +414,7 @@ impl Builder<'_> {
         match &expr.kind {
             ExprKind::Name(name) => match self.env.get(name)? {
                 Binding::OwnedValue(value) => Some(value.value.ty.clone()),
+                Binding::Owned(owner) if matches!(owner.place.storage(),Place::ApplicationElement{..}) => Some(owner.place.ty().clone()),
                 Binding::ApplicationData(data) => Some(Ty::owned_dataset(data.ty.clone(),data.count)),
                 Binding::DataReference(data) => Some(Ty::owned_dataset(data.element_layout().1.clone(),data.count)),
                 _ => None,
