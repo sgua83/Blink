@@ -84,7 +84,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "c1394c9cde921cb738d6e0b168461112b5ad63c201a3cb0a450c294bc292f252"
+      "sha256": "5793199111ecf680905f3d3edc93314b46960611946e4c8f9d282a1eca7bfe1d"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -108,7 +108,7 @@
     },
     {
       "path": "crates/blanguage/src/check/constant.rs",
-      "sha256": "5d956938d4ac3dc78176a57d8747b917a3946ddf17c9bba016c026b29000056e"
+      "sha256": "5d0c00542b388f47992cd1a4076e125a3fb8f03fdc5cc07f59aca12eadb590c6"
     },
     {
       "path": "crates/blanguage/src/check/contracts.rs",
@@ -248,7 +248,7 @@
     },
     {
       "path": "crates/blanguage/src/ir/origin.rs",
-      "sha256": "c0595909e44a1d392e4b7db9952bc4dd0a24bc8c7b645bc5c76bed9b9b9e4302"
+      "sha256": "f69acde243405f21b5adab75d505649dbcef1c6ddc9ed8f8fa55ec3306fcb1a4"
     },
     {
       "path": "crates/blanguage/src/lexer.rs",
@@ -654,8 +654,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 3957,
-      "end_line": 3994,
+      "start_line": 3969,
+      "end_line": 4006,
       "sha256": "68ff4672d959f3a1694298ed6bb416071943d7b732d6312782c0fe07ae377984"
     },
     {
@@ -702,8 +702,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 1681,
-      "end_line": 1684,
+      "start_line": 1693,
+      "end_line": 1696,
       "sha256": "85f77a74299f50bde9e112545774305524a7aba5338b64f90334ba2b4276ea8a"
     },
     {
@@ -834,8 +834,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 467,
-      "end_line": 485,
+      "start_line": 478,
+      "end_line": 496,
       "sha256": "502ae7910646b5e66565e50f26b92574ecdb855ad412ab52f3127a5f2958846c"
     },
     {
@@ -1182,8 +1182,8 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "start_line": 1517,
-      "end_line": 1526,
+      "start_line": 1529,
+      "end_line": 1538,
       "sha256": "f8694819f9dfe33c0d6ee0f2c676860a8309be71fe2d4260e223e42b07836c44"
     },
     {

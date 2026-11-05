@@ -465,7 +465,7 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-4-6-2"></a>
 
-**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量共享DomainCallLiteral，JSON reason为domain_call_literal，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；节点source_site为空，调用语法直接借用原call.source及其定义／实例／内联与域路径；DomainCallLiteral锚点分别交接call与可选evaluation；没有该项材料时对应成员为null。单源trigger及语法查询仍只解释原调用范围，不伪造字面量表达式或额外寄存器；求值事实独立从evaluation取得，具体交接见下文阶段Literal职责。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前已交接原实际Constant的生成来源，原优化照常，不为观察保活。见[规范](BLanguage.md#整域调用字面量实参的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
+**整域调用字面量实参的生成准备。** 原展开调用的Root::Literal、真实Ty分量及位模式，经build_domain原逐分量Constant进入原CallArgument，再由同一已编译域Call消费。仅在原Root::Literal生产接点为这些真实准备常量共享DomainCallLiteral，JSON reason为domain_call_literal，保留原Scalar／Bits及寄存器，不按数值或符号字符串改标其他常量；节点source_site为空，调用语法直接借用原call.source及其定义／实例／内联与域路径；DomainCallLiteral锚点分别交接call与可选evaluation；没有该项材料时对应成员为null。单源trigger及语法查询仍只解释原调用范围，不伪造字面量表达式或额外寄存器；原Literal结果的求值／绑定材料独立从evaluation取得，具体交接见下文阶段Literal职责。Uniform／Data原寄存器直传不造Constant，真实Call的原source_site保持。材料只归原Inst／FunctionBody／模块与快照，最后IR消费者后释放，不复制值权威、改变参数顺序、精度、ABI或保活节点；资源及完成仍归原Frame和最后消费者。当前已交接原实际Constant的生成来源，原优化照常，不为观察保活。见[规范](BLanguage.md#整域调用字面量实参的生成来源)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
 
 <a id="tool-7-2-4-6-3"></a>
 
@@ -473,7 +473,19 @@ compiler功能提供ir::SourceOrigin、FunctionBody.source_origin、Program::sou
 
 <a id="tool-7-2-5"></a>
 
-**具名阶段常量的原始读取语法。** stage_root的Name有原Expr／Source及实际实例，Root到值IR还须独立交接这次读取语法；已有ModuleConstantEvaluation解释常量求值，不能替代调用者Name读取。没有折叠的Plain当前可得到真实Constant／数值，但直接source_site仍为空；这项能力尚未实现。以独立语法／绑定材料交接，不要求把生成Constant改标源码直接指令；不为普通读取伪造优化事件，不以常量定义或parallel范围冒充读取位置，未知外部定义仍保持未知；材料由原Root及Inst所有者共享到最后IR消费者，不保留AST、重读源码或设来源表，见[独立台账](Issues.md#c-021-7-9-7-2-5)。
+**阶段常量Name绑定与实际求值上下文。** 原整值Name的直接Root和临时求值结果各自拥有读取位置；已有ModuleConstantEvaluation解释常量求值，不能替代调用者Name读取。以下三叶分别交接原读取及真实域上下文，普通绑定不是优化事件；不承诺捕获全部复合表达式的逐输入因果关系，复合运算和源／机器映射继续沿原职责。原生成Constant的直接source_site保持，不以常量定义或parallel范围冒充Name读取，不为观察保活。
+
+<a id="tool-7-2-5-1"></a>
+
+**直接阶段Name到Literal绑定。** stage_root按原env或模块const解析取得实际Root，只有Literal将本次原Expression SourceSite及已有GeneratedOrigin共享给StageConstantReference；其reference是原Name范围、实例与实际域路径，retained保留同一原求值／绑定材料。非Literal的Data／Uniform／Texture／Acceleration不产生常量引用，Number／StaticU32也不伪造Name。只复用原Root的生成材料构造；Builder::roots、DomainCallLiteral及阶段if／for根继续按原接点接收，不加另一字段、来源表、求值器或指令。无折叠Name也有真实绑定，retained可以为null；未知源码仍为空。单源查询只解释reference，retained独立查询；材料随原Root、Inst／删除根、模块与快照到最后IR消费者，不进入必要编码或拥有运行资源。
+
+<a id="tool-7-2-5-2"></a>
+
+**临时整值Name结果到Literal绑定。** stage_expression保留原Builder、注解、类型及完全常量检查，在结果成功且原表达式本身为Name时，复用上节构造交接Builder的原Expression SourceSite及已有结果材料；不另走解析、类型检查或求值路径。别名的真实引用材料可随原实际结果进入既有StageConstantEvaluation.operations，其表示这次结果已经持有的来源，不将普通引用解释为算术折叠；没有材料时仍不制造求值变换。非Name表达式保持自身原变换职责。后续接收与最后消费者同上节，不把临时Builder、旧IR或全部输入谱系保存下来。
+
+<a id="tool-7-2-5-3"></a>
+
+**实际域路径到阶段临时求值来源。** expand_stages持有的原domain_path经stage_root／stage_expression实际调用参数交给临时Builder.source_context，同一context的定义、实例及inline关系保持。原SourceSite和求值操作据此取得真实调用域路径，新的Name绑定复用同一事实；模块const求值仍在原常量定义上下文，不把调用者域路径写成其定义路径。根级路径为空，嵌套展开只使用原DomainSite序列，不推导路径或增加调用状态、第二路径图、运行数据与缓存历史。 三叶已交接，见[闭合范围](FixedIssues.md#c-021-7-9-7-2-5)。
 
 <a id="tool-7-3-1"></a>
 
@@ -711,11 +723,11 @@ GenerationAnchor::ReductionUniformExtract持有retained原OperationOrigin、Redu
 
 <a id="tool-7-3-1-9-1-3-2"></a>
 
-**阶段常量结果及实际消费者。** 原stage_root／stage_expression把模块const或临时表达式的结果交给Root::Literal；Ty、Bits与可选求值来源由同一Root持有，数值／合法性仍由原求值规则决定。以下生产和消费接点独立交接，不以临时Builder或Root已持有材料代替最终IR／控制展开可查询。材料仅compiler，沿原Root、IR及Program所有者在最后消费者后释放，不保留临时IR、AST／World，不新增常量表或控制／执行图。六类生产／消费接点已交接，见[闭合父项](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2)；原始Name读取语法仍归原独立任务。
+**阶段常量结果及实际消费者。** 原stage_root／stage_expression把模块const或临时表达式的结果交给Root::Literal；Ty、Bits与可选求值来源由同一Root持有，数值／合法性仍由原求值规则决定。以下生产和消费接点独立交接，不以临时Builder或Root已持有材料代替最终IR／控制展开可查询。材料仅compiler，沿原Root、IR及Program所有者在最后消费者后释放，不保留临时IR、AST／World，不新增常量表或控制／执行图。六类生产／消费接点已交接，见[闭合父项](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2)；原始Name读取绑定按上文独立职责交接。
 
 <a id="tool-7-3-1-9-1-3-2-1"></a>
 
-**具名模块const到阶段Literal。** stage_root的Name解析取得实际模块const，以原空calls消费同一evaluate返回的Ty／Bits与可选ModuleConstantEvaluation，交给原Root::Literal。env中的既有Root仍直接克隆，普通数字与StaticU32没有材料时为空；不重求值、以相同值猜补或改变原公开性／类型。实际接收沿下列消费者，状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-1)。
+**具名模块const到阶段Literal。** stage_root的Name解析取得实际模块const，以原空calls消费同一evaluate返回的Ty／Bits与可选ModuleConstantEvaluation，交给原Root::Literal。env中的既有Root仍克隆，再沿阶段Name职责交接本次真实读取，普通数字与StaticU32没有材料时为空；不重求值、以相同值猜补或改变原公开性／类型。实际接收沿下列消费者，状态见[独立台账](FixedIssues.md#c-021-7-9-7-3-1-9-1-3-2-1)。
 
 <a id="tool-7-3-1-9-1-3-2-2"></a>
 

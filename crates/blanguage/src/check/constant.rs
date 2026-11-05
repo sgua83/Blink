@@ -48,9 +48,11 @@ pub(super) fn stage_expression(
     program: &Program,
     expression: &Expr,
     annotation: Option<&TypeName>,
+    domain_path: &Arc<[DomainSite]>,
 ) -> Result<Root> {
     let definition = &instance.definition;
     let mut builder = Builder::new(world, definition, program, 0, Some(&instance.name))?;
+    builder.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*builder.source_context).clone() });
     builder.in_function = true;
     builder.roots(roots);
     // roots中的无关uniform装载不是当前表达式的计算，不要求它们为常量。
@@ -85,7 +87,10 @@ pub(super) fn stage_expression(
             expression: builder.source_at(expression.span, SourceSyntax::Expression), operations,
         }),
     }));
-    Ok(Root::Literal(value.ty, value.constant.unwrap(), origin))
+    let root = Root::Literal(value.ty, value.constant.unwrap(), origin);
+    Ok(if matches!(&expression.kind, ExprKind::Name(_)) {
+        root.reference_literal(builder.source_at(expression.span, SourceSyntax::Expression))
+    } else { root })
 }
 fn evaluation_operations<'a>(code: impl Iterator<Item = &'a Inst>) -> Vec<OperationOrigin> {
     let mut operations: Vec<_> = code.filter(|inst| inst.generated_origin.is_some())

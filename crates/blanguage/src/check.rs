@@ -113,6 +113,17 @@ enum Root {
     Uniform(Ty, u32),
     Literal(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>),
 }
+impl Root {
+    fn reference_literal(self, reference: Option<Arc<SourceSite>>) -> Self {
+        match self {
+            Self::Literal(ty, bits, retained) => Self::Literal(ty, bits, Some(Arc::new(GeneratedOrigin {
+                reason: GenerationReason::StageConstantReference,
+                trigger: Some(GenerationAnchor::StageConstantReference { reference, retained }),
+            }))),
+            root => root,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ValueIdentity {
     Register(Reg),
@@ -572,12 +583,12 @@ fn expand_stages(
                     return d.source.fail(statement.span, "B125", format!("重复局部变量或覆盖参数 {name}"));
                 }
                 let value = constant::stage_expression(
-                    world, instance, env, program, expression, annotation.as_ref(),
+                    world, instance, env, program, expression, annotation.as_ref(), domain_path,
                 )?;
                 env.insert(name.clone(), value);
             }
             StmtKind::If(condition, yes, no) => {
-                let Root::Literal(ty, words, evaluation) = stage_root(world, instance, env, program, condition)? else {
+                let Root::Literal(ty, words, evaluation) = stage_root(world, instance, env, program, condition, domain_path)? else {
                     return d.source.fail(condition.span, "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
                 };
                 if ty != Ty::scalar(Scalar::Bool) {
@@ -615,7 +626,7 @@ fn expand_stages(
                     );
                 }
                 let bound = |expr: &Expr| -> Result<StageForBound> {
-                    match stage_root(world, instance, env, program, expr)? {
+                    match stage_root(world, instance, env, program, expr, domain_path)? {
                         Root::Literal(ty, words, evaluation) if ty == Ty::scalar(Scalar::U32) => Ok(StageForBound {
                             expression: operation_source(instance, expr.span, SourceSyntax::Expression, domain_path),
                             value: words[0] as u32, evaluation,
@@ -978,7 +989,7 @@ fn expand_stages(
                 }
                 let roots = args
                     .iter()
-                    .map(|arg| stage_root(world, instance, env, program, arg))
+                    .map(|arg| stage_root(world, instance, env, program, arg, domain_path))
                     .collect::<Result<Vec<_>>>()?;
                 let actuals: Vec<_> = roots
                     .iter()
@@ -1236,18 +1247,19 @@ fn stage_root(
     env: &BTreeMap<String, Root>,
     program: &Program,
     arg: &Expr,
+    domain_path: &Arc<[DomainSite]>,
 ) -> Result<Root> {
     let d = &instance.definition;
     match &arg.kind {
         ExprKind::Name(n) => {
             if let Some(root) = env.get(n) {
-                Ok(root.clone())
+                Ok(root.clone().reference_literal(operation_source(instance, arg.span, SourceSyntax::Expression, domain_path)))
             } else if let Some(key) = world
                 .resolve(n, &d.module, &d.imports, true)
                 .filter(|key| world.functions[key].function.kind == FunctionKind::Constant)
             {
                 let (ty, words, origin) = constant::evaluate(world, &key, &[])?;
-                Ok(Root::Literal(ty, words, origin))
+                Ok(Root::Literal(ty, words, origin).reference_literal(operation_source(instance, arg.span, SourceSyntax::Expression, domain_path)))
             } else {
                 d.source
                     .fail(arg.span, "B113", format!("未知参数或 const {n}"))
@@ -1258,7 +1270,7 @@ fn stage_root(
             let (ty, bits) = number(&d.source, arg.span, n)?;
             Ok(Root::Literal(ty, vec![bits], None))
         }
-        _ => constant::stage_expression(world, instance, env, program, arg, None),
+        _ => constant::stage_expression(world, instance, env, program, arg, None, domain_path),
     }
 }
 fn collective_field(

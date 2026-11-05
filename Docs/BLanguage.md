@@ -565,15 +565,15 @@ OutputConstant的PartialEq／Eq、PartialOrd／Ord及原合同去重仍只消费
 
 #### 阶段常量结果到实际值IR的来源
 
-原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls直接接收evaluate的ModuleConstantEvaluation；env中已有Root仍克隆原值和同一材料。Number／StaticU32及没有变换材料的常量保持空来源，不从数值或名称猜补。
+原Root::Literal只在编译器的阶段展开中存在，同一结果持有Ty、Bits与可选generated_origin，不增加运行参数或对象编码。stage_root读取具名模块const时，以原空calls接收evaluate已有材料；env中已有Root仍克隆同一原值和材料，实际Literal的Name读取再由下述StageConstantReference交接本次绑定。直接Number／StaticU32及计数器初始值不伪造读取或折叠；无折叠Name的retained可以为空，本次真实reference仍保留。
 
-stage_expression复用原Builder、表达式和合法常量检查。在结束临时Builder前，取得该次表达式新增Constant上已有的generated_origin，以及结果实际引用的入口Constant材料；无关env预装载、uniform或其他局部结果不进入本次来源。与模块const共用原OperationOrigin收集及相邻共享事实去重，仅按该次SourceSite／GeneratedOrigin的Arc引用比较，不建立Reg／来源表。没有材料不创建锚点；有材料形成GenerationReason::StageConstantEvaluation和GenerationAnchor::StageConstantEvaluation { expression, operations }，再与原Ty／Bits共同交给Root。
+stage_expression复用原Builder、表达式和合法常量检查。在结束临时Builder前，取得该次表达式新增Constant上已有的generated_origin，以及结果实际引用的入口Constant材料；无关env预装载、uniform或其他局部结果不进入本次来源。与模块const共用原OperationOrigin收集及相邻共享事实去重，仅按该次SourceSite／GeneratedOrigin的Arc引用比较，不建立Reg／来源表。没有材料不创建锚点；有材料形成GenerationReason::StageConstantEvaluation和GenerationAnchor::StageConstantEvaluation { expression, operations }，再与原Ty／Bits共同交给Root。operations可包含结果已经持有的真实绑定材料，不将普通引用解释为算术折叠；临时Builder同时接收原展开的domain_path，模块const自身的定义上下文保持。
 
 JSON reason和锚点kind为stage_constant_evaluation；expression是实际临时求值上下文的source_syntax或null，operations是该次已取得的operation_origin数组。范围沿原Expr，当前可为一元运算符、名称或构造名token，不扩大成完整表达式；原不可变定义快照仍可读取。anchor().syntax()和trigger()借用已有expression，origin()／instance()由同一语法点取得；没有语法时保持null，不能按最终阶段名补造定义、实例或域路径。材料不是每个结果分量的完整因果图、全部输入谱系或所有临时求值历史，尚未产生来源的转换等变换仍沿各自原编号建设。
 
 Builder::roots共用evaluated_constant，把同一材料交给实际Constant及已有source_site，原Value数值、Proof、literal、初始化、位置、布局和阶段选择保持。原CSE／DCE及空Map移除根按原OperationOrigin继续持有，不为查询保活操作或阶段；材料由原Root及实际IR／Stage／Program拥有，到最后编译／查询消费者后释放，不保留临时Inst、AST／World或运行资源。
 
-本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if的实际选择及阶段for的范围／迭代结果已按后文交给原Program及整域入口，不能以Root已持有材料代替这些实际消费者。具名阶段常量Name读取的直接source_site仍有独立缺口：无折叠不造求值事件，不等于原始读取语法已经完整；该范围沿原始语法来源C-021.7.9.7.2.5推进。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)；具名阶段常量读取语法见[独立剩余范围](Issues.md#c-021-7-9-7-2-5)。
+本节完成具名const／临时表达式结果及值IR接收三个独立接点。整域调用的DomainCallLiteral现按原调用生成职责同时接收已有求值材料；阶段if的实际选择及阶段for的范围／迭代结果已按后文交给原Program及整域入口，不能以Root已持有材料代替这些实际消费者。具名阶段常量整值Name读取通过下述StageConstantReference交接原语法及已有材料，无折叠也有真实绑定；不因此制造算术折叠或承诺完整子表达式输入谱系。阶段选择不等于运行分支执行，编译期展开不等于运行次数。见[父项及独立职责](Architecture.md#tool-7-3-1-9-1-3-2)；具名阶段常量读取绑定见[下节架构职责](Architecture.md#tool-7-2-5)。
 
 #### 具名声明、调用及条件IR的来源
 
@@ -853,6 +853,14 @@ call_domain只为原application_execute交付Frame及实际参数后发射的Def
 
 材料只归compiler角色的原ValueCode／FunctionBody／模块及SDK／CLI快照，在最后实际IR消费者后释放；原body克隆共享不可变来源，不持有World／AST、执行资源或第二登记表。关闭compiler角色不包含该类型／字段，必要执行编码、B语法、C ABI与资源完成保持。空指令body仍可以具有真实生成入口；原优化照常，不保活变量或节点。内部原Call／字面量准备／分段提交来源各归原职责，真实CPU／GPU计算及最后完成仍归Frame／blcompute，静态入口不证明已运行。见[架构](Architecture.md#tool-7-2-4-6-1)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-1)。
 
+#### 阶段整值Name的绑定来源
+
+stage_root从原env或模块const取得Literal时，用同一Root::reference_literal交接实际Name引用；stage_expression仍经过原注解、类型与完全常量检查，成功结果的原表达式本身为Name时复用同一构造。Root保留原Ty／Bits，已有生成材料进入retained。GenerationReason::StageConstantReference表示这次真实编译期绑定，GenerationAnchor::StageConstantReference { reference, retained }及JSON kind stage_constant_reference分别共享原Expression SourceSite和原GeneratedOrigin，缺失各自为null；单源trigger()、syntax()／origin()／instance()只解释reference，不能用被引用常量定义或retained替代本次读取。它不是算术折叠事件；Data／Uniform／Texture／Acceleration以及直接Number／StaticU32不产生常量Name引用。
+
+expand_stages将原domain_path经原stage_root／stage_expression参数交给临时Builder.source_context，定义、实际实例与inline关系保持。阶段表达式及其原操作据此保存实际域路径；模块const的求值仍拥有自身定义上下文。根级为空，嵌套域只使用原DomainSite序列，不从最终函数名推导调用路径或复制图。
+
+Builder::roots仍以原evaluated_constant形成相同Constant、Scalar／Bits及寄存器，新绑定材料和原求值材料一起进入同一Inst及原CSE／DCE／空Map根；直接source_site按原生成职责保持，原绑定来源从generated_origin查询。DomainCallLiteral.evaluation、阶段if及for边界复用原Root材料交接，不新增消费者或另一来源字段。临时求值的实际结果可经原StageConstantEvaluation.operations持有输入已有绑定，不伪造额外算术或完整逐输入因果图。材料仅compiler，随原Root／IR／模块及快照到最后消费者，不保活操作、保存旧Builder／IR／World／AST、增加必要编码、运行状态或资源寿命。见[架构三叶职责](Architecture.md#tool-7-2-5)。
+
 #### 阶段if选择的生成来源
 
 expand_stages在原bool检查和唯一所选body成功展开后，把StageIfSelection交给同一Program.generated_origin。GenerationAnchor::StageIfSelection及JSON kind stage_if_selection分别提供condition（原Expression SourceSite）、value（本次bool）、evaluation（原Root可选求值GeneratedOrigin）、returned（该次阶段展开是否早退）、stages／calls（本次实际新增Stage及DomainCall的OperationOrigin）与retained（此前Program根，含递归内层选择）。stages按实际展开顺序共享原operation_source及generated_origin，calls按实际生成顺序共享原call.source而不造求值事件；二者不是最终融合阶段编号或运行次数，未选分支没有产生这些结果。单源查询只解释condition，evaluation和retained独立读取。空分支、无新阶段或阶段return仍有选择事实；失败不形成成功记录，不制造指令、复制IR、保活阶段或改变原初始化／返回语义。
@@ -875,7 +883,7 @@ build_domain只在原Root::Literal分支为逐分量准备的Constant共享Domai
 
 节点source_site为空。GenerationAnchor::DomainCallLiteral { call, evaluation }分别共享原call.source与同一Root可选的已有GeneratedOrigin；每个成员独立以null说明该事实缺失，所有本角色准备常量使用同一表示。原GenerationReason::DomainCallLiteral保持，JSON reason仍为domain_call_literal，新锚点kind也为domain_call_literal，成员为call（原source_syntax或null）及evaluation（已有generated_origin或null）。
 
-原GeneratedOrigin::trigger()及锚点syntax()／origin()／instance()仍只借用call；调用语法、原定义／实际实例及内联／域路径保持。evaluation明确表示本次实参已取得的ModuleConstantEvaluation或StageConstantEvaluation等事实，不替代调用触发，也不从调用范围猜补求值表达式；没有调用语法时相关单源查询为空，求值事实仍从evaluation取得。每个实际Root的准备Constant继续共享一个原生成材料，Scalar／Bits／分量／寄存器及CallArgument顺序不变。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call保持自身职责；不改调用、求值顺序、精度、布局或参数ABI，不为Data／Uniform直传造值准备。
+原GeneratedOrigin::trigger()及锚点syntax()／origin()／instance()仍只借用call；调用语法、原定义／实际实例及内联／域路径保持。evaluation表示本次Literal结果已有的StageConstantReference及其retained中的ModuleConstantEvaluation、StageConstantEvaluation等事实，不替代调用触发，也不从调用范围猜补求值表达式；没有调用语法时相关单源查询为空，求值事实仍从evaluation取得。每个实际Root的准备Constant继续共享一个原生成材料，Scalar／Bits／分量／寄存器及CallArgument顺序不变。真实已编译域Call仍使用同一原source_site，入口body、其他准备及分段运行Call保持自身职责；不改调用、求值顺序、精度、布局或参数ABI，不为Data／Uniform直传造值准备。
 
 材料只归compiler角色的原Inst／FunctionBody／模块及SDK／CLI快照，最后实际IR消费者后释放；原优化照常，不保活常量，不进入必要执行编码，不持有World／AST或运行资源。真实计算、Frame存储、依赖及最后完成沿原所有者，不把静态常量准备当作实际执行；不增加值表、图、调度器、同步或释放链。见[架构](Architecture.md#tool-7-2-4-6-2)及[闭合范围](FixedIssues.md#c-021-7-9-7-2-4-6-2)。
 
