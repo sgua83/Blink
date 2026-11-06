@@ -143,3 +143,23 @@ pub(super) fn negate(value: &Value, component: usize) -> ScalarRanges {
         None => ScalarRanges::default(),
     }
 }
+
+impl Proof {
+    pub(in crate::check) fn texture_sample(
+        format: Option<crate::ast::TextureFormat>, coordinate: &Value, lod: &Value,
+    ) -> Self {
+        use crate::ast::TextureFormat::*;
+        if !matches!(format, Some(Rgba8Unorm | Rgba8Srgb | R8Unorm | Rg16Unorm | Rgb10A2Unorm)) {
+            return Self::default();
+        }
+        // 当前共同证明覆盖所选原资源尺寸(u32)缩放后仍在原生最低数值范围内的输入。
+        // 事实不足只保持未知，不改变合法采样域或生成运行检查。
+        let coordinates = (0..coordinate.regs.len()).all(|i|
+            finite(coordinate, i).is_some_and(|(a,b)| a >= -1.0 && b <= 1.0));
+        let lod = finite(lod, 0).is_some_and(|(a,b)| a >= -4294967296.0 && b <= 4294967296.0);
+        if !coordinates || !lod { return Self::default(); }
+        // 原固定LINEAR过滤为非负权重组合。宽界包含CPU lerp及Vulkan过滤舍入，
+        // 不将理想UNORM [0,1]冒充严格最终范围，也不扩大原采样精度许可。
+        Self { ranges: vec![interval(Scalar::F32, 0.0, 2.0); 4], ..Self::default() }
+    }
+}

@@ -2950,7 +2950,7 @@ GPU 几何的原生入口为 `bottom_level_device(vertices,triangles)`、`bottom
 光线查询不要求窗口：`Device::for_program` 不启用 surface／swapchain。需要原生窗口呈现的程序明确使用 `Device::with_presentation`，计算资源和执行语义保持相同。`Device::swapchain(instance,window,width,height)` 接收实际输出尺寸；呈现消费同设备、等像素数和 4 字节 stride 的 BGRA8 dataset，并逐实际物理页复制，页边界可位于像素行中间。真实表面尺寸和设备能力属于原平台入口，框架不写入某个应用的最低分辨率。
 
 ## 原生只读二维与三维纹理
-`texture2d`／`texture3d` 可用一个格式实参声明实际资源要求，例如 `read texture2d<rgba8_unorm> noise`。支持当前真实texel编码 `rgba32_float`、`rgba8_unorm`、`rgba8_srgb`、`r8_unorm`、`rg16_unorm`、`rgb10a2_unorm`；名称区分大小写，它们是纹理格式标记，不是普通数值／记录类型。相应数组写为 `read array<texture2d<rgba8_unorm>,N>`。未写格式保持原任意格式接口，指定格式调用只接受具有同一明确格式的原资源参数；可向未指定格式的形参借用，不能从未知格式反向取得明确要求。接口与实现必须声明同一格式，维度、数组形状及只读寿命保持原义。原CPU／GPU绑定入口在执行前消费实际资源格式元数据，数量／维度／设备归属仍在原入口检查；不检查每个texel，也不改变机器采样算法。独立普通CPU调用在公开接口中保留要求，原生外部调用者必须交付符合要求的原纹理描述。该格式声明本身尚不向采样结果加入有限值域，值域交接及Stella散射其余前提见C-021.1.4.4.2至.4。
+`texture2d`／`texture3d` 可用一个格式实参声明实际资源要求，例如 `read texture2d<rgba8_unorm> noise`。支持当前真实texel编码 `rgba32_float`、`rgba8_unorm`、`rgba8_srgb`、`r8_unorm`、`rg16_unorm`、`rgb10a2_unorm`；名称区分大小写，它们是纹理格式标记，不是普通数值／记录类型。相应数组写为 `read array<texture2d<rgba8_unorm>,N>`。未写格式保持原任意格式接口，指定格式调用只接受具有同一明确格式的原资源参数；可向未指定格式的形参借用，不能从未知格式反向取得明确要求。接口与实现必须声明同一格式，维度、数组形状及只读寿命保持原义。原CPU／GPU绑定入口在执行前消费实际资源格式元数据，数量／维度／设备归属仍在原入口检查；不检查每个texel，也不改变机器采样算法。独立普通CPU调用在公开接口中保留要求，原生外部调用者必须交付符合要求的原纹理描述。该格式声明须与实际坐标／LOD的原数值事实共同消费，不能仅凭UNORM名称假定采样结果。现有静态分析对五种归一格式，在坐标每分量已证位于[-1,1]、LOD已证位于[-2^32,2^32]时交接保守[0,2]。坐标与LOD的这个范围属于当前共同分析覆盖，不是合法采样域限制；其他合法输入仍可采样，范围保持未知。RGBA32F和未指定格式不产生归一范围，非有限或未知输入也不产生本范围。原Proof继续承载四则、floor、整数转换、源函数及obj／lib输出；不生成运行检查、钳制或替代采样。Stella外部离散编码及完整散射仍见C-021.1.4.4.3／.4。
 
 `texture2d`／`texture3d` 是不可变资源参数，分别匹配二维／三维坐标，供 CPU／compute／GPU 计算入口、源内展开与普通CPU原生函数只读借用；它们不属于普通值类型，不能放进普通记录、内联 array、dataset、view、tile、统一值或函数返回值。接口分别写 `read texture2d`／`read texture3d`，组合时传递实际资源身份，不复制像素、不暴露地址，也不能将普通值冒充纹理。多个只读参数可以引用同一资源；固定资源数组见下一节。Windows x64普通CPU函数在源码、独立obj及标准lib中交接同一只读纹理借用，支持单张、固定资源数组、选中元素转传与递归。公开声明继续保留维度、形状与索引前提；机器输入和寿命见[普通纹理参数ABI](NativeInterop.md#普通b纹理只读参数的机器交接)。当前编译模块的普通调用为CPU调用，调用方须具有合法CPU执行目标；GPU独立普通调用仍见C-021.3.1，含纹理整域Frame入口仍见C-003.2.3.1.2，不能把普通函数与完整计算模块交付混为一项。
 
@@ -2995,6 +2995,8 @@ CPU 由现有 f32 标量指令完成坐标运算、通道转换及插值，sRGB 
 GPU 的坐标与权重按 [Vulkan Sampling](https://docs.vulkan.org/spec/latest/chapters/textures.html) 定义：每个被选 mip 分别用其真实尺寸缩放归一坐标，再按 texel 中心定位相邻采样点。轴内分数保留的精度由所选物理设备的 subTexelPrecisionBits 表达，显式 LOD 及相邻 mip 的混合分数由 mipmapPrecisionBits 表达；两者是不同环节，见 [VkPhysicalDeviceLimits](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceLimits.html)。这些属性不表示所有设备采用同一个位数，也不表示把每个最终多轴／跨 mip 权重积直接舍入到同一网格就一定符合规范。轴与 LOD 分数恰可表示时，后续乘加及格式解码仍有各自精度要求。
 
 格式转换、过滤中间算术与 float4 输出还受 [Vulkan Numeric Representation and Computation](https://docs.vulkan.org/spec/latest/chapters/fundamentals.html#fundamentals-numerics) 的要求约束。该规范对着色器外浮点运算规定约十万分之一量级的单次运算精度，并明确源 texel 格式可以隐含限制表示／精度；这不是每次完整采样统一的绝对误差，也不能替代轴／mip 量化及具体格式规则。着色器内 f32 指令的精度和浮点控制不自动成为固定功能过滤器的中间算术保证；原始位的无损资产／传输亦不保证过滤保持 NaN 载荷、负零或次正规位型。
+
+范围分析与精度约定分别处理：已知UNORM／sRGB的理想线性过滤是归一texel的加权平均，CPU现有lerp及GPU固定功能过滤的实际舍入不同。现有索引分析使用外扩到[0,2]的保守范围；非负过滤项和最多三轴加mip的线性组合保留非负性，规范单次运算精度远小于这一上界所留空间。这个宽界不是新增误差许可，也不表示结果允许任意偏离理想值；具体返回精度仍遵守以上来源。相同原输入只增加编译期事实，实际采样指令与资源不变。
 
 同一算法、格式和输入不承诺 CPU／GPU 或不同设备逐位一致；允许差异仅来自上述实际格式与目标规范，不是任意误差许可。完整结果误差还与所选相邻 texel 的值、局部变化、mip 内容和实际运算有关，不能由某一个编码间隔或精度位数推得通用常数。当前没有跨目标严格一致的采样模式；未解决的原生过滤偏差仍见 [Issues C-003.2.4.1.2](Issues.md)，不能仅以“硬件精度”认定其合法。真实材质效果由消费者核对，不以本数值合同承诺天然材质视觉等价。
 

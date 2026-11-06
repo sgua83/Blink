@@ -1772,4 +1772,4 @@ BLEngine 还在开发，新版本可能改变渲染阶段或参数。对照其�
 
 计算函数统一使用返回类型与显式parallel，on声明能力，target选择本次位置。同步GPU返回后结果仍在GPU，CPU读取须显式download；内部Program与CLI的--program保留产物职责。
 
-B只读纹理形参可声明实际格式，如`read texture2d<rgba8_unorm> noise`；固定资源数组也能声明同一要求。Rust仍通过原Texture2D／Texture3D、上传和Bindings交接实际资源，原CPU／GPU绑定入口核对元数据。blcompute::TextureFormat复用B资源合同的同一枚举，像素和GPU图像仍由原所有者保持；格式声明不增加一份解码数据或逐像素检查。未指定格式的接口接受原混合格式资源，但不能向要求明确格式的形参转传未知输入。
+B只读纹理形参可声明实际格式，如`read texture2d<rgba8_unorm> noise`；固定资源数组也能声明同一要求。Rust仍通过原Texture2D／Texture3D、上传和Bindings交接实际资源，原CPU／GPU绑定入口核对元数据。blcompute::TextureFormat复用B资源合同的同一枚举，像素和GPU图像仍由原所有者保持；格式声明不增加一份解码数据或逐像素检查。未指定格式的接口接受原混合格式资源，但不能向要求明确格式的形参转传未知输入。 已知归一格式及原数值分析可证的采样输入，还可将保守[0,2]范围交回B函数的原返回合同，obj／lib在提供者源码缺席时继续使用。Rust绑定只核对真实格式，不扫描texel；输入事实不足的采样范围保持未知。

@@ -4154,7 +4154,7 @@ Vulkan二维／三维资源沿同一原Storage、Image和uploaded完成点持有
 
 真正的三维复制让每个区域的extent.depth进入字节跨度，深度随各层宽高一起减半；原staging对齐只属于设备交接，不进入体资产。上传交接后CPU资产可以结束，原Execution保持传输所需存储，最后共享图像退出时沿原完成点释放。显式download_texture3d从实际图像同步读出完整mip并恢复采样布局，不保留旧CPU像素作为另一份结果权威。
 
-只读参数可写成`read texture2d<rgba8_unorm> noise`，三维及固定资源数组同样可声明实际格式。TypeName与TextureBinding交接格式要求，blcompute复用ast::TextureFormat的同一编码定义；CPU与Vulkan原绑定入口消费实际资源元数据。格式未声明时保持未知，不能传给要求明确格式的形参。普通CPU借用仍只交接原描述地址，外部调用方承担真实输入与寿命；不扫描像素、不复制资源。资源格式合同、采样结果的有限范围和最终tile索引分析是不同能力，剩余值域与原散射前提沿Issues C-021.1.4.4.2至.4，不把声明格式写成已经完成优化或完整Stella重建。
+只读参数可写成`read texture2d<rgba8_unorm> noise`，三维及固定资源数组同样可声明实际格式。TypeName与TextureBinding交接格式要求，blcompute复用ast::TextureFormat的同一编码定义；CPU与Vulkan原绑定入口消费实际资源元数据。格式未声明时保持未知，不能传给要求明确格式的形参。普通CPU借用仍只交接原描述地址，外部调用方承担真实输入与寿命；不扫描像素、不复制资源。格式与实际coordinate／lod的原数值事实共同交给bounds/floating.rs::Proof::texture_sample；在已知归一格式及现有合法输入证明覆盖内，原ranges得到保守[0,2]。四则、floor、整数转换与普通返回合同沿同一范围继续，obj／lib不需重读实现，实际采样指令和资源保持。输入未知或非有限、格式未知和RGBA32F仍不形成该范围，不将理想[0,1]当作严格最终输出，也不改变原过滤精度许可。Stella外部离散编码及完整散射仍沿Issues C-021.1.4.4.3／.4。
 
 沿原TextureBinding的维度，CPU在同一降低器产生二维四点或三维八点读取，再逐轴插值并混合mip；texel地址为64位，原mip描述统一交接宽、高、深与像素指针。原TextureInput::{D2,D3}只持有对应已有资源，CPU／GPU Bindings、上传依赖和最后消费者仍是唯一拥有链。普通CPU纹理形参取得原BufferAddress列表的实际借用地址，未使用形参也保留参数位置；独立对象和归档的调用者只消费公开维度、形状及索引合同，不重读提供者实现。TextureSource的parameter寄存器沿原活跃性和重编号交接，根绑定入口沿原范围表交接；CPU后端共用同一寻址与采样降低，不复制描述、像素或Frame。降低直接消费发射者已经拥有的Stage与寄存器／指令容器，范围入口仅为其原读取放置建立所需独立阶段，普通函数继续使用已有阶段。BLCO65表达实际参数ABI，BLRI32的执行描述字段保持。
 

@@ -123,9 +123,11 @@ impl Builder<'_> {
         let Some(lod) = self.expr(&args[2])? else {
             return Ok(None);
         };
-        let dimension = self.program.textures[texture.source.binding].dimension;
+        let binding = &self.program.textures[texture.source.binding];
+        let dimension = binding.dimension;
         self.require_same(&Ty::vector(Scalar::F32, dimension.components()), &coordinate.ty, args[1].span)?;
         self.require_same(&Ty::scalar(Scalar::F32), &lod.ty, args[2].span)?;
+        let proof = bounds::Proof::texture_sample(binding.format, &coordinate, &lod);
         let result = std::array::from_fn(|_| self.reg(Scalar::F32));
         self.emit(InstKind::TextureSample {
             result,
@@ -134,7 +136,7 @@ impl Builder<'_> {
             lod: lod.regs[0],
         });
         Ok(Some(Value {
-            proof: bounds::Proof::default(),
+            proof,
             literal: false,
             ty: Ty::vector(Scalar::F32, 4),
             regs: result.to_vec(),
