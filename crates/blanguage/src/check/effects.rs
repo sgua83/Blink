@@ -423,12 +423,12 @@ impl Builder<'_> {
                         normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
                     if Scope::current(self).writes_covered(&instance)?{continue;}
-                    // Resource ownership is still consumed by its existing place projection.
+                    // Closed memory effects own writes; owned arguments still consume their places.
                     let mut owned=Vec::new();
                     for(parameter,arg)in instance.definition.function.params.iter().zip(syntax){
                         if cooperative::parameter_type(self.world,parameter,&instance.definition)?.owns_resources(){owned.push(arg);}
                     }
-                    normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,contents:true,..}
+                    normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),place,..}
                         if std::ptr::eq(*origin,call)&&!owned.iter().any(|arg|std::ptr::eq(*arg,*place))));
                     let borrow=match self.native_call_memory(&instance.name,&arguments){Some(borrow)=>borrow,None=>view::Borrow::source(view::Source::Unresolved)};
                     if !borrow.active(){continue;}

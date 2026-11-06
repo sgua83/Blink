@@ -3705,20 +3705,24 @@ impl<'a> Builder<'a> {
         }
         let binding = if let Some(domain) = data {
             match domain {
-                CursorSource::ApplicationData(data) => Binding::Owned(OwnedBinding {
-                    place: data.element(
-                        &cursor,
-                        (
-                            cursor.minimum(),
-                            cursor
-                                .maximum()
-                                .min(data.length.maximum().saturating_sub(1)),
+                CursorSource::ApplicationData(mut data) => {
+                    // The cursor uses the same current loop resource as indexed access.
+                    data.data.root.proof=data.data.root.proof.clone().with_view_borrow(0,self.data_borrow(&data.sources));
+                    Binding::Owned(OwnedBinding {
+                        place: data.element(
+                            &cursor,
+                            (
+                                cursor.minimum(),
+                                cursor
+                                    .maximum()
+                                    .min(data.length.maximum().saturating_sub(1)),
+                            ),
                         ),
-                    ),
-                    proof: bounds::Proof::default(),
-                    uniform: false,
-                    initialization: None,
-                }),
+                        proof: bounds::Proof::default(),
+                        uniform: false,
+                        initialization: None,
+                    })
+                },
                 CursorSource::Data(view) => {
                     Binding::Owned(OwnedBinding {
                         place: self.dataset_element(&view, index, false),
