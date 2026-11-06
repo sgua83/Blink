@@ -4269,7 +4269,7 @@ pub(super) fn scoped_proof(ty: &Ty, mut proof: Proof, path: &Clause, env: &BTree
         proof.extend_equalities(&equality_roots(&facts));
         for component in 0..ty.components.len() {
             for fact in &facts {
-                if fact.identity().is_some_and(|identity| proof.origins[component].contains(&identity)) {
+                if fact.identity().is_some_and(|identity| proof.origins.get(component).is_some_and(|origins|origins.contains(&identity))) {
                     proof.refine(ty, component, *fact);
                 }
             }

@@ -284,7 +284,8 @@ impl ApplicationLoads<'_, '_> {
             };
         }
         if call.arguments.iter().any(|arg|matches!(arg,CallArgument::Reference{access,..}if access.writes()))||call.memory.iter().any(|effect|effect.access.writes()){return true;}
-        if Self::pointer_call(call).is_some()||Self::allocation(call){return false;}
+        // Private completion updates Frame metadata; it does not write payload bytes.
+        if Self::pointer_call(call).is_some()||Self::allocation(call)||matches!(&call.target,CallTarget::External(name)if name.library==crate::application::RUNTIME_LIBRARY&&name.symbol.starts_with("blink_complete_")){return false;}
         match &call.target {
             CallTarget::Defined(name)=>!self.0.functions.writes_only_references(name),
             _=>true,
@@ -413,6 +414,7 @@ impl ApplicationLoads<'_, '_> {
                 },
                 InstKind::If { yes, no, .. } => if let Some(source) = self.stored_position(yes, data, index, word, scalar, state, writes).or_else(|| self.stored_position(no, data, index, word, scalar, state, writes)) { return Some(source); },
                 InstKind::Scope(body) => if let Some(source) = self.stored_position(body, data, index, word, scalar, state, writes) { return Some(source); },
+                InstKind::Loop{condition,body,..}=>if let Some(source)=self.stored_position(condition,data,index,word,scalar,state,writes).or_else(||self.stored_position(body,data,index,word,scalar,state,writes)){return Some(source);},
                 _ => {},
             }
         }
@@ -445,6 +447,9 @@ impl ApplicationLoads<'_, '_> {
                     match (a,b) { (Some(mut a),Some(b))=>{a.join_condition(&b,1,None);Some(a)}, (a,None)|(None,a)=>a }
                 },
                 InstKind::Scope(body) => self.iteration_interference(body,source,word,scalar,path,state,controls),
+                InstKind::Loop{condition,body,..}=>match(self.iteration_interference(condition,source,word,scalar,path,state,controls),self.iteration_interference(body,source,word,scalar,path,state,controls)){
+                    (Some(mut a),Some(b))=>{a.join_condition(&b,1,None);Some(a)},(a,None)|(None,a)=>a,
+                },
                 InstKind::Call(call) if self.current_reference_writes(call,source,word,scalar) => None,
                 _ if self.field_store(source,word,scalar,inst,true).is_some() => None,
                 InstKind::StoreIndexed { value, .. } if self.writes_indexed(inst,source,word,scalar) => {
@@ -526,6 +531,28 @@ impl ApplicationLoads<'_, '_> {
     }
 }
 impl Builder<'_> {
+    pub(super) fn application_condition_writes(&self,code:&[Inst],place:&Place,component:usize)->bool {
+        let mut positions=place.data_positions();if positions.is_empty(){positions=self.positions(place);}
+        let position=positions.get(component);
+        fn writes(loads:&ApplicationLoads<'_, '_>,code:&[Inst],position:Option<&Position>)->bool {
+            code.iter().any(|inst|match &inst.kind {
+                InstKind::If{yes,no,..}=>writes(loads,yes,position)||writes(loads,no,position),
+                InstKind::Loop{condition,body,..}=>writes(loads,condition,position)||writes(loads,body,position),
+                InstKind::Scope(body)|InstKind::Cleanup{body,..}=>writes(loads,body,position),
+                InstKind::Call(call)=>{
+                    let affected=|borrow:&view::Borrow|borrow.pending()||position.is_none_or(|position|address::MemoryEffect::of(borrow,Access::InOut).writes_position(position));
+                    position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot)))
+                        ||loads.call_memory_writes(call,affected)
+                        ||call.memory_use.is_some_and(|first|loads.0.view_model.uses.iter().skip(first+1)
+                            .take_while(|usage|matches!(&usage.requirement,view::Requirement::Memory{target:address::MemoryTarget::Call(at),..}if *at==first))
+                            .any(|usage|matches!(&usage.requirement,view::Requirement::Memory{borrow,access:Some(access),..}if access.writes()&&affected(&loads.0.current_address_borrow(borrow)))))
+                },
+                InstKind::Store{..}|InstKind::StoreIndexed{..}|InstKind::Atomic(_)|InstKind::Append(_)=>true,
+                _=>position.is_some_and(|p|matches!(p,Position::Local(slot)if inst.local_writes().contains(slot))),
+            })
+        }
+        writes(&ApplicationLoads(self),code,position)
+    }
     pub(super) fn application_iteration_interference(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
         let loads = ApplicationLoads(self);
         let (offset, ty) = data.element_layout();

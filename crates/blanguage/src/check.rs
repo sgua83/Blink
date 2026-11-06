@@ -3540,7 +3540,7 @@ impl<'a> Builder<'a> {
         }
         let body = code;
         let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-        let (next, _) = self.leave_loop(natural, &c, &body, span, false)?;
+        let (next, _) = self.leave_loop(natural, &c, &condition_code, &body, span, false)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3850,7 +3850,7 @@ impl<'a> Builder<'a> {
         }
         let body = code;
         let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-        let (next, writes) = self.leave_loop(natural, &test, &body, span, nonempty)?;
+        let (next, writes) = self.leave_loop(natural, &test, &condition, &body, span, nonempty)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;

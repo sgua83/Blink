@@ -229,8 +229,9 @@ impl Builder<'_> {
         let mut common: Option<bounds::Proof> = None;
         for state in &context.continues {
             let Some(Binding::Owned(owner)) = state.env.get(name) else { return; };
-            if let Some(proof) = &mut common { proof.join_condition(&owner.proof, ty.components.len(), None); }
-            else { common = Some(owner.proof.clone()); }
+            let incoming=bounds::scoped_proof(ty,owner.proof.clone(),&state.path,&state.env);
+            if let Some(proof) = &mut common { proof.join_condition(&incoming, ty.components.len(), None); }
+            else { common = Some(incoming); }
         }
         let Some(mut proof) = common else { return; };
         self.application_iteration_interference(data, context.control_source.cursor.as_ref().unwrap(), &mut proof, &context.continues, &context.controls, &context.writes);
@@ -581,6 +582,7 @@ impl Builder<'_> {
         &mut self,
         mut natural:Option<LoopState>,
         test:&Value,
+        condition:&[Inst],
         body:&[Inst],
         span:Span,
         nonempty:bool,
@@ -609,12 +611,16 @@ impl Builder<'_> {
                 let Some((proof,uniform,place))=binding.proof_storage() else{continue;};
                 let Some((entry,_,_))=context.entry.env.get_mut(name).and_then(Binding::proof_storage) else{continue;};
                 let width=place.ty().components.len();
+                let empty=if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}};
                 for component in 0..width {
-                    if !proof.known_identity(component).zip(entry.known_identity(component)).is_some_and(|(a,b)|a==b){continue;}
+                    // A new header read is the final iteration's value. Other
+                    // components take backedge facts only if the header leaves them unchanged.
+                    if proof.known_identity(component).is_some_and(|id|entry.known_identity(component)!=Some(id)) || self.application_condition_writes(condition,&place,component){continue;}
                     let mut repeated:Option<(bounds::Proof,bounds::Clause,Reg)>=None;
                     for edge in &mut context.continues {
                         if let Some((next,next_uniform,_))=edge.env.get_mut(name).and_then(Binding::proof_storage) {
                             let next=next.project(&[component],width);*uniform &= *next_uniform;
+                            let next=bounds::scoped_proof(&Ty::scalar(place.ty().components[component].0),next,&edge.path,&edge.env);
                             if let Some((common,aliases,reg))=repeated.as_mut(){
                                 *aliases=bounds::Clause::either(aliases,&next.output_aliases(&[*reg],&self.registers,&BTreeMap::new()));
                                 common.join(&next,1,None);
