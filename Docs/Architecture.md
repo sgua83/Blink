@@ -851,7 +851,27 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-1-2"></a>
 
-**普通函数ABI入口／结果／退出生成段来源。** 原FunctionBody、实际参数位置、隐藏结果地址、原栈分配与展开→application::emit_value的home／保存／输入／结果／退出字节→同一NativeCode。各生成职责按实际发射位置交接，参数与源声明可取得时借用原事实，不套成业务Inst。依赖.1原容器，不新增调用或保存链；当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-2)。
+**普通函数ABI生成段来源。** 原FunctionBody、CallParameter、实际ABI槽、输入／结果及原Frame→同一次application::emit_value发射→同一NativeCode。参数home、输入搬移、栈维护、结果与退出分别按下五叶；父项只汇总，不以IR操作范围替代生成代码。原参数、隐藏结果地址、分配、展开、返回与完成语义保持；源码事实有则直接共享，无则保持未知，不在查询处用相邻源码补造。现有operation_ranges继续只表示实际Inst；ABI生成事实归同一NativeCode的compiler专用function_abi，不能混成业务Inst。原定义与实际实例在该材料中交接一次，各生成范围只借用实际相关参数来源；没有函数体、类型合同、分配器或运行资源副本。全部材料随原代码事实消费者释放，不进入执行编码／运行库；可选来源持久化继续沿.7.5。完整范围见[原父项](Issues.md#c-021-7-9-7-4-1-2)。
+
+<a id="tool-7-4-1-2-1"></a>
+
+**寄存器实参home的来源。** 原emit_value必须在栈分配、探栈及输入读取前将最多四个ABI寄存器槽写入调用方home。输入是实际槽和同一CallParameter.origin，输出是原发射前后游标、ParameterHome职责、ABI槽序号、原CallParameter序号及共享ParameterOrigin；隐藏结果地址占用的原槽独立为HiddenResultHome，不伪造源参数。来源从原emit_function的FunctionBody.source_origin／name交接，普通ValueCode入口无定义事实则保持未知，不能用首条Inst充当函数来源。原参数逻辑序号与ABI槽分别表达，间接结果会使它们不同。唯一生产者是原home循环，范围从本次emit_value的局部观察材料移动至同一NativeCode；生成范围不改变字节或强制保活。已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-2-1)。
+
+<a id="tool-7-4-1-2-2"></a>
+
+**参数到原逻辑输入的搬移来源。** 同一CallParameter、body.inputs及真实ABI槽→原参数读取循环→同一function_abi中的ParameterInput范围。每个原参数记录同次发射前后游标、实际槽、CallParameter序号与共享来源，含栈上传参、间接聚合及Reference的实际输入读取；零长度明确表示原分配／读取未新增字节，不是断点地址。输入寄存器及类型继续由原FunctionBody合同查询，原分配器与类型合同不复制到观察材料。唯一生产者是原读取循环，消费者只借用结果，依赖.1原材料与生命周期，不重走读取或建参数镜像。已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-2-2)。
+
+<a id="tool-7-4-1-2-3"></a>
+
+**栈帧及非易失寄存器维护来源。** 原allocation／Frame与实际使用寄存器→emit_value原scratch保存、allocate_frame、preserve_registers及相应恢复／释放→同一NativeCode。按真实生成职责交接，保持原分配、展开及保存规则；未交接范围保持未知，不从剩余字节补推。探栈尾部来源归.4.1.3。本叶当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-2-3)。
+
+<a id="tool-7-4-1-2-4"></a>
+
+**隐藏结果地址保存与结果搬移来源。** 原result、body.outputs及实际隐藏地址→原emit_value的帧内结果地址保存与标量／聚合结果输出→同一NativeCode。原生成点交接实际范围与合同关系，不把参数home当帧内保存，不改变返回、资源所有权或原操作范围。本叶当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-2-4)。
+
+<a id="tool-7-4-1-2-5"></a>
+
+**函数退出生成来源。** 原正常／失败完成及实际退出目标→同次函数终结发射→同一NativeCode；沿原返回与完成语义，栈及寄存器恢复归.3，结果归.4。不增加另一退出、清理或错误状态链，PA3未提交的失败ABI不由观察工具替代；本叶当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-2-5)。
 
 <a id="tool-7-4-1-3"></a>
 

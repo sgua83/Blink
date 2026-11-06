@@ -283,7 +283,7 @@ compiler功能中的`NativeCode::code_json(ip)`只读取同一原发射结果，
 
 `bc build`显式导出原`.x64`时同时写同名`.x64.json`，包含同一映像的分区、指令及原重定位；这次查询不改变发射字节、CPU／GPU执行路径或正常`bc -c`部署内容。普通`.reloc`导出仍沿原入口，JSON查询保留每个映像原本已有的全部重定位。
 
-这些范围是compiler结果中的观察材料，不属于必要执行字段；无compiler的NativeCode不含tail_regions／operation_ranges或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有尾部分区材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
+这些范围是compiler结果中的观察材料，不属于必要执行字段；无compiler的NativeCode不含tail_regions／operation_ranges／function_abi或查询／解码实现。现有执行编码的字节、重定位、stack_bytes、calls、function_end及unwind按原顺序保存，ABI不变；恢复执行映像后的compiler值没有尾部分区材料时，code_json明确报告缺失，不从源码、旧模板或可解码性重建。所有输出字符串归调用者，查询结束不持有代码、资源、线程或设备消费者。
 
 ### 普通CPU函数操作的实际发射范围
 
@@ -292,6 +292,16 @@ compiler角色的NativeCode可选持有operation_ranges，元素OperationRange�
 NativeCode::code_json在原输出中增加operation_ranges：None为null，已采集但没有操作为[]，每项提供start_byte、end_byte、byte_length、includes_nested_operations及origin（原OperationOrigin JSON）。偏移相对该映像字节零，单位为字节且范围为半开；机器反汇编仍来自同一最终bytes。序列按操作发射完成顺序交接，实际嵌套操作先于包含它的父操作，范围可以包含／重叠；这不是前端IR编号、独立指令数或动态执行次数，不能求和计成本。零长度明确表示该原操作没有发射字节，其位置只是游标，不能当作可设置断点的指令地址。origin两项均为空仍表示真实范围的来源未知，与整份材料未保留分别表达。
 
 当前范围仅描述已交接的实际IR操作发射；参数home、栈保存／输入／结果搬移、退出以及尾部探栈／字面量的来源仍按独立叶推进，不把未命中范围自动解释为生成代码或已消除。原reads::place移动完整Inst，范围对应实际发射顺序；纹理降低中未交接的来源保持未知。执行编码不保存operation_ranges，compiler角色恢复执行映像时为None；现有BLCR／BLCF只恢复其原布局材料，不恢复此来源，不自动重编。字段、职责及剩余边界见[架构](Architecture.md#tool-7-4-1-1)。
+
+### 普通CPU函数ABI参数的实际发射来源
+
+compiler角色的NativeCode可选持有function_abi：FunctionAbi只包含原函数definition、实际instance与平铺ranges，不持有FunctionBody、CallParameter类型合同、分配器或运行资源。原emit_function提供已有SourceOrigin和真实实例名，普通ValueCode发射没有这些事实则分别为None；不从首条操作或相邻源码补造。材料由原emit_value在实际生成点暂存，完成时移动至同一NativeCode；ParameterOrigin沿原参数不可变共享，生命周期随最后代码事实消费者。
+
+code_json的function_abi未保留时为null；已采集但没有当前已交接ABI步骤时仍为对象、ranges为[]。每个AbiRange输出start_byte／end_byte半开字节范围、byte_length及实际职责kind。范围相对同一映像字节零，来自原发射前后游标；零长度表示该步骤没有新增字节，不能作为断点地址。operation_ranges继续只表示实际IR操作，不因ABI观察加入业务Inst或强制变量保活。
+
+当前三种AbiRangeKind分别是HiddenResultHome、ParameterHome和ParameterInput，JSON的kind为hidden_result_home、parameter_home、parameter_input。hidden_result_home只交接真实abi_slot，不伪造源参数；其余两种还交接原CallParameter列表中的parameter_index及原ParameterOrigin JSON（未知为null）。abi_slot是Windows x64实际参数槽序号，parameter_index不是源参数索引，隐式Frame和生成参数沿原ParameterOrigin分别说明；间接结果地址会使同一逻辑参数占用后一个ABI槽。寄存器参数home最多覆盖原前四个实际槽，栈上传入的后续槽没有此步骤；parameter_input覆盖原读取循环中的每个参数，包括间接聚合与Reference，输入逻辑寄存器和类型继续查询同一FunctionBody.parameter_inputs，不复制到本材料。
+
+当前仅交接参数home及输入搬移。栈维护、帧内结果地址保存、结果输出与函数退出来源仍按独立台账推进，不能把未命中ABI范围的字节自动归类。必要执行编码不保存function_abi，compiler角色执行解码后为None；现有BLCR／BLCF不恢复此材料，不自动重编或从执行字节补造。职责、输入／输出与剩余范围见[架构](Architecture.md#tool-7-4-1-2)。
 
 ### IR操作的语法来源
 

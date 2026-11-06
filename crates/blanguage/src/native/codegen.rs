@@ -122,6 +122,7 @@ impl Emitter<'_> {
             unwind,
             tail_regions: Some(tail_regions),
             operation_ranges: self.operation_ranges,
+            function_abi: None,
         }
     }
     fn push_registers(&mut self, registers: &[u8]) {

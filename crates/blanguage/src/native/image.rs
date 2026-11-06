@@ -53,6 +53,9 @@ pub struct NativeCode {
     /// 原IR操作的实际发射区间；仅compiler观察，执行编码不保留。
     #[cfg(feature = "compiler")]
     pub operation_ranges: Option<Vec<OperationRange>>,
+    /// 同一次普通函数发射的ABI生成事实；执行编码不保留。
+    #[cfg(feature = "compiler")]
+    pub function_abi: Option<FunctionAbi>,
 }
 #[cfg(feature = "compiler")]
 #[derive(Clone, Debug)]
@@ -61,6 +64,27 @@ pub struct OperationRange {
     pub end: usize,
     pub includes_nested_operations: bool,
     pub origin: crate::ir::OperationOrigin,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub struct FunctionAbi {
+    pub definition: Option<crate::ir::SourceOrigin>,
+    pub instance: Option<String>,
+    pub ranges: Vec<AbiRange>,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub struct AbiRange {
+    pub start: usize,
+    pub end: usize,
+    pub kind: AbiRangeKind,
+}
+#[cfg(feature = "compiler")]
+#[derive(Clone, Debug)]
+pub enum AbiRangeKind {
+    HiddenResultHome { slot: usize },
+    ParameterHome { slot: usize, parameter_index: usize, origin: Option<std::sync::Arc<crate::ir::ParameterOrigin>> },
+    ParameterInput { slot: usize, parameter_index: usize, origin: Option<std::sync::Arc<crate::ir::ParameterOrigin>> },
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

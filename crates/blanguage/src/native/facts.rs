@@ -21,6 +21,27 @@ fn symbol(value: &NativeSymbol) -> String {
         NativeSymbol::Function(name) => object(&[("kind", text("function")), ("name", text(name))]),
     }
 }
+fn function_abi(value: &super::FunctionAbi) -> String {
+    object(&[("kind", text("function_abi")),
+        ("definition", value.definition.as_ref().map_or_else(|| "null".into(), crate::ir::SourceOrigin::ir_json)),
+        ("instance", value.instance.as_deref().map_or_else(|| "null".into(), text)),
+        ("ranges", array(value.ranges.iter().map(|range| {
+            let (kind, slot, parameter) = match &range.kind {
+                super::AbiRangeKind::HiddenResultHome { slot } => ("hidden_result_home", *slot, None),
+                super::AbiRangeKind::ParameterHome { slot, parameter_index, origin } => ("parameter_home", *slot, Some((*parameter_index, origin))),
+                super::AbiRangeKind::ParameterInput { slot, parameter_index, origin } => ("parameter_input", *slot, Some((*parameter_index, origin))),
+            };
+            let mut fields = vec![("kind", text(kind)), ("start_byte", range.start.to_string()),
+                ("end_byte", range.end.to_string()), ("byte_length", (range.end - range.start).to_string()),
+                ("abi_slot", slot.to_string())];
+            if let Some((index, origin)) = parameter {
+                fields.push(("parameter_index", index.to_string()));
+                fields.push(("origin", origin.as_deref().map_or_else(|| "null".into(), crate::ir::ParameterOrigin::ir_json)));
+            }
+            object(&fields)
+        }))),
+    ])
+}
 impl NativeCode {
     /// Queries this actual compiler result. `ip` is the caller's address for byte zero.
     /// Execution-only deserialization does not retain these observation facts.
@@ -49,7 +70,8 @@ impl NativeCode {
                 ("start_byte", range.start.to_string()), ("end_byte", range.end.to_string()),
                 ("byte_length", (range.end - range.start).to_string()),
                 ("includes_nested_operations", range.includes_nested_operations.to_string()), ("origin", range.origin.ir_json()),
-            ])))))]))
+            ]))))),
+            ("function_abi", self.function_abi.as_ref().map_or_else(|| "null".into(), function_abi))]))
     }
 }
 impl StageCode {

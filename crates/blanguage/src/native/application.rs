@@ -1,14 +1,17 @@
 //! 普通函数入口／结果使用 Windows x64 ABI；栈布局与调用活跃性复用原后端。
 use super::operands::Operand;
 use super::*;
+use crate::native::{AbiRange, AbiRangeKind, FunctionAbi};
 pub(crate) fn emit(body: &ValueCode) -> Result<NativeCode, &'static str> {
-    emit_value(body, &[], Some(&Ty::scalar(Scalar::U32)))
+    emit_value(body, &[], Some(&Ty::scalar(Scalar::U32)), None, None)
 }
 pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'static str> {
     emit_value(
         &function.body,
         &function.parameters,
         function.result.as_ref(),
+        function.source_origin.as_ref(),
+        Some(&function.name),
     )
 }
 use super::external::{floating, indirect};
@@ -16,6 +19,8 @@ fn emit_value(
     body: &ValueCode,
     parameters: &[CallParameter],
     result: Option<&Ty>,
+    definition: Option<&SourceOrigin>,
+    instance: Option<&str>,
 ) -> Result<NativeCode, &'static str> {
     let mut stage = Stage {
         operation_source: None,
@@ -120,9 +125,13 @@ fn emit_value(
         allocation,
         frame: layout,
     };
+    let mut abi = FunctionAbi {
+        definition: definition.cloned(), instance: instance.map(str::to_owned), ranges: Vec::new(),
+    };
     // Home every register argument before allocation, probing or input moves may overwrite it.
     // These are the Windows x64 caller-provided home slots, not another parameter copy owner.
     for slot in 0..(parameters.len() + usize::from(hidden)).min(4) {
+        let start = e.code.len();
         let value = if hidden && slot == 0 {
             None
         } else {
@@ -134,6 +143,11 @@ fn emit_value(
         } else {
             e.instruction(None, &[0x89], true, [1, 2, 8, 9][slot], memory);
         }
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind:
+            if hidden && slot == 0 { AbiRangeKind::HiddenResultHome { slot } }
+            else { AbiRangeKind::ParameterHome { slot, parameter_index: slot - usize::from(hidden),
+                origin: value.and_then(|parameter| parameter.origin.clone()) } },
+        });
     }
     if scratch { e.push_registers(&[15]); }
     e.allocate_frame(frame);
@@ -145,6 +159,7 @@ fn emit_value(
     }
     let mut inputs = body.inputs.iter();
     for (i, parameter) in parameters.iter().enumerate() {
+        let start = e.code.len();
         let slot = home + (i + usize::from(hidden)) as u32 * 8;
         match &parameter.kind {
             CallParameterKind::Value(ty) => {
@@ -166,6 +181,10 @@ fn emit_value(
                 }
             }
         }
+        abi.ranges.push(AbiRange { start, end: e.code.len(),
+            kind: AbiRangeKind::ParameterInput { slot: i + usize::from(hidden),
+                parameter_index: i, origin: parameter.origin.clone() },
+        });
     }
     e.block(&stage.code)?;
     if let Some(ty) = result {
@@ -202,5 +221,7 @@ fn emit_value(
         e.bytes(&[0x41, 0x5f]);
     }
     e.bytes(&[0xc3]);
-    Ok(e.finish(frame + u32::from(scratch) * 8))
+    let mut code = e.finish(frame + u32::from(scratch) * 8);
+    code.function_abi = Some(abi);
+    Ok(code)
 }
