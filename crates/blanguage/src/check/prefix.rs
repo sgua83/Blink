@@ -26,7 +26,7 @@ impl Facts {
                 .collect::<Vec<_>>();
             proof.forget_value(&components, ty.components.len());
             if let Some(output) = output {
-                proof.assign_ranges(&components, ty.components.len(), &output.project(&components, ty.components.len()));
+                proof.assign_elements(&components, ty.components.len(), &output.project(&components, ty.components.len()));
             }
         }
         for (scope, _) in &mut self.scopes {
@@ -169,7 +169,7 @@ pub(super) fn relations(
     Ok(result)
 }
 
-pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Root>, d: &Definition) -> Result<Vec<ElementRequirement>> {
+pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Root>, d: &Definition) -> Result<Vec<ElementFact>> {
     let mut requirements = Vec::new();
     for contract in &d.function.contracts {
         let ContractPredicate::Index { value, resource } = &contract.predicate else { continue; };
@@ -195,7 +195,7 @@ pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Ro
         if !ty.is_numeric() || ty.components.iter().any(|(scalar, _)| *scalar != Scalar::U32) {
             return d.source.fail(contract.span, "B225", "index字段需要u32标量或向量分量");
         }
-        requirements.extend(components.into_iter().map(|component| ElementRequirement::Index {
+        requirements.extend(components.into_iter().map(|component| ElementFact::Index {
             binding: *binding, offset: buffers[*binding].ty.components[component].1, target: *target,
         }));
     }
@@ -206,18 +206,32 @@ pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Ro
 impl Facts {
     pub fn assume_elements(&mut self, program: &Program) {
         for requirement in &program.element_requirements {
-            if let ElementRequirement::Index { binding, offset, target } = requirement {
+            if let ElementFact::Index { binding, offset, target } = requirement {
                 let component = program.buffers[*binding].ty.components.iter().position(|(_, word)| word == offset).unwrap();
                 self.elements.entry(*binding).or_default().mark_domain(component, IndexDomain::Data(*target));
             }
         }
     }
-    pub fn element_ranges(&self, program: &Program) -> Vec<ElementRange> {
-        self.elements.iter().flat_map(|(&binding, proof)| proof.element_ranges(binding, &program.buffers[binding].ty)).collect()
+    pub fn element_facts(&self, program: &Program) -> Vec<ElementFact> {
+        let mut facts = Vec::new();
+        for (&binding, proof) in &self.elements {
+            let ty = &program.buffers[binding].ty;
+            facts.extend(proof.element_ranges(binding, ty).into_iter().map(ElementFact::Range));
+            for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
+                if scalar != Scalar::U32 { continue; }
+                facts.extend(proof.domains(component).into_iter().filter_map(|domain| match domain {
+                    IndexDomain::Data(target) => Some(ElementFact::Index { binding, offset, target }),
+                    _ => None,
+                }));
+            }
+        }
+        facts.sort();
+        facts.dedup();
+        facts
     }
-    pub fn prove_elements(&self, program: &Program, required: &[ElementRequirement], d: &Definition, span: Span) -> Result<()> {
+    pub fn prove_elements(&self, program: &Program, required: &[ElementFact], d: &Definition, span: Span) -> Result<()> {
         for requirement in required {
-            let ElementRequirement::Index { binding, offset, target } = requirement else { continue; };
+            let ElementFact::Index { binding, offset, target } = requirement else { continue; };
             if program.buffers[*binding].count == Some(0) { continue; }
             let component = program.buffers[*binding].ty.components.iter().position(|(_, word)| word == offset).unwrap();
             let proven = self.elements.get(binding).is_some_and(|proof| {

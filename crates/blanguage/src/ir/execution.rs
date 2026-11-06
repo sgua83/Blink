@@ -12,7 +12,7 @@ pub struct ElementRange {
     pub intervals: Vec<(Bits, Bits)>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ElementRequirement {
+pub enum ElementFact {
     Range(ElementRange),
     Index { binding: usize, offset: u32, target: usize },
 }
@@ -38,8 +38,8 @@ pub trait ProgramInterface {
     fn uniform_bytes(&self) -> u32;
     fn prefix_requirements(&self) -> &[PrefixRelation];
     fn prefix_guarantees(&self) -> &[PrefixRelation];
-    fn element_requirements(&self) -> &[ElementRequirement];
-    fn element_guarantees(&self) -> &[ElementRange];
+    fn element_requirements(&self) -> &[ElementFact];
+    fn element_guarantees(&self) -> &[ElementFact];
     fn requires_bindings(&self) -> bool {
         !self.prefix_requirements().is_empty() || !self.element_requirements().is_empty()
     }
@@ -72,8 +72,8 @@ macro_rules! interface_fields {
         $vis fn uniform_bytes(&self) -> u32 { self.uniform_bytes }
         $vis fn prefix_requirements(&self) -> &[PrefixRelation] { &self.prefix_requirements }
         $vis fn prefix_guarantees(&self) -> &[PrefixRelation] { &self.prefix_guarantees }
-        $vis fn element_requirements(&self) -> &[ElementRequirement] { &self.element_requirements }
-        $vis fn element_guarantees(&self) -> &[ElementRange] { &self.element_guarantees }
+        $vis fn element_requirements(&self) -> &[ElementFact] { &self.element_requirements }
+        $vis fn element_guarantees(&self) -> &[ElementFact] { &self.element_guarantees }
         $vis fn length_requirements(&self) -> &[(usize, usize)] { &self.length_requirements }
     };
 }
@@ -139,10 +139,10 @@ where
     fn prefix_guarantees(&self) -> &[PrefixRelation] {
         self.deref().prefix_guarantees()
     }
-    fn element_requirements(&self) -> &[ElementRequirement] {
+    fn element_requirements(&self) -> &[ElementFact] {
         self.deref().element_requirements()
     }
-    fn element_guarantees(&self) -> &[ElementRange] {
+    fn element_guarantees(&self) -> &[ElementFact] {
         self.deref().element_guarantees()
     }
     fn length_requirements(&self) -> &[(usize, usize)] {
@@ -164,8 +164,8 @@ pub struct ProgramLayout {
     pub uniform_bytes: u32,
     pub prefix_requirements: Vec<PrefixRelation>,
     pub prefix_guarantees: Vec<PrefixRelation>,
-    pub element_requirements: Vec<ElementRequirement>,
-    pub element_guarantees: Vec<ElementRange>,
+    pub element_requirements: Vec<ElementFact>,
+    pub element_guarantees: Vec<ElementFact>,
     pub length_requirements: Vec<(usize, usize)>,
     pub requirements: DeviceRequirements,
 }

@@ -370,9 +370,25 @@ pub(crate) struct Proof {
     pub(super) addresses: Vec<Option<address::Identity>>,
 }
 impl Proof {
-    // 阶段完成只交接所有元素共有的数值范围，旧寄存器、路径及借用不跨阶段。
-    pub(super) fn scalar_ranges(&self) -> Self {
-        Self { ranges: self.ranges.clone(), ..Self::default() }
+    // 阶段完成只交接共同数值和逻辑数据目标；值身份、路径及借用不跨阶段。
+    pub(super) fn element_facts(&self, target: impl Fn(usize) -> Self) -> Self {
+        let mut facts = Self {
+            ranges: self.ranges.clone(),
+            domains: vec![Domains::new(); self.domains.len()],
+            ..Self::default()
+        };
+        facts.ranges.resize_with(self.ranges.len().max(self.domains.len()), ScalarRanges::default);
+        for (component, domains) in self.domains.iter().enumerate() {
+            for domain in domains {
+                if let IndexDomain::Data(binding) = domain {
+                    let bound = target(*binding);
+                    facts.domains[component].extend(bound.domains(0));
+                    facts.ranges[component] = facts.range_set(component).combine(&bound.range_set(0),
+                        |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
+                }
+            }
+        }
+        facts
     }
     pub(super) fn element_ranges(&self, binding: usize, ty: &Ty) -> Vec<ElementRange> {
         ty.components.iter().enumerate().filter_map(|(component, &(scalar, offset))| {
@@ -380,10 +396,12 @@ impl Proof {
             (intervals != [(0, scalar.bit_mask())]).then_some(ElementRange { binding, offset, scalar, intervals })
         }).collect()
     }
-    pub(super) fn assign_ranges(&mut self, components: &[usize], width: usize, fresh: &Self) {
+    pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.ranges.resize_with(width, ScalarRanges::default);
+        self.domains.resize_with(width, Domains::new);
         for (source, &component) in components.iter().enumerate() {
             self.ranges[component] = fresh.range_set(source);
+            self.domains[component] = fresh.domains(source);
         }
     }
     fn constrain_common_ranges(&mut self, other: &Self, width: usize) {

@@ -1951,7 +1951,7 @@ fn build_domain(
         start = call.stage;
         required = call.after;
         element_required = signature.element_requirements.iter().cloned()
-            .chain(call.element_after.into_iter().map(ElementRequirement::Range)).collect();
+            .chain(call.element_after).collect();
     }
     emit_domain_part(
         &world.worker,
@@ -2041,8 +2041,8 @@ fn emit_domain_part(
     stages: &[Stage],
     required: &[PrefixRelation],
     guaranteed: &[PrefixRelation],
-    element_required: &[ElementRequirement],
-    element_guaranteed: &[ElementRange],
+    element_required: &[ElementFact],
+    element_guaranteed: &[ElementFact],
     split: bool,
     part: &mut usize,
     functions: &mut Module,

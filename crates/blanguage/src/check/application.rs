@@ -48,7 +48,7 @@ impl Binding {
 pub(super) enum ElementUpdate<'a> {
     Unknown,
     Element { proof: &'a bounds::Proof, range: Option<(u32, u32)> },
-    WholeRanges(&'a bounds::Proof),
+    WholeFacts(&'a bounds::Proof),
 }
 // 动态数组借用携带实际可能的资源叶；这些来源只用于编译期别名和存活期。
 #[derive(Clone)]
@@ -2069,7 +2069,7 @@ impl Builder<'_> {
         let roots = interface.buffers.iter().enumerate().map(|(binding, buffer)|
             (buffer.name.clone(), Root::Data(binding, buffer.access))).collect();
         for requirement in prefix::element_requirements(&interface.buffers, &roots, callee)? {
-            let ElementRequirement::Index { binding, offset, target } = requirement else { continue; };
+            let ElementFact::Index { binding, offset, target } = requirement else { continue; };
             let source = &data[binding];
             if source.length.maximum() == 0 { continue; }
             let model = self.returned_storage(&source.elements);
@@ -2090,9 +2090,19 @@ impl Builder<'_> {
             ).collect::<Vec<_>>();
             let offset = reference.element_layout().0;
             let words = components.iter().map(|&i| offset + ty.components[i].1).collect::<Vec<_>>();
-            let output = interface.elements.get(&binding).map(|proof| proof.project(&components, ty.components.len()));
+            let output = interface.elements.get(&binding).map(|proof| proof.project(&components, ty.components.len())
+                .element_facts(|target| {
+                    let target = &data[target];
+                    let mut bound = bounds::Proof::default();
+                    bound.mark_domain(0, IndexDomain::ApplicationData(target.root.identity()));
+                    bound.mark_domain(0, IndexDomain::Fixed(target.length.maximum()));
+                    for identity in target.length.component_origins(0) {
+                        bound.mark_domain(0, IndexDomain::Upper(identity, 1));
+                    }
+                    bound
+                }));
             let update = match &output {
-                Some(proof) => ElementUpdate::WholeRanges(proof),
+                Some(proof) => ElementUpdate::WholeFacts(proof),
                 None => ElementUpdate::Unknown,
             };
             self.update_application_contents(reference, &words, update);
@@ -3015,11 +3025,11 @@ impl Builder<'_> {
                     fresh.at_call(&bindings)
                 }else{bounds::Proof::default()};
                 updated.proof.assign(&components,old.regs.len(),written);
-                if let ElementUpdate::WholeRanges(proof)=&update {
-                    updated.proof.assign_ranges(&components,old.regs.len(),proof);
+                if let ElementUpdate::WholeFacts(proof)=&update {
+                    updated.proof.assign_elements(&components,old.regs.len(),proof);
                 }
                 let complete=match &update {
-                    ElementUpdate::WholeRanges(_)=>bounds::Condition::constant(unique).logical(complete_scope,false),
+                    ElementUpdate::WholeFacts(_)=>bounds::Condition::constant(unique).logical(complete_scope,false),
                     _=>match &one{Some(one)=>bounds::Condition::constant(unique).logical(complete_scope,false).logical(bounds::Condition::comparison(Comparison::Equal,&data.length,one),false),None=>bounds::Condition::constant(false)},
                 };
                 let truth=complete.truth_in(&self.path);

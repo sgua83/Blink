@@ -332,8 +332,8 @@ struct DomainCall {
     write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     before: Vec<PrefixRelation>,
     after: Vec<PrefixRelation>,
-    element_before: Vec<ElementRange>,
-    element_after: Vec<ElementRange>,
+    element_before: Vec<ElementFact>,
+    element_after: Vec<ElementFact>,
     source: Option<Arc<SourceSite>>,
 }
 struct ExpandedDomain {
@@ -499,7 +499,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
         functions,
     )?;
     program.source_stages = program.stages.len();
-    program.element_guarantees = program.element_outputs(facts.element_ranges(&program));
+    program.element_guarantees = program.element_outputs(facts.element_facts(&program));
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs, elements: facts.elements })
 }
 fn expand_program(
@@ -822,7 +822,8 @@ fn expand_stages(
                     && !b.appends.iter().any(|(output, count)| output == domain || count.binding == *domain)
                 {
                     b.env.get_mut(name).and_then(Binding::proof_storage)
-                        .map(|(proof, _, _)| proof.scalar_ranges())
+                        .map(|(proof, _, _)| proof.element_facts(|binding|
+                            bounds::Proof::default().with_domains(Domains::from([IndexDomain::Data(binding)]))))
                 } else { None };
                 let write_regions = std::mem::take(&mut b.memory_regions).into_iter()
                     .filter_map(|(binding, (_, written))| (!written.is_empty()).then_some((binding, written))).collect();
@@ -1174,12 +1175,15 @@ fn expand_stages(
                         Root::Data(binding, _) => Some(binding), _ => None,
                     }).collect();
                     let before = facts.relations();
-                    let element_before = facts.element_ranges(program);
+                    let element_before = facts.element_facts(program);
                     let mut write_regions = BTreeMap::new();
                     for (logical, written) in contract.write_regions {
                         let binding = bindings[logical];
+                        let output = contract.elements.get(&logical).map(|proof|
+                            proof.element_facts(|target| bounds::Proof::default()
+                                .with_domains(Domains::from([IndexDomain::Data(bindings[target])]))));
                         for &(start, end) in &written {
-                            facts.written(program, binding, start, end, contract.elements.get(&logical));
+                            facts.written(program, binding, start, end, output.as_ref());
                         }
                         write_regions.entry(binding).or_insert_with(BTreeSet::new).extend(written);
                     }
@@ -1221,7 +1225,7 @@ fn expand_stages(
                 }
                 if compiled {
                     calls.last_mut().unwrap().after = facts.relations();
-                    calls.last_mut().unwrap().element_after = facts.element_ranges(program);
+                    calls.last_mut().unwrap().element_after = facts.element_facts(program);
                 }
             }
             StmtKind::Phase => {

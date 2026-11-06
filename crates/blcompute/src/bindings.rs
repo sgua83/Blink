@@ -1,6 +1,6 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
-use blanguage::ir::{ElementRange, ElementRequirement, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
+use blanguage::ir::{ElementRange, ElementFact, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
 use std::collections::BTreeMap;
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
@@ -244,7 +244,7 @@ impl<D> DomainBindings<D> {
         &mut self,
         program: &ExecutionPlan,
         binding: impl Fn(usize) -> (usize, u32),
-    ) {
+    ) where D: DomainStorage {
         invalidate(&mut self.domains, program, &binding);
         self.produced(program, binding);
     }
@@ -252,7 +252,7 @@ impl<D> DomainBindings<D> {
         &mut self,
         program: &dyn ProgramInterface,
         binding: impl Fn(usize) -> (usize, u32),
-    ) {
+    ) where D: DomainStorage {
         self.domains
             .extend(program.prefix_guarantees().iter().map(|r| DomainRelation::Prefix {
                 domain: binding(r.domain).0,
@@ -263,9 +263,30 @@ impl<D> DomainBindings<D> {
                     word: r.count.word + binding(r.count.binding).1,
                 },
             }));
-        self.domains.extend(program.element_guarantees().iter().map(|range| DomainRelation::Element(ElementRange {
-            binding: binding(range.binding).0, offset: range.offset + binding(range.binding).1, ..range.clone()
-        })));
+        for fact in program.element_guarantees() {
+            let range = match fact {
+                ElementFact::Range(range) => range.clone(),
+                ElementFact::Index { binding: source, offset, target } => ElementRange {
+                    binding: *source, offset: *offset, scalar: Scalar::U32,
+                    intervals: self.datasets[binding(*target).0].element_count().checked_sub(1)
+                        .map(|last| (0, u64::from(last))).into_iter().collect(),
+                },
+            };
+            let range = ElementRange {
+                binding: binding(range.binding).0, offset: range.offset + binding(range.binding).1, ..range
+            };
+            if let Some(known) = self.domains.iter_mut().find_map(|relation| match relation {
+                DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
+                    && known.scalar == range.scalar => Some(known),
+                _ => None,
+            }) {
+                known.intervals = known.intervals.iter().flat_map(|&(a, b)| range.intervals.iter().filter_map(move |&(c, d)| {
+                    let (start, end) = (a.max(c), b.min(d)); (start <= end).then_some((start, end))
+                })).collect();
+            } else {
+                self.domains.push(DomainRelation::Element(range));
+            }
+        }
         self.domains.sort();
         self.domains.dedup();
     }
@@ -302,8 +323,8 @@ pub(crate) fn require<D: DomainStorage>(
     }
     for requirement in program.element_requirements() {
         let (logical, word, scalar) = match requirement {
-            ElementRequirement::Range(range) => (range.binding, range.offset, range.scalar),
-            ElementRequirement::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
+            ElementFact::Range(range) => (range.binding, range.offset, range.scalar),
+            ElementFact::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
         };
         let (source, offset) = binding(logical);
         if datasets[source].element_count() == 0 { continue; }
@@ -311,8 +332,8 @@ pub(crate) fn require<D: DomainStorage>(
             let DomainRelation::Element(range) = known else { return false; };
             same(range.binding, source) && u64::from(range.offset) == u64::from(offset) + u64::from(word)
                 && range.scalar == scalar && match requirement {
-                    ElementRequirement::Range(required) => range.intervals.iter().all(|&(a, b)| required.intervals.iter().any(|&(c, d)| c <= a && b <= d)),
-                    ElementRequirement::Index { target, .. } => range.intervals.iter().all(|&(_, b)| b < u64::from(datasets[binding(*target).0].element_count())),
+                    ElementFact::Range(required) => range.intervals.iter().all(|&(a, b)| required.intervals.iter().any(|&(c, d)| c <= a && b <= d)),
+                    ElementFact::Index { target, .. } => range.intervals.iter().all(|&(_, b)| b < u64::from(datasets[binding(*target).0].element_count())),
                 }
         });
         if !holds { return Err(error(format!("程序 {} 缺少绑定 {} 字段 {} 的已生产数值范围", program.name(), program.buffers()[logical].name, word))); }

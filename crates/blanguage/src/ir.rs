@@ -17,7 +17,7 @@ pub use external::{
 };
 mod execution;
 pub use execution::{
-    DeviceRequirements, ElementRange, ElementRequirement, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
+    DeviceRequirements, ElementRange, ElementFact, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
     ReductionLayout,
 };
 mod atomic;
@@ -1733,16 +1733,21 @@ pub struct Program {
     pub(crate) functions: std::sync::Arc<[FunctionBody]>,
     pub(crate) prefix_requirements: Vec<PrefixRelation>,
     pub(crate) prefix_guarantees: Vec<PrefixRelation>,
-    pub(crate) element_requirements: Vec<ElementRequirement>,
-    pub(crate) element_guarantees: Vec<ElementRange>,
+    pub(crate) element_requirements: Vec<ElementFact>,
+    pub(crate) element_guarantees: Vec<ElementFact>,
     pub(crate) length_requirements: Vec<(usize, usize)>,
 }
 impl Program {
-    pub(crate) fn element_outputs(&self, ranges: Vec<ElementRange>) -> Vec<ElementRange> {
+    pub(crate) fn element_outputs(&self, facts: Vec<ElementFact>) -> Vec<ElementFact> {
         let writes = self.write_regions();
-        ranges.into_iter().filter(|range| writes.get(&range.binding).is_some_and(|regions|
-            regions.iter().any(|&(start, end)| u64::from(range.offset) < u64::from(end)
-                && u64::from(start) < u64::from(range.offset) + u64::from(range.scalar.size())))).collect()
+        facts.into_iter().filter(|fact| {
+            let (binding, offset, scalar) = match fact {
+                ElementFact::Range(range) => (range.binding, range.offset, range.scalar),
+                ElementFact::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
+            };
+            writes.get(&binding).is_some_and(|regions| regions.iter().any(|&(start, end)|
+                u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(scalar.size())))
+        }).collect()
     }
     pub(crate) fn write_regions(&self) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
         let mut regions = BTreeMap::new();
@@ -1846,8 +1851,8 @@ impl Program {
     pub fn prefix_guarantees(&self) -> &[PrefixRelation] {
         &self.prefix_guarantees
     }
-    pub fn element_requirements(&self) -> &[ElementRequirement] { &self.element_requirements }
-    pub fn element_guarantees(&self) -> &[ElementRange] { &self.element_guarantees }
+    pub fn element_requirements(&self) -> &[ElementFact] { &self.element_requirements }
+    pub fn element_guarantees(&self) -> &[ElementFact] { &self.element_guarantees }
     pub fn name(&self) -> &str {
         &self.name
     }
