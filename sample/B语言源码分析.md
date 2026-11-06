@@ -463,7 +463,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 变体继续使用共用的4字节物理分量。一个64位整数或函数地址非零，只能说明两个半字至少一个非零，不能把两个半字都标成非零。生产者把这条析取放进原标签Condition，快照身份沿原输出／模块合同交接。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1598`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1599`。
 
 ```rust
     pub(super) fn retain_payload_nonzero(&mut self, payload: &Value, offset: u32) {
@@ -488,7 +488,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 一般变体的标签不是bool。编号3和5都非零，但属于不同分支；原Condition以零／非零分区并保留准确数值范围。整数比较消费已有标签条件一次，递归比较只生产自身关系，不重复挂接条件图。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:2692`。
+源码节选：`crates/blanguage/src/check/bounds.rs:2693`。
 
 ```rust
     pub fn comparison(op: Comparison, a: &Value, b: &Value) -> Self {
@@ -496,7 +496,6 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
         if a.ty.components.len() == 1 && a.ty == b.ty
             && a.ty.components[0].0.is_integer() && a.ty.components[0].0 != Scalar::Bool {
             for value in [a, b] {
-                if value.proof.component_condition(0).is_none() { continue; }
                 let condition = Self::component(value, 0);
                 let facts = Clause::either(&condition.cases[0], &condition.cases[1]);
                 for case in &mut result.cases { *case = Clause::both(case, &facts); }
@@ -508,7 +507,7 @@ Windows x64在原调用区为间接目标留一个独立槽，准备实参前保
 
 重组只查询实际覆盖的完整整数分量：假定它们全部为零，与当前真实路径矛盾，才取得完整值非零。窄切片不继承更宽来源的非零信息；没有新的运行时判空或另一份载荷状态。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1588`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1589`。
 
 ```rust
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1764,7 +1763,7 @@ Returned::bind_outputs在Data.elements的绑定边界为无来源分量保留原
     }
 ```
 
-返回某个元素的数字或view长度，不能把它命名为“所有元素的同一个值”。application_element_proof先建立这次装载的实际寄存器快照，再在同一Proof的域中放入CommonRange，引用原DatasetContent或MemoryValue的共同数值范围。CommonRange保存形成该范围时的真实源／目标Scalar，数值及编码不变的后续无符号扩宽继续使用这同一区间；canonical及模块codec交接同一范围关系，Proof::cast和at_call共用ScalarRanges::cast，把共同输入的区间及源零值按真实转换解释后再收窄输出。同宽符号变化能保持非零，却不把旧有序位编码或共同输入当作输出数值身份；缩窄可能得到零，不能照搬源非零。无损无符号扩宽不重写前段转换，其他实际改变编码的连续转换只有等价于单次转换时才合并；缩窄后有符号扩展及扩宽到有符号目标的未闭合范围见Issues C-005.67.2／.3。不同读取保留不同数值身份，可以实际得到长度一和二而比较不等，同时各自都满足大于零。多层转发、嵌套集合和read拥有元素沿相同输入交接，不从范围推出元素相等或复制私有元素身份。实际条件选值的原LoadLocal输出在Proof::common中接收每个选支的数值条件身份：只在本支条件内，把本支该分量的身份沿原output_bound重命名为这次实际输出。条件中的CommonRange由原at_call消费真实输入持有的非零与公开共同范围来源；不同读取与不同元素不因此获得相等身份。普通合流没有实际选值输出时保持原关系。可能空、未知共同来源和真实越界仍需原证明，借用、拥有及最后释放不由数值事实授予。
+返回某个元素的数字或view长度，不能把它命名为“所有元素的同一个值”。application_element_proof先建立这次装载的实际寄存器快照，再在同一Proof的域中放入CommonRange，引用原DatasetContent或MemoryValue的共同数值范围。CommonRange保存形成该范围时的真实源／目标Scalar，数值及编码不变的后续无符号扩宽继续使用这同一区间；canonical及模块codec交接同一范围关系，Proof::cast和at_call共用ScalarRanges::cast，把共同输入的区间及源零值按真实转换解释后再收窄输出。同宽符号变化能保持非零，却不把旧有序位编码或共同输入当作输出数值身份；缩窄可能得到零，不能照搬源非零。无损无符号扩宽不重写前段转换，其他实际改变编码的连续转换只有等价于单次转换时才合并；缩窄后有符号扩展及扩宽到有符号目标的未闭合范围见Issues C-005.67.2／.3。不同读取保留不同数值身份，可以实际得到长度一和二而比较不等，同时各自都满足大于零。多层转发、嵌套集合和read拥有元素沿相同输入交接，不从范围推出元素相等或复制私有元素身份。实际条件选值的原LoadLocal输出在Proof::common中接收每个选支的数值条件身份：只在本支条件内，把本支该分量的身份沿原output_bound重命名为这次实际输出。整数比较沿原component交接实际操作数的CommonRange及已持有条件，不以是否已有条件图跳过范围来源。原at_call按源／目标Scalar将共同区间转换为同一实际快照的非零及类型化上下界，替换完成后以原Clause查询排除零分支，再交接非零结果；不同读取与不同元素不因此获得相等身份。普通合流没有实际选值输出时保持原关系。可能空、未知共同来源和真实越界仍需原证明，借用、拥有及最后释放不由数值事实授予。
 
 实际写入仍更新原共同模型，旧共同非零失效后，新读取不能继续充当除数；已经返回并捕获的普通数字仍是原快照。范围关系直接属于现有Proof与独立模块合同，不增加运行期检查、扫描或第二推导状态；对象格式只随真实编码变化更新，Frame与最后消费者的释放职责保持。
 
@@ -1991,7 +1990,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 若一条分支知道 `i∈[0,3]`，另一条知道 `i∈[0,7]`，两条路汇合以后只能共同保证 `[0,7]`。如果只有一条路径知道除数非零，汇合后也不能无条件保留非零。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:985`。
+源码节选：`crates/blanguage/src/check/bounds.rs:986`。
 
 ```rust
         self.nonzero = (0..width)
@@ -2004,7 +2003,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
 
 非零要求两条路径都成立，范围容纳两侧可能的值。域关系保留共同上界：一侧精确等于界时取非严格关系；一侧最大值不大于另一侧最小值时，也保证后者已有的上界。末尾端点可用于切片，直接索引仍须严格小于长度。
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1138`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1139`。
 
 ```rust
     pub(super) fn common(a: &Value, b: &Value, choice: Option<&Condition>, outputs: Option<&[Reg]>) -> Self {
@@ -2087,7 +2086,7 @@ F32除法只在原规范的分母范围内交接包含设备误差的结果，�
 
 条件图可以很深。最后一个消费者结束时，释放动作本身也需要明确实现，不能让一长串父子节点依赖同样深的 Rust 调用栈。原 Clause 所有者沿引用计数迭代消费最后引用的节点：
 
-源码节选：`crates/blanguage/src/check/bounds.rs:1720`。
+源码节选：`crates/blanguage/src/check/bounds.rs:1721`。
 
 ```rust
 impl Drop for Clause {

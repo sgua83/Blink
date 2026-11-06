@@ -693,6 +693,7 @@ impl Proof {
                         if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
                         let nonzero=if to.is_integer(){!range.contains(to.order_bias())}else{input.nonzero.first()==Some(&true)};
                         if nonzero{facts.insert(Fact::NonZero(target));}
+                        if to.is_integer(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
                         facts.extend(input.domains(0).into_iter().filter_map(|domain|match domain{IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,to)),_=>None}).map(|domain|Fact::Index(target,domain)));
                         facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,to))));
                     }
@@ -840,7 +841,7 @@ impl Proof {
             }
         }
         for component in 0..translated.conditions.len(){
-            if translated.component_condition(component).and_then(Condition::boolean_constant)==Some(true){translated.mark_nonzero(component);}
+            if translated.component_condition(component).is_some_and(|condition|!condition.cases[0].possible()){translated.mark_nonzero(component);}
         }
         translated
     }
@@ -2660,7 +2661,7 @@ impl Condition {
                 if truth != 0 { Fact::NonZero(identity) } else { Fact::Zero(identity) }
             } else { continue; };
             let mut facts = Facts::from([fact]);
-            if scalar==Scalar::Bool{facts.extend(value.proof.domains(component).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(identity,domain)));}
+            facts.extend(value.proof.domains(component).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(identity,domain)));
             if scalar.is_integer() {
                 let (minimum, maximum) = value.component_range(component);
                 if minimum != 0 { facts.insert(Fact::Minimum(identity, scalar, minimum)); }
@@ -2694,7 +2695,6 @@ impl Condition {
         if a.ty.components.len() == 1 && a.ty == b.ty
             && a.ty.components[0].0.is_integer() && a.ty.components[0].0 != Scalar::Bool {
             for value in [a, b] {
-                if value.proof.component_condition(0).is_none() { continue; }
                 let condition = Self::component(value, 0);
                 let facts = Clause::either(&condition.cases[0], &condition.cases[1]);
                 for case in &mut result.cases { *case = Clause::both(case, &facts); }

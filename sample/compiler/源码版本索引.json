@@ -104,7 +104,7 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "sha256": "22a13490866d28b23419622a469ff9338d024e635a9cd87d85bf7587ce376600"
+      "sha256": "6f85d19dd47a3545342fc82a81b0ebbc59254824afc5790c7a426b3bb891de70"
     },
     {
       "path": "crates/blanguage/src/check/bounds/floating.rs",
@@ -494,20 +494,20 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1598,
-      "end_line": 1615,
+      "start_line": 1599,
+      "end_line": 1616,
       "sha256": "a9f28171a24b1d4791d7e67600aa964e6c31712f4d8be18bc3c5b06a923f4fd3"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 2692,
+      "start_line": 2693,
       "end_line": 2704,
-      "sha256": "49ca9b4aad37cfa2741ee0421ebd2a2fc172613c2cfadd5d1e5fc4ad9388600e"
+      "sha256": "38baaaf1d661aea2654eb95357005783b4d70a537ee5c599dfc16f19a6b57ade"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1588,
-      "end_line": 1597,
+      "start_line": 1589,
+      "end_line": 1598,
       "sha256": "1e4dc4c774edbd0efc786caec403171c361b6055aa5a215cb6794fb15222fa40"
     },
     {
@@ -860,14 +860,14 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 985,
-      "end_line": 990,
+      "start_line": 986,
+      "end_line": 991,
       "sha256": "9311a7fab5ea4fce46df6c3a1f907842d1e50d3bbf9114a29f587d31e24ebff4"
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1138,
-      "end_line": 1155,
+      "start_line": 1139,
+      "end_line": 1156,
       "sha256": "8623749ec07abe897159a735a12fb306a2ed1be7f9fff3f2c12bbf7b4dd82624"
     },
     {
@@ -884,8 +884,8 @@
     },
     {
       "path": "crates/blanguage/src/check/bounds.rs",
-      "start_line": 1720,
-      "end_line": 1742,
+      "start_line": 1721,
+      "end_line": 1743,
       "sha256": "e3f4220275ff7e5907a7b8766432e82e6abfd3cbcd8c0637901cf23036429901"
     },
     {
