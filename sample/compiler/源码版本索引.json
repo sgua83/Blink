@@ -88,7 +88,7 @@
     },
     {
       "path": "crates/blanguage/src/check.rs",
-      "sha256": "3910c42dd6d1e32e914805d72b39b392ff30a8be59a538a5bca1a7d8031a6bff"
+      "sha256": "edb69138a5349b5cd5c64dd0404068e1c0bbee554c92620327226c0be723b9b0"
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
@@ -164,7 +164,7 @@
     },
     {
       "path": "crates/blanguage/src/check/owned_borrows.rs",
-      "sha256": "73a928a895c371ab1d53e972946b94446e67fe162b5f66a089e805aa193c4fd8"
+      "sha256": "51350646ca8193308c227b26cec2c3d147c87cc38f3d88fc5c6e8948ee5cb51a"
     },
     {
       "path": "crates/blanguage/src/check/owned_presence.rs",

@@ -4284,10 +4284,6 @@ impl<'a> Builder<'a> {
                 _=>break,
             }}
         }
-        if self.owned_element_type(lhs).is_some_and(|ty|ty.owns_resources()) {
-            let Some(place)=self.place(lhs)?else{return Ok(())};
-            return self.assign_owned_storage(place,op,rhs,span);
-        }
         if let ExprKind::Name(name) = &lhs.kind
             && let Some(Binding::ApplicationData(data)) = self.env.get(name).cloned()
         {
@@ -4296,6 +4292,9 @@ impl<'a> Builder<'a> {
         let Some(place) = self.place(lhs)? else {
             return Ok(());
         };
+        if place.ty().owns_resources() {
+            return self.assign_owned_storage(place,op,rhs,span);
+        }
         let borrowed = matches!(place.storage(), Place::ApplicationElement { .. })
             .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
         let Some(mut value) = self.expr_expected(rhs, Some(place.ty()))? else {

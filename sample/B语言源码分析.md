@@ -1768,7 +1768,7 @@ take_last_application_dataset直接物化原Data.elements中的最后一个实�
     }
 ```
 
-整元素及其记录／固定数组混合字段路径移动替换通过assign_statement的实际dataset拥有元素入口进入assign_application_element。入口沿原AST保留Member和固定数组Index的源码顺序，原member_type／array_index取得实际字段与数组单元位置；每个下标只求值一次，求值期间保持父DataReference借用，实际左侧类型仍须拥有资源；独立拥有位置和普通值继续由原入口处理，不扩大owned_expression_type或把动态元素伪装成独立env拥有者。左侧Place和副作用下标只取得一次，旧元素先按本次packed元数据物化；原临时位置借用保持父资源直到右值完成，随后drop_returned运行旧静态F并结束旧拥有树，再写入唯一新值。新值的原拥有者被消费，旧新内容没有第二释放链。活动子view、只读入口及右值提前消费父资源仍不合法，最后真实view消费者结束后才可替换。
+命名游标的拥有内容赋值先由原place(lhs)取得实际位置与Ty，再交给assign_owned_storage；不按只识别OwnedValue的名称分类提前排除已有ApplicationElement。该入口先调用原writable_storage检查实际位置访问与活动借用，再复用application_owned_argument物化真实元素旧模型，普通局部位置仍由owned_place_model交接；右值结束后取当前旧内容，再由同一store_owned_returned完成覆盖与最后释放。显式dataset下标的整元素及记录／固定数组混合字段路径继续由assign_application_element处理。入口沿原AST保留Member和固定数组Index的源码顺序，原member_type／array_index取得实际字段与数组单元位置；每个下标只求值一次，求值期间保持父DataReference借用，实际左侧类型仍须拥有资源；独立拥有位置和普通值继续由原入口处理，不扩大owned_expression_type或把动态元素伪装成独立env拥有者。左侧Place和副作用下标只取得一次，旧元素先按本次packed元数据物化；原临时位置借用保持父资源直到右值完成，随后drop_returned运行旧静态F并结束旧拥有树，再写入唯一新值。新值的原拥有者被消费，旧新内容没有第二释放链。活动子view、只读入口及右值提前消费父资源仍不合法，最后真实view消费者结束后才可替换。
 
 字段路径使同一materialize_element只取得所选旧字段／子树，原drop_returned只接管这一字段。记录与固定数组逆序释放时，drop_returned直接消费原OwnedValue的同一拥有树；每次交出字段后在原载荷结束其拥有关系，再由`crates/blanguage/src/check/user_owned.rs`中的OwnedValuePayload::cleanup_borrow取得尚未执行静态F的真实借用，和外层retained一起交给当前字段的原释放检查。原Binding及dataset元素继续共用该算法，不为借用查询另造拥有包装。来源不能早于这些F结束；已经移出或完成的包装不再保留消费关系。没有复制物理资源、改释放顺序或另建释放状态。父静态F与未改兄弟字段继续保持，完整数组字段按数组逆序清理，变体字段只处理实际活动载荷。新字段仍沿capture_element_model映射回真实父ElementComponent分量，原Data.elements保存所有仍存在元素的共同事实；普通父id的共同nonzero不因另一个dataset字段被替换而撤回，新字段不满足共同nonempty时也不会沿用旧前提。原源码缺席对象／归档交接相同模型，调用方和库内替换均只持有原Frame的实际存储。固定数组各候选投影沿实际Ty::aggregate_part映射，物化使用同一已装载的实际旧值，不产生多次读取或清理；动态选位仍合流可能未改的旧字段，唯一外层元素与唯一实际投影完整覆盖时才接收新模型。跨子dataset的整元素及拥有字段写入沿同一实际父拥有树处理。application_place_reference从实际Place.storage的原ApplicationElement交接access，保持Borrowed状态，不能将read／atomic升级；本地拥有位置继续使用同一原候选来源，不另设权限或拥有状态。右值期间持有原DataReference及其Element父来源，祖先的移动／传输／释放仍由原application_movable与view借用消费者拒绝。物理旧值、下标和右值各一次，实际旧F与最终剩余资源仍归原拥有树和Frame。
 
@@ -2058,7 +2058,7 @@ CPU顺序循环的写范围从实际位置产生。for_loop先建立将被正文
         for owner in owners{for(path,complete)in collect(resource,owner,&self.path){paths.entry(path).and_modify(|old|*old|=complete).or_insert(complete);}}
 ```
 
-同一输入合同可由独立obj／lib消费，不能把普通CPU静态前提当作跨次运行的持久保证。原运行拥有组的字段事实仍见Issues C-021.1.4.5.2；嵌套游标写无关字段的过度失效与命名游标子资源替换分别见C-021.1.4.5.4.1.1和C-020.1.6.2.11。
+同一输入合同可由独立obj／lib消费，不能把普通CPU静态前提当作跨次运行的持久保证。原运行拥有组的字段事实仍见Issues C-021.1.4.5.2；嵌套游标写无关字段的过度失效见C-021.1.4.5.4.1.1；命名游标子资源替换使用同一实际Place，普通函数循环更新后向调用者交接共同子长度的精度缺口见C-005.70。
 
 ### 9.3 两条路径汇合，什么知识还能保留
 

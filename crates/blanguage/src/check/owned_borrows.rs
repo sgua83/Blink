@@ -89,11 +89,11 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         let old=value.clone();native_function::rebind_model(&mut value,packed.regs);handoff(&mut value,&old);Ok(value)
     }
     pub(super) fn assign_owned_storage(&mut self,place:Place,op:&str,rhs:&Expr,span:Span)->Result<()> {
-        self.require_owned_writable(&place,span)?;if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
+        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,true)?;if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let result=self.evaluate_returned(rhs,Some(place.ty()))?;if !self.flow.continues(){return Ok(());}
         let value=result.ok_or_else(||Diagnostic{source:self.definition.source.clone(),span,code:"B228",message:"拥有赋值需要实际值或资源".into()})?;
         self.view_uses.after(span);
-        let old=self.owned_place_model(&place);
+        let old=if matches!(place.storage(),Place::ApplicationElement{..}){self.application_owned_argument(&place,span)?}else{self.owned_place_model(&place)};
         self.store_owned_returned(place,old,value,span)
     }
     pub(super) fn store_owned_returned(&mut self,place:Place,old:Returned,mut value:Returned,span:Span)->Result<()> {
