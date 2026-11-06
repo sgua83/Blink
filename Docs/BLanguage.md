@@ -92,7 +92,7 @@ Result及一般带载荷变体保留活动载荷的完整整数／函数地址�
 
 Windows x64普通调用和外部C声明按真实double／Rust f64签名交接。只有浮点标量参数和返回值使用相应XMM浮点ABI；含一个f64字段的普通记录仍按该记录的C ABI分类。机器装载、存储、溢出槽与位解释均消费原Scalar宽度；resize和普通值sequence继续消费完整Ty分量。
 
-GPU实际使用f64类型需要shaderFloat64；接口中的未解释载荷仅作整数存储复制、未参与实际浮点类型使用时，不因其f64声明额外要求该能力。阶段寄存器、局部、自定义值函数及内建归约／扫描的真实f64类型仍须声明；64位subgroup还需shaderSubgroupExtendedTypes。实际浮点运算、不同浮点宽度的转换及浮点转bool的比较按涉及位宽声明DenormPreserve与SignedZeroInfNanPreserve；整数与浮点之间的转换、bool转浮点及同类型值交接本身不声明这两种模式，实际类型能力仍须具备。程序整体需要的两种浮点位宽保留模式由原DeviceRequirements.float32_preserve／float64_preserve交接，来源是各原Stage的实际运算需求；ProgramLayout保存并随BLRI42执行映像编码，GPU装入消费该合同。Shader各入口仍按实际操作发射模式，运行阶段不另保存同一程序汇总。设备查询、启用和装入在原Vulkan所有者内完成。显式选定设备不具备所需能力时明确拒绝；默认入口在首次创建逻辑设备前，按原DeviceRequirements特性、计算队列及必要设备扩展匹配真实物理设备。数值语义不因缺失能力改变，GPU工作不转交CPU；创建后的设备身份保持，创建／装入／执行失败直接返回。SDK可显式选择真实物理设备，C算法绑定的GPU入口复用同一默认创建路径；完整资源限额选卡仍见Issues C-022.5.4.3。
+GPU实际使用f64类型需要shaderFloat64；接口中的未解释载荷仅作整数存储复制、未参与实际浮点类型使用时，不因其f64声明额外要求该能力。阶段寄存器、局部、自定义值函数及内建归约／扫描的真实f64类型仍须声明；64位subgroup还需shaderSubgroupExtendedTypes。实际浮点运算、不同浮点宽度的转换及浮点转bool的比较按涉及位宽声明DenormPreserve与SignedZeroInfNanPreserve；整数与浮点之间的转换、bool转浮点及同类型值交接本身不声明这两种模式，实际类型能力仍须具备。程序整体需要的两种浮点位宽保留模式由原DeviceRequirements.float32_preserve／float64_preserve交接，来源是各原Stage的实际运算需求；ProgramLayout保存并随BLRI42执行映像编码，GPU装入消费该合同。Shader各入口仍按实际操作发射模式，运行阶段不另保存同一程序汇总。设备查询、启用和装入在原Vulkan所有者内完成。显式选定设备不具备所需能力时明确拒绝；默认入口在首次创建逻辑设备前，按原DeviceRequirements特性、计算队列及必要设备扩展匹配真实物理设备，并以实际uniform_bytes匹配候选推送常量容量。数值语义不因缺失能力改变，GPU工作不转交CPU；创建后的设备身份保持，创建／装入／执行失败直接返回。SDK可显式选择真实物理设备，C算法绑定的GPU入口复用同一默认创建路径；完整资源限额选卡仍见Issues C-022.5.4.3。
 
 CPU数学直接使用平台C ABI的f64函数。GPU当前直接支持标准允许64位的abs、floor、sqrt、min／max和既有数值集合／subgroup运算；Sin、Cos、Pow、Exp、Exp2、Log、Log2的GLSL.std.450指令不接受64位浮点，尚未实现的GPU f64超越函数明确报错。该限制不构成永久语言边界，也不表示全部输入上的严格浮点精度策略、浮点原子或所有64位平台已完成。GPU64位tile的实现与当前原生缺陷见块内原子章节。
 
@@ -4533,7 +4533,7 @@ let built = compiler.build_entry(
 
 配置只约束本次新生成的参数布局，包含检查、CPU应用内提取入口、独立模块和算法库；数据类型、对齐及CPU／GPU存储规则保持。原BLBI与COFF缓存将该真实编译配置计入输入身份，同配置可复用，配置变化重新按本次上限生成或拒绝，旧大容量产物不能让较小配置跳过检查。
 
-产物的ExecutionPlan／ProgramInterface继续通过uniform_bytes记录实际布局要求，不记录或占满编译时允许的全部容量。独立对象／归档及应用按已编译映像交接该要求；链接不重读源码或重新选择编译配置。导入的既有程序保持自身实际要求，不因调用方新生成布局采用较小配置而改写。实际Vulkan加载仍在原Device::load按该物理设备的maxPushConstantsSize检查；例如编译配置允许512字节、实际产物需要260字节、设备只有256字节时，加载准确拒绝。该容量选择不改变其他数值／设备能力及资源完成规则，ABI编码身份保持原值。原生属性和命令范围见[Vulkan limits](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceLimits.html)及[vkCmdPushConstants](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPushConstants.html)。
+产物的ExecutionPlan／ProgramInterface继续通过uniform_bytes记录实际布局要求，不记录或占满编译时允许的全部容量。独立对象／归档及应用按已编译映像交接该要求；链接不重读源码或重新选择编译配置。导入的既有程序保持自身实际要求，不因调用方新生成布局采用较小配置而改写。原Device::for_program(s)、PhysicalDevice显式程序入口及呈现程序入口在创建逻辑设备前，直接将实际uniform_bytes与候选已查询的maxPushConstantsSize匹配；多程序需求取最大值，不把各自独立的参数块相加。Device::new／physical.device没有声明程序，后续装入仍在原Device::load核对已有设备的真实容量。例如编译配置允许512字节、实际产物需要260字节、候选只有256字节时，程序创建入口在vkCreateDevice之前明确拒绝；已有基础设备的装入仍准确拒绝。该容量选择不改变其他数值／设备能力及资源完成规则，ABI编码身份保持原值。原生属性和命令范围见[Vulkan limits](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceLimits.html)及[vkCmdPushConstants](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPushConstants.html)。
 
 Rust 消费者从编译结果获取布局，不能手写另一份结构体步长。CPU 普通范围函数 ABI 为 `(buffer pointers, parameter words, end index, begin index)`；数值归约与普通扫描经第五个结果指针按类型实际字节偏移写出分量。第二个参数始终指向程序统一参数，扫描／压缩／分段归约的范围前缀与排序范围元数据通过指针表末尾的私有项传递；每个工作回调只持有自己的指针表，原记录、统一参数和摘要数据不复制。自定义传播把私有项作为仅原生降低可见的只读 Buffer，用已有 Load IR 读取，不新增源语言资源或 GPU binding。分段计数沿值摘要之后的标记／u32计数存储字交接，源程序不暴露这些执行参数。
 
@@ -4772,7 +4772,7 @@ CPU code_memory仍是原按需Result<Vec<CpuCodeMemory>>，返回Vec会分配并
 
 Rust SDK 的 `vulkan::Instance::new()` 创建计算实例；`Instance::with_presentation()` 明确启用 Windows surface。两者的 `physical_devices()` 都返回实际 `Vec<PhysicalDevice>`，包含集成 GPU 等驱动可访问类型。`PhysicalDevice::name()` 供显示、`is_discrete()` 供调用者选择；名称不是资源身份。保留选中的句柄后可释放列表和公开实例，真实实例由该句柄及其派生设备共同持有。
 
-`physical.device()` 创建基础计算设备；`physical.for_program(计算函数)`／`for_programs(programs)` 合并实际程序所需能力并在该物理设备上创建独立逻辑 `Device`。呈现能力沿原实例的显式创建方式继承；其余设备／程序／格式边界仍由原入口负责，缺少能力直接报错。原 `Device::new`／`for_program(s)` 及 `with_presentation(_programs)` 将全部物理候选交给同一创建入口，保留独显优先次序，同类沿驱动枚举顺序，选择首个满足本次已声明特性、计算队列及必要设备扩展的设备；设备类别不排除候选。显式PhysicalDevice入口只传入该选定项；多程序需求在候选查询之前合并，浮点保留模式和全部subgroup能力均由原DeviceRequirements交接。每个候选只在创建之前查询和匹配，逻辑Device及真实资源保持确定的物理身份；原生查询、创建、装入和执行错误如实返回。原VK_EXT_memory_budget支持事实来自同一次通用扩展枚举，预算入口仅持有原只读查询。工作组宽度、实际共享内存及绑定容量等限额仍由原装入入口核对，完整限额选卡见Issues C-022.5.4.3。
+`physical.device()` 创建基础计算设备；`physical.for_program(计算函数)`／`for_programs(programs)` 合并实际程序所需能力并在该物理设备上创建独立逻辑 `Device`。呈现能力沿原实例的显式创建方式继承；其余设备／程序／格式边界仍由原入口负责，缺少能力直接报错。原 `Device::new`／`for_program(s)` 及 `with_presentation(_programs)` 将全部物理候选交给同一创建入口，保留独显优先次序，同类沿驱动枚举顺序，选择首个满足本次已声明特性、计算队列及必要设备扩展的设备；设备类别不排除候选。显式PhysicalDevice入口只传入该选定项；多程序需求在候选查询之前合并，浮点保留模式和全部subgroup能力均由原DeviceRequirements交接。每个候选只在创建之前查询和匹配，逻辑Device及真实资源保持确定的物理身份；原生查询、创建、装入和执行错误如实返回。原VK_EXT_memory_budget支持事实来自同一次通用扩展枚举，预算入口仅持有原只读查询。推送常量容量在同一程序遍历中消费实际uniform_bytes的最大值，在创建前匹配候选已查询的硬件属性；装入时继续以已创建的实际设备核对。工作组宽度、实际共享内存及绑定容量等其余限额仍由原装入入口消费，默认选择的剩余交接见Issues C-022.5.4.3。
 
 ```rust
 let instance = blcompute::vulkan::Instance::new()?;

@@ -1554,7 +1554,7 @@ Proof／Domains 持有真实值快照、类型化范围、来源及访问关系�
 
 SDK 调用方持有 Compiler，其 clone 共用同一 CPU 活动许可预算。Compiler::available 使用实际可用并行度，with_workers 显式设置预算，Windows on_processors 使用 processor group 和组内编号选择实际 CPU。普通调用使用调用方线程的许可；临时 worker 使用同一预算，不在每层重新扩增整机线程数，不固定为三十二核。
 
-本次新生成参数布局的容量由同一Compiler的max_parameter_bytes配置持有，with_max_parameter_bytes显式选择、默认128字节；Worker／World直接消费该值，编译图及现有缓存沿同一真实输入交接。blcompute的PhysicalDevice公开其已查询的max_push_constant_bytes，调用者可据此配置编译并继续使用同一物理句柄；编译器不承担设备枚举或创建。产物只交付实际uniform_bytes要求，独立加载仍由原Device对真实限制负责，不新增目标状态、运行时登记或链接时生成路径。完整使用规则见[规范ABI章节](BLanguage.md#abi-与代码生成)。
+本次新生成参数布局的容量由同一Compiler的max_parameter_bytes配置持有，with_max_parameter_bytes显式选择、默认128字节；Worker／World直接消费该值，编译图及现有缓存沿同一真实输入交接。blcompute的PhysicalDevice公开其已查询的max_push_constant_bytes，调用者可据此配置编译并继续使用同一物理句柄；编译器不承担设备枚举或创建。产物只交付实际uniform_bytes要求；原Device::create在已有程序需求合并中取实际字节数最大值，直接匹配候选已查询的maxPushConstantsSize，独立装入继续由原Device对该设备的真实限制负责，不新增目标状态、运行时登记或链接时生成路径。完整使用规则见[规范ABI章节](BLanguage.md#abi-与代码生成)。
 
 完成装入与参与推导的定义作为只读输入。每个实际工作持有自己的 const 求值栈、Builder、事实和发射上下文；独立具体实例、入口、函数和阶段在依赖允许处并行，融合后的 Stage 局部优化也使用同一预算。声明展开和结果按原稳定顺序交接，保留最早源顺序的真实诊断。
 
@@ -1834,7 +1834,7 @@ Submission／GpuCompletion 观察同一真实提交，结果可在观察者退�
 
 程序需要的f32／f64 DenormPreserve与SignedZeroInfNanPreserve由原Stage::requires_float_preserve按实际运算判断，合并到原DeviceRequirements.float32_preserve／float64_preserve；ProgramLayout持有这一程序设备合同并沿BLRI42交接。GPU装入消费同一合同，运行阶段保留实际域、操作和执行布局；SPIR-V逐入口的数值模式由原Stage发射，不建立另一份模式表。旧BLRI41执行映像及含其资源目录的产物须按原入口重编，现行Frame C签名和标量布局保持。
 
-物理 GPU 选择、逻辑 Device 和队列所有权分别定义。同一物理 GPU 上的两个逻辑 Device 不共享资源句柄；不同设备间目前通过显式 CPU 下载／上传交接。默认入口保留独显优先次序，同类沿驱动枚举顺序，选择首个满足本次DeviceRequirements特性、计算队列及必要设备扩展的物理设备；全部候选保留，设备类别不作为排他限制。显式PhysicalDevice只交出调用者已经选择的真实句柄。所有入口由原Device::create合并程序需求并消费同一次原生查询，确定后创建一个逻辑Device；创建、装入和执行错误直接返回，已有数据与消费者保持原设备。通用扩展枚举归该创建入口，原预算查询只消费其支持事实。实际工作组、共享内存及其他执行资源上限仍在装入时核对，完整资源限额参与默认物理选择的缺口见Issues C-022.5.4.3。直接设备间传输、多队列、多 GPU 自动调度和域内运行仍待实现。
+物理 GPU 选择、逻辑 Device 和队列所有权分别定义。同一物理 GPU 上的两个逻辑 Device 不共享资源句柄；不同设备间目前通过显式 CPU 下载／上传交接。默认入口保留独显优先次序，同类沿驱动枚举顺序，选择首个满足本次DeviceRequirements特性、计算队列及必要设备扩展的物理设备；全部候选保留，设备类别不作为排他限制。显式PhysicalDevice只交出调用者已经选择的真实句柄。所有入口由原Device::create合并程序需求并消费同一次原生查询，确定后创建一个逻辑Device；创建、装入和执行错误直接返回，已有数据与消费者保持原设备。通用扩展枚举归该创建入口，原预算查询只消费其支持事实。推送常量容量直接消费原ProgramInterface::uniform_bytes，多程序取最大值，按候选已查询的maxPushConstantsSize在创建前匹配；不累计各程序的独立参数块，也不把编译容量配置作为产物需求。后续装入继续核对已有设备的真实容量。工作组、共享内存及绑定等其余执行资源上限仍在装入时核对，默认选择的剩余交接见Issues C-022.5.4.3。直接设备间传输、多队列、多 GPU 自动调度和域内运行仍待实现。
 
 ## 当前缺口与演进职责
 

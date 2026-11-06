@@ -386,7 +386,9 @@ impl Device {
         programs: impl IntoIterator<Item = &'a P>,
     ) -> Result<Self> {
         let mut requirements = DeviceRequirements::default();
+        let mut uniform_bytes = 0;
         for program in programs {
+            uniform_bytes = uniform_bytes.max(program.uniform_bytes());
             let required = program.requirements();
             requirements.float64 |= required.float64;
             requirements.float32_preserve |= required.float32_preserve;
@@ -451,6 +453,10 @@ impl Device {
                 let get_device: Gdpa = owner.library.get(instance, c"vkGetDeviceProcAddr")?;
                 if properties.apiVersion < ((1 << 22) | (2 << 12)) {
                     unavailable.push(format!("{device_name}: {}", "目标 GPU 需要 Vulkan 1.2"));
+                    continue 'physical;
+                }
+                if uniform_bytes > properties.limits.maxPushConstantsSize {
+                    unavailable.push(format!("{device_name}: 程序推送常量需要{uniform_bytes}字节，maxPushConstantsSize为{}", properties.limits.maxPushConstantsSize));
                     continue 'physical;
                 }
                 let features_fn: unsafe extern "system" fn(

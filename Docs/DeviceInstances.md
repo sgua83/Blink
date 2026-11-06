@@ -55,7 +55,7 @@ GpuDataset::last_use返回Result<Option<GpuDatasetUse>>，从本绑定原depende
 冻结来源保留其原生产点，后续每个read绑定可保留自己的真实读取点。same_storage只辨认同一GpuStorage，不合并使用点；旧生产点完成不代表后来别名或AS／渲染消费者已完成。显式wait清除本次绑定点后，Read仍可能交回继承的原来源点。此查询不代替AS自身is_complete／wait，也不建立全存储所有消费者的完成表。实际view来源与类型布局借用见[GPU来源与绑定保留点](BLanguage.md#gpu布局view来源与绑定保留点)。
 
 ## 多程序的同一设备与BLAS记录范围
-Device::for_programs(programs)在创建一个实际逻辑设备时，合并各B程序所需的光线查询、排序、maximal reconvergence、纹理数组及命中顶点读取能力。with_presentation_programs额外声明原生呈现；原for_program／with_presentation复用同一实现。能力来自真实程序，不在执行时更换设备或增加另一套调度。后续程序仍由既有逻辑设备／能力边界负责；这不把单队列变成多队列或设备自主任务。
+Device::for_programs(programs)在创建一个实际逻辑设备时，合并各B程序所需的光线查询、排序、maximal reconvergence、纹理数组及命中顶点读取能力。with_presentation_programs额外声明原生呈现；原for_program／with_presentation复用同一实现。能力来自真实程序；同一次程序遍历还直接消费各原uniform_bytes并取最大值，在创建前匹配候选已查询的maxPushConstantsSize，各独立程序参数块不累加。编译配置容量归Compiler，设备选择消费产物实际要求，不复制为新状态。后续程序仍由既有逻辑设备及原装入容量边界负责；这不把单队列变成多队列或设备自主任务。
 
 BottomLevel::primitive_count返回该BLAS实际构建输入的u32 primitive范围。数值由平台构建所有者保存，用于原AS的primitive号与外部属性记录之间的寻址关系；不是GPU Count、原生构建完成或查询完成。它不读回设备计数，不增加引擎侧的计数镜像、扫描或等待，is_complete／wait仍保持原来含义。
 
