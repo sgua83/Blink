@@ -2510,7 +2510,7 @@ impl<'a> Builder<'a> {
                 self.writable_storage(p, span, true)?;
                 self.dataset_effect(p,Access::Write,false,span)?;
                 let proof = bounds::Proof::capture(&value);
-                if self.iterators.last().and_then(|iterator|iterator.as_ref()).is_some_and(|(name,_)|matches!(self.env.get(name),Some(Binding::Value(_)))) {
+                if self.iterators.last().is_some_and(Option::is_some) {
                     self.path = bounds::Clause::both(&self.path, &proof.output_aliases(&value.regs, &self.registers, &BTreeMap::new()));
                 }
                 self.write_application_place(

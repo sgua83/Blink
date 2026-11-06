@@ -43,11 +43,13 @@ impl Module {
         fn references(borrow:&view::Borrow)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
                 view::Source::Parameter(ValueIdentity::ParameterStorage(_),_)=>true,
-                view::Source::Position(origin)=>match &origin.root {
-                    address::Root::Parameter(_)=>true,
-                    address::Root::Derived(borrow)=>references(borrow),
-                    _=>false,
-                },
+                view::Source::Position(origin)=>origin.words.len()==origin.layout.parts.len()
+                    && origin.words.iter().zip(origin.layout.parts.iter()).all(|(word,(scalar,_))|u64::from(*word)+u64::from(scalar.size())<=u64::from(origin.base.size))
+                    && match &origin.root {
+                        address::Root::Parameter(_)=>true,
+                        address::Root::Derived(borrow)=>references(borrow),
+                        _=>false,
+                    },
                 _=>false,
             })
         }
@@ -55,7 +57,8 @@ impl Module {
             access.iter().all(|access|match access {
                 view_contracts::Access::Resource{..}=>false,
                 view_contracts::Access::Memory{access,borrows,..}=>!access.writes()||references(borrows),
-                view_contracts::Access::Dataset{..}|view_contracts::Access::Initialized{..}=>true,
+                view_contracts::Access::Dataset{access,..}=>!access.writes(),
+                view_contracts::Access::Initialized{..}=>true,
                 view_contracts::Access::Position{position,borrows,..}=>!position.writes||references(borrows),
             }))
     }

@@ -353,14 +353,64 @@ impl ApplicationLoads<'_, '_> {
         let value = Value { ty, regs: vec![reg], proof, literal: false, uniform: false, constant: self.constant(reg).map(|value| vec![value]) };
         bounds::Condition::comparison(Comparison::Equal, &value, index).truth_in(path) == Some(true)
     }
+    fn cast_source(&self, reg: Reg) -> Option<Reg> {
+        match &self.definition(reg)?.1.kind { InstKind::Cast { src, .. } => Some(*src), _ => None }
+    }
+    fn split_address(&self, address: [Reg; 2]) -> Option<Reg> {
+        let low = self.cast_source(address[0])?;
+        let high = self.cast_source(address[1])?;
+        let InstKind::Binary { op: BinaryOp::ShiftRightLogical, a, b, .. } = &self.definition(high)?.1.kind else { return None; };
+        (self.constant(*b) == Some(32) && self.same(low, *a)).then_some(low)
+    }
+    fn offset_position(&self, address: [Reg; 2]) -> Option<([Reg; 2], Reg, Reg, Reg)> {
+        let pointer = self.split_address(address)?;
+        let InstKind::Binary { op: BinaryOp::IAdd, a: base, b: at, .. } = &self.definition(pointer)?.1.kind else { return None; };
+        let InstKind::Binary { op: BinaryOp::IAdd, a: scaled, b: offset, .. } = &self.definition(*at)?.1.kind else { return None; };
+        let InstKind::Binary { op: BinaryOp::IMul, a: index, b: stride, .. } = &self.definition(*scaled)?.1.kind else { return None; };
+        let InstKind::Binary { op: BinaryOp::Or, a: low, b: high, .. } = &self.definition(*base)?.1.kind else { return None; };
+        let InstKind::Binary { op: BinaryOp::ShiftLeft, a: upper, b: bits, .. } = &self.definition(*high)?.1.kind else { return None; };
+        if self.constant(*bits) != Some(32) { return None; }
+        Some(([self.cast_source(*low)?, self.cast_source(*upper)?], self.cast_source(*index)?, self.cast_source(*stride)?, self.cast_source(*offset)?))
+    }
+    fn dataset_position(&self, source: &IndexedSource, data: &Data, index: &Value, state: &flow::LoopState, writes: &effects::LoopWrites) -> bool {
+        let IndexedSource::View { address, index: at, stride } = source else { return false; };
+        if self.constant(*at) == Some(0) && self.stride(*stride) == Some(0)
+            && let Some((base, at, step, offset)) = self.offset_position(*address) {
+            let root = if data.root.ty == Ty::scalar(Scalar::U64) {
+                self.split_address(base).is_some_and(|root| self.same(root, data.root.regs[0]))
+            } else { self.frame_root(base).is_some_and(|root| self.same_frame(root, data, writes)) };
+            let layout = match &data.layout {
+                DataLayout::Declared => self.constant(step) == Some(u64::from(ir::align_up(data.ty.size, data.ty.align))) && self.constant(offset) == Some(0),
+                DataLayout::Parameter { stride, offset: field, .. } => self.same(step, stride.regs[0]) && self.same(offset, field.regs[0]),
+            };
+            return root && layout && self.index_equal(at, index, &state.path, &state.env);
+        }
+        self.stride(*stride) == Some(u64::from(ir::align_up(data.ty.size, data.ty.align)))
+            && self.frame_root(*address).is_some_and(|root| self.same_frame(root, data, writes))
+            && self.index_equal(*at, index, &state.path, &state.env)
+    }
+    fn same_position(&self, a: &IndexedSource, b: &IndexedSource, exact_index: bool) -> bool {
+        let (IndexedSource::View { address: a, index: ai, stride: astride }, IndexedSource::View { address: b, index: bi, stride: bstride }) = (a, b) else { return false; };
+        if self.same_address(*a, *b) && self.same_stride(*astride, *bstride) && (!exact_index || self.same(*ai, *bi)) { return true; }
+        if self.constant(*ai) == Some(0) && self.constant(*bi) == Some(0) && self.stride(*astride) == Some(0) && self.stride(*bstride) == Some(0)
+            && let (Some((a, ai, astep, afield)), Some((b, bi, bstep, bfield))) = (self.offset_position(*a), self.offset_position(*b)) {
+            return self.same_address(a,b) && self.same(astep,bstep) && self.same(afield,bfield) && (!exact_index || self.same(ai,bi));
+        }
+        false
+    }
     fn stored_position<'a>(&self, code: &'a [Inst], data: &Data, index: &Value, word: u32, scalar: Scalar, state: &flow::LoopState, writes: &effects::LoopWrites) -> Option<&'a IndexedSource> {
         for inst in code {
             match &inst.kind {
-                InstKind::StoreIndexed { source: source @ IndexedSource::View { address, index: at, stride }, offset, word: at_word, value }
+                InstKind::StoreIndexed { source, offset, word: at_word, value }
                     if *at_word == word && self.0.registers[*value] == scalar && self.constant(*offset) == Some(0)
-                        && self.stride(*stride) == Some(u64::from(ir::align_up(data.ty.size, data.ty.align)))
-                        && self.frame_root(*address).is_some_and(|root| self.same_frame(root, data, writes))
-                        && self.index_equal(*at, index, &state.path, &state.env) => return Some(source),
+                        && self.dataset_position(source, data, index, state, writes) => return Some(source),
+                InstKind::Call(call) => for argument in &call.arguments {
+                    if let CallArgument::Reference { ty, access, address, .. } = argument
+                        && access.writes() && address.offset.is_none_or(|offset| self.constant(offset)==Some(0))
+                        && ty.components.iter().any(|(part,at)|*part==scalar && address.word+at==word)
+                        && let ir::CallStorage::Indexed(source)=&address.storage
+                        && self.dataset_position(source,data,index,state,writes) { return Some(source); }
+                },
                 InstKind::If { yes, no, .. } => if let Some(source) = self.stored_position(yes, data, index, word, scalar, state, writes).or_else(|| self.stored_position(no, data, index, word, scalar, state, writes)) { return Some(source); },
                 InstKind::Scope(body) => if let Some(source) = self.stored_position(body, data, index, word, scalar, state, writes) { return Some(source); },
                 _ => {},
@@ -370,9 +420,17 @@ impl ApplicationLoads<'_, '_> {
     }
     fn field_store(&self, source: &IndexedSource, word: u32, scalar: Scalar, inst: &Inst, exact_index: bool) -> Option<Reg> {
         let InstKind::StoreIndexed { source: written, offset, word: at_word, value } = &inst.kind else { return None; };
-        (self.constant(*offset) == Some(0) && *at_word == word && self.0.registers[*value] == scalar && matches!((source, written),
-            (IndexedSource::View { address: a, index: ai, stride: astride }, IndexedSource::View { address: b, index: bi, stride: bstride })
-                if self.same_address(*a, *b) && self.same_stride(*astride, *bstride) && (!exact_index || self.same(*ai, *bi)))).then_some(*value)
+        (self.constant(*offset) == Some(0) && *at_word == word && self.0.registers[*value] == scalar && self.same_position(source, written, exact_index)).then_some(*value)
+    }
+    fn current_reference_writes(&self, call: &Call, source: &IndexedSource, word: u32, scalar: Scalar) -> bool {
+        let CallTarget::Defined(name)=&call.target else { return false; };
+        self.0.functions.writes_only_references(name) && call.arguments.iter().all(|argument| {
+            let CallArgument::Reference { ty, access, address, .. }=argument else { return true; };
+            if !access.writes() { return true; }
+            let ir::CallStorage::Indexed(written)=&address.storage else { return true; };
+            !ty.components.iter().any(|(part,at)|self.store_overlaps(source,word,scalar,written,address.offset,address.word+at,*part))
+                || address.offset.is_none_or(|offset|self.constant(offset)==Some(0)) && self.same_position(source,written,true)
+        })
     }
     fn iteration_interference(&self, code: &[Inst], source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> Option<bounds::Proof> {
         let mut result: Option<bounds::Proof> = None;
@@ -387,6 +445,7 @@ impl ApplicationLoads<'_, '_> {
                     match (a,b) { (Some(mut a),Some(b))=>{a.join_condition(&b,1,None);Some(a)}, (a,None)|(None,a)=>a }
                 },
                 InstKind::Scope(body) => self.iteration_interference(body,source,word,scalar,path,state,controls),
+                InstKind::Call(call) if self.current_reference_writes(call,source,word,scalar) => None,
                 _ if self.field_store(source,word,scalar,inst,true).is_some() => None,
                 InstKind::StoreIndexed { value, .. } if self.writes_indexed(inst,source,word,scalar) => {
                     // An overlapping store to another index can affect an earlier iteration.
@@ -467,6 +526,19 @@ impl ApplicationLoads<'_, '_> {
     }
 }
 impl Builder<'_> {
+    pub(super) fn application_iteration_interference(&self, data: &DataReference, index: &Value, proof: &mut bounds::Proof, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) {
+        let loads = ApplicationLoads(self);
+        let (offset, ty) = data.element_layout();
+        for (component, &(scalar, word)) in ty.components.iter().enumerate() {
+            let mut current = proof.project(&[component], ty.components.len());
+            for state in states {
+                if let Some(source) = loads.stored_position(&self.code, &data.data, index, offset + word, scalar, state, writes) {
+                    if let Some(other) = loads.iteration_interference(&self.code, source, offset + word, scalar, &state.path, state, controls) { current.join_condition(&other, 1, None); }
+                } else { current = bounds::Proof::default(); }
+            }
+            proof.assign(&[component], ty.components.len(), current);
+        }
+    }
     pub(super) fn application_indexed_proof(&self, data: &Data, index: &Value, states: &[flow::LoopState], controls: &BTreeMap<Reg, Value>, writes: &effects::LoopWrites) -> bounds::Proof {
         let loads = ApplicationLoads(self);
         let mut output = bounds::Proof::default();

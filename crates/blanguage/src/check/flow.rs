@@ -232,7 +232,8 @@ impl Builder<'_> {
             if let Some(proof) = &mut common { proof.join_condition(&owner.proof, ty.components.len(), None); }
             else { common = Some(owner.proof.clone()); }
         }
-        let Some(proof) = common else { return; };
+        let Some(mut proof) = common else { return; };
+        self.application_iteration_interference(data, context.control_source.cursor.as_ref().unwrap(), &mut proof, &context.continues, &context.controls, &context.writes);
         self.publish_iteration_elements(exit, data, proof);
     }
     pub(super) fn application_indexed_elements(&mut self, exit: &mut LoopState, index: &Value, limit: &Value) {
