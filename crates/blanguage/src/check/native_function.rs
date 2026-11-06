@@ -105,6 +105,7 @@ pub(crate) struct Contract {
     requires: BTreeSet<(ContractKind, ContractPredicate)>,
     target: Target,
     frame: bool,
+    fallible: bool,
     pub(super) domain: Option<crate::module::domain::Interface>,
     residency: residency::Requirements,
     view_access:Option<BTreeSet<view_contracts::Access>>,
@@ -116,7 +117,7 @@ impl crate::module::codec::Encode for Contract {
     fn encode(&self,w:&mut crate::module::codec::Writer){
         self.parameters.encode(w);self.result.encode(w);self.inputs.encode(w);
         self.returned.encode(w);self.written.encode(w);self.requires.encode(w);
-        self.target.encode(w);self.frame.encode(w);self.domain.encode(w);
+        self.target.encode(w);self.frame.encode(w);self.fallible.encode(w);self.domain.encode(w);
         self.residency.len().encode(w);
         for(key,guards)in &self.residency{
             key.encode(w);1usize.encode(w);
@@ -131,7 +132,7 @@ impl crate::module::codec::Decode for Contract {
         Ok(Self{
             parameters:Decode::decode(r)?,result:Decode::decode(r)?,inputs:Decode::decode(r)?,
             returned:Decode::decode(r)?,written:Decode::decode(r)?,requires:Decode::decode(r)?,
-            target:Decode::decode(r)?,frame:Decode::decode(r)?,domain:Decode::decode(r)?,
+            target:Decode::decode(r)?,frame:Decode::decode(r)?,fallible:Decode::decode(r)?,domain:Decode::decode(r)?,
             residency:Decode::decode(r)?,view_access:Some(Decode::decode(r)?),initialization:Some(Decode::decode(r)?),
         })
     }
@@ -212,6 +213,7 @@ fn finish_declaration(
     let mut functions = checked.functions;
     let function = checked.body;
     let contract = Contract {
+        fallible: false,
         parameters: function.parameters.clone(),
         result: function.result.clone(),
         inputs: checked.inputs,
@@ -754,6 +756,7 @@ impl Builder<'_> {
             if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}
         }
         self.code.push(Inst { kind: InstKind::Call(Call {
+            error: None,
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
             memory,
@@ -1205,8 +1208,10 @@ fn lower_dataset_borrows<'a>(
                             let bytes=constant(&mut before,registers,Scalar::U32,Bits::from(bytes));
                             let result=application::pointer_type();
                             let outputs=result.components.iter().map(|(scalar,_)|register(registers,*scalar)).collect();
+                            let error=register(registers,Scalar::U64);
                             before.push(InstKind::Call(Call{
-                                target:CallTarget::External(ExternalName{library:crate::application::RUNTIME_LIBRARY.into(),symbol:"blink_application_address".into()}),
+                                error:Some(error),
+                                target:CallTarget::External(ExternalName{library:crate::application::RUNTIME_LIBRARY.into(),symbol:"blink_address".into()}),
                                 arguments:vec![
                                     value(application::pointer_type(),borrow.frame.to_vec()),
                                     value(Ty::scalar(Scalar::U32),vec![borrow.handle]),
@@ -1234,6 +1239,38 @@ fn lower_dataset_borrows<'a>(
     block(&mut body.code,&mut body.registers,model,contract);
 }
 
+fn lower_failure_calls(body:&mut ValueCode, fallible:&BTreeSet<String>) {
+    fn block(code:&mut Vec<Inst>,registers:&mut Vec<Scalar>,fallible:&BTreeSet<String>){
+        let mut out=Vec::new();
+        for mut inst in std::mem::take(code){
+            match &mut inst.kind {
+                InstKind::Scope(body)=>block(body,registers,fallible),
+                InstKind::If{yes,no,..}=>{block(yes,registers,fallible);block(no,registers,fallible);}
+                InstKind::Loop{condition,body,..}=>{block(condition,registers,fallible);block(body,registers,fallible);}
+                _=>{}
+            }
+            let error=if let InstKind::Call(call)=&mut inst.kind {
+                if call.error.is_some()
+                    || matches!(&call.target,CallTarget::Defined(name)if fallible.contains(name)){
+                    let error=match call.error{Some(error)=>error,None=>{let error=registers.len();registers.push(Scalar::U64);call.error=Some(error);error}};Some(error)
+                }else{None}
+            }else{None};
+            let source_site=inst.source_site.clone();
+            let generated_origin=inst.generated_origin.clone();
+            let generated=|kind|Inst{kind,source_site:source_site.clone(),generated_origin:generated_origin.clone()};
+            out.push(inst);
+            if let Some(error)=error {
+                let zero=registers.len();registers.push(Scalar::U64);
+                let failed=registers.len();registers.push(Scalar::Bool);
+                out.push(generated(InstKind::Constant(zero,Scalar::U64,0)));
+                out.push(generated(InstKind::Binary{dst:failed,op:BinaryOp::Compare(Comparison::NotEqual),a:error,b:zero}));
+                out.push(generated(InstKind::If{condition:failed,yes:vec![generated(InstKind::Raise(error))],no:Vec::new()}));
+            }
+        }
+        *code=out;
+    }
+    block(&mut body.code,&mut body.registers,fallible);
+}
 fn finalize(
     mut module: Module,
     mut reachable: BTreeSet<String>,
@@ -1269,6 +1306,7 @@ fn finalize(
         .filter(|(_, unit)| unit.function.is_none() && !unit.contract.frame)
         .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
     let mut frame = BTreeSet::new();
+    let mut fallible=BTreeSet::new();
     let names=units.keys().cloned().collect::<Vec<_>>();
     for name in names {
         let mut unit=units.remove(&name).unwrap();
@@ -1277,6 +1315,12 @@ fn finalize(
             lower_dataset_borrows(&mut function.body,&unit.view_model,&|callee|
                 if callee==name{own}else{&units[callee].contract});
             crate::optimize::value_code(&mut function.body);
+        }
+        if unit.contract.fallible {fallible.insert(name.clone());}
+        if let Some(function)=&mut unit.function{
+            calls(&mut function.body.code,&mut |call|{
+                if call.error.is_some(){fallible.insert(name.clone());}
+            });
         }
         if unit.contract.frame {frame.insert(name.clone());}
         if let Some(function)=&unit.function {
@@ -1293,23 +1337,27 @@ fn finalize(
     }
     loop {
         let mut next = frame.clone();
+        let mut next_fallible=fallible.clone();
         for (name, unit) in &mut units {
             if let Some(function) = &mut unit.function {
                 calls(&mut function.body.code, &mut |call| {
+                    if matches!(&call.target,CallTarget::Defined(callee)if fallible.contains(callee)){next_fallible.insert(name.clone());}
                     if matches!(&call.target, CallTarget::Defined(callee) if frame.contains(callee)) {
                         next.insert(name.clone());
                     }
                 });
             }
         }
-        if next == frame {
+        if next == frame && next_fallible == fallible {
             break;
         }
         frame = next;
+        fallible=next_fallible;
     }
     let mut imports = BTreeMap::new();
     for (name, unit) in &mut units {
         unit.contract.frame = frame.contains(name);
+        unit.contract.fallible=fallible.contains(name);
         if unit.c_abi && unit.contract.frame {
             return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
         }
@@ -1342,6 +1390,7 @@ fn finalize(
     }
     if let Some((body,_)) = &mut root {
         prune(body, &unframed);
+        lower_failure_calls(body,&fallible);
     }
     let mut result = Finalized {
         functions: Vec::new(),
@@ -1354,6 +1403,8 @@ fn finalize(
         if local {
             let mut function = unit.function.take().unwrap();
             prune(&mut function.body, &unframed);
+            function.fallible=fallible.contains(&name);
+            lower_failure_calls(&mut function.body,&fallible);
             if !frame.contains(&name) {
                 function.parameters.remove(0);
                 function.body.inputs.drain(..2);
@@ -1526,6 +1577,7 @@ impl Builder<'_> {
             trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
         });
         self.code.push(Inst::generated(InstKind::Call(Call {
+            error: None,
             target: CallTarget::Defined(crate::module::domain::symbol(&instance.name, target)),
             arguments,
             memory: Vec::new(),
@@ -1648,6 +1700,7 @@ fn build_domain(
             &frame,
             &data,
             &uniform_values,
+            &mut registers,
             &mut code,
         )?;
         domain_at(world, &call.instance, functions, target)?;
@@ -1697,6 +1750,7 @@ fn build_domain(
             });
         }
         code.push(Inst { source_site: call.source, ..Inst::new(InstKind::Call(Call {
+            error: None,
             target: CallTarget::Defined(crate::module::domain::symbol(&call.instance.name, target)),
             arguments,
             memory: Vec::new(),
@@ -1722,6 +1776,7 @@ fn build_domain(
         &frame,
         &data,
         &uniform_values,
+        &mut registers,
         &mut code,
     )?;
     interface.outputs.sort();
@@ -1742,6 +1797,7 @@ fn build_domain(
         code,
     };
     let function = FunctionBody {
+        fallible: false,
         name: name.clone(),
         source_origin: d.source_origin(),
         parameters: parameters.clone(),
@@ -1749,6 +1805,7 @@ fn build_domain(
         body,
     };
     let contract = Contract {
+        fallible: false,
         parameters,
         result: None,
         inputs,
@@ -1796,6 +1853,7 @@ fn emit_domain_part(
     frame: &CallArgument,
     data: &[[Reg; 2]],
     uniforms: &[CallArgument],
+    registers: &mut Vec<Scalar>,
     code: &mut Vec<Inst>,
 ) -> Result<()> {
     if stages.is_empty() {
@@ -1820,6 +1878,7 @@ fn emit_domain_part(
         values: vec![reg],
     }));
     arguments.extend_from_slice(uniforms);
+    let error=registers.len();registers.push(Scalar::U64);
     code.push(Inst {
         generated_origin: Some(Arc::new(GeneratedOrigin {
             reason: GenerationReason::DomainPartCall,
@@ -1830,6 +1889,7 @@ fn emit_domain_part(
             arguments,
             None,
             Vec::new(),
+            Some(error),
         )
     });
     Ok(())

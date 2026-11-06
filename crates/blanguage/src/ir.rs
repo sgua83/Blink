@@ -1060,6 +1060,8 @@ pub enum InstKind {
     // 当前静态展开函数的退出域；Exit 只离开最近的 Scope，不结束 invocation。
     Scope(Vec<Inst>),
     Exit,
+    /// 将唯一拥有错误交回本普通函数的真实调用者，不退出最近的Scope。
+    Raise(Reg),
 }
 #[derive(Clone, Debug)]
 pub enum RayResult {

@@ -3,13 +3,14 @@ use super::operands::Operand;
 use super::*;
 use crate::native::{AbiRange, AbiRangeKind, FunctionAbi};
 pub(crate) fn emit(body: &ValueCode) -> Result<NativeCode, &'static str> {
-    emit_value(body, &[], Some(&Ty::scalar(Scalar::U32)), None, None)
+    emit_value(body, &[], Some(&Ty::scalar(Scalar::U32)), false, None, None)
 }
 pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'static str> {
     emit_value(
         &function.body,
         &function.parameters,
         function.result.as_ref(),
+        function.fallible,
         function.source_origin.as_ref(),
         Some(&function.name),
     )
@@ -19,6 +20,7 @@ fn emit_value(
     body: &ValueCode,
     parameters: &[CallParameter],
     result: Option<&Ty>,
+    fallible: bool,
     definition: Option<&SourceOrigin>,
     instance: Option<&str>,
 ) -> Result<NativeCode, &'static str> {
@@ -103,7 +105,7 @@ fn emit_value(
         })
     }
     let scratch = scratch(&stage.code);
-    let hidden = result.is_some_and(indirect);
+    let hidden = result.is_some_and(|ty| fallible || indirect(ty));
     let result_pointer = hidden.then_some(layout.end.div_ceil(8) as u32 * 8);
     let bytes = (layout.end + if hidden { 8 } else { 0 }).div_ceil(16) * 16;
     let frame = i32::try_from(bytes + if !scratch && bytes != 0 { 8 } else { 0 })
@@ -196,6 +198,8 @@ fn emit_value(
                 parameter_index: i, origin: parameter.origin.clone() },
         });
     }
+    // 最外退出属于本函数，嵌套Scope继续拥有各自的Exit。
+    e.exits.push(Vec::new());
     e.block(&stage.code)?;
     if let Some(ty) = result {
         let start = e.code.len();
@@ -227,6 +231,9 @@ fn emit_value(
         };
         abi.ranges.push(AbiRange { start, end: e.code.len(), kind });
     }
+    if fallible { e.bytes(&[0x31, 0xc0]); }
+    let target=e.code.len();
+    for at in e.exits.pop().unwrap(){e.patch(at,target);}
     let start = e.code.len();
     e.preserve_registers(true);
     abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::NonvolatileRestore });

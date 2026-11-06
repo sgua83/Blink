@@ -144,7 +144,12 @@ impl ApplicationLoads<'_, '_> {
     }
     fn pointer_call(call:&Call)->Option<Reg> {
         let CallTarget::External(name)=&call.target else{return None;};
-        if name.library!=crate::application::RUNTIME_LIBRARY||!matches!(name.symbol.as_str(),"blink_application_address"|"blink_storage_address"){return None;}
+        if name.library!=crate::application::RUNTIME_LIBRARY{return None;}
+        match name.symbol.as_str() {
+            "blink_address" if call.error.is_some()=>{},
+            "blink_storage_address" if call.error.is_none()=>{},
+            _=>return None,
+        }
         match call.arguments.get(1) {Some(CallArgument::Value{values,..})=>values.first().copied(),_=>None}
     }
     fn constant(&self,reg:Reg)->Option<Bits> {
@@ -373,14 +378,13 @@ pub(super) fn runtime_call(
     arguments: Vec<CallArgument>,
     result: Option<Ty>,
     values: Vec<Reg>,
+    error: Option<Reg>,
 ) -> Inst {
     Inst::new(InstKind::Call(Call {
+        error,
         target: CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
-            symbol: match name {
-                "resize" | "upload" | "download" | "address" => format!("blink_application_{name}"),
-                _ => format!("blink_{name}"),
-            },
+            symbol: format!("blink_{name}"),
         }),
         arguments,
         memory: Vec::new(),
@@ -592,12 +596,29 @@ fn live_resources(
     let origin = |reason| Arc::new(GeneratedOrigin { reason, trigger: Some(entry_anchor.clone()) });
     let generated = |kind, reason| Inst::generated(kind, origin(reason));
     let readiness = origin(GenerationReason::FrameReadiness);
+    fn root_failure(code: &mut [Inst], frame: &[Reg]) {
+        for inst in code {
+            if let InstKind::Raise(error)=&inst.kind {
+                inst.kind=runtime_call("application_failed",vec![
+                    CallArgument::Value{origin:None,dataset_borrow:None,ty:pointer_type(),values:frame.to_vec()},
+                    CallArgument::Value{origin:None,dataset_borrow:None,ty:Ty::scalar(Scalar::U64),values:vec![*error]},
+                ],None,Vec::new(),None).kind;
+            } else {match &mut inst.kind {
+                InstKind::Scope(body)=>root_failure(body,frame),
+                InstKind::If{yes,no,..}=>{root_failure(yes,frame);root_failure(no,frame);}
+                InstKind::Loop{condition,body,..}=>{root_failure(condition,frame);root_failure(body,frame);}
+                _=>{}
+            }}
+        }
+    }
     let mut code = std::mem::take(&mut body.code);
+    root_failure(&mut code,&frame);
     code.push(generated(runtime_call(
         "destroy",
         vec![CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: pointer_type(), values: frame.clone() }],
         None,
         Vec::new(),
+        None,
     ).kind, GenerationReason::FrameDestroy));
     body.code = vec![
         generated(InstKind::FunctionAddress(receiver, CallTarget::External(ExternalName {
@@ -613,6 +634,7 @@ fn live_resources(
             ],
             Some(pointer_type()),
             frame.clone(),
+            None,
         ).kind, GenerationReason::FrameCreate),
         Inst::generated(InstKind::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] }, readiness.clone()),
         Inst::generated(InstKind::Constant(zero, Scalar::U32, 0), readiness.clone()),
@@ -869,11 +891,13 @@ impl Builder<'_> {
             .map(|(s, _)| self.reg(*s))
             .collect();
         let arguments = std::iter::once(frame).chain(args).map(argument).collect();
+        let error=self.reg(Scalar::U64);
         let kind = runtime_call(
             name,
             arguments,
             result.clone(),
             values.clone(),
+            Some(error),
         ).kind;
         if let Some(generation) = generation {
             self.code.push(Inst::generated(kind, generation));
@@ -902,6 +926,7 @@ impl Builder<'_> {
             ],
             None,
             Vec::new(),
+            None,
         )
     }
 
@@ -1265,10 +1290,11 @@ impl Builder<'_> {
             reason: GenerationReason::DatasetResizeCall,
             trigger: self.source_at(span, SourceSyntax::Expression).map(GenerationAnchor::Syntax),
         });
+        let error=self.reg(Scalar::U64);
         self.code.push(Inst::generated(runtime_call("resize", vec![
             argument(frame), argument(root), argument(length.clone()),
             fill,
-        ], Some(Ty::scalar(Scalar::U32)), vec![reg]).kind, call_origin));
+        ], Some(Ty::scalar(Scalar::U32)), vec![reg],Some(error)).kind, call_origin));
         // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
         let handle = self.application_root(reg);
         length.literal = false;
@@ -1702,7 +1728,11 @@ impl Builder<'_> {
                     reason: GenerationReason::DatasetStorageAddress,
                     trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
                 });
-                let mut value=self.application_call("storage_address",vec![data.root.clone()],Some(Ty::scalar(Scalar::U64)),span,Some(origin))?.unwrap();
+                let frame=self.application_frame(span)?;
+                let reg=self.reg(Scalar::U64);
+                let ty=Ty::scalar(Scalar::U64);
+                self.code.push(Inst::generated(runtime_call("storage_address",vec![argument(frame),argument(data.root.clone())],Some(ty.clone()),vec![reg],None).kind,origin));
+                let mut value=Value{ty,regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
                 value.proof=value.proof.with_view_borrow(0,self.data_value_borrow(&data.data));
                 value
             }

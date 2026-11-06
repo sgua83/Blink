@@ -474,12 +474,14 @@ impl Inst {
             _ => &[],
         };
         values.iter().copied()
+            .chain(if let InstKind::Call(call)=&self.kind{call.error}else{None})
             .chain(division.into_iter().flatten())
             .chain(collective.iter().map(|(_, reg)| *reg))
     }
     pub(crate) fn all_operands(&self, f: &mut impl FnMut(Reg) -> bool) -> bool {
         let values = match &self.kind {
             InstKind::Call(call) => call.all_operands(f),
+            InstKind::Raise(error) => f(*error),
             InstKind::FunctionAddress(_, CallTarget::Indirect(reg)) => f(*reg),
             InstKind::PositionAddress { address, .. } => address.all_operands(f),
             InstKind::TextureSample { coordinate, lod, .. } =>

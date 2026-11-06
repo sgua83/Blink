@@ -104,6 +104,7 @@ impl Values {
                     | InstKind::Loop { .. }
                     | InstKind::Scope(_)
                     | InstKind::Exit
+                    | InstKind::Raise(_)
                     | InstKind::TilePublish(_)
                     | InstKind::TileCollective(_)
                     | InstKind::TileBarrier
@@ -215,6 +216,7 @@ impl Values {
                     merge(&mut scope.next, scope.exits.take());
                     continuing = self.resume(&mut flow, scope);
                 }
+                InstKind::Raise(_) => continuing = false,
                 InstKind::Exit => {
                     merge(&mut flow.exits, Some(self.local_values()));
                     continuing = false;

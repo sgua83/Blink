@@ -118,6 +118,8 @@ impl CallParameter {
 }
 #[derive(Clone, Debug)]
 pub struct FunctionBody {
+    /// 可失败B函数返回唯一拥有错误，业务结果只在成功时写出。
+    pub fallible: bool,
     pub name: String,
     #[cfg(feature = "compiler")]
     pub source_origin: Option<SourceOrigin>,
@@ -143,6 +145,8 @@ impl FunctionBody {
 }
 #[derive(Clone, Debug)]
 pub struct Call {
+    /// 同次实际调用交回的拥有错误；None保持普通调用ABI。
+    pub error: Option<Reg>,
     pub target: CallTarget,
     pub arguments: Vec<CallArgument>,
     pub memory: Vec<MemoryAccess>,

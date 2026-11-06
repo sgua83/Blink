@@ -346,6 +346,11 @@ impl Emitter<'_> {
             let first = self.operation_ranges.as_ref().map(Vec::len);
             match &(inst).kind {
                 InstKind::Call(call) => self.native_call(call)?,
+                InstKind::Raise(error) => {
+                    self.load(*error);
+                    let at=self.jump(None);
+                    self.exits[0].push(at);
+                }
                 InstKind::Print { dst, value } => {
                     let scalar = self.stage.registers[*value];
                     self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);

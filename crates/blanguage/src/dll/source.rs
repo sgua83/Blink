@@ -70,24 +70,12 @@ pub(crate) fn application_source(
     functions.push_str(r#"
 unsafe extern "C" {
     fn blink_allocate(output:*mut u32,frame:*mut c_void,ty:u32,count:u32)->*mut c_void;
-    fn blink_resize(output:*mut u32,frame:*mut c_void,handle:u32,count:u32,fill:*const u32)->*mut c_void;
     fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue)->*mut c_void;
-    fn blink_upload(frame:*mut c_void,handle:u32)->*mut c_void;
-    fn blink_download(frame:*mut c_void,handle:u32)->*mut c_void;
-    fn blink_address(output:*mut *mut u32,frame:*mut c_void,handle:u32,offset:u64,bytes:u32,stride:u64,count:u32)->*mut c_void;
     fn blink_error_message(error:*const c_void,bytes:*mut usize)->*const u8;
     fn blink_error_destroy(error:*mut c_void);
     fn blink_destroy(frame:*mut c_void);
 }
 "#);
-    if !root {
-        functions.push_str(r#"
-unsafe extern "C" {
-    fn blink_application_error(context:*mut c_void,data:*const u8,bytes:usize);
-    fn blink_application_failed(frame:*mut c_void,error:*mut c_void)->!;
-}
-"#);
-    }
     if root {
         functions.push_str(r#"
 use blcompute::application::{Frame, ProgramImage};
@@ -106,38 +94,6 @@ pub unsafe extern "C" fn blink_application_failed(frame: *mut c_void, error: *mu
     unsafe { blink_error_destroy(error) };
     unsafe { blink_destroy(frame) };
     std::process::exit(1)
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_resize(frame:*mut c_void,handle:u32,count:u32,fill:*const u32)->u32 {
-    let mut output=0;
-    let error = unsafe { blink_resize(&mut output,frame,handle,count,fill) };
-    if !error.is_null() {
-        unsafe { blink_application_failed(frame,error) }
-    }
-    output
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_upload(frame:*mut c_void,handle:u32) {
-    let error = unsafe { blink_upload(frame,handle) };
-    if !error.is_null() {
-        unsafe { blink_application_failed(frame,error) }
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_download(frame:*mut c_void,handle:u32) {
-    let error = unsafe { blink_download(frame,handle) };
-    if !error.is_null() {
-        unsafe { blink_application_failed(frame,error) }
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_application_address(frame:*mut c_void,handle:u32,offset:u64,bytes:u32,stride:u64,count:u32)->*mut u32 {
-    let mut output=std::ptr::null_mut();
-    let error = unsafe { blink_address(&mut output,frame,handle,offset,bytes,stride,count) };
-    if !error.is_null() {
-        unsafe { blink_application_failed(frame,error) }
-    }
-    output
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void) -> *mut c_void {
@@ -188,7 +144,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
     for index in 0..resources.types.len() {
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(frame:*mut c_void,count:u32)->u32 {{ let mut output=0; let error=unsafe {{ blink_allocate(&mut output,frame,{prefix}_type_base+{index},count) }}; if !error.is_null() {{ unsafe {{ blink_application_failed(frame,error) }} }} output }}"
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(output:*mut u32,frame:*mut c_void,count:u32)->*mut c_void {{ unsafe {{ blink_allocate(output,frame,{prefix}_type_base+{index},count) }} }}"
         )?;
     }
     for (index, (_, program)) in resources.programs.iter().enumerate() {
@@ -226,7 +182,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
         }
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({}) {{ let data=[{}];let words=[{}];let error=unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr()) }};if !error.is_null() {{ unsafe {{ blink_application_failed(frame,error) }} }} }}",
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({})->*mut c_void {{ let data=[{}];let words=[{}];unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr()) }} }}",
             params.join(","),
             handles.join(","),
             words.join(",")

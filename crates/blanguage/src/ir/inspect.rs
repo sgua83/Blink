@@ -117,6 +117,7 @@ fn call(value: &Call) -> String {
         ("memory", array(value.memory.iter().map(|value| node("memory_access", &[("alias", alias(&value.alias)), ("access", name(&value.access))])))),
         ("memory_use", optional(value.memory_use.as_ref(), |v| number(v))),
         ("result", optional(value.result.as_ref(), Ty::layout_json)), ("values", numbers(&value.values)),
+        ("error", optional(value.error.as_ref(), |v| number(v))),
     ])
 }
 fn texture(value: &TextureSource) -> String {
@@ -190,6 +191,7 @@ fn instruction(value: &Inst) -> String {
         Loop { condition, test, body } => node("Loop", &[("condition", code(condition)), ("test", number(test)), ("body", code(body))]),
         Break => node("Break", &[]), Continue => node("Continue", &[]),
         Scope(body) => node("Scope", &[("body", code(body))]), Exit => node("Exit", &[]),
+        Raise(error) => node("Raise", &[("error", number(error))]),
     };
     #[cfg(feature = "compiler")] {
         let mut result = result;
@@ -222,7 +224,7 @@ impl ValueCode {
 }
 impl FunctionBody {
     pub fn ir_json(&self) -> String {
-        node("function_ir", &[("name", text(&self.name)),
+        node("function_ir", &[("name", text(&self.name)), ("fallible", self.fallible.to_string()),
             #[cfg(feature = "compiler")]
             ("source_origin", optional(self.source_origin.as_ref(), SourceOrigin::ir_json)),
             ("parameters", {

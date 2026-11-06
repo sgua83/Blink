@@ -1732,6 +1732,7 @@ fn finish_checked_function(
     let (returned, semantic_inputs, written, initialization) =
         native_function::canonical(&mut b, returned, &inputs, written);
     let body = FunctionBody {
+        fallible: false,
         name: name.clone(),
         source_origin: d.source_origin(),
         parameters,

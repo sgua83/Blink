@@ -329,6 +329,7 @@ pub(crate) fn map(code: &mut [Inst], r: &impl Fn(Reg) -> Reg, s: &impl Fn(usize)
             InstKind::StoreLocalIndexed { base, .. } => *base = s(*base),
             InstKind::Call(call) => {
                 for value in &mut call.values { *value = r(*value); }
+                call.error = call.error.map(r);
                 call.map_locals(s);
             }
             InstKind::PositionAddress { dst, address } => { *dst = r(*dst); address.map_locals(s); }
@@ -374,6 +375,7 @@ fn map_operands(i: &mut Inst, r: &impl Fn(Reg) -> Reg) {
     }
     match &mut (i).kind {
         InstKind::PositionAddress { address, .. } => address.map_operands(r),
+        InstKind::Raise(error) => *error = r(*error),
         InstKind::FunctionAddress(_, CallTarget::Indirect(reg)) => *reg = r(*reg),
         InstKind::TextureSample {
             coordinate, lod, ..

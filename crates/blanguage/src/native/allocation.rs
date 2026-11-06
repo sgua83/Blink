@@ -150,6 +150,7 @@ impl Graph {
                         weight,
                     )
                 }
+                InstKind::Raise(error) => {live.clear();live.insert(Register(*error));self.weights[*error]=self.weights[*error].saturating_add(weight);}
                 InstKind::Exit => live = exit_live.clone(),
                 InstKind::Break => live = break_live.clone(),
                 InstKind::Continue => live = continue_live.clone(),

@@ -17,7 +17,7 @@ pub(super) fn floating(ty: &Ty) -> bool {
 }
 impl Layout {
     pub(super) fn new(call: &Call) -> Self {
-        let hidden = call.result.as_ref().is_some_and(indirect);
+        let hidden = call.result.as_ref().is_some_and(|ty| call.error.is_some() || indirect(ty));
         let mut bytes =
             ((call.arguments.len() + usize::from(hidden)).max(4) as u64 * 8).div_ceil(16) * 16;
         let result = if hidden {
@@ -167,6 +167,11 @@ impl Emitter<'_> {
             CallTarget::Defined(name) => Some(self.native_code_address(NativeSymbol::Function(name.clone()))),
         };
         self.invoke(reference);
+        let failed = if let Some(error) = call.error {
+            self.store(error);
+            self.bytes(&[0x48, 0x85, 0xc0]);
+            Some(self.jump(Some(0x85)))
+        } else { None };
         if let Some(ty) = &call.result {
             if let Some(at) = layout.result {
                 for ((_, offset), reg) in ty.components.iter().zip(&call.values) {
@@ -189,6 +194,7 @@ impl Emitter<'_> {
                 }
             }
         }
+        if let Some(at) = failed { self.patch(at, self.code.len()); }
         Ok(())
     }
 }
