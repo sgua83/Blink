@@ -501,7 +501,7 @@ impl Builder<'_> {
         if self.atomic_storage(place) {
             return self.fail(span, "B214", "atomic 数组元素只能通过显式原子操作修改");
         }
-        self.writable_storage(place, span)?;
+        self.writable_storage(place, span, true)?;
         if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
             return self.fail(span, "B143", "赋值位置包含重复分量");
         }

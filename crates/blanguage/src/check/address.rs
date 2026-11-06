@@ -876,7 +876,7 @@ impl Builder<'_> {
         let Some(mut value) = self.expr(arg)? else { return Ok(None); };
         self.require_same(&Ty::builtin("address").unwrap(), &value.ty, arg.span)?;
         let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
-        self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),writes:false,initialized:false,span})?;
+        self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),writes:false,writable:false,initialized:false,span})?;
         let external=!borrow.pending()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|matches!(source,view::Source::External));
         let identity = value.proof.addresses.first().cloned().flatten().unwrap_or_else(||match bounds::Proof::capture(&value).known_value(&value.ty) {
             Some(bits) => Identity::Constant(bits[0]),

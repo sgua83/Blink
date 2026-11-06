@@ -495,6 +495,10 @@ impl Builder<'_> {
                 other=>other,
             };
             let arg=match arg {Argument::Value(value) if p.access==Access::Read=>Argument::Reference(self.materialize_array(value,None)),other=>other};
+            if let Argument::Reference(OwnedBinding{place,..})|Argument::OwnedReference{place,..}=&arg {
+                let origin=self.position_origin(place,span)?;
+                storage_inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Position(Arc::new(origin)))));
+            }
             match arg {
                 Argument::Value(mut value) if p.access == Access::Value && !p.ty.dataset => {
                     self.require_same(&ty, &value.ty, span)?;
@@ -528,8 +532,6 @@ impl Builder<'_> {
                     let place=owner.place.clone();
                     self.require_same(&ty, place.ty(), span)?;
                     if p.access.reads(){owner.proof=self.current_address_proof(&ty,&owner.proof);memory_borrow.union(&self.address_contents(&ty,&owner.proof));}
-                    let origin=self.position_origin(&place,span)?;
-                    storage_inputs.insert(ValueIdentity::ParameterStorage(index),bounds::Proof::default().with_view_borrow(0,view::Borrow::source(view::Source::Position(Arc::new(origin)))));
                     for (part, address) in self.native_references(&place, p.access, span, d.function.c_abi)? {
                         arguments.push(CallArgument::Reference { #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),
                             ty: part,

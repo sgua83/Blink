@@ -2166,7 +2166,7 @@ impl<'a> Builder<'a> {
                 ty, address, words, ..
             } => {
                 if let Some(borrow)=self.reference_position_borrow(p,span)? {
-                    self.check_view_requirement(view::Requirement::Address{borrow,layout:address::Layout::of(ty),writes:false,initialized:true,span})?;
+                    self.check_view_requirement(view::Requirement::Address{borrow,layout:address::Layout::of(ty),writes:false,writable:false,initialized:true,span})?;
                 }else{self.require_initialized(p, span)?;}
                 let zero = self.constant(Scalar::U32, 0).regs[0];
                 let mut regs = Vec::new();
@@ -2358,7 +2358,7 @@ impl<'a> Builder<'a> {
                 return self.fail(span, "B214", "原子借用只能通过显式原子操作修改");
             }
             Place::Reference { address, words, .. } => {
-                self.writable_storage(p, span)?;
+                self.writable_storage(p, span, true)?;
                 self.assign_owned_proof(p, bounds::Proof::capture(&value), false);
                 self.initialize(p);
                 let zero = self.constant(Scalar::U32, 0).regs[0];
@@ -2380,7 +2380,7 @@ impl<'a> Builder<'a> {
                 words,
                 ..
             } => {
-                self.writable_storage(p, span)?;
+                self.writable_storage(p, span, true)?;
                 self.dataset_effect(p,Access::Write,false,span)?;
                 let proof = bounds::Proof::capture(&value);
                 self.write_application_place(

@@ -250,7 +250,7 @@ pub(super) fn data_at_mut<'a>(binding:&'a mut Binding,path:&[usize])->Option<&'a
 pub(super) enum Requirement {
     Unborrowed {resource:Borrow,borrow:Borrow,ownership:bool,span:Span},
     Return {borrow:Borrow,allowed:BTreeSet<ValueIdentity>,owned:Borrow,span:Span},
-    Address {borrow:Borrow,layout:address::Layout,writes:bool,initialized:bool,span:Span},
+    Address {borrow:Borrow,layout:address::Layout,writes:bool,writable:bool,initialized:bool,span:Span},
     Memory {target:address::MemoryTarget,borrow:Borrow,access:Option<Access>,span:Span},
     Dataset {borrow:Borrow,index:Option<bounds::Operand>,access:Access,atomic:bool,span:Span},
     Initialized {borrow:Borrow,read:address::InitializationRead,code:&'static str,span:Span},
@@ -268,7 +268,7 @@ impl Requirement {
         match self {
             Self::Unborrowed{resource,borrow,ownership,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),ownership:*ownership,span:*span},
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
-            Self::Address{borrow,layout,writes,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),writes:*writes,initialized:*initialized,span:*span},
+            Self::Address{borrow,layout,writes,writable,initialized,span}=>Self::Address{borrow:map(borrow),layout:layout.clone(),writes:*writes,writable:*writable,initialized:*initialized,span:*span},
             Self::Memory{target,borrow,access,span}=>Self::Memory{target:*target,borrow:map(borrow),access:*access,span:*span},
             Self::Dataset{borrow,index,access,atomic,span}=>Self::Dataset{borrow:map(borrow),index:*index,access:*access,atomic:*atomic,span:*span},
             Self::Initialized{borrow,read,code,span}=>Self::Initialized{borrow:map(borrow),read:read.clone(),code,span:*span},
@@ -280,12 +280,12 @@ impl Requirement {
             return if bounds::integer_divisors(value,path).is_some(){Ok(())}else{source.fail(*span,"B152",bounds::INTEGER_DIVISOR_MESSAGE)};
         }
         if self.borrow().is_some_and(Borrow::unresolved)||matches!(self,Self::Unborrowed{resource,borrow,..}if !borrow.empty()&&resource.unresolved()){return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");}
-        if let Self::Address{borrow,layout,writes,initialized,span}=self {
+        if let Self::Address{borrow,layout,writable,initialized,span,..}=self {
             for(origin_source,when)in borrow.sources.entries() {
                 if !when.possible(){continue;}
                 if let Source::Position(origin)=origin_source {
                     if origin.layout!=*layout||!origin.layout_valid() {return source.fail(*span,"B263","地址解释的布局与原自有位置不同");}
-                    if *writes&&!origin.writable {return source.fail(*span,"B227","自有地址不能升级原只读位置的写权限");}
+                    if *writable&&!origin.writable {return source.fail(*span,"B227","自有地址不能升级原只读位置的写权限");}
                     if *initialized&&!origin.symbolic_input()&&!origin.initialized.iter().all(|ready|*ready) {return source.fail(*span,"B142","地址读取或inout需要原位置已经初始化");}
                 }
             }

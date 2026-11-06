@@ -7,8 +7,8 @@ pub(super) enum Output { Returned(usize), Written(usize,usize), ReturnedResource
 pub(super) struct CallResult { pub call:usize, pub output:Output }
 pub(super) type Outputs=BTreeMap<Output,Borrow>;
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-pub(super) struct PositionAccess {pub layout:address::Layout,pub writes:bool,pub initialized:bool}
-crate::module::codec::record!(PositionAccess {layout,writes,initialized});
+pub(super) struct PositionAccess {pub layout:address::Layout,pub writes:bool,pub writable:bool,pub initialized:bool}
+crate::module::codec::record!(PositionAccess {layout,writes,writable,initialized});
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 pub(super) enum Access {
     Resource {resources:Borrow,borrows:Borrow,ownership:bool,when:bounds::Condition},
@@ -676,7 +676,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                     }
                     for(source,when)in read.borrow().sources.entries() {
                         if let Origin::Position(origin)=source {
-                            if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),writes:false,initialized:true}},
+                            if let Some(value)=function.address_access(Borrow::source(source.clone()),|borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:origin.layout.clone(),writes:false,writable:false,initialized:true}},
                                 bounds::Condition::guard(usage.path.clone()).logical(bounds::Condition::guard(when),false)){access.insert(value);}
                         }
                     }
@@ -686,9 +686,9 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States) {
                     Requirement::Unborrowed{resource,borrow,ownership,..}=>function.access(
                         evaluate(resource,function,state,known,true),evaluate(borrow,function,state,known,true),
                         *ownership,bounds::Condition::guard(usage.path.clone())),
-                    Requirement::Address{borrow,layout,writes,initialized,..}=>function.address_access(
+                    Requirement::Address{borrow,layout,writes,writable,initialized,..}=>function.address_access(
                         evaluate(borrow,function,state,known,true),
-                        |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),writes:*writes,initialized:*initialized}},
+                        |borrows,when|Access::Position{borrows,when,position:PositionAccess{layout:layout.clone(),writes:*writes,writable:*writable,initialized:*initialized}},
                         bounds::Condition::guard(usage.path.clone())),
                     Requirement::Memory{target:address::MemoryTarget::Call(memory),borrow,access:Some(access),..} if !function.calls.iter().any(|call|call.memory==*memory)=>
                         function.address_access(evaluate(borrow,function,state,known,true),|borrows,when|Access::Memory{borrows,when,access:*access},bounds::Condition::guard(usage.path.clone())),
@@ -819,7 +819,7 @@ pub(super) fn solve(functions:&BTreeMap<String,&Function>,closed:BTreeMap<String
                 if when.active(){
                     let path=when.assume(&bounds::Clause::default(),true);
                     let requirement=match value {
-                        Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,writes:position.writes,initialized:position.initialized,span:call.span},
+                        Access::Position{borrows,position,..}=>Requirement::Address{borrow:borrows.restricted(&path),layout:position.layout,writes:position.writes,writable:position.writable,initialized:position.initialized,span:call.span},
                         Access::Resource{resources,borrows,ownership,..}=>Requirement::Unborrowed{resource:resources.restricted(&path),borrow:borrows.restricted(&path),ownership,span:call.span},
                         Access::Memory{..}|Access::Dataset{..}=>continue,
                         Access::Initialized{borrows,initialized,..}=>{

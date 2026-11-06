@@ -2665,7 +2665,7 @@ impl Builder<'_> {
             },
             _=>unreachable!(),
         }}
-        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span)?;
+        self.require_owned_writable(&place,span)?;self.writable_storage(&place,span,true)?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
         let loaded=self.read_storage_value(&place,span, None)?;
         let mut selected=data.clone();selected.projection=paths[0].clone();let mut old=self.materialize_element(&selected,loaded.clone(),&place);
