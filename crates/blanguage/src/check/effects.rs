@@ -482,7 +482,8 @@ impl Builder<'_> {
                         if !matches!(place.kind,ExprKind::Name(_)){effect.unknown_storage=true;}
                         continue;
                     };
-                    if let Some(owner)=binding.stored_place()
+                    let owner=match binding {Binding::ApplicationData(data)=>data.place.clone(),_=>binding.stored_place()};
+                    if let Some(owner)=owner
                         && let Place::Local(_,slots,..)=&owner
                         && let Some((_,components))=self.written_projection(place,name,&owner,None,writes)? {
                         effect.locals.extend(components.into_iter().flatten().map(|component|slots[component]));
@@ -905,6 +906,9 @@ pub(super) fn modified_owners(
 
 
 // 同一位置写效果：位移、独立赋值，以及由同一c-x和恒等组成的有限反向关系。
+#[derive(Clone, Copy)]
+enum NumericPlace<'a> { Stored(&'a Place, usize), Length }
+
 #[derive(Clone)]
 enum NumericEffect {
     Unknown,
@@ -944,23 +948,52 @@ fn join_numeric_paths(a: Option<NumericEffect>, b: Option<NumericEffect>) -> Opt
     match (a,b) { (Some(a),Some(b))=>Some(a.join(b)), (a,None)|(None,a)=>a }
 }
 impl Builder<'_> {
-    fn numeric_write(&self, write: &Write<'_>, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<bool> {
+    fn numeric_write(&self, write: &Write<'_>, name: &str, target: NumericPlace<'_>, writes: &[Write<'_>]) -> Result<bool> {
+        let NumericPlace::Stored(owner,component)=target else {
+            return Ok(matches!(write,Write::Position{contents:false,place,..}if matches!(&place.kind,ExprKind::Name(bound)if bound==name)));
+        };
         if let Write::Memory{borrow,..}=write{return Ok(self.loop_memory_components(borrow,owner).contains(&component));}
         let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
         let projection = if *contents { self.application_write_projection(place, owner) }
             else { self.written_projection(place, name, owner, *iterator, writes)? };
         Ok(projection.is_some_and(|(_,parts)|parts.iter().any(|part|part.contains(&component))))
     }
-    fn numeric_expression_effect(&self, expr: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>]) -> Result<NumericEffect> {
+    fn numeric_expression_effect(&self, expr: &Expr, name: &str, target: NumericPlace<'_>, writes: &[Write<'_>]) -> Result<NumericEffect> {
         for write in writes.iter().filter(|write|match write {
             Write::External{call,..}|Write::Memory{call,..}|Write::Generator(call)=>contains_expression(expr,call),
             Write::Position{call,..}=>call.is_some_and(|call|contains_expression(expr,call)),
         }) {
-            if self.numeric_write(write,name,owner,component,writes)? { return Ok(NumericEffect::Unknown); }
+            if self.numeric_write(write,name,target,writes)? { return Ok(NumericEffect::Unknown); }
         }
         Ok(NumericEffect::shift(0))
     }
-    fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, owner: &Place, component: usize, writes: &[Write<'_>], absolute: bool) -> Result<NumericEffect> {
+    fn numeric_assigned_value(&self,rhs:&Expr,writes:&[Write<'_>],absolute:bool)->Result<NumericEffect> {
+        let value=if let Some(value)=self.constant_index(rhs,writes)? {bounds::Proof::unsigned(value,value)}
+        else if absolute && let ExprKind::Name(source)=&rhs.kind {
+            match self.env.get(source) {
+                Some(Binding::Value(value)) if value.ty==Ty::scalar(Scalar::U32)=>bounds::Proof::capture(value),
+                Some(Binding::Owned(value)) if value.place.ty()==&Ty::scalar(Scalar::U32)=>{
+                    for write in writes {if self.numeric_write(write,source,NumericPlace::Stored(&value.place,0),writes)? {return Ok(NumericEffect::Unknown);}}
+                    value.proof.clone()
+                },
+                _=>return Ok(NumericEffect::Unknown),
+            }
+        } else {return Ok(NumericEffect::Unknown);};
+        Ok(NumericEffect::Assign(value))
+    }
+    fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, target: NumericPlace<'_>, writes: &[Write<'_>], absolute: bool, scope:&Scope<'_, '_, '_>) -> Result<NumericEffect> {
+        let NumericPlace::Stored(owner,component)=target else {
+            if !matches!(&lhs.kind,ExprKind::Name(bound)if bound==name) || scope.bindings.iter().any(|(bound,_)|*bound==name) {return Ok(NumericEffect::shift(0));}
+            if op!="=" {return Ok(NumericEffect::Unknown);}
+            let length=match &rhs.kind {
+                ExprKind::Call(function,args) if function=="resize" && args.len()==3 && scope.named(function,rhs.span)?.is_none()=>&args[1],
+                ExprKind::Specialize(function,_,args) if function=="dataset" && !args.is_empty()=>&args[0],
+                ExprKind::Name(source) if source==name=>return Ok(NumericEffect::shift(0)),
+                _=>return Ok(NumericEffect::Unknown),
+            };
+            if matches!(&length.kind,ExprKind::Name(source)if scope.bindings.iter().any(|(bound,_)|bound==source)) {return Ok(NumericEffect::Unknown);}
+            return self.numeric_assigned_value(length,writes,absolute);
+        };
         let Some((ty,parts))=self.written_projection(lhs,name,owner,None,writes)? else { return Ok(NumericEffect::shift(0)); };
         if !parts.iter().any(|part|part.contains(&component)) { return Ok(NumericEffect::shift(0)); }
         // 未知地址可能写此分量；单个候选分量不表示该次写必然选中了它。
@@ -978,57 +1011,46 @@ impl Builder<'_> {
                     return Ok(self.constant_index(amount,writes)?.map(NumericEffect::Reflect).unwrap_or(NumericEffect::Unknown)),
                 _ if relative(rhs)? => (1,Some(0)),
                 _ => {
-                    let value=if let Some(value)=self.constant_index(rhs,writes)? {bounds::Proof::unsigned(value,value)}
-                    else if absolute && let ExprKind::Name(source)=&rhs.kind {
-                        match self.env.get(source) {
-                            Some(Binding::Value(value)) if value.ty==Ty::scalar(Scalar::U32)=>bounds::Proof::capture(value),
-                            Some(Binding::Owned(value)) if value.place.ty()==&Ty::scalar(Scalar::U32)=>{
-                                for write in writes {if self.numeric_write(write,source,&value.place,0,writes)? {return Ok(NumericEffect::Unknown);}}
-                                value.proof.clone()
-                            },
-                            _=>return Ok(NumericEffect::Unknown),
-                        }
-                    } else {return Ok(NumericEffect::Unknown);};
-                    return Ok(NumericEffect::Assign(value));
+                    return self.numeric_assigned_value(rhs,writes,absolute);
                 },
             },
             _ => return Ok(NumericEffect::Unknown),
         };
         Ok(amount.map(|amount|NumericEffect::shift(i128::from(amount)*sign)).unwrap_or(NumericEffect::Unknown))
     }
-    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, owner:&Place, component:usize, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>)->Result<Option<NumericEffect>> {
+    fn numeric_loop_paths<'e>(&self, body:&'e [Stmt], mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, target:NumericPlace<'_>, writes:&[Write<'_>], absolute:bool, scope:&mut Scope<'_, '_, 'e>)->Result<Option<NumericEffect>> {
         let outer = scope.bindings.len();
         for statement in body {
             let Some(before)=next.take() else { break; };
             next=match &statement.kind {
                 StmtKind::Assign(lhs,op,rhs)=>Some(before
-                    .then(self.numeric_expression_effect(lhs,name,owner,component,writes)?)
-                    .then(self.numeric_expression_effect(rhs,name,owner,component,writes)?)
-                    .then(self.numeric_assignment_effect(lhs,op,rhs,name,owner,component,writes,absolute)?)),
+                    .then(self.numeric_expression_effect(lhs,name,target,writes)?)
+                    .then(self.numeric_expression_effect(rhs,name,target,writes)?)
+                    .then(self.numeric_assignment_effect(lhs,op,rhs,name,target,writes,absolute,scope)?)),
                 StmtKind::Let(ty,local,expr)=>{
-                    let next=before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?);
+                    let next=before.then(self.numeric_expression_effect(expr,name,target,writes)?);
                     scope.bindings.push((local,ty.as_ref().map_or(Local::Inferred(expr),Local::Typed)));
                     Some(next)
                 },
                 StmtKind::Declare(ty,local)=>{scope.bindings.push((local,Local::Typed(ty)));Some(before)},
-                StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?)),
+                StmtKind::Expr(expr)=>Some(before.then(self.numeric_expression_effect(expr,name,target,writes)?)),
                 StmtKind::If(condition,yes,no)=>{
-                    let before=before.then(self.numeric_expression_effect(condition,name,owner,component,writes)?);
+                    let before=before.then(self.numeric_expression_effect(condition,name,target,writes)?);
                     let truth=scope.writes_expression(condition,&mut |_|{})?;
-                    let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,owner,component,writes,absolute,scope)?};
-                    let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,owner,component,writes,absolute,scope)?};
+                    let yes=if truth==Some(false){None}else{self.numeric_loop_paths(yes,Some(before.clone()),continues,name,target,writes,absolute,scope)?};
+                    let no=if truth==Some(true){None}else{self.numeric_loop_paths(no,Some(before),continues,name,target,writes,absolute,scope)?};
                     join_numeric_paths(yes,no)
                 },
                 StmtKind::Match(value,arms)=>{
-                    let before=before.then(self.numeric_expression_effect(value,name,owner,component,writes)?);let mut next=None;
+                    let before=before.then(self.numeric_expression_effect(value,name,target,writes)?);let mut next=None;
                     for arm in arms {
                         if let Some(local)=&arm.binding{scope.bindings.push((local,Local::Payload(value,&arm.variant)));}
-                        next=join_numeric_paths(next,self.numeric_loop_paths(&arm.body,Some(before.clone()),continues,name,owner,component,writes,absolute,scope)?);
+                        next=join_numeric_paths(next,self.numeric_loop_paths(&arm.body,Some(before.clone()),continues,name,target,writes,absolute,scope)?);
                         if arm.binding.is_some(){scope.bindings.pop();}
                     }next
                 },
                 StmtKind::Seek(_,expr)=>{
-                    let before=before.then(self.numeric_expression_effect(expr,name,owner,component,writes)?);
+                    let before=before.then(self.numeric_expression_effect(expr,name,target,writes)?);
                     *continues=join_numeric_paths(continues.take(),Some(before));None
                 },
                 StmtKind::Continue=>{*continues=join_numeric_paths(continues.take(),Some(before));None},
@@ -1039,7 +1061,7 @@ impl Builder<'_> {
                         Write::External{call,..}|Write::Memory{call,..}|Write::Generator(call)=>call,
                         Write::Position{call,place,..}=>call.unwrap_or(place),
                     })) {
-                        if self.numeric_write(write,name,owner,component,writes)? {effect=NumericEffect::Unknown;break;}
+                        if self.numeric_write(write,name,target,writes)? {effect=NumericEffect::Unknown;break;}
                     }
                     Some(before.then(effect))
                 },
@@ -1054,45 +1076,62 @@ impl Builder<'_> {
         let writes=self.normalize_writes(writes)?;
         let mut retained=Vec::new();
         for (name,binding) in initial {
-            let (owner,proof)=match binding { Binding::Owned(owner)=>(owner.place.clone(),&owner.proof),Binding::OwnedValue(owner)=>{let Some(place)=owner.place()else{continue};(place,&owner.value.proof)},_=>continue };
-            // 这里只解释有确定位置身份的本地／独占参数；数据候选别名仍由原写效果撤回。
-            if !matches!(owner.storage(),Place::Local(..)|Place::Reference{..}) {continue;}
-            for (component,(scalar,_)) in owner.ty().components.iter().enumerate() {
+            let length;
+            let (owner,proof)=match binding {
+                Binding::Owned(owner)=>(Some(owner.place.clone()),&owner.proof),
+                Binding::OwnedValue(owner)=>{let Some(place)=owner.place()else{continue};(Some(place),&owner.value.proof)},
+                Binding::ApplicationData(data)=>{length=bounds::Proof::capture(&data.length);(None,&length)},
+                _=>continue,
+            };
+            // 存储分量与dataset长度共用数值效果；长度不保留旧资源身份或固定类型count。
+            let components=match &owner {
+                Some(owner) if matches!(owner.storage(),Place::Local(..)|Place::Reference{..})=>owner.ty().components.as_slice(),
+                Some(_)=>continue,
+                None=>&[(Scalar::U32,0)],
+            };
+            for (component,(scalar,_)) in components.iter().enumerate() {
+                let target=match &owner{Some(owner)=>NumericPlace::Stored(owner,component),None=>NumericPlace::Length};
                 if *scalar!=Scalar::U32 {continue;}
-                let mut written=false;for write in &writes {if self.numeric_write(write,name,&owner,component,&writes)? {written=true;break;}}
+                let mut written=false;for write in &writes {if self.numeric_write(write,name,target,&writes)? {written=true;break;}}
                 if !written {continue;}
-                if let Some(condition)=condition && matches!(self.numeric_expression_effect(condition,name,&owner,component,&writes)?,NumericEffect::Unknown) {continue;}
-                let mut input=proof.project(&[component],owner.ty().components.len());
+                if let Some(condition)=condition && matches!(self.numeric_expression_effect(condition,name,target,&writes)?,NumericEffect::Unknown) {continue;}
+                let mut input=proof.project(&[component],components.len());
                 if let Some(identity)=input.known_identity(0) {
                     let mut domains=input.domains(0);domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);
                 }
-                let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,name,&owner,component,&writes,!bounds::seeks(body),&mut Scope::current(self))?;
+                let mut continues=None;let next=self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,name,target,&writes,!bounds::seeks(body),&mut Scope::current(self))?;
                 let (lower,upper,least,most)=match join_numeric_paths(next,continues) {
                     None=>(true,true,0,0),
                     Some(NumericEffect::Shift{low,high,least,most})=>(low>=0,high<=0,least,most),
                     Some(NumericEffect::Reflect(amount))=>{
                         let reflected=input.unsigned_reflected(amount);
                         let mut invariant=input;invariant.join(&reflected,1,None);
-                        retained.push((name.clone(),component,invariant,true,true));
+                        retained.push((name.clone(),owner.as_ref().map(|_|component),invariant,true,true));
                         continue;
                     },
                     Some(NumericEffect::Assign(repeated))=>{
                         let mut invariant=input;invariant.join(&repeated,1,None);
-                        retained.push((name.clone(),component,invariant,true,true));
+                        retained.push((name.clone(),owner.as_ref().map(|_|component),invariant,true,true));
                         continue;
                     },
                     Some(NumericEffect::Unknown)=>continue,
                 };
                 if !lower&&!upper {continue;}
-                let guard=match self.env.get(name) {Some(Binding::Owned(value))=>&value.proof,Some(Binding::OwnedValue(value))=>&value.value.proof,_=>continue};
+                let guard=match self.env.get(name) {Some(Binding::Owned(value))=>&value.proof,Some(Binding::OwnedValue(value))=>&value.value.proof,Some(Binding::ApplicationData(data))=>&data.length.proof,_=>continue};
                 let low=guard.unsigned_minimum(component).max(if lower{proof.unsigned_minimum(component)}else{0});
                 let high=guard.unsigned_maximum(component).min(if upper{proof.unsigned_maximum(component)}else{u32::MAX});
                 if i128::from(low)+least<0||i128::from(high)+most>i128::from(u32::MAX) {continue;}
-                retained.push((name.clone(),component,input,lower,upper));
+                retained.push((name.clone(),owner.as_ref().map(|_|component),input,lower,upper));
             }
         }
         for (name,component,proof,lower,upper) in retained {
-            for environment in [&mut self.env,&mut *header] {if let Some(binding)=environment.get_mut(&name)&&let Some((current,_,_))=binding.proof_storage(){current.retain_loop_bounds(&proof,component,lower,upper);}}
+            for environment in [&mut self.env,&mut *header] {
+                let Some(binding)=environment.get_mut(&name)else{continue;};
+                match component {
+                    Some(component)=>{if let Some((current,_,_))=binding.proof_storage(){current.retain_loop_bounds(&proof,component,lower,upper);}},
+                    None=>{if let Binding::ApplicationData(data)=binding{data.length.proof.retain_loop_bounds(&proof,0,lower,upper);}},
+                }
+            }
         }
         Ok(())
     }

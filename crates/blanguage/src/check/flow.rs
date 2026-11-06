@@ -589,6 +589,20 @@ impl Builder<'_> {
         if !context.initial && let Some(exit)=natural.as_mut() {
             let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
             for(name,binding)in &mut exit.env {
+                if let Binding::ApplicationData(data)=binding
+                    && let Some(Place::Local(_,slots,..))=&data.place
+                    && slots.iter().any(|slot|context.writes.locals.contains(slot)) {
+                    let mut repeated:Option<returns::Returned>=None;
+                    for edge in &context.continues {
+                        let next=returns::Returned::Dataset(data_at(&edge.env[name],&[]).unwrap().clone());
+                        if let Some(common)=repeated.as_mut(){common.join(next,true);}else{repeated=Some(next);}
+                    }
+                    if let Some(repeated)=repeated {
+                        let mut value=returns::Returned::Dataset(data.clone());value.join_locations(repeated,&empty,true);
+                        let returns::Returned::Dataset(value)=value else{unreachable!()};*data=value;
+                    }
+                    continue;
+                }
                 let Some((proof,uniform,place))=binding.proof_storage() else{continue;};
                 let Some((entry,_,_))=context.entry.env.get_mut(name).and_then(Binding::proof_storage) else{continue;};
                 let width=place.ty().components.len();
