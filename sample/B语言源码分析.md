@@ -1591,11 +1591,11 @@ Scope的Local::Inferred继续沿原词法limit查询初始化表达式；dataset
 
 ```rust
                     if self.functions.read_only(&instance.name) {
-                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),contents:true,..} if std::ptr::eq(*origin,call)));
+                        normalized.retain(|write|!matches!(write,Write::Position{call:Some(origin),..} if std::ptr::eq(*origin,call)));
                     }
 ```
 
-原Module只读查询消费既有资源／内存Access，不维护第二份副作用状态，也不把这部分无写等同于整个调用无写。Scope只省略覆盖范围内的dataset内容写；首次声明／导入仍使用原已选实例，完成后只删除该call自己的contents Position。显式Scalar Reference位置写继续由原typed Reference ABI与Position交接，资源拥有仍留在原Position消费者；实参表达式的独立写与write初始化责任保持，没有另一调用记录、状态或词法实例推导。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_covered_by_dataset_inputs只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type或元素无拥有资源的按值dataset真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
+原Module只读查询同时消费Resource、Position、Dataset和Memory的闭合Access，不维护第二份副作用状态。确认没有实际写或拥有消费时，Scope不再按write／inout参数权限生产标量、记录或dataset伪写；首次声明／导入仍使用原已选实例，完成后也只删除该call自己的参数权限Position。真实Scalar Reference写、资源拥有及未知／外部／间接调用继续由原合同与Position消费者交接；实参表达式的独立写与write初始化责任保持，没有另一调用记录、状态或词法实例推导。Resource项交接借用前提与所有权消费，Position、Dataset和Memory交接实际或未知写，只读结论同时消费这些项；调用方还分别处理结果拥有关系及实际调用输入。writes_covered_by_dataset_inputs只消费同一Unit闭合合同，沿实际编码参数宽度和inputs取得原borrowed_dataset_parameter_type或元素无拥有资源的按值dataset真实根；只接受这些根的Dataset写，不把Element中的指针值或其他Position写归成父dataset写。Scope的writes_covered区分只读与已经由原参数位置覆盖的写，Scalar Reference及当前未覆盖的Atomic保持原实际效果。源调试ParameterOrigin和frame标志都不作为此公开关系的权威，源与无提供者源码对象／归档共用同一已有ABI，不另建映射表、调用图、缓存或运行状态。
 
 源码节选：`crates/blanguage/src/check/native_function.rs:42`。
 
