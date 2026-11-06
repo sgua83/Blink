@@ -291,6 +291,7 @@ pub(super) fn binary(op: BinaryOp, scalar: Scalar, a: Bits, b: Bits) -> Option<B
             BinaryOp::FSub => (a - b).to_bits(),
             BinaryOp::FMul => (a * b).to_bits(),
             BinaryOp::FDiv => (a / b).to_bits(),
+            BinaryOp::Compare(c) => return binary(BinaryOp::Compare(c), Scalar::F64, (a as f64).to_bits(), (b as f64).to_bits()),
             _ => return None,
         }));
     }

@@ -711,7 +711,7 @@ impl Proof {
                         if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
                         let nonzero=if to.is_integer(){!range.contains(to.order_bias())}else{input.nonzero.first()==Some(&true)};
                         if nonzero{facts.insert(Fact::NonZero(target));}
-                        if to.is_integer(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
+                        if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
                         facts.extend(input.domains(0).into_iter().filter_map(|domain|match domain{IndexDomain::CommonRange(source,base,middle)if base==middle||to.size()<=middle.size()=>Some(IndexDomain::CommonRange(source,base,to)),_=>None}).map(|domain|Fact::Index(target,domain)));
                         facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,to))));
                     }
@@ -730,7 +730,14 @@ impl Proof {
                     identity(id,bindings).map(|id|Fact::Maximum(id, scalar, n))
                 },
                 Fact::Outside(id,d)=>identity(id,bindings).zip(domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
-                Fact::Predicate(predicate,truth)=>predicate.at_call(bindings).map(|predicate|Fact::Predicate(predicate,truth)),
+                Fact::Predicate(predicate,truth)=>{
+                    let Some(mapped)=predicate.at_call(bindings)else{return Clause::default()};
+                    let mut facts=Facts::from([Fact::Predicate(mapped,truth)]);
+                    for operand in [predicate.a,predicate.b]{
+                        if let Operand::Value(source)=operand && let Some(target)=bindings[&source].known_identity(0){facts.extend(bindings[&source].domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
+                    }
+                    return Clause::facts(facts);
+                },
             };
             Clause::facts(translated.into_iter().collect())
         }
@@ -2326,7 +2333,13 @@ fn contradictory(facts: &Facts) -> bool {
     };
     let conflict = |fact| match fact {
         Fact::Boolean(id, truth) => contains(Fact::Boolean(id, !truth)),
-        Fact::Predicate(predicate, truth) => contains(Fact::Predicate(predicate, !truth)),
+        Fact::Predicate(predicate, truth) => contains(Fact::Predicate(predicate, !truth)) || {
+            let [a,b]=[predicate.a,predicate.b].map(|operand|match operand {
+                Operand::Constant(_,bits)=>Some(bits),
+                Operand::Value(id)=>{let(a,b)=bounds(id,predicate.scalar);(a==b).then(||floating::bits(predicate.scalar,a))},
+            });
+            a.zip(b).and_then(|(a,b)|constant::binary(BinaryOp::Compare(predicate.op),predicate.scalar,a,b)).is_some_and(|value|value!=Bits::from(truth))
+        },
         Fact::Zero(id) => contains(Fact::NonZero(id)),
         Fact::NonZero(id) => contains(Fact::Zero(id)),
         Fact::Index(id, domain) => contains(Fact::Outside(id, domain)),
@@ -2748,7 +2761,7 @@ impl Condition {
             let predicate = FloatPredicate::new(if op == Comparison::NotEqual { Comparison::Equal } else { op },
                 scalar, Operand::of(a, 0), Operand::of(b, 0));
             let condition = Self { cases: std::array::from_fn(|truth|
-                Clause::facts([Fact::Predicate(predicate, truth != 0)].into())) };
+                Clause::facts(std::iter::once(Fact::Predicate(predicate, truth != 0)).chain([a,b].into_iter().flat_map(|value|value.proof.domains(0).into_iter().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(value.component_identity(0),domain)))).collect())) };
             return if op == Comparison::NotEqual { condition.negate() } else { condition };
         }
         if !scalar.is_integer() { return Self::default(); }
