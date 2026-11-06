@@ -149,13 +149,23 @@ fn emit_value(
                 origin: value.and_then(|parameter| parameter.origin.clone()) } },
         });
     }
-    if scratch { e.push_registers(&[15]); }
+    if scratch {
+        let start = e.code.len();
+        e.push_registers(&[15]);
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ScratchSave });
+    }
+    let start = e.code.len();
     e.allocate_frame(frame);
+    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FrameAllocate { bytes: frame } });
+    let start = e.code.len();
     e.preserve_registers(false);
+    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::NonvolatileSave });
     let home = frame + if scratch { 8 } else { 0 } + 8;
     if let Some(at) = result_pointer {
+        let start = e.code.len();
         e.instruction(None, &[0x8b], true, 0, Operand::memory(4, home));
         e.instruction(None, &[0x89], true, 0, Operand::memory(4, at));
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ResultAddressSave { stack_offset: at } });
     }
     let mut inputs = body.inputs.iter();
     for (i, parameter) in parameters.iter().enumerate() {
@@ -188,14 +198,17 @@ fn emit_value(
     }
     e.block(&stage.code)?;
     if let Some(ty) = result {
-        if let Some(at) = result_pointer {
+        let start = e.code.len();
+        let kind = if let Some(at) = result_pointer {
             e.instruction(None, &[0x8b], true, 1, Operand::memory(4, at));
             for ((_, offset), reg) in ty.components.iter().zip(&body.outputs) {
                 e.write_scalar(*reg, 1, *offset);
             }
             e.bytes(&[0x48, 0x89, 0xc8]);
+            AbiRangeKind::IndirectResult { stack_offset: at }
         } else if floating(ty) {
             e.float(body.outputs[0], 0);
+            AbiRangeKind::FloatResult
         } else {
             e.bytes(&[0x31, 0xc9]);
             for ((scalar, offset), reg) in ty.components.iter().zip(&body.outputs) {
@@ -210,15 +223,23 @@ fn emit_value(
                 e.bytes(&[0x48, 0x09, 0xc1]);
             }
             e.bytes(&[0x48, 0x89, 0xc8]);
-        }
+            AbiRangeKind::IntegerResult
+        };
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind });
     }
+    let start = e.code.len();
     e.preserve_registers(true);
+    abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::NonvolatileRestore });
     if frame != 0 {
+        let start = e.code.len();
         e.bytes(&[0x48, 0x81, 0xc4]);
         e.u32(frame);
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::FrameRelease { bytes: frame } });
     }
     if scratch {
+        let start = e.code.len();
         e.bytes(&[0x41, 0x5f]);
+        abi.ranges.push(AbiRange { start, end: e.code.len(), kind: AbiRangeKind::ScratchRestore });
     }
     e.bytes(&[0xc3]);
     let mut code = e.finish(frame + u32::from(scratch) * 8);

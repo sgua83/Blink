@@ -85,6 +85,16 @@ pub enum AbiRangeKind {
     HiddenResultHome { slot: usize },
     ParameterHome { slot: usize, parameter_index: usize, origin: Option<std::sync::Arc<crate::ir::ParameterOrigin>> },
     ParameterInput { slot: usize, parameter_index: usize, origin: Option<std::sync::Arc<crate::ir::ParameterOrigin>> },
+    ScratchSave,
+    ScratchRestore,
+    FrameAllocate { bytes: u32 },
+    FrameRelease { bytes: u32 },
+    NonvolatileSave,
+    NonvolatileRestore,
+    ResultAddressSave { stack_offset: u32 },
+    IndirectResult { stack_offset: u32 },
+    FloatResult,
+    IntegerResult,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum RangeResult {

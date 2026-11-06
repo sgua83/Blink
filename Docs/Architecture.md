@@ -863,11 +863,11 @@ NativeCode::code_json借用原范围及原OperationOrigin，机器反汇编继�
 
 <a id="tool-7-4-1-2-3"></a>
 
-**栈帧及非易失寄存器维护来源。** 原allocation／Frame与实际使用寄存器→emit_value原scratch保存、allocate_frame、preserve_registers及相应恢复／释放→同一NativeCode。按真实生成职责交接，保持原分配、展开及保存规则；未交接范围保持未知，不从剩余字节补推。探栈尾部来源归.4.1.3。本叶当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-2-3)。
+**栈帧及非易失寄存器维护来源。** 原allocation／Frame与实际保存职责→emit_value的scratch保存、allocate_frame、preserve_registers及原恢复／释放段→同一function_abi。原生成调用前后读取code游标，只在实际scratch保存／恢复分支记录ScratchSave／ScratchRestore；FrameAllocate记录原分配调用及实际frame字节数，FrameRelease只记录真实释放分支及原字节数。NonvolatileSave／NonvolatileRestore沿原两次preserve_registers记录；原调用未新增字节时为零长度范围，不能当作机器指令或虚构寄存器保存。寄存器选择、实际保存、分配、展开及完成继续归原所有者，不复制Frame／allocation或保存清单，真实指令从同一最终字节查询。分配段可能包含原探栈调用；尾部辅助来源仍归.4.1.3，不以调用段冒称尾部已映射。材料沿原FunctionAbi生命周期，在最后事实消费者结束后释放；已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-2-3)。
 
 <a id="tool-7-4-1-2-4"></a>
 
-**隐藏结果地址保存与结果搬移来源。** 原result、body.outputs及实际隐藏地址→原emit_value的帧内结果地址保存与标量／聚合结果输出→同一NativeCode。原生成点交接实际范围与合同关系，不把参数home当帧内保存，不改变返回、资源所有权或原操作范围。本叶当前待实现，见[独立台账](Issues.md#c-021-7-9-7-4-1-2-4)。
+**隐藏结果地址保存与结果搬移来源。** 原result、body.outputs及实际result_pointer→原emit_value结果地址保存和输出分支→同一function_abi。ResultAddressSave记录原隐藏结果地址保存范围及其真实stack_offset；IndirectResult记录原间接输出及同一保存槽，FloatResult与IntegerResult分别记录原浮点返回和整数／打包聚合输出。保存槽偏移是该原生成点相对已分配帧RSP的字节偏移，不是参数home槽、源字段偏移或资源地址；没有结果时不产生结果输出记录。职责由实际被选分支直接交接，不在查询处按类型或相邻源码重算；函数定义和实例复用原材料，不伪造某条return语句，原类型及输出寄存器继续由FunctionBody合同拥有。保持结果字节、ABI及所有权，不保留输出值或复制合同，材料生命周期沿同一NativeCode；已实现范围及验证见[闭合台账](FixedIssues.md#c-021-7-9-7-4-1-2-4)。
 
 <a id="tool-7-4-1-2-5"></a>
 

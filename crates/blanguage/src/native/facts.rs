@@ -26,18 +26,30 @@ fn function_abi(value: &super::FunctionAbi) -> String {
         ("definition", value.definition.as_ref().map_or_else(|| "null".into(), crate::ir::SourceOrigin::ir_json)),
         ("instance", value.instance.as_deref().map_or_else(|| "null".into(), text)),
         ("ranges", array(value.ranges.iter().map(|range| {
-            let (kind, slot, parameter) = match &range.kind {
-                super::AbiRangeKind::HiddenResultHome { slot } => ("hidden_result_home", *slot, None),
-                super::AbiRangeKind::ParameterHome { slot, parameter_index, origin } => ("parameter_home", *slot, Some((*parameter_index, origin))),
-                super::AbiRangeKind::ParameterInput { slot, parameter_index, origin } => ("parameter_input", *slot, Some((*parameter_index, origin))),
+            let mut fields = vec![("start_byte", range.start.to_string()),
+                ("end_byte", range.end.to_string()), ("byte_length", (range.end - range.start).to_string())];
+            let kind = match &range.kind {
+                super::AbiRangeKind::HiddenResultHome { slot } => {
+                    fields.push(("abi_slot", slot.to_string())); "hidden_result_home"
+                }
+                super::AbiRangeKind::ParameterHome { slot, parameter_index, origin }
+                | super::AbiRangeKind::ParameterInput { slot, parameter_index, origin } => {
+                    fields.extend([("abi_slot", slot.to_string()), ("parameter_index", parameter_index.to_string()),
+                        ("origin", origin.as_deref().map_or_else(|| "null".into(), crate::ir::ParameterOrigin::ir_json))]);
+                    if matches!(&range.kind, super::AbiRangeKind::ParameterHome { .. }) { "parameter_home" } else { "parameter_input" }
+                }
+                super::AbiRangeKind::ScratchSave => "scratch_save",
+                super::AbiRangeKind::ScratchRestore => "scratch_restore",
+                super::AbiRangeKind::FrameAllocate { bytes } => { fields.push(("frame_bytes", bytes.to_string())); "frame_allocate" }
+                super::AbiRangeKind::FrameRelease { bytes } => { fields.push(("frame_bytes", bytes.to_string())); "frame_release" }
+                super::AbiRangeKind::NonvolatileSave => "nonvolatile_save",
+                super::AbiRangeKind::NonvolatileRestore => "nonvolatile_restore",
+                super::AbiRangeKind::ResultAddressSave { stack_offset } => { fields.push(("stack_offset_bytes", stack_offset.to_string())); "result_address_save" }
+                super::AbiRangeKind::IndirectResult { stack_offset } => { fields.push(("stack_offset_bytes", stack_offset.to_string())); "indirect_result" }
+                super::AbiRangeKind::FloatResult => "float_result",
+                super::AbiRangeKind::IntegerResult => "integer_result",
             };
-            let mut fields = vec![("kind", text(kind)), ("start_byte", range.start.to_string()),
-                ("end_byte", range.end.to_string()), ("byte_length", (range.end - range.start).to_string()),
-                ("abi_slot", slot.to_string())];
-            if let Some((index, origin)) = parameter {
-                fields.push(("parameter_index", index.to_string()));
-                fields.push(("origin", origin.as_deref().map_or_else(|| "null".into(), crate::ir::ParameterOrigin::ir_json)));
-            }
+            fields.insert(0, ("kind", text(kind)));
             object(&fields)
         }))),
     ])
