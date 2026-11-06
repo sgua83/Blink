@@ -1885,6 +1885,7 @@ fn build_domain(
     };
     let mut start = 0;
     let mut required = signature.prefix_requirements.clone();
+    let mut element_required = signature.element_requirements.clone();
     let split = !expanded.calls.is_empty();
     let mut part = 0;
     for call in expanded.calls {
@@ -1899,6 +1900,8 @@ fn build_domain(
             &stages[start..call.stage],
             &required,
             &call.before,
+            &element_required,
+            &call.element_before,
             split,
             &mut part,
             functions,
@@ -1967,6 +1970,8 @@ fn build_domain(
         })) });
         start = call.stage;
         required = call.after;
+        element_required = signature.element_requirements.iter().cloned()
+            .chain(call.element_after.into_iter().map(ElementRequirement::Range)).collect();
     }
     emit_domain_part(
         &world.worker,
@@ -1976,6 +1981,8 @@ fn build_domain(
         &stages[start..],
         &required,
         &signature.prefix_guarantees,
+        &element_required,
+        &signature.element_guarantees,
         split,
         &mut part,
         functions,
@@ -2054,6 +2061,8 @@ fn emit_domain_part(
     stages: &[Stage],
     required: &[PrefixRelation],
     guaranteed: &[PrefixRelation],
+    element_required: &[ElementRequirement],
+    element_guaranteed: &[ElementRange],
     split: bool,
     part: &mut usize,
     functions: &mut Module,
@@ -2077,6 +2086,8 @@ fn emit_domain_part(
     program.source_stages = stages.len();
     program.prefix_requirements = required.to_vec();
     program.prefix_guarantees = guaranteed.to_vec();
+    program.element_requirements = element_required.to_vec();
+    program.element_guarantees = program.element_outputs(element_guaranteed.to_vec());
     crate::optimize::optimize(&mut program, worker).map_err(|error| crate::compiler::diagnostic(source, error))?;
     let index = functions.resources.programs.len();
     functions.resources.programs.push((target, program));

@@ -79,13 +79,13 @@ impl resource::Module {
     /// Captures original CPU facts; deserialized execution-only images have none to export.
     pub fn code_observations(&self) -> Result<Vec<u8>> {
         // The original build result partitions unconditional images before conditional templates.
-        let images = self.images.iter().filter(|i| i.prefix_requirements.is_empty())
-            .chain(self.images.iter().filter(|i| !i.prefix_requirements.is_empty()));
+        let images = self.images.iter().filter(|i| !crate::ir::ProgramInterface::requires_bindings(*i))
+            .chain(self.images.iter().filter(|i| crate::ir::ProgramInterface::requires_bindings(*i)));
         capture(images.flat_map(image_codes))
     }
     /// Restores only matching observation fields. Execution ownership and contracts are unchanged.
     pub fn restore_code_observations(&mut self, material: &[u8]) -> Result<()> {
-        let (programs, templates): (Vec<_>, Vec<_>) = self.images.iter_mut().partition(|i| i.prefix_requirements.is_empty());
+        let (programs, templates): (Vec<_>, Vec<_>) = self.images.iter_mut().partition(|i| !crate::ir::ProgramInterface::requires_bindings(*i));
         restore(programs.into_iter().chain(templates).flat_map(image_codes_mut), material)
     }
 }

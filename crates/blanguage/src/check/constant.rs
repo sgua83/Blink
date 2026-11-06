@@ -115,7 +115,7 @@ Program {
             stages: Vec::new(),
         functions: std::sync::Arc::from([]),
             prefix_requirements: Vec::new(),
-            prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
+            prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
         }
 }
 pub(super) fn evaluate(world: &World, key: &str, calls: &[String]) -> Result<(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>)> {

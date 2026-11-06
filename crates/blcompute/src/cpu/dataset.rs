@@ -45,6 +45,7 @@ impl CpuDataset {
     }
 }
 impl DomainStorage for CpuDataset {
+    fn element_count(&self) -> u32 { self.count() }
     fn read_identity(&self) -> Option<usize> {
         match self {
             Self::Owned(_) => None,

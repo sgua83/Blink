@@ -4,11 +4,10 @@ use crate::{
     cpu::{CpuDataset, CpuTemplate},
     error, vulkan,
 };
-use crate::bindings::DomainRelation;
 use std::sync::Arc;
 use blanguage::{
     TemplateProgram,
-    ir::{ExecutionPlan, PrefixCount, Ty},
+    ir::{ExecutionPlan, Ty},
 };
 
 mod abi;
@@ -206,7 +205,7 @@ impl Frame {
             }
         }
         data.count = count;
-        self.data.domains.retain(|relation| relation.domain != index && relation.count.binding != index);
+        self.data.domains.retain(|relation| !relation.references(index));
         Ok(handle)
     }
     pub fn release(&mut self, handle: u32) {
@@ -214,7 +213,7 @@ impl Frame {
         self.data.datasets[index] = None;
         self.data
             .domains
-            .retain(|r| r.domain != index && r.count.binding != index);
+            .retain(|r| !r.references(index));
     }
     /// 借用当前 CPU 存储，不复制记录或隐式下载 GPU 存储。
     /// 直接借用 Frame 中的原位置；驻留或写权限拒绝时仍保留原存储。
@@ -239,14 +238,8 @@ impl Frame {
             }
         };
         if bytes != 0 && count != 0 {
-            self.data.domains.retain(|r| {
-                let end = u64::from(r.count.word) + 4;
-                if r.count.binding != index || offset >= end { return true; }
-                let row = if stride == 0 { 0 } else {
-                    ((end - 1 - offset) / stride).min(u64::from(count - 1))
-                };
-                u64::from(r.count.word) >= offset + row * stride + u64::from(bytes)
-            });
+            let (record_stride, records) = (data.stride(), data.count());
+            self.data.domains.retain(|r| !r.address_written(index, offset, bytes, stride, count, record_stride, records));
         }
         Ok(address)
     }
@@ -295,19 +288,7 @@ impl Frame {
             .data
             .domains
             .iter()
-            .filter_map(|r| {
-                Some(DomainRelation {
-                    domain: selected.iter().position(|&h| h as usize == r.domain)?,
-                    offset: r.offset,
-                    bytes: r.bytes,
-                    count: PrefixCount {
-                        binding: selected
-                            .iter()
-                            .position(|&h| h as usize == r.count.binding)?,
-                        word: r.count.word,
-                    },
-                })
-            })
+            .filter_map(|r| r.mapped(|binding| selected.iter().position(|&handle| handle as usize == binding)))
             .collect();
         let loaded = match definition {
             ProgramSlot::Cpu(program) => Program::Cpu(program),
@@ -398,15 +379,7 @@ impl Frame {
         }
         self.data
             .domains
-            .extend(domains.into_iter().map(|r| DomainRelation {
-                domain: selected[r.domain] as usize,
-                offset: r.offset,
-                bytes: r.bytes,
-                count: PrefixCount {
-                    binding: selected[r.count.binding] as usize,
-                    word: r.count.word,
-                },
-            }));
+            .extend(domains.into_iter().map(|r| r.mapped(|binding| Some(selected[binding] as usize)).unwrap()));
         self.data.domains.sort();
         self.data.domains.dedup();
         result

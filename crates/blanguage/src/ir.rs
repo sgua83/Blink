@@ -17,7 +17,7 @@ pub use external::{
 };
 mod execution;
 pub use execution::{
-    DeviceRequirements, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
+    DeviceRequirements, ElementRange, ElementRequirement, ExecutionPlan, ExecutionStage, ProgramInterface, ProgramLayout,
     ReductionLayout,
 };
 mod atomic;
@@ -1733,9 +1733,17 @@ pub struct Program {
     pub(crate) functions: std::sync::Arc<[FunctionBody]>,
     pub(crate) prefix_requirements: Vec<PrefixRelation>,
     pub(crate) prefix_guarantees: Vec<PrefixRelation>,
+    pub(crate) element_requirements: Vec<ElementRequirement>,
+    pub(crate) element_guarantees: Vec<ElementRange>,
     pub(crate) length_requirements: Vec<(usize, usize)>,
 }
 impl Program {
+    pub(crate) fn element_outputs(&self, ranges: Vec<ElementRange>) -> Vec<ElementRange> {
+        let writes = self.write_regions();
+        ranges.into_iter().filter(|range| writes.get(&range.binding).is_some_and(|regions|
+            regions.iter().any(|&(start, end)| u64::from(range.offset) < u64::from(end)
+                && u64::from(start) < u64::from(range.offset) + u64::from(range.scalar.size())))).collect()
+    }
     pub(crate) fn write_regions(&self) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
         let mut regions = BTreeMap::new();
         for stage in &self.stages {
@@ -1838,6 +1846,8 @@ impl Program {
     pub fn prefix_guarantees(&self) -> &[PrefixRelation] {
         &self.prefix_guarantees
     }
+    pub fn element_requirements(&self) -> &[ElementRequirement] { &self.element_requirements }
+    pub fn element_guarantees(&self) -> &[ElementRange] { &self.element_guarantees }
     pub fn name(&self) -> &str {
         &self.name
     }

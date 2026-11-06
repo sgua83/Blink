@@ -367,7 +367,7 @@ pub(crate) fn compile_world(
         match output {
             Output::Application(application) => applications.push(application),
             Output::Programs(images) => for program in images {
-                if program.prefix_requirements.is_empty() { programs.push(ExecutableProgram(program)); }
+                if !crate::ir::ProgramInterface::requires_bindings(&program) { programs.push(ExecutableProgram(program)); }
                 else { templates.push(TemplateProgram(program)); }
             },
         }

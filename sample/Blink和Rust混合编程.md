@@ -659,7 +659,7 @@ Rust 把尚在 GPU 上的两个总量交给 finish。相加在 B 中完成，Rus
 
 ### 5.5　如果以后只处理筛选后的部分
 
-本章处理全部粒子。若 B 先用 compact 筛出一部分有效粒子，后面还需要知道有效数量来自哪次筛选。Blink 用 DomainBindings 连同这项关系一起传递。
+本章处理全部粒子。若 B 先用 compact 筛出一部分有效粒子，后面还需要知道有效数量来自哪次筛选。Blink 用 DomainBindings 连同这项关系一起传递。完整原生整域生产的共同字段区间也由同一绑定组持有；带requires index(data[*].slot,table)等输入前提的入口与前缀入口一样，从Compilation.templates取得TemplateProgram，再用CpuTemplate执行。它核对已有字段元数据和实际目标数量，普通Vec原始字节不代替生产事实。字段保证的动态目标、普通B构造完成及GPU交接仍分别按Issues C-021.1.4.5.2推进。
 
 以后使用 partition、into_bindings 等接口时，要保留它们交出的对象。只取出一个 count 数字，再拼一份普通 Vec，无法代替这个筛选结果。当前例子不需要额外引入这些对象。
 

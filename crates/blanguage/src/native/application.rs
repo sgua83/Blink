@@ -57,7 +57,7 @@ fn emit_value(
         stages: Vec::new(),
         functions: std::sync::Arc::from([]),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: Default::default(),
+        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: Default::default(),
     };
     texture::lower(&mut stage);
     reads::place(&mut stage.code, &stage.writes);

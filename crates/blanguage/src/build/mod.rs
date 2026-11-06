@@ -178,7 +178,7 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
     let mut programs = Vec::new();
     let mut templates = Vec::new();
     for image in module.images {
-        if !image.prefix_requirements.is_empty() {
+        if crate::ir::ProgramInterface::requires_bindings(&image) {
             templates.push(image);
         } else {
             // 同一编译映像的空前置合同；不构造IR或重新生成机器码。

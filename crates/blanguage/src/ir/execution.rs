@@ -2,6 +2,21 @@
 use super::*;
 use std::{collections::BTreeSet, ops::Deref};
 
+/// A common field value in the original Scalar's ordered numeric encoding.
+/// Binding and byte offset name the actual logical input, never an SSA value.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ElementRange {
+    pub binding: usize,
+    pub offset: u32,
+    pub scalar: Scalar,
+    pub intervals: Vec<(Bits, Bits)>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ElementRequirement {
+    Range(ElementRange),
+    Index { binding: usize, offset: u32, target: usize },
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeviceRequirements {
     pub ray_query: bool, pub float64: bool,
@@ -23,6 +38,11 @@ pub trait ProgramInterface {
     fn uniform_bytes(&self) -> u32;
     fn prefix_requirements(&self) -> &[PrefixRelation];
     fn prefix_guarantees(&self) -> &[PrefixRelation];
+    fn element_requirements(&self) -> &[ElementRequirement];
+    fn element_guarantees(&self) -> &[ElementRange];
+    fn requires_bindings(&self) -> bool {
+        !self.prefix_requirements().is_empty() || !self.element_requirements().is_empty()
+    }
     fn length_requirements(&self) -> &[(usize, usize)];
     fn same_length(&self, a: usize, b: usize) -> bool {
         let fixed = |a: usize, b: usize| a == b
@@ -52,6 +72,8 @@ macro_rules! interface_fields {
         $vis fn uniform_bytes(&self) -> u32 { self.uniform_bytes }
         $vis fn prefix_requirements(&self) -> &[PrefixRelation] { &self.prefix_requirements }
         $vis fn prefix_guarantees(&self) -> &[PrefixRelation] { &self.prefix_guarantees }
+        $vis fn element_requirements(&self) -> &[ElementRequirement] { &self.element_requirements }
+        $vis fn element_guarantees(&self) -> &[ElementRange] { &self.element_guarantees }
         $vis fn length_requirements(&self) -> &[(usize, usize)] { &self.length_requirements }
     };
 }
@@ -117,6 +139,12 @@ where
     fn prefix_guarantees(&self) -> &[PrefixRelation] {
         self.deref().prefix_guarantees()
     }
+    fn element_requirements(&self) -> &[ElementRequirement] {
+        self.deref().element_requirements()
+    }
+    fn element_guarantees(&self) -> &[ElementRange] {
+        self.deref().element_guarantees()
+    }
     fn length_requirements(&self) -> &[(usize, usize)] {
         self.deref().length_requirements()
     }
@@ -136,6 +164,8 @@ pub struct ProgramLayout {
     pub uniform_bytes: u32,
     pub prefix_requirements: Vec<PrefixRelation>,
     pub prefix_guarantees: Vec<PrefixRelation>,
+    pub element_requirements: Vec<ElementRequirement>,
+    pub element_guarantees: Vec<ElementRange>,
     pub length_requirements: Vec<(usize, usize)>,
     pub requirements: DeviceRequirements,
 }
@@ -311,6 +341,8 @@ impl ExecutionPlan {
                 uniform_bytes: program.uniform_bytes,
                 prefix_requirements: program.prefix_requirements.clone(),
                 prefix_guarantees: program.prefix_guarantees.clone(),
+                element_requirements: program.element_requirements.clone(),
+                element_guarantees: program.element_guarantees.clone(),
                 length_requirements: program.length_requirements.clone(),
                 requirements: program.requirements(),
             },

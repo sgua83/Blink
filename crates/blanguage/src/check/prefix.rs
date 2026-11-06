@@ -24,10 +24,9 @@ impl Facts {
                 .filter_map(|(i, (scalar, offset))| (u64::from(*offset) < u64::from(end)
                     && u64::from(start) < u64::from(*offset) + u64::from(scalar.size())).then_some(i))
                 .collect::<Vec<_>>();
+            proof.forget_value(&components, ty.components.len());
             if let Some(output) = output {
                 proof.assign_ranges(&components, ty.components.len(), &output.project(&components, ty.components.len()));
-            } else {
-                proof.forget_value(&components, ty.components.len());
             }
         }
         for (scope, _) in &mut self.scopes {
@@ -162,12 +161,74 @@ pub(super) fn relations(
         .function
         .contracts
         .iter()
-        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. }))
+        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. }))
         .map(|c| relation(program, env, d, c))
         .collect::<Result<Vec<_>>>()?;
     result.sort_by_key(|r| (r.domain, r.count.binding, r.count.word));
     result.dedup();
     Ok(result)
+}
+
+pub(super) fn element_requirements(buffers: &[Buffer], env: &BTreeMap<String, Root>, d: &Definition) -> Result<Vec<ElementRequirement>> {
+    let mut requirements = Vec::new();
+    for contract in &d.function.contracts {
+        let ContractPredicate::Index { value, resource } = &contract.predicate else { continue; };
+        if contract.kind != ContractKind::Requires {
+            return d.source.fail(contract.span, "B225", "整域index声明实际输入前提；输出由完整真实写入推导");
+        }
+        let Some((root, fields)) = value.split_once("[*]") else {
+            return d.source.fail(contract.span, "B225", "整域index需要实际dataset共同元素的[*]字段选择");
+        };
+        let (Some(Root::Data(binding, access)), Some(Root::Data(target, _))) = (env.get(root), env.get(resource)) else {
+            return d.source.fail(contract.span, "B225", "整域index需要共同元素源与独立dataset目标");
+        };
+        if !access.reads() || *access == Access::Atomic {
+            return d.source.fail(contract.span, "B225", "共同输入字段需要普通read或inout访问");
+        }
+        let mut ty = buffers[*binding].ty.clone();
+        let mut components: Vec<_> = (0..ty.components.len()).collect();
+        for field in fields.trim_start_matches('.').split('.').filter(|field| !field.is_empty()) {
+            let (selected, indices) = member_type(&ty, field, &d.source, contract.span)?;
+            components = indices.iter().map(|&i| components[i]).collect();
+            ty = selected;
+        }
+        if !ty.is_numeric() || ty.components.iter().any(|(scalar, _)| *scalar != Scalar::U32) {
+            return d.source.fail(contract.span, "B225", "index字段需要u32标量或向量分量");
+        }
+        requirements.extend(components.into_iter().map(|component| ElementRequirement::Index {
+            binding: *binding, offset: buffers[*binding].ty.components[component].1, target: *target,
+        }));
+    }
+    requirements.sort();
+    requirements.dedup();
+    Ok(requirements)
+}
+impl Facts {
+    pub fn assume_elements(&mut self, program: &Program) {
+        for requirement in &program.element_requirements {
+            if let ElementRequirement::Index { binding, offset, target } = requirement {
+                let component = program.buffers[*binding].ty.components.iter().position(|(_, word)| word == offset).unwrap();
+                self.elements.entry(*binding).or_default().mark_domain(component, IndexDomain::Data(*target));
+            }
+        }
+    }
+    pub fn element_ranges(&self, program: &Program) -> Vec<ElementRange> {
+        self.elements.iter().flat_map(|(&binding, proof)| proof.element_ranges(binding, &program.buffers[binding].ty)).collect()
+    }
+    pub fn prove_elements(&self, program: &Program, required: &[ElementRequirement], d: &Definition, span: Span) -> Result<()> {
+        for requirement in required {
+            let ElementRequirement::Index { binding, offset, target } = requirement else { continue; };
+            if program.buffers[*binding].count == Some(0) { continue; }
+            let component = program.buffers[*binding].ty.components.iter().position(|(_, word)| word == offset).unwrap();
+            let proven = self.elements.get(binding).is_some_and(|proof| {
+                proof.domains(component).into_iter().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
+                    || proof.element_ranges(*binding, &program.buffers[*binding].ty).iter().any(|range| range.offset == *offset
+                        && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0))))
+            });
+            if !proven { return d.source.fail(span, "B226", "整域调用前尚未证明共同字段的目标索引前提"); }
+        }
+        Ok(())
+    }
 }
 
 /// 集合输入的 prefix 是域表达式；裸字段／输出仍由既有集合类型规则检查。

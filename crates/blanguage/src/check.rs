@@ -332,6 +332,8 @@ struct DomainCall {
     write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     before: Vec<PrefixRelation>,
     after: Vec<PrefixRelation>,
+    element_before: Vec<ElementRange>,
+    element_after: Vec<ElementRange>,
     source: Option<Arc<SourceSite>>,
 }
 struct ExpandedDomain {
@@ -475,12 +477,14 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
         stages: Vec::new(),
         functions: Arc::from([]),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
+        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     program.length_requirements = contracts::root_lengths(&env, d)?;
     program.prefix_requirements = prefix::relations(&program, &env, d, ContractKind::Requires)?;
     program.prefix_guarantees = prefix::relations(&program, &env, d, ContractKind::Ensures)?;
+    program.element_requirements = prefix::element_requirements(&program.buffers, &env, d)?;
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
+    facts.assume_elements(&program);
     let mut calls = Vec::new();
     expand_program(
         world,
@@ -495,6 +499,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
         functions,
     )?;
     program.source_stages = program.stages.len();
+    program.element_guarantees = program.element_outputs(facts.element_ranges(&program));
     Ok(ExpandedDomain { program, calls, outputs: facts.outputs, elements: facts.elements })
 }
 fn expand_program(
@@ -723,6 +728,7 @@ fn expand_stages(
                     })
                     .transpose()?;
                 let mut b = Builder::new(world, d, program, *domain, Some(&instance.name))?;
+                b.element_facts = Some(&facts.elements);
                 b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
                 b.functions = std::mem::take(functions);
                 b.roots(env);
@@ -1132,6 +1138,8 @@ fn expand_stages(
                     }
                 }
                 let required = prefix::relations(program, &child, callee, ContractKind::Requires)?;
+                let elements = prefix::element_requirements(&program.buffers, &child, callee)?;
+                facts.prove_elements(program, &elements, callee, statement.span)?;
                 for relation in &required {
                     prefix::prove(
                         facts,
@@ -1166,6 +1174,7 @@ fn expand_stages(
                         Root::Data(binding, _) => Some(binding), _ => None,
                     }).collect();
                     let before = facts.relations();
+                    let element_before = facts.element_ranges(program);
                     let mut write_regions = BTreeMap::new();
                     for (logical, written) in contract.write_regions {
                         let binding = bindings[logical];
@@ -1189,6 +1198,8 @@ fn expand_stages(
                             .map(|p| child[&p.name].clone())
                             .collect(),
                         write_regions,
+                        element_before,
+                        element_after: Vec::new(),
                         before,
                         after: Vec::new(),
                         source: caller_origin.map(|origin| Arc::new(SourceSite {
@@ -1210,6 +1221,7 @@ fn expand_stages(
                 }
                 if compiled {
                     calls.last_mut().unwrap().after = facts.relations();
+                    calls.last_mut().unwrap().element_after = facts.element_ranges(program);
                 }
             }
             StmtKind::Phase => {
@@ -1503,7 +1515,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
         stages: Vec::new(),
         functions: Arc::from([]),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
+        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     Ok(Arc::new(program))
 }
@@ -1874,6 +1886,7 @@ struct Builder<'a> {
     world: &'a World,
     definition: Arc<Definition>,
     program: &'a Program,
+    element_facts: Option<&'a BTreeMap<usize, bounds::Proof>>,
     domain: usize,
     element_domains: BTreeSet<usize>,
     env: BTreeMap<String, Binding>,
@@ -1945,6 +1958,7 @@ impl<'a> Builder<'a> {
             world,
             definition: definition.clone(),
             program,
+            element_facts: None,
             domain,
             element_domains: BTreeSet::from([domain]),
             env: BTreeMap::new(),

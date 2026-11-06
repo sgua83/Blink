@@ -440,7 +440,7 @@ pub(crate) fn compile_application(
         stages: Vec::new(),
         functions: std::sync::Arc::from([]),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
+        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     let mut builder = Builder::new(world, d, &context, 0, Some(&instance.name))?;
     let entry_anchor = GenerationAnchor::Definition {
@@ -2058,6 +2058,21 @@ impl Builder<'_> {
         }
         for (value, uniform) in uniforms.iter().zip(&interface.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
+        }
+        let roots = interface.buffers.iter().enumerate().map(|(binding, buffer)|
+            (buffer.name.clone(), Root::Data(binding, buffer.access))).collect();
+        for requirement in prefix::element_requirements(&interface.buffers, &roots, callee)? {
+            let ElementRequirement::Index { binding, offset, target } = requirement else { continue; };
+            let source = &data[binding];
+            if source.length.maximum() == 0 { continue; }
+            let model = self.returned_storage(&source.elements);
+            let word = source.element_layout().0 + offset;
+            let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
+            let value = self.value_component(&model, component);
+            let target = &data[target];
+            if !self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None) {
+                return self.fail(span, "B226", "整域调用前尚未证明共同字段的目标索引前提");
+            }
         }
         for (&binding, written) in &interface.write_regions {
             let reference = &data[binding];

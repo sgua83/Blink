@@ -1,6 +1,6 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
-use blanguage::ir::{ExecutionPlan, PrefixCount, ProgramInterface};
+use blanguage::ir::{ElementRange, ElementRequirement, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
 use std::collections::BTreeMap;
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
@@ -9,8 +9,11 @@ pub trait DomainStorage: Sized {
     fn read_identity(&self) -> Option<usize>;
     #[doc(hidden)]
     fn read_binding(&self) -> Option<Self>;
+    #[doc(hidden)]
+    fn element_count(&self) -> u32;
 }
 impl DomainStorage for crate::Dataset {
+    fn element_count(&self) -> u32 { self.count() }
     fn read_identity(&self) -> Option<usize> {
         None
     }
@@ -20,15 +23,60 @@ impl DomainStorage for crate::Dataset {
 }
 
 // 运行期引用原物理存储及其中的实际数据字段；IR中的domain仍是逻辑参数索引。
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DomainRelation {
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DomainRelation {
+    Prefix {
     /// 当前原datasets中的实际槽索引；在Frame中就是原句柄。
-    pub domain: usize,
+    domain: usize,
     /// 完整记录内选中字段的字节偏移和声明类型字节数。
-    pub offset: u32,
-    pub bytes: u32,
+    offset: u32,
+    bytes: u32,
     /// count.binding同样索引原datasets，count.word是记录内字节偏移。
-    pub count: PrefixCount,
+    count: PrefixCount,
+    },
+    Element(ElementRange),
+}
+impl DomainRelation {
+    pub fn domain(&self) -> usize {
+        match self { Self::Prefix { domain, .. } => *domain, Self::Element(range) => range.binding }
+    }
+    pub(crate) fn references(&self, binding: usize) -> bool {
+        match self { Self::Prefix { domain, count, .. } => *domain == binding || count.binding == binding,
+            Self::Element(range) => range.binding == binding }
+    }
+    pub(crate) fn mapped(&self, binding: impl Fn(usize) -> Option<usize>) -> Option<Self> {
+        Some(match self {
+            Self::Prefix { domain, offset, bytes, count } => Self::Prefix {
+                domain: binding(*domain)?, offset: *offset, bytes: *bytes,
+                count: PrefixCount { binding: binding(count.binding)?, word: count.word },
+            },
+            Self::Element(range) => Self::Element(ElementRange { binding: binding(range.binding)?, ..range.clone() }),
+        })
+    }
+    pub(crate) fn written(&self, binding: usize, start: u64, end: u64) -> bool {
+        let (owner, offset, bytes) = match self {
+            Self::Prefix { count, .. } => (count.binding, count.word, 4),
+            Self::Element(range) => (range.binding, range.offset, range.scalar.size()),
+        };
+        owner == binding && u64::from(offset) < end && start < u64::from(offset) + u64::from(bytes)
+    }
+    pub(crate) fn address_written(&self, binding: usize, offset: u64, bytes: u32, stride: u64, count: u32, record_stride: u32, records: u32) -> bool {
+        let (owner, field, width, step, rows) = match self {
+            Self::Prefix { count, .. } => (count.binding, count.word, 4, 0, 1),
+            Self::Element(range) => (range.binding, range.offset, range.scalar.size(), record_stride, records),
+        };
+        if owner != binding || count == 0 || rows == 0 || bytes == 0 { return false; }
+        let field = u128::from(field);
+        let offset = u128::from(offset);
+        let field_end = field + u128::from(rows - 1) * u128::from(step) + u128::from(width);
+        let write_end = offset + u128::from(count - 1) * u128::from(stride) + u128::from(bytes);
+        if field >= write_end || offset >= field_end { return false; }
+        let (mut a, mut b) = (u128::from(step), u128::from(stride));
+        while b != 0 { (a, b) = (b, a % b); }
+        if a == 0 { return true; }
+        let delta = (field % a + a - offset % a) % a;
+        delta < u128::from(bytes) || a - delta < u128::from(width)
+    }
 }
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
@@ -54,16 +102,7 @@ impl<D> DomainBindings<D> {
     pub(crate) fn append(&mut self, other: Self) {
         let offset = self.datasets.len();
         self.datasets.extend(other.datasets);
-        self.domains
-            .extend(other.domains.into_iter().map(|r| DomainRelation {
-                domain: r.domain + offset,
-                offset: r.offset,
-                bytes: r.bytes,
-                count: PrefixCount {
-                    binding: r.count.binding + offset,
-                    word: r.count.word,
-                },
-            }));
+        self.domains.extend(other.domains.into_iter().map(|r| r.mapped(|binding| Some(binding + offset)).unwrap()));
     }
     /// 共享借用原数据槽Vec，len包含已初始化空槽，capacity以D槽数计。
     /// 槽容量不包含元素内部拥有的载荷、分配器开销或OS页；零尺寸D不占槽字节。
@@ -129,18 +168,11 @@ impl<D> DomainBindings<D> {
             positions.extend((0..group.len()).map(|index| (part, index)));
         }
         for r in self.domains {
-            let (domain_part, domain) = positions[r.domain];
-            let (count_part, binding) = positions[r.count.binding];
-            if domain_part == count_part {
-                parts[domain_part].domains.push(DomainRelation {
-                    domain,
-                    offset: r.offset,
-                    bytes: r.bytes,
-                    count: PrefixCount {
-                        binding,
-                        word: r.count.word,
-                    },
-                });
+            let part = positions[r.domain()].0;
+            if let Some(relation) = r.mapped(|binding| {
+                let (owner, local) = positions[binding]; (owner == part).then_some(local)
+            }) {
+                parts[part].domains.push(relation);
             }
         }
         Ok(parts)
@@ -173,18 +205,15 @@ impl<D> DomainBindings<D> {
         }
         let mut domains = Vec::new();
         for relation in &self.domains {
-            for &domain in &positions[relation.domain] {
-                for &binding in &positions[relation.count.binding] {
-                    domains.push(DomainRelation {
-                        domain,
-                        offset: relation.offset,
-                        bytes: relation.bytes,
-                        count: PrefixCount {
-                            binding,
-                            word: relation.count.word,
-                        },
-                    });
-                }
+            match relation {
+                DomainRelation::Prefix { domain, offset, bytes, count } => for &domain in &positions[*domain] {
+                    for &binding in &positions[count.binding] { domains.push(DomainRelation::Prefix {
+                        domain, offset: *offset, bytes: *bytes, count: PrefixCount { binding, word: count.word },
+                    }); }
+                },
+                DomainRelation::Element(range) => for &binding in &positions[range.binding] {
+                    domains.push(DomainRelation::Element(ElementRange { binding, ..range.clone() }));
+                },
             }
         }
         domains.sort();
@@ -211,38 +240,6 @@ impl<D> DomainBindings<D> {
         self.domains = domains;
         Ok(slots.into_iter().flatten().collect())
     }
-    pub(crate) fn require(
-        &self,
-        program: &dyn ProgramInterface,
-        binding: impl Fn(usize) -> (usize, u32),
-    ) -> Result<()>
-    where
-        D: DomainStorage,
-    {
-        let same = |a: usize, b: usize| {
-            a == b
-                || self.datasets[a].read_identity().is_some_and(|identity| {
-                    self.datasets.get(b).and_then(D::read_identity) == Some(identity)
-                })
-        };
-        for relation in program.prefix_requirements() {
-            if !self.domains.iter().any(|known| {
-                same(known.domain, binding(relation.domain).0)
-                    && known.offset == binding(relation.domain).1
-                    && known.bytes == program.buffers()[relation.domain].ty.size
-                    && u64::from(known.count.word) == u64::from(relation.count.word) + u64::from(binding(relation.count.binding).1)
-                    && same(known.count.binding, binding(relation.count.binding).0)
-            }) {
-                return Err(error(format!(
-                    "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",
-                    program.name(),
-                    program.buffers()[relation.domain].name,
-                    program.buffers()[relation.count.binding].name
-                )));
-            }
-        }
-        Ok(())
-    }
     pub(crate) fn completed(
         &mut self,
         program: &ExecutionPlan,
@@ -257,7 +254,7 @@ impl<D> DomainBindings<D> {
         binding: impl Fn(usize) -> (usize, u32),
     ) {
         self.domains
-            .extend(program.prefix_guarantees().iter().map(|r| DomainRelation {
+            .extend(program.prefix_guarantees().iter().map(|r| DomainRelation::Prefix {
                 domain: binding(r.domain).0,
                 offset: binding(r.domain).1,
                 bytes: program.buffers()[r.domain].ty.size,
@@ -266,11 +263,62 @@ impl<D> DomainBindings<D> {
                     word: r.count.word + binding(r.count.binding).1,
                 },
             }));
+        self.domains.extend(program.element_guarantees().iter().map(|range| DomainRelation::Element(ElementRange {
+            binding: binding(range.binding).0, offset: range.offset + binding(range.binding).1, ..range.clone()
+        })));
         self.domains.sort();
         self.domains.dedup();
     }
 }
 
+pub(crate) fn require<D: DomainStorage>(
+    datasets: &[D],
+    domains: &[DomainRelation],
+    program: &dyn ProgramInterface,
+    binding: impl Fn(usize) -> (usize, u32),
+) -> Result<()> {
+    let same = |a: usize, b: usize| {
+        a == b
+            || datasets[a].read_identity().is_some_and(|identity| {
+                datasets.get(b).and_then(D::read_identity) == Some(identity)
+            })
+    };
+    for relation in program.prefix_requirements() {
+        if !domains.iter().any(|known| {
+            matches!(known, DomainRelation::Prefix { domain, offset, bytes, count }
+                if same(*domain, binding(relation.domain).0)
+                && *offset == binding(relation.domain).1
+                && *bytes == program.buffers()[relation.domain].ty.size
+                && u64::from(count.word) == u64::from(relation.count.word) + u64::from(binding(relation.count.binding).1)
+                && same(count.binding, binding(relation.count.binding).0))
+        }) {
+            return Err(error(format!(
+                "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",
+                program.name(),
+                program.buffers()[relation.domain].name,
+                program.buffers()[relation.count.binding].name
+            )));
+        }
+    }
+    for requirement in program.element_requirements() {
+        let (logical, word, scalar) = match requirement {
+            ElementRequirement::Range(range) => (range.binding, range.offset, range.scalar),
+            ElementRequirement::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
+        };
+        let (source, offset) = binding(logical);
+        if datasets[source].element_count() == 0 { continue; }
+        let holds = domains.iter().any(|known| {
+            let DomainRelation::Element(range) = known else { return false; };
+            same(range.binding, source) && u64::from(range.offset) == u64::from(offset) + u64::from(word)
+                && range.scalar == scalar && match requirement {
+                    ElementRequirement::Range(required) => range.intervals.iter().all(|&(a, b)| required.intervals.iter().any(|&(c, d)| c <= a && b <= d)),
+                    ElementRequirement::Index { target, .. } => range.intervals.iter().all(|&(_, b)| b < u64::from(datasets[binding(*target).0].element_count())),
+                }
+        });
+        if !holds { return Err(error(format!("程序 {} 缺少绑定 {} 字段 {} 的已生产数值范围", program.name(), program.buffers()[logical].name, word))); }
+    }
+    Ok(())
+}
 pub(crate) fn invalidate(
     domains: &mut Vec<DomainRelation>,
     program: &ExecutionPlan,
@@ -278,8 +326,6 @@ pub(crate) fn invalidate(
 ) {
     domains.retain(|r| !program.write_regions.iter().any(|(&logical, written)| {
         let (physical, offset) = binding(logical);
-        physical == r.count.binding && written.iter().any(|&(start, end)|
-            u64::from(r.count.word) < u64::from(offset) + u64::from(end)
-                && u64::from(offset) + u64::from(start) < u64::from(r.count.word) + 4)
+        written.iter().any(|&(start, end)| r.written(physical, u64::from(offset) + u64::from(start), u64::from(offset) + u64::from(end)))
     }));
 }

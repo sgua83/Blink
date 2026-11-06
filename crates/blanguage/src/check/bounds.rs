@@ -374,6 +374,12 @@ impl Proof {
     pub(super) fn scalar_ranges(&self) -> Self {
         Self { ranges: self.ranges.clone(), ..Self::default() }
     }
+    pub(super) fn element_ranges(&self, binding: usize, ty: &Ty) -> Vec<ElementRange> {
+        ty.components.iter().enumerate().filter_map(|(component, &(scalar, offset))| {
+            let intervals = self.range_set(component).restrict(0, scalar.bit_mask()).0;
+            (intervals != [(0, scalar.bit_mask())]).then_some(ElementRange { binding, offset, scalar, intervals })
+        }).collect()
+    }
     pub(super) fn assign_ranges(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.ranges.resize_with(width, ScalarRanges::default);
         for (source, &component) in components.iter().enumerate() {
@@ -3934,6 +3940,25 @@ impl Builder<'_> {
                     origins.insert(0, identity);
                 }
                 (self.path_proof(place.ty(), proof), false)
+            }
+            Place::Element { binding, words, .. } => {
+                let (mut proof, uniform) = match stored {
+                    Some(stored) => stored,
+                    None => (self.projected_owned_proof(place, Some(regs)).unwrap_or_default(), false),
+                };
+                if let Some(common) = self.element_facts.and_then(|facts| facts.get(binding)) {
+                    let ty = &self.program.buffers[*binding].ty;
+                    let components = words.iter().map(|word| ty.components.iter().position(|(_, at)| at == word).unwrap()).collect::<Vec<_>>();
+                    let mut common = common.project(&components, ty.components.len());
+                    let changed = components.iter().enumerate().filter_map(|(component, &source)| {
+                        let (scalar, offset) = ty.components[source];
+                        self.memory_regions.get(binding).is_some_and(|(_, writes)| writes.iter().any(|&(start, end)|
+                            u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset)+u64::from(scalar.size()))).then_some(component)
+                    }).collect::<Vec<_>>();
+                    common.forget_value(&changed, regs.len());
+                    proof.constrain_common_ranges(&common, regs.len());
+                }
+                (proof, uniform)
             }
             _ => match stored {
                 Some(stored) => stored,

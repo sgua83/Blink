@@ -1119,6 +1119,7 @@ impl std::ops::Deref for ReadDataset {
     }
 }
 impl crate::DomainStorage for GpuDataset {
+    fn element_count(&self) -> u32 { self.count() }
     fn read_identity(&self) -> Option<usize> {
         match &*self.storage {
             DatasetStorage::Owned(_) => None,
@@ -2101,7 +2102,12 @@ impl GpuProgram {
         location: impl Fn(usize) -> (usize, u32) + Copy,
     ) -> Result<Submission> {
         let c = &self.compiled;
-        owner.bindings.require(&c.program, location)?;
+        let mut uniforms = arguments(&c.program, (0..count).map(|i| {
+            let (binding, offset) = location(i);
+            let data = &owner.bindings.datasets[binding];
+            (&data.ty, data.count, Some(offset))
+        }), values)?;
+        crate::bindings::require(&owner.bindings.datasets, &owner.bindings.domains, &c.program, location)?;
         let physical = |i| location(i).0;
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
@@ -2159,11 +2165,6 @@ impl GpuProgram {
                 resources.extend(&source.0.views.sources);
             }
         }
-        let mut uniforms = arguments(
-            &c.program,
-            data.iter().enumerate().map(|(i, d)| (&d.ty, d.count, Some(location(i).1))),
-            values,
-        )?;
         let mut commands = Commands::new(c.inner.clone())?;
         commands.textures = std::mem::take(&mut owner.textures);
         if !owner.dependencies.is_empty() {

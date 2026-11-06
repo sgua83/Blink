@@ -713,7 +713,12 @@ impl CpuCode {
         physical: impl Fn(usize) -> (usize, u32) + Copy,
         writing: impl FnOnce(),
     ) -> Result<()> {
-        bindings.require(&self.program, physical)?;
+        let uniforms = arguments(&self.program, (0..count).map(|i| {
+            let (binding, offset) = physical(i);
+            let data = &bindings.datasets[binding];
+            (&data.ty, data.count, Some(offset))
+        }), values)?;
+        crate::bindings::require(&bindings.datasets, &bindings.domains, &self.program, physical)?;
         for (data, binding) in (0..count)
             .map(|i| &bindings.datasets[physical(i).0])
             .zip(self.program.buffers())
@@ -738,7 +743,7 @@ impl CpuCode {
                 .ok_or_else(|| error("设备调用的数据集数量不匹配"))?;
             buffers[physical].projected(expected, offset)
         }).collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&arguments, textures, values, || {
+        self.run_buffers(&arguments, textures, uniforms, || {
             crate::bindings::invalidate(&mut bindings.domains, &self.program, physical);
             writing();
         })?;
@@ -751,17 +756,18 @@ impl CpuCode {
         textures: &[TextureInput],
         values: &[Value],
     ) -> Result<()> {
+        let uniforms = arguments(&self.program, datasets.iter().map(|data| (&data.ty, data.count, None)), values)?;
         let buffers = datasets
             .iter_mut()
             .map(CpuBuffer::owned)
             .collect::<Result<Vec<_>>>()?;
-        self.run_buffers(&buffers, textures, values, || {})
+        self.run_buffers(&buffers, textures, uniforms, || {})
     }
     fn run_buffers(
         &self,
         buffers: &[CpuBuffer<'_>],
         textures: &[TextureInput],
-        values: &[Value],
+        mut uniforms: Vec<u32>,
         writing: impl FnOnce(),
     ) -> Result<()> {
         if textures.len() != self.program.texture_count()
@@ -772,11 +778,6 @@ impl CpuCode {
             return Err(error("纹理绑定数量、维度或格式与程序接口不一致"));
         }
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
-        let mut uniforms = arguments(
-            &self.program,
-            buffers.iter().map(|d| (d.ty, d.count, None)),
-            values,
-        )?;
         let pointers: Vec<_> = buffers
             .iter()
             .map(|d| BufferAddress { address: d.pointer, stride: d.stride as usize })
