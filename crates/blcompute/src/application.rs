@@ -117,7 +117,7 @@ pub struct Frame {
 impl Frame {
     /// 消费本模块定义并绑定CPU代码；失败时未创建Frame，局部资源按原所有者释放。
     pub fn new(types: Vec<Ty>, images: Vec<ProgramImage>) -> Result<Self> {
-        Ok(unsafe { Self::from_definitions(Arc::new(Definitions::new(types, images)?), &[]) })
+        Ok(unsafe { Self::from_definitions(Arc::new(Definitions::new(types, images)?), &[], &[]) })
     }
     /// 从同次静态链接的真实模块工厂创建应用Frame。
     ///
@@ -126,17 +126,18 @@ impl Frame {
     /// 原模块及依赖保持到最后真实代码、存储及设备消费者结束。
     pub unsafe fn from_linked_modules(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
         let definitions = unsafe { Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
-        Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[]) })
+        Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[], &[]) })
     }
     /// 本次范围独占局部存储，只借用原模块已绑定的同一不可变定义。
     /// # Safety
     /// inputs的实际存储、布局、权限和借用资源保持到本Frame最后消费者完成；本值不取得其释放权。
-    pub(crate) unsafe fn from_definitions(definitions: Arc<Definitions>, inputs:&[crate::cpu::CpuBuffer<'_>]) -> Self {
+    /// input_domains来自已接受的实际输入合同，取得写访问后仍有效；索引对应同一inputs。
+    pub(crate) unsafe fn from_definitions(definitions: Arc<Definitions>, inputs:&[crate::cpu::CpuBuffer<'_>], input_domains:&[crate::DomainRelation]) -> Self {
         let datasets=inputs.iter().map(|data|Some(ResidentData::CpuBorrow(CpuBorrow{
             ty:data.ty.clone(),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable,
         }))).collect();
         Self {
-            data: DomainBindings {datasets,domains:Vec::new()},
+            data: DomainBindings {datasets,domains:input_domains.to_vec()},
             gpu_programs: (0..definitions.programs.len()).map(|_| None).collect(),
             definitions,
             device: None,

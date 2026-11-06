@@ -34,7 +34,7 @@ unsafe extern "system" {
     fn CloseThreadpoolWork(work: *mut c_void);
 }
 struct RangeWork<'a> {
-    frame: Option<(&'a std::sync::Arc<crate::application::Definitions>,usize,usize,&'a [CpuBuffer<'a>])>,
+    frame: Option<(&'a std::sync::Arc<crate::application::Definitions>,usize,usize,&'a [CpuBuffer<'a>],&'a [crate::DomainRelation])>,
     entry: *mut c_void,
     buffers: *const BufferAddress,
     // 范围摘要替换数据集后的私有槽；普通 map 的完整表在其后还可包含纹理。
@@ -51,8 +51,8 @@ struct RangeWork<'a> {
 }
 impl RangeWork<'_> {
     unsafe fn invoke(&self,address:*mut c_void,buffers:*const BufferAddress,end:u32,begin:u32,output:*mut u32)->*mut c_void {
-        let mut local=self.frame.map(|(definitions,offset,words,inputs)|{
-            let frame=unsafe {crate::application::Frame::from_definitions(definitions.clone(),inputs)};
+        let mut local=self.frame.map(|(definitions,offset,words,inputs,input_domains)|{
+            let frame=unsafe {crate::application::Frame::from_definitions(definitions.clone(),inputs,input_domains)};
             let values=unsafe {std::slice::from_raw_parts(self.uniforms,words)}.to_vec();
             (frame,values,offset)
         });
@@ -921,6 +921,12 @@ impl CpuCode {
         // 原参数及投影已接受；取得可写访问时撤回旧计数关系。
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。
         writing();
+        // Only the actual accepted input capabilities enter the private scope.
+        // Write acquisition uses the original DomainBindings invalidation owner.
+        let mut input_domains = frame.iter().flat_map(|_| self.program.prefix_requirements()).map(|relation|
+            crate::DomainRelation::Prefix { domain:relation.domain,offset:0,
+                bytes:buffers[relation.domain].ty.size,count:relation.count }).collect();
+        crate::bindings::invalidate(&mut input_domains,&self.program,|binding|(binding,0));
         for (stage, code) in self.program.stages().iter().zip(&self.stages) {
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {
@@ -956,7 +962,7 @@ impl CpuCode {
                 vec![0u32; (count as usize).div_ceil(grain) * result.words()]
             };
             let mut ranges = RangeWork {
-                frame,
+                frame: frame.map(|(definitions,offset,words,inputs)| (definitions,offset,words,inputs,input_domains.as_slice())),
                 entry: executable.address,
                 buffers: pointers.as_ptr(),
                 range_parameter_slot: self.program.buffers().len(),
