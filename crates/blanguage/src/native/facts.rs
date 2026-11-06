@@ -3,15 +3,15 @@ use super::{ContinuationCode, DecodeError, NativeCode, NativeSymbol, ProgramImag
 use super::disassemble::{array, bits, bytes, object, text};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-fn region(code: &NativeCode, kind: &str, start: usize, end: usize, ip: u64, instructions: bool) -> Result<String> {
-    let raw = &code.bytes[start..end];
+fn region(code: &[u8], kind: &str, start: usize, end: usize, ip: u64, instructions: bool) -> Result<Vec<(&'static str, String)>> {
+    let raw = &code[start..end];
     let decoded = if instructions {
         super::instructions_json(raw, ip.wrapping_add(start as u64)).map_err(|error| DecodeError {
             offset: start + error.offset, ip: error.ip, reason: error.reason,
         })?
     } else { "null".into() };
-    Ok(object(&[("kind", text(kind)), ("offset_bytes", start.to_string()),
-        ("length_bytes", raw.len().to_string()), ("bytes", bytes(raw)), ("instructions", decoded)]))
+    Ok(vec![("kind", text(kind)), ("offset_bytes", start.to_string()),
+        ("length_bytes", raw.len().to_string()), ("bytes", bytes(raw)), ("instructions", decoded)])
 }
 fn symbol(value: &NativeSymbol) -> String {
     match value {
@@ -60,7 +60,7 @@ impl NativeCode {
     /// Execution-only deserialization does not retain these observation facts.
     pub fn code_json(&self, ip: u64) -> Result<String> {
         let tails = self.tail_regions.as_ref().ok_or("native image observation ranges were not retained")?;
-        let mut regions = vec![region(self, "main_function", 0, self.function_end, ip, true)?];
+        let mut regions = vec![object(&region(&self.bytes, "main_function", 0, self.function_end, ip, true)?)];
         let mut start = self.function_end;
         for part in tails {
             let (kind, instructions) = match part.kind {
@@ -68,7 +68,7 @@ impl NativeCode {
                 RegionKind::Alignment => ("alignment", false),
                 RegionKind::Literal => ("literal", false),
             };
-            regions.push(region(self, kind, start, part.end, ip, instructions)?);
+            regions.push(object(&region(&self.bytes, kind, start, part.end, ip, instructions)?));
             start = part.end;
         }
         Ok(object(&[("kind", text("native_code")), ("bitness", "64".into()),
@@ -125,22 +125,70 @@ impl StageCode {
 fn single(kind: &str, code: &NativeCode) -> Result<String> {
     Ok(object(&[("kind", text(kind)), ("code", code.code_json(0)?)]))
 }
-impl<P> ProgramImage<P> {
-    /// Observes the original root and resource images without recompiling or loading executable memory.
+impl super::ModuleCode {
+    /// Borrows the selected sections. Addresses remain section-relative until actual loading.
     pub fn code_json(&self) -> Result<String> {
-        use crate::ir::ProgramInterface;
-        Ok(object(&[("kind", text("native_program_image")), ("program", text(self.program().name())),
-            ("address_basis", text("each_image_relative")),
-            ("stages", array(self.stages().iter().map(StageCode::code_json).collect::<Result<Vec<_>>>()?)),
-            ("functions", array(self.functions().iter().map(|(name, code)| {
-                Ok(object(&[("name", text(name)), ("code", code.code_json(0)?)]))
-            }).collect::<Result<Vec<_>>>()?)),
-            ("module_code", self.module_code.as_ref().map_or_else(|| "null".into(), |module| object(&[
-                ("address_basis", text("section_relative")),
-                ("sections", array(module.sections.iter().enumerate().map(|(index, section)| object(&[
-                    ("section_index", index.to_string()), ("name", text(&section.name)),
-                    ("flags", section.flags.to_string()), ("byte_length", section.bytes.len().to_string()),
-                    ("bytes", bytes(&section.bytes)),
+        let address = |section: &super::ModuleSection, at: usize| -> Result<(Option<(usize, usize)>, String)> {
+            let addend = u32::from_le_bytes(section.bytes[at..at + 4].try_into()?);
+            let mut references = section.relocations.iter().enumerate().filter(|(_, row)| row.offset == at);
+            let relocation = references.next();
+            if references.next().is_some() { return Err("COFF module .pdata field has multiple relocations".into()); }
+            let (position, status) = match relocation {
+                None => (None, "no_relocation"),
+                Some((_, row)) if row.kind != 3 => (None, "relocation_type_not_supported"),
+                Some((_, row)) => match &row.target {
+                    super::ModuleTarget::Import(_) => (None, "target_not_section_relative"),
+                    super::ModuleTarget::Section { section, value } => {
+                        let target = self.sections.get(*section).ok_or("COFF module .pdata target section is outside the section table")?;
+                        let offset = value.wrapping_add(addend) as usize;
+                        if offset > target.bytes.len() { return Err("COFF module .pdata address is outside its target section".into()); }
+                        (Some((*section, offset)), "resolved")
+                    }
+                },
+            };
+            Ok((position, object(&[("addend", addend.to_string()), ("status", text(status)),
+                ("relocation_index", relocation.map_or_else(|| "null".into(), |(index, _)| index.to_string())),
+                ("position", position.map_or_else(|| "null".into(), |(section, offset)| object(&[
+                    ("section_index", section.to_string()), ("offset_bytes", offset.to_string()),
+                ])))])))
+        };
+        let mut spans = Vec::new(); let mut records = Vec::new();
+        for (index, section) in self.sections.iter().enumerate() {
+            if section.name != ".pdata" { continue; }
+            if section.bytes.len() % 12 != 0 { return Err("COFF module x64 .pdata contains an incomplete function record".into()); }
+            for at in (0..section.bytes.len()).step_by(12) {
+                let (begin, begin_json) = address(section, at)?;
+                let (end, end_json) = address(section, at + 4)?;
+                let (_, unwind_json) = address(section, at + 8)?;
+                let status = match (begin, end) {
+                    (Some((a, _)), Some((b, _))) if a != b => "cross_section_range",
+                    (Some((section, start)), Some((_, end))) => {
+                        if start > end { return Err("COFF module .pdata function range is reversed".into()); }
+                        spans.push((section, start, end, records.len())); "resolved"
+                    }
+                    _ => "unresolved",
+                };
+                records.push(object(&[("section_index", index.to_string()), ("offset_bytes", at.to_string()),
+                    ("record_bytes", bytes(&section.bytes[at..at + 12])), ("status", text(status)),
+                    ("begin", begin_json), ("end", end_json), ("unwind", unwind_json)]));
+            }
+        }
+        Ok(object(&[("address_basis", text("section_relative")), ("function_tables", array(records)),
+            ("sections", array(self.sections.iter().enumerate().map(|(index, section)| -> Result<String> {
+                let mut code = spans.iter().filter(|(at, _, _, _)| *at == index).collect::<Vec<_>>();
+                code.sort_by_key(|(_, start, end, _)| (*start, *end));
+                let mut regions = Vec::new(); let mut end = 0;
+                for &&(_, start, stop, record) in &code {
+                    if start > end { regions.push(object(&region(&section.bytes, "unclassified", end, start, 0, false)?)); }
+                    let mut fields = region(&section.bytes, "runtime_function", start, stop, 0, true)
+                        .map_err(|error| format!("COFF module section {index}: {error}"))?;
+                    fields.push(("function_table_index", record.to_string()));
+                    regions.push(object(&fields)); end = end.max(stop);
+                }
+                if end < section.bytes.len() { regions.push(object(&region(&section.bytes, "unclassified", end, section.bytes.len(), 0, false)?)); }
+                Ok(object(&[("section_index", index.to_string()), ("name", text(&section.name)),
+                    ("flags", section.flags.to_string()), ("byte_length", section.bytes.len().to_string()), ("bytes", bytes(&section.bytes)),
+                    ("regions", array(regions)),
                     ("relocations", array(section.relocations.iter().map(|relocation| object(&[
                         ("offset_bytes", relocation.offset.to_string()), ("type", relocation.kind.to_string()),
                         ("target", match &relocation.target {
@@ -151,12 +199,24 @@ impl<P> ProgramImage<P> {
                                 ("kind", text("import")), ("library", text(&name.library)), ("symbol", text(&name.symbol)),
                             ]),
                         }),
-                    ])))),
-                ])))),
-                ("symbols", array(module.symbols.iter().map(|(name, (section, offset))| object(&[
-                    ("name", text(name)), ("section_index", section.to_string()), ("offset_bytes", offset.to_string()),
-                ])))),
-            ]))),
+                    ]))))]))
+            }).collect::<Result<Vec<_>>>()?)),
+            ("symbols", array(self.symbols.iter().map(|(name, (section, offset))| object(&[
+                ("name", text(name)), ("section_index", section.to_string()), ("offset_bytes", offset.to_string()),
+            ]))))]))
+    }
+}
+impl<P> ProgramImage<P> {
+    /// Observes the original root and resource images without recompiling or loading executable memory.
+    pub fn code_json(&self) -> Result<String> {
+        use crate::ir::ProgramInterface;
+        Ok(object(&[("kind", text("native_program_image")), ("program", text(self.program().name())),
+            ("address_basis", text("each_image_relative")),
+            ("stages", array(self.stages().iter().map(StageCode::code_json).collect::<Result<Vec<_>>>()?)),
+            ("functions", array(self.functions().iter().map(|(name, code)| {
+                Ok(object(&[("name", text(name)), ("code", code.code_json(0)?)]))
+            }).collect::<Result<Vec<_>>>()?)),
+            ("module_code", self.module_code.as_ref().map(super::ModuleCode::code_json).transpose()?.unwrap_or_else(|| "null".into())),
             ("resource_images", array(self.resources.iter().flat_map(|module| &module.images).enumerate().map(|(index, image)| {
                 let (target, code) = match image {
                     crate::resource::Image::Cpu(image) => ("cpu", image.code_json()?),
