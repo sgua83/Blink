@@ -275,20 +275,23 @@ impl<D> DomainBindings<D> {
             let range = ElementRange {
                 binding: binding(range.binding).0, offset: range.offset + binding(range.binding).1, ..range
             };
-            if let Some(known) = self.domains.iter_mut().find_map(|relation| match relation {
-                DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
-                    && known.scalar == range.scalar => Some(known),
-                _ => None,
-            }) {
-                known.intervals = known.intervals.iter().flat_map(|&(a, b)| range.intervals.iter().filter_map(move |&(c, d)| {
-                    let (start, end) = (a.max(c), b.min(d)); (start <= end).then_some((start, end))
-                })).collect();
-            } else {
-                self.domains.push(DomainRelation::Element(range));
-            }
+            self.produced_element(range);
         }
         self.domains.sort();
         self.domains.dedup();
+    }
+    pub(crate) fn produced_element(&mut self, range: ElementRange) {
+        if let Some(known) = self.domains.iter_mut().find_map(|relation| match relation {
+            DomainRelation::Element(known) if known.binding == range.binding && known.offset == range.offset
+                && known.scalar == range.scalar => Some(known),
+            _ => None,
+        }) {
+            known.intervals = known.intervals.iter().flat_map(|&(a, b)| range.intervals.iter().filter_map(move |&(c, d)| {
+                let (start, end) = (a.max(c), b.min(d)); (start <= end).then_some((start, end))
+            })).collect();
+        } else {
+            self.domains.push(DomainRelation::Element(range));
+        }
     }
 }
 

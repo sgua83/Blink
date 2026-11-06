@@ -530,6 +530,7 @@ fn declarations(
     let mut renames = BTreeMap::new();
     let types = retain(resources.types, "allocate", &names, &mut renames);
     let programs = retain(resources.programs, "run", &names, &mut renames);
+    let completions = retain(resources.completions, "complete", &names, &mut renames);
     for code in codes.iter_mut() {
         runtime_calls(code, &mut |call| {
             if let Some(name) = renames.get(&call.symbol) {
@@ -537,7 +538,7 @@ fn declarations(
             }
         });
     }
-    crate::application::Resources { types, programs }
+    crate::application::Resources { types, programs, completions }
 }
 pub(super) fn module_resources(
     functions: &mut [FunctionBody],
@@ -1474,7 +1475,9 @@ impl Builder<'_> {
         let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone().map(GenerationAnchor::Syntax)});
         let cursor=origin(GenerationReason::DatasetInitializeCursor);
         let scalar=Ty::scalar(Scalar::U32);let zero=self.constant_with_origin(Scalar::U32,0,Some(cursor.clone()));let index_reg=self.reg(Scalar::U32);
-        let index=Value{ty:scalar.clone(),regs:vec![index_reg],proof:bounds::for_cursor(&zero,&data.length,&[]),uniform:false,literal:false,constant:None};
+        let mut proof=bounds::for_cursor(&zero,&data.length,&[]);
+        for identity in data.length.component_origins(0) { proof.mark_domain(0,IndexDomain::Upper(identity,1)); }
+        let index=Value{ty:scalar.clone(),regs:vec![index_reg],proof,uniform:false,literal:false,constant:None};
         let arguments=vec![Argument::Value(index.clone())];
         let instance=self.specialized_arguments(key,&arguments,explicit,factory.span)?;
         let function=&instance.definition.function;
@@ -1535,8 +1538,37 @@ impl Builder<'_> {
         let advance=origin(GenerationReason::DatasetInitializeAdvance);
         let one=self.constant_with_origin(Scalar::U32,1,Some(advance.clone())).regs[0];let next=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::Binary{dst:next,op:ir::BinaryOp::IAdd,a:index_reg,b:one},advance.clone()));self.code.push(Inst::generated(InstKind::StoreLocal(slot,next),advance));
         let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetInitializeLoop)));
+        self.complete_application_elements(data, &elements, span, origin(GenerationReason::DatasetInitializeComplete))?;
         self.env.remove(&owner);
         Ok(elements)
+    }
+    fn complete_application_elements(
+        &mut self, data: &Data, elements: &returns::Returned, span: Span,
+        origin: Arc<GeneratedOrigin>,
+    ) -> Result<()> {
+        let model = self.returned_storage(elements);
+        let mut facts = model.proof.element_ranges(0, &data.ty).into_iter()
+            .map(ir::ElementFact::Range).collect::<Vec<_>>();
+        let mut length = false;
+        for (component, &(scalar, offset)) in data.ty.components.iter().enumerate() {
+            if scalar == Scalar::U32 && model.proof.domains(component).contains(&IndexDomain::ApplicationData(data.root.identity())) {
+                facts.push(ir::ElementFact::Index { binding: 0, offset, target: 0 });
+                length = true;
+            }
+        }
+        if facts.is_empty() { return Ok(()); }
+        let completions = &mut self.functions.resources.completions;
+        let index = completions.iter().position(|item| *item == facts).unwrap_or_else(|| {
+            let index = completions.len();
+            completions.push(facts);
+            index
+        });
+        let frame = self.application_frame(span)?;
+        let mut arguments = vec![argument(frame), argument(data.root.clone())];
+        if length { arguments.push(argument(data.length.clone())); }
+        self.code.push(Inst::generated(runtime_call(&format!("complete_{index}"), arguments,
+            None, Vec::new(), None, None).kind, origin));
+        Ok(())
     }
     fn drop_application_elements(&mut self,data:&Data,retained:&view::Borrow,span:Span)->Result<()> {
         if data.length.maximum()==0 {return Ok(());}

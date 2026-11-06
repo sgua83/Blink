@@ -275,7 +275,8 @@ fn functions(
                 thunk(&mut bytes, &mut patches, Import {
                     dll: name.library.clone(),
                     name: if name.library == crate::application::RUNTIME_LIBRARY
-                        && (name.symbol.starts_with("blink_allocate_") || name.symbol.starts_with("blink_run_")) {
+                        && (name.symbol.starts_with("blink_allocate_") || name.symbol.starts_with("blink_run_")
+                            || name.symbol.starts_with("blink_complete_")) {
                         format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
                     } else { name.symbol.clone() },
                 });

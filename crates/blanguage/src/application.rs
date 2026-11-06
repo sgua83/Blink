@@ -19,6 +19,7 @@ pub struct Application {
 pub(crate) struct Resources {
     pub types: Vec<Ty>,
     pub programs: Vec<(Target, Program)>,
+    pub completions: Vec<Vec<crate::ir::ElementFact>>,
 }
 impl Application {
     pub fn name(&self) -> &str {
@@ -94,6 +95,7 @@ pub(crate) fn compile_resources(
                 "blink_allocate",
                 "blink_resize",
                 "blink_run",
+                "blink_complete_field",
                 "blink_error_message",
                 "blink_error_destroy",
                 "blink_error_join",
@@ -107,6 +109,7 @@ pub(crate) fn compile_resources(
         };
         exports.extend((0..resources.types.len()).map(|i| format!("{prefix}_allocate_{i}")));
         exports.extend((0..resources.programs.len()).map(|i| format!("{prefix}_run_{i}")));
+        exports.extend((0..resources.completions.len()).map(|i| format!("{prefix}_complete_{i}")));
         if root {
             exports.extend(["blink_create".into(), "blink_application_error".into()]);
         }

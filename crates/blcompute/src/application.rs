@@ -215,6 +215,25 @@ impl Frame {
             .domains
             .retain(|r| !r.references(index));
     }
+    // 只由受信任编译完成点调用；字段布局和完整写已由原编译器确定。
+    fn complete_field(&mut self, handle: u32, offset: u32,
+        intervals: &[blanguage::resource::ElementInterval], limits: &[u32]) {
+        let ty = match self.data.datasets[handle as usize].as_ref().unwrap() {
+            ResidentData::Cpu(data) => &data.ty,
+            ResidentData::Gpu(data) => data.layout(),
+        };
+        let scalar = ty.components.iter().find(|(_, at)| *at == offset).unwrap().0;
+        let mut intervals = intervals.iter().map(|range| (range.lower, range.upper)).collect::<Vec<_>>();
+        for &count in limits {
+            intervals = intervals.into_iter().filter_map(|(a, b)| {
+                let end = b.min(u64::from(count.checked_sub(1)?));
+                (a <= end).then_some((a, end))
+            }).collect();
+        }
+        self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals });
+        self.data.domains.sort();
+        self.data.domains.dedup();
+    }
     /// 取得同一存储位置并撤回真实写区相交的Count；不分配、搬移或等待。
     ///
     /// # Safety

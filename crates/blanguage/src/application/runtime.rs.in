@@ -10,6 +10,8 @@ pub struct ModuleImage {
 pub struct UniformValue { pub kind: u32, pub bits: u64 }
 #[repr(C)]
 pub struct DatasetBinding { pub handle: u32, pub offset: u32 }
+#[repr(C)]
+pub struct ElementInterval { pub lower: u64, pub upper: u64 }
 static IMAGE: &[u8] = &@IMAGE@;
 unsafe extern "C" { @CODE_DECLARATIONS@ }
 static CODE: [unsafe extern "C" fn(); @CODE_COUNT@] = [@CODE_ENTRIES@];

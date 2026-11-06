@@ -71,6 +71,7 @@ pub(crate) fn application_source(
 unsafe extern "C" {
     fn blink_allocate(output:*mut u32,frame:*mut c_void,ty:u32,count:u32)->*mut c_void;
     fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue)->*mut c_void;
+    fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize);
     fn blink_error_message(error:*const c_void,bytes:*mut usize)->*const u8;
     fn blink_error_destroy(error:*mut c_void);
     fn blink_destroy(frame:*mut c_void);
@@ -187,6 +188,33 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
             handles.join(","),
             words.join(",")
         )?;
+    }
+    for (index, facts) in resources.completions.iter().enumerate() {
+        use crate::ir::ElementFact;
+        let mut fields = std::collections::BTreeMap::<u32, (Option<Vec<(u64, u64)>>, Vec<usize>)>::new();
+        let mut counts = 0;
+        for fact in facts {
+            match fact {
+                ElementFact::Range(range) => {
+                    let field = fields.entry(range.offset).or_default();
+                    field.0 = Some(range.intervals.clone());
+                }
+                ElementFact::Index { offset, target, .. } => {
+                    fields.entry(*offset).or_default().1.push(*target);
+                    counts = counts.max(*target + 1);
+                }
+            }
+        }
+        let params = (0..counts).map(|i| format!(",count_{i}:u32")).collect::<String>();
+        writeln!(functions, "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_complete_{index}(frame:*mut c_void,data:u32{params}) {{")?;
+        for (offset, (intervals, limits)) in fields {
+            let intervals = intervals.unwrap_or_else(|| vec![(0, Scalar::U32.bit_mask())]);
+            let values = intervals.iter().map(|(lower, upper)| format!("ElementInterval{{lower:{lower},upper:{upper}}}")).collect::<Vec<_>>().join(",");
+            let limit_count = limits.len();
+            let limits = limits.iter().map(|i| format!("count_{i}")).collect::<Vec<_>>().join(",");
+            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let limits:[u32;{limit_count}]=[{limits}];unsafe {{ blink_complete_field(frame,data,{offset},INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),limits.len()) }} }}", intervals.len())?;
+        }
+        writeln!(functions, "}}")?;
     }
     Ok(include_str!("../application/runtime.rs.in")
         .replace("@PREFIX@", prefix)
