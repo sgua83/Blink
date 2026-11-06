@@ -139,25 +139,8 @@ pub(super) fn link(object: &Object) -> Result<Vec<u8>> {
             let at = relocation.offset;
             let source = sections[index].rva as u64 + at as u64;
             let bytes = &mut sections[index].bytes;
-            let width = if relocation.kind == 1 { 8 } else { 4 };
-            let old = bytes.get(at..at + width).ok_or("COFF 重定位位置越界")?;
-            match relocation.kind {
-                1 => {
-                    let add = u64::from_le_bytes(old.try_into()?);
-                    put64(bytes, at, add.wrapping_add(BASE + target));
-                    locations.push(source as u32);
-                }
-                3 => {
-                    let add = u32::from_le_bytes(old.try_into()?);
-                    put32(bytes, at, u32::try_from(target)?.wrapping_add(add));
-                }
-                4 => {
-                    let add = i32::from_le_bytes(old.try_into()?);
-                    let value = i32::try_from(target as i64 - source as i64 - 4 + add as i64)?;
-                    put32(bytes, at, value as u32);
-                }
-                kind => return Err(format!("不支持 AMD64 重定位类型 {kind}").into()),
-            }
+            crate::native::coff_relocate(bytes, at, relocation.kind, BASE, source, target)?;
+            if relocation.kind == 1 { locations.push(source as u32); }
         }
     }
     let pdata = sections

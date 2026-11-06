@@ -155,7 +155,7 @@ struct Executable {
 }
 struct Allocation {
     address: *mut c_void,
-    functions: Option<std::ptr::NonNull<RuntimeFunction>>,
+    functions: Vec<std::ptr::NonNull<RuntimeFunction>>,
     _libraries: Vec<Library>,
 }
 struct Library(*mut c_void);
@@ -184,6 +184,21 @@ impl Drop for Library {
         }
     }
 }
+fn external_symbol(
+    libraries: &mut std::collections::BTreeMap<String, Library>, name: &blanguage::ast::ExternalName,
+) -> Result<*const ()> {
+    if name.library == blanguage::resource::RUNTIME_LIBRARY {
+        return crate::application::resource_symbol(&name.symbol)
+            .ok_or_else(|| error(format!("未知的Blink资源C符号 {}", name.symbol)));
+    }
+    if !libraries.contains_key(&name.library) {
+        libraries.insert(name.library.clone(), Library::load(&name.library)
+            .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?);
+    }
+    libraries[&name.library].symbol(&name.symbol)
+        .map_err(|error| crate::error(format!("解析 {}!{} 失败：{error}", name.library, name.symbol)))
+}
+
 fn write_stdout(text: &[u8]) -> u32 {
     use std::io::Write;
     match std::io::stdout().lock().write(text) {
@@ -275,7 +290,8 @@ impl Executable {
 impl Allocation {
     fn new<P>(image: &blanguage::native::ProgramImage<P>) -> Result<(Option<std::sync::Arc<Self>>, std::collections::BTreeMap<usize, *mut c_void>)> {
         let codes = image.code().collect::<Vec<_>>();
-        if codes.is_empty() { return Ok((None, std::collections::BTreeMap::new())); }
+        let module = image.module_code();
+        if codes.is_empty() && module.is_none() { return Ok((None, std::collections::BTreeMap::new())); }
         let mut size = 0usize;
         let mut layout = Vec::with_capacity(codes.len());
         for code in &codes {
@@ -284,12 +300,29 @@ impl Allocation {
             size = unwind as usize + code.unwind.len();
             layout.push((begin, unwind));
         }
+        let mut sections = Vec::new();
+        let mut imports = std::collections::BTreeMap::new();
+        if let Some(module) = module {
+            for section in &module.sections {
+                let alignment = (1usize << ((section.flags >> 20) & 15).saturating_sub(1)).max(4096);
+                size = size.div_ceil(alignment) * alignment;
+                sections.push(size);
+                size += section.bytes.len();
+                for relocation in &section.relocations {
+                    if let blanguage::native::ModuleTarget::Import(name) = &relocation.target {
+                        imports.insert(name.clone(), 0usize);
+                    }
+                }
+            }
+            size = size.div_ceil(4096) * 4096;
+        }
+        for offset in imports.values_mut() { *offset = size; size += 8; }
         let table_offset = size.div_ceil(4) * 4;
         let count = u32::try_from(codes.len())?;
         size = table_offset + codes.len() * std::mem::size_of::<RuntimeFunction>();
         let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
         if address.is_null() { return Err(std::io::Error::last_os_error().into()); }
-        let mut allocation = Self { address, functions: None, _libraries: Vec::new() };
+        let mut allocation = Self { address, functions: Vec::new(), _libraries: Vec::new() };
         let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
         let mut addresses = std::collections::BTreeMap::new();
         for (index, (code, &(begin, unwind))) in codes.iter().zip(&layout).enumerate() {
@@ -301,26 +334,47 @@ impl Allocation {
                 std::ptr::write(table.add(index), RuntimeFunction { begin, end: begin + u32::try_from(code.function_end)?, unwind });
             }
         }
-        let functions = image.functions().iter().map(|(name, code)|
+        let mut functions = image.functions().iter().map(|(name, code)|
             (name.as_str(), addresses[&(code as *const _ as usize)])).collect::<std::collections::BTreeMap<_, _>>();
         let mut libraries = std::collections::BTreeMap::new();
+        for (name, &offset) in &imports {
+            let symbol = external_symbol(&mut libraries, name)?;
+            unsafe { std::ptr::write_unaligned(address.cast::<u8>().add(offset).cast::<u64>(), symbol as u64); }
+        }
+        let mut tables = vec![(table, count)];
+        if let Some(module) = module {
+            for (section, &begin) in module.sections.iter().zip(&sections) {
+                let entry = unsafe { address.cast::<u8>().add(begin) };
+                unsafe { std::ptr::copy_nonoverlapping(section.bytes.as_ptr(), entry, section.bytes.len()); }
+                let bytes = unsafe { std::slice::from_raw_parts_mut(entry, section.bytes.len()) };
+                for relocation in &section.relocations {
+                    let target = match &relocation.target {
+                        blanguage::native::ModuleTarget::Section { section, value } => sections[*section] + *value as usize,
+                        blanguage::native::ModuleTarget::Import(name) => imports[name],
+                    };
+                    blanguage::native::coff_relocate(bytes, relocation.offset, relocation.kind,
+                        address as u64, (begin + relocation.offset) as u64, target as u64)
+                        .map_err(error)?;
+                }
+                if section.name == ".pdata" {
+                    let count = section.bytes.len() / std::mem::size_of::<RuntimeFunction>();
+                    let table = entry.cast::<RuntimeFunction>();
+                    unsafe { std::slice::from_raw_parts_mut(table, count) }.sort_unstable_by_key(|entry| entry.begin);
+                    tables.push((table, u32::try_from(count)?));
+                }
+            }
+            for (name, &(section, value)) in &module.symbols {
+                let entry = unsafe { address.cast::<u8>().add(sections[section] + value as usize) }.cast();
+                functions.insert(name.as_str(), entry);
+            }
+        }
         for code in codes {
             let entry = addresses[&(code as *const _ as usize)];
             for relocation in &code.relocations {
                 let ptr = match &relocation.target {
                     NativeSymbol::Function(name) => *functions.get(name.as_str())
                         .ok_or_else(|| error(format!("范围映像缺少所属模块函数 {name}")))? as *const (),
-                    NativeSymbol::External(name) if name.library==blanguage::resource::RUNTIME_LIBRARY =>
-                        crate::application::resource_symbol(&name.symbol)
-                            .ok_or_else(||error(format!("未知的Blink资源C符号 {}",name.symbol)))?,
-                    NativeSymbol::External(name) => {
-                        if !libraries.contains_key(&name.library) {
-                            libraries.insert(name.library.clone(), Library::load(&name.library)
-                                .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?);
-                        }
-                        libraries[&name.library].symbol(&name.symbol).map_err(|error|
-                            crate::error(format!("解析 {}!{} 失败：{error}", name.library, name.symbol)))?
-                    }
+                    NativeSymbol::External(name) => external_symbol(&mut libraries, name)?,
                     NativeSymbol::Print(scalar) => match scalar {
                         Scalar::U8 | Scalar::U16 | Scalar::U32 => print_u32 as *const (),
                         Scalar::I8 | Scalar::I16 | Scalar::I32 => print_i32 as *const (),
@@ -341,25 +395,44 @@ impl Allocation {
             if VirtualProtect(address, size, 0x20, &mut old) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
+            if let Some(module) = module {
+                for (section, &begin) in module.sections.iter().zip(&sections) {
+                    if section.bytes.is_empty() { continue; }
+                    let protect = match section.flags & 0xe0000000 {
+                        0xe0000000 | 0xa0000000 => 0x40,
+                        0x60000000 => 0x20,
+                        0x20000000 => 0x10,
+                        0xc0000000 | 0x80000000 => 0x04,
+                        0x40000000 => 0x02,
+                        _ => 0x01,
+                    };
+                    if VirtualProtect(address.cast::<u8>().add(begin).cast(), section.bytes.len(), protect, &mut old) == 0 {
+                        return Err(std::io::Error::last_os_error().into());
+                    }
+                }
+            }
             if FlushInstructionCache(GetCurrentProcess(), address, size) == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        if unsafe { RtlAddFunctionTable(table, count, address as u64) } == 0 {
-            return Err(error("Windows未接受CPU代码的原生展开信息"));
+        for (table, count) in tables.into_iter().filter(|(_, count)| *count != 0) {
+            if unsafe { RtlAddFunctionTable(table, count, address as u64) } == 0 {
+                return Err(error("Windows未接受CPU代码的原生展开信息"));
+            }
+            allocation.functions.push(unsafe { std::ptr::NonNull::new_unchecked(table) });
         }
-        allocation.functions = Some(unsafe { std::ptr::NonNull::new_unchecked(table) });
         Ok((Some(std::sync::Arc::new(allocation)), addresses))
     }
 }
 impl Drop for Allocation {
     fn drop(&mut self) {
         unsafe {
-            if let Some(table) = self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
+            for table in &self.functions { RtlDeleteFunctionTable(table.as_ptr()); }
             VirtualFree(self.address, 0, 0x8000);
         }
     }
 }
+
 fn collective_bits(scalar: Scalar, words: &[u32], byte: usize) -> Bits {
     let mut bytes = [0; 8];
     unsafe { std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>().add(byte), bytes.as_mut_ptr(), scalar.size() as usize); }

@@ -28,10 +28,38 @@ pub(crate) fn compile_in<P: Deref<Target = Program>>(
 }
 impl crate::Compiler {
     pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
-        let source=&*program;
-        self.execute(|worker|compile_in(worker,source)).map_err(|error|error.to_string())
-            .map(|image|{let(plan,stages,functions,resources)=image.into_parts();
-                unsafe{ProgramImage::from_compiler_output(plan,stages,functions,resources)}})
+        self.native_with_inputs(program, Vec::new())
+    }
+    /// 根代码生成后，由原链接器消费实际对象／静态库；提供者源实现不参与本阶段。
+    pub fn native_with_inputs<P: Deref<Target = Program>>(
+        &self, program: P, inputs: Vec<crate::object::Input>,
+    ) -> Result<ProgramImage<P>, String> {
+        let source = &*program;
+        self.execute(|worker| {
+            let image = compile_in(worker, source)?;
+            let local = image.functions().iter().chain(image.resources.iter()
+                .flat_map(|module| &module.images).filter_map(|image| match image {
+                    crate::resource::Image::Cpu(image) => Some(image), _ => None,
+                }).flat_map(|image| image.functions().iter()))
+                .map(|(name, _)| name.as_str()).collect::<std::collections::BTreeSet<_>>();
+            let imports = source.imports.iter().chain(source.resources.iter()
+                .flat_map(|resources| &resources.programs).flat_map(|(_, program)| &program.imports))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut roots = std::collections::BTreeMap::new();
+            for relocation in image.code().flat_map(|code| &code.relocations) {
+                if let super::NativeSymbol::Function(name) = &relocation.target && !local.contains(name.as_str()) {
+                    let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
+                    roots.insert(name.clone(), (*contract).clone());
+                }
+            }
+            let modules = crate::linker::native::modules(inputs, &roots, &local).map_err(|error| error.to_string())?;
+            Ok::<_, String>((image, modules))
+        }).map_err(|error| error.to_string()).map(|(image, modules)| {
+            let (plan, stages, functions, resources) = image.into_parts();
+            let mut image = unsafe { ProgramImage::from_compiler_output(plan, stages, functions, resources) };
+            image.module_code = modules;
+            image
+        })
     }
 }
 

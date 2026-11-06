@@ -157,6 +157,7 @@ pub struct ProgramImage<P, C = NativeCode> {
     stages: Vec<StageCode<C>>,
     functions: Vec<(String, C)>,
     pub(crate) resources: Option<crate::resource::Module<C>>,
+    pub(crate) module_code: Option<super::ModuleCode>,
 }
 impl<P, C> ProgramImage<P, C> {
     /// 恢复本版本编译器输出的原生代码与执行布局。
@@ -171,6 +172,7 @@ impl<P, C> ProgramImage<P, C> {
             stages,
             functions,
             resources,
+            module_code: None,
             marker: std::marker::PhantomData,
         }
     }
@@ -181,6 +183,7 @@ impl<P, C> ProgramImage<P, C> {
         &self.stages
     }
     pub fn functions(&self) -> &[(String, C)] { &self.functions }
+    pub fn module_code(&self) -> Option<&super::ModuleCode> { self.module_code.as_ref() }
     fn own_code(&self) -> impl Iterator<Item = &C> {
         self.stages.iter().flat_map(|stage| {
             let (initialize, entries): (&[C], [Option<&C>; 3]) = match stage {
@@ -239,7 +242,7 @@ impl<P, C> ProgramImage<P, C> {
                 crate::resource::Image::Gpu(image)=>crate::resource::Image::Gpu(image),
             }).collect(),
         });
-        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages, functions, resources }
+        ProgramImage { program: self.program, marker: std::marker::PhantomData, stages, functions, resources, module_code: self.module_code }
     }
 
 }

@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x27\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x28\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 mod module_image;
 pub use module_image::{ModuleImage, ModuleFactory};
@@ -167,7 +167,7 @@ pub unsafe fn from_linked_compiler_output(bytes: &[u8], code: &[*const u8]) -> c
 macro_rules! image_output {
     ($backend:ident) => {
         impl<P> $backend::ProgramImage<P> {
-            pub(crate) fn compiler_output_bytes(&self) -> Vec<u8> { compiler_output(self) }
+            pub fn compiler_output_bytes(&self) -> Vec<u8> { compiler_output(self) }
             /// 从同一P入口的本版本编译产物恢复映像，不改变入口类别。
             ///
             /// # Safety
@@ -188,7 +188,7 @@ macro_rules! native_image_codec {
         impl<P> Encode for native::ProgramImage<P,$code>{
             fn encode(&self,writer:&mut Writer){
                 self.program().encode(writer);self.stages().encode(writer);
-                self.functions().encode(writer);self.resources.encode(writer);
+                self.functions().encode(writer);self.resources.encode(writer);self.module_code.encode(writer);
             }
         }
         impl<P> Decode for native::ProgramImage<P,$code>{
@@ -197,11 +197,17 @@ macro_rules! native_image_codec {
                 let stages=Vec::<native::StageCode<$code>>::decode(reader)?;
                 let functions=Vec::<(String,$code)>::decode(reader)?;
                 let resources=Option::<Module<$code>>::decode(reader)?;
-                Ok(unsafe{Self::from_compiler_output(program,stages,functions,resources)})
+                let module_code=Option::<native::ModuleCode>::decode(reader)?;
+                let mut image=unsafe{Self::from_compiler_output(program,stages,functions,resources)};
+                image.module_code=module_code;Ok(image)
             }
         }
     };
 }
+record!(native::ModuleCode { sections, symbols });
+record!(native::ModuleSection { name, bytes, flags, relocations });
+record!(native::ModuleRelocation { offset, kind, target });
+variants!(native::ModuleTarget { 0=>Section{section,value}, 1=>Import(name) });
 native_image_codec!(native::NativeCode);
 native_image_codec!(usize);
 impl<P> Encode for spirv::ProgramImage<P> {

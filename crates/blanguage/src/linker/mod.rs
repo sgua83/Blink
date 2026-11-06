@@ -3,6 +3,7 @@ mod combine;
 mod msvc;
 mod pe;
 mod resources;
+pub(crate) mod native;
 use crate::{
     application::RUNTIME_LIBRARY,
     object::{Input, Kind, Object, Target},
@@ -20,15 +21,44 @@ pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
     link_objects(objects, libraries, output)
 }
 fn read_inputs(inputs: &[impl AsRef<Path>]) -> Result<(Vec<Object>, Vec<crate::object::Library>)> {
+    Ok(partition(inputs.iter().map(|input| Input::read(input.as_ref())).collect::<Result<Vec<_>>>()?))
+}
+fn partition(inputs: Vec<Input>) -> (Vec<Object>, Vec<crate::object::Library>) {
     let mut objects = Vec::new();
     let mut libraries = Vec::new();
     for input in inputs {
-        match Input::read(input.as_ref())? {
+        match input {
             Input::Object(object) => objects.push(object),
             Input::Library(library) => libraries.push(library),
         }
     }
-    Ok((objects, libraries))
+    (objects, libraries)
+}
+enum Roots<'a> {
+    Entry,
+    Symbols(&'a BTreeMap<String, Vec<u8>>),
+}
+fn resolve_symbol(
+    name: &str, contract: &[u8], objects: &mut Vec<Object>,
+    libraries: &mut [crate::object::Library], defined: &mut BTreeMap<String, (usize, usize)>,
+) -> Result<(usize, usize)> {
+    let target = if let Some(&target) = defined.get(name) { target } else {
+        let mut provider = None;
+        for library in libraries {
+            if let Some(object) = library.extract(name)? { provider = Some(object); break; }
+        }
+        let provider = provider.ok_or_else(|| format!("未定义模块符号 {name}"))?;
+        let next = objects.len();
+        define(&provider, next, defined)?;
+        let target = defined[name];
+        objects.push(provider);
+        target
+    };
+    let actual = &objects[target.0].symbols[target.1];
+    if actual.contract != contract {
+        return Err(format!("模块接口不匹配 {name}；调用方与定义须使用相同的类型、布局、访问及函数事实").into());
+    }
+    Ok((target.0, actual.section))
 }
 // 符号与节的存活只属于本次原生链接；展开节沿编译产物的真实关联跟随代码。
 fn define(object: &Object, index: usize, defined: &mut BTreeMap<String, (usize, usize)>) -> Result<()> {
@@ -56,20 +86,25 @@ fn include(objects: &[Object], selected: &mut [Option<Vec<bool>>], pending: &mut
         pending.push_back((object, section));
     }
 }
-fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) -> Result<Vec<Object>> {
+fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>, roots: Roots<'_>) -> Result<Vec<Object>> {
     let mut defined = BTreeMap::new();
     for (index, object) in objects.iter().enumerate() { define(object, index, &mut defined)?; }
-    let library = matches!(objects[0].kind, Kind::Library { .. });
     let mut selected = objects.iter().map(|_| None).collect::<Vec<_>>();
     let mut pending = VecDeque::new();
-    if library {
-        // The original Rust wrapper references all of this algorithm object's native entries.
-        // GPU-only libraries have no CPU entries; their actual archive remains the root.
-        let count = objects[0].sections.len();
-        selected[0] = Some(vec![true; count]);
-        pending.extend((0..count).map(|section| (0, section)));
-    } else {
-        include(&objects, &mut selected, &mut pending, 0, 0);
+    match roots {
+        Roots::Entry if matches!(objects[0].kind, Kind::Library { .. }) => {
+            let count = objects[0].sections.len();
+            selected[0] = Some(vec![true; count]);
+            pending.extend((0..count).map(|section| (0, section)));
+        }
+        Roots::Entry => include(&objects, &mut selected, &mut pending, 0, 0),
+        Roots::Symbols(roots) => {
+            for (name, contract) in roots {
+                let (object, section) = resolve_symbol(name, contract, &mut objects, &mut libraries, &mut defined)?;
+                selected.resize_with(objects.len(), || None);
+                include(&objects, &mut selected, &mut pending, object, section);
+            }
+        }
     }
     while let Some((object, section)) = pending.pop_front() {
         for index in 0..objects[object].sections[section].associated.len() {
@@ -97,24 +132,10 @@ fn select(mut objects: Vec<Object>, mut libraries: Vec<crate::object::Library>) 
                 }
                 Target::Symbol(name) => {
                     let name = name.clone();
-                    let target = if let Some(&target) = defined.get(&name) { target } else {
-                        let mut provider = None;
-                        for library in &mut libraries {
-                            if let Some(object) = library.extract(&name)? { provider = Some(object); break; }
-                        }
-                        let provider = provider.ok_or_else(|| format!("未定义模块符号 {name}"))?;
-                        let next = objects.len();
-                        define(&provider, next, &mut defined)?;
-                        let target = defined[&name];
-                        objects.push(provider);
-                        selected.push(None);
-                        target
-                    };
-                    let actual = &objects[target.0].symbols[target.1];
-                    if &actual.contract != &objects[object].imports[&name] {
-                        return Err(format!("模块接口不匹配 {name}；调用方与定义须使用相同的类型、布局、访问及函数事实").into());
-                    }
-                    (target.0, actual.section)
+                    let contract = objects[object].imports[&name].clone();
+                    let target = resolve_symbol(&name, &contract, &mut objects, &mut libraries, &mut defined)?;
+                    selected.resize_with(objects.len(), || None);
+                    target
                 }
             };
             include(&objects, &mut selected, &mut pending, target.0, target.1);
@@ -169,7 +190,7 @@ fn prepare(mut objects: Vec<Object>, libraries: Vec<crate::object::Library>) -> 
         return Err("原生链接需要且只能有一个实际应用或算法库入口对象".into());
     }
     objects.swap(0, entries[0]);
-    let mut objects = select(objects, libraries)?;
+    let mut objects = select(objects, libraries, Roots::Entry)?;
     let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
     Ok((objects, archives))
 }
@@ -192,7 +213,7 @@ fn link_objects(objects: Vec<Object>, libraries: Vec<crate::object::Library>, pa
         Kind::Module { .. } => unreachable!(),
         Kind::Application { .. } => {
             if archives.is_empty() {
-                let (object, _) = combine::objects(objects)?;
+                let (object, _, _) = combine::objects(objects)?;
                 std::fs::write(&output, pe::link(&object)?)?;
             } else {
                 msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, false)?;

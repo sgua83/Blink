@@ -269,7 +269,9 @@ impl crate::Compiler {
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
     let (header, binding, source, functions, resources) = generate(program, &prefix, worker)?;
-    let imports = program.imports.clone();
+    let mut imports = program.imports.clone();
+    imports.extend(program.resources.iter().flat_map(|resources| &resources.programs)
+        .flat_map(|(_, program)| program.imports.clone()));
     let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
     let symbols = positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
         name, section, value, contract: Vec::new(), function: true,

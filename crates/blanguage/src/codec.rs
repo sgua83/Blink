@@ -41,7 +41,7 @@ pub(crate) trait Decode: Sized {
     }
 }
 macro_rules! integer{($($ty:ty),*)=>{$(impl Encode for $ty{fn encode(&self,w:&mut Writer){w.0.extend(self.to_le_bytes());}}impl Decode for $ty{fn decode(r:&mut Reader<'_>)->Result<Self>{Ok(Self::from_le_bytes(r.take(size_of::<Self>())?.try_into()?))}})*};}
-integer!(u8, u32, u64);
+integer!(u8, u16, u32, u64);
 impl Encode for usize {
     fn encode(&self, w: &mut Writer) {
         (*self as u64).encode(w);

@@ -3,7 +3,7 @@ use super::Result;
 use crate::object::{Kind, Object, Section, Target};
 use std::collections::BTreeMap;
 
-pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::object::Archive>)> {
+pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::object::Archive>, BTreeMap<String, (usize, u32)>)> {
     let name = objects[0].name.clone();
     let stack_bytes = objects
         .iter()
@@ -101,5 +101,6 @@ pub(super) fn objects(mut objects: Vec<Object>) -> Result<(Object, Vec<crate::ob
             archive: None,
         },
         archives,
+        symbols,
     ))
 }
