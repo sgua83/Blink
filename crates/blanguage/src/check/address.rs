@@ -772,7 +772,13 @@ impl Builder<'_> {
     pub(super) fn defer_address_values(&mut self,memory:usize)->Vec<view_contracts::ValueSnapshot> {
         let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|(name.clone(),self.positions(&place)))).collect::<Vec<_>>();
         let mut snapshots=Vec::new();
-        let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,positions:Vec<(usize,Position)>|{
+        let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,resources:Vec<Vec<usize>>|{
+            let metadata=resources.into_iter().map(|fields|{
+                let(mut offset,mut ty)=(0,ty);
+                for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
+                offset..offset+ty.size
+            }).collect::<Vec<_>>();
+            positions.retain(|(component,_)|!metadata.iter().any(|range|range.contains(&ty.components[*component].1)));
             let width=ty.components.len();let previous=proof.clone();proof.forget_value(&positions.iter().map(|(component,_)|*component).collect::<Vec<_>>(),width);
             for(component,position)in positions {
                 let identity=ValueIdentity::MemoryValue(memory,snapshots.len());
@@ -783,8 +789,9 @@ impl Builder<'_> {
         };
         for(name,positions)in owners {
             let binding=self.env.get_mut(&name).unwrap();
+            let resources=match &*binding{Binding::OwnedValue(owner)=>view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect(),_=>Vec::new()};
             let Some((proof,uniform,owner))=binding.proof_storage()else{continue;};
-            capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect());
+            capture(proof,uniform,owner.ty(),positions.into_iter().enumerate().collect(),resources);
             if let Binding::OwnedValue(owner)=binding{owner.value.constant=None;}
         }
         for binding in self.env.values_mut(){application::each_binding_data(binding,&mut|_,_,data|{
@@ -801,15 +808,10 @@ impl Builder<'_> {
                 };
                 if selected.ownership==application::Ownership::Moved{continue;}
                 let layout=Layout::of(&selected.ty);let borrow=Arc::new(borrow);
-                let metadata=view::resource_paths(&selected.ty).into_iter().filter_map(|fields|{
-                    application::model_data(&selected.elements,&fields)?;
-                    let(mut offset,mut ty)=(0,&selected.ty);
-                    for field in fields{let(at,next)=if ty.has_variants(){(ir::align_up(4,ty.align),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
-                    Some(offset..offset+ty.size)
-                }).collect::<Vec<_>>();
+                let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(&selected.elements,fields).is_some()).collect();
                 if let Some(value)=selected.elements.view_value_mut(){
-                    let positions=value.ty.components.iter().enumerate().filter(|(_,(_,word))|!metadata.iter().any(|range|range.contains(word))).map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
-                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions);value.constant=None;value.proof=bounds::Proof::capture(value);
+                    let positions=value.ty.components.iter().enumerate().map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
+                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,resources);value.constant=None;value.proof=bounds::Proof::capture(value);
                 }
             }
         });}

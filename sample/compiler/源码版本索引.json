@@ -88,7 +88,7 @@
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
-      "sha256": "6601a471eefdac2c2b2e16cb9cb4b0f7ebd9b04493cb1391079305499472598a"
+      "sha256": "c95ff01a335e98f60a70afe00b98d22699bdf5dced018cde556754bd3e2ebd3b"
     },
     {
       "path": "crates/blanguage/src/check/application.rs",
@@ -220,7 +220,7 @@
     },
     {
       "path": "crates/blanguage/src/dll/source.rs",
-      "sha256": "a47cea16bb7bb94a8e58b68c3312073783e9f3235ce5a792ea33c728e119f562"
+      "sha256": "609a04c9c122349927c5ddaf59610c1eb6195f8ec7edb5fdd2251496654537dc"
     },
     {
       "path": "crates/blanguage/src/execution.rs",
@@ -320,7 +320,7 @@
     },
     {
       "path": "crates/blanguage/src/resource.rs",
-      "sha256": "aa7db8a9b681687a6e7754fdb821fe7f1808c6b5e5f8e104875bfe3f77d6b259"
+      "sha256": "d40f3312ab6d37aa1d03f8b9c2a115c5988568f64e0047a713102905b1aa75a1"
     },
     {
       "path": "crates/blanguage/src/spirv.rs",
@@ -430,8 +430,8 @@
     },
     {
       "path": "crates/blanguage/src/check/address.rs",
-      "start_line": 860,
-      "end_line": 899,
+      "start_line": 862,
+      "end_line": 901,
       "sha256": "99705139b6ec5ce30235dfc0f44a90373b93cf41f7aeae3c06425355944d168e"
     },
     {
