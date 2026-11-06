@@ -1815,6 +1815,13 @@ impl Builder<'_> {
         let mut ranges = model.proof.element_ranges(0, ty).into_iter()
             .map(|range| (range.offset, range.intervals)).collect::<BTreeMap<_, _>>();
         let mut candidates = vec![data.length.clone()];
+        for &source in model.proof.origins.iter().flatten() {
+            if let ValueIdentity::Register(reg) = source && self.registers[reg] == Scalar::U32 {
+                candidates.push(Value { ty: Ty::scalar(Scalar::U32), regs: vec![reg],
+                    proof: bounds::Proof::default().with_identity(source),
+                    uniform: false, literal: false, constant: None });
+            }
+        }
         for binding in self.env.values() {
             if let Binding::Value(value) = binding {
                 for (component, &(scalar, _)) in value.ty.components.iter().enumerate() {

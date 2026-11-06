@@ -409,9 +409,11 @@ impl Proof {
         }).collect()
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
+        self.origins.resize_with(width, Vec::new);
         self.ranges.resize_with(width, ScalarRanges::default);
         self.domains.resize_with(width, Domains::new);
         for (source, &component) in components.iter().enumerate() {
+            self.origins[component] = fresh.origins.get(source).cloned().unwrap_or_default();
             self.ranges[component] = fresh.range_set(source);
             self.domains[component] = fresh.domains(source);
         }
