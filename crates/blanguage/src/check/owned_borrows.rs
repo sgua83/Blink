@@ -73,7 +73,7 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         fn replace(owner:&mut owned_values::OwnedValue,path:&[usize],value:Returned){let target=owner.payloads[path[0]].as_deref_mut().unwrap();if path.len()==1{*target=value;}else{let Returned::OwnedValue(child)=target else{unreachable!()};replace(child,&path[1..],value);}}
         if path.is_empty(){self.env.insert(name,match value{Returned::Dataset(data)=>Binding::ApplicationData(data),Returned::OwnedValue(value)=>Binding::OwnedValue(value),_=>unreachable!()});}else{let Some(Binding::OwnedValue(owner))=self.env.get_mut(&name)else{unreachable!()};replace(owner,path,value);}
     }
-    fn move_owned_place(&mut self,place:&Place){
+    pub(super) fn move_owned_place(&mut self,place:&Place){
         for(name,path,mut old)in self.owned_place_candidates(place){let actual=storage(&old).unwrap();let when=Presence::selected(&place.owned_positions().unwrap()[0],&actual.owned_positions().unwrap()[0]);self.forget_owned_metadata(&old);old.restrict_owned(&when.not());self.store_owned_candidate(name,&path,old);}
     }
     pub(super) fn take_owned_place(&mut self,place:Place,span:Span)->Result<Returned>{

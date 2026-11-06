@@ -1045,7 +1045,12 @@ impl Builder<'_> {
             _=>return Ok(()),
         };
         let mut borrow=self.view_uses.all(self,std::slice::from_ref(&transferred));borrow.union(retained);
-        self.drop_owned_tree(value,&borrow,span)
+        let consumed=match &value {
+            Returned::OwnedValue(value)=>value.place(),
+            Returned::Dataset(data)=>data.place.clone(),
+            _=>None,
+        };
+        self.cleanup_group(consumed.into_iter().collect(),|builder|builder.drop_owned_tree(value,&borrow,span))
     }
     pub(super) fn drop_owned_tree(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
         self.prepare_owned_read(&value);

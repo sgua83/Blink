@@ -96,6 +96,7 @@ pub(crate) fn compile_resources(
                 "blink_run",
                 "blink_error_message",
                 "blink_error_destroy",
+                "blink_error_join",
                 "blink_application_failed",
             ]
             .into_iter()

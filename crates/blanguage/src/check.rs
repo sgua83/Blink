@@ -353,7 +353,7 @@ pub(crate) fn compile_program(
             "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
         );
     }
-    native_function::finish_program(functions, expanded.program)
+    native_function::finish_program(world, functions, expanded.program)
 }
 fn expand_domain(world: &World, instance: &crate::generics::Instance, functions: &mut native_function::Module) -> Result<ExpandedDomain> {
     let name = &instance.name;
@@ -1417,7 +1417,12 @@ pub(crate) fn check_function(world: &World, instance: &crate::generics::Instance
     }
     checked_function(world, instance, None, native_function::Module::default()).map(|_| ())
 }
+struct CheckedContext {
+    program: Arc<Program>,
+    output_scopes: usize,
+}
 struct CheckedFunction {
+    context: CheckedContext,
     body: FunctionBody,
     returned: Option<returns::Returned>,
     inputs: Vec<Reg>,
@@ -1444,11 +1449,11 @@ fn checked_function(
     if b.application.is_some() { b.view_uses = view_liveness::State::new(world, d); }
     let (parameters, inputs, output_contracts) = function_parameters(&mut b, name)?;
     let (returned,written) = b.function_body(d.function.body.as_ref().unwrap())?;
-    finish_checked_function(b, name, parameters, inputs, output_contracts, returned, written)
+    finish_checked_function(b, program.clone(), name, parameters, inputs, output_contracts, returned, written)
 }
 
 #[inline(never)]
-fn function_program(world: &World, instance: &crate::generics::Instance) -> Result<Box<Program>> {
+fn function_program(world: &World, instance: &crate::generics::Instance) -> Result<Arc<Program>> {
     let name = &instance.name;
     let d = &instance.definition;
     // CPU 参数是实际调用 ABI；设备参数仍使用原并行域的接口身份。
@@ -1500,7 +1505,7 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    Ok(Box::new(program))
+    Ok(Arc::new(program))
 }
 
 // 参数准备与输出打包不在下一层函数体分析期间保留临时载荷。
@@ -1717,6 +1722,7 @@ fn function_parameters(
 #[inline(never)]
 fn finish_checked_function(
     mut b: Box<Builder<'_>>,
+    program: Arc<Program>,
     name: &String,
     parameters: Vec<CallParameter>,
     inputs: Vec<Reg>,
@@ -1751,6 +1757,7 @@ fn finish_checked_function(
         },
     };
     Ok(Box::new(CheckedFunction {
+        context: CheckedContext { program, output_scopes: b.output_scopes },
         body,
         returned,
         inputs: semantic_inputs,
@@ -1816,10 +1823,53 @@ fn number(source: &Source, span: Span, n: &str) -> Result<(Ty, Bits)> {
         Ok((Ty::scalar(Scalar::U32), Bits::from(bits)))
     }
 }
+// 原检查事实只保持到该Call的真实失败出口，不进入资源ABI或执行映像。
+#[derive(Clone)]
+pub(crate) enum FailureContinuation {
+    Return,
+    Scope(Box<FailureScope>),
+    Cleanup(usize),
+    CleanupScope(usize),
+}
+#[derive(Clone)]
+pub struct FailureScope {
+    env: BTreeMap<String, Binding>,
+    path: bounds::Clause,
+    initialized: BTreeSet<Position>,
+    definition: Arc<Definition>,
+    source_definition: Option<Arc<SourceOrigin>>,
+    source_context: Arc<SourceContext>,
+    source_site: Option<Arc<SourceSite>>,
+    mutable_names: BTreeSet<String>,
+    frame: Option<Vec<Reg>>,
+    domain: usize,
+    control_uniform: bool,
+    calls: Vec<String>,
+    consumed: Vec<Place>,
+}
+impl std::fmt::Debug for FailureScope {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("FailureScope")}
+}
+impl std::fmt::Debug for FailureContinuation {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        match self {
+            Self::Return=>f.write_str("Return"),
+            Self::Scope(_)=>f.write_str("Scope"),
+            Self::Cleanup(slot)=>f.debug_tuple("Cleanup").field(slot).finish(),
+            Self::CleanupScope(slot)=>f.debug_tuple("CleanupScope").field(slot).finish(),
+        }
+    }
+}
+#[derive(Clone,Copy)]
+enum PendingError { Group(usize), Exit(usize) }
+impl PendingError {
+    fn slot(self)->usize {match self {Self::Group(slot)|Self::Exit(slot)=>slot}}
+}
 struct Builder<'a> {
     residency: residency::Inputs,
     view_model: view_contracts::Function,
     application: Option<application::Context>,
+    pending_error: Option<PendingError>,
     functions: native_function::Module,
     world: &'a World,
     definition: Arc<Definition>,
@@ -1875,10 +1925,22 @@ impl<'a> Builder<'a> {
             &mut mutable_names,
         )?;
         let (source_definition, source_context) = definition.syntax_context(source_instance);
-        Ok(Self {
+        Ok(Self::from_checked(world,definition,program,domain,source_definition,source_context,mutable_names))
+    }
+    fn from_checked(
+        world: &'a World,
+        definition: &Arc<Definition>,
+        program: &'a Program,
+        domain: usize,
+        source_definition: Option<Arc<SourceOrigin>>,
+        source_context: Arc<SourceContext>,
+        mutable_names: BTreeSet<String>,
+    )->Self {
+        Self {
             residency: residency::Inputs::default(),
             view_model: view_contracts::Function::default(),
             application: None,
+            pending_error: None,
             functions: native_function::Module::default(),
             world,
             definition: definition.clone(),
@@ -1918,7 +1980,41 @@ impl<'a> Builder<'a> {
             tiles: Vec::new(),
             appends: BTreeMap::new(),
             prefix: None,
-        })
+        }
+    }
+    fn failure_scope(&self,consumed:Vec<Place>)->Option<Box<FailureScope>> {
+        let owns=self.env.values().any(|binding|match binding {
+            Binding::ApplicationData(data)=>data.ownership.may_own(),
+            Binding::OwnedValue(value)=>value.ownership.may_own(),
+            _=>false,
+        });
+        if !owns{return None;}
+        Some(Box::new(FailureScope {
+            env:self.env.clone(),path:self.path.clone(),initialized:self.initialized.clone(),
+            definition:self.definition.clone(),source_definition:self.source_definition.clone(),
+            source_context:self.source_context.clone(),source_site:self.source_site.clone(),
+            mutable_names:self.mutable_names.clone(),frame:self.application.as_ref().unwrap().frame.clone(),
+            domain:self.domain,control_uniform:self.control_uniform,calls:self.calls.clone(),consumed,
+        }))
+    }
+    fn failure_continuation(&self,consumed:Vec<Place>)->Option<FailureContinuation> {
+        Some(if let Some(error)=self.pending_error {FailureContinuation::Cleanup(error.slot())}
+        else {match self.failure_scope(consumed) {
+            Some(scope)=>FailureContinuation::Scope(scope),None=>FailureContinuation::Return,
+        }})
+    }
+    fn cleanup_group(&mut self,consumed:Vec<Place>,work:impl FnOnce(&mut Self)->Result<()>)->Result<()> {
+        if self.pending_error.is_some()||self.application.is_none(){return work(self);}
+        let slot=self.local_slots(&Ty::scalar(Scalar::U64)).0[0];
+        let outer=std::mem::take(&mut self.code);
+        self.pending_error=Some(PendingError::Group(slot));
+        let result=work(self);
+        let body=std::mem::replace(&mut self.code,outer);
+        self.pending_error=None;
+        result?;
+        let failure=self.failure_scope(consumed);
+        self.emit(InstKind::Cleanup{slot,body,failure});
+        Ok(())
     }
     fn emit(&mut self, kind: InstKind) {
         self.code.push(Inst { source_site: self.source_site.clone(), ..Inst::new(kind) });

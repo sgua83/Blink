@@ -192,6 +192,8 @@ fn instruction(value: &Inst) -> String {
         Break => node("Break", &[]), Continue => node("Continue", &[]),
         Scope(body) => node("Scope", &[("body", code(body))]), Exit => node("Exit", &[]),
         Raise(error) => node("Raise", &[("error", number(error))]),
+        #[cfg(feature = "compiler")]
+        Cleanup{slot,body,..}=>node("Cleanup",&[("slot",number(slot)),("body",code(body))]),
     };
     #[cfg(feature = "compiler")] {
         let mut result = result;

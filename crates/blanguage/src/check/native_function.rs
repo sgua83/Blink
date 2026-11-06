@@ -139,6 +139,7 @@ impl crate::module::codec::Decode for Contract {
 }
 
 struct Unit {
+    context: Option<CheckedContext>,
     function: Option<FunctionBody>,
     contract: Contract,
     module: String,
@@ -190,6 +191,7 @@ fn compiled_declaration(
     functions.units.insert(
         instance.name.clone(),
         Some(Unit {
+            context: None,
             function: None,
             contract,
             module: instance.definition.module.clone(),
@@ -230,6 +232,7 @@ fn finish_declaration(
     functions.units.insert(
         instance.name.clone(),
         Some(Unit {
+            context: Some(checked.context),
             function: Some(function),
             contract,
             module: instance.definition.module.clone(),
@@ -366,6 +369,7 @@ pub(super) fn canonical(builder:&mut Builder<'_>,returned:Option<Returned>,input
 }
 pub(super) fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = declaration(world, instance, Module::default())?;
+    lower_module_failures(world,&mut functions)?;
     resolve_residencies(&mut functions)
 }
 impl Builder<'_> {
@@ -624,7 +628,7 @@ impl Builder<'_> {
                     let descriptor=Self::borrowed_dataset_parameter_type(p.access,d.execution);
                     let dataset_borrow=if descriptor.components[0].0==Scalar::U64 && reference.root.ty.components[0].0==Scalar::U32 {
                         let frame=self.application_frame(span)?;
-                        Some(Box::new(ir::DatasetBorrow{frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
+                        Some(Box::new(ir::DatasetBorrow{error_slot:self.pending_error.map(PendingError::slot),frame:[frame.regs[0],frame.regs[1]],handle:reference.root.regs[0],input:actual.len(),call:self.view_model.calls.len()}))
                     }else{None};
                     let mut value=self.application_reference_value(&reference,descriptor,span)?;
                     if p.access==Access::Write&&d.execution==crate::execution::Requirement::Invocation {
@@ -755,7 +759,9 @@ impl Builder<'_> {
         for argument in &mut arguments {
             if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {borrow.call=self.view_model.calls.len();}
         }
+        let failure=self.failure_continuation(written.iter().filter(|(_,place)|place.ty().owns_resources()).map(|(_,place)|place.clone()).collect());
         self.code.push(Inst { kind: InstKind::Call(Call {
+            failure,
             error: None,
             target: CallTarget::Defined(instance.name.clone()),
             arguments,
@@ -1078,7 +1084,7 @@ fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
         match &mut (inst).kind {
             InstKind::Call(call) => visit(call),
-            InstKind::Scope(body) => calls(body, visit),
+            InstKind::Scope(body) | InstKind::Cleanup{body,..} => calls(body, visit),
             InstKind::If { yes, no, .. } => {
                 calls(yes, visit);
                 calls(no, visit);
@@ -1158,6 +1164,26 @@ fn uses_frame(code: &[Inst], registers: &[Reg], imported: &BTreeSet<String>) -> 
 
 // The original call keeps its actual Frame binding only until the same module's
 // Dataset contract closes. No function body or resource graph is reconstructed.
+fn dataset_write_regions(borrow:&DatasetBorrow,context:&view_contracts::Call,contract:&Contract)->BTreeSet<(u32,u32)> {
+let mut regions=BTreeSet::new();
+for effect in contract.view_access.as_ref().unwrap() {
+    let view_contracts::Access::Dataset{borrows,when,access,..}=effect else{continue};
+    if !access.writes(){continue;}
+    let path=when.guard_at_call(&context.arguments).assume(&context.path,true);
+    if !path.possible(){continue;}
+    for(source,when)in borrows.sources.entries() {
+        let path=bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true);
+        if !path.possible(){continue;}
+        let view::Source::Position(origin)=source else{continue};
+        for(source,when)in origin.resources().sources.entries() {
+            if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input),_)if *input==borrow.input){continue;}
+            if !bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true).possible(){continue;}
+            regions.extend(origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*word,scalar.size())));
+        }
+    }
+}
+    regions
+}
 fn lower_dataset_borrows<'a>(
     body:&mut ValueCode,
     model:&view_contracts::Function,
@@ -1182,23 +1208,7 @@ fn lower_dataset_borrows<'a>(
                         let CallArgument::Value{values,dataset_borrow,..}=argument else{continue};
                         let Some(borrow)=dataset_borrow.take() else{continue};
                         let context=&model.calls[borrow.call];
-                        let mut regions=BTreeSet::new();
-                        for effect in contract(&context.function).view_access.as_ref().unwrap() {
-                            let view_contracts::Access::Dataset{borrows,when,access,..}=effect else{continue};
-                            if !access.writes(){continue;}
-                            let path=when.guard_at_call(&context.arguments).assume(&context.path,true);
-                            if !path.possible(){continue;}
-                            for(source,when)in borrows.sources.entries() {
-                                let path=bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true);
-                                if !path.possible(){continue;}
-                                let view::Source::Position(origin)=source else{continue};
-                                for(source,when)in origin.resources().sources.entries() {
-                                    if !matches!(source,view::Source::Data(ValueIdentity::Register(input))|view::Source::Parameter(ValueIdentity::Register(input),_)if *input==borrow.input){continue;}
-                                    if !bounds::Condition::guard(when).guard_at_call(&context.arguments).assume(&path,true).possible(){continue;}
-                                    regions.extend(origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*word,scalar.size())));
-                                }
-                            }
-                        }
+                        let regions=dataset_write_regions(&borrow,context,contract(&context.function));
                         for(word,bytes)in regions {
                             let field=register(registers,Scalar::U64);
                             before.push(InstKind::Cast{dst:field,src:values[3]});
@@ -1210,6 +1220,7 @@ fn lower_dataset_borrows<'a>(
                             let outputs=result.components.iter().map(|(scalar,_)|register(registers,*scalar)).collect();
                             let error=register(registers,Scalar::U64);
                             before.push(InstKind::Call(Call{
+                                failure:Some(match borrow.error_slot {Some(slot)=>FailureContinuation::CleanupScope(slot),None=>FailureContinuation::Return}),
                                 error:Some(error),
                                 target:CallTarget::External(ExternalName{library:crate::application::RUNTIME_LIBRARY.into(),symbol:"blink_address".into()}),
                                 arguments:vec![
@@ -1239,39 +1250,242 @@ fn lower_dataset_borrows<'a>(
     block(&mut body.code,&mut body.registers,model,contract);
 }
 
-fn lower_failure_calls(body:&mut ValueCode, fallible:&BTreeSet<String>) {
-    fn block(code:&mut Vec<Inst>,registers:&mut Vec<Scalar>,fallible:&BTreeSet<String>){
-        let mut out=Vec::new();
-        for mut inst in std::mem::take(code){
-            match &mut inst.kind {
-                InstKind::Scope(body)=>block(body,registers,fallible),
-                InstKind::If{yes,no,..}=>{block(yes,registers,fallible);block(no,registers,fallible);}
-                InstKind::Loop{condition,body,..}=>{block(condition,registers,fallible);block(body,registers,fallible);}
-                _=>{}
+// The existing Module owns the closed effect; no second call graph is built.
+fn failure_effects(module:&mut Module) {
+    loop {
+        let known=module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
+        let mut required=BTreeSet::new();
+        for(name,unit)in &module.units {
+            let unit=unit.as_ref().unwrap();
+            if let Some(function)=&unit.function {
+                crate::optimize::visit(&function.body.code,&mut |inst|if let InstKind::Call(call)=&inst.kind {
+                    if call.error.is_some() || matches!(&call.target,CallTarget::Defined(name)if known.contains(name)) {
+                        required.insert(name.clone());
+                    }
+                    for argument in &call.arguments {
+                        if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {
+                            let context=&unit.view_model.calls[borrow.call];
+                            let target=&module.units[&context.function].as_ref().unwrap().contract;
+                            if !dataset_write_regions(borrow,context,target).is_empty(){required.insert(name.clone());}
+                        }
+                    }
+                });
             }
-            let error=if let InstKind::Call(call)=&mut inst.kind {
-                if call.error.is_some()
-                    || matches!(&call.target,CallTarget::Defined(name)if fallible.contains(name)){
-                    let error=match call.error{Some(error)=>error,None=>{let error=registers.len();registers.push(Scalar::U64);call.error=Some(error);error}};Some(error)
+        }
+        let mut changed=false;
+        for name in required {
+            let contract=&mut module.units.get_mut(&name).unwrap().as_mut().unwrap().contract;
+            changed|=!contract.fallible;contract.fallible=true;
+        }
+        if !changed{break;}
+    }
+}
+fn failure_scope(
+    world:&World,scope:FailureScope,error:Reg,registers:&mut Vec<Scalar>,
+    locals:&mut BTreeMap<usize,Ty>,unit:&mut Unit,module:&mut Module,existing:Option<usize>,
+)->Result<Vec<Inst>> {
+    let program=unit.context.as_ref().unwrap().program.clone();
+    let mut b=Builder::from_checked(world,&scope.definition,&program,scope.domain,
+        scope.source_definition,scope.source_context,scope.mutable_names);
+    b.application=Some(application::Context{frame:scope.frame});
+    b.env=scope.env;b.path=scope.path;b.initialized=scope.initialized;
+    b.control_uniform=scope.control_uniform;b.calls=scope.calls;
+    b.source_site=scope.source_site;b.in_function=true;
+    b.registers=std::mem::take(registers);b.locals=std::mem::take(locals);
+    b.output_scopes=unit.context.as_ref().unwrap().output_scopes;
+    b.functions=std::mem::take(module);
+    b.view_model=std::mem::take(&mut unit.view_model);
+    b.residency=std::mem::take(&mut unit.residency);
+    let initialization=b.view_model.initialization.len();
+    let slot=match existing{Some(slot)=>slot,None=>{let slot=b.local_slots(&Ty::scalar(Scalar::U64)).0[0];b.emit(InstKind::StoreLocal(slot,error));slot}};
+    b.pending_error=Some(PendingError::Exit(slot));
+    // Failure cancels ordinary future uses; the original F consumers remain live.
+    b.env.retain(|name,binding|!name.starts_with('\0')||match binding {
+        Binding::ApplicationData(data)=>data.ownership.may_own(),
+        Binding::OwnedValue(value)=>value.ownership.may_own(),
+        _=>false,
+    });
+    for place in scope.consumed {b.move_owned_place(&place);}
+    b.release_application_data(None,view::Borrow::default())?;
+    let result=b.reg(Scalar::U64);
+    b.emit(InstKind::LoadLocal(result,slot));
+    b.emit(InstKind::Raise(result));
+    // These writes happen on a failed execution, never promise normal outputs.
+    b.view_model.initialization.truncate(initialization);
+    for call in &b.view_model.calls {
+        for component in 0..call.snapshots.len() {
+            let id=ValueIdentity::MemoryValue(call.memory,component);
+            b.view_model.parameters.insert(id,id);
+        }
+    }
+    unit.context.as_mut().unwrap().output_scopes=b.output_scopes;
+    unit.view_model=b.view_model;unit.residency=b.residency;
+    *registers=b.registers;*locals=b.locals;*module=b.functions;
+    Ok(b.code)
+}
+fn lower_failure_calls(
+    world:&World,body:&mut ValueCode,mut unit:Option<&mut Unit>,
+    known:&BTreeSet<String>,mut module:Option<&mut Module>,
+)->Result<(bool,bool)> {
+    fn block(
+        world:&World,code:&mut Vec<Inst>,registers:&mut Vec<Scalar>,locals:&mut BTreeMap<usize,Ty>,
+        unit:&mut Option<&mut Unit>,known:&BTreeSet<String>,module:&mut Option<&mut Module>,
+    )->Result<(bool,bool)> {
+        let mut out=Vec::new();let mut changed=false;let mut scoped=false;
+        for mut inst in std::mem::take(code) {
+            if let InstKind::Cleanup{slot,body,failure}=&mut inst.kind {
+                let slot=*slot;let mut can_fail=false;
+                let owner=unit.as_deref().unwrap();
+                crate::optimize::visit(body,&mut |inst|if let InstKind::Call(call)=&inst.kind {
+                    can_fail|=call.error.is_some()||matches!(&call.target,CallTarget::Defined(name)if known.contains(name));
+                    for argument in &call.arguments {
+                        if let CallArgument::Value{dataset_borrow:Some(borrow),..}=argument {
+                            let context=&owner.view_model.calls[borrow.call];
+                            let target=if context.function==owner.context.as_ref().unwrap().program.name{&owner.contract}
+                                else{&module.as_deref().unwrap().units[&context.function].as_ref().unwrap().contract};
+                            can_fail|=!dataset_write_regions(borrow,context,target).is_empty();
+                        }
+                    }
+                });
+                let body=std::mem::take(body);let failure=failure.take();
+                if !can_fail {
+                    inst.kind=InstKind::Scope(body);out.push(inst);changed=true;continue;
+                }
+                let site=inst.source_site.clone();let origin=inst.generated_origin.clone();
+                let generated=|kind|Inst{kind,source_site:site.clone(),generated_origin:origin.clone()};
+                let zero=registers.len();registers.push(Scalar::U64);
+                let error=registers.len();registers.push(Scalar::U64);
+                let failed=registers.len();registers.push(Scalar::Bool);
+                out.push(generated(InstKind::Constant(zero,Scalar::U64,0)));
+                out.push(generated(InstKind::StoreLocal(slot,zero)));
+                out.push(generated(InstKind::Scope(body)));
+                out.push(generated(InstKind::LoadLocal(error,slot)));
+                out.push(generated(InstKind::Binary{dst:failed,op:BinaryOp::Compare(Comparison::NotEqual),a:error,b:zero}));
+                let yes=match failure {
+                    Some(scope)=>{
+                        scoped=true;
+                        failure_scope(world,*scope,error,registers,locals,unit.as_deref_mut().unwrap(),module.as_deref_mut().unwrap(),Some(slot))?
+                    }
+                    None=>vec![generated(InstKind::Raise(error))],
+                };
+                out.push(generated(InstKind::If{condition:failed,yes,no:Vec::new()}));
+                changed=true;continue;
+            }
+            let nested=match &mut inst.kind {
+                InstKind::Scope(body)=>block(world,body,registers,locals,unit,known,module)?,
+                InstKind::If{yes,no,..}=>{
+                    let a=block(world,yes,registers,locals,unit,known,module)?;
+                    let b=block(world,no,registers,locals,unit,known,module)?;
+                    (a.0||b.0,a.1||b.1)
+                }
+                InstKind::Loop{condition,body,..}=>{
+                    let a=block(world,condition,registers,locals,unit,known,module)?;
+                    let b=block(world,body,registers,locals,unit,known,module)?;
+                    (a.0||b.0,a.1||b.1)
+                }
+                _=>(false,false),
+            };
+            changed|=nested.0;scoped|=nested.1;
+            let failure=if let InstKind::Call(call)=&mut inst.kind {
+                if call.failure.is_some()&&(call.error.is_some()||matches!(&call.target,CallTarget::Defined(name)if known.contains(name))) {
+                    let error=*call.error.get_or_insert_with(||{let reg=registers.len();registers.push(Scalar::U64);reg});
+                    Some((error,call.failure.take().unwrap()))
                 }else{None}
             }else{None};
-            let source_site=inst.source_site.clone();
-            let generated_origin=inst.generated_origin.clone();
-            let generated=|kind|Inst{kind,source_site:source_site.clone(),generated_origin:generated_origin.clone()};
+            let site=inst.source_site.clone();let origin=inst.generated_origin.clone();
+            let generated=|kind|Inst{kind,source_site:site.clone(),generated_origin:origin.clone()};
             out.push(inst);
-            if let Some(error)=error {
+            if let Some((error,continuation))=failure {
+                changed=true;
+                let yes=match continuation {
+                    FailureContinuation::Return=>vec![generated(InstKind::Raise(error))],
+                    FailureContinuation::Scope(scope)=>{
+                        scoped=true;
+                        failure_scope(world,*scope,error,registers,locals,unit.as_deref_mut().unwrap(),module.as_deref_mut().unwrap(),None)?
+                    }
+                    FailureContinuation::Cleanup(slot)|FailureContinuation::CleanupScope(slot)=>{
+                        let leave=matches!(continuation,FailureContinuation::CleanupScope(_));
+                        let previous=registers.len();registers.push(Scalar::U64);
+                        let joined=registers.len();registers.push(Scalar::U64);
+                        let ty=Ty::scalar(Scalar::U64);
+                        let argument=|value|CallArgument::Value{origin:None,dataset_borrow:None,ty:ty.clone(),values:vec![value]};
+                        let zero=registers.len();registers.push(Scalar::U64);
+                        let present=registers.len();registers.push(Scalar::Bool);
+                        let joined=vec![
+                            generated(application::runtime_call("error_join",vec![argument(previous),argument(error)],Some(ty),vec![joined],None,None).kind),
+                            generated(InstKind::StoreLocal(slot,joined)),
+                        ];
+                        let mut code=vec![
+                            generated(InstKind::LoadLocal(previous,slot)),
+                            generated(InstKind::Constant(zero,Scalar::U64,0)),
+                            generated(InstKind::Binary{dst:present,op:BinaryOp::Compare(Comparison::NotEqual),a:previous,b:zero}),
+                            generated(InstKind::If{condition:present,yes:joined,no:vec![generated(InstKind::StoreLocal(slot,error))]}),
+                        ];
+                        if leave{code.push(generated(InstKind::Exit));}
+                        code
+                    }
+                };
                 let zero=registers.len();registers.push(Scalar::U64);
                 let failed=registers.len();registers.push(Scalar::Bool);
                 out.push(generated(InstKind::Constant(zero,Scalar::U64,0)));
                 out.push(generated(InstKind::Binary{dst:failed,op:BinaryOp::Compare(Comparison::NotEqual),a:error,b:zero}));
-                out.push(generated(InstKind::If{condition:failed,yes:vec![generated(InstKind::Raise(error))],no:Vec::new()}));
+                out.push(generated(InstKind::If{condition:failed,yes,no:Vec::new()}));
             }
         }
-        *code=out;
+        *code=out;Ok((changed,scoped))
     }
-    block(&mut body.code,&mut body.registers,fallible);
+    block(world,&mut body.code,&mut body.registers,&mut body.locals,&mut unit,known,&mut module)
+}
+fn lower_module_failures(world:&World,module:&mut Module)->Result<()> {
+    loop {
+        resolve_views(module,None)?;
+        failure_effects(module);
+        let known=module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
+        let names=module.units.keys().cloned().collect::<Vec<_>>();
+        let mut changed=false;let mut scoped=false;
+        for name in names {
+            let mut unit=module.units.get_mut(&name).unwrap().take().unwrap();
+            if let Some(mut function)=unit.function.take() {
+                let result=lower_failure_calls(world,&mut function.body,Some(&mut unit),&known,Some(&mut *module))?;
+                changed|=result.0;scoped|=result.1;unit.function=Some(function);
+            }
+            *module.units.get_mut(&name).unwrap()=Some(unit);
+        }
+        if scoped {
+            for unit in module.units.values_mut() {
+                let unit=unit.as_mut().unwrap();
+                if unit.function.is_some(){unit.contract.view_access=None;}
+            }
+        }
+        if !changed{break;}
+    }
+    // The Dataset contract is now complete. Generate each real address once.
+    let names=module.units.keys().cloned().collect::<Vec<_>>();
+    for name in names {
+        let mut unit=module.units.get_mut(&name).unwrap().take().unwrap();
+        if let Some(function)=&mut unit.function {
+            let own=&unit.contract;
+            lower_dataset_borrows(&mut function.body,&unit.view_model,&|callee|
+                if callee==name{own}else{&module.units[callee].as_ref().unwrap().contract});
+        }
+        *module.units.get_mut(&name).unwrap()=Some(unit);
+    }
+    let known=module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
+    let names=module.units.keys().cloned().collect::<Vec<_>>();
+    for name in names {
+        let mut unit=module.units.get_mut(&name).unwrap().take().unwrap();
+        if let Some(mut function)=unit.function.take() {
+            lower_failure_calls(world,&mut function.body,Some(&mut unit),&known,Some(&mut *module))?;
+            calls(&mut function.body.code,&mut |call|call.failure=None);
+            unit.function=Some(function);
+        }
+        unit.context=None;
+        *module.units.get_mut(&name).unwrap()=Some(unit);
+    }
+    Ok(())
 }
 fn finalize(
+    world:&World,
     mut module: Module,
     mut reachable: BTreeSet<String>,
     mut root: Option<(&mut ValueCode,&view_contracts::Function)>,
@@ -1279,6 +1493,7 @@ fn finalize(
     programs: &mut [&mut Program],
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
+    lower_module_failures(world,&mut module)?;
     resolve_residencies(&mut module)?;
     let mut resources = std::mem::take(&mut module.resources);
     let mut programs = programs.iter_mut().map(|program| &mut **program)
@@ -1306,22 +1521,10 @@ fn finalize(
         .filter(|(_, unit)| unit.function.is_none() && !unit.contract.frame)
         .map(|(name, _)| name.clone()).collect::<BTreeSet<_>>();
     let mut frame = BTreeSet::new();
-    let mut fallible=BTreeSet::new();
+    let fallible=units.iter().filter_map(|(name,unit)|unit.contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
     let names=units.keys().cloned().collect::<Vec<_>>();
     for name in names {
-        let mut unit=units.remove(&name).unwrap();
-        if let Some(function)=&mut unit.function {
-            let own=&unit.contract;
-            lower_dataset_borrows(&mut function.body,&unit.view_model,&|callee|
-                if callee==name{own}else{&units[callee].contract});
-            crate::optimize::value_code(&mut function.body);
-        }
-        if unit.contract.fallible {fallible.insert(name.clone());}
-        if let Some(function)=&mut unit.function{
-            calls(&mut function.body.code,&mut |call|{
-                if call.error.is_some(){fallible.insert(name.clone());}
-            });
-        }
+        let unit=units.remove(&name).unwrap();
         if unit.contract.frame {frame.insert(name.clone());}
         if let Some(function)=&unit.function {
             let registers=&function.body.inputs[..2];
@@ -1337,27 +1540,23 @@ fn finalize(
     }
     loop {
         let mut next = frame.clone();
-        let mut next_fallible=fallible.clone();
         for (name, unit) in &mut units {
             if let Some(function) = &mut unit.function {
                 calls(&mut function.body.code, &mut |call| {
-                    if matches!(&call.target,CallTarget::Defined(callee)if fallible.contains(callee)){next_fallible.insert(name.clone());}
                     if matches!(&call.target, CallTarget::Defined(callee) if frame.contains(callee)) {
                         next.insert(name.clone());
                     }
                 });
             }
         }
-        if next == frame && next_fallible == fallible {
+        if next == frame {
             break;
         }
         frame = next;
-        fallible=next_fallible;
     }
     let mut imports = BTreeMap::new();
     for (name, unit) in &mut units {
         unit.contract.frame = frame.contains(name);
-        unit.contract.fallible=fallible.contains(name);
         if unit.c_abi && unit.contract.frame {
             return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
         }
@@ -1390,7 +1589,7 @@ fn finalize(
     }
     if let Some((body,_)) = &mut root {
         prune(body, &unframed);
-        lower_failure_calls(body,&fallible);
+        lower_failure_calls(world,body,None,&fallible,None)?;
     }
     let mut result = Finalized {
         functions: Vec::new(),
@@ -1404,7 +1603,6 @@ fn finalize(
             let mut function = unit.function.take().unwrap();
             prune(&mut function.body, &unframed);
             function.fallible=fallible.contains(&name);
-            lower_failure_calls(&mut function.body,&fallible);
             if !frame.contains(&name) {
                 function.parameters.remove(0);
                 function.body.inputs.drain(..2);
@@ -1419,12 +1617,12 @@ fn finalize(
     }
     Ok(result)
 }
-pub(super) fn finish(module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
+pub(super) fn finish(world:&World, module: Module, root: &mut ValueCode, model:&view_contracts::Function) -> Result<Finalized> {
     let roots = dependencies(root);
-    finalize(module, roots, Some((root,model)), None, &mut [])
+    finalize(world, module, roots, Some((root,model)), None, &mut [])
 }
-pub(super) fn finish_program(module: Module, mut program: Program) -> Result<Program> {
-    let finalized = finalize(module, BTreeSet::new(), None, None, &mut [&mut program])?;
+pub(super) fn finish_program(world:&World, module: Module, mut program: Program) -> Result<Program> {
+    let finalized = finalize(world, module, BTreeSet::new(), None, None, &mut [&mut program])?;
     program.functions = finalized.functions.into();
     Ok(program)
 }
@@ -1509,7 +1707,7 @@ pub(crate) fn compile_module(
         roots.insert(instance.name.clone());
         functions = declaration(world, &instance, functions)?;
     }
-    let finalized = finalize(functions, roots, None, Some(entry), &mut [])?;
+    let finalized = finalize(world, functions, roots, None, Some(entry), &mut [])?;
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, finalized.resources);
     Ok(crate::module::Module {
@@ -1576,7 +1774,9 @@ impl Builder<'_> {
             reason: GenerationReason::ApplicationDomainCall,
             trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
         });
+        let failure=self.failure_continuation(Vec::new());
         self.code.push(Inst::generated(InstKind::Call(Call {
+            failure,
             error: None,
             target: CallTarget::Defined(crate::module::domain::symbol(&instance.name, target)),
             arguments,
@@ -1750,6 +1950,7 @@ fn build_domain(
             });
         }
         code.push(Inst { source_site: call.source, ..Inst::new(InstKind::Call(Call {
+            failure: Some(FailureContinuation::Return),
             error: None,
             target: CallTarget::Defined(crate::module::domain::symbol(&call.instance.name, target)),
             arguments,
@@ -1825,6 +2026,7 @@ fn build_domain(
     functions.units.insert(
         name,
         Some(Unit {
+            context: None,
             function: Some(function),
             contract,
             module: d.module.clone(),
@@ -1890,6 +2092,7 @@ fn emit_domain_part(
             None,
             Vec::new(),
             Some(error),
+            Some(FailureContinuation::Return),
         )
     });
     Ok(())

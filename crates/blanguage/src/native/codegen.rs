@@ -368,7 +368,7 @@ impl Emitter<'_> {
                     self.bytes(&[0x4c, 0x89, 0xf8]);
                     self.store(*dst);
                 }
-                InstKind::TextureSample { .. } => return Err("原生采样尚未降低到纹理读取 IR"),
+                InstKind::TextureSample { .. } | InstKind::Cleanup { .. } => return Err("原生操作尚未降低到CPU执行IR"),
                 InstKind::TextureSize {
                     result,
                     texture,

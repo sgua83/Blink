@@ -344,7 +344,7 @@ impl Builder<'_> {
         let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
             .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
         let memory_use=self.call_address_memory(memory,span)?;
-        let kind=InstKind::Call(Call { error:None, target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
+        let kind=InstKind::Call(Call { failure:None, error:None, target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
         let first = self.code.len();
         if let Some(origin)=generated_origin { self.code.push(Inst::generated(kind,origin)); }
         else { self.emit(kind); }

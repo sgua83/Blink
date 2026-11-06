@@ -30,6 +30,17 @@ mod native {
         drop(unsafe { Box::from_raw(error.cast::<NativeError>()) });
     }
     /// # Safety
+    /// primary和secondary是本运行库交回的两个独立、唯一拥有且无活动文本借用的错误。
+    /// 同次消费二者并交回一个拥有错误；原primary分配继续承载全部实际错误文本。
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn blink_error_join(primary:*mut c_void,secondary:*mut c_void)->*mut c_void {
+        let other=unsafe { Box::from_raw(secondary.cast::<NativeError>()) };
+        let error=unsafe { &mut *primary.cast::<NativeError>() };
+        error.message.push(char::from(10));
+        error.message.push_str(&other.message);
+        primary
+    }
+    /// # Safety
     /// frame属于本运行库，ty是已绑定模块的实际类型索引；调用遵守独占所有权。
     /// output可写一个u32，仅成功时初始化。返回空指针表示成功，非空错误交由调用者消费。
     #[unsafe(no_mangle)]

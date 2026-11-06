@@ -379,8 +379,10 @@ pub(super) fn runtime_call(
     result: Option<Ty>,
     values: Vec<Reg>,
     error: Option<Reg>,
+    failure: Option<FailureContinuation>,
 ) -> Inst {
     Inst::new(InstKind::Call(Call {
+        failure,
         error,
         target: CallTarget::External(ExternalName {
             library: crate::application::RUNTIME_LIBRARY.into(),
@@ -450,28 +452,21 @@ pub(crate) fn compile_application(
         reason: GenerationReason::ApplicationEntryCall, trigger: Some(entry_anchor.clone()),
     })), None)?;
     let result = builder.ordinary_return(result, d.function.span)?.unwrap();
-    let mut app = builder.application.take().unwrap();
+    let app = builder.application.take().unwrap();
     let mut body = ValueCode {
         entry_origin: None,
         generated_origin: Some(Arc::new(GeneratedOrigin { reason: GenerationReason::ApplicationEntry, trigger: Some(entry_anchor.clone()) })),
         registers: builder.registers,
         locals: builder.locals,
         code: builder.code,
-        inputs: app
-            .frame
-            .as_ref()
-            .cloned()
-            .unwrap_or_default(),
+        inputs: Vec::new(),
         outputs: result.regs,
     };
-    crate::optimize::value_code(&mut body);
-    if let Some(frame) = &mut app.frame {
-        *frame = std::mem::take(&mut body.inputs);
-    }
-    let finalized = native_function::finish(builder.functions, &mut body, &builder.view_model)?;
+    let finalized = native_function::finish(world, builder.functions, &mut body, &builder.view_model)?;
     let mut functions = finalized.functions;
     let imports = finalized.imports;
     let resources = live_resources(&mut body, &mut functions, app.frame, finalized.resources, &entry_anchor);
+    crate::optimize::value_code(&mut body);
     Ok(crate::application::Application {
         compiler: world.worker.compiler().clone(),
         name: instance.name.clone(),
@@ -602,7 +597,7 @@ fn live_resources(
                 inst.kind=runtime_call("application_failed",vec![
                     CallArgument::Value{origin:None,dataset_borrow:None,ty:pointer_type(),values:frame.to_vec()},
                     CallArgument::Value{origin:None,dataset_borrow:None,ty:Ty::scalar(Scalar::U64),values:vec![*error]},
-                ],None,Vec::new(),None).kind;
+                ],None,Vec::new(),None,None).kind;
             } else {match &mut inst.kind {
                 InstKind::Scope(body)=>root_failure(body,frame),
                 InstKind::If{yes,no,..}=>{root_failure(yes,frame);root_failure(no,frame);}
@@ -619,6 +614,7 @@ fn live_resources(
         None,
         Vec::new(),
         None,
+        None,
     ).kind, GenerationReason::FrameDestroy));
     body.code = vec![
         generated(InstKind::FunctionAddress(receiver, CallTarget::External(ExternalName {
@@ -634,6 +630,7 @@ fn live_resources(
             ],
             Some(pointer_type()),
             frame.clone(),
+            None,
             None,
         ).kind, GenerationReason::FrameCreate),
         Inst::generated(InstKind::Binary { dst: address, op: BinaryOp::Or, a: frame[0], b: frame[1] }, readiness.clone()),
@@ -898,6 +895,7 @@ impl Builder<'_> {
             result.clone(),
             values.clone(),
             Some(error),
+            self.failure_continuation(Vec::new()),
         ).kind;
         if let Some(generation) = generation {
             self.code.push(Inst::generated(kind, generation));
@@ -926,6 +924,7 @@ impl Builder<'_> {
             ],
             None,
             Vec::new(),
+            None,
             None,
         )
     }
@@ -1049,20 +1048,21 @@ impl Builder<'_> {
         data
     }
     pub(super) fn release_application_data(&mut self,keep:Option<&BTreeSet<String>>,retained:view::Borrow)->Result<()> {
-        let mut names=self.env.iter()
+        self.cleanup_group(Vec::new(),|builder|{
+        let mut names=builder.env.iter()
             .filter(|(name,_)|!keep.is_some_and(|names|names.contains(*name)))
             .filter_map(|(name,binding)|match binding {
                 Binding::ApplicationData(data) if data.ownership.may_own()=>Some(name.clone()),
-                Binding::OwnedValue(value) if value.ownership.may_own()&&!matches!(value.place(),Some(Place::Reference{..}))=>Some(name.clone()),
+                Binding::OwnedValue(value) if value.ownership.may_own()&&(matches!(builder.pending_error,Some(PendingError::Exit(_)))||!matches!(value.place(),Some(Place::Reference{..})))=>Some(name.clone()),
                 _=>None,
             }).collect::<Vec<_>>();
         names.sort_by_key(|name|{
             let temporary=name.strip_prefix("\0argument:").map(|index|index.parse::<usize>().unwrap());
-            let declaration=match &self.env[name]{Binding::OwnedValue(value)=>value.declaration,_=>0};
+            let declaration=match &builder.env[name]{Binding::OwnedValue(value)=>value.declaration,_=>0};
             (temporary.is_some(),temporary.unwrap_or(declaration))
         });
         let mut bindings=names.into_iter().map(|name|{
-            let binding=self.env[&name].clone();
+            let binding=builder.env[&name].clone();
             (name,binding)
         }).collect::<Vec<_>>();
         while let Some((name,binding))=bindings.pop(){
@@ -1071,11 +1071,11 @@ impl Builder<'_> {
                 if future.starts_with('\0'){remaining.union(&user_owned::cleanup_borrow(value,&BTreeSet::new()));}
             }
             if !name.starts_with('\0')&&matches!(&binding,Binding::OwnedValue(value)if value.value.ty.contains_cleanup()) {
-                if let Some(Binding::OwnedValue(value))=self.env.get_mut(&name){value.mark_moved();}
+                if let Some(Binding::OwnedValue(value))=builder.env.get_mut(&name){value.mark_moved();}
             }
-            self.drop_binding(binding,&remaining,self.definition.function.span)?;
-            if name.starts_with('\0'){self.env.remove(&name);}else{
-                match self.env.get_mut(&name){
+            builder.drop_binding(binding,&remaining,builder.definition.function.span)?;
+            if name.starts_with('\0'){builder.env.remove(&name);}else{
+                match builder.env.get_mut(&name){
                     Some(Binding::OwnedValue(value))=>value.mark_moved(),
                     Some(Binding::ApplicationData(data))=>data.ownership=Ownership::Moved,
                     _=>{},
@@ -1083,6 +1083,7 @@ impl Builder<'_> {
             }
         }
         Ok(())
+            })
     }
     pub(super) fn application_data_type(
         &self,
@@ -1294,7 +1295,7 @@ impl Builder<'_> {
         self.code.push(Inst::generated(runtime_call("resize", vec![
             argument(frame), argument(root), argument(length.clone()),
             fill,
-        ], Some(Ty::scalar(Scalar::U32)), vec![reg],Some(error)).kind, call_origin));
+        ], Some(Ty::scalar(Scalar::U32)), vec![reg],Some(error),self.failure_continuation(Vec::new())).kind, call_origin));
         // Frame 槽位不变；新 SSA 身份使旧长度／下标证明停留在旧存储版本。
         let handle = self.application_root(reg);
         length.literal = false;
@@ -1731,7 +1732,7 @@ impl Builder<'_> {
                 let frame=self.application_frame(span)?;
                 let reg=self.reg(Scalar::U64);
                 let ty=Ty::scalar(Scalar::U64);
-                self.code.push(Inst::generated(runtime_call("storage_address",vec![argument(frame),argument(data.root.clone())],Some(ty.clone()),vec![reg],None).kind,origin));
+                self.code.push(Inst::generated(runtime_call("storage_address",vec![argument(frame),argument(data.root.clone())],Some(ty.clone()),vec![reg],None,None).kind,origin));
                 let mut value=Value{ty,regs:vec![reg],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
                 value.proof=value.proof.with_view_borrow(0,self.data_value_borrow(&data.data));
                 value

@@ -365,7 +365,7 @@ impl Emitter<'_> {
         for inst in code {
             match &(inst).kind {
                 InstKind::Print { .. } => return Err("GPU 后端不能执行 CPU 标准输出"),
-                InstKind::Call(_) | InstKind::Raise(_) => return Err("GPU 后端不能执行普通 CPU ABI 调用或其函数退出"),
+                InstKind::Call(_) | InstKind::Raise(_) | InstKind::Cleanup { .. } => return Err("GPU 后端不能执行普通 CPU ABI 调用或其函数退出"),
                 InstKind::TextureSample {
                     result,
                     texture,

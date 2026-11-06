@@ -35,6 +35,8 @@ pub struct CallReference {
 }
 #[derive(Clone, Debug)]
 pub struct DatasetBorrow {
+    #[cfg(feature = "compiler")]
+    pub error_slot: Option<usize>,
     pub frame: [Reg; 2],
     pub handle: Reg,
     pub input: usize,
@@ -145,6 +147,8 @@ impl FunctionBody {
 }
 #[derive(Clone, Debug)]
 pub struct Call {
+    #[cfg(feature = "compiler")]
+    pub(crate) failure: Option<crate::check::FailureContinuation>,
     /// 同次实际调用交回的拥有错误；None保持普通调用ABI。
     pub error: Option<Reg>,
     pub target: CallTarget,

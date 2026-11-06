@@ -1063,6 +1063,8 @@ pub enum InstKind {
     Exit,
     /// 将唯一拥有错误交回本普通函数的真实调用者，不退出最近的Scope。
     Raise(Reg),
+    #[cfg(feature = "compiler")]
+    Cleanup { slot:usize, body:Vec<Inst>, failure:Option<Box<crate::check::FailureScope>> },
 }
 #[derive(Clone, Debug)]
 pub enum RayResult {

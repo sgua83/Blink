@@ -368,7 +368,7 @@ pub(super) fn apply_memory(code:&mut [Inst],memory:&BTreeMap<MemoryTarget,Memory
             InstKind::LoadIndexed{source:value,..}|InstKind::StoreIndexed{source:value,..}=>source(value,memory,locals),
             InstKind::PositionAddress{address:CallReference{storage:CallStorage::Indexed(value),..},..}=>source(value,memory,locals),
             InstKind::Atomic(value)=>source(&mut value.target,memory,locals),
-            InstKind::Scope(body)=>apply_memory(body,memory,locals),
+            InstKind::Scope(body)|InstKind::Cleanup{body,..}=>apply_memory(body,memory,locals),
             InstKind::If{yes,no,..}=>{apply_memory(yes,memory,locals);apply_memory(no,memory,locals);}
             InstKind::Loop{condition,body,..}=>{apply_memory(condition,memory,locals);apply_memory(body,memory,locals);}
             _=>{}
