@@ -3920,9 +3920,9 @@ impl Builder<'_> {
             let Some((a,_,place))=binding.proof_storage()else{continue};
             let Some((b,_,_))=other.get_mut(name).and_then(Binding::proof_storage)else{continue};
             let ty=place.ty();let width=ty.components.len();
-            // Stable fields retain their value identity; snapshot only actual fact changes.
+            // Only differing existing identities need an output name; unread values are named at their actual read.
             let components=Proof::fact_components(ty).filter(|&i|
-                !a.known_identity(i).zip(b.known_identity(i)).is_some_and(|(a,b)|a==b)
+                a.known_identity(i).zip(b.known_identity(i)).is_some_and(|(a,b)|a!=b)
             ).collect::<Vec<_>>();
             if components.is_empty(){continue;}
             let regs=components.iter().map(|&i|{let reg=self.registers.len();self.registers.push(ty.components[i].0);reg}).collect::<Vec<_>>();
