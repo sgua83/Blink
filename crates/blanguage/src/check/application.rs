@@ -1233,6 +1233,7 @@ impl Builder<'_> {
         }
         self.require_application_initialized(&data, span)?;
         self.application_cpu(&data, span)?;
+        let input=self.hold_binding(Binding::ApplicationData(data.clone()));
         let Some(length) = self.expr(&args[1])? else { return Ok(None); };
         self.require_same(&Ty::scalar(Scalar::U32), &length.ty, args[1].span)?;
         let Some(mut returned) = self.evaluate_returned(&args[2], Some(&data.ty))? else { return Ok(None); };
@@ -1245,7 +1246,7 @@ impl Builder<'_> {
         let mut retained = fill.proof.typed_view_borrow(&fill.ty);
         for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
         self.view_uses.invocation(span);
-        retained.union(&self.view_uses.all(self,&[]));
+        retained.union(&self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)]));
         self.application_movable(&data, &retained, span)?;
         if fill.ty.owns_resources() {
             let exact = data.length.minimum() == data.length.maximum()
@@ -1279,7 +1280,9 @@ impl Builder<'_> {
         let fill = CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: fill.ty, access: Access::Read, address: CallReference {
             storage: CallStorage::Local { base: storage.start, len: storage.len() }, offset: None, word: 0,
         } };
-        self.resize_application_storage(data.root,data.ty,length,elements,fill,span).map(Some)
+        let result=self.resize_application_storage(data.root,data.ty,length,elements,fill,span)?;
+        self.env.remove(&input);
+        Ok(Some(result))
     }
     fn resize_application_storage(&mut self,root:Value,ty:Ty,mut length:Value,elements:Box<returns::Returned>,fill:CallArgument,span:Span)->Result<Data> {
         let frame = self.application_frame(span)?;
