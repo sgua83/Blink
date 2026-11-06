@@ -143,10 +143,10 @@ impl Borrow{
     }
     pub fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{Self{sources:self.sources.guards_at_call(bindings),inputs:self.inputs.guards_at_call(bindings),calls:self.calls.guards_at_call(bindings)}}
     pub fn map_sources(&self,map:impl Fn(Source)->Self)->Self{let mut result=Self{inputs:self.inputs.clone(),calls:self.calls.clone(),..Self::default()};for(source,when)in self.sources.entries(){result.union(&map(source.clone()).restricted(&when));}result}
-    pub fn unresolved(&self)->bool {self.sources.iter().any(|source|match source {
+    pub fn unresolved(&self)->bool {self.sources.entries().any(|(source,when)|when.possible()&&match source {
         Source::Unresolved=>true,
-        Source::Element{parent,..}|Source::Projection{parent,..}=>parent.unresolved(),
-        Source::Position(origin)=>matches!(&origin.root,address::Root::Resource(borrow)|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if borrow.unresolved()),
+        Source::Element{parent,..}|Source::Projection{parent,..}=>parent.restricted(&when).unresolved(),
+        Source::Position(origin)=>matches!(&origin.root,address::Root::Resource(borrow)|address::Root::Derived(borrow)|address::Root::Dataset{borrow,..}if borrow.restricted(&when).unresolved()),
         _=>false,
     })}
     pub fn has_local(&self)->bool {self.sources.iter().any(|source|match source{Source::Position(origin)=>origin.has_local(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.has_local(),_=>false})}
