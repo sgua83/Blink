@@ -47,8 +47,10 @@ impl Builder<'_> {
             return self.fail(span, "B239", "纹理只能只读借用");
         }
         if param.ty.texture_dimension() != Some(self.program.textures[resource.source.binding].dimension)
+            || param.ty.texture_format().is_some_and(|format|
+                Some(format) != self.program.textures[resource.source.binding].format)
             || resource.shape(self.program) != shape(self.world, &param.ty, definition, param.span)? {
-            return self.fail(span, "B239", "纹理维度或资源数组形状与借用参数不一致");
+            return self.fail(span, "B239", "纹理维度、格式或资源数组形状与借用参数不一致");
         }
         Ok(())
     }

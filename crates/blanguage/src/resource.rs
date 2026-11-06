@@ -5,7 +5,7 @@ use crate::{TemplateProgram, ir::*, native, spirv};
 use crate::ast::Target;
 
 // C 入口签名或本文件的字段／标签编码改变时，改变这一实际 ABI 身份。
-pub const ABI: &[u8; 8] = b"BLRI\x1f\0\0\0";
+pub const ABI: &[u8; 8] = b"BLRI\x20\0\0\0";
 /// 根Frame中的存储引用；offset为记录内字节偏移，不交接另一份存储所有权。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -192,7 +192,8 @@ impl<P> Decode for spirv::ProgramImage<P> {
 }
 record!(crate::ast::ExternalName { library, symbol });
 variants!(crate::ast::TextureDimension { 2=>D2, 3=>D3 });
-record!(TextureBinding { name, count, dimension });
+variants!(crate::ast::TextureFormat { 0=>Rgba32Float, 1=>Rgba8Unorm, 2=>Rgba8Srgb, 3=>R8Unorm, 4=>Rg16Unorm, 5=>Rgb10A2Unorm });
+record!(TextureBinding { name, count, dimension, format });
 record!(Reduction {
     source,
     source_word,

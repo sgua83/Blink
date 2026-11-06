@@ -383,6 +383,7 @@ fn expand_domain(world: &World, instance: &crate::generics::Instance, functions:
                 name: p.name.clone(),
                 count: texture::shape(world, &p.ty, d, p.span)?,
                 dimension: p.ty.texture_dimension().unwrap(),
+                format: p.ty.texture_format(),
             });
             continue;
         }
@@ -1040,13 +1041,14 @@ fn expand_stages(
                             if !p.ty.is_texture_resource()
                                 || p.access != Access::Read
                                 || p.ty.texture_dimension() != Some(program.textures[*i].dimension)
+                                || p.ty.texture_format().is_some_and(|format| Some(format) != program.textures[*i].format)
                                 || texture::shape(world, &p.ty, callee, p.span)?
                                     != program.textures[*i].count
                             {
                                 return d.source.fail(
                                     arg.span,
                                     "B239",
-                                    "纹理资源与只读纹理参数的维度／形状不匹配",
+                                    "纹理资源与只读纹理参数的维度／形状／格式不匹配",
                                 );
                             }
                         }
@@ -1486,7 +1488,8 @@ fn function_program(world: &World, instance: &crate::generics::Instance) -> Resu
                 Ok(TextureBinding {
                     name: p.name.clone(),
                     count: texture::shape(world, &p.ty, d, p.span)?,
-                dimension: p.ty.texture_dimension().unwrap(),
+                    dimension: p.ty.texture_dimension().unwrap(),
+                    format: p.ty.texture_format(),
                 })
             })
             .collect::<Result<Vec<_>>>()?,

@@ -223,6 +223,9 @@ pub enum TextureInput { D2(Texture), D3(Texture<3>) }
 impl From<Texture> for TextureInput { fn from(value: Texture) -> Self { Self::D2(value) } }
 impl From<Texture<3>> for TextureInput { fn from(value: Texture<3>) -> Self { Self::D3(value) } }
 impl TextureInput {
+    pub(super) fn format(&self) -> crate::TextureFormat {
+        match self { Self::D2(t) => t.format(), Self::D3(t) => t.format() }
+    }
     pub fn dimension(&self) -> blanguage::ast::TextureDimension {
         match self { Self::D2(_) => blanguage::ast::TextureDimension::D2, Self::D3(_) => blanguage::ast::TextureDimension::D3 }
     }

@@ -766,9 +766,10 @@ impl CpuCode {
     ) -> Result<()> {
         if textures.len() != self.program.texture_count()
             || textures.iter().zip(self.program.textures().iter().flat_map(|binding|
-                std::iter::repeat_n(binding.dimension, binding.elements() as usize)))
-                .any(|(texture, dimension)| texture.dimension() != dimension) {
-            return Err(error("纹理绑定数量或维度与程序接口不一致"));
+                std::iter::repeat_n(binding, binding.elements() as usize)))
+                .any(|(texture, binding)| texture.dimension() != binding.dimension
+                    || binding.format.is_some_and(|format| texture.format() != format)) {
+            return Err(error("纹理绑定数量、维度或格式与程序接口不一致"));
         }
         let texture_descriptors = crate::texture::CpuTextures::new(textures);
         let mut uniforms = arguments(

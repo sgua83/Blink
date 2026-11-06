@@ -1,35 +1,9 @@
 //! 不可变有类型纹理与独立资产；CPU描述只借用实际texel存储，不生成解码镜像。
 use crate::{Result, error};
 use std::{io::Write, path::Path, sync::Arc};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum TextureFormat {
-    Rgba32Float = 0,
-    Rgba8Unorm = 1,
-    Rgba8Srgb = 2,
-    R8Unorm = 3,
-    Rg16Unorm = 4,
-    Rgb10A2Unorm = 5,
-}
-impl TextureFormat {
-    pub fn texel_bytes(self) -> usize {
-        match self {
-            Self::Rgba32Float => 16,
-            Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Rg16Unorm | Self::Rgb10A2Unorm => 4,
-            Self::R8Unorm => 1,
-        }
-    }
-    fn read(value: u32) -> Result<Self> {
-        match value {
-            0 => Ok(Self::Rgba32Float),
-            1 => Ok(Self::Rgba8Unorm),
-            2 => Ok(Self::Rgba8Srgb),
-            3 => Ok(Self::R8Unorm),
-            4 => Ok(Self::Rg16Unorm),
-            5 => Ok(Self::Rgb10A2Unorm),
-            _ => Err(error("未知BLTEX texel格式")),
-        }
-    }
+pub use blanguage::ast::TextureFormat;
+fn read_format(value: u32) -> Result<TextureFormat> {
+    TextureFormat::from_code(value).ok_or_else(|| error("未知BLTEX texel格式"))
 }
 pub enum TextureTexels {
     Rgba32Float(Vec<[f32; 4]>),
@@ -121,7 +95,7 @@ impl TextureInput {
     pub fn dimension(&self) -> blanguage::ast::TextureDimension {
         match self { Self::D2(_) => blanguage::ast::TextureDimension::D2, Self::D3(_) => blanguage::ast::TextureDimension::D3 }
     }
-    fn format(&self) -> TextureFormat {
+    pub(crate) fn format(&self) -> TextureFormat {
         match self { Self::D2(t) => t.format(), Self::D3(t) => t.format() }
     }
     fn address_bits(&self) -> u32 {
@@ -239,7 +213,7 @@ impl Texture2D {
         }
         let format = match word(&bytes, &mut at)? {
             1 => TextureFormat::Rgba32Float,
-            2 => TextureFormat::read(word(&bytes, &mut at)?)?,
+            2 => read_format(word(&bytes, &mut at)?)?,
             _ => return Err(error("不支持的BLTEX版本")),
         };
         let count = word(&bytes, &mut at)?;
@@ -356,7 +330,7 @@ impl Texture3D {
         if word(&bytes, &mut at)? != 3 {
             return Err(error("BLTEX体资产需要三维图像"));
         }
-        let format = TextureFormat::read(word(&bytes, &mut at)?)?;
+        let format = read_format(word(&bytes, &mut at)?)?;
         let count = word(&bytes, &mut at)?;
         let mut levels = Vec::new();
         for _ in 0..count {

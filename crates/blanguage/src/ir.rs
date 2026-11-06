@@ -860,6 +860,7 @@ pub struct TextureBinding {
     pub name: String,
     pub count: Option<u32>,
     pub dimension: TextureDimension,
+    pub format: Option<crate::ast::TextureFormat>,
 }
 impl TextureBinding {
     pub fn elements(&self) -> u32 {
@@ -1886,8 +1887,9 @@ impl Program {
         for (i, texture) in self.textures.iter().enumerate() {
             let name = &texture.name;
             out += &format!(
-                "  texture {}: Read {name} : {}\n",
-                self.buffers.len() + self.accelerations.len() + i, texture.dimension.name()
+                "  texture {}: Read {name} : {}{}\n",
+                self.buffers.len() + self.accelerations.len() + i, texture.dimension.name(),
+                texture.format.map(|format| format!("<{}>", format.name())).unwrap_or_default()
             );
             if let Some(count) = texture.count {
                 out += &format!("    array elements={count}\n");

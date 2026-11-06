@@ -2106,10 +2106,11 @@ impl GpuProgram {
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
             || owner.textures.iter().zip(c.program.textures().iter().flat_map(|binding|
-                std::iter::repeat_n(binding.dimension, binding.elements() as usize)))
-                .any(|(texture, dimension)| texture.dimension() != dimension)
+                std::iter::repeat_n(binding, binding.elements() as usize)))
+                .any(|(texture, binding)| texture.dimension() != binding.dimension
+                    || binding.format.is_some_and(|format| texture.format() != format))
         {
-            return Err(error("纹理数量、维度或设备归属与程序不一致"));
+            return Err(error("纹理数量、维度、格式或设备归属与程序不一致"));
         }
         for texture in &owner.textures {
             owner.dependencies.push(texture.produced());

@@ -87,6 +87,47 @@ impl TextureDimension {
         match self { Self::D2 => "texture2d", Self::D3 => "texture3d" }
     }
 }
+/// 原texel编码；B资源声明、原生描述和BLTEX共用同一格式身份。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum TextureFormat {
+    Rgba32Float = 0,
+    Rgba8Unorm = 1,
+    Rgba8Srgb = 2,
+    R8Unorm = 3,
+    Rg16Unorm = 4,
+    Rgb10A2Unorm = 5,
+}
+impl TextureFormat {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rgba32Float => "rgba32_float", Self::Rgba8Unorm => "rgba8_unorm",
+            Self::Rgba8Srgb => "rgba8_srgb", Self::R8Unorm => "r8_unorm",
+            Self::Rg16Unorm => "rg16_unorm", Self::Rgb10A2Unorm => "rgb10a2_unorm",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "rgba32_float" => Some(Self::Rgba32Float), "rgba8_unorm" => Some(Self::Rgba8Unorm),
+            "rgba8_srgb" => Some(Self::Rgba8Srgb), "r8_unorm" => Some(Self::R8Unorm),
+            "rg16_unorm" => Some(Self::Rg16Unorm), "rgb10a2_unorm" => Some(Self::Rgb10A2Unorm),
+            _ => None,
+        }
+    }
+    pub fn from_code(code: u32) -> Option<Self> {
+        match code {
+            0 => Some(Self::Rgba32Float), 1 => Some(Self::Rgba8Unorm), 2 => Some(Self::Rgba8Srgb),
+            3 => Some(Self::R8Unorm), 4 => Some(Self::Rg16Unorm), 5 => Some(Self::Rgb10A2Unorm),
+            _ => None,
+        }
+    }
+    pub fn texel_bytes(self) -> usize {
+        match self {
+            Self::Rgba32Float => 16, Self::R8Unorm => 1,
+            Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Rg16Unorm | Self::Rgb10A2Unorm => 4,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName {
     pub name: String,
@@ -156,9 +197,17 @@ impl TypeName {
             _ => None,
         }
     }
+    pub fn texture_format(&self) -> Option<TextureFormat> {
+        if self.name == "array" && self.texture_array_shape().is_some() {
+            if let GenericArgument::Type(element) = &self.arguments[0] { return element.texture_format(); }
+        }
+        let [GenericArgument::Type(format)] = self.arguments.as_slice() else { return None; };
+        if *format != TypeName::named(&format.name) { return None; }
+        TextureFormat::from_name(&format.name)
+    }
     pub fn is_texture(&self) -> bool {
         matches!(self.name.as_str(), "texture2d" | "texture3d")
-            && self.arguments.is_empty()
+            && (self.arguments.is_empty() || self.texture_format().is_some())
             && !self.dataset
             && !self.view
             && !self.tile
